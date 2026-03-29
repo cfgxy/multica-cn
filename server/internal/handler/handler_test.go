@@ -299,6 +299,148 @@ func TestCommentCRUD(t *testing.T) {
 	testHandler.DeleteIssue(w, req)
 }
 
+func TestCommentAgentAttribution(t *testing.T) {
+	// Look up the test agent ID.
+	w := httptest.NewRecorder()
+	req := newRequest("GET", "/api/agents?workspace_id="+testWorkspaceID, nil)
+	testHandler.ListAgents(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("ListAgents: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var agents []AgentResponse
+	json.NewDecoder(w.Body).Decode(&agents)
+	if len(agents) == 0 {
+		t.Fatal("need at least 1 agent in test fixture")
+	}
+	agentID := agents[0].ID
+
+	// Create a test issue.
+	w = httptest.NewRecorder()
+	req = newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title": "Agent comment attribution test",
+	})
+	testHandler.CreateIssue(w, req)
+	var issue IssueResponse
+	json.NewDecoder(w.Body).Decode(&issue)
+	issueID := issue.ID
+
+	t.Cleanup(func() {
+		cw := httptest.NewRecorder()
+		cr := newRequest("DELETE", "/api/issues/"+issueID, nil)
+		cr = withURLParam(cr, "id", issueID)
+		testHandler.DeleteIssue(cw, cr)
+	})
+
+	// Create a comment WITHOUT X-Agent-ID — should be "member".
+	w = httptest.NewRecorder()
+	req = newRequest("POST", "/api/issues/"+issueID+"/comments", map[string]any{
+		"content": "member comment",
+	})
+	req = withURLParam(req, "id", issueID)
+	testHandler.CreateComment(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateComment (member): expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var memberComment CommentResponse
+	json.NewDecoder(w.Body).Decode(&memberComment)
+	if memberComment.AuthorType != "member" {
+		t.Fatalf("expected author_type 'member', got %q", memberComment.AuthorType)
+	}
+	if memberComment.AuthorID != testUserID {
+		t.Fatalf("expected author_id %q, got %q", testUserID, memberComment.AuthorID)
+	}
+
+	// Create a comment WITH X-Agent-ID — should be "agent".
+	w = httptest.NewRecorder()
+	req = newRequest("POST", "/api/issues/"+issueID+"/comments", map[string]any{
+		"content": "agent comment",
+	})
+	req.Header.Set("X-Agent-ID", agentID)
+	req = withURLParam(req, "id", issueID)
+	testHandler.CreateComment(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateComment (agent): expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var agentComment CommentResponse
+	json.NewDecoder(w.Body).Decode(&agentComment)
+	if agentComment.AuthorType != "agent" {
+		t.Fatalf("expected author_type 'agent', got %q", agentComment.AuthorType)
+	}
+	if agentComment.AuthorID != agentID {
+		t.Fatalf("expected author_id %q, got %q", agentID, agentComment.AuthorID)
+	}
+
+	// Verify via list: both comments present with correct attribution.
+	w = httptest.NewRecorder()
+	req = newRequest("GET", "/api/issues/"+issueID+"/comments", nil)
+	req = withURLParam(req, "id", issueID)
+	testHandler.ListComments(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("ListComments: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var comments []CommentResponse
+	json.NewDecoder(w.Body).Decode(&comments)
+	if len(comments) != 2 {
+		t.Fatalf("expected 2 comments, got %d", len(comments))
+	}
+	// Comments are ordered by created_at ASC.
+	if comments[0].AuthorType != "member" {
+		t.Fatalf("first comment: expected author_type 'member', got %q", comments[0].AuthorType)
+	}
+	if comments[1].AuthorType != "agent" {
+		t.Fatalf("second comment: expected author_type 'agent', got %q", comments[1].AuthorType)
+	}
+}
+
+func TestUpdateIssueAgentAttribution(t *testing.T) {
+	// Look up the test agent ID.
+	w := httptest.NewRecorder()
+	req := newRequest("GET", "/api/agents?workspace_id="+testWorkspaceID, nil)
+	testHandler.ListAgents(w, req)
+	var agents []AgentResponse
+	json.NewDecoder(w.Body).Decode(&agents)
+	if len(agents) == 0 {
+		t.Fatal("need at least 1 agent in test fixture")
+	}
+	agentID := agents[0].ID
+
+	// Create a test issue.
+	w = httptest.NewRecorder()
+	req = newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":  "Agent update attribution test",
+		"status": "todo",
+	})
+	testHandler.CreateIssue(w, req)
+	var issue IssueResponse
+	json.NewDecoder(w.Body).Decode(&issue)
+	issueID := issue.ID
+
+	t.Cleanup(func() {
+		cw := httptest.NewRecorder()
+		cr := newRequest("DELETE", "/api/issues/"+issueID, nil)
+		cr = withURLParam(cr, "id", issueID)
+		testHandler.DeleteIssue(cw, cr)
+	})
+
+	// Update with X-Agent-ID — the response should succeed (we can't easily
+	// inspect the event bus, but we verify the handler doesn't reject the header).
+	w = httptest.NewRecorder()
+	req = newRequest("PUT", "/api/issues/"+issueID, map[string]any{
+		"status": "in_progress",
+	})
+	req.Header.Set("X-Agent-ID", agentID)
+	req = withURLParam(req, "id", issueID)
+	testHandler.UpdateIssue(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateIssue with X-Agent-ID: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var updated IssueResponse
+	json.NewDecoder(w.Body).Decode(&updated)
+	if updated.Status != "in_progress" {
+		t.Fatalf("expected status 'in_progress', got %q", updated.Status)
+	}
+}
+
 func TestAgentCRUD(t *testing.T) {
 	// List agents
 	w := httptest.NewRecorder()

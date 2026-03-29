@@ -218,6 +218,30 @@ func TestBuildEnvNilExtras(t *testing.T) {
 	}
 }
 
+func TestBuildEnvOverridesDuplicates(t *testing.T) {
+	// Cannot use t.Parallel with t.Setenv.
+
+	// Inject a known key into the current process environment so we can
+	// verify that buildEnv replaces it instead of appending a duplicate.
+	const key = "MULTICA_TEST_BUILD_ENV_OVERRIDE"
+	t.Setenv(key, "old_value")
+
+	env := buildEnv(map[string]string{key: "new_value"})
+
+	var matches []string
+	for _, e := range env {
+		if strings.HasPrefix(e, key+"=") {
+			matches = append(matches, e)
+		}
+	}
+	if len(matches) != 1 {
+		t.Fatalf("expected exactly 1 entry for %s, got %d: %v", key, len(matches), matches)
+	}
+	if matches[0] != key+"=new_value" {
+		t.Fatalf("expected %s=new_value, got %q", key, matches[0])
+	}
+}
+
 func mustMarshal(t *testing.T, v any) json.RawMessage {
 	t.Helper()
 	data, err := json.Marshal(v)

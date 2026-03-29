@@ -315,7 +315,22 @@ func trySend(ch chan<- Message, msg Message) {
 }
 
 func buildEnv(extra map[string]string) []string {
-	env := os.Environ()
+	// Build a set of keys we want to override so we can skip them
+	// when copying the parent environment. This ensures extra vars
+	// always win — os.Getenv in child processes returns the first
+	// match, so appending duplicates would silently use the old value.
+	override := make(map[string]bool, len(extra))
+	for k := range extra {
+		override[k] = true
+	}
+
+	env := make([]string, 0, len(os.Environ())+len(extra))
+	for _, entry := range os.Environ() {
+		if k, _, ok := strings.Cut(entry, "="); ok && override[k] {
+			continue // skip — will be replaced by extra
+		}
+		env = append(env, entry)
+	}
 	for k, v := range extra {
 		env = append(env, k+"="+v)
 	}
