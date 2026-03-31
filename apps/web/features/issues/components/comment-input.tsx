@@ -41,8 +41,8 @@ function CommentInput({ issueId, onSubmit }: CommentInputProps) {
   };
 
   return (
-    <div className="relative flex max-h-56 flex-col rounded-lg bg-card pb-8 ring-1 ring-border">
-      <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2">
+    <div className="relative rounded-lg bg-card ring-1 ring-border">
+      <div className="min-h-20 max-h-48 overflow-y-auto px-3 py-2 pb-8">
         <RichTextEditor
           ref={editorRef}
           placeholder="Leave a comment..."
