@@ -208,11 +208,6 @@ func (h *Handler) commentMentionsOthersButNotAssignee(content string, issue db.I
 // are already the issue's assignee (handled by on_comment), and agents with
 // on_mention trigger disabled.
 func (h *Handler) enqueueMentionedAgentTasks(ctx context.Context, issue db.Issue, comment db.Comment, authorType, authorID string) {
-	// Don't trigger on terminal statuses.
-	if issue.Status == "done" || issue.Status == "cancelled" {
-		return
-	}
-
 	mentions := util.ParseMentions(comment.Content)
 	for _, m := range mentions {
 		if m.Type != "agent" {

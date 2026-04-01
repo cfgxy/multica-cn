@@ -162,8 +162,6 @@ func (s *TaskService) ClaimTask(ctx context.Context, agentID pgtype.UUID) (*db.A
 
 // ClaimTaskForRuntime claims the next runnable task for a runtime while
 // still respecting each agent's max_concurrent_tasks limit.
-// Tasks whose issues are in a terminal status (done/cancelled) are
-// automatically cancelled and skipped.
 func (s *TaskService) ClaimTaskForRuntime(ctx context.Context, runtimeID pgtype.UUID) (*db.AgentTaskQueue, error) {
 	tasks, err := s.Queries.ListPendingTasksByRuntime(ctx, runtimeID)
 	if err != nil {
@@ -172,15 +170,6 @@ func (s *TaskService) ClaimTaskForRuntime(ctx context.Context, runtimeID pgtype.
 
 	triedAgents := map[string]struct{}{}
 	for _, candidate := range tasks {
-		// Skip tasks whose issues have reached a terminal status.
-		if issue, err := s.Queries.GetIssue(ctx, candidate.IssueID); err == nil {
-			if issue.Status == "done" || issue.Status == "cancelled" {
-				slog.Info("skipping task for terminal issue", "task_id", util.UUIDToString(candidate.ID), "issue_status", issue.Status)
-				_ = s.Queries.CancelAgentTasksByIssue(ctx, candidate.IssueID)
-				continue
-			}
-		}
-
 		agentKey := util.UUIDToString(candidate.AgentID)
 		if _, seen := triedAgents[agentKey]; seen {
 			continue
