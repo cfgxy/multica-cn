@@ -74,6 +74,20 @@ export function useRealtimeSync(ws: WSClient | null) {
         logger.debug("skipping self-event", msg.type);
         return;
       }
+
+      // issue:updated — update in-place using WS payload instead of full
+      // refetch.  Replacing the entire issues array causes every consumer
+      // (including IssueDetail in the inbox) to re-render, which can flash
+      // a loading state.  The payload already contains the full issue object
+      // so a surgical merge is safe.
+      if (msg.type === "issue:updated") {
+        const { issue } = (msg.payload ?? {}) as IssueUpdatedPayload;
+        if (issue?.id) {
+          useIssueStore.getState().updateIssue(issue.id, issue);
+        }
+        return;
+      }
+
       const prefix = msg.type.split(":")[0] ?? "";
       const refresh = refreshMap[prefix];
       if (refresh) debouncedRefresh(prefix, refresh);
