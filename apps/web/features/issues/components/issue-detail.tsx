@@ -125,8 +125,33 @@ function formatActivity(
       return "completed the task";
     case "task_failed":
       return "task failed";
+    case "issue_relation_added": {
+      const relType = details.relation_type ?? "";
+      const identifier = details.related_issue_identifier ?? "?";
+      const label = relationTypeLabel(relType);
+      return `added relation: ${label} ${identifier}`;
+    }
+    case "issue_relation_removed": {
+      const relType = details.relation_type ?? "";
+      const identifier = details.related_issue_identifier ?? "?";
+      const label = relationTypeLabel(relType);
+      return `removed relation: ${label} ${identifier}`;
+    }
     default:
       return entry.action ?? "";
+  }
+}
+
+function relationTypeLabel(type: string): string {
+  switch (type) {
+    case "blocks":
+      return "blocks";
+    case "blocked_by":
+      return "blocked by";
+    case "related":
+      return "related to";
+    default:
+      return type;
   }
 }
 
@@ -871,6 +896,7 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
                         const isStatusChange = entry.action === "status_changed";
                         const isPriorityChange = entry.action === "priority_changed";
                         const isDueDateChange = entry.action === "due_date_changed";
+                        const isRelationChange = entry.action === "issue_relation_added" || entry.action === "issue_relation_removed";
 
                         let leadIcon: React.ReactNode;
                         if (isStatusChange && details.to) {
@@ -879,6 +905,8 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
                           leadIcon = <PriorityIcon priority={details.to as IssuePriority} className="h-4 w-4 shrink-0" />;
                         } else if (isDueDateChange) {
                           leadIcon = <Calendar className="h-4 w-4 shrink-0 text-muted-foreground" />;
+                        } else if (isRelationChange) {
+                          leadIcon = <Link2 className="h-4 w-4 shrink-0 text-muted-foreground" />;
                         } else {
                           leadIcon = <ActorAvatar actorType={entry.actor_type} actorId={entry.actor_id} size={16} />;
                         }

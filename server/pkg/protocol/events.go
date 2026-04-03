@@ -7,6 +7,10 @@ const (
 	EventIssueUpdated = "issue:updated"
 	EventIssueDeleted = "issue:deleted"
 
+	// Issue dependency events
+	EventIssueDependencyCreated = "issue_dependency:created"
+	EventIssueDependencyRemoved = "issue_dependency:removed"
+
 	// Comment events
 	EventCommentCreated       = "comment:created"
 	EventCommentUpdated       = "comment:updated"

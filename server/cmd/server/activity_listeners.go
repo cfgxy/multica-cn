@@ -220,6 +220,16 @@ func registerActivityListeners(bus *events.Bus, queries *db.Queries) {
 	bus.Subscribe(protocol.EventTaskFailed, func(e events.Event) {
 		handleTaskActivity(ctx, bus, queries, e, "task_failed")
 	})
+
+	// issue_dependency:created — record "issue_relation_added" on both issues
+	bus.Subscribe(protocol.EventIssueDependencyCreated, func(e events.Event) {
+		handleDependencyActivity(ctx, bus, queries, e, "issue_relation_added")
+	})
+
+	// issue_dependency:removed — record "issue_relation_removed" on both issues
+	bus.Subscribe(protocol.EventIssueDependencyRemoved, func(e events.Event) {
+		handleDependencyActivity(ctx, bus, queries, e, "issue_relation_removed")
+	})
 }
 
 // handleTaskActivity records an activity for task:completed or task:failed events.
@@ -257,6 +267,81 @@ func handleTaskActivity(ctx context.Context, bus *events.Bus, queries *db.Querie
 	}
 
 	publishActivityEvent(bus, e, activity)
+}
+
+// handleDependencyActivity records activities on both issues when a dependency
+// is created or removed. Each issue gets an activity entry with details about
+// the related issue (identifier, title, relation type).
+func handleDependencyActivity(ctx context.Context, bus *events.Bus, queries *db.Queries, e events.Event, action string) {
+	payload, ok := e.Payload.(map[string]any)
+	if !ok {
+		return
+	}
+	dep, _ := payload["dependency"].(db.IssueDependency)
+	issue, _ := payload["issue"].(db.Issue)
+	targetIssue, _ := payload["target_issue"].(db.Issue)
+	issueIdentifier, _ := payload["issue_identifier"].(string)
+	targetIdentifier, _ := payload["target_issue_identifier"].(string)
+
+	issueID := util.UUIDToString(dep.IssueID)
+	targetIssueID := util.UUIDToString(dep.DependsOnIssueID)
+
+	// Activity on the source issue: "added relation: blocks MUL-456"
+	srcDetails, _ := json.Marshal(map[string]string{
+		"related_issue_id":         targetIssueID,
+		"related_issue_identifier": targetIdentifier,
+		"related_issue_title":      targetIssue.Title,
+		"relation_type":            dep.Type,
+	})
+	srcActivity, err := queries.CreateActivity(ctx, db.CreateActivityParams{
+		WorkspaceID: issue.WorkspaceID,
+		IssueID:     dep.IssueID,
+		ActorType:   util.StrToText(e.ActorType),
+		ActorID:     parseUUID(e.ActorID),
+		Action:      action,
+		Details:     srcDetails,
+	})
+	if err != nil {
+		slog.Error("activity: failed to record dependency activity on source issue",
+			"issue_id", issueID, "action", action, "error", err)
+	} else {
+		publishActivityEvent(bus, e, srcActivity)
+	}
+
+	// Activity on the target issue: "added relation: blocked_by MUL-123"
+	inverseType := inverseRelationType(dep.Type)
+	targetDetails, _ := json.Marshal(map[string]string{
+		"related_issue_id":         issueID,
+		"related_issue_identifier": issueIdentifier,
+		"related_issue_title":      issue.Title,
+		"relation_type":            inverseType,
+	})
+	targetActivity, err := queries.CreateActivity(ctx, db.CreateActivityParams{
+		WorkspaceID: targetIssue.WorkspaceID,
+		IssueID:     dep.DependsOnIssueID,
+		ActorType:   util.StrToText(e.ActorType),
+		ActorID:     parseUUID(e.ActorID),
+		Action:      action,
+		Details:     targetDetails,
+	})
+	if err != nil {
+		slog.Error("activity: failed to record dependency activity on target issue",
+			"issue_id", targetIssueID, "action", action, "error", err)
+	} else {
+		publishActivityEvent(bus, e, targetActivity)
+	}
+}
+
+// inverseRelationType returns the inverse of a dependency relation type.
+func inverseRelationType(t string) string {
+	switch t {
+	case "blocks":
+		return "blocked_by"
+	case "blocked_by":
+		return "blocks"
+	default:
+		return t // "related" is symmetric
+	}
 }
 
 // publishActivityEvent sends an activity:created event for WS broadcasting.
