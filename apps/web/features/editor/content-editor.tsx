@@ -109,7 +109,11 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         if (!onUpdateRef.current) return;
         if (debounceRef.current) clearTimeout(debounceRef.current);
         debounceRef.current = setTimeout(() => {
-          onUpdateRef.current?.(ed.getMarkdown());
+          // Trim trailing whitespace: ProseMirror always keeps an empty
+          // paragraph at the document end (schema: "block+"), which
+          // getMarkdown() serializes as trailing "\n\n". Without trimming,
+          // each save→reload cycle would add an extra empty line.
+          onUpdateRef.current?.(ed.getMarkdown().replace(/(\n\s*)+$/, ""));
         }, debounceMs);
       },
       onBlur: () => {
@@ -175,7 +179,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     }, [editor, editable, defaultValue]);
 
     useImperativeHandle(ref, () => ({
-      getMarkdown: () => editor?.getMarkdown() ?? "",
+      getMarkdown: () => editor?.getMarkdown().replace(/(\n\s*)+$/, "") ?? "",
       clearContent: () => {
         editor?.commands.clearContent();
       },

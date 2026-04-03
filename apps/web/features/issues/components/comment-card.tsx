@@ -131,10 +131,7 @@ function CommentRow({
 
   const saveEdit = async () => {
     if (cancelledRef.current) return;
-    const trimmed = editEditorRef.current
-      ?.getMarkdown()
-      ?.replace(/(\n\s*)+$/, "")
-      .trim();
+    const trimmed = editEditorRef.current?.getMarkdown()?.trim();
     if (!trimmed || trimmed === (entry.content ?? "").trim()) {
       setEditing(false);
       return;
@@ -300,10 +297,7 @@ function CommentCard({
 
   const saveEdit = async () => {
     if (cancelledRef.current) return;
-    const trimmed = editEditorRef.current
-      ?.getMarkdown()
-      ?.replace(/(\n\s*)+$/, "")
-      .trim();
+    const trimmed = editEditorRef.current?.getMarkdown()?.trim();
     if (!trimmed || trimmed === (entry.content ?? "").trim()) {
       setEditing(false);
       return;

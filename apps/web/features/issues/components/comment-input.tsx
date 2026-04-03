@@ -23,7 +23,7 @@ function CommentInput({ issueId, onSubmit }: CommentInputProps) {
   };
 
   const handleSubmit = async () => {
-    const content = editorRef.current?.getMarkdown()?.replace(/(\n\s*)+$/, "").trim();
+    const content = editorRef.current?.getMarkdown()?.trim();
     if (!content || submitting) return;
     setSubmitting(true);
     try {
