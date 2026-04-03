@@ -35,6 +35,8 @@ import type {
   TimelineEntry,
   TaskMessagePayload,
   Attachment,
+  IssueDependency,
+  IssueDependencyType,
 } from "@/shared/types";
 import { type Logger, noopLogger } from "@/shared/logger";
 
@@ -224,6 +226,22 @@ export class ApiClient {
 
   async listTimeline(issueId: string): Promise<TimelineEntry[]> {
     return this.fetch(`/api/issues/${issueId}/timeline`);
+  }
+
+  // Issue dependencies
+  async listDependencies(issueId: string): Promise<IssueDependency[]> {
+    return this.fetch(`/api/issues/${issueId}/dependencies`);
+  }
+
+  async createDependency(issueId: string, dependsOnIssueId: string, type: IssueDependencyType): Promise<IssueDependency> {
+    return this.fetch(`/api/issues/${issueId}/dependencies`, {
+      method: "POST",
+      body: JSON.stringify({ depends_on_issue_id: dependsOnIssueId, type }),
+    });
+  }
+
+  async deleteDependency(issueId: string, depId: string): Promise<void> {
+    await this.fetch(`/api/issues/${issueId}/dependencies/${depId}`, { method: "DELETE" });
   }
 
   async updateComment(commentId: string, content: string): Promise<Comment> {

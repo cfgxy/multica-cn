@@ -13,6 +13,7 @@ import {
   Link2,
   MoreHorizontal,
   PanelRight,
+  Plus,
   Trash2,
   UserMinus,
   Users,
@@ -57,7 +58,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from "@/components/ui/command";
 import { AvatarGroup, AvatarGroupCount } from "@/components/ui/avatar";
 import { ActorAvatar } from "@/components/common/actor-avatar";
-import type { UpdateIssueRequest, IssueStatus, IssuePriority, TimelineEntry } from "@/shared/types";
+import type { UpdateIssueRequest, IssueStatus, IssuePriority, IssueDependency, IssueDependencyType, TimelineEntry } from "@/shared/types";
 import { ALL_STATUSES, STATUS_CONFIG, PRIORITY_ORDER, PRIORITY_CONFIG } from "@/features/issues/config";
 import { StatusIcon, PriorityIcon, DueDatePicker, AssigneePicker, canAssignAgent } from "@/features/issues/components";
 import { CommentCard } from "./comment-card";
@@ -155,6 +156,12 @@ function relationTypeLabel(type: string): string {
   }
 }
 
+function inverseRelType(type: string): string {
+  if (type === "blocks") return "blocked_by";
+  if (type === "blocked_by") return "blocks";
+  return type;
+}
+
 
 // ---------------------------------------------------------------------------
 // Property row
@@ -219,7 +226,12 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
   const [deleting, setDeleting] = useState(false);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [propertiesOpen, setPropertiesOpen] = useState(true);
+  const [relationsOpen, setRelationsOpen] = useState(true);
   const [detailsOpen, setDetailsOpen] = useState(true);
+  const [dependencies, setDependencies] = useState<IssueDependency[]>([]);
+  const [addRelOpen, setAddRelOpen] = useState(false);
+  const [relSearch, setRelSearch] = useState("");
+  const [relType, setRelType] = useState<IssueDependencyType>("related");
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [showScrollBottom, setShowScrollBottom] = useState(false);
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
@@ -264,6 +276,32 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
   } = useIssueSubscribers(id, user?.id);
 
   const loading = issueLoading;
+
+  // Fetch issue dependencies
+  const fetchDependencies = useCallback(() => {
+    api.listDependencies(id).then(setDependencies).catch(() => {});
+  }, [id]);
+  useEffect(() => { fetchDependencies(); }, [fetchDependencies]);
+
+  const handleAddDependency = useCallback(async (targetIssueId: string, type: IssueDependencyType) => {
+    try {
+      await api.createDependency(id, targetIssueId, type);
+      fetchDependencies();
+      setAddRelOpen(false);
+      setRelSearch("");
+    } catch {
+      toast.error("Failed to add relation");
+    }
+  }, [id, fetchDependencies]);
+
+  const handleRemoveDependency = useCallback(async (depId: string) => {
+    try {
+      await api.deleteDependency(id, depId);
+      fetchDependencies();
+    } catch {
+      toast.error("Failed to remove relation");
+    }
+  }, [id, fetchDependencies]);
 
   // Scroll to highlighted comment once timeline loads (fire only once per highlightCommentId)
   useEffect(() => {
@@ -1047,6 +1085,102 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
                 />
               </PropRow>
             </div>}
+          </div>
+
+          {/* Relations section */}
+          <div>
+            <div className="flex items-center mb-2">
+              <button
+                className={`flex flex-1 items-center gap-1 text-xs font-medium transition-colors ${relationsOpen ? "" : "text-muted-foreground hover:text-foreground"}`}
+                onClick={() => setRelationsOpen(!relationsOpen)}
+              >
+                <ChevronRight className={`h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform ${relationsOpen ? "rotate-90" : ""}`} />
+                Relations
+                {dependencies.length > 0 && <span className="text-muted-foreground ml-1">({dependencies.length})</span>}
+              </button>
+              <Popover open={addRelOpen} onOpenChange={setAddRelOpen}>
+                <PopoverTrigger
+                  render={
+                    <button className="p-0.5 rounded hover:bg-accent/50 text-muted-foreground hover:text-foreground transition-colors">
+                      <Plus className="h-3.5 w-3.5" />
+                    </button>
+                  }
+                />
+                <PopoverContent align="end" className="w-72 p-0">
+                  <div className="p-2 border-b">
+                    <div className="flex gap-1 mb-2">
+                      {(["related", "blocks", "blocked_by"] as const).map((t) => (
+                        <button
+                          key={t}
+                          className={`px-2 py-0.5 text-xs rounded-full transition-colors ${relType === t ? "bg-primary text-primary-foreground" : "bg-muted text-muted-foreground hover:text-foreground"}`}
+                          onClick={() => setRelType(t)}
+                        >
+                          {relationTypeLabel(t)}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                  <Command>
+                    <CommandInput placeholder="Search issues..." value={relSearch} onValueChange={setRelSearch} />
+                    <CommandList>
+                      <CommandEmpty>No issues found</CommandEmpty>
+                      <CommandGroup>
+                        {allIssues
+                          .filter((i) => i.id !== id)
+                          .filter((i) => !dependencies.some(
+                            (d) => (d.issue_id === id ? d.depends_on_issue_id : d.issue_id) === i.id
+                          ))
+                          .slice(0, 20)
+                          .map((i) => (
+                            <CommandItem
+                              key={i.id}
+                              value={`${i.identifier} ${i.title}`}
+                              onSelect={() => handleAddDependency(i.id, relType)}
+                            >
+                              <span className="text-muted-foreground shrink-0 mr-1.5">{i.identifier}</span>
+                              <span className="truncate">{i.title}</span>
+                            </CommandItem>
+                          ))}
+                      </CommandGroup>
+                    </CommandList>
+                  </Command>
+                </PopoverContent>
+              </Popover>
+            </div>
+
+            {relationsOpen && dependencies.length > 0 && (
+              <div className="space-y-1 pl-2">
+                {dependencies.map((dep) => {
+                  // Determine which side is the "other" issue
+                  const isSource = dep.issue_id === id;
+                  const otherIdentifier = isSource ? dep.depends_on_issue_identifier : dep.issue_identifier;
+                  const otherTitle = isSource ? dep.depends_on_issue_title : dep.issue_title;
+                  const otherIssueId = isSource ? dep.depends_on_issue_id : dep.issue_id;
+                  // Show the relation type from this issue's perspective
+                  const displayType = isSource ? dep.type : inverseRelType(dep.type);
+
+                  return (
+                    <div key={dep.id} className="group flex items-center gap-1.5 text-xs rounded-md px-2 -mx-2 min-h-7 hover:bg-accent/50 transition-colors">
+                      <Link2 className="h-3 w-3 shrink-0 text-muted-foreground" />
+                      <span className="shrink-0 text-muted-foreground">{relationTypeLabel(displayType)}</span>
+                      <Link href={`/issues/${otherIssueId}`} className="flex items-center gap-1 min-w-0 hover:underline">
+                        <span className="shrink-0 text-muted-foreground">{otherIdentifier}</span>
+                        <span className="truncate">{otherTitle}</span>
+                      </Link>
+                      <button
+                        className="ml-auto shrink-0 opacity-0 group-hover:opacity-100 p-0.5 rounded hover:bg-accent transition-all text-muted-foreground hover:text-destructive"
+                        onClick={() => handleRemoveDependency(dep.id)}
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+            {relationsOpen && dependencies.length === 0 && (
+              <div className="pl-2 text-xs text-muted-foreground">No relations</div>
+            )}
           </div>
 
           {/* Details section */}
