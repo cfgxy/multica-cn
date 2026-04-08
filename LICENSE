@@ -7,13 +7,17 @@ Multica is licensed under a modified version of the Apache License 2.0, with the
    Should the conditions below be met, a commercial license must be obtained
    from the producer:
 
-   a. Multi-tenant service: Unless explicitly authorized by Multica in
-      writing, you may not use the Multica source code to operate a
-      multi-tenant environment.
+   a. Hosted or embedded service: Unless explicitly authorized by Multica
+      in writing, you may not use the Multica source code to provide a
+      hosted service to third parties, or embed Multica as a component of
+      a product or service that is sold, licensed, or otherwise
+      commercially distributed to third parties.
 
-      - Tenant Definition: Within the context of Multica, one tenant
-        corresponds to one workspace. The workspace provides a separated
-        area for each tenant's data, configurations, and agent runtimes.
+      - This restriction applies to offering Multica (in whole or
+        substantial part) as a SaaS platform, a managed service, or as
+        an integrated component within another commercial offering.
+      - Internal use within a single organization (including multiple
+        workspaces) does not require a commercial license.
 
    b. LOGO and copyright information: In the process of using Multica's
       frontend, you may not remove or modify the LOGO or copyright
