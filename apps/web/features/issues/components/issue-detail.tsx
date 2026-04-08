@@ -694,35 +694,38 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
           </div>
 
           {/* Sub-issues — below description, like Linear */}
-          {(childIssues.length > 0 || parentIssue) && (
-            <div className="mt-6">
-              <div className="flex items-center gap-2 mb-2">
-                <span className="text-sm font-medium">Sub-issues</span>
-                {childIssues.length > 0 && (
-                  <span className="text-xs text-muted-foreground">{childIssues.length}/{childIssues.length}</span>
-                )}
+          {childIssues.length > 0 && (
+            <div className="mt-8">
+              {/* Header */}
+              <div className="flex items-center gap-3 mb-1">
+                <div className="flex items-center gap-2">
+                  <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+                  <span className="text-sm font-medium">Sub-issues</span>
+                </div>
+                <span className="text-xs text-muted-foreground tabular-nums">{childIssues.filter((c) => c.status === "done").length}/{childIssues.length}</span>
                 <button
                   type="button"
-                  className="ml-auto p-1 rounded hover:bg-accent/60 transition-colors text-muted-foreground hover:text-foreground"
+                  className="ml-auto p-1.5 rounded-md hover:bg-accent/60 transition-colors text-muted-foreground hover:text-foreground"
                   onClick={() => useModalStore.getState().open("create-issue", {
                     parent_issue_id: issue.id,
                     parent_issue_identifier: issue.identifier,
                   })}
                 >
-                  <Plus className="h-3.5 w-3.5" />
+                  <Plus className="h-4 w-4" />
                 </button>
               </div>
-              <div className="space-y-0.5">
+              {/* List */}
+              <div className="ml-[7px] border-l border-border">
                 {childIssues.map((child) => (
                   <Link
                     key={child.id}
                     href={`/issues/${child.id}`}
-                    className="flex items-center gap-2 rounded-md px-2 py-1.5 -mx-2 text-sm hover:bg-accent/50 transition-colors group"
+                    className="flex items-center gap-3 pl-5 pr-2 py-2.5 hover:bg-accent/40 transition-colors group"
                   >
-                    <StatusIcon status={child.status} className="h-4 w-4 shrink-0" />
-                    <span className="truncate group-hover:text-foreground">{child.title}</span>
+                    <StatusIcon status={child.status} className="h-[18px] w-[18px] shrink-0" />
+                    <span className="text-sm truncate group-hover:text-foreground">{child.title}</span>
                     {child.assignee_type && child.assignee_id && (
-                      <ActorAvatar actorType={child.assignee_type} actorId={child.assignee_id} size={20} className="ml-auto shrink-0" />
+                      <ActorAvatar actorType={child.assignee_type} actorId={child.assignee_id} size={24} className="ml-auto shrink-0" />
                     )}
                   </Link>
                 ))}
