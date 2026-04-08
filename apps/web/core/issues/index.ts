@@ -8,6 +8,7 @@ export {
 } from "./queries";
 
 export {
+  useLoadMoreDoneIssues,
   useCreateIssue,
   useUpdateIssue,
   useDeleteIssue,

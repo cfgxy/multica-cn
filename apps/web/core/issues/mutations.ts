@@ -1,6 +1,7 @@
+import { useState, useCallback } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/shared/api";
-import { issueKeys } from "./queries";
+import { issueKeys, CLOSED_PAGE_SIZE } from "./queries";
 import { useWorkspaceId } from "@core/hooks";
 import type { Issue, IssueReaction } from "@/shared/types";
 import type {
@@ -9,6 +10,50 @@ import type {
   ListIssuesResponse,
 } from "@/shared/types";
 import type { TimelineEntry, IssueSubscriber, Reaction } from "@/shared/types";
+
+// ---------------------------------------------------------------------------
+// Done issue pagination
+// ---------------------------------------------------------------------------
+
+export function useLoadMoreDoneIssues() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  const [isLoading, setIsLoading] = useState(false);
+
+  const cache = qc.getQueryData<ListIssuesResponse>(issueKeys.list(wsId));
+  const doneLoaded = cache
+    ? cache.issues.filter((i) => i.status === "done").length
+    : 0;
+  const doneTotal = cache?.doneTotal ?? 0;
+  const hasMore = doneLoaded < doneTotal;
+
+  const loadMore = useCallback(async () => {
+    if (isLoading || !hasMore) return;
+    setIsLoading(true);
+    try {
+      const res = await api.listIssues({
+        status: "done",
+        limit: CLOSED_PAGE_SIZE,
+        offset: doneLoaded,
+      });
+      qc.setQueryData<ListIssuesResponse>(issueKeys.list(wsId), (old) => {
+        if (!old) return old;
+        const existingIds = new Set(old.issues.map((i) => i.id));
+        const newIssues = res.issues.filter((i) => !existingIds.has(i.id));
+        return {
+          ...old,
+          issues: [...old.issues, ...newIssues],
+          total: old.total + newIssues.length,
+          doneTotal: res.total,
+        };
+      });
+    } finally {
+      setIsLoading(false);
+    }
+  }, [qc, wsId, doneLoaded, hasMore, isLoading]);
+
+  return { loadMore, hasMore, isLoading };
+}
 
 // ---------------------------------------------------------------------------
 // Issue CRUD
@@ -22,7 +67,12 @@ export function useCreateIssue() {
     onSuccess: (newIssue) => {
       qc.setQueryData<ListIssuesResponse>(issueKeys.list(wsId), (old) =>
         old && !old.issues.some((i) => i.id === newIssue.id)
-          ? { ...old, issues: [...old.issues, newIssue], total: old.total + 1 }
+          ? {
+              ...old,
+              issues: [...old.issues, newIssue],
+              total: old.total + 1,
+              doneTotal: old.doneTotal + (newIssue.status === "done" ? 1 : 0),
+            }
           : old,
       );
     },
@@ -82,15 +132,16 @@ export function useDeleteIssue() {
     onMutate: async (id) => {
       await qc.cancelQueries({ queryKey: issueKeys.list(wsId) });
       const prevList = qc.getQueryData<ListIssuesResponse>(issueKeys.list(wsId));
-      qc.setQueryData<ListIssuesResponse>(issueKeys.list(wsId), (old) =>
-        old
-          ? {
-              ...old,
-              issues: old.issues.filter((i) => i.id !== id),
-              total: old.total - 1,
-            }
-          : old,
-      );
+      qc.setQueryData<ListIssuesResponse>(issueKeys.list(wsId), (old) => {
+        if (!old) return old;
+        const deleted = old.issues.find((i) => i.id === id);
+        return {
+          ...old,
+          issues: old.issues.filter((i) => i.id !== id),
+          total: old.total - 1,
+          doneTotal: old.doneTotal - (deleted?.status === "done" ? 1 : 0),
+        };
+      });
       qc.removeQueries({ queryKey: issueKeys.detail(wsId, id) });
       return { prevList };
     },
@@ -146,15 +197,19 @@ export function useBatchDeleteIssues() {
     onMutate: async (ids) => {
       await qc.cancelQueries({ queryKey: issueKeys.list(wsId) });
       const prevList = qc.getQueryData<ListIssuesResponse>(issueKeys.list(wsId));
-      qc.setQueryData<ListIssuesResponse>(issueKeys.list(wsId), (old) =>
-        old
-          ? {
-              ...old,
-              issues: old.issues.filter((i) => !ids.includes(i.id)),
-              total: old.total - ids.length,
-            }
-          : old,
-      );
+      qc.setQueryData<ListIssuesResponse>(issueKeys.list(wsId), (old) => {
+        if (!old) return old;
+        const idSet = new Set(ids);
+        const doneDeleted = old.issues.filter(
+          (i) => idSet.has(i.id) && i.status === "done",
+        ).length;
+        return {
+          ...old,
+          issues: old.issues.filter((i) => !idSet.has(i.id)),
+          total: old.total - ids.length,
+          doneTotal: old.doneTotal - doneDeleted,
+        };
+      });
       return { prevList };
     },
     onError: (_err, _ids, ctx) => {

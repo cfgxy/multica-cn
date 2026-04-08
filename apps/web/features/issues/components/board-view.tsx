@@ -15,9 +15,10 @@ import {
   type DragOverEvent,
 } from "@dnd-kit/core";
 import { arrayMove } from "@dnd-kit/sortable";
-import { Eye, MoreHorizontal } from "lucide-react";
+import { Eye, Loader2, MoreHorizontal } from "lucide-react";
 import type { Issue, IssueStatus } from "@/shared/types";
 import { Button } from "@/components/ui/button";
+import { useLoadMoreDoneIssues } from "@core/issues/mutations";
 import {
   DropdownMenu,
   DropdownMenuTrigger,
@@ -110,6 +111,7 @@ export function BoardView({
 }) {
   const sortBy = useViewStore((s) => s.sortBy);
   const sortDirection = useViewStore((s) => s.sortDirection);
+  const { loadMore, hasMore, isLoading: loadingMore } = useLoadMoreDoneIssues();
 
   // --- Drag state ---
   const [activeIssue, setActiveIssue] = useState<Issue | null>(null);
@@ -272,6 +274,21 @@ export function BoardView({
             status={status}
             issueIds={columns[status] ?? []}
             issueMap={issueMapRef.current}
+            footer={
+              status === "done" && hasMore ? (
+                <button
+                  type="button"
+                  className="mt-1 flex w-full items-center justify-center gap-1.5 rounded-md py-2 text-xs text-muted-foreground hover:bg-accent/60 transition-colors disabled:opacity-50"
+                  onClick={loadMore}
+                  disabled={loadingMore}
+                >
+                  {loadingMore ? (
+                    <Loader2 className="size-3 animate-spin" />
+                  ) : null}
+                  {loadingMore ? "Loading..." : "Load more"}
+                </button>
+              ) : undefined
+            }
           />
         ))}
 

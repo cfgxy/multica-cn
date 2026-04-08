@@ -12,14 +12,15 @@ export const issueKeys = {
     ["issues", "subscribers", issueId] as const,
 };
 
-const CLOSED_PAGE_SIZE = 50;
+export const CLOSED_PAGE_SIZE = 50;
 
 /**
- * CACHE SHAPE NOTE: The raw cache stores ListIssuesResponse ({ issues, total }),
+ * CACHE SHAPE NOTE: The raw cache stores ListIssuesResponse ({ issues, total, doneTotal }),
  * but `select` transforms it to Issue[] for consumers. Mutations and ws-updaters
  * must use setQueryData<ListIssuesResponse>(...) — NOT setQueryData<Issue[]>.
  *
- * Fetches all open issues + first page of closed issues (matching main's pagination strategy).
+ * Fetches all open issues + first page of done issues. Use useLoadMoreDoneIssues()
+ * to paginate additional done items into the cache.
  */
 export function issueListOptions(wsId: string) {
   return queryOptions({
@@ -32,6 +33,7 @@ export function issueListOptions(wsId: string) {
       return {
         issues: [...openRes.issues, ...closedRes.issues],
         total: openRes.total + closedRes.total,
+        doneTotal: closedRes.total,
       };
     },
     select: (data) => data.issues,

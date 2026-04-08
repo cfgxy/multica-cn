@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 import { EyeOff, MoreHorizontal, Plus } from "lucide-react";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@/components/ui/tooltip";
 import { useDroppable } from "@dnd-kit/core";
@@ -23,10 +23,12 @@ export function BoardColumn({
   status,
   issueIds,
   issueMap,
+  footer,
 }: {
   status: IssueStatus;
   issueIds: string[];
   issueMap: Map<string, Issue>;
+  footer?: ReactNode;
 }) {
   const cfg = STATUS_CONFIG[status];
   const { setNodeRef, isOver } = useDroppable({ id: status });
@@ -106,6 +108,7 @@ export function BoardColumn({
             No issues
           </p>
         )}
+        {footer}
       </div>
     </div>
   );

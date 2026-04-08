@@ -8,11 +8,15 @@ export function onIssueCreated(
   wsId: string,
   issue: Issue,
 ) {
-  qc.setQueryData<ListIssuesResponse>(issueKeys.list(wsId), (old) =>
-    old && !old.issues.some((i) => i.id === issue.id)
-      ? { ...old, issues: [...old.issues, issue], total: old.total + 1 }
-      : old,
-  );
+  qc.setQueryData<ListIssuesResponse>(issueKeys.list(wsId), (old) => {
+    if (!old || old.issues.some((i) => i.id === issue.id)) return old;
+    return {
+      ...old,
+      issues: [...old.issues, issue],
+      total: old.total + 1,
+      doneTotal: old.doneTotal + (issue.status === "done" ? 1 : 0),
+    };
+  });
 }
 
 export function onIssueUpdated(
@@ -40,15 +44,16 @@ export function onIssueDeleted(
   wsId: string,
   issueId: string,
 ) {
-  qc.setQueryData<ListIssuesResponse>(issueKeys.list(wsId), (old) =>
-    old
-      ? {
-          ...old,
-          issues: old.issues.filter((i) => i.id !== issueId),
-          total: old.total - 1,
-        }
-      : old,
-  );
+  qc.setQueryData<ListIssuesResponse>(issueKeys.list(wsId), (old) => {
+    if (!old) return old;
+    const deleted = old.issues.find((i) => i.id === issueId);
+    return {
+      ...old,
+      issues: old.issues.filter((i) => i.id !== issueId),
+      total: old.total - 1,
+      doneTotal: old.doneTotal - (deleted?.status === "done" ? 1 : 0),
+    };
+  });
   qc.removeQueries({ queryKey: issueKeys.detail(wsId, issueId) });
   qc.removeQueries({ queryKey: issueKeys.timeline(issueId) });
   qc.removeQueries({ queryKey: issueKeys.reactions(issueId) });
