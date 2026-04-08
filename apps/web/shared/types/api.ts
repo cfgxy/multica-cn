@@ -38,8 +38,8 @@ export interface ListIssuesParams {
 export interface ListIssuesResponse {
   issues: Issue[];
   total: number;
-  /** True total of done issues in the workspace (for load-more pagination). */
-  doneTotal: number;
+  /** True total of done issues in the workspace (for load-more pagination). Not returned by backend API — set by the frontend query function. */
+  doneTotal?: number;
 }
 
 export interface UpdateMeRequest {

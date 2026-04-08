@@ -14,7 +14,7 @@ export function onIssueCreated(
       ...old,
       issues: [...old.issues, issue],
       total: old.total + 1,
-      doneTotal: old.doneTotal + (issue.status === "done" ? 1 : 0),
+      doneTotal: (old.doneTotal ?? 0) + (issue.status === "done" ? 1 : 0),
     };
   });
 }
@@ -24,16 +24,25 @@ export function onIssueUpdated(
   wsId: string,
   issue: Partial<Issue> & { id: string },
 ) {
-  qc.setQueryData<ListIssuesResponse>(issueKeys.list(wsId), (old) =>
-    old
-      ? {
-          ...old,
-          issues: old.issues.map((i) =>
-            i.id === issue.id ? { ...i, ...issue } : i,
-          ),
-        }
-      : old,
-  );
+  qc.setQueryData<ListIssuesResponse>(issueKeys.list(wsId), (old) => {
+    if (!old) return old;
+    const prev = old.issues.find((i) => i.id === issue.id);
+    const wasDone = prev?.status === "done";
+    const isDone = issue.status === "done";
+    // Only adjust doneTotal when status field is present and actually changed
+    let doneDelta = 0;
+    if (issue.status !== undefined) {
+      if (!wasDone && isDone) doneDelta = 1;
+      else if (wasDone && !isDone) doneDelta = -1;
+    }
+    return {
+      ...old,
+      issues: old.issues.map((i) =>
+        i.id === issue.id ? { ...i, ...issue } : i,
+      ),
+      doneTotal: (old.doneTotal ?? 0) + doneDelta,
+    };
+  });
   qc.setQueryData<Issue>(issueKeys.detail(wsId, issue.id), (old) =>
     old ? { ...old, ...issue } : old,
   );
@@ -51,7 +60,7 @@ export function onIssueDeleted(
       ...old,
       issues: old.issues.filter((i) => i.id !== issueId),
       total: old.total - 1,
-      doneTotal: old.doneTotal - (deleted?.status === "done" ? 1 : 0),
+      doneTotal: (old.doneTotal ?? 0) - (deleted?.status === "done" ? 1 : 0),
     };
   });
   qc.removeQueries({ queryKey: issueKeys.detail(wsId, issueId) });

@@ -43,7 +43,6 @@ export function useLoadMoreDoneIssues() {
         return {
           ...old,
           issues: [...old.issues, ...newIssues],
-          total: old.total + newIssues.length,
           doneTotal: res.total,
         };
       });
@@ -71,7 +70,7 @@ export function useCreateIssue() {
               ...old,
               issues: [...old.issues, newIssue],
               total: old.total + 1,
-              doneTotal: old.doneTotal + (newIssue.status === "done" ? 1 : 0),
+              doneTotal: (old.doneTotal ?? 0) + (newIssue.status === "done" ? 1 : 0),
             }
           : old,
       );
@@ -139,7 +138,7 @@ export function useDeleteIssue() {
           ...old,
           issues: old.issues.filter((i) => i.id !== id),
           total: old.total - 1,
-          doneTotal: old.doneTotal - (deleted?.status === "done" ? 1 : 0),
+          doneTotal: (old.doneTotal ?? 0) - (deleted?.status === "done" ? 1 : 0),
         };
       });
       qc.removeQueries({ queryKey: issueKeys.detail(wsId, id) });
@@ -207,7 +206,7 @@ export function useBatchDeleteIssues() {
           ...old,
           issues: old.issues.filter((i) => !idSet.has(i.id)),
           total: old.total - ids.length,
-          doneTotal: old.doneTotal - doneDeleted,
+          doneTotal: (old.doneTotal ?? 0) - doneDeleted,
         };
       });
       return { prevList };
