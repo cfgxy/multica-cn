@@ -995,10 +995,9 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
             </div>
 
             {/* Agent live output */}
-            <AgentLiveCard
-              issueId={id}
-              scrollContainerRef={scrollContainerRef}
-            />
+            <div className="mt-4">
+              <AgentLiveCard issueId={id} />
+            </div>
 
             {/* Agent execution history */}
             <div className="mt-3">
