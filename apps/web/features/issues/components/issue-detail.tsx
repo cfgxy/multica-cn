@@ -68,7 +68,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useAuthStore } from "@/features/auth";
 import { useWorkspaceStore, useActorName } from "@/features/workspace";
 import { useWorkspaceId } from "@core/hooks";
-import { issueListOptions, issueDetailOptions } from "@core/issues/queries";
+import { issueListOptions, issueDetailOptions, childIssuesOptions } from "@core/issues/queries";
 import { memberListOptions, agentListOptions } from "@core/workspace/queries";
 import { useUpdateIssue, useDeleteIssue } from "@core/issues/mutations";
 import { useIssueTimeline } from "@/features/issues/hooks/use-issue-timeline";
@@ -227,37 +227,17 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
     subscribers, loading: subscribersLoading, isSubscribed, toggleSubscribe: handleToggleSubscribe, toggleSubscriber,
   } = useIssueSubscribers(id, user?.id);
 
-  // Sub-issue state — derive from store when possible, fetch otherwise
-  const [parentIssue, setParentIssue] = useState<Issue | null>(null);
-  const [childIssues, setChildIssues] = useState<Issue[]>([]);
-
-  // Fetch parent issue when parent_issue_id changes
-  useEffect(() => {
-    if (!issue?.parent_issue_id) {
-      setParentIssue(null);
-      return;
-    }
-    // Try store first, then fetch
-    const storeParent = allIssues.find((i) => i.id === issue.parent_issue_id);
-    if (storeParent) {
-      setParentIssue(storeParent);
-    } else {
-      api.getIssue(issue.parent_issue_id).then(setParentIssue).catch(() => setParentIssue(null));
-    }
-  }, [issue?.parent_issue_id, allIssues]);
-
-  // Fetch child issues once, then keep in sync via store
-  const childIssuesFromStore = allIssues.filter((i) => i.parent_issue_id === id);
-  useEffect(() => {
-    if (!issue) return;
-    // If store has children, use them directly
-    if (childIssuesFromStore.length > 0) {
-      setChildIssues(childIssuesFromStore);
-      return;
-    }
-    // Fetch from API (children may not be in the store yet, e.g. deep-linked)
-    api.listChildIssues(issue.id).then((r) => setChildIssues(r.issues)).catch(() => setChildIssues([]));
-  }, [issue?.id, childIssuesFromStore.length]);
+  // Sub-issue queries
+  const parentIssueId = issue?.parent_issue_id;
+  const { data: parentIssue = null } = useQuery({
+    ...issueDetailOptions(wsId, parentIssueId ?? ""),
+    enabled: !!parentIssueId,
+    initialData: () => allIssues.find((i) => i.id === parentIssueId),
+  });
+  const { data: childIssues = [] } = useQuery({
+    ...childIssuesOptions(wsId, id),
+    enabled: !!issue,
+  });
 
   const loading = issueLoading;
 
