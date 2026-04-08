@@ -116,6 +116,17 @@ export function useUpdateIssue() {
       const prevList = qc.getQueryData<ListIssuesResponse>(issueKeys.list(wsId));
       const prevDetail = qc.getQueryData<Issue>(issueKeys.detail(wsId, id));
 
+      // Resolve parent_issue_id from the freshest source so we can keep the
+      // parent's children cache in sync (used by the parent issue's
+      // sub-issues list).
+      const parentId =
+        prevDetail?.parent_issue_id ??
+        prevList?.issues.find((i) => i.id === id)?.parent_issue_id ??
+        null;
+      const prevChildren = parentId
+        ? qc.getQueryData<Issue[]>(issueKeys.children(wsId, parentId))
+        : undefined;
+
       qc.setQueryData<ListIssuesResponse>(issueKeys.list(wsId), (old) =>
         old
           ? {
@@ -129,16 +140,34 @@ export function useUpdateIssue() {
       qc.setQueryData<Issue>(issueKeys.detail(wsId, id), (old) =>
         old ? { ...old, ...data } : old,
       );
-      return { prevList, prevDetail, id };
+      if (parentId) {
+        qc.setQueryData<Issue[]>(
+          issueKeys.children(wsId, parentId),
+          (old) =>
+            old?.map((c) => (c.id === id ? { ...c, ...data } : c)),
+        );
+      }
+      return { prevList, prevDetail, prevChildren, parentId, id };
     },
     onError: (_err, _vars, ctx) => {
       if (ctx?.prevList) qc.setQueryData(issueKeys.list(wsId), ctx.prevList);
       if (ctx?.prevDetail)
         qc.setQueryData(issueKeys.detail(wsId, ctx.id), ctx.prevDetail);
+      if (ctx?.parentId && ctx.prevChildren !== undefined) {
+        qc.setQueryData(
+          issueKeys.children(wsId, ctx.parentId),
+          ctx.prevChildren,
+        );
+      }
     },
-    onSettled: (_data, _err, vars) => {
+    onSettled: (_data, _err, vars, ctx) => {
       qc.invalidateQueries({ queryKey: issueKeys.detail(wsId, vars.id) });
       qc.invalidateQueries({ queryKey: issueKeys.list(wsId) });
+      if (ctx?.parentId) {
+        qc.invalidateQueries({
+          queryKey: issueKeys.children(wsId, ctx.parentId),
+        });
+      }
     },
   });
 }

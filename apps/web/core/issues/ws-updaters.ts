@@ -27,6 +27,17 @@ export function onIssueUpdated(
   wsId: string,
   issue: Partial<Issue> & { id: string },
 ) {
+  // Look up the parent before mutating list state, so we can also keep the
+  // parent's children cache in sync (powers the sub-issues list shown on
+  // the parent issue page).
+  const listData = qc.getQueryData<ListIssuesResponse>(issueKeys.list(wsId));
+  const detailData = qc.getQueryData<Issue>(issueKeys.detail(wsId, issue.id));
+  const parentId =
+    issue.parent_issue_id ??
+    detailData?.parent_issue_id ??
+    listData?.issues.find((i) => i.id === issue.id)?.parent_issue_id ??
+    null;
+
   qc.setQueryData<ListIssuesResponse>(issueKeys.list(wsId), (old) => {
     if (!old) return old;
     const prev = old.issues.find((i) => i.id === issue.id);
@@ -49,6 +60,11 @@ export function onIssueUpdated(
   qc.setQueryData<Issue>(issueKeys.detail(wsId, issue.id), (old) =>
     old ? { ...old, ...issue } : old,
   );
+  if (parentId) {
+    qc.setQueryData<Issue[]>(issueKeys.children(wsId, parentId), (old) =>
+      old?.map((c) => (c.id === issue.id ? { ...c, ...issue } : c)),
+    );
+  }
 }
 
 export function onIssueDeleted(

@@ -78,6 +78,60 @@ import { ReactionBar } from "@/components/common/reaction-bar";
 import { useFileUpload } from "@/shared/hooks/use-file-upload";
 import { useModalStore } from "@/features/modals";
 import { timeAgo } from "@/shared/utils";
+import { cn } from "@/lib/utils";
+
+/**
+ * Tiny circular progress ring used in the "Sub-issue of …" line and the
+ * Sub-issues section header. Renders an open ring when in-progress and
+ * fills to a solid arc when complete.
+ */
+function ProgressRing({
+  done,
+  total,
+  size = 12,
+}: {
+  done: number;
+  total: number;
+  size?: number;
+}) {
+  const stroke = 1.5;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const ratio = total > 0 ? Math.min(done / total, 1) : 0;
+  const offset = circumference * (1 - ratio);
+  const isComplete = total > 0 && done >= total;
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox={`0 0 ${size} ${size}`}
+      className={isComplete ? "text-info" : "text-primary"}
+      aria-hidden="true"
+    >
+      <circle
+        cx={size / 2}
+        cy={size / 2}
+        r={radius}
+        fill="none"
+        stroke="currentColor"
+        strokeOpacity="0.25"
+        strokeWidth={stroke}
+      />
+      <circle
+        cx={size / 2}
+        cy={size / 2}
+        r={radius}
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={stroke}
+        strokeDasharray={circumference}
+        strokeDashoffset={offset}
+        strokeLinecap="round"
+        transform={`rotate(-90 ${size / 2} ${size / 2})`}
+      />
+    </svg>
+  );
+}
 
 function shortDate(date: string | null): string {
   if (!date) return "—";
@@ -238,6 +292,13 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
     ...childIssuesOptions(wsId, id),
     enabled: !!issue,
   });
+  // Parent's children — used to render the "x/y" progress next to the
+  // "Sub-issue of …" breadcrumb under the title.
+  const { data: parentChildIssues = [] } = useQuery({
+    ...childIssuesOptions(wsId, parentIssueId ?? ""),
+    enabled: !!parentIssueId,
+  });
+  const [subIssuesCollapsed, setSubIssuesCollapsed] = useState(false);
 
   const loading = issueLoading;
 
@@ -663,6 +724,31 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
             }}
           />
 
+          {parentIssue && (
+            <Link
+              href={`/issues/${parentIssue.id}`}
+              className="mt-2 inline-flex max-w-full items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors group/parent"
+            >
+              <span className="font-medium shrink-0">Sub-issue of</span>
+              <StatusIcon status={parentIssue.status} className="h-3.5 w-3.5 shrink-0" />
+              <span className="tabular-nums shrink-0">{parentIssue.identifier}</span>
+              <span className="truncate group-hover/parent:text-foreground">
+                {parentIssue.title}
+              </span>
+              {parentChildIssues.length > 0 && (() => {
+                const done = parentChildIssues.filter((c) => c.status === "done").length;
+                return (
+                  <span className="ml-1 inline-flex items-center gap-1 rounded-full bg-muted/60 px-1.5 py-0.5 shrink-0">
+                    <ProgressRing done={done} total={parentChildIssues.length} size={11} />
+                    <span className="tabular-nums text-[10.5px] font-medium">
+                      {done}/{parentChildIssues.length}
+                    </span>
+                  </span>
+                );
+              })()}
+            </Link>
+          )}
+
           <ContentEditor
             ref={descEditorRef}
             key={id}
@@ -693,45 +779,104 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
             />
           </div>
 
-          {/* Sub-issues — below description, like Linear */}
-          {childIssues.length > 0 && (
-            <div className="mt-8">
-              {/* Header */}
-              <div className="flex items-center gap-3 mb-1">
-                <div className="flex items-center gap-2">
-                  <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-                  <span className="text-sm font-medium">Sub-issues</span>
-                </div>
-                <span className="text-xs text-muted-foreground tabular-nums">{childIssues.filter((c) => c.status === "done").length}/{childIssues.length}</span>
-                <button
-                  type="button"
-                  className="ml-auto p-1.5 rounded-md hover:bg-accent/60 transition-colors text-muted-foreground hover:text-foreground"
-                  onClick={() => useModalStore.getState().open("create-issue", {
-                    parent_issue_id: issue.id,
-                    parent_issue_identifier: issue.identifier,
-                  })}
-                >
-                  <Plus className="h-4 w-4" />
-                </button>
-              </div>
-              {/* List */}
-              <div className="ml-[7px] border-l border-border">
-                {childIssues.map((child) => (
-                  <Link
-                    key={child.id}
-                    href={`/issues/${child.id}`}
-                    className="flex items-center gap-3 pl-5 pr-2 py-2.5 hover:bg-accent/40 transition-colors group"
+          {/* Sub-issues — Linear-style */}
+          {childIssues.length > 0 && (() => {
+            const doneCount = childIssues.filter((c) => c.status === "done").length;
+            return (
+              <div className="mt-10">
+                {/* Header */}
+                <div className="flex items-center gap-2 mb-2">
+                  <button
+                    type="button"
+                    onClick={() => setSubIssuesCollapsed((v) => !v)}
+                    className="flex items-center gap-1.5 text-sm font-medium text-foreground hover:text-foreground/80 transition-colors"
                   >
-                    <StatusIcon status={child.status} className="h-[18px] w-[18px] shrink-0" />
-                    <span className="text-sm truncate group-hover:text-foreground">{child.title}</span>
-                    {child.assignee_type && child.assignee_id && (
-                      <ActorAvatar actorType={child.assignee_type} actorId={child.assignee_id} size={24} className="ml-auto shrink-0" />
-                    )}
-                  </Link>
-                ))}
+                    <ChevronDown
+                      className={cn(
+                        "h-3.5 w-3.5 text-muted-foreground transition-transform",
+                        subIssuesCollapsed && "-rotate-90",
+                      )}
+                    />
+                    <span>Sub-issues</span>
+                  </button>
+                  <div className="inline-flex items-center gap-1.5 rounded-full bg-muted/60 px-2 py-0.5">
+                    <ProgressRing done={doneCount} total={childIssues.length} size={11} />
+                    <span className="text-[11px] text-muted-foreground tabular-nums font-medium">
+                      {doneCount}/{childIssues.length}
+                    </span>
+                  </div>
+                  <Tooltip>
+                    <TooltipTrigger
+                      render={
+                        <button
+                          type="button"
+                          className="ml-auto inline-flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
+                          onClick={() =>
+                            useModalStore.getState().open("create-issue", {
+                              parent_issue_id: issue.id,
+                              parent_issue_identifier: issue.identifier,
+                            })
+                          }
+                          aria-label="Add sub-issue"
+                        >
+                          <Plus className="h-4 w-4" />
+                        </button>
+                      }
+                    />
+                    <TooltipContent side="bottom">Add sub-issue</TooltipContent>
+                  </Tooltip>
+                </div>
+
+                {/* List */}
+                {!subIssuesCollapsed && (
+                  <div className="overflow-hidden rounded-lg border bg-card/30 divide-y divide-border/60">
+                    {childIssues.map((child) => {
+                      const isDone =
+                        child.status === "done" || child.status === "cancelled";
+                      return (
+                        <Link
+                          key={child.id}
+                          href={`/issues/${child.id}`}
+                          className="flex items-center gap-2.5 px-3 py-2 hover:bg-accent/50 transition-colors group/row"
+                        >
+                          <StatusIcon
+                            status={child.status}
+                            className="h-[15px] w-[15px] shrink-0"
+                          />
+                          <span className="text-[11px] text-muted-foreground tabular-nums font-medium shrink-0">
+                            {child.identifier}
+                          </span>
+                          <span
+                            className={cn(
+                              "text-sm truncate flex-1",
+                              isDone
+                                ? "text-muted-foreground"
+                                : "group-hover/row:text-foreground",
+                            )}
+                          >
+                            {child.title}
+                          </span>
+                          {child.assignee_type && child.assignee_id ? (
+                            <ActorAvatar
+                              actorType={child.assignee_type}
+                              actorId={child.assignee_id}
+                              size={20}
+                              className="shrink-0"
+                            />
+                          ) : (
+                            <span
+                              aria-hidden
+                              className="h-5 w-5 rounded-full border border-dashed border-muted-foreground/30 shrink-0"
+                            />
+                          )}
+                        </Link>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           <div className="my-8 border-t" />
 
