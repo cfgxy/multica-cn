@@ -90,6 +90,10 @@ export function useCreateIssue() {
             }
           : old,
       );
+      // Invalidate parent's children query so sub-issues list updates immediately
+      if (newIssue.parent_issue_id) {
+        qc.invalidateQueries({ queryKey: issueKeys.children(wsId, newIssue.parent_issue_id) });
+      }
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: issueKeys.list(wsId) });

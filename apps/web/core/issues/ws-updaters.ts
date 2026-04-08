@@ -17,6 +17,9 @@ export function onIssueCreated(
       doneTotal: (old.doneTotal ?? 0) + (issue.status === "done" ? 1 : 0),
     };
   });
+  if (issue.parent_issue_id) {
+    qc.invalidateQueries({ queryKey: issueKeys.children(wsId, issue.parent_issue_id) });
+  }
 }
 
 export function onIssueUpdated(
@@ -53,18 +56,26 @@ export function onIssueDeleted(
   wsId: string,
   issueId: string,
 ) {
+  // Look up the issue before removing it to check for parent_issue_id
+  const listData = qc.getQueryData<ListIssuesResponse>(issueKeys.list(wsId));
+  const deleted = listData?.issues.find((i) => i.id === issueId);
+
   qc.setQueryData<ListIssuesResponse>(issueKeys.list(wsId), (old) => {
     if (!old) return old;
-    const deleted = old.issues.find((i) => i.id === issueId);
+    const del = old.issues.find((i) => i.id === issueId);
     return {
       ...old,
       issues: old.issues.filter((i) => i.id !== issueId),
       total: old.total - 1,
-      doneTotal: (old.doneTotal ?? 0) - (deleted?.status === "done" ? 1 : 0),
+      doneTotal: (old.doneTotal ?? 0) - (del?.status === "done" ? 1 : 0),
     };
   });
   qc.removeQueries({ queryKey: issueKeys.detail(wsId, issueId) });
   qc.removeQueries({ queryKey: issueKeys.timeline(issueId) });
   qc.removeQueries({ queryKey: issueKeys.reactions(issueId) });
   qc.removeQueries({ queryKey: issueKeys.subscribers(issueId) });
+  qc.removeQueries({ queryKey: issueKeys.children(wsId, issueId) });
+  if (deleted?.parent_issue_id) {
+    qc.invalidateQueries({ queryKey: issueKeys.children(wsId, deleted.parent_issue_id) });
+  }
 }
