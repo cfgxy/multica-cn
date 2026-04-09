@@ -19,6 +19,7 @@ import {
   FolderKanban,
   Search,
   Ellipsis,
+  Zap,
 } from "lucide-react";
 import { WorkspaceAvatar } from "@multica/views/workspace/workspace-avatar";
 import { ActorAvatar } from "@multica/ui/components/common/actor-avatar";
@@ -64,6 +65,7 @@ const workspaceNav = [
   { href: "/issues", label: "Issues", icon: ListTodo },
   { href: "/projects", label: "Projects", icon: FolderKanban },
   { href: "/agents", label: "Agents", icon: Bot },
+  { href: "/sessions", label: "Sessions", icon: Zap },
 ];
 
 const configureNav = [

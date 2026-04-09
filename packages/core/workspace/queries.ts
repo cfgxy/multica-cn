@@ -7,6 +7,7 @@ export const workspaceKeys = {
   members: (wsId: string) => ["workspaces", wsId, "members"] as const,
   agents: (wsId: string) => ["workspaces", wsId, "agents"] as const,
   skills: (wsId: string) => ["workspaces", wsId, "skills"] as const,
+  tasks: (wsId: string) => ["workspaces", wsId, "tasks"] as const,
 };
 
 export function workspaceListOptions() {
@@ -35,5 +36,12 @@ export function skillListOptions(wsId: string) {
   return queryOptions({
     queryKey: workspaceKeys.skills(wsId),
     queryFn: () => api.listSkills(),
+  });
+}
+
+export function workspaceTasksOptions(wsId: string) {
+  return queryOptions({
+    queryKey: workspaceKeys.tasks(wsId),
+    queryFn: () => api.listWorkspaceTasks(wsId),
   });
 }

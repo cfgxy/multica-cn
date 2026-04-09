@@ -18,8 +18,6 @@ import {
   Cpu,
   FileCode,
   Search,
-  List,
-  BarChart3,
 } from "lucide-react";
 import { cn } from "@multica/ui/lib/utils";
 import { Dialog, DialogContent, DialogTitle } from "@multica/ui/components/ui/dialog";
@@ -29,7 +27,6 @@ import { Markdown } from "../../common/markdown";
 import { api } from "@multica/core/api";
 import type { AgentTask, Agent, AgentRuntime } from "@multica/core/types/agent";
 import { redactSecrets } from "../utils/redact";
-import { TranscriptGanttChart, TranscriptTokenChart } from "./transcript-charts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -170,7 +167,6 @@ export function AgentTranscriptDialog({
   isLive = false,
 }: AgentTranscriptDialogProps) {
   const [selectedIdx, setSelectedIdx] = useState<number | null>(null);
-  const [viewMode, setViewMode] = useState<"timeline" | "analytics">("timeline");
   const [elapsed, setElapsed] = useState("");
   const [copied, setCopied] = useState(false);
   const [agentInfo, setAgentInfo] = useState<Agent | null>(null);
@@ -213,25 +209,11 @@ export function AgentTranscriptDialog({
   // Click a timeline segment → scroll to event and select it
   const handleSegmentClick = useCallback((idx: number) => {
     setSelectedIdx(idx);
-    setViewMode("timeline");
     const el = eventRefs.current.get(idx);
     if (el) {
       el.scrollIntoView({ behavior: "smooth", block: "center" });
     }
   }, []);
-
-  // Click chart element → switch to timeline and select by seq number
-  const handleChartEventClick = useCallback((seq: number) => {
-    const idx = items.findIndex((item) => item.seq === seq);
-    if (idx >= 0) {
-      setSelectedIdx(idx);
-      setViewMode("timeline");
-      setTimeout(() => {
-        const el = eventRefs.current.get(idx);
-        if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
-      }, 100);
-    }
-  }, [items]);
 
   // Copy all events as text
   const handleCopyAll = useCallback(() => {
@@ -309,33 +291,6 @@ export function AgentTranscriptDialog({
             {statusBadge}
 
             <div className="ml-auto flex items-center gap-1">
-              {/* View mode toggle */}
-              <div className="flex items-center rounded-md border bg-muted/50 p-0.5 mr-1">
-                <button
-                  onClick={() => setViewMode("timeline")}
-                  className={cn(
-                    "flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors",
-                    viewMode === "timeline"
-                      ? "bg-background text-foreground shadow-sm"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  <List className="h-3 w-3" />
-                  Timeline
-                </button>
-                <button
-                  onClick={() => setViewMode("analytics")}
-                  className={cn(
-                    "flex items-center gap-1 rounded px-2 py-1 text-xs transition-colors",
-                    viewMode === "analytics"
-                      ? "bg-background text-foreground shadow-sm"
-                      : "text-muted-foreground hover:text-foreground",
-                  )}
-                >
-                  <BarChart3 className="h-3 w-3" />
-                  Analytics
-                </button>
-              </div>
               <button
                 onClick={handleCopyAll}
                 className="flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
@@ -416,61 +371,54 @@ export function AgentTranscriptDialog({
           </div>
         )}
 
-        {/* ── Content area (switches between timeline and analytics) ── */}
-        {viewMode === "timeline" ? (
-          <div className="flex-1 flex min-h-0">
-            {/* Left: Event list */}
-            <div
-              ref={scrollContainerRef}
-              className={cn(
-                "overflow-y-auto min-h-0 transition-[width] duration-200",
-                selectedItem ? "w-[40%] border-r" : "w-full",
-              )}
-            >
-              {items.length === 0 ? (
-                <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
-                  {isLive ? (
-                    <div className="flex items-center gap-2">
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                      Waiting for events...
-                    </div>
-                  ) : (
-                    "No execution data recorded."
-                  )}
-                </div>
-              ) : (
-                <div className="divide-y">
-                  {items.map((item, idx) => (
-                    <TranscriptEventRow
-                      key={`${item.seq}-${idx}`}
-                      ref={(el) => {
-                        if (el) eventRefs.current.set(idx, el);
-                        else eventRefs.current.delete(idx);
-                      }}
-                      item={item}
-                      index={idx}
-                      isSelected={selectedIdx === idx}
-                      onClick={() => setSelectedIdx(idx === selectedIdx ? null : idx)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Right: Detail panel */}
-            {selectedItem && (
-              <DetailPanel
-                item={selectedItem}
-                onClose={() => setSelectedIdx(null)}
-              />
+        {/* ── Split content: event list + detail panel ────────── */}
+        <div className="flex-1 flex min-h-0">
+          {/* Left: Event list */}
+          <div
+            ref={scrollContainerRef}
+            className={cn(
+              "overflow-y-auto min-h-0 transition-[width] duration-200",
+              selectedItem ? "w-[40%] border-r" : "w-full",
+            )}
+          >
+            {items.length === 0 ? (
+              <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
+                {isLive ? (
+                  <div className="flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Waiting for events...
+                  </div>
+                ) : (
+                  "No execution data recorded."
+                )}
+              </div>
+            ) : (
+              <div className="divide-y">
+                {items.map((item, idx) => (
+                  <TranscriptEventRow
+                    key={`${item.seq}-${idx}`}
+                    ref={(el) => {
+                      if (el) eventRefs.current.set(idx, el);
+                      else eventRefs.current.delete(idx);
+                    }}
+                    item={item}
+                    index={idx}
+                    isSelected={selectedIdx === idx}
+                    onClick={() => setSelectedIdx(idx === selectedIdx ? null : idx)}
+                  />
+                ))}
+              </div>
             )}
           </div>
-        ) : (
-          <div className="flex-1 overflow-y-auto min-h-0 p-6 space-y-6">
-            <TranscriptGanttChart items={items} onEventClick={handleChartEventClick} />
-            <TranscriptTokenChart items={items} onEventClick={handleChartEventClick} />
-          </div>
-        )}
+
+          {/* Right: Detail panel */}
+          {selectedItem && (
+            <DetailPanel
+              item={selectedItem}
+              onClose={() => setSelectedIdx(null)}
+            />
+          )}
+        </div>
       </DialogContent>
     </Dialog>
   );

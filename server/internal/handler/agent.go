@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -460,6 +461,36 @@ func (h *Handler) ListAgentTasks(w http.ResponseWriter, r *http.Request) {
 	tasks, err := h.Queries.ListAgentTasks(r.Context(), parseUUID(id))
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list agent tasks")
+		return
+	}
+
+	resp := make([]AgentTaskResponse, len(tasks))
+	for i, t := range tasks {
+		resp[i] = taskToResponse(t)
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) ListWorkspaceTasks(w http.ResponseWriter, r *http.Request) {
+	workspaceID := chi.URLParam(r, "id")
+	if _, ok := h.workspaceMember(w, r, workspaceID); !ok {
+		return
+	}
+
+	limit := int32(50)
+	if l := r.URL.Query().Get("limit"); l != "" {
+		if n, err := strconv.ParseInt(l, 10, 32); err == nil && n > 0 && n <= 200 {
+			limit = int32(n)
+		}
+	}
+
+	tasks, err := h.Queries.ListWorkspaceTasks(r.Context(), db.ListWorkspaceTasksParams{
+		WorkspaceID: parseUUID(workspaceID),
+		Limit:       limit,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list workspace tasks")
 		return
 	}
 

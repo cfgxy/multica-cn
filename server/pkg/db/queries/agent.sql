@@ -170,6 +170,13 @@ SELECT * FROM agent_task_queue
 WHERE runtime_id = $1 AND status IN ('queued', 'dispatched')
 ORDER BY priority DESC, created_at ASC;
 
+-- name: ListWorkspaceTasks :many
+SELECT atq.* FROM agent_task_queue atq
+JOIN agent a ON a.id = atq.agent_id
+WHERE a.workspace_id = $1
+ORDER BY atq.created_at DESC
+LIMIT $2;
+
 -- name: ListActiveTasksByIssue :many
 SELECT * FROM agent_task_queue
 WHERE issue_id = $1 AND status IN ('dispatched', 'running')

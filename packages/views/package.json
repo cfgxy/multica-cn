@@ -20,6 +20,7 @@
     "./my-issues": "./my-issues/index.ts",
     "./skills": "./skills/index.ts",
     "./runtimes": "./runtimes/index.ts",
+    "./sessions": "./sessions/index.ts",
     "./workspace/workspace-avatar": "./workspace/workspace-avatar.tsx"
   },
   "dependencies": {
