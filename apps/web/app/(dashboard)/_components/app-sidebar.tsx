@@ -177,7 +177,7 @@ export function AppSidebar() {
             <div className="flex items-center gap-1">
               <Tooltip>
                 <TooltipTrigger
-                  className="flex h-7 w-7 items-center justify-center rounded-lg bg-secondary text-muted-foreground hover:bg-secondary/80 hover:text-secondary-foreground"
+                  className="flex h-7 w-7 items-center justify-center rounded-lg text-muted-foreground hover:bg-accent hover:text-accent-foreground"
                   onClick={() => useSearchStore.getState().setOpen(true)}
                 >
                   <Search className="size-3.5" />
