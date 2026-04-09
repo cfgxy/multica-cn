@@ -1,13 +1,16 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import {
+  BarChart,
+  Bar,
   AreaChart,
   Area,
   XAxis,
   YAxis,
   CartesianGrid,
   ReferenceLine,
+  Tooltip,
 } from "recharts";
 import {
   ChartContainer,
@@ -15,7 +18,6 @@ import {
   ChartTooltipContent,
   type ChartConfig,
 } from "@multica/ui/components/ui/chart";
-import { cn } from "@multica/ui/lib/utils";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -43,9 +45,9 @@ function getToolSummary(item: TimelineItem): string {
   if (inp.file_path) return shortenPath(inp.file_path);
   if (inp.path) return shortenPath(inp.path);
   if (inp.pattern) return inp.pattern;
-  if (inp.description) return String(inp.description).slice(0, 60);
-  if (inp.command) return String(inp.command).slice(0, 60);
-  if (inp.prompt) return String(inp.prompt).slice(0, 60);
+  if (inp.description) return String(inp.description).slice(0, 50);
+  if (inp.command) return String(inp.command).slice(0, 50);
+  if (inp.prompt) return String(inp.prompt).slice(0, 50);
   if (inp.skill) return String(inp.skill);
   return "";
 }
@@ -56,104 +58,118 @@ function formatTokens(n: number): string {
   return String(n);
 }
 
-function formatCost(dollars: number): string {
-  if (dollars < 0.01) return `<$0.01`;
-  if (dollars < 1) return `$${dollars.toFixed(2)}`;
-  return `$${dollars.toFixed(2)}`;
-}
-
-// ─── Gantt chart (CSS-based) ────────────────────────────────────────────────
+// ─── Gantt chart (recharts range bars) ──────────────────────────────────────
 
 const TOOL_COLORS: Record<string, string> = {
-  Bash: "hsl(220, 70%, 55%)",
-  Read: "hsl(150, 60%, 45%)",
-  Edit: "hsl(35, 80%, 50%)",
-  Write: "hsl(280, 55%, 55%)",
-  Grep: "hsl(180, 60%, 40%)",
-  Glob: "hsl(200, 60%, 50%)",
-  Agent: "hsl(260, 60%, 55%)",
-  WebSearch: "hsl(320, 55%, 50%)",
-  WebFetch: "hsl(320, 55%, 50%)",
-  Skill: "hsl(340, 55%, 50%)",
-  TodoWrite: "hsl(60, 60%, 45%)",
+  Bash: "hsl(220 70% 55%)",
+  Read: "hsl(150 60% 45%)",
+  Edit: "hsl(35 80% 50%)",
+  Write: "hsl(280 55% 55%)",
+  Grep: "hsl(180 60% 40%)",
+  Glob: "hsl(200 60% 50%)",
+  Agent: "hsl(260 60% 55%)",
+  WebSearch: "hsl(320 55% 50%)",
+  WebFetch: "hsl(320 55% 50%)",
+  Skill: "hsl(340 55% 50%)",
+  TodoWrite: "hsl(60 60% 45%)",
 };
 
 const TYPE_COLORS: Record<string, string> = {
-  thinking: "hsl(270, 50%, 65%)",
-  text: "hsl(150, 55%, 50%)",
-  error: "hsl(0, 70%, 55%)",
+  thinking: "hsl(270 50% 65%)",
+  text: "hsl(150 55% 50%)",
+  error: "hsl(0 70% 55%)",
 };
 
-interface GanttSpan {
-  label: string;
-  tool: string;
+interface GanttRow {
+  name: string;
+  range: [number, number];
+  fill: string;
+  seq: number;
   summary: string;
-  startSeq: number;
-  endSeq: number;
-  color: string;
-  type: string;
 }
 
-function buildGanttSpans(items: TimelineItem[]): GanttSpan[] {
-  const spans: GanttSpan[] = [];
+function buildGanttRows(items: TimelineItem[]): GanttRow[] {
+  const rows: GanttRow[] = [];
 
   for (let i = 0; i < items.length; i++) {
     const item = items[i]!;
 
     if (item.type === "tool_use") {
-      // Find matching tool_result (next one with same tool or just the next tool_result)
+      // Find matching tool_result
       let endIdx = i + 1;
       while (endIdx < items.length && items[endIdx]!.type !== "tool_result") {
         endIdx++;
       }
-      const endSeq = endIdx < items.length ? items[endIdx]!.seq : item.seq;
+      const endSeq = endIdx < items.length ? items[endIdx]!.seq : item.seq + 1;
       const toolName = item.tool ?? "Tool";
       const summary = getToolSummary(item);
+      const label = summary ? `${toolName}: ${summary}` : toolName;
 
-      spans.push({
-        label: toolName,
-        tool: toolName,
+      rows.push({
+        name: label.length > 35 ? label.slice(0, 35) + "…" : label,
+        range: [item.seq, Math.max(endSeq, item.seq + 0.5)],
+        fill: TOOL_COLORS[toolName] ?? "hsl(210 50% 55%)",
+        seq: item.seq,
         summary,
-        startSeq: item.seq,
-        endSeq,
-        color: TOOL_COLORS[toolName] ?? "hsl(210, 50%, 55%)",
-        type: "tool_use",
       });
     } else if (item.type === "thinking") {
-      spans.push({
-        label: "Thinking",
-        tool: "Thinking",
-        summary: item.content?.slice(0, 60) ?? "",
-        startSeq: item.seq,
-        endSeq: item.seq,
-        color: TYPE_COLORS.thinking!,
-        type: "thinking",
+      rows.push({
+        name: "Thinking",
+        range: [item.seq, item.seq + 0.4],
+        fill: TYPE_COLORS.thinking!,
+        seq: item.seq,
+        summary: item.content?.slice(0, 50) ?? "",
       });
     } else if (item.type === "text") {
-      spans.push({
-        label: "Agent",
-        tool: "Agent",
-        summary: item.content?.split("\n").filter(Boolean).pop()?.slice(0, 60) ?? "",
-        startSeq: item.seq,
-        endSeq: item.seq,
-        color: TYPE_COLORS.text!,
-        type: "text",
+      const last = item.content?.split("\n").filter(Boolean).pop()?.slice(0, 30) ?? "";
+      rows.push({
+        name: last ? `Agent: ${last}` : "Agent",
+        range: [item.seq, item.seq + 0.4],
+        fill: TYPE_COLORS.text!,
+        seq: item.seq,
+        summary: last,
       });
     } else if (item.type === "error") {
-      spans.push({
-        label: "Error",
-        tool: "Error",
-        summary: item.content?.slice(0, 60) ?? "",
-        startSeq: item.seq,
-        endSeq: item.seq,
-        color: TYPE_COLORS.error!,
-        type: "error",
+      rows.push({
+        name: "Error",
+        range: [item.seq, item.seq + 0.4],
+        fill: TYPE_COLORS.error!,
+        seq: item.seq,
+        summary: item.content?.slice(0, 50) ?? "",
       });
     }
   }
 
-  return spans;
+  return rows;
 }
+
+// Custom bar shape that reads fill from data
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function GanttBarShape(props: any) {
+  const { x, y, width, height, payload } = props as {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    payload: GanttRow;
+  };
+  return (
+    <rect
+      x={x}
+      y={y + 2}
+      width={Math.max(width, 4)}
+      height={height - 4}
+      rx={3}
+      ry={3}
+      fill={payload.fill}
+      cursor="pointer"
+    />
+  );
+}
+
+const ganttConfig = {
+  range: { label: "Event span", color: "hsl(var(--chart-1))" },
+} satisfies ChartConfig;
 
 export function TranscriptGanttChart({
   items,
@@ -162,15 +178,13 @@ export function TranscriptGanttChart({
   items: TimelineItem[];
   onEventClick?: (seq: number) => void;
 }) {
-  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
-  const { spans, minSeq, maxSeq } = useMemo(() => {
-    const s = buildGanttSpans(items);
-    const min = s.length > 0 ? Math.min(...s.map((sp) => sp.startSeq)) : 0;
-    const max = s.length > 0 ? Math.max(...s.map((sp) => sp.endSeq)) : 0;
-    return { spans: s, minSeq: min, maxSeq: max };
+  const { rows, maxSeq } = useMemo(() => {
+    const r = buildGanttRows(items);
+    const max = items.length > 0 ? items[items.length - 1]!.seq + 1 : 1;
+    return { rows: r, maxSeq: max };
   }, [items]);
 
-  if (spans.length === 0) {
+  if (rows.length === 0) {
     return (
       <div className="flex items-center justify-center h-32 text-sm text-muted-foreground">
         No events to visualize.
@@ -178,27 +192,18 @@ export function TranscriptGanttChart({
     );
   }
 
-  const range = maxSeq - minSeq || 1;
-
-  // Build unique legend entries from tool colors used
+  // Build legend from unique tool types
   const legendEntries = useMemo(() => {
     const seen = new Map<string, string>();
-    for (const s of spans) {
-      if (!seen.has(s.label)) seen.set(s.label, s.color);
+    for (const r of rows) {
+      // Extract base tool name from the row name
+      const base = r.name.split(":")[0]!.trim();
+      if (!seen.has(base)) seen.set(base, r.fill);
     }
     return Array.from(seen.entries());
-  }, [spans]);
+  }, [rows]);
 
-  // X-axis tick marks
-  const ticks = useMemo(() => {
-    const step = Math.max(1, Math.round(range / 10));
-    const t: number[] = [];
-    for (let v = minSeq; v <= maxSeq; v += step) {
-      t.push(v);
-    }
-    if (t[t.length - 1] !== maxSeq) t.push(maxSeq);
-    return t;
-  }, [minSeq, maxSeq, range]);
+  const chartHeight = Math.min(rows.length * 28 + 50, 500);
 
   return (
     <div className="space-y-3">
@@ -214,84 +219,83 @@ export function TranscriptGanttChart({
         </div>
       </div>
 
-      {/* Chart body */}
-      <div className="max-h-[400px] overflow-y-auto">
-        <div className="space-y-0.5">
-          {spans.map((span, idx) => {
-            const leftPercent = ((span.startSeq - minSeq) / range) * 100;
-            const widthPercent = Math.max(((span.endSeq - span.startSeq) / range) * 100, 1.5);
-            const isHovered = hoveredIdx === idx;
-
-            return (
-              <div
-                key={idx}
-                className="flex items-center gap-2 group"
-                onMouseEnter={() => setHoveredIdx(idx)}
-                onMouseLeave={() => setHoveredIdx(null)}
-              >
-                {/* Row label */}
-                <div className="w-20 shrink-0 text-right">
-                  <span className="text-[10px] text-muted-foreground truncate block">{span.label}</span>
-                </div>
-
-                {/* Bar track */}
-                <div className="flex-1 relative h-5 bg-muted/30 rounded-sm overflow-hidden">
-                  <div
-                    className={cn(
-                      "absolute top-0.5 bottom-0.5 rounded-sm cursor-pointer transition-opacity",
-                      isHovered ? "opacity-80" : "opacity-100",
-                    )}
-                    style={{
-                      left: `${leftPercent}%`,
-                      width: `${widthPercent}%`,
-                      minWidth: 6,
-                      backgroundColor: span.color,
-                    }}
-                    onClick={() => onEventClick?.(span.startSeq)}
-                    title={`${span.tool}${span.summary ? ": " + span.summary : ""} (#${span.startSeq}${span.endSeq !== span.startSeq ? " → #" + span.endSeq : ""})`}
-                  />
-                </div>
-
-                {/* Summary (shown on hover) */}
-                <div className="w-48 shrink-0 overflow-hidden">
-                  {isHovered && span.summary && (
-                    <span className="text-[10px] text-muted-foreground truncate block">
-                      {span.summary}
-                    </span>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* X-axis */}
-        <div className="flex items-center gap-2 mt-1">
-          <div className="w-20 shrink-0" />
-          <div className="flex-1 relative h-4">
-            {ticks.map((tick) => {
-              const pos = ((tick - minSeq) / range) * 100;
+      <ChartContainer config={ganttConfig} className="w-full" style={{ height: chartHeight }}>
+        <BarChart
+          data={rows}
+          layout="vertical"
+          margin={{ left: 4, right: 12, top: 4, bottom: 4 }}
+          barSize={20}
+          onClick={(state: Record<string, unknown> | null) => {
+            const ap = (state as { activePayload?: { payload?: GanttRow }[] } | null)?.activePayload;
+            if (ap?.[0]?.payload?.seq != null && onEventClick) {
+              onEventClick(ap[0].payload.seq);
+            }
+          }}
+        >
+          <CartesianGrid horizontal={false} strokeDasharray="3 3" />
+          <XAxis
+            type="number"
+            domain={[0, maxSeq]}
+            tickLine={false}
+            axisLine={false}
+            tickMargin={4}
+            tickFormatter={(v: number) => `#${v}`}
+            fontSize={10}
+          />
+          <YAxis
+            type="category"
+            dataKey="name"
+            tickLine={false}
+            axisLine={false}
+            width={140}
+            fontSize={10}
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            tick={(props: any) => {
+              const { x, y, payload } = props as { x: number; y: number; payload: { value: string } };
               return (
-                <span
-                  key={tick}
-                  className="absolute text-[9px] text-muted-foreground/60 -translate-x-1/2"
-                  style={{ left: `${pos}%` }}
+                <text
+                  x={x}
+                  y={y}
+                  dy={4}
+                  textAnchor="end"
+                  fontSize={10}
+                  className="fill-muted-foreground"
                 >
-                  #{tick}
-                </span>
+                  {payload.value}
+                </text>
               );
-            })}
-          </div>
-          <div className="w-48 shrink-0" />
-        </div>
-      </div>
+            }}
+          />
+          <Tooltip
+            content={({ active, payload }) => {
+              if (!active || !payload?.[0]) return null;
+              const d = payload[0].payload as GanttRow;
+              return (
+                <div className="rounded-lg border bg-background px-3 py-2 text-xs shadow-md">
+                  <div className="font-medium">{d.name}</div>
+                  <div className="text-muted-foreground mt-0.5">
+                    #{d.range[0]} → #{d.range[1]} ({Math.round((d.range[1] - d.range[0]) * 10) / 10} events)
+                  </div>
+                </div>
+              );
+            }}
+          />
+          <Bar
+            dataKey="range"
+            shape={GanttBarShape}
+            isAnimationActive={false}
+          />
+        </BarChart>
+      </ChartContainer>
     </div>
   );
 }
 
-// ─── Token consumption curve (with input/output split + cost) ────────────────
+// ─── Token consumption curve (input/output split, no price) ─────────────────
 
 // Token estimation: separate input (fed to model) vs output (generated by model)
+// Note: These are rough estimates based on content length (~4 chars per token).
+// Actual token counts are tracked in the task_usage table per task.
 function estimateInputTokens(item: TimelineItem): number {
   let chars = 0;
   // tool_result content is fed back to the model as input
@@ -313,10 +317,6 @@ function estimateOutputTokens(item: TimelineItem): number {
   }
   return Math.round(chars / 4);
 }
-
-// Rough cost estimate (Claude Sonnet 4 pricing)
-const INPUT_COST_PER_TOKEN = 3 / 1_000_000; // $3/M input tokens
-const OUTPUT_COST_PER_TOKEN = 15 / 1_000_000; // $15/M output tokens
 
 interface TokenDataPoint {
   seq: number;
@@ -341,7 +341,7 @@ export function TranscriptTokenChart({
   items: TimelineItem[];
   onEventClick?: (seq: number) => void;
 }) {
-  const { dataPoints, totalInput, totalOutput, totalCost, errorSeqs } = useMemo(() => {
+  const { dataPoints, totalInput, totalOutput, errorSeqs } = useMemo(() => {
     let cumInput = 0;
     let cumOutput = 0;
     const points: TokenDataPoint[] = [];
@@ -367,13 +367,10 @@ export function TranscriptTokenChart({
       }
     }
 
-    const cost = cumInput * INPUT_COST_PER_TOKEN + cumOutput * OUTPUT_COST_PER_TOKEN;
-
     return {
       dataPoints: points,
       totalInput: cumInput,
       totalOutput: cumOutput,
-      totalCost: cost,
       errorSeqs: errors,
     };
   }, [items]);
@@ -389,19 +386,16 @@ export function TranscriptTokenChart({
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
-        <h4 className="text-xs font-medium text-muted-foreground">Token Consumption (estimated)</h4>
+        <h4 className="text-xs font-medium text-muted-foreground">Token Consumption (estimated from content length)</h4>
         <div className="flex items-center gap-3 text-[10px]">
           <span className="text-muted-foreground">
-            Input: <span className="font-medium text-foreground">{formatTokens(totalInput)}</span>
+            Input: <span className="font-medium text-foreground">~{formatTokens(totalInput)}</span>
           </span>
           <span className="text-muted-foreground">
-            Output: <span className="font-medium text-foreground">{formatTokens(totalOutput)}</span>
+            Output: <span className="font-medium text-foreground">~{formatTokens(totalOutput)}</span>
           </span>
           <span className="text-muted-foreground">
-            Total: <span className="font-medium text-foreground">{formatTokens(totalInput + totalOutput)}</span>
-          </span>
-          <span className="text-muted-foreground">
-            Cost: <span className="font-medium text-foreground">~{formatCost(totalCost)}</span>
+            Total: <span className="font-medium text-foreground">~{formatTokens(totalInput + totalOutput)}</span>
           </span>
         </div>
       </div>
@@ -446,15 +440,14 @@ export function TranscriptTokenChart({
                       : d.type === "tool_result"
                         ? `${d.tool ?? "Tool"} result`
                         : d.type.charAt(0).toUpperCase() + d.type.slice(1);
-                  const eventCost = d.inputTokens * INPUT_COST_PER_TOKEN + d.outputTokens * OUTPUT_COST_PER_TOKEN;
                   return (
                     <div className="flex flex-col gap-0.5">
                       <span className="font-medium">#{d.seq} — {eventLabel}</span>
                       <span className="text-muted-foreground">
-                        In: {formatTokens(d.inputTokens)} · Out: {formatTokens(d.outputTokens)}
+                        In: ~{formatTokens(d.inputTokens)} · Out: ~{formatTokens(d.outputTokens)}
                       </span>
                       <span className="text-muted-foreground">
-                        Cumulative: {formatTokens(d.cumulativeTotal)} · ~{formatCost(eventCost)}
+                        Cumulative: ~{formatTokens(d.cumulativeTotal)}
                       </span>
                     </div>
                   );
