@@ -16,11 +16,14 @@ import {
   Monitor,
   Cloud,
   Cpu,
+  FileCode,
+  Search,
 } from "lucide-react";
 import { cn } from "@multica/ui/lib/utils";
 import { Dialog, DialogContent, DialogTitle } from "@multica/ui/components/ui/dialog";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@multica/ui/components/ui/collapsible";
 import { ActorAvatar } from "../../common/actor-avatar";
+import { Markdown } from "../../common/markdown";
 import { api } from "@multica/core/api";
 import type { AgentTask, Agent, AgentRuntime } from "@multica/core/types/agent";
 import { redactSecrets } from "../utils/redact";
@@ -203,7 +206,7 @@ export function AgentTranscriptDialog({
     return () => clearInterval(interval);
   }, [isLive, task.started_at, task.dispatched_at]);
 
-  // Click a timeline segment → scroll to event
+  // Click a timeline segment → scroll to event and select it
   const handleSegmentClick = useCallback((idx: number) => {
     setSelectedIdx(idx);
     const el = eventRefs.current.get(idx);
@@ -259,10 +262,13 @@ export function AgentTranscriptDialog({
     </span>
   );
 
+  // Resolve selected item safely
+  const selectedItem = selectedIdx !== null && selectedIdx < items.length ? items[selectedIdx]! : null;
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="!max-w-4xl !w-[calc(100vw-4rem)] !max-h-[calc(100vh-4rem)] !h-[calc(100vh-4rem)] flex flex-col !p-0 !gap-0 overflow-hidden"
+        className="!max-w-[85vw] !w-[calc(100vw-4rem)] !max-h-[calc(100vh-4rem)] !h-[calc(100vh-4rem)] flex flex-col !p-0 !gap-0 overflow-hidden"
         showCloseButton={false}
       >
         <DialogTitle className="sr-only">Agent Execution Transcript</DialogTitle>
@@ -365,46 +371,58 @@ export function AgentTranscriptDialog({
           </div>
         )}
 
-        {/* ── Event list ─────────────────────────────────────────── */}
-        <div
-          ref={scrollContainerRef}
-          className="flex-1 overflow-y-auto min-h-0"
-        >
-          {items.length === 0 ? (
-            <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
-              {isLive ? (
-                <div className="flex items-center gap-2">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Waiting for events...
-                </div>
-              ) : (
-                "No execution data recorded."
-              )}
-            </div>
-          ) : (
-            <div className="divide-y">
-              {items.map((item, idx) => (
-                <TranscriptEventRow
-                  key={`${item.seq}-${idx}`}
-                  ref={(el) => {
-                    if (el) eventRefs.current.set(idx, el);
-                    else eventRefs.current.delete(idx);
-                  }}
-                  item={item}
-                  index={idx}
-                  isSelected={selectedIdx === idx}
-                  onClick={() => setSelectedIdx(idx === selectedIdx ? null : idx)}
-                />
-              ))}
-            </div>
+        {/* ── Split content: event list + detail panel ────────── */}
+        <div className="flex-1 flex min-h-0">
+          {/* Left: Event list */}
+          <div
+            ref={scrollContainerRef}
+            className={cn(
+              "overflow-y-auto min-h-0 transition-[width] duration-200",
+              selectedItem ? "w-[40%] border-r" : "w-full",
+            )}
+          >
+            {items.length === 0 ? (
+              <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
+                {isLive ? (
+                  <div className="flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Waiting for events...
+                  </div>
+                ) : (
+                  "No execution data recorded."
+                )}
+              </div>
+            ) : (
+              <div className="divide-y">
+                {items.map((item, idx) => (
+                  <TranscriptEventRow
+                    key={`${item.seq}-${idx}`}
+                    ref={(el) => {
+                      if (el) eventRefs.current.set(idx, el);
+                      else eventRefs.current.delete(idx);
+                    }}
+                    item={item}
+                    index={idx}
+                    isSelected={selectedIdx === idx}
+                    onClick={() => setSelectedIdx(idx === selectedIdx ? null : idx)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Right: Detail panel */}
+          {selectedItem && (
+            <DetailPanel
+              item={selectedItem}
+              onClose={() => setSelectedIdx(null)}
+            />
           )}
         </div>
       </DialogContent>
     </Dialog>
   );
 }
-
-// ─── Timeline bar (colored segments) ────────────────────────────────────────
 
 // ─── Metadata chip ──────────────────────────────────────────────────────────
 
@@ -491,7 +509,7 @@ function TimelineBar({
   );
 }
 
-// ─── Transcript event row ───────────────────────────────────────────────────
+// ─── Transcript event row (click to select → shows in detail panel) ──────
 
 interface TranscriptEventRowProps {
   item: TimelineItem;
@@ -503,126 +521,300 @@ interface TranscriptEventRowProps {
 const TranscriptEventRow = ({
   ref,
   item,
-  index,
   isSelected,
   onClick,
 }: TranscriptEventRowProps & { ref?: React.Ref<HTMLDivElement> }) => {
-  const [expanded, setExpanded] = useState(false);
   const color = getEventColor(item);
   const label = getEventLabel(item);
   const summary = getEventSummary(item);
-
-  const hasDetail =
-    (item.type === "tool_use" && item.input && Object.keys(item.input).length > 0) ||
-    (item.type === "tool_result" && item.output && item.output.length > 0) ||
-    (item.type === "thinking" && item.content && item.content.length > 0) ||
-    (item.type === "text" && item.content && item.content.split("\n").length > 1) ||
-    (item.type === "error" && item.content && item.content.length > 0);
 
   return (
     <div
       ref={ref}
       className={cn(
-        "group transition-colors",
+        "group transition-colors cursor-pointer hover:bg-accent/30",
         isSelected && "bg-accent/50",
       )}
+      onClick={onClick}
     >
-      <Collapsible open={expanded} onOpenChange={setExpanded}>
-        <div className="flex items-start gap-2 px-4 py-2">
-          {/* Type label badge */}
-          <span
-            className={cn(
-              "inline-flex items-center shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium mt-0.5 min-w-[60px] justify-center",
-              colorClasses[color].label,
-            )}
-          >
-            {item.type === "thinking" && <Brain className="h-3 w-3 mr-1 shrink-0" />}
-            {item.type === "error" && <AlertCircle className="h-3 w-3 mr-1 shrink-0" />}
-            {label}
-          </span>
+      <div className="flex items-start gap-2 px-4 py-2">
+        {/* Type label badge */}
+        <span
+          className={cn(
+            "inline-flex items-center shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium mt-0.5 min-w-[60px] justify-center",
+            colorClasses[color].label,
+          )}
+        >
+          {item.type === "thinking" && <Brain className="h-3 w-3 mr-1 shrink-0" />}
+          {item.type === "error" && <AlertCircle className="h-3 w-3 mr-1 shrink-0" />}
+          {label}
+        </span>
 
-          {/* Summary */}
-          <CollapsibleTrigger
-            className={cn(
-              "flex-1 text-left text-xs min-w-0 py-0.5 transition-colors",
-              hasDetail ? "cursor-pointer hover:text-foreground" : "cursor-default",
-              item.type === "error" ? "text-destructive" : "text-muted-foreground",
-            )}
-            disabled={!hasDetail}
-          >
-            <div className="flex items-start gap-1.5">
-              {hasDetail && (
-                <ChevronRight
-                  className={cn(
-                    "h-3 w-3 shrink-0 mt-0.5 text-muted-foreground/50 transition-transform",
-                    expanded && "rotate-90",
-                  )}
-                />
-              )}
-              <span className="truncate">{summary || "(empty)"}</span>
-            </div>
-          </CollapsibleTrigger>
+        {/* Summary */}
+        <span
+          className={cn(
+            "flex-1 text-xs min-w-0 py-0.5 truncate",
+            item.type === "error" ? "text-destructive" : "text-muted-foreground",
+          )}
+        >
+          {summary || "(empty)"}
+        </span>
 
-          {/* Seq number / index */}
-          <span className="shrink-0 text-[10px] text-muted-foreground/50 tabular-nums mt-1">
-            #{item.seq}
-          </span>
-        </div>
-
-        {/* Expanded detail */}
-        {hasDetail && (
-          <CollapsibleContent>
-            <div className="px-4 pb-3">
-              <div className="ml-[72px] rounded bg-muted/40 border">
-                <EventDetailContent item={item} />
-              </div>
-            </div>
-          </CollapsibleContent>
-        )}
-      </Collapsible>
+        {/* Seq number */}
+        <span className="shrink-0 text-[10px] text-muted-foreground/50 tabular-nums mt-1">
+          #{item.seq}
+        </span>
+      </div>
     </div>
   );
 };
 
-// ─── Event detail content ───────────────────────────────────────────────────
+// ─── Detail panel (sidebar) ──────────────────────────────────────────────
 
-function EventDetailContent({ item }: { item: TimelineItem }) {
+function DetailPanel({ item, onClose }: { item: TimelineItem; onClose: () => void }) {
+  const [copied, setCopied] = useState(false);
+
+  const rawContent =
+    item.type === "tool_use"
+      ? item.input
+        ? redactSecrets(JSON.stringify(item.input, null, 2))
+        : ""
+      : item.type === "tool_result"
+        ? redactSecrets(item.output ?? "")
+        : redactSecrets(item.content ?? "");
+
+  const handleCopy = useCallback(() => {
+    navigator.clipboard.writeText(rawContent).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    });
+  }, [rawContent]);
+
+  const color = getEventColor(item);
+
+  return (
+    <div className="w-[60%] flex flex-col min-h-0">
+      {/* Header */}
+      <div className="flex items-center gap-2 px-4 py-2.5 border-b shrink-0">
+        <span
+          className={cn(
+            "inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium",
+            colorClasses[color].label,
+          )}
+        >
+          {item.type === "thinking" && <Brain className="h-3 w-3 mr-1" />}
+          {item.type === "error" && <AlertCircle className="h-3 w-3 mr-1" />}
+          {getEventLabel(item)}
+        </span>
+        {item.type === "tool_result" && (
+          <span className="text-xs text-muted-foreground">result</span>
+        )}
+        <span className="text-[10px] text-muted-foreground/50">#{item.seq}</span>
+
+        <div className="ml-auto flex items-center gap-1">
+          <button
+            onClick={handleCopy}
+            className="flex items-center gap-1 rounded px-2 py-1 text-xs text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          >
+            {copied ? <Check className="h-3 w-3" /> : <Copy className="h-3 w-3" />}
+            {copied ? "Copied" : "Copy"}
+          </button>
+          <button
+            onClick={onClose}
+            className="flex items-center justify-center rounded p-1 text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+      </div>
+
+      {/* Content */}
+      <div className="flex-1 overflow-y-auto p-4">
+        <DetailContent item={item} />
+      </div>
+    </div>
+  );
+}
+
+// ─── Rich content rendering ──────────────────────────────────────────────
+
+function DetailContent({ item }: { item: TimelineItem }) {
   switch (item.type) {
     case "tool_use":
-      return (
-        <pre className="max-h-60 overflow-auto p-3 text-[11px] text-muted-foreground whitespace-pre-wrap break-all">
-          {item.input ? redactSecrets(JSON.stringify(item.input, null, 2)) : ""}
-        </pre>
-      );
+      return <ToolUseDetail item={item} />;
     case "tool_result":
+      return <ToolResultDetail item={item} />;
+    case "text":
       return (
-        <pre className="max-h-60 overflow-auto p-3 text-[11px] text-muted-foreground whitespace-pre-wrap break-all">
-          {item.output
-            ? item.output.length > 4000
-              ? redactSecrets(item.output.slice(0, 4000)) + "\n... (truncated)"
-              : redactSecrets(item.output)
-            : ""}
-        </pre>
+        <div className="prose prose-sm dark:prose-invert max-w-none">
+          <Markdown mode="minimal">{item.content ?? ""}</Markdown>
+        </div>
       );
     case "thinking":
       return (
-        <pre className="max-h-60 overflow-auto p-3 text-[11px] text-muted-foreground whitespace-pre-wrap break-words">
+        <div className="text-sm text-muted-foreground leading-relaxed whitespace-pre-wrap">
           {item.content ?? ""}
-        </pre>
-      );
-    case "text":
-      return (
-        <pre className="max-h-60 overflow-auto p-3 text-[11px] text-muted-foreground whitespace-pre-wrap break-words">
-          {item.content ?? ""}
-        </pre>
+        </div>
       );
     case "error":
       return (
-        <pre className="max-h-60 overflow-auto p-3 text-[11px] text-destructive whitespace-pre-wrap break-words">
+        <pre className="text-sm text-destructive whitespace-pre-wrap break-words font-mono">
           {item.content ?? ""}
         </pre>
       );
     default:
       return null;
   }
+}
+
+function ToolUseDetail({ item }: { item: TimelineItem }) {
+  const [showRaw, setShowRaw] = useState(false);
+  if (!item.input) return null;
+  const inp = item.input;
+
+  const command = typeof inp.command === "string" ? inp.command : undefined;
+  const description = typeof inp.description === "string" ? inp.description : undefined;
+  const filePath = typeof inp.file_path === "string" ? inp.file_path : typeof inp.path === "string" ? inp.path : undefined;
+  const oldString = typeof inp.old_string === "string" ? inp.old_string : undefined;
+  const newString = typeof inp.new_string === "string" ? inp.new_string : undefined;
+  const content = typeof inp.content === "string" ? inp.content : undefined;
+  const query = typeof inp.query === "string" ? inp.query : undefined;
+  const pattern = typeof inp.pattern === "string" ? inp.pattern : undefined;
+  const prompt = typeof inp.prompt === "string" ? inp.prompt : undefined;
+  const skill = typeof inp.skill === "string" ? inp.skill : undefined;
+
+  const hasStructuredView = !!(command || filePath || query || pattern || prompt || skill);
+
+  return (
+    <div className="space-y-3 text-sm">
+      {/* Bash command */}
+      {command && (
+        <div className="space-y-1.5">
+          {description && (
+            <p className="text-xs text-muted-foreground">{description}</p>
+          )}
+          <Markdown mode="minimal">{`\`\`\`bash\n${redactSecrets(command)}\n\`\`\``}</Markdown>
+        </div>
+      )}
+
+      {/* File path */}
+      {filePath && (
+        <div className="flex items-center gap-1.5">
+          <FileCode className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          <code className="bg-muted px-1.5 py-0.5 rounded text-xs break-all">{filePath}</code>
+        </div>
+      )}
+
+      {/* Edit: old → new diff */}
+      {oldString !== undefined && newString !== undefined && (
+        <div className="rounded border overflow-hidden">
+          <div className="bg-red-500/5 border-b px-3 py-2">
+            <div className="text-[11px] font-medium text-red-600 dark:text-red-400 mb-1">Removed</div>
+            <pre className="text-xs whitespace-pre-wrap break-all text-muted-foreground">{redactSecrets(oldString)}</pre>
+          </div>
+          <div className="bg-green-500/5 px-3 py-2">
+            <div className="text-[11px] font-medium text-green-600 dark:text-green-400 mb-1">Added</div>
+            <pre className="text-xs whitespace-pre-wrap break-all text-muted-foreground">{redactSecrets(newString)}</pre>
+          </div>
+        </div>
+      )}
+
+      {/* File content (Write tool) */}
+      {content && !command && oldString === undefined && (
+        <Markdown mode="minimal">
+          {`\`\`\`\n${redactSecrets(content.length > 10000 ? content.slice(0, 10000) + "\n... (truncated)" : content)}\n\`\`\``}
+        </Markdown>
+      )}
+
+      {/* Search query */}
+      {query && (
+        <div className="flex items-center gap-2">
+          <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          <span className="font-medium">{query}</span>
+        </div>
+      )}
+
+      {/* Glob/Grep pattern */}
+      {pattern && !query && (
+        <div className="flex items-center gap-2">
+          <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+          <code className="bg-muted px-1.5 py-0.5 rounded text-xs">{pattern}</code>
+        </div>
+      )}
+
+      {/* Agent prompt */}
+      {prompt && (
+        <div className="prose prose-sm dark:prose-invert max-w-none">
+          <Markdown mode="minimal">{redactSecrets(prompt)}</Markdown>
+        </div>
+      )}
+
+      {/* Skill */}
+      {skill && (
+        <code className="bg-muted px-2 py-1 rounded text-xs">/{skill}</code>
+      )}
+
+      {/* Full JSON: inline when no structured view, collapsible toggle otherwise */}
+      {!hasStructuredView ? (
+        <Markdown mode="minimal">
+          {`\`\`\`json\n${redactSecrets(JSON.stringify(inp, null, 2))}\n\`\`\``}
+        </Markdown>
+      ) : (
+        <Collapsible open={showRaw} onOpenChange={setShowRaw}>
+          <CollapsibleTrigger className="flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors">
+            <ChevronRight className={cn("h-3 w-3 transition-transform", showRaw && "rotate-90")} />
+            Raw input
+          </CollapsibleTrigger>
+          <CollapsibleContent>
+            <pre className="mt-1.5 max-h-60 overflow-auto rounded bg-muted/50 border p-3 text-[11px] text-muted-foreground whitespace-pre-wrap break-all">
+              {redactSecrets(JSON.stringify(inp, null, 2))}
+            </pre>
+          </CollapsibleContent>
+        </Collapsible>
+      )}
+    </div>
+  );
+}
+
+function ToolResultDetail({ item }: { item: TimelineItem }) {
+  const output = item.output ?? "";
+  if (!output) {
+    return <span className="text-sm text-muted-foreground italic">No output</span>;
+  }
+
+  const redacted = redactSecrets(output);
+  const truncated = redacted.length > 20000;
+  const displayContent = truncated ? redacted.slice(0, 20000) : redacted;
+
+  // Try to detect and format JSON
+  const trimmed = displayContent.trim();
+  if (
+    (trimmed.startsWith("{") && trimmed.endsWith("}")) ||
+    (trimmed.startsWith("[") && trimmed.endsWith("]"))
+  ) {
+    try {
+      const parsed = JSON.parse(trimmed);
+      const formatted = JSON.stringify(parsed, null, 2);
+      return (
+        <div>
+          <Markdown mode="minimal">
+            {`\`\`\`json\n${formatted}\n\`\`\``}
+          </Markdown>
+          {truncated && (
+            <p className="text-xs text-muted-foreground mt-2">... (truncated)</p>
+          )}
+        </div>
+      );
+    } catch {
+      // Not valid JSON, fall through
+    }
+  }
+
+  // Default: preformatted text with good readability
+  return (
+    <pre className="text-xs leading-relaxed text-muted-foreground whitespace-pre-wrap break-words font-mono">
+      {displayContent}
+      {truncated && "\n\n... (truncated)"}
+    </pre>
+  );
 }
