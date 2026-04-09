@@ -48,11 +48,11 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import { memberListOptions, agentListOptions } from "@multica/core/workspace/queries";
 import { ActorAvatar } from "../../common/actor-avatar";
 import {
-  useIssueViewStore,
   SORT_OPTIONS,
   CARD_PROPERTY_OPTIONS,
   type ActorFilterValue,
 } from "@multica/core/issues/stores/view-store";
+import { useViewStore, useViewStoreApi } from "@multica/core/issues/stores/view-store-context";
 import {
   useIssuesScopeStore,
   type IssuesScope,
@@ -279,16 +279,16 @@ export function IssuesHeader({ scopedIssues }: { scopedIssues: Issue[] }) {
   const scope = useIssuesScopeStore((s) => s.scope);
   const setScope = useIssuesScopeStore((s) => s.setScope);
 
-  const viewMode = useIssueViewStore((s) => s.viewMode);
-  const statusFilters = useIssueViewStore((s) => s.statusFilters);
-  const priorityFilters = useIssueViewStore((s) => s.priorityFilters);
-  const assigneeFilters = useIssueViewStore((s) => s.assigneeFilters);
-  const includeNoAssignee = useIssueViewStore((s) => s.includeNoAssignee);
-  const creatorFilters = useIssueViewStore((s) => s.creatorFilters);
-  const sortBy = useIssueViewStore((s) => s.sortBy);
-  const sortDirection = useIssueViewStore((s) => s.sortDirection);
-  const cardProperties = useIssueViewStore((s) => s.cardProperties);
-  const act = useIssueViewStore.getState();
+  const viewMode = useViewStore((s) => s.viewMode);
+  const statusFilters = useViewStore((s) => s.statusFilters);
+  const priorityFilters = useViewStore((s) => s.priorityFilters);
+  const assigneeFilters = useViewStore((s) => s.assigneeFilters);
+  const includeNoAssignee = useViewStore((s) => s.includeNoAssignee);
+  const creatorFilters = useViewStore((s) => s.creatorFilters);
+  const sortBy = useViewStore((s) => s.sortBy);
+  const sortDirection = useViewStore((s) => s.sortDirection);
+  const cardProperties = useViewStore((s) => s.cardProperties);
+  const act = useViewStoreApi().getState();
 
   const counts = useIssueCounts(scopedIssues);
 
