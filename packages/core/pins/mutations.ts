@@ -61,8 +61,5 @@ export function useReorderPins() {
     onError: (_err, _vars, ctx) => {
       if (ctx?.prev) qc.setQueryData(pinKeys.list(wsId), ctx.prev);
     },
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: pinKeys.list(wsId) });
-    },
   });
 }

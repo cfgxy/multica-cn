@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect } from "react";
+import React, { useCallback, useEffect, useRef } from "react";
 import { cn } from "@multica/ui/lib/utils";
 import { AppLink, useNavigation } from "../navigation";
 import {
@@ -28,7 +28,6 @@ import {
   CircleUser,
   FolderKanban,
   Ellipsis,
-  GripVertical,
   PinOff,
 } from "lucide-react";
 import { WorkspaceAvatar } from "../workspace/workspace-avatar";
@@ -93,26 +92,37 @@ function DraftDot() {
 
 function SortablePinItem({ pin, pathname, onUnpin }: { pin: PinnedItem; pathname: string; onUnpin: () => void }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: pin.id });
+  const wasDragged = useRef(false);
+  const { push } = useNavigation();
+
+  useEffect(() => {
+    if (isDragging) wasDragged.current = true;
+  }, [isDragging]);
+
   const style = { transform: CSS.Transform.toString(transform), transition };
   const href = pin.item_type === "issue" ? `/issues/${pin.item_id}` : `/projects/${pin.item_id}`;
   const isActive = pathname === href;
   const label = pin.item_type === "issue" && pin.identifier ? `${pin.identifier} ${pin.title}` : pin.title;
 
   return (
-    <SidebarMenuItem ref={setNodeRef} style={style} className={cn("group/pin", isDragging && "opacity-30")}>
+    <SidebarMenuItem
+      ref={setNodeRef}
+      style={style}
+      className={cn("group/pin", isDragging && "opacity-30")}
+      {...attributes}
+      {...listeners}
+    >
       <SidebarMenuButton
         isActive={isActive}
-        render={<AppLink href={href} />}
+        onClick={() => {
+          if (wasDragged.current) {
+            wasDragged.current = false;
+            return;
+          }
+          push(href);
+        }}
         className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
       >
-        <button
-          className="shrink-0 cursor-grab opacity-0 group-hover/pin:opacity-100 transition-opacity touch-none"
-          {...attributes}
-          {...listeners}
-          onClick={(e) => e.preventDefault()}
-        >
-          <GripVertical className="size-3 text-muted-foreground" />
-        </button>
         {pin.item_type === "issue" ? (
           <ListTodo className="size-4 shrink-0" />
         ) : (
