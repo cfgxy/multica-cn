@@ -69,6 +69,8 @@ func parseMentions(content string) []mention {
 // notifySubscribers queries the subscriber table for an issue, excludes the
 // actor and any extra IDs, and creates inbox items for each remaining member
 // subscriber. Publishes an inbox:new event for each notification.
+// If the issue has a parent, parent issue subscribers are also notified
+// (deduplicated against direct subscribers).
 func notifySubscribers(
 	ctx context.Context,
 	queries *db.Queries,
@@ -84,11 +86,60 @@ func notifySubscribers(
 	body string,
 	details []byte,
 ) {
+	notified := notifyIssueSubscribers(ctx, queries, bus,
+		issueID, issueStatus, workspaceID, e, exclude,
+		notifType, severity, title, body, details)
+
+	// Also notify parent issue subscribers if this is a sub-issue.
+	issue, err := queries.GetIssue(ctx, parseUUID(issueID))
+	if err != nil {
+		slog.Error("failed to get issue for parent notification",
+			"issue_id", issueID, "error", err)
+		return
+	}
+	if !issue.ParentIssueID.Valid {
+		return
+	}
+
+	// Merge already-notified IDs into exclude set for parent subscribers.
+	parentExclude := make(map[string]bool, len(exclude)+len(notified))
+	for id := range exclude {
+		parentExclude[id] = true
+	}
+	for id := range notified {
+		parentExclude[id] = true
+	}
+
+	parentID := util.UUIDToString(issue.ParentIssueID)
+	notifyIssueSubscribers(ctx, queries, bus,
+		parentID, issueStatus, workspaceID, e, parentExclude,
+		notifType, severity, title, body, details)
+}
+
+// notifyIssueSubscribers sends inbox notifications to subscribers of a single
+// issue and returns the set of member IDs that were notified.
+func notifyIssueSubscribers(
+	ctx context.Context,
+	queries *db.Queries,
+	bus *events.Bus,
+	issueID string,
+	issueStatus string,
+	workspaceID string,
+	e events.Event,
+	exclude map[string]bool,
+	notifType string,
+	severity string,
+	title string,
+	body string,
+	details []byte,
+) map[string]bool {
+	notified := map[string]bool{}
+
 	subs, err := queries.ListIssueSubscribers(ctx, parseUUID(issueID))
 	if err != nil {
 		slog.Error("failed to list subscribers for notification",
 			"issue_id", issueID, "error", err)
-		return
+		return notified
 	}
 
 	for _, sub := range subs {
@@ -128,6 +179,7 @@ func notifySubscribers(
 			continue
 		}
 
+		notified[subID] = true
 		resp := inboxItemToResponse(item)
 		resp["issue_status"] = issueStatus
 		bus.Publish(events.Event{
@@ -138,6 +190,8 @@ func notifySubscribers(
 			Payload:     map[string]any{"item": resp},
 		})
 	}
+
+	return notified
 }
 
 // notifyDirect creates an inbox item for a specific recipient. Skips if the
