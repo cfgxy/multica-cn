@@ -472,6 +472,16 @@ func (h *Handler) ListAgentTasks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+type WorkspaceTaskResponse struct {
+	AgentTaskResponse
+	IssueTitle        string `json:"issue_title"`
+	IssueNumber       int32  `json:"issue_number"`
+	TotalInputTokens  int64  `json:"total_input_tokens"`
+	TotalOutputTokens int64  `json:"total_output_tokens"`
+	ToolUseCount      int32  `json:"tool_use_count"`
+	TotalEvents       int32  `json:"total_events"`
+}
+
 func (h *Handler) ListWorkspaceTasks(w http.ResponseWriter, r *http.Request) {
 	workspaceID := chi.URLParam(r, "id")
 	if _, ok := h.workspaceMember(w, r, workspaceID); !ok {
@@ -485,6 +495,13 @@ func (h *Handler) ListWorkspaceTasks(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// Load workspace prefix for issue identifiers
+	ws, err := h.Queries.GetWorkspace(r.Context(), parseUUID(workspaceID))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load workspace")
+		return
+	}
+
 	tasks, err := h.Queries.ListWorkspaceTasks(r.Context(), db.ListWorkspaceTasksParams{
 		WorkspaceID: parseUUID(workspaceID),
 		Limit:       limit,
@@ -494,9 +511,43 @@ func (h *Handler) ListWorkspaceTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp := make([]AgentTaskResponse, len(tasks))
+	resp := make([]WorkspaceTaskResponse, len(tasks))
 	for i, t := range tasks {
-		resp[i] = taskToResponse(t)
+		var result any
+		if t.Result != nil {
+			json.Unmarshal(t.Result, &result)
+		}
+		identifier := ""
+		if t.IssueNumber > 0 {
+			identifier = ws.IssuePrefix + "-" + strconv.Itoa(int(t.IssueNumber))
+		}
+		resp[i] = WorkspaceTaskResponse{
+			AgentTaskResponse: AgentTaskResponse{
+				ID:               uuidToString(t.ID),
+				AgentID:          uuidToString(t.AgentID),
+				RuntimeID:        uuidToString(t.RuntimeID),
+				IssueID:          uuidToString(t.IssueID),
+				Status:           t.Status,
+				Priority:         t.Priority,
+				DispatchedAt:     timestampToPtr(t.DispatchedAt),
+				StartedAt:        timestampToPtr(t.StartedAt),
+				CompletedAt:      timestampToPtr(t.CompletedAt),
+				Result:           result,
+				Error:            textToPtr(t.Error),
+				CreatedAt:        timestampToString(t.CreatedAt),
+				TriggerCommentID: uuidToPtr(t.TriggerCommentID),
+			},
+			IssueTitle:        t.IssueTitle,
+			IssueNumber:       t.IssueNumber,
+			TotalInputTokens:  t.TotalInputTokens,
+			TotalOutputTokens: t.TotalOutputTokens,
+			ToolUseCount:      t.ToolUseCount,
+			TotalEvents:       t.TotalEvents,
+		}
+		// Set computed identifier
+		if identifier != "" {
+			resp[i].AgentTaskResponse.WorkspaceID = workspaceID
+		}
 	}
 
 	writeJSON(w, http.StatusOK, resp)

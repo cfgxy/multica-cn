@@ -171,8 +171,25 @@ WHERE runtime_id = $1 AND status IN ('queued', 'dispatched')
 ORDER BY priority DESC, created_at ASC;
 
 -- name: ListWorkspaceTasks :many
-SELECT atq.* FROM agent_task_queue atq
+SELECT
+  atq.*,
+  COALESCE(i.title, '')::text AS issue_title,
+  COALESCE(i.number, 0)::int AS issue_number,
+  COALESCE(tu.total_input_tokens, 0)::bigint AS total_input_tokens,
+  COALESCE(tu.total_output_tokens, 0)::bigint AS total_output_tokens,
+  COALESCE(tm.tool_use_count, 0)::int AS tool_use_count,
+  COALESCE(tm.total_events, 0)::int AS total_events
+FROM agent_task_queue atq
 JOIN agent a ON a.id = atq.agent_id
+LEFT JOIN issue i ON i.id = atq.issue_id
+LEFT JOIN (
+  SELECT task_id, SUM(input_tokens) AS total_input_tokens, SUM(output_tokens) AS total_output_tokens
+  FROM task_usage GROUP BY task_id
+) tu ON tu.task_id = atq.id
+LEFT JOIN (
+  SELECT task_id, COUNT(*) FILTER (WHERE type = 'tool_use') AS tool_use_count, COUNT(*) AS total_events
+  FROM task_message GROUP BY task_id
+) tm ON tm.task_id = atq.id
 WHERE a.workspace_id = $1
 ORDER BY atq.created_at DESC
 LIMIT $2;

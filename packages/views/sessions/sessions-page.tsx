@@ -3,24 +3,23 @@
 import { useState, useCallback, useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  Bot,
   CheckCircle2,
   XCircle,
   Loader2,
   Clock,
   Ban,
   Zap,
-  ExternalLink,
+  Wrench,
+  Hash,
 } from "lucide-react";
 import { cn } from "@multica/ui/lib/utils";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { workspaceTasksOptions, workspaceKeys, agentListOptions } from "@multica/core/workspace/queries";
-import { issueListOptions } from "@multica/core/issues/queries";
 import { useWSEvent } from "@multica/core/realtime";
 import { api } from "@multica/core/api";
 import { ActorAvatar } from "../common/actor-avatar";
 import { AgentTranscriptDialog } from "../issues/components";
-import type { AgentTask } from "@multica/core/types/agent";
+import type { AgentTask, WorkspaceTask } from "@multica/core/types/agent";
 import type { TaskMessagePayload } from "@multica/core/types/events";
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
@@ -37,15 +36,19 @@ function formatDuration(startIso: string, endIso?: string | null): string {
   return `${hours}h ${minutes % 60}m`;
 }
 
-function formatRelativeTime(iso: string): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const minutes = Math.floor(diff / 60000);
-  if (minutes < 1) return "just now";
-  if (minutes < 60) return `${minutes}m ago`;
-  const hours = Math.floor(minutes / 60);
-  if (hours < 24) return `${hours}h ago`;
-  const days = Math.floor(hours / 24);
-  return `${days}d ago`;
+function formatTokens(n: number): string {
+  if (n >= 1000000) return `${(n / 1000000).toFixed(1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}K`;
+  return String(n);
+}
+
+function formatTime(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
 
 type TaskStatus = AgentTask["status"];
@@ -58,8 +61,6 @@ const statusConfig: Record<TaskStatus, { label: string; icon: typeof Loader2; cl
   failed: { label: "Failed", icon: XCircle, className: "text-destructive", dotClass: "bg-destructive" },
   cancelled: { label: "Cancelled", icon: Ban, className: "text-muted-foreground", dotClass: "bg-muted-foreground" },
 };
-
-// ─── Timeline item type (matching transcript dialog) ────────────────────────
 
 interface TimelineItem {
   seq: number;
@@ -78,7 +79,6 @@ export function SessionsPage() {
 
   const { data: tasks = [], isLoading } = useQuery(workspaceTasksOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
-  const { data: issues = [] } = useQuery(issueListOptions(wsId));
 
   // Transcript dialog state
   const [selectedTask, setSelectedTask] = useState<AgentTask | null>(null);
@@ -95,14 +95,9 @@ export function SessionsPage() {
   useWSEvent("task:failed", invalidate);
   useWSEvent("task:cancelled", invalidate);
 
-  // Lookup helpers
   const getAgentName = useCallback(
     (agentId: string) => agents.find((a) => a.id === agentId)?.name ?? "Agent",
     [agents],
-  );
-  const getIssue = useCallback(
-    (issueId: string) => issues.find((issue) => issue.id === issueId),
-    [issues],
   );
 
   // Open transcript for a task
@@ -140,14 +135,7 @@ export function SessionsPage() {
         if (!selectedTask || p.task_id !== selectedTask.id) return;
         setTranscriptItems((prev) => [
           ...prev,
-          {
-            seq: p.seq,
-            type: p.type,
-            tool: p.tool,
-            content: p.content,
-            input: p.input,
-            output: p.output,
-          },
+          { seq: p.seq, type: p.type, tool: p.tool, content: p.content, input: p.input, output: p.output },
         ]);
       },
       [selectedTask],
@@ -173,6 +161,8 @@ export function SessionsPage() {
     });
   }, [tasks]);
 
+  const activeCount = tasks.filter((t) => t.status === "running" || t.status === "dispatched").length;
+
   return (
     <div className="flex-1 overflow-y-auto">
       {/* Header */}
@@ -180,9 +170,9 @@ export function SessionsPage() {
         <div className="flex items-center gap-2">
           <Zap className="h-5 w-5 text-muted-foreground" />
           <h1 className="text-lg font-semibold">Sessions</h1>
-          {hasActiveTasks && (
+          {activeCount > 0 && (
             <span className="rounded-full bg-info/15 px-2 py-0.5 text-xs font-medium text-info">
-              {tasks.filter((t) => t.status === "running" || t.status === "dispatched").length} active
+              {activeCount} active
             </span>
           )}
         </div>
@@ -202,82 +192,15 @@ export function SessionsPage() {
           <p className="text-xs">Sessions appear when agents start working on issues.</p>
         </div>
       ) : (
-        <div className="px-4 py-3">
-          {/* Table header */}
-          <div className="grid grid-cols-[auto_1fr_auto_auto] gap-3 px-3 py-1.5 text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
-            <div className="w-7" />
-            <div>Session</div>
-            <div className="w-20 text-center">Status</div>
-            <div className="w-24 text-right">Duration</div>
-          </div>
-
-          {/* Task rows */}
-          <div className="space-y-1">
-            {sortedTasks.map((task) => {
-              const isActive = task.status === "running" || task.status === "dispatched" || task.status === "queued";
-              const issue = getIssue(task.issue_id);
-              const agentName = getAgentName(task.agent_id);
-              const config = statusConfig[task.status];
-
-              return (
-                <button
-                  key={task.id}
-                  onClick={() => openTranscript(task)}
-                  className={cn(
-                    "w-full grid grid-cols-[auto_1fr_auto_auto] gap-3 items-center px-3 py-2.5 rounded-lg text-left transition-colors",
-                    "hover:bg-accent/50 cursor-pointer",
-                    isActive && "bg-accent/20",
-                  )}
-                >
-                  {/* Agent avatar */}
-                  <ActorAvatar actorType="agent" actorId={task.agent_id} size={28} />
-
-                  {/* Session info */}
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      {issue ? (
-                        <span className="text-sm font-medium truncate">
-                          <span className="text-muted-foreground font-normal">{issue.identifier}</span>
-                          {" "}
-                          {issue.title}
-                        </span>
-                      ) : (
-                        <span className="text-sm font-medium truncate text-muted-foreground">
-                          {task.issue_id.slice(0, 8)}
-                        </span>
-                      )}
-                    </div>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      <span className="text-xs text-muted-foreground">{agentName}</span>
-                      {task.error && (
-                        <>
-                          <span className="text-muted-foreground/30">·</span>
-                          <span className="text-xs text-destructive truncate">{task.error}</span>
-                        </>
-                      )}
-                    </div>
-                  </div>
-
-                  {/* Status */}
-                  <div className={cn("flex items-center gap-1.5 w-20 justify-center", config.className)}>
-                    <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", config.dotClass)} />
-                    <span className="text-xs">{config.label}</span>
-                  </div>
-
-                  {/* Duration / time */}
-                  <div className="text-xs text-muted-foreground w-24 text-right tabular-nums">
-                    {isActive && task.started_at ? (
-                      formatDuration(task.started_at)
-                    ) : task.started_at && task.completed_at ? (
-                      formatDuration(task.started_at, task.completed_at)
-                    ) : (
-                      formatRelativeTime(task.created_at)
-                    )}
-                  </div>
-                </button>
-              );
-            })}
-          </div>
+        <div className="p-4 space-y-2">
+          {sortedTasks.map((task) => (
+            <SessionCard
+              key={task.id}
+              task={task}
+              agentName={getAgentName(task.agent_id)}
+              onClick={() => openTranscript(task)}
+            />
+          ))}
         </div>
       )}
 
@@ -298,5 +221,102 @@ export function SessionsPage() {
         />
       )}
     </div>
+  );
+}
+
+// ─── Session card ───────────────────────────────────────────────────────────
+
+function SessionCard({
+  task,
+  agentName,
+  onClick,
+}: {
+  task: WorkspaceTask;
+  agentName: string;
+  onClick: () => void;
+}) {
+  const config = statusConfig[task.status];
+  const isActive = task.status === "running" || task.status === "dispatched";
+  const totalTokens = task.total_input_tokens + task.total_output_tokens;
+
+  return (
+    <button
+      onClick={onClick}
+      className={cn(
+        "w-full rounded-lg border p-3 text-left transition-all hover:shadow-sm hover:border-border/80",
+        isActive
+          ? "border-info/30 bg-info/5 hover:bg-info/8"
+          : "hover:bg-accent/30",
+      )}
+    >
+      {/* Top row: agent + status */}
+      <div className="flex items-center gap-2.5">
+        <ActorAvatar actorType="agent" actorId={task.agent_id} size={24} />
+        <span className="text-xs font-medium text-muted-foreground">{agentName}</span>
+        <div className="ml-auto flex items-center gap-1.5">
+          <span className={cn("h-1.5 w-1.5 rounded-full shrink-0", config.dotClass)} />
+          <span className={cn("text-[11px]", config.className)}>{config.label}</span>
+        </div>
+      </div>
+
+      {/* Issue title */}
+      <div className="mt-2">
+        {task.issue_title ? (
+          <p className="text-sm font-medium truncate">
+            {task.issue_number > 0 && (
+              <span className="text-muted-foreground font-normal mr-1">#{task.issue_number}</span>
+            )}
+            {task.issue_title}
+          </p>
+        ) : (
+          <p className="text-sm text-muted-foreground truncate">{task.issue_id.slice(0, 8)}</p>
+        )}
+        {task.error && (
+          <p className="text-xs text-destructive truncate mt-0.5">{task.error}</p>
+        )}
+      </div>
+
+      {/* Metadata chips */}
+      <div className="flex items-center gap-3 mt-2 text-[11px] text-muted-foreground">
+        {/* Duration */}
+        <span className="flex items-center gap-1">
+          <Clock className="h-3 w-3" />
+          {isActive && task.started_at
+            ? formatDuration(task.started_at)
+            : task.started_at && task.completed_at
+              ? formatDuration(task.started_at, task.completed_at)
+              : "—"}
+        </span>
+
+        {/* Tool calls */}
+        {task.tool_use_count > 0 && (
+          <span className="flex items-center gap-1">
+            <Wrench className="h-3 w-3" />
+            {task.tool_use_count} tools
+          </span>
+        )}
+
+        {/* Events */}
+        {task.total_events > 0 && (
+          <span className="flex items-center gap-1">
+            <Hash className="h-3 w-3" />
+            {task.total_events} events
+          </span>
+        )}
+
+        {/* Tokens */}
+        {totalTokens > 0 && (
+          <span className="flex items-center gap-1">
+            <Zap className="h-3 w-3" />
+            {formatTokens(totalTokens)} tokens
+          </span>
+        )}
+
+        {/* Time */}
+        <span className="ml-auto">
+          {formatTime(task.created_at)}
+        </span>
+      </div>
+    </button>
   );
 }

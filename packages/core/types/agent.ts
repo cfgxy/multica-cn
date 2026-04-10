@@ -37,6 +37,15 @@ export interface AgentTask {
   created_at: string;
 }
 
+export interface WorkspaceTask extends AgentTask {
+  issue_title: string;
+  issue_number: number;
+  total_input_tokens: number;
+  total_output_tokens: number;
+  tool_use_count: number;
+  total_events: number;
+}
+
 export interface Agent {
   id: string;
   workspace_id: string;

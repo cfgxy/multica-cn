@@ -827,8 +827,25 @@ func (q *Queries) ListTasksByIssue(ctx context.Context, issueID pgtype.UUID) ([]
 }
 
 const listWorkspaceTasks = `-- name: ListWorkspaceTasks :many
-SELECT atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority, atq.dispatched_at, atq.started_at, atq.completed_at, atq.result, atq.error, atq.created_at, atq.context, atq.runtime_id, atq.session_id, atq.work_dir, atq.trigger_comment_id, atq.chat_session_id FROM agent_task_queue atq
+SELECT
+  atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority, atq.dispatched_at, atq.started_at, atq.completed_at, atq.result, atq.error, atq.created_at, atq.context, atq.runtime_id, atq.session_id, atq.work_dir, atq.trigger_comment_id, atq.chat_session_id,
+  COALESCE(i.title, '')::text AS issue_title,
+  COALESCE(i.number, 0)::int AS issue_number,
+  COALESCE(tu.total_input_tokens, 0)::bigint AS total_input_tokens,
+  COALESCE(tu.total_output_tokens, 0)::bigint AS total_output_tokens,
+  COALESCE(tm.tool_use_count, 0)::int AS tool_use_count,
+  COALESCE(tm.total_events, 0)::int AS total_events
+FROM agent_task_queue atq
 JOIN agent a ON a.id = atq.agent_id
+LEFT JOIN issue i ON i.id = atq.issue_id
+LEFT JOIN (
+  SELECT task_id, SUM(input_tokens) AS total_input_tokens, SUM(output_tokens) AS total_output_tokens
+  FROM task_usage GROUP BY task_id
+) tu ON tu.task_id = atq.id
+LEFT JOIN (
+  SELECT task_id, COUNT(*) FILTER (WHERE type = 'tool_use') AS tool_use_count, COUNT(*) AS total_events
+  FROM task_message GROUP BY task_id
+) tm ON tm.task_id = atq.id
 WHERE a.workspace_id = $1
 ORDER BY atq.created_at DESC
 LIMIT $2
@@ -839,15 +856,41 @@ type ListWorkspaceTasksParams struct {
 	Limit       int32       `json:"limit"`
 }
 
-func (q *Queries) ListWorkspaceTasks(ctx context.Context, arg ListWorkspaceTasksParams) ([]AgentTaskQueue, error) {
+type ListWorkspaceTasksRow struct {
+	ID                pgtype.UUID        `json:"id"`
+	AgentID           pgtype.UUID        `json:"agent_id"`
+	IssueID           pgtype.UUID        `json:"issue_id"`
+	Status            string             `json:"status"`
+	Priority          int32              `json:"priority"`
+	DispatchedAt      pgtype.Timestamptz `json:"dispatched_at"`
+	StartedAt         pgtype.Timestamptz `json:"started_at"`
+	CompletedAt       pgtype.Timestamptz `json:"completed_at"`
+	Result            []byte             `json:"result"`
+	Error             pgtype.Text        `json:"error"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+	Context           []byte             `json:"context"`
+	RuntimeID         pgtype.UUID        `json:"runtime_id"`
+	SessionID         pgtype.Text        `json:"session_id"`
+	WorkDir           pgtype.Text        `json:"work_dir"`
+	TriggerCommentID  pgtype.UUID        `json:"trigger_comment_id"`
+	ChatSessionID     pgtype.UUID        `json:"chat_session_id"`
+	IssueTitle        string             `json:"issue_title"`
+	IssueNumber       int32              `json:"issue_number"`
+	TotalInputTokens  int64              `json:"total_input_tokens"`
+	TotalOutputTokens int64              `json:"total_output_tokens"`
+	ToolUseCount      int32              `json:"tool_use_count"`
+	TotalEvents       int32              `json:"total_events"`
+}
+
+func (q *Queries) ListWorkspaceTasks(ctx context.Context, arg ListWorkspaceTasksParams) ([]ListWorkspaceTasksRow, error) {
 	rows, err := q.db.Query(ctx, listWorkspaceTasks, arg.WorkspaceID, arg.Limit)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []AgentTaskQueue{}
+	items := []ListWorkspaceTasksRow{}
 	for rows.Next() {
-		var i AgentTaskQueue
+		var i ListWorkspaceTasksRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.AgentID,
@@ -866,6 +909,12 @@ func (q *Queries) ListWorkspaceTasks(ctx context.Context, arg ListWorkspaceTasks
 			&i.WorkDir,
 			&i.TriggerCommentID,
 			&i.ChatSessionID,
+			&i.IssueTitle,
+			&i.IssueNumber,
+			&i.TotalInputTokens,
+			&i.TotalOutputTokens,
+			&i.ToolUseCount,
+			&i.TotalEvents,
 		); err != nil {
 			return nil, err
 		}

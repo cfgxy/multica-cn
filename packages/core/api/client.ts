@@ -12,6 +12,7 @@ import type {
   CreateAgentRequest,
   UpdateAgentRequest,
   AgentTask,
+  WorkspaceTask,
   AgentRuntime,
   InboxItem,
   IssueSubscriber,
@@ -406,7 +407,7 @@ export class ApiClient {
     return this.fetch(`/api/agents/${agentId}/tasks`);
   }
 
-  async listWorkspaceTasks(workspaceId: string, limit = 50): Promise<AgentTask[]> {
+  async listWorkspaceTasks(workspaceId: string, limit = 50): Promise<WorkspaceTask[]> {
     return this.fetch(`/api/workspaces/${workspaceId}/tasks?limit=${limit}`);
   }
 
