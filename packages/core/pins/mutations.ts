@@ -43,3 +43,26 @@ export function useDeletePin() {
     },
   });
 }
+
+export function useReorderPins() {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceId();
+  return useMutation({
+    mutationFn: (reorderedPins: PinnedItem[]) => {
+      const items = reorderedPins.map((p, i) => ({ id: p.id, position: i + 1 }));
+      return api.reorderPins({ items });
+    },
+    onMutate: async (reorderedPins) => {
+      await qc.cancelQueries({ queryKey: pinKeys.list(wsId) });
+      const prev = qc.getQueryData<PinnedItem[]>(pinKeys.list(wsId));
+      qc.setQueryData<PinnedItem[]>(pinKeys.list(wsId), reorderedPins);
+      return { prev };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev) qc.setQueryData(pinKeys.list(wsId), ctx.prev);
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: pinKeys.list(wsId) });
+    },
+  });
+}

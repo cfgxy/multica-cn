@@ -1,2 +1,2 @@
 export { pinKeys, pinListOptions } from "./queries";
-export { useCreatePin, useDeletePin } from "./mutations";
+export { useCreatePin, useDeletePin, useReorderPins } from "./mutations";

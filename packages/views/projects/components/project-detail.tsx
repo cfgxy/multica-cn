@@ -294,6 +294,21 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
           <Button
             variant="ghost"
             size="icon-xs"
+            className={cn("text-muted-foreground", isPinned && "text-foreground")}
+            title={isPinned ? "Unpin from sidebar" : "Pin to sidebar"}
+            onClick={() => {
+              if (isPinned) {
+                deletePinMut.mutate({ itemType: "project", itemId: projectId });
+              } else {
+                createPin.mutate({ item_type: "project", item_id: projectId });
+              }
+            }}
+          >
+            {isPinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-xs"
             className="text-muted-foreground"
             onClick={() => {
               navigator.clipboard.writeText(window.location.href);

@@ -472,6 +472,27 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
                 </Tooltip>
               </div>
             )}
+            <Tooltip>
+              <TooltipTrigger
+                render={
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    className={cn("text-muted-foreground", isPinned && "text-foreground")}
+                    onClick={() => {
+                      if (isPinned) {
+                        deletePin.mutate({ itemType: "issue", itemId: issue.id });
+                      } else {
+                        createPin.mutate({ item_type: "issue", item_id: issue.id });
+                      }
+                    }}
+                  >
+                    {isPinned ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
+                  </Button>
+                }
+              />
+              <TooltipContent side="bottom">{isPinned ? "Unpin from sidebar" : "Pin to sidebar"}</TooltipContent>
+            </Tooltip>
             <DropdownMenu>
               <DropdownMenuTrigger
                 render={

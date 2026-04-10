@@ -1,8 +1,18 @@
 "use client";
 
-import React, { useEffect } from "react";
+import React, { useCallback, useEffect } from "react";
 import { cn } from "@multica/ui/lib/utils";
 import { AppLink, useNavigation } from "../navigation";
+import {
+  DndContext,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  closestCenter,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import { SortableContext, verticalListSortingStrategy, useSortable, arrayMove } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import {
   Inbox,
   ListTodo,
@@ -18,6 +28,7 @@ import {
   CircleUser,
   FolderKanban,
   Ellipsis,
+  GripVertical,
   PinOff,
 } from "lucide-react";
 import { WorkspaceAvatar } from "../workspace/workspace-avatar";
@@ -54,7 +65,7 @@ import { api } from "@multica/core/api";
 import { useModalStore } from "@multica/core/modals";
 import { useMyRuntimesNeedUpdate } from "@multica/core/runtimes/hooks";
 import { pinKeys } from "@multica/core/pins/queries";
-import { useDeletePin } from "@multica/core/pins/mutations";
+import { useDeletePin, useReorderPins } from "@multica/core/pins/mutations";
 import type { PinnedItem } from "@multica/core/types";
 
 const personalNav = [
@@ -78,6 +89,49 @@ function DraftDot() {
   const hasDraft = useIssueDraftStore((s) => !!(s.draft.title || s.draft.description));
   if (!hasDraft) return null;
   return <span className="absolute top-0 right-0 size-1.5 rounded-full bg-brand" />;
+}
+
+function SortablePinItem({ pin, pathname, onUnpin }: { pin: PinnedItem; pathname: string; onUnpin: () => void }) {
+  const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: pin.id });
+  const style = { transform: CSS.Transform.toString(transform), transition };
+  const href = pin.item_type === "issue" ? `/issues/${pin.item_id}` : `/projects/${pin.item_id}`;
+  const isActive = pathname === href;
+  const label = pin.item_type === "issue" && pin.identifier ? `${pin.identifier} ${pin.title}` : pin.title;
+
+  return (
+    <SidebarMenuItem ref={setNodeRef} style={style} className={cn("group/pin", isDragging && "opacity-30")}>
+      <SidebarMenuButton
+        isActive={isActive}
+        render={<AppLink href={href} />}
+        className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
+      >
+        <button
+          className="shrink-0 cursor-grab opacity-0 group-hover/pin:opacity-100 transition-opacity touch-none"
+          {...attributes}
+          {...listeners}
+          onClick={(e) => e.preventDefault()}
+        >
+          <GripVertical className="size-3 text-muted-foreground" />
+        </button>
+        {pin.item_type === "issue" ? (
+          <ListTodo className="size-4 shrink-0" />
+        ) : (
+          <FolderKanban className="size-4 shrink-0" />
+        )}
+        <span className="truncate">{label}</span>
+        <button
+          className="ml-auto opacity-0 group-hover/pin:opacity-100 transition-opacity p-0.5 rounded hover:bg-accent shrink-0"
+          onClick={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            onUnpin();
+          }}
+        >
+          <PinOff className="size-3 text-muted-foreground" />
+        </button>
+      </SidebarMenuButton>
+    </SidebarMenuItem>
+  );
 }
 
 interface AppSidebarProps {
@@ -116,6 +170,20 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
     enabled: !!wsId,
   });
   const deletePin = useDeletePin();
+  const reorderPins = useReorderPins();
+  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 5 } }));
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      const oldIndex = pinnedItems.findIndex((p) => p.id === active.id);
+      const newIndex = pinnedItems.findIndex((p) => p.id === over.id);
+      if (oldIndex === -1 || newIndex === -1) return;
+      const reordered = arrayMove(pinnedItems, oldIndex, newIndex);
+      reorderPins.mutate(reordered);
+    },
+    [pinnedItems, reorderPins],
+  );
 
   const queryClient = useQueryClient();
   const logout = () => {
@@ -277,43 +345,20 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
             <SidebarGroup>
               <SidebarGroupLabel>Pinned</SidebarGroupLabel>
               <SidebarGroupContent>
-                <SidebarMenu className="gap-0.5">
-                  {pinnedItems.map((pin: PinnedItem) => {
-                    const href = pin.item_type === "issue"
-                      ? `/issues/${pin.item_id}`
-                      : `/projects/${pin.item_id}`;
-                    const isActive = pathname === href;
-                    const label = pin.item_type === "issue" && pin.identifier
-                      ? `${pin.identifier} ${pin.title}`
-                      : pin.title;
-                    return (
-                      <SidebarMenuItem key={pin.id} className="group/pin">
-                        <SidebarMenuButton
-                          isActive={isActive}
-                          render={<AppLink href={href} />}
-                          className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
-                        >
-                          {pin.item_type === "issue" ? (
-                            <ListTodo className="size-4 shrink-0" />
-                          ) : (
-                            <FolderKanban className="size-4 shrink-0" />
-                          )}
-                          <span className="truncate">{label}</span>
-                          <button
-                            className="ml-auto opacity-0 group-hover/pin:opacity-100 transition-opacity p-0.5 rounded hover:bg-accent shrink-0"
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              deletePin.mutate({ itemType: pin.item_type, itemId: pin.item_id });
-                            }}
-                          >
-                            <PinOff className="size-3 text-muted-foreground" />
-                          </button>
-                        </SidebarMenuButton>
-                      </SidebarMenuItem>
-                    );
-                  })}
-                </SidebarMenu>
+                <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+                  <SortableContext items={pinnedItems.map((p) => p.id)} strategy={verticalListSortingStrategy}>
+                    <SidebarMenu className="gap-0.5">
+                      {pinnedItems.map((pin: PinnedItem) => (
+                        <SortablePinItem
+                          key={pin.id}
+                          pin={pin}
+                          pathname={pathname}
+                          onUnpin={() => deletePin.mutate({ itemType: pin.item_type, itemId: pin.item_id })}
+                        />
+                      ))}
+                    </SidebarMenu>
+                  </SortableContext>
+                </DndContext>
               </SidebarGroupContent>
             </SidebarGroup>
           )}
