@@ -11,6 +11,10 @@ export default defineConfig({
     plugins: [externalizeDepsPlugin()],
   },
   renderer: {
+    server: {
+      port: 5173,
+      strictPort: true,
+    },
     plugins: [react(), tailwindcss()],
     resolve: {
       alias: {
