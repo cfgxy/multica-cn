@@ -87,7 +87,7 @@ func notifySubscribers(
 	details []byte,
 ) {
 	notified := notifyIssueSubscribers(ctx, queries, bus,
-		issueID, issueStatus, workspaceID, e, exclude,
+		issueID, issueID, issueStatus, workspaceID, e, exclude,
 		notifType, severity, title, body, details)
 
 	// Also notify parent issue subscribers if this is a sub-issue.
@@ -110,19 +110,25 @@ func notifySubscribers(
 		parentExclude[id] = true
 	}
 
+	// Query subscribers from the parent issue, but the inbox item still
+	// points to the sub-issue so the user navigates to the actual change.
 	parentID := util.UUIDToString(issue.ParentIssueID)
 	notifyIssueSubscribers(ctx, queries, bus,
-		parentID, issueStatus, workspaceID, e, parentExclude,
+		parentID, issueID, issueStatus, workspaceID, e, parentExclude,
 		notifType, severity, title, body, details)
 }
 
-// notifyIssueSubscribers sends inbox notifications to subscribers of a single
-// issue and returns the set of member IDs that were notified.
+// notifyIssueSubscribers sends inbox notifications to subscribers of
+// subscriberIssueID, but creates inbox items pointing to targetIssueID.
+// This allows querying subscribers from a parent issue while the notification
+// links to the sub-issue where the change actually occurred.
+// Returns the set of member IDs that were notified.
 func notifyIssueSubscribers(
 	ctx context.Context,
 	queries *db.Queries,
 	bus *events.Bus,
-	issueID string,
+	subscriberIssueID string,
+	targetIssueID string,
 	issueStatus string,
 	workspaceID string,
 	e events.Event,
@@ -135,10 +141,10 @@ func notifyIssueSubscribers(
 ) map[string]bool {
 	notified := map[string]bool{}
 
-	subs, err := queries.ListIssueSubscribers(ctx, parseUUID(issueID))
+	subs, err := queries.ListIssueSubscribers(ctx, parseUUID(subscriberIssueID))
 	if err != nil {
 		slog.Error("failed to list subscribers for notification",
-			"issue_id", issueID, "error", err)
+			"issue_id", subscriberIssueID, "error", err)
 		return notified
 	}
 
@@ -166,7 +172,7 @@ func notifyIssueSubscribers(
 			RecipientID:   sub.UserID,
 			Type:          notifType,
 			Severity:      severity,
-			IssueID:       parseUUID(issueID),
+			IssueID:       parseUUID(targetIssueID),
 			Title:         title,
 			Body:          util.StrToText(body),
 			ActorType:     util.StrToText(e.ActorType),
