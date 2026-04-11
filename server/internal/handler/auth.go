@@ -241,8 +241,13 @@ func (h *Handler) SendCode(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := h.EmailService.SendVerificationCode(email, code); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to send verification code")
-		return
+		slog.Error("failed to send verification code", "email", email, "error", err)
+		if os.Getenv("APP_ENV") != "production" {
+			slog.Warn("non-production: proceeding despite email send failure (use master code 888888 to verify)")
+		} else {
+			writeError(w, http.StatusInternalServerError, "failed to send verification code")
+			return
+		}
 	}
 
 	// Best-effort cleanup of expired codes
