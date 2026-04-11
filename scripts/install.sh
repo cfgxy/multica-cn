@@ -122,12 +122,48 @@ add_to_path() {
   done
 }
 
+get_latest_version() {
+  curl -sI "$REPO_URL/releases/latest" 2>/dev/null | grep -i '^location:' | sed 's/.*tag\///' | tr -d '\r\n'
+}
+
+upgrade_cli_brew() {
+  info "Upgrading Multica CLI via Homebrew..."
+  brew update 2>/dev/null || true
+  if brew upgrade multica 2>/dev/null; then
+    ok "Multica CLI upgraded via Homebrew"
+  else
+    # brew upgrade exits non-zero if already up to date
+    ok "Multica CLI is already the latest version"
+  fi
+}
+
 install_cli() {
-  # Skip if already installed
   if command_exists multica; then
-    local ver
-    ver=$(multica version 2>/dev/null || echo "unknown")
-    ok "Multica CLI already installed ($ver)"
+    local current_ver
+    current_ver=$(multica version 2>/dev/null || echo "unknown")
+
+    local latest_ver
+    latest_ver=$(get_latest_version)
+
+    # Normalize: strip leading 'v' for comparison
+    local current_cmp="${current_ver#v}"
+    local latest_cmp="${latest_ver#v}"
+
+    if [ -z "$latest_ver" ] || [ "$current_cmp" = "$latest_cmp" ]; then
+      ok "Multica CLI is up to date ($current_ver)"
+      return 0
+    fi
+
+    info "Multica CLI $current_ver installed, latest is $latest_ver — upgrading..."
+    if command_exists brew && brew list multica >/dev/null 2>&1; then
+      upgrade_cli_brew
+    else
+      install_cli_binary
+    fi
+
+    local new_ver
+    new_ver=$(multica version 2>/dev/null || echo "unknown")
+    ok "Multica CLI upgraded ($current_ver → $new_ver)"
     return 0
   fi
 
