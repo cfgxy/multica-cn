@@ -13,6 +13,7 @@ set -euo pipefail
 # Configuration
 # ---------------------------------------------------------------------------
 REPO_URL="https://github.com/multica-ai/multica.git"
+REPO_WEB_URL="https://github.com/multica-ai/multica"  # without .git, for GitHub web APIs
 INSTALL_DIR="${MULTICA_INSTALL_DIR:-$HOME/.multica/server}"
 BREW_PACKAGE="multica-ai/tap/multica"
 
@@ -62,10 +63,16 @@ install_cli_brew() {
   if ! brew tap multica-ai/tap 2>/dev/null; then
     fail "Failed to add Homebrew tap. Check your network connection."
   fi
+  # brew install exits non-zero if already installed on older Homebrew versions
   if ! brew install multica 2>/dev/null; then
-    fail "Failed to install multica via Homebrew."
+    if brew list multica >/dev/null 2>&1; then
+      ok "Multica CLI already installed via Homebrew"
+    else
+      fail "Failed to install multica via Homebrew."
+    fi
+  else
+    ok "Multica CLI installed via Homebrew"
   fi
-  ok "Multica CLI installed via Homebrew"
 }
 
 install_cli_binary() {
@@ -73,7 +80,7 @@ install_cli_binary() {
 
   # Get latest release tag
   local latest
-  latest=$(curl -sI "$REPO_URL/releases/latest" | grep -i '^location:' | sed 's/.*tag\///' | tr -d '\r\n')
+  latest=$(curl -sI "$REPO_WEB_URL/releases/latest" 2>/dev/null | grep -i '^location:' | sed 's/.*tag\///' | tr -d '\r\n' || true)
   if [ -z "$latest" ]; then
     fail "Could not determine latest release. Check your network connection."
   fi
@@ -123,7 +130,8 @@ add_to_path() {
 }
 
 get_latest_version() {
-  curl -sI "$REPO_URL/releases/latest" 2>/dev/null | grep -i '^location:' | sed 's/.*tag\///' | tr -d '\r\n'
+  # grep exits 1 when no match; use `|| true` to avoid triggering pipefail
+  curl -sI "$REPO_WEB_URL/releases/latest" 2>/dev/null | grep -i '^location:' | sed 's/.*tag\///' | tr -d '\r\n' || true
 }
 
 upgrade_cli_brew() {
@@ -140,7 +148,8 @@ upgrade_cli_brew() {
 install_cli() {
   if command_exists multica; then
     local current_ver
-    current_ver=$(multica version 2>/dev/null || echo "unknown")
+    # `multica version` outputs "multica v0.1.13 (commit: abc1234)" — extract just the version
+    current_ver=$(multica version 2>/dev/null | awk '{print $2}' || echo "unknown")
 
     local latest_ver
     latest_ver=$(get_latest_version)
@@ -162,7 +171,7 @@ install_cli() {
     fi
 
     local new_ver
-    new_ver=$(multica version 2>/dev/null || echo "unknown")
+    new_ver=$(multica version 2>/dev/null | awk '{print $2}' || echo "unknown")
     ok "Multica CLI upgraded ($current_ver → $new_ver)"
     return 0
   fi
@@ -216,6 +225,11 @@ setup_server() {
     info "Cloning Multica repository..."
     if ! command_exists git; then
       fail "Git is not installed. Please install git and re-run."
+    fi
+    # Remove leftover directory from a previously interrupted clone
+    if [ -d "$INSTALL_DIR" ]; then
+      warn "Removing incomplete installation at $INSTALL_DIR..."
+      rm -rf "$INSTALL_DIR"
     fi
     mkdir -p "$(dirname "$INSTALL_DIR")"
     git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
