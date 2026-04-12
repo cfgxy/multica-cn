@@ -80,8 +80,8 @@ func (s *LocalStorage) DeleteKeys(ctx context.Context, keys []string) {
 }
 
 func (s *LocalStorage) Upload(ctx context.Context, key string, data []byte, contentType string, filename string) (string, error) {
-	filepath := filepath.Join(s.uploadDir, key)
-	if err := os.WriteFile(filepath, data, 0644); err != nil {
+	dest := filepath.Join(s.uploadDir, key)
+	if err := os.WriteFile(dest, data, 0644); err != nil {
 		return "", fmt.Errorf("local storage WriteFile: %w", err)
 	}
 

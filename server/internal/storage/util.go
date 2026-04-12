@@ -1,8 +1,6 @@
 package storage
 
 import (
-	"net/http"
-	"path"
 	"strings"
 )
 
@@ -19,34 +17,6 @@ func sanitizeFilename(name string) string {
 		}
 	}
 	return b.String()
-}
-
-// detectContentType determines the content type for a file.
-// Uses http.DetectContentType as base, with overrides for common extensions.
-func detectContentType(data []byte, filename string) string {
-	contentType := http.DetectContentType(data)
-	ext := strings.ToLower(path.Ext(filename))
-	if ct := overrideContentType(ext); ct != "" {
-		return ct
-	}
-	return contentType
-}
-
-// overrideContentType returns content type overrides for extensions that http.DetectContentType gets wrong.
-func overrideContentType(ext string) string {
-	switch ext {
-	case ".svg":
-		return "image/svg+xml"
-	case ".css":
-		return "text/css"
-	case ".js", ".mjs":
-		return "application/javascript"
-	case ".json":
-		return "application/json"
-	case ".wasm":
-		return "application/wasm"
-	}
-	return ""
 }
 
 // isInlineContentType returns true for media types that browsers should
