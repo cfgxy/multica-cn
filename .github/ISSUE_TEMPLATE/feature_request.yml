@@ -18,3 +18,9 @@ body:
     attributes:
       label: Proposed solution (optional)
       description: If you have an idea for how this should work, describe it here.
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots / mockups (optional)
+      description: If applicable, add screenshots, mockups, or sketches to illustrate your idea.

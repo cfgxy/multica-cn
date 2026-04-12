@@ -26,6 +26,12 @@ body:
       required: true
 
   - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots (optional)
+      description: If applicable, add screenshots or screen recordings to help explain the problem.
+
+  - type: textarea
     id: context
     attributes:
       label: Additional context (optional)
