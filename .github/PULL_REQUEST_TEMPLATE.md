@@ -41,6 +41,24 @@ Closes #
 - [ ] Changes follow existing code patterns and conventions
 - [ ] No unrelated changes included
 
+## AI Disclosure
+
+<!-- Most PRs involve AI coding tools — that's fine! Fill this out for transparency and better reviews. -->
+
+**Authored by:**
+- [ ] Human
+- [ ] AI tool (specify below)
+- [ ] Human + AI collaboration
+
+**AI tool used:** <!-- e.g. Claude Code, Cursor, GitHub Copilot, Multica Agent -->
+
+**Human review status:**
+- [ ] I have reviewed every file in this diff and understand the changes
+- [ ] I have verified the changes work as intended (not just that CI passes)
+- [ ] I have checked for hallucinated imports, non-existent APIs, or fabricated patterns
+
+<!-- Tip: link the issue/prompt/conversation that produced this PR so reviewers understand intent. -->
+
 ## Screenshots (optional)
 
 <!-- If applicable, add screenshots showing the change in action. -->
