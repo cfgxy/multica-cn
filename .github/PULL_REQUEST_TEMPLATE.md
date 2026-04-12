@@ -43,21 +43,13 @@ Closes #
 
 ## AI Disclosure
 
-<!-- Most PRs involve AI coding tools — that's fine! Fill this out for transparency and better reviews. -->
+<!-- Most PRs involve AI coding tools — that's totally fine! We're curious about your process. -->
 
-**Authored by:**
-- [ ] Human
-- [ ] AI tool (specify below)
-- [ ] Human + AI collaboration
+**AI tool used:** <!-- e.g. Claude Code, Cursor, GitHub Copilot, Multica Agent, N/A -->
 
-**AI tool used:** <!-- e.g. Claude Code, Cursor, GitHub Copilot, Multica Agent -->
+**Prompt / approach:**
+<!-- How did you use AI to produce this code? Share your prompt, conversation link, or describe your approach. This helps the team learn from each other's AI workflows. -->
 
-**Human review status:**
-- [ ] I have reviewed every file in this diff and understand the changes
-- [ ] I have verified the changes work as intended (not just that CI passes)
-- [ ] I have checked for hallucinated imports, non-existent APIs, or fabricated patterns
-
-<!-- Tip: link the issue/prompt/conversation that produced this PR so reviewers understand intent. -->
 
 ## Screenshots (optional)
 
