@@ -44,6 +44,16 @@ function createWindow(): void {
     },
   });
 
+  // Strip Origin header from WebSocket upgrade requests so the server's
+  // origin whitelist doesn't reject connections from localhost dev origins.
+  mainWindow.webContents.session.webRequest.onBeforeSendHeaders(
+    { urls: ["wss://*/*", "ws://*/*"] },
+    (details, callback) => {
+      delete details.requestHeaders["Origin"];
+      callback({ requestHeaders: details.requestHeaders });
+    },
+  );
+
   mainWindow.on("ready-to-show", () => {
     mainWindow?.show();
   });
