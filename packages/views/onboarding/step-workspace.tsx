@@ -1,35 +1,33 @@
 "use client";
 
-import { useState, useRef } from "react";
+import { useRef, useState } from "react";
 import { toast } from "sonner";
 import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
 import { Button } from "@multica/ui/components/ui/button";
 import { Card, CardContent } from "@multica/ui/components/ui/card";
 import { useCreateWorkspace } from "@multica/core/workspace/mutations";
-
-const SLUG_REGEX = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
-
-function nameToSlug(name: string): string {
-  return (
-    name
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-|-$/g, "") || "workspace"
-  );
-}
+import {
+  WORKSPACE_SLUG_CONFLICT_ERROR,
+  WORKSPACE_SLUG_FORMAT_ERROR,
+  WORKSPACE_SLUG_REGEX,
+  isWorkspaceSlugConflict,
+  nameToWorkspaceSlug,
+} from "../workspace/slug";
 
 export function StepWorkspace({ onNext }: { onNext: () => void }) {
   const createWorkspace = useCreateWorkspace();
   const [name, setName] = useState("");
   const [slug, setSlug] = useState("");
+  const [slugServerError, setSlugServerError] = useState<string | null>(null);
   // Track whether the user has manually edited the slug field.
   const slugTouched = useRef(false);
 
-  const slugError =
-    slug.length > 0 && !SLUG_REGEX.test(slug)
-      ? "Only lowercase letters, numbers, and hyphens"
+  const slugValidationError =
+    slug.length > 0 && !WORKSPACE_SLUG_REGEX.test(slug)
+      ? WORKSPACE_SLUG_FORMAT_ERROR
       : null;
+  const slugError = slugValidationError ?? slugServerError;
 
   const canSubmit =
     name.trim().length > 0 && slug.trim().length > 0 && !slugError;
@@ -37,13 +35,15 @@ export function StepWorkspace({ onNext }: { onNext: () => void }) {
   const handleNameChange = (value: string) => {
     setName(value);
     if (!slugTouched.current) {
-      setSlug(nameToSlug(value));
+      setSlug(nameToWorkspaceSlug(value));
+      setSlugServerError(null);
     }
   };
 
   const handleSlugChange = (value: string) => {
     slugTouched.current = true;
     setSlug(value);
+    setSlugServerError(null);
   };
 
   const handleCreate = () => {
@@ -52,7 +52,14 @@ export function StepWorkspace({ onNext }: { onNext: () => void }) {
       { name: name.trim(), slug: slug.trim() },
       {
         onSuccess: () => onNext(),
-        onError: () => toast.error("Failed to create workspace"),
+        onError: (error) => {
+          if (isWorkspaceSlugConflict(error)) {
+            setSlugServerError(WORKSPACE_SLUG_CONFLICT_ERROR);
+            toast.error("Choose a different workspace URL");
+            return;
+          }
+          toast.error("Failed to create workspace");
+        },
       },
     );
   };

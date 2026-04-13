@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useWorkspaceStore } from "@multica/core/workspace";
 import type { Agent } from "@multica/core/types";
 import { StepWorkspace } from "./step-workspace";
@@ -20,10 +20,20 @@ export interface OnboardingWizardProps {
 }
 
 export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
-  const [step, setStep] = useState(0);
+  const [step, setStep] = useState(() =>
+    useWorkspaceStore.getState().workspace ? 1 : 0,
+  );
   const [createdAgent, setCreatedAgent] = useState<Agent | null>(null);
 
   const wsId = useWorkspaceStore((s) => s.workspace?.id) ?? null;
+
+  useEffect(() => {
+    if (step === 0 && wsId) {
+      setStep(1);
+    }
+  }, [step, wsId]);
+
+  const startWorkspaceSetup = useCallback(() => setStep(1), []);
 
   const next = useCallback(
     () => setStep((s) => Math.min(s + 1, STEPS.length - 1)),
@@ -81,7 +91,7 @@ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
 
       {/* Step content */}
       <div className="flex flex-1 items-center justify-center px-6 py-12">
-        {step === 0 && <StepWorkspace onNext={next} />}
+        {step === 0 && <StepWorkspace onNext={startWorkspaceSetup} />}
         {step === 1 && wsId && (
           <StepRuntime wsId={wsId} onNext={next} />
         )}

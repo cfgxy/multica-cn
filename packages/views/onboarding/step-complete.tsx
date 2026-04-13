@@ -141,7 +141,7 @@ export function StepComplete({
 
       <div className="text-center">
         <h1 className="text-3xl font-semibold tracking-tight">
-          You're all set!
+          You&apos;re all set!
         </h1>
         <p className="mt-2 text-muted-foreground">
           {agent
