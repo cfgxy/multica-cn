@@ -264,7 +264,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                       <Tooltip>
                         <TooltipTrigger
                           className="ml-auto opacity-0 group-hover/ws-section:opacity-100 transition-opacity rounded hover:bg-accent p-0.5"
-                          onClick={() => useModalStore.getState().open("create-workspace")}
+                          onClick={() => push("/onboarding")}
                         >
                           <Plus className="h-3.5 w-3.5" />
                         </TooltipTrigger>
