@@ -412,6 +412,72 @@ func TestWorkspaceCRUD(t *testing.T) {
 	}
 }
 
+func TestCreateWorkspaceUsesRequestedSlug(t *testing.T) {
+	const slug = "handler-create-workspace-requested"
+	ctx := context.Background()
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM workspace WHERE slug = $1`, slug)
+	})
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/workspaces", map[string]string{
+		"name": "Handler Create Workspace Requested",
+		"slug": slug,
+	})
+	testHandler.CreateWorkspace(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateWorkspace: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var created WorkspaceResponse
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatalf("CreateWorkspace: decode response: %v", err)
+	}
+	if created.Slug != slug {
+		t.Fatalf("CreateWorkspace: expected slug %q, got %q", slug, created.Slug)
+	}
+}
+
+func TestCreateWorkspaceSlugConflictReturnsConflict(t *testing.T) {
+	ctx := context.Background()
+	retriedSlug := handlerTestWorkspaceSlug + "-2"
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM workspace WHERE slug = $1`, retriedSlug)
+	})
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/workspaces", map[string]string{
+		"name": "Duplicate Handler Workspace",
+		"slug": handlerTestWorkspaceSlug,
+	})
+	testHandler.CreateWorkspace(w, req)
+	if w.Code != http.StatusConflict {
+		t.Fatalf("CreateWorkspace: expected 409, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var count int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM workspace WHERE slug = $1`, retriedSlug).Scan(&count); err != nil {
+		t.Fatalf("CreateWorkspace: check retried slug: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("CreateWorkspace: expected no fallback slug %q, got %d rows", retriedSlug, count)
+	}
+}
+
+func TestCreateWorkspaceInvalidSlugReturnsBadRequest(t *testing.T) {
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/workspaces", map[string]string{
+		"name": "Invalid Slug Workspace",
+		"slug": "invalid slug",
+	})
+	testHandler.CreateWorkspace(w, req)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("CreateWorkspace: expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
 func TestSendCode(t *testing.T) {
 	w := httptest.NewRecorder()
 	body := map[string]string{"email": "sendcode-test@multica.ai"}
@@ -695,11 +761,11 @@ func TestResolveActor(t *testing.T) {
 	})
 
 	tests := []struct {
-		name            string
-		agentIDHeader   string
-		taskIDHeader    string
-		wantActorType   string
-		wantIsAgent     bool
+		name          string
+		agentIDHeader string
+		taskIDHeader  string
+		wantActorType string
+		wantIsAgent   bool
 	}{
 		{
 			name:          "no headers returns member",

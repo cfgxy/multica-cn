@@ -2,7 +2,6 @@ package handler
 
 import (
 	"encoding/json"
-	"fmt"
 	"log/slog"
 	"net/http"
 	"regexp"
@@ -16,6 +15,7 @@ import (
 )
 
 var nonAlpha = regexp.MustCompile(`[^a-zA-Z]`)
+var workspaceSlugPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 // generateIssuePrefix produces a 2-5 char uppercase prefix from a workspace name.
 // Examples: "Jiayuan's Workspace" → "JIA", "My Team" → "MYT", "AB" → "AB".
@@ -148,6 +148,10 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name and slug are required")
 		return
 	}
+	if !workspaceSlugPattern.MatchString(req.Slug) {
+		writeError(w, http.StatusBadRequest, "slug must contain only lowercase letters, numbers, and hyphens")
+		return
+	}
 
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
@@ -162,31 +166,19 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	}
 
 	qtx := h.Queries.WithTx(tx)
-
-	// Try the requested slug first, then append -2, -3, … on conflict.
-	const maxSlugAttempts = 10
-	var ws db.Workspace
-	slug := req.Slug
-	for attempt := 1; attempt <= maxSlugAttempts; attempt++ {
-		ws, err = qtx.CreateWorkspace(r.Context(), db.CreateWorkspaceParams{
-			Name:        req.Name,
-			Slug:        slug,
-			Description: ptrToText(req.Description),
-			Context:     ptrToText(req.Context),
-			IssuePrefix: issuePrefix,
-		})
-		if err == nil {
-			break
-		}
-		if !isUniqueViolation(err) {
-			writeError(w, http.StatusInternalServerError, "failed to create workspace: "+err.Error())
+	ws, err := qtx.CreateWorkspace(r.Context(), db.CreateWorkspaceParams{
+		Name:        req.Name,
+		Slug:        req.Slug,
+		Description: ptrToText(req.Description),
+		Context:     ptrToText(req.Context),
+		IssuePrefix: issuePrefix,
+	})
+	if err != nil {
+		if isUniqueViolation(err) {
+			writeError(w, http.StatusConflict, "workspace slug already exists")
 			return
 		}
-		// Slug taken — try next suffix.
-		slug = fmt.Sprintf("%s-%d", req.Slug, attempt+1)
-	}
-	if err != nil {
-		writeError(w, http.StatusConflict, "workspace slug already exists")
+		writeError(w, http.StatusInternalServerError, "failed to create workspace: "+err.Error())
 		return
 	}
 
