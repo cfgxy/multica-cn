@@ -920,3 +920,46 @@ func TestEnsureSymlinkRepairsBrokenLink(t *testing.T) {
 		t.Errorf("content = %q, want %q", data, "real")
 	}
 }
+
+func TestWriteReadGCMeta(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	issueID := "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
+	wsID := "ws-test-001"
+
+	if err := WriteGCMeta(dir, issueID, wsID); err != nil {
+		t.Fatalf("WriteGCMeta: %v", err)
+	}
+
+	meta, err := ReadGCMeta(dir)
+	if err != nil {
+		t.Fatalf("ReadGCMeta: %v", err)
+	}
+
+	if meta.IssueID != issueID {
+		t.Errorf("IssueID = %q, want %q", meta.IssueID, issueID)
+	}
+	if meta.WorkspaceID != wsID {
+		t.Errorf("WorkspaceID = %q, want %q", meta.WorkspaceID, wsID)
+	}
+	if meta.CompletedAt.IsZero() {
+		t.Error("CompletedAt should not be zero")
+	}
+}
+
+func TestWriteGCMeta_EmptyRoot(t *testing.T) {
+	t.Parallel()
+	if err := WriteGCMeta("", "issue", "ws"); err != nil {
+		t.Fatalf("expected nil for empty root, got %v", err)
+	}
+}
+
+func TestReadGCMeta_NoFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	_, err := ReadGCMeta(dir)
+	if err == nil {
+		t.Fatal("expected error for missing file")
+	}
+}

@@ -17,6 +17,7 @@ function LoginPageContent() {
 
   const cliCallbackRaw = searchParams.get("cli_callback");
   const cliState = searchParams.get("cli_state") || "";
+  const platform = searchParams.get("platform");
   const nextUrl = searchParams.get("next") || "/issues";
 
   // Already authenticated — redirect to dashboard (skip if CLI callback)
@@ -44,6 +45,7 @@ function LoginPageContent() {
           ? {
               clientId: googleClientId,
               redirectUri: `${window.location.origin}/auth/callback`,
+              state: platform === "desktop" ? "platform:desktop" : undefined,
             }
           : undefined
       }

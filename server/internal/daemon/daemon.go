@@ -102,6 +102,7 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	go d.heartbeatLoop(ctx)
 	go d.usageScanLoop(ctx)
+	go d.gcLoop(ctx)
 	go d.serveHealth(ctx, healthLn, time.Now())
 	return d.pollLoop(ctx)
 }
@@ -875,6 +876,15 @@ func (d *Daemon) handleTask(ctx context.Context, task Task) {
 			}
 		}
 	}
+
+	// Write GC metadata after the task finishes so the periodic GC loop
+	// can look up the issue later. Written last so that a mid-task crash
+	// leaves the directory as an orphan (cleaned up by GCOrphanTTL).
+	if result.EnvRoot != "" {
+		if err := execenv.WriteGCMeta(result.EnvRoot, task.IssueID, task.WorkspaceID); err != nil {
+			taskLog.Warn("write gc meta failed (non-fatal)", "error", err)
+		}
+	}
 }
 
 func (d *Daemon) runTask(ctx context.Context, task Task, provider string, taskLog *slog.Logger) (TaskResult, error) {
@@ -1043,6 +1053,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, taskLo
 			Comment:   result.Output,
 			SessionID: result.SessionID,
 			WorkDir:   env.WorkDir,
+			EnvRoot:   env.RootDir,
 			Usage:     usageEntries,
 		}, nil
 	case "timeout":
@@ -1052,7 +1063,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, taskLo
 		if errMsg == "" {
 			errMsg = fmt.Sprintf("%s execution %s", provider, result.Status)
 		}
-		return TaskResult{Status: "blocked", Comment: errMsg, Usage: usageEntries}, nil
+		return TaskResult{Status: "blocked", Comment: errMsg, EnvRoot: env.RootDir, Usage: usageEntries}, nil
 	}
 }
 

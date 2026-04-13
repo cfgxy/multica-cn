@@ -747,13 +747,33 @@ func TestInvalidRequestBodies(t *testing.T) {
 // ---- WebSocket integration through full router ----
 
 func TestWebSocketIntegration(t *testing.T) {
-	// Connect WebSocket client
-	wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http") + "/ws?token=" + testToken + "&workspace_id=" + testWorkspaceID
+	// Connect WebSocket client (no token in URL — first-message auth)
+	wsURL := "ws" + strings.TrimPrefix(testServer.URL, "http") + "/ws?workspace_id=" + testWorkspaceID
 	conn, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
 	if err != nil {
 		t.Fatalf("WebSocket connection failed: %v", err)
 	}
 	defer conn.Close()
+
+	// First-message auth
+	authMsg, _ := json.Marshal(map[string]any{
+		"type":    "auth",
+		"payload": map[string]string{"token": testToken},
+	})
+	if err := conn.WriteMessage(websocket.TextMessage, authMsg); err != nil {
+		t.Fatalf("failed to send auth message: %v", err)
+	}
+
+	// Read auth_ack
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	_, ack, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("failed to read auth_ack: %v", err)
+	}
+	if !strings.Contains(string(ack), "auth_ack") {
+		t.Fatalf("expected auth_ack, got %s", ack)
+	}
+	conn.SetReadDeadline(time.Time{})
 
 	// Allow Hub goroutine to process the register and add client to room
 	time.Sleep(100 * time.Millisecond)

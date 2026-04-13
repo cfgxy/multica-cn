@@ -851,3 +851,17 @@ func (h *Handler) GetIssueUsage(w http.ResponseWriter, r *http.Request) {
 		"task_count":               row.TaskCount,
 	})
 }
+
+// GetIssueGCCheck returns minimal issue info needed by the daemon GC loop.
+func (h *Handler) GetIssueGCCheck(w http.ResponseWriter, r *http.Request) {
+	issueID := chi.URLParam(r, "issueId")
+	issue, err := h.Queries.GetIssue(r.Context(), parseUUID(issueID))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "issue not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":     issue.Status,
+		"updated_at": issue.UpdatedAt.Time,
+	})
+}

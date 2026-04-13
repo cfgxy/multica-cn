@@ -31,6 +31,8 @@ import type { User } from "@multica/core/types";
 interface GoogleAuthConfig {
   clientId: string;
   redirectUri: string;
+  /** Opaque state passed through Google OAuth (e.g. "platform:desktop"). */
+  state?: string;
 }
 
 interface CliCallbackConfig {
@@ -53,6 +55,8 @@ interface LoginPageProps {
   lastWorkspaceId?: string | null;
   /** Called after a token is obtained (e.g. to set cookies). */
   onTokenObtained?: () => void;
+  /** Override Google login handler (e.g. desktop opens browser externally). When provided, renders the Google button even if `google` config is omitted. */
+  onGoogleLogin?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -88,6 +92,7 @@ export function LoginPage({
   cliCallback,
   lastWorkspaceId,
   onTokenObtained,
+  onGoogleLogin,
 }: LoginPageProps) {
   const qc = useQueryClient();
   const [step, setStep] = useState<"email" | "code" | "cli_confirm">("email");
@@ -208,6 +213,10 @@ export function LoginPage({
   };
 
   const handleGoogleLogin = () => {
+    if (onGoogleLogin) {
+      onGoogleLogin();
+      return;
+    }
     if (!google) return;
     const params = new URLSearchParams({
       client_id: google.clientId,
@@ -217,6 +226,7 @@ export function LoginPage({
       access_type: "offline",
       prompt: "select_account",
     });
+    if (google.state) params.set("state", google.state);
     window.location.href = `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
   };
 
@@ -375,7 +385,7 @@ export function LoginPage({
           >
             {loading ? "Sending code..." : "Continue"}
           </Button>
-          {google && (
+          {(google || onGoogleLogin) && (
             <>
               <div className="relative w-full">
                 <div className="absolute inset-0 flex items-center">

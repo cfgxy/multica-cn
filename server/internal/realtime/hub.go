@@ -2,12 +2,14 @@ package realtime
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"net/http"
 	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
@@ -272,7 +274,67 @@ func (h *Hub) Broadcast(message []byte) {
 	h.broadcast <- message
 }
 
-// HandleWebSocket upgrades an HTTP connection to WebSocket with JWT, PAT, or cookie auth.
+// authenticateToken validates a JWT or PAT string and returns the user ID.
+func authenticateToken(tokenStr string, pr PATResolver, ctx context.Context) (string, string) {
+	if strings.HasPrefix(tokenStr, "mul_") {
+		if pr == nil {
+			return "", `{"error":"invalid token"}`
+		}
+		uid, ok := pr.ResolveToken(ctx, tokenStr)
+		if !ok {
+			return "", `{"error":"invalid token"}`
+		}
+		return uid, ""
+	}
+
+	token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (any, error) {
+		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
+			return nil, jwt.ErrSignatureInvalid
+		}
+		return auth.JWTSecret(), nil
+	})
+	if err != nil || !token.Valid {
+		return "", `{"error":"invalid token"}`
+	}
+
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return "", `{"error":"invalid claims"}`
+	}
+
+	uid, ok := claims["sub"].(string)
+	if !ok || strings.TrimSpace(uid) == "" {
+		return "", `{"error":"invalid claims"}`
+	}
+	return uid, ""
+}
+
+// firstMessageAuth reads the first WebSocket message expecting an auth payload.
+// Message format: {"type":"auth","payload":{"token":"..."}}
+// Returns the token string or an error description.
+func firstMessageAuth(conn *websocket.Conn) (string, string) {
+	conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	defer conn.SetReadDeadline(time.Time{}) // clear deadline for subsequent reads
+
+	_, raw, err := conn.ReadMessage()
+	if err != nil {
+		return "", `{"error":"auth timeout or read error"}`
+	}
+
+	var msg struct {
+		Type    string `json:"type"`
+		Payload struct {
+			Token string `json:"token"`
+		} `json:"payload"`
+	}
+	if err := json.Unmarshal(raw, &msg); err != nil || msg.Type != "auth" || msg.Payload.Token == "" {
+		return "", `{"error":"expected auth message as first frame"}`
+	}
+
+	return msg.Payload.Token, ""
+}
+
+// HandleWebSocket upgrades an HTTP connection to WebSocket with cookie or first-message auth.
 func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, w http.ResponseWriter, r *http.Request) {
 	workspaceID := r.URL.Query().Get("workspace_id")
 	if workspaceID == "" {
@@ -280,69 +342,51 @@ func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, w http.Resp
 		return
 	}
 
-	// Resolve token: query param first, then cookie fallback.
-	tokenStr := r.URL.Query().Get("token")
-	if tokenStr == "" {
-		if cookie, err := r.Cookie(auth.AuthCookieName); err == nil && cookie.Value != "" {
-			tokenStr = cookie.Value
-		}
-	}
-	if tokenStr == "" {
-		http.Error(w, `{"error":"authentication required"}`, http.StatusUnauthorized)
-		return
-	}
-
+	// Try cookie auth first (web clients).
 	var userID string
-
-	if strings.HasPrefix(tokenStr, "mul_") {
-		// PAT authentication
-		if pr == nil {
-			http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+	if cookie, err := r.Cookie(auth.AuthCookieName); err == nil && cookie.Value != "" {
+		uid, errMsg := authenticateToken(cookie.Value, pr, r.Context())
+		if errMsg != "" {
+			http.Error(w, errMsg, http.StatusUnauthorized)
 			return
 		}
-		uid, ok := pr.ResolveToken(r.Context(), tokenStr)
-		if !ok {
-			http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
-			return
-		}
-		userID = uid
-	} else {
-		// JWT authentication
-		token, err := jwt.Parse(tokenStr, func(token *jwt.Token) (any, error) {
-			if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-				return nil, jwt.ErrSignatureInvalid
-			}
-			return auth.JWTSecret(), nil
-		})
-		if err != nil || !token.Valid {
-			http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
-			return
-		}
-
-		claims, ok := token.Claims.(jwt.MapClaims)
-		if !ok {
-			http.Error(w, `{"error":"invalid claims"}`, http.StatusUnauthorized)
-			return
-		}
-
-		uid, ok := claims["sub"].(string)
-		if !ok || strings.TrimSpace(uid) == "" {
-			http.Error(w, `{"error":"invalid claims"}`, http.StatusUnauthorized)
+		if !mc.IsMember(r.Context(), uid, workspaceID) {
+			http.Error(w, `{"error":"not a member of this workspace"}`, http.StatusForbidden)
 			return
 		}
 		userID = uid
 	}
 
-	// Verify user is a member of the workspace
-	if !mc.IsMember(r.Context(), userID, workspaceID) {
-		http.Error(w, `{"error":"not a member of this workspace"}`, http.StatusForbidden)
-		return
-	}
-
+	// Upgrade the connection. Clients without cookies (desktop) will authenticate
+	// via the first WebSocket message, so we must upgrade before we have a token.
 	conn, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		slog.Error("websocket upgrade failed", "error", err)
 		return
+	}
+
+	// First-message auth for non-cookie clients (desktop, CLI).
+	if userID == "" {
+		tokenStr, errMsg := firstMessageAuth(conn)
+		if errMsg != "" {
+			conn.WriteMessage(websocket.TextMessage, []byte(errMsg))
+			conn.Close()
+			return
+		}
+		uid, errMsg := authenticateToken(tokenStr, pr, r.Context())
+		if errMsg != "" {
+			conn.WriteMessage(websocket.TextMessage, []byte(errMsg))
+			conn.Close()
+			return
+		}
+		if !mc.IsMember(r.Context(), uid, workspaceID) {
+			conn.WriteMessage(websocket.TextMessage, []byte(`{"error":"not a member of this workspace"}`))
+			conn.Close()
+			return
+		}
+		userID = uid
+
+		conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"auth_ack"}`))
 	}
 
 	client := &Client{

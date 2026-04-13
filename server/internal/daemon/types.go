@@ -77,5 +77,6 @@ type TaskResult struct {
 	EnvType    string           `json:"env_type,omitempty"`
 	SessionID  string           `json:"session_id,omitempty"` // Claude session ID for future resumption
 	WorkDir    string           `json:"work_dir,omitempty"`   // working directory used during execution
+	EnvRoot    string           `json:"-"`                    // env root dir for writing GC metadata (not sent to server)
 	Usage      []TaskUsageEntry `json:"usage,omitempty"`      // per-model token usage
 }
