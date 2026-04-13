@@ -1,12 +1,14 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { toast } from "sonner";
 import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
 import { Button } from "@multica/ui/components/ui/button";
 import { Card, CardContent } from "@multica/ui/components/ui/card";
 import { useCreateWorkspace } from "@multica/core/workspace/mutations";
+
+const SLUG_REGEX = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 function nameToSlug(name: string): string {
   return (
@@ -20,13 +22,34 @@ function nameToSlug(name: string): string {
 export function StepWorkspace({ onNext }: { onNext: () => void }) {
   const createWorkspace = useCreateWorkspace();
   const [name, setName] = useState("");
+  const [slug, setSlug] = useState("");
+  // Track whether the user has manually edited the slug field.
+  const slugTouched = useRef(false);
 
-  const canSubmit = name.trim().length > 0;
+  const slugError =
+    slug.length > 0 && !SLUG_REGEX.test(slug)
+      ? "Only lowercase letters, numbers, and hyphens"
+      : null;
+
+  const canSubmit =
+    name.trim().length > 0 && slug.trim().length > 0 && !slugError;
+
+  const handleNameChange = (value: string) => {
+    setName(value);
+    if (!slugTouched.current) {
+      setSlug(nameToSlug(value));
+    }
+  };
+
+  const handleSlugChange = (value: string) => {
+    slugTouched.current = true;
+    setSlug(value);
+  };
 
   const handleCreate = () => {
     if (!canSubmit) return;
     createWorkspace.mutate(
-      { name: name.trim(), slug: nameToSlug(name.trim()) },
+      { name: name.trim(), slug: slug.trim() },
       {
         onSuccess: () => onNext(),
         onError: () => toast.error("Failed to create workspace"),
@@ -53,10 +76,29 @@ export function StepWorkspace({ onNext }: { onNext: () => void }) {
               autoFocus
               type="text"
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => handleNameChange(e.target.value)}
               placeholder="My Team"
               onKeyDown={(e) => e.key === "Enter" && handleCreate()}
             />
+          </div>
+          <div className="space-y-1.5">
+            <Label>Workspace URL</Label>
+            <div className="flex items-center gap-0 rounded-md border bg-background focus-within:ring-2 focus-within:ring-ring">
+              <span className="pl-3 text-sm text-muted-foreground select-none">
+                multica.ai/
+              </span>
+              <Input
+                type="text"
+                value={slug}
+                onChange={(e) => handleSlugChange(e.target.value)}
+                placeholder="my-team"
+                className="border-0 shadow-none focus-visible:ring-0"
+                onKeyDown={(e) => e.key === "Enter" && handleCreate()}
+              />
+            </div>
+            {slugError && (
+              <p className="text-xs text-destructive">{slugError}</p>
+            )}
           </div>
         </CardContent>
       </Card>
