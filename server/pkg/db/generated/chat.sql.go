@@ -250,7 +250,7 @@ SELECT cs.id, cs.workspace_id, cs.agent_id, cs.creator_id, cs.title, cs.session_
        (cs.unread_since IS NOT NULL)::bool AS has_unread
 FROM chat_session cs
 WHERE cs.workspace_id = $1 AND cs.creator_id = $2
-ORDER BY cs.updated_at DESC
+ORDER BY (cs.unread_since IS NOT NULL) DESC, cs.updated_at DESC
 `
 
 type ListAllChatSessionsByCreatorParams struct {
@@ -273,6 +273,8 @@ type ListAllChatSessionsByCreatorRow struct {
 	HasUnread   bool               `json:"has_unread"`
 }
 
+// Unread sessions float to the top so new activity never gets buried
+// under routine reads; within each group, most-recent activity wins.
 func (q *Queries) ListAllChatSessionsByCreator(ctx context.Context, arg ListAllChatSessionsByCreatorParams) ([]ListAllChatSessionsByCreatorRow, error) {
 	rows, err := q.db.Query(ctx, listAllChatSessionsByCreator, arg.WorkspaceID, arg.CreatorID)
 	if err != nil {
@@ -344,7 +346,7 @@ SELECT cs.id, cs.workspace_id, cs.agent_id, cs.creator_id, cs.title, cs.session_
        (cs.unread_since IS NOT NULL)::bool AS has_unread
 FROM chat_session cs
 WHERE cs.workspace_id = $1 AND cs.creator_id = $2 AND cs.status = 'active'
-ORDER BY cs.updated_at DESC
+ORDER BY (cs.unread_since IS NOT NULL) DESC, cs.updated_at DESC
 `
 
 type ListChatSessionsByCreatorParams struct {
@@ -370,6 +372,8 @@ type ListChatSessionsByCreatorRow struct {
 // Returns active sessions with a boolean unread flag. Unread is strictly
 // per-session: either the user has uncleared assistant replies in this
 // session or they don't. Counting messages would be misleading.
+// Unread sessions float to the top so new activity never gets buried
+// under routine reads; within each group, most-recent activity wins.
 func (q *Queries) ListChatSessionsByCreator(ctx context.Context, arg ListChatSessionsByCreatorParams) ([]ListChatSessionsByCreatorRow, error) {
 	rows, err := q.db.Query(ctx, listChatSessionsByCreator, arg.WorkspaceID, arg.CreatorID)
 	if err != nil {

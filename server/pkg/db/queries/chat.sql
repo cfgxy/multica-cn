@@ -19,14 +19,18 @@ SELECT cs.*,
        (cs.unread_since IS NOT NULL)::bool AS has_unread
 FROM chat_session cs
 WHERE cs.workspace_id = $1 AND cs.creator_id = $2 AND cs.status = 'active'
-ORDER BY cs.updated_at DESC;
+-- Unread sessions float to the top so new activity never gets buried
+-- under routine reads; within each group, most-recent activity wins.
+ORDER BY (cs.unread_since IS NOT NULL) DESC, cs.updated_at DESC;
 
 -- name: ListAllChatSessionsByCreator :many
 SELECT cs.*,
        (cs.unread_since IS NOT NULL)::bool AS has_unread
 FROM chat_session cs
 WHERE cs.workspace_id = $1 AND cs.creator_id = $2
-ORDER BY cs.updated_at DESC;
+-- Unread sessions float to the top so new activity never gets buried
+-- under routine reads; within each group, most-recent activity wins.
+ORDER BY (cs.unread_since IS NOT NULL) DESC, cs.updated_at DESC;
 
 -- name: UpdateChatSessionTitle :one
 UPDATE chat_session SET title = $2, updated_at = now()
