@@ -132,12 +132,12 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 	}
 
 	title := s.interpolateTemplate(ap)
-	description := util.TextToPtr(ap.Description)
+	description := s.buildIssueDescription(ap)
 
 	issue, err := qtx.CreateIssueWithOrigin(ctx, db.CreateIssueWithOriginParams{
 		WorkspaceID:   ap.WorkspaceID,
 		Title:         title,
-		Description:   ap.Description,
+		Description:   description,
 		Status:        "todo",
 		Priority:      ap.Priority,
 		AssigneeType:  pgtype.Text{String: "agent", Valid: true},
@@ -193,7 +193,6 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 		"autopilot_id", util.UUIDToString(ap.ID),
 		"issue_id", util.UUIDToString(issue.ID),
 		"run_id", util.UUIDToString(run.ID),
-		"description_set", description != nil,
 	)
 	return nil
 }
@@ -254,7 +253,7 @@ func (s *AutopilotService) SyncRunFromIssue(ctx context.Context, issue db.Issue)
 	wsID := util.UUIDToString(issue.WorkspaceID)
 
 	switch issue.Status {
-	case "done":
+	case "done", "in_review":
 		if _, err := s.Queries.UpdateAutopilotRunCompleted(ctx, db.UpdateAutopilotRunCompletedParams{
 			ID: run.ID,
 		}); err != nil {
@@ -364,6 +363,16 @@ func (s *AutopilotService) publishRunDone(workspaceID string, run db.AutopilotRu
 			"status":       status,
 		},
 	})
+}
+
+// buildIssueDescription appends an autopilot system instruction to the
+// user-provided description, asking the agent to rename the issue after
+// it understands the actual work.
+func (s *AutopilotService) buildIssueDescription(ap db.Autopilot) pgtype.Text {
+	now := time.Now().UTC().Format(time.RFC3339)
+	note := fmt.Sprintf("\n\n---\n*Autopilot run triggered at %s. After starting work, rename this issue to accurately reflect what you are doing.*", now)
+	base := ap.Description.String
+	return pgtype.Text{String: base + note, Valid: true}
 }
 
 // interpolateTemplate replaces {{date}} in the issue title template.
