@@ -86,6 +86,17 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return err
 	}
 
+	// If no runtimes yet (empty watched list), run one sync cycle to discover
+	// workspaces from the API before giving up. workspaceSyncLoop normally
+	// handles this, but the runtime check below would fail before it runs.
+	if len(d.allRuntimeIDs()) == 0 {
+		d.syncWorkspacesFromAPI(ctx)
+		// syncWorkspacesFromAPI writes to config; reload and register.
+		if err := d.loadWatchedWorkspaces(ctx); err != nil {
+			return err
+		}
+	}
+
 	runtimeIDs := d.allRuntimeIDs()
 	if len(runtimeIDs) == 0 {
 		return fmt.Errorf("no runtimes registered")
