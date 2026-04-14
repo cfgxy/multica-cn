@@ -525,7 +525,18 @@ func (d *Daemon) handlePing(ctx context.Context, rt Runtime, pingID string) {
 		}
 	}()
 
-	result := <-session.Result
+	var result agent.Result
+	select {
+	case result = <-session.Result:
+	case <-pingCtx.Done():
+		d.logger.Warn("ping timed out waiting for result", "runtime_id", rt.ID, "ping_id", pingID)
+		d.client.ReportPingResult(ctx, rt.ID, pingID, map[string]any{
+			"status":      "failed",
+			"error":       "ping context cancelled while waiting for result",
+			"duration_ms": time.Since(start).Milliseconds(),
+		})
+		return
+	}
 	durationMs := time.Since(start).Milliseconds()
 
 	if result.Status == "completed" {
@@ -1078,6 +1089,17 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 		return agent.Result{}, 0, err
 	}
 
+	// Create an independent drain deadline so we don't block forever if the
+	// backend's internal timeout fails to produce a Result (e.g. scanner
+	// stuck on a hung stdout pipe). The extra 30 s gives the backend time
+	// to clean up after its own timeout fires.
+	drainTimeout := opts.Timeout + 30*time.Second
+	if opts.Timeout == 0 {
+		drainTimeout = 21 * time.Minute
+	}
+	drainCtx, drainCancel := context.WithTimeout(ctx, drainTimeout)
+	defer drainCancel()
+
 	var toolCount atomic.Int32
 	go func() {
 		var seq atomic.Int32
@@ -1135,77 +1157,92 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 			}
 		}()
 
-		for msg := range session.Messages {
-			switch msg.Type {
-			case agent.MessageToolUse:
-				n := toolCount.Add(1)
-				taskLog.Info(fmt.Sprintf("tool #%d: %s", n, msg.Tool))
-				if msg.CallID != "" {
+		for {
+			select {
+			case msg, ok := <-session.Messages:
+				if !ok {
+					goto drainDone
+				}
+				switch msg.Type {
+				case agent.MessageToolUse:
+					n := toolCount.Add(1)
+					taskLog.Info(fmt.Sprintf("tool #%d: %s", n, msg.Tool))
+					if msg.CallID != "" {
+						mu.Lock()
+						callIDToTool[msg.CallID] = msg.Tool
+						mu.Unlock()
+					}
+					s := seq.Add(1)
 					mu.Lock()
-					callIDToTool[msg.CallID] = msg.Tool
+					batch = append(batch, TaskMessageData{
+						Seq:   int(s),
+						Type:  "tool_use",
+						Tool:  msg.Tool,
+						Input: msg.Input,
+					})
+					mu.Unlock()
+				case agent.MessageToolResult:
+					s := seq.Add(1)
+					output := msg.Output
+					if len(output) > 8192 {
+						output = output[:8192]
+					}
+					toolName := msg.Tool
+					if toolName == "" && msg.CallID != "" {
+						mu.Lock()
+						toolName = callIDToTool[msg.CallID]
+						mu.Unlock()
+					}
+					mu.Lock()
+					batch = append(batch, TaskMessageData{
+						Seq:    int(s),
+						Type:   "tool_result",
+						Tool:   toolName,
+						Output: output,
+					})
+					mu.Unlock()
+				case agent.MessageThinking:
+					if msg.Content != "" {
+						mu.Lock()
+						pendingThinking.WriteString(msg.Content)
+						mu.Unlock()
+					}
+				case agent.MessageText:
+					if msg.Content != "" {
+						taskLog.Debug("agent", "text", truncateLog(msg.Content, 200))
+						mu.Lock()
+						pendingText.WriteString(msg.Content)
+						mu.Unlock()
+					}
+				case agent.MessageError:
+					taskLog.Error("agent error", "content", msg.Content)
+					s := seq.Add(1)
+					mu.Lock()
+					batch = append(batch, TaskMessageData{
+						Seq:     int(s),
+						Type:    "error",
+						Content: msg.Content,
+					})
 					mu.Unlock()
 				}
-				s := seq.Add(1)
-				mu.Lock()
-				batch = append(batch, TaskMessageData{
-					Seq:   int(s),
-					Type:  "tool_use",
-					Tool:  msg.Tool,
-					Input: msg.Input,
-				})
-				mu.Unlock()
-			case agent.MessageToolResult:
-				s := seq.Add(1)
-				output := msg.Output
-				if len(output) > 8192 {
-					output = output[:8192]
-				}
-				toolName := msg.Tool
-				if toolName == "" && msg.CallID != "" {
-					mu.Lock()
-					toolName = callIDToTool[msg.CallID]
-					mu.Unlock()
-				}
-				mu.Lock()
-				batch = append(batch, TaskMessageData{
-					Seq:    int(s),
-					Type:   "tool_result",
-					Tool:   toolName,
-					Output: output,
-				})
-				mu.Unlock()
-			case agent.MessageThinking:
-				if msg.Content != "" {
-					mu.Lock()
-					pendingThinking.WriteString(msg.Content)
-					mu.Unlock()
-				}
-			case agent.MessageText:
-				if msg.Content != "" {
-					taskLog.Debug("agent", "text", truncateLog(msg.Content, 200))
-					mu.Lock()
-					pendingText.WriteString(msg.Content)
-					mu.Unlock()
-				}
-			case agent.MessageError:
-				taskLog.Error("agent error", "content", msg.Content)
-				s := seq.Add(1)
-				mu.Lock()
-				batch = append(batch, TaskMessageData{
-					Seq:     int(s),
-					Type:    "error",
-					Content: msg.Content,
-				})
-				mu.Unlock()
+			case <-drainCtx.Done():
+				goto drainDone
 			}
 		}
-
+	drainDone:
 		close(done)
 		flush()
 	}()
 
-	result := <-session.Result
-	return result, toolCount.Load(), nil
+	select {
+	case result := <-session.Result:
+		return result, toolCount.Load(), nil
+	case <-drainCtx.Done():
+		return agent.Result{
+			Status: "timeout",
+			Error:  "agent did not produce result within drain timeout",
+		}, toolCount.Load(), nil
+	}
 }
 
 func mergeUsage(a, b map[string]agent.TokenUsage) map[string]agent.TokenUsage {

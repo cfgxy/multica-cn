@@ -48,6 +48,7 @@ func (b *opencodeBackend) Execute(ctx context.Context, prompt string, opts ExecO
 	args = append(args, prompt)
 
 	cmd := exec.CommandContext(runCtx, execPath, args...)
+	cmd.WaitDelay = 10 * time.Second
 	if opts.Cwd != "" {
 		cmd.Dir = opts.Cwd
 	}
@@ -73,6 +74,12 @@ func (b *opencodeBackend) Execute(ctx context.Context, prompt string, opts ExecO
 
 	msgCh := make(chan Message, 256)
 	resCh := make(chan Result, 1)
+
+	// Close stdout when the context is cancelled so the scanner unblocks.
+	go func() {
+		<-runCtx.Done()
+		_ = stdout.Close()
+	}()
 
 	go func() {
 		defer cancel()

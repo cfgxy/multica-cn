@@ -44,6 +44,7 @@ func (b *openclawBackend) Execute(ctx context.Context, prompt string, opts ExecO
 	args = append(args, "--message", prompt)
 
 	cmd := exec.CommandContext(runCtx, execPath, args...)
+	cmd.WaitDelay = 10 * time.Second
 	if opts.Cwd != "" {
 		cmd.Dir = opts.Cwd
 	}
@@ -66,6 +67,12 @@ func (b *openclawBackend) Execute(ctx context.Context, prompt string, opts ExecO
 
 	msgCh := make(chan Message, 256)
 	resCh := make(chan Result, 1)
+
+	// Close stderr when the context is cancelled so the scanner unblocks.
+	go func() {
+		<-runCtx.Done()
+		_ = stderr.Close()
+	}()
 
 	go func() {
 		defer cancel()

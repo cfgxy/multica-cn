@@ -37,6 +37,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	args := buildClaudeArgs(opts)
 
 	cmd := exec.CommandContext(runCtx, execPath, args...)
+	cmd.WaitDelay = 10 * time.Second
 	if opts.Cwd != "" {
 		cmd.Dir = opts.Cwd
 	}
@@ -89,6 +90,12 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		finalStatus := "completed"
 		var finalError string
 		usage := make(map[string]TokenUsage)
+
+		// Close stdout when the context is cancelled so scanner.Scan() unblocks.
+		go func() {
+			<-runCtx.Done()
+			_ = stdout.Close()
+		}()
 
 		scanner := bufio.NewScanner(stdout)
 		scanner.Buffer(make([]byte, 0, 1024*1024), 10*1024*1024)

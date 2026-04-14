@@ -39,6 +39,7 @@ func (b *geminiBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	args := buildGeminiArgs(prompt, opts)
 
 	cmd := exec.CommandContext(runCtx, execPath, args...)
+	cmd.WaitDelay = 10 * time.Second
 	if opts.Cwd != "" {
 		cmd.Dir = opts.Cwd
 	}
@@ -60,6 +61,12 @@ func (b *geminiBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 
 	msgCh := make(chan Message, 16)
 	resCh := make(chan Result, 1)
+
+	// Close stdout when the context is cancelled so io.ReadAll unblocks.
+	go func() {
+		<-runCtx.Done()
+		_ = stdout.Close()
+	}()
 
 	go func() {
 		defer cancel()
