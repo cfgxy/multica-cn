@@ -14,8 +14,15 @@ interface ChatInputProps {
   onStop?: () => void;
   isRunning?: boolean;
   disabled?: boolean;
-  /** Name of the currently selected agent, used in the placeholder. */
+  /** Name of the currently selected agent, used in the default placeholder. */
   agentName?: string;
+  /**
+   * Full override for the placeholder text. When present, supersedes the
+   * agentName-based default and the archived-session message. Caller uses
+   * this to communicate agent-availability reasons (archived agent,
+   * no_agents, etc.).
+   */
+  placeholderOverride?: string;
   /** Rendered at the bottom-left of the input bar — typically the agent picker. */
   leftAdornment?: ReactNode;
 }
@@ -26,6 +33,7 @@ export function ChatInput({
   isRunning,
   disabled,
   agentName,
+  placeholderOverride,
   leftAdornment,
 }: ChatInputProps) {
   const editorRef = useRef<ContentEditorRef>(null);
@@ -66,11 +74,13 @@ export function ChatInput({
     setIsEmpty(true);
   };
 
-  const placeholder = disabled
-    ? "This session is archived"
-    : agentName
-      ? `Tell ${agentName} what to do…`
-      : "Tell me what to do…";
+  const placeholder =
+    placeholderOverride ??
+    (disabled
+      ? "This session is archived"
+      : agentName
+        ? `Tell ${agentName} what to do…`
+        : "Tell me what to do…");
 
   return (
     <div className="px-5 pb-3 pt-0">

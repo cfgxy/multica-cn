@@ -34,10 +34,61 @@ import { ChatInput } from "./chat-input";
 import { ChatResizeHandles } from "./chat-resize-handles";
 import { useChatResize } from "./use-chat-resize";
 import { createLogger } from "@multica/core/logger";
+import { toast } from "sonner";
 import type { Agent, ChatMessage, ChatSession } from "@multica/core/types";
 
 const uiLogger = createLogger("chat.ui");
 const apiLogger = createLogger("chat.api");
+
+/**
+ * What we know about the agent the UI is currently tied to, plus whether
+ * the user can actually send in this state. Derived each render from the
+ * current session, selected agent, and available agents.
+ */
+type AgentUnavailableReason =
+  | "no_agents"     // workspace has no available agents at all
+  | "archived"      // agent exists but is archived (read-only session)
+  | "missing";      // session refers to an agent that no longer exists
+
+interface AgentState {
+  /** Agent to display (possibly archived). Null when nothing to show. */
+  agent: Agent | null;
+  /** Whether the user can send a message in this state. */
+  canSend: boolean;
+  /** Why the user can't send. Absent when canSend is true. */
+  reason?: AgentUnavailableReason;
+}
+
+function sendBlockedMessage(reason: AgentUnavailableReason | undefined): string {
+  switch (reason) {
+    case "no_agents":
+      return "No agents available — create one first";
+    case "archived":
+      return "This agent is archived and can't receive messages";
+    case "missing":
+      return "This session's agent no longer exists";
+    default:
+      return "Can't send right now";
+  }
+}
+
+function placeholderFor(
+  reason: AgentUnavailableReason | undefined,
+  agentName: string | undefined,
+  isSessionArchived: boolean,
+): string {
+  if (isSessionArchived) return "This session is archived";
+  switch (reason) {
+    case "no_agents":
+      return "Create an agent to start chatting";
+    case "archived":
+      return "This agent is archived — conversation is read-only";
+    case "missing":
+      return "This session's agent is no longer available";
+    default:
+      return agentName ? `Tell ${agentName} what to do…` : "Tell me what to do…";
+  }
+}
 
 export function ChatWindow() {
   const wsId = useWorkspaceId();
@@ -72,12 +123,6 @@ export function ChatWindow() {
   );
   const pendingTaskId = pendingTask?.task_id ?? null;
 
-  // Check if current session is archived
-  const currentSession = activeSessionId
-    ? allSessions.find((s) => s.id === activeSessionId)
-    : null;
-  const isSessionArchived = currentSession?.status === "archived";
-
   const qc = useQueryClient();
   const createSession = useCreateChatSession();
   const markRead = useMarkChatSessionRead();
@@ -88,11 +133,33 @@ export function ChatWindow() {
     (a) => !a.archived_at && canAssignAgent(a, user?.id, memberRole),
   );
 
-  // Resolve selected agent: stored preference → first available
-  const activeAgent =
-    availableAgents.find((a) => a.id === selectedAgentId) ??
-    availableAgents[0] ??
-    null;
+  // Current session (may be null for a fresh new chat). Used both to bound
+  // the agent we show and to flag read-only sessions below.
+  const currentSession = activeSessionId
+    ? allSessions.find((s) => s.id === activeSessionId)
+    : null;
+  const isSessionArchived = currentSession?.status === "archived";
+
+  // Resolve which agent the UI is tied to, plus whether the user can send.
+  // Priority when a session is active: the session's bound agent from the
+  // FULL list (may be archived — we still render it, read-only). Without a
+  // session we pick the user's preference from the available set.
+  const agentState = useMemo<AgentState>(() => {
+    if (currentSession) {
+      const bound = agents.find((a) => a.id === currentSession.agent_id) ?? null;
+      if (!bound) return { agent: null, canSend: false, reason: "missing" };
+      if (bound.archived_at) return { agent: bound, canSend: false, reason: "archived" };
+      return { agent: bound, canSend: true };
+    }
+    const picked =
+      availableAgents.find((a) => a.id === selectedAgentId) ??
+      availableAgents[0] ??
+      null;
+    if (picked) return { agent: picked, canSend: true };
+    return { agent: null, canSend: false, reason: "no_agents" };
+  }, [currentSession, agents, availableAgents, selectedAgentId]);
+
+  const activeAgent = agentState.agent;
 
   // Mount / unmount logging. ChatWindow lives in DashboardLayout, so this
   // fires on layout mount (login / workspace switch / fresh page load).
@@ -156,8 +223,11 @@ export function ChatWindow() {
 
   const handleSend = useCallback(
     async (content: string) => {
-      if (!activeAgent) {
-        apiLogger.warn("sendChatMessage skipped: no active agent");
+      if (!agentState.canSend || !activeAgent) {
+        apiLogger.warn("sendChatMessage skipped", { reason: agentState.reason });
+        // Surface why — handleSend is usually triggered by button or Enter,
+        // silent failure is confusing.
+        toast.error(sendBlockedMessage(agentState.reason));
         return;
       }
 
@@ -171,47 +241,59 @@ export function ChatWindow() {
         contentLength: content.length,
       });
 
-      if (!sessionId) {
-        const session = await createSession.mutateAsync({
-          agent_id: activeAgent.id,
-          title: content.slice(0, 50),
+      try {
+        if (!sessionId) {
+          const session = await createSession.mutateAsync({
+            agent_id: activeAgent.id,
+            title: content.slice(0, 50),
+          });
+          sessionId = session.id;
+          setActiveSession(sessionId);
+        }
+
+        // Optimistic: show user message immediately.
+        const optimistic: ChatMessage = {
+          id: `optimistic-${Date.now()}`,
+          chat_session_id: sessionId,
+          role: "user",
+          content,
+          task_id: null,
+          created_at: new Date().toISOString(),
+        };
+        qc.setQueryData<ChatMessage[]>(
+          chatKeys.messages(sessionId),
+          (old) => (old ? [...old, optimistic] : [optimistic]),
+        );
+        apiLogger.debug("sendChatMessage.optimistic", { sessionId, optimisticId: optimistic.id });
+
+        const result = await api.sendChatMessage(sessionId, content);
+        apiLogger.info("sendChatMessage.success", {
+          sessionId,
+          messageId: result.message_id,
+          taskId: result.task_id,
         });
-        sessionId = session.id;
-        setActiveSession(sessionId);
+        // Seed pending-task optimistically so the spinner shows instantly —
+        // the WS chat:message handler will invalidate + refetch to confirm.
+        qc.setQueryData(chatKeys.pendingTask(sessionId), {
+          task_id: result.task_id,
+          status: "queued",
+        });
+        qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        apiLogger.error("sendChatMessage.error", { err });
+        // Drop the optimistic message — refetch the real list so the user's
+        // bubble doesn't dangle without a reply.
+        if (sessionId) {
+          qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
+        }
+        toast.error(`Failed to send: ${message}`);
       }
-
-      // Optimistic: show user message immediately.
-      const optimistic: ChatMessage = {
-        id: `optimistic-${Date.now()}`,
-        chat_session_id: sessionId,
-        role: "user",
-        content,
-        task_id: null,
-        created_at: new Date().toISOString(),
-      };
-      qc.setQueryData<ChatMessage[]>(
-        chatKeys.messages(sessionId),
-        (old) => (old ? [...old, optimistic] : [optimistic]),
-      );
-      apiLogger.debug("sendChatMessage.optimistic", { sessionId, optimisticId: optimistic.id });
-
-      const result = await api.sendChatMessage(sessionId, content);
-      apiLogger.info("sendChatMessage.success", {
-        sessionId,
-        messageId: result.message_id,
-        taskId: result.task_id,
-      });
-      // Seed pending-task optimistically so the spinner shows instantly —
-      // the WS chat:message handler will invalidate + refetch to confirm.
-      qc.setQueryData(chatKeys.pendingTask(sessionId), {
-        task_id: result.task_id,
-        status: "queued",
-      });
-      qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
     },
     [
       activeSessionId,
       activeAgent,
+      agentState,
       createSession,
       setActiveSession,
       qc,
@@ -390,17 +472,23 @@ export function ChatWindow() {
       ) : (
         <EmptyState
           agentName={activeAgent?.name}
+          reason={agentState.reason}
           onPickPrompt={(text) => handleSend(text)}
         />
       )}
 
-      {/* Input — disabled for archived sessions */}
+      {/* Input — disabled for archived sessions or when no agent can accept */}
       <ChatInput
         onSend={handleSend}
         onStop={handleStop}
         isRunning={!!pendingTaskId}
-        disabled={isSessionArchived}
+        disabled={isSessionArchived || !agentState.canSend}
         agentName={activeAgent?.name}
+        placeholderOverride={placeholderFor(
+          agentState.reason,
+          activeAgent?.name,
+          !!isSessionArchived,
+        )}
         leftAdornment={
           <AgentDropdown
             agents={availableAgents}
@@ -597,11 +685,25 @@ const STARTER_PROMPTS: { icon: string; text: string }[] = [
 
 function EmptyState({
   agentName,
+  reason,
   onPickPrompt,
 }: {
   agentName?: string;
+  reason?: AgentUnavailableReason;
   onPickPrompt: (text: string) => void;
 }) {
+  // Can't chat → show the reason instead of the starter prompts.
+  if (reason === "no_agents") {
+    return (
+      <div className="flex flex-1 flex-col items-center justify-center gap-2 px-6 py-8 text-center">
+        <h3 className="text-base font-semibold">No agents yet</h3>
+        <p className="text-sm text-muted-foreground max-w-xs">
+          Create an agent from the Agents tab to start chatting.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="flex flex-1 flex-col items-center justify-center gap-5 px-6 py-8">
       <div className="text-center space-y-1">
