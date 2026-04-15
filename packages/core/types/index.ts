@@ -38,7 +38,6 @@ export type {
   Autopilot,
   AutopilotStatus,
   AutopilotExecutionMode,
-  AutopilotConcurrencyPolicy,
   AutopilotTrigger,
   AutopilotTriggerKind,
   AutopilotRun,

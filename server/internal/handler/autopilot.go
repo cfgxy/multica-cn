@@ -32,7 +32,6 @@ type AutopilotResponse struct {
 	Status             string  `json:"status"`
 	ExecutionMode      string  `json:"execution_mode"`
 	IssueTitleTemplate *string `json:"issue_title_template"`
-	ConcurrencyPolicy  string  `json:"concurrency_policy"`
 	CreatedByType      string  `json:"created_by_type"`
 	CreatedByID        string  `json:"created_by_id"`
 	LastRunAt          *string `json:"last_run_at"`
@@ -85,7 +84,6 @@ func autopilotToResponse(a db.Autopilot) AutopilotResponse {
 		Status:             a.Status,
 		ExecutionMode:      a.ExecutionMode,
 		IssueTitleTemplate: textToPtr(a.IssueTitleTemplate),
-		ConcurrencyPolicy:  a.ConcurrencyPolicy,
 		CreatedByType:      a.CreatedByType,
 		CreatedByID:        uuidToString(a.CreatedByID),
 		LastRunAt:          timestampToPtr(a.LastRunAt),
@@ -146,7 +144,6 @@ type CreateAutopilotRequest struct {
 	ProjectID          *string `json:"project_id"`
 	Priority           string  `json:"priority"`
 	ExecutionMode      string  `json:"execution_mode"`
-	ConcurrencyPolicy  string  `json:"concurrency_policy"`
 	IssueTitleTemplate *string `json:"issue_title_template"`
 }
 
@@ -158,7 +155,6 @@ type UpdateAutopilotRequest struct {
 	Priority           *string `json:"priority"`
 	Status             *string `json:"status"`
 	ExecutionMode      *string `json:"execution_mode"`
-	ConcurrencyPolicy  *string `json:"concurrency_policy"`
 	IssueTitleTemplate *string `json:"issue_title_template"`
 }
 
@@ -276,10 +272,6 @@ func (h *Handler) CreateAutopilot(w http.ResponseWriter, r *http.Request) {
 	if priority == "" {
 		priority = "none"
 	}
-	concurrencyPolicy := req.ConcurrencyPolicy
-	if concurrencyPolicy == "" {
-		concurrencyPolicy = "skip"
-	}
 
 	var projectID pgtype.UUID
 	if req.ProjectID != nil {
@@ -293,7 +285,6 @@ func (h *Handler) CreateAutopilot(w http.ResponseWriter, r *http.Request) {
 		Priority:           priority,
 		Status:             "active",
 		ExecutionMode:      req.ExecutionMode,
-		ConcurrencyPolicy:  concurrencyPolicy,
 		CreatedByType:      "member",
 		CreatedByID:        parseUUID(userID),
 		ProjectID:          projectID,
@@ -359,9 +350,6 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.ExecutionMode != nil {
 		params.ExecutionMode = pgtype.Text{String: *req.ExecutionMode, Valid: true}
-	}
-	if req.ConcurrencyPolicy != nil {
-		params.ConcurrencyPolicy = pgtype.Text{String: *req.ConcurrencyPolicy, Valid: true}
 	}
 	if _, ok := rawFields["description"]; ok {
 		params.Description = ptrToText(req.Description)
@@ -452,6 +440,13 @@ func (h *Handler) CreateAutopilotTrigger(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	if req.Timezone != nil && *req.Timezone != "" {
+		if err := service.ValidateTimezone(*req.Timezone); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	}
+
 	var nextRunAt pgtype.Timestamptz
 	if req.Kind == "schedule" && req.CronExpression != nil {
 		tz := "UTC"
@@ -460,7 +455,7 @@ func (h *Handler) CreateAutopilotTrigger(w http.ResponseWriter, r *http.Request)
 		}
 		t, err := computeNextRun(*req.CronExpression, tz)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid cron expression: "+err.Error())
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		nextRunAt = pgtype.Timestamptz{Time: t, Valid: true}
@@ -529,6 +524,12 @@ func (h *Handler) UpdateAutopilotTrigger(w http.ResponseWriter, r *http.Request)
 		params.CronExpression = pgtype.Text{String: *req.CronExpression, Valid: true}
 	}
 	if req.Timezone != nil {
+		if *req.Timezone != "" {
+			if err := service.ValidateTimezone(*req.Timezone); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
+		}
 		params.Timezone = pgtype.Text{String: *req.Timezone, Valid: true}
 	}
 	if req.Label != nil {
@@ -550,7 +551,7 @@ func (h *Handler) UpdateAutopilotTrigger(w http.ResponseWriter, r *http.Request)
 	if prev.Kind == "schedule" && cronExpr != "" {
 		t, err := computeNextRun(cronExpr, tz)
 		if err != nil {
-			writeError(w, http.StatusBadRequest, "invalid cron expression: "+err.Error())
+			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
 		params.NextRunAt = pgtype.Timestamptz{Time: t, Valid: true}

@@ -229,7 +229,6 @@ function CreateAutopilotDialog({
         description: description.trim() || undefined,
         assignee_id: assigneeId,
         execution_mode: "create_issue",
-        concurrency_policy: "skip",
       });
 
       // Attach schedule trigger

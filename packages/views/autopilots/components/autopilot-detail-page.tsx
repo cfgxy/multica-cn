@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Zap, Play, Pause, Clock, Plus, Trash2, CheckCircle2, XCircle, SkipForward, Loader2, Pencil } from "lucide-react";
+import { Zap, Play, Pause, Clock, Plus, Trash2, CheckCircle2, XCircle, Loader2, Pencil } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { autopilotDetailOptions, autopilotRunsOptions } from "@multica/core/autopilots/queries";
 import {
@@ -50,16 +50,14 @@ function formatDate(date: string): string {
 }
 
 const RUN_STATUS_CONFIG: Record<string, { label: string; color: string; icon: typeof CheckCircle2 }> = {
-  pending: { label: "Pending", color: "text-blue-500", icon: Clock },
   issue_created: { label: "Issue Created", color: "text-blue-500", icon: Clock },
   running: { label: "Running", color: "text-blue-500", icon: Loader2 },
   completed: { label: "Completed", color: "text-emerald-500", icon: CheckCircle2 },
   failed: { label: "Failed", color: "text-destructive", icon: XCircle },
-  skipped: { label: "Skipped", color: "text-muted-foreground", icon: SkipForward },
 };
 
 function RunRow({ run }: { run: AutopilotRun }) {
-  const cfg = (RUN_STATUS_CONFIG[run.status] ?? RUN_STATUS_CONFIG["pending"])!;
+  const cfg = (RUN_STATUS_CONFIG[run.status] ?? RUN_STATUS_CONFIG["issue_created"])!;
   const StatusIcon = cfg.icon;
 
   return (
@@ -473,10 +471,6 @@ export function AutopilotDetailPage({ autopilotId }: { autopilotId: string }) {
                 <div className="mt-1">
                   {autopilot.execution_mode === "create_issue" ? "Create Issue" : "Run Only"}
                 </div>
-              </div>
-              <div>
-                <label className="text-xs text-muted-foreground">Concurrency</label>
-                <div className="mt-1 capitalize">{autopilot.concurrency_policy}</div>
               </div>
               {autopilot.description && (
                 <div className="col-span-2">

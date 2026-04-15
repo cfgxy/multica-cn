@@ -108,7 +108,6 @@ type Autopilot struct {
 	Status             string             `json:"status"`
 	ExecutionMode      string             `json:"execution_mode"`
 	IssueTitleTemplate pgtype.Text        `json:"issue_title_template"`
-	ConcurrencyPolicy  string             `json:"concurrency_policy"`
 	CreatedByType      string             `json:"created_by_type"`
 	CreatedByID        pgtype.UUID        `json:"created_by_id"`
 	LastRunAt          pgtype.Timestamptz `json:"last_run_at"`

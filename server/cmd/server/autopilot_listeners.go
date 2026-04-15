@@ -30,8 +30,8 @@ func registerAutopilotListeners(bus *events.Bus, svc *service.AutopilotService) 
 		if !ok {
 			return
 		}
-		// Only handle terminal statuses.
-		if issue.Status != "done" && issue.Status != "cancelled" && issue.Status != "blocked" {
+		// Only handle statuses that finalize an autopilot run.
+		if issue.Status != "done" && issue.Status != "in_review" && issue.Status != "cancelled" && issue.Status != "blocked" {
 			return
 		}
 		// Load the full issue from DB to check origin_type.

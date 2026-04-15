@@ -15,6 +15,9 @@ const schedulerInterval = 30 * time.Second
 
 // runAutopilotScheduler polls for due schedule triggers and dispatches them.
 func runAutopilotScheduler(ctx context.Context, queries *db.Queries, svc *service.AutopilotService) {
+	// Recover triggers that were claimed but never advanced (e.g. after a crash).
+	recoverLostTriggers(ctx, queries)
+
 	ticker := time.NewTicker(schedulerInterval)
 	defer ticker.Stop()
 
@@ -24,6 +27,43 @@ func runAutopilotScheduler(ctx context.Context, queries *db.Queries, svc *servic
 			return
 		case <-ticker.C:
 			tickScheduledAutopilots(ctx, queries, svc)
+		}
+	}
+}
+
+// recoverLostTriggers finds schedule triggers whose next_run_at is NULL
+// (claimed but never advanced, typically after a crash) and recomputes it.
+func recoverLostTriggers(ctx context.Context, queries *db.Queries) {
+	triggers, err := queries.RecoverLostTriggers(ctx)
+	if err != nil {
+		slog.Warn("autopilot scheduler: failed to recover lost triggers", "error", err)
+		return
+	}
+	if len(triggers) == 0 {
+		return
+	}
+
+	slog.Info("autopilot scheduler: recovering lost triggers", "count", len(triggers))
+	for _, t := range triggers {
+		if !t.CronExpression.Valid || t.CronExpression.String == "" {
+			continue
+		}
+		tz := "UTC"
+		if t.Timezone.Valid && t.Timezone.String != "" {
+			tz = t.Timezone.String
+		}
+		next, err := service.ComputeNextRun(t.CronExpression.String, tz)
+		if err != nil {
+			slog.Warn("autopilot scheduler: failed to compute next run for recovery",
+				"trigger_id", util.UUIDToString(t.ID), "error", err)
+			continue
+		}
+		if err := queries.AdvanceTriggerNextRun(ctx, db.AdvanceTriggerNextRunParams{
+			ID:        t.ID,
+			NextRunAt: pgtype.Timestamptz{Time: next, Valid: true},
+		}); err != nil {
+			slog.Warn("autopilot scheduler: failed to recover trigger",
+				"trigger_id", util.UUIDToString(t.ID), "error", err)
 		}
 	}
 }

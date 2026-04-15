@@ -32,8 +32,8 @@ func NewAutopilotService(q *db.Queries, tx TxStarter, bus *events.Bus, taskSvc *
 }
 
 // DispatchAutopilot is the core execution entry point.
-// It checks concurrency policy, creates a run, and either creates an issue
-// or enqueues a direct agent task depending on execution_mode.
+// It creates a run and either creates an issue or enqueues a direct agent task
+// depending on execution_mode.
 func (s *AutopilotService) DispatchAutopilot(
 	ctx context.Context,
 	autopilot db.Autopilot,
@@ -41,39 +41,17 @@ func (s *AutopilotService) DispatchAutopilot(
 	source string,
 	payload []byte,
 ) (*db.AutopilotRun, error) {
-	// Check concurrency policy.
-	allowed, err := s.checkConcurrency(ctx, autopilot)
-	if err != nil {
-		return nil, fmt.Errorf("concurrency check: %w", err)
-	}
-	if !allowed {
-		// Create a skipped run record.
-		run, err := s.Queries.CreateAutopilotRun(ctx, db.CreateAutopilotRunParams{
-			AutopilotID:    autopilot.ID,
-			TriggerID:      triggerID,
-			Source:         source,
-			Status:         "skipped",
-			TriggerPayload: payload,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("create skipped run: %w", err)
-		}
-		if _, err := s.Queries.UpdateAutopilotRunSkipped(ctx, db.UpdateAutopilotRunSkippedParams{
-			ID:            run.ID,
-			FailureReason: pgtype.Text{String: "skipped: active run exists", Valid: true},
-		}); err != nil {
-			slog.Warn("failed to finalize skipped run", "run_id", util.UUIDToString(run.ID), "error", err)
-		}
-		slog.Info("autopilot run skipped", "autopilot_id", util.UUIDToString(autopilot.ID), "source", source)
-		return &run, nil
+	// Determine initial status based on execution mode.
+	initialStatus := "issue_created"
+	if autopilot.ExecutionMode == "run_only" {
+		initialStatus = "running"
 	}
 
-	// Create a pending run.
 	run, err := s.Queries.CreateAutopilotRun(ctx, db.CreateAutopilotRunParams{
 		AutopilotID:    autopilot.ID,
 		TriggerID:      triggerID,
 		Source:         source,
-		Status:         "pending",
+		Status:         initialStatus,
 		TriggerPayload: payload,
 	})
 	if err != nil {
@@ -166,10 +144,9 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 		IssueID: issue.ID,
 	})
 	if err != nil {
-		slog.Warn("failed to update run with issue_id", "run_id", util.UUIDToString(run.ID), "error", err)
-	} else {
-		*run = updatedRun
+		return fmt.Errorf("link run to issue: %w", err)
 	}
+	*run = updatedRun
 
 	// Publish issue:created so the existing event chain fires
 	// (subscriber listeners, activity listeners, notification listeners).
@@ -186,7 +163,7 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 
 	// Enqueue agent task via the existing flow.
 	if _, err := s.TaskSvc.EnqueueTaskForIssue(ctx, issue); err != nil {
-		slog.Warn("autopilot: failed to enqueue task for issue", "issue_id", util.UUIDToString(issue.ID), "error", err)
+		return fmt.Errorf("enqueue task for issue: %w", err)
 	}
 
 	slog.Info("autopilot dispatched (create_issue)",
@@ -317,31 +294,6 @@ func (s *AutopilotService) SyncRunFromTask(ctx context.Context, task db.AgentTas
 	}
 }
 
-// checkConcurrency enforces the autopilot's concurrency policy.
-// Returns true if a new run is allowed, false otherwise.
-func (s *AutopilotService) checkConcurrency(ctx context.Context, ap db.Autopilot) (bool, error) {
-	switch ap.ConcurrencyPolicy {
-	case "queue":
-		return true, nil // always allow
-	case "skip":
-		_, err := s.Queries.FindActiveAutopilotRun(ctx, ap.ID)
-		if err == nil {
-			return false, nil // active run exists
-		}
-		if err == pgx.ErrNoRows {
-			return true, nil
-		}
-		return false, err
-	case "replace":
-		// Cancel existing active runs, then allow.
-		if err := s.Queries.CancelActiveAutopilotRuns(ctx, ap.ID); err != nil {
-			slog.Warn("failed to cancel active runs for replace policy", "autopilot_id", util.UUIDToString(ap.ID), "error", err)
-		}
-		return true, nil
-	default:
-		return true, nil
-	}
-}
 
 func (s *AutopilotService) failRun(ctx context.Context, runID pgtype.UUID, reason string) {
 	if _, err := s.Queries.UpdateAutopilotRunFailed(ctx, db.UpdateAutopilotRunFailedParams{

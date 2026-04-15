@@ -2,11 +2,9 @@ export type AutopilotStatus = "active" | "paused" | "archived";
 
 export type AutopilotExecutionMode = "create_issue" | "run_only";
 
-export type AutopilotConcurrencyPolicy = "skip" | "queue" | "replace";
-
 export type AutopilotTriggerKind = "schedule" | "webhook" | "api";
 
-export type AutopilotRunStatus = "pending" | "issue_created" | "running" | "skipped" | "completed" | "failed";
+export type AutopilotRunStatus = "issue_created" | "running" | "completed" | "failed";
 
 export type AutopilotRunSource = "schedule" | "manual" | "webhook" | "api";
 
@@ -21,7 +19,6 @@ export interface Autopilot {
   status: AutopilotStatus;
   execution_mode: AutopilotExecutionMode;
   issue_title_template: string | null;
-  concurrency_policy: AutopilotConcurrencyPolicy;
   created_by_type: string;
   created_by_id: string;
   last_run_at: string | null;
@@ -67,7 +64,6 @@ export interface CreateAutopilotRequest {
   project_id?: string;
   priority?: string;
   execution_mode: AutopilotExecutionMode;
-  concurrency_policy?: AutopilotConcurrencyPolicy;
   issue_title_template?: string;
 }
 
@@ -79,7 +75,6 @@ export interface UpdateAutopilotRequest {
   priority?: string;
   status?: AutopilotStatus;
   execution_mode?: AutopilotExecutionMode;
-  concurrency_policy?: AutopilotConcurrencyPolicy;
   issue_title_template?: string | null;
 }
 
