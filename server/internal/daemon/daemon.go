@@ -28,7 +28,7 @@ var ErrRepoNotConfigured = errors.New("repo is not configured for this workspace
 type workspaceState struct {
 	workspaceID     string
 	runtimeIDs      []string
-	reposVersion    string
+	reposVersion    string             // stored for future use: skip refresh when version unchanged
 	allowedRepoURLs map[string]struct{}
 	lastRepoSyncErr string
 	repoRefreshMu   sync.Mutex
@@ -318,6 +318,8 @@ func (d *Daemon) ensureRepoReady(ctx context.Context, workspaceID, repoURL strin
 		return fmt.Errorf("repo cache not initialized")
 	}
 
+	repoURL = strings.TrimSpace(repoURL)
+
 	d.mu.Lock()
 	ws, ok := d.workspaces[workspaceID]
 	d.mu.Unlock()
@@ -406,7 +408,7 @@ func (d *Daemon) syncWorkspacesFromAPI(ctx context.Context) error {
 	var registered int
 	for id, name := range apiIDs {
 		if currentIDs[id] {
-			continue
+			continue // important: never replace existing workspaceState; ensureRepoReady holds ws.repoRefreshMu from the original pointer
 		}
 		resp, err := d.registerRuntimesForWorkspace(ctx, id)
 		if err != nil {

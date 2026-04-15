@@ -342,6 +342,29 @@ func TestEnsureRepoReadyFastPathDoesNotRefresh(t *testing.T) {
 	}
 }
 
+func TestEnsureRepoReadyTrimsURL(t *testing.T) {
+	t.Parallel()
+
+	sourceRepo := createDaemonTestRepo(t)
+	var refreshCalls atomic.Int32
+	d := newRepoReadyTestDaemon(t, func(w http.ResponseWriter, r *http.Request) {
+		refreshCalls.Add(1)
+		http.Error(w, "unexpected refresh", http.StatusInternalServerError)
+	})
+	if err := d.repoCache.Sync("ws-1", []repocache.RepoInfo{{URL: sourceRepo}}); err != nil {
+		t.Fatalf("seed repo cache: %v", err)
+	}
+	d.workspaces["ws-1"] = newWorkspaceState("ws-1", nil, "v1", []RepoData{{URL: sourceRepo}})
+
+	// URL with trailing whitespace should still hit the fast path.
+	if err := d.ensureRepoReady(context.Background(), "ws-1", "  "+sourceRepo+"  "); err != nil {
+		t.Fatalf("ensureRepoReady with padded URL: %v", err)
+	}
+	if got := refreshCalls.Load(); got != 0 {
+		t.Fatalf("expected no refresh calls for trimmed URL, got %d", got)
+	}
+}
+
 func TestEnsureRepoReadyRefreshesOnMiss(t *testing.T) {
 	t.Parallel()
 
