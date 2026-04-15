@@ -315,8 +315,6 @@ api.example.com {
 }
 ```
 
-For a single-domain setup, route the frontend and backend through one hostname and forward `/api`, `/auth`, `/ws`, and `/health` to the backend while sending everything else to the frontend. This repository now includes a root `Caddyfile` and `docker-compose.selfhost.yml` service for that pattern.
-
 ### Nginx
 
 ```nginx
