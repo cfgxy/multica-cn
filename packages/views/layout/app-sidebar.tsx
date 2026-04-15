@@ -19,6 +19,7 @@ import {
   Bot,
   Monitor,
   ChevronDown,
+  ChevronRight,
   Settings,
   LogOut,
   Plus,
@@ -27,11 +28,15 @@ import {
   SquarePen,
   CircleUser,
   FolderKanban,
-  PinOff,
+  X,
   Zap,
 } from "lucide-react";
 import { WorkspaceAvatar } from "../workspace/workspace-avatar";
 import { ActorAvatar } from "@multica/ui/components/common/actor-avatar";
+import { Tooltip, TooltipTrigger, TooltipContent } from "@multica/ui/components/ui/tooltip";
+import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@multica/ui/components/ui/collapsible";
+import { StatusIcon } from "../issues/components/status-icon";
+import type { IssueStatus } from "@multica/core/types";
 import { useIssueDraftStore } from "@multica/core/issues/stores/draft-store";
 import {
   Sidebar,
@@ -43,7 +48,6 @@ import {
   SidebarFooter,
   SidebarMenu,
   SidebarMenuButton,
-  SidebarMenuAction,
   SidebarMenuItem,
   SidebarRail,
 } from "@multica/ui/components/ui/sidebar";
@@ -119,6 +123,7 @@ function SortablePinItem({ pin, pathname, onUnpin }: { pin: PinnedItem; pathname
       {...listeners}
     >
       <SidebarMenuButton
+        size="sm"
         isActive={isActive}
         render={<AppLink href={href} />}
         onClick={(event) => {
@@ -130,23 +135,34 @@ function SortablePinItem({ pin, pathname, onUnpin }: { pin: PinnedItem; pathname
         }}
         className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
       >
-        {pin.item_type === "issue" ? (
-          <ListTodo className="size-4 shrink-0" />
+        {pin.item_type === "issue" && pin.status ? (
+          /* Override parent [&_svg]:size-4 — pinned items need smaller icons to match sm size */
+          <StatusIcon status={pin.status as IssueStatus} className="!size-3.5 shrink-0" />
         ) : (
-          <FolderKanban className="size-4 shrink-0" />
+          <span className="flex size-3.5 shrink-0 items-center justify-center text-xs leading-none">{pin.icon || "📁"}</span>
         )}
-        <span className="truncate">{label}</span>
+        <span
+          className="min-w-0 flex-1 overflow-hidden whitespace-nowrap"
+          style={{
+            maskImage: "linear-gradient(to right, black calc(100% - 12px), transparent)",
+            WebkitMaskImage: "linear-gradient(to right, black calc(100% - 12px), transparent)",
+          }}
+        >{label}</span>
+        <Tooltip>
+          <TooltipTrigger
+            render={<span role="button" />}
+            className="hidden size-2.5 shrink-0 items-center justify-center rounded-sm text-muted-foreground group-hover/pin:flex hover:text-foreground"
+            onClick={(event) => {
+              event.preventDefault();
+              event.stopPropagation();
+              onUnpin();
+            }}
+          >
+            <X className="size-1" />
+          </TooltipTrigger>
+          <TooltipContent side="top" sideOffset={4}>Unpin</TooltipContent>
+        </Tooltip>
       </SidebarMenuButton>
-      <SidebarMenuAction
-        showOnHover
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          onUnpin();
-        }}
-      >
-        <PinOff className="size-3 text-muted-foreground" />
-      </SidebarMenuAction>
     </SidebarMenuItem>
   );
 }
@@ -408,25 +424,36 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
           </SidebarGroup>
 
           {pinnedItems.length > 0 && (
-            <SidebarGroup>
-              <SidebarGroupLabel>Pinned</SidebarGroupLabel>
-              <SidebarGroupContent>
-                <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-                  <SortableContext items={pinnedItems.map((p) => p.id)} strategy={verticalListSortingStrategy}>
-                    <SidebarMenu className="gap-0.5">
-                      {pinnedItems.map((pin: PinnedItem) => (
-                        <SortablePinItem
-                          key={pin.id}
-                          pin={pin}
-                          pathname={pathname}
-                          onUnpin={() => deletePin.mutate({ itemType: pin.item_type, itemId: pin.item_id })}
-                        />
-                      ))}
-                    </SidebarMenu>
-                  </SortableContext>
-                </DndContext>
-              </SidebarGroupContent>
-            </SidebarGroup>
+            <Collapsible defaultOpen>
+              <SidebarGroup className="group/pinned">
+                <SidebarGroupLabel
+                  render={<CollapsibleTrigger />}
+                  className="group/trigger cursor-pointer hover:bg-sidebar-accent/70 hover:text-sidebar-accent-foreground"
+                >
+                  <span>Pinned</span>
+                  <ChevronRight className="!size-3 ml-1 stroke-[2.5] transition-transform duration-200 group-data-[panel-open]/trigger:rotate-90" />
+                  <span className="ml-auto text-[10px] text-muted-foreground opacity-0 transition-opacity group-hover/pinned:opacity-100">{pinnedItems.length}</span>
+                </SidebarGroupLabel>
+                <CollapsibleContent>
+                  <SidebarGroupContent>
+                    <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+                      <SortableContext items={pinnedItems.map((p) => p.id)} strategy={verticalListSortingStrategy}>
+                        <SidebarMenu className="gap-0.5">
+                          {pinnedItems.map((pin: PinnedItem) => (
+                            <SortablePinItem
+                              key={pin.id}
+                              pin={pin}
+                              pathname={pathname}
+                              onUnpin={() => deletePin.mutate({ itemType: pin.item_type, itemId: pin.item_id })}
+                            />
+                          ))}
+                        </SidebarMenu>
+                      </SortableContext>
+                    </DndContext>
+                  </SidebarGroupContent>
+                </CollapsibleContent>
+              </SidebarGroup>
+            </Collapsible>
           )}
 
           <SidebarGroup>

@@ -10,6 +10,7 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { AppLink } from "../../navigation";
 import { ActorAvatar } from "../../common/actor-avatar";
+import { PageHeader } from "../../layout/page-header";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Button } from "@multica/ui/components/ui/button";
 import { cn } from "@multica/ui/lib/utils";
@@ -346,7 +347,7 @@ export function AutopilotsPage() {
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
-      <div className="flex h-12 shrink-0 items-center justify-between border-b px-5">
+      <PageHeader className="justify-between px-5">
         <div className="flex items-center gap-2">
           <Zap className="h-4 w-4 text-muted-foreground" />
           <h1 className="text-sm font-medium">Autopilot</h1>
@@ -358,7 +359,7 @@ export function AutopilotsPage() {
           <Plus className="h-3.5 w-3.5 mr-1" />
           New autopilot
         </Button>
-      </div>
+      </PageHeader>
 
       {/* Table */}
       <div className="flex-1 overflow-y-auto">

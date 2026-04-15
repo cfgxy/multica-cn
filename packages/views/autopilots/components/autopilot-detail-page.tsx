@@ -15,6 +15,7 @@ import { agentListOptions } from "@multica/core/workspace/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useNavigation, AppLink } from "../../navigation";
+import { PageHeader } from "../../layout/page-header";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Button } from "@multica/ui/components/ui/button";
@@ -414,7 +415,7 @@ export function AutopilotDetailPage({ autopilotId }: { autopilotId: string }) {
   return (
     <div className="flex h-full flex-col">
       {/* Header */}
-      <div className="flex h-12 shrink-0 items-center justify-between border-b px-5">
+      <PageHeader className="justify-between px-5">
         <div className="flex items-center gap-2">
           <AppLink href="/autopilots" className="text-muted-foreground hover:text-foreground transition-colors">
             <Zap className="h-4 w-4" />
@@ -447,7 +448,7 @@ export function AutopilotDetailPage({ autopilotId }: { autopilotId: string }) {
             {triggerAutopilot.isPending ? "Running..." : "Run now"}
           </Button>
         </div>
-      </div>
+      </PageHeader>
 
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-4xl mx-auto p-6 space-y-8">
