@@ -92,12 +92,14 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return err
 	}
 
-	// Fetch all user workspaces from the API and register runtimes.
+	// Fetch all user workspaces from the API and register runtimes for any
+	// that exist. Zero workspaces is a valid state — a newly-signed-up user
+	// may start the daemon before creating their first workspace. The
+	// workspaceSyncLoop below polls every 30s and will register runtimes
+	// when a workspace appears, so the daemon stays useful as a long-lived
+	// background process rather than crashing at startup.
 	if err := d.syncWorkspacesFromAPI(ctx); err != nil {
 		return err
-	}
-	if len(d.allRuntimeIDs()) == 0 {
-		return fmt.Errorf("no runtimes registered")
 	}
 
 	// Deregister runtimes on shutdown (uses a fresh context since ctx will be cancelled).
