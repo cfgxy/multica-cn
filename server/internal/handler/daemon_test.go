@@ -644,3 +644,81 @@ func TestGetDaemonWorkspaceRepos_VersionIgnoresOrderAndDescription(t *testing.T)
 		t.Fatalf("expected repos_version to change when URL set changes, got %s", version3)
 	}
 }
+
+func TestNormalizeDaemonID(t *testing.T) {
+	cases := []struct {
+		in, want string
+	}{
+		{"MacBook-Air.local", "MacBook-Air"},
+		{"MacBook-Air", "MacBook-Air"},
+		{"some.hostname.local", "some.hostname"},
+		{"local-machine", "local-machine"},
+		{".local", ""},
+		{"", ""},
+	}
+	for _, c := range cases {
+		if got := normalizeDaemonID(c.in); got != c.want {
+			t.Errorf("normalizeDaemonID(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+}
+
+func TestDaemonRegister_NormalizesLocalSuffix(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	const daemonRaw = "test-mac.local"
+	const daemonNorm = "test-mac"
+
+	// First register with the .local suffix — server should strip it before
+	// upserting, so the row lands under daemonNorm.
+	w := httptest.NewRecorder()
+	req := newDaemonTokenRequest("POST", "/api/daemon/register", map[string]any{
+		"workspace_id": testWorkspaceID,
+		"daemon_id":    daemonRaw,
+		"device_name":  "test-mac",
+		"runtimes": []map[string]any{
+			{"name": "claude-norm", "type": "claude", "version": "1.0.0", "status": "online"},
+		},
+	}, testWorkspaceID, daemonRaw)
+	testHandler.DaemonRegister(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("first register: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp map[string]any
+	json.NewDecoder(w.Body).Decode(&resp)
+	firstID := resp["runtimes"].([]any)[0].(map[string]any)["id"].(string)
+	defer testPool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE daemon_id IN ($1, $2)`, daemonRaw, daemonNorm)
+
+	var stored string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT daemon_id FROM agent_runtime WHERE id = $1`, firstID).Scan(&stored); err != nil {
+		t.Fatalf("read first runtime row: %v", err)
+	}
+	if stored != daemonNorm {
+		t.Fatalf("first register: expected stored daemon_id %q, got %q", daemonNorm, stored)
+	}
+
+	// Second register with the canonical (no-suffix) form must hit the same
+	// row via the (workspace_id, daemon_id, provider) upsert key — proving
+	// the .local-form caller and the canonical-form caller share an identity.
+	w = httptest.NewRecorder()
+	req = newDaemonTokenRequest("POST", "/api/daemon/register", map[string]any{
+		"workspace_id": testWorkspaceID,
+		"daemon_id":    daemonNorm,
+		"device_name":  "test-mac",
+		"runtimes": []map[string]any{
+			{"name": "claude-norm", "type": "claude", "version": "1.0.0", "status": "online"},
+		},
+	}, testWorkspaceID, daemonNorm)
+	testHandler.DaemonRegister(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("second register: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	json.NewDecoder(w.Body).Decode(&resp)
+	secondID := resp["runtimes"].([]any)[0].(map[string]any)["id"].(string)
+	if secondID != firstID {
+		t.Fatalf("second register: expected same runtime id %q (upsert), got %q (insert) — .local suffix not normalized", firstID, secondID)
+	}
+}

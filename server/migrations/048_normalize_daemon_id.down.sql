@@ -1,0 +1,5 @@
+-- Cannot reliably restore the `.local` suffix: the migration discarded
+-- which rows originally had it, and post-merge data may legitimately
+-- belong to a daemon that always reported `X` (not `X.local`). The only
+-- correct rollback path is to also revert PR #1070, after which existing
+-- daemons will start re-registering under their original suffixed names.

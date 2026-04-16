@@ -135,6 +135,14 @@ type daemonWorkspaceReposResponse struct {
 	ReposVersion string     `json:"repos_version"`
 }
 
+// normalizeDaemonID strips the trailing `.local` mDNS suffix that macOS
+// hostnames sometimes carry. The same normalization happens on the daemon
+// side (see server/internal/daemon/config.go), but defending again here
+// protects against pre-fix CLI versions and any non-CLI caller.
+func normalizeDaemonID(id string) string {
+	return strings.TrimSuffix(id, ".local")
+}
+
 func normalizeWorkspaceRepos(repos []RepoData) []RepoData {
 	if len(repos) == 0 {
 		return []RepoData{}
@@ -201,7 +209,7 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.WorkspaceID = strings.TrimSpace(req.WorkspaceID)
-	req.DaemonID = strings.TrimSpace(req.DaemonID)
+	req.DaemonID = normalizeDaemonID(strings.TrimSpace(req.DaemonID))
 	req.DeviceName = strings.TrimSpace(req.DeviceName)
 
 	if req.DaemonID == "" {
