@@ -200,9 +200,15 @@ func (b *codexBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 		// Wait for turn completion or context cancellation
 		select {
 		case aborted := <-turnDone:
-			if aborted {
+			switch {
+			case aborted:
 				finalStatus = "aborted"
 				finalError = "turn was aborted"
+			default:
+				if errMsg := c.getTurnError(); errMsg != "" {
+					finalStatus = "failed"
+					finalError = errMsg
+				}
 			}
 		case <-runCtx.Done():
 			if runCtx.Err() == context.DeadlineExceeded {
@@ -287,6 +293,26 @@ type codexClient struct {
 
 	usageMu sync.Mutex
 	usage   TokenUsage // accumulated from turn events
+
+	turnErrorMu sync.Mutex
+	turnError   string // captured from turn/completed status=failed or terminal error notifications
+}
+
+func (c *codexClient) setTurnError(msg string) {
+	if msg == "" {
+		return
+	}
+	c.turnErrorMu.Lock()
+	defer c.turnErrorMu.Unlock()
+	if c.turnError == "" {
+		c.turnError = msg
+	}
+}
+
+func (c *codexClient) getTurnError() string {
+	c.turnErrorMu.Lock()
+	defer c.turnErrorMu.Unlock()
+	return c.turnError
 }
 
 type pendingRPC struct {
@@ -567,6 +593,16 @@ func (c *codexClient) handleRawNotification(method string, params map[string]any
 		aborted := status == "cancelled" || status == "canceled" ||
 			status == "aborted" || status == "interrupted"
 
+		// Capture the error message from failed turns so callers can surface
+		// a real reason instead of falling back to "empty output".
+		if status == "failed" {
+			errMsg := extractNestedString(params, "turn", "error", "message")
+			if errMsg == "" {
+				errMsg = "codex turn failed"
+			}
+			c.setTurnError(errMsg)
+		}
+
 		if c.completedTurnIDs == nil {
 			c.completedTurnIDs = map[string]bool{}
 		}
@@ -584,6 +620,22 @@ func (c *codexClient) handleRawNotification(method string, params map[string]any
 
 		if c.onTurnDone != nil {
 			c.onTurnDone(aborted)
+		}
+
+	case "error":
+		// Top-level protocol error. Retrying notifications (willRetry=true) are
+		// transient reconnect attempts; only capture terminal errors so we
+		// don't stomp on a real failure later with a retry placeholder.
+		willRetry, _ := params["willRetry"].(bool)
+		errMsg := extractNestedString(params, "error", "message")
+		if errMsg == "" {
+			errMsg = extractNestedString(params, "message")
+		}
+		if errMsg != "" {
+			c.cfg.Logger.Warn("codex error notification", "message", errMsg, "will_retry", willRetry)
+			if !willRetry {
+				c.setTurnError(errMsg)
+			}
 		}
 
 	case "thread/status/changed":

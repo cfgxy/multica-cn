@@ -349,6 +349,80 @@ func TestCodexRawTurnCompletedAborted(t *testing.T) {
 	}
 }
 
+func TestCodexRawTurnCompletedFailedCapturesError(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+
+	var wasAborted bool
+	c.onTurnDone = func(aborted bool) {
+		wasAborted = aborted
+	}
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-f","status":"failed","error":{"message":"unexpected status 401 Unauthorized"}}}}`)
+
+	if wasAborted {
+		t.Fatal("failed is distinct from aborted")
+	}
+	if got := c.getTurnError(); got != "unexpected status 401 Unauthorized" {
+		t.Fatalf("expected error captured from turn.error.message, got %q", got)
+	}
+}
+
+func TestCodexRawTurnCompletedFailedWithoutMessageFallsBack(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+	c.onTurnDone = func(aborted bool) {}
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"turn/completed","params":{"turn":{"id":"turn-f","status":"failed"}}}`)
+
+	if got := c.getTurnError(); got != "codex turn failed" {
+		t.Fatalf("expected fallback message, got %q", got)
+	}
+}
+
+func TestCodexRawErrorNotificationTerminal(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"error","params":{"error":{"message":"boom"},"willRetry":false}}`)
+
+	if got := c.getTurnError(); got != "boom" {
+		t.Fatalf("expected terminal error captured, got %q", got)
+	}
+}
+
+func TestCodexRawErrorNotificationRetryingIgnored(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"error","params":{"error":{"message":"reconnecting"},"willRetry":true}}`)
+
+	if got := c.getTurnError(); got != "" {
+		t.Fatalf("retrying error should not be captured, got %q", got)
+	}
+}
+
+func TestCodexSetTurnErrorFirstWins(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+
+	c.setTurnError("first")
+	c.setTurnError("second")
+
+	if got := c.getTurnError(); got != "first" {
+		t.Fatalf("expected first-wins semantics, got %q", got)
+	}
+}
+
 func TestCodexRawItemCommandExecution(t *testing.T) {
 	t.Parallel()
 
