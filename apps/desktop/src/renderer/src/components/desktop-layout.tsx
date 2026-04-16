@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "@multica/ui/lib/utils";
 import { useTabHistory } from "@/hooks/use-tab-history";
@@ -13,6 +13,9 @@ import { AppSidebar } from "@multica/views/layout";
 import { SearchCommand, SearchTrigger } from "@multica/views/search";
 import { ChatFab, ChatWindow } from "@multica/views/chat";
 import { StepWorkspace } from "@multica/views/onboarding";
+import { WorkspaceSlugProvider } from "@multica/core/paths";
+import { getCurrentSlug, subscribeToCurrentSlug } from "@multica/core/platform";
+import { MulticaIcon } from "@multica/ui/components/common/multica-icon";
 import { DesktopNavigationProvider } from "@/platform/navigation";
 import { OnboardingGate } from "./onboarding-gate";
 import { TabBar } from "./tab-bar";
@@ -87,6 +90,12 @@ export function DesktopShell() {
   useInternalLinkHandler();
   useActiveTitleSync();
 
+  // Reactive read of current workspace slug from the platform singleton.
+  // On first mount, slug is null until WorkspaceRouteLayout (inside the tab
+  // router) sets it. Once set, the sidebar and other shell-level components
+  // can resolve workspace-scoped paths via useWorkspacePaths().
+  const slug = useSyncExternalStore(subscribeToCurrentSlug, getCurrentSlug, () => null);
+
   return (
     <DesktopNavigationProvider>
       <OnboardingGate
@@ -96,23 +105,31 @@ export function DesktopShell() {
           </div>
         )}
       >
-        <div className="flex h-screen">
-          <SidebarProvider className="flex-1">
-            <AppSidebar topSlot={<SidebarTopBar />} searchSlot={<SearchTrigger />} />
-            {/* Right side: header + content container */}
-            <div className="flex flex-1 min-w-0 flex-col">
-              <MainTopBar />
-              {/* Content area with inset styling — relative so ChatWindow/ChatFab are constrained here */}
-              <div className="relative flex flex-1 min-h-0 flex-col overflow-hidden mr-2 mb-2 ml-0.5 rounded-xl shadow-sm bg-background">
-                <TabContent />
-                <ChatWindow />
-                <ChatFab />
-              </div>
+        {slug ? (
+          <WorkspaceSlugProvider slug={slug}>
+            <div className="flex h-screen">
+              <SidebarProvider className="flex-1">
+                <AppSidebar topSlot={<SidebarTopBar />} searchSlot={<SearchTrigger />} />
+                {/* Right side: header + content container */}
+                <div className="flex flex-1 min-w-0 flex-col">
+                  <MainTopBar />
+                  {/* Content area with inset styling — relative so ChatWindow/ChatFab are constrained here */}
+                  <div className="relative flex flex-1 min-h-0 flex-col overflow-hidden mr-2 mb-2 ml-0.5 rounded-xl shadow-sm bg-background">
+                    <TabContent />
+                    <ChatWindow />
+                    <ChatFab />
+                  </div>
+                </div>
+              </SidebarProvider>
             </div>
-          </SidebarProvider>
-        </div>
-        <ModalRegistry />
-        <SearchCommand />
+            <ModalRegistry />
+            <SearchCommand />
+          </WorkspaceSlugProvider>
+        ) : (
+          <div className="flex h-screen items-center justify-center">
+            <MulticaIcon className="size-6 animate-pulse" />
+          </div>
+        )}
       </OnboardingGate>
     </DesktopNavigationProvider>
   );
