@@ -201,6 +201,62 @@ func TestGetTaskStatus_WithDaemonToken_CrossWorkspace(t *testing.T) {
 	}
 }
 
+func TestGetIssueGCCheck_WithDaemonToken_CrossWorkspace(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	// Create an issue in the test workspace. The daemon GC endpoint returns
+	// only status + updated_at, so a "done" issue exercises the typical path.
+	var issueID string
+	err := testPool.QueryRow(context.Background(), `
+		INSERT INTO issue (workspace_id, title, status, priority, creator_id, creator_type)
+		VALUES ($1, 'gc-check-auth-test-issue', 'done', 'medium', $2, 'member')
+		RETURNING id
+	`, testWorkspaceID, testUserID).Scan(&issueID)
+	if err != nil {
+		t.Fatalf("setup: create issue: %v", err)
+	}
+	defer testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID)
+
+	// Cross-workspace daemon token must be rejected with 404 — same status
+	// code as "issue not found" so there is no UUID enumeration oracle.
+	w := httptest.NewRecorder()
+	req := newDaemonTokenRequest("GET", "/api/daemon/issues/"+issueID+"/gc-check", nil,
+		"00000000-0000-0000-0000-000000000000", "attacker-daemon")
+	req = withURLParam(req, "issueId", issueID)
+
+	testHandler.GetIssueGCCheck(w, req)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("GetIssueGCCheck with cross-workspace token: expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Same-workspace daemon token succeeds and returns status + updated_at.
+	w = httptest.NewRecorder()
+	req = newDaemonTokenRequest("GET", "/api/daemon/issues/"+issueID+"/gc-check", nil,
+		testWorkspaceID, "legit-daemon")
+	req = withURLParam(req, "issueId", issueID)
+
+	testHandler.GetIssueGCCheck(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GetIssueGCCheck with correct workspace token: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp struct {
+		Status    string `json:"status"`
+		UpdatedAt string `json:"updated_at"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if resp.Status != "done" {
+		t.Fatalf("expected status %q, got %q", "done", resp.Status)
+	}
+	if resp.UpdatedAt == "" {
+		t.Fatal("expected updated_at to be set")
+	}
+}
+
 func TestGetDaemonWorkspaceRepos_WithDaemonToken(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
