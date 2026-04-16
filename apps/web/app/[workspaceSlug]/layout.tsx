@@ -2,11 +2,12 @@
 
 import { use, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { useRouter } from "next/navigation";
-import { WorkspaceSlugProvider, paths } from "@multica/core/paths";
+import { WorkspaceSlugProvider } from "@multica/core/paths";
 import { workspaceBySlugOptions } from "@multica/core/workspace";
 import { setCurrentWorkspace } from "@multica/core/platform";
 import { useAuthStore } from "@multica/core/auth";
+import { NoAccessPage } from "@multica/views/workspace/no-access-page";
+import { useWorkspaceSeen } from "@multica/views/workspace/use-workspace-seen";
 
 export default function WorkspaceLayout({
   children,
@@ -18,7 +19,6 @@ export default function WorkspaceLayout({
   const { workspaceSlug } = use(params);
   const user = useAuthStore((s) => s.user);
   const isAuthLoading = useAuthStore((s) => s.isLoading);
-  const router = useRouter();
 
   // Resolve workspace by slug from the React Query list cache.
   // Enabled only when user is authenticated — otherwise the list query isn't seeded.
@@ -54,20 +54,27 @@ export default function WorkspaceLayout({
     }
   }, [workspace, workspaceSlug]);
 
-  // Slug doesn't match any workspace the user has access to → bounce to `/`
-  // and let the root IndexRedirect pick the first valid workspace (falls to
-  // onboarding only when the list is truly empty).
-  useEffect(() => {
-    if (!user) return;
-    if (listFetched && !workspace) router.replace(paths.root());
-  }, [user, listFetched, workspace, router]);
+  // Remember whether this slug has resolved before. Used below to avoid
+  // flashing NoAccessPage during active workspace removal (delete, leave,
+  // or realtime eviction) — in those cases the caller is navigating away
+  // and we just need to hold null briefly.
+  const hasBeenSeen = useWorkspaceSeen(workspaceSlug, !!workspace);
 
   if (isAuthLoading) return null;
   // Don't render children until workspace is resolved. useWorkspaceId()
   // throws when the list hasn't populated or the slug is unknown — gating
   // here makes that invariant hold for every descendant.
   if (!listFetched) return null;
-  if (!workspace) return null;
+  if (!workspace) {
+    // If we've resolved this slug before in this session, it was just
+    // removed from our list (deleted/left/evicted). A navigate is almost
+    // certainly in flight — render null to avoid a NoAccessPage flash.
+    if (hasBeenSeen) return null;
+    // Otherwise: the URL points at a workspace the user never had access
+    // to. Show explicit feedback instead of silently redirecting. Doesn't
+    // distinguish 404 vs 403 to avoid letting attackers enumerate slugs.
+    return <NoAccessPage />;
+  }
 
   return (
     <WorkspaceSlugProvider slug={workspaceSlug}>
