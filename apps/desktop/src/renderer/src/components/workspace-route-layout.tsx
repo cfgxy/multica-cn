@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import { Outlet, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
@@ -39,18 +38,6 @@ export function WorkspaceRouteLayout() {
   if (workspace && workspaceSlug) {
     setCurrentWorkspace(workspaceSlug, workspace.id);
   }
-
-  // Double-write legacy localStorage key for rollback compatibility — a
-  // pre-refactor build reads it to pick the initial workspace. Placed in
-  // an effect so repeated renders don't hammer localStorage.
-  useEffect(() => {
-    if (!workspace) return;
-    try {
-      localStorage.setItem("multica_workspace_id", workspace.id);
-    } catch {
-      // non-critical
-    }
-  }, [workspace]);
 
   // Remember whether this slug has resolved before (see hook docs). Gates
   // the NoAccessPage render below so active workspace removal doesn't

@@ -69,27 +69,37 @@ function AppContent() {
     })();
   }, [user]);
 
-  // When the user creates their first workspace, the daemon may have been
-  // running in an idle state (post daemon.go bootstrap fix: zero workspaces
-  // no longer aborts Run) or may have been started before the workspace
-  // existed. Either way, workspaceSyncLoop's next tick is up to 30s away —
-  // restart the daemon now so the new workspace is picked up immediately.
-  const { data: workspaces } = useQuery({
+  // When a user who started the session with zero workspaces creates their
+  // first one, restart the daemon so it picks up the new workspace
+  // immediately (otherwise workspaceSyncLoop's next 30s tick would be the
+  // earliest pickup point). Specifically scoped to "started empty" because
+  // account switches (user A logout → user B login) should not trigger a
+  // daemon restart here — daemon-manager already restarts on user change
+  // via syncToken.
+  const { data: workspaces, isFetched: workspaceListFetched } = useQuery({
     ...workspaceListOptions(),
     enabled: !!user,
   });
   const wsCount = workspaces?.length ?? 0;
-  const prevCountRef = useRef(0);
+  // null = undecided (pre-login or list hasn't settled yet)
+  // true  = session started with zero workspaces; next transition to >=1 triggers restart
+  // false = session started with >=1 workspace, OR we've already restarted; skip
+  const sessionStartedEmptyRef = useRef<boolean | null>(null);
   useEffect(() => {
     if (!user) {
-      prevCountRef.current = 0;
+      sessionStartedEmptyRef.current = null;
       return;
     }
-    if (prevCountRef.current === 0 && wsCount >= 1) {
-      void window.daemonAPI.restart();
+    if (!workspaceListFetched) return;
+    if (sessionStartedEmptyRef.current === null) {
+      sessionStartedEmptyRef.current = wsCount === 0;
+      return;
     }
-    prevCountRef.current = wsCount;
-  }, [user, wsCount]);
+    if (sessionStartedEmptyRef.current && wsCount >= 1) {
+      void window.daemonAPI.restart();
+      sessionStartedEmptyRef.current = false;
+    }
+  }, [user, workspaceListFetched, wsCount]);
 
   if (isLoading || bootstrapping) {
     return (

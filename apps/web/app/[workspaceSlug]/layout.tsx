@@ -35,23 +35,13 @@ export default function WorkspaceLayout({
     setCurrentWorkspace(workspaceSlug, workspace.id);
   }
 
-  // Cookie write (last_workspace_slug) — proxy reads it on next page load.
-  // ALSO write legacy localStorage["multica_workspace_id"] for forward/back
-  // compatibility: if this version ever gets reverted to the pre-refactor
-  // build, the legacy code reads that localStorage key to know which
-  // workspace to attach to API requests. Without double-writing, a rollback
-  // would leave returning users with empty data (API calls would have no
-  // X-Workspace-ID header). Forward compatible — new code ignores this key.
+  // Cookie write (last_workspace_slug) — proxy reads it on next page load
+  // to redirect unauthenticated-URL hits to the user's last workspace.
   useEffect(() => {
     if (!workspace || typeof document === "undefined") return;
     const oneYear = 60 * 60 * 24 * 365;
     const secure = location.protocol === "https:" ? "; Secure" : "";
     document.cookie = `last_workspace_slug=${encodeURIComponent(workspaceSlug)}; path=/; max-age=${oneYear}; SameSite=Lax${secure}`;
-    try {
-      localStorage.setItem("multica_workspace_id", workspace.id);
-    } catch {
-      // localStorage may be unavailable in restricted contexts; non-critical.
-    }
   }, [workspace, workspaceSlug]);
 
   // Remember whether this slug has resolved before. Used below to avoid
