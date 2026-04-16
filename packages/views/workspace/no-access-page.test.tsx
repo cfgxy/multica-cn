@@ -3,12 +3,21 @@ import { render, screen, fireEvent } from "@testing-library/react";
 import { NoAccessPage } from "./no-access-page";
 
 const navigate = vi.fn();
+const logout = vi.fn();
+
 vi.mock("../navigation", () => ({
   useNavigation: () => ({ push: navigate, replace: navigate }),
 }));
 
+vi.mock("../auth", () => ({
+  useLogout: () => logout,
+}));
+
 describe("NoAccessPage", () => {
-  beforeEach(() => navigate.mockReset());
+  beforeEach(() => {
+    navigate.mockReset();
+    logout.mockReset();
+  });
 
   it("renders generic message that doesn't leak existence", () => {
     render(<NoAccessPage />);
@@ -23,11 +32,14 @@ describe("NoAccessPage", () => {
     expect(navigate).toHaveBeenCalledWith("/");
   });
 
-  it("navigates to login on 'Sign in as a different user'", () => {
+  it("fully logs out on 'Sign in as a different user' instead of just navigating", () => {
     render(<NoAccessPage />);
     fireEvent.click(
       screen.getByRole("button", { name: /sign in as a different user/i }),
     );
-    expect(navigate).toHaveBeenCalledWith("/login");
+    expect(logout).toHaveBeenCalledTimes(1);
+    // Should NOT just navigate to /login — that would leave the session
+    // cookie + auth state intact and AuthInitializer would re-auth.
+    expect(navigate).not.toHaveBeenCalledWith("/login");
   });
 });

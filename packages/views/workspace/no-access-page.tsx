@@ -3,6 +3,7 @@
 import { Button } from "@multica/ui/components/ui/button";
 import { paths } from "@multica/core/paths";
 import { useNavigation } from "../navigation";
+import { useLogout } from "../auth";
 
 /**
  * Rendered when the workspace slug in the URL does not resolve to a workspace
@@ -12,6 +13,7 @@ import { useNavigation } from "../navigation";
  */
 export function NoAccessPage() {
   const nav = useNavigation();
+  const logout = useLogout();
   return (
     <div className="flex min-h-svh flex-col items-center justify-center gap-6 px-6 text-center">
       <div className="space-y-2">
@@ -26,7 +28,7 @@ export function NoAccessPage() {
         <Button onClick={() => nav.push(paths.root())}>
           Go to my workspaces
         </Button>
-        <Button variant="outline" onClick={() => nav.push(paths.login())}>
+        <Button variant="outline" onClick={logout}>
           Sign in as a different user
         </Button>
       </div>
