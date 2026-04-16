@@ -109,7 +109,14 @@ function createWindow(): void {
 // is derived from the userData path. (Same approach VS Code uses for
 // Stable / Insiders coexistence.)
 
-const DEV_APP_NAME = "Multica Canary";
+// DESKTOP_APP_SUFFIX lets parallel worktrees run dev Electron side-by-side
+// without fighting for the shared single-instance lock. The suffix is
+// appended to the app name + userData path, so each worktree gets its own
+// lock file. Default (no env var) keeps behavior unchanged — the common
+// single-worktree case still lands at "Multica Canary".
+const DEV_APP_NAME = process.env.DESKTOP_APP_SUFFIX
+  ? `Multica Canary ${process.env.DESKTOP_APP_SUFFIX}`
+  : "Multica Canary";
 
 if (is.dev) {
   app.setName(DEV_APP_NAME);
