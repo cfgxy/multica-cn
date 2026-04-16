@@ -33,6 +33,13 @@ export function WorkspaceRouteLayout() {
   if (workspace && workspaceSlug && syncedSlugRef.current !== workspaceSlug) {
     setCurrentWorkspace(workspaceSlug, workspace.id);
     rehydrateAllWorkspaceStores();
+    // Double-write legacy localStorage key for rollback compatibility — see
+    // apps/web/app/[workspaceSlug]/layout.tsx for the full rationale.
+    try {
+      localStorage.setItem("multica_workspace_id", workspace.id);
+    } catch {
+      // non-critical
+    }
     syncedSlugRef.current = workspaceSlug;
   }
 
