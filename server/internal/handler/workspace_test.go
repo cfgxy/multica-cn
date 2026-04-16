@@ -9,27 +9,60 @@ import (
 
 func TestCreateWorkspace_RejectsReservedSlug(t *testing.T) {
 	reserved := []string{
-		// Auth + onboarding (covered by migration 043 audit)
+		// Auth flow
 		"login",
-		"onboarding",
-		"new-workspace",
-		"invite",
-		"api",
-		"settings",
-		"admin",
-		"auth",
-		"signup",
 		"logout",
-		"_next",
-		"favicon.ico",
-		"robots.txt",
-		"sitemap.xml",
-		// Dashboard route segments (covered by migration 045 audit)
+		"signin",
+		"signout",
+		"signup",
+		"auth",
+		"oauth",
+		"callback",
+		"invite",
+		"verify",
+		"reset",
+		"password",
+		"onboarding",
+
+		// Platform routes
+		"api",
+		"admin",
+		"help",
+		"about",
+		"pricing",
+		"docs",
+		"support",
+		"status",
+		"legal",
+		"privacy",
+		"terms",
+		"security",
+
+		// Dashboard segments
 		"issues",
 		"projects",
 		"agents",
 		"inbox",
 		"my-issues",
+		"settings",
+		"workspaces",
+		"teams",
+
+		// RFC 2142
+		"postmaster",
+		"abuse",
+		"noreply",
+
+		// Hostname confusables
+		"mail",
+		"static",
+		"cdn",
+
+		// Web standards
+		"_next",
+		"favicon.ico",
+		"robots.txt",
+		"sitemap.xml",
 	}
 
 	for _, slug := range reserved {

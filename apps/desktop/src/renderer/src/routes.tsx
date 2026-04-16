@@ -76,7 +76,7 @@ function NewWorkspaceRoute() {
  * duplicate fetches across tabs — each tab's memory router hits this
  * component independently but the query is deduped.
  *
- * Sends first-time users without any workspace to /new-workspace,
+ * Sends first-time users without any workspace to /workspaces/new,
  * everyone else to their first workspace's issues page. Persisted tab
  * paths that already carry a workspace slug bypass this component
  * entirely.
@@ -84,7 +84,7 @@ function NewWorkspaceRoute() {
 function IndexRedirect() {
   const { data: wsList, isFetched } = useQuery(workspaceListOptions());
 
-  // Wait for the query to settle so we don't redirect to /new-workspace
+  // Wait for the query to settle so we don't redirect to /workspaces/new
   // on the initial render before the seeded/fetched data arrives.
   if (!isFetched) return null;
 
@@ -108,7 +108,7 @@ function InviteRoute() {
  * Structure mirrors the web app's [workspaceSlug]/... layout: all dashboard
  * pages live under /:workspaceSlug, with WorkspaceRouteLayout resolving the
  * slug to a workspace and syncing side-effects (api client, persist namespace,
- * Zustand mirror). Global (pre-workspace) routes — new-workspace and invite —
+ * Zustand mirror). Global (pre-workspace) routes — workspaces/new and invite —
  * sit at the top level alongside the workspace wrapper.
  */
 export const appRoutes: RouteObject[] = [
@@ -118,10 +118,10 @@ export const appRoutes: RouteObject[] = [
       // Top-level index: no slug yet. `IndexRedirect` reads the workspace
       // list from React Query cache (seeded by AuthInitializer on reopen
       // or App.tsx on deep-link login) and bounces to the first
-      // workspace's issues page — or /new-workspace if the user has none.
+      // workspace's issues page — or /workspaces/new if the user has none.
       { index: true, element: <IndexRedirect /> },
       {
-        path: "new-workspace",
+        path: "workspaces/new",
         element: <NewWorkspaceRoute />,
         handle: { title: "Create Workspace" },
       },
