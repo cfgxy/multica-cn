@@ -28,8 +28,9 @@ function LoginPageContent() {
   // the user's workspace list.
   const nextUrl = searchParams.get("next");
 
-  // Already authenticated — honor ?next= or fall back to first workspace /
-  // onboarding. Skip this entire path when the user arrived to authorize the CLI.
+  // Already authenticated — honor ?next= or fall back to first workspace
+  // (or /new-workspace if the user has none). Skip this entire path when
+  // the user arrived to authorize the CLI.
   useEffect(() => {
     if (isLoading || !user || cliCallbackRaw) return;
     if (nextUrl) {

@@ -45,9 +45,10 @@ export function WorkspaceTab() {
 
   /**
    * After leaving/deleting the current workspace, send the user to a safe URL:
-   * another workspace they still have access to, or onboarding if they have none.
-   * The list is freshly fetched (staleTime: 0) because the cache still contains
-   * the just-removed workspace until the background invalidation resolves.
+   * another workspace they still have access to, or /new-workspace if none
+   * remain. The list is freshly fetched (staleTime: 0) because the cache still
+   * contains the just-removed workspace until the background invalidation
+   * resolves.
    */
   const navigateAwayFromCurrentWorkspace = async () => {
     const wsList = await qc.fetchQuery({

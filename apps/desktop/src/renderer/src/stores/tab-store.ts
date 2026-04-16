@@ -63,7 +63,7 @@ const ROUTE_ICONS: Record<string, string> = {
  *
  * Path shape after the workspace URL refactor:
  *  - workspace-scoped: `/{workspaceSlug}/{route}/...` → use segment index 1
- *  - global (onboarding/invite/auth/login): `/{route}/...` → use segment index 0
+ *  - global (new-workspace/invite/auth/login): `/{route}/...` → use segment index 0
  *
  * `isGlobalPath` is the single source of truth for which prefixes are global.
  */

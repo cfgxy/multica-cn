@@ -20,8 +20,8 @@ function AppContent() {
   // as soon as getMe resolves, which would cause DesktopShell to mount
   // before the workspace list is hydrated and briefly see `!workspace`.
   // This local flag keeps the loading screen up until the whole chain
-  // finishes, so the shell's "needs onboarding?" check gets a definitive
-  // workspace state on first render.
+  // finishes, so IndexRedirect gets a definitive workspace state on
+  // first render.
   const [bootstrapping, setBootstrapping] = useState(false);
 
   // Tell the main process which backend URL we talk to, so daemon-manager

@@ -120,7 +120,7 @@ function InviteRoute() {
  * Structure mirrors the web app's [workspaceSlug]/... layout: all dashboard
  * pages live under /:workspaceSlug, with WorkspaceRouteLayout resolving the
  * slug to a workspace and syncing side-effects (api client, persist namespace,
- * Zustand mirror). Global (pre-workspace) routes — onboarding and invite —
+ * Zustand mirror). Global (pre-workspace) routes — new-workspace and invite —
  * sit at the top level alongside the workspace wrapper.
  */
 export const appRoutes: RouteObject[] = [

@@ -261,10 +261,11 @@ export function useRealtimeSync(
     // --- Side-effect handlers (toast, navigation) ---
 
     // After the current workspace disappears (deleted or we were kicked out),
-    // navigate to another workspace the user still has access to, or to
-    // onboarding. We use a full-page navigation: this reliably tears down any
-    // in-flight queries / subscriptions tied to the dead workspace without
-    // relying on framework-specific routers from here in core.
+    // navigate to another workspace the user still has access to, or to the
+    // create-workspace page. We use a full-page navigation: this reliably
+    // tears down any in-flight queries / subscriptions tied to the dead
+    // workspace without relying on framework-specific routers from here in
+    // core.
     const relocateAfterWorkspaceLoss = async (lostWsId: string) => {
       const wsList = await qc.fetchQuery({
         ...workspaceListOptions(),

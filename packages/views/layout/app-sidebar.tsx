@@ -273,7 +273,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
     }
     // Clear the last-workspace-slug cookie. Otherwise on a shared device the
     // next user gets redirected by the proxy to the previous user's last
-    // workspace (then bounced to /onboarding by the layout — flash + confusing).
+    // workspace (then bounced to NoAccessPage by the layout — confusing).
     if (typeof document !== "undefined") {
       document.cookie = "last_workspace_slug=; path=/; max-age=0; SameSite=Lax";
     }

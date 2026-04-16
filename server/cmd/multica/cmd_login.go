@@ -77,7 +77,7 @@ func autoWatchWorkspaces(cmd *cobra.Command) error {
 
 	if len(workspaces) == 0 {
 		var err error
-		workspaces, err = waitForOnboarding(cmd, client)
+		workspaces, err = waitForWorkspaceCreation(cmd, client)
 		if err != nil {
 			return err
 		}
@@ -110,9 +110,9 @@ func autoWatchWorkspaces(cmd *cobra.Command) error {
 	return nil
 }
 
-// waitForOnboarding opens the web onboarding page and polls until the user
-// creates a workspace, returning the new workspace list.
-func waitForOnboarding(cmd *cobra.Command, client *cli.APIClient) ([]struct {
+// waitForWorkspaceCreation opens the web workspace-creation page and polls
+// until the user creates a workspace, returning the new workspace list.
+func waitForWorkspaceCreation(cmd *cobra.Command, client *cli.APIClient) ([]struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
 }, error) {
