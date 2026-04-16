@@ -15,7 +15,6 @@ import { ChatFab, ChatWindow } from "@multica/views/chat";
 import { StepWorkspace } from "@multica/views/onboarding";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
 import { getCurrentSlug, subscribeToCurrentSlug } from "@multica/core/platform";
-import { MulticaIcon } from "@multica/ui/components/common/multica-icon";
 import { DesktopNavigationProvider } from "@/platform/navigation";
 import { OnboardingGate } from "./onboarding-gate";
 import { TabBar } from "./tab-bar";
@@ -105,31 +104,31 @@ export function DesktopShell() {
           </div>
         )}
       >
-        {slug ? (
-          <WorkspaceSlugProvider slug={slug}>
-            <div className="flex h-screen">
-              <SidebarProvider className="flex-1">
-                <AppSidebar topSlot={<SidebarTopBar />} searchSlot={<SearchTrigger />} />
-                {/* Right side: header + content container */}
-                <div className="flex flex-1 min-w-0 flex-col">
-                  <MainTopBar />
-                  {/* Content area with inset styling — relative so ChatWindow/ChatFab are constrained here */}
-                  <div className="relative flex flex-1 min-h-0 flex-col overflow-hidden mr-2 mb-2 ml-0.5 rounded-xl shadow-sm bg-background">
-                    <TabContent />
-                    <ChatWindow />
-                    <ChatFab />
-                  </div>
+        {/* WorkspaceSlugProvider accepts null — components that need slug
+            use useWorkspaceSlug() (nullable) or useRequiredWorkspaceSlug()
+            (throws). TabContent MUST always render so the tab router can
+            mount WorkspaceRouteLayout, which calls setCurrentWorkspace()
+            to populate the slug. The sidebar gates on slug being present
+            to avoid the useRequiredWorkspaceSlug throw. */}
+        <WorkspaceSlugProvider slug={slug}>
+          <div className="flex h-screen">
+            <SidebarProvider className="flex-1">
+              {slug && <AppSidebar topSlot={<SidebarTopBar />} searchSlot={<SearchTrigger />} />}
+              {/* Right side: header + content container */}
+              <div className="flex flex-1 min-w-0 flex-col">
+                <MainTopBar />
+                {/* Content area with inset styling — relative so ChatWindow/ChatFab are constrained here */}
+                <div className="relative flex flex-1 min-h-0 flex-col overflow-hidden mr-2 mb-2 ml-0.5 rounded-xl shadow-sm bg-background">
+                  <TabContent />
+                  {slug && <ChatWindow />}
+                  {slug && <ChatFab />}
                 </div>
-              </SidebarProvider>
-            </div>
-            <ModalRegistry />
-            <SearchCommand />
-          </WorkspaceSlugProvider>
-        ) : (
-          <div className="flex h-screen items-center justify-center">
-            <MulticaIcon className="size-6 animate-pulse" />
+              </div>
+            </SidebarProvider>
           </div>
-        )}
+          {slug && <ModalRegistry />}
+          {slug && <SearchCommand />}
+        </WorkspaceSlugProvider>
       </OnboardingGate>
     </DesktopNavigationProvider>
   );
