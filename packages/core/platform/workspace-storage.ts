@@ -11,6 +11,7 @@ let _currentWsId: string | null = null;
 const _rehydrateFns: Array<() => void> = [];
 const _slugSubscribers = new Set<(slug: string | null) => void>();
 let _pendingNotify = false;
+let _pendingRehydrate = false;
 
 /**
  * Set both the current workspace slug and UUID at once.
@@ -70,11 +71,25 @@ export function registerForWorkspaceRehydration(fn: () => void) {
   _rehydrateFns.push(fn);
 }
 
-/** Rehydrate all registered workspace-scoped persist stores from the new namespace. */
+/**
+ * Rehydrate all registered workspace-scoped persist stores from the new
+ * namespace. Deferred to a microtask + deduplicated for the same reason
+ * as slug subscriber notification: Zustand persist rehydrate synchronously
+ * setState()s the store, which schedules updates on any component
+ * subscribed to that store. Calling this from a component's render phase
+ * would violate React 19's "no cross-component updates during render"
+ * rule. Persist stores can tolerate one microtask of staleness — they're
+ * UI preferences, not security-critical state.
+ */
 export function rehydrateAllWorkspaceStores() {
-  for (const fn of _rehydrateFns) {
-    fn();
-  }
+  if (_pendingRehydrate) return;
+  _pendingRehydrate = true;
+  queueMicrotask(() => {
+    _pendingRehydrate = false;
+    for (const fn of _rehydrateFns) {
+      fn();
+    }
+  });
 }
 
 /**
