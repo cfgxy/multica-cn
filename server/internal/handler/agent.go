@@ -155,7 +155,7 @@ func taskToResponse(t db.AgentTaskQueue) AgentTaskResponse {
 }
 
 func (h *Handler) ListAgents(w http.ResponseWriter, r *http.Request) {
-	workspaceID := resolveWorkspaceID(r)
+	workspaceID := h.resolveWorkspaceID(r)
 	member, ok := h.workspaceMember(w, r, workspaceID)
 	if !ok {
 		return
@@ -251,7 +251,7 @@ type CreateAgentRequest struct {
 }
 
 func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
-	workspaceID := resolveWorkspaceID(r)
+	workspaceID := h.resolveWorkspaceID(r)
 
 	var req CreateAgentRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {

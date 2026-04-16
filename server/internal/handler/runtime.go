@@ -204,7 +204,7 @@ func (h *Handler) GetRuntimeTaskActivity(w http.ResponseWriter, r *http.Request)
 
 // GetWorkspaceUsageByDay returns daily token usage aggregated by model for the workspace.
 func (h *Handler) GetWorkspaceUsageByDay(w http.ResponseWriter, r *http.Request) {
-	workspaceID := resolveWorkspaceID(r)
+	workspaceID := h.resolveWorkspaceID(r)
 	since := parseSinceParam(r, 30)
 
 	rows, err := h.Queries.GetWorkspaceUsageByDay(r.Context(), db.GetWorkspaceUsageByDayParams{
@@ -244,7 +244,7 @@ func (h *Handler) GetWorkspaceUsageByDay(w http.ResponseWriter, r *http.Request)
 
 // GetWorkspaceUsageSummary returns total token usage aggregated by model for the workspace.
 func (h *Handler) GetWorkspaceUsageSummary(w http.ResponseWriter, r *http.Request) {
-	workspaceID := resolveWorkspaceID(r)
+	workspaceID := h.resolveWorkspaceID(r)
 	since := parseSinceParam(r, 30)
 
 	rows, err := h.Queries.GetWorkspaceUsageSummary(r.Context(), db.GetWorkspaceUsageSummaryParams{
@@ -293,7 +293,7 @@ func parseSinceParam(r *http.Request, defaultDays int) pgtype.Timestamptz {
 }
 
 func (h *Handler) ListAgentRuntimes(w http.ResponseWriter, r *http.Request) {
-	workspaceID := resolveWorkspaceID(r)
+	workspaceID := h.resolveWorkspaceID(r)
 
 	var runtimes []db.AgentRuntime
 	var err error

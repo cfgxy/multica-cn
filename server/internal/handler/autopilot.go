@@ -175,7 +175,7 @@ type UpdateAutopilotTriggerRequest struct {
 // ── Handlers ────────────────────────────────────────────────────────────────
 
 func (h *Handler) ListAutopilots(w http.ResponseWriter, r *http.Request) {
-	workspaceID := resolveWorkspaceID(r)
+	workspaceID := h.resolveWorkspaceID(r)
 
 	var statusFilter pgtype.Text
 	if s := r.URL.Query().Get("status"); s != "" {
@@ -200,7 +200,7 @@ func (h *Handler) ListAutopilots(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) GetAutopilot(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	workspaceID := resolveWorkspaceID(r)
+	workspaceID := h.resolveWorkspaceID(r)
 
 	autopilot, err := h.Queries.GetAutopilotInWorkspace(r.Context(), db.GetAutopilotInWorkspaceParams{
 		ID:          parseUUID(id),
@@ -252,7 +252,7 @@ func (h *Handler) CreateAutopilot(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	workspaceID := resolveWorkspaceID(r)
+	workspaceID := h.resolveWorkspaceID(r)
 	userID, ok := requireUserID(w, r)
 	if !ok {
 		return
@@ -303,7 +303,7 @@ func (h *Handler) CreateAutopilot(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	workspaceID := resolveWorkspaceID(r)
+	workspaceID := h.resolveWorkspaceID(r)
 
 	prev, err := h.Queries.GetAutopilotInWorkspace(r.Context(), db.GetAutopilotInWorkspaceParams{
 		ID:          parseUUID(id),
@@ -383,7 +383,7 @@ func (h *Handler) UpdateAutopilot(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) DeleteAutopilot(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	workspaceID := resolveWorkspaceID(r)
+	workspaceID := h.resolveWorkspaceID(r)
 
 	if _, err := h.Queries.GetAutopilotInWorkspace(r.Context(), db.GetAutopilotInWorkspaceParams{
 		ID:          parseUUID(id),
@@ -411,7 +411,7 @@ func (h *Handler) DeleteAutopilot(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) CreateAutopilotTrigger(w http.ResponseWriter, r *http.Request) {
 	autopilotID := chi.URLParam(r, "id")
-	workspaceID := resolveWorkspaceID(r)
+	workspaceID := h.resolveWorkspaceID(r)
 
 	ap, err := h.Queries.GetAutopilotInWorkspace(r.Context(), db.GetAutopilotInWorkspaceParams{
 		ID:          parseUUID(autopilotID),
@@ -487,7 +487,7 @@ func (h *Handler) CreateAutopilotTrigger(w http.ResponseWriter, r *http.Request)
 func (h *Handler) UpdateAutopilotTrigger(w http.ResponseWriter, r *http.Request) {
 	autopilotID := chi.URLParam(r, "id")
 	triggerID := chi.URLParam(r, "triggerId")
-	workspaceID := resolveWorkspaceID(r)
+	workspaceID := h.resolveWorkspaceID(r)
 
 	// Verify autopilot belongs to workspace.
 	if _, err := h.Queries.GetAutopilotInWorkspace(r.Context(), db.GetAutopilotInWorkspaceParams{
@@ -575,7 +575,7 @@ func (h *Handler) UpdateAutopilotTrigger(w http.ResponseWriter, r *http.Request)
 func (h *Handler) DeleteAutopilotTrigger(w http.ResponseWriter, r *http.Request) {
 	autopilotID := chi.URLParam(r, "id")
 	triggerID := chi.URLParam(r, "triggerId")
-	workspaceID := resolveWorkspaceID(r)
+	workspaceID := h.resolveWorkspaceID(r)
 
 	if _, err := h.Queries.GetAutopilotInWorkspace(r.Context(), db.GetAutopilotInWorkspaceParams{
 		ID:          parseUUID(autopilotID),
@@ -612,7 +612,7 @@ func (h *Handler) DeleteAutopilotTrigger(w http.ResponseWriter, r *http.Request)
 
 func (h *Handler) ListAutopilotRuns(w http.ResponseWriter, r *http.Request) {
 	autopilotID := chi.URLParam(r, "id")
-	workspaceID := resolveWorkspaceID(r)
+	workspaceID := h.resolveWorkspaceID(r)
 
 	if _, err := h.Queries.GetAutopilotInWorkspace(r.Context(), db.GetAutopilotInWorkspaceParams{
 		ID:          parseUUID(autopilotID),
@@ -659,7 +659,7 @@ func (h *Handler) ListAutopilotRuns(w http.ResponseWriter, r *http.Request) {
 
 func (h *Handler) TriggerAutopilot(w http.ResponseWriter, r *http.Request) {
 	id := chi.URLParam(r, "id")
-	workspaceID := resolveWorkspaceID(r)
+	workspaceID := h.resolveWorkspaceID(r)
 
 	autopilot, err := h.Queries.GetAutopilotInWorkspace(r.Context(), db.GetAutopilotInWorkspaceParams{
 		ID:          parseUUID(id),
