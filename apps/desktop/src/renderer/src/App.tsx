@@ -87,14 +87,18 @@ function AppContent() {
   // Tabs survive across app restarts and account switches (persisted to
   // localStorage `multica_tabs`), so a tab path like `/naiyuan/issues` may
   // reference a workspace the current user can't access — showing
-  // NoAccessPage every time they open the app. Reset any such tab to `/`
-  // so IndexRedirect picks a valid workspace. Runs on every workspace list
-  // change (login, refetch, realtime workspace:deleted); idempotent.
-  useEffect(() => {
-    if (!workspaces) return;
+  // NoAccessPage every time they open the app.
+  //
+  // Run synchronously in render phase rather than in useEffect so the first
+  // render already sees validated tabs. useEffect runs AFTER commit, which
+  // means the initial render would briefly show NoAccessPage before the
+  // effect resets the tab. Zustand supports render-phase setState; the
+  // validator is idempotent (exits early if nothing changed) so this
+  // doesn't loop.
+  if (workspaces) {
     const validSlugs = new Set(workspaces.map((w) => w.slug));
     useTabStore.getState().validateWorkspaceSlugs(validSlugs);
-  }, [workspaces]);
+  }
   // null = undecided (pre-login or list hasn't settled yet)
   // true  = session started with zero workspaces; next transition to >=1 triggers restart
   // false = session started with >=1 workspace, OR we've already restarted; skip

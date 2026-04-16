@@ -3,7 +3,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import { arrayMove } from "@dnd-kit/sortable";
 import { createPersistStorage, defaultStorage } from "@multica/core/platform";
 import { createSafeId } from "@multica/core/utils";
-import { isGlobalPath } from "@multica/core/paths";
+import { isGlobalPath, isReservedSlug } from "@multica/core/paths";
 import type { DataRouter } from "react-router-dom";
 import { createTabRouter } from "../routes";
 
@@ -104,13 +104,44 @@ function createId(): string {
   return createSafeId();
 }
 
+/**
+ * Defensive: catch tab paths that were constructed without a workspace slug
+ * (e.g. a hardcoded "/issues" leftover from before the URL refactor). Such
+ * paths would get matched as `workspaceSlug="issues"` by the router and
+ * render NoAccessPage. Sanitize by falling back to "/" (IndexRedirect picks
+ * a valid workspace).
+ *
+ * Passes through:
+ *  - "/" and global paths (/login, /workspaces/new, /invite/..., /auth/...)
+ *  - workspace-scoped paths whose first segment is not a reserved word
+ *
+ * Rejects (and rewrites to "/"):
+ *  - Paths whose first segment is a reserved slug (=/=workspace slug), which
+ *    means the caller forgot to prefix the workspace. Logs a warning so the
+ *    buggy call site is easy to find.
+ */
+function sanitizeTabPath(path: string): string {
+  if (path === DEFAULT_PATH || isGlobalPath(path)) return path;
+  const firstSegment = path.split("/").filter(Boolean)[0] ?? "";
+  if (isReservedSlug(firstSegment)) {
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[tab-store] tab path "${path}" starts with reserved slug "${firstSegment}" — ` +
+        `caller likely forgot the workspace prefix. Falling back to "/".`,
+    );
+    return DEFAULT_PATH;
+  }
+  return path;
+}
+
 function makeTab(path: string, title: string, icon: string): Tab {
+  const safePath = sanitizeTabPath(path);
   return {
     id: createId(),
-    path,
+    path: safePath,
     title,
     icon,
-    router: createTabRouter(path),
+    router: createTabRouter(safePath),
     historyIndex: 0,
     historyLength: 1,
   };

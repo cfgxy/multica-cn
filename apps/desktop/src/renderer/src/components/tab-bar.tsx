@@ -30,6 +30,8 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { cn } from "@multica/ui/lib/utils";
 import { useTabStore, resolveRouteIcon, type Tab } from "@/stores/tab-store";
+import { getCurrentSlug } from "@multica/core/platform";
+import { paths } from "@multica/core/paths";
 
 const TAB_ICONS: Record<string, LucideIcon> = {
   Inbox,
@@ -124,10 +126,17 @@ function NewTabButton() {
   const setActiveTab = useTabStore((s) => s.setActiveTab);
 
   const handleClick = () => {
-    const path = "/issues";
+    // Inherit the current workspace. Terminal/IDE convention: new tab opens
+    // in the same context as the current tab. Falls back to "/" (→
+    // IndexRedirect → first workspace / /workspaces/new) when there is no
+    // current workspace (e.g. fresh launch before any tab has resolved, or
+    // the active tab is on a global route like /login).
+    const currentSlug = getCurrentSlug();
+    const path = currentSlug
+      ? paths.workspace(currentSlug).issues()
+      : "/";
     const tabId = addTab(path, "Issues", resolveRouteIcon(path));
     setActiveTab(tabId);
-    // No navigate() — new tab's router starts at /issues automatically
   };
 
   return (
