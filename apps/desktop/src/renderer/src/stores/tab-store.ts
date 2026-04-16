@@ -39,6 +39,15 @@ interface TabStore {
   updateTabHistory: (tabId: string, historyIndex: number, historyLength: number) => void;
   /** Reorder tabs by moving one from fromIndex to toIndex. Preserves router/history. */
   moveTab: (fromIndex: number, toIndex: number) => void;
+  /**
+   * Reset any tab whose first path segment references a workspace slug the
+   * current user doesn't have access to. Called after login + workspace list
+   * is populated (and on every subsequent list change, e.g. realtime
+   * workspace:deleted). Stale tabs get reset to `/` so IndexRedirect picks
+   * a valid workspace; tabs on global paths (/login, /new-workspace, etc.)
+   * are untouched.
+   */
+  validateWorkspaceSlugs: (validSlugs: Set<string>) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -181,6 +190,36 @@ export const useTabStore = create<TabStore>()(
   moveTab(fromIndex, toIndex) {
     if (fromIndex === toIndex) return;
     set((s) => ({ tabs: arrayMove(s.tabs, fromIndex, toIndex) }));
+  },
+
+  validateWorkspaceSlugs(validSlugs) {
+    const { tabs } = get();
+    let changed = false;
+    const nextTabs = tabs.map((t) => {
+      // Skip tabs on non-workspace-scoped paths — nothing to validate.
+      if (t.path === "/" || isGlobalPath(t.path)) return t;
+
+      const firstSegment = t.path.split("/").filter(Boolean)[0] ?? "";
+      if (validSlugs.has(firstSegment)) return t;
+
+      // Stale slug: dispose the old router and replace with a fresh one
+      // pointing at `/`. IndexRedirect will send the tab to a valid
+      // workspace (or /new-workspace if the user now has none).
+      changed = true;
+      t.router.dispose();
+      return {
+        ...t,
+        path: DEFAULT_PATH,
+        title: "Issues",
+        icon: resolveRouteIcon(DEFAULT_PATH),
+        router: createTabRouter(DEFAULT_PATH),
+        historyIndex: 0,
+        historyLength: 1,
+      };
+    });
+
+    if (!changed) return;
+    set({ tabs: nextTabs });
   },
     }),
     {

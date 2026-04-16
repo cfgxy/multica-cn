@@ -10,6 +10,7 @@ import { Toaster } from "sonner";
 import { DesktopLoginPage } from "./pages/login";
 import { DesktopShell } from "./components/desktop-layout";
 import { UpdateNotification } from "./components/update-notification";
+import { useTabStore } from "./stores/tab-store";
 
 function AppContent() {
   const user = useAuthStore((s) => s.user);
@@ -81,6 +82,19 @@ function AppContent() {
     enabled: !!user,
   });
   const wsCount = workspaces?.length ?? 0;
+
+  // Validate persisted tab paths against the current user's workspace list.
+  // Tabs survive across app restarts and account switches (persisted to
+  // localStorage `multica_tabs`), so a tab path like `/naiyuan/issues` may
+  // reference a workspace the current user can't access — showing
+  // NoAccessPage every time they open the app. Reset any such tab to `/`
+  // so IndexRedirect picks a valid workspace. Runs on every workspace list
+  // change (login, refetch, realtime workspace:deleted); idempotent.
+  useEffect(() => {
+    if (!workspaces) return;
+    const validSlugs = new Set(workspaces.map((w) => w.slug));
+    useTabStore.getState().validateWorkspaceSlugs(validSlugs);
+  }, [workspaces]);
   // null = undecided (pre-login or list hasn't settled yet)
   // true  = session started with zero workspaces; next transition to >=1 triggers restart
   // false = session started with >=1 workspace, OR we've already restarted; skip
