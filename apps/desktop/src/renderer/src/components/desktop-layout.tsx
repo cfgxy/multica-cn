@@ -9,13 +9,11 @@ import {
   useSidebar,
 } from "@multica/ui/components/ui/sidebar";
 import { ModalRegistry } from "@multica/views/modals/registry";
-import { AppSidebar, DashboardGuard } from "@multica/views/layout";
+import { AppSidebar } from "@multica/views/layout";
 import { SearchCommand, SearchTrigger } from "@multica/views/search";
 import { ChatFab, ChatWindow } from "@multica/views/chat";
 import { StepWorkspace } from "@multica/views/onboarding";
-import { useCurrentWorkspace } from "@multica/core/paths";
 import { DesktopNavigationProvider } from "@/platform/navigation";
-import { MulticaIcon } from "@multica/ui/components/common/multica-icon";
 import { OnboardingGate } from "./onboarding-gate";
 import { TabBar } from "./tab-bar";
 import { TabContent } from "./tab-content";
@@ -89,43 +87,32 @@ export function DesktopShell() {
   useInternalLinkHandler();
   useActiveTitleSync();
 
-  const workspace = useCurrentWorkspace();
-
   return (
     <DesktopNavigationProvider>
       <OnboardingGate
-        hasWorkspace={!!workspace}
         onboarding={(onComplete) => (
           <div className="flex min-h-screen items-center justify-center overflow-auto bg-background px-6 py-12">
             <StepWorkspace onNext={onComplete} />
           </div>
         )}
       >
-        <DashboardGuard
-          loadingFallback={
-            <div className="flex h-screen items-center justify-center">
-              <MulticaIcon className="size-6 animate-pulse" />
-            </div>
-          }
-        >
-          <div className="flex h-screen">
-            <SidebarProvider className="flex-1">
-              <AppSidebar topSlot={<SidebarTopBar />} searchSlot={<SearchTrigger />} />
-              {/* Right side: header + content container */}
-              <div className="flex flex-1 min-w-0 flex-col">
-                <MainTopBar />
-                {/* Content area with inset styling — relative so ChatWindow/ChatFab are constrained here */}
-                <div className="relative flex flex-1 min-h-0 flex-col overflow-hidden mr-2 mb-2 ml-0.5 rounded-xl shadow-sm bg-background">
-                  <TabContent />
-                  <ChatWindow />
-                  <ChatFab />
-                </div>
+        <div className="flex h-screen">
+          <SidebarProvider className="flex-1">
+            <AppSidebar topSlot={<SidebarTopBar />} searchSlot={<SearchTrigger />} />
+            {/* Right side: header + content container */}
+            <div className="flex flex-1 min-w-0 flex-col">
+              <MainTopBar />
+              {/* Content area with inset styling — relative so ChatWindow/ChatFab are constrained here */}
+              <div className="relative flex flex-1 min-h-0 flex-col overflow-hidden mr-2 mb-2 ml-0.5 rounded-xl shadow-sm bg-background">
+                <TabContent />
+                <ChatWindow />
+                <ChatFab />
               </div>
-            </SidebarProvider>
-          </div>
-          <ModalRegistry />
-          <SearchCommand />
-        </DashboardGuard>
+            </div>
+          </SidebarProvider>
+        </div>
+        <ModalRegistry />
+        <SearchCommand />
       </OnboardingGate>
     </DesktopNavigationProvider>
   );

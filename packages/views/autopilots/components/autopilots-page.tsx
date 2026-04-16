@@ -7,6 +7,7 @@ import { autopilotListOptions } from "@multica/core/autopilots/queries";
 import { useCreateAutopilot, useCreateAutopilotTrigger } from "@multica/core/autopilots/mutations";
 import { agentListOptions } from "@multica/core/workspace/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { useWorkspacePaths } from "@multica/core/paths";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { AppLink } from "../../navigation";
 import { ActorAvatar } from "../../common/actor-avatar";
@@ -144,13 +145,14 @@ const EXECUTION_MODE_LABELS: Record<string, string> = {
 
 function AutopilotRow({ autopilot }: { autopilot: Autopilot }) {
   const { getActorName } = useActorName();
+  const wsPaths = useWorkspacePaths();
   const statusCfg = (STATUS_CONFIG[autopilot.status] ?? STATUS_CONFIG["active"])!;
   const StatusIcon = statusCfg.icon;
 
   return (
     <div className="group/row flex h-11 items-center gap-2 px-5 text-sm transition-colors hover:bg-accent/40">
       <AppLink
-        href={`/autopilots/${autopilot.id}`}
+        href={wsPaths.autopilotDetail(autopilot.id)}
         className="flex min-w-0 flex-1 items-center gap-2"
       >
         <Zap className="h-4 w-4 shrink-0 text-muted-foreground" />

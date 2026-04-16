@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useMemo } from "react";
 import { useDefaultLayout } from "react-resizable-panels";
 import { useQuery } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { useWorkspacePaths } from "@multica/core/paths";
 import {
   inboxListOptions,
   deduplicateInboxItems,
@@ -51,6 +52,7 @@ import { typeLabels } from "./inbox-detail-label";
 export function InboxPage() {
   const { searchParams, replace } = useNavigation();
   const urlIssue = searchParams.get("issue") ?? "";
+  const wsPaths = useWorkspacePaths();
 
   const [selectedKey, setSelectedKeyState] = useState(() => urlIssue);
 
@@ -61,9 +63,10 @@ export function InboxPage() {
 
   const setSelectedKey = useCallback((key: string) => {
     setSelectedKeyState(key);
-    const url = key ? `/inbox?issue=${key}` : "/inbox";
+    const inboxPath = wsPaths.inbox();
+    const url = key ? `${inboxPath}?issue=${key}` : inboxPath;
     replace(url);
-  }, [replace]);
+  }, [replace, wsPaths]);
 
   const wsId = useWorkspaceId();
   const { data: rawItems = [], isLoading: loading } = useQuery(inboxListOptions(wsId));
