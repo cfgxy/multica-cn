@@ -120,7 +120,7 @@ function createId(): string {
  *    means the caller forgot to prefix the workspace. Logs a warning so the
  *    buggy call site is easy to find.
  */
-function sanitizeTabPath(path: string): string {
+export function sanitizeTabPath(path: string): string {
   if (path === DEFAULT_PATH || isGlobalPath(path)) return path;
   const firstSegment = path.split("/").filter(Boolean)[0] ?? "";
   if (isReservedSlug(firstSegment)) {
@@ -270,19 +270,13 @@ export const useTabStore = create<TabStore>()(
         if (!persisted?.tabs?.length) return currentState;
 
         const tabs: Tab[] = persisted.tabs.map((tab) => {
-          // Migration: pre-refactor tab paths like "/issues/abc" lack a
-          // workspace slug prefix. These would 404 in the new router.
-          // Reset to "/" so IndexRedirect picks the right workspace.
-          let path = tab.path;
-          if (path !== "/" && !isGlobalPath(path)) {
-            const segments = path.split("/").filter(Boolean);
-            const firstSegment = segments[0] ?? "";
-            // If the first segment IS a known route name (e.g. "issues",
-            // "projects"), it's an old-format path missing the slug prefix.
-            if (ROUTE_ICONS[firstSegment]) {
-              path = "/";
-            }
-          }
+          // Sanitize persisted paths against reserved-slug rules. Catches
+          // both pre-refactor paths like "/issues/abc" (missing workspace
+          // slug) and any other malformed paths that slipped past the
+          // write-time guard. The defense across makeTab + merge + runtime
+          // validate ensures stale or malformed paths never reach the
+          // router.
+          const path = sanitizeTabPath(tab.path);
           return {
             ...tab,
             path,
