@@ -20,7 +20,6 @@ import { DaemonRuntimeCard } from "./components/daemon-runtime-card";
 import { AgentsPage } from "@multica/views/agents";
 import { InboxPage } from "@multica/views/inbox";
 import { SettingsPage } from "@multica/views/settings";
-import { OnboardingWizard } from "@multica/views/onboarding";
 import { CreateWorkspaceForm } from "@multica/views/workspace/create-workspace-form";
 import { InvitePage } from "@multica/views/invite";
 import { useNavigation } from "@multica/views/navigation";
@@ -60,15 +59,6 @@ function PageShell() {
   );
 }
 
-function OnboardingRoute() {
-  const nav = useNavigation();
-  return (
-    <OnboardingWizard
-      onComplete={(ws) => nav.push(paths.workspace(ws.slug).issues())}
-    />
-  );
-}
-
 function NewWorkspaceRoute() {
   const nav = useNavigation();
   return (
@@ -98,15 +88,16 @@ function NewWorkspaceRoute() {
  * duplicate fetches across tabs — each tab's memory router hits this
  * component independently but the query is deduped.
  *
- * Sends first-time users without any workspace to onboarding, everyone
- * else to their first workspace's issues page. Persisted tab paths that
- * already carry a workspace slug bypass this component entirely.
+ * Sends first-time users without any workspace to /new-workspace,
+ * everyone else to their first workspace's issues page. Persisted tab
+ * paths that already carry a workspace slug bypass this component
+ * entirely.
  */
 function IndexRedirect() {
   const { data: wsList, isFetched } = useQuery(workspaceListOptions());
 
-  // Wait for the query to settle so we don't redirect to onboarding on
-  // the initial render before the seeded/fetched data arrives.
+  // Wait for the query to settle so we don't redirect to /new-workspace
+  // on the initial render before the seeded/fetched data arrives.
   if (!isFetched) return null;
 
   const firstWorkspace = wsList?.[0];
@@ -139,13 +130,8 @@ export const appRoutes: RouteObject[] = [
       // Top-level index: no slug yet. `IndexRedirect` reads the workspace
       // list from React Query cache (seeded by AuthInitializer on reopen
       // or App.tsx on deep-link login) and bounces to the first
-      // workspace's issues page — or onboarding if the user has none.
+      // workspace's issues page — or /new-workspace if the user has none.
       { index: true, element: <IndexRedirect /> },
-      {
-        path: "onboarding",
-        element: <OnboardingRoute />,
-        handle: { title: "Get Started" },
-      },
       {
         path: "new-workspace",
         element: <NewWorkspaceRoute />,
