@@ -23,8 +23,6 @@ import { api } from "@multica/core/api";
 import { useRecentIssuesStore } from "@multica/core/issues/stores";
 import { issueListOptions } from "@multica/core/issues/queries";
 import { useWorkspaceId } from "@multica/core";
-import { useWorkspacePaths } from "@multica/core/paths";
-import type { WorkspacePaths } from "@multica/core/paths";
 import { StatusIcon } from "../issues/components";
 import { STATUS_CONFIG } from "@multica/core/issues/config";
 import { PROJECT_STATUS_CONFIG } from "@multica/core/projects/config";
@@ -75,35 +73,22 @@ function HighlightText({ text, query }: { text: string; query: string }) {
   );
 }
 
-// Nav items reference WorkspacePaths method names so they can be resolved
-// against the current workspace slug at render time (see SearchCommand body).
-// Only parameterless paths are valid nav destinations.
-type NavKey =
-  | "inbox"
-  | "myIssues"
-  | "issues"
-  | "projects"
-  | "agents"
-  | "runtimes"
-  | "skills"
-  | "settings";
-
 interface NavPage {
-  key: NavKey;
+  href: string;
   label: string;
   icon: LucideIcon;
   keywords: string[];
 }
 
 const navPages: NavPage[] = [
-  { key: "inbox", label: "Inbox", icon: Inbox, keywords: ["inbox", "notifications"] },
-  { key: "myIssues", label: "My Issues", icon: CircleUser, keywords: ["my", "issues", "assigned"] },
-  { key: "issues", label: "Issues", icon: ListTodo, keywords: ["issues", "tasks", "bugs"] },
-  { key: "projects", label: "Projects", icon: FolderKanban, keywords: ["projects", "kanban"] },
-  { key: "agents", label: "Agents", icon: Bot, keywords: ["agents", "bots", "ai"] },
-  { key: "runtimes", label: "Runtimes", icon: Monitor, keywords: ["runtimes", "environments"] },
-  { key: "skills", label: "Skills", icon: BookOpenText, keywords: ["skills", "library"] },
-  { key: "settings", label: "Settings", icon: Settings, keywords: ["settings", "config", "preferences"] },
+  { href: "/inbox", label: "Inbox", icon: Inbox, keywords: ["inbox", "notifications"] },
+  { href: "/my-issues", label: "My Issues", icon: CircleUser, keywords: ["my", "issues", "assigned"] },
+  { href: "/issues", label: "Issues", icon: ListTodo, keywords: ["issues", "tasks", "bugs"] },
+  { href: "/projects", label: "Projects", icon: FolderKanban, keywords: ["projects", "kanban"] },
+  { href: "/agents", label: "Agents", icon: Bot, keywords: ["agents", "bots", "ai"] },
+  { href: "/runtimes", label: "Runtimes", icon: Monitor, keywords: ["runtimes", "environments"] },
+  { href: "/skills", label: "Skills", icon: BookOpenText, keywords: ["skills", "library"] },
+  { href: "/settings", label: "Settings", icon: Settings, keywords: ["settings", "config", "preferences"] },
 ];
 
 interface SearchResults {
@@ -117,7 +102,6 @@ export function SearchCommand() {
   const setOpen = useSearchStore((s) => s.setOpen);
   const recentItems = useRecentIssuesStore((s) => s.items);
   const wsId = useWorkspaceId();
-  const p: WorkspacePaths = useWorkspacePaths();
   const { data: allIssues = [] } = useQuery(issueListOptions(wsId));
 
   const recentIssues = useMemo(() => {
@@ -245,21 +229,20 @@ export function SearchCommand() {
     (value: string) => {
       setOpen(false);
       if (value.startsWith("project:")) {
-        // value is "project:<id>" — slice off the 8-char prefix to extract the id.
-        push(p.projectDetail(value.slice(8)));
+        push(`/projects/${value.slice(8)}`);
       } else {
-        push(p.issueDetail(value));
+        push(`/issues/${value}`);
       }
     },
-    [push, setOpen, p],
+    [push, setOpen],
   );
 
   const handlePageSelect = useCallback(
-    (key: NavKey) => {
+    (href: string) => {
       setOpen(false);
-      push(p[key]());
+      push(href);
     },
-    [push, setOpen, p],
+    [push, setOpen],
   );
 
   return (
@@ -303,9 +286,9 @@ export function SearchCommand() {
                 </div>
                 {filteredPages.map((page) => (
                   <CommandPrimitive.Item
-                    key={page.key}
-                    value={`page:${page.key}`}
-                    onSelect={() => handlePageSelect(page.key)}
+                    key={page.href}
+                    value={`page:${page.href}`}
+                    onSelect={() => handlePageSelect(page.href)}
                     className="flex cursor-default select-none items-center gap-2.5 rounded-lg px-3 py-2.5 text-sm outline-none data-[disabled=true]:pointer-events-none data-[disabled=true]:opacity-50 data-selected:bg-accent"
                   >
                     <page.icon className="size-4 shrink-0 text-muted-foreground" />

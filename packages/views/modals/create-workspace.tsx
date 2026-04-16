@@ -16,7 +16,6 @@ import {
 } from "@multica/ui/components/ui/dialog";
 import { Card, CardContent } from "@multica/ui/components/ui/card";
 import { useCreateWorkspace } from "@multica/core/workspace/mutations";
-import { paths } from "@multica/core/paths";
 import {
   WORKSPACE_SLUG_CONFLICT_ERROR,
   WORKSPACE_SLUG_FORMAT_ERROR,
@@ -63,23 +62,12 @@ export function CreateWorkspaceModal({ onClose }: { onClose: () => void }) {
 
   const handleCreate = () => {
     if (!canSubmit) return;
-    // The modal is only reachable from an authenticated workspace context
-    // (via the global modal registry). After creating a new workspace the
-    // user should land INSIDE it at its issues page, not in /onboarding —
-    // onboarding exists only for users with zero workspaces. Navigation is the
-    // only way to switch workspaces now (URL is the source of truth), so the
-    // push below is sufficient — no imperative store writes needed.
     createWorkspace.mutate(
       { name: name.trim(), slug: slug.trim() },
       {
-        onSuccess: (newWs) => {
+        onSuccess: () => {
           onClose();
-          // Navigate INTO the new workspace. The mutation's own onSuccess
-          // (in core/workspace/mutations.ts) runs before this callback and
-          // has already seeded the workspace list cache, so the destination
-          // [workspaceSlug]/layout will resolve newWs.slug → workspace
-          // synchronously without a loading flash.
-          router.push(paths.workspace(newWs.slug).issues());
+          router.push("/onboarding");
         },
         onError: (error) => {
           if (isWorkspaceSlugConflict(error)) {

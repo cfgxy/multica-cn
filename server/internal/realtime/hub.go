@@ -21,10 +21,6 @@ type MembershipChecker interface {
 	IsMember(ctx context.Context, userID, workspaceID string) bool
 }
 
-// SlugResolver translates a workspace slug to its UUID. Used by HandleWebSocket
-// to accept slug-based identification from the frontend.
-type SlugResolver func(ctx context.Context, slug string) (workspaceID string, err error)
-
 // PATResolver resolves a Personal Access Token to a user ID.
 // Returns the user ID and true if the token is valid, or ("", false) otherwise.
 type PATResolver interface {
@@ -354,21 +350,10 @@ func firstMessageAuth(conn *websocket.Conn) (string, string) {
 }
 
 // HandleWebSocket upgrades an HTTP connection to WebSocket with cookie or first-message auth.
-// resolveSlug may be nil if slug-based identification is not needed (e.g. in tests).
-func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, resolveSlug SlugResolver, w http.ResponseWriter, r *http.Request) {
+func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, w http.ResponseWriter, r *http.Request) {
 	workspaceID := r.URL.Query().Get("workspace_id")
 	if workspaceID == "" {
-		if slug := r.URL.Query().Get("workspace_slug"); slug != "" && resolveSlug != nil {
-			resolved, err := resolveSlug(r.Context(), slug)
-			if err != nil {
-				http.Error(w, `{"error":"workspace not found"}`, http.StatusNotFound)
-				return
-			}
-			workspaceID = resolved
-		}
-	}
-	if workspaceID == "" {
-		http.Error(w, `{"error":"workspace_id or workspace_slug required"}`, http.StatusBadRequest)
+		http.Error(w, `{"error":"workspace_id required"}`, http.StatusUnauthorized)
 		return
 	}
 

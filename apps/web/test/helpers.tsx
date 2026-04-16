@@ -78,6 +78,7 @@ export const mockAuthValue: Record<string, any> = {
   isLoading: false,
   login: vi.fn(),
   logout: vi.fn(),
+  switchWorkspace: vi.fn(),
   updateWorkspace: vi.fn(),
   updateCurrentUser: vi.fn(),
   getMemberName: (userId: string) => {

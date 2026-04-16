@@ -6,20 +6,20 @@ import { Input } from "@multica/ui/components/ui/input";
 import { Button } from "@multica/ui/components/ui/button";
 import { Card, CardContent } from "@multica/ui/components/ui/card";
 import { toast } from "sonner";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQuery } from "@tanstack/react-query";
 import { useAuthStore } from "@multica/core/auth";
+import { useWorkspaceStore } from "@multica/core/workspace";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { useCurrentWorkspace } from "@multica/core/paths";
-import { memberListOptions, workspaceKeys } from "@multica/core/workspace/queries";
+import { memberListOptions } from "@multica/core/workspace/queries";
 import { api } from "@multica/core/api";
-import type { Workspace, WorkspaceRepo } from "@multica/core/types";
+import type { WorkspaceRepo } from "@multica/core/types";
 
 export function RepositoriesTab() {
   const user = useAuthStore((s) => s.user);
-  const workspace = useCurrentWorkspace();
+  const workspace = useWorkspaceStore((s) => s.workspace);
   const wsId = useWorkspaceId();
-  const qc = useQueryClient();
   const { data: members = [] } = useQuery(memberListOptions(wsId));
+  const updateWorkspace = useWorkspaceStore((s) => s.updateWorkspace);
 
   const [repos, setRepos] = useState<WorkspaceRepo[]>(workspace?.repos ?? []);
   const [saving, setSaving] = useState(false);
@@ -36,9 +36,7 @@ export function RepositoriesTab() {
     setSaving(true);
     try {
       const updated = await api.updateWorkspace(workspace.id, { repos });
-      qc.setQueryData(workspaceKeys.list(), (old: Workspace[] | undefined) =>
-        old?.map((ws) => (ws.id === updated.id ? updated : ws)),
-      );
+      updateWorkspace(updated);
       toast.success("Repositories saved");
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to save repositories");

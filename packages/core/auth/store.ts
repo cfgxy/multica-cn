@@ -1,7 +1,6 @@
 import { create } from "zustand";
 import type { User, StorageAdapter } from "../types";
 import type { ApiClient } from "../api/client";
-import { setCurrentWorkspace } from "../platform/workspace-storage";
 
 export interface AuthStoreOptions {
   api: ApiClient;
@@ -59,7 +58,7 @@ export function createAuthStore(options: AuthStoreOptions) {
         set({ user, isLoading: false });
       } catch {
         api.setToken(null);
-        setCurrentWorkspace(null, null);
+        api.setWorkspaceId(null);
         storage.removeItem("multica_token");
         set({ user: null, isLoading: false });
       }
@@ -108,7 +107,7 @@ export function createAuthStore(options: AuthStoreOptions) {
       }
       storage.removeItem("multica_token");
       api.setToken(null);
-      setCurrentWorkspace(null, null);
+      api.setWorkspaceId(null);
       onLogout?.();
       set({ user: null });
     },

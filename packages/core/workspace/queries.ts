@@ -1,6 +1,5 @@
 import { queryOptions } from "@tanstack/react-query";
 import { api } from "../api";
-import type { Workspace } from "../types";
 
 export const workspaceKeys = {
   all: (wsId: string) => ["workspaces", wsId] as const,
@@ -17,14 +16,6 @@ export function workspaceListOptions() {
   return queryOptions({
     queryKey: workspaceKeys.list(),
     queryFn: () => api.listWorkspaces(),
-  });
-}
-
-/** Resolves the workspace whose slug matches, from the cached workspace list. */
-export function workspaceBySlugOptions(slug: string) {
-  return queryOptions({
-    ...workspaceListOptions(),
-    select: (list: Workspace[]) => list.find((w) => w.slug === slug) ?? null,
   });
 }
 

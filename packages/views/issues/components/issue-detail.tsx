@@ -70,7 +70,7 @@ import { AgentLiveCard, TaskRunHistory } from "./agent-live-card";
 import { BacklogAgentHintDialog } from "./backlog-agent-hint-dialog";
 import { useQuery } from "@tanstack/react-query";
 import { useAuthStore } from "@multica/core/auth";
-import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
+import { useWorkspaceStore } from "@multica/core/workspace";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { issueListOptions, issueDetailOptions, childIssuesOptions, issueUsageOptions } from "@multica/core/issues/queries";
@@ -328,8 +328,7 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
   const router = useNavigation();
   const user = useAuthStore((s) => s.user);
   const userId = useAuthStore((s) => s.user?.id);
-  const workspace = useCurrentWorkspace();
-  const paths = useWorkspacePaths();
+  const workspace = useWorkspaceStore((s) => s.workspace);
 
   // Issue navigation — read from TQ list cache
   const wsId = useWorkspaceId();
@@ -489,7 +488,7 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
       await deleteIssueMutation.mutateAsync(issue!.id);
       toast.success("Issue deleted");
       if (onDelete) onDelete();
-      else router.push(paths.issues());
+      else router.push("/issues");
     } catch {
       toast.error("Failed to delete issue");
       setDeleting(false);
@@ -552,7 +551,7 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
       <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
         <p>This issue does not exist or has been deleted in this workspace.</p>
         {!onDelete && (
-          <Button variant="outline" size="sm" onClick={() => router.push(paths.issues())}>
+          <Button variant="outline" size="sm" onClick={() => router.push("/issues")}>
             <ChevronLeft className="mr-1 h-3.5 w-3.5" />
             Back to Issues
           </Button>
@@ -603,7 +602,7 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
           </button>
           {parentIssueOpen && <div className="pl-2">
             <AppLink
-              href={paths.issueDetail(parentIssue.id)}
+              href={`/issues/${parentIssue.id}`}
               className="flex items-center gap-1.5 rounded-md px-2 py-1.5 -mx-2 text-xs hover:bg-accent/50 transition-colors group"
             >
               <StatusIcon status={parentIssue.status} className="h-3.5 w-3.5 shrink-0" />
@@ -679,21 +678,10 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
             {workspace && (
               <>
                 <AppLink
-                  href={paths.issues()}
+                  href="/issues"
                   className="text-muted-foreground hover:text-foreground transition-colors shrink-0"
                 >
                   {workspace.name}
-                </AppLink>
-                <ChevronRight className="h-3 w-3 text-muted-foreground/50 shrink-0" />
-              </>
-            )}
-            {parentIssue && (
-              <>
-                <AppLink
-                  href={paths.issueDetail(parentIssue.id)}
-                  className="text-muted-foreground hover:text-foreground transition-colors truncate shrink-0"
-                >
-                  {parentIssue.identifier}
                 </AppLink>
                 <ChevronRight className="h-3 w-3 text-muted-foreground/50 shrink-0" />
               </>
@@ -1015,7 +1003,7 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
 
           {parentIssue && (
             <AppLink
-              href={paths.issueDetail(parentIssue.id)}
+              href={`/issues/${parentIssue.id}`}
               className="mt-2 inline-flex max-w-full items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors group/parent"
             >
               <span className="font-medium shrink-0">Sub-issue of</span>
@@ -1145,7 +1133,7 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
                       return (
                         <AppLink
                           key={child.id}
-                          href={paths.issueDetail(child.id)}
+                          href={`/issues/${child.id}`}
                           className="flex items-center gap-2.5 px-3 py-2 hover:bg-accent/50 transition-colors group/row"
                         >
                           <StatusIcon

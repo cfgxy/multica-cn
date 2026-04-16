@@ -66,7 +66,7 @@ import {
   PopoverTrigger,
 } from "@multica/ui/components/ui/popover";
 import { useAuthStore } from "@multica/core/auth";
-import { useCurrentWorkspace, useWorkspacePaths, paths } from "@multica/core/paths";
+import { useWorkspaceStore } from "@multica/core/workspace";
 import { workspaceListOptions, myInvitationListOptions, workspaceKeys } from "@multica/core/workspace/queries";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { inboxKeys, deduplicateInboxItems } from "@multica/core/inbox/queries";
@@ -75,39 +75,24 @@ import { useModalStore } from "@multica/core/modals";
 import { useMyRuntimesNeedUpdate } from "@multica/core/runtimes/hooks";
 import { pinListOptions } from "@multica/core/pins/queries";
 import { useDeletePin, useReorderPins } from "@multica/core/pins/mutations";
-import type { PinnedItem, Workspace } from "@multica/core/types";
-import { clearWorkspaceStorage, defaultStorage } from "@multica/core/platform";
+import type { PinnedItem } from "@multica/core/types";
 
-// Nav items reference WorkspacePaths method names so they can be resolved
-// against the current workspace slug at render time (see AppSidebar body).
-// Only parameterless paths are valid nav destinations.
-type NavKey =
-  | "inbox"
-  | "myIssues"
-  | "issues"
-  | "projects"
-  | "autopilots"
-  | "agents"
-  | "runtimes"
-  | "skills"
-  | "settings";
-
-const personalNav: { key: NavKey; label: string; icon: typeof Inbox }[] = [
-  { key: "inbox", label: "Inbox", icon: Inbox },
-  { key: "myIssues", label: "My Issues", icon: CircleUser },
+const personalNav = [
+  { href: "/inbox", label: "Inbox", icon: Inbox },
+  { href: "/my-issues", label: "My Issues", icon: CircleUser },
 ];
 
-const workspaceNav: { key: NavKey; label: string; icon: typeof Inbox }[] = [
-  { key: "issues", label: "Issues", icon: ListTodo },
-  { key: "projects", label: "Projects", icon: FolderKanban },
-  { key: "autopilots", label: "Autopilot", icon: Zap },
-  { key: "agents", label: "Agents", icon: Bot },
+const workspaceNav = [
+  { href: "/issues", label: "Issues", icon: ListTodo },
+  { href: "/projects", label: "Projects", icon: FolderKanban },
+  { href: "/autopilots", label: "Autopilot", icon: Zap },
+  { href: "/agents", label: "Agents", icon: Bot },
 ];
 
-const configureNav: { key: NavKey; label: string; icon: typeof Inbox }[] = [
-  { key: "runtimes", label: "Runtimes", icon: Monitor },
-  { key: "skills", label: "Skills", icon: BookOpenText },
-  { key: "settings", label: "Settings", icon: Settings },
+const configureNav = [
+  { href: "/runtimes", label: "Runtimes", icon: Monitor },
+  { href: "/skills", label: "Skills", icon: BookOpenText },
+  { href: "/settings", label: "Settings", icon: Settings },
 ];
 
 function DraftDot() {
@@ -116,7 +101,7 @@ function DraftDot() {
   return <span className="absolute top-0 right-0 size-1.5 rounded-full bg-brand" />;
 }
 
-function SortablePinItem({ pin, href, pathname, onUnpin }: { pin: PinnedItem; href: string; pathname: string; onUnpin: () => void }) {
+function SortablePinItem({ pin, pathname, onUnpin }: { pin: PinnedItem; pathname: string; onUnpin: () => void }) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: pin.id });
   const wasDragged = useRef(false);
 
@@ -125,6 +110,7 @@ function SortablePinItem({ pin, href, pathname, onUnpin }: { pin: PinnedItem; hr
   }, [isDragging]);
 
   const style = { transform: CSS.Transform.toString(transform), transition };
+  const href = pin.item_type === "issue" ? `/issues/${pin.item_id}` : `/projects/${pin.item_id}`;
   const isActive = pathname === href;
   const label = pin.item_type === "issue" && pin.identifier ? `${pin.identifier} ${pin.title}` : pin.title;
 
@@ -197,8 +183,8 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
   const user = useAuthStore((s) => s.user);
   const userId = useAuthStore((s) => s.user?.id);
   const authLogout = useAuthStore((s) => s.logout);
-  const workspace = useCurrentWorkspace();
-  const p = useWorkspacePaths();
+  const workspace = useWorkspaceStore((s) => s.workspace);
+  const switchWorkspace = useWorkspaceStore((s) => s.switchWorkspace);
   const { data: workspaces = [] } = useQuery(workspaceListOptions());
   const { data: myInvitations = [] } = useQuery(myInvitationListOptions());
 
@@ -236,24 +222,9 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
   const queryClient = useQueryClient();
   const acceptInvitationMut = useMutation({
     mutationFn: (id: string) => api.acceptInvitation(id),
-    // After accepting an invitation, navigate INTO the newly-joined workspace.
-    // Otherwise the user stays on their current workspace and just sees the
-    // new one appear in the dropdown — silent and confusing (this is MUL-820).
-    onSuccess: async (_, invitationId) => {
-      const invitation = myInvitations.find((i) => i.id === invitationId);
+    onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: workspaceKeys.myInvitations() });
-      // staleTime: 0 forces a real network fetch — we need the joined workspace
-      // in the list before we can resolve its slug for navigation.
-      const list = await queryClient.fetchQuery({
-        ...workspaceListOptions(),
-        staleTime: 0,
-      });
-      const joined = invitation
-        ? list.find((w) => w.id === invitation.workspace_id)
-        : null;
-      if (joined) {
-        push(paths.workspace(joined.slug).issues());
-      }
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.list() });
     },
   });
   const declineInvitationMut = useMutation({
@@ -263,26 +234,9 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
     },
   });
   const logout = () => {
-    // Clear workspace-scoped storage for every workspace this user has access to,
-    // before clearing the React Query cache (which holds the workspace list).
-    // Otherwise per-workspace drafts/chat/etc would leak to the next user on this device.
-    const cachedWorkspaces =
-      queryClient.getQueryData<Workspace[]>(workspaceKeys.list()) ?? [];
-    for (const ws of cachedWorkspaces) {
-      clearWorkspaceStorage(defaultStorage, ws.slug);
-    }
-    // Clear the last-workspace-slug cookie. Otherwise on a shared device the
-    // next user gets redirected by the proxy to the previous user's last
-    // workspace (then bounced to /onboarding by the layout — flash + confusing).
-    if (typeof document !== "undefined") {
-      document.cookie = "last_workspace_slug=; path=/; max-age=0; SameSite=Lax";
-    }
-    // Clear desktop tab state. Tab paths can contain issue UUIDs which must
-    // not survive across user sessions on a shared machine. No-op on web
-    // (web doesn't write this key).
-    defaultStorage.removeItem("multica_tabs");
     queryClient.clear();
     authLogout();
+    useWorkspaceStore.getState().clearWorkspace();
   };
 
   // Global "C" shortcut to open create-issue modal (like Linear)
@@ -299,7 +253,7 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
         if (useModalStore.getState().modal) return;
         e.preventDefault();
         // Auto-fill project when on a project detail page
-        const projectMatch = pathname.match(/^\/[^/]+\/projects\/([^/]+)$/);
+        const projectMatch = pathname.match(/^\/projects\/([^/]+)$/);
         const data = projectMatch ? { project_id: projectMatch[1] } : undefined;
         useModalStore.getState().open("create-issue", data);
       }
@@ -346,9 +300,12 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                     {workspaces.map((ws) => (
                       <DropdownMenuItem
                         key={ws.id}
-                        render={
-                          <AppLink href={paths.workspace(ws.slug).issues()} />
-                        }
+                        onClick={() => {
+                          if (ws.id !== workspace?.id) {
+                            push("/issues");
+                            switchWorkspace(ws);
+                          }
+                        }}
                       >
                         <WorkspaceAvatar name={ws.name} size="sm" />
                         <span className="flex-1 truncate">{ws.name}</span>
@@ -443,13 +400,12 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
             <SidebarGroupContent>
               <SidebarMenu className="gap-0.5">
                 {personalNav.map((item) => {
-                  const href = p[item.key]();
-                  const isActive = pathname === href;
+                  const isActive = pathname === item.href;
                   return (
-                    <SidebarMenuItem key={item.key}>
+                    <SidebarMenuItem key={item.href}>
                       <SidebarMenuButton
                         isActive={isActive}
-                        render={<AppLink href={href} />}
+                        render={<AppLink href={item.href} />}
                         className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
                       >
                         <item.icon />
@@ -487,7 +443,6 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                             <SortablePinItem
                               key={pin.id}
                               pin={pin}
-                              href={pin.item_type === "issue" ? p.issueDetail(pin.item_id) : p.projectDetail(pin.item_id)}
                               pathname={pathname}
                               onUnpin={() => deletePin.mutate({ itemType: pin.item_type, itemId: pin.item_id })}
                             />
@@ -506,13 +461,12 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
             <SidebarGroupContent>
               <SidebarMenu className="gap-0.5">
                 {workspaceNav.map((item) => {
-                  const href = p[item.key]();
-                  const isActive = pathname === href;
+                  const isActive = pathname === item.href;
                   return (
-                    <SidebarMenuItem key={item.key}>
+                    <SidebarMenuItem key={item.href}>
                       <SidebarMenuButton
                         isActive={isActive}
-                        render={<AppLink href={href} />}
+                        render={<AppLink href={item.href} />}
                         className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
                       >
                         <item.icon />
@@ -530,13 +484,12 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
             <SidebarGroupContent>
               <SidebarMenu className="gap-0.5">
                 {configureNav.map((item) => {
-                  const href = p[item.key]();
-                  const isActive = pathname === href;
+                  const isActive = pathname === item.href;
                   return (
-                    <SidebarMenuItem key={item.key}>
+                    <SidebarMenuItem key={item.href}>
                       <SidebarMenuButton
                         isActive={isActive}
-                        render={<AppLink href={href} />}
+                        render={<AppLink href={item.href} />}
                         className="text-muted-foreground hover:not-data-active:bg-sidebar-accent/70 data-active:bg-sidebar-accent data-active:text-sidebar-accent-foreground"
                       >
                         <item.icon />
