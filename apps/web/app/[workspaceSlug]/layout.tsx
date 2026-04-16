@@ -1,14 +1,11 @@
 "use client";
 
-import { use, useEffect, useRef } from "react";
+import { use, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { useRouter } from "next/navigation";
 import { WorkspaceSlugProvider, paths } from "@multica/core/paths";
 import { workspaceBySlugOptions } from "@multica/core/workspace";
-import {
-  setCurrentWorkspace,
-  rehydrateAllWorkspaceStores,
-} from "@multica/core/platform";
+import { setCurrentWorkspace } from "@multica/core/platform";
 import { useAuthStore } from "@multica/core/auth";
 
 export default function WorkspaceLayout({
@@ -30,15 +27,12 @@ export default function WorkspaceLayout({
     enabled: !!user,
   });
 
-  // Render-phase sync: set the current workspace slug + UUID into the
-  // platform singleton BEFORE children render. This ensures the first
-  // child query's X-Workspace-Slug header is already correct.
-  // The ref guard prevents re-running on every render.
-  const syncedSlugRef = useRef<string | null>(null);
-  if (workspace && syncedSlugRef.current !== workspaceSlug) {
+  // Render-phase sync: feed the URL slug into the platform singleton so
+  // the first child query's X-Workspace-Slug header is already correct.
+  // setCurrentWorkspace self-dedupes + runs rehydrate as a side effect;
+  // safe to call on every render.
+  if (workspace) {
     setCurrentWorkspace(workspaceSlug, workspace.id);
-    rehydrateAllWorkspaceStores();
-    syncedSlugRef.current = workspaceSlug;
   }
 
   // Cookie write (last_workspace_slug) — proxy reads it on next page load.
@@ -60,16 +54,20 @@ export default function WorkspaceLayout({
     }
   }, [workspace, workspaceSlug]);
 
-  // Slug doesn't match any workspace the user has access to → onboarding.
-  // Wait for the list query to settle so we don't bounce on first render.
-  // Skip when user is null — DashboardGuard handles the /login redirect.
+  // Slug doesn't match any workspace the user has access to → bounce to `/`
+  // and let the root IndexRedirect pick the first valid workspace (falls to
+  // onboarding only when the list is truly empty).
   useEffect(() => {
     if (!user) return;
-    if (listFetched && !workspace) router.replace(paths.onboarding());
+    if (listFetched && !workspace) router.replace(paths.root());
   }, [user, listFetched, workspace, router]);
 
-  // Auth still loading → render nothing (let DashboardGuard show its loader).
   if (isAuthLoading) return null;
+  // Don't render children until workspace is resolved. useWorkspaceId()
+  // throws when the list hasn't populated or the slug is unknown — gating
+  // here makes that invariant hold for every descendant.
+  if (!listFetched) return null;
+  if (!workspace) return null;
 
   return (
     <WorkspaceSlugProvider slug={workspaceSlug}>

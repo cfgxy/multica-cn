@@ -1,21 +1,24 @@
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { Outlet, useNavigate, useParams } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { WorkspaceSlugProvider, paths } from "@multica/core/paths";
 import { workspaceBySlugOptions } from "@multica/core/workspace";
-import {
-  setCurrentWorkspace,
-  rehydrateAllWorkspaceStores,
-} from "@multica/core/platform";
+import { setCurrentWorkspace } from "@multica/core/platform";
 import { useAuthStore } from "@multica/core/auth";
 
 /**
  * Desktop equivalent of apps/web/app/[workspaceSlug]/layout.tsx.
  *
- * Reads :workspaceSlug from react-router params, resolves it to a Workspace
- * object via the React Query list cache, and syncs the URL-derived workspace
- * into the platform singleton (slug + UUID). Children (DashboardGuard +
- * dashboard layout) handle auth check, loading, and workspace-not-found.
+ * Resolves the URL slug → workspace UUID via the React Query list cache
+ * (seeded by AuthInitializer). Children do not render until the workspace
+ * is fully resolved — useWorkspaceId() inside child pages is therefore
+ * guaranteed non-null when called. Two industry-standard identities are
+ * kept distinct: slug (URL / browser) and UUID (API / cache keys).
+ *
+ * If the slug doesn't resolve to any workspace the user has access to,
+ * we redirect to `/` so IndexRedirect can pick the first valid workspace
+ * (more forgiving than bouncing to onboarding, which is only right for
+ * zero-workspace users).
  */
 export function WorkspaceRouteLayout() {
   const { workspaceSlug } = useParams<{ workspaceSlug: string }>();
@@ -28,29 +31,42 @@ export function WorkspaceRouteLayout() {
     enabled: !!user && !!workspaceSlug,
   });
 
-  // Render-phase sync (same pattern as web layout).
-  const syncedSlugRef = useRef<string | null>(null);
-  if (workspace && workspaceSlug && syncedSlugRef.current !== workspaceSlug) {
+  // Feed the URL slug into the platform singleton so the API client's
+  // X-Workspace-Slug header and persist namespace follow the active tab.
+  // setCurrentWorkspace self-dedupes on slug equality — safe to call on
+  // every render (matters on desktop, where N tabs each mount their own
+  // layout). Rehydrate is the singleton's internal side effect.
+  if (workspace && workspaceSlug) {
     setCurrentWorkspace(workspaceSlug, workspace.id);
-    rehydrateAllWorkspaceStores();
-    // Double-write legacy localStorage key for rollback compatibility — see
-    // apps/web/app/[workspaceSlug]/layout.tsx for the full rationale.
+  }
+
+  // Double-write legacy localStorage key for rollback compatibility — a
+  // pre-refactor build reads it to pick the initial workspace. Placed in
+  // an effect so repeated renders don't hammer localStorage.
+  useEffect(() => {
+    if (!workspace) return;
     try {
       localStorage.setItem("multica_workspace_id", workspace.id);
     } catch {
       // non-critical
     }
-    syncedSlugRef.current = workspaceSlug;
-  }
+  }, [workspace]);
 
-  // Slug doesn't resolve → onboarding. Skip when user is null.
+  // Slug can't be resolved → bounce to `/` (IndexRedirect picks first
+  // valid workspace; falls to onboarding only if the list is truly empty).
   useEffect(() => {
     if (!user) return;
-    if (listFetched && !workspace) navigate(paths.onboarding(), { replace: true });
+    if (listFetched && !workspace) navigate(paths.root(), { replace: true });
   }, [user, listFetched, workspace, navigate]);
 
   if (isAuthLoading) return null;
   if (!workspaceSlug) return null;
+  // Don't render children until workspace is resolved. useWorkspaceId()
+  // throws when the workspace list hasn't populated or the slug is
+  // unknown — gating here is the single point where that invariant is
+  // enforced, so every descendant can call useWorkspaceId() safely.
+  if (!listFetched) return null;
+  if (!workspace) return null;
 
   return (
     <WorkspaceSlugProvider slug={workspaceSlug}>
