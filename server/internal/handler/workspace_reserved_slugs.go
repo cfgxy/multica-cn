@@ -7,12 +7,13 @@ package handler
 // Keep this list in sync with packages/core/paths/reserved-slugs.ts.
 var reservedSlugs = map[string]bool{
 	// Auth + onboarding routes
-	"login":      true,
-	"logout":     true,
-	"signup":     true,
-	"onboarding": true,
-	"invite":     true,
-	"auth":       true,
+	"login":         true,
+	"logout":        true,
+	"signup":        true,
+	"onboarding":    true,
+	"new-workspace": true,
+	"invite":        true,
+	"auth":          true,
 
 	// Reserved for future platform routes
 	"api":       true,

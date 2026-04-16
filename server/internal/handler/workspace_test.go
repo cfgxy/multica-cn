@@ -12,6 +12,7 @@ func TestCreateWorkspace_RejectsReservedSlug(t *testing.T) {
 		// Auth + onboarding (covered by migration 043 audit)
 		"login",
 		"onboarding",
+		"new-workspace",
 		"invite",
 		"api",
 		"settings",

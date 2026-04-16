@@ -8,6 +8,7 @@ export const RESERVED_SLUGS = new Set([
   "logout",
   "signup",
   "onboarding",
+  "new-workspace",
   "invite",
   "auth",
 
