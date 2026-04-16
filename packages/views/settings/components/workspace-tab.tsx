@@ -45,7 +45,7 @@ export function WorkspaceTab() {
 
   /**
    * After leaving/deleting the current workspace, send the user to a safe URL:
-   * another workspace they still have access to, or /new-workspace if none
+   * another workspace they still have access to, or /workspaces/new if none
    * remain. The list is freshly fetched (staleTime: 0) because the cache still
    * contains the just-removed workspace until the background invalidation
    * resolves.

@@ -4,66 +4,18 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"testing"
 )
 
 func TestCreateWorkspace_RejectsReservedSlug(t *testing.T) {
-	reserved := []string{
-		// Auth flow
-		"login",
-		"logout",
-		"signin",
-		"signout",
-		"signup",
-		"auth",
-		"oauth",
-		"callback",
-		"invite",
-		"verify",
-		"reset",
-		"password",
-		"onboarding",
-
-		// Platform routes
-		"api",
-		"admin",
-		"help",
-		"about",
-		"pricing",
-		"docs",
-		"support",
-		"status",
-		"legal",
-		"privacy",
-		"terms",
-		"security",
-
-		// Dashboard segments
-		"issues",
-		"projects",
-		"agents",
-		"inbox",
-		"my-issues",
-		"settings",
-		"workspaces",
-		"teams",
-
-		// RFC 2142
-		"postmaster",
-		"abuse",
-		"noreply",
-
-		// Hostname confusables
-		"mail",
-		"static",
-		"cdn",
-
-		// Web standards
-		"_next",
-		"favicon.ico",
-		"robots.txt",
-		"sitemap.xml",
+	// Drive the test off the actual reservedSlugs map so the test can never
+	// drift from the source of truth. New entries are covered automatically.
+	reserved := make([]string, 0, len(reservedSlugs))
+	for slug := range reservedSlugs {
+		reserved = append(reserved, slug)
 	}
+	sort.Strings(reserved) // deterministic test order
 
 	for _, slug := range reserved {
 		t.Run(slug, func(t *testing.T) {

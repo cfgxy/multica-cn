@@ -113,7 +113,7 @@ export function DesktopShell() {
           mount WorkspaceRouteLayout, which calls setCurrentWorkspace()
           to populate the slug. The sidebar gates on slug being present
           to avoid the useRequiredWorkspaceSlug throw. Zero-workspace
-          users are routed to /new-workspace by IndexRedirect. */}
+          users are routed to /workspaces/new by IndexRedirect. */}
       <WorkspaceSlugProvider slug={slug}>
         <div className="flex h-screen">
           <SidebarProvider className="flex-1">

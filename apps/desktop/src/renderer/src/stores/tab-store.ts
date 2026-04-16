@@ -44,7 +44,7 @@ interface TabStore {
    * current user doesn't have access to. Called after login + workspace list
    * is populated (and on every subsequent list change, e.g. realtime
    * workspace:deleted). Stale tabs get reset to `/` so IndexRedirect picks
-   * a valid workspace; tabs on global paths (/login, /new-workspace, etc.)
+   * a valid workspace; tabs on global paths (/login, /workspaces/new, etc.)
    * are untouched.
    */
   validateWorkspaceSlugs: (validSlugs: Set<string>) => void;
@@ -72,7 +72,7 @@ const ROUTE_ICONS: Record<string, string> = {
  *
  * Path shape after the workspace URL refactor:
  *  - workspace-scoped: `/{workspaceSlug}/{route}/...` → use segment index 1
- *  - global (new-workspace/invite/auth/login): `/{route}/...` → use segment index 0
+ *  - global (workspaces/new, invite, auth, login): `/{route}/...` → use segment index 0
  *
  * `isGlobalPath` is the single source of truth for which prefixes are global.
  */
@@ -204,7 +204,7 @@ export const useTabStore = create<TabStore>()(
 
       // Stale slug: dispose the old router and replace with a fresh one
       // pointing at `/`. IndexRedirect will send the tab to a valid
-      // workspace (or /new-workspace if the user now has none).
+      // workspace (or /workspaces/new if the user now has none).
       changed = true;
       t.router.dispose();
       return {

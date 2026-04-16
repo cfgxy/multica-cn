@@ -4,7 +4,7 @@ import type { Workspace } from "@multica/core/types";
 import { CreateWorkspaceForm } from "./create-workspace-form";
 
 /**
- * Full-page shell for the /new-workspace route. Shared between web
+ * Full-page shell for the /workspaces/new route. Shared between web
  * (Next.js) and desktop (react-router) so the two apps can't drift.
  * Callers provide the onSuccess handler — that's the only app-specific
  * piece, because each app uses its own navigation primitive.

@@ -6,6 +6,15 @@
 -- set recommended by the URL-design audit (auth flow words, RFC 2142 mailbox
 -- names, hostname confusables, common platform routes).
 --
+-- Migration 046 was REMOVED in the same PR. It was auditing "new-workspace"
+-- which is no longer reserved, so it had become dead code AND was actively
+-- blocking prd deploy on a real-user workspace that no longer needs renaming
+-- (the workspace is now safe under the new route — `new-workspace` slug
+-- resolves to its workspace, no longer shadowed by the global route which
+-- moved to /workspaces/new). Removing 046 is forward-only safe: 046 had
+-- never successfully applied in prd (it was the source of the deploy
+-- block), and the audit-only nature means down-rollback is a no-op.
+--
 -- The data audit was performed before this migration was written and confirmed
 -- ZERO conflicts for every slug listed below in production. This migration
 -- exists as a safety net: if a workspace with one of these slugs slips into
