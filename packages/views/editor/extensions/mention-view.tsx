@@ -23,7 +23,6 @@ import type { NodeViewProps } from "@tiptap/react";
 import { useQuery } from "@tanstack/react-query";
 import { issueListOptions, issueDetailOptions } from "@multica/core/issues/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { useWorkspacePaths } from "@multica/core/paths";
 import { useNavigation } from "../../navigation";
 import { StatusIcon } from "../../issues/components/status-icon";
 
@@ -53,7 +52,6 @@ function IssueMention({
   fallbackLabel?: string;
 }) {
   const wsId = useWorkspaceId();
-  const p = useWorkspacePaths();
   const { data: issues = [] } = useQuery(issueListOptions(wsId));
   const { push, openInNewTab } = useNavigation();
   const listIssue = issues.find((i) => i.id === issueId);
@@ -65,7 +63,7 @@ function IssueMention({
 
   const issue = listIssue ?? detailIssue;
 
-  const issuePath = p.issueDetail(issueId);
+  const issuePath = `/issues/${issueId}`;
   const tabTitle = issue ? `${issue.identifier}: ${issue.title}` : undefined;
   const handleClick = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -84,7 +82,7 @@ function IssueMention({
 
   if (!issue) {
     return (
-      <a href={issuePath} onClick={handleClick} className={cardClass}>
+      <a href={`/issues/${issueId}`} onClick={handleClick} className={cardClass}>
         <span className="font-medium text-muted-foreground">
           {fallbackLabel ?? issueId.slice(0, 8)}
         </span>
@@ -93,7 +91,7 @@ function IssueMention({
   }
 
   return (
-    <a href={issuePath} onClick={handleClick} className={cardClass}>
+    <a href={`/issues/${issueId}`} onClick={handleClick} className={cardClass}>
       <StatusIcon status={issue.status} className="h-3.5 w-3.5 shrink-0" />
       <span className="font-medium text-muted-foreground shrink-0">{issue.identifier}</span>
       <span className="text-foreground truncate">{issue.title}</span>

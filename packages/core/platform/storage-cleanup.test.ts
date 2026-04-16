@@ -19,7 +19,6 @@ describe("clearWorkspaceStorage", () => {
     expect(adapter.removeItem).toHaveBeenCalledWith("multica:chat:activeSessionId:ws_123");
     expect(adapter.removeItem).toHaveBeenCalledWith("multica:chat:drafts:ws_123");
     expect(adapter.removeItem).toHaveBeenCalledWith("multica:chat:expanded:ws_123");
-    expect(adapter.removeItem).toHaveBeenCalledWith("multica_navigation:ws_123");
-    expect(adapter.removeItem).toHaveBeenCalledTimes(9);
+    expect(adapter.removeItem).toHaveBeenCalledTimes(8);
   });
 });

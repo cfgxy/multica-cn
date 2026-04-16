@@ -66,7 +66,6 @@ import type {
 } from "../types";
 import { type Logger, noopLogger } from "../logger";
 import { createRequestId } from "../utils";
-import { getCurrentSlug } from "../platform/workspace-storage";
 
 export interface ApiClientOptions {
   logger?: Logger;
@@ -93,6 +92,7 @@ export class ApiError extends Error {
 export class ApiClient {
   private baseUrl: string;
   private token: string | null = null;
+  private workspaceId: string | null = null;
   private logger: Logger;
   private options: ApiClientOptions;
 
@@ -110,6 +110,10 @@ export class ApiClient {
     this.token = token;
   }
 
+  setWorkspaceId(id: string | null) {
+    this.workspaceId = id;
+  }
+
   private readCsrfToken(): string | null {
     if (typeof document === "undefined") return null;
     const match = document.cookie
@@ -121,8 +125,7 @@ export class ApiClient {
   private authHeaders(): Record<string, string> {
     const headers: Record<string, string> = {};
     if (this.token) headers["Authorization"] = `Bearer ${this.token}`;
-    const slug = getCurrentSlug();
-    if (slug) headers["X-Workspace-Slug"] = slug;
+    if (this.workspaceId) headers["X-Workspace-ID"] = this.workspaceId;
     const csrf = this.readCsrfToken();
     if (csrf) headers["X-CSRF-Token"] = csrf;
     return headers;
@@ -130,10 +133,7 @@ export class ApiClient {
 
   private handleUnauthorized() {
     this.token = null;
-    // Workspace id is owned by the URL-driven workspace-storage singleton
-    // (set by [workspaceSlug]/layout.tsx). On 401, the auth flow navigates
-    // to /login which leaves the workspace route, and the next workspace
-    // entry will overwrite the id. No clear needed here.
+    this.workspaceId = null;
     this.options.onUnauthorized?.();
   }
 
@@ -231,7 +231,8 @@ export class ApiClient {
     const search = new URLSearchParams();
     if (params?.limit) search.set("limit", String(params.limit));
     if (params?.offset) search.set("offset", String(params.offset));
-    if (params?.workspace_id) search.set("workspace_id", params.workspace_id);
+    const wsId = params?.workspace_id ?? this.workspaceId;
+    if (wsId) search.set("workspace_id", wsId);
     if (params?.status) search.set("status", params.status);
     if (params?.priority) search.set("priority", params.priority);
     if (params?.assignee_id) search.set("assignee_id", params.assignee_id);
@@ -262,7 +263,9 @@ export class ApiClient {
   }
 
   async createIssue(data: CreateIssueRequest): Promise<Issue> {
-    return this.fetch("/api/issues", {
+    const search = new URLSearchParams();
+    if (this.workspaceId) search.set("workspace_id", this.workspaceId);
+    return this.fetch(`/api/issues?${search}`, {
       method: "POST",
       body: JSON.stringify(data),
     });
@@ -393,7 +396,8 @@ export class ApiClient {
   // Agents
   async listAgents(params?: { workspace_id?: string; include_archived?: boolean }): Promise<Agent[]> {
     const search = new URLSearchParams();
-    if (params?.workspace_id) search.set("workspace_id", params.workspace_id);
+    const wsId = params?.workspace_id ?? this.workspaceId;
+    if (wsId) search.set("workspace_id", wsId);
     if (params?.include_archived) search.set("include_archived", "true");
     return this.fetch(`/api/agents?${search}`);
   }
@@ -426,7 +430,8 @@ export class ApiClient {
 
   async listRuntimes(params?: { workspace_id?: string; owner?: "me" }): Promise<AgentRuntime[]> {
     const search = new URLSearchParams();
-    if (params?.workspace_id) search.set("workspace_id", params.workspace_id);
+    const wsId = params?.workspace_id ?? this.workspaceId;
+    if (wsId) search.set("workspace_id", wsId);
     if (params?.owner) search.set("owner", params.owner);
     return this.fetch(`/api/runtimes?${search}`);
   }
@@ -783,7 +788,9 @@ export class ApiClient {
   }
 
   async createProject(data: CreateProjectRequest): Promise<Project> {
-    return this.fetch("/api/projects", {
+    const search = new URLSearchParams();
+    if (this.workspaceId) search.set("workspace_id", this.workspaceId);
+    return this.fetch(`/api/projects?${search}`, {
       method: "POST",
       body: JSON.stringify(data),
     });

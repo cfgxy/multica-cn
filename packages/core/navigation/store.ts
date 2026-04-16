@@ -2,35 +2,21 @@
 
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-import {
-  createWorkspaceAwareStorage,
-  registerForWorkspaceRehydration,
-} from "../platform/workspace-storage";
+import { createPersistStorage } from "../platform/persist-storage";
 import { defaultStorage } from "../platform/storage";
 
-// Paths that should not be persisted as "last visited":
-//  - Auth flows (/login, /signup, /logout)
-//  - Pre-workspace routes (/onboarding, /auth/, /invite/)
-//  - Pair flow (/pair/)
-const EXCLUDED_PREFIXES = [
-  "/login",
-  "/signup",
-  "/logout",
-  "/onboarding",
-  "/auth/",
-  "/invite/",
-  "/pair/",
-];
+const EXCLUDED_PREFIXES = ["/login", "/pair/", "/invite/"];
 
 interface NavigationState {
-  lastPath: string | null;
+  lastPath: string;
   onPathChange: (path: string) => void;
 }
 
 export const useNavigationStore = create<NavigationState>()(
   persist(
     (set) => ({
-      lastPath: null,
+      lastPath: "/issues",
+
       onPathChange: (path: string) => {
         if (!EXCLUDED_PREFIXES.some((prefix) => path.startsWith(prefix))) {
           set({ lastPath: path });
@@ -39,11 +25,8 @@ export const useNavigationStore = create<NavigationState>()(
     }),
     {
       name: "multica_navigation",
-      storage: createJSONStorage(() => createWorkspaceAwareStorage(defaultStorage)),
+      storage: createJSONStorage(() => createPersistStorage(defaultStorage)),
       partialize: (state) => ({ lastPath: state.lastPath }),
-    },
-  ),
+    }
+  )
 );
-
-// Workspace-aware: re-read lastPath when current workspace changes.
-registerForWorkspaceRehydration(() => useNavigationStore.persist.rehydrate());

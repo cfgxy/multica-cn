@@ -89,15 +89,12 @@ describe("CreateWorkspaceModal", () => {
     );
   });
 
-  it("navigates into the newly created workspace after success", async () => {
+  it("continues onboarding after successful creation", async () => {
     const user = userEvent.setup();
     const onClose = vi.fn();
     mockCreateWorkspaceMutate.mockImplementation(
-      (
-        _data: unknown,
-        options: { onSuccess: (ws: { slug: string }) => void },
-      ) => {
-        options.onSuccess({ slug: "my-team" });
+      (_data: unknown, options: { onSuccess: () => void }) => {
+        options.onSuccess();
       },
     );
 
@@ -107,6 +104,6 @@ describe("CreateWorkspaceModal", () => {
     await user.click(screen.getByRole("button", { name: "Create workspace" }));
 
     expect(onClose).toHaveBeenCalled();
-    expect(mockPush).toHaveBeenCalledWith("/my-team/issues");
+    expect(mockPush).toHaveBeenCalledWith("/onboarding");
   });
 });

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { createWorkspaceAwareStorage, setCurrentWorkspace } from "./workspace-storage";
+import { createWorkspaceAwareStorage, setCurrentWorkspaceId } from "./workspace-storage";
 import type { StorageAdapter } from "../types/storage";
 
 function mockAdapter(): StorageAdapter {
@@ -12,50 +12,50 @@ function mockAdapter(): StorageAdapter {
 }
 
 afterEach(() => {
-  setCurrentWorkspace(null, null);
+  setCurrentWorkspaceId(null);
 });
 
 describe("workspace-aware storage", () => {
   it("uses plain key when no workspace is set", () => {
     const adapter = mockAdapter();
-    setCurrentWorkspace(null, null);
+    setCurrentWorkspaceId(null);
     const storage = createWorkspaceAwareStorage(adapter);
 
     storage.setItem("draft", "data");
     expect(adapter.setItem).toHaveBeenCalledWith("draft", "data");
   });
 
-  it("namespaces key with slug when workspace is set", () => {
+  it("namespaces key when workspace is set", () => {
     const adapter = mockAdapter();
-    setCurrentWorkspace("acme", "ws_abc");
+    setCurrentWorkspaceId("ws_abc");
     const storage = createWorkspaceAwareStorage(adapter);
 
     storage.setItem("draft", "data");
-    expect(adapter.setItem).toHaveBeenCalledWith("draft:acme", "data");
+    expect(adapter.setItem).toHaveBeenCalledWith("draft:ws_abc", "data");
 
     storage.getItem("draft");
-    expect(adapter.getItem).toHaveBeenCalledWith("draft:acme");
+    expect(adapter.getItem).toHaveBeenCalledWith("draft:ws_abc");
   });
 
   it("follows workspace changes dynamically", () => {
     const adapter = mockAdapter();
     const storage = createWorkspaceAwareStorage(adapter);
 
-    setCurrentWorkspace("team-a", "ws_1");
+    setCurrentWorkspaceId("ws_1");
     storage.setItem("draft", "v1");
-    expect(adapter.setItem).toHaveBeenCalledWith("draft:team-a", "v1");
+    expect(adapter.setItem).toHaveBeenCalledWith("draft:ws_1", "v1");
 
-    setCurrentWorkspace("team-b", "ws_2");
+    setCurrentWorkspaceId("ws_2");
     storage.setItem("draft", "v2");
-    expect(adapter.setItem).toHaveBeenCalledWith("draft:team-b", "v2");
+    expect(adapter.setItem).toHaveBeenCalledWith("draft:ws_2", "v2");
   });
 
-  it("removeItem uses current workspace slug", () => {
+  it("removeItem uses current workspace", () => {
     const adapter = mockAdapter();
-    setCurrentWorkspace("dev", "ws_x");
+    setCurrentWorkspaceId("ws_x");
     const storage = createWorkspaceAwareStorage(adapter);
 
     storage.removeItem("draft");
-    expect(adapter.removeItem).toHaveBeenCalledWith("draft:dev");
+    expect(adapter.removeItem).toHaveBeenCalledWith("draft:ws_x");
   });
 });

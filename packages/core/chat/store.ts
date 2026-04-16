@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { StorageAdapter } from "../types";
-import { getCurrentSlug, registerForWorkspaceRehydration } from "../platform/workspace-storage";
+import { getCurrentWorkspaceId, registerForWorkspaceRehydration } from "../platform/workspace-storage";
 import { createLogger } from "../logger";
 
 const logger = createLogger("chat.store");
@@ -90,8 +90,8 @@ export function createChatStore(options: ChatStoreOptions) {
   const { storage } = options;
 
   const wsKey = (base: string) => {
-    const slug = getCurrentSlug();
-    return slug ? `${base}:${slug}` : base;
+    const wsId = getCurrentWorkspaceId();
+    return wsId ? `${base}:${wsId}` : base;
   };
 
   const store = create<ChatState>((set, get) => ({

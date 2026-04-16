@@ -3,13 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, TimelineEntry } from "@multica/core/types";
-// useWorkspaceId() derives from useCurrentWorkspace (relative import inside
-// @multica/core/hooks.tsx). vi.mock("@multica/core/paths") only intercepts
-// the bare-specifier, not the internal relative import. Mock the hooks module
-// directly so the bridge hook returns the test UUID.
-vi.mock("@multica/core/hooks", () => ({
-  useWorkspaceId: () => "ws-1",
-}));
+import { WorkspaceIdProvider } from "@multica/core/hooks";
 
 // ---------------------------------------------------------------------------
 // Mocks
@@ -27,6 +21,28 @@ vi.mock("@multica/core/auth", () => ({
   ),
   registerAuthStore: vi.fn(),
   createAuthStore: vi.fn(),
+}));
+
+// Mock @multica/core/workspace
+vi.mock("@multica/core/workspace", () => ({
+  useWorkspaceStore: Object.assign(
+    (selector?: any) => {
+      const state = {
+        workspace: { id: "ws-1", name: "Test WS", slug: "test" },
+        agents: [],
+        members: [],
+      };
+      return selector ? selector(state) : state;
+    },
+    {
+      getState: () => ({
+        workspace: { id: "ws-1", name: "Test WS", slug: "test" },
+        agents: [],
+        members: [],
+      }),
+    },
+  ),
+  registerWorkspaceStore: vi.fn(),
 }));
 
 // Mock @multica/core/workspace/hooks
@@ -58,25 +74,7 @@ vi.mock("@multica/core/workspace/queries", () => ({
     queryKey: ["workspaces", "ws-1", "assignee-frequency"],
     queryFn: () => Promise.resolve([]),
   }),
-  workspaceListOptions: () => ({
-    queryKey: ["workspaces"],
-    queryFn: () => Promise.resolve([{ id: "ws-1", name: "Test WS", slug: "test" }]),
-  }),
 }));
-
-// Mock @multica/core/paths — after the URL-driven workspace refactor,
-// useCurrentWorkspace / useWorkspacePaths derive from the workspace slug in
-// URL Context. Tests don't mount a real route, so we short-circuit to fixtures.
-vi.mock("@multica/core/paths", async () => {
-  const actual = await vi.importActual<typeof import("@multica/core/paths")>(
-    "@multica/core/paths",
-  );
-  return {
-    ...actual,
-    useCurrentWorkspace: () => ({ id: "ws-1", name: "Test WS", slug: "test" }),
-    useWorkspacePaths: () => actual.paths.workspace("test"),
-  };
-});
 
 // Mock navigation
 vi.mock("../../navigation", () => ({
@@ -344,7 +342,9 @@ function renderIssueDetail(issueId = "issue-1") {
   const queryClient = createTestQueryClient();
   return render(
     <QueryClientProvider client={queryClient}>
-      <IssueDetail issueId={issueId} />
+      <WorkspaceIdProvider wsId="ws-1">
+        <IssueDetail issueId={issueId} />
+      </WorkspaceIdProvider>
     </QueryClientProvider>,
   );
 }
@@ -407,9 +407,7 @@ describe("IssueDetail (shared)", () => {
     });
 
     const wsLink = screen.getByText("Test WS");
-    // After the URL-driven workspace refactor, issue paths are scoped under
-    // /<workspaceSlug>/issues.
-    expect(wsLink.closest("a")).toHaveAttribute("href", "/test/issues");
+    expect(wsLink.closest("a")).toHaveAttribute("href", "/issues");
   });
 
   it("renders properties sidebar with status, priority, assignee, due date", async () => {

@@ -1,4 +1,4 @@
-import { useEffect, useSyncExternalStore } from "react";
+import { useEffect } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { cn } from "@multica/ui/lib/utils";
 import { useTabHistory } from "@/hooks/use-tab-history";
@@ -9,13 +9,13 @@ import {
   useSidebar,
 } from "@multica/ui/components/ui/sidebar";
 import { ModalRegistry } from "@multica/views/modals/registry";
-import { AppSidebar } from "@multica/views/layout";
+import { AppSidebar, DashboardGuard } from "@multica/views/layout";
 import { SearchCommand, SearchTrigger } from "@multica/views/search";
 import { ChatFab, ChatWindow } from "@multica/views/chat";
 import { StepWorkspace } from "@multica/views/onboarding";
-import { WorkspaceSlugProvider } from "@multica/core/paths";
-import { getCurrentSlug, subscribeToCurrentSlug } from "@multica/core/platform";
+import { useWorkspaceStore } from "@multica/core/workspace";
 import { DesktopNavigationProvider } from "@/platform/navigation";
+import { MulticaIcon } from "@multica/ui/components/common/multica-icon";
 import { OnboardingGate } from "./onboarding-gate";
 import { TabBar } from "./tab-bar";
 import { TabContent } from "./tab-content";
@@ -89,46 +89,44 @@ export function DesktopShell() {
   useInternalLinkHandler();
   useActiveTitleSync();
 
-  // Reactive read of current workspace slug from the platform singleton.
-  // On first mount, slug is null until WorkspaceRouteLayout (inside the tab
-  // router) sets it. Once set, the sidebar and other shell-level components
-  // can resolve workspace-scoped paths via useWorkspacePaths().
-  const slug = useSyncExternalStore(subscribeToCurrentSlug, getCurrentSlug, () => null);
+  const workspace = useWorkspaceStore((s) => s.workspace);
 
   return (
     <DesktopNavigationProvider>
       <OnboardingGate
+        hasWorkspace={!!workspace}
         onboarding={(onComplete) => (
           <div className="flex min-h-screen items-center justify-center overflow-auto bg-background px-6 py-12">
             <StepWorkspace onNext={onComplete} />
           </div>
         )}
       >
-        {/* WorkspaceSlugProvider accepts null — components that need slug
-            use useWorkspaceSlug() (nullable) or useRequiredWorkspaceSlug()
-            (throws). TabContent MUST always render so the tab router can
-            mount WorkspaceRouteLayout, which calls setCurrentWorkspace()
-            to populate the slug. The sidebar gates on slug being present
-            to avoid the useRequiredWorkspaceSlug throw. */}
-        <WorkspaceSlugProvider slug={slug}>
+        <DashboardGuard
+          loginPath="/login"
+          loadingFallback={
+            <div className="flex h-screen items-center justify-center">
+              <MulticaIcon className="size-6 animate-pulse" />
+            </div>
+          }
+        >
           <div className="flex h-screen">
             <SidebarProvider className="flex-1">
-              {slug && <AppSidebar topSlot={<SidebarTopBar />} searchSlot={<SearchTrigger />} />}
+              <AppSidebar topSlot={<SidebarTopBar />} searchSlot={<SearchTrigger />} />
               {/* Right side: header + content container */}
               <div className="flex flex-1 min-w-0 flex-col">
                 <MainTopBar />
                 {/* Content area with inset styling — relative so ChatWindow/ChatFab are constrained here */}
                 <div className="relative flex flex-1 min-h-0 flex-col overflow-hidden mr-2 mb-2 ml-0.5 rounded-xl shadow-sm bg-background">
                   <TabContent />
-                  {slug && <ChatWindow />}
-                  {slug && <ChatFab />}
+                  <ChatWindow />
+                  <ChatFab />
                 </div>
               </div>
             </SidebarProvider>
           </div>
-          {slug && <ModalRegistry />}
-          {slug && <SearchCommand />}
-        </WorkspaceSlugProvider>
+          <ModalRegistry />
+          <SearchCommand />
+        </DashboardGuard>
       </OnboardingGate>
     </DesktopNavigationProvider>
   );

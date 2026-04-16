@@ -1,91 +1,73 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect } from "vitest";
 import { render, screen, act } from "@testing-library/react";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { workspaceKeys } from "@multica/core/workspace/queries";
+import { useState } from "react";
 import { OnboardingGate } from "./onboarding-gate";
 
-// Prevent actual API calls — the tests seed data via setQueryData.
-vi.mock("@multica/core/api", () => ({
-  api: {
-    listWorkspaces: vi.fn().mockResolvedValue([]),
-  },
-}));
-
-function createTestQueryClient(
-  workspaces: Array<{ id: string; slug: string }> = [],
-) {
-  const qc = new QueryClient({
-    defaultOptions: { queries: { retry: false } },
-  });
-  // Seed the workspace list so the gate can read it synchronously.
-  qc.setQueryData(workspaceKeys.list(), workspaces);
-  return qc;
-}
-
-function renderGate(
-  qc: QueryClient,
-  onboarding?: (onComplete: () => void) => React.ReactNode,
-) {
-  return render(
-    <QueryClientProvider client={qc}>
+describe("OnboardingGate", () => {
+  it("renders children when a workspace exists at mount", () => {
+    render(
       <OnboardingGate
-        onboarding={
-          onboarding ??
-          ((onComplete) => (
-            <button type="button" data-testid="finish" onClick={onComplete}>
-              wizard
-            </button>
-          ))
-        }
+        hasWorkspace={true}
+        onboarding={() => <div data-testid="wizard">wizard</div>}
       >
         <div data-testid="main">main shell</div>
-      </OnboardingGate>
-    </QueryClientProvider>,
-  );
-}
-
-describe("OnboardingGate", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("renders children when workspaces exist in cache", () => {
-    const qc = createTestQueryClient([{ id: "ws-1", slug: "my-team" }]);
-    renderGate(qc);
+      </OnboardingGate>,
+    );
 
     expect(screen.getByTestId("main")).toBeInTheDocument();
-    expect(screen.queryByText("wizard")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("wizard")).not.toBeInTheDocument();
   });
 
-  it("renders onboarding when workspace list is empty", () => {
-    const qc = createTestQueryClient([]);
-    renderGate(qc);
+  it("keeps the wizard mounted even after hasWorkspace flips to true mid-flow", () => {
+    // Controls the hasWorkspace prop from outside so we can simulate
+    // step 0 of the wizard creating a workspace while steps 1-3 still need
+    // to render. The gate should ignore the prop change and hold the wizard.
+    function Harness() {
+      const [hasWorkspace, setHasWorkspace] = useState(false);
+      return (
+        <>
+          <button
+            type="button"
+            data-testid="grant-workspace"
+            onClick={() => setHasWorkspace(true)}
+          >
+            grant
+          </button>
+          <OnboardingGate
+            hasWorkspace={hasWorkspace}
+            onboarding={() => <div data-testid="wizard">wizard</div>}
+          >
+            <div data-testid="main">main shell</div>
+          </OnboardingGate>
+        </>
+      );
+    }
 
-    expect(screen.getByText("wizard")).toBeInTheDocument();
-    expect(screen.queryByTestId("main")).not.toBeInTheDocument();
-  });
+    render(<Harness />);
+    expect(screen.getByTestId("wizard")).toBeInTheDocument();
 
-  it("keeps the wizard mounted even after workspaces appear in cache mid-flow", () => {
-    const qc = createTestQueryClient([]);
-    renderGate(qc);
-
-    expect(screen.getByText("wizard")).toBeInTheDocument();
-
-    // Simulate the onboarding wizard creating a workspace mid-flow.
     act(() => {
-      qc.setQueryData(workspaceKeys.list(), [
-        { id: "ws-new", slug: "new-team" },
-      ]);
+      screen.getByTestId("grant-workspace").click();
     });
 
-    // Wizard should still be visible — only onComplete dismisses it.
-    expect(screen.getByText("wizard")).toBeInTheDocument();
+    // Prop change alone does not dismiss the wizard — only onComplete does.
+    expect(screen.getByTestId("wizard")).toBeInTheDocument();
     expect(screen.queryByTestId("main")).not.toBeInTheDocument();
   });
 
   it("transitions to children after the wizard calls onComplete", () => {
-    const qc = createTestQueryClient([]);
-    renderGate(qc);
+    render(
+      <OnboardingGate
+        hasWorkspace={false}
+        onboarding={(onComplete) => (
+          <button type="button" data-testid="finish" onClick={onComplete}>
+            finish
+          </button>
+        )}
+      >
+        <div data-testid="main">main shell</div>
+      </OnboardingGate>,
+    );
 
     expect(screen.getByTestId("finish")).toBeInTheDocument();
 

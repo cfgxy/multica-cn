@@ -11,10 +11,13 @@ function createWrapper() {
   );
 }
 
-const { mockSendCode, mockVerifyCode } = vi.hoisted(() => ({
-  mockSendCode: vi.fn(),
-  mockVerifyCode: vi.fn(),
-}));
+const { mockSendCode, mockVerifyCode, mockHydrateWorkspace } = vi.hoisted(
+  () => ({
+    mockSendCode: vi.fn(),
+    mockVerifyCode: vi.fn(),
+    mockHydrateWorkspace: vi.fn(),
+  }),
+);
 
 // Mock next/navigation
 vi.mock("next/navigation", () => ({
@@ -43,6 +46,16 @@ vi.mock("@multica/core/auth", () => {
 vi.mock("@/features/auth/auth-cookie", () => ({
   setLoggedInCookie: vi.fn(),
 }));
+
+// Mock workspace store — shared LoginPage uses getState().hydrateWorkspace
+vi.mock("@multica/core/workspace", () => {
+  const wsState = { hydrateWorkspace: mockHydrateWorkspace };
+  const useWorkspaceStore = Object.assign(
+    (selector: (s: typeof wsState) => unknown) => selector(wsState),
+    { getState: () => wsState },
+  );
+  return { useWorkspaceStore };
+});
 
 // Mock api
 vi.mock("@multica/core/api", () => ({

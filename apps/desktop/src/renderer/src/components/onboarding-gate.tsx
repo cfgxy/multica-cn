@@ -1,36 +1,29 @@
 import { useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { workspaceListOptions } from "@multica/core/workspace/queries";
 
 /**
- * Renders `onboarding` as a full-screen takeover when the user has no
- * workspaces, otherwise renders `children`.
+ * Renders `onboarding` as a full-screen takeover when the user logs in
+ * without a workspace, otherwise renders `children`.
  *
- * Reads the workspace list directly from React Query — this works regardless
- * of whether a WorkspaceSlugProvider is mounted, unlike useCurrentWorkspace()
- * which depends on slug context from the router tree.
+ * The "needs onboarding" decision is frozen at first mount via the lazy
+ * useState initializer so the onboarding view controls its own exit: the
+ * onboarding component calls the `onComplete` callback when it's ready to
+ * hand off to `children`, instead of getting unmounted the moment the
+ * workspace store updates.
  *
- * The onboarding decision is frozen at first mount via the lazy useState
- * initializer: this way the onboarding wizard controls its own exit by
- * calling the `onComplete` callback, instead of being unmounted the moment
- * the workspace list updates mid-flow (e.g. after the user creates their
- * first workspace in step 1 but still has steps 2-3 to complete).
- *
- * The frozen decision only triggers when the initial query has settled AND
- * the list is empty. While the list is loading, children are rendered
- * (the shell shows its own loading state).
+ * Assumes `hasWorkspace` is definitive at first render: desktop only mounts
+ * DesktopShell after AppContent's bootstrapping flag resolves, so the first
+ * render of this component reflects the actual server state.
  */
 export function OnboardingGate({
+  hasWorkspace,
   onboarding,
   children,
 }: {
+  hasWorkspace: boolean;
   onboarding: (onComplete: () => void) => ReactNode;
   children: ReactNode;
 }) {
-  const { data: workspaces, isFetched } = useQuery(workspaceListOptions());
-  const hasWorkspaces = !isFetched || (workspaces?.length ?? 0) > 0;
-
-  const [initialNeedsOnboarding] = useState(() => !hasWorkspaces);
+  const [initialNeedsOnboarding] = useState(() => !hasWorkspace);
   const [onboardingDone, setOnboardingDone] = useState(false);
 
   if (initialNeedsOnboarding && !onboardingDone) {

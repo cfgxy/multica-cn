@@ -6,17 +6,13 @@ import {
   useEffect,
   useState,
   useCallback,
-  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { WSClient } from "../api/ws-client";
 import type { WSEventType, StorageAdapter } from "../types";
 import type { StoreApi, UseBoundStore } from "zustand";
 import type { AuthState } from "../auth/store";
-import {
-  getCurrentSlug,
-  subscribeToCurrentSlug,
-} from "../platform/workspace-storage";
+import type { WorkspaceStore } from "../workspace/store";
 import { createLogger } from "../logger";
 import { useRealtimeSync, type RealtimeSyncStores } from "./use-realtime-sync";
 
@@ -35,6 +31,8 @@ export interface WSProviderProps {
   wsUrl: string;
   /** Platform-created auth store instance */
   authStore: UseBoundStore<StoreApi<AuthState>>;
+  /** Platform-created workspace store instance */
+  workspaceStore: UseBoundStore<StoreApi<WorkspaceStore>>;
   /** Platform-specific storage adapter for reading auth tokens */
   storage: StorageAdapter;
   /** When true, use HttpOnly cookies instead of token query param for WS auth. */
@@ -47,25 +45,17 @@ export function WSProvider({
   children,
   wsUrl,
   authStore,
+  workspaceStore,
   storage,
   cookieAuth,
   onToast,
 }: WSProviderProps) {
   const user = authStore((s) => s.user);
-  // Reactive read of the current workspace slug (URL-driven singleton in
-  // packages/core/platform/workspace-storage.ts). When the workspace switches,
-  // the useEffect below tears down the old WS connection and opens a new one
-  // bound to the new workspace slug. SSR snapshot is `null` because this
-  // provider only renders client-side under CoreProvider.
-  const wsSlug = useSyncExternalStore(
-    subscribeToCurrentSlug,
-    getCurrentSlug,
-    () => null,
-  );
+  const workspace = workspaceStore((s) => s.workspace);
   const [wsClient, setWsClient] = useState<WSClient | null>(null);
 
   useEffect(() => {
-    if (!user || !wsSlug) return;
+    if (!user || !workspace) return;
 
     // In token mode we need a token from storage; in cookie mode the HttpOnly
     // cookie is sent automatically with the WS upgrade request.
@@ -76,7 +66,7 @@ export function WSProvider({
       logger: createLogger("ws"),
       cookieAuth,
     });
-    ws.setAuth(token, wsSlug);
+    ws.setAuth(token, workspace.id);
     setWsClient(ws);
     ws.connect();
 
@@ -84,9 +74,9 @@ export function WSProvider({
       ws.disconnect();
       setWsClient(null);
     };
-  }, [user, wsSlug, wsUrl, storage, cookieAuth]);
+  }, [user, workspace, wsUrl, storage, cookieAuth]);
 
-  const stores: RealtimeSyncStores = { authStore };
+  const stores: RealtimeSyncStores = { authStore, workspaceStore };
 
   // Centralized WS -> store sync (uses state so it re-subscribes when WS changes)
   useRealtimeSync(wsClient, stores, onToast);

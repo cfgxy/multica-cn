@@ -1,8 +1,7 @@
 import { useEffect, useState } from "react";
-import { useQueryClient } from "@tanstack/react-query";
 import { CoreProvider } from "@multica/core/platform";
 import { useAuthStore } from "@multica/core/auth";
-import { workspaceKeys } from "@multica/core/workspace/queries";
+import { useWorkspaceStore } from "@multica/core/workspace";
 import { api } from "@multica/core/api";
 import { ThemeProvider } from "@multica/ui/components/common/theme-provider";
 import { MulticaIcon } from "@multica/ui/components/common/multica-icon";
@@ -14,9 +13,8 @@ import { UpdateNotification } from "./components/update-notification";
 function AppContent() {
   const user = useAuthStore((s) => s.user);
   const isLoading = useAuthStore((s) => s.isLoading);
-  const qc = useQueryClient();
   // Deep-link login runs loginWithToken → syncToken → listWorkspaces →
-  // setQueryData sequentially. loginWithToken sets user+isLoading=false
+  // hydrateWorkspace sequentially. loginWithToken sets user+isLoading=false
   // as soon as getMe resolves, which would cause DesktopShell to mount
   // before the workspace list is hydrated and briefly see `!workspace`.
   // This local flag keeps the loading screen up until the whole chain
@@ -38,20 +36,16 @@ function AppContent() {
       setBootstrapping(true);
       try {
         await useAuthStore.getState().loginWithToken(token);
-        // Seed React Query cache with the workspace list so the index-route
-        // redirect (routes.tsx `IndexRedirect`) can resolve the initial
-        // destination without a second fetch. Workspace side-effects
-        // (setCurrentWorkspace, persist namespace) are synced later by
-        // WorkspaceRouteLayout when the URL resolves.
         const wsList = await api.listWorkspaces();
-        qc.setQueryData(workspaceKeys.list(), wsList);
+        const lastWsId = localStorage.getItem("multica_workspace_id");
+        useWorkspaceStore.getState().hydrateWorkspace(wsList, lastWsId);
       } catch {
         // Token invalid or expired — user stays on login page
       } finally {
         setBootstrapping(false);
       }
     });
-  }, [qc]);
+  }, []);
 
   // Sync token and start the daemon whenever the user logs in.
   useEffect(() => {
