@@ -6,6 +6,7 @@ import { useActiveTitleSync } from "@/hooks/use-tab-sync";
 import { useTabStore, resolveRouteIcon } from "@/stores/tab-store";
 import {
   SidebarProvider,
+  SidebarTrigger,
   useSidebar,
 } from "@multica/ui/components/ui/sidebar";
 import { ModalRegistry } from "@multica/views/modals/registry";
@@ -54,17 +55,28 @@ function SidebarTopBar() {
 }
 
 // The main area's top bar doubles as a window drag region. When the sidebar
-// is collapsed, we pad the left side so tabs don't land under the macOS
-// traffic lights (which live at roughly x=16..68 and always hit-test above HTML).
+// is not occupying main-flow width — either user-collapsed (offcanvas) or
+// auto-hidden in mobile mode (<768px, becomes a sheet drawer) — we pad the
+// left side so tabs don't land under the macOS traffic lights (which live at
+// roughly x=16..68 and always hit-test above HTML), and surface a trigger so
+// the sidebar can be brought back without keyboard shortcut.
 function MainTopBar() {
-  const { state } = useSidebar();
-  const sidebarCollapsed = state === "collapsed";
+  const { state, isMobile } = useSidebar();
+  const sidebarHidden = state === "collapsed" || isMobile;
 
   return (
     <header
-      className={cn("h-12 shrink-0", sidebarCollapsed && "pl-20")}
+      className={cn(
+        "h-12 shrink-0 flex items-center gap-2",
+        sidebarHidden && "pl-20",
+      )}
       style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
     >
+      {sidebarHidden && (
+        <SidebarTrigger
+          style={{ WebkitAppRegion: "no-drag" } as React.CSSProperties}
+        />
+      )}
       <TabBar />
     </header>
   );
