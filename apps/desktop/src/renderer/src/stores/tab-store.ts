@@ -3,7 +3,7 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import { arrayMove } from "@dnd-kit/sortable";
 import { createPersistStorage, defaultStorage } from "@multica/core/platform";
 import { createSafeId } from "@multica/core/utils";
-import { isGlobalPath, isReservedSlug } from "@multica/core/paths";
+import { isReservedSlug } from "@multica/core/paths";
 import type { DataRouter } from "react-router-dom";
 import { createTabRouter } from "../routes";
 
@@ -44,10 +44,17 @@ interface TabStore {
    * current user doesn't have access to. Called after login + workspace list
    * is populated (and on every subsequent list change, e.g. realtime
    * workspace:deleted). Stale tabs get reset to `/` so IndexRedirect picks
-   * a valid workspace; tabs on global paths (/login, /workspaces/new, etc.)
-   * are untouched.
+   * a valid workspace (or opens the new-workspace overlay if the user now
+   * has none).
    */
   validateWorkspaceSlugs: (validSlugs: Set<string>) => void;
+  /**
+   * Wipe all in-memory tabs and reseed with a single default tab at `/`.
+   * Called on logout so the next user doesn't inherit the previous user's
+   * tab layout — Zustand persist only writes to localStorage; clearing
+   * localStorage alone leaves the live store untouched until app restart.
+   */
+  reset: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -67,21 +74,17 @@ const ROUTE_ICONS: Record<string, string> = {
 };
 
 /**
- * Resolve a route icon from a pathname. Title is NOT determined here — it
- * comes from document.title.
+ * Resolve a route icon from a pathname.
  *
- * Path shape after the workspace URL refactor:
- *  - workspace-scoped: `/{workspaceSlug}/{route}/...` → use segment index 1
- *  - global (workspaces/new, invite, auth, login): `/{route}/...` → use segment index 0
+ * Tab paths are always workspace-scoped on desktop: `/{slug}/{route}/...`,
+ * so the route segment lives at index 1. Pre-workspace flows (create,
+ * invite) are rendered by the window overlay, never as tabs.
  *
- * `isGlobalPath` is the single source of truth for which prefixes are global.
+ * Title is NOT determined here — it comes from document.title.
  */
 export function resolveRouteIcon(pathname: string): string {
   const segments = pathname.split("/").filter(Boolean);
-  const routeSegment = isGlobalPath(pathname)
-    ? (segments[0] ?? "")
-    : (segments[1] ?? "");
-  return ROUTE_ICONS[routeSegment] ?? "ListTodo";
+  return ROUTE_ICONS[segments[1] ?? ""] ?? "ListTodo";
 }
 
 // ---------------------------------------------------------------------------
@@ -105,30 +108,37 @@ function createId(): string {
 }
 
 /**
- * Defensive: catch tab paths that were constructed without a workspace slug
- * (e.g. a hardcoded "/issues" leftover from before the URL refactor). Such
- * paths would get matched as `workspaceSlug="issues"` by the router and
- * render NoAccessPage. Sanitize by falling back to "/" (IndexRedirect picks
- * a valid workspace).
+ * Defensive: catch paths that don't belong in the tab store.
  *
- * Passes through:
- *  - "/" and global paths (/login, /workspaces/new, /invite/..., /auth/...)
- *  - workspace-scoped paths whose first segment is not a reserved word
+ * Two kinds of rejects:
+ *  1. **Transition paths** (`/workspaces/new`, `/invite/...`). These are
+ *     pre-workspace flows rendered by the window overlay on desktop, not
+ *     tab routes. They must never persist as tab state — otherwise the user
+ *     reopens the app into a stale form/invite. Navigation to these paths
+ *     is intercepted by the navigation adapter, so they shouldn't reach
+ *     tab-store in normal flow; this guard catches older persisted state.
+ *  2. **Malformed workspace-scoped paths** like a stray `/issues/abc` that
+ *     was constructed without the workspace prefix. Router would interpret
+ *     `issues` as a workspace slug → NoAccessPage.
  *
- * Rejects (and rewrites to "/"):
- *  - Paths whose first segment is a reserved slug (=/=workspace slug), which
- *    means the caller forgot to prefix the workspace. Logs a warning so the
- *    buggy call site is easy to find.
+ * Both rewrite to `/` so `IndexRedirect` picks a valid destination (or
+ * opens the new-workspace overlay if the user has none).
  */
 export function sanitizeTabPath(path: string): string {
-  if (path === DEFAULT_PATH || isGlobalPath(path)) return path;
+  if (path === DEFAULT_PATH) return path;
   const firstSegment = path.split("/").filter(Boolean)[0] ?? "";
   if (isReservedSlug(firstSegment)) {
-    // eslint-disable-next-line no-console
-    console.warn(
-      `[tab-store] tab path "${path}" starts with reserved slug "${firstSegment}" — ` +
-        `caller likely forgot the workspace prefix. Falling back to "/".`,
-    );
+    // Don't log for known transition paths — these are legitimate inputs
+    // at the interception boundary (older persisted state or stale callers).
+    // Log only for truly buggy cases where a view forgot the workspace prefix.
+    const isTransition = path === "/workspaces/new" || path.startsWith("/invite/");
+    if (!isTransition) {
+      // eslint-disable-next-line no-console
+      console.warn(
+        `[tab-store] tab path "${path}" starts with reserved slug "${firstSegment}" — ` +
+          `caller likely forgot the workspace prefix. Falling back to "/".`,
+      );
+    }
     return DEFAULT_PATH;
   }
   return path;
@@ -227,15 +237,15 @@ export const useTabStore = create<TabStore>()(
     const { tabs } = get();
     let changed = false;
     const nextTabs = tabs.map((t) => {
-      // Skip tabs on non-workspace-scoped paths — nothing to validate.
-      if (t.path === "/" || isGlobalPath(t.path)) return t;
+      // Root sentinel doesn't carry a slug — nothing to validate.
+      if (t.path === "/") return t;
 
       const firstSegment = t.path.split("/").filter(Boolean)[0] ?? "";
       if (validSlugs.has(firstSegment)) return t;
 
       // Stale slug: dispose the old router and replace with a fresh one
       // pointing at `/`. IndexRedirect will send the tab to a valid
-      // workspace (or /workspaces/new if the user now has none).
+      // workspace, or open the new-workspace overlay if none remain.
       changed = true;
       t.router.dispose();
       return {
@@ -251,6 +261,13 @@ export const useTabStore = create<TabStore>()(
 
     if (!changed) return;
     set({ tabs: nextTabs });
+  },
+
+  reset() {
+    const { tabs } = get();
+    for (const t of tabs) t.router.dispose();
+    const fresh = makeTab(DEFAULT_PATH, "Issues", resolveRouteIcon(DEFAULT_PATH));
+    set({ tabs: [fresh], activeTabId: fresh.id });
   },
     }),
     {

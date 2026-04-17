@@ -48,6 +48,19 @@ function handleDeepLink(url: string): void {
       if (token && mainWindow) {
         mainWindow.webContents.send("auth:token", token);
       }
+      return;
+    }
+
+    // multica://invite/<invitationId>
+    // Dispatched from the web invite page when the user chooses "Open in
+    // desktop app". The renderer opens the invite overlay — no tab, no
+    // route persistence, so deep-linking the same invite twice stays safe.
+    if (parsed.hostname === "invite") {
+      const id = parsed.pathname.replace(/^\//, "");
+      if (id && mainWindow) {
+        mainWindow.webContents.send("invite:open", decodeURIComponent(id));
+      }
+      return;
     }
   } catch {
     // Ignore malformed URLs

@@ -13,11 +13,14 @@ describe("sanitizeTabPath", () => {
     expect(sanitizeTabPath("/")).toBe("/");
   });
 
-  it("passes through global paths", () => {
-    expect(sanitizeTabPath("/login")).toBe("/login");
-    expect(sanitizeTabPath("/workspaces/new")).toBe("/workspaces/new");
-    expect(sanitizeTabPath("/invite/abc")).toBe("/invite/abc");
-    expect(sanitizeTabPath("/auth/callback")).toBe("/auth/callback");
+  it("rejects transition paths — these are overlay state, not tabs", () => {
+    // Silently rewritten (no warn) since they're legitimate inputs that
+    // the navigation adapter has already redirected to the overlay.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(sanitizeTabPath("/workspaces/new")).toBe("/");
+    expect(sanitizeTabPath("/invite/abc")).toBe("/");
+    expect(warn).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it("passes through valid workspace-scoped paths", () => {
@@ -25,7 +28,7 @@ describe("sanitizeTabPath", () => {
     expect(sanitizeTabPath("/my-team/projects/abc")).toBe("/my-team/projects/abc");
   });
 
-  it("rejects paths whose first segment is a reserved slug", () => {
+  it("rejects paths whose first segment is a reserved slug (missing workspace prefix)", () => {
     // A stray "/issues" (pre-refactor leftover, missing workspace prefix)
     // would be interpreted as workspaceSlug="issues" → NoAccessPage.
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

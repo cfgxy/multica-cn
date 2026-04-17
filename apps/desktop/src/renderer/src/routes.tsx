@@ -20,14 +20,12 @@ import { DaemonRuntimeCard } from "./components/daemon-runtime-card";
 import { AgentsPage } from "@multica/views/agents";
 import { InboxPage } from "@multica/views/inbox";
 import { SettingsPage } from "@multica/views/settings";
-import { NewWorkspacePage } from "@multica/views/workspace/new-workspace-page";
-import { InvitePage } from "@multica/views/invite";
-import { useNavigation } from "@multica/views/navigation";
 import { paths } from "@multica/core/paths";
 import { workspaceListOptions } from "@multica/core/workspace/queries";
 import { Server } from "lucide-react";
 import { DaemonSettingsTab } from "./components/daemon-settings-tab";
 import { WorkspaceRouteLayout } from "./components/workspace-route-layout";
+import { useWindowOverlayStore } from "./stores/window-overlay-store";
 
 /**
  * Sets document.title from the deepest matched route's handle.title.
@@ -59,15 +57,6 @@ function PageShell() {
   );
 }
 
-function NewWorkspaceRoute() {
-  const nav = useNavigation();
-  return (
-    <NewWorkspacePage
-      onSuccess={(ws) => nav.push(paths.workspace(ws.slug).issues())}
-    />
-  );
-}
-
 /**
  * Root index route: resolves the URL-less `/` path to a concrete destination.
  *
@@ -76,15 +65,32 @@ function NewWorkspaceRoute() {
  * duplicate fetches across tabs — each tab's memory router hits this
  * component independently but the query is deduped.
  *
- * Sends first-time users without any workspace to /workspaces/new,
- * everyone else to their first workspace's issues page. Persisted tab
- * paths that already carry a workspace slug bypass this component
- * entirely.
+ * Sends users with workspaces to the first workspace's issues page.
+ * Users with zero workspaces get the window-level new-workspace overlay —
+ * desktop treats pre-workspace flows as application state, not tab routes,
+ * so there's no URL to navigate to.
  */
 function IndexRedirect() {
   const { data: wsList, isFetched } = useQuery(workspaceListOptions());
 
-  // Wait for the query to settle so we don't redirect to /workspaces/new
+  // Bidirectional overlay lifecycle: open the new-workspace overlay when
+  // the user has zero workspaces AND no other overlay is already showing,
+  // and close it when the list becomes non-empty (e.g. a realtime workspace
+  // event arrived while the overlay was open on a different code path).
+  // Only touches the new-workspace type — an active invite overlay is the
+  // user's in-flight task and must not be interrupted.
+  useEffect(() => {
+    if (!isFetched) return;
+    const { overlay, open, close } = useWindowOverlayStore.getState();
+    const isEmpty = !wsList || wsList.length === 0;
+    if (isEmpty) {
+      if (!overlay) open({ type: "new-workspace" });
+    } else if (overlay?.type === "new-workspace") {
+      close();
+    }
+  }, [isFetched, wsList]);
+
+  // Wait for the query to settle so we don't flash the empty-state overlay
   // on the initial render before the seeded/fetched data arrives.
   if (!isFetched) return null;
 
@@ -92,24 +98,21 @@ function IndexRedirect() {
   if (firstWorkspace) {
     return <Navigate to={paths.workspace(firstWorkspace.slug).issues()} replace />;
   }
-  return <Navigate to={paths.newWorkspace()} replace />;
-}
 
-function InviteRoute() {
-  const matches = useMatches();
-  const match = matches.find((m) => (m.params as { id?: string }).id);
-  const id = (match?.params as { id?: string })?.id ?? "";
-  return <InvitePage invitationId={id} />;
+  // Zero workspaces — overlay is opened via the effect above. Tab stays on
+  // `/`; the overlay covers the window. When the user creates a workspace,
+  // onSuccess navigates to the new workspace path, closing the overlay.
+  return null;
 }
 
 /**
  * Route definitions shared by all tabs.
  *
- * Structure mirrors the web app's [workspaceSlug]/... layout: all dashboard
- * pages live under /:workspaceSlug, with WorkspaceRouteLayout resolving the
- * slug to a workspace and syncing side-effects (api client, persist namespace,
- * Zustand mirror). Global (pre-workspace) routes — workspaces/new and invite —
- * sit at the top level alongside the workspace wrapper.
+ * Only workspace-scoped ("session") routes live here. Pre-workspace
+ * transitions (create workspace, accept invite) are NOT routes on desktop —
+ * they render as a window-level overlay via WindowOverlay, dispatched by
+ * the navigation adapter's transition-path interception. See
+ * `platform/navigation.tsx` and `stores/window-overlay-store.ts`.
  */
 export const appRoutes: RouteObject[] = [
   {
@@ -118,18 +121,9 @@ export const appRoutes: RouteObject[] = [
       // Top-level index: no slug yet. `IndexRedirect` reads the workspace
       // list from React Query cache (seeded by AuthInitializer on reopen
       // or App.tsx on deep-link login) and bounces to the first
-      // workspace's issues page — or /workspaces/new if the user has none.
+      // workspace's issues page — or opens the new-workspace overlay if
+      // the user has none.
       { index: true, element: <IndexRedirect /> },
-      {
-        path: "workspaces/new",
-        element: <NewWorkspaceRoute />,
-        handle: { title: "Create Workspace" },
-      },
-      {
-        path: "invite/:id",
-        element: <InviteRoute />,
-        handle: { title: "Accept Invite" },
-      },
       {
         path: ":workspaceSlug",
         element: <WorkspaceRouteLayout />,

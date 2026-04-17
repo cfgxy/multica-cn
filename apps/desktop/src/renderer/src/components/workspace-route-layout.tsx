@@ -5,7 +5,6 @@ import { WorkspaceSlugProvider, paths } from "@multica/core/paths";
 import { workspaceBySlugOptions } from "@multica/core/workspace";
 import { setCurrentWorkspace } from "@multica/core/platform";
 import { useAuthStore } from "@multica/core/auth";
-import { NoAccessPage } from "@multica/views/workspace/no-access-page";
 import { useWorkspaceSeen } from "@multica/views/workspace/use-workspace-seen";
 
 /**
@@ -17,9 +16,13 @@ import { useWorkspaceSeen } from "@multica/views/workspace/use-workspace-seen";
  * guaranteed non-null when called. Two industry-standard identities are
  * kept distinct: slug (URL / browser) and UUID (API / cache keys).
  *
- * If the slug doesn't resolve to any workspace the user has access to,
- * we render NoAccessPage instead of silently redirecting — users get
- * explicit feedback for stale bookmarks or revoked access.
+ * Unlike web, desktop never renders a "workspace not available" page: the
+ * app has no URL bar and no clickable links from outside the session, so
+ * landing on an inaccessible slug can only mean stale state (persisted tab
+ * from a previous account) or active eviction (admin removal, realtime
+ * delete). Both cases resolve by bouncing to `/`, where IndexRedirect
+ * picks a valid destination — the next workspace, or the new-workspace
+ * overlay if the user has none.
  */
 export function WorkspaceRouteLayout() {
   const { workspaceSlug } = useParams<{ workspaceSlug: string }>();
@@ -49,10 +52,21 @@ export function WorkspaceRouteLayout() {
     setCurrentWorkspace(workspaceSlug, workspace.id);
   }
 
-  // Remember whether this slug has resolved before (see hook docs). Gates
-  // the NoAccessPage render below so active workspace removal doesn't
-  // flash "Workspace not available" before the navigate lands.
+  // Remember whether this slug has resolved before. `useWorkspaceSeen`
+  // gates the auto-heal below so the mid-flight frame of an active-removal
+  // navigation doesn't double-bounce.
   const hasBeenSeen = useWorkspaceSeen(workspaceSlug, !!workspace);
+
+  // Stale slug (tab persisted from a previous account, or revoked access
+  // that hasn't yet been cleaned up by validateWorkspaceSlugs): auto-heal
+  // to `/`. IndexRedirect takes it from there.
+  useEffect(() => {
+    if (!user) return;
+    if (!listFetched) return;
+    if (workspace) return;
+    if (hasBeenSeen) return; // active eviction in flight — let the other path win
+    navigate("/", { replace: true });
+  }, [user, listFetched, workspace, hasBeenSeen, navigate]);
 
   if (isAuthLoading) return null;
   if (!workspaceSlug) return null;
@@ -61,15 +75,7 @@ export function WorkspaceRouteLayout() {
   // unknown — gating here is the single point where that invariant is
   // enforced, so every descendant can call useWorkspaceId() safely.
   if (!listFetched) return null;
-  if (!workspace) {
-    // Active workspace just removed (delete/leave/realtime eviction) —
-    // navigate is in flight; hold null briefly instead of flashing
-    // NoAccessPage.
-    if (hasBeenSeen) return null;
-    // Genuinely inaccessible slug (stale bookmark, revoked access, or a
-    // link from a former teammate's workspace) → explicit feedback.
-    return <NoAccessPage />;
-  }
+  if (!workspace) return null; // auto-heal effect above handles the navigation
 
   return (
     <WorkspaceSlugProvider slug={workspaceSlug}>
