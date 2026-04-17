@@ -45,18 +45,29 @@ export function WorkspaceTab() {
   const navigation = useNavigation();
 
   /**
-   * After leaving/deleting the current workspace, send the user to a safe URL:
-   * another workspace they still have access to, or /workspaces/new if none
-   * remain. The list is freshly fetched (staleTime: 0) because the cache still
-   * contains the just-removed workspace until the background invalidation
-   * resolves.
+   * Send the user to a safe URL BEFORE the leave/delete mutation fires.
+   * The destination is computed from the current cached workspace list,
+   * minus the workspace that's about to go away.
+   *
+   * Why navigate first, not after:
+   *   1. The backend broadcasts `workspace:deleted` / `member:removed` the
+   *      moment the mutation lands. If the user is still on the soon-to-
+   *      be-deleted workspace's URL when that event arrives, the realtime
+   *      handler in `use-realtime-sync.ts` also triggers a relocation —
+   *      and both code paths race with the mutation's own
+   *      `invalidateQueries` refetch. The loser's in-flight fetch gets
+   *      cancelled, surfacing as an unhandled `CancelledError`.
+   *   2. Navigating first means by the time the WS event fires, the
+   *      active workspace is already something else; the realtime
+   *      handler's "current === deleted" check fails and its relocate
+   *      branch no-ops.
+   *   3. UX: the destructive flow feels instant (dialog closes → new
+   *      workspace appears) even though the API hasn't responded yet.
    */
-  const navigateAwayFromCurrentWorkspace = async () => {
-    const wsList = await qc.fetchQuery({
-      ...workspaceListOptions(),
-      staleTime: 0,
-    });
-    const remaining = wsList.filter((w) => w.id !== workspace?.id);
+  const navigateAwayFromCurrentWorkspace = () => {
+    const cachedList =
+      qc.getQueryData<Workspace[]>(workspaceListOptions().queryKey) ?? [];
+    const remaining = cachedList.filter((w) => w.id !== workspace?.id);
     const next = remaining[0];
     navigation.push(
       next ? paths.workspace(next.slug).issues() : paths.newWorkspace(),
@@ -121,9 +132,11 @@ export function WorkspaceTab() {
       variant: "destructive",
       onConfirm: async () => {
         setActionId("leave");
+        // Navigate away FIRST so the realtime handler's
+        // "current-workspace-deleted" branch doesn't race the mutation.
+        navigateAwayFromCurrentWorkspace();
         try {
           await leaveWorkspace.mutateAsync(workspace.id);
-          await navigateAwayFromCurrentWorkspace();
         } catch (e) {
           toast.error(e instanceof Error ? e.message : "Failed to leave workspace");
         } finally {
@@ -136,10 +149,14 @@ export function WorkspaceTab() {
   const handleConfirmDelete = async () => {
     if (!workspace) return;
     setActionId("delete-workspace");
+    // Close the dialog and navigate away FIRST. See navigateAwayFromCurrentWorkspace
+    // comment for why: keeps the realtime `workspace:deleted` handler out
+    // of the race so we don't end up with concurrent refetches cancelling
+    // each other and surfacing CancelledError.
+    setDeleteDialogOpen(false);
+    navigateAwayFromCurrentWorkspace();
     try {
       await deleteWorkspace.mutateAsync(workspace.id);
-      setDeleteDialogOpen(false);
-      await navigateAwayFromCurrentWorkspace();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Failed to delete workspace");
     } finally {
