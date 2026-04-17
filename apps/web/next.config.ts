@@ -33,32 +33,39 @@ const nextConfig: NextConfig = {
     qualities: [75, 80, 85],
   },
   async rewrites() {
-    return [
-      {
-        source: "/api/:path*",
-        destination: `${remoteApiUrl}/api/:path*`,
-      },
-      {
-        source: "/ws",
-        destination: `${remoteApiUrl}/ws`,
-      },
-      {
-        source: "/auth/:path*",
-        destination: `${remoteApiUrl}/auth/:path*`,
-      },
-      {
-        source: "/uploads/:path*",
-        destination: `${remoteApiUrl}/uploads/:path*`,
-      },
-      {
-        source: "/docs",
-        destination: `${docsUrl}/docs`,
-      },
-      {
-        source: "/docs/:path*",
-        destination: `${docsUrl}/docs/:path*`,
-      },
-    ];
+    return {
+      // Run before file-system routes so /docs isn't shadowed by the
+      // [workspaceSlug] dynamic segment.
+      beforeFiles: [
+        {
+          source: "/docs",
+          destination: `${docsUrl}/docs`,
+        },
+        {
+          source: "/docs/:path*",
+          destination: `${docsUrl}/docs/:path*`,
+        },
+      ],
+      afterFiles: [
+        {
+          source: "/api/:path*",
+          destination: `${remoteApiUrl}/api/:path*`,
+        },
+        {
+          source: "/ws",
+          destination: `${remoteApiUrl}/ws`,
+        },
+        {
+          source: "/auth/:path*",
+          destination: `${remoteApiUrl}/auth/:path*`,
+        },
+        {
+          source: "/uploads/:path*",
+          destination: `${remoteApiUrl}/uploads/:path*`,
+        },
+      ],
+      fallback: [],
+    };
   },
 };
 
