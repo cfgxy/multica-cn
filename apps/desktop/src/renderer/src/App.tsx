@@ -11,6 +11,7 @@ import { DesktopLoginPage } from "./pages/login";
 import { DesktopShell } from "./components/desktop-layout";
 import { UpdateNotification } from "./components/update-notification";
 import { useTabStore } from "./stores/tab-store";
+import { useWindowOverlayStore } from "./stores/window-overlay-store";
 
 function AppContent() {
   const user = useAuthStore((s) => s.user);
@@ -29,6 +30,17 @@ function AppContent() {
   // can pick the matching CLI profile (server_url from ~/.multica config).
   useEffect(() => {
     window.daemonAPI.setTargetApiUrl(DAEMON_TARGET_API_URL);
+  }, []);
+
+  // Listen for invite IDs delivered via deep link (multica://invite/<id>).
+  // We open the overlay regardless of login state — if the user isn't logged
+  // in, InvitePage's queries will fail and render the "not found" state,
+  // which is acceptable; the expected pre-flight happens in the web app
+  // (login + next=/invite/... dance) before the deep link is ever dispatched.
+  useEffect(() => {
+    return window.desktopAPI.onInviteOpen((invitationId) => {
+      useWindowOverlayStore.getState().open({ type: "invite", invitationId });
+    });
   }, []);
 
   // Listen for auth token delivered via deep link (multica://auth/callback?token=...).
@@ -135,9 +147,14 @@ function AppContent() {
 const DAEMON_TARGET_API_URL =
   import.meta.env.VITE_API_URL || "http://localhost:8080";
 
-// On logout, clear any cached PAT and stop the daemon so that a subsequent
-// login as a different user never inherits the previous user's credentials.
+// On logout, wipe desktop-only in-memory state and stop the daemon so that
+// a subsequent login as a different user never inherits the previous user's
+// tabs, overlay, or credentials. Zustand persist only writes to localStorage;
+// useLogout clears the storage key, but the live stores stay populated until
+// we explicitly reset them here.
 async function handleDaemonLogout() {
+  useTabStore.getState().reset();
+  useWindowOverlayStore.getState().close();
   try {
     await window.daemonAPI.clearToken();
   } catch {
