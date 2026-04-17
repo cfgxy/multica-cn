@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"sort"
 	"strings"
 	"testing"
 
@@ -40,7 +41,7 @@ func TestEnsureDaemonID_Persists(t *testing.T) {
 	}
 }
 
-func TestEnsureDaemonID_ProfileIsolated(t *testing.T) {
+func TestEnsureDaemonID_SharedAcrossProfiles(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 
@@ -52,12 +53,50 @@ func TestEnsureDaemonID_ProfileIsolated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("staging profile: %v", err)
 	}
-	if defaultID == stagingID {
-		t.Fatalf("profiles shared the same daemon id: %s", defaultID)
+	if defaultID != stagingID {
+		t.Fatalf("profiles should share one machine id, got default=%s staging=%s", defaultID, stagingID)
 	}
 
-	if _, err := os.Stat(filepath.Join(home, ".multica", "profiles", "staging", "daemon.id")); err != nil {
-		t.Fatalf("profile-scoped daemon.id missing: %v", err)
+	// Profile-scoped file must not be created under the new layout — the
+	// only source of truth is ~/.multica/daemon.id.
+	profileFile := filepath.Join(home, ".multica", "profiles", "staging", "daemon.id")
+	if _, err := os.Stat(profileFile); !os.IsNotExist(err) {
+		t.Fatalf("profile-scoped daemon.id should not be created, stat err: %v", err)
+	}
+}
+
+func TestEnsureDaemonID_PromotesPreChangeProfileFile(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	// Seed a per-profile daemon.id the way pre-#1220 daemons laid it out.
+	legacyID := uuid.Must(uuid.NewV7()).String()
+	profileDir := filepath.Join(home, ".multica", "profiles", "staging")
+	if err := os.MkdirAll(profileDir, 0o755); err != nil {
+		t.Fatalf("mkdir profile: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(profileDir, "daemon.id"), []byte(legacyID+"\n"), 0o600); err != nil {
+		t.Fatalf("seed legacy id: %v", err)
+	}
+
+	// First call on the post-change daemon with the matching profile must
+	// reuse the pre-change UUID so existing runtime rows continue to match
+	// without needing a merge round-trip.
+	got, err := EnsureDaemonID("staging")
+	if err != nil {
+		t.Fatalf("EnsureDaemonID: %v", err)
+	}
+	if got != legacyID {
+		t.Fatalf("expected promoted UUID %s, got %s", legacyID, got)
+	}
+
+	// The canonical file now holds that same UUID.
+	data, err := os.ReadFile(filepath.Join(home, ".multica", "daemon.id"))
+	if err != nil {
+		t.Fatalf("read canonical file: %v", err)
+	}
+	if strings.TrimSpace(string(data)) != legacyID {
+		t.Fatalf("canonical file %q != promoted %q", data, legacyID)
 	}
 }
 
@@ -88,6 +127,56 @@ func TestEnsureDaemonID_RegeneratesCorruptFile(t *testing.T) {
 	}
 }
 
+func TestLegacyDaemonUUIDs_ScansProfileDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	uuidA := uuid.Must(uuid.NewV7()).String()
+	uuidB := uuid.Must(uuid.NewV7()).String()
+	for name, id := range map[string]string{"prod": uuidA, "desktop-multica": uuidB} {
+		dir := filepath.Join(home, ".multica", "profiles", name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", name, err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "daemon.id"), []byte(id+"\n"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+
+	// A profile directory with a corrupt file must be skipped, not fail.
+	corruptDir := filepath.Join(home, ".multica", "profiles", "corrupt")
+	if err := os.MkdirAll(corruptDir, 0o755); err != nil {
+		t.Fatalf("mkdir corrupt: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(corruptDir, "daemon.id"), []byte("not-a-uuid"), 0o600); err != nil {
+		t.Fatalf("seed corrupt: %v", err)
+	}
+
+	got, err := LegacyDaemonUUIDs()
+	if err != nil {
+		t.Fatalf("LegacyDaemonUUIDs: %v", err)
+	}
+	sort.Strings(got)
+	want := []string{uuidA, uuidB}
+	sort.Strings(want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("LegacyDaemonUUIDs = %v, want %v", got, want)
+	}
+}
+
+func TestLegacyDaemonUUIDs_MissingProfilesDirIsNil(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	ids, err := LegacyDaemonUUIDs()
+	if err != nil {
+		t.Fatalf("LegacyDaemonUUIDs: %v", err)
+	}
+	if ids != nil {
+		t.Fatalf("expected nil on missing profiles dir, got %v", ids)
+	}
+}
+
 func TestLegacyDaemonIDs(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -96,15 +185,11 @@ func TestLegacyDaemonIDs(t *testing.T) {
 		want     []string
 	}{
 		{
-			// Bare hostname now — but the DB may still hold the previously
-			// registered `.local` variant, so we must emit both.
 			name:     "plain hostname, no profile",
 			hostname: "MacBook-Pro",
 			want:     []string{"MacBook-Pro", "MacBook-Pro.local"},
 		},
 		{
-			// Dot-local hostname now — the stripped variant may be what the
-			// DB holds from a prior registration where .local was absent.
 			name:     "dot-local hostname, no profile",
 			hostname: "MacBook-Pro.local",
 			want:     []string{"MacBook-Pro", "MacBook-Pro.local"},
@@ -137,9 +222,6 @@ func TestLegacyDaemonIDs(t *testing.T) {
 			want:     nil,
 		},
 		{
-			// Case drift is handled on the server side (LOWER=LOWER match).
-			// We still emit the hostname in its current casing here; the SQL
-			// query normalizes both sides.
 			name:     "mixed case hostname preserved as-is",
 			hostname: "Jiayuans-MacBook-Pro.local",
 			want: []string{
