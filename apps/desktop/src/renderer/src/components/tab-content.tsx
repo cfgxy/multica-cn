@@ -1,17 +1,17 @@
 import { Activity, useEffect } from "react";
 import { RouterProvider } from "react-router-dom";
-import { useTabStore, useActiveGroup } from "@/stores/tab-store";
+import { useActiveGroup } from "@/stores/tab-store";
 import { TabNavigationProvider } from "@/platform/navigation";
 import { useTabRouterSync } from "@/hooks/use-tab-router-sync";
+import type { Tab } from "@/stores/tab-store";
 
-/** Inner wrapper rendered inside each tab's RouterProvider. */
-function TabRouterInner({ tabId }: { tabId: string }) {
-  const tab = useTabStore((s) => {
-    if (!s.activeWorkspaceSlug) return null;
-    const group = s.byWorkspace[s.activeWorkspaceSlug];
-    return group?.tabs.find((t) => t.id === tabId) ?? null;
-  });
-  useTabRouterSync(tabId, tab!.router);
+/**
+ * Inner wrapper rendered inside each tab's RouterProvider. The router
+ * reference is stable for a tab's lifetime, so passing it in directly
+ * (instead of re-deriving from the store) avoids needless re-renders.
+ */
+function TabRouterInner({ tab }: { tab: Tab }) {
+  useTabRouterSync(tab.id, tab.router);
   return null;
 }
 
@@ -46,7 +46,7 @@ export function TabContent() {
         >
           <TabNavigationProvider router={tab.router}>
             <RouterProvider router={tab.router} />
-            <TabRouterInner tabId={tab.id} />
+            <TabRouterInner tab={tab} />
           </TabNavigationProvider>
         </Activity>
       ))}

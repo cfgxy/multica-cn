@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import type { DataRouter } from "react-router-dom";
-import { useActiveTab } from "@/stores/tab-store";
+import { useActiveTabRouter, useActiveTabHistory } from "@/stores/tab-store";
 
 /**
  * Shared hint map so useTabRouterSync can distinguish back vs forward POP.
@@ -10,28 +10,31 @@ export const popDirectionHints = new Map<DataRouter, "back" | "forward">();
 
 /**
  * Per-tab back/forward navigation derived from the active workspace's
- * active tab. When the active workspace has no tab (pre-workspace state),
- * both buttons disable gracefully.
+ * active tab.
+ *
+ * Subscribed via primitive selectors so this hook only re-renders when
+ * the numeric history state actually changes — path ticks on the active
+ * tab (which don't shift historyIndex) don't churn the back/forward
+ * buttons.
  */
 export function useTabHistory() {
-  const activeTab = useActiveTab();
+  const router = useActiveTabRouter();
+  const { historyIndex, historyLength } = useActiveTabHistory();
 
-  const canGoBack = (activeTab?.historyIndex ?? 0) > 0;
-  const canGoForward =
-    (activeTab?.historyIndex ?? 0) < (activeTab?.historyLength ?? 1) - 1;
+  const canGoBack = historyIndex > 0;
+  const canGoForward = historyIndex < historyLength - 1;
 
   const goBack = useCallback(() => {
-    if (!activeTab || activeTab.historyIndex <= 0) return;
-    popDirectionHints.set(activeTab.router, "back");
-    activeTab.router.navigate(-1);
-  }, [activeTab]);
+    if (!router || historyIndex <= 0) return;
+    popDirectionHints.set(router, "back");
+    router.navigate(-1);
+  }, [router, historyIndex]);
 
   const goForward = useCallback(() => {
-    if (!activeTab || activeTab.historyIndex >= activeTab.historyLength - 1)
-      return;
-    popDirectionHints.set(activeTab.router, "forward");
-    activeTab.router.navigate(1);
-  }, [activeTab]);
+    if (!router || historyIndex >= historyLength - 1) return;
+    popDirectionHints.set(router, "forward");
+    router.navigate(1);
+  }, [router, historyIndex, historyLength]);
 
   return { canGoBack, canGoForward, goBack, goForward };
 }

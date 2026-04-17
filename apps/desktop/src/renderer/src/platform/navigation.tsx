@@ -6,7 +6,13 @@ import {
 } from "@multica/views/navigation";
 import { useAuthStore } from "@multica/core/auth";
 import { isReservedSlug } from "@multica/core/paths";
-import { useTabStore, resolveRouteIcon } from "@/stores/tab-store";
+import {
+  useTabStore,
+  resolveRouteIcon,
+  useActiveTabIdentity,
+  useActiveTabRouter,
+  getActiveTab,
+} from "@/stores/tab-store";
 import { useWindowOverlayStore } from "@/stores/window-overlay-store";
 
 // Public web app URL — injected at build time via .env.production. Falls
@@ -95,25 +101,25 @@ export function DesktopNavigationProvider({
 }: {
   children: React.ReactNode;
 }) {
-  const activeTab = useTabStore((s) => {
-    if (!s.activeWorkspaceSlug) return null;
-    const group = s.byWorkspace[s.activeWorkspaceSlug];
-    if (!group) return null;
-    return group.tabs.find((t) => t.id === group.activeTabId) ?? null;
-  });
-  const [pathname, setPathname] = useState(activeTab?.path ?? "/");
+  // Primitive-only subscriptions so this component doesn't re-render on
+  // unrelated store updates (e.g. an inactive tab's router tick). We
+  // resolve the active router here only to subscribe once per tab switch.
+  const { tabId: activeTabId } = useActiveTabIdentity();
+  const router = useActiveTabRouter();
+  const [pathname, setPathname] = useState(
+    router?.state.location.pathname ?? "/",
+  );
 
-  // Subscribe to the active tab's router for pathname updates.
   useEffect(() => {
-    if (!activeTab) {
+    if (!router) {
       setPathname("/");
       return;
     }
-    setPathname(activeTab.router.state.location.pathname);
-    return activeTab.router.subscribe((state) => {
+    setPathname(router.state.location.pathname);
+    return router.subscribe((state) => {
       setPathname(state.location.pathname);
     });
-  }, [activeTab?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [activeTabId, router]);
 
   const adapter: NavigationAdapter = useMemo(
     () => ({
@@ -160,11 +166,7 @@ export function DesktopNavigationProvider({
 }
 
 function currentActiveTab() {
-  const state = useTabStore.getState();
-  if (!state.activeWorkspaceSlug) return null;
-  const group = state.byWorkspace[state.activeWorkspaceSlug];
-  if (!group) return null;
-  return group.tabs.find((t) => t.id === group.activeTabId) ?? null;
+  return getActiveTab(useTabStore.getState());
 }
 
 /**

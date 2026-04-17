@@ -230,6 +230,10 @@ export const useTabStore = create<TabStore>()(
       byWorkspace: {},
 
       switchWorkspace(slug, openPath) {
+        // Defensive no-op if slug is empty/invalid — callers like the
+        // NavigationAdapter's path-parser should already have filtered
+        // these, but belt-and-braces keeps garbage out of the store.
+        if (!slug) return;
         const { byWorkspace } = get();
         const existing = byWorkspace[slug];
 
@@ -514,7 +518,14 @@ export const useTabStore = create<TabStore>()(
             // Persisted path may have come from a stale version or a
             // manual edit. Drop rather than rewrite so we never silently
             // put users on a path that doesn't match the group's slug.
-            if (!clean || extractWorkspaceSlug(clean) !== slug) continue;
+            if (!clean || extractWorkspaceSlug(clean) !== slug) {
+              // eslint-disable-next-line no-console
+              console.warn(
+                `[tab-store] dropping persisted tab "${pTab.path}" from ` +
+                  `group "${slug}" — path/slug mismatch`,
+              );
+              continue;
+            }
             tabs.push({
               id: pTab.id,
               path: clean,
@@ -622,19 +633,73 @@ export function migrateV1ToV2(v1: Partial<V1Persisted>): V2Persisted {
 // Selectors (convenience hooks)
 // ---------------------------------------------------------------------------
 
-/** The active workspace's tab group, or null when no workspace is active. */
+/**
+ * Pure non-hook helper — useful from event handlers / effects that already
+ * need `.getState()`. For React subscriptions prefer the stable selectors
+ * below.
+ */
+export function getActiveTab(s: TabStore): Tab | null {
+  if (!s.activeWorkspaceSlug) return null;
+  const group = s.byWorkspace[s.activeWorkspaceSlug];
+  if (!group) return null;
+  return group.tabs.find((t) => t.id === group.activeTabId) ?? null;
+}
+
+/**
+ * The active workspace's tab group, or null when no workspace is active.
+ *
+ * Zustand compares selector returns with `Object.is`. Because `updateTab`
+ * /  `updateTabHistory` replace the group object on every router tick
+ * (immutable update), this selector returns a new reference on every
+ * router event — that's fine for TabBar which needs to observe tab-list
+ * changes, but don't use this selector from components that only care
+ * about one primitive (use `useActiveTabHistory` / `useActiveTabRouter`
+ * instead).
+ */
 export function useActiveGroup(): WorkspaceTabGroup | null {
   return useTabStore((s) =>
     s.activeWorkspaceSlug ? (s.byWorkspace[s.activeWorkspaceSlug] ?? null) : null,
   );
 }
 
-/** The currently rendered tab, or null. */
-export function useActiveTab(): Tab | null {
-  return useTabStore((s) => {
-    if (!s.activeWorkspaceSlug) return null;
-    const group = s.byWorkspace[s.activeWorkspaceSlug];
-    if (!group) return null;
-    return group.tabs.find((t) => t.id === group.activeTabId) ?? null;
-  });
+/**
+ * Active tab id + active workspace slug as a compact pair. Both primitives
+ * are stable across unrelated store updates — e.g. an inactive tab's
+ * router tick doesn't churn these, so consumers don't re-render.
+ *
+ * Useful anywhere you'd previously have reached for `useActiveTab()` and
+ * only needed the identity (for memoization, effect deps, ipc).
+ */
+export function useActiveTabIdentity(): { slug: string | null; tabId: string | null } {
+  const slug = useTabStore((s) => s.activeWorkspaceSlug);
+  const tabId = useTabStore((s) =>
+    s.activeWorkspaceSlug
+      ? (s.byWorkspace[s.activeWorkspaceSlug]?.activeTabId ?? null)
+      : null,
+  );
+  return { slug, tabId };
+}
+
+/**
+ * Active tab's router — a stable reference across tab updates, because
+ * routers are created once per tab and never replaced by `updateTab`.
+ * Subscribers only re-render when the active tab *changes*, not on
+ * router events within the current tab.
+ */
+export function useActiveTabRouter(): DataRouter | null {
+  return useTabStore((s) => getActiveTab(s)?.router ?? null);
+}
+
+/**
+ * History tracking for the active tab as primitives. Subscribers re-render
+ * only when the numeric index / length change (i.e. on actual navigations),
+ * not on unrelated store updates.
+ */
+export function useActiveTabHistory(): {
+  historyIndex: number;
+  historyLength: number;
+} {
+  const historyIndex = useTabStore((s) => getActiveTab(s)?.historyIndex ?? 0);
+  const historyLength = useTabStore((s) => getActiveTab(s)?.historyLength ?? 1);
+  return { historyIndex, historyLength };
 }
