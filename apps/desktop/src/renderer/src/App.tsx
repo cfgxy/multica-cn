@@ -13,6 +13,7 @@ import { UpdateNotification } from "./components/update-notification";
 import { useTabStore } from "./stores/tab-store";
 import { useWindowOverlayStore } from "./stores/window-overlay-store";
 
+
 function AppContent() {
   const user = useAuthStore((s) => s.user);
   const isLoading = useAuthStore((s) => s.isLoading);
@@ -95,22 +96,40 @@ function AppContent() {
   });
   const wsCount = workspaces?.length ?? 0;
 
-  // Validate persisted tab paths against the current user's workspace list.
-  // Tabs survive across app restarts and account switches (persisted to
-  // localStorage `multica_tabs`), so a tab path like `/naiyuan/issues` may
-  // reference a workspace the current user can't access — showing
-  // NoAccessPage every time they open the app.
-  //
-  // Run synchronously in render phase rather than in useEffect so the first
-  // render already sees validated tabs. useEffect runs AFTER commit, which
-  // means the initial render would briefly show NoAccessPage before the
-  // effect resets the tab. Zustand supports render-phase setState; the
-  // validator is idempotent (exits early if nothing changed) so this
-  // doesn't loop.
+  // Validate persisted tab state against the current user's workspace list,
+  // and pick an active workspace if none is set. Runs in render phase (not
+  // useEffect) so the first render already sees validated state — otherwise
+  // the TabBar would briefly flash tabs from a stale workspace group. Both
+  // calls are idempotent (no-op when nothing needs to change), so re-runs
+  // per render don't loop.
   if (workspaces) {
     const validSlugs = new Set(workspaces.map((w) => w.slug));
-    useTabStore.getState().validateWorkspaceSlugs(validSlugs);
+    const tabStore = useTabStore.getState();
+    tabStore.validateWorkspaceSlugs(validSlugs);
+    // Fresh login or post-validation there's no active workspace but the
+    // user has at least one → enter the first one. This is what seeds the
+    // TabBar with content on a new account's first render.
+    if (!tabStore.activeWorkspaceSlug && workspaces.length > 0) {
+      tabStore.switchWorkspace(workspaces[0].slug);
+    }
   }
+
+  // Bidirectional new-workspace overlay: visible when there are no
+  // workspaces to enter, hidden as soon as one exists. Gated on
+  // `workspaceListFetched` so the initial render doesn't flash the
+  // overlay before the list arrives. The overlay's own `invite` type is
+  // not touched here — that's an in-flight task owned by the user.
+  useEffect(() => {
+    if (!user) return;
+    if (!workspaceListFetched) return;
+    const { overlay, open, close } = useWindowOverlayStore.getState();
+    const isEmpty = wsCount === 0;
+    if (isEmpty) {
+      if (!overlay) open({ type: "new-workspace" });
+    } else if (overlay?.type === "new-workspace") {
+      close();
+    }
+  }, [user, workspaceListFetched, wsCount]);
   // null = undecided (pre-login or list hasn't settled yet)
   // true  = session started with zero workspaces; next transition to >=1 triggers restart
   // false = session started with >=1 workspace, OR we've already restarted; skip

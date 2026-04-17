@@ -1,6 +1,6 @@
 import { useCallback } from "react";
 import type { DataRouter } from "react-router-dom";
-import { useTabStore } from "@/stores/tab-store";
+import { useActiveTab } from "@/stores/tab-store";
 
 /**
  * Shared hint map so useTabRouterSync can distinguish back vs forward POP.
@@ -9,15 +9,12 @@ import { useTabStore } from "@/stores/tab-store";
 export const popDirectionHints = new Map<DataRouter, "back" | "forward">();
 
 /**
- * Per-tab back/forward navigation derived from the active tab's history state.
- * Replaces the old global useNavigationHistory() hook.
+ * Per-tab back/forward navigation derived from the active workspace's
+ * active tab. When the active workspace has no tab (pre-workspace state),
+ * both buttons disable gracefully.
  */
 export function useTabHistory() {
-  // Return the actual tab object from the store — stable reference.
-  // Do NOT create a new object in the selector (causes infinite re-renders).
-  const activeTab = useTabStore((s) =>
-    s.tabs.find((t) => t.id === s.activeTabId),
-  );
+  const activeTab = useActiveTab();
 
   const canGoBack = (activeTab?.historyIndex ?? 0) > 0;
   const canGoForward =

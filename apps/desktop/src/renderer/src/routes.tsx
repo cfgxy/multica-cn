@@ -6,7 +6,6 @@ import {
   useMatches,
 } from "react-router-dom";
 import type { RouteObject } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
 import { IssueDetailPage } from "./pages/issue-detail-page";
 import { ProjectDetailPage } from "./pages/project-detail-page";
 import { AutopilotDetailPage } from "./pages/autopilot-detail-page";
@@ -20,12 +19,9 @@ import { DaemonRuntimeCard } from "./components/daemon-runtime-card";
 import { AgentsPage } from "@multica/views/agents";
 import { InboxPage } from "@multica/views/inbox";
 import { SettingsPage } from "@multica/views/settings";
-import { paths } from "@multica/core/paths";
-import { workspaceListOptions } from "@multica/core/workspace/queries";
 import { Server } from "lucide-react";
 import { DaemonSettingsTab } from "./components/daemon-settings-tab";
 import { WorkspaceRouteLayout } from "./components/workspace-route-layout";
-import { useWindowOverlayStore } from "./stores/window-overlay-store";
 
 /**
  * Sets document.title from the deepest matched route's handle.title.
@@ -58,72 +54,27 @@ function PageShell() {
 }
 
 /**
- * Root index route: resolves the URL-less `/` path to a concrete destination.
- *
- * Runs both on first login (App.tsx seeded the cache) and on app reopen
- * (AuthInitializer seeded the cache). Reading from React Query avoids
- * duplicate fetches across tabs — each tab's memory router hits this
- * component independently but the query is deduped.
- *
- * Sends users with workspaces to the first workspace's issues page.
- * Users with zero workspaces get the window-level new-workspace overlay —
- * desktop treats pre-workspace flows as application state, not tab routes,
- * so there's no URL to navigate to.
- */
-function IndexRedirect() {
-  const { data: wsList, isFetched } = useQuery(workspaceListOptions());
-
-  // Bidirectional overlay lifecycle: open the new-workspace overlay when
-  // the user has zero workspaces AND no other overlay is already showing,
-  // and close it when the list becomes non-empty (e.g. a realtime workspace
-  // event arrived while the overlay was open on a different code path).
-  // Only touches the new-workspace type — an active invite overlay is the
-  // user's in-flight task and must not be interrupted.
-  useEffect(() => {
-    if (!isFetched) return;
-    const { overlay, open, close } = useWindowOverlayStore.getState();
-    const isEmpty = !wsList || wsList.length === 0;
-    if (isEmpty) {
-      if (!overlay) open({ type: "new-workspace" });
-    } else if (overlay?.type === "new-workspace") {
-      close();
-    }
-  }, [isFetched, wsList]);
-
-  // Wait for the query to settle so we don't flash the empty-state overlay
-  // on the initial render before the seeded/fetched data arrives.
-  if (!isFetched) return null;
-
-  const firstWorkspace = wsList?.[0];
-  if (firstWorkspace) {
-    return <Navigate to={paths.workspace(firstWorkspace.slug).issues()} replace />;
-  }
-
-  // Zero workspaces — overlay is opened via the effect above. Tab stays on
-  // `/`; the overlay covers the window. When the user creates a workspace,
-  // onSuccess navigates to the new workspace path, closing the overlay.
-  return null;
-}
-
-/**
  * Route definitions shared by all tabs.
  *
- * Only workspace-scoped ("session") routes live here. Pre-workspace
- * transitions (create workspace, accept invite) are NOT routes on desktop —
- * they render as a window-level overlay via WindowOverlay, dispatched by
- * the navigation adapter's transition-path interception. See
- * `platform/navigation.tsx` and `stores/window-overlay-store.ts`.
+ * Every tab path is workspace-scoped: `/{slug}/{route}/...`. Pre-workspace
+ * flows (create workspace, accept invite) are NOT routes — they render as a
+ * window-level overlay via `WindowOverlay`, dispatched by the navigation
+ * adapter's transition-path interception. The `activeWorkspaceSlug` in the
+ * tab store decides which workspace's tabs are visible in the TabBar;
+ * workspace-less state (zero-workspace user) shows the overlay instead.
+ *
+ * The root index route stays as a harmless safety net. With per-workspace
+ * tabs, nothing should construct a tab at `/` — but if one ever slips
+ * through (malformed persisted state that dodges the migration, direct
+ * router.navigate from unforeseen code), the index falls back to null
+ * rather than 404; App.tsx's bootstrap repoints activeWorkspaceSlug on the
+ * next render pass.
  */
 export const appRoutes: RouteObject[] = [
   {
     element: <PageShell />,
     children: [
-      // Top-level index: no slug yet. `IndexRedirect` reads the workspace
-      // list from React Query cache (seeded by AuthInitializer on reopen
-      // or App.tsx on deep-link login) and bounces to the first
-      // workspace's issues page — or opens the new-workspace overlay if
-      // the user has none.
-      { index: true, element: <IndexRedirect /> },
+      { index: true, element: null },
       {
         path: ":workspaceSlug",
         element: <WorkspaceRouteLayout />,
