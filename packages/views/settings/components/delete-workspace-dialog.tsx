@@ -45,9 +45,13 @@ export function DeleteWorkspaceDialog({
   const [typed, setTyped] = useState("");
   const matched = typed === workspaceName;
 
+  // Reset on close (so reopening for a different workspace doesn't leak
+  // the prior attempt) AND on workspaceName change (if another owner
+  // renames the workspace while the dialog is open, the already-typed
+  // string stops matching and there'd be no feedback explaining why).
   useEffect(() => {
-    if (!open) setTyped("");
-  }, [open]);
+    setTyped("");
+  }, [open, workspaceName]);
 
   const submit = () => {
     if (!matched || loading) return;

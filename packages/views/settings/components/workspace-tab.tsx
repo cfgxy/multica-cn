@@ -38,7 +38,7 @@ export function WorkspaceTab() {
   const user = useAuthStore((s) => s.user);
   const workspace = useCurrentWorkspace();
   const wsId = useWorkspaceId();
-  const { data: members = [] } = useQuery(memberListOptions(wsId));
+  const { data: members = [], isFetched: membersFetched } = useQuery(memberListOptions(wsId));
   const qc = useQueryClient();
   const leaveWorkspace = useLeaveWorkspace();
   const deleteWorkspace = useDeleteWorkspace();
@@ -214,7 +214,10 @@ export function WorkspaceTab() {
         </Card>
       </section>
 
-      {/* Danger Zone */}
+      {/* Danger Zone — gated on the member query settling so the owner-only
+          Delete button and the sole-owner Leave guidance don't flash in
+          after mount. */}
+      {membersFetched && (
       <section className="space-y-4">
         <div className="flex items-center gap-2">
           <LogOut className="h-4 w-4 text-muted-foreground" />
@@ -265,6 +268,7 @@ export function WorkspaceTab() {
           </CardContent>
         </Card>
       </section>
+      )}
 
       <AlertDialog open={!!confirmAction} onOpenChange={(v) => { if (!v) setConfirmAction(null); }}>
         <AlertDialogContent>

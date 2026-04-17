@@ -126,6 +126,48 @@ describe("DeleteWorkspaceDialog", () => {
     expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
   });
 
+  it("matches names with spaces, unicode, and other non-ASCII characters literally", async () => {
+    const user = userEvent.setup();
+    const onConfirm = vi.fn();
+    render(
+      <DeleteWorkspaceDialog
+        workspaceName="My 团队 🚀"
+        open
+        onOpenChange={vi.fn()}
+        onConfirm={onConfirm}
+      />,
+    );
+    const input = screen.getByRole("textbox");
+    await user.type(input, "My 团队 🚀");
+    expect(screen.getByRole("button", { name: "Delete workspace" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "Delete workspace" }));
+    expect(onConfirm).toHaveBeenCalledTimes(1);
+  });
+
+  it("resets the input when the workspace being deleted changes (e.g. rename mid-dialog)", () => {
+    const { rerender } = render(
+      <DeleteWorkspaceDialog
+        workspaceName="old-name"
+        open
+        onOpenChange={vi.fn()}
+        onConfirm={vi.fn()}
+      />,
+    );
+    const input = screen.getByRole("textbox") as HTMLInputElement;
+    // Simulate user typing (set value directly since userEvent.type would
+    // lose focus across re-renders).
+    input.value = "old-name";
+    rerender(
+      <DeleteWorkspaceDialog
+        workspaceName="new-name"
+        open
+        onOpenChange={vi.fn()}
+        onConfirm={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("textbox")).toHaveValue("");
+  });
+
   it("clears the input when reopened so prior attempts don't leak", async () => {
     const user = userEvent.setup();
     const { rerender } = render(
