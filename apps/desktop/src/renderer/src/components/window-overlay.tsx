@@ -45,12 +45,21 @@ function WindowOverlayInner() {
 
   return (
     <div className="fixed inset-0 z-50 flex flex-col bg-background">
-      {/* Window-drag strip — OS-level. Transparent; covers the area
-          traffic lights would normally sit (they're hidden by
-          useImmersiveMode on macOS). */}
+      {/* Window-drag strip. Rendered as a flex *child* (not absolute
+          overlay) so it owns its own 48px of real layout space — the
+          prior absolute-positioned approach relied on z-index stacking
+          to beat the content wrapper's no-drag, which in practice didn't
+          hit-test reliably for `-webkit-app-region` on the welcome
+          screen. A real flex row with nothing else in it has no such
+          ambiguity: any pixel at top-48 is drag, full stop.
+
+          Height matches `MainTopBar` (48px) so the drag-to-grab area
+          feels consistent with the rest of the app. The strip is
+          invisible; macOS traffic lights would normally sit here but
+          `useImmersiveMode` has hidden them for the overlay's lifetime. */}
       <div
         aria-hidden
-        className="absolute inset-x-0 top-0 h-10 z-10"
+        className="h-12 shrink-0"
         style={{ WebkitAppRegion: "drag" } as React.CSSProperties}
       />
 

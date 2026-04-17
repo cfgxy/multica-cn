@@ -30,6 +30,7 @@ import {
 } from "@multica/core/workspace/queries";
 import { api } from "@multica/core/api";
 import { paths } from "@multica/core/paths";
+import { setCurrentWorkspace } from "@multica/core/platform";
 import type { Workspace } from "@multica/core/types";
 import { useNavigation } from "../../navigation";
 import { DeleteWorkspaceDialog } from "./delete-workspace-dialog";
@@ -69,6 +70,23 @@ export function WorkspaceTab() {
       qc.getQueryData<Workspace[]>(workspaceListOptions().queryKey) ?? [];
     const remaining = cachedList.filter((w) => w.id !== workspace?.id);
     const next = remaining[0];
+    // Clear the workspace-context singleton BEFORE navigating and BEFORE
+    // the mutation fires. Three downstream consumers read it:
+    //  1. Realtime `workspace:deleted` handler's "current === deleted"
+    //     check — if the singleton still points at the deleting workspace
+    //     when the WS event arrives, it fires a parallel relocate that
+    //     races the mutation's invalidate and the settings page's own
+    //     navigate, surfacing a CancelledError and a full-page reload.
+    //  2. Chrome gating (`{slug && <AppSidebar />}` on desktop) — if the
+    //     singleton lingers, the sidebar stays mounted while the deleted
+    //     workspace is no longer in the list, and `useWorkspaceId` throws.
+    //  3. API client's `X-Workspace-Slug` header — stale header post-
+    //     delete is at best a 404, at worst leaks into the next query.
+    // WorkspaceRouteLayout re-sets the singleton when a new workspace's
+    // route mounts; clearing here is safe — either the next workspace
+    // takes over immediately, or the new-workspace overlay takes over
+    // (which has no workspace context, so null is correct).
+    setCurrentWorkspace(null, null);
     navigation.push(
       next ? paths.workspace(next.slug).issues() : paths.newWorkspace(),
     );

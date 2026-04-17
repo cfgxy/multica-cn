@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CoreProvider } from "@multica/core/platform";
 import { useAuthStore } from "@multica/core/auth";
@@ -97,22 +97,22 @@ function AppContent() {
   const wsCount = workspaces?.length ?? 0;
 
   // Validate persisted tab state against the current user's workspace list,
-  // and pick an active workspace if none is set. Runs in render phase (not
-  // useEffect) so the first render already sees validated state — otherwise
-  // the TabBar would briefly flash tabs from a stale workspace group. Both
-  // calls are idempotent (no-op when nothing needs to change), so re-runs
-  // per render don't loop.
-  if (workspaces) {
+  // and pick an active workspace if none is set. Runs in useLayoutEffect
+  // (synchronously after render, before paint) rather than the render
+  // phase — the original render-phase pattern triggered React's
+  // "Cannot update a component while rendering a different component"
+  // warning because `switchWorkspace` is a Zustand setState that the
+  // TabBar is subscribed to. useLayoutEffect flushes both renders before
+  // the user sees anything, so there's no visible flicker.
+  useLayoutEffect(() => {
+    if (!workspaces) return;
     const validSlugs = new Set(workspaces.map((w) => w.slug));
     const tabStore = useTabStore.getState();
     tabStore.validateWorkspaceSlugs(validSlugs);
-    // Fresh login or post-validation there's no active workspace but the
-    // user has at least one → enter the first one. This is what seeds the
-    // TabBar with content on a new account's first render.
     if (!tabStore.activeWorkspaceSlug && workspaces.length > 0) {
       tabStore.switchWorkspace(workspaces[0].slug);
     }
-  }
+  }, [workspaces]);
 
   // Bidirectional new-workspace overlay: visible when there are no
   // workspaces to enter, hidden as soon as one exists. Gated on
