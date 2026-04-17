@@ -12,6 +12,7 @@ import { useNavigation } from "../navigation";
 import { useLogout } from "../auth";
 import { Button } from "@multica/ui/components/ui/button";
 import { Card, CardContent } from "@multica/ui/components/ui/card";
+import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { ArrowLeft, LogOut, Users, Check, X } from "lucide-react";
 
 export interface InvitePageProps {
@@ -94,7 +95,14 @@ export function InvitePage({ invitationId, onBack }: InvitePageProps) {
   if (isLoading) {
     return (
       <InviteShell onBack={onBack}>
-        <div className="text-sm text-muted-foreground">Loading invitation...</div>
+        <Card className="w-full max-w-md">
+          <CardContent className="flex flex-col items-center gap-4 py-12">
+            <Skeleton className="h-12 w-12 rounded-full" />
+            <Skeleton className="h-5 w-48" />
+            <Skeleton className="h-4 w-64" />
+            <Skeleton className="h-9 w-32 rounded-md" />
+          </CardContent>
+        </Card>
       </InviteShell>
     );
   }
