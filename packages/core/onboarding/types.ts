@@ -69,4 +69,5 @@ export interface OnboardingState {
 
   platform_preference: PlatformPreference | null;
   cloud_waitlist_email: string | null;
+  cloud_waitlist_description: string | null;
 }

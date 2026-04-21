@@ -188,8 +188,11 @@ export function OnboardingFlow({
   }, [workspace, onComplete]);
 
   const handleWaitlist = useCallback(
-    async (email: string) => {
-      await advance({ cloud_waitlist_email: email });
+    async (email: string, description: string | null) => {
+      await advance({
+        cloud_waitlist_email: email,
+        cloud_waitlist_description: description,
+      });
       await complete({});
       onComplete(workspace ?? undefined);
     },

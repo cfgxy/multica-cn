@@ -26,7 +26,7 @@ export function StepPlatformFork({
 }: {
   wsId: string;
   onNext: (runtime: AgentRuntime | null) => void;
-  onWaitlist: (email: string) => void;
+  onWaitlist: (email: string, description: string | null) => void;
   cliInstructions?: ReactNode;
 }) {
   const [state, setState] = useState<ForkState>("fork");

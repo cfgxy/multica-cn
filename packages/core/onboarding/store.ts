@@ -23,6 +23,7 @@ const INITIAL_STATE: OnboardingState = {
   onboarding_project_id: null,
   platform_preference: null,
   cloud_waitlist_email: null,
+  cloud_waitlist_description: null,
 };
 
 interface OnboardingStoreValue {
