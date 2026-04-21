@@ -1,34 +1,46 @@
-"use client";
-
 import { api } from "../api";
 import { useAuthStore } from "../auth";
-import type { OnboardingStep, QuestionnaireAnswers } from "./types";
+import type { QuestionnaireAnswers } from "./types";
 
 /**
- * Persist onboarding progress on the server and sync the refreshed
- * user object into the auth store. Callers can pass either field
- * independently:
- *   - `current_step` → save the user's furthest reached step
- *   - `questionnaire` → save Q1/Q2/Q3 answers
+ * Persist Q1/Q2/Q3 answers and sync the refreshed user into the auth
+ * store. Source of truth is `user.onboarding_questionnaire` (JSONB on
+ * the server). No client-side cache here.
  *
- * Source of truth for both lives on `user.onboarding_current_step`
- * and `user.onboarding_questionnaire` (auth store). No client-side
- * cache here.
+ * Resume-by-step is intentionally not persisted: every onboarding
+ * entry starts at Welcome. The questionnaire is the only piece of
+ * progress that survives a re-entry — it pre-fills Step 1 so the
+ * user doesn't re-answer.
  */
-export async function advanceOnboarding(patch: {
-  current_step?: OnboardingStep;
-  questionnaire?: Partial<QuestionnaireAnswers>;
-}): Promise<void> {
-  const user = await api.patchOnboarding(patch);
+export async function saveQuestionnaire(
+  answers: Partial<QuestionnaireAnswers>,
+): Promise<void> {
+  const user = await api.patchOnboarding({ questionnaire: answers });
   useAuthStore.getState().setUser(user);
 }
 
 /**
  * Finalize onboarding. POST /complete marks `onboarded_at` atomically
- * (COALESCE-guarded for idempotency) and clears `current_step`. We
- * then refresh the auth store so every gate sees the updated user.
+ * (COALESCE-guarded for idempotency). We then refresh the auth store
+ * so every gate sees the updated user.
  */
 export async function completeOnboarding(): Promise<void> {
   await api.markOnboardingComplete();
   await useAuthStore.getState().refreshMe();
+}
+
+/**
+ * Records interest in cloud runtimes. Pure side effect — does NOT
+ * complete onboarding; the user still has to pick a real Step 3
+ * path (CLI with a detected runtime) or Skip to move on.
+ *
+ * Returned user object is not synced into the auth store because no
+ * user-visible field (`onboarded_at`, anything in `UserResponse`)
+ * actually changes here.
+ */
+export async function joinCloudWaitlist(
+  email: string,
+  reason: string,
+): Promise<void> {
+  await api.joinCloudWaitlist({ email, reason });
 }

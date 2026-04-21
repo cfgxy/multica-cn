@@ -103,7 +103,7 @@ export function OtherOptionCard({
   );
 }
 
-function RadioMark({ selected }: { selected: boolean }) {
+export function RadioMark({ selected }: { selected: boolean }) {
   return (
     <span
       aria-hidden

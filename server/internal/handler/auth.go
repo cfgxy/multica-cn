@@ -41,8 +41,8 @@ type UserResponse struct {
 	Email                   string          `json:"email"`
 	AvatarURL               *string         `json:"avatar_url"`
 	OnboardedAt             *string         `json:"onboarded_at"`
-	OnboardingCurrentStep   *string         `json:"onboarding_current_step"`
 	OnboardingQuestionnaire json.RawMessage `json:"onboarding_questionnaire"`
+	StarterContentState     *string         `json:"starter_content_state"`
 	CreatedAt               string          `json:"created_at"`
 	UpdatedAt               string          `json:"updated_at"`
 }
@@ -61,8 +61,8 @@ func userToResponse(u db.User) UserResponse {
 		Email:                   u.Email,
 		AvatarURL:               textToPtr(u.AvatarUrl),
 		OnboardedAt:             timestampToPtr(u.OnboardedAt),
-		OnboardingCurrentStep:   textToPtr(u.OnboardingCurrentStep),
 		OnboardingQuestionnaire: json.RawMessage(q),
+		StarterContentState:     textToPtr(u.StarterContentState),
 		CreatedAt:               timestampToString(u.CreatedAt),
 		UpdatedAt:               timestampToString(u.UpdatedAt),
 	}

@@ -55,35 +55,30 @@ export default function OnboardingPage() {
   if (isLoading || !user || hasOnboarded) return null;
 
   // Layout: page owns its own scroll (root layout sets `body {
-  // overflow: hidden }` for the app-shell convention). Content is
-  // top-aligned — the previous `my-auto` vertical centering made the
-  // baseline jump between steps of different heights. Now every
-  // non-welcome step sits below a stable StepHeader anchor; Welcome
-  // is the only short step and it provides its own internal
-  // centering (see step-welcome.tsx).
+  // overflow: hidden }` for the app-shell convention). OnboardingFlow
+  // owns the per-step width constraint internally — Welcome renders a
+  // wide two-column hero, all other steps wrap themselves at max-w-xl.
   return (
     <div className="h-full overflow-y-auto bg-background">
-      <div className="flex min-h-full flex-col items-center px-6 py-12">
-        <div className="w-full max-w-xl">
-          <OnboardingFlow
-            onComplete={(ws, firstIssueId) => {
-              if (ws && firstIssueId) {
-                router.push(paths.workspace(ws.slug).issueDetail(firstIssueId));
-              } else if (ws) {
-                router.push(paths.workspace(ws.slug).issues());
-              } else {
-                router.push(paths.root());
-              }
-            }}
-            runtimeInstructions={
-              <CliInstallInstructions
-                apiUrl={process.env.NEXT_PUBLIC_API_URL}
-                appUrl={appUrl}
-              />
-            }
+      <OnboardingFlow
+        onComplete={(ws) => {
+          // No more firstIssueId handoff — the welcome issue is created
+          // inside the workspace via StarterContentPrompt, not during
+          // onboarding. Always land on the workspace issues list (or
+          // root if the flow never produced a workspace).
+          if (ws) {
+            router.push(paths.workspace(ws.slug).issues());
+          } else {
+            router.push(paths.root());
+          }
+        }}
+        runtimeInstructions={
+          <CliInstallInstructions
+            apiUrl={process.env.NEXT_PUBLIC_API_URL}
+            appUrl={appUrl}
           />
-        </div>
-      </div>
+        }
+      />
     </div>
   );
 }

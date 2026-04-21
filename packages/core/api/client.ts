@@ -78,6 +78,41 @@ export interface LoginResponse {
   user: User;
 }
 
+// --- Starter content (post-onboarding import) -----------------------------
+// Shape mirrors the Go request/response in handler/onboarding.go.
+
+export interface ImportStarterIssuePayload {
+  title: string;
+  description: string;
+  status: string;
+  priority: string;
+  /** Server looks up the caller's member_id and uses it as assignee when true. */
+  assign_to_self: boolean;
+}
+
+export interface ImportStarterWelcomeIssuePayload {
+  title: string;
+  description: string;
+  /** Must be an agent in the target workspace. Server validates. */
+  agent_id: string;
+  /** Defaults to "high" on server. */
+  priority?: string;
+}
+
+export interface ImportStarterContentPayload {
+  workspace_id: string;
+  project: { title: string; description: string; icon: string };
+  /** Omit or pass null for the self-serve (no-agent) path. */
+  welcome_issue: ImportStarterWelcomeIssuePayload | null;
+  sub_issues: ImportStarterIssuePayload[];
+}
+
+export interface ImportStarterContentResponse {
+  user: User;
+  project_id: string;
+  welcome_issue_id: string | null;
+}
+
 export class ApiError extends Error {
   readonly status: number;
   readonly statusText: string;
@@ -223,13 +258,47 @@ export class ApiClient {
     return this.fetch("/api/me/onboarding/complete", { method: "POST" });
   }
 
+  async joinCloudWaitlist(payload: {
+    email: string;
+    reason?: string;
+  }): Promise<User> {
+    return this.fetch("/api/me/onboarding/cloud-waitlist", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  }
+
   async patchOnboarding(payload: {
-    current_step?: string;
     questionnaire?: Record<string, unknown>;
   }): Promise<User> {
     return this.fetch("/api/me/onboarding", {
       method: "PATCH",
       body: JSON.stringify(payload),
+    });
+  }
+
+  /**
+   * Imports the Getting Started project + optional welcome issue + sub-issues
+   * in a single server-side transaction. Gated by an atomic
+   * starter_content_state: NULL → 'imported' claim — a second call returns
+   * 409 (already decided) and creates nothing new.
+   *
+   * The content templates live in TypeScript (see
+   * @multica/views/onboarding/utils/starter-content-templates) and are
+   * rendered from the user's questionnaire answers before being sent.
+   */
+  async importStarterContent(
+    payload: ImportStarterContentPayload,
+  ): Promise<ImportStarterContentResponse> {
+    return this.fetch("/api/me/starter-content/import", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+  }
+
+  async dismissStarterContent(): Promise<User> {
+    return this.fetch("/api/me/starter-content/dismiss", {
+      method: "POST",
     });
   }
 

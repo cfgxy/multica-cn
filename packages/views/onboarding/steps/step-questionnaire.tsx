@@ -1,7 +1,13 @@
 "use client";
 
 import { type ReactNode, useMemo, useRef, useState } from "react";
-import { ArrowLeft, ArrowRight, Loader2 } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  Loader2,
+  PenLine,
+  Sparkles,
+} from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
 import type {
@@ -91,7 +97,7 @@ export function StepQuestionnaire({
   };
 
   return (
-    <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_480px]">
+    <div className="animate-onboarding-enter grid h-full min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_480px]">
       {/* Left column — DragStrip + 3-region app shell */}
       <div className="flex min-h-0 flex-col">
         <DragStrip />
@@ -128,10 +134,10 @@ export function StepQuestionnaire({
         >
           <div className="mx-auto w-full max-w-[620px] px-6 py-10 sm:px-10 md:px-14 lg:px-0 lg:py-14">
             <div className="mb-2 text-xs font-medium uppercase tracking-[0.08em] text-muted-foreground">
-              A few quick questions
+              Before we start
             </div>
             <h1 className="text-balance font-serif text-[36px] font-medium leading-[1.1] tracking-tight text-foreground">
-              Three answers. We&apos;ll handle the rest.
+              Three questions. Then we tailor the rest.
             </h1>
 
             <div className="mt-10 flex flex-col gap-7">
@@ -184,7 +190,7 @@ export function StepQuestionnaire({
                 <OptionCard
                   selected={answers.role === "founder"}
                   onSelect={() => setRole("founder")}
-                  label="Founder / solo operator"
+                  label="Founder or operator"
                 />
                 <OtherOptionCard
                   selected={answers.role === "other"}
@@ -199,8 +205,8 @@ export function StepQuestionnaire({
 
               <QuestionBlock
                 num={3}
-                question="What do you want to do first?"
-                ariaLabel="What do you want to do first?"
+                question="What do you want to do with Multica?"
+                ariaLabel="What do you want to do with Multica?"
               >
                 <OptionCard
                   selected={answers.use_case === "coding"}
@@ -220,7 +226,7 @@ export function StepQuestionnaire({
                 <OptionCard
                   selected={answers.use_case === "explore"}
                   onSelect={() => setUseCase("explore")}
-                  label="Just explore what's possible"
+                  label="I'm just exploring for now"
                 />
                 <OtherOptionCard
                   selected={answers.use_case === "other"}
@@ -295,58 +301,53 @@ function QuestionBlock({
 
 function WhyWeAsk() {
   return (
-    <div className="flex flex-col gap-6">
-      <div className="text-xs font-medium uppercase tracking-[0.08em] text-muted-foreground">
-        Why we ask
-      </div>
-      <p className="text-[14px] leading-[1.55] text-foreground/80">
-        Three quick questions help us skip the setup gauntlet. Instead of
-        handing you an empty board, we&apos;ll tailor the next screens to
-        match how you work.
-      </p>
+    <div className="flex max-w-[380px] flex-col gap-8">
+      <section className="flex flex-col gap-4">
+        <div className="text-xs font-medium uppercase tracking-[0.08em] text-muted-foreground">
+          Why three questions
+        </div>
+        <h2 className="font-serif text-[22px] font-medium leading-[1.25] tracking-tight text-foreground">
+          So you land running.
+        </h2>
+      </section>
 
-      <div className="mt-2 text-xs font-medium uppercase tracking-[0.08em] text-muted-foreground">
-        What your answers unlock
-      </div>
-      <div className="flex flex-col gap-4">
-        <UnlockItem
-          num="01"
-          title="A recommended first agent"
-          body="Coder, planner, writer, or assistant — picked to match your role."
-        />
-        <UnlockItem
-          num="02"
-          title="A drafted first task"
-          body="So you land on real work in 30 seconds, not a blank textarea."
-        />
-        <UnlockItem
-          num="03"
-          title="A curated Getting Started project"
-          body="A short tour of features that actually matter to you."
-        />
-      </div>
-
-      <div className="mt-2 rounded-lg border bg-card/60 px-4 py-3 text-xs leading-[1.55] text-muted-foreground">
-        We&apos;ll never ask what tools you have installed — your machine
-        tells us in the next step.
-      </div>
+      <section className="flex flex-col gap-4">
+        <div className="text-xs font-medium uppercase tracking-[0.08em] text-muted-foreground">
+          What you get
+        </div>
+        <div className="flex flex-col gap-4">
+          <UnlockItem
+            icon={<PenLine className="h-4 w-4" />}
+            title="A starter project, tailored"
+            body="A Getting Started checklist shaped by your answers."
+          />
+          <UnlockItem
+            icon={<Sparkles className="h-4 w-4" />}
+            title="A head start with agents"
+            body="Connect a runtime and we'll pick a template for your role — plus write its first task."
+          />
+        </div>
+      </section>
     </div>
   );
 }
 
 function UnlockItem({
-  num,
+  icon,
   title,
   body,
 }: {
-  num: string;
+  icon: ReactNode;
   title: string;
   body: string;
 }) {
   return (
-    <div className="grid grid-cols-[28px_1fr] gap-3">
-      <div className="flex h-[22px] w-[22px] items-center justify-center rounded-full bg-background font-mono text-[10.5px] font-semibold text-muted-foreground">
-        {num}
+    <div className="grid grid-cols-[22px_1fr] gap-3">
+      <div
+        aria-hidden
+        className="flex h-[20px] w-[20px] items-center justify-center text-muted-foreground"
+      >
+        {icon}
       </div>
       <div className="flex flex-col">
         <div className="text-[13.5px] font-medium text-foreground">{title}</div>

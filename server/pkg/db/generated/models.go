@@ -391,8 +391,10 @@ type User struct {
 	CreatedAt               pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt               pgtype.Timestamptz `json:"updated_at"`
 	OnboardedAt             pgtype.Timestamptz `json:"onboarded_at"`
-	OnboardingCurrentStep   pgtype.Text        `json:"onboarding_current_step"`
 	OnboardingQuestionnaire []byte             `json:"onboarding_questionnaire"`
+	CloudWaitlistEmail      pgtype.Text        `json:"cloud_waitlist_email"`
+	CloudWaitlistReason     pgtype.Text        `json:"cloud_waitlist_reason"`
+	StarterContentState     pgtype.Text        `json:"starter_content_state"`
 }
 
 type VerificationCode struct {

@@ -53,13 +53,19 @@ function CopyButton({ text }: { text: string }) {
 /**
  * CLI install instructions for the runtime step. Web-only by default —
  * desktop has a bundled daemon that auto-starts, so install guidance is
- * noise there. Rendered as an `instructions` slot on `<StepRuntime />`.
+ * noise there. Rendered as an `instructions` slot inside the CLI dialog.
+ *
+ * Structure: two numbered steps shown in natural execution order. Install
+ * (step 1) MUST come before setup (step 2) — without the `multica` binary
+ * on PATH, step 2 can't run. A user who already has the CLI can safely
+ * skip step 1, but the numbering stays for the majority case of a fresh
+ * install.
  *
  * The `apiUrl` / `appUrl` props point the setup command at the right
  * server. The web shell passes `process.env.NEXT_PUBLIC_API_URL` and
- * `window.location.origin`; a self-host deployment gets a self-host
- * command; dev gets a self-host command pointing at localhost; cloud
- * gets the plain `multica setup`.
+ * `window.location.origin`; a self-host / dev deployment gets a
+ * `multica setup self-host --server-url ... --app-url ...` command;
+ * cloud gets the plain `multica setup`.
  */
 export function CliInstallInstructions({
   apiUrl,
@@ -69,17 +75,26 @@ export function CliInstallInstructions({
   appUrl?: string;
 }) {
   const setupCmd = buildSetupCommand(apiUrl, appUrl);
-  const setupSteps = [
-    { label: "Install the Multica CLI", cmd: INSTALL_CMD },
-    { label: "Set up and start the daemon", cmd: setupCmd },
+  const steps = [
+    {
+      label: "Install the Multica CLI",
+      cmd: INSTALL_CMD,
+      note: null as string | null,
+    },
+    {
+      label: "Start the daemon",
+      cmd: setupCmd,
+      note:
+        "Opens a browser tab to sign you in, then starts a background daemon. The daemon keeps running after you close the terminal — your agents still pick up tasks.",
+    },
   ];
 
   return (
     <Card className="w-full">
-      <CardContent className="space-y-3 pt-4">
-        {setupSteps.map((step, i) => (
+      <CardContent className="space-y-4 pt-4">
+        {steps.map((step, i) => (
           <div key={i}>
-            <p className="mb-1.5 text-xs text-muted-foreground">
+            <p className="mb-1.5 text-xs font-medium text-foreground">
               {i + 1}. {step.label}
             </p>
             <div className="flex items-start gap-2 rounded-lg bg-muted px-3 py-2.5 font-mono text-sm">
@@ -89,14 +104,13 @@ export function CliInstallInstructions({
               </code>
               <CopyButton text={step.cmd} />
             </div>
+            {step.note && (
+              <p className="mt-2 text-xs leading-[1.55] text-muted-foreground">
+                {step.note}
+              </p>
+            )}
           </div>
         ))}
-        <p className="pt-1 text-xs text-muted-foreground">
-          <code className="rounded bg-background px-1 py-0.5 font-mono">
-            multica setup
-          </code>{" "}
-          handles authentication, configuration, and daemon startup.
-        </p>
       </CardContent>
     </Card>
   );

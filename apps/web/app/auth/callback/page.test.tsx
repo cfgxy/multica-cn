@@ -16,7 +16,6 @@ const makeUser = (overrides: Partial<{ onboarded_at: string | null }> = {}) => (
   email: "test@multica.ai",
   avatar_url: null,
   onboarded_at: null,
-  onboarding_current_step: null,
   onboarding_questionnaire: {},
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
