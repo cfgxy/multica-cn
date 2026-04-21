@@ -124,18 +124,6 @@ export function OnboardingFlow({
     onComplete(workspace ?? undefined);
   }, [complete, workspace, onComplete]);
 
-  const handleWaitlist = useCallback(
-    (email: string, description: string | null) => {
-      // Persist waitlist fields now; let bootstrap + complete fire
-      // in the next step, same as every other no-agent path.
-      void advance({
-        cloud_waitlist_email: email,
-        cloud_waitlist_description: description,
-      });
-      setStep("first_issue");
-    },
-    [advance],
-  );
 
   if (step === "welcome") {
     return <StepWelcome onNext={handleWelcomeNext} />;
@@ -163,7 +151,6 @@ export function OnboardingFlow({
           <StepPlatformFork
             wsId={runtimeWorkspace.id}
             onNext={handleRuntimeNext}
-            onWaitlist={handleWaitlist}
             cliInstructions={runtimeInstructions}
           />
         ) : (

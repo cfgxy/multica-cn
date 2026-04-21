@@ -4,7 +4,6 @@ import { useState, type ReactNode } from "react";
 import {
   ArrowLeft,
   ArrowRight,
-  Cloud,
   Download,
   Monitor,
   Terminal,
@@ -12,21 +11,18 @@ import {
 import { Button } from "@multica/ui/components/ui/button";
 import type { AgentRuntime } from "@multica/core/types";
 import { StepRuntimeConnect } from "./step-runtime-connect";
-import { StepCloudWaitlist } from "./step-cloud-waitlist";
 
-type ForkState = "fork" | "downloading" | "cli" | "waitlist";
+type ForkState = "fork" | "downloading" | "cli";
 
 const DESKTOP_DOWNLOAD_URL = "https://multica.ai/download";
 
 export function StepPlatformFork({
   wsId,
   onNext,
-  onWaitlist,
   cliInstructions,
 }: {
   wsId: string;
   onNext: (runtime: AgentRuntime | null) => void;
-  onWaitlist: (email: string, description: string | null) => void;
   cliInstructions?: ReactNode;
 }) {
   const [state, setState] = useState<ForkState>("fork");
@@ -48,15 +44,6 @@ export function StepPlatformFork({
           instructions={cliInstructions}
         />
       </div>
-    );
-  }
-
-  if (state === "waitlist") {
-    return (
-      <StepCloudWaitlist
-        onBack={() => setState("fork")}
-        onSubmit={onWaitlist}
-      />
     );
   }
 
@@ -128,11 +115,6 @@ export function StepPlatformFork({
           label="Install the CLI instead"
           hint="2–4 min"
           onClick={() => setState("cli")}
-        />
-        <AlternativeRow
-          icon={<Cloud className="h-4 w-4" />}
-          label="Join the cloud waitlist"
-          onClick={() => setState("waitlist")}
         />
       </div>
     </div>
