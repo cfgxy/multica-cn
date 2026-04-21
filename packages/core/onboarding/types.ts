@@ -13,7 +13,7 @@ export type OnboardingStep =
   | "agent"
   | "first_issue";
 
-export type TeamSize = "solo" | "team" | "evaluating" | "other";
+export type TeamSize = "solo" | "team" | "other";
 
 export type Role =
   | "developer"

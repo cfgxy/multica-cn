@@ -82,10 +82,12 @@ function WindowOverlayInner() {
         )}
         {overlay.type === "onboarding" && (
           <div className="flex min-h-full flex-col items-center px-6 py-12">
-            {/* my-auto centers when short, flows from top when tall —
-                mirroring the web shell so long runtime lists don't push
-                Continue off-screen. */}
-            <div className="my-auto w-full max-w-xl">
+            {/* Top-aligned; the outer flex-1 overflow-auto container
+                handles scrolling. The previous `my-auto` centering
+                broke for long steps — centered content could be
+                pushed above the scroll origin, making the bottom
+                actions unreachable. */}
+            <div className="w-full max-w-xl">
               <OnboardingFlow
                 onComplete={(ws) => {
                   close();

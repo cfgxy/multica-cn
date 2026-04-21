@@ -37,18 +37,16 @@ export default function OnboardingPage() {
 
   if (isLoading || !user) return null;
 
-  // Layout notes:
-  //  - `min-h-svh` so short steps (welcome) still feel centered, but the
-  //    page grows to fit long steps (runtime with many connections) and
-  //    the whole window scrolls naturally.
-  //  - `my-auto` on the inner block centers it when content is shorter
-  //    than the viewport, and lets it sit at the top (with py-12 padding)
-  //    when taller. This avoids the trap where `items-center +
-  //    justify-center` on an overflowing flex container pushes the
-  //    bottom (Continue / Skip) off-screen with no way to scroll to it.
+  // Layout: top-aligned, body scrolls. `min-h-svh` gives short steps
+  // (welcome) a full-viewport background so they don't feel cramped.
+  // Previous `my-auto` + `items-center` vertical-centering trick broke
+  // for long content (questionnaire with many options): the centered
+  // block's top could be pushed above the scroll origin, making
+  // Continue/Skip unreachable. Top-alignment with natural body scroll
+  // is the boring-but-correct baseline.
   return (
     <div className="flex min-h-svh flex-col items-center bg-background px-6 py-12">
-      <div className="my-auto w-full max-w-xl">
+      <div className="w-full max-w-xl">
         <OnboardingFlow
           onComplete={(ws) => {
             if (ws) router.push(paths.workspace(ws.slug).issues());

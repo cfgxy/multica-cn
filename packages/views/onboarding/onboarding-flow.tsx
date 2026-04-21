@@ -9,6 +9,7 @@ import {
 } from "@multica/core/onboarding";
 import { workspaceListOptions } from "@multica/core/workspace/queries";
 import type { Agent, AgentRuntime, Workspace } from "@multica/core/types";
+import { StepWelcome } from "./steps/step-welcome";
 import { StepQuestionnaire } from "./steps/step-questionnaire";
 import { StepWorkspace } from "./steps/step-workspace";
 import { StepRuntime } from "./steps/step-runtime";
@@ -16,25 +17,62 @@ import { StepAgent } from "./steps/step-agent";
 import { StepComplete } from "./steps/step-complete";
 
 /**
- * Step identifiers for the orchestrator's *render* state. Distinct from
- * the server-side `OnboardingStep` enum in core/onboarding/types.ts,
- * which tracks persisted progress — those will converge when Step 5
- * (first-issue) lands and flow transitions are fully store-driven.
- * Today the orchestrator runs off local state and only persists the
- * questionnaire answers + current_step into the store at each
- * transition.
+ * Step identifiers for the orchestrator's *render* state.
  *
- *   questionnaire → workspace → runtime → agent → complete
+ *   welcome → questionnaire → workspace → runtime → agent → complete
  *
- * Branches: no-runtime or skip-runtime jumps past agent straight to
+ * `welcome` is a first-entry-only product intro — not a persisted
+ * step in the store. First-time users see it; anyone with stored
+ * progress skips it directly to their resume point.
+ *
+ * `complete` is the current UI placeholder for what will eventually
+ * be `first_issue` (the aha-moment step — not yet implemented). The
+ * store's `current_step` enum matches the server schema
+ * (`questionnaire | workspace | runtime | agent | first_issue`);
+ * this local union stays decoupled until Step 5 lands.
+ *
+ * Branch: no-runtime or skip-runtime jumps past agent straight to
  * complete (can't build a CreateAgent request without a runtime_id).
  */
 export type OnboardingStep =
+  | "welcome"
   | "questionnaire"
   | "workspace"
   | "runtime"
   | "agent"
   | "complete";
+
+/**
+ * Decide which step to open the flow on. First-ever entry (pristine
+ * store: sitting at `current_step === "questionnaire"` with no
+ * answers) shows Welcome. Anyone with any progress resumes at their
+ * saved step.
+ */
+function pickInitialStep(): OnboardingStep {
+  const s = useOnboardingStore.getState().state;
+  const pristine =
+    s.current_step === "questionnaire" &&
+    s.questionnaire.team_size === null &&
+    s.questionnaire.role === null &&
+    s.questionnaire.use_case === null;
+  if (pristine) return "welcome";
+  switch (s.current_step) {
+    case "questionnaire":
+      return "questionnaire";
+    case "workspace":
+      return "workspace";
+    case "runtime":
+      return "runtime";
+    case "agent":
+      return "agent";
+    case "first_issue":
+      // Step 5 not yet implemented — the closing ceremony screen is
+      // the current UI placeholder.
+      return "complete";
+    default:
+      return "welcome";
+  }
+}
 
 /**
  * Shared onboarding orchestrator. Renders the current step and drives
@@ -60,7 +98,7 @@ export function OnboardingFlow({
    */
   runtimeInstructions?: React.ReactNode;
 }) {
-  const [step, setStep] = useState<OnboardingStep>("questionnaire");
+  const [step, setStep] = useState<OnboardingStep>(pickInitialStep);
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [runtime, setRuntime] = useState<AgentRuntime | null>(null);
   const [agent, setAgent] = useState<Agent | null>(null);
@@ -79,6 +117,15 @@ export function OnboardingFlow({
   // flow completes without a workspace result.
   const { data: workspaces = [] } = useQuery(workspaceListOptions());
   const runtimeWorkspace = workspace ?? workspaces[0] ?? null;
+
+  const handleWelcomeNext = useCallback(() => {
+    // Welcome is UI-only. Mark the start of real progress by writing
+    // `current_step: "questionnaire"` even though the store is already
+    // initialized there — this ensures that once backed by the server,
+    // the initial upsert lands and the user is considered "started".
+    void advance({ current_step: "questionnaire" });
+    setStep("questionnaire");
+  }, [advance]);
 
   const handleQuestionnaireSubmit = useCallback(
     (answers: QuestionnaireAnswers) => {
@@ -138,6 +185,7 @@ export function OnboardingFlow({
 
   return (
     <>
+      {step === "welcome" && <StepWelcome onNext={handleWelcomeNext} />}
       {step === "questionnaire" && (
         <StepQuestionnaire
           initial={storedQuestionnaire}

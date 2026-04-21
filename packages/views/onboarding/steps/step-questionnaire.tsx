@@ -105,11 +105,11 @@ export function StepQuestionnaire({
     <div className="flex w-full flex-col items-center gap-8">
       <div className="flex flex-col gap-3 text-center">
         <h1 className="text-3xl font-semibold tracking-tight">
-          Welcome to Multica
+          Tell us a bit about you
         </h1>
         <p className="text-base text-muted-foreground">
-          A few quick questions so we can tailor your workspace. Skip any
-          that don't apply.
+          Three questions to pick your starter agent and draft your first
+          task. Skip any that don't apply.
         </p>
       </div>
 
@@ -130,11 +130,6 @@ export function StepQuestionnaire({
           selected={answers.team_size === "team"}
           onSelect={() => setTeamSize("team")}
           label="My team (2–10 people)"
-        />
-        <OptionCard
-          selected={answers.team_size === "evaluating"}
-          onSelect={() => setTeamSize("evaluating")}
-          label="Just exploring for now"
         />
         <OtherOptionCard
           selected={answers.team_size === "other"}
