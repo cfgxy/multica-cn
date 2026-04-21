@@ -5,7 +5,11 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { sanitizeNextUrl, useAuthStore } from "@multica/core/auth";
 import { workspaceKeys } from "@multica/core/workspace/queries";
-import { paths } from "@multica/core/paths";
+import {
+  paths,
+  resolvePostAuthDestination,
+  useHasOnboarded,
+} from "@multica/core/paths";
 import { api } from "@multica/core/api";
 import {
   Card,
@@ -22,6 +26,7 @@ function CallbackContent() {
   const searchParams = useSearchParams();
   const qc = useQueryClient();
   const loginWithGoogle = useAuthStore((s) => s.loginWithGoogle);
+  const hasOnboarded = useHasOnboarded();
   const [error, setError] = useState("");
   const [desktopToken, setDesktopToken] = useState<string | null>(null);
 
@@ -67,19 +72,17 @@ function CallbackContent() {
           qc.setQueryData(workspaceKeys.list(), wsList);
           // URL is now the source of truth for the current workspace — the
           // [workspaceSlug]/layout syncs stores + cookie once we navigate.
-          // Honor ?next= first (e.g. came from /invite/{id}), otherwise land
-          // in the first workspace's issues, or /workspaces/new for zero-workspace users.
-          const [first] = wsList;
-          const defaultDest = first
-            ? paths.workspace(first.slug).issues()
-            : paths.newWorkspace();
-          router.push(nextUrl || defaultDest);
+          // Honor ?next= first (e.g. came from /invite/{id}), otherwise
+          // defer to the shared destination resolver.
+          router.push(
+            nextUrl || resolvePostAuthDestination(wsList, hasOnboarded),
+          );
         })
         .catch((err) => {
           setError(err instanceof Error ? err.message : "Login failed");
         });
     }
-  }, [searchParams, loginWithGoogle, router, qc]);
+  }, [searchParams, loginWithGoogle, hasOnboarded, router, qc]);
 
   if (desktopToken) {
     return (

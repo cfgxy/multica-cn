@@ -7,7 +7,11 @@ import {
   workspaceKeys,
   workspaceListOptions,
 } from "@multica/core/workspace/queries";
-import { paths } from "@multica/core/paths";
+import {
+  paths,
+  resolvePostAuthDestination,
+  useHasOnboarded,
+} from "@multica/core/paths";
 import { useNavigation } from "../navigation";
 import { useLogout } from "../auth";
 import { Button } from "@multica/ui/components/ui/button";
@@ -49,8 +53,8 @@ export function InvitePage({ invitationId, onBack }: InvitePageProps) {
   // Workspace list for the fallback "Go to dashboard" destinations. The invite
   // page is a pre-workspace global route so we can't rely on WorkspaceSlugProvider.
   const { data: wsList = [] } = useQuery(workspaceListOptions());
-  const fallbackDest =
-    wsList[0] ? paths.workspace(wsList[0].slug).issues() : paths.newWorkspace();
+  const hasOnboarded = useHasOnboarded();
+  const fallbackDest = resolvePostAuthDestination(wsList, hasOnboarded);
 
   const handleAccept = async () => {
     setAccepting(true);

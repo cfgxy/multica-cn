@@ -5,7 +5,11 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { sanitizeNextUrl, useAuthStore } from "@multica/core/auth";
 import { workspaceKeys } from "@multica/core/workspace/queries";
-import { paths } from "@multica/core/paths";
+import {
+  paths,
+  resolvePostAuthDestination,
+  useHasOnboarded,
+} from "@multica/core/paths";
 import { api } from "@multica/core/api";
 import type { Workspace } from "@multica/core/types";
 import {
@@ -42,9 +46,10 @@ function LoginPageContent() {
 
   const [desktopToken, setDesktopToken] = useState<string | null>(null);
   const [desktopError, setDesktopError] = useState("");
+  const hasOnboarded = useHasOnboarded();
 
   // Already authenticated — honor ?next= or fall back to first workspace
-  // (or /workspaces/new if the user has none). Skip this entire path when
+  // (or /onboarding if the user has none). Skip this entire path when
   // the user arrived to authorize the CLI.
   useEffect(() => {
     if (isLoading || !user || cliCallbackRaw) return;
@@ -70,11 +75,8 @@ function LoginPageContent() {
       return;
     }
     const list = qc.getQueryData<Workspace[]>(workspaceKeys.list()) ?? [];
-    const [first] = list;
-    router.replace(
-      first ? paths.workspace(first.slug).issues() : paths.newWorkspace(),
-    );
-  }, [isLoading, user, router, nextUrl, cliCallbackRaw, isDesktopHandoff, qc]);
+    router.replace(resolvePostAuthDestination(list, hasOnboarded));
+  }, [isLoading, user, router, nextUrl, cliCallbackRaw, isDesktopHandoff, hasOnboarded, qc]);
 
   const handleSuccess = () => {
     if (nextUrl) {
@@ -84,10 +86,7 @@ function LoginPageContent() {
     // The LoginPage view populates the workspace list cache before calling
     // onSuccess, so it's safe to read here.
     const list = qc.getQueryData<Workspace[]>(workspaceKeys.list()) ?? [];
-    const [first] = list;
-    router.push(
-      first ? paths.workspace(first.slug).issues() : paths.newWorkspace(),
-    );
+    router.push(resolvePostAuthDestination(list, hasOnboarded));
   };
 
   // Build Google OAuth state: encode platform + next URL so the callback

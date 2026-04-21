@@ -55,11 +55,14 @@ describe("CallbackPage", () => {
     mockListWorkspaces.mockResolvedValue([]);
   });
 
-  it("falls back to paths.newWorkspace() when no next= is present and the user has no workspace", async () => {
+  it("falls back to paths.onboarding() when no next= is present and the user has no workspace", async () => {
+    // Zero-workspace users land in the onboarding flow (which handles
+    // workspace creation as one of its steps), not the standalone
+    // /workspaces/new route.
     render(<CallbackPage />);
 
     await waitFor(() => {
-      expect(mockPush).toHaveBeenCalledWith(paths.newWorkspace());
+      expect(mockPush).toHaveBeenCalledWith(paths.onboarding());
     });
   });
 
@@ -69,7 +72,7 @@ describe("CallbackPage", () => {
     render(<CallbackPage />);
 
     await waitFor(() => {
-      expect(mockPush).toHaveBeenCalledWith(paths.newWorkspace());
+      expect(mockPush).toHaveBeenCalledWith(paths.onboarding());
     });
     expect(mockPush).not.toHaveBeenCalledWith("https://evil.example");
   });

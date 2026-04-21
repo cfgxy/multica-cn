@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useImmersiveMode } from "@multica/views/platform";
 import { NewWorkspacePage } from "@multica/views/workspace/new-workspace-page";
 import { InvitePage } from "@multica/views/invite";
+import { OnboardingFlow } from "@multica/views/onboarding";
 import { useNavigation } from "@multica/views/navigation";
 import { paths } from "@multica/core/paths";
 import { workspaceListOptions } from "@multica/core/workspace/queries";
@@ -78,6 +79,21 @@ function WindowOverlayInner() {
             invitationId={overlay.invitationId}
             onBack={onBack}
           />
+        )}
+        {overlay.type === "onboarding" && (
+          <div className="flex min-h-full flex-col items-center px-6 py-12">
+            {/* my-auto centers when short, flows from top when tall —
+                mirroring the web shell so long runtime lists don't push
+                Continue off-screen. */}
+            <div className="my-auto w-full max-w-xl">
+              <OnboardingFlow
+                onComplete={(ws) => {
+                  close();
+                  if (ws) push(paths.workspace(ws.slug).issues());
+                }}
+              />
+            </div>
+          </div>
         )}
       </div>
     </div>

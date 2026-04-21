@@ -57,11 +57,15 @@ export function NewWorkspacePage({
             <h1 className="text-3xl font-semibold tracking-tight">
               Welcome to Multica
             </h1>
-            <p className="mt-2 text-muted-foreground">
-              Create your workspace to get started.
+            <p className="mt-3 text-muted-foreground">
+              One workspace where you and your AI teammates work side by side —
+              taking issues, leaving comments, sharing the same context.
             </p>
           </div>
           <CreateWorkspaceForm onSuccess={onSuccess} />
+          <p className="text-center text-xs text-muted-foreground">
+            You can invite teammates once your workspace is ready.
+          </p>
         </div>
       </div>
     </div>

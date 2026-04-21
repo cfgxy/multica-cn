@@ -4,6 +4,7 @@ import { CoreProvider } from "@multica/core/platform";
 import { useAuthStore } from "@multica/core/auth";
 import { workspaceKeys, workspaceListOptions } from "@multica/core/workspace/queries";
 import { api } from "@multica/core/api";
+import { paths, resolvePostAuthDestination, useHasOnboarded } from "@multica/core/paths";
 import { ThemeProvider } from "@multica/ui/components/common/theme-provider";
 import { MulticaIcon } from "@multica/ui/components/common/multica-icon";
 import { Toaster } from "sonner";
@@ -90,11 +91,30 @@ function AppContent() {
   // account switches (user A logout → user B login) should not trigger a
   // daemon restart here — daemon-manager already restarts on user change
   // via syncToken.
-  const { data: workspaces, isFetched: workspaceListFetched } = useQuery({
+  const { data: workspaces = [], isFetched: workspaceListFetched } = useQuery({
     ...workspaceListOptions(),
     enabled: !!user,
   });
-  const wsCount = workspaces?.length ?? 0;
+  const wsCount = workspaces.length;
+  const hasOnboarded = useHasOnboarded();
+
+  // Zero-workspace users land on either the onboarding flow or the
+  // standalone create-workspace page, depending on whether they've ever
+  // onboarded before. `resolvePostAuthDestination` owns that decision —
+  // desktop just translates the resulting path into the matching overlay
+  // type. Today `useHasOnboarded()` is a dev stub returning false, so
+  // every zero-ws user sees onboarding; when the backend flag ships,
+  // returning-user deletes will flip to `new-workspace` automatically.
+  useEffect(() => {
+    if (!user || !workspaceListFetched) return;
+    if (wsCount > 0) return;
+    const { overlay, open } = useWindowOverlayStore.getState();
+    if (overlay) return;
+    const target = resolvePostAuthDestination(workspaces, hasOnboarded);
+    open({
+      type: target === paths.onboarding() ? "onboarding" : "new-workspace",
+    });
+  }, [user, workspaceListFetched, wsCount, workspaces, hasOnboarded]);
 
   // Validate persisted tab state against the current user's workspace list,
   // and pick an active workspace if none is set. Runs in useLayoutEffect
@@ -114,22 +134,6 @@ function AppContent() {
     }
   }, [workspaces]);
 
-  // Bidirectional new-workspace overlay: visible when there are no
-  // workspaces to enter, hidden as soon as one exists. Gated on
-  // `workspaceListFetched` so the initial render doesn't flash the
-  // overlay before the list arrives. The overlay's own `invite` type is
-  // not touched here — that's an in-flight task owned by the user.
-  useEffect(() => {
-    if (!user) return;
-    if (!workspaceListFetched) return;
-    const { overlay, open, close } = useWindowOverlayStore.getState();
-    const isEmpty = wsCount === 0;
-    if (isEmpty) {
-      if (!overlay) open({ type: "new-workspace" });
-    } else if (overlay?.type === "new-workspace") {
-      close();
-    }
-  }, [user, workspaceListFetched, wsCount]);
   // null = undecided (pre-login or list hasn't settled yet)
   // true  = session started with zero workspaces; next transition to >=1 triggers restart
   // false = session started with >=1 workspace, OR we've already restarted; skip
