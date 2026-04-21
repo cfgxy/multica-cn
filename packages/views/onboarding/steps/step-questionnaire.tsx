@@ -9,6 +9,7 @@ import type {
   TeamSize,
   UseCase,
 } from "@multica/core/onboarding";
+import { DragStrip } from "@multica/views/platform";
 import { StepHeader } from "../components/step-header";
 import { OptionCard, OtherOptionCard } from "../components/option-card";
 
@@ -82,8 +83,9 @@ export function StepQuestionnaire({
 
   return (
     <div className="grid h-full min-h-0 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_480px]">
-      {/* Left column — 3-region app shell */}
+      {/* Left column — DragStrip + 3-region app shell */}
       <div className="flex min-h-0 flex-col">
+        <DragStrip />
         {/* Fixed header — Back + progress indicator */}
         <header className="flex shrink-0 items-center gap-4 border-b bg-background px-6 py-3 sm:px-10 md:px-14 lg:px-16">
           {onBack ? (
@@ -241,9 +243,10 @@ export function StepQuestionnaire({
         </footer>
       </div>
 
-      {/* Right — "Why we ask" side panel, independent scroll */}
-      <aside className="hidden min-h-0 border-l bg-muted/40 lg:flex lg:flex-col lg:overflow-y-auto">
-        <div className="px-12 py-14">
+      {/* Right — DragStrip + "Why we ask" side panel, independent scroll */}
+      <aside className="hidden min-h-0 border-l bg-muted/40 lg:flex lg:flex-col">
+        <DragStrip />
+        <div className="min-h-0 flex-1 overflow-y-auto px-12 py-12">
           <WhyWeAsk />
         </div>
       </aside>
