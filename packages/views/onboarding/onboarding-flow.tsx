@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { setCurrentWorkspace } from "@multica/core/platform";
@@ -13,7 +13,6 @@ import {
   type QuestionnaireAnswers,
 } from "@multica/core/onboarding";
 import { workspaceListOptions } from "@multica/core/workspace/queries";
-import { runtimeListOptions } from "@multica/core/runtimes/queries";
 import type { Agent, AgentRuntime, Workspace } from "@multica/core/types";
 import { StepHeader } from "./components/step-header";
 import { StepWelcome } from "./steps/step-welcome";
@@ -33,18 +32,6 @@ const EMPTY_QUESTIONNAIRE: QuestionnaireAnswers = {
   use_case_other: null,
 };
 
-function isOnboardingStep(value: unknown): value is OnboardingStep {
-  return (
-    value === "welcome" ||
-    (ONBOARDING_STEP_ORDER as readonly string[]).includes(value as string)
-  );
-}
-
-function pickInitialStep(currentStep: string | null): OnboardingStep {
-  if (isOnboardingStep(currentStep)) return currentStep;
-  return "welcome";
-}
-
 function mergeQuestionnaire(
   raw: Record<string, unknown>,
 ): QuestionnaireAnswers {
@@ -53,9 +40,9 @@ function mergeQuestionnaire(
 
 /**
  * Shell's onComplete contract:
- *   onComplete(workspace?, firstIssueId?) — if workspace + firstIssueId
- *   are both supplied, navigate to the issue detail; if only workspace,
- *   its issues list; if neither, fall back to root.
+ *   onComplete(workspace?, firstIssueId?) — if both are supplied,
+ *   navigate to the issue detail; if only workspace, the issues list;
+ *   if neither, fall back to root.
  */
 export function OnboardingFlow({
   onComplete,
@@ -69,142 +56,69 @@ export function OnboardingFlow({
     throw new Error("OnboardingFlow requires an authenticated user");
   }
 
+  // Questionnaire answers are server-persisted and pre-fill Step 1
+  // on re-entry. That's the only piece of server state the UI reads
+  // directly — `current_step` is PATCHed for analytics but never
+  // drives navigation; every entry starts at Welcome.
   const storedQuestionnaire = mergeQuestionnaire(user.onboarding_questionnaire);
 
-  const [step, setStep] = useState<OnboardingStep>(() =>
-    pickInitialStep(user.onboarding_current_step),
-  );
-
-  // `furthestStep` is the server's `onboarding_current_step` view —
-  // "the furthest point the user has ever reached". `step` is the
-  // locally-rendered step, which can differ when the user clicks
-  // Back to edit an earlier answer. Submitting an edit advances
-  // `furthestStep` only if it exceeds the previous max, and sends
-  // the user back to `furthestStep` on completion so the edit
-  // doesn't cost them their progress.
-  const furthestStepRef = useRef<OnboardingStep>(step);
-
+  const [step, setStep] = useState<OnboardingStep>("welcome");
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [runtime, setRuntime] = useState<AgentRuntime | null>(null);
   const [agent, setAgent] = useState<Agent | null>(null);
 
-  // Resume fallback: if the user comes back mid-flow (Step 3+) after a
-  // tab close, local React state is empty but the server has their
-  // workspace. Use the first workspace from the query cache as a
-  // sensible default so steps downstream of workspace creation can
-  // render. Users only ever have one workspace during onboarding
-  // (StepWorkspace always creates one), so "first" is unambiguous.
+  // Only needed at Step 2 to detect a pre-existing workspace from an
+  // earlier abandoned onboarding — so StepWorkspace shows "Continue
+  // with {name}" instead of CreateWorkspaceForm (which would hit a
+  // slug conflict on submit).
   const { data: workspaces = [] } = useQuery({
     ...workspaceListOptions(),
-    enabled: step !== "welcome" && step !== "questionnaire",
-    // Resume scenario: user lands on Step 2+ from server state, but
-    // local workspace state is empty. Pull from cache / network to
-    // seed `runtimeWorkspace` so downstream step render conditions
-    // (which require runtimeWorkspace) don't gate.
+    enabled: step === "workspace",
   });
-  const runtimeWorkspace = workspace ?? workspaces[0] ?? null;
-
-  // Same resume-fallback logic for the runtime: if the user lands on
-  // Step 4 from stored progress, `runtime` React state is empty. Read
-  // "my" runtimes from cache and prefer the first online one.
-  const { data: runtimes = [] } = useQuery({
-    ...runtimeListOptions(runtimeWorkspace?.id ?? "", "me"),
-    enabled: !!runtimeWorkspace && step === "agent",
-  });
-  const stepRuntime =
-    runtime ??
-    runtimes.find((r) => r.status === "online") ??
-    runtimes[0] ??
-    null;
-
-  // Advance `furthestStepRef` monotonically. Returns the step to
-  // actually move the user to after a submit: either the next step
-  // in the canonical order (first pass) or the previous furthest
-  // (edit mode).
-  const resolveNextStep = useCallback(
-    (localStep: OnboardingStep, intendedNext: OnboardingStep): OnboardingStep => {
-      const furthestIdx = ONBOARDING_STEP_ORDER.indexOf(furthestStepRef.current);
-      const localIdx = ONBOARDING_STEP_ORDER.indexOf(localStep);
-      // If the user is editing an earlier step, bounce them back to the
-      // furthest reached step rather than re-walking downstream steps.
-      if (localIdx >= 0 && localIdx < furthestIdx) {
-        return furthestStepRef.current;
-      }
-      const intendedIdx = ONBOARDING_STEP_ORDER.indexOf(intendedNext);
-      if (intendedIdx > furthestIdx) {
-        furthestStepRef.current = intendedNext;
-      }
-      return intendedNext;
-    },
-    [],
-  );
+  const existingWorkspace = workspace ?? workspaces[0] ?? null;
 
   const handleWelcomeNext = useCallback(async () => {
     await advanceOnboarding({ current_step: "questionnaire" });
-    furthestStepRef.current = "questionnaire";
     setStep("questionnaire");
   }, []);
 
   const handleQuestionnaireSubmit = useCallback(
     async (answers: QuestionnaireAnswers) => {
-      const nextStep = resolveNextStep("questionnaire", "workspace");
-      // In edit mode we don't regress current_step on the server — only
-      // save the questionnaire changes. In first-pass we advance both.
-      const patch: Parameters<typeof advanceOnboarding>[0] =
-        nextStep === "workspace"
-          ? { current_step: "workspace", questionnaire: answers }
-          : { questionnaire: answers };
-      await advanceOnboarding(patch);
-      setStep(nextStep);
+      await advanceOnboarding({
+        current_step: "workspace",
+        questionnaire: answers,
+      });
+      setStep("workspace");
     },
-    [resolveNextStep],
+    [],
   );
 
-  const handleWorkspaceCreated = useCallback(
-    async (ws: Workspace) => {
-      setWorkspace(ws);
-      setCurrentWorkspace(ws.slug, ws.id);
-      const nextStep = resolveNextStep("workspace", "runtime");
-      if (nextStep === "runtime") {
-        await advanceOnboarding({ current_step: "runtime" });
-      }
-      setStep(nextStep);
-    },
-    [resolveNextStep],
-  );
+  const handleWorkspaceCreated = useCallback(async (ws: Workspace) => {
+    setWorkspace(ws);
+    setCurrentWorkspace(ws.slug, ws.id);
+    await advanceOnboarding({ current_step: "runtime" });
+    setStep("runtime");
+  }, []);
 
-  const handleRuntimeNext = useCallback(
-    async (rt: AgentRuntime | null) => {
-      setRuntime(rt);
-      const intended: OnboardingStep = rt ? "agent" : "first_issue";
-      const nextStep = resolveNextStep("runtime", intended);
-      if (nextStep === intended) {
-        await advanceOnboarding({ current_step: intended });
-      }
-      setStep(nextStep);
-    },
-    [resolveNextStep],
-  );
+  const handleRuntimeNext = useCallback(async (rt: AgentRuntime | null) => {
+    setRuntime(rt);
+    // No runtime → no agent possible; skip Step 4 and let Step 5
+    // bootstrap run the self-serve path with agent=null.
+    const next: OnboardingStep = rt ? "agent" : "first_issue";
+    await advanceOnboarding({ current_step: next });
+    setStep(next);
+  }, []);
 
-  const handleAgentCreated = useCallback(
-    async (created: Agent) => {
-      setAgent(created);
-      const nextStep = resolveNextStep("agent", "first_issue");
-      if (nextStep === "first_issue") {
-        await advanceOnboarding({ current_step: "first_issue" });
-      }
-      setStep(nextStep);
-    },
-    [resolveNextStep],
-  );
+  const handleAgentCreated = useCallback(async (created: Agent) => {
+    setAgent(created);
+    await advanceOnboarding({ current_step: "first_issue" });
+    setStep("first_issue");
+  }, []);
 
   const handleAgentSkip = useCallback(async () => {
-    const nextStep = resolveNextStep("agent", "first_issue");
-    if (nextStep === "first_issue") {
-      await advanceOnboarding({ current_step: "first_issue" });
-    }
-    setStep(nextStep);
-  }, [resolveNextStep]);
+    await advanceOnboarding({ current_step: "first_issue" });
+    setStep("first_issue");
+  }, []);
 
   const handleBack = useCallback((from: OnboardingStep) => {
     const idx = ONBOARDING_STEP_ORDER.indexOf(from);
@@ -258,39 +172,39 @@ export function OnboardingFlow({
       )}
       {step === "workspace" && (
         <StepWorkspace
-          existing={runtimeWorkspace}
+          existing={existingWorkspace}
           onCreated={handleWorkspaceCreated}
           onBack={() => handleBack("workspace")}
         />
       )}
-      {step === "runtime" && runtimeWorkspace && (
+      {step === "runtime" && workspace && (
         runtimeInstructions ? (
           <StepPlatformFork
-            wsId={runtimeWorkspace.id}
+            wsId={workspace.id}
             onNext={handleRuntimeNext}
             onBack={() => handleBack("runtime")}
             cliInstructions={runtimeInstructions}
           />
         ) : (
           <StepRuntimeConnect
-            wsId={runtimeWorkspace.id}
+            wsId={workspace.id}
             onNext={handleRuntimeNext}
             onBack={() => handleBack("runtime")}
           />
         )
       )}
-      {step === "agent" && stepRuntime && (
+      {step === "agent" && runtime && (
         <StepAgent
-          runtime={stepRuntime}
+          runtime={runtime}
           onCreated={handleAgentCreated}
           onSkip={handleAgentSkip}
           onBack={() => handleBack("agent")}
         />
       )}
-      {step === "first_issue" && runtimeWorkspace && (
+      {step === "first_issue" && workspace && (
         <StepFirstIssue
           agent={agent}
-          workspace={runtimeWorkspace}
+          workspace={workspace}
           questionnaire={storedQuestionnaire}
           userName={user.name || user.email}
           userId={user.id}
