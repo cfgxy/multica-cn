@@ -25,6 +25,37 @@ const desktopAPI = {
   /** Toggle immersive mode — hide macOS traffic lights for full-screen modals */
   setImmersiveMode: (immersive: boolean) =>
     ipcRenderer.invoke("window:setImmersive", immersive),
+  /**
+   * Show a native OS notification for a new inbox item. Fired from the
+   * renderer only when the app is unfocused — in-focus feedback is the
+   * inbox sidebar's unread styling. `issueKey` is round-tripped on click so
+   * the main process can route the user back to the exact inbox row.
+   */
+  showNotification: (payload: {
+    issueKey: string;
+    title: string;
+    body: string;
+  }) => ipcRenderer.send("notification:show", payload),
+  /**
+   * Update the OS dock / taskbar unread badge. Pass 0 to clear. Values
+   * above 99 render as "99+" (capping is handled in the main process).
+   */
+  setUnreadBadge: (count: number) =>
+    ipcRenderer.send("badge:set", Math.max(0, Math.floor(count))),
+  /**
+   * Subscribe to "open this inbox row" requests sent by the main process
+   * when the user clicks an OS notification banner. Returns an unsubscribe
+   * function. The payload is the same `issueKey` that was passed to
+   * `showNotification`.
+   */
+  onInboxOpen: (callback: (issueKey: string) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, issueKey: string) =>
+      callback(issueKey);
+    ipcRenderer.on("inbox:open", handler);
+    return () => {
+      ipcRenderer.removeListener("inbox:open", handler);
+    };
+  },
 };
 
 interface DaemonStatus {

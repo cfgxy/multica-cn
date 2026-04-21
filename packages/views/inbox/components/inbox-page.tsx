@@ -8,6 +8,7 @@ import { useWorkspacePaths } from "@multica/core/paths";
 import {
   inboxListOptions,
   deduplicateInboxItems,
+  useInboxUnreadCount,
 } from "@multica/core/inbox/queries";
 import {
   useMarkInboxRead,
@@ -89,7 +90,7 @@ export function InboxPage() {
   });
 
   const isMobile = useIsMobile();
-  const unreadCount = items.filter((i) => !i.read).length;
+  const unreadCount = useInboxUnreadCount(wsId);
 
   const markReadMutation = useMarkInboxRead();
   const archiveMutation = useArchiveInbox();

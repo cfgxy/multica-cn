@@ -194,6 +194,31 @@ export function useRealtimeSync(
       if (!item) return;
       const wsId = getCurrentWsId();
       if (wsId) onInboxNew(qc, wsId, item);
+      // Fire a native OS notification only when the app isn't focused. When
+      // the user is already looking at Multica, the inbox sidebar's unread
+      // styling is enough — no need to interrupt with a banner. `desktopAPI`
+      // is injected by the preload script; its absence (web app) skips silently.
+      if (typeof document !== "undefined" && document.hasFocus()) return;
+      const desktopAPI = (
+        window as unknown as {
+          desktopAPI?: {
+            showNotification?: (payload: {
+              issueKey: string;
+              title: string;
+              body: string;
+            }) => void;
+          };
+        }
+      ).desktopAPI;
+      // `issueKey` matches the inbox page's selector: it's the issue id when
+      // the item is attached to an issue, otherwise the inbox item id. The
+      // click handler in the main process round-trips this back to the
+      // renderer so `/inbox?issue=<key>` selects the correct row.
+      desktopAPI?.showNotification?.({
+        issueKey: item.issue_id ?? item.id,
+        title: item.title,
+        body: item.body ?? "",
+      });
     });
 
     // --- Timeline event handlers (global fallback) ---
