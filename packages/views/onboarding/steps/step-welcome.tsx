@@ -20,30 +20,37 @@ import { Button } from "@multica/ui/components/ui/button";
  * illustration / hero loop; the structure leaves vertical room.
  */
 export function StepWelcome({ onNext }: { onNext: () => void }) {
+  // min-h + justify-center gives Welcome its own vertical centering.
+  // The outer shell no longer applies `my-auto` (removed so all other
+  // steps align to the top around a stable StepHeader anchor), so
+  // Welcome compensates internally — short copy needs the space or
+  // it clumps awkwardly at the top of the viewport.
   return (
-    <div className="flex w-full max-w-md flex-col items-center gap-8 text-center">
-      <div className="flex flex-col gap-3">
-        <h1 className="text-4xl font-semibold tracking-tight">
-          Welcome to Multica
-        </h1>
-        <p className="text-lg text-muted-foreground">
-          AI agents as first-class teammates.
-        </p>
-      </div>
+    <div className="flex min-h-[60vh] w-full flex-col items-center justify-center">
+      <div className="flex w-full max-w-md flex-col items-center gap-8 text-center">
+        <div className="flex flex-col gap-3">
+          <h1 className="text-4xl font-semibold tracking-tight">
+            Welcome to Multica
+          </h1>
+          <p className="text-lg text-muted-foreground">
+            AI agents as first-class teammates.
+          </p>
+        </div>
 
-      <p className="text-sm leading-relaxed text-muted-foreground">
-        Assign them tasks, chat with them, and let your workspace,
-        agents, and conversations all build on each other — so every
-        interaction makes them smarter.
-      </p>
-
-      <div className="flex flex-col items-center gap-3">
-        <Button size="lg" onClick={onNext}>
-          Get started
-        </Button>
-        <p className="text-xs text-muted-foreground">
-          Takes about 3 minutes.
+        <p className="text-sm leading-relaxed text-muted-foreground">
+          Assign them tasks, chat with them, and let your workspace,
+          agents, and conversations all build on each other — so every
+          interaction makes them smarter.
         </p>
+
+        <div className="flex flex-col items-center gap-3">
+          <Button size="lg" onClick={onNext}>
+            Get started
+          </Button>
+          <p className="text-xs text-muted-foreground">
+            Takes about 3 minutes.
+          </p>
+        </div>
       </div>
     </div>
   );

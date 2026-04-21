@@ -5,10 +5,12 @@ import { useQuery } from "@tanstack/react-query";
 import { setCurrentWorkspace } from "@multica/core/platform";
 import {
   useOnboardingStore,
+  type OnboardingStep as StoreStep,
   type QuestionnaireAnswers,
 } from "@multica/core/onboarding";
 import { workspaceListOptions } from "@multica/core/workspace/queries";
 import type { Agent, AgentRuntime, Workspace } from "@multica/core/types";
+import { StepHeader } from "./components/step-header";
 import { StepWelcome } from "./steps/step-welcome";
 import { StepQuestionnaire } from "./steps/step-questionnaire";
 import { StepWorkspace } from "./steps/step-workspace";
@@ -183,9 +185,20 @@ export function OnboardingFlow({
     onComplete(workspace ?? undefined);
   }, [workspace, onComplete]);
 
+  // Welcome renders standalone (no progress header, its own vertical
+  // centering). All other steps render under a shared wrapper whose
+  // job is to provide a stable visual anchor — StepHeader at the top,
+  // step content below — so transitioning between steps changes only
+  // the content, not the header position or vertical baseline.
+  if (step === "welcome") {
+    return <StepWelcome onNext={handleWelcomeNext} />;
+  }
+
+  const storeStep: StoreStep = mapLocalToStoreStep(step);
+
   return (
-    <>
-      {step === "welcome" && <StepWelcome onNext={handleWelcomeNext} />}
+    <div className="flex w-full flex-col gap-8">
+      <StepHeader currentStep={storeStep} />
       {step === "questionnaire" && (
         <StepQuestionnaire
           initial={storedQuestionnaire}
@@ -217,6 +230,23 @@ export function OnboardingFlow({
       {step === "complete" && (
         <StepComplete agent={agent} onFinish={handleFinish} />
       )}
-    </>
+    </div>
   );
+}
+
+/**
+ * Bridge the flow's local UI step union to the canonical store enum.
+ * `complete` is the current UI placeholder for `first_issue` (Step 5
+ * not yet implemented); once it ships, the two unions converge and
+ * this mapping collapses into an identity.
+ */
+function mapLocalToStoreStep(
+  step: Exclude<OnboardingStep, "welcome">,
+): StoreStep {
+  switch (step) {
+    case "complete":
+      return "first_issue";
+    default:
+      return step;
+  }
 }

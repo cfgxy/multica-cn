@@ -8,3 +8,4 @@ export type {
   PlatformPreference,
 } from "./types";
 export { useOnboardingStore } from "./store";
+export { ONBOARDING_STEP_ORDER } from "./step-order";

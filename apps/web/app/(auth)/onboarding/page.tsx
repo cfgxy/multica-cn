@@ -37,20 +37,17 @@ export default function OnboardingPage() {
 
   if (isLoading || !user) return null;
 
-  // Layout: the page owns its own scroll because the root layout
-  // sets `body { overflow: hidden }` for the app-shell convention
-  // (sidebar / topbar fixed, content scrolls inside). The outermost
-  // `h-full overflow-y-auto` is our scroll container; the inner
-  // `min-h-full flex flex-col items-center` lets the content claim
-  // full viewport height when short; `my-auto` on the content block
-  // then centers it vertically. When content is taller than the
-  // viewport the flex auto-margin harmlessly resolves to 0 (per the
-  // flex spec — auto margins absorb positive free space only, never
-  // negative), so Continue/Skip always remain reachable via scroll.
+  // Layout: page owns its own scroll (root layout sets `body {
+  // overflow: hidden }` for the app-shell convention). Content is
+  // top-aligned — the previous `my-auto` vertical centering made the
+  // baseline jump between steps of different heights. Now every
+  // non-welcome step sits below a stable StepHeader anchor; Welcome
+  // is the only short step and it provides its own internal
+  // centering (see step-welcome.tsx).
   return (
     <div className="h-full overflow-y-auto bg-background">
       <div className="flex min-h-full flex-col items-center px-6 py-12">
-        <div className="my-auto w-full max-w-xl">
+        <div className="w-full max-w-xl">
           <OnboardingFlow
             onComplete={(ws) => {
               if (ws) router.push(paths.workspace(ws.slug).issues());
