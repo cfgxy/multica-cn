@@ -31,8 +31,13 @@ export function TasksTab({ agent }: { agent: Agent }) {
   // issue may or may not be in the paginated issue-list cache, so going
   // through `issueDetailOptions` is the reliable lookup path (and it shares
   // the same cache as the issue detail page).
+  //
+  // Autopilot `run_only` tasks have no linked issue; the server serializes
+  // that as issue_id = "". Filter those out before issuing detail queries
+  // so we don't hit `/api/issues/` with an empty id (which was crashing
+  // the whole tab).
   const issueIds = useMemo(
-    () => Array.from(new Set(tasks.map((t) => t.issue_id))),
+    () => Array.from(new Set(tasks.map((t) => t.issue_id).filter((id) => id !== ""))),
     [tasks],
   );
   const issueQueries = useQueries({
@@ -99,7 +104,10 @@ export function TasksTab({ agent }: { agent: Agent }) {
           {sortedTasks.map((task) => {
             const config = taskStatusConfig[task.status] ?? taskStatusConfig.queued!;
             const Icon = config.icon;
-            const issue = issueMap.get(task.issue_id);
+            // Autopilot run_only tasks carry issue_id = "" — skip the lookup
+            // and render them as non-link rows labeled "Autopilot run".
+            const hasIssue = task.issue_id !== "";
+            const issue = hasIssue ? issueMap.get(task.issue_id) : undefined;
             const isActive = task.status === "running" || task.status === "dispatched";
             const isRunning = task.status === "running";
             const rowClassName = `flex items-center gap-3 rounded-lg border px-4 py-3 transition-shadow hover:shadow-sm ${
@@ -125,7 +133,7 @@ export function TasksTab({ agent }: { agent: Agent }) {
                       </span>
                     )}
                     <span className={`text-sm truncate ${isActive ? "font-medium" : ""}`}>
-                      {issue?.title ?? `Issue ${task.issue_id.slice(0, 8)}...`}
+                      {issue?.title ?? (hasIssue ? `Issue ${task.issue_id.slice(0, 8)}...` : "Autopilot run")}
                     </span>
                   </div>
                   <div className="mt-0.5 text-xs text-muted-foreground">
@@ -145,6 +153,14 @@ export function TasksTab({ agent }: { agent: Agent }) {
                 </span>
               </>
             );
+
+            if (!hasIssue) {
+              return (
+                <div key={task.id} className={rowClassName}>
+                  {content}
+                </div>
+              );
+            }
 
             return (
               <AppLink
