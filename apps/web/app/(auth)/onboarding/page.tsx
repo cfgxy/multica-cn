@@ -49,9 +49,14 @@ export default function OnboardingPage() {
       <div className="flex min-h-full flex-col items-center px-6 py-12">
         <div className="w-full max-w-xl">
           <OnboardingFlow
-            onComplete={(ws) => {
-              if (ws) router.push(paths.workspace(ws.slug).issues());
-              else router.push(paths.root());
+            onComplete={(ws, firstIssueId) => {
+              if (ws && firstIssueId) {
+                router.push(paths.workspace(ws.slug).issueDetail(firstIssueId));
+              } else if (ws) {
+                router.push(paths.workspace(ws.slug).issues());
+              } else {
+                router.push(paths.root());
+              }
             }}
             runtimeInstructions={
               <CliInstallInstructions

@@ -89,9 +89,13 @@ function WindowOverlayInner() {
                 overflow-auto still handles long-step scroll. */}
             <div className="w-full max-w-xl">
               <OnboardingFlow
-                onComplete={(ws) => {
+                onComplete={(ws, firstIssueId) => {
                   close();
-                  if (ws) push(paths.workspace(ws.slug).issues());
+                  if (ws && firstIssueId) {
+                    push(paths.workspace(ws.slug).issueDetail(firstIssueId));
+                  } else if (ws) {
+                    push(paths.workspace(ws.slug).issues());
+                  }
                 }}
               />
             </div>
