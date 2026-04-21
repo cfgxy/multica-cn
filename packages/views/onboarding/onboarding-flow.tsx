@@ -183,9 +183,10 @@ export function OnboardingFlow({
     setStep("complete");
   }, []);
 
-  const handleFinish = useCallback(() => {
+  const handleFinish = useCallback(async () => {
+    await complete({});
     onComplete(workspace ?? undefined);
-  }, [workspace, onComplete]);
+  }, [complete, workspace, onComplete]);
 
   const handleWaitlist = useCallback(
     async (email: string, description: string | null) => {

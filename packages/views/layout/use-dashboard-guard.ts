@@ -46,8 +46,11 @@ export function useDashboardGuard() {
       replace(paths.login());
       return;
     }
-    // Wait for workspace list to settle before deciding "no workspace".
     if (!workspaceListFetched) return;
+    if (!hasOnboarded) {
+      replace(paths.onboarding());
+      return;
+    }
     if (!workspace) {
       replace(resolvePostAuthDestination(workspaces, hasOnboarded));
     }

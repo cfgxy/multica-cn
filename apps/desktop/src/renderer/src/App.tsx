@@ -4,7 +4,7 @@ import { CoreProvider } from "@multica/core/platform";
 import { useAuthStore } from "@multica/core/auth";
 import { workspaceKeys, workspaceListOptions } from "@multica/core/workspace/queries";
 import { api } from "@multica/core/api";
-import { paths, resolvePostAuthDestination, useHasOnboarded } from "@multica/core/paths";
+import { useHasOnboarded } from "@multica/core/paths";
 import { ThemeProvider } from "@multica/ui/components/common/theme-provider";
 import { MulticaIcon } from "@multica/ui/components/common/multica-icon";
 import { Toaster } from "sonner";
@@ -98,22 +98,20 @@ function AppContent() {
   const wsCount = workspaces.length;
   const hasOnboarded = useHasOnboarded();
 
-  // Zero-workspace users land on either the onboarding flow or the
-  // standalone create-workspace page, depending on whether they've ever
-  // onboarded before. `resolvePostAuthDestination` owns that decision —
-  // desktop just translates the resulting path into the matching overlay
-  // type. Today `useHasOnboarded()` is a dev stub returning false, so
-  // every zero-ws user sees onboarding; when the backend flag ships,
-  // returning-user deletes will flip to `new-workspace` automatically.
+  // Onboarding and zero-workspace both resolve to an overlay, but
+  // onboarding wins: a user who hasn't completed it gets the onboarding
+  // overlay regardless of how many workspaces already exist.
   useEffect(() => {
     if (!user || !workspaceListFetched) return;
-    if (wsCount > 0) return;
     const { overlay, open } = useWindowOverlayStore.getState();
     if (overlay) return;
-    const target = resolvePostAuthDestination(workspaces, hasOnboarded);
-    open({
-      type: target === paths.onboarding() ? "onboarding" : "new-workspace",
-    });
+    if (!hasOnboarded) {
+      open({ type: "onboarding" });
+      return;
+    }
+    if (wsCount === 0) {
+      open({ type: "new-workspace" });
+    }
   }, [user, workspaceListFetched, wsCount, workspaces, hasOnboarded]);
 
   // Validate persisted tab state against the current user's workspace list,
