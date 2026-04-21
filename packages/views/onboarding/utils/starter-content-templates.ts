@@ -2,7 +2,6 @@ import type { QuestionnaireAnswers } from "@multica/core/onboarding";
 import type {
   ImportStarterContentPayload,
   ImportStarterIssuePayload,
-  ImportStarterWelcomeIssuePayload,
 } from "@multica/core/api";
 
 // =============================================================================
@@ -577,44 +576,22 @@ export function buildSelfServeSubIssues(
 }
 
 /**
- * Assembles the full import payload ready to POST. When `agentId` is null,
- * the self-serve branch is used (no welcome issue, self-serve sub-issues);
- * otherwise the agent-guided branch creates a welcome issue addressed to
- * the agent plus agent-guided sub-issues.
+ * Builds the full import payload. The client does NOT decide between the
+ * agent-guided and self-serve branches — it always sends both sub-issue
+ * arrays and a welcome-issue template (no agent_id). The SERVER picks
+ * inside the import transaction based on whether any agent exists in
+ * the workspace at that moment. See handler/onboarding.go.
  */
 export function buildImportPayload({
   workspaceId,
   userName,
   questionnaire,
-  agentId,
 }: {
   workspaceId: string;
   userName: string;
   questionnaire: QuestionnaireAnswers;
-  /** Null → self-serve branch. UUID → agent-guided, with welcome issue. */
-  agentId: string | null;
 }): ImportStarterContentPayload {
-  if (agentId) {
-    const welcome = buildWelcomeIssueText(questionnaire, userName);
-    const welcomeIssue: ImportStarterWelcomeIssuePayload = {
-      title: welcome.title,
-      description: welcome.description,
-      agent_id: agentId,
-      priority: "high",
-    };
-    return {
-      workspace_id: workspaceId,
-      project: {
-        title: "Getting Started",
-        description:
-          "A few things to try in Multica. Work through them at your own pace.",
-        icon: "👋",
-      },
-      welcome_issue: welcomeIssue,
-      sub_issues: buildAgentGuidedSubIssues(questionnaire),
-    };
-  }
-
+  const welcome = buildWelcomeIssueText(questionnaire, userName);
   return {
     workspace_id: workspaceId,
     project: {
@@ -623,7 +600,12 @@ export function buildImportPayload({
         "A few things to try in Multica. Work through them at your own pace.",
       icon: "👋",
     },
-    welcome_issue: null,
-    sub_issues: buildSelfServeSubIssues(questionnaire),
+    welcome_issue_template: {
+      title: welcome.title,
+      description: welcome.description,
+      priority: "high",
+    },
+    agent_guided_sub_issues: buildAgentGuidedSubIssues(questionnaire),
+    self_serve_sub_issues: buildSelfServeSubIssues(questionnaire),
   };
 }

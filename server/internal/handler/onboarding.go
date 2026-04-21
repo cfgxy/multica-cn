@@ -173,24 +173,25 @@ func (h *Handler) JoinCloudWaitlist(w http.ResponseWriter, r *http.Request) {
 // batch insert transactionally, (3) record the transition.
 
 type importIssueSpec struct {
-	Title       string  `json:"title"`
-	Description string  `json:"description"`
-	Status      string  `json:"status"`
-	Priority    string  `json:"priority"`
+	Title       string `json:"title"`
+	Description string `json:"description"`
+	Status      string `json:"status"`
+	Priority    string `json:"priority"`
 	// AssignToSelf: true for sub-issues (assigned to the current
-	// user's membership in this workspace). The client doesn't know
-	// the member_id; the server looks it up.
+	// user as a member). Server uses `user_id` per the app-wide
+	// convention in AssigneePicker / resolveActor.
 	AssignToSelf bool `json:"assign_to_self"`
 }
 
-type importWelcomeIssueSpec struct {
+// welcomeIssueTemplate is a PRE-rendered welcome issue — title +
+// description + priority. There is no `agent_id` field on purpose:
+// the server picks the target agent itself from ListAgents inside
+// the transaction, so a stale or compromised client can't assign
+// the welcome issue to an arbitrary agent.
+type welcomeIssueTemplate struct {
 	Title       string `json:"title"`
 	Description string `json:"description"`
-	// AgentID is the agent the welcome issue is addressed to. Must be
-	// an agent in the same workspace. Status defaults to "todo" so the
-	// agent starts replying immediately (Backlog pauses agents).
-	AgentID string `json:"agent_id"`
-	// Priority optional; defaults to "high".
+	// Priority optional; defaults to "high" when empty.
 	Priority string `json:"priority"`
 }
 
@@ -203,11 +204,18 @@ type importStarterContentRequest struct {
 		Icon        string `json:"icon"`
 	} `json:"project"`
 
-	// WelcomeIssue is present only on the agent-guided path; self-serve
-	// users (no agent in workspace) send welcome_issue=null.
-	WelcomeIssue *importWelcomeIssueSpec `json:"welcome_issue"`
+	// Welcome issue template — rendered regardless of branch. The
+	// server creates it only when at least one agent exists in the
+	// workspace; otherwise it's ignored.
+	WelcomeIssueTemplate welcomeIssueTemplate `json:"welcome_issue_template"`
 
-	SubIssues []importIssueSpec `json:"sub_issues"`
+	// Both branches of sub-issues. The server picks which array to
+	// seed based on whether the workspace has any agents at the
+	// moment of the call — the client no longer decides. Sending
+	// both is ~15 KB extra payload, which stays well under the
+	// 64 KB MaxBytesReader cap above.
+	AgentGuidedSubIssues []importIssueSpec `json:"agent_guided_sub_issues"`
+	SelfServeSubIssues   []importIssueSpec `json:"self_serve_sub_issues"`
 }
 
 type importStarterContentResponse struct {
@@ -240,12 +248,6 @@ func (h *Handler) ImportStarterContent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "project.title is required")
 		return
 	}
-	if req.WelcomeIssue != nil {
-		if req.WelcomeIssue.Title == "" || req.WelcomeIssue.AgentID == "" {
-			writeError(w, http.StatusBadRequest, "welcome_issue.title and agent_id are required")
-			return
-		}
-	}
 
 	// Start the transaction early — the state claim lives inside it so
 	// concurrent imports from another tab can't both pass the check.
@@ -274,13 +276,12 @@ func (h *Handler) ImportStarterContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Membership check: user must belong to the target workspace. We
-	// only need this for the 403 signal — the value actually stored in
-	// `assignee_id` / `creator_id` for type="member" is `user_id`, not
-	// `member.id` (see AssigneePicker in packages/views and
-	// resolveActor in handler/issue.go). Storing `member.id` would
-	// cause `useActorName.getMemberName` to resolve to "Unknown"
-	// because it looks up members by `user_id`.
+	// Membership check: user must belong to the target workspace.
+	// `actorID` below is `parseUUID(userID)` — stored as `creator_id`
+	// and `assignee_id` for `type="member"` to match the app-wide
+	// convention (AssigneePicker + resolveActor). Storing `member.id`
+	// would cause `useActorName.getMemberName` to resolve to "Unknown"
+	// since members are looked up by `user_id`.
 	if _, err := qtx.GetMemberByUserAndWorkspace(r.Context(), db.GetMemberByUserAndWorkspaceParams{
 		UserID:      parseUUID(userID),
 		WorkspaceID: parseUUID(req.WorkspaceID),
@@ -290,18 +291,24 @@ func (h *Handler) ImportStarterContent(w http.ResponseWriter, r *http.Request) {
 	}
 	actorID := parseUUID(userID)
 
-	// Verify the welcome issue's target agent is in this workspace (if
-	// present). Without this, a caller could assign the welcome issue
-	// to any agent in the database.
-	if req.WelcomeIssue != nil {
-		agent, err := qtx.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
-			ID:          parseUUID(req.WelcomeIssue.AgentID),
-			WorkspaceID: parseUUID(req.WorkspaceID),
-		})
-		if err != nil || !agent.ID.Valid {
-			writeError(w, http.StatusBadRequest, "welcome_issue.agent_id is not a valid agent in this workspace")
-			return
-		}
+	// --- Branch decision (server-authoritative) ---
+	// Ask the DB — not the client — whether there's an agent in this
+	// workspace. `ListAgents` orders by created_at ASC, so "agents[0]"
+	// is deterministically the earliest-created agent. This replaces
+	// the old client-supplied `welcome_issue.agent_id` trust chain.
+	agents, err := qtx.ListAgents(r.Context(), parseUUID(req.WorkspaceID))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list agents")
+		return
+	}
+	hasAgent := len(agents) > 0
+	var welcomeAgentID pgtype.UUID
+	if hasAgent {
+		welcomeAgentID = agents[0].ID
+	}
+	subSpecs := req.SelfServeSubIssues
+	if hasAgent {
+		subSpecs = req.AgentGuidedSubIssues
 	}
 
 	// --- Create project ---
@@ -319,27 +326,27 @@ func (h *Handler) ImportStarterContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// --- Create welcome issue (agent path only) ---
+	// --- Create welcome issue (only when an agent exists) ---
 	var welcomeIssueID *string
 	var welcomeIssueForEvent *db.Issue
-	if req.WelcomeIssue != nil {
+	if hasAgent && req.WelcomeIssueTemplate.Title != "" {
 		welcomeNumber, err := qtx.IncrementIssueCounter(r.Context(), parseUUID(req.WorkspaceID))
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to allocate issue number")
 			return
 		}
-		priority := req.WelcomeIssue.Priority
+		priority := req.WelcomeIssueTemplate.Priority
 		if priority == "" {
 			priority = "high"
 		}
 		welcome, err := qtx.CreateIssue(r.Context(), db.CreateIssueParams{
 			WorkspaceID:  parseUUID(req.WorkspaceID),
-			Title:        req.WelcomeIssue.Title,
-			Description:  strOrNullText(req.WelcomeIssue.Description),
+			Title:        req.WelcomeIssueTemplate.Title,
+			Description:  strOrNullText(req.WelcomeIssueTemplate.Description),
 			Status:       "todo",
 			Priority:     priority,
 			AssigneeType: pgtype.Text{String: "agent", Valid: true},
-			AssigneeID:   parseUUID(req.WelcomeIssue.AgentID),
+			AssigneeID:   welcomeAgentID,
 			CreatorType:  "member",
 			CreatorID:    actorID,
 			Number:       welcomeNumber,
@@ -355,9 +362,9 @@ func (h *Handler) ImportStarterContent(w http.ResponseWriter, r *http.Request) {
 		welcomeIssueForEvent = &copy
 	}
 
-	// --- Create sub-issues (assigned to the current user's member, if requested) ---
-	subIssuesCreated := make([]db.Issue, 0, len(req.SubIssues))
-	for _, sub := range req.SubIssues {
+	// --- Create sub-issues (branch picked above) ---
+	subIssuesCreated := make([]db.Issue, 0, len(subSpecs))
+	for _, sub := range subSpecs {
 		if sub.Title == "" {
 			continue
 		}

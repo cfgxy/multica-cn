@@ -4,7 +4,7 @@ export type {
   ImportStarterContentPayload,
   ImportStarterContentResponse,
   ImportStarterIssuePayload,
-  ImportStarterWelcomeIssuePayload,
+  ImportStarterWelcomeIssueTemplate,
 } from "./client";
 export { WSClient } from "./ws-client";
 

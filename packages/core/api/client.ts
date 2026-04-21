@@ -80,36 +80,47 @@ export interface LoginResponse {
 
 // --- Starter content (post-onboarding import) -----------------------------
 // Shape mirrors the Go request/response in handler/onboarding.go.
+//
+// The client sends both branches of sub-issues and an unbound welcome
+// issue template (title + description, no `agent_id`). The SERVER picks
+// the branch by inspecting the workspace's agent list inside the
+// import transaction. This removes the client as a trusted decider —
+// even if the client has a stale agent cache or lies, the server uses
+// the DB as source of truth.
 
 export interface ImportStarterIssuePayload {
   title: string;
   description: string;
   status: string;
   priority: string;
-  /** Server looks up the caller's member_id and uses it as assignee when true. */
+  /** Server uses `user_id` (per app-wide AssigneePicker convention)
+   *  as assignee when true. No member_id is threaded through. */
   assign_to_self: boolean;
 }
 
-export interface ImportStarterWelcomeIssuePayload {
+export interface ImportStarterWelcomeIssueTemplate {
   title: string;
   description: string;
-  /** Must be an agent in the target workspace. Server validates. */
-  agent_id: string;
-  /** Defaults to "high" on server. */
-  priority?: string;
+  /** Defaults to "high" on server when empty. */
+  priority: string;
 }
 
 export interface ImportStarterContentPayload {
   workspace_id: string;
   project: { title: string; description: string; icon: string };
-  /** Omit or pass null for the self-serve (no-agent) path. */
-  welcome_issue: ImportStarterWelcomeIssuePayload | null;
-  sub_issues: ImportStarterIssuePayload[];
+  /** Always sent. Server creates it only when an agent exists in the
+   *  workspace; ignored otherwise. Agent id is picked by the server. */
+  welcome_issue_template: ImportStarterWelcomeIssueTemplate;
+  /** Used when the workspace has at least one agent. */
+  agent_guided_sub_issues: ImportStarterIssuePayload[];
+  /** Used when the workspace has zero agents. */
+  self_serve_sub_issues: ImportStarterIssuePayload[];
 }
 
 export interface ImportStarterContentResponse {
   user: User;
   project_id: string;
+  /** Non-null when server took the agent-guided branch. */
   welcome_issue_id: string | null;
 }
 
