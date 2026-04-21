@@ -88,33 +88,33 @@ export function OnboardingFlow({
 
   const handleRuntimeNext = useCallback((rt: AgentRuntime | null) => {
     setRuntime(rt);
-    // No runtime → can't build CreateAgentRequest; skip to finish.
+    // No runtime → no agent possible. Converge into first_issue step
+    // with agent=null; bootstrap runs the self-serve path.
     if (!rt) {
-      void complete({});
-      onComplete(workspace ?? undefined);
+      setStep("first_issue");
       return;
     }
     setStep("agent");
-  }, [complete, workspace, onComplete]);
+  }, []);
 
   const handleAgentCreated = useCallback((created: Agent) => {
     setAgent(created);
     setStep("first_issue");
   }, []);
 
-  const handleAgentSkip = useCallback(async () => {
-    // No agent → no aha-moment task to create; just finish onboarding.
-    await complete({});
-    onComplete(workspace ?? undefined);
-  }, [complete, workspace, onComplete]);
+  const handleAgentSkip = useCallback(() => {
+    // Same convergence point as no-runtime: first_issue step,
+    // bootstrap runs self-serve path.
+    setStep("first_issue");
+  }, []);
 
   const handleBootstrapDone = useCallback(
-    async (firstIssueId: string, projectId: string | null) => {
+    async (firstIssueId: string | null, projectId: string | null) => {
       await complete({
-        first_issue_id: firstIssueId,
-        onboarding_project_id: projectId ?? undefined,
+        ...(firstIssueId ? { first_issue_id: firstIssueId } : {}),
+        ...(projectId ? { onboarding_project_id: projectId } : {}),
       });
-      onComplete(workspace ?? undefined, firstIssueId);
+      onComplete(workspace ?? undefined, firstIssueId ?? undefined);
     },
     [complete, workspace, onComplete],
   );
@@ -125,15 +125,16 @@ export function OnboardingFlow({
   }, [complete, workspace, onComplete]);
 
   const handleWaitlist = useCallback(
-    async (email: string, description: string | null) => {
-      await advance({
+    (email: string, description: string | null) => {
+      // Persist waitlist fields now; let bootstrap + complete fire
+      // in the next step, same as every other no-agent path.
+      void advance({
         cloud_waitlist_email: email,
         cloud_waitlist_description: description,
       });
-      await complete({});
-      onComplete(workspace ?? undefined);
+      setStep("first_issue");
     },
-    [advance, complete, workspace, onComplete],
+    [advance],
   );
 
   if (step === "welcome") {
@@ -179,13 +180,12 @@ export function OnboardingFlow({
           onSkip={handleAgentSkip}
         />
       )}
-      {step === "first_issue" && agent && runtimeWorkspace && (
+      {step === "first_issue" && runtimeWorkspace && (
         <StepFirstIssue
           agent={agent}
           workspace={runtimeWorkspace}
           questionnaire={storedQuestionnaire}
           userName={user?.name ?? user?.email ?? ""}
-          agentName={agent.name}
           onDone={handleBootstrapDone}
           onSkip={handleBootstrapSkip}
         />

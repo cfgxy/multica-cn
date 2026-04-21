@@ -9,7 +9,7 @@ import { runOnboardingBootstrap } from "../utils/bootstrap";
 
 type Phase =
   | { status: "running" }
-  | { status: "done"; firstIssueId: string; projectId: string | null }
+  | { status: "done"; firstIssueId: string | null; projectId: string | null }
   | { status: "error"; message: string };
 
 export function StepFirstIssue({
@@ -17,16 +17,14 @@ export function StepFirstIssue({
   workspace,
   questionnaire,
   userName,
-  agentName,
   onDone,
   onSkip,
 }: {
-  agent: Agent;
+  agent: Agent | null;
   workspace: Workspace;
   questionnaire: QuestionnaireAnswers;
   userName: string;
-  agentName: string;
-  onDone: (firstIssueId: string, projectId: string | null) => void;
+  onDone: (firstIssueId: string | null, projectId: string | null) => void;
   onSkip: () => void;
 }) {
   const [phase, setPhase] = useState<Phase>({ status: "running" });
@@ -40,7 +38,7 @@ export function StepFirstIssue({
       .then((result) => {
         setPhase({
           status: "done",
-          firstIssueId: result.firstIssueId!,
+          firstIssueId: result.firstIssueId,
           projectId: result.projectId,
         });
       })
@@ -86,6 +84,10 @@ export function StepFirstIssue({
     );
   }
 
+  const subtitle = agent
+    ? `Creating ${agent.name}, your first task, and a starter project...`
+    : "Creating your starter project and a few things to try...";
+
   return (
     <div className="flex w-full flex-col items-center gap-6 text-center">
       <Loader2 className="h-10 w-10 animate-spin text-primary" />
@@ -93,9 +95,7 @@ export function StepFirstIssue({
         <h1 className="text-2xl font-semibold tracking-tight">
           Setting up your workspace
         </h1>
-        <p className="text-sm text-muted-foreground">
-          Creating {agentName}, your first task, and a starter project...
-        </p>
+        <p className="text-sm text-muted-foreground">{subtitle}</p>
       </div>
     </div>
   );

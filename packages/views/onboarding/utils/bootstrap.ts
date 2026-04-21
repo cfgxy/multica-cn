@@ -56,7 +56,10 @@ export function buildWelcomeIssue(
   }
 }
 
-export function buildSubIssues(q: QuestionnaireAnswers): SubIssueSpec[] {
+// Path A — user created an agent. Sub-issues are "watch your agent do X".
+export function buildAgentGuidedSubIssues(
+  q: QuestionnaireAnswers,
+): SubIssueSpec[] {
   const core: SubIssueSpec[] = [
     {
       title: "Chat with your agent without creating an issue",
@@ -92,7 +95,6 @@ export function buildSubIssues(q: QuestionnaireAnswers): SubIssueSpec[] {
 
   const result: SubIssueSpec[] = [...core];
 
-  // Q1 = team → "Invite teammates" prepend
   if (q.team_size === "team") {
     result.unshift({
       title: "Invite your teammates",
@@ -101,7 +103,6 @@ export function buildSubIssues(q: QuestionnaireAnswers): SubIssueSpec[] {
     });
   }
 
-  // Q2 = developer or Q3 = coding → "Connect a repo" after core #2
   if (q.role === "developer" || q.use_case === "coding") {
     const insertIndex = result.findIndex((s) =>
       s.title.startsWith("Assign a real task"),
@@ -121,30 +122,87 @@ export function buildSubIssues(q: QuestionnaireAnswers): SubIssueSpec[] {
   return result;
 }
 
+// Path B — user has no agent yet. Sub-issues are "try this yourself".
+export function buildSelfServeSubIssues(
+  q: QuestionnaireAnswers,
+): SubIssueSpec[] {
+  const core: SubIssueSpec[] = [
+    {
+      title: "Create your first issue",
+      description:
+        "Describe something you actually want to get done. Click New issue, give it a title, write the details, and save it. This is how work flows in Multica.",
+    },
+    {
+      title: "Configure a runtime",
+      description:
+        "A runtime is where your agents actually run. Download the Multica desktop app for a bundled runtime, or install the CLI with `curl -fsSL install.multica.ai | bash`. Come back once it's connected.",
+    },
+    {
+      title: "Create your first agent",
+      description:
+        "Once a runtime is connected, go to Agents → New agent to create one. Pick a provider (Claude / Codex / Cursor / …) and give it a role. Then come back and assign it an issue.",
+    },
+    {
+      title: "Write your Workspace Context",
+      description:
+        "Workspace Context is the shared system prompt every agent in this workspace will see. Tell them who you are, what you're building, and how they should behave. Go to Workspace settings → Context.",
+    },
+    {
+      title: "Explore the Agents page",
+      description:
+        "See what agents look like — their provider, runtime, skills, and instructions — so you know what you're configuring before you build one.",
+    },
+  ];
+
+  const result: SubIssueSpec[] = [...core];
+
+  if (q.team_size === "team") {
+    result.unshift({
+      title: "Invite your teammates",
+      description:
+        "Multica works best with a small team. Go to Workspace settings → Members and invite your collaborators.",
+    });
+  }
+
+  if (q.role === "developer" || q.use_case === "coding") {
+    result.push({
+      title: "Connect a repo to your workspace",
+      description:
+        "Once you have an agent, link your GitHub repo so it can read and write code directly. Go to Workspace settings → Repos.",
+    });
+  }
+
+  return result;
+}
+
 export async function runOnboardingBootstrap({
   agent,
   workspace,
   questionnaire,
   userName,
 }: {
-  agent: Agent;
+  agent: Agent | null;
   workspace: Workspace;
   questionnaire: QuestionnaireAnswers;
   userName: string;
 }): Promise<BootstrapResult> {
-  const welcome = buildWelcomeIssue(questionnaire, userName);
+  let firstIssueId: string | null = null;
 
-  // First issue is critical. If this fails the whole bootstrap fails
-  // (no aha moment to jump to).
-  const firstIssue = await api.createIssue({
-    title: welcome.title,
-    description: welcome.description,
-    assignee_type: "agent",
-    assignee_id: agent.id,
-  });
+  // Path A — welcome issue is critical. If this fails the caller surfaces
+  // an error + retry. Path B skips this entirely.
+  if (agent) {
+    const welcome = buildWelcomeIssue(questionnaire, userName);
+    const firstIssue = await api.createIssue({
+      title: welcome.title,
+      description: welcome.description,
+      assignee_type: "agent",
+      assignee_id: agent.id,
+    });
+    firstIssueId = firstIssue.id;
+  }
 
-  // Project + sub-issues are nice-to-have. Any failure is logged but
-  // doesn't block the user from getting to their welcome issue.
+  // Project + sub-issues are nice-to-have in both paths. Failures don't
+  // block the user from landing in their workspace.
   let projectId: string | null = null;
   try {
     const project = await api.createProject({
@@ -155,7 +213,10 @@ export async function runOnboardingBootstrap({
     });
     projectId = project.id;
 
-    const subIssues = buildSubIssues(questionnaire);
+    const subIssues = agent
+      ? buildAgentGuidedSubIssues(questionnaire)
+      : buildSelfServeSubIssues(questionnaire);
+
     await Promise.allSettled(
       subIssues.map((s) =>
         api.createIssue({
@@ -170,12 +231,10 @@ export async function runOnboardingBootstrap({
     console.warn("Onboarding project bootstrap failed", err);
   }
 
-  // Silence unused warning — reserved for future bootstrap logic that
-  // might key on workspace_id directly.
   void workspace;
 
   return {
-    firstIssueId: firstIssue.id,
+    firstIssueId,
     projectId,
   };
 }
