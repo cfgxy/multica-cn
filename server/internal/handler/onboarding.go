@@ -274,16 +274,21 @@ func (h *Handler) ImportStarterContent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Membership check: user must belong to the target workspace, and
-	// the same lookup yields the member_id for assignee_id on sub-issues.
-	member, err := qtx.GetMemberByUserAndWorkspace(r.Context(), db.GetMemberByUserAndWorkspaceParams{
+	// Membership check: user must belong to the target workspace. We
+	// only need this for the 403 signal — the value actually stored in
+	// `assignee_id` / `creator_id` for type="member" is `user_id`, not
+	// `member.id` (see AssigneePicker in packages/views and
+	// resolveActor in handler/issue.go). Storing `member.id` would
+	// cause `useActorName.getMemberName` to resolve to "Unknown"
+	// because it looks up members by `user_id`.
+	if _, err := qtx.GetMemberByUserAndWorkspace(r.Context(), db.GetMemberByUserAndWorkspaceParams{
 		UserID:      parseUUID(userID),
 		WorkspaceID: parseUUID(req.WorkspaceID),
-	})
-	if err != nil {
+	}); err != nil {
 		writeError(w, http.StatusForbidden, "not a member of this workspace")
 		return
 	}
+	actorID := parseUUID(userID)
 
 	// Verify the welcome issue's target agent is in this workspace (if
 	// present). Without this, a caller could assign the welcome issue
@@ -336,7 +341,7 @@ func (h *Handler) ImportStarterContent(w http.ResponseWriter, r *http.Request) {
 			AssigneeType: pgtype.Text{String: "agent", Valid: true},
 			AssigneeID:   parseUUID(req.WelcomeIssue.AgentID),
 			CreatorType:  "member",
-			CreatorID:    member.ID,
+			CreatorID:    actorID,
 			Number:       welcomeNumber,
 		})
 		if err != nil {
@@ -365,7 +370,7 @@ func (h *Handler) ImportStarterContent(w http.ResponseWriter, r *http.Request) {
 		var assigneeID pgtype.UUID
 		if sub.AssignToSelf {
 			assigneeType = pgtype.Text{String: "member", Valid: true}
-			assigneeID = member.ID
+			assigneeID = actorID
 		}
 		status := sub.Status
 		if status == "" {
@@ -384,7 +389,7 @@ func (h *Handler) ImportStarterContent(w http.ResponseWriter, r *http.Request) {
 			AssigneeType: assigneeType,
 			AssigneeID:   assigneeID,
 			CreatorType:  "member",
-			CreatorID:    member.ID,
+			CreatorID:    actorID,
 			Number:       number,
 			ProjectID:    project.ID,
 		})

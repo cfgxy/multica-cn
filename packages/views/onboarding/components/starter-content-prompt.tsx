@@ -148,51 +148,38 @@ export function StarterContentPrompt() {
     >
       <DialogContent
         showCloseButton={false}
-        className="sm:max-w-[480px]"
+        className="sm:max-w-[440px]"
       >
         <DialogHeader>
-          <DialogTitle className="text-balance font-serif text-[24px] leading-[1.15] font-medium tracking-tight">
-            You&apos;re in. Want a quick tour?
+          <DialogTitle className="text-balance font-serif text-[22px] leading-[1.2] font-medium tracking-tight">
+            Welcome — add starter tasks?
           </DialogTitle>
-          <DialogDescription className="pt-2 text-[14px] leading-[1.6]">
+          <DialogDescription className="pt-2 text-[14px] leading-[1.55]">
             {!agentsFetched ? (
               <>Loading your workspace…</>
             ) : hasAgent ? (
               <>
-                We can seed a{" "}
+                A{" "}
                 <span className="font-medium text-foreground">
                   Getting Started
                 </span>{" "}
-                project — a handful of short tasks that each walk through
-                one piece of how real work flows between you and your
-                agents. We&apos;ll also open a{" "}
-                <span className="font-medium text-foreground">
-                  welcome issue
-                </span>{" "}
-                that{" "}
+                project with short tasks that teach how agents, issues,
+                and context fit together — plus a welcome issue{" "}
                 <span className="font-medium text-foreground">
                   {agent!.name}
                 </span>{" "}
-                will reply to right away, so you can see what agent
-                collaboration actually looks like.
+                replies to right away.
               </>
             ) : (
               <>
-                We can seed a{" "}
+                A{" "}
                 <span className="font-medium text-foreground">
                   Getting Started
                 </span>{" "}
-                project — a handful of short tasks that walk you through
-                installing a runtime, creating your first agent, and
-                assigning your first real task. No agent yet, so we&apos;ll
-                skip the welcome issue; everything else is there to try
-                at your own pace.
+                project with short tasks that teach how runtimes, agents,
+                and issues fit together in Multica.
               </>
             )}
-          </DialogDescription>
-          <DialogDescription className="pt-3 text-[13px] leading-[1.55]">
-            You can always add tasks like this later from the new-issue
-            screen. This is just a friendly starter set.
           </DialogDescription>
         </DialogHeader>
 
@@ -205,7 +192,7 @@ export function StarterContentPrompt() {
             {submitting === "dismiss" && (
               <Loader2 className="h-4 w-4 animate-spin" />
             )}
-            No thanks
+            Start blank workspace
           </Button>
           <Button
             onClick={onImport}
@@ -214,7 +201,7 @@ export function StarterContentPrompt() {
             {submitting === "import" && (
               <Loader2 className="h-4 w-4 animate-spin" />
             )}
-            {hasAgent ? "Import starter tasks" : "Import tasks"}
+            Add starter tasks
           </Button>
         </DialogFooter>
       </DialogContent>
