@@ -19,10 +19,12 @@ const DESKTOP_DOWNLOAD_URL = "https://multica.ai/download";
 export function StepPlatformFork({
   wsId,
   onNext,
+  onBack,
   cliInstructions,
 }: {
   wsId: string;
-  onNext: (runtime: AgentRuntime | null) => void;
+  onNext: (runtime: AgentRuntime | null) => void | Promise<void>;
+  onBack?: () => void;
   cliInstructions?: ReactNode;
 }) {
   const [state, setState] = useState<ForkState>("fork");
@@ -75,6 +77,16 @@ export function StepPlatformFork({
 
   return (
     <div className="flex w-full flex-col gap-6">
+      {onBack && (
+        <button
+          type="button"
+          onClick={onBack}
+          className="flex items-center gap-1.5 self-start text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" />
+          Back
+        </button>
+      )}
       <div className="flex flex-col gap-2 text-center">
         <h1 className="text-2xl font-semibold tracking-tight">
           Connect a runtime

@@ -14,7 +14,7 @@ import (
 const createUser = `-- name: CreateUser :one
 INSERT INTO "user" (name, email, avatar_url)
 VALUES ($1, $2, $3)
-RETURNING id, name, email, avatar_url, created_at, updated_at, onboarded_at
+RETURNING id, name, email, avatar_url, created_at, updated_at, onboarded_at, onboarding_current_step, onboarding_questionnaire
 `
 
 type CreateUserParams struct {
@@ -34,12 +34,14 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.OnboardedAt,
+		&i.OnboardingCurrentStep,
+		&i.OnboardingQuestionnaire,
 	)
 	return i, err
 }
 
 const getUser = `-- name: GetUser :one
-SELECT id, name, email, avatar_url, created_at, updated_at, onboarded_at FROM "user"
+SELECT id, name, email, avatar_url, created_at, updated_at, onboarded_at, onboarding_current_step, onboarding_questionnaire FROM "user"
 WHERE id = $1
 `
 
@@ -54,12 +56,14 @@ func (q *Queries) GetUser(ctx context.Context, id pgtype.UUID) (User, error) {
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.OnboardedAt,
+		&i.OnboardingCurrentStep,
+		&i.OnboardingQuestionnaire,
 	)
 	return i, err
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, name, email, avatar_url, created_at, updated_at, onboarded_at FROM "user"
+SELECT id, name, email, avatar_url, created_at, updated_at, onboarded_at, onboarding_current_step, onboarding_questionnaire FROM "user"
 WHERE email = $1
 `
 
@@ -74,6 +78,8 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.OnboardedAt,
+		&i.OnboardingCurrentStep,
+		&i.OnboardingQuestionnaire,
 	)
 	return i, err
 }
@@ -81,9 +87,10 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 const markUserOnboarded = `-- name: MarkUserOnboarded :one
 UPDATE "user" SET
     onboarded_at = COALESCE(onboarded_at, now()),
+    onboarding_current_step = NULL,
     updated_at = now()
 WHERE id = $1
-RETURNING id, name, email, avatar_url, created_at, updated_at, onboarded_at
+RETURNING id, name, email, avatar_url, created_at, updated_at, onboarded_at, onboarding_current_step, onboarding_questionnaire
 `
 
 func (q *Queries) MarkUserOnboarded(ctx context.Context, id pgtype.UUID) (User, error) {
@@ -97,6 +104,40 @@ func (q *Queries) MarkUserOnboarded(ctx context.Context, id pgtype.UUID) (User, 
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.OnboardedAt,
+		&i.OnboardingCurrentStep,
+		&i.OnboardingQuestionnaire,
+	)
+	return i, err
+}
+
+const patchUserOnboarding = `-- name: PatchUserOnboarding :one
+UPDATE "user" SET
+    onboarding_current_step = COALESCE($1, onboarding_current_step),
+    onboarding_questionnaire = COALESCE($2, onboarding_questionnaire),
+    updated_at = now()
+WHERE id = $3
+RETURNING id, name, email, avatar_url, created_at, updated_at, onboarded_at, onboarding_current_step, onboarding_questionnaire
+`
+
+type PatchUserOnboardingParams struct {
+	CurrentStep   pgtype.Text `json:"current_step"`
+	Questionnaire []byte      `json:"questionnaire"`
+	ID            pgtype.UUID `json:"id"`
+}
+
+func (q *Queries) PatchUserOnboarding(ctx context.Context, arg PatchUserOnboardingParams) (User, error) {
+	row := q.db.QueryRow(ctx, patchUserOnboarding, arg.CurrentStep, arg.Questionnaire, arg.ID)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Email,
+		&i.AvatarUrl,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.OnboardedAt,
+		&i.OnboardingCurrentStep,
+		&i.OnboardingQuestionnaire,
 	)
 	return i, err
 }
@@ -107,7 +148,7 @@ UPDATE "user" SET
     avatar_url = COALESCE($3, avatar_url),
     updated_at = now()
 WHERE id = $1
-RETURNING id, name, email, avatar_url, created_at, updated_at, onboarded_at
+RETURNING id, name, email, avatar_url, created_at, updated_at, onboarded_at, onboarding_current_step, onboarding_questionnaire
 `
 
 type UpdateUserParams struct {
@@ -127,6 +168,8 @@ func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) (User, e
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.OnboardedAt,
+		&i.OnboardingCurrentStep,
+		&i.OnboardingQuestionnaire,
 	)
 	return i, err
 }

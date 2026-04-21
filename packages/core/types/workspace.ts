@@ -32,6 +32,14 @@ export interface User {
   email: string;
   avatar_url: string | null;
   onboarded_at: string | null;
+  onboarding_current_step: string | null;
+  /**
+   * JSONB payload from the server. Typed as `unknown` here so this module
+   * stays independent of the questionnaire shape — the onboarding views
+   * cast into `Partial<QuestionnaireAnswers>` when reading. Server always
+   * returns an object (defaults to `{}`), never null.
+   */
+  onboarding_questionnaire: Record<string, unknown>;
   created_at: string;
   updated_at: string;
 }

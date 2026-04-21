@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { Code, Crown } from "lucide-react";
+import { ArrowLeft, Code, Crown } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@multica/ui/components/ui/button";
 import { Card } from "@multica/ui/components/ui/card";
@@ -61,10 +61,12 @@ export function StepAgent({
   runtime,
   onCreated,
   onSkip,
+  onBack,
 }: {
   runtime: AgentRuntime;
-  onCreated: (agent: Agent) => void;
-  onSkip: () => void;
+  onCreated: (agent: Agent) => void | Promise<void>;
+  onSkip: () => void | Promise<void>;
+  onBack?: () => void;
 }) {
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(
     null,
@@ -106,6 +108,16 @@ export function StepAgent({
 
   return (
     <div className="flex w-full max-w-md flex-col items-center gap-6">
+      {onBack && (
+        <button
+          type="button"
+          onClick={onBack}
+          className="flex items-center gap-1.5 self-start text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" />
+          Back
+        </button>
+      )}
       <div className="flex flex-col gap-3 text-center">
         <h1 className="text-3xl font-semibold tracking-tight">
           Create your first agent

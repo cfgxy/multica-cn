@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import { Loader2 } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import type {
   QuestionnaireAnswers,
@@ -53,9 +54,10 @@ export function StepQuestionnaire({
   onSubmit,
 }: {
   initial: QuestionnaireAnswers;
-  onSubmit: (answers: QuestionnaireAnswers) => void;
+  onSubmit: (answers: QuestionnaireAnswers) => void | Promise<void>;
 }) {
   const [answers, setAnswers] = useState<QuestionnaireAnswers>(initial);
+  const [submitting, setSubmitting] = useState(false);
 
   // Selecting a concrete (non-"other") option should clear the matching
   // *_other field — we don't want stale Other text floating around in
@@ -106,9 +108,14 @@ export function StepQuestionnaire({
     return !otherIncomplete;
   }, [answers]);
 
-  const submit = () => {
-    if (!canContinue) return;
-    onSubmit(answers);
+  const submit = async () => {
+    if (!canContinue || submitting) return;
+    setSubmitting(true);
+    try {
+      await onSubmit(answers);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -230,9 +237,10 @@ export function StepQuestionnaire({
       <Button
         size="lg"
         className="w-full"
-        disabled={!canContinue}
+        disabled={!canContinue || submitting}
         onClick={submit}
       >
+        {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
         Continue
       </Button>
     </div>

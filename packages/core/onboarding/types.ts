@@ -30,8 +30,3 @@ export interface QuestionnaireAnswers {
   use_case: UseCase | null;
   use_case_other: string | null;
 }
-
-export interface OnboardingState {
-  current_step: OnboardingStep | null;
-  questionnaire: QuestionnaireAnswers;
-}

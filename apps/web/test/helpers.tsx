@@ -10,6 +10,8 @@ export const mockUser: User = {
   email: "test@multica.ai",
   avatar_url: null,
   onboarded_at: "2026-01-01T00:00:00Z",
+  onboarding_current_step: null,
+  onboarding_questionnaire: {},
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
 };

@@ -223,6 +223,16 @@ export class ApiClient {
     return this.fetch("/api/me/onboarding/complete", { method: "POST" });
   }
 
+  async patchOnboarding(payload: {
+    current_step?: string;
+    questionnaire?: Record<string, unknown>;
+  }): Promise<User> {
+    return this.fetch("/api/me/onboarding", {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+  }
+
   async updateMe(data: UpdateMeRequest): Promise<User> {
     return this.fetch("/api/me", {
       method: "PATCH",

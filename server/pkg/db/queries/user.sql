@@ -22,6 +22,15 @@ RETURNING *;
 -- name: MarkUserOnboarded :one
 UPDATE "user" SET
     onboarded_at = COALESCE(onboarded_at, now()),
+    onboarding_current_step = NULL,
     updated_at = now()
 WHERE id = $1
+RETURNING *;
+
+-- name: PatchUserOnboarding :one
+UPDATE "user" SET
+    onboarding_current_step = COALESCE(sqlc.narg('current_step'), onboarding_current_step),
+    onboarding_questionnaire = COALESCE(sqlc.narg('questionnaire'), onboarding_questionnaire),
+    updated_at = now()
+WHERE id = sqlc.arg('id')
 RETURNING *;

@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2 } from "lucide-react";
+import { ArrowLeft, Loader2 } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import { Card } from "@multica/ui/components/ui/card";
 import { cn } from "@multica/ui/lib/utils";
@@ -35,10 +35,12 @@ import { ProviderLogo } from "../../runtimes/components/provider-logo";
 export function StepRuntimeConnect({
   wsId,
   onNext,
+  onBack,
   instructions,
 }: {
   wsId: string;
-  onNext: (runtime: AgentRuntime | null) => void;
+  onNext: (runtime: AgentRuntime | null) => void | Promise<void>;
+  onBack?: () => void;
   /**
    * Platform-specific content shown above the live status (CLI install
    * guide on web, omitted on desktop where the daemon auto-starts).
@@ -76,6 +78,16 @@ export function StepRuntimeConnect({
 
   return (
     <div className="flex w-full max-w-xl flex-col items-center gap-6">
+      {onBack && (
+        <button
+          type="button"
+          onClick={onBack}
+          className="flex items-center gap-1.5 self-start text-sm text-muted-foreground hover:text-foreground"
+        >
+          <ArrowLeft className="h-3.5 w-3.5" />
+          Back
+        </button>
+      )}
       <div className="flex flex-col gap-3 text-center">
         <h1 className="text-3xl font-semibold tracking-tight">
           Connect a runtime

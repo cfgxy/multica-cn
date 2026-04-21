@@ -1,5 +1,7 @@
 "use client";
 
+import { useState } from "react";
+import { Loader2 } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 
 /**
@@ -19,7 +21,17 @@ import { Button } from "@multica/ui/components/ui/button";
  * Deliberately text-only for now. Later passes can add an
  * illustration / hero loop; the structure leaves vertical room.
  */
-export function StepWelcome({ onNext }: { onNext: () => void }) {
+export function StepWelcome({ onNext }: { onNext: () => void | Promise<void> }) {
+  const [submitting, setSubmitting] = useState(false);
+  const handleClick = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      await onNext();
+    } finally {
+      setSubmitting(false);
+    }
+  };
   // min-h + justify-center gives Welcome its own vertical centering.
   // The outer shell no longer applies `my-auto` (removed so all other
   // steps align to the top around a stable StepHeader anchor), so
@@ -44,7 +56,8 @@ export function StepWelcome({ onNext }: { onNext: () => void }) {
         </p>
 
         <div className="flex flex-col items-center gap-3">
-          <Button size="lg" onClick={onNext}>
+          <Button size="lg" onClick={handleClick} disabled={submitting}>
+            {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
             Get started
           </Button>
           <p className="text-xs text-muted-foreground">
