@@ -133,13 +133,8 @@ export function StepQuestionnaire({
             <h1 className="text-balance font-serif text-[36px] font-medium leading-[1.1] tracking-tight text-foreground">
               Three answers. We&apos;ll handle the rest.
             </h1>
-            <p className="mt-3 text-[15.5px] leading-[1.55] text-foreground/80">
-              Tell us a little about you. We&apos;ll use it to pick the right
-              first agent, draft your first task, and hide every feature you
-              don&apos;t need yet — so you start on work, not on setup.
-            </p>
 
-            <div className="mt-8 flex flex-col gap-7">
+            <div className="mt-10 flex flex-col gap-7">
               <QuestionBlock
                 num={1}
                 question="Who will use this workspace?"
