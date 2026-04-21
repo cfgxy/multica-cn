@@ -56,7 +56,6 @@ export function buildWelcomeIssue(
   }
 }
 
-// Path A — user created an agent. Sub-issues are "watch your agent do X".
 export function buildAgentGuidedSubIssues(
   q: QuestionnaireAnswers,
 ): SubIssueSpec[] {
@@ -122,7 +121,6 @@ export function buildAgentGuidedSubIssues(
   return result;
 }
 
-// Path B — user has no agent yet. Sub-issues are "try this yourself".
 export function buildSelfServeSubIssues(
   q: QuestionnaireAnswers,
 ): SubIssueSpec[] {
@@ -180,16 +178,16 @@ export async function runOnboardingBootstrap({
   workspace,
   questionnaire,
   userName,
+  userId,
 }: {
   agent: Agent | null;
   workspace: Workspace;
   questionnaire: QuestionnaireAnswers;
   userName: string;
+  userId: string;
 }): Promise<BootstrapResult> {
   let firstIssueId: string | null = null;
 
-  // Path A — welcome issue is critical. If this fails the caller surfaces
-  // an error + retry. Path B skips this entirely.
   if (agent) {
     const welcome = buildWelcomeIssue(questionnaire, userName);
     const firstIssue = await api.createIssue({
@@ -199,10 +197,22 @@ export async function runOnboardingBootstrap({
       assignee_id: agent.id,
     });
     firstIssueId = firstIssue.id;
+    api
+      .createPin({ item_type: "issue", item_id: firstIssue.id })
+      // eslint-disable-next-line no-console
+      .catch((err) => console.warn("Pin welcome issue failed", err));
   }
 
-  // Project + sub-issues are nice-to-have in both paths. Failures don't
-  // block the user from landing in their workspace.
+  let myMemberId: string | null = null;
+  if (userId) {
+    try {
+      const members = await api.listMembers(workspace.id);
+      myMemberId = members.find((m) => m.user_id === userId)?.id ?? null;
+    } catch {
+      // Fall back to unassigned sub-issues if member lookup fails.
+    }
+  }
+
   let projectId: string | null = null;
   try {
     const project = await api.createProject({
@@ -213,9 +223,18 @@ export async function runOnboardingBootstrap({
     });
     projectId = project.id;
 
+    api
+      .createPin({ item_type: "project", item_id: project.id })
+      // eslint-disable-next-line no-console
+      .catch((err) => console.warn("Pin onboarding project failed", err));
+
     const subIssues = agent
       ? buildAgentGuidedSubIssues(questionnaire)
       : buildSelfServeSubIssues(questionnaire);
+
+    const assigneeFields = myMemberId
+      ? { assignee_type: "member" as const, assignee_id: myMemberId }
+      : {};
 
     await Promise.allSettled(
       subIssues.map((s) =>
@@ -223,6 +242,7 @@ export async function runOnboardingBootstrap({
           title: s.title,
           description: s.description,
           project_id: project.id,
+          ...assigneeFields,
         }),
       ),
     );
@@ -230,8 +250,6 @@ export async function runOnboardingBootstrap({
     // eslint-disable-next-line no-console
     console.warn("Onboarding project bootstrap failed", err);
   }
-
-  void workspace;
 
   return {
     firstIssueId,

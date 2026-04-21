@@ -186,6 +186,7 @@ export function OnboardingFlow({
           workspace={runtimeWorkspace}
           questionnaire={storedQuestionnaire}
           userName={user?.name ?? user?.email ?? ""}
+          userId={user?.id ?? ""}
           onDone={handleBootstrapDone}
           onSkip={handleBootstrapSkip}
         />

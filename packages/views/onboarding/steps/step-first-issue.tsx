@@ -17,6 +17,7 @@ export function StepFirstIssue({
   workspace,
   questionnaire,
   userName,
+  userId,
   onDone,
   onSkip,
 }: {
@@ -24,6 +25,7 @@ export function StepFirstIssue({
   workspace: Workspace;
   questionnaire: QuestionnaireAnswers;
   userName: string;
+  userId: string;
   onDone: (firstIssueId: string | null, projectId: string | null) => void;
   onSkip: () => void;
 }) {
@@ -34,7 +36,7 @@ export function StepFirstIssue({
     if (started.current) return;
     started.current = true;
 
-    runOnboardingBootstrap({ agent, workspace, questionnaire, userName })
+    runOnboardingBootstrap({ agent, workspace, questionnaire, userName, userId })
       .then((result) => {
         setPhase({
           status: "done",
@@ -49,7 +51,7 @@ export function StepFirstIssue({
             err instanceof Error ? err.message : "Failed to set up your workspace",
         });
       });
-  }, [agent, workspace, questionnaire, userName]);
+  }, [agent, workspace, questionnaire, userName, userId]);
 
   useEffect(() => {
     if (phase.status === "done") {
