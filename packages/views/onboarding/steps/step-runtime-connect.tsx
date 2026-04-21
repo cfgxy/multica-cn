@@ -259,8 +259,12 @@ function ScanningView() {
         Looking for your tools…
       </h1>
       <p className="mt-4 max-w-[560px] text-[15.5px] leading-[1.55] text-muted-foreground">
-        We&apos;re waiting to hear back from your machine about the AI
-        coding tools you have installed.
+        Multica drives local AI coding tools like{" "}
+        <span className="font-medium text-foreground">Claude Code</span>,{" "}
+        <span className="font-medium text-foreground">Codex</span>,{" "}
+        <span className="font-medium text-foreground">Cursor</span>, and
+        others. We&apos;re waiting to hear back from your machine about
+        which ones are installed.
       </p>
       <div className="mt-10 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
         <SkeletonRuntimeCard />
@@ -356,8 +360,12 @@ function EmptyView({
         No supported tools detected.
       </h1>
       <p className="mt-4 max-w-[560px] text-[15.5px] leading-[1.55] text-muted-foreground">
-        We didn&apos;t find any AI coding tools on your machine that we
-        can drive as a runtime. You&apos;ve got two choices from here.
+        Multica drives local AI coding tools like{" "}
+        <span className="font-medium text-foreground">Claude Code</span>,{" "}
+        <span className="font-medium text-foreground">Codex</span>,{" "}
+        <span className="font-medium text-foreground">Cursor</span>, and
+        others — we didn&apos;t find any on this machine. Install one and
+        come back, or pick a path below.
       </p>
 
       <div className="mt-10 flex flex-col gap-3.5">
@@ -380,7 +388,7 @@ function EmptyView({
         open={waitlistOpen}
         onOpenChange={(o) => (o ? null : setWaitlistOpen(false))}
       >
-        <DialogContent className="sm:max-w-[520px]">
+        <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-[520px]">
           <DialogHeader>
             <DialogTitle>Join the cloud runtime waitlist</DialogTitle>
             <DialogDescription>
@@ -389,7 +397,7 @@ function EmptyView({
             </DialogDescription>
           </DialogHeader>
 
-          <div className="pt-2">
+          <div className="min-h-0 flex-1 overflow-y-auto pt-2">
             <CloudWaitlistExpand
               submitted={waitlistSubmitted}
               onSubmitted={onWaitlistSubmitted}
