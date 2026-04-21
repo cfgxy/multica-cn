@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/mention"
+	"github.com/multica-ai/multica/server/internal/sanitize"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -241,11 +242,8 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	// Expand bare issue identifiers (e.g. MUL-117) into mention links.
 	req.Content = mention.ExpandIssueIdentifiers(r.Context(), h.Queries, issue.WorkspaceID, req.Content)
 
-	// NOTE: Comment content is stored as Markdown source. XSS is handled at the
-	// rendering layer (rehype-sanitize) and at the editor layer
-	// (@tiptap/markdown with html:false). Running an HTML sanitizer here would
-	// entity-encode Markdown syntax characters (>, ", &, <) and corrupt the
-	// source. See issue #1303 / discussion in MUL-1119, MUL-1125.
+	// Sanitize HTML to prevent stored XSS.
+	req.Content = sanitize.HTML(req.Content)
 
 	comment, err := h.Queries.CreateComment(r.Context(), db.CreateCommentParams{
 		IssueID:     issue.ID,
@@ -498,7 +496,8 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// NOTE: See CreateComment — Markdown is sanitized at render/edit time, not here.
+	// Sanitize HTML to prevent stored XSS.
+	req.Content = sanitize.HTML(req.Content)
 
 	comment, err := h.Queries.UpdateComment(r.Context(), db.UpdateCommentParams{
 		ID:      parseUUID(commentId),
