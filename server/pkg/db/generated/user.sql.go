@@ -14,7 +14,7 @@ import (
 const createUser = `-- name: CreateUser :one
 INSERT INTO "user" (name, email, avatar_url)
 VALUES ($1, $2, $3)
-RETURNING id, name, email, avatar_url, created_at, updated_at
+RETURNING id, name, email, avatar_url, created_at, updated_at, onboarded_at
 `
 
 type CreateUserParams struct {
@@ -33,12 +33,13 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.AvatarUrl,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OnboardedAt,
 	)
 	return i, err
 }
 
 const getUser = `-- name: GetUser :one
-SELECT id, name, email, avatar_url, created_at, updated_at FROM "user"
+SELECT id, name, email, avatar_url, created_at, updated_at, onboarded_at FROM "user"
 WHERE id = $1
 `
 
@@ -52,12 +53,13 @@ func (q *Queries) GetUser(ctx context.Context, id pgtype.UUID) (User, error) {
 		&i.AvatarUrl,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OnboardedAt,
 	)
 	return i, err
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, name, email, avatar_url, created_at, updated_at FROM "user"
+SELECT id, name, email, avatar_url, created_at, updated_at, onboarded_at FROM "user"
 WHERE email = $1
 `
 
@@ -71,6 +73,30 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 		&i.AvatarUrl,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OnboardedAt,
+	)
+	return i, err
+}
+
+const markUserOnboarded = `-- name: MarkUserOnboarded :one
+UPDATE "user" SET
+    onboarded_at = COALESCE(onboarded_at, now()),
+    updated_at = now()
+WHERE id = $1
+RETURNING id, name, email, avatar_url, created_at, updated_at, onboarded_at
+`
+
+func (q *Queries) MarkUserOnboarded(ctx context.Context, id pgtype.UUID) (User, error) {
+	row := q.db.QueryRow(ctx, markUserOnboarded, id)
+	var i User
+	err := row.Scan(
+		&i.ID,
+		&i.Name,
+		&i.Email,
+		&i.AvatarUrl,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.OnboardedAt,
 	)
 	return i, err
 }
@@ -81,7 +107,7 @@ UPDATE "user" SET
     avatar_url = COALESCE($3, avatar_url),
     updated_at = now()
 WHERE id = $1
-RETURNING id, name, email, avatar_url, created_at, updated_at
+RETURNING id, name, email, avatar_url, created_at, updated_at, onboarded_at
 `
 
 type UpdateUserParams struct {
@@ -100,6 +126,7 @@ func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) (User, e
 		&i.AvatarUrl,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.OnboardedAt,
 	)
 	return i, err
 }

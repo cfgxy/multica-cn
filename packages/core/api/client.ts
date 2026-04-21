@@ -219,6 +219,10 @@ export class ApiClient {
     return this.fetch("/api/me");
   }
 
+  async markOnboardingComplete(): Promise<User> {
+    return this.fetch("/api/me/onboarding/complete", { method: "POST" });
+  }
+
   async updateMe(data: UpdateMeRequest): Promise<User> {
     return this.fetch("/api/me", {
       method: "PATCH",

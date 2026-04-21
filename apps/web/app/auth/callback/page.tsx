@@ -5,11 +5,7 @@ import { useSearchParams, useRouter } from "next/navigation";
 import { useQueryClient } from "@tanstack/react-query";
 import { sanitizeNextUrl, useAuthStore } from "@multica/core/auth";
 import { workspaceKeys } from "@multica/core/workspace/queries";
-import {
-  paths,
-  resolvePostAuthDestination,
-  useHasOnboarded,
-} from "@multica/core/paths";
+import { paths, resolvePostAuthDestination } from "@multica/core/paths";
 import { api } from "@multica/core/api";
 import {
   Card,
@@ -26,7 +22,6 @@ function CallbackContent() {
   const searchParams = useSearchParams();
   const qc = useQueryClient();
   const loginWithGoogle = useAuthStore((s) => s.loginWithGoogle);
-  const hasOnboarded = useHasOnboarded();
   const [error, setError] = useState("");
   const [desktopToken, setDesktopToken] = useState<string | null>(null);
 
@@ -67,22 +62,23 @@ function CallbackContent() {
     } else {
       // Normal web flow
       loginWithGoogle(code, redirectUri)
-        .then(async () => {
+        .then(async (loggedInUser) => {
           const wsList = await api.listWorkspaces();
           qc.setQueryData(workspaceKeys.list(), wsList);
-          // URL is now the source of truth for the current workspace — the
-          // [workspaceSlug]/layout syncs stores + cookie once we navigate.
-          // Honor ?next= first (e.g. came from /invite/{id}), otherwise
-          // defer to the shared destination resolver.
+          const onboarded = loggedInUser.onboarded_at != null;
+          if (!onboarded) {
+            router.push(paths.onboarding());
+            return;
+          }
           router.push(
-            nextUrl || resolvePostAuthDestination(wsList, hasOnboarded),
+            nextUrl || resolvePostAuthDestination(wsList, onboarded),
           );
         })
         .catch((err) => {
           setError(err instanceof Error ? err.message : "Login failed");
         });
     }
-  }, [searchParams, loginWithGoogle, hasOnboarded, router, qc]);
+  }, [searchParams, loginWithGoogle, router, qc]);
 
   if (desktopToken) {
     return (

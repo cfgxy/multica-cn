@@ -25,55 +25,95 @@ function renderStep(initial: Partial<QuestionnaireAnswers> = {}) {
 }
 
 /**
- * These tests lock down the questionnaire's submit-gate behavior —
- * the small set of rules a future refactor could easily break:
- *  - Empty = Skip (zero-friction path for evaluators)
- *  - Any answer = Continue
- *  - Picking "Other" without typing = disabled
- *  - Switching away from Other clears that question's *_other field
- *  - onSubmit is called with the current answer snapshot
- * See docs/onboarding-redesign-proposal.md §3.4 for the product spec.
+ * The Continue button is the product of a strict "all three answered"
+ * gate — no Skip path. These tests lock down that policy so a future
+ * refactor can't silently loosen it:
+ *   - Disabled by default (zero answers)
+ *   - Stays disabled with 1 or 2 answers
+ *   - Enabled only when all three have concrete selections
+ *   - Stays disabled when any "Other" selection has empty text
+ *   - Clicking while disabled never calls onSubmit
+ *   - Switching away from Other clears that question's *_other field
  */
 describe("StepQuestionnaire", () => {
-  it("starts with 'Skip' when no questions are answered", () => {
+  it("Continue is disabled when no questions are answered", () => {
     renderStep();
-    const btn = screen.getByRole("button", { name: /skip/i });
-    expect(btn).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: /continue/i }),
+    ).toBeDisabled();
   });
 
-  it("switches CTA to 'Continue' once any question is answered", async () => {
+  it("Continue stays disabled with only one question answered", async () => {
     const user = userEvent.setup();
     renderStep();
     await user.click(screen.getByRole("radio", { name: /just me/i }));
-    expect(screen.getByRole("button", { name: /continue/i })).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: /continue/i }),
+    ).toBeDisabled();
   });
 
-  it("disables CTA when Other is picked but no text is provided", async () => {
+  it("Continue stays disabled with only two questions answered", async () => {
     const user = userEvent.setup();
     renderStep();
-    // Q1 Other — there are three "Other" cards (one per question); the
-    // first match is Q1's.
-    const q1Other = screen.getAllByRole("radio", { name: /^other$/i })[0]!;
-    await user.click(q1Other);
-    expect(screen.getByRole("button", { name: /continue/i })).toBeDisabled();
+    await user.click(screen.getByRole("radio", { name: /just me/i }));
+    await user.click(
+      screen.getByRole("radio", { name: /software developer/i }),
+    );
+    expect(
+      screen.getByRole("button", { name: /continue/i }),
+    ).toBeDisabled();
   });
 
-  it("re-enables CTA once Other text is entered", async () => {
+  it("Continue enables when all three questions are answered", async () => {
     const user = userEvent.setup();
     renderStep();
-    const q1Other = screen.getAllByRole("radio", { name: /^other$/i })[0]!;
-    await user.click(q1Other);
-    const input = screen.getByPlaceholderText(/tell us about your team/i);
-    await user.type(input, "Hackathon crew");
-    expect(screen.getByRole("button", { name: /continue/i })).toBeEnabled();
+    await user.click(screen.getByRole("radio", { name: /just me/i }));
+    await user.click(
+      screen.getByRole("radio", { name: /software developer/i }),
+    );
+    await user.click(
+      screen.getByRole("radio", { name: /write and ship code/i }),
+    );
+    expect(
+      screen.getByRole("button", { name: /continue/i }),
+    ).toBeEnabled();
+  });
+
+  it("Continue stays disabled when Other is picked but its text is empty", async () => {
+    const user = userEvent.setup();
+    renderStep({
+      team_size: "solo",
+      role: "developer",
+      // Q3 will be set to Other in-test — no text typed yet.
+    });
+    const q3Other = screen.getAllByRole("radio", { name: /^other$/i })[2]!;
+    await user.click(q3Other);
+    expect(
+      screen.getByRole("button", { name: /continue/i }),
+    ).toBeDisabled();
+  });
+
+  it("Continue re-enables once Other text is filled in", async () => {
+    const user = userEvent.setup();
+    renderStep({ team_size: "solo", role: "developer" });
+    const q3Other = screen.getAllByRole("radio", { name: /^other$/i })[2]!;
+    await user.click(q3Other);
+    const input = screen.getByPlaceholderText(/tell us what you'd like to do/i);
+    await user.type(input, "Teach me the system");
+    expect(
+      screen.getByRole("button", { name: /continue/i }),
+    ).toBeEnabled();
   });
 
   it("clears Other text when the user switches to a concrete option", async () => {
     const user = userEvent.setup();
-    const { onSubmit } = renderStep();
+    const { onSubmit } = renderStep({
+      role: "developer",
+      use_case: "coding",
+    });
 
-    // Pick Q1 Other → type → pick Q1 Just me → submit. The submitted
-    // payload should have team_size_other = null (cleared on switch).
+    // Pick Q1 Other → type → switch to Just me → submit.
+    // Submitted payload must have team_size_other = null.
     const q1Other = screen.getAllByRole("radio", { name: /^other$/i })[0]!;
     await user.click(q1Other);
     await user.type(
@@ -92,11 +132,15 @@ describe("StepQuestionnaire", () => {
     );
   });
 
-  it("calls onSubmit with empty answers when the user hits Skip", async () => {
+  it("does not call onSubmit when Continue is disabled", async () => {
+    // Belt-and-suspenders against a future refactor that replaces
+    // <Button disabled> with a custom element that doesn't honor
+    // the native disabled semantics — the handler's own
+    // canContinue short-circuit catches it either way.
     const user = userEvent.setup();
     const { onSubmit } = renderStep();
-    await user.click(screen.getByRole("button", { name: /skip/i }));
-    expect(onSubmit).toHaveBeenCalledWith(EMPTY_ANSWERS);
+    await user.click(screen.getByRole("button", { name: /continue/i }));
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 
   it("respects the initial prop (used for resume-after-back)", () => {
@@ -117,7 +161,9 @@ describe("StepQuestionnaire", () => {
     await user.click(
       screen.getByRole("radio", { name: /software developer/i }),
     );
-    await user.click(screen.getByRole("radio", { name: /write and ship code/i }));
+    await user.click(
+      screen.getByRole("radio", { name: /write and ship code/i }),
+    );
     await user.click(screen.getByRole("button", { name: /continue/i }));
 
     expect(onSubmit).toHaveBeenCalledWith({

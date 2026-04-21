@@ -70,6 +70,10 @@ function LoginPageContent() {
         });
       return;
     }
+    if (!hasOnboarded) {
+      router.replace(paths.onboarding());
+      return;
+    }
     if (nextUrl) {
       router.replace(nextUrl);
       return;
@@ -79,6 +83,10 @@ function LoginPageContent() {
   }, [isLoading, user, router, nextUrl, cliCallbackRaw, isDesktopHandoff, hasOnboarded, qc]);
 
   const handleSuccess = () => {
+    if (!hasOnboarded) {
+      router.push(paths.onboarding());
+      return;
+    }
     if (nextUrl) {
       router.push(nextUrl);
       return;

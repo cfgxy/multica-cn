@@ -29,11 +29,15 @@ import {
  *    prompt when the user picks Other)
  *
  * Continue button logic:
- *  - 0 selections → button reads "Skip", variant outline (zero-
- *    friction path for evaluators per §3.4)
- *  - ≥1 selections → reads "Continue", default variant
- *  - Any question set to "other" but with empty text → disabled
- *    (text is required when Other is picked)
+ *  - All three questions answered (and any "other" has text) →
+ *    enabled
+ *  - Otherwise → disabled. There is no Skip path — the three
+ *    answers drive downstream personalization (Step 4 template,
+ *    Step 5 first-issue prompt, Onboarding Project sub-issue
+ *    ordering), so partial answers would leave holes in every
+ *    subsequent step. "Other" with 80-char free text already
+ *    covers every edge-case user without forcing us to accept
+ *    null fields.
  *
  * The component holds draft answers in local state. The parent only
  * sees the final answer set when the user clicks Continue/Skip —
@@ -79,27 +83,33 @@ export function StepQuestionnaire({
     }));
   };
 
-  const anyAnswered =
-    answers.team_size !== null ||
-    answers.role !== null ||
-    answers.use_case !== null;
-
-  // "Other" picked but text empty ⇒ disable Continue. The only case
-  // where we actively block the user from advancing; blanks / skipped
-  // questions are otherwise fine.
-  const otherIncomplete = useMemo(() => {
-    const q1Bad =
-      answers.team_size === "other" &&
-      (answers.team_size_other ?? "").trim() === "";
-    const q2Bad =
-      answers.role === "other" && (answers.role_other ?? "").trim() === "";
-    const q3Bad =
-      answers.use_case === "other" &&
-      (answers.use_case_other ?? "").trim() === "";
-    return q1Bad || q2Bad || q3Bad;
+  // Two conditions must both hold for the user to advance:
+  //   1. Every question has a concrete selection (no null fields).
+  //   2. For any question where that selection is "other", the
+  //      accompanying free-text field is non-empty.
+  // Together they guarantee onSubmit never receives a partial
+  // payload — every downstream personalization rule can trust the
+  // answers to be complete.
+  const canContinue = useMemo(() => {
+    const allAnswered =
+      answers.team_size !== null &&
+      answers.role !== null &&
+      answers.use_case !== null;
+    if (!allAnswered) return false;
+    const otherIncomplete =
+      (answers.team_size === "other" &&
+        (answers.team_size_other ?? "").trim() === "") ||
+      (answers.role === "other" &&
+        (answers.role_other ?? "").trim() === "") ||
+      (answers.use_case === "other" &&
+        (answers.use_case_other ?? "").trim() === "");
+    return !otherIncomplete;
   }, [answers]);
 
-  const submit = () => onSubmit(answers);
+  const submit = () => {
+    if (!canContinue) return;
+    onSubmit(answers);
+  };
 
   return (
     <div className="flex w-full flex-col items-center gap-8">
@@ -108,8 +118,7 @@ export function StepQuestionnaire({
           Tell us a bit about you
         </h1>
         <p className="text-base text-muted-foreground">
-          Three questions to pick your starter agent and draft your first
-          task. Skip any that don't apply.
+          Three questions to tailor your setup. Pick the best fit for each.
         </p>
       </div>
 
@@ -221,11 +230,10 @@ export function StepQuestionnaire({
       <Button
         size="lg"
         className="w-full"
-        variant={anyAnswered ? "default" : "outline"}
-        disabled={otherIncomplete}
+        disabled={!canContinue}
         onClick={submit}
       >
-        {anyAnswered ? "Continue" : "Skip"}
+        Continue
       </Button>
     </div>
   );

@@ -1,14 +1,12 @@
 "use client";
 
 import { useCallback, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
 import { setCurrentWorkspace } from "@multica/core/platform";
 import { useAuthStore } from "@multica/core/auth";
 import {
   useOnboardingStore,
   type QuestionnaireAnswers,
 } from "@multica/core/onboarding";
-import { workspaceListOptions } from "@multica/core/workspace/queries";
 import type { Agent, AgentRuntime, Workspace } from "@multica/core/types";
 import { StepHeader } from "./components/step-header";
 import { StepWelcome } from "./steps/step-welcome";
@@ -57,8 +55,7 @@ export function OnboardingFlow({
   const complete = useOnboardingStore((s) => s.complete);
   const user = useAuthStore((s) => s.user);
 
-  const { data: workspaces = [] } = useQuery(workspaceListOptions());
-  const runtimeWorkspace = workspace ?? workspaces[0] ?? null;
+  const runtimeWorkspace = workspace;
 
   const handleWelcomeNext = useCallback(() => {
     void advance({ current_step: "questionnaire" });
@@ -79,10 +76,6 @@ export function OnboardingFlow({
   const handleWorkspaceCreated = useCallback((ws: Workspace) => {
     setWorkspace(ws);
     setCurrentWorkspace(ws.slug, ws.id);
-    setStep("runtime");
-  }, []);
-
-  const handleWorkspaceSkip = useCallback(() => {
     setStep("runtime");
   }, []);
 
@@ -139,12 +132,7 @@ export function OnboardingFlow({
         />
       )}
       {step === "workspace" && (
-        <StepWorkspace
-          onCreated={handleWorkspaceCreated}
-          onSkip={
-            workspaces.length > 0 ? handleWorkspaceSkip : undefined
-          }
-        />
+        <StepWorkspace onCreated={handleWorkspaceCreated} />
       )}
       {step === "runtime" && runtimeWorkspace && (
         runtimeInstructions ? (

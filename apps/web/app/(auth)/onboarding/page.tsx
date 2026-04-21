@@ -2,8 +2,14 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { useQuery } from "@tanstack/react-query";
 import { useAuthStore } from "@multica/core/auth";
-import { paths } from "@multica/core/paths";
+import {
+  paths,
+  resolvePostAuthDestination,
+  useHasOnboarded,
+} from "@multica/core/paths";
+import { workspaceListOptions } from "@multica/core/workspace/queries";
 import { CliInstallInstructions, OnboardingFlow } from "@multica/views/onboarding";
 
 /**
@@ -25,6 +31,11 @@ export default function OnboardingPage() {
   const router = useRouter();
   const user = useAuthStore((s) => s.user);
   const isLoading = useAuthStore((s) => s.isLoading);
+  const hasOnboarded = useHasOnboarded();
+  const { data: workspaces = [] } = useQuery({
+    ...workspaceListOptions(),
+    enabled: !!user && hasOnboarded,
+  });
   const [appUrl, setAppUrl] = useState<string | undefined>(undefined);
 
   useEffect(() => {
@@ -32,10 +43,16 @@ export default function OnboardingPage() {
   }, []);
 
   useEffect(() => {
-    if (!isLoading && !user) router.replace(paths.login());
-  }, [isLoading, user, router]);
+    if (isLoading || !user) {
+      if (!isLoading && !user) router.replace(paths.login());
+      return;
+    }
+    if (hasOnboarded) {
+      router.replace(resolvePostAuthDestination(workspaces, hasOnboarded));
+    }
+  }, [isLoading, user, hasOnboarded, workspaces, router]);
 
-  if (isLoading || !user) return null;
+  if (isLoading || !user || hasOnboarded) return null;
 
   // Layout: page owns its own scroll (root layout sets `body {
   // overflow: hidden }` for the app-shell convention). Content is

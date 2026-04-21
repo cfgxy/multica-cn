@@ -127,7 +127,7 @@ Step 5: 🎯 First Issue         ← aha moment，按 Q3 驱动文案
 - ○ My team (2–10 people)
 - ○ Other ⇒ 展开 80 字符文本框
 
-注意：删掉了"Just exploring for now"——它本质是"态度"而不是"人数结构"，和这题的题意不契合；评估型用户的 low-commitment 信号已经通过"全部不选 → Skip"这条路径自动表达。
+注意：删掉了"Just exploring for now"——它本质是"态度"而不是"人数结构"，和这题的题意不契合；评估型用户如果真的选项都不合适，可以通过 Other 写自由文本（"just trying it out" 等）表达。
 
 **Q2：What best describes you?**（单选）
 - ○ Software developer
@@ -143,11 +143,12 @@ Step 5: 🎯 First Issue         ← aha moment，按 Q3 驱动文案
 - ○ Just explore what's possible
 - ○ Other ⇒ 展开 80 字符文本框
 
-**可选提交策略**：
-- 全部不选 → Continue 按钮变 `outline` variant、文案变 "Skip"，允许零摩擦跳过
-- 至少选了一项 → Continue 按钮 `default` variant、文案 "Continue"
-- 选了 Other 但文本框为空 → Continue 禁用（唯一的禁用条件）
+**提交策略（必答）**：
+- Continue 按钮只在**三题全部有具体选择**时启用；否则禁用
+- 任一问题选了 Other 但文本框为空 → 也禁用
 - 从 Other 切回其他选项 → 对应的 `*_other` 字段自动清空
+- **没有 Skip 路径**。理由：三个答案驱动 Step 4 agent template、Step 5 first-issue prompt、Onboarding Project sub-issue 排序；partial 答案会在下游每一步都留洞。Other 自由文本（+ 80 字符上限）已经兜住所有非典型用户，不需要再开 null 这个口子
+- 之前允许"全部不选 Skip"的策略在 commit 中已反悔——实测下来"给自由 = 问卷质量塌方"的风险比"多一点摩擦"更值得警惕
 
 **"Other" 的下游价值——不是兜底，是 escape hatch + 个性化输入**
 

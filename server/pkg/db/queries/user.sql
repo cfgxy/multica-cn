@@ -18,3 +18,10 @@ UPDATE "user" SET
     updated_at = now()
 WHERE id = $1
 RETURNING *;
+
+-- name: MarkUserOnboarded :one
+UPDATE "user" SET
+    onboarded_at = COALESCE(onboarded_at, now()),
+    updated_at = now()
+WHERE id = $1
+RETURNING *;

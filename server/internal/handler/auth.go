@@ -36,22 +36,24 @@ var ErrSignupProhibited = SignupError{Message: "user registration is disabled on
 var ErrEmailNotAllowed = SignupError{Message: "email address or domain not allowed on this instance"}
 
 type UserResponse struct {
-	ID        string  `json:"id"`
-	Name      string  `json:"name"`
-	Email     string  `json:"email"`
-	AvatarURL *string `json:"avatar_url"`
-	CreatedAt string  `json:"created_at"`
-	UpdatedAt string  `json:"updated_at"`
+	ID          string  `json:"id"`
+	Name        string  `json:"name"`
+	Email       string  `json:"email"`
+	AvatarURL   *string `json:"avatar_url"`
+	OnboardedAt *string `json:"onboarded_at"`
+	CreatedAt   string  `json:"created_at"`
+	UpdatedAt   string  `json:"updated_at"`
 }
 
 func userToResponse(u db.User) UserResponse {
 	return UserResponse{
-		ID:        uuidToString(u.ID),
-		Name:      u.Name,
-		Email:     u.Email,
-		AvatarURL: textToPtr(u.AvatarUrl),
-		CreatedAt: timestampToString(u.CreatedAt),
-		UpdatedAt: timestampToString(u.UpdatedAt),
+		ID:          uuidToString(u.ID),
+		Name:        u.Name,
+		Email:       u.Email,
+		AvatarURL:   textToPtr(u.AvatarUrl),
+		OnboardedAt: timestampToPtr(u.OnboardedAt),
+		CreatedAt:   timestampToString(u.CreatedAt),
+		UpdatedAt:   timestampToString(u.UpdatedAt),
 	}
 }
 

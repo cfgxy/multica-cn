@@ -1,6 +1,8 @@
 "use client";
 
 import { create } from "zustand";
+import { api } from "../api";
+import { useAuthStore } from "../auth";
 import type { OnboardingState, QuestionnaireAnswers } from "./types";
 
 const INITIAL_QUESTIONNAIRE: QuestionnaireAnswers = {
@@ -35,18 +37,13 @@ interface OnboardingStoreValue {
 }
 
 /**
- * Dev-phase onboarding store. **Not persisted** — every fresh page load
- * starts at Step 1, which is intentional during frontend development:
- * we want to re-enter the flow on every login to iterate on each step
- * without manual reset.
+ * Session-local UI state for onboarding — questionnaire drafts, step
+ * progress, ephemeral IDs captured as the user moves through the flow.
  *
- * When the backend `user_onboarding` table ships, replace the
- * implementation inside this file with a TanStack Query fetch +
- * PATCH /api/me/onboarding mutation. The exported interface
- * (`advance`, `complete`, `reset`) stays stable so consumer components
- * do not change. `advance`/`complete` already return `Promise<void>`
- * for this reason — today they resolve synchronously, later they'll
- * be real network round-trips.
+ * Note: "am I onboarded?" is NOT sourced here. That signal lives on
+ * `user.onboarded_at` (auth store), which is persisted server-side.
+ * `complete()` hits the server to set that timestamp, then refreshes
+ * the auth store so every trigger sees the new state immediately.
  */
 export const useOnboardingStore = create<OnboardingStoreValue>((set) => ({
   state: INITIAL_STATE,
@@ -54,6 +51,8 @@ export const useOnboardingStore = create<OnboardingStoreValue>((set) => ({
     set((s) => ({ state: { ...s.state, ...patch } }));
   },
   complete: async (patch) => {
+    await api.markOnboardingComplete();
+    await useAuthStore.getState().refreshMe();
     set((s) => ({
       state: {
         ...s.state,
