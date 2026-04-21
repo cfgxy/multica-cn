@@ -32,7 +32,7 @@ export default function OnboardingPage() {
   const user = useAuthStore((s) => s.user);
   const isLoading = useAuthStore((s) => s.isLoading);
   const hasOnboarded = useHasOnboarded();
-  const { data: workspaces = [] } = useQuery({
+  const { data: workspaces = [], isFetched: workspacesFetched } = useQuery({
     ...workspaceListOptions(),
     enabled: !!user && hasOnboarded,
   });
@@ -47,10 +47,10 @@ export default function OnboardingPage() {
       if (!isLoading && !user) router.replace(paths.login());
       return;
     }
-    if (hasOnboarded) {
+    if (hasOnboarded && workspacesFetched) {
       router.replace(resolvePostAuthDestination(workspaces, hasOnboarded));
     }
-  }, [isLoading, user, hasOnboarded, workspaces, router]);
+  }, [isLoading, user, hasOnboarded, workspacesFetched, workspaces, router]);
 
   if (isLoading || !user || hasOnboarded) return null;
 

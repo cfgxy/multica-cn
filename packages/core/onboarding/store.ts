@@ -16,7 +16,6 @@ const INITIAL_QUESTIONNAIRE: QuestionnaireAnswers = {
 
 const INITIAL_STATE: OnboardingState = {
   current_step: "questionnaire",
-  onboarded_at: null,
   questionnaire: INITIAL_QUESTIONNAIRE,
   workspace_id: null,
   runtime_id: null,
@@ -58,7 +57,6 @@ export const useOnboardingStore = create<OnboardingStoreValue>((set) => ({
         ...s.state,
         ...patch,
         current_step: null,
-        onboarded_at: new Date().toISOString(),
       },
     }));
   },

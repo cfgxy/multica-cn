@@ -27,15 +27,15 @@ export function RedirectIfAuthenticated() {
   const isLoading = useAuthStore((s) => s.isLoading);
   const hasOnboarded = useHasOnboarded();
 
-  const { data: list } = useQuery({
+  const { data: list = [], isFetched } = useQuery({
     ...workspaceListOptions(),
     enabled: !!user,
   });
 
   useEffect(() => {
-    if (isLoading || !user || !list) return;
+    if (isLoading || !user || !isFetched) return;
     router.replace(resolvePostAuthDestination(list, hasOnboarded));
-  }, [isLoading, user, list, hasOnboarded, router]);
+  }, [isLoading, user, isFetched, list, hasOnboarded, router]);
 
   return null;
 }

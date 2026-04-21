@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useState } from "react";
+import { toast } from "sonner";
 import { setCurrentWorkspace } from "@multica/core/platform";
 import { useAuthStore } from "@multica/core/auth";
 import {
@@ -101,19 +102,37 @@ export function OnboardingFlow({
     setStep("first_issue");
   }, []);
 
+  // complete() is idempotent server-side (COALESCE on onboarded_at), so a
+  // failed POST or refreshMe surfaces a toast and stays on the current
+  // step for the user to retry. Letting the error bubble would hit the
+  // React error boundary with no recovery path.
   const handleBootstrapDone = useCallback(
     async (firstIssueId: string | null, projectId: string | null) => {
-      await complete({
-        ...(firstIssueId ? { first_issue_id: firstIssueId } : {}),
-        ...(projectId ? { onboarding_project_id: projectId } : {}),
-      });
+      try {
+        await complete({
+          ...(firstIssueId ? { first_issue_id: firstIssueId } : {}),
+          ...(projectId ? { onboarding_project_id: projectId } : {}),
+        });
+      } catch (err) {
+        toast.error(
+          err instanceof Error ? err.message : "Failed to finish onboarding",
+        );
+        return;
+      }
       onComplete(workspace ?? undefined, firstIssueId ?? undefined);
     },
     [complete, workspace, onComplete],
   );
 
   const handleBootstrapSkip = useCallback(async () => {
-    await complete({});
+    try {
+      await complete({});
+    } catch (err) {
+      toast.error(
+        err instanceof Error ? err.message : "Failed to finish onboarding",
+      );
+      return;
+    }
     onComplete(workspace ?? undefined);
   }, [complete, workspace, onComplete]);
 

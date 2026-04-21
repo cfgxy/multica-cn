@@ -83,7 +83,11 @@ function LoginPageContent() {
   }, [isLoading, user, router, nextUrl, cliCallbackRaw, isDesktopHandoff, hasOnboarded, qc]);
 
   const handleSuccess = () => {
-    if (!hasOnboarded) {
+    // Read the latest user snapshot directly — the closure's `hasOnboarded`
+    // was captured before login completed and would be stale here.
+    const currentUser = useAuthStore.getState().user;
+    const onboarded = currentUser?.onboarded_at != null;
+    if (!onboarded) {
       router.push(paths.onboarding());
       return;
     }
@@ -91,10 +95,8 @@ function LoginPageContent() {
       router.push(nextUrl);
       return;
     }
-    // The LoginPage view populates the workspace list cache before calling
-    // onSuccess, so it's safe to read here.
     const list = qc.getQueryData<Workspace[]>(workspaceKeys.list()) ?? [];
-    router.push(resolvePostAuthDestination(list, hasOnboarded));
+    router.push(resolvePostAuthDestination(list, onboarded));
   };
 
   // Build Google OAuth state: encode platform + next URL so the callback

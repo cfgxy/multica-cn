@@ -57,7 +57,6 @@ export interface QuestionnaireAnswers {
 
 export interface OnboardingState {
   current_step: OnboardingStep | null;
-  onboarded_at: string | null;
 
   questionnaire: QuestionnaireAnswers;
 
