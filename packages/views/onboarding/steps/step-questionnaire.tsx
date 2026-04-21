@@ -59,20 +59,26 @@ export function StepQuestionnaire({
       use_case_other: v === "other" ? a.use_case_other : null,
     }));
 
-  const canContinue = useMemo(() => {
-    const allAnswered =
+  // A question counts as "answered" when it has a concrete selection,
+  // and — if that selection is "other" — its free-text field is non-empty.
+  // Same rule that used to drive canContinue; we compute the per-question
+  // booleans once here and derive both the count (footer indicator) and
+  // the overall gate from it.
+  const answeredCount = useMemo(() => {
+    const q1 =
       answers.team_size !== null &&
+      (answers.team_size !== "other" ||
+        (answers.team_size_other ?? "").trim() !== "");
+    const q2 =
       answers.role !== null &&
-      answers.use_case !== null;
-    if (!allAnswered) return false;
-    const otherIncomplete =
-      (answers.team_size === "other" &&
-        (answers.team_size_other ?? "").trim() === "") ||
-      (answers.role === "other" && (answers.role_other ?? "").trim() === "") ||
-      (answers.use_case === "other" &&
-        (answers.use_case_other ?? "").trim() === "");
-    return !otherIncomplete;
+      (answers.role !== "other" || (answers.role_other ?? "").trim() !== "");
+    const q3 =
+      answers.use_case !== null &&
+      (answers.use_case !== "other" ||
+        (answers.use_case_other ?? "").trim() !== "");
+    return (q1 ? 1 : 0) + (q2 ? 1 : 0) + (q3 ? 1 : 0);
   }, [answers]);
+  const canContinue = answeredCount === 3;
 
   const submit = async () => {
     if (!canContinue || submitting) return;
@@ -235,16 +241,18 @@ export function StepQuestionnaire({
           </div>
         </main>
 
-        {/* Fixed footer — hint + Continue */}
-        <footer className="flex shrink-0 items-center justify-between gap-4 bg-background px-6 py-4 sm:px-10 md:px-14 lg:px-16">
-          <span className="hidden text-xs text-muted-foreground sm:block">
-            Your answers shape the next screens. You can change anything later.
+        {/* Fixed footer — progress counter + Continue */}
+        <footer className="flex shrink-0 items-center justify-end gap-4 bg-background px-6 py-4 sm:px-10 md:px-14 lg:px-16">
+          <span
+            aria-live="polite"
+            className="text-xs tabular-nums text-muted-foreground"
+          >
+            {answeredCount} of 3 answered
           </span>
           <Button
             size="lg"
             disabled={!canContinue || submitting}
             onClick={submit}
-            className="ml-auto"
           >
             {submitting && <Loader2 className="h-4 w-4 animate-spin" />}
             Continue
