@@ -87,7 +87,7 @@ export function StepQuestionnaire({
       <div className="flex min-h-0 flex-col">
         <DragStrip />
         {/* Fixed header — Back + progress indicator */}
-        <header className="flex shrink-0 items-center gap-4 border-b bg-background px-6 py-3 sm:px-10 md:px-14 lg:px-16">
+        <header className="flex shrink-0 items-center gap-4 bg-background px-6 py-3 sm:px-10 md:px-14 lg:px-16">
           {onBack ? (
             <button
               type="button"
@@ -226,7 +226,7 @@ export function StepQuestionnaire({
         </main>
 
         {/* Fixed footer — hint + Continue */}
-        <footer className="flex shrink-0 items-center justify-between gap-4 border-t bg-background px-6 py-4 sm:px-10 md:px-14 lg:px-16">
+        <footer className="flex shrink-0 items-center justify-between gap-4 bg-background px-6 py-4 sm:px-10 md:px-14 lg:px-16">
           <span className="hidden text-xs text-muted-foreground sm:block">
             Your answers shape the next screens. You can change anything later.
           </span>
