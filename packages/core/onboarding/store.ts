@@ -15,50 +15,34 @@ const INITIAL_QUESTIONNAIRE: QuestionnaireAnswers = {
 };
 
 const INITIAL_STATE: OnboardingState = {
-  current_step: "questionnaire",
+  current_step: "welcome",
   questionnaire: INITIAL_QUESTIONNAIRE,
-  workspace_id: null,
-  runtime_id: null,
-  agent_id: null,
-  first_issue_id: null,
-  onboarding_project_id: null,
-  platform_preference: null,
 };
 
 interface OnboardingStoreValue {
   state: OnboardingState;
   advance: (patch: Partial<OnboardingState>) => Promise<void>;
-  complete: (patch: {
-    first_issue_id?: string;
-    onboarding_project_id?: string;
-  }) => Promise<void>;
+  complete: () => Promise<void>;
   reset: () => void;
 }
 
 /**
- * Session-local UI state for onboarding — questionnaire drafts, step
- * progress, ephemeral IDs captured as the user moves through the flow.
+ * Session-local UI state for the onboarding state machine:
+ *   - current_step: where the user is in the flow
+ *   - questionnaire: Q1/Q2/Q3 draft answers
  *
- * Note: "am I onboarded?" is NOT sourced here. That signal lives on
- * `user.onboarded_at` (auth store), which is persisted server-side.
- * `complete()` hits the server to set that timestamp, then refreshes
- * the auth store so every trigger sees the new state immediately.
+ * "Am I onboarded?" does NOT live here. That signal is
+ * user.onboarded_at on the auth store (server-persisted).
  */
 export const useOnboardingStore = create<OnboardingStoreValue>((set) => ({
   state: INITIAL_STATE,
   advance: async (patch) => {
     set((s) => ({ state: { ...s.state, ...patch } }));
   },
-  complete: async (patch) => {
+  complete: async () => {
     await api.markOnboardingComplete();
     await useAuthStore.getState().refreshMe();
-    set((s) => ({
-      state: {
-        ...s.state,
-        ...patch,
-        current_step: null,
-      },
-    }));
+    set((s) => ({ state: { ...s.state, current_step: null } }));
   },
   reset: () => set({ state: INITIAL_STATE }),
 }));

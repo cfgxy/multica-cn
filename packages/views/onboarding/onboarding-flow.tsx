@@ -6,6 +6,7 @@ import { setCurrentWorkspace } from "@multica/core/platform";
 import { useAuthStore } from "@multica/core/auth";
 import {
   useOnboardingStore,
+  type OnboardingStep,
   type QuestionnaireAnswers,
 } from "@multica/core/onboarding";
 import type { Agent, AgentRuntime, Workspace } from "@multica/core/types";
@@ -18,23 +19,8 @@ import { StepPlatformFork } from "./steps/step-platform-fork";
 import { StepAgent } from "./steps/step-agent";
 import { StepFirstIssue } from "./steps/step-first-issue";
 
-export type OnboardingStep =
-  | "welcome"
-  | "questionnaire"
-  | "workspace"
-  | "runtime"
-  | "agent"
-  | "first_issue";
-
 function pickInitialStep(): OnboardingStep {
-  const s = useOnboardingStore.getState().state;
-  const pristine =
-    s.current_step === "questionnaire" &&
-    s.questionnaire.team_size === null &&
-    s.questionnaire.role === null &&
-    s.questionnaire.use_case === null;
-  if (pristine) return "welcome";
-  return s.current_step ?? "welcome";
+  return useOnboardingStore.getState().state.current_step ?? "welcome";
 }
 
 export function OnboardingFlow({
@@ -56,6 +42,14 @@ export function OnboardingFlow({
   const complete = useOnboardingStore((s) => s.complete);
   const user = useAuthStore((s) => s.user);
 
+  // OnboardingFlow is only rendered when the shell has resolved
+  // `user` to a non-null value (web page guard, desktop overlay effect).
+  // Callers that violate this surface an obvious error instead of
+  // silently degrading (e.g. unassigned sub-issues).
+  if (!user) {
+    throw new Error("OnboardingFlow requires an authenticated user");
+  }
+
   const runtimeWorkspace = workspace;
 
   const handleWelcomeNext = useCallback(() => {
@@ -74,45 +68,50 @@ export function OnboardingFlow({
     [advance],
   );
 
-  const handleWorkspaceCreated = useCallback((ws: Workspace) => {
-    setWorkspace(ws);
-    setCurrentWorkspace(ws.slug, ws.id);
-    setStep("runtime");
-  }, []);
+  const handleWorkspaceCreated = useCallback(
+    (ws: Workspace) => {
+      setWorkspace(ws);
+      setCurrentWorkspace(ws.slug, ws.id);
+      void advance({ current_step: "runtime" });
+      setStep("runtime");
+    },
+    [advance],
+  );
 
-  const handleRuntimeNext = useCallback((rt: AgentRuntime | null) => {
-    setRuntime(rt);
-    // No runtime → no agent possible. Converge into first_issue step
-    // with agent=null; bootstrap runs the self-serve path.
-    if (!rt) {
+  const handleRuntimeNext = useCallback(
+    (rt: AgentRuntime | null) => {
+      setRuntime(rt);
+      // No runtime → no agent possible; converge to first_issue step
+      // with agent=null and let bootstrap run the self-serve path.
+      const next: OnboardingStep = rt ? "agent" : "first_issue";
+      void advance({ current_step: next });
+      setStep(next);
+    },
+    [advance],
+  );
+
+  const handleAgentCreated = useCallback(
+    (created: Agent) => {
+      setAgent(created);
+      void advance({ current_step: "first_issue" });
       setStep("first_issue");
-      return;
-    }
-    setStep("agent");
-  }, []);
-
-  const handleAgentCreated = useCallback((created: Agent) => {
-    setAgent(created);
-    setStep("first_issue");
-  }, []);
+    },
+    [advance],
+  );
 
   const handleAgentSkip = useCallback(() => {
-    // Same convergence point as no-runtime: first_issue step,
-    // bootstrap runs self-serve path.
+    void advance({ current_step: "first_issue" });
     setStep("first_issue");
-  }, []);
+  }, [advance]);
 
   // complete() is idempotent server-side (COALESCE on onboarded_at), so a
-  // failed POST or refreshMe surfaces a toast and stays on the current
-  // step for the user to retry. Letting the error bubble would hit the
-  // React error boundary with no recovery path.
+  // failed call surfaces a toast and stays on the current step for retry.
+  // Letting the error bubble would hit the React error boundary with no
+  // recovery path.
   const handleBootstrapDone = useCallback(
-    async (firstIssueId: string | null, projectId: string | null) => {
+    async (firstIssueId: string | null) => {
       try {
-        await complete({
-          ...(firstIssueId ? { first_issue_id: firstIssueId } : {}),
-          ...(projectId ? { onboarding_project_id: projectId } : {}),
-        });
+        await complete();
       } catch (err) {
         toast.error(
           err instanceof Error ? err.message : "Failed to finish onboarding",
@@ -126,7 +125,7 @@ export function OnboardingFlow({
 
   const handleBootstrapSkip = useCallback(async () => {
     try {
-      await complete({});
+      await complete();
     } catch (err) {
       toast.error(
         err instanceof Error ? err.message : "Failed to finish onboarding",
@@ -135,7 +134,6 @@ export function OnboardingFlow({
     }
     onComplete(workspace ?? undefined);
   }, [complete, workspace, onComplete]);
-
 
   if (step === "welcome") {
     return <StepWelcome onNext={handleWelcomeNext} />;
@@ -179,8 +177,8 @@ export function OnboardingFlow({
           agent={agent}
           workspace={runtimeWorkspace}
           questionnaire={storedQuestionnaire}
-          userName={user?.name ?? user?.email ?? ""}
-          userId={user?.id ?? ""}
+          userName={user.name || user.email}
+          userId={user.id}
           onDone={handleBootstrapDone}
           onSkip={handleBootstrapSkip}
         />
@@ -188,3 +186,5 @@ export function OnboardingFlow({
     </div>
   );
 }
+
+export type { OnboardingStep };

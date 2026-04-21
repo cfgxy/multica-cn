@@ -95,6 +95,8 @@ function WindowOverlayInner() {
                     push(paths.workspace(ws.slug).issueDetail(firstIssueId));
                   } else if (ws) {
                     push(paths.workspace(ws.slug).issues());
+                  } else {
+                    push(paths.root());
                   }
                 }}
               />

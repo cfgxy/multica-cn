@@ -26,7 +26,7 @@ export function StepFirstIssue({
   questionnaire: QuestionnaireAnswers;
   userName: string;
   userId: string;
-  onDone: (firstIssueId: string | null, projectId: string | null) => void;
+  onDone: (firstIssueId: string | null) => void;
   onSkip: () => void;
 }) {
   const [phase, setPhase] = useState<Phase>({ status: "running" });
@@ -55,7 +55,7 @@ export function StepFirstIssue({
 
   useEffect(() => {
     if (phase.status === "done") {
-      onDone(phase.firstIssueId, phase.projectId);
+      onDone(phase.firstIssueId);
     }
   }, [phase, onDone]);
 
