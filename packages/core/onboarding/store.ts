@@ -4,9 +4,12 @@ import { create } from "zustand";
 import type { OnboardingState, QuestionnaireAnswers } from "./types";
 
 const INITIAL_QUESTIONNAIRE: QuestionnaireAnswers = {
-  existing_agents: [],
   team_size: null,
+  team_size_other: null,
+  role: null,
+  role_other: null,
   use_case: null,
+  use_case_other: null,
 };
 
 const INITIAL_STATE: OnboardingState = {

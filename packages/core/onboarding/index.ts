@@ -3,6 +3,7 @@ export type {
   OnboardingStep,
   QuestionnaireAnswers,
   TeamSize,
+  Role,
   UseCase,
   PlatformPreference,
 } from "./types";
