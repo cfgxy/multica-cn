@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { setCurrentWorkspace } from "@multica/core/platform";
 import { useAuthStore } from "@multica/core/auth";
@@ -11,6 +12,8 @@ import {
   type OnboardingStep,
   type QuestionnaireAnswers,
 } from "@multica/core/onboarding";
+import { workspaceListOptions } from "@multica/core/workspace/queries";
+import { runtimeListOptions } from "@multica/core/runtimes/queries";
 import type { Agent, AgentRuntime, Workspace } from "@multica/core/types";
 import { StepHeader } from "./components/step-header";
 import { StepWelcome } from "./steps/step-welcome";
@@ -85,7 +88,34 @@ export function OnboardingFlow({
   const [runtime, setRuntime] = useState<AgentRuntime | null>(null);
   const [agent, setAgent] = useState<Agent | null>(null);
 
-  const runtimeWorkspace = workspace;
+  // Resume fallback: if the user comes back mid-flow (Step 3+) after a
+  // tab close, local React state is empty but the server has their
+  // workspace. Use the first workspace from the query cache as a
+  // sensible default so steps downstream of workspace creation can
+  // render. Users only ever have one workspace during onboarding
+  // (StepWorkspace always creates one), so "first" is unambiguous.
+  const { data: workspaces = [] } = useQuery({
+    ...workspaceListOptions(),
+    enabled: step !== "welcome" && step !== "questionnaire",
+    // Resume scenario: user lands on Step 2+ from server state, but
+    // local workspace state is empty. Pull from cache / network to
+    // seed `runtimeWorkspace` so downstream step render conditions
+    // (which require runtimeWorkspace) don't gate.
+  });
+  const runtimeWorkspace = workspace ?? workspaces[0] ?? null;
+
+  // Same resume-fallback logic for the runtime: if the user lands on
+  // Step 4 from stored progress, `runtime` React state is empty. Read
+  // "my" runtimes from cache and prefer the first online one.
+  const { data: runtimes = [] } = useQuery({
+    ...runtimeListOptions(runtimeWorkspace?.id ?? "", "me"),
+    enabled: !!runtimeWorkspace && step === "agent",
+  });
+  const stepRuntime =
+    runtime ??
+    runtimes.find((r) => r.status === "online") ??
+    runtimes[0] ??
+    null;
 
   // Advance `furthestStepRef` monotonically. Returns the step to
   // actually move the user to after a submit: either the next step
@@ -228,6 +258,7 @@ export function OnboardingFlow({
       )}
       {step === "workspace" && (
         <StepWorkspace
+          existing={runtimeWorkspace}
           onCreated={handleWorkspaceCreated}
           onBack={() => handleBack("workspace")}
         />
@@ -248,9 +279,9 @@ export function OnboardingFlow({
           />
         )
       )}
-      {step === "agent" && runtime && (
+      {step === "agent" && stepRuntime && (
         <StepAgent
-          runtime={runtime}
+          runtime={stepRuntime}
           onCreated={handleAgentCreated}
           onSkip={handleAgentSkip}
           onBack={() => handleBack("agent")}
