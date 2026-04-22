@@ -227,7 +227,7 @@ export const en: LandingDict = {
           { label: "Features", href: "#features" },
           { label: "How it Works", href: "#how-it-works" },
           { label: "Changelog", href: "/changelog" },
-          { label: "Desktop", href: "https://github.com/multica-ai/multica/releases/latest" },
+          { label: "Download", href: "/download" },
         ],
       },
       resources: {
@@ -725,5 +725,89 @@ export const en: LandingDict = {
         ],
       },
     ],
+  },
+
+  download: {
+    hero: {
+      macArm64: {
+        title: "Multica for macOS",
+        sub: "Apple Silicon · bundled daemon, zero setup",
+        primary: "Download (.dmg)",
+        altZip: "or download .zip",
+      },
+      macIntel: {
+        title: "Multica for macOS",
+        sub: "Apple Silicon required — Intel Macs not yet supported.",
+        disabledCta: "Apple Silicon required",
+        intelHint:
+          "On an Intel Mac? Use the CLI below — it runs the same daemon.",
+      },
+      winX64: {
+        title: "Multica for Windows",
+        sub: "Bundled daemon, zero setup",
+        primary: "Download (.exe)",
+      },
+      winArm64: {
+        title: "Multica for Windows",
+        sub: "ARM · bundled daemon, zero setup",
+        primary: "Download (.exe)",
+      },
+      linux: {
+        title: "Multica for Linux",
+        sub: "Bundled daemon, zero setup",
+        primary: "Download AppImage",
+        altFormats: "or .deb / .rpm",
+      },
+      unknown: {
+        title: "Choose your platform",
+        sub: "All installers are listed below.",
+      },
+      safariMacHint: "On an Intel Mac? Use the CLI below.",
+      archFallbackHint:
+        "Wrong architecture? See all formats below.",
+    },
+    allPlatforms: {
+      title: "All platforms",
+      macLabel: "macOS · Apple Silicon",
+      winX64Label: "Windows · x64",
+      winArm64Label: "Windows · ARM64",
+      linuxX64Label: "Linux · x64",
+      linuxArm64Label: "Linux · ARM64",
+      formatDmg: ".dmg",
+      formatZip: ".zip",
+      formatExe: ".exe",
+      formatAppImage: ".AppImage",
+      formatDeb: ".deb",
+      formatRpm: ".rpm",
+      intelNote:
+        "Apple Silicon only — Intel Macs not supported in this release.",
+      unavailable: "Not available",
+    },
+    cli: {
+      title: "Prefer the CLI?",
+      sub: "For servers, remote dev boxes, and headless setups. Same daemon as Desktop, installed via terminal.",
+      installLabel: "Install",
+      startLabel: "Start daemon",
+      sshNote: "Already on a server? Same commands work over SSH.",
+      copyLabel: "Copy",
+      copiedLabel: "Copied",
+    },
+    cloud: {
+      title: "Cloud runtime (waitlist)",
+      sub: "We’ll host the runtime for you. Not live yet — leave your email to be notified.",
+    },
+    footer: {
+      releaseNotes: "What’s new in {version}",
+      allReleases: "View all releases",
+      currentVersion: "Current version: {version}",
+      versionUnavailable: "Version unavailable — check GitHub",
+    },
+  },
+
+  auth: {
+    login: {
+      extraDownloadPrompt: "Prefer the desktop app?",
+      extraDownloadCta: "Download",
+    },
   },
 };

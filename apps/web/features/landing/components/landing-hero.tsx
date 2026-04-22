@@ -42,9 +42,7 @@ export function LandingHero() {
                 {user ? t.header.dashboard : t.hero.cta}
               </Link>
               <Link
-                href="https://github.com/multica-ai/multica/releases/latest"
-                target="_blank"
-                rel="noreferrer"
+                href="/download"
                 className={heroButtonClassName("ghost")}
               >
                 <svg
