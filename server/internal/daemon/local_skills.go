@@ -156,11 +156,21 @@ func collectLocalSkillFiles(skillDir string, includeContent bool) ([]SkillFileDa
 	files := make([]SkillFileData, 0)
 	var totalSize int64
 
-	err := filepath.WalkDir(skillDir, func(path string, entry fs.DirEntry, walkErr error) error {
+	// filepath.WalkDir does not follow a symlinked root, so when the runtime
+	// root contains symlinks into a shared skill installer (e.g. lark-cli's
+	// ~/.agents/skills/<name>) walking from the symlink path enumerates zero
+	// children and every such skill ends up reporting 0 files. Resolve the
+	// real path first so the walk descends into the actual directory.
+	walkRoot := skillDir
+	if resolved, err := filepath.EvalSymlinks(skillDir); err == nil {
+		walkRoot = resolved
+	}
+
+	err := filepath.WalkDir(walkRoot, func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return nil
 		}
-		if path == skillDir {
+		if path == walkRoot {
 			return nil
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
@@ -179,7 +189,7 @@ func collectLocalSkillFiles(skillDir string, includeContent bool) ([]SkillFileDa
 			return nil
 		}
 
-		rel, err := filepath.Rel(skillDir, path)
+		rel, err := filepath.Rel(walkRoot, path)
 		if err != nil {
 			return nil
 		}
@@ -234,67 +244,69 @@ func listRuntimeLocalSkills(provider string) ([]runtimeLocalSkillSummary, bool, 
 		return nil, true, err
 	}
 
-	skills := make([]runtimeLocalSkillSummary, 0)
-	err = filepath.WalkDir(root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil
+	// Top-level enumeration only — Claude / Codex / etc. skill roots are
+	// flat directories of `<skill-name>/SKILL.md`. ReadDir + os.Stat (which
+	// follows symlinks) lets us pick up symlinked skill packages too —
+	// installers like lark-cli ship every skill as a symlink into
+	// ~/.agents/skills/, and the previous filepath.WalkDir path silently
+	// dropped all of them because fs.DirEntry sees the entry as a symlink,
+	// not a directory.
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, true, err
+	}
+
+	skills := make([]runtimeLocalSkillSummary, 0, len(entries))
+	for _, entry := range entries {
+		name := entry.Name()
+		if isIgnoredLocalSkillEntry(name) {
+			continue
 		}
-		if path == root {
-			return nil
-		}
-		if entry.Type()&os.ModeSymlink != 0 {
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if !entry.IsDir() {
-			return nil
-		}
-		if isIgnoredLocalSkillEntry(entry.Name()) {
-			return filepath.SkipDir
+
+		path := filepath.Join(root, name)
+		info, statErr := os.Stat(path) // follows symlinks
+		if statErr != nil || !info.IsDir() {
+			continue
 		}
 
 		mainPath := filepath.Join(path, "SKILL.md")
 		if _, err := os.Stat(mainPath); err != nil {
-			return nil
+			continue
 		}
 
-		rel, err := filepath.Rel(root, path)
+		key, err := normalizeLocalSkillKey(name)
 		if err != nil {
-			return filepath.SkipDir
-		}
-		key, err := normalizeLocalSkillKey(rel)
-		if err != nil {
-			return filepath.SkipDir
+			continue
 		}
 
 		content, err := readLocalSkillMainFile(path)
 		if err != nil {
-			return filepath.SkipDir
+			continue
 		}
-		name, description := parseLocalSkillFrontmatter(content)
-		if name == "" {
-			name = filepath.Base(path)
+		skillName, description := parseLocalSkillFrontmatter(content)
+		if skillName == "" {
+			skillName = name
 		}
 
 		files, err := collectLocalSkillFiles(path, false)
 		if err != nil {
-			return filepath.SkipDir
+			continue
 		}
 
 		skills = append(skills, runtimeLocalSkillSummary{
 			Key:         key,
-			Name:        name,
+			Name:        skillName,
 			Description: description,
 			SourcePath:  relativizeHomePath(path),
 			Provider:    provider,
-			FileCount:   len(files),
+			// `files` is the supporting bundle (collectLocalSkillFiles
+			// intentionally excludes SKILL.md so the bundle's `Content`
+			// field can carry it without duplication on import). For the
+			// list summary the user expects the total file count, so add
+			// one back for SKILL.md itself — every valid skill has it,
+			// we already required it above.
+			FileCount: len(files) + 1,
 		})
-		return filepath.SkipDir
-	})
-	if err != nil {
-		return nil, true, err
 	}
 
 	sort.Slice(skills, func(i, j int) bool {
