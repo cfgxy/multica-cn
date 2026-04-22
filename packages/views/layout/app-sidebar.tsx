@@ -36,7 +36,6 @@ import { ActorAvatar } from "@multica/ui/components/common/actor-avatar";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@multica/ui/components/ui/tooltip";
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@multica/ui/components/ui/collapsible";
 import { StatusIcon } from "../issues/components/status-icon";
-import type { IssueStatus } from "@multica/core/types";
 import { useIssueDraftStore } from "@multica/core/issues/stores/draft-store";
 import {
   Sidebar,
@@ -75,6 +74,8 @@ import { useModalStore } from "@multica/core/modals";
 import { useMyRuntimesNeedUpdate } from "@multica/core/runtimes/hooks";
 import { pinListOptions } from "@multica/core/pins/queries";
 import { useDeletePin, useReorderPins } from "@multica/core/pins/mutations";
+import { issueDetailOptions } from "@multica/core/issues/queries";
+import { projectDetailOptions } from "@multica/core/projects/queries";
 import type { PinnedItem } from "@multica/core/types";
 import { useLogout } from "../auth";
 
@@ -126,7 +127,27 @@ function DraftDot() {
   return <span className="absolute top-0 right-0 size-1.5 rounded-full bg-brand" />;
 }
 
-function SortablePinItem({ pin, href, pathname, onUnpin }: { pin: PinnedItem; href: string; pathname: string; onUnpin: () => void }) {
+/**
+ * Presentational pin row. The `label` and `iconNode` are computed by the
+ * parent `PinRow` from cached issue / project detail queries — keeping
+ * this component dumb means the dnd-kit / navigation wiring lives in
+ * one place and the data flow is explicit.
+ */
+function SortablePinItem({
+  pin,
+  href,
+  pathname,
+  onUnpin,
+  label,
+  iconNode,
+}: {
+  pin: PinnedItem;
+  href: string;
+  pathname: string;
+  onUnpin: () => void;
+  label: string;
+  iconNode: React.ReactNode;
+}) {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: pin.id });
   const wasDragged = useRef(false);
 
@@ -136,7 +157,6 @@ function SortablePinItem({ pin, href, pathname, onUnpin }: { pin: PinnedItem; hr
 
   const style = { transform: CSS.Transform.toString(transform), transition };
   const isActive = pathname === href;
-  const label = pin.item_type === "issue" && pin.identifier ? `${pin.identifier} ${pin.title}` : pin.title;
 
   return (
     <SidebarMenuItem
@@ -162,12 +182,7 @@ function SortablePinItem({ pin, href, pathname, onUnpin }: { pin: PinnedItem; hr
           isDragging && "pointer-events-none",
         )}
       >
-        {pin.item_type === "issue" && pin.status ? (
-          /* Override parent [&_svg]:size-4 — pinned items need smaller icons to match sm size */
-          <StatusIcon status={pin.status as IssueStatus} className="!size-3.5 shrink-0" />
-        ) : (
-          <span className="flex size-3.5 shrink-0 items-center justify-center text-xs leading-none">{pin.icon || "📁"}</span>
-        )}
+        {iconNode}
         <span
           className="min-w-0 flex-1 overflow-hidden whitespace-nowrap"
           style={{
@@ -190,6 +205,91 @@ function SortablePinItem({ pin, href, pathname, onUnpin }: { pin: PinnedItem; hr
           <TooltipContent side="top" sideOffset={4}>Unpin</TooltipContent>
         </Tooltip>
       </SidebarMenuButton>
+    </SidebarMenuItem>
+  );
+}
+
+/**
+ * Smart wrapper that resolves a pin's display data (label + status/icon)
+ * from the issue / project detail query cache. Both queries are declared
+ * unconditionally with `enabled` gates so the hook order stays stable
+ * regardless of `pin.item_type`.
+ *
+ * Loading: render a flat skeleton so the sidebar height doesn't jump.
+ * Missing (deleted item / 404): render nothing — the row hides itself
+ * until the user unpins manually or a server-side cascade catches up.
+ */
+function PinRow({
+  pin,
+  href,
+  pathname,
+  onUnpin,
+  wsId,
+}: {
+  pin: PinnedItem;
+  href: string;
+  pathname: string;
+  onUnpin: () => void;
+  wsId: string;
+}) {
+  const isIssue = pin.item_type === "issue";
+  const issueQuery = useQuery({
+    ...issueDetailOptions(wsId, pin.item_id),
+    enabled: isIssue,
+  });
+  const projectQuery = useQuery({
+    ...projectDetailOptions(wsId, pin.item_id),
+    enabled: !isIssue,
+  });
+
+  if (isIssue) {
+    if (issueQuery.isPending) return <PinSkeleton />;
+    if (issueQuery.isError || !issueQuery.data) return null;
+    const issue = issueQuery.data;
+    const label = issue.identifier ? `${issue.identifier} ${issue.title}` : issue.title;
+    const iconNode = (
+      /* Override parent [&_svg]:size-4 — pinned items need smaller icons to match sm size */
+      <StatusIcon status={issue.status} className="!size-3.5 shrink-0" />
+    );
+    return (
+      <SortablePinItem
+        pin={pin}
+        href={href}
+        pathname={pathname}
+        onUnpin={onUnpin}
+        label={label}
+        iconNode={iconNode}
+      />
+    );
+  }
+
+  if (projectQuery.isPending) return <PinSkeleton />;
+  if (projectQuery.isError || !projectQuery.data) return null;
+  const project = projectQuery.data;
+  const iconNode = (
+    <span className="flex size-3.5 shrink-0 items-center justify-center text-xs leading-none">
+      {project.icon || "📁"}
+    </span>
+  );
+  return (
+    <SortablePinItem
+      pin={pin}
+      href={href}
+      pathname={pathname}
+      onUnpin={onUnpin}
+      label={project.title}
+      iconNode={iconNode}
+    />
+  );
+}
+
+function PinSkeleton() {
+  return (
+    <SidebarMenuItem>
+      <div className="flex h-7 w-full items-center gap-2 px-2">
+        <div className="size-3.5 shrink-0 rounded-sm bg-sidebar-accent/40" />
+        <div className="h-3 w-24 rounded bg-sidebar-accent/40" />
+      </div>
     </SidebarMenuItem>
   );
 }
@@ -493,12 +593,13 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                       <SortableContext items={localPinned.map((p) => p.id)} strategy={verticalListSortingStrategy}>
                         <SidebarMenu className="gap-0.5">
                           {localPinned.map((pin: PinnedItem) => (
-                            <SortablePinItem
+                            <PinRow
                               key={pin.id}
                               pin={pin}
                               href={pin.item_type === "issue" ? p.issueDetail(pin.item_id) : p.projectDetail(pin.item_id)}
                               pathname={pathname}
                               onUnpin={() => deletePin.mutate({ itemType: pin.item_type, itemId: pin.item_id })}
+                              wsId={wsId ?? ""}
                             />
                           ))}
                         </SidebarMenu>
