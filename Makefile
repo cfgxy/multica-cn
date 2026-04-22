@@ -150,7 +150,7 @@ db-down: ## Stop the shared PostgreSQL container without removing its Docker vol
 # Use for a clean slate in local dev. Only affects the DB named in
 # ENV_FILE (POSTGRES_DB); the shared postgres container and other
 # worktree DBs are untouched. Refuses to run against a remote host.
-db-reset:
+db-reset: ## Drop and recreate the current env's database, then re-run all migrations
 	$(REQUIRE_ENV)
 	@case "$(DATABASE_URL)" in \
 		""|*@localhost:*|*@localhost/*|*@127.0.0.1:*|*@127.0.0.1/*|*@\[::1\]:*|*@\[::1\]/*) ;; \
