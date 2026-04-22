@@ -13,6 +13,18 @@ vi.mock("@multica/core/hooks", () => ({
   useWorkspaceId: () => "ws-1",
 }));
 
+// The runtime selector now filters to runtimes owned by the current user
+// to mirror the Runtimes page's "Mine" default. Stub useAuthStore so the
+// panel sees user-1 — the owner of the seeded runtime in beforeEach.
+vi.mock("@multica/core/auth", () => {
+  const stateUser = { id: "user-1", email: "u@example.com", name: "User" };
+  const useAuthStore = (selector?: any) => {
+    const state = { user: stateUser };
+    return selector ? selector(state) : state;
+  };
+  return { useAuthStore };
+});
+
 vi.mock("@multica/core/api", () => ({
   api: {
     listSkills: (...args: unknown[]) => mockListSkills(...args),
@@ -133,15 +145,20 @@ describe("SkillsPage", () => {
     });
   });
 
-  it("opens the runtime import dialog and imports a local skill", async () => {
+  it("imports a local skill via the From Runtime tab in the Add Skill dialog", async () => {
     renderSkillsPage();
 
-    const importButtons = await screen.findAllByRole("button", {
-      name: /Import From Runtime/i,
-    });
-    fireEvent.click(importButtons[0]!);
+    // Old flow had a dedicated "Import From Runtime" button. The dialog
+    // now has a single "+ Add skill" entry point with three tabs; the
+    // empty-state row also surfaces the same "Add Skill" button. Either
+    // opens the unified dialog.
+    const addButtons = await screen.findAllByRole("button", { name: /Add Skill/i });
+    fireEvent.click(addButtons[0]!);
 
-    expect(await screen.findByText("Import Runtime Skill")).toBeInTheDocument();
+    expect(await screen.findByText("Add Workspace Skill")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: /From Runtime/i }));
+
     expect(await screen.findByText("Review Helper")).toBeInTheDocument();
 
     const importButton = screen.getByRole("button", {
