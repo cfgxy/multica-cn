@@ -100,20 +100,24 @@ function useInternalLinkHandler() {
 /**
  * Bridge between the renderer and the Electron main process for inbox-level
  * OS integration. Mounted inside WorkspaceSlugProvider so it can resolve the
- * current workspace's id for the badge hook and its slug for click-routing.
+ * current workspace's id for the badge hook.
  *
  * Two responsibilities:
  *   1. Mirror the unread inbox count onto the dock/taskbar badge.
- *   2. When the user clicks an OS notification, open a new tab on the
- *      workspace's inbox focused on the notified item.
+ *   2. When the user clicks an OS notification, open the notified
+ *      workspace's inbox focused on that item. The route uses the `slug`
+ *      that the notification was *emitted* with — not the currently active
+ *      workspace — so a notification from workspace A always opens A's
+ *      inbox even if the user has since switched to workspace B. Marking
+ *      the row read is handled by InboxPage's selected-item effect, which
+ *      covers both click-to-select and URL-param-select paths.
  */
 function DesktopInboxBridge() {
   const workspace = useCurrentWorkspace();
   useDesktopUnreadBadge(workspace?.id ?? null);
 
   useEffect(() => {
-    return window.desktopAPI.onInboxOpen((issueKey) => {
-      const slug = getCurrentSlug();
+    return window.desktopAPI.onInboxOpen(({ slug, issueKey }) => {
       if (!slug) return;
       const inboxPath = `${paths.workspace(slug).inbox()}?issue=${encodeURIComponent(issueKey)}`;
       window.dispatchEvent(

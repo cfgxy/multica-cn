@@ -28,10 +28,15 @@ const desktopAPI = {
   /**
    * Show a native OS notification for a new inbox item. Fired from the
    * renderer only when the app is unfocused — in-focus feedback is the
-   * inbox sidebar's unread styling. `issueKey` is round-tripped on click so
-   * the main process can route the user back to the exact inbox row.
+   * inbox sidebar's unread styling. `slug`, `itemId`, and `issueKey` are
+   * all round-tripped on click: slug pins routing to the source workspace
+   * (the user may switch workspaces before clicking the banner), itemId
+   * lets the renderer mark the row read, issueKey maps to the inbox URL
+   * param.
    */
   showNotification: (payload: {
+    slug: string;
+    itemId: string;
     issueKey: string;
     title: string;
     body: string;
@@ -45,12 +50,20 @@ const desktopAPI = {
   /**
    * Subscribe to "open this inbox row" requests sent by the main process
    * when the user clicks an OS notification banner. Returns an unsubscribe
-   * function. The payload is the same `issueKey` that was passed to
-   * `showNotification`.
+   * function. The payload echoes the `slug`, `itemId`, and `issueKey` that
+   * were passed to `showNotification`.
    */
-  onInboxOpen: (callback: (issueKey: string) => void) => {
-    const handler = (_event: Electron.IpcRendererEvent, issueKey: string) =>
-      callback(issueKey);
+  onInboxOpen: (
+    callback: (payload: {
+      slug: string;
+      itemId: string;
+      issueKey: string;
+    }) => void,
+  ) => {
+    const handler = (
+      _event: Electron.IpcRendererEvent,
+      payload: { slug: string; itemId: string; issueKey: string },
+    ) => callback(payload);
     ipcRenderer.on("inbox:open", handler);
     return () => {
       ipcRenderer.removeListener("inbox:open", handler);

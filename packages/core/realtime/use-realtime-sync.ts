@@ -199,10 +199,19 @@ export function useRealtimeSync(
       // styling is enough — no need to interrupt with a banner. `desktopAPI`
       // is injected by the preload script; its absence (web app) skips silently.
       if (typeof document !== "undefined" && document.hasFocus()) return;
+      // Capture the source workspace slug at emit time. The user may switch
+      // workspaces before clicking the banner (macOS Notification Center
+      // holds banners), so routing must not read "current slug" at click
+      // time — otherwise notifications from workspace A click through to
+      // workspace B's inbox and 404.
+      const slug = getCurrentSlug();
+      if (!slug) return;
       const desktopAPI = (
         window as unknown as {
           desktopAPI?: {
             showNotification?: (payload: {
+              slug: string;
+              itemId: string;
               issueKey: string;
               title: string;
               body: string;
@@ -210,11 +219,12 @@ export function useRealtimeSync(
           };
         }
       ).desktopAPI;
-      // `issueKey` matches the inbox page's selector: it's the issue id when
-      // the item is attached to an issue, otherwise the inbox item id. The
-      // click handler in the main process round-trips this back to the
-      // renderer so `/inbox?issue=<key>` selects the correct row.
+      // `issueKey` matches the inbox page's URL selector (issue id when the
+      // item is attached to an issue, otherwise the inbox item id). `itemId`
+      // is the inbox row's own id, needed to fire markInboxRead on click.
       desktopAPI?.showNotification?.({
+        slug,
+        itemId: item.id,
         issueKey: item.issue_id ?? item.id,
         title: item.title,
         body: item.body ?? "",

@@ -211,10 +211,18 @@ if (!gotTheLock) {
       (
         _event,
         {
+          slug,
+          itemId,
           issueKey,
           title,
           body,
-        }: { issueKey: string; title: string; body: string },
+        }: {
+          slug: string;
+          itemId: string;
+          issueKey: string;
+          title: string;
+          body: string;
+        },
       ) => {
         if (!Notification.isSupported()) return;
         const notification = new Notification({ title, body });
@@ -223,7 +231,14 @@ if (!gotTheLock) {
           if (mainWindow.isMinimized()) mainWindow.restore();
           mainWindow.show();
           mainWindow.focus();
-          mainWindow.webContents.send("inbox:open", issueKey);
+          // Ship the full context back — the renderer pins the route to the
+          // source workspace (slug), marks the row read (itemId), and uses
+          // issueKey as the ?issue=<…> selector.
+          mainWindow.webContents.send("inbox:open", {
+            slug,
+            itemId,
+            issueKey,
+          });
         });
         notification.show();
       },

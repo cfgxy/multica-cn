@@ -11,6 +11,8 @@ interface DesktopAPI {
   setImmersiveMode: (immersive: boolean) => Promise<void>;
   /** Show a native OS notification for a new inbox item. */
   showNotification: (payload: {
+    slug: string;
+    itemId: string;
     issueKey: string;
     title: string;
     body: string;
@@ -18,7 +20,13 @@ interface DesktopAPI {
   /** Update the OS dock / taskbar unread badge. Pass 0 to clear. */
   setUnreadBadge: (count: number) => void;
   /** Listen for "open inbox row" requests from notification clicks. Returns an unsubscribe function. */
-  onInboxOpen: (callback: (issueKey: string) => void) => () => void;
+  onInboxOpen: (
+    callback: (payload: {
+      slug: string;
+      itemId: string;
+      issueKey: string;
+    }) => void,
+  ) => () => void;
 }
 
 interface DaemonStatus {

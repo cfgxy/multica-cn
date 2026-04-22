@@ -99,14 +99,23 @@ export function InboxPage() {
   const archiveAllReadMutation = useArchiveAllReadInbox();
   const archiveCompletedMutation = useArchiveCompletedInbox();
 
-  // Click-to-read: select + auto-mark-read
+  // Auto-mark-read whenever a selected item is unread — covers both click-
+  // to-select and URL-param-select (e.g. OS notification click on desktop).
+  // The mutation flips `read: true` optimistically, so this effect settles
+  // in one pass and can't loop. Kept in a `useEffect` rather than inlined
+  // in handleSelect so URL-driven selection triggers it too.
+  const markReadMutate = markReadMutation.mutate;
+  const selectedId = selected?.id;
+  const selectedRead = selected?.read;
+  useEffect(() => {
+    if (!selectedId || selectedRead) return;
+    markReadMutate(selectedId, {
+      onError: () => toast.error("Failed to mark as read"),
+    });
+  }, [selectedId, selectedRead, markReadMutate]);
+
   const handleSelect = (item: InboxItem) => {
     setSelectedKey(item.issue_id ?? item.id);
-    if (!item.read) {
-      markReadMutation.mutate(item.id, {
-        onError: () => toast.error("Failed to mark as read"),
-      });
-    }
   };
 
   const handleArchive = (id: string) => {
