@@ -1,9 +1,8 @@
 import { githubUrl } from "../components/shared";
 import type { LandingDict } from "./types";
 
-export const ALLOW_SIGNUP = process.env.NEXT_PUBLIC_ALLOW_SIGNUP !== "false";
-
-export const en: LandingDict = {
+export function createEnDict(allowSignup: boolean): LandingDict {
+  return {
   header: {
     github: "GitHub",
     login: "Log in",
@@ -122,8 +121,8 @@ export const en: LandingDict = {
     headlineFaded: "in the next hour.",
     steps: [
       {
-        title: ALLOW_SIGNUP ? "Sign up & create your workspace" : "Login to your workspace",
-        description: ALLOW_SIGNUP
+        title: allowSignup ? "Sign up & create your workspace" : "Login to your workspace",
+        description: allowSignup
           ? "Enter your email, verify with a code, and you\u2019re in. Your workspace is created automatically \u2014 no setup wizard, no configuration forms."
           : "Enter your email, verify with a code, and you\u2019re logged into your workspace \u2014 no setup wizard, no configuration forms.",
       },
@@ -726,7 +725,6 @@ export const en: LandingDict = {
       },
     ],
   },
-
   download: {
     hero: {
       macArm64: {
@@ -763,8 +761,7 @@ export const en: LandingDict = {
         sub: "All installers are listed below.",
       },
       safariMacHint: "On an Intel Mac? Use the CLI below.",
-      archFallbackHint:
-        "Wrong architecture? See all formats below.",
+      archFallbackHint: "Wrong architecture? See all formats below.",
     },
     allPlatforms: {
       title: "All platforms",
@@ -803,5 +800,5 @@ export const en: LandingDict = {
       versionUnavailable: "Version unavailable — check GitHub",
     },
   },
-
-};
+  };
+}

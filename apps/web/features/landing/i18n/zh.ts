@@ -1,9 +1,8 @@
 import { githubUrl } from "../components/shared";
 import type { LandingDict } from "./types";
 
-export const ALLOW_SIGNUP = process.env.NEXT_PUBLIC_ALLOW_SIGNUP !== "false";
-
-export const zh: LandingDict = {
+export function createZhDict(allowSignup: boolean): LandingDict {
+  return {
   header: {
     github: "GitHub",
     login: "\u767b\u5f55",
@@ -122,8 +121,8 @@ export const zh: LandingDict = {
     headlineFaded: "\u53ea\u9700\u4e00\u5c0f\u65f6\u3002",
     steps: [
       {
-        title: ALLOW_SIGNUP ? "注册并创建您的工作空间" : "登录到您的工作空间",
-        description: ALLOW_SIGNUP
+        title: allowSignup ? "注册并创建您的工作空间" : "登录到您的工作空间",
+        description: allowSignup
           ? "输入您的邮箱，验证代码后即可使用。工作空间会自动创建——无需设置向导或配置表单。"
           : "输入您的邮箱，验证代码后即可登录到您的工作空间——无需设置向导或配置表单。",
       },
@@ -726,7 +725,6 @@ export const zh: LandingDict = {
       },
     ],
   },
-
   download: {
     hero: {
       macArm64: {
@@ -800,5 +798,5 @@ export const zh: LandingDict = {
       versionUnavailable: "版本获取失败——请前往 GitHub 查看",
     },
   },
-
-};
+  };
+}

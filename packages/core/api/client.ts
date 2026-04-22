@@ -702,6 +702,8 @@ export class ApiClient {
   // App Config
   async getConfig(): Promise<{
     cdn_domain: string;
+    allow_signup: boolean;
+    google_client_id?: string;
     posthog_key?: string;
     posthog_host?: string;
   }> {
