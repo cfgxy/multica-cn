@@ -296,10 +296,53 @@ request payload.
   `packages/views/onboarding/steps/step-platform-fork.tsx` when the web
   user clicks one of the three Step 3 fork cards (before any server
   call happens, so it's frontend-only). Properties: `path`
-  (`download_desktop` / `cli` / `cloud_waitlist`), `is_mac`. Also
-  writes `platform_preference` (`web` / `desktop`) to person properties
-  so every subsequent event on the user can be broken down by chosen
-  platform.
+  (`download_desktop` / `cli` / `cloud_waitlist`), `source` (`step3`;
+  literal today but reserved for future surfaces reusing this event),
+  `is_mac`. Also writes `platform_preference` (`web` / `desktop`) to
+  person properties so every subsequent event on the user can be
+  broken down by chosen platform. **Note**: semantic "download
+  intent" is now better served by `download_intent_expressed` below —
+  `path: "download_desktop"` signals Step 3 path choice specifically,
+  not actual download start.
+
+- `download_intent_expressed` — fired whenever a user clicks a CTA
+  that points at the `/download` page. Surfaces five sources across
+  the funnel, letting the top-of-funnel entry be split cleanly.
+  Wrapper lives in `packages/core/analytics/download.ts`
+  (`captureDownloadIntent`). Properties:
+  - `source`: `landing_hero` / `landing_footer` / `login` / `welcome`
+    / `step3`
+  Also writes `platform_preference: "desktop"` to person properties.
+
+- `download_page_viewed` — fired once per `/download` mount after OS
+  detect resolves (`apps/web/app/(landing)/download/download-client.tsx`).
+  Properties:
+  - `detected_os`: `mac` / `windows` / `linux` / `unknown`
+  - `detected_arch`: `arm64` / `x64` / `unknown`
+  - `detect_confident`: `true` when detect used
+    `userAgentData.getHighEntropyValues` (Chromium); `false` when it
+    fell back to the UA string (Safari on Mac always lands here —
+    lets us isolate the arm64-default-for-Intel risk cohort).
+  - `version_available`: `false` when the GitHub API fetch failed
+    and the page is in the "Version unavailable" degraded state.
+  Also writes `first_detected_os` / `first_detected_arch` via
+  `$set_once` so every downstream event gains a platform dimension
+  without re-emitting.
+
+- `download_initiated` — fired when the user clicks a specific
+  installer link on `/download`. Both the hero CTA and the All
+  Platforms matrix rows emit this; split by `primary_cta`.
+  Properties:
+  - `platform`: `mac` / `windows` / `linux`
+  - `arch`: `arm64` / `x64`
+  - `format`: `dmg` / `zip` / `exe` / `appimage` / `deb` / `rpm`
+  - `version`: release tag (e.g. `v0.2.13`) — correlates adoption
+    with release cadence.
+  - `primary_cta`: `true` for the hero-recommended installer, `false`
+    for a manual pick from the All Platforms matrix.
+  - `matched_detect`: `true` when the chosen platform+arch matches
+    what the page detected. `false` lets us quantify detect misses
+    from the single event (no cross-join needed).
 - Attribution is NOT a separate event; UTM + referrer origin are written
   to the `multica_signup_source` cookie on the first anonymous pageview
   and read by the backend's `signup` emission. The cookie carries a JSON
