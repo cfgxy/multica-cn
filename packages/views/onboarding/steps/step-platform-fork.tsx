@@ -371,16 +371,19 @@ function CliInstallDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={(o) => (o ? null : onClose())}>
-      <DialogContent className="sm:max-w-[560px]">
+      {/* max-h + flex column so an unbounded runtime list (N machines)
+          triggers internal scrolling instead of pushing the footer's
+          Connect button below the viewport. */}
+      <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-[560px]">
         <DialogHeader>
           <DialogTitle>Install the CLI</DialogTitle>
           <DialogDescription>
             Runs the same daemon the desktop app bundles — you install
-            it yourself. This screen watches for it to come online.
+            it yourself.
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex flex-col gap-4 pt-2">
+        <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pt-2">
           {cliInstructions}
 
           {/* Live probe. Shows a staged waiting message with elapsed-
@@ -395,7 +398,10 @@ function CliInstallDialog({
                   connected
                 </span>
               </div>
-              <div className="flex flex-col gap-2">
+              {/* Cap the runtime list at ~4 rows visible, scroll the rest.
+                  Keeps the commands above always reachable even when
+                  a user has many machines registered. */}
+              <div className="flex max-h-[240px] flex-col gap-2 overflow-y-auto">
                 {runtimes.map((rt) => (
                   <CompactRuntimeRow
                     key={rt.id}
@@ -412,12 +418,16 @@ function CliInstallDialog({
         </div>
 
         <DialogFooter className="flex items-center justify-between gap-3 sm:justify-between">
+          {/* Hint is only useful AFTER a runtime has registered — "pick
+              one" / "selected X". While still waiting, the body's
+              CliWaitingStatus already conveys the live-listening state,
+              so an additional "Waiting..." footer line is duplication. */}
           <span className="text-xs text-muted-foreground">
-            {canConnect && selectedName
-              ? `Selected: ${selectedName}`
-              : hasRuntimes
-                ? "Pick a runtime above."
-                : "Waiting for your runtime to come online…"}
+            {hasRuntimes
+              ? canConnect && selectedName
+                ? `Selected: ${selectedName}`
+                : "Pick a runtime above."
+              : null}
           </span>
           <div className="flex items-center gap-2">
             <Button variant="ghost" onClick={onClose}>
@@ -577,7 +587,7 @@ function CloudWaitlistDialog({
 }) {
   return (
     <Dialog open={open} onOpenChange={(o) => (o ? null : onClose())}>
-      <DialogContent className="sm:max-w-[520px]">
+      <DialogContent className="flex max-h-[85vh] flex-col sm:max-w-[520px]">
         <DialogHeader>
           <DialogTitle>Join the cloud runtime waitlist</DialogTitle>
           <DialogDescription>
@@ -586,7 +596,7 @@ function CloudWaitlistDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="pt-2">
+        <div className="min-h-0 flex-1 overflow-y-auto pt-2">
           <CloudWaitlistExpand
             submitted={submitted}
             onSubmitted={onSubmitted}

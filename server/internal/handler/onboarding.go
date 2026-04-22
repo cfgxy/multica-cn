@@ -7,6 +7,7 @@ import (
 	"net/mail"
 	"strings"
 
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/logger"
@@ -244,6 +245,16 @@ func (h *Handler) ImportStarterContent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "workspace_id is required")
 		return
 	}
+	// Reject malformed UUIDs up front. Without this, `parseUUID` below
+	// silently returns a zero-UUID and the membership check fails with
+	// a misleading 403 "not a member of this workspace" instead of the
+	// true 400. Defense-in-depth: even if the membership check is ever
+	// refactored, a garbage workspace_id never reaches CreateProject /
+	// CreateIssue.
+	if _, err := uuid.Parse(req.WorkspaceID); err != nil {
+		writeError(w, http.StatusBadRequest, "workspace_id is invalid")
+		return
+	}
 	if req.Project.Title == "" {
 		writeError(w, http.StatusBadRequest, "project.title is required")
 		return
@@ -410,26 +421,36 @@ func (h *Handler) ImportStarterContent(w http.ResponseWriter, r *http.Request) {
 
 	// --- Pin project (and welcome issue if present) ---
 	// Non-fatal: a pin failure shouldn't prevent the onboarding bundle
-	// from landing. We warn and move on.
+	// from landing. We warn and move on. Pointers to the created rows
+	// are kept around for post-commit `pin:created` fan-out so the
+	// sidebar refreshes without a manual reload.
 	pinnedProjectPos := float64(1)
-	if _, err := qtx.CreatePinnedItem(r.Context(), db.CreatePinnedItemParams{
+	var pinProjectForEvent *db.PinnedItem
+	pinProject, err := qtx.CreatePinnedItem(r.Context(), db.CreatePinnedItemParams{
 		WorkspaceID: parseUUID(req.WorkspaceID),
 		UserID:      parseUUID(userID),
 		ItemType:    "project",
 		ItemID:      project.ID,
 		Position:    pinnedProjectPos,
-	}); err != nil {
+	})
+	if err != nil {
 		slog.Warn("import starter content: pin project failed", append(logger.RequestAttrs(r), "error", err)...)
+	} else {
+		pinProjectForEvent = &pinProject
 	}
+	var pinWelcomeIssueForEvent *db.PinnedItem
 	if welcomeIssueForEvent != nil {
-		if _, err := qtx.CreatePinnedItem(r.Context(), db.CreatePinnedItemParams{
+		pinWelcome, err := qtx.CreatePinnedItem(r.Context(), db.CreatePinnedItemParams{
 			WorkspaceID: parseUUID(req.WorkspaceID),
 			UserID:      parseUUID(userID),
 			ItemType:    "issue",
 			ItemID:      welcomeIssueForEvent.ID,
 			Position:    pinnedProjectPos + 1,
-		}); err != nil {
+		})
+		if err != nil {
 			slog.Warn("import starter content: pin welcome issue failed", append(logger.RequestAttrs(r), "error", err)...)
+		} else {
+			pinWelcomeIssueForEvent = &pinWelcome
 		}
 	}
 
@@ -466,6 +487,15 @@ func (h *Handler) ImportStarterContent(w http.ResponseWriter, r *http.Request) {
 	for _, sub := range subIssuesCreated {
 		subResp := issueToResponse(sub, workspacePrefix)
 		h.publish(protocol.EventIssueCreated, req.WorkspaceID, "member", userID, map[string]any{"issue": subResp})
+	}
+	// Pin events. Without these, the sidebar's `pinListOptions` query
+	// stays cached on the pre-import snapshot — only a hard refresh
+	// surfaces the new pins. Same payload shape as `POST /pins`.
+	if pinProjectForEvent != nil {
+		h.publish(protocol.EventPinCreated, req.WorkspaceID, "member", userID, map[string]any{"pin": pinnedItemToResponse(*pinProjectForEvent)})
+	}
+	if pinWelcomeIssueForEvent != nil {
+		h.publish(protocol.EventPinCreated, req.WorkspaceID, "member", userID, map[string]any{"pin": pinnedItemToResponse(*pinWelcomeIssueForEvent)})
 	}
 
 	writeJSON(w, http.StatusOK, importStarterContentResponse{

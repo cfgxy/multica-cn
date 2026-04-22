@@ -61,9 +61,9 @@ export function StepWelcome({
   };
 
   return (
-    <div className="animate-onboarding-enter grid h-full min-h-[640px] grid-cols-1 lg:grid-cols-2">
+    <div className="animate-onboarding-enter flex h-full min-h-[640px] flex-col lg:flex-row">
       {/* Left — prose + CTA */}
-      <div className="flex flex-col">
+      <div className="flex flex-col lg:flex-1">
         <DragStrip />
         <div className="flex flex-1 flex-col justify-center px-6 pb-12 sm:px-10 md:px-20 lg:px-20 xl:px-24">
           <div className="flex w-full max-w-[540px] flex-col gap-8">
@@ -121,10 +121,15 @@ export function StepWelcome({
         </div>
       </div>
 
-      {/* Right — mock issue cards illustration. Hidden on < lg. */}
-      <div className="hidden border-l bg-muted/40 lg:flex lg:flex-col lg:overflow-hidden">
+      {/* Right — mock issue cards illustration. Hidden on < lg.
+          Flex row on lg+ with `items-stretch` (default) makes both
+          columns take the container's full height, so the muted bg
+          fills the viewport edge-to-edge. `justify-center` inside
+          centers the mock cards vertically, mirroring the left
+          column's copy-center layout. */}
+      <div className="hidden border-l bg-muted/40 lg:flex lg:flex-1 lg:flex-col lg:overflow-hidden">
         <DragStrip />
-        <div className="flex flex-1 flex-col items-center gap-7 px-8 py-8">
+        <div className="flex flex-1 flex-col items-center justify-center gap-7 px-8 py-8">
           <p className="max-w-[440px] text-balance text-center font-serif text-[15px] italic leading-snug text-muted-foreground">
             Every issue, every thread, every decision — shared by your team and
             agents.
