@@ -13,6 +13,11 @@ const (
 	maxLocalSkillFileSize   int64 = 1 << 20
 	maxLocalSkillBundleSize int64 = 8 << 20
 	maxLocalSkillFileCount        = 128
+	// Cap how deep skill discovery descends below a runtime root. opencode
+	// stores skills two levels deep (e.g. `release/reporter/SKILL.md`); a
+	// few extra levels covers any realistic future layout while bounding
+	// work in case an installer accidentally points us at $HOME.
+	maxLocalSkillDirDepth = 4
 )
 
 type runtimeLocalSkillSummary struct {
@@ -244,75 +249,113 @@ func listRuntimeLocalSkills(provider string) ([]runtimeLocalSkillSummary, bool, 
 		return nil, true, err
 	}
 
-	// Top-level enumeration only — Claude / Codex / etc. skill roots are
-	// flat directories of `<skill-name>/SKILL.md`. ReadDir + os.Stat (which
-	// follows symlinks) lets us pick up symlinked skill packages too —
-	// installers like lark-cli ship every skill as a symlink into
-	// ~/.agents/skills/, and the previous filepath.WalkDir path silently
-	// dropped all of them because fs.DirEntry sees the entry as a symlink,
-	// not a directory.
-	entries, err := os.ReadDir(root)
+	// Walk the runtime root with two extensions over filepath.WalkDir:
+	//   - Follow symlinks at every level. Installers like lark-cli ship
+	//     each skill as a symlink into a shared ~/.agents/skills/<name>;
+	//     the previous WalkDir path silently dropped them via the
+	//     os.ModeSymlink early return.
+	//   - Allow nested layouts. opencode stores skills as
+	//     `release/reporter/SKILL.md`, and `loadRuntimeLocalSkillBundle`
+	//     already accepts slash-delimited keys, so the list endpoint
+	//     must surface those nested skills too.
+	skills := make([]runtimeLocalSkillSummary, 0)
+	visited := make(map[string]bool)
+	enumerateLocalSkills(provider, root, root, 0, visited, &skills)
+
+	sort.Slice(skills, func(i, j int) bool {
+		return skills[i].Key < skills[j].Key
+	})
+	return skills, true, nil
+}
+
+// enumerateLocalSkills walks `currentDir` looking for skill directories
+// (directories that contain a SKILL.md). When one is found it is registered
+// at a key relative to `walkRoot` and the recursion stops at that branch —
+// we never descend into a directory that already qualifies as a skill, even
+// if it happens to contain nested SKILL.md files of its own.
+//
+// `visited` keys on the resolved (symlink-followed) absolute path so a
+// cyclic symlink can't loop forever; this is the only reason we eagerly
+// EvalSymlinks up front. Errors from EvalSymlinks just stop the descent on
+// that branch — most often it's a dangling link, which we want to ignore.
+func enumerateLocalSkills(
+	provider, walkRoot, currentDir string,
+	depth int,
+	visited map[string]bool,
+	skills *[]runtimeLocalSkillSummary,
+) {
+	if depth > maxLocalSkillDirDepth {
+		return
+	}
+	resolved, err := filepath.EvalSymlinks(currentDir)
 	if err != nil {
-		return nil, true, err
+		return
+	}
+	if visited[resolved] {
+		return
+	}
+	visited[resolved] = true
+
+	entries, err := os.ReadDir(currentDir)
+	if err != nil {
+		return
 	}
 
-	skills := make([]runtimeLocalSkillSummary, 0, len(entries))
 	for _, entry := range entries {
 		name := entry.Name()
 		if isIgnoredLocalSkillEntry(name) {
 			continue
 		}
-
-		path := filepath.Join(root, name)
+		path := filepath.Join(currentDir, name)
 		info, statErr := os.Stat(path) // follows symlinks
 		if statErr != nil || !info.IsDir() {
 			continue
 		}
 
 		mainPath := filepath.Join(path, "SKILL.md")
-		if _, err := os.Stat(mainPath); err != nil {
+		if _, err := os.Stat(mainPath); err == nil {
+			rel, err := filepath.Rel(walkRoot, path)
+			if err != nil {
+				continue
+			}
+			key, err := normalizeLocalSkillKey(rel)
+			if err != nil {
+				continue
+			}
+
+			content, err := readLocalSkillMainFile(path)
+			if err != nil {
+				continue
+			}
+			skillName, description := parseLocalSkillFrontmatter(content)
+			if skillName == "" {
+				skillName = filepath.Base(path)
+			}
+
+			files, err := collectLocalSkillFiles(path, false)
+			if err != nil {
+				continue
+			}
+
+			*skills = append(*skills, runtimeLocalSkillSummary{
+				Key:         key,
+				Name:        skillName,
+				Description: description,
+				SourcePath:  relativizeHomePath(path),
+				Provider:    provider,
+				// `files` is the supporting bundle (collectLocalSkillFiles
+				// intentionally excludes SKILL.md so the bundle's `Content`
+				// field can carry it without duplication on import). For the
+				// list summary the user expects the total file count, so add
+				// one back for SKILL.md itself.
+				FileCount: len(files) + 1,
+			})
 			continue
 		}
 
-		key, err := normalizeLocalSkillKey(name)
-		if err != nil {
-			continue
-		}
-
-		content, err := readLocalSkillMainFile(path)
-		if err != nil {
-			continue
-		}
-		skillName, description := parseLocalSkillFrontmatter(content)
-		if skillName == "" {
-			skillName = name
-		}
-
-		files, err := collectLocalSkillFiles(path, false)
-		if err != nil {
-			continue
-		}
-
-		skills = append(skills, runtimeLocalSkillSummary{
-			Key:         key,
-			Name:        skillName,
-			Description: description,
-			SourcePath:  relativizeHomePath(path),
-			Provider:    provider,
-			// `files` is the supporting bundle (collectLocalSkillFiles
-			// intentionally excludes SKILL.md so the bundle's `Content`
-			// field can carry it without duplication on import). For the
-			// list summary the user expects the total file count, so add
-			// one back for SKILL.md itself — every valid skill has it,
-			// we already required it above.
-			FileCount: len(files) + 1,
-		})
+		// No SKILL.md here — descend looking for nested skills.
+		enumerateLocalSkills(provider, walkRoot, path, depth+1, visited, skills)
 	}
-
-	sort.Slice(skills, func(i, j int) bool {
-		return skills[i].Key < skills[j].Key
-	})
-	return skills, true, nil
 }
 
 func loadRuntimeLocalSkillBundle(provider, skillKey string) (*runtimeLocalSkillBundle, bool, error) {

@@ -3,6 +3,7 @@ package daemon
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -157,6 +158,55 @@ func TestListRuntimeLocalSkills_CodexUsesSharedCODEXHOME(t *testing.T) {
 	}
 	if skills[0].SourcePath != filepath.Join(codexHome, "skills", "debugger") {
 		t.Fatalf("source_path = %q", skills[0].SourcePath)
+	}
+}
+
+// opencode (and possibly future providers) lay skills out one level deep,
+// e.g. ~/.config/opencode/skills/release/reporter/SKILL.md.
+// loadRuntimeLocalSkillBundle already accepts that nested key, so the list
+// endpoint must surface those skills too — otherwise the import dialog
+// hides skills the load endpoint can fetch and users can't pick them.
+//
+// The walker also has to short-circuit at the outermost SKILL.md it finds:
+// nested SKILL.md files inside an already-registered skill (e.g. inside
+// `top/SKILL.md`'s own template tree) are part of the parent skill's
+// bundle, not separate skills.
+func TestListRuntimeLocalSkills_DescendsIntoNestedSkillDirs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	root := filepath.Join(home, ".config", "opencode", "skills")
+
+	// Top-level skill — should register at key="top" and its child SKILL.md
+	// must NOT register as a separate skill.
+	writeTestLocalSkill(t, root, "top", map[string]string{
+		"SKILL.md":            "---\nname: Top\n---\n",
+		"templates/SKILL.md":  "not a real skill — sub-template that happens to share the filename",
+	})
+
+	// Nested skill — only valid SKILL.md is at depth 2.
+	writeTestLocalSkill(t, root, "release/reporter", map[string]string{
+		"SKILL.md": "---\nname: Release Reporter\n---\n",
+	})
+
+	skills, supported, err := listRuntimeLocalSkills("opencode")
+	if err != nil {
+		t.Fatalf("listRuntimeLocalSkills: %v", err)
+	}
+	if !supported {
+		t.Fatal("opencode should be supported")
+	}
+
+	keys := make([]string, 0, len(skills))
+	for _, s := range skills {
+		keys = append(keys, s.Key)
+	}
+	// Two registered skills, "top" and "release/reporter" — and crucially
+	// NOT "top/templates" (the inner SKILL.md must be ignored once the
+	// parent qualified).
+	wantKeys := []string{"release/reporter", "top"}
+	if !reflect.DeepEqual(keys, wantKeys) {
+		t.Fatalf("keys = %v, want %v", keys, wantKeys)
 	}
 }
 
