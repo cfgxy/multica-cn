@@ -42,7 +42,7 @@ export function LandingHero() {
               <Link href={user ? "/" : "/login"} className={heroButtonClassName("solid")}>
                 {user ? t.header.dashboard : t.hero.cta}
               </Link>
-              <Link href="/download" className={heroButtonClassName("solid")}>
+              <Link href="/download" className={heroButtonClassName("ghost")}>
                 <Download className="size-4" aria-hidden />
                 {t.hero.downloadDesktop}
               </Link>
