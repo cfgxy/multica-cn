@@ -9,6 +9,7 @@ import {
   completeOnboarding,
   ONBOARDING_STEP_ORDER,
   saveQuestionnaire,
+  type OnboardingCompletionPath,
   type OnboardingStep,
   type QuestionnaireAnswers,
 } from "@multica/core/onboarding";
@@ -69,6 +70,11 @@ export function OnboardingFlow({
   const [workspace, setWorkspace] = useState<Workspace | null>(null);
   const [runtime, setRuntime] = useState<AgentRuntime | null>(null);
   const [, setAgent] = useState<Agent | null>(null);
+  // Sticky flag: Step 3's cloud-waitlist dialog only lives inside
+  // StepPlatformFork's local state, so the completion path for
+  // `runtime=null && waitlist submitted` would be invisible here without
+  // a shell-level record. One way latch; never cleared once set.
+  const [waitlistSubmitted, setWaitlistSubmitted] = useState(false);
 
   // Fetched at Step 0 + Step 2. Step 2 uses it to detect a pre-existing
   // workspace from an earlier abandoned onboarding (so StepWorkspace shows
@@ -103,7 +109,7 @@ export function OnboardingFlow({
   // they never got a starter project and may want one now.
   const handleWelcomeSkip = useCallback(async () => {
     try {
-      await completeOnboarding();
+      await completeOnboarding("skip_existing");
     } catch (err) {
       toast.error(
         err instanceof Error ? err.message : "Failed to finish onboarding",
@@ -201,6 +207,7 @@ export function OnboardingFlow({
           wsId={workspace.id}
           onNext={handleRuntimeNext}
           onBack={() => handleBack("runtime")}
+          onWaitlistSubmitted={() => setWaitlistSubmitted(true)}
         />
       );
     }
@@ -210,6 +217,7 @@ export function OnboardingFlow({
         onNext={handleRuntimeNext}
         onBack={() => handleBack("runtime")}
         cliInstructions={runtimeInstructions}
+        onWaitlistSubmitted={() => setWaitlistSubmitted(true)}
       />
     );
   }
@@ -232,6 +240,18 @@ export function OnboardingFlow({
     );
   }
 
+  // Derive the completion-path label for Step 5 here — runtime +
+  // waitlist state both live in this shell, StepFirstIssue doesn't
+  // have the visibility to compute it itself.
+  //   runtime set          → "full"
+  //   no runtime + waitlist → "cloud_waitlist"
+  //   no runtime, no waitlist → "runtime_skipped"
+  const completionPath: OnboardingCompletionPath = runtime
+    ? "full"
+    : waitlistSubmitted
+      ? "cloud_waitlist"
+      : "runtime_skipped";
+
   return (
     <div className="animate-onboarding-enter flex min-h-full flex-col">
       <DragStrip />
@@ -239,7 +259,10 @@ export function OnboardingFlow({
         <div className="flex w-full max-w-xl flex-col gap-8">
           <StepHeader currentStep={step} />
           {step === "first_issue" && (
-            <StepFirstIssue onFinished={handleFinished} />
+            <StepFirstIssue
+              onFinished={handleFinished}
+              completionPath={completionPath}
+            />
           )}
         </div>
       </div>

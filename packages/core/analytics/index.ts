@@ -39,6 +39,15 @@ let pendingIdentify: { userId: string; props?: Record<string, unknown> } | null 
 // config fetch resolves. We keep the first pending pageview so that step
 // doesn't silently drop.
 let pendingPageview: string | undefined | null = null;
+// Frontend-emitted events (captureEvent) and person-property updates
+// (setPersonProperties) can also arrive before init — same config-race as
+// identify/pageview. We replay them in order once init succeeds. These
+// only ever carry user-triggered signals on identified users, so the
+// buffer stays small (~one step-transition worth).
+type PendingOp =
+  | { kind: "event"; name: string; props?: Record<string, unknown> }
+  | { kind: "set"; props: Record<string, unknown> };
+const pendingOps: PendingOp[] = [];
 
 export interface AnalyticsConfig {
   key: string;
@@ -90,6 +99,18 @@ export function initAnalytics(config: AnalyticsConfig | null | undefined): boole
     posthog.capture("$pageview", pendingPageview ? { $current_url: pendingPageview } : undefined);
     pendingPageview = null;
   }
+  // Replay buffered events / person-property updates in their original
+  // order — funnel correctness depends on sequence (e.g. a user submits
+  // the questionnaire and then finishes onboarding within the same
+  // config-race window).
+  while (pendingOps.length > 0) {
+    const op = pendingOps.shift()!;
+    if (op.kind === "event") {
+      posthog.capture(op.name, op.props);
+    } else {
+      capturePersonSet(op.props);
+    }
+  }
   return true;
 }
 
@@ -117,8 +138,55 @@ export function identify(userId: string, userProperties?: Record<string, unknown
 export function resetAnalytics(): void {
   pendingIdentify = null;
   pendingPageview = null;
+  pendingOps.length = 0;
   if (!initialized) return;
   posthog.reset();
+}
+
+/**
+ * Capture a frontend-emitted event. Most funnel events fire server-side
+ * (see `server/internal/analytics`); this wrapper is reserved for the
+ * handful of signals the backend can't see — primarily the Step 3
+ * platform-fork choice on web, where the user's click never round-trips
+ * to a handler.
+ *
+ * Calls before initAnalytics() buffer in order so a late-arriving config
+ * doesn't silently swallow a step transition.
+ */
+export function captureEvent(
+  name: string,
+  props?: Record<string, unknown>,
+): void {
+  if (!initialized) {
+    pendingOps.push({ kind: "event", name, props });
+    return;
+  }
+  posthog.capture(name, props);
+}
+
+/**
+ * Set (overwrite) person properties on the currently identified user.
+ * Mirrors the backend's `Event.Set` path — keep these aligned so the
+ * same cohort signals (role, use_case, platform_preference) are
+ * queryable regardless of which side emitted last. Use for mutable
+ * signals; use `identify(userId, { $set_once: {...} })` style for
+ * attribution fields that must never be overwritten.
+ */
+export function setPersonProperties(props: Record<string, unknown>): void {
+  if (!initialized) {
+    pendingOps.push({ kind: "set", props });
+    return;
+  }
+  capturePersonSet(props);
+}
+
+// The public wire-level contract for `$set` is a no-op event carrying a
+// `$set` property. Wrapping it here (rather than calling
+// `posthog.setPersonProperties` directly) keeps us version-independent —
+// older posthog-js builds expose the same protocol under `posthog.people.set`,
+// and the capture form works uniformly.
+function capturePersonSet(props: Record<string, unknown>): void {
+  posthog.capture("$set", { $set: props });
 }
 
 /**
