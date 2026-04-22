@@ -2,7 +2,11 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, ArrowRight, Download } from "lucide-react";
-import { captureEvent, setPersonProperties } from "@multica/core/analytics";
+import {
+  captureDownloadIntent,
+  captureEvent,
+  setPersonProperties,
+} from "@multica/core/analytics";
 import { Button } from "@multica/ui/components/ui/button";
 import {
   Dialog,
@@ -91,17 +95,26 @@ export function StepPlatformFork({
   const pickDesktop = () => {
     window.open(DOWNLOAD_PAGE_URL, "_blank", "noopener,noreferrer");
     setDownloaded(true);
+    // Step-3-scoped path selection event (kept for existing funnels);
+    // `source: "step3"` future-proofs if the event is reused from
+    // another surface later.
     captureEvent("onboarding_runtime_path_selected", {
       path: "download_desktop",
+      source: "step3",
       is_mac: isMac,
     });
-    setPersonProperties({ platform_preference: "desktop" });
+    // Cross-surface Desktop intent event — also fires from landing
+    // hero / footer / login / Welcome. Enables the top-of-funnel
+    // split without retrofitting `onboarding_runtime_path_selected`
+    // to non-onboarding contexts.
+    captureDownloadIntent("step3");
   };
 
   const handleOpenCli = () => {
     setDialog("cli");
     captureEvent("onboarding_runtime_path_selected", {
       path: "cli",
+      source: "step3",
       is_mac: isMac,
     });
     setPersonProperties({ platform_preference: "web" });
@@ -111,6 +124,7 @@ export function StepPlatformFork({
     setDialog("cloud");
     captureEvent("onboarding_runtime_path_selected", {
       path: "cloud_waitlist",
+      source: "step3",
       is_mac: isMac,
     });
   };

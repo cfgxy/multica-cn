@@ -49,6 +49,15 @@ type PendingOp =
   | { kind: "set"; props: Record<string, unknown> };
 const pendingOps: PendingOp[] = [];
 
+export {
+  captureDownloadIntent,
+  captureDownloadPageViewed,
+  captureDownloadInitiated,
+  type DownloadIntentSource,
+  type DownloadDetectPayload,
+  type DownloadInitiatedPayload,
+} from "./download";
+
 export interface AnalyticsConfig {
   key: string;
   host: string;

@@ -1,5 +1,9 @@
 import Link from "next/link";
 import { ArrowRight, Download } from "lucide-react";
+import {
+  captureDownloadInitiated,
+  type DownloadInitiatedPayload,
+} from "@multica/core/analytics";
 import { useLocale } from "../../i18n";
 import type { DetectResult } from "../../utils/os-detect";
 import type { DownloadAssets } from "../../utils/parse-release-assets";
@@ -11,6 +15,9 @@ interface Props {
   /** True when the GitHub API fetch failed; disables all CTAs and
    *  surfaces a "version unavailable" line. */
   versionUnavailable: boolean;
+  /** Release tag (e.g. "v0.2.13"). Null when version lookup failed —
+   *  in that case CTAs are already disabled, no tracking fires. */
+  version: string | null;
 }
 
 /**
@@ -18,11 +25,31 @@ interface Props {
  * placeholder (SEO + flash-before-hydration), then swaps to a
  * platform-specific CTA once the client detection resolves.
  */
-export function DownloadHero({ detected, assets, versionUnavailable }: Props) {
+export function DownloadHero({
+  detected,
+  assets,
+  versionUnavailable,
+  version,
+}: Props) {
   const { t } = useLocale();
   const d = t.download.hero;
 
   const content = resolveContent(detected, assets, versionUnavailable, d);
+
+  // Fires download_initiated on primary CTA click. `primary_cta: true`
+  // identifies the hero-recommended path; `matched_detect: true` is
+  // always true here by construction (the primary is computed from
+  // the detect result). All Platforms rows below emit with
+  // matched_detect=false when the user overrides.
+  const onPrimaryClick = (tracking: HeroTracking | undefined) => {
+    if (!tracking || !version) return;
+    captureDownloadInitiated({
+      ...tracking,
+      version,
+      primary_cta: true,
+      matched_detect: true,
+    });
+  };
 
   return (
     <section className="relative overflow-hidden bg-[#05070b] text-white">
@@ -37,7 +64,11 @@ export function DownloadHero({ detected, assets, versionUnavailable }: Props) {
 
         <div className="mt-10 flex flex-wrap items-center justify-center gap-3">
           {content.primary ? (
-            <PrimaryCta href={content.primary.href} disabled={content.primary.disabled}>
+            <PrimaryCta
+              href={content.primary.href}
+              disabled={content.primary.disabled}
+              onClick={() => onPrimaryClick(content.primary?.tracking)}
+            >
               <Download className="size-4" aria-hidden />
               {content.primary.label}
               {!content.primary.disabled && (
@@ -49,6 +80,7 @@ export function DownloadHero({ detected, assets, versionUnavailable }: Props) {
             <Link
               href={content.alt.href}
               className={heroButtonClassName("ghost")}
+              onClick={() => onPrimaryClick(content.alt?.tracking)}
             >
               {content.alt.label}
             </Link>
@@ -75,11 +107,21 @@ export function DownloadHero({ detected, assets, versionUnavailable }: Props) {
 // Content resolver — maps (detect, assets) → CTA props
 // ------------------------------------------------------------
 
+type HeroTracking = Pick<
+  DownloadInitiatedPayload,
+  "platform" | "arch" | "format"
+>;
+
 interface HeroContent {
   title: string;
   sub: string;
-  primary?: { href: string; label: string; disabled: boolean };
-  alt?: { href: string; label: string };
+  primary?: {
+    href: string;
+    label: string;
+    disabled: boolean;
+    tracking?: HeroTracking;
+  };
+  alt?: { href: string; label: string; tracking?: HeroTracking };
   hint?: string;
 }
 
@@ -119,11 +161,22 @@ function resolveContent(
       title: d.macArm64.title,
       sub: d.macArm64.sub,
       primary: dmg
-        ? { href: dmg, label: d.macArm64.primary, disabled: false }
+        ? {
+            href: dmg,
+            label: d.macArm64.primary,
+            disabled: false,
+            tracking: { platform: "mac", arch: "arm64", format: "dmg" },
+          }
         : versionUnavailable
           ? { href: "#", label: d.macArm64.primary, disabled: true }
           : undefined,
-      alt: zip ? { href: zip, label: d.macArm64.altZip } : undefined,
+      alt: zip
+        ? {
+            href: zip,
+            label: d.macArm64.altZip,
+            tracking: { platform: "mac", arch: "arm64", format: "zip" },
+          }
+        : undefined,
       hint: detected.archConfident ? undefined : d.safariMacHint,
     };
   }
@@ -140,7 +193,16 @@ function resolveContent(
       title: copy.title,
       sub: copy.sub,
       primary: url
-        ? { href: url, label: copy.primary, disabled: false }
+        ? {
+            href: url,
+            label: copy.primary,
+            disabled: false,
+            tracking: {
+              platform: "windows",
+              arch: isArm ? "arm64" : "x64",
+              format: "exe",
+            },
+          }
         : versionUnavailable
           ? { href: "#", label: copy.primary, disabled: true }
           : undefined,
@@ -159,7 +221,16 @@ function resolveContent(
     title: d.linux.title,
     sub: d.linux.sub,
     primary: primaryUrl
-      ? { href: primaryUrl, label: d.linux.primary, disabled: false }
+      ? {
+          href: primaryUrl,
+          label: d.linux.primary,
+          disabled: false,
+          tracking: {
+            platform: "linux",
+            arch: isArmLinux ? "arm64" : "x64",
+            format: "appimage",
+          },
+        }
       : versionUnavailable
         ? { href: "#", label: d.linux.primary, disabled: true }
         : undefined,
@@ -175,10 +246,12 @@ function resolveContent(
 function PrimaryCta({
   href,
   disabled,
+  onClick,
   children,
 }: {
   href: string;
   disabled: boolean;
+  onClick?: () => void;
   children: React.ReactNode;
 }) {
   if (disabled) {
@@ -192,7 +265,7 @@ function PrimaryCta({
     );
   }
   return (
-    <a href={href} className={heroButtonClassName("solid")}>
+    <a href={href} onClick={onClick} className={heroButtonClassName("solid")}>
       {children}
     </a>
   );

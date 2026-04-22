@@ -4,6 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { Download } from "lucide-react";
 import { useAuthStore } from "@multica/core/auth";
+import { captureDownloadIntent } from "@multica/core/analytics";
 import { useLocale } from "../i18n";
 import {
   ClaudeCodeLogo,
@@ -42,7 +43,11 @@ export function LandingHero() {
               <Link href={user ? "/" : "/login"} className={heroButtonClassName("solid")}>
                 {user ? t.header.dashboard : t.hero.cta}
               </Link>
-              <Link href="/download" className={heroButtonClassName("ghost")}>
+              <Link
+                href="/download"
+                className={heroButtonClassName("ghost")}
+                onClick={() => captureDownloadIntent("landing_hero")}
+              >
                 <Download className="size-4" aria-hidden />
                 {t.hero.downloadDesktop}
               </Link>
