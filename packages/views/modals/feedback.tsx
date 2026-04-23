@@ -40,9 +40,22 @@ export function FeedbackModal({ onClose }: { onClose: () => void }) {
 
   const handleSubmit = async () => {
     if (!canSubmit) return;
+    if (editorRef.current?.hasActiveUploads()) {
+      toast.info("Please wait for uploads to finish…");
+      return;
+    }
+    // Read from the editor ref at submit time — `message` state lags 150ms
+    // behind keystrokes due to `debounceMs`, so ⌘+Enter fired immediately
+    // after typing would otherwise submit stale content.
+    const latest = editorRef.current?.getMarkdown()?.trim() ?? "";
+    if (!latest) return;
+    if (latest.length > MAX_MESSAGE_LEN) {
+      toast.error("Message is too long");
+      return;
+    }
     try {
       await mutation.mutateAsync({
-        message: message.trim(),
+        message: latest,
         url: typeof window !== "undefined" ? window.location.href : undefined,
         workspace_id: workspace?.id,
       });

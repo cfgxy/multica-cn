@@ -14,6 +14,11 @@ import (
 const (
 	feedbackMaxMessageLen   = 10000
 	feedbackHourlyRateLimit = 10
+	// feedbackBodyLimit caps the request body at 64 KiB. Message is capped at
+	// 10k chars separately; the extra budget covers JSON overhead plus the
+	// optional url/workspace_id fields without letting an authenticated client
+	// POST megabytes of junk into the metadata JSONB column.
+	feedbackBodyLimit = 64 * 1024
 )
 
 type CreateFeedbackRequest struct {
@@ -33,6 +38,7 @@ func (h *Handler) CreateFeedback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, feedbackBodyLimit)
 	var req CreateFeedbackRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
