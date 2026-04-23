@@ -89,6 +89,7 @@ function ReplyInput({
           isExpanded
             ? "h-[60vh]"
             : size === "sm" ? "max-h-40" : "max-h-56",
+          (!isEmpty || isExpanded) && "pb-7",
         )}
       >
         <div className="flex-1 min-h-0 overflow-y-auto">
@@ -102,7 +103,7 @@ function ReplyInput({
             currentIssueId={issueId}
           />
         </div>
-        <div className="flex items-center justify-end gap-1 text-muted-foreground transition-colors group-focus-within/editor:text-foreground">
+        <div className="absolute bottom-0 right-0 flex items-center gap-1 text-muted-foreground transition-colors group-focus-within/editor:text-foreground">
           <Tooltip>
             <TooltipTrigger
               render={
