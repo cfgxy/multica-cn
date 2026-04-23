@@ -1,3 +1,102 @@
 @import "tailwindcss";
-@import "fumadocs-ui/css/neutral.css";
 @import "fumadocs-ui/css/preset.css";
+@import "../../../packages/ui/styles/tokens.css";
+
+@custom-variant dark (&:is(.dark *));
+
+@source "../../../packages/ui/**/*.{ts,tsx}";
+
+/* ---------------------------------------------------------------------------
+ * Fumadocs ↔ Multica token bridge
+ *
+ * Fumadocs-ui declares its own --color-fd-* theme vars (used by classes like
+ * bg-fd-background, border-fd-primary). Its color presets (neutral, ocean,
+ * vitepress…) just fill those in. We replace that preset by mapping each
+ * Fumadocs slot to the matching Multica token — so sidebar, nav, cards,
+ * borders all pick up Multica's cool-gray/white palette automatically, and
+ * switching Multica's .dark flips Fumadocs's chrome with it.
+ *
+ * @theme inline keeps the var() reference (not the resolved value) so the
+ * cascade wires through at runtime — same pattern tokens.css uses.
+ * ------------------------------------------------------------------------- */
+
+@theme inline {
+  --color-fd-background: var(--background);
+  --color-fd-foreground: var(--foreground);
+  --color-fd-muted: var(--muted);
+  --color-fd-muted-foreground: var(--muted-foreground);
+  --color-fd-popover: var(--popover);
+  --color-fd-popover-foreground: var(--popover-foreground);
+  --color-fd-card: var(--card);
+  --color-fd-card-foreground: var(--card-foreground);
+  --color-fd-border: var(--border);
+  --color-fd-primary: var(--primary);
+  --color-fd-primary-foreground: var(--primary-foreground);
+  --color-fd-secondary: var(--secondary);
+  --color-fd-secondary-foreground: var(--secondary-foreground);
+  --color-fd-accent: var(--accent);
+  --color-fd-accent-foreground: var(--accent-foreground);
+  --color-fd-ring: var(--ring);
+}
+
+/* Sidebar uses Multica's dedicated --sidebar-* tokens so it stays a hair
+ * different from the main canvas, consistent with the product app. */
+#nd-sidebar {
+  --color-fd-background: var(--sidebar);
+  --color-fd-foreground: var(--sidebar-foreground);
+  --color-fd-muted: var(--sidebar-accent);
+  --color-fd-muted-foreground: var(--sidebar-foreground);
+  --color-fd-accent: var(--sidebar-accent);
+  --color-fd-accent-foreground: var(--sidebar-accent-foreground);
+  --color-fd-border: var(--sidebar-border);
+}
+
+/* ---------------------------------------------------------------------------
+ * Docs typography — Multica house style (pure sans)
+ *
+ * Reference-first technical docs: all headings sans, tight tracking, strong
+ * but not display-huge. Hierarchy reads via weight + size, not font-swap.
+ * ------------------------------------------------------------------------- */
+
+article h1 {
+  font-weight: 600;
+  letter-spacing: -0.028em;
+  line-height: 1.1;
+  font-size: 2.25rem; /* 36px — confident but still doc-scaled, not hero */
+}
+
+article h2 {
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  line-height: 1.25;
+}
+
+article h3,
+article h4 {
+  font-weight: 600;
+  letter-spacing: -0.008em;
+}
+
+/* ---------------------------------------------------------------------------
+ * Code blocks — always dark, regardless of page theme
+ *
+ * Landing's hero bg is near-black cool (around oklch 0.12 / 0.01 / 250).
+ * Pinning code blocks to that same value — in both light and dark mode —
+ * makes a code block read as a continuation of the hero surface, not a
+ * foreign box. Shiki's --shiki-dark carries the syntax colors it's built for.
+ * ------------------------------------------------------------------------- */
+
+article pre,
+article figure[data-rehype-pretty-code-figure] pre {
+  background: oklch(0.12 0.01 250) !important;
+  color: oklch(0.92 0.01 250);
+  border: 1px solid oklch(1 0 0 / 0.06);
+}
+
+article pre .shiki,
+article pre .shiki span {
+  color: var(--shiki-dark) !important;
+}
+
+/* Inline code stays theme-aware so it blends with surrounding prose;
+ * only block code goes hero-dark. */
