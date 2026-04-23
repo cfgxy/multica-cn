@@ -1,13 +1,10 @@
 import { source } from "@/lib/source";
-import {
-  DocsPage,
-  DocsBody,
-  DocsDescription,
-  DocsTitle,
-} from "fumadocs-ui/page";
+import { DocsPage, DocsBody } from "fumadocs-ui/page";
 import { notFound } from "next/navigation";
 import defaultMdxComponents from "fumadocs-ui/mdx";
 import type { Metadata } from "next";
+import { DocsHero } from "@/components/hero";
+import { Byline, NumberedCards, NumberedCard, NumberedSteps, Step } from "@/components/editorial";
 
 export default function Page() {
   const page = source.getPage([]);
@@ -17,10 +14,26 @@ export default function Page() {
 
   return (
     <DocsPage toc={page.data.toc}>
-      <DocsTitle>{page.data.title}</DocsTitle>
-      <DocsDescription>{page.data.description}</DocsDescription>
+      <DocsHero
+        eyebrow="Multica 文档"
+        title={
+          <>
+            人与智能体，<em className="font-medium not-italic text-[var(--primary)]">共处一方。</em>
+          </>
+        }
+        subtitle={page.data.description}
+      />
+      <Byline items={["开始使用", "2026 年 4 月更新", "阅读约 6 分钟"]} />
       <DocsBody>
-        <MDX components={{ ...defaultMdxComponents }} />
+        <MDX
+          components={{
+            ...defaultMdxComponents,
+            NumberedCards,
+            NumberedCard,
+            NumberedSteps,
+            Step,
+          }}
+        />
       </DocsBody>
     </DocsPage>
   );
