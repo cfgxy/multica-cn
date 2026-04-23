@@ -140,15 +140,10 @@ func (d *Daemon) shouldCleanTaskDir(ctx context.Context, taskDir string) gcActio
 	if err != nil {
 		var reqErr *requestError
 		if errors.As(err, &reqErr) && reqErr.StatusCode == http.StatusNotFound {
-			// Issue deleted — check mtime for orphan cleanup.
-			info, statErr := os.Stat(taskDir)
-			if statErr != nil {
-				return gcActionSkip
-			}
-			if time.Since(info.ModTime()) > d.cfg.GCOrphanTTL {
-				d.logger.Info("gc: orphan directory (issue deleted)", "dir", taskDir, "issue", meta.IssueID)
-				return gcActionOrphan
-			}
+			// Issue deleted — clean immediately. The issue row is gone from the
+			// server, so there's nothing left to protect with a grace period.
+			d.logger.Info("gc: orphan directory (issue deleted)", "dir", taskDir, "issue", meta.IssueID)
+			return gcActionOrphan
 		}
 		// API error (network, auth, etc.) — skip and retry next cycle.
 		return gcActionSkip

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -22,11 +23,25 @@ func durationFromEnv(key string, fallback time.Duration) (time.Duration, error) 
 	if value == "" {
 		return fallback, nil
 	}
-	d, err := time.ParseDuration(value)
+	d, err := parseFlexDuration(value)
 	if err != nil {
 		return 0, fmt.Errorf("%s: invalid duration %q: %w", key, value, err)
 	}
 	return d, nil
+}
+
+// dayUnit matches an integer followed by `d` (days), optionally mixed with
+// other Go duration components, e.g. "5d", "1d12h", "2d30m".
+var dayUnit = regexp.MustCompile(`(\d+)d`)
+
+// parseFlexDuration accepts the standard Go time.ParseDuration syntax plus a
+// `d` (day) suffix, which the stdlib rejects. "5d" → 120h, "1d12h" → 36h.
+func parseFlexDuration(value string) (time.Duration, error) {
+	expanded := dayUnit.ReplaceAllStringFunc(value, func(match string) string {
+		n, _ := strconv.Atoi(match[:len(match)-1])
+		return fmt.Sprintf("%dh", n*24)
+	})
+	return time.ParseDuration(expanded)
 }
 
 func intFromEnv(key string, fallback int) (int, error) {

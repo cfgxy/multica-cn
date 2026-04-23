@@ -203,7 +203,7 @@ func TestShouldCleanTaskDir_APIErrorSkipped(t *testing.T) {
 	}
 }
 
-func TestShouldCleanTaskDir_Issue404OldOrphan(t *testing.T) {
+func TestShouldCleanTaskDir_Issue404CleansImmediately(t *testing.T) {
 	t.Parallel()
 	issueID := "66666666-6666-6666-6666-666666666666"
 
@@ -214,7 +214,8 @@ func TestShouldCleanTaskDir_Issue404OldOrphan(t *testing.T) {
 	})
 
 	d := newGCTestDaemon(t, mux)
-	d.cfg.GCOrphanTTL = 0 // treat orphans as immediately eligible
+	// Keep a long OrphanTTL to prove the 404 branch no longer gates on mtime.
+	d.cfg.GCOrphanTTL = 30 * 24 * time.Hour
 	taskDir := createTaskDir(t, d.cfg.WorkspacesRoot, "ws1", "task8", &execenv.GCMeta{
 		IssueID:     issueID,
 		WorkspaceID: "ws1",
