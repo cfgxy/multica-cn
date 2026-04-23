@@ -135,6 +135,57 @@ func TestBuildPromptCommentTriggered(t *testing.T) {
 	}
 }
 
+// TestBuildPromptCommentTriggeredByAgent covers the agent-to-agent mention
+// loop signal injected into the per-turn prompt (MUL-1323 / GH#1576). When
+// the triggering comment was posted by another agent, the prompt must name
+// the author, warn against sign-off @mentions, and point at silence as a
+// valid exit.
+func TestBuildPromptCommentTriggeredByAgent(t *testing.T) {
+	t.Parallel()
+
+	prompt := BuildPrompt(Task{
+		IssueID:               "issue-1",
+		TriggerCommentID:      "comment-1",
+		TriggerCommentContent: "thanks, looks good!",
+		TriggerAuthorType:     "agent",
+		TriggerAuthorName:     "Atlas",
+		Agent:                 &AgentData{Name: "Test"},
+	})
+
+	for _, want := range []string{
+		"Another agent (Atlas)",
+		"do not @mention the other agent as a sign-off",
+		"silence is the preferred way",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q\n---\n%s", want, prompt)
+		}
+	}
+}
+
+// TestBuildPromptCommentTriggeredByMember guards against the agent-loop warning
+// leaking into human-authored triggers — a human asking a question should not
+// be pre-discouraged from getting a reply.
+func TestBuildPromptCommentTriggeredByMember(t *testing.T) {
+	t.Parallel()
+
+	prompt := BuildPrompt(Task{
+		IssueID:               "issue-1",
+		TriggerCommentID:      "comment-1",
+		TriggerCommentContent: "can you translate this?",
+		TriggerAuthorType:     "member",
+		TriggerAuthorName:     "Alice",
+		Agent:                 &AgentData{Name: "Test"},
+	})
+
+	if !strings.Contains(prompt, "A user just left a new comment") {
+		t.Fatalf("member-triggered prompt should label the author as a user\n---\n%s", prompt)
+	}
+	if strings.Contains(prompt, "Another agent") {
+		t.Fatalf("member-triggered prompt should not claim the author was another agent")
+	}
+}
+
 func TestBuildPromptCommentTriggeredNoContent(t *testing.T) {
 	t.Parallel()
 

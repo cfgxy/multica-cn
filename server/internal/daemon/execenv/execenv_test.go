@@ -1353,3 +1353,93 @@ func TestReadGCMeta_NoFile(t *testing.T) {
 		t.Fatal("expected error for missing file")
 	}
 }
+
+// TestInjectRuntimeConfigMentionLoopHardening locks in the mention-loop
+// instructions (see MUL-1323 / GH#1576). Two agents were stuck in an infinite
+// @mention loop because the harness told them mentions were "actions" but did
+// not tell them (a) when NOT to mention, (b) that silence ends a thread, or
+// (c) that the triggering comment was from another agent. If any of the
+// signals below regress, agent-to-agent loops come back.
+func TestInjectRuntimeConfigMentionLoopHardening(t *testing.T) {
+	t.Parallel()
+
+	agentTriggerCtx := TaskContextForEnv{
+		IssueID:           "issue-1",
+		TriggerCommentID:  "comment-1",
+		TriggerAuthorType: "agent",
+		TriggerAuthorName: "Atlas",
+	}
+	memberTriggerCtx := TaskContextForEnv{
+		IssueID:           "issue-1",
+		TriggerCommentID:  "comment-1",
+		TriggerAuthorType: "member",
+		TriggerAuthorName: "Alice",
+	}
+	assignmentCtx := TaskContextForEnv{IssueID: "issue-1"}
+
+	readClaudeMD := func(t *testing.T, ctx TaskContextForEnv) string {
+		t.Helper()
+		dir := t.TempDir()
+		if err := InjectRuntimeConfig(dir, "claude", ctx); err != nil {
+			t.Fatalf("InjectRuntimeConfig failed: %v", err)
+		}
+		data, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
+		if err != nil {
+			t.Fatalf("read CLAUDE.md: %v", err)
+		}
+		return string(data)
+	}
+
+	t.Run("mentions-section-lists-loop-protocol", func(t *testing.T) {
+		t.Parallel()
+		s := readClaudeMD(t, assignmentCtx)
+		for _, want := range []string{
+			"side-effecting actions",
+			"enqueues a new run for that agent",
+			"When NOT to use a mention link",
+			"When a mention IS appropriate",
+			"end with no mention at all",
+			"Silence ends conversations",
+		} {
+			if !strings.Contains(s, want) {
+				t.Errorf("Mentions section missing %q\n---\n%s", want, s)
+			}
+		}
+	})
+
+	t.Run("closing-line-no-longer-says-always-mention", func(t *testing.T) {
+		t.Parallel()
+		s := readClaudeMD(t, assignmentCtx)
+		// The old footer said "**always** use the mention format" which models
+		// over-generalized to agent/member mentions. Guard against regression.
+		if strings.Contains(s, "**always** use the mention format") {
+			t.Errorf("CLAUDE.md still contains the overreaching \"**always** use the mention format\" guidance")
+		}
+	})
+
+	t.Run("agent-triggered-comment-labels-author-as-agent", func(t *testing.T) {
+		t.Parallel()
+		s := readClaudeMD(t, agentTriggerCtx)
+		for _, want := range []string{
+			"posted by another agent (Atlas)",
+			"start a loop",
+			"Decide whether a reply is warranted",
+			"Silence is a valid and preferred way",
+		} {
+			if !strings.Contains(s, want) {
+				t.Errorf("agent-triggered CLAUDE.md missing %q", want)
+			}
+		}
+	})
+
+	t.Run("member-triggered-comment-does-not-warn-about-loops", func(t *testing.T) {
+		t.Parallel()
+		s := readClaudeMD(t, memberTriggerCtx)
+		// The anti-loop preamble is specific to agent-authored triggers; a human
+		// asking an agent to do work should not be discouraged from getting a
+		// reply.
+		if strings.Contains(s, "posted by another agent") {
+			t.Errorf("member-triggered CLAUDE.md should not claim the author was another agent")
+		}
+	})
+}
