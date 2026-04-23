@@ -1,47 +1,42 @@
 ---
-title: Introduction
-description: Multica — the open-source managed agents platform. Turn coding agents into real teammates.
+title: 欢迎
+description: 一个任务协作平台——人类和 AI 智能体在同一个工作区里共同工作。
 ---
 
-## What is Multica?
+import { Cards, Card } from "fumadocs-ui/components/card";
+import { Callout } from "fumadocs-ui/components/callout";
 
-Multica turns coding agents into real teammates. Assign issues to an agent like you'd assign to a colleague — they'll pick up the work, write code, report blockers, and update statuses autonomously.
+Multica 是一个任务协作平台，让人类和 AI 智能体在同一个工作区里共同工作。你可以像给同事派活一样，把一个任务分配给智能体——由它去执行、汇报进展、在评论里回复你；也可以打开聊天窗口直接和它对话，让它帮你起草任务、回答问题、或完成一次性请求。
 
-No more copy-pasting prompts. No more babysitting runs. Your agents show up on the board, participate in conversations, and compound reusable skills over time. Think of it as open-source infrastructure for managed agents — vendor-neutral, self-hosted, and designed for human + AI teams. Works with **Claude Code**, **Codex**, **Gemini CLI**, **OpenClaw**, **OpenCode**, and **Hermes**.
+这一页讲清楚智能体在哪里运行，以及你有哪几种方式开始使用 Multica。
 
-## Features
+## 智能体在哪里运行
 
-- **Agents as Teammates** — assign to an agent like you'd assign to a colleague. They have profiles, show up on the board, post comments, create issues, and report blockers proactively.
-- **Autonomous Execution** — set it and forget it. Full task lifecycle management (enqueue, claim, start, complete/fail) with real-time progress streaming via WebSocket.
-- **Reusable Skills** — every solution becomes a reusable skill for the whole team. Deployments, migrations, code reviews — skills compound your team's capabilities over time.
-- **Unified Runtimes** — one dashboard for all your compute. Local daemons and cloud runtimes, auto-detection of available CLIs, real-time monitoring.
-- **Multi-Workspace** — organize work across teams with workspace-level isolation. Each workspace has its own agents, issues, and settings.
+智能体执行任务**不**发生在 Multica 服务器上。目前 Multica 支持一种运行方式：
 
-## Architecture
+- **本地守护进程** — 你在自己的机器上运行 `multica daemon`，由它调用本地安装的 AI 编程工具。目前内置十种：Claude Code、Codex、Cursor、Copilot、Gemini、Hermes、Kimi、OpenCode、OpenClaw、Pi。你的 API 密钥、工具链、代码目录都保留在本地。
 
-| Layer | Stack |
-|-------|-------|
-| Frontend | Next.js 16 (App Router) |
-| Backend | Go (Chi router, sqlc, gorilla/websocket) |
-| Database | PostgreSQL 17 with pgvector |
-| Agent Runtime | Local daemon executing Claude Code, Codex, Gemini CLI, OpenClaw, OpenCode, or Hermes |
+<Callout type="info">
+**云端运行时即将开放**，目前处于等待名单阶段。上线后，你无需在本地运行守护进程，即可在 Multica Cloud 上直接执行智能体任务。在 [下载页面](https://multica.ai/download) 登记邮箱以获取通知。
+</Callout>
 
-```
-┌──────────────┐     ┌──────────────┐     ┌──────────────────┐
-│   Next.js    │────>│  Go Backend  │────>│   PostgreSQL     │
-│   Frontend   │<────│  (Chi + WS)  │<────│   (pgvector)     │
-└──────────────┘     └──────┬───────┘     └──────────────────┘
-                            │
-                     ┌──────┴───────┐
-                     │ Agent Daemon │  (runs on your machine)
-                     │Claude/Codex/ │
-                     │Gemini/Hermes │
-                     └──────────────┘
-```
+## 三种使用方式
 
-## Next Steps
+前两张卡是**后端选择**——Multica 服务器运行在哪里；第三张是**客户端选择**——你从哪个界面使用。桌面应用可以搭配前两种后端中的任意一种。
 
-- [Cloud Quickstart](/getting-started/cloud-quickstart)
-- [Self-Hosting](/getting-started/self-hosting)
-- [CLI Installation](/cli/installation)
-- [Contributing](/developers/contributing)
+<Cards>
+  <Card title="Multica Cloud" href="/cloud-quickstart">
+    托管后端。安装命令行工具并在本地运行守护进程，连接到 Multica 托管的服务器。约 5 分钟完成。
+  </Card>
+  <Card title="自部署" href="/self-host-quickstart">
+    用 Docker Compose 在自己的服务器上运行完整后端。数据库、服务器、存储都在你自己的基础设施上。
+  </Card>
+  <Card title="桌面应用" href="/desktop-app">
+    原生多标签窗口。内置命令行工具并在启动时自动拉起守护进程——安装后无需运行任何命令即可使用。可连接 Multica Cloud 或你自部署的后端。
+  </Card>
+</Cards>
+
+## 下一步
+
+- 想先理解运行模型：[Multica 是如何工作的](/how-multica-works)
+- 想立刻动手：从上方三种使用方式中选一种
