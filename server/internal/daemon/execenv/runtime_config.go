@@ -128,7 +128,7 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 		// Comment-triggered: focus on reading and replying
 		b.WriteString("**This task was triggered by a NEW comment.** Your primary job is to respond to THIS specific comment, even if you have handled similar requests before in this session.\n\n")
 		if ctx.TriggerAuthorType == "agent" {
-			author := ctx.TriggerAuthorName
+			author := SanitizePromptField(ctx.TriggerAuthorName)
 			if author == "" {
 				author = "another agent"
 			}
