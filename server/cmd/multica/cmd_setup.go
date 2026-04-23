@@ -173,14 +173,18 @@ func runSetupSelfHost(cmd *cobra.Command, args []string) error {
 		serverURL = fmt.Sprintf("http://localhost:%d", port)
 	}
 	if appURL == "" {
-		// Silently defaulting app_url to localhost is wrong when the user
-		// pointed --server-url at a remote host: the browser login flow
-		// will open a broken localhost URL. Infer app_url from the server
-		// host and warn, so the user can override with --app-url if needed.
 		if userProvidedServerURL && !serverHostIsLocal(serverURL) {
-			appURL = deriveAppURLFromServerURL(serverURL, frontendPort)
-			fmt.Fprintf(os.Stderr, "⚠ --app-url not provided; inferring %s from --server-url.\n", appURL)
-			fmt.Fprintln(os.Stderr, "  If your frontend is on a different host/port, re-run with --app-url.")
+			// We can't guess the frontend URL for a remote server: api.x.co
+			// and app.x.co, or an https-fronted deployment, would silently
+			// produce a broken login URL. Ask the user instead.
+			entered, err := promptAppURL(serverURL)
+			if err != nil {
+				return err
+			}
+			if entered == "" {
+				return fmt.Errorf("--app-url is required when --server-url points at a remote host (e.g. --app-url https://app.internal.co)")
+			}
+			appURL = entered
 		} else {
 			appURL = fmt.Sprintf("http://localhost:%d", frontendPort)
 		}
@@ -239,15 +243,19 @@ func serverHostIsLocal(serverURL string) bool {
 	return false
 }
 
-// deriveAppURLFromServerURL builds a reasonable app_url from a remote
-// server_url: same host, http scheme, frontendPort. Users can still
-// override with --app-url for reverse-proxy / FQDN setups.
-func deriveAppURLFromServerURL(serverURL string, frontendPort int) string {
-	parsed, err := url.Parse(serverURL)
-	if err != nil || parsed.Hostname() == "" {
-		return fmt.Sprintf("http://localhost:%d", frontendPort)
+// promptAppURL asks the user for the frontend URL interactively. We can't
+// derive it from a remote server_url — api.example.com ≠ app.example.com in
+// most production setups — so guessing would just defer the failure to the
+// browser login step. Returns an empty string if the user hits enter.
+func promptAppURL(serverURL string) (string, error) {
+	fmt.Fprintf(os.Stderr, "No --app-url provided, and --server-url (%s) is remote.\n", serverURL)
+	fmt.Fprint(os.Stderr, "Enter the frontend app URL (e.g. https://app.internal.co): ")
+	reader := bufio.NewReader(os.Stdin)
+	line, err := reader.ReadString('\n')
+	if err != nil && line == "" {
+		return "", nil
 	}
-	return fmt.Sprintf("http://%s:%d", parsed.Hostname(), frontendPort)
+	return strings.TrimRight(strings.TrimSpace(line), "/"), nil
 }
 
 // probeServer checks whether a Multica backend is reachable at the given URL.
