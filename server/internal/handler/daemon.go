@@ -1,9 +1,11 @@
 package handler
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -483,25 +485,50 @@ type DaemonHeartbeatRequest struct {
 	RuntimeID string `json:"runtime_id"`
 }
 
+// heartbeatPopPendingTimeout bounds the per-call Redis PopPending cost on the
+// heartbeat hot path. Heartbeats must stay fast (tens of ms); if the shared
+// store is momentarily slow we skip this tick rather than blocking the daemon.
+// A skipped tick is safe — the next heartbeat (default 15s later) re-reads the
+// pending set, so pending requests are only delayed, never dropped.
+const heartbeatPopPendingTimeout = 1 * time.Second
+
 func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
+	start := time.Now()
+	var (
+		outcome                                    = "unauth"
+		runtimeID                                  string
+		authMs, updateMs, popSkillsMs, popImportMs int64
+		popSkillsTimedOut, popImportTimedOut       bool
+	)
+	defer func() {
+		logHeartbeatEndpointSlow(runtimeID, outcome, start, authMs, updateMs, popSkillsMs, popImportMs, popSkillsTimedOut, popImportTimedOut)
+	}()
+
 	var req DaemonHeartbeatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		outcome = "bad_body"
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
 
 	if req.RuntimeID == "" {
+		outcome = "missing_runtime_id"
 		writeError(w, http.StatusBadRequest, "runtime_id is required")
 		return
 	}
+	runtimeID = req.RuntimeID
 
 	// Verify the caller owns this runtime's workspace.
 	if _, ok := h.requireDaemonRuntimeAccess(w, r, req.RuntimeID); !ok {
 		return
 	}
+	authMs = time.Since(start).Milliseconds()
 
+	updateStart := time.Now()
 	_, err := h.Queries.UpdateAgentRuntimeHeartbeat(r.Context(), parseUUID(req.RuntimeID))
+	updateMs = time.Since(updateStart).Milliseconds()
 	if err != nil {
+		outcome = "error_update"
 		writeError(w, http.StatusInternalServerError, "heartbeat failed")
 		return
 	}
@@ -523,25 +550,71 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 		resp["pending_model_list"] = map[string]string{"id": pending.ID}
 	}
 
-	// Check for pending local-skill list requests for this runtime.
-	if pending, err := h.LocalSkillListStore.PopPending(r.Context(), req.RuntimeID); err != nil {
-		slog.Warn("local skill list PopPending failed", "error", err, "runtime_id", req.RuntimeID)
-	} else if pending != nil {
-		resp["pending_local_skills"] = map[string]string{"id": pending.ID}
-	}
-
-	// Check for pending local-skill import requests for this runtime.
-	if pending, err := h.LocalSkillImportStore.PopPending(r.Context(), req.RuntimeID); err != nil {
-		slog.Warn("local skill import PopPending failed", "error", err, "runtime_id", req.RuntimeID)
-	} else if pending != nil {
-		payload := map[string]string{
-			"id":        pending.ID,
-			"skill_key": pending.SkillKey,
+	// Check for pending local-skill list requests for this runtime. Bound the
+	// call so a slow shared store cannot stall the heartbeat; a timeout is
+	// logged and we fall through without returning a pending request — the
+	// next heartbeat will pick it up.
+	popSkillsStart := time.Now()
+	skillsCtx, cancelSkills := context.WithTimeout(r.Context(), heartbeatPopPendingTimeout)
+	pendingSkills, err := h.LocalSkillListStore.PopPending(skillsCtx, req.RuntimeID)
+	cancelSkills()
+	popSkillsMs = time.Since(popSkillsStart).Milliseconds()
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			popSkillsTimedOut = true
+			slog.Warn("local skill list PopPending timed out", "runtime_id", req.RuntimeID, "elapsed_ms", popSkillsMs)
+		} else {
+			slog.Warn("local skill list PopPending failed", "error", err, "runtime_id", req.RuntimeID)
 		}
-		resp["pending_local_skill_import"] = payload
+	} else if pendingSkills != nil {
+		resp["pending_local_skills"] = map[string]string{"id": pendingSkills.ID}
 	}
 
+	// Check for pending local-skill import requests for this runtime. Same
+	// bounded-call contract as above.
+	popImportStart := time.Now()
+	importCtx, cancelImport := context.WithTimeout(r.Context(), heartbeatPopPendingTimeout)
+	pendingImport, err := h.LocalSkillImportStore.PopPending(importCtx, req.RuntimeID)
+	cancelImport()
+	popImportMs = time.Since(popImportStart).Milliseconds()
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			popImportTimedOut = true
+			slog.Warn("local skill import PopPending timed out", "runtime_id", req.RuntimeID, "elapsed_ms", popImportMs)
+		} else {
+			slog.Warn("local skill import PopPending failed", "error", err, "runtime_id", req.RuntimeID)
+		}
+	} else if pendingImport != nil {
+		resp["pending_local_skill_import"] = map[string]string{
+			"id":        pendingImport.ID,
+			"skill_key": pendingImport.SkillKey,
+		}
+	}
+
+	outcome = "ok"
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// logHeartbeatEndpointSlow emits one structured log when /api/daemon/heartbeat
+// exceeds 500ms, splitting auth / update / pop-skills / pop-import phases so
+// the prod tail can be attributed without flooding logs at normal rates.
+// Mirrors logClaimEndpointSlow for consistency.
+func logHeartbeatEndpointSlow(runtimeID, outcome string, start time.Time, authMs, updateMs, popSkillsMs, popImportMs int64, popSkillsTimedOut, popImportTimedOut bool) {
+	totalMs := time.Since(start).Milliseconds()
+	if totalMs < 500 && !popSkillsTimedOut && !popImportTimedOut {
+		return
+	}
+	slog.Info("heartbeat_endpoint slow",
+		"runtime_id", runtimeID,
+		"outcome", outcome,
+		"total_ms", totalMs,
+		"auth_ms", authMs,
+		"update_ms", updateMs,
+		"pop_skills_ms", popSkillsMs,
+		"pop_import_ms", popImportMs,
+		"pop_skills_timed_out", popSkillsTimedOut,
+		"pop_import_timed_out", popImportTimedOut,
+	)
 }
 
 // logClaimEndpointSlow emits one structured log when the /tasks/claim endpoint

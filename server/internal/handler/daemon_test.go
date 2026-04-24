@@ -8,10 +8,29 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/multica-ai/multica/server/internal/middleware"
 )
+
+// slowLocalSkillListStore wraps an InMemoryLocalSkillListStore but blocks inside
+// PopPending until the provided context is cancelled. Used to verify that the
+// heartbeat handler bounds the call so a stalled shared store cannot wedge the
+// whole request.
+type slowLocalSkillListStore struct{ LocalSkillListStore }
+
+func (s slowLocalSkillListStore) PopPending(ctx context.Context, _ string) (*RuntimeLocalSkillListRequest, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+type slowLocalSkillImportStore struct{ LocalSkillImportStore }
+
+func (s slowLocalSkillImportStore) PopPending(ctx context.Context, _ string) (*RuntimeLocalSkillImportRequest, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
 
 func setHandlerTestWorkspaceRepos(t *testing.T, repos []map[string]string) {
 	t.Helper()
@@ -135,6 +154,47 @@ func TestDaemonHeartbeat_WithDaemonToken_CrossWorkspace(t *testing.T) {
 	testHandler.DaemonHeartbeat(w, req)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("DaemonHeartbeat with cross-workspace token: expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+// TestDaemonHeartbeat_SlowStoreDoesNotWedge pins the invariant that a slow /
+// stalled LocalSkill store cannot stall the heartbeat endpoint past the
+// per-call timeout. Without the bounded context, a blocking store would hold
+// the request open indefinitely (causing the daemon client to see
+// "context deadline exceeded" in prod); with it, the handler logs the timeout
+// and returns 200 within a couple of seconds.
+func TestDaemonHeartbeat_SlowStoreDoesNotWedge(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	runtimeID := createRuntimeLocalSkillTestRuntime(t, testUserID)
+
+	origList := testHandler.LocalSkillListStore
+	origImport := testHandler.LocalSkillImportStore
+	testHandler.LocalSkillListStore = slowLocalSkillListStore{origList}
+	testHandler.LocalSkillImportStore = slowLocalSkillImportStore{origImport}
+	t.Cleanup(func() {
+		testHandler.LocalSkillListStore = origList
+		testHandler.LocalSkillImportStore = origImport
+	})
+
+	w := httptest.NewRecorder()
+	req := newDaemonTokenRequest(http.MethodPost, "/api/daemon/heartbeat", map[string]any{
+		"runtime_id": runtimeID,
+	}, testWorkspaceID, "runtime-local-skills-daemon")
+
+	start := time.Now()
+	testHandler.DaemonHeartbeat(w, req)
+	elapsed := time.Since(start)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("DaemonHeartbeat with slow stores: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	// Two bounded calls at 1s each + a small fixed slack. If the bound were
+	// removed this test would hang until the test deadline.
+	if elapsed > 3*time.Second {
+		t.Fatalf("DaemonHeartbeat took %s; expected fast return despite slow stores", elapsed)
 	}
 }
 
@@ -713,7 +773,9 @@ func TestDaemonRegister_MergesLegacyDaemonIDRuntime(t *testing.T) {
 	`, legacyAgentID, legacyIssueID, legacyRuntimeID).Scan(&legacyTaskID); err != nil {
 		t.Fatalf("seed legacy task: %v", err)
 	}
-	t.Cleanup(func() { testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, legacyTaskID) })
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, legacyTaskID)
+	})
 
 	// Register under the new stable UUID, declaring the prior hostname-derived
 	// id as legacy. The handler should merge the legacy row into the new one.
@@ -795,8 +857,8 @@ func TestDaemonRegister_MergesLegacyDaemonIDRuntime_ReverseDotLocal(t *testing.T
 	}
 
 	ctx := context.Background()
-	const legacyDaemonID = "ReverseDotLocalHost"                          // stored without .local
-	const emittedLegacyID = "ReverseDotLocalHost.local"                    // daemon now reports with .local
+	const legacyDaemonID = "ReverseDotLocalHost"        // stored without .local
+	const emittedLegacyID = "ReverseDotLocalHost.local" // daemon now reports with .local
 	const newDaemonID = "0192a7b0-0011-7ee9-9c21-30a5bcf86aa2"
 
 	var legacyRuntimeID string
@@ -853,8 +915,8 @@ func TestDaemonRegister_MergesLegacyDaemonIDRuntime_CaseDrift(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	const storedDaemonID = "Jiayuans-MacBook-Pro.local"     // DB has original mixed case
-	const emittedLegacyID = "jiayuans-macbook-pro.local"    // Daemon now reports lowercased
+	const storedDaemonID = "Jiayuans-MacBook-Pro.local"  // DB has original mixed case
+	const emittedLegacyID = "jiayuans-macbook-pro.local" // Daemon now reports lowercased
 	const newDaemonID = "0192a7b0-0022-7ee9-9c21-30a5bcf86aa3"
 
 	var legacyRuntimeID string
