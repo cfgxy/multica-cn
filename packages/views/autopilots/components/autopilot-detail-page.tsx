@@ -338,11 +338,7 @@ export function AutopilotDetailPage({ autopilotId }: { autopilotId: string }) {
                 </div>
               </div>
               <div>
-                <label className="text-xs text-muted-foreground">Priority</label>
-                <div className="mt-1 capitalize">{autopilot.priority}</div>
-              </div>
-              <div>
-                <label className="text-xs text-muted-foreground">Execution Mode</label>
+                <label className="text-xs text-muted-foreground">Output Mode</label>
                 <div className="mt-1">
                   {autopilot.execution_mode === "create_issue" ? "Create Issue" : "Run Only"}
                 </div>
@@ -428,7 +424,6 @@ export function AutopilotDetailPage({ autopilotId }: { autopilotId: string }) {
             title: autopilot.title,
             description: autopilot.description ?? "",
             assignee_id: autopilot.assignee_id,
-            priority: autopilot.priority,
             execution_mode: autopilot.execution_mode as AutopilotExecutionMode,
           }}
           triggers={triggers}
