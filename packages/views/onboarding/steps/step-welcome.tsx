@@ -104,14 +104,6 @@ export function StepWelcome({
                   "By the end, a real agent will be replying to your first issue."
                 )}
               </p>
-              <a
-                href="https://multica.ai/docs/how-multica-works"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="self-start text-sm text-muted-foreground underline underline-offset-4 transition-colors hover:text-foreground"
-              >
-                Learn how Multica works →
-              </a>
             </div>
 
             <div className="flex flex-wrap items-center gap-3">
