@@ -518,7 +518,7 @@ export default function SkillsPage() {
                 href="https://multica.ai/docs/skills"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="text-xs text-muted-foreground underline underline-offset-4 transition-colors hover:text-foreground"
+                className="text-xs text-muted-foreground underline decoration-muted-foreground/30 underline-offset-4 transition-colors hover:text-foreground"
               >
                 Learn more about Skills →
               </a>
