@@ -5,6 +5,7 @@ import {
   ArrowUp,
   Calendar,
   Link2,
+  MoreHorizontal,
   Pin,
   PinOff,
   Plus,
@@ -242,7 +243,10 @@ export function IssueActionsMenuItems({
       {/* Relationship actions live under "More" — they're lower-frequency and
           will grow (blocks, duplicates, related) as we add more relation types. */}
       <P.Sub>
-        <P.SubTrigger inset>More</P.SubTrigger>
+        <P.SubTrigger>
+          <MoreHorizontal className="h-3.5 w-3.5" />
+          More
+        </P.SubTrigger>
         <P.SubContent>
           <P.Item onClick={openCreateSubIssue}>
             <Plus className="h-3.5 w-3.5" />
