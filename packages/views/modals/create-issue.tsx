@@ -450,7 +450,10 @@ export function CreateIssueModal({ onClose, data }: { onClose: () => void; data?
               onOpenChange={setParentPickerOpen}
               title="Set parent issue"
               description="Search for an issue to set as the parent of the new issue"
-              excludeIds={childIssues.map((c) => c.id)}
+              excludeIds={[
+                ...childIssues.map((c) => c.id),
+                ...(parentIssueId ? [parentIssueId] : []),
+              ]}
               onSelect={(selected) => {
                 setParentIssueId(selected.id);
               }}
