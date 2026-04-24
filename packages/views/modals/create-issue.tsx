@@ -1,8 +1,17 @@
 "use client";
 
 import { useState, useRef } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useNavigation } from "../navigation";
-import { Check, ChevronRight, Maximize2, Minimize2, X as XIcon } from "lucide-react";
+import {
+  ArrowUp,
+  Check,
+  ChevronRight,
+  Maximize2,
+  Minimize2,
+  MoreHorizontal,
+  X as XIcon,
+} from "lucide-react";
 import { cn } from "@multica/ui/lib/utils";
 import { toast } from "sonner";
 import type { IssueStatus, IssuePriority, IssueAssigneeType } from "@multica/core/types";
@@ -11,6 +20,13 @@ import {
   DialogContent,
   DialogTitle,
 } from "@multica/ui/components/ui/dialog";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@multica/ui/components/ui/dropdown-menu";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@multica/ui/components/ui/tooltip";
 import { Button } from "@multica/ui/components/ui/button";
 import { ContentEditor, type ContentEditorRef, TitleEditor, useFileDropZone, FileDropOverlay } from "../editor";
@@ -18,12 +34,15 @@ import { StatusIcon, StatusPicker, PriorityPicker, AssigneePicker, DueDatePicker
 import { BacklogAgentHintContent } from "../issues/components/backlog-agent-hint-dialog";
 import { ProjectPicker } from "../projects/components/project-picker";
 import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
+import { useWorkspaceId } from "@multica/core/hooks";
 import { useIssueDraftStore } from "@multica/core/issues/stores/draft-store";
+import { issueDetailOptions } from "@multica/core/issues/queries";
 import { useCreateIssue, useUpdateIssue } from "@multica/core/issues/mutations";
 import { useFileUpload } from "@multica/core/hooks/use-file-upload";
 import { api } from "@multica/core/api";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
 import { PillButton } from "../common/pill-button";
+import { IssuePickerModal } from "./issue-picker-modal";
 
 // ---------------------------------------------------------------------------
 // CreateIssueModal
@@ -52,8 +71,20 @@ export function CreateIssueModal({ onClose, data }: { onClose: () => void; data?
   const [projectId, setProjectId] = useState<string | undefined>(
     (data?.project_id as string) || undefined,
   );
+  const [parentIssueId, setParentIssueId] = useState<string | undefined>(
+    (data?.parent_issue_id as string) || undefined,
+  );
+  const [parentPickerOpen, setParentPickerOpen] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
   const [backlogHintIssueId, setBacklogHintIssueId] = useState<string | null>(null);
+
+  // Fetch parent issue details for the chip (status/identifier/title).
+  // List cache usually has it already, so this resolves synchronously.
+  const wsId = useWorkspaceId();
+  const { data: parentIssue } = useQuery({
+    ...issueDetailOptions(wsId, parentIssueId ?? ""),
+    enabled: !!parentIssueId,
+  });
 
   // File upload — collect attachment IDs so we can link them after issue creation.
   const [attachmentIds, setAttachmentIds] = useState<string[]>([]);
@@ -91,7 +122,7 @@ export function CreateIssueModal({ onClose, data }: { onClose: () => void; data?
         assignee_id: assigneeId,
         due_date: dueDate || undefined,
         attachment_ids: attachmentIds.length > 0 ? attachmentIds : undefined,
-        parent_issue_id: (data?.parent_issue_id as string) || undefined,
+        parent_issue_id: parentIssueId,
         project_id: projectId,
       });
       clearDraft();
@@ -191,13 +222,7 @@ export function CreateIssueModal({ onClose, data }: { onClose: () => void; data?
               <div className="flex items-center gap-1.5 text-xs">
                 <span className="text-muted-foreground">{workspaceName}</span>
                 <ChevronRight className="size-3 text-muted-foreground/50" />
-                {typeof data?.parent_issue_identifier === "string" && (
-                  <>
-                    <span className="text-muted-foreground">{data.parent_issue_identifier}</span>
-                    <ChevronRight className="size-3 text-muted-foreground/50" />
-                  </>
-                )}
-                <span className="font-medium">{data?.parent_issue_id ? "New sub-issue" : "New issue"}</span>
+                <span className="font-medium">New issue</span>
               </div>
               <div className="flex items-center gap-1">
                 <Tooltip>
@@ -299,7 +324,79 @@ export function CreateIssueModal({ onClose, data }: { onClose: () => void; data?
                 triggerRender={<PillButton />}
                 align="start"
               />
+
+              {/* Parent chip — appears when parent is set.
+                  Placed before the ⋯ so it wraps to a new line with ⋯ if
+                  space is tight, but ⋯ always stays last in DOM order. */}
+              {parentIssueId && parentIssue && (
+                <div className="inline-flex items-center rounded-full border text-xs transition-colors hover:bg-accent/60">
+                  <button
+                    type="button"
+                    onClick={() => setParentPickerOpen(true)}
+                    className="flex items-center gap-1.5 py-1 pl-2.5 cursor-pointer"
+                  >
+                    <ArrowUp className="size-3 text-muted-foreground" />
+                    <span>Sub-issue of {parentIssue.identifier}</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setParentIssueId(undefined)}
+                    className="p-1 pr-2 text-muted-foreground hover:text-foreground cursor-pointer"
+                    aria-label="Remove parent"
+                  >
+                    <XIcon className="size-3" />
+                  </button>
+                </div>
+              )}
+
+              {/* Overflow — always the last child so DOM order keeps it at the
+                  end of the wrap flow, no matter how many chips are present. */}
+              <DropdownMenu>
+                <DropdownMenuTrigger
+                  render={
+                    <PillButton aria-label="More options">
+                      <MoreHorizontal className="size-3.5" />
+                    </PillButton>
+                  }
+                />
+                <DropdownMenuContent align="start" className="w-auto">
+                  {parentIssueId && parentIssue ? (
+                    <>
+                      <DropdownMenuItem onClick={() => setParentPickerOpen(true)}>
+                        <ArrowUp className="h-3.5 w-3.5" />
+                        Parent: {parentIssue.identifier}
+                      </DropdownMenuItem>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuItem
+                        variant="destructive"
+                        onClick={() => setParentIssueId(undefined)}
+                      >
+                        <XIcon className="h-3.5 w-3.5" />
+                        Remove parent
+                      </DropdownMenuItem>
+                    </>
+                  ) : (
+                    <DropdownMenuItem onClick={() => setParentPickerOpen(true)}>
+                      <ArrowUp className="h-3.5 w-3.5" />
+                      Set parent issue...
+                    </DropdownMenuItem>
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
+
+            {/* Parent picker — rendered inline so it stacks over this modal
+                instead of replacing it via useModalStore. */}
+            <IssuePickerModal
+              open={parentPickerOpen}
+              onOpenChange={setParentPickerOpen}
+              title="Set parent issue"
+              description="Search for an issue to set as the parent of the new issue"
+              excludeIds={[]}
+              onSelect={(selected) => {
+                setParentIssueId(selected.id);
+              }}
+            />
 
             {/* Footer */}
             <div className="flex items-center justify-between px-4 py-3 border-t shrink-0">
