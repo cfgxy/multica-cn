@@ -144,6 +144,15 @@ export function StarterContentPrompt() {
           </DialogDescription>
         </DialogHeader>
 
+        <a
+          href="https://multica.ai/docs/how-multica-works"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="-mt-1 self-start text-[13px] text-muted-foreground underline underline-offset-4 transition-colors hover:text-foreground"
+        >
+          Learn how Multica works →
+        </a>
+
         <DialogFooter className="mt-2 gap-2 sm:justify-end">
           <Button
             variant="ghost"
