@@ -114,23 +114,37 @@ describe("RuntimeLocalSkillImportPanel", () => {
   it("imports a local skill from the selected runtime", async () => {
     renderPanel();
 
-    // The discovered skill renders once the runtime + skills queries resolve.
-    expect(await screen.findByText("Review Helper")).toBeInTheDocument();
+    // Five-step async cascade (runtime list → setSelectedRuntimeId effect →
+    // skills query → auto-select effect → row render). Fast locally, slow on
+    // CI — bump timeouts above RTL's 1 s default so the jsdom/Vitest work
+    // queue actually has time to drain.
+    expect(
+      await screen.findByText("Review Helper", {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
 
     const importButton = screen.getByRole("button", {
       name: /Import to Workspace/i,
     });
-    await waitFor(() => {
-      expect(importButton).not.toBeDisabled();
-    });
+    await waitFor(
+      () => {
+        expect(importButton).not.toBeDisabled();
+      },
+      { timeout: 5000 },
+    );
     fireEvent.click(importButton);
 
-    await waitFor(() => {
-      expect(mockResolveRuntimeLocalSkillImport).toHaveBeenCalledWith("runtime-1", {
-        skill_key: "review-helper",
-        name: "Review Helper",
-        description: "Review pull requests",
-      });
-    });
+    await waitFor(
+      () => {
+        expect(mockResolveRuntimeLocalSkillImport).toHaveBeenCalledWith(
+          "runtime-1",
+          {
+            skill_key: "review-helper",
+            name: "Review Helper",
+            description: "Review pull requests",
+          },
+        );
+      },
+      { timeout: 5000 },
+    );
   });
 });
