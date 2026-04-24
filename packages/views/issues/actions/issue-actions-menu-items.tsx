@@ -224,18 +224,6 @@ export function IssueActionsMenuItems({
 
       <P.Separator />
 
-      <P.Item onClick={openCreateSubIssue}>
-        <Plus className="h-3.5 w-3.5" />
-        Create sub-issue
-      </P.Item>
-      <P.Item onClick={openSetParent}>
-        <ArrowUp className="h-3.5 w-3.5" />
-        Set parent issue...
-      </P.Item>
-      <P.Item onClick={openAddChild}>
-        <ArrowDown className="h-3.5 w-3.5" />
-        Add sub-issue...
-      </P.Item>
       <P.Item onClick={togglePin}>
         {isPinned ? (
           <PinOff className="h-3.5 w-3.5" />
@@ -248,6 +236,28 @@ export function IssueActionsMenuItems({
         <Link2 className="h-3.5 w-3.5" />
         Copy link
       </P.Item>
+
+      <P.Separator />
+
+      {/* Relationship actions live under "More" — they're lower-frequency and
+          will grow (blocks, duplicates, related) as we add more relation types. */}
+      <P.Sub>
+        <P.SubTrigger inset>More</P.SubTrigger>
+        <P.SubContent>
+          <P.Item onClick={openCreateSubIssue}>
+            <Plus className="h-3.5 w-3.5" />
+            Create sub-issue
+          </P.Item>
+          <P.Item onClick={openSetParent}>
+            <ArrowUp className="h-3.5 w-3.5" />
+            Set parent issue...
+          </P.Item>
+          <P.Item onClick={openAddChild}>
+            <ArrowDown className="h-3.5 w-3.5" />
+            Add sub-issue...
+          </P.Item>
+        </P.SubContent>
+      </P.Sub>
 
       <P.Separator />
 

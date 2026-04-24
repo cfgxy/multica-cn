@@ -140,11 +140,13 @@ describe("IssueActionsDropdown", () => {
     expect(screen.getByText("Priority")).toBeInTheDocument();
     expect(screen.getByText("Assignee")).toBeInTheDocument();
     expect(screen.getByText("Due date")).toBeInTheDocument();
-    expect(screen.getByText("Create sub-issue")).toBeInTheDocument();
-    expect(screen.getByText("Set parent issue...")).toBeInTheDocument();
-    expect(screen.getByText("Add sub-issue...")).toBeInTheDocument();
     expect(screen.getByText("Copy link")).toBeInTheDocument();
+    expect(screen.getByText("More")).toBeInTheDocument();
     expect(screen.getByText("Delete issue")).toBeInTheDocument();
+    // Relationship actions are hidden inside the "More" submenu by default.
+    expect(screen.queryByText("Create sub-issue")).not.toBeInTheDocument();
+    expect(screen.queryByText("Set parent issue...")).not.toBeInTheDocument();
+    expect(screen.queryByText("Add sub-issue...")).not.toBeInTheDocument();
   });
 
   it("clicking Delete issue opens the delete-confirm modal", async () => {
