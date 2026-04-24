@@ -36,14 +36,28 @@ func TestHideAgentWindowSetsCreateNewConsole(t *testing.T) {
 }
 
 // TestHideAgentWindowPreservesExistingSysProcAttr ensures hideAgentWindow
-// does not overwrite fields set by callers — a regression caught in PR #1474.
+// does not overwrite fields set by callers — a regression caught in PR #1474
+// where the whole SysProcAttr struct was replaced. We verify both a
+// non-CreationFlags field and a pre-existing CreationFlags bit survive.
+//
+// CREATE_UNICODE_ENVIRONMENT (0x00000400) is chosen because it is documented
+// as compatible with CREATE_NEW_CONSOLE (unlike CREATE_NEW_PROCESS_GROUP,
+// which Windows silently ignores when combined with CREATE_NEW_CONSOLE), so
+// a surviving bit here is semantically meaningful, not just bitwise intact.
 func TestHideAgentWindowPreservesExistingSysProcAttr(t *testing.T) {
+	const createUnicodeEnvironment = 0x00000400
 	cmd := exec.Command("cmd.exe", "/c", "echo", "hi")
-	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: 0x00000200} // CREATE_NEW_PROCESS_GROUP
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		CreationFlags:    createUnicodeEnvironment,
+		NoInheritHandles: true,
+	}
 	hideAgentWindow(cmd)
 
-	if cmd.SysProcAttr.CreationFlags&0x00000200 == 0 {
-		t.Error("existing CreationFlags bits should be preserved")
+	if !cmd.SysProcAttr.NoInheritHandles {
+		t.Error("NoInheritHandles set by caller should be preserved")
+	}
+	if cmd.SysProcAttr.CreationFlags&createUnicodeEnvironment == 0 {
+		t.Error("existing CreationFlags bits (CREATE_UNICODE_ENVIRONMENT) should be preserved")
 	}
 	if cmd.SysProcAttr.CreationFlags&createNewConsole == 0 {
 		t.Error("CREATE_NEW_CONSOLE should be OR'd into existing flags")
