@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   AlertTriangle,
@@ -41,7 +41,9 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@multica/ui/components/ui/tooltip";
+import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
 import { AppLink, useNavigation } from "../../navigation";
+import { PageHeader } from "../../layout/page-header";
 import { canEditSkill } from "../hooks/use-can-edit-skill";
 import { readOrigin, totalFileCount } from "../lib/origin";
 import { CreateSkillDialog } from "./create-skill-dialog";
@@ -167,7 +169,7 @@ function SkillRow({
   return (
     <AppLink
       href={href}
-      className={`group ${ROW_GRID} px-6 py-3 text-sm transition-colors hover:bg-accent/60`}
+      className={`group ${ROW_GRID} border-b px-4 py-3 text-sm transition-colors hover:bg-accent/60`}
     >
       <div className="min-w-0">
         <div className="flex items-center gap-2">
@@ -214,7 +216,7 @@ function SkillRow({
 function ListColumnHeader() {
   return (
     <div
-      className={`${ROW_GRID} border-b bg-muted/30 px-6 py-2 text-xs font-medium uppercase tracking-wider text-muted-foreground`}
+      className={`${ROW_GRID} shrink-0 border-b bg-muted/30 px-4 py-2 text-xs font-medium uppercase tracking-wider text-muted-foreground`}
     >
       <span>Name</span>
       <span>Used by</span>
@@ -237,36 +239,85 @@ const SCOPES: { value: FilterKey; label: string; description: string }[] = [
 ];
 
 // ---------------------------------------------------------------------------
-// Hero header
+// Page header bar — uses shared PageHeader so the mobile sidebar trigger and
+// h-12 chrome stay consistent with every other dashboard list page.
 // ---------------------------------------------------------------------------
 
-function HeroHeader({ totalCount }: { totalCount: number }) {
+function PageHeaderBar({
+  totalCount,
+  onCreate,
+}: {
+  totalCount: number;
+  onCreate: () => void;
+}) {
   return (
-    <div className="shrink-0 border-b px-6 pt-6 pb-5">
+    <PageHeader className="justify-between px-5">
       <div className="flex items-center gap-2">
-        <h1 className="font-heading text-xl font-semibold tracking-tight">
-          Skills
-        </h1>
+        <BookOpen className="h-4 w-4 text-muted-foreground" />
+        <h1 className="text-sm font-medium">Skills</h1>
         {totalCount > 0 && (
-          <span className="font-mono text-xs text-muted-foreground/70">
+          <span className="font-mono text-xs tabular-nums text-muted-foreground/70">
             {totalCount}
           </span>
         )}
       </div>
-      <p className="mt-1.5 max-w-2xl text-sm text-muted-foreground">
-        Reusable instruction packs that agents load at runtime — your
-        workspace&rsquo;s shared knowledge for every agent run.
-      </p>
-      <div className="mt-3 max-w-2xl rounded-r-md border-l-2 border-l-brand bg-brand/5 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
-        <span className="font-medium text-foreground">
-          Shared with your workspace.
-        </span>{" "}
-        Anyone can create a skill, import one from a URL, or copy one from
-        their local runtime — and every agent can use it.{" "}
-        <span className="font-semibold text-brand">
-          Local runtime skills stay private until you copy one here.
-        </span>
+      <Button type="button" size="sm" onClick={onCreate}>
+        <Plus className="h-3 w-3" />
+        New skill
+      </Button>
+    </PageHeader>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Card toolbar — search + scope filters, kept inside the card because they
+// operate on the table content. Page-level actions (New skill) live in the
+// PageHeader instead.
+// ---------------------------------------------------------------------------
+
+function CardToolbar({
+  search,
+  setSearch,
+  filter,
+  setFilter,
+}: {
+  search: string;
+  setSearch: (v: string) => void;
+  filter: FilterKey;
+  setFilter: (v: FilterKey) => void;
+}) {
+  return (
+    <div className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
+      <div className="relative">
+        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
+        <Input
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          placeholder="Search skills…"
+          className="h-8 w-64 pl-8 text-sm"
+        />
       </div>
+      {SCOPES.map((s) => (
+        <Tooltip key={s.value}>
+          <TooltipTrigger
+            render={
+              <Button
+                variant="outline"
+                size="sm"
+                className={
+                  filter === s.value
+                    ? "bg-accent text-accent-foreground hover:bg-accent/80"
+                    : "text-muted-foreground"
+                }
+                onClick={() => setFilter(s.value)}
+              >
+                {s.label}
+              </Button>
+            }
+          />
+          <TooltipContent side="bottom">{s.description}</TooltipContent>
+        </Tooltip>
+      ))}
     </div>
   );
 }
@@ -324,6 +375,9 @@ export default function SkillsPage() {
   const [filter, setFilter] = useState<FilterKey>("all");
   const [createOpen, setCreateOpen] = useState(false);
 
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const fadeStyle = useScrollFade(scrollRef);
+
   // Derive assignments ONCE per agents-identity. Stable reference across
   // unrelated agent refetches — see selectSkillAssignments' doc.
   const assignments = useMemo(
@@ -374,20 +428,22 @@ export default function SkillsPage() {
   if (isLoading) {
     return (
       <div className="flex flex-1 min-h-0 flex-col">
-        <div className="shrink-0 border-b px-6 pt-6 pb-5">
-          <Skeleton className="h-6 w-20" />
-          <Skeleton className="mt-3 h-4 w-96" />
-          <Skeleton className="mt-1 h-4 w-80" />
-          <Skeleton className="mt-4 h-10 w-full max-w-2xl" />
-        </div>
-        <div className="flex h-12 shrink-0 items-center gap-2 border-b px-6">
-          <Skeleton className="h-8 w-64 rounded-md" />
-          <Skeleton className="h-7 w-14 rounded-md" />
-        </div>
-        <div className="space-y-2 p-6">
-          {Array.from({ length: 4 }).map((_, i) => (
-            <Skeleton key={i} className="h-14 w-full rounded-lg" />
-          ))}
+        <PageHeaderBar totalCount={0} onCreate={() => setCreateOpen(true)} />
+        <div className="flex flex-1 min-h-0 flex-col gap-4 p-6">
+          <Skeleton className="h-12 w-full max-w-3xl rounded-md" />
+          <div className="flex flex-1 min-h-0 flex-col overflow-hidden rounded-lg border">
+            <div className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
+              <Skeleton className="h-8 w-64 rounded-md" />
+              <Skeleton className="h-7 w-12 rounded-md" />
+              <Skeleton className="h-7 w-14 rounded-md" />
+              <Skeleton className="h-7 w-16 rounded-md" />
+            </div>
+            <div className="space-y-2 p-4">
+              {Array.from({ length: 4 }).map((_, i) => (
+                <Skeleton key={i} className="h-14 w-full rounded-md" />
+              ))}
+            </div>
+          </div>
         </div>
       </div>
     );
@@ -397,7 +453,7 @@ export default function SkillsPage() {
   if (listError) {
     return (
       <div className="flex flex-1 min-h-0 flex-col">
-        <HeroHeader totalCount={0} />
+        <PageHeaderBar totalCount={0} onCreate={() => setCreateOpen(true)} />
         <div className="flex flex-1 flex-col items-center justify-center gap-3 px-6 py-16 text-center">
           <AlertCircle className="h-8 w-8 text-destructive" />
           <div>
@@ -428,7 +484,10 @@ export default function SkillsPage() {
 
   return (
     <div className="flex flex-1 min-h-0 flex-col">
-      <HeroHeader totalCount={totalCount} />
+      <PageHeaderBar
+        totalCount={totalCount}
+        onCreate={() => setCreateOpen(true)}
+      />
 
       {/* Non-blocking banner when supporting queries fail — list still renders
           but creator/runtime/permission attribution is incomplete. */}
@@ -445,98 +504,86 @@ export default function SkillsPage() {
         </div>
       )}
 
-      {/* Toolbar */}
-      {!showEmpty && (
-        <div className="flex h-12 shrink-0 items-center gap-2 border-b px-6">
-          <div className="relative">
-            <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search skills…"
-              className="h-8 w-64 pl-8 text-sm"
-            />
+      {/* Page body — padding here keeps the card from touching the chrome,
+          and `gap-4` separates the sharing banner from the table card. */}
+      <div className="flex flex-1 min-h-0 flex-col gap-4 p-6">
+        {!showEmpty && (
+          <div className="max-w-3xl rounded-r-md border-l-2 border-l-brand bg-brand/5 px-3 py-2 text-xs leading-relaxed text-muted-foreground">
+            <span className="font-medium text-foreground">
+              Shared with your workspace.
+            </span>{" "}
+            Anyone can create a skill, import one from a URL, or copy one from
+            their local runtime — and every agent can use it.{" "}
+            <span className="font-semibold text-brand">
+              Local runtime skills stay private until you copy one here.
+            </span>
           </div>
-          {SCOPES.map((s) => (
-            <Tooltip key={s.value}>
-              <TooltipTrigger
-                render={
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className={
-                      filter === s.value
-                        ? "bg-accent text-accent-foreground hover:bg-accent/80"
-                        : "text-muted-foreground"
-                    }
-                    onClick={() => setFilter(s.value)}
-                  >
-                    {s.label}
-                  </Button>
-                }
-              />
-              <TooltipContent side="bottom">{s.description}</TooltipContent>
-            </Tooltip>
-          ))}
-          <div className="ml-auto">
-            <Button
-              type="button"
-              size="sm"
-              onClick={() => setCreateOpen(true)}
-            >
-              <Plus className="h-3 w-3" />
-              New skill
-            </Button>
-          </div>
-        </div>
-      )}
+        )}
 
-      {/* Body */}
-      {showEmpty ? (
-        <EmptyState onCreate={() => setCreateOpen(true)} />
-      ) : filtered.length === 0 ? (
-        <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 py-16 text-center text-muted-foreground">
-          <Search className="h-8 w-8 text-muted-foreground/40" />
-          <p className="text-sm">No matches</p>
-          <p className="max-w-xs text-xs">
-            {search
-              ? `No skills match "${search}"${filter !== "all" ? " in this filter" : ""}.`
-              : "No skills match this filter."}{" "}
-            Try a different query.
-          </p>
-        </div>
-      ) : (
-        <div className="flex-1 min-h-0 overflow-y-auto">
-          <ListColumnHeader />
-          <div className="divide-y">
-            {filtered.map((skill) => {
-              const origin = readOrigin(skill);
-              const runtime =
-                origin.type === "runtime_local" && origin.runtime_id
-                  ? runtimesById.get(origin.runtime_id) ?? null
-                  : null;
-              return (
-                <SkillRow
-                  key={skill.id}
-                  skill={skill}
-                  agents={assignments.get(skill.id) ?? []}
-                  creator={
-                    skill.created_by
-                      ? membersById.get(skill.created_by) ?? null
-                      : null
-                  }
-                  runtime={runtime}
-                  canEdit={canEditSkill(skill, {
-                    userId: currentUserId,
-                    role: myRole,
-                  })}
-                  href={paths.skillDetail(skill.id)}
-                />
-              );
-            })}
+        {showEmpty ? (
+          <div className="flex flex-1 items-center justify-center">
+            <EmptyState onCreate={() => setCreateOpen(true)} />
           </div>
-        </div>
-      )}
+        ) : (
+          <div className="flex flex-1 min-h-0 flex-col overflow-hidden rounded-lg border bg-background">
+            <CardToolbar
+              search={search}
+              setSearch={setSearch}
+              filter={filter}
+              setFilter={setFilter}
+            />
+            {filtered.length === 0 ? (
+              <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 py-16 text-center text-muted-foreground">
+                <Search className="h-8 w-8 text-muted-foreground/40" />
+                <p className="text-sm">No matches</p>
+                <p className="max-w-xs text-xs">
+                  {search
+                    ? `No skills match "${search}"${filter !== "all" ? " in this filter" : ""}.`
+                    : "No skills match this filter."}{" "}
+                  Try a different query.
+                </p>
+              </div>
+            ) : (
+              <>
+                <ListColumnHeader />
+                <div
+                  ref={scrollRef}
+                  style={fadeStyle}
+                  className="flex-1 min-h-0 overflow-y-auto"
+                >
+                  <div>
+                    {filtered.map((skill) => {
+                      const origin = readOrigin(skill);
+                      const runtime =
+                        origin.type === "runtime_local" && origin.runtime_id
+                          ? runtimesById.get(origin.runtime_id) ?? null
+                          : null;
+                      return (
+                        <SkillRow
+                          key={skill.id}
+                          skill={skill}
+                          agents={assignments.get(skill.id) ?? []}
+                          creator={
+                            skill.created_by
+                              ? membersById.get(skill.created_by) ?? null
+                              : null
+                          }
+                          runtime={runtime}
+                          canEdit={canEditSkill(skill, {
+                            userId: currentUserId,
+                            role: myRole,
+                          })}
+                          href={paths.skillDetail(skill.id)}
+                        />
+                      );
+                    })}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+        )}
+      </div>
 
       {createOpen && (
         <CreateSkillDialog
