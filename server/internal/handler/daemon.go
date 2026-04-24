@@ -485,23 +485,28 @@ type DaemonHeartbeatRequest struct {
 	RuntimeID string `json:"runtime_id"`
 }
 
-// heartbeatPopPendingTimeout bounds the per-call Redis PopPending cost on the
-// heartbeat hot path. Heartbeats must stay fast (tens of ms); if the shared
-// store is momentarily slow we skip this tick rather than blocking the daemon.
-// A skipped tick is safe — the next heartbeat (default 15s later) re-reads the
-// pending set, so pending requests are only delayed, never dropped.
-const heartbeatPopPendingTimeout = 1 * time.Second
+// heartbeatHasPendingTimeout bounds the cheap HasPending probe on the
+// heartbeat hot path. Probes are read-only (ZCARD in Redis) so a timeout is
+// ack-safe: the worst case is "we didn't find out if anything was queued this
+// tick" and the next heartbeat (default 15s later) will try again.
+//
+// PopPending is deliberately NOT bounded this way — its Redis implementation
+// runs a Lua claim script whose ZREM + SET-running side effects cannot be
+// cleanly un-run from the client side if the context expires mid-script. We
+// therefore only invoke PopPending after HasPending confirms there is work
+// to claim, so we never start a claim we might have to abort.
+const heartbeatHasPendingTimeout = 1 * time.Second
 
 func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	var (
-		outcome                                    = "unauth"
-		runtimeID                                  string
-		authMs, updateMs, popSkillsMs, popImportMs int64
-		popSkillsTimedOut, popImportTimedOut       bool
+		outcome                                                                  = "unauth"
+		runtimeID                                                                string
+		authMs, updateMs, probeSkillsMs, popSkillsMs, probeImportMs, popImportMs int64
+		probeSkillsTimedOut, probeImportTimedOut                                 bool
 	)
 	defer func() {
-		logHeartbeatEndpointSlow(runtimeID, outcome, start, authMs, updateMs, popSkillsMs, popImportMs, popSkillsTimedOut, popImportTimedOut)
+		logHeartbeatEndpointSlow(runtimeID, outcome, start, authMs, updateMs, probeSkillsMs, popSkillsMs, probeImportMs, popImportMs, probeSkillsTimedOut, probeImportTimedOut)
 	}()
 
 	var req DaemonHeartbeatRequest
@@ -550,44 +555,59 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 		resp["pending_model_list"] = map[string]string{"id": pending.ID}
 	}
 
-	// Check for pending local-skill list requests for this runtime. Bound the
-	// call so a slow shared store cannot stall the heartbeat; a timeout is
-	// logged and we fall through without returning a pending request — the
-	// next heartbeat will pick it up.
-	popSkillsStart := time.Now()
-	skillsCtx, cancelSkills := context.WithTimeout(r.Context(), heartbeatPopPendingTimeout)
-	pendingSkills, err := h.LocalSkillListStore.PopPending(skillsCtx, req.RuntimeID)
-	cancelSkills()
-	popSkillsMs = time.Since(popSkillsStart).Milliseconds()
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-			popSkillsTimedOut = true
-			slog.Warn("local skill list PopPending timed out", "runtime_id", req.RuntimeID, "elapsed_ms", popSkillsMs)
-		} else {
-			slog.Warn("local skill list PopPending failed", "error", err, "runtime_id", req.RuntimeID)
+	// Probe then claim the local-skill list queue. The probe is bounded so a
+	// slow shared store cannot stall the heartbeat on empty-queue ticks; the
+	// claim runs unbounded (it inherits only r.Context()) because its Lua
+	// side effects cannot be safely aborted mid-script.
+	probeSkillsStart := time.Now()
+	probeSkillsCtx, cancelProbeSkills := context.WithTimeout(r.Context(), heartbeatHasPendingTimeout)
+	hasSkills, probeErr := h.LocalSkillListStore.HasPending(probeSkillsCtx, req.RuntimeID)
+	cancelProbeSkills()
+	probeSkillsMs = time.Since(probeSkillsStart).Milliseconds()
+	switch {
+	case probeErr == nil && hasSkills:
+		popStart := time.Now()
+		pendingSkills, popErr := h.LocalSkillListStore.PopPending(r.Context(), req.RuntimeID)
+		popSkillsMs = time.Since(popStart).Milliseconds()
+		if popErr != nil {
+			slog.Warn("local skill list PopPending failed", "error", popErr, "runtime_id", req.RuntimeID)
+		} else if pendingSkills != nil {
+			resp["pending_local_skills"] = map[string]string{"id": pendingSkills.ID}
 		}
-	} else if pendingSkills != nil {
-		resp["pending_local_skills"] = map[string]string{"id": pendingSkills.ID}
+	case probeErr != nil:
+		if errors.Is(probeErr, context.DeadlineExceeded) || errors.Is(probeErr, context.Canceled) {
+			probeSkillsTimedOut = true
+			slog.Warn("local skill list HasPending timed out", "runtime_id", req.RuntimeID, "elapsed_ms", probeSkillsMs)
+		} else {
+			slog.Warn("local skill list HasPending failed", "error", probeErr, "runtime_id", req.RuntimeID)
+		}
 	}
 
-	// Check for pending local-skill import requests for this runtime. Same
-	// bounded-call contract as above.
-	popImportStart := time.Now()
-	importCtx, cancelImport := context.WithTimeout(r.Context(), heartbeatPopPendingTimeout)
-	pendingImport, err := h.LocalSkillImportStore.PopPending(importCtx, req.RuntimeID)
-	cancelImport()
-	popImportMs = time.Since(popImportStart).Milliseconds()
-	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-			popImportTimedOut = true
-			slog.Warn("local skill import PopPending timed out", "runtime_id", req.RuntimeID, "elapsed_ms", popImportMs)
-		} else {
-			slog.Warn("local skill import PopPending failed", "error", err, "runtime_id", req.RuntimeID)
+	// Same probe-then-claim pattern for the import queue.
+	probeImportStart := time.Now()
+	probeImportCtx, cancelProbeImport := context.WithTimeout(r.Context(), heartbeatHasPendingTimeout)
+	hasImport, probeErr := h.LocalSkillImportStore.HasPending(probeImportCtx, req.RuntimeID)
+	cancelProbeImport()
+	probeImportMs = time.Since(probeImportStart).Milliseconds()
+	switch {
+	case probeErr == nil && hasImport:
+		popStart := time.Now()
+		pendingImport, popErr := h.LocalSkillImportStore.PopPending(r.Context(), req.RuntimeID)
+		popImportMs = time.Since(popStart).Milliseconds()
+		if popErr != nil {
+			slog.Warn("local skill import PopPending failed", "error", popErr, "runtime_id", req.RuntimeID)
+		} else if pendingImport != nil {
+			resp["pending_local_skill_import"] = map[string]string{
+				"id":        pendingImport.ID,
+				"skill_key": pendingImport.SkillKey,
+			}
 		}
-	} else if pendingImport != nil {
-		resp["pending_local_skill_import"] = map[string]string{
-			"id":        pendingImport.ID,
-			"skill_key": pendingImport.SkillKey,
+	case probeErr != nil:
+		if errors.Is(probeErr, context.DeadlineExceeded) || errors.Is(probeErr, context.Canceled) {
+			probeImportTimedOut = true
+			slog.Warn("local skill import HasPending timed out", "runtime_id", req.RuntimeID, "elapsed_ms", probeImportMs)
+		} else {
+			slog.Warn("local skill import HasPending failed", "error", probeErr, "runtime_id", req.RuntimeID)
 		}
 	}
 
@@ -596,12 +616,12 @@ func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 }
 
 // logHeartbeatEndpointSlow emits one structured log when /api/daemon/heartbeat
-// exceeds 500ms, splitting auth / update / pop-skills / pop-import phases so
-// the prod tail can be attributed without flooding logs at normal rates.
+// exceeds 500ms, splitting auth / update / probe / pop phases for both queues
+// so the prod tail can be attributed without flooding logs at normal rates.
 // Mirrors logClaimEndpointSlow for consistency.
-func logHeartbeatEndpointSlow(runtimeID, outcome string, start time.Time, authMs, updateMs, popSkillsMs, popImportMs int64, popSkillsTimedOut, popImportTimedOut bool) {
+func logHeartbeatEndpointSlow(runtimeID, outcome string, start time.Time, authMs, updateMs, probeSkillsMs, popSkillsMs, probeImportMs, popImportMs int64, probeSkillsTimedOut, probeImportTimedOut bool) {
 	totalMs := time.Since(start).Milliseconds()
-	if totalMs < 500 && !popSkillsTimedOut && !popImportTimedOut {
+	if totalMs < 500 && !probeSkillsTimedOut && !probeImportTimedOut {
 		return
 	}
 	slog.Info("heartbeat_endpoint slow",
@@ -610,10 +630,12 @@ func logHeartbeatEndpointSlow(runtimeID, outcome string, start time.Time, authMs
 		"total_ms", totalMs,
 		"auth_ms", authMs,
 		"update_ms", updateMs,
+		"probe_skills_ms", probeSkillsMs,
 		"pop_skills_ms", popSkillsMs,
+		"probe_import_ms", probeImportMs,
 		"pop_import_ms", popImportMs,
-		"pop_skills_timed_out", popSkillsTimedOut,
-		"pop_import_timed_out", popImportTimedOut,
+		"probe_skills_timed_out", probeSkillsTimedOut,
+		"probe_import_timed_out", probeImportTimedOut,
 	)
 }
 
