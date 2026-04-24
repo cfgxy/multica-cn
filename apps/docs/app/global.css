@@ -276,21 +276,37 @@ article > p.text-lg {
 }
 
 /* ---------------------------------------------------------------------------
- * Links — editorial underline (always on, accent-colored)
+ * Links — Vercel-style hairline underline, reveal brand on hover
+ *
+ * Markdown-heavy prose can put 4+ inline links in a single sentence; a
+ * permanent brand-color underline on every one turns the paragraph into
+ * highlighter spam. The trick isn't "no underline" — it's underlining
+ * in the hairline border color so the line exists but visually recedes.
+ * Hover swaps both text and underline to brand color (no thickness
+ * change) — the link "arrives" as a single color shift.
  * ------------------------------------------------------------------------- */
 
 .prose a:not([data-card]):not(.not-prose) {
   color: var(--foreground);
   font-weight: 500;
   text-decoration: underline;
-  text-decoration-color: var(--primary);
+  text-decoration-color: var(--border);
   text-decoration-thickness: 1px;
   text-underline-offset: 3px;
-  transition: text-decoration-thickness 150ms, text-decoration-color 150ms;
+  transition: text-decoration-color 150ms, color 150ms;
 }
 .prose a:not([data-card]):not(.not-prose):hover {
-  text-decoration-thickness: 2px;
-  text-decoration-color: var(--accent-foreground);
+  color: var(--primary);
+  text-decoration-color: var(--primary);
+}
+
+/* Callout already carries four visual signals (left brand bar, brand-wash
+ * bg, uppercase NOTE label, body). Another decoration over-loads it — so
+ * links inside a callout drop the underline entirely. Color shift on
+ * hover is the full affordance. */
+.prose div.shadow-md:has(> [role="none"]) a:not([data-card]):not(.not-prose),
+.prose div.shadow-md:has(> [role="none"]) a:not([data-card]):not(.not-prose):hover {
+  text-decoration: none;
 }
 
 /* Inline code — warm beige chip, accent-color text */
@@ -343,15 +359,17 @@ article > p.text-lg {
   content: none;
 }
 
-/* Tables — ruled-only, top accent rule */
+/* Tables — hairline below thead only, no outer frame (Stripe / Linear
+ * docs convention). The heavier ink-color top rule v2 used on its API
+ * reference block is intentionally not applied here — that treatment is
+ * "this is a formal declaration"; regular guide tables want quiet. */
 .prose table {
   font-size: 0.9375em;
   border-collapse: collapse;
   margin-block: 1.5em;
 }
 .prose thead {
-  border-top: 2px solid var(--foreground);
-  border-bottom: 1px solid var(--foreground);
+  border-bottom: 1px solid var(--border);
 }
 .prose thead th {
   font-family: var(--font-sans), system-ui, sans-serif;
@@ -526,6 +544,16 @@ article > p.text-lg {
   background: var(--sidebar-accent) !important;
   color: var(--sidebar-accent-foreground) !important;
   font-weight: 500;
+}
+
+/* Sidebar footer — drop the hard top rule. The scroll viewport already
+ * fades content into the footer, so a 1px line on top reads as a
+ * double-weight edge. Fumadocs hardcodes `border-t p-4 pt-2` on its
+ * SidebarFooter div; target that exact class trio inside the sidebar IDs
+ * so we don't touch any other border-t in the app. */
+#nd-sidebar .border-t.p-4.pt-2,
+#nd-sidebar-mobile .border-t.p-4.pt-2 {
+  border-top-width: 0;
 }
 
 /* ---------------------------------------------------------------------------
