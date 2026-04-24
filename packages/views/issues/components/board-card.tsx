@@ -20,6 +20,7 @@ import { PRIORITY_CONFIG } from "@multica/core/issues/config";
 import { useViewStore } from "@multica/core/issues/stores/view-store-context";
 import { ProgressRing } from "./progress-ring";
 import type { ChildProgress } from "./list-row";
+import { IssueActionsContextMenu } from "../actions";
 
 function formatDate(date: string): string {
   return new Date(date).toLocaleDateString("en-US", {
@@ -228,19 +229,21 @@ export const DraggableBoardCard = memo(function DraggableBoardCard({ issue, chil
   };
 
   return (
-    <div
-      ref={setNodeRef}
-      style={style}
-      {...attributes}
-      {...listeners}
-      className={isDragging ? "opacity-30" : ""}
-    >
-      <AppLink
-        href={p.issueDetail(issue.id)}
-        className={`group block transition-colors ${isDragging ? "pointer-events-none" : ""}`}
+    <IssueActionsContextMenu issue={issue}>
+      <div
+        ref={setNodeRef}
+        style={style}
+        {...attributes}
+        {...listeners}
+        className={isDragging ? "opacity-30" : ""}
       >
-        <BoardCardContent issue={issue} editable childProgress={childProgress} />
-      </AppLink>
-    </div>
+        <AppLink
+          href={p.issueDetail(issue.id)}
+          className={`group block transition-colors ${isDragging ? "pointer-events-none" : ""}`}
+        >
+          <BoardCardContent issue={issue} editable childProgress={childProgress} />
+        </AppLink>
+      </div>
+    </IssueActionsContextMenu>
   );
 });
