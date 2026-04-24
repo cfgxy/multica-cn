@@ -52,7 +52,7 @@ export const ListRow = memo(function ListRow({
   return (
     <IssueActionsContextMenu issue={issue}>
       <div
-        className={`group/row flex h-9 items-center gap-2 px-4 text-sm transition-colors hover:bg-accent/50 ${
+        className={`group/row flex h-9 items-center gap-2 px-4 text-sm transition-colors hover:not-data-[popup-open]:bg-accent/60 data-[popup-open]:bg-accent ${
           selected ? "bg-accent/30" : ""
         }`}
       >

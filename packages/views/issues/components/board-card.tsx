@@ -79,7 +79,7 @@ export const BoardCardContent = memo(function BoardCardContent({
   const showChildProgress = storeProperties.childProgress && childProgress;
 
   return (
-    <div className="rounded-lg border-[0.5px] bg-card py-3 px-2.5 shadow-[0_3px_6px_-2px_rgba(0,0,0,0.02),0_1px_1px_0_rgba(0,0,0,0.04)] transition-shadow group-hover:shadow-sm">
+    <div className="rounded-lg border-[0.5px] border-border bg-card py-3 px-2.5 shadow-[0_3px_6px_-2px_rgba(0,0,0,0.02),0_1px_1px_0_rgba(0,0,0,0.04)] transition-[border-color,box-shadow,background-color] group-hover/card:border-accent/50 group-hover/card:bg-accent/20 group-data-[popup-open]/card:border-accent group-data-[popup-open]/card:bg-accent/40 group-hover:shadow-sm">
       {/* Row 1: Identifier */}
       <p className="text-xs text-muted-foreground">{issue.identifier}</p>
 
@@ -235,7 +235,7 @@ export const DraggableBoardCard = memo(function DraggableBoardCard({ issue, chil
         style={style}
         {...attributes}
         {...listeners}
-        className={isDragging ? "opacity-30" : ""}
+        className={`group/card ${isDragging ? "opacity-30" : ""}`}
       >
         <AppLink
           href={p.issueDetail(issue.id)}
