@@ -538,11 +538,12 @@ export default function SkillsPage() {
         </div>
       )}
 
-      <CreateSkillDialog
-        open={createOpen}
-        onClose={() => setCreateOpen(false)}
-        onCreated={handleCreated}
-      />
+      {createOpen && (
+        <CreateSkillDialog
+          onClose={() => setCreateOpen(false)}
+          onCreated={handleCreated}
+        />
+      )}
     </div>
   );
 }

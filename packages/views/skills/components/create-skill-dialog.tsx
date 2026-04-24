@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
   AlertCircle,
   ArrowLeft,
@@ -452,20 +452,13 @@ const METHOD_DESCS: Record<Method, string> = {
 };
 
 export function CreateSkillDialog({
-  open,
   onClose,
   onCreated,
 }: {
-  open: boolean;
   onClose: () => void;
   onCreated?: (skill: Skill) => void;
 }) {
   const [method, setMethod] = useState<Method>("chooser");
-
-  // Reset to chooser each time the dialog opens.
-  useEffect(() => {
-    if (open) setMethod("chooser");
-  }, [open]);
 
   const handleCreated = (skill: Skill) => {
     onCreated?.(skill);
@@ -474,8 +467,12 @@ export function CreateSkillDialog({
 
   const wide = method === "runtime";
 
+  // Mount pattern mirrors CreateIssue / CreateProject: the parent conditionally
+  // renders this component and `<Dialog open>` is hard-coded. Toggling `open`
+  // via prop (controlled) causes a second data-open → data-closed flip with a
+  // tail re-render, which shows up as a "double blink" on close.
   return (
-    <Dialog open={open} onOpenChange={(v) => !v && onClose()}>
+    <Dialog open onOpenChange={(v) => !v && onClose()}>
       <DialogContent
         showCloseButton={false}
         className={cn(
