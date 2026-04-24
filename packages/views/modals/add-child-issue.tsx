@@ -45,6 +45,8 @@ export function AddChildIssueModal({
       title="Add sub-issue"
       description="Search for an issue to add as a sub-issue"
       excludeIds={excludeIds}
+      contextIssue={issue ?? undefined}
+      contextLabel="Adding sub-issue to"
       onSelect={(selected) => {
         updateIssue.mutate(
           { id: selected.id, parent_issue_id: issueId },

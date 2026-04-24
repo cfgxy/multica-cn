@@ -3,7 +3,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { childIssuesOptions } from "@multica/core/issues/queries";
+import {
+  childIssuesOptions,
+  issueDetailOptions,
+} from "@multica/core/issues/queries";
 import { useUpdateIssue } from "@multica/core/issues/mutations";
 import { IssuePickerModal } from "./issue-picker-modal";
 
@@ -18,6 +21,10 @@ export function SetParentIssueModal({
   const wsId = useWorkspaceId();
   const updateIssue = useUpdateIssue();
 
+  const { data: contextIssue } = useQuery({
+    ...issueDetailOptions(wsId, issueId),
+    enabled: !!issueId,
+  });
   const { data: children = [] } = useQuery({
     ...childIssuesOptions(wsId, issueId),
     enabled: !!issueId,
@@ -34,6 +41,8 @@ export function SetParentIssueModal({
       title="Set parent issue"
       description="Search for an issue to set as the parent of this issue"
       excludeIds={excludeIds}
+      contextIssue={contextIssue ?? undefined}
+      contextLabel="Setting parent of"
       onSelect={(selected) => {
         updateIssue.mutate(
           { id: issueId, parent_issue_id: selected.id },

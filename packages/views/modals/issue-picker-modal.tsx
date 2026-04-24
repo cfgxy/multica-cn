@@ -21,6 +21,10 @@ interface IssuePickerModalProps {
   description: string;
   excludeIds: string[];
   onSelect: (issue: Issue) => void;
+  /** Shows a banner at the top indicating which issue the link operates on. */
+  contextIssue?: Issue;
+  /** Small label displayed above the context issue, e.g. "Setting parent of". */
+  contextLabel?: string;
 }
 
 export function IssuePickerModal({
@@ -30,6 +34,8 @@ export function IssuePickerModal({
   description,
   excludeIds,
   onSelect,
+  contextIssue,
+  contextLabel,
 }: IssuePickerModalProps) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<Issue[]>([]);
@@ -88,6 +94,18 @@ export function IssuePickerModal({
       title={title}
       description={description}
     >
+      {contextIssue && (
+        <div className="border-b px-3 py-2">
+          {contextLabel && (
+            <p className="text-xs text-muted-foreground">{contextLabel}</p>
+          )}
+          <div className="mt-0.5 flex items-center gap-1.5 text-sm">
+            <StatusIcon status={contextIssue.status} className="h-3.5 w-3.5 shrink-0" />
+            <span className="shrink-0 text-muted-foreground">{contextIssue.identifier}</span>
+            <span className="truncate font-medium">{contextIssue.title}</span>
+          </div>
+        </div>
+      )}
       <Command shouldFilter={false}>
         <CommandInput
           placeholder="Search issues..."
