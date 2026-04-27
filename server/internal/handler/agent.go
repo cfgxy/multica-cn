@@ -698,3 +698,29 @@ func (h *Handler) ListAgentTasks(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, http.StatusOK, resp)
 }
+
+// ListWorkspaceLiveTasks returns active (queued/dispatched/running) tasks plus
+// any failed task within the last 2 minutes for the current workspace. The
+// recent-failed window powers the front-end's derived "Failed" agent state,
+// which auto-clears once the window expires. This is a single workspace-scoped
+// read used by the agent presence cache; per-agent filtering happens in the
+// front-end against the workspace-wide result.
+func (h *Handler) ListWorkspaceLiveTasks(w http.ResponseWriter, r *http.Request) {
+	workspaceID := h.resolveWorkspaceID(r)
+	if _, ok := h.workspaceMember(w, r, workspaceID); !ok {
+		return
+	}
+
+	tasks, err := h.Queries.ListWorkspaceLiveTasks(r.Context(), parseUUID(workspaceID))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list workspace live tasks")
+		return
+	}
+
+	resp := make([]AgentTaskResponse, len(tasks))
+	for i, t := range tasks {
+		resp[i] = taskToResponse(t)
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}

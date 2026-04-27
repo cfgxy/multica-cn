@@ -646,6 +646,14 @@ export class ApiClient {
     return this.fetch(`/api/agents/${agentId}/tasks`);
   }
 
+  // Workspace-scoped "live" tasks: active (queued/dispatched/running) plus
+  // failed tasks within the last 2 minutes. Used by the agent presence
+  // derivation cache — a single fetch powers all per-agent presence reads.
+  // Workspace is resolved server-side from the X-Workspace-Slug header.
+  async getActiveTasksForWorkspace(): Promise<AgentTask[]> {
+    return this.fetch(`/api/active-tasks`);
+  }
+
   async getActiveTasksForIssue(issueId: string): Promise<{ tasks: AgentTask[] }> {
     return this.fetch(`/api/issues/${issueId}/active-task`);
   }

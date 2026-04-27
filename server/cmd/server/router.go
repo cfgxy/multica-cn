@@ -395,6 +395,9 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus, analytics
 			// Tasks (user-facing, with ownership check)
 			r.Post("/api/tasks/{taskId}/cancel", h.CancelTaskByUser)
 
+			// Workspace-wide live tasks (active + recent failed) for agent presence derivation.
+			r.Get("/api/active-tasks", h.ListWorkspaceLiveTasks)
+
 			r.Route("/api/chat/sessions", func(r chi.Router) {
 				r.Post("/", h.CreateChatSession)
 				r.Get("/", h.ListChatSessions)

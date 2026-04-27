@@ -266,6 +266,21 @@ SELECT * FROM agent_task_queue
 WHERE issue_id = $1 AND status IN ('dispatched', 'running')
 ORDER BY created_at DESC;
 
+-- name: ListWorkspaceLiveTasks :many
+-- Returns all "live" tasks in a workspace: currently active (queued/dispatched/running)
+-- plus any failed task within the last 2 minutes. Used by the front-end agent
+-- presence derivation: the recent-failed window powers the "Failed" state which
+-- auto-clears after the window expires. JOINs agent because agent_task_queue has
+-- no workspace_id column.
+SELECT atq.* FROM agent_task_queue atq
+JOIN agent a ON a.id = atq.agent_id
+WHERE a.workspace_id = $1
+  AND (
+    atq.status IN ('queued', 'dispatched', 'running')
+    OR (atq.status = 'failed' AND atq.completed_at > now() - INTERVAL '2 minutes')
+  )
+ORDER BY atq.created_at DESC;
+
 -- name: ListTasksByIssue :many
 SELECT * FROM agent_task_queue
 WHERE issue_id = $1

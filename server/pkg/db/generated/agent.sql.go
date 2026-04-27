@@ -108,10 +108,10 @@ RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, c
 `
 
 // Cancels every active task on the issue and returns the affected rows so the
-// caller can reconcile each agent's status and broadcast task:cancelled
-// events (#1587). Prior :exec form silently dropped that info, so internal
-// cancel paths (issue status flips to cancelled/done, etc.) left agents stuck
-// at status="working" with no self-correction.
+// caller can reconcile each agent's status and broadcast task:cancelled events
+// (#1587). Prior :exec form silently dropped that info, so internal cancel
+// paths (issue status flips to cancelled/done, etc.) left agents stuck at
+// status="working" with no self-correction.
 func (q *Queries) CancelAgentTasksByIssue(ctx context.Context, issueID pgtype.UUID) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, cancelAgentTasksByIssue, issueID)
 	if err != nil {
@@ -1118,6 +1118,66 @@ ORDER BY created_at DESC
 
 func (q *Queries) ListTasksByIssue(ctx context.Context, issueID pgtype.UUID) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, listTasksByIssue, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentTaskQueue{}
+	for rows.Next() {
+		var i AgentTaskQueue
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.IssueID,
+			&i.Status,
+			&i.Priority,
+			&i.DispatchedAt,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.Result,
+			&i.Error,
+			&i.CreatedAt,
+			&i.Context,
+			&i.RuntimeID,
+			&i.SessionID,
+			&i.WorkDir,
+			&i.TriggerCommentID,
+			&i.ChatSessionID,
+			&i.AutopilotRunID,
+			&i.Attempt,
+			&i.MaxAttempts,
+			&i.ParentTaskID,
+			&i.FailureReason,
+			&i.LastHeartbeatAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listWorkspaceLiveTasks = `-- name: ListWorkspaceLiveTasks :many
+SELECT atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority, atq.dispatched_at, atq.started_at, atq.completed_at, atq.result, atq.error, atq.created_at, atq.context, atq.runtime_id, atq.session_id, atq.work_dir, atq.trigger_comment_id, atq.chat_session_id, atq.autopilot_run_id, atq.attempt, atq.max_attempts, atq.parent_task_id, atq.failure_reason, atq.last_heartbeat_at FROM agent_task_queue atq
+JOIN agent a ON a.id = atq.agent_id
+WHERE a.workspace_id = $1
+  AND (
+    atq.status IN ('queued', 'dispatched', 'running')
+    OR (atq.status = 'failed' AND atq.completed_at > now() - INTERVAL '2 minutes')
+  )
+ORDER BY atq.created_at DESC
+`
+
+// Returns all "live" tasks in a workspace: currently active (queued/dispatched/running)
+// plus any failed task within the last 2 minutes. Used by the front-end agent
+// presence derivation: the recent-failed window powers the "Failed" state which
+// auto-clears after the window expires. JOINs agent because agent_task_queue has
+// no workspace_id column.
+func (q *Queries) ListWorkspaceLiveTasks(ctx context.Context, workspaceID pgtype.UUID) ([]AgentTaskQueue, error) {
+	rows, err := q.db.Query(ctx, listWorkspaceLiveTasks, workspaceID)
 	if err != nil {
 		return nil, err
 	}

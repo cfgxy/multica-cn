@@ -23,6 +23,16 @@ export interface RuntimeDevice {
 
 export type AgentRuntime = RuntimeDevice;
 
+// Coarse classifier set by the backend when a task transitions to "failed".
+// Mirrors the migration-055 enum in agent_task_queue.failure_reason. Used by
+// the agent presence derivation and the UI failure-message lookup.
+export type TaskFailureReason =
+  | "agent_error"
+  | "timeout"
+  | "runtime_offline"
+  | "runtime_recovery"
+  | "manual";
+
 export interface AgentTask {
   id: string;
   agent_id: string;
@@ -38,6 +48,9 @@ export interface AgentTask {
   completed_at: string | null;
   result: unknown;
   error: string | null;
+  // Empty string when the task is not in a failed state (the backend uses
+  // `omitempty`, so the field may also be missing on non-failed tasks).
+  failure_reason?: TaskFailureReason | "";
   created_at: string;
   /** Non-empty when the task was spawned from a chat session. */
   chat_session_id?: string;
