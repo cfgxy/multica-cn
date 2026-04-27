@@ -119,6 +119,17 @@ export function useRealtimeSync(
         const wsId = getCurrentWsId();
         if (wsId) qc.invalidateQueries({ queryKey: projectKeys.all(wsId) });
       },
+      label: () => {
+        // label:created/updated/deleted — also refresh issues, since each
+        // issue carries a denormalized snapshot of its labels (rename/recolor
+        // /delete on a label needs to flush the chips on every issue showing
+        // it).
+        const wsId = getCurrentWsId();
+        if (wsId) {
+          qc.invalidateQueries({ queryKey: ["labels", wsId] });
+          qc.invalidateQueries({ queryKey: issueKeys.all(wsId) });
+        }
+      },
       pin: () => {
         const wsId = getCurrentWsId();
         const userId = authStore.getState().user?.id;

@@ -2,6 +2,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { labelKeys } from "./queries";
 import { useWorkspaceId } from "../hooks";
+import { issueKeys } from "../issues/queries";
 import { onIssueLabelsChanged } from "../issues/ws-updaters";
 import type {
   Label,
@@ -61,6 +62,9 @@ export function useUpdateLabel() {
       // stale copy of this label is refetched. The list cache is the source
       // of truth; byIssue views will re-render with the fresh data.
       qc.invalidateQueries({ queryKey: labelKeys.all(wsId) });
+      // Issues now embed labels (denormalized snapshot), so a rename/recolor
+      // also has to refresh the issues caches that hold those snapshots.
+      qc.invalidateQueries({ queryKey: issueKeys.all(wsId) });
     },
   });
 }
@@ -85,6 +89,9 @@ export function useDeleteLabel() {
     },
     onSettled: () => {
       qc.invalidateQueries({ queryKey: labelKeys.all(wsId) });
+      // A deleted label still lives in cached issue.labels arrays until we
+      // refetch — invalidate so list/board chips drop the orphan.
+      qc.invalidateQueries({ queryKey: issueKeys.all(wsId) });
     },
   });
 }

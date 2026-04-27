@@ -42,10 +42,13 @@ type IssueResponse struct {
 	UpdatedAt          string                  `json:"updated_at"`
 	Reactions          []IssueReactionResponse `json:"reactions,omitempty"`
 	Attachments        []AttachmentResponse    `json:"attachments,omitempty"`
-	// Labels are bulk-attached by list endpoints so the client can render chips
-	// without an N+1 round-trip per row. Always serialized (never omitempty) so
-	// the frontend can distinguish "no labels" from "field absent".
-	Labels             []LabelResponse         `json:"labels"`
+	// Labels are bulk-attached by list/detail endpoints so the client can render
+	// chips without an N+1 round-trip per row. Pointer + omitempty so paths that
+	// don't load labels (e.g. UpdateIssue, batch UpdateIssues, the issue:updated
+	// WS broadcast) emit no `labels` field at all — the client merge then
+	// preserves whatever labels are already in cache. nil pointer = "field
+	// absent, do not touch"; non-nil (incl. empty slice) = authoritative list.
+	Labels             *[]LabelResponse        `json:"labels,omitempty"`
 }
 
 func issueToResponse(i db.Issue, issuePrefix string) IssueResponse {
@@ -646,7 +649,11 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 		resp := make([]IssueResponse, len(issues))
 		for i, issue := range issues {
 			resp[i] = openIssueRowToResponse(issue, prefix)
-			resp[i].Labels = labelsMap[resp[i].ID]
+			labels := labelsMap[resp[i].ID]
+			if labels == nil {
+				labels = []LabelResponse{}
+			}
+			resp[i].Labels = &labels
 		}
 
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -713,7 +720,11 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	resp := make([]IssueResponse, len(issues))
 	for i, issue := range issues {
 		resp[i] = issueListRowToResponse(issue, prefix)
-		resp[i].Labels = labelsMap[resp[i].ID]
+		labels := labelsMap[resp[i].ID]
+		if labels == nil {
+			labels = []LabelResponse{}
+		}
+		resp[i].Labels = &labels
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -730,7 +741,11 @@ func (h *Handler) GetIssue(w http.ResponseWriter, r *http.Request) {
 	}
 	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 	resp := issueToResponse(issue, prefix)
-	resp.Labels = h.labelsByIssue(r.Context(), issue.WorkspaceID, []pgtype.UUID{issue.ID})[uuidToString(issue.ID)]
+	detailLabels := h.labelsByIssue(r.Context(), issue.WorkspaceID, []pgtype.UUID{issue.ID})[uuidToString(issue.ID)]
+	if detailLabels == nil {
+		detailLabels = []LabelResponse{}
+	}
+	resp.Labels = &detailLabels
 
 	// Fetch issue reactions.
 	reactions, err := h.Queries.ListIssueReactions(r.Context(), issue.ID)

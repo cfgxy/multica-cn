@@ -39,7 +39,6 @@ export const ListRow = memo(function ListRow({
   const p = useWorkspacePaths();
   const storeProperties = useViewStore((s) => s.cardProperties);
   const wsId = useWorkspaceId();
-  const showLabelsToggle = storeProperties.labels ?? true;
   const { data: projects = [] } = useQuery({
     ...projectListOptions(wsId),
     enabled: storeProperties.project && !!issue.project_id,
@@ -51,7 +50,7 @@ export const ListRow = memo(function ListRow({
   const showChildProgress = storeProperties.childProgress && childProgress;
   const showAssignee = storeProperties.assignee && issue.assignee_type && issue.assignee_id;
   const showDueDate = storeProperties.dueDate && issue.due_date;
-  const showLabels = showLabelsToggle && labels.length > 0;
+  const showLabels = storeProperties.labels && labels.length > 0;
 
   return (
     <IssueActionsContextMenu issue={issue}>
