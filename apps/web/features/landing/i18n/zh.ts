@@ -284,6 +284,30 @@ export function createZhDict(allowSignup: boolean): LandingDict {
     },
     entries: [
       {
+        version: "0.2.18",
+        date: "2026-04-27",
+        title: "Issue 标签、Labs 设置页与分片实时通讯",
+        changes: [],
+        features: [
+          "Issue 标签——按工作区维度创建、重命名、上色、挂载和取消标签；列表、看板、my-issues 和详情页均能渲染 chip，并通过 WebSocket 跨标签页实时同步",
+          "Labs 设置页签——为实验性开关提供独立入口",
+          "侧边栏邀请红点——存在未读工作区邀请时显示提示",
+          "实时通讯切换为分片化的 Redis Relay，引入双 relay 读池隔离与镜像 publish 偏差监控，为高扇出工作区打底",
+        ],
+        improvements: [
+          "抽出统一的 `<ProjectIcon>` 组件，Issue 详情右侧 Properties 等位置正确显示所选 Project 图标，左侧导航在子路由下也能保持父项高亮",
+          "自托管部署的 backend 现在能正确收到 `ALLOW_SIGNUP` / `ALLOWED_EMAILS` / `ALLOWED_EMAIL_DOMAINS`，之前会被静默忽略",
+          "Agent CLI 新增 `--description-stdin`，并在 `--content` / `--description` 中自动解码 `\\n` / `\\r` / `\\t` / `\\\\`，模型用 JSON 风格转义写评论时不会再被压成一行",
+        ],
+        fixes: [
+          "评论 Markdown 现在会把单个换行渲染为可见换行，Agent 多段评论恢复正常版式",
+          "桌面端 RPM 不再占用 `/usr/lib/.build-id/<hash>` 符号链接，与 Slack、VS Code 等 Electron 应用共存安装时不再 `dnf install` 失败",
+          "Windows 下 OpenCode 直接调用 npm 内置的 native 二进制（覆盖 x64、x64-baseline、arm64 三种包），多行 prompt 不再在首个换行处被截断",
+          "Windows CLI 架构识别去重，避免重复架构信号",
+          "Agent 状态从 active tasks 刷新，僵死的 `running` 标记可以正确清理",
+        ],
+      },
+      {
         version: "0.2.17",
         date: "2026-04-26",
         title: "Agent 自定义环境变量、更清晰的失败信息与一系列稳定性修复",

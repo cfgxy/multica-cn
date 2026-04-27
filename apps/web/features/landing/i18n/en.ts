@@ -284,6 +284,30 @@ export function createEnDict(allowSignup: boolean): LandingDict {
     },
     entries: [
       {
+        version: "0.2.18",
+        date: "2026-04-27",
+        title: "Issue Labels, Labs Tab & Sharded Realtime Relay",
+        changes: [],
+        features: [
+          "Issue labels — create, rename, recolor, attach and detach labels per workspace; chips render on the issue list, board, my-issues and detail views, and stay live across tabs over WebSocket",
+          "Labs settings tab — a dedicated home for experimental toggles",
+          "Sidebar invitation indicator — a small dot surfaces unread workspace invites",
+          "Sharded Redis realtime relay with isolated read pools and mirrored-publish divergence monitoring — groundwork for higher-fanout workspaces",
+        ],
+        improvements: [
+          "Centralized `<ProjectIcon>` across the app, so the project picker (notably the issue Properties panel) shows the selected project's icon, and parent nav entries stay highlighted on child detail routes",
+          "Self-hosted backend now receives `ALLOW_SIGNUP` / `ALLOWED_EMAILS` / `ALLOWED_EMAIL_DOMAINS` from `docker-compose.selfhost.yml`, instead of silently ignoring them",
+          "Agent CLI now accepts `--description-stdin` and decodes `\\n` / `\\r` / `\\t` / `\\\\` in `--content` and `--description`, so models that emit JSON-style escapes no longer collapse comments into one line",
+        ],
+        fixes: [
+          "Comment Markdown now renders single newlines as visible line breaks, so multi-paragraph agent comments are readable again",
+          "Desktop RPM no longer claims `/usr/lib/.build-id/<hash>` symlinks, removing install conflicts with Slack, VS Code and other Electron apps on Fedora-family distros",
+          "Windows OpenCode runs bypass the npm `.cmd` shim and launch the bundled native binary (covering x64, x64-baseline and arm64 packages), so multi-line prompts are no longer truncated at the first newline",
+          "Windows CLI architecture detection hardened to avoid duplicate architecture signals",
+          "Agent status now refreshes from active tasks, so stale `running` indicators clear out correctly",
+        ],
+      },
+      {
         version: "0.2.17",
         date: "2026-04-26",
         title: "Custom Agent Env, Better Failure Messages & Reliability Fixes",
