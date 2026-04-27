@@ -14,6 +14,7 @@ import { projectKeys } from "../projects/queries";
 import { pinKeys } from "../pins/queries";
 import { autopilotKeys } from "../autopilots/queries";
 import { runtimeKeys } from "../runtimes/queries";
+import { activeTasksKeys } from "../agents/queries";
 import {
   onIssueCreated,
   onIssueUpdated,
@@ -130,6 +131,15 @@ export function useRealtimeSync(
         const wsId = getCurrentWsId();
         if (wsId) qc.invalidateQueries({ queryKey: autopilotKeys.all(wsId) });
       },
+      // Powers the agent presence cache: any task lifecycle change
+      // (dispatch / completed / failed / cancelled) refreshes the
+      // workspace-wide live-tasks query so per-agent presence reflects
+      // the change. task:message is NOT in this prefix path — it stays
+      // in specificEvents to avoid an invalidate storm during long runs.
+      task: () => {
+        const wsId = getCurrentWsId();
+        if (wsId) qc.invalidateQueries({ queryKey: activeTasksKeys.list(wsId) });
+      },
     };
 
     const timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -154,9 +164,17 @@ export function useRealtimeSync(
       "issue_reaction:added", "issue_reaction:removed",
       "subscriber:added", "subscriber:removed",
       "daemon:heartbeat",
-      // Chat / task events are handled explicitly below; do not double-invalidate.
+      // Chat events are handled explicitly below; do not double-invalidate.
       "chat:message", "chat:done", "chat:session_read",
-      "task:message", "task:completed", "task:failed",
+      // task:message stays out of the prefix path because it fires per
+      // streamed message during a long run — invalidating active-tasks on
+      // every message would flood the network. Specific chat handlers below
+      // still receive it via ws.on() (a separate subscription channel).
+      "task:message",
+      // task:completed / task:failed deliberately NOT here. They go through
+      // both the task-prefix invalidate (powers active-tasks cache) AND the
+      // chat-specific ws.on() handlers below. The two channels are
+      // independent — onAny dispatch and ws.on are separate subscriptions.
     ]);
 
     const unsubAny = ws.onAny((msg) => {
@@ -510,6 +528,7 @@ export function useRealtimeSync(
           qc.invalidateQueries({ queryKey: projectKeys.all(wsId) });
           qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
           qc.invalidateQueries({ queryKey: autopilotKeys.all(wsId) });
+          qc.invalidateQueries({ queryKey: activeTasksKeys.all(wsId) });
         }
         qc.invalidateQueries({ queryKey: workspaceKeys.list() });
       } catch (e) {
