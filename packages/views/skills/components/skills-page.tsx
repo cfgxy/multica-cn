@@ -158,8 +158,17 @@ function AgentAssignees({ agents }: { agents: Agent[] }) {
 //
 // Same pattern as Agents (avatar) and Runtimes (icon-box, Health dot) — header
 // label and row primary text share the same x without per-column padding hacks.
+// Responsive column strategy:
+//   <md  → Name + Used by + Chevron (drop Source / Updated to free room)
+//   md+  → adds Source · Added by + Updated
+// Source icon leading slot (0.875rem) is part of the Source group, hidden
+// together at <md. Each visible column uses minmax(0,…fr) so it can shrink
+// and the cell content (with min-w-0 + truncate) trims gracefully instead
+// of overflowing into adjacent cells.
 const ROW_GRID =
-  "grid grid-cols-[minmax(0,1.6fr)_minmax(0,0.8fr)_0.875rem_minmax(0,1.2fr)_minmax(0,6rem)_auto] items-center gap-4";
+  "grid items-center gap-4 " +
+  "grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)_auto] " +
+  "md:grid-cols-[minmax(0,1.6fr)_minmax(0,0.8fr)_0.875rem_minmax(0,1.2fr)_minmax(0,6rem)_auto]";
 
 function SkillRow({
   skill,
@@ -214,8 +223,12 @@ function SkillRow({
       <div className="min-w-0">
         <AgentAssignees agents={agents} />
       </div>
-      <SourceCell skill={skill} creator={creator} runtime={runtime} />
-      <div className="min-w-0 whitespace-nowrap text-xs text-muted-foreground">
+      {/* Source group (icon + label) — md+. The icon is its own grid cell
+          for header alignment; both hide together at <md. */}
+      <span className="hidden md:contents">
+        <SourceCell skill={skill} creator={creator} runtime={runtime} />
+      </span>
+      <div className="hidden min-w-0 whitespace-nowrap text-xs text-muted-foreground md:block">
         {timeAgo(skill.updated_at)}
       </div>
       <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground/40 transition-colors group-hover:text-muted-foreground" />
@@ -231,10 +244,11 @@ function ListColumnHeader() {
       <span>Name</span>
       <span>Used by</span>
       {/* Source icon leading slot — empty in header so the label below
-          aligns with the row's "From X" / "Created manually" text. */}
-      <span aria-hidden />
-      <span>Source · Added by</span>
-      <span>Updated</span>
+          aligns with the row's "From X" / "Created manually" text.
+          Hidden together with the Source label at <md. */}
+      <span aria-hidden className="hidden md:block" />
+      <span className="hidden md:block">Source · Added by</span>
+      <span className="hidden md:block">Updated</span>
       <span className="w-4" />
     </div>
   );

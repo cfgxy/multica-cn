@@ -52,8 +52,8 @@ import { Sparkline } from "./sparkline";
 export const AGENT_LIST_GRID =
   "grid items-center gap-4 " +
   "grid-cols-[1.75rem_minmax(0,1fr)_max-content_2.5rem] " +
-  "md:grid-cols-[1.75rem_minmax(0,1.4fr)_5rem_minmax(8rem,max-content)_minmax(0,0.8fr)_4rem_2.5rem] " +
-  "lg:grid-cols-[1.75rem_minmax(0,1.5fr)_5rem_minmax(8rem,max-content)_minmax(0,0.8fr)_5rem_4rem_2.5rem]";
+  "md:grid-cols-[1.75rem_minmax(0,1.4fr)_5rem_minmax(0,max-content)_minmax(0,0.8fr)_4rem_2.5rem] " +
+  "lg:grid-cols-[1.75rem_minmax(0,1.5fr)_5rem_minmax(0,max-content)_minmax(0,0.8fr)_5rem_4rem_2.5rem]";
 
 interface AgentListItemProps {
   agent: Agent;

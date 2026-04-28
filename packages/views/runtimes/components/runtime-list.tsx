@@ -117,35 +117,39 @@ function buildWorkloadIndex(
 // Agents (avatar) and Skills (source icon).
 //
 // Width choices (left → right):
-//   IconBox:    2rem          — 32px Cloud / Monitor mode badge
-//   Runtime:    minmax(0,1fr) — primary, fills remainder, hostname truncates first
-//   HealthDot:  0.5rem        — 6px status dot
-//   Health:     9.5rem        — "Recently lost · 2m 14s ago" worst case
-//   Owner:      2rem          — single 18px avatar (multi-owner only)
-//   Agents:     6rem          — 3 avatars overlapped + "+N" pill
-//   Active:     5rem          — "2 +5q" worst case, right-aligned
-//   Cost:       7rem          — "$879.00" + "↑18%" stacked, right-aligned
-//   CLI:        8rem          — "Desktop · v0.2.17" worst case
-//   Kebab:      2.5rem        — icon button
+//   IconBox:    2rem            — 32px Cloud / Monitor mode badge
+//   Runtime:    minmax(0,1fr)   — primary, fills remainder, truncates first
+//   HealthDot:  0.5rem          — 6px status dot
+//   Health:     minmax(0,1fr)   — text label, can shrink + truncate at
+//                                 narrow widths so it never overlaps the
+//                                 Runtime column. ("Recently lost · 2m
+//                                 14s ago" is the worst case; the long
+//                                 suffix truncates first.)
+//   Owner:      2rem            — single 18px avatar (multi-owner only)
+//   Agents:     6rem            — 3 avatars overlapped + "+N" pill
+//   Active:     5rem            — "2 +5q" worst case, right-aligned
+//   Cost:       7rem            — "$879.00" + "↑18%" stacked, right-aligned
+//   CLI:        8rem            — "Desktop · v0.2.17" worst case
+//   Kebab:      2.5rem          — icon button
 //
-// "fixed rem (no max-content)" rationale carried over from the previous
-// pass: max-content sizes per-row off per-row content, so a row with `—` in
-// Active sizes its column differently than a row with avatars, and every
-// downstream column starts at a different x per row. Fixed widths kill the
-// variance.
+// Switched Health from a fixed 9.5rem to minmax(0,1fr) so it competes
+// fairly with Runtime under width pressure. The previous fixed-width
+// reservation guaranteed the worst-case copy fit, but at intermediate
+// viewports the Runtime column was squeezed below its content width and
+// overflowed visually.
 // ---------------------------------------------------------------------------
 
 const GRID_WITH_OWNER =
   "grid items-center gap-4 " +
-  "grid-cols-[2rem_minmax(0,1fr)_0.5rem_9.5rem_2rem_2.5rem] " +
-  "md:grid-cols-[2rem_minmax(0,1fr)_0.5rem_9.5rem_2rem_6rem_5rem_7rem_2.5rem] " +
-  "lg:grid-cols-[2rem_minmax(0,1fr)_0.5rem_9.5rem_2rem_6rem_5rem_7rem_8rem_2.5rem]";
+  "grid-cols-[2rem_minmax(0,1fr)_0.5rem_minmax(0,1fr)_2rem_2.5rem] " +
+  "md:grid-cols-[2rem_minmax(0,1fr)_0.5rem_minmax(0,1fr)_2rem_6rem_5rem_7rem_2.5rem] " +
+  "lg:grid-cols-[2rem_minmax(0,1.2fr)_0.5rem_minmax(0,1fr)_2rem_6rem_5rem_7rem_8rem_2.5rem]";
 
 const GRID_NO_OWNER =
   "grid items-center gap-4 " +
-  "grid-cols-[2rem_minmax(0,1fr)_0.5rem_9.5rem_2.5rem] " +
-  "md:grid-cols-[2rem_minmax(0,1fr)_0.5rem_9.5rem_6rem_5rem_7rem_2.5rem] " +
-  "lg:grid-cols-[2rem_minmax(0,1fr)_0.5rem_9.5rem_6rem_5rem_7rem_8rem_2.5rem]";
+  "grid-cols-[2rem_minmax(0,1fr)_0.5rem_minmax(0,1fr)_2.5rem] " +
+  "md:grid-cols-[2rem_minmax(0,1fr)_0.5rem_minmax(0,1fr)_6rem_5rem_7rem_2.5rem] " +
+  "lg:grid-cols-[2rem_minmax(0,1.2fr)_0.5rem_minmax(0,1fr)_6rem_5rem_7rem_8rem_2.5rem]";
 
 export function RuntimeList({
   runtimes,
@@ -325,11 +329,13 @@ function RuntimeRow({
         )}
       </div>
 
-      {/* RUNTIME — base name + (hostname). Provider lives in the right-side
-          CLI column now (avoids triple-displaying provider via logo + chip
-          + plain text). */}
+      {/* RUNTIME — base name + (hostname). Both can truncate at narrow
+          widths so the cell never overflows into the adjacent Health
+          column. The base name takes precedence (truncate later) by
+          virtue of being the first child; the hostname (more disposable)
+          shrinks first. Provider lives in the right-side CLI column. */}
       <div className="flex min-w-0 items-center gap-1.5">
-        <span className="shrink-0 text-sm font-medium">{baseName}</span>
+        <span className="min-w-0 truncate text-sm font-medium">{baseName}</span>
         {hostname && (
           <span className="min-w-0 truncate text-xs text-muted-foreground/70">
             ({hostname})
