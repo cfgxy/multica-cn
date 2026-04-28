@@ -11,10 +11,10 @@ const (
 	EventCommentCreated       = "comment:created"
 	EventCommentUpdated       = "comment:updated"
 	EventCommentDeleted       = "comment:deleted"
-	EventReactionAdded          = "reaction:added"
-	EventReactionRemoved        = "reaction:removed"
-	EventIssueReactionAdded     = "issue_reaction:added"
-	EventIssueReactionRemoved   = "issue_reaction:removed"
+	EventReactionAdded        = "reaction:added"
+	EventReactionRemoved      = "reaction:removed"
+	EventIssueReactionAdded   = "issue_reaction:added"
+	EventIssueReactionRemoved = "issue_reaction:removed"
 
 	// Agent events
 	EventAgentStatus   = "agent:status"
@@ -68,9 +68,16 @@ const (
 	EventProjectUpdated = "project:updated"
 	EventProjectDeleted = "project:deleted"
 
+	// Label events
+	EventLabelCreated       = "label:created"
+	EventLabelUpdated       = "label:updated"
+	EventLabelDeleted       = "label:deleted"
+	EventIssueLabelsChanged = "issue_labels:changed"
+
 	// Pin events
-	EventPinCreated = "pin:created"
-	EventPinDeleted = "pin:deleted"
+	EventPinCreated   = "pin:created"
+	EventPinDeleted   = "pin:deleted"
+	EventPinReordered = "pin:reordered"
 
 	// Invitation events
 	EventInvitationCreated  = "invitation:created"
@@ -86,6 +93,7 @@ const (
 	EventAutopilotRunDone  = "autopilot:run_done"
 
 	// Daemon events
-	EventDaemonHeartbeat = "daemon:heartbeat"
-	EventDaemonRegister  = "daemon:register"
+	EventDaemonHeartbeat     = "daemon:heartbeat"
+	EventDaemonRegister      = "daemon:register"
+	EventDaemonTaskAvailable = "daemon:task_available"
 )

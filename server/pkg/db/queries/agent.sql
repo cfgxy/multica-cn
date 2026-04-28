@@ -69,15 +69,62 @@ INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, 
 VALUES ($1, $2, $3, 'queued', $4, sqlc.narg(trigger_comment_id))
 RETURNING *;
 
--- name: CancelAgentTasksByIssue :exec
+-- name: CreateRetryTask :one
+-- Clones a parent task into a fresh queued attempt. Carries forward the
+-- agent's resume context (session_id/work_dir) so the child can continue
+-- the conversation when the backend supports it. attempt is incremented;
+-- max_attempts and trigger_comment_id are inherited.
+INSERT INTO agent_task_queue (
+    agent_id, runtime_id, issue_id, chat_session_id, autopilot_run_id,
+    status, priority, trigger_comment_id, context,
+    session_id, work_dir,
+    attempt, max_attempts, parent_task_id
+)
+SELECT
+    p.agent_id, p.runtime_id, p.issue_id, p.chat_session_id, p.autopilot_run_id,
+    'queued', p.priority, p.trigger_comment_id, p.context,
+    p.session_id, p.work_dir,
+    p.attempt + 1, p.max_attempts, p.id
+FROM agent_task_queue p
+WHERE p.id = $1
+RETURNING *;
+
+-- name: CancelAgentTasksByIssue :many
+-- Cancels every active task on the issue and returns the affected rows so the
+-- caller can reconcile each agent's status and broadcast task:cancelled events
+-- (#1587). Prior :exec form silently dropped that info, so internal cancel
+-- paths (issue status flips to cancelled/done, etc.) left agents stuck at
+-- status="working" with no self-correction.
 UPDATE agent_task_queue
-SET status = 'cancelled'
-WHERE issue_id = $1 AND status IN ('queued', 'dispatched', 'running');
+SET status = 'cancelled', completed_at = now()
+WHERE issue_id = $1 AND status IN ('queued', 'dispatched', 'running')
+RETURNING *;
+
+-- name: CancelAgentTasksByIssueAndAgent :many
+-- Cancels active tasks for a single (issue, agent) pair without touching
+-- tasks belonging to other agents on the same issue. Used by the manual
+-- rerun flow so re-running the assignee doesn't collateral-cancel a
+-- still-running @-mention agent on the same issue.
+UPDATE agent_task_queue
+SET status = 'cancelled', completed_at = now()
+WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'dispatched', 'running')
+RETURNING *;
 
 -- name: CancelAgentTasksByAgent :exec
 UPDATE agent_task_queue
 SET status = 'cancelled'
 WHERE agent_id = $1 AND status IN ('queued', 'dispatched', 'running');
+
+-- name: CancelAgentTasksByTriggerComment :many
+-- Cancels active tasks whose trigger is the given comment. Called when a
+-- comment is deleted so the agent does not run with the now-deleted content
+-- already embedded in its prompt. Must run BEFORE the comment row is deleted
+-- because the FK ON DELETE SET NULL would otherwise nullify trigger_comment_id
+-- and we'd lose the ability to find the affected tasks.
+UPDATE agent_task_queue
+SET status = 'cancelled', completed_at = now()
+WHERE trigger_comment_id = $1 AND status IN ('queued', 'dispatched', 'running')
+RETURNING *;
 
 -- name: GetAgentTask :one
 SELECT * FROM agent_task_queue
@@ -122,11 +169,19 @@ WHERE id = $1 AND status = 'running'
 RETURNING *;
 
 -- name: GetLastTaskSession :one
--- Returns the session_id and work_dir from the most recent completed task
--- for a given (agent_id, issue_id) pair, used for session resumption.
+-- Returns the session_id and work_dir from the most recent task for a given
+-- (agent_id, issue_id) pair, used for session resumption. We accept both
+-- 'completed' and 'failed' tasks: a failed task may have established a real
+-- agent session before crashing (orphaned by a daemon restart, runtime offline,
+-- or sweeper timeout), and the daemon pins the resume pointer mid-flight via
+-- UpdateAgentTaskSession. Without this, an auto-retry / manual rerun of a
+-- mid-run failure would silently start a fresh conversation and lose the
+-- in-flight context — exactly what MUL-1128's B branch is meant to fix.
 SELECT session_id, work_dir FROM agent_task_queue
-WHERE agent_id = $1 AND issue_id = $2 AND status = 'completed' AND session_id IS NOT NULL
-ORDER BY completed_at DESC
+WHERE agent_id = $1 AND issue_id = $2
+  AND status IN ('completed', 'failed')
+  AND session_id IS NOT NULL
+ORDER BY COALESCE(completed_at, started_at, dispatched_at, created_at) DESC
 LIMIT 1;
 
 -- name: FailAgentTask :one
@@ -136,13 +191,40 @@ LIMIT 1;
 -- pointer is preserved on the task row. The next chat task can then fall
 -- back to GetLastChatTaskSession and continue the conversation instead of
 -- silently starting over.
+--
+-- failure_reason is a coarse classifier consumed by the auto-retry path;
+-- 'agent_error' is the safe default when the daemon doesn't supply one.
 UPDATE agent_task_queue
 SET status = 'failed',
     completed_at = now(),
     error = $2,
+    failure_reason = COALESCE(sqlc.narg('failure_reason'), 'agent_error'),
     session_id = COALESCE(sqlc.narg('session_id'), session_id),
     work_dir = COALESCE(sqlc.narg('work_dir'), work_dir)
 WHERE id = $1 AND status IN ('dispatched', 'running')
+RETURNING *;
+
+-- name: UpdateAgentTaskSession :exec
+-- Pins the resume pointer mid-flight so a daemon crash leaves a usable
+-- session_id/work_dir on the task row. No-op if the task is no longer
+-- in dispatched/running.
+UPDATE agent_task_queue
+SET session_id = COALESCE(sqlc.narg('session_id'), session_id),
+    work_dir  = COALESCE(sqlc.narg('work_dir'), work_dir),
+    last_heartbeat_at = now()
+WHERE id = $1 AND status IN ('dispatched', 'running');
+
+-- name: RecoverOrphanedTasksForRuntime :many
+-- Called by the daemon at startup. Atomically fails any dispatched/running
+-- task that the prior incarnation of this runtime owned but did not
+-- finalize. Returns the failed rows so callers can hand them to the
+-- auto-retry path.
+UPDATE agent_task_queue
+SET status = 'failed',
+    completed_at = now(),
+    error = 'daemon restarted while task was in flight',
+    failure_reason = 'runtime_recovery'
+WHERE runtime_id = $1 AND status IN ('dispatched', 'running')
 RETURNING *;
 
 -- name: FailStaleTasks :many
@@ -150,10 +232,11 @@ RETURNING *;
 -- Handles cases where the daemon is alive but the task is orphaned
 -- (e.g. agent process hung, daemon failed to report completion).
 UPDATE agent_task_queue
-SET status = 'failed', completed_at = now(), error = 'task timed out'
+SET status = 'failed', completed_at = now(), error = 'task timed out',
+    failure_reason = 'timeout'
 WHERE (status = 'dispatched' AND dispatched_at < now() - make_interval(secs => @dispatch_timeout_secs::double precision))
    OR (status = 'running' AND started_at < now() - make_interval(secs => @running_timeout_secs::double precision))
-RETURNING id, agent_id, issue_id;
+RETURNING *;
 
 -- name: CancelAgentTask :one
 UPDATE agent_task_queue
@@ -202,4 +285,14 @@ ORDER BY created_at DESC;
 -- name: UpdateAgentStatus :one
 UPDATE agent SET status = $2, updated_at = now()
 WHERE id = $1
+RETURNING *;
+
+-- name: RefreshAgentStatusFromTasks :one
+UPDATE agent AS a
+SET status = CASE WHEN EXISTS (
+    SELECT 1 FROM agent_task_queue q
+    WHERE q.agent_id = a.id AND q.status IN ('dispatched', 'running')
+) THEN 'working' ELSE 'idle' END,
+    updated_at = now()
+WHERE a.id = $1
 RETURNING *;

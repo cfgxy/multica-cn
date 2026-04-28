@@ -1,9 +1,8 @@
 import { githubUrl } from "../components/shared";
 import type { LandingDict } from "./types";
 
-export const ALLOW_SIGNUP = process.env.NEXT_PUBLIC_ALLOW_SIGNUP !== "false";
-
-export const zh: LandingDict = {
+export function createZhDict(allowSignup: boolean): LandingDict {
+  return {
   header: {
     github: "GitHub",
     login: "\u767b\u5f55",
@@ -122,8 +121,8 @@ export const zh: LandingDict = {
     headlineFaded: "\u53ea\u9700\u4e00\u5c0f\u65f6\u3002",
     steps: [
       {
-        title: ALLOW_SIGNUP ? "注册并创建您的工作空间" : "登录到您的工作空间",
-        description: ALLOW_SIGNUP
+        title: allowSignup ? "注册并创建您的工作空间" : "登录到您的工作空间",
+        description: allowSignup
           ? "输入您的邮箱，验证代码后即可使用。工作空间会自动创建——无需设置向导或配置表单。"
           : "输入您的邮箱，验证代码后即可登录到您的工作空间——无需设置向导或配置表单。",
       },
@@ -145,6 +144,7 @@ export const zh: LandingDict = {
     ],
     cta: "\u5f00\u59cb\u4f7f\u7528",
     ctaGithub: "\u5728 GitHub \u4e0a\u67e5\u770b",
+    ctaDocs: "\u9605\u8bfb\u6587\u6863",
   },
 
   openSource: {
@@ -227,13 +227,13 @@ export const zh: LandingDict = {
           { label: "\u529f\u80fd\u7279\u6027", href: "#features" },
           { label: "\u5982\u4f55\u5de5\u4f5c", href: "#how-it-works" },
           { label: "更新日志", href: "/changelog" },
-          { label: "桌面端", href: "https://github.com/multica-ai/multica/releases/latest" },
+          { label: "下载", href: "/download" },
         ],
       },
       resources: {
         label: "\u8d44\u6e90",
         links: [
-          { label: "\u6587\u6863", href: githubUrl },
+          { label: "\u6587\u6863", href: "/docs/zh" },
           { label: "API", href: githubUrl },
           { label: "X (Twitter)", href: "https://x.com/MulticaAI" },
         ],
@@ -276,12 +276,130 @@ export const zh: LandingDict = {
   changelog: {
     title: "\u66f4\u65b0\u65e5\u5fd7",
     subtitle: "Multica \u7684\u6700\u65b0\u66f4\u65b0\u548c\u6539\u8fdb\u3002",
+    toc: "\u5386\u53f2\u7248\u672c",
     categories: {
       features: "新功能",
       improvements: "改进",
       fixes: "问题修复",
     },
     entries: [
+      {
+        version: "0.2.18",
+        date: "2026-04-27",
+        title: "Issue 标签、Labs 设置页与邀请红点",
+        changes: [],
+        features: [
+          "Issue 标签——给 Issue 上色、分类，列表、看板和详情页都能用",
+          "新增 Labs 设置页，集中放实验性开关",
+          "有未读工作区邀请时，侧边栏会出现红点提示",
+        ],
+        improvements: [
+          "Project 选择器会显示当前所选 Project 的图标",
+          "进入详情页时，侧边栏父级菜单保持高亮",
+          "自托管部署正确读取注册放行相关的环境变量",
+        ],
+        fixes: [
+          "Agent 评论的换行恢复正常显示",
+          "桌面端 RPM 不再与 Slack / VS Code 在 Fedora 上冲突",
+          "Windows 下 Agent 能正确处理多行 prompt",
+        ],
+      },
+      {
+        version: "0.2.17",
+        date: "2026-04-26",
+        title: "Agent 自定义环境变量、更清晰的失败信息与一系列稳定性修复",
+        changes: [],
+        features: [
+          "`multica agent create/update --custom-env KEY=VALUE` 支持为 Agent 注入自定义环境变量",
+          "Agent 失败信息会带上 Runtime CLI 的 stderr 末尾片段，排查 Runtime 报错更直接",
+          "CLI 更新下载超时支持配置，弱网下 `multica update` 不再被默认超时切断",
+        ],
+        improvements: [
+          "Daemon 把取消的任务上报为 `cancelled` 而非 `timeout`，并在按 Issue 取消任务时同步对齐 Agent 状态",
+          "Server 心跳拆成 probe/claim 两步，并补上慢日志和 model-list running-timeout，丢心跳不再卡住 UI",
+        ],
+        fixes: [
+          "Server 在 Issue 创建/更新时校验 `assignee_id` 真实存在；DeleteIssue 改用解析后的 Issue ID",
+          "Pi Runtime 改为读写 `.pi/skills`，不再使用旧的 `.pi/agent/skills` 路径",
+          "Windows 下 Daemon 启动 Agent 改用 `CREATE_NEW_CONSOLE`，孙子进程不再弹出额外终端窗口",
+          "Autopilot 的 run-only 上下文正确传给被调起的 Agent",
+        ],
+      },
+      {
+        version: "0.2.16",
+        date: "2026-04-24",
+        title: "Chat V2、Issue 右键菜单与应用内反馈",
+        changes: [],
+        features: [
+          "Chat V2——侧边栏新增 Chat 入口，主区域提供完整的 AI 对话页面",
+          "Issue 支持右键菜单，列表、看板和详情的操作入口统一收敛",
+          "应用内反馈流程及全新的 Help 启动器，集中托管文档、支持和反馈入口",
+          "Autopilot 弹窗重设计——更简的字段配置，创建与编辑共享一致的排期界面",
+          "Skills 页面重设计——列表+详情、卡片化布局、滚动渐隐和共享 PageHeader / 移动端导航",
+          "文档站重写为双语扁平内容树——中英文章节共用一棵目录",
+        ],
+        improvements: [
+          "悬停 Agent 头像即可弹出资料卡，快速了解上下文",
+          "桌面应用新增原生右键菜单，支持复制 / 粘贴 / 剪切 / 全选等剪贴板操作",
+          "Daemon 强化 Agent 提示，避免 Agent 之间形成自互 @ 的循环",
+          "Server 新增就绪态健康检查端点，可对接灰度发布和 Ingress 探针",
+          "Daemon GC 默认参数收紧，并支持灵活的时长后缀（如 `7d`、`12h`）",
+          "移除 Runtime 的 Test Connection / Ping 功能，可达性改为自动检测",
+        ],
+        fixes: [
+          "Chat 流式回复结束时不再闪烁，发送第一条消息时输入框不再跳动",
+          "桌面应用启动时正确恢复上次的工作区，而不是默认回到第一个",
+          "编辑器只读渲染路径正确保留嵌套有序列表",
+          "CLI `browser-login` 现在可以从未运行 Server 的机器上发起",
+          "Windows 下 Daemon 启动 Agent 不再拉起额外终端窗口；本地 Skill 上报在服务端瞬时错误时会自动重试",
+          "`/api/config` 重新对未登录客户端可达，方便初次 bootstrap",
+          "DeleteWorkspace 增加防御性 owner 校验；`/health/realtime` 指标限定授权访问（安全）",
+          "Hermes ACP Runtime 正确传递配置的模型；OpenClaw Agent 发现超时提高到 30s",
+        ],
+      },
+      {
+        version: "0.2.15",
+        date: "2026-04-22",
+        title: "本地 Skills、LaTeX、Focus 模式与孤儿任务自恢复",
+        changes: [],
+        features: [
+          "支持将 Runtime 本地 Skills 导入工作区,成为一等工作区资产",
+          "孤儿任务自动恢复——意外中断的 Agent 执行会自动重试,必要时可手动重跑",
+          "Issue、评论与 Chat 支持 LaTeX 渲染",
+          "Chat Focus 模式——将当前页面作为上下文分享给对话",
+        ],
+        improvements: [
+          "子 Issue 的 `status_changed` 事件不再向父 Issue 订阅者刷屏",
+          "Docker 发布镜像改为按架构原生构建,免 QEMU",
+          "侧边栏 Pin 字段在客户端派生,排序更跟手",
+          "扩充保留 slug 列表,新工作区 slug 不会再和产品路由冲突",
+        ],
+        fixes: [
+          "Gemini Runtime 模型列表补上 Gemini 3 及若干 CLI 别名",
+          "没有锚点的页面上 Chat focus 按钮改为禁用",
+          "修复 Onboarding 中 Pin 同步、欢迎页布局与 Runtime bootstrap 状态",
+          "`install.ps1` 的系统架构探测更稳健,覆盖更多 Windows 环境",
+          "`/download` 在 1 小时新鲜度窗口内可回退到上一版本,避免撞上半发布状态",
+        ],
+      },
+      {
+        version: "0.2.11",
+        date: "2026-04-21",
+        title: "桌面应用跨平台打包、CLI 自更新与看板分页",
+        changes: [],
+        features: [
+          "桌面应用跨平台打包——同一条发布流水线产出 macOS、Windows 和 Linux 安装包",
+          "新增 `multica update` 自更新命令——无需重装即可升级 CLI 和本地 Daemon",
+          "Issue 看板所有状态列都支持分页（不再只是 Done 列），大积压下依然流畅",
+        ],
+        fixes: [
+          "本地 Daemon 对 Agent 执行强制端到端工作区隔离（安全）",
+          "Windows 下 Daemon 终端关闭后继续常驻，后台 Agent 不再被意外终止",
+          "看板卡片重新显示描述预览——列表查询不再丢掉 description 字段",
+          "OpenClaw Agent 改为从 Agent 元数据读取真实模型，不再回退到默认值",
+          "评论 Markdown 全链路保留——移除会误伤格式的 HTML sanitizer",
+        ],
+      },
       {
         version: "0.2.8",
         date: "2026-04-20",
@@ -708,4 +826,78 @@ export const zh: LandingDict = {
       },
     ],
   },
-};
+  download: {
+    hero: {
+      macArm64: {
+        title: "Multica for macOS",
+        sub: "Apple Silicon · 内置 daemon，无需配置",
+        primary: "下载 (.dmg)",
+        altZip: "或下载 .zip",
+      },
+      macIntel: {
+        title: "Multica for macOS",
+        sub: "需要 Apple Silicon——暂不支持 Intel Mac。",
+        disabledCta: "需要 Apple Silicon",
+        intelHint: "在 Intel Mac 上？请使用下方 CLI——底层跑的是同一个 daemon。",
+      },
+      winX64: {
+        title: "Multica for Windows",
+        sub: "内置 daemon，无需配置",
+        primary: "下载 (.exe)",
+      },
+      winArm64: {
+        title: "Multica for Windows",
+        sub: "ARM · 内置 daemon，无需配置",
+        primary: "下载 (.exe)",
+      },
+      linux: {
+        title: "Multica for Linux",
+        sub: "内置 daemon，无需配置",
+        primary: "下载 AppImage",
+        altFormats: "或 .deb / .rpm",
+      },
+      unknown: {
+        title: "选择你的平台",
+        sub: "下方是所有支持的安装包。",
+      },
+      safariMacHint: "在 Intel Mac 上？请使用下方 CLI。",
+      archFallbackHint: "架构不对？下方是所有可选格式。",
+    },
+    allPlatforms: {
+      title: "所有平台",
+      macLabel: "macOS · Apple Silicon",
+      winX64Label: "Windows · x64",
+      winArm64Label: "Windows · ARM64",
+      linuxX64Label: "Linux · x64",
+      linuxArm64Label: "Linux · ARM64",
+      formatDmg: ".dmg",
+      formatZip: ".zip",
+      formatExe: ".exe",
+      formatAppImage: ".AppImage",
+      formatDeb: ".deb",
+      formatRpm: ".rpm",
+      intelNote: "仅支持 Apple Silicon——Intel Mac 目前暂不支持。",
+      unavailable: "暂不可用",
+    },
+    cli: {
+      title: "想用 CLI？",
+      sub: "适合服务器、远程开发机、无图形界面环境。底层 daemon 与 Desktop 相同，通过终端安装。",
+      installLabel: "安装",
+      startLabel: "启动 daemon",
+      sshNote: "已经在服务器上？通过 SSH 执行同样的命令即可。",
+      copyLabel: "复制",
+      copiedLabel: "已复制",
+    },
+    cloud: {
+      title: "Cloud runtime（等待名单）",
+      sub: "我们将为你托管 runtime，目前尚未上线——留下邮箱，上线后通知你。",
+    },
+    footer: {
+      releaseNotes: "v{version} 更新内容",
+      allReleases: "查看所有版本",
+      currentVersion: "当前版本：{version}",
+      versionUnavailable: "版本获取失败——请前往 GitHub 查看",
+    },
+  },
+  };
+}

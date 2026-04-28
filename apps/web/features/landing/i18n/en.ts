@@ -1,9 +1,8 @@
 import { githubUrl } from "../components/shared";
 import type { LandingDict } from "./types";
 
-export const ALLOW_SIGNUP = process.env.NEXT_PUBLIC_ALLOW_SIGNUP !== "false";
-
-export const en: LandingDict = {
+export function createEnDict(allowSignup: boolean): LandingDict {
+  return {
   header: {
     github: "GitHub",
     login: "Log in",
@@ -122,8 +121,8 @@ export const en: LandingDict = {
     headlineFaded: "in the next hour.",
     steps: [
       {
-        title: ALLOW_SIGNUP ? "Sign up & create your workspace" : "Login to your workspace",
-        description: ALLOW_SIGNUP
+        title: allowSignup ? "Sign up & create your workspace" : "Login to your workspace",
+        description: allowSignup
           ? "Enter your email, verify with a code, and you\u2019re in. Your workspace is created automatically \u2014 no setup wizard, no configuration forms."
           : "Enter your email, verify with a code, and you\u2019re logged into your workspace \u2014 no setup wizard, no configuration forms.",
       },
@@ -145,6 +144,7 @@ export const en: LandingDict = {
     ],
     cta: "Get started",
     ctaGithub: "View on GitHub",
+    ctaDocs: "Read the docs",
   },
 
   openSource: {
@@ -227,13 +227,13 @@ export const en: LandingDict = {
           { label: "Features", href: "#features" },
           { label: "How it Works", href: "#how-it-works" },
           { label: "Changelog", href: "/changelog" },
-          { label: "Desktop", href: "https://github.com/multica-ai/multica/releases/latest" },
+          { label: "Download", href: "/download" },
         ],
       },
       resources: {
         label: "Resources",
         links: [
-          { label: "Documentation", href: githubUrl },
+          { label: "Documentation", href: "/docs" },
           { label: "API", href: githubUrl },
           { label: "X (Twitter)", href: "https://x.com/MulticaAI" },
         ],
@@ -276,12 +276,130 @@ export const en: LandingDict = {
   changelog: {
     title: "Changelog",
     subtitle: "New updates and improvements to Multica.",
+    toc: "All releases",
     categories: {
       features: "New Features",
       improvements: "Improvements",
       fixes: "Bug Fixes",
     },
     entries: [
+      {
+        version: "0.2.18",
+        date: "2026-04-27",
+        title: "Issue Labels, Labs Tab & Sidebar Invite Dot",
+        changes: [],
+        features: [
+          "Issue labels — color-code and filter issues across list, board and detail views",
+          "Labs settings tab for experimental toggles",
+          "Sidebar shows a dot when you have an unread workspace invite",
+        ],
+        improvements: [
+          "Project picker now shows the selected project's icon",
+          "Sidebar parent items stay highlighted on detail pages",
+          "Self-hosted deployments correctly honor signup gating env vars",
+        ],
+        fixes: [
+          "Agent comments preserve line breaks again",
+          "Desktop RPM no longer conflicts with Slack / VS Code on Fedora",
+          "Windows agents handle multi-line prompts correctly",
+        ],
+      },
+      {
+        version: "0.2.17",
+        date: "2026-04-26",
+        title: "Custom Agent Env, Better Failure Messages & Reliability Fixes",
+        changes: [],
+        features: [
+          "`multica agent create/update --custom-env KEY=VALUE` injects custom environment variables into agent runs",
+          "Agent failure messages now include a tail of the runtime CLI's stderr — much easier to debug runtime errors",
+          "CLI update download timeout is now configurable, so slow links no longer abort `multica update`",
+        ],
+        improvements: [
+          "Daemon reports cancelled tasks as `cancelled` instead of `timeout`, and reconciles agent status when an issue's tasks are cancelled",
+          "Server heartbeat split into probe/claim with slow-log + a model-list running-timeout, so a lost heartbeat no longer wedges the UI",
+        ],
+        fixes: [
+          "Server validates `assignee_id` on issue create/update so phantom IDs are rejected, and `DeleteIssue` uses the resolved issue ID",
+          "Pi runtime now reads/writes `.pi/skills` instead of the old `.pi/agent/skills` path",
+          "Windows daemon uses `CREATE_NEW_CONSOLE` so grandchild console popups no longer appear when launching agents",
+          "Autopilot run-only context is now properly forwarded to the agent",
+        ],
+      },
+      {
+        version: "0.2.16",
+        date: "2026-04-24",
+        title: "Chat V2, Issue Right-Click Menu & In-App Feedback",
+        changes: [],
+        features: [
+          "Chat V2 — dedicated sidebar entry and full main-area page for AI conversations",
+          "Right-click context menu on issues with a unified action set across list, board, and detail",
+          "In-app feedback flow with a new Help launcher centralizing docs, support, and feedback",
+          "Autopilot modal redesigned — simpler schema and consistent schedule UI across creation and edit",
+          "Skills page redesigned — list + detail pages, scroll-fade card layout, shared PageHeader and mobile nav",
+          "Bilingual flat-content rewrite of the docs site — English and Chinese sections share one tree",
+        ],
+        improvements: [
+          "Agent profile card appears on avatar hover for quick context",
+          "Native right-click menu on desktop with clipboard actions (copy / paste / cut / select all)",
+          "Daemon agent prompts hardened to break self-mention loops between agents",
+          "Server readiness health endpoints for proper rollout / ingress probes",
+          "Daemon GC defaults tightened and now accept flexible duration suffixes (e.g. `7d`, `12h`)",
+          "Test Connection / runtime ping removed — runtime reachability is detected automatically",
+        ],
+        fixes: [
+          "Chat no longer flickers when a streamed response finalizes, and the input box no longer jumps when sending the first message",
+          "Desktop reopens the last-used workspace on app start instead of falling back to the first one",
+          "Editor preserves nested ordered lists through the readonly render path",
+          "CLI `browser-login` now works from a machine that isn't running the server",
+          "Daemon suppresses extra terminal windows when launching agents on Windows, and retries local-skill reports on transient server errors",
+          "`/api/config` is publicly reachable again so unauthenticated clients can bootstrap",
+          "Defense-in-depth owner check on workspace deletion, and `/health/realtime` metrics restricted to authorized callers (security)",
+          "Hermes ACP runtime now receives the configured model; OpenClaw agent discovery timeout raised to 30s",
+        ],
+      },
+      {
+        version: "0.2.15",
+        date: "2026-04-22",
+        title: "Local Skills, LaTeX, Focus Mode & Orphan-Task Recovery",
+        changes: [],
+        features: [
+          "Import runtime local Skills into the workspace as first-class artifacts",
+          "Orphan-task recovery — abandoned agent runs auto-retry, with manual rerun as fallback",
+          "LaTeX rendering in issues, comments and chat",
+          "Chat Focus mode — share the page you're on as conversation context",
+        ],
+        improvements: [
+          "Sub-issue `status_changed` events no longer spam parent-issue subscribers",
+          "Multi-arch Docker release images built natively per-arch (no QEMU)",
+          "Pin sidebar derives fields client-side for snappier reorders",
+          "Expanded reserved-slug list so new slugs can't collide with product routes",
+        ],
+        fixes: [
+          "Gemini runtime model list now includes Gemini 3 and CLI aliases",
+          "Chat focus button disabled on pages without an anchor",
+          "Onboarding pin sync, welcome layout and runtime bootstrap state",
+          "`install.ps1` OS architecture detection hardened for more Windows setups",
+          "`/download` falls back to the previous release within a 1h freshness window",
+        ],
+      },
+      {
+        version: "0.2.11",
+        date: "2026-04-21",
+        title: "Desktop Cross-Platform Packaging, CLI Self-Update & Board Pagination",
+        changes: [],
+        features: [
+          "Desktop app cross-platform packaging — macOS, Windows, and Linux artifacts from a single release pipeline",
+          "`multica update` self-update command — upgrade the CLI and local daemon without reinstalling",
+          "Issue board paginates every status column, not only Done — large backlogs stay responsive",
+        ],
+        fixes: [
+          "Workspace isolation enforced end-to-end for agent execution on the local daemon (security)",
+          "Windows daemon stays alive after the terminal closes, so background agents keep running",
+          "Board cards render their description preview again — list queries no longer strip the description field",
+          "OpenClaw agent runtime now reads the real model from agent metadata instead of falling back to a default",
+          "Comment Markdown preserved end-to-end — the HTML sanitizer that was stripping formatting has been removed",
+        ],
+      },
       {
         version: "0.2.8",
         date: "2026-04-20",
@@ -708,4 +826,80 @@ export const en: LandingDict = {
       },
     ],
   },
-};
+  download: {
+    hero: {
+      macArm64: {
+        title: "Multica for macOS",
+        sub: "Apple Silicon · bundled daemon, zero setup",
+        primary: "Download (.dmg)",
+        altZip: "or download .zip",
+      },
+      macIntel: {
+        title: "Multica for macOS",
+        sub: "Apple Silicon required — Intel Macs not yet supported.",
+        disabledCta: "Apple Silicon required",
+        intelHint:
+          "On an Intel Mac? Use the CLI below — it runs the same daemon.",
+      },
+      winX64: {
+        title: "Multica for Windows",
+        sub: "Bundled daemon, zero setup",
+        primary: "Download (.exe)",
+      },
+      winArm64: {
+        title: "Multica for Windows",
+        sub: "ARM · bundled daemon, zero setup",
+        primary: "Download (.exe)",
+      },
+      linux: {
+        title: "Multica for Linux",
+        sub: "Bundled daemon, zero setup",
+        primary: "Download AppImage",
+        altFormats: "or .deb / .rpm",
+      },
+      unknown: {
+        title: "Choose your platform",
+        sub: "All installers are listed below.",
+      },
+      safariMacHint: "On an Intel Mac? Use the CLI below.",
+      archFallbackHint: "Wrong architecture? See all formats below.",
+    },
+    allPlatforms: {
+      title: "All platforms",
+      macLabel: "macOS · Apple Silicon",
+      winX64Label: "Windows · x64",
+      winArm64Label: "Windows · ARM64",
+      linuxX64Label: "Linux · x64",
+      linuxArm64Label: "Linux · ARM64",
+      formatDmg: ".dmg",
+      formatZip: ".zip",
+      formatExe: ".exe",
+      formatAppImage: ".AppImage",
+      formatDeb: ".deb",
+      formatRpm: ".rpm",
+      intelNote:
+        "Apple Silicon only — Intel Macs not supported in this release.",
+      unavailable: "Not available",
+    },
+    cli: {
+      title: "Prefer the CLI?",
+      sub: "For servers, remote dev boxes, and headless setups. Same daemon as Desktop, installed via terminal.",
+      installLabel: "Install",
+      startLabel: "Start daemon",
+      sshNote: "Already on a server? Same commands work over SSH.",
+      copyLabel: "Copy",
+      copiedLabel: "Copied",
+    },
+    cloud: {
+      title: "Cloud runtime (waitlist)",
+      sub: "We’ll host the runtime for you. Not live yet — leave your email to be notified.",
+    },
+    footer: {
+      releaseNotes: "What’s new in {version}",
+      allReleases: "View all releases",
+      currentVersion: "Current version: {version}",
+      versionUnavailable: "Version unavailable — check GitHub",
+    },
+  },
+  };
+}

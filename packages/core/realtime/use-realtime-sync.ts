@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type { WSClient } from "../api/ws-client";
 import type { StoreApi, UseBoundStore } from "zustand";
@@ -18,12 +18,13 @@ import {
   onIssueCreated,
   onIssueUpdated,
   onIssueDeleted,
+  onIssueLabelsChanged,
 } from "../issues/ws-updaters";
-import { onInboxNew, onInboxInvalidate, onInboxIssueStatusChanged } from "../inbox/ws-updaters";
+import { onInboxNew, onInboxInvalidate, onInboxIssueStatusChanged, onInboxIssueDeleted } from "../inbox/ws-updaters";
 import { inboxKeys } from "../inbox/queries";
 import { workspaceKeys, workspaceListOptions } from "../workspace/queries";
 import { chatKeys } from "../chat/queries";
-import { paths } from "../paths";
+import { resolvePostAuthDestination, useHasOnboarded } from "../paths";
 import type {
   MemberAddedPayload,
   WorkspaceDeletedPayload,
@@ -31,6 +32,7 @@ import type {
   IssueUpdatedPayload,
   IssueCreatedPayload,
   IssueDeletedPayload,
+  IssueLabelsChangedPayload,
   InboxNewPayload,
   CommentCreatedPayload,
   CommentUpdatedPayload,
@@ -81,6 +83,14 @@ export function useRealtimeSync(
 ) {
   const { authStore } = stores;
   const qc = useQueryClient();
+
+  // Captured via ref so the (rare) hasOnboarded change doesn't re-subscribe
+  // every WS handler in this effect. The resolver reads `.current` at the
+  // moment workspace-loss fires, which is what we want.
+  const hasOnboarded = useHasOnboarded();
+  const hasOnboardedRef = useRef(hasOnboarded);
+  hasOnboardedRef.current = hasOnboarded;
+
   // Main sync: onAny -> refreshMap with debounce
   useEffect(() => {
     if (!ws) return;
@@ -108,6 +118,17 @@ export function useRealtimeSync(
       project: () => {
         const wsId = getCurrentWsId();
         if (wsId) qc.invalidateQueries({ queryKey: projectKeys.all(wsId) });
+      },
+      label: () => {
+        // label:created/updated/deleted — also refresh issues, since each
+        // issue carries a denormalized snapshot of its labels (rename/recolor
+        // /delete on a label needs to flush the chips on every issue showing
+        // it).
+        const wsId = getCurrentWsId();
+        if (wsId) {
+          qc.invalidateQueries({ queryKey: ["labels", wsId] });
+          qc.invalidateQueries({ queryKey: issueKeys.all(wsId) });
+        }
       },
       pin: () => {
         const wsId = getCurrentWsId();
@@ -139,7 +160,7 @@ export function useRealtimeSync(
 
     // Event types handled by specific handlers below -- skip generic refresh
     const specificEvents = new Set([
-      "issue:updated", "issue:created", "issue:deleted", "inbox:new",
+      "issue:updated", "issue:created", "issue:deleted", "issue_labels:changed", "inbox:new",
       "comment:created", "comment:updated", "comment:deleted",
       "activity:created",
       "reaction:added", "reaction:removed",
@@ -186,7 +207,17 @@ export function useRealtimeSync(
       const { issue_id } = p as IssueDeletedPayload;
       if (!issue_id) return;
       const wsId = getCurrentWsId();
-      if (wsId) onIssueDeleted(qc, wsId, issue_id);
+      if (wsId) {
+        onIssueDeleted(qc, wsId, issue_id);
+        onInboxIssueDeleted(qc, wsId, issue_id);
+      }
+    });
+
+    const unsubIssueLabelsChanged = ws.on("issue_labels:changed", (p) => {
+      const { issue_id, labels } = p as IssueLabelsChangedPayload;
+      if (!issue_id) return;
+      const wsId = getCurrentWsId();
+      if (wsId) onIssueLabelsChanged(qc, wsId, issue_id, labels ?? []);
     });
 
     const unsubInboxNew = ws.on("inbox:new", (p) => {
@@ -306,8 +337,11 @@ export function useRealtimeSync(
         ...workspaceListOptions(),
         staleTime: 0,
       });
-      const next = wsList.find((w) => w.id !== lostWsId);
-      const target = next ? paths.workspace(next.slug).issues() : paths.newWorkspace();
+      const remaining = wsList.filter((w) => w.id !== lostWsId);
+      const target = resolvePostAuthDestination(
+        remaining,
+        hasOnboardedRef.current,
+      );
       if (typeof window !== "undefined") {
         window.location.assign(target);
       }
@@ -383,7 +417,7 @@ export function useRealtimeSync(
       qc.invalidateQueries({ queryKey: workspaceKeys.myInvitations() });
     });
 
-    // --- Chat / task events (global, survives ChatWindow unmount) ---
+    // --- Chat / task events (global, survives chat page unmount) ---
     //
     // Single source of truth: the Query cache. No Zustand writes here — the
     // earlier mirror caused a race where the cache and store disagreed
@@ -485,6 +519,7 @@ export function useRealtimeSync(
       unsubIssueUpdated();
       unsubIssueCreated();
       unsubIssueDeleted();
+      unsubIssueLabelsChanged();
       unsubInboxNew();
       unsubCommentCreated();
       unsubCommentUpdated();
