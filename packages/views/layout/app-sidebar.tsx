@@ -418,23 +418,30 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
     },
   });
 
-  // Global "C" shortcut to open create-issue modal (like Linear)
+  // Global "C" shortcut: opens the quick-create modal by default; Shift+C
+  // jumps straight to the legacy advanced form for users who want every
+  // field. Both branches honor the same focus / open-modal guards.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "c" && !e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
-        const tag = (e.target as HTMLElement)?.tagName;
-        const isEditable =
-          tag === "INPUT" ||
-          tag === "TEXTAREA" ||
-          tag === "SELECT" ||
-          (e.target as HTMLElement)?.isContentEditable;
-        if (isEditable) return;
-        if (useModalStore.getState().modal) return;
-        e.preventDefault();
-        // Auto-fill project when on a project detail page
-        const projectMatch = pathname.match(/^\/[^/]+\/projects\/([^/]+)$/);
+      if (e.key !== "c" && e.key !== "C") return;
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      const tag = (e.target as HTMLElement)?.tagName;
+      const isEditable =
+        tag === "INPUT" ||
+        tag === "TEXTAREA" ||
+        tag === "SELECT" ||
+        (e.target as HTMLElement)?.isContentEditable;
+      if (isEditable) return;
+      if (useModalStore.getState().modal) return;
+      e.preventDefault();
+      // Auto-fill project when on a project detail page (advanced form only —
+      // quick-create lets the agent infer project from prompt).
+      const projectMatch = pathname.match(/^\/[^/]+\/projects\/([^/]+)$/);
+      if (e.shiftKey) {
         const data = projectMatch ? { project_id: projectMatch[1] } : undefined;
         useModalStore.getState().open("create-issue", data);
+      } else {
+        useModalStore.getState().open("quick-create-issue");
       }
     };
     document.addEventListener("keydown", handleKeyDown);

@@ -3,6 +3,7 @@
 import { useModalStore } from "@multica/core/modals";
 import { CreateWorkspaceModal } from "./create-workspace";
 import { CreateIssueModal } from "./create-issue";
+import { QuickCreateIssueModal } from "./quick-create-issue";
 import { CreateProjectModal } from "./create-project";
 import { FeedbackModal } from "./feedback";
 import { SetParentIssueModal } from "./set-parent-issue";
@@ -20,6 +21,8 @@ export function ModalRegistry() {
       return <CreateWorkspaceModal onClose={close} />;
     case "create-issue":
       return <CreateIssueModal onClose={close} data={data} />;
+    case "quick-create-issue":
+      return <QuickCreateIssueModal onClose={close} data={data} />;
     case "create-project":
       return <CreateProjectModal onClose={close} />;
     case "feedback":
