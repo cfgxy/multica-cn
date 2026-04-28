@@ -403,6 +403,62 @@ func (q *Queries) GetIssueInWorkspace(ctx context.Context, arg GetIssueInWorkspa
 	return i, err
 }
 
+const getRecentIssueByCreatorSince = `-- name: GetRecentIssueByCreatorSince :one
+SELECT id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at FROM issue
+WHERE workspace_id = $1
+  AND creator_type = $2
+  AND creator_id = $3
+  AND created_at >= $4
+ORDER BY created_at DESC
+LIMIT 1
+`
+
+type GetRecentIssueByCreatorSinceParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	CreatorType string             `json:"creator_type"`
+	CreatorID   pgtype.UUID        `json:"creator_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
+// Finds the most recently created issue authored by a specific creator in a
+// workspace, since a given timestamp. Used by quick-create completion to
+// locate the issue the agent just created via `multica issue create`,
+// without relying on the agent's free-text output to carry an identifier.
+func (q *Queries) GetRecentIssueByCreatorSince(ctx context.Context, arg GetRecentIssueByCreatorSinceParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, getRecentIssueByCreatorSince,
+		arg.WorkspaceID,
+		arg.CreatorType,
+		arg.CreatorID,
+		arg.CreatedAt,
+	)
+	var i Issue
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.Title,
+		&i.Description,
+		&i.Status,
+		&i.Priority,
+		&i.AssigneeType,
+		&i.AssigneeID,
+		&i.CreatorType,
+		&i.CreatorID,
+		&i.ParentIssueID,
+		&i.AcceptanceCriteria,
+		&i.ContextRefs,
+		&i.Position,
+		&i.DueDate,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Number,
+		&i.ProjectID,
+		&i.OriginType,
+		&i.OriginID,
+		&i.FirstExecutedAt,
+	)
+	return i, err
+}
+
 const listChildIssues = `-- name: ListChildIssues :many
 SELECT id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at FROM issue
 WHERE parent_issue_id = $1

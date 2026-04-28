@@ -848,6 +848,110 @@ func (h *Handler) ChildIssueProgress(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// QuickCreateIssueRequest is the body for POST /api/issues/quick-create. The
+// user picks an agent in the modal and types one line of natural language;
+// the server validates the agent's reachability up front, queues a quick-
+// create task, and returns 202 immediately. The agent translates the prompt
+// into a `multica issue create` invocation in the background; success and
+// failure both surface as inbox notifications to the requester.
+type QuickCreateIssueRequest struct {
+	AgentID string `json:"agent_id"`
+	Prompt  string `json:"prompt"`
+}
+
+// QuickCreateIssueResponse echoes the queued task id so the frontend can
+// correlate the eventual inbox item, even though completion is fully async.
+type QuickCreateIssueResponse struct {
+	TaskID string `json:"task_id"`
+}
+
+func (h *Handler) QuickCreateIssue(w http.ResponseWriter, r *http.Request) {
+	var req QuickCreateIssueRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	prompt := strings.TrimSpace(req.Prompt)
+	if prompt == "" {
+		writeError(w, http.StatusBadRequest, "prompt is required")
+		return
+	}
+	agentUUID, ok := parseUUIDOrBadRequest(w, req.AgentID, "agent_id")
+	if !ok {
+		return
+	}
+
+	workspaceID := h.resolveWorkspaceID(r)
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace_id")
+	if !ok {
+		return
+	}
+
+	requesterID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	requesterUUID, ok := parseUUIDOrBadRequest(w, requesterID, "requester_id")
+	if !ok {
+		return
+	}
+
+	// Make sure the picked agent belongs to this workspace before we even
+	// look at runtime liveness — prevents cross-workspace task injection.
+	agent, ok := h.loadAgentForUser(w, r, req.AgentID)
+	if !ok {
+		return
+	}
+	if uuidToString(agent.WorkspaceID) != workspaceID {
+		writeError(w, http.StatusBadRequest, "agent does not belong to the active workspace")
+		return
+	}
+	if agent.ArchivedAt.Valid {
+		writeAgentUnavailable(w, "agent is archived")
+		return
+	}
+	if !agent.RuntimeID.Valid {
+		writeAgentUnavailable(w, "agent has no runtime")
+		return
+	}
+	if !h.isRuntimeOnline(r.Context(), agent.RuntimeID) {
+		writeAgentUnavailable(w, "agent's runtime is offline")
+		return
+	}
+
+	task, err := h.TaskService.EnqueueQuickCreateTask(r.Context(), wsUUID, requesterUUID, agentUUID, prompt)
+	if err != nil {
+		slog.Warn("quick-create enqueue failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to enqueue quick-create task")
+		return
+	}
+
+	writeJSON(w, http.StatusAccepted, QuickCreateIssueResponse{TaskID: uuidToString(task.ID)})
+}
+
+// writeAgentUnavailable returns 422 with a stable error code so the modal
+// can show a "switch agent" hint without parsing the human-readable reason.
+func writeAgentUnavailable(w http.ResponseWriter, reason string) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusUnprocessableEntity)
+	json.NewEncoder(w).Encode(map[string]any{
+		"code":   "agent_unavailable",
+		"reason": reason,
+	})
+}
+
+// isRuntimeOnline returns true when the given runtime is currently
+// reachable (status == "online"). Quick-create rejects submissions whose
+// agent's runtime is offline so the user gets immediate feedback in the
+// modal instead of an inbox failure twenty seconds later.
+func (h *Handler) isRuntimeOnline(ctx context.Context, runtimeID pgtype.UUID) bool {
+	rt, err := h.Queries.GetAgentRuntime(ctx, runtimeID)
+	if err != nil {
+		return false
+	}
+	return rt.Status == "online"
+}
+
 type CreateIssueRequest struct {
 	Title              string   `json:"title"`
 	Description        *string  `json:"description"`

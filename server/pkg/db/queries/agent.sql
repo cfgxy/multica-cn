@@ -69,6 +69,14 @@ INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, 
 VALUES ($1, $2, $3, 'queued', $4, sqlc.narg(trigger_comment_id))
 RETURNING *;
 
+-- name: CreateQuickCreateTask :one
+-- Quick-create tasks have no issue / chat / autopilot link; the entire job
+-- description (prompt, requester, workspace) lives in context JSONB. The
+-- daemon detects this variant via context.type == "quick_create".
+INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, context)
+VALUES ($1, $2, NULL, 'queued', $3, $4)
+RETURNING *;
+
 -- name: CreateRetryTask :one
 -- Clones a parent task into a fresh queued attempt. Carries forward the
 -- agent's resume context (session_id/work_dir) so the child can continue

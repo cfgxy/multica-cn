@@ -20,10 +20,39 @@ func BuildPrompt(task Task) string {
 	if task.AutopilotRunID != "" {
 		return buildAutopilotPrompt(task)
 	}
+	if task.QuickCreatePrompt != "" {
+		return buildQuickCreatePrompt(task)
+	}
 	var b strings.Builder
 	b.WriteString("You are running as a local coding agent for a Multica workspace.\n\n")
 	fmt.Fprintf(&b, "Your assigned issue ID is: %s\n\n", task.IssueID)
 	fmt.Fprintf(&b, "Start by running `multica issue get %s --output json` to understand your task, then complete it.\n", task.IssueID)
+	return b.String()
+}
+
+// buildQuickCreatePrompt constructs a prompt for quick-create tasks. The
+// user typed a single natural-language sentence in the create-issue modal;
+// the agent's only job is to translate it into one `multica issue create`
+// CLI invocation. No issue exists yet, so the agent must NOT call
+// `multica issue get` or attempt to comment — there's nothing to read or
+// reply to.
+func buildQuickCreatePrompt(task Task) string {
+	var b strings.Builder
+	b.WriteString("You are running as a quick-create assistant for a Multica workspace.\n\n")
+	b.WriteString("A user pressed the quick-create shortcut and typed a one-line description. There is NO existing issue. Your only job is to translate the description into a single `multica issue create` command and run it.\n\n")
+	fmt.Fprintf(&b, "User input:\n> %s\n\n", task.QuickCreatePrompt)
+	b.WriteString("Field rules:\n")
+	b.WriteString("- title: required. A short, imperative summary extracted from the user input (e.g. \"fix inbox loading\"). Strip filler words.\n")
+	b.WriteString("- description: optional. Include only if the user supplied detail beyond the title; otherwise omit. Never echo the title here.\n")
+	b.WriteString("- priority: one of `urgent`, `high`, `medium`, `low`, or omit. Map P0/P1 → urgent/high; \"asap\"/\"紧急\" → urgent; \"低优先级\" → low. If unspecified, omit.\n")
+	b.WriteString("- assignee: when the user says \"分给 X\" / \"assign to X\" / \"@X\", call `multica workspace members --output json` and find the matching member by display name (case-insensitive substring match is fine). On a clean match, pass `--assignee <name>`. On no match or ambiguous match, do NOT pass `--assignee` — instead append a final line to the description: `未识别 assignee: X`.\n")
+	b.WriteString("- project: omit. The platform will route the issue to the workspace default.\n")
+	b.WriteString("- status: omit (defaults to `todo`).\n\n")
+	b.WriteString("Output format:\n")
+	b.WriteString("- Run exactly one `multica issue create` invocation.\n")
+	b.WriteString("- After it succeeds, print exactly one line: `Created MUL-<n>: <title>` and exit. No commentary, no follow-up tool calls.\n")
+	b.WriteString("- Do NOT call `multica issue get` or `multica issue comment add` for this task — there is no issue to query or comment on prior to creation.\n")
+	b.WriteString("- If the CLI returns an error, exit with that error as the only output. The platform writes a failure notification automatically; do not retry.\n")
 	return b.String()
 }
 
