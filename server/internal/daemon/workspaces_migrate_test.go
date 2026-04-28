@@ -128,18 +128,50 @@ func TestMigrateLegacyWorkspacesRoot_NoLegacyDirNoop(t *testing.T) {
 	}
 }
 
-func TestMigrateLegacyWorkspacesRoot_PreservesExistingTargetEntry(t *testing.T) {
+func TestMigrateLegacyWorkspacesRoot_MergesNonConflictingTasksUnderSameWorkspace(t *testing.T) {
+	home := withFakeHome(t)
+	profile := "desktop-api.multica.ai"
+
+	legacy := filepath.Join(home, "multica_workspaces_"+profile)
+	target := filepath.Join(home, "multica_workspaces")
+
+	// Same workspace_id present in both roots, but different task_short subdirs.
+	// This is the realistic case: Web/CLI created task-web at the new path, the
+	// Desktop daemon created task-desktop at the old per-profile path. Both
+	// must end up under target/<ws>/.
+	mustWriteFile(t, filepath.Join(target, "ws-uuid", "task-web", "marker"), "from-web")
+	mustWriteFile(t, filepath.Join(legacy, "ws-uuid", "task-desktop", "marker"), "from-desktop")
+
+	cfg := Config{
+		Profile:        profile,
+		WorkspacesRoot: target,
+	}
+	MigrateLegacyWorkspacesRoot(cfg, newSilentLogger())
+
+	if b, err := os.ReadFile(filepath.Join(target, "ws-uuid", "task-web", "marker")); err != nil || string(b) != "from-web" {
+		t.Fatalf("pre-existing target task should be preserved, got %q err=%v", string(b), err)
+	}
+	if b, err := os.ReadFile(filepath.Join(target, "ws-uuid", "task-desktop", "marker")); err != nil || string(b) != "from-desktop" {
+		t.Fatalf("legacy task should be merged into target, got %q err=%v", string(b), err)
+	}
+	// Legacy root and its workspace dir should be cleaned up since everything migrated.
+	if _, err := os.Stat(legacy); !os.IsNotExist(err) {
+		t.Fatalf("legacy root should be removed after full migration, err=%v", err)
+	}
+}
+
+func TestMigrateLegacyWorkspacesRoot_PreservesConflictingTaskShort(t *testing.T) {
 	home := withFakeHome(t)
 	profile := "desktop-foo"
 
 	legacy := filepath.Join(home, "multica_workspaces_"+profile)
 	target := filepath.Join(home, "multica_workspaces")
 
-	// Same workspace UUID exists in both. The migration must not overwrite the
-	// target — it must leave the legacy copy in place for manual reconciliation.
+	// Same workspace AND same task_short on both sides. We must not overwrite.
 	mustWriteFile(t, filepath.Join(legacy, "ws-uuid", "task-x", "marker"), "from-legacy")
-	mustWriteFile(t, filepath.Join(target, "ws-uuid", "task-y", "marker"), "from-target")
-	// Distinct entry that should be moved cleanly.
+	mustWriteFile(t, filepath.Join(target, "ws-uuid", "task-x", "marker"), "from-target")
+	// Plus a non-conflicting task_short under the same workspace and a fresh workspace.
+	mustWriteFile(t, filepath.Join(legacy, "ws-uuid", "task-y", "marker"), "merged")
 	mustWriteFile(t, filepath.Join(legacy, "ws-uuid-other", "task-z", "marker"), "moved")
 
 	cfg := Config{
@@ -148,24 +180,61 @@ func TestMigrateLegacyWorkspacesRoot_PreservesExistingTargetEntry(t *testing.T) 
 	}
 	MigrateLegacyWorkspacesRoot(cfg, newSilentLogger())
 
-	// Conflicting entry stays in legacy; target version preserved.
-	if b, err := os.ReadFile(filepath.Join(target, "ws-uuid", "task-y", "marker")); err != nil || string(b) != "from-target" {
-		t.Fatalf("target entry should be preserved, got %q err=%v", string(b), err)
+	// Same task_short on both sides → target wins, legacy copy stays put.
+	if b, err := os.ReadFile(filepath.Join(target, "ws-uuid", "task-x", "marker")); err != nil || string(b) != "from-target" {
+		t.Fatalf("target task_short should be preserved, got %q err=%v", string(b), err)
 	}
 	if b, err := os.ReadFile(filepath.Join(legacy, "ws-uuid", "task-x", "marker")); err != nil || string(b) != "from-legacy" {
-		t.Fatalf("conflicting legacy entry should remain in place, got %q err=%v", string(b), err)
+		t.Fatalf("conflicting legacy task_short should remain in place, got %q err=%v", string(b), err)
 	}
 
-	// Distinct entry was moved.
+	// Non-conflicting task_short under same workspace was merged.
+	if b, err := os.ReadFile(filepath.Join(target, "ws-uuid", "task-y", "marker")); err != nil || string(b) != "merged" {
+		t.Fatalf("non-conflicting task_short should be merged into target, got %q err=%v", string(b), err)
+	}
+
+	// Fresh workspace was renamed wholesale.
 	if _, err := os.Stat(filepath.Join(legacy, "ws-uuid-other")); !os.IsNotExist(err) {
-		t.Fatalf("non-conflicting legacy entry should be moved, err=%v", err)
+		t.Fatalf("fresh legacy workspace should be moved, err=%v", err)
 	}
 	if b, err := os.ReadFile(filepath.Join(target, "ws-uuid-other", "task-z", "marker")); err != nil || string(b) != "moved" {
-		t.Fatalf("non-conflicting entry should arrive at target, got %q err=%v", string(b), err)
+		t.Fatalf("fresh workspace should arrive at target, got %q err=%v", string(b), err)
 	}
 
-	// Legacy root retained because it still has a residual entry.
+	// Legacy root retained because the conflicting task_short still lives there.
+	if _, err := os.Stat(filepath.Join(legacy, "ws-uuid", "task-x")); err != nil {
+		t.Fatalf("legacy conflicting task_short should remain, err=%v", err)
+	}
 	if _, err := os.Stat(legacy); err != nil {
 		t.Fatalf("legacy root should be retained when residual entries exist: %v", err)
+	}
+}
+
+func TestMigrateLegacyWorkspacesRoot_LeavesDotfileConflictAlone(t *testing.T) {
+	home := withFakeHome(t)
+	profile := "desktop-foo"
+
+	legacy := filepath.Join(home, "multica_workspaces_"+profile)
+	target := filepath.Join(home, "multica_workspaces")
+
+	// Both have a `.repos` cache. Don't merge into existing cache (just
+	// leave the legacy copy; the daemon will lazily repopulate target).
+	mustWriteFile(t, filepath.Join(legacy, ".repos", "github.com", "foo", "HEAD"), "legacy")
+	mustWriteFile(t, filepath.Join(target, ".repos", "github.com", "bar", "HEAD"), "target")
+
+	cfg := Config{
+		Profile:        profile,
+		WorkspacesRoot: target,
+	}
+	MigrateLegacyWorkspacesRoot(cfg, newSilentLogger())
+
+	if _, err := os.Stat(filepath.Join(legacy, ".repos", "github.com", "foo", "HEAD")); err != nil {
+		t.Fatalf("legacy dotfile dir should be left in place when target dotfile exists: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, ".repos", "github.com", "bar", "HEAD")); err != nil {
+		t.Fatalf("target dotfile dir should be untouched: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(target, ".repos", "github.com", "foo")); !os.IsNotExist(err) {
+		t.Fatalf("target dotfile dir should not be merged into, err=%v", err)
 	}
 }

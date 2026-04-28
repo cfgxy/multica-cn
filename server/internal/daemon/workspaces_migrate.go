@@ -60,11 +60,26 @@ func MigrateLegacyWorkspacesRoot(cfg Config, logger *slog.Logger) {
 		"legacy", legacyRoot, "target", defaultRoot)
 }
 
-// migrateWorkspacesRoot moves every immediate child of legacyRoot into
-// targetRoot. Children whose name already exists at the target are left
-// untouched in legacyRoot (we never overwrite). If, after the move pass,
-// legacyRoot is empty, it is removed; otherwise it is kept so the user can
-// reconcile the leftovers manually.
+// migrateWorkspacesRoot moves the contents of legacyRoot into targetRoot.
+//
+// The on-disk layout is `<root>/<workspace_id>/<task_short>/...`, so when a
+// `<workspace_id>` directory already exists at the target (because Web/CLI
+// has run a task there) we still want to relocate the per-task subdirs from
+// the legacy `<workspace_id>` rather than abandon them. The walk therefore
+// merges one level deep:
+//
+//   - If the legacy entry name does not exist at the target, the whole entry
+//     is renamed in one syscall (fast path; covers fresh workspaces and the
+//     `.repos` cache).
+//   - Otherwise, if both sides are directories AND the entry name does not
+//     start with `.` (i.e. it looks like a workspace_id, not a hidden file
+//     like `.repos`), recurse and rename each task_short subdir whose name
+//     is free at the target. Conflicting task_short subdirs stay in legacy
+//     for manual reconciliation.
+//   - Other conflicts (file vs dir, dotfiles, non-dirs) are left untouched.
+//
+// If, after the pass, legacyRoot is empty, it is removed; otherwise it stays
+// so the user can reconcile leftovers.
 func migrateWorkspacesRoot(legacyRoot, targetRoot string) error {
 	if err := os.MkdirAll(targetRoot, 0o755); err != nil {
 		return fmt.Errorf("ensure target root: %w", err)
@@ -76,24 +91,36 @@ func migrateWorkspacesRoot(legacyRoot, targetRoot string) error {
 	}
 
 	var firstErr error
+	recordErr := func(err error) {
+		if firstErr == nil {
+			firstErr = err
+		}
+	}
+
 	for _, e := range entries {
 		src := filepath.Join(legacyRoot, e.Name())
 		dst := filepath.Join(targetRoot, e.Name())
 
-		if _, err := os.Lstat(dst); err == nil {
-			// Target already exists — leave src in place to avoid clobbering.
-			continue
-		} else if !errors.Is(err, fs.ErrNotExist) {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("stat target %s: %w", dst, err)
+		dstInfo, err := os.Lstat(dst)
+		if errors.Is(err, fs.ErrNotExist) {
+			if err := os.Rename(src, dst); err != nil {
+				recordErr(fmt.Errorf("rename %s -> %s: %w", src, dst, err))
 			}
 			continue
 		}
+		if err != nil {
+			recordErr(fmt.Errorf("stat target %s: %w", dst, err))
+			continue
+		}
 
-		if err := os.Rename(src, dst); err != nil {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("rename %s -> %s: %w", src, dst, err)
-			}
+		// Only merge into existing workspace_id-shaped dirs (skip dotfiles
+		// like `.repos` to avoid stomping shared cache state).
+		if !e.IsDir() || !dstInfo.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			continue
+		}
+
+		if err := mergeTaskDirs(src, dst); err != nil {
+			recordErr(err)
 		}
 	}
 
@@ -107,4 +134,36 @@ func migrateWorkspacesRoot(legacyRoot, targetRoot string) error {
 		_ = os.Remove(legacyRoot)
 	}
 	return nil
+}
+
+// mergeTaskDirs renames every task_short subdir in legacyWS into targetWS,
+// skipping (leaving in legacyWS) any subdir whose name already exists at the
+// target. Removes legacyWS afterwards if it ends up empty.
+func mergeTaskDirs(legacyWS, targetWS string) error {
+	subs, err := os.ReadDir(legacyWS)
+	if err != nil {
+		return fmt.Errorf("read legacy workspace dir %s: %w", legacyWS, err)
+	}
+	var firstErr error
+	for _, sub := range subs {
+		src := filepath.Join(legacyWS, sub.Name())
+		dst := filepath.Join(targetWS, sub.Name())
+		if _, err := os.Lstat(dst); err == nil {
+			continue
+		} else if !errors.Is(err, fs.ErrNotExist) {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("stat target %s: %w", dst, err)
+			}
+			continue
+		}
+		if err := os.Rename(src, dst); err != nil {
+			if firstErr == nil {
+				firstErr = fmt.Errorf("rename %s -> %s: %w", src, dst, err)
+			}
+		}
+	}
+	if remaining, err := os.ReadDir(legacyWS); err == nil && len(remaining) == 0 {
+		_ = os.Remove(legacyWS)
+	}
+	return firstErr
 }
