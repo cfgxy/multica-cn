@@ -1,9 +1,12 @@
 "use client";
 
+import { Cloud, Monitor } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
+import type { Agent, AgentRuntime } from "@multica/core/types";
 import { useAgentPresenceDetail } from "@multica/core/agents";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { agentListOptions, memberListOptions } from "@multica/core/workspace/queries";
+import { runtimeListOptions } from "@multica/core/runtimes/queries";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { ActorAvatar as ActorAvatarBase } from "@multica/ui/components/common/actor-avatar";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
@@ -19,6 +22,7 @@ export function AgentProfileCard({ agentId }: AgentProfileCardProps) {
   const p = useWorkspacePaths();
   const { data: agents = [], isLoading: agentsLoading } = useQuery(agentListOptions(wsId));
   const { data: members = [] } = useQuery(memberListOptions(wsId));
+  const { data: runtimes = [] } = useQuery(runtimeListOptions(wsId));
 
   const agent = agents.find((a) => a.id === agentId);
 
@@ -43,6 +47,7 @@ export function AgentProfileCard({ agentId }: AgentProfileCardProps) {
   const owner = agent.owner_id
     ? members.find((m) => m.user_id === agent.owner_id) ?? null
     : null;
+  const runtime = runtimes.find((r) => r.id === agent.runtime_id) ?? null;
   const isArchived = !!agent.archived_at;
   const initials = agent.name
     .split(" ")
@@ -52,12 +57,14 @@ export function AgentProfileCard({ agentId }: AgentProfileCardProps) {
     .slice(0, 2);
 
   return (
-    <div className="flex flex-col gap-3 text-left">
+    // `group` enables the hover-only Detail link on the top-right —
+    // it fades in only when the user is hovering the card chrome,
+    // staying out of the way during a quick glance.
+    <div className="group flex flex-col gap-3 text-left">
       {/* Header — avatar + name + availability on the left, "Detail →" link
-          on the right. The hover card stays minimal: only the 3-state
-          availability dot is shown here. Last-task state lives in the
-          agents list (where there's room) and the agent detail page —
-          users click "Detail" to see logs and outcome history. */}
+          on the right (hover-only). Card stays minimal: only the 3-state
+          availability dot is surfaced here; last-task state lives in the
+          agents list and the agent detail page. */}
       <div className="flex items-start gap-3">
         <ActorAvatarBase
           name={agent.name}
@@ -83,7 +90,7 @@ export function AgentProfileCard({ agentId }: AgentProfileCardProps) {
         {!isArchived && (
           <AppLink
             href={p.agentDetail(agent.id)}
-            className="mt-0.5 shrink-0 text-xs font-normal text-brand transition-opacity hover:opacity-80"
+            className="mr-1 mt-0.5 shrink-0 text-xs font-normal text-brand opacity-0 transition-opacity group-hover:opacity-100"
           >
             Detail →
           </AppLink>
@@ -97,10 +104,11 @@ export function AgentProfileCard({ agentId }: AgentProfileCardProps) {
         </p>
       )}
 
-      {/* Meta rows — only the workspace-defining ones. Runtime is implied
-          by the provider/availability already shown above; Model is a
-          power-user concern that lives on the detail page. */}
+      {/* Meta rows — minimal set: runtime (where it lives), skills (what
+          it knows), owner (who manages it). Model is intentionally
+          omitted — power-user detail lives on the detail page. */}
       <div className="flex flex-col gap-1.5 text-xs">
+        <RuntimeRow agent={agent} runtime={runtime} />
         {agent.skills.length > 0 && (
           <SkillsRow skills={agent.skills.map((s) => s.name)} />
         )}
@@ -130,6 +138,31 @@ function AgentAvailabilityLine({
     <div className="mt-0.5 inline-flex items-center gap-1.5">
       <span className={`h-1.5 w-1.5 rounded-full ${av.dotClass}`} />
       <span className={`text-xs ${av.textClass}`}>{av.label}</span>
+    </div>
+  );
+}
+
+// Compact runtime row — cloud/local icon + runtime name. We deliberately
+// do NOT repeat online/offline here because the availability dot in the
+// header already covers reachability; another wifi icon next to the
+// runtime name would be three indicators saying the same thing.
+function RuntimeRow({
+  agent,
+  runtime,
+}: {
+  agent: Agent;
+  runtime: AgentRuntime | null;
+}) {
+  const isCloud = agent.runtime_mode === "cloud";
+  const Icon = isCloud ? Cloud : Monitor;
+  const label = runtime?.name ?? (isCloud ? "Cloud" : "Unknown runtime");
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="w-12 shrink-0 text-muted-foreground">Runtime</span>
+      <Icon className="h-3 w-3 shrink-0 text-muted-foreground" />
+      <span className="min-w-0 truncate" title={label}>
+        {label}
+      </span>
     </div>
   );
 }
