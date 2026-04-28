@@ -363,18 +363,27 @@ func (q *Queries) GetIssueByNumber(ctx context.Context, arg GetIssueByNumberPara
 	return i, err
 }
 
-const getIssueInWorkspace = `-- name: GetIssueInWorkspace :one
+const getIssueByOrigin = `-- name: GetIssueByOrigin :one
 SELECT id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at FROM issue
-WHERE id = $1 AND workspace_id = $2
+WHERE workspace_id = $1
+  AND origin_type = $2
+  AND origin_id = $3
+LIMIT 1
 `
 
-type GetIssueInWorkspaceParams struct {
-	ID          pgtype.UUID `json:"id"`
+type GetIssueByOriginParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	OriginType  pgtype.Text `json:"origin_type"`
+	OriginID    pgtype.UUID `json:"origin_id"`
 }
 
-func (q *Queries) GetIssueInWorkspace(ctx context.Context, arg GetIssueInWorkspaceParams) (Issue, error) {
-	row := q.db.QueryRow(ctx, getIssueInWorkspace, arg.ID, arg.WorkspaceID)
+// Finds the issue stamped with a specific (origin_type, origin_id) pair.
+// Used by quick-create completion to deterministically locate the issue
+// produced by a given agent_task_queue.id — robust against concurrent
+// issue creates by the same agent (assignment task + quick-create both
+// running with max_concurrent_tasks > 1).
+func (q *Queries) GetIssueByOrigin(ctx context.Context, arg GetIssueByOriginParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, getIssueByOrigin, arg.WorkspaceID, arg.OriginType, arg.OriginID)
 	var i Issue
 	err := row.Scan(
 		&i.ID,
@@ -403,34 +412,18 @@ func (q *Queries) GetIssueInWorkspace(ctx context.Context, arg GetIssueInWorkspa
 	return i, err
 }
 
-const getRecentIssueByCreatorSince = `-- name: GetRecentIssueByCreatorSince :one
+const getIssueInWorkspace = `-- name: GetIssueInWorkspace :one
 SELECT id, workspace_id, title, description, status, priority, assignee_type, assignee_id, creator_type, creator_id, parent_issue_id, acceptance_criteria, context_refs, position, due_date, created_at, updated_at, number, project_id, origin_type, origin_id, first_executed_at FROM issue
-WHERE workspace_id = $1
-  AND creator_type = $2
-  AND creator_id = $3
-  AND created_at >= $4
-ORDER BY created_at DESC
-LIMIT 1
+WHERE id = $1 AND workspace_id = $2
 `
 
-type GetRecentIssueByCreatorSinceParams struct {
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	CreatorType string             `json:"creator_type"`
-	CreatorID   pgtype.UUID        `json:"creator_id"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+type GetIssueInWorkspaceParams struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
-// Finds the most recently created issue authored by a specific creator in a
-// workspace, since a given timestamp. Used by quick-create completion to
-// locate the issue the agent just created via `multica issue create`,
-// without relying on the agent's free-text output to carry an identifier.
-func (q *Queries) GetRecentIssueByCreatorSince(ctx context.Context, arg GetRecentIssueByCreatorSinceParams) (Issue, error) {
-	row := q.db.QueryRow(ctx, getRecentIssueByCreatorSince,
-		arg.WorkspaceID,
-		arg.CreatorType,
-		arg.CreatorID,
-		arg.CreatedAt,
-	)
+func (q *Queries) GetIssueInWorkspace(ctx context.Context, arg GetIssueInWorkspaceParams) (Issue, error) {
+	row := q.db.QueryRow(ctx, getIssueInWorkspace, arg.ID, arg.WorkspaceID)
 	var i Issue
 	err := row.Scan(
 		&i.ID,

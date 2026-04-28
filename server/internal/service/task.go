@@ -1192,13 +1192,12 @@ func (s *TaskService) parseQuickCreateContext(task db.AgentTaskQueue) (QuickCrea
 }
 
 // notifyQuickCreateCompleted writes a success inbox notification to the
-// requester pointing at the issue the agent just created. We locate the
-// issue by querying for the most recent issue with creator = (agent, this
-// agent's ID) in the requester's workspace since the task started; this is
-// stable across agent stdout formats (the prompt asks for "Created MUL-X"
-// but we don't depend on it). When no matching issue is found within the
-// window we treat the run as a silent failure so the user doesn't sit with
-// no inbox feedback.
+// requester pointing at the issue the agent just created. The issue is
+// stamped with origin_type=quick_create + origin_id=<task_id> by the
+// daemon-injected MULTICA_QUICK_CREATE_TASK_ID env var, so this lookup is
+// deterministic — robust against the same agent creating other issues in
+// parallel (e.g. assignment task running while max_concurrent_tasks > 1
+// permits another quick-create alongside it).
 func (s *TaskService) notifyQuickCreateCompleted(ctx context.Context, task db.AgentTaskQueue, qc QuickCreateContext) {
 	requesterID, err := util.ParseUUID(qc.RequesterID)
 	if err != nil {
@@ -1210,15 +1209,10 @@ func (s *TaskService) notifyQuickCreateCompleted(ctx context.Context, task db.Ag
 		slog.Warn("quick-create completion: invalid workspace id", "task_id", util.UUIDToString(task.ID), "error", err)
 		return
 	}
-	since := task.StartedAt
-	if !since.Valid {
-		since = task.CreatedAt
-	}
-	issue, err := s.Queries.GetRecentIssueByCreatorSince(ctx, db.GetRecentIssueByCreatorSinceParams{
+	issue, err := s.Queries.GetIssueByOrigin(ctx, db.GetIssueByOriginParams{
 		WorkspaceID: workspaceID,
-		CreatorType: "agent",
-		CreatorID:   task.AgentID,
-		CreatedAt:   since,
+		OriginType:  pgtype.Text{String: "quick_create", Valid: true},
+		OriginID:    task.ID,
 	})
 	if err != nil {
 		// No issue created — agent ran to completion but the CLI call must

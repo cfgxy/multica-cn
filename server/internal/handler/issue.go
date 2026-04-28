@@ -973,6 +973,13 @@ type CreateIssueRequest struct {
 	ProjectID          *string  `json:"project_id"`
 	DueDate            *string  `json:"due_date"`
 	AttachmentIDs      []string `json:"attachment_ids,omitempty"`
+	// OriginType / OriginID stamp the new issue with its provenance so
+	// platform-internal flows can deterministically locate it later. Only
+	// trusted callers should set these — currently the daemon CLI passes
+	// them through for quick-create tasks (origin_type=quick_create,
+	// origin_id=agent_task_queue.id).
+	OriginType *string `json:"origin_type,omitempty"`
+	OriginID   *string `json:"origin_id,omitempty"`
 }
 
 func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
@@ -1090,22 +1097,70 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 	// Determine creator identity: agent (via X-Agent-ID header) or member.
 	creatorType, actualCreatorID := h.resolveActor(r, creatorID, workspaceID)
 
-	issue, err := qtx.CreateIssue(r.Context(), db.CreateIssueParams{
-		WorkspaceID:        wsUUID,
-		Title:              req.Title,
-		Description:        ptrToText(req.Description),
-		Status:             status,
-		Priority:           priority,
-		AssigneeType:       assigneeType,
-		AssigneeID:         assigneeID,
-		CreatorType:        creatorType,
-		CreatorID:          parseUUID(actualCreatorID),
-		ParentIssueID:      parentIssueID,
-		Position:           0,
-		DueDate:            dueDate,
-		Number:             issueNumber,
-		ProjectID:          projectID,
-	})
+	// Optional origin stamping (quick-create / autopilot). Only the
+	// allowed origin types are accepted; anything else is rejected so a
+	// rogue caller can't mint arbitrary origin labels. Both fields must
+	// be provided together.
+	var originType pgtype.Text
+	var originID pgtype.UUID
+	if req.OriginType != nil || req.OriginID != nil {
+		if req.OriginType == nil || req.OriginID == nil {
+			writeError(w, http.StatusBadRequest, "origin_type and origin_id must be provided together")
+			return
+		}
+		switch *req.OriginType {
+		case "quick_create":
+			// Allowed — daemon CLI passes this through from a quick-create task.
+		default:
+			writeError(w, http.StatusBadRequest, "unsupported origin_type")
+			return
+		}
+		oid, ok := parseUUIDOrBadRequest(w, *req.OriginID, "origin_id")
+		if !ok {
+			return
+		}
+		originType = pgtype.Text{String: *req.OriginType, Valid: true}
+		originID = oid
+	}
+
+	var issue db.Issue
+	if originType.Valid {
+		issue, err = qtx.CreateIssueWithOrigin(r.Context(), db.CreateIssueWithOriginParams{
+			WorkspaceID:   wsUUID,
+			Title:         req.Title,
+			Description:   ptrToText(req.Description),
+			Status:        status,
+			Priority:      priority,
+			AssigneeType:  assigneeType,
+			AssigneeID:    assigneeID,
+			CreatorType:   creatorType,
+			CreatorID:     parseUUID(actualCreatorID),
+			ParentIssueID: parentIssueID,
+			Position:      0,
+			DueDate:       dueDate,
+			Number:        issueNumber,
+			ProjectID:     projectID,
+			OriginType:    originType,
+			OriginID:      originID,
+		})
+	} else {
+		issue, err = qtx.CreateIssue(r.Context(), db.CreateIssueParams{
+			WorkspaceID:   wsUUID,
+			Title:         req.Title,
+			Description:   ptrToText(req.Description),
+			Status:        status,
+			Priority:      priority,
+			AssigneeType:  assigneeType,
+			AssigneeID:    assigneeID,
+			CreatorType:   creatorType,
+			CreatorID:     parseUUID(actualCreatorID),
+			ParentIssueID: parentIssueID,
+			Position:      0,
+			DueDate:       dueDate,
+			Number:        issueNumber,
+			ProjectID:     projectID,
+		})
+	}
 	if err != nil {
 		slog.Warn("create issue failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
 		writeError(w, http.StatusInternalServerError, "failed to create issue: "+err.Error())

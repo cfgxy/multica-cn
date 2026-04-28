@@ -100,17 +100,16 @@ SELECT * FROM issue
 WHERE parent_issue_id = $1
 ORDER BY position ASC, created_at DESC;
 
--- name: GetRecentIssueByCreatorSince :one
--- Finds the most recently created issue authored by a specific creator in a
--- workspace, since a given timestamp. Used by quick-create completion to
--- locate the issue the agent just created via `multica issue create`,
--- without relying on the agent's free-text output to carry an identifier.
+-- name: GetIssueByOrigin :one
+-- Finds the issue stamped with a specific (origin_type, origin_id) pair.
+-- Used by quick-create completion to deterministically locate the issue
+-- produced by a given agent_task_queue.id — robust against concurrent
+-- issue creates by the same agent (assignment task + quick-create both
+-- running with max_concurrent_tasks > 1).
 SELECT * FROM issue
 WHERE workspace_id = $1
-  AND creator_type = $2
-  AND creator_id = $3
-  AND created_at >= $4
-ORDER BY created_at DESC
+  AND origin_type = $2
+  AND origin_id = $3
 LIMIT 1;
 
 -- name: CountCreatedIssueAssignees :many
