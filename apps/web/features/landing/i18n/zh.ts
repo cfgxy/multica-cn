@@ -286,12 +286,12 @@ export function createZhDict(allowSignup: boolean): LandingDict {
       {
         version: "0.2.19",
         date: "2026-04-28",
-        title: "桌面通知红点、Daemon 实时唤醒与 Issue 标签过滤",
+        title: "Kiro CLI Runtime、桌面通知红点与 Issue 标签过滤",
         changes: [],
         features: [
+          "新增 Kiro CLI 作为本地 Agent runtime 选项",
           "macOS Dock 显示未读 Issue 红点；窗口失焦时弹出原生通知，点击直达对应 Issue",
           "Issue 列表新增 Label 过滤，可与状态、优先级、Assignee 等组合使用",
-          "创建 Issue 时默认沿用上次选择的 Assignee",
           "Daemon 通过 WebSocket 接收任务唤醒，任务起跑延迟显著降低",
         ],
         improvements: [

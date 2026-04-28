@@ -286,12 +286,12 @@ export function createEnDict(allowSignup: boolean): LandingDict {
       {
         version: "0.2.19",
         date: "2026-04-28",
-        title: "Desktop Notifications, Realtime Daemon Wakeups & Issue Label Filter",
+        title: "Kiro CLI Runtime, Desktop Notifications & Issue Label Filter",
         changes: [],
         features: [
+          "Kiro CLI added as a local agent runtime option",
           "macOS dock badge for unread issues, plus a native notification when the window is unfocused — click to jump straight to the issue",
           "Issue list now supports filtering by label, combinable with status / priority / assignee",
-          "Create-issue dialog remembers the last assignee you picked",
           "Daemon receives task wakeups over WebSocket — task startup latency drops noticeably",
         ],
         improvements: [
