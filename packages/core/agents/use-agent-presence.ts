@@ -2,16 +2,21 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { agentListOptions, memberListOptions as _members } from "../workspace/queries";
+import { agentListOptions } from "../workspace/queries";
 import { runtimeListOptions } from "../runtimes/queries";
-import { activeTasksOptions } from "./queries";
-import { deriveAgentPresence, deriveAgentPresenceDetail } from "./derive-presence";
-import type { AgentPresence, AgentPresenceDetail } from "./types";
+import { agentTaskSnapshotOptions } from "./queries";
+import {
+  buildPresenceMap,
+  deriveAgentPresenceDetail,
+} from "./derive-presence";
+import type { AgentPresenceDetail } from "./types";
 
-// Re-render every 30s so the FAILED state auto-clears once its 2-minute
-// window has elapsed, even if no underlying query data has changed.
-// Without this tick, a user who tabs away and comes back 5 minutes later
-// would still see the red indicator.
+// 30s tick, mirroring useRuntimeHealth. Presence depends on wall-clock time
+// for one reason: `unstable` (= RuntimeHealth.recently_lost) decays into
+// `offline` at the 5-minute mark with no new server data. Without a tick the
+// transition would only render on the next unrelated query update.
+// The earlier 2-minute "clear failed badge" tick was removed when failed
+// became sticky; this one re-introduces ticking with a different motivation.
 const PRESENCE_TICK_MS = 30_000;
 
 function usePresenceTick(): number {
@@ -24,51 +29,69 @@ function usePresenceTick(): number {
 }
 
 /**
- * Derived agent presence ("available" / "working" / "pending" / "failed" /
- * "offline"), or "loading" while the underlying queries are still resolving.
+ * Workspace-wide presence map keyed by `agent.id`. **The single entry point
+ * for any list / card / runtime sub-view that needs presence for more than
+ * one agent.**
  *
- * Accepts wsId as a parameter so the hook works outside WorkspaceIdProvider
- * (e.g. inside hover cards rendered before the workspace is mounted).
+ * Why this exists (vs calling `useAgentPresence` per row): the per-agent
+ * hook subscribes to 3 queries. With 30+ rows that's a forest of redundant
+ * memos. This batch hook pays the cost once for the whole page; rows just
+ * `Map.get(id)` — O(1) reads, no extra subscriptions.
+ *
+ * Returned value:
+ *   - `byAgent`: ready-to-read Map. Empty if data is still loading.
+ *   - `loading`: true until all three input queries have resolved at least
+ *      once. Callers can render skeletons during loading.
+ *
+ * Single-agent consumers should keep using `useAgentPresenceDetail`; this
+ * hook is for surfaces that already have a list of agents in hand.
  */
-export function useAgentPresence(
-  wsId: string | undefined,
-  agentId: string | undefined,
-): AgentPresence | "loading" {
-  const { data: agents } = useQuery({
+export function useWorkspacePresenceMap(wsId: string | undefined): {
+  byAgent: Map<string, AgentPresenceDetail>;
+  loading: boolean;
+} {
+  const { data: agents, isPending: agentsPending } = useQuery({
     ...agentListOptions(wsId ?? ""),
     enabled: !!wsId,
   });
-  const { data: runtimes } = useQuery({
+  const { data: runtimes, isPending: runtimesPending } = useQuery({
     ...runtimeListOptions(wsId ?? ""),
     enabled: !!wsId,
   });
-  const { data: activeTasks } = useQuery({
-    ...activeTasksOptions(wsId ?? ""),
+  const { data: snapshot, isPending: snapshotPending } = useQuery({
+    ...agentTaskSnapshotOptions(wsId ?? ""),
     enabled: !!wsId,
   });
   const tick = usePresenceTick();
 
-  return useMemo<AgentPresence | "loading">(() => {
-    if (!wsId || !agentId) return "loading";
-    if (!agents || !runtimes || !activeTasks) return "loading";
-
-    const agent = agents.find((a) => a.id === agentId);
-    if (!agent) return "loading";
-    const runtime = runtimes.find((r) => r.id === agent.runtime_id);
-    if (!runtime) return "loading";
-
-    const tasks = activeTasks.filter((t) => t.agent_id === agentId);
-    return deriveAgentPresence({ agent, runtime, recentTasks: tasks, now: Date.now() });
-    // tick is intentionally read so the memo recomputes every PRESENCE_TICK_MS
-    // ms; eslint will complain if it's not in the deps array.
+  const byAgent = useMemo(() => {
+    if (!agents || !runtimes || !snapshot) {
+      return new Map<string, AgentPresenceDetail>();
+    }
+    return buildPresenceMap({
+      agents,
+      runtimes,
+      snapshot,
+      now: Date.now(),
+    });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wsId, agentId, agents, runtimes, activeTasks, tick]);
+  }, [agents, runtimes, snapshot, tick]);
+
+  return {
+    byAgent,
+    loading: agentsPending || runtimesPending || snapshotPending,
+  };
 }
 
 /**
- * Same as useAgentPresence but returns a detail object including running /
- * queued counts and (when failed) the failure reason. Use this for hover
- * cards and other places that need to render the +N badge or failure copy.
+ * Single-agent presence detail: availability + last task state + counts +
+ * (when failed) failure reason and timestamp. Returns "loading" only while
+ * the underlying queries haven't resolved yet — a missing runtime is a
+ * real state (offline) and resolves into a non-loading detail.
+ *
+ * For surfaces that already have a list of agents in hand (Agents page,
+ * Runtime detail), prefer `useWorkspacePresenceMap` to avoid forest of
+ * redundant subscriptions.
  */
 export function useAgentPresenceDetail(
   wsId: string | undefined,
@@ -82,28 +105,25 @@ export function useAgentPresenceDetail(
     ...runtimeListOptions(wsId ?? ""),
     enabled: !!wsId,
   });
-  const { data: activeTasks } = useQuery({
-    ...activeTasksOptions(wsId ?? ""),
+  const { data: snapshot } = useQuery({
+    ...agentTaskSnapshotOptions(wsId ?? ""),
     enabled: !!wsId,
   });
   const tick = usePresenceTick();
 
   return useMemo<AgentPresenceDetail | "loading">(() => {
     if (!wsId || !agentId) return "loading";
-    if (!agents || !runtimes || !activeTasks) return "loading";
+    if (!agents || !runtimes || !snapshot) return "loading";
 
     const agent = agents.find((a) => a.id === agentId);
     if (!agent) return "loading";
-    const runtime = runtimes.find((r) => r.id === agent.runtime_id);
-    if (!runtime) return "loading";
+    // Missing runtime is a legitimate state (offline) — pass null and let
+    // derive handle it. The previous implementation looped forever in
+    // "loading" when runtime was deleted.
+    const runtime = runtimes.find((r) => r.id === agent.runtime_id) ?? null;
 
-    const tasks = activeTasks.filter((t) => t.agent_id === agentId);
-    return deriveAgentPresenceDetail({
-      agent,
-      runtime,
-      recentTasks: tasks,
-      now: Date.now(),
-    });
+    const tasks = snapshot.filter((t) => t.agent_id === agentId);
+    return deriveAgentPresenceDetail({ agent, runtime, tasks, now: Date.now() });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [wsId, agentId, agents, runtimes, activeTasks, tick]);
+  }, [wsId, agentId, agents, runtimes, snapshot, tick]);
 }

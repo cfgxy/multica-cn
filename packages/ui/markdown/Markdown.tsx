@@ -11,6 +11,7 @@ import { CodeBlock, InlineCode } from './CodeBlock'
 import { preprocessFileCards } from './file-cards'
 import { preprocessLinks } from './linkify'
 import { preprocessMentionShortcodes } from './mentions'
+import 'katex/dist/katex.min.css'
 import './markdown.css'
 
 /**

@@ -50,6 +50,7 @@ interface DaemonAPI {
   startLogStream: () => void;
   stopLogStream: () => void;
   onLogLine: (callback: (line: string) => void) => () => void;
+  openLogFile: () => Promise<{ success: boolean; error?: string }>;
 }
 
 interface UpdaterAPI {

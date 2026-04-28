@@ -1,15 +1,14 @@
 "use client";
 
-import { Cloud, Monitor, Wifi, WifiOff } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
-import type { Agent, AgentRuntime } from "@multica/core/types";
+import { useAgentPresenceDetail } from "@multica/core/agents";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { agentListOptions, memberListOptions } from "@multica/core/workspace/queries";
-import { runtimeListOptions } from "@multica/core/runtimes/queries";
+import { useWorkspacePaths } from "@multica/core/paths";
 import { ActorAvatar as ActorAvatarBase } from "@multica/ui/components/common/actor-avatar";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
-import { statusConfig } from "../config";
-import { formatLastSeen } from "../../runtimes/utils";
+import { AppLink } from "../../navigation";
+import { availabilityConfig } from "../presence";
 
 interface AgentProfileCardProps {
   agentId: string;
@@ -17,8 +16,8 @@ interface AgentProfileCardProps {
 
 export function AgentProfileCard({ agentId }: AgentProfileCardProps) {
   const wsId = useWorkspaceId();
+  const p = useWorkspacePaths();
   const { data: agents = [], isLoading: agentsLoading } = useQuery(agentListOptions(wsId));
-  const { data: runtimes = [] } = useQuery(runtimeListOptions(wsId));
   const { data: members = [] } = useQuery(memberListOptions(wsId));
 
   const agent = agents.find((a) => a.id === agentId);
@@ -41,7 +40,6 @@ export function AgentProfileCard({ agentId }: AgentProfileCardProps) {
     );
   }
 
-  const runtime = runtimes.find((r) => r.id === agent.runtime_id) ?? null;
   const owner = agent.owner_id
     ? members.find((m) => m.user_id === agent.owner_id) ?? null
     : null;
@@ -55,7 +53,11 @@ export function AgentProfileCard({ agentId }: AgentProfileCardProps) {
 
   return (
     <div className="flex flex-col gap-3 text-left">
-      {/* Header */}
+      {/* Header — avatar + name + availability on the left, "Detail →" link
+          on the right. The hover card stays minimal: only the 3-state
+          availability dot is shown here. Last-task state lives in the
+          agents list (where there's room) and the agent detail page —
+          users click "Detail" to see logs and outcome history. */}
       <div className="flex items-start gap-3">
         <ActorAvatarBase
           name={agent.name}
@@ -74,8 +76,18 @@ export function AgentProfileCard({ agentId }: AgentProfileCardProps) {
               </span>
             )}
           </div>
-          <AgentStatusLine agent={agent} />
+          {!isArchived && (
+            <AgentAvailabilityLine wsId={wsId} agentId={agent.id} />
+          )}
         </div>
+        {!isArchived && (
+          <AppLink
+            href={p.agentDetail(agent.id)}
+            className="mt-0.5 shrink-0 text-xs font-normal text-brand transition-opacity hover:opacity-80"
+          >
+            Detail →
+          </AppLink>
+        )}
       </div>
 
       {/* Description */}
@@ -85,10 +97,10 @@ export function AgentProfileCard({ agentId }: AgentProfileCardProps) {
         </p>
       )}
 
-      {/* Meta rows */}
+      {/* Meta rows — only the workspace-defining ones. Runtime is implied
+          by the provider/availability already shown above; Model is a
+          power-user concern that lives on the detail page. */}
       <div className="flex flex-col gap-1.5 text-xs">
-        <RuntimeRow agent={agent} runtime={runtime} />
-        {agent.model && <MetaRow label="Model" value={agent.model} mono />}
         {agent.skills.length > 0 && (
           <SkillsRow skills={agent.skills.map((s) => s.name)} />
         )}
@@ -98,52 +110,26 @@ export function AgentProfileCard({ agentId }: AgentProfileCardProps) {
   );
 }
 
-function AgentStatusLine({ agent }: { agent: Agent }) {
-  const st = statusConfig[agent.status];
-  return (
-    <div className="mt-0.5 flex items-center gap-1.5">
-      <span className={`h-1.5 w-1.5 rounded-full ${st.dot}`} />
-      <span className={`text-xs ${st.color}`}>{st.label}</span>
-    </div>
-  );
-}
-
-function RuntimeRow({
-  agent,
-  runtime,
+// Compact availability line under the agent name — single 3-state signal
+// (online / unstable / offline). Last-task state is intentionally NOT
+// shown here; it belongs in the agents list and the detail page where
+// there's room for icon + label + reason without crowding the popover.
+function AgentAvailabilityLine({
+  wsId,
+  agentId,
 }: {
-  agent: Agent;
-  runtime: AgentRuntime | null;
+  wsId: string | undefined;
+  agentId: string;
 }) {
-  const isCloud = agent.runtime_mode === "cloud";
-  const Icon = isCloud ? Cloud : Monitor;
-  const isOnline = runtime?.status === "online";
-  // Cloud runtimes are always reachable from the user's perspective.
-  const showOnline = isCloud || isOnline;
-
-  let detail: string;
-  if (isCloud) {
-    detail = runtime?.name ?? "Cloud";
-  } else if (runtime) {
-    detail = isOnline
-      ? runtime.name
-      : `${runtime.name} · last seen ${formatLastSeen(runtime.last_seen_at)}`;
-  } else {
-    detail = "Unknown runtime";
+  const detail = useAgentPresenceDetail(wsId, agentId);
+  if (detail === "loading") {
+    return <Skeleton className="mt-0.5 h-3 w-16" />;
   }
-
+  const av = availabilityConfig[detail.availability];
   return (
-    <div className="flex items-center gap-1.5">
-      <span className="w-12 shrink-0 text-muted-foreground">Runtime</span>
-      <Icon className="h-3 w-3 shrink-0 text-muted-foreground" />
-      <span className="truncate" title={detail}>
-        {detail}
-      </span>
-      {showOnline ? (
-        <Wifi className="ml-auto h-3 w-3 shrink-0 text-success" />
-      ) : (
-        <WifiOff className="ml-auto h-3 w-3 shrink-0 text-muted-foreground" />
-      )}
+    <div className="mt-0.5 inline-flex items-center gap-1.5">
+      <span className={`h-1.5 w-1.5 rounded-full ${av.dotClass}`} />
+      <span className={`text-xs ${av.textClass}`}>{av.label}</span>
     </div>
   );
 }

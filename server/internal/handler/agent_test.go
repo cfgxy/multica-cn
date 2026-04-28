@@ -8,32 +8,55 @@ import (
 	"testing"
 )
 
-// TestListWorkspaceLiveTasks covers the agent presence cache endpoint:
-// it must return active (queued/dispatched/running) tasks plus failed tasks
-// within the last 2 minutes, and exclude older failed tasks. The 2-minute
-// window powers the front-end's auto-clearing "Failed" agent state.
-func TestListWorkspaceLiveTasks(t *testing.T) {
+// TestListWorkspaceAgentTaskSnapshot covers the agent presence snapshot endpoint:
+// every active task (queued/dispatched/running) PLUS each agent's most recent
+// OUTCOME task (completed/failed only). Cancelled tasks are excluded by design
+// from the outcome half — they're a procedural signal, not an outcome, and
+// must NOT mask a prior failure.
+//
+// The fixtures cover every branch the SQL must classify:
+//   - actives are always returned, no dedup
+//   - outcomes are deduped to "latest per agent" by completed_at
+//   - the OLD 2-minute window must be irrelevant (a 5-minute-old failure is
+//     still returned if it's the latest outcome)
+//   - cancelled rows are NEVER returned, even when they are temporally newer
+//     than a failure — this is what keeps the failed signal sticky after the
+//     user cancels their queued retry
+func TestListWorkspaceAgentTaskSnapshot(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
 
 	ctx := context.Background()
-	agentID := createHandlerTestAgent(t, "list-live-tasks-agent", []byte(`{}`))
+	// Three agents so we can verify per-agent semantics independently.
+	agentA := createHandlerTestAgent(t, "snapshot-agent-a", []byte(`{}`))
+	agentB := createHandlerTestAgent(t, "snapshot-agent-b", []byte(`{}`))
+	agentC := createHandlerTestAgent(t, "snapshot-agent-c", []byte(`{}`))
 
-	// Insert a mix of tasks covering all the cases the handler must classify.
-	// completed_at is set explicitly so the time-window filter is testable.
 	type taskFixture struct {
+		agentID     string
 		status      string
 		completedAt string // SQL expression; "" for NULL
+		label       string
 	}
 	fixtures := []taskFixture{
-		{"queued", ""},
-		{"dispatched", ""},
-		{"running", ""},
-		{"failed", "now() - interval '30 seconds'"},  // recent — should be returned
-		{"failed", "now() - interval '5 minutes'"},   // stale — should NOT be returned
-		{"completed", "now() - interval '10 seconds'"}, // never returned
-		{"cancelled", "now() - interval '10 seconds'"}, // never returned
+		// Agent A — actives + a newer completed supersedes an older failed.
+		{agentA, "queued", "", "A.queued"},
+		{agentA, "dispatched", "", "A.dispatched"},
+		{agentA, "running", "", "A.running"},
+		{agentA, "failed", "now() - interval '10 minutes'", "A.old_failed"},
+		{agentA, "completed", "now() - interval '30 seconds'", "A.latest_completed"},
+
+		// Agent B — old failure with no later outcome stays visible (no
+		// time window).
+		{agentB, "failed", "now() - interval '5 minutes'", "B.stale_failed_kept"},
+
+		// Agent C — failure followed by a NEWER cancelled. The cancelled
+		// must be skipped by the SQL filter so the failure remains visible.
+		// This is the scenario where a user fails, then cancels their
+		// queued retry to debug.
+		{agentC, "failed", "now() - interval '5 minutes'", "C.failure"},
+		{agentC, "cancelled", "now() - interval '30 seconds'", "C.newer_cancelled_must_be_ignored"},
 	}
 
 	insertedIDs := make([]string, 0, len(fixtures))
@@ -47,8 +70,8 @@ func TestListWorkspaceLiveTasks(t *testing.T) {
 			query = `INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority, completed_at)
 			         VALUES ($1, $2, $3, 0, ` + f.completedAt + `) RETURNING id`
 		}
-		if err := testPool.QueryRow(ctx, query, agentID, testRuntimeID, f.status).Scan(&id); err != nil {
-			t.Fatalf("failed to insert %s task: %v", f.status, err)
+		if err := testPool.QueryRow(ctx, query, f.agentID, testRuntimeID, f.status).Scan(&id); err != nil {
+			t.Fatalf("insert %s: %v", f.label, err)
 		}
 		insertedIDs = append(insertedIDs, id)
 	}
@@ -59,10 +82,10 @@ func TestListWorkspaceLiveTasks(t *testing.T) {
 	})
 
 	w := httptest.NewRecorder()
-	req := newRequest(http.MethodGet, "/api/active-tasks", nil)
-	testHandler.ListWorkspaceLiveTasks(w, req)
+	req := newRequest(http.MethodGet, "/api/agent-task-snapshot", nil)
+	testHandler.ListWorkspaceAgentTaskSnapshot(w, req)
 	if w.Code != http.StatusOK {
-		t.Fatalf("ListWorkspaceLiveTasks: expected 200, got %d: %s", w.Code, w.Body.String())
+		t.Fatalf("ListWorkspaceAgentTaskSnapshot: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 
 	var tasks []AgentTaskResponse
@@ -70,35 +93,50 @@ func TestListWorkspaceLiveTasks(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 
-	statusCounts := map[string]int{}
+	// Per-agent breakdown so leftover tasks from other tests in this package
+	// don't pollute the assertions.
+	type key struct{ agent, status string }
+	counts := map[key]int{}
 	for _, task := range tasks {
-		// Only count tasks for our test agent — other tests in this package
-		// share the workspace and may have leftover live tasks.
-		if task.AgentID != agentID {
+		if task.AgentID != agentA && task.AgentID != agentB && task.AgentID != agentC {
 			continue
 		}
-		statusCounts[task.Status]++
+		counts[key{task.AgentID, task.Status}]++
 	}
 
-	want := map[string]int{
-		"queued":     1,
-		"dispatched": 1,
-		"running":    1,
-		"failed":     1, // only the recent one; the 5-minute-old one filtered out
+	wantCounts := map[key]int{
+		// Agent A: 3 actives + the latest outcome (completed). The older
+		// failed must be excluded by DISTINCT ON.
+		{agentA, "queued"}:     1,
+		{agentA, "dispatched"}: 1,
+		{agentA, "running"}:    1,
+		{agentA, "completed"}:  1,
+		// Agent B: just the failed outcome.
+		{agentB, "failed"}: 1,
+		// Agent C: the failed outcome must survive the temporally newer
+		// cancellation — that's the whole point of excluding cancelled
+		// from the outcome half.
+		{agentC, "failed"}: 1,
 	}
-	for status, expected := range want {
-		if got := statusCounts[status]; got != expected {
-			t.Errorf("status=%s: expected %d task(s) for our agent, got %d", status, expected, got)
+	for k, expected := range wantCounts {
+		if got := counts[k]; got != expected {
+			t.Errorf("agent=%s status=%s: expected %d, got %d", k.agent, k.status, expected, got)
 		}
 	}
 
-	// Completed and cancelled tasks must never appear in the live-tasks endpoint
-	// — agent presence derivation only cares about active and recently-failed.
-	if statusCounts["completed"] != 0 {
-		t.Errorf("completed tasks must not appear in live tasks, got %d", statusCounts["completed"])
+	// The OLD failed terminal on agent A must be excluded.
+	if counts[key{agentA, "failed"}] != 0 {
+		t.Errorf("agent A old failed must be superseded by newer completed; got %d", counts[key{agentA, "failed"}])
 	}
-	if statusCounts["cancelled"] != 0 {
-		t.Errorf("cancelled tasks must not appear in live tasks, got %d", statusCounts["cancelled"])
+
+	// No cancelled row may ever appear in the snapshot — they're filtered at
+	// SQL level so the front-end's "cancel doesn't mask failure" rule lands
+	// without any front-end logic.
+	for _, agentID := range []string{agentA, agentB, agentC} {
+		if counts[key{agentID, "cancelled"}] != 0 {
+			t.Errorf("agent %s: cancelled rows must be excluded from snapshot; got %d",
+				agentID, counts[key{agentID, "cancelled"}])
+		}
 	}
 }
 

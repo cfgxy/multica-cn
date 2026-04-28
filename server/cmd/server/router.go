@@ -347,6 +347,7 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus, analytics
 					r.Put("/", h.UpdateAgent)
 					r.Post("/archive", h.ArchiveAgent)
 					r.Post("/restore", h.RestoreAgent)
+					r.Post("/cancel-tasks", h.CancelAgentTasks)
 					r.Get("/tasks", h.ListAgentTasks)
 					r.Get("/skills", h.ListAgentSkills)
 					r.Put("/skills", h.SetAgentSkills)
@@ -379,6 +380,8 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus, analytics
 				r.Get("/", h.ListAgentRuntimes)
 				r.Route("/{runtimeId}", func(r chi.Router) {
 					r.Get("/usage", h.GetRuntimeUsage)
+					r.Get("/usage/by-agent", h.GetRuntimeUsageByAgent)
+					r.Get("/usage/by-hour", h.GetRuntimeUsageByHour)
 					r.Get("/activity", h.GetRuntimeTaskActivity)
 					r.Post("/update", h.InitiateUpdate)
 					r.Get("/update/{updateId}", h.GetUpdate)
@@ -395,8 +398,17 @@ func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus, analytics
 			// Tasks (user-facing, with ownership check)
 			r.Post("/api/tasks/{taskId}/cancel", h.CancelTaskByUser)
 
-			// Workspace-wide live tasks (active + recent failed) for agent presence derivation.
-			r.Get("/api/active-tasks", h.ListWorkspaceLiveTasks)
+			// Workspace-wide agent task snapshot for presence derivation:
+			// every active task + each agent's most recent terminal task.
+			r.Get("/api/agent-task-snapshot", h.ListWorkspaceAgentTaskSnapshot)
+
+			// Workspace-wide daily agent activity (last 30d, anchored on
+			// completed_at). Backs the Agents-list sparkline (trailing 7d
+			// slice) AND the agent detail "Last 30 days" panel.
+			r.Get("/api/agent-activity-30d", h.GetWorkspaceAgentActivity30d)
+
+			// Workspace-wide 30-day run counts per agent for the Agents-list RUNS column.
+			r.Get("/api/agent-run-counts", h.GetWorkspaceAgentRunCounts)
 
 			r.Route("/api/chat/sessions", func(r chi.Router) {
 				r.Post("/", h.CreateChatSession)
