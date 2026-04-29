@@ -77,6 +77,16 @@ INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, 
 VALUES ($1, $2, NULL, 'queued', $3, $4)
 RETURNING *;
 
+-- name: LinkTaskToIssue :exec
+-- Attaches the issue a quick-create task produced back to the task row, once
+-- the agent has finished and the issue exists. Guarded by `issue_id IS NULL`
+-- so this never overwrites an issue id that was set at task creation (only
+-- quick-create tasks land here unset). Fixes the activity row staying on
+-- "Creating issue" forever after completion.
+UPDATE agent_task_queue
+SET issue_id = $2
+WHERE id = $1 AND issue_id IS NULL;
+
 -- name: CreateRetryTask :one
 -- Clones a parent task into a fresh queued attempt. Carries forward the
 -- agent's resume context (session_id/work_dir) so the child can continue

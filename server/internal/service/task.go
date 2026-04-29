@@ -1347,6 +1347,22 @@ func (s *TaskService) notifyQuickCreateCompleted(ctx context.Context, task db.Ag
 		s.notifyQuickCreateFailed(ctx, task, qc, "agent finished without creating an issue")
 		return
 	}
+
+	// Link the new issue back to this task so subsequent reads of the task
+	// (Activity tab, Recent work, etc.) render it as a normal issue task
+	// (kind = "direct") instead of staying on the "Creating issue" active-
+	// wording label. Best-effort: a write failure here doesn't block the
+	// inbox notification, which is the more important signal to the user.
+	if err := s.Queries.LinkTaskToIssue(ctx, db.LinkTaskToIssueParams{
+		ID:      task.ID,
+		IssueID: issue.ID,
+	}); err != nil {
+		slog.Warn("quick-create completion: link task→issue failed",
+			"task_id", util.UUIDToString(task.ID),
+			"issue_id", util.UUIDToString(issue.ID),
+			"error", err,
+		)
+	}
 	prefix := s.getIssuePrefix(workspaceID)
 	identifier := fmt.Sprintf("%s-%d", prefix, issue.Number)
 	details, _ := json.Marshal(map[string]any{

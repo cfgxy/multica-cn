@@ -620,7 +620,7 @@ func (q *Queries) CreateAgentTask(ctx context.Context, arg CreateAgentTaskParams
 const createQuickCreateTask = `-- name: CreateQuickCreateTask :one
 INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, context)
 VALUES ($1, $2, NULL, 'queued', $3, $4)
-RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, last_heartbeat_at
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, last_heartbeat_at, trigger_summary
 `
 
 type CreateQuickCreateTaskParams struct {
@@ -665,6 +665,7 @@ func (q *Queries) CreateQuickCreateTask(ctx context.Context, arg CreateQuickCrea
 		&i.ParentTaskID,
 		&i.FailureReason,
 		&i.LastHeartbeatAt,
+		&i.TriggerSummary,
 	)
 	return i, err
 }
@@ -1142,6 +1143,27 @@ func (q *Queries) HasPendingTaskForIssueAndAgent(ctx context.Context, arg HasPen
 	var has_pending bool
 	err := row.Scan(&has_pending)
 	return has_pending, err
+}
+
+const linkTaskToIssue = `-- name: LinkTaskToIssue :exec
+UPDATE agent_task_queue
+SET issue_id = $2
+WHERE id = $1 AND issue_id IS NULL
+`
+
+type LinkTaskToIssueParams struct {
+	ID      pgtype.UUID `json:"id"`
+	IssueID pgtype.UUID `json:"issue_id"`
+}
+
+// Attaches the issue a quick-create task produced back to the task row, once
+// the agent has finished and the issue exists. Guarded by `issue_id IS NULL`
+// so this never overwrites an issue id that was set at task creation (only
+// quick-create tasks land here unset). Fixes the activity row staying on
+// "Creating issue" forever after completion.
+func (q *Queries) LinkTaskToIssue(ctx context.Context, arg LinkTaskToIssueParams) error {
+	_, err := q.db.Exec(ctx, linkTaskToIssue, arg.ID, arg.IssueID)
+	return err
 }
 
 const listActiveTasksByIssue = `-- name: ListActiveTasksByIssue :many
