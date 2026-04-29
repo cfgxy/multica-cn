@@ -218,7 +218,6 @@ export function QuickCreateIssueModal({
                         actorType="agent"
                         actorId={selectedAgent.id}
                         size={16}
-                        disableHoverCard
                       />
                       {selectedAgent.name}
                     </span>
@@ -247,7 +246,6 @@ export function QuickCreateIssueModal({
                       actorType="agent"
                       actorId={a.id}
                       size={16}
-                      disableHoverCard
                     />
                     <span className="flex-1 truncate">{a.name}</span>
                   </DropdownMenuItem>
