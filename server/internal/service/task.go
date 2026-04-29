@@ -180,6 +180,12 @@ func (s *TaskService) EnqueueQuickCreateTask(ctx context.Context, workspaceID, r
 		"requester_id", util.UUIDToString(requesterID),
 		"workspace_id", util.UUIDToString(workspaceID),
 	)
+	// Match every other Enqueue* path: kick the daemon WS so the task
+	// gets claimed promptly instead of waiting for the next 30 s poll
+	// cycle. Without this the user perceives "quick create never
+	// triggered" because the modal closes immediately and the task
+	// sits in 'queued' until the next sleepWithContextOrWakeup tick.
+	s.notifyTaskAvailable(task)
 	return task, nil
 }
 
@@ -1095,6 +1101,14 @@ func (s *TaskService) ResolveTaskWorkspaceID(ctx context.Context, task db.AgentT
 				return util.UUIDToString(ap.WorkspaceID)
 			}
 		}
+	}
+	// Quick-create tasks have no issue / chat / autopilot link — workspace
+	// lives in the context JSONB. Returning "" here is what blocked
+	// requireDaemonTaskAccess (404 on /start, /progress, /complete, /fail
+	// for the daemon) and silently dropped task:dispatch / task:completed
+	// broadcasts, which is why quick-create tasks appeared stuck queued.
+	if qc, ok := s.parseQuickCreateContext(task); ok {
+		return qc.WorkspaceID
 	}
 	return ""
 }
