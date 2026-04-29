@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -18,6 +19,12 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
+
+// Mirrors AGENT_DESCRIPTION_MAX_LENGTH in packages/core/agents/constants.ts
+// and the agent_description_length CHECK constraint in migration 060. Counted
+// in unicode code points (utf8.RuneCountInString), matching Postgres
+// char_length and the front-end's String.prototype.length-with-counter UX.
+const maxAgentDescriptionLength = 255
 
 type AgentResponse struct {
 	ID                 string            `json:"id"`
@@ -343,6 +350,10 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "name is required")
 		return
 	}
+	if utf8.RuneCountInString(req.Description) > maxAgentDescriptionLength {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("description must be %d characters or fewer", maxAgentDescriptionLength))
+		return
+	}
 	if req.RuntimeID == "" {
 		writeError(w, http.StatusBadRequest, "runtime_id is required")
 		return
@@ -544,6 +555,10 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		params.Name = pgtype.Text{String: *req.Name, Valid: true}
 	}
 	if req.Description != nil {
+		if utf8.RuneCountInString(*req.Description) > maxAgentDescriptionLength {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("description must be %d characters or fewer", maxAgentDescriptionLength))
+			return
+		}
 		params.Description = pgtype.Text{String: *req.Description, Valid: true}
 	}
 	if req.Instructions != nil {
