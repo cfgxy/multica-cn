@@ -164,7 +164,13 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 		b.WriteString("- title: required, short imperative summary extracted from the user input.\n")
 		b.WriteString("- description: optional; only include if the user supplied detail beyond the title.\n")
 		b.WriteString("- priority: one of `urgent`, `high`, `medium`, `low`, or omit. Map P0/P1 → urgent/high; \"asap\"/\"紧急\" → urgent; \"低优先级\" → low.\n")
-		b.WriteString("- assignee: when the user says \"分给 X\" / \"assign to X\" / \"@X\", call `multica workspace members --output json` and find the matching member. On clean match, pass `--assignee <name>`. On no/ambiguous match, OMIT `--assignee` and append a final line to the description: `未识别 assignee: X`.\n")
+		b.WriteString("- assignee:\n")
+		b.WriteString("    - When the user names someone (\"分给 X\" / \"assign to X\" / \"@X\"), call `multica workspace members --output json` and find the matching member. On clean match, pass `--assignee <name>`. On no/ambiguous match, OMIT `--assignee` and append a final line to the description: `未识别 assignee: X`.\n")
+		if ctx.AgentName != "" {
+			fmt.Fprintf(&b, "    - When the user did NOT name an assignee, default to YOURSELF: pass `--assignee %q`. The picker agent is the expected owner because the user opened quick-create with you selected — never leave the issue unassigned.\n", ctx.AgentName)
+		} else {
+			b.WriteString("    - When the user did NOT name an assignee, default to YOURSELF (the picker agent): pass `--assignee <your agent name>`. Never leave the issue unassigned.\n")
+		}
 		b.WriteString("- project / status: omit (defaults apply).\n\n")
 		b.WriteString("Output rules:\n")
 		b.WriteString("- Run exactly one `multica issue create` invocation.\n")
