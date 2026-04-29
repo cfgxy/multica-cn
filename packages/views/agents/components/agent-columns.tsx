@@ -14,7 +14,7 @@ import {
   TooltipTrigger,
 } from "@multica/ui/components/ui/tooltip";
 import { ActorAvatar } from "../../common/actor-avatar";
-import { availabilityConfig, taskStateConfig } from "../presence";
+import { availabilityConfig, workloadConfig } from "../presence";
 import { AgentRowActions } from "./agent-row-actions";
 import { Sparkline } from "./sparkline";
 
@@ -34,19 +34,33 @@ export interface AgentRow {
   canManage: boolean;
 }
 
-// Column widths in px. Sum determines the table's natural width; when the
-// sum exceeds the viewport, the DataTable container scrolls horizontally.
-// Values picked to fit content comfortably without truncating in typical
-// cases — e.g. Agent at 360 holds avatar + 18-char name + a one-line
-// description excerpt.
+// Sized columns render at exactly `size` in fixed table-layout mode —
+// column.size doubles as the cell's effective max-width: truncatable
+// cells with `truncate` inside hit ellipsis at the column edge.
+//
+// The Agent column has `meta.grow: true` so DataTable skips its inline
+// `width` — that lets fixed table-layout assign it the leftover space
+// (= container width − sum of other columns), so the table fills the
+// viewport without an empty spacer column.
+//
+// The Agent column also keeps `size: 240` even though it isn't used for
+// rendering. TanStack folds this into `table.getTotalSize()`, which
+// DataTable applies as the table's `min-width`. That's how the agent
+// column gets a real 240px floor: when the viewport drops below
+// `sum + 240`, the table refuses to shrink further and the container
+// scrolls instead. (Fixed table-layout ignores cell-level min-width
+// per spec, so the floor has to live on the table itself.)
 const COL_WIDTHS = {
-  agent: 360,
+  agent: 240,
   status: 120,
-  lastRun: 160,
+  workload: 140,
   runtime: 200,
   activity: 100,
-  runs: 80,
-  actions: 48,
+  runs: 64,
+  // 60 = 16 left padding + 28 kebab + 16 right padding. Keeps the
+  // kebab's right edge 16px from the card so it lines up with the
+  // toolbar's px-4 right inset.
+  actions: 60,
 } as const;
 
 export function createAgentColumns({
@@ -59,6 +73,7 @@ export function createAgentColumns({
       id: "agent",
       header: "Agent",
       size: COL_WIDTHS.agent,
+      meta: { grow: true },
       cell: ({ row }) => <AgentNameCell row={row.original} />,
     },
     {
@@ -73,14 +88,14 @@ export function createAgentColumns({
       },
     },
     {
-      id: "lastRun",
-      header: "Last run",
-      size: COL_WIDTHS.lastRun,
+      id: "workload",
+      header: "Workload",
+      size: COL_WIDTHS.workload,
       cell: ({ row }) => {
         if (row.original.agent.archived_at) {
           return <span className="text-xs text-muted-foreground">—</span>;
         }
-        return <LastRunCell presence={row.original.presence} />;
+        return <WorkloadCell presence={row.original.presence} />;
       },
     },
     {
@@ -140,7 +155,7 @@ function AgentNameCell({ row }: { row: AgentRow }) {
   const isPrivate = agent.visibility === "private";
 
   return (
-    <div className="flex items-center gap-3">
+    <div className="flex min-w-0 items-center gap-3">
       <ActorAvatar
         actorType="agent"
         actorId={agent.id}
@@ -148,10 +163,10 @@ function AgentNameCell({ row }: { row: AgentRow }) {
         className={`shrink-0 rounded-md ${isArchived ? "opacity-50 grayscale" : ""}`}
         showStatusDot
       />
-      <div className="min-w-0">
-        <div className="flex items-center gap-2">
+      <div className="min-w-0 flex-1">
+        <div className="flex min-w-0 items-center gap-2">
           <span
-            className={`truncate font-medium ${
+            className={`min-w-0 truncate font-medium ${
               isArchived ? "text-muted-foreground" : ""
             }`}
           >
@@ -183,7 +198,7 @@ function AgentNameCell({ row }: { row: AgentRow }) {
           )}
         </div>
         <div
-          className={`mt-0.5 line-clamp-1 text-xs ${
+          className={`mt-0.5 truncate text-xs ${
             agent.description
               ? "text-muted-foreground"
               : "italic text-muted-foreground/50"
@@ -215,7 +230,7 @@ function AvailabilityCell({
   );
 }
 
-function LastRunCell({
+function WorkloadCell({
   presence,
 }: {
   presence: AgentPresenceDetail | null | undefined;
@@ -225,21 +240,44 @@ function LastRunCell({
       <span className="inline-flex h-3 w-20 animate-pulse rounded bg-muted/60" />
     );
   }
-  if (presence.lastTask === "idle") {
-    return <span className="text-xs text-muted-foreground/50">—</span>;
-  }
-  const ts = taskStateConfig[presence.lastTask];
-  const isRunning = presence.lastTask === "running";
-  const counts =
-    isRunning && presence.queuedCount > 0
+  // All three workload states render with the same shape (icon + label +
+  // optional counts). Idle agents show "Idle" rather than a bare em-dash
+  // — that hyphen used to mean both "no presence data" and "agent is
+  // idle", which conflated two distinct things. Em-dash is now reserved
+  // for archived rows / undefined presence (handled at the column level).
+  const wl = workloadConfig[presence.workload];
+  const isWorking = presence.workload === "working";
+  const isQueued = presence.workload === "queued";
+  // Queued's amber from workloadConfig is the severe tone for "stuck on
+  // offline runtime". On an online runtime queued is just a brief race
+  // between enqueue and daemon claim, where amber misreads as a warning.
+  // Compose with availability so the colour matches the actual signal.
+  const queuedTone =
+    presence.availability === "online" ? "text-muted-foreground" : wl.textClass;
+  const labelTone = isQueued ? queuedTone : wl.textClass;
+  // Working: show running/capacity, optionally with +Nq when overflow.
+  // Queued (= nothing running, things waiting — typically a stuck-on-
+  // offline-runtime signal): show the queued count directly so the user
+  // sees "Queued · 2" instead of misleading "Running 0/3 +2q".
+  // Idle: no counts — the label alone carries the meaning.
+  const counts = isWorking
+    ? presence.queuedCount > 0
       ? `${presence.runningCount}/${presence.capacity} +${presence.queuedCount}q`
-      : isRunning
-        ? `${presence.runningCount}/${presence.capacity}`
-        : null;
+      : `${presence.runningCount}/${presence.capacity}`
+    : isQueued
+      ? `${presence.queuedCount}`
+      : null;
   return (
     <span className="inline-flex items-center gap-1 text-xs">
-      <ts.icon className={`h-3 w-3 shrink-0 ${ts.textClass}`} />
-      <span className={`shrink-0 ${ts.textClass}`}>{ts.label}</span>
+      {/* Icon only renders for working/queued — those carry visual meaning
+          (spinner = in motion, clock = waiting). Idle adding an icon read
+          as a warning marker, which is the wrong signal. */}
+      {presence.workload !== "idle" && (
+        <wl.icon
+          className={`h-3 w-3 shrink-0 ${labelTone} ${isWorking ? "animate-spin" : ""}`}
+        />
+      )}
+      <span className={`shrink-0 ${labelTone}`}>{wl.label}</span>
       {counts && (
         <span className="truncate text-muted-foreground">{counts}</span>
       )}
@@ -258,7 +296,9 @@ function RuntimeCell({ row }: { row: AgentRow }) {
       <RuntimeIcon className="h-3 w-3 shrink-0" />
       <Tooltip>
         <TooltipTrigger
-          render={<span className="truncate">{runtimeLabel}</span>}
+          render={
+            <span className="block min-w-0 truncate">{runtimeLabel}</span>
+          }
         />
         <TooltipContent>{runtimeLabel}</TooltipContent>
       </Tooltip>
