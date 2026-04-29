@@ -373,10 +373,25 @@ export default function SkillsPage() {
         </div>
       )}
 
-      {/* Page body — padding here keeps the card from touching the chrome.
-          The "what is a skill" tagline now lives in the page header (right
-          of the title); body starts directly with the table card. */}
+      {/* Page body — padding here keeps the card from touching the chrome,
+          and `gap-4` separates the intro banner from the table card. */}
       <div className="flex flex-1 min-h-0 flex-col gap-4 p-6">
+        {!showEmpty && (
+          // Brand-coloured intro banner — explains the sharing model
+          // for skills (workspace-wide vs. local runtime). Pre-#1794
+          // this lived in the body; #1794 dropped it without a clear
+          // reason. Restored intentionally.
+          <div className="max-w-3xl rounded-r-md border-l-2 border-l-brand bg-brand/5 px-4 py-3 text-xs leading-relaxed text-muted-foreground">
+            <span className="font-medium text-foreground">
+              Shared with your workspace.
+            </span>{" "}
+            Anyone can create a skill, import one from a URL, or copy one
+            from their local runtime — and every agent can use it.{" "}
+            <span className="font-semibold text-brand">
+              Local runtime skills stay private until you copy one here.
+            </span>
+          </div>
+        )}
         {showEmpty ? (
           <div className="flex flex-1 items-center justify-center">
             <EmptyState onCreate={() => setCreateOpen(true)} />

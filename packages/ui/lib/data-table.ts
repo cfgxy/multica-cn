@@ -1,39 +1,58 @@
-import type { Column } from "@tanstack/react-table";
+import type { Column, RowData } from "@tanstack/react-table";
 import type * as React from "react";
 
-// Pinning style helper from Dice UI's data-table registry
-// (https://diceui.com/r/data-table). Returns the inline style needed to make
-// a column stick to the left/right edge of the scroll container — used by
-// the DataTable header and body cells via `style={...}`. Width is always
-// applied (from column.getSize()) regardless of pinning, since TanStack
-// Table is the source of truth for column widths.
-export function getColumnPinningStyle<TData>({
-  column,
-  withBorder = false,
-}: {
-  column: Column<TData>;
-  withBorder?: boolean;
-}): React.CSSProperties {
+// Extend TanStack Table's ColumnMeta with a `grow` flag. TanStack merges
+// a default `size: 150` into every columnDef, so "no explicit size" can't
+// be detected by inspecting columnDef.size (it's always a number). Setting
+// `meta: { grow: true }` is the official extension point — DataTable then
+// skips the inline width for these columns and lets fixed table-layout
+// assign them the leftover space (Linear / GitHub-PR-list pattern: title
+// column grows, others stay at their declared widths).
+declare module "@tanstack/react-table" {
+  interface ColumnMeta<TData extends RowData, TValue> {
+    grow?: boolean;
+  }
+}
+
+// Combined sizing + pinning style for a `<th>` / `<td>` cell. Width is
+// emitted unless the column is flagged `meta.grow` (those rely on
+// fixed-layout's leftover-space distribution). Pinned columns get
+// sticky positioning — see notes below.
+//
+// Background is intentionally NOT set inline — the upstream Dice UI
+// version writes `background: var(--background)` here, which can't
+// react to `:hover`. Consumers set bg via Tailwind classes paired with
+// `group-hover:`.
+export function getCellStyle<TData>(
+  column: Column<TData>,
+  options?: { withBorder?: boolean },
+): React.CSSProperties {
+  const grow = column.columnDef.meta?.grow;
+  const width = grow ? undefined : column.columnDef.size;
+
   const isPinned = column.getIsPinned();
-  const isLastLeftPinnedColumn =
+  if (!isPinned) {
+    return width !== undefined ? { width } : {};
+  }
+
+  const withBorder = options?.withBorder ?? false;
+  const isLastLeftPinned =
     isPinned === "left" && column.getIsLastColumn("left");
-  const isFirstRightPinnedColumn =
+  const isFirstRightPinned =
     isPinned === "right" && column.getIsFirstColumn("right");
 
   return {
+    width,
+    position: "sticky",
+    left: isPinned === "left" ? `${column.getStart("left")}px` : undefined,
+    right: isPinned === "right" ? `${column.getAfter("right")}px` : undefined,
+    zIndex: 1,
     boxShadow: withBorder
-      ? isLastLeftPinnedColumn
+      ? isLastLeftPinned
         ? "-4px 0 4px -4px var(--border) inset"
-        : isFirstRightPinnedColumn
+        : isFirstRightPinned
           ? "4px 0 4px -4px var(--border) inset"
           : undefined
       : undefined,
-    left: isPinned === "left" ? `${column.getStart("left")}px` : undefined,
-    right: isPinned === "right" ? `${column.getAfter("right")}px` : undefined,
-    opacity: isPinned ? 0.97 : 1,
-    position: isPinned ? "sticky" : "relative",
-    background: isPinned ? "var(--background)" : undefined,
-    width: column.getSize(),
-    zIndex: isPinned ? 1 : undefined,
   };
 }

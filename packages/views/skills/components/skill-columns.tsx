@@ -1,6 +1,13 @@
 "use client";
 
-import { Download, FileText, HardDrive, Lock, Pencil } from "lucide-react";
+import {
+  ChevronRight,
+  Download,
+  FileText,
+  HardDrive,
+  Lock,
+  Pencil,
+} from "lucide-react";
 import type { ColumnDef } from "@tanstack/react-table";
 import type {
   Agent,
@@ -29,11 +36,25 @@ export interface SkillRow {
   canEdit: boolean;
 }
 
+// Column widths in px. Both Name and Source carry `meta.grow: true`,
+// so DataTable skips their inline widths and fixed table-layout splits
+// the leftover space between them equally — a single grow column would
+// dump all the slack into the Name column, leaving Source perpetually
+// truncated while Name accumulates wasteful right-side whitespace.
+//
+// Each column's `size` is its floor: the values still flow into
+// table.getTotalSize() and become the table's min-width, so when the
+// viewport drops below the sum, the container scrolls horizontally
+// instead of letting either column shrink past its floor.
 const COL_WIDTHS = {
-  name: 320,
+  name: 240,
   usedBy: 140,
-  source: 240,
+  source: 220,
   updated: 100,
+  // 48 = 16 left padding + 16 chevron icon + 16 right padding. Keeps
+  // the chevron's right edge 16px from the card so it lines up with
+  // the toolbar's px-4 right inset.
+  chevron: 48,
 } as const;
 
 export function createSkillColumns(): ColumnDef<SkillRow>[] {
@@ -42,6 +63,7 @@ export function createSkillColumns(): ColumnDef<SkillRow>[] {
       id: "name",
       header: "Name",
       size: COL_WIDTHS.name,
+      meta: { grow: true },
       cell: ({ row }) => <SkillNameCell row={row.original} />,
     },
     {
@@ -54,6 +76,7 @@ export function createSkillColumns(): ColumnDef<SkillRow>[] {
       id: "source",
       header: "Source · Added by",
       size: COL_WIDTHS.source,
+      meta: { grow: true },
       cell: ({ row }) => (
         <SourceCell
           skill={row.original.skill}
@@ -72,6 +95,17 @@ export function createSkillColumns(): ColumnDef<SkillRow>[] {
         </span>
       ),
     },
+    {
+      // Trailing chevron — purely a "this row is clickable" affordance,
+      // matches the convention from the pre-data-table SkillRow. The
+      // colour deepens on row hover via the row's `group` class.
+      id: "_chevron",
+      header: () => null,
+      size: COL_WIDTHS.chevron,
+      cell: () => (
+        <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground/40 transition-colors group-hover:text-muted-foreground" />
+      ),
+    },
   ];
 }
 
@@ -83,8 +117,8 @@ function SkillNameCell({ row }: { row: SkillRow }) {
   const { skill, canEdit } = row;
   return (
     <div className="min-w-0">
-      <div className="flex items-center gap-2">
-        <span className="truncate font-medium">{skill.name}</span>
+      <div className="flex min-w-0 items-center gap-2">
+        <span className="block min-w-0 truncate font-medium">{skill.name}</span>
         {!canEdit && (
           <Tooltip>
             <TooltipTrigger
@@ -102,8 +136,13 @@ function SkillNameCell({ row }: { row: SkillRow }) {
           {totalFileCount(skill)}
         </span>
       </div>
+      {/* `max-w-xl` (36rem) caps how wide the description gets on
+          large viewports. The Name column is `meta.grow`, so on a
+          24" desktop it can balloon past 800px — without this cap,
+          a long single-line description would stretch all the way
+          across, reading more like a paragraph than a table cell. */}
       <div
-        className={`mt-0.5 line-clamp-1 text-xs ${
+        className={`mt-0.5 max-w-xl truncate text-xs ${
           skill.description
             ? "text-muted-foreground"
             : "italic text-muted-foreground/50"
@@ -182,7 +221,7 @@ function SourceCell({
     <div className="min-w-0">
       <div className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
         <span className="shrink-0">{icon}</span>
-        <span className="truncate">{label}</span>
+        <span className="block min-w-0 truncate">{label}</span>
       </div>
       {creator && (
         <div className="mt-1 flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">

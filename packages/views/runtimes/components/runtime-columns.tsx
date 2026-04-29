@@ -3,8 +3,6 @@
 import { useMemo, useState } from "react";
 import {
   ArrowUpCircle,
-  Cloud,
-  Monitor,
   MoreHorizontal,
   Trash2,
 } from "lucide-react";
@@ -12,6 +10,7 @@ import { toast } from "sonner";
 import type { ColumnDef } from "@tanstack/react-table";
 import { useQuery } from "@tanstack/react-query";
 import type { AgentRuntime, MemberWithUser } from "@multica/core/types";
+import { deriveWorkload } from "@multica/core/agents";
 import {
   deriveRuntimeHealth,
   runtimeUsageOptions,
@@ -40,6 +39,8 @@ import {
   TooltipTrigger,
 } from "@multica/ui/components/ui/tooltip";
 import { ActorAvatar } from "../../common/actor-avatar";
+import { workloadConfig } from "../../agents/presence";
+import { ProviderLogo } from "./provider-logo";
 import { HealthIcon, healthLabel } from "./shared";
 import {
   computeCostInWindow,
@@ -59,15 +60,24 @@ export interface RuntimeRow {
   canDelete: boolean;
 }
 
+// Column widths in px. The Runtime column has `meta.grow: true` so
+// DataTable skips its inline width — fixed table-layout assigns it the
+// leftover space. Its `size: 240` still flows into table.getTotalSize()
+// to set the table's `min-width`, giving the runtime column a 240px
+// floor below which the container scrolls horizontally instead of
+// shrinking the column further.
 const COL_WIDTHS = {
-  runtime: 280,
+  runtime: 240,
   health: 200,
   owner: 60,
-  agents: 120,
-  active: 100,
-  cost: 120,
-  cli: 160,
-  actions: 48,
+  agents: 100,
+  workload: 140,
+  cost: 100,
+  cli: 140,
+  // 60 = 16 left padding + 28 kebab + 16 right padding. Keeps the
+  // kebab's right edge 16px from the card so it lines up with the
+  // toolbar's px-4 right inset.
+  actions: 60,
 } as const;
 
 interface CreateColumnsArgs {
@@ -88,6 +98,7 @@ export function createRuntimeColumns({
       id: "runtime",
       header: "Runtime",
       size: COL_WIDTHS.runtime,
+      meta: { grow: true },
       cell: ({ row }) => <RuntimeNameCell runtime={row.original.runtime} />,
     },
     {
@@ -128,14 +139,14 @@ export function createRuntimeColumns({
       ),
     },
     {
-      id: "active",
-      header: () => <div className="text-right">Active</div>,
-      size: COL_WIDTHS.active,
+      id: "workload",
+      header: "Workload",
+      size: COL_WIDTHS.workload,
       cell: ({ row }) => {
         const health = deriveRuntimeHealth(row.original.runtime, now);
         const offline = health === "offline" || health === "about_to_gc";
         return (
-          <ActiveCell
+          <WorkloadCell
             running={row.original.workload.runningCount}
             queued={row.original.workload.queuedCount}
             offline={offline}
@@ -206,21 +217,19 @@ export function splitRuntimeName(name: string): {
 function RuntimeNameCell({ runtime }: { runtime: AgentRuntime }) {
   const { base: baseName, hostname } = splitRuntimeName(runtime.name);
   return (
-    <div className="flex items-center gap-2">
-      <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-md border bg-card">
-        {runtime.runtime_mode === "cloud" ? (
-          <Cloud className="h-4 w-4 text-muted-foreground" />
-        ) : (
-          <Monitor className="h-4 w-4 text-muted-foreground" />
-        )}
+    <div className="flex min-w-0 items-center gap-2">
+      <div className="flex h-8 w-8 shrink-0 items-center justify-center">
+        <ProviderLogo provider={runtime.provider} className="h-5 w-5" />
       </div>
-      <div className="flex min-w-0 items-center gap-1.5">
-        <span className="truncate text-sm font-medium">{baseName}</span>
+      <div className="flex min-w-0 flex-1 items-center gap-1.5">
+        <span className="block min-w-0 truncate text-sm font-medium">
+          {baseName}
+        </span>
         {hostname && (
           <Tooltip>
             <TooltipTrigger
               render={
-                <span className="truncate text-xs text-muted-foreground/70">
+                <span className="block min-w-0 truncate text-xs text-muted-foreground/70">
                   ({hostname})
                 </span>
               }
@@ -243,9 +252,9 @@ function HealthCell({
   const health = deriveRuntimeHealth(runtime, now);
   const lastSeen = formatLastSeen(runtime.last_seen_at);
   return (
-    <div className="flex items-center gap-1.5">
+    <div className="flex min-w-0 items-center gap-1.5">
       <HealthIcon health={health} />
-      <span className="truncate text-sm">
+      <span className="block min-w-0 truncate text-sm">
         {healthLabel(health)}
         {health !== "online" && runtime.last_seen_at && (
           <span className="text-muted-foreground"> · {lastSeen}</span>
@@ -255,7 +264,12 @@ function HealthCell({
   );
 }
 
-function ActiveCell({
+// Mirrors AgentPresenceIndicator's workload chip — same workloadConfig
+// vocabulary applied to runtime-level aggregated counts. Offline runtime
+// rows still render `—` (the runtime's Health column already says it
+// all; redundant Idle here would just be noise). Online idle runtimes
+// show "Idle" explicitly to match the agent-side three-state symmetry.
+function WorkloadCell({
   running,
   queued,
   offline,
@@ -265,31 +279,38 @@ function ActiveCell({
   offline: boolean;
 }) {
   if (offline) {
-    return (
-      <div className="text-right">
-        <span className="text-xs text-muted-foreground/50">—</span>
-      </div>
-    );
+    return <span className="text-xs text-muted-foreground/50">—</span>;
   }
-  if (running === 0 && queued === 0) {
-    return (
-      <div className="text-right">
-        <span className="text-sm text-muted-foreground">0</span>
-      </div>
-    );
-  }
+  const workload = deriveWorkload({
+    runningCount: running,
+    queuedCount: queued,
+  });
+  const wl = workloadConfig[workload];
+  // Working: running count, with +Nq overflow tail. Queued: bare queued
+  // count. Idle: no counts at all — the label is the whole signal.
+  const counts =
+    workload === "working"
+      ? queued > 0
+        ? `${running} +${queued}q`
+        : `${running}`
+      : workload === "queued"
+        ? `${queued}`
+        : null;
   return (
-    <div className="flex items-center justify-end gap-1.5 text-sm tabular-nums">
-      {running > 0 ? (
-        <>
-          <span className="h-1.5 w-1.5 rounded-full bg-brand" />
-          <span className="text-brand">{running}</span>
-        </>
-      ) : (
-        <span className="text-muted-foreground">0</span>
+    <span className="inline-flex items-center gap-1 text-xs">
+      {/* Icon only for working/queued — see WorkloadCell in agent-columns. */}
+      {workload !== "idle" && (
+        <wl.icon
+          className={`h-3 w-3 shrink-0 ${wl.textClass} ${workload === "working" ? "animate-spin" : ""}`}
+        />
       )}
-      {queued > 0 && <span className="text-xs text-warning">+{queued}q</span>}
-    </div>
+      <span className={`shrink-0 ${wl.textClass}`}>{wl.label}</span>
+      {counts && (
+        <span className="truncate font-mono tabular-nums text-muted-foreground">
+          {counts}
+        </span>
+      )}
+    </span>
   );
 }
 
