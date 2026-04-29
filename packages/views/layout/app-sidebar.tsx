@@ -38,6 +38,7 @@ import { Tooltip, TooltipTrigger, TooltipContent } from "@multica/ui/components/
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@multica/ui/components/ui/collapsible";
 import { StatusIcon } from "../issues/components/status-icon";
 import { useIssueDraftStore } from "@multica/core/issues/stores/draft-store";
+import { useCreateModeStore } from "@multica/core/issues/stores/create-mode-store";
 import {
   Sidebar,
   SidebarContent,
@@ -395,13 +396,14 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
     },
   });
 
-  // Global "C" shortcut: opens the quick-create modal by default; Shift+C
-  // jumps straight to the legacy advanced form for users who want every
-  // field. Both branches honor the same focus / open-modal guards.
+  // Global "C" shortcut: opens whichever create mode the user landed on last
+  // (agent vs manual), persisted in useCreateModeStore. The mode switch lives
+  // inside both modal footers so users can flip without remembering which
+  // shortcut goes where — `c` always means "open the create flow I prefer".
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key !== "c" && e.key !== "C") return;
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.metaKey || e.ctrlKey || e.altKey || e.shiftKey) return;
       const tag = (e.target as HTMLElement)?.tagName;
       const isEditable =
         tag === "INPUT" ||
@@ -411,10 +413,11 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
       if (isEditable) return;
       if (useModalStore.getState().modal) return;
       e.preventDefault();
-      // Auto-fill project when on a project detail page (advanced form only —
-      // quick-create lets the agent infer project from prompt).
-      const projectMatch = pathname.match(/^\/[^/]+\/projects\/([^/]+)$/);
-      if (e.shiftKey) {
+      const lastMode = useCreateModeStore.getState().lastMode;
+      if (lastMode === "manual") {
+        // Auto-fill project when on a project detail page (manual form only —
+        // agent mode lets the agent infer project from the prompt).
+        const projectMatch = pathname.match(/^\/[^/]+\/projects\/([^/]+)$/);
         const data = projectMatch ? { project_id: projectMatch[1] } : undefined;
         useModalStore.getState().open("create-issue", data);
       } else {

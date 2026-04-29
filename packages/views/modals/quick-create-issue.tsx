@@ -1,22 +1,16 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronRight, Sparkles, X as XIcon } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowLeftRight, ChevronRight, Sparkles, X as XIcon } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { cn } from "@multica/ui/lib/utils";
-import {
-  Dialog,
-  DialogContent,
-  DialogTitle,
-} from "@multica/ui/components/ui/dialog";
+import { DialogTitle } from "@multica/ui/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@multica/ui/components/ui/dropdown-menu";
-import { Tooltip, TooltipContent, TooltipTrigger } from "@multica/ui/components/ui/tooltip";
 import { Button } from "@multica/ui/components/ui/button";
 import { api, ApiError } from "@multica/core/api";
 import { useWorkspaceId } from "@multica/core/hooks";
@@ -24,22 +18,36 @@ import { useCurrentWorkspace } from "@multica/core/paths";
 import { agentListOptions } from "@multica/core/workspace/queries";
 import { useQuickCreateStore } from "@multica/core/issues/stores/quick-create-store";
 import { useIssueDraftStore } from "@multica/core/issues/stores/draft-store";
-import { useModalStore } from "@multica/core/modals";
+import { useCreateModeStore } from "@multica/core/issues/stores/create-mode-store";
+import { useFileUpload } from "@multica/core/hooks/use-file-upload";
 import type { Agent } from "@multica/core/types";
 import { ActorAvatar } from "../common/actor-avatar";
 import { canAssignAgent } from "../issues/components/pickers/assignee-picker";
 import { useAuthStore } from "@multica/core/auth";
 import { memberListOptions } from "@multica/core/workspace/queries";
+import {
+  ContentEditor,
+  type ContentEditorRef,
+  useFileDropZone,
+  FileDropOverlay,
+} from "../editor";
 
-// QuickCreateIssueModal — a streamlined create-issue UI: pick an agent, type
-// one line, submit. The agent translates the line into a `multica issue
-// create` call asynchronously; the modal closes immediately and the user is
-// notified via inbox when the agent finishes.
-export function QuickCreateIssueModal({
+// AgentCreatePanel — agent-mode body of the create-issue dialog. Renders
+// only the inner content; the surrounding `<Dialog>` AND `<DialogContent>`
+// (Portal + Overlay + Popup) are owned by CreateIssueDialog so mode-switching
+// swaps only this body. Lifting the Portal is what eliminates the close→open
+// animation flash — Base UI replays Popup enter/exit when DialogContent is
+// remounted, even inside a still-open Dialog Root.
+//
+// `onSwitchMode` is wired by the shell — the panel calls it (no payload from
+// agent → manual; the shared draft store carries description + agent).
+export function AgentCreatePanel({
   onClose,
+  onSwitchMode,
   data,
 }: {
   onClose: () => void;
+  onSwitchMode?: () => void;
   data?: Record<string, unknown> | null;
 }) {
   const workspaceName = useCurrentWorkspace()?.name;
@@ -64,6 +72,7 @@ export function QuickCreateIssueModal({
 
   const lastAgentId = useQuickCreateStore((s) => s.lastAgentId);
   const setLastAgentId = useQuickCreateStore((s) => s.setLastAgentId);
+  const setLastMode = useCreateModeStore((s) => s.setLastMode);
 
   const [agentId, setAgentId] = useState<string | undefined>(() => {
     const seed = (data?.agent_id as string) || lastAgentId || undefined;
@@ -89,22 +98,43 @@ export function QuickCreateIssueModal({
   );
 
   const initialPrompt = (data?.prompt as string) || "";
-  const [prompt, setPrompt] = useState(initialPrompt);
-  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  // The editor is uncontrolled — we read the latest markdown via the ref at
+  // submit/switch time. `hasContent` mirrors emptiness so the Create button
+  // can disable correctly without a controlled-input rerender on every keystroke.
+  const editorRef = useRef<ContentEditorRef>(null);
+  const [hasContent, setHasContent] = useState(initialPrompt.trim().length > 0);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Image paste/drop support: route uploads through the same helper Advanced
+  // uses, so users can paste screenshots straight into the prompt and the
+  // agent receives them as embedded markdown image URLs in the prompt.
+  const { uploadWithToast } = useFileUpload(api);
+  const handleUploadFile = useCallback(
+    (file: File) => uploadWithToast(file),
+    [uploadWithToast],
+  );
+  const { isDragOver, dropZoneProps } = useFileDropZone({
+    onDrop: (files) => files.forEach((f) => editorRef.current?.uploadFile(f)),
+  });
+
   useEffect(() => {
-    textareaRef.current?.focus();
+    // Defer focus so it lands after the dialog's focus trap has settled —
+    // otherwise the trap can bounce focus back to the first focusable header
+    // button on the next tick.
+    const id = requestAnimationFrame(() => editorRef.current?.focus());
+    return () => cancelAnimationFrame(id);
   }, []);
 
   const submit = async () => {
-    if (!prompt.trim() || !agentId || submitting) return;
+    const md = editorRef.current?.getMarkdown()?.trim() ?? "";
+    if (!md || !agentId || submitting) return;
     setSubmitting(true);
     setError(null);
     try {
-      await api.quickCreateIssue({ agent_id: agentId, prompt: prompt.trim() });
+      await api.quickCreateIssue({ agent_id: agentId, prompt: md });
       setLastAgentId(agentId);
+      setLastMode("agent");
       toast.success("Sent to agent — you'll get an inbox notification when it's done", {
         duration: 4000,
       });
@@ -127,39 +157,26 @@ export function QuickCreateIssueModal({
     }
   };
 
-  // Switch to the legacy advanced form, carrying the prompt over as the
-  // description so the user doesn't lose what they typed. The picked agent
-  // becomes the default assignee candidate (still editable). We seed the
-  // shared issue-draft store directly because the legacy modal reads its
-  // initial values from there rather than from `data`.
-  const switchToAdvanced = () => {
+  // Switch to the manual form, carrying what the user typed over as the
+  // description (markdown, including any pasted images) so they don't lose
+  // their work. The picked agent becomes the default assignee candidate
+  // (still editable). We seed the shared issue-draft store directly because
+  // the manual panel reads its initial values from there. Persist the mode
+  // flip so the next `c` lands in manual.
+  const switchToManual = () => {
+    const md = editorRef.current?.getMarkdown() ?? "";
     useIssueDraftStore.getState().setDraft({
-      description: prompt,
+      description: md,
       ...(agentId
         ? { assigneeType: "agent" as const, assigneeId: agentId }
         : {}),
     });
-    useModalStore.getState().open("create-issue");
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      submit();
-    }
+    setLastMode("manual");
+    onSwitchMode?.();
   };
 
   return (
-    <Dialog open onOpenChange={(v) => { if (!v) onClose(); }}>
-      <DialogContent
-        finalFocus={false}
-        showCloseButton={false}
-        className={cn(
-          "p-0 gap-0 flex flex-col overflow-hidden",
-          "!top-1/2 !left-1/2 !-translate-x-1/2 !-translate-y-1/2",
-          "!max-w-xl !w-full",
-        )}
-      >
+    <>
         <DialogTitle className="sr-only">Quick create issue</DialogTitle>
 
         {/* Header */}
@@ -167,38 +184,20 @@ export function QuickCreateIssueModal({
           <div className="flex items-center gap-1.5 text-xs">
             <span className="text-muted-foreground">{workspaceName}</span>
             <ChevronRight className="size-3 text-muted-foreground/50" />
-            <span className="font-medium">Quick create</span>
+            <span className="font-medium">Create with agent</span>
           </div>
-          <div className="flex items-center gap-1">
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <button
-                    onClick={switchToAdvanced}
-                    className="text-xs px-2 py-1 rounded-sm opacity-70 hover:opacity-100 hover:bg-accent/60 transition-all cursor-pointer"
-                  >
-                    Advanced
-                  </button>
-                }
-              />
-              <TooltipContent side="bottom">
-                Open the full form with all fields
-              </TooltipContent>
-            </Tooltip>
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <button
-                    onClick={onClose}
-                    className="rounded-sm p-1.5 opacity-70 hover:opacity-100 hover:bg-accent/60 transition-all cursor-pointer"
-                  >
-                    <XIcon className="size-4" />
-                  </button>
-                }
-              />
-              <TooltipContent side="bottom">Close</TooltipContent>
-            </Tooltip>
-          </div>
+          {/* Native `title` instead of Base UI Tooltip — Tooltip opens on
+              keyboard focus, and the dialog's focus trap briefly lands focus
+              on the first focusable element on mount, causing the tooltip to
+              auto-pop every open. */}
+          <button
+            onClick={onClose}
+            title="Close"
+            aria-label="Close"
+            className="rounded-sm p-1.5 opacity-70 hover:opacity-100 hover:bg-accent/60 transition-all cursor-pointer"
+          >
+            <XIcon className="size-4" />
+          </button>
         </div>
 
         {/* Agent picker */}
@@ -255,17 +254,23 @@ export function QuickCreateIssueModal({
           </DropdownMenu>
         </div>
 
-        {/* Prompt textarea */}
-        <div className="px-5 pb-3">
-          <textarea
-            ref={textareaRef}
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            onKeyDown={handleKeyDown}
+        {/* Prompt — same rich editor Advanced uses, so paste/drop images,
+            mentions, and formatting all work. The dropZone wrapper enables
+            drag-and-drop file uploads alongside paste. */}
+        <div
+          {...dropZoneProps}
+          className="relative px-5 pb-3 min-h-[140px]"
+        >
+          <ContentEditor
+            ref={editorRef}
+            defaultValue={initialPrompt}
             placeholder='Describe the issue, e.g. "fix inbox loading slowness, assign to naiyuan, P1"'
-            rows={5}
-            className="w-full resize-none bg-transparent text-sm placeholder:text-muted-foreground focus:outline-none"
+            onUpdate={(md) => setHasContent(md.trim().length > 0)}
+            onUploadFile={handleUploadFile}
+            onSubmit={submit}
+            debounceMs={150}
           />
+          {isDragOver && <FileDropOverlay />}
         </div>
 
         {error && (
@@ -275,15 +280,25 @@ export function QuickCreateIssueModal({
         {/* Footer */}
         <div className="flex items-center justify-between px-4 py-3 border-t shrink-0">
           <span className="text-xs text-muted-foreground">⌘↵ to submit</span>
-          <Button
-            size="sm"
-            onClick={submit}
-            disabled={!prompt.trim() || !agentId || submitting}
-          >
-            {submitting ? "Sending…" : "Create"}
-          </Button>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={switchToManual}
+              title="Switch to manual create — fill the fields yourself"
+              className="flex items-center gap-1.5 text-xs px-2 py-1 rounded-sm text-muted-foreground hover:text-foreground hover:bg-accent/60 transition-colors cursor-pointer"
+            >
+              <ArrowLeftRight className="size-3.5" />
+              Switch to manual
+            </button>
+            <Button
+              size="sm"
+              onClick={submit}
+              disabled={!hasContent || !agentId || submitting}
+            >
+              {submitting ? "Sending…" : "Create"}
+            </Button>
+          </div>
         </div>
-      </DialogContent>
-    </Dialog>
+    </>
   );
 }
