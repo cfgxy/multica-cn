@@ -8,6 +8,7 @@ import (
 	"log/slog"
 
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -31,6 +32,56 @@ type TaskService struct {
 
 type TaskWakeupNotifier interface {
 	NotifyTaskAvailable(runtimeID, taskID string)
+}
+
+// triggerSummaryMaxLen caps the snapshot length so the row stays cheap to
+// transmit (it ends up in every task list response). 200 is enough for a
+// recognisable preview of a one-paragraph comment.
+const triggerSummaryMaxLen = 200
+
+// truncateForSummary returns s shortened to maxRunes, with a trailing
+// `…` when truncated. Operates on runes (not bytes) so multibyte characters
+// — Chinese / emoji — count as one each. Strips surrounding whitespace
+// first so a leading newline doesn't waste budget.
+func truncateForSummary(s string, maxRunes int) string {
+	// strings.Builder + Grow avoids the O(N²) realloc cycle of `+=` in
+	// a loop. Grow uses byte length, which is an upper bound for the
+	// rune-equivalent output (replacing \n/\r/\t with space is byte-equal
+	// for ASCII whitespace), so we never reallocate.
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch r {
+		case '\n', '\r', '\t':
+			b.WriteByte(' ')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	rs := []rune(strings.TrimSpace(b.String()))
+	if len(rs) <= maxRunes {
+		return string(rs)
+	}
+	return string(rs[:maxRunes]) + "…"
+}
+
+// buildCommentTriggerSummary fetches the comment content and truncates
+// it for storage on the task row. Returns an invalid pgtype.Text when
+// the comment is missing (deleted / wrong workspace / etc) so the column
+// stays NULL — front-end falls back to a structural label in that case.
+func (s *TaskService) buildCommentTriggerSummary(ctx context.Context, commentID pgtype.UUID) pgtype.Text {
+	if !commentID.Valid {
+		return pgtype.Text{}
+	}
+	comment, err := s.Queries.GetComment(ctx, commentID)
+	if err != nil {
+		return pgtype.Text{}
+	}
+	summary := truncateForSummary(comment.Content, triggerSummaryMaxLen)
+	if summary == "" {
+		return pgtype.Text{}
+	}
+	return pgtype.Text{String: summary, Valid: true}
 }
 
 func NewTaskService(q *db.Queries, tx TxStarter, hub *realtime.Hub, bus *events.Bus, wakeups ...TaskWakeupNotifier) *TaskService {
@@ -75,6 +126,7 @@ func (s *TaskService) EnqueueTaskForIssue(ctx context.Context, issue db.Issue, t
 		IssueID:          issue.ID,
 		Priority:         priorityToInt(issue.Priority),
 		TriggerCommentID: commentID,
+		TriggerSummary:   s.buildCommentTriggerSummary(ctx, commentID),
 	})
 	if err != nil {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", err)
@@ -82,6 +134,13 @@ func (s *TaskService) EnqueueTaskForIssue(ctx context.Context, issue db.Issue, t
 	}
 
 	slog.Info("task enqueued", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(issue.AssigneeID))
+	// Order matters: broadcast first, notify daemon second. notifyTaskAvailable
+	// kicks an in-process channel that the daemon picks up over HTTP and
+	// claims; the claim path then emits its own task:dispatch. Doing the
+	// queued broadcast afterwards risks the dispatch event reaching clients
+	// before the queued one (rare but unsafe-by-construction). Publishing
+	// in the desired observe-order makes correctness independent of timing.
+	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
 	s.notifyTaskAvailable(task)
 	return task, nil
 }
@@ -110,6 +169,7 @@ func (s *TaskService) EnqueueTaskForMention(ctx context.Context, issue db.Issue,
 		IssueID:          issue.ID,
 		Priority:         priorityToInt(issue.Priority),
 		TriggerCommentID: triggerCommentID,
+		TriggerSummary:   s.buildCommentTriggerSummary(ctx, triggerCommentID),
 	})
 	if err != nil {
 		slog.Error("mention task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
@@ -117,6 +177,8 @@ func (s *TaskService) EnqueueTaskForMention(ctx context.Context, issue db.Issue,
 	}
 
 	slog.Info("mention task enqueued", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID))
+	// See EnqueueTaskForIssue for ordering rationale.
+	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
 	s.notifyTaskAvailable(task)
 	return task, nil
 }
@@ -148,6 +210,8 @@ func (s *TaskService) EnqueueChatTask(ctx context.Context, chatSession db.ChatSe
 	}
 
 	slog.Info("chat task enqueued", "task_id", util.UUIDToString(task.ID), "chat_session_id", util.UUIDToString(chatSession.ID), "agent_id", util.UUIDToString(chatSession.AgentID))
+	// See EnqueueTaskForIssue for ordering rationale.
+	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
 	s.notifyTaskAvailable(task)
 	return task, nil
 }
@@ -678,8 +742,11 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		"attempt", child.Attempt,
 		"max_attempts", child.MaxAttempts,
 	)
+	// Retry creates a fresh queued row, same status transition (∅ → queued)
+	// as EnqueueTaskFor*. Broadcast queued first, then notify the daemon —
+	// see EnqueueTaskForIssue for ordering rationale.
+	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, child)
 	s.notifyTaskAvailable(child)
-	s.broadcastTaskEvent(ctx, protocol.EventTaskDispatch, child)
 	return &child, nil
 }
 
