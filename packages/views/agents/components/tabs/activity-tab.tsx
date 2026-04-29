@@ -393,11 +393,13 @@ function TaskRow({
   };
 
   const sourceFallback = !hasIssue
-    ? task.chat_session_id
-      ? "Chat session"
-      : task.autopilot_run_id
-        ? "Autopilot run"
-        : "Untracked"
+    ? task.kind === "quick_create"
+      ? "Creating issue"
+      : task.chat_session_id
+        ? "Chat session"
+        : task.autopilot_run_id
+          ? "Autopilot run"
+          : "Untracked"
     : null;
 
   // Origin marker — issue / chat / autopilot / untracked. The issue

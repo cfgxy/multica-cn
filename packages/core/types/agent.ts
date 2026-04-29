@@ -89,6 +89,12 @@ export interface AgentTask {
    * or deleted.
    */
   trigger_summary?: string;
+  /**
+   * Server-computed source discriminator used by the activity row to label
+   * tasks that have no linked issue (so e.g. quick-create tasks render
+   * with a meaningful title instead of falling through to "Untracked").
+   */
+  kind?: "comment" | "autopilot" | "chat" | "quick_create" | "direct";
 }
 
 export interface Agent {

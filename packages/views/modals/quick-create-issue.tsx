@@ -264,7 +264,7 @@ export function AgentCreatePanel({
           <ContentEditor
             ref={editorRef}
             defaultValue={initialPrompt}
-            placeholder='Describe the issue, e.g. "fix inbox loading slowness, assign to naiyuan, P1"'
+            placeholder='Tell the agent what to do, e.g. "let Bohan fix the inbox loading slowness in the Web project"'
             onUpdate={(md) => setHasContent(md.trim().length > 0)}
             onUploadFile={handleUploadFile}
             onSubmit={submit}

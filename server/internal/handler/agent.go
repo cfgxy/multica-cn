@@ -156,6 +156,7 @@ type AgentTaskResponse struct {
 	AutopilotSource         string          `json:"autopilot_source,omitempty"`          // manual, schedule, webhook, or api
 	AutopilotTriggerPayload json.RawMessage `json:"autopilot_trigger_payload,omitempty"` // optional trigger payload for webhook/api runs
 	QuickCreatePrompt       string          `json:"quick_create_prompt,omitempty"`       // user's natural-language input for quick-create tasks
+	Kind                    string          `json:"kind"`                                // discriminator: "comment" | "autopilot" | "chat" | "quick_create" | "direct" — used by the activity row to label tasks that have no linked issue
 }
 
 // TaskAgentData holds agent info included in claim responses so the daemon
@@ -204,7 +205,30 @@ func taskToResponse(t db.AgentTaskQueue) AgentTaskResponse {
 		// with issue_id = "" once a task has no linked issue.
 		ChatSessionID:  uuidToString(t.ChatSessionID),
 		AutopilotRunID: uuidToString(t.AutopilotRunID),
+		Kind:           computeTaskKind(t),
 	}
+}
+
+// computeTaskKind picks the source-discriminator string the activity UI uses
+// to choose how to render a task row. Computed from the existing FK shape so
+// no extra DB lookup is needed: chat / autopilot / comment-on-issue (any
+// triggered task with both an issue_id and trigger_comment_id) / quick_create
+// (no linked source — the agent is creating the issue itself) / direct
+// (assignee-driven task on an existing issue).
+func computeTaskKind(t db.AgentTaskQueue) string {
+	if uuidToString(t.ChatSessionID) != "" {
+		return "chat"
+	}
+	if uuidToString(t.AutopilotRunID) != "" {
+		return "autopilot"
+	}
+	if uuidToString(t.IssueID) == "" {
+		return "quick_create"
+	}
+	if uuidToString(t.TriggerCommentID) != "" {
+		return "comment"
+	}
+	return "direct"
 }
 
 func (h *Handler) ListAgents(w http.ResponseWriter, r *http.Request) {
