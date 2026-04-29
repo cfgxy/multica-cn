@@ -1,0 +1,16 @@
+{
+  "appearance": {
+    "theme": {
+      "title": "Theme",
+      "light": "Light",
+      "dark": "Dark",
+      "system": "System"
+    },
+    "language": {
+      "title": "Language",
+      "english": "English",
+      "chinese": "中文",
+      "sync_failed": "Language saved on this device, but failed to sync to your account. Other devices may show the previous language."
+    }
+  }
+}

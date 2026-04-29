@@ -74,12 +74,17 @@
     "./utils": "./utils.ts",
     "./constants/*": "./constants/*.ts",
     "./platform": "./platform/index.ts",
-    "./analytics": "./analytics/index.ts"
+    "./analytics": "./analytics/index.ts",
+    "./i18n": "./i18n/index.ts",
+    "./i18n/react": "./i18n/react.ts"
   },
   "dependencies": {
+    "@formatjs/intl-localematcher": "catalog:",
     "@tanstack/react-query": "catalog:",
     "@tanstack/react-query-devtools": "^5.96.2",
+    "i18next": "catalog:",
     "posthog-js": "catalog:",
+    "react-i18next": "catalog:",
     "zustand": "catalog:"
   },
   "peerDependencies": {

@@ -72,6 +72,12 @@ function handleDeepLink(url: string): void {
 // --- Window creation -----------------------------------------------------
 
 function createWindow(): void {
+  // Pass the OS-preferred language to the renderer via additionalArguments
+  // instead of a sync IPC call. process.argv is available to the preload
+  // script before the first network request, so the renderer's i18next
+  // instance can initialize with the right locale on the very first paint.
+  const systemLocale = app.getPreferredSystemLanguages()[0] ?? "en";
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -88,6 +94,7 @@ function createWindow(): void {
       preload: join(__dirname, "../preload/index.js"),
       sandbox: false,
       webSecurity: false,
+      additionalArguments: [`--multica-locale=${systemLocale}`],
     },
   });
 

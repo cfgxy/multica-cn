@@ -5,6 +5,7 @@ import { ApiClient } from "../api/client";
 import { setApiInstance } from "../api";
 import { createAuthStore, registerAuthStore } from "../auth";
 import { createChatStore, registerChatStore } from "../chat";
+import { I18nProvider, LocaleAdapterProvider } from "../i18n/react";
 import { WSProvider } from "../realtime";
 import { QueryProvider } from "../provider";
 import { createLogger } from "../logger";
@@ -65,13 +66,19 @@ export function CoreProvider({
   onLogin,
   onLogout,
   identity,
+  locale,
+  resources,
+  localeAdapter,
 }: CoreProviderProps) {
   // Initialize singletons on first render only. Dependencies are read-once:
   // apiBaseUrl, storage, and callbacks are set at app boot and never change at runtime.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useMemo(() => initCore(apiBaseUrl, storage, onLogin, onLogout, cookieAuth, identity), []);
 
-  return (
+  // I18nProvider wraps everything else: server and client must use the same
+  // (locale, resources) to avoid hydration mismatch. Language switching goes
+  // through window.location.reload(), never client-side changeLanguage.
+  const tree = (
     <QueryProvider>
       <AuthInitializer
         onLogin={onLogin}
@@ -91,5 +98,17 @@ export function CoreProvider({
         </WSProvider>
       </AuthInitializer>
     </QueryProvider>
+  );
+
+  const withAdapter = localeAdapter ? (
+    <LocaleAdapterProvider adapter={localeAdapter}>{tree}</LocaleAdapterProvider>
+  ) : (
+    tree
+  );
+
+  return (
+    <I18nProvider locale={locale} resources={resources}>
+      {withAdapter}
+    </I18nProvider>
   );
 }

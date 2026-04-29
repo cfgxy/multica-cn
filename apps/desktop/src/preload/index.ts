@@ -23,10 +23,22 @@ function fetchAppInfo(): { version: string; os: "macos" | "windows" | "linux" | 
 
 const appInfo = fetchAppInfo();
 
+// Read the OS-preferred locale that main injected via additionalArguments.
+// Zero IPC, zero blocking — process.argv is populated before preload runs.
+function fetchSystemLocale(): string {
+  const arg = process.argv.find((a) => a.startsWith("--multica-locale="));
+  return arg?.split("=")[1] ?? "en";
+}
+
+const systemLocale = fetchSystemLocale();
+
 const desktopAPI = {
   /** App version + normalized OS. Read once at preload time so the renderer
    *  can use it synchronously when initializing the API client. */
   appInfo,
+  /** OS-preferred locale (BCP 47), passed from main via additionalArguments.
+   *  Used by the renderer's LocaleAdapter as the system-preference signal. */
+  systemLocale,
   /** Listen for auth token delivered via deep link */
   onAuthToken: (callback: (token: string) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, token: string) =>
