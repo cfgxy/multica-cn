@@ -95,8 +95,8 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 	b.WriteString("- `multica issue label remove <issue-id> <label-id>` — Detach a label from an issue\n")
 	b.WriteString("- `multica issue subscriber add <issue-id> [--user <name>]` — Subscribe a member or agent to issue updates (defaults to the caller when `--user` is omitted)\n")
 	b.WriteString("- `multica issue subscriber remove <issue-id> [--user <name>]` — Unsubscribe a member or agent\n")
-	b.WriteString("- `multica issue comment add <issue-id> --content \"...\" [--parent <comment-id>] [--attachment <path>]` — Post a comment (use `--parent` to reply to a specific comment; `--attachment` may be repeated)\n")
-	b.WriteString("  - **For multi-line content (anything with line breaks, paragraphs, code blocks, backticks, or quotes), you MUST pipe via stdin** — bash does NOT expand `\\n` inside double quotes, so writing `--content \"para1\\n\\npara2\"` stores the literal 4-char sequence and the comment renders without line breaks. Use a HEREDOC instead:\n")
+	b.WriteString("- `multica issue comment add <issue-id> --content-stdin [--parent <comment-id>] [--attachment <path>]` — Post a comment. Agent-authored comments should always pipe content via stdin, even for short single-line replies. Use `--parent` to reply to a specific comment; `--attachment` may be repeated.\n")
+	b.WriteString("  - **For comment content, you MUST pipe via stdin; this is mandatory for multi-line content (anything with line breaks, paragraphs, code blocks, backticks, or quotes).** Do not use inline `--content` and do not write `\\n` escapes. Use a HEREDOC instead:\n")
 	b.WriteString("\n")
 	b.WriteString("    ```\n")
 	b.WriteString("    cat <<'COMMENT' | multica issue comment add <issue-id> --content-stdin\n")
@@ -116,9 +116,9 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 
 	if provider == "codex" {
 		b.WriteString("## Codex-Specific Comment Formatting\n\n")
-		b.WriteString("Codex often follows the per-turn reply command literally. Treat inline `--content \"...\"` examples as short single-line examples only. ")
-		b.WriteString("For paragraphs, bullets, code blocks, backticks, quotes, or any text where line breaks matter, use `--content-stdin` with a HEREDOC and keep the same `--parent` value from the trigger comment. ")
-		b.WriteString("Do not compress a multi-paragraph answer into one `--content` argument and do not rely on `\\n` escapes.\n\n")
+		b.WriteString("Codex often follows the per-turn reply command literally. For issue comments, always use `--content-stdin` with a HEREDOC, even for short single-line replies. ")
+		b.WriteString("Never use inline `--content` for agent-authored comments. Keep the same `--parent` value from the trigger comment when replying. ")
+		b.WriteString("Do not compress a multi-paragraph answer into one line and do not rely on `\\n` escapes.\n\n")
 	}
 
 	// Inject available repositories section.

@@ -878,10 +878,11 @@ func TestInjectRuntimeConfigCodexEmphasizesStdinForFormattedComments(t *testing.
 
 	for _, want := range []string{
 		"Codex-Specific Comment Formatting",
-		"Treat inline `--content \"...\"` examples as short single-line examples only",
-		"`--content-stdin` with a HEREDOC",
-		"keep the same `--parent` value",
-		"Do not compress a multi-paragraph answer",
+		"always use `--content-stdin` with a HEREDOC",
+		"even for short single-line replies",
+		"Never use inline `--content` for agent-authored comments",
+		"Keep the same `--parent` value",
+		"do not rely on `\\n` escapes",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("AGENTS.md missing Codex multiline guidance %q\n---\n%s", want, s)
