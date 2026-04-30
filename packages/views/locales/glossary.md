@@ -1,39 +1,57 @@
 # Multica i18n 术语表 (Glossary)
 
 > **所有翻译 agent 必读**。任何 PR 翻译都必须遵守此表。
-> 如有词条不在表里，按"翻译风格"段落处理；不确定时倾向**不翻**专有词。
+> 不在表里的词，按"翻译风格"段处理。
 
-## 不翻（产品专有名词 + 工程术语 + 品牌缩写）
+## 核心区分：实体 vs 概念
 
-| 词 | 原文保留 | 理由 |
+Multica 的产品名词分两类，处理方式完全不同：
+
+- **实体（typed entity）** — 有 URL、有数据库 row、是 API 响应里某种 type 的东西。中文里**用小写英文**呈现，视觉上像类型名，告诉读者"这是 Multica 系统里的特定实体"。
+- **概念（concept）** — 不是数据库实体的普通名词。**完整翻译成中文**，CN 用户看不到生硬的英文。
+
+这套规则与 `apps/docs/content/docs/*.zh.mdx` 完全对齐——docs 是已经实战 20+ 篇的 CN voice 标准。
+
+## 不翻 — 实体（小写英文）
+
+| 词 | 中文中的写法 | 例 |
 |---|---|---|
-| Issue | Issue | Multica 核心实体；与 Linear/GitHub 一致 |
-| Workspace | Workspace | 产品概念；工程圈惯例 |
-| Agent | Agent | 核心定位词（agent-as-teammate）；翻"智能体"破坏产品定位 |
-| Skill | Skill | 专有概念（agent 的能力包）；翻"技能"会跟"个人技能"混淆 |
-| Autopilot | Autopilot | 产品功能名（类似品牌词） |
-| Daemon | Daemon | 技术术语（本地后台进程） |
-| Runtime | Runtime | 技术概念 |
-| Multica | Multica | 品牌名 |
-| CLI / API / URL / SDK / OAuth / JWT / SSO / WebSocket | 原文 | 通用缩写 |
-| GitHub / Slack / Google / Anthropic / OpenAI / Claude / Codex | 原文 | 第三方品牌 |
+| Issue | `issue`（小写） | "把 issue 分配给智能体"、"创建子 issue" |
+| Project | `project`（小写） | "归入某个 project" |
+| Skill | `skill`（小写） | "为智能体注入 skill" |
+| Autopilot | `autopilot`（小写） | "新建 autopilot" |
+| Task | `task`（小写） | "排队中的 task" |
 
-## 翻译（通用业务词）
+## 不翻 — 品牌名 + 通用缩写
+
+| 类别 | 词 |
+|---|---|
+| 品牌 | **Multica**、GitHub、Slack、Google、Anthropic、OpenAI、Claude、Codex、Cursor、Linear、Jira |
+| 缩写 | API、CLI、URL、SDK、OAuth、JWT、SSO、WebSocket、HTTP、JSON、YAML、SQL |
+
+## 完整翻译 — 概念词（必须翻）
 
 | 英 | 中 |
 |---|---|
-| Inbox | 收件箱 |
-| Project | 项目 |
-| Comment | 评论 |
-| Reply | 回复 |
-| Label | 标签 |
-| Member | 成员 |
-| Settings | 设置 |
-| Invite | 邀请 |
-| Invitation | 邀请 |
+| Workspace | **工作区** |
+| Agent | **智能体** |
+| Daemon | **守护进程** |
+| Runtime | **运行时** |
+| Inbox | **收件箱** |
+| Comment | **评论** |
+| Reply | **回复** |
+| Notifications | **通知** |
+| Member | **成员** |
+| Label | **标签** |
+| Settings | **设置** |
+| Onboarding | **上手引导** |
+
+## 完整翻译 — 通用业务词
+
+| 英 | 中 |
+|---|---|
+| Invite / Invitation | 邀请 |
 | Search | 搜索 |
-| Notifications | 通知 |
-| Onboarding | 上手引导 |
 | Email | 邮箱（label）/ 邮件（action） |
 | Password | 密码 |
 | Sign in / Log in | 登录 |
@@ -77,24 +95,36 @@
 | Error | 错误 |
 | Warning | 警告 |
 
+## 角色名 + 状态名（lowercase EN，不翻）
+
+角色名和状态枚举值是 schema-level 标识符，保持小写英文：
+
+- 角色：`owner` / `admin` / `member`
+- Issue 状态：`backlog` / `todo` / `in_progress` / `in_review` / `done` / `blocked` / `cancelled`
+
+UI 里展示这些 schema 值时，保持英文（必要时用 code-style 包起来）：
+- "你需要 owner 权限"、"已切换到 in_progress"。
+
 ## 词组组合规则
 
-英文术语保留时，与中文之间**加单空格**（中英混排标准）：
+英文词（实体名 + 品牌名 + 缩写）与中文之间**加单空格**：
 
-- "Create new issue" → "新建 Issue"
-- "Assign to agent" → "分配给 Agent"
-- "Open workspace" → "打开 Workspace"
-- "Configure runtime" → "配置 Runtime"
+- "Create new issue" → "新建 issue"
+- "Assign to agent" → "分配给智能体"
+- "Open workspace" → "打开工作区"
+- "Configure runtime" → "配置运行时"
 - "Edit comment" → "编辑评论"
 - "Delete label" → "删除标签"
+- "Stop daemon" → "停止守护进程"
 
 复数 / 量词：
 
-- "{{count}} issues" → "{{count}} 个 Issue"
-- "{{count}} agents" → "{{count}} 个 Agent"
-- "{{count}} workspaces" → "{{count}} 个 Workspace"
-- "{{count}} comments" → "{{count}} 条评论"
-- "{{count}} members" → "{{count}} 位成员"
+- `{{count}} issues` → `{{count}} 个 issue`
+- `{{count}} agents` → `{{count}} 个智能体`
+- `{{count}} workspaces` → `{{count}} 个工作区`
+- `{{count}} comments` → `{{count}} 条评论`
+- `{{count}} members` → `{{count}} 位成员`
+- `{{count}} skills` → `{{count}} 个 skill`
 
 ## Key 命名约定
 
@@ -131,14 +161,14 @@
 
 // zh-Hans/issues.json
 {
-  "issue_count_other": "{{count}} 个 Issue"
+  "issue_count_other": "{{count}} 个 issue"
 }
 ```
 
 ## 插值
 
 - 用 `{{var}}` 形式
-- 中文翻译可以调整位置以符合中文语序
+- 中文翻译可调整位置以符合中文语序
 
 ```json
 // en
@@ -165,10 +195,10 @@
 
 ## 参考实现
 
-- `packages/views/locales/en/auth.json` + `zh-Hans/auth.json`：登录页（含 web-only 段）
-- `packages/views/locales/en/settings.json` + `zh-Hans/settings.json`：Settings Appearance Tab
-- `packages/views/auth/login-page.tsx`：使用 selector API 的组件参考实现
-- `packages/views/settings/components/appearance-tab.tsx`：含 Language 切换器的参考
+- `apps/docs/content/docs/*.zh.mdx` —— **CN voice 的事实标准**，20+ 篇高度一致的实战翻译
+- `packages/views/locales/zh-Hans/auth.json` + `editor.json` —— JSON 结构 + selector API 用法参考
+- `packages/views/auth/login-page.tsx` —— 组件层 selector API 调用参考
+- `packages/views/settings/components/appearance-tab.tsx` —— 含 Language 切换器的参考
 
 ## Web-only / Desktop-only 文案位置
 
