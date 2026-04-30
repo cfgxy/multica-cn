@@ -382,7 +382,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           Properties
           <ChevronRight className={`!size-3 shrink-0 stroke-[2.5] text-muted-foreground transition-transform ${propertiesOpen ? "rotate-90" : ""}`} />
         </button>
-        {propertiesOpen && <div className="space-y-0.5 pl-2">
+        {propertiesOpen && <div className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 pl-2">
           <PropRow label="Status">
             <StatusPicker status={issue.status} onUpdate={handleUpdateField} align="start" />
           </PropRow>
