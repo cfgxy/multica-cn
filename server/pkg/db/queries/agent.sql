@@ -65,8 +65,15 @@ WHERE agent_id = $1
 ORDER BY created_at DESC;
 
 -- name: CreateAgentTask :one
-INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, trigger_comment_id, trigger_summary)
-VALUES ($1, $2, $3, 'queued', $4, sqlc.narg(trigger_comment_id), sqlc.narg(trigger_summary))
+INSERT INTO agent_task_queue (
+    agent_id, runtime_id, issue_id, status, priority, trigger_comment_id,
+    trigger_summary, force_fresh_session
+)
+VALUES (
+    $1, $2, $3, 'queued', $4, sqlc.narg(trigger_comment_id),
+    sqlc.narg(trigger_summary),
+    COALESCE(sqlc.narg('force_fresh_session')::boolean, FALSE)
+)
 RETURNING *;
 
 -- name: CreateQuickCreateTask :one
@@ -213,9 +220,17 @@ RETURNING *;
 -- UpdateAgentTaskSession. Without this, an auto-retry / manual rerun of a
 -- mid-run failure would silently start a fresh conversation and lose the
 -- in-flight context — exactly what MUL-1128's B branch is meant to fix.
+--
+-- Tasks that ended in a known "poisoned" terminal state are excluded so
+-- a rerun does not inherit the bad session. The daemon classifies these
+-- failures (iteration_limit, agent_fallback_message) when it detects the
+-- agent emitted a fallback marker instead of a real result.
 SELECT session_id, work_dir FROM agent_task_queue
 WHERE agent_id = $1 AND issue_id = $2
-  AND status IN ('completed', 'failed')
+  AND (
+    status = 'completed'
+    OR (status = 'failed' AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message'))
+  )
   AND session_id IS NOT NULL
 ORDER BY COALESCE(completed_at, started_at, dispatched_at, created_at) DESC
 LIMIT 1;

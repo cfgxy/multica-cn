@@ -96,6 +96,19 @@ func NewTaskService(q *db.Queries, tx TxStarter, hub *realtime.Hub, bus *events.
 // No context snapshot is stored — the agent fetches all data it needs at
 // runtime via the multica CLI.
 func (s *TaskService) EnqueueTaskForIssue(ctx context.Context, issue db.Issue, triggerCommentID ...pgtype.UUID) (db.AgentTaskQueue, error) {
+	var commentID pgtype.UUID
+	if len(triggerCommentID) > 0 {
+		commentID = triggerCommentID[0]
+	}
+	return s.enqueueIssueTask(ctx, issue, commentID, false)
+}
+
+// enqueueIssueTask is the shared implementation behind EnqueueTaskForIssue
+// and the manual rerun path. forceFreshSession=true marks the task so the
+// daemon claim handler skips the (agent_id, issue_id) resume lookup — the
+// user already judged the prior output bad, a fresh agent session is the
+// expected behavior.
+func (s *TaskService) enqueueIssueTask(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID, forceFreshSession bool) (db.AgentTaskQueue, error) {
 	if !issue.AssigneeID.Valid {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", "issue has no assignee")
 		return db.AgentTaskQueue{}, fmt.Errorf("issue has no assignee")
@@ -115,25 +128,26 @@ func (s *TaskService) EnqueueTaskForIssue(ctx context.Context, issue db.Issue, t
 		return db.AgentTaskQueue{}, fmt.Errorf("agent has no runtime")
 	}
 
-	var commentID pgtype.UUID
-	if len(triggerCommentID) > 0 {
-		commentID = triggerCommentID[0]
-	}
-
 	task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
-		AgentID:          issue.AssigneeID,
-		RuntimeID:        agent.RuntimeID,
-		IssueID:          issue.ID,
-		Priority:         priorityToInt(issue.Priority),
-		TriggerCommentID: commentID,
-		TriggerSummary:   s.buildCommentTriggerSummary(ctx, commentID),
+		AgentID:           issue.AssigneeID,
+		RuntimeID:         agent.RuntimeID,
+		IssueID:           issue.ID,
+		Priority:          priorityToInt(issue.Priority),
+		TriggerCommentID:  triggerCommentID,
+		TriggerSummary:    s.buildCommentTriggerSummary(ctx, triggerCommentID),
+		ForceFreshSession: pgtype.Bool{Bool: forceFreshSession, Valid: forceFreshSession},
 	})
 	if err != nil {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", err)
 		return db.AgentTaskQueue{}, fmt.Errorf("create task: %w", err)
 	}
 
-	slog.Info("task enqueued", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(issue.AssigneeID))
+	slog.Info("task enqueued",
+		"task_id", util.UUIDToString(task.ID),
+		"issue_id", util.UUIDToString(issue.ID),
+		"agent_id", util.UUIDToString(issue.AssigneeID),
+		"force_fresh_session", forceFreshSession,
+	)
 	// Order matters: broadcast first, notify daemon second. notifyTaskAvailable
 	// kicks an in-process channel that the daemon picks up over HTTP and
 	// claims; the claim path then emits its own task:dispatch. Doing the
@@ -874,9 +888,15 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 }
 
 // RerunIssue creates a fresh queued task for the agent currently assigned
-// to the issue. Used by the manual rerun endpoint. Carries the most recent
-// session_id/work_dir on the issue (across any status) so the new run
-// resumes from where the prior one left off when the backend supports it.
+// to the issue. Used by the manual rerun endpoint.
+//
+// The new task is flagged force_fresh_session=true so the daemon starts a
+// clean agent session instead of resuming the prior (agent_id, issue_id)
+// session. A user clicking rerun has just judged the prior output bad —
+// resuming the same conversation would replay the same poisoned state.
+// Auto-retry of an orphaned mid-flight failure (HandleFailedTasks →
+// MaybeRetryFailedTask → CreateRetryTask) does NOT take this path, so
+// MUL-1128's mid-flight resume contract is preserved.
 //
 // Only tasks belonging to the issue's current assignee are cancelled.
 // Tasks owned by other agents on the same issue (e.g. a parallel
@@ -909,7 +929,7 @@ func (s *TaskService) RerunIssue(ctx context.Context, issueID pgtype.UUID, trigg
 		s.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, t)
 	}
 
-	task, err := s.EnqueueTaskForIssue(ctx, issue, triggerCommentID)
+	task, err := s.enqueueIssueTask(ctx, issue, triggerCommentID, true)
 	if err != nil {
 		return nil, err
 	}

@@ -1393,6 +1393,27 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 				Usage:     usageEntries,
 			}, nil
 		}
+		// Detect "poisoned" terminal output: the agent didn't reach a real
+		// conclusion but emitted a known fallback marker (iteration limit,
+		// fallback meta message). Route through the blocked path with a
+		// specific failure_reason so the server can exclude this session
+		// from the (agent_id, issue_id) resume lookup — otherwise a manual
+		// rerun would inherit the same poisoned session and reproduce the
+		// same bad output.
+		if reason, ok := classifyPoisonedOutput(result.Output); ok {
+			taskLog.Warn("agent finished with poisoned fallback output, classifying as blocked",
+				"failure_reason", reason,
+			)
+			return TaskResult{
+				Status:        "blocked",
+				Comment:       result.Output,
+				SessionID:     result.SessionID,
+				WorkDir:       env.WorkDir,
+				EnvRoot:       env.RootDir,
+				Usage:         usageEntries,
+				FailureReason: reason,
+			}, nil
+		}
 		return TaskResult{
 			Status:    "completed",
 			Comment:   result.Output,
