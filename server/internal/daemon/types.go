@@ -18,8 +18,7 @@ type Runtime struct {
 
 // RepoData holds repository information from the workspace.
 type RepoData struct {
-	URL         string `json:"url"`
-	Description string `json:"description"`
+	URL string `json:"url"`
 }
 
 // ProjectResourceData mirrors handler.ProjectResourceData — a single project

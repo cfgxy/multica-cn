@@ -1,7 +1,26 @@
 "use client";
 
 import { useState, useRef } from "react";
-import { ChevronRight, FolderGit, Maximize2, Minimize2, X as XIcon, UserMinus } from "lucide-react";
+import { ChevronRight, Maximize2, Minimize2, X as XIcon, UserMinus } from "lucide-react";
+
+/**
+ * GitHub mark — lucide-react v1 dropped brand icons, so we inline the
+ * Octicon-style mark here (24×24 viewBox, currentColor fill so it inherits
+ * the parent's text color). Stays in this file because there's only one
+ * caller; promote to packages/ui if a second use crops up.
+ */
+function GithubIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="currentColor"
+      aria-hidden="true"
+      className={className}
+    >
+      <path d="M12 .5C5.73.5.66 5.57.66 11.84c0 5.01 3.25 9.26 7.76 10.76.57.1.78-.25.78-.55 0-.27-.01-1.17-.02-2.13-3.16.69-3.83-1.34-3.83-1.34-.52-1.31-1.27-1.66-1.27-1.66-1.04-.71.08-.7.08-.7 1.15.08 1.76 1.18 1.76 1.18 1.02 1.75 2.68 1.24 3.34.95.1-.74.4-1.24.72-1.53-2.52-.29-5.18-1.26-5.18-5.62 0-1.24.45-2.26 1.18-3.06-.12-.29-.51-1.45.11-3.02 0 0 .96-.31 3.15 1.17a10.93 10.93 0 0 1 5.74 0c2.19-1.48 3.15-1.17 3.15-1.17.62 1.57.23 2.73.11 3.02.74.8 1.18 1.82 1.18 3.06 0 4.37-2.67 5.32-5.21 5.61.41.35.78 1.04.78 2.1 0 1.52-.01 2.74-.01 3.11 0 .3.21.66.79.55 4.51-1.5 7.76-5.75 7.76-10.76C23.34 5.57 18.27.5 12 .5Z" />
+    </svg>
+  );
+}
 import { useQuery } from "@tanstack/react-query";
 import { useCreateProject } from "@multica/core/projects/mutations";
 import { useProjectDraftStore } from "@multica/core/projects";
@@ -247,7 +266,14 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
           />
         </div>
 
-        <div className="flex items-center gap-1.5 px-4 py-2 shrink-0 flex-wrap">
+        {/* Footer: properties (left, wrap) + Create button (right). Single row
+            so the modal stays compact — Linear-style.
+            Repos lives here alongside the property pills for now. Once we
+            support more resource types (Linear / Notion / Figma / Slack), pull
+            them out into a dedicated Resources strip above this footer — a
+            single Repos pill on its own row looked too sparse. */}
+        <div className="flex items-center justify-between gap-2 px-4 py-3 border-t shrink-0">
+          <div className="flex items-center gap-1.5 flex-wrap min-w-0">
           <DropdownMenu>
             <DropdownMenuTrigger
               render={
@@ -386,7 +412,7 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
             <PopoverTrigger
               render={
                 <PillButton>
-                  <FolderGit className="size-3" />
+                  <GithubIcon className="size-3" />
                   <span>
                     {selectedRepos.length === 0
                       ? "Repos"
@@ -419,7 +445,7 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
                           readOnly
                           className="size-3.5"
                         />
-                        <FolderGit className="size-3.5" />
+                        <GithubIcon className="size-3.5" />
                         <span className="truncate flex-1 text-left">{repo.url}</span>
                       </button>
                     );
@@ -465,7 +491,7 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
                       key={url}
                       className="flex items-center gap-2 text-xs"
                     >
-                      <FolderGit className="size-3 text-muted-foreground" />
+                      <GithubIcon className="size-3 text-muted-foreground" />
                       <span className="truncate flex-1">{url}</span>
                       <button
                         type="button"
@@ -480,10 +506,14 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
               )}
             </PopoverContent>
           </Popover>
-        </div>
+          </div>
 
-        <div className="flex items-center justify-end px-4 py-3 border-t shrink-0">
-          <Button size="sm" onClick={handleSubmit} disabled={!title.trim() || submitting}>
+          <Button
+            size="sm"
+            onClick={handleSubmit}
+            disabled={!title.trim() || submitting}
+            className="shrink-0"
+          >
             {submitting ? "Creating..." : "Create Project"}
           </Button>
         </div>

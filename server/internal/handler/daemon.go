@@ -156,10 +156,7 @@ func normalizeWorkspaceRepos(repos []RepoData) []RepoData {
 			continue
 		}
 		seen[url] = struct{}{}
-		normalized = append(normalized, RepoData{
-			URL:         url,
-			Description: strings.TrimSpace(repo.Description),
-		})
+		normalized = append(normalized, RepoData{URL: url})
 	}
 	return normalized
 }

@@ -261,8 +261,8 @@ func TestPrepareWithRepoContext(t *testing.T) {
 	taskCtx := TaskContextForEnv{
 		IssueID: "b2c3d4e5-f6a7-8901-bcde-f12345678901",
 		Repos: []RepoContextForEnv{
-			{URL: "https://github.com/org/backend", Description: "Go backend"},
-			{URL: "https://github.com/org/frontend", Description: "React frontend"},
+			{URL: "https://github.com/org/backend"},
+			{URL: "https://github.com/org/frontend"},
 		},
 	}
 	env, err := Prepare(PrepareParams{
@@ -304,9 +304,7 @@ func TestPrepareWithRepoContext(t *testing.T) {
 	for _, want := range []string{
 		"multica repo checkout",
 		"https://github.com/org/backend",
-		"Go backend",
 		"https://github.com/org/frontend",
-		"React frontend",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("CLAUDE.md missing %q", want)
@@ -853,7 +851,7 @@ func TestPrepareWithRepoContextOpencode(t *testing.T) {
 	taskCtx := TaskContextForEnv{
 		IssueID: "c3d4e5f6-a7b8-9012-cdef-123456789012",
 		Repos: []RepoContextForEnv{
-			{URL: "https://github.com/org/backend", Description: "Go backend"},
+			{URL: "https://github.com/org/backend"},
 		},
 	}
 	env, err := Prepare(PrepareParams{
@@ -894,7 +892,6 @@ func TestPrepareWithRepoContextOpencode(t *testing.T) {
 	for _, want := range []string{
 		"multica repo checkout",
 		"https://github.com/org/backend",
-		"Go backend",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("AGENTS.md missing %q", want)
