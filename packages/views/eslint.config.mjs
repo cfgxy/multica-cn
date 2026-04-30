@@ -37,6 +37,12 @@ const TRANSLATED_FILES = [
   "projects/components/project-detail.tsx",
   "projects/components/project-picker.tsx",
   "projects/components/project-chip.tsx",
+  "autopilots/components/autopilots-page.tsx",
+  "autopilots/components/autopilot-detail-page.tsx",
+  "autopilots/components/autopilot-dialog.tsx",
+  "autopilots/components/trigger-config.tsx",
+  "autopilots/components/pickers/agent-picker.tsx",
+  "autopilots/components/pickers/timezone-picker.tsx",
 ];
 
 export default [
