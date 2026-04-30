@@ -30,6 +30,9 @@ const TRANSLATED_FILES = [
   "inbox/components/inbox-page.tsx",
   "inbox/components/inbox-list-item.tsx",
   "inbox/components/inbox-detail-label.tsx",
+  "workspace/create-workspace-form.tsx",
+  "workspace/new-workspace-page.tsx",
+  "workspace/no-access-page.tsx",
 ];
 
 export default [

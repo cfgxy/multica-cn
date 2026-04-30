@@ -12,6 +12,7 @@ import type members from "../locales/en/members.json";
 import type myIssues from "../locales/en/my-issues.json";
 import type search from "../locales/en/search.json";
 import type inbox from "../locales/en/inbox.json";
+import type workspace from "../locales/en/workspace.json";
 
 // Module augmentation enables i18next v26 selector API across the monorepo:
 // `t($ => $.signin.title)` resolves to the value in en/auth.json.
@@ -38,6 +39,7 @@ declare module "i18next" {
       "my-issues": typeof myIssues;
       search: typeof search;
       inbox: typeof inbox;
+      workspace: typeof workspace;
     };
     enableSelector: true;
   }
