@@ -43,6 +43,13 @@ const TRANSLATED_FILES = [
   "autopilots/components/trigger-config.tsx",
   "autopilots/components/pickers/agent-picker.tsx",
   "autopilots/components/pickers/timezone-picker.tsx",
+  "skills/components/skills-page.tsx",
+  "skills/components/skill-detail-page.tsx",
+  "skills/components/skill-columns.tsx",
+  "skills/components/create-skill-dialog.tsx",
+  "skills/components/runtime-local-skill-import-panel.tsx",
+  "skills/components/file-tree.tsx",
+  "skills/components/file-viewer.tsx",
 ];
 
 export default [
