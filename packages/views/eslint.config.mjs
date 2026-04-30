@@ -69,6 +69,15 @@ const TRANSLATED_FILES = [
   "modals/create-project.tsx",
   "modals/create-issue.tsx",
   "modals/quick-create-issue.tsx",
+  "settings/components/settings-page.tsx",
+  "settings/components/account-tab.tsx",
+  "settings/components/notifications-tab.tsx",
+  "settings/components/labs-tab.tsx",
+  "settings/components/repositories-tab.tsx",
+  "settings/components/tokens-tab.tsx",
+  "settings/components/workspace-tab.tsx",
+  "settings/components/members-tab.tsx",
+  "settings/components/delete-workspace-dialog.tsx",
 ];
 
 export default [
