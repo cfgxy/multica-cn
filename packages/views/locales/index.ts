@@ -8,6 +8,7 @@ import enLabels from "./en/labels.json";
 import enMembers from "./en/members.json";
 import enMyIssues from "./en/my-issues.json";
 import enSearch from "./en/search.json";
+import enInbox from "./en/inbox.json";
 import zhHansCommon from "./zh-Hans/common.json";
 import zhHansAuth from "./zh-Hans/auth.json";
 import zhHansSettings from "./zh-Hans/settings.json";
@@ -17,6 +18,7 @@ import zhHansLabels from "./zh-Hans/labels.json";
 import zhHansMembers from "./zh-Hans/members.json";
 import zhHansMyIssues from "./zh-Hans/my-issues.json";
 import zhHansSearch from "./zh-Hans/search.json";
+import zhHansInbox from "./zh-Hans/inbox.json";
 
 // Single source of truth for the resource bundle. Both apps (web layout +
 // desktop App.tsx) import from here so adding a locale or namespace happens
@@ -32,6 +34,7 @@ export const RESOURCES: Record<SupportedLocale, LocaleResources> = {
     members: enMembers,
     "my-issues": enMyIssues,
     search: enSearch,
+    inbox: enInbox,
   },
   "zh-Hans": {
     common: zhHansCommon,
@@ -43,5 +46,6 @@ export const RESOURCES: Record<SupportedLocale, LocaleResources> = {
     members: zhHansMembers,
     "my-issues": zhHansMyIssues,
     search: zhHansSearch,
+    inbox: zhHansInbox,
   },
 };

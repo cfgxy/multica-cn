@@ -27,6 +27,9 @@ const TRANSLATED_FILES = [
   "my-issues/components/my-issues-page.tsx",
   "my-issues/components/my-issues-header.tsx",
   "search/search-command.tsx",
+  "inbox/components/inbox-page.tsx",
+  "inbox/components/inbox-list-item.tsx",
+  "inbox/components/inbox-detail-label.tsx",
 ];
 
 export default [
