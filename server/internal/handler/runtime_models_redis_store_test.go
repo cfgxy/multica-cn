@@ -11,6 +11,46 @@ import (
 // runtime_local_skills_redis_store_test.go: same Redis instance, same gating
 // on REDIS_TEST_URL, same FlushDB-per-test isolation.
 
+// TestRedisModelListStore_EnvelopePersistsRunStartedAt is a pure marshal/
+// unmarshal round-trip — no Redis required. Pins the regression that the
+// `json:"-"` tag on ModelListRequest.RunStartedAt was silently dropping the
+// field on persistence, which broke the running-timeout escape hatch
+// across nodes (CI failure for TestRedisModelListStore_RunningTimeout
+// before this fix).
+func TestRedisModelListStore_EnvelopePersistsRunStartedAt(t *testing.T) {
+	store := &RedisModelListStore{}
+	now := time.Now().UTC().Truncate(time.Microsecond) // JSON loses sub-µs precision
+	req := &ModelListRequest{
+		ID:           "id-1",
+		RuntimeID:    "rt-1",
+		Status:       ModelListRunning,
+		Supported:    true,
+		CreatedAt:    now.Add(-time.Second),
+		UpdatedAt:    now,
+		RunStartedAt: &now,
+	}
+	data, err := store.marshalRequest(req)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got, err := store.unmarshalRequest(data)
+	if err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got.RunStartedAt == nil {
+		t.Fatal("RunStartedAt lost on round trip — running timeout would never fire across nodes")
+	}
+	if !got.RunStartedAt.Equal(now) {
+		t.Errorf("RunStartedAt drifted: got %s, want %s", got.RunStartedAt, now)
+	}
+	if got.Status != ModelListRunning {
+		t.Errorf("Status lost: got %s", got.Status)
+	}
+	if got.ID != "id-1" || got.RuntimeID != "rt-1" {
+		t.Errorf("identifiers lost: %+v", got)
+	}
+}
+
 func TestRedisModelListStore_CreateGetComplete(t *testing.T) {
 	rdb := newRedisTestClient(t)
 	ctx := context.Background()

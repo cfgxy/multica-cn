@@ -59,9 +59,9 @@ func (s *RedisModelListStore) Create(ctx context.Context, runtimeID string) (*Mo
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	data, err := json.Marshal(req)
+	data, err := s.marshalRequest(req)
 	if err != nil {
-		return nil, fmt.Errorf("marshal model list request: %w", err)
+		return nil, err
 	}
 
 	pipe := s.rdb.TxPipeline()
@@ -94,12 +94,12 @@ func (s *RedisModelListStore) loadRequest(ctx context.Context, id string) (*Mode
 	if err != nil {
 		return nil, fmt.Errorf("get model list request: %w", err)
 	}
-	var req ModelListRequest
-	if err := json.Unmarshal(raw, &req); err != nil {
-		return nil, fmt.Errorf("decode model list request: %w", err)
+	req, err := s.unmarshalRequest(raw)
+	if err != nil {
+		return nil, err
 	}
-	if applyModelListTimeout(&req, time.Now()) {
-		if err := s.persistRequest(ctx, &req); err != nil {
+	if applyModelListTimeout(req, time.Now()) {
+		if err := s.persistRequest(ctx, req); err != nil {
 			return nil, err
 		}
 		// Drop from pending zset on terminal transition. PopPending would
@@ -107,18 +107,51 @@ func (s *RedisModelListStore) loadRequest(ctx context.Context, id string) (*Mode
 		// that never call PopPending.
 		s.rdb.ZRem(ctx, modelListPendingKey(req.RuntimeID), req.ID)
 	}
-	return &req, nil
+	return req, nil
 }
 
 func (s *RedisModelListStore) persistRequest(ctx context.Context, req *ModelListRequest) error {
-	data, err := json.Marshal(req)
+	data, err := s.marshalRequest(req)
 	if err != nil {
-		return fmt.Errorf("marshal model list request: %w", err)
+		return err
 	}
 	if err := s.rdb.Set(ctx, modelListKey(req.ID), data, modelListStoreRetention).Err(); err != nil {
 		return fmt.Errorf("persist model list request: %w", err)
 	}
 	return nil
+}
+
+// ModelListRequest tags RunStartedAt as `json:"-"` so the server-side
+// bookkeeping field doesn't leak into the HTTP response (the UI only
+// needs Status / UpdatedAt to drive its polling loop). Redis persistence
+// has to keep that field, otherwise the running-timeout escape hatch
+// silently breaks across nodes — every reader sees RunStartedAt=nil and
+// applyModelListTimeout's running branch becomes a no-op. Wrap in an
+// internal envelope that re-promotes the field on the wire.
+type redisModelListEnvelope struct {
+	Public       *ModelListRequest `json:"r"`
+	RunStartedAt *time.Time        `json:"s,omitempty"`
+}
+
+func (s *RedisModelListStore) marshalRequest(req *ModelListRequest) ([]byte, error) {
+	env := redisModelListEnvelope{Public: req, RunStartedAt: req.RunStartedAt}
+	data, err := json.Marshal(env)
+	if err != nil {
+		return nil, fmt.Errorf("marshal model list request: %w", err)
+	}
+	return data, nil
+}
+
+func (s *RedisModelListStore) unmarshalRequest(raw []byte) (*ModelListRequest, error) {
+	var env redisModelListEnvelope
+	if err := json.Unmarshal(raw, &env); err != nil {
+		return nil, fmt.Errorf("decode model list request: %w", err)
+	}
+	if env.Public == nil {
+		return nil, fmt.Errorf("decode model list request: missing payload")
+	}
+	env.Public.RunStartedAt = env.RunStartedAt
+	return env.Public, nil
 }
 
 // HasPending is a cheap read-only ZCARD probe used by the heartbeat hot path
@@ -164,9 +197,9 @@ func (s *RedisModelListStore) PopPending(ctx context.Context, runtimeID string) 
 		req.Status = ModelListRunning
 		req.RunStartedAt = &now
 		req.UpdatedAt = now
-		data, err := json.Marshal(req)
+		data, err := s.marshalRequest(req)
 		if err != nil {
-			return nil, fmt.Errorf("marshal model list request: %w", err)
+			return nil, err
 		}
 
 		result, err := claimPendingScript.Run(
