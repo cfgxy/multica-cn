@@ -45,10 +45,15 @@ export function useIssueTimeline(issueId: string, userId?: string) {
   );
   const [submitting, setSubmitting] = useState(false);
 
-  const createCommentMutation = useCreateComment(issueId);
-  const updateCommentMutation = useUpdateComment(issueId);
-  const deleteCommentMutation = useDeleteComment(issueId);
-  const toggleReactionMutation = useToggleCommentReaction(issueId);
+  // TanStack Query v5 returns a fresh result wrapper from useMutation on
+  // every render, but the mutate / mutateAsync functions inside are stable
+  // across renders. Pull just the stable handles so the useCallback
+  // identities below do not flip on every parent re-render — listing the
+  // whole mutation object would defeat React.memo on CommentCard.
+  const { mutateAsync: createComment } = useCreateComment(issueId);
+  const { mutateAsync: updateComment } = useUpdateComment(issueId);
+  const { mutateAsync: deleteCommentAsync } = useDeleteComment(issueId);
+  const { mutate: toggleCommentReaction } = useToggleCommentReaction(issueId);
 
   // Reconnect recovery
   useWSReconnect(
@@ -213,24 +218,21 @@ export function useIssueTimeline(issueId: string, userId?: string) {
       if (!content.trim() || submitting || !userId) return;
       setSubmitting(true);
       try {
-        await createCommentMutation.mutateAsync({
-          content,
-          attachmentIds,
-        });
+        await createComment({ content, attachmentIds });
       } catch {
         toast.error("Failed to send comment");
       } finally {
         setSubmitting(false);
       }
     },
-    [userId, submitting, createCommentMutation],
+    [userId, submitting, createComment],
   );
 
   const submitReply = useCallback(
     async (parentId: string, content: string, attachmentIds?: string[]) => {
       if (!content.trim() || !userId) return;
       try {
-        await createCommentMutation.mutateAsync({
+        await createComment({
           content,
           type: "comment",
           parentId,
@@ -240,29 +242,29 @@ export function useIssueTimeline(issueId: string, userId?: string) {
         toast.error("Failed to send reply");
       }
     },
-    [userId, createCommentMutation],
+    [userId, createComment],
   );
 
   const editComment = useCallback(
     async (commentId: string, content: string) => {
       try {
-        await updateCommentMutation.mutateAsync({ commentId, content });
+        await updateComment({ commentId, content });
       } catch {
         toast.error("Failed to update comment");
       }
     },
-    [updateCommentMutation],
+    [updateComment],
   );
 
   const deleteComment = useCallback(
     async (commentId: string) => {
       try {
-        await deleteCommentMutation.mutateAsync(commentId);
+        await deleteCommentAsync(commentId);
       } catch {
         toast.error("Failed to delete comment");
       }
     },
-    [deleteCommentMutation],
+    [deleteCommentAsync],
   );
 
   // --- Optimistic UI derivation for comment reactions ---
@@ -340,9 +342,9 @@ export function useIssueTimeline(issueId: string, userId?: string) {
           r.actor_type === "member" &&
           r.actor_id === userId,
       );
-      toggleReactionMutation.mutate({ commentId, emoji, existing });
+      toggleCommentReaction({ commentId, emoji, existing });
     },
-    [userId, toggleReactionMutation],
+    [userId, toggleCommentReaction],
   );
 
   return {
