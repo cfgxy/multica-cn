@@ -591,6 +591,38 @@ func TestCreateWorktreeWithRequestedCommitRef(t *testing.T) {
 	}
 }
 
+func TestCreateWorktreeWithRequestedTagRef(t *testing.T) {
+	t.Parallel()
+	sourceRepo := createTestRepo(t)
+	taggedCommit := gitHead(t, sourceRepo)
+	runGitAuthored(t, sourceRepo, "tag", "v1")
+	// Advance the default branch past the tag so worktree HEAD == taggedCommit
+	// can only be true if the tag was actually resolved (vs falling back to
+	// the default branch tip).
+	addEmptyCommit(t, sourceRepo, "post-tag commit")
+
+	cache := New(t.TempDir(), testLogger())
+	if err := cache.Sync("ws-1", []RepoInfo{{URL: sourceRepo}}); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	result, err := cache.CreateWorktree(WorktreeParams{
+		WorkspaceID: "ws-1",
+		RepoURL:     sourceRepo,
+		WorkDir:     t.TempDir(),
+		Ref:         "v1",
+		AgentName:   "Reviewer",
+		TaskID:      "tag-task-id",
+	})
+	if err != nil {
+		t.Fatalf("CreateWorktree failed: %v", err)
+	}
+
+	if got := gitHead(t, result.Path); got != taggedCommit {
+		t.Fatalf("worktree HEAD = %s, want tagged commit %s", got, taggedCommit)
+	}
+}
+
 func TestCreateWorktreeWithUnknownRequestedRef(t *testing.T) {
 	t.Parallel()
 	sourceRepo := createTestRepo(t)

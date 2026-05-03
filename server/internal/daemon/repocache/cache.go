@@ -399,19 +399,23 @@ func (c *Cache) CreateWorktree(params WorktreeParams) (*WorktreeResult, error) {
 	}
 
 	// Determine the ref to base the worktree on. By default this is the remote's
-	// default branch. Callers may request a specific branch, tag, or commit so
-	// review/QA agents can inspect the exact revision without trying to mutate
-	// the daemon-owned worktree metadata themselves.
+	// default branch (resolved internally via getRemoteDefaultBranch, which walks
+	// origin/HEAD → origin/main, origin/master → bare-HEAD hint into origin/<same>
+	// → single-entry scan of origin/* → bare HEAD when origin/* is empty).
+	// Callers may request a specific branch, tag, or commit so review/QA agents
+	// can inspect the exact revision without trying to mutate the daemon-owned
+	// worktree metadata themselves.
 	baseRef, err := resolveBaseRef(barePath, params.Ref)
 	if err != nil {
 		return nil, err
 	}
 
-	// getRemoteDefaultBranch walks origin/HEAD → origin/main, origin/master →
-	// bare-HEAD hint into origin/<same> → single-entry scan of origin/* → bare
-	// HEAD (only if origin/* is empty). Reaching "" here means the cache is in a
-	// state we refuse to guess from (no origin/HEAD, no main/master, bare HEAD
-	// doesn't match any origin/* entry, and origin/* has multiple candidates).
+	// Empty here means params.Ref was unset and getRemoteDefaultBranch couldn't
+	// resolve a default — the cache is in a state we refuse to guess from (no
+	// origin/HEAD, no main/master, bare HEAD doesn't match any origin/* entry,
+	// and origin/* has multiple candidates). The requested-ref path returns an
+	// explicit error before reaching here, so this branch only fires for the
+	// default-branch case.
 	if baseRef == "" {
 		return nil, fmt.Errorf("cannot resolve default branch for %s: bare cache at %s has no usable refs (origin/* is empty or ambiguous and bare HEAD has no match). The cache may be corrupted; delete it and retry", params.RepoURL, barePath)
 	}
