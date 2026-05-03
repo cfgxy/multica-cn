@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react";
+import { useEffect, useRef, useState, useCallback, useMemo } from "react";
 import { useQuery, useQueryClient, useMutationState } from "@tanstack/react-query";
 import type { Comment, TimelineEntry, Reaction } from "@multica/core/types";
 import type {
@@ -320,11 +320,20 @@ export function useIssueTimeline(issueId: string, userId?: string) {
     });
   }, [timeline, pendingReactionVars, userId]);
 
+  // Read timeline through a ref so toggleReaction's identity does not change
+  // on every WS event. Without this, every memoized CommentCard down-tree
+  // would re-render on each timeline mutation, defeating the React.memo cost
+  // savings on long timelines (see Inbox-freeze fix).
+  const timelineRef = useRef(timeline);
+  useEffect(() => {
+    timelineRef.current = timeline;
+  }, [timeline]);
+
   const toggleReaction = useCallback(
     async (commentId: string, emoji: string) => {
       if (!userId) return;
       // Read from server timeline (not optimistic) to find the real reaction
-      const entry = timeline.find((e) => e.id === commentId);
+      const entry = timelineRef.current.find((e) => e.id === commentId);
       const existing: Reaction | undefined = (entry?.reactions ?? []).find(
         (r) =>
           r.emoji === emoji &&
@@ -333,7 +342,7 @@ export function useIssueTimeline(issueId: string, userId?: string) {
       );
       toggleReactionMutation.mutate({ commentId, emoji, existing });
     },
-    [userId, timeline, toggleReactionMutation],
+    [userId, toggleReactionMutation],
   );
 
   return {
