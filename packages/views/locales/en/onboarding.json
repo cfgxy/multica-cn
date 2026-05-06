@@ -73,6 +73,48 @@
     "other_label": "Other",
     "other_aria": "Describe something else"
   },
+  "runtime_aside": {
+    "what_eyebrow": "What's a runtime?",
+    "what_prefix": "A ",
+    "what_term": "runtime",
+    "what_suffix": " is a small background process that runs on your machine. It connects your workspace to AI coding tools like Claude Code or Codex, and executes the tasks your agents pick up.",
+    "good_eyebrow": "Good to know",
+    "swap_title": "Swap anytime",
+    "swap_body": "Each agent's runtime is just a setting. Change it whenever you want.",
+    "add_more_title": "Add more later",
+    "add_more_body": "You can connect a second runtime on another machine for a team, or a dedicated one per agent.",
+    "learn_more": "Learn about runtimes →"
+  },
+  "cli_install": {
+    "copy_aria": "Copy",
+    "intro": "You'll need an AI coding tool on this machine (Claude Code, Codex, Cursor, …) for the daemon to do real work. Also works on servers and remote dev boxes.",
+    "step1_label": "Install the Multica CLI",
+    "step2_label": "Start the daemon"
+  },
+  "starter_content": {
+    "title": "Welcome — add starter tasks?",
+    "description_prefix": "A ",
+    "description_term": "Getting Started",
+    "description_suffix": " project with short tasks that walk through how agents, issues, and context work in Multica.",
+    "dismiss_action": "Start blank workspace",
+    "import_action": "Add starter tasks",
+    "success_toast": "Starter tasks added — check your sidebar",
+    "import_failed": "Import failed — please retry",
+    "dismiss_failed": "Could not dismiss — please retry"
+  },
+  "cloud_waitlist": {
+    "intro_main": "Cloud runtimes aren't live yet. Leave your email and we'll reach out when they are.",
+    "intro_warning": "Heads-up: agents can't execute tasks without a runtime — if you hit Skip now, your workspace is read-only until you come back and install one.",
+    "email_label": "Email",
+    "email_placeholder": "you@work.com",
+    "reason_label": "Why cloud?",
+    "optional": "Optional",
+    "reason_placeholder": "e.g. we want agents running 24/7, or my team works across different devices.",
+    "join": "Join waitlist",
+    "on_list": "You're on the list",
+    "success_toast": "You're on the list. We'll email when cloud runtimes are live.",
+    "failed_toast": "Failed to join waitlist"
+  },
   "errors": {
     "skip_failed": "Failed to finish onboarding"
   }

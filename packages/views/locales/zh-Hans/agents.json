@@ -299,6 +299,30 @@
       "queued_prefix": "{{when}}排队"
     }
   },
+  "char_counter": {
+    "over_limit": " · 超出 {{count}} 字"
+  },
+  "presence": {
+    "queue_badge": "+{{count}} 排队"
+  },
+  "visibility": {
+    "private": {
+      "label": "个人",
+      "tooltip": "个人 · 仅你和工作区管理员可以使用该智能体"
+    },
+    "workspace": {
+      "label": "工作区",
+      "tooltip": "工作区 · 工作区内所有人都可以使用该智能体"
+    }
+  },
+  "profile_card": {
+    "unavailable": "智能体不可用",
+    "detail_link": "详情 →",
+    "runtime_label": "运行时",
+    "skills_label": "skill",
+    "owner_label": "所有者",
+    "unknown_runtime": "未知运行时"
+  },
   "transcript": {
     "dialog_title": "智能体执行记录",
     "status_running": "进行中",

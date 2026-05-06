@@ -23,24 +23,8 @@ const STILL_HARDCODED = [
   "onboarding/steps/step-platform-fork.tsx",
   "onboarding/steps/step-agent.tsx",
   "onboarding/steps/step-first-issue.tsx",
-  "onboarding/steps/cli-install-instructions.tsx",
-  "onboarding/components/runtime-aside-panel.tsx",
-  "onboarding/components/starter-content-prompt.tsx",
-  "onboarding/components/cloud-waitlist-expand.tsx",
-  "onboarding/components/compact-runtime-row.tsx",
   // Runtimes usage panel — chart-heavy KPI / breakdown / receipt UI.
   "runtimes/components/usage-section.tsx",
-  // Agents minor — sparkline label, profile card hover, presence
-  // indicator chips. Visual primitives with little text but on the
-  // hardcoded side until translated.
-  "agents/components/sparkline.tsx",
-  "agents/components/agent-presence-indicator.tsx",
-  "agents/components/agent-profile-card.tsx",
-  "agents/components/visibility-badge.tsx",
-  "agents/components/char-counter.tsx",
-  // common/ helpers — task-transcript family + a few inbox/issue
-  // detail bits that read shared. They'll come along with whichever
-  // namespace pulls them next.
 ];
 
 export default [
