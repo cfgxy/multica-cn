@@ -123,6 +123,10 @@ const TRANSLATED_FILES = [
   "agents/components/inspector/runtime-picker.tsx",
   "agents/components/inspector/model-picker.tsx",
   "agents/components/model-dropdown.tsx",
+  "runtimes/components/runtime-columns.tsx",
+  "runtimes/components/runtime-list.tsx",
+  "runtimes/components/connect-remote-dialog.tsx",
+  "runtimes/components/update-section.tsx",
 ];
 
 export default [
