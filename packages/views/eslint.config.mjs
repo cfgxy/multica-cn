@@ -1,30 +1,16 @@
 import reactConfig from "@multica/eslint-config/react";
 import i18next from "eslint-plugin-i18next";
 
-// Global i18n protection. Every JSX text node anywhere in this package
-// must pass through useT() — raw strings become a build error. Files
-// listed in `STILL_HARDCODED` are explicit holdouts that haven't been
-// translated yet; the goal is to drain that list to zero.
-//
-// Scope of `mode: "jsx-text-only"`: flags raw strings inside JSX
-// children only. Attribute values (className, aria-label) and plain
-// TypeScript string literals are allowed through because they have
-// legitimate non-translatable uses (CSS classes, framework defaults,
-// dev-tool keys); attribute regressions are caught in code review.
-
-// Files that still contain hardcoded EN strings and have NOT been wired
-// to the i18n bundle yet. New files added here SHOULD also have an
-// issue or follow-up commit driving them to zero.
-const STILL_HARDCODED = [
-  // Runtimes usage panel — chart-heavy KPI / breakdown / receipt UI.
-  "runtimes/components/usage-section.tsx",
-];
+// Global i18n protection. Every JSX text node in this package must pass
+// through useT() — raw strings become a build error. Scope of
+// `mode: "jsx-text-only"`: flags raw strings inside JSX children only;
+// attribute values and plain TS literals are allowed through.
 
 export default [
   ...reactConfig,
   {
     files: ["**/*.tsx"],
-    ignores: ["**/*.test.tsx", "test/**", ...STILL_HARDCODED],
+    ignores: ["**/*.test.tsx", "test/**"],
     plugins: { i18next },
     rules: {
       "i18next/no-literal-string": [
