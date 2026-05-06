@@ -127,6 +127,12 @@ const TRANSLATED_FILES = [
   "runtimes/components/runtime-list.tsx",
   "runtimes/components/connect-remote-dialog.tsx",
   "runtimes/components/update-section.tsx",
+  "agents/components/tabs/instructions-tab.tsx",
+  "agents/components/tabs/env-tab.tsx",
+  "agents/components/tabs/custom-args-tab.tsx",
+  "agents/components/tabs/skills-tab.tsx",
+  "agents/components/tabs/activity-tab.tsx",
+  "agents/components/skill-add-dialog.tsx",
 ];
 
 export default [
