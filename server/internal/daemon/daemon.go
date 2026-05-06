@@ -1463,11 +1463,12 @@ func (d *Daemon) handleTask(ctx context.Context, task Task, slot int) {
 
 	_ = d.client.ReportProgress(ctx, task.ID, "Finishing task", 2, 2)
 
-	// Check if the task was cancelled while it was running (e.g. issue
-	// was reassigned). If so, skip reporting results — the server already
-	// moved the task to 'cancelled' so complete/fail would fail anyway.
-	if status, err := d.client.GetTaskStatus(ctx, task.ID); err == nil && status == "cancelled" {
-		taskLog.Info("task cancelled during execution, discarding result")
+	// Final pre-completion check: if the server already moved the task to
+	// "cancelled" or deleted the row outright, skip reporting — the
+	// complete/fail callbacks would fail anyway. Reuse shouldInterruptAgent
+	// so this guard honors the same signals as the in-flight watcher.
+	if status, err := d.client.GetTaskStatus(ctx, task.ID); shouldInterruptAgent(status, err) {
+		taskLog.Info("task cancelled during execution, discarding result", "status", status, "error", err)
 		return
 	}
 
