@@ -16,13 +16,6 @@ import i18next from "eslint-plugin-i18next";
 // to the i18n bundle yet. New files added here SHOULD also have an
 // issue or follow-up commit driving them to zero.
 const STILL_HARDCODED = [
-  // Onboarding deep steps — flagged in the rollout plan; large surfaces
-  // with copy-heavy content that benefits from a focused translation pass.
-  "onboarding/steps/step-workspace.tsx",
-  "onboarding/steps/step-runtime-connect.tsx",
-  "onboarding/steps/step-platform-fork.tsx",
-  "onboarding/steps/step-agent.tsx",
-  "onboarding/steps/step-first-issue.tsx",
   // Runtimes usage panel — chart-heavy KPI / breakdown / receipt UI.
   "runtimes/components/usage-section.tsx",
 ];
