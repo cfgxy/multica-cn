@@ -97,10 +97,12 @@ function PropRow({
 const projectViewStore = createIssueViewStore("project_issues_view");
 
 function ProjectIssuesContent({
+  projectId,
   projectIssues,
   scope,
   filter,
 }: {
+  projectId: string;
   projectIssues: Issue[];
   scope: string;
   filter: MyIssuesFilter;
@@ -156,9 +158,7 @@ function ProjectIssuesContent({
           size="sm"
           className="mt-1"
           onClick={() =>
-            useModalStore
-              .getState()
-              .open("create-issue", { project_id: scope.replace("project:", "") })
+            useModalStore.getState().open("create-issue", { project_id: projectId })
           }
         >
           <Plus className="size-3.5 mr-1.5" />
@@ -600,6 +600,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
           <ViewStoreProvider store={projectViewStore}>
               <IssuesHeader scopedIssues={projectIssues} />
               <ProjectIssuesContent
+                projectId={projectId}
                 projectIssues={projectIssues}
                 scope={projectScope}
                 filter={projectFilter}
