@@ -381,8 +381,14 @@ UPDATE agent_runtime
 SET status = 'offline', updated_at = now()
 WHERE status = 'online'
   AND id = ANY($1::uuid[])
+  AND last_seen_at < now() - make_interval(secs => $2::double precision)
 RETURNING id, workspace_id
 `
+
+type MarkRuntimesOfflineByIDsParams struct {
+	Ids          []pgtype.UUID `json:"ids"`
+	StaleSeconds float64       `json:"stale_seconds"`
+}
 
 type MarkRuntimesOfflineByIDsRow struct {
 	ID          pgtype.UUID `json:"id"`
@@ -392,8 +398,16 @@ type MarkRuntimesOfflineByIDsRow struct {
 // Flips a known set of runtime IDs from online to offline. Paired with
 // SelectStaleOnlineRuntimes in the sweeper so the candidate selection and
 // the actual write are decoupled (the LivenessStore filter sits between).
-func (q *Queries) MarkRuntimesOfflineByIDs(ctx context.Context, ids []pgtype.UUID) ([]MarkRuntimesOfflineByIDsRow, error) {
-	rows, err := q.db.Query(ctx, markRuntimesOfflineByIDs, ids)
+//
+// Re-checks the stale predicate inside the UPDATE so a concurrent heartbeat
+// between the SELECT (candidate gather), the LivenessStore filter, and this
+// UPDATE cannot demote a runtime that just refreshed last_seen_at. The
+// legacy MarkStaleRuntimesOffline UPDATE had this property implicitly
+// because the predicate and the write lived in one statement; here we
+// carry it forward explicitly so the SELECT/filter/UPDATE pipeline retains
+// the same race-freedom.
+func (q *Queries) MarkRuntimesOfflineByIDs(ctx context.Context, arg MarkRuntimesOfflineByIDsParams) ([]MarkRuntimesOfflineByIDsRow, error) {
+	rows, err := q.db.Query(ctx, markRuntimesOfflineByIDs, arg.Ids, arg.StaleSeconds)
 	if err != nil {
 		return nil, err
 	}

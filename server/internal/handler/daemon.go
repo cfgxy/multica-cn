@@ -534,11 +534,20 @@ const runtimeLivenessTTL = 45 * time.Second
 // runtimeHeartbeatDBFlushInterval is the maximum staleness we tolerate on
 // agent_runtime.last_seen_at while Redis is the active liveness source. When
 // last_seen_at gets older than this, the heartbeat path forces a DB write so
-// the UI's "last seen" display and the DB-fallback sweeper threshold (which
-// kicks in if Redis is unavailable) stay reasonably fresh. Must be >
-// runtimeLivenessTTL — otherwise we would write the DB on every beat and the
-// Redis path would buy us nothing.
-const runtimeHeartbeatDBFlushInterval = 60 * time.Second
+// (a) the UI's "last seen" display stays bounded and (b) the sweeper's
+// DB-only fallback path (used when an IsAliveBatch call to Redis errors) does
+// not false-positive on alive-but-Redis-only runtimes.
+//
+// Must satisfy two bounds:
+//   - > 0 (otherwise the Redis path buys us nothing, every beat would write).
+//   - < the sweeper's stale threshold (45s in cmd/server/runtime_sweeper.go).
+//     The strict inequality is the load-bearing invariant: DB age for an
+//     alive runtime never exceeds this value, so a sweeper that falls back
+//     to the DB stale window cannot mistakenly mark it offline.
+//
+// 30s sits at 2/3 of the 45s threshold, leaving one full heartbeat cycle
+// (15s) of buffer between the latest possible DB write and the stale cutoff.
+const runtimeHeartbeatDBFlushInterval = 30 * time.Second
 
 func (h *Handler) DaemonHeartbeat(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()

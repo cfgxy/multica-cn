@@ -75,10 +75,19 @@ WHERE status = 'online'
 -- Flips a known set of runtime IDs from online to offline. Paired with
 -- SelectStaleOnlineRuntimes in the sweeper so the candidate selection and
 -- the actual write are decoupled (the LivenessStore filter sits between).
+--
+-- Re-checks the stale predicate inside the UPDATE so a concurrent heartbeat
+-- between the SELECT (candidate gather), the LivenessStore filter, and this
+-- UPDATE cannot demote a runtime that just refreshed last_seen_at. The
+-- legacy MarkStaleRuntimesOffline UPDATE had this property implicitly
+-- because the predicate and the write lived in one statement; here we
+-- carry it forward explicitly so the SELECT/filter/UPDATE pipeline retains
+-- the same race-freedom.
 UPDATE agent_runtime
 SET status = 'offline', updated_at = now()
 WHERE status = 'online'
   AND id = ANY(@ids::uuid[])
+  AND last_seen_at < now() - make_interval(secs => @stale_seconds::double precision)
 RETURNING id, workspace_id;
 
 -- name: FailTasksForOfflineRuntimes :many

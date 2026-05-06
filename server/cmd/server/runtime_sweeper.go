@@ -76,7 +76,10 @@ func sweepStaleRuntimes(ctx context.Context, queries *db.Queries, liveness handl
 		return
 	}
 
-	staleRows, err := queries.MarkRuntimesOfflineByIDs(ctx, toOffline)
+	staleRows, err := queries.MarkRuntimesOfflineByIDs(ctx, db.MarkRuntimesOfflineByIDsParams{
+		Ids:          toOffline,
+		StaleSeconds: staleThresholdSeconds,
+	})
 	if err != nil {
 		slog.Warn("runtime sweeper: failed to mark stale runtimes offline", "error", err)
 		return
