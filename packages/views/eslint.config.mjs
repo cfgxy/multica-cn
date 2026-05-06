@@ -111,6 +111,14 @@ const TRANSLATED_FILES = [
   "issues/components/pickers/label-picker.tsx",
   "issues/components/pickers/property-picker.tsx",
   "issues/actions/issue-actions-menu-items.tsx",
+  "agents/components/agents-page.tsx",
+  "agents/components/agent-detail-page.tsx",
+  "agents/components/agent-detail-inspector.tsx",
+  "agents/components/agent-overview-pane.tsx",
+  "agents/components/create-agent-dialog.tsx",
+  "agents/components/agent-row-actions.tsx",
+  "agents/components/agent-columns.tsx",
+  "agents/components/inspector/skill-attach.tsx",
 ];
 
 export default [

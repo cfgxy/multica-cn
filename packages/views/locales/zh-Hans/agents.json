@@ -1,1 +1,189 @@
-{}
+{
+  "page": {
+    "title": "智能体",
+    "tagline": "能领取 issue、留下评论、推进状态的 AI 队友。",
+    "learn_more": "了解更多 →",
+    "new_agent": "新建智能体",
+    "search_placeholder": "搜索智能体…",
+    "show_archived": "显示已归档（{{count}}）→",
+    "of_total": "{{visible}} / {{total}}",
+    "list_load_failed": "无法加载智能体列表",
+    "list_load_failed_default": "获取智能体列表时出错。",
+    "try_again": "重试"
+  },
+  "scope": {
+    "mine": "我的",
+    "all": "全部"
+  },
+  "sort": {
+    "label_recent": "最近活跃",
+    "label_name": "名称",
+    "label_runs": "运行最多",
+    "label_created": "最近创建"
+  },
+  "availability": {
+    "all": "全部",
+    "online": "在线",
+    "unstable": "不稳定",
+    "offline": "离线"
+  },
+  "workload": {
+    "working": "处理中",
+    "queued": "排队中",
+    "idle": "空闲"
+  },
+  "archived": {
+    "active_link": "活跃智能体",
+    "title": "已归档智能体"
+  },
+  "empty": {
+    "title": "还没有智能体",
+    "description": "创建一个智能体，像分配给同事那样把 issue 交给它。本地智能体在你的机器上运行，云智能体在 Multica 运行时上运行。"
+  },
+  "no_matches": {
+    "title": "无匹配项",
+    "search_archived": "没有已归档智能体匹配「{{query}}」。",
+    "no_archived": "还没有已归档智能体。",
+    "search_active": "没有智能体匹配「{{query}}」。",
+    "search_active_filtered": "在该筛选下没有智能体匹配「{{query}}」。",
+    "no_filter_match": "该筛选下没有匹配的智能体。"
+  },
+  "columns": {
+    "agent": "智能体",
+    "status": "状态",
+    "workload": "工作负载",
+    "runtime": "运行时",
+    "activity_7d": "活动（7 天）",
+    "runs": "运行次数"
+  },
+  "row": {
+    "you": "你",
+    "archived": "已归档",
+    "no_description": "暂无描述",
+    "fallback_runtime_cloud": "云端",
+    "fallback_runtime_local": "本地",
+    "actions_aria": "行操作"
+  },
+  "activity_tooltip": {
+    "created_today": "今天创建",
+    "created_days_ago_other": "{{count}} 天前创建",
+    "last_7_days": "近 7 天",
+    "no_activity": "无活动",
+    "runs_other": "{{count}} 次运行",
+    "failed_suffix": " · {{count}} 次失败（{{percent}}%）"
+  },
+  "row_actions": {
+    "cancel_all_tasks": "取消全部 task",
+    "duplicate": "复制",
+    "restore": "恢复",
+    "archive": "归档",
+    "agent_archived_toast": "已归档智能体",
+    "archive_failed_toast": "归档智能体失败",
+    "agent_restored_toast": "已恢复智能体",
+    "restore_failed_toast": "恢复智能体失败",
+    "no_tasks_to_cancel_toast": "没有要取消的活动 task",
+    "cancelled_tasks_toast_other": "已取消 {{count}} 个 task",
+    "cancel_failed_toast": "取消 task 失败",
+    "cancel_dialog_title": "取消「{{name}}」的全部 task？",
+    "cancel_dialog_no_tasks": "没有要取消的活动 task。",
+    "cancel_dialog_running_one": "{{count}} 个进行中",
+    "cancel_dialog_queued_one": "{{count}} 个排队中",
+    "cancel_dialog_impact_other": "将取消 {{summary}} 个 task。",
+    "cancel_dialog_running_note": " 进行中的 task 最多需要 5 秒才能完全停止。",
+    "cancel_dialog_irreversible": " 已取消的 task 无法恢复。",
+    "cancel_dialog_keep": "保留",
+    "cancel_dialog_confirm": "取消全部 task",
+    "archive_dialog_title": "归档「{{name}}」？",
+    "archive_dialog_description": "归档后这个智能体将无法被分配或提及，进行中的 task 会被取消。所有历史会被保留，可以稍后恢复。",
+    "archive_dialog_cancel": "取消",
+    "archive_dialog_confirm": "归档"
+  },
+  "detail": {
+    "back_to_agents": "智能体",
+    "back_to_agents_full": "返回智能体列表",
+    "not_found_title": "未找到该智能体",
+    "not_found_default": "该智能体可能已被归档或删除。",
+    "try_again": "重试",
+    "archived_banner": "该智能体已归档，无法被分配或提及。",
+    "restore": "恢复",
+    "archive_dialog_title": "归档智能体？",
+    "archive_dialog_description": "「{{name}}」将被归档，无法被分配或提及，但所有历史会被保留。可以稍后恢复。",
+    "archive_dialog_cancel": "取消",
+    "archive_dialog_confirm": "归档",
+    "more_archive": "归档智能体",
+    "agent_updated_toast": "已更新智能体",
+    "update_failed_toast": "更新智能体失败",
+    "agent_archived_toast": "已归档智能体",
+    "archive_failed_toast": "归档智能体失败",
+    "agent_restored_toast": "已恢复智能体",
+    "restore_failed_toast": "恢复智能体失败"
+  },
+  "inspector": {
+    "section_properties": "属性",
+    "section_details": "详情",
+    "section_skills": "skill",
+    "prop_runtime": "运行时",
+    "prop_model": "模型",
+    "prop_visibility": "可见性",
+    "prop_concurrency": "并发",
+    "prop_owner": "所有者",
+    "prop_created": "创建时间",
+    "prop_updated": "更新时间",
+    "no_description_placeholder": "暂无描述",
+    "change_avatar_aria": "更换头像",
+    "avatar_updated_toast": "已更新头像",
+    "avatar_upload_failed_toast": "头像上传失败",
+    "rename_title": "重命名智能体",
+    "rename_placeholder": "智能体名称",
+    "rename_required": "名称必填",
+    "edit_description_title": "编辑描述",
+    "description_placeholder": "这个智能体做什么？",
+    "save": "保存",
+    "cancel": "取消"
+  },
+  "skill_attach": {
+    "trigger_aria": "附加工作区 skill",
+    "trigger_label": "附加"
+  },
+  "tabs": {
+    "activity": "动态",
+    "instructions": "指令",
+    "skills": "skill",
+    "environment": "环境变量",
+    "custom_args": "自定义参数",
+    "discard_dialog_title": "放弃未保存的修改？",
+    "discard_dialog_description": "当前 tab 有未保存的修改，离开会丢弃这些修改。",
+    "discard_keep": "继续编辑",
+    "discard_confirm": "放弃修改"
+  },
+  "create_dialog": {
+    "title_create": "创建智能体",
+    "title_duplicate": "复制智能体",
+    "description_create": "为工作区创建一个新的 AI 智能体。",
+    "description_duplicate": "基于「{{name}}」创建一个新智能体。指令、环境变量和 skill 会一并复制。",
+    "name_label": "名称",
+    "name_placeholder": "例如：深度研究智能体",
+    "description_label": "描述",
+    "description_placeholder": "这个智能体做什么？",
+    "visibility_label": "可见性",
+    "runtime_label": "运行时",
+    "runtime_filter_mine": "我的",
+    "runtime_filter_all": "全部",
+    "runtime_loading": "加载运行时…",
+    "runtime_none": "暂无可用运行时",
+    "runtime_register_first": "请先注册一个运行时再创建智能体",
+    "runtime_cloud_badge": "云端",
+    "duplicate_copy_suffix": "（副本）",
+    "create": "创建",
+    "creating": "创建中…",
+    "cancel": "取消",
+    "create_failed_toast": "创建智能体失败"
+  },
+  "task_failure": {
+    "agent_error": "智能体执行出错",
+    "timeout": "task 超时",
+    "runtime_offline": "守护进程离线",
+    "runtime_recovery": "守护进程已重启",
+    "manual": "用户取消"
+  }
+}
