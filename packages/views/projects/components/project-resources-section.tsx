@@ -118,16 +118,21 @@ export function ProjectResourcesSection({ projectId }: { projectId: string }) {
                 <div className="space-y-1">
                   {workspace.repos.map((repo) => {
                     const isAttached = attachedUrls.has(repo.url);
+                    const isDisabled = isAttached || createResource.isPending;
                     return (
+                      // Use aria-disabled instead of the native `disabled` attribute so
+                      // hover events still reach the tooltip trigger on attached rows
+                      // (browsers suppress pointer events on disabled form controls).
                       <button
                         key={repo.url}
                         type="button"
-                        disabled={isAttached || createResource.isPending}
+                        aria-disabled={isDisabled}
                         onClick={async () => {
+                          if (isDisabled) return;
                           await handleAttach(repo.url);
                           setAddOpen(false);
                         }}
-                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-left hover:bg-accent transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        className="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-xs text-left hover:bg-accent transition-colors aria-disabled:opacity-50 aria-disabled:cursor-not-allowed aria-disabled:hover:bg-transparent"
                       >
                         <FolderGit className="size-3.5" />
                         <Tooltip>
