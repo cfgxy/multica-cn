@@ -71,6 +71,26 @@ func TestS3StorageKeyFromURL_LegacyBucketOnlyHostStillRoundTrips(t *testing.T) {
 	}
 }
 
+func TestLooksLikeS3Hostname(t *testing.T) {
+	cases := []struct {
+		bucket string
+		want   bool
+	}{
+		{"my-bucket", false},
+		{"bucket.with.dots", false},
+		{"my-bucket.s3.us-east-1.amazonaws.com", true},
+		{"my-bucket.s3.amazonaws.com", true},
+		{"s3.us-east-1.amazonaws.com", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.bucket, func(t *testing.T) {
+			if got := looksLikeS3Hostname(tc.bucket); got != tc.want {
+				t.Fatalf("looksLikeS3Hostname(%q) = %v, want %v", tc.bucket, got, tc.want)
+			}
+		})
+	}
+}
+
 func TestS3StorageUploadedURL(t *testing.T) {
 	const key = "uploads/abc/file.png"
 

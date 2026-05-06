@@ -36,6 +36,12 @@ func NewS3StorageFromEnv() *S3Storage {
 		slog.Info("S3_BUCKET not set, cloud upload disabled")
 		return nil
 	}
+	if looksLikeS3Hostname(bucket) {
+		slog.Warn(
+			"S3_BUCKET looks like a hostname rather than a bucket name — uploads and public URLs will likely both fail. Use only the bucket name (e.g. \"my-bucket\"), not \"<bucket>.s3.<region>.amazonaws.com\".",
+			"value", bucket,
+		)
+	}
 
 	region := os.Getenv("S3_REGION")
 	if region == "" {
@@ -83,6 +89,15 @@ func NewS3StorageFromEnv() *S3Storage {
 
 func (s *S3Storage) CdnDomain() string {
 	return s.cdnDomain
+}
+
+// looksLikeS3Hostname returns true when the configured S3_BUCKET value looks
+// like an S3 endpoint hostname rather than a bucket name. Real bucket names
+// can never legitimately contain "amazonaws.com", so this is an unambiguous
+// misconfiguration signal — the most common form being users pasting
+// "<bucket>.s3.<region>.amazonaws.com" into S3_BUCKET.
+func looksLikeS3Hostname(bucket string) bool {
+	return strings.Contains(bucket, "amazonaws.com")
 }
 
 // storageClass returns the appropriate S3 storage class.
