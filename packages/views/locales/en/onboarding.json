@@ -36,6 +36,43 @@
       "card5_timestamp": "just now"
     }
   },
+  "common": {
+    "back": "Back",
+    "continue": "Continue"
+  },
+  "questionnaire": {
+    "eyebrow": "Before we start",
+    "headline": "Three questions to get to know you.",
+    "q1_question": "Who will use this workspace?",
+    "q1_solo": "Just me",
+    "q1_team": "My team (2–10 people)",
+    "q1_other_placeholder": "e.g. a small community I help run",
+    "q2_question": "What best describes you?",
+    "q2_developer": "Software developer",
+    "q2_product_lead": "Product or project lead",
+    "q2_writer": "Writer or content creator",
+    "q2_founder": "Founder or operator",
+    "q2_other_placeholder": "e.g. researcher, designer, ops lead",
+    "q3_question": "What do you want to do with Multica?",
+    "q3_coding": "Write and ship code",
+    "q3_planning": "Plan and manage projects",
+    "q3_writing_research": "Research or write",
+    "q3_explore": "I'm just exploring for now",
+    "q3_other_placeholder": "e.g. automate my weekly reports",
+    "answered_progress": "{{count}} of 3 answered",
+    "why_eyebrow": "Why three questions",
+    "why_headline": "So you land running.",
+    "what_eyebrow": "What you get",
+    "unlock_starter_title": "A starter project, tailored",
+    "unlock_starter_body": "A Getting Started checklist shaped by your answers.",
+    "unlock_agents_title": "A head start with agents",
+    "unlock_agents_body": "Connect a runtime and we'll pick a template for your role — plus write its first task.",
+    "learn_more": "Learn how agents work →"
+  },
+  "option_card": {
+    "other_label": "Other",
+    "other_aria": "Describe something else"
+  },
   "errors": {
     "skip_failed": "Failed to finish onboarding"
   }

@@ -133,6 +133,8 @@ const TRANSLATED_FILES = [
   "agents/components/tabs/skills-tab.tsx",
   "agents/components/tabs/activity-tab.tsx",
   "agents/components/skill-add-dialog.tsx",
+  "onboarding/steps/step-questionnaire.tsx",
+  "onboarding/components/option-card.tsx",
 ];
 
 export default [
