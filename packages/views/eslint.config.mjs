@@ -119,6 +119,10 @@ const TRANSLATED_FILES = [
   "agents/components/agent-row-actions.tsx",
   "agents/components/agent-columns.tsx",
   "agents/components/inspector/skill-attach.tsx",
+  "agents/components/inspector/concurrency-picker.tsx",
+  "agents/components/inspector/runtime-picker.tsx",
+  "agents/components/inspector/model-picker.tsx",
+  "agents/components/model-dropdown.tsx",
 ];
 
 export default [
