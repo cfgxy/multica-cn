@@ -61,6 +61,20 @@
     "toast_project_deleted": "已删除项目",
     "toast_move_issue_failed": "移动 issue 失败"
   },
+  "resources": {
+    "section_header": "资源",
+    "empty": "还没有关联资源。",
+    "add_button": "添加资源",
+    "popover_title": "关联 GitHub 仓库",
+    "attached_badge": "已关联",
+    "remove_tooltip": "移除",
+    "url_placeholder": "https://github.com/owner/repo",
+    "url_submit": "添加",
+    "toast_attached": "已关联仓库",
+    "toast_attach_failed": "关联失败",
+    "toast_removed": "已移除资源",
+    "toast_remove_failed": "移除资源失败"
+  },
   "delete_dialog": {
     "title": "删除项目",
     "description": "将删除这个项目。issue 不会被删除，只会从项目中解除关联。",

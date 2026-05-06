@@ -124,22 +124,25 @@ export function ChatSessionHistory() {
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Delete chat session</AlertDialogTitle>
+            <AlertDialogTitle>{t(($) => $.session_history.delete_dialog.title)}</AlertDialogTitle>
             <AlertDialogDescription>
               {pendingDelete?.title
-                ? `"${pendingDelete.title}" and its messages will be permanently removed.`
-                : "This chat session and its messages will be permanently removed."}
-              {" "}This action cannot be undone.
+                ? t(($) => $.session_history.delete_dialog.description_with_title, { title: pendingDelete.title })
+                : t(($) => $.session_history.delete_dialog.description_default)}
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={deleteSession.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogCancel disabled={deleteSession.isPending}>
+              {t(($) => $.session_history.delete_dialog.cancel)}
+            </AlertDialogCancel>
             <AlertDialogAction
               onClick={handleConfirmDelete}
               disabled={deleteSession.isPending}
               className="bg-destructive text-white hover:bg-destructive/90"
             >
-              {deleteSession.isPending ? "Deleting..." : "Delete"}
+              {deleteSession.isPending
+                ? t(($) => $.session_history.delete_dialog.confirming)
+                : t(($) => $.session_history.delete_dialog.confirm)}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -228,13 +231,13 @@ function SessionItem({
                 e.stopPropagation();
                 onRequestDelete();
               }}
-              aria-label="Delete chat session"
+              aria-label={t(($) => $.session_history.row_delete_aria)}
             />
           }
         >
           <Trash2 className="size-3.5" />
         </TooltipTrigger>
-        <TooltipContent side="left">Delete</TooltipContent>
+        <TooltipContent side="left">{t(($) => $.session_history.row_delete_tooltip)}</TooltipContent>
       </Tooltip>
     </div>
   );

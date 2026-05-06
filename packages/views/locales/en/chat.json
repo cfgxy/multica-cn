@@ -31,6 +31,16 @@
       "minutes": "{{count}}m ago",
       "hours": "{{count}}h ago",
       "days": "{{count}}d ago"
+    },
+    "row_delete_aria": "Delete chat session",
+    "row_delete_tooltip": "Delete",
+    "delete_dialog": {
+      "title": "Delete chat session",
+      "description_with_title": "\"{{title}}\" and its messages will be permanently removed. This action cannot be undone.",
+      "description_default": "This chat session and its messages will be permanently removed. This action cannot be undone.",
+      "cancel": "Cancel",
+      "confirm": "Delete",
+      "confirming": "Deleting..."
     }
   },
   "window": {
@@ -46,7 +56,9 @@
     "untitled": "New chat",
     "my_agents": "My agents",
     "others": "Others",
-    "no_agents": "No agents"
+    "no_agents": "No agents",
+    "history_show_tooltip": "Chat history",
+    "history_back_tooltip": "Back to chat"
   },
   "empty_state": {
     "first_time_title": "Chat with your agents",

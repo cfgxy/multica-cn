@@ -29,6 +29,16 @@
       "minutes": "{{count}} 分钟前",
       "hours": "{{count}} 小时前",
       "days": "{{count}} 天前"
+    },
+    "row_delete_aria": "删除对话",
+    "row_delete_tooltip": "删除",
+    "delete_dialog": {
+      "title": "删除对话",
+      "description_with_title": "\"{{title}}\" 及其消息会被永久删除，无法撤销。",
+      "description_default": "此对话及其消息会被永久删除，无法撤销。",
+      "cancel": "取消",
+      "confirm": "删除",
+      "confirming": "删除中..."
     }
   },
   "window": {
@@ -44,7 +54,9 @@
     "untitled": "新对话",
     "my_agents": "我的智能体",
     "others": "其他",
-    "no_agents": "暂无智能体"
+    "no_agents": "暂无智能体",
+    "history_show_tooltip": "对话历史",
+    "history_back_tooltip": "返回对话"
   },
   "empty_state": {
     "first_time_title": "和你的智能体对话",

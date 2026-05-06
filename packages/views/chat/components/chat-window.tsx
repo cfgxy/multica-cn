@@ -426,7 +426,7 @@ export function ChatWindow() {
               <History />
             </TooltipTrigger>
             <TooltipContent side="top">
-              {showHistory ? "Back to chat" : "Chat history"}
+              {showHistory ? t(($) => $.window.history_back_tooltip) : t(($) => $.window.history_show_tooltip)}
             </TooltipContent>
           </Tooltip>
           <Tooltip>
