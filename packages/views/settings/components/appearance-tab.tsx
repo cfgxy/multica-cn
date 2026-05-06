@@ -3,7 +3,11 @@
 import { toast } from "sonner";
 import { useTheme } from "@multica/ui/components/common/theme-provider";
 import { cn } from "@multica/ui/lib/utils";
-import { type SupportedLocale } from "@multica/core/i18n";
+import {
+  DEFAULT_LOCALE,
+  SUPPORTED_LOCALES,
+  type SupportedLocale,
+} from "@multica/core/i18n";
 import { useLocaleAdapter } from "@multica/core/i18n/react";
 import { useAuthStore } from "@multica/core/auth";
 import { api } from "@multica/core/api";
@@ -90,7 +94,14 @@ export function AppearanceTab() {
   const localeAdapter = useLocaleAdapter();
   const user = useAuthStore((s) => s.user);
 
-  const currentLocale = i18n.language as SupportedLocale;
+  // i18next.language can be a region-tagged BCP-47 string (e.g. "en-US",
+  // "zh-Hans-CN") returned by intl-localematcher. Normalize to a supported
+  // locale before comparing — otherwise the radio shows neither option active.
+  const currentLocale: SupportedLocale = SUPPORTED_LOCALES.includes(
+    i18n.language as SupportedLocale,
+  )
+    ? (i18n.language as SupportedLocale)
+    : DEFAULT_LOCALE;
 
   const themeOptions = [
     { value: "light" as const, label: t(($) => $.appearance.theme.light) },

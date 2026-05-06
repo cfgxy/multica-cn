@@ -107,6 +107,15 @@ function isSupportedLocale(value: string | null): value is SupportedLocale {
   return value !== null && (SUPPORTED_LOCALES as readonly string[]).includes(value);
 }
 
+// HTML lang attribute uses BCP-47 region tags that screen readers and font
+// stacks recognize widely. i18next keeps `zh-Hans` as its internal locale
+// (script subtag is what we actually translate against), but the html element
+// expects a region-flavoured tag for accessibility tooling and CJK fallback.
+const HTML_LANG: Record<SupportedLocale, string> = {
+  en: "en",
+  "zh-Hans": "zh-CN",
+};
+
 export default async function RootLayout({
   children,
 }: {
@@ -121,7 +130,7 @@ export default async function RootLayout({
 
   return (
     <html
-      lang={locale}
+      lang={HTML_LANG[locale]}
       suppressHydrationWarning
       className={cn("antialiased font-sans h-full", inter.variable, geistMono.variable, sourceSerif.variable)}
     >

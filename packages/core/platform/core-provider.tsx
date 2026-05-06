@@ -5,7 +5,11 @@ import { ApiClient } from "../api/client";
 import { setApiInstance } from "../api";
 import { createAuthStore, registerAuthStore } from "../auth";
 import { createChatStore, registerChatStore } from "../chat";
-import { I18nProvider, LocaleAdapterProvider } from "../i18n/react";
+import {
+  I18nProvider,
+  LocaleAdapterProvider,
+  UserLocaleSync,
+} from "../i18n/react";
 import { WSProvider } from "../realtime";
 import { QueryProvider } from "../provider";
 import { createLogger } from "../logger";
@@ -100,8 +104,13 @@ export function CoreProvider({
     </QueryProvider>
   );
 
+  // UserLocaleSync requires a LocaleAdapter to persist; only mount it when
+  // the host app provides one (web layout + desktop App both do).
   const withAdapter = localeAdapter ? (
-    <LocaleAdapterProvider adapter={localeAdapter}>{tree}</LocaleAdapterProvider>
+    <LocaleAdapterProvider adapter={localeAdapter}>
+      <UserLocaleSync />
+      {tree}
+    </LocaleAdapterProvider>
   ) : (
     tree
   );

@@ -2,6 +2,8 @@ import type { LocaleResources, SupportedLocale } from "@multica/core/i18n";
 import enCommon from "./en/common.json";
 import enAuth from "./en/auth.json";
 import enSettings from "./en/settings.json";
+import enIssues from "./en/issues.json";
+import enAgents from "./en/agents.json";
 import enEditor from "./en/editor.json";
 import enOnboarding from "./en/onboarding.json";
 import enInvite from "./en/invite.json";
@@ -21,6 +23,8 @@ import enLayout from "./en/layout.json";
 import zhHansCommon from "./zh-Hans/common.json";
 import zhHansAuth from "./zh-Hans/auth.json";
 import zhHansSettings from "./zh-Hans/settings.json";
+import zhHansIssues from "./zh-Hans/issues.json";
+import zhHansAgents from "./zh-Hans/agents.json";
 import zhHansEditor from "./zh-Hans/editor.json";
 import zhHansOnboarding from "./zh-Hans/onboarding.json";
 import zhHansInvite from "./zh-Hans/invite.json";
@@ -46,6 +50,8 @@ export const RESOURCES: Record<SupportedLocale, LocaleResources> = {
     common: enCommon,
     auth: enAuth,
     settings: enSettings,
+    issues: enIssues,
+    agents: enAgents,
     editor: enEditor,
     onboarding: enOnboarding,
     invite: enInvite,
@@ -67,6 +73,8 @@ export const RESOURCES: Record<SupportedLocale, LocaleResources> = {
     common: zhHansCommon,
     auth: zhHansAuth,
     settings: zhHansSettings,
+    issues: zhHansIssues,
+    agents: zhHansAgents,
     editor: zhHansEditor,
     onboarding: zhHansOnboarding,
     invite: zhHansInvite,

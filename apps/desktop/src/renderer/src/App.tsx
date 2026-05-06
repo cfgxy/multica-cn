@@ -237,6 +237,25 @@ export default function App() {
     () => ({ [locale]: RESOURCES[locale] }),
     [locale],
   );
+
+  // React to OS-level language changes detected by main on focus regain.
+  // Only act when the user is following the system signal (no explicit
+  // Settings choice) — otherwise their preference wins. Cross-device sync
+  // for the explicit-choice case is handled inside CoreProvider.
+  useEffect(() => {
+    return window.desktopAPI.onSystemLocaleChanged((nextSystemLocale) => {
+      if (localeAdapter.getUserChoice()) return;
+      const next = pickLocale({
+        ...localeAdapter,
+        getSystemPreferences: () =>
+          nextSystemLocale ? [nextSystemLocale] : [],
+      });
+      if (next === locale) return;
+      localeAdapter.persist(next);
+      window.location.reload();
+    });
+  }, [localeAdapter, locale]);
+
   return (
     <ThemeProvider>
       <CoreProvider

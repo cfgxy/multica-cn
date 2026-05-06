@@ -2,11 +2,8 @@
 
 import { Suspense, useMemo } from "react";
 import { CoreProvider } from "@multica/core/platform";
-import {
-  createBrowserCookieLocaleAdapter,
-  type LocaleResources,
-  type SupportedLocale,
-} from "@multica/core/i18n";
+import { createBrowserCookieLocaleAdapter } from "@multica/core/i18n/browser";
+import type { LocaleResources, SupportedLocale } from "@multica/core/i18n";
 import packageJson from "../package.json";
 import { WebNavigationProvider } from "@/platform/navigation";
 import {

@@ -1,3 +1,6 @@
+import { readdirSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { RESOURCES } from "./index";
 
@@ -10,6 +13,20 @@ import { RESOURCES } from "./index";
 // because Chinese has no grammatical number. Normalize both forms to
 // `_other` before comparing so a `{ key_one, key_other }` pair in EN
 // matches a single `{ key_other }` in zh.
+
+// Derive the canonical namespace list from disk so the test fails if a JSON
+// file ships without a matching RESOURCES entry. Without this guard the test
+// would still pass when both EN and zh-Hans skip a namespace (e.g. issues +
+// agents both unregistered), since the iteration happens over RESOURCES.en
+// itself — that's a tautology, not parity.
+const LOCALES_DIR = dirname(fileURLToPath(import.meta.url));
+
+function jsonNamespacesIn(locale: string): string[] {
+  return readdirSync(resolve(LOCALES_DIR, locale))
+    .filter((name) => name.endsWith(".json"))
+    .map((name) => name.replace(/\.json$/, ""))
+    .sort();
+}
 
 type Json = Record<string, unknown>;
 
@@ -36,6 +53,14 @@ const zh = RESOURCES["zh-Hans"];
 describe("locale bundle parity", () => {
   it("declares the same namespaces in EN and zh-Hans", () => {
     expect(Object.keys(en).sort()).toEqual(Object.keys(zh).sort());
+  });
+
+  it("registers every JSON file in RESOURCES (EN)", () => {
+    expect(Object.keys(en).sort()).toEqual(jsonNamespacesIn("en"));
+  });
+
+  it("registers every JSON file in RESOURCES (zh-Hans)", () => {
+    expect(Object.keys(zh).sort()).toEqual(jsonNamespacesIn("zh-Hans"));
   });
 
   for (const ns of Object.keys(en)) {

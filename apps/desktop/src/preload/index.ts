@@ -39,6 +39,17 @@ const desktopAPI = {
   /** OS-preferred locale (BCP 47), passed from main via additionalArguments.
    *  Used by the renderer's LocaleAdapter as the system-preference signal. */
   systemLocale,
+  /** Subscribe to OS language changes detected after boot. The renderer
+   *  decides whether to act (no-op when the user has an explicit Settings
+   *  choice). Returns an unsubscribe function. */
+  onSystemLocaleChanged: (callback: (locale: string) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, locale: string) =>
+      callback(locale);
+    ipcRenderer.on("locale:system-changed", handler);
+    return () => {
+      ipcRenderer.removeListener("locale:system-changed", handler);
+    };
+  },
   /** Listen for auth token delivered via deep link */
   onAuthToken: (callback: (token: string) => void) => {
     const handler = (_event: Electron.IpcRendererEvent, token: string) =>

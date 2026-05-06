@@ -3,8 +3,9 @@ import { initReactI18next } from "react-i18next";
 import type { LocaleResources, SupportedLocale } from "./types";
 
 // Both server (RSC) and client must call this with the SAME locale + resources
-// to avoid hydration mismatch. `initImmediate: false` forces synchronous init;
-// `useSuspense: false` prevents fallback rendering during hydration.
+// to avoid hydration mismatch. `initAsync: false` forces synchronous init
+// (renamed from `initImmediate` in i18next v25+); `useSuspense: false`
+// prevents fallback rendering during hydration.
 export function createI18n(
   locale: SupportedLocale,
   resources: Record<string, LocaleResources>,

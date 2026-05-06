@@ -514,6 +514,9 @@ importers:
       '@types/react':
         specifier: ^19.2.0
         version: 19.2.14
+      jsdom:
+        specifier: 'catalog:'
+        version: 29.0.1(@noble/hashes@1.8.0)
       typescript:
         specifier: 'catalog:'
         version: 5.9.3

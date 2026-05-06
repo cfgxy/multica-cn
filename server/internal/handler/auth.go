@@ -38,6 +38,15 @@ var ErrEmailNotAllowed = SignupError{Message: "email address or domain not allow
 
 const devVerificationCodeEnv = "MULTICA_DEV_VERIFICATION_CODE"
 
+// supportedLanguages mirrors `SUPPORTED_LOCALES` in packages/core/i18n/types.ts.
+// Keep both lists in sync when adding a locale — the user-controlled `language`
+// field round-trips through GetMe back into i18n.changeLanguage(), so without
+// validation an arbitrary string would persist and echo to every device.
+var supportedLanguages = map[string]struct{}{
+	"en":      {},
+	"zh-Hans": {},
+}
+
 type UserResponse struct {
 	ID                      string          `json:"id"`
 	Name                    string          `json:"name"`
@@ -652,7 +661,12 @@ func (h *Handler) UpdateMe(w http.ResponseWriter, r *http.Request) {
 		params.AvatarUrl = pgtype.Text{String: strings.TrimSpace(*req.AvatarURL), Valid: true}
 	}
 	if req.Language != nil {
-		params.Language = pgtype.Text{String: strings.TrimSpace(*req.Language), Valid: true}
+		lang := strings.TrimSpace(*req.Language)
+		if _, ok := supportedLanguages[lang]; !ok {
+			writeError(w, http.StatusBadRequest, "unsupported language")
+			return
+		}
+		params.Language = pgtype.Text{String: lang, Valid: true}
 	}
 
 	updatedUser, err := h.Queries.UpdateUser(r.Context(), params)

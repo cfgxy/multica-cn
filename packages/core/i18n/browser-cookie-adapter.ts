@@ -23,9 +23,13 @@ export function createBrowserCookieLocaleAdapter(): LocaleAdapter {
     },
     persist(locale: SupportedLocale) {
       if (typeof document === "undefined") return;
+      const secure =
+        typeof location !== "undefined" && location.protocol === "https:"
+          ? ";Secure"
+          : "";
       document.cookie =
         `${LOCALE_COOKIE}=${encodeURIComponent(locale)};` +
-        `path=/;max-age=${COOKIE_MAX_AGE};SameSite=Lax`;
+        `path=/;max-age=${COOKIE_MAX_AGE};SameSite=Lax${secure}`;
     },
   };
 }
