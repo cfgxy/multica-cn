@@ -271,3 +271,48 @@ func TestRecordHeartbeat_TouchErrorFallsBackToDB(t *testing.T) {
 		t.Fatalf("Touch failure should have fallen back to a DB write: before=%s after=%s", before, lastSeen)
 	}
 }
+
+// TestRecordHeartbeat_SweeperRaceRecoversOnline pins the regression for the
+// status-snapshot race: rt.Status was read from a prior SELECT, but the
+// sweeper can flip the row to offline between that SELECT and the heartbeat's
+// write. Without the affected-rows fallback in recordHeartbeat, the heartbeat
+// would only bump last_seen_at and leave the row stuck offline. The legacy
+// UpdateAgentRuntimeHeartbeat always re-asserted status='online', so this
+// regression test guards the new SELECT/Touch/MarkOnline path against the
+// same scenario.
+func TestRecordHeartbeat_SweeperRaceRecoversOnline(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	runtimeID := createRuntimeLocalSkillTestRuntime(t, testUserID)
+
+	// Force the noop store so recordHeartbeat takes the DB-write path
+	// without any Redis interference. The race is independent of the
+	// liveness store — it lives entirely between the rt.Status snapshot
+	// and the DB UPDATE.
+	orig := testHandler.LivenessStore
+	testHandler.LivenessStore = NewNoopLivenessStore()
+	t.Cleanup(func() { testHandler.LivenessStore = orig })
+
+	// Snapshot the runtime while it is still online.
+	rt := loadRuntime(t, runtimeID)
+	if rt.Status != "online" {
+		t.Fatalf("setup: runtime should be online, got %q", rt.Status)
+	}
+
+	// Simulate the sweeper flipping the row to offline between the
+	// snapshot and the heartbeat's UPDATE.
+	setRuntimeStatus(t, runtimeID, "offline")
+
+	if err := testHandler.recordHeartbeat(context.Background(), rt); err != nil {
+		t.Fatalf("recordHeartbeat: %v", err)
+	}
+
+	status, lastSeen, _ := readRuntimeRow(t, runtimeID)
+	if status != "online" {
+		t.Fatalf("expected sweeper-raced runtime to recover online, got %q", status)
+	}
+	if time.Since(lastSeen) > 30*time.Second {
+		t.Fatalf("last_seen_at not refreshed: %s ago", time.Since(lastSeen))
+	}
+}

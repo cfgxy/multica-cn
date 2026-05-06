@@ -706,8 +706,23 @@ func (h *Handler) recordHeartbeat(ctx context.Context, rt db.AgentRuntime) error
 	// Online rows take the cheap path: a single non-indexed column write
 	// that stays HOT-eligible. Only the offline→online transition (or a
 	// row that has never been seen) needs to flip status and updated_at.
+	//
+	// rt.Status was read from a prior SELECT and can race with the
+	// sweeper: between that SELECT and this UPDATE the sweeper might have
+	// flipped the row to offline. TouchAgentRuntimeLastSeen carries a
+	// status='online' predicate and reports affected rows, so we can
+	// detect the race (rows == 0) and recover via MarkAgentRuntimeOnline,
+	// matching the legacy UpdateAgentRuntimeHeartbeat behavior of always
+	// re-asserting online on every heartbeat.
 	if rt.Status == "online" && rt.LastSeenAt.Valid {
-		return h.Queries.TouchAgentRuntimeLastSeen(ctx, rt.ID)
+		rows, err := h.Queries.TouchAgentRuntimeLastSeen(ctx, rt.ID)
+		if err != nil {
+			return err
+		}
+		if rows > 0 {
+			return nil
+		}
+		// Fall through: sweeper raced us to offline; flip back online.
 	}
 	_, err := h.Queries.MarkAgentRuntimeOnline(ctx, rt.ID)
 	return err

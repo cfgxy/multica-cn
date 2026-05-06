@@ -39,14 +39,22 @@ DO UPDATE SET
     updated_at = now()
 RETURNING *, (xmax = 0) AS inserted;
 
--- name: TouchAgentRuntimeLastSeen :exec
--- Bumps last_seen_at on an already-online runtime. Deliberately does NOT touch
--- status or updated_at: status is unchanged on the hot heartbeat path, and
--- avoiding updated_at keeps the row HOT-eligible (no index columns change) and
--- avoids invalidating any downstream consumer that watches updated_at.
+-- name: TouchAgentRuntimeLastSeen :execrows
+-- Bumps last_seen_at on an already-online runtime. Deliberately does NOT
+-- touch status or updated_at: status is unchanged on the hot heartbeat path,
+-- and avoiding updated_at keeps the row HOT-eligible (no index columns
+-- change) and avoids invalidating any downstream consumer that watches
+-- updated_at.
+--
+-- The status='online' predicate is load-bearing: callers read rt.Status from
+-- a prior SELECT and may race with the sweeper, which can flip the row to
+-- offline between that SELECT and this UPDATE. Without the predicate this
+-- query would silently leave a freshly-heartbeated runtime stuck in offline.
+-- Returning affected rows lets callers detect that race and fall back to
+-- MarkAgentRuntimeOnline to flip the row back online.
 UPDATE agent_runtime
 SET last_seen_at = now()
-WHERE id = $1;
+WHERE id = $1 AND status = 'online';
 
 -- name: MarkAgentRuntimeOnline :one
 -- Used on the offline→online transition (and on first heartbeat after

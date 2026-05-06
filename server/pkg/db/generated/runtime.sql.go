@@ -534,19 +534,30 @@ func (q *Queries) SetAgentRuntimeOffline(ctx context.Context, id pgtype.UUID) er
 	return err
 }
 
-const touchAgentRuntimeLastSeen = `-- name: TouchAgentRuntimeLastSeen :exec
+const touchAgentRuntimeLastSeen = `-- name: TouchAgentRuntimeLastSeen :execrows
 UPDATE agent_runtime
 SET last_seen_at = now()
-WHERE id = $1
+WHERE id = $1 AND status = 'online'
 `
 
-// Bumps last_seen_at on an already-online runtime. Deliberately does NOT touch
-// status or updated_at: status is unchanged on the hot heartbeat path, and
-// avoiding updated_at keeps the row HOT-eligible (no index columns change) and
-// avoids invalidating any downstream consumer that watches updated_at.
-func (q *Queries) TouchAgentRuntimeLastSeen(ctx context.Context, id pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, touchAgentRuntimeLastSeen, id)
-	return err
+// Bumps last_seen_at on an already-online runtime. Deliberately does NOT
+// touch status or updated_at: status is unchanged on the hot heartbeat path,
+// and avoiding updated_at keeps the row HOT-eligible (no index columns
+// change) and avoids invalidating any downstream consumer that watches
+// updated_at.
+//
+// The status='online' predicate is load-bearing: callers read rt.Status from
+// a prior SELECT and may race with the sweeper, which can flip the row to
+// offline between that SELECT and this UPDATE. Without the predicate this
+// query would silently leave a freshly-heartbeated runtime stuck in offline.
+// Returning affected rows lets callers detect that race and fall back to
+// MarkAgentRuntimeOnline to flip the row back online.
+func (q *Queries) TouchAgentRuntimeLastSeen(ctx context.Context, id pgtype.UUID) (int64, error) {
+	result, err := q.db.Exec(ctx, touchAgentRuntimeLastSeen, id)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const upsertAgentRuntime = `-- name: UpsertAgentRuntime :one
