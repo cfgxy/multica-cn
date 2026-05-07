@@ -579,9 +579,12 @@ func (h *Handler) mergeTimelineAscThenReverse(r *http.Request, comments []db.Com
 
 // commentsToEntries fetches reactions + attachments for the given comments in
 // one batch each and returns enriched TimelineEntry slices preserving order.
+// Always returns a non-nil slice — a nil slice would marshal to JSON `null`
+// and breaks the V2 response schema (whose comments/activities are non-null
+// arrays), causing parseWithFallback to drop the entire page.
 func (h *Handler) commentsToEntries(r *http.Request, comments []db.Comment) []TimelineEntry {
 	if len(comments) == 0 {
-		return nil
+		return []TimelineEntry{}
 	}
 	ids := make([]pgtype.UUID, len(comments))
 	for i, c := range comments {

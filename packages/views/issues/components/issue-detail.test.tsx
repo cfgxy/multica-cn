@@ -615,6 +615,73 @@ describe("IssueDetail (shared)", () => {
     });
   });
 
+  it("renders an unknown priority/status without crashing the section", async () => {
+    // Server-side enum drift lands here as values the icon config doesn't
+    // know about (e.g. a new "deferred" status added by the backend before
+    // the desktop bundle ships). The activity row must downgrade to a
+    // generic icon, not throw — see the API Response Compatibility rule
+    // in CLAUDE.md.
+    // Use three different actions so the same-actor-same-action coalescer
+    // doesn't merge them into a single row (which would drop the group below
+    // the fold threshold and skip the icon render path entirely).
+    const activities: TimelineEntry[] = [
+      {
+        type: "activity",
+        id: "a-bad-priority",
+        actor_type: "member",
+        actor_id: "user-1",
+        action: "priority_changed",
+        details: { from: "low", to: "deferred-future-value" },
+        created_at: "2026-01-18T00:00:00Z",
+      },
+      {
+        type: "activity",
+        id: "a-bad-status",
+        actor_type: "member",
+        actor_id: "user-1",
+        action: "status_changed",
+        details: { from: "todo", to: "deferred-future-value" },
+        created_at: "2026-01-18T00:01:00Z",
+      },
+      {
+        type: "activity",
+        id: "a-known-priority",
+        actor_type: "member",
+        actor_id: "user-1",
+        action: "priority_changed",
+        details: { from: "high", to: "low" },
+        created_at: "2026-01-18T00:02:00Z",
+      },
+    ];
+    const desc = [...activities].sort((a, b) =>
+      b.created_at.localeCompare(a.created_at),
+    );
+    mockApiObj.listTimelineV2.mockResolvedValue({
+      comments: [],
+      activities: desc,
+      next_cursor: null,
+      prev_cursor: null,
+      has_more_before: false,
+      has_more_after: false,
+    });
+
+    renderIssueDetail();
+
+    // Group is folded by default (3 entries ≥ threshold). Expanding it must
+    // not throw — the unknown enum values should fall back to the neutral
+    // icon configs.
+    const fold = await screen.findByText("3 system events");
+    fireEvent.click(fold);
+
+    // Known priority row should still render normally after the fallback path
+    // didn't crash earlier rows.
+    await waitFor(() => {
+      expect(
+        screen.getByText(/changed priority from High to Low/),
+      ).toBeInTheDocument();
+    });
+  });
+
   it("folds heterogeneous activity groups (≥3 entries) and expands on click", async () => {
     // 5 activities with mixed actor/action so the legacy same-actor +
     // same-action coalescing does NOT collapse them — exercise the new

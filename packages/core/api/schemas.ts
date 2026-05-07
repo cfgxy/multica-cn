@@ -97,8 +97,12 @@ const TimelineTargetSchema = z.object({
 }).loose();
 
 export const TimelineV2PageSchema = z.object({
-  comments: z.array(TimelineEntrySchema).default([]),
-  activities: z.array(TimelineEntrySchema).default([]),
+  // `.nullable()` (in addition to `.default([])`) defends against server
+  // builds that serialize empty Go slices as JSON `null` — without it, an
+  // issue with zero comments rendered as a fully-empty fallback page (no
+  // entries visible at all). `.default([])` only fires for `undefined`.
+  comments: z.array(TimelineEntrySchema).nullable().default([]).transform((v) => v ?? []),
+  activities: z.array(TimelineEntrySchema).nullable().default([]).transform((v) => v ?? []),
   next_cursor: z.string().nullable().default(null),
   prev_cursor: z.string().nullable().default(null),
   has_more_before: z.boolean().default(false),

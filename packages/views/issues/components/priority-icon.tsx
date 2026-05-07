@@ -10,7 +10,11 @@ export function PriorityIcon({
   className?: string;
   inheritColor?: boolean;
 }) {
-  const cfg = PRIORITY_CONFIG[priority];
+  // Defensive lookup: a future server-side priority value (or a malformed
+  // activity payload) lands here as a key the config doesn't know about.
+  // Fall back to "none" instead of crashing the render — see the enum-drift
+  // rule in CLAUDE.md (API Response Compatibility).
+  const cfg = PRIORITY_CONFIG[priority] ?? PRIORITY_CONFIG.none;
 
   // "none" — simple horizontal dashes
   if (cfg.bars === 0) {

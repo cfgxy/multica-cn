@@ -166,8 +166,12 @@ export function StatusIcon({
   className?: string;
   inheritColor?: boolean;
 }) {
-  const cfg = STATUS_CONFIG[status];
-  const Renderer = STATUS_RENDERERS[status];
+  // Defensive lookup: a future server-side status value lands here as a key
+  // the config doesn't know about. Fall back to "backlog" — the visually
+  // neutral baseline — instead of crashing the render. See the enum-drift
+  // rule in CLAUDE.md (API Response Compatibility).
+  const cfg = STATUS_CONFIG[status] ?? STATUS_CONFIG.backlog;
+  const Renderer = STATUS_RENDERERS[status] ?? STATUS_RENDERERS.backlog;
 
   return (
     <svg
