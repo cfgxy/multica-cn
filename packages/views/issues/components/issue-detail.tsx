@@ -373,6 +373,20 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   });
   const [subIssuesCollapsed, setSubIssuesCollapsed] = useState(false);
 
+  // Expanded state for activity groups, keyed by the group's first entry id.
+  // Groups of ≥3 consecutive activities default to folded; click expands inline.
+  // Existing same-actor + same-action coalescing (giving rows a coalesced_count
+  // badge) runs first; folding is a second, density-driven layer on top.
+  const [expandedActivityGroups, setExpandedActivityGroups] = useState<Set<string>>(new Set());
+  const toggleActivityGroup = useCallback((key: string) => {
+    setExpandedActivityGroups((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }, []);
+
   const loading = issueLoading;
 
   // Scroll to highlighted comment once timeline loads (fire only once per highlightCommentId)
@@ -1026,8 +1040,49 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                   );
                 }
 
+                const groupKey = group.entries[0]!.id;
+                const isExpanded = expandedActivityGroups.has(groupKey);
+                // Fold groups with ≥3 entries by default. Below the threshold the
+                // density doesn't justify hiding them — render inline like before.
+                const shouldFold = group.entries.length >= 3 && !isExpanded;
+
+                if (shouldFold) {
+                  const totalCount = group.entries.reduce(
+                    (sum, e) => sum + (e.coalesced_count ?? 1),
+                    0,
+                  );
+                  return (
+                    <div key={groupKey} className="px-4">
+                      <button
+                        type="button"
+                        onClick={() => toggleActivityGroup(groupKey)}
+                        className="flex w-full items-center text-xs text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        <ChevronRight className="!size-3 mr-2 shrink-0 stroke-[2.5] text-muted-foreground" />
+                        <span className="truncate">
+                          {t(($) => $.activity.group_folded, { count: totalCount })}
+                        </span>
+                      </button>
+                    </div>
+                  );
+                }
+
                 return (
-                  <div key={group.entries[0]!.id} className="px-4 flex flex-col gap-3">
+                  <div key={groupKey} className="px-4 flex flex-col gap-3">
+                    {group.entries.length >= 3 && (
+                      <button
+                        type="button"
+                        onClick={() => toggleActivityGroup(groupKey)}
+                        className="flex w-full items-center text-xs text-muted-foreground hover:text-foreground transition-colors"
+                      >
+                        <ChevronDown className="!size-3 mr-2 shrink-0 stroke-[2.5] text-muted-foreground" />
+                        <span className="truncate">
+                          {t(($) => $.activity.group_folded, {
+                            count: group.entries.reduce((sum, e) => sum + (e.coalesced_count ?? 1), 0),
+                          })}
+                        </span>
+                      </button>
+                    )}
                     {group.entries.map((entry, _idx) => {
                       const details = (entry.details ?? {}) as Record<string, string>;
                       const isStatusChange = entry.action === "status_changed";

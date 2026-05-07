@@ -155,7 +155,9 @@
     "task_completed_other": "完成了 task（{{count}} 次）",
     "task_failed_one": "task 失败",
     "task_failed_other": "task 失败（{{count}} 次）",
-    "coalesced_badge": "×{{count}}"
+    "coalesced_badge": "×{{count}}",
+    "group_folded_one": "{{count}} 个系统事件",
+    "group_folded_other": "{{count}} 个系统事件"
   },
   "comment": {
     "delete_title": "删除评论",

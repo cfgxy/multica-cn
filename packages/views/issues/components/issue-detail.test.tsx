@@ -539,4 +539,85 @@ describe("IssueDetail (shared)", () => {
       );
     });
   });
+
+  it("folds heterogeneous activity groups (≥3 entries) and expands on click", async () => {
+    // 5 activities with mixed actor/action so the legacy same-actor +
+    // same-action coalescing does NOT collapse them — exercise the new
+    // density-driven fold layer instead.
+    const activities: TimelineEntry[] = [
+      {
+        type: "activity",
+        id: "a-1",
+        actor_type: "member",
+        actor_id: "user-1",
+        action: "status_changed",
+        details: { from: "todo", to: "in_progress" },
+        created_at: "2026-01-18T00:00:00Z",
+      },
+      {
+        type: "activity",
+        id: "a-2",
+        actor_type: "agent",
+        actor_id: "agent-1",
+        action: "assignee_changed",
+        details: {},
+        created_at: "2026-01-18T00:01:00Z",
+      },
+      {
+        type: "activity",
+        id: "a-3",
+        actor_type: "member",
+        actor_id: "user-1",
+        action: "priority_changed",
+        details: { from: "high", to: "low" },
+        created_at: "2026-01-18T00:02:00Z",
+      },
+      {
+        type: "activity",
+        id: "a-4",
+        actor_type: "agent",
+        actor_id: "agent-1",
+        action: "status_changed",
+        details: { from: "in_progress", to: "blocked" },
+        created_at: "2026-01-18T00:03:00Z",
+      },
+      {
+        type: "activity",
+        id: "a-5",
+        actor_type: "member",
+        actor_id: "user-1",
+        action: "status_changed",
+        details: { from: "blocked", to: "in_progress" },
+        created_at: "2026-01-18T00:04:00Z",
+      },
+    ];
+    const desc = [...activities].sort((a, b) =>
+      b.created_at.localeCompare(a.created_at),
+    );
+    mockApiObj.listTimeline.mockResolvedValue({
+      entries: desc,
+      next_cursor: null,
+      prev_cursor: null,
+      has_more_before: false,
+      has_more_after: false,
+    });
+
+    renderIssueDetail();
+
+    // Folded: the disclosure row shows the count, and individual rows are hidden.
+    const foldedRow = await screen.findByText("5 system events");
+    expect(foldedRow).toBeInTheDocument();
+    // Status labels are translated through statusLabel(): "todo" → "Todo",
+    // "in_progress" → "In Progress". When folded none of those rows render.
+    expect(screen.queryByText(/changed status from Todo/)).not.toBeInTheDocument();
+
+    fireEvent.click(foldedRow);
+
+    // Expanded: all five activity rows are visible.
+    await waitFor(() => {
+      expect(screen.getByText(/changed status from Todo to In Progress/)).toBeInTheDocument();
+    });
+    expect(screen.getByText(/changed priority from High to Low/)).toBeInTheDocument();
+    expect(screen.getByText(/changed status from Blocked to In Progress/)).toBeInTheDocument();
+  });
 });
