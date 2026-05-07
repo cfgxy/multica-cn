@@ -15,16 +15,6 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@multica/ui/components/ui/dropdown-menu";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@multica/ui/components/ui/alert-dialog";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useAuthStore } from "@multica/core/auth";
 import { agentListOptions, memberListOptions } from "@multica/core/workspace/queries";
@@ -657,10 +647,22 @@ function SessionDropdown({
   }, [sessions]);
 
   const [showArchived, setShowArchived] = useState(false);
-  const [pendingDelete, setPendingDelete] = useState<ChatSession | null>(null);
+  // Inline two-step delete: first trash click arms `confirmingDeleteId` and
+  // shows a red confirm button on that row; a second click within
+  // CONFIRM_WINDOW_MS commits. Auto-disarms after the window so a stale
+  // armed state never surprises the user. We deliberately avoid an
+  // AlertDialog here — opening one steals focus, which makes Base UI's
+  // outside-click detection close the dropdown entirely.
+  const [confirmingDeleteId, setConfirmingDeleteId] = useState<string | null>(null);
   const deleteSession = useDeleteChatSession();
   const setActiveSession = useChatStore((s) => s.setActiveSession);
   const formatTimeAgo = useFormatTimeAgo();
+
+  useEffect(() => {
+    if (!confirmingDeleteId) return;
+    const timer = setTimeout(() => setConfirmingDeleteId(null), 3000);
+    return () => clearTimeout(timer);
+  }, [confirmingDeleteId]);
 
   // Aggregate "which sessions have an in-flight task right now". Reuses
   // the same workspace-scoped query the FAB consumes, so toggling the chat
@@ -684,16 +686,23 @@ function SessionDropdown({
     (s) => s.id !== activeSessionId && s.has_unread,
   );
 
-  const handleConfirmDelete = () => {
-    if (!pendingDelete) return;
-    const sessionId = pendingDelete.id;
+  const handleDeleteClick = (session: ChatSession) => {
+    if (confirmingDeleteId !== session.id) {
+      setConfirmingDeleteId(session.id);
+      return;
+    }
     // Eager local clear when the user is deleting the session they're
     // currently looking at — otherwise messages / pendingTask queries
     // keep rendering the now-deleted session until chat:session_deleted
     // arrives over WS (~50–200ms gap).
-    if (activeSessionId === sessionId) setActiveSession(null);
-    deleteSession.mutate(sessionId, {
-      onSettled: () => setPendingDelete(null),
+    if (activeSessionId === session.id) setActiveSession(null);
+    deleteSession.mutate(session.id, {
+      onSettled: () => {
+        // Only clear when the just-completed mutation matches the still-armed
+        // row — otherwise we'd disarm a freshly-armed second row whose own
+        // mutation hasn't started yet.
+        setConfirmingDeleteId((cur) => (cur === session.id ? null : cur));
+      },
     });
   };
 
@@ -704,6 +713,7 @@ function SessionDropdown({
     return (
       <DropdownMenuItem
         key={session.id}
+        closeOnClick={false}
         onClick={() => onSelectSession(session)}
         className="group flex min-w-0 items-center gap-2"
       >
@@ -746,131 +756,109 @@ function SessionDropdown({
           />
         ) : null}
         {isCurrent && <Check className="size-3.5 text-muted-foreground shrink-0" />}
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            e.preventDefault();
-            setPendingDelete(session);
-          }}
-          className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive focus-visible:opacity-100 group-hover:opacity-100"
-          aria-label={t(($) => $.session_history.row_delete_aria)}
-        >
-          <Trash2 className="size-3.5" />
-        </button>
+        {confirmingDeleteId === session.id ? (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              handleDeleteClick(session);
+            }}
+            disabled={deleteSession.isPending}
+            className="shrink-0 rounded bg-destructive px-1.5 py-0.5 text-xs font-medium text-white transition-colors hover:bg-destructive/90 disabled:opacity-60"
+            aria-label={t(($) => $.session_history.row_delete_confirm_aria)}
+          >
+            {deleteSession.isPending && deleteSession.variables === session.id
+              ? t(($) => $.session_history.row_deleting)
+              : t(($) => $.session_history.row_delete_confirm)}
+          </button>
+        ) : (
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              e.preventDefault();
+              handleDeleteClick(session);
+            }}
+            className="shrink-0 rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/10 hover:text-destructive focus-visible:opacity-100 group-hover:opacity-100"
+            aria-label={t(($) => $.session_history.row_delete_aria)}
+          >
+            <Trash2 className="size-3.5" />
+          </button>
+        )}
       </DropdownMenuItem>
     );
   };
 
   return (
-    <>
-      <DropdownMenu>
-        <DropdownMenuTrigger className="flex items-center gap-1.5 min-w-0 rounded-md px-1.5 py-1 transition-colors hover:bg-accent aria-expanded:bg-accent">
-          {triggerAgent && (
-            <ActorAvatar
-              actorType="agent"
-              actorId={triggerAgent.id}
-              size={24}
-              enableHoverCard
-              showStatusDot
-            />
-          )}
-          <span className="truncate text-sm font-medium">{title}</span>
-          {otherSessionRunning ? (
-            <span
-              aria-label={t(($) => $.window.another_running)}
-              title={t(($) => $.window.another_running)}
-              className="size-1.5 shrink-0 rounded-full bg-amber-500 animate-pulse"
-            />
-          ) : otherSessionUnread ? (
-            <span
-              aria-label={t(($) => $.window.another_unread)}
-              title={t(($) => $.window.another_unread)}
-              className="size-1.5 shrink-0 rounded-full bg-brand"
-            />
-          ) : null}
-          <ChevronDown className="size-3 text-muted-foreground shrink-0" />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="max-h-96 w-auto min-w-64 max-w-80 overflow-y-auto">
-          {sessions.length === 0 ? (
-            <div className="px-2 py-1.5 text-xs text-muted-foreground">
-              {t(($) => $.window.no_previous)}
-            </div>
-          ) : (
-            <>
-              {active.length > 0 && (
-                <DropdownMenuGroup>
-                  <DropdownMenuLabel>{t(($) => $.window.active_group)}</DropdownMenuLabel>
-                  {active.map(renderRow)}
-                </DropdownMenuGroup>
-              )}
-              {archived.length > 0 && (
-                <>
-                  {active.length > 0 && <DropdownMenuSeparator />}
-                  <DropdownMenuItem
-                    onClick={(e) => {
-                      e.preventDefault();
-                      setShowArchived((v) => !v);
-                    }}
-                    className="flex items-center gap-1.5 text-xs text-muted-foreground"
-                  >
-                    {showArchived ? (
-                      <ChevronDown className="size-3" />
-                    ) : (
-                      <ChevronRight className="size-3" />
-                    )}
-                    <span>
-                      {t(($) => $.window.archived_group, { count: archived.length })}
-                    </span>
-                  </DropdownMenuItem>
-                  {showArchived && (
-                    <DropdownMenuGroup>
-                      {archived.map(renderRow)}
-                    </DropdownMenuGroup>
+    <DropdownMenu>
+      <DropdownMenuTrigger className="flex items-center gap-1.5 min-w-0 rounded-md px-1.5 py-1 transition-colors hover:bg-accent aria-expanded:bg-accent">
+        {triggerAgent && (
+          <ActorAvatar
+            actorType="agent"
+            actorId={triggerAgent.id}
+            size={24}
+            enableHoverCard
+            showStatusDot
+          />
+        )}
+        <span className="truncate text-sm font-medium">{title}</span>
+        {otherSessionRunning ? (
+          <span
+            aria-label={t(($) => $.window.another_running)}
+            title={t(($) => $.window.another_running)}
+            className="size-1.5 shrink-0 rounded-full bg-amber-500 animate-pulse"
+          />
+        ) : otherSessionUnread ? (
+          <span
+            aria-label={t(($) => $.window.another_unread)}
+            title={t(($) => $.window.another_unread)}
+            className="size-1.5 shrink-0 rounded-full bg-brand"
+          />
+        ) : null}
+        <ChevronDown className="size-3 text-muted-foreground shrink-0" />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="max-h-96 w-auto min-w-64 max-w-80 overflow-y-auto">
+        {sessions.length === 0 ? (
+          <div className="px-2 py-1.5 text-xs text-muted-foreground">
+            {t(($) => $.window.no_previous)}
+          </div>
+        ) : (
+          <>
+            {active.length > 0 && (
+              <DropdownMenuGroup>
+                <DropdownMenuLabel>{t(($) => $.window.active_group)}</DropdownMenuLabel>
+                {active.map(renderRow)}
+              </DropdownMenuGroup>
+            )}
+            {archived.length > 0 && (
+              <>
+                {active.length > 0 && <DropdownMenuSeparator />}
+                <DropdownMenuItem
+                  closeOnClick={false}
+                  onClick={() => setShowArchived((v) => !v)}
+                  className="flex items-center gap-1.5 text-xs text-muted-foreground"
+                >
+                  {showArchived ? (
+                    <ChevronDown className="size-3" />
+                  ) : (
+                    <ChevronRight className="size-3" />
                   )}
-                </>
-              )}
-            </>
-          )}
-        </DropdownMenuContent>
-      </DropdownMenu>
-
-      <AlertDialog
-        open={!!pendingDelete}
-        onOpenChange={(open) => {
-          if (!open && !deleteSession.isPending) setPendingDelete(null);
-        }}
-      >
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>
-              {t(($) => $.session_history.delete_dialog.title)}
-            </AlertDialogTitle>
-            <AlertDialogDescription>
-              {pendingDelete?.title
-                ? t(($) => $.session_history.delete_dialog.description_with_title, {
-                    title: pendingDelete.title,
-                  })
-                : t(($) => $.session_history.delete_dialog.description_default)}
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel disabled={deleteSession.isPending}>
-              {t(($) => $.session_history.delete_dialog.cancel)}
-            </AlertDialogCancel>
-            <AlertDialogAction
-              onClick={handleConfirmDelete}
-              disabled={deleteSession.isPending}
-              className="bg-destructive text-white hover:bg-destructive/90"
-            >
-              {deleteSession.isPending
-                ? t(($) => $.session_history.delete_dialog.confirming)
-                : t(($) => $.session_history.delete_dialog.confirm)}
-            </AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
-    </>
+                  <span>
+                    {t(($) => $.window.archived_group, { count: archived.length })}
+                  </span>
+                </DropdownMenuItem>
+                {showArchived && (
+                  <DropdownMenuGroup>
+                    {archived.map(renderRow)}
+                  </DropdownMenuGroup>
+                )}
+              </>
+            )}
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 

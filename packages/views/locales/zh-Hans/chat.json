@@ -32,14 +32,9 @@
       "days": "{{count}} 天前"
     },
     "row_delete_aria": "删除对话",
-    "delete_dialog": {
-      "title": "删除对话",
-      "description_with_title": "\"{{title}}\" 及其消息会被永久删除，无法撤销。",
-      "description_default": "此对话及其消息会被永久删除，无法撤销。",
-      "cancel": "取消",
-      "confirm": "删除",
-      "confirming": "删除中..."
-    }
+    "row_delete_confirm": "再点一次删除",
+    "row_delete_confirm_aria": "再点一次永久删除此对话",
+    "row_deleting": "删除中…"
   },
   "window": {
     "new_chat_tooltip": "新对话",

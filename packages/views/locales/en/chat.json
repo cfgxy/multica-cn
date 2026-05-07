@@ -35,14 +35,9 @@
       "days": "{{count}}d ago"
     },
     "row_delete_aria": "Delete chat session",
-    "delete_dialog": {
-      "title": "Delete chat session",
-      "description_with_title": "\"{{title}}\" and its messages will be permanently removed. This action cannot be undone.",
-      "description_default": "This chat session and its messages will be permanently removed. This action cannot be undone.",
-      "cancel": "Cancel",
-      "confirm": "Delete",
-      "confirming": "Deleting..."
-    }
+    "row_delete_confirm": "Click again to delete",
+    "row_delete_confirm_aria": "Click again to permanently delete this chat session",
+    "row_deleting": "Deleting…"
   },
   "window": {
     "new_chat_tooltip": "New chat",
