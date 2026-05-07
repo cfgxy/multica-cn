@@ -138,7 +138,9 @@
     "show_newer": "Show newer",
     "loading": "Loading...",
     "jump_to_latest": "Jump to latest",
-    "jump_to_latest_with_count": "Jump to latest · {{count}} new"
+    "jump_to_latest_with_count": "Jump to latest · {{count}} new",
+    "activity_truncated_banner": "Some system events are not shown.",
+    "activity_truncated_action": "Load all"
   },
   "activity": {
     "created": "created this issue",

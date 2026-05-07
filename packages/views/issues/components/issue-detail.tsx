@@ -284,6 +284,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     fetchOlder, fetchNewer, jumpToLatest,
     isAtLatest, newEntriesBelowCount,
     aroundTarget,
+    hasTruncatedActivities, loadAllActivities,
   } = useIssueTimeline(id, user?.id, { around: highlightCommentId ?? null });
 
   // Memoized timeline grouping. The same Map / groups references are reused
@@ -1068,6 +1069,18 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                     : t(($) => $.timeline.show_older)}
                 </button>
                 <div className="h-px flex-1 bg-border" />
+              </div>
+            )}
+            {hasTruncatedActivities && (
+              <div className="mb-4 flex items-center justify-between gap-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
+                <span>{t(($) => $.timeline.activity_truncated_banner)}</span>
+                <button
+                  type="button"
+                  onClick={loadAllActivities}
+                  className="font-medium text-foreground hover:underline"
+                >
+                  {t(($) => $.timeline.activity_truncated_action)}
+                </button>
               </div>
             )}
             <div className="mt-4 flex flex-col gap-3">

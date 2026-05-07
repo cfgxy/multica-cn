@@ -660,3 +660,72 @@ func TestListTimelineV2_ActivityHardCap(t *testing.T) {
 		t.Fatalf("expected activity_truncated_count >= 1, got %v", resp.ActivityTruncatedCount)
 	}
 }
+
+// TestListTimelineV2_ActivityLimitOverride verifies the Phase 4 escape hatch:
+// callers can raise the per-page activity quota above the default hard cap
+// when the user explicitly opts into a larger payload (the "load more system
+// events" affordance). The truncation signal disappears once the requested
+// limit covers all activities in the window.
+func TestListTimelineV2_ActivityLimitOverride(t *testing.T) {
+	if testing.Short() {
+		t.Skip("seeding 600 activities is slow; skipped under -short")
+	}
+	issueID := createIssueForTimeline(t, "V2 activity limit override")
+	ctx := context.Background()
+	base := time.Now().UTC().Add(-1000 * time.Minute)
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, created_at, updated_at)
+		VALUES ($1, $2, 'member', $3, 'anchor', 'comment', $4, $4)
+	`, issueID, testWorkspaceID, testUserID, base); err != nil {
+		t.Fatalf("seed anchor comment: %v", err)
+	}
+	const total = 600
+	for i := 0; i < total; i++ {
+		ts := base.Add(time.Duration(i+1) * time.Second)
+		if _, err := testPool.Exec(ctx, `
+			INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details, created_at)
+			VALUES ($1, $2, 'member', $3, 'status_changed', '{"from":"todo","to":"in_progress"}'::jsonb, $4)
+		`, testWorkspaceID, issueID, testUserID, ts); err != nil {
+			t.Fatalf("seed activity %d: %v", i, err)
+		}
+	}
+
+	// Default cap: truncated.
+	def, code := fetchTimelineV2(t, issueID, "comment_limit=20")
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
+	}
+	if len(def.Activities) != timelineV2ActivityHardCap {
+		t.Fatalf("default cap: expected %d activities, got %d",
+			timelineV2ActivityHardCap, len(def.Activities))
+	}
+	if def.ActivityTruncatedCount == nil {
+		t.Fatalf("default cap: expected activity_truncated_count to be set")
+	}
+
+	// Override: load all 600.
+	full, code := fetchTimelineV2(t, issueID, "comment_limit=20&activity_limit=2000")
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
+	}
+	if len(full.Activities) != total {
+		t.Fatalf("override: expected %d activities, got %d", total, len(full.Activities))
+	}
+	if full.ActivityTruncatedCount != nil {
+		t.Fatalf("override: expected activity_truncated_count to be nil, got %v",
+			full.ActivityTruncatedCount)
+	}
+}
+
+// TestListTimelineV2_ActivityLimitCeiling rejects pathologically large
+// activity_limit values to keep a stray client from blowing the response
+// budget.
+func TestListTimelineV2_ActivityLimitCeiling(t *testing.T) {
+	issueID := createIssueForTimeline(t, "V2 activity limit ceiling")
+	seedTimelineEntries(t, issueID, 1, 1)
+
+	_, code := fetchTimelineV2(t, issueID, "comment_limit=10&activity_limit=99999")
+	if code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for activity_limit above ceiling, got %d", code)
+	}
+}

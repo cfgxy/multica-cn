@@ -67,6 +67,10 @@ const (
 	timelineV2DefaultCommentLimit = 20
 	timelineV2MaxCommentLimit     = 100
 	timelineV2ActivityHardCap     = 500
+	// timelineV2ActivityCeiling caps how high a client can raise the
+	// activity quota when explicitly opting into a denser payload. Beyond
+	// this we'd risk timeouts and OOM on the renderer side.
+	timelineV2ActivityCeiling = 5000
 	// fallbackActivityLimit is used by V2 latest mode when the issue has
 	// zero comments (pure-automation issue) — the page degrades to "latest
 	// N activities", same as V1 default.
@@ -170,15 +174,32 @@ func (h *Handler) ListTimeline(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "comment_limit exceeds maximum of 100")
 			return
 		}
+		// Optional activity quota override. The frontend bumps this when the
+		// user explicitly opts into loading more activities (the "load all
+		// system events" affordance Phase 4 wires up). Defaults to the
+		// per-page hard cap so unprivileged paths can't blow the payload.
+		activityLimit := timelineV2ActivityHardCap
+		if rawAL := q.Get("activity_limit"); rawAL != "" {
+			n, err := strconv.Atoi(rawAL)
+			if err != nil || n <= 0 {
+				writeError(w, http.StatusBadRequest, "invalid activity_limit")
+				return
+			}
+			if n > timelineV2ActivityCeiling {
+				writeError(w, http.StatusBadRequest, "activity_limit exceeds ceiling")
+				return
+			}
+			activityLimit = n
+		}
 		switch {
 		case around != "":
-			h.listTimelineAroundV2(w, r, issue, around, commentLimit)
+			h.listTimelineAroundV2(w, r, issue, around, commentLimit, activityLimit)
 		case before != "":
-			h.listTimelineBeforeV2(w, r, issue, before, commentLimit)
+			h.listTimelineBeforeV2(w, r, issue, before, commentLimit, activityLimit)
 		case after != "":
-			h.listTimelineAfterV2(w, r, issue, after, commentLimit)
+			h.listTimelineAfterV2(w, r, issue, after, commentLimit, activityLimit)
 		default:
-			h.listTimelineLatestV2(w, r, issue, commentLimit)
+			h.listTimelineLatestV2(w, r, issue, commentLimit, activityLimit)
 		}
 		return
 	}
@@ -687,7 +708,12 @@ func fetchActivitiesWithCap(activities []db.ActivityLog, cap int) ([]db.Activity
 // activity newer-or-equal to the oldest of those comments. When the issue
 // has zero comments the page degrades to the latest <fallbackActivityLimit>
 // activities — the V1 default — so pure-automation issues still render.
-func (h *Handler) listTimelineLatestV2(w http.ResponseWriter, r *http.Request, issue db.Issue, commentLimit int) {
+//
+// activityLimit caps the activity slice independently of the comment quota
+// so a single dense issue can't blow the response budget; clients raise it
+// only when the user explicitly opts into a larger payload (Phase 4 "load
+// more system events" affordance).
+func (h *Handler) listTimelineLatestV2(w http.ResponseWriter, r *http.Request, issue db.Issue, commentLimit, activityLimit int) {
 	ctx := r.Context()
 
 	comments, err := h.Queries.ListCommentsLatest(ctx, db.ListCommentsLatestParams{
@@ -712,13 +738,13 @@ func (h *Handler) listTimelineLatestV2(w http.ResponseWriter, r *http.Request, i
 		oldest := comments[len(comments)-1]
 		raw, err := h.Queries.ListActivitiesSince(ctx, db.ListActivitiesSinceParams{
 			IssueID: issue.ID, Column2: oldest.CreatedAt,
-			Limit: int32(timelineV2ActivityHardCap + 1),
+			Limit: int32(activityLimit + 1),
 		})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to list activities")
 			return
 		}
-		activities, truncated = fetchActivitiesWithCap(raw, timelineV2ActivityHardCap)
+		activities, truncated = fetchActivitiesWithCap(raw, activityLimit)
 	}
 
 	resp := TimelineResponseV2{
@@ -744,7 +770,7 @@ func (h *Handler) listTimelineLatestV2(w http.ResponseWriter, r *http.Request, i
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *Handler) listTimelineBeforeV2(w http.ResponseWriter, r *http.Request, issue db.Issue, cursor string, commentLimit int) {
+func (h *Handler) listTimelineBeforeV2(w http.ResponseWriter, r *http.Request, issue db.Issue, cursor string, commentLimit, activityLimit int) {
 	ctx := r.Context()
 	t, id, err := decodeTimelineCursor(cursor)
 	if err != nil {
@@ -781,13 +807,13 @@ func (h *Handler) listTimelineBeforeV2(w http.ResponseWriter, r *http.Request, i
 		IssueID: issue.ID,
 		Column2: t, Column3: id,
 		Column4: oldest.CreatedAt,
-		Limit:   int32(timelineV2ActivityHardCap + 1),
+		Limit:   int32(activityLimit + 1),
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list activities")
 		return
 	}
-	activities, truncated := fetchActivitiesWithCap(raw, timelineV2ActivityHardCap)
+	activities, truncated := fetchActivitiesWithCap(raw, activityLimit)
 
 	resp.Comments = h.commentsToEntries(r, comments)
 	resp.Activities = activitiesToEntries(activities)
@@ -804,7 +830,7 @@ func (h *Handler) listTimelineBeforeV2(w http.ResponseWriter, r *http.Request, i
 	writeJSON(w, http.StatusOK, resp)
 }
 
-func (h *Handler) listTimelineAfterV2(w http.ResponseWriter, r *http.Request, issue db.Issue, cursor string, commentLimit int) {
+func (h *Handler) listTimelineAfterV2(w http.ResponseWriter, r *http.Request, issue db.Issue, cursor string, commentLimit, activityLimit int) {
 	ctx := r.Context()
 	t, id, err := decodeTimelineCursor(cursor)
 	if err != nil {
@@ -849,13 +875,13 @@ func (h *Handler) listTimelineAfterV2(w http.ResponseWriter, r *http.Request, is
 		IssueID: issue.ID,
 		Column2: oldest.CreatedAt,
 		Column3: newest.CreatedAt,
-		Limit:   int32(timelineV2ActivityHardCap + 1),
+		Limit:   int32(activityLimit + 1),
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list activities")
 		return
 	}
-	activities, truncated := fetchActivitiesWithCap(raw, timelineV2ActivityHardCap)
+	activities, truncated := fetchActivitiesWithCap(raw, activityLimit)
 
 	resp.Comments = h.commentsToEntries(r, commentsDesc)
 	resp.Activities = activitiesToEntries(activities)
@@ -875,7 +901,7 @@ func (h *Handler) listTimelineAfterV2(w http.ResponseWriter, r *http.Request, is
 // are resolved to the nearest comment for windowing; the original anchor is
 // preserved in resp.Target so the frontend can scroll to and auto-expand the
 // folded group containing it.
-func (h *Handler) listTimelineAroundV2(w http.ResponseWriter, r *http.Request, issue db.Issue, targetID string, commentLimit int) {
+func (h *Handler) listTimelineAroundV2(w http.ResponseWriter, r *http.Request, issue db.Issue, targetID string, commentLimit, activityLimit int) {
 	ctx := r.Context()
 	target, err := parseUUIDStrict(targetID)
 	if err != nil {
@@ -1014,13 +1040,13 @@ func (h *Handler) listTimelineAroundV2(w http.ResponseWriter, r *http.Request, i
 		IssueID: issue.ID,
 		Column2: oldestT,
 		Column3: newestT,
-		Limit:   int32(timelineV2ActivityHardCap + 1),
+		Limit:   int32(activityLimit + 1),
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list activities")
 		return
 	}
-	activities, truncated := fetchActivitiesWithCap(rawActs, timelineV2ActivityHardCap)
+	activities, truncated := fetchActivitiesWithCap(rawActs, activityLimit)
 
 	resp.Comments = h.commentsToEntries(r, stitched)
 	resp.Activities = activitiesToEntries(activities)

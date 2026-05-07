@@ -541,14 +541,22 @@ export class ApiClient {
    * stream; activities ride along inside the time window of the returned
    * comments. Cursors emitted by V2 endpoints can only be passed back to
    * V2 calls — never mix with listTimeline().
+   *
+   * `activityLimit` lets the caller bypass the server-side default cap on
+   * activities-per-page (the "load more system events" affordance — Phase
+   * 4). Server enforces a ceiling so a stray value can't blow the budget.
    */
   async listTimelineV2(
     issueId: string,
     pageParam: TimelinePageParam = { mode: "latest" },
     commentLimit = 20,
+    activityLimit?: number,
   ): Promise<TimelineV2Page> {
     const params = new URLSearchParams();
     params.set("comment_limit", String(commentLimit));
+    if (activityLimit !== undefined) {
+      params.set("activity_limit", String(activityLimit));
+    }
     if (pageParam.mode === "before") params.set("before", pageParam.cursor);
     else if (pageParam.mode === "after") params.set("after", pageParam.cursor);
     else if (pageParam.mode === "around") params.set("around", pageParam.id);

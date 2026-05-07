@@ -194,6 +194,7 @@ function v2PageToV1(v2: TimelineV2Page): TimelinePage {
 export function issueTimelineInfiniteOptions(
   issueId: string,
   around?: string | null,
+  activityLimit?: number,
 ) {
   return infiniteQueryOptions<
     TimelinePage,
@@ -207,7 +208,7 @@ export function issueTimelineInfiniteOptions(
       ? ({ mode: "around", id: around } as TimelinePageParam)
       : ({ mode: "latest" } as TimelinePageParam),
     queryFn: async ({ pageParam }) => {
-      const v2 = await api.listTimelineV2(issueId, pageParam);
+      const v2 = await api.listTimelineV2(issueId, pageParam, undefined, activityLimit);
       return v2PageToV1(v2);
     },
     // Walk older: append a page below the current oldest (last entry of the
