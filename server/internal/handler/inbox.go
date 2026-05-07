@@ -179,15 +179,36 @@ func (h *Handler) ListInbox(w http.ResponseWriter, r *http.Request) {
 // shape, capped at inboxLegacyCap to avoid OOM on very large inboxes. This
 // is a permanent compatibility surface (see ListInbox doc) — never delete.
 //
+// What "cap" means after the SQL DISTINCT ON change: the response carries
+// the newest entry for each of up to inboxLegacyCap distinct issues
+// (COALESCE(issue_id, id) for system notifications without an issue). It
+// is *not* "the latest 200 rows" — same issue with 50 unread comments
+// counts as one slot, not 50.
+//
 // Two visible degradations for old desktops are accepted as the price of
 // graceful compatibility:
-//   1. items beyond inboxLegacyCap are unreachable on the old client (it
-//      has no scroll-to-load UI to fetch them). Better than rendering
-//      thousands and freezing the tab — see #1968.
+//   1. issues beyond inboxLegacyCap distinct issues are unreachable on
+//      the old client (it has no scroll-to-load UI to fetch them).
+//      Better than rendering thousands and freezing the tab — see #1968.
 //   2. the unread badge on old desktops is derived from this list, so it
-//      caps at the unread count within the first 200 items. New clients use
-//      the dedicated /inbox/unread-count endpoint and don't have this cap.
+//      reflects the unread state of the newest entry per issue, across the
+//      first 200 distinct issues. An issue at position 201+ that is the
+//      user's only unread item will not contribute to the badge. New
+//      clients use the dedicated /inbox/unread-count endpoint and don't
+//      have this cap.
+//
+// Observability: every request hitting this branch is logged at info with
+// X-Client-Platform / X-Client-Version so we can track how much real
+// install-base sits on the legacy contract. Required for any future
+// "raise minimum supported client version" decision (cf. MUL-1795 A1).
 func (h *Handler) listInboxLegacy(w http.ResponseWriter, r *http.Request, wsUUID, recipientID pgtype.UUID) {
+	slog.Info("inbox: legacy list",
+		append(logger.RequestAttrs(r),
+			"recipient_id", uuidToString(recipientID),
+			"workspace_id", uuidToString(wsUUID),
+			"client_platform", r.Header.Get("X-Client-Platform"),
+			"client_version", r.Header.Get("X-Client-Version"),
+		)...)
 	items, err := h.Queries.ListInboxItemsLatest(r.Context(), db.ListInboxItemsLatestParams{
 		WorkspaceID:   wsUUID,
 		RecipientType: "member",

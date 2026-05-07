@@ -798,12 +798,17 @@ export class ApiClient {
   }
 
   // Inbox
+  // The new client ALWAYS sends ?limit, even when the caller passes no
+  // params, so the server can use "no pagination params at all" as the
+  // unambiguous signal for a pre-pagination desktop client. If a future
+  // filter param (e.g. ?status=unread) gets added without a default
+  // limit, it would otherwise fall into the legacy 200-cap branch by
+  // accident.
   async listInbox(params?: { limit?: number; before?: string }): Promise<InboxListPage> {
     const search = new URLSearchParams();
-    if (params?.limit !== undefined) search.set("limit", String(params.limit));
+    search.set("limit", String(params?.limit ?? 50));
     if (params?.before) search.set("before", params.before);
-    const path = search.toString() ? `/api/inbox?${search}` : "/api/inbox";
-    const raw = await this.fetch<unknown>(path);
+    const raw = await this.fetch<unknown>(`/api/inbox?${search}`);
     return parseWithFallback(raw, InboxListPageSchema, EMPTY_INBOX_LIST_PAGE, {
       endpoint: "GET /api/inbox",
     });

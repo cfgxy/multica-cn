@@ -196,6 +196,10 @@ const InboxListPageWrapperSchema = z.object({
 // already deduped, making this a no-op in steady state.
 const dedupByIssueDescending = (items: InboxItem[]): InboxItem[] => {
   const seen = new Set<string>();
+  // localeCompare is safe here: created_at is RFC3339 / ISO 8601 with the
+  // same timezone (UTC, server-emitted), so lexicographic order matches
+  // chronological order. Using Date(...).getTime() would just allocate
+  // for no reason.
   return [...items]
     .sort((a, b) => b.created_at.localeCompare(a.created_at))
     .filter((i) => {

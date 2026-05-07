@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -64,15 +65,25 @@ func seedInboxItems(t *testing.T, count int, withIssue bool) []string {
 	return ids
 }
 
+// fetchInboxLegacy hits the legacy no-params path and asserts the wire shape
+// is a JSON array. Wrapping the body in {entries:...} would white-screen
+// pre-pagination desktops (cf. #2143/#2147 on timeline) — guarding the
+// shape here prevents an accidental refactor from regressing it silently.
 func fetchInboxLegacy(t *testing.T) ([]InboxItemResponse, int) {
 	t.Helper()
 	w := httptest.NewRecorder()
 	req := newRequest("GET", "/api/inbox", nil)
 	req = withWorkspaceContext(req, testWorkspaceID)
 	testHandler.ListInbox(w, req)
+	body := w.Body.Bytes()
 	var resp []InboxItemResponse
 	if w.Code == http.StatusOK {
-		json.NewDecoder(w.Body).Decode(&resp)
+		if !bytes.HasPrefix(bytes.TrimSpace(body), []byte("[")) {
+			t.Fatalf("legacy path must serve a JSON array, got: %s", body)
+		}
+		if err := json.Unmarshal(body, &resp); err != nil {
+			t.Fatalf("decode legacy body: %v", err)
+		}
 	}
 	return resp, w.Code
 }
@@ -106,7 +117,8 @@ func TestListInbox_LegacyNoParamsReturnsArray(t *testing.T) {
 }
 
 // TestListInbox_LegacyPathCappedAt200 ensures the no-params path bounds the
-// response so an unexpectedly large inbox doesn't OOM old clients.
+// response by *distinct issues*, not raw rows: 250 inbox items spread
+// across 250 issues collapse at the 200-issue cap.
 func TestListInbox_LegacyPathCappedAt200(t *testing.T) {
 	seedInboxItems(t, 250, false)
 
@@ -116,6 +128,23 @@ func TestListInbox_LegacyPathCappedAt200(t *testing.T) {
 	}
 	if len(resp) != inboxLegacyCap {
 		t.Fatalf("expected legacy cap %d items, got %d", inboxLegacyCap, len(resp))
+	}
+}
+
+// TestListInbox_LegacyDedupBeforeCap pins the dedup × cap interaction:
+// 250 inbox items all sharing the same issue must collapse to 1 row, not
+// fill the 200-row cap with duplicates of one issue. Catches a regression
+// where DISTINCT ON gets dropped accidentally and the legacy cap silently
+// over-counts.
+func TestListInbox_LegacyDedupBeforeCap(t *testing.T) {
+	seedInboxItems(t, 250, true) // all 250 share one issue
+
+	resp, code := fetchInboxLegacy(t)
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
+	}
+	if len(resp) != 1 {
+		t.Fatalf("expected 1 deduped item, got %d", len(resp))
 	}
 }
 
