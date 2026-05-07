@@ -1,13 +1,13 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import { Focus } from "lucide-react";
 import type { ContextAnchor } from "@multica/core/chat";
 import { useChatStore } from "@multica/core/chat";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { issueDetailOptions } from "@multica/core/issues/queries";
 import { projectDetailOptions } from "@multica/core/projects/queries";
-import { inboxListOptions } from "@multica/core/inbox/queries";
+import { inboxListInfiniteOptions } from "@multica/core/inbox/queries";
 import { Button } from "@multica/ui/components/ui/button";
 import {
   Tooltip,
@@ -58,15 +58,19 @@ export function useRouteAnchorCandidate(wsId: string): {
     : null;
 
   // Inbox: the anchor is the issue behind the currently selected notification.
-  const { data: inboxItems = [] } = useQuery({
-    ...inboxListOptions(wsId),
+  // Only the loaded pages are searched — fine because the user can only have
+  // selected an item that's already on screen, so it's by definition in the
+  // pages we've already fetched.
+  const { data: inboxData } = useInfiniteQuery({
+    ...inboxListInfiniteOptions(wsId),
     enabled: isInbox,
   });
   const inboxKey = isInbox ? searchParams.get("issue") : null;
   const inboxSelectedIssueId =
     isInbox && inboxKey
-      ? inboxItems.find((i) => (i.issue_id ?? i.id) === inboxKey)?.issue_id ??
-        null
+      ? inboxData?.pages
+          .flatMap((p) => p.entries)
+          .find((i) => (i.issue_id ?? i.id) === inboxKey)?.issue_id ?? null
       : null;
 
   // One issue fetch covers both /issues/:id and inbox-derived anchors.

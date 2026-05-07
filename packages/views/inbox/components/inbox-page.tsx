@@ -2,14 +2,13 @@
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { useDefaultLayout } from "react-resizable-panels";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery } from "@tanstack/react-query";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { useModalStore } from "@multica/core/modals";
 import { useIssueDraftStore } from "@multica/core/issues/stores/draft-store";
 import {
-  inboxListOptions,
-  deduplicateInboxItems,
+  inboxListInfiniteOptions,
   useInboxUnreadCount,
 } from "@multica/core/inbox/queries";
 import {
@@ -51,6 +50,7 @@ import {
 } from "@multica/ui/components/ui/dropdown-menu";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
 import { PageHeader } from "../../layout/page-header";
+import { InfiniteScrollSentinel } from "../../issues/components/infinite-scroll-sentinel";
 import { InboxListItem, useTimeAgo } from "./inbox-list-item";
 import { useTypeLabels } from "./inbox-detail-label";
 import { getInboxDisplayTitle } from "./inbox-display";
@@ -70,8 +70,20 @@ export function InboxPage() {
   }, [urlIssue]);
 
   const wsId = useWorkspaceId();
-  const { data: rawItems = [], isLoading: loading } = useQuery(inboxListOptions(wsId));
-  const items = useMemo(() => deduplicateInboxItems(rawItems), [rawItems]);
+  const {
+    data,
+    isLoading: loading,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+  } = useInfiniteQuery(inboxListInfiniteOptions(wsId));
+  // Per-issue dedup is now done server-side (SQL DISTINCT ON in
+  // ListInboxItemsLatest), so just flatten across pages — no client-side
+  // dedup pass needed.
+  const items = useMemo<InboxItem[]>(
+    () => data?.pages.flatMap((p) => p.entries) ?? [],
+    [data],
+  );
 
   const selected = items.find((i) => (i.issue_id ?? i.id) === selectedKey) ?? null;
 
@@ -253,6 +265,14 @@ export function InboxPage() {
           onArchive={() => handleArchive(item.id)}
         />
       ))}
+      {hasNextPage && (
+        <InfiniteScrollSentinel
+          loading={isFetchingNextPage}
+          onVisible={() => {
+            if (!isFetchingNextPage) fetchNextPage();
+          }}
+        />
+      )}
     </div>
   );
 
