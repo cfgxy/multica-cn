@@ -121,7 +121,7 @@ func (q *Queries) ArchiveInboxItem(ctx context.Context, id pgtype.UUID) (InboxIt
 }
 
 const countUnreadInbox = `-- name: CountUnreadInbox :one
-SELECT count(*) FROM inbox_item
+SELECT COUNT(DISTINCT COALESCE(issue_id, id))::bigint FROM inbox_item
 WHERE workspace_id = $1 AND recipient_type = $2 AND recipient_id = $3 AND read = false AND archived = false
 `
 
@@ -131,11 +131,14 @@ type CountUnreadInboxParams struct {
 	RecipientID   pgtype.UUID `json:"recipient_id"`
 }
 
+// Count of distinct issues (or item-id for issueless items) with at least
+// one unread, unarchived inbox entry. Aligned with ListInboxItemsLatest's
+// per-issue dedup so the badge count matches the rendered list length.
 func (q *Queries) CountUnreadInbox(ctx context.Context, arg CountUnreadInboxParams) (int64, error) {
 	row := q.db.QueryRow(ctx, countUnreadInbox, arg.WorkspaceID, arg.RecipientType, arg.RecipientID)
-	var count int64
-	err := row.Scan(&count)
-	return count, err
+	var column_1 int64
+	err := row.Scan(&column_1)
+	return column_1, err
 }
 
 const createInboxItem = `-- name: CreateInboxItem :one
@@ -257,22 +260,31 @@ func (q *Queries) GetInboxItemInWorkspace(ctx context.Context, arg GetInboxItemI
 	return i, err
 }
 
-const listInboxItems = `-- name: ListInboxItems :many
-SELECT i.id, i.workspace_id, i.recipient_type, i.recipient_id, i.type, i.severity, i.issue_id, i.title, i.body, i.read, i.archived, i.created_at, i.actor_type, i.actor_id, i.details,
-       iss.status as issue_status
-FROM inbox_item i
-LEFT JOIN issue iss ON iss.id = i.issue_id
-WHERE i.workspace_id = $1 AND i.recipient_type = $2 AND i.recipient_id = $3 AND i.archived = false
-ORDER BY i.created_at DESC
+const listInboxItemsBefore = `-- name: ListInboxItemsBefore :many
+SELECT id, workspace_id, recipient_type, recipient_id, type, severity,
+       issue_id, title, body, read, archived, created_at, actor_type,
+       actor_id, details, issue_status FROM (
+  SELECT DISTINCT ON (COALESCE(i.issue_id, i.id)) i.id, i.workspace_id, i.recipient_type, i.recipient_id, i.type, i.severity, i.issue_id, i.title, i.body, i.read, i.archived, i.created_at, i.actor_type, i.actor_id, i.details, iss.status AS issue_status
+  FROM inbox_item i
+  LEFT JOIN issue iss ON iss.id = i.issue_id
+  WHERE i.workspace_id = $1 AND i.recipient_type = $2 AND i.recipient_id = $3 AND i.archived = false
+  ORDER BY COALESCE(i.issue_id, i.id), i.created_at DESC, i.id DESC
+) AS deduped
+WHERE (deduped.created_at, deduped.id) < ($4::timestamptz, $5::uuid)
+ORDER BY created_at DESC, id DESC
+LIMIT $6
 `
 
-type ListInboxItemsParams struct {
-	WorkspaceID   pgtype.UUID `json:"workspace_id"`
-	RecipientType string      `json:"recipient_type"`
-	RecipientID   pgtype.UUID `json:"recipient_id"`
+type ListInboxItemsBeforeParams struct {
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	RecipientType   string             `json:"recipient_type"`
+	RecipientID     pgtype.UUID        `json:"recipient_id"`
+	CursorCreatedAt pgtype.Timestamptz `json:"cursor_created_at"`
+	CursorID        pgtype.UUID        `json:"cursor_id"`
+	RowLimit        int32              `json:"row_limit"`
 }
 
-type ListInboxItemsRow struct {
+type ListInboxItemsBeforeRow struct {
 	ID            pgtype.UUID        `json:"id"`
 	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
 	RecipientType string             `json:"recipient_type"`
@@ -291,15 +303,112 @@ type ListInboxItemsRow struct {
 	IssueStatus   pgtype.Text        `json:"issue_status"`
 }
 
-func (q *Queries) ListInboxItems(ctx context.Context, arg ListInboxItemsParams) ([]ListInboxItemsRow, error) {
-	rows, err := q.db.Query(ctx, listInboxItems, arg.WorkspaceID, arg.RecipientType, arg.RecipientID)
+// Cursor-paginated older-than-cursor slice with the same per-issue dedup as
+// ListInboxItemsLatest. The (created_at, id) tuple keyset is exclusive of
+// the cursor row.
+func (q *Queries) ListInboxItemsBefore(ctx context.Context, arg ListInboxItemsBeforeParams) ([]ListInboxItemsBeforeRow, error) {
+	rows, err := q.db.Query(ctx, listInboxItemsBefore,
+		arg.WorkspaceID,
+		arg.RecipientType,
+		arg.RecipientID,
+		arg.CursorCreatedAt,
+		arg.CursorID,
+		arg.RowLimit,
+	)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	items := []ListInboxItemsRow{}
+	items := []ListInboxItemsBeforeRow{}
 	for rows.Next() {
-		var i ListInboxItemsRow
+		var i ListInboxItemsBeforeRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.RecipientType,
+			&i.RecipientID,
+			&i.Type,
+			&i.Severity,
+			&i.IssueID,
+			&i.Title,
+			&i.Body,
+			&i.Read,
+			&i.Archived,
+			&i.CreatedAt,
+			&i.ActorType,
+			&i.ActorID,
+			&i.Details,
+			&i.IssueStatus,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listInboxItemsLatest = `-- name: ListInboxItemsLatest :many
+SELECT id, workspace_id, recipient_type, recipient_id, type, severity,
+       issue_id, title, body, read, archived, created_at, actor_type,
+       actor_id, details, issue_status FROM (
+  SELECT DISTINCT ON (COALESCE(i.issue_id, i.id)) i.id, i.workspace_id, i.recipient_type, i.recipient_id, i.type, i.severity, i.issue_id, i.title, i.body, i.read, i.archived, i.created_at, i.actor_type, i.actor_id, i.details, iss.status AS issue_status
+  FROM inbox_item i
+  LEFT JOIN issue iss ON iss.id = i.issue_id
+  WHERE i.workspace_id = $1 AND i.recipient_type = $2 AND i.recipient_id = $3 AND i.archived = false
+  ORDER BY COALESCE(i.issue_id, i.id), i.created_at DESC, i.id DESC
+) AS deduped
+ORDER BY created_at DESC, id DESC
+LIMIT $4
+`
+
+type ListInboxItemsLatestParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	RecipientType string      `json:"recipient_type"`
+	RecipientID   pgtype.UUID `json:"recipient_id"`
+	Limit         int32       `json:"limit"`
+}
+
+type ListInboxItemsLatestRow struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	RecipientType string             `json:"recipient_type"`
+	RecipientID   pgtype.UUID        `json:"recipient_id"`
+	Type          string             `json:"type"`
+	Severity      string             `json:"severity"`
+	IssueID       pgtype.UUID        `json:"issue_id"`
+	Title         string             `json:"title"`
+	Body          pgtype.Text        `json:"body"`
+	Read          bool               `json:"read"`
+	Archived      bool               `json:"archived"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	ActorType     pgtype.Text        `json:"actor_type"`
+	ActorID       pgtype.UUID        `json:"actor_id"`
+	Details       []byte             `json:"details"`
+	IssueStatus   pgtype.Text        `json:"issue_status"`
+}
+
+// Newest-first inbox listing with per-issue dedup (Linear-style: an issue
+// with multiple unarchived notifications appears once, with the newest
+// entry winning). The DISTINCT ON dedups; the outer slice applies the
+// cursor page LIMIT. COALESCE(issue_id, id) keeps system notifications
+// (issue_id NULL) one-per-row.
+func (q *Queries) ListInboxItemsLatest(ctx context.Context, arg ListInboxItemsLatestParams) ([]ListInboxItemsLatestRow, error) {
+	rows, err := q.db.Query(ctx, listInboxItemsLatest,
+		arg.WorkspaceID,
+		arg.RecipientType,
+		arg.RecipientID,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListInboxItemsLatestRow{}
+	for rows.Next() {
+		var i ListInboxItemsLatestRow
 		if err := rows.Scan(
 			&i.ID,
 			&i.WorkspaceID,

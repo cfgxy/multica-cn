@@ -14,16 +14,20 @@ import (
 // notificationTest helpers — reuse the integration test fixtures from TestMain
 // (testPool, testUserID, testWorkspaceID are set in integration_test.go).
 
-// inboxItemsForRecipient returns all non-archived inbox items for a given recipient.
-func inboxItemsForRecipient(t *testing.T, queries *db.Queries, recipientID string) []db.ListInboxItemsRow {
+// inboxItemsForRecipient returns all non-archived inbox items for a given
+// recipient. Uses the paginated ListInboxItemsLatest with a high limit because
+// these tests assert behavior over a small fixed dataset; production uses
+// real cursor pagination.
+func inboxItemsForRecipient(t *testing.T, queries *db.Queries, recipientID string) []db.ListInboxItemsLatestRow {
 	t.Helper()
-	items, err := queries.ListInboxItems(context.Background(), db.ListInboxItemsParams{
+	items, err := queries.ListInboxItemsLatest(context.Background(), db.ListInboxItemsLatestParams{
 		WorkspaceID:   util.MustParseUUID(testWorkspaceID),
 		RecipientType: "member",
 		RecipientID:   util.MustParseUUID(recipientID),
+		Limit:         500,
 	})
 	if err != nil {
-		t.Fatalf("ListInboxItems: %v", err)
+		t.Fatalf("ListInboxItemsLatest: %v", err)
 	}
 	return items
 }
