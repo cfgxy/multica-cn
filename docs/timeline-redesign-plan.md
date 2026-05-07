@@ -1,5 +1,9 @@
 # Timeline 重设计计划
 
+> **状态(2026-05-07)**:Phase 2 / 3 / 4 已实现并提交。Phase 5(filter)按需延后。
+> 看 `git log feat/timeline-comment-anchored-pagination` 获取每阶段的具体提交。
+
+
 ## 问题
 
 当前 issue timeline 用「每页 50 条 entry(comment + activity 共享配额)」的 cursor 分页(#1968 / #2128)。这套设计:
