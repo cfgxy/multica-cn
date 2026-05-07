@@ -284,7 +284,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     fetchOlder, fetchNewer, jumpToLatest,
     isAtLatest, newEntriesBelowCount,
     aroundTarget,
-    hasTruncatedActivities, loadAllActivities,
   } = useIssueTimeline(id, user?.id, { around: highlightCommentId ?? null });
 
   // Memoized timeline grouping. The same Map / groups references are reused
@@ -1040,18 +1039,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                 <div className="h-px flex-1 bg-border" />
               </div>
             )}
-            {hasTruncatedActivities && (
-              <div className="mb-4 flex items-center justify-between gap-3 rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
-                <span>{t(($) => $.timeline.activity_truncated_banner)}</span>
-                <button
-                  type="button"
-                  onClick={loadAllActivities}
-                  className="font-medium text-foreground hover:underline"
-                >
-                  {t(($) => $.timeline.activity_truncated_action)}
-                </button>
-              </div>
-            )}
             <div className="mt-4 flex flex-col gap-3">
               {timelineView.groups.map((group) => {
                 if (group.type === "comment") {
@@ -1105,16 +1092,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                           <div className="flex min-w-0 flex-1 items-center gap-1">
                             <span className="shrink-0 font-medium">{getActorName(entry.actor_type, entry.actor_id)}</span>
                             <span className="truncate">{formatActivity(entry, t, getActorName)}</span>
-                            {/* Coalesce badge for non-task actions: task_completed / task_failed already
-                                bake the count into their translation, so suppress the badge there to
-                                avoid showing "×N" twice. */}
-                            {(entry.coalesced_count ?? 1) > 1 &&
-                              entry.action !== "task_completed" &&
-                              entry.action !== "task_failed" && (
-                                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-xs font-medium tabular-nums text-muted-foreground">
-                                  {t(($) => $.activity.coalesced_badge, { count: entry.coalesced_count ?? 1 })}
-                                </span>
-                              )}
                             <Tooltip>
                               <TooltipTrigger
                                 render={

@@ -80,15 +80,8 @@ export function useIssueTimeline(
     if (options.around) setAround(options.around);
   }, [options.around]);
 
-  // Phase 4: caller-controllable activity quota. Defaults to undefined so the
-  // server applies its standard hard cap; bumped to a high value when the
-  // user clicks "load all system events" on a truncated timeline. Stored
-  // here so the hook (not the component) owns the refetch semantics.
-  const [activityLimit, setActivityLimit] = useState<number | undefined>(
-    undefined,
-  );
   const query = useInfiniteQuery(
-    issueTimelineInfiniteOptions(issueId, around, activityLimit),
+    issueTimelineInfiniteOptions(issueId, around),
   );
   const {
     data,
@@ -453,29 +446,6 @@ export function useIssueTimeline(
     return first?.target ?? null;
   }, [data]);
 
-  // Phase 4: any loaded page reporting activity_truncated_count !== null
-  // means the server clipped the activity slice for that page. Surface this
-  // so the UI can offer a "load all system events" affordance.
-  const hasTruncatedActivities = useMemo(() => {
-    if (!data) return false;
-    return data.pages.some(
-      (p) => p.activity_truncated_count != null && p.activity_truncated_count > 0,
-    );
-  }, [data]);
-
-  // Bump the activity quota to the high ceiling and force a refetch. The
-  // queryFn closes over `activityLimit`, so we have to wait for the next
-  // render (after setState flushes) before invalidating — otherwise the
-  // refetch picks up the OLD closure and the bump is silently dropped.
-  // The effect below is the post-render hook for that.
-  const ACTIVITY_LIMIT_CEILING = 5000;
-  const loadAllActivities = useCallback(() => {
-    setActivityLimit(ACTIVITY_LIMIT_CEILING);
-  }, []);
-  useEffect(() => {
-    if (activityLimit === undefined) return;
-    qc.invalidateQueries({ queryKey: issueKeys.timeline(issueId, around) });
-  }, [activityLimit, qc, issueId, around]);
 
   return {
     timeline: optimisticTimeline,
@@ -498,7 +468,5 @@ export function useIssueTimeline(
     newEntriesBelowCount,
     targetFlatIndex,
     aroundTarget,
-    hasTruncatedActivities,
-    loadAllActivities,
   };
 }

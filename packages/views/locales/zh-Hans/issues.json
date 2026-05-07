@@ -137,9 +137,7 @@
     "show_newer": "显示更晚",
     "loading": "加载中…",
     "jump_to_latest": "跳到最新",
-    "jump_to_latest_with_count": "跳到最新 · {{count}} 条新动态",
-    "activity_truncated_banner": "部分系统事件未显示。",
-    "activity_truncated_action": "加载全部"
+    "jump_to_latest_with_count": "跳到最新 · {{count}} 条新动态"
   },
   "activity": {
     "created": "创建了这个 issue",
@@ -156,8 +154,7 @@
     "task_completed_one": "完成了 task",
     "task_completed_other": "完成了 task（{{count}} 次）",
     "task_failed_one": "task 失败",
-    "task_failed_other": "task 失败（{{count}} 次）",
-    "coalesced_badge": "×{{count}}"
+    "task_failed_other": "task 失败（{{count}} 次）"
   },
   "comment": {
     "delete_title": "删除评论",

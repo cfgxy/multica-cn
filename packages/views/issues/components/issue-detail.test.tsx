@@ -563,58 +563,6 @@ describe("IssueDetail (shared)", () => {
     });
   });
 
-  it("renders the activity-truncation banner and bumps activity_limit on click (Phase 4)", async () => {
-    // Server signals truncation by setting activity_truncated_count.
-    mockApiObj.listTimelineV2.mockResolvedValueOnce({
-      comments: [
-        {
-          type: "comment",
-          id: "c-1",
-          actor_type: "member",
-          actor_id: "user-1",
-          content: "anchor",
-          parent_id: null,
-          created_at: "2026-01-15T00:00:00Z",
-          updated_at: "2026-01-15T00:00:00Z",
-          comment_type: "comment",
-        },
-      ],
-      activities: [],
-      next_cursor: null,
-      prev_cursor: null,
-      has_more_before: false,
-      has_more_after: false,
-      activity_truncated_count: 1,
-    });
-    // Second call (after "Load all" click) would return all activities; the
-    // mock data doesn't matter for this assertion — we only care about the
-    // call-args, specifically that activity_limit was raised.
-    mockApiObj.listTimelineV2.mockResolvedValueOnce({
-      comments: [],
-      activities: [],
-      next_cursor: null,
-      prev_cursor: null,
-      has_more_before: false,
-      has_more_after: false,
-    });
-
-    renderIssueDetail();
-
-    const banner = await screen.findByText("Some system events are not shown.");
-    expect(banner).toBeInTheDocument();
-
-    fireEvent.click(screen.getByText("Load all"));
-
-    await waitFor(() => {
-      const calls = mockApiObj.listTimelineV2.mock.calls;
-      // The Load-all click triggers an invalidation + refetch with the high
-      // ceiling. Latest call must include the bumped activity_limit.
-      const latest = calls[calls.length - 1] as unknown[] | undefined;
-      // (issueId, pageParam, commentLimit, activityLimit) — activityLimit at index 3
-      expect(latest?.[3]).toBeGreaterThan(500);
-    });
-  });
-
   it("coalesces a long retry loop of status_changed by the same actor into one row regardless of time gap", async () => {
     // status_changed by the same agent over a long stretch (e.g. a 30-min
     // retry loop where each attempt re-toggles in_progress→todo→in_progress)
@@ -648,9 +596,11 @@ describe("IssueDetail (shared)", () => {
     renderIssueDetail();
 
     await waitFor(() => {
-      // Only one rendered row; the ×12 badge proves coalescing fired even
-      // though the 12 events span an hour.
-      expect(screen.getByText("×12")).toBeInTheDocument();
+      // Coalesce is silent — no ×N badge in the UI, fold is fold. We assert
+      // the result by counting status-row anchors in the activity list:
+      // 12 input rows must collapse into exactly 1 rendered row.
+      const rows = document.querySelectorAll('[id^="activity-"]');
+      expect(rows).toHaveLength(1);
     });
   });
 
@@ -692,8 +642,9 @@ describe("IssueDetail (shared)", () => {
     renderIssueDetail();
 
     await waitFor(() => {
-      // Two distinct rows — neither carries a coalesce badge.
-      expect(screen.queryByText(/×\d+/)).not.toBeInTheDocument();
+      // Two distinct activity rows — coalesce did not collapse them.
+      const rows = document.querySelectorAll('[id^="activity-"]');
+      expect(rows).toHaveLength(2);
     });
   });
 
