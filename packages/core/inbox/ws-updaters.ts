@@ -1,7 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { inboxKeys } from "./queries";
 import {
-  filterAllItems,
+  removeMatchingItems,
   mapAllItems,
   prependToLatestPage,
   type InboxCacheData,
@@ -49,7 +49,7 @@ export function onInboxIssueDeleted(
   issueId: string,
 ) {
   qc.setQueryData<InboxCacheData>(inboxKeys.list(wsId), (old) =>
-    filterAllItems(old, (i) => i.issue_id === issueId),
+    removeMatchingItems(old, (i) => i.issue_id === issueId),
   );
   qc.invalidateQueries({ queryKey: inboxKeys.unreadCount(wsId) });
 }

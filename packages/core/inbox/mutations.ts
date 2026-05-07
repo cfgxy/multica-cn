@@ -2,21 +2,38 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { inboxKeys } from "./queries";
 import {
-  filterAllItems,
   mapAllItems,
+  removeMatchingItems,
   type InboxCacheData,
 } from "./inbox-cache";
 import { useWorkspaceId } from "../hooks";
 
-// Each mutation invalidates the unread-count query so the badge stays in
-// sync with the optimistic list update. The badge derives from a separate
-// endpoint now (see useInboxUnreadCount) so list-only invalidation isn't
-// enough.
-function invalidateInbox(
+// Why these mutations no longer invalidate the LIST query:
+//
+// useInfiniteQuery refetches every loaded page with its cached pageParam on
+// invalidate. After a row is archived, page 0 (no cursor) shifts up to
+// include items previously on page 1, while page 1 still uses a cursor
+// pointing at the now-archived row — so the same item appears on both
+// pages. The old client-side `deduplicateInboxItems` masked this; deleting
+// it surfaced the bug.
+//
+// All mutations whose effect the client can predict EXACTLY (mark-read /
+// archive-single / mark-all-read / archive-all / archive-all-read) apply
+// optimistically and skip the list invalidate — the local cache is already
+// correct. Only the unread-count query is invalidated (it's a single
+// non-paginated query, immune to the cross-page issue).
+//
+// `useArchiveCompletedInbox` is the lone exception: it filters by
+// issue.status server-side, so the client can't enumerate which inbox
+// items are affected. It still invalidates the list and inherits the
+// cross-page-duplicate risk in the rare case a user with deeply scrolled
+// pagination triggers it. Acceptable trade-off — same behavior as the
+// timeline cache today.
+
+function invalidateUnreadCount(
   qc: ReturnType<typeof useQueryClient>,
   wsId: string,
 ) {
-  qc.invalidateQueries({ queryKey: inboxKeys.list(wsId) });
   qc.invalidateQueries({ queryKey: inboxKeys.unreadCount(wsId) });
 }
 
@@ -38,7 +55,7 @@ export function useMarkInboxRead() {
     onError: (_err, _id, ctx) => {
       if (ctx?.prev) qc.setQueryData(inboxKeys.list(wsId), ctx.prev);
     },
-    onSettled: () => invalidateInbox(qc, wsId),
+    onSettled: () => invalidateUnreadCount(qc, wsId),
   });
 }
 
@@ -58,7 +75,7 @@ export function useArchiveInbox() {
         .find((i) => i.id === id);
       const issueId = target?.issue_id ?? null;
       qc.setQueryData<InboxCacheData>(inboxKeys.list(wsId), (old) =>
-        filterAllItems(old, (item) =>
+        removeMatchingItems(old, (item) =>
           item.id === id || (issueId !== null && item.issue_id === issueId),
         ),
       );
@@ -67,7 +84,7 @@ export function useArchiveInbox() {
     onError: (_err, _id, ctx) => {
       if (ctx?.prev) qc.setQueryData(inboxKeys.list(wsId), ctx.prev);
     },
-    onSettled: () => invalidateInbox(qc, wsId),
+    onSettled: () => invalidateUnreadCount(qc, wsId),
   });
 }
 
@@ -89,7 +106,7 @@ export function useMarkAllInboxRead() {
     onError: (_err, _vars, ctx) => {
       if (ctx?.prev) qc.setQueryData(inboxKeys.list(wsId), ctx.prev);
     },
-    onSettled: () => invalidateInbox(qc, wsId),
+    onSettled: () => invalidateUnreadCount(qc, wsId),
   });
 }
 
@@ -98,7 +115,19 @@ export function useArchiveAllInbox() {
   const wsId = useWorkspaceId();
   return useMutation({
     mutationFn: () => api.archiveAllInbox(),
-    onSettled: () => invalidateInbox(qc, wsId),
+    onMutate: async () => {
+      await qc.cancelQueries({ queryKey: inboxKeys.list(wsId) });
+      const prev = qc.getQueryData<InboxCacheData>(inboxKeys.list(wsId));
+      // Wipe every loaded page — server is archiving everything.
+      qc.setQueryData<InboxCacheData>(inboxKeys.list(wsId), (old) =>
+        removeMatchingItems(old, () => true),
+      );
+      return { prev };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev) qc.setQueryData(inboxKeys.list(wsId), ctx.prev);
+    },
+    onSettled: () => invalidateUnreadCount(qc, wsId),
   });
 }
 
@@ -107,7 +136,18 @@ export function useArchiveAllReadInbox() {
   const wsId = useWorkspaceId();
   return useMutation({
     mutationFn: () => api.archiveAllReadInbox(),
-    onSettled: () => invalidateInbox(qc, wsId),
+    onMutate: async () => {
+      await qc.cancelQueries({ queryKey: inboxKeys.list(wsId) });
+      const prev = qc.getQueryData<InboxCacheData>(inboxKeys.list(wsId));
+      qc.setQueryData<InboxCacheData>(inboxKeys.list(wsId), (old) =>
+        removeMatchingItems(old, (item) => item.read),
+      );
+      return { prev };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev) qc.setQueryData(inboxKeys.list(wsId), ctx.prev);
+    },
+    onSettled: () => invalidateUnreadCount(qc, wsId),
   });
 }
 
@@ -115,7 +155,14 @@ export function useArchiveCompletedInbox() {
   const qc = useQueryClient();
   const wsId = useWorkspaceId();
   return useMutation({
+    // Server-side filter on issue.status — the client can't enumerate
+    // which inbox items are affected, so this is the only mutation that
+    // still invalidates the list. Inherits the cross-page duplicate
+    // risk on deeply paginated caches; same as timeline today.
     mutationFn: () => api.archiveCompletedInbox(),
-    onSettled: () => invalidateInbox(qc, wsId),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: inboxKeys.list(wsId) });
+      invalidateUnreadCount(qc, wsId);
+    },
   });
 }

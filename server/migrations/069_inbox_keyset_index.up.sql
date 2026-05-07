@@ -10,8 +10,16 @@
 -- The pre-existing idx_inbox_recipient (recipient_type, recipient_id, read)
 -- only covered the per-recipient unread-count query; it cannot drive the
 -- workspace-scoped keyset pagination, so we add a new index rather than
--- replace it. Keeping it for now until the unread-count query is verified
--- to use the new index too.
+-- replace it.
+--
+-- Not using CREATE INDEX CONCURRENTLY here for the same reason 068
+-- (timeline keyset) didn't: at current scale (early-stage product, 2–10
+-- person workspaces) the build is sub-second and the brief share-lock is
+-- acceptable. When inbox_item grows past ~1M rows the lock window will
+-- matter — at that point revisit ALL keyset indexes (068 + 069) together
+-- and either rebuild via CONCURRENTLY in an ops one-off or tighten the
+-- migration runner to support non-transactional migrations. Don't fix
+-- one in isolation; it just creates inconsistency.
 
 CREATE INDEX IF NOT EXISTS idx_inbox_active_keyset
     ON inbox_item (workspace_id, recipient_type, recipient_id, created_at DESC, id DESC)

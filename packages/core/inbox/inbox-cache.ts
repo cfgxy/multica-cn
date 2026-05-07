@@ -34,8 +34,13 @@ export function mapAllItems(
   return { ...data, pages };
 }
 
-/** Filter out items matching the predicate from every page. */
-export function filterAllItems(
+/**
+ * Remove items matching the predicate from every page. NOTE: predicate
+ * semantics are *removal* (`true` → drop), opposite of `Array.filter`.
+ * Named explicitly to avoid the easy mistake of treating it like
+ * `Array.filter` and inverting the boolean.
+ */
+export function removeMatchingItems(
   data: InboxCacheData | undefined,
   predicate: (i: InboxItem) => boolean,
 ): InboxCacheData | undefined {
