@@ -17,6 +17,7 @@ import type {
   AgentRunCount,
   AgentRuntime,
   InboxItem,
+  InboxListPage,
   IssueSubscriber,
   Comment,
   Reaction,
@@ -91,8 +92,10 @@ import { parseWithFallback } from "./schema";
 import {
   ChildIssuesResponseSchema,
   CommentsListSchema,
+  EMPTY_INBOX_LIST_PAGE,
   EMPTY_LIST_ISSUES_RESPONSE,
   EMPTY_TIMELINE_PAGE,
+  InboxListPageSchema,
   ListIssuesResponseSchema,
   SubscribersListSchema,
   TimelinePageSchema,
@@ -795,8 +798,15 @@ export class ApiClient {
   }
 
   // Inbox
-  async listInbox(): Promise<InboxItem[]> {
-    return this.fetch("/api/inbox");
+  async listInbox(params?: { limit?: number; before?: string }): Promise<InboxListPage> {
+    const search = new URLSearchParams();
+    if (params?.limit !== undefined) search.set("limit", String(params.limit));
+    if (params?.before) search.set("before", params.before);
+    const path = search.toString() ? `/api/inbox?${search}` : "/api/inbox";
+    const raw = await this.fetch<unknown>(path);
+    return parseWithFallback(raw, InboxListPageSchema, EMPTY_INBOX_LIST_PAGE, {
+      endpoint: "GET /api/inbox",
+    });
   }
 
   async markInboxRead(id: string): Promise<InboxItem> {

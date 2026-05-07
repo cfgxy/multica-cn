@@ -1,59 +1,66 @@
-import { queryOptions, useQuery } from "@tanstack/react-query";
+import {
+  infiniteQueryOptions,
+  queryOptions,
+  useQuery,
+} from "@tanstack/react-query";
 import { api } from "../api";
-import type { InboxItem } from "../types";
 
 export const inboxKeys = {
   all: (wsId: string) => ["inbox", wsId] as const,
   list: (wsId: string) => [...inboxKeys.all(wsId), "list"] as const,
+  unreadCount: (wsId: string) =>
+    [...inboxKeys.all(wsId), "unread-count"] as const,
 };
 
-export function inboxListOptions(wsId: string) {
-  return queryOptions({
+// 50 matches the server's inboxDefaultLimit. Bumping it requires no server
+// change (server caps at 100) but should be done with intent — larger pages
+// = more items rendered per scroll-to-bottom.
+const INBOX_PAGE_SIZE = 50;
+
+/**
+ * Cursor-paginated inbox listing. The cache shape is `InfiniteData<InboxListPage>`;
+ * consumers flatten via `data?.pages.flatMap(p => p.entries)`.
+ *
+ * Per-issue dedup happens server-side (SQL `DISTINCT ON (COALESCE(issue_id, id))`)
+ * so the client never sees duplicates and never has to reconcile across page
+ * boundaries — the failure mode of doing dedup in JS over a paginated list.
+ *
+ * WS-pushed new items go through `prependToLatestPage` in `inbox-cache.ts`
+ * to keep the same dedup invariant after live updates.
+ */
+export function inboxListInfiniteOptions(wsId: string) {
+  return infiniteQueryOptions({
     queryKey: inboxKeys.list(wsId),
-    queryFn: () => api.listInbox(),
+    queryFn: ({ pageParam }) =>
+      api.listInbox({
+        limit: INBOX_PAGE_SIZE,
+        ...(pageParam ? { before: pageParam } : {}),
+      }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (last) =>
+      last.has_more && last.next_cursor ? last.next_cursor : undefined,
   });
 }
 
 /**
- * Unread inbox count for the given workspace, aligned with what the inbox
- * list UI renders: archived items excluded, then deduplicated by issue so a
- * single issue with three unread notifications counts once.
+ * Unread inbox count for the badge. Calls the dedicated count endpoint
+ * (which dedups per-issue server-side, matching the listing) instead of
+ * deriving from the loaded list — that derivation can't work once the list
+ * is paginated, since the badge would only count the loaded pages.
  */
-export function useInboxUnreadCount(wsId: string | null | undefined): number {
+export function inboxUnreadCountOptions(wsId: string) {
+  return queryOptions({
+    queryKey: inboxKeys.unreadCount(wsId),
+    queryFn: async () => (await api.getUnreadInboxCount()).count,
+  });
+}
+
+export function useInboxUnreadCount(
+  wsId: string | null | undefined,
+): number {
   const { data } = useQuery({
-    queryKey: inboxKeys.list(wsId ?? ""),
-    queryFn: () => api.listInbox(),
+    ...inboxUnreadCountOptions(wsId ?? ""),
     enabled: !!wsId,
-    select: (items: InboxItem[]) =>
-      deduplicateInboxItems(items).filter((i) => !i.read).length,
   });
   return data ?? 0;
-}
-
-/**
- * Deduplicate inbox items by issue_id (one entry per issue, Linear-style).
- * Exported for consumers to use in useMemo — not in queryOptions select
- * (to avoid new array references on every cache update).
- */
-export function deduplicateInboxItems(items: InboxItem[]): InboxItem[] {
-  const active = items.filter((i) => !i.archived);
-  const groups = new Map<string, InboxItem[]>();
-  for (const item of active) {
-    const key = item.issue_id ?? item.id;
-    const group = groups.get(key) ?? [];
-    group.push(item);
-    groups.set(key, group);
-  }
-  const merged: InboxItem[] = [];
-  for (const group of groups.values()) {
-    group.sort(
-      (a, b) =>
-        new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-    );
-    if (group[0]) merged.push(group[0]);
-  }
-  return merged.sort(
-    (a, b) =>
-      new Date(b.created_at).getTime() - new Date(a.created_at).getTime(),
-  );
 }

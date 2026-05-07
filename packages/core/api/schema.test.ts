@@ -166,6 +166,117 @@ describe("ApiClient schema fallback", () => {
       expect(res).toEqual({ issues: [] });
     });
   });
+
+  // The inbox endpoint serves two shapes — see InboxListPageSchema in
+  // schemas.ts. New servers wrap entries; old servers (and the new server's
+  // no-params legacy path) return a bare array. The schema's union+transform
+  // collapses both into the wrapper shape so the UI never branches on it.
+  describe("listInbox", () => {
+    const sampleItem = {
+      id: "i-1",
+      workspace_id: "ws-1",
+      recipient_type: "member",
+      recipient_id: "u-1",
+      type: "new_comment",
+      severity: "info",
+      issue_id: null,
+      title: "hello",
+      body: null,
+      read: false,
+      archived: false,
+      created_at: "2026-01-01T00:00:00Z",
+    };
+
+    it("accepts the new paginated wrapper shape", async () => {
+      stubFetchJson({
+        entries: [sampleItem],
+        next_cursor: "c-1",
+        has_more: true,
+      });
+      const client = new ApiClient("https://api.example.test");
+      const page = await client.listInbox({ limit: 50 });
+      expect(page.entries).toHaveLength(1);
+      expect(page.next_cursor).toBe("c-1");
+      expect(page.has_more).toBe(true);
+    });
+
+    it("transforms a legacy bare-array response into a single-page wrapper", async () => {
+      // Two distinct items (different ids, no issue_id) — dedup is a no-op.
+      stubFetchJson([
+        { ...sampleItem, id: "i-a", created_at: "2026-01-02T00:00:00Z" },
+        { ...sampleItem, id: "i-b", created_at: "2026-01-01T00:00:00Z" },
+      ]);
+      const client = new ApiClient("https://api.example.test");
+      const page = await client.listInbox();
+      expect(page.entries).toHaveLength(2);
+      expect(page.next_cursor).toBeNull();
+      expect(page.has_more).toBe(false);
+    });
+
+    // Window-period defense: a new web client may briefly hit an old server
+    // (which doesn't dedup at SQL level) before the backend rollout
+    // finishes. Without this transform, the same issue would render
+    // multiple times because the new client deleted its
+    // `deduplicateInboxItems` helper.
+    it("dedups bare-array entries by issue_id, keeping the newest", async () => {
+      stubFetchJson([
+        {
+          ...sampleItem,
+          id: "old",
+          issue_id: "issue-x",
+          created_at: "2026-01-01T00:00:00Z",
+          title: "old",
+        },
+        {
+          ...sampleItem,
+          id: "new",
+          issue_id: "issue-x",
+          created_at: "2026-01-03T00:00:00Z",
+          title: "new",
+        },
+        {
+          ...sampleItem,
+          id: "other",
+          issue_id: "issue-y",
+          created_at: "2026-01-02T00:00:00Z",
+          title: "other",
+        },
+      ]);
+      const client = new ApiClient("https://api.example.test");
+      const page = await client.listInbox();
+      expect(page.entries.map((e) => e.id)).toEqual(["new", "other"]);
+    });
+
+    it("falls back to an empty page on a malformed response", async () => {
+      stubFetchJson({ entries: "not-an-array" });
+      const client = new ApiClient("https://api.example.test");
+      const page = await client.listInbox({ limit: 50 });
+      expect(page.entries).toEqual([]);
+      expect(page.has_more).toBe(false);
+    });
+
+    it("falls back when the response is null", async () => {
+      stubFetchJson(null);
+      const client = new ApiClient("https://api.example.test");
+      const page = await client.listInbox();
+      expect(page.entries).toEqual([]);
+    });
+
+    it("preserves unknown server fields via .loose()", async () => {
+      stubFetchJson({
+        entries: [{ ...sampleItem, future_field: "x" }],
+        next_cursor: null,
+        has_more: false,
+        page_metadata: { took_ms: 1 },
+      });
+      const client = new ApiClient("https://api.example.test");
+      const page = await client.listInbox({ limit: 50 });
+      const entry = page.entries[0] as unknown as Record<string, unknown>;
+      const raw = page as unknown as Record<string, unknown>;
+      expect(entry.future_field).toBe("x");
+      expect(raw.page_metadata).toEqual({ took_ms: 1 });
+    });
+  });
 });
 
 // Direct tests for the helper, decoupled from any specific endpoint —

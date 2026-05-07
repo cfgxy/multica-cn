@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { ListIssuesResponse, TimelinePage } from "../types";
+import type { InboxItem, InboxListPage, ListIssuesResponse, TimelinePage } from "../types";
 
 // ---------------------------------------------------------------------------
 // Schemas for the highest-risk API endpoints — those whose responses drive
@@ -145,3 +145,78 @@ export const SubscribersListSchema = z.array(SubscriberSchema);
 export const ChildIssuesResponseSchema = z.object({
   issues: z.array(IssueSchema).default([]),
 }).loose();
+
+// Inbox item schema — lenient like the others: enum-typed string fields
+// (recipient_type, type, severity, issue_status) stay as `z.string()` so an
+// unknown server-side enum still parses. The TS type still narrows them at
+// the call site via the `as InboxListPage` cast that parseWithFallback
+// performs.
+const InboxItemSchema = z.object({
+  id: z.string(),
+  workspace_id: z.string(),
+  recipient_type: z.string(),
+  recipient_id: z.string(),
+  actor_type: z.string().nullable().optional(),
+  actor_id: z.string().nullable().optional(),
+  type: z.string(),
+  severity: z.string(),
+  issue_id: z.string().nullable().optional(),
+  title: z.string(),
+  body: z.string().nullable().optional(),
+  issue_status: z.string().nullable().optional(),
+  read: z.boolean(),
+  archived: z.boolean(),
+  created_at: z.string(),
+  details: z.record(z.string(), z.unknown()).nullable().optional(),
+}).loose();
+
+// New paginated wrapper served when the client opts in via ?limit/?before.
+const InboxListPageWrapperSchema = z.object({
+  entries: z.array(InboxItemSchema).default([]),
+  next_cursor: z.string().nullable().default(null),
+  has_more: z.boolean().default(false),
+}).loose();
+
+// InboxListPageSchema accepts both the new wrapper and the legacy bare-array
+// shape returned by old servers (or by the new server's no-params legacy
+// path). The bare-array branch transforms to the wrapper shape with
+// has_more=false so the UI sees a single, complete page and never tries to
+// fetch a "next" page that doesn't exist.
+//
+// This is the boundary defense for the "new client, old server" drift case;
+// the reverse case ("old client, new server") is handled server-side by the
+// listInboxLegacy path.
+//
+// Why per-issue dedup happens here too: an *old* server has no SQL
+// DISTINCT ON, so the bare array contains duplicate rows for the same
+// issue. The new client deleted its `deduplicateInboxItems` helper
+// (relying on server-side dedup), so without this transform the deploy
+// window between web rollout and backend rollout would render the same
+// issue multiple times. Cheap defense — the new server's legacy path is
+// already deduped, making this a no-op in steady state.
+const dedupByIssueDescending = (items: InboxItem[]): InboxItem[] => {
+  const seen = new Set<string>();
+  return [...items]
+    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    .filter((i) => {
+      const key = i.issue_id ?? i.id;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+};
+
+export const InboxListPageSchema = z.union([
+  InboxListPageWrapperSchema,
+  z.array(InboxItemSchema).transform((items) => ({
+    entries: dedupByIssueDescending(items as InboxItem[]),
+    next_cursor: null,
+    has_more: false,
+  })),
+]);
+
+export const EMPTY_INBOX_LIST_PAGE: InboxListPage = {
+  entries: [],
+  next_cursor: null,
+  has_more: false,
+};

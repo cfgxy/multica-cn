@@ -38,3 +38,13 @@ export interface InboxItem {
   created_at: string;
   details: Record<string, string> | null;
 }
+
+// Cursor-paginated wrapper served by GET /api/inbox?limit=&before=. Old
+// servers still return InboxItem[] directly; the schema layer converts that
+// shape into this one with has_more=false so the UI treats the legacy
+// response as a single, complete page.
+export interface InboxListPage {
+  entries: InboxItem[];
+  next_cursor: string | null;
+  has_more: boolean;
+}

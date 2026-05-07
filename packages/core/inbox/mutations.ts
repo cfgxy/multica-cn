@@ -1,8 +1,24 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { inboxKeys } from "./queries";
+import {
+  filterAllItems,
+  mapAllItems,
+  type InboxCacheData,
+} from "./inbox-cache";
 import { useWorkspaceId } from "../hooks";
-import type { InboxItem } from "../types";
+
+// Each mutation invalidates the unread-count query so the badge stays in
+// sync with the optimistic list update. The badge derives from a separate
+// endpoint now (see useInboxUnreadCount) so list-only invalidation isn't
+// enough.
+function invalidateInbox(
+  qc: ReturnType<typeof useQueryClient>,
+  wsId: string,
+) {
+  qc.invalidateQueries({ queryKey: inboxKeys.list(wsId) });
+  qc.invalidateQueries({ queryKey: inboxKeys.unreadCount(wsId) });
+}
 
 export function useMarkInboxRead() {
   const qc = useQueryClient();
@@ -11,18 +27,18 @@ export function useMarkInboxRead() {
     mutationFn: (id: string) => api.markInboxRead(id),
     onMutate: async (id) => {
       await qc.cancelQueries({ queryKey: inboxKeys.list(wsId) });
-      const prev = qc.getQueryData<InboxItem[]>(inboxKeys.list(wsId));
-      qc.setQueryData<InboxItem[]>(inboxKeys.list(wsId), (old) =>
-        old?.map((item) => (item.id === id ? { ...item, read: true } : item)),
+      const prev = qc.getQueryData<InboxCacheData>(inboxKeys.list(wsId));
+      qc.setQueryData<InboxCacheData>(inboxKeys.list(wsId), (old) =>
+        mapAllItems(old, (item) =>
+          item.id === id ? { ...item, read: true } : item,
+        ),
       );
       return { prev };
     },
     onError: (_err, _id, ctx) => {
       if (ctx?.prev) qc.setQueryData(inboxKeys.list(wsId), ctx.prev);
     },
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: inboxKeys.list(wsId) });
-    },
+    onSettled: () => invalidateInbox(qc, wsId),
   });
 }
 
@@ -33,15 +49,17 @@ export function useArchiveInbox() {
     mutationFn: (id: string) => api.archiveInbox(id),
     onMutate: async (id) => {
       await qc.cancelQueries({ queryKey: inboxKeys.list(wsId) });
-      const prev = qc.getQueryData<InboxItem[]>(inboxKeys.list(wsId));
-      // Archive all items for the same issue (same behavior as store)
-      const target = prev?.find((i) => i.id === id);
-      const issueId = target?.issue_id;
-      qc.setQueryData<InboxItem[]>(inboxKeys.list(wsId), (old) =>
-        old?.map((item) =>
-          item.id === id || (issueId && item.issue_id === issueId)
-            ? { ...item, archived: true }
-            : item,
+      const prev = qc.getQueryData<InboxCacheData>(inboxKeys.list(wsId));
+      // Find the target so we can issue-archive (removing siblings on the
+      // same issue) — server does the same in ArchiveInboxItem when the
+      // issue_id is set.
+      const target = prev?.pages
+        .flatMap((p) => p.entries)
+        .find((i) => i.id === id);
+      const issueId = target?.issue_id ?? null;
+      qc.setQueryData<InboxCacheData>(inboxKeys.list(wsId), (old) =>
+        filterAllItems(old, (item) =>
+          item.id === id || (issueId !== null && item.issue_id === issueId),
         ),
       );
       return { prev };
@@ -49,9 +67,7 @@ export function useArchiveInbox() {
     onError: (_err, _id, ctx) => {
       if (ctx?.prev) qc.setQueryData(inboxKeys.list(wsId), ctx.prev);
     },
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: inboxKeys.list(wsId) });
-    },
+    onSettled: () => invalidateInbox(qc, wsId),
   });
 }
 
@@ -62,9 +78,9 @@ export function useMarkAllInboxRead() {
     mutationFn: () => api.markAllInboxRead(),
     onMutate: async () => {
       await qc.cancelQueries({ queryKey: inboxKeys.list(wsId) });
-      const prev = qc.getQueryData<InboxItem[]>(inboxKeys.list(wsId));
-      qc.setQueryData<InboxItem[]>(inboxKeys.list(wsId), (old) =>
-        old?.map((item) =>
+      const prev = qc.getQueryData<InboxCacheData>(inboxKeys.list(wsId));
+      qc.setQueryData<InboxCacheData>(inboxKeys.list(wsId), (old) =>
+        mapAllItems(old, (item) =>
           !item.archived ? { ...item, read: true } : item,
         ),
       );
@@ -73,9 +89,7 @@ export function useMarkAllInboxRead() {
     onError: (_err, _vars, ctx) => {
       if (ctx?.prev) qc.setQueryData(inboxKeys.list(wsId), ctx.prev);
     },
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: inboxKeys.list(wsId) });
-    },
+    onSettled: () => invalidateInbox(qc, wsId),
   });
 }
 
@@ -84,9 +98,7 @@ export function useArchiveAllInbox() {
   const wsId = useWorkspaceId();
   return useMutation({
     mutationFn: () => api.archiveAllInbox(),
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: inboxKeys.list(wsId) });
-    },
+    onSettled: () => invalidateInbox(qc, wsId),
   });
 }
 
@@ -95,9 +107,7 @@ export function useArchiveAllReadInbox() {
   const wsId = useWorkspaceId();
   return useMutation({
     mutationFn: () => api.archiveAllReadInbox(),
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: inboxKeys.list(wsId) });
-    },
+    onSettled: () => invalidateInbox(qc, wsId),
   });
 }
 
@@ -106,8 +116,6 @@ export function useArchiveCompletedInbox() {
   const wsId = useWorkspaceId();
   return useMutation({
     mutationFn: () => api.archiveCompletedInbox(),
-    onSettled: () => {
-      qc.invalidateQueries({ queryKey: inboxKeys.list(wsId) });
-    },
+    onSettled: () => invalidateInbox(qc, wsId),
   });
 }
