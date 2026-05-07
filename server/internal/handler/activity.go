@@ -57,6 +57,20 @@ type TimelineResponse struct {
 const (
 	timelineDefaultLimit = 50
 	timelineMaxLimit     = 100
+
+	// V2 (comment-anchored) pagination tunables. comment_limit caps how many
+	// comments a single page carries; activities ride along in the page's
+	// time window without occupying the comment quota. activityHardCap
+	// bounds the per-page activity payload so a single dense issue can't
+	// blow the response budget — clients lazy-load past the cap via the
+	// dedicated /activities endpoint.
+	timelineV2DefaultCommentLimit = 20
+	timelineV2MaxCommentLimit     = 100
+	timelineV2ActivityHardCap     = 500
+	// fallbackActivityLimit is used by V2 latest mode when the issue has
+	// zero comments (pure-automation issue) — the page degrades to "latest
+	// N activities", same as V1 default.
+	fallbackActivityLimit = 50
 )
 
 // timelineCursor encodes a (created_at, id) keyset position as opaque base64
@@ -120,12 +134,52 @@ func (h *Handler) ListTimeline(w http.ResponseWriter, r *http.Request) {
 	// Backwards-compat: pre-#2128 clients (Multica.app ≤ v0.2.25 and any cached
 	// web build older than the matching server) call /timeline with no query
 	// string and consume the response body as TimelineEntry[] directly. The
-	// new client always sends ?limit=..., so absence of every pagination param
-	// uniquely identifies a legacy caller. Drop this branch once the desktop
-	// auto-update has rolled the user base past v0.2.26.
-	if q.Get("limit") == "" && q.Get("before") == "" &&
+	// new client always sends ?limit=... or ?comment_limit=..., so absence of
+	// every pagination param uniquely identifies a legacy caller. Drop this
+	// branch once the desktop auto-update has rolled the user base past
+	// v0.2.26.
+	if q.Get("limit") == "" && q.Get("comment_limit") == "" && q.Get("before") == "" &&
 		q.Get("after") == "" && q.Get("around") == "" {
 		h.listTimelineLegacy(w, r, issue)
+		return
+	}
+
+	before, after, around := q.Get("before"), q.Get("after"), q.Get("around")
+	modes := 0
+	for _, s := range []string{before, after, around} {
+		if s != "" {
+			modes++
+		}
+	}
+	if modes > 1 {
+		writeError(w, http.StatusBadRequest, "before, after, and around are mutually exclusive")
+		return
+	}
+
+	// V2 (comment-anchored) dispatch. Selected by comment_limit query param;
+	// returns a {comments, activities, ...} response shape instead of the V1
+	// {entries: [...]} mixed list. Cursors emitted by V2 endpoints encode a
+	// comment's (created_at, id) and can only be passed back to V2 endpoints.
+	if rawCL := q.Get("comment_limit"); rawCL != "" {
+		commentLimit, err := strconv.Atoi(rawCL)
+		if err != nil || commentLimit <= 0 {
+			writeError(w, http.StatusBadRequest, "invalid comment_limit")
+			return
+		}
+		if commentLimit > timelineV2MaxCommentLimit {
+			writeError(w, http.StatusBadRequest, "comment_limit exceeds maximum of 100")
+			return
+		}
+		switch {
+		case around != "":
+			h.listTimelineAroundV2(w, r, issue, around, commentLimit)
+		case before != "":
+			h.listTimelineBeforeV2(w, r, issue, before, commentLimit)
+		case after != "":
+			h.listTimelineAfterV2(w, r, issue, after, commentLimit)
+		default:
+			h.listTimelineLatestV2(w, r, issue, commentLimit)
+		}
 		return
 	}
 
@@ -141,18 +195,6 @@ func (h *Handler) ListTimeline(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		limit = n
-	}
-
-	before, after, around := q.Get("before"), q.Get("after"), q.Get("around")
-	modes := 0
-	for _, s := range []string{before, after, around} {
-		if s != "" {
-			modes++
-		}
-	}
-	if modes > 1 {
-		writeError(w, http.StatusBadRequest, "before, after, and around are mutually exclusive")
-		return
 	}
 
 	switch {
@@ -578,6 +620,422 @@ func entryTimestamp(e TimelineEntry) pgtype.Timestamptz {
 func entryID(e TimelineEntry) pgtype.UUID {
 	id, _ := parseUUIDStrict(e.ID)
 	return id
+}
+
+// =============================================================================
+// V2 timeline: comment-anchored pagination
+// =============================================================================
+//
+// V1 paged a mixed entries[] stream by DB-row count, which let activity bursts
+// crowd comments out of the visible window (#2192). V2 paginates by comment
+// count and returns activities as a separate array bounded by the time window
+// of the returned comments. The frontend interleaves them and folds dense
+// activity runs (Phase 2). See docs/timeline-redesign-plan.md.
+
+// TimelineTarget locates the around-mode anchor inside the response. The
+// anchor can be a comment or an activity; the frontend uses Type to decide
+// whether to scroll to a comment row or to expand a folded activity group
+// before scrolling.
+type TimelineTarget struct {
+	ID   string `json:"id"`
+	Type string `json:"type"` // "comment" | "activity"
+}
+
+// TimelineResponseV2 carries comments and activities as separate arrays so
+// the frontend can interleave + fold without losing track of which entries
+// the pagination cursor advances through. Cursors encode a comment's
+// (created_at, id) — opaque to the client, but only valid against V2
+// endpoints (passing one to a V1 ?limit=... call will resolve to the wrong
+// page).
+type TimelineResponseV2 struct {
+	Comments               []TimelineEntry `json:"comments"`
+	Activities             []TimelineEntry `json:"activities"`
+	NextCursor             *string         `json:"next_cursor"`
+	PrevCursor             *string         `json:"prev_cursor"`
+	HasMoreBefore          bool            `json:"has_more_before"`
+	HasMoreAfter           bool            `json:"has_more_after"`
+	ActivityTruncatedCount *int            `json:"activity_truncated_count,omitempty"`
+	Target                 *TimelineTarget `json:"target,omitempty"`
+}
+
+// activitiesToEntries maps DB activity rows to TimelineEntry, preserving
+// order. The V1 `mergeTimelineDesc` does this inline via activityToEntry;
+// V2 keeps the two streams separate so we need a small helper.
+func activitiesToEntries(activities []db.ActivityLog) []TimelineEntry {
+	out := make([]TimelineEntry, 0, len(activities))
+	for _, a := range activities {
+		out = append(out, activityToEntry(a))
+	}
+	return out
+}
+
+// fetchActivitiesWithCap runs an activity query that has been padded with
+// limit+1 to detect truncation. Returns the trimmed activities and a non-nil
+// pointer when the result was capped. The truncated count is exposed as a
+// minimum ("≥1 more") rather than the exact remaining count — getting the
+// exact count would require a second COUNT(*) query, which is wasted IO when
+// the frontend only renders "N+ system events" anyway.
+func fetchActivitiesWithCap(activities []db.ActivityLog, cap int) ([]db.ActivityLog, *int) {
+	if len(activities) <= cap {
+		return activities, nil
+	}
+	one := 1
+	return activities[:cap], &one
+}
+
+// listTimelineLatestV2 returns the latest <commentLimit> comments and every
+// activity newer-or-equal to the oldest of those comments. When the issue
+// has zero comments the page degrades to the latest <fallbackActivityLimit>
+// activities — the V1 default — so pure-automation issues still render.
+func (h *Handler) listTimelineLatestV2(w http.ResponseWriter, r *http.Request, issue db.Issue, commentLimit int) {
+	ctx := r.Context()
+
+	comments, err := h.Queries.ListCommentsLatest(ctx, db.ListCommentsLatestParams{
+		IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, Limit: int32(commentLimit),
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list comments")
+		return
+	}
+
+	var activities []db.ActivityLog
+	var truncated *int
+	if len(comments) == 0 {
+		activities, err = h.Queries.ListActivitiesLatest(ctx, db.ListActivitiesLatestParams{
+			IssueID: issue.ID, Limit: int32(fallbackActivityLimit),
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list activities")
+			return
+		}
+	} else {
+		oldest := comments[len(comments)-1]
+		raw, err := h.Queries.ListActivitiesSince(ctx, db.ListActivitiesSinceParams{
+			IssueID: issue.ID, Column2: oldest.CreatedAt,
+			Limit: int32(timelineV2ActivityHardCap + 1),
+		})
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to list activities")
+			return
+		}
+		activities, truncated = fetchActivitiesWithCap(raw, timelineV2ActivityHardCap)
+	}
+
+	resp := TimelineResponseV2{
+		Comments:               h.commentsToEntries(r, comments),
+		Activities:             activitiesToEntries(activities),
+		ActivityTruncatedCount: truncated,
+	}
+	// has_more_before is comment-anchored: another page of comments may exist
+	// if we filled the comment quota. Conservative — a partial page can still
+	// flip true on the boundary, but the client just sees an empty next page.
+	if len(comments) >= commentLimit {
+		resp.HasMoreBefore = true
+		oldest := comments[len(comments)-1]
+		c := encodeTimelineCursor(oldest.CreatedAt, oldest.ID)
+		resp.NextCursor = &c
+	}
+	if len(comments) > 0 {
+		newest := comments[0]
+		c := encodeTimelineCursor(newest.CreatedAt, newest.ID)
+		resp.PrevCursor = &c
+	}
+	// has_more_after is always false on the latest page by definition.
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) listTimelineBeforeV2(w http.ResponseWriter, r *http.Request, issue db.Issue, cursor string, commentLimit int) {
+	ctx := r.Context()
+	t, id, err := decodeTimelineCursor(cursor)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid cursor")
+		return
+	}
+
+	comments, err := h.Queries.ListCommentsBefore(ctx, db.ListCommentsBeforeParams{
+		IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
+		Column3: t, Column4: id, Limit: int32(commentLimit),
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list comments")
+		return
+	}
+
+	resp := TimelineResponseV2{
+		HasMoreAfter: true, // we paged older from a known position, newer always exists
+	}
+
+	if len(comments) == 0 {
+		// No more comments — return an empty page. has_more_before stays false.
+		resp.Comments = []TimelineEntry{}
+		resp.Activities = []TimelineEntry{}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	// Activities for this page sit in (oldest_in_page.t .. cursor) keyset
+	// window, with the upper boundary excluded so activities exactly at
+	// cursor.t (which were on the previous page) don't double-count.
+	oldest := comments[len(comments)-1]
+	raw, err := h.Queries.ListActivitiesInBeforeWindow(ctx, db.ListActivitiesInBeforeWindowParams{
+		IssueID: issue.ID,
+		Column2: t, Column3: id,
+		Column4: oldest.CreatedAt,
+		Limit:   int32(timelineV2ActivityHardCap + 1),
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list activities")
+		return
+	}
+	activities, truncated := fetchActivitiesWithCap(raw, timelineV2ActivityHardCap)
+
+	resp.Comments = h.commentsToEntries(r, comments)
+	resp.Activities = activitiesToEntries(activities)
+	resp.ActivityTruncatedCount = truncated
+
+	if len(comments) >= commentLimit {
+		resp.HasMoreBefore = true
+		c := encodeTimelineCursor(oldest.CreatedAt, oldest.ID)
+		resp.NextCursor = &c
+	}
+	newest := comments[0]
+	c := encodeTimelineCursor(newest.CreatedAt, newest.ID)
+	resp.PrevCursor = &c
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *Handler) listTimelineAfterV2(w http.ResponseWriter, r *http.Request, issue db.Issue, cursor string, commentLimit int) {
+	ctx := r.Context()
+	t, id, err := decodeTimelineCursor(cursor)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid cursor")
+		return
+	}
+
+	// Walk newer in ASC order, then re-orient to DESC for the response.
+	commentsAsc, err := h.Queries.ListCommentsAfter(ctx, db.ListCommentsAfterParams{
+		IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
+		Column3: t, Column4: id, Limit: int32(commentLimit),
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list comments")
+		return
+	}
+
+	resp := TimelineResponseV2{
+		HasMoreBefore: true, // we paged newer from a known position, older always exists
+	}
+
+	if len(commentsAsc) == 0 {
+		resp.Comments = []TimelineEntry{}
+		resp.Activities = []TimelineEntry{}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	// commentsAsc is ASC; for activity bounding we need newest+oldest, then
+	// reverse to DESC for the response.
+	oldest := commentsAsc[0]
+	newest := commentsAsc[len(commentsAsc)-1]
+	commentsDesc := make([]db.Comment, len(commentsAsc))
+	for i, c := range commentsAsc {
+		commentsDesc[len(commentsAsc)-1-i] = c
+	}
+
+	// Activities for this page span [oldest.t, newest.t]. Inclusive on both
+	// sides — the cursor entry is a comment one step OLDER, so its timestamp
+	// is strictly less than oldest.t and not in this window anyway.
+	raw, err := h.Queries.ListActivitiesInRange(ctx, db.ListActivitiesInRangeParams{
+		IssueID: issue.ID,
+		Column2: oldest.CreatedAt,
+		Column3: newest.CreatedAt,
+		Limit:   int32(timelineV2ActivityHardCap + 1),
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list activities")
+		return
+	}
+	activities, truncated := fetchActivitiesWithCap(raw, timelineV2ActivityHardCap)
+
+	resp.Comments = h.commentsToEntries(r, commentsDesc)
+	resp.Activities = activitiesToEntries(activities)
+	resp.ActivityTruncatedCount = truncated
+	if len(commentsAsc) >= commentLimit {
+		resp.HasMoreAfter = true
+		c := encodeTimelineCursor(newest.CreatedAt, newest.ID)
+		resp.PrevCursor = &c
+	}
+	c := encodeTimelineCursor(oldest.CreatedAt, oldest.ID)
+	resp.NextCursor = &c
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// listTimelineAroundV2 anchors a window of <commentLimit> comments centered on
+// the target (which may itself be a comment or an activity). Activity anchors
+// are resolved to the nearest comment for windowing; the original anchor is
+// preserved in resp.Target so the frontend can scroll to and auto-expand the
+// folded group containing it.
+func (h *Handler) listTimelineAroundV2(w http.ResponseWriter, r *http.Request, issue db.Issue, targetID string, commentLimit int) {
+	ctx := r.Context()
+	target, err := parseUUIDStrict(targetID)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "invalid around id")
+		return
+	}
+
+	// Resolve target type + position. The around-anchor can be either a
+	// comment or an activity; we don't ask the client to disambiguate.
+	var (
+		anchorTime pgtype.Timestamptz
+		anchorID   pgtype.UUID
+		targetType string
+	)
+	if c, cErr := h.Queries.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{
+		ID: target, WorkspaceID: issue.WorkspaceID,
+	}); cErr == nil && c.IssueID == issue.ID {
+		anchorTime, anchorID = c.CreatedAt, c.ID
+		targetType = "comment"
+	} else if a, aErr := h.Queries.GetActivity(ctx, target); aErr == nil &&
+		a.IssueID == issue.ID && a.WorkspaceID == issue.WorkspaceID {
+		anchorTime, anchorID = a.CreatedAt, a.ID
+		targetType = "activity"
+	} else {
+		if cErr != nil && !errors.Is(cErr, pgx.ErrNoRows) {
+			writeError(w, http.StatusInternalServerError, "failed to resolve target")
+			return
+		}
+		writeError(w, http.StatusNotFound, "timeline entry not found")
+		return
+	}
+
+	half := commentLimit / 2
+	if half < 1 {
+		half = 1
+	}
+
+	// Older + newer comments around the anchor. For comment anchors we also
+	// include the anchor itself in the response by querying Before with the
+	// anchor's keyset (exclusive) and Get-ing the anchor separately. For
+	// activity anchors the comment list is straightforward older/newer.
+	olderComments, err := h.Queries.ListCommentsBefore(ctx, db.ListCommentsBeforeParams{
+		IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
+		Column3: anchorTime, Column4: anchorID, Limit: int32(half),
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list comments")
+		return
+	}
+	newerCommentsAsc, err := h.Queries.ListCommentsAfter(ctx, db.ListCommentsAfterParams{
+		IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
+		Column3: anchorTime, Column4: anchorID, Limit: int32(half),
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list comments")
+		return
+	}
+	// Newer is ASC from the query; flip to DESC so the response is
+	// uniformly DESC.
+	newerCommentsDesc := make([]db.Comment, len(newerCommentsAsc))
+	for i, c := range newerCommentsAsc {
+		newerCommentsDesc[len(newerCommentsAsc)-1-i] = c
+	}
+
+	// Stitch comments. Anchor comment goes between newer and older when it
+	// exists; for activity anchors there's no anchor comment to insert, the
+	// list is just newer + older.
+	var stitched []db.Comment
+	stitched = append(stitched, newerCommentsDesc...)
+	if targetType == "comment" {
+		c, err := h.Queries.GetCommentInWorkspace(ctx, db.GetCommentInWorkspaceParams{
+			ID: target, WorkspaceID: issue.WorkspaceID,
+		})
+		if err == nil {
+			stitched = append(stitched, c)
+		}
+	}
+	stitched = append(stitched, olderComments...)
+
+	// Activity time window. With comments around the anchor, span is
+	// [oldest_in_window, newest_in_window]. With zero comments (pure-activity
+	// issue) we fall back to ±half activities around the anchor.
+	resp := TimelineResponseV2{
+		Target:        &TimelineTarget{ID: targetID, Type: targetType},
+		HasMoreBefore: len(olderComments) >= half,
+		HasMoreAfter:  len(newerCommentsAsc) >= half,
+	}
+
+	if len(stitched) == 0 {
+		// Fallback: pure-activity issue. Around-mode windows ±half activities
+		// and lets the frontend show them all flat (no folding context exists).
+		olderActs, _ := h.Queries.ListActivitiesBefore(ctx, db.ListActivitiesBeforeParams{
+			IssueID: issue.ID, Column2: anchorTime, Column3: anchorID, Limit: int32(half),
+		})
+		newerActsAsc, _ := h.Queries.ListActivitiesAfter(ctx, db.ListActivitiesAfterParams{
+			IssueID: issue.ID, Column2: anchorTime, Column3: anchorID, Limit: int32(half),
+		})
+		// Flip newer ASC → DESC.
+		newerActsDesc := make([]db.ActivityLog, len(newerActsAsc))
+		for i, a := range newerActsAsc {
+			newerActsDesc[len(newerActsAsc)-1-i] = a
+		}
+		var allActs []db.ActivityLog
+		allActs = append(allActs, newerActsDesc...)
+		if targetType == "activity" {
+			if a, aErr := h.Queries.GetActivity(ctx, target); aErr == nil {
+				allActs = append(allActs, a)
+			}
+		}
+		allActs = append(allActs, olderActs...)
+		resp.Comments = []TimelineEntry{}
+		resp.Activities = activitiesToEntries(allActs)
+		// Pagination cursors point at the boundary activities; clients walk via
+		// V1 endpoints in this fallback.
+		resp.HasMoreBefore = len(olderActs) >= half
+		resp.HasMoreAfter = len(newerActsAsc) >= half
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
+	oldestT := stitched[len(stitched)-1].CreatedAt
+	newestT := stitched[0].CreatedAt
+	// If the around-anchor is an activity outside the comment window (e.g.
+	// activity newer than all returned comments), expand the activity window
+	// to include it so the anchor lands in the response and the frontend can
+	// scroll to + auto-expand the folded group containing it.
+	if targetType == "activity" {
+		if anchorTime.Time.Before(oldestT.Time) {
+			oldestT = anchorTime
+		}
+		if anchorTime.Time.After(newestT.Time) {
+			newestT = anchorTime
+		}
+	}
+	rawActs, err := h.Queries.ListActivitiesInRange(ctx, db.ListActivitiesInRangeParams{
+		IssueID: issue.ID,
+		Column2: oldestT,
+		Column3: newestT,
+		Limit:   int32(timelineV2ActivityHardCap + 1),
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list activities")
+		return
+	}
+	activities, truncated := fetchActivitiesWithCap(rawActs, timelineV2ActivityHardCap)
+
+	resp.Comments = h.commentsToEntries(r, stitched)
+	resp.Activities = activitiesToEntries(activities)
+	resp.ActivityTruncatedCount = truncated
+	// Cursors anchor on the oldest/newest comments so V2 pagination continues
+	// to walk by comment.
+	if resp.HasMoreBefore {
+		c := encodeTimelineCursor(stitched[len(stitched)-1].CreatedAt, stitched[len(stitched)-1].ID)
+		resp.NextCursor = &c
+	}
+	if resp.HasMoreAfter {
+		c := encodeTimelineCursor(stitched[0].CreatedAt, stitched[0].ID)
+		resp.PrevCursor = &c
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 // AssigneeFrequencyEntry represents how often a user assigns to a specific target.

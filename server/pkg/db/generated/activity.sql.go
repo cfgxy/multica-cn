@@ -218,6 +218,116 @@ func (q *Queries) ListActivitiesBefore(ctx context.Context, arg ListActivitiesBe
 	return items, nil
 }
 
+const listActivitiesInBeforeWindow = `-- name: ListActivitiesInBeforeWindow :many
+SELECT id, workspace_id, issue_id, actor_type, actor_id, action, details, created_at FROM activity_log
+WHERE issue_id = $1
+  AND (created_at, id) < ($2::timestamptz, $3::uuid)
+  AND created_at >= $4::timestamptz
+ORDER BY created_at DESC, id DESC
+LIMIT $5
+`
+
+type ListActivitiesInBeforeWindowParams struct {
+	IssueID pgtype.UUID        `json:"issue_id"`
+	Column2 pgtype.Timestamptz `json:"column_2"`
+	Column3 pgtype.UUID        `json:"column_3"`
+	Column4 pgtype.Timestamptz `json:"column_4"`
+	Limit   int32              `json:"limit"`
+}
+
+// Activities for V2 before-mode: keyset upper bound (exclusive) so activities
+// already shown on the previous page don't double-count, plus an inclusive
+// lower-bound timestamp so the page only carries the slice between the
+// previous boundary and this page's oldest comment.
+func (q *Queries) ListActivitiesInBeforeWindow(ctx context.Context, arg ListActivitiesInBeforeWindowParams) ([]ActivityLog, error) {
+	rows, err := q.db.Query(ctx, listActivitiesInBeforeWindow,
+		arg.IssueID,
+		arg.Column2,
+		arg.Column3,
+		arg.Column4,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ActivityLog{}
+	for rows.Next() {
+		var i ActivityLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.ActorType,
+			&i.ActorID,
+			&i.Action,
+			&i.Details,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listActivitiesInRange = `-- name: ListActivitiesInRange :many
+SELECT id, workspace_id, issue_id, actor_type, actor_id, action, details, created_at FROM activity_log
+WHERE issue_id = $1
+  AND created_at >= $2::timestamptz
+  AND created_at <= $3::timestamptz
+ORDER BY created_at DESC, id DESC
+LIMIT $4
+`
+
+type ListActivitiesInRangeParams struct {
+	IssueID pgtype.UUID        `json:"issue_id"`
+	Column2 pgtype.Timestamptz `json:"column_2"`
+	Column3 pgtype.Timestamptz `json:"column_3"`
+	Limit   int32              `json:"limit"`
+}
+
+// Activities for an issue within an inclusive [lower, upper] time range,
+// newest first. Backs the V2 timeline pagination where comments anchor each
+// page and activities ride along in the page's time window. Limit acts as a
+// hard cap; clients infer truncation via "limit + 1" or a separate count.
+func (q *Queries) ListActivitiesInRange(ctx context.Context, arg ListActivitiesInRangeParams) ([]ActivityLog, error) {
+	rows, err := q.db.Query(ctx, listActivitiesInRange,
+		arg.IssueID,
+		arg.Column2,
+		arg.Column3,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ActivityLog{}
+	for rows.Next() {
+		var i ActivityLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.ActorType,
+			&i.ActorID,
+			&i.Action,
+			&i.Details,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listActivitiesLatest = `-- name: ListActivitiesLatest :many
 SELECT id, workspace_id, issue_id, actor_type, actor_id, action, details, created_at FROM activity_log
 WHERE issue_id = $1
@@ -234,6 +344,53 @@ type ListActivitiesLatestParams struct {
 // timeline endpoint to assemble the latest page.
 func (q *Queries) ListActivitiesLatest(ctx context.Context, arg ListActivitiesLatestParams) ([]ActivityLog, error) {
 	rows, err := q.db.Query(ctx, listActivitiesLatest, arg.IssueID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ActivityLog{}
+	for rows.Next() {
+		var i ActivityLog
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.IssueID,
+			&i.ActorType,
+			&i.ActorID,
+			&i.Action,
+			&i.Details,
+			&i.CreatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listActivitiesSince = `-- name: ListActivitiesSince :many
+SELECT id, workspace_id, issue_id, actor_type, actor_id, action, details, created_at FROM activity_log
+WHERE issue_id = $1
+  AND created_at >= $2::timestamptz
+ORDER BY created_at DESC, id DESC
+LIMIT $3
+`
+
+type ListActivitiesSinceParams struct {
+	IssueID pgtype.UUID        `json:"issue_id"`
+	Column2 pgtype.Timestamptz `json:"column_2"`
+	Limit   int32              `json:"limit"`
+}
+
+// Activities for an issue with created_at >= lower bound (no upper bound),
+// newest first. Used by V2 latest mode so activities posted after the newest
+// comment still belong to the first page rather than disappearing into a
+// non-existent "newer" bucket.
+func (q *Queries) ListActivitiesSince(ctx context.Context, arg ListActivitiesSinceParams) ([]ActivityLog, error) {
+	rows, err := q.db.Query(ctx, listActivitiesSince, arg.IssueID, arg.Column2, arg.Limit)
 	if err != nil {
 		return nil, err
 	}

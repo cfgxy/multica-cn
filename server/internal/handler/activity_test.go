@@ -426,3 +426,237 @@ func TestListTimeline_MergeTruncationKeepsOlderReachable(t *testing.T) {
 	// Sanity: don't leak DB internals if something later changes the helper.
 	_ = ctx
 }
+
+// fetchTimelineV2 issues a GET /timeline?comment_limit=... request and decodes
+// the V2 response shape. Used by all V2 tests below.
+func fetchTimelineV2(t *testing.T, issueID, query string) (TimelineResponseV2, int) {
+	t.Helper()
+	url := "/api/issues/" + issueID + "/timeline?" + query
+	w := httptest.NewRecorder()
+	req := newRequest("GET", url, nil)
+	req = withURLParam(req, "id", issueID)
+	testHandler.ListTimeline(w, req)
+	var resp TimelineResponseV2
+	if w.Code == http.StatusOK {
+		json.NewDecoder(w.Body).Decode(&resp)
+	}
+	return resp, w.Code
+}
+
+// TestListTimelineV2_LatestSeparatesCommentsAndActivities verifies the
+// fundamental V2 contract: comments and activities come back as two separate
+// arrays, the comment quota caps pagination, and activities ride along in the
+// time window of the returned comments.
+func TestListTimelineV2_LatestSeparatesCommentsAndActivities(t *testing.T) {
+	issueID := createIssueForTimeline(t, "V2 latest split")
+	// 5 comments first (older), 12 activities after (newer). The V1 path
+	// would return 17 entries mixed; V2 returns 5 comments + 12 activities.
+	seedTimelineEntries(t, issueID, 5, 12)
+
+	resp, code := fetchTimelineV2(t, issueID, "comment_limit=20")
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
+	}
+	if len(resp.Comments) != 5 {
+		t.Fatalf("expected 5 comments, got %d", len(resp.Comments))
+	}
+	if len(resp.Activities) != 12 {
+		t.Fatalf("expected 12 activities, got %d", len(resp.Activities))
+	}
+	if resp.HasMoreBefore {
+		t.Fatalf("only 5 comments < limit 20, has_more_before should be false")
+	}
+	for i, c := range resp.Comments {
+		if c.Type != "comment" {
+			t.Fatalf("comments[%d].type = %q, want comment", i, c.Type)
+		}
+	}
+	for i, a := range resp.Activities {
+		if a.Type != "activity" {
+			t.Fatalf("activities[%d].type = %q, want activity", i, a.Type)
+		}
+	}
+}
+
+// TestListTimelineV2_CommentQuotaPagination verifies that the V2 cursor
+// advances by comment count, not by DB-row count. With 100 activities and
+// 25 comments and comment_limit=10, the latest page returns 10 comments + all
+// 100 activities (since they sit in the time window) — and has_more_before
+// flips true so the client can walk older.
+func TestListTimelineV2_CommentQuotaPagination(t *testing.T) {
+	issueID := createIssueForTimeline(t, "V2 quota")
+	// Insert 100 activities first (older), then 25 comments (newer).
+	ctx := context.Background()
+	base := time.Now().UTC().Add(-200 * time.Minute)
+	for i := 0; i < 100; i++ {
+		ts := base.Add(time.Duration(i) * time.Minute)
+		if _, err := testPool.Exec(ctx, `
+			INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details, created_at)
+			VALUES ($1, $2, 'member', $3, 'status_changed', '{"from":"todo","to":"in_progress"}'::jsonb, $4)
+		`, testWorkspaceID, issueID, testUserID, ts); err != nil {
+			t.Fatalf("seed activity %d: %v", i, err)
+		}
+	}
+	for i := 0; i < 25; i++ {
+		ts := base.Add(time.Duration(100+i) * time.Minute)
+		if _, err := testPool.Exec(ctx, `
+			INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, created_at, updated_at)
+			VALUES ($1, $2, 'member', $3, $4, 'comment', $5, $5)
+		`, issueID, testWorkspaceID, testUserID, fmt.Sprintf("comment %d", i), ts); err != nil {
+			t.Fatalf("seed comment %d: %v", i, err)
+		}
+	}
+
+	resp, code := fetchTimelineV2(t, issueID, "comment_limit=10")
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
+	}
+	if len(resp.Comments) != 10 {
+		t.Fatalf("expected 10 comments (quota), got %d", len(resp.Comments))
+	}
+	if !resp.HasMoreBefore {
+		t.Fatalf("expected has_more_before=true with 25 comments and quota 10")
+	}
+	if resp.NextCursor == nil {
+		t.Fatalf("expected next_cursor when has_more_before=true")
+	}
+	// All 100 activities are older than the oldest of the 10 returned comments,
+	// so they fall outside the time window — V2 latest mode includes
+	// activities >= oldest_comment.created_at, which excludes them.
+	// The 25-10 = 15 older comments are also excluded; activities between them
+	// don't appear on this page.
+	if len(resp.Activities) != 0 {
+		t.Fatalf("expected 0 activities (all older than oldest of latest 10 comments), got %d", len(resp.Activities))
+	}
+}
+
+// TestListTimelineV2_NoCommentsFallback ensures that a pure-activity issue
+// (no comments at all) doesn't return an empty page — V2 latest mode falls
+// back to the latest <fallbackActivityLimit> activities so users can still
+// navigate.
+func TestListTimelineV2_NoCommentsFallback(t *testing.T) {
+	issueID := createIssueForTimeline(t, "V2 no-comments fallback")
+	seedTimelineEntries(t, issueID, 0, 30) // activities only
+
+	resp, code := fetchTimelineV2(t, issueID, "comment_limit=20")
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
+	}
+	if len(resp.Comments) != 0 {
+		t.Fatalf("expected 0 comments, got %d", len(resp.Comments))
+	}
+	if len(resp.Activities) != 30 {
+		t.Fatalf("expected 30 activities (all under fallback cap), got %d", len(resp.Activities))
+	}
+	if resp.HasMoreBefore {
+		t.Fatalf("comment quota not hit (0 < 20), has_more_before should be false")
+	}
+}
+
+// TestListTimelineV2_AroundCommentAnchor verifies that around-mode with a
+// comment target returns comments centered on it and a target whose type is
+// "comment".
+func TestListTimelineV2_AroundCommentAnchor(t *testing.T) {
+	issueID := createIssueForTimeline(t, "V2 around comment")
+	commentIDs, _ := seedTimelineEntries(t, issueID, 21, 0)
+	target := commentIDs[10] // middle comment
+
+	resp, code := fetchTimelineV2(t, issueID, "comment_limit=10&around="+target)
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
+	}
+	if resp.Target == nil {
+		t.Fatalf("around-mode response must include target")
+	}
+	if resp.Target.ID != target || resp.Target.Type != "comment" {
+		t.Fatalf("target = %+v, want id=%s type=comment", resp.Target, target)
+	}
+	// Anchor + 5 older + 5 newer = 11 comments
+	if len(resp.Comments) < 5 {
+		t.Fatalf("expected ≥5 comments around anchor, got %d", len(resp.Comments))
+	}
+	// Anchor must be present in the comments slice.
+	found := false
+	for _, c := range resp.Comments {
+		if c.ID == target {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("anchor comment %s not in returned comments", target)
+	}
+}
+
+// TestListTimelineV2_AroundActivityAnchor exercises the inbox case where a
+// notification points at an activity. The response must surface
+// target.type="activity" and include the anchor activity in the activities
+// slice so the frontend can locate + auto-expand the folded group containing
+// it (Phase 2 fold layer).
+func TestListTimelineV2_AroundActivityAnchor(t *testing.T) {
+	issueID := createIssueForTimeline(t, "V2 around activity")
+	_, activityIDs := seedTimelineEntries(t, issueID, 5, 10)
+	target := activityIDs[5] // middle activity
+
+	resp, code := fetchTimelineV2(t, issueID, "comment_limit=10&around="+target)
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
+	}
+	if resp.Target == nil || resp.Target.Type != "activity" || resp.Target.ID != target {
+		t.Fatalf("target = %+v, want id=%s type=activity", resp.Target, target)
+	}
+	// The anchor activity must be included in the activities slice — the
+	// frontend needs it to scroll to and highlight.
+	found := false
+	for _, a := range resp.Activities {
+		if a.ID == target {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("anchor activity %s not in returned activities", target)
+	}
+}
+
+// TestListTimelineV2_ActivityHardCap verifies the activity-cap defense: an
+// issue with more activities than timelineV2ActivityHardCap inside a single
+// page's window truncates the activities slice and signals it via
+// activity_truncated_count.
+func TestListTimelineV2_ActivityHardCap(t *testing.T) {
+	if testing.Short() {
+		t.Skip("seeding 501 activities is slow; skipped under -short")
+	}
+	issueID := createIssueForTimeline(t, "V2 activity cap")
+	ctx := context.Background()
+	base := time.Now().UTC().Add(-(timelineV2ActivityHardCap + 10) * time.Minute)
+	// 1 anchor comment, then 501 activities all newer than it so they fall in
+	// the latest page's time window.
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, created_at, updated_at)
+		VALUES ($1, $2, 'member', $3, 'anchor', 'comment', $4, $4)
+	`, issueID, testWorkspaceID, testUserID, base); err != nil {
+		t.Fatalf("seed anchor comment: %v", err)
+	}
+	for i := 0; i < timelineV2ActivityHardCap+1; i++ {
+		ts := base.Add(time.Duration(i+1) * time.Second)
+		if _, err := testPool.Exec(ctx, `
+			INSERT INTO activity_log (workspace_id, issue_id, actor_type, actor_id, action, details, created_at)
+			VALUES ($1, $2, 'member', $3, 'status_changed', '{"from":"todo","to":"in_progress"}'::jsonb, $4)
+		`, testWorkspaceID, issueID, testUserID, ts); err != nil {
+			t.Fatalf("seed activity %d: %v", i, err)
+		}
+	}
+
+	resp, code := fetchTimelineV2(t, issueID, "comment_limit=20")
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
+	}
+	if len(resp.Activities) != timelineV2ActivityHardCap {
+		t.Fatalf("expected activities trimmed to hard cap %d, got %d",
+			timelineV2ActivityHardCap, len(resp.Activities))
+	}
+	if resp.ActivityTruncatedCount == nil || *resp.ActivityTruncatedCount < 1 {
+		t.Fatalf("expected activity_truncated_count >= 1, got %v", resp.ActivityTruncatedCount)
+	}
+}
