@@ -127,6 +127,67 @@ describe("ApiClient schema fallback", () => {
     });
   });
 
+  describe("listTimelineV2", () => {
+    it("falls back to an empty page when required fields are missing", async () => {
+      stubFetchJson({});
+      const client = new ApiClient("https://api.example.test");
+      const page = await client.listTimelineV2("issue-1");
+      expect(page).toEqual({
+        comments: [],
+        activities: [],
+        next_cursor: null,
+        prev_cursor: null,
+        has_more_before: false,
+        has_more_after: false,
+      });
+    });
+
+    it("treats null comments / activities as empty arrays", async () => {
+      stubFetchJson({
+        comments: null,
+        activities: null,
+        next_cursor: null,
+        prev_cursor: null,
+        has_more_before: false,
+        has_more_after: false,
+      });
+      const client = new ApiClient("https://api.example.test");
+      const page = await client.listTimelineV2("issue-1");
+      expect(page.comments).toEqual([]);
+      expect(page.activities).toEqual([]);
+    });
+
+    it("preserves target metadata when present", async () => {
+      stubFetchJson({
+        comments: [],
+        activities: [],
+        next_cursor: null,
+        prev_cursor: null,
+        has_more_before: false,
+        has_more_after: false,
+        target: { id: "abc-123", type: "activity" },
+      });
+      const client = new ApiClient("https://api.example.test");
+      const page = await client.listTimelineV2("issue-1");
+      expect(page.target).toEqual({ id: "abc-123", type: "activity" });
+    });
+
+    it("preserves activity_truncated_count when present", async () => {
+      stubFetchJson({
+        comments: [],
+        activities: [],
+        next_cursor: null,
+        prev_cursor: null,
+        has_more_before: false,
+        has_more_after: false,
+        activity_truncated_count: 47,
+      });
+      const client = new ApiClient("https://api.example.test");
+      const page = await client.listTimelineV2("issue-1");
+      expect(page.activity_truncated_count).toBe(47);
+    });
+  });
+
   describe("listIssues", () => {
     it("falls back to an empty list when the response is malformed", async () => {
       // `issues` having the wrong type triggers the fallback. An object
