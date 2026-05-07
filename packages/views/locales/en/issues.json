@@ -158,9 +158,7 @@
     "task_completed_other": "completed the task ({{count}} times)",
     "task_failed_one": "task failed",
     "task_failed_other": "task failed ({{count}} times)",
-    "coalesced_badge": "×{{count}}",
-    "group_folded_one": "{{count}} system event",
-    "group_folded_other": "{{count}} system events"
+    "coalesced_badge": "×{{count}}"
   },
   "comment": {
     "delete_title": "Delete comment",

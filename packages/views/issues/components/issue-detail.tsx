@@ -303,10 +303,19 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     }
 
     // Coalesce consecutive activities from the same actor + action.
-    // - task_completed / task_failed: no time limit (these repeat across runs)
-    // - all other actions: within a 2-minute window
+    // - task_completed / task_failed / status_changed: no time limit. These
+    //   are pure-noise repetitions when an agent retries — same actor, same
+    //   action, conceptually one event regardless of timing. The 2-minute
+    //   window only catches tight bursts; a 30-minute retry loop should
+    //   still collapse to one row.
+    // - all other actions: within a 2-minute window (e.g. assignee_changed
+    //   ×3 within seconds is noise; spread over an hour is real activity).
     const COALESCE_MS = 2 * 60 * 1000;
-    const NO_TIME_LIMIT_ACTIONS = new Set(["task_completed", "task_failed"]);
+    const NO_TIME_LIMIT_ACTIONS = new Set([
+      "task_completed",
+      "task_failed",
+      "status_changed",
+    ]);
     const coalesced: TimelineEntry[] = [];
     for (const entry of topLevel) {
       if (entry.type === "activity") {
@@ -375,28 +384,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   });
   const [subIssuesCollapsed, setSubIssuesCollapsed] = useState(false);
 
-  // Expanded state for activity groups, keyed by the group's first entry id.
-  // Groups of ≥3 consecutive activities default to folded; click expands inline.
-  // Existing same-actor + same-action coalescing (giving rows a coalesced_count
-  // badge) runs first; folding is a second, density-driven layer on top.
-  const [expandedActivityGroups, setExpandedActivityGroups] = useState<Set<string>>(new Set());
-  const toggleActivityGroup = useCallback((key: string) => {
-    setExpandedActivityGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return next;
-    });
-  }, []);
-
   const loading = issueLoading;
 
   // Scroll to (and highlight) the around-mode anchor once the timeline loads.
   // The server's TimelineTarget tells us whether the anchor is a comment row
-  // or an activity row inside a fold group. For activity anchors we expand
-  // the containing group first — otherwise the row sits hidden behind the
-  // disclosure and the scroll lands in the wrong place. Each anchor fires
-  // once (didHighlightRef gates the second render after auto-expand).
+  // or an activity row; both render at the top level (no fold UI), so a
+  // single scrollIntoView is enough.
   useEffect(() => {
     if (!aroundTarget || timeline.length === 0) return;
     if (didHighlightRef.current === aroundTarget.id) return;
@@ -406,40 +399,16 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         ? `activity-${aroundTarget.id}`
         : `comment-${aroundTarget.id}`;
 
-    // For activity anchors: ensure the fold group containing the anchor is
-    // expanded. The state update re-renders the activities list; the scroll
-    // runs in the next frame so the row exists in the DOM.
-    if (aroundTarget.type === "activity") {
-      const group = timelineView.groups.find(
-        (g) =>
-          g.type === "activities" &&
-          g.entries.some((e) => e.id === aroundTarget.id),
-      );
-      if (group) {
-        const groupKey = group.entries[0]!.id;
-        setExpandedActivityGroups((prev) => {
-          if (prev.has(groupKey)) return prev;
-          const next = new Set(prev);
-          next.add(groupKey);
-          return next;
-        });
-      }
-    }
-
-    // Double rAF: first frame for React to flush the expansion, second frame
-    // to query the DOM after layout.
-    const raf1 = requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        const el = document.getElementById(elId);
-        if (!el) return;
-        didHighlightRef.current = aroundTarget.id;
-        el.scrollIntoView({ behavior: "instant", block: "center" });
-        setHighlightedId(aroundTarget.id);
-        setTimeout(() => setHighlightedId(null), 2000);
-      });
+    const raf = requestAnimationFrame(() => {
+      const el = document.getElementById(elId);
+      if (!el) return;
+      didHighlightRef.current = aroundTarget.id;
+      el.scrollIntoView({ behavior: "instant", block: "center" });
+      setHighlightedId(aroundTarget.id);
+      setTimeout(() => setHighlightedId(null), 2000);
     });
-    return () => cancelAnimationFrame(raf1);
-  }, [aroundTarget, timeline.length, timelineView]);
+    return () => cancelAnimationFrame(raf);
+  }, [aroundTarget, timeline.length]);
 
   // Legacy fallback: parent passed highlightCommentId but server didn't (or
   // hasn't yet) returned a target — e.g. cache hit served stale V1 data, or
@@ -1105,49 +1074,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                   );
                 }
 
-                const groupKey = group.entries[0]!.id;
-                const isExpanded = expandedActivityGroups.has(groupKey);
-                // Fold groups with ≥3 entries by default. Below the threshold the
-                // density doesn't justify hiding them — render inline like before.
-                const shouldFold = group.entries.length >= 3 && !isExpanded;
-
-                if (shouldFold) {
-                  const totalCount = group.entries.reduce(
-                    (sum, e) => sum + (e.coalesced_count ?? 1),
-                    0,
-                  );
-                  return (
-                    <div key={groupKey} className="px-4">
-                      <button
-                        type="button"
-                        onClick={() => toggleActivityGroup(groupKey)}
-                        className="flex w-full items-center text-xs text-muted-foreground hover:text-foreground transition-colors"
-                      >
-                        <ChevronRight className="!size-3 mr-2 shrink-0 stroke-[2.5] text-muted-foreground" />
-                        <span className="truncate">
-                          {t(($) => $.activity.group_folded, { count: totalCount })}
-                        </span>
-                      </button>
-                    </div>
-                  );
-                }
-
                 return (
-                  <div key={groupKey} className="px-4 flex flex-col gap-3">
-                    {group.entries.length >= 3 && (
-                      <button
-                        type="button"
-                        onClick={() => toggleActivityGroup(groupKey)}
-                        className="flex w-full items-center text-xs text-muted-foreground hover:text-foreground transition-colors"
-                      >
-                        <ChevronDown className="!size-3 mr-2 shrink-0 stroke-[2.5] text-muted-foreground" />
-                        <span className="truncate">
-                          {t(($) => $.activity.group_folded, {
-                            count: group.entries.reduce((sum, e) => sum + (e.coalesced_count ?? 1), 0),
-                          })}
-                        </span>
-                      </button>
-                    )}
+                  <div key={group.entries[0]!.id} className="px-4 flex flex-col gap-3">
                     {group.entries.map((entry, _idx) => {
                       const details = (entry.details ?? {}) as Record<string, string>;
                       const isStatusChange = entry.action === "status_changed";

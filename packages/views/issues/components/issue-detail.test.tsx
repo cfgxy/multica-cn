@@ -615,15 +615,94 @@ describe("IssueDetail (shared)", () => {
     });
   });
 
+  it("coalesces a long retry loop of status_changed by the same actor into one row regardless of time gap", async () => {
+    // status_changed by the same agent over a long stretch (e.g. a 30-min
+    // retry loop where each attempt re-toggles in_progress→todo→in_progress)
+    // is conceptually one event. Without no-time-limit coalesce these would
+    // render as N separate rows; the only sane reading is "agent retried N
+    // times" — that's a coalesced row + ×N badge.
+    const start = new Date("2026-01-20T00:00:00Z").getTime();
+    const activities: TimelineEntry[] = Array.from({ length: 12 }, (_, i) => ({
+      type: "activity" as const,
+      id: `a-retry-${i}`,
+      actor_type: "agent",
+      actor_id: "agent-1",
+      action: "status_changed",
+      details: { from: "in_progress", to: "todo" },
+      // 5 minutes apart — well beyond the 2-min window. Pre-fix this would
+      // have rendered 12 rows; post-fix it collapses to one.
+      created_at: new Date(start + i * 5 * 60_000).toISOString(),
+    }));
+    const desc = [...activities].sort((a, b) =>
+      b.created_at.localeCompare(a.created_at),
+    );
+    mockApiObj.listTimelineV2.mockResolvedValue({
+      comments: [],
+      activities: desc,
+      next_cursor: null,
+      prev_cursor: null,
+      has_more_before: false,
+      has_more_after: false,
+    });
+
+    renderIssueDetail();
+
+    await waitFor(() => {
+      // Only one rendered row; the ×12 badge proves coalescing fired even
+      // though the 12 events span an hour.
+      expect(screen.getByText("×12")).toBeInTheDocument();
+    });
+  });
+
+  it("does not coalesce status_changed across different actors", async () => {
+    // Distinct actors are signal, not noise. Two members each flipping
+    // status must render two rows, not one.
+    const activities: TimelineEntry[] = [
+      {
+        type: "activity",
+        id: "a-actor-a",
+        actor_type: "member",
+        actor_id: "user-1",
+        action: "status_changed",
+        details: { from: "todo", to: "in_progress" },
+        created_at: "2026-01-20T00:00:00Z",
+      },
+      {
+        type: "activity",
+        id: "a-actor-b",
+        actor_type: "member",
+        actor_id: "user-2",
+        action: "status_changed",
+        details: { from: "in_progress", to: "done" },
+        created_at: "2026-01-20T00:00:30Z",
+      },
+    ];
+    const desc = [...activities].sort((a, b) =>
+      b.created_at.localeCompare(a.created_at),
+    );
+    mockApiObj.listTimelineV2.mockResolvedValue({
+      comments: [],
+      activities: desc,
+      next_cursor: null,
+      prev_cursor: null,
+      has_more_before: false,
+      has_more_after: false,
+    });
+
+    renderIssueDetail();
+
+    await waitFor(() => {
+      // Two distinct rows — neither carries a coalesce badge.
+      expect(screen.queryByText(/×\d+/)).not.toBeInTheDocument();
+    });
+  });
+
   it("renders an unknown priority/status without crashing the section", async () => {
     // Server-side enum drift lands here as values the icon config doesn't
     // know about (e.g. a new "deferred" status added by the backend before
     // the desktop bundle ships). The activity row must downgrade to a
     // generic icon, not throw — see the API Response Compatibility rule
     // in CLAUDE.md.
-    // Use three different actions so the same-actor-same-action coalescer
-    // doesn't merge them into a single row (which would drop the group below
-    // the fold threshold and skip the icon render path entirely).
     const activities: TimelineEntry[] = [
       {
         type: "activity",
@@ -667,107 +746,13 @@ describe("IssueDetail (shared)", () => {
 
     renderIssueDetail();
 
-    // Group is folded by default (3 entries ≥ threshold). Expanding it must
-    // not throw — the unknown enum values should fall back to the neutral
-    // icon configs.
-    const fold = await screen.findByText("3 system events");
-    fireEvent.click(fold);
-
-    // Known priority row should still render normally after the fallback path
-    // didn't crash earlier rows.
+    // Activity rows render directly (no fold UI). The bad-enum rows must
+    // downgrade to neutral icons, not throw — and the known row must still
+    // render its full label.
     await waitFor(() => {
       expect(
         screen.getByText(/changed priority from High to Low/),
       ).toBeInTheDocument();
     });
-  });
-
-  it("folds heterogeneous activity groups (≥3 entries) and expands on click", async () => {
-    // 5 activities with mixed actor/action so the legacy same-actor +
-    // same-action coalescing does NOT collapse them — exercise the new
-    // density-driven fold layer instead.
-    const activities: TimelineEntry[] = [
-      {
-        type: "activity",
-        id: "a-1",
-        actor_type: "member",
-        actor_id: "user-1",
-        action: "status_changed",
-        details: { from: "todo", to: "in_progress" },
-        created_at: "2026-01-18T00:00:00Z",
-      },
-      {
-        type: "activity",
-        id: "a-2",
-        actor_type: "agent",
-        actor_id: "agent-1",
-        action: "assignee_changed",
-        details: {},
-        created_at: "2026-01-18T00:01:00Z",
-      },
-      {
-        type: "activity",
-        id: "a-3",
-        actor_type: "member",
-        actor_id: "user-1",
-        action: "priority_changed",
-        details: { from: "high", to: "low" },
-        created_at: "2026-01-18T00:02:00Z",
-      },
-      {
-        type: "activity",
-        id: "a-4",
-        actor_type: "agent",
-        actor_id: "agent-1",
-        action: "status_changed",
-        details: { from: "in_progress", to: "blocked" },
-        created_at: "2026-01-18T00:03:00Z",
-      },
-      {
-        type: "activity",
-        id: "a-5",
-        actor_type: "member",
-        actor_id: "user-1",
-        action: "status_changed",
-        details: { from: "blocked", to: "in_progress" },
-        created_at: "2026-01-18T00:04:00Z",
-      },
-    ];
-    const desc = [...activities].sort((a, b) =>
-      b.created_at.localeCompare(a.created_at),
-    );
-    mockApiObj.listTimeline.mockResolvedValue({
-      entries: desc,
-      next_cursor: null,
-      prev_cursor: null,
-      has_more_before: false,
-      has_more_after: false,
-    });
-    mockApiObj.listTimelineV2.mockResolvedValue({
-      comments: [],
-      activities: desc,
-      next_cursor: null,
-      prev_cursor: null,
-      has_more_before: false,
-      has_more_after: false,
-    });
-
-    renderIssueDetail();
-
-    // Folded: the disclosure row shows the count, and individual rows are hidden.
-    const foldedRow = await screen.findByText("5 system events");
-    expect(foldedRow).toBeInTheDocument();
-    // Status labels are translated through statusLabel(): "todo" → "Todo",
-    // "in_progress" → "In Progress". When folded none of those rows render.
-    expect(screen.queryByText(/changed status from Todo/)).not.toBeInTheDocument();
-
-    fireEvent.click(foldedRow);
-
-    // Expanded: all five activity rows are visible.
-    await waitFor(() => {
-      expect(screen.getByText(/changed status from Todo to In Progress/)).toBeInTheDocument();
-    });
-    expect(screen.getByText(/changed priority from High to Low/)).toBeInTheDocument();
-    expect(screen.getByText(/changed status from Blocked to In Progress/)).toBeInTheDocument();
   });
 });
