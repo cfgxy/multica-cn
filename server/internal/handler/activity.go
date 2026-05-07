@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"sort"
 	"strconv"
@@ -141,7 +142,12 @@ func (h *Handler) ListTimeline(w http.ResponseWriter, r *http.Request) {
 	// new client always sends ?limit=... or ?comment_limit=..., so absence of
 	// every pagination param uniquely identifies a legacy caller. Drop this
 	// branch once the desktop auto-update has rolled the user base past
-	// v0.2.26.
+	// v0.2.26 (track via the slog in listTimelineLegacy).
+	//
+	// MAINTAINERS: when adding a new pagination param to V1 or V2, append it
+	// to the all-empty check below. Forgetting will let new clients fall
+	// into the legacy ASC array path silently. See MUL-1795 for a sturdier
+	// header-based replacement plan.
 	if q.Get("limit") == "" && q.Get("comment_limit") == "" && q.Get("before") == "" &&
 		q.Get("after") == "" && q.Get("around") == "" {
 		h.listTimelineLegacy(w, r, issue)
@@ -239,6 +245,17 @@ func (h *Handler) ListTimeline(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) listTimelineLegacy(w http.ResponseWriter, r *http.Request, issue db.Issue) {
 	const legacyTimelineCap = 200
 	ctx := r.Context()
+	// Observability for the legacy compat branch. The plan in MUL-1795 is to
+	// drop this branch once usage falls to zero — that decision needs a
+	// signal. user_agent works without a dedicated client_version header
+	// (Multica desktop UA carries the version); the X-Client-Version field
+	// stays empty until that header lands and is cheap to add now.
+	slog.InfoContext(ctx, "timeline.legacy_path",
+		"issue_id", uuidToString(issue.ID),
+		"workspace_id", uuidToString(issue.WorkspaceID),
+		"user_agent", r.UserAgent(),
+		"client_version", r.Header.Get("X-Client-Version"),
+	)
 	comments, err := h.Queries.ListCommentsLatest(ctx, db.ListCommentsLatestParams{
 		IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, Limit: legacyTimelineCap,
 	})

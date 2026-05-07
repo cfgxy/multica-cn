@@ -1,5 +1,6 @@
 import { infiniteQueryOptions, queryOptions } from "@tanstack/react-query";
 import { api } from "../api";
+import { ApiError } from "../api/client";
 import type {
   IssueStatus,
   ListIssuesParams,
@@ -207,8 +208,27 @@ export function issueTimelineInfiniteOptions(
       ? ({ mode: "around", id: around } as TimelinePageParam)
       : ({ mode: "latest" } as TimelinePageParam),
     queryFn: async ({ pageParam }) => {
-      const v2 = await api.listTimelineV2(issueId, pageParam);
-      return v2PageToV1(v2);
+      try {
+        const v2 = await api.listTimelineV2(issueId, pageParam);
+        return v2PageToV1(v2);
+      } catch (err) {
+        // Around-mode anchor was deleted between when the inbox notification
+        // was dispatched and when the user clicked it (or the link was hand-
+        // crafted with a stale id). Server returns 404 for the missing
+        // entry; without this fallback the issue detail page would render
+        // an entirely empty timeline even though the issue still has other
+        // comments and activities. Drop the anchor and refetch as latest —
+        // user lands on the live tail rather than blank space.
+        if (
+          pageParam.mode === "around" &&
+          err instanceof ApiError &&
+          err.status === 404
+        ) {
+          const v2 = await api.listTimelineV2(issueId, { mode: "latest" });
+          return v2PageToV1(v2);
+        }
+        throw err;
+      }
     },
     // Walk older: append a page below the current oldest (last entry of the
     // last loaded page). undefined = no more older entries.
