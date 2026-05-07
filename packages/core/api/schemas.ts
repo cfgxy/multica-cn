@@ -83,6 +83,30 @@ export const EMPTY_TIMELINE_PAGE: TimelinePage = {
   has_more_after: false,
 };
 
+// V2 (comment-anchored) timeline response. Comments and activities live in
+// separate arrays so the frontend can interleave + fold without confusing
+// the pagination cursor (which advances by comment, not by entry).
+//
+// `target` is set in around-mode and tells the frontend whether the anchor
+// it should scroll to is a comment row or an activity row inside a folded
+// group. Defensive defaults match the rest of this file: a malformed payload
+// downgrades to an empty page rather than crashing the issue detail screen.
+const TimelineTargetSchema = z.object({
+  id: z.string(),
+  type: z.string(), // "comment" | "activity"
+}).loose();
+
+export const TimelineV2PageSchema = z.object({
+  comments: z.array(TimelineEntrySchema).default([]),
+  activities: z.array(TimelineEntrySchema).default([]),
+  next_cursor: z.string().nullable().default(null),
+  prev_cursor: z.string().nullable().default(null),
+  has_more_before: z.boolean().default(false),
+  has_more_after: z.boolean().default(false),
+  activity_truncated_count: z.number().nullable().optional(),
+  target: TimelineTargetSchema.nullable().optional(),
+}).loose();
+
 export const CommentSchema = z.object({
   id: z.string(),
   issue_id: z.string(),

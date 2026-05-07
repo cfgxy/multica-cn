@@ -433,6 +433,17 @@ export function useIssueTimeline(
     return total - 1 - first.target_index;
   }, [data]);
 
+  // Around-mode anchor metadata (V2). When the anchor is an activity, the
+  // consumer must auto-expand the folded group containing this id before
+  // scrolling — otherwise the row sits inside a collapsed group and the
+  // user lands on the wrong context. Comment anchors don't need expansion;
+  // CommentCard scrolls naturally.
+  const aroundTarget = useMemo(() => {
+    if (!data || data.pages.length === 0) return null;
+    const first = data.pages[0];
+    return first?.target ?? null;
+  }, [data]);
+
   return {
     timeline: optimisticTimeline,
     loading,
@@ -453,5 +464,6 @@ export function useIssueTimeline(
     isAtLatest: isAtLatest === true,
     newEntriesBelowCount,
     targetFlatIndex,
+    aroundTarget,
   };
 }

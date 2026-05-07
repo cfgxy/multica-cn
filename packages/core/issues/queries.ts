@@ -4,8 +4,10 @@ import type {
   IssueStatus,
   ListIssuesParams,
   ListIssuesCache,
+  TimelineEntry,
   TimelinePage,
   TimelinePageParam,
+  TimelineV2Page,
 } from "../types";
 import { BOARD_STATUSES } from "./config";
 
@@ -141,10 +143,53 @@ export function childIssuesOptions(wsId: string, id: string) {
 }
 
 /**
- * Infinite-query options for the cursor-paginated timeline. The first page is
- * either the latest 50 entries (no `around`) or a 50-wide window centered on
- * the given comment/activity id (Inbox jump path). `getNextPageParam` walks
- * older; `getPreviousPageParam` walks newer.
+ * Translate a V2 (comment-anchored) timeline page into the V1-compatible
+ * cache shape. Comments and activities are merged DESC by (created_at, id);
+ * V2-specific signals (target, activity_truncated_count) ride along on the
+ * optional fields of TimelinePage so existing consumers keep working.
+ *
+ * Why translate instead of switching the cache to V2's two-array shape?
+ * The hook (`useIssueTimeline`) and the cache helpers (`mapAllEntries`,
+ * `prependToLatestPage`, etc.) treat the timeline as a single mixed list,
+ * which is what the UI actually renders. Forking those for V2 would double
+ * the surface area for very little gain — the comment/activity split is a
+ * pagination concern, not a rendering concern.
+ */
+function v2PageToV1(v2: TimelineV2Page): TimelinePage {
+  const entries: TimelineEntry[] = [...v2.comments, ...v2.activities].sort(
+    (a, b) => {
+      if (a.created_at !== b.created_at) {
+        return b.created_at.localeCompare(a.created_at);
+      }
+      return b.id.localeCompare(a.id);
+    },
+  );
+  let target_index: number | undefined;
+  if (v2.target) {
+    const idx = entries.findIndex((e) => e.id === v2.target!.id);
+    if (idx >= 0) target_index = idx;
+  }
+  return {
+    entries,
+    next_cursor: v2.next_cursor,
+    prev_cursor: v2.prev_cursor,
+    has_more_before: v2.has_more_before,
+    has_more_after: v2.has_more_after,
+    target_index,
+    target: v2.target ?? null,
+    activity_truncated_count: v2.activity_truncated_count ?? null,
+  };
+}
+
+/**
+ * Infinite-query options for the V2 (comment-anchored) timeline. The first
+ * page is either the latest comments + their activity window (no `around`)
+ * or a window centered on the given comment/activity id (Inbox jump path).
+ * `getNextPageParam` walks older; `getPreviousPageParam` walks newer.
+ *
+ * Cursors emitted by V2 endpoints encode a comment's (created_at, id) and
+ * are not interchangeable with V1 cursors — keep this options object the
+ * single entry point so the cursor never escapes to a V1 listTimeline call.
  */
 export function issueTimelineInfiniteOptions(
   issueId: string,
@@ -161,7 +206,10 @@ export function issueTimelineInfiniteOptions(
     initialPageParam: around
       ? ({ mode: "around", id: around } as TimelinePageParam)
       : ({ mode: "latest" } as TimelinePageParam),
-    queryFn: ({ pageParam }) => api.listTimeline(issueId, pageParam),
+    queryFn: async ({ pageParam }) => {
+      const v2 = await api.listTimelineV2(issueId, pageParam);
+      return v2PageToV1(v2);
+    },
     // Walk older: append a page below the current oldest (last entry of the
     // last loaded page). undefined = no more older entries.
     getNextPageParam: (lastPage) =>

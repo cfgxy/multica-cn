@@ -182,6 +182,18 @@ const mockApiObj = vi.hoisted(() => ({
     has_more_before: false,
     has_more_after: false,
   }),
+  // V2 (comment-anchored) endpoint — what useIssueTimeline actually calls.
+  // Default to the empty page; tests that need timeline data override this
+  // and provide { comments, activities }, which the queryFn translates
+  // into the V1 cache shape via v2PageToV1.
+  listTimelineV2: vi.fn().mockResolvedValue({
+    comments: [],
+    activities: [],
+    next_cursor: null,
+    prev_cursor: null,
+    has_more_before: false,
+    has_more_after: false,
+  }),
   listComments: vi.fn().mockResolvedValue([]),
   createComment: vi.fn(),
   updateComment: vi.fn(),
@@ -399,6 +411,17 @@ describe("IssueDetail (shared)", () => {
       has_more_before: false,
       has_more_after: false,
     });
+    // V2 mirror: split the test timeline by type. The queryFn merges them
+    // back into the V1 cache shape, so the rest of the hook + component
+    // sees the same data either way.
+    mockApiObj.listTimelineV2.mockResolvedValue({
+      comments: descTimeline.filter((e) => e.type === "comment"),
+      activities: descTimeline.filter((e) => e.type === "activity"),
+      next_cursor: null,
+      prev_cursor: null,
+      has_more_before: false,
+      has_more_after: false,
+    });
     mockApiObj.listIssueReactions.mockResolvedValue([]);
     mockApiObj.listIssueSubscribers.mockResolvedValue([]);
     mockApiObj.listChildIssues.mockResolvedValue({ issues: [] });
@@ -596,6 +619,14 @@ describe("IssueDetail (shared)", () => {
     );
     mockApiObj.listTimeline.mockResolvedValue({
       entries: desc,
+      next_cursor: null,
+      prev_cursor: null,
+      has_more_before: false,
+      has_more_after: false,
+    });
+    mockApiObj.listTimelineV2.mockResolvedValue({
+      comments: [],
+      activities: desc,
       next_cursor: null,
       prev_cursor: null,
       has_more_before: false,

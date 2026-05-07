@@ -45,6 +45,7 @@ import type {
   RuntimeLocalSkillImportRequest,
   TimelinePage,
   TimelinePageParam,
+  TimelineV2Page,
   AssigneeFrequencyEntry,
   TaskMessagePayload,
   Attachment,
@@ -96,6 +97,7 @@ import {
   ListIssuesResponseSchema,
   SubscribersListSchema,
   TimelinePageSchema,
+  TimelineV2PageSchema,
 } from "./schemas";
 
 /** Identifies the calling client to the server.
@@ -532,6 +534,40 @@ export class ApiClient {
     return parseWithFallback(raw, TimelinePageSchema, EMPTY_TIMELINE_PAGE, {
       endpoint: "GET /api/issues/:id/timeline",
     });
+  }
+
+  /**
+   * V2 (comment-anchored) timeline. Pagination cursor walks the comment
+   * stream; activities ride along inside the time window of the returned
+   * comments. Cursors emitted by V2 endpoints can only be passed back to
+   * V2 calls — never mix with listTimeline().
+   */
+  async listTimelineV2(
+    issueId: string,
+    pageParam: TimelinePageParam = { mode: "latest" },
+    commentLimit = 20,
+  ): Promise<TimelineV2Page> {
+    const params = new URLSearchParams();
+    params.set("comment_limit", String(commentLimit));
+    if (pageParam.mode === "before") params.set("before", pageParam.cursor);
+    else if (pageParam.mode === "after") params.set("after", pageParam.cursor);
+    else if (pageParam.mode === "around") params.set("around", pageParam.id);
+    const raw = await this.fetch<unknown>(
+      `/api/issues/${issueId}/timeline?${params.toString()}`,
+    );
+    return parseWithFallback(
+      raw,
+      TimelineV2PageSchema,
+      {
+        comments: [],
+        activities: [],
+        next_cursor: null,
+        prev_cursor: null,
+        has_more_before: false,
+        has_more_after: false,
+      } as TimelineV2Page,
+      { endpoint: "GET /api/issues/:id/timeline (v2)" },
+    );
   }
 
   async getAssigneeFrequency(): Promise<AssigneeFrequencyEntry[]> {

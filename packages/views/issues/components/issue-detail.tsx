@@ -283,6 +283,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     isFetchingOlder, isFetchingNewer,
     fetchOlder, fetchNewer, jumpToLatest,
     isAtLatest, newEntriesBelowCount,
+    aroundTarget,
   } = useIssueTimeline(id, user?.id, { around: highlightCommentId ?? null });
 
   // Memoized timeline grouping. The same Map / groups references are reused
@@ -389,21 +390,72 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
 
   const loading = issueLoading;
 
-  // Scroll to highlighted comment once timeline loads (fire only once per highlightCommentId)
+  // Scroll to (and highlight) the around-mode anchor once the timeline loads.
+  // The server's TimelineTarget tells us whether the anchor is a comment row
+  // or an activity row inside a fold group. For activity anchors we expand
+  // the containing group first — otherwise the row sits hidden behind the
+  // disclosure and the scroll lands in the wrong place. Each anchor fires
+  // once (didHighlightRef gates the second render after auto-expand).
   useEffect(() => {
-    if (!highlightCommentId || timeline.length === 0) return;
+    if (!aroundTarget || timeline.length === 0) return;
+    if (didHighlightRef.current === aroundTarget.id) return;
+
+    const elId =
+      aroundTarget.type === "activity"
+        ? `activity-${aroundTarget.id}`
+        : `comment-${aroundTarget.id}`;
+
+    // For activity anchors: ensure the fold group containing the anchor is
+    // expanded. The state update re-renders the activities list; the scroll
+    // runs in the next frame so the row exists in the DOM.
+    if (aroundTarget.type === "activity") {
+      const group = timelineView.groups.find(
+        (g) =>
+          g.type === "activities" &&
+          g.entries.some((e) => e.id === aroundTarget.id),
+      );
+      if (group) {
+        const groupKey = group.entries[0]!.id;
+        setExpandedActivityGroups((prev) => {
+          if (prev.has(groupKey)) return prev;
+          const next = new Set(prev);
+          next.add(groupKey);
+          return next;
+        });
+      }
+    }
+
+    // Double rAF: first frame for React to flush the expansion, second frame
+    // to query the DOM after layout.
+    const raf1 = requestAnimationFrame(() => {
+      requestAnimationFrame(() => {
+        const el = document.getElementById(elId);
+        if (!el) return;
+        didHighlightRef.current = aroundTarget.id;
+        el.scrollIntoView({ behavior: "instant", block: "center" });
+        setHighlightedId(aroundTarget.id);
+        setTimeout(() => setHighlightedId(null), 2000);
+      });
+    });
+    return () => cancelAnimationFrame(raf1);
+  }, [aroundTarget, timeline.length, timelineView]);
+
+  // Legacy fallback: parent passed highlightCommentId but server didn't (or
+  // hasn't yet) returned a target — e.g. cache hit served stale V1 data, or
+  // a non-around use of highlight. Scroll to the comment row only; activity
+  // anchors require server-side context to know how to expand.
+  useEffect(() => {
+    if (!highlightCommentId || aroundTarget || timeline.length === 0) return;
     if (didHighlightRef.current === highlightCommentId) return;
     const el = document.getElementById(`comment-${highlightCommentId}`);
-    if (el) {
-      didHighlightRef.current = highlightCommentId;
-      requestAnimationFrame(() => {
-        el.scrollIntoView({ behavior: "instant", block: "center" });
-        setHighlightedId(highlightCommentId);
-        const timer = setTimeout(() => setHighlightedId(null), 2000);
-        return () => clearTimeout(timer);
-      });
-    }
-  }, [highlightCommentId, timeline.length]);
+    if (!el) return;
+    didHighlightRef.current = highlightCommentId;
+    requestAnimationFrame(() => {
+      el.scrollIntoView({ behavior: "instant", block: "center" });
+      setHighlightedId(highlightCommentId);
+      setTimeout(() => setHighlightedId(null), 2000);
+    });
+  }, [highlightCommentId, aroundTarget, timeline.length]);
 
   const descEditorRef = useRef<ContentEditorRef>(null);
   const { isDragOver: descDragOver, dropZoneProps: descDropZoneProps } = useFileDropZone({
@@ -1101,7 +1153,11 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                       }
 
                       return (
-                        <div key={entry.id} className="flex items-center text-xs text-muted-foreground">
+                        <div
+                          key={entry.id}
+                          id={`activity-${entry.id}`}
+                          className="flex items-center text-xs text-muted-foreground"
+                        >
                           <div className="mr-2 flex w-4 shrink-0 justify-center">
                             {leadIcon}
                           </div>

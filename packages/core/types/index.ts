@@ -47,6 +47,8 @@ export type {
   TimelineEntry,
   TimelinePage,
   TimelinePageParam,
+  TimelineTarget,
+  TimelineV2Page,
   AssigneeFrequencyEntry,
 } from "./activity";
 export type { IssueSubscriber } from "./subscriber";
