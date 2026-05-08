@@ -6,10 +6,12 @@ import { AppLink } from "../../navigation";
 import { useNavigation } from "../../navigation";
 import {
   Archive,
+  ArrowDownToLine,
   Calendar,
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   CircleCheck,
   MoreHorizontal,
   PanelRight,
@@ -990,18 +992,18 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             ) : (
             <>
             {hasMoreOlder && (
-              <div className="my-4 flex items-center gap-3">
-                <div className="h-px flex-1 bg-border" />
-                <button
+              <div className="my-4 flex justify-center">
+                <Button
+                  variant="outline"
+                  size="sm"
                   onClick={fetchOlder}
                   disabled={isFetchingOlder}
-                  className="text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
                 >
+                  <ChevronUp />
                   {isFetchingOlder
                     ? t(($) => $.timeline.loading)
                     : t(($) => $.timeline.show_older)}
-                </button>
-                <div className="h-px flex-1 bg-border" />
+                </Button>
               </div>
             )}
             <div className="mt-4 flex flex-col gap-3">
@@ -1084,29 +1086,33 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               })}
             </div>
             {(hasMoreNewer || !isAtLatest) && (
-              <div className="mt-4 flex items-center justify-center gap-4">
+              <div className="mt-4 flex items-center justify-center gap-2">
                 {hasMoreNewer && (
-                  <button
+                  <Button
+                    variant="outline"
+                    size="sm"
                     onClick={fetchNewer}
                     disabled={isFetchingNewer}
-                    className="text-xs text-muted-foreground hover:text-foreground transition-colors disabled:opacity-50"
                   >
+                    <ChevronDown />
                     {isFetchingNewer
                       ? t(($) => $.timeline.loading)
                       : t(($) => $.timeline.show_newer)}
-                  </button>
+                  </Button>
                 )}
                 {!isAtLatest && (
-                  <button
+                  <Button
+                    variant="default"
+                    size="sm"
                     onClick={jumpToLatest}
-                    className="text-xs font-medium text-foreground hover:text-foreground/80 transition-colors"
                   >
+                    <ArrowDownToLine />
                     {newEntriesBelowCount > 0
                       ? t(($) => $.timeline.jump_to_latest_with_count, {
                           count: newEntriesBelowCount,
                         })
                       : t(($) => $.timeline.jump_to_latest)}
-                  </button>
+                  </Button>
                 )}
               </div>
             )}
