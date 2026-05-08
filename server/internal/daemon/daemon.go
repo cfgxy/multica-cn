@@ -50,7 +50,7 @@ type workspaceState struct {
 	repoRefreshMu   sync.Mutex
 }
 
-type repoCache interface {
+type repoCacheBackend interface {
 	Lookup(workspaceID, url string) string
 	Sync(workspaceID string, repos []repocache.RepoInfo) error
 	CreateWorktree(params repocache.WorktreeParams) (*repocache.WorktreeResult, error)
@@ -60,7 +60,7 @@ type repoCache interface {
 type Daemon struct {
 	cfg       Config
 	client    *Client
-	repoCache repoCache
+	repoCache repoCacheBackend
 	logger    *slog.Logger
 
 	mu           sync.Mutex
