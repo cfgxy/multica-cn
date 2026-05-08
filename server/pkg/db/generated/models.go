@@ -421,6 +421,7 @@ type TaskUsage struct {
 	CacheReadTokens  int64              `json:"cache_read_tokens"`
 	CacheWriteTokens int64              `json:"cache_write_tokens"`
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 }
 
 type TaskUsageDaily struct {

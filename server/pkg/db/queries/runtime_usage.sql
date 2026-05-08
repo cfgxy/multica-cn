@@ -1,13 +1,34 @@
 -- name: ListRuntimeUsage :many
+-- Reads from raw `task_usage`, bucketed by DATE(tu.created_at) — usage
+-- report time, ~= task completion time. Since cutoff is truncated to
+-- start-of-day so `days=N` yields full calendar days. This is the
+-- always-correct fallback path; used when USAGE_DAILY_ROLLUP_ENABLED
+-- is false (or the rollup hasn't been deployed yet).
+SELECT
+    DATE(tu.created_at) AS date,
+    tu.provider,
+    tu.model,
+    SUM(tu.input_tokens)::bigint AS input_tokens,
+    SUM(tu.output_tokens)::bigint AS output_tokens,
+    SUM(tu.cache_read_tokens)::bigint AS cache_read_tokens,
+    SUM(tu.cache_write_tokens)::bigint AS cache_write_tokens
+FROM task_usage tu
+JOIN agent_task_queue atq ON atq.id = tu.task_id
+WHERE atq.runtime_id = $1
+  AND tu.created_at >= DATE_TRUNC('day', @since::timestamptz)
+GROUP BY DATE(tu.created_at), tu.provider, tu.model
+ORDER BY DATE(tu.created_at) DESC, tu.provider, tu.model;
+
+-- name: ListRuntimeUsageDaily :many
 -- Reads from the `task_usage_daily` rollup table maintained by
--- rollup_task_usage_daily() (scheduled every 5 min via pg_cron). Bucket
--- semantics match the original raw-table query: rows are bucketed by
--- DATE(tu.created_at) — usage report time, ~= task completion time —
--- and the since cutoff is truncated to start-of-day so `days=N` yields
--- full calendar days.
+-- rollup_task_usage_daily() (scheduled every 5 min via pg_cron, or any
+-- equivalent external scheduler that calls the function). Same shape as
+-- ListRuntimeUsage above. Today's bucket may lag the raw table by up to
+-- ~10 min (5 min cron period + 5 min rollup safety lag); intentional.
 --
--- Today's bucket may lag the raw table by up to ~10 min (5 min cron
--- period + 5 min rollup safety lag); intentional, see migration 070.
+-- Only used when USAGE_DAILY_ROLLUP_ENABLED is true AND deploy has
+-- verified that the rollup is fresh (see task_usage_rollup_lag_seconds
+-- helper from migration 076).
 --
 -- The PK on task_usage_daily already collapses to one row per
 -- (bucket_date, runtime_id, provider, model), but SUM/GROUP BY is kept

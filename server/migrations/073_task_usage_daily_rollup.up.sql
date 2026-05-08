@@ -7,7 +7,7 @@
 --
 -- All query dimensions are denormalised into the table so reads never
 -- need to join `agent_task_queue`. The PK doubles as the upsert key for
--- the rollup worker, which makes late-arriving events idempotent.
+-- the rollup worker.
 CREATE TABLE task_usage_daily (
     bucket_date         DATE        NOT NULL,
     workspace_id        UUID        NOT NULL,
@@ -29,23 +29,12 @@ CREATE TABLE task_usage_daily (
 CREATE INDEX idx_task_usage_daily_runtime_date
     ON task_usage_daily (runtime_id, bucket_date DESC);
 
--- Workspace-wide aggregations (e.g. future per-workspace cost dashboards
--- or the batched list-page query GPT-Boy's earlier PR sketched out) hit
--- this index instead of fanning out per-runtime.
+-- Workspace-wide aggregations hit this index instead of fanning out per
+-- runtime.
 CREATE INDEX idx_task_usage_daily_workspace_date
     ON task_usage_daily (workspace_id, bucket_date DESC);
 
--- The rollup worker scans `task_usage` by created_at window. The same
--- index also accelerates the two remaining lazy queries
--- (ListRuntimeUsageByAgent / GetRuntimeUsageByHour) that still hit the
--- raw table — they currently rely on filtering by runtime_id then
--- created_at via the agent_task_queue join.
-CREATE INDEX IF NOT EXISTS idx_task_usage_created_at
-    ON task_usage (created_at);
-
 -- Single-row state table tracking how far the rollup worker has consumed.
--- Singleton enforced via id=1 CHECK so concurrent inserts can't create a
--- second row.
 CREATE TABLE task_usage_rollup_state (
     id                    SMALLINT    PRIMARY KEY DEFAULT 1 CHECK (id = 1),
     watermark_at          TIMESTAMPTZ NOT NULL DEFAULT '1970-01-01 00:00:00+00',
@@ -58,14 +47,32 @@ INSERT INTO task_usage_rollup_state (id) VALUES (1) ON CONFLICT DO NOTHING;
 
 -- Window-based aggregation primitive. Used by both the cron-driven
 -- watermark advancer and the offline backfill command, so they stay
--- byte-identical in their aggregation semantics. Returns the number of
--- output rows touched.
+-- byte-identical in their semantics. Returns the number of output rows
+-- touched.
 --
--- Late-arriving events into an already-rolled-up bucket are handled by
--- the ON CONFLICT DO UPDATE: each invocation contributes its delta on
--- top of whatever's already there. That means callers MUST NOT pass
--- overlapping windows for the same data, or rows will double-count.
--- The watermark wrapper below guarantees non-overlap by construction.
+-- IDEMPOTENCY CONTRACT (this is the important bit):
+--   For every (bucket_date, workspace_id, runtime_id, provider, model)
+--   key that has at least one task_usage row whose `updated_at` falls in
+--   [p_from, p_to), this function REPLACES the corresponding daily row
+--   with the SUM of *all* task_usage rows for that key (regardless of
+--   their updated_at). It does NOT add a delta.
+--
+-- Consequences:
+--   * Replaying the same window is safe — the row is rebuilt from raw
+--     each time, so the result converges.
+--   * Two callers (cron + backfill) processing overlapping windows is
+--     safe — both write the same value.
+--   * `UpsertTaskUsage` corrections that overwrite token counts are
+--     captured: the corrected row's updated_at gets bumped, the next
+--     window picks up its bucket key, and the bucket is recomputed
+--     from current truth.
+--
+-- Cost: the recompute reads ALL task_usage rows for each dirty bucket,
+-- not just the windowed slice. In steady state only "today" buckets are
+-- dirty (a handful of keys per active runtime), so this stays cheap.
+-- During backfill the entire history's bucket keys become dirty once;
+-- the backfill walks history in monthly slices to bound the working
+-- set per call.
 CREATE OR REPLACE FUNCTION rollup_task_usage_daily_window(
     p_from TIMESTAMPTZ,
     p_to   TIMESTAMPTZ
@@ -80,24 +87,40 @@ BEGIN
         RETURN 0;
     END IF;
 
-    WITH agg AS (
-        SELECT
-            DATE(tu.created_at)                               AS bucket_date,
-            i.workspace_id                                    AS workspace_id,
-            atq.runtime_id                                    AS runtime_id,
-            tu.provider                                       AS provider,
-            tu.model                                          AS model,
-            SUM(tu.input_tokens)::bigint                      AS input_tokens,
-            SUM(tu.output_tokens)::bigint                     AS output_tokens,
-            SUM(tu.cache_read_tokens)::bigint                 AS cache_read_tokens,
-            SUM(tu.cache_write_tokens)::bigint                AS cache_write_tokens,
-            COUNT(*)::bigint                                  AS event_count
+    WITH dirty_keys AS (
+        SELECT DISTINCT
+            DATE(tu.created_at) AS bucket_date,
+            i.workspace_id      AS workspace_id,
+            atq.runtime_id      AS runtime_id,
+            tu.provider         AS provider,
+            tu.model            AS model
         FROM task_usage tu
-        JOIN agent_task_queue atq ON atq.id = tu.task_id
-        JOIN issue i              ON i.id   = atq.issue_id
-        WHERE tu.created_at >= p_from
-          AND tu.created_at <  p_to
+        JOIN agent_task_queue atq ON atq.id      = tu.task_id
+        JOIN issue            i   ON i.id        = atq.issue_id
+        WHERE tu.updated_at >= p_from
+          AND tu.updated_at <  p_to
           AND atq.runtime_id IS NOT NULL
+    ),
+    recomputed AS (
+        SELECT
+            dk.bucket_date,
+            dk.workspace_id,
+            dk.runtime_id,
+            dk.provider,
+            dk.model,
+            SUM(tu.input_tokens)::bigint        AS input_tokens,
+            SUM(tu.output_tokens)::bigint       AS output_tokens,
+            SUM(tu.cache_read_tokens)::bigint   AS cache_read_tokens,
+            SUM(tu.cache_write_tokens)::bigint  AS cache_write_tokens,
+            COUNT(*)::bigint                    AS event_count
+        FROM dirty_keys dk
+        JOIN agent_task_queue atq ON atq.runtime_id = dk.runtime_id
+        JOIN issue            i   ON i.id           = atq.issue_id
+                                  AND i.workspace_id = dk.workspace_id
+        JOIN task_usage       tu  ON tu.task_id     = atq.id
+                                  AND tu.provider   = dk.provider
+                                  AND tu.model      = dk.model
+                                  AND DATE(tu.created_at) = dk.bucket_date
         GROUP BY 1, 2, 3, 4, 5
     )
     INSERT INTO task_usage_daily AS d (
@@ -109,13 +132,13 @@ BEGIN
         bucket_date, workspace_id, runtime_id, provider, model,
         input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
         event_count
-    FROM agg
+    FROM recomputed
     ON CONFLICT (bucket_date, workspace_id, runtime_id, provider, model) DO UPDATE
-        SET input_tokens       = d.input_tokens       + EXCLUDED.input_tokens,
-            output_tokens      = d.output_tokens      + EXCLUDED.output_tokens,
-            cache_read_tokens  = d.cache_read_tokens  + EXCLUDED.cache_read_tokens,
-            cache_write_tokens = d.cache_write_tokens + EXCLUDED.cache_write_tokens,
-            event_count        = d.event_count        + EXCLUDED.event_count,
+        SET input_tokens       = EXCLUDED.input_tokens,
+            output_tokens      = EXCLUDED.output_tokens,
+            cache_read_tokens  = EXCLUDED.cache_read_tokens,
+            cache_write_tokens = EXCLUDED.cache_write_tokens,
+            event_count        = EXCLUDED.event_count,
             updated_at         = now();
 
     GET DIAGNOSTICS v_rows = ROW_COUNT;
@@ -126,18 +149,20 @@ $$;
 -- Cron entry point. Advances the watermark by one window each call.
 --
 -- Invariants:
---  * `pg_try_advisory_lock(4242)` serialises overlapping ticks. If the
---    previous tick is still running we skip this one rather than queue;
---    catching up happens naturally on the next tick.
+--  * `pg_try_advisory_lock(4242)` serialises overlapping ticks.
 --  * The window upper bound is `now() - 5 minutes`. The lag exists
 --    because `task_usage` rows are written from a separate transaction;
---    a row with created_at = T can become visible to this snapshot at
+--    a row with updated_at = T can become visible to this snapshot at
 --    some t > T. 5 minutes is a generous bound on that visibility delay
 --    and keeps the dashboard "today" bucket at most ~10 min stale
---    (5 min lag + 5 min cron period), which is well below human-noticeable.
---  * On error we record `last_error` and re-raise so the cron framework
---    surfaces the failure; the watermark is NOT advanced because the
---    UPDATE that advances it only runs after the upsert succeeds.
+--    (5 min lag + 5 min cron period).
+--  * On error we record `last_error` and re-raise; the watermark is NOT
+--    advanced because the UPDATE that advances it only runs after the
+--    upsert succeeds.
+--  * SAFE TO RUN CONCURRENTLY WITH BACKFILL: the window primitive is
+--    idempotent (see contract above), so even if cron fires while the
+--    offline backfill is also walking history, the worst case is some
+--    bucket gets written twice with the same value.
 CREATE OR REPLACE FUNCTION rollup_task_usage_daily()
 RETURNS BIGINT
 LANGUAGE plpgsql

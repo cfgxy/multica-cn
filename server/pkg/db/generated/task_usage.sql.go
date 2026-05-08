@@ -45,7 +45,7 @@ func (q *Queries) GetIssueUsageSummary(ctx context.Context, issueID pgtype.UUID)
 }
 
 const getTaskUsage = `-- name: GetTaskUsage :many
-SELECT id, task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, created_at FROM task_usage
+SELECT id, task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, created_at, updated_at FROM task_usage
 WHERE task_id = $1
 ORDER BY model
 `
@@ -69,6 +69,7 @@ func (q *Queries) GetTaskUsage(ctx context.Context, taskID pgtype.UUID) ([]TaskU
 			&i.CacheReadTokens,
 			&i.CacheWriteTokens,
 			&i.CreatedAt,
+			&i.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -213,7 +214,8 @@ DO UPDATE SET
     input_tokens = EXCLUDED.input_tokens,
     output_tokens = EXCLUDED.output_tokens,
     cache_read_tokens = EXCLUDED.cache_read_tokens,
-    cache_write_tokens = EXCLUDED.cache_write_tokens
+    cache_write_tokens = EXCLUDED.cache_write_tokens,
+    updated_at = now()
 `
 
 type UpsertTaskUsageParams struct {
@@ -226,6 +228,9 @@ type UpsertTaskUsageParams struct {
 	CacheWriteTokens int64       `json:"cache_write_tokens"`
 }
 
+// Bumps `updated_at` on conflict so the daily-rollup worker (migration 073)
+// detects the row as dirty and re-aggregates its bucket. Without this, a
+// correction to historical token counts would never propagate to the rollup.
 func (q *Queries) UpsertTaskUsage(ctx context.Context, arg UpsertTaskUsageParams) error {
 	_, err := q.db.Exec(ctx, upsertTaskUsage,
 		arg.TaskID,

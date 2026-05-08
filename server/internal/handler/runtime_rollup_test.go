@@ -14,12 +14,10 @@ import (
 //
 //  1. It correctly groups raw `task_usage` rows by (date, runtime,
 //     workspace, provider, model) and sums the four token columns.
-//  2. Re-aggregating an already-rolled-up window through the upsert
-//     produces *additive* totals (the ON CONFLICT DO UPDATE adds
-//     EXCLUDED to the existing row). This is the property the
-//     watermark wrapper relies on to make late-arriving events safe:
-//     a future tick can re-process a partial day's tail without
-//     wiping out earlier contributions.
+//  2. Re-aggregating an already-rolled-up window is *idempotent*: the
+//     function recomputes each dirty bucket from ground truth and
+//     REPLACES the daily row, so overlap with backfill / replay is
+//     safe and corrections via UpsertTaskUsage propagate cleanly.
 func TestRollupTaskUsageDaily_AggregatesAndIsIdempotent(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -64,8 +62,8 @@ func TestRollupTaskUsageDaily_AggregatesAndIsIdempotent(t *testing.T) {
 			t.Fatalf("insert task: %v", err)
 		}
 		if _, err := testPool.Exec(ctx, `
-			INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, created_at)
-			VALUES ($1, 'claude', $2, $3, $4, $5)
+			INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, created_at, updated_at)
+			VALUES ($1, 'claude', $2, $3, $4, $5, $5)
 		`, taskID, model, in, out, usageAt); err != nil {
 			t.Fatalf("insert task_usage: %v", err)
 		}
@@ -129,19 +127,48 @@ func TestRollupTaskUsageDaily_AggregatesAndIsIdempotent(t *testing.T) {
 		t.Errorf("haiku bucket wrong: %+v", got["claude-3-5-haiku"])
 	}
 
-	// --- 2) Re-aggregating the same window adds the same totals again.
-	// This is the contract the watermark wrapper relies on: callers
-	// MUST keep windows non-overlapping; if they don't, they pay the
-	// "double" cost. Verifying it explicitly so the property doesn't
-	// silently regress.
+	// --- 2) Re-aggregating the same window is idempotent.
+	// The new function recomputes each dirty bucket from ground truth and
+	// REPLACES the daily row, so callers can safely overlap windows
+	// (cron + backfill, replay, manual ops). Verifying it explicitly so
+	// the property doesn't silently regress.
 	if _, err := testPool.Exec(ctx, `
 		SELECT rollup_task_usage_daily_window($1::timestamptz, $2::timestamptz)
 	`, day, day.Add(24*time.Hour)); err != nil {
 		t.Fatalf("rollup_task_usage_daily_window (second call): %v", err)
 	}
 	got = read()
-	if got["claude-3-5-sonnet"].InputTokens != 600 || got["claude-3-5-sonnet"].EventCount != 4 {
-		t.Errorf("after second call, sonnet should have doubled: %+v", got["claude-3-5-sonnet"])
+	if got["claude-3-5-sonnet"].InputTokens != 300 || got["claude-3-5-sonnet"].EventCount != 2 {
+		t.Errorf("after second call, sonnet should be unchanged (idempotent), got: %+v", got["claude-3-5-sonnet"])
+	}
+	if got["claude-3-5-haiku"].InputTokens != 50 || got["claude-3-5-haiku"].EventCount != 1 {
+		t.Errorf("after second call, haiku should be unchanged (idempotent), got: %+v", got["claude-3-5-haiku"])
+	}
+
+	// --- 3) Correction propagates: bumping a row's updated_at into a
+	// new window must cause the bucket to be recomputed from ground
+	// truth (covers the UpsertTaskUsage correction path that the old
+	// additive design dropped silently).
+	correctionMark := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	if _, err := testPool.Exec(ctx, `
+		UPDATE task_usage SET input_tokens = 1000, updated_at = $1
+		 WHERE task_id IN (
+		   SELECT id FROM agent_task_queue WHERE runtime_id = $2 AND created_at::date = $3::date
+		 )
+		   AND model = 'claude-3-5-sonnet'
+		   AND input_tokens = 100
+	`, correctionMark, runtimeID, day); err != nil {
+		t.Fatalf("simulate correction: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `
+		SELECT rollup_task_usage_daily_window($1::timestamptz, $2::timestamptz)
+	`, correctionMark.Add(-time.Minute), correctionMark.Add(time.Minute)); err != nil {
+		t.Fatalf("rollup correction window: %v", err)
+	}
+	got = read()
+	// New sonnet total: 1000 + 200 = 1200, still 2 events.
+	if got["claude-3-5-sonnet"].InputTokens != 1200 || got["claude-3-5-sonnet"].EventCount != 2 {
+		t.Errorf("after correction, sonnet should reflect new total 1200, got: %+v", got["claude-3-5-sonnet"])
 	}
 }
 
