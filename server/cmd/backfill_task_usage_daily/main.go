@@ -7,13 +7,13 @@
 // schedule cron, then enable the read-path flag.
 //
 // Strategy:
-//   1) Walk the time range covered by task_usage in monthly slices.
-//   2) For each slice, call rollup_task_usage_daily_window(p_from, p_to)
-//      — the same primitive the cron path uses, so semantics are
-//      guaranteed identical.
-//   3) After all slices succeed, advance task_usage_rollup_state.watermark_at
-//      to (now() - 5 minutes) so the cron tick that follows doesn't
-//      reprocess the same window we just rolled up.
+//  1. Walk the time range covered by task_usage in monthly slices.
+//  2. For each slice, call rollup_task_usage_daily_window(p_from, p_to)
+//     — the same primitive the cron path uses, so semantics are
+//     guaranteed identical.
+//  3. After all slices succeed, advance task_usage_rollup_state.watermark_at
+//     to (now() - 5 minutes) so the cron tick that follows doesn't
+//     reprocess the same window we just rolled up.
 //
 // Re-running IS safe. The window function (introduced in 073, refined in
 // 077) recomputes each dirty bucket from raw and REPLACES the daily row,

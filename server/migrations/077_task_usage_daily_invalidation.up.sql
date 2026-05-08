@@ -27,19 +27,23 @@ CREATE TABLE task_usage_daily_dirty (
     PRIMARY KEY (bucket_date, workspace_id, runtime_id, provider, model)
 );
 
--- Drained by enqueued_at <= cutoff in the window function. ON CONFLICT
--- DO NOTHING during enqueue means duplicate enqueues are free, so we
--- don't bother dedup'ing in trigger code.
+-- Drained by enqueued_at <= cutoff in the window function. Enqueue on
+-- conflict updates enqueued_at to GREATEST(existing, new) so that an
+-- invalidation arriving DURING a rollup tick (between the function's
+-- snapshot and its drain step) keeps an enqueued_at > p_to and
+-- survives the drain. Without that, the late invalidation would be
+-- silently dropped.
 CREATE INDEX idx_task_usage_daily_dirty_enqueued_at
     ON task_usage_daily_dirty (enqueued_at);
 
--- Partial index that lets the OR branch in the rollup function
--- (created_at-based discovery for legacy rows where updated_at IS NULL)
--- avoid a Seq Scan during initial backfill. Cheap on steady state because
--- in steady state no rows have NULL updated_at.
-CREATE INDEX idx_task_usage_created_at_legacy
-    ON task_usage (created_at)
-    WHERE updated_at IS NULL;
+-- NOTE: The partial index supporting the legacy `updated_at IS NULL`
+-- branch in the rollup window function is created in migration 078 with
+-- `CREATE INDEX CONCURRENTLY` to avoid blocking writes on the hot
+-- task_usage table. Until 078 has been applied, the OR branch falls
+-- back to a sequential scan filtered by `updated_at IS NULL`. That is
+-- acceptable because the rollup function is only invoked after this
+-- migration AND the backfill have run; in steady state no rows have
+-- NULL updated_at.
 
 -- Trigger function for agent_task_queue. Two cases:
 --   * UPDATE of runtime_id (old != new): usage moves between runtimes.
@@ -65,7 +69,8 @@ BEGIN
                   FROM task_usage tu
                   JOIN agent a ON a.id = OLD.agent_id
                  WHERE tu.task_id = OLD.id
-                ON CONFLICT DO NOTHING;
+                ON CONFLICT (bucket_date, workspace_id, runtime_id, provider, model) DO UPDATE
+                    SET enqueued_at = GREATEST(task_usage_daily_dirty.enqueued_at, EXCLUDED.enqueued_at);
             END IF;
             IF NEW.runtime_id IS NOT NULL THEN
                 INSERT INTO task_usage_daily_dirty (bucket_date, workspace_id, runtime_id, provider, model)
@@ -73,7 +78,8 @@ BEGIN
                   FROM task_usage tu
                   JOIN agent a ON a.id = NEW.agent_id
                  WHERE tu.task_id = NEW.id
-                ON CONFLICT DO NOTHING;
+                ON CONFLICT (bucket_date, workspace_id, runtime_id, provider, model) DO UPDATE
+                    SET enqueued_at = GREATEST(task_usage_daily_dirty.enqueued_at, EXCLUDED.enqueued_at);
             END IF;
         END IF;
         RETURN NEW;
@@ -84,7 +90,8 @@ BEGIN
               FROM task_usage tu
               JOIN agent a ON a.id = OLD.agent_id
              WHERE tu.task_id = OLD.id
-            ON CONFLICT DO NOTHING;
+            ON CONFLICT (bucket_date, workspace_id, runtime_id, provider, model) DO UPDATE
+                SET enqueued_at = GREATEST(task_usage_daily_dirty.enqueued_at, EXCLUDED.enqueued_at);
         END IF;
         RETURN OLD;
     END IF;
@@ -112,7 +119,8 @@ BEGIN
       JOIN agent a ON a.id = atq.agent_id
      WHERE atq.id = OLD.task_id
        AND atq.runtime_id IS NOT NULL
-    ON CONFLICT DO NOTHING;
+    ON CONFLICT (bucket_date, workspace_id, runtime_id, provider, model) DO UPDATE
+        SET enqueued_at = GREATEST(task_usage_daily_dirty.enqueued_at, EXCLUDED.enqueued_at);
     RETURN OLD;
 END;
 $$;
