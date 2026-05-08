@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // fetchTimeline issues a GET /timeline request with the given query string and
@@ -378,27 +379,42 @@ func TestTimelineCursor_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestHasMoreCommentsBeyond pins the truth table for the page-boundary helper.
-// Activities deliberately don't appear: #1857 reverted them from being a
-// pagination signal. Only the comment count and limit decide whether more
-// rows exist beyond the page.
-func TestHasMoreCommentsBeyond(t *testing.T) {
+// TestCommentOverflow pins the over-fetch / trim contract that gates "Show
+// older". Callers query the SQL with limit+1 and pass the raw rows in; the
+// helper trims to <limit> and reports hasMore. The boundary the user flagged
+// — exactly <limit> comments exist — must report hasMore=false so no
+// affordance appears for content that doesn't exist.
+func TestCommentOverflow(t *testing.T) {
+	mk := func(n int) []db.Comment {
+		out := make([]db.Comment, n)
+		return out
+	}
 	cases := []struct {
-		name            string
-		comments, limit int
-		want            bool
+		name        string
+		fetched     int // rows the SQL returned (caller asked for limit+1)
+		limit       int
+		wantTrimmed int
+		wantMore    bool
 	}{
-		{"empty page", 0, 30, false},
-		{"partial page", 5, 30, false},
-		{"comments hit limit", 30, 30, true},
-		{"comments well over limit", 100, 30, true},
-		{"limit zero rejects", 100, 0, false},
+		{"empty page", 0, 30, 0, false},
+		{"partial page", 5, 30, 5, false},
+		// Issue has exactly limit comments — caller asked for limit+1 and got
+		// only limit back. No older content; "Show older" must NOT appear.
+		{"exactly limit comments", 30, 30, 30, false},
+		// Issue has more than limit — caller asked for limit+1 and got
+		// limit+1 back. Trim the probe row, set hasMore=true.
+		{"one over limit", 31, 30, 30, true},
+		{"well over limit", 100, 30, 30, true},
+		{"limit zero rejects", 100, 0, 100, false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := hasMoreCommentsBeyond(tc.comments, tc.limit); got != tc.want {
-				t.Fatalf("hasMoreCommentsBeyond(c=%d, lim=%d) = %v, want %v",
-					tc.comments, tc.limit, got, tc.want)
+			rows, more := commentOverflow(mk(tc.fetched), tc.limit)
+			if len(rows) != tc.wantTrimmed {
+				t.Fatalf("trimmed length: got %d, want %d", len(rows), tc.wantTrimmed)
+			}
+			if more != tc.wantMore {
+				t.Fatalf("hasMore: got %v, want %v", more, tc.wantMore)
 			}
 		})
 	}
@@ -482,6 +498,31 @@ func TestListTimeline_PerPoolCursorWalksAllComments(t *testing.T) {
 		}
 		t.Fatalf("expected to see all %d comments via cursor walk, saw %d. Missing: %v",
 			commentN, len(seen), missing)
+	}
+}
+
+// TestListTimeline_ExactlyLimitCommentsHidesShowOlder pins the boundary the
+// user flagged: an issue with exactly <limit> comments must NOT report
+// has_more_before. Pre-fix the gate was `len(comments) >= limit`, which
+// returned true and rendered a "Show older" button that revealed nothing —
+// older clicks fetched zero rows. The over-fetch + trim probe makes the
+// boundary exact.
+func TestListTimeline_ExactlyLimitCommentsHidesShowOlder(t *testing.T) {
+	issueID := createIssueForTimeline(t, "exactly limit comments boundary")
+	seedTimelineEntries(t, issueID, 30, 0)
+
+	resp, code := fetchTimeline(t, issueID, "limit=30")
+	if code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", code)
+	}
+	if len(resp.Entries) != 30 {
+		t.Fatalf("expected 30 entries on first page, got %d", len(resp.Entries))
+	}
+	if resp.HasMoreBefore {
+		t.Fatalf("has_more_before must be false when comments == limit (issue has nothing older)")
+	}
+	if resp.NextCursor != nil {
+		t.Fatalf("next_cursor must be nil when has_more_before is false, got %q", *resp.NextCursor)
 	}
 }
 

@@ -277,13 +277,17 @@ func (h *Handler) listTimelineLegacy(w http.ResponseWriter, r *http.Request, iss
 // off-page.
 func (h *Handler) listTimelineLatest(w http.ResponseWriter, r *http.Request, issue db.Issue, limit int) {
 	ctx := r.Context()
-	comments, err := h.Queries.ListCommentsLatest(ctx, db.ListCommentsLatestParams{
-		IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, Limit: int32(limit),
+	// Over-fetch comments by one so commentOverflow can distinguish "exactly
+	// <limit> comments exist" (no Show older needed) from ">limit comments
+	// exist" (Show older required).
+	rawComments, err := h.Queries.ListCommentsLatest(ctx, db.ListCommentsLatestParams{
+		IssueID: issue.ID, WorkspaceID: issue.WorkspaceID, Limit: int32(limit + 1),
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list comments")
 		return
 	}
+	comments, hasMoreComments := commentOverflow(rawComments, limit)
 	activities, err := h.Queries.ListActivitiesLatest(ctx, db.ListActivitiesLatestParams{
 		IssueID: issue.ID, Limit: int32(limit),
 	})
@@ -294,7 +298,7 @@ func (h *Handler) listTimelineLatest(w http.ResponseWriter, r *http.Request, iss
 
 	entries := h.mergeTimelineDesc(r, comments, activities)
 	resp := TimelineResponse{Entries: entries}
-	resp.HasMoreBefore = hasMoreCommentsBeyond(len(comments), limit)
+	resp.HasMoreBefore = hasMoreComments
 
 	// Per-pool boundaries. For latest mode there is no input cursor; if a
 	// pool returned no rows it carries from the other pool so the encoded
@@ -330,14 +334,15 @@ func (h *Handler) listTimelineBefore(w http.ResponseWriter, r *http.Request, iss
 		return
 	}
 
-	comments, err := h.Queries.ListCommentsBefore(ctx, db.ListCommentsBeforeParams{
+	rawComments, err := h.Queries.ListCommentsBefore(ctx, db.ListCommentsBeforeParams{
 		IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
-		Column3: inComment.T, Column4: inComment.ID, Limit: int32(limit),
+		Column3: inComment.T, Column4: inComment.ID, Limit: int32(limit + 1),
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list comments")
 		return
 	}
+	comments, hasMoreComments := commentOverflow(rawComments, limit)
 	activities, err := h.Queries.ListActivitiesBefore(ctx, db.ListActivitiesBeforeParams{
 		IssueID: issue.ID, Column2: inActivity.T, Column3: inActivity.ID, Limit: int32(limit),
 	})
@@ -351,7 +356,7 @@ func (h *Handler) listTimelineBefore(w http.ResponseWriter, r *http.Request, iss
 		Entries:      entries,
 		HasMoreAfter: true, // we're paging older from a known position, so newer exists
 	}
-	resp.HasMoreBefore = hasMoreCommentsBeyond(len(comments), limit)
+	resp.HasMoreBefore = hasMoreComments
 
 	// Per-pool boundaries. Empty pool carries forward from the input cursor
 	// so subsequent older pages keep advancing past previously-paginated rows
@@ -378,14 +383,18 @@ func (h *Handler) listTimelineAfter(w http.ResponseWriter, r *http.Request, issu
 		return
 	}
 
-	comments, err := h.Queries.ListCommentsAfter(ctx, db.ListCommentsAfterParams{
+	rawComments, err := h.Queries.ListCommentsAfter(ctx, db.ListCommentsAfterParams{
 		IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
-		Column3: inComment.T, Column4: inComment.ID, Limit: int32(limit),
+		Column3: inComment.T, Column4: inComment.ID, Limit: int32(limit + 1),
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list comments")
 		return
 	}
+	// ASC fetch returns oldest-first; trimming to the first <limit> keeps
+	// the rows closest to the cursor and drops the (limit+1)th newest as the
+	// overflow probe.
+	comments, hasMoreComments := commentOverflow(rawComments, limit)
 	activities, err := h.Queries.ListActivitiesAfter(ctx, db.ListActivitiesAfterParams{
 		IssueID: issue.ID, Column2: inActivity.T, Column3: inActivity.ID, Limit: int32(limit),
 	})
@@ -400,7 +409,7 @@ func (h *Handler) listTimelineAfter(w http.ResponseWriter, r *http.Request, issu
 	// off-page bug (#1857).
 	entries := h.mergeTimelineAscThenReverse(r, comments, activities)
 	resp := TimelineResponse{Entries: entries, HasMoreBefore: true}
-	resp.HasMoreAfter = hasMoreCommentsBeyond(len(comments), limit)
+	resp.HasMoreAfter = hasMoreComments
 
 	cOldest, cNewest := commentBoundsAsc(comments, inComment)
 	aOldest, aNewest := activityBoundsAsc(activities, inActivity)
@@ -460,15 +469,17 @@ func (h *Handler) listTimelineAround(w http.ResponseWriter, r *http.Request, iss
 		afterLimit = 0
 	}
 
-	// Older half: keyset Before (anchor exclusive).
-	olderComments, err := h.Queries.ListCommentsBefore(ctx, db.ListCommentsBeforeParams{
+	// Older half: keyset Before (anchor exclusive). Over-fetch comments by
+	// one to detect overflow exactly.
+	rawOlderComments, err := h.Queries.ListCommentsBefore(ctx, db.ListCommentsBeforeParams{
 		IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
-		Column3: anchorTime, Column4: anchorID, Limit: int32(beforeLimit),
+		Column3: anchorTime, Column4: anchorID, Limit: int32(beforeLimit + 1),
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list comments")
 		return
 	}
+	olderComments, hasMoreOlderComments := commentOverflow(rawOlderComments, beforeLimit)
 	olderActivities, err := h.Queries.ListActivitiesBefore(ctx, db.ListActivitiesBeforeParams{
 		IssueID: issue.ID, Column2: anchorTime, Column3: anchorID, Limit: int32(beforeLimit),
 	})
@@ -479,14 +490,15 @@ func (h *Handler) listTimelineAround(w http.ResponseWriter, r *http.Request, iss
 	olderEntries := h.mergeTimelineDesc(r, olderComments, olderActivities)
 
 	// Newer half: keyset After (anchor exclusive).
-	newerComments, err := h.Queries.ListCommentsAfter(ctx, db.ListCommentsAfterParams{
+	rawNewerComments, err := h.Queries.ListCommentsAfter(ctx, db.ListCommentsAfterParams{
 		IssueID: issue.ID, WorkspaceID: issue.WorkspaceID,
-		Column3: anchorTime, Column4: anchorID, Limit: int32(afterLimit),
+		Column3: anchorTime, Column4: anchorID, Limit: int32(afterLimit + 1),
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list comments")
 		return
 	}
+	newerComments, hasMoreNewerComments := commentOverflow(rawNewerComments, afterLimit)
 	newerActivities, err := h.Queries.ListActivitiesAfter(ctx, db.ListActivitiesAfterParams{
 		IssueID: issue.ID, Column2: anchorTime, Column3: anchorID, Limit: int32(afterLimit),
 	})
@@ -512,8 +524,8 @@ func (h *Handler) listTimelineAround(w http.ResponseWriter, r *http.Request, iss
 
 	resp := TimelineResponse{
 		Entries:       entries,
-		HasMoreBefore: hasMoreCommentsBeyond(len(olderComments), beforeLimit),
-		HasMoreAfter:  hasMoreCommentsBeyond(len(newerComments), afterLimit),
+		HasMoreBefore: hasMoreOlderComments,
+		HasMoreAfter:  hasMoreNewerComments,
 		TargetIndex:   &targetIdx,
 	}
 
@@ -554,17 +566,24 @@ func (h *Handler) fetchSingleEntry(r *http.Request, issue db.Issue, id pgtype.UU
 	return TimelineEntry{}, false
 }
 
-// hasMoreCommentsBeyond reports whether more COMMENTS exist beyond the page on
-// the side the caller is paginating away from (older for "before", newer for
-// "after"). Activity rows do not gate pagination (#1857): a dense activity
-// stream from agent runs / status flips would otherwise trigger "show older"
-// on issues with only a handful of real comments, making the discussion look
-// like it had disappeared.
-func hasMoreCommentsBeyond(comments, limit int) bool {
+// commentOverflow trims an over-fetched comment slice to <limit> and reports
+// whether the SQL returned more rows than the visible budget. Callers
+// over-fetch by one (limit+1) so the boolean is exact even when the issue has
+// EXACTLY <limit> comments — the prior `len >= limit` check returned true in
+// that case and rendered a "Show older" affordance that revealed nothing.
+//
+// Activity rows do not gate pagination (#1857): a dense activity stream from
+// agent runs / status flips would otherwise trigger "show older" on issues
+// with only a handful of real comments. Activities therefore stay capped at
+// <limit> with no overflow probe.
+func commentOverflow(rows []db.Comment, limit int) ([]db.Comment, bool) {
 	if limit <= 0 {
-		return false
+		return rows, false
 	}
-	return comments >= limit
+	if len(rows) > limit {
+		return rows[:limit], true
+	}
+	return rows, false
 }
 
 // mergeTimelineDesc returns comments + activities merged DESC by
