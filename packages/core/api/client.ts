@@ -519,7 +519,7 @@ export class ApiClient {
   async listTimeline(
     issueId: string,
     pageParam: TimelinePageParam = { mode: "latest" },
-    limit = 30,
+    limit = 50,
   ): Promise<TimelinePage> {
     const params = new URLSearchParams();
     params.set("limit", String(limit));

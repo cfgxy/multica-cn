@@ -292,10 +292,22 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // CommentCard can skip re-rendering when the only thing that moved was
   // unrelated parent state (e.g. composer draft, sidebar toggle).
   const timelineView = useMemo(() => {
-    const topLevel = timeline.filter((e) => e.type === "activity" || !e.parent_id);
+    // Orphan-reply rescue (#1857): a reply whose parent_id points to a
+    // comment that isn't in the loaded timeline gets promoted to top-level
+    // instead of disappearing. Without this, paginating between a root and
+    // its replies (or a backend bug that drops the root from the page) hides
+    // the entire reply subtree because only the root's CommentCard knows to
+    // pull its children out of repliesByParent.
+    const idsInTimeline = new Set(timeline.map((e) => e.id));
+    const topLevel = timeline.filter(
+      (e) =>
+        e.type === "activity" ||
+        !e.parent_id ||
+        !idsInTimeline.has(e.parent_id),
+    );
     const repliesByParent = new Map<string, TimelineEntry[]>();
     for (const e of timeline) {
-      if (e.type === "comment" && e.parent_id) {
+      if (e.type === "comment" && e.parent_id && idsInTimeline.has(e.parent_id)) {
         const list = repliesByParent.get(e.parent_id) ?? [];
         list.push(e);
         repliesByParent.set(e.parent_id, list);

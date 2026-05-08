@@ -60,7 +60,7 @@ const (
 	// they decorate the comment stream. Without that split, an issue with
 	// sparse comments but dense activity (agent runs, status flips) triggered
 	// "show older" prematurely and felt like comments had vanished.
-	timelineDefaultLimit = 30
+	timelineDefaultLimit = 50
 	timelineMaxLimit     = 100
 )
 
