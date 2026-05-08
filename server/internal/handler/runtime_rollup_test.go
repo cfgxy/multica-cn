@@ -224,3 +224,182 @@ func TestRollupTaskUsageDaily_WatermarkAdvances(t *testing.T) {
 		t.Errorf("watermark %s not within 2min of expected %s (delta %s)", newWatermark, expected, delta)
 	}
 }
+
+// TestRollupTaskUsageDaily_InvalidationOnReassign verifies that the
+// trigger-driven dirty-bucket queue handles task reassignment between
+// runtimes (the ReassignTasksToRuntime path used during runtime merge).
+// Without invalidation the rollup would keep attributing usage to the
+// old runtime; the raw fallback would not — so the two read paths would
+// silently disagree.
+func TestRollupTaskUsageDaily_InvalidationOnReassign(t *testing.T) {
+if testHandler == nil {
+t.Skip("database not available")
+}
+ctx := context.Background()
+
+oldRuntimeID := handlerTestRuntimeID(t)
+// Spin up a second runtime to receive the reassigned task.
+var newRuntimeID string
+if err := testPool.QueryRow(ctx, `
+INSERT INTO agent_runtime (
+workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at
+)
+VALUES ($1, NULL, 'reassign-target', 'cloud', 'reassign-target', 'online', '{}'::jsonb, '{}'::jsonb, now())
+RETURNING id
+`, testWorkspaceID).Scan(&newRuntimeID); err != nil {
+t.Fatalf("create dest runtime: %v", err)
+}
+t.Cleanup(func() {
+testPool.Exec(ctx, `DELETE FROM agent_runtime WHERE id = $1`, newRuntimeID)
+})
+
+var agentID string
+if err := testPool.QueryRow(ctx, `
+SELECT id FROM agent WHERE workspace_id = $1 LIMIT 1
+`, testWorkspaceID).Scan(&agentID); err != nil {
+t.Fatalf("fetch agent: %v", err)
+}
+var issueID string
+if err := testPool.QueryRow(ctx, `
+INSERT INTO issue (workspace_id, title, creator_id, creator_type)
+VALUES ($1, 'reassign test', $2, 'member')
+RETURNING id
+`, testWorkspaceID, testUserID).Scan(&issueID); err != nil {
+t.Fatalf("create issue: %v", err)
+}
+t.Cleanup(func() {
+testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
+})
+
+day := time.Date(2021, 3, 14, 0, 0, 0, 0, time.UTC)
+var taskID string
+if err := testPool.QueryRow(ctx, `
+INSERT INTO agent_task_queue (agent_id, issue_id, runtime_id, status, created_at)
+VALUES ($1, $2, $3, 'completed', $4)
+RETURNING id
+`, agentID, issueID, oldRuntimeID, day.Add(time.Hour)).Scan(&taskID); err != nil {
+t.Fatalf("insert task: %v", err)
+}
+t.Cleanup(func() {
+testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
+})
+if _, err := testPool.Exec(ctx, `
+INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, created_at, updated_at)
+VALUES ($1, 'claude', 'm-reassign', 700, 70, $2, $2)
+`, taskID, day.Add(time.Hour)); err != nil {
+t.Fatalf("insert task_usage: %v", err)
+}
+t.Cleanup(func() {
+testPool.Exec(ctx, `DELETE FROM task_usage_daily WHERE bucket_date = $1::date AND model = 'm-reassign'`, day)
+testPool.Exec(ctx, `DELETE FROM task_usage_daily_dirty WHERE bucket_date = $1::date AND model = 'm-reassign'`, day)
+})
+
+// Initial roll-up: usage should attach to OLD runtime.
+if _, err := testPool.Exec(ctx, `SELECT rollup_task_usage_daily_window('-infinity'::timestamptz, 'infinity'::timestamptz)`); err != nil {
+t.Fatalf("initial rollup: %v", err)
+}
+var oldTokens, newTokens int64
+testPool.QueryRow(ctx, `SELECT COALESCE(SUM(input_tokens),0) FROM task_usage_daily WHERE runtime_id = $1 AND bucket_date = $2::date AND model = 'm-reassign'`, oldRuntimeID, day).Scan(&oldTokens)
+testPool.QueryRow(ctx, `SELECT COALESCE(SUM(input_tokens),0) FROM task_usage_daily WHERE runtime_id = $1 AND bucket_date = $2::date AND model = 'm-reassign'`, newRuntimeID, day).Scan(&newTokens)
+if oldTokens != 700 || newTokens != 0 {
+t.Fatalf("initial: expected old=700 new=0, got old=%d new=%d", oldTokens, newTokens)
+}
+
+// Trigger should enqueue both old + new buckets.
+if _, err := testPool.Exec(ctx, `UPDATE agent_task_queue SET runtime_id = $1 WHERE id = $2`, newRuntimeID, taskID); err != nil {
+t.Fatalf("reassign task: %v", err)
+}
+var dirtyCount int
+testPool.QueryRow(ctx, `SELECT COUNT(*) FROM task_usage_daily_dirty WHERE bucket_date = $1::date AND model = 'm-reassign'`, day).Scan(&dirtyCount)
+if dirtyCount != 2 {
+t.Fatalf("expected 2 dirty entries (old+new runtime), got %d", dirtyCount)
+}
+
+// Re-run rollup. Old bucket should be deleted (no source rows left),
+// new bucket should receive the moved usage.
+if _, err := testPool.Exec(ctx, `SELECT rollup_task_usage_daily_window('-infinity'::timestamptz, 'infinity'::timestamptz)`); err != nil {
+t.Fatalf("rollup after reassign: %v", err)
+}
+testPool.QueryRow(ctx, `SELECT COALESCE(SUM(input_tokens),0) FROM task_usage_daily WHERE runtime_id = $1 AND bucket_date = $2::date AND model = 'm-reassign'`, oldRuntimeID, day).Scan(&oldTokens)
+testPool.QueryRow(ctx, `SELECT COALESCE(SUM(input_tokens),0) FROM task_usage_daily WHERE runtime_id = $1 AND bucket_date = $2::date AND model = 'm-reassign'`, newRuntimeID, day).Scan(&newTokens)
+if oldTokens != 0 || newTokens != 700 {
+t.Fatalf("after reassign: expected old=0 new=700, got old=%d new=%d", oldTokens, newTokens)
+}
+// Dirty queue should be drained.
+testPool.QueryRow(ctx, `SELECT COUNT(*) FROM task_usage_daily_dirty WHERE bucket_date = $1::date AND model = 'm-reassign'`, day).Scan(&dirtyCount)
+if dirtyCount != 0 {
+t.Errorf("expected dirty queue drained, got %d entries", dirtyCount)
+}
+}
+
+// TestRollupTaskUsageDaily_InvalidationOnIssueDelete verifies that
+// cascade delete (issue → agent_task_queue → task_usage) clears the
+// matching daily rows via the trigger-driven dirty queue.
+func TestRollupTaskUsageDaily_InvalidationOnIssueDelete(t *testing.T) {
+if testHandler == nil {
+t.Skip("database not available")
+}
+ctx := context.Background()
+
+runtimeID := handlerTestRuntimeID(t)
+var agentID string
+if err := testPool.QueryRow(ctx, `SELECT id FROM agent WHERE workspace_id = $1 LIMIT 1`, testWorkspaceID).Scan(&agentID); err != nil {
+t.Fatalf("fetch agent: %v", err)
+}
+var issueID string
+if err := testPool.QueryRow(ctx, `
+INSERT INTO issue (workspace_id, title, creator_id, creator_type)
+VALUES ($1, 'delete test', $2, 'member') RETURNING id
+`, testWorkspaceID, testUserID).Scan(&issueID); err != nil {
+t.Fatalf("create issue: %v", err)
+}
+
+day := time.Date(2021, 7, 4, 0, 0, 0, 0, time.UTC)
+var taskID string
+if err := testPool.QueryRow(ctx, `
+INSERT INTO agent_task_queue (agent_id, issue_id, runtime_id, status, created_at)
+VALUES ($1, $2, $3, 'completed', $4) RETURNING id
+`, agentID, issueID, runtimeID, day.Add(time.Hour)).Scan(&taskID); err != nil {
+t.Fatalf("insert task: %v", err)
+}
+if _, err := testPool.Exec(ctx, `
+INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, created_at, updated_at)
+VALUES ($1, 'claude', 'm-delete', 500, 50, $2, $2)
+`, taskID, day.Add(time.Hour)); err != nil {
+t.Fatalf("insert task_usage: %v", err)
+}
+t.Cleanup(func() {
+testPool.Exec(ctx, `DELETE FROM task_usage_daily WHERE bucket_date = $1::date AND model = 'm-delete'`, day)
+testPool.Exec(ctx, `DELETE FROM task_usage_daily_dirty WHERE bucket_date = $1::date AND model = 'm-delete'`, day)
+})
+
+if _, err := testPool.Exec(ctx, `SELECT rollup_task_usage_daily_window('-infinity'::timestamptz, 'infinity'::timestamptz)`); err != nil {
+t.Fatalf("initial rollup: %v", err)
+}
+var tokens int64
+testPool.QueryRow(ctx, `SELECT COALESCE(SUM(input_tokens),0) FROM task_usage_daily WHERE runtime_id = $1 AND bucket_date = $2::date AND model = 'm-delete'`, runtimeID, day).Scan(&tokens)
+if tokens != 500 {
+t.Fatalf("initial: expected 500, got %d", tokens)
+}
+
+// Cascade delete via issue. Trigger fires on agent_task_queue BEFORE
+// DELETE — that's when the task_usage children + issue parent are
+// still readable inside the same statement.
+if _, err := testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID); err != nil {
+t.Fatalf("delete issue: %v", err)
+}
+var dirtyCount int
+testPool.QueryRow(ctx, `SELECT COUNT(*) FROM task_usage_daily_dirty WHERE bucket_date = $1::date AND model = 'm-delete'`, day).Scan(&dirtyCount)
+if dirtyCount == 0 {
+t.Fatalf("expected dirty entry after cascade delete, got 0")
+}
+
+// Re-run rollup: bucket should be deleted because no source rows exist.
+if _, err := testPool.Exec(ctx, `SELECT rollup_task_usage_daily_window('-infinity'::timestamptz, 'infinity'::timestamptz)`); err != nil {
+t.Fatalf("rollup after delete: %v", err)
+}
+testPool.QueryRow(ctx, `SELECT COALESCE(SUM(input_tokens),0) FROM task_usage_daily WHERE runtime_id = $1 AND bucket_date = $2::date AND model = 'm-delete'`, runtimeID, day).Scan(&tokens)
+if tokens != 0 {
+t.Errorf("after issue delete: expected 0 (bucket cleared), got %d", tokens)
+}
+}

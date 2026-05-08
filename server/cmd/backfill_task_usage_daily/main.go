@@ -1,8 +1,10 @@
 // Backfill_task_usage_daily seeds the `task_usage_daily` rollup table
-// from the historical contents of `task_usage`. Intended to be run once,
-// after migration 070 has applied schema and before migration 071's
-// pg_cron schedule starts advancing the watermark, so the cron picks up
-// from where the backfill left off.
+// from the historical contents of `task_usage`. Intended to be run once
+// after migrations 072..077 are applied, before flipping the
+// USAGE_DAILY_ROLLUP_ENABLED feature flag and before scheduling the
+// pg_cron job. The cron schedule is intentionally NOT created by a
+// migration (see 076 header) — operators run this backfill, then
+// schedule cron, then enable the read-path flag.
 //
 // Strategy:
 //   1) Walk the time range covered by task_usage in monthly slices.
@@ -11,11 +13,13 @@
 //      guaranteed identical.
 //   3) After all slices succeed, advance task_usage_rollup_state.watermark_at
 //      to (now() - 5 minutes) so the cron tick that follows doesn't
-//      double-count any of the rows we just rolled up.
+//      reprocess the same window we just rolled up.
 //
-// Re-running is NOT safe: the upsert uses ON CONFLICT DO UPDATE adding
-// the delta, so re-running within the same month doubles the totals.
-// To redo a backfill: TRUNCATE task_usage_daily first.
+// Re-running IS safe. The window function (introduced in 073, refined in
+// 077) recomputes each dirty bucket from raw and REPLACES the daily row,
+// so rerunning a slice produces the same result. Use this property to
+// recover from partial backfill failures without TRUNCATEing
+// task_usage_daily first.
 package main
 
 import (

@@ -97,9 +97,20 @@ BEGIN
         FROM task_usage tu
         JOIN agent_task_queue atq ON atq.id      = tu.task_id
         JOIN issue            i   ON i.id        = atq.issue_id
-        WHERE tu.updated_at >= p_from
-          AND tu.updated_at <  p_to
-          AND atq.runtime_id IS NOT NULL
+        WHERE atq.runtime_id IS NOT NULL
+          AND (
+              -- Steady state: rows updated within the watermark window.
+              -- Hits idx_task_usage_updated_at directly.
+              (tu.updated_at >= p_from AND tu.updated_at < p_to)
+              -- Legacy rows from before migration 072 (updated_at IS NULL)
+              -- — discoverable via created_at + the partial index added
+              -- in 077. Steady-state windows after backfill never include
+              -- historical dates, so this branch is a no-op once the
+              -- backfill has swept history.
+              OR (tu.updated_at IS NULL
+                  AND tu.created_at >= p_from
+                  AND tu.created_at <  p_to)
+          )
     ),
     recomputed AS (
         SELECT

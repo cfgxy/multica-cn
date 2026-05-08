@@ -1,9 +1,10 @@
 -- name: UpsertTaskUsage :exec
--- Bumps `updated_at` on conflict so the daily-rollup worker (migration 073)
--- detects the row as dirty and re-aggregates its bucket. Without this, a
--- correction to historical token counts would never propagate to the rollup.
-INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens)
-VALUES ($1, $2, $3, $4, $5, $6, $7)
+-- Bumps `updated_at` on INSERT and on conflict so the daily-rollup worker
+-- (migration 073) detects the row as dirty and re-aggregates its bucket.
+-- Without the conflict-side bump, a correction to historical token counts
+-- would never propagate to the rollup.
+INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, now())
 ON CONFLICT (task_id, provider, model)
 DO UPDATE SET
     input_tokens = EXCLUDED.input_tokens,
