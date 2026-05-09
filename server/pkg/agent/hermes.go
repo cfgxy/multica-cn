@@ -76,13 +76,34 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	// without this we'd report a misleading "empty output" and hide
 	// the real cause (wrong model for the current provider, bad
 	// credentials, rate limit, …) in the daemon log.
+	//
+	// We use StderrPipe + an explicit copier goroutine instead of
+	// `cmd.Stderr = io.MultiWriter(...)` so we have a join point
+	// (`stderrDone`) before the failure-promotion decision. With the
+	// MultiWriter form, exec's internal copy goroutine is only
+	// joined by `cmd.Wait()`, which runs in the deferred cleanup —
+	// after `promoteACPResultOnProviderError` already consulted the
+	// sniffer. That race lost the 429 / usage-limit message under
+	// CI load and surfaced as a flaky test
+	// (TestHermesBackendPromotesProviderErrorWithNonEmptyOutput).
 	providerErr := newACPProviderErrorSniffer("hermes")
-	cmd.Stderr = io.MultiWriter(newLogWriter(b.cfg.Logger, "[hermes:stderr] "), providerErr)
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("hermes stderr pipe: %w", err)
+	}
 
 	if err := cmd.Start(); err != nil {
 		cancel()
 		return nil, fmt.Errorf("start hermes: %w", err)
 	}
+
+	stderrSink := io.MultiWriter(newLogWriter(b.cfg.Logger, "[hermes:stderr] "), providerErr)
+	stderrDone := make(chan struct{})
+	go func() {
+		defer close(stderrDone)
+		_, _ = io.Copy(stderrSink, stderr)
+	}()
 
 	b.cfg.Logger.Info("hermes acp started", "pid", cmd.Process.Pid, "cwd", opts.Cwd)
 
@@ -307,6 +328,13 @@ func (b *hermesBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 
 		// Wait for the reader goroutine to finish so all output is accumulated.
 		<-readerDone
+		// Wait for the stderr copier as well so the provider-error sniffer
+		// has every byte the child wrote before we consult it for failure
+		// promotion. Skipping this leaves a small race where stopReason=
+		// end_turn arrives over stdout while the stderr 429 / usage-limit
+		// lines are still in transit, causing the promoted error message
+		// to fall through to the synthetic agent-text fallback.
+		<-stderrDone
 
 		outputMu.Lock()
 		finalOutput := output.String()

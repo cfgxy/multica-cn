@@ -75,13 +75,29 @@ func (b *kimiBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 	// without this the daemon reports a misleading "empty output"
 	// and the actionable error (expired token, rate limit, upstream
 	// 5xx, …) stays buried in the daemon log.
+	//
+	// StderrPipe + an explicit copier give us a join point
+	// (`stderrDone`) that fires before the failure-promotion
+	// decision; see the matching comment in hermes.go for why the
+	// io.MultiWriter form races with stopReason=end_turn under load.
 	providerErr := newACPProviderErrorSniffer("kimi")
-	cmd.Stderr = io.MultiWriter(newLogWriter(b.cfg.Logger, "[kimi:stderr] "), providerErr)
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("kimi stderr pipe: %w", err)
+	}
 
 	if err := cmd.Start(); err != nil {
 		cancel()
 		return nil, fmt.Errorf("start kimi: %w", err)
 	}
+
+	stderrSink := io.MultiWriter(newLogWriter(b.cfg.Logger, "[kimi:stderr] "), providerErr)
+	stderrDone := make(chan struct{})
+	go func() {
+		defer close(stderrDone)
+		_, _ = io.Copy(stderrSink, stderr)
+	}()
 
 	b.cfg.Logger.Info("kimi acp started", "pid", cmd.Process.Pid, "cwd", opts.Cwd)
 
@@ -297,6 +313,9 @@ func (b *kimiBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 		cancel()
 
 		<-readerDone
+		// Ensure the stderr copier has drained before consulting the
+		// provider-error sniffer; see hermes.go for the failure mode.
+		<-stderrDone
 
 		outputMu.Lock()
 		finalOutput := output.String()
