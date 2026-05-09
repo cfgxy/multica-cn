@@ -1,12 +1,17 @@
 /**
- * Mobile PriorityIcon. Renders 4 stacked bars matching the priority order,
- * mirroring the structure of packages/core/issues/config/priority.ts which
- * defines `bars: 0..4` per priority. Visual is mobile-tuned (small chevron
- * stack), but the bar count is the same as web/desktop — Behavioral parity
- * rule (counts and visibility must agree).
+ * Mobile PriorityIcon — react-native-svg implementation.
+ *
+ * Geometry mirrors packages/views/issues/components/priority-icon.tsx
+ * (16×16 viewBox, 4 ascending bars, "none" rendered as a center dash). Bar
+ * counts mirror packages/core/issues/config/priority.ts PRIORITY_CONFIG.bars
+ * — Behavioral parity rule: same priority → same number of filled bars
+ * across clients.
+ *
+ * Differences from web:
+ *   - No urgent pulse animation in v1 (would need reanimated; defer until
+ *     animation polish iteration).
  */
-import { View } from "react-native";
-import { cn } from "@/lib/utils";
+import Svg, { Line, Rect } from "react-native-svg";
 import type { IssuePriority } from "@multica/core/types";
 
 const BARS: Record<IssuePriority, number> = {
@@ -17,38 +22,59 @@ const BARS: Record<IssuePriority, number> = {
   none: 0,
 };
 
+// Mirrors PRIORITY_CONFIG.color in packages/core/issues/config/priority.ts.
 const COLOR: Record<IssuePriority, string> = {
-  urgent: "bg-destructive",
-  high: "bg-warning",
-  medium: "bg-warning",
-  low: "bg-info",
-  none: "bg-muted-foreground/40",
+  urgent: "#dc2626", // destructive
+  high: "#eab308", // warning
+  medium: "#eab308", // warning
+  low: "#3b82f6", // info
+  none: "#71717a", // muted-foreground
 };
 
-export function PriorityIcon({ priority }: { priority: IssuePriority }) {
-  const filled = BARS[priority];
-  const color = COLOR[priority];
-
+export function PriorityIcon({
+  priority,
+  size = 14,
+}: {
+  priority: IssuePriority;
+  size?: number;
+}) {
   if (priority === "none") {
     return (
-      <View className="size-4 items-center justify-center">
-        <View className="size-1 rounded-full bg-muted-foreground/40" />
-      </View>
+      <Svg width={size} height={size} viewBox="0 0 16 16">
+        <Line
+          x1={3}
+          y1={8}
+          x2={13}
+          y2={8}
+          stroke={COLOR.none}
+          strokeWidth={1.5}
+          strokeLinecap="round"
+        />
+      </Svg>
     );
   }
 
+  const filled = BARS[priority];
+  const color = COLOR[priority];
+
   return (
-    <View className="size-4 flex-row items-end justify-center gap-[1px]">
-      {[1, 2, 3, 4].map((b) => (
-        <View
-          key={b}
-          className={cn(
-            "w-[2px] rounded-sm",
-            b <= filled ? color : "bg-muted-foreground/30",
-          )}
-          style={{ height: 4 + b * 2 }}
-        />
-      ))}
-    </View>
+    <Svg width={size} height={size} viewBox="0 0 16 16">
+      {[0, 1, 2, 3].map((i) => {
+        const y = 12 - (i + 1) * 3;
+        const h = (i + 1) * 3;
+        return (
+          <Rect
+            key={i}
+            x={1 + i * 4}
+            y={y}
+            width={3}
+            height={h}
+            rx={0.5}
+            fill={color}
+            opacity={i < filled ? 1 : 0.2}
+          />
+        );
+      })}
+    </Svg>
   );
 }

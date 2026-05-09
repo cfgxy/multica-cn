@@ -1,6 +1,7 @@
 import { ActivityIndicator, FlatList, Pressable, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
+import { router } from "expo-router";
 import type { Issue } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
@@ -51,7 +52,14 @@ export default function MyIssues() {
             <View className="h-px bg-border ml-4" />
           )}
           contentContainerClassName="pb-6"
-          renderItem={({ item }) => <IssueRow issue={item} />}
+          renderItem={({ item }) => (
+            <IssueRow
+              issue={item}
+              onPress={() => {
+                if (wsSlug) router.push(`/${wsSlug}/issue/${item.id}`);
+              }}
+            />
+          )}
           refreshing={isRefetching}
           onRefresh={refetch}
         />
@@ -60,9 +68,15 @@ export default function MyIssues() {
   );
 }
 
-function IssueRow({ issue }: { issue: Issue }) {
+function IssueRow({
+  issue,
+  onPress,
+}: {
+  issue: Issue;
+  onPress: () => void;
+}) {
   return (
-    <Pressable className="active:bg-secondary px-4 py-3">
+    <Pressable onPress={onPress} className="active:bg-secondary px-4 py-3">
       <View className="flex-row items-center gap-3">
         <PriorityIcon priority={issue.priority} />
         <StatusIcon status={issue.status} />

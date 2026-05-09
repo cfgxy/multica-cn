@@ -30,6 +30,29 @@ Concrete rules:
 
 When UI requires a divergence, write down at the divergence point what the rule is mirroring (point at the source function in packages/core or packages/views) and why mobile renders it differently. Future readers should be able to tell, in 30 seconds, that the mobile divergence is intentional and which web-side function is the source of truth.
 
+### ⚠️ Incident (2026-05-09): inbox dedup missing — counts disagreed
+
+**Symptom**: Web sidebar showed "Inbox 1" while mobile rendered 3+ unread dots on the same workspace, same user, same moment.
+
+**Root cause**: Backend `GET /api/inbox` returns raw rows that include:
+1. archived items, and
+2. multiple inbox notifications per issue (a comment, a status change, and an assignment on the same issue each create one row).
+
+Web/desktop run those raw rows through `deduplicateInboxItems` (`packages/core/inbox/queries.ts`) before rendering and before counting unread:
+1. filter `archived = true` out
+2. group by `issue_id`, keep the newest in each group
+3. sort by `created_at` desc
+
+Mobile's first cut rendered the raw list directly. So a single issue with 3 notifications showed as 3 rows with 3 unread dots, while web showed 1.
+
+**Fix**: mirror `deduplicateInboxItems` into `apps/mobile/lib/inbox-display.ts`, run mobile's inbox tab through it before rendering and before any counting.
+
+**Lesson — encode this into your reflexes when adding any new mobile screen that consumes a list endpoint**:
+
+> Before rendering an API list response, grep `packages/core/<domain>/queries.ts` and `packages/views/<domain>/components/*.tsx` for any preprocessing — `dedupe*`, `coalesce*`, `filter*`, `*-display.ts`, `useMemo(() => transform(raw))`. Mirror everything that runs between `useQuery` and the JSX in web/desktop. **Do not assume the backend returns "what should be displayed"** — it usually returns the raw cache shape, and the client is responsible for shaping it.
+
+This pattern repeats: timeline coalescing (`buildTimelineGroups`), inbox dedup, comment thread flattening, etc. Each one is a behavioral parity hazard if mobile skips it.
+
 ## Tech-stack baseline
 
 Start minimal. Add to this list when actually adopted — do NOT pre-list libraries.

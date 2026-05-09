@@ -34,5 +34,18 @@ export default function WorkspaceLayout() {
 
   if (!matched) return <Redirect href="/select-workspace" />;
 
-  return <Stack screenOptions={{ headerShown: false }} />;
+  // Tabs hide their own header; pushed screens (issue/[id]) get a native
+  // iOS Stack header with the standard back button + swipe-to-dismiss.
+  return (
+    <Stack>
+      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+      <Stack.Screen
+        name="issue/[id]"
+        options={{
+          title: "Issue",
+          headerBackTitle: "Back",
+        }}
+      />
+    </Stack>
+  );
 }
