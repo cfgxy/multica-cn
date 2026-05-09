@@ -22,6 +22,7 @@ import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { useActorLookup } from "@/data/use-actor-name";
 import { timeAgo } from "@/lib/time-ago";
+import { Markdown } from "@/lib/markdown";
 
 interface Props {
   entry: TimelineEntry;
@@ -58,7 +59,11 @@ function CommentBody({ entry }: { entry: TimelineEntry }) {
     entry.updated_at &&
     entry.created_at &&
     entry.updated_at !== entry.created_at;
-  const attachmentCount = entry.attachments?.length ?? 0;
+  // Note: entry.attachments is not rendered separately — the markdown
+  // renderer handles inline images (`![]()`) and file cards
+  // (`!file[name](url)` → preprocessed into a 📎-prefixed link). The
+  // attachments[] array is backend cleanup metadata, not display content
+  // (matches web's behavior).
   return (
     <View className="gap-2">
       <View className="flex-row items-center gap-2">
@@ -73,16 +78,7 @@ function CommentBody({ entry }: { entry: TimelineEntry }) {
           {edited ? " · (edited)" : ""}
         </Text>
       </View>
-      {entry.content ? (
-        <Text className="text-sm text-foreground leading-5">
-          {entry.content}
-        </Text>
-      ) : null}
-      {attachmentCount > 0 ? (
-        <Text className="text-xs text-muted-foreground">
-          📎 {attachmentCount} attachment{attachmentCount === 1 ? "" : "s"}
-        </Text>
-      ) : null}
+      {entry.content ? <Markdown content={entry.content} /> : null}
     </View>
   );
 }

@@ -1,13 +1,13 @@
 /**
- * Description block. V1 renders raw markdown source as plain text — the
- * `react-native-marked` adapter described in
- * apps/mobile/docs/markdown-renderer-research.md is V2 work, not blocking
- * v1. So `**bold**`, fenced code, and `![alt](url)` are shown verbatim.
- *
- * RN <Text> respects `\n` so paragraph breaks survive intact.
+ * Description block. Renders markdown via the standalone mobile markdown
+ * renderer at apps/mobile/lib/markdown/. Empty / null descriptions show
+ * a muted "No description." placeholder rather than collapsing the block,
+ * so the layout above the timeline stays stable when the user adds a
+ * description later.
  */
 import { View } from "react-native";
 import { Text } from "@/components/ui/text";
+import { Markdown } from "@/lib/markdown";
 
 export function IssueDescription({
   description,
@@ -25,7 +25,7 @@ export function IssueDescription({
   }
   return (
     <View className="px-4 pb-4">
-      <Text className="text-sm text-foreground leading-5">{description}</Text>
+      <Markdown content={description} />
     </View>
   );
 }
