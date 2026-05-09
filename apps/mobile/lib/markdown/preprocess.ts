@@ -42,8 +42,10 @@ function preprocessFileCards(input: string): string {
  * no inline HTML. Without this pass, users see literal `<br>` tags in the
  * comment body. Strategy:
  *
- *   - `<br>` / `<br/>` / `<br />` → newline. With marked's `breaks: true`,
- *     a newline becomes a soft break in the rendered paragraph.
+ *   - `<br>` / `<br/>` / `<br />` → `"  \n"` (two trailing spaces + newline,
+ *     the canonical CommonMark hard-break syntax). md4c respects it as a
+ *     hard line break inside a paragraph; bare `\n` would be treated as a
+ *     space (CommonMark default), losing intentional `<br>` semantics.
  *   - HTML comments `<!-- ... -->` → removed entirely.
  *   - Every other tag → strip the tag, keep the inner text. So
  *     `<sub>2</sub>` becomes `2`. Loses formatting but keeps content; far
@@ -55,7 +57,7 @@ function preprocessFileCards(input: string): string {
 function stripHtml(input: string): string {
   return input
     .replace(/<!--[\s\S]*?-->/g, "")
-    .replace(/<br\s*\/?>/gi, "\n")
+    .replace(/<br\s*\/?>/gi, "  \n")
     .replace(/<\/?[a-z][^>]*>/gi, "");
 }
 

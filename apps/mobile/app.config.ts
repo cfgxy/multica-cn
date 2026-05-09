@@ -34,7 +34,20 @@ export default ({ config }: ConfigContext): ExpoConfig => {
           ? "ai.multica.mobile.staging"
           : "ai.multica.mobile.dev",
     },
-    plugins: ["expo-router", "expo-secure-store"],
+    plugins: [
+      "expo-router",
+      "expo-secure-store",
+      "@react-native-community/datetimepicker",
+      "react-native-enriched-markdown",
+      [
+        "expo-build-properties",
+        {
+          ios: {
+            buildReactNativeFromSource: true,
+          },
+        },
+      ],
+    ],
     extra: { APP_ENV: env },
   };
 };

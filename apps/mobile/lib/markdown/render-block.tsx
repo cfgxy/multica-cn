@@ -59,7 +59,10 @@ function renderBlock(
       const t = token as Tokens.Paragraph;
       return (
         <View className={BLOCK_GAP}>
-          <Text className={cn(BODY_CLASS, PARAGRAPH_LEADING)}>
+          <Text
+            className={cn(BODY_CLASS, PARAGRAPH_LEADING)}
+            lineBreakStrategyIOS="hangul-word"
+          >
             {renderInline(t.tokens, path)}
           </Text>
         </View>
@@ -70,7 +73,10 @@ function renderBlock(
       const cls = HEADING_CLASS[t.depth] ?? HEADING_CLASS[6];
       return (
         <View className={cn(HEADING_TOP_GAP, BLOCK_GAP)}>
-          <Text className={cn(cls, "text-foreground")}>
+          <Text
+            className={cn(cls, "text-foreground")}
+            lineBreakStrategyIOS="hangul-word"
+          >
             {renderInline(t.tokens, path)}
           </Text>
         </View>
@@ -215,10 +221,16 @@ function renderListItem(
       className="flex-row mb-1"
       style={{ paddingLeft: ctx.listDepth * LIST_INDENT }}
     >
-      <Text className={cn(BODY_CLASS, "shrink-0 w-6")}>{bullet}</Text>
+      {/* w-4 (16px) is the canonical mobile hanging-indent column for "•"
+       *  / "1." — matches GitHub mobile and Linear iOS. w-6 left a visible
+       *  dead gap between bullet and content. */}
+      <Text className={cn(BODY_CLASS, "shrink-0 w-4")}>{bullet}</Text>
       <View className="flex-1">
         {inlineOnly ? (
-          <Text className={cn(BODY_CLASS, PARAGRAPH_LEADING)}>
+          <Text
+            className={cn(BODY_CLASS, PARAGRAPH_LEADING)}
+            lineBreakStrategyIOS="hangul-word"
+          >
             {renderInline(
               (item.tokens[0] as Tokens.Text).tokens,
               [...path, 0],

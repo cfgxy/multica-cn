@@ -62,7 +62,7 @@ Start minimal. Add to this list when actually adopted — do NOT pre-list librar
 - **React 19.1** — whatever Expo SDK 55 ships. Pinned in `apps/mobile/package.json` directly, NOT via root `catalog:`.
 - **TypeScript** strict
 - **Expo Router 55** (file-based routing — version aligns with Expo SDK)
-- **NativeWind 4** + **Tailwind 3.4** — NativeWind 5 is unstable and doesn't support Expo Go; stay on v4. (Note: web/desktop use Tailwind v4 — versions intentionally differ.)
+- **NativeWind 4** + **Tailwind 3.4** — NativeWind 5 is unstable; stay on v4. (Note: web/desktop use Tailwind v4 — versions intentionally differ.)
 - **react-native-reusables (RNR)** — the shadcn equivalent for React Native. Uses NativeWind + RN-Primitives + CVA. Component API mirrors shadcn.
 - **TanStack Query 5** — mobile owns its `QueryClient` with `AppState` focus listener + `NetInfo` online listener.
 - **Zustand** — mobile-local state only.

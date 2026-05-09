@@ -21,6 +21,7 @@ import type { Issue, TimelineEntry, TimelinePage } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { IssueHeaderCard } from "./issue-header-card";
 import { IssueDescription } from "./issue-description";
+import { IssueReactionRow } from "./issue-reaction-row";
 import { ActivityRow } from "./activity-row";
 import { CommentCard } from "./comment-card";
 import { coalesceTimeline } from "@/lib/timeline-coalesce";
@@ -35,6 +36,9 @@ interface Props {
   fetchOlder: () => void;
   refreshing: boolean;
   onRefresh: () => void;
+  /** Long-press → Reply on a comment bubbles up via this callback. The
+   *  issue page lifts replyingTo state and feeds it back into the composer. */
+  onReplyTo: (commentId: string, name: string) => void;
 }
 
 const NEAR_TOP_THRESHOLD = 120;
@@ -48,6 +52,7 @@ export function TimelineList({
   fetchOlder,
   refreshing,
   onRefresh,
+  onReplyTo,
 }: Props) {
   // Server pages are DESC (newest first). Concatenate then reverse → ASC,
   // matching how web's useIssueTimeline shapes its consumer view
@@ -90,6 +95,7 @@ export function TimelineList({
     <View>
       <IssueHeaderCard issue={issue} />
       <IssueDescription description={issue.description} />
+      <IssueReactionRow issue={issue} />
       <View className="px-4 pt-4 pb-2 border-t border-border">
         <Text className="text-xs uppercase tracking-wider text-muted-foreground font-medium">
           Activity
@@ -121,7 +127,12 @@ export function TimelineList({
       ListHeaderComponent={ListHeader}
       renderItem={({ item }) =>
         item.entry.type === "comment" ? (
-          <CommentCard entry={item.entry} replies={item.replies} />
+          <CommentCard
+            entry={item.entry}
+            replies={item.replies}
+            issueId={issue.id}
+            onReplyTo={onReplyTo}
+          />
         ) : (
           <ActivityRow entry={item.entry} />
         )

@@ -3,12 +3,11 @@
  * packages/core/issues/queries.ts (issueDetailOptions and
  * issueTimelineInfiniteOptions). Mobile v1 only needs latest-mode for the
  * initial page and before-cursor for older pages — no around-mode (no deep
- * link jump) and no after-mode (no WS prepend).
+ * link jump) and no after-mode (no WS prepend yet).
  *
- * Workspace-scoped query keys. Mandatory per repo-root CLAUDE.md state-mgmt
- * rules ("Workspace-scoped queries must key on wsId") — switching workspace
- * causes the cache key to change, which automatically refetches detail and
- * timeline for the right workspace.
+ * Query keys live in ./issue-keys so they share a prefix with the my-issues
+ * list cache — WS handlers can later invalidate the whole `issues` subtree
+ * with one call.
  */
 import {
   infiniteQueryOptions,
@@ -16,15 +15,11 @@ import {
 } from "@tanstack/react-query";
 import type { TimelinePage } from "@multica/core/types";
 import { api } from "@/data/api";
+import { issueKeys } from "./issue-keys";
 
 type TimelineCursor = { mode: "before"; cursor: string } | null;
 
-export const issueKeys = {
-  detail: (wsId: string | null, id: string) =>
-    ["issue", wsId, "detail", id] as const,
-  timeline: (wsId: string | null, id: string) =>
-    ["issue", wsId, "timeline", id] as const,
-};
+export { issueKeys } from "./issue-keys";
 
 export const issueDetailOptions = (wsId: string | null, id: string) =>
   queryOptions({

@@ -9,7 +9,7 @@
  * `issue/[id]` Stack.Screen with title "Issue". We override that here once
  * the data lands so the navigation bar shows `MUL-123` (Linear-style).
  */
-import { useCallback } from "react";
+import { useCallback, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -18,6 +18,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, useLocalSearchParams } from "expo-router";
+import { useHeaderHeight } from "@react-navigation/elements";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
@@ -35,12 +36,26 @@ export default function IssueDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const qc = useQueryClient();
+  // KeyboardAvoidingView's `padding` behaviour calculates from screen top.
+  // The native iOS Stack header above this screen takes ~88pt that the
+  // padding doesn't subtract — without this offset, the comment composer
+  // ends up under the keyboard by exactly the header height. See
+  // https://reactnavigation.org/docs/use-header-height.
+  const headerHeight = useHeaderHeight();
 
   const detail = useQuery(issueDetailOptions(wsId, id));
   const timeline = useInfiniteQuery(
     issueTimelineInfiniteOptions(wsId, id),
   );
   const createComment = useCreateComment(id);
+
+  // Lifted: long-press a comment → action sheet → "Reply" sets this; the
+  // composer reads it to render a "Replying to <name>" chip and sends the
+  // resulting comment with `parent_id`.
+  const [replyingTo, setReplyingTo] = useState<{
+    commentId: string;
+    name: string;
+  } | null>(null);
 
   const onRefresh = useCallback(async () => {
     await Promise.all([
@@ -50,9 +65,18 @@ export default function IssueDetail() {
   }, [detail, qc, wsId, id]);
 
   const onSubmitComment = useCallback(
-    (content: string) => createComment.mutateAsync(content),
+    async (vars: { content: string; parentId?: string }) => {
+      await createComment.mutateAsync(vars);
+      setReplyingTo(null);
+    },
     [createComment],
   );
+
+  const onReplyTo = useCallback((commentId: string, name: string) => {
+    setReplyingTo({ commentId, name });
+  }, []);
+
+  const onCancelReply = useCallback(() => setReplyingTo(null), []);
 
   const issue = detail.data;
 
@@ -83,6 +107,7 @@ export default function IssueDetail() {
       ) : (
         <KeyboardAvoidingView
           behavior={Platform.OS === "ios" ? "padding" : undefined}
+          keyboardVerticalOffset={headerHeight}
           className="flex-1"
         >
           <View className="flex-1">
@@ -95,9 +120,14 @@ export default function IssueDetail() {
               fetchOlder={() => timeline.fetchNextPage()}
               refreshing={detail.isRefetching || timeline.isRefetching}
               onRefresh={onRefresh}
+              onReplyTo={onReplyTo}
             />
           </View>
-          <CommentComposer onSubmit={onSubmitComment} />
+          <CommentComposer
+            onSubmit={onSubmitComment}
+            replyingTo={replyingTo}
+            onCancelReply={onCancelReply}
+          />
         </KeyboardAvoidingView>
       )}
     </SafeAreaView>

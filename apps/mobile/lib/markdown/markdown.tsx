@@ -1,47 +1,93 @@
 /**
- * Public Markdown component for the mobile app. Replaces ad-hoc
- * `<Text>{content}</Text>` calls in comment-card and issue-description.
+ * Public Markdown component for the mobile app. Internal implementation:
+ * `EnrichedMarkdownText` from `react-native-enriched-markdown` (Software
+ * Mansion, native md4c parser, no WebView).
  *
- * Pipeline (one-shot, memoized by content string):
+ * Why this engine vs the previous hand-rolled walker (see Decision log in
+ * `apps/mobile/docs/markdown-renderer-research.md`):
  *
+ *   - md4c renders into iOS NSAttributedString end-to-end. No nested-Text
+ *     runs, so the chronic RN inline-Text border/padding bug (#10775 /
+ *     #45925) is structurally impossible. Inline code chips, links, and
+ *     CJK paragraphs all flow correctly without per-element workarounds.
+ *   - GFM tables / task lists / strikethrough are first-class.
+ *   - LaTeX math is native (block `$$...$$` with `flavor="github"`).
+ *   - Streaming-aware via the companion `react-native-streamdown` package.
+ *   - Native context menu, native image actions (Save / Copy / Share).
+ *
+ * Trade-offs accepted:
+ *   - Mention links degrade from avatar chips → colored links. The
+ *     `mention://` URL still routes via `onLinkPress` to the right place
+ *     (issue navigation), but no inline avatar.
+ *   - File cards degrade to `[📎 name](url)` plain links (already the
+ *     preprocess output — no further regression).
+ *   - Code blocks no longer use the Shiki highlighter. md4c's built-in
+ *     code rendering is plain monospace; if syntax highlighting comes
+ *     back, it will need to be a separate path.
+ *
+ * Pipeline:
  *   content
- *     ↓ preprocessMobileMarkdown   (mention shortcodes + file cards)
- *     ↓ marked.lexer({ gfm, breaks })
- *     ↓ Token[]
- *     ↓ renderBlocks               (returns a React Native tree)
+ *     ↓ preprocessMobileMarkdown   (legacy mention shortcodes + file cards
+ *                                   + HTML strip with `<br>` → "  \n")
+ *     ↓ EnrichedMarkdownText (md4c, GFM)
  *
- * Performance: typical comments are < 5 KB, descriptions < 20 KB. Lexing
- * is sub-millisecond at that size; we still memoize on content so a
- * parent re-render with the same content doesn't reparse. No persistent
- * cache (cross-comment) — each `<Markdown>` instance owns its own memo.
+ * Style customisation lives in `markdown-style.ts` so the component file
+ * stays focused on routing / event wiring.
  */
-import { useMemo } from "react";
-import { View } from "react-native";
-import { marked } from "marked";
-import { renderBlocks } from "./render-block";
+import { useCallback, useMemo } from "react";
+import { Linking } from "react-native";
+import { router } from "expo-router";
+import { EnrichedMarkdownText } from "react-native-enriched-markdown";
+import { useWorkspaceStore } from "@/data/workspace-store";
 import { preprocessMobileMarkdown } from "./preprocess";
-import { promoteInlineImages } from "./ast";
+import { MARKDOWN_STYLE } from "./markdown-style";
 
 interface Props {
   content: string;
 }
 
 export function Markdown({ content }: Props) {
-  const tokens = useMemo(() => {
-    const pre = preprocessMobileMarkdown(content);
-    if (!pre) return [];
-    // gfm: true gives us tables, task lists, strikethrough, autolinks.
-    // breaks: true makes a single newline render as <br> — matches how
-    // people type in chat-style mobile inputs (and matches web's
-    // remark-breaks plugin in readonly-content.tsx).
-    const lexed = marked.lexer(pre, { gfm: true, breaks: true });
-    // promoteInlineImages: marked always wraps `![alt](url)` in a
-    // paragraph (CommonMark says image is inline). RN can't put an
-    // <Image> inside a <Text>, so without this pass NO images would
-    // ever render. The transform pulls images out as block siblings.
-    return promoteInlineImages(lexed);
-  }, [content]);
+  const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
 
-  if (tokens.length === 0) return null;
-  return <View>{renderBlocks(tokens)}</View>;
+  const processed = useMemo(
+    () => preprocessMobileMarkdown(content),
+    [content],
+  );
+
+  const onLinkPress = useCallback(
+    ({ url }: { url: string }) => {
+      // mention://issue/<uuid> → navigate to issue detail. Other mention
+      // types (member / agent) currently no-op; future iteration could
+      // open a profile sheet.
+      if (url.startsWith("mention://")) {
+        const rest = url.slice("mention://".length);
+        const slash = rest.indexOf("/");
+        if (slash < 0) return;
+        const type = rest.slice(0, slash);
+        const id = rest.slice(slash + 1);
+        if (type === "issue" && id && wsSlug) {
+          router.push(`/${wsSlug}/issue/${id}`);
+        }
+        return;
+      }
+      // Everything else — http(s), mailto, tel, app-scheme deep links —
+      // hand off to the system. Linking.openURL throws if no app handles
+      // the URL; the catch keeps a stray tap from crashing the screen.
+      Linking.openURL(url).catch(() => {
+        // Silent: failing loudly is worse than a no-op tap.
+      });
+    },
+    [wsSlug],
+  );
+
+  if (!processed) return null;
+
+  return (
+    <EnrichedMarkdownText
+      flavor="github"
+      markdown={processed}
+      markdownStyle={MARKDOWN_STYLE}
+      onLinkPress={onLinkPress}
+    />
+  );
 }

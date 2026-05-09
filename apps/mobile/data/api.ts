@@ -18,10 +18,16 @@ import type {
   Comment,
   InboxItem,
   Issue,
+  IssueLabelsResponse,
+  IssueReaction,
   ListIssuesParams,
   ListIssuesResponse,
+  ListLabelsResponse,
+  ListProjectsResponse,
   MemberWithUser,
+  Reaction,
   TimelinePage,
+  UpdateIssueRequest,
   User,
   Workspace,
 } from "@multica/core/types";
@@ -31,6 +37,12 @@ import {
   ListIssuesResponseSchema,
   TimelinePageSchema,
 } from "@multica/core/api/schemas";
+import {
+  EMPTY_LIST_LABELS_RESPONSE,
+  EMPTY_LIST_PROJECTS_RESPONSE,
+  ListLabelsResponseSchema,
+  ListProjectsResponseSchema,
+} from "./schemas";
 import { getCurrentSlug } from "./workspace-store";
 import { parseWithFallback } from "@/lib/parse-response";
 import { createRequestId } from "@/lib/request-id";
@@ -195,7 +207,11 @@ class ApiClient {
     for (const [k, v] of Object.entries(params)) {
       if (v == null) continue;
       if (Array.isArray(v)) {
-        for (const item of v) search.append(k, String(item));
+        // Backend parses comma-separated lists (server/internal/handler/issue.go
+        // uses strings.Split on a single query value). Match web's serialization
+        // in packages/core/api/client.ts:407 — repeated keys would silently
+        // collapse to the first value only.
+        if (v.length > 0) search.set(k, v.map(String).join(","));
       } else {
         search.set(k, String(v));
       }
@@ -233,11 +249,113 @@ class ApiClient {
     });
   }
 
-  async createComment(issueId: string, content: string): Promise<Comment> {
+  async createComment(
+    issueId: string,
+    content: string,
+    parentId?: string,
+  ): Promise<Comment> {
+    // Body shape mirrors backend `CreateCommentRequest`
+    // (server/internal/handler/comment.go:165). `parent_id` is sent only
+    // when present so top-level comments don't carry an explicit null.
     return this.fetch<Comment>(`/api/issues/${issueId}/comments`, {
       method: "POST",
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({
+        content,
+        ...(parentId ? { parent_id: parentId } : {}),
+      }),
     });
+  }
+
+  // --- Reactions ---
+  // Comment reactions: POST/DELETE /api/comments/{id}/reactions
+  // Issue reactions:   POST/DELETE /api/issues/{id}/reactions
+  // Mirror surface from packages/core/api/client.ts:541-573.
+  async addReaction(commentId: string, emoji: string): Promise<Reaction> {
+    return this.fetch<Reaction>(`/api/comments/${commentId}/reactions`, {
+      method: "POST",
+      body: JSON.stringify({ emoji }),
+    });
+  }
+
+  async removeReaction(commentId: string, emoji: string): Promise<void> {
+    await this.fetch<void>(`/api/comments/${commentId}/reactions`, {
+      method: "DELETE",
+      body: JSON.stringify({ emoji }),
+    });
+  }
+
+  async addIssueReaction(
+    issueId: string,
+    emoji: string,
+  ): Promise<IssueReaction> {
+    return this.fetch<IssueReaction>(`/api/issues/${issueId}/reactions`, {
+      method: "POST",
+      body: JSON.stringify({ emoji }),
+    });
+  }
+
+  async removeIssueReaction(issueId: string, emoji: string): Promise<void> {
+    await this.fetch<void>(`/api/issues/${issueId}/reactions`, {
+      method: "DELETE",
+      body: JSON.stringify({ emoji }),
+    });
+  }
+
+  // --- Issue update ---
+  // Write endpoint — the mutation surface handles errors via rollback, so
+  // we let bad responses surface naturally (no parseWithFallback).
+  // Method is PUT to match backend router (server/cmd/server/router.go:327)
+  // and web client (packages/core/api/client.ts:465).
+  async updateIssue(id: string, body: UpdateIssueRequest): Promise<Issue> {
+    return this.fetch<Issue>(`/api/issues/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    });
+  }
+
+  // --- Labels ---
+  async listLabels(): Promise<ListLabelsResponse> {
+    const raw = await this.fetch<unknown>("/api/labels");
+    return parseWithFallback(
+      raw,
+      ListLabelsResponseSchema,
+      EMPTY_LIST_LABELS_RESPONSE,
+      { endpoint: "GET /api/labels" },
+    );
+  }
+
+  async attachLabel(
+    issueId: string,
+    labelId: string,
+  ): Promise<IssueLabelsResponse> {
+    return this.fetch<IssueLabelsResponse>(
+      `/api/issues/${issueId}/labels`,
+      {
+        method: "POST",
+        body: JSON.stringify({ label_id: labelId }),
+      },
+    );
+  }
+
+  async detachLabel(
+    issueId: string,
+    labelId: string,
+  ): Promise<IssueLabelsResponse> {
+    return this.fetch<IssueLabelsResponse>(
+      `/api/issues/${issueId}/labels/${labelId}`,
+      { method: "DELETE" },
+    );
+  }
+
+  // --- Projects ---
+  async listProjects(): Promise<ListProjectsResponse> {
+    const raw = await this.fetch<unknown>("/api/projects");
+    return parseWithFallback(
+      raw,
+      ListProjectsResponseSchema,
+      EMPTY_LIST_PROJECTS_RESPONSE,
+      { endpoint: "GET /api/projects" },
+    );
   }
 }
 

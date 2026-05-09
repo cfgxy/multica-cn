@@ -10,7 +10,13 @@ import { api } from "@/data/api";
 import { queryClient } from "@/data/query-client";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
-import { LightboxProvider } from "@/lib/markdown";
+import { LightboxProvider, prewarmHighlighter } from "@/lib/markdown";
+
+// Kick off Shiki highlighter init at module load — fires once per process,
+// finishes before the user navigates to any screen with a code block. If
+// init fails (engine unavailable) the highlighter falls back to plain
+// text; nothing here is allowed to throw.
+prewarmHighlighter();
 
 function AuthInitializer({ children }: { children: React.ReactNode }) {
   const initialize = useAuthStore((s) => s.initialize);

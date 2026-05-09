@@ -3,6 +3,22 @@ import { Redirect, Stack, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { workspaceListOptions } from "@/data/queries/workspaces";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { RealtimeProvider } from "@/data/realtime/realtime-provider";
+import { useInboxRealtime } from "@/data/realtime/use-inbox-realtime";
+
+/**
+ * Mounts every per-feature realtime subscription. Lives inside
+ * RealtimeProvider so the WSClient context is available, and stays alive
+ * for the whole workspace session — the inbox unread count must keep
+ * refreshing even while the user is on an issue page or settings, not
+ * just when the inbox tab is foregrounded.
+ *
+ * Add new realtime feature hooks here as they land (issue, chat, etc).
+ */
+function RealtimeSubscriptions() {
+  useInboxRealtime();
+  return null;
+}
 
 /**
  * Workspace context layout. Reads the slug from the URL (the route is the
@@ -37,15 +53,18 @@ export default function WorkspaceLayout() {
   // Tabs hide their own header; pushed screens (issue/[id]) get a native
   // iOS Stack header with the standard back button + swipe-to-dismiss.
   return (
-    <Stack>
-      <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-      <Stack.Screen
-        name="issue/[id]"
-        options={{
-          title: "Issue",
-          headerBackTitle: "Back",
-        }}
-      />
-    </Stack>
+    <RealtimeProvider>
+      <RealtimeSubscriptions />
+      <Stack>
+        <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+        <Stack.Screen
+          name="issue/[id]"
+          options={{
+            title: "Issue",
+            headerBackTitle: "Back",
+          }}
+        />
+      </Stack>
+    </RealtimeProvider>
   );
 }

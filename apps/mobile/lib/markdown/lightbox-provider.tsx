@@ -3,8 +3,7 @@
  *
  * Single instance mounted at the root layout. `useLightbox().open(uri)`
  * displays the image fullscreen with pinch-to-zoom, double-tap, and
- * swipe-down-to-dismiss — all handled by `react-native-image-viewing`
- * (pure TS, Expo Go compatible).
+ * swipe-down-to-dismiss — all handled by `react-native-image-viewing`.
  *
  * V2.1 only opens single images. A future iteration could collect every
  * `![]()` URL while rendering a comment and pass the array through so
