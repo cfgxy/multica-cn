@@ -101,18 +101,3 @@ export function formatActivity(
   }
 }
 
-/** Absolute timestamp for activity rows (Linear-style: "Mar 27, 2026 at 23:41"). */
-export function formatActivityTimestamp(iso: string): string {
-  const d = new Date(iso);
-  const date = d.toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
-  const time = d.toLocaleTimeString("en-US", {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
-  return `${date} at ${time}`;
-}

@@ -131,7 +131,11 @@ export function TimelineList({
       refreshControl={
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
       }
-      contentContainerClassName="pb-4"
+      // gap-3 between every row gives uniform 12px spacing — matches web's
+      // `<div className="mt-4 flex flex-col gap-3">` outer container. With
+      // this owning the spacing, the row components themselves drop their
+      // own py so we don't double-up vertical breathing room.
+      contentContainerClassName="pb-4 gap-3"
     />
   );
 }

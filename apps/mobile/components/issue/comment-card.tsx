@@ -32,7 +32,7 @@ interface Props {
 
 export function CommentCard({ entry, replies = [] }: Props) {
   return (
-    <View className="px-4 py-1.5">
+    <View className="px-4">
       <View className="bg-secondary rounded-2xl px-4 py-3 gap-3">
         <CommentBody entry={entry} />
         {replies.map((reply) => (
