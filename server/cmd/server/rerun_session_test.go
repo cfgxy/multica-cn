@@ -130,6 +130,39 @@ func TestGetLastTaskSessionFallbackPoisonedClassifier(t *testing.T) {
 	}
 }
 
+// TestGetLastTaskSessionExcludesAPIInvalidRequest covers the MUL-1921
+// case: an Anthropic 400 invalid_request_error (e.g. an oversized or
+// malformed image baked into the conversation) bakes the bad message
+// into the session history, so resuming would replay the same 400
+// forever. The daemon classifies these as 'api_invalid_request' and the
+// SQL filter must skip them on the resume lookup.
+func TestGetLastTaskSessionExcludesAPIInvalidRequest(t *testing.T) {
+	if testPool == nil {
+		t.Skip("no database connection")
+	}
+
+	issueID, agentID, runtimeID := setupRerunTestFixture(t)
+	t.Cleanup(func() { cleanupRerunFixture(t, issueID) })
+
+	ctx := context.Background()
+
+	if _, err := testPool.Exec(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, started_at, completed_at, session_id, work_dir, failure_reason)
+		VALUES ($1, $2, $3, 'failed', 0, now() - interval '5 seconds', now() - interval '5 seconds', 'POISONED-API400', '/tmp/poisoned', 'api_invalid_request')
+	`, agentID, runtimeID, issueID); err != nil {
+		t.Fatalf("insert poisoned failed task: %v", err)
+	}
+
+	queries := db.New(testPool)
+	prior, err := queries.GetLastTaskSession(ctx, db.GetLastTaskSessionParams{
+		AgentID: pgtype.UUID{Bytes: parseUUIDBytes(agentID), Valid: true},
+		IssueID: pgtype.UUID{Bytes: parseUUIDBytes(issueID), Valid: true},
+	})
+	if err == nil && prior.SessionID.Valid {
+		t.Fatalf("expected no resumable session for api_invalid_request, got %q", prior.SessionID.String)
+	}
+}
+
 // TestRerunIssueSetsForceFreshSession asserts the manual rerun flow flags
 // the new task so the daemon claim handler skips the resume lookup. This
 // is the call-site half of the fix: even if the SQL filter ever misses a

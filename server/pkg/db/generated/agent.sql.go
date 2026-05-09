@@ -1033,7 +1033,7 @@ SELECT session_id, work_dir, runtime_id FROM agent_task_queue
 WHERE agent_id = $1 AND issue_id = $2
   AND (
     status = 'completed'
-    OR (status = 'failed' AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message'))
+    OR (status = 'failed' AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request'))
   )
   AND session_id IS NOT NULL
 ORDER BY COALESCE(completed_at, started_at, dispatched_at, created_at) DESC
@@ -1068,8 +1068,10 @@ type GetLastTaskSessionRow struct {
 //
 // Tasks that ended in a known "poisoned" terminal state are also excluded
 // here so even auto-retry does not inherit the bad session. The daemon
-// classifies these failures (iteration_limit, agent_fallback_message) when
-// it detects the agent emitted a fallback marker instead of a real result.
+// classifies these failures (iteration_limit, agent_fallback_message,
+// api_invalid_request) when it detects either an agent fallback marker in
+// the output or an upstream API 400 that means the conversation history
+// itself is unprocessable (oversized image, malformed base64, etc.).
 func (q *Queries) GetLastTaskSession(ctx context.Context, arg GetLastTaskSessionParams) (GetLastTaskSessionRow, error) {
 	row := q.db.QueryRow(ctx, getLastTaskSession, arg.AgentID, arg.IssueID)
 	var i GetLastTaskSessionRow
