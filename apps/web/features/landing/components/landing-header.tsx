@@ -45,6 +45,17 @@ export function LandingHeader({
 
         <div className="flex items-center gap-2.5 sm:gap-3">
           <Link
+            href="/changelog"
+            className={cn(
+              "hidden text-[13px] font-medium transition-colors sm:inline-flex",
+              variant === "dark"
+                ? "text-white/72 hover:text-white"
+                : "text-[#0a0d12]/64 hover:text-[#0a0d12]",
+            )}
+          >
+            {t.header.changelog}
+          </Link>
+          <Link
             href={githubUrl}
             target="_blank"
             rel="noreferrer"

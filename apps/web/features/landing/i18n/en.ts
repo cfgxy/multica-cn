@@ -7,6 +7,7 @@ export function createEnDict(allowSignup: boolean): LandingDict {
     github: "GitHub",
     login: "Log in",
     dashboard: "Dashboard",
+    changelog: "Changelog",
   },
 
   hero: {
