@@ -17,7 +17,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { Stack, useLocalSearchParams } from "expo-router";
+import { Stack, router, useLocalSearchParams } from "expo-router";
 import { useHeaderHeight } from "@react-navigation/elements";
 import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Text } from "@/components/ui/text";
@@ -30,6 +30,7 @@ import {
   issueTimelineInfiniteOptions,
 } from "@/data/queries/issues";
 import { useCreateComment } from "@/data/mutations/issues";
+import { useIssueRealtime } from "@/data/realtime/use-issue-realtime";
 import { useWorkspaceStore } from "@/data/workspace-store";
 
 export default function IssueDetail() {
@@ -48,6 +49,13 @@ export default function IssueDetail() {
     issueTimelineInfiniteOptions(wsId, id),
   );
   const createComment = useCreateComment(id);
+
+  // Subscribe to per-issue WS events: status/priority/assignee/label
+  // changes, comments, activity, reactions, agent task progress.
+  // Mounted with `id` — cleans up automatically on navigate-away.
+  // If another client deletes the issue we're viewing, pop back so the
+  // user isn't stranded on a 404 detail page.
+  useIssueRealtime(id, () => router.back());
 
   // Lifted: long-press a comment → action sheet → "Reply" sets this; the
   // composer reads it to render a "Replying to <name>" chip and sends the

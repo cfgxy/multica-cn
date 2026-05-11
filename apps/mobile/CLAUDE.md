@@ -85,6 +85,89 @@ Tailwind version mismatch (mobile v3.4 vs web v4) makes file sharing impractical
 
 Mobile release cadence is decoupled from main `v*.*.*` tags (server / CLI / desktop).
 
+## Realtime / WebSocket strategy
+
+Mobile uses the same WS server protocol as web/desktop, but mounts subscriptions differently. The rules below exist because mobile-specific constraints (cellular data cost, AppState lifecycle, per-screen unmount cleanup, smaller cache surface) make a direct port of web's pattern wrong.
+
+### Three-layer stack
+
+```
+Layer 1  ws-client.ts                — single socket, no React. Exponential
+                                       backoff with full jitter. Three-state
+                                       lifecycle (idle / active / paused) so
+                                       the provider can pause on background
+                                       and resume on foreground without
+                                       racing the auto-reconnect timer.
+Layer 2  realtime-provider.tsx       — owns the WSClient. Mounts/unmounts on
+                                       auth + workspace + AppState + NetInfo
+                                       changes. Exposes useWSClient().
+Layer 3  use-<feature>-realtime.ts   — per-feature subscriptions. Translate
+                                       events → cache mutations.
+```
+
+Layer 3 is what changes per feature; layers 1 and 2 are infrastructure and shouldn't be edited when adding event coverage.
+
+### Mount strategy: list-level global, per-record per-screen
+
+Mobile **does NOT use a single centralized `useRealtimeSync` hook** like `packages/core/realtime/use-realtime-sync.ts`. That pattern is fine on web (one tab = one mount, lives forever) but on mobile it gets in the way: most events care about a single record (one issue's comments, one chat session's messages), and the hook needs to know which record without prop-drilling.
+
+Two mount tiers:
+
+- **Listing-level (always-on for the workspace session)** — mount inside the `<RealtimeSubscriptions />` component in `app/(app)/[workspace]/_layout.tsx`. These don't take parameters; they patch caches keyed only on `wsId`. Examples: `useInboxRealtime`, `useMyIssuesRealtime`. Both run from the moment the user enters a workspace until they leave it, regardless of which tab is foregrounded.
+
+- **Per-record (mounted with id, cleans up on unmount)** — mount inside the screen that owns the record, parameterized by the id from the route. Example: `useIssueRealtime(id, () => router.back())` in `issue/[id].tsx`. The hook filters every event by `payload.issue_id === id` and only patches the current issue's caches. When the user navigates away the `useEffect` cleanup unsubscribes all listeners, so a backgrounded screen doesn't keep mutating caches it no longer owns.
+
+Don't mount a per-record hook globally to "just be safe" — every filter call on every event then runs N times where N is the number of issues a user has ever opened in this session.
+
+### Patch over invalidate (cellular-data rule)
+
+When a WS payload contains the full updated object, **patch** the cache (`setQueryData` / `setQueriesData`). Only fall back to **invalidate** when:
+
+1. The payload is just an id (we don't know the full new shape — e.g., `issue:created` with no scope context).
+2. The cache shape doesn't match what we can patch (e.g., multi-key scope-filtered lists where we'd have to predict membership).
+3. The event is rare enough that the extra refetch isn't a real cost (e.g., `issue:deleted` on a list that was about to invalidate anyway).
+4. After a reconnect, where we may have missed events while disconnected.
+
+Web is fine to invalidate generously because most users are on broadband; mobile users on cellular pay for each refetch. A `setQueryData` is free; an `invalidateQueries` is a network roundtrip per affected query key.
+
+### Mobile-owned updaters (don't import `packages/core/issues/ws-updaters.ts`)
+
+Mobile has its own `apps/mobile/data/realtime/issue-ws-updaters.ts` even though web has a near-identical file. **Do not import web's updaters into mobile.** Two reasons:
+
+1. **Key-factory binding.** Web's updaters reference `issueKeys` from `packages/core/issues/queries.ts` — a different runtime instance from mobile's `apps/mobile/data/queries/issue-keys.ts`. TanStack Query compares keys structurally so it *appears* to work, but binding cache mutation to a foreign key factory invites silent drift the moment either side adjusts its key shape (renames a segment, adds a discriminator).
+2. **Cache-shape divergence.** Mobile has simpler caches: flat `Issue[]` for my-issues (web has status-bucketed); no children subtree (web does); no label-byIssue cache (web does). Web's updaters carry conditional dead-code for paths mobile doesn't have, and mobile would silently no-op on web shapes that don't exist locally.
+
+When the same logic needs to exist on both sides, copy the design — not the import. Document the mirror at the top of the mobile file (see `issue-ws-updaters.ts` for the pattern).
+
+### Event-always-wins (optimistic conflict policy)
+
+Mutations like `useUpdateIssue` apply an optimistic patch to the detail cache, then the server processes the request and broadcasts `issue:updated`. If a separate WS event (from another client / another user / an agent) arrives between the optimistic patch and the mutation response, the WS handler overwrites the optimistic state with the server's authoritative state. Brief UI flicker is acceptable; correctness wins.
+
+**Do not** add timestamp-comparison logic to "protect" the optimistic state — the server is the truth and the user benefits from seeing real changes immediately. If a specific event proves problematic in practice, add the gate at that point, not by default.
+
+### Reconnect handling
+
+Each hook registers a single `ws.onReconnect(cb)` that invalidates **only the queries it owns**:
+
+| Hook | Invalidates on reconnect |
+|---|---|
+| `useInboxRealtime` | `["inbox", wsId]` |
+| `useMyIssuesRealtime` | `issueKeys.myAll(wsId)` |
+| `useIssueRealtime(id)` | `issueKeys.detail(wsId, id)` + `issueKeys.timeline(wsId, id)` |
+
+No global "invalidate everything on reconnect" sweep. The fanout would be every screen the user has ever visited in this session refetching simultaneously — wasteful on cellular and prone to rate-limiting the server in low-signal areas where reconnects happen frequently.
+
+### Adding new event coverage — recipe
+
+1. **Read the payload.** Find the event in `@multica/core/types/events.ts`. Note the fields; decide if patch is possible (full object) or invalidate is required (just an id).
+2. **Mirror, don't import.** If web has an updater for this event in `packages/core/<feature>/ws-updaters.ts`, copy the design into `apps/mobile/data/realtime/<feature>-ws-updaters.ts`. Adapt to mobile's actual cache shapes — don't carry web's bucket/children/childProgress dead-code if mobile doesn't have those caches.
+3. **Subscribe in a hook.** Either extend an existing `use-<feature>-realtime.ts` or create a new one. Filter by id at the top of each handler so per-record hooks ignore unrelated events.
+4. **Mount it.** Listing-level → add to `<RealtimeSubscriptions />` in workspace `_layout.tsx`. Per-record → add to the owning screen's body, parameterized by the route id.
+5. **Add reconnect invalidate.** Single `ws.onReconnect()` call scoped to the hook's own keys.
+6. **Verify cross-client.** Open the affected screen on mobile, change the same record from a second client (web or another device), confirm mobile updates within ~500ms without pull-to-refresh.
+
+If a new event has no consumer on mobile (e.g., `subscriber:added` when mobile doesn't render subscriber lists yet), **don't subscribe**. Mounting a listener with no UI consumer adds CPU on every fire for zero user benefit.
+
 ## Lessons learned (encode into reflexes)
 
 These are real mistakes that have been made building the mobile shell. Each one cost time to find. Treat as enforceable rules, not suggestions.

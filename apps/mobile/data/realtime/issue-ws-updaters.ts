@@ -1,0 +1,287 @@
+/**
+ * Mobile-owned WS cache patchers for the issue domain. These are pure
+ * functions over `QueryClient` — no React, no WS plumbing. The hooks in
+ * `use-issue-realtime.ts` and `use-my-issues-realtime.ts` translate WS
+ * events into calls into this module.
+ *
+ * Why mobile-owned (and not importing from packages/core/issues/ws-updaters):
+ *   - Web's updaters reference `issueKeys` from `packages/core/issues/queries`,
+ *     a different runtime instance than mobile's `data/queries/issue-keys.ts`.
+ *     TanStack Query keys are compared structurally so this would *appear*
+ *     to work, but binding cache mutation to a foreign key factory invites
+ *     drift the moment either side adjusts its key shape.
+ *   - Mobile cache shapes are simpler: no status-bucketed list, no children
+ *     subtree, no childProgress, no label-byIssue cache. A direct mirror
+ *     would be ~120 lines of conditional dead-code paths.
+ *
+ * Cache shapes (the design contract here):
+ *   - Issue detail:    Issue                                  (keyed by detail(wsId, id))
+ *   - Issue timeline:  { pages: TimelinePage[], pageParams }  (keyed by timeline(wsId, id))
+ *                      Pages are DESC newest-first; new entries prepend to the FIRST page.
+ *   - My Issues list:  Issue[]                                (keyed by myList(wsId, scope, filter))
+ *                      Multiple list caches per wsId (one per scope/filter combo).
+ *                      Patch ALL of them via setQueriesData on myAll(wsId).
+ */
+import type { QueryClient } from "@tanstack/react-query";
+import type {
+  Comment,
+  Issue,
+  IssueReaction,
+  Label,
+  Reaction,
+  TimelineEntry,
+  TimelinePage,
+} from "@multica/core/types";
+import { issueKeys } from "@/data/queries/issue-keys";
+
+type InfiniteTimeline = { pages: TimelinePage[]; pageParams: unknown[] };
+type TimelinePredicate = (entry: TimelineEntry) => boolean;
+type TimelineMutate = (entry: TimelineEntry) => TimelineEntry;
+
+// =====================================================
+// Issue detail cache (single Issue per id)
+// =====================================================
+
+export function patchIssueDetail(
+  qc: QueryClient,
+  wsId: string,
+  partial: Partial<Issue> & { id: string },
+) {
+  qc.setQueryData<Issue>(issueKeys.detail(wsId, partial.id), (old) =>
+    old ? { ...old, ...partial } : old,
+  );
+}
+
+export function clearIssueDetail(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+) {
+  qc.removeQueries({ queryKey: issueKeys.detail(wsId, issueId) });
+  qc.removeQueries({ queryKey: issueKeys.timeline(wsId, issueId) });
+}
+
+// =====================================================
+// Issue timeline (infinite query of pages)
+// =====================================================
+
+export function prependTimelineEntry(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  entry: TimelineEntry,
+) {
+  qc.setQueryData<InfiniteTimeline>(
+    issueKeys.timeline(wsId, issueId),
+    (old) => {
+      if (!old || old.pages.length === 0) return old;
+      // Pages are DESC newest-first; first page holds the most recent.
+      // Skip if the entry is already present — backend can re-emit on
+      // reconnect or two clients can echo the same comment.
+      const [first, ...rest] = old.pages;
+      if (first.entries.some((e) => e.id === entry.id && e.type === entry.type)) {
+        return old;
+      }
+      return {
+        ...old,
+        pages: [{ ...first, entries: [entry, ...first.entries] }, ...rest],
+      };
+    },
+  );
+}
+
+export function patchTimelineEntry(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  predicate: TimelinePredicate,
+  mutate: TimelineMutate,
+) {
+  qc.setQueryData<InfiniteTimeline>(
+    issueKeys.timeline(wsId, issueId),
+    (old) => {
+      if (!old) return old;
+      return {
+        ...old,
+        pages: old.pages.map((p) => ({
+          ...p,
+          entries: p.entries.map((e) => (predicate(e) ? mutate(e) : e)),
+        })),
+      };
+    },
+  );
+}
+
+export function removeTimelineEntry(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  predicate: TimelinePredicate,
+) {
+  qc.setQueryData<InfiniteTimeline>(
+    issueKeys.timeline(wsId, issueId),
+    (old) => {
+      if (!old) return old;
+      return {
+        ...old,
+        pages: old.pages.map((p) => ({
+          ...p,
+          entries: p.entries.filter((e) => !predicate(e)),
+        })),
+      };
+    },
+  );
+}
+
+// =====================================================
+// My Issues list (flat Issue[] across many keys)
+// =====================================================
+
+export function patchMyIssuesList(
+  qc: QueryClient,
+  wsId: string,
+  partial: Partial<Issue> & { id: string },
+) {
+  // myList is keyed by (wsId, scope, filter); we don't know which entries
+  // the issue belongs to, so update every cached one. Any not-yet-loaded
+  // list will fetch fresh on mount.
+  qc.setQueriesData<Issue[]>({ queryKey: issueKeys.myAll(wsId) }, (old) =>
+    old ? old.map((i) => (i.id === partial.id ? { ...i, ...partial } : i)) : old,
+  );
+}
+
+export function removeFromMyIssuesList(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+) {
+  qc.setQueriesData<Issue[]>({ queryKey: issueKeys.myAll(wsId) }, (old) =>
+    old ? old.filter((i) => i.id !== issueId) : old,
+  );
+}
+
+// =====================================================
+// Reactions
+// =====================================================
+
+export function addCommentReaction(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  commentId: string,
+  reaction: Reaction,
+) {
+  patchTimelineEntry(
+    qc,
+    wsId,
+    issueId,
+    (e) => e.type === "comment" && e.id === commentId,
+    (e) => ({
+      ...e,
+      reactions: [
+        ...(e.reactions ?? []).filter((r) => r.id !== reaction.id),
+        reaction,
+      ],
+    }),
+  );
+}
+
+export function removeCommentReaction(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  commentId: string,
+  emoji: string,
+  actorId: string,
+) {
+  patchTimelineEntry(
+    qc,
+    wsId,
+    issueId,
+    (e) => e.type === "comment" && e.id === commentId,
+    (e) => ({
+      ...e,
+      reactions: (e.reactions ?? []).filter(
+        (r) => !(r.emoji === emoji && r.actor_id === actorId),
+      ),
+    }),
+  );
+}
+
+export function addIssueReaction(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  reaction: IssueReaction,
+) {
+  qc.setQueryData<Issue>(issueKeys.detail(wsId, issueId), (old) => {
+    if (!old) return old;
+    const existing = old.reactions ?? [];
+    if (existing.some((r) => r.id === reaction.id)) return old;
+    return { ...old, reactions: [...existing, reaction] };
+  });
+}
+
+export function removeIssueReaction(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  emoji: string,
+  actorId: string,
+) {
+  qc.setQueryData<Issue>(issueKeys.detail(wsId, issueId), (old) =>
+    old
+      ? {
+          ...old,
+          reactions: (old.reactions ?? []).filter(
+            (r) => !(r.emoji === emoji && r.actor_id === actorId),
+          ),
+        }
+      : old,
+  );
+}
+
+// =====================================================
+// Labels
+// =====================================================
+
+export function patchIssueLabels(
+  qc: QueryClient,
+  wsId: string,
+  issueId: string,
+  labels: Label[],
+) {
+  qc.setQueryData<Issue>(issueKeys.detail(wsId, issueId), (old) =>
+    old ? { ...old, labels } : old,
+  );
+  qc.setQueriesData<Issue[]>({ queryKey: issueKeys.myAll(wsId) }, (old) =>
+    old
+      ? old.map((i) => (i.id === issueId ? { ...i, labels } : i))
+      : old,
+  );
+}
+
+// =====================================================
+// Helpers — payload normalization
+// =====================================================
+
+/**
+ * Convert a Comment WS payload into a TimelineEntry. The two types share
+ * most fields but use different actor-key names (Comment uses
+ * `author_type/author_id`; TimelineEntry uses `actor_type/actor_id`).
+ */
+export function commentToTimelineEntry(comment: Comment): TimelineEntry {
+  return {
+    type: "comment",
+    id: comment.id,
+    actor_type: comment.author_type,
+    actor_id: comment.author_id,
+    created_at: comment.created_at,
+    content: comment.content,
+    parent_id: comment.parent_id,
+    updated_at: comment.updated_at,
+    comment_type: comment.type,
+    reactions: comment.reactions,
+    attachments: comment.attachments,
+  };
+}
