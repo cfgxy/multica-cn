@@ -18,7 +18,18 @@ import type { RuntimeConfigResult } from "../shared/runtime-config";
 // from the running window to the hicolor icon and falls back to the
 // theme default. Consumed in createWindow() (all platforms in dev, Linux
 // in prod) and the macOS dev dock branch.
-const BUNDLED_ICON_PATH = join(__dirname, "../../resources/icon.png");
+//
+// `asarUnpack: resources/**` in electron-builder.yml extracts the icon to
+// `app.asar.unpacked/`, but `__dirname` resolves into `app.asar/`. The
+// Linux native window-icon code path expects a real filesystem path
+// (unlike Electron's nativeImage loader which transparently reads from
+// asar), so swap the segment — same pattern as bundledCliPath() in
+// daemon-manager.ts. In dev `__dirname` has no `app.asar`, so the replace
+// is a no-op.
+const BUNDLED_ICON_PATH = join(__dirname, "../../resources/icon.png").replace(
+  "app.asar",
+  "app.asar.unpacked",
+);
 
 // macOS/Linux GUI launches inherit a minimal PATH from launchd that omits
 // the user's shell config (~/.zshrc, Homebrew, nvm, ~/.local/bin, etc.).
