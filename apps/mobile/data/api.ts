@@ -15,6 +15,7 @@
  */
 import type {
   Agent,
+  Attachment,
   Comment,
   CreateIssueRequest,
   InboxItem,
@@ -39,6 +40,7 @@ import {
   TimelinePageSchema,
 } from "@multica/core/api/schemas";
 import {
+  AttachmentSchema,
   EMPTY_LIST_LABELS_RESPONSE,
   EMPTY_LIST_PROJECTS_RESPONSE,
   ListLabelsResponseSchema,
@@ -61,6 +63,20 @@ export interface LoginResponse {
   token: string;
   user: User;
 }
+
+/** Mobile file payload for `uploadFile`. RN doesn't have a browser `File`
+ *  object; the fetch `FormData` polyfill accepts `{ uri, name, type }`
+ *  directly and streams from disk. expo-image-picker / expo-document-picker
+ *  return assets that map straight onto this shape. */
+export interface FileAsset {
+  uri: string;
+  name: string;
+  type: string;
+}
+
+/** Web mirrors this from `packages/core/constants/upload.ts`. Mobile keeps
+ *  its own copy per the `mirror, don't import` rule in apps/mobile/CLAUDE.md. */
+const MAX_FILE_SIZE = 100 * 1024 * 1024;
 
 export class ApiError extends Error {
   readonly status: number;
@@ -369,6 +385,108 @@ class ApiClient {
       { endpoint: "GET /api/projects" },
     );
   }
+
+  // --- File Upload ---
+
+  /**
+   * Multipart-stream a file to `/api/upload-file`. Mirrors the web
+   * implementation in `packages/core/api/client.ts:uploadFile` but with the
+   * RN-shaped `FileAsset` instead of a browser `File`. The fetch FormData
+   * polyfill recognises `{ uri, name, type }` and reads the file off disk.
+   *
+   * `opts.issueId` / `opts.commentId` link the attachment record. Pass
+   * `issueId` when uploading from a comment composer / reply input; leave
+   * both empty when uploading from a not-yet-created issue (the attachment
+   * is hooked to the issue once it's created — same flow as web).
+   *
+   * Does NOT use `this.fetch` because:
+   *   - FormData must not have a `Content-Type` header preset (the browser /
+   *     RN fetch needs to set the multipart boundary itself).
+   *   - `this.fetch` hard-codes `application/json`.
+   *
+   * So we re-implement the auth + slug + logging shell inline.
+   */
+  async uploadFile(
+    asset: FileAsset,
+    opts?: { issueId?: string; commentId?: string },
+  ): Promise<Attachment> {
+    const rid = createRequestId();
+    const start = Date.now();
+    const path = "/api/upload-file";
+
+    const headers: Record<string, string> = {
+      // No Content-Type — let fetch set the multipart boundary.
+      "X-Client-Platform": "mobile",
+      "X-Client-OS": "ios",
+      "X-Client-Version": "0.1.0",
+      "X-Request-ID": rid,
+    };
+    if (this.token) headers["Authorization"] = `Bearer ${this.token}`;
+    const slug = getCurrentSlug();
+    if (slug) headers["X-Workspace-Slug"] = slug;
+
+    const formData = new FormData();
+    // RN's FormData accepts `{ uri, name, type }` as the file value.
+    // `as never` quiets TS (the global FormData type expects `Blob | string`).
+    formData.append(
+      "file",
+      { uri: asset.uri, name: asset.name, type: asset.type } as never,
+    );
+    if (opts?.issueId) formData.append("issue_id", opts.issueId);
+    if (opts?.commentId) formData.append("comment_id", opts.commentId);
+
+    console.log(`[api] → POST ${path}`, { rid, filename: asset.name });
+
+    const res = await fetch(`${API_URL}${path}`, {
+      method: "POST",
+      headers,
+      body: formData,
+    });
+    const duration = Date.now() - start;
+
+    if (!res.ok) {
+      if (res.status === 401) this.options.onUnauthorized?.();
+      let body: unknown;
+      try {
+        body = await res.json();
+      } catch {
+        body = undefined;
+      }
+      const message =
+        (body && typeof body === "object" && "message" in body
+          ? String((body as { message: unknown }).message)
+          : null) ?? `Upload failed: ${res.status}`;
+      console.error(`[api] ← ${res.status} ${path}`, {
+        rid,
+        duration: `${duration}ms`,
+        error: message,
+      });
+      throw new ApiError(message, res.status, body);
+    }
+
+    console.log(`[api] ← ${res.status} ${path}`, {
+      rid,
+      duration: `${duration}ms`,
+    });
+
+    // Strict validation: parseWithFallback's silent-fallback pattern doesn't
+    // fit here — an attachment without a `url` would be inserted into the
+    // user's text as `![](undefined)`. Throw on shape mismatch so the
+    // caller's Alert path fires instead of letting a broken link land in
+    // the editor.
+    const json: unknown = await res.json();
+    const parsed = AttachmentSchema.safeParse(json);
+    if (!parsed.success) {
+      console.error(`[api] ← shape mismatch ${path}`, {
+        rid,
+        error: parsed.error.message,
+      });
+      throw new ApiError("Upload response invalid", res.status, json);
+    }
+    return parsed.data;
+  }
 }
+
+export { MAX_FILE_SIZE };
 
 export const api = new ApiClient();

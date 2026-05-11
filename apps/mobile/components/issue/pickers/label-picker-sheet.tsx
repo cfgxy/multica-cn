@@ -11,6 +11,7 @@ import { ActivityIndicator, FlatList, Modal, Pressable, TextInput, View } from "
 import { useQuery } from "@tanstack/react-query";
 import type { Label } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
+import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { labelListOptions } from "@/data/queries/labels";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { cn } from "@/lib/utils";
@@ -68,7 +69,7 @@ export function LabelPickerSheet({
                   value={query}
                   onChangeText={setQuery}
                   placeholder="Search labels"
-                  placeholderTextColor="#a1a1aa"
+                  placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
                   className="text-sm text-foreground bg-secondary/50 rounded-md px-3 py-2"
                   autoCapitalize="none"
                   autoCorrect={false}

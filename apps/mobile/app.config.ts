@@ -40,6 +40,19 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       "@react-native-community/datetimepicker",
       "react-native-enriched-markdown",
       [
+        "expo-image-picker",
+        {
+          // iOS NSPhotoLibraryUsageDescription. Without this string in
+          // Info.plist, calling launchImageLibraryAsync hard-crashes on
+          // iOS 14+. Camera + microphone are disabled — we only ever read
+          // from the existing photo library.
+          photosPermission:
+            "Allow Multica to access your photos to attach images to issues and comments.",
+          cameraPermission: false,
+          microphonePermission: false,
+        },
+      ],
+      [
         "expo-build-properties",
         {
           ios: {

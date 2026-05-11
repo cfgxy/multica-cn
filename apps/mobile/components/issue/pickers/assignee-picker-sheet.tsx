@@ -13,6 +13,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { Agent, MemberWithUser } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
+import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { memberListOptions } from "@/data/queries/members";
 import { agentListOptions } from "@/data/queries/agents";
 import { useWorkspaceStore } from "@/data/workspace-store";
@@ -99,7 +100,7 @@ export function AssigneePickerSheet({
                   value={query}
                   onChangeText={setQuery}
                   placeholder="Search people"
-                  placeholderTextColor="#a1a1aa"
+                  placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
                   className="text-sm text-foreground bg-secondary/50 rounded-md px-3 py-2"
                   autoCapitalize="none"
                   autoCorrect={false}

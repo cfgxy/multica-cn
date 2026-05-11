@@ -8,24 +8,13 @@
  *  - Agent:  natural-language prompt + agent picker (placeholder; Phase 3
  *            wires the real picker + apiClient.quickCreateIssue).
  *
- * Manual-mode state lives at the top level (title / description / status /
- * priority / assignee / mention markers / selection / mentioning). The
- * `ManualPanel` is a controlled child — submit button lives in the Stack
- * header so it needs to read `canSubmit` and call `onSubmit` from this
- * scope.
- *
- * Mention pattern mirrors `comment-composer.tsx` exactly:
- *   1. `onChangeText` + `onSelectionChange` recompute `tokenAtCursor` to
- *      detect an active `@query` at the caret.
- *   2. `MentionSuggestionBar` renders above the chip row when there's an
- *      active mention; picking calls `insertMention` and pushes to markers.
- *   3. On submit, `serializeMentions(description, markers)` produces the
- *      canonical `[@name](mention://type/id)` markdown — same wire format
- *      as web's Tiptap mention extension. Server's util.ParseMentions and
- *      mobile's mention-chip both parse it back.
+ * Mention pipeline is shared with `comment-composer.tsx` via the
+ * `useMentionInput` hook — both surfaces produce the same canonical
+ * `[@name](mention://type/id)` markdown on submit, recognised by the
+ * server's util.ParseMentions and mobile's mention-chip renderer.
  *
  * Defaults (status="todo", priority="none") mirror web's ManualCreatePanel —
- * "Behavioral parity" rule (apps/mobile/CLAUDE.md).
+ * behavioral parity rule (apps/mobile/CLAUDE.md).
  */
 import { useCallback, useMemo, useState } from "react";
 import {
@@ -36,8 +25,6 @@ import {
   ScrollView,
   TextInput,
   View,
-  type NativeSyntheticEvent,
-  type TextInputSelectionChangeEventData,
 } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { Stack, router } from "expo-router";
@@ -50,37 +37,29 @@ import {
 } from "@/components/issue/create-mode-toggle";
 import type { AssigneeValue } from "@/components/issue/pickers/assignee-picker-sheet";
 import { MentionSuggestionBar } from "@/components/issue/mention-suggestion-bar";
+import { MarkdownToolbar } from "@/components/editor/markdown-toolbar";
+import { useFileAttach } from "@/components/editor/use-file-attach";
 import { Text } from "@/components/ui/text";
+import {
+  MIN_BODY_INPUT_HEIGHT_PX,
+  MOBILE_PLACEHOLDER_COLOR,
+} from "@/components/ui/input-tokens";
+import { cn } from "@/lib/utils";
 import { useCreateIssue } from "@/data/mutations/issues";
 import {
-  insertMention,
-  serializeMentions,
-  tokenAtCursor,
-  type MentionMarker,
-} from "@/lib/mention-serialize";
-
-interface MentioningState {
-  start: number;
-  query: string;
-}
+  useMentionInput,
+  type UseMentionInputReturn,
+} from "@/lib/use-mention-input";
 
 export default function NewIssueModal() {
   const [mode, setMode] = useState<CreateMode>("manual");
 
   // Manual mode fields
   const [title, setTitle] = useState("");
-  const [description, setDescription] = useState("");
+  const description = useMentionInput();
   const [status, setStatus] = useState<IssueStatus>("todo");
   const [priority, setPriority] = useState<IssuePriority>("none");
   const [assignee, setAssignee] = useState<AssigneeValue>(null);
-
-  // Mention state (description only — web doesn't allow mentions in title)
-  const [markers, setMarkers] = useState<MentionMarker[]>([]);
-  const [selection, setSelection] = useState<{ start: number; end: number }>({
-    start: 0,
-    end: 0,
-  });
-  const [mentioning, setMentioning] = useState<MentioningState | null>(null);
 
   // Agent mode fields (Phase 3 wires the picker)
   const [prompt, setPrompt] = useState("");
@@ -95,56 +74,11 @@ export default function NewIssueModal() {
       ? title.trim().length > 0
       : prompt.trim().length > 0);
 
-  const recomputeMentioning = useCallback(
-    (text: string, cursor: number) => {
-      const token = tokenAtCursor(text, cursor);
-      if (token) {
-        setMentioning({ start: token.start, query: token.query });
-      } else if (mentioning) {
-        setMentioning(null);
-      }
-    },
-    [mentioning],
-  );
-
-  const onDescriptionChange = useCallback(
-    (next: string) => {
-      setDescription(next);
-      recomputeMentioning(next, selection.end);
-    },
-    [recomputeMentioning, selection.end],
-  );
-
-  const onDescriptionSelectionChange = useCallback(
-    (e: NativeSyntheticEvent<TextInputSelectionChangeEventData>) => {
-      const sel = e.nativeEvent.selection;
-      setSelection(sel);
-      recomputeMentioning(description, sel.end);
-    },
-    [recomputeMentioning, description],
-  );
-
-  const onSelectMention = useCallback(
-    (mention: MentionMarker) => {
-      if (!mentioning) return;
-      const { newText, newSelection, marker } = insertMention(
-        description,
-        { start: mentioning.start, queryLength: mentioning.query.length },
-        mention,
-      );
-      setDescription(newText);
-      setSelection(newSelection);
-      setMarkers((prev) => [...prev, marker]);
-      setMentioning(null);
-    },
-    [mentioning, description],
-  );
-
   const onSubmit = useCallback(async () => {
     if (mode === "manual") {
       const trimmedTitle = title.trim();
       if (trimmedTitle.length === 0) return;
-      const finalDescription = serializeMentions(description, markers).trim();
+      const finalDescription = description.serialize().trim();
       try {
         await createIssue.mutateAsync({
           title: trimmedTitle,
@@ -175,7 +109,6 @@ export default function NewIssueModal() {
     mode,
     title,
     description,
-    markers,
     status,
     priority,
     assignee,
@@ -216,17 +149,12 @@ export default function NewIssueModal() {
             title={title}
             onTitleChange={setTitle}
             description={description}
-            onDescriptionChange={onDescriptionChange}
-            descriptionSelection={selection}
-            onDescriptionSelectionChange={onDescriptionSelectionChange}
             status={status}
             onStatusChange={setStatus}
             priority={priority}
             onPriorityChange={setPriority}
             assignee={assignee}
             onAssigneeChange={setAssignee}
-            mentioning={mentioning}
-            onSelectMention={onSelectMention}
             submitting={isSubmitting}
           />
         ) : (
@@ -241,37 +169,44 @@ function ManualPanel({
   title,
   onTitleChange,
   description,
-  onDescriptionChange,
-  descriptionSelection,
-  onDescriptionSelectionChange,
   status,
   onStatusChange,
   priority,
   onPriorityChange,
   assignee,
   onAssigneeChange,
-  mentioning,
-  onSelectMention,
   submitting,
 }: {
   title: string;
   onTitleChange: (next: string) => void;
-  description: string;
-  onDescriptionChange: (next: string) => void;
-  descriptionSelection: { start: number; end: number };
-  onDescriptionSelectionChange: (
-    e: NativeSyntheticEvent<TextInputSelectionChangeEventData>,
-  ) => void;
+  description: UseMentionInputReturn;
   status: IssueStatus;
   onStatusChange: (next: IssueStatus) => void;
   priority: IssuePriority;
   onPriorityChange: (next: IssuePriority) => void;
   assignee: AssigneeValue;
   onAssigneeChange: (next: AssigneeValue) => void;
-  mentioning: MentioningState | null;
-  onSelectMention: (mention: MentionMarker) => void;
   submitting: boolean;
 }) {
+  const fileAttach = useFileAttach();
+
+  // Issue not yet created → no issueId / commentId in upload context. The
+  // attachment is hooked to the issue at create time via the standard
+  // backend flow (same as web's "create issue" path).
+  const handleAttachImage = async () => {
+    const result = await fileAttach.pickAndUploadImage();
+    if (result) description.insertAtCursor(`![](${result.url})`);
+  };
+
+  const handleAttachFile = async () => {
+    const result = await fileAttach.pickAndUploadFile();
+    if (result) {
+      description.insertAtCursor(
+        `[📎 ${result.filename}](${result.url})`,
+      );
+    }
+  };
+
   return (
     <>
       <ScrollView
@@ -283,31 +218,26 @@ function ManualPanel({
           value={title}
           onChangeText={onTitleChange}
           placeholder="Issue title"
-          placeholderTextColor="#a1a1aa"
+          placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
           className="text-2xl font-semibold text-foreground py-2"
           autoFocus
           returnKeyType="next"
           editable={!submitting}
         />
-        <TextInput
-          value={description}
-          onChangeText={onDescriptionChange}
-          selection={descriptionSelection}
-          onSelectionChange={onDescriptionSelectionChange}
-          placeholder="Description… (type @ to mention)"
-          placeholderTextColor="#a1a1aa"
-          className="text-base text-foreground py-2 min-h-[120px]"
-          multiline
-          textAlignVertical="top"
-          editable={!submitting}
-        />
+        <DescriptionField description={description} disabled={submitting} />
       </ScrollView>
 
-      <View className="border-t border-border bg-background">
-        <MentionSuggestionBar
-          visible={mentioning !== null}
-          query={mentioning?.query ?? ""}
-          onSelect={onSelectMention}
+      <View className="bg-background">
+        <MentionSuggestionBar {...description.suggestionBar} />
+        <MarkdownToolbar
+          onAt={description.handlers.onAtButtonPress}
+          onList={() => description.insertAtLineStart("- ")}
+          onCheckbox={() => description.insertAtLineStart("- [ ] ")}
+          onCode={() => description.insertAtCursor("\n```\n\n```", 4)}
+          onQuote={() => description.insertAtLineStart("> ")}
+          onImage={handleAttachImage}
+          onFile={handleAttachFile}
+          disabled={submitting || fileAttach.uploading}
         />
         <CreateFormAttributeRow
           status={status}
@@ -340,7 +270,7 @@ function AgentPanel({
           value={prompt}
           onChangeText={onPromptChange}
           placeholder="Describe what you want done…"
-          placeholderTextColor="#a1a1aa"
+          placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
           className="text-base text-foreground py-2 min-h-[160px]"
           autoFocus
           multiline
@@ -357,14 +287,58 @@ function AgentPanel({
           className="flex-row items-center gap-2 px-3 py-2 rounded-full border border-dashed border-muted-foreground/30 self-start active:bg-secondary"
           hitSlop={4}
         >
-          <Ionicons name="sparkles-outline" size={14} color="#a1a1aa" />
-          <Text className="text-xs text-muted-foreground">
-            Agent: Select
-          </Text>
-          <Ionicons name="chevron-down" size={12} color="#a1a1aa" />
+          <Ionicons
+            name="sparkles-outline"
+            size={14}
+            color={MOBILE_PLACEHOLDER_COLOR}
+          />
+          <Text className="text-xs text-muted-foreground">Agent: Select</Text>
+          <Ionicons
+            name="chevron-down"
+            size={12}
+            color={MOBILE_PLACEHOLDER_COLOR}
+          />
         </Pressable>
       </View>
     </>
   );
 }
 
+/** Description field with a focus-tinted rounded-2xl container, visually
+ *  matching `CommentComposer`'s input so the two "write markdown body"
+ *  surfaces feel like the same product. */
+function DescriptionField({
+  description,
+  disabled,
+}: {
+  description: UseMentionInputReturn;
+  disabled: boolean;
+}) {
+  const [focused, setFocused] = useState(false);
+  return (
+    <View
+      className={cn(
+        "rounded-2xl border px-3",
+        focused
+          ? "border-primary/30 bg-secondary"
+          : "border-transparent bg-secondary/40",
+      )}
+    >
+      <TextInput
+        value={description.text}
+        onChangeText={description.handlers.onChangeText}
+        selection={description.selection}
+        onSelectionChange={description.handlers.onSelectionChange}
+        onFocus={() => setFocused(true)}
+        onBlur={() => setFocused(false)}
+        placeholder="Description… (type @ to mention)"
+        placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
+        className="text-base text-foreground py-2"
+        style={{ minHeight: MIN_BODY_INPUT_HEIGHT_PX }}
+        multiline
+        textAlignVertical="top"
+        editable={!disabled}
+      />
+    </View>
+  );
+}

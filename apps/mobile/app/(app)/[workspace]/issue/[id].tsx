@@ -132,6 +132,7 @@ export default function IssueDetail() {
             />
           </View>
           <CommentComposer
+            issueId={id}
             onSubmit={onSubmitComment}
             replyingTo={replyingTo}
             onCancelReply={onCancelReply}

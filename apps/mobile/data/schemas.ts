@@ -11,12 +11,35 @@
  */
 import { z } from "zod";
 import type {
+  Attachment,
   IssueLabelsResponse,
   Label,
   ListLabelsResponse,
   ListProjectsResponse,
   Project,
 } from "@multica/core/types";
+
+/** Upload response. Only fields mobile actually consumes — `url` to put
+ *  into the markdown link, `filename` for the `[📎 name](url)` form, `id`
+ *  for future linking. `.loose()` so the server can add fields without
+ *  breaking mobile. Web's AttachmentSchema (packages/core/api/schemas.ts:41)
+ *  is even looser (only `id`); mobile validates more because the upload
+ *  flow inserts `url` directly into editable text and an empty `url` would
+ *  produce a broken link the user only notices after submit. */
+export const AttachmentSchema: z.ZodType<Attachment> = z.object({
+  id: z.string(),
+  workspace_id: z.string().default(""),
+  issue_id: z.string().nullable().default(null),
+  comment_id: z.string().nullable().default(null),
+  uploader_type: z.string().default(""),
+  uploader_id: z.string().default(""),
+  filename: z.string(),
+  url: z.string(),
+  download_url: z.string().default(""),
+  content_type: z.string().default(""),
+  size_bytes: z.number().default(0),
+  created_at: z.string().default(""),
+}).loose();
 
 const LabelSchema = z.object({
   id: z.string(),
