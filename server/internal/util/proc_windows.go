@@ -18,6 +18,11 @@ const swHide = 0
 // visible to the user. Every child process (git, cmd, etc.) inherits this
 // hidden console automatically, so no per-call SysProcAttr gymnastics are
 // needed.
+//
+// MUST be called at daemon startup before any child process is spawned —
+// the inherited hidden console only protects children started after this
+// returns. A child spawned earlier will allocate its own visible console
+// window and reintroduce the popup-flash regression from #2357.
 func EnsureHiddenConsole() {
 	if hwnd, _, _ := procGetConsoleWnd.Call(); hwnd != 0 {
 		return // already have a console
