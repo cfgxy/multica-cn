@@ -1,46 +1,52 @@
 /**
- * Public Markdown component for the mobile app. Internal implementation:
- * `EnrichedMarkdownText` from `react-native-enriched-markdown` (Software
- * Mansion, native md4c parser, no WebView).
+ * Public Markdown component for the mobile app. Hybrid renderer:
  *
- * Why this engine vs the previous hand-rolled walker (see Decision log in
- * `apps/mobile/docs/markdown-renderer-research.md`):
+ *   - Prose (paragraphs, headings, lists, quotes, tables, inline code,
+ *     links, mentions) → `EnrichedMarkdownText` (react-native-enriched-
+ *     markdown, native md4c → NSAttributedString / Spannable). One
+ *     instance per prose island.
+ *   - Fenced code blocks → in-house `CodeBlock` with Shiki syntax
+ *     highlighting, copy button, and horizontal scroll. Shares the
+ *     `github-light` / `github-dark` themes with web for byte-identical
+ *     palettes.
+ *   - Images → in-house `MarkdownImage` with expo-image + auto aspect
+ *     ratio + tap-to-lightbox dispatch.
  *
- *   - md4c renders into iOS NSAttributedString end-to-end. No nested-Text
- *     runs, so the chronic RN inline-Text border/padding bug (#10775 /
- *     #45925) is structurally impossible. Inline code chips, links, and
- *     CJK paragraphs all flow correctly without per-element workarounds.
- *   - GFM tables / task lists / strikethrough are first-class.
- *   - LaTeX math is native (block `$$...$$` with `flavor="github"`).
- *   - Streaming-aware via the companion `react-native-streamdown` package.
- *   - Native context menu, native image actions (Save / Copy / Share).
- *
- * Trade-offs accepted:
- *   - Mention links degrade from avatar chips → colored links. The
- *     `mention://` URL still routes via `onLinkPress` to the right place
- *     (issue navigation), but no inline avatar.
- *   - File cards degrade to `[📎 name](url)` plain links (already the
- *     preprocess output — no further regression).
- *   - Code blocks no longer use the Shiki highlighter. md4c's built-in
- *     code rendering is plain monospace; if syntax highlighting comes
- *     back, it will need to be a separate path.
+ * Why hybrid instead of pure enriched: enriched does not let us inject
+ * React for any leaf node (issues #54, #232 — maintainer: "no custom
+ * renderers, by design"), which would permanently lock out syntax
+ * highlighting and tap-to-lightbox. The maintainer themselves
+ * recommends this split in #246: "split them out and render with
+ * another instance of enriched-markdown".
  *
  * Pipeline:
- *   content
- *     ↓ preprocessMobileMarkdown   (legacy mention shortcodes + file cards
- *                                   + HTML strip with `<br>` → "  \n")
- *     ↓ EnrichedMarkdownText (md4c, GFM)
  *
- * Style customisation lives in `markdown-style.ts` so the component file
- * stays focused on routing / event wiring.
+ *   content
+ *     ↓ preprocessMobileMarkdown    legacy mention shortcodes + file
+ *                                   cards + HTML strip with `<br>` →
+ *                                   "  \n" (canonical CommonMark hard
+ *                                   break)
+ *     ↓ splitMarkdown               marked.lexer → segments[]
+ *     ↓ render per-segment          prose / code / image components
+ *
+ * Mention chip note: mobile renders `mention://` links via enriched's
+ * default link styling (brand-colored, underlined), matching web's
+ * fallback behavior when no `renderMention` is provided
+ * (`packages/ui/markdown/Markdown.tsx:173-178`). The avatar pill
+ * variant only ever existed on web in specific contexts that supplied
+ * a custom renderer — mobile doesn't lose anything that exists by
+ * default elsewhere.
  */
 import { useCallback, useMemo } from "react";
-import { Linking } from "react-native";
+import { Linking, View } from "react-native";
 import { router } from "expo-router";
 import { EnrichedMarkdownText } from "react-native-enriched-markdown";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { preprocessMobileMarkdown } from "./preprocess";
 import { MARKDOWN_STYLE } from "./markdown-style";
+import { splitMarkdown } from "./split-markdown";
+import { CodeBlock } from "./code-block";
+import { MarkdownImage } from "./markdown-image";
 
 interface Props {
   content: string;
@@ -49,10 +55,10 @@ interface Props {
 export function Markdown({ content }: Props) {
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
 
-  const processed = useMemo(
-    () => preprocessMobileMarkdown(content),
-    [content],
-  );
+  const segments = useMemo(() => {
+    const processed = preprocessMobileMarkdown(content);
+    return splitMarkdown(processed);
+  }, [content]);
 
   const onLinkPress = useCallback(
     ({ url }: { url: string }) => {
@@ -80,14 +86,28 @@ export function Markdown({ content }: Props) {
     [wsSlug],
   );
 
-  if (!processed) return null;
+  if (segments.length === 0) return null;
 
   return (
-    <EnrichedMarkdownText
-      flavor="github"
-      markdown={processed}
-      markdownStyle={MARKDOWN_STYLE}
-      onLinkPress={onLinkPress}
-    />
+    <View>
+      {segments.map((seg, i) => {
+        switch (seg.type) {
+          case "prose":
+            return (
+              <EnrichedMarkdownText
+                key={i}
+                flavor="github"
+                markdown={seg.content}
+                markdownStyle={MARKDOWN_STYLE}
+                onLinkPress={onLinkPress}
+              />
+            );
+          case "code":
+            return <CodeBlock key={i} code={seg.code} lang={seg.lang} />;
+          case "image":
+            return <MarkdownImage key={i} uri={seg.uri} alt={seg.alt} />;
+        }
+      })}
+    </View>
   );
 }

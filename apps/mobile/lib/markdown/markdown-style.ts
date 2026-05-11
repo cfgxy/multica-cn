@@ -84,13 +84,32 @@ export const MARKDOWN_STYLE = {
     underline: true,
   },
   // Inline code — bg + monospace. md4c renders this natively into
-  // NSAttributedString attributes, so the chip stays inline (none of the
-  // RN nested-Text bugs from the previous walker).
+  // NSAttributedString / Spannable attributes (no RN nested-Text bugs).
+  //
+  // Calibrated against GitHub Primer's `bgColor-neutral-muted` palette
+  // but at LOWER alpha than the web token (12% instead of 20%). Reason:
+  // enriched-markdown paints inline `backgroundColor` over the full
+  // NSAttributedString line height (Cocoa's default), and with our
+  // CJK-friendly paragraph leading (lineHeight 24 on fontSize 14, ratio
+  // 1.71) the painted rect ends up ~6pt taller than the glyphs — at
+  // GitHub web's 20% alpha the chip reads as a heavy block. Web hides
+  // this with `padding .2em .4em` + `border-radius 6px` + 85% font size;
+  // enriched supports none of those for inline code, so the only knob
+  // left is alpha. 12% lands close to GitHub iOS / Linear iOS levels.
+  //
+  // No `fontSize` override → inherits the paragraph 14pt. Web GitHub
+  // uses 0.85em, but at 14pt that drops to ~12pt which hurts mobile
+  // legibility; Linear iOS, Notion mobile, and GitHub iOS all keep
+  // inline code at body size for the same reason.
+  //
+  // No `borderColor` — the API supports it but has no `borderWidth`,
+  // and a translucent fill with a hairline border reads grubby. GitHub,
+  // Slack, Linear, Notion all skip the border on inline code.
+  // (`padding` / `borderRadius` aren't supported on inline code at all
+  // in enriched-markdown.)
   code: {
-    fontSize: 13,
     color: FOREGROUND,
-    backgroundColor: "#0000001a", // foreground/10 in tailwind opacity terms
-    borderColor: "#00000026", // foreground/15 — md4c gives us border for free
+    backgroundColor: "#afb8c11f",
   },
   // Block code — bigger box, muted background, mono font.
   codeBlock: {

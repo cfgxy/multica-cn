@@ -31,6 +31,14 @@ module.exports = {
         "secondary-foreground": "#2e2e33",
         muted: "#f4f4f5",
         "muted-foreground": "#71717a",
+        // ~5% darker than `secondary` (#f4f4f5). Dedicated surface for
+        // fenced code blocks so they have visual elevation inside a
+        // comment card (which itself uses `secondary`). Don't fold this
+        // into `muted` — muted is used for many other neutral fills
+        // (disabled states, placeholder bg, /50 overlays) and bumping
+        // it would shift those too. Mirrors GitHub Primer's separate
+        // `bgColor-muted` token for code surfaces.
+        "code-surface": "#e8e8eb",
         accent: "#f4f4f5",
         "accent-foreground": "#2e2e33",
         destructive: "#dc2626",
