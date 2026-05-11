@@ -25,10 +25,16 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
 import { router } from "expo-router";
 import Svg, { Line } from "react-native-svg";
-import type { Agent, Issue, IssueStatus } from "@multica/core/types";
+import type {
+  Agent,
+  Issue,
+  IssuePriority,
+  IssueStatus,
+} from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
 import { ScreenHeader } from "@/components/ui/screen-header";
+import { HeaderActions } from "@/components/ui/app-header-actions";
 import { PriorityIcon } from "@/components/ui/priority-icon";
 import { StatusIcon } from "@/components/ui/status-icon";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
@@ -42,7 +48,11 @@ import type { MyIssuesScope } from "@/data/queries/issue-keys";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useMyIssuesViewStore } from "@/data/stores/my-issues-view-store";
-import { BOARD_STATUSES, STATUS_LABEL } from "@/lib/issue-status";
+import {
+  BOARD_STATUSES,
+  PRIORITY_LABEL,
+  STATUS_LABEL,
+} from "@/lib/issue-status";
 import { filterMyIssues } from "@/lib/filter-issues";
 import { cn } from "@/lib/utils";
 
@@ -134,17 +144,29 @@ export default function MyIssues() {
 
   return (
     <SafeAreaView className="flex-1 bg-background" edges={["top"]}>
-      <ScreenHeader
-        title="My Issues"
-        subtitle={wsSlug ?? undefined}
-        right={
+      <ScreenHeader title="My Issues" right={<HeaderActions />} />
+      <ScopeTabs
+        scope={scope}
+        onChange={setScope}
+        filterSlot={
           <FilterButton
             hasActive={hasActiveFilters}
             onPress={() => setSheetOpen(true)}
           />
         }
       />
-      <ScopeTabs scope={scope} onChange={setScope} />
+      {hasActiveFilters ? (
+        <ActiveFilterChips
+          statusFilters={statusFilters}
+          priorityFilters={priorityFilters}
+          onClearStatus={(s) =>
+            useMyIssuesViewStore.getState().toggleStatusFilter(s)
+          }
+          onClearPriority={(p) =>
+            useMyIssuesViewStore.getState().togglePriorityFilter(p)
+          }
+        />
+      ) : null}
       {scope === "agents" && myAgents.length === 0 ? (
         <EmptyState message="You don't have any agents yet." />
       ) : isLoading ? (
@@ -208,37 +230,80 @@ export default function MyIssues() {
 function ScopeTabs({
   scope,
   onChange,
+  filterSlot,
 }: {
   scope: MyIssuesScope;
   onChange: (next: MyIssuesScope) => void;
+  filterSlot?: React.ReactNode;
 }) {
   return (
-    <View className="flex-row gap-1 px-4 pb-2">
-      {SCOPES.map((s) => {
-        const active = s.value === scope;
-        return (
-          <Pressable
-            key={s.value}
-            onPress={() => onChange(s.value)}
-            className={cn(
-              "px-3 py-1.5 rounded-full",
-              active ? "bg-secondary" : "active:bg-secondary/40",
-            )}
-          >
-            <Text
+    <View className="flex-row items-center px-4 pb-2">
+      <View className="flex-row gap-1 flex-1">
+        {SCOPES.map((s) => {
+          const active = s.value === scope;
+          return (
+            <Pressable
+              key={s.value}
+              onPress={() => onChange(s.value)}
               className={cn(
-                "text-sm",
-                active
-                  ? "text-foreground font-medium"
-                  : "text-muted-foreground",
+                "px-3 py-1.5 rounded-full",
+                active ? "bg-secondary" : "active:bg-secondary/40",
               )}
             >
-              {s.label}
-            </Text>
-          </Pressable>
-        );
-      })}
+              <Text
+                className={cn(
+                  "text-sm",
+                  active
+                    ? "text-foreground font-medium"
+                    : "text-muted-foreground",
+                )}
+              >
+                {s.label}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      {filterSlot ? <View className="ml-2">{filterSlot}</View> : null}
     </View>
+  );
+}
+
+function ActiveFilterChips({
+  statusFilters,
+  priorityFilters,
+  onClearStatus,
+  onClearPriority,
+}: {
+  statusFilters: IssueStatus[];
+  priorityFilters: IssuePriority[];
+  onClearStatus: (s: IssueStatus) => void;
+  onClearPriority: (p: IssuePriority) => void;
+}) {
+  return (
+    <View className="flex-row flex-wrap gap-1.5 px-4 pb-2">
+      {statusFilters.map((s) => (
+        <Chip key={`s-${s}`} label={STATUS_LABEL[s]} onClear={() => onClearStatus(s)} />
+      ))}
+      {priorityFilters.map((p) => (
+        <Chip key={`p-${p}`} label={PRIORITY_LABEL[p]} onClear={() => onClearPriority(p)} />
+      ))}
+    </View>
+  );
+}
+
+function Chip({ label, onClear }: { label: string; onClear: () => void }) {
+  return (
+    <Pressable
+      onPress={onClear}
+      className="flex-row items-center gap-1 pl-2.5 pr-2 py-1 rounded-full border border-border bg-secondary/40 active:bg-secondary"
+    >
+      <Text className="text-xs text-foreground">{label}</Text>
+      <Svg width={10} height={10} viewBox="0 0 10 10">
+        <Line x1="2" y1="2" x2="8" y2="8" stroke="#71717a" strokeWidth="1.5" strokeLinecap="round" />
+        <Line x1="8" y1="2" x2="2" y2="8" stroke="#71717a" strokeWidth="1.5" strokeLinecap="round" />
+      </Svg>
+    </Pressable>
   );
 }
 

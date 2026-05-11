@@ -7,6 +7,7 @@ import type { InboxItem } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
 import { ScreenHeader } from "@/components/ui/screen-header";
+import { HeaderActions } from "@/components/ui/app-header-actions";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { StatusIcon } from "@/components/ui/status-icon";
 import { InboxDetailLabel } from "@/components/inbox/detail-label";
@@ -43,7 +44,7 @@ export default function Inbox() {
 
   return (
     <SafeAreaView className="flex-1 bg-background" edges={["top"]}>
-      <ScreenHeader title="Inbox" subtitle={wsSlug ?? undefined} />
+      <ScreenHeader title="Inbox" right={<HeaderActions />} />
       {isLoading ? (
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator />

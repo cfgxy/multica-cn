@@ -5,6 +5,7 @@ import { workspaceListOptions } from "@/data/queries/workspaces";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { RealtimeProvider } from "@/data/realtime/realtime-provider";
 import { useInboxRealtime } from "@/data/realtime/use-inbox-realtime";
+import { ModalCloseButton } from "@/components/ui/modal-close-button";
 
 /**
  * Mounts every per-feature realtime subscription. Lives inside
@@ -62,6 +63,38 @@ export default function WorkspaceLayout() {
           options={{
             title: "Issue",
             headerBackTitle: "Back",
+          }}
+        />
+        <Stack.Screen
+          name="more/projects"
+          options={{ title: "Projects", headerBackTitle: "More" }}
+        />
+        <Stack.Screen
+          name="more/agents"
+          options={{ title: "Agents", headerBackTitle: "More" }}
+        />
+        <Stack.Screen
+          name="more/pins"
+          options={{ title: "Pins", headerBackTitle: "More" }}
+        />
+        <Stack.Screen
+          name="more/notifications"
+          options={{ title: "Notifications", headerBackTitle: "More" }}
+        />
+        <Stack.Screen
+          name="new-issue"
+          options={{
+            title: "New Issue",
+            presentation: "modal",
+            headerLeft: () => <ModalCloseButton />,
+          }}
+        />
+        <Stack.Screen
+          name="search"
+          options={{
+            title: "Search",
+            presentation: "modal",
+            headerLeft: () => <ModalCloseButton />,
           }}
         />
       </Stack>
