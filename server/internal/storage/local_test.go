@@ -306,6 +306,100 @@ func TestLocalStorage_ServeFile_NoSidecarFallback(t *testing.T) {
 	}
 }
 
+// TestLocalStorage_ServeFile_RejectsSidecarSuffix verifies that the sidecar
+// JSON itself is not addressable via /uploads/*. The sidecar is an
+// implementation detail; exposing it would turn the filename + content-type
+// pair into a stable read API and make any future ACL change leakier than
+// the data file it sits next to.
+func TestLocalStorage_ServeFile_RejectsSidecarSuffix(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("LOCAL_UPLOAD_DIR", tmpDir)
+
+	store := NewLocalStorageFromEnv()
+	if store == nil {
+		t.Fatal("NewLocalStorageFromEnv returned nil")
+	}
+
+	ctx := context.Background()
+	if _, err := store.Upload(ctx, "abc.xlsx", []byte("body"), "text/plain", "real.xlsx"); err != nil {
+		t.Fatalf("Upload failed: %v", err)
+	}
+
+	sidecarKey := "abc.xlsx" + metaSuffix
+	req := httptest.NewRequest(http.MethodGet, "/uploads/"+sidecarKey, nil)
+	rec := httptest.NewRecorder()
+	store.ServeFile(rec, req, sidecarKey)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Disposition"); got != "" {
+		t.Errorf("Content-Disposition = %q, want empty", got)
+	}
+}
+
+// TestLocalStorage_ServeFile_RejectsPathTraversal documents that a key
+// pointing outside uploadDir is rejected before any sidecar read. Without
+// this guard, readLocalMeta would attempt a disk read at <some-path>.meta.json
+// before http.ServeFile's own ".." check fires on r.URL.Path.
+func TestLocalStorage_ServeFile_RejectsPathTraversal(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("LOCAL_UPLOAD_DIR", tmpDir)
+
+	store := NewLocalStorageFromEnv()
+	if store == nil {
+		t.Fatal("NewLocalStorageFromEnv returned nil")
+	}
+
+	// Seed a sidecar OUTSIDE uploadDir so we'd notice if it were read: the
+	// header would carry "leaked.xlsx". Locating the sibling inside the
+	// per-test TempDir keeps the test self-contained — no real /etc reads.
+	parentDir := filepath.Dir(tmpDir)
+	leakedBase := filepath.Join(parentDir, "leaked-target")
+	if err := os.WriteFile(leakedBase+metaSuffix, []byte(`{"filename":"leaked.xlsx","content_type":"text/plain"}`), 0644); err != nil {
+		t.Fatalf("seed leaked sidecar failed: %v", err)
+	}
+	t.Cleanup(func() {
+		os.Remove(leakedBase + metaSuffix)
+	})
+
+	traversal := "../" + filepath.Base(leakedBase)
+	req := httptest.NewRequest(http.MethodGet, "/uploads/"+traversal, nil)
+	rec := httptest.NewRecorder()
+	store.ServeFile(rec, req, traversal)
+
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("status = %d, want 404", rec.Code)
+	}
+	if got := rec.Header().Get("Content-Disposition"); got != "" {
+		t.Errorf("Content-Disposition = %q, want empty (sidecar must not leak)", got)
+	}
+}
+
+// TestLocalStorage_Upload_SkipsSidecarWhenFilenameEmpty verifies the tighter
+// Upload gate: a write with no filename has nothing useful to preserve, so
+// we shouldn't litter the upload directory with content-type-only sidecars
+// that ServeFile would ignore anyway.
+func TestLocalStorage_Upload_SkipsSidecarWhenFilenameEmpty(t *testing.T) {
+	tmpDir := t.TempDir()
+	t.Setenv("LOCAL_UPLOAD_DIR", tmpDir)
+
+	store := NewLocalStorageFromEnv()
+	if store == nil {
+		t.Fatal("NewLocalStorageFromEnv returned nil")
+	}
+
+	ctx := context.Background()
+	key := "no-filename.bin"
+	if _, err := store.Upload(ctx, key, []byte("body"), "application/octet-stream", ""); err != nil {
+		t.Fatalf("Upload failed: %v", err)
+	}
+
+	if _, err := os.Stat(filepath.Join(tmpDir, key+metaSuffix)); !os.IsNotExist(err) {
+		t.Errorf("sidecar should not exist when filename is empty, got err=%v", err)
+	}
+}
+
 // TestLocalStorage_Delete_RemovesSidecar verifies the cleanup half of the
 // fix: when the upload is deleted, its sidecar metadata file disappears too.
 // Otherwise the upload directory grows orphan .meta.json files forever.

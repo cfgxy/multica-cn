@@ -114,12 +114,12 @@ func (s *LocalStorage) Upload(ctx context.Context, key string, data []byte, cont
 	// Best-effort sidecar so ServeFile can restore the original filename in
 	// Content-Disposition. A failure here is logged but does not fail the
 	// upload — the file is still usable, just without the human-readable
-	// download name.
-	if filename != "" || contentType != "" {
-		body, err := json.Marshal(localMeta{Filename: filename, ContentType: contentType})
-		if err != nil {
-			slog.Error("local storage meta marshal failed", "key", key, "error", err)
-		} else if err := os.WriteFile(dest+metaSuffix, body, 0644); err != nil {
+	// download name. Skip when there's no filename to preserve: a sidecar
+	// without a filename is dead weight, since ServeFile only reads it for
+	// that field.
+	if filename != "" {
+		body, _ := json.Marshal(localMeta{Filename: filename, ContentType: contentType})
+		if err := os.WriteFile(dest+metaSuffix, body, 0644); err != nil {
 			slog.Error("local storage meta write failed", "key", key, "error", err)
 		}
 	}
@@ -135,7 +135,25 @@ func (s *LocalStorage) GetFilePath(key string) string {
 }
 
 func (s *LocalStorage) ServeFile(w http.ResponseWriter, r *http.Request, filename string) {
+	// The sidecar is an implementation detail of the local backend; refuse
+	// to serve it directly so /uploads/<key>.meta.json doesn't become a
+	// stable read API. Comes before any disk work so a path-traversal
+	// attempt at a .meta.json sibling can't trigger an out-of-tree read.
+	if strings.HasSuffix(filename, metaSuffix) {
+		http.NotFound(w, r)
+		return
+	}
+
 	filePath := filepath.Join(s.uploadDir, filename)
+	// filepath.Join cleans the path but doesn't enforce containment, so a
+	// caller passing "../etc/passwd" lands outside uploadDir. http.ServeFile
+	// rejects such requests on r.URL.Path, but readLocalMeta runs first —
+	// without this guard a crafted path could trigger a stray disk read on
+	// an arbitrary <some-path>.meta.json before the 400 lands.
+	if !isUnder(s.uploadDir, filePath) {
+		http.NotFound(w, r)
+		return
+	}
 	slog.Info("serving file", "filename", filename, "filepath", filePath)
 
 	// Mirror the S3 Upload path: when sidecar metadata exists for this key,
@@ -156,6 +174,17 @@ func (s *LocalStorage) ServeFile(w http.ResponseWriter, r *http.Request, filenam
 	// Use http.ServeFile which has built-in path traversal protection
 	// It sanitizes the path and prevents access outside the directory
 	http.ServeFile(w, r, filePath)
+}
+
+// isUnder reports whether target resolves to a path inside dir (or equal to
+// it). Both inputs are passed through filepath.Clean so trailing slashes and
+// "." segments don't fool the comparison.
+func isUnder(dir, target string) bool {
+	rel, err := filepath.Rel(filepath.Clean(dir), filepath.Clean(target))
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func readLocalMeta(filePath string) (localMeta, bool) {
