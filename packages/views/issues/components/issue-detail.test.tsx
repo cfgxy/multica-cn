@@ -289,14 +289,31 @@ vi.mock("@multica/core/issues/stores", () => ({
 // compute a 0-height viewport and render nothing. The mock renders every item
 // inline, which matches how the unvirtualized .map used to behave and keeps
 // existing assertions (`getByText('Started working on this')` etc.) working.
+//
+// scrollToIndexSpy: the deep-link logic now uses Virtuoso's own
+// scrollToIndex API instead of native el.scrollIntoView (native diverges
+// from Virtuoso's internal scrollTop model, petyosi #1083). The mock
+// exposes a spy so we can assert deep-link landing in tests.
+const scrollToIndexSpy = vi.hoisted(() => vi.fn());
+
 vi.mock("react-virtuoso", () => ({
-  Virtuoso: ({ data, itemContent }: { data: unknown[]; itemContent: (i: number, item: unknown) => unknown }) => (
-    <div data-testid="virtuoso-mock">
-      {data.map((item, i) => (
-        <div key={i}>{itemContent(i, item) as React.ReactElement}</div>
-      ))}
-    </div>
-  ),
+  Virtuoso: forwardRef(function MockVirtuoso(
+    { data, itemContent }: { data: unknown[]; itemContent: (i: number, item: unknown) => unknown },
+    ref: any,
+  ) {
+    useImperativeHandle(ref, () => ({
+      scrollToIndex: scrollToIndexSpy,
+      // Real Virtuoso exposes more, but the deep-link path only needs
+      // scrollToIndex. Other call sites would fail loudly if added later.
+    }));
+    return (
+      <div data-testid="virtuoso-mock">
+        {data.map((item, i) => (
+          <div key={i}>{itemContent(i, item) as React.ReactElement}</div>
+        ))}
+      </div>
+    );
+  }),
 }));
 
 // Mock modals
@@ -580,41 +597,40 @@ describe("IssueDetail (shared)", () => {
   });
 
   describe("highlightCommentId scroll-to-comment", () => {
-    let scrollIntoViewSpy: ReturnType<typeof vi.fn>;
-
     beforeEach(() => {
-      scrollIntoViewSpy = vi.fn();
-      Element.prototype.scrollIntoView =
-        scrollIntoViewSpy as unknown as Element["scrollIntoView"];
+      scrollToIndexSpy.mockClear();
     });
 
     it("scrolls to the highlighted comment after both issue and timeline finish loading", async () => {
       renderIssueDetailWithHighlight("comment-2");
 
-      // Under virtualization the DOM anchor is a `data-comment-id` attribute
-      // on the item wrapper; we no longer rely on element id="comment-...".
+      // Wait for the comment row to mount under the virtuoso mock.
       await waitFor(() => {
         expect(
           document.querySelector('[data-comment-id="comment-2"]'),
         ).not.toBeNull();
       });
 
-      // The deep-link useEffect polls until the target mounts, then calls
-      // scrollIntoView on the wrapper element.
+      // The deep-link effect calls virtuosoRef.scrollToIndex with the
+      // target's index. comment-2 is items[1] in the flat timeline
+      // (items[0] = comment-1, items[1] = comment-2). The effect calls
+      // scrollToIndex twice (once on enter, once after the settle
+      // timeout); we only need to see at least one call land.
       await waitFor(() => {
-        expect(scrollIntoViewSpy).toHaveBeenCalled();
+        expect(scrollToIndexSpy).toHaveBeenCalled();
       });
-
-      const callContext = scrollIntoViewSpy.mock.contexts[0] as HTMLElement;
-      expect(callContext.getAttribute("data-comment-id")).toBe("comment-2");
+      expect(scrollToIndexSpy).toHaveBeenCalledWith(
+        expect.objectContaining({ index: 1, align: "center" }),
+      );
     });
 
     it("still scrolls when the timeline is ready before the issue (regression for inbox click)", async () => {
-      // Reproduces the inbox-click race: timeline data is in the cache before
-      // the issue resolves. While `loading` is true the timeline skeleton is
-      // shown and no comment wrapper is mounted. The deep-link polling loop
-      // must keep retrying (up to ~320ms of rAFs) until the issue resolves
-      // and the target's `data-comment-id` appears in the DOM.
+      // Reproduces the inbox-click race: timeline data is in the cache
+      // before the issue resolves. While loading is true, IssueDetail
+      // renders the loading skeleton (Virtuoso never mounts), so no
+      // scrollToIndex can fire. After the issue resolves, Virtuoso
+      // mounts, the bootstrapRef capture path or the warm-path effect
+      // fires scrollToIndex with the target index.
       let resolveIssue: (value: Issue) => void = () => {};
       const issuePromise = new Promise<Issue>((resolve) => {
         resolveIssue = resolve;
@@ -626,7 +642,7 @@ describe("IssueDetail (shared)", () => {
       expect(
         document.querySelector('[data-comment-id="comment-2"]'),
       ).toBeNull();
-      expect(scrollIntoViewSpy).not.toHaveBeenCalled();
+      expect(scrollToIndexSpy).not.toHaveBeenCalled();
 
       resolveIssue(mockIssue);
 
@@ -636,7 +652,9 @@ describe("IssueDetail (shared)", () => {
         ).not.toBeNull();
       });
       await waitFor(() => {
-        expect(scrollIntoViewSpy).toHaveBeenCalled();
+        expect(scrollToIndexSpy).toHaveBeenCalledWith(
+          expect.objectContaining({ index: 1, align: "center" }),
+        );
       });
     });
   });
