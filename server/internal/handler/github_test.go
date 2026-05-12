@@ -491,3 +491,182 @@ func TestWebhook_MergedPR_WaitsForOpenSibling(t *testing.T) {
 		t.Errorf("expected issue 'done' after every linked PR merged, got %q", issueAfterB.Status)
 	}
 }
+
+// firePullRequestWebhook is a shared helper for the multi-PR tests below: it
+// fires one pull_request webhook for a given repo/number with a target state
+// of open / closed / merged and asserts the handler accepts it. Centralizing
+// here keeps the per-scenario tests focused on assertions.
+func firePullRequestWebhook(t *testing.T, secret, identifier string, installationID int64, repo string, prNumber int32, prState string) {
+	t.Helper()
+	state := "open"
+	merged := false
+	switch prState {
+	case "merged":
+		state = "closed"
+		merged = true
+	case "closed":
+		state = "closed"
+	}
+	payload := map[string]any{
+		"action": state,
+		"pull_request": map[string]any{
+			"number":     prNumber,
+			"html_url":   "https://github.com/acme/" + repo + "/pull/1",
+			"title":      "Fix " + identifier,
+			"body":       "",
+			"state":      state,
+			"draft":      false,
+			"merged":     merged,
+			"merged_at":  "2026-04-29T00:00:00Z",
+			"closed_at":  "2026-04-29T00:00:00Z",
+			"created_at": "2026-04-28T00:00:00Z",
+			"updated_at": "2026-04-29T00:00:00Z",
+			"head":       map[string]any{"ref": "fix/multi"},
+			"user":       map[string]any{"login": "octocat"},
+		},
+		"repository": map[string]any{
+			"name":  repo,
+			"owner": map[string]any{"login": "acme"},
+		},
+		"installation": map[string]any{"id": installationID},
+	}
+	raw, _ := json.Marshal(payload)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write(raw)
+	sig := "sha256=" + hex.EncodeToString(mac.Sum(nil))
+
+	rec := httptest.NewRecorder()
+	hookReq := httptest.NewRequest("POST", "/api/webhooks/github", bytes.NewReader(raw))
+	hookReq.Header.Set("X-GitHub-Event", "pull_request")
+	hookReq.Header.Set("X-Hub-Signature-256", sig)
+	testHandler.HandleGitHubWebhook(rec, hookReq)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("webhook %s pr=%d state=%s: expected 202, got %d (%s)",
+			repo, prNumber, prState, rec.Code, rec.Body.String())
+	}
+}
+
+// TestWebhook_ClosedSiblingAfterMerge guards the ordering bug GPT-Boy flagged
+// on PR #2470: PR-A merges first (issue stays in_progress because PR-B is
+// open), then PR-B closes WITHOUT merging. Because PR-A already delivered the
+// work, that close event must re-evaluate the issue and advance it to done.
+func TestWebhook_ClosedSiblingAfterMerge(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	secret := "closed-sibling-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":  "Closed sibling after merge",
+		"status": "in_progress",
+	})
+	testHandler.CreateIssue(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateIssue: %d %s", w.Code, w.Body.String())
+	}
+	var created IssueResponse
+	json.NewDecoder(w.Body).Decode(&created)
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, created.ID)
+	})
+
+	const installationID int64 = 66778899
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID:    parseUUID(testWorkspaceID),
+		InstallationID: installationID,
+		AccountLogin:   "closed-sibling-acct",
+		AccountType:    "User",
+	}); err != nil {
+		t.Fatalf("CreateGitHubInstallation: %v", err)
+	}
+
+	// Open both PRs.
+	firePullRequestWebhook(t, secret, created.Identifier, installationID, "repo-a", 1, "open")
+	firePullRequestWebhook(t, secret, created.Identifier, installationID, "repo-b", 2, "open")
+
+	// Merge PR A — issue must stay in_progress because PR B is still open.
+	firePullRequestWebhook(t, secret, created.Identifier, installationID, "repo-a", 1, "merged")
+	intermediate, err := testHandler.Queries.GetIssue(ctx, parseUUID(created.ID))
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if intermediate.Status != "in_progress" {
+		t.Fatalf("issue should stay in_progress while sibling PR open, got %q", intermediate.Status)
+	}
+
+	// Close PR B WITHOUT merging — issue should now advance to done because
+	// PR-A's merge already delivered the work.
+	firePullRequestWebhook(t, secret, created.Identifier, installationID, "repo-b", 2, "closed")
+	final, err := testHandler.Queries.GetIssue(ctx, parseUUID(created.ID))
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if final.Status != "done" {
+		t.Errorf("expected issue 'done' after sibling closed-without-merge follows a prior merge, got %q", final.Status)
+	}
+}
+
+// TestWebhook_AllClosedWithoutMerge guards the "nothing was delivered" path:
+// two PRs both close without merging. We must NOT auto-close the issue —
+// closed-without-merge alone is not evidence the work landed, and the user
+// should decide what to do.
+func TestWebhook_AllClosedWithoutMerge(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("handler test fixture not initialized (no DB?)")
+	}
+	ctx := context.Background()
+	secret := "all-closed-secret"
+	t.Setenv("GITHUB_WEBHOOK_SECRET", secret)
+
+	w := httptest.NewRecorder()
+	req := newRequest("POST", "/api/issues?workspace_id="+testWorkspaceID, map[string]any{
+		"title":  "All closed no merge",
+		"status": "in_progress",
+	})
+	testHandler.CreateIssue(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("CreateIssue: %d %s", w.Code, w.Body.String())
+	}
+	var created IssueResponse
+	json.NewDecoder(w.Body).Decode(&created)
+
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM issue_pull_request WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM github_pull_request WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM github_installation WHERE workspace_id = $1`, testWorkspaceID)
+		testPool.Exec(ctx, `DELETE FROM activity_log WHERE issue_id = $1`, created.ID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, created.ID)
+	})
+
+	const installationID int64 = 77889900
+	if _, err := testHandler.Queries.CreateGitHubInstallation(ctx, db.CreateGitHubInstallationParams{
+		WorkspaceID:    parseUUID(testWorkspaceID),
+		InstallationID: installationID,
+		AccountLogin:   "all-closed-acct",
+		AccountType:    "User",
+	}); err != nil {
+		t.Fatalf("CreateGitHubInstallation: %v", err)
+	}
+
+	firePullRequestWebhook(t, secret, created.Identifier, installationID, "repo-a", 1, "open")
+	firePullRequestWebhook(t, secret, created.Identifier, installationID, "repo-b", 2, "open")
+
+	firePullRequestWebhook(t, secret, created.Identifier, installationID, "repo-a", 1, "closed")
+	firePullRequestWebhook(t, secret, created.Identifier, installationID, "repo-b", 2, "closed")
+
+	final, err := testHandler.Queries.GetIssue(ctx, parseUUID(created.ID))
+	if err != nil {
+		t.Fatalf("GetIssue: %v", err)
+	}
+	if final.Status != "in_progress" {
+		t.Errorf("issue must stay in_progress when no linked PR ever merged, got %q", final.Status)
+	}
+}

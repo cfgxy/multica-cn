@@ -578,22 +578,26 @@ func (h *Handler) handlePullRequestEvent(ctx context.Context, body []byte) {
 		}
 		linkedIssueIDs = append(linkedIssueIDs, uuidToString(issue.ID))
 
-		// PR merged → move issue to done, but only when (a) the issue is not
-		// already terminal and (b) no sibling PR linked to the same issue is
-		// still in flight. We deliberately avoid clobbering 'cancelled' since
-		// that signals the user explicitly abandoned the work; and an issue
-		// linked to multiple PRs is not "done" until every PR has resolved
-		// (merged or closed-without-merge).
-		if state == "merged" && issue.Status != "done" && issue.Status != "cancelled" {
-			openSiblings, err := h.Queries.CountOpenSiblingPullRequestsForIssue(ctx, db.CountOpenSiblingPullRequestsForIssueParams{
+		// A terminal PR event (`merged` or `closed`) may be the moment the
+		// last in-flight sibling resolves, so we re-evaluate the issue on
+		// both. We advance the issue to done when:
+		//   1. the issue isn't already terminal (`done` / `cancelled`);
+		//   2. no sibling PR is still `open` / `draft`;
+		//   3. at least one linked PR (this one or a sibling) is `merged`.
+		// Rule (3) prevents an "all closed-without-merge" sequence from
+		// silently auto-closing the issue — if nothing was ever delivered,
+		// the user should decide what to do manually.
+		if (state == "merged" || state == "closed") && issue.Status != "done" && issue.Status != "cancelled" {
+			counts, err := h.Queries.GetSiblingPullRequestStateCountsForIssue(ctx, db.GetSiblingPullRequestStateCountsForIssueParams{
 				IssueID: issue.ID,
 				ID:      pr.ID,
 			})
 			if err != nil {
-				slog.Warn("github: count open siblings failed", "err", err, "issue_id", uuidToString(issue.ID))
+				slog.Warn("github: count sibling pr states failed", "err", err, "issue_id", uuidToString(issue.ID))
 				continue
 			}
-			if openSiblings == 0 {
+			anyMerged := state == "merged" || counts.MergedCount > 0
+			if counts.OpenCount == 0 && anyMerged {
 				h.advanceIssueToDone(ctx, issue, workspaceID)
 			}
 		}

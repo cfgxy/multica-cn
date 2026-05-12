@@ -11,31 +11,6 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
-const countOpenSiblingPullRequestsForIssue = `-- name: CountOpenSiblingPullRequestsForIssue :one
-SELECT COUNT(*)::bigint
-FROM github_pull_request pr
-JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
-WHERE ipr.issue_id = $1
-  AND pr.id <> $2
-  AND pr.state IN ('open', 'draft')
-`
-
-type CountOpenSiblingPullRequestsForIssueParams struct {
-	IssueID pgtype.UUID `json:"issue_id"`
-	ID      pgtype.UUID `json:"id"`
-}
-
-// Counts pull requests linked to an issue whose state is still "open" or
-// "draft", excluding one PR by id (the PR currently being processed by the
-// webhook handler). Used to decide whether merging one PR should auto-close
-// the issue — if any sibling is still in flight, we leave the issue alone.
-func (q *Queries) CountOpenSiblingPullRequestsForIssue(ctx context.Context, arg CountOpenSiblingPullRequestsForIssueParams) (int64, error) {
-	row := q.db.QueryRow(ctx, countOpenSiblingPullRequestsForIssue, arg.IssueID, arg.ID)
-	var column_1 int64
-	err := row.Scan(&column_1)
-	return column_1, err
-}
-
 const createGitHubInstallation = `-- name: CreateGitHubInstallation :one
 INSERT INTO github_installation (
     workspace_id, installation_id, account_login, account_type, account_avatar_url, connected_by_id
@@ -200,6 +175,39 @@ func (q *Queries) GetGitHubPullRequest(ctx context.Context, arg GetGitHubPullReq
 		&i.CreatedAt,
 		&i.UpdatedAt,
 	)
+	return i, err
+}
+
+const getSiblingPullRequestStateCountsForIssue = `-- name: GetSiblingPullRequestStateCountsForIssue :one
+SELECT
+    COALESCE(SUM(CASE WHEN pr.state IN ('open', 'draft') THEN 1 ELSE 0 END), 0)::bigint AS open_count,
+    COALESCE(SUM(CASE WHEN pr.state = 'merged' THEN 1 ELSE 0 END), 0)::bigint AS merged_count
+FROM github_pull_request pr
+JOIN issue_pull_request ipr ON ipr.pull_request_id = pr.id
+WHERE ipr.issue_id = $1
+  AND pr.id <> $2
+`
+
+type GetSiblingPullRequestStateCountsForIssueParams struct {
+	IssueID pgtype.UUID `json:"issue_id"`
+	ID      pgtype.UUID `json:"id"`
+}
+
+type GetSiblingPullRequestStateCountsForIssueRow struct {
+	OpenCount   int64 `json:"open_count"`
+	MergedCount int64 `json:"merged_count"`
+}
+
+// Returns, for the PRs linked to an issue excluding one PR by id (the PR
+// currently being processed by the webhook handler), how many are still in
+// flight (open or draft) and how many have already merged. The webhook
+// handler combines these with the current event's state to decide whether
+// to auto-advance the issue: the issue moves to done only when there is no
+// in-flight sibling AND at least one linked PR (current or sibling) merged.
+func (q *Queries) GetSiblingPullRequestStateCountsForIssue(ctx context.Context, arg GetSiblingPullRequestStateCountsForIssueParams) (GetSiblingPullRequestStateCountsForIssueRow, error) {
+	row := q.db.QueryRow(ctx, getSiblingPullRequestStateCountsForIssue, arg.IssueID, arg.ID)
+	var i GetSiblingPullRequestStateCountsForIssueRow
+	err := row.Scan(&i.OpenCount, &i.MergedCount)
 	return i, err
 }
 
