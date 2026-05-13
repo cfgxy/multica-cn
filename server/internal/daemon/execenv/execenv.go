@@ -145,8 +145,8 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 		if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{CodexVersion: params.CodexVersion}, logger); err != nil {
 			return nil, fmt.Errorf("execenv: prepare codex-home: %w", err)
 		}
-		if err := writeCodexWorkspaceSkills(codexHome, params.Task.AgentSkills); err != nil {
-			return nil, fmt.Errorf("execenv: write codex skills: %w", err)
+		if err := hydrateCodexSkills(codexHome, params.Task.AgentSkills, logger); err != nil {
+			return nil, fmt.Errorf("execenv: hydrate codex skills: %w", err)
 		}
 		env.CodexHome = codexHome
 	}
@@ -186,7 +186,7 @@ func Reuse(workDir, provider, codexVersion string, task TaskContextForEnv, logge
 			logger.Warn("execenv: refresh codex-home failed", "error", err)
 		} else {
 			env.CodexHome = codexHome
-			if err := writeCodexWorkspaceSkills(codexHome, task.AgentSkills); err != nil {
+			if err := hydrateCodexSkills(codexHome, task.AgentSkills, logger); err != nil {
 				logger.Warn("execenv: refresh codex skills failed", "error", err)
 			}
 		}
@@ -196,11 +196,24 @@ func Reuse(workDir, provider, codexVersion string, task TaskContextForEnv, logge
 	return env
 }
 
-func writeCodexWorkspaceSkills(codexHome string, skills []SkillContextForEnv) error {
-	if len(skills) == 0 {
+// hydrateCodexSkills populates the per-task CODEX_HOME/skills directory with
+// both user-installed skills (from the shared ~/.codex/skills/) and
+// workspace-assigned skills. Workspace skills win on name conflict — they are
+// written last and seedUserCodexSkills already pre-filters their names.
+//
+// Codex is the only runtime that needs this two-stage hydration because the
+// daemon sets CODEX_HOME to a per-task directory, isolating the CLI from the
+// user's real ~/.codex/. Other runtimes leave HOME untouched and discover
+// user-level skills natively (see context.go for the workdir-local paths
+// they use for workspace skills).
+func hydrateCodexSkills(codexHome string, workspaceSkills []SkillContextForEnv, logger *slog.Logger) error {
+	if err := seedUserCodexSkills(codexHome, workspaceSkills, logger); err != nil {
+		logger.Warn("execenv: seed user codex skills failed", "error", err)
+	}
+	if len(workspaceSkills) == 0 {
 		return nil
 	}
-	return writeSkillFiles(filepath.Join(codexHome, "skills"), skills)
+	return writeSkillFiles(filepath.Join(codexHome, "skills"), workspaceSkills)
 }
 
 // GCMetaKind identifies which kind of parent record a task workdir belongs to.
