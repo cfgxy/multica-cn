@@ -84,7 +84,6 @@ export function AvatarPicker({ value, onChange, size = 56 }: AvatarPickerProps) 
         style={dimensionStyle}
       >
         {hasValue ? (
-          // eslint-disable-next-line @next/next/no-img-element
           <img
             src={value ?? undefined}
             alt=""
