@@ -20,7 +20,7 @@ import type chat from "../locales/en/chat.json";
 import type modals from "../locales/en/modals.json";
 import type runtimes from "../locales/en/runtimes.json";
 import type layout from "../locales/en/layout.json";
-import type dashboard from "../locales/en/dashboard.json";
+import type usage from "../locales/en/usage.json";
 
 // Module augmentation enables i18next v26 selector API across the monorepo:
 // `t($ => $.signin.title)` resolves to the value in en/auth.json.
@@ -55,7 +55,7 @@ declare module "i18next" {
       modals: typeof modals;
       runtimes: typeof runtimes;
       layout: typeof layout;
-      dashboard: typeof dashboard;
+      usage: typeof usage;
     };
     enableSelector: true;
   }
