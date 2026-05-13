@@ -201,19 +201,33 @@ func Reuse(workDir, provider, codexVersion string, task TaskContextForEnv, logge
 // workspace-assigned skills. Workspace skills win on name conflict — they are
 // written last and seedUserCodexSkills already pre-filters their names.
 //
+// The skills directory is wiped first so two stale-state classes that the
+// Reuse path would otherwise leak are gone:
+//
+//   - A name now claimed by a workspace skill that previously held only a
+//     user-seeded copy — support files from the user version would otherwise
+//     linger under the workspace skill's directory.
+//   - A user skill removed from the shared ~/.codex/skills/ since the last
+//     run — its old contents would otherwise remain visible to the codex
+//     CLI.
+//
 // Codex is the only runtime that needs this two-stage hydration because the
 // daemon sets CODEX_HOME to a per-task directory, isolating the CLI from the
 // user's real ~/.codex/. Other runtimes leave HOME untouched and discover
 // user-level skills natively (see context.go for the workdir-local paths
 // they use for workspace skills).
 func hydrateCodexSkills(codexHome string, workspaceSkills []SkillContextForEnv, logger *slog.Logger) error {
+	skillsDir := filepath.Join(codexHome, "skills")
+	if err := os.RemoveAll(skillsDir); err != nil {
+		return fmt.Errorf("clear codex skills dir: %w", err)
+	}
 	if err := seedUserCodexSkills(codexHome, workspaceSkills, logger); err != nil {
 		logger.Warn("execenv: seed user codex skills failed", "error", err)
 	}
 	if len(workspaceSkills) == 0 {
 		return nil
 	}
-	return writeSkillFiles(filepath.Join(codexHome, "skills"), workspaceSkills)
+	return writeSkillFiles(skillsDir, workspaceSkills)
 }
 
 // GCMetaKind identifies which kind of parent record a task workdir belongs to.

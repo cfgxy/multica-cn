@@ -2295,6 +2295,119 @@ func TestReuseSeedsUserSkillUpdates(t *testing.T) {
 	}
 }
 
+// TestReuseClearsUserSkillResidueOnWorkspaceConflict locks in the fix for
+// the GPT-Boy review on PR #2519: when round 1 seeded a user skill named
+// `writing` (including support files) and round 2 reuses the same workdir
+// with a workspace skill `Writing`, the user-version support files must not
+// linger under the workspace skill's directory.
+func TestReuseClearsUserSkillResidueOnWorkspaceConflict(t *testing.T) {
+	// Cannot use t.Parallel() with t.Setenv.
+
+	sharedHome := t.TempDir()
+	t.Setenv("CODEX_HOME", sharedHome)
+
+	userSkillDir := filepath.Join(sharedHome, "skills", "writing")
+	if err := os.MkdirAll(filepath.Join(userSkillDir, "drafts"), 0o755); err != nil {
+		t.Fatalf("seed user skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(userSkillDir, "SKILL.md"), []byte("user writing"), 0o644); err != nil {
+		t.Fatalf("seed user SKILL.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(userSkillDir, "drafts", "stale.md"), []byte("stale"), 0o644); err != nil {
+		t.Fatalf("seed user support file: %v", err)
+	}
+
+	env, err := Prepare(PrepareParams{
+		WorkspacesRoot: t.TempDir(),
+		WorkspaceID:    "ws-reuse-conflict",
+		TaskID:         "c1d2e3f4-a5b6-7890-abcd-123456789012",
+		AgentName:      "Codex Agent",
+		Provider:       "codex",
+		Task:           TaskContextForEnv{IssueID: "reuse-conflict-test"},
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	defer env.Cleanup(true)
+
+	// Round 1 had no workspace skill, so the user version should be present.
+	if _, err := os.Stat(filepath.Join(env.CodexHome, "skills", "writing", "drafts", "stale.md")); err != nil {
+		t.Fatalf("user support file should be seeded in round 1: %v", err)
+	}
+
+	reused := Reuse(env.WorkDir, "codex", "", TaskContextForEnv{
+		IssueID: "reuse-conflict-test",
+		AgentSkills: []SkillContextForEnv{
+			{Name: "Writing", Content: "workspace writing"},
+		},
+	}, testLogger())
+	if reused == nil {
+		t.Fatal("Reuse returned nil")
+	}
+
+	data, err := os.ReadFile(filepath.Join(reused.CodexHome, "skills", "writing", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("workspace SKILL.md missing after reuse: %v", err)
+	}
+	if string(data) != "workspace writing" {
+		t.Errorf("SKILL.md = %q, want workspace content", data)
+	}
+	if _, err := os.Stat(filepath.Join(reused.CodexHome, "skills", "writing", "drafts", "stale.md")); !os.IsNotExist(err) {
+		t.Errorf("round-1 user support file leaked into round-2 workspace skill dir, err=%v", err)
+	}
+}
+
+// TestReuseClearsRemovedUserSkill checks that uninstalling a user skill
+// between two runs (delete it from ~/.codex/skills) also drops it from the
+// per-task home on Reuse — otherwise users would still see deleted skills
+// surface to the codex CLI.
+func TestReuseClearsRemovedUserSkill(t *testing.T) {
+	// Cannot use t.Parallel() with t.Setenv.
+
+	sharedHome := t.TempDir()
+	t.Setenv("CODEX_HOME", sharedHome)
+
+	userSkill := filepath.Join(sharedHome, "skills", "deprecated")
+	if err := os.MkdirAll(userSkill, 0o755); err != nil {
+		t.Fatalf("seed user skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(userSkill, "SKILL.md"), []byte("deprecated"), 0o644); err != nil {
+		t.Fatalf("seed user SKILL.md: %v", err)
+	}
+
+	env, err := Prepare(PrepareParams{
+		WorkspacesRoot: t.TempDir(),
+		WorkspaceID:    "ws-reuse-remove",
+		TaskID:         "d2e3f4a5-b6c7-8901-abcd-234567890123",
+		AgentName:      "Codex Agent",
+		Provider:       "codex",
+		Task:           TaskContextForEnv{IssueID: "reuse-remove-test"},
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	defer env.Cleanup(true)
+
+	if _, err := os.Stat(filepath.Join(env.CodexHome, "skills", "deprecated", "SKILL.md")); err != nil {
+		t.Fatalf("user skill should be seeded in round 1: %v", err)
+	}
+
+	// Uninstall the user skill before round 2.
+	if err := os.RemoveAll(userSkill); err != nil {
+		t.Fatalf("remove user skill: %v", err)
+	}
+
+	reused := Reuse(env.WorkDir, "codex", "", TaskContextForEnv{
+		IssueID: "reuse-remove-test",
+	}, testLogger())
+	if reused == nil {
+		t.Fatal("Reuse returned nil")
+	}
+	if _, err := os.Stat(filepath.Join(reused.CodexHome, "skills", "deprecated")); !os.IsNotExist(err) {
+		t.Errorf("removed user skill still present in per-task home after reuse, err=%v", err)
+	}
+}
+
 func TestEnsureSymlinkRepairsBrokenLink(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
