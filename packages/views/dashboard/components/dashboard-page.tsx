@@ -331,7 +331,7 @@ function DailyTrendBlock({
   dailyTokens: ReturnType<typeof aggregateDailyTokens>;
 }) {
   const { t } = useT("usage");
-  const [metric, setMetric] = useState<DailyMetric>("cost");
+  const [metric, setMetric] = useState<DailyMetric>("tokens");
 
   // Empty-state is per-metric so a workspace that recorded tokens but
   // has no priced models (unmapped) still gets a real Tokens chart while
@@ -356,8 +356,8 @@ function DailyTrendBlock({
           value={metric}
           onChange={setMetric}
           options={[
-            { label: t(($) => $.daily.metric_cost), value: "cost" as const },
             { label: t(($) => $.daily.metric_tokens), value: "tokens" as const },
+            { label: t(($) => $.daily.metric_cost), value: "cost" as const },
           ]}
         />
       </div>
