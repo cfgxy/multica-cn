@@ -29,8 +29,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
+  Keyboard,
   KeyboardAvoidingView,
   Platform,
+  Pressable,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -359,9 +361,18 @@ export default function ChatTab() {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         className="flex-1"
       >
-        <View className="flex-1">
+        {/* Tap any non-bubble area of the messages region → dismiss the
+            keyboard. `keyboardShouldPersistTaps="handled"` on the
+            inner FlatList has a long-standing RN bug (facebook/react-
+            native#31448) that prevents it from firing dismiss in many
+            real-world setups; wrapping with a Pressable is the
+            canonical workaround that the RN docs and Expo guide both
+            recommend. Interactive drag-dismiss
+            (`keyboardDismissMode="interactive"` on the FlatList) is
+            an independent mechanism and still works. */}
+        <Pressable className="flex-1" onPress={() => Keyboard.dismiss()}>
           <ChatMessageList messages={messages} loading={messagesLoading} />
-        </View>
+        </Pressable>
         <StatusPill pendingTask={pendingTask} onStop={handleStop} />
         <ChatComposer
           value={draft}
