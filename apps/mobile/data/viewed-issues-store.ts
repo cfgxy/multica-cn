@@ -52,9 +52,16 @@ export const useViewedIssuesStore = create<State>((set) => ({
     }),
 }));
 
+/** Stable empty array — Zustand selectors that return a fresh `[]` each
+ *  call trigger an infinite re-render loop in useSyncExternalStore
+ *  (see CLAUDE.md "Common Zustand footguns"). All "no entry" paths
+ *  share this single frozen reference. */
+const EMPTY_IDS: readonly string[] = Object.freeze([]);
+
 /** Selector — current workspace's viewed-issue ids in most-recent-first
- *  order. Returns the same array reference between updates so consumers
- *  can pass it directly to memoised selectors without re-renders. */
+ *  order. Stable reference: returns the underlying array when present,
+ *  the shared EMPTY_IDS otherwise. */
 export function selectViewedIssueIds(wsId: string | null) {
-  return (s: State): string[] => (wsId ? s.byWorkspace[wsId] ?? [] : []);
+  return (s: State): readonly string[] =>
+    wsId ? s.byWorkspace[wsId] ?? EMPTY_IDS : EMPTY_IDS;
 }
