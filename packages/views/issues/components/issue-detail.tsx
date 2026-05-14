@@ -130,6 +130,85 @@ function formatTokenCount(n: number): string {
 }
 
 // ---------------------------------------------------------------------------
+// Activity block (collapsible)
+// ---------------------------------------------------------------------------
+
+function ActivityBlock({
+  entries,
+  defaultExpanded,
+  resolveActorName,
+}: {
+  entries: TimelineEntry[];
+  defaultExpanded: boolean;
+  resolveActorName: (type: string, id: string) => string;
+}) {
+  const [expanded, setExpanded] = useState(defaultExpanded);
+  const count = entries.length;
+  const label = `${count} ${count === 1 ? "activity" : "activities"}`;
+
+  if (!expanded) {
+    return (
+      <div className="px-4">
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <ChevronRight className="h-3 w-3 shrink-0" />
+          <span>{label}</span>
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-4 flex flex-col gap-3">
+      {entries.map((entry) => {
+        const details = (entry.details ?? {}) as Record<string, string>;
+        const isStatusChange = entry.action === "status_changed";
+        const isPriorityChange = entry.action === "priority_changed";
+        const isDueDateChange = entry.action === "due_date_changed";
+
+        let leadIcon: React.ReactNode;
+        if (isStatusChange && details.to) {
+          leadIcon = <StatusIcon status={details.to as IssueStatus} className="h-4 w-4 shrink-0" />;
+        } else if (isPriorityChange && details.to) {
+          leadIcon = <PriorityIcon priority={details.to as IssuePriority} className="h-4 w-4 shrink-0" />;
+        } else if (isDueDateChange) {
+          leadIcon = <Calendar className="h-4 w-4 shrink-0 text-muted-foreground" />;
+        } else {
+          leadIcon = <ActorAvatar actorType={entry.actor_type} actorId={entry.actor_id} size={16} />;
+        }
+
+        return (
+          <div key={entry.id} className="flex items-center text-xs text-muted-foreground">
+            <div className="mr-2 flex w-4 shrink-0 justify-center">
+              {leadIcon}
+            </div>
+            <div className="flex min-w-0 flex-1 items-center gap-1">
+              <span className="shrink-0 font-medium">{resolveActorName(entry.actor_type, entry.actor_id)}</span>
+              <span className="truncate">{formatActivity(entry, resolveActorName)}</span>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <span className="ml-auto shrink-0 cursor-default">
+                      {timeAgo(entry.created_at)}
+                    </span>
+                  }
+                />
+                <TooltipContent side="top">
+                  {new Date(entry.created_at).toLocaleString()}
+                </TooltipContent>
+              </Tooltip>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Property row
 // ---------------------------------------------------------------------------
 
@@ -896,7 +975,8 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
                   coalesced.push(entry);
                 }
 
-                // Group consecutive activities together so the connector line works
+                // Group consecutive activities together so the connector line works.
+                // Each `activities` group is collapsible — see ActivityBlock.
                 const groups: { type: "activities" | "comment"; entries: TimelineEntry[] }[] = [];
                 for (const entry of coalesced) {
                   if (entry.type === "activity") {
@@ -911,7 +991,17 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
                   }
                 }
 
-                return groups.map((group) => {
+                // Activity blocks default to collapsed except the most recent one,
+                // since the latest block usually conveys "what just happened".
+                let lastActivityIdx = -1;
+                for (let i = groups.length - 1; i >= 0; i--) {
+                  if (groups[i]!.type === "activities") {
+                    lastActivityIdx = i;
+                    break;
+                  }
+                }
+
+                return groups.map((group, idx) => {
                   if (group.type === "comment") {
                     const entry = group.entries[0]!;
                     return (
@@ -932,49 +1022,12 @@ export function IssueDetail({ issueId, onDelete, defaultSidebarOpen = true, layo
                   }
 
                   return (
-                    <div key={group.entries[0]!.id} className="px-4 flex flex-col gap-3">
-                      {group.entries.map((entry, _idx) => {
-                        const details = (entry.details ?? {}) as Record<string, string>;
-                        const isStatusChange = entry.action === "status_changed";
-                        const isPriorityChange = entry.action === "priority_changed";
-                        const isDueDateChange = entry.action === "due_date_changed";
-
-                        let leadIcon: React.ReactNode;
-                        if (isStatusChange && details.to) {
-                          leadIcon = <StatusIcon status={details.to as IssueStatus} className="h-4 w-4 shrink-0" />;
-                        } else if (isPriorityChange && details.to) {
-                          leadIcon = <PriorityIcon priority={details.to as IssuePriority} className="h-4 w-4 shrink-0" />;
-                        } else if (isDueDateChange) {
-                          leadIcon = <Calendar className="h-4 w-4 shrink-0 text-muted-foreground" />;
-                        } else {
-                          leadIcon = <ActorAvatar actorType={entry.actor_type} actorId={entry.actor_id} size={16} />;
-                        }
-
-                        return (
-                          <div key={entry.id} className="flex items-center text-xs text-muted-foreground">
-                            <div className="mr-2 flex w-4 shrink-0 justify-center">
-                              {leadIcon}
-                            </div>
-                            <div className="flex min-w-0 flex-1 items-center gap-1">
-                              <span className="shrink-0 font-medium">{getActorName(entry.actor_type, entry.actor_id)}</span>
-                              <span className="truncate">{formatActivity(entry, getActorName)}</span>
-                              <Tooltip>
-                                <TooltipTrigger
-                                  render={
-                                    <span className="ml-auto shrink-0 cursor-default">
-                                      {timeAgo(entry.created_at)}
-                                    </span>
-                                  }
-                                />
-                                <TooltipContent side="top">
-                                  {new Date(entry.created_at).toLocaleString()}
-                                </TooltipContent>
-                              </Tooltip>
-                            </div>
-                          </div>
-                        );
-                      })}
-                    </div>
+                    <ActivityBlock
+                      key={group.entries[0]!.id}
+                      entries={group.entries}
+                      defaultExpanded={idx === lastActivityIdx}
+                      resolveActorName={getActorName}
+                    />
                   );
                 });
               })()}
