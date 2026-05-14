@@ -234,7 +234,8 @@
       "title": "Pick a template",
       "empty": "No templates available yet.",
       "load_failed": "Failed to load templates",
-      "other_category": "Other"
+      "other_category": "Other",
+      "filter_all": "All"
     },
     "template_card": {
       "skills_one": "{{count}} skill",

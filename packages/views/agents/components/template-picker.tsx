@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import {
   AlertTriangle,
   AlignLeft,
@@ -38,6 +38,7 @@ import type { LucideIcon } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { agentTemplateListOptions } from "@multica/core/agents/queries";
 import type { AgentTemplateSummary } from "@multica/core/types";
+import { Button } from "@multica/ui/components/ui/button";
 import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../../i18n";
 
@@ -68,6 +69,11 @@ export function TemplatePicker({ onSelect }: TemplatePickerProps) {
     agentTemplateListOptions(),
   );
 
+  // `null` = "All" (default). When a specific category is selected, the
+  // grid renders flat (no section headers) — the active pill already
+  // tells the user what they're looking at, so headers would be noise.
+  const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+
   // Group by category. Templates without a category fall into the
   // localised "Other" bucket so they still render. Preserves the load
   // order within each group for deterministic UI (matches the
@@ -82,6 +88,18 @@ export function TemplatePicker({ onSelect }: TemplatePickerProps) {
     }
     return Array.from(byCategory.entries());
   }, [templates, otherCategory]);
+
+  // Templates currently visible given the filter. When "All" is active
+  // we show every template (grouped by category below); otherwise we
+  // only show the matching category.
+  const visibleTemplates = useMemo(() => {
+    if (selectedCategory === null) return templates;
+    return templates.filter(
+      (tmpl) =>
+        (tmpl.category?.trim() ? tmpl.category : otherCategory) ===
+        selectedCategory,
+    );
+  }, [templates, selectedCategory, otherCategory]);
 
   if (isLoading) {
     return (
@@ -113,25 +131,94 @@ export function TemplatePicker({ onSelect }: TemplatePickerProps) {
 
   return (
     <div className="flex-1 overflow-y-auto">
-      <div className="mx-auto max-w-5xl space-y-6 p-6">
-        {groups.map(([category, tmpls]) => (
-          <section key={category}>
-            <h2 className="sticky top-0 z-10 -mx-6 border-b bg-background px-6 py-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              {category}
-            </h2>
-            <div className="grid grid-cols-1 gap-3 pt-3 md:grid-cols-2">
-              {tmpls.map((tmpl) => (
-                <TemplateCard
-                  key={tmpl.slug}
-                  template={tmpl}
-                  onClick={() => onSelect(tmpl)}
-                />
-              ))}
-            </div>
-          </section>
-        ))}
+      <div className="mx-auto max-w-5xl space-y-4 p-6">
+        {/* Category filter — mirrors the IssuesHeader scope pattern
+            (Button variant="outline" + active-class swap). `flex-wrap`
+            so the 8 pills (All + 7 categories) degrade gracefully on
+            narrow widths. Counts are inlined into the label rather than
+            shown as a separate badge because we want the pill row to
+            stay one-line-tall per pill. */}
+        <div className="flex flex-wrap items-center gap-1">
+          <FilterPill
+            label={`${t(($) => $.create_dialog.template_picker.filter_all)} (${templates.length})`}
+            active={selectedCategory === null}
+            onClick={() => setSelectedCategory(null)}
+          />
+          {groups.map(([category, tmpls]) => (
+            <FilterPill
+              key={category}
+              label={`${category} (${tmpls.length})`}
+              active={selectedCategory === category}
+              onClick={() => setSelectedCategory(category)}
+            />
+          ))}
+        </div>
+
+        {/* Grid — grouped with sticky headers when "All" is active;
+            flat when a single category is filtered (the active pill
+            already tells the user what they're looking at). */}
+        {selectedCategory === null ? (
+          <div className="space-y-6">
+            {groups.map(([category, tmpls]) => (
+              <section key={category}>
+                <h2 className="sticky top-0 z-10 -mx-6 border-b bg-background px-6 py-2 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                  {category}
+                </h2>
+                <div className="grid grid-cols-1 gap-3 pt-3 md:grid-cols-2">
+                  {tmpls.map((tmpl) => (
+                    <TemplateCard
+                      key={tmpl.slug}
+                      template={tmpl}
+                      onClick={() => onSelect(tmpl)}
+                    />
+                  ))}
+                </div>
+              </section>
+            ))}
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+            {visibleTemplates.map((tmpl) => (
+              <TemplateCard
+                key={tmpl.slug}
+                template={tmpl}
+                onClick={() => onSelect(tmpl)}
+              />
+            ))}
+          </div>
+        )}
       </div>
     </div>
+  );
+}
+
+/** Single filter pill. Visual matches IssuesHeader's scope toggle
+ *  (Button outline + bg-accent on active) so the catalog feels
+ *  consistent with the rest of the app's filter affordances. */
+function FilterPill({
+  label,
+  active,
+  onClick,
+}: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      className={cn(
+        "h-7 text-xs",
+        active
+          ? "bg-accent text-accent-foreground hover:bg-accent/80"
+          : "text-muted-foreground",
+      )}
+      onClick={onClick}
+    >
+      {label}
+    </Button>
   );
 }
 
