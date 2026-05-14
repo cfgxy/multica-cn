@@ -509,7 +509,8 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var req struct {
-		Content string `json:"content"`
+		Content       string   `json:"content"`
+		AttachmentIDs []string `json:"attachment_ids"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid request body")
@@ -517,6 +518,11 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Content == "" {
 		writeError(w, http.StatusBadRequest, "content is required")
+		return
+	}
+
+	attachmentIDs, ok := parseUUIDSliceOrBadRequest(w, req.AttachmentIDs, "attachment_ids")
+	if !ok {
 		return
 	}
 
@@ -530,6 +536,14 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("update comment failed", append(logger.RequestAttrs(r), "error", err, "comment_id", commentId)...)
 		writeError(w, http.StatusInternalServerError, "failed to update comment")
 		return
+	}
+
+	// Bind any newly uploaded attachments referenced in the edited content so
+	// they appear in the timeline's comment.attachments after refresh. Existing
+	// attachments already point at this comment via the upload flow; passing
+	// them again is a no-op at the SQL level.
+	if len(attachmentIDs) > 0 {
+		h.linkAttachmentsByIDs(r.Context(), comment.ID, existing.IssueID, attachmentIDs)
 	}
 
 	// Fetch reactions and attachments for the updated comment.

@@ -38,7 +38,7 @@ import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, Command
 import { AvatarGroup, AvatarGroupCount } from "@multica/ui/components/ui/avatar";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { PropRow } from "../../common/prop-row";
-import type { Issue, IssueStatus, IssuePriority, TimelineEntry, UpdateIssueRequest } from "@multica/core/types";
+import type { Attachment, Issue, IssueStatus, IssuePriority, TimelineEntry, UpdateIssueRequest } from "@multica/core/types";
 import { STATUS_CONFIG, PRIORITY_CONFIG } from "@multica/core/issues/config";
 import { useUpdateIssue } from "@multica/core/issues/mutations";
 import { toast } from "sonner";
@@ -816,10 +816,21 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const { isDragOver: descDragOver, dropZoneProps: descDropZoneProps } = useFileDropZone({
     onDrop: (files) => files.forEach((f) => descEditorRef.current?.uploadFile(f)),
   });
-  // Description uploads don't pass issueId — the URL lives in the markdown.
-  // This avoids stale attachment records when users delete images from the editor.
+  // Pending uploads in the description editor. We don't pass `issueId` on
+  // upload (to avoid orphaning attachments when the user deletes the file
+  // from the markdown), so they start unattached and we re-bind them via
+  // `attachment_ids` on the next description save. Drives editor previews
+  // so text/code attachments show an Eye before the bind round-trips.
+  const [descPendingAttachments, setDescPendingAttachments] = useState<Attachment[]>([]);
+  const descEditorAttachments = descPendingAttachments.length > 0
+    ? [...(issueAttachments ?? []), ...descPendingAttachments]
+    : issueAttachments;
   const handleDescriptionUpload = useCallback(
-    (file: File) => uploadWithToast(file),
+    async (file: File) => {
+      const result = await uploadWithToast(file);
+      if (result) setDescPendingAttachments((prev) => [...prev, result]);
+      return result;
+    },
     [uploadWithToast],
   );
 
@@ -1287,11 +1298,19 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               key={id}
               defaultValue={issue.description || ""}
               placeholder={t(($) => $.detail.desc_placeholder)}
-              onUpdate={(md) => handleUpdateField({ description: md })}
+              onUpdate={(md) => {
+                // Bind any pending uploads still referenced in the markdown
+                // so they appear in `issueAttachments` after refresh and the
+                // editor's text/code preview keeps working past reload.
+                const ids = descPendingAttachments
+                  .filter((a) => md.includes(a.url))
+                  .map((a) => a.id);
+                handleUpdateField({ description: md, attachment_ids: ids.length > 0 ? ids : undefined });
+              }}
               onUploadFile={handleDescriptionUpload}
               debounceMs={1500}
               currentIssueId={id}
-              attachments={issueAttachments}
+              attachments={descEditorAttachments}
             />
 
             <div className="flex items-center gap-1 mt-3">

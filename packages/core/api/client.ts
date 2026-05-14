@@ -592,10 +592,10 @@ export class ApiClient {
     return this.fetch("/api/assignee-frequency");
   }
 
-  async updateComment(commentId: string, content: string): Promise<Comment> {
+  async updateComment(commentId: string, content: string, attachmentIds?: string[]): Promise<Comment> {
     return this.fetch(`/api/comments/${commentId}`, {
       method: "PUT",
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({ content, attachment_ids: attachmentIds }),
     });
   }
 
