@@ -1,17 +1,18 @@
 /**
  * New issue creation modal — manual only.
  *
- * title + description + status/priority/assignee/due-date/project chips.
- * Fully wired to `apiClient.issues.create` via useCreateIssue().
- * Description supports inline `@mention` (members + agents).
+ * Layout follows Apple Reminders / Linear iOS / Things 3: one vertical
+ * scrolling form (title → description → property chips), no sticky bottom
+ * toolbar. Property chips are part of the form, not pinned above keyboard.
+ * MentionSuggestionBar floats above keyboard only when the user is mid-@.
  *
- * Mention pipeline is shared with `comment-composer.tsx` via the
- * `useMentionInput` hook — both surfaces produce the same canonical
- * `[@name](mention://type/id)` markdown on submit, recognised by the
- * server's util.ParseMentions and mobile's mention-chip renderer.
+ * No markdown toolbar / upload buttons in v1: mobile users creating an
+ * issue rarely format markdown, and attachment upload is deferred to a
+ * later release (see plan-issue-majestic-rabin.md "skip uploads").
  *
- * Defaults (status="todo", priority="none") mirror web's ManualCreatePanel —
- * behavioral parity rule (apps/mobile/CLAUDE.md).
+ * Mention pipeline shares `useMentionInput` with `comment-composer.tsx` —
+ * both surfaces produce canonical `[@name](mention://type/id)` markdown
+ * recognised by util.ParseMentions on the server.
  */
 import { useCallback, useMemo, useState } from "react";
 import {
@@ -23,13 +24,11 @@ import {
   View,
 } from "react-native";
 import { Stack, router } from "expo-router";
-import type { IssuePriority, IssueStatus } from "@multica/core/types";
+import type { IssuePriority, IssueStatus, Project } from "@multica/core/types";
 import { SubmitIssueButton } from "@/components/issue/submit-issue-button";
 import { CreateFormAttributeRow } from "@/components/issue/create-form-attribute-row";
 import type { AssigneeValue } from "@/components/issue/pickers/assignee-picker-sheet";
 import { MentionSuggestionBar } from "@/components/issue/mention-suggestion-bar";
-import { MarkdownToolbar } from "@/components/editor/markdown-toolbar";
-import { useFileAttach } from "@/components/editor/use-file-attach";
 import {
   MIN_BODY_INPUT_HEIGHT_PX,
   MOBILE_PLACEHOLDER_COLOR,
@@ -48,7 +47,7 @@ export default function NewIssueModal() {
   const [priority, setPriority] = useState<IssuePriority>("none");
   const [assignee, setAssignee] = useState<AssigneeValue>(null);
   const [dueDate, setDueDate] = useState<string | null>(null);
-  const [projectId, setProjectId] = useState<string | null>(null);
+  const [project, setProject] = useState<Project | null>(null);
 
   const createIssue = useCreateIssue();
   const isSubmitting = createIssue.isPending;
@@ -69,7 +68,7 @@ export default function NewIssueModal() {
           ? { assignee_type: assignee.type, assignee_id: assignee.id }
           : {}),
         ...(dueDate ? { due_date: dueDate } : {}),
-        ...(projectId ? { project_id: projectId } : {}),
+        ...(project ? { project_id: project.id } : {}),
       });
       router.back();
     } catch (err) {
@@ -85,7 +84,7 @@ export default function NewIssueModal() {
     priority,
     assignee,
     dueDate,
-    projectId,
+    project,
     createIssue,
   ]);
 
@@ -109,122 +108,44 @@ export default function NewIssueModal() {
         className="flex-1 bg-background"
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        <ManualPanel
-          title={title}
-          onTitleChange={setTitle}
-          description={description}
-          status={status}
-          onStatusChange={setStatus}
-          priority={priority}
-          onPriorityChange={setPriority}
-          assignee={assignee}
-          onAssigneeChange={setAssignee}
-          dueDate={dueDate}
-          onDueDateChange={setDueDate}
-          projectId={projectId}
-          onProjectIdChange={setProjectId}
-          submitting={isSubmitting}
-        />
-      </KeyboardAvoidingView>
-    </>
-  );
-}
+        <ScrollView
+          className="flex-1"
+          contentContainerClassName="px-4 pt-4 pb-6 gap-4"
+          keyboardShouldPersistTaps="handled"
+        >
+          <TextInput
+            value={title}
+            onChangeText={setTitle}
+            placeholder="Issue title"
+            placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
+            className="text-2xl font-semibold text-foreground py-2"
+            autoFocus
+            returnKeyType="next"
+            editable={!isSubmitting}
+          />
+          <DescriptionField
+            description={description}
+            disabled={isSubmitting}
+          />
+          <CreateFormAttributeRow
+            status={status}
+            onStatusChange={setStatus}
+            priority={priority}
+            onPriorityChange={setPriority}
+            assignee={assignee}
+            onAssigneeChange={setAssignee}
+            dueDate={dueDate}
+            onDueDateChange={setDueDate}
+            project={project}
+            onProjectChange={setProject}
+          />
+        </ScrollView>
 
-function ManualPanel({
-  title,
-  onTitleChange,
-  description,
-  status,
-  onStatusChange,
-  priority,
-  onPriorityChange,
-  assignee,
-  onAssigneeChange,
-  dueDate,
-  onDueDateChange,
-  projectId,
-  onProjectIdChange,
-  submitting,
-}: {
-  title: string;
-  onTitleChange: (next: string) => void;
-  description: UseMentionInputReturn;
-  status: IssueStatus;
-  onStatusChange: (next: IssueStatus) => void;
-  priority: IssuePriority;
-  onPriorityChange: (next: IssuePriority) => void;
-  assignee: AssigneeValue;
-  onAssigneeChange: (next: AssigneeValue) => void;
-  dueDate: string | null;
-  onDueDateChange: (next: string | null) => void;
-  projectId: string | null;
-  onProjectIdChange: (next: string | null) => void;
-  submitting: boolean;
-}) {
-  const fileAttach = useFileAttach();
-
-  // Issue not yet created → no issueId / commentId in upload context. The
-  // attachment is hooked to the issue at create time via the standard
-  // backend flow (same as web's "create issue" path).
-  const handleAttachImage = async () => {
-    const result = await fileAttach.pickAndUploadImage();
-    if (result) description.insertAtCursor(`![](${result.url})`);
-  };
-
-  const handleAttachFile = async () => {
-    const result = await fileAttach.pickAndUploadFile();
-    if (result) {
-      description.insertAtCursor(
-        `[📎 ${result.filename}](${result.url})`,
-      );
-    }
-  };
-
-  return (
-    <>
-      <ScrollView
-        className="flex-1"
-        contentContainerClassName="px-4 pt-4 pb-2 gap-2"
-        keyboardShouldPersistTaps="handled"
-      >
-        <TextInput
-          value={title}
-          onChangeText={onTitleChange}
-          placeholder="Issue title"
-          placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
-          className="text-2xl font-semibold text-foreground py-2"
-          autoFocus
-          returnKeyType="next"
-          editable={!submitting}
-        />
-        <DescriptionField description={description} disabled={submitting} />
-      </ScrollView>
-
-      <View className="bg-background">
+        {/* Mention suggestions float above the keyboard only when the user
+            types `@`. Self-hides via `if (!visible) return null` so it
+            doesn't take space at rest. */}
         <MentionSuggestionBar {...description.suggestionBar} />
-        <MarkdownToolbar
-          onAt={description.handlers.onAtButtonPress}
-          onList={() => description.insertAtLineStart("- ")}
-          onCheckbox={() => description.insertAtLineStart("- [ ] ")}
-          onCode={() => description.insertAtCursor("\n```\n\n```", 4)}
-          onQuote={() => description.insertAtLineStart("> ")}
-          onImage={handleAttachImage}
-          onFile={handleAttachFile}
-          disabled={submitting || fileAttach.uploading}
-        />
-        <CreateFormAttributeRow
-          status={status}
-          onStatusChange={onStatusChange}
-          priority={priority}
-          onPriorityChange={onPriorityChange}
-          assignee={assignee}
-          onAssigneeChange={onAssigneeChange}
-          dueDate={dueDate}
-          onDueDateChange={onDueDateChange}
-          projectId={projectId}
-          onProjectIdChange={onProjectIdChange}
-        />
-      </View>
+      </KeyboardAvoidingView>
     </>
   );
 }

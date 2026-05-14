@@ -14,10 +14,13 @@
  * renders `dimmed` with a placeholder label.
  */
 import { useState } from "react";
-import { ScrollView, View } from "react-native";
+import { View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
-import { useQuery } from "@tanstack/react-query";
-import type { IssuePriority, IssueStatus } from "@multica/core/types";
+import type {
+  IssuePriority,
+  IssueStatus,
+  Project,
+} from "@multica/core/types";
 import { AttributeChip } from "@/components/issue/attribute-chip";
 import {
   AssigneePickerSheet,
@@ -32,8 +35,6 @@ import { PriorityIcon } from "@/components/ui/priority-icon";
 import { ProjectIcon } from "@/components/ui/project-icon";
 import { StatusIcon } from "@/components/ui/status-icon";
 import { useActorLookup } from "@/data/use-actor-name";
-import { projectListOptions } from "@/data/queries/projects";
-import { useWorkspaceStore } from "@/data/workspace-store";
 import { PRIORITY_LABEL, STATUS_LABEL } from "@/lib/issue-status";
 
 interface Props {
@@ -45,8 +46,8 @@ interface Props {
   onAssigneeChange: (next: AssigneeValue) => void;
   dueDate: string | null;
   onDueDateChange: (next: string | null) => void;
-  projectId: string | null;
-  onProjectIdChange: (next: string | null) => void;
+  project: Project | null;
+  onProjectChange: (next: Project | null) => void;
 }
 
 export function CreateFormAttributeRow({
@@ -58,8 +59,8 @@ export function CreateFormAttributeRow({
   onAssigneeChange,
   dueDate,
   onDueDateChange,
-  projectId,
-  onProjectIdChange,
+  project,
+  onProjectChange,
 }: Props) {
   const [statusOpen, setStatusOpen] = useState(false);
   const [priorityOpen, setPriorityOpen] = useState(false);
@@ -74,22 +75,9 @@ export function CreateFormAttributeRow({
   const priorityLabel =
     priority === "none" ? "Priority" : PRIORITY_LABEL[priority];
 
-  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
-  const { data: projects } = useQuery(projectListOptions(wsId));
-  const project = projectId
-    ? projects?.find((p) => p.id === projectId)
-    : undefined;
-  // While the list fetches, show "…" so the filled chip isn't visually
-  // ambiguous with the unselected "Project" placeholder.
-  const projectLabel = projectId ? project?.title ?? "…" : "Project";
-
   return (
     <View>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerClassName="flex-row gap-2 px-4 py-3"
-      >
+      <View className="flex-row flex-wrap gap-2">
         <AttributeChip
           icon={<StatusIcon status={status} size={12} />}
           label={STATUS_LABEL[status]}
@@ -142,11 +130,11 @@ export function CreateFormAttributeRow({
               <Ionicons name="folder-outline" size={14} color="#a1a1aa" />
             )
           }
-          label={projectLabel}
-          variant={projectId ? "filled" : "dimmed"}
+          label={project?.title ?? "Project"}
+          variant={project ? "filled" : "dimmed"}
           onPress={() => setProjectOpen(true)}
         />
-      </ScrollView>
+      </View>
 
       <StatusPickerSheet
         visible={statusOpen}
@@ -174,8 +162,8 @@ export function CreateFormAttributeRow({
       />
       <ProjectPickerSheet
         visible={projectOpen}
-        value={projectId}
-        onChange={onProjectIdChange}
+        value={project}
+        onChange={onProjectChange}
         onClose={() => setProjectOpen(false)}
       />
     </View>

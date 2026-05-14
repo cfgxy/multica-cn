@@ -22,8 +22,8 @@ import { cn } from "@/lib/utils";
 
 interface Props {
   visible: boolean;
-  value: string | null;
-  onChange: (next: string | null) => void;
+  value: Project | null;
+  onChange: (next: Project | null) => void;
   onClose: () => void;
 }
 
@@ -40,7 +40,7 @@ export function ProjectPickerSheet({ visible, value, onChange, onClose }: Props)
     return sorted.filter((p) => p.title.toLowerCase().includes(q));
   }, [projects, query]);
 
-  const pick = (next: string | null) => {
+  const pick = (next: Project | null) => {
     onChange(next);
     onClose();
   };
@@ -85,8 +85,8 @@ export function ProjectPickerSheet({ visible, value, onChange, onClose }: Props)
                   renderItem={({ item }) => (
                     <ProjectRow
                       project={item}
-                      checked={item.id === value}
-                      onPress={() => pick(item.id)}
+                      checked={item.id === value?.id}
+                      onPress={() => pick(item)}
                     />
                   )}
                   ListEmptyComponent={
