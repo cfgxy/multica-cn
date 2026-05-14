@@ -308,6 +308,11 @@ export function CreateAgentDialog({
   // and the banner there reports the bad URLs; on any other error we
   // surface a toast and reset the spinner so they can retry.
   const quickCreateFromTemplate = async (tmpl: AgentTemplateSummary) => {
+    // Re-entry guard: TemplateDetail already disables its CTA while
+    // `creating` is true, but a parallel keyboard path (Enter on the
+    // template card during animation) could still slip in. Bail before
+    // we issue a second createAgentFromTemplate against the same form.
+    if (creating) return;
     if (!selectedRuntime || selectedRuntimeLocked) {
       toast.error(t(($) => $.create_dialog.no_runtime_toast));
       return;
@@ -386,6 +391,14 @@ export function CreateAgentDialog({
   };
 
   const handleSubmit = async () => {
+    // In-flight re-entry guard. The Create button is disabled while
+    // `creating` is true, but the name input's Enter handler (and any
+    // future keyboard shortcut) calls handleSubmit directly — without
+    // this guard a quick Enter during the Create-then-AddSquadMember
+    // window would fire a duplicate createAgent / addSquadMember,
+    // which is exactly the two-phase-submit bug MUL-2178 set out to
+    // prevent.
+    if (creating) return;
     if (!name.trim() || !selectedRuntime || selectedRuntimeLocked) return;
     setFailedURLs(null);
     setPhase("creating-agent");
@@ -520,9 +533,12 @@ export function CreateAgentDialog({
   // Back is hidden in the squad-join retry state: the agent already
   // exists, so navigating back to a step that mutates the form would
   // imply the user is still composing the agent. Recovery is forward-
-  // only — retry the join or close out.
+  // only — retry the join or close out. It's also hidden while a
+  // submit is in flight, so the user can't re-mount the form mid-
+  // request (which would lose the create-agent context).
   const showBackButton =
     !squadJoinRetry &&
+    !creating &&
     (step.kind === "template-picker" ||
       step.kind === "template-detail" ||
       step.kind === "blank-form");
@@ -703,7 +719,19 @@ export function CreateAgentDialog({
         {!squadJoinRetry && isFormStep(step) && (
           <>
             <div className="flex-1 overflow-y-auto p-5">
-              <div className="space-y-4 min-w-0">
+              {/* fieldset[disabled] is the user-agent's native escape
+                  hatch for "freeze this form": every native control
+                  inside (input, button, select, textarea) is disabled
+                  by the browser, so a stray Enter key on the name
+                  input or click on the visibility toggle can't slip
+                  through while we're waiting on createAgent /
+                  addSquadMember. The visual neutralisations
+                  (border-0 p-0 m-0) keep fieldset's default chrome
+                  out of the layout. */}
+              <fieldset
+                disabled={creating}
+                className="space-y-4 min-w-0 border-0 p-0 m-0 disabled:opacity-60"
+              >
                 {/* failedURLs banner lives in TemplateDetail — it's the
                     only step that can trigger a 422, and rendering the
                     error there keeps the user where the action was. */}
@@ -838,7 +866,7 @@ export function CreateAgentDialog({
 
                 {/* Avatar moved up next to Name — see the identity row at
                     the top of the form. */}
-              </div>
+              </fieldset>
             </div>
 
             {/* Inline footer instead of <DialogFooter>: the shipped

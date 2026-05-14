@@ -294,6 +294,40 @@ describe("CreateAgentDialog runtime visibility gate", () => {
     expect(onCreateMock.mock.calls[0]?.[0].runtime_id).toBe("rt-mine");
   });
 
+  it("ignores Enter on the name input while a submit is already in flight", async () => {
+    // The Create button is disabled while creating, but the Input's
+    // own onKeyDown calls handleSubmit() directly. Without the
+    // in-flight guard inside handleSubmit, a quick Enter during the
+    // create-then-add window fires a duplicate onCreate / addSquadMember
+    // pair — which is the exact bug GPT-Boy flagged on PR #2595.
+    const mine = makeRuntime({
+      id: "rt-mine",
+      name: "My Runtime",
+      owner_id: ME,
+      visibility: "private",
+    });
+    const onCreate = vi.fn(
+      () => new Promise<Agent | void>(() => undefined),
+    );
+    renderDialog([mine], { onCreate });
+
+    const nameInput = screen.getByPlaceholderText(
+      /Deep Research Agent/i,
+    ) as HTMLInputElement;
+    fireEvent.change(nameInput, { target: { value: "Phase Test Agent" } });
+    // Initial submit via Enter to mirror the user-reported path —
+    // they typed a name and hit Enter to fire the first request.
+    fireEvent.keyDown(nameInput, { key: "Enter" });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(onCreate).toHaveBeenCalledTimes(1);
+
+    // Second Enter during the in-flight window must be a no-op.
+    fireEvent.keyDown(nameInput, { key: "Enter" });
+    fireEvent.keyDown(nameInput, { key: "Enter" });
+    await new Promise((r) => setTimeout(r, 0));
+    expect(onCreate).toHaveBeenCalledTimes(1);
+  });
+
   it("disables Cancel and Create while a submit is in flight", async () => {
     const mine = makeRuntime({
       id: "rt-mine",
