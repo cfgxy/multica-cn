@@ -80,6 +80,12 @@ export function ChatMessageList({ messages, loading }: Props) {
       keyExtractor={(m) => m.id}
       renderItem={({ item }) => <MessageRow message={item} />}
       contentContainerClassName="px-3 py-3 gap-2"
+      // iMessage-style keyboard dismissal: dragging the list pulls the
+      // keyboard down with the finger (iOS), and tapping any empty
+      // space between bubbles dismisses it. `handled` keeps Pressables
+      // inside bubbles (long-press action sheet etc.) firing normally.
+      keyboardDismissMode="interactive"
+      keyboardShouldPersistTaps="handled"
       onContentSizeChange={() => {
         // Initial mount: jump straight to the bottom without animation so
         // the user lands on the latest message, not history.
