@@ -10,7 +10,8 @@
  * On send: scan for `⁣@<word>` runs, zip with the ordered `markers`
  * list to produce `[@<name>](mention://<type>/<id>)` markdown that the
  * backend's `util.ParseMentions` regex (server/internal/util/mention.go:16)
- * already accepts.
+ * already accepts. **Issues drop the `@` in the label** — they render as
+ * `[MUL-123](mention://issue/<uuid>)` to match web (mention-extension.ts).
  *
  * Sentinel mismatch (e.g. user copy-paste broke a marker) → serializer
  * falls back to plain text with all sentinels stripped: never crash, never
@@ -19,13 +20,14 @@
 
 const SENTINEL = "⁣";
 
-export type MentionType = "member" | "agent" | "all";
+export type MentionType = "member" | "agent" | "all" | "issue";
 
 export interface MentionMarker {
   type: MentionType;
-  /** UUID for member/agent, the literal "all" for @all. */
+  /** UUID for member/agent/issue, the literal "all" for @all. */
   id: string;
-  /** Display name without the leading `@`. May contain non-ASCII chars. */
+  /** Display name without the leading `@`. For issues this is the
+   *  identifier (e.g. "MUL-123"). May contain non-ASCII chars. */
   name: string;
 }
 
@@ -156,9 +158,11 @@ export function serializeMentions(
       break;
     }
 
-    out.push(
-      `[@${marker.name}](mention://${marker.type}/${marker.id})`,
-    );
+    // Issues render without the leading `@` in the link label (mirrors
+    // web's mention-extension.ts:67-74). Members / agents / @all keep it.
+    const label =
+      marker.type === "issue" ? marker.name : `@${marker.name}`;
+    out.push(`[${label}](mention://${marker.type}/${marker.id})`);
     markerIndex++;
     cursor = wordEnd;
   }

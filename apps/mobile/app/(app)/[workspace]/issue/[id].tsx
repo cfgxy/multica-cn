@@ -9,7 +9,7 @@
  * `issue/[id]` Stack.Screen with title "Issue". We override that here once
  * the data lands so the navigation bar shows `MUL-123` (Linear-style).
  */
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ActivityIndicator,
   KeyboardAvoidingView,
@@ -32,6 +32,7 @@ import {
 import { useCreateComment } from "@/data/mutations/issues";
 import { useIssueRealtime } from "@/data/realtime/use-issue-realtime";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { useViewedIssuesStore } from "@/data/viewed-issues-store";
 
 export default function IssueDetail() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -56,6 +57,16 @@ export default function IssueDetail() {
   // If another client deletes the issue we're viewing, pop back so the
   // user isn't stranded on a 404 detail page.
   useIssueRealtime(id, () => router.back());
+
+  // Track viewed issues so the chat composer's `@` suggestion bar can
+  // surface "Recent" — the user just looked at MUL-123, likely wants to
+  // ask the agent about it next. Workspace-scoped + in-memory; see
+  // data/viewed-issues-store.ts.
+  useEffect(() => {
+    if (wsId && id) {
+      useViewedIssuesStore.getState().push(wsId, id);
+    }
+  }, [wsId, id]);
 
   // Lifted: long-press a comment → action sheet → "Reply" sets this; the
   // composer reads it to render a "Replying to <name>" chip and sends the
