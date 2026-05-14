@@ -2,19 +2,37 @@
 
 import { useMemo } from "react";
 import {
+  AlertTriangle,
+  AlignLeft,
+  BookOpen,
   Brush,
+  Briefcase,
+  Bug,
   ChevronRight,
+  ClipboardList,
   FileText,
   FlaskConical,
+  GitCommit,
+  GitPullRequest,
+  GraduationCap,
+  Highlighter,
+  Languages,
   LayoutDashboard,
+  Lightbulb,
   ListChecks,
   Loader2,
   Megaphone,
+  MessageSquare,
+  Microscope,
   Palette,
   PenLine,
   Presentation,
+  Scale,
   Search,
   Sparkles,
+  Target,
+  Type,
+  UserRound,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
@@ -150,9 +168,11 @@ function TemplateCard({ template, onClick }: TemplateCardProps) {
           {template.description}
         </p>
         <div className="mt-2.5 inline-flex items-center gap-1 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
-          {t(($) => $.create_dialog.template_card.skills, {
-            count: template.skills.length,
-          })}
+          {template.skills.length === 0
+            ? t(($) => $.create_dialog.template_card.prompt_only)
+            : t(($) => $.create_dialog.template_card.skills, {
+                count: template.skills.length,
+              })}
         </div>
       </div>
     </button>
@@ -164,17 +184,35 @@ function TemplateCard({ template, onClick }: TemplateCardProps) {
 /** Lucide icon name → component. Add new entries when shipping templates
  *  that use icons not yet listed here. Unknown names fall back to FileText. */
 const ICONS: Record<string, LucideIcon> = {
-  Search,
-  Palette,
+  AlertTriangle,
+  AlignLeft,
+  BookOpen,
+  Briefcase,
+  Brush,
+  Bug,
+  ClipboardList,
   FileText,
   FlaskConical,
-  Sparkles,
-  ListChecks,
-  Brush,
-  PenLine,
-  Megaphone,
-  Presentation,
+  GitCommit,
+  GitPullRequest,
+  GraduationCap,
+  Highlighter,
+  Languages,
   LayoutDashboard,
+  Lightbulb,
+  ListChecks,
+  Megaphone,
+  MessageSquare,
+  Microscope,
+  Palette,
+  PenLine,
+  Presentation,
+  Scale,
+  Search,
+  Sparkles,
+  Target,
+  Type,
+  UserRound,
 };
 
 /** Semantic accent → Tailwind class string. The class strings are written

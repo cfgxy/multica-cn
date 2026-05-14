@@ -232,7 +232,8 @@
       "other_category": "其他"
     },
     "template_card": {
-      "skills_other": "{{count}} 个 skill"
+      "skills_other": "{{count}} 个 skill",
+      "prompt_only": "纯指令"
     },
     "template_detail": {
       "load_failed": "加载模板失败",

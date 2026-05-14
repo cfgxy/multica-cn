@@ -238,7 +238,8 @@
     },
     "template_card": {
       "skills_one": "{{count}} skill",
-      "skills_other": "{{count}} skills"
+      "skills_other": "{{count}} skills",
+      "prompt_only": "Prompt only"
     },
     "template_detail": {
       "load_failed": "Failed to load template",

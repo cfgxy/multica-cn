@@ -145,32 +145,37 @@ export function TemplateDetail({
             />
           </section>
 
-          {/* Skill list — always visible (summary has cached descriptions) */}
-          <section className="mt-6">
-            <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-              {t(($) => $.create_dialog.template_detail.skill_count, {
-                count: template.skills.length,
-              })}
-            </h3>
-            <ul className="mt-3 space-y-2">
-              {template.skills.map((s) => (
-                <li
-                  key={s.source_url}
-                  className="rounded-lg border bg-card px-3 py-2.5"
-                >
-                  <div className="flex items-center gap-2">
-                    <Check className="h-4 w-4 text-success" />
-                    <span className="font-mono text-xs font-medium">{s.cached_name}</span>
-                  </div>
-                  {s.cached_description ? (
-                    <p className="mt-1 ml-6 text-xs text-muted-foreground">
-                      {s.cached_description}
-                    </p>
-                  ) : null}
-                </li>
-              ))}
-            </ul>
-          </section>
+          {/* Skill list — hidden entirely for prompt-only templates. Most of
+              the catalog is 0-skill; a section reading "Includes 0 skills"
+              with an empty list would just be visual noise. The Instructions
+              section below carries the agent's identity for these. */}
+          {template.skills.length > 0 ? (
+            <section className="mt-6">
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                {t(($) => $.create_dialog.template_detail.skill_count, {
+                  count: template.skills.length,
+                })}
+              </h3>
+              <ul className="mt-3 space-y-2">
+                {template.skills.map((s) => (
+                  <li
+                    key={s.source_url}
+                    className="rounded-lg border bg-card px-3 py-2.5"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Check className="h-4 w-4 text-success" />
+                      <span className="font-mono text-xs font-medium">{s.cached_name}</span>
+                    </div>
+                    {s.cached_description ? (
+                      <p className="mt-1 ml-6 text-xs text-muted-foreground">
+                        {s.cached_description}
+                      </p>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            </section>
+          ) : null}
 
           {/* Instructions — lazy fetch + loading/error states */}
           <section className="mt-6">
