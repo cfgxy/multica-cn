@@ -21,7 +21,7 @@ import { Eye, FileText, Loader2, Download } from "lucide-react";
 import { useT } from "../../i18n";
 import { useAttachmentDownloadResolver } from "../attachment-download-context";
 import { useAttachmentPreview } from "../attachment-preview-modal";
-import { isPreviewable } from "../utils/preview";
+import { getPreviewKind } from "../utils/preview";
 
 
 // ---------------------------------------------------------------------------
@@ -44,15 +44,27 @@ function FileCardView({ node }: NodeViewProps) {
     openByUrl(href);
   };
 
-  // The NodeView only holds href + filename. The full Attachment (with
-  // content_type / download_url) lives in the surrounding
-  // AttachmentDownloadProvider — resolve it lazily at click time so the
-  // eye button is only offered when we both know the record and the
-  // dispatcher recognizes the type.
+  // Preview gate mirrors the Download gate (href is enough). We attempt
+  // to resolve the full Attachment from the surrounding provider, but its
+  // absence is no longer fatal — media kinds (pdf/video/audio) only need
+  // the URL, so they remain previewable even when `resolveAttachment`
+  // misses (e.g. the URL was copy-pasted across comments and isn't in the
+  // current entity's attachments). Text kinds still require the id because
+  // the preview proxy is ID-keyed.
   const attachment = href ? resolveAttachment(href) : undefined;
-  const previewable = attachment
-    ? isPreviewable(attachment.content_type, attachment.filename)
-    : false;
+  const kind = filename
+    ? getPreviewKind(attachment?.content_type ?? "", filename)
+    : null;
+  const isMediaKind = kind === "pdf" || kind === "video" || kind === "audio";
+  const canPreview = !!href && kind !== null && (!!attachment || isMediaKind);
+
+  const openPreview = () => {
+    if (attachment) {
+      preview.tryOpen({ kind: "full", attachment });
+    } else if (href) {
+      preview.tryOpen({ kind: "url", url: href, filename });
+    }
+  };
 
   return (
     <NodeViewWrapper as="div" className="file-card-node" data-type="fileCard">
@@ -69,7 +81,7 @@ function FileCardView({ node }: NodeViewProps) {
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm">{uploading ? t(($) => $.file_card.uploading, { filename }) : filename}</p>
         </div>
-        {!uploading && href && previewable && attachment && (
+        {!uploading && canPreview && (
           <button
             type="button"
             className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
@@ -78,7 +90,7 @@ function FileCardView({ node }: NodeViewProps) {
             onMouseDown={(e) => {
               e.preventDefault();
               e.stopPropagation();
-              preview.tryOpen(attachment);
+              openPreview();
             }}
           >
             <Eye className="size-3.5" />

@@ -164,7 +164,7 @@ function AttachmentList({ attachments, content, className }: { attachments?: Att
               className="shrink-0 rounded-md p-1 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
               title={t(($) => $.attachment.preview)}
               aria-label={t(($) => $.attachment.preview)}
-              onClick={() => preview.tryOpen(a)}
+              onClick={() => preview.tryOpen({ kind: "full", attachment: a })}
             >
               <Eye className="size-3.5" />
             </button>
