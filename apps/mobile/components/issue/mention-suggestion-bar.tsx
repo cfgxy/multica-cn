@@ -1,58 +1,148 @@
 /**
- * Above-input suggestion bar for @mentions in the comment composer.
+ * Above-input suggestion bar for @mentions.
  *
- * iOS-native pattern (Slack iOS / Linear iOS / Discord iOS): when the user
- * is composing an `@<token>`, a horizontal-scroll-free bar appears just
- * above the input row with filtered candidates. Tap a row → caller inserts
- * the mention. The suggestion bar does NOT manage state itself.
+ * Two modes — `comment` (the default, used in issue comment composer
+ * and new-issue body) and `chat` (used in chat composer).
  *
- * Sections (in order):
- *   1. `@all` (single static row, only visible when query matches "all"
+ * `comment` sections:
+ *   1. `@all` (single static row; visible when query matches "all"
  *      prefix or is empty)
  *   2. Members — sorted alphabetically
  *   3. Agents — sorted alphabetically
  *
- * Recency-sort and issue-cross-references are deferred to v2 (see
- * `~/.claude/plans/plan-polymorphic-hickey.md`).
+ * `chat` sections (chat is user ↔ single agent — `@member`/`@agent` are
+ * noise; `@` here means "reference a resource for the agent"):
+ *   1. Recent — issues the user opened most recently (from the in-memory
+ *      viewed-issues store), max 5
+ *   2. My issues — assigned-to-me, deduped against Recent, max 10
+ *
+ * Closed issues (status `done` / `cancelled`) are dimmed but selectable,
+ * matching web's behaviour (mention-suggestion.tsx).
  */
 import { useMemo } from "react";
 import { FlatList, Pressable, View } from "react-native";
-import { useQuery } from "@tanstack/react-query";
-import type { Agent, MemberWithUser } from "@multica/core/types";
+import { useQueries, useQuery } from "@tanstack/react-query";
+import type { Agent, Issue, MemberWithUser } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
+import { StatusIcon } from "@/components/ui/status-icon";
 import { memberListOptions } from "@/data/queries/members";
 import { agentListOptions } from "@/data/queries/agents";
+import { issueDetailOptions } from "@/data/queries/issues";
+import { myIssueListOptions } from "@/data/queries/my-issues";
+import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import {
+  selectViewedIssueIds,
+  useViewedIssuesStore,
+} from "@/data/viewed-issues-store";
 import type { MentionMarker } from "@/lib/mention-serialize";
 import { cn } from "@/lib/utils";
+
+type Mode = "comment" | "chat";
 
 type Row =
   | { kind: "all" }
   | { kind: "section"; label: string }
   | { kind: "member"; member: MemberWithUser }
   | { kind: "agent"; agent: Agent }
+  | { kind: "issue"; issue: Issue }
   | { kind: "empty" };
 
 interface Props {
   visible: boolean;
   query: string;
   onSelect: (mention: MentionMarker) => void;
+  /** Default `"comment"` to preserve existing comment-composer and
+   *  new-issue behaviour. `"chat"` switches the bar to issue mode. */
+  mode?: Mode;
 }
 
-export function MentionSuggestionBar({ visible, query, onSelect }: Props) {
+const RECENT_LIMIT = 5;
+const MY_ISSUES_LIMIT = 10;
+
+export function MentionSuggestionBar({
+  visible,
+  query,
+  onSelect,
+  mode = "comment",
+}: Props) {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
-  const { data: members = [] } = useQuery(memberListOptions(wsId));
-  const { data: agents = [] } = useQuery(agentListOptions(wsId));
+  const isChat = mode === "chat";
+
+  // Comment-mode data — disabled in chat mode to avoid wasted fetches.
+  const { data: members = [] } = useQuery({
+    ...memberListOptions(wsId),
+    enabled: !isChat && !!wsId,
+  });
+  const { data: agents = [] } = useQuery({
+    ...agentListOptions(wsId),
+    enabled: !isChat && !!wsId,
+  });
+
+  // Chat-mode data.
+  const userId = useAuthStore((s) => s.user?.id ?? null);
+  const viewedIds = useViewedIssuesStore(selectViewedIssueIds(wsId));
+  const recentIds = useMemo(
+    () => viewedIds.slice(0, RECENT_LIMIT),
+    [viewedIds],
+  );
+  const recentQueries = useQueries({
+    queries: recentIds.map((id) => ({
+      ...issueDetailOptions(wsId, id),
+      enabled: isChat && !!wsId,
+    })),
+  });
+  const recentIssues = useMemo<Issue[]>(
+    () =>
+      recentQueries
+        .map((q) => q.data)
+        .filter((i): i is Issue => !!i),
+    [recentQueries],
+  );
+
+  const myFilter = useMemo(
+    () => (userId ? { assignee_id: userId } : { assignee_id: "" }),
+    [userId],
+  );
+  const { data: myIssuesAll = [] } = useQuery({
+    ...myIssueListOptions(wsId, "assigned", myFilter),
+    enabled: isChat && !!wsId && !!userId,
+  });
 
   const rows = useMemo<Row[]>(() => {
     const q = query.trim().toLowerCase();
-    const showAll = !q || "all".startsWith(q);
 
+    if (isChat) {
+      const issueMatches = (i: Issue) =>
+        !q ||
+        i.identifier.toLowerCase().includes(q) ||
+        i.title.toLowerCase().includes(q);
+
+      const matchedRecent = recentIssues.filter(issueMatches);
+      const recentIdSet = new Set(matchedRecent.map((i) => i.id));
+      const matchedMine = myIssuesAll
+        .filter((i) => !recentIdSet.has(i.id) && issueMatches(i))
+        .slice(0, MY_ISSUES_LIMIT);
+
+      const out: Row[] = [];
+      if (matchedRecent.length > 0) {
+        out.push({ kind: "section", label: "Recent" });
+        for (const i of matchedRecent) out.push({ kind: "issue", issue: i });
+      }
+      if (matchedMine.length > 0) {
+        out.push({ kind: "section", label: "My issues" });
+        for (const i of matchedMine) out.push({ kind: "issue", issue: i });
+      }
+      if (out.length === 0) out.push({ kind: "empty" });
+      return out;
+    }
+
+    // Comment mode (unchanged).
+    const showAll = !q || "all".startsWith(q);
     const matchedMembers = [...members]
       .filter((m) => !q || m.name.toLowerCase().includes(q))
       .sort((a, b) => a.name.localeCompare(b.name));
-
     const matchedAgents = [...agents]
       .filter((a) => !q || a.name.toLowerCase().includes(q))
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -69,7 +159,7 @@ export function MentionSuggestionBar({ visible, query, onSelect }: Props) {
     }
     if (out.length === 0) out.push({ kind: "empty" });
     return out;
-  }, [members, agents, query]);
+  }, [isChat, query, recentIssues, myIssuesAll, members, agents]);
 
   if (!visible) return null;
 
@@ -90,13 +180,12 @@ export function MentionSuggestionBar({ visible, query, onSelect }: Props) {
                 ? `row:m:${row.member.user_id}`
                 : row.kind === "agent"
                   ? `row:a:${row.agent.id}`
-                  : `row:empty:${i}`
+                  : row.kind === "issue"
+                    ? `row:i:${row.issue.id}`
+                    : `row:empty:${i}`
         }
         renderItem={({ item, index }) => {
           if (item.kind === "section") {
-            // Tiny separator + uppercase label gives clear visual structure
-            // between @all / Members / Agents segments without taking real
-            // estate.
             return (
               <View
                 className={cn(
@@ -161,23 +250,56 @@ export function MentionSuggestionBar({ visible, query, onSelect }: Props) {
               </Pressable>
             );
           }
-          // agent
+          if (item.kind === "agent") {
+            return (
+              <Pressable
+                onPress={() =>
+                  onSelect({
+                    type: "agent",
+                    id: item.agent.id,
+                    name: item.agent.name,
+                  })
+                }
+                className="flex-row items-center gap-3 px-3 py-2 active:bg-secondary"
+              >
+                <ActorAvatar type="agent" id={item.agent.id} size={28} />
+                <Text className="flex-1 text-sm text-foreground">
+                  {item.agent.name}
+                </Text>
+                <Badge label="Agent" tone="brand" />
+              </Pressable>
+            );
+          }
+          // issue
+          const closed =
+            item.issue.status === "done" ||
+            item.issue.status === "cancelled";
           return (
             <Pressable
               onPress={() =>
                 onSelect({
-                  type: "agent",
-                  id: item.agent.id,
-                  name: item.agent.name,
+                  type: "issue",
+                  id: item.issue.id,
+                  name: item.issue.identifier,
                 })
               }
-              className="flex-row items-center gap-3 px-3 py-2 active:bg-secondary"
+              className={cn(
+                "flex-row items-center gap-3 px-3 py-2 active:bg-secondary",
+                closed && "opacity-60",
+              )}
             >
-              <ActorAvatar type="agent" id={item.agent.id} size={28} />
-              <Text className="flex-1 text-sm text-foreground">
-                {item.agent.name}
+              <View className="size-7 items-center justify-center">
+                <StatusIcon status={item.issue.status} size={16} />
+              </View>
+              <Text className="text-sm font-medium text-foreground">
+                {item.issue.identifier}
               </Text>
-              <Badge label="Agent" tone="brand" />
+              <Text
+                className="flex-1 text-sm text-muted-foreground"
+                numberOfLines={1}
+              >
+                {item.issue.title}
+              </Text>
             </Pressable>
           );
         }}

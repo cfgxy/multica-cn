@@ -116,7 +116,7 @@ export function ChatComposer({
 
   return (
     <View className="px-3 pb-2">
-      <MentionSuggestionBar {...mention.suggestionBar} />
+      <MentionSuggestionBar {...mention.suggestionBar} mode="chat" />
       <View
         className={cn(
           "rounded-3xl border bg-secondary",
