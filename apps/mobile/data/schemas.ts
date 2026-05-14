@@ -18,8 +18,10 @@ import type {
   IssueLabelsResponse,
   Label,
   ListLabelsResponse,
+  ListProjectResourcesResponse,
   ListProjectsResponse,
   Project,
+  ProjectResource,
   SendChatMessageResponse,
 } from "@multica/core/types";
 
@@ -72,7 +74,7 @@ export const EMPTY_ISSUE_LABELS_RESPONSE: IssueLabelsResponse = {
   labels: [],
 };
 
-const ProjectSchema = z.object({
+export const ProjectSchema = z.object({
   id: z.string(),
   workspace_id: z.string(),
   title: z.string(),
@@ -96,6 +98,55 @@ export const ListProjectsResponseSchema = z.object({
 
 export const EMPTY_LIST_PROJECTS_RESPONSE: ListProjectsResponse = {
   projects: [],
+  total: 0,
+};
+
+// Fallback for `GET /api/projects/{id}` when the response shape drifts.
+// `id` defaults to empty — caller can detect "not found / drift" by checking
+// `data.id === ""` and rendering an error state instead of pretending the
+// data is valid. Status / priority cast to the enum literals so TS callers
+// downstream still flow correctly; runtime values came from the schema
+// (`z.string()`), which would have already passed.
+export const EMPTY_PROJECT: Project = {
+  id: "",
+  workspace_id: "",
+  title: "",
+  description: null,
+  icon: null,
+  status: "planned",
+  priority: "none",
+  lead_type: null,
+  lead_id: null,
+  created_at: "",
+  updated_at: "",
+  issue_count: 0,
+  done_count: 0,
+  resource_count: 0,
+};
+
+// Project resources are typed pointers to external resources (today: GitHub
+// repos). resource_ref shape varies per resource_type; lenient on both
+// `resource_type` (so a future type doesn't crash the list) and
+// `resource_ref` (passes through unchanged for the renderer to dispatch on).
+const ProjectResourceSchema = z.object({
+  id: z.string(),
+  project_id: z.string(),
+  workspace_id: z.string(),
+  resource_type: z.string(),
+  resource_ref: z.unknown(),
+  label: z.string().nullable(),
+  position: z.number().default(0),
+  created_at: z.string(),
+  created_by: z.string().nullable(),
+}).loose();
+
+export const ListProjectResourcesResponseSchema = z.object({
+  resources: z.array(ProjectResourceSchema).default([]),
+  total: z.number().default(0),
+}).loose();
+
+export const EMPTY_LIST_PROJECT_RESOURCES_RESPONSE: ListProjectResourcesResponse = {
+  resources: [],
   total: 0,
 };
 
@@ -161,4 +212,4 @@ export const SendChatMessageResponseSchema: z.ZodType<SendChatMessageResponse> =
 }).loose();
 
 // Helpers re-exported for ergonomic single-import at the call site.
-export type { Label, Project };
+export type { Label, Project, ProjectResource };

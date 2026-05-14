@@ -21,6 +21,8 @@ import type {
   ChatSession,
   Comment,
   CreateIssueRequest,
+  CreateProjectRequest,
+  CreateProjectResourceRequest,
   InboxItem,
   Issue,
   IssueLabelsResponse,
@@ -28,12 +30,16 @@ import type {
   ListIssuesParams,
   ListIssuesResponse,
   ListLabelsResponse,
+  ListProjectResourcesResponse,
   ListProjectsResponse,
   MemberWithUser,
+  Project,
+  ProjectResource,
   Reaction,
   SendChatMessageResponse,
   TimelinePage,
   UpdateIssueRequest,
+  UpdateProjectRequest,
   User,
   Workspace,
 } from "@multica/core/types";
@@ -53,9 +59,13 @@ import {
   EMPTY_CHAT_PENDING_TASK,
   EMPTY_CHAT_SESSION_LIST,
   EMPTY_LIST_LABELS_RESPONSE,
+  EMPTY_LIST_PROJECT_RESOURCES_RESPONSE,
   EMPTY_LIST_PROJECTS_RESPONSE,
+  EMPTY_PROJECT,
   ListLabelsResponseSchema,
+  ListProjectResourcesResponseSchema,
   ListProjectsResponseSchema,
+  ProjectSchema,
   SendChatMessageResponseSchema,
 } from "./schemas";
 import { getCurrentSlug } from "./workspace-store";
@@ -484,6 +494,86 @@ class ApiClient {
       ListProjectsResponseSchema,
       EMPTY_LIST_PROJECTS_RESPONSE,
       { endpoint: "GET /api/projects" },
+    );
+  }
+
+  async getProject(
+    id: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<Project> {
+    const raw = await this.fetch<unknown>(`/api/projects/${id}`, {
+      signal: opts?.signal,
+    });
+    // Drift-safe parse — UI checks `data.id === ""` to render the
+    // "project not found / shape drifted" error state instead of a
+    // half-populated detail page.
+    return parseWithFallback(raw, ProjectSchema, EMPTY_PROJECT, {
+      endpoint: "GET /api/projects/:id",
+    });
+  }
+
+  // Write endpoints — no parseWithFallback (mirrors updateIssue:430). A
+  // malformed write response surfaces as an error so the optimistic
+  // patch rolls back; pretending the write succeeded with empty data
+  // would silently desync caches.
+  async createProject(body: CreateProjectRequest): Promise<Project> {
+    return this.fetch<Project>("/api/projects", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async updateProject(
+    id: string,
+    body: UpdateProjectRequest,
+  ): Promise<Project> {
+    return this.fetch<Project>(`/api/projects/${id}`, {
+      method: "PUT",
+      body: JSON.stringify(body),
+    });
+  }
+
+  async deleteProject(id: string): Promise<void> {
+    await this.fetch<void>(`/api/projects/${id}`, { method: "DELETE" });
+  }
+
+  // --- Project resources ---
+  async listProjectResources(
+    projectId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<ListProjectResourcesResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/projects/${projectId}/resources`,
+      { signal: opts?.signal },
+    );
+    return parseWithFallback(
+      raw,
+      ListProjectResourcesResponseSchema,
+      EMPTY_LIST_PROJECT_RESOURCES_RESPONSE,
+      { endpoint: "GET /api/projects/:id/resources" },
+    );
+  }
+
+  async createProjectResource(
+    projectId: string,
+    body: CreateProjectResourceRequest,
+  ): Promise<ProjectResource> {
+    return this.fetch<ProjectResource>(
+      `/api/projects/${projectId}/resources`,
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    );
+  }
+
+  async deleteProjectResource(
+    projectId: string,
+    resourceId: string,
+  ): Promise<void> {
+    await this.fetch<void>(
+      `/api/projects/${projectId}/resources/${resourceId}`,
+      { method: "DELETE" },
     );
   }
 
