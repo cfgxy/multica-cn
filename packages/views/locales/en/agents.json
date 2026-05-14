@@ -216,6 +216,7 @@
     "duplicate_copy_suffix": " (Copy)",
     "create": "Create",
     "creating": "Creating...",
+    "adding_to_squad": "Adding to squad...",
     "cancel": "Cancel",
     "create_failed_toast": "Failed to create agent",
     "back_aria": "Back",
@@ -225,6 +226,13 @@
     "template_created_with_reuse_toast_other": "Agent \"{{name}}\" created. Reused {{count}} existing skills.",
     "skill_attach_failed_toast": "Agent created, but failed to attach skills: {{error}}",
     "squad_join_failed_toast": "Agent \"{{name}}\" was created but couldn't join the squad: {{error}}. You can add it manually from Members.",
+    "squad_join_retry": {
+      "title": "Couldn't add agent to this squad",
+      "description": "Agent \"{{name}}\" was created, but adding it to this squad failed. Retry, or close and add it manually from Members.",
+      "retry_button": "Retry adding to squad",
+      "retrying": "Adding to squad...",
+      "close_button": "Close"
+    },
     "chooser": {
       "blank_title": "Start blank",
       "blank_desc": "Write everything yourself.",

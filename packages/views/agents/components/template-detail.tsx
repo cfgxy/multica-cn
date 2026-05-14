@@ -23,6 +23,11 @@ interface TemplateDetailProps {
   /** True while the parent's create request is in flight; we disable the
    *  Use button so the user can't double-click. */
   creating?: boolean;
+  /** Overrides the in-flight button label. Squad-context create runs a
+   *  follow-up AddSquadMember after createAgentFromTemplate; the parent
+   *  pipes "Adding to squad..." through here so the CTA mirrors that
+   *  phase instead of stuck on "Creating...". */
+  creatingLabel?: string;
   /** Upstream URLs the server reported as unreachable on the most recent
    *  create attempt. Surfaces an inline error banner so the user knows
    *  *why* Create didn't navigate. The detail step is the only place
@@ -60,6 +65,7 @@ export function TemplateDetail({
   template,
   onUse,
   creating = false,
+  creatingLabel,
   failedURLs,
   runtimes,
   runtimesLoading,
@@ -215,7 +221,7 @@ export function TemplateDetail({
           {creating ? (
             <>
               <Loader2 className="h-4 w-4 animate-spin" />
-              {t(($) => $.create_dialog.template_detail.creating)}
+              {creatingLabel ?? t(($) => $.create_dialog.template_detail.creating)}
             </>
           ) : (
             <>

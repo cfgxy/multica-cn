@@ -3,7 +3,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, fireEvent, cleanup } from "@testing-library/react";
-import type { Agent, MemberWithUser, RuntimeDevice } from "@multica/core/types";
+import type { Agent, CreateAgentRequest, MemberWithUser, RuntimeDevice } from "@multica/core/types";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
 import { NavigationProvider, type NavigationAdapter } from "../../navigation";
@@ -42,7 +42,16 @@ vi.mock("../../common/actor-avatar", () => ({
 }));
 
 vi.mock("sonner", () => ({
-  toast: { error: vi.fn(), success: vi.fn() },
+  toast: { error: vi.fn(), success: vi.fn(), warning: vi.fn() },
+}));
+
+// Squad-join tests reach into api.addSquadMember; stub only the surface
+// we exercise so the test doesn't touch the real fetch helper.
+const addSquadMemberMock = vi.fn();
+vi.mock("@multica/core/api", () => ({
+  api: {
+    addSquadMember: (...args: unknown[]) => addSquadMemberMock(...args),
+  },
 }));
 
 import { CreateAgentDialog } from "./create-agent-dialog";
@@ -122,11 +131,23 @@ function makeTemplate(runtimeId: string): Agent {
   };
 }
 
-function renderDialog(runtimes: RuntimeDevice[], template?: Agent) {
+function renderDialog(
+  runtimes: RuntimeDevice[],
+  options: {
+    template?: Agent;
+    squadId?: string;
+    onCreate?: (data: CreateAgentRequest) => Promise<Agent | void>;
+  } = {},
+) {
+  const { template, squadId } = options;
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  const onCreate = vi.fn().mockResolvedValue(undefined);
+  // The renderDialog return value is used by tests to inspect mock calls
+  // (`.mock.calls[0]`). Default to a fresh vi.fn so existing tests still
+  // see Mock methods; explicit overrides come from the caller already
+  // typed as a function so we don't need the Mock surface for those.
+  const onCreate = options.onCreate ?? vi.fn().mockResolvedValue(undefined);
   const onClose = vi.fn();
   render(
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
@@ -138,6 +159,7 @@ function renderDialog(runtimes: RuntimeDevice[], template?: Agent) {
             members={members}
             currentUserId={ME}
             template={template}
+            squadId={squadId}
             onClose={onClose}
             onCreate={onCreate}
           />
@@ -153,7 +175,7 @@ function renderDialog(runtimes: RuntimeDevice[], template?: Agent) {
   if (!template) {
     fireEvent.click(screen.getByText(enAgents.create_dialog.chooser.blank_title));
   }
-  return { onCreate, onClose };
+  return { onCreate, onClose, queryClient };
 }
 
 describe("CreateAgentDialog runtime visibility gate", () => {
@@ -255,7 +277,7 @@ describe("CreateAgentDialog runtime visibility gate", () => {
       visibility: "private",
     });
     const template = makeTemplate("rt-others-private");
-    const { onCreate } = renderDialog([othersPrivate, mine], template);
+    const { onCreate } = renderDialog([othersPrivate, mine], { template });
 
     expect(
       screen.getByText("My Runtime", { selector: "span.truncate" }),
@@ -267,8 +289,39 @@ describe("CreateAgentDialog runtime visibility gate", () => {
     // Sanity check: with a usable selection seeded, Create should submit.
     fireEvent.click(screen.getByText("Create"));
     await new Promise((r) => setTimeout(r, 0));
-    expect(onCreate).toHaveBeenCalledTimes(1);
-    expect(onCreate.mock.calls[0]?.[0].runtime_id).toBe("rt-mine");
+    const onCreateMock = onCreate as ReturnType<typeof vi.fn>;
+    expect(onCreateMock).toHaveBeenCalledTimes(1);
+    expect(onCreateMock.mock.calls[0]?.[0].runtime_id).toBe("rt-mine");
+  });
+
+  it("disables Cancel and Create while a submit is in flight", async () => {
+    const mine = makeRuntime({
+      id: "rt-mine",
+      name: "My Runtime",
+      owner_id: ME,
+      visibility: "private",
+    });
+    // onCreate never resolves so the dialog stays in the "creating-agent"
+    // phase — exactly the window where a hasty backdrop click would
+    // previously have dismissed the dialog mid-flight.
+    const onCreate = vi.fn(
+      () => new Promise<Agent | void>(() => undefined),
+    );
+    renderDialog([mine], { onCreate });
+    fireEvent.change(screen.getByPlaceholderText(/Deep Research Agent/i), {
+      target: { value: "Phase Test Agent" },
+    });
+    fireEvent.click(screen.getByText("Create"));
+    await new Promise((r) => setTimeout(r, 0));
+
+    const cancelBtn = screen
+      .getAllByRole("button")
+      .find((b) => b.textContent === "Cancel") as HTMLButtonElement;
+    expect(cancelBtn.disabled).toBe(true);
+    const submitBtn = screen
+      .getAllByRole("button")
+      .find((b) => b.textContent?.includes("Creating")) as HTMLButtonElement;
+    expect(submitBtn.disabled).toBe(true);
   });
 
   it("disables Create when the selected runtime is locked (template + no usable fallback)", () => {
@@ -285,7 +338,7 @@ describe("CreateAgentDialog runtime visibility gate", () => {
     // visible — that's the scope where the selected-but-locked state
     // can persist after the initial seed search returns nothing.
     const template = makeTemplate("rt-only-others-private");
-    renderDialog([onlyOthersPrivate], template);
+    renderDialog([onlyOthersPrivate], { template });
 
     // The Create button is rendered by lucide-free CTA text "Create".
     const createBtn = screen
@@ -293,5 +346,104 @@ describe("CreateAgentDialog runtime visibility gate", () => {
       .find((b) => b.textContent === "Create");
     expect(createBtn).toBeDefined();
     expect((createBtn as HTMLButtonElement).disabled).toBe(true);
+  });
+});
+
+describe("CreateAgentDialog squad-join recovery", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    addSquadMemberMock.mockReset();
+  });
+  afterEach(() => {
+    cleanup();
+    document.body.innerHTML = "";
+  });
+
+  const fillFormAndSubmit = (agentName = "Squad Agent") => {
+    fireEvent.change(screen.getByPlaceholderText(/Deep Research Agent/i), {
+      target: { value: agentName },
+    });
+    fireEvent.click(screen.getByText("Create"));
+  };
+
+  it("keeps the dialog open and shows a retry CTA when addSquadMember fails", async () => {
+    const mine = makeRuntime({
+      id: "rt-mine",
+      name: "My Runtime",
+      owner_id: ME,
+      visibility: "private",
+    });
+    const created: Agent = { ...makeTemplate("rt-mine"), id: "new-agent-id", name: "Squad Agent" };
+    const onCreate = vi.fn().mockResolvedValue(created);
+    addSquadMemberMock.mockRejectedValueOnce(new Error("forbidden"));
+    const { onClose } = renderDialog([mine], {
+      squadId: "squad-1",
+      onCreate,
+    });
+
+    fillFormAndSubmit();
+    // Two awaits: one for onCreate's microtask, one for addSquadMember.
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(addSquadMemberMock).toHaveBeenCalledWith("squad-1", {
+      member_type: "agent",
+      member_id: "new-agent-id",
+    });
+    expect(onClose).not.toHaveBeenCalled();
+    // The retry title appears in both the dialog header and the body
+    // card — either is enough proof we're in the retry view.
+    expect(
+      screen.getAllByText(enAgents.create_dialog.squad_join_retry.title).length,
+    ).toBeGreaterThan(0);
+    expect(
+      screen.getByText(enAgents.create_dialog.squad_join_retry.retry_button),
+    ).toBeInTheDocument();
+  });
+
+  it("retries addSquadMember and closes the dialog on success", async () => {
+    const mine = makeRuntime({
+      id: "rt-mine",
+      name: "My Runtime",
+      owner_id: ME,
+      visibility: "private",
+    });
+    const created: Agent = { ...makeTemplate("rt-mine"), id: "new-agent-id", name: "Squad Agent" };
+    const onCreate = vi.fn().mockResolvedValue(created);
+    addSquadMemberMock
+      .mockRejectedValueOnce(new Error("forbidden"))
+      .mockResolvedValueOnce({
+        id: "sm-1",
+        squad_id: "squad-1",
+        member_type: "agent",
+        member_id: "new-agent-id",
+        role: "",
+        created_at: "2026-05-14T00:00:00Z",
+      });
+    const { onClose, queryClient } = renderDialog([mine], {
+      squadId: "squad-1",
+      onCreate,
+    });
+
+    fillFormAndSubmit();
+    await new Promise((r) => setTimeout(r, 0));
+    await new Promise((r) => setTimeout(r, 0));
+
+    // Trigger the retry button now that the failure view is on screen.
+    fireEvent.click(
+      screen.getByText(enAgents.create_dialog.squad_join_retry.retry_button),
+    );
+    await new Promise((r) => setTimeout(r, 0));
+
+    expect(addSquadMemberMock).toHaveBeenCalledTimes(2);
+    expect(onClose).toHaveBeenCalledTimes(1);
+
+    // Optimistic insert: the squad members cache should contain the new
+    // agent the moment the join resolves, without a refetch.
+    const cached = queryClient.getQueryData<
+      Array<{ member_id: string; member_type: string }>
+    >(["workspaces", "ws-1", "squads", "squad-1", "members"]);
+    expect(cached?.[0]?.member_id).toBe("new-agent-id");
+    expect(cached?.[0]?.member_type).toBe("agent");
   });
 });

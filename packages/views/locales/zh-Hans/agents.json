@@ -212,6 +212,7 @@
     "duplicate_copy_suffix": "（副本）",
     "create": "创建",
     "creating": "创建中...",
+    "adding_to_squad": "正在加入小队...",
     "cancel": "取消",
     "create_failed_toast": "创建智能体失败",
     "back_aria": "返回",
@@ -220,6 +221,13 @@
     "template_created_with_reuse_toast_other": "智能体「{{name}}」已创建。复用了 {{count}} 个现有 skill。",
     "skill_attach_failed_toast": "智能体已创建，但 skill 关联失败：{{error}}",
     "squad_join_failed_toast": "智能体「{{name}}」已创建，但加入小队失败：{{error}}。你可以在 Members 标签里手动添加。",
+    "squad_join_retry": {
+      "title": "未能将智能体加入小队",
+      "description": "智能体「{{name}}」已创建，但加入小队失败。你可以重试，也可以关闭弹窗后在 Members 标签里手动添加。",
+      "retry_button": "重试加入小队",
+      "retrying": "正在加入小队...",
+      "close_button": "关闭"
+    },
     "chooser": {
       "blank_title": "从零开始",
       "blank_desc": "全部由你来填写。",

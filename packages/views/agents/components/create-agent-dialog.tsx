@@ -2,9 +2,11 @@
 
 import { useState } from "react";
 import {
+  AlertTriangle,
   ArrowLeft,
   FileText,
   Globe,
+  Loader2,
   Lock,
   PenLine,
 } from "lucide-react";
@@ -28,6 +30,7 @@ import type {
   RuntimeDevice,
   MemberWithUser,
   CreateAgentRequest,
+  SquadMember,
 } from "@multica/core/types";
 import { isImeComposing } from "@multica/core/utils";
 import {
@@ -178,7 +181,20 @@ export function CreateAgentDialog({
   const [selectedSkillIds, setSelectedSkillIds] = useState<Set<string>>(
     () => new Set(template?.skills.map((s) => s.id) ?? []),
   );
-  const [creating, setCreating] = useState(false);
+  // Submit progresses through phases so the action button can show
+  // accurate copy ("Creating..." → "Adding to squad...") instead of a
+  // generic spinner. Phases are mutually exclusive — only one network
+  // call is in flight at a time.
+  type SubmitPhase = "idle" | "creating-agent" | "adding-to-squad";
+  const [phase, setPhase] = useState<SubmitPhase>("idle");
+  const creating = phase !== "idle";
+  // When the agent was created but addSquadMember failed, we hold the
+  // agent here so the dialog can stay open with a Retry button —
+  // closing in that state would orphan the agent (created but not in
+  // the squad), which is the exact bug GPT-Boy flagged on MUL-2178.
+  const [squadJoinRetry, setSquadJoinRetry] = useState<
+    { agentId: string; displayName: string } | null
+  >(null);
   const [failedURLs, setFailedURLs] = useState<string[] | null>(null);
 
   // Duplicate-mode pre-fill: clone lands on the source agent's runtime so
@@ -217,19 +233,39 @@ export function CreateAgentDialog({
     setStep({ kind: "blank-form" });
   };
 
-  // Shared squad-join follow-up. Returns nothing — the caller has
-  // already shown its create-success toast; we only need to surface a
-  // warning when the agent landed but the squad-join failed. Cache
-  // invalidation for the squad's members list rides along so the
-  // Members tab re-renders without a manual refetch.
-  const attachToSquad = async (agentId: string, displayName: string) => {
-    if (!squadId) return;
+  // Shared squad-join follow-up. Returns `true` when the agent landed
+  // in the squad, `false` when AddSquadMember failed — the form path
+  // and the template path both use this signal to decide whether to
+  // close the dialog (success) or keep it open with a retry CTA
+  // (failure). On success we optimistically insert the SquadMember
+  // into the cache so the Members tab shows the new agent the instant
+  // the dialog closes, instead of leaving an empty-feeling beat while
+  // a background refetch lands. The invalidation still rides along so
+  // server-side joins (member metadata, role) reconcile in the
+  // background.
+  const attachToSquad = async (
+    agentId: string,
+    displayName: string,
+  ): Promise<boolean> => {
+    if (!squadId) return true;
+    setPhase("adding-to-squad");
     try {
-      await api.addSquadMember(squadId, {
+      const newMember = await api.addSquadMember(squadId, {
         member_type: "agent",
         member_id: agentId,
       });
       if (wsId) {
+        queryClient.setQueryData<SquadMember[]>(
+          [...workspaceKeys.squads(wsId), squadId, "members"],
+          (current = []) => {
+            const exists = current.some(
+              (m) =>
+                m.member_type === newMember.member_type &&
+                m.member_id === newMember.member_id,
+            );
+            return exists ? current : [...current, newMember];
+          },
+        );
         queryClient.invalidateQueries({
           queryKey: [...workspaceKeys.squads(wsId), squadId, "members"],
         });
@@ -237,14 +273,32 @@ export function CreateAgentDialog({
           queryKey: [...workspaceKeys.squads(wsId), squadId],
         });
       }
+      setSquadJoinRetry(null);
+      return true;
     } catch (err) {
+      setSquadJoinRetry({ agentId, displayName });
       toast.warning(
         t(($) => $.create_dialog.squad_join_failed_toast, {
           name: displayName,
           error: err instanceof Error ? err.message : "unknown error",
         }),
       );
+      return false;
+    } finally {
+      setPhase("idle");
     }
+  };
+
+  // Retry handler for the squad-join-failed state. Reuses attachToSquad
+  // so a second failure stays in the same UI; a success closes the
+  // dialog like the happy path.
+  const handleRetrySquadJoin = async () => {
+    if (!squadJoinRetry) return;
+    const ok = await attachToSquad(
+      squadJoinRetry.agentId,
+      squadJoinRetry.displayName,
+    );
+    if (ok) onClose();
   };
 
   // Template path is one-click — picker card click goes straight to the
@@ -267,7 +321,7 @@ export function CreateAgentDialog({
     }
 
     setFailedURLs(null);
-    setCreating(true);
+    setPhase("creating-agent");
     try {
       const resp = await api.createAgentFromTemplate({
         template_slug: tmpl.slug,
@@ -295,10 +349,15 @@ export function CreateAgentDialog({
       // Squad context: attach the freshly created agent to the squad
       // before closing — and skip the agent-detail navigation so the
       // user lands back on the squad page where they triggered the
-      // flow. Failures here are non-fatal; the agent exists and can be
-      // added manually if the join call 4xxs.
+      // flow. If the join fails the dialog stays open in the retry
+      // state (attachToSquad sets squadJoinRetry); we do NOT close
+      // here, otherwise the user can't recover without re-opening
+      // Members and adding manually.
       if (squadId && resp.agent.id) {
-        await attachToSquad(resp.agent.id, candidate);
+        const joined = await attachToSquad(resp.agent.id, candidate);
+        if (!joined) return;
+        onClose();
+        return;
       }
       onClose();
       // Land on the new agent's detail page so the user can verify or
@@ -308,8 +367,9 @@ export function CreateAgentDialog({
       // fallback) we skip the navigation: the agent was created server-
       // side, the list-invalidation above will surface it, and a push
       // to `/agents/` would land on a broken detail page. Squad-context
-      // entry also skips the push — the user wants to stay on Members.
-      if (resp.agent.id && !squadId) {
+      // entry has already returned above — its navigation stays on
+      // Members.
+      if (resp.agent.id) {
         navigation.push(paths.agentDetail(resp.agent.id));
       }
     } catch (err) {
@@ -321,14 +381,14 @@ export function CreateAgentDialog({
           err instanceof Error ? err.message : t(($) => $.create_dialog.create_failed_toast),
         );
       }
-      setCreating(false);
+      setPhase("idle");
     }
   };
 
   const handleSubmit = async () => {
     if (!name.trim() || !selectedRuntime || selectedRuntimeLocked) return;
     setFailedURLs(null);
-    setCreating(true);
+    setPhase("creating-agent");
 
     // Template path goes through quickCreateFromTemplate directly from
     // the picker — no form step. So handleSubmit only fires for blank /
@@ -399,35 +459,43 @@ export function CreateAgentDialog({
       }
       // Squad context: attach the agent after skills land so the
       // squad's Members tab shows the agent with its skills already
-      // in place. Atomicity is best-effort by design (see plan in
-      // MUL-2178) — a partial failure surfaces a warning toast and
-      // the user can retry from the Add Member dialog.
+      // in place. The dialog only closes when AddSquadMember succeeds
+      // — on failure attachToSquad parks the agent in squadJoinRetry
+      // so the user can retry without re-creating the agent (the
+      // alternative was a warning toast that the user could miss and
+      // end up with an orphan agent not in the squad).
       if (createdAgent && squadId) {
-        await attachToSquad(createdAgent.id, createdAgent.name);
+        const joined = await attachToSquad(createdAgent.id, createdAgent.name);
+        if (!joined) return;
       }
       onClose();
     } catch (err) {
       toast.error(err instanceof Error ? err.message : t(($) => $.create_dialog.create_failed_toast));
-      setCreating(false);
+      setPhase("idle");
     }
   };
 
   // Header title — narrowed by step.kind, so reads on `step.template` are
-  // type-safe and there's no fallback string compilation needed.
-  const headerTitle = (() => {
-    switch (step.kind) {
-      case "chooser":
-        return t(($) => $.create_dialog.title_create);
-      case "blank-form":
-        return t(($) => $.create_dialog.title_create);
-      case "duplicate-form":
-        return t(($) => $.create_dialog.title_duplicate);
-      case "template-picker":
-        return t(($) => $.create_dialog.template_picker.title);
-      case "template-detail":
-        return step.template.name;
-    }
-  })();
+  // type-safe and there's no fallback string compilation needed. When
+  // the squad-join retry takes over, the title reflects the new task
+  // ("Couldn't add agent...") so the user isn't staring at "Create
+  // Agent" while looking at a failure recovery screen.
+  const headerTitle = squadJoinRetry
+    ? t(($) => $.create_dialog.squad_join_retry.title)
+    : (() => {
+        switch (step.kind) {
+          case "chooser":
+            return t(($) => $.create_dialog.title_create);
+          case "blank-form":
+            return t(($) => $.create_dialog.title_create);
+          case "duplicate-form":
+            return t(($) => $.create_dialog.title_duplicate);
+          case "template-picker":
+            return t(($) => $.create_dialog.template_picker.title);
+          case "template-detail":
+            return step.template.name;
+        }
+      })();
 
   // Back navigation — each kind maps to one previous kind. Duplicate-form
   // and chooser have no back (duplicate enters from a row action, chooser
@@ -449,13 +517,27 @@ export function CreateAgentDialog({
     }
   };
 
+  // Back is hidden in the squad-join retry state: the agent already
+  // exists, so navigating back to a step that mutates the form would
+  // imply the user is still composing the agent. Recovery is forward-
+  // only — retry the join or close out.
   const showBackButton =
-    step.kind === "template-picker" ||
-    step.kind === "template-detail" ||
-    step.kind === "blank-form";
+    !squadJoinRetry &&
+    (step.kind === "template-picker" ||
+      step.kind === "template-detail" ||
+      step.kind === "blank-form");
 
   return (
-    <Dialog open onOpenChange={(v) => { if (!v) onClose(); }}>
+    <Dialog
+      open
+      onOpenChange={(v) => {
+        // Don't let backdrop / Escape dismiss the dialog while a network
+        // call is in flight — closing mid-flight would either drop the
+        // user before AddSquadMember finishes (silent partial success)
+        // or orphan the agent if the join request is still pending.
+        if (!v && !creating) onClose();
+      }}
+    >
       <DialogContent className={agentDialogContentClass(step)}>
         <DialogHeader className="border-b px-5 py-3 space-y-0">
           <div className="flex items-center gap-2">
@@ -471,20 +553,73 @@ export function CreateAgentDialog({
             )}
             <DialogTitle className="text-base font-semibold">{headerTitle}</DialogTitle>
           </div>
-          {step.kind === "chooser" && (
+          {!squadJoinRetry && step.kind === "chooser" && (
             <DialogDescription className="mt-1 text-xs">
               {t(($) => $.create_dialog.description_create)}
             </DialogDescription>
           )}
-          {step.kind === "duplicate-form" && template && (
+          {!squadJoinRetry && step.kind === "duplicate-form" && template && (
             <DialogDescription className="mt-1 text-xs">
               {t(($) => $.create_dialog.description_duplicate, { name: template.name })}
             </DialogDescription>
           )}
         </DialogHeader>
 
+        {/* ---------- Squad-join retry view ----------
+            Agent already exists; AddSquadMember failed. We replace the
+            entire step body with a focused recover screen instead of
+            wedging a banner into the form — leaving the create form
+            visible would imply the user is still creating something,
+            but the agent is already created and any further form edits
+            would be ignored. Retry runs AddSquadMember on the existing
+            agent; Close drops the user back to Members where Add Member
+            still works. */}
+        {squadJoinRetry && (
+          <div className="flex flex-1 flex-col">
+            <div className="flex flex-1 items-center justify-center p-8">
+              <div className="flex max-w-md flex-col items-center gap-4 text-center">
+                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-amber-100 text-amber-700 dark:bg-amber-900/30 dark:text-amber-400">
+                  <AlertTriangle className="h-6 w-6" />
+                </div>
+                <div className="space-y-2">
+                  <div className="text-base font-semibold">
+                    {t(($) => $.create_dialog.squad_join_retry.title)}
+                  </div>
+                  <div className="text-sm text-muted-foreground">
+                    {t(($) => $.create_dialog.squad_join_retry.description, {
+                      name: squadJoinRetry.displayName,
+                    })}
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-2 border-t bg-background px-5 py-3">
+              <Button
+                variant="ghost"
+                onClick={onClose}
+                disabled={phase === "adding-to-squad"}
+              >
+                {t(($) => $.create_dialog.squad_join_retry.close_button)}
+              </Button>
+              <Button
+                onClick={() => void handleRetrySquadJoin()}
+                disabled={phase === "adding-to-squad"}
+              >
+                {phase === "adding-to-squad" ? (
+                  <>
+                    <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                    {t(($) => $.create_dialog.squad_join_retry.retrying)}
+                  </>
+                ) : (
+                  t(($) => $.create_dialog.squad_join_retry.retry_button)
+                )}
+              </Button>
+            </div>
+          </div>
+        )}
+
         {/* ---------- Step 1: Chooser (two large cards, vertically centred) ---------- */}
-        {step.kind === "chooser" && (
+        {!squadJoinRetry && step.kind === "chooser" && (
           <div className="flex flex-1 items-center justify-center p-8">
             <div className="grid w-full max-w-3xl grid-cols-2 gap-4">
               <button
@@ -529,7 +664,7 @@ export function CreateAgentDialog({
         {/* ---------- Step 2: Template Picker — click a card opens the
             detail preview so the user can review instructions / skills
             before committing. ---------- */}
-        {step.kind === "template-picker" && (
+        {!squadJoinRetry && step.kind === "template-picker" && (
           <TemplatePicker
             onSelect={(tmpl) => setStep({ kind: "template-detail", template: tmpl })}
           />
@@ -540,11 +675,16 @@ export function CreateAgentDialog({
             create with default settings (name auto-deduped, first usable
             runtime, private visibility); the user customises further on
             the agent detail page if needed. ---------- */}
-        {step.kind === "template-detail" && (
+        {!squadJoinRetry && step.kind === "template-detail" && (
           <TemplateDetail
             template={step.template}
             onUse={quickCreateFromTemplate}
             creating={creating}
+            creatingLabel={
+              phase === "adding-to-squad"
+                ? t(($) => $.create_dialog.adding_to_squad)
+                : undefined
+            }
             failedURLs={failedURLs}
             runtimes={runtimes}
             runtimesLoading={runtimesLoading}
@@ -560,7 +700,7 @@ export function CreateAgentDialog({
         )}
 
         {/* ---------- Form step (blank / duplicate / template) ---------- */}
-        {isFormStep(step) && (
+        {!squadJoinRetry && isFormStep(step) && (
           <>
             <div className="flex-1 overflow-y-auto p-5">
               <div className="space-y-4 min-w-0">
@@ -708,7 +848,7 @@ export function CreateAgentDialog({
                 the dialog. A plain flex row anchored by `border-t` keeps
                 the visual rhythm without the overflow bug. */}
             <div className="flex items-center justify-end gap-2 border-t bg-background px-5 py-3">
-              <Button variant="ghost" onClick={onClose}>
+              <Button variant="ghost" onClick={onClose} disabled={creating}>
                 {t(($) => $.create_dialog.cancel)}
               </Button>
               <Button
@@ -722,7 +862,14 @@ export function CreateAgentDialog({
                     : undefined
                 }
               >
-                {creating ? t(($) => $.create_dialog.creating) : t(($) => $.create_dialog.create)}
+                {creating && (
+                  <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                )}
+                {phase === "adding-to-squad"
+                  ? t(($) => $.create_dialog.adding_to_squad)
+                  : phase === "creating-agent"
+                    ? t(($) => $.create_dialog.creating)
+                    : t(($) => $.create_dialog.create)}
               </Button>
             </div>
           </>
