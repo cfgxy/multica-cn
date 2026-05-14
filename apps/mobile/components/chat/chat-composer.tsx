@@ -1,27 +1,33 @@
 /**
- * Bottom-sticky chat input. Mirrors the structure of
- * `components/issue/comment-composer.tsx` (same mention + markdown toolbar
- * + send pattern) but with two chat-specific differences:
+ * Bottom chat input — floating-card style (Linear / iMessage / Slack
+ * idiom). One multiline TextInput on top, an inline toolbar row inside
+ * the same card with `@` on the left and Send / Stop on the right.
  *
- *   1. No `replyingTo` chip — chat is a flat conversation, not a thread.
- *   2. No file/image buttons — v1 cuts file upload (see plan); we wire
- *      MarkdownToolbar without `onImage` / `onFile` so the buttons hide.
- *   3. Send button flips to a Stop button while `sending===true`, giving
- *      the user a single mid-row affordance for "interrupt the agent".
+ * Differences vs. `comment-composer.tsx` (the sibling for issue comments):
+ *   1. No MarkdownToolbar — chat is natural-language conversation, not
+ *      structured discussion. No list / checkbox / code / quote buttons.
+ *   2. No `replyingTo` chip — chat is a flat conversation.
+ *   3. Send swaps to Stop while `sending===true`, giving one mid-row
+ *      affordance to interrupt the agent. Crossfaded via reanimated.
+ *   4. v1 cuts file upload — only `@` mention is wired here.
  *
- * Draft persistence is delegated to the caller — the chat screen owns
- * useChatDraftsStore and feeds `value` + `onChangeText` through here.
- * Keeps this component stateless w.r.t. session id (composer doesn't
- * need to know which session it's typing into).
+ * Draft persistence is delegated to the caller (see chat.tsx's
+ * useChatDraftsStore). Composer is stateless w.r.t. session id.
+ *
+ * Keyboard avoidance + bottom safe-area are handled by the parent
+ * (KeyboardAvoidingView + SafeAreaView edges={["top","bottom"]} in
+ * app/(app)/[workspace]/(tabs)/chat.tsx) — this component just lays out
+ * the card and trusts the parent.
  */
 import { Pressable, TextInput, View } from "react-native";
-import Svg, { Path } from "react-native-svg";
+import { useEffect, useState } from "react";
+import * as Haptics from "expo-haptics";
+import { Image } from "expo-image";
+import Animated, { FadeIn, FadeOut } from "react-native-reanimated";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
-import { MarkdownToolbar } from "@/components/editor/markdown-toolbar";
 import { useMentionInput } from "@/lib/use-mention-input";
 import { MentionSuggestionBar } from "@/components/issue/mention-suggestion-bar";
 import { cn } from "@/lib/utils";
-import { useEffect, useState } from "react";
 
 interface Props {
   /** Current draft text (controlled). Empty string = no draft. */
@@ -44,6 +50,8 @@ interface Props {
   disabledReason?: string;
 }
 
+const IS_IOS = process.env.EXPO_OS === "ios";
+
 export function ChatComposer({
   value,
   onChangeText,
@@ -58,13 +66,10 @@ export function ChatComposer({
 
   // Drive the mention hook from the controlled `value`. When the parent
   // resets (post-send) or rehydrates a saved draft (post session-switch),
-  // sync the internal text. We only push down — onChangeText is the upward
+  // sync the internal text. Push-only — onChangeText is the upward
   // signal — to avoid an infinite ping-pong loop.
   useEffect(() => {
     if (mention.text !== value) {
-      // Reset clears markers + selection, which is correct for both empty
-      // and full draft hydration. Markers from a different session
-      // shouldn't carry over.
       mention.reset();
       if (value) {
         mention.insertAtCursor(value);
@@ -86,6 +91,9 @@ export function ChatComposer({
     if (!canSend) return;
     const content = mention.serialize().trim();
     if (!content) return;
+    if (IS_IOS) {
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    }
     // Optimistic clear — the parent's draft store mirrors `value` and will
     // see "" on the next onChangeText; the visual reset is immediate.
     onChangeText("");
@@ -93,84 +101,108 @@ export function ChatComposer({
     try {
       await onSend(content);
     } catch {
-      // Restore the text so the user doesn't lose what they typed. We push
+      // Restore the text so the user doesn't lose what they typed. Push
       // through onChangeText so the drafts store gets it too.
       onChangeText(content);
     }
   }
 
+  function handleStop() {
+    if (IS_IOS) {
+      void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+    }
+    onStop();
+  }
+
   return (
-    <View className="border-t border-border bg-background">
+    <View className="px-3 pb-2">
       <MentionSuggestionBar {...mention.suggestionBar} />
-      <MarkdownToolbar
-        onAt={mention.handlers.onAtButtonPress}
-        onList={() => mention.insertAtLineStart("- ")}
-        onCheckbox={() => mention.insertAtLineStart("- [ ] ")}
-        onCode={() => mention.insertAtCursor("\n```\n\n```", 4)}
-        onQuote={() => mention.insertAtLineStart("> ")}
-        disabled={disabled || sending}
-      />
-      <View className="px-3 py-2 flex-row items-end gap-1.5">
-        <View
-          className={cn(
-            "flex-1 rounded-2xl border",
-            focused
-              ? "border-primary/30 bg-secondary"
-              : "border-transparent bg-secondary",
-            disabled && "opacity-60",
+      <View
+        className={cn(
+          "rounded-3xl border bg-secondary",
+          focused ? "border-primary/30" : "border-border",
+          disabled && "opacity-60",
+        )}
+        style={{ borderCurve: "continuous" }}
+      >
+        <TextInput
+          value={mention.text}
+          onChangeText={(next) => {
+            mention.handlers.onChangeText(next);
+            onChangeText(next);
+          }}
+          selection={mention.selection}
+          onSelectionChange={mention.handlers.onSelectionChange}
+          onFocus={() => setFocused(true)}
+          onBlur={() => setFocused(false)}
+          placeholder={placeholder}
+          placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
+          multiline
+          className="px-4 pt-3 pb-1 text-base text-foreground max-h-32 min-h-10"
+          editable={!disabled}
+        />
+        <View className="flex-row items-center px-2 pb-2 pt-1">
+          <Pressable
+            onPress={mention.handlers.onAtButtonPress}
+            disabled={disabled || sending}
+            className="h-8 w-8 items-center justify-center rounded-full active:opacity-60"
+            hitSlop={6}
+            accessibilityRole="button"
+            accessibilityLabel="Mention"
+          >
+            <Image
+              source="sf:at"
+              tintColor="#71717a"
+              style={{ width: 18, height: 18 }}
+            />
+          </Pressable>
+          <View className="flex-1" />
+          {sending ? (
+            <Animated.View
+              key="stop"
+              entering={FadeIn.duration(120)}
+              exiting={FadeOut.duration(120)}
+            >
+              <Pressable
+                onPress={handleStop}
+                className="h-8 w-8 items-center justify-center rounded-full bg-foreground active:opacity-80"
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Stop agent"
+              >
+                <View className="h-3 w-3 rounded-sm bg-background" />
+              </Pressable>
+            </Animated.View>
+          ) : (
+            <Animated.View
+              key="send"
+              entering={FadeIn.duration(120)}
+              exiting={FadeOut.duration(120)}
+            >
+              <Pressable
+                onPress={handleSend}
+                disabled={!canSend}
+                className={cn(
+                  "h-8 w-8 items-center justify-center rounded-full",
+                  canSend
+                    ? "bg-primary active:opacity-80"
+                    : "bg-background",
+                )}
+                hitSlop={8}
+                accessibilityRole="button"
+                accessibilityLabel="Send"
+                accessibilityState={{ disabled: !canSend }}
+              >
+                <Image
+                  source="sf:arrow.up"
+                  tintColor={canSend ? "#ffffff" : "#a1a1aa"}
+                  style={{ width: 16, height: 16 }}
+                />
+              </Pressable>
+            </Animated.View>
           )}
-        >
-          <TextInput
-            value={mention.text}
-            onChangeText={(next) => {
-              mention.handlers.onChangeText(next);
-              onChangeText(next);
-            }}
-            selection={mention.selection}
-            onSelectionChange={mention.handlers.onSelectionChange}
-            onFocus={() => setFocused(true)}
-            onBlur={() => setFocused(false)}
-            placeholder={placeholder}
-            placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
-            multiline
-            className="px-4 py-2 text-base text-foreground max-h-32 min-h-8"
-            editable={!disabled}
-          />
         </View>
-        {sending ? (
-          <Pressable
-            onPress={onStop}
-            className="h-8 w-8 rounded-full items-center justify-center bg-foreground active:opacity-80"
-            hitSlop={8}
-            accessibilityLabel="Stop agent"
-          >
-            <View className="h-3 w-3 rounded-sm bg-background" />
-          </Pressable>
-        ) : canSend ? (
-          <Pressable
-            onPress={handleSend}
-            className="h-8 w-8 rounded-full items-center justify-center bg-primary active:opacity-80"
-            hitSlop={8}
-            accessibilityLabel="Send"
-          >
-            <SendArrow />
-          </Pressable>
-        ) : null}
       </View>
     </View>
-  );
-}
-
-function SendArrow() {
-  return (
-    <Svg width={16} height={16} viewBox="0 0 16 16" fill="none">
-      <Path
-        d="M8 13V3M8 3l-4 4M8 3l4 4"
-        stroke="#fff"
-        strokeWidth={1.8}
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-    </Svg>
   );
 }
