@@ -40,3 +40,57 @@ func TestBuildQuickCreatePromptRules(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildQuickCreatePromptAssigneeIncludesSquads locks in the MUL-2165
+// fix: the assignee-resolution rules must tell the agent to consult the
+// squad list alongside members and agents. Before this, a quick-create
+// input like "assign to <SquadName>" silently fell through to
+// "Unrecognized assignee" because squads were never queried.
+func TestBuildQuickCreatePromptAssigneeIncludesSquads(t *testing.T) {
+	out := buildQuickCreatePrompt(Task{QuickCreatePrompt: "fix the login button color"})
+	mustContain := []string{
+		"multica squad list",
+		"Squads are first-class assignees",
+	}
+	for _, s := range mustContain {
+		if !strings.Contains(out, s) {
+			t.Errorf("buildQuickCreatePrompt assignee block missing %q\n--- output ---\n%s", s, out)
+		}
+	}
+}
+
+// TestBuildQuickCreatePromptProjectPinning verifies that when the user
+// pins a project in the quick-create modal, the prompt instructs the agent
+// to pass `--project <uuid>` exactly. Without this, the agent would re-read
+// the workspace default and silently drop the user's selection — the same
+// "I have to retype 'in project X' every time" failure mode the modal
+// addition was meant to fix.
+func TestBuildQuickCreatePromptProjectPinning(t *testing.T) {
+	const projectID = "11111111-2222-3333-4444-555555555555"
+	out := buildQuickCreatePrompt(Task{
+		QuickCreatePrompt: "fix the login button color",
+		ProjectID:         projectID,
+		ProjectTitle:      "Web App",
+	})
+	mustContain := []string{
+		"--project \"" + projectID + "\"",
+		"Web App",
+		"modal selection is authoritative",
+	}
+	for _, s := range mustContain {
+		if !strings.Contains(out, s) {
+			t.Errorf("buildQuickCreatePrompt with project missing %q\n--- output ---\n%s", s, out)
+		}
+	}
+
+	// Without a project, the prompt must keep the legacy "omit" instruction
+	// so the agent doesn't accidentally start passing --project on plain
+	// quick-create runs.
+	plain := buildQuickCreatePrompt(Task{QuickCreatePrompt: "fix the login button color"})
+	if !strings.Contains(plain, "**project**: omit") {
+		t.Errorf("buildQuickCreatePrompt without project must keep the omit instruction, got:\n%s", plain)
+	}
+	if strings.Contains(plain, "--project") {
+		t.Errorf("buildQuickCreatePrompt without project must NOT mention --project, got:\n%s", plain)
+	}
+}
