@@ -1,6 +1,6 @@
 /**
- * Assignee picker — polymorphic single-select over members + agents, plus
- * an "Unassigned" option. Loose mirror of web
+ * Assignee picker — polymorphic single-select over members + agents +
+ * squads, plus an "Unassigned" option. Loose mirror of web
  * `packages/views/issues/components/pickers/assignee-picker.tsx` (mobile v1
  * skips the frequency-sort optimization — sorts alphabetically instead).
  *
@@ -11,28 +11,29 @@
  * keyboard stay reachable when filtering.
  *
  * Selection emits `{ type, id } | null` (null = Unassigned). Parent passes
- * this to `useUpdateIssue.mutate({ assignee_type, assignee_id })`.
+ * this to `useUpdateIssue.mutate({ assignee_type, assignee_id })`. The
+ * backend routes a squad assignee to its leader agent
+ * (server/internal/handler/issue.go:944).
  */
 import { useMemo, useState } from "react";
 import { FlatList, Pressable, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
-import type { Agent, IssueAssigneeType, MemberWithUser } from "@multica/core/types";
+import type {
+  Agent,
+  IssueAssigneeType,
+  MemberWithUser,
+  Squad,
+} from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { TextField } from "@/components/ui/text-field";
 import { SheetShell } from "@/components/ui/sheet-shell";
 import { memberListOptions } from "@/data/queries/members";
 import { agentListOptions } from "@/data/queries/agents";
+import { squadListOptions } from "@/data/queries/squads";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { cn } from "@/lib/utils";
 
-// `IssueAssigneeType` is `"member" | "agent" | "squad"` (packages/core/types/
-// issue.ts). Mobile only renders member + agent rows in this picker — squad
-// listing isn't built yet — but `AssigneeValue` keeps the full union so an
-// existing squad assignment from web isn't silently dropped when the
-// attribute-row passes it back through. Squad rows fail `isSelected` against
-// member/agent options; user can clear via Unassigned or replace with a
-// member/agent.
 export type AssigneeValue = {
   type: IssueAssigneeType;
   id: string;
@@ -48,7 +49,8 @@ interface Props {
 type Row =
   | { kind: "unassigned" }
   | { kind: "member"; member: MemberWithUser }
-  | { kind: "agent"; agent: Agent };
+  | { kind: "agent"; agent: Agent }
+  | { kind: "squad"; squad: Squad };
 
 export function AssigneePickerSheet({
   visible,
@@ -59,41 +61,55 @@ export function AssigneePickerSheet({
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
+  const { data: squads = [] } = useQuery(squadListOptions(wsId));
   const [query, setQuery] = useState("");
 
   const rows = useMemo<Row[]>(() => {
     const q = query.trim().toLowerCase();
-    const matchMember = (m: MemberWithUser) =>
-      !q || m.name.toLowerCase().includes(q);
-    const matchAgent = (a: Agent) => !q || a.name.toLowerCase().includes(q);
+    const matchName = (name: string) => !q || name.toLowerCase().includes(q);
 
     const memberRows: Row[] = [...members]
-      .filter(matchMember)
+      .filter((m) => matchName(m.name))
       .sort((a, b) => a.name.localeCompare(b.name))
       .map((m) => ({ kind: "member" as const, member: m }));
     const agentRows: Row[] = [...agents]
-      .filter(matchAgent)
+      .filter((a) => matchName(a.name))
       .sort((a, b) => a.name.localeCompare(b.name))
       .map((a) => ({ kind: "agent" as const, agent: a }));
+    // Archived squads are excluded — matches web
+    // (packages/views/issues/components/pickers/assignee-picker.tsx:93).
+    const squadRows: Row[] = [...squads]
+      .filter((s) => !s.archived_at && matchName(s.name))
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .map((s) => ({ kind: "squad" as const, squad: s }));
 
     // Hide "Unassigned" while searching — matches web behaviour.
-    if (q) return [...memberRows, ...agentRows];
-    return [{ kind: "unassigned" }, ...memberRows, ...agentRows];
-  }, [members, agents, query]);
+    if (q) return [...memberRows, ...agentRows, ...squadRows];
+    return [
+      { kind: "unassigned" },
+      ...memberRows,
+      ...agentRows,
+      ...squadRows,
+    ];
+  }, [members, agents, squads, query]);
 
   const isSelected = (row: Row): boolean => {
     if (row.kind === "unassigned") return value === null;
     if (value === null) return false;
     if (row.kind === "member")
       return value.type === "member" && value.id === row.member.user_id;
-    return value.type === "agent" && value.id === row.agent.id;
+    if (row.kind === "agent")
+      return value.type === "agent" && value.id === row.agent.id;
+    return value.type === "squad" && value.id === row.squad.id;
   };
 
   const select = (row: Row) => {
     if (row.kind === "unassigned") onChange(null);
     else if (row.kind === "member")
       onChange({ type: "member", id: row.member.user_id });
-    else onChange({ type: "agent", id: row.agent.id });
+    else if (row.kind === "agent")
+      onChange({ type: "agent", id: row.agent.id });
+    else onChange({ type: "squad", id: row.squad.id });
     onClose();
   };
 
@@ -113,13 +129,12 @@ export function AssigneePickerSheet({
         className="flex-1"
         keyboardShouldPersistTaps="handled"
         automaticallyAdjustKeyboardInsets
-        keyExtractor={(row) =>
-          row.kind === "unassigned"
-            ? "unassigned"
-            : row.kind === "member"
-              ? `m:${row.member.user_id}`
-              : `a:${row.agent.id}`
-        }
+        keyExtractor={(row) => {
+          if (row.kind === "unassigned") return "unassigned";
+          if (row.kind === "member") return `m:${row.member.user_id}`;
+          if (row.kind === "agent") return `a:${row.agent.id}`;
+          return `s:${row.squad.id}`;
+        }}
         renderItem={({ item }) => (
           <Pressable
             onPress={() => select(item)}
@@ -138,15 +153,19 @@ export function AssigneePickerSheet({
                 id={item.member.user_id}
                 size={28}
               />
-            ) : (
+            ) : item.kind === "agent" ? (
               <ActorAvatar type="agent" id={item.agent.id} size={28} />
+            ) : (
+              <ActorAvatar type="squad" id={item.squad.id} size={28} />
             )}
             <Text className="flex-1 text-sm text-foreground">
               {item.kind === "unassigned"
                 ? "Unassigned"
                 : item.kind === "member"
                   ? item.member.name
-                  : item.agent.name}
+                  : item.kind === "agent"
+                    ? item.agent.name
+                    : item.squad.name}
             </Text>
             {isSelected(item) ? (
               <Text className="text-xs text-muted-foreground">✓</Text>

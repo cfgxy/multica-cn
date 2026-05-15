@@ -9,6 +9,9 @@
  *      prefix or is empty)
  *   2. Members — sorted alphabetically
  *   3. Agents — sorted alphabetically
+ *   4. Squads — sorted alphabetically (archived hidden). Selecting a squad
+ *      emits `mention://squad/<uuid>`; backend wakes the squad's leader
+ *      agent (server/internal/handler/comment.go:444).
  *
  * `chat` sections (chat is user ↔ single agent — `@member`/`@agent` are
  * noise; `@` here means "reference a resource for the agent"):
@@ -22,12 +25,13 @@
 import { useMemo } from "react";
 import { FlatList, Pressable, View } from "react-native";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import type { Agent, Issue, MemberWithUser } from "@multica/core/types";
+import type { Agent, Issue, MemberWithUser, Squad } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { StatusIcon } from "@/components/ui/status-icon";
 import { memberListOptions } from "@/data/queries/members";
 import { agentListOptions } from "@/data/queries/agents";
+import { squadListOptions } from "@/data/queries/squads";
 import { issueDetailOptions } from "@/data/queries/issues";
 import { myIssueListOptions } from "@/data/queries/my-issues";
 import { useAuthStore } from "@/data/auth-store";
@@ -46,6 +50,7 @@ type Row =
   | { kind: "section"; label: string }
   | { kind: "member"; member: MemberWithUser }
   | { kind: "agent"; agent: Agent }
+  | { kind: "squad"; squad: Squad }
   | { kind: "issue"; issue: Issue }
   | { kind: "empty" };
 
@@ -77,6 +82,10 @@ export function MentionSuggestionBar({
   });
   const { data: agents = [] } = useQuery({
     ...agentListOptions(wsId),
+    enabled: !isChat && !!wsId,
+  });
+  const { data: squads = [] } = useQuery({
+    ...squadListOptions(wsId),
     enabled: !isChat && !!wsId,
   });
 
@@ -146,6 +155,14 @@ export function MentionSuggestionBar({
     const matchedAgents = [...agents]
       .filter((a) => !q || a.name.toLowerCase().includes(q))
       .sort((a, b) => a.name.localeCompare(b.name));
+    // Archived squads are filtered out — matching web (packages/views/editor/
+    // extensions/mention-suggestion.tsx:428). A re-activated squad re-appears
+    // on the next list refetch.
+    const matchedSquads = [...squads]
+      .filter(
+        (s) => !s.archived_at && (!q || s.name.toLowerCase().includes(q)),
+      )
+      .sort((a, b) => a.name.localeCompare(b.name));
 
     const out: Row[] = [];
     if (showAll) out.push({ kind: "all" });
@@ -157,9 +174,13 @@ export function MentionSuggestionBar({
       out.push({ kind: "section", label: "Agents" });
       for (const a of matchedAgents) out.push({ kind: "agent", agent: a });
     }
+    if (matchedSquads.length > 0) {
+      out.push({ kind: "section", label: "Squads" });
+      for (const s of matchedSquads) out.push({ kind: "squad", squad: s });
+    }
     if (out.length === 0) out.push({ kind: "empty" });
     return out;
-  }, [isChat, query, recentIssues, myIssuesAll, members, agents]);
+  }, [isChat, query, recentIssues, myIssuesAll, members, agents, squads]);
 
   if (!visible) return null;
 
@@ -262,11 +283,31 @@ export function MentionSuggestionBar({
                 }
                 className="flex-row items-center gap-3 px-3 py-2 active:bg-secondary"
               >
-                <ActorAvatar type="agent" id={item.agent.id} size={28} />
+                <ActorAvatar type="agent" id={item.agent.id} size={28} showPresence />
                 <Text className="flex-1 text-sm text-foreground">
                   {item.agent.name}
                 </Text>
                 <Badge label="Agent" tone="brand" />
+              </Pressable>
+            );
+          }
+          if (item.kind === "squad") {
+            return (
+              <Pressable
+                onPress={() =>
+                  onSelect({
+                    type: "squad",
+                    id: item.squad.id,
+                    name: item.squad.name,
+                  })
+                }
+                className="flex-row items-center gap-3 px-3 py-2 active:bg-secondary"
+              >
+                <ActorAvatar type="squad" id={item.squad.id} size={28} />
+                <Text className="flex-1 text-sm text-foreground">
+                  {item.squad.name}
+                </Text>
+                <Badge label="Squad" tone="outline" />
               </Pressable>
             );
           }
@@ -313,13 +354,17 @@ function Badge({
   tone = "muted",
 }: {
   label: string;
-  tone?: "muted" | "brand";
+  tone?: "muted" | "brand" | "outline";
 }) {
   return (
     <View
       className={cn(
         "px-1.5 py-0.5 rounded",
-        tone === "brand" ? "bg-brand/10" : "bg-secondary",
+        tone === "brand"
+          ? "bg-brand/10"
+          : tone === "outline"
+            ? "border border-border"
+            : "bg-secondary",
       )}
     >
       <Text

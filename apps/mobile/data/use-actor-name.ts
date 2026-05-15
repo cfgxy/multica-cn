@@ -2,10 +2,11 @@ import { useQuery } from "@tanstack/react-query";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { memberListOptions } from "@/data/queries/members";
 import { agentListOptions } from "@/data/queries/agents";
+import { squadListOptions } from "@/data/queries/squads";
 
 /**
- * Resolve actor (member or agent) name + avatar URL from the workspace
- * member/agent lists. Mirrors packages/core/workspace/hooks.ts useActorName.
+ * Resolve actor (member / agent / squad) name + avatar URL from the
+ * workspace lists. Mirrors packages/core/workspace/hooks.ts useActorName.
  *
  * Returns synchronous lookup helpers — they read whatever is in the TQ
  * cache. If the lists haven't loaded yet, lookups return null/initials
@@ -15,6 +16,7 @@ export function useActorLookup() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
+  const { data: squads = [] } = useQuery(squadListOptions(wsId));
 
   const getName = (
     type: "member" | "agent" | "squad" | null | undefined,
@@ -29,9 +31,7 @@ export function useActorLookup() {
       const a = agents.find((a) => a.id === id);
       return a?.name ?? "Unknown Agent";
     }
-    // Mobile has no squad list query yet — render a generic label so squad
-    // assignees coming from web/desktop are visible (and clearable) here.
-    return "Squad";
+    return squads.find((s) => s.id === id)?.name ?? "Squad";
   };
 
   const getAvatarUrl = (
@@ -45,8 +45,7 @@ export function useActorLookup() {
     if (type === "agent") {
       return agents.find((a) => a.id === id)?.avatar_url ?? null;
     }
-    // No squad cache — ActorAvatar falls back to the group glyph.
-    return null;
+    return squads.find((s) => s.id === id)?.avatar_url ?? null;
   };
 
   return { getName, getAvatarUrl };
