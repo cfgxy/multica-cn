@@ -31,6 +31,8 @@ import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
 import { TimelineList } from "@/components/issue/timeline-list";
 import { CommentComposer } from "@/components/issue/comment-composer";
+import { AgentHeaderBadge } from "@/components/issue/agent-header-badge";
+import { RunsSheet } from "@/components/issue/runs-sheet";
 import {
   issueDetailOptions,
   issueKeys,
@@ -162,18 +164,24 @@ export default function IssueDetail() {
           headerBackTitle: "Back",
           headerRight: issue
             ? () => (
-                <Pressable
-                  onPress={onPressMore}
-                  hitSlop={8}
-                  className="px-2 py-1"
-                  accessibilityLabel="Issue actions"
-                >
-                  <Ionicons
-                    name="ellipsis-horizontal"
-                    size={20}
-                    color={Platform.OS === "ios" ? "#0a84ff" : "#71717a"}
-                  />
-                </Pressable>
+                <View className="flex-row items-center gap-2">
+                  {/* Ambient agent-working badge — renders null when no
+                   *  active tasks, so it doesn't crowd the header in the
+                   *  common case. See agent-header-badge.tsx. */}
+                  <AgentHeaderBadge issueId={id} />
+                  <Pressable
+                    onPress={onPressMore}
+                    hitSlop={8}
+                    className="px-2 py-1"
+                    accessibilityLabel="Issue actions"
+                  >
+                    <Ionicons
+                      name="ellipsis-horizontal"
+                      size={20}
+                      color={Platform.OS === "ios" ? "#0a84ff" : "#71717a"}
+                    />
+                  </Pressable>
+                </View>
               )
             : undefined,
         }}
@@ -218,6 +226,10 @@ export default function IssueDetail() {
             replyingTo={replyingTo}
             onCancelReply={onCancelReply}
           />
+          {/* Mounted once at the page level so both the in-card
+           *  AgentActivityRow and the Stack-header AgentHeaderBadge open
+           *  the same sheet instance via useRunsSheetStore. */}
+          <RunsSheet issueId={id} />
         </KeyboardAvoidingView>
       )}
     </SafeAreaView>

@@ -3,8 +3,10 @@
  * shared `<SheetShell>` primitive (components/ui/sheet-shell.tsx) which
  * encapsulates pageSheet + safe-area + close-button.
  *
- * See `apps/mobile/CLAUDE.md` Lesson #6 for the rationale on choosing
- * pageSheet over the project's older transparent-fade Modal pattern.
+ * Mounted ONCE at the page level (issue/[id].tsx), not inside the
+ * activity row. Open state lives in `useRunsSheetStore` so both the
+ * in-card `<AgentActivityRow>` and the Stack-header `<AgentHeaderBadge>`
+ * can trigger the same sheet instance.
  *
  * Two sections: Active (queued/dispatched/running, created_at desc) and
  * Past (failed → cancelled → completed, completed_at desc within each).
@@ -14,17 +16,20 @@
  */
 import { useMemo } from "react";
 import { ScrollView, View } from "react-native";
+import { useQuery } from "@tanstack/react-query";
 import type { AgentTask } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { SheetShell } from "@/components/ui/sheet-shell";
+import {
+  issueActiveTasksOptions,
+  issueTasksOptions,
+} from "@/data/queries/issues";
+import { useRunsSheetStore } from "@/data/runs-sheet-store";
+import { useWorkspaceStore } from "@/data/workspace-store";
 import { RunRow } from "./run-row";
 
 interface Props {
-  visible: boolean;
-  onClose: () => void;
   issueId: string;
-  activeTasks: AgentTask[];
-  pastTasks: AgentTask[];
 }
 
 const PAST_STATUS_ORDER: Record<AgentTask["status"], number> = {
@@ -38,13 +43,19 @@ const PAST_STATUS_ORDER: Record<AgentTask["status"], number> = {
   running: 99,
 };
 
-export function RunsSheet({
-  visible,
-  onClose,
-  issueId,
-  activeTasks,
-  pastTasks,
-}: Props) {
+export function RunsSheet({ issueId }: Props) {
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const openIssueId = useRunsSheetStore((s) => s.openIssueId);
+  const close = useRunsSheetStore((s) => s.close);
+  const visible = openIssueId === issueId;
+
+  // Same query keys as AgentActivityRow / AgentHeaderBadge — TanStack Query
+  // cache is shared, so this doesn't fire extra requests.
+  const { data: activeTasks = [] } = useQuery(
+    issueActiveTasksOptions(wsId, issueId),
+  );
+  const { data: allTasks = [] } = useQuery(issueTasksOptions(wsId, issueId));
+
   const active = useMemo(
     () =>
       [...activeTasks].sort((a, b) =>
@@ -54,16 +65,22 @@ export function RunsSheet({
   );
 
   const past = useMemo(() => {
-    return [...pastTasks].sort((a, b) => {
+    const filtered = allTasks.filter(
+      (t) =>
+        t.status === "completed" ||
+        t.status === "failed" ||
+        t.status === "cancelled",
+    );
+    return filtered.sort((a, b) => {
       const ord = PAST_STATUS_ORDER[a.status] - PAST_STATUS_ORDER[b.status];
       if (ord !== 0) return ord;
       // Within a status group: newest completion first.
       return (b.completed_at ?? "").localeCompare(a.completed_at ?? "");
     });
-  }, [pastTasks]);
+  }, [allTasks]);
 
   return (
-    <SheetShell visible={visible} onClose={onClose} title="Agent Runs">
+    <SheetShell visible={visible} onClose={close} title="Agent Runs">
       <ScrollView showsVerticalScrollIndicator={false}>
         <View className="px-4 gap-3 pb-4">
           {active.length > 0 ? (
