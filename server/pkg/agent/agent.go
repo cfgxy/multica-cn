@@ -1,6 +1,6 @@
 // Package agent provides a unified interface for executing prompts via
 // coding agents (Claude Code, Codex, Copilot, OpenCode, OpenClaw, Hermes,
-// Gemini, Pi, Cursor, Kimi). It mirrors the happy-cli AgentBackend
+// Gemini, Pi, Cursor, Kimi, Kiro). It mirrors the happy-cli AgentBackend
 // pattern, translated to idiomatic Go.
 package agent
 
@@ -22,14 +22,19 @@ type Backend interface {
 
 // ExecOptions configures a single execution.
 type ExecOptions struct {
-	Cwd             string
-	Model           string
-	SystemPrompt    string
-	MaxTurns        int
-	Timeout         time.Duration
-	ResumeSessionID string          // if non-empty, resume a previous agent session
-	CustomArgs      []string        // additional CLI arguments appended to the agent command
-	McpConfig       json.RawMessage // if non-nil, MCP server config to pass via --mcp-config
+	Cwd   string
+	Model string
+	// SystemPrompt is consumed only by providers that can pass or safely inline
+	// developer/system instructions. Hermes ACP intentionally ignores it and
+	// relies on cwd-scoped context files such as AGENTS.md instead.
+	SystemPrompt              string
+	MaxTurns                  int
+	Timeout                   time.Duration
+	SemanticInactivityTimeout time.Duration
+	ResumeSessionID           string          // if non-empty, resume a previous agent session
+	ExtraArgs                 []string        // daemon-wide default CLI arguments appended before CustomArgs; currently read by claude and codex backends only
+	CustomArgs                []string        // per-agent CLI arguments appended after ExtraArgs
+	McpConfig                 json.RawMessage // if non-nil, MCP server config to pass via --mcp-config
 }
 
 // Session represents a running agent execution.
@@ -87,13 +92,13 @@ type Result struct {
 
 // Config configures a Backend instance.
 type Config struct {
-	ExecutablePath string            // path to CLI binary (claude, codex, copilot, opencode, openclaw, hermes, gemini, pi, cursor, kimi)
+	ExecutablePath string            // path to CLI binary (claude, codex, copilot, opencode, openclaw, hermes, gemini, pi, cursor, kimi, kiro-cli)
 	Env            map[string]string // extra environment variables
 	Logger         *slog.Logger
 }
 
 // New creates a Backend for the given agent type.
-// Supported types: "claude", "codex", "copilot", "opencode", "openclaw", "hermes", "gemini", "pi", "cursor", "kimi".
+// Supported types: "claude", "codex", "copilot", "opencode", "openclaw", "hermes", "gemini", "pi", "cursor", "kimi", "kiro".
 func New(agentType string, cfg Config) (Backend, error) {
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -120,8 +125,10 @@ func New(agentType string, cfg Config) (Backend, error) {
 		return &cursorBackend{cfg: cfg}, nil
 	case "kimi":
 		return &kimiBackend{cfg: cfg}, nil
+	case "kiro":
+		return &kiroBackend{cfg: cfg}, nil
 	default:
-		return nil, fmt.Errorf("unknown agent type: %q (supported: claude, codex, copilot, opencode, openclaw, hermes, gemini, pi, cursor, kimi)", agentType)
+		return nil, fmt.Errorf("unknown agent type: %q (supported: claude, codex, copilot, opencode, openclaw, hermes, gemini, pi, cursor, kimi, kiro)", agentType)
 	}
 }
 
@@ -147,6 +154,7 @@ var launchHeaders = map[string]string{
 	"opencode": "opencode run (json)",
 	"pi":       "pi (json mode)",
 	"kimi":     "kimi acp",
+	"kiro":     "kiro-cli acp",
 }
 
 // LaunchHeader returns the user-visible launch skeleton for agentType, or an

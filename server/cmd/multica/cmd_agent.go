@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -68,6 +69,13 @@ var agentTasksCmd = &cobra.Command{
 	RunE:  runAgentTasks,
 }
 
+var agentAvatarCmd = &cobra.Command{
+	Use:   "avatar <id>",
+	Short: "Upload an avatar image for an agent",
+	Args:  exactArgs(1),
+	RunE:  runAgentAvatar,
+}
+
 // Agent skills subcommands.
 
 var agentSkillsCmd = &cobra.Command{
@@ -97,6 +105,7 @@ func init() {
 	agentCmd.AddCommand(agentArchiveCmd)
 	agentCmd.AddCommand(agentRestoreCmd)
 	agentCmd.AddCommand(agentTasksCmd)
+	agentCmd.AddCommand(agentAvatarCmd)
 	agentCmd.AddCommand(agentSkillsCmd)
 
 	agentSkillsCmd.AddCommand(agentSkillsListCmd)
@@ -114,6 +123,12 @@ func init() {
 	agentCreateCmd.Flags().String("description", "", "Agent description")
 	agentCreateCmd.Flags().String("instructions", "", "Agent instructions")
 	agentCreateCmd.Flags().String("runtime-id", "", "Runtime ID (required)")
+	// --from-template seeds the new agent from a curated template: imports the
+	// template's skills into the workspace (find-or-create by name) and applies
+	// the template's instructions. When set, --description/--instructions/
+	// --custom-args/--custom-env/--runtime-config are ignored (the template
+	// provides all the agent shape); --name and --runtime-id are still required.
+	agentCreateCmd.Flags().String("from-template", "", "Template slug to seed the agent from (e.g. code-reviewer). Lists are available via GET /api/agent-templates.")
 	agentCreateCmd.Flags().String("runtime-config", "", "Runtime config as JSON string")
 	agentCreateCmd.Flags().String("model", "", "Model identifier (e.g. claude-sonnet-4-6, openai/gpt-4o). Prefer this over passing --model in --custom-args.")
 	agentCreateCmd.Flags().String("custom-args", "", "Custom CLI arguments as JSON array. For model selection prefer --model; some providers (codex app-server, openclaw) reject --model in custom_args.")
@@ -148,6 +163,10 @@ func init() {
 
 	// agent tasks
 	agentTasksCmd.Flags().String("output", "table", "Output format: table or json")
+
+	// agent avatar
+	agentAvatarCmd.Flags().String("file", "", "Path to the avatar image file (required)")
+	agentAvatarCmd.Flags().String("output", "json", "Output format: table or json")
 
 	// agent skills list
 	agentSkillsListCmd.Flags().String("output", "table", "Output format: table or json")
@@ -321,13 +340,14 @@ func runAgentGet(cmd *cobra.Command, args []string) error {
 		return cli.PrintJSON(os.Stdout, agent)
 	}
 
-	headers := []string{"ID", "NAME", "STATUS", "RUNTIME", "VISIBILITY", "DESCRIPTION"}
+	headers := []string{"ID", "NAME", "STATUS", "RUNTIME", "VISIBILITY", "AVATAR_URL", "DESCRIPTION"}
 	rows := [][]string{{
 		strVal(agent, "id"),
 		strVal(agent, "name"),
 		strVal(agent, "status"),
 		strVal(agent, "runtime_mode"),
 		strVal(agent, "visibility"),
+		strVal(agent, "avatar_url"),
 		strVal(agent, "description"),
 	}}
 	cli.PrintTable(os.Stdout, headers, rows)
@@ -347,6 +367,14 @@ func runAgentCreate(cmd *cobra.Command, _ []string) error {
 	runtimeID, _ := cmd.Flags().GetString("runtime-id")
 	if runtimeID == "" {
 		return fmt.Errorf("--runtime-id is required")
+	}
+
+	// --from-template short-circuits to the dedicated endpoint, which
+	// fetches the template's skill URLs in parallel and creates the agent
+	// + skill rows atomically. Skip the manual-create body building and
+	// post the small template payload instead.
+	if templateSlug, _ := cmd.Flags().GetString("from-template"); templateSlug != "" {
+		return runAgentCreateFromTemplate(cmd, client, name, runtimeID, templateSlug)
 	}
 
 	body := map[string]any{
@@ -407,6 +435,55 @@ func runAgentCreate(cmd *cobra.Command, _ []string) error {
 	}
 
 	fmt.Printf("Agent created: %s (%s)\n", strVal(result, "name"), strVal(result, "id"))
+	return nil
+}
+
+// runAgentCreateFromTemplate posts to POST /api/agents/from-template. The
+// server fetches every referenced skill in parallel and writes everything in
+// a single transaction; a 422 here means at least one upstream URL was
+// unreachable, in which case the body carries the failing URLs so we can
+// surface them verbatim to the operator instead of a generic error.
+func runAgentCreateFromTemplate(cmd *cobra.Command, client *cli.APIClient, name, runtimeID, slug string) error {
+	body := map[string]any{
+		"template_slug": slug,
+		"name":          name,
+		"runtime_id":    runtimeID,
+	}
+	if cmd.Flags().Changed("model") {
+		v, _ := cmd.Flags().GetString("model")
+		body["model"] = v
+	}
+	if cmd.Flags().Changed("visibility") {
+		v, _ := cmd.Flags().GetString("visibility")
+		body["visibility"] = v
+	}
+	if cmd.Flags().Changed("max-concurrent-tasks") {
+		v, _ := cmd.Flags().GetInt32("max-concurrent-tasks")
+		body["max_concurrent_tasks"] = v
+	}
+
+	// 60s ceiling: templates fan out N HTTP fetches to GitHub, each ~200-500ms.
+	// Matches the timeout used by `multica skill import` (cmd_skill.go).
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	var result map[string]any
+	if err := client.PostJSON(ctx, "/api/agents/from-template", body, &result); err != nil {
+		return fmt.Errorf("create agent from template: %w", err)
+	}
+
+	output, _ := cmd.Flags().GetString("output")
+	if output == "json" {
+		return cli.PrintJSON(os.Stdout, result)
+	}
+
+	agent, _ := result["agent"].(map[string]any)
+	imported, _ := result["imported_skill_ids"].([]any)
+	reused, _ := result["reused_skill_ids"].([]any)
+	fmt.Printf("Agent created from template %q: %s (%s)\n", slug, strVal(agent, "name"), strVal(agent, "id"))
+	if len(imported) > 0 || len(reused) > 0 {
+		fmt.Printf("  Skills: %d imported, %d reused\n", len(imported), len(reused))
+	}
 	return nil
 }
 
@@ -567,6 +644,86 @@ func runAgentTasks(cmd *cobra.Command, args []string) error {
 			strVal(t, "created_at"),
 		})
 	}
+	cli.PrintTable(os.Stdout, headers, rows)
+	return nil
+}
+
+func runAgentAvatar(cmd *cobra.Command, args []string) error {
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+
+	filePath, _ := cmd.Flags().GetString("file")
+	if filePath == "" {
+		return fmt.Errorf("--file is required")
+	}
+
+	// Validate file exists.
+	info, err := os.Stat(filePath)
+	if err != nil {
+		return fmt.Errorf("file not found: %w", err)
+	}
+
+	// Validate extension.
+	ext := strings.ToLower(filepath.Ext(filePath))
+	validExts := map[string]bool{".png": true, ".jpg": true, ".jpeg": true, ".gif": true, ".webp": true}
+	if !validExts[ext] {
+		return fmt.Errorf("unsupported file format %q: must be .png, .jpg, .jpeg, .gif, or .webp", ext)
+	}
+
+	// Client-side size guard: reject files > 5MB.
+	const maxSize = 5 << 20 // 5 MB
+	if info.Size() > maxSize {
+		return fmt.Errorf("file too large: %d bytes (max 5MB)", info.Size())
+	}
+
+	fileData, err := os.ReadFile(filePath)
+	if err != nil {
+		return fmt.Errorf("read file: %w", err)
+	}
+
+	// Defensive re-check: guard against TOCTOU race where the file
+	// was swapped between stat and read.
+	if len(fileData) > maxSize {
+		return fmt.Errorf("file too large: %d bytes (max 5MB)", len(fileData))
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	// Agent existence pre-check.
+	var agent map[string]any
+	if err := client.GetJSON(ctx, "/api/agents/"+args[0], &agent); err != nil {
+		return fmt.Errorf("get agent: %w", err)
+	}
+
+	id, url, err := client.UploadFileWithURL(ctx, fileData, filePath)
+	if err != nil {
+		return fmt.Errorf("upload avatar: %w", err)
+	}
+
+	body := map[string]any{"avatar_url": url}
+	var result map[string]any
+	if err := client.PutJSON(ctx, "/api/agents/"+args[0], body, &result); err != nil {
+		return fmt.Errorf("update agent avatar: %w", err)
+	}
+
+	output, _ := cmd.Flags().GetString("output")
+	if output == "json" {
+		return cli.PrintJSON(os.Stdout, map[string]any{
+			"id":         id,
+			"agent_id":   args[0],
+			"avatar_url": url,
+		})
+	}
+
+	headers := []string{"ID", "AGENT_ID", "AVATAR_URL"}
+	rows := [][]string{{
+		id,
+		args[0],
+		url,
+	}}
 	cli.PrintTable(os.Stdout, headers, rows)
 	return nil
 }

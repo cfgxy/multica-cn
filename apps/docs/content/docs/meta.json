@@ -9,11 +9,14 @@
     "workspaces",
     "members-roles",
     "issues",
+    "projects",
     "comments",
+    "project-resources",
     "---Agents---",
     "agents",
     "agents-create",
     "skills",
+    "squads",
     "---How agents run---",
     "daemon-runtimes",
     "tasks",
@@ -25,6 +28,8 @@
     "autopilots",
     "---Inbox---",
     "inbox",
+    "---Integrations---",
+    "github-integration",
     "---Self-hosting & ops---",
     "environment-variables",
     "auth-setup",
@@ -32,6 +37,8 @@
     "---Reference---",
     "cli",
     "auth-tokens",
-    "desktop-app"
+    "desktop-app",
+    "---Developers---",
+    "developers"
   ]
 }

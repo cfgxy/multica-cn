@@ -11,6 +11,8 @@ import {
   PickerItem,
   PickerEmpty,
 } from "../../../issues/components/pickers/property-picker";
+import { useT } from "../../../i18n";
+import { matchesPinyin } from "../../../editor/extensions/pinyin-match";
 
 export function AgentPicker({
   agentId,
@@ -25,6 +27,7 @@ export function AgentPicker({
   triggerRender?: React.ReactElement;
   align?: "start" | "center" | "end";
 }) {
+  const { t } = useT("autopilots");
   const wsId = useWorkspaceId();
   const [open, setOpen] = useState(false);
   const [filter, setFilter] = useState("");
@@ -34,7 +37,7 @@ export function AgentPicker({
 
   const query = filter.trim().toLowerCase();
   const filteredAgents = query
-    ? active.filter((a) => a.name.toLowerCase().includes(query))
+    ? active.filter((a) => a.name.toLowerCase().includes(query) || matchesPinyin(a.name, query))
     : active;
 
   return (
@@ -44,7 +47,7 @@ export function AgentPicker({
       width="w-56"
       align={align}
       searchable
-      searchPlaceholder="Filter agents..."
+      searchPlaceholder={t(($) => $.agent_picker.filter_placeholder)}
       onSearchChange={setFilter}
       triggerRender={triggerRender}
       trigger={
@@ -52,13 +55,13 @@ export function AgentPicker({
           <>
             {selected ? (
               <>
-                <ActorAvatar actorType="agent" actorId={selected.id} size={16} disableHoverCard />
+                <ActorAvatar actorType="agent" actorId={selected.id} size={16} showStatusDot />
                 <span className="truncate">{selected.name}</span>
               </>
             ) : (
               <>
                 <Bot className="size-3" />
-                <span>Select agent</span>
+                <span>{t(($) => $.agent_picker.select_agent)}</span>
               </>
             )}
           </>
@@ -77,7 +80,7 @@ export function AgentPicker({
               setOpen(false);
             }}
           >
-            <ActorAvatar actorType="agent" actorId={a.id} size={16} disableHoverCard />
+            <ActorAvatar actorType="agent" actorId={a.id} size={16} showStatusDot />
             <span className="truncate">{a.name}</span>
           </PickerItem>
         ))

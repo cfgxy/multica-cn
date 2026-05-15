@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue } from "@multica/core/types";
+import { I18nProvider } from "@multica/core/i18n/react";
+import enCommon from "../../locales/en/common.json";
+import enIssues from "../../locales/en/issues.json";
+
+const TEST_RESOURCES = { en: { common: enCommon, issues: enIssues } };
 vi.mock("@multica/core/hooks", () => ({
   useWorkspaceId: () => "ws-1",
 }));
@@ -98,7 +103,7 @@ vi.mock("@multica/core/issues/config", () => ({
 
 // Mock view store
 const mockViewState = {
-  viewMode: "board" as const,
+  viewMode: "board" as "board" | "list",
   statusFilters: [] as string[],
   priorityFilters: [] as string[],
   assigneeFilters: [] as { type: string; id: string }[],
@@ -106,9 +111,10 @@ const mockViewState = {
   creatorFilters: [] as { type: string; id: string }[],
   projectFilters: [] as string[],
   includeNoProject: false,
+  labelFilters: [] as string[],
   sortBy: "position" as const,
   sortDirection: "asc" as const,
-  cardProperties: { priority: true, description: true, assignee: true, dueDate: true, project: true, childProgress: true },
+  cardProperties: { priority: true, description: true, assignee: true, dueDate: true, project: true, childProgress: true, labels: true },
   listCollapsedStatuses: [] as string[],
   setViewMode: vi.fn(),
   toggleStatusFilter: vi.fn(),
@@ -118,6 +124,7 @@ const mockViewState = {
   toggleCreatorFilter: vi.fn(),
   toggleProjectFilter: vi.fn(),
   toggleNoProject: vi.fn(),
+  toggleLabelFilter: vi.fn(),
   hideStatus: vi.fn(),
   showStatus: vi.fn(),
   clearFilters: vi.fn(),
@@ -130,6 +137,7 @@ const mockViewState = {
 vi.mock("@multica/core/issues/stores/view-store", () => ({
   useClearFiltersOnWorkspaceChange: () => {},
   viewStorePersistOptions: () => ({ name: "test", storage: undefined, partialize: (s: any) => s }),
+  mergeViewStatePersisted: (_p: unknown, c: any) => c,
   viewStoreSlice: vi.fn(),
   useIssueViewStore: Object.assign(
     (selector?: any) => (selector ? selector(mockViewState) : mockViewState),
@@ -153,6 +161,7 @@ vi.mock("@multica/core/issues/stores/view-store", () => ({
     { key: "assignee", label: "Assignee" },
     { key: "dueDate", label: "Due date" },
     { key: "project", label: "Project" },
+    { key: "labels", label: "Labels" },
     { key: "childProgress", label: "Sub-issue progress" },
   ],
 }));
@@ -163,13 +172,15 @@ vi.mock("@multica/core/issues/stores/view-store-context", () => ({
   useViewStoreApi: () => ({ getState: () => mockViewState, setState: vi.fn(), subscribe: vi.fn() }),
 }));
 
+let mockScope = "all";
+
 vi.mock("@multica/core/issues/stores/issues-scope-store", () => ({
   useIssuesScopeStore: Object.assign(
     (selector?: any) => {
-      const state = { scope: "all", setScope: vi.fn() };
+      const state = { scope: mockScope, setScope: vi.fn() };
       return selector ? selector(state) : state;
     },
-    { getState: () => ({ scope: "all", setScope: vi.fn() }) },
+    { getState: () => ({ scope: mockScope, setScope: vi.fn() }) },
   ),
 }));
 
@@ -186,11 +197,18 @@ vi.mock("@multica/core/issues/stores/selection-store", () => ({
 vi.mock("@multica/core/issues/stores/recent-issues-store", () => ({
   useRecentIssuesStore: Object.assign(
     (selector?: any) => {
-      const state = { items: [], recordVisit: vi.fn() };
+      const state = { byWorkspace: {}, recordVisit: vi.fn(), pruneWorkspaces: vi.fn() };
       return selector ? selector(state) : state;
     },
-    { getState: () => ({ items: [], recordVisit: vi.fn() }) },
+    {
+      getState: () => ({
+        byWorkspace: {},
+        recordVisit: vi.fn(),
+        pruneWorkspaces: vi.fn(),
+      }),
+    },
   ),
+  selectRecentIssues: () => () => [],
 }));
 
 vi.mock("@multica/core/modals", () => ({
@@ -314,6 +332,24 @@ const mockIssues: Issue[] = [
     created_at: "2026-01-01T00:00:00Z",
     updated_at: "2026-01-01T00:00:00Z",
   },
+  {
+    ...issueDefaults,
+    id: "issue-4",
+    workspace_id: "ws-1",
+    number: 4,
+    identifier: "TES-4",
+    title: "Squad task",
+    description: null,
+    status: "todo",
+    priority: "medium",
+    assignee_type: "squad",
+    assignee_id: "squad-1",
+    creator_type: "member",
+    creator_id: "user-1",
+    due_date: null,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -334,9 +370,11 @@ function renderWithQuery(ui: React.ReactElement) {
     },
   });
   return render(
-    <QueryClientProvider client={qc}>
-      {ui}
-    </QueryClientProvider>,
+    <I18nProvider locale="en" resources={TEST_RESOURCES}>
+      <QueryClientProvider client={qc}>
+        {ui}
+      </QueryClientProvider>
+    </I18nProvider>,
   );
 }
 
@@ -351,6 +389,7 @@ describe("IssuesPage (shared)", () => {
     mockViewState.viewMode = "board";
     mockViewState.statusFilters = [];
     mockViewState.priorityFilters = [];
+    mockScope = "all";
   });
 
   it("shows loading skeletons initially", () => {
@@ -419,5 +458,39 @@ describe("IssuesPage (shared)", () => {
     await screen.findByText("All");
     expect(screen.getByText("Members")).toBeInTheDocument();
     expect(screen.getByText("Agents")).toBeInTheDocument();
+  });
+
+  it("agents scope includes squad-assigned issues", async () => {
+    mockScope = "agents";
+    mockViewState.viewMode = "list";
+    mockListIssues.mockImplementation((params: any) =>
+      Promise.resolve({
+        issues: mockIssues.filter((i) => i.status === params?.status),
+        total: mockIssues.filter((i) => i.status === params?.status).length,
+      }),
+    );
+    renderWithQuery(<IssuesPage />);
+
+    // Squad task and agent task should be visible
+    await screen.findByText("Design landing page");
+    expect(screen.getByText("Squad task")).toBeInTheDocument();
+    // Member task should NOT be visible
+    expect(screen.queryByText("Implement auth")).not.toBeInTheDocument();
+  });
+
+  it("members scope excludes squad-assigned issues", async () => {
+    mockScope = "members";
+    mockViewState.viewMode = "list";
+    mockListIssues.mockImplementation((params: any) =>
+      Promise.resolve({
+        issues: mockIssues.filter((i) => i.status === params?.status),
+        total: mockIssues.filter((i) => i.status === params?.status).length,
+      }),
+    );
+    renderWithQuery(<IssuesPage />);
+
+    await screen.findByText("Implement auth");
+    expect(screen.queryByText("Squad task")).not.toBeInTheDocument();
+    expect(screen.queryByText("Design landing page")).not.toBeInTheDocument();
   });
 });

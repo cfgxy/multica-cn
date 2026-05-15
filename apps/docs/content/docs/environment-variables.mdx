@@ -7,20 +7,21 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 A self-hosted Multica [server](/self-host-quickstart) reads its configuration from environment variables at startup — database, sign-in, email, storage, signup allowlists all live here. This page groups every variable by purpose: each section spells out **what happens if you leave it unset** and **which ones you must set in production**. For how to actually configure the auth-related ones, see [Sign-in and signup configuration](/auth-setup).
 
-## The five required at startup
+## Core server variables
 
-These are the five you must think about before deploying — some have defaults that let the server start, but in production you should set all of them explicitly.
+These are the core variables you must think about before deploying — some have defaults that let the server start, but in production you should set the required ones explicitly.
 
 | Variable | Default | Required in production? |
 |---|---|---|
 | `DATABASE_URL` | `postgres://multica:multica@localhost:5432/multica?sslmode=disable` | **Yes** |
 | `PORT` | `8080` | No (unless you change the port) |
 | `JWT_SECRET` | `multica-dev-secret-change-in-production` | **Yes** (the default is unsafe) |
-| `APP_ENV` | empty | **Yes** (must be `production` — see the next section for the trap) |
+| `APP_ENV` | empty | **Yes** (must be `production`) |
 | `FRONTEND_ORIGIN` | empty | **Yes** (self-host must set its own domain) |
+| `MULTICA_DEV_VERIFICATION_CODE` | empty | No (must stay empty in production) |
 
 <Callout type="warning">
-**If `APP_ENV` is not set to `production`, anyone can sign in to any account using the code `888888`.** Multica has a development-only master code, `888888` — when `APP_ENV != "production"`, **any email** plus `888888` passes verification. The behavior is intentional for local development (no Resend dependency); **in production, failing to set `production` is equivalent to disabling auth entirely**. See [Sign-in and signup configuration → The 888888 trap](/auth-setup#the-888888-trap).
+**Keep `MULTICA_DEV_VERIFICATION_CODE` empty in production.** A fixed local test code is disabled by default, but if you opt in with `MULTICA_DEV_VERIFICATION_CODE=888888`, anyone who can request a code can sign in with that fixed value while `APP_ENV` is non-production. The shortcut is ignored when `APP_ENV=production`.
 </Callout>
 
 ### Database connection pool
@@ -34,14 +35,28 @@ These are the five you must think about before deploying — some have defaults 
 
 ## Email configuration
 
-Multica uses [Resend](https://resend.com/) to send verification codes and invite emails.
+Multica supports two delivery backends — [Resend](https://resend.com/) for cloud deployments, or an SMTP relay for internal / on-premise networks. `SMTP_HOST` takes priority over `RESEND_API_KEY` when both are set.
+
+### Resend
 
 | Variable | Default | Description |
 |---|---|---|
 | `RESEND_API_KEY` | empty | Resend API key |
-| `RESEND_FROM_EMAIL` | `noreply@multica.ai` | Sender address (must be a domain verified in your Resend account) |
+| `RESEND_FROM_EMAIL` | `noreply@multica.ai` | Sender address (must be a domain verified in your Resend account; also reused as the `From:` header when SMTP is in use) |
 
-**Behavior when `RESEND_API_KEY` is unset**: the server does not error, but every email that should have been sent (verification codes, invite links) **is written to the server's stdout only**. Convenient for local development — copy the code out of the server logs; **in production, forgetting to set this creates a silent black hole**, with users never receiving email and no error surfaced.
+### SMTP relay
+
+| Variable | Default | Description |
+|---|---|---|
+| `SMTP_HOST` | empty | SMTP relay hostname. Setting this activates SMTP mode and overrides Resend |
+| `SMTP_PORT` | `25` | SMTP port. Use `587` for STARTTLS submission; **port 465 (SMTPS / implicit TLS) is not supported** |
+| `SMTP_USERNAME` | empty | SMTP username. Leave empty for unauthenticated relay |
+| `SMTP_PASSWORD` | empty | SMTP password |
+| `SMTP_TLS_INSECURE` | `false` | Set `true` to skip TLS certificate verification (private CA / self-signed only) |
+
+STARTTLS is upgraded automatically when the server advertises it. The dial timeout is 10s and the whole SMTP session has a 30s deadline, so a black-holed relay can't hang the auth handler.
+
+**Behavior when neither is set**: the server does not error, but every email that should have been sent (verification codes, invite links) **is written to the server's stdout only**. Convenient for local development — copy the code out of the server logs; **in production, forgetting to set this creates a silent black hole**, with users never receiving email and no error surfaced.
 
 ## Google OAuth configuration
 
@@ -65,12 +80,18 @@ Multica stores user-uploaded attachments (images and files in comments). **S3 is
 
 | Variable | Default | Description |
 |---|---|---|
-| `S3_BUCKET` | empty | Setting this enables S3 storage |
-| `S3_REGION` | `us-west-2` | AWS region |
+| `S3_BUCKET` | empty | **Bucket name only** (for example `my-bucket`). Do **not** include the `.s3.<region>.amazonaws.com` suffix — the server constructs the public host from `S3_BUCKET` + `S3_REGION`. Setting this enables S3 storage |
+| `S3_REGION` | `us-west-2` | AWS region. Must match the bucket's actual region — it is used both for SDK signing and for building the public URL |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | empty | Static credentials. When both are unset, the AWS SDK default credential chain is used (IAM role / environment credentials) |
 | `AWS_ENDPOINT_URL` | empty | Custom S3-compatible endpoint (for example [MinIO](https://min.io/)). Setting this switches to path-style URLs |
 
 **When `S3_BUCKET` is unset**: the server logs `"S3_BUCKET not set, cloud upload disabled"` at startup, and all uploads fall back to local disk.
+
+**Public URLs** are constructed in this order of priority:
+
+1. `https://<CLOUDFRONT_DOMAIN>/<key>` if `CLOUDFRONT_DOMAIN` is set.
+2. `<AWS_ENDPOINT_URL>/<S3_BUCKET>/<key>` (path-style) if `AWS_ENDPOINT_URL` is set.
+3. `https://<S3_BUCKET>.s3.<S3_REGION>.amazonaws.com/<key>` (virtual-hosted-style). When `S3_BUCKET` contains dots, the server falls back to `https://s3.<S3_REGION>.amazonaws.com/<S3_BUCKET>/<key>` (path-style) because the AWS-issued wildcard TLS certificate does not validate dotted bucket hosts.
 
 ### Local disk (when S3 is not configured)
 
@@ -134,6 +155,22 @@ For a full explanation of how each parameter affects daemon behavior, see [Daemo
 **Leaving `FRONTEND_ORIGIN` unset creates two silent failures**: (1) invite email links point at `https://app.multica.ai` (the hosted domain), and clicking them doesn't bring users back to your self-hosted instance; (2) WebSocket Origin checks fall back to `localhost:3000 / 5173 / 5174`, so every WebSocket connection in a production deployment is rejected and the frontend appears to "lose real-time updates."
 </Callout>
 
+## GitHub integration
+
+The [GitHub PR ↔ issue integration](/github-integration) needs two variables. Set both to enable Connect GitHub in Settings and accept incoming webhooks.
+
+| Variable | Default | Description |
+|---|---|---|
+| `GITHUB_APP_SLUG` | empty | The slug of your GitHub App (the tail of `https://github.com/apps/<slug>`). Drives the Settings → Integrations install button URL |
+| `GITHUB_WEBHOOK_SECRET` | empty | The Webhook secret you set on the GitHub App. Used for HMAC-SHA256 verification of every `pull_request` / `installation` delivery, and as the HMAC key for the setup-callback state token |
+
+**Behavior when either is unset:**
+
+- `Connect GitHub` in Settings → Integrations is **disabled** and shows a "not configured" hint to admins.
+- The `/api/webhooks/github` endpoint returns **`503 github webhooks not configured`** — Multica refuses to process events with no secret rather than treating every signature as valid.
+
+**Note:** `GITHUB_WEBHOOK_SECRET` is reused as the signing key for the install-flow state token, so operators only need to manage one secret. It is **not** the GitHub App's *Client* secret — Client secrets are OAuth-related and not used by this integration. See [GitHub integration → Self-host setup](/github-integration#self-host-setup) for the full walkthrough.
+
 ## Usage analytics
 
 By default, the server reports to Multica's official PostHog instance. To opt out, set `ANALYTICS_DISABLED=true`.
@@ -147,5 +184,6 @@ By default, the server reports to Multica's official PostHog instance. To opt ou
 ## Next
 
 - [Sign-in and signup configuration](/auth-setup) — how to actually configure the auth-related variables above and where the traps are
+- [GitHub integration](/github-integration) — how to set up the GitHub App that backs `GITHUB_APP_SLUG` / `GITHUB_WEBHOOK_SECRET`
 - [Troubleshooting](/troubleshooting) — symptoms and fixes for common misconfigurations
 - [Daemon and runtimes](/daemon-runtimes) — what the `MULTICA_DAEMON_*` parameters actually do

@@ -9,11 +9,13 @@
     "workspaces",
     "members-roles",
     "issues",
+    "projects",
     "comments",
     "---智能体---",
     "agents",
     "agents-create",
     "skills",
+    "squads",
     "---智能体怎么运行---",
     "daemon-runtimes",
     "tasks",
@@ -25,6 +27,8 @@
     "autopilots",
     "---收件箱---",
     "inbox",
+    "---集成---",
+    "github-integration",
     "---自部署运维---",
     "environment-variables",
     "auth-setup",
@@ -32,6 +36,8 @@
     "---参考---",
     "cli",
     "auth-tokens",
-    "desktop-app"
+    "desktop-app",
+    "---开发者---",
+    "developers"
   ]
 }

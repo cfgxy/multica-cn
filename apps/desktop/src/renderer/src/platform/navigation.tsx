@@ -15,11 +15,15 @@ import {
 } from "@/stores/tab-store";
 import { useWindowOverlayStore } from "@/stores/window-overlay-store";
 
-// Public web app URL — injected at build time via .env.production. In dev
-// (no VITE_APP_URL set) falls back to the local web dev server so "Copy
-// link" in a dev build yields a URL that points at the running dev
-// frontend, not the prod host. Matches the fallback used in pages/login.tsx.
-const APP_URL = import.meta.env.VITE_APP_URL || "http://localhost:3000";
+function requireRuntimeAppUrl(scope: string): string {
+  const runtimeConfig = window.desktopAPI.runtimeConfig;
+  if (!runtimeConfig.ok) {
+    throw new Error(
+      `Invariant violated: ${scope} rendered before App accepted runtime config`,
+    );
+  }
+  return runtimeConfig.config.appUrl;
+}
 
 /**
  * Extract the leading workspace slug from a path, or null if the path isn't
@@ -56,6 +60,13 @@ function tryRouteToOverlay(path: string, router?: DataRouter): boolean {
   }
   if (path === "/onboarding") {
     overlay.open({ type: "onboarding" });
+    if (router && router.state.location.pathname !== "/") {
+      router.navigate("/", { replace: true });
+    }
+    return true;
+  }
+  if (path === "/invitations") {
+    overlay.open({ type: "invitations" });
     if (router && router.state.location.pathname !== "/") {
       router.navigate("/", { replace: true });
     }
@@ -109,16 +120,17 @@ export function DesktopNavigationProvider({
 }: {
   children: React.ReactNode;
 }) {
+  const appUrl = requireRuntimeAppUrl("DesktopNavigationProvider");
   // Primitive-only subscriptions so this component doesn't re-render on
   // unrelated store updates (e.g. an inactive tab's router tick). We
   // resolve the active router here only to subscribe once per tab switch.
   const { tabId: activeTabId } = useActiveTabIdentity();
   const router = useActiveTabRouter();
   // Mirror the active tab router's full location (pathname + search) so
-  // shell-level consumers of useNavigation() can read URL search params.
-  // Must stay in sync with TabNavigationProvider below; a partial shape
-  // here (just pathname) silently broke focus-mode anchor resolution on
-  // `/inbox?issue=…`.
+  // shell-level consumers of useNavigation() — ChatWindow in particular —
+  // can read URL search params. Must stay in sync with TabNavigationProvider
+  // below; a partial shape here (just pathname) silently broke focus-mode
+  // anchor resolution on `/inbox?issue=…`.
   const [location, setLocation] = useState<{ pathname: string; search: string }>(
     () => ({
       pathname: router?.state.location.pathname ?? "/",
@@ -179,9 +191,9 @@ export function DesktopNavigationProvider({
         const tabId = store.openTab(path, title ?? path, icon);
         if (tabId) store.setActiveTab(tabId);
       },
-      getShareableUrl: (path: string) => `${APP_URL}${path}`,
+      getShareableUrl: (path: string) => `${appUrl}${path}`,
     }),
-    [location],
+    [appUrl, location],
   );
 
   return <NavigationProvider value={adapter}>{children}</NavigationProvider>;
@@ -204,6 +216,7 @@ export function TabNavigationProvider({
   router: DataRouter;
   children: React.ReactNode;
 }) {
+  const appUrl = requireRuntimeAppUrl("TabNavigationProvider");
   const [location, setLocation] = useState(router.state.location);
 
   useEffect(() => {
@@ -239,9 +252,9 @@ export function TabNavigationProvider({
         const tabId = store.openTab(path, title ?? path, icon);
         if (tabId) store.setActiveTab(tabId);
       },
-      getShareableUrl: (path: string) => `${APP_URL}${path}`,
+      getShareableUrl: (path: string) => `${appUrl}${path}`,
     }),
-    [router, location],
+    [appUrl, router, location],
   );
 
   return <NavigationProvider value={adapter}>{children}</NavigationProvider>;

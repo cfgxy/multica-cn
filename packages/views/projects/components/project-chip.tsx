@@ -3,6 +3,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { projectListOptions, projectDetailOptions } from "@multica/core/projects/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
+import { ProjectIcon } from "./project-icon";
+import { useT } from "../../i18n";
 
 /**
  * Compact presentational representation of a project —
@@ -10,9 +12,6 @@ import { useWorkspaceId } from "@multica/core/hooks";
  *
  * Not a link / button: callers wrap it in whatever interactive shell they
  * need. Pure UI — data is queried internally so callers can pass just an id.
- *
- * `📁` matches the fallback used elsewhere (project-picker, projects-page,
- * project-detail) so project affordances feel consistent across the app.
  */
 export interface ProjectChipProps {
   projectId: string;
@@ -30,6 +29,7 @@ export function ProjectChip({
   fallbackLabel,
   className,
 }: ProjectChipProps) {
+  const { t } = useT("projects");
   const wsId = useWorkspaceId();
   const { data: projects = [] } = useQuery(projectListOptions(wsId));
   const listProject = projects.find((p) => p.id === projectId);
@@ -45,9 +45,9 @@ export function ProjectChip({
   if (!project) {
     return (
       <span className={cls}>
-        <span className="shrink-0">📁</span>
+        <ProjectIcon size="md" />
         <span className="text-muted-foreground truncate">
-          {fallbackLabel ?? "Project"}
+          {fallbackLabel ?? t(($) => $.chip.fallback_label)}
         </span>
       </span>
     );
@@ -55,7 +55,7 @@ export function ProjectChip({
 
   return (
     <span className={cls}>
-      <span className="shrink-0">{project.icon || "📁"}</span>
+      <ProjectIcon project={project} size="md" />
       <span className="text-foreground truncate">{project.title}</span>
     </span>
   );

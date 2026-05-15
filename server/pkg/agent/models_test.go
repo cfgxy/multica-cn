@@ -8,7 +8,7 @@ import (
 
 func TestListModelsStaticProviders(t *testing.T) {
 	ctx := context.Background()
-	for _, provider := range []string{"claude", "codex", "gemini", "cursor", "copilot"} {
+	for _, provider := range []string{"claude", "codex", "gemini", "cursor"} {
 		got, err := ListModels(ctx, provider, "")
 		if err != nil {
 			t.Fatalf("ListModels(%q) error: %v", provider, err)
@@ -24,6 +24,33 @@ func TestListModelsStaticProviders(t *testing.T) {
 				t.Errorf("ListModels(%q)[%d] has empty Label", provider, i)
 			}
 		}
+	}
+}
+
+func TestListModelsCopilotFallsBackToStatic(t *testing.T) {
+	// Copilot uses dynamic ACP discovery, but with no `copilot`
+	// binary on PATH (the discovery LookPath fails) it must fall
+	// back to copilotStaticModels() so the UI dropdown stays
+	// populated. This is the "binary missing on the daemon host"
+	// path we care about for self-hosted runtimes.
+	ctx := context.Background()
+	modelCacheMu.Lock()
+	delete(modelCache, "copilot")
+	modelCacheMu.Unlock()
+
+	got, err := ListModels(ctx, "copilot", "/nonexistent/copilot-cli")
+	if err != nil {
+		t.Fatalf("ListModels(copilot) error: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("expected static fallback models, got empty list")
+	}
+	ids := map[string]bool{}
+	for _, m := range got {
+		ids[m.ID] = true
+	}
+	if !ids["gpt-5.4"] || !ids["claude-sonnet-4.6"] {
+		t.Errorf("static fallback missing expected models: %+v", got)
 	}
 }
 
@@ -58,6 +85,119 @@ func TestGeminiStaticModelsExposesAliasesAndGemini3(t *testing.T) {
 	}
 }
 
+func TestCodexStaticModelsExposesGPT55(t *testing.T) {
+	// Codex CLI has no `models list` subcommand so the catalog is
+	// hand-maintained. Regression guard for multica-ai/multica#2009 —
+	// GPT-5.5 must be selectable, and the badge default must point at
+	// the latest release rather than lagging a version behind.
+	models := codexStaticModels()
+	ids := map[string]Model{}
+	for _, m := range models {
+		ids[m.ID] = m
+	}
+	for _, want := range []string{
+		"gpt-5.5", "gpt-5.5-mini",
+		"gpt-5.4", "gpt-5.4-mini",
+		"gpt-5.3-codex", "gpt-5",
+		"o3", "o3-mini",
+	} {
+		if _, ok := ids[want]; !ok {
+			t.Errorf("missing expected Codex model %q in: %+v", want, models)
+		}
+	}
+	latest, ok := ids["gpt-5.5"]
+	if !ok || !latest.Default {
+		t.Errorf("expected `gpt-5.5` to be the default Codex entry, got %+v", latest)
+	}
+	defaults := 0
+	for _, m := range models {
+		if m.Default {
+			defaults++
+		}
+		if m.Provider != "openai" {
+			t.Errorf("all Codex entries must carry Provider=openai, got %+v", m)
+		}
+	}
+	if defaults != 1 {
+		t.Errorf("expected exactly one default Codex entry, got %d", defaults)
+	}
+}
+
+func TestInferCopilotProvider(t *testing.T) {
+	cases := map[string]string{
+		"gpt-5.5":           "openai",
+		"gpt-5.4-mini":      "openai",
+		"gpt-5.3-codex":     "openai",
+		"gpt-4.1":           "openai",
+		"o1":                "openai",
+		"o3":                "openai",
+		"o3-mini":           "openai",
+		"o4-mini":           "openai",
+		"o5":                "openai", // future-proof: any o<digit>+
+		"o6-mini-high":      "openai",
+		"claude-opus-4.7":   "anthropic",
+		"claude-sonnet-4.6": "anthropic",
+		"claude-haiku-4.5":  "anthropic",
+		"gemini-3-pro":      "google",
+		"grok-code-fast-1":  "xai",
+		"auto":              "",
+		"raptor-mini":       "",
+		// negative cases: must not be misidentified as OpenAI
+		// reasoning series even though they start with `o`.
+		"opus-fake":         "",
+		"omni":              "",
+		"o":                 "",
+	}
+	for id, want := range cases {
+		if got := inferCopilotProvider(id); got != want {
+			t.Errorf("inferCopilotProvider(%q) = %q, want %q", id, got, want)
+		}
+	}
+}
+
+func TestCopilotStaticModelsExposesFullCatalog(t *testing.T) {
+	// GitHub Copilot CLI has no `models list` subcommand, so the
+	// catalog is hand-maintained from the official supported-models
+	// docs. Regression guard for multica-ai/multica#1948 — the
+	// dropdown previously shipped only 2 models and used dashed IDs
+	// (`claude-sonnet-4-6`) which the CLI rejects. IDs must use the
+	// dotted form (`claude-sonnet-4.6`) that `copilot --model <id>`
+	// actually accepts, and cover both OpenAI and Anthropic families.
+	models := copilotStaticModels()
+	ids := map[string]Model{}
+	for _, m := range models {
+		ids[m.ID] = m
+	}
+	for _, want := range []string{
+		"gpt-5.5", "gpt-5.4", "gpt-5.4-mini",
+		"gpt-5.3-codex", "gpt-5.2-codex", "gpt-5.2",
+		"gpt-5-mini", "gpt-4.1",
+		"claude-opus-4.7", "claude-sonnet-4.6",
+		"claude-sonnet-4.5", "claude-haiku-4.5",
+	} {
+		if _, ok := ids[want]; !ok {
+			t.Errorf("missing expected Copilot model %q in: %+v", want, models)
+		}
+	}
+	// Dashed legacy IDs must not reappear — `copilot --model
+	// claude-sonnet-4-6` errors with "Model ... is not available".
+	for _, banned := range []string{"claude-sonnet-4-6", "claude-sonnet-4-5"} {
+		if _, ok := ids[banned]; ok {
+			t.Errorf("Copilot catalog must not use dashed model id %q; use dotted form", banned)
+		}
+	}
+	for _, m := range models {
+		switch m.Provider {
+		case "openai", "anthropic":
+		default:
+			t.Errorf("Copilot entry %q has unexpected Provider %q", m.ID, m.Provider)
+		}
+		if m.Default {
+			t.Errorf("Copilot entries should not set Default; account routing decides. got %+v", m)
+		}
+	}
+}
+
 func TestListModelsHermesWithoutBinary(t *testing.T) {
 	// With no `hermes` binary on PATH the discovery fast-paths to
 	// an empty list (the UI then falls back to creatable manual
@@ -72,6 +212,21 @@ func TestListModelsHermesWithoutBinary(t *testing.T) {
 	got, err := ListModels(ctx, "hermes", "/nonexistent/hermes")
 	if err != nil {
 		t.Fatalf("ListModels(hermes) error: %v", err)
+	}
+	if got == nil {
+		t.Error("expected non-nil slice even when binary is missing")
+	}
+}
+
+func TestListModelsKiroWithoutBinary(t *testing.T) {
+	ctx := context.Background()
+	modelCacheMu.Lock()
+	delete(modelCache, "kiro")
+	modelCacheMu.Unlock()
+
+	got, err := ListModels(ctx, "kiro", "/nonexistent/kiro-cli")
+	if err != nil {
+		t.Fatalf("ListModels(kiro) error: %v", err)
 	}
 	if got == nil {
 		t.Error("expected non-nil slice even when binary is missing")
@@ -141,6 +296,35 @@ bareword
 	}
 	if models[0].ID != "openai/gpt-4o" {
 		t.Errorf("expected colon normalized to slash: %+v", models[0])
+	}
+}
+
+func TestParsePiModelsTableFormat(t *testing.T) {
+	input := `provider             model                   context  max-out  thinking  images
+bailian-coding-plan  glm-4.7                 202.8K   16.4K    no        no
+bailian-coding-plan  qwen3.6-plus            1M       65.5K    no        yes
+opencode             claude-sonnet-4-6       1M       64K      yes       yes
+opencode             claude-sonnet-4-6:exp   1M       64K      yes       yes
+opencode             claude-sonnet-4-6       1M       64K      yes       yes
+bareword-only-line
+`
+	models := parsePiModels(input)
+	if len(models) != 4 {
+		t.Fatalf("expected 4 models (header skipped, duplicate deduped, bareword skipped), got %d: %+v", len(models), models)
+	}
+	if models[0].ID != "bailian-coding-plan/glm-4.7" || models[0].Provider != "bailian-coding-plan" {
+		t.Errorf("unexpected first model: %+v", models[0])
+	}
+	if models[1].ID != "bailian-coding-plan/qwen3.6-plus" || models[1].Provider != "bailian-coding-plan" {
+		t.Errorf("unexpected second model: %+v", models[1])
+	}
+	if models[2].ID != "opencode/claude-sonnet-4-6" || models[2].Provider != "opencode" {
+		t.Errorf("unexpected third model: %+v", models[2])
+	}
+	// Colon inside a model name in column 1 must be preserved — only
+	// the legacy `provider:model` form gets colon→slash normalization.
+	if models[3].ID != "opencode/claude-sonnet-4-6:exp" || models[3].Provider != "opencode" {
+		t.Errorf("expected ':' inside table-format model name to be preserved: %+v", models[3])
 	}
 }
 

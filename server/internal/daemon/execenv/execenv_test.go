@@ -1,6 +1,8 @@
 package execenv
 
 import (
+	"encoding/json"
+	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -11,6 +13,10 @@ import (
 
 func testLogger() *slog.Logger {
 	return slog.Default()
+}
+
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
 func TestShortID(t *testing.T) {
@@ -27,6 +33,24 @@ func TestShortID(t *testing.T) {
 		if got := shortID(tt.input); got != tt.want {
 			t.Errorf("shortID(%q) = %q, want %q", tt.input, got, tt.want)
 		}
+	}
+}
+
+func TestPredictRootDir(t *testing.T) {
+	t.Parallel()
+	got := PredictRootDir("/root", "ws-uuid", "a1b2c3d4-e5f6-7890-abcd-ef1234567890")
+	want := filepath.Join("/root", "ws-uuid", "a1b2c3d4")
+	if got != want {
+		t.Errorf("PredictRootDir = %q, want %q", got, want)
+	}
+	if got := PredictRootDir("", "ws", "task"); got != "" {
+		t.Errorf("expected empty when workspaces root missing, got %q", got)
+	}
+	if got := PredictRootDir("/r", "", "task"); got != "" {
+		t.Errorf("expected empty when workspace ID missing, got %q", got)
+	}
+	if got := PredictRootDir("/r", "ws", ""); got != "" {
+		t.Errorf("expected empty when task ID missing, got %q", got)
 	}
 }
 
@@ -120,6 +144,139 @@ func TestPrepareDirectoryMode(t *testing.T) {
 	}
 }
 
+func TestPrepareWithProjectResources(t *testing.T) {
+	t.Parallel()
+	workspacesRoot := t.TempDir()
+
+	taskCtx := TaskContextForEnv{
+		IssueID:      "11111111-2222-3333-4444-555555555555",
+		ProjectID:    "22222222-3333-4444-5555-666666666666",
+		ProjectTitle: "Agent UX 2026",
+		ProjectResources: []ProjectResourceForEnv{
+			{
+				ID:           "33333333-4444-5555-6666-777777777777",
+				ResourceType: "github_repo",
+				ResourceRef:  json.RawMessage(`{"url":"https://github.com/multica-ai/multica","default_branch_hint":"main"}`),
+			},
+		},
+	}
+	env, err := Prepare(PrepareParams{
+		WorkspacesRoot: workspacesRoot,
+		WorkspaceID:    "ws-test-pr",
+		TaskID:         "11111111-2222-3333-4444-555555555555",
+		AgentName:      "Test Agent",
+		Provider:       "claude",
+		Task:           taskCtx,
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	defer env.Cleanup(true)
+
+	// resources.json should exist and decode back to what we wrote.
+	resourcesPath := filepath.Join(env.WorkDir, ".multica", "project", "resources.json")
+	raw, err := os.ReadFile(resourcesPath)
+	if err != nil {
+		t.Fatalf("failed to read resources.json: %v", err)
+	}
+	var got struct {
+		ProjectID    string `json:"project_id"`
+		ProjectTitle string `json:"project_title"`
+		Resources    []struct {
+			ID           string          `json:"id"`
+			ResourceType string          `json:"resource_type"`
+			ResourceRef  json.RawMessage `json:"resource_ref"`
+		} `json:"resources"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("resources.json unmarshal: %v\n%s", err, string(raw))
+	}
+	if got.ProjectID != taskCtx.ProjectID {
+		t.Errorf("resources.json project_id = %q, want %q", got.ProjectID, taskCtx.ProjectID)
+	}
+	if got.ProjectTitle != taskCtx.ProjectTitle {
+		t.Errorf("resources.json project_title = %q, want %q", got.ProjectTitle, taskCtx.ProjectTitle)
+	}
+	if len(got.Resources) != 1 || got.Resources[0].ResourceType != "github_repo" {
+		t.Fatalf("resources.json resources mismatch: %+v", got.Resources)
+	}
+
+	// CLAUDE.md should mention the project context block.
+	if _, err := InjectRuntimeConfig(env.WorkDir, "claude", taskCtx); err != nil {
+		t.Fatalf("InjectRuntimeConfig: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(env.WorkDir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("read CLAUDE.md: %v", err)
+	}
+	s := string(content)
+	for _, want := range []string{
+		"## Project Context",
+		"Agent UX 2026",
+		"GitHub repo",
+		"https://github.com/multica-ai/multica",
+		"default branch: `main`",
+		".multica/project/resources.json",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("CLAUDE.md missing %q", want)
+		}
+	}
+}
+
+// When the issue's project has its own github_repo resources, those should be
+// the only repos rendered in the meta-skill — workspace-level repos must not
+// leak into the agent prompt to avoid confusing it about which repo to use.
+//
+// The handler-side override is exercised in handler tests; this test confirms
+// the rendering side: given a TaskContextForEnv where Repos was already
+// narrowed by the server to project repos only, the meta skill renders just
+// those.
+func TestProjectReposReplaceWorkspaceReposInMetaSkill(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	ctx := TaskContextForEnv{
+		IssueID:      "11111111-2222-3333-4444-555555555555",
+		ProjectID:    "22222222-3333-4444-5555-666666666666",
+		ProjectTitle: "Project A",
+		Repos: []RepoContextForEnv{
+			{URL: "https://github.com/org/project-repo"},
+		},
+		ProjectResources: []ProjectResourceForEnv{
+			{
+				ID:           "33333333-4444-5555-6666-777777777777",
+				ResourceType: "github_repo",
+				ResourceRef:  []byte(`{"url":"https://github.com/org/project-repo"}`),
+			},
+		},
+	}
+	if _, err := InjectRuntimeConfig(dir, "claude", ctx); err != nil {
+		t.Fatalf("InjectRuntimeConfig: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("read CLAUDE.md: %v", err)
+	}
+	s := string(content)
+	if !strings.Contains(s, "https://github.com/org/project-repo") {
+		t.Errorf("CLAUDE.md missing project repo URL")
+	}
+	if strings.Contains(s, "https://github.com/org/workspace-repo") {
+		t.Errorf("CLAUDE.md should not contain workspace repo when project has its own")
+	}
+}
+
+func TestWriteProjectResourcesSkippedWhenNone(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	if err := writeProjectResources(dir, TaskContextForEnv{}); err != nil {
+		t.Fatalf("writeProjectResources: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".multica", "project", "resources.json")); !os.IsNotExist(err) {
+		t.Errorf("expected no resources.json to be written when project context is empty")
+	}
+}
+
 func TestPrepareWithRepoContext(t *testing.T) {
 	t.Parallel()
 	workspacesRoot := t.TempDir()
@@ -127,8 +284,8 @@ func TestPrepareWithRepoContext(t *testing.T) {
 	taskCtx := TaskContextForEnv{
 		IssueID: "b2c3d4e5-f6a7-8901-bcde-f12345678901",
 		Repos: []RepoContextForEnv{
-			{URL: "https://github.com/org/backend", Description: "Go backend"},
-			{URL: "https://github.com/org/frontend", Description: "React frontend"},
+			{URL: "https://github.com/org/backend"},
+			{URL: "https://github.com/org/frontend"},
 		},
 	}
 	env, err := Prepare(PrepareParams{
@@ -145,7 +302,7 @@ func TestPrepareWithRepoContext(t *testing.T) {
 	defer env.Cleanup(true)
 
 	// Inject runtime config (done separately in daemon, replicate here).
-	if err := InjectRuntimeConfig(env.WorkDir, "claude", taskCtx); err != nil {
+	if _, err := InjectRuntimeConfig(env.WorkDir, "claude", taskCtx); err != nil {
 		t.Fatalf("InjectRuntimeConfig failed: %v", err)
 	}
 
@@ -170,9 +327,7 @@ func TestPrepareWithRepoContext(t *testing.T) {
 	for _, want := range []string{
 		"multica repo checkout",
 		"https://github.com/org/backend",
-		"Go backend",
 		"https://github.com/org/frontend",
-		"React frontend",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("CLAUDE.md missing %q", want)
@@ -406,7 +561,7 @@ func TestInjectRuntimeConfigClaude(t *testing.T) {
 		},
 	}
 
-	if err := InjectRuntimeConfig(dir, "claude", ctx); err != nil {
+	if _, err := InjectRuntimeConfig(dir, "claude", ctx); err != nil {
 		t.Fatalf("InjectRuntimeConfig failed: %v", err)
 	}
 
@@ -430,6 +585,34 @@ func TestInjectRuntimeConfigClaude(t *testing.T) {
 	}
 }
 
+// Regression test for #2347: the runtime config injected into agent harnesses
+// must advertise both autopilot execution modes on create AND update, so an
+// agent acting as a CLI user is not confined to create_issue.
+func TestInjectRuntimeConfigAutopilotAdvertisesBothModes(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	if _, err := InjectRuntimeConfig(dir, "claude", TaskContextForEnv{IssueID: "issue-1"}); err != nil {
+		t.Fatalf("InjectRuntimeConfig failed: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("failed to read CLAUDE.md: %v", err)
+	}
+
+	s := string(content)
+	for _, want := range []string{
+		"multica autopilot create --title \"...\" --agent <name> --mode create_issue|run_only",
+		"multica autopilot update <id>",
+		"[--mode create_issue|run_only]",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("CLAUDE.md missing %q", want)
+		}
+	}
+}
+
 func TestInjectRuntimeConfigGemini(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -439,7 +622,7 @@ func TestInjectRuntimeConfigGemini(t *testing.T) {
 		AgentSkills: []SkillContextForEnv{{Name: "Writing", Content: "Write clearly."}},
 	}
 
-	if err := InjectRuntimeConfig(dir, "gemini", ctx); err != nil {
+	if _, err := InjectRuntimeConfig(dir, "gemini", ctx); err != nil {
 		t.Fatalf("InjectRuntimeConfig failed: %v", err)
 	}
 
@@ -477,7 +660,7 @@ func TestInjectRuntimeConfigCodex(t *testing.T) {
 		AgentSkills: []SkillContextForEnv{{Name: "Coding", Content: "Write good code."}},
 	}
 
-	if err := InjectRuntimeConfig(dir, "codex", ctx); err != nil {
+	if _, err := InjectRuntimeConfig(dir, "codex", ctx); err != nil {
 		t.Fatalf("InjectRuntimeConfig failed: %v", err)
 	}
 
@@ -501,7 +684,7 @@ func TestInjectRuntimeConfigNoSkills(t *testing.T) {
 
 	ctx := TaskContextForEnv{IssueID: "test-issue-id"}
 
-	if err := InjectRuntimeConfig(dir, "claude", ctx); err != nil {
+	if _, err := InjectRuntimeConfig(dir, "claude", ctx); err != nil {
 		t.Fatalf("InjectRuntimeConfig failed: %v", err)
 	}
 
@@ -590,17 +773,17 @@ func TestWriteContextFilesOpencodeNativeSkills(t *testing.T) {
 		t.Fatalf("writeContextFiles failed: %v", err)
 	}
 
-	// Skills should be in .config/opencode/skills/ (native discovery).
-	skillMd, err := os.ReadFile(filepath.Join(dir, ".config", "opencode", "skills", "go-conventions", "SKILL.md"))
+	// Skills should be in .opencode/skills/ (native discovery).
+	skillMd, err := os.ReadFile(filepath.Join(dir, ".opencode", "skills", "go-conventions", "SKILL.md"))
 	if err != nil {
-		t.Fatalf("failed to read .config/opencode/skills/go-conventions/SKILL.md: %v", err)
+		t.Fatalf("failed to read .opencode/skills/go-conventions/SKILL.md: %v", err)
 	}
 	if !strings.Contains(string(skillMd), "Follow Go conventions.") {
 		t.Error("SKILL.md missing content")
 	}
 
-	// Supporting files should also be under .config/opencode/skills/.
-	supportFile, err := os.ReadFile(filepath.Join(dir, ".config", "opencode", "skills", "go-conventions", "templates", "example.go"))
+	// Supporting files should also be under .opencode/skills/.
+	supportFile, err := os.ReadFile(filepath.Join(dir, ".opencode", "skills", "go-conventions", "templates", "example.go"))
 	if err != nil {
 		t.Fatalf("failed to read supporting file: %v", err)
 	}
@@ -619,6 +802,85 @@ func TestWriteContextFilesOpencodeNativeSkills(t *testing.T) {
 	}
 }
 
+// OpenClaw's native skill scanner reads {workspaceDir}/skills/. The daemon
+// pairs writeContextFiles with a per-task synthesized openclaw-config.json
+// (see openclaw_config.go) that pins agents.defaults.workspace to workDir,
+// so writing skills to {workDir}/skills/ is what the CLI actually scans.
+// This test pins the post-MUL-2219 write path; the previous fallback into
+// .agent_context/skills/ was a dead drop the openclaw scanner never read.
+func TestWriteContextFilesOpenclawNativeSkills(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	ctx := TaskContextForEnv{
+		IssueID: "openclaw-skill-test",
+		AgentSkills: []SkillContextForEnv{
+			{
+				Name:    "Go Conventions",
+				Content: "Follow Go conventions.",
+				Files: []SkillFileContextForEnv{
+					{Path: "templates/example.go", Content: "package main"},
+				},
+			},
+		},
+	}
+
+	if err := writeContextFiles(dir, "openclaw", ctx); err != nil {
+		t.Fatalf("writeContextFiles failed: %v", err)
+	}
+
+	skillMd, err := os.ReadFile(filepath.Join(dir, "skills", "go-conventions", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("failed to read skills/go-conventions/SKILL.md: %v", err)
+	}
+	if !strings.Contains(string(skillMd), "Follow Go conventions.") {
+		t.Error("SKILL.md missing content")
+	}
+
+	supportFile, err := os.ReadFile(filepath.Join(dir, "skills", "go-conventions", "templates", "example.go"))
+	if err != nil {
+		t.Fatalf("failed to read supporting file: %v", err)
+	}
+	if string(supportFile) != "package main" {
+		t.Errorf("supporting file content = %q, want %q", string(supportFile), "package main")
+	}
+
+	// The pre-MUL-2219 fallback path must NOT be written: openclaw never scans it.
+	if _, err := os.Stat(filepath.Join(dir, ".agent_context", "skills")); !os.IsNotExist(err) {
+		t.Error(".agent_context/skills/ MUST NOT be written for openclaw — the scanner does not read that path")
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".openclaw", "skills")); !os.IsNotExist(err) {
+		t.Error(".openclaw/skills/ MUST NOT be written — openclaw never scans that path; writing there is a dead drop")
+	}
+}
+
+func TestWriteContextFilesKiroNativeSkills(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	ctx := TaskContextForEnv{
+		IssueID: "kiro-skill-test",
+		AgentSkills: []SkillContextForEnv{
+			{Name: "Go Conventions", Content: "Follow Go conventions."},
+		},
+	}
+
+	if err := writeContextFiles(dir, "kiro", ctx); err != nil {
+		t.Fatalf("writeContextFiles failed: %v", err)
+	}
+
+	skillMd, err := os.ReadFile(filepath.Join(dir, ".kiro", "skills", "go-conventions", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("failed to read .kiro/skills/go-conventions/SKILL.md: %v", err)
+	}
+	if !strings.Contains(string(skillMd), "Follow Go conventions.") {
+		t.Error("SKILL.md missing content")
+	}
+	if _, err := os.Stat(filepath.Join(dir, ".agent_context", "skills")); !os.IsNotExist(err) {
+		t.Error("expected .agent_context/skills/ to NOT exist for Kiro provider")
+	}
+}
+
 func TestInjectRuntimeConfigOpencode(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -628,7 +890,7 @@ func TestInjectRuntimeConfigOpencode(t *testing.T) {
 		AgentSkills: []SkillContextForEnv{{Name: "Coding", Content: "Write good code."}},
 	}
 
-	if err := InjectRuntimeConfig(dir, "opencode", ctx); err != nil {
+	if _, err := InjectRuntimeConfig(dir, "opencode", ctx); err != nil {
 		t.Fatalf("InjectRuntimeConfig failed: %v", err)
 	}
 
@@ -655,6 +917,36 @@ func TestInjectRuntimeConfigOpencode(t *testing.T) {
 	}
 }
 
+func TestInjectRuntimeConfigKiro(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	ctx := TaskContextForEnv{
+		IssueID:     "test-issue-id",
+		AgentSkills: []SkillContextForEnv{{Name: "Coding", Content: "Write good code."}},
+	}
+
+	if _, err := InjectRuntimeConfig(dir, "kiro", ctx); err != nil {
+		t.Fatalf("InjectRuntimeConfig failed: %v", err)
+	}
+
+	content, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("failed to read AGENTS.md: %v", err)
+	}
+
+	s := string(content)
+	if !strings.Contains(s, "Multica Agent Runtime") {
+		t.Error("AGENTS.md missing meta skill header")
+	}
+	if !strings.Contains(s, "Coding") {
+		t.Error("AGENTS.md missing skill name")
+	}
+	if !strings.Contains(s, "discovered automatically") {
+		t.Error("AGENTS.md missing native skill discovery hint")
+	}
+}
+
 func TestPrepareWithRepoContextOpencode(t *testing.T) {
 	t.Parallel()
 	workspacesRoot := t.TempDir()
@@ -662,7 +954,7 @@ func TestPrepareWithRepoContextOpencode(t *testing.T) {
 	taskCtx := TaskContextForEnv{
 		IssueID: "c3d4e5f6-a7b8-9012-cdef-123456789012",
 		Repos: []RepoContextForEnv{
-			{URL: "https://github.com/org/backend", Description: "Go backend"},
+			{URL: "https://github.com/org/backend"},
 		},
 	}
 	env, err := Prepare(PrepareParams{
@@ -678,7 +970,7 @@ func TestPrepareWithRepoContextOpencode(t *testing.T) {
 	}
 	defer env.Cleanup(true)
 
-	if err := InjectRuntimeConfig(env.WorkDir, "opencode", taskCtx); err != nil {
+	if _, err := InjectRuntimeConfig(env.WorkDir, "opencode", taskCtx); err != nil {
 		t.Fatalf("InjectRuntimeConfig failed: %v", err)
 	}
 
@@ -703,7 +995,6 @@ func TestPrepareWithRepoContextOpencode(t *testing.T) {
 	for _, want := range []string{
 		"multica repo checkout",
 		"https://github.com/org/backend",
-		"Go backend",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("AGENTS.md missing %q", want)
@@ -735,7 +1026,7 @@ func TestInjectRuntimeConfigRequiresExplicitCommentPost(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			dir := t.TempDir()
-			if err := InjectRuntimeConfig(dir, "claude", tc.ctx); err != nil {
+			if _, err := InjectRuntimeConfig(dir, "claude", tc.ctx); err != nil {
 				t.Fatalf("InjectRuntimeConfig failed: %v", err)
 			}
 			data, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
@@ -771,6 +1062,189 @@ func TestInjectRuntimeConfigRequiresExplicitCommentPost(t *testing.T) {
 	}
 }
 
+// TestInjectRuntimeConfigAvailableCommandsIsNeutral pins that the global
+// Available Commands section lists the three input modes neutrally for
+// every non-Codex provider on every host OS, with no "MUST pipe via stdin"
+// mandate.
+//
+// Background: #1795 / #1851 introduced "MUST pipe via stdin" /
+// `--description-stdin` directives in the global section to fix Codex's
+// habit of emitting literal `\n` inside `--content "..."` (MUL-1467).
+// That mandate landed in the all-provider section and ended up steering
+// every provider at stdin — which then broke non-ASCII bytes on Windows
+// shells (#2198 / #2236 / #2376). This rollback keeps the strong
+// Codex-specific mandate in the Codex-Specific section (pinned by
+// TestInjectRuntimeConfigCodexLinuxEmphasizesStdin) and leaves the global
+// section neutral.
+//
+// Not parallel: mutates the package-level runtimeGOOS.
+func TestInjectRuntimeConfigAvailableCommandsIsNeutral(t *testing.T) {
+	saved := runtimeGOOS
+	t.Cleanup(func() { runtimeGOOS = saved })
+
+	for _, host := range []string{"linux", "darwin", "windows"} {
+		for _, provider := range []string{"claude", "opencode", "openclaw", "hermes", "kimi", "kiro", "cursor", "gemini"} {
+			t.Run(provider+"/"+host, func(t *testing.T) {
+				runtimeGOOS = host
+				dir := t.TempDir()
+				if _, err := InjectRuntimeConfig(dir, provider, TaskContextForEnv{IssueID: "issue-1"}); err != nil {
+					t.Fatalf("InjectRuntimeConfig failed: %v", err)
+				}
+
+				configFile := "CLAUDE.md"
+				if provider != "claude" {
+					configFile = "AGENTS.md"
+				}
+				if provider == "gemini" {
+					configFile = "GEMINI.md"
+				}
+				data, err := os.ReadFile(filepath.Join(dir, configFile))
+				if err != nil {
+					t.Fatalf("read %s: %v", configFile, err)
+				}
+				s := string(data)
+
+				// Available Commands lists all three input modes as fact.
+				for _, want := range []string{
+					"`--content \"...\"`",
+					"`--content-stdin`",
+					"`--content-file <path>`",
+					"`--description-stdin`",
+					"`--description-file <path>`",
+				} {
+					if !strings.Contains(s, want) {
+						t.Errorf("%s missing flag mention %q\n---\n%s", configFile, want, s)
+					}
+				}
+
+				// "MUST pipe via stdin" must NOT appear in any non-Codex
+				// provider's runtime config: it was the over-spread of
+				// the Codex-specific fix.
+				for _, banned := range []string{
+					"MUST pipe via stdin",
+					"Agent-authored comments should always pipe content via stdin",
+					"use `--description-stdin` and pipe a HEREDOC",
+				} {
+					if strings.Contains(s, banned) {
+						t.Errorf("%s carries over-spread Codex mandate %q for non-Codex provider %s\n---\n%s", configFile, banned, provider, s)
+					}
+				}
+			})
+		}
+	}
+}
+
+// TestInjectRuntimeConfigCodexLinuxEmphasizesStdin pins the
+// Codex-Specific Comment Formatting section's "MUST stdin" mandate on
+// non-Windows hosts. This is the MUL-1467 / #1795 / #1851 fix scoped
+// back to where it belongs.
+//
+// Not parallel: mutates the package-level runtimeGOOS.
+func TestInjectRuntimeConfigCodexLinuxEmphasizesStdin(t *testing.T) {
+	saved := runtimeGOOS
+	t.Cleanup(func() { runtimeGOOS = saved })
+	runtimeGOOS = "linux"
+
+	dir := t.TempDir()
+	if _, err := InjectRuntimeConfig(dir, "codex", TaskContextForEnv{
+		IssueID:          "issue-1",
+		TriggerCommentID: "comment-1",
+	}); err != nil {
+		t.Fatalf("InjectRuntimeConfig failed: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read AGENTS.md: %v", err)
+	}
+	s := string(data)
+
+	for _, want := range []string{
+		"Codex-Specific Comment Formatting",
+		"always use `--content-stdin` with a HEREDOC",
+		"even for short single-line replies",
+		"Never use inline `--content` for agent-authored comments",
+		"Keep the same `--parent` value",
+		"do not rely on `\\n` escapes",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("AGENTS.md missing Codex multiline guidance %q\n---\n%s", want, s)
+		}
+	}
+}
+
+// TestInjectRuntimeConfigCodexWindowsUsesContentFile pins that on Windows
+// the Codex-Specific section directs the agent at `--content-file` instead
+// of `--content-stdin`. PowerShell 5.1 / cmd.exe re-encode piped HEREDOC
+// bytes through the active console codepage and silently drop non-ASCII
+// as `?` before reaching `multica.exe` (#2198 / #2236 / #2376).
+//
+// Not parallel: mutates the package-level runtimeGOOS.
+func TestInjectRuntimeConfigCodexWindowsUsesContentFile(t *testing.T) {
+	saved := runtimeGOOS
+	t.Cleanup(func() { runtimeGOOS = saved })
+	runtimeGOOS = "windows"
+
+	dir := t.TempDir()
+	if _, err := InjectRuntimeConfig(dir, "codex", TaskContextForEnv{IssueID: "issue-1"}); err != nil {
+		t.Fatalf("InjectRuntimeConfig failed: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read AGENTS.md: %v", err)
+	}
+	s := string(data)
+	for _, want := range []string{
+		"On Windows, **always write the comment body to a UTF-8 file",
+		"$OutputEncoding",
+		"--content-file",
+		"silently dropping non-ASCII characters as `?`",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("AGENTS.md missing Codex/Windows file-first guidance %q\n---\n%s", want, s)
+		}
+	}
+	for _, banned := range []string{
+		"always use `--content-stdin` with a HEREDOC, even for short single-line replies",
+	} {
+		if strings.Contains(s, banned) {
+			t.Errorf("AGENTS.md still carries Codex stdin mandate %q on Windows\n---\n%s", banned, s)
+		}
+	}
+}
+
+func TestInjectRuntimeConfigQuickCreateOutputPrefixAgnostic(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	ctx := TaskContextForEnv{QuickCreatePrompt: "create a task"}
+	if _, err := InjectRuntimeConfig(dir, "codex", ctx); err != nil {
+		t.Fatalf("InjectRuntimeConfig failed: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
+	if err != nil {
+		t.Fatalf("read AGENTS.md: %v", err)
+	}
+	s := string(data)
+
+	for _, want := range []string{
+		"quick-create task",
+		"Created <identifier-or-id>: <title>",
+		"identifier` from JSON output",
+		"Do not assume any workspace issue prefix",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("quick-create runtime config missing %q\n---\n%s", want, s)
+		}
+	}
+	for _, absent := range []string{
+		"Created MUL-<n>",
+	} {
+		if strings.Contains(s, absent) {
+			t.Errorf("quick-create runtime config should not contain %q\n---\n%s", absent, s)
+		}
+	}
+}
+
 func TestInjectRuntimeConfigAutopilotRunOnlyNoIssueWorkflow(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -783,7 +1257,7 @@ func TestInjectRuntimeConfigAutopilotRunOnlyNoIssueWorkflow(t *testing.T) {
 		AutopilotSource:      "manual",
 	}
 
-	if err := InjectRuntimeConfig(dir, "codex", ctx); err != nil {
+	if _, err := InjectRuntimeConfig(dir, "codex", ctx); err != nil {
 		t.Fatalf("InjectRuntimeConfig failed: %v", err)
 	}
 	data, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
@@ -819,7 +1293,7 @@ func TestInjectRuntimeConfigUnknownProvider(t *testing.T) {
 	dir := t.TempDir()
 
 	// Unknown provider should be a no-op.
-	if err := InjectRuntimeConfig(dir, "unknown", TaskContextForEnv{}); err != nil {
+	if _, err := InjectRuntimeConfig(dir, "unknown", TaskContextForEnv{}); err != nil {
 		t.Fatalf("expected no error for unknown provider, got: %v", err)
 	}
 
@@ -839,7 +1313,7 @@ func TestInjectRuntimeConfigHermes(t *testing.T) {
 		AgentSkills: []SkillContextForEnv{{Name: "Coding", Content: "Write good code."}},
 	}
 
-	if err := InjectRuntimeConfig(dir, "hermes", ctx); err != nil {
+	if _, err := InjectRuntimeConfig(dir, "hermes", ctx); err != nil {
 		t.Fatalf("InjectRuntimeConfig failed: %v", err)
 	}
 
@@ -1007,6 +1481,57 @@ func TestPrepareCodexHomeSeedsFromShared(t *testing.T) {
 	}
 }
 
+// Regression test for #1753 — Codex Desktop writes plugin-backed
+// `[[skills.config]]` entries without a `path` field, and the CLI's TOML
+// parser rejects them with `missing field path`. prepareCodexHome must drop
+// every `[[skills.config]]` entry while copying the user's config.toml so
+// the per-task home stays parseable.
+func TestPrepareCodexHomeStripsSkillsConfigEntries(t *testing.T) {
+	// Cannot use t.Parallel() with t.Setenv.
+
+	sharedHome := t.TempDir()
+	sharedConfig := `model = "o3"
+
+[[skills.config]]
+path = "/Users/x/SKILL.md"
+enabled = false
+
+[[skills.config]]
+name = "superpowers:brainstorming"
+enabled = false
+
+[profiles.default]
+model = "o3"
+`
+	if err := os.WriteFile(filepath.Join(sharedHome, "config.toml"), []byte(sharedConfig), 0o644); err != nil {
+		t.Fatalf("write shared config.toml: %v", err)
+	}
+	t.Setenv("CODEX_HOME", sharedHome)
+
+	codexHome := filepath.Join(t.TempDir(), "codex-home")
+	if err := prepareCodexHome(codexHome, testLogger()); err != nil {
+		t.Fatalf("prepareCodexHome failed: %v", err)
+	}
+
+	data, err := os.ReadFile(filepath.Join(codexHome, "config.toml"))
+	if err != nil {
+		t.Fatalf("read per-task config.toml: %v", err)
+	}
+	tomlStr := string(data)
+	if strings.Contains(tomlStr, "[[skills.config]]") {
+		t.Errorf("per-task config.toml should not inherit [[skills.config]] entries, got:\n%s", tomlStr)
+	}
+	if strings.Contains(tomlStr, "superpowers:brainstorming") {
+		t.Errorf("per-task config.toml should not retain plugin skill names, got:\n%s", tomlStr)
+	}
+	if !strings.Contains(tomlStr, `model = "o3"`) {
+		t.Errorf("top-level keys should be preserved, got:\n%s", tomlStr)
+	}
+	if !strings.Contains(tomlStr, "[profiles.default]") {
+		t.Errorf("unrelated tables should be preserved, got:\n%s", tomlStr)
+	}
+}
+
 func TestPrepareCodexHomeSkipsMissingFiles(t *testing.T) {
 	// Cannot use t.Parallel() with t.Setenv.
 
@@ -1053,6 +1578,51 @@ func TestPrepareCodexHomeSkipsMissingFiles(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(codexHome, "plugins", "cache")); err != nil {
 		t.Fatalf("missing shared plugin cache exposure should still be tolerated and created: %v", err)
+	}
+}
+
+// Regression for issue #2081: when the per-task auth.json is a stale regular
+// file (e.g. left behind from an earlier Windows copy fallback), a subsequent
+// Reuse() / prepareCodexHome must refresh it from the shared source rather
+// than preserve the stale copy. Without this, Codex would keep retrying with
+// a refresh token the OAuth server has already revoked, surfacing as
+// `refresh_token_reused` / `token_expired` until the user manually nukes the
+// workspace directory.
+func TestPrepareCodexHome_RefreshesStaleAuthCopyOnReuse(t *testing.T) {
+	// Cannot use t.Parallel() with t.Setenv.
+
+	sharedHome := t.TempDir()
+	os.WriteFile(filepath.Join(sharedHome, "auth.json"), []byte(`{"refresh_token":"v1"}`), 0o644)
+	t.Setenv("CODEX_HOME", sharedHome)
+
+	codexHome := filepath.Join(t.TempDir(), "codex-home")
+
+	// Pre-seed the per-task home with a stale regular-file auth.json,
+	// simulating a previous run where os.Symlink failed and createFileLink
+	// fell back to copying.
+	if err := os.MkdirAll(codexHome, 0o755); err != nil {
+		t.Fatalf("mkdir codex-home: %v", err)
+	}
+	stalePath := filepath.Join(codexHome, "auth.json")
+	if err := os.WriteFile(stalePath, []byte(`{"refresh_token":"v0_stale"}`), 0o644); err != nil {
+		t.Fatalf("seed stale auth: %v", err)
+	}
+
+	// Shared source rotates to v2 while the per-task copy is still stuck on v0.
+	os.WriteFile(filepath.Join(sharedHome, "auth.json"), []byte(`{"refresh_token":"v2"}`), 0o644)
+
+	if err := prepareCodexHome(codexHome, testLogger()); err != nil {
+		t.Fatalf("prepareCodexHome failed: %v", err)
+	}
+
+	// After Reuse, dst should mirror the current shared source — either as a
+	// fresh symlink (preferred) or as a fresh copy (Windows fallback).
+	data, err := os.ReadFile(stalePath)
+	if err != nil {
+		t.Fatalf("read auth.json: %v", err)
+	}
+	if string(data) != `{"refresh_token":"v2"}` {
+		t.Errorf("auth.json content = %q, want refreshed v2 contents", data)
 	}
 }
 
@@ -1381,7 +1951,7 @@ func TestReuseRestoresCodexHome(t *testing.T) {
 	}
 
 	// Reuse should restore CodexHome.
-	reused := Reuse(env.WorkDir, "codex", "", TaskContextForEnv{IssueID: "reuse-test"}, testLogger())
+	reused := Reuse(ReuseParams{WorkDir: env.WorkDir, Provider: "codex", Task: TaskContextForEnv{IssueID: "reuse-test"}}, testLogger())
 	if reused == nil {
 		t.Fatal("Reuse returned nil")
 	}
@@ -1431,7 +2001,7 @@ func TestReuseRestoresCodexPluginCache(t *testing.T) {
 		t.Fatalf("remove codex plugins dir: %v", err)
 	}
 
-	reused := Reuse(env.WorkDir, "codex", "", TaskContextForEnv{IssueID: "reuse-plugin-test"}, testLogger())
+	reused := Reuse(ReuseParams{WorkDir: env.WorkDir, Provider: "codex", Task: TaskContextForEnv{IssueID: "reuse-plugin-test"}}, testLogger())
 	if reused == nil {
 		t.Fatal("Reuse returned nil")
 	}
@@ -1469,7 +2039,7 @@ func TestReuseWritesMissingCodexWorkspaceSkills(t *testing.T) {
 		t.Fatalf("remove codex skills dir: %v", err)
 	}
 
-	reused := Reuse(env.WorkDir, "codex", "", TaskContextForEnv{
+	reused := Reuse(ReuseParams{WorkDir: env.WorkDir, Provider: "codex", Task: TaskContextForEnv{
 		IssueID: "reuse-skill-test",
 		AgentSkills: []SkillContextForEnv{
 			{
@@ -1478,7 +2048,7 @@ func TestReuseWritesMissingCodexWorkspaceSkills(t *testing.T) {
 				Files:   []SkillFileContextForEnv{{Path: "examples/example.md", Content: "Example"}},
 			},
 		},
-	}, testLogger())
+	}}, testLogger())
 	if reused == nil {
 		t.Fatal("Reuse returned nil")
 	}
@@ -1528,7 +2098,7 @@ func TestReuseUpdatesCodexWorkspaceSkills(t *testing.T) {
 	}
 	defer env.Cleanup(true)
 
-	reused := Reuse(env.WorkDir, "codex", "", TaskContextForEnv{
+	reused := Reuse(ReuseParams{WorkDir: env.WorkDir, Provider: "codex", Task: TaskContextForEnv{
 		IssueID: "reuse-skill-update-test",
 		AgentSkills: []SkillContextForEnv{
 			{
@@ -1537,7 +2107,7 @@ func TestReuseUpdatesCodexWorkspaceSkills(t *testing.T) {
 				Files:   []SkillFileContextForEnv{{Path: "examples/example.md", Content: "Updated example"}},
 			},
 		},
-	}, testLogger())
+	}}, testLogger())
 	if reused == nil {
 		t.Fatal("Reuse returned nil")
 	}
@@ -1555,6 +2125,371 @@ func TestReuseUpdatesCodexWorkspaceSkills(t *testing.T) {
 	}
 	if string(example) != "Updated example" {
 		t.Errorf("support file content = %q", example)
+	}
+}
+
+// TestPrepareCodexSeedsUserSkills covers the fix for #1922: skills the user
+// installs under ~/.codex/skills/ must be discoverable by the codex CLI
+// inside a Multica task, despite the daemon redirecting CODEX_HOME to a
+// per-task directory.
+func TestPrepareCodexSeedsUserSkills(t *testing.T) {
+	// Cannot use t.Parallel() with t.Setenv.
+
+	sharedHome := t.TempDir()
+	t.Setenv("CODEX_HOME", sharedHome)
+
+	// Lay out two user-installed skills with both a SKILL.md and a
+	// supporting file, plus an ignored dotfile that must not be copied.
+	userSkills := filepath.Join(sharedHome, "skills")
+	if err := os.MkdirAll(filepath.Join(userSkills, "summarize", "examples"), 0o755); err != nil {
+		t.Fatalf("seed user skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(userSkills, "summarize", "SKILL.md"), []byte("summarize"), 0o644); err != nil {
+		t.Fatalf("seed user SKILL.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(userSkills, "summarize", "examples", "ex.md"), []byte("example"), 0o644); err != nil {
+		t.Fatalf("seed user support file: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(userSkills, "translate"), 0o755); err != nil {
+		t.Fatalf("seed second user skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(userSkills, "translate", "SKILL.md"), []byte("translate"), 0o644); err != nil {
+		t.Fatalf("seed second user SKILL.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(userSkills, ".DS_Store"), []byte("noise"), 0o644); err != nil {
+		t.Fatalf("seed ignored dotfile: %v", err)
+	}
+
+	env, err := Prepare(PrepareParams{
+		WorkspacesRoot: t.TempDir(),
+		WorkspaceID:    "ws-user-skills",
+		TaskID:         "d6f7a8b9-c0d1-2345-efab-678901234567",
+		AgentName:      "Codex Agent",
+		Provider:       "codex",
+		Task:           TaskContextForEnv{IssueID: "user-skills-test"},
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	defer env.Cleanup(true)
+
+	if data, err := os.ReadFile(filepath.Join(env.CodexHome, "skills", "summarize", "SKILL.md")); err != nil {
+		t.Fatalf("user skill SKILL.md not seeded: %v", err)
+	} else if string(data) != "summarize" {
+		t.Errorf("summarize SKILL.md = %q, want %q", data, "summarize")
+	}
+	if data, err := os.ReadFile(filepath.Join(env.CodexHome, "skills", "summarize", "examples", "ex.md")); err != nil {
+		t.Fatalf("user skill support file not seeded: %v", err)
+	} else if string(data) != "example" {
+		t.Errorf("ex.md = %q, want %q", data, "example")
+	}
+	if data, err := os.ReadFile(filepath.Join(env.CodexHome, "skills", "translate", "SKILL.md")); err != nil {
+		t.Fatalf("second user skill not seeded: %v", err)
+	} else if string(data) != "translate" {
+		t.Errorf("translate SKILL.md = %q, want %q", data, "translate")
+	}
+	if _, err := os.Stat(filepath.Join(env.CodexHome, "skills", ".DS_Store")); !os.IsNotExist(err) {
+		t.Errorf("ignored dotfile leaked into codex-home/skills: err=%v", err)
+	}
+}
+
+// TestPrepareCodexWorkspaceSkillBeatsUserSkillOnConflict checks that when a
+// workspace-assigned skill shares a sanitized name with a user-installed
+// skill, the workspace version fully replaces the user version (rather than
+// leaving stale user files lingering).
+func TestPrepareCodexWorkspaceSkillBeatsUserSkillOnConflict(t *testing.T) {
+	// Cannot use t.Parallel() with t.Setenv.
+
+	sharedHome := t.TempDir()
+	t.Setenv("CODEX_HOME", sharedHome)
+
+	userSkillDir := filepath.Join(sharedHome, "skills", "writing")
+	if err := os.MkdirAll(filepath.Join(userSkillDir, "drafts"), 0o755); err != nil {
+		t.Fatalf("seed user writing skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(userSkillDir, "SKILL.md"), []byte("user writing"), 0o644); err != nil {
+		t.Fatalf("seed user SKILL.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(userSkillDir, "drafts", "stale.md"), []byte("stale"), 0o644); err != nil {
+		t.Fatalf("seed user stale file: %v", err)
+	}
+
+	env, err := Prepare(PrepareParams{
+		WorkspacesRoot: t.TempDir(),
+		WorkspaceID:    "ws-skill-conflict",
+		TaskID:         "e7f8a9b0-c1d2-3456-efab-789012345678",
+		AgentName:      "Codex Agent",
+		Provider:       "codex",
+		Task: TaskContextForEnv{
+			IssueID: "skill-conflict-test",
+			AgentSkills: []SkillContextForEnv{
+				{Name: "Writing", Content: "workspace writing"},
+			},
+		},
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	defer env.Cleanup(true)
+
+	data, err := os.ReadFile(filepath.Join(env.CodexHome, "skills", "writing", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("workspace skill not written: %v", err)
+	}
+	if string(data) != "workspace writing" {
+		t.Errorf("SKILL.md = %q, want workspace content", data)
+	}
+	// The user's stale support file must not leak through — seeding is
+	// skipped entirely for names that workspace skills claim.
+	if _, err := os.Stat(filepath.Join(env.CodexHome, "skills", "writing", "drafts", "stale.md")); !os.IsNotExist(err) {
+		t.Errorf("user-skill stale file leaked despite workspace conflict: err=%v", err)
+	}
+}
+
+// TestPrepareCodexNoUserSkillsDir is a regression guard for the empty case —
+// when ~/.codex/skills doesn't exist, the seed step is a no-op and Prepare
+// still succeeds.
+func TestPrepareCodexNoUserSkillsDir(t *testing.T) {
+	// Cannot use t.Parallel() with t.Setenv.
+
+	sharedHome := t.TempDir()
+	t.Setenv("CODEX_HOME", sharedHome)
+
+	env, err := Prepare(PrepareParams{
+		WorkspacesRoot: t.TempDir(),
+		WorkspaceID:    "ws-no-user-skills",
+		TaskID:         "f8a9b0c1-d2e3-4567-fabc-890123456789",
+		AgentName:      "Codex Agent",
+		Provider:       "codex",
+		Task:           TaskContextForEnv{IssueID: "no-user-skills-test"},
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	defer env.Cleanup(true)
+	if _, err := os.Stat(filepath.Join(env.CodexHome, "skills")); !os.IsNotExist(err) {
+		t.Errorf("skills dir should not exist when neither user nor workspace skills are present, err=%v", err)
+	}
+}
+
+// TestPrepareCodexResolvesUserSkillSymlinks covers the lark-cli /
+// shared-installer case: each user skill is a symlink into a separate
+// installer directory. The per-task home must end up with a real copy, not
+// a dangling symlink that points outside the task root.
+func TestPrepareCodexResolvesUserSkillSymlinks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink semantics differ on Windows; covered by Unix path")
+	}
+	// Cannot use t.Parallel() with t.Setenv.
+
+	sharedHome := t.TempDir()
+	t.Setenv("CODEX_HOME", sharedHome)
+
+	installerRoot := filepath.Join(t.TempDir(), "installer", "lark-mail")
+	if err := os.MkdirAll(installerRoot, 0o755); err != nil {
+		t.Fatalf("seed installer dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(installerRoot, "SKILL.md"), []byte("lark"), 0o644); err != nil {
+		t.Fatalf("seed installer SKILL.md: %v", err)
+	}
+
+	userSkills := filepath.Join(sharedHome, "skills")
+	if err := os.MkdirAll(userSkills, 0o755); err != nil {
+		t.Fatalf("seed user skills dir: %v", err)
+	}
+	if err := os.Symlink(installerRoot, filepath.Join(userSkills, "lark-mail")); err != nil {
+		t.Fatalf("seed user skill symlink: %v", err)
+	}
+
+	env, err := Prepare(PrepareParams{
+		WorkspacesRoot: t.TempDir(),
+		WorkspaceID:    "ws-symlinked-skills",
+		TaskID:         "a9b0c1d2-e3f4-5678-abcd-901234567890",
+		AgentName:      "Codex Agent",
+		Provider:       "codex",
+		Task:           TaskContextForEnv{IssueID: "symlinked-skills-test"},
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	defer env.Cleanup(true)
+
+	dst := filepath.Join(env.CodexHome, "skills", "lark-mail")
+	fi, err := os.Lstat(dst)
+	if err != nil {
+		t.Fatalf("seeded skill missing: %v", err)
+	}
+	if fi.Mode()&os.ModeSymlink != 0 {
+		t.Errorf("seeded skill should be a real directory, got a symlink")
+	}
+	data, err := os.ReadFile(filepath.Join(dst, "SKILL.md"))
+	if err != nil {
+		t.Fatalf("seeded SKILL.md missing: %v", err)
+	}
+	if string(data) != "lark" {
+		t.Errorf("seeded SKILL.md = %q, want %q", data, "lark")
+	}
+}
+
+// TestReuseSeedsUserSkillUpdates ensures that user-skill edits between two
+// runs of the same task (the Reuse path) propagate into the per-task home.
+func TestReuseSeedsUserSkillUpdates(t *testing.T) {
+	// Cannot use t.Parallel() with t.Setenv.
+
+	sharedHome := t.TempDir()
+	t.Setenv("CODEX_HOME", sharedHome)
+
+	userSkill := filepath.Join(sharedHome, "skills", "summarize")
+	if err := os.MkdirAll(userSkill, 0o755); err != nil {
+		t.Fatalf("seed user skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(userSkill, "SKILL.md"), []byte("v1"), 0o644); err != nil {
+		t.Fatalf("seed v1 SKILL.md: %v", err)
+	}
+
+	workspacesRoot := t.TempDir()
+	env, err := Prepare(PrepareParams{
+		WorkspacesRoot: workspacesRoot,
+		WorkspaceID:    "ws-user-skill-reuse",
+		TaskID:         "b0c1d2e3-f4a5-6789-abcd-012345678901",
+		AgentName:      "Codex Agent",
+		Provider:       "codex",
+		Task:           TaskContextForEnv{IssueID: "user-skill-reuse-test"},
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	defer env.Cleanup(true)
+
+	if err := os.WriteFile(filepath.Join(userSkill, "SKILL.md"), []byte("v2"), 0o644); err != nil {
+		t.Fatalf("update user SKILL.md: %v", err)
+	}
+
+	reused := Reuse(ReuseParams{WorkDir: env.WorkDir, Provider: "codex", Task: TaskContextForEnv{
+		IssueID: "user-skill-reuse-test",
+	}}, testLogger())
+	if reused == nil {
+		t.Fatal("Reuse returned nil")
+	}
+	data, err := os.ReadFile(filepath.Join(reused.CodexHome, "skills", "summarize", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("user skill not refreshed on reuse: %v", err)
+	}
+	if string(data) != "v2" {
+		t.Errorf("after Reuse, user skill content = %q, want %q", data, "v2")
+	}
+}
+
+// TestReuseClearsUserSkillResidueOnWorkspaceConflict locks in the fix for
+// the GPT-Boy review on PR #2519: when round 1 seeded a user skill named
+// `writing` (including support files) and round 2 reuses the same workdir
+// with a workspace skill `Writing`, the user-version support files must not
+// linger under the workspace skill's directory.
+func TestReuseClearsUserSkillResidueOnWorkspaceConflict(t *testing.T) {
+	// Cannot use t.Parallel() with t.Setenv.
+
+	sharedHome := t.TempDir()
+	t.Setenv("CODEX_HOME", sharedHome)
+
+	userSkillDir := filepath.Join(sharedHome, "skills", "writing")
+	if err := os.MkdirAll(filepath.Join(userSkillDir, "drafts"), 0o755); err != nil {
+		t.Fatalf("seed user skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(userSkillDir, "SKILL.md"), []byte("user writing"), 0o644); err != nil {
+		t.Fatalf("seed user SKILL.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(userSkillDir, "drafts", "stale.md"), []byte("stale"), 0o644); err != nil {
+		t.Fatalf("seed user support file: %v", err)
+	}
+
+	env, err := Prepare(PrepareParams{
+		WorkspacesRoot: t.TempDir(),
+		WorkspaceID:    "ws-reuse-conflict",
+		TaskID:         "c1d2e3f4-a5b6-7890-abcd-123456789012",
+		AgentName:      "Codex Agent",
+		Provider:       "codex",
+		Task:           TaskContextForEnv{IssueID: "reuse-conflict-test"},
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	defer env.Cleanup(true)
+
+	// Round 1 had no workspace skill, so the user version should be present.
+	if _, err := os.Stat(filepath.Join(env.CodexHome, "skills", "writing", "drafts", "stale.md")); err != nil {
+		t.Fatalf("user support file should be seeded in round 1: %v", err)
+	}
+
+	reused := Reuse(ReuseParams{WorkDir: env.WorkDir, Provider: "codex", Task: TaskContextForEnv{
+		IssueID: "reuse-conflict-test",
+		AgentSkills: []SkillContextForEnv{
+			{Name: "Writing", Content: "workspace writing"},
+		},
+	}}, testLogger())
+	if reused == nil {
+		t.Fatal("Reuse returned nil")
+	}
+
+	data, err := os.ReadFile(filepath.Join(reused.CodexHome, "skills", "writing", "SKILL.md"))
+	if err != nil {
+		t.Fatalf("workspace SKILL.md missing after reuse: %v", err)
+	}
+	if string(data) != "workspace writing" {
+		t.Errorf("SKILL.md = %q, want workspace content", data)
+	}
+	if _, err := os.Stat(filepath.Join(reused.CodexHome, "skills", "writing", "drafts", "stale.md")); !os.IsNotExist(err) {
+		t.Errorf("round-1 user support file leaked into round-2 workspace skill dir, err=%v", err)
+	}
+}
+
+// TestReuseClearsRemovedUserSkill checks that uninstalling a user skill
+// between two runs (delete it from ~/.codex/skills) also drops it from the
+// per-task home on Reuse — otherwise users would still see deleted skills
+// surface to the codex CLI.
+func TestReuseClearsRemovedUserSkill(t *testing.T) {
+	// Cannot use t.Parallel() with t.Setenv.
+
+	sharedHome := t.TempDir()
+	t.Setenv("CODEX_HOME", sharedHome)
+
+	userSkill := filepath.Join(sharedHome, "skills", "deprecated")
+	if err := os.MkdirAll(userSkill, 0o755); err != nil {
+		t.Fatalf("seed user skill: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(userSkill, "SKILL.md"), []byte("deprecated"), 0o644); err != nil {
+		t.Fatalf("seed user SKILL.md: %v", err)
+	}
+
+	env, err := Prepare(PrepareParams{
+		WorkspacesRoot: t.TempDir(),
+		WorkspaceID:    "ws-reuse-remove",
+		TaskID:         "d2e3f4a5-b6c7-8901-abcd-234567890123",
+		AgentName:      "Codex Agent",
+		Provider:       "codex",
+		Task:           TaskContextForEnv{IssueID: "reuse-remove-test"},
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	defer env.Cleanup(true)
+
+	if _, err := os.Stat(filepath.Join(env.CodexHome, "skills", "deprecated", "SKILL.md")); err != nil {
+		t.Fatalf("user skill should be seeded in round 1: %v", err)
+	}
+
+	// Uninstall the user skill before round 2.
+	if err := os.RemoveAll(userSkill); err != nil {
+		t.Fatalf("remove user skill: %v", err)
+	}
+
+	reused := Reuse(ReuseParams{WorkDir: env.WorkDir, Provider: "codex", Task: TaskContextForEnv{
+		IssueID: "reuse-remove-test",
+	}}, testLogger())
+	if reused == nil {
+		t.Fatal("Reuse returned nil")
+	}
+	if _, err := os.Stat(filepath.Join(reused.CodexHome, "skills", "deprecated")); !os.IsNotExist(err) {
+		t.Errorf("removed user skill still present in per-task home after reuse, err=%v", err)
 	}
 }
 
@@ -1597,7 +2532,11 @@ func TestWriteReadGCMeta(t *testing.T) {
 	issueID := "a1b2c3d4-e5f6-7890-abcd-ef1234567890"
 	wsID := "ws-test-001"
 
-	if err := WriteGCMeta(dir, issueID, wsID); err != nil {
+	if err := WriteGCMeta(dir, GCMeta{
+		Kind:        GCKindIssue,
+		IssueID:     issueID,
+		WorkspaceID: wsID,
+	}, discardLogger()); err != nil {
 		t.Fatalf("WriteGCMeta: %v", err)
 	}
 
@@ -1606,6 +2545,9 @@ func TestWriteReadGCMeta(t *testing.T) {
 		t.Fatalf("ReadGCMeta: %v", err)
 	}
 
+	if meta.Kind != GCKindIssue {
+		t.Errorf("Kind = %q, want %q", meta.Kind, GCKindIssue)
+	}
 	if meta.IssueID != issueID {
 		t.Errorf("IssueID = %q, want %q", meta.IssueID, issueID)
 	}
@@ -1619,8 +2561,74 @@ func TestWriteReadGCMeta(t *testing.T) {
 
 func TestWriteGCMeta_EmptyRoot(t *testing.T) {
 	t.Parallel()
-	if err := WriteGCMeta("", "issue", "ws"); err != nil {
+	if err := WriteGCMeta("", GCMeta{Kind: GCKindIssue, IssueID: "x", WorkspaceID: "ws"}, discardLogger()); err != nil {
 		t.Fatalf("expected nil for empty root, got %v", err)
+	}
+}
+
+func TestWriteGCMeta_EmptyKind(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+
+	if err := WriteGCMeta(dir, GCMeta{WorkspaceID: "ws"}, discardLogger()); err != nil {
+		t.Fatalf("expected nil for empty kind, got %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, gcMetaFile)); !os.IsNotExist(err) {
+		t.Fatalf("expected gc meta file to be absent, got err=%v", err)
+	}
+}
+
+// Pre-v2 meta files lacked the kind field. ReadGCMeta must default an empty
+// kind to GCKindIssue so the existing on-disk meta files keep flowing
+// through the issue path.
+func TestReadGCMeta_LegacyFileDefaultsToIssueKind(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	legacy := []byte(`{"issue_id":"a1b2c3d4-e5f6-7890-abcd-ef1234567890","workspace_id":"ws","completed_at":"2025-01-01T00:00:00Z"}`)
+	if err := os.WriteFile(filepath.Join(dir, gcMetaFile), legacy, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	meta, err := ReadGCMeta(dir)
+	if err != nil {
+		t.Fatalf("ReadGCMeta: %v", err)
+	}
+	if meta.Kind != GCKindIssue {
+		t.Fatalf("legacy kind: want %q, got %q", GCKindIssue, meta.Kind)
+	}
+	if meta.IssueID != "a1b2c3d4-e5f6-7890-abcd-ef1234567890" {
+		t.Fatalf("legacy issue_id: got %q", meta.IssueID)
+	}
+}
+
+// New v2 meta files for chat / autopilot / quick-create round-trip without
+// being misclassified as the issue kind.
+func TestWriteReadGCMeta_KindRoundTrip(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		meta GCMeta
+		want GCMetaKind
+	}{
+		{"chat", GCMeta{Kind: GCKindChat, ChatSessionID: "cs-1", WorkspaceID: "ws"}, GCKindChat},
+		{"autopilot_run", GCMeta{Kind: GCKindAutopilotRun, AutopilotRunID: "ar-1", WorkspaceID: "ws"}, GCKindAutopilotRun},
+		{"quick_create", GCMeta{Kind: GCKindQuickCreate, TaskID: "t-1", WorkspaceID: "ws"}, GCKindQuickCreate},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			if err := WriteGCMeta(dir, tc.meta, discardLogger()); err != nil {
+				t.Fatalf("WriteGCMeta: %v", err)
+			}
+			got, err := ReadGCMeta(dir)
+			if err != nil {
+				t.Fatalf("ReadGCMeta: %v", err)
+			}
+			if got.Kind != tc.want {
+				t.Fatalf("Kind: want %q, got %q", tc.want, got.Kind)
+			}
+		})
 	}
 }
 
@@ -1651,7 +2659,7 @@ func TestInjectRuntimeConfigMentionLoopHardening(t *testing.T) {
 	readClaudeMD := func(t *testing.T, ctx TaskContextForEnv) string {
 		t.Helper()
 		dir := t.TempDir()
-		if err := InjectRuntimeConfig(dir, "claude", ctx); err != nil {
+		if _, err := InjectRuntimeConfig(dir, "claude", ctx); err != nil {
 			t.Fatalf("InjectRuntimeConfig failed: %v", err)
 		}
 		data, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
@@ -1704,4 +2712,63 @@ func TestInjectRuntimeConfigMentionLoopHardening(t *testing.T) {
 			}
 		}
 	})
+}
+
+// TestInjectRuntimeConfigSquadLeaderCommentTriggeredNoAction verifies that
+// when IsSquadLeader is true and the task is comment-triggered, the generated
+// CLAUDE.md explicitly forbids posting comments that merely announce no_action.
+// This is the fix for MUL-2168 — squad leaders were posting "Exiting silently"
+// comments because the comment-triggered path lacked the prohibition.
+func TestInjectRuntimeConfigSquadLeaderCommentTriggeredNoAction(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	ctx := TaskContextForEnv{
+		IssueID:          "issue-1",
+		TriggerCommentID: "comment-1",
+		IsSquadLeader:    true,
+	}
+	if _, err := InjectRuntimeConfig(dir, "claude", ctx); err != nil {
+		t.Fatalf("InjectRuntimeConfig failed: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("read CLAUDE.md: %v", err)
+	}
+	s := string(data)
+
+	// The comment-triggered workflow must contain the squad leader no_action rule.
+	for _, want := range []string{
+		"Squad leader rule",
+		"DO NOT post any comment",
+		"multica squad activity",
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("squad leader comment-triggered CLAUDE.md missing %q", want)
+		}
+	}
+
+	// The Output section must use strong prohibition language.
+	if !strings.Contains(s, "you MUST exit without posting any comment") {
+		t.Errorf("Output section missing strong prohibition for squad leader no_action")
+	}
+
+	// Non-squad-leader should NOT have the squad leader rule in comment-triggered path.
+	dir2 := t.TempDir()
+	ctx2 := TaskContextForEnv{
+		IssueID:          "issue-1",
+		TriggerCommentID: "comment-1",
+		IsSquadLeader:    false,
+	}
+	if _, err := InjectRuntimeConfig(dir2, "claude", ctx2); err != nil {
+		t.Fatalf("InjectRuntimeConfig failed: %v", err)
+	}
+	data2, err := os.ReadFile(filepath.Join(dir2, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("read CLAUDE.md: %v", err)
+	}
+	s2 := string(data2)
+	if strings.Contains(s2, "Squad leader rule") {
+		t.Errorf("non-squad-leader CLAUDE.md should NOT contain squad leader rule")
+	}
 }

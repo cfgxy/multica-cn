@@ -2,6 +2,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue } from "@multica/core/types";
+import { I18nProvider } from "@multica/core/i18n/react";
+import enCommon from "../../../locales/en/common.json";
+import enIssues from "../../../locales/en/issues.json";
+
+const TEST_RESOURCES = { en: { common: enCommon, issues: enIssues } };
 
 // ---------------------------------------------------------------------------
 // Mocks — same pattern as the issue-detail test suite.
@@ -43,6 +48,18 @@ vi.mock("@multica/core/workspace/queries", () => ({
     queryKey: ["workspaces", "ws-1", "agents"],
     queryFn: () => Promise.resolve([]),
   }),
+  squadListOptions: () => ({
+    queryKey: ["workspaces", "ws-1", "squads"],
+    queryFn: () => Promise.resolve([]),
+  }),
+  assigneeFrequencyOptions: () => ({
+    queryKey: ["workspaces", "ws-1", "assignee-frequency"],
+    queryFn: () => Promise.resolve([]),
+  }),
+}));
+
+vi.mock("@multica/core/workspace/hooks", () => ({
+  useActorName: () => ({ getActorName: (_t: string, _id: string) => "" }),
 }));
 
 vi.mock("@multica/core/pins", () => ({
@@ -115,7 +132,11 @@ function wrap(ui: React.ReactNode) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false } },
   });
-  return <QueryClientProvider client={qc}>{ui}</QueryClientProvider>;
+  return (
+    <I18nProvider locale="en" resources={TEST_RESOURCES}>
+      <QueryClientProvider client={qc}>{ui}</QueryClientProvider>
+    </I18nProvider>
+  );
 }
 
 beforeEach(() => {
@@ -147,6 +168,29 @@ describe("IssueActionsDropdown", () => {
     expect(screen.queryByText("Create sub-issue")).not.toBeInTheDocument();
     expect(screen.queryByText("Set parent issue...")).not.toBeInTheDocument();
     expect(screen.queryByText("Add sub-issue...")).not.toBeInTheDocument();
+  });
+
+  it("clicking the Assignee item opens the shared AssigneePicker popover", async () => {
+    render(
+      wrap(
+        <IssueActionsDropdown
+          issue={mockIssue}
+          trigger={<button data-testid="trigger">Menu</button>}
+        />,
+      ),
+    );
+
+    fireEvent.click(screen.getByTestId("trigger"));
+    fireEvent.click(await screen.findByText("Assignee"));
+
+    // The shared picker exposes a search input and renders the workspace
+    // member under a "Members" group — both come from `AssigneePicker`, not
+    // the legacy submenu (which had neither).
+    expect(
+      await screen.findByPlaceholderText("Assign to..."),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("Members")).toBeInTheDocument();
+    expect(await screen.findByText("Test User")).toBeInTheDocument();
   });
 
   it("clicking Delete issue opens the delete-confirm modal", async () => {

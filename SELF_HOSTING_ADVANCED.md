@@ -25,14 +25,30 @@ These have sensible defaults and only need to be set when tuning a large or cons
 
 ### Email (Required for Authentication)
 
-Multica uses email-based magic link authentication via [Resend](https://resend.com).
+Multica supports two email backends. `SMTP_HOST` takes priority when set; otherwise `RESEND_API_KEY` is used. With neither configured, verification codes are printed to the server log — copy them from there to log in.
+
+#### Option A: Resend (recommended for cloud deployments)
 
 | Variable | Description |
 |----------|-------------|
 | `RESEND_API_KEY` | Your Resend API key |
 | `RESEND_FROM_EMAIL` | Sender email address (default: `noreply@multica.ai`) |
 
-> **Note:** The dev master verification code `888888` is gated by `APP_ENV != "production"`. The Docker self-host stack defaults to `APP_ENV=production` (so `888888` is disabled), which protects publicly reachable instances. For local development without email configured, set `APP_ENV=development` in your `.env` to enable `888888` — never do this on a public instance.
+#### Option B: SMTP relay (for self-hosted / on-premise deployments)
+
+Use this option when your deployment cannot reach the public internet or you already have an internal mail relay (e.g. Exchange, Postfix, SendGrid on-prem).
+
+| Variable | Description | Default |
+|----------|-------------|----------|
+| `SMTP_HOST` | SMTP relay hostname (setting this activates SMTP mode) | - |
+| `SMTP_PORT` | SMTP port | `25` |
+| `SMTP_USERNAME` | SMTP username (leave empty for unauthenticated relay) | - |
+| `SMTP_PASSWORD` | SMTP password | - |
+| `SMTP_TLS_INSECURE` | Set `true` to skip TLS certificate verification (self-signed / private CA certs) | `false` |
+
+STARTTLS is used automatically when advertised by the server. Port 465 (SMTPS / implicit TLS) is not currently supported - use ports 25 or 587 with STARTTLS.
+
+> **Note:** If neither Resend nor SMTP is configured, generated verification codes are printed to backend logs — copy them from there to log in. A fixed local testing code (e.g. `888888`) is **opt-in only**: set `MULTICA_DEV_VERIFICATION_CODE=888888` in `.env` and keep `APP_ENV` non-production. The Docker self-host stack pins `APP_ENV=production`, so the shortcut is ignored there. **Never enable a fixed code on a publicly reachable instance.**
 
 ### Google OAuth (Optional)
 
@@ -56,13 +72,15 @@ Changes take effect after restarting the backend / compose stack. The web UI rea
 
 ### File Storage (Optional)
 
-For file uploads and attachments, configure S3 and CloudFront:
+For file uploads and attachments, configure S3 and (optionally) CloudFront:
 
 | Variable | Description |
 |----------|-------------|
-| `S3_BUCKET` | S3 bucket name |
-| `S3_REGION` | AWS region (default: `us-west-2`) |
-| `CLOUDFRONT_DOMAIN` | CloudFront distribution domain |
+| `S3_BUCKET` | Bucket name only (e.g. `my-bucket`). Do **not** include the `.s3.<region>.amazonaws.com` suffix — the server constructs the public URL from `S3_BUCKET` + `S3_REGION` |
+| `S3_REGION` | AWS region (default: `us-west-2`). Must match the bucket's actual region — used for both SDK signing and public URLs |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | Static credentials. When both are unset, the AWS SDK default credential chain is used |
+| `AWS_ENDPOINT_URL` | Custom S3-compatible endpoint (e.g. MinIO, R2, B2). Setting this switches the public URL to path-style |
+| `CLOUDFRONT_DOMAIN` | CloudFront distribution domain — when set, public URLs use this host instead of the S3 host |
 | `CLOUDFRONT_KEY_PAIR_ID` | CloudFront key pair ID for signed URLs |
 | `CLOUDFRONT_PRIVATE_KEY` | CloudFront private key (PEM format) |
 
@@ -79,6 +97,7 @@ The `Secure` flag on session cookies is derived automatically from the scheme of
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `PORT` | `8080` | Backend server port |
+| `METRICS_ADDR` | empty | Optional Prometheus metrics listener, for example `127.0.0.1:9090` |
 | `FRONTEND_PORT` | `3000` | Frontend port |
 | `CORS_ALLOWED_ORIGINS` | Value of `FRONTEND_ORIGIN` | Comma-separated list of allowed origins |
 | `LOG_LEVEL` | `info` | Log level: `debug`, `info`, `warn`, `error` |
@@ -102,6 +121,8 @@ Agent-specific overrides:
 | `MULTICA_CLAUDE_MODEL` | Override the Claude model used |
 | `MULTICA_CODEX_PATH` | Custom path to the `codex` binary |
 | `MULTICA_CODEX_MODEL` | Override the Codex model used |
+| `MULTICA_COPILOT_PATH` | Custom path to the `copilot` (GitHub Copilot CLI) binary |
+| `MULTICA_COPILOT_MODEL` | Override the Copilot model used (note: GitHub Copilot routes models through your account entitlement, so this may not be honoured) |
 | `MULTICA_OPENCODE_PATH` | Custom path to the `opencode` binary |
 | `MULTICA_OPENCODE_MODEL` | Override the OpenCode model used |
 | `MULTICA_OPENCLAW_PATH` | Custom path to the `openclaw` binary |
@@ -181,15 +202,46 @@ In production, put a reverse proxy in front of both the backend and frontend to 
 
 ### Caddy (Recommended)
 
+**Single-domain layout** — frontend and backend served on the same hostname (this is what `docker-compose.selfhost.yml` defaults to):
+
+```
+multica.example.com {
+    # WebSocket route — must come before the catch-all
+    @multica_ws path /ws /ws/*
+    handle @multica_ws {
+        reverse_proxy localhost:8080 {
+            flush_interval -1
+        }
+    }
+
+    # Everything else → frontend
+    reverse_proxy localhost:3000
+}
+```
+
+**Separate-domain layout** — frontend and backend on different hostnames:
+
 ```
 app.example.com {
     reverse_proxy localhost:3000
 }
 
 api.example.com {
+    @multica_ws path /ws /ws/*
+    handle @multica_ws {
+        reverse_proxy localhost:8080 {
+            flush_interval -1
+        }
+    }
+
     reverse_proxy localhost:8080
 }
 ```
+
+Two non-obvious bits inside the `/ws` block are worth calling out — both are common reasons real-time updates "stop working" on a Caddy-fronted self-host:
+
+- **`path /ws /ws/*` (not `/ws*`)** — bare `handle /ws` is an exact match, so future path variants under `/ws/` fall through to the frontend block. The obvious shortcut `handle /ws*` overcorrects in the other direction: Caddy's `*` is a glob without a path-segment boundary, so it would also catch unrelated paths like `/ws-foo`, which is a legitimate workspace URL (only the exact slug `ws` is reserved). Listing `/ws` and `/ws/*` explicitly covers both real cases without overreach.
+- **`flush_interval -1`** — disables response buffering so WebSocket frames are forwarded as soon as they arrive. Without it, frames can sit behind Caddy's default flush window, which looks like delayed comments, missing typing indicators, or "comments only appear after a page refresh."
 
 ### Nginx
 
@@ -307,6 +359,28 @@ Use `/health` for basic liveness / reachability checks. Use `/readyz` for
 dependency-aware readiness probes and external monitoring that should fail when
 the database is unavailable or migrations are not fully applied. `/healthz` is
 kept as an alias for operator familiarity.
+
+## Prometheus Metrics
+
+The backend can expose Prometheus metrics on a separate management listener:
+
+```bash
+METRICS_ADDR=127.0.0.1:9090 ./server/bin/server
+curl http://127.0.0.1:9090/metrics
+```
+
+`METRICS_ADDR` is empty by default, so no metrics listener is started. The
+public API port does not serve `/metrics`; keep it that way for internet-facing
+deployments. HTTP request metrics start accumulating only after the metrics
+listener is enabled. Metrics can reveal internal routes, traffic volume,
+dependency state, and runtime health.
+
+For Docker or Kubernetes deployments, prefer a private scrape path: bind the
+metrics listener to an internal interface and protect it with private
+networking, allowlists, NetworkPolicy, or proxy authentication. If you bind
+`METRICS_ADDR=0.0.0.0:9090` inside a container, only publish that port to a
+trusted network, for example a host-local mapping such as
+`127.0.0.1:9090:9090`.
 
 ## Upgrading
 
