@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Tabs } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
+import { Image } from "expo-image";
 import { GlobalNavMenu } from "@/components/nav/global-nav-menu";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import {
@@ -58,10 +58,10 @@ export default function TabsLayout() {
             tabBarBadge: inboxBadge,
             tabBarBadgeStyle: BADGE_STYLE,
             tabBarIcon: ({ color, size, focused }) => (
-              <Ionicons
-                name={focused ? "mail" : "mail-outline"}
-                size={size}
-                color={color}
+              <Image
+                source={focused ? "sf:tray.fill" : "sf:tray"}
+                tintColor={color}
+                style={{ width: size, height: size }}
               />
             ),
           }}
@@ -71,10 +71,10 @@ export default function TabsLayout() {
           options={{
             title: "My Issues",
             tabBarIcon: ({ color, size, focused }) => (
-              <Ionicons
-                name={focused ? "list" : "list-outline"}
-                size={size}
-                color={color}
+              <Image
+                source={focused ? "sf:checklist" : "sf:checklist.unchecked"}
+                tintColor={color}
+                style={{ width: size, height: size }}
               />
             ),
           }}
@@ -86,10 +86,10 @@ export default function TabsLayout() {
             tabBarBadge: chatBadge,
             tabBarBadgeStyle: BADGE_STYLE,
             tabBarIcon: ({ color, size, focused }) => (
-              <Ionicons
-                name={focused ? "chatbubble" : "chatbubble-outline"}
-                size={size}
-                color={color}
+              <Image
+                source={focused ? "sf:bubble.left.fill" : "sf:bubble.left"}
+                tintColor={color}
+                style={{ width: size, height: size }}
               />
             ),
           }}
@@ -99,10 +99,10 @@ export default function TabsLayout() {
           options={{
             title: "More",
             tabBarIcon: ({ color, size }) => (
-              <Ionicons
-                name={menuOpen ? "menu" : "menu-outline"}
-                size={size}
-                color={color}
+              <Image
+                source="sf:ellipsis"
+                tintColor={color}
+                style={{ width: size, height: size }}
               />
             ),
           }}
