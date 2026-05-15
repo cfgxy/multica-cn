@@ -35,7 +35,15 @@ import { useWorkspaceStore } from "@/data/workspace-store";
 import { useViewedIssuesStore } from "@/data/viewed-issues-store";
 
 export default function IssueDetail() {
-  const { id } = useLocalSearchParams<{ id: string }>();
+  // `highlight` + `h` come from inbox deep-link (apps/mobile/app/(app)/
+  // [workspace]/(tabs)/inbox.tsx). `highlight` is the target comment id;
+  // `h` is a per-tap nonce so re-tapping the same row re-fires the
+  // scroll-and-flash effect.
+  const { id, highlight, h } = useLocalSearchParams<{
+    id: string;
+    highlight?: string;
+    h?: string;
+  }>();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const qc = useQueryClient();
   // KeyboardAvoidingView's `padding` behaviour calculates from screen top.
@@ -135,6 +143,8 @@ export default function IssueDetail() {
               refreshing={detail.isRefetching || timeline.isRefetching}
               onRefresh={onRefresh}
               onReplyTo={onReplyTo}
+              highlightCommentId={highlight}
+              highlightNonce={h}
             />
           </View>
           <CommentComposer

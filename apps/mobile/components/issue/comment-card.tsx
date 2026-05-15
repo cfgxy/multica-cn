@@ -14,8 +14,15 @@
  * reply, and copy. Reactions render under each comment body via
  * ReactionBar (existing behavior, only visible when a reaction exists).
  */
-import { useCallback, useState } from "react";
-import { Pressable, View } from "react-native";
+import { useCallback, useEffect, useState } from "react";
+import { Pressable, StyleSheet, View } from "react-native";
+import Animated, {
+  useAnimatedStyle,
+  useSharedValue,
+  withDelay,
+  withSequence,
+  withTiming,
+} from "react-native-reanimated";
 import * as Haptics from "expo-haptics";
 import * as Clipboard from "expo-clipboard";
 import type { Reaction, TimelineEntry } from "@multica/core/types";
@@ -40,27 +47,118 @@ interface Props {
   /** Bubble-up callback — long-press → Reply opens this with the target
    *  comment id and display name; the issue page lifts replyingTo state. */
   onReplyTo: (commentId: string, name: string) => void;
+  /** Inbox deep-link flash target. When this matches the root entry id we
+   *  flash the outer bubble (ring + bg). When it matches a reply id we
+   *  flash that reply's wrapper (bg only). Mirrors web's distinction at
+   *  packages/views/issues/components/comment-card.tsx:498-682. */
+  highlightedCommentId?: string | null;
 }
 
-export function CommentCard({ entry, replies = [], issueId, onReplyTo }: Props) {
+// Brand color (apps/mobile/tailwind.config.js:48 brand = #4571e0) decomposed
+// into the two rgba alphas that web uses (`ring-brand/50`, `bg-brand/5`).
+const BRAND_RING = "rgba(69, 113, 224, 0.5)";
+const BRAND_WASH = "rgba(69, 113, 224, 0.05)";
+
+export function CommentCard({
+  entry,
+  replies = [],
+  issueId,
+  onReplyTo,
+  highlightedCommentId,
+}: Props) {
   return (
     <View className="px-4">
-      <View className="bg-secondary rounded-2xl px-4 py-3 gap-3">
-        <CommentBody entry={entry} issueId={issueId} onReplyTo={onReplyTo} />
-        {replies.map((reply) => (
-          <View
-            key={reply.id}
-            className="border-t border-border/60 pt-3"
-          >
-            <CommentBody
-              entry={reply}
-              issueId={issueId}
-              onReplyTo={onReplyTo}
-            />
-          </View>
-        ))}
+      <View className="rounded-2xl">
+        <View className="bg-secondary rounded-2xl px-4 py-3 gap-3">
+          <CommentBody entry={entry} issueId={issueId} onReplyTo={onReplyTo} />
+          {replies.map((reply) => (
+            <View key={reply.id} className="border-t border-border/60 pt-3">
+              <CommentBody
+                entry={reply}
+                issueId={issueId}
+                onReplyTo={onReplyTo}
+              />
+              <ReplyHighlightOverlay
+                active={highlightedCommentId === reply.id}
+              />
+            </View>
+          ))}
+        </View>
+        <RootHighlightOverlay active={highlightedCommentId === entry.id} />
       </View>
     </View>
+  );
+}
+
+/**
+ * Animated highlight overlay for a root comment bubble. Sits absolute-
+ * positioned over the parent <View className="rounded-2xl">, no pointer
+ * capture (long-press still works through it). Border + background wash
+ * — equivalent to web's `ring-2 ring-brand/50 bg-brand/5`.
+ *
+ * Reflow note: animating `borderWidth` would push children every frame,
+ * so we keep it constant at 2 and animate `opacity` 0→1→0. Same trick
+ * for the wash. Single shared value, one animated style.
+ */
+function RootHighlightOverlay({ active }: { active: boolean }) {
+  const progress = useSharedValue(0);
+
+  useEffect(() => {
+    if (!active) return;
+    // 700ms fade-in → 1800ms hold → 700ms fade-out. Matches web's
+    // `transition-colors duration-700` + `setTimeout(2500)` timing.
+    progress.value = withSequence(
+      withTiming(1, { duration: 700 }),
+      withDelay(1800, withTiming(0, { duration: 700 })),
+    );
+  }, [active, progress]);
+
+  const style = useAnimatedStyle(() => ({ opacity: progress.value }));
+
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={[
+        StyleSheet.absoluteFillObject,
+        {
+          borderRadius: 16,
+          borderWidth: 2,
+          borderColor: BRAND_RING,
+          backgroundColor: BRAND_WASH,
+        },
+        style,
+      ]}
+    />
+  );
+}
+
+/**
+ * Animated wash overlay for a reply row. Same timing as root, but no
+ * border — mirrors web's reply branch which applies only `bg-brand/5`
+ * (packages/views/issues/components/comment-card.tsx:682).
+ */
+function ReplyHighlightOverlay({ active }: { active: boolean }) {
+  const progress = useSharedValue(0);
+
+  useEffect(() => {
+    if (!active) return;
+    progress.value = withSequence(
+      withTiming(1, { duration: 700 }),
+      withDelay(1800, withTiming(0, { duration: 700 })),
+    );
+  }, [active, progress]);
+
+  const style = useAnimatedStyle(() => ({ opacity: progress.value }));
+
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={[
+        StyleSheet.absoluteFillObject,
+        { backgroundColor: BRAND_WASH },
+        style,
+      ]}
+    />
   );
 }
 

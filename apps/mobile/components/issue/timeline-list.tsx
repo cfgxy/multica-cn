@@ -7,11 +7,16 @@
  * created bugs at reply-thread boundaries). The previous "Pull to load
  * older" UX and top-edge `fetchOlder` trigger are gone.
  *
+ * Inbox deep-link: when `highlightCommentId` is set (paired with a fresh
+ * `highlightNonce` per tap), this list auto-scrolls to the matching row
+ * and lights up the `<CommentCard>` for ~3.2s. Mirrors the web behavior
+ * at packages/views/issues/components/issue-detail.tsx:686-709.
+ *
  * Uses native FlatList (mobile baseline doesn't include FlashList — see
  * apps/mobile/CLAUDE.md "Tech-stack baseline"). For the issue volumes the
  * product targets, FlatList is fine.
  */
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ActivityIndicator, FlatList, RefreshControl, View } from "react-native";
 import type { Issue, TimelineEntry } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
@@ -32,7 +37,20 @@ interface Props {
   /** Long-press → Reply on a comment bubbles up via this callback. The
    *  issue page lifts replyingTo state and feeds it back into the composer. */
   onReplyTo: (commentId: string, name: string) => void;
+  /** Inbox deep-link target. Root comment id OR reply id — replies live
+   *  inline inside their parent's CommentCard, so a reply target scrolls
+   *  to the parent's row and the card highlights the matching child. */
+  highlightCommentId?: string;
+  /** Per-tap nonce. Re-tapping the same inbox row produces the same
+   *  `highlightCommentId` but a fresh nonce, which re-triggers the
+   *  scroll-and-flash effect (without this, identical props short-circuit). */
+  highlightNonce?: string;
 }
+
+/** How long the flash stays "claimed" before we let a new highlight take
+ *  over. The fade-out itself is driven by the Reanimated sequence inside
+ *  CommentCard; this is just the upstream gate. */
+const HIGHLIGHT_HOLD_MS = 2500;
 
 export function TimelineList({
   issue,
@@ -41,6 +59,8 @@ export function TimelineList({
   refreshing,
   onRefresh,
   onReplyTo,
+  highlightCommentId,
+  highlightNonce,
 }: Props) {
   // Server already returns ASC oldest-first. Pipeline:
   //   1. coalesceTimeline → merge consecutive identical activities
@@ -52,6 +72,39 @@ export function TimelineList({
     if (!entries) return [];
     return buildTimelineRows(coalesceTimeline(entries));
   }, [entries]);
+
+  const listRef = useRef<FlatList<TimelineRow>>(null);
+  // Gates single-shot per (commentId, nonce) tuple. Re-tap from inbox
+  // bumps the nonce → ref no longer matches → effect re-fires.
+  const didHighlightRef = useRef<string | null>(null);
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!highlightCommentId || data.length === 0) return;
+    const stamp = `${highlightCommentId}:${highlightNonce ?? ""}`;
+    if (didHighlightRef.current === stamp) return;
+
+    // Replies are folded into their parent's CommentCard (no separate row);
+    // a reply deep-link scrolls to the parent and the card animates the
+    // matching child View. Mirrors web's replyToRoot fallback at
+    // packages/views/issues/components/issue-detail.tsx:588-607.
+    const idx = data.findIndex(
+      (r) =>
+        r.entry.id === highlightCommentId ||
+        r.replies.some((rp) => rp.id === highlightCommentId),
+    );
+    if (idx < 0) return;
+
+    didHighlightRef.current = stamp;
+    listRef.current?.scrollToIndex({
+      index: idx,
+      animated: true,
+      viewPosition: 0.3,
+    });
+    setHighlightedId(highlightCommentId);
+    const t = setTimeout(() => setHighlightedId(null), HIGHLIGHT_HOLD_MS);
+    return () => clearTimeout(t);
+  }, [highlightCommentId, highlightNonce, data]);
 
   const ListHeader = (
     <View>
@@ -73,6 +126,7 @@ export function TimelineList({
 
   return (
     <FlatList
+      ref={listRef}
       data={data}
       keyExtractor={(row) => row.entry.id}
       ListHeaderComponent={ListHeader}
@@ -83,11 +137,30 @@ export function TimelineList({
             replies={item.replies}
             issueId={issue.id}
             onReplyTo={onReplyTo}
+            highlightedCommentId={highlightedId}
           />
         ) : (
           <ActivityRow entry={item.entry} />
         )
       }
+      // Variable row heights + no getItemLayout = scrollToIndex on a target
+      // outside the windowed render area throws this callback. Standard RN
+      // dance: jump to an estimate, then retry on the next frame once the
+      // target's window has rendered. The estimate ignores the header, but
+      // viewPosition: 0.3 on retry corrects for it.
+      onScrollToIndexFailed={(info) => {
+        listRef.current?.scrollToOffset({
+          offset: info.averageItemLength * info.index,
+          animated: false,
+        });
+        requestAnimationFrame(() => {
+          listRef.current?.scrollToIndex({
+            index: info.index,
+            animated: true,
+            viewPosition: 0.3,
+          });
+        });
+      }}
       refreshControl={
         <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
       }

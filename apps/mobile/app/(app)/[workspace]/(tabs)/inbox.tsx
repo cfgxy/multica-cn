@@ -51,7 +51,24 @@ export default function Inbox() {
       markRead.mutate(item.id);
     }
     if (item.issue_id && wsSlug) {
-      router.push(`/${wsSlug}/issue/${item.issue_id}`);
+      // `highlight`: the target comment id (only present on new_comment /
+      // mentioned / reaction_added notifications — backend populates
+      // details.comment_id there). When undefined, expo-router strips the
+      // key cleanly (no "undefined" string).
+      //
+      // `h`: nonce forcing the param tuple to differ each tap, so re-tapping
+      // the same inbox row from a back-navigation re-fires the highlight
+      // effect on the issue screen (otherwise React sees identical params
+      // and skips the re-render).
+      router.push({
+        pathname: "/[workspace]/issue/[id]",
+        params: {
+          workspace: wsSlug,
+          id: item.issue_id,
+          highlight: item.details?.comment_id,
+          h: String(Date.now()),
+        },
+      });
     }
   };
 
