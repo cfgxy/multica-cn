@@ -51,7 +51,7 @@ export default function SelectWorkspace() {
             </View>
           ) : !data || data.length === 0 ? (
             <Text className="text-sm text-muted-foreground">
-              You don't belong to any workspaces yet. Contact your workspace
+              You don&apos;t belong to any workspaces yet. Contact your workspace
               admin to be invited.
             </Text>
           ) : (

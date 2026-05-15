@@ -40,7 +40,7 @@ export default function Login() {
               Sign in to Multica
             </Text>
             <Text className="text-base text-muted-foreground">
-              Enter your email and we'll send you a verification code.
+              Enter your email and we&apos;ll send you a verification code.
             </Text>
           </View>
 
