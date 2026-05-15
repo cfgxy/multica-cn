@@ -48,6 +48,7 @@ interface NavItem {
 // via the user card at the top of this popover. Only entries that are NOT
 // covered by either of those surfaces belong here.
 const NAV_ITEMS: NavItem[] = [
+  { label: "Issues", icon: "list-outline", path: "/more/issues" },
   { label: "Projects", icon: "cube-outline", path: "/more/projects" },
 ];
 
