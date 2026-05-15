@@ -4,39 +4,51 @@ Expo + React Native iOS client for Multica. Independent from web/desktop — sha
 
 ## Scripts
 
-| Command | Env file | Backend |
+| Command | What it does | Backend |
 |---|---|---|
-| `pnpm dev:mobile` | `.env.development.local` | your own (LAN IP of local backend) |
-| `pnpm dev:mobile:staging` | `.env.staging` | staging |
-| `pnpm ios:mobile:device` | `.env.development.local` | your own |
-| `pnpm ios:mobile:device:staging` | `.env.staging` | staging |
+| `pnpm dev:mobile` | Metro only (reuse existing dev install) | local (`.env.development.local`) |
+| `pnpm dev:mobile:staging` | Metro only (reuse existing dev install) | staging (`.env.staging`) |
+| `pnpm ios:mobile:device` | Full rebuild + install on USB iPhone, **Debug** | local |
+| `pnpm ios:mobile:device:staging` | Full rebuild + install on USB iPhone, **Debug** | staging |
+| `pnpm ios:mobile:device:staging:release` | Full rebuild + install, **Release** (standalone) | staging |
 
-`dev:*` runs Metro only (reuse an already-installed dev-client build). `ios:device:*` does a full native rebuild + install onto a physically-connected iPhone.
+`dev:*` runs Metro only — assumes a Debug build of the matching variant is already installed on the device. `ios:device:*` does a full native rebuild + install onto a USB-connected iPhone.
 
 Bundle identifier and display name switch on `APP_ENV` (see `app.config.ts`), so Dev / Staging / Production variants can coexist on the same device.
 
 ## Build your own version onto your iPhone
 
-For a self-host user who wants to run Multica mobile against their own / staging backend:
+Two paths, depending on what you want to do:
 
-1. Get the prerequisites set up (Mac, Xcode, free Apple ID added in Xcode → Settings → Accounts, iPhone connected, Developer Mode enabled). Follow Expo's [Set up your environment](https://docs.expo.dev/get-started/set-up-your-environment/) — pick **Development build → iOS Device**.
-2. Copy `.env.example` to `.env.staging` (or `.env.development.local`) and set `EXPO_PUBLIC_API_URL` to the backend you want to hit.
-3. From repo root, run:
+### Day-to-day development (you have the Mac in front of you)
 
-   ```bash
-   pnpm ios:mobile:device:staging
-   ```
+```bash
+pnpm ios:mobile:device:staging
+```
 
-   First build downloads CocoaPods + compiles React Native from source — expect 10-20 minutes. Subsequent builds are much faster.
+Produces a **Debug build** with `expo-dev-launcher` embedded. Every launch the app probes Metro on your Mac and pulls fresh JS — perfect for hot-reload, painful when the Mac is asleep or you're on a different WiFi.
 
-The app installs to your phone and runs without the Mac after the build completes.
+### Standalone / "just use it" (you want to walk away from the Mac)
+
+```bash
+pnpm ios:mobile:device:staging:release
+```
+
+Produces a **Release build**. No `expo-dev-launcher`, no Metro probe, no "Downloading…" screen. Splash → app, exactly like an App Store install. The trade-off: you cannot hot-reload — every JS change requires re-running this command.
+
+Both paths share the same prerequisites: Mac with Xcode, free Apple ID added under Xcode → Settings → Accounts, iPhone connected via USB with Developer Mode enabled. Follow Expo's [Set up your environment](https://docs.expo.dev/get-started/set-up-your-environment/) — pick **Development build → iOS Device** — if any of that is missing.
+
+First build of either variant downloads CocoaPods + compiles React Native from source — expect 10-20 minutes. Subsequent builds reuse Xcode's DerivedData cache.
 
 ## 7-day signing limit
 
-A free Apple ID signs builds for **7 days only**. After that the app refuses to launch. Plug back into the Mac and re-run `pnpm ios:mobile:device:staging` to re-sign — there is no workaround short of an Apple Developer Program account ($99/yr).
+A free Apple ID signs builds for **7 days only**, Debug and Release both. After that the app refuses to launch. Plug back into the Mac and re-run the corresponding `ios:*` script to re-sign. The only workaround is an Apple Developer Program account ($99/yr), which extends to 1 year.
 
 ## Pointing at a different backend
 
-Edit `EXPO_PUBLIC_API_URL` in `.env.staging` (or `.env.development.local`), then rebuild. The value is baked into the JS bundle at compile time; runtime swaps are not supported.
+Edit `EXPO_PUBLIC_API_URL` in `.env.staging` (or `.env.development.local`). Then:
+
+- For an installed **Debug build**: restart Metro (`pnpm dev:mobile:staging`) so the next JS bundle it serves picks up the new value.
+- For an installed **Release build**: re-run the `ios:*:release` command — the value is baked into the embedded bundle at build time.
 
 For local backend testing, use your Mac's LAN IP (`ipconfig getifaddr en0`), not `localhost`.
