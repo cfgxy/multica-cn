@@ -1,43 +1,18 @@
 /**
- * Two-state issue-comment composer — visually aligned with `chat-composer.tsx`.
+ * Issue-comment composer — visually aligned with `chat-composer.tsx`.
  *
- * State machine (single `expanded: boolean`):
- *   - compact     → a Pressable styled as input pill. Tap → expanded.
- *   - expanded    → rounded-3xl floating card identical to chat's, with
- *                   `@ · 📷 · 📎` on the left and Send on the right,
- *                   all inside the card's bottom action row.
- *
- * Collapse is blur-driven:
- *   - onBlur + text empty + no replyingTo → collapse to compact
- *   - otherwise (has text or has replyingTo) → stay expanded; draft visible
- *
- * The `replyingTo` chip renders ABOVE the pill/card as a separate
- * rounded-2xl pill, so its geometry doesn't clash with the rounded-3xl
- * card beneath.
- *
- * Differences vs. chat composer:
- *   - No "Stop" branch — comment submit is synchronous.
- *   - Two extra action buttons inside the card: `sf:photo` and `sf:paperclip`,
- *     wired to `useFileAttach` so user can drop an image/file inline.
- *   - `replyingTo` chip + cancel-reply affordance.
- *
- * v1 punts (intentional):
- *   - No comment-drafts persistence. Chat has one (`useChatDraftsStore`),
- *     comments don't. Punt until requested — typed text only survives within
- *     a single screen mount.
- *   - No tap-outside-to-dismiss gesture. Default RN blur handlers (return
- *     key, keyboard down-swipe) drive the collapse rule reliably.
+ * Always-on form: input + action row (@ · 📷 · 📎 · Send) rendered immediately.
+ * No tap-to-expand pill — tapping the input opens the keyboard directly.
  *
  * RN limitation: text inside `<TextInput>` can't be color-styled inline. The
  * mention text shows plain grey while editing; after send the comment
  * renders as a coloured chip in the timeline via mention-chip.tsx.
  */
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import { Pressable, TextInput, View } from "react-native";
 import { Image } from "expo-image";
 import { Text } from "@/components/ui/text";
 import { AutosizeTextArea } from "@/components/ui/autosize-textarea";
-import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { useFileAttach } from "@/components/editor/use-file-attach";
 import { cn } from "@/lib/utils";
 import { useMentionInput } from "@/lib/use-mention-input";
@@ -69,18 +44,8 @@ export function CommentComposer({
   const mention = useMentionInput();
   const fileAttach = useFileAttach();
   const [submitting, setSubmitting] = useState(false);
-  const [expanded, setExpanded] = useState(false);
   const [focused, setFocused] = useState(false);
   const inputRef = useRef<TextInput>(null);
-
-  // Focus the TextInput one frame after expansion so RN has finished
-  // laying out the newly-mounted input. `autoFocus` on a conditionally-
-  // rendered TextInput is unreliable across iOS/Android first mount.
-  useEffect(() => {
-    if (expanded) {
-      requestAnimationFrame(() => inputRef.current?.focus());
-    }
-  }, [expanded]);
 
   const handleAttachImage = async () => {
     const result = await fileAttach.pickAndUploadImage({ issueId });
@@ -110,32 +75,11 @@ export function CommentComposer({
     mention.reset();
     try {
       await onSubmit({ content, parentId: replyingTo?.commentId });
-      // Do NOT setExpanded(false) here. Collapse is blur-driven so the
-      // user can immediately send a follow-up without the card jumping.
-      // When they dismiss the keyboard, the rule below collapses for them.
     } catch {
-      // Restore the snapshot so the user doesn't lose what they typed.
+      // Restore snapshot so the user doesn't lose what they typed.
       mention.restore(snap);
     } finally {
       setSubmitting(false);
-    }
-  }
-
-  function handleBlur() {
-    setFocused(false);
-    // Single collapse rule — let go of the card only when the user has
-    // neither a draft nor an active reply target.
-    if (mention.text.trim().length === 0 && !replyingTo) {
-      setExpanded(false);
-    }
-  }
-
-  function handleCancelReply() {
-    onCancelReply?.();
-    // If text is empty too, trigger the blur rule so the card collapses
-    // without forcing the user to manually dismiss the keyboard.
-    if (mention.text.trim().length === 0) {
-      inputRef.current?.blur();
     }
   }
 
@@ -150,7 +94,7 @@ export function CommentComposer({
         <Text className="text-foreground font-medium">{replyingTo.name}</Text>
       </Text>
       <Pressable
-        onPress={handleCancelReply}
+        onPress={onCancelReply}
         hitSlop={8}
         className="h-6 w-6 items-center justify-center rounded-full active:bg-secondary"
         accessibilityLabel="Cancel reply"
@@ -159,30 +103,6 @@ export function CommentComposer({
       </Pressable>
     </View>
   ) : null;
-
-  if (!expanded) {
-    return (
-      <View className="pt-3 pb-2">
-        {Chip}
-        <View className="px-3">
-          <Pressable
-            onPress={() => setExpanded(true)}
-            className="rounded-3xl bg-secondary px-4 py-3 active:opacity-80"
-            style={{ borderCurve: "continuous" }}
-            accessibilityRole="button"
-            accessibilityLabel="Add a comment"
-          >
-            <Text
-              className="text-base"
-              style={{ color: MOBILE_PLACEHOLDER_COLOR }}
-            >
-              Add a comment…
-            </Text>
-          </Pressable>
-        </View>
-      </View>
-    );
-  }
 
   return (
     <View>
@@ -203,7 +123,7 @@ export function CommentComposer({
             selection={mention.selection}
             onSelectionChange={mention.handlers.onSelectionChange}
             onFocus={() => setFocused(true)}
-            onBlur={handleBlur}
+            onBlur={() => setFocused(false)}
             placeholder="Add a comment…"
             className="px-4 pt-3 pb-1"
             editable={!submitting}
