@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { ActivityIndicator, FlatList, Pressable, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { router } from "expo-router";
 import type { InboxItem } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
@@ -24,6 +24,7 @@ import { cn } from "@/lib/utils";
 export default function Inbox() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
+  const qc = useQueryClient();
   const { data: rawItems, isLoading, error, refetch, isRefetching } = useQuery(
     inboxListOptions(wsId),
   );
@@ -36,7 +37,19 @@ export default function Inbox() {
   const markRead = useMarkInboxRead();
 
   const onPressItem = (item: InboxItem) => {
-    if (!item.read) markRead.mutate(item.id);
+    if (!item.read) {
+      // Synchronous optimistic write so the row visibly transitions to the
+      // read style BEFORE router.push captures the source view screenshot
+      // for the native stack transition. The mutation's own onMutate writes
+      // optimistically too, but it awaits cancelQueries first — that one
+      // microtask is enough for iOS to freeze the row in its unread state
+      // inside the transition snapshot. Mark-read mutation still runs to
+      // sync with the server and to fire onSettled invalidate.
+      qc.setQueryData<InboxItem[]>(["inbox", wsId], (old) =>
+        old?.map((i) => (i.id === item.id ? { ...i, read: true } : i)),
+      );
+      markRead.mutate(item.id);
+    }
     if (item.issue_id && wsSlug) {
       router.push(`/${wsSlug}/issue/${item.issue_id}`);
     }
