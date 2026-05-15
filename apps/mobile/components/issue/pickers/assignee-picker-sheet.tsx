@@ -16,7 +16,7 @@
 import { useMemo, useState } from "react";
 import { FlatList, Pressable, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
-import type { Agent, MemberWithUser } from "@multica/core/types";
+import type { Agent, IssueAssigneeType, MemberWithUser } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { TextField } from "@/components/ui/text-field";
@@ -26,8 +26,15 @@ import { agentListOptions } from "@/data/queries/agents";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { cn } from "@/lib/utils";
 
+// `IssueAssigneeType` is `"member" | "agent" | "squad"` (packages/core/types/
+// issue.ts). Mobile only renders member + agent rows in this picker — squad
+// listing isn't built yet — but `AssigneeValue` keeps the full union so an
+// existing squad assignment from web isn't silently dropped when the
+// attribute-row passes it back through. Squad rows fail `isSelected` against
+// member/agent options; user can clear via Unassigned or replace with a
+// member/agent.
 export type AssigneeValue = {
-  type: "member" | "agent";
+  type: IssueAssigneeType;
   id: string;
 } | null;
 

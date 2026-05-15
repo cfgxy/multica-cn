@@ -11,18 +11,48 @@
  *     repo-root CLAUDE.md "Agent Assignees" section.
  */
 import { Image, View } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import { Text } from "@/components/ui/text";
 import { cn } from "@/lib/utils";
 import { useActorLookup, getInitials } from "@/data/use-actor-name";
 
+// `system` actors are server-side automation (state changes triggered by the
+// platform itself, not a member or an agent). InboxItem.actor_type carries
+// this third value (packages/core/types/inbox.ts:28). `squad` is a third
+// assignee polymorph (packages/core/types/issue.ts IssueAssigneeType) that
+// mobile doesn't yet have a list query for — render a generic group glyph so
+// squad-assigned issues from web don't disappear or render as blank circles.
 interface Props {
-  type: "member" | "agent" | null | undefined;
+  type: "member" | "agent" | "system" | "squad" | null | undefined;
   id: string | null | undefined;
   size?: number;
 }
 
 export function ActorAvatar({ type, id, size = 32 }: Props) {
   const { getName, getAvatarUrl } = useActorLookup();
+
+  if (type === "system") {
+    return (
+      <View
+        style={{ width: size, height: size, borderRadius: size / 2 }}
+        className="items-center justify-center bg-muted"
+      >
+        <Ionicons name="cog" size={Math.round(size * 0.55)} color="#71717a" />
+      </View>
+    );
+  }
+
+  if (type === "squad") {
+    return (
+      <View
+        style={{ width: size, height: size, borderRadius: size / 2 }}
+        className="items-center justify-center bg-muted"
+      >
+        <Ionicons name="people" size={Math.round(size * 0.55)} color="#71717a" />
+      </View>
+    );
+  }
+
   const name = getName(type, id);
   const url = getAvatarUrl(type, id);
 

@@ -11,21 +11,26 @@
  */
 import { z } from "zod";
 import type {
+  Agent,
   AgentTask,
   Attachment,
   ChatMessage,
   ChatPendingTask,
   ChatSession,
+  InboxItem,
   IssueLabelsResponse,
   Label,
   ListLabelsResponse,
   ListProjectResourcesResponse,
   ListProjectsResponse,
+  MemberWithUser,
   Project,
   ProjectResource,
   SearchIssuesResponse,
   SearchProjectsResponse,
   SendChatMessageResponse,
+  User,
+  Workspace,
 } from "@multica/core/types";
 import { IssueSchema } from "@multica/core/api/schemas";
 
@@ -41,6 +46,8 @@ export const AttachmentSchema: z.ZodType<Attachment> = z.object({
   workspace_id: z.string().default(""),
   issue_id: z.string().nullable().default(null),
   comment_id: z.string().nullable().default(null),
+  chat_session_id: z.string().nullable().default(null),
+  chat_message_id: z.string().nullable().default(null),
   uploader_type: z.string().default(""),
   uploader_id: z.string().default(""),
   filename: z.string(),
@@ -313,6 +320,180 @@ export interface ActiveTasksResponse {
 
 export const EMPTY_AGENT_TASK_LIST: AgentTask[] = [];
 export const EMPTY_ACTIVE_TASKS_RESPONSE: ActiveTasksResponse = { tasks: [] };
+
+// =====================================================
+// User / Workspace / Inbox / Member / Agent
+// =====================================================
+// Mobile reads these on every cold start (auth → workspaces → inbox → members
+// → agents form the boot sequence). A schema drift in any of them used to
+// cascade — getMe failure flushed the user, listWorkspaces failure landed the
+// app on the workspace picker with no entries. With parseWithFallback every
+// drift downgrades to "stale defaults render", and the user can keep working.
+//
+// All five are `.loose()` so additive backend fields (`onboarded_at` style
+// flags) pass through without breaking parsing. Required identity fields
+// (id, slug, etc.) stay required — a response that genuinely lacks them is
+// unusable and parseWithFallback should fall back to the empty sentinel.
+
+export const UserSchema: z.ZodType<User> = z.object({
+  id: z.string(),
+  name: z.string().default(""),
+  email: z.string().default(""),
+  avatar_url: z.string().nullable().default(null),
+  onboarded_at: z.string().nullable().default(null),
+  onboarding_questionnaire: z.record(z.string(), z.unknown()).default({}),
+  starter_content_state: z.string().nullable().default(null),
+  language: z.string().nullable().default(null),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+}).loose();
+
+// `id: ""` is the sentinel for "drifted / unauthenticated"; downstream code
+// that switches on `user.id` will treat empty-string as a logged-out state
+// (the auth hook also clears the cache on 401, so this is rarely seen).
+export const EMPTY_USER: User = {
+  id: "",
+  name: "",
+  email: "",
+  avatar_url: null,
+  onboarded_at: null,
+  onboarding_questionnaire: {},
+  starter_content_state: null,
+  language: null,
+  created_at: "",
+  updated_at: "",
+};
+
+export const WorkspaceSchema: z.ZodType<Workspace> = z.object({
+  id: z.string(),
+  name: z.string().default(""),
+  slug: z.string().default(""),
+  description: z.string().nullable().default(null),
+  context: z.string().nullable().default(null),
+  settings: z.record(z.string(), z.unknown()).default({}),
+  repos: z.array(z.object({ url: z.string() }).loose()).default([]),
+  issue_prefix: z.string().default(""),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+}).loose();
+
+export const WorkspaceListSchema = z.array(WorkspaceSchema).default([]);
+export const EMPTY_WORKSPACE_LIST: Workspace[] = [];
+
+const InboxItemSchema: z.ZodType<InboxItem> = z.object({
+  id: z.string(),
+  workspace_id: z.string().default(""),
+  // Recipient is always a real actor in the dataset, but defend against
+  // either field going missing — mobile's actor lookup tolerates null.
+  recipient_type: z.enum(["member", "agent"]).catch("member"),
+  recipient_id: z.string().default(""),
+  // `actor_type` includes "system" for platform-triggered notifications
+  // (packages/core/types/inbox.ts:28). ActorAvatar handles all three plus
+  // null. Enum drift falls back to null so the row still renders without an
+  // avatar instead of crashing the list.
+  actor_type: z
+    .enum(["member", "agent", "system"])
+    .nullable()
+    .catch(null),
+  actor_id: z.string().nullable().default(null),
+  // `type` discriminates the rendered detail-label. Unknown values pass
+  // through as raw strings — `InboxDetailLabel` has a default branch that
+  // shows the raw type as fallback (components/inbox/detail-label.tsx).
+  type: z.string() as unknown as z.ZodType<InboxItem["type"]>,
+  severity: z
+    .enum(["action_required", "attention", "info"])
+    .catch("info"),
+  issue_id: z.string().nullable().default(null),
+  title: z.string().default(""),
+  body: z.string().nullable().default(null),
+  issue_status: z.string().nullable().default(null) as unknown as z.ZodType<
+    InboxItem["issue_status"]
+  >,
+  read: z.boolean().default(false),
+  archived: z.boolean().default(false),
+  created_at: z.string().default(""),
+  details: z.record(z.string(), z.string()).nullable().default(null),
+}).loose();
+
+export const InboxListSchema = z.array(InboxItemSchema).default([]);
+export const EMPTY_INBOX_LIST: InboxItem[] = [];
+
+export const MemberWithUserSchema: z.ZodType<MemberWithUser> = z.object({
+  id: z.string(),
+  workspace_id: z.string().default(""),
+  user_id: z.string().default(""),
+  role: z.enum(["owner", "admin", "member"]).catch("member"),
+  created_at: z.string().default(""),
+  name: z.string().default(""),
+  email: z.string().default(""),
+  avatar_url: z.string().nullable().default(null),
+}).loose();
+
+export const MemberListSchema = z.array(MemberWithUserSchema).default([]);
+export const EMPTY_MEMBER_LIST: MemberWithUser[] = [];
+
+// Agent schema is loose on every enum / structural field — the agent table is
+// where new modes/visibilities/statuses get added most often. We need only id,
+// name, avatar_url, and a couple of flags for the assignee picker + chat
+// header; everything else is informational and safe to default.
+export const AgentSchema: z.ZodType<Agent> = z.object({
+  id: z.string(),
+  workspace_id: z.string().default(""),
+  runtime_id: z.string().default(""),
+  name: z.string().default(""),
+  description: z.string().default(""),
+  instructions: z.string().default(""),
+  avatar_url: z.string().nullable().default(null),
+  runtime_mode: z.string().catch("daemon") as unknown as z.ZodType<
+    Agent["runtime_mode"]
+  >,
+  runtime_config: z.record(z.string(), z.unknown()).default({}),
+  custom_env: z.record(z.string(), z.string()).default({}),
+  custom_args: z.array(z.string()).default([]),
+  custom_env_redacted: z.boolean().default(true),
+  visibility: z.string().catch("workspace") as unknown as z.ZodType<
+    Agent["visibility"]
+  >,
+  status: z.string().catch("active") as unknown as z.ZodType<Agent["status"]>,
+  max_concurrent_tasks: z.number().default(1),
+  model: z.string().default(""),
+  owner_id: z.string().nullable().default(null),
+  skills: z.array(z.unknown()).default([]) as unknown as z.ZodType<
+    Agent["skills"]
+  >,
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+  archived_at: z.string().nullable().default(null),
+  archived_by: z.string().nullable().default(null),
+}).loose();
+
+export const AgentListSchema = z.array(AgentSchema).default([]);
+export const EMPTY_AGENT_LIST: Agent[] = [];
+
+// Single-issue fallback used by getIssue. Mobile reuses IssueSchema from core
+// for parsing; this sentinel lets parseWithFallback yield a structurally-
+// valid Issue when the response drifts. `id: ""` flags drift downstream — the
+// detail screen treats it as "issue not found" and shows the empty state.
+export const EMPTY_ISSUE_FALLBACK: import("@multica/core/types").Issue = {
+  id: "",
+  workspace_id: "",
+  number: 0,
+  identifier: "",
+  title: "",
+  description: null,
+  status: "backlog",
+  priority: "none",
+  assignee_type: null,
+  assignee_id: null,
+  creator_type: "member",
+  creator_id: "",
+  parent_issue_id: null,
+  project_id: null,
+  position: 0,
+  due_date: null,
+  created_at: "",
+  updated_at: "",
+};
 
 // Helpers re-exported for ergonomic single-import at the call site.
 export type { Label, Project, ProjectResource };

@@ -49,11 +49,13 @@ import type {
 import {
   EMPTY_LIST_ISSUES_RESPONSE,
   EMPTY_TIMELINE_ENTRIES,
+  IssueSchema,
   ListIssuesResponseSchema,
   TimelineEntriesSchema,
 } from "@multica/core/api/schemas";
 import {
   ActiveTasksResponseSchema,
+  AgentListSchema,
   AgentTaskListSchema,
   AttachmentSchema,
   ChatMessageListSchema,
@@ -61,23 +63,33 @@ import {
   ChatSessionListSchema,
   ChatSessionSchema,
   EMPTY_ACTIVE_TASKS_RESPONSE,
+  EMPTY_AGENT_LIST,
   EMPTY_AGENT_TASK_LIST,
   EMPTY_CHAT_MESSAGE_LIST,
   EMPTY_CHAT_PENDING_TASK,
   EMPTY_CHAT_SESSION_LIST,
+  EMPTY_INBOX_LIST,
+  EMPTY_ISSUE_FALLBACK,
   EMPTY_LIST_LABELS_RESPONSE,
   EMPTY_LIST_PROJECT_RESOURCES_RESPONSE,
   EMPTY_LIST_PROJECTS_RESPONSE,
+  EMPTY_MEMBER_LIST,
   EMPTY_PROJECT,
   EMPTY_SEARCH_ISSUES_RESPONSE,
   EMPTY_SEARCH_PROJECTS_RESPONSE,
+  EMPTY_USER,
+  EMPTY_WORKSPACE_LIST,
+  InboxListSchema,
   ListLabelsResponseSchema,
   ListProjectResourcesResponseSchema,
   ListProjectsResponseSchema,
+  MemberListSchema,
   ProjectSchema,
   SearchIssuesResponseSchema,
   SearchProjectsResponseSchema,
   SendChatMessageResponseSchema,
+  UserSchema,
+  WorkspaceListSchema,
 } from "./schemas";
 import { getCurrentSlug } from "./workspace-store";
 import { parseWithFallback } from "@/lib/parse-response";
@@ -287,21 +299,30 @@ class ApiClient {
   }
 
   async getMe(opts?: { signal?: AbortSignal }): Promise<User> {
-    return this.fetch<User>("/api/me", { signal: opts?.signal });
+    const raw = await this.fetch<unknown>("/api/me", { signal: opts?.signal });
+    return parseWithFallback(raw, UserSchema, EMPTY_USER, { endpoint: "getMe" });
   }
 
   // --- Workspaces ---
   async listWorkspaces(opts?: {
     signal?: AbortSignal;
   }): Promise<Workspace[]> {
-    return this.fetch<Workspace[]>("/api/workspaces", {
+    const raw = await this.fetch<unknown>("/api/workspaces", {
       signal: opts?.signal,
+    });
+    return parseWithFallback(raw, WorkspaceListSchema, EMPTY_WORKSPACE_LIST, {
+      endpoint: "listWorkspaces",
     });
   }
 
   // --- Inbox ---
   async listInbox(opts?: { signal?: AbortSignal }): Promise<InboxItem[]> {
-    return this.fetch<InboxItem[]>("/api/inbox", { signal: opts?.signal });
+    const raw = await this.fetch<unknown>("/api/inbox", {
+      signal: opts?.signal,
+    });
+    return parseWithFallback(raw, InboxListSchema, EMPTY_INBOX_LIST, {
+      endpoint: "listInbox",
+    });
   }
 
   async markInboxRead(id: string): Promise<InboxItem> {
@@ -340,14 +361,22 @@ class ApiClient {
     workspaceId: string,
     opts?: { signal?: AbortSignal },
   ): Promise<MemberWithUser[]> {
-    return this.fetch<MemberWithUser[]>(
+    const raw = await this.fetch<unknown>(
       `/api/workspaces/${workspaceId}/members`,
       { signal: opts?.signal },
     );
+    return parseWithFallback(raw, MemberListSchema, EMPTY_MEMBER_LIST, {
+      endpoint: "listMembers",
+    });
   }
 
   async listAgents(opts?: { signal?: AbortSignal }): Promise<Agent[]> {
-    return this.fetch<Agent[]>("/api/agents", { signal: opts?.signal });
+    const raw = await this.fetch<unknown>("/api/agents", {
+      signal: opts?.signal,
+    });
+    return parseWithFallback(raw, AgentListSchema, EMPTY_AGENT_LIST, {
+      endpoint: "listAgents",
+    });
   }
 
   // --- Issues ---
@@ -405,7 +434,12 @@ class ApiClient {
     id: string,
     opts?: { signal?: AbortSignal },
   ): Promise<Issue> {
-    return this.fetch<Issue>(`/api/issues/${id}`, { signal: opts?.signal });
+    const raw = await this.fetch<unknown>(`/api/issues/${id}`, {
+      signal: opts?.signal,
+    });
+    return parseWithFallback(raw, IssueSchema, EMPTY_ISSUE_FALLBACK, {
+      endpoint: "getIssue",
+    });
   }
 
   // Write endpoint — mirrors POST /api/issues

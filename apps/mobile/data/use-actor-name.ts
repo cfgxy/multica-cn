@@ -17,7 +17,7 @@ export function useActorLookup() {
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
 
   const getName = (
-    type: "member" | "agent" | null | undefined,
+    type: "member" | "agent" | "squad" | null | undefined,
     id: string | null | undefined,
   ): string => {
     if (!type || !id) return "System";
@@ -25,19 +25,28 @@ export function useActorLookup() {
       const m = members.find((m) => m.user_id === id);
       return m?.name ?? "Unknown";
     }
-    const a = agents.find((a) => a.id === id);
-    return a?.name ?? "Unknown Agent";
+    if (type === "agent") {
+      const a = agents.find((a) => a.id === id);
+      return a?.name ?? "Unknown Agent";
+    }
+    // Mobile has no squad list query yet — render a generic label so squad
+    // assignees coming from web/desktop are visible (and clearable) here.
+    return "Squad";
   };
 
   const getAvatarUrl = (
-    type: "member" | "agent" | null | undefined,
+    type: "member" | "agent" | "squad" | null | undefined,
     id: string | null | undefined,
   ): string | null => {
     if (!type || !id) return null;
     if (type === "member") {
       return members.find((m) => m.user_id === id)?.avatar_url ?? null;
     }
-    return agents.find((a) => a.id === id)?.avatar_url ?? null;
+    if (type === "agent") {
+      return agents.find((a) => a.id === id)?.avatar_url ?? null;
+    }
+    // No squad cache — ActorAvatar falls back to the group glyph.
+    return null;
   };
 
   return { getName, getAvatarUrl };
