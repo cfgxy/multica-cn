@@ -308,6 +308,33 @@ class ApiClient {
     return this.fetch<InboxItem>(`/api/inbox/${id}/read`, { method: "POST" });
   }
 
+  // Archive endpoints — write surface. Match web's surface in
+  // packages/core/api/client.ts:981-1003. No parseWithFallback (mirrors
+  // markInboxRead above and the project write endpoints): a malformed
+  // archive response should surface naturally so the optimistic patch
+  // rolls back.
+  async archiveInbox(id: string): Promise<InboxItem> {
+    return this.fetch<InboxItem>(`/api/inbox/${id}/archive`, { method: "POST" });
+  }
+
+  async archiveAllInbox(): Promise<{ count: number }> {
+    return this.fetch<{ count: number }>("/api/inbox/archive-all", {
+      method: "POST",
+    });
+  }
+
+  async archiveAllReadInbox(): Promise<{ count: number }> {
+    return this.fetch<{ count: number }>("/api/inbox/archive-all-read", {
+      method: "POST",
+    });
+  }
+
+  async archiveCompletedInbox(): Promise<{ count: number }> {
+    return this.fetch<{ count: number }>("/api/inbox/archive-completed", {
+      method: "POST",
+    });
+  }
+
   // --- Members & Agents (for actor name/avatar lookup) ---
   async listMembers(
     workspaceId: string,
