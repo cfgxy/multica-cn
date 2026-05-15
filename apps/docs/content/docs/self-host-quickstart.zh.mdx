@@ -58,7 +58,9 @@ make selfhost
 
 如果不配邮件，用户无法通过邮件收到验证码；server 会把生成的验证码打印到 stdout。
 
-要真的发验证码邮件：
+支持两种发送通道，按部署环境二选一：
+
+**Option A — Resend（公网/云端部署）：**
 
 1. 在 [Resend](https://resend.com/) 注册并拿一个 API key
 2. 验证一个你控制的发件域名
@@ -69,9 +71,21 @@ make selfhost
     RESEND_FROM_EMAIL=noreply@yourdomain.com
     ```
 
-4. 重启：`docker compose -f docker-compose.selfhost.yml restart backend`
+**Option B — SMTP relay（内网/自部署）：**
 
-更多 auth 配置（OAuth、注册白名单）见 [登录与注册配置](/auth-setup)。
+适合内网无法访问 `api.resend.com`，或已经有内部邮件中继（Exchange、Postfix、自部署 SendGrid 等）的场景。同时设置时 `SMTP_HOST` 优先级高于 Resend。
+
+```bash
+SMTP_HOST=smtp.internal.example.com
+SMTP_PORT=587                  # 默认 25；STARTTLS 提交端口用 587
+SMTP_USERNAME=multica          # 留空则使用未认证 relay
+SMTP_PASSWORD=...
+RESEND_FROM_EMAIL=noreply@yourdomain.com  # 同时作为 SMTP From: 头
+```
+
+之后重启：`docker compose -f docker-compose.selfhost.yml restart backend`。
+
+更多 auth 配置（OAuth、注册白名单）以及完整的 SMTP 变量说明见 [登录与注册配置](/auth-setup) 和 [环境变量](/environment-variables)。
 
 ## 4. 首次登录 + 创建工作区
 

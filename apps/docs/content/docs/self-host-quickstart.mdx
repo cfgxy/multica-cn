@@ -59,7 +59,9 @@ Before any public deployment, make sure `.env` has `APP_ENV=production` and `MUL
 
 Without email configured, your users can't receive verification codes by email; the server prints generated codes to stdout instead.
 
-To actually send verification emails:
+Two delivery backends are supported — pick whichever fits your network:
+
+**Option A — Resend (cloud / public-internet deployments):**
 
 1. Sign up at [Resend](https://resend.com/) and get an API key
 2. Verify a sending domain you control
@@ -70,9 +72,21 @@ To actually send verification emails:
     RESEND_FROM_EMAIL=noreply@yourdomain.com
     ```
 
-4. Restart: `docker compose -f docker-compose.selfhost.yml restart backend`
+**Option B — SMTP relay (internal networks / on-premise):**
 
-For more auth configuration (OAuth, signup allowlist), see [Auth setup](/auth-setup).
+Use this when the deployment can't reach `api.resend.com`, or you already have an internal mail relay (Exchange, Postfix, on-prem SendGrid, etc.). `SMTP_HOST` takes priority over Resend when both are set.
+
+```bash
+SMTP_HOST=smtp.internal.example.com
+SMTP_PORT=587                  # default 25; use 587 for STARTTLS submission
+SMTP_USERNAME=multica          # leave empty for unauthenticated relay
+SMTP_PASSWORD=...
+RESEND_FROM_EMAIL=noreply@yourdomain.com  # reused as the From: header
+```
+
+Then restart: `docker compose -f docker-compose.selfhost.yml restart backend`.
+
+For more auth configuration (OAuth, signup allowlist) and the full SMTP variable reference, see [Auth setup](/auth-setup) and [Environment variables → Email](/environment-variables#email-configuration).
 
 ## 4. First login + create a workspace
 
