@@ -92,7 +92,7 @@ RESEND_FROM_EMAIL=noreply@yourdomain.com  # 同时作为 SMTP From: 头
 打开 [http://localhost:3000](http://localhost:3000)：
 
 - 输入你的邮箱
-- 从 Resend 邮件里拿验证码（或者前面没配 Resend 的话从 server 容器的 stdout 里抄 `[DEV] Verification code` 这行）
+- 从你配置的邮件后端（Resend 或 SMTP relay）收到的邮件里拿验证码；两者都没配的话，从 server 容器的 stdout 里抄 `[DEV] Verification code` 这行
 - 不要直接使用 `888888`；只有在非 production 私有实例上显式设置 `MULTICA_DEV_VERIFICATION_CODE=888888` 后它才会生效
 - 登录后创建第一个工作区
 
@@ -121,7 +121,7 @@ multica setup self-host
 ## 常见问题
 
 - **后端起不来**：看容器日志 `docker compose -f docker-compose.selfhost.yml logs backend`；常见是 `.env` 里 `DATABASE_URL` 或 `JWT_SECRET` 有问题
-- **验证码收不到**：没配 Resend → 从 `docker compose logs backend` 里找 `[DEV] Verification code`
+- **验证码收不到**：没配任何邮件后端（Resend 和 SMTP 都没设） → 从 `docker compose logs backend` 里找 `[DEV] Verification code`
 - **WebSocket 连不上**：公网部署必须设 `FRONTEND_ORIGIN` 成你真实的前端域名；见 [故障排查 → WebSocket 连不上](/troubleshooting#websocket-连不上)
 
 ## 下一步

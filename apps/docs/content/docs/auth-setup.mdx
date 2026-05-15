@@ -51,7 +51,7 @@ STARTTLS is upgraded automatically when the server advertises it. Port 465 (SMTP
 
 The old behavior where non-production instances accepted `888888` by default has been removed. Unless you explicitly configure it, typing `888888` is treated like any other wrong code.
 
-Local development without Resend should use the generated code printed in server logs. If you need deterministic local/private automation, set `MULTICA_DEV_VERIFICATION_CODE` to a 6-digit value such as `888888`, and keep `APP_ENV` non-production:
+Local development without any email backend configured (no Resend, no SMTP) should use the generated code printed in server logs. If you need deterministic local/private automation, set `MULTICA_DEV_VERIFICATION_CODE` to a 6-digit value such as `888888`, and keep `APP_ENV` non-production:
 
 ```bash
 APP_ENV=development

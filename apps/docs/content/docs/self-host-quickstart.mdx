@@ -93,7 +93,7 @@ For more auth configuration (OAuth, signup allowlist) and the full SMTP variable
 Open [http://localhost:3000](http://localhost:3000):
 
 - Enter your email
-- Grab the verification code from the Resend email (or, if you haven't configured Resend, from the server container stdout — look for the `[DEV] Verification code` line)
+- Grab the verification code from your configured email backend (Resend or SMTP relay); if neither is configured, copy it from the server container stdout — look for the `[DEV] Verification code` line
 - Do not use `888888` unless you explicitly set `MULTICA_DEV_VERIFICATION_CODE=888888` on a non-production private instance
 - Log in and create your first workspace
 
@@ -122,7 +122,7 @@ Same flow as Cloud — see [Cloud quickstart → Steps 5-6](/cloud-quickstart#5-
 ## Common issues
 
 - **Backend won't start**: check container logs with `docker compose -f docker-compose.selfhost.yml logs backend`; usually it's a bad `DATABASE_URL` or `JWT_SECRET` in `.env`
-- **Verification code not received**: Resend isn't configured → look for `[DEV] Verification code` in `docker compose logs backend`
+- **Verification code not received**: no email backend is configured (neither Resend nor SMTP) → look for `[DEV] Verification code` in `docker compose logs backend`
 - **WebSocket won't connect**: for public deployments you must set `FRONTEND_ORIGIN` to your real frontend domain; see [Troubleshooting → WebSocket won't connect](/troubleshooting#websocket-wont-connect)
 
 ## Next steps
