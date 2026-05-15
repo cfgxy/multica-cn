@@ -545,6 +545,13 @@ class ApiClient {
     });
   }
 
+  // Backend returns 204 No Content on success
+  // (server/internal/handler/issue.go DeleteIssue). this.fetch already
+  // short-circuits 204 → undefined (api.ts:270), so no body parsing needed.
+  async deleteIssue(id: string): Promise<void> {
+    await this.fetch<void>(`/api/issues/${id}`, { method: "DELETE" });
+  }
+
   // --- Labels ---
   async listLabels(opts?: {
     signal?: AbortSignal;
