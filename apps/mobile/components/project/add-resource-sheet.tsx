@@ -7,16 +7,18 @@
  * `https://github.com/owner/repo`. Anything else surfaces a Submit error
  * from the server (real validation lives there).
  *
- * Modal shell mirrors other picker sheets — Pressable backdrop, centered
- * card, tap-outside-to-dismiss. Phone keyboards push the card up
- * naturally; no need for KeyboardAvoidingView at the modal scope.
+ * Container: iOS pageSheet via shared `<SheetShell>` (CLAUDE.md Lesson #6).
+ * Primary action ("Attach") lives in the header's rightAction slot — iOS
+ * convention for confirm-style sheets (Mail, Messages). X closes (replaces
+ * the old explicit Cancel button).
  */
 import { useState } from "react";
-import { Modal, Pressable, View } from "react-native";
+import { View } from "react-native";
 import type { CreateProjectResourceRequest } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
 import { TextField } from "@/components/ui/text-field";
+import { SheetShell } from "@/components/ui/sheet-shell";
 
 interface Props {
   visible: boolean;
@@ -63,65 +65,45 @@ export function AddResourceSheet({
   };
 
   return (
-    <Modal
+    <SheetShell
       visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={close}
+      onClose={close}
+      title="Attach repository"
+      rightAction={
+        <Button
+          size="sm"
+          onPress={submit}
+          disabled={!valid || submitting}
+          className={!valid || submitting ? "opacity-50" : undefined}
+        >
+          {submitting ? "Attaching…" : "Attach"}
+        </Button>
+      }
     >
-      <Pressable className="flex-1 bg-black/40" onPress={close}>
-        <View className="flex-1 items-center justify-center px-6">
-          <Pressable onPress={() => {}} className="w-full max-w-sm">
-            <View className="bg-popover rounded-2xl p-4 gap-3">
-              <Text className="text-base font-semibold text-foreground">
-                Attach GitHub repository
-              </Text>
-              <View className="gap-1">
-                <Text className="text-xs text-muted-foreground">
-                  Repository URL
-                </Text>
-                <TextField
-                  value={url}
-                  onChangeText={setUrl}
-                  placeholder="https://github.com/owner/repo"
-                  autoCapitalize="none"
-                  autoCorrect={false}
-                  keyboardType="url"
-                  autoFocus
-                />
-              </View>
-              <View className="gap-1">
-                <Text className="text-xs text-muted-foreground">
-                  Label (optional)
-                </Text>
-                <TextField
-                  value={label}
-                  onChangeText={setLabel}
-                  placeholder="e.g. Backend"
-                />
-              </View>
-              <View className="flex-row justify-end gap-2 pt-1">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onPress={close}
-                  disabled={submitting}
-                >
-                  Cancel
-                </Button>
-                <Button
-                  size="sm"
-                  onPress={submit}
-                  disabled={!valid || submitting}
-                  className={!valid || submitting ? "opacity-50" : undefined}
-                >
-                  {submitting ? "Attaching…" : "Attach"}
-                </Button>
-              </View>
-            </View>
-          </Pressable>
+      <View className="px-4 pt-4 gap-4">
+        <View className="gap-1">
+          <Text className="text-xs text-muted-foreground">Repository URL</Text>
+          <TextField
+            value={url}
+            onChangeText={setUrl}
+            placeholder="https://github.com/owner/repo"
+            autoCapitalize="none"
+            autoCorrect={false}
+            keyboardType="url"
+            autoFocus
+          />
         </View>
-      </Pressable>
-    </Modal>
+        <View className="gap-1">
+          <Text className="text-xs text-muted-foreground">
+            Label (optional)
+          </Text>
+          <TextField
+            value={label}
+            onChangeText={setLabel}
+            placeholder="e.g. Backend"
+          />
+        </View>
+      </View>
+    </SheetShell>
   );
 }

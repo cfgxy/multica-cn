@@ -8,18 +8,19 @@
  *
  * State is passed in as props rather than read from a hard-coded store so
  * the same sheet can serve both surfaces without one page's filter state
- * leaking into the other. The two view stores have identical shape; the
- * sheet doesn't care which one the caller wired up.
+ * leaking into the other.
  *
- * Modal + backdrop layout mirrors apps/mobile/components/issue/pickers/
- * status-picker-sheet.tsx (no new sheet lib).
+ * Container: iOS pageSheet via shared `<SheetShell>` (CLAUDE.md Lesson #6).
+ * Reset lives in the header's rightAction slot; X (in SheetShell) is the
+ * primary dismiss (replaces the previous bottom "Done" button which was
+ * redundant with X).
  */
-import { Modal, Pressable, ScrollView, View } from "react-native";
+import { Pressable, ScrollView, View } from "react-native";
 import type { IssuePriority, IssueStatus } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
-import { Button } from "@/components/ui/button";
 import { StatusIcon } from "@/components/ui/status-icon";
 import { PriorityIcon } from "@/components/ui/priority-icon";
+import { SheetShell } from "@/components/ui/sheet-shell";
 import { BOARD_STATUSES, STATUS_LABEL } from "@/lib/issue-status";
 import { cn } from "@/lib/utils";
 
@@ -64,94 +65,72 @@ export function IssueFilterSheet({
   onTogglePriority,
   onClearFilters,
 }: Props) {
-  const hasActive =
-    statusFilters.length > 0 || priorityFilters.length > 0;
+  const hasActive = statusFilters.length > 0 || priorityFilters.length > 0;
 
   return (
-    <Modal
+    <SheetShell
       visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={onClose}
-    >
-      <Pressable className="flex-1 bg-black/40" onPress={onClose}>
-        <View className="flex-1 items-center justify-center px-6">
-          <Pressable onPress={() => {}} className="w-full max-w-sm">
-            <View className="bg-popover rounded-2xl overflow-hidden">
-              <View className="px-4 py-3 border-b border-border">
-                <Text className="text-base font-semibold text-foreground">
-                  Filter
-                </Text>
-              </View>
-
-              <ScrollView className="max-h-96">
-                <SectionLabel>Status</SectionLabel>
-                {ALL_STATUSES.map((status) => {
-                  const checked = statusFilters.includes(status);
-                  return (
-                    <Pressable
-                      key={status}
-                      onPress={() => onToggleStatus(status)}
-                      className={cn(
-                        "flex-row items-center gap-3 px-4 py-2.5 active:bg-secondary",
-                        checked && "bg-secondary/60",
-                      )}
-                    >
-                      <StatusIcon status={status} size={16} />
-                      <Text className="flex-1 text-sm text-foreground">
-                        {STATUS_LABEL[status]}
-                      </Text>
-                      <CheckMark checked={checked} />
-                    </Pressable>
-                  );
-                })}
-
-                <SectionLabel>Priority</SectionLabel>
-                {PRIORITY_ORDER.map((priority) => {
-                  const checked = priorityFilters.includes(priority);
-                  return (
-                    <Pressable
-                      key={priority}
-                      onPress={() => onTogglePriority(priority)}
-                      className={cn(
-                        "flex-row items-center gap-3 px-4 py-2.5 active:bg-secondary",
-                        checked && "bg-secondary/60",
-                      )}
-                    >
-                      <PriorityIcon priority={priority} />
-                      <Text className="flex-1 text-sm text-foreground">
-                        {PRIORITY_LABEL[priority]}
-                      </Text>
-                      <CheckMark checked={checked} />
-                    </Pressable>
-                  );
-                })}
-              </ScrollView>
-
-              <View className="flex-row items-center gap-2 px-3 py-2.5 border-t border-border">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onPress={onClearFilters}
-                  disabled={!hasActive}
-                  className={cn("flex-1", !hasActive && "opacity-50")}
-                >
-                  Reset
-                </Button>
-                <Button
-                  variant="default"
-                  size="sm"
-                  onPress={onClose}
-                  className="flex-1"
-                >
-                  Done
-                </Button>
-              </View>
-            </View>
+      onClose={onClose}
+      title="Filter"
+      rightAction={
+        hasActive ? (
+          <Pressable
+            onPress={onClearFilters}
+            hitSlop={8}
+            className="px-2 py-1 active:opacity-60"
+          >
+            <Text className="text-sm text-primary font-medium">Reset</Text>
           </Pressable>
-        </View>
-      </Pressable>
-    </Modal>
+        ) : null
+      }
+    >
+      <ScrollView
+        className="flex-1"
+        showsVerticalScrollIndicator={false}
+      >
+        <SectionLabel>Status</SectionLabel>
+        {ALL_STATUSES.map((status) => {
+          const checked = statusFilters.includes(status);
+          return (
+            <Pressable
+              key={status}
+              onPress={() => onToggleStatus(status)}
+              className={cn(
+                "flex-row items-center gap-3 px-4 py-2.5 active:bg-secondary",
+                checked && "bg-secondary/60",
+              )}
+            >
+              <StatusIcon status={status} size={16} />
+              <Text className="flex-1 text-sm text-foreground">
+                {STATUS_LABEL[status]}
+              </Text>
+              <CheckMark checked={checked} />
+            </Pressable>
+          );
+        })}
+
+        <SectionLabel>Priority</SectionLabel>
+        {PRIORITY_ORDER.map((priority) => {
+          const checked = priorityFilters.includes(priority);
+          return (
+            <Pressable
+              key={priority}
+              onPress={() => onTogglePriority(priority)}
+              className={cn(
+                "flex-row items-center gap-3 px-4 py-2.5 active:bg-secondary",
+                checked && "bg-secondary/60",
+              )}
+            >
+              <PriorityIcon priority={priority} />
+              <Text className="flex-1 text-sm text-foreground">
+                {PRIORITY_LABEL[priority]}
+              </Text>
+              <CheckMark checked={checked} />
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+    </SheetShell>
   );
 }
 

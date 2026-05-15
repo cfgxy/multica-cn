@@ -244,3 +244,26 @@ Forgetting the destructure (writing `() => api.listInbox()`) defeats every benef
 **Verification**: After any change to `api.ts` or a new query addition, `grep -n "queryFn: () =>" apps/mobile/data/queries/` should return zero matches. Every `queryFn` should destructure `{ signal }`.
 
 **Why the wiring already in `data/query-client.ts` (focusManager + AppState, onlineManager + NetInfo) is not enough on its own**: focusManager triggers a *refetch attempt* when the app comes back to the foreground, but if the prior fetch promise is hanging, TQ won't start a new request — it'll keep waiting on the dead one. Only timeout + signal cancellation actually unwedges the query. The three pieces work together: signal lets TQ proactively cancel on staleness, timeout is the safety net when nothing else fires, focusManager is the "user came back, let's recheck" trigger.
+
+### 6. Modal container selection: match container to content, don't copy the first sheet
+
+The mobile codebase has ~15 Modal sheets. They almost all copy the same shape (`Modal transparent fade` + hand-drawn `bg-black/40` backdrop + centered/bottom card with `maxHeight`). That shape is correct for **short action menus** (the earliest sheets), wrong for **everything else**. Once the pattern was established as "the mobile sheet style," subsequent sheets inherited it regardless of content — and inherited a different bug each time: keyboard squashing the card, `maxHeight: 380` clipping FlatLists on tall phones, `useSafeAreaInsets` returning 0 inside Modal so bottom content collides with the Home Indicator, etc.
+
+**Choose the container by content type, not by "what the last sheet did":**
+
+| Content shape | Container | Why |
+|---|---|---|
+| < 5 fixed actions, 1-2s stay, no keyboard | `Modal transparent` + bottom action card (current pattern) | Short, light, dim-backdrop tap-to-dismiss is correct here |
+| Yes/No or one-tap confirm | `Alert.alert` | Native, accessible, no custom UI |
+| < 7 fixed picker options, no search | `Modal transparent` + small centered card | Same as action card, just centered |
+| Long list / search box / content view / form / anything with a keyboard | **`Modal presentationStyle="pageSheet"`** | iOS native: auto ~93% height, drag-dismiss, rounded corners, safe area mostly auto. Add an X button for the discoverability path; pageSheet's top exposed strip is NOT tappable. |
+| Multi-screen flow / route-level modal | Expo Router `presentation: "modal"` | Has back-stack, swipe-dismiss, deep-linkable |
+
+**The pitfalls a `presentationStyle="pageSheet"` still has:**
+
+- **Bottom padding past the Home Indicator is not auto-applied** to scroll content. Read `useSafeAreaInsets()` from the **parent component (outside the Modal)** and pass `bottomInset` as a prop into the sheet — `useSafeAreaInsets()` called inside a `presentationStyle="pageSheet"` Modal does not reliably return non-zero on all iOS versions / RN versions. The parent-read + prop-drill is the robust path. See `apps/mobile/components/issue/runs-sheet.tsx` for the reference implementation.
+- **Android falls back to full-screen** — no rounded corners, no drag. mobile/CLAUDE.md treats iOS as the primary target so this is acceptable, but document it inline at the call site if a particular feature must work identically on both.
+- **Tapping the exposed top strip does NOT dismiss.** That strip is the underlying screen, not a backdrop. Users dismiss via drag-down or via your X button. Always include an X button.
+- **`transparent` and `presentationStyle="pageSheet"` are mutually exclusive.** If you find yourself wanting both, you picked the wrong container.
+
+**Past sheets that need to migrate to pageSheet** (logged in `/Users/qingnaiyuan/.claude/plans/mobile-sheet-rollout.md`): session-sheet, issue-filter-sheet, assignee/label/project/project-lead picker sheets, add-resource-sheet. Do these one PR at a time, one verification at a time — don't try to batch.
