@@ -34,6 +34,7 @@ import {
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
+import { useIsFocused } from "@react-navigation/native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Agent,
@@ -181,20 +182,28 @@ export default function ChatTab() {
     setActiveSessionId(null);
   });
 
-  // ── Auto markRead on entering a session with unread state ─────────────
+  // ── Auto markRead while viewing a session with unread state ──────────
+  // Mirrors packages/views/chat/components/chat-window.tsx auto-markRead.
+  //
+  // Gate on tab focus: in React Navigation tab navigators, sibling tabs
+  // stay mounted in the background, so this effect re-fires for every WS
+  // chat:done arriving on the active session even when the user has
+  // switched to Inbox/My Issues. Without the focus check the badge clears
+  // itself behind the user's back. Web's equivalent gates on `isOpen` for
+  // the same reason.
+  //
+  // has_unread is the inner dedup signal: the optimistic patch in
+  // markRead flips it to false, so the effect won't re-fire until a new
+  // chat:done event flips it true again — at which point we DO want to
+  // mark it read again, because the user is still viewing the session.
+  const isFocused = useIsFocused();
   const markRead = useMarkChatSessionRead();
-  const lastMarkedRef = useRef<string | null>(null);
-  // mutate() triggers an optimistic setQueryData inside onMutate — that's a
-  // cache write, and writing to a cache this component reads from during
-  // render breaks React's purity contract (StrictMode in dev fires render
-  // twice). Always run mutations from an effect.
   useEffect(() => {
+    if (!isFocused) return;
     if (!activeSessionId) return;
     if (!activeSession?.has_unread) return;
-    if (lastMarkedRef.current === activeSessionId) return;
-    lastMarkedRef.current = activeSessionId;
     markRead.mutate(activeSessionId);
-  }, [activeSessionId, activeSession?.has_unread, markRead]);
+  }, [isFocused, activeSessionId, activeSession?.has_unread, markRead]);
 
   // ── Mutations ──────────────────────────────────────────────────────────
   const createSession = useCreateChatSession();
