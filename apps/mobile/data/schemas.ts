@@ -11,6 +11,7 @@
  */
 import { z } from "zod";
 import type {
+  AgentTask,
   Attachment,
   ChatMessage,
   ChatPendingTask,
@@ -255,6 +256,63 @@ export const EMPTY_SEARCH_PROJECTS_RESPONSE: SearchProjectsResponse = {
   projects: [],
   total: 0,
 };
+
+// =====================================================
+// Agent tasks (per-issue runs, active + history)
+// =====================================================
+// Mirrors AgentTask in packages/core/types/agent.ts. Backend handlers:
+//   GET  /api/issues/{id}/active-task → { tasks: AgentTask[] } (may be empty)
+//   GET  /api/issues/{id}/task-runs   → AgentTask[]
+// Lenient on every field — status / kind / failure_reason all use `.catch()`
+// so a future server-side enum value renders a generic fallback rather than
+// crashing the row (root CLAUDE.md "Enum drift downgrades, not crashes").
+
+export const AgentTaskSchema: z.ZodType<AgentTask> = z.object({
+  id: z.string(),
+  agent_id: z.string().default(""),
+  runtime_id: z.string().default(""),
+  issue_id: z.string().default(""),
+  status: z
+    .enum(["queued", "dispatched", "running", "completed", "failed", "cancelled"])
+    .catch("queued"),
+  priority: z.number().default(0),
+  dispatched_at: z.string().nullable().default(null),
+  started_at: z.string().nullable().default(null),
+  completed_at: z.string().nullable().default(null),
+  result: z.unknown().default(null),
+  error: z.string().nullable().default(null),
+  // Backend uses empty string ("") as the "not failed" sentinel (Go
+  // `omitempty` on a custom string-typed enum). Normalize that to `undefined`
+  // so downstream truthy checks (`if (task.failure_reason)`) don't have to
+  // special-case both null/undefined AND "".
+  failure_reason: z
+    .enum(["agent_error", "timeout", "runtime_offline", "runtime_recovery", "manual", ""])
+    .optional()
+    .catch("")
+    .transform((v) => (v === "" ? undefined : v)),
+  created_at: z.string().default(""),
+  chat_session_id: z.string().optional(),
+  autopilot_run_id: z.string().optional(),
+  parent_task_id: z.string().optional(),
+  attempt: z.number().optional(),
+  trigger_comment_id: z.string().optional(),
+  trigger_summary: z.string().optional(),
+  kind: z.enum(["comment", "autopilot", "chat", "quick_create", "direct"]).optional().catch("direct"),
+  work_dir: z.string().optional(),
+}).loose();
+
+export const AgentTaskListSchema = z.array(AgentTaskSchema).default([]);
+
+export const ActiveTasksResponseSchema = z.object({
+  tasks: z.array(AgentTaskSchema).default([]),
+}).loose();
+
+export interface ActiveTasksResponse {
+  tasks: AgentTask[];
+}
+
+export const EMPTY_AGENT_TASK_LIST: AgentTask[] = [];
+export const EMPTY_ACTIVE_TASKS_RESPONSE: ActiveTasksResponse = { tasks: [] };
 
 // Helpers re-exported for ergonomic single-import at the call site.
 export type { Label, Project, ProjectResource };

@@ -15,6 +15,7 @@
  */
 import type {
   Agent,
+  AgentTask,
   Attachment,
   ChatMessage,
   ChatPendingTask,
@@ -52,11 +53,15 @@ import {
   TimelineEntriesSchema,
 } from "@multica/core/api/schemas";
 import {
+  ActiveTasksResponseSchema,
+  AgentTaskListSchema,
   AttachmentSchema,
   ChatMessageListSchema,
   ChatPendingTaskSchema,
   ChatSessionListSchema,
   ChatSessionSchema,
+  EMPTY_ACTIVE_TASKS_RESPONSE,
+  EMPTY_AGENT_TASK_LIST,
   EMPTY_CHAT_MESSAGE_LIST,
   EMPTY_CHAT_PENDING_TASK,
   EMPTY_CHAT_SESSION_LIST,
@@ -406,6 +411,46 @@ class ApiClient {
       TimelineEntriesSchema,
       EMPTY_TIMELINE_ENTRIES,
       { endpoint: "GET /api/issues/:id/timeline" },
+    );
+  }
+
+  // Active tasks for an issue (status in queued/dispatched/running). Returns
+  // the inner `tasks` array directly — handler wraps it in `{ tasks: [] }`
+  // (server/internal/handler/daemon.go:1866) so the response object survives
+  // future field additions without breaking the cache shape.
+  async listActiveTasksForIssue(
+    issueId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<AgentTask[]> {
+    const raw = await this.fetch<unknown>(
+      `/api/issues/${issueId}/active-task`,
+      { signal: opts?.signal },
+    );
+    const parsed = parseWithFallback(
+      raw,
+      ActiveTasksResponseSchema,
+      EMPTY_ACTIVE_TASKS_RESPONSE,
+      { endpoint: "GET /api/issues/:id/active-task" },
+    );
+    return parsed.tasks;
+  }
+
+  // All tasks (any status) for an issue — drives the "Runs" history section.
+  // Path is `/task-runs` (server/cmd/server/router.go:353), NOT `/tasks` —
+  // the latter doesn't exist on this scope.
+  async listTasksByIssue(
+    issueId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<AgentTask[]> {
+    const raw = await this.fetch<unknown>(
+      `/api/issues/${issueId}/task-runs`,
+      { signal: opts?.signal },
+    );
+    return parseWithFallback(
+      raw,
+      AgentTaskListSchema,
+      EMPTY_AGENT_TASK_LIST,
+      { endpoint: "GET /api/issues/:id/task-runs" },
     );
   }
 

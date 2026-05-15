@@ -15,6 +15,7 @@ import { View } from "react-native";
 import type { Issue } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { AttributeRow } from "./attribute-row";
+import { AgentActivityRow } from "./agent-activity-row";
 
 export function IssueHeaderCard({ issue }: { issue: Issue }) {
   return (
@@ -23,6 +24,11 @@ export function IssueHeaderCard({ issue }: { issue: Issue }) {
       <Text className="text-2xl font-bold text-foreground">
         {issue.title}
       </Text>
+      {/* Activity row sits between title and attributes — it represents
+       *  "who's doing this issue right now / who has done it" (dynamic),
+       *  which is higher-IA than the static property chips below.
+       *  Conditionally renders null when there are no tasks at all. */}
+      <AgentActivityRow issueId={issue.id} />
       <AttributeRow issue={issue} />
     </View>
   );

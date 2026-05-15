@@ -52,3 +52,28 @@ export const issueTimelineOptions = (wsId: string | null, id: string) =>
     queryFn: ({ signal }) => api.listTimeline(id, { signal }),
     enabled: !!wsId && !!id,
   });
+
+/**
+ * Currently-running tasks for an issue. WS events (task:queued/dispatch/
+ * progress/completed/failed/cancelled) patch this cache directly via
+ * `issue-ws-updaters.ts`, so refetches are rare in practice. The fetch is
+ * still wired so the initial open + reconnect-invalidate path works.
+ */
+export const issueActiveTasksOptions = (wsId: string | null, id: string) =>
+  queryOptions({
+    queryKey: issueKeys.activeTasks(wsId, id),
+    queryFn: ({ signal }) => api.listActiveTasksForIssue(id, { signal }),
+    enabled: !!wsId && !!id,
+  });
+
+/**
+ * All tasks (any status) for an issue — drives the Runs sheet history
+ * section. Same patching strategy as active tasks: WS moves entries between
+ * the two caches without refetching.
+ */
+export const issueTasksOptions = (wsId: string | null, id: string) =>
+  queryOptions({
+    queryKey: issueKeys.tasks(wsId, id),
+    queryFn: ({ signal }) => api.listTasksByIssue(id, { signal }),
+    enabled: !!wsId && !!id,
+  });

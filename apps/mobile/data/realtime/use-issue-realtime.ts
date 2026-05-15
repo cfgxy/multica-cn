@@ -87,9 +87,25 @@ export function useIssueRealtime(
       qc.invalidateQueries({ queryKey: issueKeys.timeline(wsId, issueId) });
     };
 
+    // Task-query invalidation — separate from detail/timeline so the
+    // AgentActivityRow + RunsSheet can refresh without forcing a full
+    // timeline rebuild. WS task payloads only carry { task_id, agent_id,
+    // issue_id, status } — not the full AgentTask object — so per
+    // apps/mobile/CLAUDE.md "Patch over invalidate" rule #1 (payload is
+    // just an id), invalidate is the correct primitive.
+    const invalidateTaskQueries = () => {
+      qc.invalidateQueries({ queryKey: issueKeys.activeTasks(wsId, issueId) });
+      qc.invalidateQueries({ queryKey: issueKeys.tasks(wsId, issueId) });
+    };
+
     const onTaskEvent = (p: unknown) => {
       if ((p as TaskEventPayload).issue_id !== issueId) return;
+      // Detail + timeline: task state can flip issue.status server-side
+      // (e.g. agent_finished → in_progress) without an issue:updated event,
+      // so we refetch the authoritative detail too.
       invalidateThisIssue();
+      // Task lists: drive the AgentActivityRow + RunsSheet.
+      invalidateTaskQueries();
     };
 
     const unsubs: Array<() => void> = [
@@ -204,7 +220,10 @@ export function useIssueRealtime(
       ws.on("task:cancelled", onTaskEvent),
 
       // ----- Reconnect -----
-      ws.onReconnect(invalidateThisIssue),
+      ws.onReconnect(() => {
+        invalidateThisIssue();
+        invalidateTaskQueries();
+      }),
     ];
 
     return () => {

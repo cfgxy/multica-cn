@@ -15,6 +15,7 @@
  */
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import type {
+  AgentTask,
   CreateIssueRequest,
   Issue,
   IssueReaction,
@@ -376,6 +377,38 @@ export function useCreateIssue() {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: issueKeys.myAll(wsId) });
       qc.invalidateQueries({ queryKey: ["inbox", wsId] });
+    },
+  });
+}
+
+/**
+ * Cancel an in-flight agent task. Optimistically removes the task from the
+ * active-tasks cache so the RunRow disappears immediately; the WS
+ * `task:cancelled` event then invalidates both task queries (see
+ * `use-issue-realtime.ts`) so the task reappears in the past list with the
+ * authoritative server state. On error we restore the snapshot.
+ */
+export function useCancelTask(issueId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+
+  return useMutation({
+    mutationFn: (taskId: string) => api.cancelTaskById(taskId),
+    onMutate: async (taskId) => {
+      const activeKey = issueKeys.activeTasks(wsId, issueId);
+      await qc.cancelQueries({ queryKey: activeKey });
+      const prev = qc.getQueryData<AgentTask[]>(activeKey);
+      qc.setQueryData<AgentTask[]>(activeKey, (old) =>
+        old ? old.filter((t) => t.id !== taskId) : old,
+      );
+      return { prev, activeKey };
+    },
+    onError: (_err, _taskId, ctx) => {
+      if (ctx?.prev) qc.setQueryData(ctx.activeKey, ctx.prev);
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: issueKeys.activeTasks(wsId, issueId) });
+      qc.invalidateQueries({ queryKey: issueKeys.tasks(wsId, issueId) });
     },
   });
 }
