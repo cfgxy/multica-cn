@@ -9,7 +9,7 @@
  */
 import type { Issue, IssuePriority, IssueStatus } from "@multica/core/types";
 
-export function filterMyIssues(
+export function filterIssues(
   issues: Issue[],
   statusFilters: IssueStatus[],
   priorityFilters: IssuePriority[],

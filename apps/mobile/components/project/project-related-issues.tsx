@@ -17,9 +17,7 @@ import { router } from "expo-router";
 import Svg, { Path } from "react-native-svg";
 import type { Issue } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
-import { PriorityIcon } from "@/components/ui/priority-icon";
-import { StatusIcon } from "@/components/ui/status-icon";
-import { ActorAvatar } from "@/components/ui/actor-avatar";
+import { IssueRow } from "@/components/issue/issue-row";
 import { projectIssuesOptions } from "@/data/queries/projects";
 import { useWorkspaceStore } from "@/data/workspace-store";
 
@@ -114,6 +112,7 @@ export function ProjectRelatedIssues({ projectId }: Props) {
               key={issue.id}
               issue={issue}
               onPress={() => navigateToIssue(issue.id)}
+              showStatus
             />
           ))
         : null}
@@ -131,6 +130,7 @@ export function ProjectRelatedIssues({ projectId }: Props) {
                   key={issue.id}
                   issue={issue}
                   onPress={() => navigateToIssue(issue.id)}
+                  showStatus
                 />
               ))
             : null}
@@ -191,33 +191,3 @@ function Chevron({ expanded }: { expanded: boolean }) {
   );
 }
 
-function IssueRow({
-  issue,
-  onPress,
-}: {
-  issue: Issue;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable onPress={onPress} className="active:bg-secondary px-4 py-3">
-      <View className="flex-row items-center gap-3">
-        <StatusIcon status={issue.status} size={14} />
-        <PriorityIcon priority={issue.priority} size={14} />
-        <Text className="text-xs text-muted-foreground shrink-0 w-16">
-          {issue.identifier}
-        </Text>
-        <Text className="flex-1 text-sm text-foreground" numberOfLines={1}>
-          {issue.title}
-        </Text>
-        {issue.assignee_id &&
-        (issue.assignee_type === "member" || issue.assignee_type === "agent") ? (
-          <ActorAvatar
-            type={issue.assignee_type}
-            id={issue.assignee_id}
-            size={20}
-          />
-        ) : null}
-      </View>
-    </Pressable>
-  );
-}

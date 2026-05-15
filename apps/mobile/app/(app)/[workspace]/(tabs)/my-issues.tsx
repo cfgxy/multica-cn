@@ -35,10 +35,9 @@ import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
 import { ScreenHeader } from "@/components/ui/screen-header";
 import { HeaderActions } from "@/components/ui/app-header-actions";
-import { PriorityIcon } from "@/components/ui/priority-icon";
 import { StatusIcon } from "@/components/ui/status-icon";
-import { ActorAvatar } from "@/components/ui/actor-avatar";
-import { MyIssuesFilterSheet } from "@/components/issue/my-issues-filter-sheet";
+import { IssueRow } from "@/components/issue/issue-row";
+import { IssueFilterSheet } from "@/components/issue/issue-filter-sheet";
 import {
   buildMyIssuesFilter,
   myIssueListOptions,
@@ -53,7 +52,7 @@ import {
   PRIORITY_LABEL,
   STATUS_LABEL,
 } from "@/lib/issue-status";
-import { filterMyIssues } from "@/lib/filter-issues";
+import { filterIssues } from "@/lib/filter-issues";
 import { cn } from "@/lib/utils";
 
 const SCOPES: { value: MyIssuesScope; label: string }[] = [
@@ -111,9 +110,9 @@ export default function MyIssues() {
   });
 
   // Apply client-side status + priority filter. Mirrors the predicate at
-  // packages/views/issues/utils/filter.ts:30-34 via filterMyIssues().
+  // packages/views/issues/utils/filter.ts:30-34 via filterIssues().
   const filtered = useMemo(
-    () => filterMyIssues(data ?? [], statusFilters, priorityFilters),
+    () => filterIssues(data ?? [], statusFilters, priorityFilters),
     [data, statusFilters, priorityFilters],
   );
 
@@ -219,9 +218,18 @@ export default function MyIssues() {
         />
       )}
 
-      <MyIssuesFilterSheet
+      <IssueFilterSheet
         visible={sheetOpen}
         onClose={() => setSheetOpen(false)}
+        statusFilters={statusFilters}
+        priorityFilters={priorityFilters}
+        onToggleStatus={(s) =>
+          useMyIssuesViewStore.getState().toggleStatusFilter(s)
+        }
+        onTogglePriority={(p) =>
+          useMyIssuesViewStore.getState().togglePriorityFilter(p)
+        }
+        onClearFilters={() => useMyIssuesViewStore.getState().clearFilters()}
       />
     </SafeAreaView>
   );
@@ -344,35 +352,6 @@ function emptyMessageForScope(scope: MyIssuesScope): string {
     case "agents":
       return "Your agents aren't working on anything yet.";
   }
-}
-
-function IssueRow({
-  issue,
-  onPress,
-}: {
-  issue: Issue;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable onPress={onPress} className="active:bg-secondary px-4 py-3">
-      <View className="flex-row items-center gap-3">
-        <PriorityIcon priority={issue.priority} />
-        <Text className="text-xs text-muted-foreground shrink-0 w-16">
-          {issue.identifier}
-        </Text>
-        <Text className="flex-1 text-sm text-foreground" numberOfLines={1}>
-          {issue.title}
-        </Text>
-        {issue.assignee_type && issue.assignee_id ? (
-          <ActorAvatar
-            type={issue.assignee_type}
-            id={issue.assignee_id}
-            size={20}
-          />
-        ) : null}
-      </View>
-    </Pressable>
-  );
 }
 
 function FilterButton({

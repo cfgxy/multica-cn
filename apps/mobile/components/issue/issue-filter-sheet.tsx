@@ -1,12 +1,18 @@
 /**
- * Status + Priority filter sheet for My Issues. Multi-select, persists
- * across re-opens — user closes via Done. Mirrors the Status / Priority
- * sub-menus of web's MyIssuesHeader at
- * packages/views/my-issues/components/my-issues-header.tsx:181-250.
+ * Status + Priority filter sheet for any issue list surface — My Issues
+ * (`(tabs)/my-issues.tsx`) and workspace Issues (`more/issues.tsx`) both
+ * mount it with their own view-store. Mirrors the Status / Priority
+ * sub-menus of web's MyIssuesHeader (packages/views/my-issues/components/
+ * my-issues-header.tsx:181-250) and the analogous controls in web's
+ * IssuesHeader.
  *
- * Modal + backdrop layout copied from
- * apps/mobile/components/issue/pickers/status-picker-sheet.tsx (no new
- * sheet lib).
+ * State is passed in as props rather than read from a hard-coded store so
+ * the same sheet can serve both surfaces without one page's filter state
+ * leaking into the other. The two view stores have identical shape; the
+ * sheet doesn't care which one the caller wired up.
+ *
+ * Modal + backdrop layout mirrors apps/mobile/components/issue/pickers/
+ * status-picker-sheet.tsx (no new sheet lib).
  */
 import { Modal, Pressable, ScrollView, View } from "react-native";
 import type { IssuePriority, IssueStatus } from "@multica/core/types";
@@ -15,7 +21,6 @@ import { Button } from "@/components/ui/button";
 import { StatusIcon } from "@/components/ui/status-icon";
 import { PriorityIcon } from "@/components/ui/priority-icon";
 import { BOARD_STATUSES, STATUS_LABEL } from "@/lib/issue-status";
-import { useMyIssuesViewStore } from "@/data/stores/my-issues-view-store";
 import { cn } from "@/lib/utils";
 
 const ALL_STATUSES: IssueStatus[] = [...BOARD_STATUSES, "cancelled"];
@@ -43,15 +48,22 @@ const PRIORITY_LABEL: Record<IssuePriority, string> = {
 interface Props {
   visible: boolean;
   onClose: () => void;
+  statusFilters: IssueStatus[];
+  priorityFilters: IssuePriority[];
+  onToggleStatus: (status: IssueStatus) => void;
+  onTogglePriority: (priority: IssuePriority) => void;
+  onClearFilters: () => void;
 }
 
-export function MyIssuesFilterSheet({ visible, onClose }: Props) {
-  const statusFilters = useMyIssuesViewStore((s) => s.statusFilters);
-  const priorityFilters = useMyIssuesViewStore((s) => s.priorityFilters);
-  const toggleStatus = useMyIssuesViewStore((s) => s.toggleStatusFilter);
-  const togglePriority = useMyIssuesViewStore((s) => s.togglePriorityFilter);
-  const clearFilters = useMyIssuesViewStore((s) => s.clearFilters);
-
+export function IssueFilterSheet({
+  visible,
+  onClose,
+  statusFilters,
+  priorityFilters,
+  onToggleStatus,
+  onTogglePriority,
+  onClearFilters,
+}: Props) {
   const hasActive =
     statusFilters.length > 0 || priorityFilters.length > 0;
 
@@ -79,7 +91,7 @@ export function MyIssuesFilterSheet({ visible, onClose }: Props) {
                   return (
                     <Pressable
                       key={status}
-                      onPress={() => toggleStatus(status)}
+                      onPress={() => onToggleStatus(status)}
                       className={cn(
                         "flex-row items-center gap-3 px-4 py-2.5 active:bg-secondary",
                         checked && "bg-secondary/60",
@@ -100,7 +112,7 @@ export function MyIssuesFilterSheet({ visible, onClose }: Props) {
                   return (
                     <Pressable
                       key={priority}
-                      onPress={() => togglePriority(priority)}
+                      onPress={() => onTogglePriority(priority)}
                       className={cn(
                         "flex-row items-center gap-3 px-4 py-2.5 active:bg-secondary",
                         checked && "bg-secondary/60",
@@ -120,7 +132,7 @@ export function MyIssuesFilterSheet({ visible, onClose }: Props) {
                 <Button
                   variant="outline"
                   size="sm"
-                  onPress={clearFilters}
+                  onPress={onClearFilters}
                   disabled={!hasActive}
                   className={cn("flex-1", !hasActive && "opacity-50")}
                 >
