@@ -15,13 +15,6 @@ export interface Squad {
   updated_at: string;
   archived_at: string | null;
   archived_by: string | null;
-  /**
-   * Total issues currently assigned to this squad (all statuses, see backend
-   * CountIssuesForSquad). Only populated by `GET /api/squads/{id}`; absent
-   * (`undefined`) on list/create/update responses and on older servers that
-   * predate the field. Treat `undefined` and `null` identically as "unknown".
-   */
-  issue_count?: number | null;
 }
 
 export interface SquadMember {

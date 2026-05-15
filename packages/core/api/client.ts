@@ -116,7 +116,6 @@ import {
   EMPTY_LIST_ISSUES_RESPONSE,
   EMPTY_TIMELINE_ENTRIES,
   ListIssuesResponseSchema,
-  SquadSchema,
   SubscribersListSchema,
   TimelineEntriesSchema,
 } from "./schemas";
@@ -1457,10 +1456,7 @@ export class ApiClient {
   }
 
   async getSquad(id: string): Promise<Squad> {
-    const raw = await this.fetch(`/api/squads/${id}`);
-    return parseWithFallback(raw, SquadSchema, raw as Squad, {
-      endpoint: `GET /api/squads/${id}`,
-    });
+    return this.fetch(`/api/squads/${id}`);
   }
 
   async createSquad(data: { name: string; description?: string; leader_id: string; avatar_url?: string }): Promise<Squad> {
