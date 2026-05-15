@@ -29,10 +29,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
-  Keyboard,
   KeyboardAvoidingView,
   Platform,
-  Pressable,
   View,
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
@@ -358,18 +356,19 @@ export default function ChatTab() {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         className="flex-1"
       >
-        {/* Tap any non-bubble area of the messages region → dismiss the
-            keyboard. `keyboardShouldPersistTaps="handled"` on the
-            inner FlatList has a long-standing RN bug (facebook/react-
-            native#31448) that prevents it from firing dismiss in many
-            real-world setups; wrapping with a Pressable is the
-            canonical workaround that the RN docs and Expo guide both
-            recommend. Interactive drag-dismiss
-            (`keyboardDismissMode="interactive"` on the FlatList) is
-            an independent mechanism and still works. */}
-        <Pressable className="flex-1" onPress={() => Keyboard.dismiss()}>
-          <ChatMessageList messages={messages} loading={messagesLoading} />
-        </Pressable>
+        {/* NO wrapper around the message list. Mirrors web's chat-message-
+            list.tsx which mounts a bare `<div className="flex-1 overflow-
+            y-auto">` directly inside the chat-window flex column.
+            "Tap empty area → dismiss keyboard" is provided by the
+            FlatList itself via `keyboardShouldPersistTaps="handled"`
+            (taps not handled by a child bubble dismiss the keyboard,
+            per RN docs). "Drag list → dismiss keyboard" is provided
+            via `keyboardDismissMode="interactive"`. Wrapping with any
+            Touchable* (Pressable / TouchableWithoutFeedback / etc.)
+            inserts a touch-responder claim above the FlatList that
+            kills its pan gesture on iOS — that's what made the list
+            unscrollable. */}
+        <ChatMessageList messages={messages} loading={messagesLoading} />
         <StatusPill pendingTask={pendingTask} onStop={handleStop} />
         <ChatComposer
           value={draft}
