@@ -70,8 +70,17 @@ async function waitForRender() {
   return screen.findAllByRole("link");
 }
 
-describe("PullRequestList card layout", () => {
-  it("renders the card with All-checks-passed status when only passed counts are non-zero", async () => {
+describe("PullRequestList sidebar rows", () => {
+  it("uses the sidebar list-row surface instead of a card surface", async () => {
+    mockPRs = [makePR({ title: "Visual row" })];
+    renderList();
+    await waitForRender();
+    const row = screen.getByTestId("pull-request-row");
+    expect(row).toHaveClass("rounded-md", "-mx-2", "hover:bg-accent/50");
+    expect(row).not.toHaveClass("rounded-lg", "border", "bg-card");
+  });
+
+  it("renders All-checks-passed status when only passed counts are non-zero", async () => {
     mockPRs = [makePR({ checks_passed: 3 })];
     renderList();
     await waitForRender();
@@ -152,7 +161,7 @@ describe("PullRequestList card layout", () => {
     expect(screen.getByText("1 file")).toBeInTheDocument();
   });
 
-  it("collapses extra PRs past the card limit behind Show more toggle", async () => {
+  it("collapses extra PR rows past the visible limit behind Show more toggle", async () => {
     mockPRs = [
       makePR({ id: "a", number: 1, title: "PR-A" }),
       makePR({ id: "b", number: 2, title: "PR-B" }),
@@ -170,7 +179,7 @@ describe("PullRequestList card layout", () => {
     expect(screen.getByText("Show 2 more")).toBeInTheDocument();
   });
 
-  it("collapses to 3 cards + compact tail when count == threshold", async () => {
+  it("collapses to 3 rows + hidden tail when count == threshold", async () => {
     mockPRs = [
       makePR({ id: "a", number: 1, title: "PR-A" }),
       makePR({ id: "b", number: 2, title: "PR-B" }),

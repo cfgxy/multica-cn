@@ -1,6 +1,6 @@
 import type { GitHubPullRequest } from "../types";
 
-// Status kinds rendered in the PR card's footer line. Order in the
+// Status kinds rendered in the PR sidebar row's detail line. Order in the
 // pass-through table matters — the first matching rule wins. The order is
 // chosen so terminal PR states (closed / merged) short-circuit before any
 // transient CI/conflict signal, since those signals are no longer actionable
@@ -16,12 +16,12 @@ import type { GitHubPullRequest } from "../types";
 //   7. no suite + mergeable=clean → status_ready
 //   8. otherwise                  → status_unknown
 //
-// Note: this table is the single source of truth for the v3 card layout. The
+// Note: this table is the single source of truth for the sidebar PR row. The
 // older row-with-badges implementation used a separate "hide status row for
-// terminal PRs" branch — under the card layout we instead render the card
+// terminal PRs" branch — the current row renders
 // with status_closed / status_merged text, never falling through to a
 // conflicts / checks line on a terminal PR. Keep this priority order in sync
-// with the i18n keys `pull_request_card_status_*` and with the progress-bar
+// with the i18n keys `pull_request_card_status_*` and with the progress-strip
 // derivation in `derivePullRequestProgressSegments` (terminal kinds get a
 // solid bar; the rest map onto the per-suite counts).
 export type PullRequestStatusKind =

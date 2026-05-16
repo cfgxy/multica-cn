@@ -29,12 +29,11 @@ import type {
 import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../../i18n";
 
-// Card layout takes ~4× the vertical space of the legacy row. Past 3 cards
-// the sidebar feels packed, so once we hit this threshold we collapse: show
-// (LIMIT - 1) cards inline and push the rest behind a "Show more" toggle as
-// legacy compact rows. 4 is the threshold per Xeon's RFC v3 increment, so
-// N >= 4 collapses to 3 cards + compact tail.
-const CARD_LIMIT_BEFORE_COLLAPSE = 4;
+type IssuesT = ReturnType<typeof useT<"issues">>["t"];
+
+// Keep the existing sidebar density: show the first 3 PR rows inline, then
+// collapse the rest once the section reaches 4 rows.
+const PR_LIMIT_BEFORE_COLLAPSE = 4;
 
 const STATE_ICON: Record<
   GitHubPullRequestState,
@@ -73,28 +72,27 @@ export function PullRequestList({ issueId }: { issueId: string }) {
   }
 
   // Render rule:
-  //   - <  CARD_LIMIT_BEFORE_COLLAPSE: every PR as a card.
-  //   - >= CARD_LIMIT_BEFORE_COLLAPSE: first (LIMIT - 1) as cards, the
-  //     remainder as compact rows behind a toggle. Keeping LIMIT-1 visible
-  //     before the toggle leaves room for the toggle itself without overflow.
-  const useCollapse = prs.length >= CARD_LIMIT_BEFORE_COLLAPSE;
-  const expandedHead = useCollapse ? prs.slice(0, CARD_LIMIT_BEFORE_COLLAPSE - 1) : prs;
-  const collapsedTail = useCollapse ? prs.slice(CARD_LIMIT_BEFORE_COLLAPSE - 1) : [];
+  //   - <  PR_LIMIT_BEFORE_COLLAPSE: every PR row is visible.
+  //   - >= PR_LIMIT_BEFORE_COLLAPSE: first (LIMIT - 1) rows are visible and
+  //     the remainder sits behind a toggle.
+  const useCollapse = prs.length >= PR_LIMIT_BEFORE_COLLAPSE;
+  const expandedHead = useCollapse ? prs.slice(0, PR_LIMIT_BEFORE_COLLAPSE - 1) : prs;
+  const collapsedTail = useCollapse ? prs.slice(PR_LIMIT_BEFORE_COLLAPSE - 1) : [];
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-1">
       {expandedHead.map((pr) => (
-        <PullRequestCard key={pr.id} pr={pr} />
+        <PullRequestRow key={pr.id} pr={pr} />
       ))}
       {useCollapse ? (
         <div className="space-y-1">
           {expanded
-            ? collapsedTail.map((pr) => <PullRequestCompactRow key={pr.id} pr={pr} />)
+            ? collapsedTail.map((pr) => <PullRequestRow key={pr.id} pr={pr} />)
             : null}
           <button
             type="button"
             onClick={() => setExpanded((v) => !v)}
-            className="text-[11px] text-muted-foreground hover:text-foreground px-2 py-1 rounded-md hover:bg-accent/40 transition-colors w-full text-left"
+            className="block w-[calc(100%+1rem)] -mx-2 rounded-md px-2 py-1.5 text-left text-[11px] text-muted-foreground hover:bg-accent/50 hover:text-foreground transition-colors"
           >
             {expanded
               ? t(($) => $.detail.pull_request_card_show_less)
@@ -106,7 +104,7 @@ export function PullRequestList({ issueId }: { issueId: string }) {
   );
 }
 
-function PullRequestCard({ pr }: { pr: GitHubPullRequest }) {
+function PullRequestRow({ pr }: { pr: GitHubPullRequest }) {
   const { t } = useT("issues");
   const cfg = STATE_ICON[pr.state] ?? { icon: GitPullRequest, className: "" };
   const StateIcon = cfg.icon;
@@ -130,87 +128,103 @@ function PullRequestCard({ pr }: { pr: GitHubPullRequest }) {
   });
   const statusText = useStatusText(kind);
   const draftPrefix = pr.state === "draft";
+  const stateLabel = getStateLabel(pr.state, t);
 
   return (
     <a
+      data-testid="pull-request-row"
       href={pr.html_url}
       target="_blank"
       rel="noreferrer noopener"
       className={cn(
-        "block rounded-lg border bg-card px-3 py-2 hover:bg-accent/40 transition-colors group",
+        "flex items-start gap-2 rounded-md px-2 py-1.5 -mx-2 hover:bg-accent/50 transition-colors group",
         draftPrefix ? "opacity-80" : null,
       )}
     >
-      <div className="flex items-start gap-2">
-        <StateIcon className={cn("h-4 w-4 mt-0.5 shrink-0", cfg.className)} />
-        <div className="min-w-0 flex-1 space-y-1">
-          <p className="text-xs font-semibold leading-snug line-clamp-2 group-hover:text-foreground">
-            {pr.title}
-          </p>
-          <div className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-            {pr.author_avatar_url ? (
-              // Plain <img>: avatars are external URLs (github.com), already
-              // served at a small size, and Next.js's optimizer doesn't run
-              // in @multica/views shared code.
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={pr.author_avatar_url}
-                alt=""
-                className="h-4 w-4 rounded-full shrink-0 object-cover"
-              />
-            ) : null}
-            <span className="truncate">
-              {pr.author_login ? `${pr.author_login} · ` : ""}#{pr.number}
-            </span>
-          </div>
-          {showStats ? (
-            <div className="flex items-center gap-2 text-[11px] text-muted-foreground">
-              <span className="text-emerald-600 dark:text-emerald-400 tabular-nums">
-                +{pr.additions ?? 0}
-              </span>
-              <span className="text-rose-600 dark:text-rose-400 tabular-nums">
-                −{pr.deletions ?? 0}
-              </span>
-              <span aria-hidden="true">·</span>
-              <span>
-                {t(($) => $.detail.pull_request_card_files_count, {
-                  count: pr.changed_files ?? 0,
-                })}
-              </span>
-            </div>
-          ) : null}
-          <PullRequestProgressBar state={pr.state} segments={segments} />
-          <p className="text-[11px] text-muted-foreground">
-            {draftPrefix
+      <StateIcon className={cn("h-3.5 w-3.5 mt-0.5 shrink-0", cfg.className)} />
+      <div className="min-w-0 flex-1">
+        <p className="text-xs font-medium leading-snug truncate group-hover:text-foreground">
+          {pr.title}
+        </p>
+        <p className="text-[11px] text-muted-foreground truncate">
+          {pr.repo_owner}/{pr.repo_name}#{pr.number} · {stateLabel}
+          {pr.author_login ? ` · @${pr.author_login}` : null}
+        </p>
+        <PullRequestRowDetails
+          pr={pr}
+          segments={segments}
+          showStats={showStats}
+          statusText={
+            draftPrefix
               ? t(($) => $.detail.pull_request_card_draft_prefix, { status: statusText })
-              : statusText}
-          </p>
-        </div>
+              : statusText
+          }
+          statusKind={kind}
+        />
       </div>
     </a>
   );
 }
 
-function PullRequestProgressBar({
-  state,
+function PullRequestRowDetails({
+  pr,
+  segments,
+  showStats,
+  statusText,
+  statusKind,
+}: {
+  pr: GitHubPullRequest;
+  segments: PullRequestProgressSegment[] | null;
+  showStats: boolean;
+  statusText: string;
+  statusKind: PullRequestStatusKind;
+}) {
+  const { t } = useT("issues");
+  const checksBadge = getChecksBadge(pr, t);
+  const conflictsBadge = getConflictsBadge(pr, t);
+  const showChecksBadge =
+    !!checksBadge &&
+    statusKind !== "checks_failed" &&
+    statusKind !== "checks_pending" &&
+    statusKind !== "checks_passed";
+  const showConflictsBadge =
+    !!conflictsBadge && statusKind !== "conflicts" && statusKind !== "ready";
+
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 text-[11px] text-muted-foreground">
+      {showStats ? <PullRequestStats pr={pr} /> : null}
+      <PullRequestProgressStrip segments={segments} />
+      <span className="truncate">{statusText}</span>
+      {showChecksBadge ? <PullRequestBadge badge={checksBadge} /> : null}
+      {showConflictsBadge ? <PullRequestBadge badge={conflictsBadge} /> : null}
+    </div>
+  );
+}
+
+function PullRequestStats({ pr }: { pr: GitHubPullRequest }) {
+  const { t } = useT("issues");
+  return (
+    <span className="inline-flex items-center gap-1.5 tabular-nums">
+      <span className="text-emerald-600 dark:text-emerald-400">+{pr.additions ?? 0}</span>
+      <span className="text-rose-600 dark:text-rose-400">−{pr.deletions ?? 0}</span>
+      <span aria-hidden="true">·</span>
+      <span>
+        {t(($) => $.detail.pull_request_card_files_count, {
+          count: pr.changed_files ?? 0,
+        })}
+      </span>
+    </span>
+  );
+}
+
+function PullRequestProgressStrip({
   segments,
 }: {
-  state: GitHubPullRequestState;
   segments: PullRequestProgressSegment[] | null;
 }) {
-  // Terminal PRs: solid colored bar with no segments — the status text below
-  // already says "Merged" / "Closed", the bar exists for shape parity with
-  // open PRs only.
-  if (state === "merged") {
-    return <div className="h-1 rounded-full bg-violet-500/80 dark:bg-violet-400/80" />;
-  }
-  if (state === "closed") {
-    return <div className="h-1 rounded-full bg-rose-500/70 dark:bg-rose-400/70" />;
-  }
-  // No suite reported yet — hide the bar entirely (per RFC v3 §2 boundary).
   if (!segments) return null;
   return (
-    <div className="flex h-1 w-full overflow-hidden rounded-full bg-muted">
+    <span className="flex h-1 w-12 shrink-0 overflow-hidden rounded-full bg-muted" aria-hidden="true">
       {segments.map((seg) => (
         <span
           key={seg.kind}
@@ -223,89 +237,78 @@ function PullRequestProgressBar({
           style={{ width: `${seg.ratio * 100}%` }}
         />
       ))}
-    </div>
+    </span>
   );
 }
 
-// PullRequestCompactRow renders the legacy "icon + title + state · badges"
-// row used for collapsed PRs beyond the card limit. The pre-card behaviour
-// (hide status row for terminal PRs) is preserved here, so a fully merged
-// older PR collapses to a single line without misleading badges.
-function PullRequestCompactRow({ pr }: { pr: GitHubPullRequest }) {
-  const { t } = useT("issues");
-  const cfg = STATE_ICON[pr.state] ?? { icon: GitPullRequest, className: "" };
-  const Icon = cfg.icon;
-  const label =
-    pr.state === "open"
-      ? t(($) => $.detail.pull_request_state_open)
-      : pr.state === "draft"
-        ? t(($) => $.detail.pull_request_state_draft)
-        : pr.state === "merged"
-          ? t(($) => $.detail.pull_request_state_merged)
-          : pr.state === "closed"
-            ? t(($) => $.detail.pull_request_state_closed)
-            : pr.state;
-  const showStatus = pr.state === "open" || pr.state === "draft";
+interface PullRequestBadgeConfig {
+  icon: React.ComponentType<{ className?: string }>;
+  label: string;
+  className: string;
+}
+
+function PullRequestBadge({ badge }: { badge: PullRequestBadgeConfig }) {
+  const Icon = badge.icon;
   return (
-    <a
-      href={pr.html_url}
-      target="_blank"
-      rel="noreferrer noopener"
-      className="flex items-start gap-2 rounded-md px-2 py-1.5 -mx-2 hover:bg-accent/50 transition-colors group"
-    >
-      <Icon className={cn("h-3.5 w-3.5 mt-0.5 shrink-0", cfg.className)} />
-      <div className="min-w-0 flex-1">
-        <p className="text-xs font-medium truncate group-hover:text-foreground">{pr.title}</p>
-        <p className="text-[11px] text-muted-foreground truncate">
-          {pr.repo_owner}/{pr.repo_name}#{pr.number} · {label}
-          {pr.author_login ? ` · @${pr.author_login}` : null}
-        </p>
-        {showStatus ? <PullRequestCompactStatusRow pr={pr} /> : null}
-      </div>
-    </a>
+    <span className="inline-flex items-center gap-1">
+      <Icon className={cn("h-3 w-3", badge.className)} />
+      {badge.label}
+    </span>
   );
 }
 
-function PullRequestCompactStatusRow({ pr }: { pr: GitHubPullRequest }) {
-  const { t } = useT("issues");
-  const checks = pr.checks_conclusion ?? null;
+function getConflictsBadge(
+  pr: GitHubPullRequest,
+  t: IssuesT,
+): PullRequestBadgeConfig | null {
   const mergeable = pr.mergeable_state ?? null;
-  const conflictsBadge =
-    mergeable === "dirty"
-      ? { icon: TriangleAlert, label: t(($) => $.detail.pull_request_conflicts_dirty), className: "text-rose-600 dark:text-rose-400" }
-      : mergeable === "clean"
-        ? { icon: CheckCircle2, label: t(($) => $.detail.pull_request_conflicts_clean), className: "text-emerald-600 dark:text-emerald-400" }
-        : null;
-  const checksBadge =
-    checks && CHECKS_ICON[checks]
+  return mergeable === "dirty"
+    ? {
+        icon: TriangleAlert,
+        label: t(($) => $.detail.pull_request_conflicts_dirty),
+        className: "text-rose-600 dark:text-rose-400",
+      }
+    : mergeable === "clean"
       ? {
-          icon: CHECKS_ICON[checks].icon,
-          className: CHECKS_ICON[checks].className,
-          label:
-            checks === "passed"
-              ? t(($) => $.detail.pull_request_checks_passed)
-              : checks === "failed"
-                ? t(($) => $.detail.pull_request_checks_failed)
-                : t(($) => $.detail.pull_request_checks_pending),
+          icon: CheckCircle2,
+          label: t(($) => $.detail.pull_request_conflicts_clean),
+          className: "text-emerald-600 dark:text-emerald-400",
         }
       : null;
-  if (!conflictsBadge && !checksBadge) return null;
-  return (
-    <div className="flex items-center gap-3 mt-0.5">
-      {checksBadge ? (
-        <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
-          <checksBadge.icon className={cn("h-3 w-3", checksBadge.className)} />
-          {checksBadge.label}
-        </span>
-      ) : null}
-      {conflictsBadge ? (
-        <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
-          <conflictsBadge.icon className={cn("h-3 w-3", conflictsBadge.className)} />
-          {conflictsBadge.label}
-        </span>
-      ) : null}
-    </div>
-  );
+}
+
+function getChecksBadge(
+  pr: GitHubPullRequest,
+  t: IssuesT,
+): PullRequestBadgeConfig | null {
+  const checks = pr.checks_conclusion ?? null;
+  return checks && CHECKS_ICON[checks]
+    ? {
+        icon: CHECKS_ICON[checks].icon,
+        className: CHECKS_ICON[checks].className,
+        label:
+          checks === "passed"
+            ? t(($) => $.detail.pull_request_checks_passed)
+            : checks === "failed"
+              ? t(($) => $.detail.pull_request_checks_failed)
+              : t(($) => $.detail.pull_request_checks_pending),
+      }
+    : null;
+}
+
+function getStateLabel(
+  state: GitHubPullRequestState,
+  t: IssuesT,
+): string {
+  return state === "open"
+    ? t(($) => $.detail.pull_request_state_open)
+    : state === "draft"
+      ? t(($) => $.detail.pull_request_state_draft)
+      : state === "merged"
+        ? t(($) => $.detail.pull_request_state_merged)
+        : state === "closed"
+          ? t(($) => $.detail.pull_request_state_closed)
+          : state;
 }
 
 function useStatusText(kind: PullRequestStatusKind): string {
