@@ -30,9 +30,10 @@ import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../../i18n";
 
 // Card layout takes ~4× the vertical space of the legacy row. Past 3 cards
-// the sidebar feels packed, so we expand the first N inline and collapse the
-// rest behind a "Show more" toggle that renders them as the legacy compact
-// rows. 4 is the threshold per Xeon's RFC v3 increment.
+// the sidebar feels packed, so once we hit this threshold we collapse: show
+// (LIMIT - 1) cards inline and push the rest behind a "Show more" toggle as
+// legacy compact rows. 4 is the threshold per Xeon's RFC v3 increment, so
+// N >= 4 collapses to 3 cards + compact tail.
 const CARD_LIMIT_BEFORE_COLLAPSE = 4;
 
 const STATE_ICON: Record<
@@ -72,11 +73,11 @@ export function PullRequestList({ issueId }: { issueId: string }) {
   }
 
   // Render rule:
-  //   - <= CARD_LIMIT_BEFORE_COLLAPSE: every PR as a card.
-  //   - >  CARD_LIMIT_BEFORE_COLLAPSE: first (LIMIT - 1) as cards, the
+  //   - <  CARD_LIMIT_BEFORE_COLLAPSE: every PR as a card.
+  //   - >= CARD_LIMIT_BEFORE_COLLAPSE: first (LIMIT - 1) as cards, the
   //     remainder as compact rows behind a toggle. Keeping LIMIT-1 visible
   //     before the toggle leaves room for the toggle itself without overflow.
-  const useCollapse = prs.length > CARD_LIMIT_BEFORE_COLLAPSE;
+  const useCollapse = prs.length >= CARD_LIMIT_BEFORE_COLLAPSE;
   const expandedHead = useCollapse ? prs.slice(0, CARD_LIMIT_BEFORE_COLLAPSE - 1) : prs;
   const collapsedTail = useCollapse ? prs.slice(CARD_LIMIT_BEFORE_COLLAPSE - 1) : [];
 

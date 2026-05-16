@@ -170,7 +170,7 @@ describe("PullRequestList card layout", () => {
     expect(screen.getByText("Show 2 more")).toBeInTheDocument();
   });
 
-  it("renders all four PRs as cards when count == threshold", async () => {
+  it("collapses to 3 cards + compact tail when count == threshold", async () => {
     mockPRs = [
       makePR({ id: "a", number: 1, title: "PR-A" }),
       makePR({ id: "b", number: 2, title: "PR-B" }),
@@ -179,7 +179,10 @@ describe("PullRequestList card layout", () => {
     ];
     renderList();
     await waitForRender();
-    expect(screen.getByText("PR-D")).toBeInTheDocument();
-    expect(screen.queryByText(/Show.*more/)).not.toBeInTheDocument();
+    expect(screen.getByText("PR-A")).toBeInTheDocument();
+    expect(screen.getByText("PR-B")).toBeInTheDocument();
+    expect(screen.getByText("PR-C")).toBeInTheDocument();
+    expect(screen.queryByText("PR-D")).not.toBeInTheDocument();
+    expect(screen.getByText("Show 1 more")).toBeInTheDocument();
   });
 });
