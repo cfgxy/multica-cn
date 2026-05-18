@@ -333,3 +333,45 @@ export const EMPTY_CREATE_AGENT_FROM_TEMPLATE_RESPONSE: CreateAgentFromTemplateR
   imported_skill_ids: [],
   reused_skill_ids: [],
 };
+
+// ---------------------------------------------------------------------------
+// Structured error body — POST /api/workspaces/:wsId/issues 409 conflict.
+//
+// When the server detects an active issue with the same title in the same
+// workspace, it returns `{ code: "active_duplicate_issue", error, issue }`
+// instead of letting the create through. The UI uses the embedded issue ref
+// to offer "view existing" rather than dropping the user into a generic
+// "create failed" toast.
+//
+// Strict guarantees:
+//   - `code` is a literal so a future server rename (e.g. `duplicate_issue`)
+//     fails the parse and falls back to a normal error toast — drift never
+//     ships as a broken duplicate UI.
+//   - `issue` is required; without an id/identifier/title the "view existing"
+//     button has nothing to point at, so we'd rather fall back than guess.
+//   - `issue.status` is intentionally OMITTED: the duplicate toast doesn't
+//     render a StatusIcon (which has no fallback for unknown enum values),
+//     so a future server-side rename of `status` must not knock this branch
+//     out. `.loose()` lets the field pass through unchanged for any other
+//     consumer.
+// ---------------------------------------------------------------------------
+
+export const DuplicateIssueErrorBodySchema = z.object({
+  code: z.literal("active_duplicate_issue"),
+  error: z.string().optional(),
+  issue: z.object({
+    id: z.string(),
+    identifier: z.string(),
+    title: z.string(),
+  }).loose(),
+}).loose();
+
+export interface DuplicateIssueErrorBody {
+  code: "active_duplicate_issue";
+  error?: string;
+  issue: {
+    id: string;
+    identifier: string;
+    title: string;
+  };
+}

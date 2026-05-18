@@ -262,8 +262,12 @@ function TriggerRow({ trigger, autopilotId }: { trigger: AutopilotTrigger; autop
       await deleteTrigger.mutateAsync({ autopilotId, triggerId: trigger.id });
       toast.success(t(($) => $.trigger_row.toast_deleted));
       setConfirmOpen(false);
-    } catch {
-      toast.error(t(($) => $.trigger_row.toast_delete_failed));
+    } catch (err) {
+      toast.error(
+        err instanceof Error && err.message
+          ? err.message
+          : t(($) => $.trigger_row.toast_delete_failed),
+      );
     } finally {
       setDeleting(false);
     }
@@ -299,8 +303,12 @@ function TriggerRow({ trigger, autopilotId }: { trigger: AutopilotTrigger; autop
       await rotateToken.mutateAsync({ autopilotId, triggerId: trigger.id });
       toast.success(t(($) => $.trigger_row.toast_rotated));
       setRotateOpen(false);
-    } catch {
-      toast.error(t(($) => $.trigger_row.toast_rotate_failed));
+    } catch (err) {
+      toast.error(
+        err instanceof Error && err.message
+          ? err.message
+          : t(($) => $.trigger_row.toast_rotate_failed),
+      );
     }
   };
 
@@ -466,8 +474,12 @@ function AddTriggerDialog({
       setKind("schedule");
       setConfig(getDefaultTriggerConfig());
       setLabel("");
-    } catch {
-      toast.error(t(($) => $.add_trigger_dialog.toast_add_failed));
+    } catch (err) {
+      toast.error(
+        err instanceof Error && err.message
+          ? err.message
+          : t(($) => $.add_trigger_dialog.toast_add_failed),
+      );
     } finally {
       setSubmitting(false);
     }
@@ -627,8 +639,12 @@ export function AutopilotDetailPage({ autopilotId }: { autopilotId: string }) {
       await deleteAutopilot.mutateAsync(autopilotId);
       toast.success(t(($) => $.detail.toast_deleted));
       router.push(wsPaths.autopilots());
-    } catch {
-      toast.error(t(($) => $.detail.toast_delete_failed));
+    } catch (err) {
+      toast.error(
+        err instanceof Error && err.message
+          ? err.message
+          : t(($) => $.detail.toast_delete_failed),
+      );
       setDeleting(false);
     }
   };

@@ -62,6 +62,7 @@ import {
   type TriggerFrequency,
 } from "./trigger-config";
 import { useT } from "../../i18n";
+import { formatSchedulePartialFailureToast } from "./autopilot-dialog-toast";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -327,6 +328,7 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
           execution_mode: executionMode,
         });
         let triggerOk = true;
+        let triggerErrMessage: string | null = null;
         let webhookTrigger: AutopilotTrigger | null = null;
         try {
           if (triggerKind === "webhook") {
@@ -342,8 +344,10 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
               timezone: triggerConfig.timezone,
             });
           }
-        } catch {
+        } catch (err) {
           triggerOk = false;
+          triggerErrMessage =
+            err instanceof Error && err.message ? err.message : null;
         }
         if (triggerKind === "webhook" && webhookTrigger) {
           // Stay in the dialog and surface the URL inline so the user
@@ -353,8 +357,14 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
           return;
         }
         onOpenChange(false);
-        if (triggerOk) toast.success(t(($) => $.dialog.toast_created));
-        else toast.error(t(($) => $.dialog.toast_create_partial));
+        if (triggerOk) {
+          toast.success(t(($) => $.dialog.toast_created));
+        } else {
+          // Partial success: autopilot saved, schedule failed. Show the
+          // server-provided reason so the user can act on it (cron syntax
+          // error, conflict, etc.) instead of seeing a generic message.
+          toast.error(formatSchedulePartialFailureToast(t, "create", triggerErrMessage));
+        }
       } else {
         await updateAutopilot.mutateAsync({
           id: props.autopilotId,
@@ -364,6 +374,7 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
           execution_mode: executionMode,
         });
         let scheduleOk = true;
+        let scheduleErrMessage: string | null = null;
         // Skip the schedule sync when the autopilot's first trigger is a
         // webhook — there's no cron to update there, and the schedule
         // panel isn't even rendered for webhook autopilots.
@@ -385,19 +396,26 @@ export function AutopilotDialog(props: AutopilotDialogProps) {
                 timezone: triggerConfig.timezone,
               });
             }
-          } catch {
+          } catch (err) {
             scheduleOk = false;
+            scheduleErrMessage =
+              err instanceof Error && err.message ? err.message : null;
           }
         }
         onOpenChange(false);
-        if (scheduleOk) toast.success(t(($) => $.dialog.toast_updated));
-        else toast.error(t(($) => $.dialog.toast_update_partial));
+        if (scheduleOk) {
+          toast.success(t(($) => $.dialog.toast_updated));
+        } else {
+          toast.error(formatSchedulePartialFailureToast(t, "update", scheduleErrMessage));
+        }
       }
-    } catch {
+    } catch (err) {
       toast.error(
-        isCreate
-          ? t(($) => $.dialog.toast_create_failed)
-          : t(($) => $.dialog.toast_update_failed),
+        err instanceof Error && err.message
+          ? err.message
+          : isCreate
+            ? t(($) => $.dialog.toast_create_failed)
+            : t(($) => $.dialog.toast_update_failed),
       );
     } finally {
       setSubmitting(false);
