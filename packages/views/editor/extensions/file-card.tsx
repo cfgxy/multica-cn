@@ -20,7 +20,7 @@ import type { NodeViewProps } from "@tiptap/react";
 import { FILE_CARD_URL_PATTERN } from "@multica/ui/markdown";
 import { useAttachmentDownloadResolver } from "../attachment-download-context";
 import { useAttachmentPreview } from "../attachment-preview-modal";
-import { AttachmentCard } from "../attachment-card";
+import { AttachmentBlock } from "../attachment-block";
 
 const FILE_CARD_MARKDOWN_RE = new RegExp(
   `^!file\\[([^\\]]*)\\]\\((${FILE_CARD_URL_PATTERN.source})\\)`,
@@ -31,7 +31,7 @@ const FILE_CARD_MARKDOWN_RE = new RegExp(
 // React NodeView
 // ---------------------------------------------------------------------------
 
-function FileCardView({ node }: NodeViewProps) {
+export function FileCardView({ node }: NodeViewProps) {
   const href = (node.attrs.href as string) || "";
   const filename = (node.attrs.filename as string) || "";
   const uploading = node.attrs.uploading as boolean;
@@ -56,7 +56,7 @@ function FileCardView({ node }: NodeViewProps) {
   return (
     <NodeViewWrapper as="div" className="file-card-node" data-type="fileCard">
       <div contentEditable={false}>
-        <AttachmentCard
+        <AttachmentBlock
           filename={filename}
           contentType={attachment?.content_type ?? ""}
           attachmentId={attachment?.id}

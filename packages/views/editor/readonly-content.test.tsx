@@ -1,5 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, render, waitFor } from "@testing-library/react";
+import type { ReactElement } from "react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+
+const { getAttachmentTextContentMock } = vi.hoisted(() => ({
+  getAttachmentTextContentMock: vi.fn(),
+}));
+
+vi.mock("@multica/core/api", () => ({
+  api: { getAttachmentTextContent: getAttachmentTextContentMock },
+  PreviewTooLargeError: class extends Error {},
+  PreviewUnsupportedError: class extends Error {},
+}));
 
 vi.mock("@multica/core/paths", () => ({
   useWorkspacePaths: () => ({
@@ -251,5 +263,49 @@ describe("ReadonlyContent HTML block rendering", () => {
     expect(
       container.querySelector("pre code.language-mermaidx"),
     ).not.toBeNull();
+  });
+});
+
+describe("ReadonlyContent file-card → AttachmentBlock HTML routing", () => {
+  // Regression pin for readonly-content.tsx:279. The `div data-type=fileCard`
+  // branch must render through <AttachmentBlock>, not the older
+  // <AttachmentCard>. Reverting that line would skip the html+attachmentId
+  // dispatcher branch and surface the bare file-card chrome (filename row)
+  // instead of the rendered iframe — the exact regression MUL-2330 fixed.
+  function renderWithQuery(ui: ReactElement) {
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false, gcTime: 0 } },
+    });
+    return render(<QueryClientProvider client={qc}>{ui}</QueryClientProvider>);
+  }
+
+  it("renders the !file[](url) HTML attachment as an iframe (no file-card chrome)", async () => {
+    getAttachmentTextContentMock.mockResolvedValueOnce({
+      text: "<p>chart</p>",
+      originalContentType: "text/html",
+    });
+    const attachment = {
+      id: "att-1",
+      url: "/uploads/report.html",
+      filename: "report.html",
+      content_type: "text/html",
+      size_bytes: 0,
+    } as any;
+    const { container, queryByText } = renderWithQuery(
+      <ReadonlyContent
+        content="!file[report.html](/uploads/report.html)"
+        attachments={[attachment]}
+      />,
+    );
+    const frame = await waitFor(() => {
+      const f = container.querySelector<HTMLIFrameElement>("iframe");
+      expect(f).not.toBeNull();
+      return f!;
+    });
+    expect(frame.getAttribute("sandbox")).toBe("allow-scripts");
+    expect(frame.getAttribute("srcdoc")).toContain("<p>chart</p>");
+    // AttachmentCard chrome surfaces the filename as visible text in a
+    // <p class="truncate"> row. HtmlAttachmentPreview replaces it entirely.
+    expect(queryByText("report.html")).toBeNull();
   });
 });
