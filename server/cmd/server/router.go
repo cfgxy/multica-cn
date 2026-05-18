@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
+	"net/netip"
 	"os"
 	"strings"
 	"time"
@@ -57,6 +59,33 @@ func allowedOrigins() []string {
 	return origins
 }
 
+// parseTrustedProxies parses a comma-separated list of CIDR prefixes from the
+// MULTICA_TRUSTED_PROXIES env var. Invalid entries are dropped with a single
+// warn-line per entry rather than crashing the server — a typo in one CIDR
+// shouldn't take the whole API down. Returns nil for empty input, which the
+// rate limiter treats as "trust no proxy headers, use RemoteAddr only".
+func parseTrustedProxies(raw string) []netip.Prefix {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil
+	}
+	var out []netip.Prefix
+	for _, part := range strings.Split(raw, ",") {
+		s := strings.TrimSpace(part)
+		if s == "" {
+			continue
+		}
+		p, err := netip.ParsePrefix(s)
+		if err != nil {
+			slog.Warn("MULTICA_TRUSTED_PROXIES: ignoring invalid CIDR",
+				"value", s, "error", err)
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
 // NewRouter creates the fully-configured Chi router with all middleware and routes.
 // rdb is optional: when non-nil the runtime local-skill request stores are
 // swapped for Redis-backed implementations so multiple API nodes share the
@@ -107,6 +136,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		AllowedEmailDomains:           splitAndTrim(os.Getenv("ALLOWED_EMAIL_DOMAINS")),
 		UseDailyRollupForRuntimeUsage: os.Getenv("USAGE_DAILY_ROLLUP_ENABLED") == "true",
 		UseDailyRollupForDashboard:    os.Getenv("USAGE_DASHBOARD_ROLLUP_ENABLED") == "true",
+		PublicURL:                     strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_PUBLIC_URL")), "/"),
+		TrustedProxies:                parseTrustedProxies(os.Getenv("MULTICA_TRUSTED_PROXIES")),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
 	if opts.DaemonWakeup != nil {
@@ -118,6 +149,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		h.LocalSkillListStore = handler.NewRedisLocalSkillListStore(rdb)
 		h.LocalSkillImportStore = handler.NewRedisLocalSkillImportStore(rdb)
 		h.LivenessStore = handler.NewRedisLivenessStore(rdb)
+		h.WebhookRateLimiter = handler.NewRedisWebhookRateLimiter(rdb, handler.DefaultWebhookRateLimit())
+		h.WebhookIPRateLimiter = handler.NewRedisWebhookIPRateLimiter(rdb, handler.DefaultWebhookIPRateLimit())
 	}
 	if opts.HeartbeatScheduler != nil {
 		h.HeartbeatScheduler = opts.HeartbeatScheduler
@@ -214,6 +247,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// Public API
 	r.Get("/api/config", h.GetConfig)
 
+	// Webhook ingress for autopilots. Outside the authenticated group on
+	// purpose: the bearer token in the URL path IS the credential. Workspace
+	// context is derived from the trigger row, never from request headers.
+	r.Post("/api/webhooks/autopilots/{token}", h.HandleAutopilotWebhook)
 	// GitHub App webhook (no Multica auth — requests are authenticated via
 	// HMAC-SHA256 signature in the handler) and post-install setup callback.
 	r.Post("/api/webhooks/github", h.HandleGitHubWebhook)
@@ -421,10 +458,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/", h.DeleteAutopilot)
 					r.Post("/trigger", h.TriggerAutopilot)
 					r.Get("/runs", h.ListAutopilotRuns)
+					r.Get("/runs/{runId}", h.GetAutopilotRun)
 					r.Post("/triggers", h.CreateAutopilotTrigger)
 					r.Route("/triggers/{triggerId}", func(r chi.Router) {
 						r.Patch("/", h.UpdateAutopilotTrigger)
 						r.Delete("/", h.DeleteAutopilotTrigger)
+						r.Post("/rotate-webhook-token", h.RotateAutopilotTriggerWebhookToken)
 					})
 				})
 			})

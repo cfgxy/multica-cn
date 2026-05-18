@@ -1578,6 +1578,13 @@ export class ApiClient {
     return this.fetch(`/api/autopilots/${id}/runs?${search}`);
   }
 
+  // Returns a single run including its full trigger_payload. List responses
+  // omit trigger_payload to keep them small (a webhook envelope can be
+  // up to 256 KiB × limit rows), so the detail view fetches via this route.
+  async getAutopilotRun(autopilotId: string, runId: string): Promise<AutopilotRun> {
+    return this.fetch(`/api/autopilots/${autopilotId}/runs/${runId}`);
+  }
+
   async createAutopilotTrigger(autopilotId: string, data: CreateAutopilotTriggerRequest): Promise<AutopilotTrigger> {
     return this.fetch(`/api/autopilots/${autopilotId}/triggers`, {
       method: "POST",
@@ -1594,6 +1601,16 @@ export class ApiClient {
 
   async deleteAutopilotTrigger(autopilotId: string, triggerId: string): Promise<void> {
     await this.fetch(`/api/autopilots/${autopilotId}/triggers/${triggerId}`, { method: "DELETE" });
+  }
+
+  async rotateAutopilotTriggerWebhookToken(
+    autopilotId: string,
+    triggerId: string,
+  ): Promise<AutopilotTrigger> {
+    return this.fetch(
+      `/api/autopilots/${autopilotId}/triggers/${triggerId}/rotate-webhook-token`,
+      { method: "POST" },
+    );
   }
 
   // GitHub integration
