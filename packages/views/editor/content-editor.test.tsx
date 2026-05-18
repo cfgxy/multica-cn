@@ -177,7 +177,10 @@ describe("ContentEditor", () => {
     editorState.markdown = "same content";
     const { rerender } = render(<ContentEditor defaultValue="same content" />);
 
-    rerender(<ContentEditor defaultValue="same content" />);
+    // Different `defaultValue` string forces the effect to re-run (the dep
+    // array sees a new value), but the trailing whitespace normalises away
+    // via `trimEnd()`, so `setContent` must still short-circuit.
+    rerender(<ContentEditor defaultValue={"same content\n"} />);
 
     expect(mockSetContent).not.toHaveBeenCalled();
   });
