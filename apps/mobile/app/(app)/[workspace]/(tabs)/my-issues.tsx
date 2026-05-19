@@ -2,16 +2,13 @@
  * "My Issues" tab. Three scopes — assigned / created / agents — mirroring
  * web's `packages/views/my-issues/components/my-issues-page.tsx`.
  *
- * Visual baseline mirrors the inbox tab (apps/mobile/CLAUDE.md "Visual
- * alignment is baseline"): SafeAreaView + ScreenHeader + scroll body.
  * Issues are grouped by status using SectionList in `BOARD_STATUSES` order;
  * empty status sections are filtered out so the screen doesn't fill with
  * "(0)" headers.
  *
- * Status + Priority filters mirror web's MyIssuesHeader filter sub-menus
- * (packages/views/my-issues/components/my-issues-header.tsx). Filter state
- * lives in `useMyIssuesViewStore` and is cleared on workspace change to
- * mirror `useClearFiltersOnWorkspaceChange` in
+ * Status + Priority filters mirror web's MyIssuesHeader filter sub-menus.
+ * Filter state lives in `useMyIssuesViewStore` and is cleared on workspace
+ * change to mirror `useClearFiltersOnWorkspaceChange` in
  * packages/core/issues/stores/view-store.ts:273-284.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -21,7 +18,6 @@ import {
   SectionList,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
 import { router } from "expo-router";
 import Svg, { Line } from "react-native-svg";
@@ -33,7 +29,7 @@ import type {
 } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
-import { ScreenHeader } from "@/components/ui/screen-header";
+import { Header } from "@/components/ui/header";
 import { HeaderActions } from "@/components/ui/app-header-actions";
 import { StatusIcon } from "@/components/ui/status-icon";
 import { IssueRow } from "@/components/issue/issue-row";
@@ -117,8 +113,7 @@ export default function MyIssues() {
   );
 
   // When statusFilters is non-empty, intersect visible status order with it
-  // so hidden statuses don't render an empty section header. Mirrors
-  // packages/views/my-issues/components/my-issues-page.tsx:94-98.
+  // so hidden statuses don't render an empty section header.
   const sections = useMemo<IssueSection[]>(() => {
     if (filtered.length === 0) return [];
     const byStatus = new Map<IssueStatus, Issue[]>();
@@ -142,8 +137,8 @@ export default function MyIssues() {
     !isLoading && !error && filtered.length === 0;
 
   return (
-    <SafeAreaView className="flex-1 bg-background" edges={["top"]}>
-      <ScreenHeader title="My Issues" right={<HeaderActions />} />
+    <View className="flex-1 bg-background">
+      <Header title="My Issues" right={<HeaderActions />} />
       <ScopeTabs
         scope={scope}
         onChange={setScope}
@@ -173,7 +168,7 @@ export default function MyIssues() {
           <ActivityIndicator />
         </View>
       ) : error ? (
-        <View className="px-4 gap-3">
+        <View className="px-4 gap-3 pt-4">
           <Text className="text-sm text-destructive">
             Failed to load issues:{" "}
             {error instanceof Error ? error.message : "unknown error"}
@@ -231,7 +226,7 @@ export default function MyIssues() {
         }
         onClearFilters={() => useMyIssuesViewStore.getState().clearFilters()}
       />
-    </SafeAreaView>
+    </View>
   );
 }
 
@@ -245,7 +240,7 @@ function ScopeTabs({
   filterSlot?: React.ReactNode;
 }) {
   return (
-    <View className="flex-row items-center px-4 pb-2">
+    <View className="flex-row items-center px-4 pt-2 pb-2">
       <View className="flex-row gap-1 flex-1">
         {SCOPES.map((s) => {
           const active = s.value === scope;

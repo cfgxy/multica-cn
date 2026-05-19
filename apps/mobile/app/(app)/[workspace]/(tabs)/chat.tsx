@@ -2,9 +2,12 @@
  * Chat tab — single-screen IA.
  *
  * Layout:
- *   SafeAreaView ─ ChatHeader ─ (NoAgentBanner?) ─ ChatMessageList
- *                                                   └─ StatusPill
- *                                                   └─ ChatComposer
+ *   View ─ Header(center: ChatTitleButton, right: ChatSessionActions)
+ *        ─ (NoAgentBanner?)
+ *        ─ KeyboardAvoidingView ─ ChatMessageList
+ *                                ─ StatusPill
+ *                                ─ OfflineBanner
+ *                                ─ ChatComposer
  *
  * Session switching, agent selection, and session deletion all happen
  * inside this screen via Modal sheets — there is no `/chat/[id]` sub-route.
@@ -33,9 +36,7 @@ import {
   Platform,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import { useIsFocused } from "@react-navigation/native";
-import { router } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Agent,
@@ -67,7 +68,9 @@ import { useChatSessionRealtime } from "@/data/realtime/use-chat-session-realtim
 import { canAssignAgent } from "@/lib/can-assign-agent";
 import { useWorkspaceAgentAvailability } from "@/lib/workspace-agent-availability";
 import { useAgentPresence } from "@/lib/use-agent-presence";
-import { ChatHeader } from "@/components/chat/chat-header";
+import { Header } from "@/components/ui/header";
+import { ChatTitleButton } from "@/components/chat/chat-title-button";
+import { ChatSessionActions } from "@/components/chat/chat-session-actions";
 import { ChatMessageList } from "@/components/chat/chat-message-list";
 import { ChatComposer } from "@/components/chat/chat-composer";
 import { StatusPill } from "@/components/chat/status-pill";
@@ -79,7 +82,6 @@ import { OfflineBanner } from "@/components/chat/offline-banner";
 export default function ChatTab() {
   const qc = useQueryClient();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
-  const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const userId = useAuthStore((s) => s.user?.id);
 
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -94,26 +96,14 @@ export default function ChatTab() {
 
   // ── Auto-hydrate active session on first Chat tab entry ────────────────
   // Mobile-only deviation from web: web's chat-window opens to an empty
-  // state when no `activeSessionId` is persisted, because the sidebar
-  // SessionDropdown makes switching one-click cheap. On a phone, picking
-  // a session is 4 taps (header → sheet open → row → close), so an
-  // always-empty default is friction. Instead, when the user first sees
-  // the Chat tab in this workspace, jump straight to the most recent
-  // session (sessions are server-sorted by updated_at desc, so
-  // sessions[0] is "what they were last working on" 99% of the time).
-  //
-  // Hydration is a one-shot per workspace: once it runs, subsequent
-  // user intent (point + New, delete-active) is respected and never
-  // overwritten by this effect. ref resets when wsId changes so the
-  // next workspace gets its own first-entry hydration.
+  // state when no `activeSessionId` is persisted; on a phone, picking
+  // a session is 4 taps, so jump straight to the most recent session.
+  // Hydration is one-shot per workspace.
   const hydratedWsRef = useRef<string | null>(null);
   useEffect(() => {
     if (!wsId) return;
     if (hydratedWsRef.current === wsId) return;
     if (sessions.length === 0) {
-      // Workspace truly has no chat history — leave activeSessionId null
-      // so the empty-state ("Start the conversation") renders. Mark
-      // hydrated so we don't keep checking on every WS event.
       hydratedWsRef.current = wsId;
       return;
     }
@@ -147,8 +137,7 @@ export default function ChatTab() {
   );
 
   // Active agent: explicit selection wins; otherwise inherit from the
-  // active session; otherwise pick the first available agent so a fresh
-  // workspace lands on the right header rather than "Chat" placeholder.
+  // active session; otherwise pick the first available agent.
   const currentAgent: Agent | null = useMemo(() => {
     if (selectedAgentId) {
       return availableAgents.find((a) => a.id === selectedAgentId) ?? null;
@@ -160,9 +149,6 @@ export default function ChatTab() {
   }, [selectedAgentId, availableAgents, activeSession, agents]);
 
   const availability = useWorkspaceAgentAvailability();
-  // Current agent's runtime-driven presence — drives the OfflineBanner above
-  // the composer. `"loading"` collapses to `undefined` so the banner stays
-  // silent during cold fetch (avoids a 1s flash of speculative offline copy).
   const presenceDetail = useAgentPresence(wsId, currentAgent?.id);
   const presenceAvailability =
     presenceDetail === "loading" ? undefined : presenceDetail.availability;
@@ -177,27 +163,11 @@ export default function ChatTab() {
   const promoteNewDraft = useChatDraftsStore((s) => s.promoteNewDraft);
 
   // ── Realtime ───────────────────────────────────────────────────────────
-  // Per-record subscription for the active session. If the session is
-  // deleted by another client, drop the pointer so we land back on the
-  // new-chat blank state instead of a phantom view.
   useChatSessionRealtime(activeSessionId, () => {
     setActiveSessionId(null);
   });
 
   // ── Auto markRead while viewing a session with unread state ──────────
-  // Mirrors packages/views/chat/components/chat-window.tsx auto-markRead.
-  //
-  // Gate on tab focus: in React Navigation tab navigators, sibling tabs
-  // stay mounted in the background, so this effect re-fires for every WS
-  // chat:done arriving on the active session even when the user has
-  // switched to Inbox/My Issues. Without the focus check the badge clears
-  // itself behind the user's back. Web's equivalent gates on `isOpen` for
-  // the same reason.
-  //
-  // has_unread is the inner dedup signal: the optimistic patch in
-  // markRead flips it to false, so the effect won't re-fire until a new
-  // chat:done event flips it true again — at which point we DO want to
-  // mark it read again, because the user is still viewing the session.
   const isFocused = useIsFocused();
   const markRead = useMarkChatSessionRead();
   useEffect(() => {
@@ -212,8 +182,6 @@ export default function ChatTab() {
   const deleteSession = useDeleteChatSession();
 
   // ── Send burst ─────────────────────────────────────────────────────────
-  // Ensures a single in-flight createChatSession when the user fires
-  // multiple sends back-to-back on a new chat.
   const sessionPromiseRef = useRef<Promise<string | null> | null>(null);
 
   const ensureSession = useCallback(
@@ -247,8 +215,6 @@ export default function ChatTab() {
       const sessionId = await ensureSession(content);
       if (!sessionId) return;
 
-      // Optimistic burst — every visual cue lands before the HTTP
-      // roundtrip so the user sees their message + StatusPill instantly.
       const sentAt = new Date().toISOString();
       const optimistic: ChatMessage = {
         id: `optimistic-${Date.now()}`,
@@ -258,14 +224,9 @@ export default function ChatTab() {
         task_id: null,
         created_at: sentAt,
       };
-      // Seed messages cache BEFORE flipping activeSessionId so the
-      // useQuery subscription doesn't render an empty/loading state for
-      // one frame.
       qc.setQueryData<ChatMessage[]>(chatKeys.messages(sessionId), (old) =>
         old ? [...old, optimistic] : [optimistic],
       );
-      // Seed pendingTask with a temporary id so StatusPill mounts and
-      // starts ticking immediately. The real task_id arrives below.
       qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(sessionId), {
         task_id: `optimistic-${optimistic.id}`,
         status: "queued",
@@ -278,25 +239,18 @@ export default function ChatTab() {
 
       try {
         const result = await api.sendChatMessage(sessionId, content);
-        // Replace the temporary task_id with the server's authoritative
-        // one + snap created_at so the StatusPill timer doesn't jump.
         qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(sessionId), {
           task_id: result.task_id,
           status: "queued",
           created_at: result.created_at,
         });
-        // Refetch messages to pick up the persisted user message with its
-        // real id (replacing the `optimistic-*` placeholder).
         qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
         clearDraft(sessionId);
       } catch (err) {
-        // Roll back the optimistic message + pendingTask seed.
         qc.setQueryData<ChatMessage[]>(chatKeys.messages(sessionId), (old) =>
           old ? old.filter((m) => m.id !== optimistic.id) : old,
         );
         qc.setQueryData(chatKeys.pendingTask(sessionId), {});
-        // Re-throw so ChatComposer restores the user's text into the
-        // input (it catches and calls onChangeText to repopulate).
         throw err;
       }
     },
@@ -313,10 +267,6 @@ export default function ChatTab() {
   // ── Cancel in-flight ───────────────────────────────────────────────────
   const handleStop = useCallback(() => {
     if (!pendingTask?.task_id || !activeSessionId) return;
-    // Optimistic clear — pill disappears immediately. WS task:cancelled
-    // (eventual) will confirm. If the cancel POST fails because the task
-    // already finished, the success path's WS chat:done already wrote
-    // the assistant message and there's nothing to recover.
     qc.setQueryData(chatKeys.pendingTask(activeSessionId), {});
     void api.cancelTaskById(pendingTask.task_id).catch(() => {
       // Silent — task may have already terminated server-side.
@@ -325,8 +275,6 @@ export default function ChatTab() {
 
   // ── Header / sheet actions ─────────────────────────────────────────────
   const handleNewChat = useCallback(() => {
-    // Multi-agent → ask the user. Single-agent or none → just clear the
-    // active session and let the empty state guide them.
     if (availableAgents.length > 1) {
       setAgentPickerOpen(true);
       return;
@@ -341,9 +289,6 @@ export default function ChatTab() {
   }, []);
 
   const handleSelectSession = useCallback((session: ChatSession) => {
-    // Clearing selectedAgentId lets currentAgent inherit from the
-    // session's agent_id (which may differ from what the picker last
-    // showed).
     setSelectedAgentId(null);
     setActiveSessionId(session.id);
   }, []);
@@ -391,15 +336,21 @@ export default function ChatTab() {
         : undefined;
 
   return (
-    <SafeAreaView className="flex-1 bg-background" edges={["top"]}>
-      <ChatHeader
-        currentSession={activeSession}
-        currentAgent={currentAgent}
-        onTitlePress={() => setSessionSheetOpen(true)}
-        onMorePress={handleDeleteActive}
-        onNewPress={handleNewChat}
-        onMenuPress={
-          wsSlug ? () => router.push(`/${wsSlug}/menu`) : undefined
+    <View className="flex-1 bg-background">
+      <Header
+        center={
+          <ChatTitleButton
+            currentSession={activeSession}
+            currentAgent={currentAgent}
+            onPress={() => setSessionSheetOpen(true)}
+          />
+        }
+        right={
+          <ChatSessionActions
+            showMore={!!activeSession}
+            onMorePress={handleDeleteActive}
+            onNewPress={handleNewChat}
+          />
         }
       />
       {availability === "none" ? <NoAgentBanner /> : null}
@@ -407,18 +358,6 @@ export default function ChatTab() {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         className="flex-1"
       >
-        {/* NO wrapper around the message list. Mirrors web's chat-message-
-            list.tsx which mounts a bare `<div className="flex-1 overflow-
-            y-auto">` directly inside the chat-window flex column.
-            "Tap empty area → dismiss keyboard" is provided by the
-            FlatList itself via `keyboardShouldPersistTaps="handled"`
-            (taps not handled by a child bubble dismiss the keyboard,
-            per RN docs). "Drag list → dismiss keyboard" is provided
-            via `keyboardDismissMode="interactive"`. Wrapping with any
-            Touchable* (Pressable / TouchableWithoutFeedback / etc.)
-            inserts a touch-responder claim above the FlatList that
-            kills its pan gesture on iOS — that's what made the list
-            unscrollable. */}
         <ChatMessageList messages={messages} loading={messagesLoading} />
         <StatusPill pendingTask={pendingTask} onStop={handleStop} />
         <OfflineBanner
@@ -452,6 +391,6 @@ export default function ChatTab() {
         onPick={handlePickAgent}
         onClose={() => setAgentPickerOpen(false)}
       />
-    </SafeAreaView>
+    </View>
   );
 }

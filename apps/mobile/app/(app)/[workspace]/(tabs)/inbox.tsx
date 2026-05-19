@@ -4,17 +4,15 @@ import {
   ActivityIndicator,
   Alert,
   FlatList,
-  Pressable,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { router } from "expo-router";
-import { Ionicons } from "@expo/vector-icons";
 import type { InboxItem } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
-import { ScreenHeader } from "@/components/ui/screen-header";
+import { Header } from "@/components/ui/header";
+import { IconButton } from "@/components/ui/icon-button";
 import { HeaderActions } from "@/components/ui/app-header-actions";
 import { SwipeableInboxRow } from "@/components/inbox/swipeable-inbox-row";
 import { inboxListOptions } from "@/data/queries/inbox";
@@ -54,23 +52,13 @@ export default function Inbox() {
       // for the native stack transition. The mutation's own onMutate writes
       // optimistically too, but it awaits cancelQueries first — that one
       // microtask is enough for iOS to freeze the row in its unread state
-      // inside the transition snapshot. Mark-read mutation still runs to
-      // sync with the server and to fire onSettled invalidate.
+      // inside the transition snapshot.
       qc.setQueryData<InboxItem[]>(["inbox", wsId], (old) =>
         old?.map((i) => (i.id === item.id ? { ...i, read: true } : i)),
       );
       markRead.mutate(item.id);
     }
     if (item.issue_id && wsSlug) {
-      // `highlight`: the target comment id (only present on new_comment /
-      // mentioned / reaction_added notifications — backend populates
-      // details.comment_id there). When undefined, expo-router strips the
-      // key cleanly (no "undefined" string).
-      //
-      // `h`: nonce forcing the param tuple to differ each tap, so re-tapping
-      // the same inbox row from a back-navigation re-fires the highlight
-      // effect on the issue screen (otherwise React sees identical params
-      // and skips the re-render).
       router.push({
         pathname: "/[workspace]/issue/[id]",
         params: {
@@ -85,8 +73,7 @@ export default function Inbox() {
 
   // Trailing batch menu — mirrors desktop's dropdown
   // (packages/views/inbox/components/inbox-page.tsx:220-235). "Archive all"
-  // is destructive so it gets the iOS red treatment + Alert confirm; the
-  // narrower variants fire directly because they're already filtered.
+  // is destructive so it gets the iOS red treatment + Alert confirm.
   const onPressMenu = () => {
     const options = [
       "Cancel",
@@ -123,12 +110,16 @@ export default function Inbox() {
   };
 
   return (
-    <SafeAreaView className="flex-1 bg-background" edges={["top"]}>
-      <ScreenHeader
+    <View className="flex-1 bg-background">
+      <Header
         title="Inbox"
         right={
           <>
-            <InboxMenuButton onPress={onPressMenu} />
+            <IconButton
+              name="ellipsis-horizontal"
+              onPress={onPressMenu}
+              accessibilityLabel="Inbox actions"
+            />
             <HeaderActions />
           </>
         }
@@ -138,7 +129,7 @@ export default function Inbox() {
           <ActivityIndicator />
         </View>
       ) : error ? (
-        <View className="px-4 gap-3">
+        <View className="px-4 gap-3 pt-4">
           <Text className="text-sm text-destructive">
             Failed to load inbox:{" "}
             {error instanceof Error ? error.message : "unknown error"}
@@ -172,21 +163,6 @@ export default function Inbox() {
           onRefresh={refetch}
         />
       )}
-    </SafeAreaView>
-  );
-}
-
-const HIT_SLOP = { top: 8, right: 8, bottom: 8, left: 8 } as const;
-
-function InboxMenuButton({ onPress }: { onPress: () => void }) {
-  return (
-    <Pressable
-      onPress={onPress}
-      hitSlop={HIT_SLOP}
-      className="size-9 items-center justify-center rounded-full active:bg-secondary"
-      accessibilityLabel="Inbox actions"
-    >
-      <Ionicons name="ellipsis-horizontal" size={20} color="#3f3f46" />
-    </Pressable>
+    </View>
   );
 }

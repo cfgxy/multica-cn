@@ -3,20 +3,14 @@
  * Provides two global actions on the right: search and create-issue.
  *
  * The workspace menu (global nav, workspace switcher, settings) is reached
- * via the "More" tab in the bottom bar — see (tabs)/_layout.tsx, which
- * intercepts the tabPress and presents /[workspace]/menu as an iOS
- * formSheet. Header doesn't duplicate that entry to keep the strip clean.
+ * via the "More" tab in the bottom bar.
  *
  * Tab-specific actions (e.g. My Issues filter) MUST NOT live here — they
  * mix scope levels with global actions and would clutter the strip.
  */
-import { Pressable } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
 import { router } from "expo-router";
+import { IconButton } from "@/components/ui/icon-button";
 import { useWorkspaceStore } from "@/data/workspace-store";
-
-const ICON_COLOR = "#3f3f46";
-const HIT = { top: 8, right: 8, bottom: 8, left: 8 } as const;
 
 export function HeaderActions() {
   const slug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
@@ -30,22 +24,17 @@ export function HeaderActions() {
 
   return (
     <>
-      <Pressable
+      <IconButton
+        name="search"
         onPress={onSearch}
-        hitSlop={HIT}
-        className="size-9 items-center justify-center rounded-full active:bg-secondary"
         accessibilityLabel="Search"
-      >
-        <Ionicons name="search" size={20} color={ICON_COLOR} />
-      </Pressable>
-      <Pressable
+      />
+      <IconButton
+        name="add"
+        iconSize={24}
         onPress={onCreate}
-        hitSlop={HIT}
-        className="size-9 items-center justify-center rounded-full active:bg-secondary"
         accessibilityLabel="New issue"
-      >
-        <Ionicons name="add" size={24} color={ICON_COLOR} />
-      </Pressable>
+      />
     </>
   );
 }

@@ -20,21 +20,19 @@
  * are deferred — see plan; v1 ships with the same filter set as My Issues
  * for consistency and code reuse.
  */
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   Pressable,
   SectionList,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import { useQuery } from "@tanstack/react-query";
-import { router } from "expo-router";
+import { router, useNavigation } from "expo-router";
 import Svg, { Line } from "react-native-svg";
 import type { Issue, IssuePriority, IssueStatus } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
-import { ScreenHeader } from "@/components/ui/screen-header";
 import { StatusIcon } from "@/components/ui/status-icon";
 import { IssueRow } from "@/components/issue/issue-row";
 import { IssueFilterSheet } from "@/components/issue/issue-filter-sheet";
@@ -51,6 +49,7 @@ import { filterIssues } from "@/lib/filter-issues";
 type IssueSection = { status: IssueStatus; data: Issue[] };
 
 export default function IssuesPage() {
+  const navigation = useNavigation();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
 
@@ -107,17 +106,22 @@ export default function IssuesPage() {
   const showEmptyState =
     !isLoading && !error && filtered.length === 0;
 
+  // Native Stack header (registered in [workspace]/_layout.tsx as
+  // "more/issues" with title: "Issues") owns the chrome — we just feed it
+  // the filter button via headerRight.
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerRight: () => (
+        <FilterButton
+          hasActive={hasActiveFilters}
+          onPress={() => setSheetOpen(true)}
+        />
+      ),
+    });
+  });
+
   return (
-    <SafeAreaView className="flex-1 bg-background" edges={["bottom"]}>
-      <ScreenHeader
-        title="Issues"
-        right={
-          <FilterButton
-            hasActive={hasActiveFilters}
-            onPress={() => setSheetOpen(true)}
-          />
-        }
-      />
+    <View className="flex-1 bg-background">
       {hasActiveFilters ? (
         <ActiveFilterChips
           statusFilters={statusFilters}
@@ -193,7 +197,7 @@ export default function IssuesPage() {
         }
         onClearFilters={() => useIssuesViewStore.getState().clearFilters()}
       />
-    </SafeAreaView>
+    </View>
   );
 }
 
