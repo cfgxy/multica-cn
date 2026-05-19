@@ -31,12 +31,13 @@ import {
   Pressable,
   ScrollView,
   View,
-  useColorScheme,
 } from "react-native";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
 import Svg, { Path, Rect } from "react-native-svg";
 import { Text } from "@/components/ui/text";
+import { THEME } from "@/lib/theme";
+import { useColorScheme } from "@/lib/use-color-scheme";
 import {
   CODE_BLOCK_CONTAINER_CLASS,
   CODE_BLOCK_LANG_LABEL_CLASS,
@@ -56,8 +57,8 @@ interface Props {
 }
 
 export function CodeBlock({ code, lang }: Props) {
-  const scheme = useColorScheme();
-  const theme = scheme === "dark" ? SHIKI_THEME_DARK : SHIKI_THEME_LIGHT;
+  const { isDarkColorScheme } = useColorScheme();
+  const theme = isDarkColorScheme ? SHIKI_THEME_DARK : SHIKI_THEME_LIGHT;
   const resolvedLang = resolveLang(lang);
   const [lines, setLines] = useState<HighlightedLine[] | null>(null);
 
@@ -118,6 +119,8 @@ function HighlightedCode({ lines }: { lines: HighlightedLine[] }) {
 }
 
 function CodeBlockHeader({ code, lang }: Props) {
+  const { isDarkColorScheme } = useColorScheme();
+  const t = isDarkColorScheme ? THEME.dark : THEME.light;
   const [copied, setCopied] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -155,20 +158,21 @@ function CodeBlockHeader({ code, lang }: Props) {
         accessibilityRole="button"
         accessibilityLabel={copied ? "Code copied" : "Copy code"}
       >
-        {copied ? <CheckIcon /> : <CopyIcon />}
+        {copied ? (
+          <CheckIcon color={t.success} />
+        ) : (
+          <CopyIcon color={t.mutedForeground} />
+        )}
       </Pressable>
     </View>
   );
 }
 
-// Inline SVG icons — match the project convention (see status-icon.tsx,
-// priority-icon.tsx): hex stroke values mapped to Tailwind tokens by comment.
-// react-native-svg primitives don't accept className via NativeWind, so the
-// theme tie-in lives in the comment + hex pair.
-const ICON_MUTED = "#71717a"; // muted-foreground
-const ICON_SUCCESS = "#22c55e"; // success
+// Inline SVG icons. react-native-svg primitives don't accept className via
+// NativeWind, so colors are passed in as props from the parent — which
+// reads them from `THEME[scheme]` so light/dark tracks the app theme.
 
-function CopyIcon() {
+function CopyIcon({ color }: { color: string }) {
   return (
     <Svg width={14} height={14} viewBox="0 0 16 16" fill="none">
       <Rect
@@ -177,12 +181,12 @@ function CopyIcon() {
         width={9}
         height={9}
         rx={1.5}
-        stroke={ICON_MUTED}
+        stroke={color}
         strokeWidth={1.4}
       />
       <Path
         d="M11 4.5V3.5A1.5 1.5 0 0 0 9.5 2H3.5A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11h1"
-        stroke={ICON_MUTED}
+        stroke={color}
         strokeWidth={1.4}
         strokeLinecap="round"
       />
@@ -190,12 +194,12 @@ function CopyIcon() {
   );
 }
 
-function CheckIcon() {
+function CheckIcon({ color }: { color: string }) {
   return (
     <Svg width={14} height={14} viewBox="0 0 16 16" fill="none">
       <Path
         d="M3.5 8.5L6.5 11.5L12.5 5"
-        stroke={ICON_SUCCESS}
+        stroke={color}
         strokeWidth={1.6}
         strokeLinecap="round"
         strokeLinejoin="round"

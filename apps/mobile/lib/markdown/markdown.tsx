@@ -43,7 +43,7 @@ import { router } from "expo-router";
 import { EnrichedMarkdownText } from "react-native-enriched-markdown";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { preprocessMobileMarkdown } from "./preprocess";
-import { MARKDOWN_STYLE } from "./markdown-style";
+import { useMarkdownStyle } from "./markdown-style";
 import { splitMarkdown } from "./split-markdown";
 import { CodeBlock } from "./code-block";
 import { MarkdownImage } from "./markdown-image";
@@ -54,6 +54,7 @@ interface Props {
 
 export function Markdown({ content }: Props) {
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
+  const markdownStyle = useMarkdownStyle();
 
   const segments = useMemo(() => {
     const processed = preprocessMobileMarkdown(content);
@@ -104,7 +105,7 @@ export function Markdown({ content }: Props) {
                 key={i}
                 flavor="github"
                 markdown={seg.content}
-                markdownStyle={MARKDOWN_STYLE}
+                markdownStyle={markdownStyle}
                 onLinkPress={onLinkPress}
               />
             );

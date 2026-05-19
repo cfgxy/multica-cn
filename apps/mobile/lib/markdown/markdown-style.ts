@@ -1,170 +1,213 @@
 /**
- * `markdownStyle` prop value for `EnrichedMarkdownText`. Mirrors the design
- * tokens in `apps/mobile/tailwind.config.js` — single source of truth for
- * colors lives there; this file is the bridge from those Tailwind tokens
- * to the imperative style object md4c expects.
+ * `markdownStyle` prop value for `EnrichedMarkdownText`. Driven by RNR
+ * theme tokens (`apps/mobile/lib/theme.ts`, mirroring CSS variables in
+ * `apps/mobile/global.css`) so colors track light/dark automatically.
+ *
+ * Why a hook instead of a static object: enriched-markdown is a native
+ * (md4c → NSAttributedString / Spannable) layer that only accepts an
+ * imperative style object — it can NOT consume NativeWind classNames.
+ * The hook is the bridge: it reads the current colorScheme via the same
+ * `useColorScheme` everything else in the app uses, and rebuilds the
+ * style object whenever the theme flips.
  *
  * Sizing follows the mobile typography scale documented in
  * `apps/mobile/docs/markdown-renderer-research.md` → "Mobile typography
  * scale" (calibrated against Apple HIG; one tier below shadcn web defaults
  * because markdown headings inside an issue card are structural, not
- * screen titles).
- *
- * Dark mode: mobile is currently single-theme (light tokens only in
- * tailwind.config.js). When dark tokens land, branch on `useColorScheme()`
- * inside `markdown.tsx` and pick the right object.
+ * screen titles). HIG values are encoded in `MD_FONT` / `MD_LINE` /
+ * `MD_GAP` constants — these are NOT RNR tokens to replace; they are
+ * mobile-specific design constants validated by the 2026-05-09 inline-
+ * code incident.
  */
+import { useMemo } from "react";
+import { THEME } from "@/lib/theme";
+import { useColorScheme } from "@/lib/use-color-scheme";
 
-// Tailwind tokens (kept in sync by hand with apps/mobile/tailwind.config.js)
-const FOREGROUND = "#1f1f23";
-const MUTED_FOREGROUND = "#71717a";
-const MUTED = "#f4f4f5";
-const BORDER = "#e4e4e7";
-const BRAND = "#4571e0";
+/**
+ * Typography scale — Apple HIG-calibrated, one tier below shadcn web.
+ * See `docs/markdown-renderer-research.md` "Mobile typography scale".
+ */
+const MD_FONT = {
+  body: 14,
+  h1: 20,
+  h2: 18,
+  h3: 16,
+  h4: 14,
+  h5: 14,
+  h6: 12,
+  codeBlock: 13,
+} as const;
 
-export const MARKDOWN_STYLE = {
-  // Body / paragraph — text-sm + leading-6 ≈ 1.71. Generous for CJK.
-  paragraph: {
-    fontSize: 14,
-    lineHeight: 24,
-    color: FOREGROUND,
-    marginBottom: 12,
-  },
-  // Headings — Apple HIG-calibrated, one tier below shadcn web defaults.
-  h1: {
-    fontSize: 20,
-    fontWeight: "700" as const,
-    color: FOREGROUND,
-    marginTop: 16,
-    marginBottom: 8,
-  },
-  h2: {
-    fontSize: 18,
-    fontWeight: "600" as const,
-    color: FOREGROUND,
-    marginTop: 16,
-    marginBottom: 8,
-  },
-  h3: {
-    fontSize: 16,
-    fontWeight: "600" as const,
-    color: FOREGROUND,
-    marginTop: 12,
-    marginBottom: 6,
-  },
-  h4: {
-    fontSize: 14,
-    fontWeight: "600" as const,
-    color: FOREGROUND,
-    marginTop: 12,
-    marginBottom: 6,
-  },
-  h5: {
-    fontSize: 14,
-    fontWeight: "600" as const,
-    color: FOREGROUND,
-    marginTop: 12,
-    marginBottom: 6,
-  },
-  h6: {
-    fontSize: 12,
-    fontWeight: "600" as const,
-    color: MUTED_FOREGROUND,
-    marginTop: 12,
-    marginBottom: 6,
-  },
-  strong: {
-    // md4c restricts inline `fontWeight` to "bold" | "normal" — it adds the
-    // bold trait on top of the inherited block font. We can't pin a 600
-    // weight here the way we can on headings.
-    fontWeight: "bold" as const,
-  },
-  link: {
-    color: BRAND,
-    underline: true,
-  },
-  // Inline code — bg + monospace. md4c renders this natively into
-  // NSAttributedString / Spannable attributes (no RN nested-Text bugs).
-  //
-  // Calibrated against GitHub Primer's `bgColor-neutral-muted` palette
-  // but at LOWER alpha than the web token (12% instead of 20%). Reason:
-  // enriched-markdown paints inline `backgroundColor` over the full
-  // NSAttributedString line height (Cocoa's default), and with our
-  // CJK-friendly paragraph leading (lineHeight 24 on fontSize 14, ratio
-  // 1.71) the painted rect ends up ~6pt taller than the glyphs — at
-  // GitHub web's 20% alpha the chip reads as a heavy block. Web hides
-  // this with `padding .2em .4em` + `border-radius 6px` + 85% font size;
-  // enriched supports none of those for inline code, so the only knob
-  // left is alpha. 12% lands close to GitHub iOS / Linear iOS levels.
-  //
-  // No `fontSize` override → inherits the paragraph 14pt. Web GitHub
-  // uses 0.85em, but at 14pt that drops to ~12pt which hurts mobile
-  // legibility; Linear iOS, Notion mobile, and GitHub iOS all keep
-  // inline code at body size for the same reason.
-  //
-  // No `borderColor` — the API supports it but has no `borderWidth`,
-  // and a translucent fill with a hairline border reads grubby. GitHub,
-  // Slack, Linear, Notion all skip the border on inline code.
-  // (`padding` / `borderRadius` aren't supported on inline code at all
-  // in enriched-markdown.)
-  code: {
-    color: FOREGROUND,
-    backgroundColor: "#afb8c11f",
-  },
-  // Block code — bigger box, muted background, mono font.
-  codeBlock: {
-    fontSize: 13,
-    color: FOREGROUND,
-    backgroundColor: MUTED,
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 12,
-  },
-  // Blockquote — subtle left bar in muted-foreground.
-  blockquote: {
-    borderColor: BORDER,
-    borderWidth: 2,
-    backgroundColor: "transparent",
-    marginBottom: 12,
-  },
-  // List — bullets in muted-foreground so they don't compete with content.
-  list: {
-    fontSize: 14,
-    bulletColor: MUTED_FOREGROUND,
-    bulletSize: 4,
-    markerColor: MUTED_FOREGROUND,
-    gapWidth: 8,
-    marginLeft: 16,
-  },
-  image: {
-    borderRadius: 8,
-    marginBottom: 12,
-  },
-  taskList: {
-    checkedColor: BRAND,
-    borderColor: BORDER,
-    checkmarkColor: "#ffffff",
-    checkboxSize: 16,
-  },
-  // GFM tables.
-  table: {
-    fontSize: 14,
-    borderColor: BORDER,
-    borderRadius: 6,
-    headerBackgroundColor: MUTED,
-    cellPaddingHorizontal: 10,
-    cellPaddingVertical: 6,
-  },
-  // LaTeX math (free with this engine — was V3 deferred under the walker).
-  math: {
-    fontSize: 16,
-    color: FOREGROUND,
-    backgroundColor: MUTED,
-    padding: 12,
-    marginBottom: 12,
-    textAlign: "center" as const,
-  },
-  inlineMath: {
-    color: FOREGROUND,
-  },
-};
+const MD_LINE = {
+  body: 24, // text-sm + leading-6 ≈ 1.71, generous for CJK
+} as const;
+
+const MD_GAP = {
+  paragraph: 12,
+  headingTopLarge: 16,
+  headingTopSmall: 12,
+  headingBottomLarge: 8,
+  headingBottomSmall: 6,
+} as const;
+
+/**
+ * Inline code background — translucent neutral overlay computed against
+ * the current `foreground` so it reads consistently in light AND dark.
+ * Web's chip uses a 20% alpha; mobile uses 12% because enriched paints
+ * inline `backgroundColor` over the full NSAttributedString line height
+ * (Cocoa default) and our CJK-friendly leading (24 on 14 = 1.71) makes
+ * the painted rect ~6pt taller than the glyphs. At 20% alpha the chip
+ * reads as a heavy block; 12% lands close to GitHub iOS / Linear iOS.
+ *
+ * We construct via hex+alpha suffix instead of reading code-surface
+ * because:
+ *   1. code-surface is a SOLID color for fenced code blocks — semantically
+ *      different from the translucent inline overlay.
+ *   2. The translucency lets inline code work over any background
+ *      (paragraph bg, blockquote bg, future colored callouts) without
+ *      needing per-context tuning.
+ */
+function inlineCodeBg(scheme: "light" | "dark"): string {
+  // Neutral mid-gray with 12% alpha. Tracks scheme: a slightly lighter
+  // shade in dark mode so the overlay is visible against deep backgrounds.
+  return scheme === "dark" ? "#9ca3af1f" : "#afb8c11f";
+}
+
+export function useMarkdownStyle() {
+  const { isDarkColorScheme } = useColorScheme();
+  const scheme = isDarkColorScheme ? "dark" : "light";
+  const t = isDarkColorScheme ? THEME.dark : THEME.light;
+
+  return useMemo(
+    () => ({
+      // Body / paragraph — text-sm + leading-6 ≈ 1.71. Generous for CJK.
+      paragraph: {
+        fontSize: MD_FONT.body,
+        lineHeight: MD_LINE.body,
+        color: t.foreground,
+        marginBottom: MD_GAP.paragraph,
+      },
+      // Headings — Apple HIG-calibrated, one tier below shadcn web defaults.
+      h1: {
+        fontSize: MD_FONT.h1,
+        fontWeight: "700" as const,
+        color: t.foreground,
+        marginTop: MD_GAP.headingTopLarge,
+        marginBottom: MD_GAP.headingBottomLarge,
+      },
+      h2: {
+        fontSize: MD_FONT.h2,
+        fontWeight: "600" as const,
+        color: t.foreground,
+        marginTop: MD_GAP.headingTopLarge,
+        marginBottom: MD_GAP.headingBottomLarge,
+      },
+      h3: {
+        fontSize: MD_FONT.h3,
+        fontWeight: "600" as const,
+        color: t.foreground,
+        marginTop: MD_GAP.headingTopSmall,
+        marginBottom: MD_GAP.headingBottomSmall,
+      },
+      h4: {
+        fontSize: MD_FONT.h4,
+        fontWeight: "600" as const,
+        color: t.foreground,
+        marginTop: MD_GAP.headingTopSmall,
+        marginBottom: MD_GAP.headingBottomSmall,
+      },
+      h5: {
+        fontSize: MD_FONT.h5,
+        fontWeight: "600" as const,
+        color: t.foreground,
+        marginTop: MD_GAP.headingTopSmall,
+        marginBottom: MD_GAP.headingBottomSmall,
+      },
+      h6: {
+        fontSize: MD_FONT.h6,
+        fontWeight: "600" as const,
+        color: t.mutedForeground,
+        marginTop: MD_GAP.headingTopSmall,
+        marginBottom: MD_GAP.headingBottomSmall,
+      },
+      strong: {
+        // md4c restricts inline `fontWeight` to "bold" | "normal" — it adds
+        // the bold trait on top of the inherited block font. We can't pin
+        // a 600 weight here the way we can on headings.
+        fontWeight: "bold" as const,
+      },
+      link: {
+        color: t.brand,
+        underline: true,
+      },
+      // Inline code — bg + monospace. md4c renders this natively into
+      // NSAttributedString / Spannable attributes (no RN nested-Text bugs).
+      // No fontSize / border / padding overrides — see `inlineCodeBg`
+      // docstring for the alpha rationale and the 2026-05-09 incident.
+      code: {
+        color: t.foreground,
+        backgroundColor: inlineCodeBg(scheme),
+      },
+      // Block code — bigger box, muted background, mono font. (When the
+      // splitter detects a fenced code block it routes to the in-house
+      // `CodeBlock` component instead — this style is the fallback for
+      // any code that stays inside the enriched prose stream.)
+      codeBlock: {
+        fontSize: MD_FONT.codeBlock,
+        color: t.foreground,
+        backgroundColor: t.muted,
+        padding: 12,
+        borderRadius: 8,
+        marginBottom: MD_GAP.paragraph,
+      },
+      // Blockquote — subtle left bar in border tone.
+      blockquote: {
+        borderColor: t.border,
+        borderWidth: 2,
+        backgroundColor: "transparent",
+        marginBottom: MD_GAP.paragraph,
+      },
+      // List — bullets in muted-foreground so they don't compete with content.
+      list: {
+        fontSize: MD_FONT.body,
+        bulletColor: t.mutedForeground,
+        bulletSize: 4,
+        markerColor: t.mutedForeground,
+        gapWidth: 8,
+        marginLeft: 16,
+      },
+      image: {
+        borderRadius: 8,
+        marginBottom: MD_GAP.paragraph,
+      },
+      taskList: {
+        checkedColor: t.brand,
+        borderColor: t.border,
+        checkmarkColor: t.brandForeground,
+        checkboxSize: 16,
+      },
+      // GFM tables.
+      table: {
+        fontSize: MD_FONT.body,
+        borderColor: t.border,
+        borderRadius: 6,
+        headerBackgroundColor: t.muted,
+        cellPaddingHorizontal: 10,
+        cellPaddingVertical: 6,
+      },
+      // LaTeX math (free with this engine — was V3 deferred under the walker).
+      math: {
+        fontSize: 16,
+        color: t.foreground,
+        backgroundColor: t.muted,
+        padding: 12,
+        marginBottom: MD_GAP.paragraph,
+        textAlign: "center" as const,
+      },
+      inlineMath: {
+        color: t.foreground,
+      },
+    }),
+    [t, scheme],
+  );
+}
