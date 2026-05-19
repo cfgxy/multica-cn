@@ -193,11 +193,37 @@ Each hook registers a single `ws.onReconnect(cb)` that invalidates **only the qu
 
 | Hook | Invalidates on reconnect |
 |---|---|
-| `useInboxRealtime` | `["inbox", wsId]` |
+| `useInboxRealtime` | `inboxKeys.list(wsId)` |
 | `useMyIssuesRealtime` | `issueKeys.myAll(wsId)` |
 | `useIssueRealtime(id)` | `issueKeys.detail(wsId, id)` + `issueKeys.timeline(wsId, id)` |
 
 No global "invalidate everything on reconnect" sweep. The fanout would be every screen the user has ever visited in this session refetching simultaneously — wasteful on cellular and prone to rate-limiting the server in low-signal areas where reconnects happen frequently.
+
+### Cross-cutting cache patches across features
+
+Some events legitimately need to mutate a foreign feature's cache. The
+canonical example: `issue:updated` changing an issue's status must also
+update the StatusIcon shown on the matching inbox row, and `issue:deleted`
+must strip every inbox row pointing at the dead issue.
+
+The pattern:
+
+1. **The feature whose cache is being patched owns the updater.** Example:
+   `apps/mobile/data/realtime/inbox-ws-updaters.ts` exports
+   `patchInboxIssueStatus` and `dropInboxItemsByIssue` — they live with
+   inbox, not with issues, because they read `inboxKeys.list(wsId)`.
+2. **That feature's realtime hook subscribes to the foreign event.**
+   `use-inbox-realtime.ts` subscribes to `issue:updated` and `issue:deleted`
+   alongside the `inbox:*` events. The issue-realtime hook does NOT know
+   that inbox cares.
+3. **Mirror web's wiring.** Web's `packages/core/inbox/ws-updaters.ts` has
+   the same handlers; mobile copies the design. Behavioral parity hazard:
+   without these the mobile inbox row keeps showing the prior status (or
+   404s on tap if the issue is gone) while web users see the change live.
+
+If you find yourself reaching across features in `use-issues-realtime` to
+patch something else, you have the inversion: move the updater to the
+patched feature and subscribe there.
 
 ### Adding new event coverage — recipe
 
@@ -209,6 +235,144 @@ No global "invalidate everything on reconnect" sweep. The fanout would be every 
 6. **Verify cross-client.** Open the affected screen on mobile, change the same record from a second client (web or another device), confirm mobile updates within ~500ms without pull-to-refresh.
 
 If a new event has no consumer on mobile (e.g., `subscriber:added` when mobile doesn't render subscriber lists yet), **don't subscribe**. Mounting a listener with no UI consumer adds CPU on every fire for zero user benefit.
+
+## Data layer helpers (use these — don't recreate them)
+
+Common boilerplate is wrapped. New code that reinvents these helpers is a
+review-block, both because it makes the codebase inconsistent AND because
+the helpers encode subtle correctness rules (signal forwarding, schema
+fallback, sync-before-await ordering, type-safe payloads).
+
+### Three rails that every feature must follow
+
+1. **Logic mirrors web/desktop, only interaction is mobile-original.**
+   Mobile is the *consumer* of the same server contract — endpoints,
+   request bodies, response shapes, optimistic patch semantics, cache key
+   prefix shapes all match web verbatim. Before adding any new feature,
+   grep `packages/core/<feature>/{queries,mutations,ws-updaters}.ts` and
+   `packages/core/api/client.ts` for the existing pattern and mirror it.
+   UI / interaction can diverge freely (per "Behavioral parity" section
+   above), but the data contract may not.
+
+2. **Use the existing components — no new primitives.** Walk the
+   `iOS native > RNR > discuss` waterfall in §UI components. If RNR ships
+   it, `npx @react-native-reusables/cli@latest add <name>`. If iOS ships
+   it (Alert / ActionSheetIOS / Haptics / share / picker), use it directly.
+   If neither has it AND it's a single-screen need, inline compose with
+   `<Pressable>` + `<Text>` + tokens. **Do NOT create a new generic
+   primitive in `components/ui/` for one or two callers** — the migration
+   doc lists "21 hand-written components" as exactly the trap we're
+   escaping. Threshold for a new primitive is three callers AND no
+   RNR/iOS-native alternative.
+
+3. **Use the wrapped request / WS layer.** See the helper map below.
+
+### API client: `fetchValidated` + `fetchValidatedWith`
+
+`apps/mobile/data/api.ts` exposes two private helpers on `ApiClient` that
+collapse the fetch + parseWithFallback envelope. **Every new read-side
+method that returns a typed body must use them.**
+
+| Helper | When to use | Shape |
+|---|---|---|
+| `this.fetchValidated(path, schema, fallback, opts?)` | GET endpoints | One-liner method body — see `getMe`, `listInbox`, `getNotificationPreferences` |
+| `this.fetchValidatedWith(path, schema, fallback, init, opts?)` | Any HTTP method (PATCH / PUT / POST) whose response is consumed | Carries the body via `init.body` + method; signal forwarding handled |
+| `this.fetch<T>(path, init?)` directly | Writes whose response is `{ count }` / `void` / not consumed by UI logic | Only here is a raw `as T` acceptable, because the value never reaches a render path |
+
+Rules:
+- The fallback object MUST match the success type exactly so downstream
+  code never has a partial value (see `EMPTY_USER` / `EMPTY_INBOX_LIST`
+  pattern in `apps/mobile/data/schemas.ts`).
+- The `endpoint` label is for telemetry — defaults to the path; override
+  only when the path has dynamic segments and you want stable groupings
+  (`GET /api/issues/:id` not `GET /api/issues/abc-123`).
+- Migration is progressive: not every legacy method is converted yet.
+  Adding a new method? Use the helpers. Touching an old method that
+  isn't using them? Convert it as part of the same PR.
+
+### Query / mutation factory pattern
+
+Every workspace-scoped feature exposes a key factory in
+`apps/mobile/data/queries/<feature>.ts`:
+
+```ts
+export const inboxKeys = {
+  all: (wsId: string | null) => ["inbox", wsId] as const,
+  list: (wsId: string | null) => [...inboxKeys.all(wsId), "list"] as const,
+};
+```
+
+Three-segment shape matches web (`packages/core/inbox/queries.ts`).
+Reasons:
+
+- TQ does prefix matching by default — `invalidateQueries({ queryKey:
+  inboxKeys.all(wsId) })` invalidates the list AND any future sub-keys
+  (e.g. a `detail(id)`) under the same prefix. Use `.all` to clear a
+  workspace cleanly, `.list` to target the list specifically.
+- Cross-platform mental-model parity: a reader switching between mobile
+  and web finds the same key shape.
+- Stops bare `["inbox", wsId]` strings from spreading. Grep
+  `\["inbox"` in this codebase should only hit the factory file.
+
+Mutations import the factory and use `inboxKeys.list(wsId)` everywhere —
+never inline strings.
+
+### WS layer: `ws.on<E>()` + `useWSSubscriptions`
+
+Two helpers replace ~20 lines of boilerplate per realtime hook:
+
+1. **`ws.on<E extends WSEventType>(event, handler)`** — the handler's
+   `payload` parameter is auto-typed to `WSEventPayload<E>`. **Do not
+   add `as XxxPayload` casts at handler bodies** — they're redundant
+   and (worse) silently hide drift if `WSEventPayloadMap` shifts.
+   The cast is only acceptable when one handler covers multiple events
+   that don't share a typed common ancestor (see `onTaskEvent` in
+   `use-issue-realtime.ts` — `task:progress` has no formal payload).
+2. **`useWSSubscriptions(setup, deps)`** in
+   `apps/mobile/lib/use-ws-subscriptions.ts` — wraps the
+   `if (!ws || !wsId) return; useEffect + cleanup` template. Setup
+   callback receives `(ws, wsId)`, returns the unsub array (or
+   `undefined` to short-circuit, e.g. when a per-record id is missing).
+
+Adding a new event type? Extend `packages/core/types/events.ts`:
+
+1. Add the event to the `WSEventType` union.
+2. Add the payload interface.
+3. Add the `WSEventType → payload` entry in `WSEventPayloadMap`.
+
+Forgetting step 3 means callers get `unknown` (loud — they have to
+narrow), not `any` (silent unsafe access). That's the safety net.
+
+### Synchronous setQueryData before `await cancelQueries`
+
+Optimistic mutations that flip state read by a UI element that's about
+to be in a navigation snapshot (the classic case: marking an inbox row
+read, then `router.push` to the issue) MUST call `setQueryData` in
+`onMutate` **before** `await qc.cancelQueries(...)`. The await yields
+one microtask; iOS captures the source-view snapshot during that gap and
+freezes the row in its unread style inside the slide-in transition.
+
+Lives inside the mutation, not the caller. See `useMarkInboxRead.onMutate`
+in `apps/mobile/data/mutations/inbox.ts` for the canonical example.
+
+### Checklist for a new feature
+
+Before opening a PR for a new screen / mutation / realtime hook:
+
+1. Grep `packages/core/<feature>/` for the web equivalent — endpoints,
+   key shape, optimistic patch shape. Mirror, don't invent.
+2. API methods → `fetchValidated` / `fetchValidatedWith` (or raw
+   `this.fetch` only for writes with no consumed response).
+3. Query key → factory in `data/queries/<feature>.ts`, 3-segment shape.
+4. Mutations → optimistic three-step (snapshot → patch → rollback) +
+   settle invalidate, all keys via factory.
+5. Realtime → `useWSSubscriptions(setup, deps)`, typed `ws.on<E>()`,
+   per-event patching (no global invalidate) when payload carries the
+   full object.
+6. UI → waterfall (iOS native > RNR > inline compose). No new
+   `components/ui/` primitive unless three callers + RNR doesn't ship.
+7. Verify cross-client: change the same record from web and confirm
+   mobile updates within ~500ms without pull-to-refresh.
 
 ## Lessons learned (encode into reflexes)
 
@@ -309,3 +473,51 @@ The mobile codebase has ~15 Modal sheets. They almost all copy the same shape (`
 - **`transparent` and `presentationStyle="pageSheet"` are mutually exclusive.** If you find yourself wanting both, you picked the wrong container.
 
 **Past sheets that need to migrate to pageSheet** (logged in `/Users/qingnaiyuan/.claude/plans/mobile-sheet-rollout.md`): session-sheet, issue-filter-sheet, assignee/label/project/project-lead picker sheets, add-resource-sheet. Do these one PR at a time, one verification at a time — don't try to batch.
+
+### 7. Destructive swipe: reveal only, no auto-fire — always pair with haptic
+
+iOS Mail / Linear iOS / Things: leftward swipe reveals a red Archive
+button; the user **must tap it** to commit. The earlier mobile inbox
+swipe auto-fired on full drag past the threshold and "felt wrong" — no
+peek, easy to trigger by accident on a fast vertical scroll that
+catches some horizontal motion. There is no native UX that auto-commits
+a destructive action on swipe — match the platform standard.
+
+The rule:
+
+- `ReanimatedSwipeable` with `renderRightActions={<Pressable onPress={fireArchive} />}`.
+- **No `onSwipeableOpen` auto-fire.** Drag → reveals the action; release
+  past threshold → action stays revealed; tap action → commit; tap
+  outside or drag back → cancel.
+- One-shot `Haptics.impactAsync('medium')` when the drag crosses the
+  action width. Wire via `useAnimatedReaction(() => drag.value <= -ACTION_WIDTH, ...)`
+  + `runOnJS(Haptics.impactAsync)`. The shared-value reaction runs on
+  the UI thread; `runOnJS` bridges to the JS-only Haptics call.
+
+See `apps/mobile/components/inbox/swipeable-inbox-row.tsx` for the
+reference implementation. When adding a new swipe-to-action row
+elsewhere, copy that pattern; do not reinvent.
+
+### 8. Tier C domain components: opportunistic upgrade only — no silent rewrites
+
+Tier C in `apps/mobile/docs/rnr-migration.md` §4 names the domain UI
+files that stay where they are but need foundation upgrades
+(`ActorAvatar`, `StatusIcon`, `PriorityIcon`, `PresenceDot`, etc.).
+**You don't rewrite a Tier C file just because you're rendering it in
+your new feature.** That spreads scope and stalls feature PRs.
+
+Two rules:
+
+1. **Touch only what your PR needs to touch.** If `ActorAvatar` has
+   hardcoded `#71717a` and you're building an inbox feature that
+   *uses* `<ActorAvatar>`, leave the hex alone. Note it for a future
+   doc / cleanup PR.
+2. **Upgrade Tier C only when you're modifying that file for a
+   different real reason.** E.g. adding presence to chat header → you
+   were going to touch `<ActorAvatar>` anyway → fold the RNR-Avatar
+   migration + hex → token cleanup into the same PR.
+
+The pre-migration legacy persists because someone "while I'm in
+here…"-style touched 21 files in one PR; we don't do that anymore.
+Document any Tier C smells you spotted in the PR description as
+follow-ups; surface for a future grouped Tier C cleanup PR.
