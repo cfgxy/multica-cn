@@ -41,9 +41,11 @@ import {
   PreviewTooLargeError,
   PreviewUnsupportedError,
 } from "@multica/core/api";
-import { Download, FileText, Loader2, X } from "lucide-react";
+import { Download, ExternalLink, FileText, Loader2, X } from "lucide-react";
 import type { Attachment } from "@multica/core/types";
+import { paths, useWorkspaceSlug } from "@multica/core/paths";
 import { useT } from "../i18n";
+import { useNavigation } from "../navigation";
 import { openExternal } from "../platform";
 import { ReadonlyContent } from "./readonly-content";
 import {
@@ -178,6 +180,10 @@ export function AttachmentPreviewModal({
   const { t } = useT("editor");
   const download = useDownloadAttachment();
   const state = normalize(source);
+  // useWorkspaceSlug (not useWorkspacePaths) — returns null outside a
+  // workspace route instead of throwing, so the new-tab button just hides.
+  const slug = useWorkspaceSlug();
+  const navigation = useNavigation();
 
   useEffect(() => {
     if (!open) return;
@@ -199,6 +205,25 @@ export function AttachmentPreviewModal({
     } else {
       openExternal(state.mediaUrl);
     }
+  };
+
+  // Open-in-new-tab mirrors HtmlAttachmentPreview's inline toolbar: only the
+  // `html` kind has a dedicated full-page route (/attachments/{id}/preview).
+  // Gated on slug + attachmentId for the same reason — URL-only sources
+  // can't address the /content proxy the page relies on.
+  const canOpenInNewTab = kind === "html" && !!slug && !!state.attachmentId;
+  const handleOpenInNewTab = () => {
+    if (!slug || !state.attachmentId) return;
+    const nameQuery = state.filename
+      ? `?name=${encodeURIComponent(state.filename)}`
+      : "";
+    const path = `${paths.workspace(slug).attachmentPreview(state.attachmentId)}${nameQuery}`;
+    if (navigation.openInNewTab) {
+      navigation.openInNewTab(path, state.filename);
+      return;
+    }
+    const url = navigation.getShareableUrl(path);
+    window.open(url, "_blank", "noopener,noreferrer");
   };
 
   if (!open || typeof document === "undefined") return null;
@@ -226,6 +251,17 @@ export function AttachmentPreviewModal({
             {state.contentType || "—"}
           </span>
           <div className="ml-auto flex items-center gap-1">
+            {canOpenInNewTab && (
+              <button
+                type="button"
+                className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
+                title={t(($) => $.attachment.open_in_new_tab)}
+                aria-label={t(($) => $.attachment.open_in_new_tab)}
+                onClick={handleOpenInNewTab}
+              >
+                <ExternalLink className="size-4" />
+              </button>
+            )}
             <button
               type="button"
               className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-secondary hover:text-foreground"
