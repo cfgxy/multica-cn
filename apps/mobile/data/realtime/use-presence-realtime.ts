@@ -19,66 +19,58 @@
  * Reconnect: re-invalidate runtimes + snapshot (NOT agents — agent identity
  * doesn't drift while we're offline; runtime status and task counts do).
  */
-import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useWorkspaceStore } from "@/data/workspace-store";
-import { useWSClient } from "./realtime-provider";
+import { useWSSubscriptions } from "@/lib/use-ws-subscriptions";
 
 export function usePresenceRealtime() {
-  const ws = useWSClient();
-  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const queryClient = useQueryClient();
 
-  useEffect(() => {
-    if (!ws || !wsId) return;
+  useWSSubscriptions(
+    (ws, wsId) => {
+      const runtimesKey = ["runtimes", wsId];
+      const agentsKey = ["agents", wsId];
+      const snapshotKey = ["agent-task-snapshot", wsId];
 
-    const runtimesKey = ["runtimes", wsId];
-    const agentsKey = ["agents", wsId];
-    const snapshotKey = ["agent-task-snapshot", wsId];
+      const invalidateRuntimes = () =>
+        queryClient.invalidateQueries({ queryKey: runtimesKey });
+      const invalidateAgents = () =>
+        queryClient.invalidateQueries({ queryKey: agentsKey });
+      const invalidateSnapshot = () =>
+        queryClient.invalidateQueries({ queryKey: snapshotKey });
 
-    const invalidateRuntimes = () =>
-      queryClient.invalidateQueries({ queryKey: runtimesKey });
-    const invalidateAgents = () =>
-      queryClient.invalidateQueries({ queryKey: agentsKey });
-    const invalidateSnapshot = () =>
-      queryClient.invalidateQueries({ queryKey: snapshotKey });
+      return [
+        // Daemon lifecycle — register events mean a runtime came online or
+        // re-registered; the sweeper's offline transitions are NOT pushed as
+        // a WS event, but the next agent:status / task:* event will pull a
+        // fresh runtime list anyway, and the 30s wall-clock tick masks the
+        // gap. Heartbeats deliberately omitted.
+        ws.on("daemon:register", invalidateRuntimes),
 
-    const unsubs: Array<() => void> = [
-      // Daemon lifecycle — register events mean a runtime came online or
-      // re-registered; the sweeper's offline transitions are NOT pushed as a
-      // WS event, but the next agent:status / task:* event will pull a fresh
-      // runtime list anyway, and the 30s wall-clock tick masks the gap.
-      // Heartbeats deliberately omitted.
-      ws.on("daemon:register", invalidateRuntimes),
+        // Agent identity churn — visible in pickers / chat header straight
+        // away, so invalidate the cached list.
+        ws.on("agent:status", invalidateAgents),
+        ws.on("agent:created", invalidateAgents),
+        ws.on("agent:archived", invalidateAgents),
+        ws.on("agent:restored", invalidateAgents),
 
-      // Agent identity churn — visible in pickers / chat header straight
-      // away, so invalidate the cached list.
-      ws.on("agent:status", invalidateAgents),
-      ws.on("agent:created", invalidateAgents),
-      ws.on("agent:archived", invalidateAgents),
-      ws.on("agent:restored", invalidateAgents),
+        // Task lifecycle — drives the workload dimension of presence and the
+        // reserved-for-P1 peek sheet. progress / message intentionally absent.
+        ws.on("task:queued", invalidateSnapshot),
+        ws.on("task:dispatch", invalidateSnapshot),
+        ws.on("task:completed", invalidateSnapshot),
+        ws.on("task:failed", invalidateSnapshot),
+        ws.on("task:cancelled", invalidateSnapshot),
 
-      // Task lifecycle — drives the workload dimension of presence and the
-      // reserved-for-P1 peek sheet. progress / message intentionally absent.
-      ws.on("task:queued", invalidateSnapshot),
-      ws.on("task:dispatch", invalidateSnapshot),
-      ws.on("task:completed", invalidateSnapshot),
-      ws.on("task:failed", invalidateSnapshot),
-      ws.on("task:cancelled", invalidateSnapshot),
-
-      // We may have missed sweeper-driven runtime offline transitions while
-      // disconnected — refetch runtimes + snapshot. Agents not re-invalidated
-      // because agent:created / archived are rare enough that the user can
-      // pull-to-refresh if needed; saving one round-trip on reconnect is
-      // worth it on cellular.
-      ws.onReconnect(() => {
-        invalidateRuntimes();
-        invalidateSnapshot();
-      }),
-    ];
-
-    return () => {
-      for (const unsub of unsubs) unsub();
-    };
-  }, [ws, wsId, queryClient]);
+        // We may have missed sweeper-driven runtime offline transitions
+        // while disconnected — refetch runtimes + snapshot. Agents not
+        // re-invalidated because agent:created / archived are rare enough
+        // that the user can pull-to-refresh if needed.
+        ws.onReconnect(() => {
+          invalidateRuntimes();
+          invalidateSnapshot();
+        }),
+      ];
+    },
+    [queryClient],
+  );
 }

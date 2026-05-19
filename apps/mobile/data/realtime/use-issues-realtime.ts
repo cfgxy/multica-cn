@@ -23,16 +23,9 @@
  * parallel — apps/mobile/CLAUDE.md "Mobile-owned updaters" / "list-level
  * global, per-record per-screen".
  */
-import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import type {
-  IssueCreatedPayload,
-  IssueDeletedPayload,
-  IssueUpdatedPayload,
-} from "@multica/core/types";
 import { issueKeys } from "@/data/queries/issue-keys";
-import { useWorkspaceStore } from "@/data/workspace-store";
-import { useWSClient } from "./realtime-provider";
+import { useWSSubscriptions } from "@/lib/use-ws-subscriptions";
 import {
   patchIssuesList,
   prependToIssuesList,
@@ -40,35 +33,26 @@ import {
 } from "./issue-ws-updaters";
 
 export function useIssuesRealtime() {
-  const ws = useWSClient();
-  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const qc = useQueryClient();
 
-  useEffect(() => {
-    if (!ws || !wsId) return;
+  useWSSubscriptions(
+    (ws, wsId) => {
+      const invalidateList = () =>
+        qc.invalidateQueries({ queryKey: issueKeys.list(wsId) });
 
-    const invalidateList = () => {
-      qc.invalidateQueries({ queryKey: issueKeys.list(wsId) });
-    };
-
-    const unsubs: Array<() => void> = [
-      ws.on("issue:created", (p) => {
-        const payload = p as IssueCreatedPayload;
-        prependToIssuesList(qc, wsId, payload.issue);
-      }),
-      ws.on("issue:updated", (p) => {
-        const payload = p as IssueUpdatedPayload;
-        patchIssuesList(qc, wsId, payload.issue);
-      }),
-      ws.on("issue:deleted", (p) => {
-        const payload = p as IssueDeletedPayload;
-        removeFromIssuesList(qc, wsId, payload.issue_id);
-      }),
-      ws.onReconnect(invalidateList),
-    ];
-
-    return () => {
-      for (const unsub of unsubs) unsub();
-    };
-  }, [ws, wsId, qc]);
+      return [
+        ws.on("issue:created", (payload) => {
+          prependToIssuesList(qc, wsId, payload.issue);
+        }),
+        ws.on("issue:updated", (payload) => {
+          patchIssuesList(qc, wsId, payload.issue);
+        }),
+        ws.on("issue:deleted", (payload) => {
+          removeFromIssuesList(qc, wsId, payload.issue_id);
+        }),
+        ws.onReconnect(invalidateList),
+      ];
+    },
+    [qc],
+  );
 }

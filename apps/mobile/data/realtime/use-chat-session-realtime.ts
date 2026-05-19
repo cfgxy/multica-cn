@@ -22,20 +22,9 @@
  *   - reconnect                 → invalidate this session's messages +
  *                                  pendingTask
  */
-import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import type {
-  ChatDonePayload,
-  ChatMessageEventPayload,
-  ChatSessionDeletedPayload,
-  TaskCancelledPayload,
-  TaskCompletedPayload,
-  TaskDispatchPayload,
-  TaskFailedPayload,
-  TaskQueuedPayload,
-} from "@multica/core/types";
 import { chatKeys } from "@/data/queries/chat";
-import { useWSClient } from "./realtime-provider";
+import { useWSSubscriptions } from "@/lib/use-ws-subscriptions";
 import {
   applyChatDoneToCache,
   clearPendingTask,
@@ -47,76 +36,66 @@ export function useChatSessionRealtime(
   sessionId: string | null,
   onSessionDeleted?: () => void,
 ) {
-  const ws = useWSClient();
   const qc = useQueryClient();
 
-  useEffect(() => {
-    if (!ws || !sessionId) return;
+  useWSSubscriptions(
+    (ws) => {
+      if (!sessionId) return;
 
-    const isMine = (p: { chat_session_id?: string }) =>
-      p.chat_session_id === sessionId;
+      const isMine = (p: { chat_session_id?: string }) =>
+        p.chat_session_id === sessionId;
 
-    const invalidateMine = () => {
-      qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
-      qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
-    };
-
-    const unsubs: Array<() => void> = [
-      // User-message echo from another device; we may also receive our own
-      // sends echoed back, but the id-dedupe in the cache write handles
-      // that. Invalidate is cheap — chat:message is rare in practice.
-      ws.on("chat:message", (p) => {
-        const payload = p as ChatMessageEventPayload;
-        if (!isMine(payload)) return;
+      const invalidateMine = () => {
         qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
         qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
-      }),
-      ws.on("chat:done", (p) => {
-        const payload = p as ChatDonePayload;
-        if (!isMine(payload)) return;
-        applyChatDoneToCache(qc, payload);
-      }),
-      ws.on("task:queued", (p) => {
-        const payload = p as TaskQueuedPayload;
-        if (!isMine(payload)) return;
-        seedPendingTaskFromQueued(qc, payload);
-      }),
-      ws.on("task:dispatch", (p) => {
-        const payload = p as TaskDispatchPayload;
-        if (!isMine(payload)) return;
-        promotePendingTaskToRunning(qc, payload);
-      }),
-      ws.on("task:cancelled", (p) => {
-        const payload = p as TaskCancelledPayload;
-        if (!isMine(payload)) return;
-        clearPendingTask(qc, sessionId);
-      }),
-      ws.on("task:completed", (p) => {
-        const payload = p as TaskCompletedPayload;
-        if (!isMine(payload)) return;
-        // `chat:done` already wrote the assistant message and cleared
-        // pendingTask. Defensive clear in case the two events arrive
-        // out of order on a flaky network.
-        clearPendingTask(qc, sessionId);
-      }),
-      ws.on("task:failed", (p) => {
-        const payload = p as TaskFailedPayload;
-        if (!isMine(payload)) return;
-        // FailTask persists a destructive assistant message — surface it
-        // by refetching messages and clearing the pending pill.
-        clearPendingTask(qc, sessionId);
-        qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
-      }),
-      ws.on("chat:session_deleted", (p) => {
-        const payload = p as ChatSessionDeletedPayload;
-        if (!isMine(payload)) return;
-        onSessionDeleted?.();
-      }),
-      ws.onReconnect(invalidateMine),
-    ];
+      };
 
-    return () => {
-      for (const unsub of unsubs) unsub();
-    };
-  }, [ws, sessionId, qc, onSessionDeleted]);
+      return [
+        // User-message echo from another device; we may also receive our own
+        // sends echoed back, but the id-dedupe in the cache write handles
+        // that. Invalidate is cheap — chat:message is rare in practice.
+        ws.on("chat:message", (payload) => {
+          if (!isMine(payload)) return;
+          qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
+          qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
+        }),
+        ws.on("chat:done", (payload) => {
+          if (!isMine(payload)) return;
+          applyChatDoneToCache(qc, payload);
+        }),
+        ws.on("task:queued", (payload) => {
+          if (!isMine(payload)) return;
+          seedPendingTaskFromQueued(qc, payload);
+        }),
+        ws.on("task:dispatch", (payload) => {
+          if (!isMine(payload)) return;
+          promotePendingTaskToRunning(qc, payload);
+        }),
+        ws.on("task:cancelled", (payload) => {
+          if (!isMine(payload)) return;
+          clearPendingTask(qc, sessionId);
+        }),
+        ws.on("task:completed", (payload) => {
+          if (!isMine(payload)) return;
+          // `chat:done` already wrote the assistant message and cleared
+          // pendingTask. Defensive clear in case the two events arrive
+          // out of order on a flaky network.
+          clearPendingTask(qc, sessionId);
+        }),
+        ws.on("task:failed", (payload) => {
+          if (!isMine(payload)) return;
+          // FailTask persists a destructive assistant message — surface it
+          // by refetching messages and clearing the pending pill.
+          clearPendingTask(qc, sessionId);
+          qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
+        }),
+        ws.on("chat:session_deleted", (payload) => {
+          if (!isMine(payload)) return;
+          onSessionDeleted?.();
+        }),
+        ws.onReconnect(invalidateMine),
+      ];
+    },
+    [sessionId, qc, onSessionDeleted],
+  );
 }

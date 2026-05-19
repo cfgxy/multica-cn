@@ -22,8 +22,16 @@
  *   before any business events. workspace_slug + client_platform passed as
  *   query params on the upgrade URL (RN's WebSocket can't set headers).
  */
-import type { WSEventType, WSMessage } from "@multica/core/types";
+import type {
+  WSEventPayload,
+  WSEventType,
+  WSMessage,
+} from "@multica/core/types";
 
+/** Generic handler used internally by the dispatcher map. Each `on<E>()`
+ *  call narrows this to `(payload: WSEventPayload<E>, actorId?) => void`
+ *  at the call site — callers get the precise payload type and never
+ *  need a `as XxxPayload` cast. */
 type EventHandler = (payload: unknown, actorId?: string) => void;
 type AnyHandler = (msg: WSMessage) => void;
 
@@ -133,15 +141,20 @@ export class WSClient {
 
   // ── public subscription ─────────────────────────────────────────────
 
-  on(event: WSEventType, handler: EventHandler) {
+  on<E extends WSEventType>(
+    event: E,
+    handler: (payload: WSEventPayload<E>, actorId?: string) => void,
+  ) {
     let set = this.handlers.get(event);
     if (!set) {
       set = new Set();
       this.handlers.set(event, set);
     }
-    set.add(handler);
+    // Store as the erased EventHandler in the map; the public signature
+    // gives callers the typed payload at the call site.
+    set.add(handler as EventHandler);
     return () => {
-      this.handlers.get(event)?.delete(handler);
+      this.handlers.get(event)?.delete(handler as EventHandler);
     };
   }
 

@@ -13,39 +13,30 @@
  * starts with the simplest correct path: invalidate-and-refetch. Push
  * notifications for backgrounded delivery come later via APNs, not WS.
  */
-import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { useWorkspaceStore } from "@/data/workspace-store";
-import { useWSClient } from "./realtime-provider";
+import { useWSSubscriptions } from "@/lib/use-ws-subscriptions";
 
 export function useInboxRealtime() {
-  const ws = useWSClient();
-  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const queryClient = useQueryClient();
 
-  useEffect(() => {
-    if (!ws || !wsId) return;
-
-    // Same key shape as data/queries/inbox.ts → inboxListOptions(wsId).
-    // Keying on wsId means workspace switches naturally invalidate.
-    const inboxKey = ["inbox", wsId];
-    const invalidate = () => {
-      queryClient.invalidateQueries({ queryKey: inboxKey });
-    };
-
-    const unsubs: Array<() => void> = [
-      ws.on("inbox:new", invalidate),
-      ws.on("inbox:read", invalidate),
-      ws.on("inbox:archived", invalidate),
-      ws.on("inbox:batch-read", invalidate),
-      ws.on("inbox:batch-archived", invalidate),
-      // After a reconnect we don't know what we missed during the
-      // downtime — refresh from server.
-      ws.onReconnect(invalidate),
-    ];
-
-    return () => {
-      for (const unsub of unsubs) unsub();
-    };
-  }, [ws, wsId, queryClient]);
+  useWSSubscriptions(
+    (ws, wsId) => {
+      // Same key shape as data/queries/inbox.ts → inboxListOptions(wsId).
+      // Keying on wsId means workspace switches naturally invalidate.
+      const invalidate = () => {
+        queryClient.invalidateQueries({ queryKey: ["inbox", wsId] });
+      };
+      return [
+        ws.on("inbox:new", invalidate),
+        ws.on("inbox:read", invalidate),
+        ws.on("inbox:archived", invalidate),
+        ws.on("inbox:batch-read", invalidate),
+        ws.on("inbox:batch-archived", invalidate),
+        // After a reconnect we don't know what we missed during the
+        // downtime — refresh from server.
+        ws.onReconnect(invalidate),
+      ];
+    },
+    [queryClient],
+  );
 }

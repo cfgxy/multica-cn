@@ -23,20 +23,11 @@
  *
  * `project:created` is not relevant to the per-record hook (no id match).
  */
-import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import type {
-  Issue,
-  IssueCreatedPayload,
-  IssueDeletedPayload,
-  IssueUpdatedPayload,
-  ProjectDeletedPayload,
-  ProjectUpdatedPayload,
-} from "@multica/core/types";
+import type { Issue } from "@multica/core/types";
 import { issueKeys } from "@/data/queries/issue-keys";
 import { projectKeys } from "@/data/queries/projects";
-import { useWorkspaceStore } from "@/data/workspace-store";
-import { useWSClient } from "./realtime-provider";
+import { useWSSubscriptions } from "@/lib/use-ws-subscriptions";
 import {
   clearProjectDetail,
   patchProjectDetail,
@@ -47,85 +38,77 @@ export function useProjectRealtime(
   projectId: string | undefined,
   onDeleted?: () => void,
 ) {
-  const ws = useWSClient();
-  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const qc = useQueryClient();
 
-  useEffect(() => {
-    if (!ws || !wsId || !projectId) return;
+  useWSSubscriptions(
+    (ws, wsId) => {
+      if (!projectId) return;
 
-    const issueListKey = [
-      ...issueKeys.list(wsId),
-      "byProject",
-      projectId,
-    ] as const;
+      const issueListKey = [
+        ...issueKeys.list(wsId),
+        "byProject",
+        projectId,
+      ] as const;
 
-    const invalidateThisProject = () => {
-      qc.invalidateQueries({ queryKey: projectKeys.detail(wsId, projectId) });
-      qc.invalidateQueries({
-        queryKey: projectKeys.resources(wsId, projectId),
-      });
-      qc.invalidateQueries({ queryKey: issueListKey });
-    };
-
-    const unsubs: Array<() => void> = [
-      // Project-level events
-      ws.on("project:updated", (p) => {
-        const payload = p as ProjectUpdatedPayload;
-        if (payload.project.id !== projectId) return;
-        patchProjectDetail(qc, wsId, payload.project);
-      }),
-      ws.on("project:deleted", (p) => {
-        const payload = p as ProjectDeletedPayload;
-        if (payload.project_id !== projectId) return;
-        clearProjectDetail(qc, wsId, projectId);
-        removeFromProjectsList(qc, wsId, projectId);
-        onDeleted?.();
-      }),
-
-      // Issue events for issues IN this project — patch the byProject cache
-      // directly so the list stays fresh without a refetch.
-      ws.on("issue:updated", (p) => {
-        const payload = p as IssueUpdatedPayload;
-        const issue = payload.issue;
-        // Status / project_id changes both matter:
-        //  - if it was in this project and still is: replace in place
-        //  - if it just moved INTO this project: append (server is authority on order)
-        //  - if it just moved OUT: remove from this list
-        const wasInList = (qc.getQueryData<Issue[]>(issueListKey) ?? []).some(
-          (i) => i.id === issue.id,
-        );
-        const nowInProject = issue.project_id === projectId;
-        if (!wasInList && !nowInProject) return;
-        qc.setQueryData<Issue[]>(issueListKey, (old) => {
-          if (!old) return old;
-          if (nowInProject) {
-            return old.some((i) => i.id === issue.id)
-              ? old.map((i) => (i.id === issue.id ? issue : i))
-              : [...old, issue];
-          }
-          return old.filter((i) => i.id !== issue.id);
+      const invalidateThisProject = () => {
+        qc.invalidateQueries({ queryKey: projectKeys.detail(wsId, projectId) });
+        qc.invalidateQueries({
+          queryKey: projectKeys.resources(wsId, projectId),
         });
-      }),
-      ws.on("issue:created", (p) => {
-        const payload = p as IssueCreatedPayload;
-        if (payload.issue.project_id !== projectId) return;
-        // Server is the authority on list position — invalidate so we
-        // refetch with the correct ordering rather than guessing.
         qc.invalidateQueries({ queryKey: issueListKey });
-      }),
-      ws.on("issue:deleted", (p) => {
-        const payload = p as IssueDeletedPayload;
-        qc.setQueryData<Issue[]>(issueListKey, (old) =>
-          old ? old.filter((i) => i.id !== payload.issue_id) : old,
-        );
-      }),
+      };
 
-      ws.onReconnect(invalidateThisProject),
-    ];
+      return [
+        // Project-level events
+        ws.on("project:updated", (payload) => {
+          if (payload.project.id !== projectId) return;
+          patchProjectDetail(qc, wsId, payload.project);
+        }),
+        ws.on("project:deleted", (payload) => {
+          if (payload.project_id !== projectId) return;
+          clearProjectDetail(qc, wsId, projectId);
+          removeFromProjectsList(qc, wsId, projectId);
+          onDeleted?.();
+        }),
 
-    return () => {
-      for (const unsub of unsubs) unsub();
-    };
-  }, [ws, wsId, projectId, qc, onDeleted]);
+        // Issue events for issues IN this project — patch the byProject
+        // cache directly so the list stays fresh without a refetch.
+        ws.on("issue:updated", (payload) => {
+          const issue = payload.issue;
+          // Status / project_id changes both matter:
+          //  - if it was in this project and still is: replace in place
+          //  - if it just moved INTO this project: append (server is authority on order)
+          //  - if it just moved OUT: remove from this list
+          const wasInList = (
+            qc.getQueryData<Issue[]>(issueListKey) ?? []
+          ).some((i) => i.id === issue.id);
+          const nowInProject = issue.project_id === projectId;
+          if (!wasInList && !nowInProject) return;
+          qc.setQueryData<Issue[]>(issueListKey, (old) => {
+            if (!old) return old;
+            if (nowInProject) {
+              return old.some((i) => i.id === issue.id)
+                ? old.map((i) => (i.id === issue.id ? issue : i))
+                : [...old, issue];
+            }
+            return old.filter((i) => i.id !== issue.id);
+          });
+        }),
+        ws.on("issue:created", (payload) => {
+          if (payload.issue.project_id !== projectId) return;
+          // Server is the authority on list position — invalidate so we
+          // refetch with the correct ordering rather than guessing.
+          qc.invalidateQueries({ queryKey: issueListKey });
+        }),
+        ws.on("issue:deleted", (payload) => {
+          qc.setQueryData<Issue[]>(issueListKey, (old) =>
+            old ? old.filter((i) => i.id !== payload.issue_id) : old,
+          );
+        }),
+
+        ws.onReconnect(invalidateThisProject),
+      ];
+    },
+    [projectId, qc, onDeleted],
+  );
 }

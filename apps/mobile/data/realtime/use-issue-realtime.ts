@@ -23,20 +23,8 @@
  *   - All handlers self-gate on `issue_id === issueId` so we only react
  *     to events for the currently-viewed issue.
  */
-import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import type {
-  ActivityCreatedPayload,
-  CommentCreatedPayload,
-  CommentDeletedPayload,
-  CommentUpdatedPayload,
-  IssueDeletedPayload,
-  IssueLabelsChangedPayload,
-  IssueReactionAddedPayload,
-  IssueReactionRemovedPayload,
-  IssueUpdatedPayload,
-  ReactionAddedPayload,
-  ReactionRemovedPayload,
   TaskCancelledPayload,
   TaskCompletedPayload,
   TaskDispatchPayload,
@@ -45,8 +33,7 @@ import type {
   TaskQueuedPayload,
 } from "@multica/core/types";
 import { issueKeys } from "@/data/queries/issue-keys";
-import { useWorkspaceStore } from "@/data/workspace-store";
-import { useWSClient } from "./realtime-provider";
+import { useWSSubscriptions } from "@/lib/use-ws-subscriptions";
 import {
   addCommentReaction,
   addIssueReaction,
@@ -75,159 +62,147 @@ export function useIssueRealtime(
   issueId: string | undefined,
   onDeleted?: () => void,
 ) {
-  const ws = useWSClient();
-  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const qc = useQueryClient();
 
-  useEffect(() => {
-    if (!ws || !wsId || !issueId) return;
+  useWSSubscriptions(
+    (ws, wsId) => {
+      if (!issueId) return;
 
-    const invalidateThisIssue = () => {
-      qc.invalidateQueries({ queryKey: issueKeys.detail(wsId, issueId) });
-      qc.invalidateQueries({ queryKey: issueKeys.timeline(wsId, issueId) });
-    };
+      const invalidateThisIssue = () => {
+        qc.invalidateQueries({ queryKey: issueKeys.detail(wsId, issueId) });
+        qc.invalidateQueries({ queryKey: issueKeys.timeline(wsId, issueId) });
+      };
 
-    // Task-query invalidation — separate from detail/timeline so the
-    // AgentActivityRow + RunsSheet can refresh without forcing a full
-    // timeline rebuild. WS task payloads only carry { task_id, agent_id,
-    // issue_id, status } — not the full AgentTask object — so per
-    // apps/mobile/CLAUDE.md "Patch over invalidate" rule #1 (payload is
-    // just an id), invalidate is the correct primitive.
-    const invalidateTaskQueries = () => {
-      qc.invalidateQueries({ queryKey: issueKeys.activeTasks(wsId, issueId) });
-      qc.invalidateQueries({ queryKey: issueKeys.tasks(wsId, issueId) });
-    };
+      // Task-query invalidation — separate from detail/timeline so the
+      // AgentActivityRow + RunsSheet can refresh without forcing a full
+      // timeline rebuild. WS task payloads only carry { task_id, agent_id,
+      // issue_id, status } — not the full AgentTask object — so per
+      // apps/mobile/CLAUDE.md "Patch over invalidate" rule #1 (payload is
+      // just an id), invalidate is the correct primitive.
+      const invalidateTaskQueries = () => {
+        qc.invalidateQueries({ queryKey: issueKeys.activeTasks(wsId, issueId) });
+        qc.invalidateQueries({ queryKey: issueKeys.tasks(wsId, issueId) });
+      };
 
-    const onTaskEvent = (p: unknown) => {
-      if ((p as TaskEventPayload).issue_id !== issueId) return;
-      // Detail + timeline: task state can flip issue.status server-side
-      // (e.g. agent_finished → in_progress) without an issue:updated event,
-      // so we refetch the authoritative detail too.
-      invalidateThisIssue();
-      // Task lists: drive the AgentActivityRow + RunsSheet.
-      invalidateTaskQueries();
-    };
-
-    const unsubs: Array<() => void> = [
-      // ----- Issue-level -----
-      ws.on("issue:updated", (p) => {
-        const payload = p as IssueUpdatedPayload;
-        if (payload.issue.id !== issueId) return;
-        patchIssueDetail(qc, wsId, payload.issue);
-        patchMyIssuesList(qc, wsId, payload.issue);
-      }),
-      ws.on("issue:deleted", (p) => {
-        const payload = p as IssueDeletedPayload;
-        if (payload.issue_id !== issueId) return;
-        clearIssueDetail(qc, wsId, issueId);
-        removeFromMyIssuesList(qc, wsId, issueId);
-        onDeleted?.();
-      }),
-      ws.on("issue_labels:changed", (p) => {
-        const payload = p as IssueLabelsChangedPayload;
-        if (payload.issue_id !== issueId) return;
-        patchIssueLabels(qc, wsId, issueId, payload.labels);
-      }),
-
-      // ----- Comments / activity -----
-      ws.on("comment:created", (p) => {
-        const payload = p as CommentCreatedPayload;
-        if (payload.comment.issue_id !== issueId) return;
-        appendTimelineEntry(
-          qc,
-          wsId,
-          issueId,
-          commentToTimelineEntry(payload.comment),
-        );
-      }),
-      ws.on("comment:updated", (p) => {
-        const payload = p as CommentUpdatedPayload;
-        if (payload.comment.issue_id !== issueId) return;
-        const entry = commentToTimelineEntry(payload.comment);
-        patchTimelineEntry(
-          qc,
-          wsId,
-          issueId,
-          (e) => e.type === "comment" && e.id === payload.comment.id,
-          () => entry,
-        );
-      }),
-      ws.on("comment:deleted", (p) => {
-        const payload = p as CommentDeletedPayload;
-        if (payload.issue_id !== issueId) return;
-        removeTimelineEntry(
-          qc,
-          wsId,
-          issueId,
-          (e) => e.type === "comment" && e.id === payload.comment_id,
-        );
-      }),
-      ws.on("activity:created", (p) => {
-        const payload = p as ActivityCreatedPayload;
-        if (payload.issue_id !== issueId) return;
-        appendTimelineEntry(qc, wsId, issueId, payload.entry);
-      }),
-
-      // ----- Comment reactions -----
-      ws.on("reaction:added", (p) => {
-        const payload = p as ReactionAddedPayload;
-        if (payload.issue_id !== issueId) return;
-        addCommentReaction(
-          qc,
-          wsId,
-          issueId,
-          payload.reaction.comment_id,
-          payload.reaction,
-        );
-      }),
-      ws.on("reaction:removed", (p) => {
-        const payload = p as ReactionRemovedPayload;
-        if (payload.issue_id !== issueId) return;
-        removeCommentReaction(
-          qc,
-          wsId,
-          issueId,
-          payload.comment_id,
-          payload.emoji,
-          payload.actor_id,
-        );
-      }),
-
-      // ----- Issue-level reactions -----
-      ws.on("issue_reaction:added", (p) => {
-        const payload = p as IssueReactionAddedPayload;
-        if (payload.issue_id !== issueId) return;
-        addIssueReaction(qc, wsId, issueId, payload.reaction);
-      }),
-      ws.on("issue_reaction:removed", (p) => {
-        const payload = p as IssueReactionRemovedPayload;
-        if (payload.issue_id !== issueId) return;
-        removeIssueReaction(
-          qc,
-          wsId,
-          issueId,
-          payload.emoji,
-          payload.actor_id,
-        );
-      }),
-
-      // ----- Agent task progress -----
-      ws.on("task:queued", onTaskEvent),
-      ws.on("task:dispatch", onTaskEvent),
-      ws.on("task:progress", onTaskEvent),
-      ws.on("task:completed", onTaskEvent),
-      ws.on("task:failed", onTaskEvent),
-      ws.on("task:cancelled", onTaskEvent),
-
-      // ----- Reconnect -----
-      ws.onReconnect(() => {
+      // Shared cross-event handler for the 6 task:* subscriptions below.
+      // All task events DO carry `issue_id` server-side, but `task:progress`
+      // has no formal payload interface yet (WSEventPayloadMap entry is
+      // `unknown`), so we cast through the union of the typed ones. If a new
+      // task event lands without `issue_id`, this cast is the failure point —
+      // grep here.
+      const onTaskEvent = (p: unknown) => {
+        if ((p as TaskEventPayload).issue_id !== issueId) return;
         invalidateThisIssue();
         invalidateTaskQueries();
-      }),
-    ];
+      };
 
-    return () => {
-      for (const unsub of unsubs) unsub();
-    };
-  }, [ws, wsId, issueId, qc, onDeleted]);
+      return [
+        // ----- Issue-level -----
+        ws.on("issue:updated", (payload) => {
+          if (payload.issue.id !== issueId) return;
+          patchIssueDetail(qc, wsId, payload.issue);
+          patchMyIssuesList(qc, wsId, payload.issue);
+        }),
+        ws.on("issue:deleted", (payload) => {
+          if (payload.issue_id !== issueId) return;
+          clearIssueDetail(qc, wsId, issueId);
+          removeFromMyIssuesList(qc, wsId, issueId);
+          onDeleted?.();
+        }),
+        ws.on("issue_labels:changed", (payload) => {
+          if (payload.issue_id !== issueId) return;
+          patchIssueLabels(qc, wsId, issueId, payload.labels);
+        }),
+
+        // ----- Comments / activity -----
+        ws.on("comment:created", (payload) => {
+          if (payload.comment.issue_id !== issueId) return;
+          appendTimelineEntry(
+            qc,
+            wsId,
+            issueId,
+            commentToTimelineEntry(payload.comment),
+          );
+        }),
+        ws.on("comment:updated", (payload) => {
+          if (payload.comment.issue_id !== issueId) return;
+          const entry = commentToTimelineEntry(payload.comment);
+          patchTimelineEntry(
+            qc,
+            wsId,
+            issueId,
+            (e) => e.type === "comment" && e.id === payload.comment.id,
+            () => entry,
+          );
+        }),
+        ws.on("comment:deleted", (payload) => {
+          if (payload.issue_id !== issueId) return;
+          removeTimelineEntry(
+            qc,
+            wsId,
+            issueId,
+            (e) => e.type === "comment" && e.id === payload.comment_id,
+          );
+        }),
+        ws.on("activity:created", (payload) => {
+          if (payload.issue_id !== issueId) return;
+          appendTimelineEntry(qc, wsId, issueId, payload.entry);
+        }),
+
+        // ----- Comment reactions -----
+        ws.on("reaction:added", (payload) => {
+          if (payload.issue_id !== issueId) return;
+          addCommentReaction(
+            qc,
+            wsId,
+            issueId,
+            payload.reaction.comment_id,
+            payload.reaction,
+          );
+        }),
+        ws.on("reaction:removed", (payload) => {
+          if (payload.issue_id !== issueId) return;
+          removeCommentReaction(
+            qc,
+            wsId,
+            issueId,
+            payload.comment_id,
+            payload.emoji,
+            payload.actor_id,
+          );
+        }),
+
+        // ----- Issue-level reactions -----
+        ws.on("issue_reaction:added", (payload) => {
+          if (payload.issue_id !== issueId) return;
+          addIssueReaction(qc, wsId, issueId, payload.reaction);
+        }),
+        ws.on("issue_reaction:removed", (payload) => {
+          if (payload.issue_id !== issueId) return;
+          removeIssueReaction(
+            qc,
+            wsId,
+            issueId,
+            payload.emoji,
+            payload.actor_id,
+          );
+        }),
+
+        // ----- Agent task progress -----
+        ws.on("task:queued", onTaskEvent),
+        ws.on("task:dispatch", onTaskEvent),
+        ws.on("task:progress", onTaskEvent),
+        ws.on("task:completed", onTaskEvent),
+        ws.on("task:failed", onTaskEvent),
+        ws.on("task:cancelled", onTaskEvent),
+
+        // ----- Reconnect -----
+        ws.onReconnect(() => {
+          invalidateThisIssue();
+          invalidateTaskQueries();
+        }),
+      ];
+    },
+    [issueId, qc, onDeleted],
+  );
 }

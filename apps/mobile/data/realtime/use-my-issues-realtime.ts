@@ -20,17 +20,9 @@
  * Inbox realtime (use-inbox-realtime.ts) handles its own keys and runs
  * in parallel; the two are independent.
  */
-import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import type {
-  IssueCreatedPayload,
-  IssueDeletedPayload,
-  IssueLabelsChangedPayload,
-  IssueUpdatedPayload,
-} from "@multica/core/types";
 import { issueKeys } from "@/data/queries/issue-keys";
-import { useWorkspaceStore } from "@/data/workspace-store";
-import { useWSClient } from "./realtime-provider";
+import { useWSSubscriptions } from "@/lib/use-ws-subscriptions";
 import {
   patchIssueLabels,
   patchMyIssuesList,
@@ -38,45 +30,29 @@ import {
 } from "./issue-ws-updaters";
 
 export function useMyIssuesRealtime() {
-  const ws = useWSClient();
-  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const qc = useQueryClient();
 
-  useEffect(() => {
-    if (!ws || !wsId) return;
+  useWSSubscriptions(
+    (ws, wsId) => {
+      const invalidateMyAll = () =>
+        qc.invalidateQueries({ queryKey: issueKeys.myAll(wsId) });
 
-    const invalidateMyAll = () => {
-      qc.invalidateQueries({ queryKey: issueKeys.myAll(wsId) });
-    };
-
-    // Issue creation isn't a payload we can patch into a scope-filtered
-    // list without knowing the user's filter context — fall back to a
-    // refresh. Same on reconnect.
-    const unsubs: Array<() => void> = [
-      ws.on("issue:created", (_p) => {
-        // We do consume the payload type-check, but we don't need any
-        // fields from it — server is the authority on which scopes/filters
-        // the new issue lands in.
-        void (_p as IssueCreatedPayload);
-        invalidateMyAll();
-      }),
-      ws.on("issue:updated", (p) => {
-        const payload = p as IssueUpdatedPayload;
-        patchMyIssuesList(qc, wsId, payload.issue);
-      }),
-      ws.on("issue:deleted", (p) => {
-        const payload = p as IssueDeletedPayload;
-        removeFromMyIssuesList(qc, wsId, payload.issue_id);
-      }),
-      ws.on("issue_labels:changed", (p) => {
-        const payload = p as IssueLabelsChangedPayload;
-        patchIssueLabels(qc, wsId, payload.issue_id, payload.labels);
-      }),
-      ws.onReconnect(invalidateMyAll),
-    ];
-
-    return () => {
-      for (const unsub of unsubs) unsub();
-    };
-  }, [ws, wsId, qc]);
+      return [
+        // Server is the authority on which scopes/filters a new issue lands
+        // in — we don't need to read the payload, just refetch.
+        ws.on("issue:created", () => invalidateMyAll()),
+        ws.on("issue:updated", (payload) => {
+          patchMyIssuesList(qc, wsId, payload.issue);
+        }),
+        ws.on("issue:deleted", (payload) => {
+          removeFromMyIssuesList(qc, wsId, payload.issue_id);
+        }),
+        ws.on("issue_labels:changed", (payload) => {
+          patchIssueLabels(qc, wsId, payload.issue_id, payload.labels);
+        }),
+        ws.onReconnect(invalidateMyAll),
+      ];
+    },
+    [qc],
+  );
 }

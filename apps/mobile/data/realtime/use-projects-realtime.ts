@@ -15,16 +15,9 @@
  * Patch over invalidate (cellular-data rule)", every event with a full
  * payload patches the cache directly.
  */
-import { useEffect } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import type {
-  ProjectCreatedPayload,
-  ProjectDeletedPayload,
-  ProjectUpdatedPayload,
-} from "@multica/core/types";
 import { projectKeys } from "@/data/queries/projects";
-import { useWorkspaceStore } from "@/data/workspace-store";
-import { useWSClient } from "./realtime-provider";
+import { useWSSubscriptions } from "@/lib/use-ws-subscriptions";
 import {
   clearProjectDetail,
   patchProjectDetail,
@@ -34,37 +27,28 @@ import {
 } from "./project-ws-updaters";
 
 export function useProjectsRealtime() {
-  const ws = useWSClient();
-  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const qc = useQueryClient();
 
-  useEffect(() => {
-    if (!ws || !wsId) return;
+  useWSSubscriptions(
+    (ws, wsId) => {
+      const invalidateList = () =>
+        qc.invalidateQueries({ queryKey: projectKeys.list(wsId) });
 
-    const invalidateList = () => {
-      qc.invalidateQueries({ queryKey: projectKeys.list(wsId) });
-    };
-
-    const unsubs: Array<() => void> = [
-      ws.on("project:created", (p) => {
-        const payload = p as ProjectCreatedPayload;
-        upsertIntoProjectsList(qc, wsId, payload.project);
-      }),
-      ws.on("project:updated", (p) => {
-        const payload = p as ProjectUpdatedPayload;
-        patchProjectsList(qc, wsId, payload.project);
-        patchProjectDetail(qc, wsId, payload.project);
-      }),
-      ws.on("project:deleted", (p) => {
-        const payload = p as ProjectDeletedPayload;
-        removeFromProjectsList(qc, wsId, payload.project_id);
-        clearProjectDetail(qc, wsId, payload.project_id);
-      }),
-      ws.onReconnect(invalidateList),
-    ];
-
-    return () => {
-      for (const unsub of unsubs) unsub();
-    };
-  }, [ws, wsId, qc]);
+      return [
+        ws.on("project:created", (payload) => {
+          upsertIntoProjectsList(qc, wsId, payload.project);
+        }),
+        ws.on("project:updated", (payload) => {
+          patchProjectsList(qc, wsId, payload.project);
+          patchProjectDetail(qc, wsId, payload.project);
+        }),
+        ws.on("project:deleted", (payload) => {
+          removeFromProjectsList(qc, wsId, payload.project_id);
+          clearProjectDetail(qc, wsId, payload.project_id);
+        }),
+        ws.onReconnect(invalidateList),
+      ];
+    },
+    [qc],
+  );
 }
