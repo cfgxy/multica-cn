@@ -65,7 +65,7 @@ export default function Login() {
             disabled={submitting || !email.trim()}
             onPress={onSubmit}
           >
-            {submitting ? "Sending..." : "Send code"}
+            <Text>{submitting ? "Sending..." : "Send code"}</Text>
           </Button>
         </View>
       </KeyboardAvoidingView>

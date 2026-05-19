@@ -2,10 +2,10 @@
  * Header utility buttons shared across primary tabs (Inbox / My Issues).
  * Provides two global actions on the right: search and create-issue.
  *
- * The global nav menu is NOT triggered from here — it's the "More" tab in
- * the bottom bar (see (tabs)/_layout.tsx). Keeping the trigger on the
- * tab bar means it's always reachable in one thumb tap, regardless of
- * which screen the user is on.
+ * The workspace menu (global nav, workspace switcher, settings) is reached
+ * via the "More" tab in the bottom bar — see (tabs)/_layout.tsx, which
+ * intercepts the tabPress and presents /[workspace]/menu as an iOS
+ * formSheet. Header doesn't duplicate that entry to keep the strip clean.
  *
  * Tab-specific actions (e.g. My Issues filter) MUST NOT live here — they
  * mix scope levels with global actions and would clutter the strip.

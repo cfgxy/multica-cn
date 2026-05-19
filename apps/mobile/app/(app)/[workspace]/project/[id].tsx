@@ -191,7 +191,7 @@ export default function ProjectDetail() {
               : "not found"}
           </Text>
           <Button variant="outline" onPress={() => detail.refetch()}>
-            Retry
+            <Text>Retry</Text>
           </Button>
         </View>
       ) : (

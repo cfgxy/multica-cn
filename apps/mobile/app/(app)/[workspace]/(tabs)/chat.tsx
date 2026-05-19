@@ -35,6 +35,7 @@ import {
 } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useIsFocused } from "@react-navigation/native";
+import { router } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Agent,
@@ -78,6 +79,7 @@ import { OfflineBanner } from "@/components/chat/offline-banner";
 export default function ChatTab() {
   const qc = useQueryClient();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const userId = useAuthStore((s) => s.user?.id);
 
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
@@ -396,6 +398,9 @@ export default function ChatTab() {
         onTitlePress={() => setSessionSheetOpen(true)}
         onMorePress={handleDeleteActive}
         onNewPress={handleNewChat}
+        onMenuPress={
+          wsSlug ? () => router.push(`/${wsSlug}/menu`) : undefined
+        }
       />
       {availability === "none" ? <NoAgentBanner /> : null}
       <KeyboardAvoidingView

@@ -105,6 +105,22 @@ export default function WorkspaceLayout() {
           }}
         />
         <Stack.Screen
+          name="menu"
+          options={{
+            // Native iOS form sheet — drag handle, swipe-down dismiss,
+            // backdrop blur all handled by UIKit. Route is named `menu`
+            // (not `more`) to avoid path collision with (tabs)/more.tsx.
+            //
+            // sheetAllowedDetents: "fitToContents" lets iOS size the sheet
+            // to the GlobalNavMenu's intrinsic height instead of defaulting
+            // to full-screen on iPhone (which is what formSheet does in
+            // iOS 15+ unless detents are specified).
+            presentation: "formSheet",
+            sheetAllowedDetents: "fitToContents",
+            headerShown: false,
+          }}
+        />
+        <Stack.Screen
           name="more/issues"
           options={{ title: "Issues", headerBackTitle: "Back" }}
         />

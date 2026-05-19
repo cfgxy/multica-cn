@@ -199,7 +199,7 @@ export default function IssueDetail() {
               : "not found"}
           </Text>
           <Button variant="outline" onPress={() => detail.refetch()}>
-            Retry
+            <Text>Retry</Text>
           </Button>
         </View>
       ) : (

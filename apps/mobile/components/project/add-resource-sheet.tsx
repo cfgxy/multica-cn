@@ -76,7 +76,7 @@ export function AddResourceSheet({
           disabled={!valid || submitting}
           className={!valid || submitting ? "opacity-50" : undefined}
         >
-          {submitting ? "Attaching…" : "Attach"}
+          <Text>{submitting ? "Attaching…" : "Attach"}</Text>
         </Button>
       }
     >

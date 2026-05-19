@@ -96,7 +96,7 @@ export default function Verify() {
               disabled={submitting || code.length < CODE_LENGTH}
               onPress={() => submit(code)}
             >
-              {submitting ? "Verifying..." : "Verify"}
+              <Text>{submitting ? "Verifying..." : "Verify"}</Text>
             </Button>
 
             <Pressable
@@ -124,7 +124,7 @@ export default function Verify() {
               disabled={submitting}
               onPress={() => router.back()}
             >
-              Use a different email
+              <Text>Use a different email</Text>
             </Button>
           </View>
         </View>

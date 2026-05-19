@@ -63,18 +63,60 @@ Start minimal. Add to this list when actually adopted — do NOT pre-list librar
 - **TypeScript** strict
 - **Expo Router 55** (file-based routing — version aligns with Expo SDK)
 - **NativeWind 4** + **Tailwind 3.4** — NativeWind 5 is unstable; stay on v4. (Note: web/desktop use Tailwind v4 — versions intentionally differ.)
-- **react-native-reusables (RNR)** — the shadcn equivalent for React Native. Uses NativeWind + RN-Primitives + CVA. Component API mirrors shadcn.
+- **react-native-reusables (RNR)** — the shadcn equivalent for React Native. Uses NativeWind + RN-Primitives + CVA. Component API mirrors shadcn. **Phased adoption in progress — see `apps/mobile/docs/rnr-migration.md` for the canonical plan, three-tier classification, and Phase 0/1/2/3 status.**
 - **TanStack Query 5** — mobile owns its `QueryClient` with `AppState` focus listener + `NetInfo` online listener.
 - **Zustand** — mobile-local state only.
-- **expo-secure-store** — auth token persistence.
+- **expo-secure-store** — auth token persistence + theme preference (`light` / `dark` / `system`).
 
 When upgrading any of these, update this list.
 
-## Visual tokens (separate from web)
+## UI components & theming
 
-Mobile maintains its own design tokens in `apps/mobile/tailwind.config.js`. You MAY reference `packages/ui/styles/tokens.css` (web/desktop tokens) as inspiration, but **do not import or symlink the file**. Tokens are transcribed by hand and may diverge for mobile (touch-friendly spacing, no hover states, native typography).
+The full plan, file inventory, and migration phases live in `apps/mobile/docs/rnr-migration.md`. The rules below are the durable ones that must survive after the migration completes — read this section first when working on any UI.
 
-Tailwind version mismatch (mobile v3.4 vs web v4) makes file sharing impractical anyway — this isolation is intentional.
+### Hard rule — defaults first, three-tier waterfall
+
+Two principles govern every UI decision on mobile. They exist to fight the temptation to recreate things that already exist — which is exactly the trap that produced the current 21 hand-written components and 18 hand-rolled sheets.
+
+**Principle 1 — defaults first.** When you use any RNR component, accept its default variant, default size, default spacing, default palette. Do NOT add wrapper layers, "improved" defaults, or `variant="multicaCustom"` styles unless a concrete product need demands it. Reaching for shadcn defaults is correct; reaching for a hand-tuned version of them is the failure mode.
+
+**Principle 2 — iOS native > RNR > discuss.** When you need a new interaction, walk this waterfall in order, stop at the first hit:
+
+1. **iOS / RN ships a native API?** Use it directly. Don't wrap a `Modal` to mimic it.
+   - Text input prompt → `Alert.prompt`
+   - Confirm / destructive prompt → `Alert.alert`
+   - Action sheet (one-of-N) → `ActionSheetIOS.showActionSheetWithOptions`
+   - Date / time → `@react-native-community/datetimepicker` (already installed)
+   - Image / camera → `expo-image-picker` (already installed)
+   - Documents → `expo-document-picker` (already installed)
+   - Share → `Share.share` from `react-native`
+   - Haptics → `expo-haptics` (already installed)
+2. **RNR ships a matching component?** `npx @react-native-reusables/cli@latest add <name>`. Use the default variant/size/palette.
+3. **Neither.** **Stop and ask the user.** Don't silently hand-roll a replacement — that's exactly how the pre-migration legacy accumulated.
+
+### Component placement
+
+After deciding via the waterfall:
+
+- **Generic UI primitives** → `components/ui/`. Either RNR `add` output or hand-written with `cva` + `cn()` + semantic tokens + `@rn-primitives/*` building blocks.
+- **Domain UI** (anything mentioning issues, priorities, statuses, actors, agents, presence, projects, runs) → `components/<domain>/`. Composes primitives but isn't generic.
+
+Never copy the visual shape of an existing hand-written `components/ui/` component as a template if its RNR equivalent exists — most of them are pre-migration legacy. The migration doc tracks which files are legacy and which have been replaced.
+
+### Theming model — CSS variables + class-based dark mode
+
+- Source of truth for colors is `global.css` — CSS variables defined under `:root` (light) and `.dark:root` (dark). `tailwind.config.js` maps utilities like `bg-background` to `hsl(var(--background))`, so the same class name resolves to the right color in either mode automatically.
+- `darkMode: 'class'` (NOT media-query). We control the mode explicitly so the in-app Settings → Appearance picker (`light` / `dark` / `system`) can override the OS preference.
+- The mode is switched by NativeWind's `useColorScheme().setColorScheme(mode)`. Calling it sets the root class; every `bg-foo` / `text-foo` reactively rebinds to the new variable values. No manual className toggling, no re-render dance.
+- React Navigation (`expo-router`'s `Stack` headers, modal chrome, drawer) is themed separately by passing `NAV_THEME[isDarkColorScheme ? 'dark' : 'light']` into `ThemeProvider`. Source of `NAV_THEME` is `lib/theme.ts`, which mirrors `global.css` in TypeScript.
+- Persistence: the user's choice goes into `expo-secure-store` under the key `theme-preference` (values: `light` / `dark` / `system`). Loaded synchronously at app startup in `app/_layout.tsx` before the first paint; missing key defaults to `system`.
+- **When you change a CSS variable in `global.css`, also update `lib/theme.ts`.** They mirror each other. The RNR docs include a prompt template for this sync.
+
+### What this replaces (and what stays)
+
+- The old "Visual tokens" approach — hand-transcribed hex values in `tailwind.config.js` — is being **replaced** by the CSS-variable system above. Web tokens are still inspiration only; we do NOT import `packages/ui/styles/tokens.css` (Tailwind v3.4 vs v4 mismatch makes file sharing impractical; isolation is intentional).
+- The `cn()` helper at `lib/utils.ts` stays — RNR uses the same one.
+- The sheet rule from Lesson 6 below still applies. RNR ships `Dialog` and other modal primitives; use them for **new** sheets. Existing sheets migrate one PR at a time per `~/.claude/plans/mobile-sheet-rollout.md` — do not bulk-replace `sheet-shell.tsx`.
 
 ## Build & release
 

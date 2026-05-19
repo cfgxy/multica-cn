@@ -15,7 +15,17 @@ import { Button } from "@/components/ui/button";
 import { workspaceListOptions } from "@/data/queries/workspaces";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import {
+  useColorScheme,
+  type ThemePreference,
+} from "@/lib/use-color-scheme";
 import { cn } from "@/lib/utils";
+
+const THEME_OPTIONS: Array<{ value: ThemePreference; label: string }> = [
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
+  { value: "system", label: "System" },
+];
 
 export default function SettingsPage() {
   const user = useAuthStore((s) => s.user);
@@ -24,6 +34,7 @@ export default function SettingsPage() {
   const setCurrentWorkspace = useWorkspaceStore((s) => s.setCurrentWorkspace);
   const clearWorkspace = useWorkspaceStore((s) => s.clear);
   const { data, isLoading, error } = useQuery(workspaceListOptions());
+  const { preference, setPreference } = useColorScheme();
 
   const onSwitch = async (ws: Workspace) => {
     if (ws.slug === currentSlug) return;
@@ -81,12 +92,53 @@ export default function SettingsPage() {
         )}
       </SectionGroup>
 
+      <SectionGroup title="Appearance">
+        {THEME_OPTIONS.map((opt, idx) => (
+          <ThemeRow
+            key={opt.value}
+            label={opt.label}
+            isActive={preference === opt.value}
+            isLast={idx === THEME_OPTIONS.length - 1}
+            onPress={() => setPreference(opt.value)}
+          />
+        ))}
+      </SectionGroup>
+
       <View className="pt-2">
         <Button variant="outline" onPress={onSignOut}>
-          Sign out
+          <Text>Sign out</Text>
         </Button>
       </View>
     </ScrollView>
+  );
+}
+
+function ThemeRow({
+  label,
+  isActive,
+  isLast,
+  onPress,
+}: {
+  label: string;
+  isActive: boolean;
+  isLast: boolean;
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      className={cn(
+        "flex-row items-center px-4 py-3.5 active:bg-secondary",
+        !isLast && "border-b border-border",
+      )}
+    >
+      <View className="flex-1">
+        <Text className="text-base font-medium text-foreground">{label}</Text>
+      </View>
+      {isActive ? (
+        <Ionicons name="checkmark" size={18} color="#71717a" />
+      ) : null}
+    </Pressable>
   );
 }
 

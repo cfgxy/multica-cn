@@ -69,7 +69,7 @@ export default function ProjectsPage() {
             {error instanceof Error ? error.message : "unknown error"}
           </Text>
           <Button variant="outline" onPress={() => refetch()}>
-            Retry
+            <Text>Retry</Text>
           </Button>
         </View>
       ) : sorted.length === 0 ? (
@@ -140,7 +140,7 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
         lead.
       </Text>
       <Button variant="default" onPress={onCreate}>
-        Create project
+        <Text>Create project</Text>
       </Button>
     </View>
   );

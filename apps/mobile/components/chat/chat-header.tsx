@@ -18,6 +18,7 @@
  * subtitle reads "New chat" so the title region never looks broken.
  */
 import { Pressable, View } from "react-native";
+import { Ionicons } from "@expo/vector-icons";
 import type { Agent, ChatSession } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
@@ -31,6 +32,9 @@ interface Props {
   onTitlePress: () => void;
   onMorePress: () => void;
   onNewPress: () => void;
+  /** Opens the workspace menu sheet (/[workspace]/menu). Optional so other
+   *  embed sites can omit it, but the chat tab always provides it. */
+  onMenuPress?: () => void;
 }
 
 export function ChatHeader({
@@ -39,6 +43,7 @@ export function ChatHeader({
   onTitlePress,
   onMorePress,
   onNewPress,
+  onMenuPress,
 }: Props) {
   const agentName = currentAgent?.name ?? "Chat";
   const subtitle = currentSession?.title || "New chat";
@@ -46,6 +51,16 @@ export function ChatHeader({
 
   return (
     <View className="flex-row items-center px-3 pt-2 pb-2 border-b border-border bg-background">
+      {onMenuPress ? (
+        <Pressable
+          onPress={onMenuPress}
+          hitSlop={8}
+          className="h-9 w-9 mr-1 items-center justify-center rounded-full active:bg-secondary"
+          accessibilityLabel="Menu"
+        >
+          <Ionicons name="ellipsis-horizontal" size={20} color="#3f3f46" />
+        </Pressable>
+      ) : null}
       <Pressable
         onPress={onTitlePress}
         hitSlop={4}

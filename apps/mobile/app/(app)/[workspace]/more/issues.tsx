@@ -141,7 +141,7 @@ export default function IssuesPage() {
             {error instanceof Error ? error.message : "unknown error"}
           </Text>
           <Button variant="outline" onPress={() => refetch()}>
-            Retry
+            <Text>Retry</Text>
           </Button>
         </View>
       ) : showEmptyState ? (

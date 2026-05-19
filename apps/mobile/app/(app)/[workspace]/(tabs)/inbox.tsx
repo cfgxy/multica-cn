@@ -144,7 +144,7 @@ export default function Inbox() {
             {error instanceof Error ? error.message : "unknown error"}
           </Text>
           <Button variant="outline" onPress={() => refetch()}>
-            Retry
+            <Text>Retry</Text>
           </Button>
         </View>
       ) : !data || data.length === 0 ? (

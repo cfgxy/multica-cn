@@ -1,32 +1,25 @@
 /**
- * GlobalNavMenu — bottom-right popover anchored above the More tab. Three
- * sections: user identity card → workspace switcher → real feature entries.
+ * GlobalNavMenu — content of the workspace "Menu" sheet (a stack route
+ * presented as iOS formSheet). Three sections: user identity card →
+ * workspace switcher → real feature entries.
  *
- * Why a popover and not a tab: the iOS HIG treats tab-bar items as
- * destinations, not action triggers, so "More" was an anti-pattern. Linear /
- * Things 3 / Reminders all use a header-anchored global nav button instead.
- *
- * Why custom Modal instead of @gorhom/bottom-sheet: gorhom v5 only supports
- * Reanimated v3 and the mobile app is on Reanimated v4. Same Modal+Pressable
- * pattern as status-picker-sheet.tsx etc. — keeps the dependency surface
- * untouched.
+ * No self-managed Modal — the parent stack screen (formSheet route)
+ * handles presentation, drag-to-dismiss, and safe area. This component
+ * is a pure content view; it calls `router.dismiss()` to close.
  *
  * Composition mirrors web's sidebar dropdown (packages/views/layout/
- * app-sidebar.tsx:496-511): user info row (avatar + name + email) sits above
- * the workspace list. On mobile the row is a tappable card that pushes into
- * the existing settings page, since there isn't enough screen real estate to
- * inline account / workspaces / sign-out the way web does.
+ * app-sidebar.tsx:496-511): user info row (avatar + name + email) sits
+ * above the workspace list. On mobile the row is a tappable card that
+ * pushes into the existing settings page.
  */
 import { useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Image,
-  Modal,
   Pressable,
   ScrollView,
   View,
 } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router, usePathname } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
@@ -45,7 +38,7 @@ interface NavItem {
 }
 
 // Inbox / My Issues / Chat live on the bottom tab bar; Settings is reached
-// via the user card at the top of this popover. Only entries that are NOT
+// via the user card at the top of this menu. Only entries that are NOT
 // covered by either of those surfaces belong here.
 const NAV_ITEMS: NavItem[] = [
   { label: "Issues", icon: "list-outline", path: "/more/issues" },
@@ -55,13 +48,7 @@ const NAV_ITEMS: NavItem[] = [
 const ICON_COLOR = "#3f3f46";
 const ICON_MUTED = "#71717a";
 
-interface Props {
-  visible: boolean;
-  onClose: () => void;
-}
-
-export function GlobalNavMenu({ visible, onClose }: Props) {
-  const insets = useSafeAreaInsets();
+export function GlobalNavMenu() {
   const slug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const user = useAuthStore((s) => s.user);
   const pathname = usePathname();
@@ -72,124 +59,87 @@ export function GlobalNavMenu({ visible, onClose }: Props) {
   const isActive = (path: string) => {
     if (!slug) return false;
     const target = `/${slug}${path}`;
-    // Match exact, or a deeper child route. Append `/` to the prefix so a
-    // sibling like /:slug/inbox-archive doesn't match /:slug/inbox.
     if (pathname === target) return true;
     return pathname.startsWith(target + "/");
   };
 
+  const dismissAndPush = (href: string) => {
+    router.dismiss();
+    router.push(href);
+  };
+
   const onNav = (path: string) => {
     if (!slug) return;
-    onClose();
-    setShowWorkspaces(false);
-    router.push(`/${slug}${path}`);
+    dismissAndPush(`/${slug}${path}`);
   };
 
   const onOpenSettings = () => {
     if (!slug) return;
-    onClose();
-    setShowWorkspaces(false);
-    router.push(`/${slug}/more/settings`);
+    dismissAndPush(`/${slug}/more/settings`);
+  };
+
+  const onPickWorkspace = (ws: Workspace) => {
+    router.dismiss();
+    router.replace(`/${ws.slug}/inbox`);
   };
 
   return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={onClose}
-    >
+    // No `flex-1` — when this view is rendered inside a formSheet with
+    // `sheetAllowedDetents: "fitToContents"`, the sheet measures the
+    // content's intrinsic size. `flex-1` would expand to fill the parent
+    // and defeat fitToContents.
+    <ScrollView className="bg-background">
+      <UserCard user={user} onPress={onOpenSettings} />
+
       <Pressable
-        className="flex-1 bg-black/30"
-        onPress={() => {
-          setShowWorkspaces(false);
-          onClose();
-        }}
+        onPress={() => setShowWorkspaces((v) => !v)}
+        className="flex-row items-center px-4 py-3 active:bg-secondary border-b border-border"
       >
-        <View
-          // Anchor above the bottom tab bar (49pt iOS default + bottom
-          // safe-area inset for the home indicator) with a hair of
-          // breathing room. Menu rises from the More tab on the right.
-          style={{ paddingBottom: insets.bottom + 49 + 8, paddingRight: 12 }}
-          className="flex-1 items-end justify-end"
-        >
-          <Pressable onPress={() => {}}>
-            <View
-              className="w-72 bg-popover rounded-2xl overflow-hidden"
-              // Subtle elevation so it visually lifts off the page.
-              style={{
-                shadowColor: "#000",
-                shadowOpacity: 0.18,
-                shadowRadius: 16,
-                shadowOffset: { width: 0, height: 8 },
-                elevation: 8,
-              }}
-            >
-              {/* User identity card — tap pushes into settings, where
-                  account info, workspace list, and sign out already live. */}
-              <UserCard user={user} onPress={onOpenSettings} />
-
-              {/* Workspace switcher header */}
-              <Pressable
-                onPress={() => setShowWorkspaces((v) => !v)}
-                className="flex-row items-center px-4 py-3 active:bg-secondary border-b border-border"
-              >
-                <View className="size-7 rounded-md bg-secondary items-center justify-center mr-3">
-                  <Ionicons name="business" size={14} color={ICON_COLOR} />
-                </View>
-                <Text
-                  className="flex-1 text-sm font-medium text-foreground"
-                  numberOfLines={1}
-                >
-                  {currentWorkspace?.name ?? "Workspace"}
-                </Text>
-                <Ionicons
-                  name={showWorkspaces ? "chevron-up" : "chevron-down"}
-                  size={14}
-                  color={ICON_MUTED}
-                />
-              </Pressable>
-
-              {showWorkspaces ? (
-                <WorkspaceList
-                  activeSlug={slug}
-                  onPick={(ws) => {
-                    setShowWorkspaces(false);
-                    onClose();
-                    router.replace(`/${ws.slug}/inbox`);
-                  }}
-                />
-              ) : (
-                <View className="py-1">
-                  {NAV_ITEMS.map((item) => {
-                    const active = isActive(item.path);
-                    return (
-                      <Pressable
-                        key={item.path}
-                        onPress={() => onNav(item.path)}
-                        className={cn(
-                          "flex-row items-center px-3 py-2.5 mx-1 rounded-lg active:bg-secondary",
-                          active && "bg-secondary",
-                        )}
-                      >
-                        <Ionicons
-                          name={item.icon}
-                          size={18}
-                          color={ICON_COLOR}
-                        />
-                        <Text className="ml-3 flex-1 text-sm text-foreground">
-                          {item.label}
-                        </Text>
-                      </Pressable>
-                    );
-                  })}
-                </View>
-              )}
-            </View>
-          </Pressable>
+        <View className="size-7 rounded-md bg-secondary items-center justify-center mr-3">
+          <Ionicons name="business" size={14} color={ICON_COLOR} />
         </View>
+        <Text
+          className="flex-1 text-sm font-medium text-foreground"
+          numberOfLines={1}
+        >
+          {currentWorkspace?.name ?? "Workspace"}
+        </Text>
+        <Ionicons
+          name={showWorkspaces ? "chevron-up" : "chevron-down"}
+          size={14}
+          color={ICON_MUTED}
+        />
       </Pressable>
-    </Modal>
+
+      {showWorkspaces ? (
+        <WorkspaceList activeSlug={slug} onPick={onPickWorkspace} />
+      ) : (
+        <View className="py-1">
+          {NAV_ITEMS.map((item) => {
+            const active = isActive(item.path);
+            return (
+              <Pressable
+                key={item.path}
+                onPress={() => onNav(item.path)}
+                className={cn(
+                  "flex-row items-center px-3 py-2.5 mx-2 rounded-lg active:bg-secondary",
+                  active && "bg-secondary",
+                )}
+              >
+                <Ionicons
+                  name={item.icon}
+                  size={18}
+                  color={ICON_COLOR}
+                />
+                <Text className="ml-3 flex-1 text-sm text-foreground">
+                  {item.label}
+                </Text>
+              </Pressable>
+            );
+          })}
+        </View>
+      )}
+    </ScrollView>
   );
 }
 
@@ -221,7 +171,7 @@ function WorkspaceList({
   }
 
   return (
-    <ScrollView className="max-h-72">
+    <View>
       {data?.map((ws) => {
         const active = ws.slug === activeSlug;
         return (
@@ -251,7 +201,7 @@ function WorkspaceList({
           </Pressable>
         );
       })}
-    </ScrollView>
+    </View>
   );
 }
 

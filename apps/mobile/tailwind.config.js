@@ -1,64 +1,92 @@
 /**
- * Mobile design tokens — transcribed by hand from packages/ui/styles/tokens.css
- * (web/desktop). Web tokens use oklch + Tailwind v4 @theme inline syntax which
- * NativeWind 4 + Tailwind 3.4 can't consume, so we re-author them here as hex
- * approximations. When web tokens drift, sync this file by hand — divergence
- * is intentional.
+ * RNR template config (verbatim) + Multica custom token mappings appended.
  *
- * Mobile-specific tweaks (touch-friendly spacing, no hover variants) live here
- * too. Do NOT import packages/ui/styles/tokens.css.
+ * Colors map to CSS variables in apps/mobile/global.css. When changing a
+ * variable name there, mirror the change here AND in apps/mobile/lib/theme.ts.
+ *
+ * See apps/mobile/docs/rnr-migration.md §5 for the sync rule.
  */
+const { hairlineWidth } = require("nativewind/theme");
 
 /** @type {import('tailwindcss').Config} */
 module.exports = {
-  content: [
-    "./app/**/*.{js,jsx,ts,tsx}",
-    "./components/**/*.{js,jsx,ts,tsx}",
-  ],
+  darkMode: "class",
+  content: ["./app/**/*.{ts,tsx}", "./components/**/*.{ts,tsx}"],
   presets: [require("nativewind/preset")],
   theme: {
     extend: {
       colors: {
-        background: "#ffffff",
-        foreground: "#1f1f23",
-        card: "#ffffff",
-        "card-foreground": "#1f1f23",
-        popover: "#ffffff",
-        "popover-foreground": "#1f1f23",
-        primary: "#2e2e33",
-        "primary-foreground": "#fafafa",
-        secondary: "#f4f4f5",
-        "secondary-foreground": "#2e2e33",
-        muted: "#f4f4f5",
-        "muted-foreground": "#71717a",
-        // ~5% darker than `secondary` (#f4f4f5). Dedicated surface for
-        // fenced code blocks so they have visual elevation inside a
-        // comment card (which itself uses `secondary`). Don't fold this
-        // into `muted` — muted is used for many other neutral fills
-        // (disabled states, placeholder bg, /50 overlays) and bumping
-        // it would shift those too. Mirrors GitHub Primer's separate
-        // `bgColor-muted` token for code surfaces.
-        "code-surface": "#e8e8eb",
-        accent: "#f4f4f5",
-        "accent-foreground": "#2e2e33",
-        destructive: "#dc2626",
-        border: "#e4e4e7",
-        input: "#e4e4e7",
-        ring: "#a1a1aa",
-        brand: "#4571e0",
-        "brand-foreground": "#fafafa",
-        success: "#22c55e",
-        warning: "#eab308",
-        info: "#3b82f6",
-        priority: "#f97316",
+        border: "hsl(var(--border))",
+        input: "hsl(var(--input))",
+        ring: "hsl(var(--ring))",
+        background: "hsl(var(--background))",
+        foreground: "hsl(var(--foreground))",
+        primary: {
+          DEFAULT: "hsl(var(--primary))",
+          foreground: "hsl(var(--primary-foreground))",
+        },
+        secondary: {
+          DEFAULT: "hsl(var(--secondary))",
+          foreground: "hsl(var(--secondary-foreground))",
+        },
+        destructive: {
+          DEFAULT: "hsl(var(--destructive))",
+          foreground: "hsl(var(--destructive-foreground))",
+        },
+        muted: {
+          DEFAULT: "hsl(var(--muted))",
+          foreground: "hsl(var(--muted-foreground))",
+        },
+        accent: {
+          DEFAULT: "hsl(var(--accent))",
+          foreground: "hsl(var(--accent-foreground))",
+        },
+        popover: {
+          DEFAULT: "hsl(var(--popover))",
+          foreground: "hsl(var(--popover-foreground))",
+        },
+        card: {
+          DEFAULT: "hsl(var(--card))",
+          foreground: "hsl(var(--card-foreground))",
+        },
+
+        // Multica custom tokens
+        brand: {
+          DEFAULT: "hsl(var(--brand))",
+          foreground: "hsl(var(--brand-foreground))",
+        },
+        success: "hsl(var(--success))",
+        warning: "hsl(var(--warning))",
+        info: "hsl(var(--info))",
+        priority: "hsl(var(--priority))",
+        "code-surface": "hsl(var(--code-surface))",
       },
       borderRadius: {
-        sm: "calc(0.625rem * 0.6)",
-        md: "calc(0.625rem * 0.8)",
-        lg: "0.625rem",
-        xl: "calc(0.625rem * 1.4)",
+        lg: "var(--radius)",
+        md: "calc(var(--radius) - 2px)",
+        sm: "calc(var(--radius) - 4px)",
+      },
+      borderWidth: {
+        hairline: hairlineWidth(),
+      },
+      keyframes: {
+        "accordion-down": {
+          from: { height: "0" },
+          to: { height: "var(--radix-accordion-content-height)" },
+        },
+        "accordion-up": {
+          from: { height: "var(--radix-accordion-content-height)" },
+          to: { height: "0" },
+        },
+      },
+      animation: {
+        "accordion-down": "accordion-down 0.2s ease-out",
+        "accordion-up": "accordion-up 0.2s ease-out",
       },
     },
   },
-  plugins: [],
+  future: {
+    hoverOnlyWhenSupported: true,
+  },
+  plugins: [require("tailwindcss-animate")],
 };
