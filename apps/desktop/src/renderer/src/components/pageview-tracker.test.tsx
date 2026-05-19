@@ -116,7 +116,7 @@ describe("PageviewTracker", () => {
     expect(state.capturePageview).not.toHaveBeenCalled();
   });
 
-  it("fires pageview when a new tab is opened (openInNewTab / addTab)", () => {
+  it("fires pageview when a foreground tab is added (addTab path)", () => {
     state.byWorkspace = {
       acme: {
         activeTabId: "tA",
@@ -128,7 +128,10 @@ describe("PageviewTracker", () => {
     const { rerender } = render(<PageviewTracker />);
     state.capturePageview.mockClear();
 
-    // Simulate openInNewTab("/acme/agents") → new tab tC added and activated.
+    // Simulate a foreground new-tab action (e.g. cmd+k → "Open in new tab"
+    // that explicitly switches focus) — tC is appended AND becomes active.
+    // Note: `openInNewTab` itself opens tabs in the background and does NOT
+    // change `activeTabId`, so it does not trigger this path on its own.
     state.byWorkspace = {
       acme: {
         activeTabId: "tC",
