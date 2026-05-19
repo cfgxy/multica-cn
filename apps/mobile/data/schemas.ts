@@ -60,6 +60,12 @@ export const AttachmentSchema: z.ZodType<Attachment> = z.object({
   created_at: z.string().default(""),
 }).loose();
 
+/** GET /api/issues/:id/attachments — array of attachments for the issue.
+ *  Empty array fallback so a 5xx or shape mismatch doesn't crash markdown
+ *  rendering — image URIs simply fail to resolve and fall back to fetch. */
+export const AttachmentListSchema = z.array(AttachmentSchema).default([]);
+export const EMPTY_ATTACHMENT_LIST: Attachment[] = [];
+
 const LabelSchema = z.object({
   id: z.string(),
   workspace_id: z.string(),

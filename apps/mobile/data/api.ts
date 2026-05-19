@@ -59,6 +59,7 @@ import {
   ActiveTasksResponseSchema,
   AgentListSchema,
   AgentTaskListSchema,
+  AttachmentListSchema,
   AttachmentSchema,
   ChatMessageListSchema,
   ChatPendingTaskSchema,
@@ -67,6 +68,7 @@ import {
   EMPTY_ACTIVE_TASKS_RESPONSE,
   EMPTY_AGENT_LIST,
   EMPTY_AGENT_TASK_LIST,
+  EMPTY_ATTACHMENT_LIST,
   EMPTY_CHAT_MESSAGE_LIST,
   EMPTY_CHAT_PENDING_TASK,
   EMPTY_CHAT_SESSION_LIST,
@@ -515,6 +517,26 @@ class ApiClient {
       TimelineEntriesSchema,
       EMPTY_TIMELINE_ENTRIES,
       { endpoint: "GET /api/issues/:id/timeline" },
+    );
+  }
+
+  // GET /api/issues/:id/attachments — list of file attachments hooked to
+  // the issue (or its comments). Mobile uses this to resolve `mc://file/<id>`
+  // markdown image URIs to their `download_url` HTTPS endpoint; without it,
+  // iOS image loader doesn't understand the mc: scheme and renders broken.
+  async listAttachments(
+    issueId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<Attachment[]> {
+    const raw = await this.fetch<unknown>(
+      `/api/issues/${issueId}/attachments`,
+      { signal: opts?.signal },
+    );
+    return parseWithFallback(
+      raw,
+      AttachmentListSchema,
+      EMPTY_ATTACHMENT_LIST,
+      { endpoint: "GET /api/issues/:id/attachments" },
     );
   }
 

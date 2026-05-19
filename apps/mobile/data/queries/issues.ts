@@ -77,3 +77,20 @@ export const issueTasksOptions = (wsId: string | null, id: string) =>
     queryFn: ({ signal }) => api.listTasksByIssue(id, { signal }),
     enabled: !!wsId && !!id,
   });
+
+/**
+ * File attachments uploaded to this issue or any of its comments. The
+ * mobile markdown renderer reads this list to resolve `mc://file/<id>`
+ * URIs in image markdown to a real HTTPS `download_url` that iOS can
+ * actually load — see `lib/markdown/markdown-image.tsx`.
+ *
+ * TanStack Query dedupes the request across concurrent callers, so it's
+ * safe for both IssueDescription and CommentCard to fetch the same
+ * issue's attachments — only one network request fires.
+ */
+export const issueAttachmentsOptions = (wsId: string | null, id: string) =>
+  queryOptions({
+    queryKey: issueKeys.attachments(wsId, id),
+    queryFn: ({ signal }) => api.listAttachments(id, { signal }),
+    enabled: !!wsId && !!id,
+  });

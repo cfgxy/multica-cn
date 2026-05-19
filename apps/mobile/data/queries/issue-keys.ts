@@ -36,4 +36,8 @@ export const issueKeys = {
   // All tasks (any status) for an issue — drives the Runs history sheet.
   tasks: (wsId: string | null, id: string) =>
     [...issueKeys.all(wsId), "tasks", id] as const,
+  // File attachments hooked to an issue (and its comments). Used by the
+  // markdown renderer to resolve `mc://file/<id>` URIs to download_url.
+  attachments: (wsId: string | null, id: string) =>
+    [...issueKeys.all(wsId), "attachments", id] as const,
 };

@@ -201,7 +201,9 @@ function MessageRow({ message }: { message: ChatMessage }) {
   // right gutter from the outer max-w-4xl px-5 container.
   return (
     <View className="w-full">
-      <Markdown content={message.content} />
+      {/* message.attachments scopes mc://file/<id> resolution to this
+          message's own uploads (chat doesn't have an issue-wide list). */}
+      <Markdown content={message.content} attachments={message.attachments} />
     </View>
   );
 }

@@ -30,9 +30,12 @@ import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { useActorLookup } from "@/data/use-actor-name";
 import { timeAgo } from "@/lib/time-ago";
+import { useQuery } from "@tanstack/react-query";
 import { Markdown } from "@/lib/markdown";
 import { useToggleCommentReaction } from "@/data/mutations/issues";
 import { useAuthStore } from "@/data/auth-store";
+import { useWorkspaceStore } from "@/data/workspace-store";
+import { issueAttachmentsOptions } from "@/data/queries/issues";
 import { ReactionBar } from "./reaction-bar";
 import { CommentActionSheet } from "./comment-action-sheet";
 
@@ -173,8 +176,14 @@ function CommentBody({
 }) {
   const { getName } = useActorLookup();
   const userId = useAuthStore((s) => s.user?.id);
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const toggle = useToggleCommentReaction(issueId);
   const [sheetOpen, setSheetOpen] = useState(false);
+  // Same query as IssueDescription — TanStack dedupes so this fires once
+  // per issue regardless of how many comments need to resolve attachments.
+  const { data: attachments } = useQuery(
+    issueAttachmentsOptions(wsId, issueId),
+  );
 
   const name = getName(
     entry.actor_type as "member" | "agent" | null | undefined,
@@ -239,7 +248,9 @@ function CommentBody({
             {edited ? " · (edited)" : ""}
           </Text>
         </View>
-        {entry.content ? <Markdown content={entry.content} /> : null}
+        {entry.content ? (
+          <Markdown content={entry.content} attachments={attachments} />
+        ) : null}
         <ReactionBar
           reactions={reactions}
           currentUserId={userId}
