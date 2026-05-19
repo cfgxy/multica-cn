@@ -21,6 +21,11 @@ export function onIssueCreated(
   qc.invalidateQueries({ queryKey: issueKeys.myAll(wsId) });
   qc.invalidateQueries({ queryKey: issueKeys.assigneeGroupsAll(wsId) });
   qc.invalidateQueries({ queryKey: issueKeys.myAssigneeGroupsAll(wsId) });
+  // Refresh every Project Gantt cache that might be observing this issue.
+  // We invalidate the whole prefix rather than the issue's own project
+  // because a fresh issue isn't necessarily scheduled yet; the active Gantt
+  // page (if any) will refetch and pick it up if it qualifies.
+  qc.invalidateQueries({ queryKey: issueKeys.projectGanttAll(wsId) });
   if (issue.parent_issue_id) {
     qc.invalidateQueries({ queryKey: issueKeys.children(wsId, issue.parent_issue_id) });
     qc.invalidateQueries({ queryKey: issueKeys.childProgress(wsId) });
@@ -52,6 +57,12 @@ export function onIssueUpdated(
   qc.invalidateQueries({ queryKey: issueKeys.myAll(wsId) });
   qc.invalidateQueries({ queryKey: issueKeys.assigneeGroupsAll(wsId) });
   qc.invalidateQueries({ queryKey: issueKeys.myAssigneeGroupsAll(wsId) });
+  // Any field change can shift Gantt membership — start_date / due_date may
+  // have moved in or out of the `scheduled` set, project_id may have
+  // changed, or the row that is in the cache may need to mirror updated
+  // metadata (title, status, assignee). Cheaper to invalidate the prefix
+  // than to mirror the server filter here.
+  qc.invalidateQueries({ queryKey: issueKeys.projectGanttAll(wsId) });
   qc.setQueryData<Issue>(issueKeys.detail(wsId, issue.id), (old) =>
     old ? { ...old, ...issue } : old,
   );

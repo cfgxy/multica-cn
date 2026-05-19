@@ -15,12 +15,12 @@ import { useCreatePin, useDeletePin } from "@multica/core/pins";
 import {
   myIssueAssigneeGroupsOptions,
   myIssueListOptions,
-  myIssueListPaginationOptions,
+  projectGanttIssuesOptions,
   childIssueProgressOptions,
   type AssigneeGroupedIssuesFilter,
   type MyIssuesFilter,
 } from "@multica/core/issues/queries";
-import { useLoadAllRemaining, useUpdateIssue } from "@multica/core/issues/mutations";
+import { useUpdateIssue } from "@multica/core/issues/mutations";
 import { useModalStore } from "@multica/core/modals";
 import { memberListOptions, agentListOptions } from "@multica/core/workspace/queries";
 import { useWorkspaceId } from "@multica/core/hooks";
@@ -40,7 +40,7 @@ import { ProjectResourcesSection } from "./project-resources-section";
 import { IssuesHeader } from "../../issues/components/issues-header";
 import { BoardView } from "../../issues/components/board-view";
 import { ListView } from "../../issues/components/list-view";
-import { GanttView, type GanttPaginationProps } from "../../issues/components/gantt-view";
+import { GanttView } from "../../issues/components/gantt-view";
 import { BatchActionToolbar } from "../../issues/components/batch-action-toolbar";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Button } from "@multica/ui/components/ui/button";
@@ -115,7 +115,7 @@ function ProjectIssuesContent({
   assigneeGroupFilter,
   scope,
   filter,
-  ganttPagination,
+  ganttIssues,
 }: {
   projectId: string;
   projectIssues: Issue[];
@@ -124,7 +124,7 @@ function ProjectIssuesContent({
   assigneeGroupFilter?: AssigneeGroupedIssuesFilter;
   scope: string;
   filter: MyIssuesFilter;
-  ganttPagination: GanttPaginationProps | undefined;
+  ganttIssues: Issue[];
 }) {
   const { t } = useT("projects");
   const wsId = useWorkspaceId();
@@ -139,6 +139,14 @@ function ProjectIssuesContent({
   const issues = useMemo(
     () => filterIssues(projectIssues, { statusFilters, priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, projectFilters: [], includeNoProject: false, labelFilters }),
     [projectIssues, statusFilters, priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, labelFilters],
+  );
+
+  // Gantt rides its own dedicated query (scheduled-only) so it doesn't have
+  // to wait for every status bucket to paginate in. View-store filters still
+  // apply so toggling priority / assignee / label hides the same bars.
+  const filteredGanttIssues = useMemo(
+    () => filterIssues(ganttIssues, { statusFilters, priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, projectFilters: [], includeNoProject: false, labelFilters }),
+    [ganttIssues, statusFilters, priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, labelFilters],
   );
 
   const { data: childProgressMap = new Map() } = useQuery(childIssueProgressOptions(wsId));
@@ -220,9 +228,7 @@ function ProjectIssuesContent({
           projectId={projectId}
         />
       )}
-      {viewMode === "gantt" && (
-        <GanttView issues={issues} pagination={ganttPagination} />
-      )}
+      {viewMode === "gantt" && <GanttView issues={filteredGanttIssues} />}
     </div>
   );
 }
@@ -271,32 +277,19 @@ function ProjectIssuesSurface({
     ...assigneeGroupsOptions,
     enabled: usesAssigneeBoard,
   });
-  // Subscribes to the same cache as statusIssuesQuery and just selects a
-  // pagination summary instead of the flat issue array — used by Gantt to
-  // warn when issues are hidden behind unfetched pages (Board/List have
-  // per-column load-more affordances; Gantt does not).
-  const paginationQuery = useQuery({
-    ...myIssueListPaginationOptions(wsId, scope, filter),
-    enabled: !usesAssigneeBoard,
+  // Gantt has its own data source — a single fetch of every scheduled issue
+  // in the project (server-side `scheduled=true` filter). Independent from
+  // the bucketed Board/List cache so it isn't bottlenecked by per-status
+  // pagination and reacts in isolation to WS updates that move issues into
+  // or out of the scheduled set.
+  const ganttIssuesQuery = useQuery({
+    ...projectGanttIssuesOptions(wsId, projectId),
+    enabled: viewMode === "gantt",
   });
-  const { loadAll, isLoading: isLoadingMore } = useLoadAllRemaining({ scope, filter });
   const projectIssues = usesAssigneeBoard
     ? (assigneeGroupsQuery.data?.groups.flatMap((group) => group.issues) ?? [])
     : (statusIssuesQuery.data ?? []);
-
-  // Gantt can't paginate per-column, so we surface a banner + Load-all
-  // affordance when the cache is missing pages. Skip when the surface is
-  // using the assignee-grouped query — that uses a different cache shape.
-  const ganttPagination: GanttPaginationProps | undefined =
-    !usesAssigneeBoard && paginationQuery.data
-      ? {
-          loaded: paginationQuery.data.loaded,
-          total: paginationQuery.data.total,
-          hasMore: paginationQuery.data.hasMore,
-          isLoadingMore,
-          onLoadAll: loadAll,
-        }
-      : undefined;
+  const ganttIssues = ganttIssuesQuery.data ?? [];
 
   return (
     <>
@@ -309,7 +302,7 @@ function ProjectIssuesSurface({
         assigneeGroupFilter={usesAssigneeBoard ? assigneeGroupFilter : undefined}
         scope={scope}
         filter={filter}
-        ganttPagination={ganttPagination}
+        ganttIssues={ganttIssues}
       />
       <BatchActionToolbar />
     </>
