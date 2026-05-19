@@ -25,14 +25,14 @@
  * as the primary target so this is acceptable for now.
  */
 import type { ReactNode } from "react";
-import { Modal, Pressable, View } from "react-native";
+import { Modal, View } from "react-native";
 import {
   initialWindowMetrics,
   SafeAreaProvider,
   useSafeAreaInsets,
 } from "react-native-safe-area-context";
-import { Ionicons } from "@expo/vector-icons";
 import { Text } from "@/components/ui/text";
+import { IconButton } from "@/components/ui/icon-button";
 
 interface Props {
   visible: boolean;
@@ -85,16 +85,14 @@ function SheetBody({
         <Text className="text-base font-semibold text-foreground">{title}</Text>
         <View className="flex-row items-center gap-2">
           {rightAction}
-          <Pressable
+          <IconButton
+            name="close"
+            iconSize={18}
+            variant="secondary"
+            className="size-7 rounded-full"
             onPress={onClose}
-            hitSlop={8}
             accessibilityLabel="Close"
-            className="active:opacity-60"
-          >
-            <View className="size-7 items-center justify-center rounded-full bg-secondary">
-              <Ionicons name="close" size={18} color="#3f3f46" />
-            </View>
-          </Pressable>
+          />
         </View>
       </View>
       <View className="flex-1" style={{ paddingBottom: insets.bottom }}>
