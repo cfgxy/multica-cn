@@ -2,7 +2,13 @@
  * Due-date picker. Wraps `@react-native-community/datetimepicker` (native
  * UIDatePicker on iOS, Material spinner on Android). Two affordances:
  *   - "Done" — sends the currently displayed date as ISO 8601 / RFC 3339
- *   - "Clear due date" — sends null (only shown when value is set)
+ *   - "Clear" — sends null (only shown when value is set)
+ *
+ * Container: iOS pageSheet via shared `<SheetShell>`. UIDatePicker
+ * `display="inline"` is sized for sheet-body use (Apple Calendar /
+ * Reminders sheets use the same component) — the earlier centered
+ * transparent card cramped it. Done / Cancel / Clear sit in the
+ * `rightAction` slot of the sheet header so the body is just the picker.
  *
  * Backend (`server/internal/handler/issue.go` CreateIssue / UpdateIssue)
  * parses with `time.Parse(time.RFC3339, ...)` — strict. Mirrors web's
@@ -15,9 +21,10 @@
  * matches web's behavior — diverging here would break parity.
  */
 import { useState, useEffect } from "react";
-import { Modal, Pressable, View } from "react-native";
+import { Pressable, View } from "react-native";
 import DateTimePicker from "@react-native-community/datetimepicker";
 import { Text } from "@/components/ui/text";
+import { SheetShell } from "@/components/ui/sheet-shell";
 
 interface Props {
   visible: boolean;
@@ -58,51 +65,44 @@ export function DueDatePickerSheet({
     onClose();
   };
 
-  return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={onClose}
-    >
-      <Pressable className="flex-1 bg-black/40" onPress={onClose}>
-        <View className="flex-1 items-center justify-center px-6">
-          <Pressable onPress={() => {}} className="w-full max-w-sm">
-            <View className="bg-popover rounded-2xl p-4 gap-3">
-              <DateTimePicker
-                value={draft}
-                mode="date"
-                display="inline"
-                onChange={(_event, selected) => {
-                  if (selected) setDraft(selected);
-                }}
-              />
-              <View className="flex-row gap-2 justify-end">
-                {value ? (
-                  <Pressable
-                    onPress={clear}
-                    className="px-3 py-2 rounded-md active:bg-secondary"
-                  >
-                    <Text className="text-sm text-destructive">Clear</Text>
-                  </Pressable>
-                ) : null}
-                <Pressable
-                  onPress={onClose}
-                  className="px-3 py-2 rounded-md active:bg-secondary"
-                >
-                  <Text className="text-sm text-muted-foreground">Cancel</Text>
-                </Pressable>
-                <Pressable
-                  onPress={submit}
-                  className="px-3 py-2 rounded-md bg-primary active:opacity-80"
-                >
-                  <Text className="text-sm text-primary-foreground">Done</Text>
-                </Pressable>
-              </View>
-            </View>
-          </Pressable>
-        </View>
+  const headerActions = (
+    <View className="flex-row items-center gap-1">
+      {value ? (
+        <Pressable
+          onPress={clear}
+          hitSlop={6}
+          className="px-2 py-1 rounded-md active:bg-secondary"
+        >
+          <Text className="text-sm text-destructive">Clear</Text>
+        </Pressable>
+      ) : null}
+      <Pressable
+        onPress={submit}
+        hitSlop={6}
+        className="px-2 py-1 rounded-md active:bg-secondary"
+      >
+        <Text className="text-sm font-medium text-primary">Done</Text>
       </Pressable>
-    </Modal>
+    </View>
+  );
+
+  return (
+    <SheetShell
+      visible={visible}
+      onClose={onClose}
+      title="Due date"
+      rightAction={headerActions}
+    >
+      <View className="flex-1 items-center pt-2">
+        <DateTimePicker
+          value={draft}
+          mode="date"
+          display="inline"
+          onChange={(_event, selected) => {
+            if (selected) setDraft(selected);
+          }}
+        />
+      </View>
+    </SheetShell>
   );
 }

@@ -474,6 +474,28 @@ The mobile codebase has ~15 Modal sheets. They almost all copy the same shape (`
 
 **Past sheets that need to migrate to pageSheet** (logged in `/Users/qingnaiyuan/.claude/plans/mobile-sheet-rollout.md`): session-sheet, issue-filter-sheet, assignee/label/project/project-lead picker sheets, add-resource-sheet. Do these one PR at a time, one verification at a time — don't try to batch.
 
+**Carve-out — picker-row consistency wins over per-container optimisation:**
+
+The table above says "< 7 fixed picker options → centered card". That rule
+applies in isolation, but **breaks down when multiple pickers coexist in
+the same chip row** (issue-detail AttributeRow is the canonical case:
+status / priority / assignee / label / project / due-date all sit next
+to each other). Mixing centered cards (for status/priority, short
+fixed lists) with pageSheets (for assignee/label/project, long lists)
+means the user gets two different gestures depending on which chip
+they tap — there's no muscle-memory carry-over.
+
+When you find yourself building a row like this, **use pageSheet for
+every picker in the row**, even the ones a standalone centered card
+would handle fine. The cost is some empty space below 5–7 short rows;
+the gain is uniform tap → slide-up-sheet + drag-down-to-dismiss
+behaviour across the whole row. Linear iOS / Things 3 / Apple
+Reminders all do this for the same reason.
+
+The centered-card pattern stays correct for **isolated short menus**
+(e.g. the chat-composer's "More" popover, the timeline's coalesce-
+expand) where there's no neighbour to be consistent with.
+
 ### 7. Destructive swipe: reveal only, no auto-fire — always pair with haptic
 
 iOS Mail / Linear iOS / Things: leftward swipe reveals a red Archive

@@ -20,7 +20,13 @@
 import { useMemo, useState } from "react";
 import { View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
-import type { Issue, IssuePriority, IssueStatus, Label } from "@multica/core/types";
+import type {
+  Issue,
+  IssuePriority,
+  IssueStatus,
+  Label,
+  Project,
+} from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { StatusIcon } from "@/components/ui/status-icon";
 import { PriorityIcon } from "@/components/ui/priority-icon";
@@ -35,6 +41,7 @@ import {
 } from "./pickers/assignee-picker-sheet";
 import { LabelPickerSheet } from "./pickers/label-picker-sheet";
 import { DueDatePickerSheet } from "./pickers/due-date-picker-sheet";
+import { ProjectPickerSheet } from "./pickers/project-picker-sheet";
 import {
   useAttachLabel,
   useDetachLabel,
@@ -43,13 +50,16 @@ import {
 import { useActorLookup } from "@/data/use-actor-name";
 import { findProject, projectListOptions } from "@/data/queries/projects";
 import { useWorkspaceStore } from "@/data/workspace-store";
-import { STATUS_LABEL } from "@/lib/issue-status";
+import {
+  STATUS_LABEL,
+  PRIORITY_LABEL as PRIORITY_FULL_LABEL,
+} from "@/lib/issue-status";
 
-const PRIORITY_LABEL: Record<IssuePriority, string> = {
-  urgent: "Urgent",
-  high: "High",
-  medium: "Medium",
-  low: "Low",
+// Chip placeholder shortens `none` from "No priority" → "Priority" so the
+// unset chip reads as a placeholder, not as a confusing assigned value.
+// All other priorities use the canonical label from lib/issue-status.ts.
+const PRIORITY_CHIP_LABEL: Record<IssuePriority, string> = {
+  ...PRIORITY_FULL_LABEL,
   none: "Priority",
 };
 
@@ -72,6 +82,7 @@ export function AttributeRow({ issue }: { issue: Issue }) {
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [labelOpen, setLabelOpen] = useState(false);
   const [dueOpen, setDueOpen] = useState(false);
+  const [projectOpen, setProjectOpen] = useState(false);
 
   // Project read-only — fetch list to look up the title + icon. Cheap
   // (cached after first issue-detail visit).
@@ -98,6 +109,8 @@ export function AttributeRow({ issue }: { issue: Issue }) {
   const onAttach = (label: Label) => attachLabel.mutate({ label });
   const onDetach = (labelId: string) => detachLabel.mutate({ labelId });
   const onDue = (next: string | null) => updateIssue.mutate({ due_date: next });
+  const onProject = (next: Project | null) =>
+    updateIssue.mutate({ project_id: next?.id ?? null });
 
   const assigneeValue: AssigneeValue =
     issue.assignee_type && issue.assignee_id
@@ -122,7 +135,7 @@ export function AttributeRow({ issue }: { issue: Issue }) {
       {/* Priority — always shown; "none" still tappable so user can change */}
       <AttributeChip
         icon={<PriorityIcon priority={issue.priority} size={14} />}
-        label={PRIORITY_LABEL[issue.priority]}
+        label={PRIORITY_CHIP_LABEL[issue.priority]}
         variant={issue.priority === "none" ? "dimmed" : "filled"}
         onPress={() => setPriorityOpen(true)}
       />
@@ -153,8 +166,10 @@ export function AttributeRow({ issue }: { issue: Issue }) {
         />
       )}
 
-      {/* Each existing label as its own chip — tap deletes (calls detach
-          directly to avoid a sheet round-trip for the most common action). */}
+      {/* Each existing label renders as its own chip. Tap opens the
+          LabelPickerSheet (where the user can toggle attached/detached);
+          no quick-detach gesture on the chip itself in v1 — Linear iOS
+          uses long-press for that, deferred until requested. */}
       {labels.map((label) => (
         <AttributeChip
           key={label.id}
@@ -178,14 +193,24 @@ export function AttributeRow({ issue }: { issue: Issue }) {
         />
       ) : null}
 
-      {/* Project — read-only chip; picker deferred. Hidden when empty. */}
+      {/* Project — tap to open picker (or set placeholder when none). */}
       {project ? (
         <AttributeChip
           icon={<ProjectIcon icon={project.icon} size="sm" />}
           label={project.title}
           variant="filled"
+          onPress={() => setProjectOpen(true)}
         />
-      ) : null}
+      ) : (
+        <AttributeChip
+          icon={
+            <View className="size-3.5 rounded-sm border border-dashed border-muted-foreground/40" />
+          }
+          label="Project"
+          variant="dimmed"
+          onPress={() => setProjectOpen(true)}
+        />
+      )}
 
       {/* Due date */}
       <AttributeChip
@@ -226,6 +251,12 @@ export function AttributeRow({ issue }: { issue: Issue }) {
         value={issue.due_date}
         onChange={onDue}
         onClose={() => setDueOpen(false)}
+      />
+      <ProjectPickerSheet
+        visible={projectOpen}
+        value={project ?? null}
+        onChange={onProject}
+        onClose={() => setProjectOpen(false)}
       />
     </View>
   );
