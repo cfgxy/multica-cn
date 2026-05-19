@@ -398,7 +398,7 @@ describe("AttachmentPreviewModal — open-in-new-tab (HTML only)", () => {
     expect(screen.getByTitle("Open in new tab")).toBeTruthy();
   });
 
-  it("invokes navigation.openInNewTab with the preview path when available (desktop)", async () => {
+  it("invokes navigation.openInNewTab with the preview path and closes the modal (desktop)", async () => {
     getAttachmentTextContentMock.mockResolvedValueOnce({
       text: "<p>hi</p>",
       originalContentType: "text/html",
@@ -407,11 +407,12 @@ describe("AttachmentPreviewModal — open-in-new-tab (HTML only)", () => {
       filename: "report.html",
       content_type: "text/html",
     });
+    const onClose = vi.fn();
     render(
       <AttachmentPreviewModal
         source={{ kind: "full", attachment: att }}
         open
-        onClose={() => {}}
+        onClose={onClose}
       />,
     );
     fireEvent.click(screen.getByTitle("Open in new tab"));
@@ -419,9 +420,10 @@ describe("AttachmentPreviewModal — open-in-new-tab (HTML only)", () => {
       "/acme/attachments/att-1/preview?name=report.html",
       "report.html",
     );
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it("falls back to window.open against the shareable URL on web", async () => {
+  it("falls back to window.open against the shareable URL and closes the modal (web)", async () => {
     navState.hasOpenInNewTab = false;
     getAttachmentTextContentMock.mockResolvedValueOnce({
       text: "<p>hi</p>",
@@ -434,11 +436,12 @@ describe("AttachmentPreviewModal — open-in-new-tab (HTML only)", () => {
       filename: "report.html",
       content_type: "text/html",
     });
+    const onClose = vi.fn();
     render(
       <AttachmentPreviewModal
         source={{ kind: "full", attachment: att }}
         open
-        onClose={() => {}}
+        onClose={onClose}
       />,
     );
     fireEvent.click(screen.getByTitle("Open in new tab"));
@@ -448,6 +451,7 @@ describe("AttachmentPreviewModal — open-in-new-tab (HTML only)", () => {
       "_blank",
       "noopener,noreferrer",
     );
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
   it("does not render the new-tab button for non-HTML kinds", () => {

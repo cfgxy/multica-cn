@@ -222,10 +222,11 @@ export function AttachmentPreviewModal({
     const path = `${paths.workspace(slug).attachmentPreview(state.attachmentId)}${nameQuery}`;
     if (navigation.openInNewTab) {
       navigation.openInNewTab(path, state.filename);
-      return;
+    } else {
+      const url = navigation.getShareableUrl(path);
+      window.open(url, "_blank", "noopener,noreferrer");
     }
-    const url = navigation.getShareableUrl(path);
-    window.open(url, "_blank", "noopener,noreferrer");
+    onClose();
   };
 
   if (!open || typeof document === "undefined") return null;

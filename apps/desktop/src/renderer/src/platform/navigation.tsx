@@ -180,7 +180,9 @@ export function DesktopNavigationProvider({
       searchParams: new URLSearchParams(location.search),
       openInNewTab: (path: string, title?: string) => {
         // Cross-workspace "open in new tab" switches workspace and opens
-        // the path there; same-workspace just adds a tab in the current group.
+        // the path there; same-workspace just adds a background tab. The
+        // type contract (NavigationAdapter.openInNewTab) is explicitly a
+        // background-tab operation — focus stays on the current tab.
         const slug = extractWorkspaceSlug(path);
         const store = useTabStore.getState();
         if (slug && slug !== store.activeWorkspaceSlug) {
@@ -188,8 +190,7 @@ export function DesktopNavigationProvider({
           return;
         }
         const icon = resolveRouteIcon(path);
-        const tabId = store.openTab(path, title ?? path, icon);
-        if (tabId) store.setActiveTab(tabId);
+        store.openTab(path, title ?? path, icon);
       },
       getShareableUrl: (path: string) => `${appUrl}${path}`,
     }),
@@ -249,8 +250,7 @@ export function TabNavigationProvider({
           return;
         }
         const icon = resolveRouteIcon(path);
-        const tabId = store.openTab(path, title ?? path, icon);
-        if (tabId) store.setActiveTab(tabId);
+        store.openTab(path, title ?? path, icon);
       },
       getShareableUrl: (path: string) => `${appUrl}${path}`,
     }),
