@@ -73,7 +73,7 @@ export function HtmlAttachmentPreview({
     const nameQuery = filename ? `?name=${encodeURIComponent(filename)}` : "";
     const path = `${paths.workspace(slug).attachmentPreview(attachmentId)}${nameQuery}`;
     if (navigation.openInNewTab) {
-      navigation.openInNewTab(path, filename);
+      navigation.openInNewTab(path, filename, { activate: true });
       return;
     }
     const url = navigation.getShareableUrl(path);
