@@ -419,6 +419,7 @@ describe("AttachmentPreviewModal — open-in-new-tab (HTML only)", () => {
     expect(openInNewTabMock).toHaveBeenCalledWith(
       "/acme/attachments/att-1/preview?name=report.html",
       "report.html",
+      { activate: true },
     );
     expect(onClose).toHaveBeenCalledTimes(1);
   });

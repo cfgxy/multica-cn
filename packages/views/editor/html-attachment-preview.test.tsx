@@ -202,6 +202,7 @@ describe("HtmlAttachmentPreview — toolbar actions", () => {
     expect(openInNewTabMock).toHaveBeenCalledWith(
       "/acme/attachments/att-1/preview?name=report.html",
       "report.html",
+      { activate: true },
     );
   });
 

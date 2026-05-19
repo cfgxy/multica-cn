@@ -178,11 +178,16 @@ export function DesktopNavigationProvider({
       },
       pathname: location.pathname,
       searchParams: new URLSearchParams(location.search),
-      openInNewTab: (path: string, title?: string) => {
+      openInNewTab: (
+        path: string,
+        title?: string,
+        opts?: { activate?: boolean },
+      ) => {
         // Cross-workspace "open in new tab" switches workspace and opens
-        // the path there; same-workspace just adds a background tab. The
-        // type contract (NavigationAdapter.openInNewTab) is explicitly a
-        // background-tab operation — focus stays on the current tab.
+        // the path there (focus follows the user); same-workspace defaults
+        // to background tab (browser cmd+click semantics). Callers that
+        // represent an explicit "Open in new tab" CTA pass `activate: true`
+        // to bring the new tab to the foreground.
         const slug = extractWorkspaceSlug(path);
         const store = useTabStore.getState();
         if (slug && slug !== store.activeWorkspaceSlug) {
@@ -190,7 +195,10 @@ export function DesktopNavigationProvider({
           return;
         }
         const icon = resolveRouteIcon(path);
-        store.openTab(path, title ?? path, icon);
+        const newId = store.openTab(path, title ?? path, icon);
+        if (opts?.activate && newId) {
+          store.setActiveTab(newId);
+        }
       },
       getShareableUrl: (path: string) => `${appUrl}${path}`,
     }),
@@ -242,7 +250,11 @@ export function TabNavigationProvider({
       back: () => router.navigate(-1),
       pathname: location.pathname,
       searchParams: new URLSearchParams(location.search),
-      openInNewTab: (path: string, title?: string) => {
+      openInNewTab: (
+        path: string,
+        title?: string,
+        opts?: { activate?: boolean },
+      ) => {
         const slug = extractWorkspaceSlug(path);
         const store = useTabStore.getState();
         if (slug && slug !== store.activeWorkspaceSlug) {
@@ -250,7 +262,10 @@ export function TabNavigationProvider({
           return;
         }
         const icon = resolveRouteIcon(path);
-        store.openTab(path, title ?? path, icon);
+        const newId = store.openTab(path, title ?? path, icon);
+        if (opts?.activate && newId) {
+          store.setActiveTab(newId);
+        }
       },
       getShareableUrl: (path: string) => `${appUrl}${path}`,
     }),

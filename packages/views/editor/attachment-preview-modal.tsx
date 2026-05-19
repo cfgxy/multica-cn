@@ -221,7 +221,7 @@ export function AttachmentPreviewModal({
       : "";
     const path = `${paths.workspace(slug).attachmentPreview(state.attachmentId)}${nameQuery}`;
     if (navigation.openInNewTab) {
-      navigation.openInNewTab(path, state.filename);
+      navigation.openInNewTab(path, state.filename, { activate: true });
     } else {
       const url = navigation.getShareableUrl(path);
       window.open(url, "_blank", "noopener,noreferrer");

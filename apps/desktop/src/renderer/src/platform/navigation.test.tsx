@@ -137,6 +137,22 @@ describe("DesktopNavigationProvider.openInNewTab", () => {
     expect(state.switchWorkspace).not.toHaveBeenCalled();
   });
 
+  it("activates the new tab when opts.activate is true (foreground)", () => {
+    let adapter: ReturnType<typeof useNavigation> | null = null;
+    const Probe = captureAdapter((a) => {
+      adapter = a;
+    });
+    render(
+      <DesktopNavigationProvider>
+        <Probe />
+      </DesktopNavigationProvider>,
+    );
+    adapter!.openInNewTab!("/acme/agents", "Agents", { activate: true });
+    expect(state.openTab).toHaveBeenCalledWith("/acme/agents", "Agents", "File");
+    expect(state.setActiveTab).toHaveBeenCalledWith("tNew");
+    expect(state.switchWorkspace).not.toHaveBeenCalled();
+  });
+
   it("delegates to switchWorkspace for a cross-workspace path", () => {
     let adapter: ReturnType<typeof useNavigation> | null = null;
     const Probe = captureAdapter((a) => {
@@ -155,7 +171,7 @@ describe("DesktopNavigationProvider.openInNewTab", () => {
 });
 
 describe("TabNavigationProvider.openInNewTab", () => {
-  it("opens a background tab (no setActiveTab) for a same-workspace path", () => {
+  function renderTabProvider() {
     let adapter: ReturnType<typeof useNavigation> | null = null;
     const Probe = captureAdapter((a) => {
       adapter = a;
@@ -170,9 +186,22 @@ describe("TabNavigationProvider.openInNewTab", () => {
         <Probe />
       </TabNavigationProvider>,
     );
-    adapter!.openInNewTab!("/acme/agents", "Agents");
+    return () => adapter!;
+  }
+
+  it("opens a background tab (no setActiveTab) for a same-workspace path", () => {
+    const getAdapter = renderTabProvider();
+    getAdapter().openInNewTab!("/acme/agents", "Agents");
     expect(state.openTab).toHaveBeenCalledWith("/acme/agents", "Agents", "File");
     expect(state.setActiveTab).not.toHaveBeenCalled();
+    expect(state.switchWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("activates the new tab when opts.activate is true (foreground)", () => {
+    const getAdapter = renderTabProvider();
+    getAdapter().openInNewTab!("/acme/agents", "Agents", { activate: true });
+    expect(state.openTab).toHaveBeenCalledWith("/acme/agents", "Agents", "File");
+    expect(state.setActiveTab).toHaveBeenCalledWith("tNew");
     expect(state.switchWorkspace).not.toHaveBeenCalled();
   });
 });
