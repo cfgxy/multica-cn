@@ -62,13 +62,13 @@ function WindowOverlayInner() {
       {overlay.type === "invitations" && <InvitationsPage />}
       {overlay.type === "onboarding" && (
         <OnboardingFlow
-          onComplete={(ws) => {
+          onComplete={(ws, issueId) => {
             close();
-            // Post-onboarding landing is always the workspace issues
-            // list. The welcome-issue flow moved into a dialog that
-            // renders on that page (StarterContentPrompt), so the
-            // flow doesn't need to thread a target issue id back here.
-            if (ws) {
+            // Runtime-connected onboarding lands on its single guide
+            // issue. Runtime-less exits still land on the issues list.
+            if (ws && issueId) {
+              push(paths.workspace(ws.slug).issueDetail(issueId));
+            } else if (ws) {
               push(paths.workspace(ws.slug).issues());
             } else {
               push(paths.root());

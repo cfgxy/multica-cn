@@ -129,6 +129,8 @@ import {
   GroupedIssuesResponseSchema,
   ListIssuesResponseSchema,
   ListWebhookDeliveriesResponseSchema,
+  OnboardingNoRuntimeBootstrapResponseSchema,
+  OnboardingRuntimeBootstrapResponseSchema,
   SquadMemberStatusListResponseSchema,
   SubscribersListSchema,
   TimelineEntriesSchema,
@@ -159,6 +161,30 @@ export interface LoginResponse {
   token: string;
   user: User;
 }
+
+export interface OnboardingRuntimeBootstrapResponse {
+  workspace_id: string;
+  agent_id: string;
+  issue_id: string;
+}
+
+const EMPTY_ONBOARDING_RUNTIME_BOOTSTRAP_RESPONSE:
+  OnboardingRuntimeBootstrapResponse = {
+  workspace_id: "",
+  agent_id: "",
+  issue_id: "",
+};
+
+export interface OnboardingNoRuntimeBootstrapResponse {
+  workspace_id: string;
+  issue_id: string;
+}
+
+const EMPTY_ONBOARDING_NO_RUNTIME_BOOTSTRAP_RESPONSE:
+  OnboardingNoRuntimeBootstrapResponse = {
+  workspace_id: "",
+  issue_id: "",
+};
 
 // --- Starter content (post-onboarding import) -----------------------------
 // Shape mirrors the Go request/response in handler/onboarding.go.
@@ -412,6 +438,43 @@ export class ApiClient {
       method: "POST",
       body: payload ? JSON.stringify(payload) : undefined,
     });
+  }
+
+  async bootstrapOnboardingRuntime(payload: {
+    workspace_id: string;
+    runtime_id: string;
+  }): Promise<OnboardingRuntimeBootstrapResponse> {
+    const raw = await this.fetch<unknown>(
+      "/api/me/onboarding/runtime-bootstrap",
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+    );
+    return parseWithFallback(
+      raw,
+      OnboardingRuntimeBootstrapResponseSchema,
+      EMPTY_ONBOARDING_RUNTIME_BOOTSTRAP_RESPONSE,
+      { endpoint: "POST /api/me/onboarding/runtime-bootstrap" },
+    );
+  }
+
+  async bootstrapOnboardingNoRuntime(payload: {
+    workspace_id: string;
+  }): Promise<OnboardingNoRuntimeBootstrapResponse> {
+    const raw = await this.fetch<unknown>(
+      "/api/me/onboarding/no-runtime-bootstrap",
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      },
+    );
+    return parseWithFallback(
+      raw,
+      OnboardingNoRuntimeBootstrapResponseSchema,
+      EMPTY_ONBOARDING_NO_RUNTIME_BOOTSTRAP_RESPONSE,
+      { endpoint: "POST /api/me/onboarding/no-runtime-bootstrap" },
+    );
   }
 
   async joinCloudWaitlist(payload: {

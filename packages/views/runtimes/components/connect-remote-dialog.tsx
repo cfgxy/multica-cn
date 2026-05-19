@@ -236,7 +236,7 @@ function TroubleshootingDetails() {
             {/* CLI command — literal shell string, not i18n content. */}
             {/* eslint-disable-next-line i18next/no-literal-string */}
             <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-foreground">
-              multica daemon status
+              {"multica daemon status"}
             </code>
           </li>
           <li className="flex items-center gap-1.5">
@@ -244,7 +244,7 @@ function TroubleshootingDetails() {
             {/* CLI command — literal shell string, not i18n content. */}
             {/* eslint-disable-next-line i18next/no-literal-string */}
             <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-[10px] text-foreground">
-              multica daemon logs -f
+              {"multica daemon logs -f"}
             </code>
           </li>
         </ul>
