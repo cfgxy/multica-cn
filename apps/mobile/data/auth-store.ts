@@ -22,6 +22,9 @@ interface AuthState {
   sendCode: (email: string) => Promise<void>;
   verifyCode: (email: string, code: string) => Promise<User>;
   logout: () => Promise<void>;
+  /** Overwrite the in-memory user — call after PATCH /api/me so name/avatar
+   *  edits land without a refetch. Server response is the source of truth. */
+  setUser: (user: User) => void;
 }
 
 export const useAuthStore = create<AuthState>((set) => ({
@@ -71,4 +74,6 @@ export const useAuthStore = create<AuthState>((set) => ({
     api.setToken(null);
     set({ user: null });
   },
+
+  setUser: (user) => set({ user }),
 }));

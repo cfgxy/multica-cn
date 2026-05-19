@@ -66,6 +66,22 @@ export const AttachmentSchema: z.ZodType<Attachment> = z.object({
 export const AttachmentListSchema = z.array(AttachmentSchema).default([]);
 export const EMPTY_ATTACHMENT_LIST: Attachment[] = [];
 
+/** GET/PUT /api/notification-preferences. Preferences are partial — absent
+ *  keys mean "default (= all)", an explicit "muted" turns the group off.
+ *  Loose() so future group additions on the backend don't break parsing.
+ *  Value type is z.string() (not z.enum) so a future server-side value like
+ *  "snoozed" downgrades gracefully (read sites treat unknown as enabled)
+ *  instead of failing schema parse and dropping the entire preferences map.
+ *  Per CLAUDE.md "Enum drift downgrades, not crashes". */
+export const NotificationPreferenceResponseSchema = z.object({
+  workspace_id: z.string().default(""),
+  preferences: z.record(z.string(), z.string()).default({}),
+}).loose();
+export const EMPTY_NOTIFICATION_PREFERENCES = {
+  workspace_id: "",
+  preferences: {},
+} as const;
+
 const LabelSchema = z.object({
   id: z.string(),
   workspace_id: z.string(),

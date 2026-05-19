@@ -42,8 +42,11 @@ import type {
   SearchProjectsResponse,
   SendChatMessageResponse,
   Squad,
+  NotificationPreferenceResponse,
+  NotificationPreferences,
   TimelineEntry,
   UpdateIssueRequest,
+  UpdateMeRequest,
   UpdateProjectRequest,
   User,
   Workspace,
@@ -78,6 +81,7 @@ import {
   EMPTY_LIST_PROJECT_RESOURCES_RESPONSE,
   EMPTY_LIST_PROJECTS_RESPONSE,
   EMPTY_MEMBER_LIST,
+  EMPTY_NOTIFICATION_PREFERENCES,
   EMPTY_PROJECT,
   EMPTY_RUNTIME_LIST,
   EMPTY_SEARCH_ISSUES_RESPONSE,
@@ -86,6 +90,7 @@ import {
   EMPTY_USER,
   EMPTY_WORKSPACE_LIST,
   InboxListSchema,
+  NotificationPreferenceResponseSchema,
   ListLabelsResponseSchema,
   ListProjectResourcesResponseSchema,
   ListProjectsResponseSchema,
@@ -99,6 +104,7 @@ import {
   UserSchema,
   WorkspaceListSchema,
 } from "./schemas";
+import type { ZodType } from "zod";
 import { getCurrentSlug } from "./workspace-store";
 import { parseWithFallback } from "@/lib/parse-response";
 import { createRequestId } from "@/lib/request-id";
@@ -291,6 +297,57 @@ class ApiClient {
     return (await res.json()) as T;
   }
 
+  /**
+   * Read-side helper: GET + zod parse + fallback in one call. Collapses
+   * the boilerplate that every list/detail endpoint repeats:
+   *
+   *   const raw = await this.fetch<unknown>(path, { signal: opts?.signal });
+   *   return parseWithFallback(raw, Schema, FALLBACK, { endpoint: "name" });
+   *
+   * Always uses GET (no method arg) — write endpoints that need parsing
+   * still go through `this.fetch` + `parseWithFallback` directly because
+   * they carry a body and care about method semantics. Use
+   * `fetchValidatedWith` for those (PATCH / PUT / POST).
+   *
+   * The `endpoint` label defaults to the request path — override only when
+   * the path has dynamic segments and you want stable telemetry labels.
+   */
+  private async fetchValidated<T>(
+    path: string,
+    schema: ZodType,
+    fallback: T,
+    opts?: { signal?: AbortSignal; endpoint?: string },
+  ): Promise<T> {
+    const raw = await this.fetch<unknown>(path, { signal: opts?.signal });
+    return parseWithFallback(raw, schema, fallback, {
+      endpoint: opts?.endpoint ?? path,
+    });
+  }
+
+  /** Same as fetchValidated but supports any HTTP method + body. Used by
+   *  PATCH/PUT/POST endpoints whose response we still want to validate
+   *  (e.g. updateMe returns User, updateNotificationPreferences returns
+   *  NotificationPreferenceResponse). */
+  private async fetchValidatedWith<T>(
+    path: string,
+    schema: ZodType,
+    fallback: T,
+    init: RequestInit,
+    opts?: { signal?: AbortSignal; endpoint?: string },
+  ): Promise<T> {
+    // `opts.signal` wins if both are passed, but absent opts.signal does
+    // NOT clear init.signal — important because forgetting `?? init.signal`
+    // would silently strip a caller's abort signal when they used the
+    // RequestInit shape but no opts.
+    const raw = await this.fetch<unknown>(path, {
+      ...init,
+      signal: opts?.signal ?? init.signal ?? undefined,
+    });
+    return parseWithFallback(raw, schema, fallback, {
+      endpoint: opts?.endpoint ?? `${init.method ?? "GET"} ${path}`,
+    });
+  }
+
   // --- Auth ---
   async sendCode(email: string): Promise<void> {
     await this.fetch<void>("/auth/send-code", {
@@ -307,8 +364,48 @@ class ApiClient {
   }
 
   async getMe(opts?: { signal?: AbortSignal }): Promise<User> {
-    const raw = await this.fetch<unknown>("/api/me", { signal: opts?.signal });
-    return parseWithFallback(raw, UserSchema, EMPTY_USER, { endpoint: "getMe" });
+    return this.fetchValidated(
+      "/api/me",
+      UserSchema,
+      EMPTY_USER,
+      { ...opts, endpoint: "getMe" },
+    );
+  }
+
+  // PATCH /api/me — name, avatar_url, language. Server returns the updated
+  // user; we parse so a partial drift doesn't bleed into the auth store.
+  async updateMe(data: UpdateMeRequest): Promise<User> {
+    return this.fetchValidatedWith(
+      "/api/me",
+      UserSchema,
+      EMPTY_USER,
+      { method: "PATCH", body: JSON.stringify(data) },
+      { endpoint: "updateMe" },
+    );
+  }
+
+  // --- Notification preferences ---
+  async getNotificationPreferences(
+    opts?: { signal?: AbortSignal },
+  ): Promise<NotificationPreferenceResponse> {
+    return this.fetchValidated(
+      "/api/notification-preferences",
+      NotificationPreferenceResponseSchema,
+      EMPTY_NOTIFICATION_PREFERENCES,
+      { ...opts, endpoint: "getNotificationPreferences" },
+    );
+  }
+
+  async updateNotificationPreferences(
+    preferences: NotificationPreferences,
+  ): Promise<NotificationPreferenceResponse> {
+    return this.fetchValidatedWith(
+      "/api/notification-preferences",
+      NotificationPreferenceResponseSchema,
+      EMPTY_NOTIFICATION_PREFERENCES,
+      { method: "PUT", body: JSON.stringify({ preferences }) },
+      { endpoint: "updateNotificationPreferences" },
+    );
   }
 
   // --- Workspaces ---

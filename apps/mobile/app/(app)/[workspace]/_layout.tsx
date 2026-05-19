@@ -137,6 +137,14 @@ export default function WorkspaceLayout() {
           options={{ title: "Settings", headerBackTitle: "Back" }}
         />
         <Stack.Screen
+          name="more/settings/profile"
+          options={{ title: "Profile", headerBackTitle: "Settings" }}
+        />
+        <Stack.Screen
+          name="more/settings/notifications"
+          options={{ title: "Notifications", headerBackTitle: "Settings" }}
+        />
+        <Stack.Screen
           name="new-issue"
           options={{
             title: "New Issue",
