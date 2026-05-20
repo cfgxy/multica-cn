@@ -135,22 +135,7 @@ export default function WorkspaceLayout() {
         />
         <Stack.Screen
           name="menu"
-          options={{
-            // Native iOS form sheet — drag handle, swipe-down dismiss,
-            // backdrop blur all handled by UIKit. Route is named `menu`
-            // (not `more`) to avoid path collision with (tabs)/more.tsx.
-            //
-            // sheetAllowedDetents: "fitToContents" lets iOS size the sheet
-            // to the GlobalNavMenu's intrinsic height instead of defaulting
-            // to full-screen on iPhone (which is what formSheet does in
-            // iOS 15+ unless detents are specified). Menu retains
-            // "fitToContents" — see CLAUDE.md Lesson 6 on formSheet detent
-            // bugs; every OTHER formSheet declares explicit numeric detents.
-            presentation: "formSheet",
-            sheetAllowedDetents: "fitToContents",
-            sheetGrabberVisible: true,
-            headerShown: false,
-          }}
+          options={SHEET_OPTIONS}
         />
         {/* Issue-detail formSheet pickers. All share the same sheet config:
             explicit numeric detents to dodge expo/expo#42904+#42965 (the

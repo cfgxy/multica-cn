@@ -490,7 +490,7 @@ The mobile codebase started with ~15 Modal sheets. They almost all copied the sa
 
 - `presentation: "formSheet"` — the magic that hands the screen to `UISheetPresentationController`.
 - `sheetGrabberVisible: true` — the iOS native drag handle. Users don't discover the gesture without it.
-- `sheetAllowedDetents: [0.6, 0.95]` — explicit numeric detents. The ergonomic `"fitToContents"` is broken on iOS 26 + Expo 55 (expo/expo#42904 padding inconsistency, #42965 zero-size). Predictable two-snap presentation across every sheet is more important than shrink-wrapping. The `menu.tsx` formSheet keeps `fitToContents` because it shipped first and works — leave it; every NEW sheet uses explicit detents.
+- `sheetAllowedDetents: [0.6, 0.95]` — explicit numeric detents. The ergonomic `"fitToContents"` is broken on iOS 26 + Expo 55 (expo/expo#42904 padding inconsistency, #42965 zero-size). Predictable two-snap presentation across every sheet is more important than shrink-wrapping; every formSheet uses these explicit detents.
 - `sheetCornerRadius: 20` — matches RNR card radius. Without this iOS uses a larger system default that's slightly out of sync with the rest of the app.
 - `contentStyle: { height: "100%" }` — safety net against the zero-size class of bugs above. Ensures the sheet body fills the allotted detent height.
 
