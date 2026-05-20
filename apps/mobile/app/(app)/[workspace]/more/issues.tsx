@@ -1,88 +1,134 @@
 /**
- * Workspace-wide Issues page. Mirrors the data model of web's
- * `packages/views/issues/components/issues-page.tsx`: fetch every issue in
- * the workspace, group by status, expose status + priority filters.
+ * Workspace-wide Issues page. Mirrors web `packages/views/issues/components/
+ * issues-page.tsx:32-94`: fetch every issue in the workspace, expose
+ * `all / members / agents` scope tabs, group by status, allow status +
+ * priority filtering.
+ *
+ * Scope is a **client-side** filter on `assignee_type` — matches web
+ * `issues-page.tsx:90-94`. This keeps `issueListOptions(wsId)` workspace-
+ * scoped (no scope param on the wire), so `issueKeys.list(wsId)` and
+ * `useIssuesRealtime` need no changes.
  *
  * Differences vs My Issues (`(tabs)/my-issues.tsx`):
- *   - No scope tabs (Assigned/Created/Agents) — workspace-wide list has
- *     no per-user scope to switch between.
- *   - Fetches `issueListOptions(wsId)` (workspace-wide) instead of
- *     `myIssueListOptions` (user-scoped).
+ *   - Workspace-wide list (all issues), not user-scoped.
+ *   - Three scopes are `all / members / agents` (assignee_type pre-filter),
+ *     not `assigned / created / agents` (per-user predicates).
  *   - Independent filter store (`useIssuesViewStore`) so workspace-level
  *     filters don't bleed into the per-user view.
  *
- * Everything else (SectionList grouped by status, IssueRow, IssueFilterSheet,
- * pull-to-refresh, empty state) is the same component family used across
- * the issue surfaces — keeps visual identity consistent (apps/mobile/
- * CLAUDE.md "Visual alignment is baseline").
- *
  * Filters beyond status/priority (assignee / project / label / creator)
- * are deferred — see plan; v1 ships with the same filter set as My Issues
- * for consistency and code reuse.
+ * are deferred — power-user features with non-trivial picker cost; ship
+ * after the parity-critical scope tabs land.
  */
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import {
-  ActivityIndicator,
-  Pressable,
-  SectionList,
-  View,
-} from "react-native";
+import { useLayoutEffect, useMemo } from "react";
+import { Pressable, SectionList, View } from "react-native";
+import SegmentedControl from "@react-native-segmented-control/segmented-control";
 import { useQuery } from "@tanstack/react-query";
 import { router, useNavigation } from "expo-router";
-import Svg, { Line } from "react-native-svg";
+import { Ionicons } from "@expo/vector-icons";
 import type { Issue, IssuePriority, IssueStatus } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
+import { IconButton } from "@/components/ui/icon-button";
 import { StatusIcon } from "@/components/ui/status-icon";
 import { IssueRow } from "@/components/issue/issue-row";
-import { IssueFilterSheet } from "@/components/issue/issue-filter-sheet";
+import { IssuesLoading } from "@/components/issue/issues-loading";
 import { issueListOptions } from "@/data/queries/issues";
 import { useWorkspaceStore } from "@/data/workspace-store";
-import { useIssuesViewStore } from "@/data/stores/issues-view-store";
+import {
+  useIssuesViewStore,
+  type IssuesScope,
+} from "@/data/stores/issues-view-store";
+import { useClearFiltersOnWorkspaceChange } from "@/lib/use-clear-filters-on-workspace-change";
 import {
   BOARD_STATUSES,
   PRIORITY_LABEL,
   STATUS_LABEL,
 } from "@/lib/issue-status";
 import { filterIssues } from "@/lib/filter-issues";
+import { useColorScheme } from "@/lib/use-color-scheme";
+import { THEME } from "@/lib/theme";
 
 type IssueSection = { status: IssueStatus; data: Issue[] };
+
+// Scope tab definitions. Same value set as web `issuesScopeStore`. Labels
+// stay English (mobile is not i18n'd in v1); counts get appended at render
+// time from `scopeCounts` so users see "(N)" per tab matching web's
+// `useIssueCounts` (`issues-header.tsx:114-153`).
+const SCOPES: { value: IssuesScope; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "members", label: "Members" },
+  { value: "agents", label: "Agents" },
+];
 
 export default function IssuesPage() {
   const navigation = useNavigation();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
 
+  const scope = useIssuesViewStore((s) => s.scope);
+  const setScope = useIssuesViewStore((s) => s.setScope);
   const statusFilters = useIssuesViewStore((s) => s.statusFilters);
   const priorityFilters = useIssuesViewStore((s) => s.priorityFilters);
 
-  const [sheetOpen, setSheetOpen] = useState(false);
+  const openFilter = () => {
+    if (!wsSlug) return;
+    router.push({
+      pathname: "/[workspace]/issues-filter",
+      params: { workspace: wsSlug, scope: "all" },
+    });
+  };
 
-  // Mirror useClearFiltersOnWorkspaceChange (packages/core/issues/stores/
-  // view-store.ts:273-284): clear filters on transitions between two
-  // defined workspace ids. Ref guard skips first render so we don't wipe
-  // initial state on mount.
-  const prevWsRef = useRef<string | null>(null);
-  useEffect(() => {
-    if (prevWsRef.current && wsId && wsId !== prevWsRef.current) {
-      useIssuesViewStore.getState().clearFilters();
-    }
-    prevWsRef.current = wsId ?? null;
-  }, [wsId]);
+  useClearFiltersOnWorkspaceChange(
+    useIssuesViewStore.getState().clearFilters,
+    wsId,
+  );
 
   const { data, isLoading, error, refetch, isRefetching } = useQuery(
     issueListOptions(wsId),
   );
 
-  // Apply client-side status + priority filter. Mirrors the predicate at
-  // packages/views/issues/utils/filter.ts:30-34 via filterIssues().
+  const allIssues = data ?? [];
+
+  // Counts per scope — derived once from the raw list, used to label the
+  // SegmentedControl. `agents` includes both agent + squad assignees to
+  // match web `issues-page.tsx:93`.
+  const scopeCounts = useMemo(() => {
+    let members = 0;
+    let agents = 0;
+    for (const issue of allIssues) {
+      if (issue.assignee_type === "member") members++;
+      else if (
+        issue.assignee_type === "agent" ||
+        issue.assignee_type === "squad"
+      ) {
+        agents++;
+      }
+    }
+    return { all: allIssues.length, members, agents };
+  }, [allIssues]);
+
+  // Scope pre-filter — mirrors web `issues-page.tsx:90-94`. Applied before
+  // status/priority filtering so chip filters operate on the visible slice.
+  const scopedIssues = useMemo(() => {
+    if (scope === "members") {
+      return allIssues.filter((i) => i.assignee_type === "member");
+    }
+    if (scope === "agents") {
+      return allIssues.filter(
+        (i) => i.assignee_type === "agent" || i.assignee_type === "squad",
+      );
+    }
+    return allIssues;
+  }, [allIssues, scope]);
+
   const filtered = useMemo(
-    () => filterIssues(data ?? [], statusFilters, priorityFilters),
-    [data, statusFilters, priorityFilters],
+    () => filterIssues(scopedIssues, statusFilters, priorityFilters),
+    [scopedIssues, statusFilters, priorityFilters],
   );
 
-  // When statusFilters is non-empty, intersect visible status order with it
-  // so hidden statuses don't render an empty section header.
+  // Section grouping uses BOARD_STATUSES (cancelled excluded) — matches web
+  // `issues-page.tsx:117-125`.
   const sections = useMemo<IssueSection[]>(() => {
     if (filtered.length === 0) return [];
     const byStatus = new Map<IssueStatus, Issue[]>();
@@ -103,25 +149,45 @@ export default function IssuesPage() {
   const hasActiveFilters =
     statusFilters.length > 0 || priorityFilters.length > 0;
 
-  const showEmptyState =
-    !isLoading && !error && filtered.length === 0;
+  const showEmptyState = !isLoading && !error && filtered.length === 0;
 
-  // Native Stack header (registered in [workspace]/_layout.tsx as
-  // "more/issues" with title: "Issues") owns the chrome — we just feed it
-  // the filter button via headerRight.
+  const selectedIndex = SCOPES.findIndex((s) => s.value === scope);
+
+  // Native Stack header owns the chrome — we feed it the filter IconButton
+  // (with an absolute red dot when filters are active) via headerRight.
   useLayoutEffect(() => {
     navigation.setOptions({
       headerRight: () => (
-        <FilterButton
-          hasActive={hasActiveFilters}
-          onPress={() => setSheetOpen(true)}
-        />
+        <View style={{ position: "relative" }}>
+          <IconButton
+            name="options-outline"
+            onPress={openFilter}
+            accessibilityLabel="Filter"
+          />
+          {hasActiveFilters ? (
+            <View
+              pointerEvents="none"
+              className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-brand"
+            />
+          ) : null}
+        </View>
       ),
     });
   });
 
   return (
     <View className="flex-1 bg-background">
+      <View className="px-4 pt-2 pb-2">
+        <SegmentedControl
+          values={SCOPES.map(
+            (s) => `${s.label} (${scopeCounts[s.value]})`,
+          )}
+          selectedIndex={selectedIndex === -1 ? 0 : selectedIndex}
+          onChange={(e) =>
+            setScope(SCOPES[e.nativeEvent.selectedSegmentIndex].value)
+          }
+        />
+      </View>
       {hasActiveFilters ? (
         <ActiveFilterChips
           statusFilters={statusFilters}
@@ -135,11 +201,9 @@ export default function IssuesPage() {
         />
       ) : null}
       {isLoading ? (
-        <View className="flex-1 items-center justify-center">
-          <ActivityIndicator />
-        </View>
+        <IssuesLoading />
       ) : error ? (
-        <View className="px-4 gap-3">
+        <View className="px-4 gap-3 pt-4">
           <Text className="text-sm text-destructive">
             Failed to load issues:{" "}
             {error instanceof Error ? error.message : "unknown error"}
@@ -153,7 +217,7 @@ export default function IssuesPage() {
           message={
             hasActiveFilters
               ? "No issues match the current filters."
-              : "No issues in this workspace yet."
+              : emptyMessageForScope(scope)
           }
         />
       ) : (
@@ -165,10 +229,7 @@ export default function IssuesPage() {
             <View className="h-px bg-border ml-4" />
           )}
           renderSectionHeader={({ section }) => (
-            <SectionHeader
-              status={section.status}
-              count={section.data.length}
-            />
+            <SectionHeader status={section.status} count={section.data.length} />
           )}
           contentContainerClassName="pb-6"
           renderItem={({ item }) => (
@@ -183,20 +244,6 @@ export default function IssuesPage() {
           onRefresh={refetch}
         />
       )}
-
-      <IssueFilterSheet
-        visible={sheetOpen}
-        onClose={() => setSheetOpen(false)}
-        statusFilters={statusFilters}
-        priorityFilters={priorityFilters}
-        onToggleStatus={(s) =>
-          useIssuesViewStore.getState().toggleStatusFilter(s)
-        }
-        onTogglePriority={(p) =>
-          useIssuesViewStore.getState().togglePriorityFilter(p)
-        }
-        onClearFilters={() => useIssuesViewStore.getState().clearFilters()}
-      />
     </View>
   );
 }
@@ -233,16 +280,18 @@ function ActiveFilterChips({
 }
 
 function Chip({ label, onClear }: { label: string; onClear: () => void }) {
+  const { colorScheme } = useColorScheme();
   return (
     <Pressable
       onPress={onClear}
       className="flex-row items-center gap-1 pl-2.5 pr-2 py-1 rounded-full border border-border bg-secondary/40 active:bg-secondary"
     >
       <Text className="text-xs text-foreground">{label}</Text>
-      <Svg width={10} height={10} viewBox="0 0 10 10">
-        <Line x1="2" y1="2" x2="8" y2="8" stroke="#71717a" strokeWidth="1.5" strokeLinecap="round" />
-        <Line x1="8" y1="2" x2="2" y2="8" stroke="#71717a" strokeWidth="1.5" strokeLinecap="round" />
-      </Svg>
+      <Ionicons
+        name="close"
+        size={12}
+        color={THEME[colorScheme].mutedForeground}
+      />
     </Pressable>
   );
 }
@@ -275,27 +324,13 @@ function EmptyState({ message }: { message: string }) {
   );
 }
 
-function FilterButton({
-  hasActive,
-  onPress,
-}: {
-  hasActive: boolean;
-  onPress: () => void;
-}) {
-  return (
-    <Pressable
-      onPress={onPress}
-      className="size-9 items-center justify-center rounded-md border border-border bg-background active:bg-secondary"
-    >
-      <Svg width={16} height={16} viewBox="0 0 16 16">
-        {/* Mirrors muted-foreground (#71717a) — same hex used by status-icon */}
-        <Line x1="2" y1="4" x2="14" y2="4" stroke="#71717a" strokeWidth="1.5" strokeLinecap="round" />
-        <Line x1="4" y1="8" x2="12" y2="8" stroke="#71717a" strokeWidth="1.5" strokeLinecap="round" />
-        <Line x1="6" y1="12" x2="10" y2="12" stroke="#71717a" strokeWidth="1.5" strokeLinecap="round" />
-      </Svg>
-      {hasActive ? (
-        <View className="absolute top-1 right-1 size-1.5 rounded-full bg-brand" />
-      ) : null}
-    </Pressable>
-  );
+function emptyMessageForScope(scope: IssuesScope): string {
+  switch (scope) {
+    case "all":
+      return "No issues in this workspace.";
+    case "members":
+      return "No issues assigned to a member.";
+    case "agents":
+      return "No issues assigned to agents or squads.";
+  }
 }
