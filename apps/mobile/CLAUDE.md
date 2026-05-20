@@ -74,13 +74,24 @@ When upgrading any of these, update this list.
 
 The full plan, file inventory, and migration phases live in `apps/mobile/docs/rnr-migration.md`. The rules below are the durable ones that must survive after the migration completes — read this section first when working on any UI.
 
-### Hard rule — defaults first, three-tier waterfall
+### Hard rule — existing pattern first, defaults first, native waterfall
 
-Two principles govern every UI decision on mobile. They exist to fight the temptation to recreate things that already exist — which is exactly the trap that produced the current 21 hand-written components and 18 hand-rolled sheets.
+Three principles govern every UI decision on mobile. They exist to fight the temptation to recreate things that already exist — which is exactly the trap that produced the current 21 hand-written components and 18 hand-rolled sheets.
 
-**Principle 1 — defaults first.** When you use any RNR component, accept its default variant, default size, default spacing, default palette. Do NOT add wrapper layers, "improved" defaults, or `variant="multicaCustom"` styles unless a concrete product need demands it. Reaching for shadcn defaults is correct; reaching for a hand-tuned version of them is the failure mode.
+**Principle 1 — existing pattern first.** Before reaching for ANY new component (RNR add, hand-written primitive, new sheet container), grep the mobile codebase for an already-shipped pattern that does the same thing.
 
-**Principle 2 — iOS native > RNR > discuss.** When you need a new interaction, walk this waterfall in order, stop at the first hit:
+- Building a row → grep `components/inbox/`, `components/issue/`, `components/project/` for an analogous list-row first.
+- Building a picker / sheet → check `components/issue/pickers/`, `components/project/pickers/` — there are 8+ pickers; one of them is probably the shape you need.
+- Building a status / priority / actor visual → `components/ui/status-icon.tsx`, `priority-icon.tsx`, `actor-avatar.tsx` already exist. Re-use, don't re-skin.
+- Composer / form / detail screen layout → `app/(app)/[workspace]/issue/[id]/`, `chat/`, `new-issue.tsx` — copy the structure, don't reinvent.
+
+If a working pattern exists, **import or copy-adapt it**. If it almost-fits but needs a small extension, extend the existing one (one PR) rather than fork a second variant. Only when no existing pattern fits, proceed to Principle 2.
+
+Why: every "I'll just write a fresh one" produced one of the 21 legacy components. The codebase already paid the cost of figuring out the iOS-correct shape for inbox rows, picker sheets, status icons — don't re-pay it.
+
+**Principle 2 — defaults first.** When you use any RNR component, accept its default variant, default size, default spacing, default palette. Do NOT add wrapper layers, "improved" defaults, or `variant="multicaCustom"` styles unless a concrete product need demands it. Reaching for shadcn defaults is correct; reaching for a hand-tuned version of them is the failure mode.
+
+**Principle 3 — iOS native > RNR > discuss.** When you need a new interaction, walk this waterfall in order, stop at the first hit:
 
 1. **iOS / RN ships a native API?** Use it directly. Don't wrap a `Modal` to mimic it.
    - Text input prompt → `Alert.prompt`
@@ -116,7 +127,7 @@ Never copy the visual shape of an existing hand-written `components/ui/` compone
 
 - The old "Visual tokens" approach — hand-transcribed hex values in `tailwind.config.js` — is being **replaced** by the CSS-variable system above. Web tokens are still inspiration only; we do NOT import `packages/ui/styles/tokens.css` (Tailwind v3.4 vs v4 mismatch makes file sharing impractical; isolation is intentional).
 - The `cn()` helper at `lib/utils.ts` stays — RNR uses the same one.
-- The sheet rule from Lesson 6 below still applies. RNR ships `Dialog` and other modal primitives; use them for **new** sheets. Existing sheets migrate one PR at a time per `~/.claude/plans/mobile-sheet-rollout.md` — do not bulk-replace `sheet-shell.tsx`.
+- The sheet rule from Lesson 6 below still applies. RNR ships `Dialog` and other modal primitives; use them for **new** sheets. The legacy `sheet-shell.tsx` (RN `<Modal presentationStyle="pageSheet">`) has been deleted — every long-list / search / form sheet now uses an Expo Router `presentation: "formSheet"` route, which instantiates iOS' `UISheetPresentationController` for native grabber, detents, and spring drag physics.
 
 ## Build & release
 
@@ -453,26 +464,40 @@ Forgetting the destructure (writing `() => api.listInbox()`) defeats every benef
 
 ### 6. Modal container selection: match container to content, don't copy the first sheet
 
-The mobile codebase has ~15 Modal sheets. They almost all copy the same shape (`Modal transparent fade` + hand-drawn `bg-black/40` backdrop + centered/bottom card with `maxHeight`). That shape is correct for **short action menus** (the earliest sheets), wrong for **everything else**. Once the pattern was established as "the mobile sheet style," subsequent sheets inherited it regardless of content — and inherited a different bug each time: keyboard squashing the card, `maxHeight: 380` clipping FlatLists on tall phones, `useSafeAreaInsets` returning 0 inside Modal so bottom content collides with the Home Indicator, etc.
+The mobile codebase started with ~15 Modal sheets. They almost all copied the same shape (`Modal transparent fade` + hand-drawn `bg-black/40` backdrop + centered/bottom card with `maxHeight`). That shape is correct for **short action menus** (the earliest sheets), wrong for **everything else**. Once the pattern was established as "the mobile sheet style," subsequent sheets inherited it regardless of content — and inherited a different bug each time: keyboard squashing the card, `maxHeight: 380` clipping FlatLists on tall phones, `useSafeAreaInsets` returning 0 inside Modal so bottom content collides with the Home Indicator, etc.
 
 **Choose the container by content type, not by "what the last sheet did":**
 
 | Content shape | Container | Why |
 |---|---|---|
-| < 5 fixed actions, 1-2s stay, no keyboard | `Modal transparent` + bottom action card (current pattern) | Short, light, dim-backdrop tap-to-dismiss is correct here |
+| < 5 fixed actions, 1-2s stay, no keyboard | `Modal transparent` + bottom action card | Short, light, dim-backdrop tap-to-dismiss is correct here |
 | Yes/No or one-tap confirm | `Alert.alert` | Native, accessible, no custom UI |
+| One-of-N from a server-driven short list | `ActionSheetIOS.showActionSheetWithOptions` | Native iOS action sheet, no custom UI |
 | < 7 fixed picker options, no search | `Modal transparent` + small centered card | Same as action card, just centered |
-| Long list / search box / content view / form / anything with a keyboard | **`Modal presentationStyle="pageSheet"`** | iOS native: auto ~93% height, drag-dismiss, rounded corners, safe area mostly auto. Add an X button for the discoverability path; pageSheet's top exposed strip is NOT tappable. |
-| Multi-screen flow / route-level modal | Expo Router `presentation: "modal"` | Has back-stack, swipe-dismiss, deep-linkable |
+| Long list / search box / content view / form / anything with a keyboard | **Expo Router `presentation: "formSheet"` route** | Instantiates iOS `UISheetPresentationController`: native grabber, drag-dismiss with spring physics, stacked-card backdrop, detents — all UIKit-managed |
+| Multi-screen flow / route-level full modal | Expo Router `presentation: "modal"` | Full-page slide-up, has back-stack, swipe-dismiss, deep-linkable |
 
-**The pitfalls a `presentationStyle="pageSheet"` still has:**
+**`SheetShell` is deleted.** It was a wrapper around RN core `<Modal presentationStyle="pageSheet">` which does NOT instantiate `UISheetPresentationController` — so it never had native grabber, stacked-card backdrop, or real spring physics. Every former SheetShell call site is now an Expo Router formSheet route.
 
-- **Bottom padding past the Home Indicator is not auto-applied** to scroll content. Read `useSafeAreaInsets()` from the **parent component (outside the Modal)** and pass `bottomInset` as a prop into the sheet — `useSafeAreaInsets()` called inside a `presentationStyle="pageSheet"` Modal does not reliably return non-zero on all iOS versions / RN versions. The parent-read + prop-drill is the robust path. See `apps/mobile/components/issue/runs-sheet.tsx` for the reference implementation.
-- **Android falls back to full-screen** — no rounded corners, no drag. mobile/CLAUDE.md treats iOS as the primary target so this is acceptable, but document it inline at the call site if a particular feature must work identically on both.
-- **Tapping the exposed top strip does NOT dismiss.** That strip is the underlying screen, not a backdrop. Users dismiss via drag-down or via your X button. Always include an X button.
-- **`transparent` and `presentationStyle="pageSheet"` are mutually exclusive.** If you find yourself wanting both, you picked the wrong container.
+**Rules for adding a new formSheet route:**
 
-**Past sheets that need to migrate to pageSheet** (logged in `/Users/qingnaiyuan/.claude/plans/mobile-sheet-rollout.md`): session-sheet, issue-filter-sheet, assignee/label/project/project-lead picker sheets, add-resource-sheet. Do these one PR at a time, one verification at a time — don't try to batch.
+1. **File goes under the parent context** so the URL reads sensibly — issue-detail pickers under `app/(app)/[workspace]/issue/[id]/picker/<field>.tsx`; project pickers under `project/[id]/picker/<field>.tsx`; transient action sheets under `<context>/<noun>/actions.tsx`. The new-issue draft flow has its own `new-issue-picker/<field>.tsx` directory because routes can't share state with the modal that opened them — see the draft-store discussion below.
+2. **Register the Stack.Screen in `app/(app)/[workspace]/_layout.tsx`** using the shared `SHEET_OPTIONS` constant. Do NOT inline the config per screen — every sheet must look and feel identical (grabber, detents, corner radius).
+3. **Self-contained route bodies.** A picker route reads the record it needs from the TanStack Query cache (issue / project / timeline are already cached when the user gets there), calls its own mutation on submit, and `router.back()`s. No callbacks back up to a parent. The only legitimate exception is the new-issue draft flow, which uses `useNewIssueDraftStore` because the issue doesn't exist yet — there's nothing in cache to read.
+4. **Header is drawn inside the body**, not by the Stack. SHEET_OPTIONS sets `headerShown: false`; the body renders its own `<View>` with title + optional right action. The native Stack header on a formSheet creates a layout dance with the grabber that doesn't match iOS sheets.
+
+**SHEET_OPTIONS rationale (every value exists for a known bug or platform behavior):**
+
+- `presentation: "formSheet"` — the magic that hands the screen to `UISheetPresentationController`.
+- `sheetGrabberVisible: true` — the iOS native drag handle. Users don't discover the gesture without it.
+- `sheetAllowedDetents: [0.6, 0.95]` — explicit numeric detents. The ergonomic `"fitToContents"` is broken on iOS 26 + Expo 55 (expo/expo#42904 padding inconsistency, #42965 zero-size). Predictable two-snap presentation across every sheet is more important than shrink-wrapping. The `menu.tsx` formSheet keeps `fitToContents` because it shipped first and works — leave it; every NEW sheet uses explicit detents.
+- `sheetCornerRadius: 20` — matches RNR card radius. Without this iOS uses a larger system default that's slightly out of sync with the rest of the app.
+- `contentStyle: { height: "100%" }` — safety net against the zero-size class of bugs above. Ensures the sheet body fills the allotted detent height.
+
+**Caveats that still apply:**
+
+- **Android falls back to a regular modal** — no rounded corners, no native drag. mobile/CLAUDE.md treats iOS as the primary target so this is acceptable, but document inline at the call site if a particular feature must work identically on both.
+- **A formSheet pushed from inside a `presentation: "modal"` route is supported** by Expo Router 55 / RN Screens 4, but the back gesture from the formSheet returns to the modal, not the underlying tab. This is the right UX for the new-issue draft flow (sheet dismisses back to the form), but check the navigation graph if you're adding a sheet under a non-obvious parent.
 
 **Carve-out — picker-row consistency wins over per-container optimisation:**
 
@@ -481,16 +506,16 @@ applies in isolation, but **breaks down when multiple pickers coexist in
 the same chip row** (issue-detail AttributeRow is the canonical case:
 status / priority / assignee / label / project / due-date all sit next
 to each other). Mixing centered cards (for status/priority, short
-fixed lists) with pageSheets (for assignee/label/project, long lists)
-means the user gets two different gestures depending on which chip
-they tap — there's no muscle-memory carry-over.
+fixed lists) with formSheet routes (for assignee/label/project, long
+lists) means the user gets two different gestures depending on which
+chip they tap — there's no muscle-memory carry-over.
 
-When you find yourself building a row like this, **use pageSheet for
-every picker in the row**, even the ones a standalone centered card
-would handle fine. The cost is some empty space below 5–7 short rows;
-the gain is uniform tap → slide-up-sheet + drag-down-to-dismiss
-behaviour across the whole row. Linear iOS / Things 3 / Apple
-Reminders all do this for the same reason.
+When you find yourself building a row like this, **use the formSheet
+route for every picker in the row**, even the ones a standalone
+centered card would handle fine. The cost is some empty space below
+5–7 short rows; the gain is uniform tap → slide-up-sheet +
+drag-down-to-dismiss behaviour across the whole row. Linear iOS /
+Things 3 / Apple Reminders all do this for the same reason.
 
 The centered-card pattern stays correct for **isolated short menus**
 (e.g. the chat-composer's "More" popover, the timeline's coalesce-
