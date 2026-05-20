@@ -267,7 +267,8 @@ export interface UpdateAgentRequest {
   /**
    * Runtime-native reasoning/effort token. Tri-state semantics (MUL-2339):
    *   - field omitted → no change
-   *   - "" → explicit clear (use runtime default)
+   *   - "" → clear the override; backend omits the effort flag and the
+   *     local CLI config / built-in default decides what the model runs at
    *   - non-empty → set; validated server-side against the target
    *     runtime's provider enum, rejected with 400 if not recognised
    */
