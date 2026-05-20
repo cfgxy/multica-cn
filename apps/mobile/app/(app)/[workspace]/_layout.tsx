@@ -14,6 +14,7 @@ import { usePresenceRealtime } from "@/data/realtime/use-presence-realtime";
 import { useWorkspacePresencePrefetch } from "@/lib/use-workspace-presence-prefetch";
 import { ModalCloseButton } from "@/components/ui/modal-close-button";
 import { useNewIssueDraftResetOnWorkspaceChange } from "@/data/stores/new-issue-draft-store";
+import { useNewProjectDraftResetOnWorkspaceChange } from "@/data/stores/new-project-draft-store";
 import { useChatSessionPickerResetOnWorkspaceChange } from "@/data/stores/chat-session-picker-store";
 
 /**
@@ -107,6 +108,7 @@ export default function WorkspaceLayout() {
   // changes — a draft picked under workspace A (assignee id, draft
   // session id, etc.) is invalid in workspace B and must not leak.
   useNewIssueDraftResetOnWorkspaceChange(matched?.id ?? null);
+  useNewProjectDraftResetOnWorkspaceChange(matched?.id ?? null);
   useChatSessionPickerResetOnWorkspaceChange(matched?.id ?? null);
 
   // Wait for the workspaces list before deciding membership — otherwise a
@@ -233,6 +235,16 @@ export default function WorkspaceLayout() {
         />
         <Stack.Screen
           name="new-issue-picker/due-date"
+          options={SHEET_OPTIONS}
+        />
+        {/* New-project draft formSheet pickers — same pattern as
+            new-issue-picker/*. Stacked on top of `project/new` (a modal). */}
+        <Stack.Screen
+          name="new-project-picker/status"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
+          name="new-project-picker/priority"
           options={SHEET_OPTIONS}
         />
         {/* Shared filter sheet for My Issues and the workspace Issues page —

@@ -8,6 +8,10 @@
  * project from a "I need to track this stream of work" intent and figure
  * out who's leading it later. The picker lives on the detail screen.
  *
+ * Status / priority cross-route through `useNewProjectDraftStore` so the
+ * formSheet picker routes can read/write them — same pattern as
+ * new-issue.tsx + new-issue-picker/* (see new-project-draft-store.ts).
+ *
  * On success: dismiss modal → navigate to the new project's detail page so
  * the user can immediately add a lead / attach issues / configure properties.
  */
@@ -16,7 +20,6 @@ import {
   Alert,
   InteractionManager,
   KeyboardAvoidingView,
-  Modal,
   Platform,
   Pressable,
   ScrollView,
@@ -24,7 +27,6 @@ import {
   View,
 } from "react-native";
 import { Stack, router } from "expo-router";
-import type { ProjectPriority, ProjectStatus } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { AutosizeTextArea } from "@/components/ui/autosize-textarea";
 import {
@@ -33,14 +35,24 @@ import {
 } from "@/components/ui/input-tokens";
 import { ProjectStatusIcon } from "@/components/ui/project-status-icon";
 import { ProjectPriorityIcon } from "@/components/ui/project-priority-icon";
-import { ProjectStatusPickerBody } from "@/components/project/pickers/project-status-picker-body";
-import { ProjectPriorityPickerBody } from "@/components/project/pickers/project-priority-picker-body";
 import {
   projectPriorityLabel,
   projectStatusLabel,
 } from "@/lib/project-status";
 import { useCreateProject } from "@/data/mutations/projects";
+import { useNewProjectDraftStore } from "@/data/stores/new-project-draft-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
+
+/**
+ * Typed map of new-project picker route pathnames. Keeps `router.push` calls
+ * compile-checked rather than depending on free-form template strings —
+ * same approach as `create-form-attribute-row.tsx`.
+ */
+type NewProjectPickerField = "status" | "priority";
+const NEW_PROJECT_PICKER_PATHNAMES = {
+  status: "/[workspace]/new-project-picker/status",
+  priority: "/[workspace]/new-project-picker/priority",
+} as const satisfies Record<NewProjectPickerField, string>;
 
 export default function NewProject() {
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
@@ -49,11 +61,9 @@ export default function NewProject() {
   const [title, setTitle] = useState("");
   const [icon, setIcon] = useState("");
   const [description, setDescription] = useState("");
-  const [status, setStatus] = useState<ProjectStatus>("planned");
-  const [priority, setPriority] = useState<ProjectPriority>("none");
-
-  const [statusOpen, setStatusOpen] = useState(false);
-  const [priorityOpen, setPriorityOpen] = useState(false);
+  const status = useNewProjectDraftStore((s) => s.status);
+  const priority = useNewProjectDraftStore((s) => s.priority);
+  const resetDraft = useNewProjectDraftStore((s) => s.reset);
 
   const dirty =
     title.length > 0 ||
@@ -64,8 +74,20 @@ export default function NewProject() {
 
   const canCreate = title.trim().length > 0 && !create.isPending;
 
+  const openPicker = useCallback(
+    (field: NewProjectPickerField) => {
+      if (!wsSlug) return;
+      router.push({
+        pathname: NEW_PROJECT_PICKER_PATHNAMES[field],
+        params: { workspace: wsSlug },
+      });
+    },
+    [wsSlug],
+  );
+
   const onCancel = useCallback(() => {
     if (!dirty) {
+      resetDraft();
       router.back();
       return;
     }
@@ -77,11 +99,14 @@ export default function NewProject() {
         {
           text: "Discard",
           style: "destructive",
-          onPress: () => router.back(),
+          onPress: () => {
+            resetDraft();
+            router.back();
+          },
         },
       ],
     );
-  }, [dirty]);
+  }, [dirty, resetDraft]);
 
   const onCreate = useCallback(() => {
     if (!canCreate) return;
@@ -95,6 +120,7 @@ export default function NewProject() {
       },
       {
         onSuccess: (project) => {
+          resetDraft();
           router.back();
           // Wait for the modal dismiss animation to finish before pushing
           // the detail screen. `InteractionManager` resolves once iOS
@@ -113,7 +139,17 @@ export default function NewProject() {
         },
       },
     );
-  }, [canCreate, create, title, description, icon, status, priority, wsSlug]);
+  }, [
+    canCreate,
+    create,
+    title,
+    description,
+    icon,
+    status,
+    priority,
+    wsSlug,
+    resetDraft,
+  ]);
 
   const headerLeft = useCallback(() => {
     return (
@@ -186,7 +222,7 @@ export default function NewProject() {
             <View className="flex-1">
               <Field label="Status">
                 <Pressable
-                  onPress={() => setStatusOpen(true)}
+                  onPress={() => openPicker("status")}
                   className="flex-row items-center gap-2 bg-secondary/50 rounded-md px-3 py-2.5"
                 >
                   <ProjectStatusIcon status={status} size={16} />
@@ -199,7 +235,7 @@ export default function NewProject() {
             <View className="flex-1">
               <Field label="Priority">
                 <Pressable
-                  onPress={() => setPriorityOpen(true)}
+                  onPress={() => openPicker("priority")}
                   className="flex-row items-center gap-2 bg-secondary/50 rounded-md px-3 py-2.5"
                 >
                   <ProjectPriorityIcon priority={priority} size={16} />
@@ -212,67 +248,7 @@ export default function NewProject() {
           </View>
         </ScrollView>
       </KeyboardAvoidingView>
-
-      <DraftPickerModal visible={statusOpen} onClose={() => setStatusOpen(false)}>
-        <ProjectStatusPickerBody
-          value={status}
-          onChange={(next) => {
-            setStatus(next);
-            setStatusOpen(false);
-          }}
-        />
-      </DraftPickerModal>
-      <DraftPickerModal
-        visible={priorityOpen}
-        onClose={() => setPriorityOpen(false)}
-      >
-        <ProjectPriorityPickerBody
-          value={priority}
-          onChange={(next) => {
-            setPriority(next);
-            setPriorityOpen(false);
-          }}
-        />
-      </DraftPickerModal>
     </>
-  );
-}
-
-/**
- * Inline modal shell for the new-project draft pickers. The host screen is
- * already a presentation="modal", and routes can't read draft local state
- * (the project doesn't exist yet, nothing in the cache to push the picker
- * to). So we keep a lightweight centered card here rather than wire a
- * separate draft store for a single transient form — matches the carve-out
- * in apps/mobile/CLAUDE.md "modal container selection" for short fixed
- * picker lists with no neighbour pickers to be consistent with.
- */
-function DraftPickerModal({
-  visible,
-  onClose,
-  children,
-}: {
-  visible: boolean;
-  onClose: () => void;
-  children: React.ReactNode;
-}) {
-  return (
-    <Modal
-      visible={visible}
-      transparent
-      animationType="fade"
-      onRequestClose={onClose}
-    >
-      <Pressable className="flex-1 bg-black/40" onPress={onClose}>
-        <View className="flex-1 items-center justify-center px-8">
-          <Pressable onPress={() => {}} className="w-full max-w-sm">
-            <View className="bg-popover rounded-2xl overflow-hidden">
-              {children}
-            </View>
-          </Pressable>
-        </View>
-      </Pressable>
-    </Modal>
   );
 }
 
