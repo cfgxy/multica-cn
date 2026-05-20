@@ -31,8 +31,10 @@ export function ThinkingPicker({
 }: {
   /** Persisted thinking_level — "" means "follow local CLI config". */
   value: string;
-  /** Supported levels for the current (runtime, model) pair. Caller has
-   *  already verified the list is non-empty before mounting this picker. */
+  /** Supported levels for the current (runtime, model) pair. Usually
+   *  non-empty when the row is shown, but the stale-orphan clear path
+   *  in ThinkingPropRow mounts the picker with an empty list plus a
+   *  persisted value so the user can see and clear the dangling token. */
   levels: RuntimeModelThinkingLevel[];
   /** When false, render a static read-only display and skip the popover. */
   canEdit?: boolean;
