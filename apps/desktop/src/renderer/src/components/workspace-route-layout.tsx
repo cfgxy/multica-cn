@@ -12,6 +12,7 @@ import { useWorkspaceSeen } from "@multica/views/workspace/use-workspace-seen";
 import { OnboardingHelperModal } from "@multica/views/workspace/onboarding-helper-modal";
 import { WorkspacePresencePrefetch } from "@multica/views/layout";
 import { useTabStore } from "@/stores/tab-store";
+import { useWindowOverlayStore } from "@/stores/window-overlay-store";
 
 /**
  * Desktop equivalent of apps/web/app/[workspaceSlug]/layout.tsx.
@@ -35,6 +36,17 @@ export function WorkspaceRouteLayout() {
   const navigate = useNavigate();
   const user = useAuthStore((s) => s.user);
   const isAuthLoading = useAuthStore((s) => s.isLoading);
+  // While a WindowOverlay is open (onboarding, accept-invite, new-workspace),
+  // the underlying tab is still mounted in the React tree — so this layout
+  // and its OnboardingHelperModal would render UNDER the overlay. Because
+  // the modal uses a Portal that targets document.body, it ends up rendered
+  // LATER in the DOM and visually outranks the overlay's z-50 — surfacing
+  // the modal in front of the onboarding flow before the user has even
+  // exited it. Suppress the modal whenever any overlay is active; the
+  // moment the overlay closes (`onComplete` in window-overlay.tsx), the
+  // modal re-evaluates its gate and pops on its own if onboarded_at is
+  // still NULL.
+  const overlayActive = useWindowOverlayStore((s) => s.overlay !== null);
 
   // Workspace routes require auth. If user is unauthenticated, bounce to /login.
   useEffect(() => {
@@ -88,8 +100,11 @@ export function WorkspaceRouteLayout() {
       <Outlet />
       {/* Blocking modal that fires once for new users when they reach the
        *  workspace before completing Multica Helper setup. Self-gates on
-       *  `me.onboarded_at == null` — renders null otherwise. */}
-      <OnboardingHelperModal />
+       *  `me.onboarded_at == null` — renders null otherwise. Additionally
+       *  suppressed while a WindowOverlay (onboarding / accept-invite /
+       *  new-workspace) is open so the modal doesn't portal-jump in front
+       *  of an active pre-workspace flow. */}
+      {!overlayActive && <OnboardingHelperModal />}
     </WorkspaceSlugProvider>
   );
 }
