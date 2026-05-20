@@ -63,25 +63,32 @@ detect_os() {
 # ---------------------------------------------------------------------------
 # CLI Installation
 # ---------------------------------------------------------------------------
+_dump_brew_log() {
+  local log="$1"
+  if [ -s "$log" ]; then
+    warn "Homebrew output (last 80 lines):"
+    tail -n 80 "$log" | sed 's/^/  /' >&2
+  fi
+}
+
 install_cli_brew() {
   info "Installing Multica CLI via Homebrew..."
-  if ! brew tap multica-ai/tap 2>/dev/null; then
+  local brew_log
+  brew_log=$(mktemp)
+  if ! brew tap multica-ai/tap >"$brew_log" 2>&1; then
     warn "Failed to add Homebrew tap. Falling back to GitHub Releases binary install."
+    _dump_brew_log "$brew_log"
+    rm -f "$brew_log"
     return 1
   fi
   # brew install exits non-zero if already installed on older Homebrew versions
-  local brew_log
-  brew_log=$(mktemp)
   if ! brew install "$BREW_PACKAGE" >"$brew_log" 2>&1; then
     if brew list "$BREW_PACKAGE" >/dev/null 2>&1; then
       rm -f "$brew_log"
       ok "Multica CLI already installed via Homebrew"
     else
       warn "Failed to install multica via Homebrew. Falling back to GitHub Releases binary install."
-      if [ -s "$brew_log" ]; then
-        warn "Homebrew output (last 80 lines):"
-        tail -n 80 "$brew_log" | sed 's/^/  /' >&2
-      fi
+      _dump_brew_log "$brew_log"
       rm -f "$brew_log"
       return 1
     fi
@@ -455,6 +462,15 @@ main() {
         echo "  (default)       Install / upgrade the Multica CLI"
         echo "  --with-server   Install CLI + provision a self-host server (Docker)"
         echo "  --stop          Stop a self-hosted installation"
+        echo ""
+        echo "Environment variables:"
+        echo "  MULTICA_INSTALL_DIR   Self-host server install directory"
+        echo "                        (default: \$HOME/.multica/server)"
+        echo "  MULTICA_BIN_DIR       Target directory for the CLI binary when"
+        echo "                        installing from GitHub Releases"
+        echo "                        (default: /usr/local/bin, then \$HOME/.local/bin)"
+        echo "  MULTICA_SELFHOST_REF  Git ref to check out for self-host assets"
+        echo "                        (default: latest release tag, falling back to main)"
         echo ""
         echo "After installation, run 'multica setup' to configure your environment."
         exit 0
