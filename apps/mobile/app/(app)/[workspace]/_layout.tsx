@@ -182,9 +182,20 @@ export default function WorkspaceLayout() {
           name="issue/[id]/picker/priority"
           options={SHEET_OPTIONS}
         />
+        {/* Experiment: assignee uses iOS-native nav header + UISearchController
+            instead of the body-rendered header pattern in SHEET_OPTIONS.
+            Eliminates the #3634 overlap class of bugs and the focus-loss
+            footgun of a custom TextInput inside ListHeaderComponent. The
+            route file wires `headerSearchBarOptions` via setOptions. If this
+            proves out, propagate to label / project / other search pickers
+            and update CLAUDE.md Lesson 6 with a carve-out. */}
         <Stack.Screen
           name="issue/[id]/picker/assignee"
-          options={SHEET_OPTIONS}
+          options={{
+            ...SHEET_OPTIONS,
+            headerShown: true,
+            title: "Assignee",
+          }}
         />
         <Stack.Screen
           name="issue/[id]/picker/label"
@@ -238,7 +249,11 @@ export default function WorkspaceLayout() {
         />
         <Stack.Screen
           name="new-issue-picker/assignee"
-          options={SHEET_OPTIONS}
+          options={{
+            ...SHEET_OPTIONS,
+            headerShown: true,
+            title: "Assignee",
+          }}
         />
         <Stack.Screen
           name="new-issue-picker/project"
