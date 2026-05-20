@@ -118,13 +118,17 @@ describe("ThinkingPropRow", () => {
     mockInitiateListModels.mockResolvedValue(listResult([NO_THINKING_MODEL]));
     renderRow({ model: "gemini-2.5-pro", value: "" });
 
-    // Wait for the query to settle. We assert by absence of the i18n
-    // label rather than by query state, so this also fails if the row
-    // re-renders later.
+    // The row stays mounted while discovery is in flight (so the
+    // useQuery subscription survives long enough for the request to
+    // fire) — assertion must wait until the query has settled before
+    // checking the row is gone. waitFor with the absence as the
+    // condition also catches a late re-mount.
     await waitFor(() => {
       expect(mockInitiateListModels).toHaveBeenCalled();
     });
-    expect(screen.queryByText("Thinking")).toBeNull();
+    await waitFor(() => {
+      expect(screen.queryByText("Thinking")).toBeNull();
+    });
   });
 
   it("hides the row while the runtime is offline (no query fires)", () => {
@@ -162,7 +166,7 @@ describe("ThinkingPropRow", () => {
     // matching the i18n `thinking_clear_title` copy.
     await screen.findByText("xhigh");
     fireEvent.click(screen.getByRole("button"));
-    const clearButton = await screen.findByTitle(/Clear and fall back/i);
+    const clearButton = await screen.findByTitle(/Clear the override/i);
     fireEvent.click(clearButton);
 
     expect(onChange).toHaveBeenCalledWith("");
@@ -176,10 +180,12 @@ describe("ThinkingPropRow", () => {
     expect((await screen.findAllByText("High")).length).toBeGreaterThan(0);
   });
 
-  it("renders the row with \"Default\" when value is empty and the model exposes levels", async () => {
+  it("renders the row with \"Follow CLI config\" when value is empty and the model exposes levels", async () => {
     renderRow({ value: "" });
 
     await screen.findByText("Thinking");
-    expect((await screen.findAllByText("Default")).length).toBeGreaterThan(0);
+    // Empty value means Multica omits --effort, so the local CLI's
+    // config decides — chip + tooltip both read "Follow CLI config".
+    expect((await screen.findAllByText("Follow CLI config")).length).toBeGreaterThan(0);
   });
 });
