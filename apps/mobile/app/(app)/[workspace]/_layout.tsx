@@ -45,6 +45,17 @@ const SHEET_OPTIONS: ComponentProps<typeof Stack.Screen>["options"] = {
 };
 
 /**
+ * Cold-start deep-link anchor. Expo Router otherwise treats whatever
+ * route resolves the URL as the root of the stack — if the user opens a
+ * notification that targets `issue/[id]/picker/status` directly, they
+ * land on the formSheet with NO parent under it, no way to go back to
+ * the tabs. `anchor: "(tabs)"` tells the router to mount the tab UI as
+ * the implicit underlying screen so back/swipe-dismiss returns the user
+ * to a sensible base state.
+ */
+export const unstable_settings = { anchor: "(tabs)" } as const;
+
+/**
  * Mounts every per-feature realtime subscription. Lives inside
  * RealtimeProvider so the WSClient context is available, and stays alive
  * for the whole workspace session — the inbox unread count must keep
