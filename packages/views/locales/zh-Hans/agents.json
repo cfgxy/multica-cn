@@ -170,11 +170,10 @@
     "model_custom_use": "使用\"{{value}}\"",
     "model_clear": "清除（使用提供方默认）",
     "model_clear_title": "清除并回退到运行时的提供方默认",
-    "thinking_default": "默认",
+    "thinking_default": "跟随 CLI 配置",
     "thinking_tooltip": "思考 · {{value}}",
-    "thinking_default_badge": "默认",
-    "thinking_clear": "使用模型默认",
-    "thinking_clear_title": "清除并回退到该模型的默认推理级别"
+    "thinking_clear": "跟随 CLI 配置",
+    "thinking_clear_title": "清除覆盖，让本地 CLI（claude/codex）的配置决定推理级别"
   },
   "model_dropdown": {
     "label": "模型",

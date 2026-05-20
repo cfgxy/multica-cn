@@ -133,10 +133,12 @@ export interface Agent {
   /**
    * Runtime-native reasoning/effort token (e.g. Claude's
    * `low|medium|high|xhigh|max`, Codex's
-   * `none|minimal|low|medium|high|xhigh`). Empty string means "use the
-   * runtime/model default". The picker is per-runtime per-model — the
-   * API never normalises across providers. Older backends omit this
-   * field entirely; treat undefined as "" (MUL-2339).
+   * `none|minimal|low|medium|high|xhigh`). Empty string means "no
+   * override": the backend omits the effort flag and the upstream CLI
+   * config / built-in default decides at run time. The picker is
+   * per-runtime per-model — the API never normalises across providers.
+   * Older backends omit this field entirely; treat undefined as ""
+   * (MUL-2339).
    */
   thinking_level?: string;
   owner_id: string | null;
@@ -462,8 +464,11 @@ export interface RuntimeModel {
 export interface RuntimeModelThinking {
   /** Levels the user is allowed to pick for this model. */
   supported_levels: RuntimeModelThinkingLevel[];
-  /** The level the runtime defaults to when no override is sent. The UI
-   *  uses this to badge the default and prefill new agents. */
+  /** Informational: the level the upstream CLI documents as its built-in
+   *  default when no `--effort` flag is passed. Surfaced by the daemon
+   *  but not actively rendered today — Multica's empty `thinking_level`
+   *  means "no override; let the local CLI config decide", which may
+   *  itself differ from this value. */
   default_level?: string;
 }
 
