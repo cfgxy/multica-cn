@@ -45,14 +45,21 @@ export function ThinkingPropRow({
   const models = modelsQuery.data?.models ?? [];
   const entry = pickModelEntry(models, model);
   const levels = entry?.thinking?.supported_levels ?? [];
-  if (levels.length === 0 && !value) return null;
+  // Keep the row visible while discovery is in flight. Hiding during
+  // load forces the user to manually open the Model picker to "kick"
+  // discovery before Thinking ever appears — which it doesn't, because
+  // both pickers share the same query cache via runtimeModelsKeys.
+  // Mounting the picker here is what triggers `resolveRuntimeModels`;
+  // an early `return null` aborts that subscription before it can fire.
+  if (!modelsQuery.isLoading && !modelsQuery.isFetching && levels.length === 0 && !value) {
+    return null;
+  }
 
   return (
     <PropRow label={t(($) => $.inspector.prop_thinking)} interactive={false}>
       <ThinkingPicker
         value={value}
         levels={levels}
-        defaultLevel={entry?.thinking?.default_level}
         canEdit={canEdit}
         onChange={onChange}
       />

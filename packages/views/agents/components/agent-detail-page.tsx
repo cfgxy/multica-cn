@@ -101,11 +101,28 @@ export function AgentDetailPage({ agentId }: AgentDetailPageProps) {
   const [confirmArchive, setConfirmArchive] = useState(false);
 
   const handleUpdate = async (id: string, data: Record<string, unknown>) => {
+    // Optimistic update: patch the matching agent in the cached list
+    // BEFORE the network round-trip so the inspector picker chips flip to
+    // the new value immediately on click. Without this, every inspector
+    // picker (thinking / visibility / concurrency / model / runtime) waits
+    // 0.5-2s for the API response + invalidate + refetch before the trigger
+    // updates — readable as obvious lag in the UI. On error we restore the
+    // previous list, rethrow, and let the caller's toast surface the cause.
+    const queryKey = workspaceKeys.agents(wsId);
+    const prevAgents = qc.getQueryData<Agent[]>(queryKey);
+    if (prevAgents) {
+      qc.setQueryData<Agent[]>(queryKey, (old) =>
+        old?.map((a) => (a.id === id ? ({ ...a, ...data } as Agent) : a)),
+      );
+    }
     try {
       await api.updateAgent(id, data as UpdateAgentRequest);
-      qc.invalidateQueries({ queryKey: workspaceKeys.agents(wsId) });
+      qc.invalidateQueries({ queryKey });
       toast.success(t(($) => $.detail.agent_updated_toast));
     } catch (e) {
+      // Roll back to the snapshot we took before the optimistic write so
+      // the UI doesn't lie to the user about persisted state.
+      if (prevAgents) qc.setQueryData<Agent[]>(queryKey, prevAgents);
       toast.error(e instanceof Error ? e.message : t(($) => $.detail.update_failed_toast));
       throw e;
     }

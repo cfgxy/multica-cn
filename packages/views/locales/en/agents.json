@@ -174,11 +174,10 @@
     "model_custom_use": "Use \"{{value}}\"",
     "model_clear": "Clear (use provider default)",
     "model_clear_title": "Clear and fall back to the runtime's provider default",
-    "thinking_default": "Default",
+    "thinking_default": "Follow CLI config",
     "thinking_tooltip": "Thinking · {{value}}",
-    "thinking_default_badge": "default",
-    "thinking_clear": "Use model default",
-    "thinking_clear_title": "Clear and fall back to this model's default reasoning level"
+    "thinking_clear": "Follow CLI config",
+    "thinking_clear_title": "Clear the override and let the local CLI config (claude/codex) decide the reasoning level"
   },
   "model_dropdown": {
     "label": "Model",

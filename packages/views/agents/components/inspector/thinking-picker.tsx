@@ -24,18 +24,14 @@ import { useT } from "../../../i18n";
 export function ThinkingPicker({
   value,
   levels,
-  defaultLevel,
   canEdit = true,
   onChange,
 }: {
-  /** Persisted thinking_level — "" means "use model default". */
+  /** Persisted thinking_level — "" means "follow local CLI config". */
   value: string;
   /** Supported levels for the current (runtime, model) pair. Caller has
    *  already verified the list is non-empty before mounting this picker. */
   levels: RuntimeModelThinkingLevel[];
-  /** Level the runtime uses when no override is sent. Surfaced as a badge
-   *  in the popover. */
-  defaultLevel?: string;
   /** When false, render a static read-only display and skip the popover. */
   canEdit?: boolean;
   onChange: (next: string) => Promise<void> | void;
@@ -96,23 +92,26 @@ export function ThinkingPicker({
           key={l.value}
           selected={l.value === value}
           onClick={() => void select(l.value)}
-          tooltip={l.description || (l.label !== l.value ? `${l.label} · ${l.value}` : l.value)}
         >
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-1.5">
-              <span className="truncate font-medium">{l.label}</span>
-              {l.value === defaultLevel && (
-                <span className="shrink-0 rounded bg-primary/10 px-1 text-[10px] font-medium text-primary">
-                  {t(($) => $.pickers.thinking_default_badge)}
-                </span>
-              )}
-            </div>
+          {/* PickerItem wraps children in a flex `<span>`. Putting a
+              `<div>` inside that <span> is block-in-inline (invalid HTML5)
+              and triggers browser quirks that shift descendant x-position.
+              Use a `<span>` with explicit `block` + `text-left` so layout
+              is deterministic across rows regardless of whether the label
+              row has the `default` badge sibling. */}
+          {/* No model-factory-default badge here on purpose: when the
+              picker is "Follow CLI config" (value === ""), Multica omits
+              `--effort` and the local CLI config decides — the model's
+              factory default is irrelevant to what actually fires, so
+              flagging one option as "default" was misleading. */}
+          <span className="block min-w-0 flex-1 text-left">
+            <span className="truncate text-[13px] font-medium">{l.label}</span>
             {l.description && (
-              <div className="truncate text-[10px] text-muted-foreground">
+              <span className="mt-0.5 block text-[11px] leading-snug text-muted-foreground">
                 {l.description}
-              </div>
+              </span>
             )}
-          </div>
+          </span>
         </PickerItem>
       ))}
 
