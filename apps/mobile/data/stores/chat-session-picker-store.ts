@@ -23,7 +23,7 @@
  * wired in `app/(app)/[workspace]/_layout.tsx` via
  * `useResetOnWorkspaceChange()` — that's the only place that calls it.
  */
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { create } from "zustand";
 
 interface ChatSessionPickerState {
@@ -66,14 +66,19 @@ export const useChatSessionPickerStore = create<ChatSessionPickerState>(
  * Clears the chat session picker store whenever the active workspace id
  * changes. Mounted once from the workspace `_layout.tsx`; relies on the
  * workspace store being the source of truth for "which workspace am I
- * looking at right now". The first time it runs there's no prior id, so
- * the initial mount is effectively a no-op (we already initialise to the
- * INITIAL shape).
+ * looking at right now". The `useRef` gate makes the first mount a true
+ * no-op: we only fire `reset()` when the id actually transitions, so a
+ * cold start resolving the workspace from `null → uuid` doesn't stomp
+ * the already-INITIAL store.
  */
 export function useChatSessionPickerResetOnWorkspaceChange(
   wsId: string | null,
 ) {
+  const prevRef = useRef(wsId);
   useEffect(() => {
-    useChatSessionPickerStore.getState().reset();
+    if (prevRef.current !== wsId) {
+      useChatSessionPickerStore.getState().reset();
+      prevRef.current = wsId;
+    }
   }, [wsId]);
 }

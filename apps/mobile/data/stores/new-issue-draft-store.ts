@@ -20,7 +20,7 @@
  * `app/(app)/[workspace]/_layout.tsx` via `useResetOnWorkspaceChange()` —
  * that's the only place that calls it on workspace-id transitions.
  */
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { create } from "zustand";
 import type {
   IssuePriority,
@@ -67,12 +67,18 @@ export const useNewIssueDraftStore = create<NewIssueDraftState>((set) => ({
 /**
  * Clears the new-issue draft store whenever the active workspace id
  * changes. Mounted once from the workspace `_layout.tsx`; relies on the
- * workspace store being the source of truth. The first time it runs
- * there's no prior id, so the initial mount effectively re-applies
- * INITIAL — already the store's starting shape.
+ * workspace store being the source of truth. The `useRef` gate ensures
+ * the first mount is a no-op — we only fire `reset()` when the id
+ * actually changes from one value to another, so a fresh app launch that
+ * resolves the workspace into a non-null id doesn't pointlessly stomp
+ * the already-INITIAL store on every cold start.
  */
 export function useNewIssueDraftResetOnWorkspaceChange(wsId: string | null) {
+  const prevRef = useRef(wsId);
   useEffect(() => {
-    useNewIssueDraftStore.getState().reset();
+    if (prevRef.current !== wsId) {
+      useNewIssueDraftStore.getState().reset();
+      prevRef.current = wsId;
+    }
   }, [wsId]);
 }
