@@ -2,27 +2,30 @@
  * Comment composition modal — full-screen replacement for the old always-on
  * inline composer at the bottom of issue/[id].tsx.
  *
+ * Three modes, driven by route params:
+ *   - New top-level comment: no extra params
+ *   - Reply:                  `parent` + `parentName`
+ *   - Edit existing comment:  `edit` + `initial`
+ *
+ * In edit mode the textarea is pre-seeded with the comment's current
+ * content, the header reads "Edit comment", and Send routes to
+ * `useEditComment` instead of `useCreateComment`. The picker / mention
+ * pipeline is identical — same `useMentionInput`, same toolbar.
+ *
  * Why a modal route instead of inline:
  *   - Always-on inline composer competed with the timeline for vertical
  *     space and the keyboard avoiding logic was clunky (user feedback).
  *   - Modal gives the composer dedicated real estate: bigger TextArea,
  *     MentionSuggestionBar can lay out without colliding with toolbar.
  *   - iOS slide-up sheet is the platform-standard "compose" pattern
- *     (Mail, Linear, Slack thread reply).
- *
- * Reuses the same `useMentionInput` + `useFileAttach` hooks as the chat
- * composer — same `[@name](mention://type/id)` markdown the server parses.
- *
- * Reply mode: route param `parent` carries the parent comment id;
- * `parentName` carries the display name for the header. The composer
- * submits with `parentId` set; backend treats it as a threaded reply.
+ *     (Mail, Linear, Slack thread reply / edit).
  *
  * Submit success → router.back() returns to the issue detail screen. The
- * `useCreateComment` optimistic mutation has already patched the timeline
- * cache before the modal closes, so the new comment is visible immediately
- * without a flash.
+ * mutation's optimistic patch has already updated the timeline cache
+ * before the modal closes, so the new / edited comment is visible
+ * immediately without a flash.
  */
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   Alert,
   KeyboardAvoidingView,
@@ -40,16 +43,18 @@ import { useMentionInput } from "@/lib/use-mention-input";
 import { useFileAttach } from "@/components/editor/use-file-attach";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
-import { useCreateComment } from "@/data/mutations/issues";
+import { useCreateComment, useEditComment } from "@/data/mutations/issues";
 import { cn } from "@/lib/utils";
 
 const ICON_SIZE = 18;
 
 export default function NewCommentModal() {
-  const { id, parent, parentName } = useLocalSearchParams<{
+  const { id, parent, parentName, edit, initial } = useLocalSearchParams<{
     id: string;
     parent?: string;
     parentName?: string;
+    edit?: string;
+    initial?: string;
   }>();
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme];
@@ -59,15 +64,36 @@ export default function NewCommentModal() {
   const inputRef = useRef<TextInput>(null);
   const [submitting, setSubmitting] = useState(false);
   const createComment = useCreateComment(id);
+  const editComment = useEditComment(id);
+
+  const isEdit = !!edit;
+  const isReply = !!parent;
+  const title = isEdit ? "Edit comment" : isReply ? "Reply" : "New comment";
+
+  // In edit mode, seed the input with the existing content once on mount.
+  // mention.setText is referentially stable (Zustand action shape) — guard
+  // with a ref-mounted flag instead of including it in deps so the effect
+  // doesn't re-fire and clobber user edits.
+  const seededRef = useRef(false);
+  useEffect(() => {
+    if (!isEdit || seededRef.current) return;
+    if (initial) {
+      mention.setText(initial);
+      seededRef.current = true;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEdit, initial]);
 
   const trimmed = mention.text.trim();
   // Same send-gate as the old inline composer: text non-empty, not already
   // mid-submit, no upload in flight (the upload's deferred insertAtCursor
   // would otherwise race a clear and orphan markdown into the next message).
-  const canSend = trimmed.length > 0 && !submitting && !fileAttach.uploading;
-
-  const isReply = !!parent;
-  const title = isReply ? "Reply" : "New comment";
+  // In edit mode, also gate on content actually changed.
+  const canSend =
+    trimmed.length > 0 &&
+    !submitting &&
+    !fileAttach.uploading &&
+    (!isEdit || trimmed !== (initial ?? "").trim());
 
   const handleSend = useCallback(async () => {
     if (!canSend) return;
@@ -75,19 +101,23 @@ export default function NewCommentModal() {
     const snap = mention.snapshot();
     const content = mention.serialize().trim();
     try {
-      await createComment.mutateAsync({ content, parentId: parent });
+      if (isEdit && edit) {
+        await editComment.mutateAsync({ commentId: edit, content });
+      } else {
+        await createComment.mutateAsync({ content, parentId: parent });
+      }
       router.back();
     } catch (err) {
-      // Restore so the user doesn't lose their text. Surface a toast so
-      // they know it failed (Alert is the simplest reliable surface here).
+      // Restore so the user doesn't lose their text. Alert is the simplest
+      // reliable surface here.
       mention.restore(snap);
       Alert.alert(
-        "Couldn't send",
+        isEdit ? "Couldn't save" : "Couldn't send",
         err instanceof Error ? err.message : "Try again in a moment.",
       );
       setSubmitting(false);
     }
-  }, [canSend, mention, createComment, parent]);
+  }, [canSend, mention, createComment, editComment, parent, isEdit, edit]);
 
   const handleAttachImage = useCallback(async () => {
     const result = await fileAttach.pickAndUploadImage({ issueId: id });
@@ -127,7 +157,13 @@ export default function NewCommentModal() {
                   canSend ? "text-primary-foreground" : "text-muted-foreground",
                 )}
               >
-                {submitting ? "Sending…" : "Send"}
+                {submitting
+                  ? isEdit
+                    ? "Saving…"
+                    : "Sending…"
+                  : isEdit
+                    ? "Save"
+                    : "Send"}
               </Text>
             </Pressable>
           ),

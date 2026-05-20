@@ -30,7 +30,6 @@ import { Stack, router, useLocalSearchParams } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import type {
-  CreateProjectResourceRequest,
   ProjectPriority,
   ProjectStatus,
 } from "@multica/core/types";
@@ -43,17 +42,11 @@ import { ProjectResourcesSection } from "@/components/project/project-resources-
 import { ProjectStatusPickerSheet } from "@/components/project/pickers/project-status-picker-sheet";
 import { ProjectPriorityPickerSheet } from "@/components/project/pickers/project-priority-picker-sheet";
 import {
-  ProjectLeadPickerSheet,
-  type LeadValue,
-} from "@/components/project/pickers/project-lead-picker-sheet";
-import { AddResourceSheet } from "@/components/project/add-resource-sheet";
-import {
   projectDetailOptions,
   projectResourcesOptions,
 } from "@/data/queries/projects";
 import { issueKeys } from "@/data/queries/issue-keys";
 import {
-  useCreateProjectResource,
   useDeleteProject,
   useUpdateProject,
 } from "@/data/mutations/projects";
@@ -69,12 +62,13 @@ export default function ProjectDetail() {
   const detail = useQuery(projectDetailOptions(wsId, id));
   const updateProject = useUpdateProject(id);
   const deleteProject = useDeleteProject(id);
-  const createResource = useCreateProjectResource(id);
 
+  // Status + Priority pickers still use the older transparent-Modal
+  // pattern (project-status-picker-sheet / project-priority-picker-sheet) —
+  // not part of the SheetShell formSheet migration. Lead + Add Resource
+  // moved to formSheet routes.
   const [statusOpen, setStatusOpen] = useState(false);
   const [priorityOpen, setPriorityOpen] = useState(false);
-  const [leadOpen, setLeadOpen] = useState(false);
-  const [resourceOpen, setResourceOpen] = useState(false);
 
   // Per-record realtime — when another client deletes the project we're
   // viewing, pop back so the user isn't stranded on a 404.
@@ -147,18 +141,6 @@ export default function ProjectDetail() {
     );
   };
 
-  const onAddResource = (body: CreateProjectResourceRequest) => {
-    createResource.mutate(body, {
-      onSuccess: () => setResourceOpen(false),
-      onError: (err) => {
-        Alert.alert(
-          "Failed to attach resource",
-          err instanceof Error ? err.message : "Unknown error",
-        );
-      },
-    });
-  };
-
   return (
     <SafeAreaView className="flex-1 bg-background" edges={["bottom"]}>
       <Stack.Screen
@@ -215,11 +197,23 @@ export default function ProjectDetail() {
             project={project}
             onPressStatus={() => setStatusOpen(true)}
             onPressPriority={() => setPriorityOpen(true)}
-            onPressLead={() => setLeadOpen(true)}
+            onPressLead={() => {
+              if (wsSlug)
+                router.push({
+                  pathname: "/[workspace]/project/[id]/picker/lead",
+                  params: { workspace: wsSlug, id },
+                });
+            }}
           />
           <ProjectResourcesSection
             projectId={id}
-            onAdd={() => setResourceOpen(true)}
+            onAdd={() => {
+              if (wsSlug)
+                router.push({
+                  pathname: "/[workspace]/project/[id]/add-resource",
+                  params: { workspace: wsSlug, id },
+                });
+            }}
           />
           <View className="h-3" />
           <ProjectRelatedIssues projectId={id} />
@@ -243,28 +237,6 @@ export default function ProjectDetail() {
               updateProject.mutate({ priority: next })
             }
             onClose={() => setPriorityOpen(false)}
-          />
-          <ProjectLeadPickerSheet
-            visible={leadOpen}
-            value={
-              project.lead_type && project.lead_id
-                ? { type: project.lead_type, id: project.lead_id }
-                : null
-            }
-            onChange={(next: LeadValue | null) =>
-              updateProject.mutate(
-                next
-                  ? { lead_type: next.type, lead_id: next.id }
-                  : { lead_type: null, lead_id: null },
-              )
-            }
-            onClose={() => setLeadOpen(false)}
-          />
-          <AddResourceSheet
-            visible={resourceOpen}
-            onSubmit={onAddResource}
-            onClose={() => setResourceOpen(false)}
-            submitting={createResource.isPending}
           />
         </>
       ) : null}

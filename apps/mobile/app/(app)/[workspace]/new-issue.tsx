@@ -14,7 +14,7 @@
  * — both surfaces produce canonical `[@name](mention://type/id)` markdown
  * recognised by util.ParseMentions on the server.
  */
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Alert,
   KeyboardAvoidingView,
@@ -23,11 +23,10 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { Stack, router } from "expo-router";
-import type { IssuePriority, IssueStatus, Project } from "@multica/core/types";
+import { Stack, router, useLocalSearchParams } from "expo-router";
+import { Text } from "@/components/ui/text";
 import { SubmitIssueButton } from "@/components/issue/submit-issue-button";
 import { CreateFormAttributeRow } from "@/components/issue/create-form-attribute-row";
-import type { AssigneeValue } from "@/components/issue/pickers/assignee-picker-sheet";
 import { MentionSuggestionBar } from "@/components/issue/mention-suggestion-bar";
 import { AutosizeTextArea } from "@/components/ui/autosize-textarea";
 import {
@@ -36,19 +35,74 @@ import {
 } from "@/components/ui/input-tokens";
 import { cn } from "@/lib/utils";
 import { useCreateIssue } from "@/data/mutations/issues";
+import { useNewIssueDraftStore } from "@/data/stores/new-issue-draft-store";
 import {
   useMentionInput,
   type UseMentionInputReturn,
 } from "@/lib/use-mention-input";
 
 export default function NewIssueModal() {
+  // Route params support "create from comment" flows from
+  // comment-action-sheet.tsx:
+  //   - seed_content: comment body that prefills the description (quoted)
+  //   - seed_actor:   comment author (rendered in the attribution line)
+  //   - seed_source_issue: identifier (MUL-NN) for attribution
+  //   - parent_id:    when set, the new issue is created as a sub-issue
+  //                   (mobile UI shows a hint banner; backend accepts via
+  //                   CreateIssueRequest.parent_issue_id)
+  const {
+    seed_content: seedContent,
+    seed_actor: seedActor,
+    seed_source_issue: seedSourceIssue,
+    parent_id: parentId,
+  } = useLocalSearchParams<{
+    seed_content?: string;
+    seed_actor?: string;
+    seed_source_issue?: string;
+    parent_id?: string;
+  }>();
+
   const [title, setTitle] = useState("");
   const description = useMentionInput();
-  const [status, setStatus] = useState<IssueStatus>("todo");
-  const [priority, setPriority] = useState<IssuePriority>("none");
-  const [assignee, setAssignee] = useState<AssigneeValue>(null);
-  const [dueDate, setDueDate] = useState<string | null>(null);
-  const [project, setProject] = useState<Project | null>(null);
+  // Attribute chips (status / priority / assignee / due date / project)
+  // live in `useNewIssueDraftStore` so the new-issue-picker/* formSheet
+  // routes can read and write the same values without a parent-child
+  // React relationship. The store is reset on mount + on unmount so
+  // re-opening the new-issue modal starts clean.
+  const status = useNewIssueDraftStore((s) => s.status);
+  const priority = useNewIssueDraftStore((s) => s.priority);
+  const assignee = useNewIssueDraftStore((s) => s.assignee);
+  const dueDate = useNewIssueDraftStore((s) => s.dueDate);
+  const project = useNewIssueDraftStore((s) => s.project);
+  const resetDraft = useNewIssueDraftStore((s) => s.reset);
+
+  useEffect(() => {
+    resetDraft();
+    return () => {
+      resetDraft();
+    };
+  }, [resetDraft]);
+
+  // Prefill description once on mount when "from comment" params are set.
+  // Format mirrors the canonical GitHub-style attribution quote: an
+  // attribution line, a blank line, then the original body as a markdown
+  // blockquote. seededRef guards against re-seeding after the user edits.
+  const seededRef = useRef(false);
+  useEffect(() => {
+    if (seededRef.current || !seedContent) return;
+    const attribution = seedSourceIssue
+      ? `> From ${seedActor ?? "a comment"} on ${seedSourceIssue}`
+      : `> From ${seedActor ?? "a comment"}`;
+    const quoted = seedContent
+      .split("\n")
+      .map((line) => `> ${line}`)
+      .join("\n");
+    description.setText(`${attribution}\n>\n${quoted}\n\n`);
+    seededRef.current = true;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seedContent, seedActor, seedSourceIssue]);
+
+  const isSubIssue = !!parentId;
 
   const createIssue = useCreateIssue();
   const isSubmitting = createIssue.isPending;
@@ -70,6 +124,7 @@ export default function NewIssueModal() {
           : {}),
         ...(dueDate ? { due_date: dueDate } : {}),
         ...(project ? { project_id: project.id } : {}),
+        ...(parentId ? { parent_issue_id: parentId } : {}),
       });
       router.back();
     } catch (err) {
@@ -86,6 +141,7 @@ export default function NewIssueModal() {
     assignee,
     dueDate,
     project,
+    parentId,
     createIssue,
   ]);
 
@@ -114,6 +170,19 @@ export default function NewIssueModal() {
           contentContainerClassName="px-4 pt-4 pb-6 gap-4"
           keyboardShouldPersistTaps="handled"
         >
+          {isSubIssue ? (
+            <View className="rounded-lg bg-secondary px-3 py-2">
+              <Text className="text-xs text-muted-foreground">
+                Sub-issue
+                {seedSourceIssue ? (
+                  <Text className="text-foreground font-medium">
+                    {" "}
+                    of {seedSourceIssue}
+                  </Text>
+                ) : null}
+              </Text>
+            </View>
+          ) : null}
           <TextInput
             value={title}
             onChangeText={setTitle}
@@ -128,18 +197,7 @@ export default function NewIssueModal() {
             description={description}
             disabled={isSubmitting}
           />
-          <CreateFormAttributeRow
-            status={status}
-            onStatusChange={setStatus}
-            priority={priority}
-            onPriorityChange={setPriority}
-            assignee={assignee}
-            onAssigneeChange={setAssignee}
-            dueDate={dueDate}
-            onDueDateChange={setDueDate}
-            project={project}
-            onProjectChange={setProject}
-          />
+          <CreateFormAttributeRow />
         </ScrollView>
 
         {/* Mention suggestions float above the keyboard only when the user

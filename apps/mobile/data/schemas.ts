@@ -17,6 +17,7 @@ import type {
   ChatMessage,
   ChatPendingTask,
   ChatSession,
+  Comment,
   InboxItem,
   IssueLabelsResponse,
   Label,
@@ -65,6 +66,44 @@ export const AttachmentSchema: z.ZodType<Attachment> = z.object({
  *  rendering — image URIs simply fail to resolve and fall back to fetch. */
 export const AttachmentListSchema = z.array(AttachmentSchema).default([]);
 export const EMPTY_ATTACHMENT_LIST: Attachment[] = [];
+
+/** Comment write endpoints all return a full Comment. Used by createComment /
+ *  updateComment / resolveComment / unresolveComment via fetchValidatedWith.
+ *  Empty fallback yields `id: ""` so downstream code (the mutations'
+ *  onSuccess writers) can detect drift and fall back to invalidate. */
+export const CommentSchema = z.object({
+  id: z.string(),
+  issue_id: z.string().default(""),
+  author_type: z.string().default("member"),
+  author_id: z.string().default(""),
+  content: z.string().default(""),
+  type: z.string().default("comment"),
+  parent_id: z.string().nullable().default(null),
+  reactions: z.array(z.unknown()).default([]),
+  attachments: z.array(z.unknown()).default([]),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+  resolved_at: z.string().nullable().default(null),
+  resolved_by_type: z.string().nullable().default(null),
+  resolved_by_id: z.string().nullable().default(null),
+}).loose() as unknown as z.ZodType<Comment>;
+
+export const EMPTY_COMMENT: Comment = {
+  id: "",
+  issue_id: "",
+  author_type: "member",
+  author_id: "",
+  content: "",
+  type: "comment",
+  parent_id: null,
+  reactions: [],
+  attachments: [],
+  created_at: "",
+  updated_at: "",
+  resolved_at: null,
+  resolved_by_type: null,
+  resolved_by_id: null,
+};
 
 /** GET/PUT /api/notification-preferences. Preferences are partial — absent
  *  keys mean "default (= all)", an explicit "muted" turns the group off.

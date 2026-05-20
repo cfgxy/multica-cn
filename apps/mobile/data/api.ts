@@ -65,6 +65,7 @@ import {
   AttachmentListSchema,
   AttachmentSchema,
   ChatMessageListSchema,
+  CommentSchema,
   ChatPendingTaskSchema,
   ChatSessionListSchema,
   ChatSessionSchema,
@@ -75,6 +76,7 @@ import {
   EMPTY_CHAT_MESSAGE_LIST,
   EMPTY_CHAT_PENDING_TASK,
   EMPTY_CHAT_SESSION_LIST,
+  EMPTY_COMMENT,
   EMPTY_INBOX_LIST,
   EMPTY_ISSUE_FALLBACK,
   EMPTY_LIST_LABELS_RESPONSE,
@@ -670,18 +672,77 @@ class ApiClient {
   async createComment(
     issueId: string,
     content: string,
-    parentId?: string,
+    opts?: { parentId?: string; type?: string; attachmentIds?: string[] },
   ): Promise<Comment> {
     // Body shape mirrors backend `CreateCommentRequest`
     // (server/internal/handler/comment.go:165). `parent_id` is sent only
     // when present so top-level comments don't carry an explicit null.
-    return this.fetch<Comment>(`/api/issues/${issueId}/comments`, {
-      method: "POST",
-      body: JSON.stringify({
-        content,
-        ...(parentId ? { parent_id: parentId } : {}),
-      }),
-    });
+    // `type` defaults to "comment" matching web client.ts:686.
+    return this.fetchValidatedWith(
+      `/api/issues/${issueId}/comments`,
+      CommentSchema,
+      EMPTY_COMMENT,
+      {
+        method: "POST",
+        body: JSON.stringify({
+          content,
+          type: opts?.type ?? "comment",
+          ...(opts?.parentId ? { parent_id: opts.parentId } : {}),
+          ...(opts?.attachmentIds ? { attachment_ids: opts.attachmentIds } : {}),
+        }),
+      },
+      { endpoint: "createComment" },
+    );
+  }
+
+  // PUT /api/comments/:id — content edit (+ optional attachment swap).
+  async updateComment(
+    commentId: string,
+    content: string,
+    attachmentIds?: string[],
+  ): Promise<Comment> {
+    return this.fetchValidatedWith(
+      `/api/comments/${commentId}`,
+      CommentSchema,
+      EMPTY_COMMENT,
+      {
+        method: "PUT",
+        body: JSON.stringify({
+          content,
+          ...(attachmentIds ? { attachment_ids: attachmentIds } : {}),
+        }),
+      },
+      { endpoint: "updateComment" },
+    );
+  }
+
+  // DELETE /api/comments/:id — 204 No Content on success; this.fetch
+  // already short-circuits 204 → undefined.
+  async deleteComment(commentId: string): Promise<void> {
+    await this.fetch<void>(`/api/comments/${commentId}`, { method: "DELETE" });
+  }
+
+  // POST /api/comments/:id/resolve — marks the thread root resolved; only
+  // meaningful for root comments. Backend mirrors web semantics.
+  async resolveComment(commentId: string): Promise<Comment> {
+    return this.fetchValidatedWith(
+      `/api/comments/${commentId}/resolve`,
+      CommentSchema,
+      EMPTY_COMMENT,
+      { method: "POST" },
+      { endpoint: "resolveComment" },
+    );
+  }
+
+  // DELETE /api/comments/:id/resolve — un-resolves the thread.
+  async unresolveComment(commentId: string): Promise<Comment> {
+    return this.fetchValidatedWith(
+      `/api/comments/${commentId}/resolve`,
+      CommentSchema,
+      EMPTY_COMMENT,
+      { method: "DELETE" },
+      { endpoint: "unresolveComment" },
+    );
   }
 
   // --- Reactions ---

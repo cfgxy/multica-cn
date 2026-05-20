@@ -10,20 +10,16 @@
  * Apple HIG "Progress Indicators" + the agent-UX "ambient status badge"
  * pattern (https://www.aiuxdesign.guide/patterns/agent-status-monitoring).
  *
- * Mounted at `<Stack.Screen options.headerRight>` of
- * `app/(app)/[workspace]/issue/[id].tsx` — see plan
- * /Users/qingnaiyuan/.claude/plans/ok-plan-linked-taco.md.
- *
- * Both this badge and the in-card row dispatch the same
- * `useRunsSheetStore.open(issueId)` action; the page-level `<RunsSheet>`
- * subscribes. One sheet, two entry points, no duplication.
+ * Tap pushes the `issue/[id]/runs` formSheet route — the in-card
+ * AgentActivityRow does the same. One route, two entry points, no
+ * duplicate sheet state.
  */
 import { Pressable } from "react-native";
+import { router } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { AvatarStack, type StackActor } from "@/components/ui/avatar-stack";
 import { PulseDot } from "@/components/ui/pulse-dot";
 import { issueActiveTasksOptions } from "@/data/queries/issues";
-import { useRunsSheetStore } from "@/data/runs-sheet-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 
 interface Props {
@@ -32,7 +28,7 @@ interface Props {
 
 export function AgentHeaderBadge({ issueId }: Props) {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
-  const open = useRunsSheetStore((s) => s.open);
+  const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { data: active = [] } = useQuery(
     issueActiveTasksOptions(wsId, issueId),
   );
@@ -46,7 +42,13 @@ export function AgentHeaderBadge({ issueId }: Props) {
 
   return (
     <Pressable
-      onPress={() => open(issueId)}
+      onPress={() => {
+        if (!wsSlug) return;
+        router.push({
+          pathname: "/[workspace]/issue/[id]/runs",
+          params: { workspace: wsSlug, id: issueId },
+        });
+      }}
       hitSlop={8}
       accessibilityLabel="Agent working — open runs"
       className="flex-row items-center gap-1.5 px-2 py-1 active:opacity-60"

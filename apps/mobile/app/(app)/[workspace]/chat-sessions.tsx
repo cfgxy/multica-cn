@@ -1,46 +1,36 @@
 /**
- * Session-switch sheet — opens from the chat header's center title press.
+ * Chat session-switch sheet — presented as a formSheet by the parent Stack.
+ * Reads the session list from the chat cache and writes the user's pick
+ * through a shared "active session" store so the chat tab picks it up on
+ * dismiss.
  *
- * Migrated to the shared SheetShell (iOS pageSheet) — see apps/mobile/
- * CLAUDE.md Lesson #6 for why this content type belongs in a pageSheet,
- * not the project's older transparent-fade Modal pattern.
- *
- * Interactions per row:
- *   - Tap          → switch active session + close sheet
- *   - Long-press   → confirm alert → delete session
- *
- * Footer row: "Switch agent →" → opens the agent picker sheet.
- *
- * Archived sessions render in the same flat list with a small "archived"
- * label suffix. We don't hide them (parity rule: web shows N sessions →
- * mobile shows N sessions). The chat screen disables send for them.
+ * Why a tiny dedicated store: the chat tab's `activeSessionId` used to live
+ * as a `useState` inside `chat.tsx`, but now that session picking happens
+ * on a separate route screen, we need a cross-screen channel. Same minimum
+ * pattern as `useNewIssueDraftStore` for the new-issue form.
  */
 import { Alert, Pressable, ScrollView, View } from "react-native";
+import { router } from "expo-router";
+import { useQuery } from "@tanstack/react-query";
 import type { ChatSession } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
-import { SheetShell } from "@/components/ui/sheet-shell";
+import { chatSessionsOptions } from "@/data/queries/chat";
+import { useDeleteChatSession } from "@/data/mutations/chat";
+import { useChatSessionPickerStore } from "@/data/stores/chat-session-picker-store";
+import { useWorkspaceStore } from "@/data/workspace-store";
 import { cn } from "@/lib/utils";
 
-interface Props {
-  visible: boolean;
-  sessions: ChatSession[];
-  activeSessionId: string | null;
-  onSelectSession: (session: ChatSession) => void;
-  onDeleteSession: (sessionId: string) => void;
-  onOpenAgentPicker: () => void;
-  onClose: () => void;
-}
+export default function ChatSessionsRoute() {
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const { data: sessions = [] } = useQuery(chatSessionsOptions(wsId));
+  const activeSessionId = useChatSessionPickerStore((s) => s.activeSessionId);
+  const requestSelect = useChatSessionPickerStore((s) => s.requestSelect);
+  const requestNewWithAgent = useChatSessionPickerStore(
+    (s) => s.requestNewWithAgent,
+  );
+  const deleteSession = useDeleteChatSession();
 
-export function SessionSheet({
-  visible,
-  sessions,
-  activeSessionId,
-  onSelectSession,
-  onDeleteSession,
-  onOpenAgentPicker,
-  onClose,
-}: Props) {
   const confirmDelete = (session: ChatSession) => {
     Alert.alert(
       "Delete this chat?",
@@ -50,7 +40,14 @@ export function SessionSheet({
         {
           text: "Delete",
           style: "destructive",
-          onPress: () => onDeleteSession(session.id),
+          onPress: () => {
+            deleteSession.mutate(session.id);
+            // If we just deleted the active one, the chat tab clears its
+            // local activeSessionId via the picker-store request.
+            if (session.id === activeSessionId) {
+              requestSelect(null);
+            }
+          },
         },
       ],
       { cancelable: true },
@@ -58,11 +55,11 @@ export function SessionSheet({
   };
 
   return (
-    <SheetShell visible={visible} onClose={onClose} title="Chats">
-      <ScrollView
-        className="flex-1"
-        showsVerticalScrollIndicator={false}
-      >
+    <View className="flex-1 bg-popover">
+      <View className="px-4 pt-4 pb-3">
+        <Text className="text-base font-semibold text-foreground">Chats</Text>
+      </View>
+      <ScrollView className="flex-1" showsVerticalScrollIndicator={false}>
         {sessions.length === 0 ? (
           <View className="px-4 py-8">
             <Text className="text-sm text-muted-foreground text-center">
@@ -77,8 +74,8 @@ export function SessionSheet({
               <Pressable
                 key={session.id}
                 onPress={() => {
-                  onSelectSession(session);
-                  onClose();
+                  requestSelect(session.id);
+                  router.back();
                 }}
                 onLongPress={() => confirmDelete(session)}
                 className={cn(
@@ -86,11 +83,6 @@ export function SessionSheet({
                   selected && "bg-secondary/60",
                 )}
               >
-                {/* Unread dot — has_unread comes from the server and
-                 *  WS chat:done invalidations keep it fresh. Sized
-                 *  +reserved-width whether visible or not so the
-                 *  avatar column stays aligned across read/unread
-                 *  rows. */}
                 <View
                   className={cn(
                     "h-2 w-2 rounded-full",
@@ -129,8 +121,11 @@ export function SessionSheet({
 
         <Pressable
           onPress={() => {
-            onOpenAgentPicker();
-            onClose();
+            // Signal the chat tab to open its agent picker. Done via store
+            // because the agent picker is still a transparent Modal (out of
+            // formSheet migration scope per the SheetShell rollout plan).
+            requestNewWithAgent();
+            router.back();
           }}
           className="flex-row items-center justify-between px-4 py-3 border-t border-border active:bg-secondary"
         >
@@ -138,6 +133,6 @@ export function SessionSheet({
           <Text className="text-sm text-muted-foreground">→</Text>
         </Pressable>
       </ScrollView>
-    </SheetShell>
+    </View>
   );
 }

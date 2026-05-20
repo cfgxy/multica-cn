@@ -34,9 +34,6 @@ interface Props {
   timelineLoading: boolean;
   refreshing: boolean;
   onRefresh: () => void;
-  /** Long-press → Reply on a comment bubbles up via this callback. The
-   *  issue page lifts replyingTo state and feeds it back into the composer. */
-  onReplyTo: (commentId: string, name: string) => void;
   /** Inbox deep-link target. Root comment id OR reply id — replies live
    *  inline inside their parent's CommentCard, so a reply target scrolls
    *  to the parent's row and the card highlights the matching child. */
@@ -58,7 +55,6 @@ export function TimelineList({
   timelineLoading,
   refreshing,
   onRefresh,
-  onReplyTo,
   highlightCommentId,
   highlightNonce,
 }: Props) {
@@ -136,7 +132,6 @@ export function TimelineList({
             entry={item.entry}
             replies={item.replies}
             issueId={issue.id}
-            onReplyTo={onReplyTo}
             highlightedCommentId={highlightedId}
           />
         ) : (

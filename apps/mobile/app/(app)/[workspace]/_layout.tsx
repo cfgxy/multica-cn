@@ -1,4 +1,5 @@
 import { useEffect } from "react";
+import type { ComponentProps } from "react";
 import { Redirect, Stack, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { workspaceListOptions } from "@/data/queries/workspaces";
@@ -12,6 +13,34 @@ import { useProjectsRealtime } from "@/data/realtime/use-projects-realtime";
 import { usePresenceRealtime } from "@/data/realtime/use-presence-realtime";
 import { useWorkspacePresencePrefetch } from "@/lib/use-workspace-presence-prefetch";
 import { ModalCloseButton } from "@/components/ui/modal-close-button";
+
+/**
+ * Shared Stack.Screen options for every iOS formSheet-presented sheet route.
+ *
+ * Why these specific values:
+ *   - `presentation: "formSheet"` instantiates iOS
+ *     UISheetPresentationController — native grabber, stacked-card backdrop,
+ *     drag-to-dismiss spring physics, detents.
+ *   - `sheetAllowedDetents: [0.6, 0.95]` — explicit numeric detents. The
+ *     ergonomic `"fitToContents"` is broken on iOS 26 + Expo 55
+ *     (expo/expo#42904 padding inconsistency, expo/expo#42965 zero-size).
+ *     Predictable two-snap presentation across every sheet > shrink-wrap.
+ *   - `sheetGrabberVisible: true` — surfaces the iOS native drag handle
+ *     so users discover the gesture.
+ *   - `contentStyle.height: "100%"` — safety net against the same
+ *     zero-size class of bugs above; ensures the sheet body fills the
+ *     allotted detent.
+ *   - `headerShown: false` — every sheet body draws its own header (title
+ *     + optional right action). The native Stack header would double up.
+ */
+const SHEET_OPTIONS: ComponentProps<typeof Stack.Screen>["options"] = {
+  presentation: "formSheet",
+  sheetGrabberVisible: true,
+  sheetAllowedDetents: [0.6, 0.95],
+  sheetCornerRadius: 20,
+  contentStyle: { height: "100%" },
+  headerShown: false,
+};
 
 /**
  * Mounts every per-feature realtime subscription. Lives inside
@@ -114,12 +143,87 @@ export default function WorkspaceLayout() {
             // sheetAllowedDetents: "fitToContents" lets iOS size the sheet
             // to the GlobalNavMenu's intrinsic height instead of defaulting
             // to full-screen on iPhone (which is what formSheet does in
-            // iOS 15+ unless detents are specified).
+            // iOS 15+ unless detents are specified). Menu retains
+            // "fitToContents" — see CLAUDE.md Lesson 6 on formSheet detent
+            // bugs; every OTHER formSheet declares explicit numeric detents.
             presentation: "formSheet",
             sheetAllowedDetents: "fitToContents",
+            sheetGrabberVisible: true,
             headerShown: false,
           }}
         />
+        {/* Issue-detail formSheet pickers. All share the same sheet config:
+            explicit numeric detents to dodge expo/expo#42904+#42965 (the
+            `fitToContents` zero-size / padding bugs on iOS 26 + Expo 55),
+            iOS native grabber, and contentStyle.height=100% as a safety
+            net against the same zero-size class of bugs. */}
+        <Stack.Screen
+          name="issue/[id]/picker/status"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
+          name="issue/[id]/picker/priority"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
+          name="issue/[id]/picker/assignee"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
+          name="issue/[id]/picker/label"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
+          name="issue/[id]/picker/project"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
+          name="issue/[id]/picker/due-date"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen name="issue/[id]/runs" options={SHEET_OPTIONS} />
+        <Stack.Screen
+          name="issue/[id]/comment/[commentId]/actions"
+          options={SHEET_OPTIONS}
+        />
+        {/* Project-detail formSheet pickers. */}
+        <Stack.Screen
+          name="project/[id]/picker/lead"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
+          name="project/[id]/add-resource"
+          options={SHEET_OPTIONS}
+        />
+        {/* New-issue draft formSheet pickers — stacked on top of the
+            new-issue.tsx Stack.Screen (which is itself a `modal`).
+            Expo Router 55 / RN Screens 4 support a formSheet pushed on top
+            of a modal in the same Stack. */}
+        <Stack.Screen
+          name="new-issue-picker/status"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
+          name="new-issue-picker/priority"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
+          name="new-issue-picker/assignee"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
+          name="new-issue-picker/project"
+          options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
+          name="new-issue-picker/due-date"
+          options={SHEET_OPTIONS}
+        />
+        {/* Shared filter sheet for My Issues and the workspace Issues page —
+            chooses the right view-store via `?scope=my|all` URL param. */}
+        <Stack.Screen name="issues-filter" options={SHEET_OPTIONS} />
+        {/* Chat session-switch sheet. */}
+        <Stack.Screen name="chat-sessions" options={SHEET_OPTIONS} />
         <Stack.Screen
           name="more/issues"
           options={{ title: "Issues", headerBackTitle: "Back" }}

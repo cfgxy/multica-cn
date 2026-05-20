@@ -9,13 +9,15 @@
  * different layout — web shows recursive tree, mobile shows one bubble per
  * thread. Counts agree (no comment is dropped or duplicated).
  *
- * Long-press on any CommentBody (parent or reply) opens
- * CommentActionSheet — the iOS-native entry point for quick reactions,
- * reply, and copy. Reactions render under each comment body via
- * ReactionBar (existing behavior, only visible when a reaction exists).
+ * Long-press on any CommentBody (parent or reply) pushes the
+ * `issue/[id]/comment/[commentId]/actions` formSheet route — the iOS-native
+ * entry point for quick reactions, reply, and copy. Reactions render under
+ * each comment body via ReactionBar (existing behavior, only visible when
+ * a reaction exists).
  */
 import { useCallback, useEffect, useState } from "react";
 import { Pressable, View } from "react-native";
+import { router } from "expo-router";
 import Animated, {
   useAnimatedStyle,
   useSharedValue,
@@ -24,7 +26,6 @@ import Animated, {
   withTiming,
 } from "react-native-reanimated";
 import * as Haptics from "expo-haptics";
-import * as Clipboard from "expo-clipboard";
 import type { Reaction, TimelineEntry } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
@@ -37,7 +38,7 @@ import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { issueAttachmentsOptions } from "@/data/queries/issues";
 import { ReactionBar } from "./reaction-bar";
-import { CommentActionSheet } from "./comment-action-sheet";
+import { EmojiPickerSheet } from "./emoji-picker-sheet";
 
 interface Props {
   entry: TimelineEntry;
@@ -47,9 +48,6 @@ interface Props {
   /** Plumbed through so each CommentBody can wire its reaction toggle to
    *  the correct issue's mutation key. */
   issueId: string;
-  /** Bubble-up callback — long-press → Reply opens this with the target
-   *  comment id and display name; the issue page lifts replyingTo state. */
-  onReplyTo: (commentId: string, name: string) => void;
   /** Inbox deep-link flash target. When this matches the root entry id we
    *  flash the outer bubble (ring + bg). When it matches a reply id we
    *  flash that reply's wrapper (bg only). Mirrors web's distinction at
@@ -61,7 +59,6 @@ export function CommentCard({
   entry,
   replies = [],
   issueId,
-  onReplyTo,
   highlightedCommentId,
 }: Props) {
   return (
@@ -77,14 +74,10 @@ export function CommentCard({
          *  Border (L 84%) adds 6% on top for the outline. See global.css
          *  for the full 5-tier elevation scale. */}
         <View className="bg-surface-1 rounded-2xl px-4 py-3 gap-3">
-          <CommentBody entry={entry} issueId={issueId} onReplyTo={onReplyTo} />
+          <CommentBody entry={entry} issueId={issueId} />
           {replies.map((reply) => (
             <View key={reply.id} className="border-t border-border/60 pt-3">
-              <CommentBody
-                entry={reply}
-                issueId={issueId}
-                onReplyTo={onReplyTo}
-              />
+              <CommentBody entry={reply} issueId={issueId} />
               <ReplyHighlightOverlay
                 active={highlightedCommentId === reply.id}
               />
@@ -165,17 +158,16 @@ function ReplyHighlightOverlay({ active }: { active: boolean }) {
 function CommentBody({
   entry,
   issueId,
-  onReplyTo,
 }: {
   entry: TimelineEntry;
   issueId: string;
-  onReplyTo: (commentId: string, name: string) => void;
 }) {
   const { getName } = useActorLookup();
   const userId = useAuthStore((s) => s.user?.id);
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const toggle = useToggleCommentReaction(issueId);
-  const [sheetOpen, setSheetOpen] = useState(false);
+  const [emojiPickerOpen, setEmojiPickerOpen] = useState(false);
   // Same query as IssueDescription — TanStack dedupes so this fires once
   // per issue regardless of how many comments need to resolve attachments.
   const { data: attachments } = useQuery(
@@ -193,6 +185,9 @@ function CommentBody({
 
   // Reactions live on TimelineEntry.reactions (mirrored from Comment).
   // Pass through to the bar; toggle finds existing match by emoji + actor.
+  // Ownership + isRoot derivation now happens inside the comment-actions
+  // route (`issue/[id]/comment/[commentId]/actions.tsx`) — keeping it in
+  // one place avoids two sources of truth.
   const reactions: Reaction[] = (entry.reactions ?? []) as Reaction[];
 
   const onToggleReaction = useCallback(
@@ -213,16 +208,17 @@ function CommentBody({
     // accept actions — server-side ids haven't been assigned yet, so a
     // toggle/copy/reply against the synthetic id would no-op or break.
     if (entry.id.startsWith("optimistic-")) return;
+    if (!wsSlug) return;
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-    setSheetOpen(true);
-  }, [entry.id]);
-
-  const handleCopy = useCallback(async () => {
-    if (entry.content) {
-      await Clipboard.setStringAsync(entry.content);
-      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-    }
-  }, [entry.content]);
+    router.push({
+      pathname: "/[workspace]/issue/[id]/comment/[commentId]/actions",
+      params: {
+        workspace: wsSlug,
+        id: issueId,
+        commentId: entry.id,
+      },
+    });
+  }, [entry.id, wsSlug, issueId]);
 
   // Note: entry.attachments is not rendered separately — the markdown
   // renderer handles inline images (`![]()`) and file cards
@@ -246,18 +242,18 @@ function CommentBody({
           </Text>
         </View>
         {entry.content ? (
-          // userSelect: 'none' so long-press goes only to the Pressable
-          // wrapper's onLongPress (action sheet) — without this, iOS' native
-          // text selection bubble fires in parallel and the user has to
-          // tap-elsewhere to dismiss the selection caret. Users can still
-          // copy the full body via the action sheet "Copy text" entry.
-          //
-          // The cast is because ViewStyle's type def in our RN types
-          // doesn't yet list `userSelect`, but RN ≥ 0.74 supports it at
-          // runtime on iOS 17+ / Android and propagates to descendant Text.
-          <View style={{ userSelect: "none" } as object}>
-            <Markdown content={entry.content} attachments={attachments} />
-          </View>
+          // `selectable={false}` kills UIKit's UITextView.isSelectable on
+          // the underlying enriched-markdown native view (and on our
+          // CodeBlock <Text>s), so the long-press magnifier doesn't fire
+          // in parallel with the parent Pressable.onLongPress that opens
+          // the comment action sheet. Users still copy the full body via
+          // the action sheet's "Copy text" entry. Element X PR #1584
+          // documents the same bug + fix in a Matrix client.
+          <Markdown
+            content={entry.content}
+            attachments={attachments}
+            selectable={false}
+          />
         ) : null}
         <ReactionBar
           reactions={reactions}
@@ -265,12 +261,13 @@ function CommentBody({
           onToggle={onToggleReaction}
         />
       </View>
-      <CommentActionSheet
-        visible={sheetOpen}
-        onClose={() => setSheetOpen(false)}
-        onReact={onToggleReaction}
-        onReply={() => onReplyTo(entry.id, name)}
-        onCopy={handleCopy}
+      <EmojiPickerSheet
+        visible={emojiPickerOpen}
+        onClose={() => setEmojiPickerOpen(false)}
+        onSelect={(emoji) => {
+          setEmojiPickerOpen(false);
+          onToggleReaction(emoji);
+        }}
       />
     </Pressable>
   );

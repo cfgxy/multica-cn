@@ -1,5 +1,7 @@
 /**
- * Single row inside `RunsSheet`. Same component for active and past tasks —
+ * Single row inside the agent-runs formSheet route
+ * (`app/(app)/[workspace]/issue/[id]/runs.tsx`). Same component for active
+ * and past tasks —
  * the trailing Cancel button is conditional on `status in {queued,
  * dispatched, running}`, and the status badge / colour swaps based on the
  * AgentTask.status enum.

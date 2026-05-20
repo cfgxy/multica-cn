@@ -31,7 +31,6 @@ import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
 import { TimelineList } from "@/components/issue/timeline-list";
 import { AgentHeaderBadge } from "@/components/issue/agent-header-badge";
-import { RunsSheet } from "@/components/issue/runs-sheet";
 import {
   issueDetailOptions,
   issueKeys,
@@ -82,19 +81,6 @@ export default function IssueDetail() {
       qc.invalidateQueries({ queryKey: issueKeys.timeline(wsId, id) }),
     ]);
   }, [detail, qc, wsId, id]);
-
-  // Long-press on a comment → ActionSheet → Reply. Lifts to a route push so
-  // the new-comment modal receives `parent` + `parentName` and titles
-  // itself "Reply". No local state — the modal owns its own input.
-  const onReplyTo = useCallback(
-    (commentId: string, name: string) => {
-      router.push({
-        pathname: "/[workspace]/issue/[id]/new-comment",
-        params: { workspace: wsSlug, id, parent: commentId, parentName: name },
-      });
-    },
-    [wsSlug, id],
-  );
 
   const openNewComment = useCallback(() => {
     router.push({
@@ -193,7 +179,6 @@ export default function IssueDetail() {
             timelineLoading={timeline.isLoading}
             refreshing={detail.isRefetching || timeline.isRefetching}
             onRefresh={onRefresh}
-            onReplyTo={onReplyTo}
             highlightCommentId={highlight}
             highlightNonce={h}
           />
@@ -206,10 +191,6 @@ export default function IssueDetail() {
               <Text>Comment</Text>
             </Button>
           </View>
-          {/* Mounted once at the page level so both the in-card
-           *  AgentActivityRow and the Stack-header AgentHeaderBadge open
-           *  the same sheet instance via useRunsSheetStore. */}
-          <RunsSheet issueId={id} />
         </View>
       )}
     </SafeAreaView>

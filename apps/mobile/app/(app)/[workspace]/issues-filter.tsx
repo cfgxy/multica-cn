@@ -1,26 +1,22 @@
 /**
- * Status + Priority filter sheet for any issue list surface — My Issues
- * (`(tabs)/my-issues.tsx`) and workspace Issues (`more/issues.tsx`) both
- * mount it with their own view-store. Mirrors the Status / Priority
- * sub-menus of web's MyIssuesHeader (packages/views/my-issues/components/
- * my-issues-header.tsx:181-250) and the analogous controls in web's
- * IssuesHeader.
+ * Status + Priority filter sheet — presented as a formSheet by the parent
+ * Stack. Shared by My Issues and the workspace-wide Issues page; which
+ * view-store to read/write is selected by the `scope` URL param.
  *
- * State is passed in as props rather than read from a hard-coded store so
- * the same sheet can serve both surfaces without one page's filter state
- * leaking into the other.
+ * Routes that open this sheet:
+ *   - /[workspace]/issues-filter?scope=my   →  useMyIssuesViewStore
+ *   - /[workspace]/issues-filter?scope=all  →  useIssuesViewStore
  *
- * Container: iOS pageSheet via shared `<SheetShell>` (CLAUDE.md Lesson #6).
- * Reset lives in the header's rightAction slot; X (in SheetShell) is the
- * primary dismiss (replaces the previous bottom "Done" button which was
- * redundant with X).
+ * Self-contained: reads/writes the store directly, no callback passing.
  */
 import { Pressable, ScrollView, View } from "react-native";
+import { useLocalSearchParams } from "expo-router";
 import type { IssuePriority, IssueStatus } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { StatusIcon } from "@/components/ui/status-icon";
 import { PriorityIcon } from "@/components/ui/priority-icon";
-import { SheetShell } from "@/components/ui/sheet-shell";
+import { useIssuesViewStore } from "@/data/stores/issues-view-store";
+import { useMyIssuesViewStore } from "@/data/stores/my-issues-view-store";
 import { BOARD_STATUSES, STATUS_LABEL } from "@/lib/issue-status";
 import { cn } from "@/lib/utils";
 
@@ -35,9 +31,8 @@ const PRIORITY_ORDER: IssuePriority[] = [
   "none",
 ];
 
-// TODO: consolidate to apps/mobile/lib/issue-priority.ts — this label map is
-// duplicated in components/inbox/detail-label.tsx, components/issue/
-// attribute-row.tsx, and lib/format-activity.ts. Out of scope for this PR.
+// Label map duplicated across several mobile files — out of scope to
+// consolidate per the SheetShell migration plan.
 const PRIORITY_LABEL: Record<IssuePriority, string> = {
   urgent: "Urgent",
   high: "High",
@@ -46,34 +41,44 @@ const PRIORITY_LABEL: Record<IssuePriority, string> = {
   none: "No priority",
 };
 
-interface Props {
-  visible: boolean;
-  onClose: () => void;
-  statusFilters: IssueStatus[];
-  priorityFilters: IssuePriority[];
-  onToggleStatus: (status: IssueStatus) => void;
-  onTogglePriority: (priority: IssuePriority) => void;
-  onClearFilters: () => void;
-}
+type Scope = "my" | "all";
 
-export function IssueFilterSheet({
-  visible,
-  onClose,
-  statusFilters,
-  priorityFilters,
-  onToggleStatus,
-  onTogglePriority,
-  onClearFilters,
-}: Props) {
+export default function IssuesFilterRoute() {
+  const { scope } = useLocalSearchParams<{ scope?: string }>();
+  const resolvedScope: Scope = scope === "all" ? "all" : "my";
+
+  const statusFilters = useScopedFilters(resolvedScope, "status");
+  const priorityFilters = useScopedFilters(resolvedScope, "priority");
+
+  const onToggleStatus = (s: IssueStatus) => {
+    if (resolvedScope === "all") {
+      useIssuesViewStore.getState().toggleStatusFilter(s);
+    } else {
+      useMyIssuesViewStore.getState().toggleStatusFilter(s);
+    }
+  };
+  const onTogglePriority = (p: IssuePriority) => {
+    if (resolvedScope === "all") {
+      useIssuesViewStore.getState().togglePriorityFilter(p);
+    } else {
+      useMyIssuesViewStore.getState().togglePriorityFilter(p);
+    }
+  };
+  const onClearFilters = () => {
+    if (resolvedScope === "all") {
+      useIssuesViewStore.getState().clearFilters();
+    } else {
+      useMyIssuesViewStore.getState().clearFilters();
+    }
+  };
+
   const hasActive = statusFilters.length > 0 || priorityFilters.length > 0;
 
   return (
-    <SheetShell
-      visible={visible}
-      onClose={onClose}
-      title="Filter"
-      rightAction={
-        hasActive ? (
+    <View className="flex-1 bg-popover">
+      <View className="flex-row items-center justify-between px-4 pt-4 pb-3">
+        <Text className="text-base font-semibold text-foreground">Filter</Text>
+        {hasActive ? (
           <Pressable
             onPress={onClearFilters}
             hitSlop={8}
@@ -81,13 +86,9 @@ export function IssueFilterSheet({
           >
             <Text className="text-sm text-primary font-medium">Reset</Text>
           </Pressable>
-        ) : null
-      }
-    >
-      <ScrollView
-        className="flex-1"
-        showsVerticalScrollIndicator={false}
-      >
+        ) : null}
+      </View>
+      <ScrollView className="flex-1" showsVerticalScrollIndicator={false}>
         <SectionLabel>Status</SectionLabel>
         {ALL_STATUSES.map((status) => {
           const checked = statusFilters.includes(status);
@@ -130,8 +131,30 @@ export function IssueFilterSheet({
           );
         })}
       </ScrollView>
-    </SheetShell>
+    </View>
   );
+}
+
+function useScopedFilters(
+  scope: Scope,
+  kind: "status",
+): IssueStatus[];
+function useScopedFilters(
+  scope: Scope,
+  kind: "priority",
+): IssuePriority[];
+function useScopedFilters(
+  scope: Scope,
+  kind: "status" | "priority",
+): IssueStatus[] | IssuePriority[] {
+  const allStatus = useIssuesViewStore((s) => s.statusFilters);
+  const allPriority = useIssuesViewStore((s) => s.priorityFilters);
+  const myStatus = useMyIssuesViewStore((s) => s.statusFilters);
+  const myPriority = useMyIssuesViewStore((s) => s.priorityFilters);
+  if (scope === "all") {
+    return kind === "status" ? allStatus : allPriority;
+  }
+  return kind === "status" ? myStatus : myPriority;
 }
 
 function SectionLabel({ children }: { children: string }) {

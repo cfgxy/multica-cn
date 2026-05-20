@@ -1,12 +1,9 @@
 /**
- * Project picker — single-select over workspace projects. Tap a row to set,
- * tap the "No project" row to clear. Mirrors web's `ProjectPicker`
- * (`packages/views/projects/components/project-picker.tsx`) in behavior.
+ * Pure picker body for an issue's project — single-select. See
+ * status-picker-body.tsx for the split rationale.
  *
- * Container: iOS pageSheet via shared `<SheetShell>` (CLAUDE.md Lesson #6).
- *
- * Phase 1 does NOT support inline project creation — mobile users who want
- * a new project create it on web.
+ * Phase 1 does not support inline project creation; mobile users who want a
+ * new project create it on web.
  */
 import { useMemo, useState } from "react";
 import { ActivityIndicator, FlatList, Pressable, View } from "react-native";
@@ -17,24 +14,16 @@ import { Text } from "@/components/ui/text";
 import { ProjectIcon } from "@/components/ui/project-icon";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { TextField } from "@/components/ui/text-field";
-import { SheetShell } from "@/components/ui/sheet-shell";
 import { projectListOptions } from "@/data/queries/projects";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { cn } from "@/lib/utils";
 
 interface Props {
-  visible: boolean;
   value: Project | null;
   onChange: (next: Project | null) => void;
-  onClose: () => void;
 }
 
-export function ProjectPickerSheet({
-  visible,
-  value,
-  onChange,
-  onClose,
-}: Props) {
+export function ProjectPickerBody({ value, onChange }: Props) {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const { data: projects, isLoading } = useQuery(projectListOptions(wsId));
   const [query, setQuery] = useState("");
@@ -47,13 +36,8 @@ export function ProjectPickerSheet({
     return sorted.filter((p) => p.title.toLowerCase().includes(q));
   }, [projects, query]);
 
-  const pick = (next: Project | null) => {
-    onChange(next);
-    onClose();
-  };
-
   return (
-    <SheetShell visible={visible} onClose={onClose} title="Project">
+    <View className="flex-1">
       <View className="px-3 pt-2 pb-2 border-b border-border">
         <TextField
           value={query}
@@ -77,14 +61,14 @@ export function ProjectPickerSheet({
           ListHeaderComponent={
             <NoProjectRow
               checked={value === null}
-              onPress={() => pick(null)}
+              onPress={() => onChange(null)}
             />
           }
           renderItem={({ item }) => (
             <ProjectRow
               project={item}
               checked={item.id === value?.id}
-              onPress={() => pick(item)}
+              onPress={() => onChange(item)}
             />
           )}
           ListEmptyComponent={
@@ -98,7 +82,7 @@ export function ProjectPickerSheet({
           }
         />
       )}
-    </SheetShell>
+    </View>
   );
 }
 

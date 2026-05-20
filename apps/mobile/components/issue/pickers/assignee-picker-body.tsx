@@ -1,19 +1,10 @@
 /**
- * Assignee picker — polymorphic single-select over members + agents +
- * squads, plus an "Unassigned" option. Loose mirror of web
- * `packages/views/issues/components/pickers/assignee-picker.tsx` (mobile v1
- * skips the frequency-sort optimization — sorts alphabetically instead).
+ * Pure picker body for issue assignee — polymorphic single-select over
+ * members + agents + squads, plus an "Unassigned" option. See
+ * status-picker-body.tsx for the split rationale.
  *
- * Container: iOS pageSheet via shared `<SheetShell>` (see CLAUDE.md
- * Lesson #6). Search box sits at the top of the body; FlatList of rows
- * below. On iOS pageSheet, keyboard appears layered over the sheet —
- * FlatList sets `automaticallyAdjustsKeyboardInsets` so rows above the
- * keyboard stay reachable when filtering.
- *
- * Selection emits `{ type, id } | null` (null = Unassigned). Parent passes
- * this to `useUpdateIssue.mutate({ assignee_type, assignee_id })`. The
- * backend routes a squad assignee to its leader agent
- * (server/internal/handler/issue.go:944).
+ * Mirrors web `packages/views/issues/components/pickers/assignee-picker.tsx`
+ * (mobile skips frequency-sort; alphabetical instead).
  */
 import { useMemo, useState } from "react";
 import { FlatList, Pressable, View } from "react-native";
@@ -27,7 +18,6 @@ import type {
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { TextField } from "@/components/ui/text-field";
-import { SheetShell } from "@/components/ui/sheet-shell";
 import { memberListOptions } from "@/data/queries/members";
 import { agentListOptions } from "@/data/queries/agents";
 import { squadListOptions } from "@/data/queries/squads";
@@ -40,10 +30,8 @@ export type AssigneeValue = {
 } | null;
 
 interface Props {
-  visible: boolean;
   value: AssigneeValue;
   onChange: (next: AssigneeValue) => void;
-  onClose: () => void;
 }
 
 type Row =
@@ -52,12 +40,7 @@ type Row =
   | { kind: "agent"; agent: Agent }
   | { kind: "squad"; squad: Squad };
 
-export function AssigneePickerSheet({
-  visible,
-  value,
-  onChange,
-  onClose,
-}: Props) {
+export function AssigneePickerBody({ value, onChange }: Props) {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
@@ -76,14 +59,11 @@ export function AssigneePickerSheet({
       .filter((a) => matchName(a.name))
       .sort((a, b) => a.name.localeCompare(b.name))
       .map((a) => ({ kind: "agent" as const, agent: a }));
-    // Archived squads are excluded — matches web
-    // (packages/views/issues/components/pickers/assignee-picker.tsx:93).
     const squadRows: Row[] = [...squads]
       .filter((s) => !s.archived_at && matchName(s.name))
       .sort((a, b) => a.name.localeCompare(b.name))
       .map((s) => ({ kind: "squad" as const, squad: s }));
 
-    // Hide "Unassigned" while searching — matches web behaviour.
     if (q) return [...memberRows, ...agentRows, ...squadRows];
     return [
       { kind: "unassigned" },
@@ -110,11 +90,10 @@ export function AssigneePickerSheet({
     else if (row.kind === "agent")
       onChange({ type: "agent", id: row.agent.id });
     else onChange({ type: "squad", id: row.squad.id });
-    onClose();
   };
 
   return (
-    <SheetShell visible={visible} onClose={onClose} title="Assignee">
+    <View className="flex-1">
       <View className="px-3 pt-2 pb-2 border-b border-border">
         <TextField
           value={query}
@@ -178,6 +157,6 @@ export function AssigneePickerSheet({
           </View>
         }
       />
-    </SheetShell>
+    </View>
   );
 }

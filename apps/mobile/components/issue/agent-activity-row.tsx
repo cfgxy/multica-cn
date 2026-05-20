@@ -1,19 +1,19 @@
 /**
- * Double-state row that lives inside `IssueHeaderCard`. Dispatches to
- * `useRunsSheetStore` to open the page-level `<RunsSheet>`.
+ * Double-state row that lives inside `IssueHeaderCard`. Pushes the
+ * `issue/[id]/runs` formSheet route — the Stack-header
+ * `<AgentHeaderBadge>` pushes the same route.
  *
  *   ≥1 active task        → [agent avatars] (pulse) Working           ›
  *   0 active, ≥1 past     → 🕓 Runs · N                                ›
  *   never run             → null (zero space)
  *
  * This row is the "discovery" surface (visible only when timeline isn't
- * scrolled). The Stack-header `<AgentHeaderBadge>` is the "ambient"
- * surface (always visible during active tasks). Both open the same
- * `<RunsSheet>` instance via the shared store — see plan
- * /Users/qingnaiyuan/.claude/plans/ok-plan-linked-taco.md.
+ * scrolled). The badge is the "ambient" surface (always visible during
+ * active tasks). One route, two entry points.
  */
 import { useMemo } from "react";
 import { Pressable, View } from "react-native";
+import { router } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { Text } from "@/components/ui/text";
@@ -23,7 +23,6 @@ import {
   issueActiveTasksOptions,
   issueTasksOptions,
 } from "@/data/queries/issues";
-import { useRunsSheetStore } from "@/data/runs-sheet-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
@@ -34,7 +33,7 @@ interface Props {
 
 export function AgentActivityRow({ issueId }: Props) {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
-  const open = useRunsSheetStore((s) => s.open);
+  const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { colorScheme } = useColorScheme();
   const mutedFg = THEME[colorScheme].mutedForeground;
 
@@ -63,7 +62,13 @@ export function AgentActivityRow({ issueId }: Props) {
 
   return (
     <Pressable
-      onPress={() => open(issueId)}
+      onPress={() => {
+        if (!wsSlug) return;
+        router.push({
+          pathname: "/[workspace]/issue/[id]/runs",
+          params: { workspace: wsSlug, id: issueId },
+        });
+      }}
       className="flex-row items-center gap-2 -mx-2 px-2 py-2 rounded-lg active:bg-secondary"
     >
       {activeCount > 0 ? (

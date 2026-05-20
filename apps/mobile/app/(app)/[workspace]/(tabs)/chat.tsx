@@ -36,13 +36,13 @@ import {
   Platform,
   View,
 } from "react-native";
+import { router } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Agent,
   ChatMessage,
   ChatPendingTask,
-  ChatSession,
 } from "@multica/core/types";
 import { api } from "@/data/api";
 import { useAuthStore } from "@/data/auth-store";
@@ -64,6 +64,7 @@ import {
   DRAFT_NEW_SESSION,
   useChatDraftsStore,
 } from "@/data/stores/chat-drafts-store";
+import { useChatSessionPickerStore } from "@/data/stores/chat-session-picker-store";
 import { useChatSessionRealtime } from "@/data/realtime/use-chat-session-realtime";
 import { canAssignAgent } from "@/lib/can-assign-agent";
 import { useWorkspaceAgentAvailability } from "@/lib/workspace-agent-availability";
@@ -74,7 +75,6 @@ import { ChatSessionActions } from "@/components/chat/chat-session-actions";
 import { ChatMessageList } from "@/components/chat/chat-message-list";
 import { ChatComposer } from "@/components/chat/chat-composer";
 import { StatusPill } from "@/components/chat/status-pill";
-import { SessionSheet } from "@/components/chat/session-sheet";
 import { AgentPickerSheet } from "@/components/chat/agent-picker-sheet";
 import { NoAgentBanner } from "@/components/chat/no-agent-banner";
 import { OfflineBanner } from "@/components/chat/offline-banner";
@@ -82,12 +82,31 @@ import { OfflineBanner } from "@/components/chat/offline-banner";
 export default function ChatTab() {
   const qc = useQueryClient();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const userId = useAuthStore((s) => s.user?.id);
 
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
-  const [sessionSheetOpen, setSessionSheetOpen] = useState(false);
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
+
+  // Bridge to the chat-sessions formSheet route. Mirror local
+  // activeSessionId into the store so the picker can render the current
+  // selection's check mark; consume the picker's one-shot select +
+  // open-agent-picker requests via useEffect.
+  const setStoreActiveSessionId = useChatSessionPickerStore(
+    (s) => s.setActiveSessionId,
+  );
+  const selectRequest = useChatSessionPickerStore((s) => s.selectRequest);
+  const openAgentPickerRequest = useChatSessionPickerStore(
+    (s) => s.openAgentPickerRequest,
+  );
+  const consumeSelect = useChatSessionPickerStore((s) => s.consumeSelect);
+  const consumeOpenAgentPicker = useChatSessionPickerStore(
+    (s) => s.consumeOpenAgentPicker,
+  );
+  useEffect(() => {
+    setStoreActiveSessionId(activeSessionId);
+  }, [activeSessionId, setStoreActiveSessionId]);
 
   // ── Server state ───────────────────────────────────────────────────────
   const { data: sessions = [] } = useQuery(chatSessionsOptions(wsId));
@@ -288,10 +307,23 @@ export default function ChatTab() {
     setActiveSessionId(null);
   }, []);
 
-  const handleSelectSession = useCallback((session: ChatSession) => {
+  // Apply the user's pick from the chat-sessions route (or "no session"
+  // when they delete the active one in the sheet).
+  useEffect(() => {
+    if (!selectRequest) return;
     setSelectedAgentId(null);
-    setActiveSessionId(session.id);
-  }, []);
+    setActiveSessionId(selectRequest.id);
+    consumeSelect();
+  }, [selectRequest, consumeSelect]);
+
+  // The chat-sessions route surfaces a "Switch agent" tail row that
+  // re-opens the agent picker. Routes can't open a transparent Modal in
+  // the tab tree, so the request is bounced back here.
+  useEffect(() => {
+    if (!openAgentPickerRequest) return;
+    setAgentPickerOpen(true);
+    consumeOpenAgentPicker();
+  }, [openAgentPickerRequest, consumeOpenAgentPicker]);
 
   const handleDeleteActive = useCallback(() => {
     if (!activeSession) return;
@@ -314,16 +346,6 @@ export default function ChatTab() {
     );
   }, [activeSession, deleteSession]);
 
-  const handleDeleteFromSheet = useCallback(
-    (sessionId: string) => {
-      if (sessionId === activeSessionId) {
-        setActiveSessionId(null);
-      }
-      deleteSession.mutate(sessionId);
-    },
-    [activeSessionId, deleteSession],
-  );
-
   // ── Composer disabled-state ────────────────────────────────────────────
   const disabled =
     !currentAgent || availability === "none" || isArchived === true;
@@ -342,7 +364,13 @@ export default function ChatTab() {
           <ChatTitleButton
             currentSession={activeSession}
             currentAgent={currentAgent}
-            onPress={() => setSessionSheetOpen(true)}
+            onPress={() => {
+              if (!wsSlug) return;
+              router.push({
+                pathname: "/[workspace]/chat-sessions",
+                params: { workspace: wsSlug },
+              });
+            }}
           />
         }
         right={
@@ -375,15 +403,6 @@ export default function ChatTab() {
         />
       </KeyboardAvoidingView>
 
-      <SessionSheet
-        visible={sessionSheetOpen}
-        sessions={sessions}
-        activeSessionId={activeSessionId}
-        onSelectSession={handleSelectSession}
-        onDeleteSession={handleDeleteFromSheet}
-        onOpenAgentPicker={() => setAgentPickerOpen(true)}
-        onClose={() => setSessionSheetOpen(false)}
-      />
       <AgentPickerSheet
         visible={agentPickerOpen}
         agents={availableAgents}

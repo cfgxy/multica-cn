@@ -58,7 +58,7 @@ export function useCreateComment(issueId: string) {
 
   return useMutation({
     mutationFn: ({ content, parentId }: CreateCommentVars) =>
-      api.createComment(issueId, content, parentId),
+      api.createComment(issueId, content, { parentId }),
     onMutate: async ({ content, parentId }) => {
       const key = issueKeys.timeline(wsId, issueId);
       await qc.cancelQueries({ queryKey: key });
@@ -158,6 +158,143 @@ export function useToggleCommentReaction(issueId: string) {
           return { ...entry, reactions: [...reactions, optimistic] };
         });
       });
+      return { prev, key };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev !== undefined && ctx.key) {
+        qc.setQueryData(ctx.key, ctx.prev);
+      }
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: issueKeys.timeline(wsId, issueId) });
+    },
+  });
+}
+
+/**
+ * Edit an existing comment. Replaces `content` (and optionally
+ * `attachment_ids`) on the server and patches the matching TimelineEntry
+ * in the timeline cache. Mirrors web `useEditComment` semantics.
+ *
+ * Server returns the full updated Comment; we map it into the timeline's
+ * TimelineEntry shape (`type: "comment"`, the rest of Comment fields flat).
+ */
+export function useEditComment(issueId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+
+  return useMutation({
+    mutationFn: ({
+      commentId,
+      content,
+      attachmentIds,
+    }: {
+      commentId: string;
+      content: string;
+      attachmentIds?: string[];
+    }) => api.updateComment(commentId, content, attachmentIds),
+    onMutate: async ({ commentId, content }) => {
+      const key = issueKeys.timeline(wsId, issueId);
+      await qc.cancelQueries({ queryKey: key });
+      const prev = qc.getQueryData<TimelineEntry[]>(key);
+      qc.setQueryData<TimelineEntry[]>(key, (old) =>
+        old?.map((entry) =>
+          entry.type === "comment" && entry.id === commentId
+            ? {
+                ...entry,
+                content,
+                updated_at: new Date().toISOString(),
+              }
+            : entry,
+        ),
+      );
+      return { prev, key };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev !== undefined && ctx.key) {
+        qc.setQueryData(ctx.key, ctx.prev);
+      }
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: issueKeys.timeline(wsId, issueId) });
+    },
+  });
+}
+
+/**
+ * Delete a comment. Strips the matching TimelineEntry (and any replies
+ * with parent_id === commentId) from the timeline cache optimistically.
+ * Backend cascades reply deletion server-side; we mirror the cascade
+ * locally so the optimistic patch leaves no orphans on screen.
+ */
+export function useDeleteComment(issueId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+
+  return useMutation({
+    mutationFn: (commentId: string) => api.deleteComment(commentId),
+    onMutate: async (commentId) => {
+      const key = issueKeys.timeline(wsId, issueId);
+      await qc.cancelQueries({ queryKey: key });
+      const prev = qc.getQueryData<TimelineEntry[]>(key);
+      qc.setQueryData<TimelineEntry[]>(key, (old) =>
+        old?.filter(
+          (entry) =>
+            !(
+              entry.type === "comment" &&
+              (entry.id === commentId || entry.parent_id === commentId)
+            ),
+        ),
+      );
+      return { prev, key };
+    },
+    onError: (_err, _vars, ctx) => {
+      if (ctx?.prev !== undefined && ctx.key) {
+        qc.setQueryData(ctx.key, ctx.prev);
+      }
+    },
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: issueKeys.timeline(wsId, issueId) });
+    },
+  });
+}
+
+/**
+ * Resolve / unresolve a comment thread (root comments only — server rejects
+ * the call on a reply). Toggle is driven by the `resolved` boolean param:
+ * true → POST /resolve, false → DELETE /resolve. Mirrors web
+ * `useResolveComment(commentId, resolved)` semantics.
+ *
+ * Optimistic patch sets `resolved_at` to now (or null on unresolve) so the
+ * UI flips immediately; server response replaces with authoritative values.
+ */
+export function useResolveComment(issueId: string) {
+  const qc = useQueryClient();
+  const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+
+  return useMutation({
+    mutationFn: ({
+      commentId,
+      resolved,
+    }: {
+      commentId: string;
+      resolved: boolean;
+    }) =>
+      resolved
+        ? api.resolveComment(commentId)
+        : api.unresolveComment(commentId),
+    onMutate: async ({ commentId, resolved }) => {
+      const key = issueKeys.timeline(wsId, issueId);
+      await qc.cancelQueries({ queryKey: key });
+      const prev = qc.getQueryData<TimelineEntry[]>(key);
+      const now = resolved ? new Date().toISOString() : null;
+      qc.setQueryData<TimelineEntry[]>(key, (old) =>
+        old?.map((entry) =>
+          entry.type === "comment" && entry.id === commentId
+            ? { ...entry, resolved_at: now }
+            : entry,
+        ),
+      );
       return { prev, key };
     },
     onError: (_err, _vars, ctx) => {

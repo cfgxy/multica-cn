@@ -1,0 +1,53 @@
+/**
+ * Pure picker body for issue status — single-select over BOARD_STATUSES +
+ * cancelled. No shell, no modal — the caller (a formSheet route screen, or
+ * any embedding surface) renders it inside whatever container it needs.
+ *
+ * Split from the old `status-picker-sheet.tsx` so the same row UI can serve
+ * both the issue-detail route (`issue/[id]/picker/status.tsx`, which writes
+ * via useUpdateIssue) and the new-issue draft route
+ * (`new-issue-picker/status.tsx`, which writes via useNewIssueDraftStore).
+ */
+import { Pressable, ScrollView, View } from "react-native";
+import type { IssueStatus } from "@multica/core/types";
+import { Text } from "@/components/ui/text";
+import { StatusIcon } from "@/components/ui/status-icon";
+import { BOARD_STATUSES, STATUS_LABEL } from "@/lib/issue-status";
+import { cn } from "@/lib/utils";
+
+const ALL_STATUSES: IssueStatus[] = [...BOARD_STATUSES, "cancelled"];
+
+interface Props {
+  value: IssueStatus;
+  onChange: (next: IssueStatus) => void;
+}
+
+export function StatusPickerBody({ value, onChange }: Props) {
+  return (
+    <ScrollView showsVerticalScrollIndicator={false}>
+      <View className="px-2 pt-2">
+        {ALL_STATUSES.map((status) => {
+          const selected = status === value;
+          return (
+            <Pressable
+              key={status}
+              onPress={() => onChange(status)}
+              className={cn(
+                "flex-row items-center gap-3 rounded-lg px-3 py-3 active:bg-secondary",
+                selected && "bg-secondary",
+              )}
+            >
+              <StatusIcon status={status} size={18} />
+              <Text className="flex-1 text-base text-foreground">
+                {STATUS_LABEL[status]}
+              </Text>
+              {selected ? (
+                <Text className="text-sm text-muted-foreground">✓</Text>
+              ) : null}
+            </Pressable>
+          );
+        })}
+      </View>
+    </ScrollView>
+  );
+}

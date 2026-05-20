@@ -1,10 +1,7 @@
 /**
- * Project lead picker. Single-select over members + agents, with a top
- * "Unassigned" row to clear. Search bar filters by name.
- *
- * Container: iOS pageSheet via shared `<SheetShell>` (CLAUDE.md Lesson #6).
- * Search input at the top of the body; SectionList (Members / Agents)
- * below.
+ * Pure picker body for project lead — single-select over members + agents
+ * with an Unassigned row. See issue/pickers/status-picker-body.tsx for the
+ * "extract body, route owns shell" pattern.
  */
 import { useMemo, useState } from "react";
 import {
@@ -20,7 +17,6 @@ import type { Agent, MemberWithUser } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
-import { SheetShell } from "@/components/ui/sheet-shell";
 import { agentListOptions } from "@/data/queries/agents";
 import { memberListOptions } from "@/data/queries/members";
 import { useWorkspaceStore } from "@/data/workspace-store";
@@ -32,22 +28,15 @@ export interface LeadValue {
 }
 
 interface Props {
-  visible: boolean;
   value: LeadValue | null;
   onChange: (next: LeadValue | null) => void;
-  onClose: () => void;
 }
 
 type RowItem =
   | { kind: "member"; member: MemberWithUser }
   | { kind: "agent"; agent: Agent };
 
-export function ProjectLeadPickerSheet({
-  visible,
-  value,
-  onChange,
-  onClose,
-}: Props) {
+export function ProjectLeadPickerBody({ value, onChange }: Props) {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const { data: members, isLoading: loadingMembers } = useQuery(
     memberListOptions(wsId),
@@ -66,18 +55,13 @@ export function ProjectLeadPickerSheet({
     const agentRows: RowItem[] = (agents ?? [])
       .filter((a) => !q || a.name.toLowerCase().includes(q))
       .map((a) => ({ kind: "agent" as const, agent: a }));
-    const out: Array<{ title: string; data: RowItem[] }> = [];
+    const out: { title: string; data: RowItem[] }[] = [];
     if (memberRows.length > 0)
       out.push({ title: "Members", data: memberRows });
     if (agentRows.length > 0)
       out.push({ title: "Agents", data: agentRows });
     return out;
   }, [members, agents, query]);
-
-  const pick = (next: LeadValue | null) => {
-    onChange(next);
-    onClose();
-  };
 
   const matches = (item: RowItem) => {
     if (!value) return false;
@@ -88,7 +72,7 @@ export function ProjectLeadPickerSheet({
   };
 
   return (
-    <SheetShell visible={visible} onClose={onClose} title="Project Lead">
+    <View className="flex-1">
       <View className="px-3 pt-2 pb-2 border-b border-border">
         <TextInput
           value={query}
@@ -118,7 +102,7 @@ export function ProjectLeadPickerSheet({
           ListHeaderComponent={
             <UnassignedRow
               checked={value === null}
-              onPress={() => pick(null)}
+              onPress={() => onChange(null)}
             />
           }
           renderSectionHeader={({ section }) => (
@@ -136,7 +120,7 @@ export function ProjectLeadPickerSheet({
                 id={item.member.user_id}
                 checked={matches(item)}
                 onPress={() =>
-                  pick({ type: "member", id: item.member.user_id })
+                  onChange({ type: "member", id: item.member.user_id })
                 }
               />
             ) : (
@@ -145,7 +129,7 @@ export function ProjectLeadPickerSheet({
                 type="agent"
                 id={item.agent.id}
                 checked={matches(item)}
-                onPress={() => pick({ type: "agent", id: item.agent.id })}
+                onPress={() => onChange({ type: "agent", id: item.agent.id })}
               />
             )
           }
@@ -160,7 +144,7 @@ export function ProjectLeadPickerSheet({
           }
         />
       )}
-    </SheetShell>
+    </View>
   );
 }
 

@@ -1,12 +1,9 @@
 /**
- * Label picker — multi-select over workspace labels. Tap toggles attach /
- * detach immediately (consistent with mobile reaction toggle UX, not web's
- * "select then click Done" model).
+ * Pure picker body for issue labels — multi-select with toggle-on-tap. See
+ * status-picker-body.tsx for the split rationale.
  *
- * Container: iOS pageSheet via shared `<SheetShell>` (CLAUDE.md Lesson #6).
- *
- * Phase 1 does NOT support inline label creation — web has it, mobile users
- * who want a new label create it on web. Empty state nudges them.
+ * Phase 1 does not support inline label creation; mobile users who want a
+ * new label create it on web (matches the previous picker-sheet behaviour).
  */
 import { useMemo, useState } from "react";
 import { ActivityIndicator, FlatList, Pressable, View } from "react-native";
@@ -14,26 +11,17 @@ import { useQuery } from "@tanstack/react-query";
 import type { Label } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { TextField } from "@/components/ui/text-field";
-import { SheetShell } from "@/components/ui/sheet-shell";
 import { labelListOptions } from "@/data/queries/labels";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { cn } from "@/lib/utils";
 
 interface Props {
-  visible: boolean;
   attached: Label[];
   onAttach: (label: Label) => void;
   onDetach: (labelId: string) => void;
-  onClose: () => void;
 }
 
-export function LabelPickerSheet({
-  visible,
-  attached,
-  onAttach,
-  onDetach,
-  onClose,
-}: Props) {
+export function LabelPickerBody({ attached, onAttach, onDetach }: Props) {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const { data: labels, isLoading } = useQuery(labelListOptions(wsId));
   const [query, setQuery] = useState("");
@@ -57,7 +45,7 @@ export function LabelPickerSheet({
   };
 
   return (
-    <SheetShell visible={visible} onClose={onClose} title="Labels">
+    <View className="flex-1">
       <View className="px-3 pt-2 pb-2 border-b border-border">
         <TextField
           value={query}
@@ -112,6 +100,6 @@ export function LabelPickerSheet({
           }
         />
       )}
-    </SheetShell>
+    </View>
   );
 }
