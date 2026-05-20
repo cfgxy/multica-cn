@@ -118,11 +118,13 @@ describe("ThinkingPropRow", () => {
     mockInitiateListModels.mockResolvedValue(listResult([NO_THINKING_MODEL]));
     renderRow({ model: "gemini-2.5-pro", value: "" });
 
-    // The row stays mounted while discovery is in flight (so the
-    // useQuery subscription survives long enough for the request to
-    // fire) — assertion must wait until the query has settled before
-    // checking the row is gone. waitFor with the absence as the
-    // condition also catches a late re-mount.
+    // ThinkingPropRow returns null when levels are empty and value is
+    // empty — both initially (data undefined) and after discovery
+    // (NO_THINKING_MODEL has no `thinking` block). The `useQuery` hook
+    // runs before the early null return on first render, so the
+    // subscription is established and discovery still fires. In
+    // production this is also covered by the sibling ModelPicker
+    // mounted next to the row in agent-detail-inspector.
     await waitFor(() => {
       expect(mockInitiateListModels).toHaveBeenCalled();
     });

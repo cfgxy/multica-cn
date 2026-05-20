@@ -16,10 +16,12 @@ import { useT } from "../../../i18n";
  * discovered, so the value/label pairs match each CLI's own UI (`Low`,
  * `Extra high`, …) verbatim; never normalised across providers.
  *
- * The empty string is the "use model default" sentinel and renders as
- * "Default" in the chip, with the discovered `default_level` (when
- * present) badged inside the popover so the user can see what they'll
- * get if they clear.
+ * Empty string is the "no override" sentinel: the backend omits the
+ * effort flag entirely and the upstream CLI's own config / built-in
+ * default decides what the model runs at. We render that state as
+ * "Follow CLI config" rather than singling out one level as the
+ * factory default, because the actual default at runtime is owned by
+ * the user's local CLI install, not by Multica's catalog.
  */
 export function ThinkingPicker({
   value,
