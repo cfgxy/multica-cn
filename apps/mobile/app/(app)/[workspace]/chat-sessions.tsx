@@ -55,7 +55,7 @@ export default function ChatSessionsRoute() {
   };
 
   return (
-    <View className="flex-1 bg-popover">
+    <View className="flex-1">
       <View className="px-4 pt-4 pb-3">
         <Text className="text-base font-semibold text-foreground">Chats</Text>
       </View>

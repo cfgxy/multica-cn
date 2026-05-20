@@ -22,7 +22,7 @@
  */
 import { useLayoutEffect, useMemo } from "react";
 import { Pressable, SectionList, View } from "react-native";
-import SegmentedControl from "@react-native-segmented-control/segmented-control";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useQuery } from "@tanstack/react-query";
 import { router, useNavigation } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -91,8 +91,8 @@ export default function IssuesPage() {
   const allIssues = data ?? [];
 
   // Counts per scope — derived once from the raw list, used to label the
-  // SegmentedControl. `agents` includes both agent + squad assignees to
-  // match web `issues-page.tsx:93`.
+  // scope tabs. `agents` includes both agent + squad assignees to match
+  // web `issues-page.tsx:93`.
   const scopeCounts = useMemo(() => {
     let members = 0;
     let agents = 0;
@@ -151,8 +151,6 @@ export default function IssuesPage() {
 
   const showEmptyState = !isLoading && !error && filtered.length === 0;
 
-  const selectedIndex = SCOPES.findIndex((s) => s.value === scope);
-
   // Native Stack header owns the chrome — we feed it the filter IconButton
   // (with an absolute red dot when filters are active) via headerRight.
   useLayoutEffect(() => {
@@ -178,15 +176,18 @@ export default function IssuesPage() {
   return (
     <View className="flex-1 bg-background">
       <View className="px-4 pt-2 pb-2">
-        <SegmentedControl
-          values={SCOPES.map(
-            (s) => `${s.label} (${scopeCounts[s.value]})`,
-          )}
-          selectedIndex={selectedIndex === -1 ? 0 : selectedIndex}
-          onChange={(e) =>
-            setScope(SCOPES[e.nativeEvent.selectedSegmentIndex].value)
-          }
-        />
+        <Tabs
+          value={scope}
+          onValueChange={(v) => setScope(v as IssuesScope)}
+        >
+          <TabsList className="w-full">
+            {SCOPES.map((s) => (
+              <TabsTrigger key={s.value} value={s.value} className="flex-1">
+                <Text>{`${s.label} (${scopeCounts[s.value]})`}</Text>
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
       </View>
       {hasActiveFilters ? (
         <ActiveFilterChips

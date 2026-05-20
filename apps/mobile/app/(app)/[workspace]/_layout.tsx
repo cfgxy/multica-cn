@@ -47,7 +47,7 @@ const SHEET_OPTIONS: ComponentProps<typeof Stack.Screen>["options"] = {
   sheetGrabberVisible: true,
   sheetAllowedDetents: [0.6, 0.95],
   sheetCornerRadius: 20,
-  contentStyle: { height: "100%" },
+  contentStyle: { flex: 1 },
   headerShown: false,
 };
 

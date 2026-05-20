@@ -70,7 +70,7 @@ export default function CommentEmojiPickerRoute() {
   const theme = THEME[colorScheme];
 
   return (
-    <View className="flex-1 bg-popover">
+    <View className="flex-1">
       <View className="px-4 pt-3 pb-2">
         <Text className="text-lg font-semibold text-foreground">
           Add Reaction

@@ -47,7 +47,7 @@ export default function AddResourceRoute() {
   }, [valid, submitting, createResource, url, label]);
 
   return (
-    <View className="flex-1 bg-popover">
+    <View className="flex-1">
       <View className="flex-row items-center justify-between px-4 pt-4 pb-2">
         <Text className="text-base font-semibold text-foreground">
           Attach repository

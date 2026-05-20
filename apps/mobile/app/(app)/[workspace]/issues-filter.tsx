@@ -75,7 +75,7 @@ export default function IssuesFilterRoute() {
   const hasActive = statusFilters.length > 0 || priorityFilters.length > 0;
 
   return (
-    <View className="flex-1 bg-popover">
+    <View className="flex-1">
       <View className="flex-row items-center justify-between px-4 pt-4 pb-3">
         <Text className="text-base font-semibold text-foreground">Filter</Text>
         {hasActive ? (

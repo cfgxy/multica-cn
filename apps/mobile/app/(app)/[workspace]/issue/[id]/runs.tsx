@@ -64,7 +64,7 @@ export default function IssueRunsRoute() {
   }, [allTasks]);
 
   return (
-    <View className="flex-1 bg-popover">
+    <View className="flex-1">
       <View className="px-4 pt-4 pb-3">
         <Text className="text-base font-semibold text-foreground">
           Agent Runs

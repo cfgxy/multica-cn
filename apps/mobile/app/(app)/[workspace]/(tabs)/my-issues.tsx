@@ -16,7 +16,7 @@
  */
 import { useMemo } from "react";
 import { Pressable, SectionList, View } from "react-native";
-import SegmentedControl from "@react-native-segmented-control/segmented-control";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useQuery } from "@tanstack/react-query";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -123,8 +123,6 @@ export default function MyIssues() {
   const showEmptyState =
     !isLoading && !error && filtered.length === 0;
 
-  const selectedIndex = SCOPES.findIndex((s) => s.value === scope);
-
   return (
     <View className="flex-1 bg-background">
       <Header
@@ -149,13 +147,18 @@ export default function MyIssues() {
         }
       />
       <View className="px-4 pt-2 pb-2">
-        <SegmentedControl
-          values={SCOPES.map((s) => s.label)}
-          selectedIndex={selectedIndex === -1 ? 0 : selectedIndex}
-          onChange={(e) =>
-            setScope(SCOPES[e.nativeEvent.selectedSegmentIndex].value)
-          }
-        />
+        <Tabs
+          value={scope}
+          onValueChange={(v) => setScope(v as MyIssuesScope)}
+        >
+          <TabsList className="w-full">
+            {SCOPES.map((s) => (
+              <TabsTrigger key={s.value} value={s.value} className="flex-1">
+                <Text>{s.label}</Text>
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
       </View>
       {hasActiveFilters ? (
         <ActiveFilterChips
