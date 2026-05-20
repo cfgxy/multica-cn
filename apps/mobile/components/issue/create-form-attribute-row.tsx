@@ -23,6 +23,26 @@ import { useNewIssueDraftStore } from "@/data/stores/new-issue-draft-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { PRIORITY_LABEL, STATUS_LABEL } from "@/lib/issue-status";
 
+/**
+ * Picker fields the new-issue draft form can open. Bound to a typed map
+ * of Expo Router pathnames so typos become compile errors (previously
+ * the call site used `as never` on a template string).
+ */
+type NewIssuePickerField =
+  | "status"
+  | "priority"
+  | "assignee"
+  | "project"
+  | "due-date";
+
+const NEW_ISSUE_PICKER_PATHNAMES = {
+  status: "/[workspace]/new-issue-picker/status",
+  priority: "/[workspace]/new-issue-picker/priority",
+  assignee: "/[workspace]/new-issue-picker/assignee",
+  project: "/[workspace]/new-issue-picker/project",
+  "due-date": "/[workspace]/new-issue-picker/due-date",
+} as const satisfies Record<NewIssuePickerField, string>;
+
 export function CreateFormAttributeRow() {
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const status = useNewIssueDraftStore((s) => s.status);
@@ -38,10 +58,10 @@ export function CreateFormAttributeRow() {
   const priorityLabel =
     priority === "none" ? "Priority" : PRIORITY_LABEL[priority];
 
-  const open = (field: string) => {
+  const open = (field: NewIssuePickerField) => {
     if (!wsSlug) return;
     router.push({
-      pathname: `/[workspace]/new-issue-picker/${field}` as never,
+      pathname: NEW_ISSUE_PICKER_PATHNAMES[field],
       params: { workspace: wsSlug },
     });
   };

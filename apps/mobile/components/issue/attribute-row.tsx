@@ -44,6 +44,29 @@ const PRIORITY_CHIP_LABEL: Record<IssuePriority, string> = {
   none: "Priority",
 };
 
+/**
+ * The picker fields the issue-detail attribute row can open. Bound to a
+ * map of typed Expo Router pathnames so typos become compile errors
+ * (previously the call site used `as never` on a template string, which
+ * silently accepted anything).
+ */
+type IssuePickerField =
+  | "status"
+  | "priority"
+  | "assignee"
+  | "label"
+  | "project"
+  | "due-date";
+
+const ISSUE_PICKER_PATHNAMES = {
+  status: "/[workspace]/issue/[id]/picker/status",
+  priority: "/[workspace]/issue/[id]/picker/priority",
+  assignee: "/[workspace]/issue/[id]/picker/assignee",
+  label: "/[workspace]/issue/[id]/picker/label",
+  project: "/[workspace]/issue/[id]/picker/project",
+  "due-date": "/[workspace]/issue/[id]/picker/due-date",
+} as const satisfies Record<IssuePickerField, string>;
+
 function formatDueDate(iso: string | null): string | null {
   if (!iso) return null;
   const d = new Date(iso);
@@ -76,10 +99,10 @@ export function AttributeRow({ issue }: { issue: Issue }) {
     : null;
   const dueLabel = formatDueDate(issue.due_date);
 
-  const openPicker = (field: string) => {
+  const openPicker = (field: IssuePickerField) => {
     if (!wsSlug) return;
     router.push({
-      pathname: `/[workspace]/issue/[id]/picker/${field}` as never,
+      pathname: ISSUE_PICKER_PATHNAMES[field],
       params: { workspace: wsSlug, id: issue.id },
     });
   };
