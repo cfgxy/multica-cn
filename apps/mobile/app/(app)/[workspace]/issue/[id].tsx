@@ -40,6 +40,7 @@ import { useDeleteIssue } from "@/data/mutations/issues";
 import { useIssueRealtime } from "@/data/realtime/use-issue-realtime";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useViewedIssuesStore } from "@/data/viewed-issues-store";
+import { useCommentSelectStore } from "@/data/comment-select-store";
 
 export default function IssueDetail() {
   // `highlight` + `h` come from inbox deep-link (apps/mobile/app/(app)/
@@ -74,6 +75,12 @@ export default function IssueDetail() {
       useViewedIssuesStore.getState().push(wsId, id);
     }
   }, [wsId, id]);
+
+  // Clear comment text-selection mode when leaving the issue. Each fresh
+  // navigation into an issue starts with no comment in selection mode.
+  useEffect(() => {
+    return () => useCommentSelectStore.getState().clear();
+  }, []);
 
   const onRefresh = useCallback(async () => {
     await Promise.all([

@@ -72,11 +72,35 @@ interface Props {
    * bodies) where users expect to be able to select and copy text natively.
    */
   selectable?: boolean;
+  /**
+   * Strip the trailing paragraph `marginBottom` so the markdown sits flush
+   * inside a bounded container (chat user bubble, badge, tooltip — anything
+   * that already supplies its own vertical padding). Mirrors web's
+   * `[&>*:first-child]:mt-0 [&>*:last-child]:mb-0` neutralisation pattern
+   * applied in `packages/views/chat/components/chat-message-list.tsx` user
+   * bubble. enriched-markdown applies one paragraph style to every paragraph
+   * (can't single out the last), so multi-paragraph content in compact mode
+   * loses the 12px inter-paragraph gap — a fair trade for the common
+   * single-paragraph bubble case.
+   */
+  compact?: boolean;
 }
 
-export function Markdown({ content, attachments, selectable = true }: Props) {
+export function Markdown({
+  content,
+  attachments,
+  selectable = true,
+  compact = false,
+}: Props) {
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
-  const markdownStyle = useMarkdownStyle();
+  const baseStyle = useMarkdownStyle();
+  const markdownStyle = useMemo(
+    () =>
+      compact
+        ? { ...baseStyle, paragraph: { ...baseStyle.paragraph, marginBottom: 0 } }
+        : baseStyle,
+    [baseStyle, compact],
+  );
 
   const segments = useMemo(() => {
     const processed = preprocessMobileMarkdown(content);

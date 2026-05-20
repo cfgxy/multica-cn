@@ -38,6 +38,7 @@ import {
 } from "@/data/mutations/issues";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { useCommentSelectStore } from "@/data/comment-select-store";
 import { useActorLookup } from "@/data/use-actor-name";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
@@ -177,6 +178,16 @@ export default function CommentActionsRoute() {
         Haptics.NotificationFeedbackType.Success,
       );
     }
+  };
+
+  // "Select text" flips this comment into selection mode so the next
+  // long-press inside the bubble triggers iOS' native selection magnifier
+  // (+ handles + edit menu). Mirrors iOS 26 iMessage's "Select" entry.
+  // The state is set BEFORE router.back so CommentBody re-renders with
+  // selectable=true the instant the sheet starts dismissing.
+  const handleSelectText = () => {
+    useCommentSelectStore.getState().setSelecting(entry.id);
+    router.back();
   };
 
   const handleCopyLink = async () => {
@@ -319,6 +330,13 @@ export default function CommentActionsRoute() {
               iconColor={fg}
               label="Copy text"
               onPress={wrap(handleCopy)}
+            />
+            <Separator />
+            <ActionRow
+              icon="text-outline"
+              iconColor={fg}
+              label="Select text"
+              onPress={handleSelectText}
             />
             <Separator />
             <ActionRow

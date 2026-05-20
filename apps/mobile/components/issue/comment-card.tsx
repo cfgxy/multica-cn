@@ -37,6 +37,7 @@ import { useToggleCommentReaction } from "@/data/mutations/issues";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { issueAttachmentsOptions } from "@/data/queries/issues";
+import { useCommentSelectStore } from "@/data/comment-select-store";
 import { ReactionBar } from "./reaction-bar";
 
 interface Props {
@@ -171,6 +172,15 @@ function CommentBody({
   const { data: attachments } = useQuery(
     issueAttachmentsOptions(wsId, issueId),
   );
+  // Selection mode toggle. When this comment is the one the user picked
+  // "Select text" on from the action sheet, we flip the Markdown to
+  // `selectable={true}` (handing the long-press to iOS' native selection
+  // magnifier) and disable the outer Pressable.onLongPress so the action
+  // sheet doesn't race the magnifier — see data/comment-select-store.ts
+  // for the full rationale.
+  const isSelecting = useCommentSelectStore(
+    (s) => s.selectingId === entry.id,
+  );
 
   const name = getName(
     entry.actor_type as "member" | "agent" | null | undefined,
@@ -224,7 +234,10 @@ function CommentBody({
   // attachments[] array is backend cleanup metadata, not display content
   // (matches web's behavior).
   return (
-    <Pressable onLongPress={handleLongPress} delayLongPress={400}>
+    <Pressable
+      onLongPress={isSelecting ? undefined : handleLongPress}
+      delayLongPress={400}
+    >
       <View className="gap-2">
         <View className="flex-row items-center gap-2">
           <ActorAvatar
@@ -240,17 +253,21 @@ function CommentBody({
           </Text>
         </View>
         {entry.content ? (
-          // `selectable={false}` kills UIKit's UITextView.isSelectable on
-          // the underlying enriched-markdown native view (and on our
-          // CodeBlock <Text>s), so the long-press magnifier doesn't fire
-          // in parallel with the parent Pressable.onLongPress that opens
-          // the comment action sheet. Users still copy the full body via
-          // the action sheet's "Copy text" entry. Element X PR #1584
-          // documents the same bug + fix in a Matrix client.
+          // Default `selectable={false}` kills UIKit's UITextView.isSelectable
+          // on the underlying enriched-markdown native view (and on our
+          // CodeBlock <Text>s), so the long-press magnifier doesn't fire in
+          // parallel with the parent Pressable.onLongPress that opens the
+          // comment action sheet. Users still copy the full body via the
+          // action sheet's "Copy text" entry. Element X PR #1584 documents
+          // the same bug + fix in a Matrix client.
+          //
+          // When the user explicitly picks "Select text" from the sheet,
+          // `isSelecting` flips and we hand the long-press to iOS' native
+          // selection magnifier instead — see data/comment-select-store.ts.
           <Markdown
             content={entry.content}
             attachments={attachments}
-            selectable={false}
+            selectable={isSelecting}
           />
         ) : null}
         <ReactionBar
