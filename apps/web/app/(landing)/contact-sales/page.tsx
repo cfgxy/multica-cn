@@ -8,7 +8,7 @@ export const metadata: Metadata = {
   openGraph: {
     title: "Contact Sales — Multica",
     description:
-      "Tell us about your team. We’ll get back within one business day.",
+      "Tell us about your team. We’ll respond within three business days.",
     url: "/contact-sales",
   },
   alternates: {

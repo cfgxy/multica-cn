@@ -1441,7 +1441,7 @@ export function createZhDict(allowSignup: boolean): LandingDict {
     success: {
       title: "已收到，谢谢！",
       message:
-        "Multica 团队会在一个工作日内与你取得联系。在此期间，欢迎查看我们的文档，或在 GitHub 上为我们点个 Star。",
+        "Multica 团队会在三个工作日内回复你。在此期间，欢迎查看我们的文档，或在 GitHub 上为我们点个 Star。",
       cta: "返回 multica.ai",
     },
     errors: {

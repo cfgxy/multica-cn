@@ -1444,7 +1444,7 @@ export function createEnDict(allowSignup: boolean): LandingDict {
     success: {
       title: "Thanks — we got it.",
       message:
-        "A member of the Multica team will reach out within one business day. In the meantime, feel free to explore the docs or star us on GitHub.",
+        "A member of the Multica team will respond within three business days. In the meantime, feel free to explore the docs or star us on GitHub.",
       cta: "Back to multica.ai",
     },
     errors: {

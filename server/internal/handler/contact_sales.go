@@ -131,17 +131,13 @@ func (h *Handler) CreateContactSales(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	email := strings.ToLower(strings.TrimSpace(req.BusinessEmail))
-	if email == "" {
-		writeError(w, http.StatusBadRequest, "business_email is required")
+	email, ok := canonicalBusinessEmail(req.BusinessEmail)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "business_email is invalid")
 		return
 	}
 	if len(email) > contactSalesMaxEmail {
 		writeError(w, http.StatusBadRequest, "business_email is too long")
-		return
-	}
-	if _, err := mail.ParseAddress(email); err != nil {
-		writeError(w, http.StatusBadRequest, "business_email is invalid")
 		return
 	}
 	if !isBusinessEmailDomain(email) {
@@ -255,6 +251,32 @@ func truncateString(s string, max int) string {
 		return s
 	}
 	return s[:max]
+}
+
+// canonicalBusinessEmail parses raw user input with net/mail and returns the
+// canonical "local@domain" form (lower-cased, no display name, no surrounding
+// whitespace). It is the only safe input to isBusinessEmailDomain — checking
+// the raw string allows `Ada <ada@gmail.com>` to slip past the free-email
+// block list because the parsed RFC 5322 address would have domain `gmail.com`
+// while the raw "@" suffix would be `gmail.com>`.
+func canonicalBusinessEmail(raw string) (string, bool) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return "", false
+	}
+	addr, err := mail.ParseAddress(trimmed)
+	if err != nil {
+		return "", false
+	}
+	email := strings.ToLower(strings.TrimSpace(addr.Address))
+	// mail.ParseAddress also accepts forms like `<ada@example.com>` and
+	// addresses with comments; addr.Address strips both. Require the
+	// canonical local@domain shape with non-empty pieces on either side.
+	at := strings.LastIndex(email, "@")
+	if at <= 0 || at == len(email)-1 {
+		return "", false
+	}
+	return email, true
 }
 
 func isBusinessEmailDomain(email string) bool {

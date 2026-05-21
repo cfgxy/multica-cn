@@ -164,3 +164,73 @@ func TestIsBusinessEmailDomain(t *testing.T) {
 		}
 	}
 }
+
+func TestCanonicalBusinessEmail(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   string
+		want    string
+		wantOk  bool
+	}{
+		{"plain", "ada@multica.ai", "ada@multica.ai", true},
+		{"uppercase normalized", "Ada@Multica.AI", "ada@multica.ai", true},
+		{"trim whitespace", "  ada@multica.ai  ", "ada@multica.ai", true},
+		{"display name stripped", "Ada Lovelace <ada@multica.ai>", "ada@multica.ai", true},
+		{"angle-bracketed", "<ada@multica.ai>", "ada@multica.ai", true},
+		{"empty", "", "", false},
+		{"only whitespace", "   ", "", false},
+		{"missing at", "no-at-sign", "", false},
+		{"missing local", "@multica.ai", "", false},
+		{"missing domain", "ada@", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := canonicalBusinessEmail(c.input)
+			if ok != c.wantOk || got != c.want {
+				t.Errorf("canonicalBusinessEmail(%q) = (%q, %v), want (%q, %v)",
+					c.input, got, ok, c.want, c.wantOk)
+			}
+		})
+	}
+}
+
+// Regression: net/mail.ParseAddress accepts display-name forms like
+// `Ada <ada@gmail.com>`. Earlier versions of the handler ran the
+// free-email check against the raw user input, so the domain it saw was
+// `gmail.com>` (with the trailing angle bracket) — which is not in the
+// block list, allowing a personal address to bypass the gate. The handler
+// must canonicalize through the parsed addr.Address before the check.
+func TestCreateContactSalesRejectsFreeEmailWithDisplayName(t *testing.T) {
+	body := validContactSalesRequest()
+	body.BusinessEmail = "Ada Lovelace <ada@gmail.com>"
+
+	w := httptest.NewRecorder()
+	testHandler.CreateContactSales(w, newContactSalesRequest(body))
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestCreateContactSalesNormalizesDisplayNameEmail(t *testing.T) {
+	body := validContactSalesRequest()
+	body.BusinessEmail = "Ada Lovelace <ada@display-name.example>"
+	clearContactSalesForEmail(t, "ada@display-name.example")
+
+	w := httptest.NewRecorder()
+	testHandler.CreateContactSales(w, newContactSalesRequest(body))
+
+	if w.Code != http.StatusCreated {
+		t.Fatalf("expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var stored string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT business_email FROM contact_sales_inquiry WHERE business_email = $1`,
+		"ada@display-name.example").Scan(&stored); err != nil {
+		t.Fatalf("expected row with canonical email persisted: %v", err)
+	}
+	if stored != "ada@display-name.example" {
+		t.Fatalf("expected canonical email persisted, got %q", stored)
+	}
+}
