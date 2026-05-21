@@ -455,7 +455,7 @@ cursor target falls before the watermark.
 
 Per-issue metadata is a small KV map agents use to track pipeline state (PR number, pipeline status, waiting_on, ...). Keys match `^[a-zA-Z_][a-zA-Z0-9_.-]{0,63}$`, values are primitives (string / number / bool), max 50 keys per issue, blob capped at 8KB.
 
-Don't pin runtime bookkeeping like `attempts`, large logs, secrets/tokens, or description/comment copies — see the agent runtime prompt for the full anti-pattern list.
+The bar for writing is high: pin a value only when it is materially important to the issue AND likely to be re-read by future runs on this same issue (the PR URL, the deploy URL, what we're blocked on). Most runs write zero new keys — that's the expected case. Don't pin runtime bookkeeping like `attempts`, single-run investigation notes, large logs, secrets/tokens, or description/comment copies — see the agent runtime prompt for the full anti-pattern list.
 
 ```bash
 # List every key on an issue
