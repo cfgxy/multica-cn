@@ -28,9 +28,7 @@
     "members_label": "Members",
     "members_description": "Issues assigned to team members",
     "agents_label": "Agents",
-    "agents_description": "Issues assigned to AI agents",
-    "working_label": "Working",
-    "working_description": "Show only issues with an active agent task"
+    "agents_description": "Issues assigned to AI agents"
   },
   "filters": {
     "tooltip": "Filter",
@@ -144,6 +142,8 @@
     "section_properties": "Properties",
     "section_parent_issue": "Parent issue",
     "section_pull_requests": "Pull requests",
+    "section_metadata": "Metadata",
+    "metadata_dialog_title": "Metadata",
     "section_details": "Details",
     "section_token_usage": "Token usage",
     "pull_requests_loading": "Loading…",

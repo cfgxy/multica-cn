@@ -32,6 +32,7 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
     position: 0,
     start_date: null,
     due_date: null,
+    metadata: {},
     created_at: "2025-01-01T00:00:00Z",
     updated_at: "2025-01-01T00:00:00Z",
     ...overrides,
@@ -204,45 +205,5 @@ describe("filterIssues", () => {
     // L4 (empty labels) and L5 (missing labels field) must both be filtered out.
     expect(result.map((i) => i.id)).not.toContain("L4");
     expect(result.map((i) => i.id)).not.toContain("L5");
-  });
-
-  // --- Working filter ---
-  it("returns all issues when workingOnly is false even if workingIssueIds is set", () => {
-    const result = filterIssues(issues, {
-      ...NO_FILTER,
-      workingOnly: false,
-      workingIssueIds: new Set(["1"]),
-    });
-    expect(result.map((i) => i.id)).toEqual(["1", "2", "3", "4"]);
-  });
-
-  it("keeps only issues whose id is in workingIssueIds when workingOnly is true", () => {
-    const result = filterIssues(issues, {
-      ...NO_FILTER,
-      workingOnly: true,
-      workingIssueIds: new Set(["2", "4"]),
-    });
-    expect(result.map((i) => i.id)).toEqual(["2", "4"]);
-  });
-
-  it("collapses to empty when workingOnly is true but workingIssueIds is undefined", () => {
-    // Snapshot still loading — fail closed instead of leaking stale rows.
-    const result = filterIssues(issues, {
-      ...NO_FILTER,
-      workingOnly: true,
-      workingIssueIds: undefined,
-    });
-    expect(result).toEqual([]);
-  });
-
-  it("combines workingOnly with other filters using AND semantics", () => {
-    const result = filterIssues(issues, {
-      ...NO_FILTER,
-      statusFilters: ["todo"],
-      workingOnly: true,
-      workingIssueIds: new Set(["1", "2"]),
-    });
-    // Only issue 1 is both status=todo and in the working set.
-    expect(result.map((i) => i.id)).toEqual(["1"]);
   });
 });
