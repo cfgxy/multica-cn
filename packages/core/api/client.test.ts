@@ -248,7 +248,7 @@ describe("ApiClient", () => {
     expect(url).toBe("https://api.example.test/api/cloud-runtime/nodes");
     expect(opts).toMatchObject({
       method: "DELETE",
-      body: JSON.stringify({ id: "node-abc-123" }),
+      body: JSON.stringify({ instance_id: "node-abc-123" }),
     });
     expect((opts.headers as Record<string, string>)["Content-Type"]).toBe(
       "application/json",
