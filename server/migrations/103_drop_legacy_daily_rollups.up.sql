@@ -21,6 +21,32 @@
 -- (same guard pattern as migration 076).
 
 -- ---------------------------------------------------------------------------
+-- Fail-closed guard: refuse to drop the legacy daily pipelines while the
+-- new hourly rollup is empty on a database that already has token-event
+-- history. `migrate up` runs the migration set straight through (no
+-- per-version stop), so a self-host operator who skips the documented
+-- backfill step would otherwise silently land in a state where dashboards
+-- show zeros (see SELF-HOST UPGRADE ORDER in
+-- cmd/backfill_task_usage_hourly/main.go and
+-- docs/timezone-architecture-rfc.md §6 / §7.1). Failing loud here is the
+-- only thing that turns an undetected outage into a clear migration error.
+--
+-- A fresh database (no rows in task_usage) is exempt — there is nothing to
+-- backfill, and the new triggers installed in 102 will populate
+-- task_usage_hourly on the first event.
+-- ---------------------------------------------------------------------------
+
+DO $$
+BEGIN
+    IF EXISTS (SELECT 1 FROM task_usage LIMIT 1)
+       AND NOT EXISTS (SELECT 1 FROM task_usage_hourly LIMIT 1) THEN
+        RAISE EXCEPTION
+            'refusing to drop legacy daily rollups: task_usage_hourly is empty but task_usage has data — apply migrations 100-102 first, then run cmd/backfill_task_usage_hourly, then re-run migrate (see SELF-HOST UPGRADE ORDER in cmd/backfill_task_usage_hourly/main.go)';
+    END IF;
+END
+$$;
+
+-- ---------------------------------------------------------------------------
 -- Unschedule the legacy pg_cron jobs first (no-op when pg_cron is absent
 -- or the job was never registered).
 -- ---------------------------------------------------------------------------
