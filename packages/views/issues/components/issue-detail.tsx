@@ -7,6 +7,7 @@ import { AppLink } from "../../navigation";
 import { useNavigation } from "../../navigation";
 import {
   Archive,
+  Braces,
   Calendar,
   CalendarClock,
   CalendarDays,
@@ -35,6 +36,7 @@ import {
   TooltipTrigger,
   TooltipContent,
 } from "@multica/ui/components/ui/tooltip";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@multica/ui/components/ui/dialog";
 import { Popover, PopoverTrigger, PopoverContent } from "@multica/ui/components/ui/popover";
 import { Checkbox } from "@multica/ui/components/ui/checkbox";
 import { Command, CommandInput, CommandList, CommandEmpty, CommandGroup, CommandItem } from "@multica/ui/components/ui/command";
@@ -651,7 +653,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const [detailsOpen, setDetailsOpen] = useState(true);
   const [parentIssueOpen, setParentIssueOpen] = useState(true);
   const [pullRequestsOpen, setPullRequestsOpen] = useState(true);
-  const [metadataOpen, setMetadataOpen] = useState(true);
+  const [metadataDialogOpen, setMetadataDialogOpen] = useState(false);
   const [tokenUsageOpen, setTokenUsageOpen] = useState(true);
   const githubSettings = useGitHubSettings();
 
@@ -1386,33 +1388,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         </div>
       )}
 
-      {/* Metadata — read-only KV strip. Agents write via the CLI / metadata
-          API; UI editing is intentionally not in V1. Section hides itself
-          when the issue has no keys to keep the sidebar quiet for the
-          common case where metadata is never set. */}
-      {Object.keys(issue.metadata ?? {}).length > 0 && (
-        <div>
-          <button
-            className={`flex w-full items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors mb-2 hover:bg-accent/70 ${metadataOpen ? "" : "text-muted-foreground hover:text-foreground"}`}
-            onClick={() => setMetadataOpen(!metadataOpen)}
-          >
-            {t(($) => $.detail.section_metadata)}
-            <ChevronRight className={`!size-3 shrink-0 stroke-[2.5] text-muted-foreground transition-transform ${metadataOpen ? "rotate-90" : ""}`} />
-          </button>
-          {metadataOpen && (
-            <div className="grid grid-cols-[auto_1fr] gap-x-2 gap-y-0.5 pl-2">
-              {Object.entries(issue.metadata).map(([k, v]) => (
-                <PropRow key={k} label={k} interactive={false}>
-                  <span className="truncate text-muted-foreground">
-                    {typeof v === "boolean" ? (v ? "true" : "false") : String(v)}
-                  </span>
-                </PropRow>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
       {/* Details */}
       <div>
         <button
@@ -1474,6 +1449,32 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           </div>}
         </div>
       )}
+
+      {/* Metadata — agent-facing free-form KV bag. The values almost never
+          mean anything to humans, so we don't render them in the sidebar;
+          instead a small button reveals the raw JSON on demand. Button
+          hides itself when the bag is empty to keep the sidebar quiet. */}
+      {Object.keys(issue.metadata ?? {}).length > 0 && (
+        <button
+          type="button"
+          onClick={() => setMetadataDialogOpen(true)}
+          className="flex items-center gap-1.5 rounded-md px-2 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground"
+        >
+          <Braces className="!size-3 shrink-0 stroke-[2.5]" />
+          {t(($) => $.detail.section_metadata)}
+        </button>
+      )}
+
+      <Dialog open={metadataDialogOpen} onOpenChange={setMetadataDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{t(($) => $.detail.metadata_dialog_title)}</DialogTitle>
+          </DialogHeader>
+          <pre className="max-h-[60vh] overflow-auto rounded-md bg-muted p-3 font-mono text-xs">
+            {JSON.stringify(issue.metadata ?? {}, null, 2)}
+          </pre>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 
