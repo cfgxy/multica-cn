@@ -681,7 +681,9 @@ describe("IssueDetail (shared)", () => {
     renderIssueDetail();
 
     await waitFor(() => {
-      expect(screen.getByRole("button", { name: "Metadata" })).toBeInTheDocument();
+      // Trigger label includes a "· N" count so users can see payload size
+      // before clicking — accept any count via regex.
+      expect(screen.getByRole("button", { name: /^Metadata\b/ })).toBeInTheDocument();
     });
 
     // Key names are not rendered in the sidebar prior to opening the dialog.
@@ -700,7 +702,7 @@ describe("IssueDetail (shared)", () => {
 
     renderIssueDetail();
 
-    const button = await screen.findByRole("button", { name: "Metadata" });
+    const button = await screen.findByRole("button", { name: /^Metadata\b/ });
     fireEvent.click(button);
 
     // The dialog renders a <pre> containing the formatted JSON; checking the
@@ -725,7 +727,7 @@ describe("IssueDetail (shared)", () => {
       expect(screen.getByText("Details")).toBeInTheDocument();
     });
 
-    expect(screen.queryByRole("button", { name: "Metadata" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Metadata\b/ })).not.toBeInTheDocument();
   });
 
   it("renders Details section with Created by and dates", async () => {
