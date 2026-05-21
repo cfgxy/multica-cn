@@ -9,26 +9,48 @@ For cross-app sharing rules, see the root `CLAUDE.md` *Sharing Principles* secti
 
 Everything else, mobile writes its own.
 
+## Pre-flight — before you write any code
+
+For any new mobile feature / screen / interaction, complete the three steps below in order. **Skipping any step = no code yet** (read-only investigation and answering questions are exempt). This section overrides every other rule in this file.
+
+### 1. Read the real web/desktop implementation
+
+Until you can name the relevant code, don't reason from "general experience":
+
+- `packages/views/<feature>/` — UI shape, information density
+- `packages/core/<feature>/{queries,mutations,ws-updaters}.ts` — endpoints, cache key shapes, optimistic patches, WS event coverage
+- Anything matching `*-display.ts` / `dedupe*` / `coalesce*` / `useMemo(() => transform(raw))` — preprocessing between backend and JSX
+
+List the **must-agree points**: counts, enums, permissions, cross-cache side effects (e.g. a status change must also refresh inbox), navigation flow. Missing one of these is how the 2026-05-09 inbox duplicate-dot incident happened.
+
+### 2. Show the user the interaction plan + parity points (≤30s to read)
+
+Include:
+
+- What you're about to build (one sentence)
+- The container / interaction you propose (after walking the iOS-native > RNR > ask waterfall in §UI components)
+- Mental-model parity points pulled from step 1 (example: "counts mirror `deduplicateInboxItems`")
+- What UI **must differ** and why (example: "web has a sidebar workspace switcher; mobile puts it in Settings — same switching semantics")
+- **Visual baseline check** (this is baseline, not polish): tab bar has icons, every screen has a title, multiple right-side row elements stack vertically, secondary text routes through a type-aware label; place a web screenshot next to a simulator screenshot
+
+### 3. Wait for an explicit "do it / go / start" before writing code
+
+"Yes / right / sounds good" ≠ permission to act. "How should we do X?" ≠ permission to act. Only an explicit imperative ("build X / change X / start") triggers code.
+
+> Detailed rules live downstream: must-agree details in §Behavioral parity; component waterfall in §UI components; data / mirroring rules in §Data layer helpers and §Realtime. Pre-flight is the gate; those are the references.
+
 ## Behavioral parity with web/desktop
 
 Mobile is allowed to differ in **UI and interaction** — it's a phone, not a port. It is NOT allowed to differ in **product semantics**. Users should not get a different mental model of "what's there" depending on which client they open.
 
-Concrete rules:
+**The four things that must agree:**
 
-- **Counts and visibility must agree.** If web shows the user N comments on an issue under a given filter, mobile must show the same N (subject to identical pagination/coalescing rules). If mobile silently re-implements timeline grouping with different coalescing windows, mobile is wrong.
-- **Permissions and access checks must agree.** "Can comment", "can change status", "can archive inbox item" — mobile decides via the same logic web does (mirrored from packages/core, not re-derived from feel).
-- **State enums and transitions must agree.** Issue status set, priority set, inbox item types, comment types — mobile renders all of them (with a sensible fallback for unknown values, per "API Response Compatibility" in the root CLAUDE.md). Mobile does NOT silently drop categories.
-- **Data identity must agree.** Same `id`, same `slug`, same canonical fields. Mobile does not invent its own ids or normalize differently.
+- **Counts / visibility** — same N for the same filter, under identical pagination / coalescing rules.
+- **Permissions / access** — mirror the same logic web uses (from `packages/core`); don't re-derive from feel.
+- **State enums / transitions** — render every status / priority / inbox type / comment type, with a sensible fallback for unknown values (per "API Response Compatibility" in the root CLAUDE.md). Never silently drop a category.
+- **Data identity** — same `id`, same `slug`, same canonical fields. Don't invent ids or normalize differently.
 
-**Concrete UX divergence is fine** when it preserves semantics:
-
-- ✅ Web shows comment thread as a recursive tree; mobile shows a flat list (because phone screens). Same comments, different layout.
-- ✅ Web has a sidebar workspace switcher; mobile puts it in Settings. Same switching semantics.
-- ✅ Web shows inbox item read-state with a filled background; mobile uses a leading dot. Same boolean.
-- ❌ Web counts both replies and parent comments in the comment count; mobile counts only top-level. **Not allowed** — same N rule.
-- ❌ Web treats `status="cancelled"` as visible; mobile silently hides it. **Not allowed** — same enums rule.
-
-When UI requires a divergence, write down at the divergence point what the rule is mirroring (point at the source function in packages/core or packages/views) and why mobile renders it differently. Future readers should be able to tell, in 30 seconds, that the mobile divergence is intentional and which web-side function is the source of truth.
+**When UI must diverge**, write at the divergence point what rule it's mirroring (point at the source function in `packages/core` or `packages/views`) and why mobile renders it differently. A future reader should be able to tell in 30 seconds that the divergence is intentional and find the web-side source of truth.
 
 ### ⚠️ Incident (2026-05-09): inbox dedup missing — counts disagreed
 
@@ -256,14 +278,11 @@ fallback, sync-before-await ordering, type-safe payloads).
 
 ### Three rails that every feature must follow
 
-1. **Logic mirrors web/desktop, only interaction is mobile-original.**
-   Mobile is the *consumer* of the same server contract — endpoints,
-   request bodies, response shapes, optimistic patch semantics, cache key
-   prefix shapes all match web verbatim. Before adding any new feature,
-   grep `packages/core/<feature>/{queries,mutations,ws-updaters}.ts` and
-   `packages/core/api/client.ts` for the existing pattern and mirror it.
-   UI / interaction can diverge freely (per "Behavioral parity" section
-   above), but the data contract may not.
+1. **Logic mirrors web/desktop.** See §Pre-flight step 1 at the top of
+   this file. Restating the data-contract half here: endpoints, request
+   bodies, response schemas, optimistic patches, and cache key prefixes
+   all match web verbatim. UI / interaction can diverge freely per
+   §Behavioral parity.
 
 2. **Use the existing components — no new primitives.** Walk the
    `iOS native > RNR > discuss` waterfall in §UI components. If RNR ships
@@ -417,21 +436,7 @@ Mobile's fetch wrapper (`apps/mobile/data/api.ts`) MUST implement all four. Miss
 
 **What mobile correctly does NOT need (don't add these):** CSRF token (`X-CSRF-Token`), `credentials: "include"`, cookie reading. Mobile is Bearer-token auth, not cookie auth — the cookie attack surface that requires CSRF protection on web doesn't exist on mobile.
 
-### 4. Visual alignment is baseline, not polish
-
-When implementing a mobile screen / row / list:
-
-1. Open the web/desktop equivalent source file (e.g. `packages/views/inbox/components/inbox-list-item.tsx`) and compare its JSX structure side-by-side with the mobile JSX you're about to write.
-2. Run a screenshot of the web/desktop view next to a screenshot of the simulator.
-3. The four items below are **baseline**, not polish for a later iteration:
-   - **Tab bar must have icons** (Ionicons / SF Symbols / lucide-react-native) with focused/unfocused state switch.
-   - **Each screen has a title at the top** (Stack large title, or a custom `ScreenHeader`).
-   - **Row's right-side elements stack vertically into a column** when there are multiple (status above, time below). Pattern: nested flex-rows, each with its own right-aligned element. NOT a single horizontal flex-row with status and time competing for the same trailing slot.
-   - **Secondary lines must use a type-aware label component** (mirror, e.g., `InboxDetailLabel`'s type switch). Rendering raw `item.body` directly leaks server-side markdown markers (`##`, `*`) and stale debug strings into the UI.
-
-Skipping any of these in a "first cut" turns the v1 into something that prompts a "you didn't care about interaction at all" review — every time. Easier to do them up-front (15 min total) than to retrofit.
-
-### 5. Every read query must pass `signal` to fetch; api.ts always has a hard timeout
+### 4. Every read query must pass `signal` to fetch; api.ts always has a hard timeout
 
 **Symptom that triggered the rule (2026-05-11)**: Inbox screen sometimes returned to the foreground showing the FlatList pull-to-refresh spinner stuck indefinitely. List items were rendered underneath, but `isRefetching` never flipped back to `false`. Pull-to-refresh, navigating away, and re-opening the tab did not clear it.
 
@@ -462,7 +467,7 @@ Forgetting the destructure (writing `() => api.listInbox()`) defeats every benef
 
 **Why the wiring already in `data/query-client.ts` (focusManager + AppState, onlineManager + NetInfo) is not enough on its own**: focusManager triggers a *refetch attempt* when the app comes back to the foreground, but if the prior fetch promise is hanging, TQ won't start a new request — it'll keep waiting on the dead one. Only timeout + signal cancellation actually unwedges the query. The three pieces work together: signal lets TQ proactively cancel on staleness, timeout is the safety net when nothing else fires, focusManager is the "user came back, let's recheck" trigger.
 
-### 6. Modal container selection: match container to content, don't copy the first sheet
+### 5. Modal container selection: match container to content, don't copy the first sheet
 
 The mobile codebase started with ~15 Modal sheets. They almost all copied the same shape (`Modal transparent fade` + hand-drawn `bg-black/40` backdrop + centered/bottom card with `maxHeight`). That shape is correct for **short action menus** (the earliest sheets), wrong for **everything else**. Once the pattern was established as "the mobile sheet style," subsequent sheets inherited it regardless of content — and inherited a different bug each time: keyboard squashing the card, `maxHeight: 380` clipping FlatLists on tall phones, `useSafeAreaInsets` returning 0 inside Modal so bottom content collides with the Home Indicator, etc.
 
@@ -521,7 +526,7 @@ The centered-card pattern stays correct for **isolated short menus**
 (e.g. the chat-composer's "More" popover, the timeline's coalesce-
 expand) where there's no neighbour to be consistent with.
 
-### 7. Destructive swipe: reveal only, no auto-fire — always pair with haptic
+### 6. Destructive swipe: reveal only, no auto-fire — always pair with haptic
 
 iOS Mail / Linear iOS / Things: leftward swipe reveals a red Archive
 button; the user **must tap it** to commit. The earlier mobile inbox
@@ -545,7 +550,7 @@ See `apps/mobile/components/inbox/swipeable-inbox-row.tsx` for the
 reference implementation. When adding a new swipe-to-action row
 elsewhere, copy that pattern; do not reinvent.
 
-### 8. Tier C domain components: opportunistic upgrade only — no silent rewrites
+### 7. Tier C domain components: opportunistic upgrade only — no silent rewrites
 
 Tier C in `apps/mobile/docs/rnr-migration.md` §4 names the domain UI
 files that stay where they are but need foundation upgrades

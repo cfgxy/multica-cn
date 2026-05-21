@@ -32,11 +32,17 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     icon: "./assets/icon.png",
     ios: {
       supportsTablet: false,
-      bundleIdentifier: isProd
-        ? "ai.multica.mobile"
-        : isStaging
-          ? "ai.multica.mobile.staging"
-          : "ai.multica.mobile.dev",
+      // `EXPO_BUNDLE_IDENTIFIER` lets a dev override the default ai.multica.*
+      // IDs locally when their Apple ID isn't on the Multica team yet
+      // (Xcode can't sign someone else's bundle prefix). Set in
+      // .env.development.local — gitignored, never reaches CI / EAS.
+      bundleIdentifier:
+        process.env.EXPO_BUNDLE_IDENTIFIER ??
+        (isProd
+          ? "ai.multica.mobile"
+          : isStaging
+            ? "ai.multica.mobile.staging"
+            : "ai.multica.mobile.dev"),
     },
     plugins: [
       "expo-router",
