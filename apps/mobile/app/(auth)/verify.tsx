@@ -2,10 +2,13 @@ import { useEffect, useRef, useState } from "react";
 import { KeyboardAvoidingView, Platform, Pressable, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router, useLocalSearchParams } from "expo-router";
+import * as Haptics from "expo-haptics";
 import { Text } from "@/components/ui/text";
 import { OtpInput, type OtpInputRef } from "@/components/ui/otp-input";
 import { Button } from "@/components/ui/button";
+import { MulticaLogo } from "@/components/brand/multica-logo";
 import { useAuthStore } from "@/data/auth-store";
+import { mapAuthError } from "@/lib/auth-error";
 
 const CODE_LENGTH = 6;
 const RESEND_COOLDOWN_SECONDS = 60;
@@ -31,13 +34,16 @@ export default function Verify() {
 
   const submit = async (value: string) => {
     if (!value || !email || submitting) return;
+    void Haptics.selectionAsync();
     setSubmitting(true);
     setError(null);
     try {
       await verifyCode(email, value);
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
       router.replace("/");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Invalid code");
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setError(mapAuthError(err, "Couldn't verify the code. Try again."));
       setSubmitting(false);
       otpRef.current?.clear();
       setCode("");
@@ -46,6 +52,7 @@ export default function Verify() {
 
   const onResend = async () => {
     if (cooldown > 0 || resending || !email) return;
+    void Haptics.selectionAsync();
     setResending(true);
     setError(null);
     try {
@@ -54,7 +61,8 @@ export default function Verify() {
       otpRef.current?.clear();
       setCode("");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to resend code");
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setError(mapAuthError(err, "Couldn't resend the code. Try again."));
     } finally {
       setResending(false);
     }
@@ -67,13 +75,16 @@ export default function Verify() {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
         <View className="flex-1 justify-center px-6 gap-8">
-          <View className="gap-2">
-            <Text className="text-3xl font-bold text-foreground">
-              Enter verification code
-            </Text>
-            <Text className="text-base text-muted-foreground">
-              We sent a 6-digit code to {email}
-            </Text>
+          <View className="items-center gap-4">
+            <MulticaLogo size={56} />
+            <View className="gap-2 items-center">
+              <Text className="text-3xl font-bold text-foreground">
+                Enter verification code
+              </Text>
+              <Text className="text-base text-muted-foreground text-center">
+                We sent a 6-digit code to {email}
+              </Text>
+            </View>
           </View>
 
           <View className="gap-3 items-center">
@@ -93,6 +104,7 @@ export default function Verify() {
 
           <View className="gap-3">
             <Button
+              size="lg"
               disabled={submitting || code.length < CODE_LENGTH}
               onPress={() => submit(code)}
             >
@@ -120,7 +132,7 @@ export default function Verify() {
             </Pressable>
 
             <Button
-              variant="outline"
+              variant="ghost"
               disabled={submitting}
               onPress={() => router.back()}
             >

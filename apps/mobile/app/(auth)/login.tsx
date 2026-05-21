@@ -2,10 +2,13 @@ import { useState } from "react";
 import { KeyboardAvoidingView, Platform, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
+import * as Haptics from "expo-haptics";
 import { Text } from "@/components/ui/text";
-import { Input } from "@/components/ui/input";
+import { TextField } from "@/components/ui/text-field";
 import { Button } from "@/components/ui/button";
+import { MulticaLogo } from "@/components/brand/multica-logo";
 import { useAuthStore } from "@/data/auth-store";
+import { mapAuthError } from "@/lib/auth-error";
 
 export default function Login() {
   const sendCode = useAuthStore((s) => s.sendCode);
@@ -16,13 +19,15 @@ export default function Login() {
   const onSubmit = async () => {
     const trimmed = email.trim();
     if (!trimmed) return;
+    void Haptics.selectionAsync();
     setSubmitting(true);
     setError(null);
     try {
       await sendCode(trimmed);
       router.push({ pathname: "/verify", params: { email: trimmed } });
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to send code");
+      void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
+      setError(mapAuthError(err, "Couldn't send the code. Try again."));
     } finally {
       setSubmitting(false);
     }
@@ -34,20 +39,24 @@ export default function Login() {
         className="flex-1"
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        <View className="flex-1 justify-center px-6 gap-6">
-          <View className="gap-2">
-            <Text className="text-3xl font-bold text-foreground">
-              Sign in to Multica
-            </Text>
-            <Text className="text-base text-muted-foreground">
-              Enter your email and we&apos;ll send you a verification code.
-            </Text>
+        <View className="flex-1 justify-center px-6 gap-8">
+          <View className="items-center gap-4">
+            <MulticaLogo size={56} />
+            <View className="gap-2 items-center">
+              <Text className="text-3xl font-bold text-foreground">
+                Sign in to Multica
+              </Text>
+              <Text className="text-base text-muted-foreground text-center">
+                Enter your email and we&apos;ll send you a verification code.
+              </Text>
+            </View>
           </View>
 
           <View className="gap-3">
-            <Input
+            <TextField
               autoCapitalize="none"
               autoComplete="email"
+              autoFocus
               keyboardType="email-address"
               placeholder="you@example.com"
               value={email}
@@ -55,6 +64,7 @@ export default function Login() {
               onSubmitEditing={onSubmit}
               returnKeyType="send"
               editable={!submitting}
+              invalid={!!error}
             />
             {error ? (
               <Text className="text-sm text-destructive">{error}</Text>
@@ -62,6 +72,7 @@ export default function Login() {
           </View>
 
           <Button
+            size="lg"
             disabled={submitting || !email.trim()}
             onPress={onSubmit}
           >
