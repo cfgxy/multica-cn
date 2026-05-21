@@ -452,6 +452,14 @@ export class ApiClient {
 
   async patchOnboarding(payload: {
     questionnaire?: Record<string, unknown>;
+    // runtime_id / runtime_skipped persist the user's Step 3 selection so
+    // the workspace-entry init can read it (the prior design discarded the
+    // choice when Step 3 unmounted). Either field may be omitted — server
+    // preserves existing values via COALESCE. Sending both `runtime_id` and
+    // `runtime_skipped: true` is rejected as a 400 (CHECK constraint
+    // mirror).
+    runtime_id?: string;
+    runtime_skipped?: boolean;
   }): Promise<User> {
     return this.fetch("/api/me/onboarding", {
       method: "PATCH",
@@ -1141,6 +1149,23 @@ export class ApiClient {
 
   async leaveWorkspace(workspaceId: string): Promise<void> {
     await this.fetch(`/api/workspaces/${workspaceId}/leave`, {
+      method: "POST",
+    });
+  }
+
+  /**
+   * Idempotent "make sure this workspace has the install-runtime seed
+   * issue" hook used by `<WorkspaceOnboardingInit />`'s branch 0 fallback.
+   * Server gates on "workspace has no runtime yet" and dedupes by title via
+   * advisory lock; calling repeatedly is safe.
+   *
+   * Returns `created=false` when nothing was seeded (workspace already had
+   * a runtime, or a live issue with the canonical title exists). The
+   * frontend doesn't need to act on the response — the WS EventIssueCreated
+   * fired server-side updates the issue list.
+   */
+  async ensureOnboardingContent(workspaceId: string): Promise<{ created: boolean }> {
+    return this.fetch(`/api/workspaces/${workspaceId}/ensure-onboarding-content`, {
       method: "POST",
     });
   }

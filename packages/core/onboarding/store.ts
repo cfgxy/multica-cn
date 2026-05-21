@@ -106,3 +106,32 @@ export async function joinCloudWaitlist(
 ): Promise<void> {
   await api.joinCloudWaitlist({ email, reason });
 }
+
+/**
+ * Persist the user's Step 3 runtime selection. Replaces the prior pattern
+ * of carrying the choice in React state inside `StepRuntimeConnect` (which
+ * dropped it the moment Step 3 unmounted).
+ *
+ * After this call the auth store's `me.onboarding_runtime_id` reflects the
+ * choice, so the workspace-entry init can read it directly.
+ *
+ * Mutually exclusive with `recordOnboardingRuntimeSkipped` — server's CHECK
+ * constraint rejects (runtime_id, skipped=true) and the handler returns 400
+ * if the client tries to send both together.
+ */
+export async function recordOnboardingRuntimeChoice(
+  runtimeId: string,
+): Promise<void> {
+  const user = await api.patchOnboarding({ runtime_id: runtimeId });
+  useAuthStore.getState().setUser(user);
+}
+
+/**
+ * Persist the user's Step 3 explicit Skip. The workspace-entry init reads
+ * `me.onboarding_runtime_skipped` to decide whether to auto-seed the
+ * install-runtime issue + mark onboarded.
+ */
+export async function recordOnboardingRuntimeSkipped(): Promise<void> {
+  const user = await api.patchOnboarding({ runtime_skipped: true });
+  useAuthStore.getState().setUser(user);
+}

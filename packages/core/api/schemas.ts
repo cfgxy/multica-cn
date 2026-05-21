@@ -503,6 +503,13 @@ export const UserSchema = z.object({
   avatar_url: z.string().nullable().default(null),
   onboarded_at: z.string().nullable().default(null),
   onboarding_questionnaire: z.record(z.string(), z.unknown()).default({}),
+  // Step 3 selection persisted server-side so the workspace-entry init can
+  // read it. `onboarding_runtime_id` defaults to null on older servers that
+  // haven't deployed migration 098 yet; `onboarding_runtime_skipped` defaults
+  // to false. Treat both as additive — old desktop builds parsing the same
+  // response will simply ignore the unknown keys (loose schema).
+  onboarding_runtime_id: z.string().nullable().default(null),
+  onboarding_runtime_skipped: z.boolean().default(false),
   starter_content_state: z.string().nullable().default(null),
   language: z.string().nullable().default(null),
   profile_description: z.string().default(""),
@@ -517,6 +524,8 @@ export const EMPTY_USER: User = {
   avatar_url: null,
   onboarded_at: null,
   onboarding_questionnaire: {},
+  onboarding_runtime_id: null,
+  onboarding_runtime_skipped: false,
   starter_content_state: null,
   language: null,
   profile_description: "",
