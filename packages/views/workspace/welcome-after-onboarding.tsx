@@ -402,6 +402,7 @@ function RuntimeWelcome({
           t(($) => $.welcome_after_onboarding.error_generic)
         }
         retryLabel={t(($) => $.welcome_after_onboarding.retry)}
+        closeLabel={t(($) => $.welcome_after_onboarding.error_close)}
         onRetry={() => {
           setPrepError(null);
           setAttemptKey((n) => n + 1);
@@ -918,12 +919,14 @@ function FullScreenError({
   title,
   message,
   retryLabel,
+  closeLabel,
   onRetry,
   onClose,
 }: {
   title: string;
   message: string;
   retryLabel: string;
+  closeLabel: string;
   onRetry: () => void;
   onClose: () => void;
 }) {
@@ -937,7 +940,7 @@ function FullScreenError({
         <p className="text-center text-xs text-muted-foreground">{message}</p>
         <div className="flex gap-2">
           <Button variant="outline" size="sm" onClick={onClose}>
-            Close
+            {closeLabel}
           </Button>
           <Button size="sm" onClick={onRetry}>
             {retryLabel}

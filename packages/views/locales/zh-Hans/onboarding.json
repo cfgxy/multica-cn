@@ -185,6 +185,7 @@
     "error_generic": "出了点问题，请重试。",
     "retry": "重试",
     "dismiss_error": "知道了",
+    "error_close": "关闭",
     "user_context_heading": "关于我",
     "user_context_role_label": "角色",
     "user_context_use_case_label": "想用 Multica 做",

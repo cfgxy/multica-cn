@@ -185,6 +185,7 @@
     "error_generic": "Something went wrong. Try again.",
     "retry": "Try again",
     "dismiss_error": "Dismiss",
+    "error_close": "Close",
     "user_context_heading": "About me",
     "user_context_role_label": "Role",
     "user_context_use_case_label": "What I want to do with Multica",
