@@ -1,12 +1,12 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { AlertCircle, ArrowRight, Loader2 } from "lucide-react";
+import { AlertCircle, Loader2 } from "lucide-react";
 import { api } from "@multica/core/api";
 import { useAuthStore } from "@multica/core/auth";
 import { useWelcomeStore } from "@multica/core/onboarding";
-import { paths } from "@multica/core/paths";
+import { paths, useCurrentWorkspace } from "@multica/core/paths";
 import { issueKeys } from "@multica/core/issues/queries";
 import { workspaceKeys } from "@multica/core/workspace/queries";
 import type { Agent, CreateIssueRequest, Issue } from "@multica/core/types";
@@ -21,14 +21,19 @@ import { cn } from "@multica/ui/lib/utils";
 import { useNavigation } from "../navigation";
 import { useT } from "../i18n";
 import {
+  buildUserContextSection,
   CREATE_AGENT_GUIDE_ISSUE_TITLE,
   FOLLOWUP_COMMENT_PREFIX,
   getCreateAgentGuideBody,
   HELPER_DESCRIPTION,
   HELPER_INSTRUCTIONS,
+  HELPER_STARTER_PROMPTS,
   INSTALL_RUNTIME_ISSUE_BODY,
   INSTALL_RUNTIME_ISSUE_TITLE,
   pickContentLang,
+  STARTER_CARD_IDS,
+  type StarterCardId,
+  type UserContextLabels,
 } from "../onboarding/templates";
 
 /**
@@ -73,11 +78,28 @@ import {
  */
 export function WelcomeAfterOnboarding() {
   const me = useAuthStore((s) => s.user);
+  const currentWorkspace = useCurrentWorkspace();
   const signal = useWelcomeStore((s) => s.signal);
   const dismissed = useWelcomeStore((s) => s.dismissed);
   const dismiss = useWelcomeStore((s) => s.dismiss);
 
-  if (!me || !signal || dismissed) return null;
+  // Cross-workspace safety: signal lives in a global store, but this
+  // component mounts inside a workspace-scoped layout. If the user is
+  // currently viewing ws-B while signal points at ws-A (back/forward,
+  // deep-link, desktop multi-tab where stores are shared across tabs in
+  // one renderer), DON'T fire here — would create the Helper agent /
+  // seed issues in ws-A while the user looks at ws-B, then navigate them
+  // away. Render null until the user lands back in the workspace the
+  // signal was parked for.
+  if (
+    !me ||
+    !signal ||
+    dismissed ||
+    !currentWorkspace ||
+    currentWorkspace.id !== signal.workspaceId
+  ) {
+    return null;
+  }
 
   if (signal.choice === "runtime" && signal.runtimeId) {
     return (
@@ -111,9 +133,6 @@ const HELPER_AGENT_NAME = "Multica Helper";
 
 const HELPER_AVATAR_URL =
   "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 128 128'%3E%3Cdefs%3E%3ClinearGradient id='t' x1='0' y1='0' x2='0' y2='1'%3E%3Cstop offset='0%25' stop-color='%2323242C'/%3E%3Cstop offset='100%25' stop-color='%2313141A'/%3E%3C/linearGradient%3E%3C/defs%3E%3Crect width='128' height='128' rx='28' fill='url(%23t)'/%3E%3Cg stroke='%23FFFFFF' stroke-width='13' stroke-linecap='round'%3E%3Cline x1='64' y1='32' x2='64' y2='96'/%3E%3Cline x1='32' y1='64' x2='96' y2='64'/%3E%3Cline x1='41.4' y1='41.4' x2='86.6' y2='86.6'/%3E%3Cline x1='86.6' y1='41.4' x2='41.4' y2='86.6'/%3E%3C/g%3E%3C/svg%3E";
-
-const STARTER_CARD_IDS = ["intro", "assign", "second_agent"] as const;
-type StarterCardId = (typeof STARTER_CARD_IDS)[number];
 
 /**
  * Module-level dedupe for in-flight Helper setup. Keyed on
@@ -265,19 +284,86 @@ function RuntimeWelcome({
   const { t, i18n } = useT("onboarding");
   const navigation = useNavigation();
   const qc = useQueryClient();
+  // The parent `WelcomeAfterOnboarding` already gated on `me` being
+  // non-null, but we re-read the store here instead of threading it
+  // through props so the questionnaire stays in sync if the user
+  // refreshes their profile mid-flow (PATCH /api/me returns the updated
+  // row and the store is reactive). Used to enrich starter issue
+  // descriptions with a `> About me` block.
+  const me = useAuthStore((s) => s.user);
 
-  // Phase machine: "preparing" (loading veil) → "ready" (modal with agent)
-  // → submitting on a per-card basis. On error we surface a retry inside
-  // the same phase rather than transitioning to a separate state.
+  // Phase machine: "preparing" (loading veil) → "ready" (modal with agent
+  // + selectable cards) → submitting (cards locked, bottom CTA spins) →
+  // success path navigates away; failure path surfaces an error string.
   const [agent, setAgent] = useState<Agent | null>(null);
   const [prepError, setPrepError] = useState<Error | null>(null);
   const [attemptKey, setAttemptKey] = useState(0);
 
-  const [submittingCard, setSubmittingCard] = useState<StarterCardId | null>(
-    null,
+  // Multi-select of starter cards. Empty Set = nothing selected → CTA
+  // disabled. User toggles by clicking; no checkmark icon — we lean on
+  // the border + ring pattern already used by `compact-runtime-row.tsx`
+  // for visual selection state.
+  const [selected, setSelected] = useState<Set<StarterCardId>>(
+    () => new Set(),
   );
+  const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const submitInFlightRef = useRef(false);
+  // After Promise.all(createIssue × N) resolves we DON'T navigate
+  // immediately. We park the first issue id here and switch the Modal to
+  // a success state ("you're all set, agent is on it, here's how to
+  // check in via Inbox / chat") — gives the user a moment to register
+  // what just happened + surfaces two features they're likely to miss.
+  // Got it on the success view is what finally dismisses + navigates.
+  const [successIssueId, setSuccessIssueId] = useState<string | null>(null);
+
+  // Resolve the role / use_case enum slugs to human-readable labels in
+  // the user's current locale, then build the markdown block that gets
+  // appended to every starter issue description. Memoized on t +
+  // i18n.language so a language switch refreshes everything in one
+  // re-render; bundle is rebuilt whenever the questionnaire row changes.
+  const userContextLabels: UserContextLabels = useMemo(() => {
+    const lang = pickContentLang(i18n.language);
+    return {
+      heading: t(($) => $.welcome_after_onboarding.user_context_heading),
+      roleLabel: t(($) => $.welcome_after_onboarding.user_context_role_label),
+      useCaseLabel: t(
+        ($) => $.welcome_after_onboarding.user_context_use_case_label,
+      ),
+      listSeparator: lang === "zh" ? "、" : ", ",
+      role: {
+        engineer: t(($) => $.questions.role.engineer),
+        product: t(($) => $.questions.role.product),
+        designer: t(($) => $.questions.role.designer),
+        founder: t(($) => $.questions.role.founder),
+        marketing: t(($) => $.questions.role.marketing),
+        writer: t(($) => $.questions.role.writer),
+        research: t(($) => $.questions.role.research),
+        ops: t(($) => $.questions.role.ops),
+        student: t(($) => $.questions.role.student),
+        other: t(($) => $.questions.role.other),
+      },
+      useCase: {
+        ship_code: t(($) => $.questions.use_case.ship_code),
+        manage_team: t(($) => $.questions.use_case.manage_team),
+        personal_tasks: t(($) => $.questions.use_case.personal_tasks),
+        plan_research: t(($) => $.questions.use_case.plan_research),
+        write_publish: t(($) => $.questions.use_case.write_publish),
+        automate_ops: t(($) => $.questions.use_case.automate_ops),
+        evaluate: t(($) => $.questions.use_case.evaluate),
+        other: t(($) => $.questions.use_case.other),
+      },
+    };
+  }, [t, i18n.language]);
+  const toggle = (id: StarterCardId) => {
+    if (submitting) return;
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   // Find-or-create Helper agent. Dedupe lives in `findOrCreateHelper`
   // (module-level promise cache) so StrictMode double-mounts share one
@@ -335,40 +421,56 @@ function RuntimeWelcome({
   }
 
   // Phase 2: blocking modal with starter cards.
-  const handlePick = async (cardId: StarterCardId) => {
-    if (submitInFlightRef.current) return;
+  const lang = pickContentLang(i18n.language);
+
+  const handleAssign = async () => {
+    if (submitInFlightRef.current || selected.size === 0) return;
     submitInFlightRef.current = true;
     setSubmitError(null);
-    setSubmittingCard(cardId);
+    setSubmitting(true);
     try {
-      const cardTitle = t(
-        ($) => $.welcome_after_onboarding.runtime.cards[cardId].title,
+      // Build the per-task "about me" block once and append it to every
+      // starter issue. The block is empty markdown ("") when the user
+      // skipped both questions, so unconditional concat is safe — Helper
+      // sees the original prompt verbatim with no trailing context.
+      const userContext = buildUserContextSection(
+        me?.onboarding_questionnaire,
+        userContextLabels,
       );
-      const prompt = t(
-        ($) => $.welcome_after_onboarding.runtime.cards[cardId].prompt,
+      // Create issues in declared order (STARTER_CARD_IDS), so the user
+      // lands on the most foundational task first when there's a tie. We
+      // run them in parallel — Helper's max_concurrent_tasks lets it pick
+      // them up immediately, and one failure of N shouldn't gate the
+      // others.
+      const orderedIds = STARTER_CARD_IDS.filter((id) => selected.has(id));
+      const issues = await Promise.all(
+        orderedIds.map((id) => {
+          const card = HELPER_STARTER_PROMPTS[id];
+          return api.createIssue({
+            title: card.title[lang],
+            description: card.prompt[lang] + userContext,
+            status: "todo",
+            priority: "high",
+            assignee_type: "agent",
+            assignee_id: agent.id,
+          });
+        }),
       );
-      const issue = await api.createIssue({
-        title: cardTitle,
-        description: prompt,
-        status: "todo",
-        priority: "high",
-        assignee_type: "agent",
-        assignee_id: agent.id,
-      });
       await Promise.all([
         qc.invalidateQueries({ queryKey: issueKeys.all(workspaceId) }),
         qc.invalidateQueries({
           queryKey: workspaceKeys.agents(workspaceId),
         }),
       ]);
-      // Dismiss BEFORE navigating so the user landing on the destination
-      // doesn't see the same modal re-render from the store signal.
-      onComplete();
-      const slug = await resolveWorkspaceSlug(qc, workspaceId);
-      navigation.push(paths.workspace(slug).issueDetail(issue.id));
+      // Issues created — switch the Modal to its success state. We
+      // navigate only when the user explicitly clicks Got it (handled in
+      // handleGotIt below) so they see the inbox / chat hint.
+      submitInFlightRef.current = false;
+      setSubmitting(false);
+      setSuccessIssueId(issues[0]!.id);
     } catch (err) {
       submitInFlightRef.current = false;
-      setSubmittingCard(null);
+      setSubmitting(false);
       setSubmitError(
         err instanceof Error
           ? err.message
@@ -376,6 +478,70 @@ function RuntimeWelcome({
       );
     }
   };
+
+  const handleGotIt = async () => {
+    if (!successIssueId) return;
+    onComplete();
+    const slug = await resolveWorkspaceSlug(qc, workspaceId);
+    navigation.push(paths.workspace(slug).issueDetail(successIssueId));
+  };
+
+  if (successIssueId) {
+    return (
+      <Dialog
+        open={true}
+        modal={true}
+        disablePointerDismissal={true}
+        onOpenChange={() => {
+          /* blocking until Got it */
+        }}
+      >
+        <DialogContent
+          showCloseButton={false}
+          className="max-w-md sm:max-w-md"
+          aria-describedby="welcome-after-onboarding-runtime-success-subtitle"
+        >
+          <div className="flex flex-col items-center gap-3 pt-4">
+            <div
+              className="text-4xl animate-welcome-emoji-pop"
+              aria-hidden
+            >
+              🎉
+            </div>
+            <DialogTitle className="text-center text-2xl font-semibold">
+              {t(($) => $.welcome_after_onboarding.runtime.success.title)}
+            </DialogTitle>
+            <DialogDescription
+              id="welcome-after-onboarding-runtime-success-subtitle"
+              className="text-center text-sm text-muted-foreground"
+            >
+              {t(
+                ($) => $.welcome_after_onboarding.runtime.success.subtitle,
+                { agentName: agent.name },
+              )}
+            </DialogDescription>
+            <div className="mt-1 flex flex-col gap-1.5 max-w-sm">
+              <p className="text-center text-xs text-muted-foreground/80 leading-relaxed">
+                {t(
+                  ($) => $.welcome_after_onboarding.runtime.success.tip_inbox,
+                )}
+              </p>
+              <p className="text-center text-xs text-muted-foreground/80 leading-relaxed">
+                {t(
+                  ($) => $.welcome_after_onboarding.runtime.success.tip_chat,
+                )}
+              </p>
+            </div>
+          </div>
+          <div className="mt-4 flex justify-end">
+            <Button size="lg" onClick={handleGotIt}>
+              {t(($) => $.welcome_after_onboarding.runtime.success.got_it)}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  }
 
   return (
     <Dialog
@@ -388,18 +554,18 @@ function RuntimeWelcome({
     >
       <DialogContent
         showCloseButton={false}
-        className="max-w-md sm:max-w-md"
+        className="max-w-xl sm:max-w-xl"
         aria-describedby="welcome-after-onboarding-runtime-subtitle"
       >
-        <div className="flex flex-col items-center gap-3 pt-2">
+        <div className="flex flex-col items-center gap-3 pt-4 animate-onboarding-enter">
           <img
             src={agent.avatar_url || HELPER_AVATAR_URL}
             alt=""
             aria-hidden
             className="h-14 w-14 rounded-xl ring-1 ring-foreground/10"
           />
-          <DialogTitle className="text-center text-base font-medium">
-            {t(($) => $.welcome_after_onboarding.runtime.title)}
+          <DialogTitle className="text-center text-xl font-semibold">
+            {t(($) => $.welcome_after_onboarding.runtime.greeting)}
           </DialogTitle>
           <DialogDescription
             id="welcome-after-onboarding-runtime-subtitle"
@@ -407,52 +573,66 @@ function RuntimeWelcome({
           >
             {t(($) => $.welcome_after_onboarding.runtime.subtitle)}
           </DialogDescription>
-          <p className="text-center text-xs text-muted-foreground/80">
-            {t(($) => $.welcome_after_onboarding.runtime.helper_description)}
+          <p className="text-center text-sm text-muted-foreground max-w-md leading-relaxed">
+            {t(($) => $.welcome_after_onboarding.runtime.capabilities)}
           </p>
         </div>
 
-        <div className="mt-2 flex flex-col gap-2">
-          {STARTER_CARD_IDS.map((id, idx) => {
-            const busy = submittingCard === id;
-            const otherBusy =
-              submittingCard !== null && submittingCard !== id;
-            return (
-              <button
-                key={id}
-                type="button"
-                onClick={() => handlePick(id)}
-                disabled={otherBusy}
-                aria-busy={busy}
-                className={cn(
-                  "group flex items-center gap-3 rounded-lg border bg-background px-3 py-2.5 text-left transition-colors",
-                  "hover:border-foreground/30 hover:bg-muted/40",
-                  "disabled:cursor-not-allowed disabled:opacity-50",
-                  idx === 0 && "border-foreground/30",
-                )}
-              >
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-medium leading-tight">
-                    {t(
-                      ($) =>
-                        $.welcome_after_onboarding.runtime.cards[id].title,
-                    )}
-                  </p>
-                  <p className="mt-0.5 text-xs text-muted-foreground leading-snug">
-                    {t(
-                      ($) =>
-                        $.welcome_after_onboarding.runtime.cards[id].subtitle,
-                    )}
-                  </p>
-                </div>
-                {busy ? (
-                  <Loader2 className="h-4 w-4 shrink-0 animate-spin text-muted-foreground" />
-                ) : (
-                  <ArrowRight className="h-4 w-4 shrink-0 text-muted-foreground transition-transform group-hover:translate-x-0.5" />
-                )}
-              </button>
-            );
-          })}
+        <div className="mt-4 border-t pt-4">
+          <p className="mb-3 text-sm font-medium text-foreground">
+            {t(($) => $.welcome_after_onboarding.runtime.section_label)}
+          </p>
+          <div className="flex flex-col gap-2">
+            {STARTER_CARD_IDS.map((id) => {
+              const isSelected = selected.has(id);
+              return (
+                <button
+                  key={id}
+                  type="button"
+                  onClick={() => toggle(id)}
+                  disabled={submitting}
+                  aria-pressed={isSelected}
+                  className={cn(
+                    "flex items-start gap-3 rounded-lg border bg-card px-3 py-2.5 text-left transition-colors",
+                    isSelected
+                      ? "border-primary ring-1 ring-primary"
+                      : "hover:border-foreground/20",
+                    "disabled:cursor-not-allowed disabled:opacity-60",
+                  )}
+                >
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium leading-tight">
+                      {HELPER_STARTER_PROMPTS[id].title[lang]}
+                    </p>
+                    <p className="mt-0.5 text-xs text-muted-foreground leading-snug">
+                      {t(
+                        ($) =>
+                          $.welcome_after_onboarding.runtime.cards[id]
+                            .subtitle,
+                      )}
+                    </p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="mt-4 flex justify-end">
+            <Button
+              size="lg"
+              disabled={selected.size === 0 || submitting}
+              onClick={handleAssign}
+            >
+              {submitting && (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              )}
+              {selected.size === 0
+                ? t(($) => $.welcome_after_onboarding.runtime.assign_empty)
+                : t(($) => $.welcome_after_onboarding.runtime.assign_count, {
+                    count: selected.size,
+                  })}
+            </Button>
+          </div>
         </div>
 
         {submitError ? (

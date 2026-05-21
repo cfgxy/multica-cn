@@ -48,6 +48,23 @@ const mockCreateIssue = vi.fn();
 const mockCreateComment = vi.fn();
 const mockGetWorkspace = vi.fn();
 
+// `useCurrentWorkspace` is gated by `WorkspaceSlugProvider`; in tests
+// we short-circuit to a fixture matching the welcome signal's workspace id
+// so the cross-workspace guard doesn't drop the component.
+vi.mock("@multica/core/paths", async () => {
+  const actual = await vi.importActual<typeof import("@multica/core/paths")>(
+    "@multica/core/paths",
+  );
+  return {
+    ...actual,
+    useCurrentWorkspace: () => ({
+      id: "ws-1",
+      slug: "test-ws",
+      name: "Test WS",
+    }),
+  };
+});
+
 vi.mock("@multica/core/api", () => ({
   api: {
     listAgents: (...args: unknown[]) => mockListAgents(...args),
@@ -108,6 +125,21 @@ describe("WelcomeAfterOnboarding", () => {
     expect(container.firstChild).toBeNull();
   });
 
+  it("renders nothing when the signal points at a different workspace", () => {
+    // Cross-workspace guard: store may have a signal parked from
+    // workspace ws-2 while the user is currently viewing ws-1 (the
+    // mocked useCurrentWorkspace returns ws-1). Don't fire here —
+    // otherwise we'd create the Helper / seed issues in ws-2 while the
+    // user looks at ws-1, then navigate them away unexpectedly.
+    useWelcomeStore.getState().set({
+      workspaceId: "ws-2",
+      choice: "skip",
+    });
+    const { container } = renderWelcome();
+    expect(container.firstChild).toBeNull();
+    expect(mockCreateIssue).not.toHaveBeenCalled();
+  });
+
   describe("runtime path", () => {
     it("creates a Helper agent then opens a blocking modal with starter cards", async () => {
       mockListAgents.mockResolvedValueOnce([]);
@@ -129,7 +161,7 @@ describe("WelcomeAfterOnboarding", () => {
       expect(screen.getByText(/Preparing your Helper/i)).toBeInTheDocument();
 
       await waitFor(() => {
-        expect(screen.getByText(/Meet Multica Helper/i)).toBeInTheDocument();
+        expect(screen.getByText(/welcome to Multica/i)).toBeInTheDocument();
       });
 
       expect(mockCreateAgent).toHaveBeenCalledTimes(1);
@@ -138,13 +170,15 @@ describe("WelcomeAfterOnboarding", () => {
       expect(agentArgs.name).toBe("Multica Helper");
       expect(agentArgs.instructions).toContain("Multica Helper");
 
-      expect(screen.getByText("Introduce me to Multica")).toBeInTheDocument();
+      // 3 starter card titles come from HELPER_STARTER_PROMPTS (TS const,
+      // EN under the test's en locale).
       expect(
-        screen.getByText("Show me how to assign an issue"),
+        screen.getByText("Introduce Multica to me"),
       ).toBeInTheDocument();
       expect(
-        screen.getByText("Help me create a second agent"),
+        screen.getByText("Walk me through the core features"),
       ).toBeInTheDocument();
+      expect(screen.getByText("Make me a welcome page")).toBeInTheDocument();
     });
 
     it("reuses an existing Multica Helper agent instead of creating duplicates", async () => {
@@ -166,13 +200,13 @@ describe("WelcomeAfterOnboarding", () => {
 
       renderWelcome();
       await waitFor(() => {
-        expect(screen.getByText(/Meet Multica Helper/i)).toBeInTheDocument();
+        expect(screen.getByText(/welcome to Multica/i)).toBeInTheDocument();
       });
 
       expect(mockCreateAgent).not.toHaveBeenCalled();
     });
 
-    it("clicking a starter card creates an issue assigned to the agent and navigates", async () => {
+    it("selecting cards then clicking Assign creates one issue per pick and navigates to the first", async () => {
       mockListAgents.mockResolvedValueOnce([]);
       mockCreateAgent.mockResolvedValueOnce({
         id: "agent-1",
@@ -181,10 +215,18 @@ describe("WelcomeAfterOnboarding", () => {
         avatar_url: null,
         visibility: "workspace",
       });
-      mockCreateIssue.mockResolvedValueOnce({
-        id: "issue-1",
-        workspace_id: "ws-1",
-      });
+      // Pick 2 cards — `intro` then `welcome_page`. Issues come back in
+      // STARTER_CARD_IDS order (intro first), so navigate target is the
+      // intro issue.
+      mockCreateIssue
+        .mockResolvedValueOnce({
+          id: "issue-intro",
+          workspace_id: "ws-1",
+        })
+        .mockResolvedValueOnce({
+          id: "issue-welcome",
+          workspace_id: "ws-1",
+        });
       useWelcomeStore.getState().set({
         workspaceId: "ws-1",
         choice: "runtime",
@@ -193,20 +235,48 @@ describe("WelcomeAfterOnboarding", () => {
 
       renderWelcome();
       await waitFor(() =>
-        expect(screen.getByText("Introduce me to Multica")).toBeInTheDocument(),
+        expect(
+          screen.getByText("Introduce Multica to me"),
+        ).toBeInTheDocument(),
       );
 
-      fireEvent.click(screen.getByText("Introduce me to Multica"));
+      // CTA is disabled until at least one card is selected.
+      const ctaEmpty = screen.getByRole("button", { name: /pick one or more/i });
+      expect(ctaEmpty).toBeDisabled();
 
-      await waitFor(() => expect(mockCreateIssue).toHaveBeenCalledTimes(1));
-      const [issueArgs] = mockCreateIssue.mock.calls[0]!;
-      expect(issueArgs.assignee_type).toBe("agent");
-      expect(issueArgs.assignee_id).toBe("agent-1");
-      expect(issueArgs.title).toBe("Introduce me to Multica");
-      expect(typeof issueArgs.description).toBe("string");
+      // Toggle two cards.
+      fireEvent.click(screen.getByText("Introduce Multica to me"));
+      fireEvent.click(screen.getByText("Make me a welcome page"));
 
+      // CTA enables and reflects the count.
+      const cta = await screen.findByRole("button", { name: /assign 2/i });
+      expect(cta).not.toBeDisabled();
+      fireEvent.click(cta);
+
+      await waitFor(() => expect(mockCreateIssue).toHaveBeenCalledTimes(2));
+      const titles = mockCreateIssue.mock.calls.map(([args]) => args.title);
+      expect(titles).toEqual([
+        "Introduce Multica to me",
+        "Make me a welcome page",
+      ]);
+      // Both assigned to the same Helper agent.
+      mockCreateIssue.mock.calls.forEach(([args]) => {
+        expect(args.assignee_type).toBe("agent");
+        expect(args.assignee_id).toBe("agent-1");
+      });
+
+      // After Promise.all resolves we DO NOT navigate immediately — the
+      // Modal switches to a success view (☕ "you're all set, Helper is
+      // on it, here's how to check via Inbox / chat"). The user must
+      // click Got it on that view to navigate.
+      const gotIt = await screen.findByRole("button", { name: /got it/i });
+      expect(mockPush).not.toHaveBeenCalled();
+      fireEvent.click(gotIt);
+
+      // Navigates to the first issue (intro, since it's earlier in
+      // STARTER_CARD_IDS).
       await waitFor(() =>
-        expect(mockPush).toHaveBeenCalledWith("/test-ws/issues/issue-1"),
+        expect(mockPush).toHaveBeenCalledWith("/test-ws/issues/issue-intro"),
       );
     });
   });

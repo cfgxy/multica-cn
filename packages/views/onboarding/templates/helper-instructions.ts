@@ -96,33 +96,3 @@ export const HELPER_DESCRIPTION = {
   zh: "Multica 使用助手。可以询问用法、帮助创建/查看任务、配置 agent 等。",
 } as const;
 
-/**
- * The whole copy-paste markdown block used in the skip-path
- * create-agent-guide issue. Composed from HELPER_DESCRIPTION +
- * HELPER_INSTRUCTIONS so the embedded ```md fence matches the body's
- * language end-to-end (no Chinese-around-an-English-block surprise).
- *
- * Structural headers (`# Multica Helper`, `## Description`, `## Instructions`)
- * stay English on purpose — they're the agent-form's section markers
- * the user pastes against; the agent-create UI doesn't localize them.
- */
-export const HELPER_FULL_BLOCK = {
-  en: `# Multica Helper
-
-## Description
-
-${HELPER_DESCRIPTION.en}
-
-## Instructions
-
-${HELPER_INSTRUCTIONS.en}`,
-  zh: `# Multica Helper
-
-## Description
-
-${HELPER_DESCRIPTION.zh}
-
-## Instructions
-
-${HELPER_INSTRUCTIONS.zh}`,
-} as const;

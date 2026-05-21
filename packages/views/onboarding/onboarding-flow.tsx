@@ -26,17 +26,34 @@ import { StepPlatformFork } from "./steps/step-platform-fork";
 import { useT } from "../i18n";
 
 const EMPTY_QUESTIONNAIRE: QuestionnaireAnswers = {
-  source: null,
+  source: [],
   source_other: null,
   source_skipped: false,
   role: null,
   role_other: null,
   role_skipped: false,
-  use_case: null,
+  use_case: [],
   use_case_other: null,
   use_case_skipped: false,
   version: 2,
 };
+
+/**
+ * Coerce a stored questionnaire slot into the array shape used by the
+ * current UI. Earlier versions of this app wrote `source` / `use_case`
+ * as a single string; tolerate that on read so a user who started
+ * onboarding before this change doesn't see their previous answer
+ * disappear on re-entry. Empty string and null both collapse to [].
+ */
+function coerceToArray<T extends string>(value: unknown): T[] {
+  if (Array.isArray(value)) {
+    return value.filter((v): v is T => typeof v === "string" && v.length > 0);
+  }
+  if (typeof value === "string" && value.length > 0) {
+    return [value as T];
+  }
+  return [];
+}
 
 /**
  * Merge persisted answers into the empty default. Re-entry pre-fills
@@ -47,9 +64,16 @@ const EMPTY_QUESTIONNAIRE: QuestionnaireAnswers = {
 function mergeQuestionnaire(
   raw: Record<string, unknown>,
 ): QuestionnaireAnswers {
-  const merged = { ...EMPTY_QUESTIONNAIRE, ...(raw as Partial<QuestionnaireAnswers>) };
+  const merged = {
+    ...EMPTY_QUESTIONNAIRE,
+    ...(raw as Partial<QuestionnaireAnswers>),
+  };
   return {
     ...merged,
+    source: coerceToArray<QuestionnaireAnswers["source"][number]>(raw.source),
+    use_case: coerceToArray<QuestionnaireAnswers["use_case"][number]>(
+      raw.use_case,
+    ),
     source_skipped: false,
     role_skipped: false,
     use_case_skipped: false,

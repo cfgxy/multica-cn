@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { CoreProvider } from "@multica/core/platform";
 import { pickLocale } from "@multica/core/i18n";
 import { useAuthStore } from "@multica/core/auth";
+import { useWelcomeStore } from "@multica/core/onboarding";
 import { workspaceKeys, workspaceListOptions } from "@multica/core/workspace/queries";
 import { api } from "@multica/core/api";
 import { useHasOnboarded } from "@multica/core/paths";
@@ -265,6 +266,9 @@ function BlockingRuntimeConfigError({ message }: { message: string }) {
 async function handleDaemonLogout() {
   useTabStore.getState().reset();
   useWindowOverlayStore.getState().close();
+  // Drop any post-onboarding welcome signal so user B logging in next
+  // doesn't inherit user A's pending modal state.
+  useWelcomeStore.getState().reset();
   try {
     await window.daemonAPI.clearToken();
   } catch {

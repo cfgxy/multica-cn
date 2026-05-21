@@ -129,32 +129,62 @@ type patchOnboardingRequest struct {
 	Questionnaire *json.RawMessage `json:"questionnaire,omitempty"`
 }
 
-// questionnaireAnswers mirrors the frontend's v2 `QuestionnaireAnswers`
-// shape. Each of source / role / use_case has a value, an optional
-// free-text "other" override, and a skip marker. The questionnaire is
-// "resolved" once every slot has either an answer or a skip marker;
-// the funnel event fires on the transition into that state.
+// questionnaireAnswers mirrors the frontend's `QuestionnaireAnswers`
+// shape. Source and use_case are multi-select arrays (Step 1 + Step 3
+// allow picking several); role stays single-select.
+//
+// stringOrSlice tolerates pre-multi-select rows that wrote a bare
+// string into the JSONB column — `json.Unmarshal` would otherwise
+// fail on type mismatch when reading those back.
+type stringOrSlice []string
+
+func (s *stringOrSlice) UnmarshalJSON(data []byte) error {
+	// Empty / null both decode to nil slice.
+	if len(data) == 0 || string(data) == "null" {
+		*s = nil
+		return nil
+	}
+	// Try array first (current shape).
+	var arr []string
+	if err := json.Unmarshal(data, &arr); err == nil {
+		*s = arr
+		return nil
+	}
+	// Fall back to single string (legacy shape from before this column
+	// went multi-select). Empty string means "unanswered" — keep nil.
+	var single string
+	if err := json.Unmarshal(data, &single); err != nil {
+		return err
+	}
+	if single == "" {
+		*s = nil
+		return nil
+	}
+	*s = []string{single}
+	return nil
+}
+
 type questionnaireAnswers struct {
-	Source         string `json:"source"`
-	SourceOther    string `json:"source_other"`
-	SourceSkipped  bool   `json:"source_skipped"`
-	Role           string `json:"role"`
-	RoleOther      string `json:"role_other"`
-	RoleSkipped    bool   `json:"role_skipped"`
-	UseCase        string `json:"use_case"`
-	UseCaseOther   string `json:"use_case_other"`
-	UseCaseSkipped bool   `json:"use_case_skipped"`
-	Version        int    `json:"version"`
+	Source         stringOrSlice `json:"source"`
+	SourceOther    string        `json:"source_other"`
+	SourceSkipped  bool          `json:"source_skipped"`
+	Role           string        `json:"role"`
+	RoleOther      string        `json:"role_other"`
+	RoleSkipped    bool          `json:"role_skipped"`
+	UseCase        stringOrSlice `json:"use_case"`
+	UseCaseOther   string        `json:"use_case_other"`
+	UseCaseSkipped bool          `json:"use_case_skipped"`
+	Version        int           `json:"version"`
 }
 
 func (q questionnaireAnswers) sourceResolved() bool {
-	return q.Source != "" || q.SourceSkipped
+	return len(q.Source) > 0 || q.SourceSkipped
 }
 func (q questionnaireAnswers) roleResolved() bool {
 	return q.Role != "" || q.RoleSkipped
 }
 func (q questionnaireAnswers) useCaseResolved() bool {
-	return q.UseCase != "" || q.UseCaseSkipped
+	return len(q.UseCase) > 0 || q.UseCaseSkipped
 }
 
 // questionnaireSchemaVersion is the schema this handler understands.
@@ -218,9 +248,9 @@ func (h *Handler) PatchOnboarding(w http.ResponseWriter, r *http.Request) {
 	if after.complete() && !before.complete() {
 		h.Analytics.Capture(analytics.OnboardingQuestionnaireSubmitted(
 			userID,
-			after.Source,
+			[]string(after.Source),
 			after.Role,
-			after.UseCase,
+			[]string(after.UseCase),
 			after.SourceSkipped,
 			after.RoleSkipped,
 			after.UseCaseSkipped,

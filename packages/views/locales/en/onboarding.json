@@ -185,26 +185,34 @@
     "error_generic": "Something went wrong. Try again.",
     "retry": "Try again",
     "dismiss_error": "Dismiss",
+    "user_context_heading": "About me",
+    "user_context_role_label": "Role",
+    "user_context_use_case_label": "What I want to do with Multica",
     "runtime": {
-      "title": "Meet Multica Helper",
-      "subtitle": "Your first agent in this workspace. Pick something to assign as your first task — Helper will pick it up and reply on the issue.",
-      "helper_description": "Built-in workspace assistant. Answers Multica questions and runs CLI operations.",
+      "greeting": "Hi, welcome to Multica",
+      "subtitle": "I'm your first Agent assistant.",
+      "capabilities": "Ask me anything about how to use Multica. You can also have me get things done in your workspace — create issues, set up cron tasks, build new agents…",
+      "section_label": "Pick one or more tasks to start with:",
+      "assign_empty": "Pick one or more",
+      "assign_count": "Assign {{count}} task to me →",
+      "assign_count_plural": "Assign {{count}} tasks to me →",
       "cards": {
         "intro": {
-          "title": "Introduce me to Multica",
-          "subtitle": "Have Helper walk you through what Multica is and how to work with agents.",
-          "prompt": "Introduce me to Multica. Explain what this workspace is, what agents do here, and what I should try first."
+          "subtitle": "Let me explain in 1–2 paragraphs what Multica is and what it can do."
         },
-        "assign": {
-          "title": "Show me how to assign an issue",
-          "subtitle": "Helper will demonstrate assignees, @mentions, and the issue thread by walking through this one.",
-          "prompt": "Show me how to assign an issue to an agent and how @mentions work. Use this issue as the worked example."
+        "tour": {
+          "subtitle": "I'll walk you through how issue, agent, squad, autopilot fit together."
         },
-        "second_agent": {
-          "title": "Help me create a second agent",
-          "subtitle": "Watch Helper spin up a new teammate from a template using the multica CLI.",
-          "prompt": "Help me create a second agent in this workspace. Ask me what kind of agent I want, then create it for me using the multica CLI."
+        "welcome_page": {
+          "subtitle": "I'll write you a small HTML welcome page to celebrate the kickoff."
         }
+      },
+      "success": {
+        "title": "All set!",
+        "subtitle": "Sit tight — your {{agentName}} is on it ☕",
+        "tip_inbox": "When there's progress, you'll see it in your Inbox.",
+        "tip_chat": "Want to chat live? Click the chat bubble at the bottom-right.",
+        "got_it": "Got it →"
       }
     },
     "skip": {

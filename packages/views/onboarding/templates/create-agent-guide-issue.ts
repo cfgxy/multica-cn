@@ -1,4 +1,6 @@
-import { HELPER_FULL_BLOCK } from "./helper-instructions";
+import { HELPER_DESCRIPTION, HELPER_INSTRUCTIONS } from "./helper-instructions";
+
+const HELPER_AGENT_NAME = "Multica Helper";
 
 /**
  * Skip path, issue 2/2: "Create your first Multica Agent".
@@ -47,12 +49,21 @@ Go to **Agents** in the sidebar → click **New Agent**.
 
 Select the runtime under "Runtime". If nothing shows up, the runtime isn't online yet — finish the install steps in ${installRuntimeMention}.
 
-## 3. Copy the block below into the form
+## 3. Copy each block into the matching field
 
-Name: \`Multica Helper\`. Paste the rest into Description + Instructions (the markdown copy button on the block below puts it on your clipboard).
-
+**Name**
 \`\`\`md
-${HELPER_FULL_BLOCK.en}
+${HELPER_AGENT_NAME}
+\`\`\`
+
+**Description**
+\`\`\`md
+${HELPER_DESCRIPTION.en}
+\`\`\`
+
+**Instructions**
+\`\`\`md
+${HELPER_INSTRUCTIONS.en}
 \`\`\`
 
 ## 4. Save → assign an issue
@@ -80,12 +91,21 @@ function zhBody(installRuntimeMention: string): string {
 
 在 "Runtime" 下选它。如果什么都没有，说明运行时还没上线 —— 先按 ${installRuntimeMention} 把安装步骤走完。
 
-## 3. 把下面这段复制进表单
+## 3. 把下面三段分别复制到对应字段
 
-Name 填 \`Multica Helper\`。剩下的内容粘进 Description + Instructions（下面这段 markdown 块右上角有复制按钮）。
-
+**名称**
 \`\`\`md
-${HELPER_FULL_BLOCK.zh}
+${HELPER_AGENT_NAME}
+\`\`\`
+
+**描述**
+\`\`\`md
+${HELPER_DESCRIPTION.zh}
+\`\`\`
+
+**指令**
+\`\`\`md
+${HELPER_INSTRUCTIONS.zh}
 \`\`\`
 
 ## 4. 保存 → 分派 issue

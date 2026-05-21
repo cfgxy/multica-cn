@@ -22,12 +22,16 @@ export async function saveQuestionnaire(
   useAuthStore.getState().setUser(user);
   // Mirror the three cohort signals into person properties so every
   // PostHog event on this user can be broken down by source / role /
-  // use_case without re-joining the DB.
-  if (answers.source || answers.role || answers.use_case) {
+  // use_case without re-joining the DB. source / use_case are arrays
+  // (multi-select); PostHog accepts array property values, and
+  // breakdowns split each element into its own group.
+  const sourceList = answers.source ?? [];
+  const useCaseList = answers.use_case ?? [];
+  if (sourceList.length > 0 || answers.role || useCaseList.length > 0) {
     setPersonProperties({
-      ...(answers.source ? { source: answers.source } : {}),
+      ...(sourceList.length > 0 ? { source: sourceList } : {}),
       ...(answers.role ? { role: answers.role } : {}),
-      ...(answers.use_case ? { use_case: answers.use_case } : {}),
+      ...(useCaseList.length > 0 ? { use_case: useCaseList } : {}),
     });
   }
 }

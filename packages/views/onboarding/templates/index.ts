@@ -1,7 +1,6 @@
 export {
   HELPER_INSTRUCTIONS,
   HELPER_DESCRIPTION,
-  HELPER_FULL_BLOCK,
   type HelperInstructionsLang,
 } from "./helper-instructions";
 export {
@@ -13,6 +12,16 @@ export {
   CREATE_AGENT_GUIDE_ISSUE_TITLE,
   getCreateAgentGuideBody,
 } from "./create-agent-guide-issue";
+export {
+  HELPER_STARTER_PROMPTS,
+  STARTER_CARD_IDS,
+  type StarterCardId,
+} from "./helper-starter-prompts";
+export {
+  buildUserContextSection,
+  type UserContextLabels,
+  type QuestionnaireRaw,
+} from "./user-context";
 
 /**
  * Pick the EN or ZH content for the given user language. Maps any "zh*"
