@@ -173,61 +173,28 @@ func (h *Handler) CompleteOnboarding(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
 
-	// Read the prior state so we can detect "was this call the one that
-	// actually completed onboarding?" — MarkUserOnboarded uses COALESCE
-	// and returns the preserved timestamp on repeat calls, which is not
-	// the signal we need for the funnel.
-	before, err := qtx.GetUser(r.Context(), parseUUID(userID))
+	// Pass a zero workspace id so MarkComplete skips its internal seed step.
+	// Seeding the install-runtime issue is now centralised in
+	// `<WorkspaceOnboardingInit />` via the EnsureOnboardingContent endpoint,
+	// which fires once the user reaches the workspace shell. Two consequences:
+	//   * the workspace_id field on this request is now informational (used
+	//     for analytics only — see firstCompletion block below);
+	//   * the explicit "skip_existing" / "cloud_waitlist" completion paths
+	//     no longer double-write the install-runtime issue here.
+	_ = wsUUID    // workspace_id is still validated above; analytics needs it
+	_ = hasWorkspace
+	result, err := h.OnboardingService.MarkComplete(r.Context(), qtx, parseUUID(userID), pgtype.UUID{})
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load user")
+		slog.Warn("complete onboarding: mark complete failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", req.WorkspaceID)...)
+		writeError(w, http.StatusInternalServerError, "failed to complete onboarding")
 		return
 	}
-	firstCompletion := !before.OnboardedAt.Valid
-
-	user, err := qtx.MarkUserOnboarded(r.Context(), parseUUID(userID))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to mark onboarded")
-		return
-	}
-
-	var seededIssue db.Issue
-	seeded := false
-	if hasWorkspace {
-		if _, err := qtx.GetMemberByUserAndWorkspace(r.Context(), db.GetMemberByUserAndWorkspaceParams{
-			UserID:      parseUUID(userID),
-			WorkspaceID: wsUUID,
-		}); err == nil {
-			seededIssue, seeded, err = ensureNoRuntimeOnboardingIssue(r.Context(), qtx, wsUUID, parseUUID(userID), before.Language)
-			if err != nil {
-				slog.Warn("complete onboarding: ensure install-runtime issue failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", req.WorkspaceID)...)
-				writeError(w, http.StatusInternalServerError, "failed to seed onboarding issue")
-				return
-			}
-			if err := claimStarterContentStateIfUnset(r.Context(), qtx, parseUUID(userID), user.StarterContentState); err != nil {
-				writeError(w, http.StatusInternalServerError, "failed to record starter content state")
-				return
-			}
-		}
-	}
+	user := result.User
+	firstCompletion := result.FirstCompletion
 
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to complete onboarding")
 		return
-	}
-
-	if seeded {
-		prefix := h.getIssuePrefix(r.Context(), seededIssue.WorkspaceID)
-		resp := issueToResponse(seededIssue, prefix)
-		h.publish(protocol.EventIssueCreated, req.WorkspaceID, "member", userID, map[string]any{"issue": resp})
-		h.Analytics.Capture(analytics.IssueCreated(
-			userID,
-			req.WorkspaceID,
-			uuidToString(seededIssue.ID),
-			"",
-			"",
-			"",
-			analytics.SourceOnboarding,
-		))
 	}
 
 	if firstCompletion {
@@ -335,13 +302,6 @@ func (h *Handler) BootstrapOnboardingRuntime(w http.ResponseWriter, r *http.Requ
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
-
-	userBefore, err := qtx.GetUser(r.Context(), parseUUID(userID))
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to load user")
-		return
-	}
-	firstCompletion := !userBefore.OnboardedAt.Valid
 
 	member, err := qtx.GetMemberByUserAndWorkspace(r.Context(), db.GetMemberByUserAndWorkspaceParams{
 		UserID:      parseUUID(userID),
@@ -466,15 +426,18 @@ func (h *Handler) BootstrapOnboardingRuntime(w http.ResponseWriter, r *http.Requ
 		issueCreated = true
 	}
 
-	updatedUser, err := qtx.MarkUserOnboarded(r.Context(), parseUUID(userID))
+	// Workspace has a runtime (this is the runtime-connected path), so
+	// MarkComplete's internal EnsureInstallRuntimeIssue will no-op. We pass
+	// wsUUID anyway for symmetry — if the runtime is somehow gone between
+	// the GetAgentRuntimeForWorkspace check above and now, the fallback
+	// install-runtime seed is the right thing to land on.
+	completion, err := h.OnboardingService.MarkComplete(r.Context(), qtx, parseUUID(userID), wsUUID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to mark onboarded")
 		return
 	}
-	if err := claimStarterContentStateIfUnset(r.Context(), qtx, parseUUID(userID), updatedUser.StarterContentState); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to record starter content state")
-		return
-	}
+	updatedUser := completion.User
+	firstCompletion := completion.FirstCompletion
 
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to finish onboarding")
@@ -570,7 +533,6 @@ func (h *Handler) BootstrapOnboardingNoRuntime(w http.ResponseWriter, r *http.Re
 		writeError(w, http.StatusInternalServerError, "failed to load user")
 		return
 	}
-	firstCompletion := !userBefore.OnboardedAt.Valid
 
 	if _, err := qtx.GetMemberByUserAndWorkspace(r.Context(), db.GetMemberByUserAndWorkspaceParams{
 		UserID:      parseUUID(userID),
@@ -582,8 +544,10 @@ func (h *Handler) BootstrapOnboardingNoRuntime(w http.ResponseWriter, r *http.Re
 
 	// The user explicitly skipped the runtime step, so seed the install-
 	// runtime issue regardless of any pre-existing runtime on the workspace
-	// — the user's intent was "I have nothing to connect right now".
-	issue, issueCreated, err := seedInstallRuntimeIssue(
+	// — the user's intent was "I have nothing to connect right now". We
+	// call SeedInstallRuntimeIssue directly (not via MarkComplete, which
+	// would gate on "no runtime yet") to preserve that semantic.
+	issue, issueCreated, err := h.WorkspaceContent.SeedInstallRuntimeIssue(
 		r.Context(), qtx, wsUUID, parseUUID(userID), userBefore.Language,
 	)
 	if err != nil {
@@ -592,15 +556,15 @@ func (h *Handler) BootstrapOnboardingNoRuntime(w http.ResponseWriter, r *http.Re
 		return
 	}
 
-	updatedUser, err := qtx.MarkUserOnboarded(r.Context(), parseUUID(userID))
+	// Zero pgtype.UUID disables MarkComplete's internal seeding step — we
+	// already seeded above with the unconditional semantic.
+	completion, err := h.OnboardingService.MarkComplete(r.Context(), qtx, parseUUID(userID), pgtype.UUID{})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to mark onboarded")
 		return
 	}
-	if err := claimStarterContentStateIfUnset(r.Context(), qtx, parseUUID(userID), updatedUser.StarterContentState); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to record starter content state")
-		return
-	}
+	updatedUser := completion.User
+	firstCompletion := completion.FirstCompletion
 
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to finish onboarding")
@@ -643,6 +607,16 @@ func (h *Handler) BootstrapOnboardingNoRuntime(w http.ResponseWriter, r *http.Re
 
 type patchOnboardingRequest struct {
 	Questionnaire *json.RawMessage `json:"questionnaire,omitempty"`
+	// RuntimeID is the user's Step 3 runtime selection. Pointer so the client
+	// can distinguish "field omitted" (preserve existing) from "set to null"
+	// — the latter currently isn't a legal transition (CHECK constraint), so
+	// in practice nil means omit. An empty string is rejected as an explicit
+	// null since we want callers to either omit or pass a real UUID.
+	RuntimeID *string `json:"runtime_id,omitempty"`
+	// RuntimeSkipped records the user picking Skip in Step 3. nil = omit; a
+	// pointer to true / false = set. The handler rejects (RuntimeID, true)
+	// combinations up-front so the DB CHECK constraint is never tickled.
+	RuntimeSkipped *bool `json:"runtime_skipped,omitempty"`
 }
 
 // questionnaireAnswers mirrors the frontend's v2 `QuestionnaireAnswers`
@@ -722,8 +696,30 @@ func (h *Handler) PatchOnboarding(w http.ResponseWriter, r *http.Request) {
 	if req.Questionnaire != nil {
 		params.Questionnaire = []byte(*req.Questionnaire)
 	}
+	// Reject the (runtime_id, runtime_skipped=true) combination up-front so
+	// the DB CHECK constraint never fires — a 400 here gives the client a
+	// useful error; a CHECK violation surfaces as a 500.
+	if req.RuntimeID != nil && req.RuntimeSkipped != nil && *req.RuntimeSkipped {
+		writeError(w, http.StatusBadRequest, "cannot set runtime_id and runtime_skipped=true together")
+		return
+	}
+	if req.RuntimeID != nil {
+		if *req.RuntimeID == "" {
+			writeError(w, http.StatusBadRequest, "runtime_id is empty; omit the field to leave it unchanged")
+			return
+		}
+		runtimeUUID, ok := parseUUIDOrBadRequest(w, *req.RuntimeID, "runtime_id")
+		if !ok {
+			return
+		}
+		params.RuntimeID = runtimeUUID
+	}
+	if req.RuntimeSkipped != nil {
+		params.RuntimeSkipped = pgtype.Bool{Bool: *req.RuntimeSkipped, Valid: true}
+	}
 	user, err := h.Queries.PatchUserOnboarding(r.Context(), params)
 	if err != nil {
+		slog.Warn("patch onboarding failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to update onboarding")
 		return
 	}

@@ -433,37 +433,25 @@ func (h *Handler) AcceptInvitation(w http.ResponseWriter, r *http.Request) {
 	// in BootstrapOnboardingRuntime when they pick a starter task via the
 	// modal — but invitees skip that whole flow.)
 	//
-	// DO NOT REMOVE this MarkUserOnboarded call without simultaneously
-	// updating the OnboardingHelperModal trigger in packages/views/workspace/
-	// to also exclude invited-only members. The current trigger is purely
+	// DO NOT REMOVE this MarkComplete call without simultaneously updating
+	// the OnboardingHelperModal trigger in packages/views/workspace/ to also
+	// exclude invited-only members. The current trigger is purely
 	// `me.onboarded_at == null`, so dropping this mark would pop the modal
 	// in front of an invitee in someone else's workspace.
 	//
-	// COALESCE in MarkUserOnboarded keeps this idempotent for users joining
-	// additional workspaces after their first.
-	firstOnboardingCompletion := !user.OnboardedAt.Valid
-	onboardedUser, err := qtx.MarkUserOnboarded(r.Context(), user.ID)
+	// Seeding the install-runtime issue is now owned by
+	// `<WorkspaceOnboardingInit />` (via EnsureOnboardingContent), so we pass
+	// a zero workspace id to skip the seed step inside MarkComplete. The
+	// invitee reaches the workspace shell next; the init component runs the
+	// fallback seed once they get there.
+	completion, err := h.OnboardingService.MarkComplete(r.Context(), qtx, user.ID, pgtype.UUID{})
 	if err != nil {
+		slog.Warn("accept invitation: mark complete failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", uuidToString(accepted.WorkspaceID))...)
 		writeError(w, http.StatusInternalServerError, "failed to mark user onboarded")
 		return
 	}
-
-	// Seed an install-runtime issue if the workspace has no runtime yet, so
-	// the invitee lands on a concrete next step rather than an empty list.
-	// claimStarterContentStateIfUnset keeps older desktop builds from showing
-	// the legacy import dialog (rendered when this column is NULL).
-	seededIssue, seededIssueCreated, err := ensureNoRuntimeOnboardingIssue(
-		r.Context(), qtx, accepted.WorkspaceID, user.ID, onboardedUser.Language,
-	)
-	if err != nil {
-		slog.Warn("accept invitation: ensure install-runtime issue failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", uuidToString(accepted.WorkspaceID))...)
-		writeError(w, http.StatusInternalServerError, "failed to seed onboarding issue")
-		return
-	}
-	if err := claimStarterContentStateIfUnset(r.Context(), qtx, user.ID, onboardedUser.StarterContentState); err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to record starter content state")
-		return
-	}
+	onboardedUser := completion.User
+	firstOnboardingCompletion := completion.FirstCompletion
 
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to accept invitation")
@@ -487,21 +475,6 @@ func (h *Handler) AcceptInvitation(w http.ResponseWriter, r *http.Request) {
 		"invitation_id": uuidToString(accepted.ID),
 		"member":        memberResp,
 	})
-
-	if seededIssueCreated {
-		prefix := h.getIssuePrefix(r.Context(), seededIssue.WorkspaceID)
-		issueResp := issueToResponse(seededIssue, prefix)
-		h.publish(protocol.EventIssueCreated, wsID, "member", userID, map[string]any{"issue": issueResp})
-		h.Analytics.Capture(analytics.IssueCreated(
-			userID,
-			wsID,
-			uuidToString(seededIssue.ID),
-			"",
-			"",
-			"",
-			analytics.SourceOnboarding,
-		))
-	}
 
 	// days_since_invite rounds down to whole days so the funnel segments
 	// "accepted same day" cleanly from "accepted later". inv.CreatedAt is

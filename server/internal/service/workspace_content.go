@@ -1,4 +1,4 @@
-package handler
+package service
 
 import (
 	"context"
@@ -10,12 +10,94 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
-// noRuntimeIssueTitle and noRuntimeIssueDescription are the canonical
-// "install your first runtime" issue. The text lives here so every mark-
-// onboarded entry point (BootstrapOnboardingNoRuntime, CompleteOnboarding,
-// CreateWorkspace, AcceptInvitation) seeds the same body.
-const noRuntimeIssueTitle = "Connect a runtime to start using agents"
+// NoRuntimeIssueTitle is the canonical title of the install-runtime onboarding
+// seed. Exported so legacy callers (test fixtures, analytics dashboards) can
+// dedupe against it by title.
+const NoRuntimeIssueTitle = "Connect a runtime to start using agents"
 
+// WorkspaceContentService is the single entry point for seeding workspace-level
+// onboarding content (currently: the install-runtime issue). Every prior
+// caller (CreateWorkspace, AcceptInvitation, CompleteOnboarding,
+// BootstrapOnboardingNoRuntime) now goes through this service so the seeding
+// behaviour has one definition and one test surface.
+type WorkspaceContentService struct{}
+
+func NewWorkspaceContentService() *WorkspaceContentService {
+	return &WorkspaceContentService{}
+}
+
+// EnsureInstallRuntimeIssue gates on "workspace has no runtime yet" — used by
+// completion paths that aren't an explicit runtime skip (CreateWorkspace,
+// AcceptInvitation, CompleteOnboarding). When the workspace already has a
+// runtime registered, this is a no-op.
+//
+// Must run inside the caller's transaction (`q` is typically a `qtx`).
+func (s *WorkspaceContentService) EnsureInstallRuntimeIssue(
+	ctx context.Context,
+	q *db.Queries,
+	workspaceID pgtype.UUID,
+	userID pgtype.UUID,
+	language pgtype.Text,
+) (db.Issue, bool, error) {
+	runtimes, err := q.ListAgentRuntimes(ctx, workspaceID)
+	if err != nil {
+		return db.Issue{}, false, err
+	}
+	if len(runtimes) > 0 {
+		return db.Issue{}, false, nil
+	}
+	return s.SeedInstallRuntimeIssue(ctx, q, workspaceID, userID, language)
+}
+
+// SeedInstallRuntimeIssue is the unconditional seeder used by the explicit
+// runtime-skip path. Dedupes against existing active issues with the same
+// title via pg_advisory_xact_lock so concurrent callers can't produce two
+// copies. Must run inside a transaction.
+func (s *WorkspaceContentService) SeedInstallRuntimeIssue(
+	ctx context.Context,
+	q *db.Queries,
+	workspaceID pgtype.UUID,
+	userID pgtype.UUID,
+	language pgtype.Text,
+) (db.Issue, bool, error) {
+	var emptyUUID pgtype.UUID
+	existing, foundIssue, err := issueguard.LockAndFindActiveDuplicate(
+		ctx, q, workspaceID, emptyUUID, emptyUUID, NoRuntimeIssueTitle, false,
+	)
+	if err != nil {
+		return db.Issue{}, false, err
+	}
+	if foundIssue {
+		return existing, false, nil
+	}
+
+	issueNumber, err := q.IncrementIssueCounter(ctx, workspaceID)
+	if err != nil {
+		return db.Issue{}, false, err
+	}
+	issue, err := q.CreateIssue(ctx, db.CreateIssueParams{
+		WorkspaceID:   workspaceID,
+		Title:         NoRuntimeIssueTitle,
+		Description:   strOrNullText(noRuntimeIssueDescription(language)),
+		Status:        "todo",
+		Priority:      "high",
+		AssigneeType:  pgtype.Text{String: "member", Valid: true},
+		AssigneeID:    userID,
+		CreatorType:   "member",
+		CreatorID:     userID,
+		ParentIssueID: emptyUUID,
+		Position:      0,
+		Number:        issueNumber,
+		ProjectID:     emptyUUID,
+	})
+	if err != nil {
+		return db.Issue{}, false, err
+	}
+	return issue, true, nil
+}
+
+// noRuntimeIssueDescription picks the EN or ZH copy based on the user's
+// language preference. ZH selected on any "zh*" prefix (zh, zh-CN, zh-Hans).
 func noRuntimeIssueDescription(language pgtype.Text) string {
 	if language.Valid && strings.HasPrefix(language.String, "zh") {
 		return zhNoRuntimeIssueDescription()
@@ -110,90 +192,11 @@ func zhNoRuntimeIssueDescription() string {
 	}, "\n")
 }
 
-// seedInstallRuntimeIssue creates the install-runtime issue, deduping against
-// existing active issues with the same title via pg_advisory_xact_lock so
-// concurrent callers can't produce two copies. Must run inside a transaction.
-func seedInstallRuntimeIssue(
-	ctx context.Context,
-	q *db.Queries,
-	workspaceID pgtype.UUID,
-	userID pgtype.UUID,
-	language pgtype.Text,
-) (db.Issue, bool, error) {
-	var emptyUUID pgtype.UUID
-	existing, foundIssue, err := issueguard.LockAndFindActiveDuplicate(
-		ctx, q, workspaceID, emptyUUID, emptyUUID, noRuntimeIssueTitle, false,
-	)
-	if err != nil {
-		return db.Issue{}, false, err
+// strOrNullText converts an empty string to SQL NULL, non-empty to Valid text.
+// Local copy so service package doesn't need to depend on handler.
+func strOrNullText(s string) pgtype.Text {
+	if s == "" {
+		return pgtype.Text{}
 	}
-	if foundIssue {
-		return existing, false, nil
-	}
-
-	issueNumber, err := q.IncrementIssueCounter(ctx, workspaceID)
-	if err != nil {
-		return db.Issue{}, false, err
-	}
-	issue, err := q.CreateIssue(ctx, db.CreateIssueParams{
-		WorkspaceID:   workspaceID,
-		Title:         noRuntimeIssueTitle,
-		Description:   strOrNullText(noRuntimeIssueDescription(language)),
-		Status:        "todo",
-		Priority:      "high",
-		AssigneeType:  pgtype.Text{String: "member", Valid: true},
-		AssigneeID:    userID,
-		CreatorType:   "member",
-		CreatorID:     userID,
-		ParentIssueID: emptyUUID,
-		Position:      0,
-		Number:        issueNumber,
-		ProjectID:     emptyUUID,
-	})
-	if err != nil {
-		return db.Issue{}, false, err
-	}
-	return issue, true, nil
-}
-
-// ensureNoRuntimeOnboardingIssue is the side-door wrapper used by
-// CompleteOnboarding / CreateWorkspace / AcceptInvitation: it only seeds the
-// install-runtime issue when the workspace has no agent_runtime yet.
-// BootstrapOnboardingNoRuntime is the explicit "I skipped the runtime step"
-// signal and bypasses this gate via seedInstallRuntimeIssue directly.
-func ensureNoRuntimeOnboardingIssue(
-	ctx context.Context,
-	q *db.Queries,
-	workspaceID pgtype.UUID,
-	userID pgtype.UUID,
-	language pgtype.Text,
-) (db.Issue, bool, error) {
-	runtimes, err := q.ListAgentRuntimes(ctx, workspaceID)
-	if err != nil {
-		return db.Issue{}, false, err
-	}
-	if len(runtimes) > 0 {
-		return db.Issue{}, false, nil
-	}
-	return seedInstallRuntimeIssue(ctx, q, workspaceID, userID, language)
-}
-
-// claimStarterContentStateIfUnset transitions starter_content_state from NULL
-// to 'imported'. Kept after the starter-kit removal so older desktop builds —
-// which still render the legacy import dialog when this column is NULL — skip
-// the dialog on accounts created after the removal.
-func claimStarterContentStateIfUnset(
-	ctx context.Context,
-	q *db.Queries,
-	userID pgtype.UUID,
-	current pgtype.Text,
-) error {
-	if current.Valid {
-		return nil
-	}
-	_, err := q.SetStarterContentState(ctx, db.SetStarterContentStateParams{
-		ID:                  userID,
-		StarterContentState: pgtype.Text{String: "imported", Valid: true},
-	})
-	return err
+	return pgtype.Text{String: s, Valid: true}
 }

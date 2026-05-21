@@ -331,6 +331,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// the handler strips the management handle and adds a
 					// can_manage hint so the UI can gate connect/disconnect.
 					r.Get("/github/installations", h.ListGitHubInstallations)
+					// Idempotent install-runtime issue seeding — called by the
+					// workspace-entry init when a member lands on a runtime-less
+					// workspace. Self-gates on "no runtime + no live duplicate
+					// issue" so repeated calls are cheap no-ops.
+					r.Post("/ensure-onboarding-content", h.EnsureOnboardingContent)
 				})
 				// Admin-level access
 				r.Group(func(r chi.Router) {

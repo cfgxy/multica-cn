@@ -222,20 +222,14 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Brand-new workspaces never have a runtime yet, so seed the
-	// "install a runtime" issue so the user lands on a concrete next step.
-	// claimStarterContentStateIfUnset suppresses the legacy starter-content
-	// dialog on older desktop builds that still render it when the column
-	// is NULL.
-	seededIssue, seededIssueCreated, err := ensureNoRuntimeOnboardingIssue(
-		r.Context(), qtx, ws.ID, parseUUID(userID), currentUser.Language,
-	)
-	if err != nil {
-		slog.Warn("create workspace: ensure install-runtime issue failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", uuidToString(ws.ID))...)
-		writeError(w, http.StatusInternalServerError, "failed to seed onboarding issue")
-		return
-	}
-	if err := claimStarterContentStateIfUnset(r.Context(), qtx, parseUUID(userID), currentUser.StarterContentState); err != nil {
+	// Claim starter_content_state to suppress the legacy import dialog on
+	// older desktop builds. Seeding the install-runtime issue is now handled
+	// by `<WorkspaceOnboardingInit />` via the EnsureOnboardingContent
+	// endpoint when the user reaches the workspace shell — keeping the
+	// seeding out of the create path means there is exactly one seed call
+	// site, and a workspace created via the API but never opened (rare, but
+	// possible for tests / scripts) doesn't accumulate stale issues.
+	if err := h.OnboardingService.ClaimStarterContentStateIfUnset(r.Context(), qtx, parseUUID(userID), currentUser.StarterContentState); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to record starter content state")
 		return
 	}
@@ -253,23 +247,75 @@ func (h *Handler) CreateWorkspace(w http.ResponseWriter, r *http.Request) {
 	// a schema change, and the event stream answers the question exactly.
 	h.Analytics.Capture(analytics.WorkspaceCreated(userID, wsID))
 
-	if seededIssueCreated {
-		prefix := h.getIssuePrefix(r.Context(), seededIssue.WorkspaceID)
-		issueResp := issueToResponse(seededIssue, prefix)
-		h.publish(protocol.EventIssueCreated, wsID, "member", userID, map[string]any{"issue": issueResp})
-		h.Analytics.Capture(analytics.IssueCreated(
-			userID,
-			wsID,
-			uuidToString(seededIssue.ID),
-			"",
-			"",
-			"",
-			analytics.SourceOnboarding,
-		))
-	}
-
 	slog.Info("workspace created", append(logger.RequestAttrs(r), "workspace_id", wsID, "name", ws.Name, "slug", ws.Slug)...)
 	writeJSON(w, http.StatusCreated, workspaceToResponse(ws))
+}
+
+// EnsureOnboardingContent is the workspace-entry idempotent seeder hook. The
+// frontend `<WorkspaceOnboardingInit />` fires it once the user lands on the
+// workspace shell — it gates on "workspace has no runtime yet" inside the
+// service so already-runtime'd workspaces are no-ops, and uses an advisory
+// lock + title dedupe so repeated calls (tab switch, SPA remount, multi-tab)
+// never accumulate duplicates.
+//
+// Returns 200 with `{issue, created}` so the caller can publish a
+// EventIssueCreated WS event when this call actually wrote a row, and skip
+// the publish otherwise.
+func (h *Handler) EnsureOnboardingContent(w http.ResponseWriter, r *http.Request) {
+	workspaceID := workspaceIDFromURL(r, "id")
+	requester, ok := h.workspaceMember(w, r, workspaceID)
+	if !ok {
+		return
+	}
+	currentUser, err := h.Queries.GetUser(r.Context(), requester.UserID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load user")
+		return
+	}
+
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to ensure onboarding content")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+
+	issue, created, err := h.WorkspaceContent.EnsureInstallRuntimeIssue(
+		r.Context(), qtx, requester.WorkspaceID, requester.UserID, currentUser.Language,
+	)
+	if err != nil {
+		slog.Warn("ensure onboarding content failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
+		writeError(w, http.StatusInternalServerError, "failed to ensure onboarding content")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to ensure onboarding content")
+		return
+	}
+
+	wsID := uuidToString(requester.WorkspaceID)
+	type response struct {
+		Created bool          `json:"created"`
+		Issue   *IssueResponse `json:"issue,omitempty"`
+	}
+	if !created {
+		writeJSON(w, http.StatusOK, response{Created: false})
+		return
+	}
+	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
+	resp := issueToResponse(issue, prefix)
+	h.publish(protocol.EventIssueCreated, wsID, "member", uuidToString(requester.UserID), map[string]any{"issue": resp})
+	h.Analytics.Capture(analytics.IssueCreated(
+		uuidToString(requester.UserID),
+		wsID,
+		uuidToString(issue.ID),
+		"",
+		"",
+		"",
+		analytics.SourceOnboarding,
+	))
+	writeJSON(w, http.StatusOK, response{Created: true, Issue: &resp})
 }
 
 type UpdateWorkspaceRequest struct {
