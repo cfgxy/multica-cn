@@ -79,3 +79,13 @@ export function useCreateCloudRuntimeNode(wsId: string) {
     },
   });
 }
+
+export function useDeleteCloudRuntimeNode(wsId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (nodeId: string) => api.deleteCloudRuntimeNode(nodeId),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: cloudRuntimeKeys.all(wsId) });
+    },
+  });
+}

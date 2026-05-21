@@ -163,6 +163,10 @@
     "cancel": "取消",
     "toast_created": "Cloud Runtime 节点已创建",
     "toast_create_failed": "创建 Cloud Runtime 节点失败",
+    "delete": "删除节点",
+    "delete_confirm": "确定要删除此云节点吗？此操作无法撤销。",
+    "toast_deleted": "云节点已删除",
+    "toast_delete_failed": "删除云节点失败",
     "fields": {
       "name": "名称",
       "instance_type": "实例规格",

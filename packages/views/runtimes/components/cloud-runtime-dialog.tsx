@@ -3,12 +3,13 @@
 import { useId, useMemo, useState } from "react";
 import type { FormEvent, HTMLAttributes } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Cloud, Loader2, RefreshCw, Rocket } from "lucide-react";
+import { Cloud, Loader2, RefreshCw, Rocket, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import type { CloudRuntimeNode } from "@multica/core/runtimes";
 import {
   cloudRuntimeNodeListOptions,
   useCreateCloudRuntimeNode,
+  useDeleteCloudRuntimeNode,
 } from "@multica/core/runtimes";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { Badge } from "@multica/ui/components/ui/badge";
@@ -192,7 +193,7 @@ export function CloudRuntimeDialog({ onClose }: { onClose: () => void }) {
                 <div className="max-h-[410px] overflow-y-auto p-2">
                   <div className="space-y-2">
                     {sortedNodes.map((node) => (
-                      <CloudRuntimeNodeRow key={node.id} node={node} />
+                      <CloudRuntimeNodeRow key={node.id} node={node} wsId={wsId} />
                     ))}
                   </div>
                 </div>
@@ -290,8 +291,9 @@ function LabeledInput({
   );
 }
 
-function CloudRuntimeNodeRow({ node }: { node: CloudRuntimeNode }) {
+function CloudRuntimeNodeRow({ node, wsId }: { node: CloudRuntimeNode; wsId: string }) {
   const { t } = useT("runtimes");
+  const deleteNode = useDeleteCloudRuntimeNode(wsId);
   const title =
     node.name.trim() ||
     node.instance_id.trim() ||
@@ -317,6 +319,32 @@ function CloudRuntimeNodeRow({ node }: { node: CloudRuntimeNode }) {
             )}
           </div>
         </div>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          className="h-7 w-7 shrink-0 p-0 text-muted-foreground hover:text-destructive"
+          disabled={deleteNode.isPending}
+          onClick={() => {
+            if (!confirm(t(($) => $.cloud_runtime.delete_confirm))) return;
+            deleteNode.mutate(node.id, {
+              onSuccess: () => toast.success(t(($) => $.cloud_runtime.toast_deleted)),
+              onError: (err) =>
+                toast.error(
+                  err instanceof Error
+                    ? err.message
+                    : t(($) => $.cloud_runtime.toast_delete_failed),
+                ),
+            });
+          }}
+          aria-label={t(($) => $.cloud_runtime.delete)}
+        >
+          {deleteNode.isPending ? (
+            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+          ) : (
+            <Trash2 className="h-3.5 w-3.5" />
+          )}
+        </Button>
       </div>
       {node.instance_id && (
         <div className="mt-2 truncate font-mono text-[11px] text-muted-foreground/80">
