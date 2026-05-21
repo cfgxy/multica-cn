@@ -21,6 +21,81 @@
 -- (same guard pattern as migration 076).
 
 -- ---------------------------------------------------------------------------
+-- Fail-closed guard: refuse to drop the legacy daily pipelines unless the
+-- hourly rollup has actually been seeded across the existing `task_usage`
+-- history. `migrate up` runs the migration set straight through (no
+-- per-version stop), so a self-host operator who skips the documented
+-- backfill step would otherwise silently land in a state where dashboards
+-- show zeros (see SELF-HOST UPGRADE ORDER in
+-- cmd/backfill_task_usage_hourly/main.go and
+-- docs/timezone-architecture-rfc.md §6 / §7.1). Failing loud here is the
+-- only thing that turns an undetected outage into a clear migration error.
+--
+-- The completion signal we trust is task_usage_hourly_rollup_state.watermark_at:
+--
+--   * cmd/backfill_task_usage_hourly stamps it to `now() - 5 minutes` only
+--     after every monthly slice succeeded (server/cmd/backfill_task_usage_hourly/main.go).
+--   * rollup_task_usage_hourly() (the pg_cron entry) advances it on every
+--     tick (102_task_usage_hourly_pipeline.up.sql).
+--   * The default after migration 101 is `1970-01-01`, so an unrun or
+--     interrupted backfill is trivially detected.
+--
+-- A non-empty `task_usage_hourly` is NOT a safe proxy for "backfill done":
+-- the triggers in 102 only enqueue dirty keys on agent_task_queue /
+-- issue / task_usage DELETE — they do not write hourly rows themselves,
+-- and they fire only on writes since 102 landed. A backfill that
+-- crashed mid-run, or a manual `rollup_task_usage_hourly_window` call,
+-- both leave the hourly table non-empty but with a stale watermark and
+-- partial history; the legacy rollups would still be the only complete
+-- read path.
+--
+-- A fresh database (no rows in task_usage) is exempt — there is no
+-- history to backfill, and rollup_task_usage_hourly() (registered as a
+-- pg_cron job by the operator) will populate task_usage_hourly from the
+-- first event forward via its updated_at watermark window.
+-- ---------------------------------------------------------------------------
+
+DO $$
+DECLARE
+    v_watermark TIMESTAMPTZ;
+    v_max_event TIMESTAMPTZ;
+    v_lag       INTERVAL := INTERVAL '1 hour';
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM task_usage LIMIT 1) THEN
+        RETURN;
+    END IF;
+
+    SELECT watermark_at INTO v_watermark
+      FROM task_usage_hourly_rollup_state
+     WHERE id = 1;
+
+    IF v_watermark IS NULL THEN
+        RAISE EXCEPTION
+            'refusing to drop legacy daily rollups: task_usage_hourly_rollup_state row is missing — apply migrations 100-102 first, then run cmd/backfill_task_usage_hourly';
+    END IF;
+
+    SELECT MAX(COALESCE(updated_at, created_at)) INTO v_max_event FROM task_usage;
+
+    -- A successful cmd/backfill_task_usage_hourly stamps watermark_at to
+    -- `now() - 5 min`; once pg_cron is registered the worker keeps it
+    -- within a similar window. If the watermark trails the latest event
+    -- by more than v_lag, one of these went wrong:
+    --   * the backfill was never run (watermark stuck at 1970-01-01),
+    --   * the backfill was interrupted before stampWatermark ran,
+    --   * someone hand-seeded task_usage_hourly without stamping,
+    --   * pg_cron has been off long enough to drift past the cap.
+    -- In every case, dropping the legacy rollups now would remove the
+    -- only read path for buckets the hourly pipeline has not proven it
+    -- owns yet.
+    IF v_watermark < v_max_event - v_lag THEN
+        RAISE EXCEPTION
+            'refusing to drop legacy daily rollups: task_usage_hourly_rollup_state.watermark_at (%) trails task_usage latest event (%) by more than % — backfill is incomplete or pg_cron is not running. Run cmd/backfill_task_usage_hourly (and let pg_cron catch up) before re-running migrate (see SELF-HOST UPGRADE ORDER in cmd/backfill_task_usage_hourly/main.go).',
+            v_watermark, v_max_event, v_lag;
+    END IF;
+END
+$$;
+
+-- ---------------------------------------------------------------------------
 -- Unschedule the legacy pg_cron jobs first (no-op when pg_cron is absent
 -- or the job was never registered).
 -- ---------------------------------------------------------------------------
