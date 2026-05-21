@@ -73,6 +73,27 @@ describe("WSClient", () => {
     expect(url.searchParams.has("client_os")).toBe(false);
   });
 
+  it("truncates the logged payload when an unparseable frame is large", () => {
+    const logger = {
+      debug: vi.fn(),
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+    };
+    const ws = new WSClient("ws://example.test/ws", { logger });
+    ws.connect();
+
+    const huge = "x".repeat(5000);
+    FakeWebSocket.lastInstance!.onmessage?.({ data: huge });
+
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    const [, summary] = logger.warn.mock.calls[0] as [string, string];
+    expect(summary.length).toBeLessThan(huge.length);
+    expect(summary).toContain("truncated");
+    expect(summary).toContain("5000");
+    expect(summary.startsWith("x".repeat(200))).toBe(true);
+  });
+
   it("logs and skips malformed frames without breaking later messages", () => {
     const logger = {
       debug: vi.fn(),
