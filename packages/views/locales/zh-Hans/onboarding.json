@@ -202,6 +202,12 @@
     "dismiss_error": "知道了",
     "error_generic": "无法创建 Multica Helper，请检查网络后重试。"
   },
+  "workspace_init": {
+    "setting_up": "正在为你准备工作区……",
+    "error_title": "准备工作区失败",
+    "error_generic": "为你准备工作区时出错了。",
+    "retry": "重试"
+  },
   "step_workspace": {
     "eyebrow_first": "你的第一个工作区",
     "eyebrow_resume": "继续，或重新开始",

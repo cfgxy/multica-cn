@@ -8,7 +8,7 @@ import { workspaceBySlugOptions } from "@multica/core/workspace";
 import { setCurrentWorkspace } from "@multica/core/platform";
 import { useAuthStore } from "@multica/core/auth";
 import { NoAccessPage } from "@multica/views/workspace/no-access-page";
-import { OnboardingHelperModal } from "@multica/views/workspace/onboarding-helper-modal";
+import { WorkspaceOnboardingInit } from "@multica/views/workspace/workspace-onboarding-init";
 import { MulticaIcon } from "@multica/ui/components/common/multica-icon";
 import { useWorkspaceSeen } from "@multica/views/workspace/use-workspace-seen";
 
@@ -87,10 +87,12 @@ export default function WorkspaceLayout({
   return (
     <WorkspaceSlugProvider slug={workspaceSlug}>
       {children}
-      {/* Blocking modal that fires once for new users when they reach the
-       *  workspace before completing Multica Helper setup. Self-gates on
-       *  `me.onboarded_at == null` — renders null otherwise. */}
-      <OnboardingHelperModal />
+      {/* Single decision point for un-onboarded users landing on the
+       *  workspace shell. Reads `me.onboarding_runtime_id` /
+       *  `me.onboarding_runtime_skipped` to pick exactly one branch
+       *  (Modal / silent Skip bootstrap / rescue back to /onboarding /
+       *  nothing). Renders null for already-onboarded users. */}
+      <WorkspaceOnboardingInit />
     </WorkspaceSlugProvider>
   );
 }

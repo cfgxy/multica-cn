@@ -1,14 +1,13 @@
 "use client";
 
 import { useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { ArrowRight, Loader2 } from "lucide-react";
 import { bootstrapRuntimeOnboarding } from "@multica/core/onboarding";
-import { runtimeListOptions } from "@multica/core/runtimes";
 import { issueKeys } from "@multica/core/issues/queries";
 import { workspaceKeys } from "@multica/core/workspace/queries";
-import { useAuthStore } from "@multica/core/auth";
-import { useCurrentWorkspace, paths } from "@multica/core/paths";
+import { paths } from "@multica/core/paths";
+import type { Workspace } from "@multica/core/types";
 import {
   Dialog,
   DialogContent,
@@ -73,25 +72,32 @@ type StarterCardId = (typeof STARTER_CARD_IDS)[number];
  *     The condition gates on `runtimes[0]` so the modal hides while we
  *     wait for / re-establish a runtime.
  */
-export function OnboardingHelperModal() {
+/**
+ * Dumb component. The parent (`<WorkspaceOnboardingInit />`) has already
+ * decided to render the modal — user is un-onboarded, workspace resolved,
+ * runtime selected in Step 3 — and passes `runtimeId` from
+ * `me.onboarding_runtime_id`. No internal gating.
+ *
+ * `runtimeId` may belong to a runtime that has since been removed from the
+ * workspace (daemon revoked, runtime evicted between Step 3 and now). In
+ * that case the bootstrap POST below 4xx's and we surface the error; the
+ * user can dismiss and re-enter Step 3 if needed.
+ */
+export interface OnboardingHelperModalProps {
+  workspace: Workspace;
+  runtimeId: string;
+}
+
+export function OnboardingHelperModal({
+  workspace,
+  runtimeId,
+}: OnboardingHelperModalProps) {
   const { t } = useT("onboarding");
-  const me = useAuthStore((s) => s.user);
-  const workspace = useCurrentWorkspace();
-  const wsId = workspace?.id ?? "";
-  const runtimes = useQuery({
-    ...runtimeListOptions(wsId),
-    enabled: !!wsId && me?.onboarded_at == null,
-  });
   const navigation = useNavigation();
   const qc = useQueryClient();
 
   const [submittingId, setSubmittingId] = useState<StarterCardId | null>(null);
   const [error, setError] = useState<string | null>(null);
-
-  if (!me || me.onboarded_at != null) return null;
-  if (!workspace) return null;
-  const runtime = runtimes.data?.[0];
-  if (!runtime) return null;
 
   const handlePick = async (cardId: StarterCardId) => {
     if (submittingId !== null) return;
@@ -101,7 +107,7 @@ export function OnboardingHelperModal() {
     try {
       const result = await bootstrapRuntimeOnboarding(
         workspace.id,
-        runtime.id,
+        runtimeId,
         prompt,
       );
       // bootstrapRuntimeOnboarding internally refreshes the auth store, so

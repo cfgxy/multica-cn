@@ -202,6 +202,12 @@
     "dismiss_error": "Dismiss",
     "error_generic": "Could not set up Multica Helper. Check your connection and try again."
   },
+  "workspace_init": {
+    "setting_up": "Setting up your workspace…",
+    "error_title": "Couldn't finish setup",
+    "error_generic": "Something went wrong while setting up your workspace.",
+    "retry": "Try again"
+  },
   "step_workspace": {
     "eyebrow_first": "Your first workspace",
     "eyebrow_resume": "Pick up or start fresh",
