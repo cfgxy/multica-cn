@@ -199,6 +199,111 @@ func TestSubIssueCreationSectionIsUnconditional(t *testing.T) {
 	}
 }
 
+// Workspace Context block: workspace.context (the per-workspace system prompt
+// owners set in Settings → General) must reach the brief as `## Workspace
+// Context` for every task kind so agents see a consistent shared system prompt
+// regardless of how they were triggered. Empty content must skip the heading
+// entirely — bare headings would just add noise.
+func TestWorkspaceContextRenderedAcrossTaskKinds(t *testing.T) {
+	t.Parallel()
+	const wsContext = "All comments must be in English. Prefer concise PR descriptions."
+	cases := []struct {
+		name string
+		ctx  TaskContextForEnv
+	}{
+		{
+			name: "assignment-triggered",
+			ctx: TaskContextForEnv{
+				IssueID:          "11111111-2222-3333-4444-555555555555",
+				WorkspaceContext: wsContext,
+			},
+		},
+		{
+			name: "comment-triggered",
+			ctx: TaskContextForEnv{
+				IssueID:          "22222222-3333-4444-5555-666666666666",
+				TriggerCommentID: "33333333-4444-5555-6666-777777777777",
+				WorkspaceContext: wsContext,
+			},
+		},
+		{
+			name: "chat",
+			ctx: TaskContextForEnv{
+				ChatSessionID:    "chat-1",
+				WorkspaceContext: wsContext,
+			},
+		},
+		{
+			name: "quick-create",
+			ctx: TaskContextForEnv{
+				QuickCreatePrompt: "create me an issue",
+				WorkspaceContext:  wsContext,
+			},
+		},
+		{
+			name: "autopilot run-only",
+			ctx: TaskContextForEnv{
+				AutopilotRunID:   "run-1",
+				WorkspaceContext: wsContext,
+			},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := buildMetaSkillContent("claude", tc.ctx)
+
+			if !strings.Contains(out, "## Workspace Context") {
+				t.Fatalf("[%s] expected `## Workspace Context` heading", tc.name)
+			}
+			if !strings.Contains(out, wsContext) {
+				t.Errorf("[%s] brief missing workspace context body %q", tc.name, wsContext)
+			}
+			// The block must precede Available Commands so it acts as
+			// background framing, not a footer hidden below CLI usage.
+			ctxIdx := strings.Index(out, "## Workspace Context")
+			cmdsIdx := strings.Index(out, "## Available Commands")
+			if ctxIdx == -1 || cmdsIdx == -1 || ctxIdx > cmdsIdx {
+				t.Errorf("[%s] `## Workspace Context` must appear above `## Available Commands` (ctx=%d, cmds=%d)", tc.name, ctxIdx, cmdsIdx)
+			}
+		})
+	}
+}
+
+func TestWorkspaceContextHeadingSkippedWhenEmpty(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		ctx  TaskContextForEnv
+	}{
+		{
+			name: "empty string",
+			ctx: TaskContextForEnv{
+				IssueID:          "11111111-2222-3333-4444-555555555555",
+				WorkspaceContext: "",
+			},
+		},
+		{
+			name: "whitespace only",
+			ctx: TaskContextForEnv{
+				IssueID:          "11111111-2222-3333-4444-555555555555",
+				WorkspaceContext: "   \n\t  \r\n",
+			},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := buildMetaSkillContent("claude", tc.ctx)
+			if strings.Contains(out, "## Workspace Context") {
+				t.Errorf("[%s] empty workspace context must NOT emit the heading", tc.name)
+			}
+		})
+	}
+}
+
 func TestSubIssueCreationSectionSkippedForNonIssueModes(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
