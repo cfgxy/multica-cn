@@ -20,16 +20,18 @@
  * are deferred — power-user features with non-trivial picker cost; ship
  * after the parity-critical scope tabs land.
  */
-import { useLayoutEffect, useMemo } from "react";
+import { useMemo } from "react";
 import { Pressable, SectionList, View } from "react-native";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useQuery } from "@tanstack/react-query";
-import { router, useNavigation } from "expo-router";
+import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import type { Issue, IssuePriority, IssueStatus } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
-import { IconButton } from "@/components/ui/icon-button";
+// Header chrome (back + "Issues" title) comes from the parent Stack
+// (`apps/mobile/app/(app)/[workspace]/_layout.tsx:269`). The Filter
+// affordance now lives in <ScopeToolbar> below, matching web's
+// IssuesHeader pattern (scope + filter share a row).
 import { StatusIcon } from "@/components/ui/status-icon";
 import { IssueRow } from "@/components/issue/issue-row";
 import { IssuesLoading } from "@/components/issue/issues-loading";
@@ -51,10 +53,11 @@ import { THEME } from "@/lib/theme";
 
 type IssueSection = { status: IssueStatus; data: Issue[] };
 
-// Scope tab definitions. Same value set as web `issuesScopeStore`. Labels
-// stay English (mobile is not i18n'd in v1); counts get appended at render
-// time from `scopeCounts` so users see "(N)" per tab matching web's
-// `useIssueCounts` (`issues-header.tsx:114-153`).
+// Scope tab definitions. Mirrors web `issuesScopeStore`. Counts are NOT
+// rendered on the pill labels — web's `IssuesHeader` doesn't show them
+// either, and on SE3 (375pt) "(123)" appended to each label pushes the
+// row past the safe width when filter icon shares the row. Per-status
+// counts still appear on the SectionList headers below.
 const SCOPES: { value: IssuesScope; label: string }[] = [
   { value: "all", label: "All" },
   { value: "members", label: "Members" },
@@ -62,7 +65,6 @@ const SCOPES: { value: IssuesScope; label: string }[] = [
 ];
 
 export default function IssuesPage() {
-  const navigation = useNavigation();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
 
@@ -89,24 +91,6 @@ export default function IssuesPage() {
   );
 
   const allIssues = data ?? [];
-
-  // Counts per scope — derived once from the raw list, used to label the
-  // scope tabs. `agents` includes both agent + squad assignees to match
-  // web `issues-page.tsx:93`.
-  const scopeCounts = useMemo(() => {
-    let members = 0;
-    let agents = 0;
-    for (const issue of allIssues) {
-      if (issue.assignee_type === "member") members++;
-      else if (
-        issue.assignee_type === "agent" ||
-        issue.assignee_type === "squad"
-      ) {
-        agents++;
-      }
-    }
-    return { all: allIssues.length, members, agents };
-  }, [allIssues]);
 
   // Scope pre-filter — mirrors web `issues-page.tsx:90-94`. Applied before
   // status/priority filtering so chip filters operate on the visible slice.
@@ -151,44 +135,15 @@ export default function IssuesPage() {
 
   const showEmptyState = !isLoading && !error && filtered.length === 0;
 
-  // Native Stack header owns the chrome — we feed it the filter IconButton
-  // (with an absolute red dot when filters are active) via headerRight.
-  useLayoutEffect(() => {
-    navigation.setOptions({
-      headerRight: () => (
-        <View style={{ position: "relative" }}>
-          <IconButton
-            name="options-outline"
-            onPress={openFilter}
-            accessibilityLabel="Filter"
-          />
-          {hasActiveFilters ? (
-            <View
-              pointerEvents="none"
-              className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-brand"
-            />
-          ) : null}
-        </View>
-      ),
-    });
-  });
-
   return (
     <View className="flex-1 bg-background">
-      <View className="px-4 pt-2 pb-2">
-        <Tabs
-          value={scope}
-          onValueChange={(v) => setScope(v as IssuesScope)}
-        >
-          <TabsList className="w-full">
-            {SCOPES.map((s) => (
-              <TabsTrigger key={s.value} value={s.value} className="flex-1">
-                <Text>{`${s.label} (${scopeCounts[s.value]})`}</Text>
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
-      </View>
+      <ScopeToolbar
+        scopes={SCOPES}
+        scope={scope}
+        onChange={(v) => setScope(v)}
+        onOpenFilter={openFilter}
+        hasActiveFilters={hasActiveFilters}
+      />
       {hasActiveFilters ? (
         <ActiveFilterChips
           statusFilters={statusFilters}
@@ -245,6 +200,97 @@ export default function IssuesPage() {
           onRefresh={refetch}
         />
       )}
+    </View>
+  );
+}
+
+/**
+ * Outline icon button matching the pill height. Identical to the helper in
+ * `(tabs)/my-issues.tsx` for the same reason ScopeToolbar is duplicated:
+ * two callers don't justify a shared primitive yet.
+ */
+function FilterButton({
+  onPress,
+  hasActiveFilters,
+}: {
+  onPress: () => void;
+  hasActiveFilters: boolean;
+}) {
+  const { colorScheme } = useColorScheme();
+  return (
+    <View style={{ position: "relative" }} className="ml-2">
+      <Button
+        variant="outline"
+        size="sm"
+        onPress={onPress}
+        accessibilityLabel="Filter"
+        className="w-9 px-0"
+      >
+        <Ionicons
+          name="options-outline"
+          size={16}
+          color={THEME[colorScheme].mutedForeground}
+        />
+      </Button>
+      {hasActiveFilters ? (
+        <View
+          pointerEvents="none"
+          className="absolute top-1 right-1 size-1.5 rounded-full bg-brand"
+        />
+      ) : null}
+    </View>
+  );
+}
+
+/**
+ * Toolbar row mirroring web `IssuesHeader`
+ * (`packages/views/issues/components/issues-header.tsx:516-543`): left-aligned
+ * scope pill group + right-side Filter icon (red dot on active filters).
+ * Identical to the equivalent in `(tabs)/my-issues.tsx` — kept duplicated
+ * because the threshold for a shared `components/ui/` primitive is 3 callers,
+ * and two callers don't justify the abstraction yet.
+ */
+function ScopeToolbar<S extends string>({
+  scopes,
+  scope,
+  onChange,
+  onOpenFilter,
+  hasActiveFilters,
+}: {
+  scopes: { value: S; label: string }[];
+  scope: S;
+  onChange: (value: S) => void;
+  onOpenFilter: () => void;
+  hasActiveFilters: boolean;
+}) {
+  return (
+    <View className="flex-row items-center justify-between px-4 pt-2 pb-2">
+      <View className="flex-row items-center gap-1 flex-shrink min-w-0">
+        {scopes.map((s) => {
+          const active = scope === s.value;
+          return (
+            <Button
+              key={s.value}
+              variant="outline"
+              size="sm"
+              onPress={() => onChange(s.value)}
+              className={active ? "bg-accent" : ""}
+              accessibilityState={{ selected: active }}
+            >
+              <Text
+                numberOfLines={1}
+                className={active ? "text-accent-foreground" : "text-muted-foreground"}
+              >
+                {s.label}
+              </Text>
+            </Button>
+          );
+        })}
+      </View>
+      <FilterButton
+        onPress={onOpenFilter}
+        hasActiveFilters={hasActiveFilters}
+      />
     </View>
   );
 }

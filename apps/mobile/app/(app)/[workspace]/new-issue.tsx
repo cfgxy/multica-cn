@@ -14,7 +14,7 @@
  * — both surfaces produce canonical `[@name](mention://type/id)` markdown
  * recognised by util.ParseMentions on the server.
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Alert,
   KeyboardAvoidingView,
@@ -23,7 +23,7 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { Stack, router, useLocalSearchParams } from "expo-router";
+import { Stack, router } from "expo-router";
 import { Text } from "@/components/ui/text";
 import { SubmitIssueButton } from "@/components/issue/submit-issue-button";
 import { CreateFormAttributeRow } from "@/components/issue/create-form-attribute-row";
@@ -42,26 +42,6 @@ import {
 } from "@/lib/use-mention-input";
 
 export default function NewIssueModal() {
-  // Route params support "create from comment" flows from
-  // comment-action-sheet.tsx:
-  //   - seed_content: comment body that prefills the description (quoted)
-  //   - seed_actor:   comment author (rendered in the attribution line)
-  //   - seed_source_issue: identifier (MUL-NN) for attribution
-  //   - parent_id:    when set, the new issue is created as a sub-issue
-  //                   (mobile UI shows a hint banner; backend accepts via
-  //                   CreateIssueRequest.parent_issue_id)
-  const {
-    seed_content: seedContent,
-    seed_actor: seedActor,
-    seed_source_issue: seedSourceIssue,
-    parent_id: parentId,
-  } = useLocalSearchParams<{
-    seed_content?: string;
-    seed_actor?: string;
-    seed_source_issue?: string;
-    parent_id?: string;
-  }>();
-
   const [title, setTitle] = useState("");
   const description = useMentionInput();
   // Attribute chips (status / priority / assignee / due date / project)
@@ -83,27 +63,6 @@ export default function NewIssueModal() {
     };
   }, [resetDraft]);
 
-  // Prefill description once on mount when "from comment" params are set.
-  // Format mirrors the canonical GitHub-style attribution quote: an
-  // attribution line, a blank line, then the original body as a markdown
-  // blockquote. seededRef guards against re-seeding after the user edits.
-  const seededRef = useRef(false);
-  useEffect(() => {
-    if (seededRef.current || !seedContent) return;
-    const attribution = seedSourceIssue
-      ? `> From ${seedActor ?? "a comment"} on ${seedSourceIssue}`
-      : `> From ${seedActor ?? "a comment"}`;
-    const quoted = seedContent
-      .split("\n")
-      .map((line) => `> ${line}`)
-      .join("\n");
-    description.setText(`${attribution}\n>\n${quoted}\n\n`);
-    seededRef.current = true;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [seedContent, seedActor, seedSourceIssue]);
-
-  const isSubIssue = !!parentId;
-
   const createIssue = useCreateIssue();
   const isSubmitting = createIssue.isPending;
 
@@ -124,7 +83,6 @@ export default function NewIssueModal() {
           : {}),
         ...(dueDate ? { due_date: dueDate } : {}),
         ...(project ? { project_id: project.id } : {}),
-        ...(parentId ? { parent_issue_id: parentId } : {}),
       });
       router.back();
     } catch (err) {
@@ -141,7 +99,6 @@ export default function NewIssueModal() {
     assignee,
     dueDate,
     project,
-    parentId,
     createIssue,
   ]);
 
@@ -170,19 +127,6 @@ export default function NewIssueModal() {
           contentContainerClassName="px-4 pt-4 pb-6 gap-4"
           keyboardShouldPersistTaps="handled"
         >
-          {isSubIssue ? (
-            <View className="rounded-lg bg-secondary px-3 py-2">
-              <Text className="text-xs text-muted-foreground">
-                Sub-issue
-                {seedSourceIssue ? (
-                  <Text className="text-foreground font-medium">
-                    {" "}
-                    of {seedSourceIssue}
-                  </Text>
-                ) : null}
-              </Text>
-            </View>
-          ) : null}
           <TextInput
             value={title}
             onChangeText={setTitle}

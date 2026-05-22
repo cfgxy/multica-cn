@@ -16,7 +16,6 @@
  */
 import { useMemo } from "react";
 import { Pressable, SectionList, View } from "react-native";
-import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useQuery } from "@tanstack/react-query";
 import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
@@ -24,7 +23,6 @@ import type { Issue, IssuePriority, IssueStatus } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
 import { Header } from "@/components/ui/header";
-import { IconButton } from "@/components/ui/icon-button";
 import { HeaderActions } from "@/components/ui/app-header-actions";
 import { StatusIcon } from "@/components/ui/status-icon";
 import { IssueRow } from "@/components/issue/issue-row";
@@ -47,13 +45,16 @@ import { filterIssues } from "@/lib/filter-issues";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 
-// Label "Agents and Squads" mirrors web `packages/views/locales/en/my-issues.json:14`
-// ("My Agents and Squads"). The scope value stays "agents" — that's the
-// cache key + view-store discriminator; user-visible string is what changed.
+// Mobile pill row has tight width on SE3 (375pt). Three pills + Filter icon
+// must fit in 343pt usable space, so the agents scope renders "Agents" — the
+// full "Agents and Squads" label (~135pt) blows past safe limits and breaks
+// under Dynamic Type. Semantics unchanged: same backend predicate
+// (`involves_user_id`, MUL-2397) covers owned agents + related squads; the
+// empty state copy still says "agents or squads".
 const SCOPES: { value: MyIssuesScope; label: string }[] = [
   { value: "assigned", label: "Assigned" },
   { value: "created", label: "Created" },
-  { value: "agents", label: "Agents and Squads" },
+  { value: "agents", label: "Agents" },
 ];
 
 type IssueSection = { status: IssueStatus; data: Issue[] };
@@ -125,41 +126,14 @@ export default function MyIssues() {
 
   return (
     <View className="flex-1 bg-background">
-      <Header
-        title="My Issues"
-        right={
-          <>
-            <View style={{ position: "relative" }}>
-              <IconButton
-                name="options-outline"
-                onPress={openFilter}
-                accessibilityLabel="Filter"
-              />
-              {hasActiveFilters ? (
-                <View
-                  pointerEvents="none"
-                  className="absolute top-1.5 right-1.5 size-1.5 rounded-full bg-brand"
-                />
-              ) : null}
-            </View>
-            <HeaderActions />
-          </>
-        }
+      <Header title="My Issues" right={<HeaderActions />} />
+      <ScopeToolbar
+        scopes={SCOPES}
+        scope={scope}
+        onChange={(v) => setScope(v)}
+        onOpenFilter={openFilter}
+        hasActiveFilters={hasActiveFilters}
       />
-      <View className="px-4 pt-2 pb-2">
-        <Tabs
-          value={scope}
-          onValueChange={(v) => setScope(v as MyIssuesScope)}
-        >
-          <TabsList className="w-full">
-            {SCOPES.map((s) => (
-              <TabsTrigger key={s.value} value={s.value} className="flex-1">
-                <Text>{s.label}</Text>
-              </TabsTrigger>
-            ))}
-          </TabsList>
-        </Tabs>
-      </View>
       {hasActiveFilters ? (
         <ActiveFilterChips
           statusFilters={statusFilters}
@@ -220,6 +194,100 @@ export default function MyIssues() {
         />
       )}
 
+    </View>
+  );
+}
+
+/**
+ * Outline icon button matching the pill height so the toolbar row reads as
+ * one visual group. Mirrors web `IssuesHeader` / `MyIssuesHeader` filter
+ * trigger (`packages/views/my-issues/components/my-issues-header.tsx:174`),
+ * which is also `variant="outline"` + icon-sized — NOT the ghost-style we'd
+ * get from <IconButton>. Square (`w-9`) with `px-0` to suppress the sm
+ * default `px-3`.
+ */
+function FilterButton({
+  onPress,
+  hasActiveFilters,
+}: {
+  onPress: () => void;
+  hasActiveFilters: boolean;
+}) {
+  const { colorScheme } = useColorScheme();
+  return (
+    <View style={{ position: "relative" }} className="ml-2">
+      <Button
+        variant="outline"
+        size="sm"
+        onPress={onPress}
+        accessibilityLabel="Filter"
+        className="w-9 px-0"
+      >
+        <Ionicons
+          name="options-outline"
+          size={16}
+          color={THEME[colorScheme].mutedForeground}
+        />
+      </Button>
+      {hasActiveFilters ? (
+        <View
+          pointerEvents="none"
+          className="absolute top-1 right-1 size-1.5 rounded-full bg-brand"
+        />
+      ) : null}
+    </View>
+  );
+}
+
+/**
+ * Toolbar row mirroring web `MyIssuesHeader` / `IssuesHeader`
+ * (`packages/views/my-issues/components/my-issues-header.tsx:138-163`):
+ * left-aligned scope pill group + right-side Filter icon (red dot when
+ * filters are active). Replaces the previous full-width segmented tabs +
+ * Filter-in-title-bar split — keeps scope and the filter affordance in the
+ * same row, because they both control the list directly below.
+ */
+function ScopeToolbar<S extends string>({
+  scopes,
+  scope,
+  onChange,
+  onOpenFilter,
+  hasActiveFilters,
+}: {
+  scopes: { value: S; label: string }[];
+  scope: S;
+  onChange: (value: S) => void;
+  onOpenFilter: () => void;
+  hasActiveFilters: boolean;
+}) {
+  return (
+    <View className="flex-row items-center justify-between px-4 pt-2 pb-2">
+      <View className="flex-row items-center gap-1 flex-shrink min-w-0">
+        {scopes.map((s) => {
+          const active = scope === s.value;
+          return (
+            <Button
+              key={s.value}
+              variant="outline"
+              size="sm"
+              onPress={() => onChange(s.value)}
+              className={active ? "bg-accent" : ""}
+              accessibilityState={{ selected: active }}
+            >
+              <Text
+                numberOfLines={1}
+                className={active ? "text-accent-foreground" : "text-muted-foreground"}
+              >
+                {s.label}
+              </Text>
+            </Button>
+          );
+        })}
+      </View>
+      <FilterButton
+        onPress={onOpenFilter}
+        hasActiveFilters={hasActiveFilters}
+      />
     </View>
   );
 }

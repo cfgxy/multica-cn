@@ -15,10 +15,14 @@
  * Behavioral parity:
  *   - Same `Issue` type, same `assignee_type`/`assignee_id` semantics
  *     (root CLAUDE.md "Data identity must agree").
- *   - Assignee is rendered only when `assignee_type` is `member` or
- *     `agent` — `squad` and `system` types fall through with no avatar
- *     (graceful enum-drift fallback per "Enum drift downgrades, not
- *     crashes").
+ *   - Mirrors web `packages/views/issues/components/list-row.tsx:52`:
+ *     render the assignee whenever `assignee_type && assignee_id` are both
+ *     truthy — `ActorAvatar` itself handles member / agent / squad rendering
+ *     (rounded square + people glyph or `squad.avatar_url` for squads). A
+ *     future fourth enum value falls through to ActorAvatar's initials
+ *     fallback, which is the real "enum drift downgrades, not crashes"
+ *     behavior — earlier whitelist (member/agent only) silently dropped
+ *     squad assignees instead.
  */
 import { Pressable, View } from "react-native";
 import type { Issue } from "@multica/core/types";
@@ -46,8 +50,7 @@ export function IssueRow({ issue, onPress, showStatus = false }: Props) {
         <Text className="flex-1 text-sm text-foreground" numberOfLines={1}>
           {issue.title}
         </Text>
-        {issue.assignee_id &&
-        (issue.assignee_type === "member" || issue.assignee_type === "agent") ? (
+        {issue.assignee_type && issue.assignee_id ? (
           <ActorAvatar
             type={issue.assignee_type}
             id={issue.assignee_id}
