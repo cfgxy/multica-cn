@@ -141,7 +141,7 @@ export const CommentsListSchema = z.array(CommentSchema);
 // to {} so consumers never need to nil-guard `issue.metadata`.
 const IssueMetadataSchema = z.record(z.string(), z.union([z.string(), z.number(), z.boolean()])).default({});
 
-const IssueSchema = z.object({
+export const IssueSchema = z.object({
   id: z.string(),
   workspace_id: z.string(),
   number: z.number(),
