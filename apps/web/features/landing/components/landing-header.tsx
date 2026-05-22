@@ -54,6 +54,15 @@ export function LandingHeader({
             {t.header.changelog}
           </Link>
           <Link
+            href="/contact-sales"
+            className={cn(
+              headerButtonClassName("ghost", variant),
+              "hidden md:inline-flex",
+            )}
+          >
+            {t.header.contactSales}
+          </Link>
+          <Link
             href={githubUrl}
             target="_blank"
             rel="noreferrer"
