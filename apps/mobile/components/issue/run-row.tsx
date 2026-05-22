@@ -151,6 +151,7 @@ const STATUS_CLASS: Record<AgentTask["status"], string> = {
 const FAILURE_REASON_LABEL: Record<TaskFailureReason, string> = {
   agent_error: "Agent error",
   timeout: "Timeout",
+  codex_semantic_inactivity: "Codex inactivity",
   runtime_offline: "Runtime offline",
   runtime_recovery: "Runtime recovery",
   manual: "Manual",

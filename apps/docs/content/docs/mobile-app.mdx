@@ -1,22 +1,22 @@
 ---
 title: Mobile app (iOS)
-description: How to build a personal copy of the Multica iOS app on your own iPhone — no App Store yet.
+description: How to build the open-source Multica iOS app on your own iPhone — no App Store yet.
 ---
 
 import { Callout } from "fumadocs-ui/components/callout";
 
-Multica has an iOS app built with Expo + React Native. It is not on the App Store yet — for now, anyone who wants to use it on their phone builds it themselves from source. The build runs in about 10–20 minutes the first time, ~2 minutes after that, and connects to the same backend as [multica.ai](https://multica.ai) so your existing account just works.
+Multica's iOS client is open-source and lives in the [main repo](https://github.com/multica-ai/multica) alongside web, desktop, and backend. It isn't on the App Store yet — until that changes, anyone who wants it on their iPhone builds from source. The build takes about 10–20 minutes the first time and ~2 minutes after that, and it talks to the same backend as [multica.ai](https://multica.ai) so your existing account just works.
 
 <Callout type="info">
-This page is for **personal use**. App developers should read [`apps/mobile/README.md`](https://github.com/multica-ai/multica/blob/main/apps/mobile/README.md) in the repo instead — it covers the dev / staging variants and the full script matrix.
+This page is for **personal use**. App developers should read [`apps/mobile/README.md`](https://github.com/multica-ai/multica/blob/main/apps/mobile/README.md) in the repo — it covers the dev / staging variants and the full script matrix.
 </Callout>
 
 ## What you need
 
 - A **Mac** with Xcode installed (free from the App Store).
-- A free **Apple ID** added under Xcode → Settings → Accounts. A paid Apple Developer Program account ($99/yr) is optional and only changes the signing-validity period — see [7-day limit](#7-day-signing-limit) below.
+- A free **Apple ID** added under Xcode → Settings → Accounts. A paid Apple Developer Program account is optional and only extends the 7-day signing window to 1 year — see [7-day limit](#7-day-signing-limit) below.
 - An **iPhone** connected via USB cable, with [Developer Mode enabled](https://docs.expo.dev/guides/ios-developer-mode/) (Settings → Privacy & Security → Developer Mode).
-- The Multica source code checked out. Either clone the repo:
+- The Multica source code checked out:
 
   ```bash
   git clone https://github.com/multica-ai/multica.git
@@ -24,9 +24,7 @@ This page is for **personal use**. App developers should read [`apps/mobile/READ
   pnpm install
   ```
 
-  …or use any other mechanism you prefer.
-
-If anything in that list is missing, walk through Expo's [Set up your environment](https://docs.expo.dev/get-started/set-up-your-environment/) (pick **Development build → iOS Device**) — it is the canonical setup guide for everything except the repo checkout.
+If anything in that list is missing, walk through Expo's [Set up your environment](https://docs.expo.dev/get-started/set-up-your-environment/) (pick **Development build → iOS Device**) — it's the canonical setup guide for everything except the repo checkout.
 
 ## Build it
 
@@ -36,28 +34,21 @@ One command:
 pnpm ios:mobile:device:prod:release
 ```
 
-This compiles a **Release build** with no Metro dependency — splash → app, exactly like an App Store install — and installs it onto the connected iPhone.
+Xcode signs the build with the "Personal Team" your Apple ID automatically owns — this team is created silently the first time you sign into Xcode with any Apple ID, so it's there even if you don't remember setting anything up. This is a **Release build**: no Metro dependency, splash → app, exactly like an App Store install.
 
-If your Apple ID is **on the Multica Apple Developer team**, you're done. The default bundle id (`ai.multica.mobile`) signs cleanly and the app installs.
+The first build downloads CocoaPods + compiles React Native from source — expect 10–20 minutes. Subsequent builds reuse Xcode's cache.
 
-If your Apple ID is **not on the Multica team** (the common case for external users), Xcode will refuse to sign the default bundle id because it can only sign prefixes your own Apple Developer account owns. Set your own reverse-domain bundle id once, then re-run:
-
-```bash
-export EXPO_BUNDLE_IDENTIFIER_PROD=com.yourname.multica
-pnpm ios:mobile:device:prod:release
-```
-
-Pick any reverse-domain string you control — `com.<yourname>.multica` is fine. The app installs under that id, and your existing `multica.ai` login works because the backend doesn't care about bundle ids.
+That's it for the typical path. If signing fails, jump to [Troubleshooting](#troubleshooting).
 
 ## 7-day signing limit
 
-A free Apple ID signs builds for **7 days**. After that, the app refuses to launch on your iPhone and shows an "untrusted developer" error. Plug back into your Mac and re-run the same command to re-sign — your data stays put because it's stored on the backend, not in the app.
+A free Apple ID signs builds for **7 days**. After that, the app refuses to launch on your iPhone and shows an "untrusted developer" error. Plug back into your Mac and re-run the same command to re-sign — your data stays put because it lives on the backend, not in the app.
 
-The only way around this is an **Apple Developer Program account** ($99/yr from [developer.apple.com](https://developer.apple.com)). With that, signing is valid for 1 year between renewals, and you can also distribute to other devices via TestFlight.
+The only way to extend this is an **Apple Developer Program account** ($99/yr from [developer.apple.com](https://developer.apple.com)). Signing is then valid for 1 year between renewals, and you can also distribute to other devices via TestFlight.
 
 ## Updating
 
-There is no auto-update. When the Multica codebase moves forward, pull and rebuild:
+There is no auto-update yet. When the Multica codebase moves forward, pull and rebuild:
 
 ```bash
 git pull
@@ -65,7 +56,7 @@ pnpm install
 pnpm ios:mobile:device:prod:release
 ```
 
-The rebuild is fast on subsequent runs because Xcode caches the native compile.
+Subsequent builds are fast because Xcode caches the native compile.
 
 ## Why no App Store yet
 
@@ -75,10 +66,17 @@ If you'd like to be notified when TestFlight opens, watch the [GitHub repo](http
 
 ## Troubleshooting
 
-**"No matching provisioning profiles found"** — your Apple ID isn't on the Multica team and you haven't set `EXPO_BUNDLE_IDENTIFIER_PROD`. Set it (see [Build it](#build-it)) and re-run.
+**"No matching provisioning profiles found"** — Xcode refuses to sign the default bundle id `ai.multica.mobile` with your Apple ID. Rare, but happens if someone has registered that prefix on Apple's developer portal. Pick any reverse-domain you control (`com.yourname.multica` is fine), export it, and re-run:
 
-**"Could not launch <app>" / "Untrusted Developer"** — either you've hit the 7-day limit (re-run the build) or you need to manually trust the developer profile on your iPhone: Settings → General → VPN & Device Management → tap your Apple ID → Trust.
+```bash
+export EXPO_BUNDLE_IDENTIFIER_PROD=com.yourname.multica
+pnpm ios:mobile:device:prod:release
+```
+
+The id doesn't have to mean anything — Apple just needs it to be unclaimed by other teams.
+
+**"Could not launch &lt;app&gt;" / "Untrusted Developer"** — either you've hit the 7-day limit (re-run the build) or you need to manually trust the developer profile on your iPhone: Settings → General → VPN & Device Management → tap your Apple ID → Trust.
 
 **Build hangs on `Pod install` or compiles forever** — first build is genuinely 10–20 minutes because CocoaPods downloads dependencies and Xcode compiles React Native from source. Subsequent builds are much faster.
 
-**App can't reach the backend** — confirm `.env.production` is intact (it ships with `EXPO_PUBLIC_API_URL=https://api.multica.ai`). If you modified it, restore the default with `git checkout apps/mobile/.env.production`.
+**App can't reach the backend** — confirm `apps/mobile/.env.production` hasn't been modified (it ships with `EXPO_PUBLIC_API_URL=https://api.multica.ai`). If you changed it, restore with `git checkout apps/mobile/.env.production`.

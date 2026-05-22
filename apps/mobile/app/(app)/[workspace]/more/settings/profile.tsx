@@ -213,7 +213,7 @@ export default function ProfileSettingsScreen() {
             </Text>
           </View>
           <Text className="text-xs text-muted-foreground mt-1.5">
-            Email is set at sign-up and can't be changed here.
+            Email is set at sign-up and can&apos;t be changed here.
           </Text>
         </View>
       </View>

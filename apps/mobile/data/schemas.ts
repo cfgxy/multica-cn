@@ -434,6 +434,8 @@ export const UserSchema: z.ZodType<User> = z.object({
   onboarding_questionnaire: z.record(z.string(), z.unknown()).default({}),
   starter_content_state: z.string().nullable().default(null),
   language: z.string().nullable().default(null),
+  profile_description: z.string().default(""),
+  timezone: z.string().nullable().default(null),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
 }).loose();
@@ -450,6 +452,8 @@ export const EMPTY_USER: User = {
   onboarding_questionnaire: {},
   starter_content_state: null,
   language: null,
+  profile_description: "",
+  timezone: null,
   created_at: "",
   updated_at: "",
 };
@@ -654,6 +658,7 @@ export const EMPTY_ISSUE_FALLBACK: import("@multica/core/types").Issue = {
   position: 0,
   start_date: null,
   due_date: null,
+  metadata: {},
   created_at: "",
   updated_at: "",
 };

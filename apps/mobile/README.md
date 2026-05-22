@@ -4,24 +4,26 @@ Expo + React Native iOS client for Multica. Independent from web/desktop — sha
 
 ## Just want to use it on your phone? (no development)
 
-Run one command, get a personal copy of Multica on your iPhone talking to the same backend as `multica.ai`:
+Multica isn't on the App Store yet — until that changes, anyone who wants it on their iPhone builds from source. One command:
 
 ```bash
 pnpm ios:mobile:device:prod:release
 ```
 
-Prerequisites: Mac with Xcode, a free Apple ID added under Xcode → Settings → Accounts, iPhone connected via USB with [Developer Mode enabled](https://docs.expo.dev/guides/ios-developer-mode/). Follow Expo's [Set up your environment](https://docs.expo.dev/get-started/set-up-your-environment/) (pick **Development build → iOS Device**) if any of that is missing.
+This connects to the same backend as `multica.ai`, so your existing account just works.
 
-**If your Apple ID isn't on the Multica Apple Developer team**, the build will fail at signing because Xcode can only sign bundle ids your team owns. Export your own reverse-domain bundle id once, then re-run:
+**Prerequisites**: Mac with Xcode, a free Apple ID added under Xcode → Settings → Accounts, iPhone connected via USB with [Developer Mode enabled](https://docs.expo.dev/guides/ios-developer-mode/). Walk through Expo's [Set up your environment](https://docs.expo.dev/get-started/set-up-your-environment/) (pick **Development build → iOS Device**) if any of that is missing.
+
+Xcode signs the build with the "Personal Team" your Apple ID automatically owns — created silently the first time you signed into Xcode, no setup needed. The first build downloads CocoaPods + compiles React Native from source — expect 10–20 minutes. Subsequent builds reuse Xcode's cache.
+
+**If Xcode rejects signing with "No matching provisioning profiles found"** — rare, happens if someone has claimed the default bundle id `ai.multica.mobile` on Apple's developer portal. Pick any reverse-domain you own and re-run:
 
 ```bash
 export EXPO_BUNDLE_IDENTIFIER_PROD=com.yourname.multica
 pnpm ios:mobile:device:prod:release
 ```
 
-The first build downloads CocoaPods + compiles React Native from source — expect 10–20 minutes. Subsequent builds reuse Xcode's cache.
-
-**7-day signing limit**: a free Apple ID signs builds for 7 days, after which the app refuses to launch. Plug back into the Mac and re-run the command to re-sign. The only workaround is an Apple Developer Program account ($99/yr), which extends to 1 year.
+**7-day signing limit**: a free Apple ID signs builds for 7 days. After that, plug back into the Mac and re-run the command to re-sign. An Apple Developer Program account ($99/yr) extends this to 1 year.
 
 Everything below is for app developers — you can ignore the rest if you only wanted a personal install.
 
