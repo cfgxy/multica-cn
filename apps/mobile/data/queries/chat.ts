@@ -25,7 +25,28 @@ export const chatKeys = {
   messages: (sessionId: string) => ["chat", "messages", sessionId] as const,
   pendingTask: (sessionId: string) =>
     ["chat", "pending-task", sessionId] as const,
+  /** Per-task live execution timeline (thinking / tool_use / tool_result /
+   *  text / error rows). Cache is workspace-agnostic — keyed only on
+   *  `taskId` — matching web's `chatKeys.taskMessages` shape so future
+   *  cross-feature consumers (issue agent cards) can share the cache.
+   *  `task:message` WS events append rows in place; once the task
+   *  completes the cache stays warm so the persisted assistant message
+   *  can render the same trace without refetching. */
+  taskMessages: (taskId: string) => ["task-messages", taskId] as const,
 };
+
+// UUID gate mirrors `packages/core/chat/queries.ts`: optimistic task ids
+// (`optimistic-…`) are not real backend rows, so the query must be
+// disabled until we have a server-issued UUID. Returning the cache for
+// an optimistic id would 404 the API.
+const UUID_PATTERN =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+export function isTaskMessageTaskId(
+  taskId: string | null | undefined,
+): taskId is string {
+  return typeof taskId === "string" && UUID_PATTERN.test(taskId);
+}
 
 export const chatSessionsOptions = (wsId: string | null) =>
   queryOptions({
@@ -48,5 +69,13 @@ export const pendingChatTaskOptions = (sessionId: string | null) =>
     queryKey: chatKeys.pendingTask(sessionId ?? ""),
     queryFn: ({ signal }) => api.getPendingChatTask(sessionId!, { signal }),
     enabled: !!sessionId,
+    staleTime: Infinity,
+  });
+
+export const taskMessagesOptions = (taskId: string | null | undefined) =>
+  queryOptions({
+    queryKey: chatKeys.taskMessages(taskId ?? ""),
+    queryFn: ({ signal }) => api.listTaskMessages(taskId!, { signal }),
+    enabled: isTaskMessageTaskId(taskId),
     staleTime: Infinity,
   });

@@ -21,25 +21,16 @@ import {
   Platform,
   ScrollView,
   TextInput,
-  View,
 } from "react-native";
 import { Stack, router } from "expo-router";
-import { Text } from "@/components/ui/text";
 import { SubmitIssueButton } from "@/components/issue/submit-issue-button";
 import { CreateFormAttributeRow } from "@/components/issue/create-form-attribute-row";
 import { MentionSuggestionBar } from "@/components/issue/mention-suggestion-bar";
-import { AutosizeTextArea } from "@/components/ui/autosize-textarea";
-import {
-  MIN_BODY_INPUT_HEIGHT_PX,
-  MOBILE_PLACEHOLDER_COLOR,
-} from "@/components/ui/input-tokens";
-import { cn } from "@/lib/utils";
+import { DescriptionField } from "@/components/issue/description-field";
+import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { useCreateIssue } from "@/data/mutations/issues";
 import { useNewIssueDraftStore } from "@/data/stores/new-issue-draft-store";
-import {
-  useMentionInput,
-  type UseMentionInputReturn,
-} from "@/lib/use-mention-input";
+import { useMentionInput } from "@/lib/use-mention-input";
 
 export default function NewIssueModal() {
   const [title, setTitle] = useState("");
@@ -150,41 +141,5 @@ export default function NewIssueModal() {
         <MentionSuggestionBar {...description.suggestionBar} />
       </KeyboardAvoidingView>
     </>
-  );
-}
-
-/** Description field with a focus-tinted rounded-2xl container — the
- *  same "write markdown body" treatment used by the comment modal
- *  (issue/[id]/new-comment.tsx) so the two surfaces feel consistent. */
-function DescriptionField({
-  description,
-  disabled,
-}: {
-  description: UseMentionInputReturn;
-  disabled: boolean;
-}) {
-  const [focused, setFocused] = useState(false);
-  return (
-    <View
-      className={cn(
-        "rounded-2xl border px-3",
-        focused
-          ? "border-primary/30 bg-secondary"
-          : "border-transparent bg-secondary/40",
-      )}
-    >
-      <AutosizeTextArea
-        value={description.text}
-        onChangeText={description.handlers.onChangeText}
-        selection={description.selection}
-        onSelectionChange={description.handlers.onSelectionChange}
-        onFocus={() => setFocused(true)}
-        onBlur={() => setFocused(false)}
-        placeholder="Description… (type @ to mention)"
-        className="py-2"
-        minHeight={MIN_BODY_INPUT_HEIGHT_PX}
-        editable={!disabled}
-      />
-    </View>
   );
 }

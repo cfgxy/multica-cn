@@ -32,19 +32,17 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     icon: "./assets/icon.png",
     ios: {
       supportsTablet: false,
-      // `EXPO_BUNDLE_IDENTIFIER_DEV` lets a dev override the default
-      // ai.multica.mobile.dev id locally when their Apple ID isn't on the
-      // Multica team yet (Xcode can't sign someone else's bundle prefix).
-      // Set in `.env.development.local` — gitignored, never reaches CI / EAS.
-      //
-      // Only honored in the dev variant. Expo CLI auto-loads
-      // `.env.development.local` on every run regardless of APP_ENV, so a
-      // generic `EXPO_BUNDLE_IDENTIFIER` would silently leak the dev override
-      // into staging / production builds and collapse the variants onto a
-      // single bundle id. The `_DEV` suffix + isDev-only branch keeps each
-      // variant on its canonical id.
+      // Per-variant bundle id overrides exist for one reason: an Apple ID
+      // can only sign bundle prefixes it owns, so contributors not on the
+      // Multica Apple Developer team (and external users self-building a
+      // personal copy against production) need to swap to a reverse-domain
+      // they control. Each variant has its own `_<VARIANT>` suffix and is
+      // only read inside that variant's branch — a generic
+      // `EXPO_BUNDLE_IDENTIFIER` would leak across variants (Expo CLI
+      // auto-loads `.env.<mode>.local` regardless of APP_ENV) and collapse
+      // dev / staging / prod onto a single id.
       bundleIdentifier: isProd
-        ? "ai.multica.mobile"
+        ? (process.env.EXPO_BUNDLE_IDENTIFIER_PROD ?? "ai.multica.mobile")
         : isStaging
           ? "ai.multica.mobile.staging"
           : (process.env.EXPO_BUNDLE_IDENTIFIER_DEV ?? "ai.multica.mobile.dev"),

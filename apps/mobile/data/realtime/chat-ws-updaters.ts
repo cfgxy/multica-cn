@@ -26,6 +26,7 @@ import type {
   ChatPendingTask,
   ChatSession,
   ChatSessionDeletedPayload,
+  TaskMessagePayload,
   TaskQueuedPayload,
   TaskDispatchPayload,
 } from "@multica/core/types";
@@ -173,4 +174,36 @@ export function clearPendingTask(
   sessionId: string,
 ) {
   qc.setQueryData(chatKeys.pendingTask(sessionId), {});
+}
+
+// =====================================================
+// Task messages (live timeline, keyed by taskId)
+// =====================================================
+
+/**
+ * Append a `task:message` payload into the per-task timeline cache.
+ *
+ * - De-dupes on `seq` (server may re-emit on flaky network).
+ * - Sorts by `seq` ASC after insert so reordered late-arriving rows still
+ *   render in execution order.
+ * - Creates the cache entry on first event (empty default), so the timeline
+ *   is visible even before the user opens the assistant bubble that drives
+ *   the lazy fetch.
+ *
+ * Mirrors `packages/core/realtime/use-realtime-sync.ts` ~675-689 (web's
+ * single global handler). Mobile attaches per-session via
+ * `use-chat-session-realtime` instead — see the WS strategy note in
+ * `apps/mobile/CLAUDE.md` for why mobile prefers per-record mounts.
+ */
+export function appendTaskMessage(
+  qc: QueryClient,
+  payload: TaskMessagePayload,
+) {
+  qc.setQueryData<TaskMessagePayload[]>(
+    chatKeys.taskMessages(payload.task_id),
+    (old = []) => {
+      if (old.some((m) => m.seq === payload.seq)) return old;
+      return [...old, payload].sort((a, b) => a.seq - b.seq);
+    },
+  );
 }

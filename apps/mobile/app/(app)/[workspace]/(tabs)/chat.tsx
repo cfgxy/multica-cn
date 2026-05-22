@@ -4,8 +4,9 @@
  * Layout:
  *   View ─ Header(center: ChatTitleButton, right: ChatSessionActions)
  *        ─ (NoAgentBanner?)
- *        ─ KeyboardAvoidingView ─ ChatMessageList
- *                                ─ StatusPill
+ *        ─ KeyboardAvoidingView ─ ChatMessageList (includes live status
+ *                                                  + timeline in its
+ *                                                  ListFooterComponent)
  *                                ─ OfflineBanner
  *                                ─ ChatComposer
  *
@@ -54,6 +55,7 @@ import {
   chatMessagesOptions,
   chatSessionsOptions,
   pendingChatTaskOptions,
+  taskMessagesOptions,
 } from "@/data/queries/chat";
 import {
   useCreateChatSession,
@@ -74,7 +76,6 @@ import { ChatTitleButton } from "@/components/chat/chat-title-button";
 import { ChatSessionActions } from "@/components/chat/chat-session-actions";
 import { ChatMessageList } from "@/components/chat/chat-message-list";
 import { ChatComposer } from "@/components/chat/chat-composer";
-import { StatusPill } from "@/components/chat/status-pill";
 import { AgentPickerSheet } from "@/components/chat/agent-picker-sheet";
 import { NoAgentBanner } from "@/components/chat/no-agent-banner";
 import { OfflineBanner } from "@/components/chat/offline-banner";
@@ -92,19 +93,13 @@ export default function ChatTab() {
 
   // Bridge to the chat-sessions formSheet route. Mirror local
   // activeSessionId into the store so the picker can render the current
-  // selection's check mark; consume the picker's one-shot select +
-  // open-agent-picker requests via useEffect.
+  // selection's check mark; consume the picker's one-shot select request
+  // via useEffect.
   const setStoreActiveSessionId = useChatSessionPickerStore(
     (s) => s.setActiveSessionId,
   );
   const selectRequest = useChatSessionPickerStore((s) => s.selectRequest);
-  const openAgentPickerRequest = useChatSessionPickerStore(
-    (s) => s.openAgentPickerRequest,
-  );
   const consumeSelect = useChatSessionPickerStore((s) => s.consumeSelect);
-  const consumeOpenAgentPicker = useChatSessionPickerStore(
-    (s) => s.consumeOpenAgentPicker,
-  );
   useEffect(() => {
     setStoreActiveSessionId(activeSessionId);
   }, [activeSessionId, setStoreActiveSessionId]);
@@ -135,6 +130,14 @@ export default function ChatTab() {
   );
   const { data: pendingTask } = useQuery(
     pendingChatTaskOptions(activeSessionId),
+  );
+  // Live execution trace for the in-flight task. `task:message` WS events
+  // append rows to this same cache key via `appendTaskMessage`, so the
+  // list/pill stay in sync without a polling fetch. `enabled` is gated by
+  // `isTaskMessageTaskId` inside taskMessagesOptions — optimistic ids
+  // never hit the network.
+  const { data: liveTaskMessages = [] } = useQuery(
+    taskMessagesOptions(pendingTask?.task_id),
   );
 
   // ── Derived ────────────────────────────────────────────────────────────
@@ -236,7 +239,7 @@ export default function ChatTab() {
   );
 
   const handleSend = useCallback(
-    async (content: string) => {
+    async (content: string, attachmentIds: string[] = []) => {
       if (!currentAgent) return;
 
       const isNewSession = !activeSessionId;
@@ -266,7 +269,9 @@ export default function ChatTab() {
       }
 
       try {
-        const result = await api.sendChatMessage(sessionId, content);
+        const result = await api.sendChatMessage(sessionId, content, {
+          attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
+        });
         qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(sessionId), {
           task_id: result.task_id,
           status: "queued",
@@ -324,15 +329,6 @@ export default function ChatTab() {
     setActiveSessionId(selectRequest.id);
     consumeSelect();
   }, [selectRequest, consumeSelect]);
-
-  // The chat-sessions route surfaces a "Switch agent" tail row that
-  // re-opens the agent picker. Routes can't open a transparent Modal in
-  // the tab tree, so the request is bounced back here.
-  useEffect(() => {
-    if (!openAgentPickerRequest) return;
-    setAgentPickerOpen(true);
-    consumeOpenAgentPicker();
-  }, [openAgentPickerRequest, consumeOpenAgentPicker]);
 
   const handleDeleteActive = useCallback(() => {
     if (!activeSession) return;
@@ -395,8 +391,16 @@ export default function ChatTab() {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         className="flex-1"
       >
-        <ChatMessageList messages={messages} loading={messagesLoading} />
-        <StatusPill pendingTask={pendingTask} onStop={handleStop} />
+        <ChatMessageList
+          messages={messages}
+          loading={messagesLoading}
+          hasSessions={sessions.length > 0}
+          agentName={currentAgent?.name}
+          onPickPrompt={(text) => setDraft(draftKey, text)}
+          pendingTask={pendingTask}
+          liveTaskMessages={liveTaskMessages}
+          availability={presenceAvailability}
+        />
         <OfflineBanner
           agentName={currentAgent?.name}
           availability={presenceAvailability}

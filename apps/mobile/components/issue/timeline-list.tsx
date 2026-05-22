@@ -143,6 +143,11 @@ export function TimelineList({
   highlightCommentId,
   highlightNonce,
 }: Props) {
+  // Top-level selection subscription gates the outer "tap-outside-to-dismiss"
+  // Pressable below. When null, the Pressable stays disabled and every tap
+  // passes through to comment cards / chip rows / reactions normally.
+  const selectingId = useCommentSelectStore((s) => s.selectingId);
+
   // Server already returns ASC oldest-first. Pipeline:
   //   1. coalesceTimeline → merge consecutive identical activities
   //   2. buildTimelineRows → reorder so replies sit adjacent to their parent
@@ -353,12 +358,39 @@ export function TimelineList({
 
   return (
     <View className="flex-1">
+      {/* Outer Pressable owns the "tap anywhere outside the selected
+          comment to exit text-selection mode" gesture. Disabled when
+          no comment is selected → layout-only wrapper, every tap passes
+          through to cells / chips / reactions. Active state captures any
+          tap that didn't fire an inner Pressable — selecting CommentBody
+          renders without its own Pressable wrapper (see comment-card.tsx
+          `if (isSelecting) return body;`), so taps on the selected
+          comment dismiss too, matching iOS Notes / iMessage. Scroll
+          gestures are unaffected. */}
+      <Pressable
+        onPress={
+          selectingId
+            ? () => useCommentSelectStore.getState().clear()
+            : undefined
+        }
+        disabled={!selectingId}
+        style={{ flex: 1 }}
+      >
       <FlashList
         key={flashListKey}
         ref={listRef}
         data={dataWithDivider}
         keyExtractor={(row) => row.entry.id}
         ListHeaderComponent={ListHeader}
+        // Drag-to-dismiss keyboard — when the user scrolls the timeline
+        // while the composer keyboard is up, the keyboard slides down
+        // interactively (iMessage / WhatsApp / Slack idiom). Pairs with the
+        // composer's `onBlur` → auto-collapse to pill: scroll dismisses
+        // keyboard → TextInput blurs → composer collapses if empty.
+        keyboardDismissMode="on-drag"
+        // Tap-on-row inside the list (long-press a comment, tap a
+        // reaction) should still register even when the keyboard is up.
+        keyboardShouldPersistTaps="handled"
         // FlashList v2 MVCP. `startRenderingFromBottom` only applies when a
         // deep-link is active — a normal issue-open lands at the top so the
         // user sees the header (title, description, status) first. After
@@ -369,11 +401,11 @@ export function TimelineList({
         maintainVisibleContentPosition={{
           startRenderingFromBottom: !!highlightCommentId,
         }}
-        // FlashList ignores `gap-*` on contentContainer (same constraint
-        // chat-message-list.tsx noted) — bottom-margin the header so the
-        // 12 px breathing room between header and the first item matches
-        // the row-to-row spacing supplied by ItemSeparatorComponent.
-        ListHeaderComponentStyle={{ marginBottom: 12 }}
+        // "Activity" is a section heading, not a sibling row — it should
+        // hug the first entry the way iOS Settings / Linear sections do.
+        // 4 px is just enough breathing room without making the heading
+        // float above the list. (12 px = row-to-row gap, wrong here.)
+        ListHeaderComponentStyle={{ marginBottom: 4 }}
         ItemSeparatorComponent={RowSeparator}
         renderItem={({ item }) => {
           if (item.entry.id === DIVIDER_ID) {
@@ -406,17 +438,9 @@ export function TimelineList({
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }
-        // `flexGrow: 1` + `justifyContent: 'flex-end'` makes the content
-        // hug the composer when the timeline is short — no awkward empty
-        // band between the last entry and the input. When the timeline
-        // overflows the viewport, flexGrow has no effect and the list
-        // scrolls normally from the top.
-        contentContainerStyle={{
-          flexGrow: 1,
-          justifyContent: "flex-end",
-          paddingBottom: 16,
-        }}
+        contentContainerStyle={{ paddingBottom: 16 }}
       />
+      </Pressable>
       {newCount > 0 ? (
         <NewCommentChip count={newCount} onPress={onJumpToNew} />
       ) : null}

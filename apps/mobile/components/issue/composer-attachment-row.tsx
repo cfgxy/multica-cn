@@ -1,45 +1,53 @@
 /**
- * Horizontal thumbnail row for the comment composer's pending attachments.
+ * Unified chip row for the comment composer's pending pickables.
  *
- * Lives above the TextInput and below the (optional) reply-target chip.
- * Each item is a fixed-size card showing:
+ * Three chip kinds share the same capsule shape (icon + name + remove ×):
  *
- *   - Image (mime/^image\//) → expo-image preview off the LOCAL uri (file://
- *     from the picker), so the thumbnail renders instantly without waiting
- *     for the server URL. Even after upload completes we keep using
- *     localUri — it's already on disk, no network roundtrip.
- *   - Anything else → 📎 icon + truncated filename. Mime / size hints could
- *     be added later; for v1 the icon + name is enough signal.
+ *   - mention  → `@<name>` (or `@all` for the workspace-wide pick). Tap is a
+ *                no-op; only the × button removes. Drives the comment's
+ *                mention markdown header on submit.
+ *   - image    → filename + image icon. Tap opens the lightbox using the
+ *                LOCAL file:// uri so completed and uploading items both
+ *                preview without waiting for the server URL.
+ *   - file     → filename + document icon. Tap opens the canonical
+ *                download_url in Safari once the upload completed; before
+ *                completion the tap is a no-op.
  *
- * Status overlays (on top of the thumbnail):
+ * Capsule (not thumbnail) by design: the previous version showed an actual
+ * image preview inside a 64x64 card. The user feedback was that the preview
+ * pulled the eye away from the input — the row should be a "what did I
+ * attach" summary, not a visual gallery. Click-to-zoom satisfies the
+ * "I want to verify it's the right image" need without competing with
+ * @ and file chips for visual weight.
  *
- *   - uploading → translucent spinner overlay across the whole card. The
- *     remove (×) button is hidden; user can't yank an upload mid-flight.
- *   - failed    → translucent destructive-tint overlay + small ⚠️ corner
- *                 badge. The card stays tappable for retry via the parent's
- *                 onRetry handler. Remove (×) is still shown so the user
- *                 can drop a wedged item.
- *   - completed → no overlay; just the × button in the corner.
- *
- * Why a separate component (not inlined): the composer file is already
- * dense (~400 LOC of textinput/keyboard/upload glue). Putting this here
- * keeps the composer focused on text + submit; this file only knows about
- * thumbnails. The data model is owned upstream (composer holds the array),
- * this is pure render + callback wiring.
- *
- * Placement rationale (above text, not below): aligns with iMessage / Slack
- * iOS / Lark / WhatsApp / Telegram — the attachment row is visual context
- * above the composing area. The toolbar below the text needs to stay flush
- * with the keyboard top, so inserting a row between text and toolbar would
- * conflict with KeyboardStickyView's bottom anchor.
+ * Lives above the TextInput (between the reply-target chip and the input
+ * itself). The composer measures whether the row is non-empty to decide
+ * whether to render this component at all — empty composer keeps the
+ * vertical footprint minimal.
  */
 import { useMemo } from "react";
-import { ActivityIndicator, Pressable, ScrollView, View } from "react-native";
-import { Image as ExpoImage } from "expo-image";
+import { ActivityIndicator, Linking, Pressable, ScrollView, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { useLightbox } from "@/lib/markdown/lightbox-provider";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { Text } from "@/components/ui/text";
+
+/** Mention chip data — composer-local state. No store, no cross-route
+ *  sharing. The composer owns the array and passes it in. */
+export type MentionChipType = "member" | "agent" | "squad" | "all" | "issue";
+
+export interface MentionChip {
+  type: MentionChipType;
+  /** UUID for member/agent/squad/issue; literal "all" for @all. */
+  id: string;
+  /** Display name without leading `@`. For type "issue" this stores the
+   *  human identifier (e.g. "MUL-123"), which is what the chip + the
+   *  serialised markdown link both surface (matches web's
+   *  packages/views/editor/extensions/mention-extension.ts:67-74 — issues
+   *  drop the leading `@`). */
+  name: string;
+}
 
 export type ComposerAttachmentStatus = "uploading" | "completed" | "failed";
 
@@ -48,9 +56,8 @@ export interface ComposerAttachmentItem {
    *  the React key AND as the lookup id for status transitions. We don't use
    *  the server-returned `id` because it doesn't exist yet during upload. */
   localId: string;
-  /** `file://...` from expo-image-picker / expo-document-picker. Stays the
-   *  source of truth for thumbnail rendering even post-upload — it's on
-   *  disk, free, and avoids fetching the server-side preview. */
+  /** `file://...` from expo-image-picker / expo-document-picker. Source of
+   *  truth for lightbox preview even post-upload — on-device cache. */
   localUri: string;
   filename: string;
   mimeType: string;
@@ -58,138 +65,184 @@ export interface ComposerAttachmentItem {
   /** Populated when status === "completed" — the server-side attachment id
    *  that the comment mutation will reference via `attachmentIds`. */
   id?: string;
-  /** Populated when status === "completed" — the canonical `mc://file/<id>`
-   *  URL the server returns. Currently unused at the composer level (we
-   *  submit by id, not url), but kept on the item for future inline-insert
-   *  affordances or debugging. */
+  /** Populated when status === "completed" — canonical `mc://file/<id>`
+   *  URL the server returns. The composer submits by id, not url; the
+   *  field is kept for inline-insert affordances or debugging. */
   url?: string;
-  /** Populated when status === "failed" — short human-readable error from
-   *  the upload exception. */
+  /** Populated when status === "completed" — signed HTTPS link to open in
+   *  Safari for file chips. Mirrors web's "download" path. */
+  downloadUrl?: string;
+  /** Populated when status === "failed" — short human-readable error. */
   error?: string;
 }
 
 interface Props {
-  items: ComposerAttachmentItem[];
-  onRemove: (localId: string) => void;
-  onRetry?: (localId: string) => void;
+  mentions: MentionChip[];
+  attachments: ComposerAttachmentItem[];
+  onRemoveMention: (type: MentionChipType, id: string) => void;
+  onRemoveAttachment: (localId: string) => void;
+  onRetryAttachment?: (localId: string) => void;
 }
 
-export function ComposerAttachmentRow({ items, onRemove, onRetry }: Props) {
-  const { colorScheme } = useColorScheme();
-  const theme = THEME[colorScheme];
-
-  if (items.length === 0) return null;
+export function ComposerAttachmentRow({
+  mentions,
+  attachments,
+  onRemoveMention,
+  onRemoveAttachment,
+  onRetryAttachment,
+}: Props) {
+  if (mentions.length === 0 && attachments.length === 0) return null;
 
   return (
     <ScrollView
       horizontal
       showsHorizontalScrollIndicator={false}
-      contentContainerStyle={{ gap: 8, paddingHorizontal: 4 }}
+      contentContainerStyle={{ gap: 6, paddingHorizontal: 2, paddingVertical: 2 }}
       keyboardShouldPersistTaps="handled"
     >
-      {items.map((item) => (
-        <AttachmentCard
-          key={item.localId}
-          item={item}
-          theme={theme}
-          onRemove={onRemove}
-          onRetry={onRetry}
+      {mentions.map((m) => (
+        <MentionChipView
+          key={`m:${m.type}:${m.id}`}
+          mention={m}
+          onRemove={onRemoveMention}
+        />
+      ))}
+      {attachments.map((a) => (
+        <AttachmentChipView
+          key={a.localId}
+          item={a}
+          onRemove={onRemoveAttachment}
+          onRetry={onRetryAttachment}
         />
       ))}
     </ScrollView>
   );
 }
 
-interface CardProps {
+// ---------------------------------------------------------------------------
+// Mention chip — small capsule, no tap (only × removes).
+// ---------------------------------------------------------------------------
+
+function MentionChipView({
+  mention,
+  onRemove,
+}: {
+  mention: MentionChip;
+  onRemove: (type: MentionChipType, id: string) => void;
+}) {
+  const { colorScheme } = useColorScheme();
+  const theme = THEME[colorScheme];
+
+  // Icon picks: @all → people; issue → git-branch (matches web's status icon
+  // styling for issue mentions); else single-person glyph.
+  const iconName =
+    mention.type === "all"
+      ? "people"
+      : mention.type === "issue"
+        ? "git-branch-outline"
+        : "person";
+
+  // Issue chips show the bare identifier (e.g. "MUL-123") — no leading @.
+  // Mirrors how the serialized markdown link renders on web/desktop.
+  const label = mention.type === "issue" ? mention.name : `@${mention.name}`;
+
+  return (
+    <View className="flex-row items-center gap-1 h-7 px-2 rounded-full bg-primary/10">
+      <Ionicons name={iconName} size={12} color={theme.primary} />
+      <Text className="text-xs font-medium text-foreground">{label}</Text>
+      <Pressable
+        onPress={() => onRemove(mention.type, mention.id)}
+        hitSlop={8}
+        accessibilityRole="button"
+        accessibilityLabel={`Remove mention ${mention.name}`}
+        className="h-4 w-4 items-center justify-center"
+      >
+        <Ionicons name="close" size={12} color={theme.mutedForeground} />
+      </Pressable>
+    </View>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Attachment chip — image / file capsule with status overlay.
+// ---------------------------------------------------------------------------
+
+interface AttachmentChipProps {
   item: ComposerAttachmentItem;
-  theme: typeof THEME["light"];
   onRemove: (localId: string) => void;
   onRetry?: (localId: string) => void;
 }
 
-function AttachmentCard({ item, theme, onRemove, onRetry }: CardProps) {
+function AttachmentChipView({ item, onRemove, onRetry }: AttachmentChipProps) {
+  const { colorScheme } = useColorScheme();
+  const theme = THEME[colorScheme];
+  const { open } = useLightbox();
+
   const isImage = useMemo(
     () => item.mimeType.startsWith("image/"),
     [item.mimeType],
   );
 
-  const handlePress = () => {
-    // Tap on a failed card retries (if the parent wired onRetry). Other
-    // statuses ignore tap — uploading is in-flight, completed has the ×
-    // button as the only action.
+  const onPress = () => {
     if (item.status === "failed" && onRetry) {
       onRetry(item.localId);
+      return;
+    }
+    if (item.status !== "completed") return;
+    if (isImage) {
+      // Prefer the local on-device file over the network URL — instant,
+      // no signed-URL round-trip, works the same pre/post upload.
+      open(item.localUri);
+    } else if (item.downloadUrl) {
+      void Linking.openURL(item.downloadUrl);
     }
   };
 
+  const iconName = item.status === "failed"
+    ? "refresh"
+    : isImage
+      ? "image-outline"
+      : "document-outline";
+
   return (
     <Pressable
-      onPress={handlePress}
+      onPress={onPress}
       accessibilityRole={item.status === "failed" ? "button" : "image"}
       accessibilityLabel={
         item.status === "failed"
           ? `Retry upload of ${item.filename}`
-          : `Attachment ${item.filename}`
+          : `Open ${item.filename}`
       }
-      accessibilityHint={
-        item.status === "failed"
-          ? "Tap to retry the upload"
-          : undefined
-      }
-      className="relative h-16 w-16 rounded-md overflow-hidden bg-secondary"
+      className="flex-row items-center gap-1 h-7 px-2 rounded-full bg-secondary active:opacity-80"
     >
-      {isImage ? (
-        <ExpoImage
-          source={{ uri: item.localUri }}
-          style={{ width: "100%", height: "100%" }}
-          contentFit="cover"
-          transition={120}
-        />
-      ) : (
-        <View className="flex-1 items-center justify-center p-1">
-          <Ionicons
-            name="document-outline"
-            size={22}
-            color={theme.mutedForeground}
-          />
-          <Text
-            className="text-[10px] text-muted-foreground mt-0.5"
-            numberOfLines={1}
-          >
-            {item.filename}
-          </Text>
-        </View>
-      )}
-
       {item.status === "uploading" ? (
-        <View
-          pointerEvents="none"
-          className="absolute inset-0 items-center justify-center bg-black/40"
-        >
-          <ActivityIndicator color="#fff" />
-        </View>
-      ) : null}
-
-      {item.status === "failed" ? (
-        <View
-          pointerEvents="none"
-          className="absolute inset-0 items-center justify-center bg-destructive/30"
-        >
-          <Ionicons name="refresh" size={20} color="#fff" />
-        </View>
-      ) : null}
-
-      {item.status !== "uploading" ? (
-        <Pressable
-          onPress={() => onRemove(item.localId)}
-          hitSlop={8}
-          accessibilityRole="button"
-          accessibilityLabel={`Remove ${item.filename}`}
-          className="absolute -top-1 -right-1 h-5 w-5 rounded-full bg-foreground items-center justify-center"
-        >
-          <Ionicons name="close" size={12} color={theme.background} />
-        </Pressable>
-      ) : null}
+        <ActivityIndicator size="small" color={theme.mutedForeground} />
+      ) : (
+        <Ionicons
+          name={iconName}
+          size={12}
+          color={
+            item.status === "failed"
+              ? theme.destructive
+              : theme.mutedForeground
+          }
+        />
+      )}
+      <Text
+        className="text-xs text-foreground max-w-[120px]"
+        numberOfLines={1}
+      >
+        {item.filename}
+      </Text>
+      <Pressable
+        onPress={() => onRemove(item.localId)}
+        hitSlop={8}
+        accessibilityRole="button"
+        accessibilityLabel={`Remove ${item.filename}`}
+        className="h-4 w-4 items-center justify-center"
+      >
+        <Ionicons name="close" size={12} color={theme.mutedForeground} />
+      </Pressable>
     </Pressable>
   );
 }

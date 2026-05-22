@@ -155,6 +155,14 @@ export default function WorkspaceLayout() {
           }}
         />
         <Stack.Screen
+          name="issue/[id]/edit"
+          options={{
+            title: "Edit Issue",
+            presentation: "modal",
+            headerLeft: () => <ModalCloseButton />,
+          }}
+        />
+        <Stack.Screen
           name="project/new"
           options={{
             title: "New Project",
@@ -193,6 +201,14 @@ export default function WorkspaceLayout() {
         <Stack.Screen
           name="issue/[id]/picker/label"
           options={SHEET_OPTIONS}
+        />
+        <Stack.Screen
+          name="mention-picker"
+          options={{
+            ...SHEET_OPTIONS,
+            headerShown: true,
+            title: "Mention",
+          }}
         />
         <Stack.Screen
           name="issue/[id]/picker/project"

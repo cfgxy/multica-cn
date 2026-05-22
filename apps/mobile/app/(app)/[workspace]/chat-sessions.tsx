@@ -26,9 +26,6 @@ export default function ChatSessionsRoute() {
   const { data: sessions = [] } = useQuery(chatSessionsOptions(wsId));
   const activeSessionId = useChatSessionPickerStore((s) => s.activeSessionId);
   const requestSelect = useChatSessionPickerStore((s) => s.requestSelect);
-  const requestNewWithAgent = useChatSessionPickerStore(
-    (s) => s.requestNewWithAgent,
-  );
   const deleteSession = useDeleteChatSession();
 
   const confirmDelete = (session: ChatSession) => {
@@ -118,20 +115,6 @@ export default function ChatSessionsRoute() {
             );
           })
         )}
-
-        <Pressable
-          onPress={() => {
-            // Signal the chat tab to open its agent picker. Done via store
-            // because the agent picker is still a transparent Modal (out of
-            // formSheet migration scope per the SheetShell rollout plan).
-            requestNewWithAgent();
-            router.back();
-          }}
-          className="flex-row items-center justify-between px-4 py-3 border-t border-border active:bg-secondary"
-        >
-          <Text className="text-sm text-foreground">Switch agent</Text>
-          <Text className="text-sm text-muted-foreground">→</Text>
-        </Pressable>
       </ScrollView>
     </View>
   );

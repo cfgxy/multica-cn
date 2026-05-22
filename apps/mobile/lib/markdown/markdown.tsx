@@ -73,15 +73,34 @@ interface Props {
    */
   selectable?: boolean;
   /**
-   * Strip the trailing paragraph `marginBottom` so the markdown sits flush
-   * inside a bounded container (chat user bubble, badge, tooltip — anything
-   * that already supplies its own vertical padding). Mirrors web's
-   * `[&>*:first-child]:mt-0 [&>*:last-child]:mb-0` neutralisation pattern
-   * applied in `packages/views/chat/components/chat-message-list.tsx` user
-   * bubble. enriched-markdown applies one paragraph style to every paragraph
+   * Strip the trailing paragraph `marginBottom` AND tighten paragraph
+   * `lineHeight` so the markdown sits flush AND visually centered inside
+   * a bounded container (chat user bubble, badge, tooltip — anything that
+   * already supplies its own vertical padding).
+   *
+   * Two adjustments because two separate offsets break vertical centering
+   * in a small box:
+   *
+   *   1. `marginBottom: 0` — mirrors web's `[&>*:last-child]:mb-0`
+   *      neutralisation pattern in
+   *      `packages/views/chat/components/chat-message-list.tsx`.
+   *
+   *   2. `lineHeight: 20` (down from 24) — paragraph default is calibrated
+   *      for prose readability (`lineHeight/fontSize ≈ 1.71` for CJK
+   *      leading), which makes the line-box 10pt taller than the glyph.
+   *      Combined with PingFang SC's baseline at ~75-80% of the line-box
+   *      (see `markdown-style.ts:54-67` and the inline-code note at 184-200),
+   *      the empty space inside the line-box is asymmetric — visible as
+   *      the glyph sitting off-centre in a small `py-2` bubble. Tightening
+   *      to ~1.43 collapses the line-box close to the glyph and the
+   *      residual asymmetry becomes too small to read as misalignment.
+   *      Multi-line content in compact mode loses some inter-line breathing
+   *      room — acceptable for the common single-paragraph bubble case.
+   *
+   * enriched-markdown applies one paragraph style to every paragraph
    * (can't single out the last), so multi-paragraph content in compact mode
-   * loses the 12px inter-paragraph gap — a fair trade for the common
-   * single-paragraph bubble case.
+   * also loses the 12px inter-paragraph gap — a fair trade for the bubble
+   * case.
    */
   compact?: boolean;
 }
@@ -97,7 +116,14 @@ export function Markdown({
   const markdownStyle = useMemo(
     () =>
       compact
-        ? { ...baseStyle, paragraph: { ...baseStyle.paragraph, marginBottom: 0 } }
+        ? {
+            ...baseStyle,
+            paragraph: {
+              ...baseStyle.paragraph,
+              marginBottom: 0,
+              lineHeight: 20,
+            },
+          }
         : baseStyle,
     [baseStyle, compact],
   );
@@ -109,9 +135,18 @@ export function Markdown({
 
   const onLinkPress = useCallback(
     ({ url }: { url: string }) => {
-      // mention://issue/<uuid> → navigate to issue detail. Other mention
-      // types (member / agent) currently no-op; future iteration could
-      // open a profile sheet.
+      // `mention://` is an internal scheme — never hand it to the system.
+      // No app is registered for it, so `Linking.openURL("mention://...")`
+      // would surface iOS's "Cannot open URL" prompt or silently fail
+      // (depending on iOS version). Handle every shape inline and ALWAYS
+      // return without falling through to Linking.
+      //
+      //   mention://issue/<uuid>   → navigate to that issue detail
+      //   mention://member/<uuid>  → no-op (no member profile screen yet)
+      //   mention://agent/<uuid>   → no-op (no agent profile screen yet)
+      //   mention://squad/<uuid>   → no-op (no squad profile screen yet)
+      //   mention://all/all        → no-op (semantic only — "everyone")
+      //   anything malformed       → no-op
       if (url.startsWith("mention://")) {
         const rest = url.slice("mention://".length);
         const slash = rest.indexOf("/");

@@ -118,6 +118,7 @@ export default function IssueDetail() {
       : null;
     const options: string[] = ["Cancel"];
     options.push(isPinned ? "Unpin" : "Pin");
+    options.push("Edit details");
     if (issueLink) options.push("Copy link");
     if (issueLink) options.push("Open on web");
     options.push("Delete issue");
@@ -135,6 +136,8 @@ export default function IssueDetail() {
           createPin.mutate({ item_type: "issue", item_id: issue.id });
         } else if (label === "Unpin") {
           deletePin.mutate({ itemType: "issue", itemId: issue.id });
+        } else if (label === "Edit details") {
+          if (wsSlug) router.push(`/${wsSlug}/issue/${issue.id}/edit`);
         } else if (label === "Copy link" && issueLink) {
           Clipboard.setStringAsync(issueLink);
         } else if (label === "Open on web" && issueLink) {

@@ -49,6 +49,7 @@ import type {
   Squad,
   NotificationPreferenceResponse,
   NotificationPreferences,
+  TaskMessagePayload,
   TimelineEntry,
   UpdateIssueRequest,
   UpdateMeRequest,
@@ -111,6 +112,8 @@ import {
   SearchProjectsResponseSchema,
   SendChatMessageResponseSchema,
   SquadListSchema,
+  TaskMessageListSchema,
+  EMPTY_TASK_MESSAGE_LIST,
   UserSchema,
   WorkspaceListSchema,
 } from "./schemas";
@@ -1036,14 +1039,24 @@ class ApiClient {
   async sendChatMessage(
     sessionId: string,
     content: string,
+    opts?: { attachmentIds?: string[] },
   ): Promise<SendChatMessageResponse> {
     // Strict parse — we need task_id + created_at to anchor the optimistic
     // StatusPill. Fallback would silently break the elapsed-time timer.
+    //
+    // `attachment_ids` mirrors the comment / issue create payloads —
+    // server-side `chat.go` back-fills `chat_message_id` on the listed
+    // attachments after the message row is inserted (see
+    // server/internal/handler/chat.go:410-456).
+    const body: { content: string; attachment_ids?: string[] } = { content };
+    if (opts?.attachmentIds && opts.attachmentIds.length > 0) {
+      body.attachment_ids = opts.attachmentIds;
+    }
     const raw = await this.fetch<unknown>(
       `/api/chat/sessions/${sessionId}/messages`,
       {
         method: "POST",
-        body: JSON.stringify({ content }),
+        body: JSON.stringify(body),
       },
     );
     const parsed = SendChatMessageResponseSchema.safeParse(raw);
@@ -1081,6 +1094,23 @@ class ApiClient {
 
   async cancelTaskById(taskId: string): Promise<void> {
     await this.fetch<void>(`/api/tasks/${taskId}/cancel`, { method: "POST" });
+  }
+
+  /** Live execution timeline for a task — used by the chat screen to
+   *  render the "thinking → tool_use → tool_result → final text" trace
+   *  beneath an in-flight assistant bubble. `task:message` WS events
+   *  append to the same cache key in real time (see
+   *  use-chat-session-realtime.ts). */
+  async listTaskMessages(
+    taskId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<TaskMessagePayload[]> {
+    return this.fetchValidated(
+      `/api/tasks/${taskId}/messages`,
+      TaskMessageListSchema,
+      EMPTY_TASK_MESSAGE_LIST,
+      { ...opts, endpoint: "GET /api/tasks/:id/messages" },
+    );
   }
 
   // --- Pins ---

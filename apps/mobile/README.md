@@ -2,17 +2,44 @@
 
 Expo + React Native iOS client for Multica. Independent from web/desktop — shares only types from `@multica/core/`. See [`CLAUDE.md`](./CLAUDE.md) for the locked tech-stack baseline and import rules.
 
+## Just want to use it on your phone? (no development)
+
+Run one command, get a personal copy of Multica on your iPhone talking to the same backend as `multica.ai`:
+
+```bash
+pnpm ios:mobile:device:prod:release
+```
+
+Prerequisites: Mac with Xcode, a free Apple ID added under Xcode → Settings → Accounts, iPhone connected via USB with [Developer Mode enabled](https://docs.expo.dev/guides/ios-developer-mode/). Follow Expo's [Set up your environment](https://docs.expo.dev/get-started/set-up-your-environment/) (pick **Development build → iOS Device**) if any of that is missing.
+
+**If your Apple ID isn't on the Multica Apple Developer team**, the build will fail at signing because Xcode can only sign bundle ids your team owns. Export your own reverse-domain bundle id once, then re-run:
+
+```bash
+export EXPO_BUNDLE_IDENTIFIER_PROD=com.yourname.multica
+pnpm ios:mobile:device:prod:release
+```
+
+The first build downloads CocoaPods + compiles React Native from source — expect 10–20 minutes. Subsequent builds reuse Xcode's cache.
+
+**7-day signing limit**: a free Apple ID signs builds for 7 days, after which the app refuses to launch. Plug back into the Mac and re-run the command to re-sign. The only workaround is an Apple Developer Program account ($99/yr), which extends to 1 year.
+
+Everything below is for app developers — you can ignore the rest if you only wanted a personal install.
+
 ## Scripts
 
 | Command | What it does | Backend |
 |---|---|---|
 | `pnpm dev:mobile` | Metro only (reuse existing install) | local (`.env.development.local`) |
 | `pnpm dev:mobile:staging` | Metro only (reuse existing install) | staging (`.env.staging`) |
+| `pnpm dev:mobile:prod` | Metro only (reuse existing install) | production (`.env.production`) |
 | `pnpm ios:mobile` | Full rebuild + install on **iOS Simulator**, Debug | local |
 | `pnpm ios:mobile:staging` | Full rebuild + install on **iOS Simulator**, Debug | staging |
+| `pnpm ios:mobile:prod` | Full rebuild + install on **iOS Simulator**, Debug | production |
 | `pnpm ios:mobile:device` | Full rebuild + install on **USB iPhone**, Debug | local |
 | `pnpm ios:mobile:device:staging` | Full rebuild + install on **USB iPhone**, Debug | staging |
 | `pnpm ios:mobile:device:staging:release` | Full rebuild + install on **USB iPhone**, Release (standalone) | staging |
+| `pnpm ios:mobile:device:prod` | Full rebuild + install on **USB iPhone**, Debug | production |
+| `pnpm ios:mobile:device:prod:release` | Full rebuild + install on **USB iPhone**, Release (standalone) | production |
 
 `dev:*` runs Metro only — assumes the matching variant is already installed. `ios:mobile*` does a full native rebuild + install.
 
@@ -67,7 +94,7 @@ A free Apple ID signs builds for **7 days only**, Debug and Release both. After 
 
 ## Pointing at a different backend
 
-Edit `EXPO_PUBLIC_API_URL` in `.env.staging` (or `.env.development.local`). Then:
+Edit `EXPO_PUBLIC_API_URL` in `.env.staging`, `.env.production`, or `.env.development.local` (whichever variant you're running). Then:
 
 - For an installed **Debug build**: restart Metro (`pnpm dev:mobile:staging`) so the next JS bundle picks up the new value.
 - For an installed **Release build**: re-run the `ios:mobile:device:staging:release` command — the value is baked into the embedded bundle at build time.

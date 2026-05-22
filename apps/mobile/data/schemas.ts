@@ -33,6 +33,7 @@ import type {
   SearchProjectsResponse,
   SendChatMessageResponse,
   Squad,
+  TaskMessagePayload,
   User,
   Workspace,
 } from "@multica/core/types";
@@ -285,6 +286,31 @@ export const SendChatMessageResponseSchema: z.ZodType<SendChatMessageResponse> =
   task_id: z.string(),
   created_at: z.string().default(""),
 }).loose();
+
+// Live timeline emitted by the agent runtime while a task is running. Each
+// row is one execution step (thinking / tool_use / tool_result / text /
+// error). Mirrors web's TaskMessagePayload type and the WS `task:message`
+// payload so the mobile cache shape stays interchangeable with web's.
+export const TaskMessagePayloadSchema: z.ZodType<TaskMessagePayload> = z.object({
+  task_id: z.string(),
+  issue_id: z.string().default(""),
+  chat_session_id: z.string().optional(),
+  seq: z.number().default(0),
+  // Enum drift defense: unknown server-side types fall back to "text" so
+  // the row still renders (as a plain markdown chunk) instead of crashing
+  // the timeline. Matches root CLAUDE.md "Enum drift downgrades, not crashes".
+  type: z
+    .enum(["text", "thinking", "tool_use", "tool_result", "error"])
+    .catch("text"),
+  tool: z.string().optional(),
+  content: z.string().optional(),
+  input: z.record(z.string(), z.unknown()).optional(),
+  output: z.string().optional(),
+}).loose();
+
+export const TaskMessageListSchema = z.array(TaskMessagePayloadSchema).default([]);
+
+export const EMPTY_TASK_MESSAGE_LIST: TaskMessagePayload[] = [];
 
 // =====================================================
 // Search (issues + projects)
