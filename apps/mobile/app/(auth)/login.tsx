@@ -39,14 +39,14 @@ export default function Login() {
         className="flex-1"
         behavior={Platform.OS === "ios" ? "padding" : undefined}
       >
-        <View className="flex-1 justify-center px-6 gap-8">
-          <View className="items-center gap-4">
-            <MulticaLogo size={56} />
-            <View className="gap-2 items-center">
-              <Text className="text-3xl font-bold text-foreground">
+        <View className="flex-1 justify-center px-6 gap-6">
+          <View className="items-center gap-3">
+            <MulticaLogo size={32} />
+            <View className="gap-1 items-center">
+              <Text className="text-2xl font-semibold text-foreground">
                 Sign in to Multica
               </Text>
-              <Text className="text-base text-muted-foreground text-center">
+              <Text className="text-sm text-muted-foreground text-center">
                 Enter your email and we&apos;ll send you a verification code.
               </Text>
             </View>

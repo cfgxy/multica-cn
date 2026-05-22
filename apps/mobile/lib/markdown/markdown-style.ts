@@ -40,11 +40,14 @@ const MD_FONT = {
   // h6 = 13 (was 12) + foreground (was mutedForeground) — the prior config
   // rendered h6 as "small gray text" indistinguishable from a caption.
   h6: 13,
-  // Code block font size — must match the in-house `CodeBlock` component's
-  // `text-sm` (= 14). The earlier 13 created a visible size mismatch between
-  // top-level fenced code (rendered by CodeBlock @ 14) and list-nested code
-  // (rendered by enriched via this style @ 13).
-  codeBlock: 14,
+  // Code block font size — mirrors the in-house `CodeBlock` component's
+  // `text-[13px]` (see `tokens.ts` → CODE_BLOCK_TEXT_CLASS). The two paths
+  // MUST agree so top-level fenced code (rendered by CodeBlock) and
+  // list-nested code (rendered by enriched via this style) look identical.
+  // Both were lowered from 14 to 13 to match GitHub Mobile / Linear iOS /
+  // Notion iOS — at the same point size mono is visually denser than
+  // PingFang, and 14 read as "louder than body" inside a card.
+  codeBlock: 13,
 } as const;
 
 const MD_LINE = {
@@ -220,11 +223,17 @@ export function useMarkdownStyle() {
         color: t.mutedForeground,
         backgroundColor: "transparent",
         borderColor: "transparent",
-        // 15 (was 14) — monospaced glyphs have smaller cap-height than
-        // PingFang SC at the same point size; bumping +1 brings them
-        // visually level with surrounding CJK text. Standard practice in
-        // Apple Notes / Notion / GitHub Mobile inline code rendering.
-        fontSize: 15,
+        // Match body (14) and codeBlock (14) — inline code MUST NOT be
+        // larger than block code, otherwise the hierarchy inverts and
+        // the inline token "jumps" out of any paragraph that contains
+        // one. The earlier +1pt was meant to compensate for SF Mono's
+        // smaller cap-height vs PingFang in pure-CJK paragraphs, but
+        // in English-heavy text (variable names, error strings) the
+        // +1 made mono glyphs visibly larger than surrounding Latin
+        // body, which is the opposite of the intent. Visual id stays
+        // strong via monospace family + mutedForeground tint — same
+        // approach as GitHub Mobile / Linear iOS / Notion.
+        fontSize: MD_FONT.body,
       },
       // Block code — bigger box, surface-2 background (one tonal tier
        // above secondary so the box stays visible when the markdown
