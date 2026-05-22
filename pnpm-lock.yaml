@@ -4,102 +4,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-catalogs:
-  default:
-    '@formatjs/intl-localematcher':
-      specifier: ^0.8.4
-      version: 0.8.4
-    '@tailwindcss/postcss':
-      specifier: ^4
-      version: 4.2.2
-    '@tanstack/react-query':
-      specifier: ^5.96.2
-      version: 5.96.2
-    '@tanstack/react-table':
-      specifier: ^8.21.3
-      version: 8.21.3
-    '@testing-library/jest-dom':
-      specifier: ^6.9.1
-      version: 6.9.1
-    '@testing-library/react':
-      specifier: ^16.3.2
-      version: 16.3.2
-    '@testing-library/user-event':
-      specifier: ^14.6.1
-      version: 14.6.1
-    '@types/node':
-      specifier: ^25.0.10
-      version: 25.5.0
-    '@vitejs/plugin-react':
-      specifier: ^6.0.1
-      version: 6.0.1
-    class-variance-authority:
-      specifier: ^0.7.1
-      version: 0.7.1
-    clsx:
-      specifier: ^2.1.1
-      version: 2.1.1
-    eslint-plugin-i18next:
-      specifier: ^6.1.4
-      version: 6.1.4
-    i18next:
-      specifier: ^26.0.8
-      version: 26.0.8
-    jsdom:
-      specifier: ^29.0.1
-      version: 29.0.1
-    katex:
-      specifier: ^0.16.45
-      version: 0.16.45
-    lucide-react:
-      specifier: ^1.0.1
-      version: 1.0.1
-    mermaid:
-      specifier: ^11.14.0
-      version: 11.14.0
-    posthog-js:
-      specifier: ^1.176.1
-      version: 1.369.3
-    react:
-      specifier: 19.2.3
-      version: 19.2.3
-    react-dom:
-      specifier: 19.2.3
-      version: 19.2.3
-    react-i18next:
-      specifier: ^17.0.6
-      version: 17.0.6
-    react-virtuoso:
-      specifier: ^4.14.0
-      version: 4.18.7
-    rehype-katex:
-      specifier: ^7.0.1
-      version: 7.0.1
-    remark-math:
-      specifier: ^6.0.0
-      version: 6.0.0
-    tailwind-merge:
-      specifier: ^3.4.0
-      version: 3.5.0
-    tailwindcss:
-      specifier: ^4
-      version: 4.2.2
-    typescript:
-      specifier: ^5.9.3
-      version: 5.9.3
-    unicode-animations:
-      specifier: ^1.0.3
-      version: 1.0.3
-    vitest:
-      specifier: ^4.1.0
-      version: 4.1.0
-    zod:
-      specifier: ^4.1.5
-      version: 4.3.6
-    zustand:
-      specifier: ^5.0.0
-      version: 5.0.12
-
 overrides:
   '@types/react': ^19.2.0
   '@types/react-dom': ^19.2.0
@@ -429,12 +333,6 @@ importers:
       react-native-image-viewing:
         specifier: ^0.2.2
         version: 0.2.2(react-native@0.83.6(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.0))(react@19.2.0)
-      react-native-ios-context-menu:
-        specifier: 3.2.1
-        version: 3.2.1(react-native-ios-utilities@5.2.0(react-native@0.83.6(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.0))(react@19.2.0))(react-native@0.83.6(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.0))(react@19.2.0)
-      react-native-ios-utilities:
-        specifier: 5.2.0
-        version: 5.2.0(react-native@0.83.6(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.0))(react@19.2.0)
       react-native-keyboard-controller:
         specifier: 1.20.7
         version: 1.20.7(react-native-reanimated@4.2.3(react-native-worklets@0.7.4(@babel/core@7.29.0)(react-native@0.83.6(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.0))(react@19.2.0))(react-native@0.83.6(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.0))(react@19.2.0))(react-native@0.83.6(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.0))(react@19.2.0)
@@ -1753,9 +1651,6 @@ packages:
     resolution: {integrity: sha512-+MKAJEOfaBe5SmV6t34p80MMKhjvUz0vRrvVJbPT0WElzaOJ/1xs+D+KDv+tD/NE5ujfrChEcshd4fLn0wpiqg==}
     peerDependencies:
       react: '>=16.8.0'
-
-  '@dominicstop/ts-event-emitter@1.1.0':
-    resolution: {integrity: sha512-CcxmJIvUb1vsFheuGGVSQf4KdPZC44XolpUT34+vlal+LyQoBUOn31pjFET5M9ctOxEpt8xa0M3/2M7uUiAoJw==}
 
   '@dotenvx/dotenvx@1.57.0':
     resolution: {integrity: sha512-WsTEcqfHzKmLFZh3jLGd7o4iCkrIupp+qFH2FJUJtQXUh2GcOnLXD00DcrhlO4H8QSmaKnW9lugOEbrdpu25kA==}
@@ -8999,19 +8894,6 @@ packages:
       react: '>=16.11.0'
       react-native: '>=0.61.3'
 
-  react-native-ios-context-menu@3.2.1:
-    resolution: {integrity: sha512-OBQbb3I/VUx2wQgz4cqN614kt3nJ+qx5wxEdtGN1Aj4nYYL1orp7VLFkV6axof6DgOyv0YD6af2RUTok6a2xDQ==}
-    peerDependencies:
-      react: '*'
-      react-native: '*'
-      react-native-ios-utilities: '*'
-
-  react-native-ios-utilities@5.2.0:
-    resolution: {integrity: sha512-RTw1Gk8rQhBL43+U80I+Nu8T7mLTNkj5RaG8vTs3ETEDqphS3L0Mrzk79RX0Jmm64HMad70GXHctXFlW1n0V8w==}
-    peerDependencies:
-      react: '*'
-      react-native: '*'
-
   react-native-is-edge-to-edge@1.3.1:
     resolution: {integrity: sha512-NIXU/iT5+ORyCc7p0z2nnlkouYKX425vuU1OEm6bMMtWWR9yvb+Xg5AZmImTKoF9abxCPqrKC3rOZsKzUYgYZA==}
     peerDependencies:
@@ -11400,8 +11282,6 @@ snapshots:
     dependencies:
       react: 19.2.3
       tslib: 2.8.1
-
-  '@dominicstop/ts-event-emitter@1.1.0': {}
 
   '@dotenvx/dotenvx@1.57.0':
     dependencies:
@@ -20591,18 +20471,6 @@ snapshots:
       react-native: 0.83.6(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.0)
 
   react-native-image-viewing@0.2.2(react-native@0.83.6(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.0))(react@19.2.0):
-    dependencies:
-      react: 19.2.0
-      react-native: 0.83.6(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.0)
-
-  react-native-ios-context-menu@3.2.1(react-native-ios-utilities@5.2.0(react-native@0.83.6(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.0))(react@19.2.0))(react-native@0.83.6(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.0))(react@19.2.0):
-    dependencies:
-      '@dominicstop/ts-event-emitter': 1.1.0
-      react: 19.2.0
-      react-native: 0.83.6(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.0)
-      react-native-ios-utilities: 5.2.0(react-native@0.83.6(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.0))(react@19.2.0)
-
-  react-native-ios-utilities@5.2.0(react-native@0.83.6(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.0))(react@19.2.0):
     dependencies:
       react: 19.2.0
       react-native: 0.83.6(@babel/core@7.29.0)(@types/react@19.2.14)(react@19.2.0)

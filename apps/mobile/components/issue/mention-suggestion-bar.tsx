@@ -196,6 +196,12 @@ export function MentionSuggestionBar({
   if (!visible) return null;
 
   return (
+    // Plain View — wrapping in reanimated `Animated.View` with `className`
+    // silently drops every NativeWind utility (no `cssInterop` registered in
+    // this repo for Animated.View), and `FadeInDown` left the bar at
+    // `opacity:0` when mounted inside `KeyboardStickyView`. Entrance
+    // animation is desirable but needs the chat-composer pattern (bare
+    // Animated.View outer + className on inner View) — single follow-up.
     <View
       className="bg-background border-b border-border"
       style={{ maxHeight: 220 }}

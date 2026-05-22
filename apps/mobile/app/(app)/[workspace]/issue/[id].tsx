@@ -18,7 +18,6 @@ import {
   Linking,
   View,
 } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
 import { Stack, router, useLocalSearchParams } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Clipboard from "expo-clipboard";
@@ -42,6 +41,7 @@ import { useIssueRealtime } from "@/data/realtime/use-issue-realtime";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useViewedIssuesStore } from "@/data/viewed-issues-store";
 import { useCommentSelectStore } from "@/data/comment-select-store";
+import { useReplyTargetStore } from "@/data/stores/reply-target-store";
 
 export default function IssueDetail() {
   // `highlight` + `h` come from inbox deep-link (apps/mobile/app/(app)/
@@ -77,10 +77,15 @@ export default function IssueDetail() {
     }
   }, [wsId, id]);
 
-  // Clear comment text-selection mode when leaving the issue. Each fresh
-  // navigation into an issue starts with no comment in selection mode.
+  // Screen-scoped composer state — clear on unmount so re-entering the
+  // issue starts from a clean slate (no stale text-selection comment id,
+  // no stale "Replying to X" target). Both stores are singletons used by
+  // the long-press action sheet.
   useEffect(() => {
-    return () => useCommentSelectStore.getState().clear();
+    return () => {
+      useCommentSelectStore.getState().clear();
+      useReplyTargetStore.getState().clear();
+    };
   }, []);
 
   const onRefresh = useCallback(async () => {
@@ -146,7 +151,7 @@ export default function IssueDetail() {
   }, [issue, wsSlug, deleteIssue, isPinned, createPin, deletePin]);
 
   return (
-    <SafeAreaView className="flex-1 bg-background" edges={["bottom"]}>
+    <View className="flex-1 bg-background">
       <Stack.Screen
         options={{
           title: issue?.identifier ?? "Issue",
@@ -198,7 +203,7 @@ export default function IssueDetail() {
           <InlineCommentComposer issueId={id} />
         </View>
       )}
-    </SafeAreaView>
+    </View>
   );
 }
 

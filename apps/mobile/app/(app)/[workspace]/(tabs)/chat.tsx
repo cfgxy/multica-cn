@@ -37,7 +37,7 @@ import {
   View,
 } from "react-native";
 import { router } from "expo-router";
-import { useIsFocused } from "@react-navigation/native";
+import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   Agent,
@@ -78,6 +78,7 @@ import { StatusPill } from "@/components/chat/status-pill";
 import { AgentPickerSheet } from "@/components/chat/agent-picker-sheet";
 import { NoAgentBanner } from "@/components/chat/no-agent-banner";
 import { OfflineBanner } from "@/components/chat/offline-banner";
+import { useChatSelectStore } from "@/data/chat-select-store";
 
 export default function ChatTab() {
   const qc = useQueryClient();
@@ -185,6 +186,14 @@ export default function ChatTab() {
   useChatSessionRealtime(activeSessionId, () => {
     setActiveSessionId(null);
   });
+
+  // Exit text-selection mode whenever the chat tab loses focus. Expo
+  // Router bottom tabs stay mounted across tab switches, so a plain
+  // useEffect cleanup wouldn't fire — useFocusEffect is the navigation-
+  // aware equivalent.
+  useFocusEffect(
+    useCallback(() => () => useChatSelectStore.getState().clear(), []),
+  );
 
   // ── Auto markRead while viewing a session with unread state ──────────
   const isFocused = useIsFocused();

@@ -1,8 +1,9 @@
 /**
  * Full emoji picker for a comment reaction — opened from the per-comment
- * actions sheet via "More reactions". Mirrors web's emoji-mart picker that
- * sits behind QuickEmojiPicker's overflow button: same product semantics
- * (mobile must offer the full emoji set, not only the 8 quick picks).
+ * long-press menu's "+" tapback button. Mirrors web's emoji-mart picker
+ * that sits behind QuickEmojiPicker's overflow button: same product
+ * semantics (mobile must offer the full emoji set, not only the 8 quick
+ * picks).
  *
  * Reads the comment from the timeline cache to detect an already-applied
  * reaction by the current user, then fires `useToggleCommentReaction` with
@@ -63,10 +64,6 @@ export default function CommentEmojiPickerRoute() {
     [reactions, userId, toggle, commentId],
   );
 
-  // Map our semantic tokens through to the library's theme so the picker
-  // blends with light/dark mode. Library only accepts hex/rgb strings so
-  // we feed the resolved THEME constants from lib/theme.ts (mirror of
-  // global.css per CLAUDE.md theming rules).
   const theme = THEME[colorScheme];
 
   return (

@@ -17,7 +17,7 @@
  * without coupling the policy to the hook (comment-composer does rollback;
  * new-issue prefers Alert and no rollback — both are fine).
  */
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import type {
   NativeSyntheticEvent,
   TextInputSelectionChangeEventData,
@@ -42,7 +42,11 @@ export interface MentionInputSnapshot {
 
 export interface UseMentionInputReturn {
   text: string;
-  setText: (next: string) => void;
+  /** Raw React state setter — accepts either a string or a functional
+   *  updater. Callers doing post-await replacements (e.g. swapping an
+   *  upload placeholder for the final markdown) MUST use the functional
+   *  form to avoid losing typing the user did during the await. */
+  setText: Dispatch<SetStateAction<string>>;
   selection: { start: number; end: number };
   setSelection: (sel: { start: number; end: number }) => void;
   markers: MentionMarker[];
@@ -86,6 +90,18 @@ export function useMentionInput(): UseMentionInputReturn {
   const [markers, setMarkers] = useState<MentionMarker[]>([]);
   const [mentioning, setMentioning] = useState<MentioningState | null>(null);
 
+  // Refs mirror the latest text / selection so the two native event handlers
+  // (`onChangeText` and `onSelectionChange`) can each see the OTHER's just-
+  // applied value. Reading from React state via closures races with React's
+  // batching: in the same native tick the first event would see stale text or
+  // stale selection, and `tokenAtCursor` would miss the first `@` (cursor=0).
+  // Refs sidestep that — every render syncs them, and every mutator below
+  // writes through so handlers running in the same tick stay consistent.
+  const textRef = useRef(text);
+  const selectionRef = useRef(selection);
+  textRef.current = text;
+  selectionRef.current = selection;
+
   const recomputeMentioning = useCallback(
     (nextText: string, cursor: number) => {
       const token = tokenAtCursor(nextText, cursor);
@@ -98,27 +114,31 @@ export function useMentionInput(): UseMentionInputReturn {
 
   const onChangeText = useCallback(
     (next: string) => {
+      textRef.current = next;
       setText(next);
-      // Approximate cursor as end of new text — onSelectionChange will fire
-      // immediately after with the precise caret. Enough for inline `@`
-      // detection; matches the pattern comment-composer / new-issue already used.
-      recomputeMentioning(next, selection.end);
+      // Read selection from the ref so we get the cursor position
+      // onSelectionChange may have just written in the same tick.
+      recomputeMentioning(next, selectionRef.current.end);
     },
-    [recomputeMentioning, selection.end],
+    [recomputeMentioning],
   );
 
   const onSelectionChange = useCallback(
     (e: NativeSyntheticEvent<TextInputSelectionChangeEventData>) => {
       const sel = e.nativeEvent.selection;
+      selectionRef.current = sel;
       setSelection(sel);
-      recomputeMentioning(text, sel.end);
+      // Read text from the ref so we see what onChangeText may have just set.
+      recomputeMentioning(textRef.current, sel.end);
     },
-    [recomputeMentioning, text],
+    [recomputeMentioning],
   );
 
   const onAtButtonPress = useCallback(() => {
-    const before = text.slice(0, selection.start);
-    const after = text.slice(selection.end);
+    const t = textRef.current;
+    const s = selectionRef.current;
+    const before = t.slice(0, s.start);
+    const after = t.slice(s.end);
     // Mention tokens require a word boundary before `@`. If the prior char
     // isn't whitespace (or start-of-text), pad with a space — otherwise the
     // suggestion bar won't trigger.
@@ -126,59 +146,70 @@ export function useMentionInput(): UseMentionInputReturn {
     const inserted = (needsPad ? " " : "") + "@";
     const next = before + inserted + after;
     const cursor = before.length + inserted.length;
+    textRef.current = next;
+    selectionRef.current = { start: cursor, end: cursor };
     setText(next);
     setSelection({ start: cursor, end: cursor });
     recomputeMentioning(next, cursor);
-  }, [text, selection, recomputeMentioning]);
+  }, [recomputeMentioning]);
 
   const onSelectMention = useCallback(
     (mention: MentionMarker) => {
       if (!mentioning) return;
       const { newText, newSelection, marker } = insertMention(
-        text,
+        textRef.current,
         { start: mentioning.start, queryLength: mentioning.query.length },
         mention,
       );
+      textRef.current = newText;
+      selectionRef.current = newSelection;
       setText(newText);
       setSelection(newSelection);
       setMarkers((prev) => [...prev, marker]);
       setMentioning(null);
     },
-    [mentioning, text],
+    [mentioning],
   );
 
   const insertAtCursor = useCallback(
     (insert: string, cursorOffsetFromEnd = 0) => {
-      const before = text.slice(0, selection.start);
-      const after = text.slice(selection.end);
+      const t = textRef.current;
+      const s = selectionRef.current;
+      const before = t.slice(0, s.start);
+      const after = t.slice(s.end);
       const next = before + insert + after;
       const cursor = before.length + insert.length - cursorOffsetFromEnd;
+      textRef.current = next;
+      selectionRef.current = { start: cursor, end: cursor };
       setText(next);
       setSelection({ start: cursor, end: cursor });
       // Toolbar inserts (list / quote / code / inline image link) never
       // produce a mention — close the suggestion bar if it was open.
       setMentioning(null);
     },
-    [text, selection],
+    [],
   );
 
   const insertAtLineStart = useCallback(
     (prefix: string) => {
-      const before = text.slice(0, selection.start);
+      const t = textRef.current;
+      const s = selectionRef.current;
+      const before = t.slice(0, s.start);
       const lastNewline = before.lastIndexOf("\n");
       // The line containing the caret starts after the previous \n, or at
       // index 0 if this is the first line.
       const lineStart = lastNewline === -1 ? 0 : lastNewline + 1;
-      const next =
-        text.slice(0, lineStart) + prefix + text.slice(lineStart);
+      const next = t.slice(0, lineStart) + prefix + t.slice(lineStart);
       // Shift the caret right by prefix length so it stays in the same
       // visual position relative to what the user just typed.
-      const cursor = selection.end + prefix.length;
+      const cursor = s.end + prefix.length;
+      textRef.current = next;
+      selectionRef.current = { start: cursor, end: cursor };
       setText(next);
       setSelection({ start: cursor, end: cursor });
       setMentioning(null);
     },
-    [text, selection],
+    [],
   );
 
   const serialize = useCallback(
@@ -192,6 +223,8 @@ export function useMentionInput(): UseMentionInputReturn {
   );
 
   const restore = useCallback((snap: MentionInputSnapshot) => {
+    textRef.current = snap.text;
+    selectionRef.current = snap.selection;
     setText(snap.text);
     setMarkers(snap.markers);
     setSelection(snap.selection);
@@ -199,6 +232,8 @@ export function useMentionInput(): UseMentionInputReturn {
   }, []);
 
   const reset = useCallback(() => {
+    textRef.current = "";
+    selectionRef.current = { start: 0, end: 0 };
     setText("");
     setMarkers([]);
     setSelection({ start: 0, end: 0 });

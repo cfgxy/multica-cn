@@ -9,13 +9,11 @@
  * different layout — web shows recursive tree, mobile shows one bubble per
  * thread. Counts agree (no comment is dropped or duplicated).
  *
- * Long-press on any CommentBody (parent or reply) opens a UIKit-native
- * `UIContextMenuInteraction` (wired via `<CommentContextMenu>`): system
- * blur + bubble snapshot scale + grouped menu (Reply / Edit / Copy /
- * Select Text / Copy Link / Resolve / New Issue / Delete) + an
- * auxiliary-preview reactions row above the snapshot for quick Tapback-
- * style emoji. Reactions still render under each body via ReactionBar
- * (existing behavior, only visible when a reaction exists).
+ * Interaction: long-press inside a bubble fires a native iOS
+ * `ActionSheetIOS` with the comment's actions (Reply, React…, Copy,
+ * Select Text, Copy Link, Resolve, Delete). While the sheet is on screen
+ * the targeted bubble's border highlights. See `useCommentLongPress` in
+ * `./comment-context-menu.tsx`.
  *
  * Resolved threads render in a collapsed `<ResolvedThreadBar>` by default —
  * mirrors the same state language web uses (`packages/views/issues/
@@ -41,6 +39,7 @@ import { useActorLookup } from "@/data/use-actor-name";
 import { timeAgo } from "@/lib/time-ago";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Markdown } from "@/lib/markdown";
+import { CommentAttachmentList } from "@/components/issue/comment-attachment-list";
 import {
   discardFailedComment,
   useCreateComment,
@@ -48,17 +47,14 @@ import {
 } from "@/data/mutations/issues";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
-import {
-  issueAttachmentsOptions,
-  issueDetailOptions,
-} from "@/data/queries/issues";
-import { useCommentSelectStore } from "@/data/comment-select-store";
+import { issueAttachmentsOptions } from "@/data/queries/issues";
 import { useFailedCommentsStore } from "@/data/stores/failed-comments-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { ReactionBar } from "./reaction-bar";
-import { CommentContextMenu } from "./comment-context-menu";
+import { useCommentLongPress } from "./comment-context-menu";
+import { useCommentSelectStore } from "@/data/comment-select-store";
 
 interface Props {
   entry: TimelineEntry;
@@ -68,6 +64,10 @@ interface Props {
   /** Plumbed through so each CommentBody can wire its reaction toggle to
    *  the correct issue's mutation key. */
   issueId: string;
+  /** Human-readable identifier (e.g. `MUL-123`) used to build the shareable
+   *  web URL for the long-press "Copy Link" item. Optional — that item
+   *  hides when missing. */
+  issueIdentifier: string | undefined;
   /** Inbox deep-link flash target. When this matches the root entry id we
    *  flash the outer bubble (ring + bg). When it matches a reply id we
    *  flash that reply's wrapper (bg only). Mirrors web's distinction at
@@ -79,6 +79,7 @@ export function CommentCard({
   entry,
   replies = [],
   issueId,
+  issueIdentifier,
   highlightedCommentId,
 }: Props) {
   // Resolved threads default to a single-line bar; tap expands in place for
@@ -88,6 +89,28 @@ export function CommentCard({
   // on the root is the single source of truth for this card.
   const resolved = !!entry.resolved_at;
   const [expanded, setExpanded] = useState(false);
+  // Highlight ring while a long-press action sheet is on screen — child
+  // CommentBody flips this via onPressChange so the outer bubble shell can
+  // visually bind the sheet to the targeted entry.
+  const [pressedEntryId, setPressedEntryId] = useState<string | null>(null);
+  const handlePressChange = useCallback(
+    (entryId: string, pressed: boolean) => {
+      setPressedEntryId((cur) => {
+        if (pressed) return entryId;
+        return cur === entryId ? null : cur;
+      });
+    },
+    [],
+  );
+  const isHighlighted =
+    pressedEntryId === entry.id ||
+    replies.some((r) => r.id === pressedEntryId);
+  // Translucent primary-tinted background while ANY body inside this card
+  // is in text-selection mode. Subtle visual cue that replaces the prior
+  // Done pill — exit is via scroll / tab switch / selecting another body.
+  const selectingId = useCommentSelectStore((s) => s.selectingId);
+  const isSelectingHere =
+    selectingId === entry.id || replies.some((r) => r.id === selectingId);
 
   // Inbox deep-link target inside a resolved thread expands automatically —
   // otherwise tapping a notification would just reveal a bar with no content
@@ -130,8 +153,10 @@ export function CommentCard({
          *  body — mirrors web's muted resolved card visual. */}
         <View
           className={cn(
-            "bg-surface-1 rounded-2xl px-4 py-3 gap-3",
+            "bg-surface-1 rounded-2xl px-4 py-3 gap-3 border-2 border-transparent transition-colors",
             resolved && "opacity-70",
+            isHighlighted && "border-primary/30",
+            isSelectingHere && "bg-primary/5 border-primary/30",
           )}
         >
           {resolved ? (
@@ -140,10 +165,20 @@ export function CommentCard({
               onCollapse={() => setExpanded(false)}
             />
           ) : null}
-          <CommentBody entry={entry} issueId={issueId} />
+          <CommentBody
+            entry={entry}
+            issueId={issueId}
+            issueIdentifier={issueIdentifier}
+            onPressChange={handlePressChange}
+          />
           {replies.map((reply) => (
             <View key={reply.id} className="border-t border-border/60 pt-3">
-              <CommentBody entry={reply} issueId={issueId} />
+              <CommentBody
+                entry={reply}
+                issueId={issueId}
+                issueIdentifier={issueIdentifier}
+                onPressChange={handlePressChange}
+              />
               <ReplyHighlightOverlay
                 active={highlightedCommentId === reply.id}
               />
@@ -339,10 +374,22 @@ function ReplyHighlightOverlay({ active }: { active: boolean }) {
 function CommentBody({
   entry,
   issueId,
+  issueIdentifier,
+  onPressChange,
 }: {
   entry: TimelineEntry;
   issueId: string;
+  issueIdentifier: string | undefined;
+  onPressChange?: (entryId: string, pressed: boolean) => void;
 }) {
+  // When this comment is the active selection target, drop the long-press
+  // wrapper AND make the markdown selectable — so the next long-press
+  // routes to UIKit's native text-selection magnifier instead of our
+  // gesture handler. Selection mode is exited via the Done pill, scrolling
+  // the timeline, or unmounting the issue screen.
+  const isSelecting = useCommentSelectStore(
+    (s) => s.selectingId === entry.id,
+  );
   const { getName } = useActorLookup();
   const userId = useAuthStore((s) => s.user?.id);
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
@@ -359,23 +406,6 @@ function CommentBody({
   const { data: attachments } = useQuery(
     issueAttachmentsOptions(wsId, issueId),
   );
-  // Issue detail (cached by IssueDetailScreen) — only needed for the
-  // identifier passed into the context-menu "Copy link" / "New issue"
-  // actions. TanStack dedupes against the screen-level subscription.
-  const { data: issue } = useQuery(issueDetailOptions(wsId, issueId));
-  // Selection mode: when the user picked "Select Text" from the
-  // CommentContextMenu, the store remembers this comment's id. We then
-  // (a) skip the context-menu wrapper so UIKit no longer owns long-press,
-  // and (b) flip Markdown to `selectable={true}` so the next long-press
-  // hands off to UIKit's native selection magnifier (handles + Copy/Look
-  // Up callout). Same UX as iOS 26 iMessage "Select" — no race, no flicker.
-  const isSelecting = useCommentSelectStore(
-    (s) => s.selectingId === entry.id,
-  );
-  // Optimistic comments (synthetic ids minted by useCreateComment) don't
-  // have server-side ids yet — every menu action (toggle / copy link /
-  // delete / resolve) would no-op or break, so we render the body bare.
-  const isOptimistic = entry.id.startsWith("optimistic-");
 
   const name = getName(
     entry.actor_type as "member" | "agent" | null | undefined,
@@ -388,9 +418,6 @@ function CommentBody({
 
   // Reactions live on TimelineEntry.reactions (mirrored from Comment).
   // Pass through to the bar; toggle finds existing match by emoji + actor.
-  // Ownership + isRoot derivation now happens inside the comment-actions
-  // route (`issue/[id]/comment/[commentId]/actions.tsx`) — keeping it in
-  // one place avoids two sources of truth.
   const reactions: Reaction[] = (entry.reactions ?? []) as Reaction[];
 
   const onToggleReaction = useCallback(
@@ -424,20 +451,32 @@ function CommentBody({
     discardFailedComment(qc, wsId, issueId, entry.id);
   }, [qc, wsId, issueId, entry.id]);
 
-  // Note: entry.attachments is not rendered separately — the markdown
-  // renderer handles inline images (`![]()`) and file cards
-  // (`!file[name](url)` → preprocessed into a 📎-prefixed link). The
-  // attachments[] array is backend cleanup metadata, not display content
-  // (matches web's behavior).
+  // Per-comment attachments render in two complementary places:
+  //   - inline via the markdown renderer when the content references
+  //     them with `![](url)` (typical for web/desktop comments authored
+  //     in the rich editor)
+  //   - via <CommentAttachmentList> below the body when they exist but
+  //     aren't referenced in markdown (mobile-authored comments take this
+  //     path — see inline-comment-composer.tsx for why mobile doesn't
+  //     inline-insert).
+  // Mirrors web's split: comment-card.tsx:124 `AttachmentList`.
   //
-  // `selectable={isSelecting}`: default false so UIKit's UITextView.
-  // isSelectable doesn't fight UIContextMenuInteraction for the long-press
-  // gesture on the enriched-markdown native view. When the user picks
-  // "Select Text" from the menu, `isSelecting` flips true and UIKit's
-  // native selection (magnifier + handles + Copy/Look Up callout) takes
-  // over the next long-press inside the bubble — Safari / Notes / Mail
-  // standard. We also drop the CommentContextMenu wrapper in that branch
-  // so only one long-press handler is bound at a time.
+  // When NOT selecting: long-press fires the native ActionSheetIOS via
+  // useCommentLongPress. Markdown is non-selectable so the long-press
+  // gesture doesn't race UIKit's text selection.
+  //
+  // When selecting: long-press wrapper is gone, markdown is selectable.
+  // The next long-press fires UIKit's native text-selection magnifier
+  // + handles + Copy/Look Up callout. The outer bubble shell carries a
+  // translucent primary-tint background as the mode cue (no Done pill).
+  // Exit: scroll the timeline, leave the issue, or long-press another body.
+  const longPress = useCommentLongPress(entry, issueId, issueIdentifier);
+
+  useEffect(() => {
+    if (isSelecting) return;
+    onPressChange?.(entry.id, longPress.isPressed);
+  }, [longPress.isPressed, entry.id, isSelecting, onPressChange]);
+
   const body = (
     <View className="gap-2">
       <View className="flex-row items-center gap-2">
@@ -460,6 +499,10 @@ function CommentBody({
           selectable={isSelecting}
         />
       ) : null}
+      <CommentAttachmentList
+        attachments={entry.attachments}
+        content={entry.content}
+      />
       {failed ? (
         <FailedActions
           error={failed.error}
@@ -476,16 +519,12 @@ function CommentBody({
     </View>
   );
 
-  if (isSelecting || isOptimistic) return body;
+  if (isSelecting) return body;
 
   return (
-    <CommentContextMenu
-      entry={entry}
-      issueId={issueId}
-      issueIdentifier={issue?.identifier}
-    >
+    <Pressable onLongPress={longPress.onLongPress} delayLongPress={500}>
       {body}
-    </CommentContextMenu>
+    </Pressable>
   );
 }
 

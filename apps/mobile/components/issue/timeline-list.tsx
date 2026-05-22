@@ -94,12 +94,12 @@ import { IssueDescription } from "./issue-description";
 import { IssueReactionRow } from "./issue-reaction-row";
 import { ActivityRow } from "./activity-row";
 import { CommentCard } from "./comment-card";
-import { useCommentSelectStore } from "@/data/comment-select-store";
 import { useLastViewedStore } from "@/data/stores/last-viewed-store";
 import { coalesceTimeline } from "@/lib/timeline-coalesce";
 import { buildTimelineRows, type TimelineRow } from "@/lib/timeline-thread";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
+import { useCommentSelectStore } from "@/data/comment-select-store";
 
 interface Props {
   issue: Issue;
@@ -384,26 +384,38 @@ export function TimelineList({
               entry={item.entry}
               replies={item.replies}
               issueId={issue.id}
+              issueIdentifier={issue.identifier}
               highlightedCommentId={highlightedId}
             />
           ) : (
             <ActivityRow entry={item.entry} />
           );
         }}
-        // Any user-initiated scroll exits comment text-selection mode —
-        // once the user starts scrolling, an active selection is treated as
-        // done so the next long-press on a comment goes back to opening the
-        // action sheet instead of triggering UIKit selection. Both events
-        // are listened to because a flick fires `momentumScrollBegin`
-        // without an explicit `scrollBeginDrag`.
-        onScrollBeginDrag={() => useCommentSelectStore.getState().clear()}
-        onMomentumScrollBegin={() => useCommentSelectStore.getState().clear()}
         onScroll={handleScroll}
+        // Any user-initiated scroll exits comment text-selection mode —
+        // matches iMessage's behavior where scrolling implicitly commits /
+        // dismisses the selection caret. Hooks both drag-start and the
+        // momentum kick after a flick so a fast scroll can't escape.
+        onScrollBeginDrag={() =>
+          useCommentSelectStore.getState().clear()
+        }
+        onMomentumScrollBegin={() =>
+          useCommentSelectStore.getState().clear()
+        }
         viewabilityConfigCallbackPairs={viewabilityCallbackPairs.current}
         refreshControl={
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }
-        contentContainerStyle={{ paddingBottom: 16 }}
+        // `flexGrow: 1` + `justifyContent: 'flex-end'` makes the content
+        // hug the composer when the timeline is short — no awkward empty
+        // band between the last entry and the input. When the timeline
+        // overflows the viewport, flexGrow has no effect and the list
+        // scrolls normally from the top.
+        contentContainerStyle={{
+          flexGrow: 1,
+          justifyContent: "flex-end",
+          paddingBottom: 16,
+        }}
       />
       {newCount > 0 ? (
         <NewCommentChip count={newCount} onPress={onJumpToNew} />
