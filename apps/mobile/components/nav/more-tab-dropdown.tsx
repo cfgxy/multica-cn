@@ -27,15 +27,15 @@
  *     so they share the visual language of the bottom tab bar icons.
  *   - All colours route through THEME tokens (foreground /
  *     mutedForeground / secondary), so dark mode is automatic.
- *   - Workspace section is a flat list of every workspace the user
- *     belongs to. The current one is rendered bold + with a trailing
- *     `sf:checkmark`; the others are tappable and switch immediately.
- *     This is the iOS list-picker idiom (Apple Reminders' list picker,
- *     Calendar's calendar picker) — selection lives in the row itself,
- *     no secondary picker sheet, no extra chevron required.
+ *   - Workspace is collapsed to a single `<WorkspaceCard>` row (icon +
+ *     current workspace name + chevron). Tapping it dismisses the popover
+ *     and pushes `/${slug}/switch-workspace`, a formSheet that lists every
+ *     workspace and triggers an iOS `Alert.alert` confirm before switching.
+ *     Earlier shape (every workspace inlined here) made the popover long
+ *     and offered no friction against accidental taps.
  */
 import { useMemo } from "react";
-import { ActivityIndicator, Image, Pressable, View } from "react-native";
+import { Image, Pressable, View } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import { router, usePathname } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
@@ -73,6 +73,7 @@ interface NavItem {
 }
 
 const NAV_ITEMS: NavItem[] = [
+  { label: "Pinned", icon: "pin", path: "/more/pins" },
   { label: "Issues", icon: "list.bullet", path: "/more/issues" },
   { label: "Projects", icon: "square.stack", path: "/more/projects" },
 ];
@@ -135,11 +136,13 @@ export function MoreTabDropdownAnchor({
 
           <DropdownMenuSeparator />
 
-          <WorkspaceSection
-            activeSlug={slug}
+          <WorkspaceCard
             currentWorkspaceName={currentWorkspace?.name}
+            onPress={() =>
+              slug && router.push(`/${slug}/switch-workspace`)
+            }
             iconTint={t.foreground}
-            mutedIconTint={t.mutedForeground}
+            chevronTint={t.mutedForeground}
           />
 
           <DropdownMenuSeparator />
@@ -228,101 +231,66 @@ function UserCard({
 }
 
 /**
- * Flat list of every workspace the user belongs to. The current row is
- * bold + ends with `sf:checkmark`; the rest are tappable and switch
- * immediately. iOS list-picker idiom — no nested sheet, no separate
- * picker chevron. When there is only one workspace, that single row is
- * still rendered with the checkmark so the user can confirm where they
- * are; the "switchable" affordance is the existence of other rows.
+ * Collapsed single-row entry that shows the current workspace name and
+ * pushes the switch-workspace formSheet on tap. Same shape as `UserCard`
+ * above — `chevron.right` disclosure indicator signals "tap to descend".
+ * Auto-closes the popover because `DropdownMenuItem.onPress` dismisses
+ * the menu before our handler runs.
+ *
+ * When the workspaces query hasn't resolved yet, we still render the row
+ * using the slug-derived name from the store so the popover doesn't
+ * jump-resize on first open; the row remains tappable because the
+ * switch-workspace sheet has its own loading state.
+ *
+ * Single-workspace users: handled in `MoreTabDropdownAnchor` by passing
+ * `disabled` — the row renders with no chevron and no press effect.
  */
-function WorkspaceSection({
-  activeSlug,
+function WorkspaceCard({
   currentWorkspaceName,
+  onPress,
   iconTint,
-  mutedIconTint,
+  chevronTint,
 }: {
-  activeSlug: string | null;
   currentWorkspaceName: string | undefined;
+  onPress: () => void;
   iconTint: string;
-  mutedIconTint: string;
+  chevronTint: string;
 }) {
-  const { data, isLoading } = useQuery(workspaceListOptions());
+  const { data } = useQuery(workspaceListOptions());
+  const canSwitch = (data?.length ?? 0) > 1;
 
-  if (isLoading) {
-    return (
-      <View className="py-3 items-center">
-        <ActivityIndicator />
-      </View>
-    );
-  }
-
-  // Fallback: query somehow returned nothing but we still know the
-  // current workspace name from the store. Render it as a static row so
-  // the user can confirm context.
-  if (!data || data.length === 0) {
-    return (
-      <View className="px-2 py-2 flex-row items-center gap-3">
+  return (
+    <DropdownMenuItem
+      onPress={onPress}
+      disabled={!canSwitch}
+      className="h-12 gap-3"
+      accessibilityLabel={
+        canSwitch ? "切换工作区" : currentWorkspaceName ?? "Workspace"
+      }
+    >
+      <View className="size-8 rounded-md bg-muted items-center justify-center">
         <ExpoImage
           source="sf:building.2"
           tintColor={iconTint}
           style={{ width: 16, height: 16 }}
         />
+      </View>
+      <View className="flex-1 min-w-0">
         <Text
-          className="flex-1 text-sm font-medium text-foreground"
+          className="text-sm font-medium text-foreground"
           numberOfLines={1}
         >
           {currentWorkspaceName ?? "Workspace"}
         </Text>
       </View>
-    );
-  }
-
-  return (
-    <View>
-      <View className="px-2 pt-1 pb-1">
-        <Text className="text-[11px] uppercase tracking-wider text-muted-foreground">
-          Workspace
-        </Text>
-      </View>
-      {data.map((ws) => {
-        const active = ws.slug === activeSlug;
-        return (
-          <DropdownMenuItem
-            key={ws.id}
-            onPress={() => {
-              if (active) return;
-              router.replace(`/${ws.slug}/inbox`);
-            }}
-            className="h-9 gap-3"
-            accessibilityLabel={
-              active ? `${ws.name}, current` : `Switch to ${ws.name}`
-            }
-          >
-            <ExpoImage
-              source="sf:building.2"
-              tintColor={active ? iconTint : mutedIconTint}
-              style={{ width: 16, height: 16 }}
-            />
-            <Text
-              className={cn(
-                "flex-1 text-sm text-foreground",
-                active && "font-semibold",
-              )}
-              numberOfLines={1}
-            >
-              {ws.name}
-            </Text>
-            {active ? (
-              <ExpoImage
-                source="sf:checkmark"
-                tintColor={iconTint}
-                style={{ width: 14, height: 14 }}
-              />
-            ) : null}
-          </DropdownMenuItem>
-        );
-      })}
-    </View>
+      {canSwitch ? (
+        <ExpoImage
+          source="sf:chevron.right"
+          tintColor={chevronTint}
+          style={{ width: 12, height: 12 }}
+        />
+      ) : null}
+    </DropdownMenuItem>
   );
 }
 

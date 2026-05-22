@@ -10,6 +10,7 @@ import { useIssuesRealtime } from "@/data/realtime/use-issues-realtime";
 import { useMyIssuesRealtime } from "@/data/realtime/use-my-issues-realtime";
 import { useChatSessionsRealtime } from "@/data/realtime/use-chat-sessions-realtime";
 import { useProjectsRealtime } from "@/data/realtime/use-projects-realtime";
+import { usePinsRealtime } from "@/data/realtime/use-pins-realtime";
 import { usePresenceRealtime } from "@/data/realtime/use-presence-realtime";
 import { useWorkspacePresencePrefetch } from "@/lib/use-workspace-presence-prefetch";
 import { ModalCloseButton } from "@/components/ui/modal-close-button";
@@ -77,6 +78,7 @@ function RealtimeSubscriptions() {
   useMyIssuesRealtime();
   useChatSessionsRealtime();
   useProjectsRealtime();
+  usePinsRealtime();
   // Presence: warm the three queries up front so avatars don't flash a
   // dotless first render, and listen for daemon/agent/task events to keep
   // the runtime + snapshot caches fresh. See use-presence-realtime.ts for
@@ -201,6 +203,9 @@ export default function WorkspaceLayout() {
           options={SHEET_OPTIONS}
         />
         <Stack.Screen name="issue/[id]/runs" options={SHEET_OPTIONS} />
+        {/* Full emoji picker for a comment reaction. Pushed from the "+"
+            button inside the comment long-press tapback row — see
+            components/issue/comment-context-menu.tsx. */}
         <Stack.Screen
           name="issue/[id]/comment/[commentId]/emoji-picker"
           options={SHEET_OPTIONS}
@@ -265,6 +270,9 @@ export default function WorkspaceLayout() {
         <Stack.Screen name="issues-filter" options={SHEET_OPTIONS} />
         {/* Chat session-switch sheet. */}
         <Stack.Screen name="chat-sessions" options={SHEET_OPTIONS} />
+        {/* Workspace switcher — reached from the More popover's collapsed
+            WorkspaceCard. Two-step (pick → iOS Alert confirm → switch). */}
+        <Stack.Screen name="switch-workspace" options={SHEET_OPTIONS} />
         <Stack.Screen
           name="more/issues"
           options={{ title: "Issues", headerBackTitle: "Back" }}
@@ -276,6 +284,10 @@ export default function WorkspaceLayout() {
         <Stack.Screen
           name="more/agents"
           options={{ title: "Agents", headerBackTitle: "Back" }}
+        />
+        <Stack.Screen
+          name="more/pins"
+          options={{ title: "Pinned", headerBackTitle: "Back" }}
         />
         <Stack.Screen
           name="more/settings"

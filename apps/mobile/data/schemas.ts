@@ -25,6 +25,7 @@ import type {
   ListProjectResourcesResponse,
   ListProjectsResponse,
   MemberWithUser,
+  PinnedItem,
   Project,
   ProjectResource,
   RuntimeDevice,
@@ -442,6 +443,22 @@ export const WorkspaceSchema: z.ZodType<Workspace> = z.object({
 
 export const WorkspaceListSchema = z.array(WorkspaceSchema).default([]);
 export const EMPTY_WORKSPACE_LIST: Workspace[] = [];
+
+/** Pin metadata only — display fields (title / status / icon) are NOT here,
+ *  consumers derive them from `issueDetailOptions` / `projectDetailOptions`.
+ *  Matches the design in packages/core/types/pin.ts. */
+export const PinnedItemSchema: z.ZodType<PinnedItem> = z.object({
+  id: z.string(),
+  workspace_id: z.string().default(""),
+  user_id: z.string().default(""),
+  item_type: z.enum(["issue", "project"]).catch("issue"),
+  item_id: z.string(),
+  position: z.number().default(0),
+  created_at: z.string().default(""),
+}).loose();
+
+export const PinListSchema = z.array(PinnedItemSchema).default([]);
+export const EMPTY_PIN_LIST: PinnedItem[] = [];
 
 const InboxItemSchema: z.ZodType<InboxItem> = z.object({
   id: z.string(),

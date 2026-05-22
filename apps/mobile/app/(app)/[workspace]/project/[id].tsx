@@ -39,6 +39,9 @@ import {
 } from "@/data/queries/projects";
 import { issueKeys } from "@/data/queries/issue-keys";
 import { useDeleteProject } from "@/data/mutations/projects";
+import { pinListOptions } from "@/data/queries/pins";
+import { useCreatePin, useDeletePin } from "@/data/mutations/pins";
+import { useAuthStore } from "@/data/auth-store";
 import { useProjectRealtime } from "@/data/realtime/use-project-realtime";
 import { useWorkspaceStore } from "@/data/workspace-store";
 
@@ -71,11 +74,22 @@ export default function ProjectDetail() {
   // fallback because the response shape drifted. Treat as "not found".
   const projectMissing = !project || project.id === "";
 
+  const userId = useAuthStore((s) => s.user?.id ?? null);
+  const { data: pins } = useQuery(pinListOptions(wsId, userId));
+  const isPinned =
+    !!project &&
+    !!pins?.some(
+      (p) => p.item_type === "project" && p.item_id === project.id,
+    );
+  const createPin = useCreatePin();
+  const deletePin = useDeletePin();
+
   const onPressMore = () => {
     if (!project) return;
     const wsUrl = process.env.EXPO_PUBLIC_WEB_URL;
     const options = [
       "Cancel",
+      isPinned ? "Unpin" : "Pin",
       "Edit details",
       ...(wsUrl ? ["Open on web"] : []),
       "Delete",
@@ -88,11 +102,20 @@ export default function ProjectDetail() {
         destructiveButtonIndex: destructiveIndex,
       },
       (i) => {
-        if (i === 1) {
+        const label = options[i];
+        if (label === "Pin") {
+          createPin.mutate({ item_type: "project", item_id: project.id });
+          return;
+        }
+        if (label === "Unpin") {
+          deletePin.mutate({ itemType: "project", itemId: project.id });
+          return;
+        }
+        if (label === "Edit details") {
           if (wsSlug) router.push(`/${wsSlug}/project/${id}/edit`);
           return;
         }
-        if (wsUrl && i === 2) {
+        if (label === "Open on web" && wsUrl) {
           Linking.openURL(`${wsUrl}/${wsSlug}/projects/${id}`);
           return;
         }

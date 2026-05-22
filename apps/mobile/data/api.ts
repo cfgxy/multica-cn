@@ -36,9 +36,12 @@ import type {
   ListProjectResourcesResponse,
   ListProjectsResponse,
   MemberWithUser,
+  PinnedItem,
+  PinnedItemType,
   Project,
   ProjectResource,
   Reaction,
+  ReorderPinsRequest,
   RuntimeDevice,
   SearchIssuesResponse,
   SearchProjectsResponse,
@@ -86,6 +89,7 @@ import {
   EMPTY_LIST_PROJECTS_RESPONSE,
   EMPTY_MEMBER_LIST,
   EMPTY_NOTIFICATION_PREFERENCES,
+  EMPTY_PIN_LIST,
   EMPTY_PROJECT,
   EMPTY_RUNTIME_LIST,
   EMPTY_SEARCH_ISSUES_RESPONSE,
@@ -99,6 +103,8 @@ import {
   ListProjectResourcesResponseSchema,
   ListProjectsResponseSchema,
   MemberListSchema,
+  PinListSchema,
+  PinnedItemSchema,
   ProjectSchema,
   RuntimeListSchema,
   SearchIssuesResponseSchema,
@@ -1075,6 +1081,57 @@ class ApiClient {
 
   async cancelTaskById(taskId: string): Promise<void> {
     await this.fetch<void>(`/api/tasks/${taskId}/cancel`, { method: "POST" });
+  }
+
+  // --- Pins ---
+  //
+  // Pin metadata only — title / status / icon for each row come from
+  // `issueDetailOptions` / `projectDetailOptions` on the consumer side.
+  // Endpoints mirror packages/core/api/client.ts:1551-1572.
+
+  async listPins(opts?: { signal?: AbortSignal }): Promise<PinnedItem[]> {
+    return this.fetchValidated(
+      "/api/pins",
+      PinListSchema,
+      EMPTY_PIN_LIST,
+      { ...opts, endpoint: "listPins" },
+    );
+  }
+
+  async createPin(data: {
+    item_type: PinnedItemType;
+    item_id: string;
+  }): Promise<PinnedItem> {
+    return this.fetchValidatedWith(
+      "/api/pins",
+      PinnedItemSchema,
+      // Mirror EMPTY_PIN_LIST element shape — onSuccess uses the returned
+      // pin's id/position so a stub with empty id is detectable downstream.
+      {
+        id: "",
+        workspace_id: "",
+        user_id: "",
+        item_type: data.item_type,
+        item_id: data.item_id,
+        position: 0,
+        created_at: "",
+      },
+      { method: "POST", body: JSON.stringify(data) },
+      { endpoint: "createPin" },
+    );
+  }
+
+  async deletePin(itemType: PinnedItemType, itemId: string): Promise<void> {
+    await this.fetch<void>(`/api/pins/${itemType}/${itemId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async reorderPins(data: ReorderPinsRequest): Promise<void> {
+    await this.fetch<void>("/api/pins/reorder", {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
   }
 
   // --- File Upload ---

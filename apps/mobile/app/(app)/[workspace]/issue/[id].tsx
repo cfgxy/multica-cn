@@ -35,6 +35,9 @@ import {
   issueTimelineOptions,
 } from "@/data/queries/issues";
 import { useDeleteIssue } from "@/data/mutations/issues";
+import { pinListOptions } from "@/data/queries/pins";
+import { useCreatePin, useDeletePin } from "@/data/mutations/pins";
+import { useAuthStore } from "@/data/auth-store";
 import { useIssueRealtime } from "@/data/realtime/use-issue-realtime";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useViewedIssuesStore } from "@/data/viewed-issues-store";
@@ -89,9 +92,16 @@ export default function IssueDetail() {
 
   const issue = detail.data;
   const deleteIssue = useDeleteIssue();
+  const userId = useAuthStore((s) => s.user?.id ?? null);
+  const { data: pins } = useQuery(pinListOptions(wsId, userId));
+  const isPinned =
+    !!issue &&
+    !!pins?.some((p) => p.item_type === "issue" && p.item_id === issue.id);
+  const createPin = useCreatePin();
+  const deletePin = useDeletePin();
 
-  // Three-dot menu: Copy link / Open on web (if web URL set) / Delete.
-  // Mirrors apps/mobile/app/(app)/[workspace]/project/[id].tsx:99-148 — same
+  // Three-dot menu: Pin/Unpin / Copy link / Open on web (if web URL set) /
+  // Delete. Mirrors apps/mobile/app/(app)/[workspace]/project/[id].tsx — same
   // ActionSheetIOS + Alert.alert confirm pattern. Property edits (status,
   // priority, assignee, due_date) live on the IssueHeaderCard chips inside
   // the timeline list, not in this menu — one entry per action.
@@ -102,6 +112,7 @@ export default function IssueDetail() {
       ? `${webUrl}/${wsSlug}/issue/${issue.identifier}`
       : null;
     const options: string[] = ["Cancel"];
+    options.push(isPinned ? "Unpin" : "Pin");
     if (issueLink) options.push("Copy link");
     if (issueLink) options.push("Open on web");
     options.push("Delete issue");
@@ -115,7 +126,11 @@ export default function IssueDetail() {
       },
       (i) => {
         const label = options[i];
-        if (label === "Copy link" && issueLink) {
+        if (label === "Pin") {
+          createPin.mutate({ item_type: "issue", item_id: issue.id });
+        } else if (label === "Unpin") {
+          deletePin.mutate({ itemType: "issue", itemId: issue.id });
+        } else if (label === "Copy link" && issueLink) {
           Clipboard.setStringAsync(issueLink);
         } else if (label === "Open on web" && issueLink) {
           Linking.openURL(issueLink);
@@ -128,7 +143,7 @@ export default function IssueDetail() {
         }
       },
     );
-  }, [issue, wsSlug, deleteIssue]);
+  }, [issue, wsSlug, deleteIssue, isPinned, createPin, deletePin]);
 
   return (
     <SafeAreaView className="flex-1 bg-background" edges={["bottom"]}>
