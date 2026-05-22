@@ -287,6 +287,35 @@ export function createEnDict(allowSignup: boolean): LandingDict {
     },
     entries: [
       {
+        version: "0.3.6",
+        date: "2026-05-22",
+        title: "Smarter Welcome, Live Work Signals & Safer Collaboration",
+        changes: [],
+        features: [
+          "New users now enter a guided welcome experience where Multica Helper can introduce the workspace, give a tour, or build a slide-style welcome page",
+          "Issue lists now show when agents are actively working, with per-Issue indicators, hover details, and a quick filter for work in progress",
+          "When a child Issue is finished, the parent Issue now receives a platform-generated update and can notify the right parent owner without creating loops",
+          "The public site now includes a Contact Sales flow with a business-email form and submission protection",
+          "Desktop users can navigate back and forward with macOS swipe gestures",
+        ],
+        improvements: [
+          "Issue board cards are easier to scan, with cleaner rows, better truncation, and localized relative times",
+          "Create Issue keeps start date in the overflow menu until it is needed, leaving the main property bar less crowded",
+          "Workspaces can choose stricter secret visibility so agent environment values stay hidden even from read views",
+          "Workspace lists load more efficiently for members in larger deployments",
+          "Helper now surfaces newer CLI, documentation, or repository behavior instead of silently relying on stale guidance",
+        ],
+        fixes: [
+          "Agents now receive the workspace context configured in settings, so shared guidance is available during runs",
+          "Online local runtimes no longer offer a delete action that immediately reappears because the local service is still running",
+          "Pi responses no longer leak raw tool-call markup into visible assistant messages or Issue comments",
+          "SVG uploads and inline file previews use safer handling by default",
+          "Squad leaders get clearer protection against accidentally triggering the same agent twice",
+          "Self-hosted setups no longer expose the database port by default, and cloud runtime deletion sends the correct request details",
+          "Desktop update settings, mobile skill pages, and assignee pickers now fit better across languages and small screens",
+        ],
+      },
+      {
         version: "0.3.5",
         date: "2026-05-21",
         title: "Local-Time Usage & Issue Custom KV",
