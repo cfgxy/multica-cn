@@ -89,7 +89,13 @@ export function ContactSalesPageClient() {
     setState({ status: "submitting" });
 
     try {
-      const res = await fetch("/api/contact-sales", {
+      // Call the API origin directly (same as the rest of the web app via
+      // `apiBaseUrl={process.env.NEXT_PUBLIC_API_URL}`). The `/api/*` Vercel
+      // rewrite uses server-only `REMOTE_API_URL`, which on Vercel may not
+      // be publicly resolvable — relying on it makes this endpoint 404 even
+      // when every other API works.
+      const apiBase = process.env.NEXT_PUBLIC_API_URL ?? "";
+      const res = await fetch(`${apiBase}/api/contact-sales`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
