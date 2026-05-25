@@ -833,39 +833,173 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 		scheduledFilter = pgtype.Bool{Bool: true, Valid: true}
 	}
 
-	issues, err := h.Queries.ListIssues(ctx, db.ListIssuesParams{
-		WorkspaceID:    wsUUID,
-		Limit:          int32(limit),
-		Offset:         int32(offset),
-		Status:         statusFilter,
-		Priority:       priorityFilter,
-		AssigneeID:     assigneeFilter,
-		AssigneeIds:    assigneeIdsFilter,
-		CreatorID:      creatorFilter,
-		ProjectID:      projectFilter,
-		InvolvesUserID: involvesUserFilter,
-		Scheduled:      scheduledFilter,
-		MetadataFilter: metadataFilter,
-	})
+	// Parse sort and direction params for dynamic ORDER BY.
+	sortCol := "position"
+	if s := r.URL.Query().Get("sort"); s != "" {
+		switch s {
+		case "position", "title", "created_at", "start_date", "due_date":
+			sortCol = s
+		case "priority":
+			sortCol = "CASE i.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END"
+		default:
+			writeError(w, http.StatusBadRequest, "invalid sort value")
+			return
+		}
+	}
+	sortDir := "ASC"
+	if d := r.URL.Query().Get("direction"); d != "" {
+		switch strings.ToLower(d) {
+		case "asc":
+			sortDir = "ASC"
+		case "desc":
+			sortDir = "DESC"
+		default:
+			writeError(w, http.StatusBadRequest, "invalid direction value")
+			return
+		}
+	}
+
+	// Build dynamic SQL — same approach as ListGroupedIssues.
+	where := []string{"i.workspace_id = $1"}
+	args := []any{wsUUID}
+	addArg := func(v any) string {
+		args = append(args, v)
+		return "$" + strconv.Itoa(len(args))
+	}
+
+	if statusFilter.Valid {
+		where = append(where, fmt.Sprintf("i.status = %s", addArg(statusFilter.String)))
+	}
+	if priorityFilter.Valid {
+		where = append(where, fmt.Sprintf("i.priority = %s", addArg(priorityFilter.String)))
+	}
+	if assigneeFilter.Valid {
+		where = append(where, fmt.Sprintf("i.assignee_id = %s::uuid", addArg(assigneeFilter)))
+	}
+	if len(assigneeIdsFilter) > 0 {
+		where = append(where, fmt.Sprintf("i.assignee_id = ANY(%s::uuid[])", addArg(assigneeIdsFilter)))
+	}
+	if creatorFilter.Valid {
+		where = append(where, fmt.Sprintf("i.creator_id = %s::uuid", addArg(creatorFilter)))
+	}
+	if projectFilter.Valid {
+		where = append(where, fmt.Sprintf("i.project_id = %s::uuid", addArg(projectFilter)))
+	}
+	if scheduledFilter.Valid {
+		where = append(where, "(i.start_date IS NOT NULL OR i.due_date IS NOT NULL)")
+	}
+	if metadataFilter != nil {
+		where = append(where, fmt.Sprintf("i.metadata @> %s::jsonb", addArg(string(metadataFilter))))
+	}
+	if involvesUserFilter.Valid {
+		ref := addArg(involvesUserFilter)
+		where = append(where, fmt.Sprintf(`(
+    (i.assignee_type = 'agent' AND i.assignee_id IN (
+       SELECT a.id FROM agent a
+        WHERE a.workspace_id = $1
+          AND a.owner_id     = %[1]s::uuid
+    ))
+    OR (i.assignee_type = 'squad' AND i.assignee_id IN (
+       SELECT sm.squad_id
+         FROM squad_member sm
+         JOIN squad s ON s.id = sm.squad_id
+        WHERE s.workspace_id = $1
+          AND sm.member_type = 'member'
+          AND sm.member_id   = %[1]s::uuid
+       UNION
+       SELECT s.id
+         FROM squad s
+         JOIN agent a ON a.id = s.leader_id
+        WHERE s.workspace_id = $1
+          AND a.workspace_id = $1
+          AND a.owner_id     = %[1]s::uuid
+       UNION
+       SELECT sm.squad_id
+         FROM squad_member sm
+         JOIN squad s ON s.id = sm.squad_id
+         JOIN agent a ON a.id = sm.member_id
+        WHERE s.workspace_id = $1
+          AND sm.member_type = 'agent'
+          AND a.workspace_id = $1
+          AND a.owner_id     = %[1]s::uuid
+    ))
+)`, ref))
+	}
+
+	whereSql := strings.Join(where, " AND ")
+
+	// Build ORDER BY clause.
+	orderBy := sortCol
+	if !strings.HasPrefix(sortCol, "CASE") {
+		orderBy = "i." + sortCol
+	}
+	orderBy += " " + sortDir
+	if sortCol == "start_date" || sortCol == "due_date" {
+		orderBy += " NULLS LAST"
+	}
+	orderBy += ", i.created_at DESC"
+
+	offsetRef := addArg(int64(offset))
+	limitRef := addArg(int64(limit))
+
+	query := fmt.Sprintf(`SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
+       i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
+       i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.number, i.project_id, i.metadata
+FROM issue i
+WHERE %s
+ORDER BY %s
+LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
+
+	rows, err := h.DB.Query(ctx, query, args...)
 	if err != nil {
+		slog.Warn("ListIssues query failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "failed to list issues")
+		return
+	}
+	defer rows.Close()
+
+	var issues []db.ListIssuesRow
+	for rows.Next() {
+		var row db.ListIssuesRow
+		if err := rows.Scan(
+			&row.ID,
+			&row.WorkspaceID,
+			&row.Title,
+			&row.Description,
+			&row.Status,
+			&row.Priority,
+			&row.AssigneeType,
+			&row.AssigneeID,
+			&row.CreatorType,
+			&row.CreatorID,
+			&row.ParentIssueID,
+			&row.Position,
+			&row.StartDate,
+			&row.DueDate,
+			&row.CreatedAt,
+			&row.UpdatedAt,
+			&row.Number,
+			&row.ProjectID,
+			&row.Metadata,
+		); err != nil {
+			slog.Warn("ListIssues scan failed", "error", err)
+			writeError(w, http.StatusInternalServerError, "failed to list issues")
+			return
+		}
+		issues = append(issues, row)
+	}
+	if err := rows.Err(); err != nil {
+		slog.Warn("ListIssues rows failed", "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to list issues")
 		return
 	}
 
 	// Get the true total count for pagination awareness.
-	total, err := h.Queries.CountIssues(ctx, db.CountIssuesParams{
-		WorkspaceID:    wsUUID,
-		Status:         statusFilter,
-		Priority:       priorityFilter,
-		AssigneeID:     assigneeFilter,
-		AssigneeIds:    assigneeIdsFilter,
-		CreatorID:      creatorFilter,
-		ProjectID:      projectFilter,
-		InvolvesUserID: involvesUserFilter,
-		Scheduled:      scheduledFilter,
-		MetadataFilter: metadataFilter,
-	})
-	if err != nil {
+	countQuery := fmt.Sprintf(`SELECT COUNT(*) FROM issue i WHERE %s`, whereSql)
+	// Count query uses the same args minus the OFFSET and LIMIT params (last two added).
+	countArgs := args[:len(args)-2]
+	var total int64
+	if err := h.DB.QueryRow(ctx, countQuery, countArgs...).Scan(&total); err != nil {
 		total = int64(len(issues))
 	}
 
@@ -1194,6 +1328,41 @@ func (h *Handler) ListGroupedIssues(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	sortCol := "position"
+	if s := r.URL.Query().Get("sort"); s != "" {
+		switch s {
+		case "position", "title", "created_at", "start_date", "due_date":
+			sortCol = s
+		case "priority":
+			sortCol = "CASE i.priority WHEN 'urgent' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END"
+		default:
+			writeError(w, http.StatusBadRequest, "invalid sort value")
+			return
+		}
+	}
+	sortDir := "ASC"
+	if d := r.URL.Query().Get("direction"); d != "" {
+		switch strings.ToLower(d) {
+		case "asc":
+			sortDir = "ASC"
+		case "desc":
+			sortDir = "DESC"
+		default:
+			writeError(w, http.StatusBadRequest, "invalid direction value")
+			return
+		}
+	}
+
+	intraGroupOrder := sortCol
+	if !strings.HasPrefix(sortCol, "CASE") {
+		intraGroupOrder = "i." + sortCol
+	}
+	intraGroupOrder += " " + sortDir
+	if sortCol == "start_date" || sortCol == "due_date" {
+		intraGroupOrder += " NULLS LAST"
+	}
+	intraGroupOrder += ", i.created_at DESC"
+
 	offsetRef := addArg(int64(offset))
 	limitRef := addArg(int64(limit))
 	query := fmt.Sprintf(`
@@ -1206,7 +1375,7 @@ WITH ranked AS (
 		COUNT(*) OVER (PARTITION BY i.assignee_type, i.assignee_id) AS group_total,
 		ROW_NUMBER() OVER (
 			PARTITION BY i.assignee_type, i.assignee_id
-			ORDER BY i.position ASC, i.created_at DESC
+			ORDER BY %s
 		) AS rn
 	FROM issue i
 	WHERE %s
@@ -1227,7 +1396,7 @@ ORDER BY
 	END,
 	assignee_type NULLS LAST,
 	assignee_id NULLS LAST,
-	rn`, strings.Join(where, " AND "), offsetRef, offsetRef, limitRef)
+	rn`, intraGroupOrder, strings.Join(where, " AND "), offsetRef, offsetRef, limitRef)
 
 	rows, err := h.DB.Query(ctx, query, args...)
 	if err != nil {

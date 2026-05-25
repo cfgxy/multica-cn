@@ -125,7 +125,8 @@
     "show_column": "显示列",
     "add_issue_tooltip": "新建 issue",
     "empty_column": "无 issue",
-    "empty_grouping": "没有匹配的 issue"
+    "empty_grouping": "没有匹配的 issue",
+    "ordered_by": "按{{field}}排序"
   },
   "detail": {
     "not_found": "这个 issue 不存在或已在该工作区被删除。",

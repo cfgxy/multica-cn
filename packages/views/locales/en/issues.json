@@ -126,7 +126,8 @@
     "show_column": "Show column",
     "add_issue_tooltip": "Add issue",
     "empty_column": "No issues",
-    "empty_grouping": "No matching issues"
+    "empty_grouping": "No matching issues",
+    "ordered_by": "Board ordered by {{field}}"
   },
   "detail": {
     "not_found": "This issue does not exist or has been deleted in this workspace.",

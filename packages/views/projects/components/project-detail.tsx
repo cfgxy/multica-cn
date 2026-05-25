@@ -250,6 +250,8 @@ function ProjectIssuesSurface({
   const wsId = useWorkspaceId();
   const viewMode = useViewStore((s) => s.viewMode);
   const grouping = useViewStore((s) => s.grouping);
+  const sortBy = useViewStore((s) => s.sortBy);
+  const sortDirection = useViewStore((s) => s.sortDirection);
   const statusFilters = useViewStore((s) => s.statusFilters);
   const priorityFilters = useViewStore((s) => s.priorityFilters);
   const assigneeFilters = useViewStore((s) => s.assigneeFilters);
@@ -258,6 +260,12 @@ function ProjectIssuesSurface({
   const labelFilters = useViewStore((s) => s.labelFilters);
   const usesAssigneeBoard = viewMode === "board" && grouping === "assignee";
   const usesGantt = viewMode === "gantt";
+
+  const sort = useMemo(
+    () => ({ sort_by: sortBy, sort_direction: sortDirection } as const),
+    [sortBy, sortDirection],
+  );
+
   const assigneeGroupFilter = useMemo<AssigneeGroupedIssuesFilter>(
     () => ({
       ...filter,
@@ -274,6 +282,8 @@ function ProjectIssuesSurface({
     wsId,
     scope,
     assigneeGroupFilter,
+    undefined,
+    sort,
   );
   // Each view owns exactly one data source. Board/List ride the bucketed
   // `myIssueListOptions` cache; the assignee-grouped board uses the grouped
@@ -281,7 +291,7 @@ function ProjectIssuesSurface({
   // the current view so switching to Gantt doesn't re-trigger the full
   // per-status fetch in the background.
   const statusIssuesQuery = useQuery({
-    ...myIssueListOptions(wsId, scope, filter),
+    ...myIssueListOptions(wsId, scope, filter, undefined, sort),
     enabled: !usesAssigneeBoard && !usesGantt,
   });
   const assigneeGroupsQuery = useQuery({

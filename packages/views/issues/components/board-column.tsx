@@ -40,6 +40,8 @@ export function BoardColumn({
   totalCount,
   footer,
   projectId,
+  isDragging,
+  sortLabel,
 }: {
   group: BoardColumnGroup;
   issueIds: string[];
@@ -49,6 +51,8 @@ export function BoardColumn({
   footer?: ReactNode;
   /** When set, the per-column "+" pre-fills the project on the create form. */
   projectId?: string;
+  isDragging?: boolean;
+  sortLabel?: string | null;
 }) {
   const status = group.status;
   const cfg = status ? STATUS_CONFIG[status] : null;
@@ -115,10 +119,15 @@ export function BoardColumn({
       </div>
       <div
         ref={setNodeRef}
-        className={`min-h-[200px] flex-1 space-y-2 overflow-y-auto rounded-lg p-1 transition-colors ${
+        className={`relative min-h-[200px] flex-1 space-y-2 overflow-y-auto rounded-lg p-1 transition-colors ${
           isOver ? "bg-accent/60" : ""
         }`}
       >
+        {isDragging && sortLabel && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-background/60 backdrop-blur-[1px]">
+            <p className="text-sm font-medium text-foreground">{sortLabel}</p>
+          </div>
+        )}
         <SortableContext items={issueIds} strategy={verticalListSortingStrategy}>
           {resolvedIssues.map((issue) => (
             <DraggableBoardCard key={issue.id} issue={issue} childProgress={childProgressMap?.get(issue.id)} />

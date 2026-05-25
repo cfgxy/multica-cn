@@ -11,7 +11,6 @@ import type { MyIssuesFilter } from "@multica/core/issues/queries";
 import { useModalStore } from "@multica/core/modals";
 import { useViewStore } from "@multica/core/issues/stores/view-store-context";
 import { useIssueSelectionStore } from "@multica/core/issues/stores/selection-store";
-import { sortIssues } from "../utils/sort";
 import { StatusHeading } from "./status-heading";
 import { ListRow, type ChildProgress } from "./list-row";
 import { InfiniteScrollSentinel } from "./infinite-scroll-sentinel";
@@ -36,8 +35,6 @@ export function ListView({
   /** When set, the per-section "+" pre-fills the project on the create form. */
   projectId?: string;
 }) {
-  const sortBy = useViewStore((s) => s.sortBy);
-  const sortDirection = useViewStore((s) => s.sortDirection);
   const listCollapsedStatuses = useViewStore(
     (s) => s.listCollapsedStatuses
   );
@@ -49,10 +46,10 @@ export function ListView({
     const map = new Map<IssueStatus, Issue[]>();
     for (const status of visibleStatuses) {
       const filtered = issues.filter((i) => i.status === status);
-      map.set(status, sortIssues(filtered, sortBy, sortDirection));
+      map.set(status, filtered);
     }
     return map;
-  }, [issues, visibleStatuses, sortBy, sortDirection]);
+  }, [issues, visibleStatuses]);
 
   const expandedStatuses = useMemo(
     () =>

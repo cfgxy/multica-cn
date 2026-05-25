@@ -41,8 +41,15 @@ export function IssuesPage() {
   const projectFilters = useIssueViewStore((s) => s.projectFilters);
   const includeNoProject = useIssueViewStore((s) => s.includeNoProject);
   const labelFilters = useIssueViewStore((s) => s.labelFilters);
+  const sortBy = useIssueViewStore((s) => s.sortBy);
+  const sortDirection = useIssueViewStore((s) => s.sortDirection);
   const agentRunningFilter = useIssueViewStore((s) => s.agentRunningFilter);
   const usesAssigneeBoard = viewMode === "board" && grouping === "assignee";
+
+  const sort = useMemo(
+    () => ({ sort_by: sortBy, sort_direction: sortDirection } as const),
+    [sortBy, sortDirection],
+  );
 
   // Derive the set of issue ids that currently have at least one
   // `running` agent task. Used by the workspace agents-working filter
@@ -75,9 +82,9 @@ export function IssuesPage() {
     return filter;
   }, [assigneeFilters, creatorFilters, includeNoAssignee, includeNoProject, labelFilters, priorityFilters, projectFilters, scope, statusFilters]);
 
-  const assigneeGroupsOptions = issueAssigneeGroupsOptions(wsId, assigneeGroupFilter);
+  const assigneeGroupsOptions = issueAssigneeGroupsOptions(wsId, assigneeGroupFilter, sort);
   const statusIssuesQuery = useQuery({
-    ...issueListOptions(wsId),
+    ...issueListOptions(wsId, sort),
     enabled: !usesAssigneeBoard,
   });
   const assigneeGroupsQuery = useQuery({
