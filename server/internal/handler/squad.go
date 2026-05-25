@@ -896,27 +896,15 @@ func (h *Handler) RecordSquadLeaderEvaluation(w http.ResponseWriter, r *http.Req
 // ── Squad Trigger Logic ─────────────────────────────────────────────────────
 
 // shouldEnqueueSquadLeaderOnComment returns true if the issue is assigned to a
-// squad and the comment should wake the squad leader. commentContent is the
-// new comment's markdown body; parentComment is the row referenced by the
-// comment's parent_id (nil for a top-level comment).
-//
-// Suppression rules — leader stays out when:
-//
-//  1. Comment author is the leader itself AND its last activity on this issue
-//     was a leader-role task (self-trigger loop guard).
-//  2. Member explicitly @mentions anyone (agent/member/squad/@all) — the @
-//     marks deliberate routing and the leader would just no_action.
-//  3. Agent's reply lands as a child of a member comment that itself carried
-//     a routing @mention. The human routed the conversation explicitly; the
-//     agent's reply is the second leg of that exchange, not new work for the
-//     leader to coordinate. Without this, the leader would re-@ the user on
-//     every agent reply to an explicit ping. (MUL-2624)
-//
-// Issue cross-reference mentions (mention://issue/...) are NOT a routing
-// signal and never suppress the leader. Agent comments that are NOT replies
-// to a routing member comment still go through the leader so agent-initiated
-// updates keep driving coordination.
-func (h *Handler) shouldEnqueueSquadLeaderOnComment(ctx context.Context, issue db.Issue, commentContent, authorType, authorID string, parentComment *db.Comment) bool {
+// squad and the comment author is NOT a member of that squad (anti-loop).
+// commentContent is the new comment's markdown body; when a member explicitly
+// @mentions anyone (agent, member, squad, or @all) in that body, the leader
+// is skipped — the @ marks deliberate routing and the leader would otherwise
+// just observe and record no_action. Issue cross-reference mentions
+// (mention://issue/...) are NOT a routing signal and do not suppress the
+// leader. Agent-authored comments always go through the leader (subject to
+// the leader self-trigger guard) so agent updates still drive coordination.
+func (h *Handler) shouldEnqueueSquadLeaderOnComment(ctx context.Context, issue db.Issue, commentContent, authorType, authorID string) bool {
 	if !issue.AssigneeType.Valid || issue.AssigneeType.String != "squad" || !issue.AssigneeID.Valid {
 		return false
 	}
@@ -943,21 +931,10 @@ func (h *Handler) shouldEnqueueSquadLeaderOnComment(ctx context.Context, issue d
 
 	// Member explicitly @mentioned someone → that someone owns the next step,
 	// skip the leader. Covers @agent / @member / @squad / @all; issue
-	// cross-references do NOT count as routing.
+	// cross-references do NOT count as routing. Agent-authored comments are
+	// intentionally exempt: when an agent posts a result that @mentions
+	// another agent, the leader still needs to coordinate the thread.
 	if authorType == "member" && commentMentionsAnyone(commentContent) {
-		return false
-	}
-
-	// Agent reply directly under a member comment that explicitly @mentioned
-	// someone is the continuation of that routed exchange — same rule as the
-	// member-side skip above, applied to the second leg. The parent comment
-	// here is the comment-triggered task's trigger comment (enforced in the
-	// CreateComment handler: agent parent_id must equal task.TriggerCommentID),
-	// so this only fires when the agent's reply is provably tied to that
-	// upstream routing comment.
-	if authorType == "agent" && parentComment != nil &&
-		parentComment.AuthorType == "member" &&
-		commentMentionsAnyone(parentComment.Content) {
 		return false
 	}
 
