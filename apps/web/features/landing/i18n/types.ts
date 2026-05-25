@@ -38,9 +38,14 @@ export type LandingDict = {
   header: {
     github: string;
     login: string;
+    cta: string;
     dashboard: string;
+    docs: string;
     changelog: string;
     useCases: string;
+    navigation: string;
+    openMenu: string;
+    closeMenu: string;
   };
   hero: {
     headlineLine1: string;
