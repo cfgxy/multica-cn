@@ -3546,6 +3546,8 @@ func defaultArgsForProvider(cfg Config, provider string) []string {
 		args = cfg.ClaudeArgs
 	case "codex":
 		args = cfg.CodexArgs
+	case "codebuddy":
+		args = cfg.CodebuddyArgs
 	default:
 		return nil
 	}
