@@ -5,7 +5,6 @@ export function createEnDict(allowSignup: boolean): LandingDict {
   return {
   header: {
     github: "GitHub",
-    login: "Log in",
     cta: "Get started",
     dashboard: "Dashboard",
     docs: "Docs",

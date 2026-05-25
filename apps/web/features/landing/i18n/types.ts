@@ -37,7 +37,6 @@ export type ContactSalesOption = { value: string; label: string };
 export type LandingDict = {
   header: {
     github: string;
-    login: string;
     cta: string;
     dashboard: string;
     docs: string;

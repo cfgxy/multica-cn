@@ -77,7 +77,10 @@ export function LandingHeader({
             aria-label={isMenuOpen ? t.header.closeMenu : t.header.openMenu}
             aria-expanded={isMenuOpen}
             onClick={() => setIsMenuOpen((open) => !open)}
-            className={cn(headerButtonClassName("ghost", variant), "px-3 md:hidden")}
+            className={cn(
+              headerButtonClassName("ghost", variant),
+              "px-3 md:hidden",
+            )}
           >
             {isMenuOpen ? (
               <X className="size-4" aria-hidden />
@@ -97,18 +100,10 @@ export function LandingHeader({
             <GitHubMark className="size-3.5" />
             {t.header.github}
           </Link>
-          {!user ? (
-            <Link
-              href="/login"
-              className={cn(
-                headerButtonClassName("ghost", variant),
-                "hidden sm:inline-flex",
-              )}
-            >
-              {t.header.login}
-            </Link>
-          ) : null}
-          <Link href={ctaHref} className={headerButtonClassName("solid", variant)}>
+          <Link
+            href={ctaHref}
+            className={headerButtonClassName("solid", variant)}
+          >
             {ctaLabel}
           </Link>
         </div>
@@ -151,15 +146,6 @@ export function LandingHeader({
               <GitHubMark className="size-3.5" />
               {t.header.github}
             </Link>
-            {!user ? (
-              <Link
-                href="/login"
-                onClick={() => setIsMenuOpen(false)}
-                className={mobileNavLinkClassName(variant)}
-              >
-                {t.header.login}
-              </Link>
-            ) : null}
           </div>
         </div>
       ) : null}
