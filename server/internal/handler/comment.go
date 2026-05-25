@@ -745,12 +745,10 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Squad trigger: if the issue is assigned to a squad, trigger the squad leader.
-	// Skip when the comment author is the leader (prevent internal loops), when
-	// a member explicitly @mentions anyone (agent/member/squad/all) — deliberate
-	// routing — or when an agent's reply continues an explicitly-routed exchange
-	// the human already opened (parent is a member comment with routing mentions,
-	// MUL-2624).
-	if h.shouldEnqueueSquadLeaderOnComment(r.Context(), issue, comment.Content, authorType, authorID, parentComment) {
+	// Skip when the comment author is the leader (prevent internal loops), or
+	// when a member explicitly @mentions anyone (agent/member/squad/all) — that
+	// counts as deliberate routing and the leader stays out.
+	if h.shouldEnqueueSquadLeaderOnComment(r.Context(), issue, comment.Content, authorType, authorID) {
 		h.enqueueSquadLeaderTask(r.Context(), issue, comment.ID, authorType, authorID)
 	}
 
