@@ -37,8 +37,18 @@ export function MyIssuesPage() {
   const priorityFilters = useStore(myIssuesViewStore, (s) => s.priorityFilters);
   const scope = useStore(myIssuesViewStore, (s) => s.scope);
   const grouping = useStore(myIssuesViewStore, (s) => s.grouping);
+  const sortBy = useStore(myIssuesViewStore, (s) => s.sortBy);
+  const sortDirection = useStore(myIssuesViewStore, (s) => s.sortDirection);
   const agentRunningFilter = useStore(myIssuesViewStore, (s) => s.agentRunningFilter);
   const usesAssigneeBoard = viewMode === "board" && grouping === "assignee";
+
+  const sort = useMemo(
+    () => ({
+      sort_by: sortBy,
+      sort_direction: sortBy !== "position" ? sortDirection : undefined,
+    } as const),
+    [sortBy, sortDirection],
+  );
 
   // See issues-page.tsx for the rationale — derive a workspace-wide set
   // of issue ids with at least one running task, drive the "agents
@@ -97,9 +107,10 @@ export function MyIssuesPage() {
     scope,
     assigneeGroupFilter,
     user?.id,
+    sort,
   );
   const statusIssuesQuery = useQuery({
-    ...myIssueListOptions(wsId, scope, filter, user?.id),
+    ...myIssueListOptions(wsId, scope, filter, user?.id, sort),
     enabled: !usesAssigneeBoard,
   });
   const assigneeGroupsQuery = useQuery({
@@ -149,7 +160,7 @@ export function MyIssuesPage() {
 
   const updateIssueMutation = useUpdateIssue();
   const handleMoveIssue = useCallback(
-    (issueId: string, updates: Pick<UpdateIssueRequest, "status" | "assignee_type" | "assignee_id" | "position">) => {
+    (issueId: string, updates: Pick<UpdateIssueRequest, "status" | "assignee_type" | "assignee_id" | "position">, onSettled?: () => void) => {
       updateIssueMutation.mutate(
         { id: issueId, ...updates },
         {
@@ -159,6 +170,7 @@ export function MyIssuesPage() {
                 ? err.message
                 : t(($) => $.errors.move_failed),
             ),
+          onSettled: () => onSettled?.(),
         },
       );
     },

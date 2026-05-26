@@ -67,17 +67,18 @@ export function useLoadMoreByStatus(
   const wsId = useWorkspaceId();
   const [isLoading, setIsLoading] = useState(false);
 
-  const queryKey = myIssues
+  const prefixKey = myIssues
     ? issueKeys.myList(wsId, myIssues.scope, myIssues.filter)
     : issueKeys.list(wsId);
-  const cache = qc.getQueryData<ListIssuesCache>(queryKey);
+  const queries = qc.getQueriesData<ListIssuesCache>({ queryKey: prefixKey });
+  const [activeKey, cache] = queries[0] ?? [undefined, undefined];
   const bucket = cache?.byStatus[status];
   const loaded = bucket?.issues.length ?? 0;
   const total = bucket?.total ?? 0;
   const hasMore = loaded < total;
 
   const loadMore = useCallback(async () => {
-    if (isLoading || !hasMore) return;
+    if (isLoading || !hasMore || !activeKey) return;
     setIsLoading(true);
     try {
       const res = await api.listIssues({
@@ -86,7 +87,7 @@ export function useLoadMoreByStatus(
         offset: loaded,
         ...myIssues?.filter,
       });
-      qc.setQueryData<ListIssuesCache>(queryKey, (old) => {
+      qc.setQueryData<ListIssuesCache>(activeKey, (old) => {
         if (!old) return old;
         const prev = getBucket(old, status);
         const existingIds = new Set(prev.issues.map((i) => i.id));
@@ -99,7 +100,7 @@ export function useLoadMoreByStatus(
     } finally {
       setIsLoading(false);
     }
-  }, [qc, queryKey, status, loaded, hasMore, isLoading, myIssues?.filter]);
+  }, [qc, activeKey, status, loaded, hasMore, isLoading, myIssues?.filter]);
 
   return { loadMore, hasMore, isLoading, total };
 }
@@ -166,9 +167,9 @@ export function useCreateIssue() {
   return useMutation({
     mutationFn: (data: CreateIssueRequest) => api.createIssue(data),
     onSuccess: (newIssue) => {
-      qc.setQueryData<ListIssuesCache>(issueKeys.list(wsId), (old) =>
-        old ? addIssueToBuckets(old, newIssue) : old,
-      );
+      for (const [key, data] of qc.getQueriesData<ListIssuesCache>({ queryKey: issueKeys.list(wsId) })) {
+        if (data) qc.setQueryData<ListIssuesCache>(key, addIssueToBuckets(data, newIssue));
+      }
       // Surface the just-created issue in cmd+k's Recent list without
       // requiring the user to open it first.
       useRecentIssuesStore.getState().recordVisit(wsId, newIssue.id);
@@ -199,7 +200,8 @@ export function useUpdateIssue() {
       // yield to the event loop, letting @dnd-kit reset its visual state
       // before the optimistic update lands.
       qc.cancelQueries({ queryKey: issueKeys.list(wsId) });
-      const prevList = qc.getQueryData<ListIssuesCache>(issueKeys.list(wsId));
+      const prevLists = qc.getQueriesData<ListIssuesCache>({ queryKey: issueKeys.list(wsId) });
+      const firstListData = prevLists[0]?.[1];
       const prevDetail = qc.getQueryData<Issue>(issueKeys.detail(wsId, id));
 
       // Resolve parent_issue_id from the freshest source so we can keep the
@@ -209,7 +211,7 @@ export function useUpdateIssue() {
       // child may live only there, not in detail/list.
       let parentId: string | null =
         prevDetail?.parent_issue_id ??
-        (prevList ? findIssueLocation(prevList, id)?.issue.parent_issue_id : null) ??
+        (firstListData ? findIssueLocation(firstListData, id)?.issue.parent_issue_id : null) ??
         null;
       if (!parentId) {
         const childrenCaches = qc.getQueriesData<Issue[]>({
@@ -228,9 +230,9 @@ export function useUpdateIssue() {
         ? qc.getQueryData<Issue[]>(issueKeys.children(wsId, parentId))
         : undefined;
 
-      qc.setQueryData<ListIssuesCache>(issueKeys.list(wsId), (old) =>
-        old ? patchIssueInBuckets(old, id, data) : old,
-      );
+      for (const [key, cached] of prevLists) {
+        if (cached) qc.setQueryData<ListIssuesCache>(key, patchIssueInBuckets(cached, id, data));
+      }
       qc.setQueryData<Issue>(issueKeys.detail(wsId, id), (old) =>
         old ? { ...old, ...data } : old,
       );
@@ -241,10 +243,14 @@ export function useUpdateIssue() {
             old?.map((c) => (c.id === id ? { ...c, ...data } : c)),
         );
       }
-      return { prevList, prevDetail, prevChildren, parentId, id };
+      return { prevLists, prevDetail, prevChildren, parentId, id };
     },
     onError: (_err, _vars, ctx) => {
-      if (ctx?.prevList) qc.setQueryData(issueKeys.list(wsId), ctx.prevList);
+      if (ctx?.prevLists) {
+        for (const [key, snapshot] of ctx.prevLists) {
+          qc.setQueryData(key, snapshot);
+        }
+      }
       if (ctx?.prevDetail)
         qc.setQueryData(issueKeys.detail(wsId, ctx.id), ctx.prevDetail);
       if (ctx?.parentId && ctx.prevChildren !== undefined) {
@@ -302,7 +308,7 @@ export function useDeleteIssue() {
           qc.cancelQueries({ queryKey: issueKeys.children(wsId, parentId) }),
         ),
       );
-      const prevList = qc.getQueryData<ListIssuesCache>(issueKeys.list(wsId));
+      const prevLists = qc.getQueriesData<ListIssuesCache>({ queryKey: issueKeys.list(wsId) });
       const prevMyLists = qc.getQueriesData<ListIssuesCache>({
         queryKey: issueKeys.myAll(wsId),
       });
@@ -318,10 +324,14 @@ export function useDeleteIssue() {
       pruneDeletedIssueFromListCaches(qc, wsId, id);
       pruneDeletedIssueFromParentChildrenCaches(qc, wsId, id, metadata);
       qc.removeQueries({ queryKey: issueKeys.detail(wsId, id) });
-      return { id, metadata, prevList, prevMyLists, prevDetail, prevChildren };
+      return { id, metadata, prevLists, prevMyLists, prevDetail, prevChildren };
     },
     onError: (_err, _id, ctx) => {
-      if (ctx?.prevList) qc.setQueryData(issueKeys.list(wsId), ctx.prevList);
+      if (ctx?.prevLists) {
+        for (const [key, snapshot] of ctx.prevLists) {
+          qc.setQueryData(key, snapshot);
+        }
+      }
       if (ctx?.prevMyLists) {
         for (const [key, snapshot] of ctx.prevMyLists) {
           qc.setQueryData(key, snapshot);
@@ -362,13 +372,13 @@ export function useBatchUpdateIssues() {
     }) => api.batchUpdateIssues(ids, updates),
     onMutate: async ({ ids, updates }) => {
       await qc.cancelQueries({ queryKey: issueKeys.list(wsId) });
-      const prevList = qc.getQueryData<ListIssuesCache>(issueKeys.list(wsId));
-      qc.setQueryData<ListIssuesCache>(issueKeys.list(wsId), (old) => {
-        if (!old) return old;
-        let next = old;
+      const prevLists = qc.getQueriesData<ListIssuesCache>({ queryKey: issueKeys.list(wsId) });
+      for (const [key, cached] of prevLists) {
+        if (!cached) continue;
+        let next = cached;
         for (const id of ids) next = patchIssueInBuckets(next, id, updates);
-        return next;
-      });
+        qc.setQueryData<ListIssuesCache>(key, next);
+      }
 
       // Mirror the optimistic patch into any loaded children cache so
       // sub-issue rows on a parent's detail page reflect the change too.
@@ -389,10 +399,14 @@ export function useBatchUpdateIssues() {
         );
       }
 
-      return { prevList, prevChildren, affectedParentIds };
+      return { prevLists, prevChildren, affectedParentIds };
     },
     onError: (_err, _vars, ctx) => {
-      if (ctx?.prevList) qc.setQueryData(issueKeys.list(wsId), ctx.prevList);
+      if (ctx?.prevLists) {
+        for (const [key, snapshot] of ctx.prevLists) {
+          qc.setQueryData(key, snapshot);
+        }
+      }
       if (ctx?.prevChildren) {
         for (const [parentId, snapshot] of ctx.prevChildren) {
           qc.setQueryData(issueKeys.children(wsId, parentId), snapshot);
@@ -443,7 +457,7 @@ export function useBatchDeleteIssues() {
           qc.cancelQueries({ queryKey: issueKeys.children(wsId, parentId) }),
         ),
       );
-      const prevList = qc.getQueryData<ListIssuesCache>(issueKeys.list(wsId));
+      const prevLists = qc.getQueriesData<ListIssuesCache>({ queryKey: issueKeys.list(wsId) });
       const prevMyLists = qc.getQueriesData<ListIssuesCache>({
         queryKey: issueKeys.myAll(wsId),
       });
@@ -462,10 +476,14 @@ export function useBatchDeleteIssues() {
           pruneDeletedIssueFromParentChildrenCaches(qc, wsId, id, metadata);
         }
       }
-      return { prevList, prevMyLists, prevChildren, parentIssueIds, metadataById };
+      return { prevLists, prevMyLists, prevChildren, parentIssueIds, metadataById };
     },
     onError: (_err, _ids, ctx) => {
-      if (ctx?.prevList) qc.setQueryData(issueKeys.list(wsId), ctx.prevList);
+      if (ctx?.prevLists) {
+        for (const [key, snapshot] of ctx.prevLists) {
+          qc.setQueryData(key, snapshot);
+        }
+      }
       if (ctx?.prevMyLists) {
         for (const [key, snapshot] of ctx.prevMyLists) {
           qc.setQueryData(key, snapshot);
@@ -485,7 +503,11 @@ export function useBatchDeleteIssues() {
         return;
       }
 
-      if (ctx?.prevList) qc.setQueryData(issueKeys.list(wsId), ctx.prevList);
+      if (ctx?.prevLists) {
+        for (const [key, snapshot] of ctx.prevLists) {
+          qc.setQueryData(key, snapshot);
+        }
+      }
       if (ctx?.prevMyLists) {
         for (const [key, snapshot] of ctx.prevMyLists) {
           qc.setQueryData(key, snapshot);
