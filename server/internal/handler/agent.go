@@ -28,30 +28,43 @@ import (
 const maxAgentDescriptionLength = 255
 
 type AgentResponse struct {
-	ID                      string            `json:"id"`
-	WorkspaceID             string            `json:"workspace_id"`
-	RuntimeID               string            `json:"runtime_id"`
-	Name                    string            `json:"name"`
-	Description             string            `json:"description"`
-	Instructions            string            `json:"instructions"`
-	AvatarURL               *string           `json:"avatar_url"`
-	RuntimeMode             string            `json:"runtime_mode"`
-	RuntimeConfig           any               `json:"runtime_config"`
-	CustomEnv               map[string]string `json:"custom_env"`
-	CustomArgs              []string          `json:"custom_args"`
-	McpConfig               json.RawMessage   `json:"mcp_config"`
-	CustomEnvRedacted       bool              `json:"custom_env_redacted"`
-	CustomEnvRedactedReason string            `json:"custom_env_redacted_reason,omitempty"`
-	McpConfigRedacted       bool              `json:"mcp_config_redacted"`
-	Visibility              string            `json:"visibility"`
-	Status                  string            `json:"status"`
-	MaxConcurrentTasks      int32             `json:"max_concurrent_tasks"`
-	Model                   string            `json:"model"`
+	ID            string          `json:"id"`
+	WorkspaceID   string          `json:"workspace_id"`
+	RuntimeID     string          `json:"runtime_id"`
+	Name          string          `json:"name"`
+	Description   string          `json:"description"`
+	Instructions  string          `json:"instructions"`
+	AvatarURL     *string         `json:"avatar_url"`
+	RuntimeMode   string          `json:"runtime_mode"`
+	RuntimeConfig any             `json:"runtime_config"`
+	CustomArgs    []string        `json:"custom_args"`
+	McpConfig     json.RawMessage `json:"mcp_config"`
+	// custom_env is intentionally NOT serialized on agent resources. The
+	// agent_list/get/create/update/archive/restore responses and WS events
+	// only expose coarse metadata (has_custom_env, custom_env_key_count) so
+	// the UI can show "N variables configured" without dragging secrets
+	// across the API surface. Reading values requires the dedicated, audited
+	// `GET /api/agents/{id}/env` endpoint; writing requires `PUT` to the
+	// same path. agent-actor tokens are denied there. See MUL-2600.
+	HasCustomEnv       bool   `json:"has_custom_env"`
+	CustomEnvKeyCount  int    `json:"custom_env_key_count"`
+	McpConfigRedacted  bool   `json:"mcp_config_redacted"`
+	Visibility         string `json:"visibility"`
+	Status             string `json:"status"`
+	MaxConcurrentTasks int32  `json:"max_concurrent_tasks"`
+	Model              string `json:"model"`
 	// ThinkingLevel is the runtime-native reasoning/effort token persisted
 	// for this agent (empty = use runtime default). The picker is per-runtime
 	// per-model; the API never normalizes across providers. See MUL-2339.
-	ThinkingLevel string              `json:"thinking_level"`
-	OwnerID       *string             `json:"owner_id"`
+	ThinkingLevel string `json:"thinking_level"`
+	// SkillsLocal controls whether the runtime merges the host machine's
+	// user-global skill directory (e.g. Claude's `~/.claude/skills/`) into
+	// the agent's skill set. "merge" (default) preserves the pre-existing
+	// inherit-from-machine behavior; "ignore" isolates the runtime so a
+	// broken local skill cannot crash a shared agent (#3052). Workspace
+	// skills (`{workDir}/.claude/skills/`) are always loaded regardless.
+	SkillsLocal string              `json:"skills_local"`
+	OwnerID     *string             `json:"owner_id"`
 	Skills        []AgentSkillSummary `json:"skills"`
 	CreatedAt     string              `json:"created_at"`
 	UpdatedAt     string              `json:"updated_at"`
@@ -68,14 +81,18 @@ func agentToResponse(a db.Agent) AgentResponse {
 		rc = map[string]any{}
 	}
 
-	var customEnv map[string]string
+	// Compute env metadata WITHOUT exposing the values. We unmarshal here
+	// only to count keys; the map never reaches the response. A coarse
+	// has_custom_env / key_count is what the UI gets — to read the values
+	// the caller must hit GET /api/agents/{id}/env (owner/admin only,
+	// audited).
+	envKeyCount := 0
 	if a.CustomEnv != nil {
+		var customEnv map[string]string
 		if err := json.Unmarshal(a.CustomEnv, &customEnv); err != nil {
 			slog.Warn("failed to unmarshal agent custom_env", "agent_id", uuidToString(a.ID), "error", err)
 		}
-	}
-	if customEnv == nil {
-		customEnv = map[string]string{}
+		envKeyCount = len(customEnv)
 	}
 
 	var customArgs []string
@@ -103,14 +120,16 @@ func agentToResponse(a db.Agent) AgentResponse {
 		AvatarURL:          textToPtr(a.AvatarUrl),
 		RuntimeMode:        a.RuntimeMode,
 		RuntimeConfig:      rc,
-		CustomEnv:          customEnv,
 		CustomArgs:         customArgs,
 		McpConfig:          mcpConfig,
+		HasCustomEnv:       envKeyCount > 0,
+		CustomEnvKeyCount:  envKeyCount,
 		Visibility:         a.Visibility,
 		Status:             a.Status,
 		MaxConcurrentTasks: a.MaxConcurrentTasks,
 		Model:              a.Model.String,
 		ThinkingLevel:      a.ThinkingLevel.String,
+		SkillsLocal:        normalizeSkillsLocal(a.SkillsLocal),
 		OwnerID:            uuidToPtr(a.OwnerID),
 		Skills:             []AgentSkillSummary{},
 		CreatedAt:          timestampToString(a.CreatedAt),
@@ -199,6 +218,15 @@ type AgentTaskResponse struct {
 	RequestingUserName               string `json:"requesting_user_name,omitempty"`
 	RequestingUserProfileDescription string `json:"requesting_user_profile_description,omitempty"`
 	Kind                             string `json:"kind"` // discriminator: "comment" | "autopilot" | "chat" | "quick_create" | "direct" — used by the activity row to label tasks that have no linked issue
+	// AuthToken is the task-scoped `mat_` token the daemon must inject as
+	// MULTICA_TOKEN in the agent process environment. The server binds it to
+	// this (agent_id, task_id) pair at claim time and treats any request
+	// authenticated with it as actor=agent, regardless of headers — so the
+	// agent process cannot use it to read another agent's secrets via the
+	// env-management endpoint. Empty when the runtime has no owning user
+	// (cloud / system runtimes that pre-date per-task tokens); in that case
+	// the daemon falls back to its own credential. See MUL-2600.
+	AuthToken string `json:"auth_token,omitempty"`
 }
 
 // ChatAttachmentMeta is the structured attachment metadata embedded in
@@ -225,6 +253,11 @@ type TaskAgentData struct {
 	McpConfig     json.RawMessage          `json:"mcp_config,omitempty"`
 	Model         string                   `json:"model,omitempty"`
 	ThinkingLevel string                   `json:"thinking_level,omitempty"`
+	// SkillsLocal mirrors the agent column of the same name. Daemon reads
+	// it to decide whether to isolate the Claude runtime from the host's
+	// user-global `~/.claude/skills/`. Empty string is treated as the
+	// platform default ("merge") by the daemon — see normalizeSkillsLocal.
+	SkillsLocal string `json:"skills_local,omitempty"`
 }
 
 func taskToResponse(t db.AgentTaskQueue) AgentTaskResponse {
@@ -327,15 +360,18 @@ func (h *Handler) ListAgents(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	// Check workspace-level always-redact setting.
-	var alwaysRedact bool
+	// mcp_config still uses the workspace-level always-redact setting and
+	// the per-row owner/admin gate — secrets in MCP server configs follow
+	// the same exposure rules as custom_env used to. custom_env itself is
+	// never serialized on agent resources anymore (MUL-2600); see the
+	// AgentResponse comment.
 	ws, err := h.Queries.GetWorkspace(r.Context(), parseUUID(workspaceID))
 	if err != nil {
 		slog.Warn("GetWorkspace failed for redact check", "workspace_id", workspaceID, "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
-	alwaysRedact = workspaceAlwaysRedactEnv(ws.Settings)
+	alwaysRedact := workspaceAlwaysRedactSecrets(ws.Settings)
 
 	// Resolve the request actor once. Agents bypass the private-agent gate
 	// to preserve A2A collaboration; members must be in allowed_principals
@@ -352,16 +388,13 @@ func (h *Handler) ListAgents(w http.ResponseWriter, r *http.Request) {
 		if skills, ok := skillMap[resp.ID]; ok {
 			resp.Skills = skills
 		}
-		// Redact sensitive fields for users who are not the agent owner or workspace owner/admin,
-		// or unconditionally when the workspace opts into always_redact_env.
-		if alwaysRedact {
-			redactEnv(&resp)
+		// Agent actors NEVER see mcp_config secrets, even when their host's
+		// PAT would normally satisfy the owner/admin role gate. Otherwise an
+		// agent running under an owner's daemon could read other agents'
+		// MCP configs (which routinely embed third-party API tokens) — the
+		// same lateral-movement vector MUL-2600 closed for custom_env.
+		if actorType == "agent" || alwaysRedact || !canViewAgentSecrets(a, userID, member.Role) {
 			redactMcpConfig(&resp)
-			resp.CustomEnvRedactedReason = "policy"
-		} else if !canViewAgentEnv(a, userID, member.Role) {
-			redactEnv(&resp)
-			redactMcpConfig(&resp)
-			resp.CustomEnvRedactedReason = "role"
 		}
 		visible = append(visible, resp)
 	}
@@ -406,26 +439,22 @@ func (h *Handler) GetAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Redact sensitive fields for users who are not the agent owner or workspace owner/admin,
-	// or unconditionally when the workspace opts into always_redact_env.
+	// mcp_config redaction (custom_env was removed from this response shape
+	// in MUL-2600; secrets are now fetched via GET /api/agents/{id}/env).
 	userID := requestUserID(r)
-	var alwaysRedact bool
 	ws, err := h.Queries.GetWorkspace(r.Context(), agent.WorkspaceID)
 	if err != nil {
 		slog.Warn("GetWorkspace failed for redact check", "workspace_id", uuidToString(agent.WorkspaceID), "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
 		return
 	}
-	alwaysRedact = workspaceAlwaysRedactEnv(ws.Settings)
-	if alwaysRedact {
-		redactEnv(&resp)
+	alwaysRedact := workspaceAlwaysRedactSecrets(ws.Settings)
+	// Agent actors NEVER see mcp_config (see ListAgents for the rationale).
+	if actorType == "agent" || alwaysRedact {
 		redactMcpConfig(&resp)
-		resp.CustomEnvRedactedReason = "policy"
 	} else if member, ok := ctxMember(r.Context()); ok {
-		if !canViewAgentEnv(agent, userID, member.Role) {
-			redactEnv(&resp)
+		if !canViewAgentSecrets(agent, userID, member.Role) {
 			redactMcpConfig(&resp)
-			resp.CustomEnvRedactedReason = "role"
 		}
 	}
 
@@ -446,6 +475,11 @@ type CreateAgentRequest struct {
 	MaxConcurrentTasks int32             `json:"max_concurrent_tasks"`
 	Model              string            `json:"model"`
 	ThinkingLevel      string            `json:"thinking_level"`
+	// SkillsLocal opts the agent into ("merge") or out of ("ignore") the
+	// runtime's user-global skill discovery. Empty / missing defaults to
+	// "merge". Validated in CreateAgent / UpdateAgent against the
+	// recognised set; anything else returns 400.
+	SkillsLocal string `json:"skills_local"`
 	// Template records which template slug was used to seed this agent
 	// (e.g. "coding" / "planning" / "writing" / "assistant"). Empty when
 	// the caller didn't come from a template picker — the `agent_created`
@@ -545,6 +579,21 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Request validation is strict: a missing field defaults to "merge" (the
+	// pre-MUL-2603 inherit-from-machine behavior), but a present-but-bogus
+	// value must 400 rather than silently normalize. The drift-safe normalize
+	// is only for on-read coercion of stored values (normalizeSkillsLocal) —
+	// applying it to request input would mask client typos as a successful
+	// create.
+	skillsLocal := "merge"
+	if req.SkillsLocal != "" {
+		if !isValidSkillsLocal(req.SkillsLocal) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("skills_local %q is invalid (expected \"ignore\" or \"merge\")", req.SkillsLocal))
+			return
+		}
+		skillsLocal = req.SkillsLocal
+	}
+
 	// Probe workspace agent count BEFORE the insert so the funnel has a
 	// clean "first agent ever in this workspace" signal — Step 4 of
 	// onboarding always lands in this branch. A non-fatal read: if the
@@ -592,6 +641,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		McpConfig:          mc,
 		Model:              pgtype.Text{String: req.Model, Valid: req.Model != ""},
 		ThinkingLevel:      pgtype.Text{String: req.ThinkingLevel, Valid: req.ThinkingLevel != ""},
+		SkillsLocal:        skillsLocal,
 	})
 	if err != nil {
 		// Unique constraint on (workspace_id, name) — return a clear conflict error
@@ -614,7 +664,7 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 
 	resp := agentToResponse(created)
 	actorType, actorID := h.resolveActor(r, ownerID, workspaceID)
-	h.publish(protocol.EventAgentCreated, workspaceID, actorType, actorID, map[string]any{"agent": resp})
+	h.publish(protocol.EventAgentCreated, workspaceID, actorType, actorID, map[string]any{"agent": broadcastAgentResponse(resp)})
 
 	h.Analytics.Capture(analytics.AgentCreated(
 		ownerID,
@@ -626,23 +676,32 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		isFirstAgent,
 	))
 
+	redactAgentResponseForActor(&resp, actorType)
 	writeJSON(w, http.StatusCreated, resp)
 }
 
 type UpdateAgentRequest struct {
-	Name               *string            `json:"name"`
-	Description        *string            `json:"description"`
-	Instructions       *string            `json:"instructions"`
-	AvatarURL          *string            `json:"avatar_url"`
-	RuntimeID          *string            `json:"runtime_id"`
-	RuntimeConfig      any                `json:"runtime_config"`
-	CustomEnv          *map[string]string `json:"custom_env"`
-	CustomArgs         *[]string          `json:"custom_args"`
-	McpConfig          *json.RawMessage   `json:"mcp_config"`
-	Visibility         *string            `json:"visibility"`
-	Status             *string            `json:"status"`
-	MaxConcurrentTasks *int32             `json:"max_concurrent_tasks"`
-	Model              *string            `json:"model"`
+	Name          *string `json:"name"`
+	Description   *string `json:"description"`
+	Instructions  *string `json:"instructions"`
+	AvatarURL     *string `json:"avatar_url"`
+	RuntimeID     *string `json:"runtime_id"`
+	RuntimeConfig any     `json:"runtime_config"`
+	// custom_env is intentionally NOT updatable through this endpoint.
+	// Use `PUT /api/agents/{id}/env` for env changes — that path is
+	// owner/admin-only, denies agent actors, and writes a persisted
+	// audit log entry. A `PUT /api/agents/{id}` body that carries
+	// `custom_env` is rejected with 400 in the handler below so a
+	// caller never believes they rotated a secret when the value is
+	// actually unchanged, and so a client that round-tripped a
+	// previously-returned masked map cannot silently overwrite real
+	// secret values with literal `****`. See MUL-2600.
+	CustomArgs         *[]string        `json:"custom_args"`
+	McpConfig          *json.RawMessage `json:"mcp_config"`
+	Visibility         *string          `json:"visibility"`
+	Status             *string          `json:"status"`
+	MaxConcurrentTasks *int32           `json:"max_concurrent_tasks"`
+	Model              *string          `json:"model"`
 	// ThinkingLevel is treated as a tri-state per-MUL-2339:
 	//   - field omitted → no change (leave existing value alone)
 	//   - field present with "" → explicit clear (use runtime default)
@@ -650,14 +709,44 @@ type UpdateAgentRequest struct {
 	// Distinguishing those modes is why this is a pointer; the raw-fields
 	// map captured at decode time tells us whether the key was sent.
 	ThinkingLevel *string `json:"thinking_level"`
+	// SkillsLocal: nil means "no change"; non-nil overrides the stored
+	// value after validation. We use a pointer (rather than the empty
+	// string sentinel ThinkingLevel uses) because there is no "clear"
+	// state — the column has a NOT NULL default and the toggle is binary.
+	SkillsLocal *string `json:"skills_local"`
 }
 
-// workspaceAlwaysRedactEnv checks whether the workspace has opted into
-// unconditional redaction of custom_env and mcp_config on read responses,
-// regardless of the caller's role. This is useful for single-tenant
-// self-hosts or security-conscious teams that never want plaintext secrets
-// returned from the API.
-func workspaceAlwaysRedactEnv(settings []byte) bool {
+// normalizeSkillsLocal coerces empty / unknown stored values to the platform
+// default "merge" — the pre-MUL-2603 inherit-from-machine behavior. Older
+// rows written before the column existed get a NOT NULL default at migration
+// time, but the helper still guards against any future schema drift or
+// hand-edited rows so we never surface an in-between state to clients or the
+// daemon.
+func normalizeSkillsLocal(stored string) string {
+	if stored == "ignore" {
+		return "ignore"
+	}
+	return "merge"
+}
+
+// isValidSkillsLocal mirrors the CHECK constraint on agent.skills_local.
+// The DB would reject a write with a 23514 violation anyway, but pre-flight
+// validation lets the API return a clean 400 with the offending value.
+func isValidSkillsLocal(v string) bool {
+	return v == "ignore" || v == "merge"
+}
+
+// workspaceAlwaysRedactSecrets reports whether the workspace has opted
+// into unconditional redaction of secret-bearing fields (currently
+// `mcp_config`) on read responses, regardless of the caller's role.
+//
+// The legacy JSON key is still `always_redact_env` for backwards-
+// compatibility with workspaces that flipped the setting before MUL-2600
+// shipped. The setting no longer affects `custom_env` because that field
+// is never serialized on agent resources anymore — secrets there are
+// fetched exclusively through `GET /api/agents/{id}/env` with audit
+// logging — so the flag now only governs `mcp_config` exposure.
+func workspaceAlwaysRedactSecrets(settings []byte) bool {
 	if len(settings) == 0 {
 		return false
 	}
@@ -670,26 +759,32 @@ func workspaceAlwaysRedactEnv(settings []byte) bool {
 	return s.AlwaysRedactEnv
 }
 
-// canViewAgentEnv checks whether the requesting user is allowed to see the
-// agent's custom environment variables. Only the agent owner or workspace
-// owner/admin may view them; for everyone else the field is redacted.
-func canViewAgentEnv(agent db.Agent, userID string, memberRole string) bool {
+// canViewAgentSecrets checks whether the requesting user is allowed to
+// see the agent's secret-bearing fields (currently `mcp_config`). Only
+// the agent owner or workspace owner/admin qualify; for everyone else
+// the response is redacted. `custom_env` is no longer part of an agent
+// resource response (see MUL-2600), so this predicate is shared only by
+// the remaining mcp_config redaction path.
+func canViewAgentSecrets(agent db.Agent, userID string, memberRole string) bool {
 	if roleAllowed(memberRole, "owner", "admin") {
 		return true
 	}
 	return uuidToString(agent.OwnerID) == userID
 }
 
-// redactEnv masks custom_env values in the response when the caller is not
-// authorised to view them. Keys are preserved so members can see which
-// variables are configured; values are replaced with "****".
-func redactEnv(resp *AgentResponse) {
-	masked := make(map[string]string, len(resp.CustomEnv))
-	for k := range resp.CustomEnv {
-		masked[k] = "****"
-	}
-	resp.CustomEnv = masked
-	resp.CustomEnvRedacted = true
+// broadcastAgentResponse strips secret-bearing fields from an
+// AgentResponse before it goes onto the WebSocket bus. Mutation
+// handlers call this when fanning out create/update/archive/restore
+// events: subscribers (which include agent processes that have
+// authenticated with their own task tokens) must not learn another
+// agent's mcp_config via a WS push that bypassed the read-path
+// redaction in ListAgents / GetAgent. The caller still receives the
+// canonical form in the HTTP response; only the broadcast copy is
+// redacted.
+func broadcastAgentResponse(resp AgentResponse) AgentResponse {
+	out := resp
+	redactMcpConfig(&out)
+	return out
 }
 
 // redactMcpConfig removes the mcp_config value from the response when the caller is not
@@ -699,6 +794,19 @@ func redactMcpConfig(resp *AgentResponse) {
 	if resp.McpConfig != nil {
 		resp.McpConfig = nil
 		resp.McpConfigRedacted = true
+	}
+}
+
+// redactAgentResponseForActor strips secret-bearing fields from an agent
+// resource HTTP response when the request actor is an agent. Read
+// handlers already gate on actorType — mutation handlers
+// (create/update/archive/restore) must apply the same rule, otherwise
+// an agent with a host owner/admin token can do an unrelated mutation
+// (e.g. flip max_concurrent_tasks) on a target agent and harvest the
+// target's mcp_config from the mutation response. MUL-2600.
+func redactAgentResponseForActor(resp *AgentResponse, actorType string) {
+	if actorType == "agent" {
+		redactMcpConfig(resp)
 	}
 }
 
@@ -737,6 +845,18 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Hard-reject any attempt to write custom_env through the generic
+	// update endpoint. Silently dropping the field (which is what an
+	// `omitempty` field would do) was the pre-PR behaviour and led to
+	// users believing they had rotated a secret when the value was
+	// actually unchanged. env values move only through `PUT
+	// /api/agents/{id}/env` — that endpoint is owner/admin-only, denies
+	// agent actors, and writes a queryable audit row.
+	if _, ok := rawFields["custom_env"]; ok {
+		writeError(w, http.StatusBadRequest, "custom_env is no longer accepted on this endpoint; use PUT /api/agents/{id}/env (or `multica agent env set`)")
+		return
+	}
+
 	params := db.UpdateAgentParams{
 		ID: existing.ID,
 	}
@@ -759,10 +879,6 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	if req.RuntimeConfig != nil {
 		rc, _ := json.Marshal(req.RuntimeConfig)
 		params.RuntimeConfig = rc
-	}
-	if req.CustomEnv != nil {
-		ce, _ := json.Marshal(*req.CustomEnv)
-		params.CustomEnv = ce
 	}
 	if req.CustomArgs != nil {
 		ca, _ := json.Marshal(*req.CustomArgs)
@@ -818,6 +934,17 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.Model != nil {
 		params.Model = pgtype.Text{String: *req.Model, Valid: true}
+	}
+	if req.SkillsLocal != nil {
+		// PATCH is strictly opt-in: nil means no change. A non-nil value must
+		// validate as-is — normalizing here would let garbage silently land as
+		// "merge" and hide a client bug. The drift-safe coercion lives in
+		// normalizeSkillsLocal for on-read use only.
+		if !isValidSkillsLocal(*req.SkillsLocal) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("skills_local %q is invalid (expected \"ignore\" or \"merge\")", *req.SkillsLocal))
+			return
+		}
+		params.SkillsLocal = pgtype.Text{String: *req.SkillsLocal, Valid: true}
 	}
 
 	// thinking_level handling (MUL-2339). Tri-state semantics:
@@ -905,7 +1032,8 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	slog.Info("agent updated", append(logger.RequestAttrs(r), "agent_id", id, "workspace_id", uuidToString(updated.WorkspaceID))...)
 	userID := requestUserID(r)
 	actorType, actorID := h.resolveActor(r, userID, uuidToString(updated.WorkspaceID))
-	h.publish(protocol.EventAgentStatus, uuidToString(updated.WorkspaceID), actorType, actorID, map[string]any{"agent": resp})
+	h.publish(protocol.EventAgentStatus, uuidToString(updated.WorkspaceID), actorType, actorID, map[string]any{"agent": broadcastAgentResponse(resp)})
+	redactAgentResponseForActor(&resp, actorType)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -963,7 +1091,8 @@ func (h *Handler) ArchiveAgent(w http.ResponseWriter, r *http.Request) {
 	slog.Info("agent archived", append(logger.RequestAttrs(r), "agent_id", id, "workspace_id", wsID)...)
 	resp := agentToResponse(archived)
 	actorType, actorID := h.resolveActor(r, userID, wsID)
-	h.publish(protocol.EventAgentArchived, wsID, actorType, actorID, map[string]any{"agent": resp})
+	h.publish(protocol.EventAgentArchived, wsID, actorType, actorID, map[string]any{"agent": broadcastAgentResponse(resp)})
+	redactAgentResponseForActor(&resp, actorType)
 	writeJSON(w, http.StatusOK, resp)
 }
 
@@ -993,7 +1122,8 @@ func (h *Handler) RestoreAgent(w http.ResponseWriter, r *http.Request) {
 	resp := agentToResponse(restored)
 	userID := requestUserID(r)
 	actorType, actorID := h.resolveActor(r, userID, wsID)
-	h.publish(protocol.EventAgentRestored, wsID, actorType, actorID, map[string]any{"agent": resp})
+	h.publish(protocol.EventAgentRestored, wsID, actorType, actorID, map[string]any{"agent": broadcastAgentResponse(resp)})
+	redactAgentResponseForActor(&resp, actorType)
 	writeJSON(w, http.StatusOK, resp)
 }
 

@@ -20,8 +20,9 @@ WHERE id = $1 AND workspace_id = $2;
 INSERT INTO agent (
     workspace_id, name, description, avatar_url, runtime_mode,
     runtime_config, runtime_id, visibility, max_concurrent_tasks, owner_id,
-    instructions, custom_env, custom_args, mcp_config, model, thinking_level
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+    instructions, custom_env, custom_args, mcp_config, model, thinking_level,
+    skills_local
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)
 RETURNING *;
 
 -- name: UpdateAgent :one
@@ -41,6 +42,7 @@ UPDATE agent SET
     mcp_config = COALESCE(sqlc.narg('mcp_config'), mcp_config),
     model = COALESCE(sqlc.narg('model'), model),
     thinking_level = COALESCE(sqlc.narg('thinking_level'), thinking_level),
+    skills_local = COALESCE(sqlc.narg('skills_local'), skills_local),
     updated_at = now()
 WHERE id = $1
 RETURNING *;
@@ -55,6 +57,17 @@ RETURNING *;
 
 -- name: ClearAgentMcpConfig :one
 UPDATE agent SET mcp_config = NULL, updated_at = now()
+WHERE id = $1
+RETURNING *;
+
+-- name: UpdateAgentCustomEnv :one
+-- Replaces an agent's custom_env map wholesale. Used by the dedicated
+-- env-management endpoint (POST/PUT /api/agents/{id}/env), which is the
+-- only post-creation write path for env. UpdateAgent has been stripped
+-- of custom_env handling so all env mutations flow through here and the
+-- handler's audit-log + **** sentinel guard.
+UPDATE agent
+SET custom_env = $2, updated_at = now()
 WHERE id = $1
 RETURNING *;
 

@@ -75,6 +75,12 @@ type Task struct {
 	// when description is empty so the agent doesn't see a useless heading.
 	RequestingUserName               string `json:"requesting_user_name,omitempty"`
 	RequestingUserProfileDescription string `json:"requesting_user_profile_description,omitempty"`
+	// AuthToken is the task-scoped credential the server mints at claim time.
+	// The daemon injects it into the spawned agent as MULTICA_TOKEN so the
+	// agent never sees the daemon's own (often workspace-owner) credential.
+	// Empty when the server-side runtime has no owning user — the daemon
+	// then falls back to its own token. See MUL-2600.
+	AuthToken string `json:"auth_token,omitempty"`
 }
 
 // ChatAttachmentMeta is the structured attachment metadata the daemon
@@ -99,6 +105,18 @@ type AgentData struct {
 	McpConfig     json.RawMessage   `json:"mcp_config,omitempty"`
 	Model         string            `json:"model,omitempty"`
 	ThinkingLevel string            `json:"thinking_level,omitempty"`
+	// SkillsLocal controls whether the runtime merges the host machine's
+	// user-global skill directory into the agent. "merge" (default)
+	// preserves the inherit-from-machine behavior; "ignore" hides the
+	// directory from the runtime so a broken local skill cannot crash a
+	// shared agent (#3052). Old servers that predate the column omit this
+	// field entirely; the daemon treats empty as "merge". Currently
+	// honoured by Claude (via CLAUDE_CONFIG_DIR scratch mirroring in
+	// server/pkg/agent/claude.go) and Codex (via the user-skill seed gate
+	// in server/internal/daemon/execenv/execenv.go); other runtimes leave
+	// HOME untouched and natively discover user-level skills, so the
+	// toggle is a no-op for them.
+	SkillsLocal string `json:"skills_local,omitempty"`
 }
 
 // SkillData represents a structured skill for task execution.

@@ -20,6 +20,14 @@ import { useEffect, useLayoutEffect, useRef } from "react";
  * are dropped — the new route's container shares the same marker key but
  * is a different page, and restoring the old offset would land the user
  * somewhere arbitrary on the new page.
+ *
+ * For virtualized children (Virtuoso, react-virtual, etc.) the single
+ * synchronous `scrollTop = saved` inside useLayoutEffect isn't enough:
+ * the child registers its observers in a passive useEffect that fires
+ * later, so at restore time the container's scrollHeight has collapsed
+ * to clientHeight and the browser clamps our assignment to 0. The
+ * restore loops across rAF frames until the assignment sticks, which
+ * lets virtualization rehydrate before we give up.
  */
 export function useTabScrollRestore(tabPath: string) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -33,19 +41,47 @@ export function useTabScrollRestore(tabPath: string) {
 
   // <Activity> cleans up effects on hidden and re-mounts them on visible,
   // so an empty-deps useLayoutEffect runs exactly on every hidden → visible
-  // transition. Restoring here (before the browser paints) avoids any
-  // flash at scrollTop=0.
+  // transition. Restoring here (before the browser paints) handles the
+  // common case without a flash.
+  //
+  // The synchronous set isn't enough for virtualized lists though
+  // (issue-detail uses Virtuoso with customScrollParent). Virtuoso wires
+  // its scroll/resize observers in a passive useEffect, which fires AFTER
+  // useLayoutEffect — so at the moment we try to restore, the spacer that
+  // gives the container its tall scrollHeight hasn't been re-established
+  // yet. The browser silently clamps `scrollTop = saved` down to 0 because
+  // `scrollHeight === clientHeight` in that window. Retry across rAF
+  // frames until the set sticks (or we time out around the time any sane
+  // child should have laid out, ~500ms).
   useLayoutEffect(() => {
     const root = containerRef.current;
     if (!root) return;
     const els = root.querySelectorAll<HTMLElement>("[data-tab-scroll-root]");
+    const cancellers: Array<() => void> = [];
     els.forEach((el) => {
       const key = scrollKey(el);
       const saved = savedRef.current.get(key);
-      if (saved !== undefined && el.scrollTop !== saved) {
+      if (saved === undefined) return;
+      el.scrollTop = saved;
+      if (el.scrollTop === saved) return;
+
+      let cancelled = false;
+      let attempts = 0;
+      const maxAttempts = 30; // ~500ms at 60fps
+      const tick = () => {
+        if (cancelled) return;
         el.scrollTop = saved;
-      }
+        attempts++;
+        if (el.scrollTop === saved) return;
+        if (attempts >= maxAttempts) return;
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+      cancellers.push(() => {
+        cancelled = true;
+      });
     });
+    return () => cancellers.forEach((c) => c());
   }, []);
 
   useEffect(() => {

@@ -4,6 +4,18 @@ export type AgentRuntimeMode = "local" | "cloud";
 
 export type AgentVisibility = "workspace" | "private";
 
+/**
+ * Per-agent toggle controlling whether the runtime merges the host machine's
+ * user-global skill directory into the agent. "merge" (default) preserves the
+ * inherit-from-machine behavior; "ignore" isolates the runtime so a broken
+ * local skill on one operator's machine cannot crash a shared agent (#3052).
+ * Today only the Claude runtime honours the switch — others either already
+ * isolate (Codex via CODEX_HOME) or treat it as a no-op. Older backends omit
+ * the field; clients MUST treat undefined as "merge" so the documented
+ * default wins on drift.
+ */
+export type AgentSkillsLocal = "ignore" | "merge";
+
 // Runtime visibility is a separate axis from agent visibility — different
 // vocabulary because it gates a different action. "private" (default) means
 // only the runtime owner and workspace admins can bind agents to it;
@@ -123,10 +135,24 @@ export interface Agent {
   avatar_url: string | null;
   runtime_mode: AgentRuntimeMode;
   runtime_config: Record<string, unknown>;
-  custom_env: Record<string, string>;
   custom_args: string[];
-  custom_env_redacted: boolean;
-  custom_env_redacted_reason?: 'policy' | 'role';
+  /**
+   * Coarse metadata signalling whether the agent has any custom env
+   * vars configured, without exposing the keys or values. Reads of
+   * the real map go through the dedicated `GET /api/agents/{id}/env`
+   * endpoint (owner/admin only, audited). MUL-2600.
+   *
+   * Optional in the type so older backends (pre-MUL-2600) that omit
+   * the field don't crash the renderer; downstream code should treat
+   * `undefined` as "unknown — assume no env" rather than "definitely
+   * has env".
+   */
+  has_custom_env?: boolean;
+  /**
+   * Number of keys in the agent's custom_env map. Always present
+   * alongside `has_custom_env`. Treat `undefined` as zero. MUL-2600.
+   */
+  custom_env_key_count?: number;
   visibility: AgentVisibility;
   status: AgentStatus;
   max_concurrent_tasks: number;
@@ -142,6 +168,14 @@ export interface Agent {
    * (MUL-2339).
    */
   thinking_level?: string;
+  /**
+   * Per-agent toggle for merging the host machine's user-global skill
+   * directory (e.g. Claude's `~/.claude/skills/`) into the agent. Older
+   * backends that predate the column omit this field; consumers MUST
+   * default to `"merge"` on drift to match the documented platform
+   * default (#3052 hardening is opt-in via `"ignore"`).
+   */
+  skills_local?: AgentSkillsLocal;
   owner_id: string | null;
   skills: AgentSkillSummary[];
   created_at: string;
@@ -177,6 +211,10 @@ export interface CreateAgentRequest {
   model?: string;
   /** Optional runtime-native reasoning/effort token. See `Agent.thinking_level`. */
   thinking_level?: string;
+  /** Per-agent host-skill merge toggle. Defaults to `"merge"` server-side
+   *  when omitted (inherit-from-machine behavior); pass `"ignore"` to
+   *  isolate the agent from the host's user-global skill directory. */
+  skills_local?: AgentSkillsLocal;
   /** Optional template slug used by the onboarding agent picker. Surfaced
    *  as the `template` property on the `agent_created` PostHog event. */
   template?: string;
@@ -259,7 +297,15 @@ export interface UpdateAgentRequest {
   avatar_url?: string;
   runtime_id?: string;
   runtime_config?: Record<string, unknown>;
-  custom_env?: Record<string, string>;
+  /**
+   * NOTE: `custom_env` is intentionally NOT updatable through this
+   * request shape. Env edits flow through `client.updateAgentEnv` /
+   * `PUT /api/agents/{id}/env` — that path is owner/admin only,
+   * denies agent actors, and writes a persistent audit row. The
+   * server REJECTS any `PUT /api/agents/{id}` body that includes
+   * `custom_env` with a 400; do not put the field in this payload.
+   * MUL-2600.
+   */
   custom_args?: string[];
   visibility?: AgentVisibility;
   status?: AgentStatus;
@@ -274,6 +320,30 @@ export interface UpdateAgentRequest {
    *     runtime's provider enum, rejected with 400 if not recognised
    */
   thinking_level?: string;
+  /** Update the host-skill merge toggle. Omit to leave unchanged. */
+  skills_local?: AgentSkillsLocal;
+}
+
+/**
+ * Wire shape for the dedicated env-management endpoints
+ * (`GET /api/agents/{id}/env` and `PUT /api/agents/{id}/env`). Kept
+ * deliberately separate from `Agent` so generic agent reads cannot
+ * accidentally surface env values. MUL-2600.
+ */
+export interface AgentEnvResponse {
+  agent_id: string;
+  custom_env: Record<string, string>;
+}
+
+/**
+ * Body for `PUT /api/agents/{id}/env`. Values equal to `"****"` are
+ * treated by the server as "preserve the existing value for this key"
+ * — a defence-in-depth guard so a UI that round-trips a masked map
+ * cannot accidentally clobber real secrets. Submit only the keys
+ * touched in the form; omitted keys are removed by the server.
+ */
+export interface UpdateAgentEnvRequest {
+  custom_env: Record<string, string>;
 }
 
 // Skills
