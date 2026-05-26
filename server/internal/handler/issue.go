@@ -2540,8 +2540,21 @@ func (h *Handler) shouldEnqueueAgentTask(ctx context.Context, issue db.Issue) bo
 // trigger the assigned agent. Fires for any status — comments are
 // conversational and can happen at any stage, including after completion
 // (e.g. follow-up questions on a done issue).
-func (h *Handler) shouldEnqueueOnComment(ctx context.Context, issue db.Issue) bool {
-	if !h.isAgentAssigneeReady(ctx, issue) {
+//
+// Mirrors the private-agent gate that enqueueMentionedAgentTasks applies on the
+// @mention path: once an owner/admin assigns a private agent to an issue, the
+// agent's UUID is "welded" onto the issue and remains visible to every member
+// who can view it. Without this check any of those members could dispatch a new
+// task to the private agent simply by commenting (#3300).
+func (h *Handler) shouldEnqueueOnComment(ctx context.Context, issue db.Issue, actorType, actorID string) bool {
+	if !issue.AssigneeType.Valid || issue.AssigneeType.String != "agent" || !issue.AssigneeID.Valid {
+		return false
+	}
+	agent, err := h.Queries.GetAgent(ctx, issue.AssigneeID)
+	if err != nil || !agent.RuntimeID.Valid || agent.ArchivedAt.Valid {
+		return false
+	}
+	if !h.canAccessPrivateAgent(ctx, agent, actorType, actorID, uuidToString(issue.WorkspaceID)) {
 		return false
 	}
 	// Coalescing queue: allow enqueue when a task is running (so the agent
