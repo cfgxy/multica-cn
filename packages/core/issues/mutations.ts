@@ -5,6 +5,7 @@ import {
   issueKeys,
   ISSUE_PAGE_SIZE,
   type AssigneeGroupedIssuesFilter,
+  type IssueSortParam,
   type MyIssuesFilter,
 } from "./queries";
 import {
@@ -81,10 +82,12 @@ export function useLoadMoreByStatus(
     if (isLoading || !hasMore || !activeKey) return;
     setIsLoading(true);
     try {
+      const sort = (activeKey[activeKey.length - 1] ?? {}) as IssueSortParam;
       const res = await api.listIssues({
         status,
         limit: ISSUE_PAGE_SIZE,
         offset: loaded,
+        ...sort,
         ...myIssues?.filter,
       });
       qc.setQueryData<ListIssuesCache>(activeKey, (old) => {
@@ -123,10 +126,16 @@ export function useLoadMoreByAssigneeGroup(
     if (isLoading || !hasMore) return;
     setIsLoading(true);
     try {
+      const sortFromKey = (queryKey[queryKey.length - 1] ?? {}) as Record<string, unknown>;
+      const sort: IssueSortParam = {
+        sort_by: sortFromKey.sort_by as IssueSortParam["sort_by"],
+        sort_direction: sortFromKey.sort_direction as IssueSortParam["sort_direction"],
+      };
       const res = await api.listGroupedIssues({
         group_by: "assignee",
         limit: ISSUE_PAGE_SIZE,
         offset: loaded,
+        ...sort,
         ...filter,
         group_assignee_type: group.assignee_type ?? "none",
         group_assignee_id: group.assignee_id ?? undefined,

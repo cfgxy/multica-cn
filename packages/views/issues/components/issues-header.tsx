@@ -1018,8 +1018,10 @@ export function IssueDisplayControls({
               </TooltipContent>
             </Tooltip>
             <DropdownMenuContent align="end" className="w-auto">
-              <DropdownMenuRadioGroup value={viewMode} onValueChange={(v) => act.setViewMode(v as ViewMode)}>
+              <DropdownMenuGroup>
                 <DropdownMenuLabel>{t(($) => $.view.section)}</DropdownMenuLabel>
+              </DropdownMenuGroup>
+              <DropdownMenuRadioGroup value={viewMode} onValueChange={(v) => act.setViewMode(v as ViewMode)}>
                 <DropdownMenuRadioItem value="board">
                   <Columns3 />
                   {t(($) => $.view.board)}

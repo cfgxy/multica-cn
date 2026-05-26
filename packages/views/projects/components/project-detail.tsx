@@ -232,6 +232,7 @@ function ProjectIssuesContent({
           myIssuesScope={scope}
           myIssuesFilter={filter}
           projectId={projectId}
+          onMoveIssue={handleMoveIssue}
         />
       )}
       {viewMode === "gantt" && <GanttView issues={filteredGanttIssues} />}
