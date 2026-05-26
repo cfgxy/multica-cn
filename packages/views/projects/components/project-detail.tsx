@@ -164,7 +164,7 @@ function ProjectIssuesContent({
 
   const updateIssueMutation = useUpdateIssue();
   const handleMoveIssue = useCallback(
-    (issueId: string, updates: Pick<UpdateIssueRequest, "status" | "assignee_type" | "assignee_id" | "position">) => {
+    (issueId: string, updates: Pick<UpdateIssueRequest, "status" | "assignee_type" | "assignee_id" | "position">, onSettled?: () => void) => {
       updateIssueMutation.mutate(
         { id: issueId, ...updates },
         {
@@ -174,6 +174,7 @@ function ProjectIssuesContent({
                 ? err.message
                 : t(($) => $.detail.toast_move_issue_failed),
             ),
+          onSettled: () => onSettled?.(),
         },
       );
     },

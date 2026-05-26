@@ -223,7 +223,7 @@ export function BoardView({
   assigneeGroupFilter?: AssigneeGroupedIssuesFilter;
   visibleStatuses: IssueStatus[];
   hiddenStatuses: IssueStatus[];
-  onMoveIssue: (issueId: string, updates: BoardMoveUpdates) => void;
+  onMoveIssue: (issueId: string, updates: BoardMoveUpdates, onSettled?: () => void) => void;
   childProgressMap?: Map<string, ChildProgress>;
   /** When set, per-status load-more targets the scoped cache instead of the workspace one. */
   myIssuesScope?: string;
@@ -307,6 +307,7 @@ export function BoardView({
   // --- Drag state ---
   const [activeIssue, setActiveIssue] = useState<Issue | null>(null);
   const isDraggingRef = useRef(false);
+  const isSettlingRef = useRef(false);
 
   // --- Local columns state ---
   // Between drags: follows TQ via useEffect.
@@ -318,8 +319,21 @@ export function BoardView({
   columnsRef.current = columns;
 
   useEffect(() => {
-    if (!isDraggingRef.current) {
-      setColumns(buildColumns(groupedIssues, groups, grouping));
+    const blocked = isDraggingRef.current || isSettlingRef.current;
+    const rebuilt = buildColumns(groupedIssues, groups, grouping);
+    console.log(JSON.stringify({
+      _tag: "BOARD_COLUMNS_EFFECT",
+      ts: Date.now(),
+      blocked,
+      isDragging: isDraggingRef.current,
+      isSettling: isSettlingRef.current,
+      sampleCol: Object.entries(rebuilt).length > 0
+        ? { col: Object.entries(rebuilt)[0]![0], ids: (Object.entries(rebuilt)[0]![1] as string[]).slice(0, 6) }
+        : null,
+      issueCount: groupedIssues.length,
+    }));
+    if (!blocked) {
+      setColumns(rebuilt);
     }
   }, [groupedIssues, groups, grouping]);
 
@@ -344,7 +358,7 @@ export function BoardView({
   }, [groupedIssues]);
 
   const issueMapRef = useRef(issueMap);
-  if (!isDraggingRef.current) {
+  if (!isDraggingRef.current && !isSettlingRef.current) {
     issueMapRef.current = issueMap;
   }
 
@@ -398,6 +412,7 @@ export function BoardView({
         setColumns(buildColumns(groupedIssues, groups, grouping));
 
       if (!over) {
+        console.log(JSON.stringify({ _tag: "DRAG_END", ts: Date.now(), reason: "no_over" }));
         resetColumns();
         return;
       }
@@ -409,12 +424,14 @@ export function BoardView({
       const activeCol = findColumn(cols, activeId, groupIds);
       const overCol = findColumn(cols, overId, groupIds);
       if (!activeCol || !overCol) {
+        console.log(JSON.stringify({ _tag: "DRAG_END", ts: Date.now(), reason: "col_not_found", activeCol, overCol }));
         resetColumns();
         return;
       }
 
       // Non-manual sort: same-column reorder is meaningless.
       if (activeCol === overCol && sortBy !== "position") {
+        console.log(JSON.stringify({ _tag: "DRAG_END", ts: Date.now(), reason: "non_manual_same_col", sortBy }));
         resetColumns();
         return;
       }
@@ -434,11 +451,13 @@ export function BoardView({
 
       const finalCol = findColumn(finalColumns, activeId, groupIds);
       if (!finalCol) {
+        console.log(JSON.stringify({ _tag: "DRAG_END", ts: Date.now(), reason: "final_col_not_found" }));
         resetColumns();
         return;
       }
       const finalGroup = groupMap.get(finalCol);
       if (!finalGroup) {
+        console.log(JSON.stringify({ _tag: "DRAG_END", ts: Date.now(), reason: "final_group_not_found" }));
         resetColumns();
         return;
       }
@@ -449,10 +468,20 @@ export function BoardView({
         // Cross-column: only update group (status/assignee), keep original position.
         const currentIssue = map.get(activeId);
         if (!currentIssue || issueMatchesGroup(currentIssue, finalGroup)) {
+          console.log(JSON.stringify({ _tag: "DRAG_END", ts: Date.now(), reason: "non_manual_no_change" }));
           resetColumns();
           return;
         }
-        onMoveIssue(activeId, getMoveUpdates(finalGroup, currentIssue.position));
+        console.log(JSON.stringify({
+          _tag: "DRAG_END", ts: Date.now(), reason: "non_manual_cross_col",
+          activeId: activeId.slice(0, 8),
+          fromCol: activeCol, toCol: finalCol,
+          position: currentIssue.position,
+        }));
+        isSettlingRef.current = true;
+        onMoveIssue(activeId, getMoveUpdates(finalGroup, currentIssue.position), () => {
+          isSettlingRef.current = false;
+        });
         return;
       }
 
@@ -465,10 +494,27 @@ export function BoardView({
         issueMatchesGroup(currentIssue, finalGroup) &&
         currentIssue.position === newPosition
       ) {
+        console.log(JSON.stringify({ _tag: "DRAG_END", ts: Date.now(), reason: "no_change", position: newPosition }));
         return;
       }
 
-      onMoveIssue(activeId, getMoveUpdates(finalGroup, newPosition));
+      console.log(JSON.stringify({
+        _tag: "DRAG_END", ts: Date.now(), reason: "move",
+        activeId: activeId.slice(0, 8),
+        sortBy,
+        sameCol: activeCol === overCol,
+        fromCol: activeCol, toCol: finalCol,
+        oldPosition: currentIssue?.position,
+        newPosition,
+        finalIdsInCol: finalIds.map((id) => ({
+          id: id.slice(0, 8),
+          pos: map.get(id)?.position,
+        })),
+      }));
+      isSettlingRef.current = true;
+      onMoveIssue(activeId, getMoveUpdates(finalGroup, newPosition), () => {
+        isSettlingRef.current = false;
+      });
     },
     [groupedIssues, groups, grouping, onMoveIssue, groupIds, groupMap, sortBy],
   );

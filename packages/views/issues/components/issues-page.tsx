@@ -142,7 +142,7 @@ export function IssuesPage() {
 
   const updateIssueMutation = useUpdateIssue();
   const handleMoveIssue = useCallback(
-    (issueId: string, updates: Pick<UpdateIssueRequest, "status" | "assignee_type" | "assignee_id" | "position">) => {
+    (issueId: string, updates: Pick<UpdateIssueRequest, "status" | "assignee_type" | "assignee_id" | "position">, onSettled?: () => void) => {
       updateIssueMutation.mutate(
         { id: issueId, ...updates },
         {
@@ -152,6 +152,7 @@ export function IssuesPage() {
                 ? err.message
                 : t(($) => $.page.move_failed),
             ),
+          onSettled: () => onSettled?.(),
         },
       );
     },
