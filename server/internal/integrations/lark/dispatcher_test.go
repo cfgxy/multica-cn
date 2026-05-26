@@ -426,7 +426,7 @@ func TestDispatcher_AgentOfflineFallsThroughCleanly(t *testing.T) {
 		chatSession:       db.ChatSession{ID: sessionID, AgentID: validUUID(0x33)},
 	}
 	chat := &fakeChat{ensureID: sessionID, appendResult: AppendResult{MessageStored: true}}
-	enq := &fakeEnqueuer{err: errors.New("agent has no runtime")}
+	enq := &fakeEnqueuer{err: service.ErrChatTaskAgentNoRuntime}
 	d := &Dispatcher{
 		Queries:     queries,
 		Chat:        chat,
@@ -449,5 +449,72 @@ func TestDispatcher_AgentOfflineFallsThroughCleanly(t *testing.T) {
 	}
 	if res.ChatSessionID != sessionID {
 		t.Fatalf("session id not propagated: %+v", res.ChatSessionID)
+	}
+}
+
+func TestDispatcher_AgentArchivedSurfacesDistinctOutcome(t *testing.T) {
+	sessionID := validUUID(0x66)
+	queries := &fakeQueries{
+		installationByApp: activeInstallation(),
+		userBinding:       boundUser(),
+		chatSession:       db.ChatSession{ID: sessionID, AgentID: validUUID(0x33)},
+	}
+	chat := &fakeChat{ensureID: sessionID, appendResult: AppendResult{MessageStored: true}}
+	enq := &fakeEnqueuer{err: service.ErrChatTaskAgentArchived}
+	d := &Dispatcher{
+		Queries:     queries,
+		Chat:        chat,
+		Audit:       &fakeAudit{},
+		TaskService: enq,
+	}
+
+	res, err := d.Handle(context.Background(), InboundMessage{
+		AppID:        "ok",
+		ChatType:     ChatTypeP2P,
+		SenderOpenID: "ou_user_a",
+		Body:         "hi",
+		MessageID:    "msg-arch",
+	})
+	if err != nil {
+		t.Fatalf("archived path should not return error, got %v", err)
+	}
+	if res.Outcome != OutcomeAgentArchived {
+		t.Fatalf("expected OutcomeAgentArchived, got %q", res.Outcome)
+	}
+}
+
+func TestDispatcher_InfraFailureSurfacesError(t *testing.T) {
+	// A DB / load / create failure from TaskService.EnqueueChatTask is
+	// NOT a productizable state — the WS adapter must see a real
+	// error so it can retry or page, not an "offline" card that
+	// silently hides the outage.
+	sessionID := validUUID(0x66)
+	queries := &fakeQueries{
+		installationByApp: activeInstallation(),
+		userBinding:       boundUser(),
+		chatSession:       db.ChatSession{ID: sessionID, AgentID: validUUID(0x33)},
+	}
+	chat := &fakeChat{ensureID: sessionID, appendResult: AppendResult{MessageStored: true}}
+	infraErr := errors.New("create chat task: connection refused")
+	enq := &fakeEnqueuer{err: infraErr}
+	d := &Dispatcher{
+		Queries:     queries,
+		Chat:        chat,
+		Audit:       &fakeAudit{},
+		TaskService: enq,
+	}
+
+	_, err := d.Handle(context.Background(), InboundMessage{
+		AppID:        "ok",
+		ChatType:     ChatTypeP2P,
+		SenderOpenID: "ou_user_a",
+		Body:         "hi",
+		MessageID:    "msg-infra",
+	})
+	if err == nil {
+		t.Fatalf("infra failure should surface as error, got nil")
+	}
+	if !errors.Is(err, infraErr) {
+		t.Fatalf("infra error should propagate (errors.Is), got %v", err)
 	}
 }

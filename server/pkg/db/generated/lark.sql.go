@@ -296,13 +296,9 @@ INSERT INTO lark_user_binding (
     $1, $2, $3, $4, $5
 )
 ON CONFLICT (installation_id, lark_open_id) DO UPDATE SET
-    -- Re-binding the same open_id to a different Multica user happens
-    -- when a workspace member changes their Lark account. We accept the
-    -- new mapping; the old user simply loses Lark access via this Bot.
-    multica_user_id = EXCLUDED.multica_user_id,
-    workspace_id    = EXCLUDED.workspace_id,
-    union_id        = COALESCE(EXCLUDED.union_id, lark_user_binding.union_id),
-    bound_at        = now()
+    union_id = COALESCE(EXCLUDED.union_id, lark_user_binding.union_id),
+    bound_at = now()
+WHERE lark_user_binding.multica_user_id = EXCLUDED.multica_user_id
 RETURNING id, workspace_id, multica_user_id, installation_id, lark_open_id, union_id, bound_at
 `
 
@@ -318,9 +314,25 @@ type CreateLarkUserBindingParams struct {
 // lark_user_binding
 // =====================
 // Records that a Lark open_id (per-installation) maps to a Multica
-// user. The composite FK to member(workspace_id, user_id) makes this
-// statement fail if the user is not (or no longer) a workspace member
-// — that is the structural guarantee for §4.3 of the design.
+// user.
+//
+// Two structural guarantees:
+//  1. The composite FK to member(workspace_id, user_id) makes this
+//     statement fail when the redeemer is not (or no longer) a
+//     workspace member — that is §4.3 of the design.
+//  2. ON CONFLICT DO UPDATE is gated on `multica_user_id` matching
+//     the existing binding, so a second redeemer holding their own
+//     valid binding token CANNOT silently steal an already-bound
+//     open_id. If the conflict row points at a different user, the
+//     UPDATE is skipped and the statement returns ZERO rows — the
+//     caller (lark.BindingTokenService.RedeemAndBind) translates
+//     that into ErrBindingAlreadyAssigned.
+//
+// The same-user case still updates metadata (union_id refresh,
+// bound_at bump) so an idempotent re-bind by the original user
+// continues to work; only a cross-user re-assignment is rejected.
+// True account changes must go through an explicit unbind flow, not
+// through a binding token.
 func (q *Queries) CreateLarkUserBinding(ctx context.Context, arg CreateLarkUserBindingParams) (LarkUserBinding, error) {
 	row := q.db.QueryRow(ctx, createLarkUserBinding,
 		arg.WorkspaceID,

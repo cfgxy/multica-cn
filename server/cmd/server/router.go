@@ -172,7 +172,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				slog.Error("lark: InstallationService init failed; lark integration disabled", "error", err)
 			} else {
 				h.LarkInstallations = installSvc
-				h.LarkBindingTokens = lark.NewBindingTokenService(queries)
+				h.LarkBindingTokens = lark.NewBindingTokenService(queries, pool)
 				slog.Info("lark integration enabled")
 			}
 		}

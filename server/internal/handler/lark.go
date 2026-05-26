@@ -223,6 +223,14 @@ type RedeemLarkBindingTokenResponse struct {
 // Multica account. The token only proves "this open_id requested
 // binding" — combining it with the logged-in user is what creates
 // the (open_id ↔ user) mapping.
+//
+// Consume + bind happen inside a single DB transaction (see
+// lark.BindingTokenService.RedeemAndBind). The three failure modes
+// each map to a distinct status code so the frontend can render the
+// appropriate copy without a separate probe:
+//   - 410 Gone:       token unknown / consumed / expired
+//   - 409 Conflict:   open_id is already bound to a different user
+//   - 403 Forbidden:  redeemer is not a workspace member
 func (h *Handler) RedeemLarkBindingToken(w http.ResponseWriter, r *http.Request) {
 	if h.LarkBindingTokens == nil {
 		writeError(w, http.StatusServiceUnavailable, "lark integration not configured")
@@ -246,27 +254,18 @@ func (h *Handler) RedeemLarkBindingToken(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	redeemed, err := h.LarkBindingTokens.Redeem(r.Context(), req.Token)
+	redeemed, err := h.LarkBindingTokens.RedeemAndBind(r.Context(), req.Token, userUUID)
 	if err != nil {
-		if errors.Is(err, lark.ErrBindingTokenInvalid) {
+		switch {
+		case errors.Is(err, lark.ErrBindingTokenInvalid):
 			writeError(w, http.StatusGone, "binding token invalid or expired")
-			return
+		case errors.Is(err, lark.ErrBindingAlreadyAssigned):
+			writeError(w, http.StatusConflict, "this Lark account is already bound to a different Multica user")
+		case errors.Is(err, lark.ErrBindingNotWorkspaceMember):
+			writeError(w, http.StatusForbidden, "binding refused (are you a workspace member?)")
+		default:
+			writeError(w, http.StatusInternalServerError, "failed to redeem token")
 		}
-		writeError(w, http.StatusInternalServerError, "failed to redeem token")
-		return
-	}
-
-	// CreateLarkUserBinding's composite FK to member(workspace_id, user_id)
-	// will fail with a foreign-key violation if the redeemer is NOT a
-	// member of the token's workspace. We surface that as 403 so a
-	// non-member who stole the link cannot silently complete binding.
-	if _, err := h.Queries.CreateLarkUserBinding(r.Context(), db.CreateLarkUserBindingParams{
-		WorkspaceID:    redeemed.WorkspaceID,
-		MulticaUserID:  userUUID,
-		InstallationID: redeemed.InstallationID,
-		LarkOpenID:     string(redeemed.LarkOpenID),
-	}); err != nil {
-		writeError(w, http.StatusForbidden, "binding refused (are you a workspace member?)")
 		return
 	}
 

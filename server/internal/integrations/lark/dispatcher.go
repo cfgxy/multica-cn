@@ -57,11 +57,23 @@ const (
 	OutcomeIngested Outcome = "ingested"
 
 	// OutcomeAgentOffline — the message landed in chat_session, but
-	// the agent has no online runtime and no task was enqueued. The
-	// adapter should reply with "agent offline, will run on next
-	// online." The chat_message row remains so the agent picks it up
-	// on resume.
+	// the agent has no runtime bound at all (agent.runtime_id IS
+	// NULL). The adapter should reply with "agent offline, will run
+	// on next online." The chat_message row remains so the agent
+	// picks it up on resume.
+	//
+	// IMPORTANT: this is NOT triggered when a daemon is merely
+	// disconnected. If agent.runtime_id IS set, the chat task is
+	// enqueued and waits for the daemon to claim it on next online;
+	// that path returns OutcomeIngested with a TaskID.
 	OutcomeAgentOffline Outcome = "agent_offline"
+
+	// OutcomeAgentArchived — the message landed in chat_session, but
+	// the agent has been archived. The adapter should reply with a
+	// distinct copy ("this agent has been archived; ask an admin to
+	// unarchive or rebind"). Kept separate from OutcomeAgentOffline
+	// because the user-facing remediation differs.
+	OutcomeAgentArchived Outcome = "agent_archived"
 )
 
 // DispatchResult is the typed return from Dispatcher.Handle. Callers
@@ -249,19 +261,36 @@ func (d *Dispatcher) Handle(ctx context.Context, msg InboundMessage) (DispatchRe
 		res.IssueNumber = issueRes.Issue.Number
 	}
 
-	// 7. Enqueue the chat task that triggers the agent run. A failure
-	//    here typically means "agent has no online runtime" — the
-	//    chat_message is already written, so the user's input is not
-	//    lost. We surface OutcomeAgentOffline so the WS adapter can
-	//    reply with the offline notice card per §4.6.
+	// 7. Enqueue the chat task that triggers the agent run.
+	//
+	//    Only the productizable rejections from EnqueueChatTask
+	//    (agent archived, agent has no runtime configured) are mapped
+	//    to a user-visible Outcome here — the chat_message is already
+	//    written, so the user's input is not lost. Real infra
+	//    failures (DB load / insert errors) are returned to the WS
+	//    adapter as errors so it can retry or page; we don't disguise
+	//    them as an "offline" card.
+	//
+	//    Note: a daemon that's merely disconnected is NOT an error
+	//    here. As long as agent.runtime_id is set, the chat task is
+	//    enqueued and waits for the daemon to claim it on next
+	//    online; this path returns OutcomeIngested with a TaskID.
 	session, err := d.Queries.GetChatSession(ctx, sessionID)
 	if err != nil {
 		return DispatchResult{}, fmt.Errorf("reload chat session: %w", err)
 	}
 	task, err := d.TaskService.EnqueueChatTask(ctx, session)
 	if err != nil {
-		res.Outcome = OutcomeAgentOffline
-		return res, nil
+		switch {
+		case errors.Is(err, service.ErrChatTaskAgentNoRuntime):
+			res.Outcome = OutcomeAgentOffline
+			return res, nil
+		case errors.Is(err, service.ErrChatTaskAgentArchived):
+			res.Outcome = OutcomeAgentArchived
+			return res, nil
+		default:
+			return DispatchResult{}, fmt.Errorf("enqueue chat task: %w", err)
+		}
 	}
 	res.TaskID = task.ID
 	return res, nil
