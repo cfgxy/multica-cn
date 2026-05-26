@@ -87,6 +87,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	// from cwd regardless and are not affected by either mode.
 	isolateClaudeConfig := opts.SkillsLocal == "ignore"
 	var claudeConfigDir string
+	var hostConfigDir string
 	var claudeConfigCleanup func()
 	if isolateClaudeConfig {
 		// Resolve the *effective* Claude config source before we strip
@@ -95,8 +96,13 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		// Mirroring `~/.claude` blindly when the operator has explicitly
 		// pointed Claude at a different config dir (e.g. a managed install)
 		// would copy the wrong credentials into the scratch dir and break
-		// auth — see the second Must Fix in MUL-2603 review.
-		hostConfigDir := resolveHostClaudeConfigDir(b.cfg.Env)
+		// auth — see the second Must Fix in MUL-2603 review. The same
+		// value is threaded through to buildClaudeEnv so the macOS keychain
+		// passthrough can refuse to inject the default OAuth token into a
+		// custom-dir isolated child (the unsuffixed keychain entry does not
+		// match the suffixed entry a custom CLAUDE_CONFIG_DIR would resolve
+		// to, so reading it would inject a different account's token).
+		hostConfigDir = resolveHostClaudeConfigDir(b.cfg.Env)
 		dir, cleanup, err := newIsolatedClaudeConfigDir(opts.Cwd, hostConfigDir, b.cfg.Logger)
 		if err != nil {
 			cancel()
@@ -111,7 +117,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		}
 	}()
 
-	cmd.Env = buildClaudeEnv(b.cfg.Env, claudeConfigDir, b.cfg.Logger)
+	cmd.Env = buildClaudeEnv(b.cfg.Env, claudeConfigDir, hostConfigDir, b.cfg.Logger)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -627,20 +633,27 @@ func buildEnv(extra map[string]string) []string {
 // the override race. Callers in "merge" mode pass "" and behaviour
 // matches the pre-MUL-2603 buildEnv path.
 //
-// On macOS isolation also surfaces the host's Claude Code OAuth token
-// through CLAUDE_CODE_OAUTH_TOKEN — see buildClaudeEnvWith for why this
-// is necessary on Darwin even when .claude.json is already mirrored.
-func buildClaudeEnv(extra map[string]string, claudeConfigDir string, logger *slog.Logger) []string {
-	return buildClaudeEnvWith(extra, claudeConfigDir, logger, readHostClaudeOAuthToken)
+// hostConfigDir is the *effective* host Claude config source the scratch
+// dir was mirrored from (see resolveHostClaudeConfigDir). It is used as
+// the gate for the macOS keychain OAuth passthrough: only the default
+// `$HOME/.claude` host source matches the unsuffixed
+// `Claude Code-credentials` keychain entry, so for custom dirs we
+// deliberately skip the passthrough rather than inject the daemon
+// user's default account into a managed/custom-dir agent.
+func buildClaudeEnv(extra map[string]string, claudeConfigDir, hostConfigDir string, logger *slog.Logger) []string {
+	return buildClaudeEnvWith(extra, claudeConfigDir, hostConfigDir, logger, os.UserHomeDir, readHostClaudeOAuthToken)
 }
 
 // buildClaudeEnvWith is the testable seam behind buildClaudeEnv. Tests
-// inject a readOAuthToken closure so they can exercise the auth
-// passthrough without touching the real macOS keychain.
+// inject a homeDir resolver and readOAuthToken closure so they can
+// exercise the auth passthrough — including the default-vs-custom
+// hostConfigDir gate — without touching the real macOS keychain or
+// mutating $HOME.
 func buildClaudeEnvWith(
 	extra map[string]string,
-	claudeConfigDir string,
+	claudeConfigDir, hostConfigDir string,
 	logger *slog.Logger,
+	homeDir func() (string, error),
 	readOAuthToken func() (string, error),
 ) []string {
 	env := mergeEnv(os.Environ(), extra)
@@ -698,14 +711,35 @@ func buildClaudeEnvWith(
 	// the access token via CLAUDE_CODE_OAUTH_TOKEN so the child skips
 	// keychain lookup entirely (MUL-2603 follow-up regression).
 	//
-	// Security boundary: CLAUDE_CODE_OAUTH_TOKEN is the host's claude.ai
-	// OAuth access token. We rely on Claude Code itself scrubbing it from
-	// the env it passes to Bash / hook subprocesses — a property we lock
-	// in with TestClaudeCLIScrubsOAuthTokenFromBashSubprocess, which boots
-	// the real CLI with a canary token and asserts `printenv` inside the
-	// model-driven Bash tool returns empty. If that test ever flips
-	// (upstream CLI change), this passthrough must move off env vars
-	// before merging.
+	// Host-dir gate: the reader returns the *unsuffixed*
+	// `Claude Code-credentials` entry, which is only correct when the
+	// host config source is the default `$HOME/.claude`. A custom
+	// CLAUDE_CONFIG_DIR (set via agent custom_env or daemon-host env)
+	// maps to `Claude Code-credentials-<hash>` for a *different* account.
+	// Injecting the unsuffixed entry there would cross-pollute the
+	// managed/custom agent with the daemon user's default OAuth account
+	// — the same "do not cross accounts" boundary mirrorHostClaudeJSONIfMissing
+	// already enforces for `.claude.json`. So for custom/parent dirs we
+	// deliberately skip the passthrough and let the child rely on
+	// whatever auth lives inside the custom dir (`.credentials.json`,
+	// `apiKeyHelper`, etc.) or fall through to ANTHROPIC_API_KEY.
+	//
+	// Security boundary (Bash subprocess only): CLAUDE_CODE_OAUTH_TOKEN
+	// is the host's claude.ai OAuth access token. We rely on Claude
+	// Code itself scrubbing it from the env it passes to the
+	// model-driven Bash tool subprocess — the property is locked in by
+	// TestClaudeCLIScrubsOAuthTokenFromBashSubprocess, which boots the
+	// real CLI with a canary OAuth token + a non-secret control var and
+	// asserts that the Bash subprocess sees the canary as UNSET while
+	// the control is CONTROL-SET. That control prong is what proves the
+	// scrub is targeted, not a side-effect of "Bash gets no env". Hook
+	// subprocesses are NOT covered by this assertion: we have not
+	// reproduced the env shape they receive, so the contract here
+	// intentionally narrows to Bash; if a future hook-using feature
+	// matters we must add a hook-side regression before relying on the
+	// same env-scrub there. If the existing test ever flips (upstream
+	// CLI change), this passthrough must move off env vars (e.g. a
+	// short-lived `apiKeyHelper` script) before merging.
 	//
 	// Precedence (highest wins): operator-pinned CLAUDE_CODE_OAUTH_TOKEN
 	// in custom_env, then ANTHROPIC_API_KEY (the user explicitly chose
@@ -713,7 +747,8 @@ func buildClaudeEnvWith(
 	// keychain token. "Pinned" is gated on a non-empty value above so an
 	// empty `KEY=` inherited from os.Environ does not pose as an explicit
 	// choice and disable the keychain reader.
-	if !hasOAuthToken && !hasAnthropicKey && readOAuthToken != nil {
+	if !hasOAuthToken && !hasAnthropicKey && readOAuthToken != nil &&
+		isDefaultHostClaudeConfigDir(hostConfigDir, homeDir) {
 		token, err := readOAuthToken()
 		if err != nil && logger != nil {
 			logger.Warn("claude: read host oauth token failed",
@@ -725,6 +760,28 @@ func buildClaudeEnvWith(
 		}
 	}
 	return filtered
+}
+
+// isDefaultHostClaudeConfigDir reports whether hostConfigDir refers to the
+// default per-user Claude config path `$HOME/.claude`. The macOS keychain
+// passthrough relies on this gate because the unsuffixed
+// `Claude Code-credentials` entry only matches that default; custom
+// CLAUDE_CONFIG_DIR values map to suffixed entries for different accounts,
+// so reading the unsuffixed entry into a custom-dir isolated child would
+// cross-pollute accounts (see buildClaudeEnvWith for the full reasoning).
+//
+// Returns false when hostConfigDir is empty (merge mode) or when the home
+// directory cannot be resolved — both translate to "do not pull the
+// default keychain token", which is the safe default.
+func isDefaultHostClaudeConfigDir(hostConfigDir string, homeDir func() (string, error)) bool {
+	if hostConfigDir == "" || homeDir == nil {
+		return false
+	}
+	home, err := homeDir()
+	if err != nil || home == "" {
+		return false
+	}
+	return hostConfigDir == filepath.Join(home, ".claude")
 }
 
 func mergeEnv(base []string, extra map[string]string) []string {

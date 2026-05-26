@@ -825,7 +825,8 @@ func TestClaudeExecuteMergeModeKeepsHostConfigDir(t *testing.T) {
 func TestBuildClaudeEnvAppendsIsolatedConfigDir(t *testing.T) {
 	t.Parallel()
 
-	env := buildClaudeEnvWith(nil, "/tmp/isolated-claude-config", slog.Default(), noopOAuthTokenReader)
+	hostDir, homeDir := noopHostGate()
+	env := buildClaudeEnvWith(nil, "/tmp/isolated-claude-config", hostDir, slog.Default(), homeDir, noopOAuthTokenReader)
 
 	var last string
 	hits := 0
@@ -848,7 +849,8 @@ func TestBuildClaudeEnvSkipsOverrideWhenEmpty(t *testing.T) {
 
 	// Asking for "merge" mode passes "" through. We should not add a
 	// CLAUDE_CONFIG_DIR=… entry; the parent's value (if any) wins.
-	env := buildClaudeEnvWith(map[string]string{"FOO": "bar"}, "", slog.Default(), noopOAuthTokenReader)
+	hostDir, homeDir := noopHostGate()
+	env := buildClaudeEnvWith(map[string]string{"FOO": "bar"}, "", hostDir, slog.Default(), homeDir, noopOAuthTokenReader)
 	for _, entry := range env {
 		if strings.HasPrefix(entry, "CLAUDE_CONFIG_DIR=") {
 			// The parent env may legitimately have one set on a developer
@@ -865,10 +867,13 @@ func TestBuildClaudeEnvOverridesPreviousValue(t *testing.T) {
 	// Even if custom_env supplies a CLAUDE_CONFIG_DIR, the isolated dir
 	// must take precedence: a stale custom_env entry must never be able
 	// to point the child back at `~/.claude/`.
+	hostDir, homeDir := noopHostGate()
 	env := buildClaudeEnvWith(
 		map[string]string{"CLAUDE_CONFIG_DIR": "/etc/hostile"},
 		"/tmp/safe",
+		hostDir,
 		slog.Default(),
+		homeDir,
 		noopOAuthTokenReader,
 	)
 
@@ -891,6 +896,27 @@ func TestBuildClaudeEnvOverridesPreviousValue(t *testing.T) {
 // ("", nil) takes the "no token available" path: buildClaudeEnvWith
 // neither appends CLAUDE_CODE_OAUTH_TOKEN nor logs a warning.
 func noopOAuthTokenReader() (string, error) { return "", nil }
+
+// defaultHostGate returns (hostConfigDir, homeDir) inputs that satisfy
+// isDefaultHostClaudeConfigDir, so buildClaudeEnvWith treats the host
+// source as the default `$HOME/.claude` and runs the keychain
+// passthrough. Tests that exercise the passthrough branch use this; the
+// chosen home lives under t.TempDir so each subtest is hermetic and the
+// real machine's $HOME never matters.
+func defaultHostGate(t *testing.T) (string, func() (string, error)) {
+	t.Helper()
+	home := t.TempDir()
+	return filepath.Join(home, ".claude"), func() (string, error) { return home, nil }
+}
+
+// noopHostGate returns (hostConfigDir, homeDir) inputs that always fail
+// the gate. Used by tests that don't care about the gate because the
+// passthrough is short-circuited earlier (merge mode, hasOAuthToken,
+// hasAnthropicKey). Returning an empty hostConfigDir is the explicit
+// "this test does not exercise the keychain branch" signal.
+func noopHostGate() (string, func() (string, error)) {
+	return "", func() (string, error) { return "", nil }
+}
 
 // countEnvEntries returns the number of `key=…` entries in env. Used by
 // the auth-passthrough tests below to assert "exactly one" instead of
@@ -929,7 +955,8 @@ func TestBuildClaudeEnvIsolatedInjectsKeychainOAuthToken(t *testing.T) {
 	t.Parallel()
 
 	reader := func() (string, error) { return "sk-ant-oat-test", nil }
-	env := buildClaudeEnvWith(nil, "/tmp/isolated", slog.Default(), reader)
+	hostDir, homeDir := defaultHostGate(t)
+	env := buildClaudeEnvWith(nil, "/tmp/isolated", hostDir, slog.Default(), homeDir, reader)
 
 	if got := countEnvEntries(env, "CLAUDE_CODE_OAUTH_TOKEN"); got != 1 {
 		t.Fatalf("expected exactly one CLAUDE_CODE_OAUTH_TOKEN entry, got %d (%v)", got, env)
@@ -951,7 +978,8 @@ func TestBuildClaudeEnvMergeModeDoesNotInjectOAuthToken(t *testing.T) {
 		t.Fatal("readOAuthToken must not be invoked in merge mode")
 		return "", nil
 	}
-	env := buildClaudeEnvWith(nil, "", slog.Default(), reader)
+	hostDir, homeDir := noopHostGate()
+	env := buildClaudeEnvWith(nil, "", hostDir, slog.Default(), homeDir, reader)
 
 	if got := countEnvEntries(env, "CLAUDE_CODE_OAUTH_TOKEN"); got != 0 {
 		t.Fatalf("expected no CLAUDE_CODE_OAUTH_TOKEN in merge mode, got %d (%v)", got, env)
@@ -971,10 +999,13 @@ func TestBuildClaudeEnvIsolatedRespectsCustomOAuthToken(t *testing.T) {
 		t.Fatal("readOAuthToken must not be invoked when custom_env pinned a token")
 		return "", nil
 	}
+	hostDir, homeDir := defaultHostGate(t)
 	env := buildClaudeEnvWith(
 		map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-pinned"},
 		"/tmp/isolated",
+		hostDir,
 		slog.Default(),
+		homeDir,
 		reader,
 	)
 
@@ -996,10 +1027,13 @@ func TestBuildClaudeEnvIsolatedSkipsKeychainWhenAnthropicKeyPresent(t *testing.T
 		t.Fatal("readOAuthToken must not be invoked when ANTHROPIC_API_KEY is set")
 		return "", nil
 	}
+	hostDir, homeDir := defaultHostGate(t)
 	env := buildClaudeEnvWith(
 		map[string]string{"ANTHROPIC_API_KEY": "sk-ant-api-test"},
 		"/tmp/isolated",
+		hostDir,
 		slog.Default(),
+		homeDir,
 		reader,
 	)
 
@@ -1022,7 +1056,8 @@ func TestBuildClaudeEnvIsolatedReaderErrorIsSoftFailure(t *testing.T) {
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
-	env := buildClaudeEnvWith(nil, "/tmp/isolated", logger, reader)
+	hostDir, homeDir := defaultHostGate(t)
+	env := buildClaudeEnvWith(nil, "/tmp/isolated", hostDir, logger, homeDir, reader)
 
 	if got := countEnvEntries(env, "CLAUDE_CODE_OAUTH_TOKEN"); got != 0 {
 		t.Fatalf("expected no CLAUDE_CODE_OAUTH_TOKEN when reader errors, got %d (%v)", got, env)
@@ -1047,7 +1082,8 @@ func TestBuildClaudeEnvIsolatedReaderNilTokenStaysQuiet(t *testing.T) {
 	var logBuf bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
 
-	env := buildClaudeEnvWith(nil, "/tmp/isolated", logger, noopOAuthTokenReader)
+	hostDir, homeDir := defaultHostGate(t)
+	env := buildClaudeEnvWith(nil, "/tmp/isolated", hostDir, logger, homeDir, noopOAuthTokenReader)
 
 	if got := countEnvEntries(env, "CLAUDE_CODE_OAUTH_TOKEN"); got != 0 {
 		t.Fatalf("expected no CLAUDE_CODE_OAUTH_TOKEN when reader returns empty, got %d (%v)", got, env)
@@ -1076,7 +1112,8 @@ func TestBuildClaudeEnvIsolatedTreatsEmptyAnthropicAPIKeyAsUnpinned(t *testing.T
 	t.Setenv("ANTHROPIC_API_KEY", "")
 
 	reader := func() (string, error) { return "sk-ant-oat-keychain", nil }
-	env := buildClaudeEnvWith(nil, "/tmp/isolated", slog.Default(), reader)
+	hostDir, homeDir := defaultHostGate(t)
+	env := buildClaudeEnvWith(nil, "/tmp/isolated", hostDir, slog.Default(), homeDir, reader)
 
 	if got := envValue(env, "CLAUDE_CODE_OAUTH_TOKEN"); got != "sk-ant-oat-keychain" {
 		t.Fatalf("expected keychain token to be injected when ANTHROPIC_API_KEY is empty, got %q", got)
@@ -1096,7 +1133,8 @@ func TestBuildClaudeEnvIsolatedHonorsNonEmptyAnthropicAPIKey(t *testing.T) {
 		t.Fatal("readOAuthToken must not be invoked when non-empty ANTHROPIC_API_KEY is set")
 		return "", nil
 	}
-	env := buildClaudeEnvWith(nil, "/tmp/isolated", slog.Default(), reader)
+	hostDir, homeDir := defaultHostGate(t)
+	env := buildClaudeEnvWith(nil, "/tmp/isolated", hostDir, slog.Default(), homeDir, reader)
 
 	if got := countEnvEntries(env, "CLAUDE_CODE_OAUTH_TOKEN"); got != 0 {
 		t.Fatalf("expected no CLAUDE_CODE_OAUTH_TOKEN with non-empty ANTHROPIC_API_KEY, got %d (%v)", got, env)
@@ -1113,10 +1151,13 @@ func TestBuildClaudeEnvIsolatedEmptyOAuthTokenInCustomEnvAsUnpinned(t *testing.T
 	t.Parallel()
 
 	reader := func() (string, error) { return "sk-ant-oat-keychain", nil }
+	hostDir, homeDir := defaultHostGate(t)
 	env := buildClaudeEnvWith(
 		map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": ""},
 		"/tmp/isolated",
+		hostDir,
 		slog.Default(),
+		homeDir,
 		reader,
 	)
 
@@ -1127,14 +1168,112 @@ func TestBuildClaudeEnvIsolatedEmptyOAuthTokenInCustomEnvAsUnpinned(t *testing.T
 	}
 }
 
+// TestBuildClaudeEnvIsolatedSkipsKeychainForCustomHostConfigDir pins the
+// "do not cross accounts" boundary the round-2 MUL-2603 review flagged
+// as Must-fix 1: when the host config source is a custom CLAUDE_CONFIG_DIR
+// (set via agent custom_env or daemon-host env), the isolated child must
+// NOT receive the daemon user's default `Claude Code-credentials` keychain
+// token. Claude Code 2.x maps custom dirs to suffixed keychain entries
+// (`Claude Code-credentials-<sha256(dir)[:8]>`) belonging to whatever
+// account `claude /login` was last run against under that dir, so
+// injecting the unsuffixed default entry would mix accounts — the same
+// boundary mirrorHostClaudeJSONIfMissing already enforces for
+// `.claude.json` (see TestMirrorHostClaudeJSONIfMissing_CustomHostDirSkipped).
+//
+// The reader closure uses t.Fatal so a regression that re-enables the
+// keychain read for custom dirs fails loud and obvious — silent
+// re-introduction is exactly how cross-account leaks slip past review.
+func TestBuildClaudeEnvIsolatedSkipsKeychainForCustomHostConfigDir(t *testing.T) {
+	t.Parallel()
+
+	reader := func() (string, error) {
+		t.Fatal("readOAuthToken must NOT be invoked when host config dir is a custom CLAUDE_CONFIG_DIR — would inject the daemon user's default account into a managed/custom-dir agent")
+		return "", nil
+	}
+	// Home points somewhere; hostConfigDir intentionally is NOT
+	// $HOME/.claude — it's a managed/custom location an operator pinned.
+	home := t.TempDir()
+	customHost := filepath.Join(t.TempDir(), "managed-claude")
+	homeDir := func() (string, error) { return home, nil }
+
+	env := buildClaudeEnvWith(nil, "/tmp/isolated", customHost, slog.Default(), homeDir, reader)
+
+	if got := countEnvEntries(env, "CLAUDE_CODE_OAUTH_TOKEN"); got != 0 {
+		t.Fatalf("expected no CLAUDE_CODE_OAUTH_TOKEN to be injected for custom hostConfigDir, got %d (%v)", got, env)
+	}
+	// Isolation env itself must still be intact — the gate only suppresses
+	// the keychain passthrough, it does not change CLAUDE_CONFIG_DIR.
+	if got := countEnvEntries(env, "CLAUDE_CONFIG_DIR"); got != 1 {
+		t.Fatalf("expected isolated CLAUDE_CONFIG_DIR to still be set, got %d entries", got)
+	}
+}
+
+// TestIsDefaultHostClaudeConfigDir documents the gate's truth table at
+// the unit level so the keychain passthrough's host-dir boundary is
+// regression-tested even when buildClaudeEnvWith short-circuits earlier
+// (operator pinned auth, merge mode, etc.).
+func TestIsDefaultHostClaudeConfigDir(t *testing.T) {
+	t.Parallel()
+	const fakeHome = "/fake-home"
+	okHome := func() (string, error) { return fakeHome, nil }
+	emptyHome := func() (string, error) { return "", nil }
+	errHome := func() (string, error) { return "", errors.New("no home for you") }
+
+	cases := []struct {
+		name          string
+		hostConfigDir string
+		homeDir       func() (string, error)
+		want          bool
+	}{
+		{"matches default", filepath.Join(fakeHome, ".claude"), okHome, true},
+		{"custom dir under home", filepath.Join(fakeHome, "managed-claude"), okHome, false},
+		{"completely unrelated dir", "/etc/claude-managed", okHome, false},
+		{"empty hostConfigDir (merge mode)", "", okHome, false},
+		{"empty home resolves to false", filepath.Join(fakeHome, ".claude"), emptyHome, false},
+		{"home resolver error", filepath.Join(fakeHome, ".claude"), errHome, false},
+		{"nil home resolver", filepath.Join(fakeHome, ".claude"), nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isDefaultHostClaudeConfigDir(tc.hostConfigDir, tc.homeDir); got != tc.want {
+				t.Fatalf("isDefaultHostClaudeConfigDir(%q, ...) = %v, want %v",
+					tc.hostConfigDir, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestClaudeCLIScrubsOAuthTokenFromBashSubprocess is the safety-boundary
 // regression test backing the security comment in buildClaudeEnvWith:
 // surfacing the host OAuth token through CLAUDE_CODE_OAUTH_TOKEN is only
 // safe because Claude Code itself strips that variable from the env it
-// hands to Bash / hook subprocesses, so a model-driven `printenv` cannot
-// echo the secret into the agent transcript. The MUL-2603 review (Elon)
-// flagged this as the blocking question for #3267, and the empirical
-// reproduction below is what the team accepted as proof.
+// hands to the model-driven **Bash tool subprocess**, so a `printenv`
+// inside the model's bash invocation cannot echo the secret into the
+// agent transcript. The MUL-2603 review (Elon, round 2) flagged that a
+// bare "canary absent" assertion was insufficient — it false-passes any
+// time the model refuses, paraphrases, or never reaches Bash — so this
+// version adds a non-secret CONTROL variable. The three conjoined
+// assertions are:
+//
+//  1. the canary CLAUDE_CODE_OAUTH_TOKEN value is NOT in the transcript
+//     (the primary safety claim);
+//  2. "UNSET" IS in the transcript (the Bash tool actually ran AND saw
+//     CLAUDE_CODE_OAUTH_TOKEN as unset, ruling out the "model refused" /
+//     "model paraphrased" false pass);
+//  3. "CONTROL-SET" IS in the transcript (ordinary env propagation works
+//     for the non-sensitive MUL2603_CONTROL variable — proves the scrub
+//     is a targeted strip of CLAUDE_CODE_OAUTH_TOKEN, not a side-effect
+//     of "the CLI sandboxes Bash with no env at all", which would not
+//     be a security property we could rely on for arbitrary future
+//     env-exposed secrets).
+//
+// The boundary intentionally narrows to the **Bash tool subprocess**.
+// We have not reproduced the env shape the CLI hands to hook
+// subprocesses (e.g. PreToolUse / PostToolUse hooks), so this test does
+// not assert anything about them — and neither do the code comment in
+// buildClaudeEnvWith nor the PR description. If a future feature
+// requires the same env-scrub property for hooks, a parallel hook
+// regression has to be added before relying on it.
 //
 // Skipped by default because it requires:
 //   - macOS (the keychain-suffix path the passthrough exists for)
@@ -1174,15 +1313,26 @@ func TestClaudeCLIScrubsOAuthTokenFromBashSubprocess(t *testing.T) {
 	// Distinctive canary the model has no reason to produce on its own.
 	// Long + structured so a substring match cannot false-positive on
 	// "sk-ant-…" prefixes that legitimately appear in CLI help text.
-	const canary = "sk-ant-oat-leak-canary-CLAUDE_CODE_OAUTH_TOKEN-MUL2603-PROBE"
+	const (
+		canary       = "sk-ant-oat-leak-canary-CLAUDE_CODE_OAUTH_TOKEN-MUL2603-PROBE"
+		controlValue = "mul2603-control-value-non-secret"
+		// The Bash tool emits these literal tokens; we assert on them as
+		// proof-of-execution rather than parsing the model's prose.
+		secretUnsetMarker = "UNSET"
+		secretSetMarker   = "SET"
+		controlSetMarker  = "CONTROL-SET"
+	)
 
-	// Use the *user's* shell-resolved env minus what we explicitly set so
-	// the CLI sees the canary token and the real API key. We do not use
-	// t.Setenv because Execute spawns a child of the test binary, not of
-	// the test goroutine; explicit env list keeps the boundary obvious.
-	env := append(os.Environ(), "CLAUDE_CODE_OAUTH_TOKEN="+canary)
+	// Use the *user's* shell-resolved env plus the canary + control vars.
+	// We do not use t.Setenv because the CLI is spawned via exec.Command,
+	// not as a child of the test goroutine; an explicit env list keeps
+	// the boundary obvious.
+	env := append(os.Environ(),
+		"CLAUDE_CODE_OAUTH_TOKEN="+canary,
+		"MUL2603_CONTROL="+controlValue,
+	)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, claudePath,
 		"--print",
@@ -1191,19 +1341,44 @@ func TestClaudeCLIScrubsOAuthTokenFromBashSubprocess(t *testing.T) {
 		"--allowedTools", "Bash",
 	)
 	cmd.Env = env
+	// The prompt asks the model to run two `test -n` probes back-to-back
+	// and report both raw outputs. Using `test -n` instead of `printenv`
+	// makes the assertion deterministic: an empty value and an unset key
+	// both render as "UNSET", so the test doesn't have to special-case
+	// `printenv`'s exit-status behaviour across shells.
 	cmd.Stdin = strings.NewReader(
-		"Please run this exact bash command and paste the raw output verbatim: " +
-			"`printenv CLAUDE_CODE_OAUTH_TOKEN || echo SCRUB-OK`. " +
-			"Do not paraphrase the output, do not redact it.",
+		"Please run this exact bash command and paste the raw output verbatim. " +
+			"Do not paraphrase, do not redact, do not summarize:\n" +
+			"`test -n \"$CLAUDE_CODE_OAUTH_TOKEN\" && echo " + secretSetMarker + " || echo " + secretUnsetMarker +
+			"; test -n \"$MUL2603_CONTROL\" && echo " + controlSetMarker + " || echo CONTROL-UNSET`",
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("claude --print failed: %v\noutput:\n%s", err, out)
 	}
 	body := string(out)
+
+	// Primary safety assertion: the canary OAuth value never lands in the
+	// transcript verbatim.
 	if strings.Contains(body, canary) {
 		t.Fatalf("CLAUDE_CODE_OAUTH_TOKEN leaked to Bash tool subprocess — Claude Code stopped scrubbing it.\nProof: canary %q present in transcript:\n%s",
 			canary, body)
+	}
+	// Control-prong proves the scrub is *targeted*, not "Bash has no env".
+	// Without this, a Claude Code change that walled Bash off entirely
+	// would pass the canary check but break the security model we documented.
+	if !strings.Contains(body, controlSetMarker) {
+		t.Fatalf("Bash tool did not propagate the non-secret control var %s — the scrub may have widened to all env vars, which changes the security model we documented.\nTranscript:\n%s",
+			controlSetMarker, body)
+	}
+	// Proof-of-execution: the Bash subprocess actually ran the probe AND
+	// saw CLAUDE_CODE_OAUTH_TOKEN as unset (the marker is what the probe
+	// emits in the false branch of `test -n`). Without this assertion a
+	// transcript where the model declined to call Bash would pass the
+	// canary check trivially and silently disarm the regression.
+	if !strings.Contains(body, secretUnsetMarker) {
+		t.Fatalf("Bash tool either did not run or saw CLAUDE_CODE_OAUTH_TOKEN as SET — both invalidate the scrub assertion.\nTranscript:\n%s",
+			body)
 	}
 }
 
