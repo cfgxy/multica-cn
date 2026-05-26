@@ -1,4 +1,4 @@
-import { queryOptions } from "@tanstack/react-query";
+import { keepPreviousData, queryOptions } from "@tanstack/react-query";
 import { api } from "../api";
 import type {
   GroupedIssuesResponse,
@@ -229,6 +229,7 @@ export function issueListOptions(wsId: string, sort?: IssueSortParam) {
     queryKey: issueKeys.listSorted(wsId, sort),
     queryFn: () => fetchFirstPages({}, sort),
     select: flattenIssueBuckets,
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -247,6 +248,7 @@ export function issueAssigneeGroupsOptions(
         ...sort,
         ...filter,
       }),
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -272,6 +274,7 @@ export function myIssueListOptions(
         ? fetchAllMyFirstPages(userId, sort)
         : fetchFirstPages(filter, sort),
     select: flattenIssueBuckets,
+    placeholderData: keepPreviousData,
   });
 }
 
@@ -349,6 +352,7 @@ export function myIssueAssigneeGroupsOptions(
             ...sort,
             ...filter,
           }),
+    placeholderData: keepPreviousData,
   });
 }
 

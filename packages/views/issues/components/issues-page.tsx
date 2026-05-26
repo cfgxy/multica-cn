@@ -23,7 +23,10 @@ import { IssuesHeader } from "./issues-header";
 import { BoardView } from "./board-view";
 import { ListView } from "./list-view";
 import { BatchActionToolbar } from "./batch-action-toolbar";
+import type { ChildProgress } from "./list-row";
 import { useT } from "../../i18n";
+
+const EMPTY_CHILD_PROGRESS = new Map<string, ChildProgress>();
 
 export function IssuesPage() {
   const { t } = useT("issues");
@@ -131,7 +134,7 @@ export function IssuesPage() {
 
   // Fetch sub-issue progress from the backend so counts are accurate
   // regardless of client-side pagination or filtering of done issues.
-  const { data: childProgressMap = new Map() } = useQuery(childIssueProgressOptions(wsId));
+  const { data: childProgressMap = EMPTY_CHILD_PROGRESS } = useQuery(childIssueProgressOptions(wsId));
 
   const visibleStatuses = useMemo(() => {
     if (statusFilters.length > 0)
@@ -162,49 +165,26 @@ export function IssuesPage() {
     [updateIssueMutation, t],
   );
 
-  if (loading) {
-    return (
-      <div className="flex flex-1 min-h-0 flex-col">
-        <div className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
-          <Skeleton className="h-5 w-5 rounded" />
-          <Skeleton className="h-4 w-32" />
+  const contentSkeleton = viewMode === "list" ? (
+    <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1">
+      {Array.from({ length: 4 }).map((_, i) => (
+        <Skeleton key={i} className="h-10 w-full rounded-lg" />
+      ))}
+    </div>
+  ) : (
+    <div className="flex flex-1 min-h-0 gap-4 overflow-x-auto p-4">
+      {Array.from({ length: 5 }).map((_, i) => (
+        <div key={i} className="flex min-w-52 flex-1 flex-col gap-2">
+          <Skeleton className="h-4 w-20" />
+          <Skeleton className="h-24 w-full rounded-lg" />
+          <Skeleton className="h-24 w-full rounded-lg" />
         </div>
-        <div className="flex h-12 shrink-0 items-center justify-between px-4">
-          <div className="flex items-center gap-1">
-            <Skeleton className="h-8 w-14 rounded-md" />
-            <Skeleton className="h-8 w-20 rounded-md" />
-            <Skeleton className="h-8 w-16 rounded-md" />
-          </div>
-          <div className="flex items-center gap-1">
-            <Skeleton className="h-8 w-8 rounded-md" />
-            <Skeleton className="h-8 w-8 rounded-md" />
-            <Skeleton className="h-8 w-8 rounded-md" />
-          </div>
-        </div>
-        {viewMode === "list" ? (
-          <div className="flex-1 min-h-0 overflow-y-auto p-2 space-y-1">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <Skeleton key={i} className="h-10 w-full rounded-lg" />
-            ))}
-          </div>
-        ) : (
-          <div className="flex flex-1 min-h-0 gap-4 overflow-x-auto p-4">
-            {Array.from({ length: 5 }).map((_, i) => (
-              <div key={i} className="flex min-w-52 flex-1 flex-col gap-2">
-                <Skeleton className="h-4 w-20" />
-                <Skeleton className="h-24 w-full rounded-lg" />
-                <Skeleton className="h-24 w-full rounded-lg" />
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    );
-  }
+      ))}
+    </div>
+  );
 
   return (
     <div className="flex flex-1 min-h-0 flex-col">
-      {/* Header 1: Workspace breadcrumb */}
       <PageHeader className="gap-1.5">
         <WorkspaceAvatar name={workspace?.name ?? "W"} size="sm" />
         <span className="text-sm text-muted-foreground">
@@ -215,11 +195,9 @@ export function IssuesPage() {
       </PageHeader>
 
       <ViewStoreProvider store={useIssueViewStore}>
-        {/* Header 2: Scope tabs + filters */}
         <IssuesHeader scopedIssues={headerIssues} />
 
-        {/* Content: scrollable */}
-        {headerIssues.length === 0 ? (
+        {loading ? contentSkeleton : headerIssues.length === 0 ? (
           <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-2 text-muted-foreground">
             <ListTodo className="h-10 w-10 text-muted-foreground/40" />
             <p className="text-sm">{t(($) => $.page.empty_title)}</p>

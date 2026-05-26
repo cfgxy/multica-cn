@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo, useEffect, useRef } from "react";
+import { useState, useCallback, useMemo, useEffect, useRef, memo } from "react";
 import {
   DndContext,
   DragOverlay,
@@ -31,7 +31,7 @@ import { useViewStoreApi, useViewStore } from "@multica/core/issues/stores/view-
 import type { IssueGrouping } from "@multica/core/issues/stores/view-store";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { StatusIcon } from "./status-icon";
-import { BoardColumn, type BoardColumnGroup } from "./board-column";
+import { BoardColumn, BOARD_CARD_WIDTH, type BoardColumnGroup } from "./board-column";
 import { BoardCardContent } from "./board-card";
 import { InfiniteScrollSentinel } from "./infinite-scroll-sentinel";
 import type { ChildProgress } from "./list-row";
@@ -147,9 +147,10 @@ function buildColumns(
   grouping: IssueGrouping,
 ): Record<string, string[]> {
   const cols: Record<string, string[]> = {};
-  for (const group of groups) {
-    const filtered = issues.filter((i) => getIssueGroupId(i, grouping) === group.id);
-    cols[group.id] = filtered.map((i) => i.id);
+  for (const group of groups) cols[group.id] = [];
+  for (const issue of issues) {
+    const gid = getIssueGroupId(issue, grouping);
+    if (cols[gid]) cols[gid].push(issue.id);
   }
   return cols;
 }
@@ -199,6 +200,7 @@ function getMoveUpdates(
 }
 
 const EMPTY_PROGRESS_MAP = new Map<string, ChildProgress>();
+const EMPTY_IDS: string[] = [];
 
 export function BoardView({
   issues,
@@ -495,7 +497,7 @@ export function BoardView({
               <PaginatedBoardColumn
                 key={group.id}
                 group={group}
-                issueIds={columns[group.id] ?? []}
+                issueIds={columns[group.id] ?? EMPTY_IDS}
                 issueMap={issueMapRef.current}
                 childProgressMap={childProgressMap}
                 myIssuesOpts={myIssuesOpts}
@@ -507,7 +509,7 @@ export function BoardView({
                 <PaginatedAssigneeBoardColumn
                   key={group.id}
                   group={group}
-                  issueIds={columns[group.id] ?? []}
+                  issueIds={columns[group.id] ?? EMPTY_IDS}
                   issueMap={issueMapRef.current}
                   childProgressMap={childProgressMap}
                   queryKey={assigneeGroupQueryKey}
@@ -519,7 +521,7 @@ export function BoardView({
                 <BoardColumn
                   key={group.id}
                   group={group}
-                  issueIds={columns[group.id] ?? []}
+                  issueIds={columns[group.id] ?? EMPTY_IDS}
                   issueMap={issueMapRef.current}
                   childProgressMap={childProgressMap}
                   projectId={projectId}
@@ -541,7 +543,7 @@ export function BoardView({
 
       <DragOverlay dropAnimation={null}>
         {activeIssue ? (
-          <div className="w-[280px] rotate-2 scale-105 cursor-grabbing opacity-90 shadow-lg shadow-black/10">
+          <div style={{ width: BOARD_CARD_WIDTH }} className="rotate-1 cursor-grabbing opacity-90 shadow-lg shadow-black/10">
             <BoardCardContent issue={activeIssue} childProgress={childProgressMap.get(activeIssue.id)} />
           </div>
         ) : null}
@@ -550,7 +552,7 @@ export function BoardView({
   );
 }
 
-function PaginatedAssigneeBoardColumn({
+const PaginatedAssigneeBoardColumn = memo(function PaginatedAssigneeBoardColumn({
   group,
   issueIds,
   issueMap,
@@ -594,9 +596,9 @@ function PaginatedAssigneeBoardColumn({
       }
     />
   );
-}
+});
 
-function PaginatedBoardColumn({
+const PaginatedBoardColumn = memo(function PaginatedBoardColumn({
   group,
   issueIds,
   issueMap,
@@ -633,7 +635,7 @@ function PaginatedBoardColumn({
       }
     />
   );
-}
+});
 
 function HiddenColumnsPanel({
   hiddenStatuses,

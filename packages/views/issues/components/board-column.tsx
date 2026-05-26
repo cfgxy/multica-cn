@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, type ReactNode } from "react";
+import { memo, useMemo, type ReactNode } from "react";
 import { EyeOff, MoreHorizontal, Plus, UserMinus } from "lucide-react";
 import { Tooltip, TooltipTrigger, TooltipContent } from "@multica/ui/components/ui/tooltip";
 import { useDroppable } from "@dnd-kit/core";
@@ -27,6 +27,9 @@ import { ActorAvatar } from "../../common/actor-avatar";
 // cannot be faithfully replicated in JavaScript (ICU/V8). Showing an
 // inaccurate indicator is worse than showing none.
 
+export const BOARD_COL_WIDTH = 280;
+export const BOARD_CARD_WIDTH = BOARD_COL_WIDTH - 16 - 8; // col(280) - col p-2(16) - droppable p-1(8)
+
 export interface BoardColumnGroup {
   id: string;
   title: string;
@@ -37,7 +40,7 @@ export interface BoardColumnGroup {
   createData?: Record<string, unknown>;
 }
 
-export function BoardColumn({
+export const BoardColumn = memo(function BoardColumn({
   group,
   issueIds,
   issueMap,
@@ -74,7 +77,7 @@ export function BoardColumn({
   );
 
   return (
-    <div className={`flex w-[280px] shrink-0 flex-col rounded-xl ${cfg?.columnBg ?? "bg-muted/40"} p-2`}>
+    <div style={{ width: BOARD_COL_WIDTH }} className={`flex shrink-0 flex-col rounded-xl ${cfg?.columnBg ?? "bg-muted/40"} p-2`}>
       <div className="mb-2 flex items-center justify-between px-1.5">
         <BoardGroupHeading group={group} count={totalCount ?? issueIds.length} />
 
@@ -151,7 +154,7 @@ export function BoardColumn({
       </div>
     </div>
   );
-}
+});
 
 function BoardGroupHeading({
   group,
