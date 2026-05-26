@@ -1,0 +1,59 @@
+package lark
+
+import (
+	"strings"
+	"testing"
+)
+
+// These tests cover the pure-Go halves of BindingTokenService — token
+// generation entropy/encoding, deterministic hashing — without
+// touching the database. DB-backed mint/redeem invariants (single use,
+// expiry) are covered by the DB CHECK on lark_binding_token plus the
+// ConsumeLarkBindingToken query, which require an integration test
+// against a real Postgres and are added in a follow-up alongside the
+// OAuth flow tests.
+
+func TestRandomTokenIsUnique(t *testing.T) {
+	seen := map[string]struct{}{}
+	for i := 0; i < 256; i++ {
+		tok, err := randomToken(32)
+		if err != nil {
+			t.Fatalf("randomToken: %v", err)
+		}
+		if _, dup := seen[tok]; dup {
+			t.Fatalf("randomToken returned a duplicate after %d iterations: %q", i, tok)
+		}
+		seen[tok] = struct{}{}
+	}
+}
+
+func TestRandomTokenURLSafe(t *testing.T) {
+	tok, err := randomToken(32)
+	if err != nil {
+		t.Fatalf("randomToken: %v", err)
+	}
+	// RawURLEncoding alphabet: A-Z a-z 0-9 - _
+	for _, r := range tok {
+		ok := (r >= 'A' && r <= 'Z') || (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_'
+		if !ok {
+			t.Fatalf("token contains non-url-safe rune %q in %q", r, tok)
+		}
+	}
+	if strings.Contains(tok, "=") {
+		t.Fatalf("RawURLEncoding should drop padding, got %q", tok)
+	}
+}
+
+func TestHashTokenDeterministic(t *testing.T) {
+	a := hashToken("hello")
+	b := hashToken("hello")
+	if a != b {
+		t.Fatalf("hashToken non-deterministic: %q vs %q", a, b)
+	}
+	if a == hashToken("hello ") {
+		t.Fatalf("hashToken collided trivially with whitespace variant")
+	}
+	if len(a) != 64 {
+		t.Fatalf("expected sha256 hex (64 chars), got %d chars", len(a))
+	}
+}

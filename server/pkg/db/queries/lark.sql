@@ -1,0 +1,293 @@
+-- Lark (飞书) Bot integration queries. The migration that defines these
+-- tables lives at server/migrations/109_lark_integration.up.sql; the
+-- architectural boundaries the package enforces on top of them are
+-- documented in server/internal/integrations/lark/doc.go.
+--
+-- Scoping convention: every public-facing read goes through a
+-- workspace-scoped variant where one exists. The lookups that take only
+-- a UUID PK (e.g. GetLarkInstallation) are reserved for internal trusted
+-- callers (the WS lease scanner, the inbound dispatcher after identity
+-- resolution); HTTP handlers should prefer the *InWorkspace forms.
+
+-- =====================
+-- lark_installation
+-- =====================
+
+-- name: CreateLarkInstallation :one
+-- Used by the OAuth callback. `app_secret_encrypted` is the ciphertext
+-- produced by internal/util/secretbox — never plaintext. The
+-- (workspace_id, agent_id) UNIQUE constraint enforces the spec rule
+-- "one Multica Agent ↔ one Lark Bot"; re-installing on the same agent
+-- goes through UpsertLarkInstallation instead.
+INSERT INTO lark_installation (
+    workspace_id, agent_id, app_id, app_secret_encrypted,
+    tenant_key, bot_open_id, installer_user_id
+) VALUES (
+    $1, $2, $3, $4, sqlc.narg('tenant_key'), $5, $6
+)
+RETURNING *;
+
+-- name: UpsertLarkInstallation :one
+-- Re-install path: a user who already bound this agent to Lark scans
+-- the QR again (e.g. they rotated their Lark app secret, or revoked +
+-- reinstalled). We refresh the app credentials, bot identity, and
+-- installer attribution, and force status back to 'active'. The WS
+-- lease is intentionally NOT reset here — the inbound hub owns lease
+-- lifecycle.
+INSERT INTO lark_installation (
+    workspace_id, agent_id, app_id, app_secret_encrypted,
+    tenant_key, bot_open_id, installer_user_id
+) VALUES (
+    $1, $2, $3, $4, sqlc.narg('tenant_key'), $5, $6
+)
+ON CONFLICT (workspace_id, agent_id) DO UPDATE SET
+    app_id               = EXCLUDED.app_id,
+    app_secret_encrypted = EXCLUDED.app_secret_encrypted,
+    tenant_key           = EXCLUDED.tenant_key,
+    bot_open_id          = EXCLUDED.bot_open_id,
+    installer_user_id    = EXCLUDED.installer_user_id,
+    status               = 'active',
+    installed_at         = now(),
+    updated_at           = now()
+RETURNING *;
+
+-- name: GetLarkInstallation :one
+SELECT * FROM lark_installation WHERE id = $1;
+
+-- name: GetLarkInstallationInWorkspace :one
+SELECT * FROM lark_installation
+WHERE id = $1 AND workspace_id = $2;
+
+-- name: GetLarkInstallationByAgent :one
+SELECT * FROM lark_installation
+WHERE workspace_id = $1 AND agent_id = $2;
+
+-- name: GetLarkInstallationByAppID :one
+-- Used by the OAuth callback to detect re-install vs first-install,
+-- and by the inbound dispatcher to route an event payload (which only
+-- carries app_id) to its installation row.
+SELECT * FROM lark_installation WHERE app_id = $1;
+
+-- name: ListLarkInstallationsByWorkspace :many
+SELECT * FROM lark_installation
+WHERE workspace_id = $1
+ORDER BY created_at ASC;
+
+-- name: ListActiveLarkInstallations :many
+-- Boot path for the WebSocket hub: enumerate every active installation
+-- so the hub can claim leases and open long connections. Excludes
+-- revoked rows — their WS should already be torn down.
+SELECT * FROM lark_installation
+WHERE status = 'active'
+ORDER BY created_at ASC;
+
+-- name: SetLarkInstallationStatus :exec
+UPDATE lark_installation
+SET status = $2, updated_at = now()
+WHERE id = $1;
+
+-- name: AcquireLarkWSLease :one
+-- Atomically claims the WebSocket lease for an installation. The CAS
+-- predicate accepts the lease when (a) no current holder exists, (b)
+-- the holder's lease has expired, or (c) the holder is us (renewal).
+-- Returns the row when the lease was successfully claimed; returns no
+-- rows when another live holder still owns it.
+UPDATE lark_installation
+SET ws_lease_token       = sqlc.arg('new_token'),
+    ws_lease_expires_at  = sqlc.arg('new_expires_at'),
+    updated_at           = now()
+WHERE id = sqlc.arg('id')
+  AND status = 'active'
+  AND (
+        ws_lease_token IS NULL
+        OR ws_lease_expires_at < now()
+        OR ws_lease_token = sqlc.arg('new_token')
+  )
+RETURNING *;
+
+-- name: ReleaseLarkWSLease :exec
+-- Drops the lease iff we're still the holder. A racing acquirer that
+-- already took over will not have its lease cleared.
+UPDATE lark_installation
+SET ws_lease_token      = NULL,
+    ws_lease_expires_at = NULL,
+    updated_at          = now()
+WHERE id = $1
+  AND ws_lease_token = sqlc.arg('current_token');
+
+-- =====================
+-- lark_user_binding
+-- =====================
+
+-- name: CreateLarkUserBinding :one
+-- Records that a Lark open_id (per-installation) maps to a Multica
+-- user. The composite FK to member(workspace_id, user_id) makes this
+-- statement fail if the user is not (or no longer) a workspace member
+-- — that is the structural guarantee for §4.3 of the design.
+INSERT INTO lark_user_binding (
+    workspace_id, multica_user_id, installation_id, lark_open_id, union_id
+) VALUES (
+    $1, $2, $3, $4, sqlc.narg('union_id')
+)
+ON CONFLICT (installation_id, lark_open_id) DO UPDATE SET
+    -- Re-binding the same open_id to a different Multica user happens
+    -- when a workspace member changes their Lark account. We accept the
+    -- new mapping; the old user simply loses Lark access via this Bot.
+    multica_user_id = EXCLUDED.multica_user_id,
+    workspace_id    = EXCLUDED.workspace_id,
+    union_id        = COALESCE(EXCLUDED.union_id, lark_user_binding.union_id),
+    bound_at        = now()
+RETURNING *;
+
+-- name: GetLarkUserBindingByOpenID :one
+-- The inbound identity check. A row here means: this open_id maps to a
+-- Multica user who IS currently a workspace member (the composite FK
+-- cascades the binding away when membership is revoked, so a row's
+-- existence is itself the membership proof).
+SELECT * FROM lark_user_binding
+WHERE installation_id = $1 AND lark_open_id = $2;
+
+-- name: ListLarkUserBindingsByInstallation :many
+SELECT * FROM lark_user_binding
+WHERE installation_id = $1
+ORDER BY bound_at DESC;
+
+-- name: DeleteLarkUserBinding :exec
+DELETE FROM lark_user_binding WHERE id = $1;
+
+-- =====================
+-- lark_chat_session_binding
+-- =====================
+
+-- name: CreateLarkChatSessionBinding :one
+INSERT INTO lark_chat_session_binding (
+    chat_session_id, installation_id, lark_chat_id, lark_chat_type
+) VALUES (
+    $1, $2, $3, $4
+)
+RETURNING *;
+
+-- name: GetLarkChatSessionBinding :one
+-- Lookup-by-Lark-chat path. Used by the inbound dispatcher to find the
+-- existing chat_session before deciding whether to create one. The
+-- UNIQUE (installation_id, lark_chat_id) constraint means at most one
+-- row matches.
+SELECT * FROM lark_chat_session_binding
+WHERE installation_id = $1 AND lark_chat_id = $2;
+
+-- name: GetLarkChatSessionBindingBySession :one
+-- Reverse lookup: given a chat_session_id, find its Lark binding. Used
+-- by the outbound card patcher to know which (installation, chat_id)
+-- to PATCH when an agent emits a stream event for this session.
+SELECT * FROM lark_chat_session_binding
+WHERE chat_session_id = $1;
+
+-- =====================
+-- lark_inbound_message_dedup
+-- =====================
+
+-- name: TryInsertLarkInboundDedup :one
+-- The idempotency gate. Returns the message_id when the row was newly
+-- inserted, and NO rows when the message_id was already present (dedup
+-- hit). Callers branch on the row count, NOT on an error — ON CONFLICT
+-- DO NOTHING does not raise.
+INSERT INTO lark_inbound_message_dedup (message_id)
+VALUES ($1)
+ON CONFLICT (message_id) DO NOTHING
+RETURNING message_id;
+
+-- name: PurgeLarkInboundDedup :exec
+-- Removes dedup rows older than the supplied cutoff. The vacuum job
+-- (separate cron) calls this with cutoff = now() - INTERVAL '24h'.
+DELETE FROM lark_inbound_message_dedup
+WHERE received_at < $1;
+
+-- =====================
+-- lark_inbound_audit
+-- =====================
+
+-- name: RecordLarkInboundDrop :exec
+-- The ONLY write path for events that fail identity check or the
+-- group-mention filter. Deliberately accepts no body column — the
+-- AuditLogger interface in internal/integrations/lark mirrors that
+-- shape so a caller cannot accidentally hand a body to this row.
+INSERT INTO lark_inbound_audit (
+    installation_id, lark_chat_id, event_type,
+    lark_event_id, lark_message_id, drop_reason
+) VALUES (
+    sqlc.narg('installation_id'),
+    sqlc.narg('lark_chat_id'),
+    $1,
+    sqlc.narg('lark_event_id'),
+    sqlc.narg('lark_message_id'),
+    $2
+);
+
+-- name: ListLarkInboundAuditByInstallation :many
+-- Ops debugging view; paged via the (installation_id, received_at) idx.
+SELECT * FROM lark_inbound_audit
+WHERE installation_id = $1
+ORDER BY received_at DESC
+LIMIT $2 OFFSET $3;
+
+-- =====================
+-- lark_outbound_card_message
+-- =====================
+
+-- name: CreateLarkOutboundCardMessage :one
+INSERT INTO lark_outbound_card_message (
+    chat_session_id, task_id, lark_chat_id, lark_card_message_id, status
+) VALUES (
+    $1, sqlc.narg('task_id'), $2, $3, $4
+)
+RETURNING *;
+
+-- name: GetLarkOutboundCardByTask :one
+-- Most card patches arrive keyed by task_id (we're streaming an agent
+-- run's output). The partial unique index on (task_id) WHERE task_id IS
+-- NOT NULL guarantees this returns at most one row.
+SELECT * FROM lark_outbound_card_message
+WHERE task_id = $1;
+
+-- name: UpdateLarkOutboundCardStatus :exec
+UPDATE lark_outbound_card_message
+SET status = $2,
+    last_patched_at = now()
+WHERE id = $1;
+
+-- =====================
+-- lark_binding_token
+-- =====================
+
+-- name: CreateLarkBindingToken :one
+-- Mints a single-use binding token for an unbound Lark user. The TTL
+-- cap (`expires_at <= created_at + INTERVAL '15 minutes'`) is enforced
+-- by the DB CHECK on the table, in lockstep with lark.BindingTokenTTL.
+-- We store the HASH, not the raw token; the raw value is returned to
+-- the caller exactly once (in the URL it embeds in the Bot's reply
+-- card) and never persisted server-side.
+INSERT INTO lark_binding_token (
+    token_hash, workspace_id, installation_id, lark_open_id, expires_at
+) VALUES (
+    $1, $2, $3, $4, $5
+)
+RETURNING *;
+
+-- name: ConsumeLarkBindingToken :one
+-- Atomic redemption. Returns the row only if (a) the hash exists, (b)
+-- it has not been consumed, and (c) it has not expired. The UPDATE +
+-- RETURNING pattern guarantees that two simultaneous redemptions of
+-- the same token cannot both succeed — exactly one row update wins,
+-- the other sees zero rows.
+UPDATE lark_binding_token
+SET consumed_at = now()
+WHERE token_hash = $1
+  AND consumed_at IS NULL
+  AND expires_at > now()
+RETURNING *;
+
+-- name: PurgeExpiredLarkBindingTokens :exec
+-- Tokens are tiny but unbounded over time. The same vacuum cron that
+-- handles dedup can sweep these too.
+DELETE FROM lark_binding_token
+WHERE expires_at < $1;
