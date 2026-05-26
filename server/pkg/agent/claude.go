@@ -111,7 +111,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		}
 	}()
 
-	cmd.Env = buildClaudeEnv(b.cfg.Env, claudeConfigDir)
+	cmd.Env = buildClaudeEnv(b.cfg.Env, claudeConfigDir, b.cfg.Logger)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -626,22 +626,78 @@ func buildEnv(extra map[string]string) []string {
 // CLAUDE_CONFIG_DIR so a daemon-host env var cannot accidentally win
 // the override race. Callers in "merge" mode pass "" and behaviour
 // matches the pre-MUL-2603 buildEnv path.
-func buildClaudeEnv(extra map[string]string, claudeConfigDir string) []string {
+//
+// On macOS isolation also surfaces the host's Claude Code OAuth token
+// through CLAUDE_CODE_OAUTH_TOKEN — see buildClaudeEnvWith for why this
+// is necessary on Darwin even when .claude.json is already mirrored.
+func buildClaudeEnv(extra map[string]string, claudeConfigDir string, logger *slog.Logger) []string {
+	return buildClaudeEnvWith(extra, claudeConfigDir, logger, readHostClaudeOAuthToken)
+}
+
+// buildClaudeEnvWith is the testable seam behind buildClaudeEnv. Tests
+// inject a readOAuthToken closure so they can exercise the auth
+// passthrough without touching the real macOS keychain.
+func buildClaudeEnvWith(
+	extra map[string]string,
+	claudeConfigDir string,
+	logger *slog.Logger,
+	readOAuthToken func() (string, error),
+) []string {
 	env := mergeEnv(os.Environ(), extra)
 	if claudeConfigDir == "" {
 		return env
 	}
 	// Drop any CLAUDE_CONFIG_DIR already in the slice (from os.Environ or
 	// from custom_env) before appending the isolated override so the last
-	// entry wins deterministically.
+	// entry wins deterministically. Track whether the operator already
+	// pinned OAuth / API-key auth via env so we know whether to add a
+	// keychain-sourced token below.
 	filtered := env[:0]
+	hasOAuthToken := false
+	hasAnthropicKey := false
 	for _, entry := range env {
 		if strings.HasPrefix(entry, "CLAUDE_CONFIG_DIR=") {
 			continue
 		}
+		if strings.HasPrefix(entry, "CLAUDE_CODE_OAUTH_TOKEN=") {
+			hasOAuthToken = true
+		}
+		if strings.HasPrefix(entry, "ANTHROPIC_API_KEY=") {
+			hasAnthropicKey = true
+		}
 		filtered = append(filtered, entry)
 	}
-	return append(filtered, "CLAUDE_CONFIG_DIR="+claudeConfigDir)
+	filtered = append(filtered, "CLAUDE_CONFIG_DIR="+claudeConfigDir)
+
+	// Auth passthrough — only meaningful in isolation mode, and only on
+	// platforms where the child CLI cannot follow the host's auth on its
+	// own. On Linux/Windows the OAuth token lives in
+	// `$CLAUDE_CONFIG_DIR/.credentials.json` and is already symlinked via
+	// mirrorHostClaudeExceptSkills, so readHostClaudeOAuthToken is a
+	// no-op there. On macOS Claude Code 2.x scopes the keychain entry by
+	// SHA-256(CLAUDE_CONFIG_DIR)[:8]; isolating the config dir changes
+	// that suffix, so the child cannot find the host token even though it
+	// is sitting in the default `Claude Code-credentials` entry. Surface
+	// the access token via CLAUDE_CODE_OAUTH_TOKEN so the child skips
+	// keychain lookup entirely (MUL-2603 follow-up regression).
+	//
+	// Precedence (highest wins): operator-pinned CLAUDE_CODE_OAUTH_TOKEN
+	// in custom_env, then ANTHROPIC_API_KEY (the user explicitly chose
+	// API-key auth — do not silently override with OAuth), then the
+	// keychain token. The first two leave the keychain alone, which keeps
+	// non-OAuth installs free of macOS prompts on every isolated run.
+	if !hasOAuthToken && !hasAnthropicKey && readOAuthToken != nil {
+		token, err := readOAuthToken()
+		if err != nil && logger != nil {
+			logger.Warn("claude: read host oauth token failed",
+				"error", err,
+			)
+		}
+		if token != "" {
+			filtered = append(filtered, "CLAUDE_CODE_OAUTH_TOKEN="+token)
+		}
+	}
+	return filtered
 }
 
 func mergeEnv(base []string, extra map[string]string) []string {

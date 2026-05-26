@@ -824,7 +824,7 @@ func TestClaudeExecuteMergeModeKeepsHostConfigDir(t *testing.T) {
 func TestBuildClaudeEnvAppendsIsolatedConfigDir(t *testing.T) {
 	t.Parallel()
 
-	env := buildClaudeEnv(nil, "/tmp/isolated-claude-config")
+	env := buildClaudeEnvWith(nil, "/tmp/isolated-claude-config", slog.Default(), noopOAuthTokenReader)
 
 	var last string
 	hits := 0
@@ -847,7 +847,7 @@ func TestBuildClaudeEnvSkipsOverrideWhenEmpty(t *testing.T) {
 
 	// Asking for "merge" mode passes "" through. We should not add a
 	// CLAUDE_CONFIG_DIR=… entry; the parent's value (if any) wins.
-	env := buildClaudeEnv(map[string]string{"FOO": "bar"}, "")
+	env := buildClaudeEnvWith(map[string]string{"FOO": "bar"}, "", slog.Default(), noopOAuthTokenReader)
 	for _, entry := range env {
 		if strings.HasPrefix(entry, "CLAUDE_CONFIG_DIR=") {
 			// The parent env may legitimately have one set on a developer
@@ -864,7 +864,12 @@ func TestBuildClaudeEnvOverridesPreviousValue(t *testing.T) {
 	// Even if custom_env supplies a CLAUDE_CONFIG_DIR, the isolated dir
 	// must take precedence: a stale custom_env entry must never be able
 	// to point the child back at `~/.claude/`.
-	env := buildClaudeEnv(map[string]string{"CLAUDE_CONFIG_DIR": "/etc/hostile"}, "/tmp/safe")
+	env := buildClaudeEnvWith(
+		map[string]string{"CLAUDE_CONFIG_DIR": "/etc/hostile"},
+		"/tmp/safe",
+		slog.Default(),
+		noopOAuthTokenReader,
+	)
 
 	hits := 0
 	for _, entry := range env {
@@ -877,6 +882,177 @@ func TestBuildClaudeEnvOverridesPreviousValue(t *testing.T) {
 	}
 	if hits != 1 {
 		t.Fatalf("expected isolated dir to be present exactly once, got %d (%v)", hits, env)
+	}
+}
+
+// noopOAuthTokenReader stands in for the production keychain reader in
+// tests that do not care about the auth-passthrough branch. Returning
+// ("", nil) takes the "no token available" path: buildClaudeEnvWith
+// neither appends CLAUDE_CODE_OAUTH_TOKEN nor logs a warning.
+func noopOAuthTokenReader() (string, error) { return "", nil }
+
+// countEnvEntries returns the number of `key=…` entries in env. Used by
+// the auth-passthrough tests below to assert "exactly one" instead of
+// "at least one" — a duplicate CLAUDE_CODE_OAUTH_TOKEN entry would let
+// later behaviour depend on which one the kernel hands to the child.
+func countEnvEntries(env []string, key string) int {
+	prefix := key + "="
+	n := 0
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			n++
+		}
+	}
+	return n
+}
+
+// envValue returns the first value bound to key in env, or "" if absent.
+func envValue(env []string, key string) string {
+	prefix := key + "="
+	for _, entry := range env {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix)
+		}
+	}
+	return ""
+}
+
+// TestBuildClaudeEnvIsolatedInjectsKeychainOAuthToken locks in the
+// MUL-2603 follow-up: when isolation strips CLAUDE_CONFIG_DIR, the host
+// OAuth token must reach the child through CLAUDE_CODE_OAUTH_TOKEN.
+// Without this passthrough Claude Code's per-config-dir keychain suffix
+// scheme strands the isolated child at "Not logged in · Please run
+// /login" even though the host's OAuth credential is sitting in the
+// default keychain entry.
+func TestBuildClaudeEnvIsolatedInjectsKeychainOAuthToken(t *testing.T) {
+	t.Parallel()
+
+	reader := func() (string, error) { return "sk-ant-oat-test", nil }
+	env := buildClaudeEnvWith(nil, "/tmp/isolated", slog.Default(), reader)
+
+	if got := countEnvEntries(env, "CLAUDE_CODE_OAUTH_TOKEN"); got != 1 {
+		t.Fatalf("expected exactly one CLAUDE_CODE_OAUTH_TOKEN entry, got %d (%v)", got, env)
+	}
+	if got := envValue(env, "CLAUDE_CODE_OAUTH_TOKEN"); got != "sk-ant-oat-test" {
+		t.Fatalf("expected keychain token to be surfaced verbatim, got %q", got)
+	}
+}
+
+// TestBuildClaudeEnvMergeModeDoesNotInjectOAuthToken guards the
+// merge-mode side: CLAUDE_CODE_OAUTH_TOKEN must never appear when the
+// caller opted out of isolation, because in that path the child reads
+// the host keychain itself and a stale env-var would shadow a freshly
+// refreshed token.
+func TestBuildClaudeEnvMergeModeDoesNotInjectOAuthToken(t *testing.T) {
+	t.Parallel()
+
+	reader := func() (string, error) {
+		t.Fatal("readOAuthToken must not be invoked in merge mode")
+		return "", nil
+	}
+	env := buildClaudeEnvWith(nil, "", slog.Default(), reader)
+
+	if got := countEnvEntries(env, "CLAUDE_CODE_OAUTH_TOKEN"); got != 0 {
+		t.Fatalf("expected no CLAUDE_CODE_OAUTH_TOKEN in merge mode, got %d (%v)", got, env)
+	}
+}
+
+// TestBuildClaudeEnvIsolatedRespectsCustomOAuthToken documents that a
+// CLAUDE_CODE_OAUTH_TOKEN pinned via agent custom_env wins over the
+// keychain reader. Operators sometimes pin a long-lived setup-token
+// (`claude setup-token`) for shared agents that must run after the
+// interactive user logs out; calling the keychain in that case would
+// either prompt or silently replace the intended token.
+func TestBuildClaudeEnvIsolatedRespectsCustomOAuthToken(t *testing.T) {
+	t.Parallel()
+
+	reader := func() (string, error) {
+		t.Fatal("readOAuthToken must not be invoked when custom_env pinned a token")
+		return "", nil
+	}
+	env := buildClaudeEnvWith(
+		map[string]string{"CLAUDE_CODE_OAUTH_TOKEN": "sk-ant-oat-pinned"},
+		"/tmp/isolated",
+		slog.Default(),
+		reader,
+	)
+
+	if got := envValue(env, "CLAUDE_CODE_OAUTH_TOKEN"); got != "sk-ant-oat-pinned" {
+		t.Fatalf("expected pinned custom_env token, got %q", got)
+	}
+}
+
+// TestBuildClaudeEnvIsolatedSkipsKeychainWhenAnthropicKeyPresent
+// documents that a user who explicitly chose API-key auth via
+// ANTHROPIC_API_KEY does NOT get an OAuth token shoved on top — the two
+// auth modes are mutually exclusive on the CLI side, and silently
+// adding the keychain token would surface a confusing
+// "ambiguous auth" path on every isolated run.
+func TestBuildClaudeEnvIsolatedSkipsKeychainWhenAnthropicKeyPresent(t *testing.T) {
+	t.Parallel()
+
+	reader := func() (string, error) {
+		t.Fatal("readOAuthToken must not be invoked when ANTHROPIC_API_KEY is set")
+		return "", nil
+	}
+	env := buildClaudeEnvWith(
+		map[string]string{"ANTHROPIC_API_KEY": "sk-ant-api-test"},
+		"/tmp/isolated",
+		slog.Default(),
+		reader,
+	)
+
+	if got := countEnvEntries(env, "CLAUDE_CODE_OAUTH_TOKEN"); got != 0 {
+		t.Fatalf("expected no CLAUDE_CODE_OAUTH_TOKEN alongside ANTHROPIC_API_KEY, got %d (%v)", got, env)
+	}
+}
+
+// TestBuildClaudeEnvIsolatedReaderErrorIsSoftFailure documents that a
+// keychain read error (e.g. /usr/bin/security missing) does NOT abort
+// the build — the child still gets a coherent env minus the OAuth
+// token, and the warning is surfaced through the injected logger so
+// operators can correlate "Not logged in" with the underlying cause.
+func TestBuildClaudeEnvIsolatedReaderErrorIsSoftFailure(t *testing.T) {
+	t.Parallel()
+
+	reader := func() (string, error) {
+		return "", errors.New("security CLI unavailable")
+	}
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	env := buildClaudeEnvWith(nil, "/tmp/isolated", logger, reader)
+
+	if got := countEnvEntries(env, "CLAUDE_CODE_OAUTH_TOKEN"); got != 0 {
+		t.Fatalf("expected no CLAUDE_CODE_OAUTH_TOKEN when reader errors, got %d (%v)", got, env)
+	}
+	if got := countEnvEntries(env, "CLAUDE_CONFIG_DIR"); got != 1 {
+		t.Fatalf("expected isolation env to still be intact, got %d CLAUDE_CONFIG_DIR entries", got)
+	}
+	if !strings.Contains(logBuf.String(), "read host oauth token failed") {
+		t.Fatalf("expected reader error to be logged, got %q", logBuf.String())
+	}
+}
+
+// TestBuildClaudeEnvIsolatedReaderNilTokenStaysQuiet documents the
+// common "host is not logged in" path: the reader returns ("", nil) —
+// no token, no error — and the env builder must neither append a
+// CLAUDE_CODE_OAUTH_TOKEN nor log a warning. We assert the silence
+// explicitly because a noisy warning every isolated run on every
+// API-key-only / unauthenticated host would drown out the real ones.
+func TestBuildClaudeEnvIsolatedReaderNilTokenStaysQuiet(t *testing.T) {
+	t.Parallel()
+
+	var logBuf bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	env := buildClaudeEnvWith(nil, "/tmp/isolated", logger, noopOAuthTokenReader)
+
+	if got := countEnvEntries(env, "CLAUDE_CODE_OAUTH_TOKEN"); got != 0 {
+		t.Fatalf("expected no CLAUDE_CODE_OAUTH_TOKEN when reader returns empty, got %d (%v)", got, env)
+	}
+	if logBuf.Len() != 0 {
+		t.Fatalf("expected silence on (\"\", nil) reader return, got log output %q", logBuf.String())
 	}
 }
 
