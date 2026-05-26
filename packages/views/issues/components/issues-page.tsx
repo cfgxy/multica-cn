@@ -47,7 +47,10 @@ export function IssuesPage() {
   const usesAssigneeBoard = viewMode === "board" && grouping === "assignee";
 
   const sort = useMemo(
-    () => ({ sort_by: sortBy, sort_direction: sortDirection } as const),
+    () => ({
+      sort_by: sortBy,
+      sort_direction: sortBy !== "position" ? sortDirection : undefined,
+    } as const),
     [sortBy, sortDirection],
   );
 

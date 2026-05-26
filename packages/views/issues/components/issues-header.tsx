@@ -14,7 +14,7 @@ import {
   FolderMinus,
   List,
   SignalHigh,
-  SlidersHorizontal,
+  X,
   Tag,
   User,
   UserMinus,
@@ -603,17 +603,17 @@ export function IssueDisplayControls({
 
   const counts = useIssueCounts(scopedIssues);
 
-  const hasActiveFilters =
-    getActiveFilterCount({
-      statusFilters,
-      priorityFilters,
-      assigneeFilters,
-      includeNoAssignee,
-      creatorFilters,
-      projectFilters,
-      includeNoProject,
-      labelFilters,
-    }) > 0;
+  const activeFilterCount = getActiveFilterCount({
+    statusFilters,
+    priorityFilters,
+    assigneeFilters,
+    includeNoAssignee,
+    creatorFilters,
+    projectFilters,
+    includeNoProject,
+    labelFilters,
+  });
+  const hasActiveFilters = activeFilterCount > 0;
 
   const SORT_LABEL_KEY: Record<typeof SORT_OPTIONS[number]["value"], "sort_manual" | "sort_priority" | "sort_start_date" | "sort_due_date" | "sort_created" | "sort_title"> = {
     position: "sort_manual",
@@ -649,10 +649,29 @@ export function IssueDisplayControls({
               render={
                 <TooltipTrigger
                   render={
-                    <Button variant="outline" size="icon-sm" className="relative text-muted-foreground">
-                      <Filter className="size-4" />
+                    <Button
+                      variant={hasActiveFilters ? "default" : "outline"}
+                      size="sm"
+                      className={
+                        hasActiveFilters
+                          ? "gap-1 bg-brand text-white hover:bg-brand/90"
+                          : "gap-1 text-muted-foreground"
+                      }
+                    >
+                      <Filter className="size-3.5" />
+                      {hasActiveFilters
+                        ? t(($) => $.filters.active_count, { count: activeFilterCount })
+                        : t(($) => $.filters.tooltip)}
                       {hasActiveFilters && (
-                        <span className="absolute top-0 right-0 size-1.5 rounded-full bg-brand" />
+                        <span
+                          role="button"
+                          tabIndex={-1}
+                          className="-mr-1 ml-0.5 rounded-sm p-0.5 hover:bg-white/20"
+                          onClick={(e) => { e.preventDefault(); e.stopPropagation(); act.clearFilters(); }}
+                          onPointerDown={(e) => e.stopPropagation()}
+                        >
+                          <X className="size-3" />
+                        </span>
                       )}
                     </Button>
                   }
@@ -841,8 +860,13 @@ export function IssueDisplayControls({
               render={
                 <TooltipTrigger
                   render={
-                    <Button variant="outline" size="icon-sm" className="text-muted-foreground">
-                      <SlidersHorizontal className="size-4" />
+                    <Button variant="outline" size="sm" className="gap-1 text-muted-foreground">
+                      {sortBy !== "position" && (
+                        sortDirection === "asc"
+                          ? <ArrowUp className="size-3.5" />
+                          : <ArrowDown className="size-3.5" />
+                      )}
+                      {sortLabel}
                     </Button>
                   }
                 />
@@ -914,20 +938,22 @@ export function IssueDisplayControls({
                     ))}
                   </DropdownMenuContent>
                 </DropdownMenu>
-                <Button
-                  variant="outline"
-                  size="icon-sm"
-                  onClick={() =>
-                    act.setSortDirection(sortDirection === "asc" ? "desc" : "asc")
-                  }
-                  title={sortDirection === "asc" ? t(($) => $.display.ascending_title) : t(($) => $.display.descending_title)}
-                >
-                  {sortDirection === "asc" ? (
-                    <ArrowUp className="size-3.5" />
-                  ) : (
-                    <ArrowDown className="size-3.5" />
-                  )}
-                </Button>
+                {sortBy !== "position" && (
+                  <Button
+                    variant="outline"
+                    size="icon-sm"
+                    onClick={() =>
+                      act.setSortDirection(sortDirection === "asc" ? "desc" : "asc")
+                    }
+                    title={sortDirection === "asc" ? t(($) => $.display.ascending_title) : t(($) => $.display.descending_title)}
+                  >
+                    {sortDirection === "asc" ? (
+                      <ArrowUp className="size-3.5" />
+                    ) : (
+                      <ArrowDown className="size-3.5" />
+                    )}
+                  </Button>
+                )}
               </div>
             </div>
 
@@ -964,14 +990,19 @@ export function IssueDisplayControls({
                 render={
                   <TooltipTrigger
                     render={
-                      <Button variant="outline" size="icon-sm" className="text-muted-foreground">
+                      <Button variant="outline" size="sm" className="gap-1 text-muted-foreground">
                         {viewMode === "board" ? (
-                          <Columns3 className="size-4" />
+                          <Columns3 className="size-3.5" />
                         ) : viewMode === "gantt" && allowGantt ? (
-                          <ChartGantt className="size-4" />
+                          <ChartGantt className="size-3.5" />
                         ) : (
-                          <List className="size-4" />
+                          <List className="size-3.5" />
                         )}
+                        {viewMode === "board"
+                          ? t(($) => $.view.board)
+                          : viewMode === "gantt" && allowGantt
+                          ? t(($) => $.view.gantt)
+                          : t(($) => $.view.list)}
                       </Button>
                     }
                   />

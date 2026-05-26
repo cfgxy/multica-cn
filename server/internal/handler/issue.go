@@ -834,6 +834,9 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Parse sort and direction params for dynamic ORDER BY.
+	// Manual sort (position) is always ASC — direction is ignored because
+	// the user defines order through drag-and-drop, reversing it has no
+	// product meaning.
 	sortCol := "position"
 	if s := r.URL.Query().Get("sort"); s != "" {
 		switch s {
@@ -847,15 +850,17 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	sortDir := "ASC"
-	if d := r.URL.Query().Get("direction"); d != "" {
-		switch strings.ToLower(d) {
-		case "asc":
-			sortDir = "ASC"
-		case "desc":
-			sortDir = "DESC"
-		default:
-			writeError(w, http.StatusBadRequest, "invalid direction value")
-			return
+	if sortCol != "position" {
+		if d := r.URL.Query().Get("direction"); d != "" {
+			switch strings.ToLower(d) {
+			case "asc":
+				sortDir = "ASC"
+			case "desc":
+				sortDir = "DESC"
+			default:
+				writeError(w, http.StatusBadRequest, "invalid direction value")
+				return
+			}
 		}
 	}
 
@@ -1341,15 +1346,17 @@ func (h *Handler) ListGroupedIssues(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	sortDir := "ASC"
-	if d := r.URL.Query().Get("direction"); d != "" {
-		switch strings.ToLower(d) {
-		case "asc":
-			sortDir = "ASC"
-		case "desc":
-			sortDir = "DESC"
-		default:
-			writeError(w, http.StatusBadRequest, "invalid direction value")
-			return
+	if sortCol != "position" {
+		if d := r.URL.Query().Get("direction"); d != "" {
+			switch strings.ToLower(d) {
+			case "asc":
+				sortDir = "ASC"
+			case "desc":
+				sortDir = "DESC"
+			default:
+				writeError(w, http.StatusBadRequest, "invalid direction value")
+				return
+			}
 		}
 	}
 
