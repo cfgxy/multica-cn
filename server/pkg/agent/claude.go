@@ -729,11 +729,16 @@ func buildClaudeEnvWith(
 	// Code itself scrubbing it from the env it passes to the
 	// model-driven Bash tool subprocess — the property is locked in by
 	// TestClaudeCLIScrubsOAuthTokenFromBashSubprocess, which boots the
-	// real CLI with a canary OAuth token + a non-secret control var and
-	// asserts that the Bash subprocess sees the canary as UNSET while
-	// the control is CONTROL-SET. That control prong is what proves the
-	// scrub is targeted, not a side-effect of "Bash gets no env". Hook
-	// subprocesses are NOT covered by this assertion: we have not
+	// real CLI with a canary OAuth token + a non-secret control var,
+	// plus two per-run random nonces passed *only* via env vars (never
+	// in the prompt text). The assertions are: the canary is absent
+	// from the transcript, the unset-nonce appears (proving a real Bash
+	// subprocess ran AND saw CLAUDE_CODE_OAUTH_TOKEN as empty), and the
+	// control-nonce appears (proving the scrub is targeted, not a
+	// side-effect of "Bash gets no env"). Using nonces — instead of
+	// hard-coded markers that could be paraphrased back from the
+	// prompt — is what makes the proof actually pin a real subprocess.
+	// Hook subprocesses are NOT covered by this assertion: we have not
 	// reproduced the env shape they receive, so the contract here
 	// intentionally narrows to Bash; if a future hook-using feature
 	// matters we must add a hook-side regression before relying on the

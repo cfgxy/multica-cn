@@ -3,6 +3,8 @@ package agent
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -1249,23 +1251,29 @@ func TestIsDefaultHostClaudeConfigDir(t *testing.T) {
 // safe because Claude Code itself strips that variable from the env it
 // hands to the model-driven **Bash tool subprocess**, so a `printenv`
 // inside the model's bash invocation cannot echo the secret into the
-// agent transcript. The MUL-2603 review (Elon, round 2) flagged that a
-// bare "canary absent" assertion was insufficient — it false-passes any
-// time the model refuses, paraphrases, or never reaches Bash — so this
-// version adds a non-secret CONTROL variable. The three conjoined
-// assertions are:
+// agent transcript. The MUL-2603 review (Elon, round 3) flagged that
+// hard-coded proof markers like "UNSET" / "CONTROL-SET" still
+// false-passed any time the model only paraphrased the prompt without
+// invoking Bash — `strings.Contains` would match the literal that was
+// already in the prompt. This version replaces them with per-run
+// random nonces that are passed *only* via env vars (never written into
+// the prompt text); the prompt references the env var names, so the
+// nonce values can land in the transcript only if a real Bash
+// subprocess inherits those env vars and echoes them. The three
+// conjoined assertions are:
 //
 //  1. the canary CLAUDE_CODE_OAUTH_TOKEN value is NOT in the transcript
 //     (the primary safety claim);
-//  2. "UNSET" IS in the transcript (the Bash tool actually ran AND saw
-//     CLAUDE_CODE_OAUTH_TOKEN as unset, ruling out the "model refused" /
-//     "model paraphrased" false pass);
-//  3. "CONTROL-SET" IS in the transcript (ordinary env propagation works
-//     for the non-sensitive MUL2603_CONTROL variable — proves the scrub
-//     is a targeted strip of CLAUDE_CODE_OAUTH_TOKEN, not a side-effect
-//     of "the CLI sandboxes Bash with no env at all", which would not
-//     be a security property we could rely on for arbitrary future
-//     env-exposed secrets).
+//  2. the unsetNonce IS in the transcript — the Bash tool actually ran
+//     AND saw CLAUDE_CODE_OAUTH_TOKEN as unset (the model cannot
+//     paraphrase a fresh random value it never saw, so this rules out
+//     the "model refused" / "model paraphrased the prompt" false pass);
+//  3. the controlNonce IS in the transcript — ordinary env propagation
+//     works for the non-sensitive MUL2603_CONTROL variable, proving the
+//     scrub is a targeted strip of CLAUDE_CODE_OAUTH_TOKEN, not a
+//     side-effect of "the CLI sandboxes Bash with no env at all",
+//     which would not be a security property we could rely on for
+//     arbitrary future env-exposed secrets.
 //
 // The boundary intentionally narrows to the **Bash tool subprocess**.
 // We have not reproduced the env shape the CLI hands to hook
@@ -1316,20 +1324,33 @@ func TestClaudeCLIScrubsOAuthTokenFromBashSubprocess(t *testing.T) {
 	const (
 		canary       = "sk-ant-oat-leak-canary-CLAUDE_CODE_OAUTH_TOKEN-MUL2603-PROBE"
 		controlValue = "mul2603-control-value-non-secret"
-		// The Bash tool emits these literal tokens; we assert on them as
-		// proof-of-execution rather than parsing the model's prose.
-		secretUnsetMarker = "UNSET"
-		secretSetMarker   = "SET"
-		controlSetMarker  = "CONTROL-SET"
 	)
 
-	// Use the *user's* shell-resolved env plus the canary + control vars.
-	// We do not use t.Setenv because the CLI is spawned via exec.Command,
-	// not as a child of the test goroutine; an explicit env list keeps
-	// the boundary obvious.
+	// Per-run random nonces. These are the proof-of-execution markers,
+	// and they are passed to Bash *only* via env vars — never written
+	// into the prompt text — so the model has no way to reproduce them
+	// by paraphrasing the prompt. If a nonce appears in the transcript,
+	// a real Bash subprocess inherited the env var and echoed it.
+	nonceBytes := func(t *testing.T, label string) string {
+		t.Helper()
+		b := make([]byte, 16)
+		if _, err := rand.Read(b); err != nil {
+			t.Fatalf("rand.Read(%s): %v", label, err)
+		}
+		return hex.EncodeToString(b)
+	}
+	unsetNonce := nonceBytes(t, "unset")
+	controlNonce := nonceBytes(t, "control")
+
+	// Use the *user's* shell-resolved env plus the canary + control vars
+	// and the two nonce vars. We do not use t.Setenv because the CLI is
+	// spawned via exec.Command, not as a child of the test goroutine;
+	// an explicit env list keeps the boundary obvious.
 	env := append(os.Environ(),
 		"CLAUDE_CODE_OAUTH_TOKEN="+canary,
 		"MUL2603_CONTROL="+controlValue,
+		"MUL2603_UNSET_NONCE="+unsetNonce,
+		"MUL2603_CONTROL_NONCE="+controlNonce,
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
@@ -1341,16 +1362,21 @@ func TestClaudeCLIScrubsOAuthTokenFromBashSubprocess(t *testing.T) {
 		"--allowedTools", "Bash",
 	)
 	cmd.Env = env
-	// The prompt asks the model to run two `test -n` probes back-to-back
-	// and report both raw outputs. Using `test -n` instead of `printenv`
-	// makes the assertion deterministic: an empty value and an unset key
-	// both render as "UNSET", so the test doesn't have to special-case
-	// `printenv`'s exit-status behaviour across shells.
+	// The prompt asks Bash to run two `test -n` probes and emit a nonce
+	// in each branch we care about:
+	//   - if CLAUDE_CODE_OAUTH_TOKEN is empty/unset (the safety case),
+	//     echo $MUL2603_UNSET_NONCE
+	//   - if MUL2603_CONTROL is non-empty (the env-still-flows control),
+	//     echo $MUL2603_CONTROL_NONCE
+	// The prompt never contains the nonce *values* — only the variable
+	// names. So a paraphrasing model that never spawns Bash cannot
+	// produce either nonce in its prose; only a real Bash subprocess
+	// with these env vars present will echo them.
 	cmd.Stdin = strings.NewReader(
 		"Please run this exact bash command and paste the raw output verbatim. " +
 			"Do not paraphrase, do not redact, do not summarize:\n" +
-			"`test -n \"$CLAUDE_CODE_OAUTH_TOKEN\" && echo " + secretSetMarker + " || echo " + secretUnsetMarker +
-			"; test -n \"$MUL2603_CONTROL\" && echo " + controlSetMarker + " || echo CONTROL-UNSET`",
+			"`test -n \"$CLAUDE_CODE_OAUTH_TOKEN\" || echo \"$MUL2603_UNSET_NONCE\"; " +
+			"test -n \"$MUL2603_CONTROL\" && echo \"$MUL2603_CONTROL_NONCE\"`",
 	)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -1367,17 +1393,17 @@ func TestClaudeCLIScrubsOAuthTokenFromBashSubprocess(t *testing.T) {
 	// Control-prong proves the scrub is *targeted*, not "Bash has no env".
 	// Without this, a Claude Code change that walled Bash off entirely
 	// would pass the canary check but break the security model we documented.
-	if !strings.Contains(body, controlSetMarker) {
-		t.Fatalf("Bash tool did not propagate the non-secret control var %s — the scrub may have widened to all env vars, which changes the security model we documented.\nTranscript:\n%s",
-			controlSetMarker, body)
+	// The nonce can only appear if Bash ran AND inherited MUL2603_CONTROL.
+	if !strings.Contains(body, controlNonce) {
+		t.Fatalf("Bash tool did not echo the control nonce — either Bash never ran or MUL2603_CONTROL did not propagate, which would mean the scrub has widened to all env vars and changes the security model we documented.\nTranscript:\n%s",
+			body)
 	}
-	// Proof-of-execution: the Bash subprocess actually ran the probe AND
-	// saw CLAUDE_CODE_OAUTH_TOKEN as unset (the marker is what the probe
-	// emits in the false branch of `test -n`). Without this assertion a
-	// transcript where the model declined to call Bash would pass the
-	// canary check trivially and silently disarm the regression.
-	if !strings.Contains(body, secretUnsetMarker) {
-		t.Fatalf("Bash tool either did not run or saw CLAUDE_CODE_OAUTH_TOKEN as SET — both invalidate the scrub assertion.\nTranscript:\n%s",
+	// Proof-of-execution: a real Bash subprocess ran the probe AND saw
+	// CLAUDE_CODE_OAUTH_TOKEN as empty/unset (the false branch of
+	// `test -n` echoed $MUL2603_UNSET_NONCE). The nonce value is not in
+	// the prompt, so a paraphrasing/refusing model cannot fake it.
+	if !strings.Contains(body, unsetNonce) {
+		t.Fatalf("Bash tool either did not run or saw CLAUDE_CODE_OAUTH_TOKEN as SET — both invalidate the scrub assertion. The expected unset nonce never appeared in the transcript.\nTranscript:\n%s",
 			body)
 	}
 }
