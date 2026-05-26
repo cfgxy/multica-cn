@@ -27,6 +27,32 @@ vi.mock("@multica/core/paths", async () => {
   };
 });
 
+// Stub backend-bound queries that the swimlane invokes for project /
+// assignee groupings. The hook MUST return a stable reference each call
+// — production `useActorName` wraps its returns in `useMemo`, and the
+// swimlane feeds the result into a `useMemo(..., [getActorName, ...])`
+// that then drives a `useEffect(setLocalCells, [cells])` chain. A fresh
+// object per render therefore loops the effect indefinitely.
+vi.mock("@multica/core/projects/queries", () => ({
+  projectListOptions: (_wsId: string) => ({
+    queryKey: ["projects", _wsId, "list"],
+    queryFn: () => Promise.resolve([]),
+  }),
+}));
+const { mockActorNameResult } = vi.hoisted(() => ({
+  mockActorNameResult: {
+    getActorName: (_type: string, _id: string) => "Mock Actor",
+    getActorInitials: () => "MA",
+    getActorAvatarUrl: () => null,
+    getMemberName: () => "Mock Member",
+    getAgentName: () => "Mock Agent",
+    getSquadName: () => "Mock Squad",
+  },
+}));
+vi.mock("@multica/core/workspace/hooks", () => ({
+  useActorName: () => mockActorNameResult,
+}));
+
 // Mock @multica/core/auth
 const mockAuthUser = { id: "user-1", email: "test@test.com", name: "Test User" };
 vi.mock("@multica/core/auth", () => ({
@@ -97,15 +123,22 @@ vi.mock("@multica/core/issues/mutations", async (importOriginal) => {
   };
 });
 
-// Mock view store. `swimlaneOrder` is mutable on the captured object so
-// tests can simulate persisted lane order and assert that
-// `setSwimlaneOrder` was called by drag-end handlers.
+type SwimlaneGroupingMock = "parent" | "project" | "assignee";
+
+// Mock view store. The lane order and collapsed-lane fields are mutable
+// records on the captured object so tests can simulate persisted state
+// (per grouping) and assert that `setSwimlaneOrder` was called by drag-end
+// handlers. The store actions operate on `swimlaneGrouping` — tests that
+// flip grouping must set both `swimlaneGrouping` and the matching slice
+// in `swimlaneOrders` / `collapsedSwimlanes`.
 const mockViewState: {
   sortBy: "position";
   sortDirection: "asc";
   cardProperties: Record<string, boolean>;
-  swimlaneOrder: string[];
-  collapsedSwimlanes: string[];
+  swimlaneGrouping: SwimlaneGroupingMock;
+  swimlaneOrders: Record<SwimlaneGroupingMock, string[]>;
+  collapsedSwimlanes: Record<SwimlaneGroupingMock, string[]>;
+  setSwimlaneGrouping: (g: SwimlaneGroupingMock) => void;
   setSwimlaneOrder: (order: string[]) => void;
   toggleSwimlaneCollapsed: (key: string) => void;
   hideStatus: (s: string) => void;
@@ -114,8 +147,10 @@ const mockViewState: {
   sortBy: "position",
   sortDirection: "asc",
   cardProperties: { priority: true, description: true, assignee: true, dueDate: true, project: true, childProgress: true, labels: true },
-  swimlaneOrder: [],
-  collapsedSwimlanes: [],
+  swimlaneGrouping: "parent",
+  swimlaneOrders: { parent: [], project: [], assignee: [] },
+  collapsedSwimlanes: { parent: [], project: [], assignee: [] },
+  setSwimlaneGrouping: vi.fn(),
   setSwimlaneOrder: vi.fn(),
   toggleSwimlaneCollapsed: vi.fn(),
   hideStatus: vi.fn(),
@@ -269,8 +304,9 @@ function renderWithI18n(ui: React.ReactNode) {
 describe("SwimLaneView", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    mockViewState.swimlaneOrder = [];
-    mockViewState.collapsedSwimlanes = [];
+    mockViewState.swimlaneGrouping = "parent";
+    mockViewState.swimlaneOrders = { parent: [], project: [], assignee: [] };
+    mockViewState.collapsedSwimlanes = { parent: [], project: [], assignee: [] };
     useLoadMoreByStatusMock.mockImplementation(() => ({
       total: 0,
       loaded: 0,
@@ -727,8 +763,8 @@ describe("SwimLaneView", () => {
 
     act(() => {
       lastOnDragEnd({
-        active: { id: "lane:parent-1" },
-        over: { id: "lane:parent-2" },
+        active: { id: "lane:parent:parent-1" },
+        over: { id: "lane:parent:parent-2" },
       });
     });
 
@@ -736,7 +772,10 @@ describe("SwimLaneView", () => {
   });
 
   it("appends newly-visible parents to the persisted order on first reorder", () => {
-    mockViewState.swimlaneOrder = ["parent-1"];
+    mockViewState.swimlaneOrders = {
+      ...mockViewState.swimlaneOrders,
+      parent: ["parent-1"],
+    };
 
     renderWithI18n(
       <SwimLaneView issues={multiParentIssues} onMoveIssue={vi.fn()} />,
@@ -744,8 +783,8 @@ describe("SwimLaneView", () => {
 
     act(() => {
       lastOnDragEnd({
-        active: { id: "lane:parent-1" },
-        over: { id: "lane:parent-2" },
+        active: { id: "lane:parent:parent-1" },
+        over: { id: "lane:parent:parent-2" },
       });
     });
 
@@ -753,7 +792,10 @@ describe("SwimLaneView", () => {
   });
 
   it("preserves persisted entries that aren't currently visible during a reorder", () => {
-    mockViewState.swimlaneOrder = ["filtered-a", "parent-1", "filtered-b", "parent-2"];
+    mockViewState.swimlaneOrders = {
+      ...mockViewState.swimlaneOrders,
+      parent: ["filtered-a", "parent-1", "filtered-b", "parent-2"],
+    };
 
     renderWithI18n(
       <SwimLaneView issues={multiParentIssues} onMoveIssue={vi.fn()} />,
@@ -761,8 +803,8 @@ describe("SwimLaneView", () => {
 
     act(() => {
       lastOnDragEnd({
-        active: { id: "lane:parent-1" },
-        over: { id: "lane:parent-2" },
+        active: { id: "lane:parent:parent-1" },
+        over: { id: "lane:parent:parent-2" },
       });
     });
 
@@ -781,8 +823,8 @@ describe("SwimLaneView", () => {
 
     act(() => {
       lastOnDragEnd({
-        active: { id: "lane:parent-1" },
-        over: { id: "lane:parent-1" },
+        active: { id: "lane:parent:parent-1" },
+        over: { id: "lane:parent:parent-1" },
       });
     });
 
@@ -797,8 +839,8 @@ describe("SwimLaneView", () => {
 
     act(() => {
       lastOnDragEnd({
-        active: { id: "lane:parent-1" },
-        over: { id: "lane:parent-2" },
+        active: { id: "lane:parent:parent-1" },
+        over: { id: "lane:parent:parent-2" },
       });
     });
 
@@ -806,7 +848,10 @@ describe("SwimLaneView", () => {
   });
 
   it("renders parent lanes in stored swimlaneOrder when set", () => {
-    mockViewState.swimlaneOrder = ["parent-2", "parent-1"];
+    mockViewState.swimlaneOrders = {
+      ...mockViewState.swimlaneOrders,
+      parent: ["parent-2", "parent-1"],
+    };
 
     renderWithI18n(
       <SwimLaneView issues={multiParentIssues} onMoveIssue={vi.fn()} />,
@@ -820,7 +865,10 @@ describe("SwimLaneView", () => {
   });
 
   it("keeps 'No parent' lane pinned at top regardless of stored order", () => {
-    mockViewState.swimlaneOrder = ["parent-2", "parent-1"];
+    mockViewState.swimlaneOrders = {
+      ...mockViewState.swimlaneOrders,
+      parent: ["parent-2", "parent-1"],
+    };
 
     renderWithI18n(
       <SwimLaneView issues={multiParentIssues} onMoveIssue={vi.fn()} />,
@@ -836,7 +884,10 @@ describe("SwimLaneView", () => {
   // ------------------------------------------------------------------
 
   it("collapses a parent lane when its id is in stored collapsedSwimlanes", () => {
-    mockViewState.collapsedSwimlanes = ["parent-1"];
+    mockViewState.collapsedSwimlanes = {
+      ...mockViewState.collapsedSwimlanes,
+      parent: ["parent-1"],
+    };
 
     renderWithI18n(
       <SwimLaneView issues={multiParentIssues} onMoveIssue={vi.fn()} />,
@@ -851,7 +902,10 @@ describe("SwimLaneView", () => {
   });
 
   it("collapses the 'No parent' lane when 'none' is in stored collapsedSwimlanes", () => {
-    mockViewState.collapsedSwimlanes = ["none"];
+    mockViewState.collapsedSwimlanes = {
+      ...mockViewState.collapsedSwimlanes,
+      parent: ["none"],
+    };
 
     renderWithI18n(
       <SwimLaneView issues={mockIssues} onMoveIssue={vi.fn()} />,
@@ -886,5 +940,210 @@ describe("SwimLaneView", () => {
     fireEvent.click(noParentHeader!);
 
     expect(mockToggleSwimlaneCollapsed).toHaveBeenCalledWith("none");
+  });
+
+  // ------------------------------------------------------------------
+  // Project grouping
+  // ------------------------------------------------------------------
+
+  const projectIssues: Issue[] = [
+    {
+      ...mockIssues[0]!,
+      id: "issue-a",
+      identifier: "PROJ-100",
+      title: "Issue A",
+      project_id: "proj-1",
+      parent_issue_id: null,
+      status: "todo",
+    },
+    {
+      ...mockIssues[0]!,
+      id: "issue-b",
+      identifier: "PROJ-101",
+      title: "Issue B",
+      project_id: "proj-2",
+      parent_issue_id: null,
+      status: "in_progress",
+    },
+    {
+      ...mockIssues[0]!,
+      id: "issue-c",
+      identifier: "PROJ-102",
+      title: "Issue C",
+      project_id: null,
+      parent_issue_id: null,
+      status: "todo",
+    },
+  ];
+
+  it("groups by project when swimlaneGrouping is 'project'", () => {
+    mockViewState.swimlaneGrouping = "project";
+
+    renderWithI18n(
+      <SwimLaneView issues={projectIssues} onMoveIssue={vi.fn()} />,
+    );
+
+    // No-project pinned lane is always present.
+    expect(screen.getAllByText("No project").length).toBeGreaterThanOrEqual(1);
+    // Both issue cards from real projects render — production fetches
+    // project titles from the API; in tests the mocked listProjects
+    // returns [] so the lane headers fall back to an empty title and
+    // we assert on card visibility, not lane title text.
+    expect(screen.getByText("Issue A")).toBeInTheDocument();
+    expect(screen.getByText("Issue B")).toBeInTheDocument();
+    expect(screen.getByText("Issue C")).toBeInTheDocument();
+  });
+
+  it("emits project_id when a card is dropped into a project lane", () => {
+    mockViewState.swimlaneGrouping = "project";
+    const mockOnMoveIssue = vi.fn();
+
+    renderWithI18n(
+      <SwimLaneView issues={projectIssues} onMoveIssue={mockOnMoveIssue} />,
+    );
+
+    // Drop "issue-c" (no project) into proj-1's todo cell.
+    const target = "swim:project:proj-1:todo";
+    act(() => {
+      lastOnDragOver({ active: { id: "issue-c" }, over: { id: target } });
+    });
+    act(() => {
+      lastOnDragEnd({ active: { id: "issue-c" }, over: { id: target } });
+    });
+
+    expect(mockOnMoveIssue).toHaveBeenCalledWith(
+      "issue-c",
+      expect.objectContaining({ project_id: "proj-1", status: "todo" }),
+    );
+  });
+
+  it("emits null project_id when a card is dropped into the 'No project' lane", () => {
+    mockViewState.swimlaneGrouping = "project";
+    const mockOnMoveIssue = vi.fn();
+
+    renderWithI18n(
+      <SwimLaneView issues={projectIssues} onMoveIssue={mockOnMoveIssue} />,
+    );
+
+    const target = "swim:project:none:in_review";
+    act(() => {
+      lastOnDragOver({ active: { id: "issue-a" }, over: { id: target } });
+    });
+    act(() => {
+      lastOnDragEnd({ active: { id: "issue-a" }, over: { id: target } });
+    });
+
+    expect(mockOnMoveIssue).toHaveBeenCalledWith(
+      "issue-a",
+      expect.objectContaining({ project_id: null, status: "in_review" }),
+    );
+  });
+
+  // ------------------------------------------------------------------
+  // Assignee grouping
+  // ------------------------------------------------------------------
+
+  const assigneeIssues: Issue[] = [
+    {
+      ...mockIssues[0]!,
+      id: "issue-x",
+      identifier: "PROJ-200",
+      title: "Issue X",
+      assignee_type: "member",
+      assignee_id: "user-1",
+      parent_issue_id: null,
+      project_id: null,
+      status: "todo",
+    },
+    {
+      ...mockIssues[0]!,
+      id: "issue-y",
+      identifier: "PROJ-201",
+      title: "Issue Y",
+      assignee_type: "agent",
+      assignee_id: "agent-1",
+      parent_issue_id: null,
+      project_id: null,
+      status: "in_progress",
+    },
+    {
+      ...mockIssues[0]!,
+      id: "issue-z",
+      identifier: "PROJ-202",
+      title: "Issue Z",
+      assignee_type: null,
+      assignee_id: null,
+      parent_issue_id: null,
+      project_id: null,
+      status: "todo",
+    },
+  ];
+
+  it("groups by assignee when swimlaneGrouping is 'assignee'", () => {
+    mockViewState.swimlaneGrouping = "assignee";
+
+    renderWithI18n(
+      <SwimLaneView issues={assigneeIssues} onMoveIssue={vi.fn()} />,
+    );
+
+    // Unassigned pinned lane is always rendered.
+    expect(screen.getAllByText("Unassigned").length).toBeGreaterThanOrEqual(1);
+    // Mock actor name fallback for both member and agent.
+    expect(screen.getAllByText("Mock Actor").length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByText("Issue X")).toBeInTheDocument();
+    expect(screen.getByText("Issue Y")).toBeInTheDocument();
+    expect(screen.getByText("Issue Z")).toBeInTheDocument();
+  });
+
+  it("emits assignee_type + assignee_id when a card is dropped into an actor lane", () => {
+    mockViewState.swimlaneGrouping = "assignee";
+    const mockOnMoveIssue = vi.fn();
+
+    renderWithI18n(
+      <SwimLaneView issues={assigneeIssues} onMoveIssue={mockOnMoveIssue} />,
+    );
+
+    const target = "swim:assignee:member:user-1:in_review";
+    act(() => {
+      lastOnDragOver({ active: { id: "issue-z" }, over: { id: target } });
+    });
+    act(() => {
+      lastOnDragEnd({ active: { id: "issue-z" }, over: { id: target } });
+    });
+
+    expect(mockOnMoveIssue).toHaveBeenCalledWith(
+      "issue-z",
+      expect.objectContaining({
+        assignee_type: "member",
+        assignee_id: "user-1",
+        status: "in_review",
+      }),
+    );
+  });
+
+  it("emits null assignee when a card is dropped into the 'Unassigned' lane", () => {
+    mockViewState.swimlaneGrouping = "assignee";
+    const mockOnMoveIssue = vi.fn();
+
+    renderWithI18n(
+      <SwimLaneView issues={assigneeIssues} onMoveIssue={mockOnMoveIssue} />,
+    );
+
+    const target = "swim:assignee:none:done";
+    act(() => {
+      lastOnDragOver({ active: { id: "issue-x" }, over: { id: target } });
+    });
+    act(() => {
+      lastOnDragEnd({ active: { id: "issue-x" }, over: { id: target } });
+    });
+
+    expect(mockOnMoveIssue).toHaveBeenCalledWith(
+      "issue-x",
+      expect.objectContaining({
+        assignee_type: null,
+        assignee_id: null,
+        status: "done",
+      }),
+    );
   });
 });

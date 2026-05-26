@@ -61,6 +61,8 @@
     "descending_title": "Descending",
     "group_status": "Status",
     "group_assignee": "Assignee",
+    "group_parent": "Parent issue",
+    "group_project": "Project",
     "sort_manual": "Manual",
     "sort_priority": "Priority",
     "sort_start_date": "Start date",
@@ -127,6 +129,8 @@
   "swimlane": {
     "no_parent": "No parent",
     "other_parents": "Other parents",
+    "no_project": "No project",
+    "no_assignee": "Unassigned",
     "open_parent": "Open parent issue",
     "toggle_collapse": "Toggle lane"
   },
