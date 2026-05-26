@@ -291,7 +291,6 @@
     "skills": {
       "intro": "分配给该智能体的工作区 skill。本地运行时 skill 会自动可用。",
       "add_action": "添加 skill",
-      "import_hint": "导入会在工作区创建一份副本，团队可以编辑和复用。",
       "empty_title": "尚未分配 skill",
       "empty_hint": "添加工作区 skill，把团队知识共享给这个智能体。",
       "remove_failed_toast": "移除 skill 失败",
