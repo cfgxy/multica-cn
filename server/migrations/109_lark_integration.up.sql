@@ -43,7 +43,11 @@ CREATE TABLE lark_installation (
     created_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at            TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (workspace_id, agent_id),
-    UNIQUE (app_id)
+    UNIQUE (app_id),
+    -- Composite key target for the composite FK on lark_user_binding
+    -- (installation_id, workspace_id) — guarantees a binding's workspace
+    -- always matches the workspace of its installation.
+    UNIQUE (id, workspace_id)
 );
 
 CREATE INDEX idx_lark_installation_workspace ON lark_installation(workspace_id);
@@ -61,15 +65,42 @@ CREATE INDEX idx_lark_installation_lease ON lark_installation(ws_lease_expires_a
 -- not open_id alone. `union_id` is captured opportunistically for future
 -- cross-installation identity merging (Phase 2) but is not authoritative
 -- in MVP.
+--
+-- Two structural invariants protect §4.3's "unbound or non-workspace
+-- members never leak content into chat_session" rule from drifting if
+-- the application layer regresses:
+--
+--   1. The composite FK on (installation_id, workspace_id) targets
+--      lark_installation(id, workspace_id), so a binding row cannot
+--      claim a workspace different from its installation's workspace.
+--
+--   2. The composite FK on (workspace_id, multica_user_id) targets
+--      member(workspace_id, user_id) with ON DELETE CASCADE, so when a
+--      Multica user is removed from the workspace the stale Lark
+--      binding is removed in the same transaction. There is no path
+--      where lark_user_binding can outlive workspace membership.
 CREATE TABLE lark_user_binding (
     id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    workspace_id     UUID NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
-    multica_user_id  UUID NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
-    installation_id  UUID NOT NULL REFERENCES lark_installation(id) ON DELETE CASCADE,
+    workspace_id     UUID NOT NULL,
+    multica_user_id  UUID NOT NULL,
+    installation_id  UUID NOT NULL,
     lark_open_id     TEXT NOT NULL,
     union_id         TEXT,
     bound_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
-    UNIQUE (installation_id, lark_open_id)
+    UNIQUE (installation_id, lark_open_id),
+    -- Installation ↔ workspace integrity. Composite FK guarantees the
+    -- binding's workspace_id matches the installation's workspace_id.
+    CONSTRAINT lark_user_binding_installation_fk
+        FOREIGN KEY (installation_id, workspace_id)
+        REFERENCES lark_installation(id, workspace_id)
+        ON DELETE CASCADE,
+    -- Workspace membership integrity. Composite FK guarantees the
+    -- (workspace_id, multica_user_id) pair still exists in member; when
+    -- the user is removed from the workspace, the binding cascades away.
+    CONSTRAINT lark_user_binding_member_fk
+        FOREIGN KEY (workspace_id, multica_user_id)
+        REFERENCES member(workspace_id, user_id)
+        ON DELETE CASCADE
 );
 
 CREATE INDEX idx_lark_user_binding_user
@@ -185,11 +216,13 @@ CREATE TABLE lark_binding_token (
     expires_at       TIMESTAMPTZ NOT NULL,
     consumed_at      TIMESTAMPTZ,
     created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-    -- Defense in depth: the application caps TTL at 15 minutes; the CHECK
-    -- enforces a hard upper bound (1 hour) in case the application is
-    -- misconfigured or someone hand-inserts a row via direct SQL.
+    -- Belt-and-braces with the application-layer cap (lark.BindingTokenTTL
+    -- = 15 minutes). The CHECK refuses any row whose lifetime exceeds the
+    -- product cap, so a misconfigured caller or a hand-inserted SQL row
+    -- cannot quietly mint a longer-lived binding token. Keep this value
+    -- in sync with lark.BindingTokenTTL.
     CONSTRAINT lark_binding_token_ttl_cap
-        CHECK (expires_at <= created_at + INTERVAL '1 hour')
+        CHECK (expires_at <= created_at + INTERVAL '15 minutes')
 );
 
 CREATE INDEX idx_lark_binding_token_installation
