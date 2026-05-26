@@ -21,12 +21,14 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
+	"github.com/multica-ai/multica/server/internal/integrations/lark"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/internal/util/secretbox"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -151,6 +153,31 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		h.LivenessStore = handler.NewRedisLivenessStore(rdb)
 		h.WebhookRateLimiter = handler.NewRedisWebhookRateLimiter(rdb, handler.DefaultWebhookRateLimit())
 		h.WebhookIPRateLimiter = handler.NewRedisWebhookIPRateLimiter(rdb, handler.DefaultWebhookIPRateLimit())
+	}
+
+	// Lark integration. Only wired when MULTICA_LARK_SECRET_KEY is set:
+	// the InstallationService refuses to fall back to plaintext storage
+	// for app_secret, and the BindingTokenService cannot mint usable
+	// tokens without it either. When the key is absent the Lark
+	// handlers return 503 with a clear message; the rest of the server
+	// continues to start so self-host deployments that have not opted
+	// in to Lark are unaffected.
+	if larkKey, err := secretbox.LoadKey("MULTICA_LARK_SECRET_KEY"); err == nil {
+		box, err := secretbox.New(larkKey)
+		if err != nil {
+			slog.Error("lark: secretbox.New failed; lark integration disabled", "error", err)
+		} else {
+			installSvc, err := lark.NewInstallationService(queries, box)
+			if err != nil {
+				slog.Error("lark: InstallationService init failed; lark integration disabled", "error", err)
+			} else {
+				h.LarkInstallations = installSvc
+				h.LarkBindingTokens = lark.NewBindingTokenService(queries)
+				slog.Info("lark integration enabled")
+			}
+		}
+	} else {
+		slog.Info("lark integration disabled (MULTICA_LARK_SECRET_KEY not set)")
 	}
 	if opts.HeartbeatScheduler != nil {
 		h.HeartbeatScheduler = opts.HeartbeatScheduler
@@ -363,8 +390,32 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/github/connect", h.GitHubConnect)
 					r.Delete("/github/installations/{installationId}", h.DeleteGitHubInstallation)
 				})
+
+				// Lark integration. Listing is member-visible (same
+				// rationale as GitHub: the Integrations tab must
+				// render for non-admins so they see "wired up by whom").
+				// Create / revoke require admin to prevent a non-admin
+				// from binding a Bot to a workspace agent or yanking
+				// an installation out from under one.
+				r.Group(func(r chi.Router) {
+					r.Use(middleware.RequireWorkspaceMemberFromURL(queries, "id"))
+					r.Get("/lark/installations", h.ListLarkInstallations)
+				})
+				r.Group(func(r chi.Router) {
+					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
+					r.Post("/lark/installations", h.CreateLarkInstallation)
+					r.Delete("/lark/installations/{installationId}", h.RevokeLarkInstallation)
+				})
 			})
 		})
+
+		// Lark binding-token redemption. NOT workspace-scoped because
+		// the redeemer hits this BEFORE they have any workspace
+		// context — the redemption itself is what mints their
+		// lark_user_binding row. Identity comes from the session;
+		// the token only proves "this open_id requested binding," and
+		// is combined with the logged-in user to create the mapping.
+		r.Post("/api/lark/binding/redeem", h.RedeemLarkBindingToken)
 
 		// User-scoped invitation routes (no workspace context required)
 		r.Get("/api/invitations", h.ListMyInvitations)

@@ -20,6 +20,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/cloudruntime"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/integrations/lark"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -106,7 +107,14 @@ type Handler struct {
 	WebhookRateLimiter    WebhookRateLimiter
 	WebhookIPRateLimiter  WebhookRateLimiter
 	CloudRuntime          cloudRuntimeProxy
-	cfg                   Config
+	// Lark integration. Both are nil when the Lark master key
+	// (MULTICA_LARK_SECRET_KEY) is unset; the corresponding HTTP
+	// handlers return 503 in that case so a misconfigured self-host
+	// deployment surfaces a clear error instead of silently using a
+	// zero key. Wired in cmd/server/router.go after handler.New.
+	LarkInstallations *lark.InstallationService
+	LarkBindingTokens *lark.BindingTokenService
+	cfg               Config
 }
 
 func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *events.Bus, emailService *service.EmailService, store storage.Storage, cfSigner *auth.CloudFrontSigner, analyticsClient analytics.Client, cfg Config, daemonHubs ...*daemonws.Hub) *Handler {
