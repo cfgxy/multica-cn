@@ -249,7 +249,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// callback short-circuits to
 					// oauth_exchange_unimplemented and operators stay on
 					// the manual-paste InstallationService path.
-					oauthSvc, oerr := lark.NewOAuthService(oauthCfg, larkClient, installSvc, h.LarkBindingTokens)
+					oauthSvc, oerr := lark.NewOAuthService(oauthCfg, larkClient, queries, pool, h.LarkBindingTokens)
 					if oerr != nil {
 						slog.Error("lark: OAuthService init failed; oauth disabled", "error", oerr)
 					} else {

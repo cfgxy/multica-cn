@@ -101,15 +101,23 @@ type BindingPromptParams struct {
 	BindURL string
 }
 
-// OAuthExchangeResult is the credentials extracted from a successful
-// PersonalAgent OAuth grant. We deliberately surface only the fields
-// we persist into `lark_installation` so the call site cannot
-// accidentally leak transient values (e.g. access tokens) into storage.
+// OAuthExchangeResult is the installer identity extracted from a Lark
+// OAuth v2 grant. Identity-only: the v2 user-OAuth chain
+// (/authen/v2/oauth/token + /authen/v1/user_info) returns a
+// user_access_token + the human's open_id/union_id; it does NOT mint
+// per-installation bot credentials (app_id / app_secret / bot_open_id),
+// which require a separate Lark PersonalAgent install API not yet
+// wired here.
+//
+// Because the result no longer carries bot credentials, the OAuth
+// callback can only auto-bind the installer onto an installation row
+// that already exists (provisioned via the manual-paste
+// POST /api/workspaces/{id}/lark/installations route). When the
+// PersonalAgent install API is integrated in a follow-up the bot-side
+// fields can come back, but they must arrive PER-INSTALLATION — never
+// as a shared parent app reuse, which would collide with the
+// UNIQUE (app_id) constraint and the dispatcher's app_id routing.
 type OAuthExchangeResult struct {
-	AppID            string
-	AppSecret        string
-	BotOpenID        string
-	TenantKey        string
 	InstallerOpenID  OpenID
 	InstallerUnionID string
 }

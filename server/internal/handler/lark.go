@@ -450,11 +450,24 @@ func larkOAuthErrorReason(err error) string {
 		return "invalid_state"
 	case errors.Is(err, lark.ErrStateExpired):
 		return "state_expired"
-	case errors.Is(err, lark.ErrExchangeMissingAppID),
-		errors.Is(err, lark.ErrExchangeMissingAppSecret),
-		errors.Is(err, lark.ErrExchangeMissingBotOpenID),
-		errors.Is(err, lark.ErrExchangeMissingInstallerOpenID):
+	case errors.Is(err, lark.ErrExchangeMissingInstallerOpenID):
+		// /authen/v1/user_info returned without an open_id — rare,
+		// but distinct so the UI can render "Lark did not return
+		// your identity" instead of a generic install failure.
 		return "exchange_incomplete"
+	case errors.Is(err, lark.ErrInstallationNotProvisioned):
+		// No lark_installation row exists yet for (workspace,
+		// agent). Identity-only OAuth means the admin must
+		// provision via the manual-paste route first; the UI maps
+		// this reason to "ask your admin to add the bot
+		// credentials before scanning".
+		return "installation_not_provisioned"
+	case errors.Is(err, lark.ErrInstallationRevoked):
+		// Installation row exists but its status is `revoked`.
+		// Distinct from not_provisioned so the UI can render
+		// "this installation was revoked — re-provision before
+		// scanning".
+		return "installation_revoked"
 	case errors.Is(err, lark.ErrBindingAlreadyAssigned):
 		// Installer auto-bind tripped the same-installation-different-user
 		// guard — surface a dedicated code so the frontend can render

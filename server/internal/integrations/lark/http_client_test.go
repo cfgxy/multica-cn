@@ -647,17 +647,12 @@ func TestHTTPClient_ExchangeOAuthCode_NotConfigured(t *testing.T) {
 }
 
 // TestHTTPClient_ExchangeOAuthCode_HappyPath verifies the v2 OAuth
-// exchange + bot-info handshake produces an OAuthExchangeResult whose
-// fields are non-empty and ready for InstallationParams: app_id /
-// app_secret are the parent app credentials, BotOpenID is the parent
-// bot's open_id from /bot/v3/info, InstallerOpenID is the open_id
-// from the authorization-code exchange. All four are required by
-// validateExchangeResult; an empty value here is a hard install
-// failure.
+// token + /authen/v1/user_info chain (the official shape — token
+// endpoint returns access_token only, identity comes from user_info).
+// Result is identity-only: InstallerOpenID / InstallerUnionID. Per-
+// installation bot credentials are NOT delivered here.
 func TestHTTPClient_ExchangeOAuthCode_HappyPath(t *testing.T) {
 	fake := newLarkFake(t)
-	// Token endpoint — used for the bot-info call.
-	fake.stubToken("tok_oauth_install", 7200)
 
 	fake.mux.HandleFunc("/open-apis/authen/v2/oauth/token", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
@@ -682,29 +677,30 @@ func TestHTTPClient_ExchangeOAuthCode_HappyPath(t *testing.T) {
 		if body["redirect_uri"] != "https://multica.test/api/lark/install/callback" {
 			t.Errorf("redirect_uri: got %q", body["redirect_uri"])
 		}
+		// RFC 6749 shape — no open_id here. Identity comes from
+		// /authen/v1/user_info below using this access_token.
 		writeJSON(w, map[string]any{
-			"access_token": "u-abc",
-			"token_type":   "Bearer",
-			"expires_in":   7200,
-			"open_id":      "ou_installer",
-			"union_id":     "on_installer_union",
+			"access_token":  "u-abc",
+			"token_type":    "Bearer",
+			"expires_in":    7200,
+			"refresh_token": "r-abc",
+			"scope":         "personal_agent:install",
 		})
 	})
 
-	fake.mux.HandleFunc("/open-apis/bot/v3/info", func(w http.ResponseWriter, r *http.Request) {
+	fake.mux.HandleFunc("/open-apis/authen/v1/user_info", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			t.Errorf("bot info: want GET, got %s", r.Method)
+			t.Errorf("user_info: want GET, got %s", r.Method)
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer tok_oauth_install" {
-			t.Errorf("bot info: Authorization=%q want Bearer tok_oauth_install", got)
+		if got := r.Header.Get("Authorization"); got != "Bearer u-abc" {
+			t.Errorf("user_info: Authorization=%q want Bearer u-abc", got)
 		}
 		writeJSON(w, map[string]any{
 			"code": 0,
 			"msg":  "ok",
-			"bot": map[string]any{
-				"open_id":         "ou_bot_parent",
-				"app_name":        "Multica",
-				"activate_status": 0,
+			"data": map[string]any{
+				"open_id":  "ou_installer",
+				"union_id": "on_installer_union",
 			},
 		})
 	})
@@ -718,15 +714,6 @@ func TestHTTPClient_ExchangeOAuthCode_HappyPath(t *testing.T) {
 	res, err := c.ExchangeOAuthCode(context.Background(), "auth_code_xyz", "https://multica.test/api/lark/install/callback")
 	if err != nil {
 		t.Fatalf("ExchangeOAuthCode: %v", err)
-	}
-	if res.AppID != "cli_app_parent" {
-		t.Errorf("AppID: got %q want cli_app_parent", res.AppID)
-	}
-	if res.AppSecret != "secret_parent" {
-		t.Errorf("AppSecret: got %q want secret_parent", res.AppSecret)
-	}
-	if res.BotOpenID != "ou_bot_parent" {
-		t.Errorf("BotOpenID: got %q want ou_bot_parent", res.BotOpenID)
 	}
 	if string(res.InstallerOpenID) != "ou_installer" {
 		t.Errorf("InstallerOpenID: got %q want ou_installer", res.InstallerOpenID)
@@ -759,20 +746,19 @@ func TestHTTPClient_ExchangeOAuthCode_OAuthError(t *testing.T) {
 	}
 }
 
-// TestHTTPClient_ExchangeOAuthCode_BotInfoError surfaces a bot-info
-// failure as a non-nil error and does NOT leak the partial open_id
-// from step 1 into a half-filled OAuthExchangeResult.
-func TestHTTPClient_ExchangeOAuthCode_BotInfoError(t *testing.T) {
+// TestHTTPClient_ExchangeOAuthCode_UserInfoError surfaces a
+// /authen/v1/user_info failure as a non-nil error and does NOT leak
+// the partial access_token from step 1 into a half-filled
+// OAuthExchangeResult.
+func TestHTTPClient_ExchangeOAuthCode_UserInfoError(t *testing.T) {
 	fake := newLarkFake(t)
-	fake.stubToken("tok_e2", 7200)
 	fake.mux.HandleFunc("/open-apis/authen/v2/oauth/token", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{
 			"access_token": "u-x",
-			"open_id":      "ou_x",
 			"expires_in":   7200,
 		})
 	})
-	fake.mux.HandleFunc("/open-apis/bot/v3/info", func(w http.ResponseWriter, r *http.Request) {
+	fake.mux.HandleFunc("/open-apis/authen/v1/user_info", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"code": 99991663, "msg": "expired token"})
 	})
 	c := NewHTTPAPIClient(HTTPClientConfig{
@@ -784,7 +770,7 @@ func TestHTTPClient_ExchangeOAuthCode_BotInfoError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "99991663") {
 		t.Errorf("want code=99991663 surfaced, got err=%v", err)
 	}
-	if res.AppID != "" || res.BotOpenID != "" || res.InstallerOpenID != "" {
+	if res.InstallerOpenID != "" {
 		t.Errorf("error path must not leak partial result: %+v", res)
 	}
 }
