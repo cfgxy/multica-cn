@@ -1592,11 +1592,18 @@ func (h *Handler) ChildIssueProgress(w http.ResponseWriter, r *http.Request) {
 // the agent's `multica issue create` invocation passes `--project <uuid>`
 // instead of letting it default. The frontend remembers the user's last
 // pick per workspace, so frequent users skip retyping "in project X".
+//
+// ParentIssueID is optional and is set by the "Add sub issue" entry point
+// when the modal is opened from an existing issue. The agent passes it
+// through as `--parent <uuid>` so the new issue is filed as a sub-issue,
+// keeping the sub-issue intent of the entry point regardless of whether
+// the user submits via manual or agent mode.
 type QuickCreateIssueRequest struct {
-	AgentID   string `json:"agent_id,omitempty"`
-	SquadID   string `json:"squad_id,omitempty"`
-	Prompt    string `json:"prompt"`
-	ProjectID string `json:"project_id,omitempty"`
+	AgentID       string `json:"agent_id,omitempty"`
+	SquadID       string `json:"squad_id,omitempty"`
+	Prompt        string `json:"prompt"`
+	ProjectID     string `json:"project_id,omitempty"`
+	ParentIssueID string `json:"parent_issue_id,omitempty"`
 }
 
 // QuickCreateIssueResponse echoes the queued task id so the frontend can
@@ -1743,7 +1750,28 @@ func (h *Handler) QuickCreateIssue(w http.ResponseWriter, r *http.Request) {
 		projectUUID = pid
 	}
 
-	task, err := h.TaskService.EnqueueQuickCreateTask(r.Context(), wsUUID, requesterUUID, agentUUID, squadUUID, prompt, projectUUID)
+	// Optional parent_issue_id — validate same-workspace membership just like
+	// the regular CreateIssue path. Frontend seeds this from the "Add sub
+	// issue" entry, but the handler re-checks so a forged request can't
+	// smuggle a foreign parent UUID through.
+	var parentIssueUUID pgtype.UUID
+	if strings.TrimSpace(req.ParentIssueID) != "" {
+		pid, ok := parseUUIDOrBadRequest(w, req.ParentIssueID, "parent_issue_id")
+		if !ok {
+			return
+		}
+		parent, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
+			ID:          pid,
+			WorkspaceID: wsUUID,
+		})
+		if err != nil || !parent.ID.Valid {
+			writeError(w, http.StatusBadRequest, "parent issue not found in this workspace")
+			return
+		}
+		parentIssueUUID = pid
+	}
+
+	task, err := h.TaskService.EnqueueQuickCreateTask(r.Context(), wsUUID, requesterUUID, agentUUID, squadUUID, prompt, projectUUID, parentIssueUUID)
 	if err != nil {
 		slog.Warn("quick-create enqueue failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to enqueue quick-create task")
