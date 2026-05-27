@@ -175,6 +175,17 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				h.LarkBindingTokens = lark.NewBindingTokenService(queries, pool)
 				slog.Info("lark integration enabled")
 
+				// Outbound card patcher: subscribe to task / chat-done
+				// events on the existing bus so any task born from a
+				// Lark-bound chat_session gets its card kept in sync
+				// (thinking → streaming → final | error). The stub
+				// APIClient surfaces ErrAPIClientNotConfigured on
+				// transport — once the real Lark client lands, swap
+				// it in here without touching the subscription.
+				larkClient := lark.NewStubAPIClient(slog.Default())
+				patcher := lark.NewPatcher(queries, installSvc, larkClient, lark.PatcherConfig{})
+				patcher.Register(bus)
+
 				// OAuth install flow is independent of the at-rest key
 				// (it adds the user-facing "scan to bind" path on top of
 				// the manual-paste InstallationService). Operators who
