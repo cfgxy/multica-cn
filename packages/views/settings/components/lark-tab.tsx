@@ -1,9 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ExternalLink, Sparkles, Trash2 } from "lucide-react";
+import { ExternalLink, RefreshCw, Sparkles, Trash2 } from "lucide-react";
+import QRCode from "react-qr-code";
 import { Button } from "@multica/ui/components/ui/button";
 import { Card, CardContent } from "@multica/ui/components/ui/card";
 import {
@@ -16,12 +17,20 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@multica/ui/components/ui/alert-dialog";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+  DialogFooter,
+} from "@multica/ui/components/ui/dialog";
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { memberListOptions } from "@multica/core/workspace/queries";
 import { larkInstallationsOptions, larkKeys } from "@multica/core/lark";
 import { api } from "@multica/core/api";
-import type { LarkInstallation } from "@multica/core/types";
+import type { LarkInstallation, LarkInstallStatusResponse } from "@multica/core/types";
 import { useT } from "../../i18n";
 
 // LarkTab is the workspace settings panel for Lark Bot installations.
@@ -29,7 +38,7 @@ import { useT } from "../../i18n";
 // backend enforces it; the UI hides the button for non-admins to match).
 //
 // Adding a new installation flows through the Agent detail page: the
-// install URL is per-agent (each Multica Agent gets exactly one Bot —
+// install path is per-agent (each Multica Agent gets exactly one Bot —
 // see the (workspace_id, agent_id) UNIQUE in lark_installation), so
 // asking the user to pick an agent here would re-create that page's
 // picker. The "Bind your first agent" copy in the empty state hints
@@ -51,12 +60,12 @@ export function LarkTab() {
   });
   const installations = data?.installations ?? [];
   const configured = data?.configured === true;
-  // install_supported tracks the OAuth-install capability gate on the
-  // server (APIClient.SupportsOAuthInstall). When false, scan-to-bind
-  // would fail at the exchange step, so we hide install entry points
-  // and surface a "coming soon" notice in their place rather than send
-  // users into a broken flow. Already-installed bots still appear in
-  // the listing below and remain manageable.
+  // install_supported tracks whether the device-flow install path is
+  // wired end-to-end on the server. When false, scan-to-bind would
+  // fail at the post-poll bot-info step, so we hide install entry
+  // points and surface a "coming soon" notice in their place rather
+  // than send users into a broken flow. Already-installed bots still
+  // appear in the listing below and remain manageable.
   const installSupported = data?.install_supported === true;
 
   const [disconnectTarget, setDisconnectTarget] = useState<string | null>(null);
@@ -100,12 +109,12 @@ export function LarkTab() {
           </CardContent>
         </Card>
       ) : !installSupported && installations.length === 0 ? (
-        // OAuth-install capability is closed (no parent app creds, or
-        // ExchangeOAuthCode unwired). We deliberately do NOT direct
-        // users to the agent-detail "Bind" button because the OAuth
-        // callback would fail at the exchange step. Existing
-        // installations still render via the branch below; this only
-        // hides the empty-state CTA when there is nothing to manage.
+        // Device-flow install path is not wired (HTTP client is the stub
+        // or RegistrationService didn't initialize). We deliberately do
+        // NOT direct users to the agent-detail "Bind" button because the
+        // backend would 503 anyway. Existing installations still render
+        // via the branch below; this only hides the empty-state CTA
+        // when there is nothing to manage.
         <Card>
           <CardContent className="space-y-2">
             <p className="text-sm font-medium">{t(($) => $.lark.preview_title)}</p>
@@ -233,16 +242,12 @@ function InstallationRow({
 // detail page. The Settings panel above is the management view; this
 // button is the entry point.
 //
-// The button hides itself when the OAuth-install capability is closed
-// (install_supported == false on the listing endpoint). This is the
-// second half of the "don't expose a flow that's guaranteed to fail"
-// guarantee: even if a future view mistakenly mounts the button while
-// the server-side OAuth path is unwired (or the parent Lark app creds
-// aren't supplied), it stays invisible to users.
-//
-// Keeping it in the same file so a future contributor adding a Lark
-// surface (e.g. an inline "you have N bots" widget on the workspace
-// dashboard) finds the API client wiring next to the consumer.
+// The button hides itself when the device-flow install path is not
+// wired (install_supported == false on the listing endpoint). This is
+// the second half of the "don't expose a flow that's guaranteed to
+// fail" guarantee: even if a future view mistakenly mounts the button
+// while the server-side install path is unwired (stub APIClient, or
+// no MULTICA_LARK_SECRET_KEY), it stays invisible to users.
 export function LarkAgentBindButton({
   agentId,
   agentName,
@@ -254,53 +259,270 @@ export function LarkAgentBindButton({
 }) {
   const { t } = useT("settings");
   const wsId = useWorkspaceId();
-  const [opening, setOpening] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
 
-  // Cheap signal that decides whether the button is reachable for this
-  // workspace. The query is cached + WS-invalidated by larkKeys, so
-  // mounting this button on the agent detail page does not add new
-  // load — it shares the cache with the Settings tab.
   const { data: listing } = useQuery({
     ...larkInstallationsOptions(wsId),
     enabled: !!wsId,
   });
   const installSupported = listing?.install_supported === true;
 
-  async function handleClick() {
-    if (opening) return;
-    setOpening(true);
-    try {
-      const resp = await api.getLarkInstallURL(wsId, agentId);
-      if (!resp.configured || !resp.url) {
-        toast.error(t(($) => $.lark.toast_oauth_not_configured));
-        return;
-      }
-      // Open in a new tab so the in-app session keeps working; the
-      // callback (LarkInstallCallback in server/internal/handler/lark.go)
-      // bounces the browser back to /settings?tab=lark on success.
-      window.open(resp.url, "_blank", "noopener");
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : t(($) => $.lark.toast_start_failed));
-    } finally {
-      setOpening(false);
-    }
-  }
-
   if (!installSupported) return null;
 
   return (
-    <Button
-      variant="outline"
-      size="sm"
-      onClick={handleClick}
-      disabled={opening || !agentId}
-      className={className}
-      title={agentName ? t(($) => $.lark.bind_button_title, { agent: agentName }) : undefined}
-    >
-      <ExternalLink className="h-3 w-3" />
-      {opening
-        ? t(($) => $.lark.bind_button_opening)
-        : t(($) => $.lark.bind_button)}
-    </Button>
+    <>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={() => setDialogOpen(true)}
+        disabled={!agentId}
+        className={className}
+        title={agentName ? t(($) => $.lark.bind_button_title, { agent: agentName }) : undefined}
+      >
+        <ExternalLink className="h-3 w-3" />
+        {t(($) => $.lark.bind_button)}
+      </Button>
+      {dialogOpen && (
+        <LarkInstallDialog
+          wsId={wsId}
+          agentId={agentId}
+          agentName={agentName}
+          onClose={() => setDialogOpen(false)}
+        />
+      )}
+    </>
   );
 }
+
+// LarkInstallDialog walks the user through the device-flow install:
+// 1) POST /lark/install/begin → render QR
+// 2) poll /lark/install/{sessionId}/status until success | error | expiry
+// 3) on success: toast, close, invalidate installations cache
+//
+// The dialog deliberately re-fetches a fresh session on each "retry"
+// rather than reusing a stale device_code — Lark's device_code is
+// single-use and a re-render of the same QR after an error would just
+// fail again at the next poll.
+function LarkInstallDialog({
+  wsId,
+  agentId,
+  agentName,
+  onClose,
+}: {
+  wsId: string;
+  agentId: string;
+  agentName?: string;
+  onClose: () => void;
+}) {
+  const { t } = useT("settings");
+  const qc = useQueryClient();
+
+  // We track session lifecycle as local state because TanStack Query is
+  // optimized for cached server reads, and this dialog is a one-shot
+  // flow whose entire state collapses on close. Using `useQuery` for
+  // the polling would also fight TanStack's default refetch heuristics
+  // (window focus, online/offline, retries) that have the wrong shape
+  // for a single bounded session.
+  const [session, setSession] = useState<null | {
+    sessionId: string;
+    qrCodeURL: string;
+    expiresInSeconds: number;
+    pollIntervalSeconds: number;
+  }>(null);
+  const [status, setStatus] = useState<LarkInstallStatusResponse["status"]>("pending");
+  const [errorReason, setErrorReason] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [beginning, setBeginning] = useState(false);
+  const closedRef = useRef(false);
+
+  // beginSession is callable from both the initial mount and the
+  // "scan again" action. Wrapping in a function (instead of a useEffect
+  // dependency cascade) makes the retry path explicit.
+  async function beginSession() {
+    setBeginning(true);
+    setStatus("pending");
+    setErrorReason(null);
+    setErrorMessage(null);
+    setSession(null);
+    try {
+      const res = await api.beginLarkInstall(wsId, agentId);
+      if (closedRef.current) return;
+      setSession({
+        sessionId: res.session_id,
+        qrCodeURL: res.qr_code_url,
+        expiresInSeconds: res.expires_in_seconds,
+        pollIntervalSeconds: res.poll_interval_seconds,
+      });
+    } catch (e) {
+      if (closedRef.current) return;
+      setStatus("error");
+      setErrorReason("internal_error");
+      setErrorMessage(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBeginning(false);
+    }
+  }
+
+  // Kick off on mount.
+  useEffect(() => {
+    void beginSession();
+    return () => {
+      closedRef.current = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Polling loop. Bounded by the device-flow expiry — once that
+  // elapses Lark's server returns expired_token and our backend marks
+  // the session errored, so we don't need a separate client-side
+  // expiry timer.
+  useEffect(() => {
+    if (!session || status !== "pending") return;
+    const intervalMs = Math.max(2000, session.pollIntervalSeconds * 1000);
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    const poll = async () => {
+      if (cancelled) return;
+      try {
+        const res = await api.getLarkInstallStatus(wsId, session.sessionId);
+        if (cancelled) return;
+        setStatus(res.status);
+        if (res.status === "success") {
+          await qc.invalidateQueries({ queryKey: larkKeys.installations(wsId) });
+          toast.success(t(($) => $.lark.install_success_toast));
+          // Close after a tiny beat so the user sees the success state
+          // briefly before the dialog disappears.
+          setTimeout(() => {
+            if (!cancelled) onClose();
+          }, 800);
+          return;
+        }
+        if (res.status === "error") {
+          setErrorReason(res.error_reason ?? "internal_error");
+          setErrorMessage(res.error_message ?? null);
+          return;
+        }
+        timer = setTimeout(poll, intervalMs);
+      } catch (e) {
+        if (cancelled) return;
+        // Transient errors (network blip) — schedule another poll
+        // rather than killing the session. The next backend status
+        // read will either confirm pending or surface the terminal
+        // error the polling goroutine recorded.
+        timer = setTimeout(poll, intervalMs);
+        // Surface the message as a non-blocking toast for diagnostics.
+        toast.message(t(($) => $.lark.install_poll_retry), {
+          description: e instanceof Error ? e.message : String(e),
+        });
+      }
+    };
+
+    timer = setTimeout(poll, intervalMs);
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session?.sessionId, status]);
+
+  return (
+    <Dialog
+      open
+      onOpenChange={(o) => {
+        if (!o) onClose();
+      }}
+    >
+      <DialogContent className="max-w-sm">
+        <DialogHeader>
+          <DialogTitle>{t(($) => $.lark.install_dialog_title)}</DialogTitle>
+          <DialogDescription>
+            {agentName
+              ? t(($) => $.lark.install_dialog_description_for_agent, { agent: agentName })
+              : t(($) => $.lark.install_dialog_description)}
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="flex flex-col items-center gap-4 py-2">
+          {beginning && !session && (
+            <p className="text-sm text-muted-foreground">{t(($) => $.lark.install_starting)}</p>
+          )}
+
+          {session && status === "pending" && (
+            <>
+              <div className="rounded-md border bg-white p-3">
+                {/* react-qr-code renders an inline SVG — no external
+                  network image dependency, prints at any DPI. */}
+                <QRCode value={session.qrCodeURL} size={192} />
+              </div>
+              <p className="text-center text-xs text-muted-foreground">
+                {t(($) => $.lark.install_scan_hint)}
+              </p>
+              <a
+                href={session.qrCodeURL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-xs underline text-muted-foreground"
+              >
+                {t(($) => $.lark.install_open_link_fallback)}
+              </a>
+            </>
+          )}
+
+          {status === "success" && (
+            <p className="text-sm font-medium">{t(($) => $.lark.install_success)}</p>
+          )}
+
+          {status === "error" && (
+            <div className="space-y-2 text-center">
+              <p className="text-sm font-medium text-destructive">
+                {(() => {
+                  switch (errorReason) {
+                    case "expired":
+                      return t(($) => $.lark.install_error_expired);
+                    case "access_denied":
+                      return t(($) => $.lark.install_error_access_denied);
+                    case "lark_protocol_error":
+                      return t(($) => $.lark.install_error_protocol);
+                    case "bot_info_failed":
+                      return t(($) => $.lark.install_error_bot_info);
+                    case "installation_conflict":
+                      return t(($) => $.lark.install_error_conflict);
+                    case "installer_bind_failed":
+                      return t(($) => $.lark.install_error_installer_bind);
+                    default:
+                      return t(($) => $.lark.install_error_generic);
+                  }
+                })()}
+              </p>
+              {errorMessage && (
+                <p className="text-[10px] text-muted-foreground break-all">
+                  {errorMessage}
+                </p>
+              )}
+            </div>
+          )}
+        </div>
+
+        <DialogFooter>
+          {status === "error" ? (
+            <>
+              <Button variant="outline" size="sm" onClick={onClose}>
+                {t(($) => $.lark.install_close)}
+              </Button>
+              <Button size="sm" onClick={beginSession} disabled={beginning}>
+                <RefreshCw className="h-3 w-3" />
+                {t(($) => $.lark.install_retry)}
+              </Button>
+            </>
+          ) : (
+            <Button variant="outline" size="sm" onClick={onClose}>
+              {t(($) => $.lark.install_close)}
+            </Button>
+          )}
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+

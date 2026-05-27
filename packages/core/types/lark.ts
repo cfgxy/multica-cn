@@ -24,27 +24,43 @@ export interface ListLarkInstallationsResponse {
    * false the Bind button must be disabled and the panel renders an
    * empty / "ask the operator to enable Lark" state. */
   configured: boolean;
-  /** Whether new installs via OAuth are end-to-end supported, i.e. the
-   * real Lark HTTP APIClient is wired (not the no-op stub). When false
-   * the install entry points are hidden and the panel surfaces a
-   * "coming soon" notice — even if `configured` is true, the OAuth
-   * exchange would fail at the transport step. Optional so older
-   * desktop builds receiving a server that does not yet emit the field
+  /** Whether new installs via the device-flow scan-to-bind path can
+   * complete end-to-end — i.e. the device-flow RegistrationService is
+   * wired AND the real Lark HTTP APIClient (not the no-op stub) is in
+   * place. When false the install entry points are hidden and the
+   * panel surfaces a "coming soon" notice. Optional so older desktop
+   * builds receiving a server that does not yet emit the field
    * default to `undefined`, treated as not supported. */
   install_supported?: boolean;
 }
 
-export interface StartLarkInstallResponse {
-  /** Absolute Lark OAuth authorization URL. Empty when `configured`
-   * is false — the UI should render the QR / open-link controls only
-   * when this is set. */
-  url?: string;
-  /** False when MULTICA_LARK_OAUTH_* env vars are not configured.
-   * Distinct from `ListLarkInstallationsResponse.configured` (which
-   * tracks the at-rest key, MULTICA_LARK_SECRET_KEY) — a deployment
-   * can have the latter set for the manual-paste path without
-   * configuring OAuth. */
-  configured: boolean;
+/** First half of the device-flow install: the server has opened a
+ * registration session against accounts.feishu.cn and returned the QR
+ * URL. The frontend renders `qr_code_url` as a QR (and as a clickable
+ * link fallback) and starts polling `/install/{session_id}/status` at
+ * the supplied cadence until success or terminal failure. */
+export interface BeginLarkInstallResponse {
+  session_id: string;
+  qr_code_url: string;
+  expires_in_seconds: number;
+  poll_interval_seconds: number;
+}
+
+/** Status polling result. `status` is the discriminator. */
+export interface LarkInstallStatusResponse {
+  status: "pending" | "success" | "error" | string;
+  /** Populated when status === "success". The frontend invalidates the
+   * installations cache so the new row appears in the Settings tab. */
+  installation_id?: string;
+  /** Stable code on error — switch on this (NOT error_message) to pick
+   * the right copy. Common values: "expired", "access_denied",
+   * "lark_protocol_error", "bot_info_failed", "installation_conflict",
+   * "installer_bind_failed", "internal_error". */
+  error_reason?: string;
+  /** Human-readable error tail for debugging; the production UI should
+   * surface the copy keyed off error_reason and use this only as a
+   * diagnostic tooltip. */
+  error_message?: string;
 }
 
 export interface RedeemLarkBindingTokenResponse {

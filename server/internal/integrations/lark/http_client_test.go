@@ -3,7 +3,6 @@ package lark
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -158,49 +157,13 @@ func TestHTTPClient_IsConfigured(t *testing.T) {
 	}
 }
 
-// TestHTTPClient_SupportsOAuthInstall_FalseWithoutOAuthCreds pins the
-// must-fix from Elon's review: HTTP outbound transport being wired
-// does NOT imply the OAuth install flow is ready. The exchange step
-// requires the parent Lark app credentials (OAuthAppID / Secret) and
-// returns ErrAPIClientNotConfigured without them; the capability gate
-// must mirror that so handlers do not surface a bind UI that would
-// crash at the exchange step.
-func TestHTTPClient_SupportsOAuthInstall_FalseWithoutOAuthCreds(t *testing.T) {
-	c := NewHTTPAPIClient(HTTPClientConfig{})
-	if c.SupportsOAuthInstall() {
-		t.Fatalf("SupportsOAuthInstall must be false without OAuth credentials")
-	}
-	// Both gates must flip in lockstep — if a future change makes one
-	// say "ready" while the other says "not configured", users see an
-	// install UI that crashes at the exchange. Lock the invariant here.
-	_, err := c.ExchangeOAuthCode(context.Background(), "x", "https://x")
-	if !errors.Is(err, ErrAPIClientNotConfigured) {
-		t.Fatalf("ExchangeOAuthCode must surface ErrAPIClientNotConfigured without OAuth creds; got %v", err)
-	}
-}
-
-// TestHTTPClient_SupportsOAuthInstall_TrueWithOAuthCreds is the
-// inverse: once a deployment has supplied OAuthAppID + OAuthAppSecret,
-// SupportsOAuthInstall reveals the install entry. The exchange path is
-// real (covered by the happy-path test below); this test only pins the
-// capability gate.
-func TestHTTPClient_SupportsOAuthInstall_TrueWithOAuthCreds(t *testing.T) {
-	c := NewHTTPAPIClient(HTTPClientConfig{OAuthAppID: "cli_app_parent", OAuthAppSecret: "secret_parent"})
-	if !c.SupportsOAuthInstall() {
-		t.Fatalf("SupportsOAuthInstall must be true when OAuth creds are configured")
-	}
-}
-
-// TestHTTPClient_StubReportsBothCapabilitiesFalse pins the stub side
-// of the capability split: the stub has no transport and no OAuth
-// support, so both must be false.
-func TestHTTPClient_StubReportsBothCapabilitiesFalse(t *testing.T) {
+// TestHTTPClient_StubReportsNotConfigured pins that the stub never
+// claims wired outbound — handlers gate install / management UI on
+// this signal.
+func TestHTTPClient_StubReportsNotConfigured(t *testing.T) {
 	s := NewStubAPIClient(nil)
 	if s.IsConfigured() {
 		t.Errorf("stub IsConfigured must be false")
-	}
-	if s.SupportsOAuthInstall() {
-		t.Errorf("stub SupportsOAuthInstall must be false")
 	}
 }
 
@@ -633,160 +596,73 @@ func TestHTTPClient_BindingPromptValidation(t *testing.T) {
 	}
 }
 
-// TestHTTPClient_ExchangeOAuthCode_NotConfigured pins the gate: without
-// OAuth credentials, exchange must surface ErrAPIClientNotConfigured
-// (NOT a generic error) so the callback handler can map it to the
-// dedicated `oauth_exchange_unimplemented` reason instead of treating
-// it as a transient outage.
-func TestHTTPClient_ExchangeOAuthCode_NotConfigured(t *testing.T) {
-	c := NewHTTPAPIClient(HTTPClientConfig{})
-	_, err := c.ExchangeOAuthCode(context.Background(), "code_x", "https://x")
-	if !errors.Is(err, ErrAPIClientNotConfigured) {
-		t.Errorf("OAuth exchange without parent app creds must surface ErrAPIClientNotConfigured: %v", err)
-	}
-}
-
-// TestHTTPClient_ExchangeOAuthCode_HappyPath verifies the v2 OAuth
-// token + /authen/v1/user_info chain (the official shape — token
-// endpoint returns access_token only, identity comes from user_info).
-// Result is identity-only: InstallerOpenID / InstallerUnionID. Per-
-// installation bot credentials are NOT delivered here.
-func TestHTTPClient_ExchangeOAuthCode_HappyPath(t *testing.T) {
+// TestHTTPClient_GetBotInfo_HappyPath drives the device-flow follow-up
+// step: once RegistrationService has fresh client_id / client_secret
+// from /oauth/v1/app/registration, it mints a tenant_access_token and
+// asks /open-apis/bot/v3/info for the Bot's per-installation open_id.
+// The other fields on the bot/v3/info response (display name, avatar,
+// IP whitelist) are deliberately dropped on the floor; we only freeze
+// the open_id into lark_installation.
+func TestHTTPClient_GetBotInfo_HappyPath(t *testing.T) {
 	fake := newLarkFake(t)
-
-	fake.mux.HandleFunc("/open-apis/authen/v2/oauth/token", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			t.Errorf("oauth exchange: want POST, got %s", r.Method)
-		}
-		var body map[string]string
-		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Errorf("oauth exchange: decode body: %v", err)
-		}
-		if body["grant_type"] != "authorization_code" {
-			t.Errorf("grant_type: got %q", body["grant_type"])
-		}
-		if body["client_id"] != "cli_app_parent" {
-			t.Errorf("client_id: got %q", body["client_id"])
-		}
-		if body["client_secret"] != "secret_parent" {
-			t.Errorf("client_secret: got %q", body["client_secret"])
-		}
-		if body["code"] != "auth_code_xyz" {
-			t.Errorf("code: got %q", body["code"])
-		}
-		if body["redirect_uri"] != "https://multica.test/api/lark/install/callback" {
-			t.Errorf("redirect_uri: got %q", body["redirect_uri"])
-		}
-		// RFC 6749 shape — no open_id here. Identity comes from
-		// /authen/v1/user_info below using this access_token.
-		writeJSON(w, map[string]any{
-			"access_token":  "u-abc",
-			"token_type":    "Bearer",
-			"expires_in":    7200,
-			"refresh_token": "r-abc",
-			"scope":         "personal_agent:install",
-		})
-	})
-
-	fake.mux.HandleFunc("/open-apis/authen/v1/user_info", func(w http.ResponseWriter, r *http.Request) {
+	fake.stubToken("tok_bi", 7200)
+	fake.mux.HandleFunc("/open-apis/bot/v3/info", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			t.Errorf("user_info: want GET, got %s", r.Method)
+			t.Errorf("bot info: want GET, got %s", r.Method)
 		}
-		if got := r.Header.Get("Authorization"); got != "Bearer u-abc" {
-			t.Errorf("user_info: Authorization=%q want Bearer u-abc", got)
+		if got := r.Header.Get("Authorization"); got != "Bearer tok_bi" {
+			t.Errorf("bot info: Authorization=%q want Bearer tok_bi", got)
 		}
 		writeJSON(w, map[string]any{
 			"code": 0,
 			"msg":  "ok",
-			"data": map[string]any{
-				"open_id":  "ou_installer",
-				"union_id": "on_installer_union",
+			"bot": map[string]any{
+				"open_id":   "ou_bot_42",
+				"app_name":  "PersonalAgent",
+				"avatar_url": "https://example/avatar.png",
 			},
 		})
 	})
 
-	c := NewHTTPAPIClient(HTTPClientConfig{
-		BaseURL:        fake.URL(),
-		OAuthAppID:     "cli_app_parent",
-		OAuthAppSecret: "secret_parent",
-	})
-
-	res, err := c.ExchangeOAuthCode(context.Background(), "auth_code_xyz", "https://multica.test/api/lark/install/callback")
+	c := NewHTTPAPIClient(HTTPClientConfig{BaseURL: fake.URL()})
+	info, err := c.GetBotInfo(context.Background(), testCreds())
 	if err != nil {
-		t.Fatalf("ExchangeOAuthCode: %v", err)
+		t.Fatalf("GetBotInfo: %v", err)
 	}
-	if string(res.InstallerOpenID) != "ou_installer" {
-		t.Errorf("InstallerOpenID: got %q want ou_installer", res.InstallerOpenID)
-	}
-	if res.InstallerUnionID != "on_installer_union" {
-		t.Errorf("InstallerUnionID: got %q want on_installer_union", res.InstallerUnionID)
+	if string(info.OpenID) != "ou_bot_42" {
+		t.Errorf("OpenID: got %q want ou_bot_42", info.OpenID)
 	}
 }
 
-// TestHTTPClient_ExchangeOAuthCode_OAuthError surfaces a Lark v2 OAuth
-// error response as a non-nil error from ExchangeOAuthCode so the
-// callback handler can render the right copy. The v2 endpoint follows
-// RFC 6749: errors come back as 200 + {error, error_description}.
-func TestHTTPClient_ExchangeOAuthCode_OAuthError(t *testing.T) {
+// TestHTTPClient_GetBotInfo_LarkErrorCode surfaces a non-zero Lark
+// error code (e.g. 230003 = bot disabled) as a wrapped error so
+// RegistrationService can fail the install cleanly instead of
+// recording a row with bot_open_id="".
+func TestHTTPClient_GetBotInfo_LarkErrorCode(t *testing.T) {
 	fake := newLarkFake(t)
-	fake.mux.HandleFunc("/open-apis/authen/v2/oauth/token", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]any{
-			"error":             "invalid_grant",
-			"error_description": "code already used",
-		})
+	fake.stubToken("tok_bi_err", 7200)
+	fake.mux.HandleFunc("/open-apis/bot/v3/info", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{"code": 230003, "msg": "bot disabled"})
 	})
-	c := NewHTTPAPIClient(HTTPClientConfig{
-		BaseURL:        fake.URL(),
-		OAuthAppID:     "cli_app_parent",
-		OAuthAppSecret: "secret_parent",
-	})
-	_, err := c.ExchangeOAuthCode(context.Background(), "code_x", "https://x")
-	if err == nil || !strings.Contains(err.Error(), "invalid_grant") {
-		t.Errorf("want invalid_grant surfaced, got %v", err)
+	c := NewHTTPAPIClient(HTTPClientConfig{BaseURL: fake.URL()})
+	_, err := c.GetBotInfo(context.Background(), testCreds())
+	if err == nil || !strings.Contains(err.Error(), "code=230003") {
+		t.Errorf("want code=230003 surfaced, got %v", err)
 	}
 }
 
-// TestHTTPClient_ExchangeOAuthCode_UserInfoError surfaces a
-// /authen/v1/user_info failure as a non-nil error and does NOT leak
-// the partial access_token from step 1 into a half-filled
-// OAuthExchangeResult.
-func TestHTTPClient_ExchangeOAuthCode_UserInfoError(t *testing.T) {
+// TestHTTPClient_GetBotInfo_MissingCredentials short-circuits before
+// any HTTP round-trip when the caller hands in zero-value credentials.
+// A misuse here should NOT leak load to Lark's token endpoint.
+func TestHTTPClient_GetBotInfo_MissingCredentials(t *testing.T) {
 	fake := newLarkFake(t)
-	fake.mux.HandleFunc("/open-apis/authen/v2/oauth/token", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]any{
-			"access_token": "u-x",
-			"expires_in":   7200,
-		})
-	})
-	fake.mux.HandleFunc("/open-apis/authen/v1/user_info", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]any{"code": 99991663, "msg": "expired token"})
-	})
-	c := NewHTTPAPIClient(HTTPClientConfig{
-		BaseURL:        fake.URL(),
-		OAuthAppID:     "cli_app_parent",
-		OAuthAppSecret: "secret_parent",
-	})
-	res, err := c.ExchangeOAuthCode(context.Background(), "code_x", "https://x")
-	if err == nil || !strings.Contains(err.Error(), "99991663") {
-		t.Errorf("want code=99991663 surfaced, got err=%v", err)
+	c := newTestClient(fake, time.Now)
+	if _, err := c.GetBotInfo(context.Background(), InstallationCredentials{}); err == nil ||
+		!strings.Contains(err.Error(), "missing app credentials") {
+		t.Errorf("want missing credentials error, got %v", err)
 	}
-	if res.InstallerOpenID != "" {
-		t.Errorf("error path must not leak partial result: %+v", res)
-	}
-}
-
-// TestHTTPClient_ExchangeOAuthCode_PreflightValidation pins the
-// pre-auth short-circuits so a misuse cannot waste a token round-trip.
-func TestHTTPClient_ExchangeOAuthCode_PreflightValidation(t *testing.T) {
-	c := NewHTTPAPIClient(HTTPClientConfig{
-		OAuthAppID:     "cli_app_parent",
-		OAuthAppSecret: "secret_parent",
-	})
-	if _, err := c.ExchangeOAuthCode(context.Background(), "", "https://x"); err == nil || !strings.Contains(err.Error(), "code") {
-		t.Errorf("want missing code error, got %v", err)
-	}
-	if _, err := c.ExchangeOAuthCode(context.Background(), "x", ""); err == nil || !strings.Contains(err.Error(), "redirect_uri") {
-		t.Errorf("want missing redirect_uri error, got %v", err)
+	if got := fake.tokenN.Load(); got != 0 {
+		t.Errorf("token endpoint must not be hit on bad input: got %d", got)
 	}
 }
 

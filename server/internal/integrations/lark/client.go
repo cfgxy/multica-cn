@@ -17,38 +17,12 @@ import (
 // already authenticated the installation row and decrypted its
 // app_secret. The client never reads `lark_installation` itself.
 type APIClient interface {
-	// IsConfigured reports whether this APIClient can reach Lark for
-	// outbound transport (SendInteractiveCard / PatchInteractiveCard /
-	// SendBindingPromptCard). It is the "HTTP outbound is wired"
-	// signal. The stub returns false; the real Lark HTTP client
-	// returns true once instantiated.
-	//
-	// This is intentionally a NARROWER signal than "the install flow
-	// works end-to-end": ExchangeOAuthCode may still be unimplemented
-	// even when outbound transport is fine. See SupportsOAuthInstall
-	// for the install-flow capability gate.
+	// IsConfigured reports whether this APIClient can reach Lark over
+	// the network. It is the "HTTP outbound is wired" signal: the stub
+	// returns false; the real Lark HTTP client returns true once
+	// instantiated. Handlers consult this when deciding whether to
+	// surface install / management UI that needs to talk to Lark.
 	IsConfigured() bool
-
-	// SupportsOAuthInstall reports whether the OAuth install flow
-	// (StartLarkInstall → Lark authorize → LarkInstallCallback →
-	// ExchangeOAuthCode → Upsert) can actually succeed end-to-end. It
-	// is FALSE whenever ExchangeOAuthCode would surface
-	// ErrAPIClientNotConfigured.
-	//
-	// Why it is separate from IsConfigured: the real HTTP client can
-	// have functional outbound transport for already-installed bots
-	// while the PersonalAgent install-time exchange response shape is
-	// still being pinned down. Flipping a single "install_supported"
-	// flag off the outbound transport capability would either (a)
-	// expose a doomed scan-to-bind UI when transport was wired
-	// without exchange, or (b) hide outbound patching while waiting
-	// for exchange to land. Splitting the gate lets the UI reveal
-	// each capability independently as it becomes safe to use.
-	//
-	// Handlers consult this — NOT IsConfigured — when deciding
-	// whether to surface the "Bind to Lark" CTA or the
-	// install_supported field on listings.
-	SupportsOAuthInstall() bool
 
 	// SendInteractiveCard posts an interactive card into a Lark chat
 	// and returns Lark's message_id for the card. The patcher persists
@@ -68,10 +42,23 @@ type APIClient interface {
 	// Lark's card schema.
 	SendBindingPromptCard(ctx context.Context, p BindingPromptParams) error
 
-	// ExchangeOAuthCode swaps a Lark OAuth `code` for the installation
-	// metadata we persist (app credentials, bot identity, installer
-	// open_id). The OAuth callback handler is the only caller.
-	ExchangeOAuthCode(ctx context.Context, code, redirectURI string) (OAuthExchangeResult, error)
+	// GetBotInfo returns the Bot's per-installation `open_id` (the
+	// `bot_open_id` we persist on lark_installation). RegistrationService
+	// is the only caller — after the device-flow registration returns
+	// fresh `client_id` / `client_secret`, the service mints a
+	// tenant_access_token with those creds and calls
+	// /open-apis/bot/v3/info to learn the Bot's identity. The result
+	// is then frozen into lark_installation alongside the app_id /
+	// app_secret in the same transaction as the installer-bind.
+	GetBotInfo(ctx context.Context, creds InstallationCredentials) (BotInfo, error)
+}
+
+// BotInfo is the slice of /open-apis/bot/v3/info we care about: the
+// Bot's per-installation open_id. Everything else (display name,
+// avatar) is reachable downstream from the bot_open_id when needed,
+// so we deliberately do NOT freeze it into our schema.
+type BotInfo struct {
+	OpenID OpenID
 }
 
 // SendCardParams is the input shape for posting a fresh card.
@@ -99,27 +86,6 @@ type BindingPromptParams struct {
 	// BindURL is the absolute URL the user clicks. The token is
 	// embedded in the URL by the caller; the client never sees it.
 	BindURL string
-}
-
-// OAuthExchangeResult is the installer identity extracted from a Lark
-// OAuth v2 grant. Identity-only: the v2 user-OAuth chain
-// (/authen/v2/oauth/token + /authen/v1/user_info) returns a
-// user_access_token + the human's open_id/union_id; it does NOT mint
-// per-installation bot credentials (app_id / app_secret / bot_open_id),
-// which require a separate Lark PersonalAgent install API not yet
-// wired here.
-//
-// Because the result no longer carries bot credentials, the OAuth
-// callback can only auto-bind the installer onto an installation row
-// that already exists (provisioned via the manual-paste
-// POST /api/workspaces/{id}/lark/installations route). When the
-// PersonalAgent install API is integrated in a follow-up the bot-side
-// fields can come back, but they must arrive PER-INSTALLATION — never
-// as a shared parent app reuse, which would collide with the
-// UNIQUE (app_id) constraint and the dispatcher's app_id routing.
-type OAuthExchangeResult struct {
-	InstallerOpenID  OpenID
-	InstallerUnionID string
 }
 
 // InstallationCredentials is the per-installation transport context the
@@ -169,10 +135,6 @@ func NewStubAPIClient(log *slog.Logger) APIClient {
 
 func (s *stubAPIClient) IsConfigured() bool { return false }
 
-// SupportsOAuthInstall is false for the stub: every transport call
-// errors with ErrAPIClientNotConfigured, including ExchangeOAuthCode.
-func (s *stubAPIClient) SupportsOAuthInstall() bool { return false }
-
 func (s *stubAPIClient) SendInteractiveCard(ctx context.Context, p SendCardParams) (string, error) {
 	s.log.Warn("lark stub client: SendInteractiveCard called", "chat_id", string(p.ChatID))
 	return "", ErrAPIClientNotConfigured
@@ -188,7 +150,7 @@ func (s *stubAPIClient) SendBindingPromptCard(ctx context.Context, p BindingProm
 	return ErrAPIClientNotConfigured
 }
 
-func (s *stubAPIClient) ExchangeOAuthCode(ctx context.Context, code, redirectURI string) (OAuthExchangeResult, error) {
-	s.log.Warn("lark stub client: ExchangeOAuthCode called")
-	return OAuthExchangeResult{}, ErrAPIClientNotConfigured
+func (s *stubAPIClient) GetBotInfo(ctx context.Context, creds InstallationCredentials) (BotInfo, error) {
+	s.log.Warn("lark stub client: GetBotInfo called", "app_id", creds.AppID)
+	return BotInfo{}, ErrAPIClientNotConfigured
 }

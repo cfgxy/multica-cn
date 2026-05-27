@@ -96,7 +96,8 @@ export type {
 export type {
   LarkInstallation,
   ListLarkInstallationsResponse,
-  StartLarkInstallResponse,
+  BeginLarkInstallResponse,
+  LarkInstallStatusResponse,
   RedeemLarkBindingTokenResponse,
 } from "./lark";
 export type {

@@ -19,13 +19,12 @@ import (
 //
 // Scope: tenant_access_token acquisition + caching, IM v1 interactive-
 // card send / patch, the dedicated binding-prompt outbound, AND the
-// install-time OAuth code → installer-identity exchange. The OAuth
-// path requires the deployment to supply the Multica-owned Lark app
-// credentials (OAuthAppID / OAuthAppSecret) — those authenticate the
-// v2 token endpoint, NOT the resulting installation. When they are
-// absent, ExchangeOAuthCode short-circuits to ErrAPIClientNotConfigured
-// and SupportsOAuthInstall stays false so the UI never reveals a bind
-// entry that would fail.
+// install-time Bot identity lookup (/open-apis/bot/v3/info) consumed
+// by RegistrationService right after a successful device-flow grant.
+// The PersonalAgent registration protocol itself is a separate client
+// (RegistrationClient) because it speaks to a different host
+// (accounts.feishu.cn) with a different auth model (no
+// tenant_access_token — the response IS the credentials).
 //
 // Per-installation credentials flow in on each call via
 // InstallationCredentials; the client never reads lark_installation
@@ -75,27 +74,9 @@ type HTTPClientConfig struct {
 	// Now is overridable for deterministic token-expiry tests.
 	Now func() time.Time
 
-	// Logger receives warnings about Lark error codes and the
-	// "OAuth not implemented" surface. Nil uses slog.Default().
+	// Logger receives warnings about Lark error codes. Nil uses
+	// slog.Default().
 	Logger *slog.Logger
-
-	// OAuthAppID / OAuthAppSecret are the Multica-owned Lark app
-	// credentials used as `client_id` / `client_secret` for the
-	// authorization-code exchange against /authen/v2/oauth/token.
-	// They authenticate the OAuth handshake itself — NOT the
-	// resulting installation. Per-installation bot credentials
-	// (app_id / app_secret / bot_open_id on lark_installation) are
-	// supplied separately via the manual-paste POST
-	// /lark/installations route; the OAuth callback then binds the
-	// installer's Lark identity onto that existing row.
-	//
-	// Empty disables ExchangeOAuthCode — it surfaces
-	// ErrAPIClientNotConfigured and SupportsOAuthInstall returns
-	// false, so the install UI stays hidden. Wiring (router.go) feeds
-	// these from MULTICA_LARK_OAUTH_APP_ID / _APP_SECRET so the OAuth
-	// config and the HTTP client read the same env vars.
-	OAuthAppID     string
-	OAuthAppSecret string
 }
 
 func (c HTTPClientConfig) withDefaults() HTTPClientConfig {
@@ -138,31 +119,11 @@ type cachedToken struct {
 }
 
 // IsConfigured reports true: once this client exists at all, the
-// outbound transport path (send / patch / binding prompt) is wired.
-// The stub returns false because every call there errors with
-// ErrAPIClientNotConfigured; the real client is the inverse contract.
-//
-// IsConfigured deliberately does NOT speak to OAuth install
-// readiness — see SupportsOAuthInstall below for that gate.
+// outbound transport path (send / patch / binding prompt / bot info)
+// is wired. The stub returns false because every call there errors
+// with ErrAPIClientNotConfigured; the real client is the inverse
+// contract.
 func (c *httpAPIClient) IsConfigured() bool { return true }
-
-// SupportsOAuthInstall reports whether the scan-to-bind install
-// flow can actually complete end-to-end. Two things must be true:
-//
-//  1. ExchangeOAuthCode is implemented (it is, below), AND
-//  2. the deployment has supplied the parent Lark app credentials
-//     (OAuthAppID + OAuthAppSecret) the exchange + bot-info calls
-//     authenticate with.
-//
-// When (2) is missing, ExchangeOAuthCode short-circuits to
-// ErrAPIClientNotConfigured and the handler-level
-// `install_supported` flag stays false so the UI never surfaces a
-// bind entry the user cannot actually walk through. Handlers must
-// consult THIS gate, NOT IsConfigured — outbound transport being
-// wired says nothing about whether OAuth credentials are configured.
-func (c *httpAPIClient) SupportsOAuthInstall() bool {
-	return c.cfg.OAuthAppID != "" && c.cfg.OAuthAppSecret != ""
-}
 
 // tenantAccessToken returns a usable tenant_access_token for the
 // given installation, reusing a cached token while it is alive (minus
@@ -352,106 +313,48 @@ func (c *httpAPIClient) SendBindingPromptCard(ctx context.Context, p BindingProm
 	return nil
 }
 
-// ExchangeOAuthCode runs the install-time identity handshake:
+// GetBotInfo calls /open-apis/bot/v3/info to learn the Bot's
+// per-installation `open_id` (what we persist as `bot_open_id` on
+// lark_installation). RegistrationService is the only caller — right
+// after the device-flow registration returns fresh `client_id` /
+// `client_secret`, the service mints a tenant_access_token with
+// those creds and calls this method so the installation row can be
+// frozen with the Bot's identity in the same transaction as the
+// installer-bind.
 //
-//  1. POST /open-apis/authen/v2/oauth/token — exchange the
-//     authorization code for the installer's user_access_token using
-//     the Multica-owned Lark app's client_id / client_secret. This
-//     follows RFC 6749 (top-level access_token / refresh_token /
-//     expires_in; no Lark-style {code, msg, data} wrapper). Errors
-//     come back as 200 + {error, error_description}.
-//
-//  2. GET /open-apis/authen/v1/user_info — call the user-info
-//     endpoint with the just-issued user_access_token as a Bearer.
-//     This is the official chain documented at
-//     https://open.feishu.cn/document/authentication-management/access-token/get-user-access-token —
-//     the v2 token endpoint does NOT return open_id directly; user
-//     identity must be fetched separately.
-//
-// The result carries only the installer's per-app open_id (and
-// union_id when available). It does NOT carry per-installation bot
-// credentials: those require a separate Lark PersonalAgent install
-// API not yet integrated here. The OAuth callback consumes this
-// identity to bind the installer onto an installation row that the
-// admin has already provisioned via the manual-paste
-// POST /lark/installations route.
-func (c *httpAPIClient) ExchangeOAuthCode(ctx context.Context, code, redirectURI string) (OAuthExchangeResult, error) {
-	if c.cfg.OAuthAppID == "" || c.cfg.OAuthAppSecret == "" {
-		// Deployment did not configure the OAuth app credentials;
-		// the OAuth callback handler maps this to
-		// oauth_exchange_unimplemented so the UI surfaces a precise
-		// reason instead of a generic internal_error.
-		return OAuthExchangeResult{}, ErrAPIClientNotConfigured
+// The response carries other fields (display name, avatar, IP
+// whitelist) which we deliberately drop; downstream reads can fetch
+// them on demand from the bot_open_id, and freezing them into our
+// schema would create a drift surface every time the operator edits
+// the Bot on Lark's side.
+func (c *httpAPIClient) GetBotInfo(ctx context.Context, creds InstallationCredentials) (BotInfo, error) {
+	if creds.AppID == "" || creds.AppSecret == "" {
+		return BotInfo{}, errors.New("lark http client: missing app credentials for GetBotInfo")
 	}
-	if code == "" {
-		return OAuthExchangeResult{}, errors.New("lark http client: missing authorization code")
+	token, err := c.tenantAccessToken(ctx, creds)
+	if err != nil {
+		return BotInfo{}, err
 	}
-	if redirectURI == "" {
-		return OAuthExchangeResult{}, errors.New("lark http client: missing redirect_uri")
-	}
-
-	// Step 1 — Lark OAuth v2 authorization-code exchange. RFC 6749
-	// shape: success returns top-level access_token / token_type /
-	// expires_in / refresh_token / scope. Errors come back as 200 +
-	// {error, error_description}; non-2xx is a transport / config
-	// failure. The token endpoint does NOT return open_id directly —
-	// that field is fetched from /authen/v1/user_info in step 2.
-	exchBody := map[string]string{
-		"grant_type":    "authorization_code",
-		"client_id":     c.cfg.OAuthAppID,
-		"client_secret": c.cfg.OAuthAppSecret,
-		"code":          code,
-		"redirect_uri":  redirectURI,
-	}
-	var exchResp struct {
-		AccessToken      string `json:"access_token"`
-		TokenType        string `json:"token_type"`
-		ExpiresIn        int64  `json:"expires_in"`
-		RefreshToken     string `json:"refresh_token"`
-		RefreshExpiresIn int64  `json:"refresh_expires_in"`
-		Scope            string `json:"scope"`
-		Error            string `json:"error"`
-		ErrorDescription string `json:"error_description"`
-	}
-	if err := c.doJSON(ctx, http.MethodPost, "/open-apis/authen/v2/oauth/token", "", exchBody, &exchResp); err != nil {
-		return OAuthExchangeResult{}, fmt.Errorf("lark http client: oauth token exchange: %w", err)
-	}
-	if exchResp.Error != "" {
-		return OAuthExchangeResult{}, fmt.Errorf("lark http client: oauth token exchange: error=%q description=%q",
-			exchResp.Error, exchResp.ErrorDescription)
-	}
-	if exchResp.AccessToken == "" {
-		return OAuthExchangeResult{}, errors.New("lark http client: oauth token exchange: response missing access_token")
-	}
-
-	// Step 2 — /authen/v1/user_info with the installer's
-	// user_access_token. This is the official path to the open_id /
-	// union_id; the legacy v1 /access_token endpoint that bundled
-	// identity into the exchange response is deprecated and not
-	// used. user_info returns the canonical {code, msg, data} Lark
-	// envelope.
-	var infoResp struct {
+	var resp struct {
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`
-		Data struct {
-			OpenID  string `json:"open_id"`
-			UnionID string `json:"union_id"`
-		} `json:"data"`
+		Bot  struct {
+			OpenID string `json:"open_id"`
+		} `json:"bot"`
 	}
-	if err := c.doJSON(ctx, http.MethodGet, "/open-apis/authen/v1/user_info", exchResp.AccessToken, nil, &infoResp); err != nil {
-		return OAuthExchangeResult{}, fmt.Errorf("lark http client: user_info: %w", err)
+	if err := c.doJSON(ctx, http.MethodGet, "/open-apis/bot/v3/info", token, nil, &resp); err != nil {
+		return BotInfo{}, fmt.Errorf("lark http client: bot info: %w", err)
 	}
-	if infoResp.Code != 0 {
-		return OAuthExchangeResult{}, fmt.Errorf("lark http client: user_info: code=%d msg=%q", infoResp.Code, infoResp.Msg)
+	if resp.Code != 0 {
+		if isTokenError(resp.Code) {
+			c.invalidateToken(creds.AppID)
+		}
+		return BotInfo{}, fmt.Errorf("lark http client: bot info: code=%d msg=%q", resp.Code, resp.Msg)
 	}
-	if infoResp.Data.OpenID == "" {
-		return OAuthExchangeResult{}, errors.New("lark http client: user_info: response missing open_id")
+	if resp.Bot.OpenID == "" {
+		return BotInfo{}, errors.New("lark http client: bot info: response missing open_id")
 	}
-
-	return OAuthExchangeResult{
-		InstallerOpenID:  OpenID(infoResp.Data.OpenID),
-		InstallerUnionID: infoResp.Data.UnionID,
-	}, nil
+	return BotInfo{OpenID: OpenID(resp.Bot.OpenID)}, nil
 }
 
 // doJSON encapsulates the verb + URL + auth-header + JSON

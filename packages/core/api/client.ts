@@ -100,7 +100,8 @@ import type {
   ListGitHubInstallationsResponse,
   GitHubConnectResponse,
   ListLarkInstallationsResponse,
-  StartLarkInstallResponse,
+  BeginLarkInstallResponse,
+  LarkInstallStatusResponse,
   RedeemLarkBindingTokenResponse,
   Squad,
   SquadMember,
@@ -1871,9 +1872,15 @@ export class ApiClient {
     return this.fetch(`/api/workspaces/${workspaceId}/lark/installations`);
   }
 
-  async getLarkInstallURL(workspaceId: string, agentId: string): Promise<StartLarkInstallResponse> {
+  async beginLarkInstall(workspaceId: string, agentId: string): Promise<BeginLarkInstallResponse> {
     const search = new URLSearchParams({ agent_id: agentId });
-    return this.fetch(`/api/workspaces/${workspaceId}/lark/install/start?${search.toString()}`);
+    return this.fetch(`/api/workspaces/${workspaceId}/lark/install/begin?${search.toString()}`, {
+      method: "POST",
+    });
+  }
+
+  async getLarkInstallStatus(workspaceId: string, sessionId: string): Promise<LarkInstallStatusResponse> {
+    return this.fetch(`/api/workspaces/${workspaceId}/lark/install/${sessionId}/status`);
   }
 
   async deleteLarkInstallation(workspaceId: string, installationId: string): Promise<void> {

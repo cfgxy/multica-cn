@@ -35,6 +35,33 @@ type RedeemedBindingToken struct {
 	LarkOpenID     OpenID
 }
 
+// InstallerBinder is the narrow surface RegistrationService needs to
+// record the installer's lark_user_binding row in the same business
+// step as the installation insert. Without this step the first inbound
+// message from the installer would be dropped as `unbound_user` and
+// the Bot would reply "you're not bound, click here…" to the person
+// who just authorized the install seconds ago.
+//
+// Implementations MUST be idempotent on (installation_id, lark_open_id):
+// a re-install by the same user should not error.
+//
+// `qtx` is the *db.Queries handle to run the bind against. The caller
+// opens the transaction so the installation insert and the binding
+// write commit together; nil means "use the service's own
+// (non-transactional) queries handle".
+type InstallerBinder interface {
+	BindInstallerTx(ctx context.Context, qtx *db.Queries, p InstallerBindParams) error
+}
+
+// InstallerBindParams carries the inputs InstallerBinder needs. Kept
+// as a struct so adding union_id (Phase 2) does not break callers.
+type InstallerBindParams struct {
+	WorkspaceID    pgtype.UUID
+	InstallationID pgtype.UUID
+	MulticaUserID  pgtype.UUID // the installer's Multica account
+	LarkOpenID     OpenID      // the installer's per-installation open_id
+}
+
 // BindingTokenService mints and redeems binding tokens for the
 // "you're not bound yet, click here" flow. The TTL is fixed at
 // BindingTokenTTL (15 min); the DB CHECK enforces the same cap so a
@@ -169,34 +196,35 @@ func (s *BindingTokenService) RedeemAndBind(ctx context.Context, raw string, mul
 	}, nil
 }
 
-// BindInstallerTx is the auto-binding path for the OAuth install
-// flow: the user who just authorized the install is recorded as
+// BindInstallerTx is the auto-binding path for the device-flow
+// install: the user who just authorized the install is recorded as
 // bound to their own open_id, so the first inbound message in the
 // bot's DM arrives at a `bound` identity check and the user is NOT
 // prompted with a redundant "click here to bind" card.
 //
-// `qtx` is the OAuthService's transaction-scoped queries handle. The
-// service opens a transaction that wraps the lark_installation
-// lookup and this binding write so a concurrent revoke / re-provision
-// between read and bind cannot land — either both reads see the
-// same state and both writes commit, or neither does. When `qtx` is
-// nil the service's own (non-transactional) queries handle is used,
-// which is the right behavior for tests that don't need atomicity.
+// `qtx` is the RegistrationService's transaction-scoped queries
+// handle. The service opens a transaction that wraps the
+// lark_installation insert and this binding write so a half-applied
+// install (installation row without the installer binding) cannot
+// land. When `qtx` is nil the service's own (non-transactional)
+// queries handle is used, which is the right behavior for tests that
+// don't need atomicity.
 //
 // Token redemption deliberately does NOT share this code path:
 //   - RedeemAndBind consumes a server-minted token in the same tx as
 //     the binding insert; that's how anti-replay works.
-//   - BindInstallerTx is invoked from the OAuth callback where the
-//     authoritative proof of identity is the signed OAuth state +
-//     the Lark-validated `code` exchange. There is no token to
-//     consume, and inventing one would only widen the attack surface.
+//   - BindInstallerTx is invoked from the device-flow success hook
+//     where the authoritative proof of identity is the Lark-validated
+//     polling response (open_id returned alongside the freshly minted
+//     client_id / client_secret). There is no token to consume, and
+//     inventing one would only widen the attack surface.
 //
 // The underlying CreateLarkUserBinding query is idempotent on
 // (installation_id, lark_open_id) when multica_user_id matches (the
 // ON CONFLICT DO UPDATE gating spelled out on the SQL), so a
-// re-authorize by the same user is a no-op metadata refresh. A
-// re-authorize by a DIFFERENT user surfaces as ErrBindingAlreadyAssigned
-// — the OAuth caller treats that as a hard error and the
+// re-install by the same user is a no-op metadata refresh. A
+// re-install by a DIFFERENT user surfaces as ErrBindingAlreadyAssigned
+// — the registration caller treats that as a hard error and the
 // frontend surfaces it as "this Lark account is bound elsewhere",
 // preventing one workspace admin from silently rebinding another's
 // PersonalAgent install.

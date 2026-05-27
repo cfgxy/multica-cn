@@ -3,10 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
-	"net/url"
-	"os"
 	"strings"
 	"time"
 
@@ -56,80 +53,6 @@ func larkInstallationToResponse(row db.LarkInstallation) LarkInstallationRespons
 	return resp
 }
 
-// CreateLarkInstallationRequest is the manual-install payload (admin
-// pastes credentials from the Lark developer console). The OAuth
-// callback path lands credentials via the same InstallationService
-// pipeline, so adding it later does not change this contract.
-type CreateLarkInstallationRequest struct {
-	AgentID   string `json:"agent_id"`
-	AppID     string `json:"app_id"`
-	AppSecret string `json:"app_secret"`
-	TenantKey string `json:"tenant_key,omitempty"`
-	BotOpenID string `json:"bot_open_id"`
-}
-
-// CreateLarkInstallation (POST /api/workspaces/{id}/lark/installations)
-// is admin-only at the router level. It performs the at-rest
-// encryption of `app_secret` via InstallationService and refuses to
-// fall back to plaintext storage when the master key is unset (503).
-func (h *Handler) CreateLarkInstallation(w http.ResponseWriter, r *http.Request) {
-	if h.LarkInstallations == nil {
-		writeError(w, http.StatusServiceUnavailable, "lark integration not configured (MULTICA_LARK_SECRET_KEY)")
-		return
-	}
-	userID, ok := requireUserID(w, r)
-	if !ok {
-		return
-	}
-	wsUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workspace id")
-	if !ok {
-		return
-	}
-
-	var req CreateLarkInstallationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid request body")
-		return
-	}
-	agentUUID, ok := parseUUIDOrBadRequest(w, req.AgentID, "agent_id")
-	if !ok {
-		return
-	}
-	// Validate the agent really belongs to this workspace before we
-	// accept its credentials. Without this guard a workspace admin
-	// could install Lark on an agent in a different workspace by
-	// supplying that workspace's agent_id.
-	if _, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
-		ID:          agentUUID,
-		WorkspaceID: wsUUID,
-	}); err != nil {
-		writeError(w, http.StatusNotFound, "agent not found in this workspace")
-		return
-	}
-	installerUUID, ok := parseUUIDOrBadRequest(w, userID, "installer user id")
-	if !ok {
-		return
-	}
-
-	inst, err := h.LarkInstallations.Upsert(r.Context(), lark.InstallationParams{
-		WorkspaceID:     wsUUID,
-		AgentID:         agentUUID,
-		AppID:           req.AppID,
-		AppSecret:       req.AppSecret,
-		TenantKey:       req.TenantKey,
-		BotOpenID:       req.BotOpenID,
-		InstallerUserID: installerUUID,
-	})
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-
-	resp := larkInstallationToResponse(inst)
-	h.publish(protocol.EventLarkInstallationCreated, uuidToString(wsUUID), "user", userID, resp)
-	writeJSON(w, http.StatusCreated, resp)
-}
-
 // ListLarkInstallations (GET /api/workspaces/{id}/lark/installations)
 // is member-visible — the Integrations tab should not render blank
 // for non-admins. Unlike the GitHub list, we do not strip any field
@@ -141,18 +64,14 @@ func (h *Handler) CreateLarkInstallation(w http.ResponseWriter, r *http.Request)
 //   - configured: at-rest encryption key is set (`LarkInstallations
 //     != nil`). When false, no install flow can succeed at all; the
 //     UI hides the tab.
-//   - install_supported: the OAuth-install capability gate is open
-//     — the wired APIClient reports SupportsOAuthInstall()==true,
-//     meaning the deployment has supplied the parent Lark app
-//     credentials AND ExchangeOAuthCode is wired against the real
-//     v2 endpoint. When false, manual-paste installs still work for
-//     bots already in lark_installation but scan-to-bind would fail
-//     at the exchange step; the UI hides install entry points (the
-//     Settings tab surfaces a "coming soon" notice and the
-//     agent-detail "Bind to Lark" button stays hidden). This is
-//     sourced from APIClient.SupportsOAuthInstall — NOT IsConfigured
-//     — so a real HTTP client wired for outbound transport without
-//     OAuth credentials still keeps the bind UI hidden.
+//   - install_supported: the device-flow install path is wired
+//     end-to-end: a RegistrationService exists (deployment supplied
+//     MULTICA_LARK_SECRET_KEY) AND the APIClient.IsConfigured signal
+//     is true (the real Lark HTTP client is in place — the stub
+//     cannot complete the post-poll GetBotInfo call). When false,
+//     the agent-detail "Bind" button stays hidden and the Settings
+//     tab surfaces a "coming soon" notice; already-installed bots
+//     still appear and remain manageable.
 func (h *Handler) ListLarkInstallations(w http.ResponseWriter, r *http.Request) {
 	if h.LarkInstallations == nil {
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -178,14 +97,14 @@ func (h *Handler) ListLarkInstallations(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"installations":     out,
 		"configured":        true,
-		"install_supported": h.LarkAPIClient != nil && h.LarkAPIClient.SupportsOAuthInstall(),
+		"install_supported": h.LarkRegistration != nil && h.LarkAPIClient != nil && h.LarkAPIClient.IsConfigured(),
 	})
 }
 
 // RevokeLarkInstallation (DELETE /api/workspaces/{id}/lark/installations/{installationId})
 // flips status to 'revoked' so the WS hub drops the connection on its
 // next sweep. The row itself is preserved for audit; a re-install via
-// CreateLarkInstallation flips status back to 'active' atomically.
+// the device-flow path flips status back to 'active' atomically.
 func (h *Handler) RevokeLarkInstallation(w http.ResponseWriter, r *http.Request) {
 	if h.LarkInstallations == nil {
 		writeError(w, http.StatusServiceUnavailable, "lark integration not configured")
@@ -299,43 +218,29 @@ func (h *Handler) RedeemLarkBindingToken(w http.ResponseWriter, r *http.Request)
 	})
 }
 
-// StartLarkInstallResponse is the payload the agent detail "bind to
-// Lark" button consumes. The frontend renders `url` as a QR (and as a
-// clickable link fallback) so a phone user can scan it instead of
-// typing.
-type StartLarkInstallResponse struct {
-	URL        string `json:"url"`
-	Configured bool   `json:"configured"`
+// BeginLarkInstallResponse is the payload the QR-code dialog consumes.
+// The frontend renders `qr_code_url` as a QR image (and as a tap-to-
+// open link fallback) and starts polling
+// /lark/install/{session_id}/status at the supplied cadence.
+type BeginLarkInstallResponse struct {
+	SessionID           string `json:"session_id"`
+	QRCodeURL           string `json:"qr_code_url"`
+	ExpiresInSeconds    int    `json:"expires_in_seconds"`
+	PollIntervalSeconds int    `json:"poll_interval_seconds"`
 }
 
-// StartLarkInstall (GET /api/workspaces/{id}/lark/install/start?agent_id=...)
-// returns the Lark OAuth authorization URL the user must open (or
-// scan as QR) to bind a Bot to the supplied agent. Admin-only at the
-// router. The state token signed inside the URL binds workspace +
-// agent + initiator, so the callback persists the installation
-// against the correct rows without trusting query params.
-func (h *Handler) StartLarkInstall(w http.ResponseWriter, r *http.Request) {
-	if h.LarkInstallations == nil {
-		writeError(w, http.StatusServiceUnavailable, "lark integration not configured (MULTICA_LARK_SECRET_KEY)")
-		return
-	}
-	// OAuth-install capability gate. We consult
-	// APIClient.SupportsOAuthInstall — NOT IsConfigured — because the
-	// install flow needs ExchangeOAuthCode to actually be implemented,
-	// not merely "outbound transport is wired". A real HTTP client
-	// that has SendInteractiveCard / PatchInteractiveCard / binding
-	// prompt working but still returns ErrAPIClientNotConfigured from
-	// ExchangeOAuthCode reports IsConfigured()==true and
-	// SupportsOAuthInstall()==false; in that intermediate state we
-	// MUST short-circuit here so the user does not scan, authorize,
-	// and then get bounced back with a generic internal_error after
-	// the exchange step fails.
-	if h.LarkAPIClient == nil || !h.LarkAPIClient.SupportsOAuthInstall() {
-		writeJSON(w, http.StatusOK, StartLarkInstallResponse{Configured: false})
-		return
-	}
-	if h.LarkOAuth == nil {
-		writeJSON(w, http.StatusOK, StartLarkInstallResponse{Configured: false})
+// BeginLarkInstall (POST /api/workspaces/{id}/lark/install/begin)
+// opens a new device-flow registration session against Lark. Admin-only
+// at the router. The agent_id query param picks which Multica Agent
+// the new Bot will be bound to; the agent must belong to this
+// workspace (RegistrationService re-checks that defense-in-depth).
+//
+// Returns 503 when the integration is not wired (no at-rest key, no
+// HTTP client, no RegistrationService); the UI hides the bind button
+// in that case so this should not be reached through the normal flow.
+func (h *Handler) BeginLarkInstall(w http.ResponseWriter, r *http.Request) {
+	if h.LarkRegistration == nil {
+		writeError(w, http.StatusServiceUnavailable, "lark install not configured")
 		return
 	}
 	userID, ok := requireUserID(w, r)
@@ -355,10 +260,9 @@ func (h *Handler) StartLarkInstall(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Reject install attempts against agents from other workspaces;
-	// the OAuth state would otherwise let one workspace admin install
-	// a Bot on another workspace's agent (the URL state is signed,
-	// but pre-state validation is what blocks the attempt earliest).
+	// Ownership pre-check at the HTTP boundary so a malformed
+	// agent_id surfaces 404 here (not an opaque service error from
+	// inside the service's own re-check).
 	if _, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
 		ID:          agentUUID,
 		WorkspaceID: wsUUID,
@@ -366,120 +270,88 @@ func (h *Handler) StartLarkInstall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "agent not found in this workspace")
 		return
 	}
-	installerUUID, ok := parseUUIDOrBadRequest(w, userID, "user id")
+	initiatorUUID, ok := parseUUIDOrBadRequest(w, userID, "user id")
 	if !ok {
 		return
 	}
-	res, err := h.LarkOAuth.StartInstall(lark.StartInstallParams{
+
+	res, err := h.LarkRegistration.BeginInstall(r.Context(), lark.BeginInstallParams{
 		WorkspaceID: wsUUID,
 		AgentID:     agentUUID,
-		InitiatorID: installerUUID,
+		InitiatorID: initiatorUUID,
 	})
 	if err != nil {
-		if errors.Is(err, lark.ErrOAuthNotConfigured) {
-			writeJSON(w, http.StatusOK, StartLarkInstallResponse{Configured: false})
+		writeError(w, http.StatusBadGateway, "failed to start install: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, BeginLarkInstallResponse{
+		SessionID:           res.SessionID,
+		QRCodeURL:           res.QRCodeURL,
+		ExpiresInSeconds:    res.ExpiresInSeconds,
+		PollIntervalSeconds: res.PollIntervalSeconds,
+	})
+}
+
+// LarkInstallStatusResponse is the polling payload. `status` is one
+// of "pending" | "success" | "error"; on success `installation_id`
+// is populated, on error `error_reason` is a stable code (see
+// lark.RegistrationReason*).
+type LarkInstallStatusResponse struct {
+	Status         string `json:"status"`
+	InstallationID string `json:"installation_id,omitempty"`
+	ErrorReason    string `json:"error_reason,omitempty"`
+	ErrorMessage   string `json:"error_message,omitempty"`
+}
+
+// GetLarkInstallStatus (GET /api/workspaces/{id}/lark/install/{sessionId}/status)
+// returns the current state of an in-flight install session. Admin-
+// only at the router. Unknown / cross-workspace / GC'd sessions return
+// 404 — the frontend treats it as "session lost, please restart".
+//
+// On success this handler does NOT clean up the session — the
+// frontend may poll once more after the dialog closes to confirm
+// before the in-process GC sweep retires the entry; reading is
+// idempotent.
+func (h *Handler) GetLarkInstallStatus(w http.ResponseWriter, r *http.Request) {
+	if h.LarkRegistration == nil {
+		writeError(w, http.StatusServiceUnavailable, "lark install not configured")
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workspace id")
+	if !ok {
+		return
+	}
+	sessionID := strings.TrimSpace(chi.URLParam(r, "sessionId"))
+	if sessionID == "" {
+		writeError(w, http.StatusBadRequest, "session id is required")
+		return
+	}
+	state, err := h.LarkRegistration.GetSession(wsUUID, sessionID)
+	if err != nil {
+		if errors.Is(err, lark.ErrRegistrationSessionNotFound) {
+			writeError(w, http.StatusNotFound, "install session not found")
 			return
 		}
-		writeError(w, http.StatusInternalServerError, "failed to start install")
+		writeError(w, http.StatusInternalServerError, "failed to load install session")
 		return
 	}
-	writeJSON(w, http.StatusOK, StartLarkInstallResponse{URL: res.URL, Configured: true})
-}
-
-// LarkInstallCallback (GET /api/lark/install/callback) is the redirect
-// destination Lark calls after a user authorizes the install. It is
-// outside the workspace-scoped group on purpose — the state token IS
-// the workspace credential here, the user may not currently have a
-// session header attached to this request, and the callback always
-// finishes with a frontend redirect (not a JSON body). Bouncing to
-// the frontend Settings → Lark tab matches the GitHub callback's
-// behavior and lets the existing settings page render success / error
-// copy without polling.
-func (h *Handler) LarkInstallCallback(w http.ResponseWriter, r *http.Request) {
-	frontend := strings.TrimSpace(os.Getenv("FRONTEND_ORIGIN"))
-	if frontend == "" {
-		frontend = "http://localhost:3000"
+	resp := LarkInstallStatusResponse{
+		Status:       string(state.Status),
+		ErrorReason:  state.ErrorReason,
+		ErrorMessage: state.ErrorMessage,
 	}
-	settingsURL := strings.TrimRight(frontend, "/") + "/settings?tab=lark"
-
-	if h.LarkInstallations == nil || h.LarkOAuth == nil {
-		http.Redirect(w, r, settingsURL+"&lark_error=not_configured", http.StatusFound)
-		return
+	if state.InstallationID.Valid {
+		resp.InstallationID = uuidToString(state.InstallationID)
+		// Successful install — emit the lark_installation:created
+		// event so listeners (Settings tab, agent detail page) refresh
+		// without waiting for the frontend's cache invalidation.
+		// Idempotent: the event handler keys on installation_id, and
+		// a duplicate emit is a no-op refresh.
+		if state.Status == lark.RegistrationStatusSuccess {
+			h.publish(protocol.EventLarkInstallationCreated, uuidToString(wsUUID), "system", "", map[string]any{
+				"installation_id": resp.InstallationID,
+			})
+		}
 	}
-
-	q := r.URL.Query()
-	code := q.Get("code")
-	state := q.Get("state")
-	res, err := h.LarkOAuth.HandleCallback(r.Context(), lark.CallbackParams{
-		Code:  code,
-		State: state,
-	})
-	if err != nil {
-		reason := larkOAuthErrorReason(err)
-		slog.Warn("lark: oauth callback failed", "error", err, "reason", reason)
-		http.Redirect(w, r, settingsURL+"&lark_error="+url.QueryEscape(reason), http.StatusFound)
-		return
-	}
-
-	h.publish(protocol.EventLarkInstallationCreated, uuidToString(res.WorkspaceID), "system", "", map[string]any{
-		"installation_id": uuidToString(res.InstallationID),
-		"agent_id":        uuidToString(res.AgentID),
-	})
-
-	http.Redirect(w, r, settingsURL+"&lark_installed=1&installation="+url.QueryEscape(uuidToString(res.InstallationID)), http.StatusFound)
-}
-
-func larkOAuthErrorReason(err error) string {
-	switch {
-	case errors.Is(err, lark.ErrOAuthNotConfigured):
-		return "not_configured"
-	case errors.Is(err, lark.ErrAPIClientNotConfigured):
-		// Reached when the APIClient's ExchangeOAuthCode still
-		// returns ErrAPIClientNotConfigured (PersonalAgent install
-		// shape not yet implemented). StartLarkInstall's
-		// SupportsOAuthInstall gate should prevent users from
-		// landing here through the normal flow, but a raw callback
-		// hit (state replay, manually opened URL) can still trigger
-		// it. Surface a distinct reason so the frontend can render
-		// "scan-to-bind not yet available" instead of a generic
-		// internal_error that looks like a transient outage.
-		return "oauth_exchange_unimplemented"
-	case errors.Is(err, lark.ErrMissingCode):
-		return "missing_code"
-	case errors.Is(err, lark.ErrInvalidState):
-		return "invalid_state"
-	case errors.Is(err, lark.ErrStateExpired):
-		return "state_expired"
-	case errors.Is(err, lark.ErrExchangeMissingInstallerOpenID):
-		// /authen/v1/user_info returned without an open_id — rare,
-		// but distinct so the UI can render "Lark did not return
-		// your identity" instead of a generic install failure.
-		return "exchange_incomplete"
-	case errors.Is(err, lark.ErrInstallationNotProvisioned):
-		// No lark_installation row exists yet for (workspace,
-		// agent). Identity-only OAuth means the admin must
-		// provision via the manual-paste route first; the UI maps
-		// this reason to "ask your admin to add the bot
-		// credentials before scanning".
-		return "installation_not_provisioned"
-	case errors.Is(err, lark.ErrInstallationRevoked):
-		// Installation row exists but its status is `revoked`.
-		// Distinct from not_provisioned so the UI can render
-		// "this installation was revoked — re-provision before
-		// scanning".
-		return "installation_revoked"
-	case errors.Is(err, lark.ErrBindingAlreadyAssigned):
-		// Installer auto-bind tripped the same-installation-different-user
-		// guard — surface a dedicated code so the frontend can render
-		// "this Lark account is bound to a different Multica user"
-		// rather than a generic install failure.
-		return "installer_already_bound_elsewhere"
-	case errors.Is(err, lark.ErrBindingNotWorkspaceMember):
-		// Installer is no longer (or never was) a member of the
-		// target workspace. Distinct code so the UI can ask them to
-		// re-verify their workspace membership before retrying.
-		return "installer_not_workspace_member"
-	default:
-		return "internal_error"
-	}
+	writeJSON(w, http.StatusOK, resp)
 }

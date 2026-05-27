@@ -107,24 +107,26 @@ type Handler struct {
 	WebhookRateLimiter    WebhookRateLimiter
 	WebhookIPRateLimiter  WebhookRateLimiter
 	CloudRuntime          cloudRuntimeProxy
-	// Lark integration. Both are nil when the Lark master key
+	// Lark integration. All three are nil when the Lark master key
 	// (MULTICA_LARK_SECRET_KEY) is unset; the corresponding HTTP
 	// handlers return 503 in that case so a misconfigured self-host
 	// deployment surfaces a clear error instead of silently using a
 	// zero key. Wired in cmd/server/router.go after handler.New.
 	LarkInstallations *lark.InstallationService
 	LarkBindingTokens *lark.BindingTokenService
-	// LarkOAuth is nil when MULTICA_LARK_OAUTH_APP_ID (and friends) are
-	// not set. The manual-install HTTP path keeps working without it —
-	// only the new install start / callback endpoints short-circuit to
-	// 503 when LarkOAuth is nil.
-	LarkOAuth *lark.OAuthService
+	// LarkRegistration owns the device-flow install lifecycle: begin
+	// a registration session against accounts.feishu.cn, poll, and
+	// on success write lark_installation + the installer's
+	// lark_user_binding in one DB transaction. Nil when either the
+	// at-rest key is unset or the real Lark HTTP APIClient is not
+	// wired (the stub cannot complete the post-poll GetBotInfo call).
+	LarkRegistration *lark.RegistrationService
 	// LarkAPIClient is the live transport that backs SendInteractiveCard,
-	// PatchInteractiveCard, SendBindingPromptCard, ExchangeOAuthCode.
-	// It is `lark.NewStubAPIClient(...)` until the real Lark HTTP client
-	// is wired (Phase-2 follow-up); the UI hides install entry points
-	// while IsConfigured()==false so users do not land in a flow that
-	// is guaranteed to fail at the exchange step.
+	// PatchInteractiveCard, SendBindingPromptCard, GetBotInfo. It is
+	// `lark.NewStubAPIClient(...)` until the real Lark HTTP client is
+	// wired; the UI hides install entry points while IsConfigured()
+	// is false so users do not land in a flow that is guaranteed to
+	// fail at the bot-info step.
 	LarkAPIClient lark.APIClient
 	cfg           Config
 }

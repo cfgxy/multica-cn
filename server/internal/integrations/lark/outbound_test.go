@@ -77,8 +77,7 @@ type fakeAPIClient struct {
 	bindingSent []BindingPromptParams
 }
 
-func (f *fakeAPIClient) IsConfigured() bool        { return true }
-func (f *fakeAPIClient) SupportsOAuthInstall() bool { return true }
+func (f *fakeAPIClient) IsConfigured() bool { return true }
 
 func (f *fakeAPIClient) SendInteractiveCard(ctx context.Context, p SendCardParams) (string, error) {
 	f.mu.Lock()
@@ -98,8 +97,8 @@ func (f *fakeAPIClient) SendBindingPromptCard(ctx context.Context, p BindingProm
 	f.bindingSent = append(f.bindingSent, p)
 	return nil
 }
-func (f *fakeAPIClient) ExchangeOAuthCode(ctx context.Context, code, redirectURI string) (OAuthExchangeResult, error) {
-	return OAuthExchangeResult{}, nil
+func (f *fakeAPIClient) GetBotInfo(ctx context.Context, creds InstallationCredentials) (BotInfo, error) {
+	return BotInfo{}, nil
 }
 
 func newTestPatcher(t *testing.T) (*Patcher, *fakePatcherQueries, *fakeAPIClient) {
