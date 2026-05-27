@@ -62,7 +62,12 @@ description: 给项目挂上有类型的指针（GitHub 仓库、本地目录，
 | 可在哪台机器跑 | 任意守护进程 | 仅绑定的那一台 |
 | 磁盘占用 | 每条任务一个 worktree | 0 —— 用你已有的目录 |
 
-如果"重新 clone"是最贵的步骤，选 `local_directory`；如果你需要同一仓库上多条任务并行，继续用 `github_repo`。
+下面两种场景下推荐选 `local_directory`：
+
+1. **重新 clone 的成本过高** —— 几十 GB 的游戏 checkout、带大量 LFS 资源的 monorepo、或者任何场景下 `git clone` 的耗时会盖过实际工作量。你拿并发能力换"零 clone"的运行。
+2. **改动很细碎，需要频繁在本地 review** —— 你在反复打磨某个组件，几分钟就要切回编辑器看一眼智能体改了什么；与其每次去 `~/multica_workspaces/` 翻一个新 worktree，不如让它就在你已有的 checkout 里干活。
+
+两种情况下你接受的取舍是同一个：**当前版本没有任何文件级的写入锁**。"同一目录上的任务串行执行"这一道闸是唯一防止两个 issue 的智能体同时改同一份文件的保护。如果你把两个 issue 的智能体都指向同一个 `local_directory`，它们的任务会排队、而不是并行 —— 这是有意的。如果需要在同一份代码上真正的并行，请继续用 `github_repo`。
 
 ### 添加本地目录
 
@@ -106,6 +111,15 @@ multica project resource update <project-id> <resource-id> \
 同一项目上 **每台守护进程最多只能绑一个 `local_directory`**。在同一台机器上想再加一条会被 API 用 `409` 拒绝；桌面端的按钮在达到上限时会自动隐藏，并在 tooltip 里说明原因。
 
 不同的守护进程互不影响 —— 一个共享的项目可以为每个队友的机器各绑一个 `local_directory`，把同一个项目挂到不同主机上的不同目录。守护进程领任务时会挑跟自己 ID 匹配的那一行，其它的忽略。
+
+### 混用资源类型，以及多个 `local_directory` 资源
+
+实际会碰到两种跨资源的组合：
+
+- **同一个项目同时挂 `github_repo` 和 `local_directory`。** 在拥有匹配 `local_directory` 绑定的那台守护进程上，本地目录 **优先**：智能体跑在你的目录里，项目的 `github_repo` 这次不会被 clone。`github_repo` 的 URL 仍然会出现在 `.multica/project/resources.json` 和智能体的 `## Repositories` 段里供参考，但智能体真正在编辑的工作树是你的本地目录，不是 worktree。在 **没有** 匹配 `local_directory` 行的其他守护进程上（不同机器、或者那位队友还没挂本地目录），任务按原本的 `github_repo` worktree 流程走。本质上 `local_directory` 是某台守护进程对 clone 路径的一个覆盖。
+- **同一个项目挂两个 `local_directory`。** 每个 `local_directory` 只能绑一台守护进程，所以这只会发生在两台不同机器之间（同一台机器上想加第二条会被 API 当场拒掉，见上一节）。任务的去向由智能体 runtime 绑定决定，不是由"哪台守护进程有本地目录"决定 —— 任务会落到承载这条智能体 runtime 的那台守护进程上，由它挑出匹配自己 ID 的那一行、忽略其他行。这里没有负载均衡：如果你想让某台机器跑某条任务，请把任务派给绑在那台机器 runtime 上的智能体。
+
+如果某台守护进程没有匹配这个项目的 `local_directory` 行，**不会**因为别处有人绑了就被拦下 —— 它的任务会照常走项目里的其他资源（一般就是 `github_repo` 那条 fallback 路径）。`local_directory` 只对它绑定的那台守护进程生效。
 
 ### 任务在本地目录里如何运行
 

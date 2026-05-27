@@ -62,7 +62,12 @@ The trade-off vs. `github_repo` is intentional: only the bound daemon can pick u
 | Where it can run | Any daemon | Exactly one daemon (the one bound) |
 | Disk footprint | One worktree per task | Zero overhead — your existing folder |
 
-Pick `local_directory` when re-cloning is the expensive part. Stay on `github_repo` when you want multiple agents working in parallel.
+Pick `local_directory` when **either** of these matches:
+
+1. **Re-cloning is prohibitively expensive** — a multi-gigabyte game checkout, a monorepo with heavy LFS assets, or anything where the per-task `git clone` would dominate the actual work. You trade concurrency for a clone-free run.
+2. **Your changes are fine-grained and you want to review them locally as they happen** — you're iterating on a single component, you want to flip between the agent's edits and your editor every few minutes, and you'd rather have your existing checkout be the source of truth than a per-task worktree you have to dig out of `~/multica_workspaces/`.
+
+The trade-off you accept in both cases is the same: **this version ships no file-level write lock.** The per-directory serial gate (one task at a time on the same folder) is the only protection against agents in two different issues touching the same files at the same time. If you point two issues' agents at the same `local_directory`, their tasks queue rather than parallelise — that's by design. If you need real parallelism on the same codebase, stay on `github_repo`.
 
 ### Attaching a local directory
 
@@ -106,6 +111,15 @@ The blacklist is intentionally aggressive — picking your home directory would 
 A project may hold **at most one `local_directory` per daemon**. Attempting to add a second one on the same daemon returns a `409` from the API; the Desktop button hides itself when the limit is already reached and surfaces a tooltip explaining why.
 
 Different daemons are independent — a shared project can have one `local_directory` per teammate's machine, each binding the same project to a different folder on a different host. When the daemon claims a task, it picks the row that matches its own ID and ignores the rest.
+
+### Mixing resource types, and multiple `local_directory` resources
+
+Two cross-resource configurations show up in practice:
+
+- **`github_repo` + `local_directory` on the same project.** On the daemon that has a matching `local_directory` binding, the local directory **takes precedence**: the agent runs in your folder and the project's `github_repo` is not cloned for that task. The `github_repo` URL still appears in `.multica/project/resources.json` and in the agent's `## Repositories` section for reference — but the working tree the agent edits is your local one, not a worktree. On a daemon that has **no** `local_directory` row for this project (different machine, or before that teammate attached one), the task falls back to the usual `github_repo` worktree flow. Effectively the local directory is a per-daemon override of the clone path.
+- **Two `local_directory` resources on the same project.** Because each `local_directory` is bound to exactly one daemon, this only happens across two different machines (the API rejects two on the same daemon at attach time, see above). Tasks are routed by the agent's runtime assignment, not by which daemon has a local directory: a task lands on the daemon that owns the receiving agent's runtime, that daemon picks the `local_directory` row matching its own ID, and ignores the rest. There is no load-balancing — if you want a specific machine to run a task, dispatch the agent that's bound to that machine's runtime.
+
+A daemon that has no `local_directory` row for a project that has one bound elsewhere is **not** blocked — its tasks simply proceed via the project's other resources (typically the `github_repo` fallback). The `local_directory` only matters for the daemon it's bound to.
 
 ### Running tasks against a local directory
 
