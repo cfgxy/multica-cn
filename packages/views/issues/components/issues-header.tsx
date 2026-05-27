@@ -19,6 +19,7 @@ import {
   User,
   UserMinus,
   UserPen,
+  Waves,
 } from "lucide-react";
 import { Button } from "@multica/ui/components/ui/button";
 import {
@@ -28,6 +29,8 @@ import {
   DropdownMenuGroup,
   DropdownMenuItem,
   DropdownMenuCheckboxItem,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuSub,
@@ -56,10 +59,12 @@ import { LabelChip } from "../../labels/label-chip";
 import {
   SORT_OPTIONS,
   GROUPING_OPTIONS,
+  SWIMLANE_GROUPINGS,
   CARD_PROPERTY_OPTIONS,
   type ActorFilterValue,
 } from "@multica/core/issues/stores/view-store";
 import { useViewStore, useViewStoreApi } from "@multica/core/issues/stores/view-store-context";
+import type { SortField, IssueGrouping, SwimlaneGrouping, ViewMode } from "@multica/core/issues/stores/view-store";
 import {
   useIssuesScopeStore,
   type IssuesScope,
@@ -598,6 +603,7 @@ export function IssueDisplayControls({
   const sortBy = useViewStore((s) => s.sortBy);
   const sortDirection = useViewStore((s) => s.sortDirection);
   const grouping = useViewStore((s) => s.grouping);
+  const swimlaneGrouping = useViewStore((s) => s.swimlaneGrouping);
   const cardProperties = useViewStore((s) => s.cardProperties);
   const act = useViewStoreApi().getState();
 
@@ -627,6 +633,11 @@ export function IssueDisplayControls({
     status: "group_status",
     assignee: "group_assignee",
   };
+  const SWIMLANE_GROUPING_LABEL_KEY: Record<SwimlaneGrouping, "group_parent" | "group_project" | "group_assignee"> = {
+    parent: "group_parent",
+    project: "group_project",
+    assignee: "group_assignee",
+  };
   const CARD_PROPERTY_LABEL_KEY: Record<typeof CARD_PROPERTY_OPTIONS[number]["key"], "card_priority" | "card_description" | "card_assignee" | "card_start_date" | "card_due_date" | "card_project" | "card_labels" | "card_child_progress"> = {
     priority: "card_priority",
     description: "card_description",
@@ -639,6 +650,7 @@ export function IssueDisplayControls({
   };
   const sortLabel = t(($) => $.display[SORT_LABEL_KEY[sortBy]]);
   const groupingLabel = t(($) => $.display[GROUPING_LABEL_KEY[grouping]]);
+  const swimlaneGroupingLabel = t(($) => $.display[SWIMLANE_GROUPING_LABEL_KEY[swimlaneGrouping]]);
 
   return (
     <div className="flex items-center gap-1">
@@ -895,14 +907,48 @@ export function IssueDisplayControls({
                       }
                     />
                     <DropdownMenuContent align="start" className="w-auto">
-                      {GROUPING_OPTIONS.map((opt) => (
-                        <DropdownMenuItem
-                          key={opt.value}
-                          onClick={() => act.setGrouping(opt.value)}
+                      <DropdownMenuRadioGroup value={grouping} onValueChange={(v) => act.setGrouping(v as IssueGrouping)}>
+                        {GROUPING_OPTIONS.map((opt) => (
+                          <DropdownMenuRadioItem key={opt.value} value={opt.value}>
+                            {t(($) => $.display[GROUPING_LABEL_KEY[opt.value]])}
+                          </DropdownMenuRadioItem>
+                        ))}
+                      </DropdownMenuRadioGroup>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                </div>
+              </div>
+            )}
+            {viewMode === "swimlane" && (
+              <div className="border-b px-3 py-2.5">
+                <span className="text-xs font-medium text-muted-foreground">
+                  {t(($) => $.display.grouping_section)}
+                </span>
+                <div className="mt-2">
+                  <DropdownMenu>
+                    <DropdownMenuTrigger
+                      render={
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="w-full justify-between text-xs"
                         >
-                          {t(($) => $.display[GROUPING_LABEL_KEY[opt.value]])}
-                        </DropdownMenuItem>
-                      ))}
+                          {swimlaneGroupingLabel}
+                          <ChevronDown className="size-3 text-muted-foreground" />
+                        </Button>
+                      }
+                    />
+                    <DropdownMenuContent align="start" className="w-auto">
+                      <DropdownMenuRadioGroup
+                        value={swimlaneGrouping}
+                        onValueChange={(v) => act.setSwimlaneGrouping(v as SwimlaneGrouping)}
+                      >
+                        {SWIMLANE_GROUPINGS.map((value) => (
+                          <DropdownMenuRadioItem key={value} value={value}>
+                            {t(($) => $.display[SWIMLANE_GROUPING_LABEL_KEY[value]])}
+                          </DropdownMenuRadioItem>
+                        ))}
+                      </DropdownMenuRadioGroup>
                     </DropdownMenuContent>
                   </DropdownMenu>
                 </div>
@@ -928,14 +974,13 @@ export function IssueDisplayControls({
                     }
                   />
                   <DropdownMenuContent align="start" className="w-auto">
-                    {SORT_OPTIONS.map((opt) => (
-                      <DropdownMenuItem
-                        key={opt.value}
-                        onClick={() => act.setSortBy(opt.value)}
-                      >
-                        {t(($) => $.display[SORT_LABEL_KEY[opt.value]])}
-                      </DropdownMenuItem>
-                    ))}
+                    <DropdownMenuRadioGroup value={sortBy} onValueChange={(v) => act.setSortBy(v as SortField)}>
+                      {SORT_OPTIONS.map((opt) => (
+                        <DropdownMenuRadioItem key={opt.value} value={opt.value}>
+                          {t(($) => $.display[SORT_LABEL_KEY[opt.value]])}
+                        </DropdownMenuRadioItem>
+                      ))}
+                    </DropdownMenuRadioGroup>
                   </DropdownMenuContent>
                 </DropdownMenu>
                 {sortBy !== "position" && (
@@ -993,6 +1038,8 @@ export function IssueDisplayControls({
                       <Button variant="outline" size="sm" className="gap-1 text-muted-foreground">
                         {viewMode === "board" ? (
                           <Columns3 className="size-3.5" />
+                        ) : viewMode === "swimlane" ? (
+                          <Waves className="size-3.5" />
                         ) : viewMode === "gantt" && allowGantt ? (
                           <ChartGantt className="size-3.5" />
                         ) : (
@@ -1000,6 +1047,8 @@ export function IssueDisplayControls({
                         )}
                         {viewMode === "board"
                           ? t(($) => $.view.board)
+                          : viewMode === "swimlane"
+                          ? t(($) => $.view.swimlane)
                           : viewMode === "gantt" && allowGantt
                           ? t(($) => $.view.gantt)
                           : t(($) => $.view.list)}
@@ -1011,6 +1060,8 @@ export function IssueDisplayControls({
               <TooltipContent side="bottom">
                 {viewMode === "board"
                   ? t(($) => $.view.tooltip_board)
+                  : viewMode === "swimlane"
+                  ? t(($) => $.view.tooltip_swimlane)
                   : viewMode === "gantt" && allowGantt
                   ? t(($) => $.view.tooltip_gantt)
                   : t(($) => $.view.tooltip_list)}
@@ -1019,21 +1070,27 @@ export function IssueDisplayControls({
             <DropdownMenuContent align="end" className="w-auto">
               <DropdownMenuGroup>
                 <DropdownMenuLabel>{t(($) => $.view.section)}</DropdownMenuLabel>
-                <DropdownMenuItem onClick={() => act.setViewMode("board")}>
+              </DropdownMenuGroup>
+              <DropdownMenuRadioGroup value={viewMode} onValueChange={(v) => act.setViewMode(v as ViewMode)}>
+                <DropdownMenuRadioItem value="board">
                   <Columns3 />
                   {t(($) => $.view.board)}
-                </DropdownMenuItem>
-                <DropdownMenuItem onClick={() => act.setViewMode("list")}>
+                </DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="list">
                   <List />
                   {t(($) => $.view.list)}
-                </DropdownMenuItem>
+                </DropdownMenuRadioItem>
+                <DropdownMenuRadioItem value="swimlane">
+                  <Waves />
+                  {t(($) => $.view.swimlane)}
+                </DropdownMenuRadioItem>
                 {allowGantt && (
-                  <DropdownMenuItem onClick={() => act.setViewMode("gantt")}>
+                  <DropdownMenuRadioItem value="gantt">
                     <ChartGantt />
                     {t(($) => $.view.gantt)}
-                  </DropdownMenuItem>
+                  </DropdownMenuRadioItem>
                 )}
-              </DropdownMenuGroup>
+              </DropdownMenuRadioGroup>
             </DropdownMenuContent>
           </DropdownMenu>
         )}

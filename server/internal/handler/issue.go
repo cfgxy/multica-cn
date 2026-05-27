@@ -1544,6 +1544,75 @@ func (h *Handler) ListChildIssues(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// Cap on the number of parents we'll fan-out children for in one request.
+// Swimlane's visible-lane count is naturally bounded by what fits on screen
+// (typically <= 50), but cap explicitly so a malicious caller can't ANY()
+// across the whole workspace's issue set in a single round trip.
+const listChildrenByParentsLimit = 200
+
+// ListChildrenByParents returns the union of children for the
+// provided parent ids. Replaces the N-call fan-out Swimlane would otherwise
+// have to make on mount (one /issues/:id/children per visible parent lane).
+//
+// Workspace scope is enforced at the query level — any parent_id that doesn't
+// belong to the caller's workspace simply yields zero children, so callers
+// can't probe parents across workspace boundaries.
+func (h *Handler) ListChildrenByParents(w http.ResponseWriter, r *http.Request) {
+	workspaceID := h.resolveWorkspaceID(r)
+	wsUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace_id")
+	if !ok {
+		return
+	}
+
+	raw := r.URL.Query().Get("parent_ids")
+	if raw == "" {
+		// Empty input is a no-op response (not an error) — simplifies the
+		// client which calls this unconditionally on Swimlane mount even
+		// when there are zero visible parent lanes.
+		writeJSON(w, http.StatusOK, map[string]any{"issues": []IssueResponse{}})
+		return
+	}
+
+	parts := strings.Split(raw, ",")
+	if len(parts) > listChildrenByParentsLimit {
+		writeError(w, http.StatusBadRequest, "too many parent_ids")
+		return
+	}
+	parentIDs := make([]pgtype.UUID, 0, len(parts))
+	for _, s := range parts {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		id, ok := parseUUIDOrBadRequest(w, s, "parent_ids")
+		if !ok {
+			return
+		}
+		parentIDs = append(parentIDs, id)
+	}
+	if len(parentIDs) == 0 {
+		writeJSON(w, http.StatusOK, map[string]any{"issues": []IssueResponse{}})
+		return
+	}
+
+	children, err := h.Queries.ListChildrenByParents(r.Context(), db.ListChildrenByParentsParams{
+		WorkspaceID: wsUUID,
+		ParentIds:   parentIDs,
+	})
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list child issues")
+		return
+	}
+	prefix := h.getIssuePrefix(r.Context(), wsUUID)
+	resp := make([]IssueResponse, len(children))
+	for i, child := range children {
+		resp[i] = issueToResponse(child, prefix)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"issues": resp,
+	})
+}
+
 func (h *Handler) ChildIssueProgress(w http.ResponseWriter, r *http.Request) {
 	wsID := h.resolveWorkspaceID(r)
 	wsUUID, ok := parseUUIDOrBadRequest(w, wsID, "workspace_id")
@@ -1592,11 +1661,18 @@ func (h *Handler) ChildIssueProgress(w http.ResponseWriter, r *http.Request) {
 // the agent's `multica issue create` invocation passes `--project <uuid>`
 // instead of letting it default. The frontend remembers the user's last
 // pick per workspace, so frequent users skip retyping "in project X".
+//
+// ParentIssueID is optional and is set by the "Add sub issue" entry point
+// when the modal is opened from an existing issue. The agent passes it
+// through as `--parent <uuid>` so the new issue is filed as a sub-issue,
+// keeping the sub-issue intent of the entry point regardless of whether
+// the user submits via manual or agent mode.
 type QuickCreateIssueRequest struct {
-	AgentID   string `json:"agent_id,omitempty"`
-	SquadID   string `json:"squad_id,omitempty"`
-	Prompt    string `json:"prompt"`
-	ProjectID string `json:"project_id,omitempty"`
+	AgentID       string `json:"agent_id,omitempty"`
+	SquadID       string `json:"squad_id,omitempty"`
+	Prompt        string `json:"prompt"`
+	ProjectID     string `json:"project_id,omitempty"`
+	ParentIssueID string `json:"parent_issue_id,omitempty"`
 }
 
 // QuickCreateIssueResponse echoes the queued task id so the frontend can
@@ -1743,7 +1819,28 @@ func (h *Handler) QuickCreateIssue(w http.ResponseWriter, r *http.Request) {
 		projectUUID = pid
 	}
 
-	task, err := h.TaskService.EnqueueQuickCreateTask(r.Context(), wsUUID, requesterUUID, agentUUID, squadUUID, prompt, projectUUID)
+	// Optional parent_issue_id — validate same-workspace membership just like
+	// the regular CreateIssue path. Frontend seeds this from the "Add sub
+	// issue" entry, but the handler re-checks so a forged request can't
+	// smuggle a foreign parent UUID through.
+	var parentIssueUUID pgtype.UUID
+	if strings.TrimSpace(req.ParentIssueID) != "" {
+		pid, ok := parseUUIDOrBadRequest(w, req.ParentIssueID, "parent_issue_id")
+		if !ok {
+			return
+		}
+		parent, err := h.Queries.GetIssueInWorkspace(r.Context(), db.GetIssueInWorkspaceParams{
+			ID:          pid,
+			WorkspaceID: wsUUID,
+		})
+		if err != nil || !parent.ID.Valid {
+			writeError(w, http.StatusBadRequest, "parent issue not found in this workspace")
+			return
+		}
+		parentIssueUUID = pid
+	}
+
+	task, err := h.TaskService.EnqueueQuickCreateTask(r.Context(), wsUUID, requesterUUID, agentUUID, squadUUID, prompt, projectUUID, parentIssueUUID)
 	if err != nil {
 		slog.Warn("quick-create enqueue failed", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to enqueue quick-create task")
@@ -2330,11 +2427,19 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Trigger the assigned agent when a member moves an issue out of backlog.
-	// Backlog acts as a parking lot — moving to an active status signals the
-	// issue is ready for work.
-	if statusChanged && !assigneeChanged && actorType == "member" &&
-		prevIssue.Status == "backlog" && issue.Status != "done" && issue.Status != "cancelled" {
+	// Trigger the assigned agent when an issue moves out of backlog. Backlog
+	// acts as a parking lot — moving to an active status signals the issue is
+	// ready for work. Agent actors are allowed here so the documented
+	// serial sub-task workflow works (parent agent finishes Step 1, then
+	// promotes Step 2 from backlog→todo, regardless of who Step 2 is
+	// assigned to). The only excluded case is the real self-loop: an agent
+	// promoting the same issue its current task is running on. Same-agent,
+	// cross-issue handoff (Agent A finishing one task and promoting another
+	// issue assigned to A) must still fire — that is the documented serial
+	// chain.
+	if statusChanged && !assigneeChanged &&
+		prevIssue.Status == "backlog" && issue.Status != "done" && issue.Status != "cancelled" &&
+		!h.isAgentRunningOnIssue(r, actorType, issue) {
 		if h.isAgentAssigneeReady(r.Context(), issue) {
 			h.TaskService.EnqueueTaskForIssue(r.Context(), issue)
 		}
@@ -2447,8 +2552,21 @@ func (h *Handler) shouldEnqueueAgentTask(ctx context.Context, issue db.Issue) bo
 // trigger the assigned agent. Fires for any status — comments are
 // conversational and can happen at any stage, including after completion
 // (e.g. follow-up questions on a done issue).
-func (h *Handler) shouldEnqueueOnComment(ctx context.Context, issue db.Issue) bool {
-	if !h.isAgentAssigneeReady(ctx, issue) {
+//
+// Mirrors the private-agent gate that enqueueMentionedAgentTasks applies on the
+// @mention path: once an owner/admin assigns a private agent to an issue, the
+// agent's UUID is "welded" onto the issue and remains visible to every member
+// who can view it. Without this check any of those members could dispatch a new
+// task to the private agent simply by commenting (#3300).
+func (h *Handler) shouldEnqueueOnComment(ctx context.Context, issue db.Issue, actorType, actorID string) bool {
+	if !issue.AssigneeType.Valid || issue.AssigneeType.String != "agent" || !issue.AssigneeID.Valid {
+		return false
+	}
+	agent, err := h.Queries.GetAgent(ctx, issue.AssigneeID)
+	if err != nil || !agent.RuntimeID.Valid || agent.ArchivedAt.Valid {
+		return false
+	}
+	if !h.canAccessPrivateAgent(ctx, agent, actorType, actorID, uuidToString(issue.WorkspaceID)) {
 		return false
 	}
 	// Coalescing queue: allow enqueue when a task is running (so the agent
@@ -2462,6 +2580,43 @@ func (h *Handler) shouldEnqueueOnComment(ctx context.Context, issue db.Issue) bo
 		return false
 	}
 	return true
+}
+
+// isAgentRunningOnIssue reports whether the calling agent's current task
+// (identified by X-Task-ID) is running for the exact issue being promoted.
+// That is the only true self-loop on backlog→active: the agent flipping
+// the same issue its own task is executing for would immediately re-enqueue
+// itself, complete the run, flip again, and so on.
+//
+// Same-agent cross-issue handoff (Agent A finishing a task on issue I1 then
+// promoting issue I2 — even when I2 is also assigned to A) is NOT a loop
+// and must fire; that is the documented serial sub-task chain. Member
+// actors never match.
+//
+// X-Task-ID is guaranteed to be present and consistent when actorType is
+// "agent": resolveActor demotes the actor to "member" otherwise (handler.go
+// resolveActor). We still recheck defensively — a future caller could pass
+// agent identity through a different path.
+func (h *Handler) isAgentRunningOnIssue(r *http.Request, actorType string, issue db.Issue) bool {
+	if actorType != "agent" {
+		return false
+	}
+	taskIDStr := r.Header.Get("X-Task-ID")
+	if taskIDStr == "" {
+		return false
+	}
+	taskUUID, err := util.ParseUUID(taskIDStr)
+	if err != nil {
+		return false
+	}
+	task, err := h.Queries.GetAgentTask(r.Context(), taskUUID)
+	if err != nil {
+		return false
+	}
+	if !task.IssueID.Valid {
+		return false
+	}
+	return uuidToString(task.IssueID) == uuidToString(issue.ID)
 }
 
 // isAgentAssigneeReady checks if an issue is assigned to an active agent
@@ -2758,9 +2913,13 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 
-		// Trigger agent when moving out of backlog (batch).
-		if statusChanged && !assigneeChanged && actorType == "member" &&
-			prevIssue.Status == "backlog" && issue.Status != "done" && issue.Status != "cancelled" {
+		// Trigger agent when moving out of backlog (batch). Mirrors the
+		// single-update path above — agent actors are allowed so serial
+		// sub-task chains work, and the same task-issue self-loop guard
+		// prevents an agent from re-triggering itself on the same issue.
+		if statusChanged && !assigneeChanged &&
+			prevIssue.Status == "backlog" && issue.Status != "done" && issue.Status != "cancelled" &&
+			!h.isAgentRunningOnIssue(r, actorType, issue) {
 			if h.isAgentAssigneeReady(r.Context(), issue) {
 				h.TaskService.EnqueueTaskForIssue(r.Context(), issue)
 			}

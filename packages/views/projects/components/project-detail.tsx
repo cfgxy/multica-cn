@@ -18,6 +18,7 @@ import {
   projectGanttIssuesOptions,
   childIssueProgressOptions,
   type AssigneeGroupedIssuesFilter,
+  type IssueSortParam,
   type MyIssuesFilter,
 } from "@multica/core/issues/queries";
 import { useUpdateIssue } from "@multica/core/issues/mutations";
@@ -41,6 +42,7 @@ import { IssuesHeader } from "../../issues/components/issues-header";
 import { BoardView } from "../../issues/components/board-view";
 import { ListView } from "../../issues/components/list-view";
 import { GanttView } from "../../issues/components/gantt-view";
+import { SwimLaneView } from "../../issues/components/swimlane-view";
 import { BatchActionToolbar } from "../../issues/components/batch-action-toolbar";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Button } from "@multica/ui/components/ui/button";
@@ -115,6 +117,7 @@ function ProjectIssuesContent({
   assigneeGroupFilter,
   scope,
   filter,
+  sort,
   ganttIssues,
 }: {
   projectId: string;
@@ -124,6 +127,7 @@ function ProjectIssuesContent({
   assigneeGroupFilter?: AssigneeGroupedIssuesFilter;
   scope: string;
   filter: MyIssuesFilter;
+  sort?: IssueSortParam;
   ganttIssues: Issue[];
 }) {
   const { t } = useT("projects");
@@ -139,6 +143,12 @@ function ProjectIssuesContent({
   const issues = useMemo(
     () => filterIssues(projectIssues, { statusFilters, priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, projectFilters: [], includeNoProject: false, labelFilters }),
     [projectIssues, statusFilters, priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, labelFilters],
+  );
+
+  // Status-unfiltered companion for Swimlane.
+  const swimlaneIssues = useMemo(
+    () => filterIssues(projectIssues, { statusFilters: [], priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, projectFilters: [], includeNoProject: false, labelFilters }),
+    [projectIssues, priorityFilters, assigneeFilters, includeNoAssignee, creatorFilters, labelFilters],
   );
 
   // Gantt rides its own dedicated query (scheduled-only) so it doesn't have
@@ -164,7 +174,7 @@ function ProjectIssuesContent({
 
   const updateIssueMutation = useUpdateIssue();
   const handleMoveIssue = useCallback(
-    (issueId: string, updates: Pick<UpdateIssueRequest, "status" | "assignee_type" | "assignee_id" | "position">, onSettled?: () => void) => {
+    (issueId: string, updates: Pick<UpdateIssueRequest, "status" | "assignee_type" | "assignee_id" | "position" | "parent_issue_id">, onSettled?: () => void) => {
       updateIssueMutation.mutate(
         { id: issueId, ...updates },
         {
@@ -181,12 +191,12 @@ function ProjectIssuesContent({
     [updateIssueMutation, t],
   );
 
-  // Gantt has its own data source (scheduled-only) and its own empty axis —
-  // we never short-circuit it here, otherwise an unscheduled-but-non-empty
-  // project would surface a misleading "no issues" CTA. For Board/List the
-  // bucketed cache really is the ground truth, so an empty result means an
-  // empty project.
-  if (viewMode !== "gantt" && projectIssues.length === 0) {
+  // Gantt and Swimlane have their own data sources and empty states —
+  // we never short-circuit them here, otherwise an unscheduled/unparented
+  // but non-empty project would surface a misleading "no issues" CTA.
+  // For Board/List the bucketed cache really is the ground truth,
+  // so an empty result means an empty project.
+  if (viewMode !== "gantt" && viewMode !== "swimlane" && projectIssues.length === 0) {
     return (
       <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-muted-foreground">
         <ListTodo className="h-10 w-10 text-muted-foreground/40" />
@@ -221,6 +231,7 @@ function ProjectIssuesContent({
           childProgressMap={childProgressMap}
           myIssuesScope={scope}
           myIssuesFilter={filter}
+          sort={sort}
           projectId={projectId}
         />
       )}
@@ -231,10 +242,26 @@ function ProjectIssuesContent({
           childProgressMap={childProgressMap}
           myIssuesScope={scope}
           myIssuesFilter={filter}
+          sort={sort}
           projectId={projectId}
+          onMoveIssue={handleMoveIssue}
         />
       )}
       {viewMode === "gantt" && <GanttView issues={filteredGanttIssues} />}
+      {viewMode === "swimlane" && (
+        <SwimLaneView
+          issues={issues}
+          unfilteredIssues={swimlaneIssues}
+          visibleStatuses={visibleStatuses}
+          hiddenStatuses={hiddenStatuses}
+          onMoveIssue={handleMoveIssue}
+          childProgressMap={childProgressMap}
+          myIssuesScope={scope}
+          myIssuesFilter={filter}
+          sort={sort}
+          projectId={projectId}
+        />
+      )}
     </div>
   );
 }
@@ -331,6 +358,7 @@ function ProjectIssuesSurface({
         assigneeGroupFilter={usesAssigneeBoard ? assigneeGroupFilter : undefined}
         scope={scope}
         filter={filter}
+        sort={sort}
         ganttIssues={ganttIssues}
       />
       <BatchActionToolbar />
@@ -480,6 +508,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
       {/* Properties */}
       <div>
         <button
+          type="button"
           className={`flex w-full items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors mb-2 hover:bg-accent/70 ${propertiesOpen ? "" : "text-muted-foreground hover:text-foreground"}`}
           onClick={() => setPropertiesOpen(!propertiesOpen)}
         >
@@ -612,6 +641,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
         return (
           <div>
             <button
+              type="button"
               className={`flex w-full items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors mb-2 hover:bg-accent/70 ${progressOpen ? "" : "text-muted-foreground hover:text-foreground"}`}
               onClick={() => setProgressOpen(!progressOpen)}
             >
@@ -636,6 +666,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
       {/* Description */}
       <div>
         <button
+          type="button"
           className={`flex w-full items-center gap-1 rounded-md px-2 py-1 text-xs font-medium transition-colors mb-2 hover:bg-accent/70 ${descriptionOpen ? "" : "text-muted-foreground hover:text-foreground"}`}
           onClick={() => setDescriptionOpen(!descriptionOpen)}
         >

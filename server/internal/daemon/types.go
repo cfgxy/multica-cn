@@ -67,6 +67,8 @@ type Task struct {
 	QuickCreatePrompt       string                `json:"quick_create_prompt,omitempty"`       // user's natural-language input for quick-create tasks
 	SquadID                 string                `json:"squad_id,omitempty"`                  // when the picker was a squad, the squad's UUID; Agent is still the resolved leader
 	SquadName               string                `json:"squad_name,omitempty"`                // display name for the picker squad, used in prompt text
+	ParentIssueID           string                `json:"parent_issue_id,omitempty"`           // for quick-create tasks opened from "Add sub issue" — UUID of the parent issue the new issue should be filed under
+	ParentIssueIdentifier   string                `json:"parent_issue_identifier,omitempty"`   // human-readable identifier (e.g. MUL-123) of the quick-create parent issue, used in prompt context
 	// RequestingUserName + RequestingUserProfileDescription describe the human
 	// the agent is working on behalf of. v1 sources them from the runtime
 	// owner (the user who registered the daemon). Empty when the runtime has
@@ -105,18 +107,6 @@ type AgentData struct {
 	McpConfig     json.RawMessage   `json:"mcp_config,omitempty"`
 	Model         string            `json:"model,omitempty"`
 	ThinkingLevel string            `json:"thinking_level,omitempty"`
-	// SkillsLocal controls whether the runtime merges the host machine's
-	// user-global skill directory into the agent. "merge" (default)
-	// preserves the inherit-from-machine behavior; "ignore" hides the
-	// directory from the runtime so a broken local skill cannot crash a
-	// shared agent (#3052). Old servers that predate the column omit this
-	// field entirely; the daemon treats empty as "merge". Currently
-	// honoured by Claude (via CLAUDE_CONFIG_DIR scratch mirroring in
-	// server/pkg/agent/claude.go) and Codex (via the user-skill seed gate
-	// in server/internal/daemon/execenv/execenv.go); other runtimes leave
-	// HOME untouched and natively discover user-level skills, so the
-	// toggle is a no-op for them.
-	SkillsLocal string `json:"skills_local,omitempty"`
 }
 
 // SkillData represents a structured skill for task execution.

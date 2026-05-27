@@ -4,18 +4,6 @@ export type AgentRuntimeMode = "local" | "cloud";
 
 export type AgentVisibility = "workspace" | "private";
 
-/**
- * Per-agent toggle controlling whether the runtime merges the host machine's
- * user-global skill directory into the agent. "merge" (default) preserves the
- * inherit-from-machine behavior; "ignore" isolates the runtime so a broken
- * local skill on one operator's machine cannot crash a shared agent (#3052).
- * Today only the Claude runtime honours the switch — others either already
- * isolate (Codex via CODEX_HOME) or treat it as a no-op. Older backends omit
- * the field; clients MUST treat undefined as "merge" so the documented
- * default wins on drift.
- */
-export type AgentSkillsLocal = "ignore" | "merge";
-
 // Runtime visibility is a separate axis from agent visibility — different
 // vocabulary because it gates a different action. "private" (default) means
 // only the runtime owner and workspace admins can bind agents to it;
@@ -82,7 +70,19 @@ export interface AgentTask {
   // autopilot-spawned. Check chat_session_id / autopilot_run_id to tell
   // which source produced it.
   issue_id: string;
-  status: "queued" | "dispatched" | "running" | "completed" | "failed" | "cancelled";
+  // `waiting_local_directory` is the daemon-emitted hold state for the
+  // local_directory flow: a task that has been dispatched but is parked
+  // because another task currently owns the same on-disk path lock.
+  // Treated as an active (non-terminal) state alongside queued/dispatched/
+  // running by every consumer that buckets tasks into "active vs done".
+  status:
+    | "queued"
+    | "dispatched"
+    | "waiting_local_directory"
+    | "running"
+    | "completed"
+    | "failed"
+    | "cancelled";
   priority: number;
   dispatched_at: string | null;
   started_at: string | null;
@@ -168,14 +168,6 @@ export interface Agent {
    * (MUL-2339).
    */
   thinking_level?: string;
-  /**
-   * Per-agent toggle for merging the host machine's user-global skill
-   * directory (e.g. Claude's `~/.claude/skills/`) into the agent. Older
-   * backends that predate the column omit this field; consumers MUST
-   * default to `"merge"` on drift to match the documented platform
-   * default (#3052 hardening is opt-in via `"ignore"`).
-   */
-  skills_local?: AgentSkillsLocal;
   owner_id: string | null;
   skills: AgentSkillSummary[];
   created_at: string;
@@ -211,10 +203,6 @@ export interface CreateAgentRequest {
   model?: string;
   /** Optional runtime-native reasoning/effort token. See `Agent.thinking_level`. */
   thinking_level?: string;
-  /** Per-agent host-skill merge toggle. Defaults to `"merge"` server-side
-   *  when omitted (inherit-from-machine behavior); pass `"ignore"` to
-   *  isolate the agent from the host's user-global skill directory. */
-  skills_local?: AgentSkillsLocal;
   /** Optional template slug used by the onboarding agent picker. Surfaced
    *  as the `template` property on the `agent_created` PostHog event. */
   template?: string;
@@ -320,8 +308,6 @@ export interface UpdateAgentRequest {
    *     runtime's provider enum, rejected with 400 if not recognised
    */
   thinking_level?: string;
-  /** Update the host-skill merge toggle. Omit to leave unchanged. */
-  skills_local?: AgentSkillsLocal;
 }
 
 /**

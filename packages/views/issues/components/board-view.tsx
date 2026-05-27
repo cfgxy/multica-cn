@@ -7,70 +7,35 @@ import {
   PointerSensor,
   useSensor,
   useSensors,
-  pointerWithin,
-  closestCenter,
-  type CollisionDetection,
   type DragStartEvent,
   type DragEndEvent,
   type DragOverEvent,
 } from "@dnd-kit/core";
 import type { QueryKey } from "@tanstack/react-query";
 import { arrayMove } from "@dnd-kit/sortable";
-import { Eye, MoreHorizontal } from "lucide-react";
-import type { Issue, IssueAssigneeGroup, IssueAssigneeType, IssueStatus, UpdateIssueRequest } from "@multica/core/types";
-import { Button } from "@multica/ui/components/ui/button";
+import type { Issue, IssueAssigneeGroup, IssueStatus } from "@multica/core/types";
 import { useLoadMoreByAssigneeGroup, useLoadMoreByStatus } from "@multica/core/issues/mutations";
-import type { AssigneeGroupedIssuesFilter, MyIssuesFilter } from "@multica/core/issues/queries";
-import {
-  DropdownMenu,
-  DropdownMenuTrigger,
-  DropdownMenuContent,
-  DropdownMenuItem,
-} from "@multica/ui/components/ui/dropdown-menu";
-import { useViewStoreApi, useViewStore } from "@multica/core/issues/stores/view-store-context";
+import type { AssigneeGroupedIssuesFilter, IssueSortParam, MyIssuesFilter } from "@multica/core/issues/queries";
+import { useViewStore } from "@multica/core/issues/stores/view-store-context";
 import type { IssueGrouping } from "@multica/core/issues/stores/view-store";
 import { useActorName } from "@multica/core/workspace/hooks";
-import { StatusIcon } from "./status-icon";
 import { BoardColumn, BOARD_CARD_WIDTH, type BoardColumnGroup } from "./board-column";
 import { BoardCardContent } from "./board-card";
+import { HiddenColumnsPanel, HiddenColumnRow } from "./hidden-columns-panel";
 import { InfiniteScrollSentinel } from "./infinite-scroll-sentinel";
 import type { ChildProgress } from "./list-row";
 import { useT } from "../../i18n";
-
-type BoardMoveUpdates = Pick<
-  UpdateIssueRequest,
-  "status" | "assignee_type" | "assignee_id" | "position"
->;
-
-const UNASSIGNED_GROUP_ID = "assignee:unassigned";
-
-function makeKanbanCollision(columnIds: Set<string>): CollisionDetection {
-  return (args) => {
-    const pointer = pointerWithin(args);
-    if (pointer.length > 0) {
-      const cards = pointer.filter((c) => !columnIds.has(c.id as string));
-      if (cards.length > 0) return cards;
-      return pointer;
-    }
-    return closestCenter(args);
-  };
-}
-
-function statusGroupId(status: IssueStatus): string {
-  return `status:${status}`;
-}
-
-function assigneeGroupId(
-  type: IssueAssigneeType | null,
-  id: string | null,
-): string {
-  return type && id ? `assignee:${type}:${id}` : UNASSIGNED_GROUP_ID;
-}
-
-function getIssueGroupId(issue: Issue, grouping: IssueGrouping): string {
-  if (grouping === "status") return statusGroupId(issue.status);
-  return assigneeGroupId(issue.assignee_type, issue.assignee_id);
-}
+import {
+  type DragMoveUpdates,
+  makeKanbanCollision,
+  statusGroupId,
+  assigneeGroupId,
+  buildColumns,
+  computePosition,
+  findColumn,
+  issueMatchesGroup,
+  getMoveUpdates,
+} from "../utils/drag-utils";
 
 function isStatusGroup(
   group: BoardColumnGroup,
@@ -132,71 +97,12 @@ function buildGroups(
     none: 3,
   };
 
-  return [...groups.values()].sort((a, b) => {
+  return Array.from(groups.values()).toSorted((a, b) => {
     const aOrder = order[a.assigneeType ?? "none"] ?? 99;
     const bOrder = order[b.assigneeType ?? "none"] ?? 99;
     if (aOrder !== bOrder) return aOrder - bOrder;
     return a.title.localeCompare(b.title);
   });
-}
-
-/** Build column ID arrays from TQ issue data (server-sorted). */
-function buildColumns(
-  issues: Issue[],
-  groups: BoardColumnGroup[],
-  grouping: IssueGrouping,
-): Record<string, string[]> {
-  const cols: Record<string, string[]> = {};
-  for (const group of groups) cols[group.id] = [];
-  for (const issue of issues) {
-    const gid = getIssueGroupId(issue, grouping);
-    if (cols[gid]) cols[gid].push(issue.id);
-  }
-  return cols;
-}
-
-/** Compute a float position for `activeId` based on its neighbors in `ids`. */
-function computePosition(ids: string[], activeId: string, issueMap: Map<string, Issue>): number {
-  const idx = ids.indexOf(activeId);
-  if (idx === -1) return 0;
-  const getPos = (id: string) => issueMap.get(id)?.position ?? 0;
-  if (ids.length === 1) return issueMap.get(activeId)?.position ?? 0;
-  if (idx === 0) return getPos(ids[1]!) - 1;
-  if (idx === ids.length - 1) return getPos(ids[idx - 1]!) + 1;
-  return (getPos(ids[idx - 1]!) + getPos(ids[idx + 1]!)) / 2;
-}
-
-/** Find which column contains a given ID (issue or column droppable). */
-function findColumn(
-  columns: Record<string, string[]>,
-  id: string,
-  columnIds: Set<string>,
-): string | null {
-  if (columnIds.has(id)) return id;
-  for (const [columnId, ids] of Object.entries(columns)) {
-    if (ids.includes(id)) return columnId;
-  }
-  return null;
-}
-
-function issueMatchesGroup(issue: Issue, group: BoardColumnGroup): boolean {
-  if (group.status) return issue.status === group.status;
-  return (
-    (issue.assignee_type ?? null) === (group.assigneeType ?? null) &&
-    (issue.assignee_id ?? null) === (group.assigneeId ?? null)
-  );
-}
-
-function getMoveUpdates(
-  group: BoardColumnGroup,
-  position: number,
-): BoardMoveUpdates {
-  if (group.status) return { status: group.status, position };
-  return {
-    assignee_type: group.assigneeType ?? null,
-    assignee_id: group.assigneeId ?? null,
-    position,
-  };
 }
 
 const EMPTY_PROGRESS_MAP = new Map<string, ChildProgress>();
@@ -213,6 +119,7 @@ export function BoardView({
   childProgressMap = EMPTY_PROGRESS_MAP,
   myIssuesScope,
   myIssuesFilter,
+  sort,
   projectId,
 }: {
   issues: Issue[];
@@ -221,11 +128,13 @@ export function BoardView({
   assigneeGroupFilter?: AssigneeGroupedIssuesFilter;
   visibleStatuses: IssueStatus[];
   hiddenStatuses: IssueStatus[];
-  onMoveIssue: (issueId: string, updates: BoardMoveUpdates, onSettled?: () => void) => void;
+  onMoveIssue: (issueId: string, updates: DragMoveUpdates, onSettled?: () => void) => void;
   childProgressMap?: Map<string, ChildProgress>;
   /** When set, per-status load-more targets the scoped cache instead of the workspace one. */
   myIssuesScope?: string;
   myIssuesFilter?: MyIssuesFilter;
+  /** Must match the sort the page queried with — embedded in the cache key. */
+  sort?: IssueSortParam;
   /** When set, the per-column "+" pre-fills the project on the create form. */
   projectId?: string;
 }) {
@@ -486,7 +395,7 @@ export function BoardView({
       onDragOver={handleDragOver}
       onDragEnd={handleDragEnd}
     >
-      <div className="flex flex-1 min-h-0 gap-4 overflow-x-auto p-4">
+      <div className="flex flex-1 min-h-0 gap-4 overflow-x-auto p-2">
         {groups.length === 0 ? (
           <div className="flex min-w-full flex-1 items-center justify-center text-sm text-muted-foreground">
             {t(($) => $.board.empty_grouping)}
@@ -501,6 +410,7 @@ export function BoardView({
                 issueMap={issueMapRef.current}
                 childProgressMap={childProgressMap}
                 myIssuesOpts={myIssuesOpts}
+                sort={sort}
                 projectId={projectId}
                 sortLabel={sortLabel}
               />
@@ -514,6 +424,7 @@ export function BoardView({
                   childProgressMap={childProgressMap}
                   queryKey={assigneeGroupQueryKey}
                   filter={assigneeGroupFilter}
+                  sort={sort}
                   projectId={projectId}
                   sortLabel={sortLabel}
                 />
@@ -534,9 +445,10 @@ export function BoardView({
         )}
 
         {grouping === "status" && hiddenStatuses.length > 0 && (
-          <HiddenColumnsPanel
+          <BoardHiddenColumnsPanel
             hiddenStatuses={hiddenStatuses}
             myIssuesOpts={myIssuesOpts}
+            sort={sort}
           />
         )}
       </div>
@@ -559,6 +471,7 @@ const PaginatedAssigneeBoardColumn = memo(function PaginatedAssigneeBoardColumn(
   childProgressMap,
   queryKey,
   filter,
+  sort,
   projectId,
   sortLabel,
 }: {
@@ -568,6 +481,7 @@ const PaginatedAssigneeBoardColumn = memo(function PaginatedAssigneeBoardColumn(
   childProgressMap?: Map<string, ChildProgress>;
   queryKey: QueryKey;
   filter: AssigneeGroupedIssuesFilter;
+  sort?: IssueSortParam;
   projectId?: string;
   sortLabel?: string | null;
 }) {
@@ -579,6 +493,7 @@ const PaginatedAssigneeBoardColumn = memo(function PaginatedAssigneeBoardColumn(
     },
     queryKey,
     filter,
+    sort,
   );
   return (
     <BoardColumn
@@ -604,6 +519,7 @@ const PaginatedBoardColumn = memo(function PaginatedBoardColumn({
   issueMap,
   childProgressMap,
   myIssuesOpts,
+  sort,
   projectId,
   sortLabel,
 }: {
@@ -612,12 +528,14 @@ const PaginatedBoardColumn = memo(function PaginatedBoardColumn({
   issueMap: Map<string, Issue>;
   childProgressMap?: Map<string, ChildProgress>;
   myIssuesOpts?: { scope: string; filter: MyIssuesFilter };
+  sort?: IssueSortParam;
   projectId?: string;
   sortLabel?: string | null;
 }) {
   const { loadMore, hasMore, isLoading, total } = useLoadMoreByStatus(
     group.status,
     myIssuesOpts,
+    sort,
   );
   return (
     <BoardColumn
@@ -637,74 +555,46 @@ const PaginatedBoardColumn = memo(function PaginatedBoardColumn({
   );
 });
 
-function HiddenColumnsPanel({
-  hiddenStatuses,
-  myIssuesOpts,
-}: {
-  hiddenStatuses: IssueStatus[];
-  myIssuesOpts?: { scope: string; filter: MyIssuesFilter };
-}) {
-  const { t } = useT("issues");
-  return (
-    <div className="flex w-[240px] shrink-0 flex-col">
-      <div className="mb-2 flex items-center gap-2 px-1">
-        <span className="text-sm font-medium text-muted-foreground">
-          {t(($) => $.board.hidden_columns_label)}
-        </span>
-      </div>
-      <div className="flex-1 space-y-0.5">
-        {hiddenStatuses.map((status) => (
-          <HiddenColumnRow
-            key={status}
-            status={status}
-            myIssuesOpts={myIssuesOpts}
-          />
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function HiddenColumnRow({
+/**
+ * Board-view-specific row that pulls the server-aggregated total from
+ * `useLoadMoreByStatus` and hands it to the shared {@link HiddenColumnRow}.
+ * Lives here (not in `hidden-columns-panel.tsx`) so the shared panel stays
+ * free of `useLoadMoreByStatus` / `myIssuesOpts` coupling — the swimlane
+ * uses an in-memory total instead.
+ */
+function BoardHiddenColumnRow({
   status,
   myIssuesOpts,
+  sort,
 }: {
   status: IssueStatus;
   myIssuesOpts?: { scope: string; filter: MyIssuesFilter };
+  sort?: IssueSortParam;
 }) {
-  const { t } = useT("issues");
-  const viewStoreApi = useViewStoreApi();
-  const { total } = useLoadMoreByStatus(status, myIssuesOpts);
+  const { total } = useLoadMoreByStatus(status, myIssuesOpts, sort);
+  return <HiddenColumnRow status={status} total={total} />;
+}
+
+function BoardHiddenColumnsPanel({
+  hiddenStatuses,
+  myIssuesOpts,
+  sort,
+}: {
+  hiddenStatuses: IssueStatus[];
+  myIssuesOpts?: { scope: string; filter: MyIssuesFilter };
+  sort?: IssueSortParam;
+}) {
   return (
-    <div className="flex items-center justify-between rounded-lg px-2.5 py-2 hover:bg-muted/50">
-      <div className="flex items-center gap-2">
-        <StatusIcon status={status} className="h-3.5 w-3.5" />
-        <span className="text-sm">{t(($) => $.status[status])}</span>
-      </div>
-      <div className="flex items-center gap-1.5">
-        <span className="text-xs text-muted-foreground">{total}</span>
-        <DropdownMenu>
-          <DropdownMenuTrigger
-            render={
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                className="rounded-full text-muted-foreground"
-              >
-                <MoreHorizontal className="size-3.5" />
-              </Button>
-            }
-          />
-          <DropdownMenuContent align="end">
-            <DropdownMenuItem
-              onClick={() => viewStoreApi.getState().showStatus(status)}
-            >
-              <Eye className="size-3.5" />
-              {t(($) => $.board.show_column)}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
-    </div>
+    <HiddenColumnsPanel
+      hiddenStatuses={hiddenStatuses}
+      renderRow={(status) => (
+        <BoardHiddenColumnRow
+          key={status}
+          status={status}
+          myIssuesOpts={myIssuesOpts}
+          sort={sort}
+        />
+      )}
+    />
   );
 }

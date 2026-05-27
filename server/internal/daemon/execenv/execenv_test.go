@@ -2650,145 +2650,6 @@ func TestPrepareCodexResolvesUserSkillSymlinks(t *testing.T) {
 	}
 }
 
-// TestPrepareCodexSkillsLocalIgnoreSkipsUserSeed covers the per-agent
-// `skills_local=ignore` contract on the Codex side (MUL-2603): when the
-// agent opts out of host-machine skills, the daemon must not seed
-// `~/.codex/skills/` into the per-task CODEX_HOME, so a broken local skill
-// cannot crash a shared Codex agent. The default (`merge`) preserves the
-// pre-existing seed-from-shared behavior — covered by
-// TestPrepareCodexSeedsUserSkills above.
-func TestPrepareCodexSkillsLocalIgnoreSkipsUserSeed(t *testing.T) {
-	// Cannot use t.Parallel() with t.Setenv.
-
-	sharedHome := t.TempDir()
-	t.Setenv("CODEX_HOME", sharedHome)
-
-	userSkills := filepath.Join(sharedHome, "skills")
-	if err := os.MkdirAll(filepath.Join(userSkills, "summarize"), 0o755); err != nil {
-		t.Fatalf("seed user skill dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(userSkills, "summarize", "SKILL.md"), []byte("user summarize"), 0o644); err != nil {
-		t.Fatalf("seed user SKILL.md: %v", err)
-	}
-
-	env, err := Prepare(PrepareParams{
-		WorkspacesRoot: t.TempDir(),
-		WorkspaceID:    "ws-codex-skills-local-ignore",
-		TaskID:         "c1d2e3f4-a5b6-7890-cdef-123456789012",
-		AgentName:      "Codex Agent",
-		Provider:       "codex",
-		SkillsLocal:    "ignore",
-		Task: TaskContextForEnv{
-			IssueID: "codex-skills-local-ignore-test",
-			AgentSkills: []SkillContextForEnv{
-				{Name: "Writing", Content: "workspace writing"},
-			},
-		},
-	}, testLogger())
-	if err != nil {
-		t.Fatalf("Prepare failed: %v", err)
-	}
-	defer env.Cleanup(true)
-
-	if _, err := os.Stat(filepath.Join(env.CodexHome, "skills", "summarize")); !os.IsNotExist(err) {
-		t.Errorf("user skill seeded despite skills_local=ignore: err=%v", err)
-	}
-	if _, err := os.Stat(filepath.Join(env.CodexHome, "skills", "writing", "SKILL.md")); err != nil {
-		t.Errorf("workspace skill not written under skills_local=ignore: %v", err)
-	}
-}
-
-// TestPrepareCodexSkillsLocalMergeSeedsUserSkills locks in the default
-// `merge` semantics on the Codex side: anything other than the literal
-// "ignore" (including empty from older servers) preserves the seed-from-
-// shared behavior so existing personal workflows continue working.
-func TestPrepareCodexSkillsLocalMergeSeedsUserSkills(t *testing.T) {
-	// Cannot use t.Parallel() with t.Setenv.
-
-	sharedHome := t.TempDir()
-	t.Setenv("CODEX_HOME", sharedHome)
-
-	userSkills := filepath.Join(sharedHome, "skills")
-	if err := os.MkdirAll(filepath.Join(userSkills, "translate"), 0o755); err != nil {
-		t.Fatalf("seed user skill dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(userSkills, "translate", "SKILL.md"), []byte("user translate"), 0o644); err != nil {
-		t.Fatalf("seed user SKILL.md: %v", err)
-	}
-
-	env, err := Prepare(PrepareParams{
-		WorkspacesRoot: t.TempDir(),
-		WorkspaceID:    "ws-codex-skills-local-merge",
-		TaskID:         "d2e3f4a5-b6c7-8901-cdef-234567890123",
-		AgentName:      "Codex Agent",
-		Provider:       "codex",
-		SkillsLocal:    "merge",
-		Task:           TaskContextForEnv{IssueID: "codex-skills-local-merge-test"},
-	}, testLogger())
-	if err != nil {
-		t.Fatalf("Prepare failed: %v", err)
-	}
-	defer env.Cleanup(true)
-
-	data, err := os.ReadFile(filepath.Join(env.CodexHome, "skills", "translate", "SKILL.md"))
-	if err != nil {
-		t.Fatalf("user skill not seeded under skills_local=merge: %v", err)
-	}
-	if string(data) != "user translate" {
-		t.Errorf("seeded user SKILL.md = %q, want %q", data, "user translate")
-	}
-}
-
-// TestReuseCodexSkillsLocalIgnoreSkipsUserSeed mirrors the Prepare path on
-// the Reuse branch: if a user flips the agent toggle to `ignore` between
-// runs, the next task on the reused workdir must drop the previously-seeded
-// user skill rather than leak it through.
-func TestReuseCodexSkillsLocalIgnoreSkipsUserSeed(t *testing.T) {
-	// Cannot use t.Parallel() with t.Setenv.
-
-	sharedHome := t.TempDir()
-	t.Setenv("CODEX_HOME", sharedHome)
-
-	userSkills := filepath.Join(sharedHome, "skills")
-	if err := os.MkdirAll(filepath.Join(userSkills, "summarize"), 0o755); err != nil {
-		t.Fatalf("seed user skill dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(userSkills, "summarize", "SKILL.md"), []byte("user summarize"), 0o644); err != nil {
-		t.Fatalf("seed user SKILL.md: %v", err)
-	}
-
-	env, err := Prepare(PrepareParams{
-		WorkspacesRoot: t.TempDir(),
-		WorkspaceID:    "ws-codex-reuse-toggle",
-		TaskID:         "e3f4a5b6-c7d8-9012-cdef-345678901234",
-		AgentName:      "Codex Agent",
-		Provider:       "codex",
-		SkillsLocal:    "merge",
-		Task:           TaskContextForEnv{IssueID: "codex-reuse-toggle-test"},
-	}, testLogger())
-	if err != nil {
-		t.Fatalf("Prepare failed: %v", err)
-	}
-	defer env.Cleanup(true)
-
-	if _, err := os.Stat(filepath.Join(env.CodexHome, "skills", "summarize", "SKILL.md")); err != nil {
-		t.Fatalf("Prepare(merge) did not seed user skill: %v", err)
-	}
-
-	reused := Reuse(ReuseParams{
-		WorkDir:     env.WorkDir,
-		Provider:    "codex",
-		SkillsLocal: "ignore",
-		Task:        TaskContextForEnv{IssueID: "codex-reuse-toggle-test"},
-	}, testLogger())
-	if reused == nil {
-		t.Fatal("Reuse returned nil")
-	}
-	if _, err := os.Stat(filepath.Join(reused.CodexHome, "skills", "summarize")); !os.IsNotExist(err) {
-		t.Errorf("user skill survived Reuse(skills_local=ignore): err=%v", err)
-	}
-}
-
 // TestReuseSeedsUserSkillUpdates ensures that user-skill edits between two
 // runs of the same task (the Reuse path) propagate into the per-task home.
 func TestReuseSeedsUserSkillUpdates(t *testing.T) {
@@ -3818,4 +3679,148 @@ func TestInjectRuntimeConfigIssueMetadataCodexFormattingUnchanged(t *testing.T) 
 			t.Fatalf("codex Windows --content-file rule missing\n---\n%s", s)
 		}
 	})
+}
+
+// Tests below cover the local_directory flow (MUL-2663): the daemon
+// substitutes LocalWorkDir for the synthesized envRoot/workdir when a
+// project pins the task to a user-supplied directory. The agent runs in
+// place; the daemon's envRoot still hosts output/, logs/, and .gc_meta.json
+// (the daemon's logbook), but the workdir slot is the user's path.
+
+func TestPrepareLocalWorkDir(t *testing.T) {
+	t.Parallel()
+	workspacesRoot := t.TempDir()
+	userDir := t.TempDir()
+
+	env, err := Prepare(PrepareParams{
+		WorkspacesRoot: workspacesRoot,
+		WorkspaceID:    "ws-local",
+		TaskID:         "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+		AgentName:      "Test Agent",
+		LocalWorkDir:   userDir,
+		Task: TaskContextForEnv{
+			IssueID: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+		},
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+	defer env.Cleanup(true)
+
+	if !env.LocalDirectory {
+		t.Fatal("expected env.LocalDirectory to be true")
+	}
+	if env.WorkDir != userDir {
+		t.Errorf("WorkDir = %q, want %q (user-supplied path)", env.WorkDir, userDir)
+	}
+
+	// envRoot should still be created for scratch dirs, but the synthesised
+	// workdir/ subdirectory should NOT exist (we substituted the user's
+	// path for it).
+	for _, sub := range []string{"output", "logs"} {
+		path := filepath.Join(env.RootDir, sub)
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("expected %s to exist: %v", path, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(env.RootDir, "workdir")); !os.IsNotExist(err) {
+		t.Fatalf("expected envRoot/workdir to NOT exist for local_directory tasks; err=%v", err)
+	}
+
+	// Context files should still land in the user's directory so the
+	// agent can discover them.
+	contextPath := filepath.Join(userDir, ".agent_context", "issue_context.md")
+	if _, err := os.Stat(contextPath); err != nil {
+		t.Fatalf("expected context file in user dir: %v", err)
+	}
+}
+
+func TestEnvironmentCleanupPreservesLocalDirectory(t *testing.T) {
+	t.Parallel()
+	workspacesRoot := t.TempDir()
+	userDir := t.TempDir()
+
+	// Drop a sentinel file inside the user's directory so we can verify
+	// Cleanup never removed it.
+	sentinel := filepath.Join(userDir, "user-file.txt")
+	if err := os.WriteFile(sentinel, []byte("keep me"), 0o644); err != nil {
+		t.Fatalf("write sentinel: %v", err)
+	}
+
+	env, err := Prepare(PrepareParams{
+		WorkspacesRoot: workspacesRoot,
+		WorkspaceID:    "ws-local",
+		TaskID:         "b1b2c3d4-e5f6-7890-abcd-ef1234567890",
+		AgentName:      "Test Agent",
+		LocalWorkDir:   userDir,
+		Task:           TaskContextForEnv{IssueID: "issue-1"},
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("Prepare failed: %v", err)
+	}
+
+	// removeAll=true on a local_directory env MUST NOT touch the user's
+	// directory. envRoot (the daemon's logbook) is fair game.
+	if err := env.Cleanup(true); err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("user file removed by Cleanup: %v", err)
+	}
+	if _, err := os.Stat(env.RootDir); !os.IsNotExist(err) {
+		t.Fatalf("expected envRoot to be cleaned, got err=%v", err)
+	}
+
+	// removeAll=false should also leave the user's directory alone (the
+	// existing semantics for non-local tasks would have removed WorkDir
+	// — that's exactly what we must NOT do here).
+	env2, err := Prepare(PrepareParams{
+		WorkspacesRoot: workspacesRoot,
+		WorkspaceID:    "ws-local-2",
+		TaskID:         "b2b2c3d4-e5f6-7890-abcd-ef1234567890",
+		AgentName:      "Test Agent",
+		LocalWorkDir:   userDir,
+		Task:           TaskContextForEnv{IssueID: "issue-1"},
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("Prepare 2: %v", err)
+	}
+	if err := env2.Cleanup(false); err != nil {
+		t.Fatalf("Cleanup 2: %v", err)
+	}
+	if _, err := os.Stat(sentinel); err != nil {
+		t.Fatalf("partial Cleanup removed user file: %v", err)
+	}
+}
+
+// TestEnvironmentCleanupStandardModeRemovesWorkdir is the negative control:
+// a non-local_directory env preserves its existing semantics so the
+// local_directory branch can't silently regress the regular flow.
+func TestEnvironmentCleanupStandardModeRemovesWorkdir(t *testing.T) {
+	t.Parallel()
+	workspacesRoot := t.TempDir()
+
+	env, err := Prepare(PrepareParams{
+		WorkspacesRoot: workspacesRoot,
+		WorkspaceID:    "ws-std",
+		TaskID:         "c1b2c3d4-e5f6-7890-abcd-ef1234567890",
+		AgentName:      "Test Agent",
+		Task:           TaskContextForEnv{IssueID: "issue-1"},
+	}, testLogger())
+	if err != nil {
+		t.Fatalf("Prepare: %v", err)
+	}
+	if env.LocalDirectory {
+		t.Fatal("expected LocalDirectory to be false for standard env")
+	}
+	if err := env.Cleanup(false); err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+	if _, err := os.Stat(env.WorkDir); !os.IsNotExist(err) {
+		t.Fatalf("expected workdir to be removed in standard mode")
+	}
+	// output/logs should remain.
+	if _, err := os.Stat(filepath.Join(env.RootDir, "output")); err != nil {
+		t.Fatalf("output/ removed by partial cleanup: %v", err)
+	}
 }
