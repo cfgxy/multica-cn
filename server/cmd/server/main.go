@@ -283,7 +283,7 @@ func main() {
 	// shutdown so any pending bumps are flushed before we exit.
 	heartbeatScheduler := handler.NewBatchedHeartbeatScheduler(queries, handler.DefaultHeartbeatBatchInterval)
 
-	r := NewRouterWithOptions(pool, hub, bus, analyticsClient, storeRedis, RouterOptions{
+	r, h := NewRouterWithOptions(pool, hub, bus, analyticsClient, storeRedis, RouterOptions{
 		HTTPMetrics:        httpMetrics,
 		DaemonHub:          daemonHub,
 		DaemonWakeup:       daemonWakeup,
@@ -318,6 +318,16 @@ func main() {
 	go runAutopilotScheduler(autopilotCtx, queries, autopilotSvc)
 	go runAutopilotFailureMonitor(autopilotCtx, queries, bus, envFailureMonitorConfig())
 	go runDBStatsLogger(sweepCtx, pool)
+
+	// Lark inbound supervisor: holds the §4.4 WS lease per installation
+	// and runs the EventConnector for each. Nil when the Lark master
+	// key is unset — self-host deployments that have not opted in to
+	// Lark do not pay any goroutine cost. Lifecycle is bound to
+	// sweepCtx so the Hub winds down alongside the other long-running
+	// workers, AFTER the HTTP server has drained.
+	if h.LarkHub != nil {
+		go h.LarkHub.Run(sweepCtx)
+	}
 
 	if metricsServer != nil {
 		go func() {
@@ -359,6 +369,15 @@ func main() {
 	// final batch of queued heartbeat bumps.
 	sweepCancel()
 	heartbeatScheduler.Stop()
+
+	// Join the Lark Hub's per-installation supervisor goroutines so the
+	// lease renewer can issue a final release before process exit;
+	// otherwise the next replica would have to wait the full LeaseTTL
+	// before picking up the installation on the other side of the
+	// redeploy.
+	if h.LarkHub != nil {
+		h.LarkHub.Wait()
+	}
 
 	if metricsServer != nil {
 		metricsShutdownCtx, metricsShutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)

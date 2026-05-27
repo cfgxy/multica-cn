@@ -96,7 +96,8 @@ func parseTrustedProxies(raw string) []netip.Prefix {
 // keeps the default in-memory stores which are fine for single-node dev and
 // tests.
 func NewRouter(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus, analyticsClient analytics.Client, rdb *redis.Client) chi.Router {
-	return NewRouterWithOptions(pool, hub, bus, analyticsClient, rdb, RouterOptions{})
+	r, _ := NewRouterWithOptions(pool, hub, bus, analyticsClient, rdb, RouterOptions{})
+	return r
 }
 
 type RouterOptions struct {
@@ -110,7 +111,14 @@ type RouterOptions struct {
 	HeartbeatScheduler handler.HeartbeatScheduler
 }
 
-func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus, analyticsClient analytics.Client, rdb *redis.Client, opts RouterOptions) chi.Router {
+// NewRouterWithOptions builds the fully-configured Chi router and
+// returns the *handler.Handler it was constructed from. Callers that
+// need to drive background lifecycle on services attached to the
+// handler (e.g. starting the Lark inbound Hub under a long-running
+// context, calling Wait on shutdown) use the returned handler;
+// callers that only need the HTTP handler (tests, the simple
+// NewRouter shim) discard the second value.
+func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus, analyticsClient analytics.Client, rdb *redis.Client, opts RouterOptions) (chi.Router, *handler.Handler) {
 	queries := db.New(pool)
 	emailSvc := service.NewEmailService()
 	daemonHub := opts.DaemonHub
@@ -205,6 +213,39 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				h.LarkAPIClient = larkClient
 				patcher := lark.NewPatcher(queries, installSvc, larkClient, lark.PatcherConfig{})
 				patcher.Register(bus)
+
+				// Inbound pipeline: lark_inbound_audit logger,
+				// channel-aware ChatSessionService, and the
+				// Dispatcher that orders identity / dedup / append /
+				// /issue / enqueue per §4.3. The Dispatcher depends
+				// on the same IssueService + TaskService that back
+				// HTTP, so /issue-created issues share counter, dup
+				// guard, project boundary, broadcast, analytics and
+				// agent-enqueue with the rest of the product.
+				auditLogger := lark.NewAuditLogger(queries)
+				chatSvc := lark.NewChatSessionService(queries, pool)
+				dispatcher := &lark.Dispatcher{
+					Queries:      queries,
+					Chat:         chatSvc,
+					Audit:        auditLogger,
+					IssueService: h.IssueService,
+					TaskService:  h.TaskService,
+				}
+
+				// WS Hub: lease + supervisor goroutines per
+				// installation. The factory hands every supervisor a
+				// shared NoopConnector for now — the connector holds
+				// the lease and emits nothing, so the lifecycle
+				// (lease acquisition, renewal, release on shutdown,
+				// supervisor reap on revoke) runs against real DB
+				// rows on staging without committing to the wire
+				// protocol implementation. Swapping in the real
+				// Lark long-conn client is a single line change in
+				// this block; the Hub / Dispatcher / ChatService
+				// surfaces stay frozen.
+				connectorFactory := lark.NoopConnectorFactory(slog.Default())
+				h.LarkHub = lark.NewHub(queries, connectorFactory, dispatcher, lark.HubConfig{})
+				slog.Info("lark inbound pipeline wired (noop connector — real long-conn pending)")
 
 				// Device-flow registration service: end-to-end install
 				// pipeline that talks to accounts.feishu.cn (RFC 8628)
@@ -806,7 +847,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		})
 	})
 
-	return r
+	return r, h
 }
 
 // membershipChecker implements realtime.MembershipChecker using database queries.

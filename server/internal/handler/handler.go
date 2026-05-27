@@ -128,7 +128,17 @@ type Handler struct {
 	// is false so users do not land in a flow that is guaranteed to
 	// fail at the bot-info step.
 	LarkAPIClient lark.APIClient
-	cfg           Config
+	// LarkHub owns the per-installation supervisor goroutines that
+	// hold the §4.4 WS lease and run the EventConnector. Nil when the
+	// Lark inbound pipeline is not wired (master key unset, or the
+	// real APIClient is not configured). The router constructs the
+	// Hub but does NOT call Run on it; the process owner (main.go)
+	// starts it under a long-running context and joins on Wait
+	// during graceful shutdown so the lease renewer can yield
+	// gracefully instead of forcing the next replica to wait the
+	// full TTL.
+	LarkHub *lark.Hub
+	cfg     Config
 }
 
 func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *events.Bus, emailService *service.EmailService, store storage.Storage, cfSigner *auth.CloudFrontSigner, analyticsClient analytics.Client, cfg Config, daemonHubs ...*daemonws.Hub) *Handler {
