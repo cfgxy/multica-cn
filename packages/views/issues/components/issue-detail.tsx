@@ -1951,6 +1951,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               </div>
             </div>
 
+            <LocalDirectoryHint projectId={issue?.project_id} />
+
             {/* Agent live output — sticky banner in the activity section,
                 keyed by issue id so switching issues remounts the card and
                 clears any in-flight task state from the previous issue.
@@ -2024,7 +2026,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
 
             {/* Bottom comment input — no avatar, full width */}
             <div className="mt-4">
-              <LocalDirectoryHint projectId={issue?.project_id} />
               {/* key={id}: web's /issues/[id] route doesn't remount on
                   issueId change, so without an explicit key the editor
                   keeps the previous issue's in-memory content and the
