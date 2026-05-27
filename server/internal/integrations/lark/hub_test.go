@@ -27,6 +27,18 @@ type fakeHubQueries struct {
 	releaseErr     error
 	now            func() time.Time
 	acquireCount   int32
+
+	// releaseBlock, if non-nil, makes ReleaseLarkWSLease block until
+	// either the channel is closed/sent on OR the caller's ctx fires.
+	// Used to simulate a frozen DB pool so the bounded-release timeout
+	// can be exercised without standing up real infrastructure.
+	releaseBlock chan struct{}
+	// releaseObservedCtxErr captures the ctx error (typically
+	// context.DeadlineExceeded) the blocked release call observed
+	// when its bounded ctx fired. Inspected by tests to prove the
+	// bound actually fired instead of the test happening to win the
+	// race naturally.
+	releaseObservedCtxErr error
 }
 
 func newFakeHubQueries() *fakeHubQueries {
@@ -72,6 +84,20 @@ func (f *fakeHubQueries) AcquireLarkWSLease(ctx context.Context, arg db.AcquireL
 }
 
 func (f *fakeHubQueries) ReleaseLarkWSLease(ctx context.Context, arg db.ReleaseLarkWSLeaseParams) error {
+	f.mu.Lock()
+	block := f.releaseBlock
+	f.mu.Unlock()
+	if block != nil {
+		select {
+		case <-block:
+			// Released by the test — fall through to the normal path.
+		case <-ctx.Done():
+			f.mu.Lock()
+			f.releaseObservedCtxErr = ctx.Err()
+			f.mu.Unlock()
+			return ctx.Err()
+		}
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.releaseErr != nil {
@@ -456,6 +482,170 @@ func TestHubEmitReturnsDispatchResultAndError(t *testing.T) {
 	}
 	if gotRes.Outcome != "" {
 		t.Fatalf("emit should not invent an outcome on dispatcher error; got %q", gotRes.Outcome)
+	}
+}
+
+// TestHubReleaseLeaseBoundedByTimeout pins the shutdown-safety
+// invariant: a frozen DB pool must NOT keep the supervisor blocked
+// on releaseLease past the configured LeaseReleaseTimeout. Without
+// the bound, ctx.Background()-rooted release calls could hang
+// forever on a stalled pool, dragging out process shutdown well
+// past the operator's expected drain budget.
+func TestHubReleaseLeaseBoundedByTimeout(t *testing.T) {
+	q := newFakeHubQueries()
+	q.releaseBlock = make(chan struct{}) // never closed; release always sees ctx.Done
+	instID := uuidFromString(t, "88888888-8888-8888-8888-888888888888")
+	q.installations = []db.LarkInstallation{{ID: instID, Status: "active"}}
+
+	conn := &fakeConnector{}
+	factory := func(_ db.LarkInstallation) (EventConnector, error) { return conn, nil }
+
+	releaseTimeout := 50 * time.Millisecond
+	hub := NewHub(q, factory, nil, HubConfig{
+		LeaseTTL:            500 * time.Millisecond,
+		LeaseRenewInterval:  20 * time.Millisecond,
+		PollInterval:        1 * time.Hour,
+		MinBackoff:          5 * time.Millisecond,
+		MaxBackoff:          20 * time.Millisecond,
+		ResetBackoffAfter:   10 * time.Second,
+		LeaseReleaseTimeout: releaseTimeout,
+		ShutdownTimeout:     2 * time.Second, // generous; we want WaitWithTimeout to succeed
+		Logger:              newDiscardLogger(),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go hub.Run(ctx)
+
+	if !waitFor(500*time.Millisecond, func() bool { return conn.Runs() >= 1 }) {
+		cancel()
+		hub.Wait()
+		t.Fatalf("expected connector to start; runs=%d", conn.Runs())
+	}
+
+	start := time.Now()
+	cancel()
+	// WaitWithTimeout MUST return true: the bound on releaseLease
+	// has to let the supervisor unwind even though our fake release
+	// never returns on its own.
+	if !hub.WaitWithTimeout(2 * time.Second) {
+		t.Fatalf("supervisor stuck despite bounded release; lease release timeout did not fire")
+	}
+	elapsed := time.Since(start)
+
+	// Sanity bound: shutdown must complete in roughly the release
+	// timeout plus a small jitter, NOT seconds. If the bound regressed
+	// (e.g. someone reintroduced ctx.Background() without a deadline),
+	// this assertion catches it.
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("shutdown took %s; expected ≈ %s + slack", elapsed, releaseTimeout)
+	}
+
+	q.mu.Lock()
+	gotErr := q.releaseObservedCtxErr
+	q.mu.Unlock()
+	if !errors.Is(gotErr, context.DeadlineExceeded) {
+		t.Fatalf("release should have observed DeadlineExceeded from its bounded ctx; got %v", gotErr)
+	}
+}
+
+// TestHubWaitWithTimeoutReturnsTrueWhenSupervisorsExit covers the
+// happy path: everything stops cleanly within the deadline, so the
+// caller can proceed without logging a timeout warning.
+func TestHubWaitWithTimeoutReturnsTrueWhenSupervisorsExit(t *testing.T) {
+	q := newFakeHubQueries()
+	instID := uuidFromString(t, "99999999-9999-9999-9999-999999999999")
+	q.installations = []db.LarkInstallation{{ID: instID, Status: "active"}}
+
+	conn := &fakeConnector{}
+	factory := func(_ db.LarkInstallation) (EventConnector, error) { return conn, nil }
+
+	hub := NewHub(q, factory, nil, HubConfig{
+		LeaseTTL:           500 * time.Millisecond,
+		LeaseRenewInterval: 20 * time.Millisecond,
+		PollInterval:       1 * time.Hour,
+		MinBackoff:         5 * time.Millisecond,
+		MaxBackoff:         20 * time.Millisecond,
+		ResetBackoffAfter:  10 * time.Second,
+		Logger:             newDiscardLogger(),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go hub.Run(ctx)
+
+	if !waitFor(500*time.Millisecond, func() bool { return conn.Runs() >= 1 }) {
+		cancel()
+		hub.Wait()
+		t.Fatalf("expected connector to start; runs=%d", conn.Runs())
+	}
+
+	cancel()
+	if !hub.WaitWithTimeout(1 * time.Second) {
+		t.Fatalf("WaitWithTimeout returned false despite supervisor exiting promptly")
+	}
+}
+
+// TestHubWaitWithTimeoutReturnsFalseWhenSupervisorStuck pins the
+// bound on the join itself: if a (future real) connector or release
+// path ignores ctx and refuses to exit, WaitWithTimeout MUST return
+// false so main.go can log + proceed with shutdown rather than block
+// the process forever.
+func TestHubWaitWithTimeoutReturnsFalseWhenSupervisorStuck(t *testing.T) {
+	q := newFakeHubQueries()
+	q.releaseBlock = make(chan struct{}) // never closed
+	instID := uuidFromString(t, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
+	q.installations = []db.LarkInstallation{{ID: instID, Status: "active"}}
+
+	conn := &fakeConnector{}
+	factory := func(_ db.LarkInstallation) (EventConnector, error) { return conn, nil }
+
+	// LeaseReleaseTimeout > ShutdownTimeout so the release is still
+	// blocked when the join deadline expires. This pins the "join
+	// deadline trips before the supervisor unwinds" branch.
+	hub := NewHub(q, factory, nil, HubConfig{
+		LeaseTTL:            500 * time.Millisecond,
+		LeaseRenewInterval:  20 * time.Millisecond,
+		PollInterval:        1 * time.Hour,
+		MinBackoff:          5 * time.Millisecond,
+		MaxBackoff:          20 * time.Millisecond,
+		ResetBackoffAfter:   10 * time.Second,
+		LeaseReleaseTimeout: 5 * time.Second,
+		Logger:              newDiscardLogger(),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go hub.Run(ctx)
+
+	if !waitFor(500*time.Millisecond, func() bool { return conn.Runs() >= 1 }) {
+		cancel()
+		hub.Wait() // unbounded fallback; test will time out instead of hanging
+		t.Fatalf("expected connector to start; runs=%d", conn.Runs())
+	}
+
+	cancel()
+	if hub.WaitWithTimeout(50 * time.Millisecond) {
+		t.Fatalf("WaitWithTimeout returned true while release was still blocked")
+	}
+
+	// Unblock the release so the supervisor can finally exit and the
+	// test doesn't leak a goroutine.
+	close(q.releaseBlock)
+	hub.Wait()
+}
+
+// TestHubConfigDefaultsCoverShutdownKnobs documents that callers
+// that omit the new shutdown knobs still get sensible defaults
+// (matching the behavior router.go relies on by passing HubConfig{}).
+// If the defaults regress to zero, releaseLease would derive a
+// 0-deadline ctx that fails instantly — the real symptom would be
+// "release lease failed: context deadline exceeded" warnings on
+// every shutdown.
+func TestHubConfigDefaultsCoverShutdownKnobs(t *testing.T) {
+	c := HubConfig{}.withDefaults()
+	if c.LeaseReleaseTimeout <= 0 {
+		t.Fatalf("LeaseReleaseTimeout default must be > 0; got %s", c.LeaseReleaseTimeout)
+	}
+	if c.ShutdownTimeout <= 0 {
+		t.Fatalf("ShutdownTimeout default must be > 0; got %s", c.ShutdownTimeout)
 	}
 }
 

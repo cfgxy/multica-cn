@@ -129,14 +129,16 @@ type Handler struct {
 	// fail at the bot-info step.
 	LarkAPIClient lark.APIClient
 	// LarkHub owns the per-installation supervisor goroutines that
-	// hold the §4.4 WS lease and run the EventConnector. Nil when the
-	// Lark inbound pipeline is not wired (master key unset, or the
-	// real APIClient is not configured). The router constructs the
-	// Hub but does NOT call Run on it; the process owner (main.go)
-	// starts it under a long-running context and joins on Wait
-	// during graceful shutdown so the lease renewer can yield
-	// gracefully instead of forcing the next replica to wait the
-	// full TTL.
+	// hold the §4.4 WS lease and run the EventConnector. Nil only
+	// when the master at-rest key (MULTICA_LARK_SECRET_KEY) is unset
+	// — the inbound pipeline does NOT depend on the outbound HTTP
+	// APIClient, so the Hub still wires up under the stub APIClient
+	// (the dispatcher and renewer touch DB rows, not Lark wire I/O).
+	// The router constructs the Hub but does NOT call Run on it; the
+	// process owner (main.go) starts it under a long-running context
+	// and joins on Wait during graceful shutdown so the lease
+	// renewer can yield gracefully instead of forcing the next
+	// replica to wait the full TTL.
 	LarkHub *lark.Hub
 	cfg     Config
 }

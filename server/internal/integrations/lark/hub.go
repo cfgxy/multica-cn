@@ -114,6 +114,23 @@ type HubConfig struct {
 	MaxBackoff        time.Duration
 	ResetBackoffAfter time.Duration
 
+	// LeaseReleaseTimeout caps how long a single ReleaseLarkWSLease
+	// call may block. The release runs on a fresh context (not the
+	// parent supervisor ctx, which is already cancelled by the time
+	// we release on shutdown), so without an explicit deadline a
+	// stalled DB pool could hang shutdown indefinitely. A bounded
+	// timeout means a hung release falls back to the natural lease
+	// TTL expiry on the next replica — slower than a clean release,
+	// but still bounded.
+	LeaseReleaseTimeout time.Duration
+
+	// ShutdownTimeout bounds how long Hub.Wait blocks waiting for
+	// supervisor goroutines to exit after their parent ctx is
+	// cancelled. Hub.Wait itself does not enforce this — callers
+	// pass it to WaitWithTimeout. Exposed on the config so main.go
+	// and tests share the same default.
+	ShutdownTimeout time.Duration
+
 	// Now returns the current time. Injected for tests; production
 	// uses time.Now.
 	Now func() time.Time
@@ -140,6 +157,12 @@ func (c HubConfig) withDefaults() HubConfig {
 	}
 	if c.ResetBackoffAfter == 0 {
 		c.ResetBackoffAfter = 60 * time.Second
+	}
+	if c.LeaseReleaseTimeout == 0 {
+		c.LeaseReleaseTimeout = 5 * time.Second
+	}
+	if c.ShutdownTimeout == 0 {
+		c.ShutdownTimeout = 15 * time.Second
 	}
 	if c.Now == nil {
 		c.Now = time.Now
@@ -231,9 +254,47 @@ func (h *Hub) Run(ctx context.Context) {
 // Wait blocks until every supervisor goroutine the Hub started has
 // exited. Call this AFTER cancelling Run's context; calling it before
 // returns immediately if no supervisors are active.
+//
+// Prefer WaitWithTimeout in shutdown paths so a stuck supervisor
+// (typically a hung lease release on a frozen DB pool) cannot block
+// process exit indefinitely.
 func (h *Hub) Wait() {
 	h.wg.Wait()
 }
+
+// WaitWithTimeout is the bounded variant of Wait. Returns true if all
+// supervisor goroutines exited within the deadline, false if the
+// timeout fired first. On timeout, the process owner should log the
+// fact and proceed with exit; the orphaned supervisor goroutines will
+// be reclaimed by the OS, and any unreleased leases expire naturally
+// after LeaseTTL on the next replica.
+//
+// A timeout <= 0 falls back to unbounded Wait, matching the legacy
+// behavior.
+func (h *Hub) WaitWithTimeout(timeout time.Duration) bool {
+	if timeout <= 0 {
+		h.wg.Wait()
+		return true
+	}
+	done := make(chan struct{})
+	go func() {
+		h.wg.Wait()
+		close(done)
+	}()
+	t := time.NewTimer(timeout)
+	defer t.Stop()
+	select {
+	case <-done:
+		return true
+	case <-t.C:
+		return false
+	}
+}
+
+// ShutdownTimeout exposes the configured graceful-shutdown deadline so
+// main.go can use the same value WaitWithTimeout is checked against
+// without re-deriving it.
+func (h *Hub) ShutdownTimeout() time.Duration { return h.cfg.ShutdownTimeout }
 
 // sweep enumerates currently-active installations and starts a
 // supervisor for any that this Hub does not yet supervise. Supervisors
@@ -329,7 +390,7 @@ func (h *Hub) supervise(ctx context.Context, inst db.LarkInstallation, id string
 		conn, err := h.factory(inst)
 		if err != nil {
 			log.Error("lark hub: connector factory failed", "error", err)
-			h.releaseLease(context.Background(), inst.ID)
+			h.releaseLease(inst.ID)
 			if sleep(ctx, backoff) {
 				return
 			}
@@ -357,7 +418,7 @@ func (h *Hub) supervise(ctx context.Context, inst db.LarkInstallation, id string
 		})
 		runCancel()
 		<-renewDone
-		h.releaseLease(context.Background(), inst.ID)
+		h.releaseLease(inst.ID)
 
 		if ctx.Err() != nil {
 			return
@@ -442,7 +503,21 @@ func (h *Hub) renewLeaseUntil(ctx context.Context, cancelRun context.CancelFunc,
 	}
 }
 
-func (h *Hub) releaseLease(ctx context.Context, instID pgtype.UUID) {
+// releaseLease writes a token-fenced DELETE to lark_installation's
+// lease columns so the next replica can pick up the installation
+// without waiting for LeaseTTL to expire.
+//
+// The supervisor calls this from two places — factory-error retry and
+// post-Run cleanup — and at shutdown the parent ctx is already done,
+// so passing it through would short-circuit the DB call before it ever
+// reached the pool. Instead we derive a fresh background ctx with a
+// bounded LeaseReleaseTimeout: a healthy pool finishes in milliseconds,
+// and a frozen pool can no longer hang shutdown indefinitely. The
+// fallback when the bound trips is the same as a crash — the lease row
+// stays put until its TTL elapses on the next replica.
+func (h *Hub) releaseLease(instID pgtype.UUID) {
+	ctx, cancel := context.WithTimeout(context.Background(), h.cfg.LeaseReleaseTimeout)
+	defer cancel()
 	if err := h.queries.ReleaseLarkWSLease(ctx, db.ReleaseLarkWSLeaseParams{
 		ID:           instID,
 		CurrentToken: pgtype.Text{String: h.nodeID, Valid: true},

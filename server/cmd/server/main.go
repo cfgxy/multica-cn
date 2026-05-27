@@ -374,9 +374,16 @@ func main() {
 	// lease renewer can issue a final release before process exit;
 	// otherwise the next replica would have to wait the full LeaseTTL
 	// before picking up the installation on the other side of the
-	// redeploy.
+	// redeploy. The wait is bounded — if a supervisor is wedged (DB
+	// pool stalled, a future real EventConnector ignoring ctx, etc.)
+	// the fallback is the natural LeaseTTL expiry on the other side,
+	// which is strictly better than holding shutdown open forever.
 	if h.LarkHub != nil {
-		h.LarkHub.Wait()
+		if !h.LarkHub.WaitWithTimeout(h.LarkHub.ShutdownTimeout()) {
+			slog.Warn("lark hub: supervisors did not exit within shutdown timeout; proceeding",
+				"timeout", h.LarkHub.ShutdownTimeout().String(),
+			)
+		}
 	}
 
 	if metricsServer != nil {
