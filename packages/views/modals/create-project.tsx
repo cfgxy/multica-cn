@@ -243,6 +243,7 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
               <TooltipTrigger
                 render={
                   <button
+                    type="button"
                     onClick={() => setIsExpanded(!isExpanded)}
                     className="rounded-sm p-1.5 opacity-70 hover:opacity-100 hover:bg-accent/60 transition-all cursor-pointer"
                   >
@@ -260,6 +261,7 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
               <TooltipTrigger
                 render={
                   <button
+                    type="button"
                     onClick={onClose}
                     className="rounded-sm p-1.5 opacity-70 hover:opacity-100 hover:bg-accent/60 transition-all cursor-pointer"
                   >
