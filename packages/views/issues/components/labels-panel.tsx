@@ -288,6 +288,7 @@ function ColorPalette({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           className="absolute inset-0 h-full w-full cursor-pointer opacity-0"
+          aria-label={t(($) => $.labels_panel.pick_color_aria)}
         />
       </label>
       {!compact && (

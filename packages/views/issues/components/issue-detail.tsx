@@ -659,7 +659,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const { t } = useT("issues");
   const timeAgo = useTimeAgo();
   const id = issueId;
-  const router = useNavigation();
+  const { push } = useNavigation();
   const user = useAuthStore((s) => s.user);
   const workspace = useCurrentWorkspace();
   const paths = useWorkspacePaths();
@@ -1230,7 +1230,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         </div>
         <div className="flex flex-1 min-h-0">
           <div className="flex-1 overflow-y-auto">
-            <div className="mx-auto w-full max-w-4xl px-8 py-8 space-y-6">
+            <div className="mx-auto w-full max-w-4xl p-8 space-y-6">
               <Skeleton className="h-8 w-3/4" />
               <div className="space-y-2">
                 <Skeleton className="h-4 w-full" />
@@ -1275,7 +1275,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
         <p>{t(($) => $.detail.not_found)}</p>
         {!onDelete && (
-          <Button variant="outline" size="sm" onClick={() => router.push(paths.issues())}>
+          <Button variant="outline" size="sm" onClick={() => push(paths.issues())}>
             <ChevronLeft className="mr-1 h-3.5 w-3.5" />
             {t(($) => $.detail.back_to_issues)}
           </Button>
@@ -1370,7 +1370,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                     icon the resulting picker uses, so the dropdown reads
                     as a preview of what will show up below. */}
                 <PopoverContent align="start" className="w-44 p-1">
-                  {OPTIONAL_PROP_KEYS.filter((k) => !visibleOptionalProps.has(k)).map((k) => (
+                  {OPTIONAL_PROP_KEYS.flatMap((k) => visibleOptionalProps.has(k) ? [] : [(
                     <button
                       key={k}
                       type="button"
@@ -1396,7 +1396,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                         {k === "labels" && t(($) => $.detail.prop_labels)}
                       </span>
                     </button>
-                  ))}
+                  )])}
                 </PopoverContent>
               </Popover>
             </div>
@@ -1742,7 +1742,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
           data-tab-scroll-root
           className="relative flex-1 overflow-y-auto"
         >
-        <div className="mx-auto w-full max-w-4xl px-8 py-8">
+        <div className="mx-auto w-full max-w-4xl p-8">
           <TitleEditor
             key={`title-${id}`}
             defaultValue={issue.title}
@@ -1790,8 +1790,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                 // so they appear in `issueAttachments` after refresh and the
                 // editor's text/code preview keeps working past reload.
                 const ids = descPendingAttachments
-                  .filter((a) => md.includes(a.url))
-                  .map((a) => a.id);
+                  .flatMap((a) => md.includes(a.url) ? [a.id] : []);
                 handleUpdateField({ description: md, attachment_ids: ids.length > 0 ? ids : undefined });
               }}
               onUploadFile={handleDescriptionUpload}

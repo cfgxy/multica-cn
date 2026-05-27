@@ -93,8 +93,7 @@ function ReplyInput({
     if (!content || submitting) return;
     // Only send attachment IDs for uploads still present in the content.
     const activeIds = pendingAttachments
-      .filter((a) => content.includes(a.url))
-      .map((a) => a.id);
+      .flatMap((a) => content.includes(a.url) ? [a.id] : []);
     setSubmitting(true);
     try {
       await onSubmit(content, activeIds.length > 0 ? activeIds : undefined);

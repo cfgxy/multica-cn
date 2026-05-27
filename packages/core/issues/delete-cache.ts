@@ -62,7 +62,9 @@ export function collectDeletedIssueCacheMetadata(
   for (const [key, data] of qc.getQueriesData<Issue[]>({
     queryKey: [...issueKeys.all(wsId), "children"],
   })) {
-    const child = data?.find((issue) => issue.id === issueId);
+    if (!data) continue;
+    const childMap = new Map(data.map((issue) => [issue.id, issue]));
+    const child = childMap.get(issueId);
     if (!child) continue;
     collectParentId(parentIssueIds, child.parent_issue_id);
     collectParentId(parentIssueIds, parentIdFromChildrenKey(key));

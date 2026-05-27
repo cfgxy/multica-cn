@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState, type ReactElement } from "react";
+import { useMemo, useRef, useState, type ReactElement } from "react";
 import type { Issue } from "@multica/core/types";
 import {
   ContextMenu,
@@ -36,6 +36,23 @@ export function IssueActionsContextMenu({
     clickPosRef.current = { x: e.clientX, y: e.clientY };
   };
 
+  // eslint-disable-next-line react-hooks/exhaustive-deps -- reads ref at open time
+  const assigneeAnchor = useMemo(
+    () => (
+      <span
+        aria-hidden
+        className="pointer-events-none fixed"
+        style={{
+          left: clickPosRef.current.x,
+          top: clickPosRef.current.y,
+          width: 0,
+          height: 0,
+        }}
+      />
+    ),
+    [assigneeOpen],
+  );
+
   return (
     <>
       <ContextMenu>
@@ -62,18 +79,7 @@ export function IssueActionsContextMenu({
           onUpdate={actions.updateField}
           open={assigneeOpen}
           onOpenChange={setAssigneeOpen}
-          triggerRender={
-            <span
-              aria-hidden
-              className="pointer-events-none fixed"
-              style={{
-                left: clickPosRef.current.x,
-                top: clickPosRef.current.y,
-                width: 0,
-                height: 0,
-              }}
-            />
-          }
+          triggerRender={assigneeAnchor}
           trigger={<span />}
           align="start"
         />

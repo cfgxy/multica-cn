@@ -219,6 +219,7 @@ function ActorSubContent({
           placeholder={t(($) => $.filters.placeholder)}
           className="w-full bg-transparent text-sm placeholder:text-muted-foreground outline-none"
           autoFocus
+          aria-label={t(($) => $.filters.filter_actors_aria)}
         />
       </div>
 
@@ -376,6 +377,7 @@ function ProjectSubContent({
           placeholder={t(($) => $.filters.placeholder)}
           className="w-full bg-transparent text-sm placeholder:text-muted-foreground outline-none"
           autoFocus
+          aria-label={t(($) => $.filters.filter_projects_aria)}
         />
       </div>
 
@@ -459,6 +461,7 @@ function LabelSubContent({
           placeholder={t(($) => $.filters.placeholder)}
           className="w-full bg-transparent text-sm placeholder:text-muted-foreground outline-none"
           autoFocus
+          aria-label={t(($) => $.filters.filter_labels_aria)}
         />
       </div>
 
@@ -675,15 +678,14 @@ export function IssueDisplayControls({
                         ? t(($) => $.filters.active_count, { count: activeFilterCount })
                         : t(($) => $.filters.tooltip)}
                       {hasActiveFilters && (
-                        <span
-                          role="button"
-                          tabIndex={-1}
+                        <button
+                          type="button"
                           className="-mr-1 ml-0.5 rounded-sm p-0.5 hover:bg-white/20"
                           onClick={(e) => { e.preventDefault(); e.stopPropagation(); act.clearFilters(); }}
                           onPointerDown={(e) => e.stopPropagation()}
                         >
                           <X className="size-3" />
-                        </span>
+                        </button>
                       )}
                     </Button>
                   }

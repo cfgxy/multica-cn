@@ -193,8 +193,7 @@ function initialStandaloneAttachmentIds(entry: TimelineEntry): Set<string> {
   const content = entry.content ?? "";
   return new Set(
     (entry.attachments ?? [])
-      .filter((attachment) => !content.includes(attachment.url))
-      .map((attachment) => attachment.id),
+      .flatMap((attachment) => content.includes(attachment.url) ? [] : [attachment.id]),
   );
 }
 
@@ -417,6 +416,7 @@ function CommentRow({
 
       {edit.editing ? (
         <div
+          role="group"
           {...edit.dropZoneProps}
           className="relative mt-1.5 pl-8"
           onKeyDown={(e) => { if (e.key === "Escape") edit.cancelEdit(); }}
@@ -656,6 +656,7 @@ function CommentCardImpl({
           <div className="px-4 pb-3">
             {edit.editing ? (
               <div
+                role="group"
                 {...edit.dropZoneProps}
                 className="relative pl-10"
                 onKeyDown={(e) => { if (e.key === "Escape") edit.cancelEdit(); }}

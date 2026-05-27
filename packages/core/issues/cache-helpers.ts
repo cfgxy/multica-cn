@@ -28,12 +28,13 @@ export function findIssueLocation(
   resp: ListIssuesCache,
   id: string,
 ): { status: IssueStatus; issue: Issue } | null {
+  const index = new Map<string, { status: IssueStatus; issue: Issue }>();
   for (const status of PAGINATED_STATUSES) {
     const bucket = resp.byStatus[status];
-    const found = bucket?.issues.find((i) => i.id === id);
-    if (found) return { status, issue: found };
+    if (!bucket) continue;
+    for (const issue of bucket.issues) index.set(issue.id, { status, issue });
   }
-  return null;
+  return index.get(id) ?? null;
 }
 
 /** Add an issue to its status bucket (no-op if already present). */

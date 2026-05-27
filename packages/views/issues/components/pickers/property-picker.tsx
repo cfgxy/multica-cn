@@ -68,7 +68,7 @@ export function PropertyPicker({
   const placeholder = searchPlaceholder ?? t(($) => $.filters.placeholder);
   const filterAria = t(($) => $.pickers.filter_options_aria);
   const [query, setQuery] = useState("");
-  const [highlightedIndex, setHighlightedIndex] = useState(-1);
+  const highlightedIndexRef = useRef(-1);
   const [tooltipHover, setTooltipHover] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
   // Show the tooltip only while the trigger is hovered AND the popover is
@@ -83,23 +83,28 @@ export function PropertyPicker({
     );
   }, []);
 
-  // Apply/remove highlight class via DOM when index changes
-  useEffect(() => {
+  const applyHighlight = useCallback((index: number) => {
+    highlightedIndexRef.current = index;
     const items = getItems();
     for (const item of items) {
       item.classList.remove(HIGHLIGHT_CLASS);
     }
-    if (highlightedIndex >= 0 && highlightedIndex < items.length) {
-      items[highlightedIndex]?.classList.add(HIGHLIGHT_CLASS);
+    if (index >= 0 && index < items.length) {
+      items[index]?.classList.add(HIGHLIGHT_CLASS);
     }
-  }, [highlightedIndex, getItems, children]); // re-run when children change (filtered list updates)
+  }, [getItems]);
+
+  // Re-apply highlight when children change (filtered list updates)
+  useEffect(() => {
+    applyHighlight(highlightedIndexRef.current);
+  }, [applyHighlight, children]);
 
   const handleOpenChange = useCallback(
     (v: boolean) => {
       onOpenChange(v);
       if (!v) {
         setQuery("");
-        setHighlightedIndex(-1);
+        highlightedIndexRef.current = -1;
         onSearchChange?.("");
       }
     },
@@ -116,29 +121,28 @@ export function PropertyPicker({
 
       if (e.key === "ArrowDown") {
         e.preventDefault();
-        setHighlightedIndex((prev) => {
-          const next = prev < items.length - 1 ? prev + 1 : 0;
-          items[next]?.scrollIntoView({ block: "nearest" });
-          return next;
-        });
+        const prev = highlightedIndexRef.current;
+        const next = prev < items.length - 1 ? prev + 1 : 0;
+        applyHighlight(next);
+        items[next]?.scrollIntoView({ block: "nearest" });
       } else if (e.key === "ArrowUp") {
         e.preventDefault();
-        setHighlightedIndex((prev) => {
-          const next = prev > 0 ? prev - 1 : items.length - 1;
-          items[next]?.scrollIntoView({ block: "nearest" });
-          return next;
-        });
+        const prev = highlightedIndexRef.current;
+        const next = prev > 0 ? prev - 1 : items.length - 1;
+        applyHighlight(next);
+        items[next]?.scrollIntoView({ block: "nearest" });
       } else if (e.key === "Enter") {
         e.preventDefault();
-        if (highlightedIndex >= 0 && highlightedIndex < items.length) {
-          items[highlightedIndex]?.click();
+        const idx = highlightedIndexRef.current;
+        if (idx >= 0 && idx < items.length) {
+          items[idx]?.click();
         } else if (items.length === 1) {
           // Auto-select when only one result
           items[0]?.click();
         }
       }
     },
-    [getItems, highlightedIndex],
+    [getItems, applyHighlight],
   );
 
   const popoverTrigger = (
@@ -168,7 +172,7 @@ export function PropertyPicker({
               value={query}
               onChange={(e) => {
                 setQuery(e.target.value);
-                setHighlightedIndex(0);
+                applyHighlight(0);
                 onSearchChange?.(e.target.value);
               }}
               onKeyDown={handleKeyDown}

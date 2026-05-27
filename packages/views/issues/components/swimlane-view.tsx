@@ -115,18 +115,27 @@ function parseCellId(id: string): { laneKey: string; status: string } | null {
   };
 }
 
-function findCellIn(
+type CellIndex = Map<string, { laneKey: string; status: string }>;
+
+function buildCellIndex(
   data: Record<string, Record<string, string[]>>,
+): CellIndex {
+  const index: CellIndex = new Map();
+  for (const [pk, statusMap] of Object.entries(data)) {
+    for (const [status, ids] of Object.entries(statusMap)) {
+      for (const id of ids) index.set(id, { laneKey: pk, status });
+    }
+  }
+  return index;
+}
+
+function findCellIn(
+  cellIndex: CellIndex,
   cellIds: Set<string>,
   id: string,
 ): { laneKey: string; status: string } | null {
   if (cellIds.has(id)) return parseCellId(id);
-  for (const [pk, statusMap] of Object.entries(data)) {
-    for (const [status, ids] of Object.entries(statusMap)) {
-      if (ids.includes(id)) return { laneKey: pk, status };
-    }
-  }
-  return null;
+  return cellIndex.get(id) ?? null;
 }
 
 function cellId(laneKey: string, status: IssueStatus): string {
@@ -210,6 +219,7 @@ interface LaneGroup {
 
 const EMPTY_PROGRESS_MAP = new Map<string, ChildProgress>();
 const EMPTY_PROJECTS: Project[] = [];
+const EMPTY_STATUSES: IssueStatus[] = [];
 
 /**
  * Build parent-grouping lanes. The "No parent" lane is always pinned at the
@@ -431,7 +441,7 @@ export function SwimLaneView({
   issues,
   unfilteredIssues,
   visibleStatuses = BOARD_STATUSES,
-  hiddenStatuses = [],
+  hiddenStatuses = EMPTY_STATUSES,
   onMoveIssue,
   childProgressMap = EMPTY_PROGRESS_MAP,
   myIssuesScope,
@@ -694,8 +704,9 @@ export function SwimLaneView({
       const overId = over.id as string;
 
       setLocalCells((prev) => {
-        const activeCell = findCellIn(prev, cellSet, activeId);
-        const overCell = findCellIn(prev, cellSet, overId);
+        const idx = buildCellIndex(prev);
+        const activeCell = findCellIn(idx, cellSet, activeId);
+        const overCell = findCellIn(idx, cellSet, overId);
         if (!activeCell || !overCell) return prev;
         if (
           activeCell.laneKey === overCell.laneKey &&
@@ -791,8 +802,7 @@ export function SwimLaneView({
       ) {
         // Visible non-pinned lanes, in current render order.
         const visibleOrder = laneGroups
-          .filter((g) => !g.isPinned && !g.isOrphan)
-          .map((g) => g.rawId);
+          .flatMap((g) => !g.isPinned && !g.isOrphan ? [g.rawId] : []);
         const fromIdx = visibleOrder.indexOf(activeLaneRef.rawId);
         const toIdx = visibleOrder.indexOf(overLaneRef.rawId);
         if (fromIdx === -1 || toIdx === -1 || fromIdx === toIdx) return;
@@ -819,9 +829,10 @@ export function SwimLaneView({
       if (activeLaneRef || overLaneRef) return;
 
       const cols = localCellsRef.current;
+      const colsIdx = buildCellIndex(cols);
 
-      const activeCell = findCellIn(cols, cellSet, activeId);
-      const overCell = findCellIn(cols, cellSet, overId);
+      const activeCell = findCellIn(colsIdx, cellSet, activeId);
+      const overCell = findCellIn(colsIdx, cellSet, overId);
       if (!activeCell || !overCell) {
         reset();
         return;
@@ -863,7 +874,8 @@ export function SwimLaneView({
         }
       }
 
-      const finalOverCell = findCellIn(finalCells, cellSet, activeId);
+      const finalIdx = finalCells === cols ? colsIdx : buildCellIndex(finalCells);
+      const finalOverCell = findCellIn(finalIdx, cellSet, activeId);
       if (!finalOverCell) {
         reset();
         return;
@@ -961,9 +973,7 @@ export function SwimLaneView({
             are wrapped in a SortableContext so users can reorder lanes by
             dragging the grip handle. */}
         <div className="flex flex-col gap-4">
-          {laneGroups
-            .filter((g) => g.isPinned)
-            .map((lane) => (
+          {laneGroups.flatMap((lane) => !lane.isPinned ? [] : [(
               <DraggableSwimLane
                 key={lane.key}
                 lane={lane}
@@ -978,16 +988,12 @@ export function SwimLaneView({
                 paths={paths}
                 projectId={projectId}
               />
-            ))}
+            )])}
           <SortableContext
-            items={laneGroups
-              .filter((g) => !g.isPinned)
-              .map((g) => laneIdFor(swimlaneGrouping, g.rawId))}
+            items={laneGroups.flatMap((g) => g.isPinned ? [] : [laneIdFor(swimlaneGrouping, g.rawId)])}
             strategy={verticalListSortingStrategy}
           >
-            {laneGroups
-              .filter((g) => !g.isPinned)
-              .map((lane) => (
+            {laneGroups.flatMap((lane) => lane.isPinned ? [] : [(
                 <DraggableSwimLane
                   key={lane.key}
                   lane={lane}
@@ -1002,7 +1008,7 @@ export function SwimLaneView({
                   paths={paths}
                   projectId={projectId}
                 />
-              ))}
+              )])}
           </SortableContext>
 
           {/* Per-status load-more sentinels — same bucketed cache as Board. */}
@@ -1096,7 +1102,7 @@ function DraggableSwimLane({
           don't nest an <a> inside a <button>. The drag listeners attach
           here so the whole header row is the drag surface. */}
       <div
-        className="mb-2 flex w-full items-center gap-2 rounded-md px-1 py-1"
+        className="mb-2 flex w-full items-center gap-2 rounded-md p-1"
         {...attributes}
         {...listeners}
       >

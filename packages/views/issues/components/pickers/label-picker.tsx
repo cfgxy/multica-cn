@@ -22,6 +22,10 @@ import {
 } from "./property-picker";
 import { useT } from "../../../i18n";
 
+const LABEL_TRIGGER_RENDER = (
+  <div className="flex flex-wrap items-center gap-1 cursor-pointer rounded px-1 -mx-1 hover:bg-accent/30 transition-colors" />
+);
+
 interface LabelPickerProps {
   issueId: string;
   /** Optional controlled open state (for tests / cmd+k integration). */
@@ -154,11 +158,7 @@ export function LabelPicker({
         searchable
         searchPlaceholder={t(($) => $.pickers.label.search_placeholder)}
         onSearchChange={setFilter}
-        triggerRender={
-          hasLabels ? (
-            <div className="flex flex-wrap items-center gap-1 cursor-pointer rounded px-1 -mx-1 hover:bg-accent/30 transition-colors" />
-          ) : undefined
-        }
+        triggerRender={hasLabels ? LABEL_TRIGGER_RENDER : undefined}
         trigger={
           hasLabels ? (
             <>

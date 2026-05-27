@@ -48,7 +48,10 @@
     "squads_group": "小队",
     "issue_count_other": "{{count}} 个 issue",
     "reset": "重置全部筛选",
-    "active_count_other": "{{count}} 个筛选"
+    "active_count_other": "{{count}} 个筛选",
+    "filter_actors_aria": "筛选人员",
+    "filter_projects_aria": "筛选项目",
+    "filter_labels_aria": "筛选标签"
   },
   "display": {
     "tooltip": "显示设置",

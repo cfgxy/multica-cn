@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, memo } from "react";
+import { useCallback, memo, useMemo } from "react";
 import { AppLink } from "../../navigation";
 import { useSortable, defaultAnimateLayoutChanges } from "@dnd-kit/sortable";
 import type { AnimateLayoutChanges } from "@dnd-kit/sortable";
@@ -52,7 +52,7 @@ function PickerWrapper({ children, className }: { children: React.ReactNode; cla
     e.preventDefault();
   };
   return (
-    <div onClick={stop} onMouseDown={stop} onPointerDown={stop} className={className}>
+    <div role="presentation" onClick={stop} onMouseDown={stop} onPointerDown={stop} className={className}>
       {children}
     </div>
   );
@@ -115,21 +115,25 @@ export const BoardCardContent = memo(function BoardCardContent({
       : null;
 
   const priorityLabel = t(($) => $.priority[issue.priority]);
+  const priorityTrigger = useMemo(
+    () => (
+      <button
+        type="button"
+        aria-label={priorityLabel}
+        className="inline-flex items-center justify-center rounded hover:bg-muted/60"
+      >
+        <PriorityIcon priority={issue.priority} />
+      </button>
+    ),
+    [priorityLabel, issue.priority],
+  );
   const priorityIconNode = showPriority ? (
     editable ? (
       <PickerWrapper>
         <PriorityPicker
           priority={issue.priority}
           onUpdate={handleUpdate}
-          triggerRender={
-            <button
-              type="button"
-              aria-label={priorityLabel}
-              className="inline-flex items-center justify-center rounded hover:bg-muted/60"
-            >
-              <PriorityIcon priority={issue.priority} />
-            </button>
-          }
+          triggerRender={priorityTrigger}
         />
       </PickerWrapper>
     ) : (

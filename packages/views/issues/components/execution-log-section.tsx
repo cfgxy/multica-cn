@@ -157,7 +157,7 @@ export function ExecutionLogSection({ issueId }: ExecutionLogSectionProps) {
               <button
                 type="button"
                 onClick={() => setShowPast(!showPast)}
-                className="flex w-full items-center gap-1 rounded px-1 py-1 text-xs text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
+                className="flex w-full items-center gap-1 rounded p-1 text-xs text-muted-foreground transition-colors hover:bg-accent/40 hover:text-foreground"
               >
                 <ChevronRight
                   className={`!size-3 shrink-0 stroke-[2.5] transition-transform ${

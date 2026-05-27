@@ -33,6 +33,7 @@ import {
   statusGroupId,
   buildColumns,
   computePosition,
+  buildColumnIndex,
   findColumn,
   issueMatchesGroup,
   getMoveUpdates,
@@ -177,8 +178,9 @@ export function ListView({
       const overId = over.id as string;
 
       setColumns((prev) => {
-        const activeCol = findColumn(prev, activeId, groupIds);
-        const overCol = findColumn(prev, overId, groupIds);
+        const idx = buildColumnIndex(prev);
+        const activeCol = findColumn(idx, activeId, groupIds);
+        const overCol = findColumn(idx, overId, groupIds);
         if (!activeCol || !overCol || activeCol === overCol) return prev;
 
         if (sortBy !== "position") return prev;
@@ -213,8 +215,9 @@ export function ListView({
       const overId = over.id as string;
 
       const cols = columnsRef.current;
-      const activeCol = findColumn(cols, activeId, groupIds);
-      const overCol = findColumn(cols, overId, groupIds);
+      const colsIdx = buildColumnIndex(cols);
+      const activeCol = findColumn(colsIdx, activeId, groupIds);
+      const overCol = findColumn(colsIdx, overId, groupIds);
       if (!activeCol || !overCol) {
         resetColumns();
         return;
@@ -232,8 +235,9 @@ export function ListView({
         }
       }
 
+      const finalIdx = finalColumns === cols ? colsIdx : buildColumnIndex(finalColumns);
       const finalCol = sortBy === "position"
-        ? findColumn(finalColumns, activeId, groupIds)
+        ? findColumn(finalIdx, activeId, groupIds)
         : overCol;
       if (!finalCol) {
         resetColumns();
@@ -288,9 +292,11 @@ export function ListView({
       value={expandedStatuses}
       onValueChange={(value: string[]) => {
         if (isDraggingRef.current) return;
+        const expandedSet = new Set(expandedStatuses);
+        const valueSet = new Set(value);
         for (const status of visibleStatuses) {
-          const wasExpanded = expandedStatuses.includes(status);
-          const isExpanded = value.includes(status);
+          const wasExpanded = expandedSet.has(status);
+          const isExpanded = valueSet.has(status);
           if (wasExpanded !== isExpanded) {
             toggleListCollapsed(status as IssueStatus);
           }
@@ -425,6 +431,7 @@ function StatusAccordionItem({
                 select(issueIds);
               }
             }}
+            aria-label={`Select all ${status} issues`}
             className="cursor-pointer accent-primary"
           />
         </div>

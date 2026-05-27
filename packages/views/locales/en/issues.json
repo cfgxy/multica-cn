@@ -50,7 +50,10 @@
     "issue_count_other": "{{count}} issues",
     "reset": "Reset all filters",
     "active_count_one": "{{count}} filter",
-    "active_count_other": "{{count}} filters"
+    "active_count_other": "{{count}} filters",
+    "filter_actors_aria": "Filter people",
+    "filter_projects_aria": "Filter projects",
+    "filter_labels_aria": "Filter labels"
   },
   "display": {
     "tooltip": "Display settings",

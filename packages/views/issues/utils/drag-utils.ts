@@ -37,7 +37,7 @@ export function assigneeGroupId(
   return type && id ? `assignee:${type}:${id}` : UNASSIGNED_GROUP_ID;
 }
 
-export function getIssueGroupId(issue: Issue, grouping: IssueGrouping): string {
+function getIssueGroupId(issue: Issue, grouping: IssueGrouping): string {
   if (grouping === "status") return statusGroupId(issue.status);
   return assigneeGroupId(issue.assignee_type, issue.assignee_id);
 }
@@ -66,16 +66,25 @@ export function computePosition(ids: string[], activeId: string, issueMap: Map<s
   return (getPos(ids[idx - 1]!) + getPos(ids[idx + 1]!)) / 2;
 }
 
-export function findColumn(
+export type ColumnIndex = Map<string, string>;
+
+export function buildColumnIndex(
   columns: Record<string, string[]>,
+): ColumnIndex {
+  const index: ColumnIndex = new Map();
+  for (const [columnId, ids] of Object.entries(columns)) {
+    for (const id of ids) index.set(id, columnId);
+  }
+  return index;
+}
+
+export function findColumn(
+  columnIndex: ColumnIndex,
   id: string,
   columnIds: Set<string>,
 ): string | null {
   if (columnIds.has(id)) return id;
-  for (const [columnId, ids] of Object.entries(columns)) {
-    if (ids.includes(id)) return columnId;
-  }
-  return null;
+  return columnIndex.get(id) ?? null;
 }
 
 export function issueMatchesGroup(issue: Issue, group: BoardColumnGroup): boolean {

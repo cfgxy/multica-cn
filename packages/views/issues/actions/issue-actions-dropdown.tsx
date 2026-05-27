@@ -14,6 +14,10 @@ import {
 } from "./issue-actions-menu-items";
 import { AssigneePicker } from "../components/pickers";
 
+const ASSIGNEE_PICKER_ANCHOR = (
+  <span aria-hidden className="pointer-events-none absolute inset-0" />
+);
+
 interface IssueActionsDropdownProps {
   issue: Issue;
   /** A single React element cloned by Base UI as the trigger (via `render` prop). */
@@ -60,12 +64,7 @@ export function IssueActionsDropdown({
           onUpdate={actions.updateField}
           open={assigneeOpen}
           onOpenChange={setAssigneeOpen}
-          triggerRender={
-            <span
-              aria-hidden
-              className="pointer-events-none absolute inset-0"
-            />
-          }
+          triggerRender={ASSIGNEE_PICKER_ANCHOR}
           trigger={<span />}
           align={align}
         />

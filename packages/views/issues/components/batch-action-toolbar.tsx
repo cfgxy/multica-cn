@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { X, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@multica/ui/components/ui/button";
@@ -44,6 +44,11 @@ export function BatchActionToolbar({
   const batchUpdate = useBatchUpdateIssues();
   const batchDelete = useBatchDeleteIssues();
   const loading = batchUpdate.isPending || batchDelete.isPending;
+
+  const pickerTrigger = useMemo(
+    () => <Button variant="ghost" size="sm" disabled={loading} />,
+    [loading],
+  );
 
   if (count === 0) return null;
 
@@ -105,7 +110,7 @@ export function BatchActionToolbar({
           onUpdate={handleBatchUpdate}
           open={statusOpen}
           onOpenChange={setStatusOpen}
-          triggerRender={<Button variant="ghost" size="sm" disabled={loading} />}
+          triggerRender={pickerTrigger}
           trigger={t(($) => $.batch.status)}
           align="center"
         />
@@ -116,7 +121,7 @@ export function BatchActionToolbar({
           onUpdate={handleBatchUpdate}
           open={priorityOpen}
           onOpenChange={setPriorityOpen}
-          triggerRender={<Button variant="ghost" size="sm" disabled={loading} />}
+          triggerRender={pickerTrigger}
           trigger={t(($) => $.batch.priority)}
           align="center"
         />
@@ -128,7 +133,7 @@ export function BatchActionToolbar({
           onUpdate={handleBatchUpdate}
           open={assigneeOpen}
           onOpenChange={setAssigneeOpen}
-          triggerRender={<Button variant="ghost" size="sm" disabled={loading} />}
+          triggerRender={pickerTrigger}
           trigger={t(($) => $.batch.assignee)}
           align="center"
         />

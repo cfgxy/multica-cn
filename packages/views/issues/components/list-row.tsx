@@ -90,6 +90,7 @@ function ListRowContent({
             type="checkbox"
             checked={selected}
             onChange={() => toggle(issue.id)}
+            aria-label={issue.identifier}
             className={`absolute inset-0 cursor-pointer accent-primary ${
               selected ? "" : "hidden group-hover/row:block"
             }`}
