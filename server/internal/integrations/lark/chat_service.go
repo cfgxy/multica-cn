@@ -47,10 +47,16 @@ type TxStarter interface {
 //     already be resolved by the caller (the sender argument is a
 //     trusted Multica user UUID).
 //
-//   - AppendUserMessage runs dedup → message-write → session-touch in
-//     a single transaction so a duplicate Lark event cannot leave a
-//     half-written chat_message row behind, and so a session that has
-//     received a message has its `updated_at` advanced atomically.
+//   - AppendUserMessage runs message-write + session-touch in a single
+//     transaction so a session that has received a message has its
+//     `updated_at` advanced atomically. Per-Lark-message-id idempotency
+//     is enforced by the Dispatcher's two-phase dedup gate
+//     (ClaimLarkInboundDedup + Mark/Release) BEFORE AppendUserMessage
+//     runs — see Dispatcher.Handle. AppendUserMessage trusts the
+//     dispatcher's claim and does not re-check dedup itself; this is
+//     what lets the dispatcher safely Release the claim on infra
+//     failure (rolled-back tx → no chat_message → next replay
+//     re-processes).
 type chatSessionService struct {
 	queries   *db.Queries
 	txStarter TxStarter
@@ -148,15 +154,16 @@ func (s *chatSessionService) createSessionAndBinding(ctx context.Context, p Ensu
 // (when the body parses as `/issue …`) returns the parsed command so
 // the caller can dispatch through IssueService.
 //
-// Idempotency is enforced upstream: the Dispatcher's top-level
-// TryInsertLarkInboundDedup gate trips before this method ever runs
-// for a replayed message_id (see Dispatcher.Handle step 2). The
-// lark_inbound_message_dedup UNIQUE (message_id) constraint is the
-// ultimate backstop — if two concurrent Handle calls ever both
-// passed the dedup gate for the same id, the second insert would
-// fail with 23505 and surface as an error from this method, which
-// the Dispatcher returns to the WS adapter as an infra failure
-// rather than silently corrupting chat_session.
+// Idempotency is enforced upstream by the Dispatcher's two-phase
+// ClaimLarkInboundDedup gate (see Dispatcher.Handle step 2): a
+// replayed message_id whose previous attempt reached a durable
+// outcome — i.e. successfully returned from this method — is dropped
+// before AppendUserMessage is ever called for it. A previous attempt
+// that crashed or returned an infra error before reaching this method
+// is explicitly released by the dispatcher, so the retry can re-claim
+// and re-run the insert. AppendUserMessage itself therefore does no
+// dedup; the transaction commit here is what triggers the dispatcher's
+// MarkLarkInboundDedupProcessed call on the way out.
 func (s *chatSessionService) AppendUserMessage(ctx context.Context, p AppendUserMessageParams) (AppendResult, error) {
 	tx, err := s.txStarter.Begin(ctx)
 	if err != nil {

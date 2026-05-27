@@ -59,6 +59,50 @@ func (q *Queries) AcquireLarkWSLease(ctx context.Context, arg AcquireLarkWSLease
 	return i, err
 }
 
+const claimLarkInboundDedup = `-- name: ClaimLarkInboundDedup :one
+
+INSERT INTO lark_inbound_message_dedup (message_id)
+VALUES ($1)
+ON CONFLICT (message_id) DO UPDATE
+    SET received_at = now()
+    WHERE lark_inbound_message_dedup.processed_at IS NULL
+      AND lark_inbound_message_dedup.received_at < now() - INTERVAL '60 seconds'
+RETURNING message_id, received_at, processed_at
+`
+
+// =====================
+// lark_inbound_message_dedup
+// =====================
+// The two-phase idempotency gate. The dispatcher uses this BEFORE
+// group filter / identity check / chat-session lookup so a WebSocket
+// reconnect that replays an event cannot re-trigger binding prompts,
+// re-write drop audit rows, or re-touch chat_session.
+//
+// Returns the row when a claim is acquired:
+//   - newly inserted (first delivery of this message_id), OR
+//   - re-taken from a stale in-flight claim. A claim is stale when
+//     processed_at IS NULL AND received_at is older than 60 seconds —
+//     the previous worker crashed or lost its DB connection between
+//     claim and finalize, and a retry should be allowed to proceed.
+//
+// Returns NO rows (pgx.ErrNoRows) when the claim cannot be acquired:
+//   - the row exists with processed_at IS NOT NULL (terminal: prior
+//     attempt reached a durable outcome), OR
+//   - the row exists with processed_at IS NULL AND received_at within
+//     the last 60 seconds (another worker is actively processing).
+//
+// The dispatcher MUST follow up every successful claim with exactly one
+// of MarkLarkInboundDedupProcessed (durable outcome) or
+// ReleaseLarkInboundDedup (infra failure before durable outcome).
+// Otherwise the row sits as an in-flight claim and the next replay
+// attempt must wait for the staleness TTL.
+func (q *Queries) ClaimLarkInboundDedup(ctx context.Context, messageID string) (LarkInboundMessageDedup, error) {
+	row := q.db.QueryRow(ctx, claimLarkInboundDedup, messageID)
+	var i LarkInboundMessageDedup
+	err := row.Scan(&i.MessageID, &i.ReceivedAt, &i.ProcessedAt)
+	return i, err
+}
+
 const consumeLarkBindingToken = `-- name: ConsumeLarkBindingToken :one
 UPDATE lark_binding_token
 SET consumed_at = now()
@@ -747,6 +791,28 @@ func (q *Queries) ListLarkUserBindingsByInstallation(ctx context.Context, instal
 	return items, nil
 }
 
+const markLarkInboundDedupProcessed = `-- name: MarkLarkInboundDedupProcessed :exec
+UPDATE lark_inbound_message_dedup
+SET processed_at = now()
+WHERE message_id = $1
+`
+
+// Locks in a claim as permanently processed. Called by the dispatcher
+// after a durable outcome has been reached:
+//   - a drop audit row was persisted (group filter / unbound user /
+//     revoked / invalid event), OR
+//   - chat_message + chat_session.updated_at were committed (ingest
+//     path, including ingest paths that subsequently fail at issue
+//     creation / task enqueue — the user-visible message is already in
+//     the session).
+//
+// After this call, future ClaimLarkInboundDedup attempts for the same
+// message_id return no rows, regardless of staleness.
+func (q *Queries) MarkLarkInboundDedupProcessed(ctx context.Context, messageID string) error {
+	_, err := q.db.Exec(ctx, markLarkInboundDedupProcessed, messageID)
+	return err
+}
+
 const purgeExpiredLarkBindingTokens = `-- name: PurgeExpiredLarkBindingTokens :exec
 DELETE FROM lark_binding_token
 WHERE expires_at < $1
@@ -766,6 +832,7 @@ WHERE received_at < $1
 
 // Removes dedup rows older than the supplied cutoff. The vacuum job
 // (separate cron) calls this with cutoff = now() - INTERVAL '24h'.
+// Sweeps both processed and (very old) abandoned in-flight rows.
 func (q *Queries) PurgeLarkInboundDedup(ctx context.Context, receivedAt pgtype.Timestamptz) error {
 	_, err := q.db.Exec(ctx, purgeLarkInboundDedup, receivedAt)
 	return err
@@ -814,6 +881,24 @@ func (q *Queries) RecordLarkInboundDrop(ctx context.Context, arg RecordLarkInbou
 	return err
 }
 
+const releaseLarkInboundDedup = `-- name: ReleaseLarkInboundDedup :exec
+DELETE FROM lark_inbound_message_dedup
+WHERE message_id = $1
+  AND processed_at IS NULL
+`
+
+// Releases an in-flight claim. Called by the dispatcher when an infra
+// error occurred BEFORE any durable side effect (e.g. EnsureChatSession
+// or AppendUserMessage returned an error and its transaction rolled
+// back). Deleting the row lets the WS adapter's retry re-acquire the
+// claim immediately, instead of waiting for the 60-second staleness
+// TTL. Guarded by processed_at IS NULL so an out-of-order Release
+// cannot undo a Mark.
+func (q *Queries) ReleaseLarkInboundDedup(ctx context.Context, messageID string) error {
+	_, err := q.db.Exec(ctx, releaseLarkInboundDedup, messageID)
+	return err
+}
+
 const releaseLarkWSLease = `-- name: ReleaseLarkWSLease :exec
 UPDATE lark_installation
 SET ws_lease_token      = NULL,
@@ -849,28 +934,6 @@ type SetLarkInstallationStatusParams struct {
 func (q *Queries) SetLarkInstallationStatus(ctx context.Context, arg SetLarkInstallationStatusParams) error {
 	_, err := q.db.Exec(ctx, setLarkInstallationStatus, arg.ID, arg.Status)
 	return err
-}
-
-const tryInsertLarkInboundDedup = `-- name: TryInsertLarkInboundDedup :one
-
-INSERT INTO lark_inbound_message_dedup (message_id)
-VALUES ($1)
-ON CONFLICT (message_id) DO NOTHING
-RETURNING message_id
-`
-
-// =====================
-// lark_inbound_message_dedup
-// =====================
-// The idempotency gate. Returns the message_id when the row was newly
-// inserted, and NO rows when the message_id was already present (dedup
-// hit). Callers branch on the row count, NOT on an error — ON CONFLICT
-// DO NOTHING does not raise.
-func (q *Queries) TryInsertLarkInboundDedup(ctx context.Context, messageID string) (string, error) {
-	row := q.db.QueryRow(ctx, tryInsertLarkInboundDedup, messageID)
-	var message_id string
-	err := row.Scan(&message_id)
-	return message_id, err
 }
 
 const updateLarkOutboundCardStatus = `-- name: UpdateLarkOutboundCardStatus :exec

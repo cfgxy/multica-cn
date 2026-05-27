@@ -137,9 +137,27 @@ CREATE INDEX idx_lark_chat_session_binding_session
 -- recently-delivered events; we keep 24h of message_ids to short-circuit
 -- replays before any business logic runs. A periodic vacuum job (separate
 -- migration / cron) trims rows older than ~24h.
+--
+-- Two-phase semantics (see ClaimLarkInboundDedup / MarkLarkInboundDedup-
+-- Processed / ReleaseLarkInboundDedup in queries/lark.sql):
+--
+--   processed_at IS NULL  → in-flight claim. The dispatcher holds a
+--     row but has not yet reached a durable outcome (audit-drop row
+--     persisted, OR chat_message + session touched). If the worker
+--     crashes here the row is re-claimable after the staleness TTL,
+--     so a replay does not get permanently swallowed.
+--
+--   processed_at IS NOT NULL → terminal. The message_id has reached a
+--     durable outcome; future replays are dropped as duplicates
+--     regardless of staleness.
+--
+-- This design is what prevents "first-attempt EnsureChatSession or
+-- AppendUserMessage infra error → second attempt gets duplicate-dropped"
+-- (the bug Elon flagged in PR #3277 review).
 CREATE TABLE lark_inbound_message_dedup (
     message_id    TEXT PRIMARY KEY,
-    received_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+    received_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    processed_at  TIMESTAMPTZ
 );
 
 CREATE INDEX idx_lark_inbound_dedup_received

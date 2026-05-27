@@ -15,11 +15,14 @@ import (
 // is the canned response the fake returns from the corresponding
 // method; ErrNoRows variants pin specific failure modes.
 //
-// Dedup state lives in `dedupSeen` (set of message_ids previously
-// inserted) so tests can simulate a Lark reconnect that replays the
-// same event by calling Handle twice with the same MessageID. The
-// default behavior — empty set — accepts every insert (first delivery
-// for every test that does not pre-seed it).
+// Dedup state is modeled accurately: each row in `dedup` is either
+// in-flight (processed=false) or terminal (processed=true), matching
+// the lark_inbound_message_dedup.processed_at semantics. Tests that
+// want to pre-seed a permanently-processed message (simulating a Lark
+// reconnect that replays an already-handled event) drop a `true` entry
+// into the map. Tests that want to exercise the in-flight-claim path
+// drop a `false` entry. Empty map → first delivery for every
+// message_id (the default).
 type fakeQueries struct {
 	installationByApp  db.LarkInstallation
 	installationErr    error
@@ -27,12 +30,15 @@ type fakeQueries struct {
 	userBindingErr     error
 	chatSession        db.ChatSession
 	chatSessionErr     error
-	dedupSeen          map[string]struct{}
-	dedupErr           error
+	dedup              map[string]bool // message_id → processed?
+	dedupClaimErr      error
+	dedupReclaim       bool // when true, in-flight rows are re-claimable (simulates staleness)
 	calledUserBinding  int
 	calledChatSession  int
 	calledInstallation int
-	calledDedup        int
+	calledClaim        int
+	calledMark         int
+	calledRelease      int
 }
 
 func (f *fakeQueries) GetLarkInstallationByAppID(ctx context.Context, appID string) (db.LarkInstallation, error) {
@@ -50,21 +56,52 @@ func (f *fakeQueries) GetChatSession(ctx context.Context, id pgtype.UUID) (db.Ch
 	return f.chatSession, f.chatSessionErr
 }
 
-func (f *fakeQueries) TryInsertLarkInboundDedup(ctx context.Context, messageID string) (string, error) {
-	f.calledDedup++
-	if f.dedupErr != nil {
-		return "", f.dedupErr
+// ClaimLarkInboundDedup mirrors the production query's three outcomes:
+//
+//   - Row not present → INSERT succeeds → returns the row.
+//   - Row present, processed=false, dedupReclaim=true → staleness
+//     fallback re-takes the claim → returns the row.
+//   - Row present otherwise → ON CONFLICT WHERE filter excludes the
+//     UPDATE → RETURNING returns 0 rows → pgx.ErrNoRows.
+func (f *fakeQueries) ClaimLarkInboundDedup(ctx context.Context, messageID string) (db.LarkInboundMessageDedup, error) {
+	f.calledClaim++
+	if f.dedupClaimErr != nil {
+		return db.LarkInboundMessageDedup{}, f.dedupClaimErr
 	}
-	if f.dedupSeen == nil {
-		f.dedupSeen = map[string]struct{}{}
+	if f.dedup == nil {
+		f.dedup = map[string]bool{}
 	}
-	if _, hit := f.dedupSeen[messageID]; hit {
-		// Mirror the real query: ON CONFLICT DO NOTHING ... RETURNING
-		// surfaces pgx.ErrNoRows when the row already exists.
-		return "", pgx.ErrNoRows
+	processed, exists := f.dedup[messageID]
+	if !exists {
+		f.dedup[messageID] = false
+		return db.LarkInboundMessageDedup{MessageID: messageID}, nil
 	}
-	f.dedupSeen[messageID] = struct{}{}
-	return messageID, nil
+	if !processed && f.dedupReclaim {
+		// In-flight claim re-taken (staleness fallback in prod).
+		return db.LarkInboundMessageDedup{MessageID: messageID}, nil
+	}
+	return db.LarkInboundMessageDedup{}, pgx.ErrNoRows
+}
+
+func (f *fakeQueries) MarkLarkInboundDedupProcessed(ctx context.Context, messageID string) error {
+	f.calledMark++
+	if f.dedup == nil {
+		f.dedup = map[string]bool{}
+	}
+	f.dedup[messageID] = true
+	return nil
+}
+
+func (f *fakeQueries) ReleaseLarkInboundDedup(ctx context.Context, messageID string) error {
+	f.calledRelease++
+	if f.dedup == nil {
+		return nil
+	}
+	// Mirror the SQL guard: only delete unprocessed rows.
+	if processed, ok := f.dedup[messageID]; ok && !processed {
+		delete(f.dedup, messageID)
+	}
+	return nil
 }
 
 // fakeChat is a stub ChatSessionService that records what the
@@ -322,7 +359,7 @@ func TestDispatcher_DedupHitDoesNotEnqueue(t *testing.T) {
 	queries := &fakeQueries{
 		installationByApp: activeInstallation(),
 		userBinding:       boundUser(),
-		dedupSeen:         map[string]struct{}{"msg-dup": {}},
+		dedup:             map[string]bool{"msg-dup": true},
 	}
 	chat := &fakeChat{
 		ensureID: validUUID(0x66),
@@ -372,7 +409,7 @@ func TestDispatcher_DedupHitDoesNotEnqueue(t *testing.T) {
 func TestDispatcher_DedupBeforeGroupFilter(t *testing.T) {
 	queries := &fakeQueries{
 		installationByApp: activeInstallation(),
-		dedupSeen:         map[string]struct{}{"msg-replay": {}},
+		dedup:             map[string]bool{"msg-replay": true},
 	}
 	audit := &fakeAudit{}
 	d := &Dispatcher{Queries: queries, Audit: audit}
@@ -399,7 +436,7 @@ func TestDispatcher_DedupBeforeIdentityCheck(t *testing.T) {
 	queries := &fakeQueries{
 		installationByApp: activeInstallation(),
 		userBindingErr:    pgx.ErrNoRows, // unbound — would normally trigger OutcomeNeedsBinding
-		dedupSeen:         map[string]struct{}{"msg-replay": {}},
+		dedup:             map[string]bool{"msg-replay": true},
 	}
 	audit := &fakeAudit{}
 	d := &Dispatcher{Queries: queries, Audit: audit}
@@ -606,5 +643,341 @@ func TestDispatcher_InfraFailureSurfacesError(t *testing.T) {
 	}
 	if !errors.Is(err, infraErr) {
 		t.Fatalf("infra error should propagate (errors.Is), got %v", err)
+	}
+}
+
+// TestDispatcher_EnsureChatSessionFailureReleasesClaim is the
+// regression for the dedup-blocker Elon flagged in PR #3277: the
+// pre-fix Dispatcher inserted the dedup row before EnsureChatSession,
+// so an infra error in EnsureChatSession would leave a permanent
+// dedup row behind and the WS adapter's retry would be mis-classified
+// as a duplicate — the user's message would be silently lost.
+//
+// With the two-phase claim/Release contract, the first attempt's
+// claim is released, and the retry must observe a fresh first
+// delivery: identity check + EnsureChatSession + AppendUserMessage
+// run normally, no duplicate drop.
+func TestDispatcher_EnsureChatSessionFailureReleasesClaim(t *testing.T) {
+	sessionID := validUUID(0x66)
+	queries := &fakeQueries{
+		installationByApp: activeInstallation(),
+		userBinding:       boundUser(),
+		chatSession:       db.ChatSession{ID: sessionID, AgentID: validUUID(0x33)},
+	}
+	chat := &fakeChat{
+		ensureID:  sessionID,
+		ensureErr: errors.New("ensure chat session: connection refused"),
+	}
+	d := &Dispatcher{
+		Queries:     queries,
+		Chat:        chat,
+		Audit:       &fakeAudit{},
+		TaskService: &fakeEnqueuer{task: db.AgentTaskQueue{ID: validUUID(0x77)}},
+	}
+
+	// First attempt — infra error in EnsureChatSession.
+	_, err := d.Handle(context.Background(), InboundMessage{
+		AppID:        "ok",
+		ChatType:     ChatTypeP2P,
+		SenderOpenID: "ou_user_a",
+		Body:         "hi",
+		MessageID:    "msg-retry",
+	})
+	if err == nil {
+		t.Fatalf("first attempt should surface ensure-chat-session error, got nil")
+	}
+	if queries.calledMark != 0 {
+		t.Fatalf("must not mark processed when no durable side effect landed; calledMark=%d", queries.calledMark)
+	}
+	if queries.calledRelease != 1 {
+		t.Fatalf("must release the claim on pre-durable infra error; calledRelease=%d", queries.calledRelease)
+	}
+	if _, present := queries.dedup["msg-retry"]; present {
+		t.Fatalf("release must delete the in-flight claim row; dedup=%+v", queries.dedup)
+	}
+
+	// Retry — same message_id, ensure succeeds this time. The claim
+	// was released, so the retry must be able to re-claim and run
+	// the full ingest pipeline. The bug being regressed would have
+	// caused a DropReasonDuplicate here.
+	chat.ensureErr = nil
+	res, err := d.Handle(context.Background(), InboundMessage{
+		AppID:        "ok",
+		ChatType:     ChatTypeP2P,
+		SenderOpenID: "ou_user_a",
+		Body:         "hi",
+		MessageID:    "msg-retry",
+	})
+	if err != nil {
+		t.Fatalf("retry should succeed, got %v", err)
+	}
+	if res.Outcome != OutcomeIngested {
+		t.Fatalf("retry must ingest; got outcome=%q reason=%q", res.Outcome, res.DropReason)
+	}
+	if chat.calledAppend != 1 {
+		t.Fatalf("retry must reach AppendUserMessage; calledAppend=%d", chat.calledAppend)
+	}
+	if queries.calledMark != 1 {
+		t.Fatalf("retry must mark processed; calledMark=%d", queries.calledMark)
+	}
+	if processed, ok := queries.dedup["msg-retry"]; !ok || !processed {
+		t.Fatalf("retry must finalize claim as processed; dedup=%+v", queries.dedup)
+	}
+
+	// A third attempt with the same message_id (post-success replay)
+	// must now be a duplicate-drop — the Mark from the retry is the
+	// terminal state.
+	queries.calledClaim = 0
+	chat.calledAppend = 0
+	res, err = d.Handle(context.Background(), InboundMessage{
+		AppID:        "ok",
+		ChatType:     ChatTypeP2P,
+		SenderOpenID: "ou_user_a",
+		Body:         "hi",
+		MessageID:    "msg-retry",
+	})
+	if err != nil {
+		t.Fatalf("post-success replay should not error, got %v", err)
+	}
+	if res.Outcome != OutcomeDropped || res.DropReason != DropReasonDuplicate {
+		t.Fatalf("post-success replay must duplicate-drop; got %+v", res)
+	}
+	if chat.calledAppend != 0 {
+		t.Fatalf("post-success replay must not re-append; calledAppend=%d", chat.calledAppend)
+	}
+}
+
+// TestDispatcher_AppendUserMessageFailureReleasesClaim is the
+// regression for the second variant of the dedup blocker: an infra
+// error from AppendUserMessage (e.g. tx commit failure) must also
+// release the claim so a retry can re-ingest. AppendUserMessage's
+// transaction is atomic — an error means rollback, no chat_message
+// landed.
+func TestDispatcher_AppendUserMessageFailureReleasesClaim(t *testing.T) {
+	sessionID := validUUID(0x66)
+	queries := &fakeQueries{
+		installationByApp: activeInstallation(),
+		userBinding:       boundUser(),
+		chatSession:       db.ChatSession{ID: sessionID, AgentID: validUUID(0x33)},
+	}
+	chat := &fakeChat{
+		ensureID:  sessionID,
+		appendErr: errors.New("create chat message: connection refused"),
+	}
+	d := &Dispatcher{
+		Queries:     queries,
+		Chat:        chat,
+		Audit:       &fakeAudit{},
+		TaskService: &fakeEnqueuer{task: db.AgentTaskQueue{ID: validUUID(0x77)}},
+	}
+
+	// First attempt — append fails.
+	_, err := d.Handle(context.Background(), InboundMessage{
+		AppID:        "ok",
+		ChatType:     ChatTypeP2P,
+		SenderOpenID: "ou_user_a",
+		Body:         "hi",
+		MessageID:    "msg-append-retry",
+	})
+	if err == nil {
+		t.Fatalf("first attempt should surface append error, got nil")
+	}
+	if queries.calledMark != 0 {
+		t.Fatalf("must not mark processed when AppendUserMessage rolled back; calledMark=%d", queries.calledMark)
+	}
+	if queries.calledRelease != 1 {
+		t.Fatalf("must release the claim; calledRelease=%d", queries.calledRelease)
+	}
+
+	// Retry — same message_id, append succeeds.
+	chat.appendErr = nil
+	res, err := d.Handle(context.Background(), InboundMessage{
+		AppID:        "ok",
+		ChatType:     ChatTypeP2P,
+		SenderOpenID: "ou_user_a",
+		Body:         "hi",
+		MessageID:    "msg-append-retry",
+	})
+	if err != nil {
+		t.Fatalf("retry should succeed, got %v", err)
+	}
+	if res.Outcome != OutcomeIngested {
+		t.Fatalf("retry must ingest; got %+v", res)
+	}
+	if chat.calledAppend != 2 {
+		t.Fatalf("expected exactly two append attempts (1 failed + 1 retry); calledAppend=%d", chat.calledAppend)
+	}
+}
+
+// TestDispatcher_DurableErrorMarksClaim pins the inverse of the
+// release path: when AppendUserMessage has succeeded (chat_message
+// committed) but a downstream step returns an error, the dispatcher
+// MUST mark the claim processed. Otherwise a replay would re-process
+// the message and write a second chat_message row.
+func TestDispatcher_DurableErrorMarksClaim(t *testing.T) {
+	sessionID := validUUID(0x66)
+	queries := &fakeQueries{
+		installationByApp: activeInstallation(),
+		userBinding:       boundUser(),
+		chatSession:       db.ChatSession{ID: sessionID, AgentID: validUUID(0x33)},
+	}
+	chat := &fakeChat{
+		ensureID:     sessionID,
+		appendResult: AppendResult{},
+	}
+	infraErr := errors.New("create chat task: connection refused")
+	d := &Dispatcher{
+		Queries:     queries,
+		Chat:        chat,
+		Audit:       &fakeAudit{},
+		TaskService: &fakeEnqueuer{err: infraErr},
+	}
+
+	_, err := d.Handle(context.Background(), InboundMessage{
+		AppID:        "ok",
+		ChatType:     ChatTypeP2P,
+		SenderOpenID: "ou_user_a",
+		Body:         "hi",
+		MessageID:    "msg-durable-err",
+	})
+	if !errors.Is(err, infraErr) {
+		t.Fatalf("expected infra error to propagate, got %v", err)
+	}
+	if queries.calledRelease != 0 {
+		t.Fatalf("must not release: chat_message already committed; calledRelease=%d", queries.calledRelease)
+	}
+	if queries.calledMark != 1 {
+		t.Fatalf("must mark processed: chat_message committed before the enqueue error; calledMark=%d", queries.calledMark)
+	}
+	if processed, ok := queries.dedup["msg-durable-err"]; !ok || !processed {
+		t.Fatalf("dedup row must end up processed=true; got %+v", queries.dedup)
+	}
+}
+
+// TestDispatcher_DropMarksClaim pins that audit-drop branches (group
+// filter, unbound user) finalize their claim as processed, so a
+// reconnect replay does NOT re-write the audit row or re-fire any
+// binding-prompt side effect. This is the "no audit / card spam"
+// invariant from §4.3.
+func TestDispatcher_DropMarksClaim(t *testing.T) {
+	queries := &fakeQueries{
+		installationByApp: activeInstallation(),
+		userBindingErr:    pgx.ErrNoRows,
+	}
+	audit := &fakeAudit{}
+	d := &Dispatcher{Queries: queries, Audit: audit}
+
+	_, _ = d.Handle(context.Background(), InboundMessage{
+		AppID:        "ok",
+		ChatType:     ChatTypeP2P,
+		SenderOpenID: "ou_user_a",
+		MessageID:    "msg-unbound",
+	})
+	if queries.calledMark != 1 {
+		t.Fatalf("unbound-user drop must mark claim processed; calledMark=%d", queries.calledMark)
+	}
+	if queries.calledRelease != 0 {
+		t.Fatalf("unbound-user drop must not release; calledRelease=%d", queries.calledRelease)
+	}
+}
+
+// TestDispatcher_EmptyMessageIDSkipsDedup pins that non-message
+// events (no MessageID) bypass dedup entirely — there is no key to
+// deduplicate by, and the dispatcher must not call Claim / Mark /
+// Release for them.
+func TestDispatcher_EmptyMessageIDSkipsDedup(t *testing.T) {
+	queries := &fakeQueries{
+		installationByApp: activeInstallation(),
+	}
+	d := &Dispatcher{Queries: queries, Audit: &fakeAudit{}}
+
+	_, _ = d.Handle(context.Background(), InboundMessage{
+		AppID:    "ok",
+		ChatType: ChatTypeGroup, // group filter drops it
+		// MessageID intentionally empty
+	})
+	if queries.calledClaim != 0 || queries.calledMark != 0 || queries.calledRelease != 0 {
+		t.Fatalf("empty MessageID must skip dedup entirely; claim=%d mark=%d release=%d",
+			queries.calledClaim, queries.calledMark, queries.calledRelease)
+	}
+}
+
+// TestDispatcher_InFlightClaimDropsReplay covers the "another worker
+// is processing" branch: a fresh in-flight claim (processed=false,
+// not yet stale) must duplicate-drop a concurrent replay, NOT
+// re-process. This is the protection against two replicas
+// simultaneously consuming the same Lark event during a brief
+// double-leased window.
+func TestDispatcher_InFlightClaimDropsReplay(t *testing.T) {
+	queries := &fakeQueries{
+		installationByApp: activeInstallation(),
+		userBinding:       boundUser(),
+		// In-flight claim (processed=false) and reclaim disabled
+		// (simulates "the row is fresh — not stale yet").
+		dedup: map[string]bool{"msg-inflight": false},
+	}
+	chat := &fakeChat{}
+	d := &Dispatcher{
+		Queries:     queries,
+		Chat:        chat,
+		Audit:       &fakeAudit{},
+		TaskService: &fakeEnqueuer{},
+	}
+
+	res, err := d.Handle(context.Background(), InboundMessage{
+		AppID:        "ok",
+		ChatType:     ChatTypeP2P,
+		SenderOpenID: "ou_user_a",
+		Body:         "race",
+		MessageID:    "msg-inflight",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if res.Outcome != OutcomeDropped || res.DropReason != DropReasonDuplicate {
+		t.Fatalf("in-flight claim must drop the replay; got %+v", res)
+	}
+	if chat.calledEnsure != 0 || chat.calledAppend != 0 {
+		t.Fatalf("in-flight drop must short-circuit before chat lookup; ensure=%d append=%d",
+			chat.calledEnsure, chat.calledAppend)
+	}
+}
+
+// TestDispatcher_StaleInFlightClaimReclaimable covers the
+// crash-recovery branch: an in-flight claim older than the staleness
+// TTL must be re-takeable so a process crash mid-pipeline does not
+// leave the message stuck forever.
+func TestDispatcher_StaleInFlightClaimReclaimable(t *testing.T) {
+	sessionID := validUUID(0x66)
+	queries := &fakeQueries{
+		installationByApp: activeInstallation(),
+		userBinding:       boundUser(),
+		chatSession:       db.ChatSession{ID: sessionID, AgentID: validUUID(0x33)},
+		dedup:             map[string]bool{"msg-stale": false},
+		dedupReclaim:      true, // simulates received_at < now() - 60s
+	}
+	chat := &fakeChat{ensureID: sessionID, appendResult: AppendResult{}}
+	d := &Dispatcher{
+		Queries:     queries,
+		Chat:        chat,
+		Audit:       &fakeAudit{},
+		TaskService: &fakeEnqueuer{task: db.AgentTaskQueue{ID: validUUID(0x77)}},
+	}
+
+	res, err := d.Handle(context.Background(), InboundMessage{
+		AppID:        "ok",
+		ChatType:     ChatTypeP2P,
+		SenderOpenID: "ou_user_a",
+		Body:         "after-crash retry",
+		MessageID:    "msg-stale",
+	})
+	if err != nil {
+		t.Fatalf("stale-claim retry should succeed, got %v", err)
+	}
+	if res.Outcome != OutcomeIngested {
+		t.Fatalf("stale-claim retry must ingest; got %+v", res)
+	}
+	if queries.calledMark != 1 {
+		t.Fatalf("stale-claim retry must mark processed; calledMark=%d", queries.calledMark)
 	}
 }
