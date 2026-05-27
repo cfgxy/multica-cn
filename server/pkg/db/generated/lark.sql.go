@@ -61,13 +61,14 @@ func (q *Queries) AcquireLarkWSLease(ctx context.Context, arg AcquireLarkWSLease
 
 const claimLarkInboundDedup = `-- name: ClaimLarkInboundDedup :one
 
-INSERT INTO lark_inbound_message_dedup (message_id)
-VALUES ($1)
+INSERT INTO lark_inbound_message_dedup (message_id, claim_token)
+VALUES ($1, gen_random_uuid())
 ON CONFLICT (message_id) DO UPDATE
-    SET received_at = now()
+    SET received_at = now(),
+        claim_token = gen_random_uuid()
     WHERE lark_inbound_message_dedup.processed_at IS NULL
       AND lark_inbound_message_dedup.received_at < now() - INTERVAL '60 seconds'
-RETURNING message_id, received_at, processed_at
+RETURNING message_id, received_at, processed_at, claim_token
 `
 
 // =====================
@@ -91,15 +92,29 @@ RETURNING message_id, received_at, processed_at
 //   - the row exists with processed_at IS NULL AND received_at within
 //     the last 60 seconds (another worker is actively processing).
 //
+// Owner fencing: every successful Claim mints a fresh UUID into
+// `claim_token`. The Caller passes that token to MarkLarkInbound-
+// DedupProcessed / ReleaseLarkInboundDedup; mismatched tokens are
+// ignored. A stale-reclaim that re-takes the row ROTATES the token,
+// so the previous (slow but still alive) worker can no longer Mark
+// the row — its same-tx Mark returns zero rows and the chat_message
+// write rolls back. See lark_inbound_message_dedup table comment.
+//
 // The dispatcher MUST follow up every successful claim with exactly one
 // of MarkLarkInboundDedupProcessed (durable outcome) or
-// ReleaseLarkInboundDedup (infra failure before durable outcome).
-// Otherwise the row sits as an in-flight claim and the next replay
-// attempt must wait for the staleness TTL.
+// ReleaseLarkInboundDedup (infra failure before durable outcome),
+// supplying the returned claim_token. Otherwise the row sits as an
+// in-flight claim and the next replay attempt must wait for the
+// staleness TTL.
 func (q *Queries) ClaimLarkInboundDedup(ctx context.Context, messageID string) (LarkInboundMessageDedup, error) {
 	row := q.db.QueryRow(ctx, claimLarkInboundDedup, messageID)
 	var i LarkInboundMessageDedup
-	err := row.Scan(&i.MessageID, &i.ReceivedAt, &i.ProcessedAt)
+	err := row.Scan(
+		&i.MessageID,
+		&i.ReceivedAt,
+		&i.ProcessedAt,
+		&i.ClaimToken,
+	)
 	return i, err
 }
 
@@ -791,11 +806,18 @@ func (q *Queries) ListLarkUserBindingsByInstallation(ctx context.Context, instal
 	return items, nil
 }
 
-const markLarkInboundDedupProcessed = `-- name: MarkLarkInboundDedupProcessed :exec
+const markLarkInboundDedupProcessed = `-- name: MarkLarkInboundDedupProcessed :execrows
 UPDATE lark_inbound_message_dedup
 SET processed_at = now()
 WHERE message_id = $1
+  AND claim_token = $2
+  AND processed_at IS NULL
 `
+
+type MarkLarkInboundDedupProcessedParams struct {
+	MessageID  string      `json:"message_id"`
+	ClaimToken pgtype.UUID `json:"claim_token"`
+}
 
 // Locks in a claim as permanently processed. Called by the dispatcher
 // after a durable outcome has been reached:
@@ -806,11 +828,22 @@ WHERE message_id = $1
 //     creation / task enqueue — the user-visible message is already in
 //     the session).
 //
-// After this call, future ClaimLarkInboundDedup attempts for the same
-// message_id return no rows, regardless of staleness.
-func (q *Queries) MarkLarkInboundDedupProcessed(ctx context.Context, messageID string) error {
-	_, err := q.db.Exec(ctx, markLarkInboundDedupProcessed, messageID)
-	return err
+// For the chat_message ingest path the dispatcher invokes this query
+// INSIDE the chat_message+session transaction (via qtx), so the
+// durable write and the Mark commit atomically. A token mismatch
+// (another worker has re-claimed the row in the meantime) returns
+// zero rows; the caller treats that as a lost claim and rolls back the
+// in-tx invocation, so no second chat_message is written.
+//
+// Guarded by processed_at IS NULL so a successful Mark is itself
+// idempotent: replaying it cannot resurrect a row that was already
+// terminal.
+func (q *Queries) MarkLarkInboundDedupProcessed(ctx context.Context, arg MarkLarkInboundDedupProcessedParams) (int64, error) {
+	result, err := q.db.Exec(ctx, markLarkInboundDedupProcessed, arg.MessageID, arg.ClaimToken)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const purgeExpiredLarkBindingTokens = `-- name: PurgeExpiredLarkBindingTokens :exec
@@ -881,11 +914,17 @@ func (q *Queries) RecordLarkInboundDrop(ctx context.Context, arg RecordLarkInbou
 	return err
 }
 
-const releaseLarkInboundDedup = `-- name: ReleaseLarkInboundDedup :exec
+const releaseLarkInboundDedup = `-- name: ReleaseLarkInboundDedup :execrows
 DELETE FROM lark_inbound_message_dedup
 WHERE message_id = $1
+  AND claim_token = $2
   AND processed_at IS NULL
 `
+
+type ReleaseLarkInboundDedupParams struct {
+	MessageID  string      `json:"message_id"`
+	ClaimToken pgtype.UUID `json:"claim_token"`
+}
 
 // Releases an in-flight claim. Called by the dispatcher when an infra
 // error occurred BEFORE any durable side effect (e.g. EnsureChatSession
@@ -893,10 +932,14 @@ WHERE message_id = $1
 // back). Deleting the row lets the WS adapter's retry re-acquire the
 // claim immediately, instead of waiting for the 60-second staleness
 // TTL. Guarded by processed_at IS NULL so an out-of-order Release
-// cannot undo a Mark.
-func (q *Queries) ReleaseLarkInboundDedup(ctx context.Context, messageID string) error {
-	_, err := q.db.Exec(ctx, releaseLarkInboundDedup, messageID)
-	return err
+// cannot undo a Mark; guarded by claim_token so a slow-but-alive worker
+// whose claim was reclaimed cannot delete the new holder's row.
+func (q *Queries) ReleaseLarkInboundDedup(ctx context.Context, arg ReleaseLarkInboundDedupParams) (int64, error) {
+	result, err := q.db.Exec(ctx, releaseLarkInboundDedup, arg.MessageID, arg.ClaimToken)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
 }
 
 const releaseLarkWSLease = `-- name: ReleaseLarkWSLease :exec

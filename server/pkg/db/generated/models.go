@@ -439,6 +439,7 @@ type LarkInboundMessageDedup struct {
 	MessageID   string             `json:"message_id"`
 	ReceivedAt  pgtype.Timestamptz `json:"received_at"`
 	ProcessedAt pgtype.Timestamptz `json:"processed_at"`
+	ClaimToken  pgtype.UUID        `json:"claim_token"`
 }
 
 type LarkInstallation struct {

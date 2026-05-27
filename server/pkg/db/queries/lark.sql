@@ -217,20 +217,30 @@ WHERE chat_session_id = $1;
 --   - the row exists with processed_at IS NULL AND received_at within
 --     the last 60 seconds (another worker is actively processing).
 --
+-- Owner fencing: every successful Claim mints a fresh UUID into
+-- `claim_token`. The Caller passes that token to MarkLarkInbound-
+-- DedupProcessed / ReleaseLarkInboundDedup; mismatched tokens are
+-- ignored. A stale-reclaim that re-takes the row ROTATES the token,
+-- so the previous (slow but still alive) worker can no longer Mark
+-- the row — its same-tx Mark returns zero rows and the chat_message
+-- write rolls back. See lark_inbound_message_dedup table comment.
+--
 -- The dispatcher MUST follow up every successful claim with exactly one
 -- of MarkLarkInboundDedupProcessed (durable outcome) or
--- ReleaseLarkInboundDedup (infra failure before durable outcome).
--- Otherwise the row sits as an in-flight claim and the next replay
--- attempt must wait for the staleness TTL.
-INSERT INTO lark_inbound_message_dedup (message_id)
-VALUES ($1)
+-- ReleaseLarkInboundDedup (infra failure before durable outcome),
+-- supplying the returned claim_token. Otherwise the row sits as an
+-- in-flight claim and the next replay attempt must wait for the
+-- staleness TTL.
+INSERT INTO lark_inbound_message_dedup (message_id, claim_token)
+VALUES ($1, gen_random_uuid())
 ON CONFLICT (message_id) DO UPDATE
-    SET received_at = now()
+    SET received_at = now(),
+        claim_token = gen_random_uuid()
     WHERE lark_inbound_message_dedup.processed_at IS NULL
       AND lark_inbound_message_dedup.received_at < now() - INTERVAL '60 seconds'
-RETURNING message_id, received_at, processed_at;
+RETURNING message_id, received_at, processed_at, claim_token;
 
--- name: MarkLarkInboundDedupProcessed :exec
+-- name: MarkLarkInboundDedupProcessed :execrows
 -- Locks in a claim as permanently processed. Called by the dispatcher
 -- after a durable outcome has been reached:
 --   - a drop audit row was persisted (group filter / unbound user /
@@ -239,22 +249,34 @@ RETURNING message_id, received_at, processed_at;
 --     path, including ingest paths that subsequently fail at issue
 --     creation / task enqueue — the user-visible message is already in
 --     the session).
--- After this call, future ClaimLarkInboundDedup attempts for the same
--- message_id return no rows, regardless of staleness.
+-- For the chat_message ingest path the dispatcher invokes this query
+-- INSIDE the chat_message+session transaction (via qtx), so the
+-- durable write and the Mark commit atomically. A token mismatch
+-- (another worker has re-claimed the row in the meantime) returns
+-- zero rows; the caller treats that as a lost claim and rolls back the
+-- in-tx invocation, so no second chat_message is written.
+--
+-- Guarded by processed_at IS NULL so a successful Mark is itself
+-- idempotent: replaying it cannot resurrect a row that was already
+-- terminal.
 UPDATE lark_inbound_message_dedup
 SET processed_at = now()
-WHERE message_id = $1;
+WHERE message_id = $1
+  AND claim_token = $2
+  AND processed_at IS NULL;
 
--- name: ReleaseLarkInboundDedup :exec
+-- name: ReleaseLarkInboundDedup :execrows
 -- Releases an in-flight claim. Called by the dispatcher when an infra
 -- error occurred BEFORE any durable side effect (e.g. EnsureChatSession
 -- or AppendUserMessage returned an error and its transaction rolled
 -- back). Deleting the row lets the WS adapter's retry re-acquire the
 -- claim immediately, instead of waiting for the 60-second staleness
 -- TTL. Guarded by processed_at IS NULL so an out-of-order Release
--- cannot undo a Mark.
+-- cannot undo a Mark; guarded by claim_token so a slow-but-alive worker
+-- whose claim was reclaimed cannot delete the new holder's row.
 DELETE FROM lark_inbound_message_dedup
 WHERE message_id = $1
+  AND claim_token = $2
   AND processed_at IS NULL;
 
 -- name: PurgeLarkInboundDedup :exec

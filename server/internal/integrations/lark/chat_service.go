@@ -18,6 +18,14 @@ import (
 // constant. See https://www.postgresql.org/docs/current/errcodes-appendix.html
 const pgSQLStateUniqueViolation = "23505"
 
+// ErrClaimLost signals that AppendUserMessage's in-tx dedup Mark
+// matched zero rows — another worker re-claimed the lark_inbound_-
+// message_dedup row while we were running (stale-reclaim race). The
+// transaction is rolled back, no chat_message lands, and the
+// Dispatcher treats this as a duplicate drop: the other worker is the
+// sole writer for this Lark message_id.
+var ErrClaimLost = errors.New("lark dedup claim lost to a concurrent reclaim")
+
 // isUniqueViolation reports whether err is a Postgres unique-violation
 // (SQLSTATE 23505). The lark_chat_session_binding
 // UNIQUE (installation_id, lark_chat_id) constraint surfaces this
@@ -154,16 +162,34 @@ func (s *chatSessionService) createSessionAndBinding(ctx context.Context, p Ensu
 // (when the body parses as `/issue …`) returns the parsed command so
 // the caller can dispatch through IssueService.
 //
-// Idempotency is enforced upstream by the Dispatcher's two-phase
-// ClaimLarkInboundDedup gate (see Dispatcher.Handle step 2): a
-// replayed message_id whose previous attempt reached a durable
-// outcome — i.e. successfully returned from this method — is dropped
-// before AppendUserMessage is ever called for it. A previous attempt
-// that crashed or returned an infra error before reaching this method
-// is explicitly released by the dispatcher, so the retry can re-claim
-// and re-run the insert. AppendUserMessage itself therefore does no
-// dedup; the transaction commit here is what triggers the dispatcher's
-// MarkLarkInboundDedupProcessed call on the way out.
+// Idempotency is enforced as a two-step contract with the Dispatcher's
+// ClaimLarkInboundDedup gate:
+//
+//  1. BEFORE this method is called, the Dispatcher claims an in-flight
+//     row in lark_inbound_message_dedup and gets back a `claim_token`.
+//     A replay whose previous attempt reached a durable outcome —
+//     processed_at IS NOT NULL — is dropped at that gate and never
+//     reaches AppendUserMessage at all.
+//
+//  2. INSIDE this method's chat_message+session transaction, when
+//     ClaimToken is supplied, we run MarkLarkInboundDedupProcessed
+//     gated on (message_id, claim_token, processed_at IS NULL). If
+//     another worker re-claimed the dedup row in the meantime — e.g.
+//     because we ran slowly past the 60-second staleness TTL — the
+//     row's claim_token has rotated, our UPDATE matches zero rows,
+//     and we return ErrClaimLost. The deferred Rollback then unwinds
+//     the chat_message + session writes, so no second chat_message
+//     lands for the same Lark message_id.
+//
+// Together these close the two windows that staleness-TTL alone left
+// open (stale-reclaim race + Mark-window crash): the durable write
+// and the dedup Mark commit (or roll back) atomically.
+//
+// Callers that pass an invalid (zero) ClaimToken get the legacy
+// behavior — just write the message — and are responsible for
+// finalizing the dedup row themselves. The dispatcher always passes
+// the live token; tests use the zero value when they want to exercise
+// the write path without modelling dedup.
 func (s *chatSessionService) AppendUserMessage(ctx context.Context, p AppendUserMessageParams) (AppendResult, error) {
 	tx, err := s.txStarter.Begin(ctx)
 	if err != nil {
@@ -198,11 +224,36 @@ func (s *chatSessionService) AppendUserMessage(ctx context.Context, p AppendUser
 		return AppendResult{}, fmt.Errorf("touch chat session: %w", err)
 	}
 
+	// In-tx dedup Mark, gated on the supplied claim token. The whole
+	// point of doing this here — rather than after Commit — is that
+	// the chat_message write and the Mark either commit atomically or
+	// roll back atomically. A stale-reclaim by another worker rotated
+	// claim_token, so our UPDATE matches zero rows; deferring to the
+	// post-method Mark path would leave the chat_message in place
+	// while another worker also wrote one.
+	markedInTx := false
+	if p.ClaimToken.Valid && p.LarkMessageID != "" {
+		rows, err := qtx.MarkLarkInboundDedupProcessed(ctx, db.MarkLarkInboundDedupProcessedParams{
+			MessageID:  p.LarkMessageID,
+			ClaimToken: p.ClaimToken,
+		})
+		if err != nil {
+			return AppendResult{}, fmt.Errorf("mark dedup processed: %w", err)
+		}
+		if rows == 0 {
+			// Another worker holds (or already finalized) this
+			// claim. Roll back via the deferred Rollback — the
+			// chat_message insert never commits.
+			return AppendResult{}, ErrClaimLost
+		}
+		markedInTx = true
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return AppendResult{}, fmt.Errorf("commit: %w", err)
 	}
 
-	return AppendResult{IssueCommand: cmd}, nil
+	return AppendResult{IssueCommand: cmd, DedupMarked: markedInTx}, nil
 }
 
 // titleFromPreviousMessage extracts a sensible title from a prior

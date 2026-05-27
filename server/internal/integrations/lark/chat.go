@@ -59,11 +59,23 @@ type EnsureChatSessionParams struct {
 // AppendUserMessageParams carries the inputs for ChatSessionService.AppendUserMessage.
 // Body is the (already-decoded) user-facing text. LarkMessageID is the
 // Lark-side message id used for idempotency dedup.
+//
+// ClaimToken is the owner-fencing token returned by the dispatcher's
+// ClaimLarkInboundDedup call. When ClaimToken.Valid is true,
+// AppendUserMessage runs MarkLarkInboundDedupProcessed INSIDE its own
+// chat_message+session transaction, gated on this token. A mismatched
+// token (another worker re-claimed the row while we were running)
+// returns ErrClaimLost and rolls back the entire transaction, so no
+// second chat_message can land for the same Lark message_id. Pass an
+// invalid (zero) UUID to skip the in-tx Mark — useful for tests and
+// for callers that have already finalized dedup outside the
+// transaction.
 type AppendUserMessageParams struct {
 	ChatSessionID pgtype.UUID
 	Sender        pgtype.UUID
 	Body          string
 	LarkMessageID string
+	ClaimToken    pgtype.UUID
 }
 
 // AppendResult reports what AppendUserMessage decided.
@@ -77,6 +89,12 @@ type AppendResult struct {
 	// with `/issue`. The caller passes this to
 	// service.IssueService.Create.
 	IssueCommand *IssueCommand
+	// DedupMarked is true when AppendUserMessage finalized the dedup
+	// claim in its own transaction (i.e. ClaimToken was supplied and
+	// the Mark succeeded). The dispatcher uses this to skip the
+	// post-pipeline finalize, since the row is already in its
+	// terminal state.
+	DedupMarked bool
 }
 
 // IssueCommand is the parsed shape of a user-typed `/issue ...`

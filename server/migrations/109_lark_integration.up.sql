@@ -138,8 +138,9 @@ CREATE INDEX idx_lark_chat_session_binding_session
 -- replays before any business logic runs. A periodic vacuum job (separate
 -- migration / cron) trims rows older than ~24h.
 --
--- Two-phase semantics (see ClaimLarkInboundDedup / MarkLarkInboundDedup-
--- Processed / ReleaseLarkInboundDedup in queries/lark.sql):
+-- Two-phase semantics with owner fencing (see ClaimLarkInboundDedup /
+-- MarkLarkInboundDedupProcessed / ReleaseLarkInboundDedup in
+-- queries/lark.sql):
 --
 --   processed_at IS NULL  → in-flight claim. The dispatcher holds a
 --     row but has not yet reached a durable outcome (audit-drop row
@@ -151,13 +152,35 @@ CREATE INDEX idx_lark_chat_session_binding_session
 --     durable outcome; future replays are dropped as duplicates
 --     regardless of staleness.
 --
--- This design is what prevents "first-attempt EnsureChatSession or
--- AppendUserMessage infra error → second attempt gets duplicate-dropped"
--- (the bug Elon flagged in PR #3277 review).
+--   claim_token → owner fence. Each Claim mints a fresh UUID; Mark and
+--     Release only succeed when the supplied token matches the row's
+--     current value. This closes two windows that staleness-TTL alone
+--     leaves open:
+--
+--       (1) Stale-reclaim race. Worker A claims with token T_A; it
+--           runs slowly past the 60s TTL but is still alive. Worker B
+--           re-takes the claim with a new token T_B. A reaches the
+--           chat_message+Mark transaction; the token-fenced Mark
+--           returns zero rows because the live token is now T_B, so
+--           A's tx ROLLS BACK and no second chat_message lands. B's
+--           run is the sole writer.
+--
+--       (2) Mark window. The dispatcher Marks the dedup row INSIDE
+--           the same tx as the chat_message + session touch, so the
+--           durable write and the Mark commit (or roll back)
+--           atomically. There is no "committed chat_message but not
+--           yet Marked" window for a crash or retry to exploit.
+--
+-- Together: "first-attempt EnsureChatSession or AppendUserMessage
+-- infra error → second attempt gets duplicate-dropped" is prevented by
+-- Release (claim is dropped on rollback); "stale reclaim while
+-- original worker is alive" and "process crash between durable commit
+-- and Mark" are prevented by owner fencing + same-tx Mark.
 CREATE TABLE lark_inbound_message_dedup (
     message_id    TEXT PRIMARY KEY,
     received_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
-    processed_at  TIMESTAMPTZ
+    processed_at  TIMESTAMPTZ,
+    claim_token   UUID NOT NULL DEFAULT gen_random_uuid()
 );
 
 CREATE INDEX idx_lark_inbound_dedup_received

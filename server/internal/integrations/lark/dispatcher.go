@@ -109,20 +109,33 @@ type ChatTaskEnqueuer interface {
 // needs for installation routing, identity lookup, dedup, and session
 // reload. *db.Queries satisfies it directly; tests substitute a fake.
 //
-// Dedup is two-phase: ClaimLarkInboundDedup acquires an in-flight
-// claim, then exactly one of MarkLarkInboundDedupProcessed (durable
-// outcome) or ReleaseLarkInboundDedup (infra failure before durable
-// outcome) finalizes it. The two-phase contract is what prevents an
-// infra error mid-pipeline from permanently swallowing a message — the
-// claim row is released so the next replay attempt can proceed instead
-// of being mis-classified as a duplicate.
+// Dedup is two-phase with owner fencing:
+//
+//   - ClaimLarkInboundDedup mints a fresh claim_token UUID on insert
+//     and on stale-reclaim re-take. The token is the dispatcher's
+//     ownership receipt for the row.
+//
+//   - MarkLarkInboundDedupProcessed and ReleaseLarkInboundDedup are
+//     fenced on (message_id, claim_token, processed_at IS NULL). A
+//     stale-reclaim that rotates the token invalidates earlier
+//     finalizers, so a slow-but-alive worker whose claim was taken
+//     over cannot stomp the new holder's row. Both queries return
+//     rowsAffected; zero means "your token is no longer the live one"
+//     and the dispatcher treats it as a no-op (not an error — the
+//     other worker is responsible for the row now).
+//
+//   - AppendUserMessage invokes the Mark INSIDE its chat_message tx
+//     when a claim token is supplied, so the durable write and the
+//     Mark commit atomically. That closes the "crashed between
+//     commit and Mark" window. See lark_inbound_message_dedup comment
+//     in 109_lark_integration.up.sql for the full invariant set.
 type DispatcherQueries interface {
 	GetLarkInstallationByAppID(ctx context.Context, appID string) (db.LarkInstallation, error)
 	GetLarkUserBindingByOpenID(ctx context.Context, arg db.GetLarkUserBindingByOpenIDParams) (db.LarkUserBinding, error)
 	GetChatSession(ctx context.Context, id pgtype.UUID) (db.ChatSession, error)
 	ClaimLarkInboundDedup(ctx context.Context, messageID string) (db.LarkInboundMessageDedup, error)
-	MarkLarkInboundDedupProcessed(ctx context.Context, messageID string) error
-	ReleaseLarkInboundDedup(ctx context.Context, messageID string) error
+	MarkLarkInboundDedupProcessed(ctx context.Context, arg db.MarkLarkInboundDedupProcessedParams) (int64, error)
+	ReleaseLarkInboundDedup(ctx context.Context, arg db.ReleaseLarkInboundDedupParams) (int64, error)
 }
 
 // Dispatcher is the single per-message entry point on the inbound
@@ -182,21 +195,29 @@ func (d *Dispatcher) Handle(ctx context.Context, msg InboundMessage) (DispatchRe
 		return d.drop(ctx, msg, inst.ID, DropReasonRevokedInstallation), nil
 	}
 
-	// 2. Two-phase dedup claim. Spec §4.3 puts this before group
-	//    filter and identity check so a WebSocket reconnect that
-	//    replays an event cannot:
+	// 2. Two-phase dedup claim with owner fencing. Spec §4.3 puts this
+	//    before group filter and identity check so a WebSocket
+	//    reconnect that replays an event cannot:
 	//      a) re-trigger the binding prompt for an unbound user, or
 	//      b) re-write the not_addressed_in_group / unbound_user audit
 	//         rows, or
 	//      c) re-touch the chat_session for a bound message.
 	//
+	//    The Claim returns claim_token; subsequent Mark / Release calls
+	//    are fenced on (message_id, claim_token), and AppendUserMessage
+	//    invokes the Mark INSIDE its chat_message tx, so the durable
+	//    write + Mark commit atomically. Stale-reclaim by another
+	//    worker rotates the token, which invalidates our same-tx Mark
+	//    (zero rows → ErrClaimLost → tx rollback).
+	//
 	//    Empty MessageID means the event has no Lark message_id at all
 	//    (non-message events, malformed payloads); skipping dedup is
 	//    the safe default — we have no key to deduplicate by, and no
 	//    claim to finalize at the end.
+	var claimToken pgtype.UUID
 	claimed := false
 	if msg.MessageID != "" {
-		_, err := d.Queries.ClaimLarkInboundDedup(ctx, msg.MessageID)
+		claim, err := d.Queries.ClaimLarkInboundDedup(ctx, msg.MessageID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				// Either the row is processed_at IS NOT NULL
@@ -207,44 +228,75 @@ func (d *Dispatcher) Handle(ctx context.Context, msg InboundMessage) (DispatchRe
 			}
 			return DispatchResult{}, fmt.Errorf("dedup claim: %w", err)
 		}
+		claimToken = claim.ClaimToken
 		claimed = true
 	}
 
-	res, durable, err := d.processClaimed(ctx, msg, inst)
+	res, finalize, err := d.processClaimed(ctx, msg, inst, claimToken)
 
 	if claimed {
-		// Finalize exactly once. The decision rule is "was a durable
-		// outcome reached" rather than "did Handle return nil err",
-		// because some error paths (e.g. ErrEmptyIssueTitle wrapped
-		// after AppendUserMessage already committed) sit *after* a
-		// chat_message has already landed and must NOT be re-processed
-		// on a subsequent replay.
-		d.finalizeDedupClaim(ctx, msg.MessageID, durable)
+		d.applyFinalize(ctx, msg.MessageID, claimToken, finalize)
+	}
+
+	// ErrClaimLost is the dispatcher's signal that another worker
+	// holds the claim. Surface it as a duplicate drop to the caller —
+	// nothing else needs to happen, and the audit row was already
+	// written by the in-tx rollback path's caller (see processClaimed).
+	if errors.Is(err, ErrClaimLost) {
+		return d.drop(ctx, msg, inst.ID, DropReasonDuplicate), nil
 	}
 
 	return res, err
 }
 
-// processClaimed runs the post-dedup pipeline. It returns (result,
-// durable, error) where durable=true means the run produced at least
-// one persisted, user-visible side effect (audit drop row OR
-// chat_message + session touch). The caller uses this to decide
-// whether to Mark or Release the dedup claim.
+// dedupFinalize captures the dispatcher's instruction to applyFinalize
+// after processClaimed returns. The three states correspond to the
+// three terminal positions in the inbound pipeline:
+//
+//   - finalizeMark: a durable side effect landed OUTSIDE
+//     AppendUserMessage's tx (audit drop row, or a post-AppendUser-
+//     Message error that left the chat_message committed). Token-
+//     fenced Mark locks the row terminal.
+//
+//   - finalizeRelease: the run did not reach durability. Delete the
+//     in-flight row so the WS adapter's retry can re-claim it
+//     immediately instead of waiting for the 60s staleness TTL.
+//
+//   - finalizeNone: AppendUserMessage already finalized the row in
+//     its own tx (success → Mark in-tx; ErrClaimLost → another worker
+//     owns it). The dispatcher does not touch the row again.
+type dedupFinalize int
+
+const (
+	finalizeNone dedupFinalize = iota
+	finalizeMark
+	finalizeRelease
+)
+
+// processClaimed runs the post-dedup pipeline. It returns the typed
+// dispatch result, a dedupFinalize directive telling the caller how to
+// land the claim row, and any error.
 //
 // Boundary contract per step:
 //
-//   - Group filter / unbound-user drop → audit row written → durable.
-//   - EnsureChatSession error → tx rolled back, no durable side effect.
-//   - AppendUserMessage success → chat_message committed; everything
-//     past this point is durable, including subsequent error returns
-//     for /issue, session reload, and task enqueue.
-func (d *Dispatcher) processClaimed(ctx context.Context, msg InboundMessage, inst db.LarkInstallation) (DispatchResult, bool, error) {
+//   - Group filter / unbound-user drop → audit row written →
+//     finalizeMark.
+//   - EnsureChatSession error → tx rolled back, no durable side effect
+//     → finalizeRelease.
+//   - AppendUserMessage success → chat_message committed AND
+//     dedup row already Marked in the same tx → finalizeNone.
+//   - AppendUserMessage error → tx rolled back, no chat_message →
+//     finalizeRelease (ErrClaimLost is treated specially by Handle).
+//   - Post-AppendUserMessage error (issue create, session reload,
+//     task enqueue) → chat_message already committed but the
+//     in-tx Mark also already committed → finalizeNone.
+func (d *Dispatcher) processClaimed(ctx context.Context, msg InboundMessage, inst db.LarkInstallation, claimToken pgtype.UUID) (DispatchResult, dedupFinalize, error) {
 	// 3. Group-mention filter (group chats only). We do this BEFORE
 	//    identity check so that an unbound user's idle group chatter
 	//    never produces an "you need to bind" reply card spam — the
 	//    Bot is not addressed, so we say nothing.
 	if msg.ChatType == ChatTypeGroup && !msg.AddressedToBot {
-		return d.drop(ctx, msg, inst.ID, DropReasonNotAddressedInGroup), true, nil
+		return d.drop(ctx, msg, inst.ID, DropReasonNotAddressedInGroup), finalizeMark, nil
 	}
 
 	// 4. Identity check. A row in lark_user_binding means the open_id
@@ -269,9 +321,9 @@ func (d *Dispatcher) processClaimed(ctx context.Context, msg InboundMessage, ins
 				DropReason:     DropReasonUnboundUser,
 				InstallationID: inst.ID,
 				SenderOpenID:   msg.SenderOpenID,
-			}, true, nil
+			}, finalizeMark, nil
 		}
-		return DispatchResult{}, false, fmt.Errorf("load user binding: %w", err)
+		return DispatchResult{}, finalizeRelease, fmt.Errorf("load user binding: %w", err)
 	}
 
 	// 5. Resolve the chat_session. For group chats, the session
@@ -295,24 +347,47 @@ func (d *Dispatcher) processClaimed(ctx context.Context, msg InboundMessage, ins
 		// chat_session create + lark_chat_session_binding create are
 		// in a single tx; an error here means the tx rolled back and
 		// nothing landed. Safe to release the dedup claim.
-		return DispatchResult{}, false, fmt.Errorf("ensure chat session: %w", err)
+		return DispatchResult{}, finalizeRelease, fmt.Errorf("ensure chat session: %w", err)
 	}
 
-	// 6. Append message — the durable transition point. After this
-	//    returns nil, a chat_message row exists; any subsequent
-	//    failure must NOT release the dedup claim, or a replay would
-	//    re-write the same message into chat_session.
+	// 6. Append message + in-tx dedup Mark — the durable transition
+	//    point. After this returns nil the chat_message AND the dedup
+	//    Mark have committed atomically; any subsequent failure path
+	//    must return finalizeNone (the row is already terminal,
+	//    re-Marking is a no-op but re-Releasing would undo nothing
+	//    and we don't want to call DELETE on a Marked row).
+	//
+	//    ErrClaimLost = our token was rotated by a stale-reclaim mid-
+	//    flight; the deferred Rollback in AppendUserMessage already
+	//    undid the chat_message insert, so Handle treats this as a
+	//    duplicate drop. finalizeNone — the other holder owns the row.
 	appendRes, err := d.Chat.AppendUserMessage(ctx, AppendUserMessageParams{
 		ChatSessionID: sessionID,
 		Sender:        binding.MulticaUserID,
 		Body:          msg.Body,
 		LarkMessageID: msg.MessageID,
+		ClaimToken:    claimToken,
 	})
 	if err != nil {
+		if errors.Is(err, ErrClaimLost) {
+			return DispatchResult{}, finalizeNone, err
+		}
 		// AppendUserMessage's transaction either commits or rolls
 		// back atomically; an error means rollback, so no
 		// chat_message was written. Safe to release.
-		return DispatchResult{}, false, fmt.Errorf("append user message: %w", err)
+		return DispatchResult{}, finalizeRelease, fmt.Errorf("append user message: %w", err)
+	}
+
+	// Post-AppendUserMessage paths must NOT Release the claim, because
+	// the chat_message + dedup Mark are already committed. Mark-again
+	// is a no-op (the in-tx Mark already landed), so finalizeNone.
+	postAppendFinalize := finalizeNone
+	if !appendRes.DedupMarked {
+		// Defensive: the dispatcher always passes a valid claim token,
+		// but if a future caller wires AppendUserMessage with an
+		// invalid token the Mark would not have run in-tx. Fall back
+		// to the post-pipeline Mark so the row still terminates.
+		postAppendFinalize = finalizeMark
 	}
 
 	res := DispatchResult{
@@ -323,11 +398,12 @@ func (d *Dispatcher) processClaimed(ctx context.Context, msg InboundMessage, ins
 	}
 
 	// 7. /issue command, if present. chat_message is already durable
-	//    above; from here all error returns must signal durable=true.
+	//    above; from here all error returns must signal finalizeNone
+	//    (or finalizeMark in the defensive fallback above).
 	if appendRes.IssueCommand != nil {
 		issueRes, err := d.createIssueFromCommand(ctx, inst, binding.MulticaUserID, sessionID, *appendRes.IssueCommand)
 		if err != nil {
-			return DispatchResult{}, true, fmt.Errorf("create issue from command: %w", err)
+			return DispatchResult{}, postAppendFinalize, fmt.Errorf("create issue from command: %w", err)
 		}
 		res.IssueID = issueRes.Issue.ID
 		res.IssueNumber = issueRes.Issue.Number
@@ -345,37 +421,51 @@ func (d *Dispatcher) processClaimed(ctx context.Context, msg InboundMessage, ins
 	//    online; this path returns OutcomeIngested with a TaskID.
 	session, err := d.Queries.GetChatSession(ctx, sessionID)
 	if err != nil {
-		return DispatchResult{}, true, fmt.Errorf("reload chat session: %w", err)
+		return DispatchResult{}, postAppendFinalize, fmt.Errorf("reload chat session: %w", err)
 	}
 	task, err := d.TaskService.EnqueueChatTask(ctx, session)
 	if err != nil {
 		switch {
 		case errors.Is(err, service.ErrChatTaskAgentNoRuntime):
 			res.Outcome = OutcomeAgentOffline
-			return res, true, nil
+			return res, postAppendFinalize, nil
 		case errors.Is(err, service.ErrChatTaskAgentArchived):
 			res.Outcome = OutcomeAgentArchived
-			return res, true, nil
+			return res, postAppendFinalize, nil
 		default:
-			return DispatchResult{}, true, fmt.Errorf("enqueue chat task: %w", err)
+			return DispatchResult{}, postAppendFinalize, fmt.Errorf("enqueue chat task: %w", err)
 		}
 	}
 	res.TaskID = task.ID
-	return res, true, nil
+	return res, postAppendFinalize, nil
 }
 
-// finalizeDedupClaim flips the in-flight claim row to its terminal
-// state. Best-effort by design: a failure here cannot abort the
-// outcome (the user's message is already in chat_session or the audit
-// row already exists), and the worst case is a stuck in-flight row
-// that the 60-second staleness fallback in ClaimLarkInboundDedup
-// re-takes on retry.
-func (d *Dispatcher) finalizeDedupClaim(ctx context.Context, messageID string, durable bool) {
-	if durable {
-		_ = d.Queries.MarkLarkInboundDedupProcessed(ctx, messageID)
-		return
+// applyFinalize flips the in-flight claim row to its terminal state,
+// token-fenced so a slow-but-alive worker whose claim was reclaimed
+// cannot stomp the new holder's row.
+//
+// Best-effort by design for the I/O layer: a transport failure here
+// cannot abort the outcome (the user's message is already in
+// chat_session or the audit row already exists), and the worst case
+// is a stuck in-flight row that the 60-second staleness fallback in
+// ClaimLarkInboundDedup re-takes on retry. zero-rows-affected is the
+// EXPECTED outcome whenever our token was rotated; it is not an error.
+func (d *Dispatcher) applyFinalize(ctx context.Context, messageID string, claimToken pgtype.UUID, action dedupFinalize) {
+	switch action {
+	case finalizeMark:
+		_, _ = d.Queries.MarkLarkInboundDedupProcessed(ctx, db.MarkLarkInboundDedupProcessedParams{
+			MessageID:  messageID,
+			ClaimToken: claimToken,
+		})
+	case finalizeRelease:
+		_, _ = d.Queries.ReleaseLarkInboundDedup(ctx, db.ReleaseLarkInboundDedupParams{
+			MessageID:  messageID,
+			ClaimToken: claimToken,
+		})
+	case finalizeNone:
+		// AppendUserMessage already finalized the row in-tx, or our
+		// claim was lost to a concurrent reclaim. Do not touch it.
 	}
-	_ = d.Queries.ReleaseLarkInboundDedup(ctx, messageID)
 }
 
 func (d *Dispatcher) drop(ctx context.Context, msg InboundMessage, instID pgtype.UUID, reason DropReason) DispatchResult {

@@ -11,18 +11,31 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
+// fakeDedupRow is the test-side model of a lark_inbound_message_dedup
+// row. It tracks the three pieces of state that drive the dispatcher's
+// finalize logic: terminal flag (processed_at IS NOT NULL), the
+// currently-live claim_token, and a counter of how many distinct
+// claim_tokens have ever been minted for this message_id (used by
+// tests to assert that a stale-reclaim actually rotated the token).
+type fakeDedupRow struct {
+	processed bool
+	token     pgtype.UUID
+	// rotations is the number of times claim_token has been minted
+	// for this row (1 = inserted, 2+ = stale-reclaimed N-1 times).
+	rotations int
+}
+
 // fakeQueries is the unit-test seam for DispatcherQueries. Each field
 // is the canned response the fake returns from the corresponding
 // method; ErrNoRows variants pin specific failure modes.
 //
-// Dedup state is modeled accurately: each row in `dedup` is either
-// in-flight (processed=false) or terminal (processed=true), matching
-// the lark_inbound_message_dedup.processed_at semantics. Tests that
-// want to pre-seed a permanently-processed message (simulating a Lark
-// reconnect that replays an already-handled event) drop a `true` entry
-// into the map. Tests that want to exercise the in-flight-claim path
-// drop a `false` entry. Empty map → first delivery for every
-// message_id (the default).
+// Dedup state mirrors lark_inbound_message_dedup with owner fencing:
+// each row carries a current claim_token, and Mark/Release require a
+// matching token to succeed (zero rows otherwise, exactly like the
+// production query). Tests pre-seed terminal rows by writing
+// processed=true; tests exercising the in-flight branch write
+// processed=false. The default empty map means "first delivery for
+// every message_id".
 type fakeQueries struct {
 	installationByApp  db.LarkInstallation
 	installationErr    error
@@ -30,15 +43,24 @@ type fakeQueries struct {
 	userBindingErr     error
 	chatSession        db.ChatSession
 	chatSessionErr     error
-	dedup              map[string]bool // message_id → processed?
+	dedup              map[string]*fakeDedupRow
 	dedupClaimErr      error
 	dedupReclaim       bool // when true, in-flight rows are re-claimable (simulates staleness)
+	nextTokenByte      byte // monotonically incremented; ensures each minted token is distinct
 	calledUserBinding  int
 	calledChatSession  int
 	calledInstallation int
 	calledClaim        int
 	calledMark         int
 	calledRelease      int
+}
+
+// mintToken produces a deterministic, distinct token per call so
+// tests can compare them. Production uses gen_random_uuid(); the
+// fake only needs uniqueness, not randomness.
+func (f *fakeQueries) mintToken() pgtype.UUID {
+	f.nextTokenByte++
+	return validUUID(0xA0 + f.nextTokenByte)
 }
 
 func (f *fakeQueries) GetLarkInstallationByAppID(ctx context.Context, appID string) (db.LarkInstallation, error) {
@@ -58,9 +80,11 @@ func (f *fakeQueries) GetChatSession(ctx context.Context, id pgtype.UUID) (db.Ch
 
 // ClaimLarkInboundDedup mirrors the production query's three outcomes:
 //
-//   - Row not present → INSERT succeeds → returns the row.
+//   - Row not present → INSERT succeeds, mints a fresh claim_token →
+//     returns the row.
 //   - Row present, processed=false, dedupReclaim=true → staleness
-//     fallback re-takes the claim → returns the row.
+//     fallback re-takes the claim and ROTATES the claim_token →
+//     returns the row.
 //   - Row present otherwise → ON CONFLICT WHERE filter excludes the
 //     UPDATE → RETURNING returns 0 rows → pgx.ErrNoRows.
 func (f *fakeQueries) ClaimLarkInboundDedup(ctx context.Context, messageID string) (db.LarkInboundMessageDedup, error) {
@@ -69,48 +93,95 @@ func (f *fakeQueries) ClaimLarkInboundDedup(ctx context.Context, messageID strin
 		return db.LarkInboundMessageDedup{}, f.dedupClaimErr
 	}
 	if f.dedup == nil {
-		f.dedup = map[string]bool{}
+		f.dedup = map[string]*fakeDedupRow{}
 	}
-	processed, exists := f.dedup[messageID]
+	row, exists := f.dedup[messageID]
 	if !exists {
-		f.dedup[messageID] = false
-		return db.LarkInboundMessageDedup{MessageID: messageID}, nil
+		token := f.mintToken()
+		f.dedup[messageID] = &fakeDedupRow{token: token, rotations: 1}
+		return db.LarkInboundMessageDedup{MessageID: messageID, ClaimToken: token}, nil
 	}
-	if !processed && f.dedupReclaim {
-		// In-flight claim re-taken (staleness fallback in prod).
-		return db.LarkInboundMessageDedup{MessageID: messageID}, nil
+	if !row.processed && f.dedupReclaim {
+		// In-flight claim re-taken — rotate the token. This is what
+		// fences the previous worker out: their saved claim_token no
+		// longer matches the row's live one, so Mark/Release becomes
+		// a no-op for them and (for the in-tx Mark) the chat_message
+		// tx rolls back.
+		row.token = f.mintToken()
+		row.rotations++
+		return db.LarkInboundMessageDedup{MessageID: messageID, ClaimToken: row.token}, nil
 	}
 	return db.LarkInboundMessageDedup{}, pgx.ErrNoRows
 }
 
-func (f *fakeQueries) MarkLarkInboundDedupProcessed(ctx context.Context, messageID string) error {
+// MarkLarkInboundDedupProcessed mirrors the production UPDATE: only
+// the holder of the current claim_token can mark the row, and only
+// while it is still in-flight (processed_at IS NULL). Mismatched token
+// or already-terminal row returns 0 rows affected (and nil error) —
+// the dispatcher relies on this for the in-tx ErrClaimLost path.
+func (f *fakeQueries) MarkLarkInboundDedupProcessed(ctx context.Context, arg db.MarkLarkInboundDedupProcessedParams) (int64, error) {
 	f.calledMark++
 	if f.dedup == nil {
-		f.dedup = map[string]bool{}
+		return 0, nil
 	}
-	f.dedup[messageID] = true
-	return nil
+	row, ok := f.dedup[arg.MessageID]
+	if !ok {
+		return 0, nil
+	}
+	if row.processed {
+		return 0, nil
+	}
+	if row.token != arg.ClaimToken {
+		return 0, nil
+	}
+	row.processed = true
+	return 1, nil
 }
 
-func (f *fakeQueries) ReleaseLarkInboundDedup(ctx context.Context, messageID string) error {
+// ReleaseLarkInboundDedup mirrors the production DELETE: only the
+// holder of the current claim_token can release the row, and only
+// while it is still in-flight.
+func (f *fakeQueries) ReleaseLarkInboundDedup(ctx context.Context, arg db.ReleaseLarkInboundDedupParams) (int64, error) {
 	f.calledRelease++
 	if f.dedup == nil {
-		return nil
+		return 0, nil
 	}
-	// Mirror the SQL guard: only delete unprocessed rows.
-	if processed, ok := f.dedup[messageID]; ok && !processed {
-		delete(f.dedup, messageID)
+	row, ok := f.dedup[arg.MessageID]
+	if !ok {
+		return 0, nil
 	}
-	return nil
+	if row.processed {
+		return 0, nil
+	}
+	if row.token != arg.ClaimToken {
+		return 0, nil
+	}
+	delete(f.dedup, arg.MessageID)
+	return 1, nil
 }
 
 // fakeChat is a stub ChatSessionService that records what the
 // dispatcher asked of it and returns canned outcomes.
+//
+// When `queries` is non-nil and the dispatcher hands AppendUserMessage
+// a valid ClaimToken, the stub mirrors the production in-tx Mark: it
+// invokes fakeQueries.MarkLarkInboundDedupProcessed with the supplied
+// token before returning success. This is what reproduces the
+// stale-reclaim race in tests — if the token has been rotated by a
+// concurrent Claim, the Mark matches zero rows and AppendUserMessage
+// returns ErrClaimLost, exactly like the real chatSessionService's
+// rolled-back transaction.
+//
+// `beforeAppend` is a hook fired at the top of AppendUserMessage, used
+// by the stale-reclaim regression test to inject a concurrent reclaim
+// between the dispatcher's Claim and AppendUserMessage's in-tx Mark.
 type fakeChat struct {
 	ensureID         pgtype.UUID
 	ensureErr        error
 	appendResult     AppendResult
 	appendErr        error
+	queries          *fakeQueries           // when set, runs the in-tx Mark
+	beforeAppend     func(AppendUserMessageParams) // race-injection hook
 	calledEnsure     int
 	calledAppend     int
 	lastAppendParams AppendUserMessageParams
@@ -126,7 +197,30 @@ func (f *fakeChat) EnsureChatSession(ctx context.Context, p EnsureChatSessionPar
 func (f *fakeChat) AppendUserMessage(ctx context.Context, p AppendUserMessageParams) (AppendResult, error) {
 	f.calledAppend++
 	f.lastAppendParams = p
-	return f.appendResult, f.appendErr
+	if f.beforeAppend != nil {
+		f.beforeAppend(p)
+	}
+	if f.appendErr != nil {
+		return f.appendResult, f.appendErr
+	}
+	res := f.appendResult
+	// Mirror chatSessionService.AppendUserMessage: when the dispatcher
+	// supplies a claim token, Mark in-tx; zero rows ↔ stale-reclaim
+	// rotated the token under our feet, surface ErrClaimLost.
+	if f.queries != nil && p.ClaimToken.Valid && p.LarkMessageID != "" {
+		rows, err := f.queries.MarkLarkInboundDedupProcessed(ctx, db.MarkLarkInboundDedupProcessedParams{
+			MessageID:  p.LarkMessageID,
+			ClaimToken: p.ClaimToken,
+		})
+		if err != nil {
+			return AppendResult{}, err
+		}
+		if rows == 0 {
+			return AppendResult{}, ErrClaimLost
+		}
+		res.DedupMarked = true
+	}
+	return res, nil
 }
 
 type fakeAudit struct {
@@ -359,7 +453,7 @@ func TestDispatcher_DedupHitDoesNotEnqueue(t *testing.T) {
 	queries := &fakeQueries{
 		installationByApp: activeInstallation(),
 		userBinding:       boundUser(),
-		dedup:             map[string]bool{"msg-dup": true},
+		dedup:             map[string]*fakeDedupRow{"msg-dup": {processed: true, token: validUUID(0xAB)}},
 	}
 	chat := &fakeChat{
 		ensureID: validUUID(0x66),
@@ -409,7 +503,7 @@ func TestDispatcher_DedupHitDoesNotEnqueue(t *testing.T) {
 func TestDispatcher_DedupBeforeGroupFilter(t *testing.T) {
 	queries := &fakeQueries{
 		installationByApp: activeInstallation(),
-		dedup:             map[string]bool{"msg-replay": true},
+		dedup:             map[string]*fakeDedupRow{"msg-replay": {processed: true, token: validUUID(0xAB)}},
 	}
 	audit := &fakeAudit{}
 	d := &Dispatcher{Queries: queries, Audit: audit}
@@ -436,7 +530,7 @@ func TestDispatcher_DedupBeforeIdentityCheck(t *testing.T) {
 	queries := &fakeQueries{
 		installationByApp: activeInstallation(),
 		userBindingErr:    pgx.ErrNoRows, // unbound — would normally trigger OutcomeNeedsBinding
-		dedup:             map[string]bool{"msg-replay": true},
+		dedup:             map[string]*fakeDedupRow{"msg-replay": {processed: true, token: validUUID(0xAB)}},
 	}
 	audit := &fakeAudit{}
 	d := &Dispatcher{Queries: queries, Audit: audit}
@@ -720,7 +814,7 @@ func TestDispatcher_EnsureChatSessionFailureReleasesClaim(t *testing.T) {
 	if queries.calledMark != 1 {
 		t.Fatalf("retry must mark processed; calledMark=%d", queries.calledMark)
 	}
-	if processed, ok := queries.dedup["msg-retry"]; !ok || !processed {
+	if row, ok := queries.dedup["msg-retry"]; !ok || !row.processed {
 		t.Fatalf("retry must finalize claim as processed; dedup=%+v", queries.dedup)
 	}
 
@@ -849,7 +943,7 @@ func TestDispatcher_DurableErrorMarksClaim(t *testing.T) {
 	if queries.calledMark != 1 {
 		t.Fatalf("must mark processed: chat_message committed before the enqueue error; calledMark=%d", queries.calledMark)
 	}
-	if processed, ok := queries.dedup["msg-durable-err"]; !ok || !processed {
+	if row, ok := queries.dedup["msg-durable-err"]; !ok || !row.processed {
 		t.Fatalf("dedup row must end up processed=true; got %+v", queries.dedup)
 	}
 }
@@ -914,7 +1008,7 @@ func TestDispatcher_InFlightClaimDropsReplay(t *testing.T) {
 		userBinding:       boundUser(),
 		// In-flight claim (processed=false) and reclaim disabled
 		// (simulates "the row is fresh — not stale yet").
-		dedup: map[string]bool{"msg-inflight": false},
+		dedup: map[string]*fakeDedupRow{"msg-inflight": {processed: false, token: validUUID(0xAB)}},
 	}
 	chat := &fakeChat{}
 	d := &Dispatcher{
@@ -953,7 +1047,7 @@ func TestDispatcher_StaleInFlightClaimReclaimable(t *testing.T) {
 		installationByApp: activeInstallation(),
 		userBinding:       boundUser(),
 		chatSession:       db.ChatSession{ID: sessionID, AgentID: validUUID(0x33)},
-		dedup:             map[string]bool{"msg-stale": false},
+		dedup:             map[string]*fakeDedupRow{"msg-stale": {processed: false, token: validUUID(0xAB)}},
 		dedupReclaim:      true, // simulates received_at < now() - 60s
 	}
 	chat := &fakeChat{ensureID: sessionID, appendResult: AppendResult{}}
@@ -979,5 +1073,261 @@ func TestDispatcher_StaleInFlightClaimReclaimable(t *testing.T) {
 	}
 	if queries.calledMark != 1 {
 		t.Fatalf("stale-claim retry must mark processed; calledMark=%d", queries.calledMark)
+	}
+}
+
+// TestDispatcher_StaleReclaimRaceDoesNotDoubleWrite is the regression
+// for Elon's first must-fix on PR #3277 dedup: worker A claims a
+// dedup row at t=0 with token T_A, runs slowly past the 60-second
+// staleness TTL, and is still alive. Worker B (a replay) sees the row
+// as stale-reclaimable, takes the claim, rotates the token to T_B,
+// and runs the full ingest pipeline. A subsequently reaches its in-tx
+// Mark with the old T_A. WITHOUT owner fencing both A and B would
+// commit a chat_message for the same Lark message_id — the bug Elon
+// flagged. WITH owner fencing A's Mark matches zero rows, the in-tx
+// Mark returns ErrClaimLost, A's chat_message+session transaction
+// rolls back, and B is the sole writer.
+//
+// The test reproduces this by inverting the timeline: worker A is
+// Handle()'s active call, and worker B is injected by the
+// `beforeAppend` hook, which rotates the row's claim_token between
+// the dispatcher's ClaimLarkInboundDedup call and AppendUserMessage's
+// in-tx Mark. The hook fires exactly once so the second Handle()
+// continues normally.
+func TestDispatcher_StaleReclaimRaceDoesNotDoubleWrite(t *testing.T) {
+	sessionID := validUUID(0x66)
+	queries := &fakeQueries{
+		installationByApp: activeInstallation(),
+		userBinding:       boundUser(),
+		chatSession:       db.ChatSession{ID: sessionID, AgentID: validUUID(0x33)},
+	}
+	chat := &fakeChat{ensureID: sessionID, appendResult: AppendResult{}}
+	chat.queries = queries // model the production in-tx Mark
+	d := &Dispatcher{
+		Queries:     queries,
+		Chat:        chat,
+		Audit:       &fakeAudit{},
+		TaskService: &fakeEnqueuer{task: db.AgentTaskQueue{ID: validUUID(0x77)}},
+	}
+
+	// Inject worker B's reclaim. The hook fires while worker A's
+	// AppendUserMessage is running with its original (now-stale)
+	// token; ClaimLarkInboundDedup with dedupReclaim=true rotates the
+	// row's claim_token to T_B. When fakeChat then attempts the in-tx
+	// Mark with T_A it must match zero rows and return ErrClaimLost.
+	raceFired := false
+	originalToken := pgtype.UUID{}
+	chat.beforeAppend = func(p AppendUserMessageParams) {
+		if raceFired {
+			return
+		}
+		raceFired = true
+		originalToken = p.ClaimToken
+		// Make the existing in-flight row reclaimable, then have
+		// worker B re-Claim. This rotates claim_token under A's feet.
+		queries.dedupReclaim = true
+		if _, err := queries.ClaimLarkInboundDedup(context.Background(), p.LarkMessageID); err != nil {
+			t.Fatalf("worker-B reclaim setup failed: %v", err)
+		}
+		// Switch reclaim off so the dispatcher-level retry path (the
+		// second Handle below) doesn't keep rotating the token.
+		queries.dedupReclaim = false
+	}
+
+	res, err := d.Handle(context.Background(), InboundMessage{
+		AppID:        "ok",
+		ChatType:     ChatTypeP2P,
+		SenderOpenID: "ou_user_a",
+		Body:         "slow-worker A",
+		MessageID:    "msg-race",
+	})
+	if err != nil {
+		t.Fatalf("stale-reclaim race should surface as duplicate drop, not error; got %v", err)
+	}
+	if res.Outcome != OutcomeDropped || res.DropReason != DropReasonDuplicate {
+		t.Fatalf("worker A must observe duplicate drop after losing claim; got %+v", res)
+	}
+
+	// Critical regression assertion: worker A must NOT have committed
+	// a chat_message. AppendUserMessage was called (race hook fired),
+	// but its in-tx Mark matched zero rows, so the tx rolled back.
+	// The "chat_message committed" signal in this fake is appendResult
+	// — fakeChat returning success would have made calledAppend bump
+	// AND the row would have been marked under A's token; instead A
+	// got ErrClaimLost. To pin "no double write" we check that the
+	// row's processed_at was set by worker B's path (the rotated
+	// token, T_B), not by worker A's old token (T_A).
+	row, ok := queries.dedup["msg-race"]
+	if !ok {
+		t.Fatalf("dedup row must still exist after race; got %+v", queries.dedup)
+	}
+	if row.rotations < 2 {
+		t.Fatalf("worker B's reclaim must have rotated the token; rotations=%d", row.rotations)
+	}
+	if row.token == originalToken {
+		t.Fatalf("token must have rotated away from worker A's original; both=%v", originalToken)
+	}
+
+	// And the loser's audit row records duplicate (not double-ingest).
+	if chat.calledAppend != 1 {
+		t.Fatalf("worker A's append must have been attempted exactly once; calledAppend=%d", chat.calledAppend)
+	}
+
+	// A subsequent replay of the same message_id must still
+	// duplicate-drop — the row is in the in-flight state belonging to
+	// worker B's (uncompleted) run; the dispatcher cannot double-write
+	// even if B's process never finishes. We simulate that by leaving
+	// dedupReclaim=false so the row is treated as fresh in-flight.
+	chat.beforeAppend = nil
+	res2, err := d.Handle(context.Background(), InboundMessage{
+		AppID:        "ok",
+		ChatType:     ChatTypeP2P,
+		SenderOpenID: "ou_user_a",
+		Body:         "third-arrival replay",
+		MessageID:    "msg-race",
+	})
+	if err != nil {
+		t.Fatalf("post-race replay should not error, got %v", err)
+	}
+	if res2.Outcome != OutcomeDropped || res2.DropReason != DropReasonDuplicate {
+		t.Fatalf("post-race replay must duplicate-drop; got %+v", res2)
+	}
+}
+
+// TestDispatcher_InTxMarkPreventsPostCommitReclaim is the regression
+// for Elon's second must-fix on PR #3277 dedup: in the previous
+// design, a process that committed chat_message but crashed or failed
+// before MarkLarkInboundDedupProcessed left the dedup row in-flight;
+// 60 seconds later a retry would treat the row as stale, re-claim it,
+// and write a second chat_message. The fix moves Mark INSIDE the
+// chat_message+session transaction, so the durable write and the Mark
+// commit (or roll back) atomically — there is no window where
+// chat_message is committed but dedup is not.
+//
+// This test pins the invariant by simulating a successful in-tx Mark,
+// then "crashing" (Handle returns without further bookkeeping), then
+// replaying the same message_id and verifying it is duplicate-dropped
+// regardless of the staleness TTL setting.
+func TestDispatcher_InTxMarkPreventsPostCommitReclaim(t *testing.T) {
+	sessionID := validUUID(0x66)
+	queries := &fakeQueries{
+		installationByApp: activeInstallation(),
+		userBinding:       boundUser(),
+		chatSession:       db.ChatSession{ID: sessionID, AgentID: validUUID(0x33)},
+	}
+	chat := &fakeChat{ensureID: sessionID, appendResult: AppendResult{}}
+	chat.queries = queries
+	d := &Dispatcher{
+		Queries:     queries,
+		Chat:        chat,
+		Audit:       &fakeAudit{},
+		TaskService: &fakeEnqueuer{task: db.AgentTaskQueue{ID: validUUID(0x77)}},
+	}
+
+	res, err := d.Handle(context.Background(), InboundMessage{
+		AppID:        "ok",
+		ChatType:     ChatTypeP2P,
+		SenderOpenID: "ou_user_a",
+		Body:         "first delivery",
+		MessageID:    "msg-atomic",
+	})
+	if err != nil {
+		t.Fatalf("first delivery should succeed, got %v", err)
+	}
+	if res.Outcome != OutcomeIngested {
+		t.Fatalf("first delivery must ingest; got %+v", res)
+	}
+
+	// AppendUserMessage's in-tx Mark fired; the dispatcher's post-
+	// pipeline applyFinalize saw DedupMarked=true and skipped its
+	// own Mark call. Total fakeQueries.MarkLarkInboundDedupProcessed
+	// calls must therefore be exactly 1 — proves the in-tx path was
+	// the sole writer.
+	if queries.calledMark != 1 {
+		t.Fatalf("expected exactly one Mark call (in-tx only, no post-finalize duplicate); calledMark=%d",
+			queries.calledMark)
+	}
+	row, ok := queries.dedup["msg-atomic"]
+	if !ok || !row.processed {
+		t.Fatalf("dedup row must be terminal after in-tx Mark; got %+v", queries.dedup)
+	}
+
+	// Now simulate the dangerous scenario the OLD design failed: a
+	// retry replays the same message_id AFTER the staleness TTL would
+	// have expired. With the new design, processed_at IS NOT NULL
+	// shadows the staleness check, so even with dedupReclaim=true the
+	// Claim cannot re-acquire the row. The retry is a duplicate-drop.
+	queries.dedupReclaim = true
+	chat.calledAppend = 0
+	res2, err := d.Handle(context.Background(), InboundMessage{
+		AppID:        "ok",
+		ChatType:     ChatTypeP2P,
+		SenderOpenID: "ou_user_a",
+		Body:         "after-crash retry",
+		MessageID:    "msg-atomic",
+	})
+	if err != nil {
+		t.Fatalf("post-mark retry should not error, got %v", err)
+	}
+	if res2.Outcome != OutcomeDropped || res2.DropReason != DropReasonDuplicate {
+		t.Fatalf("post-mark retry must duplicate-drop; got %+v", res2)
+	}
+	if chat.calledAppend != 0 {
+		t.Fatalf("post-mark retry must short-circuit before AppendUserMessage; calledAppend=%d",
+			chat.calledAppend)
+	}
+	// The dedup row must remain processed=true and unrotated — the
+	// Claim hit the terminal-row branch (no UPDATE), so claim_token
+	// did NOT mint a new value.
+	if row, ok := queries.dedup["msg-atomic"]; !ok || !row.processed {
+		t.Fatalf("dedup row must stay terminal after replay; got %+v", queries.dedup)
+	}
+	if queries.dedup["msg-atomic"].rotations != 1 {
+		t.Fatalf("claim_token must not rotate when the row is already processed; rotations=%d",
+			queries.dedup["msg-atomic"].rotations)
+	}
+}
+
+// TestDispatcher_InTxMarkSucceedsAndSkipsPostFinalize is a positive
+// regression for the in-tx Mark path: when AppendUserMessage returns
+// DedupMarked=true the dispatcher must NOT issue an additional Mark
+// from applyFinalize. This is the contract that makes the new design
+// safe — calling Mark twice is benign at the SQL layer (the
+// processed_at IS NULL guard makes the second call a no-op), but the
+// extra round-trip would defeat the "in-tx atomic finalize" goal.
+func TestDispatcher_InTxMarkSucceedsAndSkipsPostFinalize(t *testing.T) {
+	sessionID := validUUID(0x66)
+	queries := &fakeQueries{
+		installationByApp: activeInstallation(),
+		userBinding:       boundUser(),
+		chatSession:       db.ChatSession{ID: sessionID, AgentID: validUUID(0x33)},
+	}
+	chat := &fakeChat{ensureID: sessionID, appendResult: AppendResult{}}
+	chat.queries = queries
+	d := &Dispatcher{
+		Queries:     queries,
+		Chat:        chat,
+		Audit:       &fakeAudit{},
+		TaskService: &fakeEnqueuer{task: db.AgentTaskQueue{ID: validUUID(0x77)}},
+	}
+
+	_, err := d.Handle(context.Background(), InboundMessage{
+		AppID:        "ok",
+		ChatType:     ChatTypeP2P,
+		SenderOpenID: "ou_user_a",
+		Body:         "hi",
+		MessageID:    "msg-in-tx",
+	})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if queries.calledMark != 1 {
+		t.Fatalf("exactly one Mark call expected (in-tx only); calledMark=%d", queries.calledMark)
+	}
+	// Verify the dispatcher did not also Release — applyFinalize must
+	// be a no-op (finalizeNone) when AppendUserMessage marked in-tx.
+	if queries.calledRelease != 0 {
+		t.Fatalf("dispatcher must not release after successful in-tx Mark; calledRelease=%d",
+			queries.calledRelease)
 	}
 }
