@@ -114,7 +114,12 @@ type Handler struct {
 	// zero key. Wired in cmd/server/router.go after handler.New.
 	LarkInstallations *lark.InstallationService
 	LarkBindingTokens *lark.BindingTokenService
-	cfg               Config
+	// LarkOAuth is nil when MULTICA_LARK_OAUTH_APP_ID (and friends) are
+	// not set. The manual-install HTTP path keeps working without it —
+	// only the new install start / callback endpoints short-circuit to
+	// 503 when LarkOAuth is nil.
+	LarkOAuth *lark.OAuthService
+	cfg       Config
 }
 
 func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *events.Bus, emailService *service.EmailService, store storage.Storage, cfSigner *auth.CloudFrontSigner, analyticsClient analytics.Client, cfg Config, daemonHubs ...*daemonws.Hub) *Handler {

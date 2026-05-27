@@ -3,7 +3,11 @@ package handler
 import (
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
+	"net/url"
+	"os"
+	"strings"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -274,4 +278,138 @@ func (h *Handler) RedeemLarkBindingToken(w http.ResponseWriter, r *http.Request)
 		InstallationID: uuidToString(redeemed.InstallationID),
 		LarkOpenID:     string(redeemed.LarkOpenID),
 	})
+}
+
+// StartLarkInstallResponse is the payload the agent detail "bind to
+// Lark" button consumes. The frontend renders `url` as a QR (and as a
+// clickable link fallback) so a phone user can scan it instead of
+// typing.
+type StartLarkInstallResponse struct {
+	URL        string `json:"url"`
+	Configured bool   `json:"configured"`
+}
+
+// StartLarkInstall (GET /api/workspaces/{id}/lark/install/start?agent_id=...)
+// returns the Lark OAuth authorization URL the user must open (or
+// scan as QR) to bind a Bot to the supplied agent. Admin-only at the
+// router. The state token signed inside the URL binds workspace +
+// agent + initiator, so the callback persists the installation
+// against the correct rows without trusting query params.
+func (h *Handler) StartLarkInstall(w http.ResponseWriter, r *http.Request) {
+	if h.LarkInstallations == nil {
+		writeError(w, http.StatusServiceUnavailable, "lark integration not configured (MULTICA_LARK_SECRET_KEY)")
+		return
+	}
+	if h.LarkOAuth == nil {
+		writeJSON(w, http.StatusOK, StartLarkInstallResponse{Configured: false})
+		return
+	}
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	wsUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workspace id")
+	if !ok {
+		return
+	}
+	agentIDStr := strings.TrimSpace(r.URL.Query().Get("agent_id"))
+	if agentIDStr == "" {
+		writeError(w, http.StatusBadRequest, "agent_id is required")
+		return
+	}
+	agentUUID, ok := parseUUIDOrBadRequest(w, agentIDStr, "agent_id")
+	if !ok {
+		return
+	}
+	// Reject install attempts against agents from other workspaces;
+	// the OAuth state would otherwise let one workspace admin install
+	// a Bot on another workspace's agent (the URL state is signed,
+	// but pre-state validation is what blocks the attempt earliest).
+	if _, err := h.Queries.GetAgentInWorkspace(r.Context(), db.GetAgentInWorkspaceParams{
+		ID:          agentUUID,
+		WorkspaceID: wsUUID,
+	}); err != nil {
+		writeError(w, http.StatusNotFound, "agent not found in this workspace")
+		return
+	}
+	installerUUID, ok := parseUUIDOrBadRequest(w, userID, "user id")
+	if !ok {
+		return
+	}
+	res, err := h.LarkOAuth.StartInstall(lark.StartInstallParams{
+		WorkspaceID: wsUUID,
+		AgentID:     agentUUID,
+		InitiatorID: installerUUID,
+	})
+	if err != nil {
+		if errors.Is(err, lark.ErrOAuthNotConfigured) {
+			writeJSON(w, http.StatusOK, StartLarkInstallResponse{Configured: false})
+			return
+		}
+		writeError(w, http.StatusInternalServerError, "failed to start install")
+		return
+	}
+	writeJSON(w, http.StatusOK, StartLarkInstallResponse{URL: res.URL, Configured: true})
+}
+
+// LarkInstallCallback (GET /api/lark/install/callback) is the redirect
+// destination Lark calls after a user authorizes the install. It is
+// outside the workspace-scoped group on purpose — the state token IS
+// the workspace credential here, the user may not currently have a
+// session header attached to this request, and the callback always
+// finishes with a frontend redirect (not a JSON body). Bouncing to
+// the frontend Settings → Lark tab matches the GitHub callback's
+// behavior and lets the existing settings page render success / error
+// copy without polling.
+func (h *Handler) LarkInstallCallback(w http.ResponseWriter, r *http.Request) {
+	frontend := strings.TrimSpace(os.Getenv("FRONTEND_ORIGIN"))
+	if frontend == "" {
+		frontend = "http://localhost:3000"
+	}
+	settingsURL := strings.TrimRight(frontend, "/") + "/settings?tab=lark"
+
+	if h.LarkInstallations == nil || h.LarkOAuth == nil {
+		http.Redirect(w, r, settingsURL+"&lark_error=not_configured", http.StatusFound)
+		return
+	}
+
+	q := r.URL.Query()
+	code := q.Get("code")
+	state := q.Get("state")
+	res, err := h.LarkOAuth.HandleCallback(r.Context(), lark.CallbackParams{
+		Code:  code,
+		State: state,
+	})
+	if err != nil {
+		reason := larkOAuthErrorReason(err)
+		slog.Warn("lark: oauth callback failed", "error", err, "reason", reason)
+		http.Redirect(w, r, settingsURL+"&lark_error="+url.QueryEscape(reason), http.StatusFound)
+		return
+	}
+
+	h.publish(protocol.EventLarkInstallationCreated, uuidToString(res.WorkspaceID), "system", "", map[string]any{
+		"installation_id": uuidToString(res.InstallationID),
+		"agent_id":        uuidToString(res.AgentID),
+	})
+
+	http.Redirect(w, r, settingsURL+"&lark_installed=1&installation="+url.QueryEscape(uuidToString(res.InstallationID)), http.StatusFound)
+}
+
+func larkOAuthErrorReason(err error) string {
+	switch {
+	case errors.Is(err, lark.ErrOAuthNotConfigured):
+		return "not_configured"
+	case errors.Is(err, lark.ErrMissingCode):
+		return "missing_code"
+	case errors.Is(err, lark.ErrInvalidState):
+		return "invalid_state"
+	case errors.Is(err, lark.ErrStateExpired):
+		return "state_expired"
+	case errors.Is(err, lark.ErrExchangeMissingAppID),
+		errors.Is(err, lark.ErrExchangeMissingAppSecret),
+		errors.Is(err, lark.ErrExchangeMissingBotOpenID):
+		return "exchange_incomplete"
+	default:
+		return "internal_error"
+	}
 }

@@ -174,6 +174,35 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				h.LarkInstallations = installSvc
 				h.LarkBindingTokens = lark.NewBindingTokenService(queries, pool)
 				slog.Info("lark integration enabled")
+
+				// OAuth install flow is independent of the at-rest key
+				// (it adds the user-facing "scan to bind" path on top of
+				// the manual-paste InstallationService). Operators who
+				// only want the manual path leave MULTICA_LARK_OAUTH_*
+				// unset and these handlers fall back to "not configured".
+				oauthCfg := lark.OAuthConfig{
+					AppID:              strings.TrimSpace(os.Getenv("MULTICA_LARK_OAUTH_APP_ID")),
+					AppSecret:          strings.TrimSpace(os.Getenv("MULTICA_LARK_OAUTH_APP_SECRET")),
+					RedirectURI:        strings.TrimSpace(os.Getenv("MULTICA_LARK_OAUTH_REDIRECT_URI")),
+					StateSigningSecret: strings.TrimSpace(os.Getenv("MULTICA_LARK_OAUTH_STATE_SECRET")),
+					AuthorizeBaseURL:   strings.TrimSpace(os.Getenv("MULTICA_LARK_OAUTH_AUTHORIZE_URL")),
+					FrontendSuccessURL: strings.TrimSpace(os.Getenv("MULTICA_LARK_OAUTH_SUCCESS_URL")),
+				}
+				if oauthCfg.Enabled() {
+					// The real APIClient lands in a follow-up; until
+					// then OAuth callbacks surface ErrAPIClientNotConfigured
+					// loudly instead of silently failing.
+					stub := lark.NewStubAPIClient(slog.Default())
+					oauthSvc, oerr := lark.NewOAuthService(oauthCfg, stub, installSvc)
+					if oerr != nil {
+						slog.Error("lark: OAuthService init failed; oauth disabled", "error", oerr)
+					} else {
+						h.LarkOAuth = oauthSvc
+						slog.Info("lark oauth enabled")
+					}
+				} else {
+					slog.Info("lark oauth disabled (MULTICA_LARK_OAUTH_APP_ID/_SECRET/_REDIRECT_URI/_STATE_SECRET incomplete)")
+				}
 			}
 		}
 	} else {
@@ -291,6 +320,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// HMAC-SHA256 signature in the handler) and post-install setup callback.
 	r.Post("/api/webhooks/github", h.HandleGitHubWebhook)
 	r.Get("/api/github/setup", h.GitHubSetupCallback)
+	// Lark PersonalAgent OAuth callback. Outside the authenticated group
+	// because Lark redirects the browser here with no Multica session
+	// header attached; the state token signed at StartLarkInstall IS
+	// the authorization (it carries the workspace, agent, and initiator
+	// UUIDs under HMAC).
+	r.Get("/api/lark/install/callback", h.LarkInstallCallback)
 
 	// Daemon API routes (require daemon token or valid user token)
 	r.Route("/api/daemon", func(r chi.Router) {
@@ -405,6 +440,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Use(middleware.RequireWorkspaceRoleFromURL(queries, "id", "owner", "admin"))
 					r.Post("/lark/installations", h.CreateLarkInstallation)
 					r.Delete("/lark/installations/{installationId}", h.RevokeLarkInstallation)
+					// "Bind to Lark" entry point — admin only because
+					// the resulting OAuth grant lands credentials in
+					// lark_installation against the picked agent. The
+					// callback (LarkInstallCallback) is workspace-less
+					// because Lark redirects without a session, but the
+					// state token signed here binds the right rows.
+					r.Get("/lark/install/start", h.StartLarkInstall)
 				})
 			})
 		})
