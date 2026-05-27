@@ -209,7 +209,7 @@ export function AgentDetailInspector({
 
       {/* Integrations — surfaces external-channel bind entry points
           (Lark Bot today; Slack / Discord in the future). The bind
-          button self-hides when the server-side OAuth-install
+          button self-hides when the server-side device-flow install
           capability gate is closed, so this section may render empty
           on deployments without a configured Lark app — that's
           intentional and matches the "don't surface a flow that will
