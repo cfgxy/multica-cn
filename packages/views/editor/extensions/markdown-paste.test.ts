@@ -178,6 +178,32 @@ describe("markdownPaste — code block context", () => {
     expectLiteralPaste(editor, text);
   });
 
+  it("falls back to literal when markdown parse drops content (e.g. <T>)", () => {
+    editor = makeEditor({
+      type: "doc",
+      content: [{ type: "paragraph" }],
+    });
+
+    editor.commands.setTextSelection(1);
+
+    const handled = paste(editor, "<T>");
+    expect(handled).toBe(true);
+    expect(editor.getText()).toBe("<T>");
+  });
+
+  it("falls back to literal for any unknown HTML-like tag", () => {
+    editor = makeEditor({
+      type: "doc",
+      content: [{ type: "paragraph" }],
+    });
+
+    editor.commands.setTextSelection(1);
+
+    const handled = paste(editor, "<MyComponent>");
+    expect(handled).toBe(true);
+    expect(editor.getText()).toBe("<MyComponent>");
+  });
+
   it("does not parse oversized bracketed plain text as JSON", () => {
     editor = makeEditor({
       type: "doc",

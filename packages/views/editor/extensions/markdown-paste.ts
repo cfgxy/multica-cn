@@ -112,6 +112,23 @@ export function createMarkdownPasteExtension() {
               // web pages): parse text/plain as Markdown.
               const json = editor.markdown.parse(text);
               const node = editor.schema.nodeFromJSON(json);
+
+              // CommonMark treats <word> as inline HTML (spec §6.6). When the
+              // entire input is an unknown HTML tag (e.g. <T>), the parser
+              // produces a doc with only an empty paragraph — all visible
+              // text was consumed as unrecognized HTML. Fall back to literal
+              // insertion so the user sees their text instead of nothing.
+              const first = node.content.firstChild;
+              const parsedEmpty =
+                node.content.childCount === 0 ||
+                (node.content.childCount === 1 &&
+                  first?.type.name === "paragraph" &&
+                  first.content.size === 0);
+              if (text.trim() && parsedEmpty) {
+                view.dispatch(view.state.tr.insertText(text));
+                return true;
+              }
+
               const slice = Slice.maxOpen(node.content);
               const tr = view.state.tr.replaceSelection(slice);
               view.dispatch(tr);
