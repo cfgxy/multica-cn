@@ -568,7 +568,7 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
                 </PillButton>
               }
             />
-            <PopoverContent align="start" className="w-72 p-2 space-y-2">
+            <PopoverContent side="top" align="start" className="w-72 p-2 space-y-2">
               {/* Source mode is binary — repo OR local directory, never both.
                   Local option is desktop-only because a local_directory
                   resource has to be pinned to a daemon_id, which doesn't
