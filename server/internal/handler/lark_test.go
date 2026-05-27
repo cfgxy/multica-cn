@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -14,12 +15,24 @@ import (
 
 // stubConfiguredAPIClient is the test seam that lets us simulate a
 // real Lark client being wired without dragging the transport in.
-// Its only behaviorally interesting method here is IsConfigured —
-// every other call returns ErrAPIClientNotConfigured (the test paths
-// that hit it would already be a misconfiguration).
-type stubConfiguredAPIClient struct{}
+// The behaviorally interesting methods here are IsConfigured and
+// SupportsOAuthInstall — flipped independently so tests can pin the
+// half-wired transitional state where outbound is functional but
+// OAuth exchange is not yet implemented. Every other call returns
+// ErrAPIClientNotConfigured (the test paths that hit it would
+// already be a misconfiguration).
+type stubConfiguredAPIClient struct {
+	// supportsOAuthInstall lets tests cover both the "outbound only"
+	// and "fully wired" capability states. Default zero-value is
+	// false, matching the real httpAPIClient's current behavior
+	// (ExchangeOAuthCode not yet implemented).
+	supportsOAuthInstall bool
+}
 
 func (stubConfiguredAPIClient) IsConfigured() bool { return true }
+func (s stubConfiguredAPIClient) SupportsOAuthInstall() bool {
+	return s.supportsOAuthInstall
+}
 func (stubConfiguredAPIClient) SendInteractiveCard(_ context.Context, _ lark.SendCardParams) (string, error) {
 	return "", lark.ErrAPIClientNotConfigured
 }
@@ -207,5 +220,101 @@ func TestListLarkInstallations_StubClientReportsInstallNotSupported(t *testing.T
 	}
 	if resp.InstallSupported {
 		t.Fatalf("install_supported must be false while only stub APIClient is wired")
+	}
+}
+
+// TestStartLarkInstall_TransportOnlyClientReportsNotConfigured pins
+// the must-fix from the Elon review: outbound HTTP transport being
+// wired (IsConfigured()==true) is NOT enough to flip the install
+// flow open. As long as the wired APIClient still reports
+// SupportsOAuthInstall()==false (ExchangeOAuthCode not yet
+// implemented), StartLarkInstall MUST short-circuit to
+// configured:false. Otherwise the user would scan the QR, authorize,
+// and get bounced back with a generic internal_error after the
+// callback's exchange step fails.
+func TestStartLarkInstall_TransportOnlyClientReportsNotConfigured(t *testing.T) {
+	h := &Handler{
+		// Transport wired (IsConfigured=true) but OAuth not implemented
+		// yet (SupportsOAuthInstall=false) — exactly the half-built
+		// state the real httpAPIClient is in until ExchangeOAuthCode
+		// lands.
+		LarkAPIClient: stubConfiguredAPIClient{supportsOAuthInstall: false},
+	}
+	h.LarkInstallations = &lark.InstallationService{}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/x/lark/install/start?agent_id=y", nil)
+	w := httptest.NewRecorder()
+	h.StartLarkInstall(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", w.Code, w.Body.String())
+	}
+	var resp StartLarkInstallResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.Configured {
+		t.Fatalf("configured must be false while SupportsOAuthInstall()==false; got %+v", resp)
+	}
+	if resp.URL != "" {
+		t.Fatalf("URL must be empty when not configured; got %q", resp.URL)
+	}
+}
+
+// TestListLarkInstallations_TransportOnlyClientReportsInstallNotSupported
+// is the listing-side counterpart: even with outbound transport wired,
+// install_supported must remain false until OAuth install is actually
+// supported by the APIClient. The frontend reads install_supported to
+// decide whether to render the agent-detail "Bind to Lark" button, so
+// a regression here would re-expose the broken scan-to-bind UI.
+//
+// Note: this test exercises the explicit LarkInstallations!=nil path
+// so the handler reaches the `install_supported` computation. The
+// other "stub returns false" test (above) covers the nil-installation
+// short-circuit case.
+func TestListLarkInstallations_TransportOnlyClientReportsInstallNotSupported(t *testing.T) {
+	h := &Handler{
+		LarkInstallations: nil, // forces the early-return branch, which
+		// also exposes install_supported. Keep the test reading the
+		// shape end-to-end so future refactors that move the field
+		// don't silently lose it.
+		LarkAPIClient: stubConfiguredAPIClient{supportsOAuthInstall: false},
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/workspaces/x/lark/installations", nil)
+	w := httptest.NewRecorder()
+	h.ListLarkInstallations(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	var resp struct {
+		InstallSupported bool `json:"install_supported"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if resp.InstallSupported {
+		t.Fatalf("install_supported must be false while SupportsOAuthInstall()==false")
+	}
+}
+
+// TestLarkOAuthErrorReason_APIClientNotConfigured pins the explicit
+// mapping from the must-fix: if the OAuth callback ever does reach
+// ExchangeOAuthCode (e.g. someone replayed a state URL while the
+// SupportsOAuthInstall gate was open earlier) and the call surfaces
+// ErrAPIClientNotConfigured, the redirect query string must carry a
+// distinct, user-meaningful reason — NOT the generic internal_error
+// that masks a known-unimplemented stage as a transient outage.
+func TestLarkOAuthErrorReason_APIClientNotConfigured(t *testing.T) {
+	// Bare sentinel.
+	if got := larkOAuthErrorReason(lark.ErrAPIClientNotConfigured); got != "oauth_exchange_unimplemented" {
+		t.Errorf("bare sentinel: got %q want oauth_exchange_unimplemented", got)
+	}
+	// Wrapped via fmt.Errorf("...: %w", ...) — this is exactly the
+	// shape HandleCallback wraps in (`fmt.Errorf("exchange oauth code:
+	// %w", err)`). The mapping uses errors.Is so wrapping must still
+	// land on the right reason; otherwise a regression here silently
+	// downgrades the error to internal_error.
+	wrapped := fmt.Errorf("exchange oauth code: %w", lark.ErrAPIClientNotConfigured)
+	if got := larkOAuthErrorReason(wrapped); got != "oauth_exchange_unimplemented" {
+		t.Errorf("wrapped sentinel: got %q want oauth_exchange_unimplemented", got)
 	}
 }

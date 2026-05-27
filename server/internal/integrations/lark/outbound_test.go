@@ -2,6 +2,7 @@ package lark
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"sync"
 	"testing"
@@ -76,7 +77,8 @@ type fakeAPIClient struct {
 	bindingSent []BindingPromptParams
 }
 
-func (f *fakeAPIClient) IsConfigured() bool { return true }
+func (f *fakeAPIClient) IsConfigured() bool        { return true }
+func (f *fakeAPIClient) SupportsOAuthInstall() bool { return true }
 
 func (f *fakeAPIClient) SendInteractiveCard(ctx context.Context, p SendCardParams) (string, error) {
 	f.mu.Lock()
@@ -271,5 +273,39 @@ func TestPatcherSwallowsInstallationLoadErrors(t *testing.T) {
 	defer api.mu.Unlock()
 	if len(api.sent) != 0 {
 		t.Fatalf("DB failure must not result in a card send; got %d", len(api.sent))
+	}
+}
+
+// TestDefaultRendererConfigCarriesUpdateMulti pins the streaming-card
+// contract: Lark refuses PatchInteractiveCard on a card whose config
+// does not declare update_multi=true. Since the Patcher's whole
+// raison d'être is to send a thinking card and then patch it forward
+// to streaming/final/error, ANY kind missing update_multi would make
+// the patch silently no-op against Lark while the local DB row still
+// flips. Hence the assertion covers every kind, not just the final
+// patched kinds.
+func TestDefaultRendererConfigCarriesUpdateMulti(t *testing.T) {
+	r := NewDefaultRenderer()
+	for _, kind := range []CardKind{CardKindThinking, CardKindRunning, CardKindFinal, CardKindError} {
+		t.Run(string(kind), func(t *testing.T) {
+			out, err := r.Render(RenderInput{Kind: kind, Content: "x", ErrorMessage: "y"})
+			if err != nil {
+				t.Fatalf("render: %v", err)
+			}
+			var doc map[string]any
+			if err := json.Unmarshal([]byte(out.JSON), &doc); err != nil {
+				t.Fatalf("decode card json: %v", err)
+			}
+			cfg, ok := doc["config"].(map[string]any)
+			if !ok {
+				t.Fatalf("missing config block: %v", doc)
+			}
+			if v, _ := cfg["update_multi"].(bool); !v {
+				t.Errorf("config.update_multi must be true so subsequent patches apply; got %v", cfg)
+			}
+			if v, _ := cfg["wide_screen_mode"].(bool); !v {
+				t.Errorf("config.wide_screen_mode regression: %v", cfg)
+			}
+		})
 	}
 }

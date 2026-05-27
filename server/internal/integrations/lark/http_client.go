@@ -120,10 +120,25 @@ type cachedToken struct {
 }
 
 // IsConfigured reports true: once this client exists at all, the
-// outbound transport path is wired. The stub returns false because
-// every call there errors with ErrAPIClientNotConfigured; the real
-// client is the inverse contract.
+// outbound transport path (send / patch / binding prompt) is wired.
+// The stub returns false because every call there errors with
+// ErrAPIClientNotConfigured; the real client is the inverse contract.
+//
+// IsConfigured deliberately does NOT speak to OAuth install
+// readiness — see SupportsOAuthInstall below for that gate.
 func (c *httpAPIClient) IsConfigured() bool { return true }
+
+// SupportsOAuthInstall is FALSE while ExchangeOAuthCode is left
+// returning ErrAPIClientNotConfigured. Outbound transport (send /
+// patch / binding prompt) is fully wired, but the PersonalAgent
+// install-time exchange response shape is not yet pinned against
+// the production endpoint; surfacing the install entry to users in
+// this half-built state would send them through a flow that is
+// guaranteed to fail at the exchange step. Once ExchangeOAuthCode
+// is implemented, this method flips to true and the handler-level
+// gates (`install_supported` field and StartLarkInstall) reveal
+// the bind UI without any additional knob.
+func (c *httpAPIClient) SupportsOAuthInstall() bool { return false }
 
 // tenantAccessToken returns a usable tenant_access_token for the
 // given installation, reusing a cached token while it is alive (minus

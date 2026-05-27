@@ -141,14 +141,17 @@ func (h *Handler) CreateLarkInstallation(w http.ResponseWriter, r *http.Request)
 //   - configured: at-rest encryption key is set (`LarkInstallations
 //     != nil`). When false, no install flow can succeed at all; the
 //     UI hides the tab.
-//   - install_supported: a real Lark APIClient is wired (not the
-//     stub). When false, the at-rest path works for already-installed
-//     bots but new installs via OAuth would fail at the exchange
-//     step; the UI hides install entry points (the Settings tab
-//     surfaces a "coming soon" notice and the agent-detail "Bind to
-//     Lark" button is hidden). This lets us land the install UI
-//     incrementally without exposing a flow that is guaranteed to
-//     fail end-to-end.
+//   - install_supported: the wired APIClient can carry the OAuth
+//     install flow end-to-end (it both has outbound transport AND
+//     implements ExchangeOAuthCode). When false, the at-rest path
+//     still works for already-installed bots but new installs via
+//     OAuth would fail at the exchange step; the UI hides install
+//     entry points (the Settings tab surfaces a "coming soon"
+//     notice and the agent-detail "Bind to Lark" button is hidden).
+//     This is sourced from APIClient.SupportsOAuthInstall — NOT
+//     IsConfigured — so a half-wired client that has outbound
+//     transport but no ExchangeOAuthCode implementation does not
+//     accidentally reveal the install UI.
 func (h *Handler) ListLarkInstallations(w http.ResponseWriter, r *http.Request) {
 	if h.LarkInstallations == nil {
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -174,7 +177,7 @@ func (h *Handler) ListLarkInstallations(w http.ResponseWriter, r *http.Request) 
 	writeJSON(w, http.StatusOK, map[string]any{
 		"installations":     out,
 		"configured":        true,
-		"install_supported": h.LarkAPIClient != nil && h.LarkAPIClient.IsConfigured(),
+		"install_supported": h.LarkAPIClient != nil && h.LarkAPIClient.SupportsOAuthInstall(),
 	})
 }
 
@@ -315,19 +318,18 @@ func (h *Handler) StartLarkInstall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusServiceUnavailable, "lark integration not configured (MULTICA_LARK_SECRET_KEY)")
 		return
 	}
-	// install_supported gate. We check the APIClient before LarkOAuth
-	// for two reasons:
-	//   1. Even with OAuth env set, if the underlying APIClient is
-	//      the stub (no real Lark HTTP transport wired yet), the
-	//      callback will fail at the exchange step. Reporting
-	//      `configured: false` here short-circuits the frontend
-	//      before it sends the user into a flow that is guaranteed
-	//      to break end-to-end.
-	//   2. It makes the test seam tractable: stub APIClient +
-	//      whatever LarkOAuth state produces a configured:false
-	//      response without requiring the test to fully construct
-	//      LarkOAuth (which needs a DB-backed InstallationService).
-	if h.LarkAPIClient == nil || !h.LarkAPIClient.IsConfigured() {
+	// OAuth-install capability gate. We consult
+	// APIClient.SupportsOAuthInstall — NOT IsConfigured — because the
+	// install flow needs ExchangeOAuthCode to actually be implemented,
+	// not merely "outbound transport is wired". A real HTTP client
+	// that has SendInteractiveCard / PatchInteractiveCard / binding
+	// prompt working but still returns ErrAPIClientNotConfigured from
+	// ExchangeOAuthCode reports IsConfigured()==true and
+	// SupportsOAuthInstall()==false; in that intermediate state we
+	// MUST short-circuit here so the user does not scan, authorize,
+	// and then get bounced back with a generic internal_error after
+	// the exchange step fails.
+	if h.LarkAPIClient == nil || !h.LarkAPIClient.SupportsOAuthInstall() {
 		writeJSON(w, http.StatusOK, StartLarkInstallResponse{Configured: false})
 		return
 	}
@@ -430,6 +432,17 @@ func larkOAuthErrorReason(err error) string {
 	switch {
 	case errors.Is(err, lark.ErrOAuthNotConfigured):
 		return "not_configured"
+	case errors.Is(err, lark.ErrAPIClientNotConfigured):
+		// Reached when the APIClient's ExchangeOAuthCode still
+		// returns ErrAPIClientNotConfigured (PersonalAgent install
+		// shape not yet implemented). StartLarkInstall's
+		// SupportsOAuthInstall gate should prevent users from
+		// landing here through the normal flow, but a raw callback
+		// hit (state replay, manually opened URL) can still trigger
+		// it. Surface a distinct reason so the frontend can render
+		// "scan-to-bind not yet available" instead of a generic
+		// internal_error that looks like a transient outage.
+		return "oauth_exchange_unimplemented"
 	case errors.Is(err, lark.ErrMissingCode):
 		return "missing_code"
 	case errors.Is(err, lark.ErrInvalidState):

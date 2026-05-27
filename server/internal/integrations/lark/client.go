@@ -17,13 +17,38 @@ import (
 // already authenticated the installation row and decrypted its
 // app_secret. The client never reads `lark_installation` itself.
 type APIClient interface {
-	// IsConfigured reports whether this APIClient can actually reach
-	// Lark. The stub implementation returns false; the real Lark HTTP
-	// client (Phase-2 follow-up) returns true. UI surfaces (the
-	// Settings → Lark tab, the "Bind to Lark" agent-detail button)
-	// hide themselves when this returns false so users do not enter
-	// an OAuth flow that is guaranteed to fail at the exchange step.
+	// IsConfigured reports whether this APIClient can reach Lark for
+	// outbound transport (SendInteractiveCard / PatchInteractiveCard /
+	// SendBindingPromptCard). It is the "HTTP outbound is wired"
+	// signal. The stub returns false; the real Lark HTTP client
+	// returns true once instantiated.
+	//
+	// This is intentionally a NARROWER signal than "the install flow
+	// works end-to-end": ExchangeOAuthCode may still be unimplemented
+	// even when outbound transport is fine. See SupportsOAuthInstall
+	// for the install-flow capability gate.
 	IsConfigured() bool
+
+	// SupportsOAuthInstall reports whether the OAuth install flow
+	// (StartLarkInstall → Lark authorize → LarkInstallCallback →
+	// ExchangeOAuthCode → Upsert) can actually succeed end-to-end. It
+	// is FALSE whenever ExchangeOAuthCode would surface
+	// ErrAPIClientNotConfigured.
+	//
+	// Why it is separate from IsConfigured: the real HTTP client can
+	// have functional outbound transport for already-installed bots
+	// while the PersonalAgent install-time exchange response shape is
+	// still being pinned down. Flipping a single "install_supported"
+	// flag off the outbound transport capability would either (a)
+	// expose a doomed scan-to-bind UI when transport was wired
+	// without exchange, or (b) hide outbound patching while waiting
+	// for exchange to land. Splitting the gate lets the UI reveal
+	// each capability independently as it becomes safe to use.
+	//
+	// Handlers consult this — NOT IsConfigured — when deciding
+	// whether to surface the "Bind to Lark" CTA or the
+	// install_supported field on listings.
+	SupportsOAuthInstall() bool
 
 	// SendInteractiveCard posts an interactive card into a Lark chat
 	// and returns Lark's message_id for the card. The patcher persists
@@ -135,6 +160,10 @@ func NewStubAPIClient(log *slog.Logger) APIClient {
 }
 
 func (s *stubAPIClient) IsConfigured() bool { return false }
+
+// SupportsOAuthInstall is false for the stub: every transport call
+// errors with ErrAPIClientNotConfigured, including ExchangeOAuthCode.
+func (s *stubAPIClient) SupportsOAuthInstall() bool { return false }
 
 func (s *stubAPIClient) SendInteractiveCard(ctx context.Context, p SendCardParams) (string, error) {
 	s.log.Warn("lark stub client: SendInteractiveCard called", "chat_id", string(p.ChatID))

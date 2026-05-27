@@ -179,7 +179,8 @@ type fakeOAuthAPIClient struct {
 	err  error
 }
 
-func (f *fakeOAuthAPIClient) IsConfigured() bool { return true }
+func (f *fakeOAuthAPIClient) IsConfigured() bool        { return true }
+func (f *fakeOAuthAPIClient) SupportsOAuthInstall() bool { return true }
 
 func (f *fakeOAuthAPIClient) SendInteractiveCard(_ context.Context, _ SendCardParams) (string, error) {
 	return "", ErrAPIClientNotConfigured

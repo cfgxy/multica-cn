@@ -102,8 +102,21 @@ func (defaultRenderer) Render(in RenderInput) (CardRender, error) {
 	default:
 		return CardRender{}, fmt.Errorf("unknown card kind %q", in.Kind)
 	}
+	// update_multi MUST be true on every render: Lark refuses to apply
+	// PatchInteractiveCard to a card whose config does not declare it
+	// a "shared, updatable" card. Since this renderer drives the
+	// thinking → streaming → final/error lifecycle (the card is sent
+	// once and patched multiple times), an absent update_multi causes
+	// every patch after the first send to silently no-op on the
+	// Lark side while the local outbound status row still flips to
+	// streaming/final. Keep this on every kind — including thinking
+	// and error — because that initial JSON IS the body Lark stores
+	// and consults for subsequent patches.
 	doc := map[string]any{
-		"config": map[string]any{"wide_screen_mode": true},
+		"config": map[string]any{
+			"wide_screen_mode": true,
+			"update_multi":     true,
+		},
 		"header": map[string]any{
 			"template": "blue",
 			"title":    map[string]any{"tag": "plain_text", "content": header},

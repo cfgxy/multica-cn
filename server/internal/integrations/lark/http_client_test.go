@@ -158,6 +158,130 @@ func TestHTTPClient_IsConfigured(t *testing.T) {
 	}
 }
 
+// TestHTTPClient_SupportsOAuthInstall_FalseUntilExchangeLands pins the
+// must-fix from Elon's review: HTTP outbound transport being wired
+// does NOT imply the OAuth install flow is ready. As long as
+// ExchangeOAuthCode returns ErrAPIClientNotConfigured, the capability
+// gate must report false so handlers do not surface a bind UI that
+// would crash at the exchange step. Removing this guard would re-open
+// the broken scan-to-bind flow the review caught.
+func TestHTTPClient_SupportsOAuthInstall_FalseUntilExchangeLands(t *testing.T) {
+	c := NewHTTPAPIClient(HTTPClientConfig{})
+	if c.SupportsOAuthInstall() {
+		t.Fatalf("SupportsOAuthInstall must be false while ExchangeOAuthCode is unimplemented")
+	}
+	// Sanity-check the invariant: if this client ever flips to true,
+	// it can only be safe to do so once ExchangeOAuthCode stops
+	// returning ErrAPIClientNotConfigured. Fail loudly if the two go
+	// out of sync.
+	_, err := c.ExchangeOAuthCode(context.Background(), "x", "https://x")
+	if !errors.Is(err, ErrAPIClientNotConfigured) {
+		t.Fatalf("ExchangeOAuthCode must still surface ErrAPIClientNotConfigured while SupportsOAuthInstall is false; got %v", err)
+	}
+}
+
+// TestHTTPClient_StubReportsBothCapabilitiesFalse pins the stub side
+// of the capability split: the stub has no transport and no OAuth
+// support, so both must be false.
+func TestHTTPClient_StubReportsBothCapabilitiesFalse(t *testing.T) {
+	s := NewStubAPIClient(nil)
+	if s.IsConfigured() {
+		t.Errorf("stub IsConfigured must be false")
+	}
+	if s.SupportsOAuthInstall() {
+		t.Errorf("stub SupportsOAuthInstall must be false")
+	}
+}
+
+// TestHTTPClient_SendInteractiveCard_DefaultRendererBodyHasUpdateMulti
+// is the send-side half of the must-fix wire check: when the Patcher
+// uses NewDefaultRenderer to produce a card and ships it via
+// SendInteractiveCard, the actual HTTP body Lark receives must carry
+// config.update_multi=true so the card is patchable downstream.
+// Without this, the first send succeeds but every subsequent patch
+// silently no-ops on Lark's side while local DB status still flips.
+func TestHTTPClient_SendInteractiveCard_DefaultRendererBodyHasUpdateMulti(t *testing.T) {
+	fake := newLarkFake(t)
+	fake.stubToken("tok_um_send", 7200)
+	var capturedContent string
+	fake.stubSend(
+		map[string]any{"code": 0, "data": map[string]string{"message_id": "om_send_um"}},
+		func(_ *http.Request, body map[string]string) {
+			capturedContent = body["content"]
+		},
+	)
+
+	r := NewDefaultRenderer()
+	render, err := r.Render(RenderInput{Kind: CardKindThinking, AgentName: "TestAgent"})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	c := newTestClient(fake, time.Now)
+	if _, err := c.SendInteractiveCard(context.Background(), SendCardParams{
+		InstallationID: testCreds(),
+		ChatID:         ChatID("oc_send_um"),
+		CardJSON:       render.JSON,
+	}); err != nil {
+		t.Fatalf("send: %v", err)
+	}
+
+	assertCardContentHasUpdateMulti(t, capturedContent)
+}
+
+// TestHTTPClient_PatchInteractiveCard_DefaultRendererBodyHasUpdateMulti
+// is the patch-side half of the same wire check. Every PatchCardParams
+// the Patcher produces goes through the default renderer; the body
+// shipped over PATCH /open-apis/im/v1/messages/:id must still carry
+// update_multi=true, otherwise Lark refuses to apply the patch to a
+// card that was sent with update_multi=true (the two ends must agree).
+func TestHTTPClient_PatchInteractiveCard_DefaultRendererBodyHasUpdateMulti(t *testing.T) {
+	fake := newLarkFake(t)
+	fake.stubToken("tok_um_patch", 7200)
+	var capturedContent string
+	fake.stubPatch(
+		map[string]any{"code": 0, "msg": "ok"},
+		func(_ *http.Request, _ string, body map[string]string) {
+			capturedContent = body["content"]
+		},
+	)
+
+	r := NewDefaultRenderer()
+	render, err := r.Render(RenderInput{Kind: CardKindRunning, AgentName: "TestAgent"})
+	if err != nil {
+		t.Fatalf("render: %v", err)
+	}
+
+	c := newTestClient(fake, time.Now)
+	if err := c.PatchInteractiveCard(context.Background(), PatchCardParams{
+		InstallationID:    testCreds(),
+		LarkCardMessageID: "om_patch_um",
+		CardJSON:          render.JSON,
+	}); err != nil {
+		t.Fatalf("patch: %v", err)
+	}
+
+	assertCardContentHasUpdateMulti(t, capturedContent)
+}
+
+func assertCardContentHasUpdateMulti(t *testing.T, content string) {
+	t.Helper()
+	if content == "" {
+		t.Fatalf("captured content empty — fake server did not receive the request body")
+	}
+	var doc map[string]any
+	if err := json.Unmarshal([]byte(content), &doc); err != nil {
+		t.Fatalf("card content is not valid JSON: %v (raw=%s)", err, content)
+	}
+	cfg, ok := doc["config"].(map[string]any)
+	if !ok {
+		t.Fatalf("card content missing config block (raw=%s)", content)
+	}
+	if v, _ := cfg["update_multi"].(bool); !v {
+		t.Fatalf("config.update_multi must be true so the card is patchable on Lark's side; got config=%v (raw=%s)", cfg, content)
+	}
+}
+
 func TestHTTPClient_SendInteractiveCard_HappyPath(t *testing.T) {
 	fake := newLarkFake(t)
 	fake.stubToken("tok_1", 7200)
