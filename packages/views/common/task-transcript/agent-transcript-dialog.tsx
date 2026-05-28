@@ -17,7 +17,7 @@ import {
   Cloud,
   Cpu,
   Filter,
-  FolderTree,
+  Folder,
   ArrowDownNarrowWide,
   ArrowUpNarrowWide,
 } from "lucide-react";
@@ -179,6 +179,7 @@ export function AgentTranscriptDialog({
   const [selectedSeq, setSelectedSeq] = useState<number | null>(null);
   const [elapsed, setElapsed] = useState("");
   const [copied, setCopied] = useState(false);
+  const [copiedWorkdir, setCopiedWorkdir] = useState(false);
   const [agentInfo, setAgentInfo] = useState<Agent | null>(null);
   const [runtimeInfo, setRuntimeInfo] = useState<AgentRuntime | null>(null);
   const [selectedTools, setSelectedTools] = useState<Set<string>>(new Set());
@@ -277,6 +278,14 @@ export function AgentTranscriptDialog({
 
   // Copy all events as text. Use the displayed order so users get the same
   // sequence they see on screen — matters when sort is set to newest-first.
+  const handleCopyWorkdir = useCallback(() => {
+    if (!task.relative_work_dir) return;
+    navigator.clipboard.writeText(task.relative_work_dir).then(() => {
+      setCopiedWorkdir(true);
+      setTimeout(() => setCopiedWorkdir(false), 2000);
+    });
+  }, [task.relative_work_dir]);
+
   const handleCopyAll = useCallback(() => {
     const text = displayItems
       .map((item) => {
@@ -478,13 +487,25 @@ export function AgentTranscriptDialog({
                 nothing when older backends omit the field rather than rendering
                 `work_dir` raw and leaking the user's home directory. The
                 absolute `task.work_dir` deliberately never reaches the DOM
-                (no title/aria/data attribute), since the goal of this chip is
-                that recordings, screen shares, and screenshots never expose
-                $HOME or the username. */}
+                anywhere — only `relative_work_dir` is safe to render / put in
+                title / copy to clipboard, because the server has already
+                stripped $HOME and the username out of it. The button
+                truncates because real workdir paths are routinely long
+                enough to push every other chip off the row. */}
             {task.relative_work_dir && (
-              <MetadataChip icon={<FolderTree className="h-3 w-3" />}>
-                <span className="font-mono">{task.relative_work_dir}</span>
-              </MetadataChip>
+              <button
+                type="button"
+                onClick={handleCopyWorkdir}
+                title={task.relative_work_dir}
+                className="inline-flex max-w-[16rem] items-center gap-1 rounded-md border bg-muted/50 px-2 py-0.5 text-[11px] text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+              >
+                {copiedWorkdir ? (
+                  <Check className="h-3 w-3 shrink-0 text-emerald-500" />
+                ) : (
+                  <Folder className="h-3 w-3 shrink-0" />
+                )}
+                <span className="truncate font-mono">{task.relative_work_dir}</span>
+              </button>
             )}
 
             {/* Created time */}
