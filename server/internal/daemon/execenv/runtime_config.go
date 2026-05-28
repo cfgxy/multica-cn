@@ -29,6 +29,24 @@ import (
 const (
 	runtimeMarkerBegin = "<!-- BEGIN MULTICA-RUNTIME (auto-managed; do not edit) -->"
 	runtimeMarkerEnd   = "<!-- END MULTICA-RUNTIME -->"
+
+	// runtimeManagedSeparator is the fixed separator inserted between any
+	// pre-existing user content and the marker block whenever Inject
+	// appends to a file that already exists. The separator is considered
+	// part of the managed region: Cleanup strips it together with the
+	// block, so the file rolls back to its exact pre-injection bytes
+	// regardless of whether the user file ended with no newline, one
+	// newline, or multiple trailing newlines. Without a fixed-width
+	// separator the cleanup path would have to renormalise the user's
+	// trailing bytes and would leave a subtle but real diff every run
+	// (see MUL-2753 review on PR #3438).
+	//
+	// Cleanup distinguishes "file we created" (no managed separator
+	// precedes the block — write a missing file from scratch) from "file
+	// that pre-existed" (managed separator precedes the block) so the
+	// file's existence is preserved exactly across the inject→cleanup
+	// cycle, including empty / whitespace-only pre-existing files.
+	runtimeManagedSeparator = "\n\n"
 )
 
 // runtimeGOOS is the host-platform string used by buildMetaSkillContent and
@@ -152,13 +170,19 @@ func runtimeConfigPath(workDir, provider string) string {
 // clobbering any user-authored content already present. Behaviour by file
 // state:
 //
-//   - file missing → create the file containing only the marker block,
-//   - file present, no marker block → append the marker block to the end so
-//     existing content (e.g. the user's repository-level CLAUDE.md) is
-//     preserved verbatim above it,
+//   - file missing → create the file containing only the marker block, no
+//     leading separator. Cleanup detects the absence of the separator and
+//     restores the missing-file state by removing the file outright.
+//   - file present (any content, including empty), no marker block →
+//     append `<runtimeManagedSeparator>` + the marker block. The
+//     separator's bytes are part of the managed region so Cleanup can
+//     restore the user's pre-injection bytes exactly (no trailing-newline
+//     normalisation, no surprises for files that ended without a newline
+//     or with extra trailing newlines).
 //   - file present, marker block already there → replace the body between
 //     the markers in place so repeated runs in the same workdir don't grow
-//     the file unboundedly.
+//     the file unboundedly. The pre-block content (including any managed
+//     separator established by the first inject) is preserved verbatim.
 //
 // The previous implementation called os.WriteFile unconditionally, which
 // silently truncated a repository's CLAUDE.md / AGENTS.md / GEMINI.md the
@@ -180,20 +204,18 @@ func writeRuntimeConfigFile(path, brief string) error {
 		// Replace the existing block in place. locateMarkerBlock already
 		// consumes the trailing newline that closed the previous block, so
 		// successive runs don't accumulate blank lines around the block.
+		// The managed separator (if any) lives in existingStr[:start] and
+		// is preserved untouched.
 		newContent := existingStr[:start] + block + existingStr[end:]
 		return os.WriteFile(path, []byte(newContent), 0o644)
 	}
 
-	// No (well-formed) marker block present. Append one to the end of the
-	// existing content, separated by a blank line for readability.
-	prefix := existingStr
-	if prefix != "" && !strings.HasSuffix(prefix, "\n") {
-		prefix += "\n"
-	}
-	if prefix != "" && !strings.HasSuffix(prefix, "\n\n") {
-		prefix += "\n"
-	}
-	return os.WriteFile(path, []byte(prefix+block), 0o644)
+	// No marker block present. Append the fixed managed separator followed
+	// by the block. The separator is unconditional — including for files
+	// that already end in two or more newlines — so the byte boundary
+	// between user content and the managed region is deterministic, which
+	// is what lets Cleanup roll back to the user's exact original bytes.
+	return os.WriteFile(path, []byte(existingStr+runtimeManagedSeparator+block), 0o644)
 }
 
 // locateMarkerBlock finds the [start, end) byte range of the Multica marker
@@ -237,18 +259,34 @@ func locateMarkerBlock(content string) (start, end int, found bool) {
 }
 
 // CleanupRuntimeConfig excises the Multica marker block from the runtime
-// config file for the given provider, leaving any surrounding user-authored
-// content intact. If the file would be empty (or whitespace-only) after the
-// block is removed, the file is deleted entirely so the directory looks
-// untouched to the user.
+// config file for the given provider and restores the file to its exact
+// pre-injection state, byte for byte. The cleanup is the second half of
+// the contract `writeRuntimeConfigFile` establishes: together they must
+// round-trip a user's local repository config across an arbitrary number
+// of Multica runs without ever touching a single non-managed byte.
+//
+// Behaviour, mirroring the three Inject states:
+//
+//   - file has no marker block → no-op (nothing was ever injected here);
+//   - block is at the start of the file with no preceding managed
+//     separator → the file was created by Inject from a missing-file
+//     state. Remove the file outright so the post-cleanup directory
+//     listing is byte-identical to the pre-Inject one.
+//   - block is preceded by the fixed managed separator → strip the
+//     separator together with the block; whatever remains (which may be
+//     an empty pre-existing file, a whitespace-only file, or arbitrary
+//     user content) is the user's original file, written back verbatim
+//     with NO trailing-newline normalisation and NO TrimSpace-based file
+//     removal heuristic. Both of those were sources of subtle diff in
+//     PR #3438 review feedback.
 //
 // Required for the local_directory flow (WorkDir is the user's own repo):
 // without this pass, a manual `claude` / `codex` / `gemini` run started by
-// the user inside the same directory after a Multica task would pick up the
-// stale brief and act on the previous task's issue id, trigger comment id,
-// and reply rules. Cloud workspace runs never trigger this pollution
-// because their workdir is daemon scratch that the GC loop deletes
-// wholesale; the daemon skips this Cleanup on those workdirs.
+// the user inside the same directory after a Multica task would pick up
+// the stale brief and act on the previous task's issue id, trigger
+// comment id, and reply rules. Cloud workspace runs never trigger this
+// pollution because their workdir is daemon scratch that the GC loop
+// deletes wholesale; the daemon skips this Cleanup on those workdirs.
 //
 // Missing files, unknown providers, and files without a marker block are
 // no-ops — Cleanup is safe to call defensively.
@@ -269,22 +307,33 @@ func CleanupRuntimeConfig(workDir, provider string) error {
 	if !ok {
 		return nil
 	}
-	remainder := existingStr[:start] + existingStr[end:]
-	if strings.TrimSpace(remainder) == "" {
-		// File would be empty / whitespace-only — remove it. Either we
-		// created the file from scratch (no surrounding user content), or
-		// the user's file was empty before we wrote the block; either way,
-		// removing it leaves the directory in the cleanest state.
+	pre := existingStr[:start]
+	post := existingStr[end:]
+
+	// Detect — and strip — the fixed managed separator that Inject puts
+	// immediately before the block whenever it appended to a file that
+	// pre-existed. The absence of the separator is the marker that says
+	// "Inject created this file from scratch", which is the only case
+	// where Cleanup is allowed to delete the file.
+	hadManagedSeparator := strings.HasSuffix(pre, runtimeManagedSeparator)
+	if hadManagedSeparator {
+		pre = pre[:len(pre)-len(runtimeManagedSeparator)]
+	}
+	remainder := pre + post
+
+	if !hadManagedSeparator && remainder == "" {
+		// Inject created the file (no managed separator → block was the
+		// only content). Restore the missing-file state.
 		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
-			return fmt.Errorf("remove empty runtime config %s: %w", path, err)
+			return fmt.Errorf("remove runtime config %s: %w", path, err)
 		}
 		return nil
 	}
-	// Trim any trailing blank line introduced by writeRuntimeConfigFile's
-	// "separated by a blank line for readability" step so cleanup leaves a
-	// file that ends in exactly one newline, matching the user's typical
-	// pre-injection state.
-	remainder = strings.TrimRight(remainder, "\n") + "\n"
+	// File pre-existed (possibly empty, possibly whitespace-only,
+	// possibly with user content) — write the remainder back exactly,
+	// without any normalisation. An empty `remainder` here means the
+	// user's original file was empty; we still write it (zero-byte file)
+	// so the file's existence is preserved.
 	return os.WriteFile(path, []byte(remainder), 0o644)
 }
 

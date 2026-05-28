@@ -1,6 +1,7 @@
 package execenv
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -918,5 +919,209 @@ func TestInjectThenCleanupRoundTrip(t *testing.T) {
 		if string(got) != userContent {
 			t.Errorf("iter %d: user file must be byte-identical to pre-injection state\n got:\n%q\nwant:\n%q", i, string(got), userContent)
 		}
+	}
+}
+
+// Byte-exact boundary coverage flagged in PR #3438 review (Elon): the
+// previous cleanup used TrimRight + "\n" and TrimSpace-based file removal,
+// which created a real diff in three boundary cases. The table walks each
+// one through a full inject→cleanup cycle and asserts the file ends up
+// byte-identical (or, for missing-file, that it stays missing).
+func TestInjectThenCleanupRoundTripByteExactBoundaries(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		// seed describes the pre-inject filesystem state. When seedExists
+		// is false the file is absent; when true the file is created with
+		// seedContent (which may be empty / whitespace-only / arbitrary
+		// bytes).
+		seedExists  bool
+		seedContent string
+	}{
+		{
+			name:        "file missing — Inject creates, Cleanup removes",
+			seedExists:  false,
+			seedContent: "",
+		},
+		{
+			name:        "pre-existing empty file (zero bytes)",
+			seedExists:  true,
+			seedContent: "",
+		},
+		{
+			name:        "pre-existing whitespace-only file",
+			seedExists:  true,
+			seedContent: "   \n",
+		},
+		{
+			name:        "no trailing newline",
+			seedExists:  true,
+			seedContent: "rules",
+		},
+		{
+			name:        "one trailing newline (the common markdown shape)",
+			seedExists:  true,
+			seedContent: "# Rules\n\nbody\n",
+		},
+		{
+			name:        "two trailing newlines",
+			seedExists:  true,
+			seedContent: "rules\n\n",
+		},
+		{
+			name:        "many trailing newlines",
+			seedExists:  true,
+			seedContent: "rules\n\n\n\n",
+		},
+		{
+			name:        "CRLF line endings",
+			seedExists:  true,
+			seedContent: "rule A\r\nrule B\r\n",
+		},
+		{
+			name:        "no final newline AND embedded blank lines",
+			seedExists:  true,
+			seedContent: "para 1\n\npara 2\n\npara 3",
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			path := filepath.Join(dir, "CLAUDE.md")
+
+			if tc.seedExists {
+				if err := os.WriteFile(path, []byte(tc.seedContent), 0o644); err != nil {
+					t.Fatalf("seed: %v", err)
+				}
+			}
+
+			// Two cycles to cover both "first inject hits user file" and
+			// "subsequent inject hits a cleaned file" paths.
+			for i := 0; i < 2; i++ {
+				if _, err := InjectRuntimeConfig(dir, "claude", TaskContextForEnv{
+					IssueID: "11111111-2222-3333-4444-555555555555",
+				}); err != nil {
+					t.Fatalf("iter %d inject: %v", i, err)
+				}
+				if err := CleanupRuntimeConfig(dir, "claude"); err != nil {
+					t.Fatalf("iter %d cleanup: %v", i, err)
+				}
+
+				if !tc.seedExists {
+					// Missing file must remain missing after the cycle so
+					// the user's directory listing is also byte-identical
+					// (no zero-byte stub left behind).
+					if _, err := os.Stat(path); !os.IsNotExist(err) {
+						t.Errorf("iter %d: file must remain missing, stat err=%v", i, err)
+					}
+					continue
+				}
+				got, err := os.ReadFile(path)
+				if err != nil {
+					t.Fatalf("iter %d read back: %v", i, err)
+				}
+				if string(got) != tc.seedContent {
+					t.Errorf("iter %d: file must be byte-identical to seed\n got:  %q\n want: %q", i, string(got), tc.seedContent)
+				}
+			}
+		})
+	}
+}
+
+// Idempotency across the byte-exact boundaries: when a second Inject runs
+// against a file that already carries a marker block (the "replace in
+// place" branch), the surrounding bytes must stay untouched and the
+// subsequent Cleanup must still restore the user's original file
+// byte-exactly. This guards against a regression where the replace path
+// would re-normalise pre/post bytes the way the old cleanup did.
+func TestInjectReplaceThenCleanupRestoresByteExact(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name        string
+		seedContent string
+	}{
+		{name: "no trailing newline", seedContent: "rules"},
+		{name: "two trailing newlines", seedContent: "rules\n\n"},
+		{name: "empty file", seedContent: ""},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			path := filepath.Join(dir, "CLAUDE.md")
+			if err := os.WriteFile(path, []byte(tc.seedContent), 0o644); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+
+			// First inject — append path.
+			if _, err := InjectRuntimeConfig(dir, "claude", TaskContextForEnv{
+				IssueID: "11111111-2222-3333-4444-555555555555",
+			}); err != nil {
+				t.Fatalf("first inject: %v", err)
+			}
+			// Second inject — replace-in-place path.
+			if _, err := InjectRuntimeConfig(dir, "claude", TaskContextForEnv{
+				IssueID: "11111111-2222-3333-4444-555555555555",
+			}); err != nil {
+				t.Fatalf("second inject: %v", err)
+			}
+			if err := CleanupRuntimeConfig(dir, "claude"); err != nil {
+				t.Fatalf("cleanup: %v", err)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read back: %v", err)
+			}
+			if string(got) != tc.seedContent {
+				t.Errorf("file must be byte-identical to seed after replace+cleanup\n got:  %q\n want: %q", string(got), tc.seedContent)
+			}
+		})
+	}
+}
+
+// The fixed managed separator is the invariant that makes byte-exact
+// cleanup possible. This test pins it: writeRuntimeConfigFile must
+// produce exactly `<user-bytes><\n\n><marker-block>` for ANY non-empty
+// or empty pre-existing file, with no trailing-newline normalisation.
+func TestWriteRuntimeConfigFileAlwaysInsertsFixedManagedSeparator(t *testing.T) {
+	t.Parallel()
+	for _, seed := range []string{"", "rules", "rules\n", "rules\n\n", "rules\n\n\n\n"} {
+		seed := seed
+		t.Run(fmt.Sprintf("seed=%q", seed), func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			path := filepath.Join(dir, "CLAUDE.md")
+			if err := os.WriteFile(path, []byte(seed), 0o644); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+			if err := writeRuntimeConfigFile(path, "brief body"); err != nil {
+				t.Fatalf("write: %v", err)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read back: %v", err)
+			}
+			s := string(got)
+			// The seed must appear verbatim at the start of the file —
+			// no extra newline appended, no trailing newline trimmed.
+			if !strings.HasPrefix(s, seed) {
+				t.Errorf("seed bytes must survive verbatim at the start of the file\n got: %q\n seed: %q", s, seed)
+			}
+			// Immediately after the seed we must see the fixed managed
+			// separator, then the begin marker.
+			markerStart := len(seed) + len(runtimeManagedSeparator)
+			if len(s) < markerStart+len(runtimeMarkerBegin) {
+				t.Fatalf("file shorter than expected layout\n got: %q", s)
+			}
+			if got, want := s[len(seed):markerStart], runtimeManagedSeparator; got != want {
+				t.Errorf("expected managed separator %q immediately after seed, got %q", want, got)
+			}
+			if got, want := s[markerStart:markerStart+len(runtimeMarkerBegin)], runtimeMarkerBegin; got != want {
+				t.Errorf("expected begin marker after managed separator, got %q", got)
+			}
+		})
 	}
 }
