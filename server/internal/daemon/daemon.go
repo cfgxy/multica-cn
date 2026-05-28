@@ -2367,11 +2367,28 @@ func (d *Daemon) reportTaskResult(ctx context.Context, taskID string, result Tas
 	switch result.Status {
 	case "completed":
 		taskLog.Info("task completed", "status", result.Status)
-		if err := d.client.CompleteTask(ctx, taskID, result.Comment, result.BranchName, result.SessionID, result.WorkDir); err != nil {
-			taskLog.Error("complete task failed, falling back to fail", "error", err)
-			if failErr := d.client.FailTask(ctx, taskID, fmt.Sprintf("complete task failed: %s", err.Error()), result.SessionID, result.WorkDir, "agent_error"); failErr != nil {
-				taskLog.Error("fail task fallback also failed", "error", failErr)
-			}
+		err := d.client.CompleteTask(ctx, taskID, result.Comment, result.BranchName, result.SessionID, result.WorkDir)
+		if err == nil {
+			return
+		}
+		// CompleteTask retries transient errors internally. A transient
+		// error reaching us here means the schedule was exhausted while
+		// the upstream was still 5xx / unreachable. Converting that into
+		// a fail would lose the agent's actual result and surface a
+		// misleading red badge in the UI — leave the task in running
+		// instead so a future fix (server-side stuck-task reaper, or a
+		// daemon-side persistent pending queue) can recover it. Only
+		// permanent server-side rejections (4xx other than 408/429)
+		// warrant the legacy fallback, because at that point the server
+		// has already refused this task and the only useful UI signal
+		// left is a concrete failure.
+		if isTransientError(err) {
+			taskLog.Error("complete task failed after retries; leaving task in running rather than falling back to fail", "error", err)
+			return
+		}
+		taskLog.Error("complete task rejected by server, falling back to fail", "error", err)
+		if failErr := d.client.FailTask(ctx, taskID, fmt.Sprintf("complete task failed: %s", err.Error()), result.SessionID, result.WorkDir, "agent_error"); failErr != nil {
+			taskLog.Error("fail task fallback also failed", "error", failErr)
 		}
 	default:
 		failureReason := result.FailureReason
