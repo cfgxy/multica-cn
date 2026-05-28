@@ -3438,3 +3438,148 @@ func TestMembershipCache_InvalidatedOnDeleteWorkspace(t *testing.T) {
 		t.Fatal("DeleteWorkspace handler did not invalidate extra-member cache entry")
 	}
 }
+
+// createCommentTriggeredClaimTask seeds a queued comment-triggered task whose
+// trigger comment is rooted under parentID (nil → trigger is itself a root).
+// Returns the task id and the trigger comment id.
+func createCommentTriggeredClaimTask(t *testing.T, ctx context.Context, agentID, runtimeID, issueID string, parentID *string) (string, string) {
+	t.Helper()
+	var commentID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, parent_id)
+		VALUES ($1, $2, 'member', $3, 'trigger comment', 'comment', $4)
+		RETURNING id
+	`, issueID, testWorkspaceID, testUserID, parentID).Scan(&commentID); err != nil {
+		t.Fatalf("insert trigger comment: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM comment WHERE id = $1`, commentID) })
+
+	var taskID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, trigger_comment_id)
+		VALUES ($1, $2, $3, 'queued', 0, $4)
+		RETURNING id
+	`, agentID, runtimeID, issueID, commentID).Scan(&taskID); err != nil {
+		t.Fatalf("insert comment-triggered task: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, taskID) })
+	return taskID, commentID
+}
+
+type claimCommentTaskResp struct {
+	Task *struct {
+		ID               string `json:"id"`
+		PriorSessionID   string `json:"prior_session_id"`
+		TriggerParentID  string `json:"trigger_parent_id"`
+		TriggerCommentID string `json:"trigger_comment_id"`
+		UnresolvedCount  int    `json:"unresolved_count"`
+	} `json:"task"`
+}
+
+func claimCommentTask(t *testing.T, runtimeID, daemonID string) claimCommentTaskResp {
+	t.Helper()
+	w := httptest.NewRecorder()
+	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/tasks/claim", nil, testWorkspaceID, daemonID)
+	req = withURLParam(req, "runtimeId", runtimeID)
+	testHandler.ClaimTaskByRuntime(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("ClaimTaskByRuntime: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var resp claimCommentTaskResp
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode claim response: %v", err)
+	}
+	if resp.Task == nil {
+		t.Fatalf("expected a claimed task, got nil: %s", w.Body.String())
+	}
+	return resp
+}
+
+// TestClaimTaskByRuntime_CommentTaskPopulatesUnresolvedAndParent verifies the
+// claim response carries trigger_parent_id (thread root) and unresolved_count
+// for comment-triggered tasks.
+func TestClaimTaskByRuntime_CommentTaskPopulatesUnresolvedAndParent(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	runtimeID := createClaimReclaimRuntime(t, ctx, "Comment unresolved runtime")
+	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "Comment unresolved agent")
+
+	// Seed a root comment, then a reply under it that triggers the task.
+	var rootID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type)
+		VALUES ($1, $2, 'member', $3, 'root', 'comment') RETURNING id
+	`, issueID, testWorkspaceID, testUserID).Scan(&rootID); err != nil {
+		t.Fatalf("insert root comment: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM comment WHERE id = $1`, rootID) })
+
+	_, triggerID := createCommentTriggeredClaimTask(t, ctx, agentID, runtimeID, issueID, &rootID)
+
+	resp := claimCommentTask(t, runtimeID, "comment-unresolved-claim")
+	if resp.Task.TriggerCommentID != triggerID {
+		t.Fatalf("trigger_comment_id = %s, want %s", resp.Task.TriggerCommentID, triggerID)
+	}
+	// Trigger is a reply rooted at rootID → parent must be the root.
+	if resp.Task.TriggerParentID != rootID {
+		t.Errorf("trigger_parent_id = %s, want thread root %s", resp.Task.TriggerParentID, rootID)
+	}
+	// Two member comments open (root + trigger), neither authored by the agent.
+	if resp.Task.UnresolvedCount != 2 {
+		t.Errorf("unresolved_count = %d, want 2", resp.Task.UnresolvedCount)
+	}
+}
+
+// TestClaimTaskByRuntime_CommentResumeGatedByEnvFlag verifies the rollout gate:
+// a comment-triggered task does NOT resume the prior session by default, but
+// does when MULTICA_RESUME_COMMENT_SESSION is set. The prior session must be on
+// the same runtime to qualify.
+func TestClaimTaskByRuntime_CommentResumeGatedByEnvFlag(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	runtimeID := createClaimReclaimRuntime(t, ctx, "Comment resume runtime")
+	agentID, issueID := createClaimReclaimAgentAndIssue(t, ctx, runtimeID, "Comment resume agent")
+
+	// A prior completed task on the same (agent, issue, runtime) with a session.
+	const priorSession = "sess-prior-123"
+	var priorTaskID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority, session_id, completed_at)
+		VALUES ($1, $2, $3, 'completed', 0, $4, now())
+		RETURNING id
+	`, agentID, runtimeID, issueID, priorSession).Scan(&priorTaskID); err != nil {
+		t.Fatalf("insert prior completed task: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE id = $1`, priorTaskID) })
+
+	createCommentTriggeredClaimTask(t, ctx, agentID, runtimeID, issueID, nil)
+
+	t.Run("flag off → no session resume", func(t *testing.T) {
+		t.Setenv("MULTICA_RESUME_COMMENT_SESSION", "")
+		resp := claimCommentTask(t, runtimeID, "comment-resume-off")
+		if resp.Task.PriorSessionID != "" {
+			t.Errorf("prior_session_id = %q, want empty when flag off", resp.Task.PriorSessionID)
+		}
+	})
+
+	// Re-queue the task the previous claim dispatched so the second sub-test
+	// has a claimable comment task again.
+	if _, err := testPool.Exec(ctx, `
+		UPDATE agent_task_queue SET status = 'queued', dispatched_at = NULL
+		WHERE agent_id = $1 AND issue_id = $2 AND trigger_comment_id IS NOT NULL
+	`, agentID, issueID); err != nil {
+		t.Fatalf("re-queue comment task: %v", err)
+	}
+
+	t.Run("flag on → session resumes", func(t *testing.T) {
+		t.Setenv("MULTICA_RESUME_COMMENT_SESSION", "true")
+		resp := claimCommentTask(t, runtimeID, "comment-resume-on")
+		if resp.Task.PriorSessionID != priorSession {
+			t.Errorf("prior_session_id = %q, want %q when flag on", resp.Task.PriorSessionID, priorSession)
+		}
+	})
+}

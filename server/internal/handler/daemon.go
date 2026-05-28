@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -26,6 +27,15 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
 )
+
+// resumeCommentSessionEnabled reports whether comment-triggered tasks may
+// resume the prior Claude session. Default OFF: resumed comment turns can
+// inherit the prior turn's "Done." final message. This is a temporary rollout
+// gate — it affects even old daemons, which already consume prior_session_id.
+func resumeCommentSessionEnabled() bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv("MULTICA_RESUME_COMMENT_SESSION")))
+	return v == "true" || v == "1"
+}
 
 // ---------------------------------------------------------------------------
 // Daemon workspace ownership helpers
@@ -1257,6 +1267,30 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 				}
+				// Thread root of the trigger: parent_id when it is a reply, its
+				// own id when it is already a root. Lets the daemon point the
+				// agent at the right thread without the agent walking up the
+				// tree itself.
+				if comment.ParentID.Valid {
+					resp.TriggerParentID = uuidToString(comment.ParentID)
+				} else {
+					resp.TriggerParentID = uuidToString(comment.ID)
+				}
+
+				// Surface how many comments on the issue are still unresolved,
+				// so the daemon can tell the agent up front instead of relying
+				// on it to self-fetch every thread. Excludes the agent's own
+				// comments so a chatty agent doesn't inflate its own backlog.
+				// Scope from the trigger comment (issue + workspace) so we don't
+				// depend on the issue var, which is out of scope here.
+				// Best-effort: a DB error leaves the count at 0 (hint suppressed).
+				if cnt, err := h.Queries.CountUnresolvedComments(r.Context(), db.CountUnresolvedCommentsParams{
+					IssueID:     comment.IssueID,
+					WorkspaceID: comment.WorkspaceID,
+					AuthorID:    task.AgentID,
+				}); err == nil {
+					resp.UnresolvedCount = int(cnt)
+				}
 			}
 		}
 
@@ -1277,7 +1311,17 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 				AgentID: task.AgentID,
 				IssueID: task.IssueID,
 			}); err == nil && prior.SessionID.Valid {
-				if !task.TriggerCommentID.Valid && prior.RuntimeID == task.RuntimeID {
+				// Comment-triggered follow-ups skip session resume by default
+				// (only workdir is reused): a resumed conversation tends to
+				// inherit the prior turn's final assistant message (e.g.
+				// "Done.") and answer a new comment with that stale marker.
+				// MULTICA_RESUME_COMMENT_SESSION is a rollout gate to let
+				// comment triggers ALSO resume the session; the runtime-match
+				// and poisoned-session guards stay in force regardless. The
+				// "Focus on THIS comment" guard in prompt.go still defends
+				// against Done.-inheritance when resume is on.
+				resumeComment := resumeCommentSessionEnabled()
+				if (!task.TriggerCommentID.Valid || resumeComment) && prior.RuntimeID == task.RuntimeID {
 					resp.PriorSessionID = prior.SessionID.String
 				}
 				if prior.WorkDir.Valid {
