@@ -136,9 +136,11 @@ type Handler struct {
 	// (the dispatcher and renewer touch DB rows, not Lark wire I/O).
 	// The router constructs the Hub but does NOT call Run on it; the
 	// process owner (main.go) starts it under a long-running context
-	// and joins on Wait during graceful shutdown so the lease
-	// renewer can yield gracefully instead of forcing the next
-	// replica to wait the full TTL.
+	// and joins via WaitWithTimeout (bounded wait, fenced by
+	// ShutdownTimeout) during graceful shutdown so the lease renewer
+	// can yield cleanly when the DB is healthy without blocking
+	// process exit indefinitely if the pool is frozen — at worst the
+	// next replica waits the full TTL.
 	LarkHub *lark.Hub
 	cfg     Config
 }

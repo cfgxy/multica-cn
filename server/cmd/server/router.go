@@ -232,20 +232,29 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					TaskService:  h.TaskService,
 				}
 
-				// WS Hub: lease + supervisor goroutines per
-				// installation. The factory hands every supervisor a
-				// shared NoopConnector for now — the connector holds
-				// the lease and emits nothing, so the lifecycle
-				// (lease acquisition, renewal, release on shutdown,
-				// supervisor reap on revoke) runs against real DB
-				// rows on staging without committing to the wire
-				// protocol implementation. Swapping in the real
-				// Lark long-conn client is a single line change in
-				// this block; the Hub / Dispatcher / ChatService
-				// surfaces stay frozen.
-				connectorFactory := lark.NoopConnectorFactory(slog.Default())
+				// WS Hub: lease + supervisor goroutines per installation.
+				// The factory we hand the Hub picks one of two
+				// connectors:
+				//
+				//   - NoopConnector (default): holds the lease + sweeps
+				//     supervisors against real DB rows without dialing
+				//     Lark. Used on staging boxes that need the lease /
+				//     reconnect lifecycle exercised before the live WS
+				//     protocol is enabled, and as the safe fallback when
+				//     the outbound HTTP APIClient is the stub (no real
+				//     bearer means no `connection_token` call).
+				//
+				//   - WSLongConnConnector (MULTICA_LARK_WS_ENABLED=true):
+				//     real Lark long-conn over gorilla/websocket. The
+				//     connector wraps every read with a ctx-cancel
+				//     watchdog so lease loss / shutdown breaks the
+				//     blocking ReadMessage in bounded time — the
+				//     invariant §4.4 leans on. Requires the HTTP client
+				//     to be enabled because the connection_token POST
+				//     piggybacks on its tenant_access_token cache.
+				connectorFactory, connectorLabel := buildLarkConnectorFactory(larkClient, installSvc)
 				h.LarkHub = lark.NewHub(queries, connectorFactory, dispatcher, lark.HubConfig{})
-				slog.Info("lark inbound pipeline wired (noop connector — real long-conn pending)")
+				slog.Info("lark inbound pipeline wired", "connector", connectorLabel)
 
 				// Device-flow registration service: end-to-end install
 				// pipeline that talks to accounts.feishu.cn (RFC 8628)
@@ -848,6 +857,64 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	})
 
 	return r, h
+}
+
+// buildLarkConnectorFactory picks between the staging-mode
+// NoopConnector and the real WS long-conn connector based on
+// MULTICA_LARK_WS_ENABLED. The real connector requires an HTTP
+// APIClient that can mint a tenant_access_token; the stub cannot, so we
+// fall back to noop with a warning if the operator enables the WS flag
+// without also enabling MULTICA_LARK_HTTP_ENABLED. Returns the factory
+// the Hub will use plus a short label for the boot log so operators
+// can see at a glance which mode they are in.
+func buildLarkConnectorFactory(client lark.APIClient, installSvc *lark.InstallationService) (lark.ConnectorFactory, string) {
+	if !strings.EqualFold(strings.TrimSpace(os.Getenv("MULTICA_LARK_WS_ENABLED")), "true") {
+		return lark.NoopConnectorFactory(slog.Default()), "noop"
+	}
+	tokenSource, err := lark.NewHTTPAPIClientTokenSource(client)
+	if err != nil {
+		slog.Warn("lark ws: MULTICA_LARK_WS_ENABLED requires MULTICA_LARK_HTTP_ENABLED; falling back to noop", "error", err)
+		return lark.NoopConnectorFactory(slog.Default()), "noop"
+	}
+	endpointFetcher, err := lark.NewHTTPConnectionTokenFetcher(lark.HTTPConnectionTokenConfig{
+		BaseURL:     strings.TrimSpace(os.Getenv("MULTICA_LARK_HTTP_BASE_URL")),
+		TokenSource: tokenSource,
+		Logger:      slog.Default(),
+	})
+	if err != nil {
+		slog.Error("lark ws: connection_token fetcher init failed; falling back to noop", "error", err)
+		return lark.NoopConnectorFactory(slog.Default()), "noop"
+	}
+	decoder := lark.NewLarkJSONFrameDecoder()
+	dialer := lark.NewGorillaDialer()
+	credsProvider := lark.CredentialsProviderFunc(func(ctx context.Context, inst db.LarkInstallation) (lark.InstallationCredentials, error) {
+		secret, err := installSvc.DecryptAppSecret(inst)
+		if err != nil {
+			return lark.InstallationCredentials{}, err
+		}
+		creds := lark.InstallationCredentials{
+			AppID:     inst.AppID,
+			AppSecret: secret,
+		}
+		if inst.TenantKey.Valid {
+			creds.TenantKey = inst.TenantKey.String
+		}
+		return creds, nil
+	})
+	conn, err := lark.NewWSLongConnConnector(lark.WSConnectorConfig{
+		Dialer:              dialer,
+		EndpointFetcher:     endpointFetcher,
+		FrameDecoder:        decoder,
+		CredentialsProvider: credsProvider,
+		Logger:              slog.Default(),
+	})
+	if err != nil {
+		slog.Error("lark ws: connector init failed; falling back to noop", "error", err)
+		return lark.NoopConnectorFactory(slog.Default()), "noop"
+	}
+	return func(_ db.LarkInstallation) (lark.EventConnector, error) {
+		return conn, nil
+	}, "ws-long-conn"
 }
 
 // membershipChecker implements realtime.MembershipChecker using database queries.
