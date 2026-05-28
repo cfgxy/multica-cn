@@ -115,22 +115,45 @@ func (h *Handler) GetCloudBillingCheckoutSession(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusBadRequest, "session_id is required")
 		return
 	}
-	// chi already URL-decodes the param, but it does NOT re-escape it
-	// when we splice it into the upstream URL below. Stripe session
-	// IDs are `cs_<base62>` so they're URL-safe by construction; if a
-	// future event ever sends something containing `/` or `?`, that
-	// would smuggle path/query segments. The cloud-runtime client
-	// rejects paths that don't start with `/` but doesn't otherwise
-	// validate; explicitly bail on suspicious characters here.
-	for _, c := range sessionID {
-		if c == '/' || c == '?' || c == '#' {
-			writeError(w, http.StatusBadRequest, "invalid session_id")
-			return
-		}
+	// Stripe Checkout session IDs are `cs_<base62>` by construction —
+	// alphanumeric plus underscore, nothing else. We splice the value
+	// straight into the upstream URL path, so anything outside that
+	// alphabet could in principle introduce path / query / fragment
+	// segments that re-target the request. Allow-list rather than
+	// deny-list: a future Stripe-format bump cannot quietly slip a
+	// new "harmful" character past us, it just rejects until we
+	// widen the rule consciously.
+	if !isValidStripeSessionID(sessionID) {
+		writeError(w, http.StatusBadRequest, "invalid session_id")
+		return
 	}
 	h.proxyCloudRuntime(w, r, http.MethodGet, "/api/v1/billing/checkout-sessions/"+sessionID, cloudRuntimeProxyOptions{
 		withUserID: true,
 	})
+}
+
+// isValidStripeSessionID reports whether s is a syntactically
+// plausible Stripe Checkout session id: a non-empty string of
+// `[A-Za-z0-9_]`. Stripe's own format is `cs_<base62>`, but we
+// accept the broader alphanumeric+underscore set because (a) it
+// covers every Stripe ID variant that might ever route here and
+// (b) it stays in lockstep with Stripe's own ID grammar without
+// hard-coding the `cs_` prefix.
+func isValidStripeSessionID(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, c := range s {
+		switch {
+		case c >= 'a' && c <= 'z':
+		case c >= 'A' && c <= 'Z':
+		case c >= '0' && c <= '9':
+		case c == '_':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // CreateCloudBillingPortalSession forwards POST /api/v1/billing/portal-sessions.
@@ -168,9 +191,50 @@ func (h *Handler) CreateCloudBillingPortalSession(w http.ResponseWriter, r *http
 // We DO bound the read with MaxBytesReader so a malicious or
 // misconfigured sender can't make us buffer arbitrary memory before
 // the upstream rejects on signature.
+//
+// Two pre-checks happen BEFORE we read the body:
+//
+//   - Per-IP rate limit (mirrors HandleAutopilotWebhook). The
+//     endpoint is public; without rate limiting an attacker spraying
+//     bogus payloads forces an upstream round-trip per request and
+//     burns the cloud's webhook handling budget. A spray of bad
+//     signatures still counts toward this limit, so the fast-path
+//     429 stops the bleed.
+//
+//   - Mandatory `Stripe-Signature` header. Real Stripe deliveries
+//     always include it; absence ≡ not from Stripe. Returning 401
+//     locally saves an upstream RTT on the most common kind of
+//     unauthorized poke (curl from a script kiddie). This is a strict
+//     superset of what the upstream would do — Cloud also rejects
+//     missing-signature with 401 — so it does not change Stripe's
+//     own delivery dashboard view.
 func (h *Handler) HandleCloudBillingStripeWebhook(w http.ResponseWriter, r *http.Request) {
 	if h.CloudRuntime == nil || !h.CloudRuntime.Enabled() {
 		writeError(w, http.StatusServiceUnavailable, "cloud runtime is not configured")
+		return
+	}
+
+	// Per-IP rate limit BEFORE reading the body or hitting upstream.
+	// We deliberately reuse the same limiter as the autopilot
+	// webhook: both are public unauthenticated ingress with the same
+	// abuse profile, and budgeting them together gives a single knob
+	// to tune.
+	if h.WebhookIPRateLimiter != nil {
+		if ip := h.clientIPForRateLimit(r); ip != "" {
+			if !h.WebhookIPRateLimiter.Allow(r.Context(), ip) {
+				writeError(w, http.StatusTooManyRequests, "rate limit exceeded")
+				return
+			}
+		}
+	}
+
+	// Real Stripe deliveries always include Stripe-Signature; the
+	// absence is a confident "not from Stripe" signal. Reject locally
+	// to save the upstream RTT. NOTE: we use Header.Values to detect
+	// presence rather than Get, so a header explicitly set to "" still
+	// counts as missing (matches the upstream's interpretation).
+	if len(r.Header.Values(stripeSignatureHeader)) == 0 {
+		writeError(w, http.StatusUnauthorized, "missing Stripe-Signature header")
 		return
 	}
 
@@ -194,19 +258,23 @@ func (h *Handler) HandleCloudBillingStripeWebhook(w http.ResponseWriter, r *http
 		return
 	}
 
-	// Pull whatever Stripe sent — we forward all values rather than
-	// the first only, in case Stripe ever changes from the v=… split
-	// across multiple header lines (they currently use a single line).
+	// Forward Stripe-Signature verbatim, plus Stripe's original
+	// Content-Type (so the upstream sees the exact same header set
+	// it would if Stripe were calling it directly). cloudruntime's
+	// default Content-Type would override `application/json;
+	// charset=utf-8` to plain `application/json`; signature
+	// verification doesn't care (HMAC is over the body), but
+	// preserving the exact header is cheap and removes a debug-time
+	// "why does this header look different?" surprise. Caller-
+	// supplied Headers in cloudruntime.Request override defaults, so
+	// putting Content-Type here is enough.
 	headers := http.Header{}
 	if sigs := r.Header.Values(stripeSignatureHeader); len(sigs) > 0 {
 		headers[stripeSignatureHeader] = sigs
 	}
-	// Forward the original Content-Type if set, since the cloud side
-	// hands the raw body to a Stripe SDK that doesn't strictly require
-	// JSON content-type but doesn't object to it. The cloudruntime
-	// client defaults to `application/json` when a body is present;
-	// for a webhook that's the same value Stripe sends, so we don't
-	// override it explicitly.
+	if cts := r.Header.Values("Content-Type"); len(cts) > 0 {
+		headers["Content-Type"] = cts
+	}
 
 	resp, err := h.CloudRuntime.Do(r.Context(), cloudruntime.Request{
 		Method:    http.MethodPost,

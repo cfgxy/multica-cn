@@ -114,8 +114,12 @@ func (c *Client) Do(ctx context.Context, req Request) (*Response, error) {
 	// Content-Type) ARE overridable — a webhook passthrough may need
 	// to preserve a non-JSON Content-Type.
 	for k, vs := range req.Headers {
-		// Skip the headers we stamp authoritatively below.
-		if http.CanonicalHeaderKey(k) == "X-User-Id" || http.CanonicalHeaderKey(k) == "X-Request-Id" {
+		// Skip the headers we stamp authoritatively below. Canonicalize
+		// once per key — http.CanonicalHeaderKey allocates on its
+		// fast path so calling it twice per iteration would double
+		// the per-request header overhead for no reason.
+		canon := http.CanonicalHeaderKey(k)
+		if canon == "X-User-Id" || canon == "X-Request-Id" {
 			continue
 		}
 		httpReq.Header.Del(k)

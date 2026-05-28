@@ -2,6 +2,7 @@ package handler
 
 import (
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -19,13 +20,13 @@ import (
 // — the interesting per-endpoint logic lives in `withQuery` /
 // `withBody` / dynamic-path-param branches.
 type billingProxyCase struct {
-	name    string
-	method  string
-	path    string // path on OUR router, e.g. /api/cloud-billing/balance
-	body    any    // nil for GET; map / struct for POST bodies
-	wantPx  string // expected upstream path
-	wantQ   string // expected upstream query (encoded form), "" if none
-	invoke  func(t *testing.T, w http.ResponseWriter, r *http.Request)
+	name   string
+	method string
+	path   string // path on OUR router, e.g. /api/cloud-billing/balance
+	body   any    // nil for GET; map / struct for POST bodies
+	wantPx string // expected upstream path
+	wantQ  string // expected upstream query (encoded form), "" if none
+	invoke func(t *testing.T, w http.ResponseWriter, r *http.Request)
 }
 
 // TestCloudBillingProxiesForwardCorrectly walks every standard
@@ -144,7 +145,7 @@ func TestCloudBillingProxiesForwardCorrectly(t *testing.T) {
 			if tc.method == http.MethodGet && len(proxy.req.Body) > 0 {
 				t.Errorf("upstream body should be empty on GET, got %s", proxy.req.Body)
 			}
-		});
+		})
 	}
 }
 
@@ -258,6 +259,7 @@ func TestCloudBillingDisabledReturnsUnavailable(t *testing.T) {
 func TestStripeWebhookForwardsRawBodyAndSignature(t *testing.T) {
 	rawBody := "  \n{\"id\":\"evt_test\",\"type\":\"checkout.session.completed\"}\n"
 	const sig = "t=1700000000,v1=deadbeef0000aaaa"
+	const ct = "application/json; charset=utf-8"
 
 	proxy := &fakeCloudRuntimeProxy{
 		enabled: true,
@@ -270,7 +272,7 @@ func TestStripeWebhookForwardsRawBodyAndSignature(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/stripe", strings.NewReader(rawBody))
 	req.Header.Set("Stripe-Signature", sig)
-	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	req.Header.Set("Content-Type", ct)
 	// Deliberately NO X-User-ID — the webhook must work without auth.
 	w := httptest.NewRecorder()
 
@@ -291,26 +293,29 @@ func TestStripeWebhookForwardsRawBodyAndSignature(t *testing.T) {
 	if got := proxy.req.Headers.Get("Stripe-Signature"); got != sig {
 		t.Fatalf("upstream Stripe-Signature = %q, want %q", got, sig)
 	}
+	// Content-Type must arrive verbatim — preserving the
+	// `; charset=utf-8` suffix Stripe always sends. cloudruntime's
+	// default would otherwise strip it to plain `application/json`.
+	if got := proxy.req.Headers.Get("Content-Type"); got != ct {
+		t.Fatalf("upstream Content-Type = %q, want %q", got, ct)
+	}
 	if proxy.req.UserID != "" {
 		t.Errorf("upstream user_id should be empty for webhook, got %q", proxy.req.UserID)
 	}
 }
 
-// TestStripeWebhookMissingSignatureStillForwards confirms we don't
-// reject pre-flight on missing Stripe-Signature ourselves — that's
-// the cloud's job, and forwarding the raw payload (without sig) lets
-// the upstream return its own 401, giving Stripe an actionable error
-// in their delivery dashboard. The middle-tier MUST NOT short-circuit
-// signature verification, since any check we'd do here is by
-// definition weaker than the upstream's.
-func TestStripeWebhookMissingSignatureStillForwards(t *testing.T) {
-	proxy := &fakeCloudRuntimeProxy{
-		enabled: true,
-		resp: &cloudruntime.Response{
-			StatusCode: http.StatusUnauthorized,
-			Body:       []byte(`{"error":"missing signature"}`),
-		},
-	}
+// TestStripeWebhookMissingSignatureRejectedLocally pins the early
+// 401 we now return when Stripe-Signature is absent. Real Stripe
+// deliveries ALWAYS include the header; absence ≡ not from Stripe.
+// Rejecting locally saves the upstream RTT (and prevents using us
+// as a DoS amplifier against the cloud Billing service).
+//
+// The contract is documented in HandleCloudBillingStripeWebhook:
+// our local 401 is a strict superset of what the upstream would do
+// in this case, so Stripe's delivery dashboard sees the same
+// outcome it would have if the request had reached cloud.
+func TestStripeWebhookMissingSignatureRejectedLocally(t *testing.T) {
+	proxy := &fakeCloudRuntimeProxy{enabled: true}
 	useCloudRuntimeProxy(t, proxy)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/stripe",
@@ -321,18 +326,17 @@ func TestStripeWebhookMissingSignatureStillForwards(t *testing.T) {
 	if w.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
-	if !proxy.called {
-		t.Fatal("upstream must still be called even without signature")
-	}
-	if got := proxy.req.Headers.Get("Stripe-Signature"); got != "" {
-		t.Errorf("upstream Stripe-Signature = %q, want empty", got)
+	if proxy.called {
+		t.Fatal("upstream must NOT be called when Stripe-Signature is missing")
 	}
 }
 
 // TestStripeWebhookForwardsEmptyBody confirms we don't pre-reject an
 // empty body — Stripe's webhook tester sometimes sends pings, and the
 // upstream is the source of truth for what's an acceptable payload.
-// (We do still cap large bodies; that's a separate test.)
+// (We do still cap large bodies; that's a separate test.) The
+// signature header is set because, post-fix, the absence of it is
+// itself a 401 — see TestStripeWebhookMissingSignatureRejectedLocally.
 func TestStripeWebhookForwardsEmptyBody(t *testing.T) {
 	proxy := &fakeCloudRuntimeProxy{
 		enabled: true,
@@ -344,6 +348,7 @@ func TestStripeWebhookForwardsEmptyBody(t *testing.T) {
 	useCloudRuntimeProxy(t, proxy)
 
 	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/stripe", http.NoBody)
+	req.Header.Set("Stripe-Signature", "t=1,v1=deadbeef")
 	w := httptest.NewRecorder()
 	testHandler.HandleCloudBillingStripeWebhook(w, req)
 
@@ -394,3 +399,41 @@ func TestStripeWebhookDisabledReturnsUnavailable(t *testing.T) {
 		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
 	}
 }
+
+
+// TestStripeWebhookRateLimited pins the per-IP rate-limit fast
+// path. With a denying limiter installed the handler must 429
+// BEFORE consulting upstream. Mirrors HandleAutopilotWebhook's
+// behaviour: the public webhook ingress sits behind the same
+// WebhookIPRateLimiter so a flood of bogus requests doesn't burn
+// cloud-side budget.
+func TestStripeWebhookRateLimited(t *testing.T) {
+	proxy := &fakeCloudRuntimeProxy{enabled: true}
+	useCloudRuntimeProxy(t, proxy)
+
+	prevLimiter := testHandler.WebhookIPRateLimiter
+	testHandler.WebhookIPRateLimiter = denyingWebhookIPRateLimiter{}
+	t.Cleanup(func() { testHandler.WebhookIPRateLimiter = prevLimiter })
+
+	req := httptest.NewRequest(http.MethodPost, "/api/webhooks/stripe",
+		strings.NewReader(`{"id":"evt"}`))
+	req.Header.Set("Stripe-Signature", "t=1,v1=deadbeef")
+	req.RemoteAddr = "203.0.113.7:1234"
+	w := httptest.NewRecorder()
+	testHandler.HandleCloudBillingStripeWebhook(w, req)
+
+	if w.Code != http.StatusTooManyRequests {
+		t.Fatalf("status = %d, body = %s", w.Code, w.Body.String())
+	}
+	if proxy.called {
+		t.Fatal("upstream must not be called when rate limited")
+	}
+}
+
+// denyingWebhookIPRateLimiter is the smallest possible limiter that
+// always says "no". It exists to drive the 429 branch without
+// requiring a Redis test instance — the limiter interface is the
+// same one HandleAutopilotWebhook uses.
+type denyingWebhookIPRateLimiter struct{}
+
+func (denyingWebhookIPRateLimiter) Allow(_ context.Context, _ string) bool { return false }

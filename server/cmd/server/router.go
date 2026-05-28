@@ -396,6 +396,30 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Delete("/{id}", h.RevokePersonalAccessToken)
 		})
 
+		// Cloud Billing proxy. Same upstream service / port as
+		// cloud-runtime — multica-cloud's Fleet and Billing share
+		// :8080 and the same chi router. All routes here forward
+		// to /api/v1/billing/* with X-User-ID stamped from the
+		// authenticated context.
+		//
+		// User-scoped (account-level), NOT workspace-scoped — sits
+		// outside the RequireWorkspaceMember group so a user can
+		// inspect their balance, top up, and open the Billing Portal
+		// without an active workspace selected. The upstream owner
+		// model is single-user; X-Workspace-ID would be ignored even
+		// if we sent it. The Stripe webhook is the public outlier
+		// and lives outside the entire Auth group (see above).
+		r.Route("/api/cloud-billing", func(r chi.Router) {
+			r.Get("/balance", h.GetCloudBillingBalance)
+			r.Get("/transactions", h.ListCloudBillingTransactions)
+			r.Get("/batches", h.ListCloudBillingBatches)
+			r.Get("/topups", h.ListCloudBillingTopups)
+			r.Get("/price-tiers", h.ListCloudBillingPriceTiers)
+			r.Post("/checkout-sessions", h.CreateCloudBillingCheckoutSession)
+			r.Get("/checkout-sessions/{sessionId}", h.GetCloudBillingCheckoutSession)
+			r.Post("/portal-sessions", h.CreateCloudBillingPortalSession)
+		})
+
 		// --- Workspace-scoped routes (all require workspace membership) ---
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RequireWorkspaceMember(queries))
@@ -641,23 +665,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/nodes/reboot", h.RebootCloudRuntimeNode)
 				r.Post("/nodes/status", h.GetCloudRuntimeNodeStatus)
 				r.Post("/nodes/exec", h.ExecCloudRuntimeNode)
-			})
-
-			// Cloud Billing proxy. Same upstream service / port as
-			// cloud-runtime — multica-cloud's Fleet and Billing share
-			// :8080 and the same chi router. All routes here forward
-			// to /api/v1/billing/* with X-User-ID stamped from the
-			// authenticated context. The Stripe webhook is the
-			// outlier and lives outside this Auth group (see above).
-			r.Route("/api/cloud-billing", func(r chi.Router) {
-				r.Get("/balance", h.GetCloudBillingBalance)
-				r.Get("/transactions", h.ListCloudBillingTransactions)
-				r.Get("/batches", h.ListCloudBillingBatches)
-				r.Get("/topups", h.ListCloudBillingTopups)
-				r.Get("/price-tiers", h.ListCloudBillingPriceTiers)
-				r.Post("/checkout-sessions", h.CreateCloudBillingCheckoutSession)
-				r.Get("/checkout-sessions/{sessionId}", h.GetCloudBillingCheckoutSession)
-				r.Post("/portal-sessions", h.CreateCloudBillingPortalSession)
 			})
 
 			// Tasks (user-facing, with ownership check)
