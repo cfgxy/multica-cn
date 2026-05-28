@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Check, Copy, Terminal } from "lucide-react";
 import { Card, CardContent } from "@multica/ui/components/ui/card";
-import { CODE_LIGATURE_CLASS } from "@multica/ui/markdown";
+import { CODE_LIGATURE_CLASS } from "@multica/ui/lib/code-style";
 import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../../i18n";
 
