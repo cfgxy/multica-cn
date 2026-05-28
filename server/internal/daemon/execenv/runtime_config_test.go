@@ -153,6 +153,55 @@ func TestCommentTriggeredProtocolDoesNotForceInReview(t *testing.T) {
 	}
 }
 
+// The CLAUDE.md workflow surface must carry the same unresolved-comments hint
+// and the resolve step as the per-turn prompt. PR #2816 requires the two
+// surfaces stay in sync, so this pins both the count-driven hint and the
+// `comment resolve` step into the comment-triggered brief.
+func TestCommentTriggeredBriefCarriesUnresolvedHintAndResolveStep(t *testing.T) {
+	t.Parallel()
+	const (
+		issueID  = "55555555-6666-7777-8888-999999999999"
+		parentID = "thread-root-xyz"
+	)
+	ctx := TaskContextForEnv{
+		IssueID:          issueID,
+		TriggerCommentID: "reply-abc",
+		TriggerParentID:  parentID,
+		UnresolvedCount:  4,
+	}
+	out := buildMetaSkillContent("claude", ctx)
+
+	// Thread-variant hint (trigger is a reply, parent differs).
+	if !strings.Contains(out, "You were pulled into thread `"+parentID+"`") {
+		t.Errorf("comment brief must carry the thread unresolved hint, got:\n%s", out)
+	}
+	if !strings.Contains(out, "4 other unresolved comment(s)") {
+		t.Errorf("comment brief must report the unresolved count, got:\n%s", out)
+	}
+	if !strings.Contains(out, "--unresolved --output json") {
+		t.Errorf("comment brief must point at --unresolved, got:\n%s", out)
+	}
+	// Resolve step (F).
+	if !strings.Contains(out, "multica comment resolve <thread-root>") {
+		t.Errorf("comment brief must instruct the agent to resolve a finished thread, got:\n%s", out)
+	}
+}
+
+// Zero backlog must not render the hint in the CLAUDE.md surface either.
+func TestCommentTriggeredBriefSuppressesUnresolvedHintWhenZero(t *testing.T) {
+	t.Parallel()
+	ctx := TaskContextForEnv{
+		IssueID:          "55555555-6666-7777-8888-999999999999",
+		TriggerCommentID: "trigger-1",
+		TriggerParentID:  "trigger-1",
+		UnresolvedCount:  0,
+	}
+	out := buildMetaSkillContent("claude", ctx)
+	if strings.Contains(out, "unresolved comment(s)") {
+		t.Errorf("no unresolved hint should render when count is 0, got:\n%s", out)
+	}
+}
+
 // Assignment-triggered briefs are the inverse boundary: when the agent
 // owns the issue lifecycle, the brief AS A WHOLE must still tell it to
 // flip to in_review on completion. The flip lives in the

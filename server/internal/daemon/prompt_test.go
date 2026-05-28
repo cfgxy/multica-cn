@@ -359,3 +359,89 @@ func TestBuildPromptNonSquadLeaderNoRule(t *testing.T) {
 		t.Errorf("buildCommentPrompt must NOT inject squad leader no_action rule for non-squad-leader agents, got:\n%s", out)
 	}
 }
+
+// TestBuildPromptUnresolvedHintIssueLevel pins that a comment-triggered task
+// whose trigger is a thread root (TriggerParentID == TriggerCommentID) gets the
+// issue-level unresolved hint pointing at `--unresolved`, but only when the
+// count is positive. This is the cheap "here's the backlog" signal that lets a
+// cold-entering agent pull every open comment in one call instead of walking
+// threads blind.
+func TestBuildPromptUnresolvedHintIssueLevel(t *testing.T) {
+	const (
+		issueID   = "issue-unresolved-1"
+		triggerID = "trigger-root-1"
+	)
+	task := Task{
+		IssueID:               issueID,
+		TriggerCommentID:      triggerID,
+		TriggerCommentContent: "please look",
+		TriggerAuthorType:     "member",
+		// Trigger is itself a root: server stamps TriggerParentID == its own id.
+		TriggerParentID: triggerID,
+		UnresolvedCount: 3,
+	}
+	out := BuildPrompt(task, "claude")
+
+	if !strings.Contains(out, "3 unresolved comment(s) on this issue") {
+		t.Errorf("issue-level hint must report the unresolved count, got:\n%s", out)
+	}
+	if !strings.Contains(out, "multica issue comment list "+issueID+" --unresolved --output json") {
+		t.Errorf("issue-level hint must point at --unresolved, got:\n%s", out)
+	}
+	// Root trigger must NOT render the thread-pull variant.
+	if strings.Contains(out, "You were pulled into thread") {
+		t.Errorf("issue-level hint must not use the thread-pull wording for a root trigger, got:\n%s", out)
+	}
+}
+
+// TestBuildPromptUnresolvedHintThread pins the thread variant: when the trigger
+// is a reply (TriggerParentID differs from TriggerCommentID), the agent is told
+// it was pulled into the parent thread and to read that thread first, with the
+// other unresolved comments offered as a secondary source.
+func TestBuildPromptUnresolvedHintThread(t *testing.T) {
+	const (
+		issueID   = "issue-unresolved-2"
+		triggerID = "reply-comment-2"
+		parentID  = "thread-root-2"
+	)
+	task := Task{
+		IssueID:               issueID,
+		TriggerCommentID:      triggerID,
+		TriggerCommentContent: "follow-up",
+		TriggerAuthorType:     "member",
+		TriggerParentID:       parentID,
+		UnresolvedCount:       2,
+	}
+	out := BuildPrompt(task, "claude")
+
+	if !strings.Contains(out, "You were pulled into thread `"+parentID+"`") {
+		t.Errorf("thread hint must name the parent thread, got:\n%s", out)
+	}
+	if !strings.Contains(out, "multica issue comment list "+issueID+" --thread "+parentID+" --output json") {
+		t.Errorf("thread hint must point at the parent thread read, got:\n%s", out)
+	}
+	if !strings.Contains(out, "2 other unresolved comment(s)") {
+		t.Errorf("thread hint must mention the other unresolved count, got:\n%s", out)
+	}
+	if !strings.Contains(out, "--unresolved --output json") {
+		t.Errorf("thread hint must still offer --unresolved as the wider-picture call, got:\n%s", out)
+	}
+}
+
+// TestBuildPromptUnresolvedHintSuppressedWhenZero pins that no hint renders when
+// there is no backlog (count == 0). A noisy "0 unresolved comments" line would
+// just waste context on the common case.
+func TestBuildPromptUnresolvedHintSuppressedWhenZero(t *testing.T) {
+	task := Task{
+		IssueID:               "issue-unresolved-3",
+		TriggerCommentID:      "trigger-3",
+		TriggerCommentContent: "hi",
+		TriggerAuthorType:     "member",
+		TriggerParentID:       "trigger-3",
+		UnresolvedCount:       0,
+	}
+	out := BuildPrompt(task, "claude")
+	if strings.Contains(out, "unresolved comment(s)") {
+		t.Errorf("no unresolved hint should render when count is 0, got:\n%s", out)
+	}
+}
