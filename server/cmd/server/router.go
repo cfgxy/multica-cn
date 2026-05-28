@@ -409,7 +409,20 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// model is single-user; X-Workspace-ID would be ignored even
 		// if we sent it. The Stripe webhook is the public outlier
 		// and lives outside the entire Auth group (see above).
+		//
+		// IMPORTANT — task-token actors are blocked here. The Auth
+		// middleware happily turns an mat_ task token into a normal
+		// X-User-ID stamp (so agents can comment, claim issues, etc.
+		// as their owner), but billing is account-level and a running
+		// agent reading its owner's balance / opening a checkout
+		// session is the kind of lateral-movement we're explicitly
+		// trying to prevent. handler.RequireHumanActor checks the
+		// authoritative server-set X-Actor-Source header and 403s
+		// any task-token request. See actor_guards.go for the full
+		// rationale.
 		r.Route("/api/cloud-billing", func(r chi.Router) {
+			r.Use(handler.RequireHumanActor)
+
 			r.Get("/balance", h.GetCloudBillingBalance)
 			r.Get("/transactions", h.ListCloudBillingTransactions)
 			r.Get("/batches", h.ListCloudBillingBatches)
