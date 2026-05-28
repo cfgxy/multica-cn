@@ -1,6 +1,7 @@
 package lark
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -661,4 +662,307 @@ func waitFor(timeout time.Duration, cond func() bool) bool {
 		time.Sleep(time.Millisecond)
 	}
 	return cond()
+}
+
+// slowReplier blocks Reply for the configured duration unless the ctx
+// fires first. Used to prove the Hub's reply-off-critical-path
+// invariant: a Reply that exceeds ReplyTimeout MUST get its ctx
+// cancelled instead of running unbounded.
+type slowReplier struct {
+	delay       time.Duration
+	startCh     chan struct{}
+	finishCh    chan struct{}
+	mu          sync.Mutex
+	callCount   int
+	lastCtxErr  error // ctx.Err() observed when Reply returned
+}
+
+func newSlowReplier(delay time.Duration) *slowReplier {
+	return &slowReplier{
+		delay:    delay,
+		startCh:  make(chan struct{}, 16),
+		finishCh: make(chan struct{}, 16),
+	}
+}
+
+func (s *slowReplier) Reply(ctx context.Context, _ db.LarkInstallation, _ InboundMessage, _ DispatchResult) {
+	s.mu.Lock()
+	s.callCount++
+	s.mu.Unlock()
+	select {
+	case s.startCh <- struct{}{}:
+	default:
+	}
+	select {
+	case <-time.After(s.delay):
+	case <-ctx.Done():
+	}
+	s.mu.Lock()
+	s.lastCtxErr = ctx.Err()
+	s.mu.Unlock()
+	select {
+	case s.finishCh <- struct{}{}:
+	default:
+	}
+}
+
+func (s *slowReplier) calls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.callCount
+}
+
+func (s *slowReplier) ctxErr() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastCtxErr
+}
+
+// TestHubScheduleReplyReturnsImmediately verifies the core invariant
+// behind the OutcomeReplier refactor: a slow replier MUST NOT block
+// the dispatch caller. handleEvent is on the ACK critical path — the
+// connector ACKs as soon as it returns — so coupling it to outbound
+// Lark HTTP would let any slow card-send stall ACK past Lark's 3s
+// deadline. This test puts a 10s sleep in the replier and asserts the
+// scheduling call still returns in < 50ms.
+func TestHubScheduleReplyReturnsImmediately(t *testing.T) {
+	t.Parallel()
+	rep := newSlowReplier(10 * time.Second)
+	hub := NewHub(nil, nil, nil, HubConfig{
+		ReplyTimeout: 100 * time.Millisecond,
+		Logger:       newDiscardLogger(),
+	})
+	hub.SetOutcomeReplier(rep)
+
+	start := time.Now()
+	hub.scheduleReply(db.LarkInstallation{}, InboundMessage{EventID: "e1"},
+		DispatchResult{Outcome: OutcomeNeedsBinding}, newDiscardLogger())
+	elapsed := time.Since(start)
+
+	if elapsed > 50*time.Millisecond {
+		t.Fatalf("scheduleReply took %s; ACK critical path would be blocked by outbound HTTP", elapsed)
+	}
+
+	// The replier should still be in flight — proves it really did
+	// detach into a goroutine.
+	select {
+	case <-rep.startCh:
+		// good — Reply was invoked async
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("detached replier never ran")
+	}
+
+	// Drain the timeout-bounded reply so the test doesn't leak goroutines.
+	if !hub.WaitWithTimeout(1 * time.Second) {
+		t.Fatal("reply goroutine did not exit after ReplyTimeout fired")
+	}
+
+	if !errors.Is(rep.ctxErr(), context.DeadlineExceeded) {
+		t.Fatalf("replier ctx.Err() = %v; want DeadlineExceeded", rep.ctxErr())
+	}
+}
+
+// TestHubReplyTimeoutCancelsHungReplier pins the bound on the detached
+// reply: a replier that ignores ctx (or its outbound HTTP that hasn't
+// noticed yet) MUST be cancelled at ReplyTimeout. The test gives the
+// replier a deliberately long sleep and a short timeout, then asserts
+// the reply goroutine exits within roughly the timeout — not the sleep.
+func TestHubReplyTimeoutCancelsHungReplier(t *testing.T) {
+	t.Parallel()
+	timeout := 80 * time.Millisecond
+	rep := newSlowReplier(10 * time.Second)
+	hub := NewHub(nil, nil, nil, HubConfig{
+		ReplyTimeout: timeout,
+		Logger:       newDiscardLogger(),
+	})
+	hub.SetOutcomeReplier(rep)
+
+	start := time.Now()
+	hub.scheduleReply(db.LarkInstallation{}, InboundMessage{EventID: "e2"},
+		DispatchResult{Outcome: OutcomeAgentOffline}, newDiscardLogger())
+
+	select {
+	case <-rep.finishCh:
+	case <-time.After(1 * time.Second):
+		t.Fatal("replier never exited; ReplyTimeout did not fire")
+	}
+	elapsed := time.Since(start)
+
+	// Sanity bound: shutdown must complete in roughly timeout + jitter.
+	if elapsed > 500*time.Millisecond {
+		t.Fatalf("replier exit took %s; expected ≈ %s", elapsed, timeout)
+	}
+	if !errors.Is(rep.ctxErr(), context.DeadlineExceeded) {
+		t.Fatalf("replier should observe DeadlineExceeded; got %v", rep.ctxErr())
+	}
+	hub.Wait()
+}
+
+// TestHubWaitDrainsInFlightReplies verifies that Hub.Wait (and
+// WaitWithTimeout) joins on the replier goroutines, not just the
+// supervisor goroutines. Without this, shutdown could close the
+// process while a binding-card send is still in flight — the user
+// gets no card, no log entry, and the binding token they were going
+// to receive is orphaned with no observability.
+func TestHubWaitDrainsInFlightReplies(t *testing.T) {
+	t.Parallel()
+	rep := newSlowReplier(30 * time.Millisecond) // shorter than ReplyTimeout
+	hub := NewHub(nil, nil, nil, HubConfig{
+		ReplyTimeout: 1 * time.Second,
+		Logger:       newDiscardLogger(),
+	})
+	hub.SetOutcomeReplier(rep)
+
+	hub.scheduleReply(db.LarkInstallation{}, InboundMessage{EventID: "e3"},
+		DispatchResult{Outcome: OutcomeNeedsBinding}, newDiscardLogger())
+
+	// Wait should block until the reply finishes its 30ms work.
+	start := time.Now()
+	hub.Wait()
+	elapsed := time.Since(start)
+
+	if elapsed < 20*time.Millisecond {
+		t.Fatalf("Wait returned in %s; should have blocked until reply completed", elapsed)
+	}
+	if rep.calls() != 1 {
+		t.Fatalf("reply call count = %d; want 1", rep.calls())
+	}
+	// Reply finished naturally (sleep returned), not via cancellation.
+	if rep.ctxErr() != nil {
+		t.Errorf("reply ctxErr = %v; want nil (slept normally)", rep.ctxErr())
+	}
+}
+
+// TestHubNoopReplierInlineNoGoroutine verifies the optimisation: the
+// noop replier (used when outbound APIClient isn't configured) runs
+// inline, not under a goroutine. This avoids the cost of a goroutine
+// per inbound event on a deployment that hasn't wired outbound replies
+// yet. Indirectly proven by observing replyWg is not bumped (Wait
+// returns immediately without any reply goroutine to drain).
+func TestHubNoopReplierInlineNoGoroutine(t *testing.T) {
+	t.Parallel()
+	hub := NewHub(nil, nil, nil, HubConfig{
+		Logger: newDiscardLogger(),
+	})
+	// hub.replier defaults to noop. Call scheduleReply many times — if
+	// it spawned goroutines, Wait would wait at least until those
+	// goroutines schedule, but with the fast-path it must return
+	// instantly.
+	for i := 0; i < 1000; i++ {
+		hub.scheduleReply(db.LarkInstallation{}, InboundMessage{EventID: "e"},
+			DispatchResult{Outcome: OutcomeNeedsBinding}, newDiscardLogger())
+	}
+	done := make(chan struct{})
+	go func() { hub.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Wait should return immediately when no goroutine replies were scheduled")
+	}
+}
+
+// TestHubReplyTimeoutDefaultIsUnder3s pins the value the production
+// path uses — Lark requires ACK within 3 seconds, and the replier
+// runs ON TOP of the dispatch latency, so it must complete strictly
+// under 3s even if dispatch took 500ms. Defaulting to 2.5s leaves
+// headroom both for outbound HTTP and for shutdown to drain replies
+// without hitting the broader ShutdownTimeout.
+func TestHubReplyTimeoutDefaultIsUnder3s(t *testing.T) {
+	t.Parallel()
+	c := HubConfig{}.withDefaults()
+	if c.ReplyTimeout <= 0 {
+		t.Fatalf("ReplyTimeout default must be > 0; got %s", c.ReplyTimeout)
+	}
+	if c.ReplyTimeout >= 3*time.Second {
+		t.Fatalf("ReplyTimeout default %s is too close to Lark's 3s ACK deadline; outbound HTTP would race ACK", c.ReplyTimeout)
+	}
+}
+
+// TestHubACKNotBlockedByOutboundReply proves the full integrated
+// invariant: even when the OutcomeReplier hangs for far longer than
+// the Lark ACK deadline, the connector's data-frame ACK still lands
+// on the wire promptly. This is the end-to-end version of the unit
+// test above, exercising connector -> Hub.handleEvent -> scheduleReply
+// against a fakeWSConn so we can observe the actual binary ACK frame
+// timing.
+//
+// Construct a dispatcher manually that returns OutcomeNeedsBinding
+// (the outcome most prone to expensive outbound work — token mint +
+// card send). Wire a slowReplier that sleeps 5s. Push one event.
+// Assert: an ACK frame appears in conn.writes within 500ms (well
+// under Lark's 3s budget).
+func TestHubACKNotBlockedByOutboundReply(t *testing.T) {
+	t.Parallel()
+
+	conn := newFakeWSConn()
+	decoder := FrameDecoderFunc(func(payload []byte, _ db.LarkInstallation) (InboundMessage, bool, error) {
+		return InboundMessage{EventID: string(payload)}, true, nil
+	})
+	c := quietConnector(t, conn, decoder, time.Hour) // disable ping
+
+	// Slow replier that would block ACK if the critical path coupling
+	// regressed. 5s sleep, ReplyTimeout 2.5s — replier must be
+	// cancelled at ~2.5s and the ACK must NOT have waited for it.
+	rep := newSlowReplier(5 * time.Second)
+	hub := NewHub(nil, nil, nil, HubConfig{
+		ReplyTimeout: 2500 * time.Millisecond,
+		Logger:       newDiscardLogger(),
+	})
+	hub.SetOutcomeReplier(rep)
+
+	emit := func(ctx context.Context, msg InboundMessage) (DispatchResult, error) {
+		// Simulate the dispatcher's "successful binding-needed" verdict
+		// without standing up the full Dispatcher (concrete struct +
+		// service deps). The async reply is the only behaviour under
+		// test here, and scheduleReply is what the real handleEvent
+		// hands to the replier.
+		res := DispatchResult{
+			Outcome:      OutcomeNeedsBinding,
+			SenderOpenID: "ou_user_42",
+		}
+		hub.scheduleReply(db.LarkInstallation{}, msg, res, newDiscardLogger())
+		return res, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Run(ctx, db.LarkInstallation{AppID: "test_app"}, emit)
+	}()
+
+	start := time.Now()
+	pushDataFrame(conn, []byte("evt-binding"), "om-binding")
+
+	// The data-frame ACK MUST appear well under Lark's 3s budget.
+	if !waitFor(500*time.Millisecond, func() bool {
+		for _, w := range conn.snapshot() {
+			f, err := UnmarshalFrame(w)
+			if err != nil {
+				continue
+			}
+			if f.Method == FrameMethodData && bytes.Contains(f.Payload, []byte(`"code":200`)) {
+				return true
+			}
+		}
+		return false
+	}) {
+		t.Fatalf("data-frame ACK did not land within 500ms; outbound reply blocked the critical path (replier still running? %v)", rep.calls() == 1)
+	}
+	ackLatency := time.Since(start)
+	if ackLatency >= 3*time.Second {
+		t.Fatalf("ACK landed in %s, past Lark's 3s deadline", ackLatency)
+	}
+
+	// Verify the replier was indeed launched (proves we didn't accidentally
+	// short-circuit it).
+	select {
+	case <-rep.startCh:
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("replier never ran; the reply path is silently broken")
+	}
+
+	cancel()
+	<-done
+	hub.WaitWithTimeout(5 * time.Second)
 }

@@ -8,25 +8,29 @@ import (
 )
 
 // Wire-compatible re-implementation of the Lark/Feishu long-connection
-// binary Frame envelope, byte-identical to the SDK's
-// github.com/larksuite/oapi-sdk-go/v3/ws/pbbp2.Frame.
-//
-// Lark's long-connection transport carries every message — control,
-// data, ping, pong, ack — as a single binary protobuf Frame. JSON
-// payloads are nested inside Frame.Payload; the outer wrapper itself
-// is protobuf. Decoding via JSON (the previous implementation) cannot
-// see the wire and will reject every real frame.
+// binary Frame envelope. The encoded bytes are byte-identical to what
+// the official SDK's github.com/larksuite/oapi-sdk-go/v3/ws Frame
+// produces, which matters because Lark's server rejects frames whose
+// required fields are missing — and the SDK is generated from
+// pbbp2.proto using proto2 + gogo `req` semantics, so SeqID / LogID /
+// Service / Method are emitted unconditionally (even when zero) and the
+// opt string fields (PayloadEncoding / PayloadType / LogIDNew) are also
+// emitted unconditionally because gogo's generated code skips the
+// zero-guard for opt strings on this message. Only Payload uses the
+// `nil` guard. See the SDK's pbbp2.pb.go MarshalToSizedBuffer for the
+// reference; mismatches against that function silently corrupt the
+// stream because round-tripping against our own UnmarshalFrame masks
+// the bug.
 //
 // We re-encode by hand using google.golang.org/protobuf/encoding/protowire
 // rather than importing the official SDK's pbbp2 package: the SDK has
 // a large transitive dependency tree (full open-platform client,
 // generated code for every API surface) and we only need this one
 // message type. Hand-rolling the encode/decode for a 9-field message
-// is ~150 lines and isolated to this file, so the cost is bounded
-// while the dependency surface stays small.
-//
-// Field tags MUST match the SDK exactly; mismatches produce frames
-// that round-trip against ourselves but Lark silently drops them.
+// is bounded while the dependency surface stays small. The golden
+// tests in ws_frame_test.go pin the exact byte sequence the SDK would
+// produce for a handful of canonical frames; that is the load-bearing
+// compatibility check.
 
 const (
 	// FrameMethodControl identifies a frame whose Method=Control(0).
@@ -55,9 +59,9 @@ const (
 
 	// FrameHeaderSumKey / FrameHeaderSeqKey carry chunking metadata
 	// for multi-frame payloads (sum>1 means N chunks indexed by seq).
-	// MVP does not assemble chunks (Lark events fit in one frame); we
-	// still preserve the headers in the ACK so server doesn't reject
-	// the reply for missing keys.
+	// The chunk assembler in ws_chunk_assembler.go uses these to
+	// reassemble a single JSON payload from multiple Frames before
+	// invoking the decoder.
 	FrameHeaderSumKey = "sum"
 	FrameHeaderSeqKey = "seq"
 )
@@ -72,19 +76,22 @@ type FrameHeader struct {
 // Frame mirrors pbbp2.Frame. Field numbers match the SDK proto so the
 // on-wire bytes are byte-identical to what oapi-sdk-go produces.
 //
-// Unset fields are left zero / nil; the marshaller writes only the
-// fields a caller set explicitly. That matches proto3's "skip zero
-// values" rule and keeps our ping/pong frames small.
+// The Marshal implementation matches the SDK's gogo-generated code:
+// SeqID, LogID, Service, Method are emitted unconditionally as proto2
+// required fields; PayloadEncoding, PayloadType, LogIDNew are emitted
+// unconditionally with zero-length values when empty (matches the
+// generated code's unconditional copy + length-encoding); Payload is
+// emitted only when non-nil. The golden tests pin exact byte sequences.
 type Frame struct {
-	SeqID           uint64        // proto field 1
-	LogID           uint64        // proto field 2
-	Service         int32         // proto field 3
-	Method          int32         // proto field 4
-	Headers         []FrameHeader // proto field 5
-	PayloadEncoding string        // proto field 6
-	PayloadType     string        // proto field 7
-	Payload         []byte        // proto field 8
-	LogIDNew        string        // proto field 9
+	SeqID           uint64        // proto field 1 (req)
+	LogID           uint64        // proto field 2 (req)
+	Service         int32         // proto field 3 (req)
+	Method          int32         // proto field 4 (req)
+	Headers         []FrameHeader // proto field 5 (rep)
+	PayloadEncoding string        // proto field 6 (opt)
+	PayloadType     string        // proto field 7 (opt)
+	Payload         []byte        // proto field 8 (opt)
+	LogIDNew        string        // proto field 9 (opt)
 }
 
 // HeaderValue returns the value for the first header with the supplied
@@ -102,67 +109,71 @@ func (f *Frame) HeaderValue(key string) string {
 
 // Marshal encodes the frame to the wire format Lark expects. The
 // returned bytes are sent verbatim as the WebSocket binary payload.
+//
+// Field emission order matches the SDK's MarshalToSizedBuffer reverse
+// build (fields 1→9 in the final byte stream). DO NOT change which
+// fields are emitted unconditionally without re-checking the SDK's
+// generated MarshalToSizedBuffer — it is the authority on wire shape
+// and divergence is invisible until Lark's server starts dropping
+// frames in production.
 func (f *Frame) Marshal() []byte {
-	// Pre-sized buffer keeps the steady-state ping/pong / ACK
-	// allocations to a single make: empirically those frames are
-	// well under 128 bytes.
 	buf := make([]byte, 0, 64+len(f.Payload))
-	if f.SeqID != 0 {
-		buf = protowire.AppendTag(buf, 1, protowire.VarintType)
-		buf = protowire.AppendVarint(buf, f.SeqID)
-	}
-	if f.LogID != 0 {
-		buf = protowire.AppendTag(buf, 2, protowire.VarintType)
-		buf = protowire.AppendVarint(buf, f.LogID)
-	}
-	if f.Service != 0 {
-		buf = protowire.AppendTag(buf, 3, protowire.VarintType)
-		buf = protowire.AppendVarint(buf, uint64(uint32(f.Service)))
-	}
-	if f.Method != 0 {
-		buf = protowire.AppendTag(buf, 4, protowire.VarintType)
-		buf = protowire.AppendVarint(buf, uint64(uint32(f.Method)))
-	}
+
+	// Required fields (proto2 req): always emit tag + varint, even when
+	// the value is zero. The SDK's generated code unconditionally writes
+	// these; a Lark server reading a Frame missing one of them returns
+	// a RequiredNotSetError and discards the frame.
+	buf = protowire.AppendTag(buf, 1, protowire.VarintType)
+	buf = protowire.AppendVarint(buf, f.SeqID)
+	buf = protowire.AppendTag(buf, 2, protowire.VarintType)
+	buf = protowire.AppendVarint(buf, f.LogID)
+	buf = protowire.AppendTag(buf, 3, protowire.VarintType)
+	buf = protowire.AppendVarint(buf, uint64(uint32(f.Service)))
+	buf = protowire.AppendTag(buf, 4, protowire.VarintType)
+	buf = protowire.AppendVarint(buf, uint64(uint32(f.Method)))
+
+	// Repeated headers — emit one length-prefixed entry per FrameHeader.
+	// Empty Headers list emits nothing, matching the SDK guard.
 	for _, h := range f.Headers {
 		buf = protowire.AppendTag(buf, 5, protowire.BytesType)
 		buf = protowire.AppendVarint(buf, uint64(headerSize(h)))
-		if h.Key != "" {
-			buf = protowire.AppendTag(buf, 1, protowire.BytesType)
-			buf = protowire.AppendString(buf, h.Key)
-		}
-		if h.Value != "" {
-			buf = protowire.AppendTag(buf, 2, protowire.BytesType)
-			buf = protowire.AppendString(buf, h.Value)
-		}
+		// Header.Key (field 1) and Header.Value (field 2) are both
+		// proto2 req — emit unconditionally.
+		buf = protowire.AppendTag(buf, 1, protowire.BytesType)
+		buf = protowire.AppendString(buf, h.Key)
+		buf = protowire.AppendTag(buf, 2, protowire.BytesType)
+		buf = protowire.AppendString(buf, h.Value)
 	}
-	if f.PayloadEncoding != "" {
-		buf = protowire.AppendTag(buf, 6, protowire.BytesType)
-		buf = protowire.AppendString(buf, f.PayloadEncoding)
-	}
-	if f.PayloadType != "" {
-		buf = protowire.AppendTag(buf, 7, protowire.BytesType)
-		buf = protowire.AppendString(buf, f.PayloadType)
-	}
-	if len(f.Payload) > 0 {
+
+	// PayloadEncoding (field 6) — gogo's generated code copies the
+	// string unconditionally and emits the tag + length prefix even
+	// when len==0. Empty string still produces tag + zero-length.
+	buf = protowire.AppendTag(buf, 6, protowire.BytesType)
+	buf = protowire.AppendString(buf, f.PayloadEncoding)
+
+	// PayloadType (field 7) — same unconditional emission as PayloadEncoding.
+	buf = protowire.AppendTag(buf, 7, protowire.BytesType)
+	buf = protowire.AppendString(buf, f.PayloadType)
+
+	// Payload (field 8) — the SDK uses `if m.Payload != nil`. We mirror
+	// that: nil omits the tag entirely; non-nil emits, even if len==0.
+	if f.Payload != nil {
 		buf = protowire.AppendTag(buf, 8, protowire.BytesType)
 		buf = protowire.AppendBytes(buf, f.Payload)
 	}
-	if f.LogIDNew != "" {
-		buf = protowire.AppendTag(buf, 9, protowire.BytesType)
-		buf = protowire.AppendString(buf, f.LogIDNew)
-	}
+
+	// LogIDNew (field 9) — unconditional like PayloadEncoding/Type.
+	buf = protowire.AppendTag(buf, 9, protowire.BytesType)
+	buf = protowire.AppendString(buf, f.LogIDNew)
+
 	return buf
 }
 
 func headerSize(h FrameHeader) int {
-	n := 0
-	if h.Key != "" {
-		n += protowire.SizeTag(1) + protowire.SizeBytes(len(h.Key))
-	}
-	if h.Value != "" {
-		n += protowire.SizeTag(2) + protowire.SizeBytes(len(h.Value))
-	}
-	return n
+	// Both fields are req and always emitted; their byte cost is
+	// tag + length-prefix(len) + len.
+	return protowire.SizeTag(1) + protowire.SizeBytes(len(h.Key)) +
+		protowire.SizeTag(2) + protowire.SizeBytes(len(h.Value))
 }
 
 // UnmarshalFrame parses one binary protobuf message into a Frame.
@@ -357,13 +368,16 @@ func NewPongFrame(serviceID int32) *Frame {
 // encoded Response struct as the Payload.
 //
 // codeOK is true on successful dispatch (Response.code=200); false
-// surfaces 500 to the server (it will retry the event).
+// surfaces 500 to the server (it will retry the event). The payload
+// shape mirrors the SDK's NewResponseByCode JSON: a nil Headers map
+// and nil Data slice both marshal to JSON null in stdlib encoding/json,
+// which is what the server expects to receive.
 func NewAckFrame(inbound *Frame, codeOK bool) *Frame {
 	code := 200
 	if !codeOK {
 		code = 500
 	}
-	payload := fmt.Sprintf(`{"code":%d,"headers":{},"data":""}`, code)
+	payload := fmt.Sprintf(`{"code":%d,"headers":null,"data":null}`, code)
 	return &Frame{
 		Method:  inbound.Method,
 		Service: inbound.Service,

@@ -111,6 +111,13 @@ type WSConnectorConfig struct {
 	// WriteTimeout bounds a single WriteMessage. Zero defaults to 10s.
 	WriteTimeout time.Duration
 
+	// ChunkTTL bounds how long the chunk assembler holds a partial
+	// multi-frame event before discarding the buffered chunks. Mirrors
+	// the SDK's 5-second default — long enough to absorb pacing across
+	// several chunks, short enough that an abandoned multi-frame event
+	// does not leak memory. Zero defaults to 5 seconds.
+	ChunkTTL time.Duration
+
 	// Now is overridable for deterministic tests. Defaults to time.Now.
 	Now func() time.Time
 
@@ -127,6 +134,9 @@ func (c WSConnectorConfig) withDefaults() WSConnectorConfig {
 	}
 	if c.WriteTimeout == 0 {
 		c.WriteTimeout = 10 * time.Second
+	}
+	if c.ChunkTTL == 0 {
+		c.ChunkTTL = 5 * time.Second
 	}
 	if c.Now == nil {
 		c.Now = time.Now
@@ -219,6 +229,13 @@ func (c *WSLongConnConnector) Run(ctx context.Context, inst db.LarkInstallation,
 	// the binary frame stream.
 	var writeMu sync.Mutex
 
+	// Per-Run chunk assembler. State does not need to outlive a single
+	// long-conn session — Lark re-sends multi-frame events from chunk 0
+	// after a reconnect — so the assembler is built here and dropped
+	// when Run returns, which also releases any partial buffers held by
+	// an abandoned event.
+	assembler := newChunkAssembler(c.cfg.ChunkTTL, c.cfg.Now)
+
 	// Ping loop: app-layer binary ping frames at the server's PingInterval.
 	pingDone := make(chan struct{})
 	go c.pingLoop(runCtx, conn, &writeMu, endpoint.ServiceID, pingInterval, log, pingDone)
@@ -290,9 +307,36 @@ func (c *WSLongConnConnector) Run(ctx context.Context, inst db.LarkInstallation,
 			continue
 		}
 
-		// Data frames: hand the JSON payload to the decoder, emit if
-		// it resolved to a message, and ACK back to the server.
-		msg, ok, derr := c.cfg.FrameDecoder.Decode(frame.Payload, inst)
+		// Multi-frame events: stash the chunk and skip ACK until the
+		// full payload has arrived. This mirrors the SDK's combine()
+		// behaviour — the SDK does NOT ACK partial chunks; Lark
+		// reconciles delivery on its side using sum/seq, so ACKing
+		// partials would tell Lark "we got it" before we actually
+		// have the assembled payload.
+		sum, seq, msgID := parseChunkHeaders(frame)
+		payload := frame.Payload
+		if sum > 1 {
+			assembled, complete := assembler.admit(msgID, sum, seq, frame.Payload)
+			if !complete {
+				log.Debug("lark ws connector: partial chunk buffered",
+					"message_id", msgID,
+					"seq", seq,
+					"sum", sum,
+					"pending", assembler.pendingCount(),
+				)
+				continue
+			}
+			payload = assembled
+			log.Debug("lark ws connector: chunk reassembly complete",
+				"message_id", msgID,
+				"chunks", sum,
+				"bytes", len(payload),
+			)
+		}
+
+		// Data frames: hand the (possibly reassembled) JSON payload to
+		// the decoder, emit if it resolved to a message, and ACK back.
+		msg, ok, derr := c.cfg.FrameDecoder.Decode(payload, inst)
 		if derr != nil {
 			log.Warn("lark ws connector: frame decode failed",
 				"err", derr.Error(),

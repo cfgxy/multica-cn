@@ -131,6 +131,18 @@ type HubConfig struct {
 	// and tests share the same default.
 	ShutdownTimeout time.Duration
 
+	// ReplyTimeout caps an OutcomeReplier.Reply call. The replier
+	// runs in a detached goroutine off the ACK critical path —
+	// dispatch returns the verdict to the connector immediately so
+	// the ACK can be written, then the reply (a NeedsBinding card,
+	// an offline notice, etc.) is best-effort under this deadline.
+	// Lark's long-conn server expects a frame ACK within 3 seconds,
+	// so this MUST stay strictly under 3s to keep the connector's
+	// own ACK path comfortably bounded even if the dispatch itself
+	// takes a few hundred ms (DB roundtrips, identity checks, etc.).
+	// Zero defaults to 2.5s.
+	ReplyTimeout time.Duration
+
 	// Now returns the current time. Injected for tests; production
 	// uses time.Now.
 	Now func() time.Time
@@ -163,6 +175,9 @@ func (c HubConfig) withDefaults() HubConfig {
 	}
 	if c.ShutdownTimeout == 0 {
 		c.ShutdownTimeout = 15 * time.Second
+	}
+	if c.ReplyTimeout == 0 {
+		c.ReplyTimeout = 2500 * time.Millisecond
 	}
 	if c.Now == nil {
 		c.Now = time.Now
@@ -203,6 +218,16 @@ type Hub struct {
 	wg       sync.WaitGroup
 	stopped  bool
 	stopChan chan struct{}
+
+	// replyWg tracks in-flight outbound reply goroutines (NeedsBinding
+	// card, offline notice, etc.). The replier is detached from the
+	// inbound ACK critical path — the connector ACKs as soon as
+	// dispatch returns — so reply goroutines may still be running when
+	// the supervisor goroutines have already exited. Hub.Wait joins on
+	// these too, with each goroutine bounded by ReplyTimeout, so a
+	// hung outbound Lark HTTP call cannot block shutdown beyond the
+	// timeout.
+	replyWg sync.WaitGroup
 }
 
 // NewHub constructs a Hub bound to the supplied queries, connector
@@ -269,34 +294,40 @@ func (h *Hub) Run(ctx context.Context) {
 	}
 }
 
-// Wait blocks until every supervisor goroutine the Hub started has
-// exited. Call this AFTER cancelling Run's context; calling it before
-// returns immediately if no supervisors are active.
+// Wait blocks until every supervisor goroutine AND every detached
+// reply goroutine the Hub started has exited. Call this AFTER
+// cancelling Run's context; calling it before returns immediately if
+// no goroutines are active.
 //
 // Prefer WaitWithTimeout in shutdown paths so a stuck supervisor
 // (typically a hung lease release on a frozen DB pool) cannot block
-// process exit indefinitely.
+// process exit indefinitely. Reply goroutines are independently
+// bounded by ReplyTimeout, so even Wait() (unbounded) eventually
+// returns once those deadlines elapse.
 func (h *Hub) Wait() {
 	h.wg.Wait()
+	h.replyWg.Wait()
 }
 
 // WaitWithTimeout is the bounded variant of Wait. Returns true if all
-// supervisor goroutines exited within the deadline, false if the
-// timeout fired first. On timeout, the process owner should log the
-// fact and proceed with exit; the orphaned supervisor goroutines will
-// be reclaimed by the OS, and any unreleased leases expire naturally
-// after LeaseTTL on the next replica.
+// supervisor AND reply goroutines exited within the deadline, false if
+// the timeout fired first. On timeout, the process owner should log
+// the fact and proceed with exit; the orphaned goroutines will be
+// reclaimed by the OS, any unreleased leases expire naturally after
+// LeaseTTL on the next replica, and in-flight replies abort at their
+// own ReplyTimeout (already strictly under 3s, so well under any
+// reasonable ShutdownTimeout).
 //
 // A timeout <= 0 falls back to unbounded Wait, matching the legacy
 // behavior.
 func (h *Hub) WaitWithTimeout(timeout time.Duration) bool {
 	if timeout <= 0 {
-		h.wg.Wait()
+		h.Wait()
 		return true
 	}
 	done := make(chan struct{})
 	go func() {
-		h.wg.Wait()
+		h.Wait()
 		close(done)
 	}()
 	t := time.NewTimer(timeout)
@@ -554,11 +585,22 @@ func (h *Hub) releaseLease(instID pgtype.UUID) {
 // failures propagate up to the connector, which decides whether to
 // reconnect.
 //
-// On a clean dispatch (err==nil) we invoke the replier inline so the
-// connector returns to its read loop only after the Lark-side reply
-// has been attempted. The replier is best-effort — its own failures
-// are logged and swallowed so an outbound Lark outage cannot stall
-// the inbound pipeline.
+// CRITICAL: handleEvent MUST return promptly because the connector
+// writes the frame ACK right after emit returns, and Lark's long-conn
+// server expects an ACK within 3 seconds. The dispatcher itself is
+// fast (one DB roundtrip + identity check) but the outbound replier
+// can do real Lark HTTP calls — token mint, card send — each with
+// its own multi-second client timeout. Running the replier inline
+// would couple ACK latency to outbound HTTP, and if that HTTP stalls
+// for >3s Lark treats the event as un-ACKed and re-pushes it; by then
+// Dispatcher has already marked the dedup row terminal, so the retry
+// gets dropped and the user never receives the binding prompt /
+// offline notice.
+//
+// Fix: dispatch is synchronous (in the connector's read loop), the
+// reply is detached. Each reply runs in its own goroutine under a
+// fresh context bounded by ReplyTimeout (strictly under 3s). Hub.Wait
+// joins on replyWg so shutdown still drains in-flight replies.
 func (h *Hub) handleEvent(ctx context.Context, inst db.LarkInstallation, log *slog.Logger, msg InboundMessage) (DispatchResult, error) {
 	if h.dispatcher == nil {
 		log.Warn("lark hub: dispatcher not configured; dropping event",
@@ -579,10 +621,48 @@ func (h *Hub) handleEvent(ctx context.Context, inst db.LarkInstallation, log *sl
 		"outcome", string(res.Outcome),
 		"drop_reason", string(res.DropReason),
 	)
-	if h.replier != nil {
-		h.replier.Reply(ctx, inst, msg, res)
-	}
+	h.scheduleReply(inst, msg, res, log)
 	return res, nil
+}
+
+// scheduleReply detaches the OutcomeReplier from the ACK critical path.
+// The reply goroutine uses a fresh context.Background() with a
+// ReplyTimeout deadline so it is independent of the inbound emit ctx
+// (which the connector cancels as soon as Run exits). A nil or noop
+// replier short-circuits — no goroutine, no wg tracking.
+//
+// Why a fresh background ctx instead of inheriting from the emit ctx:
+// the emit ctx is cancelled when the connector's runCtx fires, which
+// can happen mid-reply on a normal reconnect cycle. Inheriting would
+// kill the outbound reply for no reason — the binding card / offline
+// notice is still wanted. ReplyTimeout is the only guard we need.
+func (h *Hub) scheduleReply(inst db.LarkInstallation, msg InboundMessage, res DispatchResult, log *slog.Logger) {
+	r := h.replier
+	if r == nil {
+		return
+	}
+	// Fast path: noop replier doesn't do any IO, run it inline so we
+	// don't pay goroutine + waitgroup cost for a no-op. The exposed
+	// type is unexported but the test seam uses NewNoopOutcomeReplier
+	// which returns *noopReplier, so the type-assert is safe.
+	if _, isNoop := r.(*noopReplier); isNoop {
+		r.Reply(context.Background(), inst, msg, res)
+		return
+	}
+	h.replyWg.Add(1)
+	go func() {
+		defer h.replyWg.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), h.cfg.ReplyTimeout)
+		defer cancel()
+		r.Reply(ctx, inst, msg, res)
+		if ctx.Err() == context.DeadlineExceeded {
+			log.Warn("lark hub: outbound reply timed out",
+				"event_id", msg.EventID,
+				"outcome", string(res.Outcome),
+				"timeout", h.cfg.ReplyTimeout.String(),
+			)
+		}
+	}()
 }
 
 // ErrDispatcherNotConfigured is surfaced to the connector when emit is

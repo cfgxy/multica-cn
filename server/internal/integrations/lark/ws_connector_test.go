@@ -1,11 +1,13 @@
 package lark
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -545,6 +547,107 @@ func TestWSConnectorDialErrorIsReturned(t *testing.T) {
 	})
 	if err == nil || !errors.Is(err, dialErr) {
 		t.Fatalf("expected wrapped dial error, got %v", err)
+	}
+}
+
+// pushChunkedDataFrame pushes a Lark long-conn data Frame carrying one
+// chunk of a multi-frame event. Lark splits big events across N frames
+// with sum/seq/message_id headers; the connector reassembles before
+// invoking the decoder.
+func pushChunkedDataFrame(conn *fakeWSConn, payload []byte, messageID string, sum, seq int) {
+	f := &Frame{
+		Method:  FrameMethodData,
+		Service: 7,
+		Headers: []FrameHeader{
+			{Key: FrameHeaderTypeKey, Value: FrameHeaderTypeEvent},
+			{Key: FrameHeaderMessageIDKey, Value: messageID},
+			{Key: FrameHeaderSumKey, Value: strconv.Itoa(sum)},
+			{Key: FrameHeaderSeqKey, Value: strconv.Itoa(seq)},
+		},
+		Payload: payload,
+	}
+	conn.Push(f.Marshal())
+}
+
+// TestWSConnectorReassemblesChunkedDataFrame verifies that:
+//   - intermediate chunks (sum>1, seq<sum-1) are NOT ACKed and NOT
+//     emitted — the SDK's combine() contract;
+//   - the final chunk completes the buffer, the decoder receives the
+//     concatenated payload, and ONE ACK is written for the whole event.
+//
+// This is the regression test for the prior MVP behaviour where every
+// data frame was decoded individually and chunked events were silently
+// truncated then ACKed (server would never retry).
+func TestWSConnectorReassemblesChunkedDataFrame(t *testing.T) {
+	t.Parallel()
+	conn := newFakeWSConn()
+	var decodedPayloads [][]byte
+	var decodeMu sync.Mutex
+	decoder := FrameDecoderFunc(func(payload []byte, _ db.LarkInstallation) (InboundMessage, bool, error) {
+		decodeMu.Lock()
+		decodedPayloads = append(decodedPayloads, append([]byte(nil), payload...))
+		decodeMu.Unlock()
+		return InboundMessage{EventID: string(payload)}, true, nil
+	})
+	c := quietConnector(t, conn, decoder, time.Hour) // disable ping cadence
+
+	emits := make(chan InboundMessage, 4)
+	emit := func(_ context.Context, msg InboundMessage) (DispatchResult, error) {
+		emits <- msg
+		return DispatchResult{Outcome: OutcomeIngested}, nil
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- c.Run(ctx, db.LarkInstallation{AppID: "test_app"}, emit)
+	}()
+
+	// Three chunks of a single logical event "ABC".
+	pushChunkedDataFrame(conn, []byte("A"), "om-multi", 3, 0)
+	pushChunkedDataFrame(conn, []byte("B"), "om-multi", 3, 1)
+	pushChunkedDataFrame(conn, []byte("C"), "om-multi", 3, 2)
+
+	select {
+	case msg := <-emits:
+		if msg.EventID != "ABC" {
+			t.Errorf("emit EventID = %q; want ABC", msg.EventID)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("reassembled event did not reach emit in 2s")
+	}
+
+	// Drain the read loop briefly to let any pending ACK write land.
+	time.Sleep(50 * time.Millisecond)
+
+	// Exactly one ACK should have been written — only the final chunk
+	// triggers ACK; intermediate chunks are silently buffered.
+	cancel()
+	<-done
+
+	writes := conn.snapshot()
+	dataAcks := 0
+	for _, w := range writes {
+		f, err := UnmarshalFrame(w)
+		if err != nil {
+			continue
+		}
+		if f.Method == FrameMethodData && bytes.Contains(f.Payload, []byte(`"code":200`)) {
+			dataAcks++
+		}
+	}
+	if dataAcks != 1 {
+		t.Errorf("data-frame ACK count = %d; want exactly 1 (only the final chunk should ACK)", dataAcks)
+	}
+
+	decodeMu.Lock()
+	defer decodeMu.Unlock()
+	if len(decodedPayloads) != 1 {
+		t.Fatalf("decoder invoked %d times; want exactly 1 (reassembled payload)", len(decodedPayloads))
+	}
+	if string(decodedPayloads[0]) != "ABC" {
+		t.Errorf("decoder saw payload = %q; want ABC", string(decodedPayloads[0]))
 	}
 }
 
