@@ -12,16 +12,17 @@ import (
 // writeContextFiles renders and writes .agent_context/issue_context.md and
 // skills into the appropriate provider-native location.
 //
-// Claude:   skills → {workDir}/.claude/skills/{name}/SKILL.md  (native discovery)
-// Codex:    skills → handled separately in Prepare via codex-home
-// Copilot:  skills → {workDir}/.github/skills/{name}/SKILL.md  (native project-level discovery)
-// OpenCode: skills → {workDir}/.opencode/skills/{name}/SKILL.md  (native discovery)
-// OpenClaw: skills → {workDir}/skills/{name}/SKILL.md  (native discovery — paired with a per-task synthesized openclaw-config.json that pins agents.defaults.workspace to workDir; see openclaw_config.go)
-// Pi:       skills → {workDir}/.pi/skills/{name}/SKILL.md  (native discovery)
-// Cursor:   skills → {workDir}/.cursor/skills/{name}/SKILL.md  (native discovery)
-// Kimi:     skills → {workDir}/.kimi/skills/{name}/SKILL.md  (native discovery)
-// Kiro:     skills → {workDir}/.kiro/skills/{name}/SKILL.md  (native discovery)
-// Default:  skills → {workDir}/.agent_context/skills/{name}/SKILL.md
+// Claude:      skills → {workDir}/.claude/skills/{name}/SKILL.md  (native discovery)
+// Codex:       skills → handled separately in Prepare via codex-home
+// Copilot:     skills → {workDir}/.github/skills/{name}/SKILL.md  (native project-level discovery)
+// OpenCode:    skills → {workDir}/.opencode/skills/{name}/SKILL.md  (native discovery)
+// OpenClaw:    skills → {workDir}/skills/{name}/SKILL.md  (native discovery — paired with a per-task synthesized openclaw-config.json that pins agents.defaults.workspace to workDir; see openclaw_config.go)
+// Pi:          skills → {workDir}/.pi/skills/{name}/SKILL.md  (native discovery)
+// Cursor:      skills → {workDir}/.cursor/skills/{name}/SKILL.md  (native discovery)
+// Kimi:        skills → {workDir}/.kimi/skills/{name}/SKILL.md  (native discovery)
+// Kiro:        skills → {workDir}/.kiro/skills/{name}/SKILL.md  (native discovery)
+// Antigravity: skills → {workDir}/.agents/skills/{name}/SKILL.md  (native discovery — see https://antigravity.google/docs/gcli-migration "Workspace skills")
+// Default:     skills → {workDir}/.agent_context/skills/{name}/SKILL.md
 func writeContextFiles(workDir, provider string, ctx TaskContextForEnv) error {
 	contextDir := filepath.Join(workDir, ".agent_context")
 	if err := os.MkdirAll(contextDir, 0o755); err != nil {
@@ -163,6 +164,12 @@ func resolveSkillsDir(workDir, provider string) (string, error) {
 		// Kiro CLI auto-discovers project-level skills from .kiro/skills/
 		// in the workdir.
 		skillsDir = filepath.Join(workDir, ".kiro", "skills")
+	case "antigravity":
+		// Antigravity (`agy`) auto-discovers workspace-level skills from
+		// .agents/skills/ in the workdir. The CLI inherits Gemini CLI's
+		// workspace skill layout; see https://antigravity.google/docs/gcli-migration
+		// under "Workspace skills".
+		skillsDir = filepath.Join(workDir, ".agents", "skills")
 	default:
 		// Fallback: write to .agent_context/skills/ (referenced by meta config).
 		skillsDir = filepath.Join(workDir, ".agent_context", "skills")
