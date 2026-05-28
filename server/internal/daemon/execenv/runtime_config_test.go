@@ -1,6 +1,8 @@
 package execenv
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -332,5 +334,233 @@ func TestSubIssueCreationSectionSkippedForNonIssueModes(t *testing.T) {
 				t.Errorf("%s mode must NOT emit the Sub-issue Creation section", tc.name)
 			}
 		})
+	}
+}
+
+// writeRuntimeConfigFile is the safe replacement for the previous
+// unconditional os.WriteFile of CLAUDE.md / AGENTS.md / GEMINI.md. The three
+// states it must handle correctly are: file missing, file present without
+// markers (user-authored content already there — the regression case from
+// MUL-2753), and file present with markers (idempotent second-run replace).
+
+func TestWriteRuntimeConfigFileCreatesMissingFile(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "CLAUDE.md")
+	const brief = "# Multica Agent Runtime\n\nbrief body line"
+
+	if err := writeRuntimeConfigFile(path, brief); err != nil {
+		t.Fatalf("writeRuntimeConfigFile returned error: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back file: %v", err)
+	}
+	s := string(got)
+	if !strings.HasPrefix(s, runtimeMarkerBegin+"\n") {
+		t.Errorf("output should start with begin marker, got:\n%s", s)
+	}
+	if !strings.Contains(s, brief) {
+		t.Errorf("output should contain brief body, got:\n%s", s)
+	}
+	if !strings.Contains(s, "\n"+runtimeMarkerEnd+"\n") {
+		t.Errorf("output should contain end marker followed by newline, got:\n%s", s)
+	}
+}
+
+func TestWriteRuntimeConfigFilePreservesUserContent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "CLAUDE.md")
+	const userContent = "# User repo CLAUDE.md\n\n- rule one\n- rule two\n"
+	if err := os.WriteFile(path, []byte(userContent), 0o644); err != nil {
+		t.Fatalf("seed user file: %v", err)
+	}
+
+	const brief = "## Multica brief\n\ninjected body"
+	if err := writeRuntimeConfigFile(path, brief); err != nil {
+		t.Fatalf("writeRuntimeConfigFile returned error: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back file: %v", err)
+	}
+	s := string(got)
+	// The user's original content must be untouched and appear before the
+	// injected marker block; this is the core regression case from MUL-2753.
+	if !strings.HasPrefix(s, userContent) {
+		t.Errorf("user content must be preserved verbatim at the top of the file, got:\n%s", s)
+	}
+	beginIdx := strings.Index(s, runtimeMarkerBegin)
+	endIdx := strings.Index(s, runtimeMarkerEnd)
+	if beginIdx < 0 || endIdx <= beginIdx {
+		t.Fatalf("expected a well-formed marker block in:\n%s", s)
+	}
+	if beginIdx < len(userContent) {
+		t.Errorf("begin marker must appear after user content, beginIdx=%d userLen=%d", beginIdx, len(userContent))
+	}
+	if !strings.Contains(s, brief) {
+		t.Errorf("brief body missing from output:\n%s", s)
+	}
+}
+
+func TestWriteRuntimeConfigFileReplacesExistingBlock(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "AGENTS.md")
+	const userBefore = "# User AGENTS.md\n\nuser line above\n"
+	const userAfter = "\nuser line below the block\n"
+	original := userBefore +
+		runtimeMarkerBegin + "\n" +
+		"OLD BRIEF CONTENT THAT MUST GO AWAY\n" +
+		runtimeMarkerEnd + "\n" +
+		userAfter
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	const newBrief = "## New Multica brief\n\nfresh body"
+	if err := writeRuntimeConfigFile(path, newBrief); err != nil {
+		t.Fatalf("writeRuntimeConfigFile returned error: %v", err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back file: %v", err)
+	}
+	s := string(got)
+	if !strings.HasPrefix(s, userBefore) {
+		t.Errorf("content above the marker block must be preserved, got:\n%s", s)
+	}
+	if !strings.HasSuffix(s, userAfter) {
+		t.Errorf("content below the marker block must be preserved, got:\n%s", s)
+	}
+	if strings.Contains(s, "OLD BRIEF CONTENT THAT MUST GO AWAY") {
+		t.Errorf("previous block body must be replaced, got:\n%s", s)
+	}
+	if !strings.Contains(s, newBrief) {
+		t.Errorf("new brief body missing from output:\n%s", s)
+	}
+	if strings.Count(s, runtimeMarkerBegin) != 1 || strings.Count(s, runtimeMarkerEnd) != 1 {
+		t.Errorf("there must be exactly one begin/end marker pair, got:\n%s", s)
+	}
+}
+
+func TestWriteRuntimeConfigFileIsIdempotent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "CLAUDE.md")
+	const userContent = "# User CLAUDE.md\n\nimportant rules\n"
+	if err := os.WriteFile(path, []byte(userContent), 0o644); err != nil {
+		t.Fatalf("seed user file: %v", err)
+	}
+
+	const brief = "## Multica brief\n\nbody"
+	for i := 0; i < 5; i++ {
+		if err := writeRuntimeConfigFile(path, brief); err != nil {
+			t.Fatalf("iteration %d: %v", i, err)
+		}
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back file: %v", err)
+	}
+	s := string(got)
+	if strings.Count(s, runtimeMarkerBegin) != 1 {
+		t.Errorf("repeated runs must not duplicate the begin marker, count=%d, file:\n%s", strings.Count(s, runtimeMarkerBegin), s)
+	}
+	if strings.Count(s, runtimeMarkerEnd) != 1 {
+		t.Errorf("repeated runs must not duplicate the end marker, count=%d, file:\n%s", strings.Count(s, runtimeMarkerEnd), s)
+	}
+	if strings.Count(s, brief) != 1 {
+		t.Errorf("repeated runs must not duplicate the brief body, count=%d, file:\n%s", strings.Count(s, brief), s)
+	}
+	if !strings.HasPrefix(s, userContent) {
+		t.Errorf("user content must remain intact at the top of the file, got:\n%s", s)
+	}
+}
+
+// InjectRuntimeConfig is the production entry point — verify the marker
+// semantics propagate through it for each provider's target filename.
+func TestInjectRuntimeConfigPreservesUserContent(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		provider string
+		filename string
+	}{
+		{"claude", "CLAUDE.md"},
+		{"codex", "AGENTS.md"},
+		{"copilot", "AGENTS.md"},
+		{"opencode", "AGENTS.md"},
+		{"openclaw", "AGENTS.md"},
+		{"hermes", "AGENTS.md"},
+		{"pi", "AGENTS.md"},
+		{"cursor", "AGENTS.md"},
+		{"kimi", "AGENTS.md"},
+		{"kiro", "AGENTS.md"},
+		{"gemini", "GEMINI.md"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.provider, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			path := filepath.Join(dir, tc.filename)
+			const userContent = "# User-authored file\n\ndon't touch this\n"
+			if err := os.WriteFile(path, []byte(userContent), 0o644); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+
+			content, err := InjectRuntimeConfig(dir, tc.provider, TaskContextForEnv{
+				IssueID: "11111111-2222-3333-4444-555555555555",
+			})
+			if err != nil {
+				t.Fatalf("InjectRuntimeConfig: %v", err)
+			}
+			if content == "" {
+				t.Fatalf("returned brief content must be non-empty")
+			}
+
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read back: %v", err)
+			}
+			s := string(got)
+			if !strings.HasPrefix(s, userContent) {
+				t.Errorf("[%s] user content must be preserved verbatim at the top of %s, got:\n%s", tc.provider, tc.filename, s)
+			}
+			if !strings.Contains(s, runtimeMarkerBegin) || !strings.Contains(s, runtimeMarkerEnd) {
+				t.Errorf("[%s] %s must contain the runtime marker block, got:\n%s", tc.provider, tc.filename, s)
+			}
+		})
+	}
+}
+
+func TestInjectRuntimeConfigUnknownProviderSkipsWrite(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	// Seed all three candidate filenames so we can verify none of them get
+	// written when the provider is unknown.
+	for _, name := range []string{"CLAUDE.md", "AGENTS.md", "GEMINI.md"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("untouched\n"), 0o644); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+	}
+
+	if _, err := InjectRuntimeConfig(dir, "totally-unknown-provider", TaskContextForEnv{
+		IssueID: "11111111-2222-3333-4444-555555555555",
+	}); err != nil {
+		t.Fatalf("InjectRuntimeConfig: %v", err)
+	}
+	for _, name := range []string{"CLAUDE.md", "AGENTS.md", "GEMINI.md"} {
+		got, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		if string(got) != "untouched\n" {
+			t.Errorf("unknown provider must not write %s; got:\n%s", name, string(got))
+		}
 	}
 }

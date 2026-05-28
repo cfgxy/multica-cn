@@ -2,11 +2,33 @@ package execenv
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+)
+
+// runtimeMarkerBegin and runtimeMarkerEnd delimit the Multica-managed brief
+// inside the runtime config file (CLAUDE.md / AGENTS.md / GEMINI.md). The
+// markers exist so writeRuntimeConfigFile can:
+//
+//   - preserve user-authored content in the same file (the user's repo may
+//     already ship a CLAUDE.md / AGENTS.md when the agent is pointed at a
+//     local_directory project resource),
+//   - replace the brief idempotently on subsequent runs in the same workdir
+//     instead of appending duplicate copies, and
+//   - leave a precise excision target for a future cleanup pass.
+//
+// HTML comments are used so the markers are inert in every Markdown renderer
+// and harmless when fed to the agent as instructions. Changing the marker
+// text is a breaking change for any file that already carries the previous
+// markers — bump deliberately.
+const (
+	runtimeMarkerBegin = "<!-- BEGIN MULTICA-RUNTIME (auto-managed; do not edit) -->"
+	runtimeMarkerEnd   = "<!-- END MULTICA-RUNTIME -->"
 )
 
 // runtimeGOOS is the host-platform string used by buildMetaSkillContent and
@@ -103,15 +125,69 @@ func InjectRuntimeConfig(workDir, provider string, ctx TaskContextForEnv) (strin
 
 	switch provider {
 	case "claude":
-		return content, os.WriteFile(filepath.Join(workDir, "CLAUDE.md"), []byte(content), 0o644)
+		return content, writeRuntimeConfigFile(filepath.Join(workDir, "CLAUDE.md"), content)
 	case "codex", "copilot", "opencode", "openclaw", "hermes", "pi", "cursor", "kimi", "kiro":
-		return content, os.WriteFile(filepath.Join(workDir, "AGENTS.md"), []byte(content), 0o644)
+		return content, writeRuntimeConfigFile(filepath.Join(workDir, "AGENTS.md"), content)
 	case "gemini":
-		return content, os.WriteFile(filepath.Join(workDir, "GEMINI.md"), []byte(content), 0o644)
+		return content, writeRuntimeConfigFile(filepath.Join(workDir, "GEMINI.md"), content)
 	default:
 		// Unknown provider — skip config injection, prompt-only mode.
 		return content, nil
 	}
+}
+
+// writeRuntimeConfigFile writes the Multica runtime brief to path without
+// clobbering any user-authored content already present. Behaviour by file
+// state:
+//
+//   - file missing → create the file containing only the marker block,
+//   - file present, no marker block → append the marker block to the end so
+//     existing content (e.g. the user's repository-level CLAUDE.md) is
+//     preserved verbatim above it,
+//   - file present, marker block already there → replace the body between
+//     the markers in place so repeated runs in the same workdir don't grow
+//     the file unboundedly.
+//
+// The previous implementation called os.WriteFile unconditionally, which
+// silently truncated a repository's CLAUDE.md / AGENTS.md / GEMINI.md the
+// first time the agent was pointed at the user's own directory via the
+// local_directory project resource flow. See MUL-2753.
+func writeRuntimeConfigFile(path, brief string) error {
+	block := runtimeMarkerBegin + "\n" + strings.TrimRight(brief, "\n") + "\n" + runtimeMarkerEnd + "\n"
+
+	existing, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return os.WriteFile(path, []byte(block), 0o644)
+	}
+	if err != nil {
+		return fmt.Errorf("read existing runtime config %s: %w", path, err)
+	}
+
+	existingStr := string(existing)
+	startIdx := strings.Index(existingStr, runtimeMarkerBegin)
+	endIdx := strings.Index(existingStr, runtimeMarkerEnd)
+	if startIdx >= 0 && endIdx > startIdx {
+		// Replace the existing block in place. Consume the trailing newline
+		// that the original block emitted (if any) so successive runs don't
+		// accumulate blank lines after the block.
+		blockEnd := endIdx + len(runtimeMarkerEnd)
+		if blockEnd < len(existingStr) && existingStr[blockEnd] == '\n' {
+			blockEnd++
+		}
+		newContent := existingStr[:startIdx] + block + existingStr[blockEnd:]
+		return os.WriteFile(path, []byte(newContent), 0o644)
+	}
+
+	// No (well-formed) marker block present. Append one to the end of the
+	// existing content, separated by a blank line for readability.
+	prefix := existingStr
+	if prefix != "" && !strings.HasSuffix(prefix, "\n") {
+		prefix += "\n"
+	}
+	if prefix != "" && !strings.HasSuffix(prefix, "\n\n") {
+		prefix += "\n"
+	}
+	return os.WriteFile(path, []byte(prefix+block), 0o644)
 }
 
 // buildMetaSkillContent generates the meta skill markdown that teaches the agent
