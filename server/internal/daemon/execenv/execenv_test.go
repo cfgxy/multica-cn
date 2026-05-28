@@ -269,7 +269,7 @@ func TestProjectReposReplaceWorkspaceReposInMetaSkill(t *testing.T) {
 func TestWriteProjectResourcesSkippedWhenNone(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	if err := writeProjectResources(dir, TaskContextForEnv{}); err != nil {
+	if err := writeProjectResources(dir, TaskContextForEnv{}, nil); err != nil {
 		t.Fatalf("writeProjectResources: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, ".multica", "project", "resources.json")); !os.IsNotExist(err) {
@@ -352,7 +352,7 @@ func TestWriteContextFiles(t *testing.T) {
 		},
 	}
 
-	if err := writeContextFiles(dir, "", ctx); err != nil {
+	if err := writeContextFiles(dir, "", ctx, nil); err != nil {
 		t.Fatalf("writeContextFiles failed: %v", err)
 	}
 
@@ -405,7 +405,7 @@ func TestWriteContextFilesOmitsSkillsWhenEmpty(t *testing.T) {
 		IssueID: "minimal-issue-id",
 	}
 
-	if err := writeContextFiles(dir, "", ctx); err != nil {
+	if err := writeContextFiles(dir, "", ctx, nil); err != nil {
 		t.Fatalf("writeContextFiles failed: %v", err)
 	}
 
@@ -435,7 +435,7 @@ func TestWriteContextFilesAutopilotRunOnly(t *testing.T) {
 		AutopilotSource:      "manual",
 	}
 
-	if err := writeContextFiles(dir, "", ctx); err != nil {
+	if err := writeContextFiles(dir, "", ctx, nil); err != nil {
 		t.Fatalf("writeContextFiles failed: %v", err)
 	}
 
@@ -479,7 +479,7 @@ func TestWriteContextFilesClaudeNativeSkills(t *testing.T) {
 		},
 	}
 
-	if err := writeContextFiles(dir, "claude", ctx); err != nil {
+	if err := writeContextFiles(dir, "claude", ctx, nil); err != nil {
 		t.Fatalf("writeContextFiles failed: %v", err)
 	}
 
@@ -757,7 +757,7 @@ func TestWriteContextFilesCopilotNativeSkills(t *testing.T) {
 		},
 	}
 
-	if err := writeContextFiles(dir, "copilot", ctx); err != nil {
+	if err := writeContextFiles(dir, "copilot", ctx, nil); err != nil {
 		t.Fatalf("writeContextFiles failed: %v", err)
 	}
 
@@ -808,7 +808,7 @@ func TestWriteContextFilesOpencodeNativeSkills(t *testing.T) {
 		},
 	}
 
-	if err := writeContextFiles(dir, "opencode", ctx); err != nil {
+	if err := writeContextFiles(dir, "opencode", ctx, nil); err != nil {
 		t.Fatalf("writeContextFiles failed: %v", err)
 	}
 
@@ -880,7 +880,7 @@ func TestWriteContextFilesPreservesExistingSkillFrontmatter(t *testing.T) {
 		},
 	}
 
-	if err := writeContextFiles(dir, "opencode", ctx); err != nil {
+	if err := writeContextFiles(dir, "opencode", ctx, nil); err != nil {
 		t.Fatalf("writeContextFiles failed: %v", err)
 	}
 
@@ -915,7 +915,7 @@ func TestWriteContextFilesInjectsNameIntoNamelessFrontmatter(t *testing.T) {
 		},
 	}
 
-	if err := writeContextFiles(dir, "opencode", ctx); err != nil {
+	if err := writeContextFiles(dir, "opencode", ctx, nil); err != nil {
 		t.Fatalf("writeContextFiles failed: %v", err)
 	}
 
@@ -953,7 +953,7 @@ func TestWriteContextFilesOpenclawNativeSkills(t *testing.T) {
 		},
 	}
 
-	if err := writeContextFiles(dir, "openclaw", ctx); err != nil {
+	if err := writeContextFiles(dir, "openclaw", ctx, nil); err != nil {
 		t.Fatalf("writeContextFiles failed: %v", err)
 	}
 
@@ -993,7 +993,7 @@ func TestWriteContextFilesKiroNativeSkills(t *testing.T) {
 		},
 	}
 
-	if err := writeContextFiles(dir, "kiro", ctx); err != nil {
+	if err := writeContextFiles(dir, "kiro", ctx, nil); err != nil {
 		t.Fatalf("writeContextFiles failed: %v", err)
 	}
 
@@ -1125,7 +1125,7 @@ func TestWriteContextFilesAntigravityNativeSkills(t *testing.T) {
 		},
 	}
 
-	if err := writeContextFiles(dir, "antigravity", ctx); err != nil {
+	if err := writeContextFiles(dir, "antigravity", ctx, nil); err != nil {
 		t.Fatalf("writeContextFiles failed: %v", err)
 	}
 
@@ -1550,7 +1550,7 @@ func TestWriteContextFilesHermesFallbackSkills(t *testing.T) {
 		},
 	}
 
-	if err := writeContextFiles(dir, "hermes", ctx); err != nil {
+	if err := writeContextFiles(dir, "hermes", ctx, nil); err != nil {
 		t.Fatalf("writeContextFiles failed: %v", err)
 	}
 

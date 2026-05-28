@@ -2600,6 +2600,17 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			if cerr := execenv.CleanupRuntimeConfig(env.WorkDir, provider); cerr != nil {
 				d.logger.Warn("execenv: cleanup runtime config failed (non-fatal)", "error", cerr)
 			}
+			// Excise the sidecar tree (.agent_context/, .multica/,
+			// provider-specific .claude/skills/ etc.) that Prepare wrote
+			// into the user's repo. Without this pass the user's tree
+			// accumulates one directory layer per task — see MUL-2784.
+			// CleanupRuntimeConfig handles the runtime brief inside
+			// CLAUDE.md / AGENTS.md / GEMINI.md; CleanupSidecars handles
+			// every other file Prepare placed under WorkDir. Together
+			// they round-trip the workdir to its exact pre-task bytes.
+			if cerr := execenv.CleanupSidecars(env.RootDir); cerr != nil {
+				d.logger.Warn("execenv: cleanup sidecars failed (non-fatal)", "error", cerr)
+			}
 		}()
 	}
 
