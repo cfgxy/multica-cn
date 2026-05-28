@@ -38,29 +38,51 @@ func TestRequireHumanActor_AllowsHumanRequest(t *testing.T) {
 	}
 }
 
-// TestRequireHumanActor_BlocksTaskToken pins the security-critical
-// branch. An mat_ task token would have caused the Auth middleware to
-// stamp X-Actor-Source=task_token; the guard MUST 403 such requests
-// before they can reach a billing handler.
-func TestRequireHumanActor_BlocksTaskToken(t *testing.T) {
-	next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
-		t.Fatal("inner handler must NOT run for task-token requests")
-	})
+// TestRequireHumanActor_BlocksMachineCredentials walks every machine-
+// credential X-Actor-Source value the auth middlewares stamp today
+// and confirms each is rejected with 403. The two values must stay
+// in lockstep with auth.go and daemon_auth.go: a new machine
+// credential added there without a corresponding case here would
+// silently grant agents/nodes account-level access.
+func TestRequireHumanActor_BlocksMachineCredentials(t *testing.T) {
+	cases := []struct {
+		name        string
+		actorSource string
+	}{
+		// mat_ task token — set in middleware/auth.go's mat_ branch.
+		// An agent process holding its task-scoped token must not be
+		// able to read its owner's billing data.
+		{name: "task_token", actorSource: "task_token"},
+		// mcn_ cloud-node PAT — set in BOTH middleware/auth.go and
+		// middleware/daemon_auth.go's mcn_ branches. A cloud-runtime
+		// EC2 node operating on the owner's behalf is the same kind
+		// of machine credential as mat_ for billing-authorization
+		// purposes.
+		{name: "cloud_pat", actorSource: "cloud_pat"},
+	}
 
-	mw := RequireHumanActor(next)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			next := http.HandlerFunc(func(_ http.ResponseWriter, _ *http.Request) {
+				t.Fatalf("inner handler must NOT run for actor source %q", tc.actorSource)
+			})
+			mw := RequireHumanActor(next)
 
-	req := httptest.NewRequest(http.MethodGet, "/api/cloud-billing/balance", nil)
-	// This is what the Auth middleware sets for an mat_ token caller.
-	// Setting it directly here proves the gate triggers on the header
-	// regardless of upstream context — which is also what the auth
-	// middleware guarantees, since it strips client-supplied values
-	// before stamping its own.
-	req.Header.Set("X-Actor-Source", "task_token")
-	w := httptest.NewRecorder()
-	mw.ServeHTTP(w, req)
+			req := httptest.NewRequest(http.MethodGet, "/api/cloud-billing/balance", nil)
+			// This is what the Auth (or DaemonAuth) middleware sets
+			// for the matching token kind. Setting it directly here
+			// proves the gate triggers on the header regardless of
+			// upstream context — the auth middlewares strip any
+			// client-supplied value before stamping their own, so a
+			// non-empty value at this point IS authoritative.
+			req.Header.Set("X-Actor-Source", tc.actorSource)
+			w := httptest.NewRecorder()
+			mw.ServeHTTP(w, req)
 
-	if w.Code != http.StatusForbidden {
-		t.Fatalf("status = %d, want 403", w.Code)
+			if w.Code != http.StatusForbidden {
+				t.Fatalf("status = %d, want 403", w.Code)
+			}
+		})
 	}
 }
 
