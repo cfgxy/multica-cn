@@ -194,8 +194,14 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	}
 
 	// New issues sort to the top of their (workspace, status) column for
-	// manual ordering. Computed inside the tx so a concurrent create and
-	// a concurrent manual reorder can't both land on the same position.
+	// manual ordering. Computed inside the tx, after IncrementIssueCounter
+	// has already taken the workspace row lock, so two concurrent creates
+	// in the same workspace see each other's positions and don't both
+	// land on the same min-1 slot. Concurrent manual reorder via
+	// UpdateIssue(position) does NOT take this lock, so a create racing
+	// a reorder is still allowed to collide on position — manual ordering
+	// is best-effort and the UI tolerates equal positions by falling back
+	// to the secondary ORDER BY key.
 	newPosition, err := issueposition.NextTopPosition(ctx, tx, p.WorkspaceID, p.Status)
 	if err != nil {
 		return IssueCreateResult{}, fmt.Errorf("next top position: %w", err)
