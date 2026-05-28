@@ -122,17 +122,29 @@ func formatProjectResource(r ProjectResourceForEnv) string {
 // For Kiro:     writes {workDir}/AGENTS.md  (Kiro CLI reads AGENTS.md natively; skills auto-discovered from project skills dirs)
 func InjectRuntimeConfig(workDir, provider string, ctx TaskContextForEnv) (string, error) {
 	content := buildMetaSkillContent(provider, ctx)
-
-	switch provider {
-	case "claude":
-		return content, writeRuntimeConfigFile(filepath.Join(workDir, "CLAUDE.md"), content)
-	case "codex", "copilot", "opencode", "openclaw", "hermes", "pi", "cursor", "kimi", "kiro":
-		return content, writeRuntimeConfigFile(filepath.Join(workDir, "AGENTS.md"), content)
-	case "gemini":
-		return content, writeRuntimeConfigFile(filepath.Join(workDir, "GEMINI.md"), content)
-	default:
+	path := runtimeConfigPath(workDir, provider)
+	if path == "" {
 		// Unknown provider — skip config injection, prompt-only mode.
 		return content, nil
+	}
+	return content, writeRuntimeConfigFile(path, content)
+}
+
+// runtimeConfigPath returns the absolute path to the runtime config file that
+// InjectRuntimeConfig writes for the given provider, or "" when the provider
+// has no file-based config target. Centralising the mapping keeps Inject /
+// Cleanup in lockstep — both paths consult the same table so a new provider
+// added to one side cannot drift past the other.
+func runtimeConfigPath(workDir, provider string) string {
+	switch provider {
+	case "claude":
+		return filepath.Join(workDir, "CLAUDE.md")
+	case "codex", "copilot", "opencode", "openclaw", "hermes", "pi", "cursor", "kimi", "kiro":
+		return filepath.Join(workDir, "AGENTS.md")
+	case "gemini":
+		return filepath.Join(workDir, "GEMINI.md")
+	default:
+		return ""
 	}
 }
 
@@ -164,17 +176,11 @@ func writeRuntimeConfigFile(path, brief string) error {
 	}
 
 	existingStr := string(existing)
-	startIdx := strings.Index(existingStr, runtimeMarkerBegin)
-	endIdx := strings.Index(existingStr, runtimeMarkerEnd)
-	if startIdx >= 0 && endIdx > startIdx {
-		// Replace the existing block in place. Consume the trailing newline
-		// that the original block emitted (if any) so successive runs don't
-		// accumulate blank lines after the block.
-		blockEnd := endIdx + len(runtimeMarkerEnd)
-		if blockEnd < len(existingStr) && existingStr[blockEnd] == '\n' {
-			blockEnd++
-		}
-		newContent := existingStr[:startIdx] + block + existingStr[blockEnd:]
+	if start, end, ok := locateMarkerBlock(existingStr); ok {
+		// Replace the existing block in place. locateMarkerBlock already
+		// consumes the trailing newline that closed the previous block, so
+		// successive runs don't accumulate blank lines around the block.
+		newContent := existingStr[:start] + block + existingStr[end:]
 		return os.WriteFile(path, []byte(newContent), 0o644)
 	}
 
@@ -188,6 +194,98 @@ func writeRuntimeConfigFile(path, brief string) error {
 		prefix += "\n"
 	}
 	return os.WriteFile(path, []byte(prefix+block), 0o644)
+}
+
+// locateMarkerBlock finds the [start, end) byte range of the Multica marker
+// block inside content. The returned `end` is one past the block's trailing
+// newline (if any) so callers can splice the block out without leaving an
+// orphan blank line behind.
+//
+// The end marker is searched for strictly after the begin marker. This
+// matters for two malformed cases that the previous naive `strings.Index`
+// pair would mishandle:
+//
+//   - User content carries a stray `<!-- END MULTICA-RUNTIME -->` (e.g. a
+//     documentation snippet showing what the wire format looks like) before
+//     any begin marker. The naive parser would find that end and reject the
+//     block (`endIdx > startIdx` false), then append a fresh block — and
+//     since the stray end stays in place, every subsequent run would append
+//     yet another block, growing the file unboundedly.
+//   - A previous run crashed between writing begin and end and left the file
+//     with a half-block. The naive parser would not find an end, fall
+//     through to the append branch, and stack a new block after the
+//     half-block. Treating "begin found, no end after" as "the block ends
+//     at EOF" makes the next write replace the half-block in place.
+func locateMarkerBlock(content string) (start, end int, found bool) {
+	start = strings.Index(content, runtimeMarkerBegin)
+	if start < 0 {
+		return 0, 0, false
+	}
+	afterBegin := start + len(runtimeMarkerBegin)
+	endRel := strings.Index(content[afterBegin:], runtimeMarkerEnd)
+	if endRel < 0 {
+		// Malformed — no end marker after begin. Treat the rest of the file
+		// as the block so the next write replaces it cleanly instead of
+		// stacking another block beneath the half-block.
+		return start, len(content), true
+	}
+	end = afterBegin + endRel + len(runtimeMarkerEnd)
+	if end < len(content) && content[end] == '\n' {
+		end++
+	}
+	return start, end, true
+}
+
+// CleanupRuntimeConfig excises the Multica marker block from the runtime
+// config file for the given provider, leaving any surrounding user-authored
+// content intact. If the file would be empty (or whitespace-only) after the
+// block is removed, the file is deleted entirely so the directory looks
+// untouched to the user.
+//
+// Required for the local_directory flow (WorkDir is the user's own repo):
+// without this pass, a manual `claude` / `codex` / `gemini` run started by
+// the user inside the same directory after a Multica task would pick up the
+// stale brief and act on the previous task's issue id, trigger comment id,
+// and reply rules. Cloud workspace runs never trigger this pollution
+// because their workdir is daemon scratch that the GC loop deletes
+// wholesale; the daemon skips this Cleanup on those workdirs.
+//
+// Missing files, unknown providers, and files without a marker block are
+// no-ops — Cleanup is safe to call defensively.
+func CleanupRuntimeConfig(workDir, provider string) error {
+	path := runtimeConfigPath(workDir, provider)
+	if path == "" {
+		return nil
+	}
+	existing, err := os.ReadFile(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read runtime config %s: %w", path, err)
+	}
+	existingStr := string(existing)
+	start, end, ok := locateMarkerBlock(existingStr)
+	if !ok {
+		return nil
+	}
+	remainder := existingStr[:start] + existingStr[end:]
+	if strings.TrimSpace(remainder) == "" {
+		// File would be empty / whitespace-only — remove it. Either we
+		// created the file from scratch (no surrounding user content), or
+		// the user's file was empty before we wrote the block; either way,
+		// removing it leaves the directory in the cleanest state.
+		if err := os.Remove(path); err != nil && !errors.Is(err, fs.ErrNotExist) {
+			return fmt.Errorf("remove empty runtime config %s: %w", path, err)
+		}
+		return nil
+	}
+	// Trim any trailing blank line introduced by writeRuntimeConfigFile's
+	// "separated by a blank line for readability" step so cleanup leaves a
+	// file that ends in exactly one newline, matching the user's typical
+	// pre-injection state.
+	remainder = strings.TrimRight(remainder, "\n") + "\n"
+	return os.WriteFile(path, []byte(remainder), 0o644)
 }
 
 // buildMetaSkillContent generates the meta skill markdown that teaches the agent

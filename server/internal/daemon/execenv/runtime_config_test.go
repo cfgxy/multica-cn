@@ -564,3 +564,359 @@ func TestInjectRuntimeConfigUnknownProviderSkipsWrite(t *testing.T) {
 		}
 	}
 }
+
+// Parser hardening: the end marker must be found strictly after the begin
+// marker so a stray end marker that appears earlier in user content (e.g.
+// a documentation snippet showing what the wire format looks like) doesn't
+// trick writeRuntimeConfigFile into thinking the file is malformed and
+// appending another block on every run.
+func TestWriteRuntimeConfigFileIgnoresStrayEndMarkerBeforeBegin(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "CLAUDE.md")
+
+	// Seed a file whose user-authored portion documents the marker format
+	// (so the *end* marker appears before any *begin* marker), then has a
+	// real block authored by an earlier Multica run below.
+	const userDoc = "# Repo CLAUDE.md\n\nExample of what Multica writes:\n" +
+		runtimeMarkerEnd + "\n\n# Real config below\n"
+	original := userDoc +
+		runtimeMarkerBegin + "\nFIRST BRIEF\n" + runtimeMarkerEnd + "\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	const newBrief = "SECOND BRIEF"
+	if err := writeRuntimeConfigFile(path, newBrief); err != nil {
+		t.Fatalf("writeRuntimeConfigFile: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	s := string(got)
+
+	// The user's stray end marker line plus surrounding doc text must still
+	// be present, and the file must contain exactly one begin marker and
+	// one *additional* end marker (so two end markers total — the stray
+	// one and the one closing our block).
+	if !strings.Contains(s, userDoc) {
+		t.Errorf("user doc with stray end marker must be preserved verbatim, got:\n%s", s)
+	}
+	if got, want := strings.Count(s, runtimeMarkerBegin), 1; got != want {
+		t.Errorf("expected exactly %d begin markers, got %d:\n%s", want, got, s)
+	}
+	if got, want := strings.Count(s, runtimeMarkerEnd), 2; got != want {
+		t.Errorf("expected exactly %d end markers (1 user stray + 1 closing our block), got %d:\n%s", want, got, s)
+	}
+	if strings.Contains(s, "FIRST BRIEF") {
+		t.Errorf("previous brief body must be replaced, got:\n%s", s)
+	}
+	if !strings.Contains(s, newBrief) {
+		t.Errorf("new brief body missing from output:\n%s", s)
+	}
+
+	// Idempotency under the stray-end pattern: a second write must not
+	// stack another block.
+	if err := writeRuntimeConfigFile(path, newBrief); err != nil {
+		t.Fatalf("second writeRuntimeConfigFile: %v", err)
+	}
+	got2, _ := os.ReadFile(path)
+	s2 := string(got2)
+	if got, want := strings.Count(s2, runtimeMarkerBegin), 1; got != want {
+		t.Errorf("repeat write must not grow begin markers, got %d, want %d:\n%s", got, want, s2)
+	}
+}
+
+// Parser hardening: a file containing only a begin marker (e.g. a previous
+// run that crashed mid-write) must not cause every subsequent run to stack
+// another block beneath the half-block.
+func TestWriteRuntimeConfigFileReplacesMalformedHalfBlock(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "AGENTS.md")
+
+	const userTop = "# Repo AGENTS.md\n\nrules above\n"
+	const halfBlock = "leftover from crashed write\nsecond line\n"
+	original := userTop + runtimeMarkerBegin + "\n" + halfBlock
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	const newBrief = "recovered brief"
+	if err := writeRuntimeConfigFile(path, newBrief); err != nil {
+		t.Fatalf("writeRuntimeConfigFile: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	s := string(got)
+	if !strings.HasPrefix(s, userTop) {
+		t.Errorf("user content above the half-block must be preserved, got:\n%s", s)
+	}
+	if strings.Contains(s, "leftover from crashed write") {
+		t.Errorf("half-block contents must be replaced, got:\n%s", s)
+	}
+	if got, want := strings.Count(s, runtimeMarkerBegin), 1; got != want {
+		t.Errorf("expected exactly %d begin marker, got %d:\n%s", want, got, s)
+	}
+	if got, want := strings.Count(s, runtimeMarkerEnd), 1; got != want {
+		t.Errorf("expected exactly %d end marker after recovery, got %d:\n%s", want, got, s)
+	}
+	if !strings.Contains(s, newBrief) {
+		t.Errorf("new brief body missing from output:\n%s", s)
+	}
+}
+
+// Cleanup excises the marker block, preserving every byte of surrounding
+// user content. This is the local_directory invariant: a `claude` /
+// `codex` run started by the user after a Multica task must see the same
+// file the user wrote.
+func TestCleanupRuntimeConfigPreservesUserContent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "CLAUDE.md")
+
+	const userBefore = "# Repo CLAUDE.md\n\nuser line above\n"
+	const userAfter = "\nuser line below the block\n"
+	const userExpected = "# Repo CLAUDE.md\n\nuser line above\n\nuser line below the block\n"
+	// Inject via the production write path so we exercise the actual
+	// marker block format, not a hand-rolled approximation.
+	if err := os.WriteFile(path, []byte(userBefore+userAfter), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if err := writeRuntimeConfigFile(path, "brief body"); err != nil {
+		t.Fatalf("seed brief: %v", err)
+	}
+
+	if err := CleanupRuntimeConfig(dir, "claude"); err != nil {
+		t.Fatalf("CleanupRuntimeConfig: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	s := string(got)
+	if strings.Contains(s, runtimeMarkerBegin) || strings.Contains(s, runtimeMarkerEnd) {
+		t.Errorf("marker block must be removed, got:\n%s", s)
+	}
+	if strings.Contains(s, "brief body") {
+		t.Errorf("brief body must be removed, got:\n%s", s)
+	}
+	if s != userExpected {
+		t.Errorf("user content must be preserved byte-for-byte\n got:\n%q\nwant:\n%q", s, userExpected)
+	}
+}
+
+// Cleanup removes the file entirely when the marker block was the only
+// content — i.e. we created the file from scratch in a directory that had
+// no pre-existing CLAUDE.md / AGENTS.md / GEMINI.md.
+func TestCleanupRuntimeConfigRemovesFileWhenOnlyBlockRemained(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "CLAUDE.md")
+
+	// No seed — writeRuntimeConfigFile creates the file with only the
+	// marker block inside.
+	if err := writeRuntimeConfigFile(path, "brief body"); err != nil {
+		t.Fatalf("seed brief: %v", err)
+	}
+
+	if err := CleanupRuntimeConfig(dir, "claude"); err != nil {
+		t.Fatalf("CleanupRuntimeConfig: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Errorf("expected file to be removed, stat err=%v", err)
+	}
+}
+
+// Cleanup is a no-op when no marker block exists or when the file is
+// missing — Cleanup is safe to call defensively from the daemon's defer.
+func TestCleanupRuntimeConfigNoOpCases(t *testing.T) {
+	t.Parallel()
+
+	t.Run("missing file", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		if err := CleanupRuntimeConfig(dir, "claude"); err != nil {
+			t.Errorf("missing file must be no-op, got: %v", err)
+		}
+		// And the directory must remain untouched.
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			t.Fatalf("readdir: %v", err)
+		}
+		if len(entries) != 0 {
+			t.Errorf("expected dir to remain empty, got: %v", entries)
+		}
+	})
+
+	t.Run("file without marker block", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		path := filepath.Join(dir, "CLAUDE.md")
+		const userContent = "# Repo CLAUDE.md\n\nrules\n"
+		if err := os.WriteFile(path, []byte(userContent), 0o644); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		if err := CleanupRuntimeConfig(dir, "claude"); err != nil {
+			t.Errorf("no-marker-block file must be no-op, got: %v", err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read back: %v", err)
+		}
+		if string(got) != userContent {
+			t.Errorf("file must be untouched\n got:\n%q\nwant:\n%q", string(got), userContent)
+		}
+	})
+
+	t.Run("unknown provider", func(t *testing.T) {
+		t.Parallel()
+		dir := t.TempDir()
+		// Seed every candidate filename to verify none of them get touched.
+		for _, name := range []string{"CLAUDE.md", "AGENTS.md", "GEMINI.md"} {
+			if err := os.WriteFile(filepath.Join(dir, name), []byte("untouched\n"), 0o644); err != nil {
+				t.Fatalf("seed %s: %v", name, err)
+			}
+		}
+		if err := CleanupRuntimeConfig(dir, "totally-unknown-provider"); err != nil {
+			t.Errorf("unknown provider must be no-op, got: %v", err)
+		}
+		for _, name := range []string{"CLAUDE.md", "AGENTS.md", "GEMINI.md"} {
+			got, err := os.ReadFile(filepath.Join(dir, name))
+			if err != nil {
+				t.Fatalf("read %s: %v", name, err)
+			}
+			if string(got) != "untouched\n" {
+				t.Errorf("unknown provider must not touch %s; got:\n%s", name, string(got))
+			}
+		}
+	})
+}
+
+// Cleanup must handle a half-block left by a previous crashed run: begin
+// marker present but no end. Otherwise the half-block would survive
+// cleanup and pollute the next manual CLI invocation in the same dir.
+func TestCleanupRuntimeConfigRemovesMalformedHalfBlock(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "AGENTS.md")
+
+	const userTop = "# Repo AGENTS.md\n\nrules\n"
+	original := userTop + runtimeMarkerBegin + "\nhalf-written brief no end\n"
+	if err := os.WriteFile(path, []byte(original), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	if err := CleanupRuntimeConfig(dir, "codex"); err != nil {
+		t.Fatalf("CleanupRuntimeConfig: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	s := string(got)
+	if strings.Contains(s, runtimeMarkerBegin) {
+		t.Errorf("half-block begin marker must be excised, got:\n%s", s)
+	}
+	if strings.Contains(s, "half-written brief no end") {
+		t.Errorf("half-block body must be excised, got:\n%s", s)
+	}
+	if !strings.HasPrefix(s, userTop) {
+		t.Errorf("user content above the half-block must remain, got:\n%s", s)
+	}
+}
+
+// Cleanup must remove the marker block for every provider's target file,
+// using the same provider→filename mapping as InjectRuntimeConfig — so a
+// new provider added to one side cannot drift past the other.
+func TestCleanupRuntimeConfigByProvider(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		provider string
+		filename string
+	}{
+		{"claude", "CLAUDE.md"},
+		{"codex", "AGENTS.md"},
+		{"copilot", "AGENTS.md"},
+		{"opencode", "AGENTS.md"},
+		{"openclaw", "AGENTS.md"},
+		{"hermes", "AGENTS.md"},
+		{"pi", "AGENTS.md"},
+		{"cursor", "AGENTS.md"},
+		{"kimi", "AGENTS.md"},
+		{"kiro", "AGENTS.md"},
+		{"gemini", "GEMINI.md"},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.provider, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			path := filepath.Join(dir, tc.filename)
+			const userContent = "# User file\n\ndon't touch this\n"
+			if err := os.WriteFile(path, []byte(userContent), 0o644); err != nil {
+				t.Fatalf("seed: %v", err)
+			}
+
+			// Inject through the production path so cleanup runs against
+			// the same wire format the agent saw.
+			if _, err := InjectRuntimeConfig(dir, tc.provider, TaskContextForEnv{
+				IssueID: "11111111-2222-3333-4444-555555555555",
+			}); err != nil {
+				t.Fatalf("InjectRuntimeConfig: %v", err)
+			}
+			if err := CleanupRuntimeConfig(dir, tc.provider); err != nil {
+				t.Fatalf("CleanupRuntimeConfig: %v", err)
+			}
+			got, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("read back: %v", err)
+			}
+			s := string(got)
+			if strings.Contains(s, runtimeMarkerBegin) || strings.Contains(s, runtimeMarkerEnd) {
+				t.Errorf("[%s] marker block must be removed from %s, got:\n%s", tc.provider, tc.filename, s)
+			}
+			if s != userContent {
+				t.Errorf("[%s] user content in %s must be preserved byte-for-byte\n got:\n%q\nwant:\n%q", tc.provider, tc.filename, s, userContent)
+			}
+		})
+	}
+}
+
+// Inject → Cleanup → manual edit → Inject must converge back to the
+// pre-injection state on the next Cleanup. This is the end-to-end
+// regression that locks in: the user's repo is byte-identical to what
+// they had before the task, every task cycle.
+func TestInjectThenCleanupRoundTrip(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "CLAUDE.md")
+	const userContent = "# User-authored CLAUDE.md\n\n- rule A\n- rule B\n"
+	if err := os.WriteFile(path, []byte(userContent), 0o644); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+
+	// Two full inject→cleanup cycles — covers both the "first task on a
+	// fresh user file" path and the "subsequent task hits a clean file
+	// again" path.
+	for i := 0; i < 2; i++ {
+		if _, err := InjectRuntimeConfig(dir, "claude", TaskContextForEnv{
+			IssueID: "11111111-2222-3333-4444-555555555555",
+		}); err != nil {
+			t.Fatalf("iter %d inject: %v", i, err)
+		}
+		if err := CleanupRuntimeConfig(dir, "claude"); err != nil {
+			t.Fatalf("iter %d cleanup: %v", i, err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("iter %d read back: %v", i, err)
+		}
+		if string(got) != userContent {
+			t.Errorf("iter %d: user file must be byte-identical to pre-injection state\n got:\n%q\nwant:\n%q", i, string(got), userContent)
+		}
+	}
+}
