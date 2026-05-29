@@ -201,6 +201,17 @@ ORDER BY p.last_activity_at ASC, p.root_id ASC, c.created_at ASC, c.id ASC;
 SELECT count(*) FROM comment
 WHERE issue_id = $1 AND workspace_id = $2;
 
+-- name: CountNewCommentsSince :one
+-- Counts comments on an issue created strictly after @since, excluding any
+-- authored by the given agent (@author_id). Feeds the daemon claim response so
+-- a comment-triggered task can tell the agent how many comments arrived since
+-- its last run on this issue, without shipping their bodies.
+SELECT count(*) FROM comment
+WHERE issue_id = @issue_id
+  AND workspace_id = @workspace_id
+  AND created_at > @since
+  AND NOT (author_type = 'agent' AND author_id = @author_id);
+
 -- name: GetComment :one
 SELECT * FROM comment
 WHERE id = $1;
@@ -208,6 +219,27 @@ WHERE id = $1;
 -- name: GetCommentInWorkspace :one
 SELECT * FROM comment
 WHERE id = $1 AND workspace_id = $2;
+
+-- name: GetThreadRoot :one
+-- Returns the thread-root comment for @comment_id by walking parent_id up to
+-- the row whose parent_id IS NULL. For a root comment it returns that comment
+-- itself. Used at the write boundary to flatten replies: every new reply stores
+-- the thread root as its parent_id, so the comment tree never exceeds depth 1.
+-- This enforces the 2-level threading model the product and UI already assume
+-- (a root + a flat list of replies, like Linear/Slack) at insert time, so every
+-- reader can treat a reply's parent_id AS its thread root without re-walking the
+-- tree. Cycle-safe under the PK constraint (a comment cannot be its own ancestor).
+WITH RECURSIVE root_of AS (
+    SELECT c.id, c.parent_id
+    FROM comment c
+    WHERE c.id = @comment_id AND c.workspace_id = @workspace_id
+    UNION ALL
+    SELECT p.id, p.parent_id
+    FROM comment p
+    JOIN root_of r ON p.id = r.parent_id
+)
+SELECT c.* FROM comment c
+WHERE c.id = (SELECT id FROM root_of WHERE parent_id IS NULL LIMIT 1);
 
 -- name: CreateComment :one
 INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, parent_id)

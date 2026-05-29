@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5/pgtype"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // cursorQuery builds a properly URL-encoded query string for the recent +
@@ -1012,4 +1014,131 @@ func TestListComments_ThreadTailNotFoundReturns404(t *testing.T) {
 		t.Fatalf("expected 404 for unknown anchor, got %d: %s", w.Code, w.Body.String())
 	}
 	_ = fx
+}
+
+// resolveCommentRow marks a comment resolved directly in the DB (test helper —
+// the public path goes through ResolveComment, but for list-filter tests we
+// just need the column set).
+func resolveCommentRow(t *testing.T, commentID string) {
+	t.Helper()
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE comment SET resolved_at = now(), resolved_by_type = 'member', resolved_by_id = $2 WHERE id = $1`,
+		commentID, testUserID,
+	); err != nil {
+		t.Fatalf("resolve comment row: %v", err)
+	}
+}
+
+// TestCountNewCommentsSince_ExcludesAgentOwn pins the claim-side count query: it
+// counts comments created after the given anchor and excludes the agent's own,
+// so a chatty agent does not inflate its own new-comment count.
+func TestCountNewCommentsSince_ExcludesAgentOwn(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	fx := newCommentListFixture(t)
+	agentID := createHandlerTestAgent(t, "count-agent", []byte("[]"))
+
+	// Two agent-authored comments — must NOT be counted.
+	for _, body := range []string{"agent reply 1", "agent reply 2"} {
+		if _, err := testPool.Exec(context.Background(), `
+			INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, type, parent_id)
+			VALUES ($1, $2, 'agent', $3, $4, 'comment', $5)
+		`, fx.IssueID, testWorkspaceID, agentID, body, fx.Root2); err != nil {
+			t.Fatalf("insert agent comment: %v", err)
+		}
+	}
+
+	ctx := context.Background()
+
+	// Anchor in the far past: all 7 member comments are newer; agent's 2 excluded.
+	got, err := testHandler.Queries.CountNewCommentsSince(ctx, db.CountNewCommentsSinceParams{
+		IssueID:     parseUUID(fx.IssueID),
+		WorkspaceID: parseUUID(testWorkspaceID),
+		Since:       pgtype.Timestamptz{Time: time.Unix(0, 0), Valid: true},
+		AuthorID:    parseUUID(agentID),
+	})
+	if err != nil {
+		t.Fatalf("count new since epoch: %v", err)
+	}
+	if got != 7 {
+		t.Fatalf("expected 7 new member comments since epoch (agent's own excluded), got %d", got)
+	}
+
+	// Anchor in the future: nothing is newer.
+	got, err = testHandler.Queries.CountNewCommentsSince(ctx, db.CountNewCommentsSinceParams{
+		IssueID:     parseUUID(fx.IssueID),
+		WorkspaceID: parseUUID(testWorkspaceID),
+		Since:       pgtype.Timestamptz{Time: time.Now().Add(time.Hour), Valid: true},
+		AuthorID:    parseUUID(agentID),
+	})
+	if err != nil {
+		t.Fatalf("count new since future: %v", err)
+	}
+	if got != 0 {
+		t.Fatalf("expected 0 new comments after a future anchor, got %d", got)
+	}
+}
+
+// TestCreateCommentNormalizesParentToThreadRoot pins the write-boundary
+// invariant: a reply created through CreateComment is always stored with its
+// parent_id pointing at the THREAD ROOT, never at an interior reply. This keeps
+// the comment tree at depth 1 (the 2-level model the product/UI assume), so
+// readers can treat a reply's parent_id AS its thread root. We post a reply to a
+// reply and assert the stored parent collapses to the root, not the middle row.
+func TestCreateCommentNormalizesParentToThreadRoot(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("requires DB")
+	}
+	ctx := context.Background()
+
+	var issueID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO issue (workspace_id, creator_type, creator_id, title)
+		VALUES ($1, 'member', $2, $3)
+		RETURNING id
+	`, testWorkspaceID, testUserID, "parent normalization fixture").Scan(&issueID); err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM issue WHERE id = $1`, issueID)
+	})
+
+	create := func(parentID, body string) CommentResponse {
+		t.Helper()
+		payload := map[string]any{"content": body}
+		if parentID != "" {
+			payload["parent_id"] = parentID
+		}
+		w := httptest.NewRecorder()
+		req := newRequest("POST", "/api/issues/"+issueID+"/comments", payload)
+		req = withURLParam(req, "id", issueID)
+		testHandler.CreateComment(w, req)
+		if w.Code != http.StatusCreated {
+			t.Fatalf("CreateComment(%q): expected 201, got %d: %s", body, w.Code, w.Body.String())
+		}
+		var resp CommentResponse
+		if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode created comment %q: %v", body, err)
+		}
+		return resp
+	}
+
+	root := create("", "root")
+	if root.ParentID != nil {
+		t.Fatalf("root comment must have nil parent_id, got %v", *root.ParentID)
+	}
+
+	// A direct reply to the root stays parented at the root.
+	reply := create(root.ID, "reply")
+	if reply.ParentID == nil || *reply.ParentID != root.ID {
+		t.Fatalf("direct reply parent_id: want root %s, got %v", root.ID, reply.ParentID)
+	}
+
+	// A reply whose parent is itself a reply must collapse to the thread root,
+	// NOT stay pointed at the interior reply — this is the write-boundary fix.
+	nested := create(reply.ID, "nested")
+	if nested.ParentID == nil || *nested.ParentID != root.ID {
+		t.Fatalf("reply-to-reply parent_id: want collapsed to root %s, got %v (must not be the interior reply %s)", root.ID, nested.ParentID, reply.ID)
+	}
 }

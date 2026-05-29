@@ -156,6 +156,61 @@ func TestCommentTriggeredProtocolDoesNotForceInReview(t *testing.T) {
 	}
 }
 
+// The CLAUDE.md workflow surface must carry the same since-delta new-comment
+// hint as the per-turn prompt. PR #2816 requires the two surfaces stay in sync,
+// so this pins the count-driven `--since` hint into the comment-triggered brief.
+func TestCommentTriggeredBriefCarriesNewCommentsHint(t *testing.T) {
+	t.Parallel()
+	const (
+		issueID = "55555555-6666-7777-8888-999999999999"
+		since   = "2026-05-28T11:00:00Z"
+	)
+	ctx := TaskContextForEnv{
+		IssueID:          issueID,
+		TriggerCommentID: "reply-abc",
+		NewCommentCount:  4,
+		NewCommentsSince: since,
+	}
+	out := buildMetaSkillContent("claude", ctx)
+
+	if !strings.Contains(out, "4 new comment(s) since your last run") {
+		t.Errorf("comment brief must report the new-comment count, got:\n%s", out)
+	}
+	if !strings.Contains(out, "--since "+since+" --output json") {
+		t.Errorf("comment brief must point at the --since catch-up read, got:\n%s", out)
+	}
+	// Warm path also keeps a --thread pointer for the triggering thread's
+	// pre-anchor history that --since cannot cover.
+	if !strings.Contains(out, "--thread reply-abc --tail 30 --output json") {
+		t.Errorf("warm brief must also point at the triggering thread, got:\n%s", out)
+	}
+	// The removed resolve step must not reappear.
+	if strings.Contains(out, "multica comment resolve") {
+		t.Errorf("comment brief must not carry the dropped resolve step, got:\n%s", out)
+	}
+}
+
+// Cold start (no prior run → no since anchor) must point the agent at the
+// triggering CONVERSATION (--thread <trigger> --tail 30) instead of the flat
+// timeline dump or the since-delta hint.
+func TestCommentTriggeredBriefColdStartThreadRead(t *testing.T) {
+	t.Parallel()
+	const issueID = "55555555-6666-7777-8888-999999999999"
+	ctx := TaskContextForEnv{
+		IssueID:          issueID,
+		TriggerCommentID: "trigger-1",
+		NewCommentCount:  0,
+		NewCommentsSince: "",
+	}
+	out := buildMetaSkillContent("claude", ctx)
+	if strings.Contains(out, "new comment(s) since your last run") {
+		t.Errorf("no since-delta hint should render on cold start, got:\n%s", out)
+	}
+	if !strings.Contains(out, "multica issue comment list "+issueID+" --thread trigger-1 --tail 30 --output json") {
+		t.Errorf("cold start must point at the triggering thread read, got:\n%s", out)
+	}
+}
+
 // Assignment-triggered briefs are the inverse boundary: when the agent
 // owns the issue lifecycle, the brief AS A WHOLE must still tell it to
 // flip to in_review on completion. The flip lives in the

@@ -2488,6 +2488,8 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	taskCtx := execenv.TaskContextForEnv{
 		IssueID:                          task.IssueID,
 		TriggerCommentID:                 task.TriggerCommentID,
+		NewCommentCount:                  task.NewCommentCount,
+		NewCommentsSince:                 task.NewCommentsSince,
 		AgentID:                          agentID,
 		AgentName:                        agentName,
 		AgentInstructions:                instructions,
