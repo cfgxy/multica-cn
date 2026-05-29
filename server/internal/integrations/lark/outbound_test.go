@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -272,6 +273,73 @@ func TestPatcherSwallowsInstallationLoadErrors(t *testing.T) {
 	defer api.mu.Unlock()
 	if len(api.sent) != 0 {
 		t.Fatalf("DB failure must not result in a card send; got %d", len(api.sent))
+	}
+}
+
+// TestPatcherIgnoresEventTaskCompletedForChatTasks is the regression
+// for the "card shows Done. instead of the agent's reply" bug Bohan
+// hit on the live env. TaskService publishes ChatDone (with content)
+// IMMEDIATELY BEFORE TaskCompleted (with no content) for every chat
+// task. If the Patcher subscribed to both, the second patch would
+// overwrite the real reply with the "Done." fallback. The fix is to
+// drop the EventTaskCompleted subscription entirely — EventChatDone
+// is the canonical "agent finished" signal for the Lark card path.
+//
+// This test pins the contract: a Patcher that has never seen
+// EventTaskCompleted does not register a subscription for it, and
+// even if one is replayed (e.g. event bus replay on reconnect) the
+// Patcher's processEvent switch ignores it instead of finalizing.
+func TestPatcherIgnoresEventTaskCompletedForChatTasks(t *testing.T) {
+	p, q, api := newTestPatcher(t)
+	taskID := uuidFromString(t, "ee666666-ee66-ee66-ee66-eeeeeeeeeeee")
+	q.card = db.LarkOutboundCardMessage{
+		ID:                uuidFromString(t, "dd333333-dd33-dd33-dd33-dddddddddddd"),
+		LarkCardMessageID: "lark_card_msg_existing",
+		ChatSessionID:     q.binding.ChatSessionID,
+		LarkChatID:        q.binding.LarkChatID,
+		Status:            string(CardStatusStreaming),
+	}
+	q.cardErr = nil
+
+	// Step 1: ChatDone arrives with the real agent reply. The card
+	// should get patched to the reply text and persisted as final.
+	p.handleEvent(events.Event{
+		Type:          protocol.EventChatDone,
+		TaskID:        uuidString(taskID),
+		ChatSessionID: uuidString(q.binding.ChatSessionID),
+		Payload: protocol.ChatDonePayload{
+			TaskID:        uuidString(taskID),
+			ChatSessionID: uuidString(q.binding.ChatSessionID),
+			Content:       "Hello! I'm cc, a coding agent…",
+		},
+	})
+
+	// Step 2: TaskCompleted fires immediately after. The Patcher MUST
+	// NOT patch the card again — doing so would replay the empty
+	// payload through finalize and overwrite the real reply with the
+	// "Done." fallback.
+	p.handleEvent(events.Event{
+		Type:          protocol.EventTaskCompleted,
+		TaskID:        uuidString(taskID),
+		ChatSessionID: uuidString(q.binding.ChatSessionID),
+		Payload: map[string]any{
+			"task_id":         uuidString(taskID),
+			"chat_session_id": uuidString(q.binding.ChatSessionID),
+			"status":          "completed",
+		},
+	})
+
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.patched) != 1 {
+		t.Fatalf("exactly one patch expected (ChatDone); EventTaskCompleted must be ignored. Got %d patches", len(api.patched))
+	}
+	// And the surviving patch carries the actual reply text — not "Done.".
+	if !strings.Contains(api.patched[0].CardJSON, "Hello! I'm cc") {
+		t.Errorf("patched card body should contain the agent reply; got %s", api.patched[0].CardJSON)
+	}
+	if strings.Contains(api.patched[0].CardJSON, `"content":"Done."`) {
+		t.Errorf("patched card body should NOT contain the Done. fallback; got %s", api.patched[0].CardJSON)
 	}
 }
 

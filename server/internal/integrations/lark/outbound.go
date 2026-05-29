@@ -238,10 +238,20 @@ func NewPatcher(queries PatcherQueries, credentials CredentialsResolver, client 
 // against a fresh bus; call sites should invoke it exactly once
 // during server boot (after the bus + patcher are constructed and
 // before HTTP traffic starts).
+//
+// We deliberately do NOT subscribe to EventTaskCompleted here.
+// TaskService publishes ChatDone (with the assistant message content)
+// IMMEDIATELY BEFORE TaskCompleted (which has no content) for every
+// chat task. Subscribing to both would patch the final card twice:
+// the first patch shows the real reply, the second patch wipes it
+// with the "Done." fallback because the TaskCompleted payload's
+// `map[string]any` has no "content" key. EventChatDone is the
+// canonical "agent finished replying" signal for the Patcher;
+// EventTaskCompleted is left to other listeners (web UI, analytics,
+// task usage rollup, etc.) where the lack of content doesn't matter.
 func (p *Patcher) Register(bus *events.Bus) {
 	bus.Subscribe(protocol.EventTaskQueued, p.handleEvent)
 	bus.Subscribe(protocol.EventTaskRunning, p.handleEvent)
-	bus.Subscribe(protocol.EventTaskCompleted, p.handleEvent)
 	bus.Subscribe(protocol.EventTaskFailed, p.handleEvent)
 	bus.Subscribe(protocol.EventChatDone, p.handleEvent)
 }
@@ -303,7 +313,7 @@ func (p *Patcher) processEvent(ctx context.Context, e events.Event) error {
 	switch e.Type {
 	case protocol.EventTaskQueued, protocol.EventTaskRunning:
 		return p.ensureCard(ctx, creds, binding, taskID, agentName, e.Type)
-	case protocol.EventTaskCompleted, protocol.EventChatDone:
+	case protocol.EventChatDone:
 		return p.finalize(ctx, creds, binding, taskID, agentName, e.Payload)
 	case protocol.EventTaskFailed:
 		return p.fail(ctx, creds, binding, taskID, agentName, e.Payload)
