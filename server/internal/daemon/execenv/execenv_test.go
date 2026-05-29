@@ -3346,11 +3346,12 @@ func TestBuildMetaSkillContentOmitsRequestingUserWhenEmpty(t *testing.T) {
 }
 
 // TestInjectRuntimeConfigCommentTriggerColdStartRead checks the
-// comment-triggered Workflow on cold start (no prior run): it falls back to a
-// plain catch-up read with no since-delta hint, while the Available Commands
-// core line still surfaces the thread/recent/cursor flags so they remain
-// discoverable for CLI use even though the verbose cursor walkthrough was
-// dropped from the workflow steps.
+// comment-triggered Workflow on cold start (no prior run): it points the agent
+// at the triggering thread (--thread <trigger> --tail 30) instead of the flat
+// dump and with no since-delta hint, while the Available Commands core line
+// still surfaces the thread/recent/cursor flags so they remain discoverable for
+// CLI use even though the verbose cursor walkthrough was dropped from the
+// workflow steps.
 func TestInjectRuntimeConfigCommentTriggerColdStartRead(t *testing.T) {
 	t.Parallel()
 
@@ -3372,10 +3373,11 @@ func TestInjectRuntimeConfigCommentTriggerColdStartRead(t *testing.T) {
 	}
 	s := string(data)
 
-	// Cold start (no prior run) → plain catch-up line, no since-delta hint.
+	// Cold start (no prior run) → read the triggering thread, not the flat dump,
+	// and no since-delta hint.
 	for _, want := range []string{
-		"Catch up on comments",
-		"multica issue comment list " + issueID + " --output json",
+		"Read the triggering conversation first",
+		"multica issue comment list " + issueID + " --thread " + triggerID + " --tail 30 --output json",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("comment-triggered Workflow missing cold-start read %q\n---\n%s", want, s)

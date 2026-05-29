@@ -179,18 +179,25 @@ func TestCommentTriggeredBriefCarriesNewCommentsHint(t *testing.T) {
 	if !strings.Contains(out, "--since "+since+" --output json") {
 		t.Errorf("comment brief must point at the --since catch-up read, got:\n%s", out)
 	}
+	// Warm path also keeps a --thread pointer for the triggering thread's
+	// pre-anchor history that --since cannot cover.
+	if !strings.Contains(out, "--thread reply-abc --tail 30 --output json") {
+		t.Errorf("warm brief must also point at the triggering thread, got:\n%s", out)
+	}
 	// The removed resolve step must not reappear.
 	if strings.Contains(out, "multica comment resolve") {
 		t.Errorf("comment brief must not carry the dropped resolve step, got:\n%s", out)
 	}
 }
 
-// Cold start (no prior run → no since anchor) must fall back to the plain read
-// line instead of the since-delta hint.
-func TestCommentTriggeredBriefColdStartNoHint(t *testing.T) {
+// Cold start (no prior run → no since anchor) must point the agent at the
+// triggering CONVERSATION (--thread <trigger> --tail 30) instead of the flat
+// timeline dump or the since-delta hint.
+func TestCommentTriggeredBriefColdStartThreadRead(t *testing.T) {
 	t.Parallel()
+	const issueID = "55555555-6666-7777-8888-999999999999"
 	ctx := TaskContextForEnv{
-		IssueID:          "55555555-6666-7777-8888-999999999999",
+		IssueID:          issueID,
 		TriggerCommentID: "trigger-1",
 		NewCommentCount:  0,
 		NewCommentsSince: "",
@@ -199,8 +206,8 @@ func TestCommentTriggeredBriefColdStartNoHint(t *testing.T) {
 	if strings.Contains(out, "new comment(s) since your last run") {
 		t.Errorf("no since-delta hint should render on cold start, got:\n%s", out)
 	}
-	if !strings.Contains(out, "Catch up on comments") {
-		t.Errorf("cold start must fall back to the plain catch-up line, got:\n%s", out)
+	if !strings.Contains(out, "multica issue comment list "+issueID+" --thread trigger-1 --tail 30 --output json") {
+		t.Errorf("cold start must point at the triggering thread read, got:\n%s", out)
 	}
 }
 

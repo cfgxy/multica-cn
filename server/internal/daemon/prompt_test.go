@@ -323,16 +323,23 @@ func TestBuildPromptNewCommentsHint(t *testing.T) {
 	if !strings.Contains(out, "multica issue comment list "+issueID+" --since "+since+" --output json") {
 		t.Errorf("hint must point at the --since catch-up read, got:\n%s", out)
 	}
+	// Warm path also keeps a --thread pointer: --since is a time delta and can
+	// miss the triggering thread's pre-anchor history, so the agent is told it can
+	// pull that thread in full when needed.
+	if !strings.Contains(out, "multica issue comment list "+issueID+" --thread trigger-1 --tail 30 --output json") {
+		t.Errorf("warm hint must also point at the triggering thread, got:\n%s", out)
+	}
 	// The old cursor-heavy paragraph must be gone.
 	if strings.Contains(out, "Next reply cursor") || strings.Contains(out, "--before-id") {
 		t.Errorf("the old cursor-pagination paragraph must not render, got:\n%s", out)
 	}
 }
 
-// TestBuildPromptColdStartNoHint pins the cold-start case: no prior run means no
-// since anchor (NewCommentsSince empty), so we suppress the delta hint and fall
-// back to a plain "read the discussion" line.
-func TestBuildPromptColdStartNoHint(t *testing.T) {
+// TestBuildPromptColdStartThreadRead pins the cold-start case: no prior run means
+// no since anchor (NewCommentsSince empty), so we suppress the delta hint and
+// instead point the agent at the triggering CONVERSATION (--thread <trigger>
+// --tail 30) rather than dumping the flat timeline.
+func TestBuildPromptColdStartThreadRead(t *testing.T) {
 	const issueID = "issue-cold-1"
 	task := Task{
 		IssueID:               issueID,
@@ -346,7 +353,7 @@ func TestBuildPromptColdStartNoHint(t *testing.T) {
 	if strings.Contains(out, "new comment(s) since your last run") {
 		t.Errorf("no since-delta hint should render on cold start, got:\n%s", out)
 	}
-	if !strings.Contains(out, "Read the discussion: `multica issue comment list "+issueID+" --output json`") {
-		t.Errorf("cold start must fall back to the plain read line, got:\n%s", out)
+	if !strings.Contains(out, "multica issue comment list "+issueID+" --thread trigger-1 --tail 30 --output json") {
+		t.Errorf("cold start must point at the triggering thread read, got:\n%s", out)
 	}
 }

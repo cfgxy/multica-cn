@@ -159,10 +159,13 @@ func buildCommentPrompt(task Task, provider string) string {
 		}
 	}
 	fmt.Fprintf(&b, "Start by running `multica issue get %s --output json` to understand your task, then decide how to proceed.\n\n", task.IssueID)
-	// New-comment hint when we know the agent ran on this issue before; otherwise
-	// (cold start) point it at the discussion with a single plain read.
-	if hint := execenv.BuildNewCommentsHint(task.IssueID, task.NewCommentsSince, task.NewCommentCount); hint != "" {
+	// Comment-reading pointer. Warm path (agent ran here before): since-delta.
+	// Cold path (no prior run): read the triggering thread, not the flat timeline.
+	// Final fallback (no trigger id, shouldn't happen on this path): plain read.
+	if hint := execenv.BuildNewCommentsHint(task.IssueID, task.TriggerCommentID, task.NewCommentsSince, task.NewCommentCount); hint != "" {
 		b.WriteString(hint)
+	} else if cold := execenv.BuildColdCommentsHint(task.IssueID, task.TriggerCommentID); cold != "" {
+		b.WriteString(cold)
 	} else {
 		fmt.Fprintf(&b, "Read the discussion: `multica issue comment list %s --output json` (long issue? use `--recent 20`).\n\n", task.IssueID)
 	}
