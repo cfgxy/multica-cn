@@ -250,4 +250,29 @@ describe("BoardView non-manual ordering", () => {
       "stay-low",
     ]);
   });
+
+  it("keeps Manual (position) order ascending even with a stale desc direction", () => {
+    // The header hides the direction toggle in manual mode but never resets a
+    // desc left over from a prior field-sort. Manual order must stay position
+    // ascending regardless — the server treats position as directionless.
+    mockViewState.sortBy = "position";
+    mockViewState.sortDirection = "desc";
+    const issues = [
+      makeIssue({ id: "p30", status: "todo", position: 30 }),
+      makeIssue({ id: "p10", status: "todo", position: 10 }),
+      makeIssue({ id: "p20", status: "todo", position: 20 }),
+    ];
+
+    const { getByTestId } = renderBoard(
+      <BoardView
+        issues={issues}
+        visibleStatuses={[...VISIBLE]}
+        hiddenStatuses={[]}
+        onMoveIssue={vi.fn()}
+      />,
+    );
+
+    const cards = within(getByTestId("col-status:todo")).getAllByTestId("card");
+    expect(cards.map((c) => c.textContent)).toEqual(["p10", "p20", "p30"]);
+  });
 });
