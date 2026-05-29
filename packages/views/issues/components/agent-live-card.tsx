@@ -292,7 +292,7 @@ export function AgentLiveCard({ issueId }: AgentLiveCardProps) {
     // thread scrolls under it. One bordered container in every state: the
     // single row, the collapsed summary, and the expanded list all share it,
     // so the bar reads at one consistent width.
-    <div className="mb-4 sticky top-4 z-10 rounded-lg bg-background/80 supports-[backdrop-filter]:bg-background/55 backdrop-blur-md">
+    <div className="mt-4 sticky top-4 z-10 rounded-lg bg-background/80 supports-[backdrop-filter]:bg-background/55 backdrop-blur-md">
       <div className="overflow-hidden rounded-lg border border-info/20 bg-info/5">
         {isMulti ? (
           <>
