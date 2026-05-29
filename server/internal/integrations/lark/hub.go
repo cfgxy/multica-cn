@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	mathrand "math/rand/v2"
+	"strconv"
 	"sync"
 	"time"
 
@@ -456,6 +457,23 @@ func (h *Hub) startSupervisor(parent context.Context, inst db.LarkInstallation) 
 	go h.supervise(ctx, inst, id, gen)
 }
 
+// leaseToken composes the per-supervisor lease token. We pair the
+// Hub-wide nodeID (so multi-replica observability still works — an
+// operator inspecting lark_installation.ws_lease_token can map it
+// back to a process) with the supervisor's gen so two supervisors
+// inside the SAME Hub running back-to-back for the same installation
+// (the rotation path) carry different tokens. That distinction is
+// what stops an old supervisor's post-cancel releaseLease from
+// CAS-matching and DELETE-ing the lease the successor just acquired.
+//
+// We use strconv.FormatUint rather than fmt.Sprintf because this is on
+// the supervise hot path (called on every renew tick when its result
+// would be ineligible to be cached) and we'd like to keep allocation
+// pressure minimal.
+func leaseToken(nodeID string, gen uint64) string {
+	return nodeID + "-g" + strconv.FormatUint(gen, 10)
+}
+
 // installationFingerprint condenses the credentials-bearing columns of
 // the installation row into an opaque string. Two rows with the same
 // fingerprint are interchangeable as far as the connector is concerned;
@@ -490,7 +508,19 @@ func (h *Hub) supervise(ctx context.Context, inst db.LarkInstallation, id string
 		h.mu.Unlock()
 	}()
 
-	log := h.cfg.Logger.With("installation_id", id, "node_id", h.nodeID)
+	// Per-supervisor lease token: scopes the DB-level token fence to
+	// THIS goroutine so a stale post-cancel release from a rotation
+	// predecessor can't clobber a successor's just-acquired lease.
+	// Embeds the Hub's nodeID for cross-replica observability and the
+	// supervisor gen so the same Hub running multiple sequential
+	// supervisors for the same installation (rotation) gets distinct
+	// tokens for each.
+	leaseTok := leaseToken(h.nodeID, gen)
+	log := h.cfg.Logger.With(
+		"installation_id", id,
+		"node_id", h.nodeID,
+		"lease_token", leaseTok,
+	)
 	backoff := h.cfg.MinBackoff
 
 	for {
@@ -501,7 +531,7 @@ func (h *Hub) supervise(ctx context.Context, inst db.LarkInstallation, id string
 		// Try to claim the WS lease for this installation. If another
 		// replica already owns a live lease, sleep until either the
 		// lease expires or our context is cancelled.
-		leased, err := h.acquireLease(ctx, inst.ID)
+		leased, err := h.acquireLease(ctx, inst.ID, leaseTok)
 		if err != nil {
 			log.Warn("lark hub: acquire lease error", "error", err)
 			if sleep(ctx, h.cfg.LeaseRenewInterval) {
@@ -526,7 +556,7 @@ func (h *Hub) supervise(ctx context.Context, inst db.LarkInstallation, id string
 		conn, err := h.factory(inst)
 		if err != nil {
 			log.Error("lark hub: connector factory failed", "error", err)
-			h.releaseLease(inst.ID)
+			h.releaseLease(inst.ID, leaseTok)
 			if sleep(ctx, backoff) {
 				return
 			}
@@ -545,7 +575,7 @@ func (h *Hub) supervise(ctx context.Context, inst db.LarkInstallation, id string
 			// theft: A's renewer fails CAS the moment B steals the
 			// lease, A's runCtx flips done, A's connector returns, and
 			// only B is consuming events.
-			h.renewLeaseUntil(runCtx, runCancel, inst.ID)
+			h.renewLeaseUntil(runCtx, runCancel, inst.ID, leaseTok)
 		}()
 
 		startedAt := h.cfg.Now()
@@ -554,7 +584,7 @@ func (h *Hub) supervise(ctx context.Context, inst db.LarkInstallation, id string
 		})
 		runCancel()
 		<-renewDone
-		h.releaseLease(inst.ID)
+		h.releaseLease(inst.ID, leaseTok)
 
 		if ctx.Err() != nil {
 			return
@@ -581,20 +611,31 @@ func (h *Hub) supervise(ctx context.Context, inst db.LarkInstallation, id string
 
 // acquireLease tries to claim or renew the WS lease for an
 // installation. Returns (true, nil) when the lease is owned by this
-// Hub after the call; (false, nil) when another replica holds a live
-// lease; or (false, err) for transport / DB failures.
-func (h *Hub) acquireLease(ctx context.Context, instID pgtype.UUID) (bool, error) {
+// supervisor after the call; (false, nil) when another replica or
+// in-process predecessor holds a live lease; or (false, err) for
+// transport / DB failures.
+//
+// token is a per-supervisor identifier (see leaseToken) — NOT the
+// hub-wide nodeID. This is the load-bearing change for rotation
+// safety: an old supervisor and its successor inside the same Hub
+// each carry a distinct token, so the old supervisor's stale release
+// can no longer match (and DELETE) the successor's just-acquired
+// lease row.
+func (h *Hub) acquireLease(ctx context.Context, instID pgtype.UUID, token string) (bool, error) {
 	expires := h.cfg.Now().Add(h.cfg.LeaseTTL)
 	_, err := h.queries.AcquireLarkWSLease(ctx, db.AcquireLarkWSLeaseParams{
 		ID:           instID,
-		NewToken:     pgtype.Text{String: h.nodeID, Valid: true},
+		NewToken:     pgtype.Text{String: token, Valid: true},
 		NewExpiresAt: pgtype.Timestamptz{Time: expires, Valid: true},
 	})
 	if err == nil {
 		return true, nil
 	}
 	if isNoRowsErr(err) {
-		// CAS predicate didn't match — someone else holds the lease.
+		// CAS predicate didn't match — someone else (another replica
+		// OR a sibling supervisor mid-rotation) holds the lease. We
+		// back off and let the renewer / supervise loop re-poll on its
+		// own clock.
 		return false, nil
 	}
 	return false, err
@@ -612,7 +653,12 @@ func (h *Hub) acquireLease(ctx context.Context, instID pgtype.UUID) (bool, error
 // §4.4 ownership invariant rules out. Calling cancelRun here forces
 // the connector's ctx to flip done immediately, so conn.Run returns
 // in bounded time even when the underlying socket is silent.
-func (h *Hub) renewLeaseUntil(ctx context.Context, cancelRun context.CancelFunc, instID pgtype.UUID) {
+//
+// token MUST be the same per-supervisor token threaded through the
+// initial acquireLease call. Otherwise the very first renewal would
+// CAS-fail against the supervisor's own previous renew and tear the
+// connector down on every renew interval.
+func (h *Hub) renewLeaseUntil(ctx context.Context, cancelRun context.CancelFunc, instID pgtype.UUID, token string) {
 	t := time.NewTicker(h.cfg.LeaseRenewInterval)
 	defer t.Stop()
 	for {
@@ -620,7 +666,7 @@ func (h *Hub) renewLeaseUntil(ctx context.Context, cancelRun context.CancelFunc,
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			leased, err := h.acquireLease(ctx, instID)
+			leased, err := h.acquireLease(ctx, instID, token)
 			if err != nil {
 				h.cfg.Logger.Warn("lark hub: lease renewal error",
 					"installation_id", uuidString(instID),
@@ -640,8 +686,9 @@ func (h *Hub) renewLeaseUntil(ctx context.Context, cancelRun context.CancelFunc,
 }
 
 // releaseLease writes a token-fenced DELETE to lark_installation's
-// lease columns so the next replica can pick up the installation
-// without waiting for LeaseTTL to expire.
+// lease columns so the next supervisor (this process or another
+// replica) can pick up the installation without waiting for LeaseTTL
+// to expire.
 //
 // The supervisor calls this from two places — factory-error retry and
 // post-Run cleanup — and at shutdown the parent ctx is already done,
@@ -651,12 +698,19 @@ func (h *Hub) renewLeaseUntil(ctx context.Context, cancelRun context.CancelFunc,
 // and a frozen pool can no longer hang shutdown indefinitely. The
 // fallback when the bound trips is the same as a crash — the lease row
 // stays put until its TTL elapses on the next replica.
-func (h *Hub) releaseLease(instID pgtype.UUID) {
+//
+// token MUST be the same per-supervisor token used to acquire. If a
+// rotation has already replaced this supervisor and the successor has
+// taken the lease with its own token, the DELETE's WHERE clause won't
+// match this supervisor's stale token and the call no-ops instead of
+// clobbering the successor's lease. That fence is the whole point of
+// per-supervisor tokens.
+func (h *Hub) releaseLease(instID pgtype.UUID, token string) {
 	ctx, cancel := context.WithTimeout(context.Background(), h.cfg.LeaseReleaseTimeout)
 	defer cancel()
 	if err := h.queries.ReleaseLarkWSLease(ctx, db.ReleaseLarkWSLeaseParams{
 		ID:           instID,
-		CurrentToken: pgtype.Text{String: h.nodeID, Valid: true},
+		CurrentToken: pgtype.Text{String: token, Valid: true},
 	}); err != nil {
 		h.cfg.Logger.Warn("lark hub: release lease failed",
 			"installation_id", uuidString(instID),

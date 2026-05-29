@@ -447,6 +447,197 @@ func TestHubDoesNotRestartSupervisorOnUnchangedRow(t *testing.T) {
 	}
 }
 
+// TestHubRotationStaleReleaseDoesNotClearSuccessorLease pins the
+// fix for Elon's review of HEAD be8d4cef. Before per-supervisor lease
+// tokens, both old and new supervisors of the same Hub used the same
+// hub-wide nodeID as their lease token. The rotation race went:
+//
+//   1. Old supervisor cancelled by maybeRestartOnRotation.
+//   2. New supervisor started; acquireLease takes the lease.
+//   3. Old supervisor finishes post-cancel unwind and calls
+//      releaseLease(nodeID).
+//   4. DB row's CurrentToken still equals nodeID (because new
+//      supervisor wrote the SAME token). DELETE matches → DB row
+//      cleared → new supervisor's lease silently lost.
+//
+// Per-supervisor tokens (nodeID + "-g" + gen) make step 3's
+// CurrentToken belong to the OLD supervisor, and the DB row's actual
+// CurrentToken belongs to the NEW supervisor — so the DELETE no-ops
+// and the successor keeps its lease.
+//
+// This test drives the lease state machine directly through the
+// fakeHubQueries, simulating the exact ordering: old acquires
+// (token_A) → rotation → new acquires (token_B) → old's stale
+// release(token_A). The lease must remain held by token_B.
+func TestHubRotationStaleReleaseDoesNotClearSuccessorLease(t *testing.T) {
+	q := newFakeHubQueries()
+	instID := uuidFromString(t, "deadbeef-dead-beef-dead-beefdeadbeef")
+	expires := time.Now().Add(time.Minute)
+
+	tokenA := leaseToken("node_xyz", 1)
+	tokenB := leaseToken("node_xyz", 2)
+	if tokenA == tokenB {
+		t.Fatalf("per-supervisor tokens must differ; got %q for both", tokenA)
+	}
+
+	// Old supervisor acquires.
+	if _, err := q.AcquireLarkWSLease(context.Background(), db.AcquireLarkWSLeaseParams{
+		ID:           instID,
+		NewToken:     pgtype.Text{String: tokenA, Valid: true},
+		NewExpiresAt: pgtype.Timestamptz{Time: expires, Valid: true},
+	}); err != nil {
+		t.Fatalf("old acquire: %v", err)
+	}
+	q.mu.Lock()
+	if got := q.leaseOwner[uuidString(instID)]; got != tokenA {
+		t.Fatalf("after old acquire, owner = %q; want %q", got, tokenA)
+	}
+	q.mu.Unlock()
+
+	// Rotation: new supervisor takes over. acquireLease's CAS in the
+	// production query accepts "matching token" as a renewal — but
+	// here we want to exercise the post-cancel succession where the
+	// old lease is gone or being replaced. The fake's CAS also accepts
+	// expired rows, so we simulate the old supervisor's lease having
+	// been released cleanly (its renewal hasn't fired yet on rotation
+	// boundary, but in production a rotation cancels the old loop and
+	// the old supervisor's defer eventually calls releaseLease — let
+	// the new supervisor acquire BEFORE that release lands).
+	q.mu.Lock()
+	delete(q.leaseOwner, uuidString(instID))
+	delete(q.leaseExpiresAt, uuidString(instID))
+	q.mu.Unlock()
+	if _, err := q.AcquireLarkWSLease(context.Background(), db.AcquireLarkWSLeaseParams{
+		ID:           instID,
+		NewToken:     pgtype.Text{String: tokenB, Valid: true},
+		NewExpiresAt: pgtype.Timestamptz{Time: expires, Valid: true},
+	}); err != nil {
+		t.Fatalf("new acquire: %v", err)
+	}
+	q.mu.Lock()
+	if got := q.leaseOwner[uuidString(instID)]; got != tokenB {
+		t.Fatalf("after new acquire, owner = %q; want %q", got, tokenB)
+	}
+	q.mu.Unlock()
+
+	// Old supervisor's defer / cleanup fires AFTER new acquired.
+	// Without per-supervisor tokens this would clobber tokenB's lease.
+	if err := q.ReleaseLarkWSLease(context.Background(), db.ReleaseLarkWSLeaseParams{
+		ID:           instID,
+		CurrentToken: pgtype.Text{String: tokenA, Valid: true},
+	}); err != nil {
+		t.Fatalf("old release: %v", err)
+	}
+
+	// Successor's lease must still be held by tokenB.
+	q.mu.Lock()
+	got, ok := q.leaseOwner[uuidString(instID)]
+	q.mu.Unlock()
+	if !ok {
+		t.Fatalf("successor lease silently cleared by stale release — the rotation race is back")
+	}
+	if got != tokenB {
+		t.Fatalf("after stale release, owner = %q; want %q (successor's token)", got, tokenB)
+	}
+}
+
+// TestHubRotationEndToEndKeepsSuccessorLeased exercises the same
+// rotation race through the live supervise loop — not just the lease
+// state machine in isolation. Drives a hub through:
+//
+//   1. install row with credentials A → supervisor1 acquires lease(A)
+//   2. credentials rotate to B → maybeRestartOnRotation cancels sup1
+//   3. supervisor2 starts, acquires lease(B)
+//   4. sup1's post-cancel releaseLease(A) runs; must NOT clear lease(B)
+//
+// Even with the timing being non-deterministic (real goroutines), the
+// fake's lease map either ends up with sup2's token or empty — empty
+// means the successor lost its lease and would never deliver events,
+// which is exactly the bug Elon flagged. We assert the lease ends up
+// held by sup2's token.
+func TestHubRotationEndToEndKeepsSuccessorLeased(t *testing.T) {
+	q := newFakeHubQueries()
+	instID := uuidFromString(t, "feedfeed-feed-feed-feed-feedfeedfeed")
+	q.installations = []db.LarkInstallation{{
+		ID:                 instID,
+		Status:             "active",
+		AppID:              "app_one",
+		BotOpenID:          "bot_one",
+		AppSecretEncrypted: []byte("secret_one"),
+	}}
+
+	// Use a fakeConnector that blocks on ctx.Done so the renewer keeps
+	// running and refreshes the lease at each tick, mirroring
+	// production timing for the rotation handoff.
+	factoryCalls := int32(0)
+	factory := func(_ db.LarkInstallation) (EventConnector, error) {
+		atomic.AddInt32(&factoryCalls, 1)
+		return &fakeConnector{}, nil
+	}
+
+	hub := NewHub(q, factory, nil, HubConfig{
+		LeaseTTL:           500 * time.Millisecond,
+		LeaseRenewInterval: 30 * time.Millisecond,
+		PollInterval:       15 * time.Millisecond,
+		MinBackoff:         5 * time.Millisecond,
+		MaxBackoff:         20 * time.Millisecond,
+		ResetBackoffAfter:  1 * time.Second,
+		Logger:             newDiscardLogger(),
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go hub.Run(ctx)
+	defer func() { cancel(); hub.Wait() }()
+
+	if !waitFor(300*time.Millisecond, func() bool { return atomic.LoadInt32(&factoryCalls) >= 1 }) {
+		t.Fatalf("expected sup1 to start; got %d factory calls", factoryCalls)
+	}
+	q.mu.Lock()
+	sup1Token := q.leaseOwner[uuidString(instID)]
+	q.mu.Unlock()
+	if sup1Token == "" {
+		t.Fatalf("sup1 did not write a lease token")
+	}
+
+	// Rotation.
+	q.mu.Lock()
+	q.installations[0].AppID = "app_two"
+	q.installations[0].BotOpenID = "bot_two"
+	q.installations[0].AppSecretEncrypted = []byte("secret_two")
+	q.mu.Unlock()
+
+	// Wait for sup2 to start AND its lease token to differ from sup1's.
+	// The successor's token must end up owning the row regardless of
+	// when sup1's stale release lands.
+	if !waitFor(500*time.Millisecond, func() bool {
+		if atomic.LoadInt32(&factoryCalls) < 2 {
+			return false
+		}
+		q.mu.Lock()
+		defer q.mu.Unlock()
+		curr, ok := q.leaseOwner[uuidString(instID)]
+		return ok && curr != sup1Token
+	}) {
+		q.mu.Lock()
+		got, ok := q.leaseOwner[uuidString(instID)]
+		q.mu.Unlock()
+		t.Fatalf("successor lease never present; ok=%v owner=%q factoryCalls=%d",
+			ok, got, atomic.LoadInt32(&factoryCalls))
+	}
+
+	// Give sup1's deferred release a chance to land, then re-check.
+	time.Sleep(150 * time.Millisecond)
+	q.mu.Lock()
+	owner, ok := q.leaseOwner[uuidString(instID)]
+	q.mu.Unlock()
+	if !ok {
+		t.Fatalf("successor lease cleared after sup1's stale release — rotation fencing broken")
+	}
+	if owner == sup1Token {
+		t.Fatalf("lease still held by sup1 token %q; successor never took over", sup1Token)
+	}
+}
+
 func TestHubBacksOffOnFactoryError(t *testing.T) {
 	q := newFakeHubQueries()
 	instID := uuidFromString(t, "55555555-5555-5555-5555-555555555555")
