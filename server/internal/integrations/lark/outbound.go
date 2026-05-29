@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -159,25 +158,19 @@ type CredentialsResolver interface {
 	DecryptAppSecret(inst db.LarkInstallation) (string, error)
 }
 
-// PatcherConfig tunes the streaming patcher. Defaults via
-// withDefaults; tests typically override Renderer / Now / Logger.
+// PatcherConfig tunes the outbound Patcher. Defaults via withDefaults;
+// tests typically override Renderer / Now / Logger.
 type PatcherConfig struct {
-	// MinPatchInterval throttles per-card patches so a streaming run
-	// doesn't blow past Lark's per-card update rate-limit. Patches
-	// issued sooner than this since the last one are dropped (the
-	// final/error transition is never dropped — those bypass the
-	// throttle).
-	MinPatchInterval time.Duration
-
+	// Renderer drives the error card template used on the EventTaskFailed
+	// path. The success path (EventChatDone) bypasses the renderer
+	// entirely — it sends the raw assistant reply as a plain text IM
+	// message — so this only matters for the failure branch.
 	Renderer Renderer
 	Now      func() time.Time
 	Logger   *slog.Logger
 }
 
 func (c PatcherConfig) withDefaults() PatcherConfig {
-	if c.MinPatchInterval == 0 {
-		c.MinPatchInterval = 500 * time.Millisecond
-	}
 	if c.Renderer == nil {
 		c.Renderer = NewDefaultRenderer()
 	}
@@ -190,34 +183,32 @@ func (c PatcherConfig) withDefaults() PatcherConfig {
 	return c
 }
 
-// Patcher reacts to task-lifecycle events on the event bus and keeps
-// the Lark interactive card for each chat-driven task in sync. It is
-// the §4.5 outbound side of the design: thinking → running/streaming
-// → final/error.
+// Patcher reacts to task-lifecycle events on the event bus and forwards
+// chat replies to Lark as plain text IM messages. It is the outbound
+// side of §4.5 — but the original "thinking → streaming → final card"
+// lifecycle was reduced to a single plain-text reply on EventChatDone
+// after Bohan reported the card chrome made replies feel like system
+// notifications. The error path is the one survivor of card rendering:
+// failed runs surface as a short error card on EventTaskFailed because
+// the visual distinction from a normal reply is genuinely useful.
 //
 // Scope:
 //
 //   - Only tasks whose chat_session has a lark_chat_session_binding
-//     produce a card. Tasks born from the web UI or autopilot pass
+//     produce outbound. Tasks born from the web UI or autopilot pass
 //     through unchanged.
 //
-//   - The card binding is per-task (lark_outbound_card_message.task_id),
-//     so a chat_session that hosts many runs gets one card per run.
+//   - Each EventChatDone yields one Lark text message; there is no
+//     streaming, no throttling, no DB row to track card-state.
 //
-//   - Throttling is per-card, in-memory. Multi-replica deployments
-//     are de-duplicated at the next layer up: only the replica that
-//     also holds the inbound WS lease for the installation will see
-//     the run originate locally, and the events bus is per-process.
-//     For the SaaS multi-node case, the same Redis fanout used by the
-//     UI WS layer makes a future cross-process patcher cheap to add.
+//   - Multi-replica safety is inherited from the inbound WS lease: at
+//     most one replica holds the installation lease at a time, the
+//     event bus is per-process, so exactly one Patcher reacts per run.
 type Patcher struct {
 	queries     PatcherQueries
 	credentials CredentialsResolver
 	client      APIClient
 	cfg         PatcherConfig
-
-	mu          sync.Mutex
-	lastPatched map[string]time.Time // task_id -> last patch wall-clock time
 }
 
 // NewPatcher constructs a Patcher bound to its dependencies. The
@@ -229,7 +220,6 @@ func NewPatcher(queries PatcherQueries, credentials CredentialsResolver, client 
 		credentials: credentials,
 		client:      client,
 		cfg:         cfg,
-		lastPatched: make(map[string]time.Time),
 	}
 }
 
@@ -239,19 +229,26 @@ func NewPatcher(queries PatcherQueries, credentials CredentialsResolver, client 
 // during server boot (after the bus + patcher are constructed and
 // before HTTP traffic starts).
 //
-// We deliberately do NOT subscribe to EventTaskCompleted here.
-// TaskService publishes ChatDone (with the assistant message content)
-// IMMEDIATELY BEFORE TaskCompleted (which has no content) for every
-// chat task. Subscribing to both would patch the final card twice:
-// the first patch shows the real reply, the second patch wipes it
-// with the "Done." fallback because the TaskCompleted payload's
-// `map[string]any` has no "content" key. EventChatDone is the
-// canonical "agent finished replying" signal for the Patcher;
-// EventTaskCompleted is left to other listeners (web UI, analytics,
-// task usage rollup, etc.) where the lack of content doesn't matter.
+// Subscriptions are deliberately minimal:
+//
+//   - EventChatDone — the agent finished replying. The Patcher sends
+//     the reply as a plain text IM message (Lark's `msg_type=text`),
+//     not as an interactive card. The earlier card-based design (with
+//     thinking → running → final patches) made every reply look like
+//     a system notification nested in card chrome; flipping to plain
+//     text makes free-form chat feel native.
+//
+//   - EventTaskFailed — the run failed; surface a short error card
+//     so the failure is visually distinct from a successful reply.
+//
+// We deliberately do NOT subscribe to EventTaskQueued / EventTaskRunning
+// (no thinking-card lifecycle anymore — adds noise without value) or to
+// EventTaskCompleted (chat tasks always emit EventChatDone first, which
+// is what we care about; non-chat tasks have no Lark binding anyway and
+// would early-return). Leaving EventTaskCompleted unsubscribed also
+// avoids the prior "Done." overwrite regression where the no-content
+// EventTaskCompleted payload would wipe the real reply.
 func (p *Patcher) Register(bus *events.Bus) {
-	bus.Subscribe(protocol.EventTaskQueued, p.handleEvent)
-	bus.Subscribe(protocol.EventTaskRunning, p.handleEvent)
 	bus.Subscribe(protocol.EventTaskFailed, p.handleEvent)
 	bus.Subscribe(protocol.EventChatDone, p.handleEvent)
 }
@@ -311,12 +308,36 @@ func (p *Patcher) processEvent(ctx context.Context, e events.Event) error {
 	}
 
 	switch e.Type {
-	case protocol.EventTaskQueued, protocol.EventTaskRunning:
-		return p.ensureCard(ctx, creds, binding, taskID, agentName, e.Type)
 	case protocol.EventChatDone:
-		return p.finalize(ctx, creds, binding, taskID, agentName, e.Payload)
+		return p.sendChatReply(ctx, creds, binding, e.Payload)
 	case protocol.EventTaskFailed:
 		return p.fail(ctx, creds, binding, taskID, agentName, e.Payload)
+	}
+	return nil
+}
+
+// sendChatReply turns ChatDonePayload.Content into a plain text Lark
+// message. No card chrome, no thinking-card lifecycle, no DB row in
+// lark_outbound_card_message — each reply is a one-shot text bubble
+// indistinguishable from a user typing.
+//
+// Empty content is silently dropped: we'd rather show nothing than
+// "Done." (the prior card fallback that confused Bohan in the live
+// dev env). In practice an empty Content means the daemon completed
+// the task without producing visible output, which only happens for
+// edge cases like a chat task that just acknowledged a system event;
+// not emitting a message there is the right product call.
+func (p *Patcher) sendChatReply(ctx context.Context, creds InstallationCredentials, binding db.LarkChatSessionBinding, payload any) error {
+	content := chatDoneContent(payload)
+	if content == "" {
+		return nil
+	}
+	if _, err := p.client.SendTextMessage(ctx, SendTextParams{
+		InstallationID: creds,
+		ChatID:         ChatID(binding.LarkChatID),
+		Text:           content,
+	}); err != nil {
+		return fmt.Errorf("send text message: %w", err)
 	}
 	return nil
 }
@@ -339,117 +360,16 @@ func (p *Patcher) installationCredentials(inst db.LarkInstallation) (Installatio
 	return creds, nil
 }
 
-// ensureCard creates the initial "thinking" card on first sight of the
-// task, or patches the existing card to its "running" body once the
-// daemon claims the task. Both transitions respect the per-card
-// throttle.
-func (p *Patcher) ensureCard(ctx context.Context, creds InstallationCredentials, binding db.LarkChatSessionBinding, taskID pgtype.UUID, agentName string, eventType string) error {
-	card, err := p.queries.GetLarkOutboundCardByTask(ctx, taskID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		// First sight: render + send the thinking card, persist the binding.
-		render, err := p.cfg.Renderer.Render(RenderInput{
-			Kind:      CardKindThinking,
-			AgentName: agentName,
-			TaskID:    taskID,
-		})
-		if err != nil {
-			return fmt.Errorf("render thinking card: %w", err)
-		}
-		cardMessageID, err := p.client.SendInteractiveCard(ctx, SendCardParams{
-			InstallationID: creds,
-			ChatID:         ChatID(binding.LarkChatID),
-			CardJSON:       render.JSON,
-		})
-		if err != nil {
-			return fmt.Errorf("send thinking card: %w", err)
-		}
-		if _, err := p.queries.CreateLarkOutboundCardMessage(ctx, db.CreateLarkOutboundCardMessageParams{
-			ChatSessionID:     binding.ChatSessionID,
-			LarkChatID:        binding.LarkChatID,
-			LarkCardMessageID: cardMessageID,
-			Status:            string(CardStatusPending),
-			TaskID:            pgtype.UUID{Bytes: taskID.Bytes, Valid: true},
-		}); err != nil {
-			return fmt.Errorf("persist outbound card: %w", err)
-		}
-		p.markPatched(taskID)
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("load existing card: %w", err)
-	}
-	// Existing card. Step it forward to streaming when the task
-	// transitions to running; ignore duplicate queued events.
-	if eventType != protocol.EventTaskRunning {
-		return nil
-	}
-	if !p.shouldPatch(taskID) {
-		return nil
-	}
-	render, err := p.cfg.Renderer.Render(RenderInput{
-		Kind:      CardKindRunning,
-		AgentName: agentName,
-		TaskID:    taskID,
-	})
-	if err != nil {
-		return fmt.Errorf("render running card: %w", err)
-	}
-	if err := p.client.PatchInteractiveCard(ctx, PatchCardParams{
-		InstallationID:    creds,
-		LarkCardMessageID: card.LarkCardMessageID,
-		CardJSON:          render.JSON,
-	}); err != nil {
-		return fmt.Errorf("patch running card: %w", err)
-	}
-	if err := p.queries.UpdateLarkOutboundCardStatus(ctx, db.UpdateLarkOutboundCardStatusParams{
-		ID:     card.ID,
-		Status: string(CardStatusStreaming),
-	}); err != nil {
-		return fmt.Errorf("update card status: %w", err)
-	}
-	p.markPatched(taskID)
-	return nil
-}
-
-func (p *Patcher) finalize(ctx context.Context, creds InstallationCredentials, binding db.LarkChatSessionBinding, taskID pgtype.UUID, agentName string, payload any) error {
-	card, err := p.loadCardOrSkip(ctx, taskID)
-	if err != nil || card == nil {
-		return err
-	}
-	content := chatDoneContent(payload)
-	render, err := p.cfg.Renderer.Render(RenderInput{
-		Kind:      CardKindFinal,
-		AgentName: agentName,
-		TaskID:    taskID,
-		Content:   content,
-	})
-	if err != nil {
-		return fmt.Errorf("render final card: %w", err)
-	}
-	// Final transitions bypass the throttle: even if a streaming
-	// patch fired 50ms ago, the user must see the final state.
-	if err := p.client.PatchInteractiveCard(ctx, PatchCardParams{
-		InstallationID:    creds,
-		LarkCardMessageID: card.LarkCardMessageID,
-		CardJSON:          render.JSON,
-	}); err != nil {
-		return fmt.Errorf("patch final card: %w", err)
-	}
-	if err := p.queries.UpdateLarkOutboundCardStatus(ctx, db.UpdateLarkOutboundCardStatusParams{
-		ID:     card.ID,
-		Status: string(CardStatusFinal),
-	}); err != nil {
-		return fmt.Errorf("update card final status: %w", err)
-	}
-	p.markPatched(taskID)
-	return nil
-}
-
+// fail surfaces a short error card on task failure. Unlike the
+// success path (plain text via sendChatReply), failures stay as cards
+// because the user benefits from the visual distinction — a red /
+// header-styled card is much harder to miss than a regular bubble,
+// and these are rare enough that the card chrome isn't noisy.
+//
+// One-shot send (no patching, no DB row): if the task fails a second
+// time we'd just send a second card, which is fine — failure is
+// usually a single terminal event.
 func (p *Patcher) fail(ctx context.Context, creds InstallationCredentials, binding db.LarkChatSessionBinding, taskID pgtype.UUID, agentName string, payload any) error {
-	card, err := p.loadCardOrSkip(ctx, taskID)
-	if err != nil || card == nil {
-		return err
-	}
 	render, err := p.cfg.Renderer.Render(RenderInput{
 		Kind:         CardKindError,
 		AgentName:    agentName,
@@ -459,52 +379,14 @@ func (p *Patcher) fail(ctx context.Context, creds InstallationCredentials, bindi
 	if err != nil {
 		return fmt.Errorf("render error card: %w", err)
 	}
-	if err := p.client.PatchInteractiveCard(ctx, PatchCardParams{
-		InstallationID:    creds,
-		LarkCardMessageID: card.LarkCardMessageID,
-		CardJSON:          render.JSON,
+	if _, err := p.client.SendInteractiveCard(ctx, SendCardParams{
+		InstallationID: creds,
+		ChatID:         ChatID(binding.LarkChatID),
+		CardJSON:       render.JSON,
 	}); err != nil {
-		return fmt.Errorf("patch error card: %w", err)
+		return fmt.Errorf("send error card: %w", err)
 	}
-	if err := p.queries.UpdateLarkOutboundCardStatus(ctx, db.UpdateLarkOutboundCardStatusParams{
-		ID:     card.ID,
-		Status: string(CardStatusError),
-	}); err != nil {
-		return fmt.Errorf("update card error status: %w", err)
-	}
-	p.markPatched(taskID)
 	return nil
-}
-
-func (p *Patcher) loadCardOrSkip(ctx context.Context, taskID pgtype.UUID) (*db.LarkOutboundCardMessage, error) {
-	card, err := p.queries.GetLarkOutboundCardByTask(ctx, taskID)
-	if err == nil {
-		return &card, nil
-	}
-	if errors.Is(err, pgx.ErrNoRows) {
-		// No card was ever sent (task didn't originate via Lark);
-		// quietly skip rather than spam logs.
-		return nil, nil
-	}
-	return nil, fmt.Errorf("load existing card: %w", err)
-}
-
-func (p *Patcher) shouldPatch(taskID pgtype.UUID) bool {
-	key := uuidString(taskID)
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	last, ok := p.lastPatched[key]
-	if !ok {
-		return true
-	}
-	return p.cfg.Now().Sub(last) >= p.cfg.MinPatchInterval
-}
-
-func (p *Patcher) markPatched(taskID pgtype.UUID) {
-	key := uuidString(taskID)
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	p.lastPatched[key] = p.cfg.Now()
 }
 
 // taskAndSessionFromEvent parses the typed-ish payload broadcastTaskEvent

@@ -35,6 +35,15 @@ type APIClient interface {
 	// performs the network call.
 	PatchInteractiveCard(ctx context.Context, p PatchCardParams) error
 
+	// SendTextMessage posts a plain text message into a Lark chat.
+	// Used for the agent's chat reply — Bohan asked for replies to be
+	// rendered as a normal IM bubble rather than nested inside an
+	// interactive card, which feels more natural for free-form chat.
+	// Returns Lark's message_id (we don't currently persist it for the
+	// text path since each send is one-shot, but the API gives it back
+	// for consistency with SendInteractiveCard).
+	SendTextMessage(ctx context.Context, p SendTextParams) (string, error)
+
 	// SendBindingPromptCard is the dedicated "you need to bind"
 	// outbound. Kept separate from SendInteractiveCard so the
 	// abstraction stays stable when the production card template
@@ -76,6 +85,15 @@ type PatchCardParams struct {
 	InstallationID    InstallationCredentials
 	LarkCardMessageID string
 	CardJSON          string
+}
+
+// SendTextParams is the input shape for posting a plain text message.
+// Text is sent verbatim to Lark; the client handles JSON encoding of
+// the `{"text": "..."}` content envelope Lark requires.
+type SendTextParams struct {
+	InstallationID InstallationCredentials
+	ChatID         ChatID
+	Text           string
 }
 
 // BindingPromptParams carries the data needed to render and send the
@@ -144,6 +162,11 @@ func (s *stubAPIClient) SendInteractiveCard(ctx context.Context, p SendCardParam
 func (s *stubAPIClient) PatchInteractiveCard(ctx context.Context, p PatchCardParams) error {
 	s.log.Warn("lark stub client: PatchInteractiveCard called", "card_message_id", p.LarkCardMessageID)
 	return ErrAPIClientNotConfigured
+}
+
+func (s *stubAPIClient) SendTextMessage(ctx context.Context, p SendTextParams) (string, error) {
+	s.log.Warn("lark stub client: SendTextMessage called", "chat_id", string(p.ChatID))
+	return "", ErrAPIClientNotConfigured
 }
 
 func (s *stubAPIClient) SendBindingPromptCard(ctx context.Context, p BindingPromptParams) error {

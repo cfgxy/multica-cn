@@ -238,6 +238,57 @@ func (c *httpAPIClient) SendInteractiveCard(ctx context.Context, p SendCardParam
 	return resp.Data.MessageID, nil
 }
 
+// SendTextMessage posts a plain text IM message into a Lark chat.
+// This is the Patcher's primary outbound for agent chat replies —
+// using a normal text bubble instead of an interactive card makes
+// free-form replies feel like a native Lark conversation. The
+// content envelope Lark expects is a JSON-encoded `{"text": "..."}`
+// blob; we encode it here so callers pass raw text.
+func (c *httpAPIClient) SendTextMessage(ctx context.Context, p SendTextParams) (string, error) {
+	if p.ChatID == "" {
+		return "", errors.New("lark http client: missing chat_id")
+	}
+	if p.Text == "" {
+		return "", errors.New("lark http client: missing text")
+	}
+	token, err := c.tenantAccessToken(ctx, p.InstallationID)
+	if err != nil {
+		return "", err
+	}
+	// Lark's `text` msg_type expects content = JSON-encoded {"text": "..."}.
+	// json.Marshal handles the escape of newlines / quotes / unicode so
+	// the agent's reply round-trips intact.
+	contentBytes, err := json.Marshal(map[string]string{"text": p.Text})
+	if err != nil {
+		return "", fmt.Errorf("lark http client: encode text content: %w", err)
+	}
+	q := url.Values{}
+	q.Set("receive_id_type", "chat_id")
+	body := map[string]string{
+		"receive_id": string(p.ChatID),
+		"msg_type":   "text",
+		"content":    string(contentBytes),
+	}
+	var resp struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			MessageID string `json:"message_id"`
+		} `json:"data"`
+	}
+	path := "/open-apis/im/v1/messages?" + q.Encode()
+	if err := c.doJSON(ctx, http.MethodPost, path, token, body, &resp); err != nil {
+		return "", fmt.Errorf("lark http client: send text message: %w", err)
+	}
+	if resp.Code != 0 || resp.Data.MessageID == "" {
+		if isTokenError(resp.Code) {
+			c.invalidateToken(p.InstallationID.AppID)
+		}
+		return "", fmt.Errorf("lark http client: send text message: code=%d msg=%q", resp.Code, resp.Msg)
+	}
+	return resp.Data.MessageID, nil
+}
+
 // PatchInteractiveCard updates an existing card's body. Lark's
 // message-patch endpoint replaces the whole card payload; callers
 // (i.e. the Patcher) render the full updated card each time.

@@ -69,13 +69,16 @@ func (f fakeCredentials) DecryptAppSecret(inst db.LarkInstallation) (string, err
 }
 
 type fakeAPIClient struct {
-	mu          sync.Mutex
-	sent        []SendCardParams
-	patched     []PatchCardParams
-	sendReturn  string
-	sendErr     error
-	patchErr    error
-	bindingSent []BindingPromptParams
+	mu             sync.Mutex
+	sent           []SendCardParams
+	patched        []PatchCardParams
+	textSent       []SendTextParams
+	sendReturn     string
+	sendErr        error
+	patchErr       error
+	textSendErr    error
+	textSendReturn string
+	bindingSent    []BindingPromptParams
 }
 
 func (f *fakeAPIClient) IsConfigured() bool { return true }
@@ -92,6 +95,12 @@ func (f *fakeAPIClient) PatchInteractiveCard(ctx context.Context, p PatchCardPar
 	f.patched = append(f.patched, p)
 	return f.patchErr
 }
+func (f *fakeAPIClient) SendTextMessage(ctx context.Context, p SendTextParams) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.textSent = append(f.textSent, p)
+	return f.textSendReturn, f.textSendErr
+}
 func (f *fakeAPIClient) SendBindingPromptCard(ctx context.Context, p BindingPromptParams) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -106,10 +115,10 @@ func newTestPatcher(t *testing.T) (*Patcher, *fakePatcherQueries, *fakeAPIClient
 	t.Helper()
 	q := &fakePatcherQueries{
 		binding: db.LarkChatSessionBinding{
-			ChatSessionID:   uuidFromString(t, "cccccccc-cccc-cccc-cccc-cccccccccccc"),
-			InstallationID:  uuidFromString(t, "1111aaaa-1111-1111-1111-111111111111"),
-			LarkChatID:      "oc_test_chat",
-			LarkChatType:    "p2p",
+			ChatSessionID:  uuidFromString(t, "cccccccc-cccc-cccc-cccc-cccccccccccc"),
+			InstallationID: uuidFromString(t, "1111aaaa-1111-1111-1111-111111111111"),
+			LarkChatID:     "oc_test_chat",
+			LarkChatType:   "p2p",
 		},
 		installation: db.LarkInstallation{
 			ID:                 uuidFromString(t, "1111aaaa-1111-1111-1111-111111111111"),
@@ -121,83 +130,22 @@ func newTestPatcher(t *testing.T) (*Patcher, *fakePatcherQueries, *fakeAPIClient
 		agent:   db.Agent{Name: "TestAgent"},
 		cardErr: pgx.ErrNoRows,
 	}
-	api := &fakeAPIClient{sendReturn: "lark_card_msg_1"}
+	api := &fakeAPIClient{sendReturn: "lark_card_msg_1", textSendReturn: "lark_text_msg_1"}
 	p := NewPatcher(q, fakeCredentials{secret: "shh"}, api, PatcherConfig{
-		MinPatchInterval: 50 * time.Millisecond,
-		Logger:           newDiscardLogger(),
-		Now:              time.Now,
+		Logger: newDiscardLogger(),
+		Now:    time.Now,
 	})
 	return p, q, api
 }
 
-func TestPatcherSendsThinkingCardOnTaskQueued(t *testing.T) {
-	p, q, api := newTestPatcher(t)
-	taskID := uuidFromString(t, "ee111111-ee11-ee11-ee11-eeeeeeeeeeee")
-	sessionID := q.binding.ChatSessionID
-
-	p.handleEvent(events.Event{
-		Type:          protocol.EventTaskQueued,
-		TaskID:        uuidString(taskID),
-		ChatSessionID: uuidString(sessionID),
-		Payload: map[string]any{
-			"task_id":         uuidString(taskID),
-			"chat_session_id": uuidString(sessionID),
-			"status":          "queued",
-		},
-	})
-
-	api.mu.Lock()
-	defer api.mu.Unlock()
-	if len(api.sent) != 1 {
-		t.Fatalf("expected one SendInteractiveCard call, got %d", len(api.sent))
-	}
-	if api.sent[0].InstallationID.AppID != "cli_test_app" {
-		t.Fatalf("expected app_id propagated, got %q", api.sent[0].InstallationID.AppID)
-	}
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if len(q.created) != 1 {
-		t.Fatalf("expected one CreateLarkOutboundCardMessage call, got %d", len(q.created))
-	}
-	if q.created[0].Status != string(CardStatusPending) {
-		t.Fatalf("initial card status should be 'pending', got %q", q.created[0].Status)
-	}
-	if q.created[0].LarkCardMessageID != "lark_card_msg_1" {
-		t.Fatalf("expected card binding to use returned message id, got %q", q.created[0].LarkCardMessageID)
-	}
-}
-
-func TestPatcherSkipsWhenNoChatSessionBinding(t *testing.T) {
-	p, q, api := newTestPatcher(t)
-	q.bindingErr = pgx.ErrNoRows
-
-	p.handleEvent(events.Event{
-		Type:          protocol.EventTaskQueued,
-		TaskID:        uuidString(uuidFromString(t, "ee222222-ee22-ee22-ee22-eeeeeeeeeeee")),
-		ChatSessionID: uuidString(uuidFromString(t, "cc222222-cc22-cc22-cc22-cccccccccccc")),
-	})
-
-	api.mu.Lock()
-	defer api.mu.Unlock()
-	if len(api.sent) != 0 {
-		t.Fatalf("web-only chat sessions must not produce Lark cards; got %d sends", len(api.sent))
-	}
-}
-
-func TestPatcherFinalCardBypassesThrottle(t *testing.T) {
+// TestPatcherSendsPlainTextOnChatDone pins the new behaviour Bohan asked
+// for: when the agent finishes replying, the Patcher posts the reply as
+// a plain Lark IM text message (msg_type=text), not nested inside an
+// interactive card. This is the load-bearing UX call — the prior card
+// chrome made every reply look like a system notification.
+func TestPatcherSendsPlainTextOnChatDone(t *testing.T) {
 	p, q, api := newTestPatcher(t)
 	taskID := uuidFromString(t, "ee333333-ee33-ee33-ee33-eeeeeeeeeeee")
-	cardID := uuidFromString(t, "dd111111-dd11-dd11-dd11-dddddddddddd")
-	q.card = db.LarkOutboundCardMessage{
-		ID:                cardID,
-		LarkCardMessageID: "lark_card_msg_existing",
-		ChatSessionID:     q.binding.ChatSessionID,
-		LarkChatID:        q.binding.LarkChatID,
-		Status:            string(CardStatusStreaming),
-	}
-	q.cardErr = nil
-	// Pretend we just patched ms ago so the throttle would otherwise refuse.
-	p.markPatched(taskID)
 
 	p.handleEvent(events.Event{
 		Type:          protocol.EventChatDone,
@@ -206,34 +154,88 @@ func TestPatcherFinalCardBypassesThrottle(t *testing.T) {
 		Payload: protocol.ChatDonePayload{
 			TaskID:        uuidString(taskID),
 			ChatSessionID: uuidString(q.binding.ChatSessionID),
-			Content:       "agent reply text",
+			Content:       "Hello! I'm cc, a coding agent…",
 		},
 	})
 
 	api.mu.Lock()
 	defer api.mu.Unlock()
-	if len(api.patched) != 1 {
-		t.Fatalf("final transition must bypass throttle; got %d patches", len(api.patched))
+	if len(api.textSent) != 1 {
+		t.Fatalf("expected one SendTextMessage call on ChatDone; got %d", len(api.textSent))
 	}
-	if api.patched[0].LarkCardMessageID != "lark_card_msg_existing" {
-		t.Fatalf("final patch must target existing card id, got %q", api.patched[0].LarkCardMessageID)
+	got := api.textSent[0]
+	if got.Text != "Hello! I'm cc, a coding agent…" {
+		t.Errorf("text mismatch: got %q", got.Text)
 	}
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if len(q.statusUpdates) != 1 || q.statusUpdates[0].Status != string(CardStatusFinal) {
-		t.Fatalf("expected single final status update, got %+v", q.statusUpdates)
+	if got.ChatID != ChatID(q.binding.LarkChatID) {
+		t.Errorf("chat_id mismatch: got %q want %q", got.ChatID, q.binding.LarkChatID)
+	}
+	if got.InstallationID.AppID != "cli_test_app" {
+		t.Errorf("expected installation app_id propagated; got %q", got.InstallationID.AppID)
+	}
+	if len(api.sent) != 0 || len(api.patched) != 0 {
+		t.Errorf("ChatDone must NOT send / patch any card; got sent=%d patched=%d",
+			len(api.sent), len(api.patched))
 	}
 }
 
-func TestPatcherFailEventTransitionsToError(t *testing.T) {
+// TestPatcherDropsEmptyChatReply guards the fallback we deliberately
+// removed: the previous design rendered "Done." when content was
+// empty. Now an empty Content is silently dropped (no text message
+// sent at all). Showing nothing is better than showing the misleading
+// "Done." fallback, which Bohan reported confused him in the live env.
+func TestPatcherDropsEmptyChatReply(t *testing.T) {
+	p, q, api := newTestPatcher(t)
+	taskID := uuidFromString(t, "ee777777-ee77-ee77-ee77-eeeeeeeeeeee")
+
+	p.handleEvent(events.Event{
+		Type:          protocol.EventChatDone,
+		TaskID:        uuidString(taskID),
+		ChatSessionID: uuidString(q.binding.ChatSessionID),
+		Payload: protocol.ChatDonePayload{
+			TaskID:        uuidString(taskID),
+			ChatSessionID: uuidString(q.binding.ChatSessionID),
+			Content:       "",
+		},
+	})
+
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.textSent) != 0 {
+		t.Errorf("empty content must drop, not render the Done. fallback; got %d text sends", len(api.textSent))
+	}
+}
+
+func TestPatcherSkipsWhenNoChatSessionBinding(t *testing.T) {
+	p, q, api := newTestPatcher(t)
+	q.bindingErr = pgx.ErrNoRows
+
+	p.handleEvent(events.Event{
+		Type:          protocol.EventChatDone,
+		TaskID:        uuidString(uuidFromString(t, "ee222222-ee22-ee22-ee22-eeeeeeeeeeee")),
+		ChatSessionID: uuidString(uuidFromString(t, "cc222222-cc22-cc22-cc22-cccccccccccc")),
+		Payload: protocol.ChatDonePayload{
+			Content: "irrelevant — no binding",
+		},
+	})
+
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.textSent) != 0 || len(api.sent) != 0 {
+		t.Fatalf("web-only chat sessions must produce no outbound; got text=%d cards=%d",
+			len(api.textSent), len(api.sent))
+	}
+}
+
+// TestPatcherFailEventSendsErrorCard verifies the failure path still
+// surfaces a card. The visual distinction between a successful reply
+// (plain text bubble) and a failure (red header card) is genuinely
+// useful — and failures are rare enough that the card chrome isn't
+// noisy. One-shot send (no patching of any prior thinking card,
+// because there isn't one anymore).
+func TestPatcherFailEventSendsErrorCard(t *testing.T) {
 	p, q, api := newTestPatcher(t)
 	taskID := uuidFromString(t, "ee444444-ee44-ee44-ee44-eeeeeeeeeeee")
-	q.card = db.LarkOutboundCardMessage{
-		ID:                uuidFromString(t, "dd222222-dd22-dd22-dd22-dddddddddddd"),
-		LarkCardMessageID: "lark_card_msg_existing",
-		Status:            string(CardStatusStreaming),
-	}
-	q.cardErr = nil
 
 	p.handleEvent(events.Event{
 		Type:          protocol.EventTaskFailed,
@@ -248,13 +250,14 @@ func TestPatcherFailEventTransitionsToError(t *testing.T) {
 
 	api.mu.Lock()
 	defer api.mu.Unlock()
-	if len(api.patched) != 1 {
-		t.Fatalf("fail event must patch the card; got %d patches", len(api.patched))
+	if len(api.sent) != 1 {
+		t.Fatalf("fail event must send an error card; got %d card sends", len(api.sent))
 	}
-	q.mu.Lock()
-	defer q.mu.Unlock()
-	if len(q.statusUpdates) != 1 || q.statusUpdates[0].Status != string(CardStatusError) {
-		t.Fatalf("expected single error status update, got %+v", q.statusUpdates)
+	if len(api.patched) != 0 {
+		t.Errorf("fail event must NOT patch any card (no prior card lifecycle); got %d patches", len(api.patched))
+	}
+	if !strings.Contains(api.sent[0].CardJSON, "boom") {
+		t.Errorf("error card body should embed the error message; got %s", api.sent[0].CardJSON)
 	}
 }
 
@@ -263,46 +266,37 @@ func TestPatcherSwallowsInstallationLoadErrors(t *testing.T) {
 	q.installationErr = errors.New("db down")
 
 	p.handleEvent(events.Event{
-		Type:          protocol.EventTaskQueued,
+		Type:          protocol.EventChatDone,
 		TaskID:        uuidString(uuidFromString(t, "ee555555-ee55-ee55-ee55-eeeeeeeeeeee")),
 		ChatSessionID: uuidString(q.binding.ChatSessionID),
+		Payload: protocol.ChatDonePayload{
+			Content: "would-be reply",
+		},
 	})
 
-	// The patcher logs but never panics; no card sent.
+	// The patcher logs but never panics; no outbound.
 	api.mu.Lock()
 	defer api.mu.Unlock()
-	if len(api.sent) != 0 {
-		t.Fatalf("DB failure must not result in a card send; got %d", len(api.sent))
+	if len(api.textSent) != 0 || len(api.sent) != 0 {
+		t.Fatalf("DB failure must not produce outbound; got text=%d cards=%d",
+			len(api.textSent), len(api.sent))
 	}
 }
 
-// TestPatcherIgnoresEventTaskCompletedForChatTasks is the regression
-// for the "card shows Done. instead of the agent's reply" bug Bohan
-// hit on the live env. TaskService publishes ChatDone (with content)
-// IMMEDIATELY BEFORE TaskCompleted (with no content) for every chat
-// task. If the Patcher subscribed to both, the second patch would
-// overwrite the real reply with the "Done." fallback. The fix is to
-// drop the EventTaskCompleted subscription entirely — EventChatDone
-// is the canonical "agent finished" signal for the Lark card path.
-//
-// This test pins the contract: a Patcher that has never seen
-// EventTaskCompleted does not register a subscription for it, and
-// even if one is replayed (e.g. event bus replay on reconnect) the
-// Patcher's processEvent switch ignores it instead of finalizing.
+// TestPatcherIgnoresEventTaskCompletedForChatTasks pins the no-extra-send
+// invariant. TaskService publishes ChatDone (with content) immediately
+// before TaskCompleted (without content) for every chat task. The
+// Patcher must NOT react to TaskCompleted — doing so would either
+// re-send the same text reply (duplicate bubble) or send the "Done."
+// fallback (the original bug Bohan reported). The fix is to leave
+// EventTaskCompleted unsubscribed; this test asserts exactly one
+// outbound text message from the sequence.
 func TestPatcherIgnoresEventTaskCompletedForChatTasks(t *testing.T) {
 	p, q, api := newTestPatcher(t)
 	taskID := uuidFromString(t, "ee666666-ee66-ee66-ee66-eeeeeeeeeeee")
-	q.card = db.LarkOutboundCardMessage{
-		ID:                uuidFromString(t, "dd333333-dd33-dd33-dd33-dddddddddddd"),
-		LarkCardMessageID: "lark_card_msg_existing",
-		ChatSessionID:     q.binding.ChatSessionID,
-		LarkChatID:        q.binding.LarkChatID,
-		Status:            string(CardStatusStreaming),
-	}
-	q.cardErr = nil
 
-	// Step 1: ChatDone arrives with the real agent reply. The card
-	// should get patched to the reply text and persisted as final.
+	// Step 1: ChatDone arrives with the real agent reply. Plain text
+	// is sent to Lark.
 	p.handleEvent(events.Event{
 		Type:          protocol.EventChatDone,
 		TaskID:        uuidString(taskID),
@@ -314,10 +308,9 @@ func TestPatcherIgnoresEventTaskCompletedForChatTasks(t *testing.T) {
 		},
 	})
 
-	// Step 2: TaskCompleted fires immediately after. The Patcher MUST
-	// NOT patch the card again — doing so would replay the empty
-	// payload through finalize and overwrite the real reply with the
-	// "Done." fallback.
+	// Step 2: TaskCompleted fires immediately after with no content.
+	// The Patcher MUST NOT send a second message — neither a
+	// duplicate of the reply nor the "Done." fallback.
 	p.handleEvent(events.Event{
 		Type:          protocol.EventTaskCompleted,
 		TaskID:        uuidString(taskID),
@@ -331,15 +324,15 @@ func TestPatcherIgnoresEventTaskCompletedForChatTasks(t *testing.T) {
 
 	api.mu.Lock()
 	defer api.mu.Unlock()
-	if len(api.patched) != 1 {
-		t.Fatalf("exactly one patch expected (ChatDone); EventTaskCompleted must be ignored. Got %d patches", len(api.patched))
+	if len(api.textSent) != 1 {
+		t.Fatalf("exactly one text send expected (ChatDone); EventTaskCompleted must be ignored. Got %d sends", len(api.textSent))
 	}
-	// And the surviving patch carries the actual reply text — not "Done.".
-	if !strings.Contains(api.patched[0].CardJSON, "Hello! I'm cc") {
-		t.Errorf("patched card body should contain the agent reply; got %s", api.patched[0].CardJSON)
+	if api.textSent[0].Text != "Hello! I'm cc, a coding agent…" {
+		t.Errorf("text content mismatch; got %q", api.textSent[0].Text)
 	}
-	if strings.Contains(api.patched[0].CardJSON, `"content":"Done."`) {
-		t.Errorf("patched card body should NOT contain the Done. fallback; got %s", api.patched[0].CardJSON)
+	if len(api.sent) != 0 || len(api.patched) != 0 {
+		t.Errorf("no card outbound expected on the success path; got sent=%d patched=%d",
+			len(api.sent), len(api.patched))
 	}
 }
 

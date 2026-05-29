@@ -41,6 +41,10 @@ func (s *stubAPIClientWithRecorder) PatchInteractiveCard(ctx context.Context, p 
 	return nil
 }
 
+func (s *stubAPIClientWithRecorder) SendTextMessage(ctx context.Context, p SendTextParams) (string, error) {
+	return "", nil
+}
+
 func (s *stubAPIClientWithRecorder) SendBindingPromptCard(ctx context.Context, p BindingPromptParams) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
