@@ -225,7 +225,15 @@ func TestRedisLocalSkillImportStore_PreservesCreatorID(t *testing.T) {
 
 	name := "Review Helper"
 	desc := "Desc"
-	req, err := store.Create(ctx, "runtime-1", "user-42", "review-helper", &name, &desc, LocalSkillImportActionOverwrite, "target-skill-99")
+	req, err := store.Create(ctx, LocalSkillImportRequestInput{
+		RuntimeID:     "runtime-1",
+		CreatorID:     "user-42",
+		SkillKey:      "review-helper",
+		Name:          &name,
+		Description:   &desc,
+		Action:        LocalSkillImportActionOverwrite,
+		TargetSkillID: "target-skill-99",
+	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -264,7 +272,11 @@ func TestRedisLocalSkillImportStore_PreservesConflict(t *testing.T) {
 	ctx := context.Background()
 	store := NewRedisLocalSkillImportStore(rdb)
 
-	req, err := store.Create(ctx, "runtime-1", "user-1", "review-helper", nil, nil, LocalSkillImportActionCreate, "")
+	req, err := store.Create(ctx, LocalSkillImportRequestInput{
+		RuntimeID: "runtime-1",
+		CreatorID: "user-1",
+		SkillKey:  "review-helper",
+	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -295,7 +307,11 @@ func TestRedisLocalSkillImportStore_PopPendingAcrossInstances(t *testing.T) {
 	nodeA := NewRedisLocalSkillImportStore(rdb)
 	nodeB := NewRedisLocalSkillImportStore(rdb)
 
-	req, err := nodeA.Create(ctx, "runtime-import", "user-1", "review-helper", nil, nil, LocalSkillImportActionCreate, "")
+	req, err := nodeA.Create(ctx, LocalSkillImportRequestInput{
+		RuntimeID: "runtime-import",
+		CreatorID: "user-1",
+		SkillKey:  "review-helper",
+	})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -402,7 +418,11 @@ func TestRedisLocalSkillImportStore_PopPendingBatch(t *testing.T) {
 	// Create 5 pending imports.
 	ids := make([]string, 5)
 	for i := range ids {
-		req, err := store.Create(ctx, "runtime-batch", "user-1", fmt.Sprintf("skill-%d", i), nil, nil, LocalSkillImportActionCreate, "")
+		req, err := store.Create(ctx, LocalSkillImportRequestInput{
+			RuntimeID: "runtime-batch",
+			CreatorID: "user-1",
+			SkillKey:  fmt.Sprintf("skill-%d", i),
+		})
 		if err != nil {
 			t.Fatalf("create %d: %v", i, err)
 		}

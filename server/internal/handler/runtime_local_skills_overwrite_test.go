@@ -182,7 +182,7 @@ func TestRuntimeLocalSkillImport_ConflictCreatorCanOverwrite(t *testing.T) {
 	existingID := createImportTargetSkill(t, name, testUserID, nil)
 
 	got := runLocalSkillImport(t, runtimeID,
-		map[string]any{"skill_key": "review-helper"},
+		map[string]any{"skill_key": "review-helper", "supports_conflict": true},
 		reportBundleBody(name, "incoming description", "# incoming", map[string]string{"a.md": "A"}),
 	)
 
@@ -221,7 +221,7 @@ func TestRuntimeLocalSkillImport_ConflictNonCreatorCannotOverwrite(t *testing.T)
 	existingID := createImportTargetSkill(t, name, otherUserID, nil)
 
 	got := runLocalSkillImport(t, runtimeID,
-		map[string]any{"skill_key": "review-helper"},
+		map[string]any{"skill_key": "review-helper", "supports_conflict": true},
 		reportBundleBody(name, "incoming description", "# incoming", nil),
 	)
 
@@ -371,5 +371,64 @@ func TestRuntimeLocalSkillImport_OverwriteRetryIsIdempotent(t *testing.T) {
 	}
 	if n := countSkillFiles(t, existingID); n != 1 {
 		t.Fatalf("retry must not re-write files, got %d files", n)
+	}
+}
+
+// TestRuntimeLocalSkillImport_LegacyClientGetsFailedOnConflict verifies the
+// installed-app compatibility gate: a client that does NOT opt into the
+// structured-conflict contract keeps the legacy `failed` + "already exists"
+// behavior on a same-name collision, instead of the new `conflict` status its
+// older poll loop wouldn't understand.
+func TestRuntimeLocalSkillImport_LegacyClientGetsFailedOnConflict(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	runtimeID := createRuntimeLocalSkillTestRuntime(t, testUserID)
+	name := fmt.Sprintf("legacy-conflict-%d", time.Now().UnixNano())
+	createImportTargetSkill(t, name, testUserID, nil)
+
+	got := runLocalSkillImport(t, runtimeID,
+		// No supports_conflict (and no action) — an old client.
+		map[string]any{"skill_key": "review-helper"},
+		reportBundleBody(name, "incoming description", "# incoming", nil),
+	)
+
+	if got.Status != RuntimeLocalSkillFailed {
+		t.Fatalf("status = %s, want failed (legacy contract)", got.Status)
+	}
+	if got.Conflict != nil {
+		t.Fatalf("legacy client must not receive structured conflict metadata: %+v", got.Conflict)
+	}
+	if got.Error != "a skill with this name already exists" {
+		t.Fatalf("error = %q, want legacy already-exists message", got.Error)
+	}
+}
+
+// TestRuntimeLocalSkillImport_OverwriteNameMismatchFails verifies the guard
+// against a stale / wrong target_skill_id: if the target's name no longer
+// matches the imported skill, the overwrite fails instead of writing one
+// skill's content onto another.
+func TestRuntimeLocalSkillImport_OverwriteNameMismatchFails(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	runtimeID := createRuntimeLocalSkillTestRuntime(t, testUserID)
+	targetName := fmt.Sprintf("overwrite-target-%d", time.Now().UnixNano())
+	otherName := fmt.Sprintf("overwrite-other-%d", time.Now().UnixNano())
+	targetID := createImportTargetSkill(t, targetName, testUserID, nil)
+
+	// Overwrite targets targetID but the imported bundle is named otherName.
+	got := runLocalSkillImport(t, runtimeID,
+		map[string]any{"skill_key": "review-helper", "action": "overwrite", "target_skill_id": targetID},
+		reportBundleBody(otherName, "incoming description", "# incoming", map[string]string{"a.md": "A"}),
+	)
+
+	if got.Status != RuntimeLocalSkillFailed {
+		t.Fatalf("status = %s, want failed (name mismatch)", got.Status)
+	}
+	if _, desc, _, _ := getSkillRow(t, targetID); desc != "original description" {
+		t.Fatalf("name-mismatch overwrite must not mutate the target, description = %q", desc)
 	}
 }

@@ -92,18 +92,24 @@ func (h *Handler) createSkillWithFiles(ctx context.Context, input skillCreateInp
 // user's confirm and this write. Callers map them to a failed import and must
 // NOT fall back to creating a new skill.
 var (
-	errSkillOverwriteNotFound  = errors.New("target skill not found")
-	errSkillOverwriteForbidden = errors.New("not permitted to overwrite target skill")
+	errSkillOverwriteNotFound     = errors.New("target skill not found")
+	errSkillOverwriteForbidden    = errors.New("not permitted to overwrite target skill")
+	errSkillOverwriteNameMismatch = errors.New("target skill name does not match the imported skill")
 )
 
 type skillOverwriteInput struct {
 	WorkspaceID   pgtype.UUID
 	TargetSkillID pgtype.UUID
 	UserID        string // re-checked against the skill creator inside the tx
-	Description   string
-	Content       string
-	Config        any
-	Files         []CreateSkillFileRequest
+	// ExpectedName, when non-empty, must equal the target's current name. Guards
+	// against a client sending the wrong target_skill_id and overwriting a
+	// different skill than the one the conflict dialog showed the user. The
+	// caller passes the sanitized effective import name.
+	ExpectedName string
+	Description  string
+	Content      string
+	Config       any
+	Files        []CreateSkillFileRequest
 }
 
 // overwriteSkillWithFiles re-imports a bundle onto an existing skill in a single
@@ -147,6 +153,13 @@ func (h *Handler) overwriteSkillWithFiles(ctx context.Context, input skillOverwr
 	}
 	if !canOverwriteSkillByLocalImport(input.UserID, existing) {
 		return SkillWithFilesResponse{}, errSkillOverwriteForbidden
+	}
+	// The overwrite is keyed on target_skill_id, but the conflict the user
+	// confirmed was a same-name collision; reject if the target's name no longer
+	// matches the imported skill so a stale/wrong target_skill_id can't write
+	// one skill's content onto another.
+	if input.ExpectedName != "" && existing.Name != input.ExpectedName {
+		return SkillWithFilesResponse{}, errSkillOverwriteNameMismatch
 	}
 
 	// Name is intentionally left unset (COALESCE keeps the existing name): the
