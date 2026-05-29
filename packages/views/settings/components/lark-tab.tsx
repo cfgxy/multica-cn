@@ -378,7 +378,19 @@ function LarkInstallDialog({
   }
 
   // Kick off on mount.
+  //
+  // Reset closedRef AT THE START of every mount, not just at construction.
+  // React 18+ / 19 StrictMode dev runs effects twice (mount → cleanup →
+  // mount) on the same component instance, which preserves useRef across
+  // the simulated remount. Without resetting, the cleanup from mount #1
+  // flips closedRef.current=true, and on mount #2 every beginSession
+  // promise sees closedRef=true at the await boundary and early-exits
+  // before calling setSession — leaving the dialog body empty (no
+  // "starting" placeholder, no QR, no error), which is exactly the
+  // "QR never appears" bug. Reset on entry so the second mount
+  // re-arms the in-flight cancellation guard.
   useEffect(() => {
+    closedRef.current = false;
     void beginSession();
     return () => {
       closedRef.current = true;

@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { StrictMode, type ReactNode } from "react";
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -121,6 +121,19 @@ function I18nWrapper({ children }: { children: ReactNode }) {
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
       {children}
     </I18nProvider>
+  );
+}
+
+// StrictMode wrapper used to reproduce the dev-mode mount → unmount →
+// remount cycle. React 19 dev runs this on every component, which
+// surfaces effect cleanup bugs that don't show in production builds.
+function StrictModeWrapper({ children }: { children: ReactNode }) {
+  return (
+    <StrictMode>
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
+        {children}
+      </I18nProvider>
+    </StrictMode>
   );
 }
 
@@ -249,5 +262,40 @@ describe("LarkInstallDialog (polling terminal errors)", () => {
       await vi.advanceTimersByTimeAsync(5000);
     });
     expect(mockGetStatus.mock.calls.length).toBe(callsAfterTerminal);
+  });
+
+  // Regression test for the empty-dialog bug Bohan hit on PR #3277:
+  // the QR area was completely blank after opening the dialog. React 19
+  // StrictMode dev mounts every component twice. The mount/cleanup/mount
+  // cycle preserves the component's useRef across the simulated remount,
+  // so the cleanup's `closedRef.current = true` survived into the
+  // second mount. Both beginSession() promises then saw closedRef=true
+  // at the post-await guard and skipped setSession(), leaving the dialog
+  // body with no QR, no error, no loading text — just empty. Resetting
+  // closedRef.current at the START of the effect re-arms the guard on
+  // every mount.
+  it("renders the QR after a React StrictMode double-mount (regression for empty dialog body)", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    render(<LarkAgentBindButton agentId="agent-1" agentName="Bot" />, {
+      wrapper: StrictModeWrapper,
+    });
+    await user.click(screen.getByRole("button", { name: /Bind to Lark/i }));
+
+    // The QR must appear even though the dialog mounted, unmounted, and
+    // mounted again under StrictMode. The previous bug left the body
+    // empty here.
+    await waitFor(
+      () => {
+        expect(screen.getByTestId("qr-code")).toBeTruthy();
+      },
+      { timeout: 2000 },
+    );
+
+    // And the QR's value should match what the (latest) begin call
+    // returned — not be empty / undefined.
+    const qr = screen.getByTestId("qr-code");
+    expect(qr.getAttribute("data-value")).toBe(
+      "https://accounts.feishu.cn/oauth/v1/device?u=abc",
+    );
   });
 });
