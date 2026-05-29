@@ -356,19 +356,29 @@ func (c *RegistrationClient) doForm(ctx context.Context, domain string, form url
 	if err != nil {
 		return fmt.Errorf("registration: read body: %w", err)
 	}
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	if len(body) == 0 {
 		return &RegistrationError{
 			Code:        fmt.Sprintf("http_%d", resp.StatusCode),
-			Description: truncate(string(body), 256),
+			Description: "empty body",
 		}
 	}
-	if len(body) == 0 {
-		return &RegistrationError{Code: "invalid_response", Description: "empty body"}
+	// RFC 8628 device-flow servers return non-2xx with a JSON body whose
+	// `error` field is the actual signal — `authorization_pending` and
+	// `slow_down` arrive as HTTP 400, NOT 2xx. Decoding the body first
+	// and letting the caller route on `resp.Error` is what the upstream
+	// Go SDK does; treating any non-2xx as a hard protocol error (the
+	// previous behaviour) killed every session on the first poll because
+	// the user hasn't scanned the QR yet at that point.
+	if jsonErr := json.Unmarshal(body, out); jsonErr == nil {
+		return nil
 	}
-	if err := json.Unmarshal(body, out); err != nil {
-		return fmt.Errorf("registration: decode body: %w", err)
+	// Body didn't parse — surface the raw status + payload tail so ops
+	// can tell a Lark outage / proxy interception apart from a schema
+	// drift. Caller treats this as a terminal protocol error.
+	return &RegistrationError{
+		Code:        fmt.Sprintf("http_%d", resp.StatusCode),
+		Description: truncate(string(body), 256),
 	}
-	return nil
 }
 
 // decorateQRCodeURL appends the SDK-style telemetry params Lark expects

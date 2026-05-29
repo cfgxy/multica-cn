@@ -195,6 +195,80 @@ func TestRegistrationClient_Poll_AuthorizationPending(t *testing.T) {
 	}
 }
 
+// TestRegistrationClient_Poll_AuthorizationPendingHTTP400 pins the
+// RFC 8628 transport behaviour Lark actually uses: the device-flow
+// polling endpoint returns HTTP 400 with the JSON body
+// `{"error":"authorization_pending"}` while the user hasn't scanned
+// the QR yet. The previous transport treated any non-2xx as a
+// terminal protocol error, which killed every install session on the
+// first poll and made the QR dialog silently empty in the UI —
+// because the frontend received status="error" + lark_protocol_error
+// within seconds of opening the dialog.
+//
+// Verified against the live Lark service: it returns HTTP 400 with
+// `code=20094` for the wait-state, not HTTP 200.
+func TestRegistrationClient_Poll_AuthorizationPendingHTTP400(t *testing.T) {
+	fake := newRegistrationFake(t)
+	fake.mux.HandleFunc(registrationEndpoint, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"authorization_pending","error_description":"","code":20094}`))
+	})
+	c := NewRegistrationClient(RegistrationConfig{Domain: fake.URL()})
+	res, err := c.Poll(context.Background(), fake.URL(), "dc_x")
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	if res.Status != "authorization_pending" {
+		t.Errorf("Status: got %q want authorization_pending (HTTP 400 should NOT be a terminal error)", res.Status)
+	}
+	if res.Err != nil {
+		t.Errorf("PollResult.Err should be nil for authorization_pending wait state, got %+v", res.Err)
+	}
+}
+
+// TestRegistrationClient_Poll_AccessDeniedHTTP400 verifies the
+// adjacent path: HTTP 400 with `error=access_denied` IS terminal (user
+// cancelled in the Lark UI). The fix in doForm must distinguish these
+// two cases by the body's `error` field, not by the HTTP status.
+func TestRegistrationClient_Poll_AccessDeniedHTTP400(t *testing.T) {
+	fake := newRegistrationFake(t)
+	fake.mux.HandleFunc(registrationEndpoint, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"access_denied","error_description":"user cancelled"}`))
+	})
+	c := NewRegistrationClient(RegistrationConfig{Domain: fake.URL()})
+	res, err := c.Poll(context.Background(), fake.URL(), "dc_x")
+	if err != nil {
+		t.Fatalf("Poll: %v", err)
+	}
+	if res.Err == nil || res.Err.Code != "access_denied" {
+		t.Errorf("PollResult.Err: got %+v; want access_denied", res.Err)
+	}
+}
+
+// TestRegistrationClient_Poll_HTTP500UnparseableIsTerminal pins the
+// fallback: a non-JSON 5xx (e.g. proxy returning a HTML error page) is
+// still surfaced as a typed protocol error so ops can tell a Lark
+// outage from a schema drift.
+func TestRegistrationClient_Poll_HTTP500UnparseableIsTerminal(t *testing.T) {
+	fake := newRegistrationFake(t)
+	fake.mux.HandleFunc(registrationEndpoint, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = w.Write([]byte("<html><body>502 Bad Gateway</body></html>"))
+	})
+	c := NewRegistrationClient(RegistrationConfig{Domain: fake.URL()})
+	_, err := c.Poll(context.Background(), fake.URL(), "dc_x")
+	if err == nil {
+		t.Fatal("want error on unparseable 502 body")
+	}
+	var re *RegistrationError
+	if !errorsAs(err, &re) || re.Code != "http_502" {
+		t.Errorf("want http_502 RegistrationError, got %v", err)
+	}
+}
+
 func TestRegistrationClient_Poll_SlowDown(t *testing.T) {
 	fake := newRegistrationFake(t)
 	fake.mux.HandleFunc(registrationEndpoint, func(w http.ResponseWriter, r *http.Request) {
