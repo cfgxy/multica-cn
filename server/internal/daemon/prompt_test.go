@@ -299,9 +299,8 @@ func TestBuildPromptNonSquadLeaderNoRule(t *testing.T) {
 
 // TestBuildPromptNewCommentsHint pins that a comment-triggered task whose agent
 // ran before on this issue (NewCommentsSince set, NewCommentCount > 0) gets the
-// one-line since-delta hint pointing at `--since`, so the agent catches up on
-// exactly the comments that arrived since its last run instead of re-reading
-// everything or walking threads blind.
+// since-delta hint scoped to the triggering thread, so the agent does not pull
+// unrelated thread updates by default.
 func TestBuildPromptNewCommentsHint(t *testing.T) {
 	const (
 		issueID = "issue-new-1"
@@ -317,15 +316,20 @@ func TestBuildPromptNewCommentsHint(t *testing.T) {
 	}
 	out := BuildPrompt(task, "claude")
 
-	if !strings.Contains(out, "3 new comment(s) since your last run") {
+	if !strings.Contains(out, "3 other new comment(s) in this thread since your last run") {
 		t.Errorf("hint must report the new-comment count, got:\n%s", out)
 	}
-	if !strings.Contains(out, "multica issue comment list "+issueID+" --since "+since+" --output json") {
-		t.Errorf("hint must point at the --since catch-up read, got:\n%s", out)
+	if !strings.Contains(out, "multica issue comment list "+issueID+" --thread trigger-1 --since "+since+" --output json") {
+		t.Errorf("hint must point at the thread-scoped --since catch-up read, got:\n%s", out)
 	}
-	// Warm path also keeps a --thread pointer: --since is a time delta and can
-	// miss the triggering thread's pre-anchor history, so the agent is told it can
-	// pull that thread in full when needed.
+	if !strings.Contains(out, "raw thread delta") {
+		t.Errorf("hint must not imply the CLI output exactly matches the count, got:\n%s", out)
+	}
+	if strings.Contains(out, "resumed session is missing older thread context") {
+		t.Errorf("warm delta fallback wording must not assume a resumed session, got:\n%s", out)
+	}
+	// Warm path also keeps a bounded full-thread pointer: thread-scoped --since
+	// can still miss the triggering thread's pre-anchor history.
 	if !strings.Contains(out, "multica issue comment list "+issueID+" --thread trigger-1 --tail 30 --output json") {
 		t.Errorf("warm hint must also point at the triggering thread, got:\n%s", out)
 	}
@@ -355,5 +359,37 @@ func TestBuildPromptColdStartThreadRead(t *testing.T) {
 	}
 	if !strings.Contains(out, "multica issue comment list "+issueID+" --thread trigger-1 --tail 30 --output json") {
 		t.Errorf("cold start must point at the triggering thread read, got:\n%s", out)
+	}
+}
+
+// TestBuildPromptResumedNoDeltaDoesNotForceThreadRead pins the warm/no-delta
+// path: when a prior provider session is actually being resumed, the triggering
+// comment is already embedded in the per-turn prompt, so the agent should not
+// be told to re-read the triggering thread's latest 30 replies by default.
+func TestBuildPromptResumedNoDeltaDoesNotForceThreadRead(t *testing.T) {
+	const issueID = "issue-resumed-1"
+	task := Task{
+		IssueID:               issueID,
+		TriggerCommentID:      "trigger-1",
+		TriggerCommentContent: "hi again",
+		TriggerAuthorType:     "member",
+		PriorSessionID:        "session-123",
+		NewCommentCount:       0,
+		NewCommentsSince:      "",
+	}
+	out := BuildPrompt(task, "claude")
+
+	for _, want := range []string{
+		"triggering comment is already included above",
+		"Do not re-read comment history by default",
+		"Only if the resumed session is missing thread context",
+		"multica issue comment list " + issueID + " --thread trigger-1 --tail 30 --output json",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("resumed/no-delta prompt missing %q\n--- output ---\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "Read the triggering conversation first") {
+		t.Errorf("resumed/no-delta prompt must not use the cold-start forced-read wording, got:\n%s", out)
 	}
 }
