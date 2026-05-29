@@ -1320,12 +1320,13 @@ func resolveCommentRow(t *testing.T, commentID string) {
 	}
 }
 
-// TestCountNewCommentsSince_ThreadScopedExcludesAgentOwnAndTrigger pins the
-// claim-side count query: it counts comments created after the given anchor only
-// within the triggering thread, excludes the triggering comment because it is
-// injected into the prompt, and excludes the agent's own comments so a chatty
-// agent does not inflate its own new-comment count.
-func TestCountNewCommentsSince_ThreadScopedExcludesAgentOwnAndTrigger(t *testing.T) {
+// TestCountNewCommentsSince_IssueWideExcludesAgentOwnAndTrigger pins the
+// claim-side count query: it counts comments created after the given anchor
+// ACROSS THE WHOLE ISSUE (every thread, not just the triggering one), excludes
+// the triggering comment because it is injected into the prompt, and excludes
+// the agent's own comments so a chatty agent does not inflate its own
+// new-comment count.
+func TestCountNewCommentsSince_IssueWideExcludesAgentOwnAndTrigger(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -1341,9 +1342,10 @@ func TestCountNewCommentsSince_ThreadScopedExcludesAgentOwnAndTrigger(t *testing
 
 	ctx := context.Background()
 
-	// Anchor after r1a: root1/r1a are stale, r1b is the only non-trigger,
-	// non-agent comment in the triggering thread. r1b1 is the trigger and root2's
-	// whole thread is unrelated noise.
+	// Anchor after r1a: root1/r1a are stale. Newer than the anchor are r1b
+	// (trigger thread), r1b1 (the trigger itself — excluded), the agent reply
+	// (excluded), and root2's whole thread root2/r2a/r2b (unrelated thread, now
+	// counted because the count is issue-wide). So r1b + root2 + r2a + r2b = 4.
 	got, err := testHandler.Queries.CountNewCommentsSince(ctx, db.CountNewCommentsSinceParams{
 		AnchorID:    parseUUID(fx.R1b1),
 		IssueID:     parseUUID(fx.IssueID),
@@ -1354,8 +1356,8 @@ func TestCountNewCommentsSince_ThreadScopedExcludesAgentOwnAndTrigger(t *testing
 	if err != nil {
 		t.Fatalf("count new since anchor: %v", err)
 	}
-	if got != 1 {
-		t.Fatalf("expected only r1b to count, got %d", got)
+	if got != 4 {
+		t.Fatalf("expected issue-wide count of 4 (r1b + root2 + r2a + r2b), got %d", got)
 	}
 
 	// Anchor in the future: nothing is newer.

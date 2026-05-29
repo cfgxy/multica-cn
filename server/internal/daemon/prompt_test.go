@@ -299,8 +299,9 @@ func TestBuildPromptNonSquadLeaderNoRule(t *testing.T) {
 
 // TestBuildPromptNewCommentsHint pins that a comment-triggered task whose agent
 // ran before on this issue (NewCommentsSince set, NewCommentCount > 0) gets the
-// since-delta hint scoped to the triggering thread, so the agent does not pull
-// unrelated thread updates by default.
+// since-delta hint with the ISSUE-WIDE new-comment count, but is steered to read
+// the triggering (parent) thread first rather than blindly pulling every new
+// comment.
 func TestBuildPromptNewCommentsHint(t *testing.T) {
 	const (
 		issueID = "issue-new-1"
@@ -316,22 +317,24 @@ func TestBuildPromptNewCommentsHint(t *testing.T) {
 	}
 	out := BuildPrompt(task, "claude")
 
-	if !strings.Contains(out, "3 other new comment(s) in this thread since your last run") {
-		t.Errorf("hint must report the new-comment count, got:\n%s", out)
+	// Issue-wide count (reverted from the thread-scoped wording).
+	if !strings.Contains(out, "3 new comment(s) on this issue since your last run") {
+		t.Errorf("hint must report the issue-wide new-comment count, got:\n%s", out)
 	}
+	// Don't-blindly-read-all guidance.
+	if !strings.Contains(out, "blindly") {
+		t.Errorf("hint must discourage blindly reading every new comment, got:\n%s", out)
+	}
+	// Parent thread first: the --thread <trigger> read is the prioritized action.
 	if !strings.Contains(out, "multica issue comment list "+issueID+" --thread trigger-1 --since "+since+" --output json") {
-		t.Errorf("hint must point at the thread-scoped --since catch-up read, got:\n%s", out)
+		t.Errorf("hint must point at the triggering (parent) thread --since read first, got:\n%s", out)
 	}
-	if !strings.Contains(out, "raw thread delta") {
-		t.Errorf("hint must not imply the CLI output exactly matches the count, got:\n%s", out)
+	if !strings.Contains(out, "--tail 30") {
+		t.Errorf("hint must offer the full-thread (--tail 30) option, got:\n%s", out)
 	}
-	if strings.Contains(out, "resumed session is missing older thread context") {
-		t.Errorf("warm delta fallback wording must not assume a resumed session, got:\n%s", out)
-	}
-	// Warm path also keeps a bounded full-thread pointer: thread-scoped --since
-	// can still miss the triggering thread's pre-anchor history.
-	if !strings.Contains(out, "multica issue comment list "+issueID+" --thread trigger-1 --tail 30 --output json") {
-		t.Errorf("warm hint must also point at the triggering thread, got:\n%s", out)
+	// Issue-wide catch-up is demoted to an only-if-needed fallback.
+	if !strings.Contains(out, "multica issue comment list "+issueID+" --since "+since+" --output json") {
+		t.Errorf("hint must keep the issue-wide --since catch-up as a fallback, got:\n%s", out)
 	}
 	// The old cursor-heavy paragraph must be gone.
 	if strings.Contains(out, "Next reply cursor") || strings.Contains(out, "--before-id") {
@@ -381,15 +384,19 @@ func TestBuildPromptResumedNoDeltaDoesNotForceThreadRead(t *testing.T) {
 
 	for _, want := range []string{
 		"triggering comment is already included above",
-		"Current-thread delta: 0 additional comments beyond the triggering comment",
-		"This is scoped to the triggering thread, not the whole issue",
-		"Do not re-read the triggering thread by default",
+		"No other new comments on this issue since your last run",
+		"Do not re-read comment history by default",
 		"Only if the resumed session is missing thread context",
 		"multica issue comment list " + issueID + " --thread trigger-1 --tail 30 --output json",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("resumed/no-delta prompt missing %q\n--- output ---\n%s", want, out)
 		}
+	}
+	// The stale thread-scoped wording (since-delta used to be thread-scoped)
+	// must not reappear.
+	if strings.Contains(out, "scoped to the triggering thread") {
+		t.Errorf("resumed/no-delta prompt must not claim the delta is thread-scoped, got:\n%s", out)
 	}
 	if strings.Contains(out, "Read the triggering conversation first") {
 		t.Errorf("resumed/no-delta prompt must not use the cold-start forced-read wording, got:\n%s", out)

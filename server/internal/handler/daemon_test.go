@@ -3497,12 +3497,13 @@ func claimCommentTask(t *testing.T, runtimeID, daemonID string) claimCommentTask
 	return resp
 }
 
-// TestClaimTaskByRuntime_CommentTaskPopulatesThreadScopedNewCommentCount
+// TestClaimTaskByRuntime_CommentTaskPopulatesNewCommentCount
 // verifies the claim response carries new_comment_count + new_comments_since for
-// a comment task when the agent ran before: the count is scoped to the
-// triggering thread, excludes the injected trigger comment, excludes the
-// agent's own comments, and the since anchor is the prior run's started_at.
-func TestClaimTaskByRuntime_CommentTaskPopulatesThreadScopedNewCommentCount(t *testing.T) {
+// a comment task when the agent ran before: the count is ISSUE-WIDE (covers
+// every thread, not just the triggering one), excludes the injected trigger
+// comment, excludes the agent's own comments, and the since anchor is the prior
+// run's started_at.
+func TestClaimTaskByRuntime_CommentTaskPopulatesNewCommentCount(t *testing.T) {
 	if testHandler == nil || testPool == nil {
 		t.Skip("database not available")
 	}
@@ -3562,8 +3563,10 @@ func TestClaimTaskByRuntime_CommentTaskPopulatesThreadScopedNewCommentCount(t *t
 	if resp.Task.NewCommentsSince == "" {
 		t.Errorf("new_comments_since must be set when a prior run exists, got empty")
 	}
-	if resp.Task.NewCommentCount != 1 {
-		t.Errorf("new_comment_count = %d, want 1 (same-thread context only)", resp.Task.NewCommentCount)
+	// Issue-wide: the same-thread context comment AND the unrelated-thread root
+	// both count; only the agent's own reply and the injected trigger are excluded.
+	if resp.Task.NewCommentCount != 2 {
+		t.Errorf("new_comment_count = %d, want 2 (issue-wide: same-thread + unrelated thread)", resp.Task.NewCommentCount)
 	}
 }
 

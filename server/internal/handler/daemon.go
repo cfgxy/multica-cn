@@ -1269,15 +1269,15 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 				}
-				// Count non-injected comments that arrived in the triggering
-				// thread since this agent's last run, so the daemon can tell it up
-				// front instead of forcing an issue-wide catch-up. Anchor = the
-				// prior task's started_at (never completed_at: a long run would
-				// miss comments posted while it ran). Cold start (no prior task) →
-				// no anchor → no hint. Excludes the agent's own comments and the
-				// triggering comment itself because that body is already injected
-				// into the prompt. Best-effort: any DB error or zero count leaves
-				// the hint suppressed.
+				// Count comments that arrived issue-wide since this agent's last
+				// run, so the daemon can tell it the full catch-up volume up front
+				// (the prompt then steers it to read the triggering thread first).
+				// Anchor = the prior task's started_at (never completed_at: a long
+				// run would miss comments posted while it ran). Cold start (no prior
+				// task) → no anchor → no hint. Excludes the agent's own comments and
+				// the triggering comment itself because that body is already
+				// injected into the prompt. Best-effort: any DB error or zero count
+				// leaves the hint suppressed.
 				if startedAt, err := h.Queries.GetLastTaskStartedAtForIssueAndAgent(r.Context(), db.GetLastTaskStartedAtForIssueAndAgentParams{
 					AgentID: task.AgentID,
 					IssueID: comment.IssueID,

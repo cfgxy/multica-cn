@@ -298,39 +298,18 @@ SELECT count(*) FROM comment
 WHERE issue_id = $1 AND workspace_id = $2;
 
 -- name: CountNewCommentsSince :one
--- Counts non-injected comments in the thread containing @anchor_id created
--- strictly after @since, excluding any authored by the given agent
--- (@author_id). The triggering comment body is already injected into the
--- prompt, so @anchor_id itself is excluded from the count. Feeds the daemon
--- claim response without shipping comment bodies.
-WITH RECURSIVE root_of AS (
-    -- Scope is enforced on both the anchor seed and recursive walk-up; keep
-    -- these predicates together so future parent/thread changes cannot cross
-    -- issue or workspace boundaries.
-    SELECT c.id, c.parent_id
-    FROM comment c
-    WHERE c.id = @anchor_id AND c.issue_id = @issue_id AND c.workspace_id = @workspace_id
-    UNION ALL
-    SELECT p.id, p.parent_id
-    FROM comment p
-    JOIN root_of r ON p.id = r.parent_id
-    WHERE p.issue_id = @issue_id AND p.workspace_id = @workspace_id
-),
-thread_root AS (
-    SELECT id FROM root_of WHERE parent_id IS NULL LIMIT 1
-),
-descendants AS (
-    SELECT c.id, c.created_at, c.author_type, c.author_id
-    FROM comment c
-    JOIN thread_root tr ON c.id = tr.id
-    UNION
-    SELECT c.id, c.created_at, c.author_type, c.author_id
-    FROM comment c
-    JOIN descendants d ON c.parent_id = d.id
-    WHERE c.issue_id = @issue_id AND c.workspace_id = @workspace_id
-)
-SELECT count(*) FROM descendants
-WHERE created_at > @since
+-- Counts comments on an issue created strictly after @since, ACROSS THE WHOLE
+-- ISSUE (every thread, not just the triggering one). Excludes the triggering
+-- comment itself (@anchor_id — its body is already injected into the prompt)
+-- and any authored by the given agent (@author_id), so a chatty agent does not
+-- inflate its own new-comment count. The agent is steered to read the
+-- triggering thread first (see BuildNewCommentsHint), but the count is
+-- issue-wide so it knows the full catch-up volume. Feeds the daemon claim
+-- response without shipping comment bodies.
+SELECT count(*) FROM comment
+WHERE issue_id = @issue_id
+  AND workspace_id = @workspace_id
+  AND created_at > @since
   AND id <> @anchor_id
   AND NOT (author_type = 'agent' AND author_id = @author_id);
 

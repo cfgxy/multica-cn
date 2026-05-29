@@ -4,58 +4,68 @@ import "fmt"
 
 // BuildNewCommentsHint returns the comment-reading pointer for the WARM path —
 // the agent ran on this issue before, so there is a since-anchor. The server
-// count is scoped to the triggering thread and excludes the triggering comment
-// itself because that body is already injected into the prompt. It ships only
-// the COUNT and the cursor — never the comment bodies — so the server stays
-// cheap and the agent pulls details on demand.
+// count is ISSUE-WIDE (every thread, not just the triggering one) and excludes
+// the triggering comment itself because that body is already injected into the
+// prompt. It ships only the COUNT and the cursor — never the comment bodies —
+// so the server stays cheap and the agent pulls details on demand.
+//
+// The agent is told the full issue-wide volume but steered to read the
+// triggering (parent) thread FIRST instead of blindly catching up on every
+// thread. The issue-wide `--since` catch-up is kept as an explicit
+// "only if you need it" fallback.
 //
 // Both the per-turn prompt (daemon.buildCommentPrompt) and the CLAUDE.md
 // workflow (InjectRuntimeConfig) call this so the two surfaces cannot drift
 // (hard requirement from PR #2816).
 //
 // Renders nothing on cold start (no prior run → newCommentsSince empty) or when
-// there are no additional thread comments (newCommentCount <= 0) or required
-// IDs are empty. In those cases the caller falls back to BuildResumedCommentsHint
-// (when a prior session is active) or BuildColdCommentsHint.
+// there are no new comments (newCommentCount <= 0) or issueID is empty. In those
+// cases the caller falls back to BuildResumedCommentsHint (when a prior session
+// is active) or BuildColdCommentsHint.
 func BuildNewCommentsHint(issueID, triggerCommentID, newCommentsSince string, newCommentCount int) string {
-	if newCommentCount <= 0 || newCommentsSince == "" || issueID == "" || triggerCommentID == "" {
+	if newCommentCount <= 0 || newCommentsSince == "" || issueID == "" {
 		return ""
 	}
-	hint := fmt.Sprintf(
-		"%d other new comment(s) in this thread since your last run. "+
-			"The triggering comment is already included above. "+
-			"To inspect the raw thread delta (which may include the injected trigger and agent-authored rows), run: "+
-			"`multica issue comment list %s --thread %s --since %s --output json`.\n\n",
-		newCommentCount, issueID, triggerCommentID, newCommentsSince,
+	// When we know the triggering thread, steer the agent to read THAT thread
+	// first rather than blindly pulling every new comment issue-wide. The
+	// issue-wide --since catch-up is demoted to an only-if-needed fallback.
+	if triggerCommentID != "" {
+		return fmt.Sprintf(
+			"%d new comment(s) on this issue since your last run — don't read them all blindly. "+
+				"Start with the thread your triggering comment is in: "+
+				"`multica issue comment list %s --thread %s --since %s --output json` "+
+				"(swap `--since` for `--tail 30` if you need the full thread, not just the delta). "+
+				"Only if you need context from the other threads, catch up issue-wide: "+
+				"`multica issue comment list %s --since %s --output json`.\n\n",
+			newCommentCount, issueID, triggerCommentID, newCommentsSince, issueID, newCommentsSince,
+		)
+	}
+	// Defensive: comment triggers always carry a trigger id, but if one is
+	// missing there is no thread to anchor on, so fall back to the plain
+	// issue-wide catch-up.
+	return fmt.Sprintf(
+		"%d new comment(s) on this issue since your last run. Catch up: "+
+			"`multica issue comment list %s --since %s --output json`.\n\n",
+		newCommentCount, issueID, newCommentsSince,
 	)
-	// --thread + --since is still only a delta: it covers new rows in the
-	// triggering thread, not older pre-anchor context. Keep a bounded fallback
-	// when the older conversation context is missing.
-	hint += fmt.Sprintf(
-		"If older thread context before %s is missing, pull the triggering conversation: "+
-			"`multica issue comment list %s --thread %s --tail 30 --output json`.\n\n",
-		newCommentsSince, issueID, triggerCommentID,
-	)
-	return hint
 }
 
 // BuildResumedCommentsHint returns the comment-reading pointer for the WARM
 // no-delta path: the daemon is resuming a prior provider session and the
 // triggering comment body has already been injected into the per-turn prompt.
-// In that shape, the zero-delta statement must be explicitly scoped to the
-// triggering thread, not the whole issue. Reading the triggering thread's last
-// 30 replies is duplicate context by default, so keep the bounded thread read
-// as an explicit fallback for missing context instead of making it the first
-// action.
+// newCommentCount == 0 here means no new comments arrived issue-wide since the
+// last run (beyond the injected trigger and the agent's own replies), so
+// re-reading comment history is duplicate work by default. Keep the bounded
+// triggering-thread read as an explicit fallback for missing context instead of
+// making it the first action.
 func BuildResumedCommentsHint(issueID, triggerCommentID string) string {
 	if issueID == "" || triggerCommentID == "" {
 		return ""
 	}
 	return fmt.Sprintf(
 		"You're resuming the prior session, and the triggering comment is already included above. "+
-			"Current-thread delta: 0 additional comments beyond the triggering comment. "+
-			"This is scoped to the triggering thread, not the whole issue. "+
-			"Do not re-read the triggering thread by default. "+
+			"No other new comments on this issue since your last run. "+
+			"Do not re-read comment history by default. "+
 			"Only if the resumed session is missing thread context, pull the triggering conversation: "+
 			"`multica issue comment list %s --thread %s --tail 30 --output json`.\n\n",
 		issueID, triggerCommentID,

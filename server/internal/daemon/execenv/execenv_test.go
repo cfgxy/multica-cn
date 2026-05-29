@@ -3441,15 +3441,17 @@ func TestInjectRuntimeConfigCommentTriggerResumedNoDeltaRead(t *testing.T) {
 
 	for _, want := range []string{
 		"triggering comment is already included above",
-		"Current-thread delta: 0 additional comments beyond the triggering comment",
-		"This is scoped to the triggering thread, not the whole issue",
-		"Do not re-read the triggering thread by default",
+		"No other new comments on this issue since your last run",
+		"Do not re-read comment history by default",
 		"Only if the resumed session is missing thread context",
 		"multica issue comment list " + issueID + " --thread " + triggerID + " --tail 30 --output json",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("comment-triggered resumed Workflow missing %q\n---\n%s", want, s)
 		}
+	}
+	if strings.Contains(s, "scoped to the triggering thread") {
+		t.Errorf("resumed Workflow must not claim the delta is thread-scoped\n---\n%s", s)
 	}
 	if strings.Contains(s, "Read the triggering conversation first") {
 		t.Errorf("resumed workflow must not force the cold-start thread read\n---\n%s", s)
