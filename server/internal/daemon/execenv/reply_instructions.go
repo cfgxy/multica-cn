@@ -2,6 +2,88 @@ package execenv
 
 import "fmt"
 
+// BuildNewCommentsHint returns the comment-reading pointer for the WARM path —
+// the agent ran on this issue before, so there is a since-anchor. The server
+// count is scoped to the triggering thread and excludes the triggering comment
+// itself because that body is already injected into the prompt. It ships only
+// the COUNT and the cursor — never the comment bodies — so the server stays
+// cheap and the agent pulls details on demand.
+//
+// Both the per-turn prompt (daemon.buildCommentPrompt) and the CLAUDE.md
+// workflow (InjectRuntimeConfig) call this so the two surfaces cannot drift
+// (hard requirement from PR #2816).
+//
+// Renders nothing on cold start (no prior run → newCommentsSince empty) or when
+// there are no additional thread comments (newCommentCount <= 0) or required
+// IDs are empty. In those cases the caller falls back to BuildResumedCommentsHint
+// (when a prior session is active) or BuildColdCommentsHint.
+func BuildNewCommentsHint(issueID, triggerCommentID, newCommentsSince string, newCommentCount int) string {
+	if newCommentCount <= 0 || newCommentsSince == "" || issueID == "" || triggerCommentID == "" {
+		return ""
+	}
+	hint := fmt.Sprintf(
+		"%d other new comment(s) in this thread since your last run. "+
+			"The triggering comment is already included above. "+
+			"To inspect the raw thread delta (which may include the injected trigger and agent-authored rows), run: "+
+			"`multica issue comment list %s --thread %s --since %s --output json`.\n\n",
+		newCommentCount, issueID, triggerCommentID, newCommentsSince,
+	)
+	// --thread + --since is still only a delta: it covers new rows in the
+	// triggering thread, not older pre-anchor context. Keep a bounded fallback
+	// when the older conversation context is missing.
+	hint += fmt.Sprintf(
+		"If older thread context before %s is missing, pull the triggering conversation: "+
+			"`multica issue comment list %s --thread %s --tail 30 --output json`.\n\n",
+		newCommentsSince, issueID, triggerCommentID,
+	)
+	return hint
+}
+
+// BuildResumedCommentsHint returns the comment-reading pointer for the WARM
+// no-delta path: the daemon is resuming a prior provider session and the
+// triggering comment body has already been injected into the per-turn prompt.
+// In that shape, reading the triggering thread's last 30 replies is duplicate
+// context by default. Keep the bounded thread read as an explicit fallback for
+// missing context instead of making it the first action.
+func BuildResumedCommentsHint(issueID, triggerCommentID string) string {
+	if issueID == "" || triggerCommentID == "" {
+		return ""
+	}
+	return fmt.Sprintf(
+		"You're resuming the prior session, and the triggering comment is already included above. "+
+			"Do not re-read comment history by default. "+
+			"Only if the resumed session is missing thread context, pull the triggering conversation: "+
+			"`multica issue comment list %s --thread %s --tail 30 --output json`.\n\n",
+		issueID, triggerCommentID,
+	)
+}
+
+// BuildColdCommentsHint returns the comment-reading pointer for the COLD path —
+// the agent has no prior run on this issue, so there is no since-anchor and
+// BuildNewCommentsHint renders nothing. Instead of dumping the whole flat
+// timeline (oldest-first, server cap 2000), point the agent at the triggering
+// CONVERSATION: `--thread <trigger> --tail 30` returns that thread's root plus
+// its 30 newest replies (root is always included, even at --tail 0) — the
+// context the triggering comment actually needs. A `--recent 20` pointer is kept
+// for cross-thread background the agent can pull on judgment.
+//
+// Both surfaces call this so the cold fallback cannot drift between them (same
+// single-source rule as BuildNewCommentsHint, PR #2816). Returns "" when there
+// is no triggering comment to thread from, so the caller can keep a final plain
+// fallback.
+func BuildColdCommentsHint(issueID, triggerCommentID string) string {
+	if issueID == "" || triggerCommentID == "" {
+		return ""
+	}
+	return fmt.Sprintf(
+		"Read the triggering conversation first: "+
+			"`multica issue comment list %s --thread %s --tail 30 --output json` "+
+			"(that thread's root + its 30 newest replies). "+
+			"Need cross-thread background? `multica issue comment list %s --recent 20 --output json`.\n\n",
+		issueID, triggerCommentID, issueID,
+	)
+}
+
 // BuildCommentReplyInstructions returns the canonical block telling an agent
 // how to post its reply for a comment-triggered task. Both the per-turn
 // prompt (daemon.buildCommentPrompt) and the CLAUDE.md workflow

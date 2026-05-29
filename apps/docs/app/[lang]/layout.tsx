@@ -7,7 +7,7 @@ import type { Metadata } from "next";
 import { cn } from "@multica/ui/lib/utils";
 import { baseOptions } from "@/app/layout.config";
 import { source } from "@/lib/source";
-import { i18n, type Lang } from "@/lib/i18n";
+import { docsContentLang, i18n, type Lang } from "@/lib/i18n";
 import { uiTranslations, localeLabels } from "@/lib/translations";
 import { DocsSettings } from "@/components/docs-settings";
 
@@ -21,6 +21,9 @@ const inter = Inter({
     "PingFang SC",
     "Microsoft YaHei",
     "Noto Sans CJK SC",
+    "Apple SD Gothic Neo",
+    "Malgun Gothic",
+    "Noto Sans CJK KR",
     "sans-serif",
   ],
 });
@@ -73,6 +76,7 @@ export default async function Layout({
   const lang = (i18n.languages as readonly string[]).includes(rawLang)
     ? (rawLang as Lang)
     : (i18n.defaultLanguage as Lang);
+  const contentLang = docsContentLang(lang);
   const locales = i18n.languages.map((l) => ({
     locale: l,
     name: localeLabels[l],
@@ -80,7 +84,7 @@ export default async function Layout({
 
   return (
     <html
-      lang={lang}
+      lang={contentLang}
       suppressHydrationWarning
       className={cn(
         "antialiased",
@@ -99,7 +103,7 @@ export default async function Layout({
           search={{ options: { api: "/docs/api/search" } }}
         >
           <DocsLayout
-            tree={source.getPageTree(lang)}
+            tree={source.getPageTree(contentLang)}
             // Suppress Fumadocs's default sidebar-footer icons (theme +
             // language + search). Our custom <DocsSettings> is mounted as
             // the sidebar footer instead — two labelled buttons, not three
