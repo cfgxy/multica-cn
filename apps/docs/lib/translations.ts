@@ -54,7 +54,7 @@ export const homeCopy = {
   },
   ko: {
     eyebrow: "Multica 문서",
-    titleLead: "사람과 agent,",
+    titleLead: "사람과 에이전트,",
     titleAccent: "한곳에서.",
     byline: ["시작하기", "2026년 4월 업데이트", "약 6분 읽기"],
   },

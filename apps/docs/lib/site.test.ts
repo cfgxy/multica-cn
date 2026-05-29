@@ -35,7 +35,7 @@ beforeEach(() => {
 });
 
 describe("docsAlternates", () => {
-  it("omits Korean hreflang when the page only renders via English fallback", async () => {
+  it("omits Korean hreflang when no Korean MDX file exists for the page", async () => {
     const { docsAlternates } = await import("./site");
 
     expect(docsAlternates(["agents"])).toEqual({
@@ -48,10 +48,25 @@ describe("docsAlternates", () => {
     });
   });
 
-  it("omits Korean hreflang even when Fumadocs returns a fallback page for Korean", async () => {
+  it("omits Korean hreflang even when source.getPage returns a page for Korean", async () => {
     const { docsAlternates } = await import("./site");
 
     expect(docsAlternates(["agents"]).languages).not.toHaveProperty("ko");
+  });
+
+  it("includes Korean hreflang when a real *.ko.mdx page exists", async () => {
+    existingDocs.add("agents.ko.mdx");
+    const { docsAlternates } = await import("./site");
+
+    expect(docsAlternates(["agents"])).toEqual({
+      canonical: "https://www.multica.ai/docs/agents",
+      languages: {
+        en: "https://www.multica.ai/docs/agents",
+        zh: "https://www.multica.ai/docs/zh/agents",
+        ko: "https://www.multica.ai/docs/ko/agents",
+        "x-default": "https://www.multica.ai/docs/agents",
+      },
+    });
   });
 
   it("keeps the locale root alternates limited to real localized MDX pages", async () => {
