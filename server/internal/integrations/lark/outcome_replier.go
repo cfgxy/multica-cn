@@ -171,8 +171,27 @@ func (r *LarkOutcomeReplier) Reply(ctx context.Context, inst db.LarkInstallation
 				"err", err.Error(),
 			)
 		}
-	case OutcomeIngested, OutcomeDropped:
-		// OutcomeIngested is owned by the Patcher (task lifecycle).
+	case OutcomeIngested:
+		// The agent's chat reply itself goes through the Patcher (text
+		// message on ChatDone). But /issue does NOT block on the
+		// agent — the user expects an immediate "Created [MUL-42]"
+		// confirmation as soon as the issue row commits, separate
+		// from whatever the agent eventually replies. Without this,
+		// the user types `/issue fix login bug` and just sees the
+		// agent's eventual response, with no clear signal that the
+		// command itself was understood. Gate on IssueID.Valid so a
+		// plain chat message (no /issue) stays silent here.
+		if res.IssueID.Valid {
+			if err := r.sendIssueCreated(ctx, inst, msg, res); err != nil {
+				r.log.Warn("lark outcome replier: issue-created confirmation failed",
+					"installation_id", uuidString(inst.ID),
+					"chat_id", string(msg.ChatID),
+					"issue_id", uuidString(res.IssueID),
+					"err", err.Error(),
+				)
+			}
+		}
+	case OutcomeDropped:
 		// OutcomeDropped is informational; no user-visible reply.
 	}
 }
@@ -198,6 +217,56 @@ func (r *LarkOutcomeReplier) sendBindingPrompt(ctx context.Context, inst db.Lark
 		OpenID:         res.SenderOpenID,
 		BindURL:        bindURL,
 	})
+}
+
+// sendIssueCreated posts the "Created [MUL-42] <title>" confirmation
+// as a plain text message. We deliberately send text rather than an
+// interactive card so the confirmation flows inline with the rest of
+// the Lark conversation — consistent with how chat replies render
+// after MUL-2671's plain-text refactor. The link to Multica is
+// included on its own line so Lark's auto-linker turns it into a
+// tappable URL.
+func (r *LarkOutcomeReplier) sendIssueCreated(ctx context.Context, inst db.LarkInstallation, msg InboundMessage, res DispatchResult) error {
+	if msg.ChatID == "" {
+		return errors.New("missing chat_id")
+	}
+	creds, err := r.installationCredentials(inst)
+	if err != nil {
+		return err
+	}
+	text := issueCreatedText(res, r.publicURL)
+	if _, err := r.client.SendTextMessage(ctx, SendTextParams{
+		InstallationID: creds,
+		ChatID:         msg.ChatID,
+		Text:           text,
+	}); err != nil {
+		return fmt.Errorf("send issue-created text: %w", err)
+	}
+	return nil
+}
+
+// issueCreatedText composes the user-facing confirmation. Identifier
+// always wins over a bare number — DispatchResult.IssueIdentifier
+// already encodes the workspace prefix when available. PublicURL is
+// optional: when empty (self-host operators who haven't configured
+// MULTICA_PUBLIC_URL) the message still confirms the issue, just
+// without a deep link the user can tap.
+func issueCreatedText(res DispatchResult, publicURL string) string {
+	identifier := res.IssueIdentifier
+	if identifier == "" {
+		identifier = fmt.Sprintf("#%d", res.IssueNumber)
+	}
+	title := strings.TrimSpace(res.IssueTitle)
+	var line string
+	if title == "" {
+		line = fmt.Sprintf("Created %s", identifier)
+	} else {
+		line = fmt.Sprintf("Created %s — %s", identifier, title)
+	}
+	if publicURL == "" {
+		return line
+	}
+	return line + "\n" + strings.TrimRight(publicURL, "/") + "/issues/" + identifier
 }
 
 func (r *LarkOutcomeReplier) sendChatNotice(ctx context.Context, inst db.LarkInstallation, msg InboundMessage, body string) error {

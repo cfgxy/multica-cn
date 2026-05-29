@@ -88,6 +88,15 @@ type DispatchResult struct {
 	TaskID         pgtype.UUID
 	IssueID        pgtype.UUID
 	IssueNumber    int32
+	// IssueIdentifier is the workspace-qualified human key for the
+	// created issue ("MUL-42"). Populated only when /issue produced a
+	// new row. The OutcomeReplier uses this verbatim in the "Created
+	// [MUL-42]" confirmation message.
+	IssueIdentifier string
+	// IssueTitle is the title the user supplied on /issue, echoed back
+	// in the confirmation message so the chat history reads naturally
+	// even when the Multica deep link is not reachable.
+	IssueTitle string
 }
 
 // IssueCreator is the narrow subset of service.IssueService the
@@ -136,6 +145,12 @@ type DispatcherQueries interface {
 	ClaimLarkInboundDedup(ctx context.Context, messageID string) (db.LarkInboundMessageDedup, error)
 	MarkLarkInboundDedupProcessed(ctx context.Context, arg db.MarkLarkInboundDedupProcessedParams) (int64, error)
 	ReleaseLarkInboundDedup(ctx context.Context, arg db.ReleaseLarkInboundDedupParams) (int64, error)
+	// GetWorkspace is needed to read IssuePrefix so the /issue
+	// confirmation message can render the workspace-qualified key
+	// ("MUL-42"). A lookup failure is non-fatal — we degrade to
+	// emitting just the issue number — so callers handle the error
+	// inline rather than aborting the whole dispatch.
+	GetWorkspace(ctx context.Context, id pgtype.UUID) (db.Workspace, error)
 }
 
 // Dispatcher is the single per-message entry point on the inbound
@@ -407,6 +422,18 @@ func (d *Dispatcher) processClaimed(ctx context.Context, msg InboundMessage, ins
 		}
 		res.IssueID = issueRes.Issue.ID
 		res.IssueNumber = issueRes.Issue.Number
+		res.IssueTitle = issueRes.Issue.Title
+		// Render the workspace-qualified key ("MUL-42") so the
+		// outbound confirmation reads like a Linear/Jira identifier
+		// rather than a bare number. A workspace lookup failure here
+		// degrades gracefully — we still surface the issue number,
+		// just without the workspace prefix — so a Postgres blip on
+		// the workspace row does not eat the "/issue created" signal.
+		if ws, werr := d.Queries.GetWorkspace(ctx, inst.WorkspaceID); werr == nil && ws.IssuePrefix != "" {
+			res.IssueIdentifier = fmt.Sprintf("%s-%d", ws.IssuePrefix, issueRes.Issue.Number)
+		} else {
+			res.IssueIdentifier = fmt.Sprintf("#%d", issueRes.Issue.Number)
+		}
 	}
 
 	// 8. Enqueue the chat task that triggers the agent run. Only the

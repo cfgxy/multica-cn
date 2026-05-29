@@ -43,6 +43,8 @@ type fakeQueries struct {
 	userBindingErr     error
 	chatSession        db.ChatSession
 	chatSessionErr     error
+	workspace          db.Workspace
+	workspaceErr       error
 	dedup              map[string]*fakeDedupRow
 	dedupClaimErr      error
 	dedupReclaim       bool // when true, in-flight rows are re-claimable (simulates staleness)
@@ -141,6 +143,10 @@ func (f *fakeQueries) MarkLarkInboundDedupProcessed(ctx context.Context, arg db.
 // ReleaseLarkInboundDedup mirrors the production DELETE: only the
 // holder of the current claim_token can release the row, and only
 // while it is still in-flight.
+func (f *fakeQueries) GetWorkspace(ctx context.Context, id pgtype.UUID) (db.Workspace, error) {
+	return f.workspace, f.workspaceErr
+}
+
 func (f *fakeQueries) ReleaseLarkInboundDedup(ctx context.Context, arg db.ReleaseLarkInboundDedupParams) (int64, error) {
 	f.calledRelease++
 	if f.dedup == nil {
@@ -557,6 +563,7 @@ func TestDispatcher_IssueCommandCreatesIssue(t *testing.T) {
 		installationByApp: inst,
 		userBinding:       boundUser(),
 		chatSession:       db.ChatSession{ID: sessionID, AgentID: inst.AgentID},
+		workspace:         db.Workspace{ID: inst.WorkspaceID, IssuePrefix: "MUL"},
 	}
 	chat := &fakeChat{
 		ensureID: sessionID,
@@ -564,7 +571,11 @@ func TestDispatcher_IssueCommandCreatesIssue(t *testing.T) {
 			IssueCommand: &IssueCommand{Title: "ship it", Description: "ship the thing"},
 		},
 	}
-	issueSvc := &fakeIssueCreator{result: service.IssueCreateResult{Issue: db.Issue{ID: validUUID(0x88), Number: 42}}}
+	issueSvc := &fakeIssueCreator{result: service.IssueCreateResult{Issue: db.Issue{
+		ID:     validUUID(0x88),
+		Number: 42,
+		Title:  "ship it",
+	}}}
 	d := &Dispatcher{
 		Queries:      queries,
 		Chat:         chat,
@@ -598,6 +609,64 @@ func TestDispatcher_IssueCommandCreatesIssue(t *testing.T) {
 	}
 	if !res.IssueID.Valid || res.IssueNumber != 42 {
 		t.Fatalf("issue id/number not propagated: %+v", res)
+	}
+	// IssueIdentifier and IssueTitle are how the OutcomeReplier knows
+	// what to put in the "Created [MUL-42] ship it" confirmation
+	// message. They MUST be populated whenever a /issue command
+	// produced a row.
+	if res.IssueIdentifier != "MUL-42" {
+		t.Fatalf("issue identifier should reflect workspace prefix; got %q", res.IssueIdentifier)
+	}
+	if res.IssueTitle != "ship it" {
+		t.Fatalf("issue title should be propagated; got %q", res.IssueTitle)
+	}
+}
+
+// TestDispatcher_IssueIdentifierFallsBackToNumberOnWorkspaceLookupErr
+// pins the degrade-gracefully behaviour: a Postgres blip on the
+// workspace row should NOT silently drop the issue-created
+// confirmation. We emit "#42" instead of "MUL-42" in that case so
+// the user still sees that the issue was created.
+func TestDispatcher_IssueIdentifierFallsBackToNumberOnWorkspaceLookupErr(t *testing.T) {
+	sessionID := validUUID(0x66)
+	inst := activeInstallation()
+	queries := &fakeQueries{
+		installationByApp: inst,
+		userBinding:       boundUser(),
+		chatSession:       db.ChatSession{ID: sessionID, AgentID: inst.AgentID},
+		workspaceErr:      errors.New("workspace lookup failed"),
+	}
+	chat := &fakeChat{
+		ensureID: sessionID,
+		appendResult: AppendResult{
+			IssueCommand: &IssueCommand{Title: "fallback path", Description: ""},
+		},
+	}
+	issueSvc := &fakeIssueCreator{result: service.IssueCreateResult{Issue: db.Issue{
+		ID:     validUUID(0x88),
+		Number: 7,
+		Title:  "fallback path",
+	}}}
+	d := &Dispatcher{
+		Queries:      queries,
+		Chat:         chat,
+		Audit:        &fakeAudit{},
+		IssueService: issueSvc,
+		TaskService:  &fakeEnqueuer{task: db.AgentTaskQueue{ID: validUUID(0x77)}},
+	}
+
+	res, err := d.Handle(context.Background(), InboundMessage{
+		AppID:        "ok",
+		ChatType:     ChatTypeP2P,
+		SenderOpenID: "ou_user_a",
+		Body:         "/issue fallback path",
+		MessageID:    "msg-fallback",
+	})
+	if err != nil {
+		t.Fatalf("workspace lookup error must NOT abort dispatch; got %v", err)
+	}
+	if res.IssueIdentifier != "#7" {
+		t.Errorf("expected fallback identifier '#7'; got %q", res.IssueIdentifier)
 	}
 }
 

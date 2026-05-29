@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 
@@ -21,7 +22,9 @@ type stubAPIClientWithRecorder struct {
 	configured     bool
 	bindingCalls   []BindingPromptParams
 	interactiveOut []SendCardParams
+	textOut        []SendTextParams
 	sendErr        error
+	textErr        error
 	bindingErr     error
 }
 
@@ -42,7 +45,13 @@ func (s *stubAPIClientWithRecorder) PatchInteractiveCard(ctx context.Context, p 
 }
 
 func (s *stubAPIClientWithRecorder) SendTextMessage(ctx context.Context, p SendTextParams) (string, error) {
-	return "", nil
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.textErr != nil {
+		return "", s.textErr
+	}
+	s.textOut = append(s.textOut, p)
+	return "lark-text-msg-id", nil
 }
 
 func (s *stubAPIClientWithRecorder) SendBindingPromptCard(ctx context.Context, p BindingPromptParams) error {
@@ -256,6 +265,93 @@ func TestNoopReplierIsHandledByHub(t *testing.T) {
 	hub := NewHub(nil, nil, nil, HubConfig{})
 	if hub.replier == nil {
 		t.Fatal("Hub.replier must default to noop, not nil")
+	}
+}
+
+// TestLarkOutcomeReplierIssueCreatedSendsConfirmation pins the
+// recovered /issue confirmation path. Before the plain-text refactor
+// the design called for a "已创建 [MUL-xxx]" card; the refactor
+// dropped the whole card lifecycle, which had the side effect of
+// silently dropping the issue-created signal. Trump flagged it as a
+// blocker on PR #3277 review. Fix: OutcomeIngested with IssueID.Valid
+// triggers a plain text confirmation send via SendTextMessage,
+// composing the workspace-qualified identifier with the title and a
+// deep link back to Multica.
+func TestLarkOutcomeReplierIssueCreatedSendsConfirmation(t *testing.T) {
+	t.Parallel()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	stub := &stubAPIClientWithRecorder{configured: true}
+	rep := NewLarkOutcomeReplier(OutcomeReplierConfig{
+		APIClient:   stub,
+		BindingSvc:  &BindingTokenService{},
+		Credentials: stubCredentialsResolver{secret: "s"},
+		Queries:     stubReplierQueries{},
+		PublicURL:   "https://multica.test",
+		Logger:      log,
+	})
+
+	inst := db.LarkInstallation{AppID: "cli_x"}
+	inst.ID = mustUUID("11111111-1111-1111-1111-111111111111")
+	msg := InboundMessage{ChatID: "oc_chat_42", SenderOpenID: "ou_user"}
+	rep.Reply(context.Background(), inst, msg, DispatchResult{
+		Outcome:         OutcomeIngested,
+		IssueID:         mustUUID("22222222-2222-2222-2222-222222222222"),
+		IssueNumber:     42,
+		IssueIdentifier: "MUL-42",
+		IssueTitle:      "fix login bug",
+	})
+
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if len(stub.textOut) != 1 {
+		t.Fatalf("expected one SendTextMessage call, got %d", len(stub.textOut))
+	}
+	got := stub.textOut[0]
+	if got.ChatID != "oc_chat_42" {
+		t.Errorf("ChatID = %q; want oc_chat_42", got.ChatID)
+	}
+	if !strings.Contains(got.Text, "MUL-42") {
+		t.Errorf("text should embed the workspace-qualified key; got %q", got.Text)
+	}
+	if !strings.Contains(got.Text, "fix login bug") {
+		t.Errorf("text should embed the issue title; got %q", got.Text)
+	}
+	if !strings.Contains(got.Text, "https://multica.test/issues/MUL-42") {
+		t.Errorf("text should embed the deep link back to Multica; got %q", got.Text)
+	}
+	// No interactive card on this path — the confirmation must be
+	// plain text, matching how chat replies render.
+	if len(stub.interactiveOut) != 0 {
+		t.Errorf("issue-created confirmation must not send a card; got %d cards", len(stub.interactiveOut))
+	}
+}
+
+// TestLarkOutcomeReplierOutcomeIngestedSilentWithoutIssue pins the
+// silent-by-default behaviour for plain chat messages. The "Created"
+// text is gated on IssueID.Valid; a chat that didn't include /issue
+// must NOT trigger an outbound from the OutcomeReplier (the agent's
+// reply is delivered separately by the Patcher on EventChatDone).
+func TestLarkOutcomeReplierOutcomeIngestedSilentWithoutIssue(t *testing.T) {
+	t.Parallel()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	stub := &stubAPIClientWithRecorder{configured: true}
+	rep := NewLarkOutcomeReplier(OutcomeReplierConfig{
+		APIClient:   stub,
+		BindingSvc:  &BindingTokenService{},
+		Credentials: stubCredentialsResolver{secret: "s"},
+		Queries:     stubReplierQueries{},
+		PublicURL:   "https://multica.test",
+		Logger:      log,
+	})
+
+	rep.Reply(context.Background(), db.LarkInstallation{}, InboundMessage{ChatID: "oc"},
+		DispatchResult{Outcome: OutcomeIngested}) // no IssueID
+
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if len(stub.textOut) != 0 || len(stub.interactiveOut) != 0 {
+		t.Errorf("plain chat ingest must be silent at the replier; got text=%d cards=%d",
+			len(stub.textOut), len(stub.interactiveOut))
 	}
 }
 

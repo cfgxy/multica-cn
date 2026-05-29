@@ -298,6 +298,139 @@ func TestHTTPClient_SendInteractiveCard_HappyPath(t *testing.T) {
 	}
 }
 
+// TestHTTPClient_SendTextMessage_HappyPath pins the wire shape of the
+// plain text outbound used for chat replies + /issue confirmations.
+// Path, query, bearer auth, msg_type, and the double-JSON-encoded
+// `content` envelope all matter — Lark rejects anything off-spec and
+// the failures are silent-but-non-2xx, which is hard to debug
+// in production without this kind of contract pin.
+func TestHTTPClient_SendTextMessage_HappyPath(t *testing.T) {
+	fake := newLarkFake(t)
+	fake.stubToken("tok_text", 7200)
+	fake.stubSend(
+		map[string]any{
+			"code": 0,
+			"msg":  "ok",
+			"data": map[string]string{"message_id": "om_text_1"},
+		},
+		func(r *http.Request, body map[string]string) {
+			if r.URL.Path != "/open-apis/im/v1/messages" {
+				t.Errorf("path: got %q want /open-apis/im/v1/messages", r.URL.Path)
+			}
+			if got := r.URL.Query().Get("receive_id_type"); got != "chat_id" {
+				t.Errorf("receive_id_type: got %q want chat_id", got)
+			}
+			if body["receive_id"] != "oc_chat_42" {
+				t.Errorf("receive_id: got %q want oc_chat_42", body["receive_id"])
+			}
+			if body["msg_type"] != "text" {
+				t.Errorf("msg_type: got %q want text (NOT interactive — chat replies are plain bubbles)", body["msg_type"])
+			}
+			// content is a JSON-encoded string Lark requires: the outer
+			// HTTP body is JSON, and `content` is another JSON
+			// document INSIDE it. Decode and inspect.
+			var inner map[string]string
+			if err := json.Unmarshal([]byte(body["content"]), &inner); err != nil {
+				t.Fatalf("content is not valid inner JSON: %v (raw=%q)", err, body["content"])
+			}
+			if inner["text"] != "Hello world" {
+				t.Errorf("inner content.text: got %q want Hello world", inner["text"])
+			}
+		},
+	)
+
+	c := newTestClient(fake, time.Now)
+	msgID, err := c.SendTextMessage(context.Background(), SendTextParams{
+		InstallationID: testCreds(),
+		ChatID:         ChatID("oc_chat_42"),
+		Text:           "Hello world",
+	})
+	if err != nil {
+		t.Fatalf("send: %v", err)
+	}
+	if msgID != "om_text_1" {
+		t.Errorf("message id: got %q want om_text_1", msgID)
+	}
+	if got := fake.lastAuth(); got != "Bearer tok_text" {
+		t.Errorf("Authorization header: got %q want Bearer tok_text", got)
+	}
+}
+
+// TestHTTPClient_SendTextMessage_EncodesSpecialCharacters guards the
+// inner JSON envelope's escaping. Lark's spec is "content MUST be a
+// JSON-encoded string", which means newlines and quotes have to be
+// double-escaped — once when we marshal the inner `{"text": ...}`,
+// then once more implicitly when the outer body is encoded for the
+// HTTP request. Forgetting either pass corrupts the text Lark renders
+// (or worse, rejects the message with a body parse error).
+func TestHTTPClient_SendTextMessage_EncodesSpecialCharacters(t *testing.T) {
+	cases := []struct {
+		name string
+		text string
+	}{
+		{"multiline", "first line\nsecond line"},
+		{"double_quote", `she said "hi"`},
+		{"backslash", `path\to\file`},
+		{"chinese", "你好，世界 🌏"},
+		{"tab_and_newline", "col1\tcol2\nrow2"},
+		{"json_lookalike", `{"fake": "json"}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newLarkFake(t)
+			fake.stubToken("tok", 7200)
+			fake.stubSend(
+				map[string]any{"code": 0, "data": map[string]string{"message_id": "om_x"}},
+				func(r *http.Request, body map[string]string) {
+					var inner map[string]string
+					if err := json.Unmarshal([]byte(body["content"]), &inner); err != nil {
+						t.Fatalf("content envelope not valid JSON after wire-encode round trip: %v (raw=%q)", err, body["content"])
+					}
+					if inner["text"] != tc.text {
+						t.Errorf("text round-trip failed\n  got:  %q\n  want: %q", inner["text"], tc.text)
+					}
+				},
+			)
+			c := newTestClient(fake, time.Now)
+			if _, err := c.SendTextMessage(context.Background(), SendTextParams{
+				InstallationID: testCreds(),
+				ChatID:         ChatID("oc_chat_1"),
+				Text:           tc.text,
+			}); err != nil {
+				t.Fatalf("send: %v", err)
+			}
+		})
+	}
+}
+
+// TestHTTPClient_SendTextMessage_LarkErrorCode pins the failure path:
+// non-zero `code` becomes a wrapped error; a missing message_id even
+// with code=0 is still treated as failure (matches the success-card
+// path so callers don't have to special-case the response shapes).
+func TestHTTPClient_SendTextMessage_LarkErrorCode(t *testing.T) {
+	fake := newLarkFake(t)
+	fake.stubToken("tok", 7200)
+	fake.stubSend(
+		map[string]any{
+			"code": 234567,
+			"msg":  "Permission denied",
+		},
+		nil,
+	)
+	c := newTestClient(fake, time.Now)
+	_, err := c.SendTextMessage(context.Background(), SendTextParams{
+		InstallationID: testCreds(),
+		ChatID:         ChatID("oc"),
+		Text:           "hi",
+	})
+	if err == nil {
+		t.Fatal("expected error on non-zero Lark code")
+	}
+	if !strings.Contains(err.Error(), "234567") {
+		t.Errorf("error should surface the Lark code; got %v", err)
+	}
+}
+
 func TestHTTPClient_SendInteractiveCard_TokenCached(t *testing.T) {
 	fake := newLarkFake(t)
 	fake.stubToken("tok_cached", 7200)
