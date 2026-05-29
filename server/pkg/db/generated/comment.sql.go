@@ -512,6 +512,111 @@ func (q *Queries) ListRecentThreadCommentsForIssue(ctx context.Context, arg List
 	return items, nil
 }
 
+const listRootCommentsForIssue = `-- name: ListRootCommentsForIssue :many
+SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id FROM comment
+WHERE issue_id = $1 AND workspace_id = $2 AND parent_id IS NULL
+ORDER BY created_at ASC, id ASC
+LIMIT $3
+`
+
+type ListRootCommentsForIssueParams struct {
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Limit       int32       `json:"limit"`
+}
+
+// Top-level comments only, in issue chronological order. This powers
+// `comment list --roots-only` so agents can orient around the global issue
+// discussion before fetching any specific reply thread.
+func (q *Queries) ListRootCommentsForIssue(ctx context.Context, arg ListRootCommentsForIssueParams) ([]Comment, error) {
+	rows, err := q.db.Query(ctx, listRootCommentsForIssue, arg.IssueID, arg.WorkspaceID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Comment{}
+	for rows.Next() {
+		var i Comment
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueID,
+			&i.AuthorType,
+			&i.AuthorID,
+			&i.Content,
+			&i.Type,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ParentID,
+			&i.WorkspaceID,
+			&i.ResolvedAt,
+			&i.ResolvedByType,
+			&i.ResolvedByID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listRootCommentsSinceForIssue = `-- name: ListRootCommentsSinceForIssue :many
+SELECT id, issue_id, author_type, author_id, content, type, created_at, updated_at, parent_id, workspace_id, resolved_at, resolved_by_type, resolved_by_id FROM comment
+WHERE issue_id = $1 AND workspace_id = $2 AND parent_id IS NULL AND created_at > $3
+ORDER BY created_at ASC, id ASC
+LIMIT $4
+`
+
+type ListRootCommentsSinceForIssueParams struct {
+	IssueID     pgtype.UUID        `json:"issue_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	Limit       int32              `json:"limit"`
+}
+
+// Top-level comments created strictly after $3. Same semantics as
+// ListCommentsSinceForIssue, narrowed to thread roots.
+func (q *Queries) ListRootCommentsSinceForIssue(ctx context.Context, arg ListRootCommentsSinceForIssueParams) ([]Comment, error) {
+	rows, err := q.db.Query(ctx, listRootCommentsSinceForIssue,
+		arg.IssueID,
+		arg.WorkspaceID,
+		arg.CreatedAt,
+		arg.Limit,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Comment{}
+	for rows.Next() {
+		var i Comment
+		if err := rows.Scan(
+			&i.ID,
+			&i.IssueID,
+			&i.AuthorType,
+			&i.AuthorID,
+			&i.Content,
+			&i.Type,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.ParentID,
+			&i.WorkspaceID,
+			&i.ResolvedAt,
+			&i.ResolvedByType,
+			&i.ResolvedByID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listThreadCommentsForIssue = `-- name: ListThreadCommentsForIssue :many
 WITH RECURSIVE root_of AS (
     -- Walk up from the anchor until parent_id IS NULL.

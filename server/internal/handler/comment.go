@@ -69,30 +69,39 @@ const commentHardCap = 2000
 
 // ListComments returns comments for an issue. The default behaviour is
 // unchanged — full chronological dump capped at commentHardCap — so existing
-// callers and the desktop UI keep working as-is. Four optional query params
-// give agent-style readers a thread-aware view that scales to long issues
-// without dragging every prior comment into context:
+// callers and the desktop UI keep working as-is. Optional query params give
+// agent-style readers bounded views that scale to long issues without dragging
+// every prior reply into context:
+//
+//   - roots_only=true — return only top-level comments (parent_id IS NULL).
+//     May combine with since for incremental polling of newly created roots,
+//     but is exclusive with thread/recent/tail/cursor modes because those
+//     have their own grouping or pagination semantics.
 //
 //   - thread=<comment-uuid> — return the root of the thread containing this
 //     comment plus every descendant. The anchor may be a root or any reply;
 //     the server walks up to the root via a recursive CTE, so callers do not
 //     need to know whether the id they have is a root.
+//
 //   - tail=<N> — only valid with thread. Cap the reply count at the N most
 //     recent replies (per (created_at, id)). The thread root is always
 //     returned, even when N=0, so the reader keeps the "what is this thread
 //     about" context. Without tail, thread returns the entire thread (the
 //     pre-MUL-2421 behavior).
+//
 //   - recent=<N> — return the N most recently active threads (root + every
 //     descendant per thread). A thread's recency is MAX(created_at) across
 //     the whole subtree, so a stale-but-recently-replied thread ranks ahead
 //     of an active-but-quiet one. Row-based "newest N comments" is
 //     deliberately NOT exposed — it surfaces unrelated thread tails and
 //     hides relevant history (#2340).
+//
 //   - before=<RFC3339> + before-id=<uuid> — cursor. The pair's meaning is
 //     context-dependent so the flag surface stays small:
 //
 //   - with recent: a *thread* cursor — (last_activity_at, root_id) — and
 //     the next page returns threads strictly less recent.
+//
 //   - with thread + tail: a *reply* cursor — (created_at, id) — and the
 //     next page returns replies in the same thread strictly older than
 //     that reply.
@@ -104,6 +113,9 @@ const commentHardCap = 2000
 //
 // Combination rules (kept narrow on purpose — Elon flagged the matrix risk):
 //
+//   - roots_only is exclusive with thread, recent, tail, and before/before-id.
+//     It may combine with since. This keeps "list issue roots" separate from
+//     "read a specific thread" and "read recently active threads".
 //   - thread is exclusive with recent. Asking for "the most recent N within
 //     thread X" mixes two different navigation models and is rejected.
 //   - thread + before/before-id requires tail. Without tail, thread returns
@@ -153,7 +165,41 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 		beforeIDStr = q.Get("before-id")
 	}
 
+	rootsOnlyStr := q.Get("roots_only")
+	if rootsOnlyStr == "" {
+		// Accept hyphenated alias to match CLI flag convention.
+		rootsOnlyStr = q.Get("roots-only")
+	}
+
+	rootsOnly := false
+	if rootsOnlyStr != "" {
+		switch rootsOnlyStr {
+		case "true":
+			rootsOnly = true
+		case "false":
+		default:
+			writeError(w, http.StatusBadRequest, "invalid roots_only parameter; expected boolean")
+			return
+		}
+	}
+
 	// --- combination validation ----------------------------------------
+	if rootsOnly && threadStr != "" {
+		writeError(w, http.StatusBadRequest, "roots_only and thread are mutually exclusive")
+		return
+	}
+	if rootsOnly && recentStr != "" {
+		writeError(w, http.StatusBadRequest, "roots_only and recent are mutually exclusive")
+		return
+	}
+	if rootsOnly && tailStr != "" {
+		writeError(w, http.StatusBadRequest, "roots_only and tail are mutually exclusive")
+		return
+	}
+	if rootsOnly && (beforeTimeStr != "" || beforeIDStr != "") {
+		writeError(w, http.StatusBadRequest, "roots_only does not support before / before_id")
+		return
+	}
 	if threadStr != "" && recentStr != "" {
 		writeError(w, http.StatusBadRequest, "thread and recent are mutually exclusive")
 		return
@@ -241,6 +287,7 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 		HasCursor:     hasCursor,
 		BeforeAt:      beforeCursor,
 		BeforeID:      beforeUUID,
+		RootsOnly:     rootsOnly,
 	})
 	if err != nil {
 		switch err {
@@ -295,6 +342,7 @@ func (h *Handler) ListComments(w http.ResponseWriter, r *http.Request) {
 type fetchCommentsArgs struct {
 	Issue         db.Issue
 	Since         pgtype.Timestamptz
+	RootsOnly     bool
 	ThreadAnchor  string
 	ThreadTail    int
 	ThreadTailSet bool
@@ -560,6 +608,29 @@ func (h *Handler) fetchCommentsForList(ctx context.Context, args fetchCommentsAr
 			out.NextBeforeID = uuidToString(headRoot)
 		}
 		return out, nil
+	}
+
+	if args.RootsOnly {
+		// Root-only read for issue-level orientation. This intentionally
+		// stays separate from thread/recent modes: callers get the global
+		// top-level discussion first, then fetch a specific thread only when
+		// they need reply context.
+		if args.Since.Valid {
+			comments, err := h.Queries.ListRootCommentsSinceForIssue(ctx, db.ListRootCommentsSinceForIssueParams{
+				IssueID:     issue.ID,
+				WorkspaceID: issue.WorkspaceID,
+				CreatedAt:   args.Since,
+				Limit:       commentHardCap,
+			})
+			return fetchCommentsResult{Comments: comments}, err
+		}
+
+		comments, err := h.Queries.ListRootCommentsForIssue(ctx, db.ListRootCommentsForIssueParams{
+			IssueID:     issue.ID,
+			WorkspaceID: issue.WorkspaceID,
+			Limit:       commentHardCap,
+		})
+		return fetchCommentsResult{Comments: comments}, err
 	}
 
 	// Default + since paths preserved verbatim (no behavioural change for

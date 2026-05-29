@@ -15,6 +15,23 @@ WHERE issue_id = $1 AND workspace_id = $2 AND created_at > $3
 ORDER BY created_at ASC, id ASC
 LIMIT $4;
 
+-- name: ListRootCommentsForIssue :many
+-- Top-level comments only, in issue chronological order. This powers
+-- `comment list --roots-only` so agents can orient around the global issue
+-- discussion before fetching any specific reply thread.
+SELECT * FROM comment
+WHERE issue_id = $1 AND workspace_id = $2 AND parent_id IS NULL
+ORDER BY created_at ASC, id ASC
+LIMIT $3;
+
+-- name: ListRootCommentsSinceForIssue :many
+-- Top-level comments created strictly after $3. Same semantics as
+-- ListCommentsSinceForIssue, narrowed to thread roots.
+SELECT * FROM comment
+WHERE issue_id = $1 AND workspace_id = $2 AND parent_id IS NULL AND created_at > $3
+ORDER BY created_at ASC, id ASC
+LIMIT $4;
+
 -- name: ListThreadCommentsForIssue :many
 -- Returns the root of the thread containing @anchor_id plus every descendant
 -- (recursive — defends against any future deeper nesting; today's data is two

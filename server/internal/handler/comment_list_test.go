@@ -174,6 +174,59 @@ func TestListComments_DefaultPreservesChronologicalOrder(t *testing.T) {
 	eqIDs(t, ids(rows), want, "default order")
 }
 
+// TestListComments_RootsOnlyReturnsTopLevelComments pins the #3164 contract:
+// issue-level orientation should fetch only root comments, leaving replies for
+// a later thread-scoped read if the caller needs detail.
+func TestListComments_RootsOnlyReturnsTopLevelComments(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	fx := newCommentListFixture(t)
+
+	for _, tc := range []struct {
+		name  string
+		query string
+	}{
+		{name: "underscore query", query: "roots_only=true"},
+		{name: "hyphenated alias", query: "roots-only=true"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			w, rows := listComments(t, fx.IssueID, tc.query)
+			eqIDs(t, ids(rows), []string{fx.Root1, fx.Root2}, tc.name)
+			for _, row := range rows {
+				if row.ParentID != nil {
+					t.Fatalf("%s: expected root comment %s to have nil parent_id, got %q", tc.name, row.ID, *row.ParentID)
+				}
+			}
+			nb, nbid := nextThreadCursor(w)
+			if nb != "" || nbid != "" {
+				t.Fatalf("%s: roots-only list should not emit cursor headers, got before=%q before_id=%q", tc.name, nb, nbid)
+			}
+		})
+	}
+}
+
+// TestListComments_RootsOnlyWithSinceReturnsNewTopLevelComments proves the
+// one allowed roots-only combination: `since` narrows the root list without
+// pulling newer replies into the response.
+func TestListComments_RootsOnlyWithSinceReturnsNewTopLevelComments(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	fx := newCommentListFixture(t)
+
+	v := url.Values{}
+	v.Set("roots_only", "true")
+	v.Set("since", fx.Base.Add(5*time.Minute).UTC().Format(time.RFC3339Nano))
+	_, rows := listComments(t, fx.IssueID, v.Encode())
+	eqIDs(t, ids(rows), []string{fx.Root2}, "roots_only + since")
+	for _, row := range rows {
+		if row.ParentID != nil {
+			t.Fatalf("roots_only + since: expected root comment %s to have nil parent_id, got %q", row.ID, *row.ParentID)
+		}
+	}
+}
+
 // TestListComments_ThreadResolvesFromAnyAnchor proves Elon's point 2:
 // regardless of whether the anchor is a root, a direct reply, or a nested
 // reply (parent_id points at another reply), the server walks up to the
@@ -548,6 +601,37 @@ func TestListComments_FlagCombinationRules(t *testing.T) {
 		{
 			name:   "non-numeric recent rejected",
 			query:  "recent=lots",
+			status: http.StatusBadRequest,
+		},
+		{
+			name:   "non-boolean roots_only rejected",
+			query:  "roots_only=yes",
+			status: http.StatusBadRequest,
+		},
+		{
+			name:   "roots_only + thread rejected",
+			query:  "roots_only=true&thread=" + fx.Root1,
+			status: http.StatusBadRequest,
+		},
+		{
+			name:   "roots_only + recent rejected",
+			query:  "roots_only=true&recent=1",
+			status: http.StatusBadRequest,
+		},
+		{
+			name:   "roots_only + tail rejected",
+			query:  "roots_only=true&tail=1",
+			status: http.StatusBadRequest,
+		},
+		{
+			name: "roots_only + cursor rejected",
+			query: (func() string {
+				v := url.Values{}
+				v.Set("roots_only", "true")
+				v.Set("before", time.Now().UTC().Format(time.RFC3339))
+				v.Set("before_id", uuid.NewString())
+				return v.Encode()
+			})(),
 			status: http.StatusBadRequest,
 		},
 	}
