@@ -1,6 +1,8 @@
 ---
 name: multica-mentioning
 description: Use when writing an issue comment that needs to @mention someone — notify a person, trigger another agent, or hand work to a squad. Covers how to build a mention link that actually fires and what each mention type does.
+user-invocable: false
+allowed-tools: Bash(multica *)
 ---
 
 # Mentioning & Delegating
