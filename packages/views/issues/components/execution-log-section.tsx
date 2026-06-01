@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ChevronRight, Loader2, RotateCcw, Square } from "lucide-react";
+import { Ban, CheckCircle2, ChevronRight, Loader2, RotateCcw, Square, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@multica/core/api";
 import { issueKeys } from "@multica/core/issues/queries";
@@ -28,14 +28,12 @@ import { TerminateTaskConfirmDialog } from "./terminate-task-confirm-dialog";
 //     (sticky card stays as a header-only banner)
 //   - the standalone <TaskRunHistory> below the main content
 //
-// Row layout — two visual columns, with an overlaid trailing slot:
+// Row layout — simple left/right flex:
 //   1. Agent avatar (no status dot — agent availability is not the
 //      story here; the row's right column carries the task status)
-//   2. Trigger description (e.g. "From comment", "Autopilot", "Retry"),
-//      masked before the fixed trailing zone
-//   3. Fixed right trailing zone: status by default, hover actions on top.
-//      Status never participates in flex layout, otherwise long terminal
-//      labels create invisible hover gaps and squeeze the trigger text.
+//   2. Trigger description flexes and truncates
+//   3. Status is a normal shrink-0 right column; hover actions overlay that
+//      same right edge. Do not use masks/padding gymnastics here.
 //
 // One query (`listTasksByIssue`) drives both buckets — the back-end
 // returns every status, the front-end filters into active vs past on the
@@ -273,7 +271,7 @@ function ActiveRow({ task, issueId }: { task: AgentTask; issueId: string }) {
   return (
     <RowShell task={task}>
       <TriggerText text={trigger} />
-      <RowStatus>
+      <RowStatus title={label}>
         {task.status === "running" && <Loader2 className="h-3 w-3 animate-spin text-info" />}
         <span className={tone}>{label}</span>
       </RowStatus>
@@ -327,7 +325,6 @@ function PastRow({ task, issueId }: { task: AgentTask; issueId: string }) {
   const { t } = useT("issues");
   const timeAgo = useTimeAgo();
   const [retrying, setRetrying] = useState(false);
-  const tone = STATUS_TONE[task.status];
   const label = useStatusLabel(task.status);
   const trigger = useTriggerText(task);
   const time = task.completed_at ? timeAgo(task.completed_at) : "—";
@@ -361,9 +358,9 @@ function PastRow({ task, issueId }: { task: AgentTask; issueId: string }) {
   return (
     <RowShell task={task}>
       <TriggerText text={trigger} />
-      <RowStatus title={failureLabel ?? undefined}>
-        <span className={tone}>{label}</span>
-        <span className="text-muted-foreground"> · {time}</span>
+      <RowStatus title={failureLabel ?? label}>
+        <TaskStatusIcon status={task.status} />
+        <span className="text-muted-foreground">{time}</span>
       </RowStatus>
       <RowActions>
         <TranscriptButton task={task} agentName="" title={t(($) => $.execution_log.transcript_tooltip)} />
@@ -422,28 +419,10 @@ function RowShell({
   );
 }
 
-// Trigger description leaves a real layout gutter before the absolute
-// trailing slot. Padding is not enough here: text can still visually paint
-// under an overlaid status. The right margin makes the text column end
-// before status/actions begin.
 function TriggerText({ text }: { text: string }) {
-  return (
-    <span
-      className="mr-32 min-w-0 flex-1 overflow-hidden whitespace-nowrap text-xs text-muted-foreground"
-      style={{
-        maskImage: "linear-gradient(to right, black calc(100% - 28px), transparent)",
-        WebkitMaskImage:
-          "linear-gradient(to right, black calc(100% - 28px), transparent)",
-      }}
-    >
-      {text}
-    </span>
-  );
+  return <span className="min-w-0 flex-1 truncate text-xs text-muted-foreground">{text}</span>;
 }
 
-// Fixed trailing status slot. This deliberately does NOT sit in flex layout:
-// terminal rows can have longer status/time text, but that text must not
-// reserve a huge invisible gap when hover actions fade in.
 function RowStatus({
   children,
   title,
@@ -454,22 +433,33 @@ function RowStatus({
   return (
     <div
       title={title}
-      className="pointer-events-none absolute inset-y-0 right-1 flex w-28 items-center justify-end gap-1 overflow-hidden whitespace-nowrap bg-gradient-to-l from-background via-background/95 to-transparent pl-4 text-xs transition-opacity group-hover/execution-log-row:opacity-0"
+      className="flex h-7 w-20 shrink-0 items-center justify-end gap-1 overflow-hidden whitespace-nowrap text-xs transition-opacity group-hover/execution-log-row:opacity-0"
     >
       {children}
     </div>
   );
 }
 
+function TaskStatusIcon({ status }: { status: AgentTask["status"] }) {
+  switch (status) {
+    case "completed":
+      return <CheckCircle2 className="h-3.5 w-3.5 text-success" />;
+    case "failed":
+      return <XCircle className="h-3.5 w-3.5 text-destructive" />;
+    case "cancelled":
+      return <Ban className="h-3.5 w-3.5 text-muted-foreground" />;
+    default:
+      return null;
+  }
+}
+
 // Hover-only action slot — absolute-positioned over the row's right edge.
-// Default trailing status and hover actions share the same fixed right zone,
-// so the row never reflows and long status text never steals trigger width.
-// Mirrors the compact Chat History / desktop tab / sidebar pin pattern.
+// It covers the normal right status column only on hover.
 function RowActions({ children }: { children: React.ReactNode }) {
   return (
     <div
       className={[
-        "pointer-events-none absolute inset-y-0 right-1 flex items-center gap-0.5 pl-6 opacity-0 transition-opacity",
+        "pointer-events-none absolute inset-y-0 right-1 flex w-20 items-center justify-end gap-0.5 opacity-0 transition-opacity",
         // The gradient backdrop blends the row's hover background (accent/40)
         // from the right and fades to transparent on the left, so the
         // status text underneath is dimmed gracefully rather than cut.
