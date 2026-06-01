@@ -40,14 +40,14 @@ const TRIGGER_MASK_STYLE: React.CSSProperties = {
 //     (sticky card stays as a header-only banner)
 //   - the standalone <TaskRunHistory> below the main content
 //
-// Row layout — three columns, left to right:
+// Row layout — two visual columns, with an overlaid trailing slot:
 //   1. Agent avatar (no status dot — agent availability is not the
 //      story here; the row's right column carries the task status)
 //   2. Trigger description (e.g. "From comment", "Autopilot", "Retry"),
-//      truncated with ellipsis when narrow
-//   3. Status, swapped to hover actions (cancel / transcript) in the same
-//      trailing zone. Active rows do not show relative time; the live status
-//      is the useful signal.
+//      masked before the fixed trailing zone
+//   3. Fixed right trailing zone: status by default, hover actions on top.
+//      Status never participates in flex layout, otherwise long terminal
+//      labels create invisible hover gaps and squeeze the trigger text.
 //
 // One query (`listTasksByIssue`) drives both buckets — the back-end
 // returns every status, the front-end filters into active vs past on the
@@ -285,10 +285,10 @@ function ActiveRow({ task, issueId }: { task: AgentTask; issueId: string }) {
   return (
     <RowShell task={task}>
       <TriggerText text={trigger} />
-      <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-xs transition-opacity group-hover:opacity-0 group-focus-within:opacity-0">
+      <RowStatus>
         {task.status === "running" && <Loader2 className="h-3 w-3 animate-spin text-info" />}
         <span className={tone}>{label}</span>
-      </span>
+      </RowStatus>
       <RowActions>
         {showTranscript && (
           <TranscriptButton
@@ -373,10 +373,10 @@ function PastRow({ task, issueId }: { task: AgentTask; issueId: string }) {
   return (
     <RowShell task={task}>
       <TriggerText text={trigger} />
-      <span className="shrink-0 whitespace-nowrap text-xs transition-opacity group-hover:opacity-0 group-focus-within:opacity-0">
-        <span className={tone}>{failureLabel ?? label}</span>
+      <RowStatus title={failureLabel ?? undefined}>
+        <span className={tone}>{label}</span>
         <span className="text-muted-foreground"> · {time}</span>
-      </span>
+      </RowStatus>
       <RowActions>
         <TranscriptButton task={task} agentName="" title={t(($) => $.execution_log.transcript_tooltip)} />
         {canRetry && (
@@ -418,7 +418,7 @@ function RowShell({
   // `relative` so the absolute-positioned RowActions slot anchors to this
   // row instead of an outer container.
   return (
-    <div className="group relative flex items-center gap-2 rounded px-1 py-1.5 transition-colors hover:bg-accent/40">
+    <div className="group relative flex items-center gap-2 overflow-hidden rounded px-1 py-1.5 transition-colors hover:bg-accent/40">
       {task.agent_id ? (
         <ActorAvatar
           actorType="agent"
@@ -441,7 +441,7 @@ function RowShell({
 function TriggerText({ text }: { text: string }) {
   return (
     <span
-      className="min-w-0 flex-1 overflow-hidden whitespace-nowrap text-xs text-muted-foreground"
+      className="min-w-0 flex-1 overflow-hidden whitespace-nowrap pr-24 text-xs text-muted-foreground"
       style={TRIGGER_MASK_STYLE}
     >
       {text}
@@ -449,10 +449,30 @@ function TriggerText({ text }: { text: string }) {
   );
 }
 
+// Fixed trailing status slot. This deliberately does NOT sit in flex layout:
+// terminal rows can have longer status/time text, but that text must not
+// reserve a huge invisible gap when hover actions fade in.
+function RowStatus({
+  children,
+  title,
+}: {
+  children: React.ReactNode;
+  title?: string;
+}) {
+  return (
+    <div
+      title={title}
+      className="pointer-events-none absolute right-1 top-1/2 flex h-7 max-w-24 -translate-y-1/2 items-center justify-end gap-1 overflow-hidden whitespace-nowrap text-xs transition-opacity group-hover:opacity-0"
+    >
+      {children}
+    </div>
+  );
+}
+
 // Hover-only action slot — absolute-positioned over the row's right edge.
-// Default trailing status stays anchored in the layout; on hover it fades out
-// and the action buttons fade into the same trailing zone, so the row never
-// reflows. Mirrors the compact Chat History / desktop tab / sidebar pin pattern.
+// Default trailing status and hover actions share the same fixed right zone,
+// so the row never reflows and long status text never steals trigger width.
+// Mirrors the compact Chat History / desktop tab / sidebar pin pattern.
 function RowActions({ children }: { children: React.ReactNode }) {
   return (
     <div
@@ -463,7 +483,6 @@ function RowActions({ children }: { children: React.ReactNode }) {
         // status text underneath is dimmed gracefully rather than cut.
         "bg-gradient-to-l from-accent/95 via-accent/80 to-transparent",
         "group-hover:pointer-events-auto group-hover:opacity-100",
-        "group-focus-within:pointer-events-auto group-focus-within:opacity-100",
       ].join(" ")}
     >
       {children}
