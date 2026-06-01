@@ -800,18 +800,16 @@ function SessionDropdown({
     setConfirmingStopId(null);
   }, [confirmingStopId, pendingTaskBySessionId]);
 
-  // Cross-session aggregate signal for the closed-dropdown trigger.
-  // "Active" here means there's something interesting happening in a
-  // session OTHER than the one the user is currently looking at — the
-  // user already sees their own session's state via the StatusPill /
-  // unread auto-mark, so highlighting it on the trigger would be noise.
-  // Same priority rule as the row pips: running > unread.
-  const otherSessionRunning = sessions.some(
+  // Header state split:
+  // - inside the trigger: the current chat's own live state
+  // - beside the trigger: aggregate activity from other chats
+  const currentSessionRunning = activeSessionId ? inFlightSessionIds.has(activeSessionId) : false;
+  const otherRunningCount = sessions.filter(
     (s) => s.id !== activeSessionId && inFlightSessionIds.has(s.id),
-  );
-  const otherSessionUnread = sessions.some(
+  ).length;
+  const otherUnreadCount = sessions.filter(
     (s) => s.id !== activeSessionId && s.has_unread,
-  );
+  ).length;
 
   const handleConfirmDelete = (session: ChatSession) => {
     const sessionId = session.id;
@@ -1039,7 +1037,7 @@ function SessionDropdown({
             </div>
           ) : (
             <div className="absolute right-2 top-1/2 flex -translate-y-1/2 items-center">
-              <div className="flex h-7 min-w-16 items-center justify-end gap-1.5 text-xs text-muted-foreground transition-opacity group-hover/history-row:opacity-0 group-focus-within/history-row:opacity-0">
+              <div className="flex h-7 min-w-16 items-center justify-end gap-1.5 text-xs text-muted-foreground transition-opacity group-hover/history-row:opacity-0">
                 {isRunning && <Loader2 className="size-3 animate-spin" />}
                 {showCompleted && !isRunning && <Check className="size-3 text-emerald-500" />}
                 {showUnread && !isRunning && !showCompleted && (
@@ -1051,7 +1049,7 @@ function SessionDropdown({
                 )}
                 <span className={cn("truncate", (showUnread || showCompleted || isRunning) && "font-medium text-foreground")}>{trailingStatus}</span>
               </div>
-              <div className="absolute right-0 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover/history-row:opacity-100 group-focus-within/history-row:opacity-100">
+              <div className="absolute right-0 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity group-hover/history-row:opacity-100">
                 {isRunning && pendingTask && (
                   <button
                     type="button"
@@ -1117,31 +1115,46 @@ function SessionDropdown({
   return (
     <>
       <Popover open={isHistoryOpen} onOpenChange={setIsHistoryOpen}>
-        <PopoverTrigger className="flex max-w-96 min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 transition-colors hover:bg-accent data-[popup-open]:bg-accent data-open:bg-accent">
-          {triggerAgent && (
-            <ActorAvatar
-              actorType="agent"
-              actorId={triggerAgent.id}
-              size={24}
-              enableHoverCard
-              showStatusDot
-            />
-          )}
-          <span className="min-w-0 truncate text-sm font-medium">{title}</span>
-          {otherSessionRunning ? (
-            <Loader2
+        <div className="flex min-w-0 items-center gap-1">
+          <PopoverTrigger className="flex max-w-96 min-w-0 items-center gap-1.5 rounded-md px-1.5 py-1 transition-colors hover:bg-accent data-[popup-open]:bg-accent data-open:bg-accent">
+            {triggerAgent && (
+              <ActorAvatar
+                actorType="agent"
+                actorId={triggerAgent.id}
+                size={24}
+                enableHoverCard
+                showStatusDot
+              />
+            )}
+            <span className="min-w-0 truncate text-sm font-medium">{title}</span>
+            {currentSessionRunning && (
+              <Loader2
+                aria-label={t(($) => $.session_history.row_subtitle.working)}
+                className="size-3 shrink-0 animate-spin text-muted-foreground"
+              />
+            )}
+            <ChevronDown className="size-3 text-muted-foreground shrink-0" />
+          </PopoverTrigger>
+          {otherRunningCount > 0 ? (
+            <span
               aria-label={t(($) => $.window.another_running)}
-              className="size-3.5 shrink-0 animate-spin text-muted-foreground"
-            />
-          ) : otherSessionUnread ? (
+              title={t(($) => $.window.another_running)}
+              className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-xs font-medium text-muted-foreground"
+            >
+              <Loader2 className="size-3 animate-spin" />
+              {otherRunningCount > 1 && <span>{otherRunningCount}</span>}
+            </span>
+          ) : otherUnreadCount > 0 ? (
             <span
               aria-label={t(($) => $.window.another_unread)}
               title={t(($) => $.window.another_unread)}
-              className="size-1.5 shrink-0 rounded-full bg-brand"
-            />
+              className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md px-1.5 text-xs font-medium text-muted-foreground"
+            >
+              <span className="size-1.5 rounded-full bg-brand" />
+              {otherUnreadCount > 1 && <span>{otherUnreadCount}</span>}
+            </span>
           ) : null}
-          <ChevronDown className="size-3 text-muted-foreground shrink-0" />
-        </PopoverTrigger>
+        </div>
         <PopoverContent
           align="start"
           className="max-h-96 w-auto min-w-[max(16rem,var(--anchor-width,16rem))] max-w-96 gap-0 overflow-y-auto p-1"
