@@ -45,8 +45,9 @@ const TRIGGER_MASK_STYLE: React.CSSProperties = {
 //      story here; the row's right column carries the task status)
 //   2. Trigger description (e.g. "From comment", "Autopilot", "Retry"),
 //      truncated with ellipsis when narrow
-//   3. Status + relative time, swapped to hover actions (cancel /
-//      transcript) on hover
+//   3. Status, swapped to hover actions (cancel / transcript) in the same
+//      trailing zone. Active rows do not show relative time; the live status
+//      is the useful signal.
 //
 // One query (`listTasksByIssue`) drives both buckets — the back-end
 // returns every status, the front-end filters into active vs past on the
@@ -214,22 +215,6 @@ const STATUS_TONE: Record<AgentTask["status"], string> = {
   cancelled: "text-muted-foreground",
 };
 
-// Time anchor depends on status. Active rows want "Started 2m ago" /
-// "Queued 30s ago" — what's happening now. Past rows want "5m ago" — when
-// the verdict landed.
-function activeTimeText(task: AgentTask, timeAgo: (dateStr: string) => string): string {
-  if (task.status === "running" && task.started_at) {
-    return timeAgo(task.started_at);
-  }
-  if (
-    (task.status === "dispatched" || task.status === "waiting_local_directory") &&
-    task.dispatched_at
-  ) {
-    return timeAgo(task.dispatched_at);
-  }
-  return timeAgo(task.created_at);
-}
-
 // ─── Active row ────────────────────────────────────────────────────────────
 
 import { stripMentionMarkdown } from "../utils/strip-mention-markdown";
@@ -270,13 +255,11 @@ function useStatusLabel(status: AgentTask["status"]): string {
 
 function ActiveRow({ task, issueId }: { task: AgentTask; issueId: string }) {
   const { t } = useT("issues");
-  const timeAgo = useTimeAgo();
   const [cancelling, setCancelling] = useState(false);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const tone = STATUS_TONE[task.status];
   const label = useStatusLabel(task.status);
   const trigger = useTriggerText(task);
-  const time = activeTimeText(task, timeAgo);
 
   // Transcript only meaningful once messages exist — pure-queued and
   // waiting_local_directory tasks haven't streamed any agent output yet.
@@ -302,11 +285,9 @@ function ActiveRow({ task, issueId }: { task: AgentTask; issueId: string }) {
   return (
     <RowShell task={task}>
       <TriggerText text={trigger} />
-      {/* Status + time always visible — actions append on hover, never
-          replace. Same pattern as desktop tab bar / sidebar pins. */}
-      <span className="shrink-0 whitespace-nowrap text-xs">
+      <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-xs transition-opacity group-hover:opacity-0 group-focus-within:opacity-0">
+        {task.status === "running" && <Loader2 className="h-3 w-3 animate-spin text-info" />}
         <span className={tone}>{label}</span>
-        <span className="text-muted-foreground"> · {time}</span>
       </span>
       <RowActions>
         {showTranscript && (
@@ -392,7 +373,7 @@ function PastRow({ task, issueId }: { task: AgentTask; issueId: string }) {
   return (
     <RowShell task={task}>
       <TriggerText text={trigger} />
-      <span className="shrink-0 whitespace-nowrap text-xs">
+      <span className="shrink-0 whitespace-nowrap text-xs transition-opacity group-hover:opacity-0 group-focus-within:opacity-0">
         <span className={tone}>{failureLabel ?? label}</span>
         <span className="text-muted-foreground"> · {time}</span>
       </span>
@@ -469,11 +450,9 @@ function TriggerText({ text }: { text: string }) {
 }
 
 // Hover-only action slot — absolute-positioned over the row's right edge.
-// Status + time stay anchored in the layout; on hover the action buttons
-// fade in on top of them with a left-fading gradient backdrop, so the
-// status copy is gracefully covered (not hard-clipped) and the row
-// content never reflows. Mirrors the "actions sticky over content" idiom
-// used by GitHub PR rows, Linear issue rows, etc.
+// Default trailing status stays anchored in the layout; on hover it fades out
+// and the action buttons fade into the same trailing zone, so the row never
+// reflows. Mirrors the compact Chat History / desktop tab / sidebar pin pattern.
 function RowActions({ children }: { children: React.ReactNode }) {
   return (
     <div
