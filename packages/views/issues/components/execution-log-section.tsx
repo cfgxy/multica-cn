@@ -422,14 +422,14 @@ function RowShell({
   );
 }
 
-// Trigger description with a mask-gradient right edge — text fades into
-// transparency in the trailing 12px for the same reason desktop tab /
-// sidebar pin do it: avoids a hard truncate cut against neighbouring
-// content.
+// Trigger description leaves a real layout gutter before the absolute
+// trailing slot. Padding is not enough here: text can still visually paint
+// under an overlaid status. The right margin makes the text column end
+// before status/actions begin.
 function TriggerText({ text }: { text: string }) {
   return (
     <span
-      className="min-w-0 flex-1 overflow-hidden whitespace-nowrap pr-36 text-xs text-muted-foreground"
+      className="mr-32 min-w-0 flex-1 overflow-hidden whitespace-nowrap text-xs text-muted-foreground"
       style={{
         maskImage: "linear-gradient(to right, black calc(100% - 28px), transparent)",
         WebkitMaskImage:
@@ -454,7 +454,7 @@ function RowStatus({
   return (
     <div
       title={title}
-      className="pointer-events-none absolute right-1 top-1/2 flex h-7 w-28 -translate-y-1/2 items-center justify-end gap-1 overflow-hidden whitespace-nowrap text-xs transition-opacity group-hover/execution-log-row:opacity-0"
+      className="pointer-events-none absolute inset-y-0 right-1 flex w-28 items-center justify-end gap-1 overflow-hidden whitespace-nowrap bg-gradient-to-l from-background via-background/95 to-transparent pl-4 text-xs transition-opacity group-hover/execution-log-row:opacity-0"
     >
       {children}
     </div>
