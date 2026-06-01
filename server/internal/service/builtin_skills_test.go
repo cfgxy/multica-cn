@@ -156,6 +156,38 @@ func TestMentioningSkillTeachesTheParserContract(t *testing.T) {
 	}
 }
 
+func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
+	skill, ok := findSkill(t, "multica-working-on-issues")
+	if !ok {
+		return
+	}
+	fm, body, _ := splitFrontmatter(skill.Content)
+
+	if got := strings.TrimSpace(fm["user-invocable"]); got != "false" {
+		t.Errorf("user-invocable = %q, want false (issue workflow guidance triggers from context)", got)
+	}
+	if got := strings.TrimSpace(fm["allowed-tools"]); !strings.Contains(got, "Bash(multica *)") {
+		t.Errorf("allowed-tools = %q, want access to the Multica CLI", got)
+	}
+
+	mustContain := []string{
+		"multica issue get <issue-id> --output json",
+		"multica issue metadata list <issue-id> --output json",
+		"multica issue comment list <issue-id> --thread <trigger-comment-id>",
+		"multica issue comment add <issue-id> --parent <trigger-comment-id>",
+		"Closes MUL-2759",
+		"--status backlog",
+		"pr_url",
+		"server/internal/handler/github.go:490",
+		"server/internal/handler/issue.go:2446",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(body, want) {
+			t.Errorf("working-on-issues skill missing %q", want)
+		}
+	}
+}
+
 func findSkill(t *testing.T, name string) (AgentSkillData, bool) {
 	t.Helper()
 	for _, s := range loadBuiltinSkills() {
