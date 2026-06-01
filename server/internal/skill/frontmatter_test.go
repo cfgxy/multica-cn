@@ -2,7 +2,7 @@ package skill
 
 import "testing"
 
-func TestParseFrontmatter(t *testing.T) {
+func TestParseSkillFrontmatter(t *testing.T) {
 	tests := []struct {
 		name     string
 		content  string
@@ -70,6 +70,55 @@ func TestParseFrontmatter(t *testing.T) {
 			wantDesc: "",
 		},
 		{
+			name:     "name only",
+			content:  "---\nname: foo\n---\nbody",
+			wantName: "foo",
+			wantDesc: "",
+		},
+		{
+			name:     "description only",
+			content:  "---\ndescription: bar\n---\nbody",
+			wantName: "",
+			wantDesc: "bar",
+		},
+		{
+			name:     "leading blank line is not frontmatter",
+			content:  "\n---\nname: foo\ndescription: bar\n---\nbody",
+			wantName: "",
+			wantDesc: "",
+		},
+		{
+			// The non-greedy capture stops at the first closing fence, so a
+			// later "---" in the body must not extend the frontmatter block.
+			name:     "triple dash in body stops at first fence",
+			content:  "---\nname: foo\ndescription: bar\n---\nintro\n---\nmore",
+			wantName: "foo",
+			wantDesc: "bar",
+		},
+		{
+			// Parity with the TS coercion: non-string scalars render as their
+			// literal form rather than being dropped.
+			name:     "non-string scalars coerce to literal",
+			content:  "---\nname: 123\ndescription: 456\n---\nbody",
+			wantName: "123",
+			wantDesc: "456",
+		},
+		{
+			// A structured value where a scalar belongs (authoring mistake) must
+			// not discard the sibling name; the value is JSON-encoded, matching
+			// the TS parseFrontmatter behaviour.
+			name:     "sequence description keeps name and is JSON-encoded",
+			content:  "---\nname: my-skill\ndescription:\n  - first feature\n  - second feature\n---\nbody",
+			wantName: "my-skill",
+			wantDesc: `["first feature","second feature"]`,
+		},
+		{
+			name:     "mapping description keeps name and is JSON-encoded",
+			content:  "---\nname: my-skill\ndescription:\n  a: 1\n  b: 2\n---\nbody",
+			wantName: "my-skill",
+			wantDesc: `{"a":1,"b":2}`,
+		},
+		{
 			// Reproduction for issue #3495: Chinese block scalar.
 			name: "issue 3495 chinese literal block scalar",
 			content: "---\n" +
@@ -88,7 +137,7 @@ func TestParseFrontmatter(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotName, gotDesc := ParseFrontmatter(tt.content)
+			gotName, gotDesc := ParseSkillFrontmatter(tt.content)
 			if gotName != tt.wantName {
 				t.Errorf("name: got %q, want %q", gotName, tt.wantName)
 			}
