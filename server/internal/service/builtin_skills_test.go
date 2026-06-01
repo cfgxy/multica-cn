@@ -242,10 +242,14 @@ func TestSkillDiscoverySkillCoversFindVerifyImportContracts(t *testing.T) {
 	}
 
 	mustContain := []string{
-		"npx --yes skills find <query>",
-		"skills.sh",
+		"multica skill search <query> --output json",
+		"GET /api/skills/search?q=...",
+		"clawhub.ai",
+		"upstream_unavailable",
 		"verify before import",
-		"install count",
+		"install_count",
+		"github_stars",
+		"repo",
 		"source reputation",
 		"SKILL.md",
 		"multica skill import --url <selected-url> --output json",

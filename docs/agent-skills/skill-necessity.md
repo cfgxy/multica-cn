@@ -349,7 +349,7 @@ The skill teaches the agent how to turn a user's need into a search query, evalu
 
 Discovery and installation are separate:
 
-- discovery can use `npx --yes skills find <query>` or skills.sh to find candidate URLs;
+- discovery should use `multica skill search <query> --output json` / `GET /api/skills/search?q=...` to find structured candidate URLs;
 - installation must use `multica skill import --url <selected-url> --output json` / `POST /api/skills/import`.
 
 ### Without this skill
@@ -377,8 +377,8 @@ The agent may install a plausible but wrong skill, or install it outside Multica
 With the skill, the agent must:
 
 1. Convert the request into a focused search query.
-2. Run a discovery command such as `npx --yes skills find <query>`.
-3. Compare candidates using `SKILL.md` content, install count, source reputation, generality, and importability.
+2. Run `multica skill search <query> --output json`.
+3. Compare candidates using `SKILL.md` content, `install_count`, `github_stars` / `repo` when present, source reputation, generality, and importability.
 4. Reject weak matches instead of importing something just to act.
 5. Import the selected URL with `multica skill import --url <selected-url> --output json`.
 6. Report the selected URL, selection rationale, import result, and whether agent binding is still needed.
