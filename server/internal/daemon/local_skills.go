@@ -318,7 +318,7 @@ func enumerateLocalSkills(
 			if err != nil {
 				continue
 			}
-			skillName, description := skill.ParseFrontmatter(content)
+			skillName, description := skill.ParseSkillFrontmatter(content)
 			if skillName == "" {
 				skillName = filepath.Base(path)
 			}
@@ -376,7 +376,7 @@ func loadRuntimeLocalSkillBundle(provider, skillKey string) (*runtimeLocalSkillB
 	if err != nil {
 		return nil, true, err
 	}
-	name, description := skill.ParseFrontmatter(content)
+	name, description := skill.ParseSkillFrontmatter(content)
 	if name == "" {
 		name = filepath.Base(skillDir)
 	}
