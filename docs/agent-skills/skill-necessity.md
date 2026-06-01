@@ -252,3 +252,160 @@ The run with the skill passes if the agent:
 ### Why this belongs in a skill
 
 The brief must keep the hard contracts: use the `multica` CLI, do not access Multica APIs directly, and post a result comment when work is performed. The long issue workflow belongs in a skill because it is a task-specific method. It is needed when the agent works on an issue, but it does not need to consume prompt space for every possible task type.
+
+## `multica-skill-importing`
+
+`multica-skill-importing` exists because importing a skill into Multica is not the same as installing a skill into a local external tool. The platform contract is that managed skills must enter the workspace skill database through Multica's API or CLI.
+
+### Purpose
+
+The skill teaches the agent what to do when a user already has a URL or explicitly asks to import a known skill: use the Multica import surface, read the structured response, handle duplicates, and bind the skill to an agent only when requested.
+
+### Platform contract
+
+The supported workspace import surface is:
+
+```bash
+multica skill import --url <url> --output json
+```
+
+That command calls:
+
+```text
+POST /api/skills/import
+```
+
+The import path supports ClawHub, Skills.sh, GitHub URLs, and bare ClawHub slugs. A successful import returns a workspace skill response with fields such as `id`, `name`, `description`, `config.origin`, `files`, `created_at`, and `updated_at`.
+
+### Without this skill
+
+A prompt like this exercises the failure:
+
+```text
+Import this skill into Multica and make it available to my agent: https://skills.sh/owner/repo/skill
+```
+
+Without the skill, the agent may:
+
+- run `npx skills add <url>` and claim the skill is installed;
+- ignore `--output json` and fail to report the returned skill id;
+- treat a `409` duplicate response as a hard failure instead of finding the existing workspace skill;
+- say the skill is available to an agent without binding or verifying agent skills.
+
+### Failure mode
+
+These mistakes create a false sense of installation:
+
+- the skill may exist only in a local external environment, not in Multica's workspace database;
+- Multica cannot list, manage, or bind the skill;
+- the agent cannot use the returned `id` because it never read it;
+- duplicate imports look like failures even though the workspace may already contain the skill.
+
+### With this skill
+
+With the skill, the agent must:
+
+1. Use `multica skill import --url <url> --output json` for direct URL imports.
+2. Read and report the structured return fields: `id`, `name`, `description`, `config.origin`, and files count.
+3. On `409`, run `multica skill list --output json` and `multica skill get <skill-id> --output json` to identify the existing skill.
+4. Avoid `npx skills add` as the final Multica install path.
+5. If the user wants an agent to use the skill, bind it with `multica agent skills set <agent-id> --skill-ids <skill-id>`.
+
+### Test scenario
+
+Use this prompt for an A/B evaluation:
+
+```text
+Import https://skills.sh/owner/repo/skill into this workspace and tell me what got installed. If it already exists, report the existing skill instead of failing.
+```
+
+The run without the skill fails if the agent:
+
+- uses `npx skills add` as the final installation;
+- does not call `multica skill import --url <url> --output json`;
+- cannot report the skill id/name/origin;
+- stops at a duplicate `409` without finding the existing skill.
+
+The run with the skill passes if the agent:
+
+- imports through Multica;
+- reports returned workspace skill fields;
+- handles duplicate imports by finding the existing skill;
+- only claims agent availability after binding or verifying the binding.
+
+### Why this belongs in a skill
+
+The brief should not permanently carry every import source and duplicate-handling workflow. The workflow matters when importing skills, so it belongs in an on-demand skill.
+
+## `multica-skill-discovery`
+
+`multica-skill-discovery` exists because users may describe a capability without knowing which skill URL to import. The agent needs a discovery workflow that finds candidates but still returns to Multica's workspace import path.
+
+### Purpose
+
+The skill teaches the agent how to turn a user's need into a search query, evaluate candidate skills, pick an importable URL, and then use Multica's import API/CLI. It does not make external discovery tools the source of truth for installation.
+
+### Platform contract
+
+Discovery and installation are separate:
+
+- discovery can use `npx --yes skills find <query>` or skills.sh to find candidate URLs;
+- installation must use `multica skill import --url <selected-url> --output json` / `POST /api/skills/import`.
+
+### Without this skill
+
+A prompt like this exercises the failure:
+
+```text
+Find a skill that helps agents improve frontend UI quality, install the best one, and explain why you chose it.
+```
+
+Without the skill, the agent may:
+
+- search poorly or use the user's whole sentence as a bad query;
+- import the first search result without checking whether the `SKILL.md` matches the need;
+- optimize only for install count and ignore source reputation;
+- finish with `npx skills add` instead of importing into Multica;
+- fail to explain why the selected skill is better than alternatives.
+
+### Failure mode
+
+The agent may install a plausible but wrong skill, or install it outside Multica. The user sees a confident recommendation, but the workspace may not contain a usable skill and future agents cannot rely on the result.
+
+### With this skill
+
+With the skill, the agent must:
+
+1. Convert the request into a focused search query.
+2. Run a discovery command such as `npx --yes skills find <query>`.
+3. Compare candidates using `SKILL.md` content, install count, source reputation, generality, and importability.
+4. Reject weak matches instead of importing something just to act.
+5. Import the selected URL with `multica skill import --url <selected-url> --output json`.
+6. Report the selected URL, selection rationale, import result, and whether agent binding is still needed.
+
+### Test scenario
+
+Use this prompt for an A/B evaluation:
+
+```text
+I need a skill for frontend design review, but I do not know the URL. Find the best one and import it into Multica.
+```
+
+The run without the skill fails if the agent:
+
+- imports the first search result without reading/verifying the skill content;
+- uses `npx skills add` as the final step;
+- cannot justify candidate ranking;
+- reports installation without Multica import output.
+
+The run with the skill passes if the agent:
+
+- searches for candidates;
+- verifies candidates before import;
+- chooses an importable URL;
+- uses `multica skill import --url <selected-url> --output json`;
+- reports the import result and rationale.
+
+### Why this belongs in a skill
+
+Discovery is a conditional workflow. It should not live in the always-on brief because it only matters when the user needs a skill but does not know which one. It also needs product-specific guidance: discovery is not installation; Multica import remains the final source of truth.

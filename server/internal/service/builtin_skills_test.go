@@ -190,6 +190,71 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 	}
 }
 
+func TestSkillImportingSkillCoversWorkspaceImportContracts(t *testing.T) {
+	skill, ok := findSkill(t, "multica-skill-importing")
+	if !ok {
+		return
+	}
+	fm, body, _ := splitFrontmatter(skill.Content)
+
+	if got := strings.TrimSpace(fm["user-invocable"]); got != "false" {
+		t.Errorf("user-invocable = %q, want false (skill import guidance triggers from context)", got)
+	}
+	if got := strings.TrimSpace(fm["allowed-tools"]); !strings.Contains(got, "Bash(multica *)") {
+		t.Errorf("allowed-tools = %q, want access to the Multica CLI", got)
+	}
+
+	mustContain := []string{
+		"multica skill import --url <url> --output json",
+		"/api/skills/import",
+		"clawhub.ai",
+		"skills.sh",
+		"github.com",
+		"config.origin",
+		"409",
+		"multica skill list --output json",
+		"npx skills add",
+		"multica agent skills set <agent-id> --skill-ids <skill-id>",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(body, want) {
+			t.Errorf("skill-importing skill missing %q", want)
+		}
+	}
+}
+
+func TestSkillDiscoverySkillCoversFindVerifyImportContracts(t *testing.T) {
+	skill, ok := findSkill(t, "multica-skill-discovery")
+	if !ok {
+		return
+	}
+	fm, body, _ := splitFrontmatter(skill.Content)
+
+	if got := strings.TrimSpace(fm["user-invocable"]); got != "false" {
+		t.Errorf("user-invocable = %q, want false (skill discovery guidance triggers from context)", got)
+	}
+	if got := strings.TrimSpace(fm["allowed-tools"]); !strings.Contains(got, "Bash(multica *)") {
+		t.Errorf("allowed-tools = %q, want access to the Multica CLI", got)
+	}
+
+	mustContain := []string{
+		"npx --yes skills find <query>",
+		"skills.sh",
+		"verify before import",
+		"install count",
+		"source reputation",
+		"SKILL.md",
+		"multica skill import --url <selected-url> --output json",
+		"not `npx skills add`",
+		"discovery is not installation",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(body, want) {
+			t.Errorf("skill-discovery skill missing %q", want)
+		}
+	}
+}
+
 func findSkill(t *testing.T, name string) (AgentSkillData, bool) {
 	t.Helper()
 	for _, s := range loadBuiltinSkills() {
