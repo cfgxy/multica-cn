@@ -19,18 +19,6 @@ import { failureReasonLabel } from "../../agents/components/tabs/task-failure";
 import { useT } from "../../i18n";
 import { TerminateTaskConfirmDialog } from "./terminate-task-confirm-dialog";
 
-// Mask gradient that fades the trigger-summary text into transparency at
-// the right edge. Mirrors the pattern used by the desktop tab bar
-// (apps/desktop/.../tab-bar.tsx) and the sidebar pin item
-// (packages/views/layout/app-sidebar.tsx) — gives the row a smooth
-// visual ramp toward the trailing actions instead of a hard truncate +
-// ellipsis cut.
-const TRIGGER_MASK_STYLE: React.CSSProperties = {
-  maskImage: "linear-gradient(to right, black calc(100% - 12px), transparent)",
-  WebkitMaskImage:
-    "linear-gradient(to right, black calc(100% - 12px), transparent)",
-};
-
 // Right-panel section that lists every agent run for this issue. Active
 // runs sit at the top (always visible when present); past runs (terminal
 // statuses) collapse behind a "Show past runs (N)" toggle.
@@ -418,7 +406,7 @@ function RowShell({
   // `relative` so the absolute-positioned RowActions slot anchors to this
   // row instead of an outer container.
   return (
-    <div className="group relative flex items-center gap-2 overflow-hidden rounded px-1 py-1.5 transition-colors hover:bg-accent/40">
+    <div className="group/execution-log-row relative flex items-center gap-2 overflow-hidden rounded px-1 py-1.5 transition-colors hover:bg-accent/40">
       {task.agent_id ? (
         <ActorAvatar
           actorType="agent"
@@ -441,8 +429,12 @@ function RowShell({
 function TriggerText({ text }: { text: string }) {
   return (
     <span
-      className="min-w-0 flex-1 overflow-hidden whitespace-nowrap pr-24 text-xs text-muted-foreground"
-      style={TRIGGER_MASK_STYLE}
+      className="min-w-0 flex-1 overflow-hidden whitespace-nowrap pr-36 text-xs text-muted-foreground"
+      style={{
+        maskImage: "linear-gradient(to right, black calc(100% - 28px), transparent)",
+        WebkitMaskImage:
+          "linear-gradient(to right, black calc(100% - 28px), transparent)",
+      }}
     >
       {text}
     </span>
@@ -462,7 +454,7 @@ function RowStatus({
   return (
     <div
       title={title}
-      className="pointer-events-none absolute right-1 top-1/2 flex h-7 max-w-24 -translate-y-1/2 items-center justify-end gap-1 overflow-hidden whitespace-nowrap text-xs transition-opacity group-hover:opacity-0"
+      className="pointer-events-none absolute right-1 top-1/2 flex h-7 w-28 -translate-y-1/2 items-center justify-end gap-1 overflow-hidden whitespace-nowrap text-xs transition-opacity group-hover/execution-log-row:opacity-0"
     >
       {children}
     </div>
@@ -482,7 +474,7 @@ function RowActions({ children }: { children: React.ReactNode }) {
         // from the right and fades to transparent on the left, so the
         // status text underneath is dimmed gracefully rather than cut.
         "bg-gradient-to-l from-accent/95 via-accent/80 to-transparent",
-        "group-hover:pointer-events-auto group-hover:opacity-100",
+        "group-hover/execution-log-row:pointer-events-auto group-hover/execution-log-row:opacity-100",
       ].join(" ")}
     >
       {children}
