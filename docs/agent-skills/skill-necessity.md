@@ -167,10 +167,13 @@ The relevant platform contracts are spread across CLI commands and backend behav
 
 - `multica issue get`, `multica issue comment list`, and `multica issue metadata list` provide the working context.
 - `multica issue comment add` is the visible delivery surface for issue work.
-- `server/internal/handler/github.go:490` links PRs to issues when the PR title, body, or branch contains an issue identifier such as `MUL-2759`.
-- `server/internal/handler/github.go:501` only treats close keywords such as `Closes MUL-2759` as close intent when the keyword is adjacent to the issue identifier.
-- `server/internal/handler/issue.go:2446` treats `backlog` as a parking lot and enqueues work when an assigned issue moves out of `backlog`.
-- `server/internal/handler/issue.go:2474` sends parent notifications when a child issue moves to `done`.
+- `multica issue pull-requests <issue-id> --output json` is the CLI surface for reading Multica's issue ↔ PR link table.
+- `server/cmd/multica/cmd_issue.go:104` registers the `pull-requests <id>` command, and `server/cmd/multica/cmd_issue.go:522` calls `GET /api/issues/<id>/pull-requests`.
+- `server/cmd/server/router.go:480` registers the API route, and `server/internal/handler/github.go:466` returns linked PRs from `ListPullRequestsByIssue`.
+- `server/internal/handler/github.go:727` links PRs to issues when the PR title, body, or branch contains an issue identifier such as `MUL-2759`.
+- `server/internal/handler/github.go:736` only treats close keywords such as `Closes MUL-2759` as close intent when the keyword is adjacent to the issue identifier.
+- `server/internal/handler/issue.go:2523` treats `backlog` as a parking lot and enqueues work when an assigned issue moves out of `backlog`.
+- `server/internal/handler/issue_child_done.go:15` sends parent notifications when a child issue moves to `done`.
 
 ### Without this skill
 
@@ -188,7 +191,7 @@ Without the skill, the agent may produce plausible but broken behavior:
 - it sets the issue to `done` from a comment-triggered follow-up even though the work only needs a reply;
 - it writes temporary notes such as files touched or run timestamps into issue metadata;
 - it creates serial sub-issues with `--status todo`, which starts all assigned agents immediately;
-- it claims an issue is linked to a PR without verifying the link or recording the PR URL.
+- it claims an issue is linked to a PR without running `multica issue pull-requests <issue-id> --output json` or checking a durable recorded PR URL.
 
 ### Failure mode
 
@@ -199,7 +202,8 @@ These failures break the work loop rather than a single command:
 - the issue status stops representing reality;
 - future agents read noisy metadata and make worse decisions;
 - serial work runs concurrently because later sub-issues were not parked in `backlog`;
-- follow-up agents or humans have to reconstruct the state manually.
+- follow-up agents or humans have to reconstruct the state manually;
+- PR state becomes guesswork when metadata is stale or multiple PRs have touched the same issue.
 
 ### With this skill
 
@@ -211,10 +215,11 @@ With the skill, the agent must run the issue as a closed loop:
 4. Do the requested work and verify it with real commands.
 5. When opening a PR, include the issue identifier in the title, body, or branch, for example `MUL-2759`.
 6. Use adjacent close syntax such as `Closes MUL-2759` only when merge should move the issue to `done`.
-7. Report the result with `multica issue comment add` after doing the work.
-8. Write metadata only for facts that future agents will read repeatedly, such as `pr_url`, `deploy_url`, `waiting_on`, `blocked_reason`, or `decision`.
-9. For sub-issues, use `todo` for parallel work and `backlog` for later serial steps.
-10. Do not claim that the issue has a linked PR unless the agent created that PR, read a recorded `pr_url`, or can query the link through the CLI when that command exists.
+7. Verify linked PRs with `multica issue pull-requests <issue-id> --output json` before reporting PR state, correcting stale `pr_url` / `pr_number` metadata, or moving work to review based on an existing PR.
+8. Report the result with `multica issue comment add` after doing the work.
+9. Write metadata only for facts that future agents will read repeatedly, such as `pr_url`, `deploy_url`, `waiting_on`, `blocked_reason`, or `decision`.
+10. For sub-issues, use `todo` for parallel work and `backlog` for later serial steps.
+11. Do not claim that the issue has a linked PR unless the agent created that PR, read a durable `pr_url`, or verified the link through `issue pull-requests`.
 
 ### Test scenario
 
@@ -231,6 +236,7 @@ The run without the skill fails if the agent:
 - omits the final issue comment;
 - writes run logs or temporary notes into metadata;
 - creates both serial sub-issues as `todo`;
+- claims or reports PR state without `multica issue pull-requests <issue-id> --output json` when an issue-linked PR already exists;
 - changes issue status without a clear status contract.
 
 The run with the skill passes if the agent:
@@ -239,6 +245,7 @@ The run with the skill passes if the agent:
 - reports real execution output through `multica issue comment add`;
 - includes `MUL-2759` in the PR title, body, or branch;
 - uses close syntax only when the issue should be closed on merge;
+- verifies linked PRs with `multica issue pull-requests <issue-id> --output json` before reporting PR state or updating PR metadata;
 - keeps metadata small and durable;
 - parks later serial sub-issues in `backlog`.
 

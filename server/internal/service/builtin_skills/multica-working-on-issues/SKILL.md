@@ -92,6 +92,27 @@ Resolves MUL-2759
 Do not use close syntax for exploratory work, partial fixes, draft PRs, or PRs
 that should not complete the issue.
 
+## Verify linked PRs through Multica
+
+When a task depends on PR state, do not guess from memory, branch names, GitHub
+search, or stale metadata. Query Multica's issue ↔ PR link table through the CLI:
+
+```bash
+multica issue pull-requests <issue-id> --output json
+```
+
+Use the result to confirm:
+
+- whether the issue is actually linked to a PR;
+- PR number, URL, title, state, draft/merged status, and checks if present;
+- whether `pr_url` / `pr_number` metadata is missing or stale;
+- whether a result comment or status change can accurately say the work is in
+  review, merged, blocked, or still unlinked.
+
+If the command returns no linked PRs after you opened one, fix the PR title/body
+or branch to include the issue key (for example `MUL-2759`) instead of claiming
+that the issue is linked.
+
 ## Metadata is a high-signal scratchpad
 
 Read metadata on entry. Write it only when the value will likely be re-read by a
@@ -207,11 +228,18 @@ multica issue create --title "Step 3" --parent MUL-2759 --status backlog
 
 ## Source of truth
 
-- `server/internal/handler/github.go:490` — issue identifiers in PR title, body,
+- `server/cmd/multica/cmd_issue.go:104` — `multica issue pull-requests` exposes
+  linked PR lookup to agents through the CLI.
+- `server/cmd/multica/cmd_issue.go:522` — the CLI calls
+  `GET /api/issues/<id>/pull-requests`.
+- `server/cmd/server/router.go:480` — the API route is registered.
+- `server/internal/handler/github.go:466` — the API loads the issue and lists
+  PRs through `ListPullRequestsByIssue`.
+- `server/internal/handler/github.go:727` — issue identifiers in PR title, body,
   or branch create issue ↔ PR links.
-- `server/internal/handler/github.go:501` — adjacent close keywords such as
+- `server/internal/handler/github.go:736` — adjacent close keywords such as
   `Closes MUL-123` record close intent.
-- `server/internal/handler/issue.go:2446` — moving an assigned issue out of
+- `server/internal/handler/issue.go:2523` — moving an assigned issue out of
   `backlog` enqueues work.
-- `server/internal/handler/issue.go:2474` — a child issue entering `done`
+- `server/internal/handler/issue_child_done.go:15` — a child issue entering `done`
   notifies the parent.

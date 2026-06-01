@@ -175,11 +175,13 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 		"multica issue metadata list <issue-id> --output json",
 		"multica issue comment list <issue-id> --thread <trigger-comment-id>",
 		"multica issue comment add <issue-id> --parent <trigger-comment-id>",
+		"multica issue pull-requests <issue-id> --output json",
 		"Closes MUL-2759",
 		"--status backlog",
 		"pr_url",
-		"server/internal/handler/github.go:490",
-		"server/internal/handler/issue.go:2446",
+		"server/cmd/multica/cmd_issue.go:104",
+		"server/internal/handler/github.go:466",
+		"server/internal/handler/issue.go:2523",
 	}
 	for _, want := range mustContain {
 		if !strings.Contains(body, want) {
