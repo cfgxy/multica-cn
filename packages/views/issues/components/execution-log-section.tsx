@@ -273,7 +273,7 @@ function ActiveRow({ task, issueId }: { task: AgentTask; issueId: string }) {
       <TriggerText text={trigger} />
       <RowStatus title={label}>
         {task.status === "running" && <Loader2 className="h-3 w-3 animate-spin text-info" />}
-        <span className={tone}>{label}</span>
+        <span className={`${tone} min-w-0 truncate`}>{label}</span>
       </RowStatus>
       <RowActions>
         {showTranscript && (
@@ -360,6 +360,7 @@ function PastRow({ task, issueId }: { task: AgentTask; issueId: string }) {
       <TriggerText text={trigger} />
       <RowStatus title={failureLabel ?? label}>
         <TaskStatusIcon status={task.status} />
+        <span className="sr-only">{failureLabel ?? label}</span>
         <span className="text-muted-foreground">{time}</span>
       </RowStatus>
       <RowActions>
@@ -433,7 +434,7 @@ function RowStatus({
   return (
     <div
       title={title}
-      className="flex h-7 w-20 shrink-0 items-center justify-end gap-1 overflow-hidden whitespace-nowrap text-xs transition-opacity group-hover/execution-log-row:opacity-0"
+      className="flex h-7 w-20 shrink-0 items-center justify-end gap-1 overflow-hidden whitespace-nowrap text-xs transition-opacity group-hover/execution-log-row:opacity-0 group-focus-within/execution-log-row:opacity-0"
     >
       {children}
     </div>
@@ -443,11 +444,11 @@ function RowStatus({
 function TaskStatusIcon({ status }: { status: AgentTask["status"] }) {
   switch (status) {
     case "completed":
-      return <CheckCircle2 className="h-3.5 w-3.5 text-success" />;
+      return <CheckCircle2 aria-hidden="true" className="h-3.5 w-3.5 text-success" />;
     case "failed":
-      return <XCircle className="h-3.5 w-3.5 text-destructive" />;
+      return <XCircle aria-hidden="true" className="h-3.5 w-3.5 text-destructive" />;
     case "cancelled":
-      return <Ban className="h-3.5 w-3.5 text-muted-foreground" />;
+      return <Ban aria-hidden="true" className="h-3.5 w-3.5 text-muted-foreground" />;
     default:
       return null;
   }
@@ -465,6 +466,7 @@ function RowActions({ children }: { children: React.ReactNode }) {
         // status text underneath is dimmed gracefully rather than cut.
         "bg-gradient-to-l from-accent/95 via-accent/80 to-transparent",
         "group-hover/execution-log-row:pointer-events-auto group-hover/execution-log-row:opacity-100",
+        "group-focus-within/execution-log-row:pointer-events-auto group-focus-within/execution-log-row:opacity-100",
       ].join(" ")}
     >
       {children}
