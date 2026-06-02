@@ -211,6 +211,10 @@ type SetAgentSkillsRequest struct {
 	SkillIDs []string `json:"skill_ids"`
 }
 
+type AddAgentSkillsRequest struct {
+	SkillIDs []string `json:"skill_ids"`
+}
+
 // --- Helpers ---
 
 // validateFilePath checks that a file path is safe (no traversal, no absolute paths).
@@ -1927,6 +1931,9 @@ func (h *Handler) SetAgentSkills(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !h.validateAgentSkillIDsInWorkspace(w, r, agent, skillUUIDs) {
+		return
+	}
 
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
@@ -1957,7 +1964,78 @@ func (h *Handler) SetAgentSkills(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Return the updated skills list.
+	h.writeUpdatedAgentSkills(w, r, agent)
+}
+
+func (h *Handler) AddAgentSkills(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	agent, ok := h.loadAgentForUser(w, r, id)
+	if !ok {
+		return
+	}
+	if !h.canManageAgent(w, r, agent) {
+		return
+	}
+
+	var req AddAgentSkillsRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	skillUUIDs, ok := parseUUIDSliceOrBadRequest(w, req.SkillIDs, "skill_ids")
+	if !ok {
+		return
+	}
+	if !h.validateAgentSkillIDsInWorkspace(w, r, agent, skillUUIDs) {
+		return
+	}
+
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+
+	qtx := h.Queries.WithTx(tx)
+	for _, skillID := range skillUUIDs {
+		if err := qtx.AddAgentSkill(r.Context(), db.AddAgentSkillParams{
+			AgentID: agent.ID,
+			SkillID: skillID,
+		}); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to add agent skill: "+err.Error())
+			return
+		}
+	}
+
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to commit")
+		return
+	}
+
+	h.writeUpdatedAgentSkills(w, r, agent)
+}
+
+func (h *Handler) validateAgentSkillIDsInWorkspace(w http.ResponseWriter, r *http.Request, agent db.Agent, skillUUIDs []pgtype.UUID) bool {
+	seen := map[string]struct{}{}
+	for _, skillID := range skillUUIDs {
+		key := uuidToString(skillID)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		if _, err := h.Queries.GetSkillInWorkspace(r.Context(), db.GetSkillInWorkspaceParams{
+			ID:          skillID,
+			WorkspaceID: agent.WorkspaceID,
+		}); err != nil {
+			writeError(w, http.StatusNotFound, "skill not found")
+			return false
+		}
+	}
+	return true
+}
+
+func (h *Handler) writeUpdatedAgentSkills(w http.ResponseWriter, r *http.Request, agent db.Agent) {
 	skills, err := h.Queries.ListAgentSkillSummaries(r.Context(), agent.ID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list agent skills")
