@@ -64,22 +64,20 @@ multica skill import --url <url> --output json
 - `files` / files count
 - `created_at` / `updated_at`
 
-3. If the user wants an agent to use the skill, bind the returned skill id safely.
-`multica agent skills set` is replace-all: it replaces every current assignment
-with the ids you pass. Never use `set` with only the new id unless the user
-explicitly wants to remove all other skills.
-
-Safe read-modify-write binding:
+3. If the user wants an agent to use the skill, bind the returned skill id additively.
+`multica agent skills add` preserves existing assignments and adds the new id:
 
 ```bash
-multica agent skills list <agent-id> --output json
-# merge the new skill id with the existing ids
-multica agent skills set <agent-id> --skill-ids <existing-id-1>,<existing-id-2>,<skill-id> --output json
+multica agent skills add <agent-id> --skill-ids <skill-id> --output json
 multica agent skills list <agent-id> --output json
 ```
 
 After the final `list`, verify the target skill id is present before claiming the
 skill is available to that agent.
+
+`multica agent skills set` is replace-all: it replaces every current assignment
+with the ids you pass. Use `set` only when the user explicitly wants to replace
+the full skill list. Never use `set` with only the new id for a normal add.
 
 ## Duplicate imports
 
@@ -144,9 +142,7 @@ multica skill import --url https://skills.sh/owner/repo/skill --output json
 Correct follow-up when the skill must be available to an agent:
 
 ```bash
-multica agent skills list <agent-id> --output json
-# merge the new skill id with the existing ids
-multica agent skills set <agent-id> --skill-ids <existing-id-1>,<existing-id-2>,<skill-id> --output json
+multica agent skills add <agent-id> --skill-ids <skill-id> --output json
 multica agent skills list <agent-id> --output json
 ```
 
@@ -154,8 +150,10 @@ multica agent skills list <agent-id> --output json
 
 - `server/internal/handler/skill.go` implements `ImportSkill` for `/api/skills/import`.
 - `server/cmd/multica/cmd_skill.go` implements `multica skill import --url`.
-- `server/cmd/multica/cmd_agent.go` documents `agent skills set` as replacing
-  all current assignments.
+- `server/cmd/multica/cmd_agent.go` implements additive `agent skills add` and
+  documents `agent skills set` as replacing all current assignments.
+- `server/internal/handler/skill.go` implements `AddAgentSkills` by inserting
+  assignments without clearing existing ones.
 - `server/internal/handler/skill.go` implements `SetAgentSkills` by clearing
   then re-adding assignments.
 - The import response is a workspace `SkillResponse`, so agents can read returned

@@ -227,10 +227,10 @@ func TestSkillImportingSkillCoversWorkspaceImportContracts(t *testing.T) {
 		"legacy",
 		"multica skill list --output json",
 		"npx skills add",
+		"multica agent skills add <agent-id> --skill-ids <skill-id> --output json",
 		"multica agent skills list <agent-id> --output json",
-		"merge the new skill id with the existing ids",
-		"multica agent skills set <agent-id> --skill-ids <existing-id-1>,<existing-id-2>,<skill-id> --output json",
 		"replace-all",
+		"Use `set` only when the user explicitly wants to replace",
 	}
 	for _, want := range mustContain {
 		if !strings.Contains(body, want) {
@@ -240,11 +240,11 @@ func TestSkillImportingSkillCoversWorkspaceImportContracts(t *testing.T) {
 
 	mustNotContain := []string{
 		"multica agent skills set <agent-id> --skill-ids <skill-id>",
-		"multica agent skills add",
+		"merge the new skill id with the existing ids",
 	}
 	for _, forbidden := range mustNotContain {
 		if strings.Contains(body, forbidden) {
-			t.Errorf("skill-importing skill should not teach unavailable or destructive binding command %q", forbidden)
+			t.Errorf("skill-importing skill should not teach stale or destructive binding command %q", forbidden)
 		}
 	}
 }

@@ -67,9 +67,9 @@ fields available in the search result:
 - `name`;
 - `url`;
 - `source`;
-- `repo`;
+- `repo`, only when non-null;
 - `install_count`;
-- `github_stars`;
+- `github_stars`, only when non-null;
 - `description`;
 - source reputation and owner/repo credibility;
 - whether the URL is importable by `multica skill import`;
@@ -126,8 +126,8 @@ Correct:
 
 ```text
 I searched for `frontend design`, compared the top candidates by install count,
-github_stars, repo, source reputation, URL, and description, selected the matching
-skills.sh URL, and imported it with `multica skill import --url <selected-url> --output json`.
+source reputation, URL, description, and any non-null repo/github_stars metadata,
+selected the matching skills.sh URL, and imported it with `multica skill import --url <selected-url> --output json`.
 ```
 
 ## Source of truth

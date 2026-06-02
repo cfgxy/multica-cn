@@ -62,8 +62,8 @@ The `<id>` must be a real UUID for `member`, `agent`, `squad`, and `issue` menti
 The source of truth is:
 
 - `server/internal/util/mention.go:16`, which parses only UUID-shaped mention IDs or the literal `all`;
-- `server/internal/handler/comment.go:884`, which enqueues mentioned agents and squad leaders;
-- `server/internal/handler/comment.go:768`, which handles `@all` broadcast behavior.
+- `server/internal/handler/comment.go:1082`, which enqueues mentioned agents and squad leaders;
+- `server/internal/handler/comment.go:953` and `:966`, which handle `@all` broadcast suppression behavior.
 
 ### Without this skill
 
