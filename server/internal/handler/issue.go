@@ -811,12 +811,15 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	limit := 100
 	offset := 0
 	if l := r.URL.Query().Get("limit"); l != "" {
-		if v, err := strconv.Atoi(l); err == nil {
+		if v, err := strconv.Atoi(l); err == nil && v > 0 {
 			limit = v
 		}
 	}
+	if limit > 100 {
+		limit = 100
+	}
 	if o := r.URL.Query().Get("offset"); o != "" {
-		if v, err := strconv.Atoi(o); err == nil {
+		if v, err := strconv.Atoi(o); err == nil && v >= 0 {
 			offset = v
 		}
 	}
