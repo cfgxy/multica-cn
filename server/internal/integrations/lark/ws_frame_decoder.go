@@ -75,16 +75,18 @@ func (d *LarkJSONFrameDecoder) Decode(payload []byte, inst db.LarkInstallation) 
 		SenderOpenID: OpenID(evt.Sender.SenderID.OpenID),
 	}
 
+	botUnionID := ""
+	if inst.BotUnionID.Valid {
+		botUnionID = inst.BotUnionID.String
+	}
+
 	switch evt.Message.MessageType {
 	case "text":
-		msg.Body = extractTextBody(evt.Message.Content)
+		msg.Body = resolveMentions(extractTextBody(evt.Message.Content),
+			evt.Message.Mentions, inst.BotOpenID, botUnionID)
 	}
 
 	if msg.ChatType == ChatTypeGroup {
-		botUnionID := ""
-		if inst.BotUnionID.Valid {
-			botUnionID = inst.BotUnionID.String
-		}
 		msg.AddressedToBot = containsMention(evt.Message.Mentions, inst.BotOpenID, botUnionID)
 	}
 
@@ -138,6 +140,81 @@ type larkMention struct {
 		UserID  string `json:"user_id"`
 	} `json:"id"`
 	Name string `json:"name"`
+}
+
+// resolveMentions substitutes Lark's `@_user_N` placeholders so the
+// agent receives a body that reads naturally and does not require
+// resolving the mentions array itself. The bot's OWN mention is
+// stripped (the dispatcher already routes the event on
+// AddressedToBot — re-emitting `@<bot>` in front of every message
+// makes both the chat transcript and any downstream LLM context
+// noisier without adding signal). Other participants render as
+// `@<displayName>`, falling back to leaving the placeholder alone
+// when name is empty (defensive — Lark always populates it in
+// practice).
+//
+// Whitespace cleanup: runs of horizontal whitespace introduced by
+// stripping the bot mention are collapsed to a single space, and
+// leading/trailing horizontal whitespace per line is trimmed. Line
+// breaks in the original message are preserved.
+func resolveMentions(text string, mentions []larkMention, botOpenID, botUnionID string) string {
+	if text == "" || len(mentions) == 0 {
+		return text
+	}
+	for _, m := range mentions {
+		if m.Key == "" {
+			continue
+		}
+		var rep string
+		switch {
+		case isBotMention(m, botOpenID, botUnionID):
+			rep = ""
+		case m.Name != "":
+			rep = "@" + m.Name
+		default:
+			continue
+		}
+		text = strings.ReplaceAll(text, m.Key, rep)
+	}
+	return tidyMentionWhitespace(text)
+}
+
+func isBotMention(m larkMention, botOpenID, botUnionID string) bool {
+	if botUnionID != "" && m.ID.UnionID == botUnionID {
+		return true
+	}
+	if botOpenID != "" && m.ID.OpenID == botOpenID {
+		return true
+	}
+	return false
+}
+
+// tidyMentionWhitespace collapses runs of spaces/tabs and trims
+// horizontal whitespace at the start/end of each line. Newlines are
+// preserved so multi-line user messages survive intact.
+func tidyMentionWhitespace(s string) string {
+	if s == "" {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		var b strings.Builder
+		b.Grow(len(line))
+		prevSpace := false
+		for _, r := range line {
+			if r == ' ' || r == '\t' {
+				if !prevSpace {
+					b.WriteByte(' ')
+				}
+				prevSpace = true
+				continue
+			}
+			prevSpace = false
+			b.WriteRune(r)
+		}
+		lines[i] = strings.TrimSpace(b.String())
+	}
+	return strings.Join(lines, "\n")
 }
 
 func extractTextBody(content string) string {

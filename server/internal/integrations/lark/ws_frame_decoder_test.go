@@ -1,6 +1,7 @@
 package lark
 
 import (
+	"encoding/json"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -178,6 +179,101 @@ func TestLarkJSONFrameDecoderGroupMentionUnionID(t *testing.T) {
 		}
 		if !msg.AddressedToBot {
 			t.Error("AddressedToBot = false; expected true via legacy open_id fallback")
+		}
+	})
+}
+
+// TestLarkJSONFrameDecoderMentionPlaceholderRewrite covers the body
+// cleanup: Lark inlines `@_user_N` placeholders inside the text and
+// resolves them via the `mentions` array. We strip the bot's own
+// mention (the dispatcher already routes the event), substitute
+// other users with `@<displayName>`, and leave the agent with a
+// natural-looking message body.
+func TestLarkJSONFrameDecoderMentionPlaceholderRewrite(t *testing.T) {
+	t.Parallel()
+	pgText := func(s string) pgtype.Text { return pgtype.Text{String: s, Valid: true} }
+
+	mkRaw := func(text, mentionsJSON string) []byte {
+		// Lark wraps text in a `{"text": ...}` JSON envelope inside
+		// `message.content`; we double-encode below to match wire.
+		contentDoc := map[string]string{"text": text}
+		contentBytes, _ := json.Marshal(contentDoc)
+		contentEsc, _ := json.Marshal(string(contentBytes))
+		return []byte(`{
+			"type":"event_callback",
+			"header":{"event_id":"e","event_type":"im.message.receive_v1","app_id":"a"},
+			"event":{
+				"sender":{"sender_id":{"open_id":"ou_user"}},
+				"message":{
+					"message_id":"m","chat_id":"c","chat_type":"group",
+					"message_type":"text",
+					"content":` + string(contentEsc) + `,
+					"mentions":` + mentionsJSON + `
+				}
+			}
+		}`)
+	}
+	d := NewLarkJSONFrameDecoder()
+
+	t.Run("strips bot self-mention via union_id", func(t *testing.T) {
+		inst := db.LarkInstallation{
+			BotOpenID:  "ou_bot",
+			BotUnionID: pgText("on_bot"),
+		}
+		mentions := `[{"key":"@_user_1","name":"My Bot","id":{"open_id":"ou_bot_wire","union_id":"on_bot"}}]`
+		msg, ok, err := d.Decode(mkRaw("@_user_1 ping test", mentions), inst)
+		if err != nil || !ok {
+			t.Fatalf("ok=%v err=%v", ok, err)
+		}
+		if msg.Body != "ping test" {
+			t.Errorf("Body = %q; want %q", msg.Body, "ping test")
+		}
+	})
+
+	t.Run("substitutes other-user mention with display name", func(t *testing.T) {
+		inst := db.LarkInstallation{
+			BotOpenID:  "ou_bot",
+			BotUnionID: pgText("on_bot"),
+		}
+		mentions := `[
+			{"key":"@_user_1","name":"My Bot","id":{"open_id":"ou_bot_wire","union_id":"on_bot"}},
+			{"key":"@_user_2","name":"Alice","id":{"open_id":"ou_alice","union_id":"on_alice"}}
+		]`
+		msg, ok, err := d.Decode(mkRaw("@_user_1 hey @_user_2 take a look", mentions), inst)
+		if err != nil || !ok {
+			t.Fatalf("ok=%v err=%v", ok, err)
+		}
+		if msg.Body != "hey @Alice take a look" {
+			t.Errorf("Body = %q; want %q", msg.Body, "hey @Alice take a look")
+		}
+	})
+
+	t.Run("preserves newlines and collapses spaces from stripped mention", func(t *testing.T) {
+		inst := db.LarkInstallation{
+			BotOpenID:  "ou_bot",
+			BotUnionID: pgText("on_bot"),
+		}
+		mentions := `[{"key":"@_user_1","name":"My Bot","id":{"open_id":"ou_bot_wire","union_id":"on_bot"}}]`
+		msg, ok, err := d.Decode(mkRaw("@_user_1  first line\nsecond line", mentions), inst)
+		if err != nil || !ok {
+			t.Fatalf("ok=%v err=%v", ok, err)
+		}
+		if msg.Body != "first line\nsecond line" {
+			t.Errorf("Body = %q; want %q", msg.Body, "first line\nsecond line")
+		}
+	})
+
+	t.Run("no mentions leaves body unchanged", func(t *testing.T) {
+		inst := db.LarkInstallation{
+			BotOpenID:  "ou_bot",
+			BotUnionID: pgText("on_bot"),
+		}
+		msg, ok, err := d.Decode(mkRaw("just a normal message", `[]`), inst)
+		if err != nil || !ok {
+			t.Fatalf("ok=%v err=%v", ok, err)
+		}
+		if msg.Body != "just a normal message" {
+			t.Errorf("Body = %q; want %q", msg.Body, "just a normal message")
 		}
 	})
 }
