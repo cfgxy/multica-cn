@@ -476,6 +476,7 @@ func (s *RegistrationService) finishSuccess(ctx context.Context, sess *registrat
 		AppID:              res.ClientID,
 		AppSecretEncrypted: sealed,
 		BotOpenID:          string(info.OpenID),
+		BotUnionID:         textOrNull(info.UnionID),
 		InstallerUserID:    sess.initiatorID,
 	})
 	if err != nil {

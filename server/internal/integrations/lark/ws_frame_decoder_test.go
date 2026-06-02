@@ -3,6 +3,7 @@ package lark
 import (
 	"testing"
 
+	"github.com/jackc/pgx/v5/pgtype"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -96,6 +97,87 @@ func TestLarkJSONFrameDecoderGroupMentionDiscrimination(t *testing.T) {
 		}
 		if msg.AddressedToBot {
 			t.Error("AddressedToBot = true; expected false")
+		}
+	})
+}
+
+// TestLarkJSONFrameDecoderGroupMentionUnionID exercises the MUL-2671
+// fix: in a multi-bot group chat the per-app `mentions[].id.open_id`
+// is structurally inverted across WS perspectives, so we route on
+// `union_id` (the stable, cross-app identifier captured at install
+// time) when the installation row knows it. The open_id path remains
+// as a transitional fallback for installations that haven't been
+// backfilled yet.
+func TestLarkJSONFrameDecoderGroupMentionUnionID(t *testing.T) {
+	t.Parallel()
+
+	mkRaw := func(mentionOpenID, mentionUnionID string) []byte {
+		return []byte(`{
+			"type":"event_callback",
+			"header":{"event_id":"e","event_type":"im.message.receive_v1","app_id":"a"},
+			"event":{
+				"sender":{"sender_id":{"open_id":"ou_user"}},
+				"message":{
+					"message_id":"m","chat_id":"c","chat_type":"group",
+					"message_type":"text","content":"{\"text\":\"hi\"}",
+					"mentions":[{"id":{"open_id":"` + mentionOpenID + `","union_id":"` + mentionUnionID + `"}}]
+				}
+			}
+		}`)
+	}
+	d := NewLarkJSONFrameDecoder()
+	pgText := func(s string) pgtype.Text { return pgtype.Text{String: s, Valid: true} }
+
+	t.Run("union_id match wins even when open_id mismatches", func(t *testing.T) {
+		// Two-bot group chat, this bot's WS perspective:
+		// payload.mentions[0].open_id is the WIRE-form open_id Lark
+		// hands us (not equal to our installation's bot_open_id,
+		// which is what /bot/v3/info returned), but the union_id is
+		// the stable identifier we captured at install. The match
+		// must succeed.
+		inst := db.LarkInstallation{
+			BotOpenID:  "ou_bot_a_canonical",
+			BotUnionID: pgText("on_bot_a_union"),
+		}
+		msg, ok, err := d.Decode(mkRaw("ou_bot_a_wire", "on_bot_a_union"), inst)
+		if err != nil || !ok {
+			t.Fatalf("ok=%v err=%v", ok, err)
+		}
+		if !msg.AddressedToBot {
+			t.Error("AddressedToBot = false; expected true via union_id")
+		}
+	})
+
+	t.Run("union_id mismatch wins even when open_id matches", func(t *testing.T) {
+		// The other bot in the group was @-mentioned; Lark hands
+		// THIS bot's WS a payload whose mentions[].id.open_id
+		// happens to equal our bot_open_id (the inverse-mapping
+		// quirk Bohan's live triage surfaced). The match must NOT
+		// fire — union_id is the source of truth.
+		inst := db.LarkInstallation{
+			BotOpenID:  "ou_bot_a_canonical",
+			BotUnionID: pgText("on_bot_a_union"),
+		}
+		msg, ok, err := d.Decode(mkRaw("ou_bot_a_canonical", "on_bot_b_union"), inst)
+		if err != nil || !ok {
+			t.Fatalf("ok=%v err=%v", ok, err)
+		}
+		if msg.AddressedToBot {
+			t.Error("AddressedToBot = true; expected false because union_id points at the OTHER bot")
+		}
+	})
+
+	t.Run("falls back to open_id when union_id is unknown", func(t *testing.T) {
+		// Pre-backfill installation row: no union_id yet. Decoder
+		// must keep working in the single-bot case via the legacy
+		// open_id comparison.
+		inst := db.LarkInstallation{BotOpenID: "ou_bot_a_canonical"}
+		msg, ok, err := d.Decode(mkRaw("ou_bot_a_canonical", "on_anything"), inst)
+		if err != nil || !ok {
+			t.Fatalf("ok=%v err=%v", ok, err)
+		}
+		if !msg.AddressedToBot {
+			t.Error("AddressedToBot = false; expected true via legacy open_id fallback")
 		}
 	})
 }

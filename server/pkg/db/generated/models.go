@@ -452,6 +452,7 @@ type LarkInstallation struct {
 	AppSecretEncrypted []byte             `json:"app_secret_encrypted"`
 	TenantKey          pgtype.Text        `json:"tenant_key"`
 	BotOpenID          string             `json:"bot_open_id"`
+	BotUnionID         pgtype.Text        `json:"bot_union_id"`
 	InstallerUserID    pgtype.UUID        `json:"installer_user_id"`
 	Status             string             `json:"status"`
 	WsLeaseToken       pgtype.Text        `json:"ws_lease_token"`

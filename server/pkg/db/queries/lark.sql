@@ -21,9 +21,9 @@
 -- goes through UpsertLarkInstallation instead.
 INSERT INTO lark_installation (
     workspace_id, agent_id, app_id, app_secret_encrypted,
-    tenant_key, bot_open_id, installer_user_id
+    tenant_key, bot_open_id, bot_union_id, installer_user_id
 ) VALUES (
-    $1, $2, $3, $4, sqlc.narg('tenant_key'), $5, $6
+    $1, $2, $3, $4, sqlc.narg('tenant_key'), $5, sqlc.narg('bot_union_id'), $6
 )
 RETURNING *;
 
@@ -36,20 +36,33 @@ RETURNING *;
 -- lifecycle.
 INSERT INTO lark_installation (
     workspace_id, agent_id, app_id, app_secret_encrypted,
-    tenant_key, bot_open_id, installer_user_id
+    tenant_key, bot_open_id, bot_union_id, installer_user_id
 ) VALUES (
-    $1, $2, $3, $4, sqlc.narg('tenant_key'), $5, $6
+    $1, $2, $3, $4, sqlc.narg('tenant_key'), $5, sqlc.narg('bot_union_id'), $6
 )
 ON CONFLICT (workspace_id, agent_id) DO UPDATE SET
     app_id               = EXCLUDED.app_id,
     app_secret_encrypted = EXCLUDED.app_secret_encrypted,
     tenant_key           = EXCLUDED.tenant_key,
     bot_open_id          = EXCLUDED.bot_open_id,
+    bot_union_id         = EXCLUDED.bot_union_id,
     installer_user_id    = EXCLUDED.installer_user_id,
     status               = 'active',
     installed_at         = now(),
     updated_at           = now()
 RETURNING *;
+
+-- name: SetLarkInstallationBotUnionID :exec
+-- Operator-only backfill for installations created before the
+-- bot_union_id column existed (migration 112). Production reads do
+-- NOT use this — finishSuccess writes union_id during install, and
+-- the upsert path writes it on re-install. Kept as a focused single-
+-- column UPDATE so the backfill cannot accidentally overwrite app
+-- credentials, status, or lease state.
+UPDATE lark_installation
+SET bot_union_id = $2,
+    updated_at   = now()
+WHERE id = $1;
 
 -- name: GetLarkInstallation :one
 SELECT * FROM lark_installation WHERE id = $1;

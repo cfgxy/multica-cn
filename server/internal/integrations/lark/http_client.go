@@ -365,16 +365,31 @@ func (c *httpAPIClient) SendBindingPromptCard(ctx context.Context, p BindingProm
 }
 
 // GetBotInfo calls /open-apis/bot/v3/info to learn the Bot's
-// per-installation `open_id` (what we persist as `bot_open_id` on
-// lark_installation). RegistrationService is the only caller — right
-// after the device-flow registration returns fresh `client_id` /
-// `client_secret`, the service mints a tenant_access_token with
-// those creds and calls this method so the installation row can be
-// frozen with the Bot's identity in the same transaction as the
-// installer-bind.
+// per-installation `open_id` and then /open-apis/contact/v3/users/
+// {open_id}?user_id_type=open_id to resolve its stable `union_id`.
+// RegistrationService is the only caller — right after the device-
+// flow registration returns fresh `client_id` / `client_secret`, the
+// service mints a tenant_access_token with those creds and calls
+// this method so the installation row can be frozen with both Bot
+// identifiers in the same transaction as the installer-bind.
 //
-// The response carries other fields (display name, avatar, IP
-// whitelist) which we deliberately drop; downstream reads can fetch
+// Why two API calls instead of one: /bot/v3/info does not return
+// union_id in the public schema. The WS inbound decoder needs
+// union_id to disambiguate which bot was @-mentioned in a multi-bot
+// group chat (the per-app open_id field on mentions is structurally
+// inverse across WS perspectives — see MUL-2671 triage), so we
+// invest one extra HTTP round-trip at install time to capture it
+// and avoid running the wrong supervisor for every event going
+// forward.
+//
+// A missing union_id (contact lookup denied by app scope, or Lark
+// returns an empty field) is NOT a hard failure here — the
+// installation is still usable for p2p chats and the decoder can
+// fall back to the (broken) open_id match path until the operator
+// fixes scopes. We log a warning so the gap is visible.
+//
+// Other fields the upstream APIs return (display name, avatar, IP
+// whitelist) are deliberately dropped; downstream reads can fetch
 // them on demand from the bot_open_id, and freezing them into our
 // schema would create a drift surface every time the operator edits
 // the Bot on Lark's side.
@@ -386,26 +401,76 @@ func (c *httpAPIClient) GetBotInfo(ctx context.Context, creds InstallationCreden
 	if err != nil {
 		return BotInfo{}, err
 	}
-	var resp struct {
+	var botResp struct {
 		Code int    `json:"code"`
 		Msg  string `json:"msg"`
 		Bot  struct {
 			OpenID string `json:"open_id"`
 		} `json:"bot"`
 	}
-	if err := c.doJSON(ctx, http.MethodGet, "/open-apis/bot/v3/info", token, nil, &resp); err != nil {
+	if err := c.doJSON(ctx, http.MethodGet, "/open-apis/bot/v3/info", token, nil, &botResp); err != nil {
 		return BotInfo{}, fmt.Errorf("lark http client: bot info: %w", err)
+	}
+	if botResp.Code != 0 {
+		if isTokenError(botResp.Code) {
+			c.invalidateToken(creds.AppID)
+		}
+		return BotInfo{}, fmt.Errorf("lark http client: bot info: code=%d msg=%q", botResp.Code, botResp.Msg)
+	}
+	if botResp.Bot.OpenID == "" {
+		return BotInfo{}, errors.New("lark http client: bot info: response missing open_id")
+	}
+
+	// Resolve union_id via the contact endpoint. Soft-fail: log and
+	// return the BotInfo with empty UnionID. Callers (Registration-
+	// Service.finishSuccess) accept the gap and persist what they
+	// have.
+	unionID, lookupErr := c.fetchBotUnionID(ctx, token, botResp.Bot.OpenID)
+	if lookupErr != nil {
+		c.cfg.Logger.Warn("lark http client: bot union_id lookup failed; continuing without it",
+			"app_id", creds.AppID,
+			"bot_open_id", botResp.Bot.OpenID,
+			"err", lookupErr)
+	}
+	return BotInfo{OpenID: OpenID(botResp.Bot.OpenID), UnionID: unionID}, nil
+}
+
+// fetchBotUnionID resolves a Bot's `union_id` from its `open_id` via
+// /open-apis/contact/v3/users/{open_id}?user_id_type=open_id. Split
+// out from GetBotInfo so the failure mode is explicit and the call
+// sites that only need open_id don't pay for the second round-trip.
+//
+// Empty string + nil error is a valid outcome: Lark's user endpoint
+// can return code=0 with no union_id field when the app's contact
+// scope is restricted. Caller logs and continues; the decoder still
+// works in single-bot deployments where open_id-based matching is
+// unambiguous.
+func (c *httpAPIClient) fetchBotUnionID(ctx context.Context, token, openID string) (string, error) {
+	if openID == "" {
+		return "", errors.New("empty open_id")
+	}
+	q := url.Values{}
+	q.Set("user_id_type", "open_id")
+	path := "/open-apis/contact/v3/users/" + url.PathEscape(openID) + "?" + q.Encode()
+	var resp struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			User struct {
+				UnionID string `json:"union_id"`
+			} `json:"user"`
+		} `json:"data"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, path, token, nil, &resp); err != nil {
+		return "", fmt.Errorf("contact users: %w", err)
 	}
 	if resp.Code != 0 {
 		if isTokenError(resp.Code) {
-			c.invalidateToken(creds.AppID)
+			c.invalidateToken(token)
 		}
-		return BotInfo{}, fmt.Errorf("lark http client: bot info: code=%d msg=%q", resp.Code, resp.Msg)
+		return "", fmt.Errorf("contact users: code=%d msg=%q", resp.Code, resp.Msg)
 	}
-	if resp.Bot.OpenID == "" {
-		return BotInfo{}, errors.New("lark http client: bot info: response missing open_id")
-	}
-	return BotInfo{OpenID: OpenID(resp.Bot.OpenID)}, nil
+	return resp.Data.User.UnionID, nil
 }
 
 // doJSON encapsulates the verb + URL + auth-header + JSON

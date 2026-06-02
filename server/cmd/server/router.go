@@ -276,6 +276,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				h.LarkHub.SetOutcomeReplier(replier)
 				slog.Info("lark inbound pipeline wired", "connector", connectorLabel)
 
+				// One-shot union_id backfill for installations created
+				// before migration 112 added bot_union_id. Runs off the
+				// hot startup path so a slow Lark round-trip cannot block
+				// HTTP listener boot. New installs already write
+				// bot_union_id during the device-flow finalize, so this
+				// is bridge code — it will simply find no rows to update
+				// on a fresh deployment and exit. MUL-2671.
+				go lark.BackfillBotUnionIDs(context.Background(), queries, larkClient, installSvc, slog.Default())
+
 				// Device-flow registration service: end-to-end install
 				// pipeline that talks to accounts.feishu.cn (RFC 8628)
 				// for the QR-scan handshake and then commits the
