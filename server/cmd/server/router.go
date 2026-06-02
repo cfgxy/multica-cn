@@ -793,6 +793,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Get("/tasks", h.ListAgentTasks)
 					r.Get("/skills", h.ListAgentSkills)
 					r.Put("/skills", h.SetAgentSkills)
+					r.Post("/skills/add", h.AddAgentSkills)
 					// Dedicated env-management endpoint. Owner/admin only;
 					// agent actors are denied. Every reveal / write is
 					// audited to activity_log. See MUL-2600 and
@@ -814,6 +815,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Route("/api/skills", func(r chi.Router) {
 				r.Get("/", h.ListSkills)
 				r.Post("/", h.CreateSkill)
+				r.Get("/search", h.SearchSkills)
 				r.Post("/import", h.ImportSkill)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetSkill)

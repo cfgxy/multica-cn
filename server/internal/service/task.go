@@ -1717,7 +1717,12 @@ func (s *TaskService) LoadAgentSkills(ctx context.Context, agentID pgtype.UUID) 
 
 	result := make([]AgentSkillData, 0, len(skills))
 	for _, sk := range skills {
-		data := AgentSkillData{Name: sk.Name, Description: sk.Description, Content: sk.Content}
+		data := AgentSkillData{
+			ID:          util.UUIDToString(sk.ID),
+			Name:        sk.Name,
+			Description: sk.Description,
+			Content:     sk.Content,
+		}
 		files, _ := s.Queries.ListSkillFiles(ctx, sk.ID)
 		for _, f := range files {
 			data.Files = append(data.Files, AgentSkillFileData{Path: f.Path, Content: f.Content})
@@ -1729,6 +1734,7 @@ func (s *TaskService) LoadAgentSkills(ctx context.Context, agentID pgtype.UUID) 
 
 // AgentSkillData represents a skill for task execution responses.
 type AgentSkillData struct {
+	ID          string               `json:"id"`
 	Name        string               `json:"name"`
 	Description string               `json:"description,omitempty"`
 	Content     string               `json:"content"`
@@ -1953,12 +1959,9 @@ func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID p
 	if err != nil {
 		return
 	}
-	// Resolve thread root: collapse parentID to the top-level thread root so the
-	// comment tree never exceeds depth 1 (the 2-level model the product and UI
-	// assume — see GetThreadRoot). GetThreadRoot walks parent_id all the way to
-	// the root, so this stays correct even if a reply-to-a-reply ever reached the
-	// store. rootComment captures the root row so we can auto-unresolve it after
-	// the reply is committed (see AutoUnresolveThreadOnReply).
+	// Resolve the thread root for thread-level side effects without overwriting
+	// parentID. The stored parent_id must remain the exact comment being replied
+	// to; recursive thread reads recover the root when needed.
 	var rootComment *db.Comment
 	if parentID.Valid {
 		if root, err := s.Queries.GetThreadRoot(ctx, db.GetThreadRootParams{
@@ -1966,7 +1969,6 @@ func (s *TaskService) createAgentComment(ctx context.Context, issueID, agentID p
 			WorkspaceID: issue.WorkspaceID,
 		}); err == nil {
 			rootComment = &root
-			parentID = root.ID
 		}
 	}
 	// Expand bare issue identifiers (e.g. MUL-117) into mention links.

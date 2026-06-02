@@ -425,7 +425,7 @@ func (c *httpAPIClient) GetBotInfo(ctx context.Context, creds InstallationCreden
 	// return the BotInfo with empty UnionID. Callers (Registration-
 	// Service.finishSuccess) accept the gap and persist what they
 	// have.
-	unionID, lookupErr := c.fetchBotUnionID(ctx, token, botResp.Bot.OpenID)
+	unionID, lookupErr := c.fetchBotUnionID(ctx, creds.AppID, token, botResp.Bot.OpenID)
 	if lookupErr != nil {
 		c.cfg.Logger.Warn("lark http client: bot union_id lookup failed; continuing without it",
 			"app_id", creds.AppID,
@@ -445,7 +445,7 @@ func (c *httpAPIClient) GetBotInfo(ctx context.Context, creds InstallationCreden
 // scope is restricted. Caller logs and continues; the decoder still
 // works in single-bot deployments where open_id-based matching is
 // unambiguous.
-func (c *httpAPIClient) fetchBotUnionID(ctx context.Context, token, openID string) (string, error) {
+func (c *httpAPIClient) fetchBotUnionID(ctx context.Context, appID, token, openID string) (string, error) {
 	if openID == "" {
 		return "", errors.New("empty open_id")
 	}
@@ -465,8 +465,12 @@ func (c *httpAPIClient) fetchBotUnionID(ctx context.Context, token, openID strin
 		return "", fmt.Errorf("contact users: %w", err)
 	}
 	if resp.Code != 0 {
+		// invalidateToken is keyed by app_id (the cache key on
+		// httpAPIClient.tokens), NOT by the bearer string. Passing
+		// the bearer would do nothing and a stale token would keep
+		// being reused on every retry until natural TTL expiry.
 		if isTokenError(resp.Code) {
-			c.invalidateToken(token)
+			c.invalidateToken(appID)
 		}
 		return "", fmt.Errorf("contact users: code=%d msg=%q", resp.Code, resp.Msg)
 	}
