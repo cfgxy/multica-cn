@@ -298,6 +298,62 @@ func TestSkillDiscoverySkillCoversMetadataOnlyPreImportContracts(t *testing.T) {
 	}
 }
 
+func TestCreatingAgentsSkillCoversAgentCreationContracts(t *testing.T) {
+	skill, ok := findSkill(t, "multica-creating-agents")
+	if !ok {
+		return
+	}
+	fm, body, _ := splitFrontmatter(skill.Content)
+
+	if got := strings.TrimSpace(fm["user-invocable"]); got != "false" {
+		t.Errorf("user-invocable = %q, want false (agent creation guidance triggers from context)", got)
+	}
+	if got := strings.TrimSpace(fm["allowed-tools"]); !strings.Contains(got, "Bash(multica *)") {
+		t.Errorf("allowed-tools = %q, want access to the Multica CLI", got)
+	}
+
+	mustContain := []string{
+		"not a parameter manual",
+		"Define the job first",
+		"`description` is a catalog summary",
+		"`instructions` is the runtime behavior contract",
+		"multica agent create --name <name> --runtime-id <runtime-id>",
+		"Prefer `--model` over model flags in `--custom-args`",
+		"`thinking_level`",
+		"custom_args",
+		"custom_env",
+		"--custom-env-stdin",
+		"--custom-env-file",
+		"multica agent skills add <agent-id> --skill-ids <skill-id> --output json",
+		"multica agent skills list <agent-id> --output json",
+		"multica agent get <agent-id> --output json",
+		"Run a low-risk task",
+		"server/cmd/multica/cmd_agent.go:158",
+		"server/cmd/multica/cmd_agent.go:409",
+		"server/internal/handler/daemon.go:1109",
+		"server/internal/service/task.go:1684",
+		"server/pkg/db/generated/agent.sql.go",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(body, want) {
+			t.Errorf("creating-agents skill missing %q", want)
+		}
+	}
+
+	mustNotContain := []string{
+		"--from-template",
+		"/api/agent-templates",
+		"template_slug",
+		"curated template",
+		"copy this parameter list",
+	}
+	for _, forbidden := range mustNotContain {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("creating-agents skill should not teach immature template/parameter-manual content %q", forbidden)
+		}
+	}
+}
+
 func findSkill(t *testing.T, name string) (AgentSkillData, bool) {
 	t.Helper()
 	for _, s := range loadBuiltinSkills() {
