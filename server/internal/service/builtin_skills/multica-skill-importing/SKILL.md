@@ -1,6 +1,6 @@
 ---
 name: multica-skill-importing
-description: Use when a user provides a skill URL or asks to import/install a skill into Multica. Teaches the Multica workspace import API/CLI path, returned data, duplicate handling, and agent binding; never treats external local installers as the final Multica install.
+description: Use when a user provides a skill URL or asks to import/install a skill into Multica. Teaches the Multica workspace import API/CLI path, returned data, duplicate handling, and safe agent binding; never treats external local installers as the final Multica install.
 user-invocable: false
 allowed-tools: Bash(multica *)
 ---
@@ -64,14 +64,22 @@ multica skill import --url <url> --output json
 - `files` / files count
 - `created_at` / `updated_at`
 
-3. If the user wants an agent to use the skill, bind the returned skill id:
+3. If the user wants an agent to use the skill, bind the returned skill id safely.
+`multica agent skills set` is replace-all: it replaces every current assignment
+with the ids you pass. Never use `set` with only the new id unless the user
+explicitly wants to remove all other skills.
+
+Safe read-modify-write binding:
 
 ```bash
-multica agent skills set <agent-id> --skill-ids <skill-id>
+multica agent skills list <agent-id> --output json
+# merge the new skill id with the existing ids
+multica agent skills set <agent-id> --skill-ids <existing-id-1>,<existing-id-2>,<skill-id> --output json
+multica agent skills list <agent-id> --output json
 ```
 
-Do not claim the skill is available to an agent until you have bound it or
-verified that it is already bound.
+After the final `list`, verify the target skill id is present before claiming the
+skill is available to that agent.
 
 ## Duplicate imports
 
@@ -119,7 +127,15 @@ npx skills add https://skills.sh/owner/repo/skill
 That bypasses Multica. The skill may exist locally, but Multica cannot manage it
 as a workspace skill.
 
-Correct:
+Incorrect agent binding:
+
+```bash
+multica agent skills set <agent-id> --skill-ids <new-skill-id>
+```
+
+That replaces all existing assignments with just the new skill.
+
+Correct import:
 
 ```bash
 multica skill import --url https://skills.sh/owner/repo/skill --output json
@@ -128,12 +144,19 @@ multica skill import --url https://skills.sh/owner/repo/skill --output json
 Correct follow-up when the skill must be available to an agent:
 
 ```bash
-multica agent skills set <agent-id> --skill-ids <skill-id>
+multica agent skills list <agent-id> --output json
+# merge the new skill id with the existing ids
+multica agent skills set <agent-id> --skill-ids <existing-id-1>,<existing-id-2>,<skill-id> --output json
+multica agent skills list <agent-id> --output json
 ```
 
 ## Source of truth
 
 - `server/internal/handler/skill.go` implements `ImportSkill` for `/api/skills/import`.
 - `server/cmd/multica/cmd_skill.go` implements `multica skill import --url`.
+- `server/cmd/multica/cmd_agent.go` documents `agent skills set` as replacing
+  all current assignments.
+- `server/internal/handler/skill.go` implements `SetAgentSkills` by clearing
+  then re-adding assignments.
 - The import response is a workspace `SkillResponse`, so agents can read returned
   fields instead of guessing whether the import succeeded.

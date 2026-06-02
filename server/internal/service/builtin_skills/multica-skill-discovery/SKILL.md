@@ -1,6 +1,6 @@
 ---
 name: multica-skill-discovery
-description: Use when the user describes a capability but does not know which skill URL to import. Teaches how to search for candidate skills, verify fit against the user's need, choose an importable URL, and then install through Multica's import path.
+description: Use when the user describes a capability but does not know which skill URL to import. Teaches metadata-only candidate search, fit selection from available search fields, and then installation through Multica's import path.
 user-invocable: false
 allowed-tools: Bash(multica *)
 ---
@@ -8,8 +8,8 @@ allowed-tools: Bash(multica *)
 # Discovering skills before import
 
 Use this skill when the user wants a capability but does not provide a specific
-skill URL. Your job is to find candidates, verify the best fit, and then hand off
-to the Multica import path.
+skill URL. Your job is to find candidates from search metadata, select the best
+fit, and then hand off to the Multica import path.
 
 discovery is not installation. The final installation step is still:
 
@@ -58,21 +58,33 @@ say that clearly instead of inventing a URL.
 Do not stop at the first result. Search output is a candidate list, not a product
 decision.
 
-## Verify before import
+## Select using metadata-only before import
 
-You must verify before import. Compare candidates with the user's actual need.
-Use these signals:
+Selection is metadata-only before import. Current search does not expose a remote
+content preview. Compare candidates with the user's actual need using only the
+fields available in the search result:
 
-- content match in `SKILL.md`, not only the title;
+- `name`;
+- `url`;
+- `source`;
+- `repo`;
 - `install_count`;
-- `github_stars` / `repo` when present;
+- `github_stars`;
+- `description`;
 - source reputation and owner/repo credibility;
-- whether the skill is general enough or too project-specific;
 - whether the URL is importable by `multica skill import`;
-- whether the skill duplicates an existing workspace skill.
+- whether the candidate appears too project-specific from its metadata.
 
-If a candidate looks good from the search result but the `SKILL.md` does not
-match the user's intent, reject it and explain why.
+Do not claim you inspected remote skill content during search. The limitation is
+explicit: full content verification happens after import by reading the imported
+workspace skill, for example:
+
+```bash
+multica skill get <skill-id> --output json
+```
+
+If metadata is too weak to choose safely, say that and ask for a URL or a more
+specific requirement instead of importing a weak match.
 
 ## Import after choosing
 
@@ -85,15 +97,15 @@ multica skill import --url <selected-url> --output json
 Use `multica-skill-importing` for duplicate handling, returned fields, and agent
 binding.
 
-Do not use `npx skills add` as the final step; this is not `npx skills add`. That installs outside Multica and
-will not create a managed workspace skill.
+Do not use `npx skills add` as the final step; this is not `npx skills add`. That
+installs outside Multica and will not create a managed workspace skill.
 
 ## Output to the user
 
 Report the decision, not the whole search dump:
 
 - selected skill name and URL;
-- why it matched the user's request;
+- why the metadata matched the user's request;
 - any strong rejected alternatives if relevant;
 - import result: `id`, `name`, `config.origin`, files count;
 - whether it still needs to be bound to an agent.
@@ -106,21 +118,23 @@ something.
 Incorrect:
 
 ```text
-I found the first result on skills.sh and installed it with npx skills add.
+I opened the first remote skill file during search, verified its full content,
+and installed it with npx skills add.
 ```
 
 Correct:
 
 ```text
 I searched for `frontend design`, compared the top candidates by install count,
-source reputation, and SKILL.md content, selected the matching skills.sh URL, and
-imported it with `multica skill import --url <selected-url> --output json`.
+github_stars, repo, source reputation, URL, and description, selected the matching
+skills.sh URL, and imported it with `multica skill import --url <selected-url> --output json`.
 ```
 
 ## Source of truth
 
 - `multica skill search <query> --output json` / `GET /api/skills/search?q=...`
   are the supported structured discovery surfaces.
+- Search returns candidate metadata only; it is not a remote content preview.
 - `multica-skill-importing` defines the final Multica workspace import path.
 - `POST /api/skills/import` and `multica skill import --url` are the supported
   Multica installation surfaces.

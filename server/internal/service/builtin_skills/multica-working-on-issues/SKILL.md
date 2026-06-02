@@ -1,71 +1,18 @@
 ---
 name: multica-working-on-issues
-description: Use when working on a Multica issue or issue comment — read the triggering context, perform and verify the work, report results, link PRs to issues, use metadata/status carefully, and create sub-issues without accidentally starting the wrong work.
+description: Use when working on a Multica issue after the runtime has provided the trigger context — link PRs to issues, use metadata/status carefully, create sub-issues without accidentally starting work, and understand platform side effects.
 user-invocable: false
 allowed-tools: Bash(multica *), Bash(git *), Bash(gh *)
 ---
 
 # Working on Multica issues
 
-This skill covers the Multica issue execution loop: understand the trigger, do
-real work, verify it, and leave the issue in a state the next person or agent can
-trust.
+This skill covers product contracts that the runtime brief does not fully encode:
+PR linking, close intent, metadata semantics, status side effects, and sub-issue
+creation behavior.
 
 Do not use this skill to learn how to build mention links. For mentions, load
 `multica-mentioning`.
-
-## The invariant
-
-If you perform actual work for an issue, the result must be visible on the issue.
-Terminal output, local files, and agent logs are not delivery. Post a concise
-issue comment after the work is done.
-
-If the triggering comment is only an acknowledgement, thanks, or sign-off and
-you did no work, stay silent. Do not post "no action needed".
-
-## Start from the trigger, not from memory
-
-1. Read the issue:
-
-```bash
-multica issue get <issue-id> --output json
-```
-
-2. Read pinned metadata:
-
-```bash
-multica issue metadata list <issue-id> --output json
-```
-
-3. If this run came from a comment, read that conversation thread first:
-
-```bash
-multica issue comment list <issue-id> --thread <trigger-comment-id> --tail 30 --output json
-```
-
-4. Use recent threads only when the current thread does not contain enough
-context:
-
-```bash
-multica issue comment list <issue-id> --recent 20 --output json
-```
-
-Do not answer an old comment just because it appears in the history. Focus on
-the trigger that started this run.
-
-## Reply only after doing the requested work
-
-A result comment should state outcome and evidence, not narrate every command.
-Good comments answer: what changed, what was verified, and what remains blocked.
-
-Use the trigger comment as the parent when replying to a triggered comment:
-
-```bash
-multica issue comment add <issue-id> --parent <trigger-comment-id> --content "..."
-```
-
-For multiline comments, use `--content-stdin` or `--content-file` so quotes and
-code blocks survive intact.
 
 ## PR linking and close intent
 
@@ -115,8 +62,8 @@ that the issue is linked.
 
 ## Metadata is a high-signal scratchpad
 
-Read metadata on entry. Write it only when the value will likely be re-read by a
-future run on the same issue.
+Read metadata on entry when the runtime asks for issue context. Write it only
+when the value will likely be re-read by a future run on the same issue.
 
 Usually valid keys:
 
@@ -186,19 +133,6 @@ with curl, wget, or direct HTTP. If an issue or comment has attachments and you
 need them, inspect the attachment CLI help and use the authenticated CLI path.
 
 ## Incorrect → correct
-
-Incorrect:
-
-```text
-I fixed it locally.
-```
-
-Correct:
-
-```text
-Fixed the login redirect and opened PR: https://github.com/org/repo/pull/123
-Verified with `go test ./internal/service -run TestLoginRedirect`.
-```
 
 Incorrect PR title:
 

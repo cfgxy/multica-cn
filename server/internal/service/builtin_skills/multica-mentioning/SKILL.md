@@ -71,9 +71,9 @@ behave as described, check the source rather than guessing:
 
 - `server/internal/util/mention.go:16` — the mention regex. The id must be a
   hex UUID (or the literal `all`); a name silently fails to parse.
-- `server/internal/handler/comment.go:884` — `enqueueMentionedAgentTasks`:
+- `server/internal/handler/comment.go:948` — `enqueueMentionedAgentTasks`:
   how `@agent` enqueues a run and `@squad` enqueues the leader, plus the
   guards (already-pending dedup, archived, private) that make a valid mention
   no-op.
-- `server/internal/handler/comment.go:768` — `@all` is a broadcast that
+- `server/internal/handler/comment.go:966` — `@all` is a broadcast that
   suppresses the assignee's auto-trigger.

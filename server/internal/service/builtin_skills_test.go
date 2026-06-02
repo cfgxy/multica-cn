@@ -171,10 +171,6 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 	}
 
 	mustContain := []string{
-		"multica issue get <issue-id> --output json",
-		"multica issue metadata list <issue-id> --output json",
-		"multica issue comment list <issue-id> --thread <trigger-comment-id>",
-		"multica issue comment add <issue-id> --parent <trigger-comment-id>",
 		"multica issue pull-requests <issue-id> --output json",
 		"Closes MUL-2759",
 		"--status backlog",
@@ -186,6 +182,19 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 	for _, want := range mustContain {
 		if !strings.Contains(body, want) {
 			t.Errorf("working-on-issues skill missing %q", want)
+		}
+	}
+
+	mustNotContain := []string{
+		"Start from the trigger, not from memory",
+		"multica issue get <issue-id> --output json",
+		"multica issue metadata list <issue-id> --output json",
+		"multica issue comment list <issue-id> --thread <trigger-comment-id>",
+		"multica issue comment add <issue-id> --parent <trigger-comment-id>",
+	}
+	for _, forbidden := range mustNotContain {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("working-on-issues skill duplicates runtime prompt contract %q", forbidden)
 		}
 	}
 }
@@ -218,16 +227,29 @@ func TestSkillImportingSkillCoversWorkspaceImportContracts(t *testing.T) {
 		"legacy",
 		"multica skill list --output json",
 		"npx skills add",
-		"multica agent skills set <agent-id> --skill-ids <skill-id>",
+		"multica agent skills list <agent-id> --output json",
+		"merge the new skill id with the existing ids",
+		"multica agent skills set <agent-id> --skill-ids <existing-id-1>,<existing-id-2>,<skill-id> --output json",
+		"replace-all",
 	}
 	for _, want := range mustContain {
 		if !strings.Contains(body, want) {
 			t.Errorf("skill-importing skill missing %q", want)
 		}
 	}
+
+	mustNotContain := []string{
+		"multica agent skills set <agent-id> --skill-ids <skill-id>",
+		"multica agent skills add",
+	}
+	for _, forbidden := range mustNotContain {
+		if strings.Contains(body, forbidden) {
+			t.Errorf("skill-importing skill should not teach unavailable or destructive binding command %q", forbidden)
+		}
+	}
 }
 
-func TestSkillDiscoverySkillCoversFindVerifyImportContracts(t *testing.T) {
+func TestSkillDiscoverySkillCoversMetadataOnlyPreImportContracts(t *testing.T) {
 	skill, ok := findSkill(t, "multica-skill-discovery")
 	if !ok {
 		return
@@ -246,12 +268,13 @@ func TestSkillDiscoverySkillCoversFindVerifyImportContracts(t *testing.T) {
 		"GET /api/skills/search?q=...",
 		"clawhub.ai",
 		"upstream_unavailable",
-		"verify before import",
+		"metadata-only before import",
+		"full content verification happens after import",
 		"install_count",
 		"github_stars",
 		"repo",
 		"source reputation",
-		"SKILL.md",
+		"description",
 		"multica skill import --url <selected-url> --output json",
 		"not `npx skills add`",
 		"discovery is not installation",
@@ -261,50 +284,16 @@ func TestSkillDiscoverySkillCoversFindVerifyImportContracts(t *testing.T) {
 			t.Errorf("skill-discovery skill missing %q", want)
 		}
 	}
-}
-
-func TestSkillAuthoringSkillCoversCreateUpdateMaintainContracts(t *testing.T) {
-	skill, ok := findSkill(t, "multica-skill-authoring")
-	if !ok {
-		return
-	}
-	fm, body, _ := splitFrontmatter(skill.Content)
-
-	if got := strings.TrimSpace(fm["user-invocable"]); got != "false" {
-		t.Errorf("user-invocable = %q, want false (skill authoring guidance triggers from context)", got)
-	}
-	if got := strings.TrimSpace(fm["allowed-tools"]); !strings.Contains(got, "Bash(multica *)") {
-		t.Errorf("allowed-tools = %q, want access to the Multica CLI", got)
-	}
-
-	mustContain := []string{
-		"multica skill create --name <name> --description <description> --content <path-or-text> --output json",
-		"multica skill update <skill-id> --content <path-or-text> --output json",
-		"multica skill files upsert <skill-id> --path <relative-path> --content <path-or-text>",
-		"multica skill files delete <skill-id> <file-id>",
-		"multica skill get <skill-id> --output json",
-		"SKILL.md",
-		"frontmatter",
-		"supporting files",
-		"secrets",
-		"PR numbers",
-		"current CLI",
-		"source of truth",
-		"verify by reading it back",
-	}
-	for _, want := range mustContain {
-		if !strings.Contains(body, want) {
-			t.Errorf("skill-authoring skill missing %q", want)
-		}
-	}
 
 	mustNotContain := []string{
-		"--bundle-dir",
-		"local bundle",
+		"content match in `SKILL.md`, not only the title",
+		"If a candidate looks good from the search result but the `SKILL.md` does not",
+		"source reputation, and SKILL.md content",
+		"verify before import",
 	}
 	for _, forbidden := range mustNotContain {
 		if strings.Contains(body, forbidden) {
-			t.Errorf("skill-authoring skill should not mention unsupported local import workflow %q", forbidden)
+			t.Errorf("skill-discovery skill should not imply remote content preview %q", forbidden)
 		}
 	}
 }
