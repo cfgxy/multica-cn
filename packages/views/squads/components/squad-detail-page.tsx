@@ -1121,7 +1121,7 @@ function SquadOverviewPane({
   );
 }
 
-// Visual config for the four squad member status buckets. Mirrors
+// Visual config for the five squad member status buckets. Mirrors
 // availabilityConfig + workloadConfig in packages/views/agents/presence.ts —
 // same semantic tokens so a status dot here matches the agent page's dot.
 // Unknown / null statuses (human members, server-side enum drift) render as
