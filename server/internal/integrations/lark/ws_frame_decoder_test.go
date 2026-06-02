@@ -248,7 +248,11 @@ func TestLarkJSONFrameDecoderMentionPlaceholderRewrite(t *testing.T) {
 		}
 	})
 
-	t.Run("preserves newlines and collapses spaces from stripped mention", func(t *testing.T) {
+	t.Run("preserves newlines after stripped mention", func(t *testing.T) {
+		// Strip the bot mention + one adjacent space; the newline that
+		// follows stays put so the rest of the message keeps its
+		// shape. User-typed extra spaces (the double space here) are
+		// preserved verbatim — we do not globally collapse whitespace.
 		inst := db.LarkInstallation{
 			BotOpenID:  "ou_bot",
 			BotUnionID: pgText("on_bot"),
@@ -258,8 +262,8 @@ func TestLarkJSONFrameDecoderMentionPlaceholderRewrite(t *testing.T) {
 		if err != nil || !ok {
 			t.Fatalf("ok=%v err=%v", ok, err)
 		}
-		if msg.Body != "first line\nsecond line" {
-			t.Errorf("Body = %q; want %q", msg.Body, "first line\nsecond line")
+		if msg.Body != " first line\nsecond line" {
+			t.Errorf("Body = %q; want %q", msg.Body, " first line\nsecond line")
 		}
 	})
 
@@ -274,6 +278,97 @@ func TestLarkJSONFrameDecoderMentionPlaceholderRewrite(t *testing.T) {
 		}
 		if msg.Body != "just a normal message" {
 			t.Errorf("Body = %q; want %q", msg.Body, "just a normal message")
+		}
+	})
+
+	t.Run("preserves indentation and tabs around stripped mention", func(t *testing.T) {
+		// Code-block / indented messages: stripping the bot mention
+		// must not eat the surrounding indent, tabs, or any internal
+		// whitespace the user intentionally typed. We only consume a
+		// single space directly adjacent to the placeholder.
+		inst := db.LarkInstallation{
+			BotOpenID:  "ou_bot",
+			BotUnionID: pgText("on_bot"),
+		}
+		mentions := `[{"key":"@_user_1","name":"My Bot","id":{"open_id":"ou_bot_wire","union_id":"on_bot"}}]`
+		raw := "    @_user_1 review this snippet:\n\tfunc add(a, b int) int {\n\t\treturn a + b\n\t}"
+		want := "    review this snippet:\n\tfunc add(a, b int) int {\n\t\treturn a + b\n\t}"
+		msg, ok, err := d.Decode(mkRaw(raw, mentions), inst)
+		if err != nil || !ok {
+			t.Fatalf("ok=%v err=%v", ok, err)
+		}
+		if msg.Body != want {
+			t.Errorf("Body = %q; want %q", msg.Body, want)
+		}
+	})
+
+	t.Run("avoids @_user_1 / @_user_10 prefix collision", func(t *testing.T) {
+		// Lark assigns mention keys positionally; a chat with eleven+
+		// participants exposes both `@_user_1` and `@_user_10`. Naive
+		// ReplaceAll for `@_user_1` would mangle `@_user_10`, so we
+		// match longest-first.
+		inst := db.LarkInstallation{
+			BotOpenID:  "ou_bot",
+			BotUnionID: pgText("on_bot"),
+		}
+		mentions := `[
+			{"key":"@_user_1","name":"My Bot","id":{"open_id":"ou_bot_wire","union_id":"on_bot"}},
+			{"key":"@_user_10","name":"Alice","id":{"open_id":"ou_alice","union_id":"on_alice"}}
+		]`
+		raw := "@_user_1 forward this to @_user_10 please"
+		want := "forward this to @Alice please"
+		msg, ok, err := d.Decode(mkRaw(raw, mentions), inst)
+		if err != nil || !ok {
+			t.Fatalf("ok=%v err=%v", ok, err)
+		}
+		if msg.Body != want {
+			t.Errorf("Body = %q; want %q", msg.Body, want)
+		}
+	})
+
+	t.Run("@-ing both bots in one message strips only self, renders other by name", func(t *testing.T) {
+		// Multi-bot group chat where the user @-mentions BOTH bots in
+		// the same message. From this WS's perspective only the self
+		// mention should be stripped; the sibling bot renders as
+		// @<displayName> so the agent receives a faithful transcript
+		// of the user intent.
+		inst := db.LarkInstallation{
+			BotOpenID:  "ou_self_canonical",
+			BotUnionID: pgText("on_self_union"),
+		}
+		mentions := `[
+			{"key":"@_user_1","name":"Self Bot","id":{"open_id":"ou_self_wire","union_id":"on_self_union"}},
+			{"key":"@_user_2","name":"Sibling Bot","id":{"open_id":"ou_sibling_wire","union_id":"on_sibling_union"}}
+		]`
+		raw := "@_user_1 @_user_2 please coordinate"
+		want := "@Sibling Bot please coordinate"
+		msg, ok, err := d.Decode(mkRaw(raw, mentions), inst)
+		if err != nil || !ok {
+			t.Fatalf("ok=%v err=%v", ok, err)
+		}
+		if msg.Body != want {
+			t.Errorf("Body = %q; want %q", msg.Body, want)
+		}
+	})
+
+	t.Run("open_id match does NOT strip when union_id known but differs", func(t *testing.T) {
+		// Mirror of containsMention's union_id-first rule: when we
+		// know our union_id, an open_id-only match means the mention
+		// is for the OTHER bot (the inverse-mapping quirk), so we
+		// must render it as @<name>, not strip it.
+		inst := db.LarkInstallation{
+			BotOpenID:  "ou_self_canonical",
+			BotUnionID: pgText("on_self_union"),
+		}
+		mentions := `[{"key":"@_user_1","name":"Sibling Bot","id":{"open_id":"ou_self_canonical","union_id":"on_sibling_union"}}]`
+		raw := "@_user_1 hi"
+		want := "@Sibling Bot hi"
+		msg, ok, err := d.Decode(mkRaw(raw, mentions), inst)
+		if err != nil || !ok {
+			t.Fatalf("ok=%v err=%v", ok, err)
+		}
+		if msg.Body != want {
+			t.Errorf("Body = %q; want %q", msg.Body, want)
 		}
 	})
 }

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -153,68 +154,93 @@ type larkMention struct {
 // when name is empty (defensive — Lark always populates it in
 // practice).
 //
-// Whitespace cleanup: runs of horizontal whitespace introduced by
-// stripping the bot mention are collapsed to a single space, and
-// leading/trailing horizontal whitespace per line is trimmed. Line
-// breaks in the original message are preserved.
+// Replacement is a single-pass token scan, not naive ReplaceAll. Two
+// reasons:
+//
+//   - Prefix collision: a chat with eleven @-mentions exposes keys
+//     `@_user_1` and `@_user_10`; ReplaceAll for `@_user_1` would
+//     mangle the substring of `@_user_10`. We sort keys by length
+//     DESC and try the longest match at each scan position so the
+//     longer placeholder always wins.
+//
+//   - Whitespace fidelity: when we strip the bot mention we only
+//     touch a single space immediately adjacent to it — either the
+//     space after the placeholder, or, if there is none, a single
+//     trailing space already in the output. Tabs, indentation, code
+//     blocks, table pipes, and any other intentional whitespace in
+//     the user's message are preserved verbatim.
 func resolveMentions(text string, mentions []larkMention, botOpenID, botUnionID string) string {
 	if text == "" || len(mentions) == 0 {
 		return text
 	}
+	// Filter empty keys and sort longest first so `@_user_10` is
+	// matched before `@_user_1` at any scan position.
+	sorted := make([]larkMention, 0, len(mentions))
 	for _, m := range mentions {
-		if m.Key == "" {
-			continue
+		if m.Key != "" {
+			sorted = append(sorted, m)
 		}
-		var rep string
-		switch {
-		case isBotMention(m, botOpenID, botUnionID):
-			rep = ""
-		case m.Name != "":
-			rep = "@" + m.Name
-		default:
-			continue
-		}
-		text = strings.ReplaceAll(text, m.Key, rep)
 	}
-	return tidyMentionWhitespace(text)
-}
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return len(sorted[i].Key) > len(sorted[j].Key)
+	})
 
-func isBotMention(m larkMention, botOpenID, botUnionID string) bool {
-	if botUnionID != "" && m.ID.UnionID == botUnionID {
-		return true
-	}
-	if botOpenID != "" && m.ID.OpenID == botOpenID {
-		return true
-	}
-	return false
-}
-
-// tidyMentionWhitespace collapses runs of spaces/tabs and trims
-// horizontal whitespace at the start/end of each line. Newlines are
-// preserved so multi-line user messages survive intact.
-func tidyMentionWhitespace(s string) string {
-	if s == "" {
-		return s
-	}
-	lines := strings.Split(s, "\n")
-	for i, line := range lines {
-		var b strings.Builder
-		b.Grow(len(line))
-		prevSpace := false
-		for _, r := range line {
-			if r == ' ' || r == '\t' {
-				if !prevSpace {
-					b.WriteByte(' ')
-				}
-				prevSpace = true
-				continue
+	out := make([]byte, 0, len(text))
+	i := 0
+	for i < len(text) {
+		var matched *larkMention
+		for idx := range sorted {
+			if strings.HasPrefix(text[i:], sorted[idx].Key) {
+				matched = &sorted[idx]
+				break
 			}
-			prevSpace = false
-			b.WriteRune(r)
 		}
-		lines[i] = strings.TrimSpace(b.String())
+		if matched == nil {
+			out = append(out, text[i])
+			i++
+			continue
+		}
+		end := i + len(matched.Key)
+		switch {
+		case isBotMention(*matched, botOpenID, botUnionID):
+			// Strip: eat one adjacent space (after the placeholder
+			// preferred; else backtrack one space we already emitted)
+			// so the seam is not left with a double space or a
+			// dangling leading space. Tabs / newlines / other chars
+			// are untouched.
+			if end < len(text) && text[end] == ' ' {
+				end++
+			} else if n := len(out); n > 0 && out[n-1] == ' ' {
+				out = out[:n-1]
+			}
+		case matched.Name != "":
+			out = append(out, '@')
+			out = append(out, matched.Name...)
+		default:
+			// Unknown mention — leave the placeholder intact so the
+			// agent at least sees a stable token.
+			out = append(out, matched.Key...)
+		}
+		i = end
 	}
-	return strings.Join(lines, "\n")
+	return string(out)
+}
+
+// isBotMention identifies whether a payload mention refers to THIS
+// bot. Stays in lockstep with containsMention: when union_id is
+// known we trust it exclusively (open_id is structurally inverted
+// in multi-bot groups — matching on it would re-introduce the
+// MUL-2671 routing bug). Only when union_id is missing do we fall
+// back to open_id, which is correct in single-bot installs and the
+// best we can do in pre-backfill rows.
+func isBotMention(m larkMention, botOpenID, botUnionID string) bool {
+	if botUnionID != "" {
+		return m.ID.UnionID == botUnionID
+	}
+	if botOpenID == "" {
+		return false
+	}
+	return m.ID.OpenID == botOpenID
 }
 
 func extractTextBody(content string) string {
