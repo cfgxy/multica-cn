@@ -354,6 +354,40 @@ func TestCreatingAgentsSkillCoversAgentCreationContracts(t *testing.T) {
 	}
 }
 
+func TestSquadsSkillCoversLeaderRoutingContract(t *testing.T) {
+	skill, ok := findSkill(t, "multica-squads")
+	if !ok {
+		return
+	}
+	fm, body, _ := splitFrontmatter(skill.Content)
+
+	if got := strings.TrimSpace(fm["user-invocable"]); got != "false" {
+		t.Errorf("user-invocable = %q, want false (squad guidance triggers from context)", got)
+	}
+	if got := strings.TrimSpace(fm["allowed-tools"]); !strings.Contains(got, "Bash(multica *)") {
+		t.Errorf("allowed-tools = %q, want access to the Multica CLI", got)
+	}
+
+	mustContain := []string{
+		"A squad is not an agent",
+		"squad's `leader_id` agent",
+		"squad members are not automatically fanned out",
+		"multica squad member set-role",
+		"mention://squad/<squad-id>",
+		"recording squad activity",
+		"references/squad-source-map.md",
+	}
+	for _, want := range mustContain {
+		if !strings.Contains(body, want) {
+			t.Errorf("squads skill missing %q", want)
+		}
+	}
+
+	if !skillHasFile(skill, "references/squad-source-map.md") {
+		t.Errorf("squads skill missing supporting file references/squad-source-map.md")
+	}
+}
+
 func findSkill(t *testing.T, name string) (AgentSkillData, bool) {
 	t.Helper()
 	for _, s := range loadBuiltinSkills() {
@@ -363,6 +397,15 @@ func findSkill(t *testing.T, name string) (AgentSkillData, bool) {
 	}
 	t.Errorf("built-in skill %q not found", name)
 	return AgentSkillData{}, false
+}
+
+func skillHasFile(skill AgentSkillData, path string) bool {
+	for _, f := range skill.Files {
+		if f.Path == path {
+			return true
+		}
+	}
+	return false
 }
 
 // splitFrontmatter returns the top-level scalar keys of a leading YAML
