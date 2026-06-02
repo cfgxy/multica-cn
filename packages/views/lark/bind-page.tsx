@@ -136,4 +136,3 @@ function redemptionFailureReason(err: unknown): string {
   }
   return "unknown";
 }
-
