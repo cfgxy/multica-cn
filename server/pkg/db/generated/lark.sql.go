@@ -62,15 +62,20 @@ func (q *Queries) AcquireLarkWSLease(ctx context.Context, arg AcquireLarkWSLease
 
 const claimLarkInboundDedup = `-- name: ClaimLarkInboundDedup :one
 
-INSERT INTO lark_inbound_message_dedup (message_id, claim_token)
-VALUES ($1, gen_random_uuid())
-ON CONFLICT (message_id) DO UPDATE
+INSERT INTO lark_inbound_message_dedup (installation_id, message_id, claim_token)
+VALUES ($1, $2, gen_random_uuid())
+ON CONFLICT (installation_id, message_id) DO UPDATE
     SET received_at = now(),
         claim_token = gen_random_uuid()
     WHERE lark_inbound_message_dedup.processed_at IS NULL
       AND lark_inbound_message_dedup.received_at < now() - INTERVAL '60 seconds'
-RETURNING message_id, received_at, processed_at, claim_token
+RETURNING installation_id, message_id, received_at, processed_at, claim_token
 `
+
+type ClaimLarkInboundDedupParams struct {
+	InstallationID pgtype.UUID `json:"installation_id"`
+	MessageID      string      `json:"message_id"`
+}
 
 // =====================
 // lark_inbound_message_dedup
@@ -107,10 +112,11 @@ RETURNING message_id, received_at, processed_at, claim_token
 // supplying the returned claim_token. Otherwise the row sits as an
 // in-flight claim and the next replay attempt must wait for the
 // staleness TTL.
-func (q *Queries) ClaimLarkInboundDedup(ctx context.Context, messageID string) (LarkInboundMessageDedup, error) {
-	row := q.db.QueryRow(ctx, claimLarkInboundDedup, messageID)
+func (q *Queries) ClaimLarkInboundDedup(ctx context.Context, arg ClaimLarkInboundDedupParams) (LarkInboundMessageDedup, error) {
+	row := q.db.QueryRow(ctx, claimLarkInboundDedup, arg.InstallationID, arg.MessageID)
 	var i LarkInboundMessageDedup
 	err := row.Scan(
+		&i.InstallationID,
 		&i.MessageID,
 		&i.ReceivedAt,
 		&i.ProcessedAt,
@@ -819,14 +825,16 @@ func (q *Queries) ListLarkUserBindingsByInstallation(ctx context.Context, instal
 const markLarkInboundDedupProcessed = `-- name: MarkLarkInboundDedupProcessed :execrows
 UPDATE lark_inbound_message_dedup
 SET processed_at = now()
-WHERE message_id = $1
-  AND claim_token = $2
+WHERE installation_id = $1
+  AND message_id = $2
+  AND claim_token = $3
   AND processed_at IS NULL
 `
 
 type MarkLarkInboundDedupProcessedParams struct {
-	MessageID  string      `json:"message_id"`
-	ClaimToken pgtype.UUID `json:"claim_token"`
+	InstallationID pgtype.UUID `json:"installation_id"`
+	MessageID      string      `json:"message_id"`
+	ClaimToken     pgtype.UUID `json:"claim_token"`
 }
 
 // Locks in a claim as permanently processed. Called by the dispatcher
@@ -849,7 +857,7 @@ type MarkLarkInboundDedupProcessedParams struct {
 // idempotent: replaying it cannot resurrect a row that was already
 // terminal.
 func (q *Queries) MarkLarkInboundDedupProcessed(ctx context.Context, arg MarkLarkInboundDedupProcessedParams) (int64, error) {
-	result, err := q.db.Exec(ctx, markLarkInboundDedupProcessed, arg.MessageID, arg.ClaimToken)
+	result, err := q.db.Exec(ctx, markLarkInboundDedupProcessed, arg.InstallationID, arg.MessageID, arg.ClaimToken)
 	if err != nil {
 		return 0, err
 	}
@@ -926,14 +934,16 @@ func (q *Queries) RecordLarkInboundDrop(ctx context.Context, arg RecordLarkInbou
 
 const releaseLarkInboundDedup = `-- name: ReleaseLarkInboundDedup :execrows
 DELETE FROM lark_inbound_message_dedup
-WHERE message_id = $1
-  AND claim_token = $2
+WHERE installation_id = $1
+  AND message_id = $2
+  AND claim_token = $3
   AND processed_at IS NULL
 `
 
 type ReleaseLarkInboundDedupParams struct {
-	MessageID  string      `json:"message_id"`
-	ClaimToken pgtype.UUID `json:"claim_token"`
+	InstallationID pgtype.UUID `json:"installation_id"`
+	MessageID      string      `json:"message_id"`
+	ClaimToken     pgtype.UUID `json:"claim_token"`
 }
 
 // Releases an in-flight claim. Called by the dispatcher when an infra
@@ -945,7 +955,7 @@ type ReleaseLarkInboundDedupParams struct {
 // cannot undo a Mark; guarded by claim_token so a slow-but-alive worker
 // whose claim was reclaimed cannot delete the new holder's row.
 func (q *Queries) ReleaseLarkInboundDedup(ctx context.Context, arg ReleaseLarkInboundDedupParams) (int64, error) {
-	result, err := q.db.Exec(ctx, releaseLarkInboundDedup, arg.MessageID, arg.ClaimToken)
+	result, err := q.db.Exec(ctx, releaseLarkInboundDedup, arg.InstallationID, arg.MessageID, arg.ClaimToken)
 	if err != nil {
 		return 0, err
 	}

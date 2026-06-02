@@ -89,7 +89,7 @@ func (f *fakeQueries) GetChatSession(ctx context.Context, id pgtype.UUID) (db.Ch
 //     returns the row.
 //   - Row present otherwise → ON CONFLICT WHERE filter excludes the
 //     UPDATE → RETURNING returns 0 rows → pgx.ErrNoRows.
-func (f *fakeQueries) ClaimLarkInboundDedup(ctx context.Context, messageID string) (db.LarkInboundMessageDedup, error) {
+func (f *fakeQueries) ClaimLarkInboundDedup(ctx context.Context, arg db.ClaimLarkInboundDedupParams) (db.LarkInboundMessageDedup, error) {
 	f.calledClaim++
 	if f.dedupClaimErr != nil {
 		return db.LarkInboundMessageDedup{}, f.dedupClaimErr
@@ -97,11 +97,16 @@ func (f *fakeQueries) ClaimLarkInboundDedup(ctx context.Context, messageID strin
 	if f.dedup == nil {
 		f.dedup = map[string]*fakeDedupRow{}
 	}
-	row, exists := f.dedup[messageID]
+	key := dedupKey(arg.InstallationID, arg.MessageID)
+	row, exists := f.dedup[key]
 	if !exists {
 		token := f.mintToken()
-		f.dedup[messageID] = &fakeDedupRow{token: token, rotations: 1}
-		return db.LarkInboundMessageDedup{MessageID: messageID, ClaimToken: token}, nil
+		f.dedup[key] = &fakeDedupRow{token: token, rotations: 1}
+		return db.LarkInboundMessageDedup{
+			InstallationID: arg.InstallationID,
+			MessageID:      arg.MessageID,
+			ClaimToken:     token,
+		}, nil
 	}
 	if !row.processed && f.dedupReclaim {
 		// In-flight claim re-taken — rotate the token. This is what
@@ -111,9 +116,27 @@ func (f *fakeQueries) ClaimLarkInboundDedup(ctx context.Context, messageID strin
 		// tx rolls back.
 		row.token = f.mintToken()
 		row.rotations++
-		return db.LarkInboundMessageDedup{MessageID: messageID, ClaimToken: row.token}, nil
+		return db.LarkInboundMessageDedup{
+			InstallationID: arg.InstallationID,
+			MessageID:      arg.MessageID,
+			ClaimToken:     row.token,
+		}, nil
 	}
 	return db.LarkInboundMessageDedup{}, pgx.ErrNoRows
+}
+
+// dedupKey mirrors the production (installation_id, message_id) composite
+// PK in the test map. Installations are not isolated by message_id alone:
+// a Lark group with multiple bots installed delivers the SAME message_id
+// to every bot's WS, and each one must be free to claim, evaluate
+// AddressedToBot independently, and either ingest or drop as
+// not_addressed_in_group.
+func dedupKey(installationID pgtype.UUID, messageID string) string {
+	var b [16]byte
+	if installationID.Valid {
+		b = installationID.Bytes
+	}
+	return string(b[:]) + "|" + messageID
 }
 
 // MarkLarkInboundDedupProcessed mirrors the production UPDATE: only
@@ -126,7 +149,7 @@ func (f *fakeQueries) MarkLarkInboundDedupProcessed(ctx context.Context, arg db.
 	if f.dedup == nil {
 		return 0, nil
 	}
-	row, ok := f.dedup[arg.MessageID]
+	row, ok := f.dedup[dedupKey(arg.InstallationID, arg.MessageID)]
 	if !ok {
 		return 0, nil
 	}
@@ -152,7 +175,8 @@ func (f *fakeQueries) ReleaseLarkInboundDedup(ctx context.Context, arg db.Releas
 	if f.dedup == nil {
 		return 0, nil
 	}
-	row, ok := f.dedup[arg.MessageID]
+	key := dedupKey(arg.InstallationID, arg.MessageID)
+	row, ok := f.dedup[key]
 	if !ok {
 		return 0, nil
 	}
@@ -162,7 +186,7 @@ func (f *fakeQueries) ReleaseLarkInboundDedup(ctx context.Context, arg db.Releas
 	if row.token != arg.ClaimToken {
 		return 0, nil
 	}
-	delete(f.dedup, arg.MessageID)
+	delete(f.dedup, key)
 	return 1, nil
 }
 
@@ -215,8 +239,9 @@ func (f *fakeChat) AppendUserMessage(ctx context.Context, p AppendUserMessagePar
 	// rotated the token under our feet, surface ErrClaimLost.
 	if f.queries != nil && p.ClaimToken.Valid && p.LarkMessageID != "" {
 		rows, err := f.queries.MarkLarkInboundDedupProcessed(ctx, db.MarkLarkInboundDedupProcessedParams{
-			MessageID:  p.LarkMessageID,
-			ClaimToken: p.ClaimToken,
+			InstallationID: p.InstallationID,
+			MessageID:      p.LarkMessageID,
+			ClaimToken:     p.ClaimToken,
 		})
 		if err != nil {
 			return AppendResult{}, err
@@ -281,6 +306,14 @@ func activeInstallation() db.LarkInstallation {
 		InstallerUserID: validUUID(0x99),
 		Status:          string(InstallationActive),
 	}
+}
+
+// seedDedupKey composes a fake-table key for the default activeInstallation
+// fixture (installation_id = validUUID(0x11)). Pre-seeded dedup rows in
+// dispatcher tests use this to satisfy the new (installation_id,
+// message_id) composite PK.
+func seedDedupKey(messageID string) string {
+	return dedupKey(validUUID(0x11), messageID)
 }
 
 func boundUser() db.LarkUserBinding {
@@ -459,7 +492,7 @@ func TestDispatcher_DedupHitDoesNotEnqueue(t *testing.T) {
 	queries := &fakeQueries{
 		installationByApp: activeInstallation(),
 		userBinding:       boundUser(),
-		dedup:             map[string]*fakeDedupRow{"msg-dup": {processed: true, token: validUUID(0xAB)}},
+		dedup: map[string]*fakeDedupRow{seedDedupKey("msg-dup"): {processed: true, token: validUUID(0xAB)}},
 	}
 	chat := &fakeChat{
 		ensureID: validUUID(0x66),
@@ -509,7 +542,7 @@ func TestDispatcher_DedupHitDoesNotEnqueue(t *testing.T) {
 func TestDispatcher_DedupBeforeGroupFilter(t *testing.T) {
 	queries := &fakeQueries{
 		installationByApp: activeInstallation(),
-		dedup:             map[string]*fakeDedupRow{"msg-replay": {processed: true, token: validUUID(0xAB)}},
+		dedup: map[string]*fakeDedupRow{seedDedupKey("msg-replay"): {processed: true, token: validUUID(0xAB)}},
 	}
 	audit := &fakeAudit{}
 	d := &Dispatcher{Queries: queries, Audit: audit}
@@ -528,6 +561,47 @@ func TestDispatcher_DedupBeforeGroupFilter(t *testing.T) {
 	}
 }
 
+// TestDispatcher_DedupIsScopedPerInstallation pins MUL-2671's multi-bot
+// invariant: in a Lark group with TWO Multica bots installed, the
+// same Lark message_id arrives at both WS supervisors and each one
+// MUST be free to claim, evaluate AddressedToBot independently, and
+// either ingest or drop. Before the (installation_id, message_id)
+// composite PK landed, whichever WS claimed first would mark the
+// shared row terminal and the bot that was actually @-ed would lose
+// to dedup before its filter ran — every @ to the "second" bot
+// silently disappeared.
+func TestDispatcher_DedupIsScopedPerInstallation(t *testing.T) {
+	otherInst := activeInstallation()
+	otherInst.ID = validUUID(0x12) // distinct from the default 0x11
+	queries := &fakeQueries{
+		installationByApp: otherInst,
+		// Pre-seed a terminal dedup row for installation 0x11 — that's
+		// the OTHER bot's already-processed claim. The current Handle
+		// runs under installation 0x12 (composite-key miss → fresh
+		// claim → continues processing).
+		dedup: map[string]*fakeDedupRow{
+			dedupKey(validUUID(0x11), "msg-shared"): {processed: true, token: validUUID(0xAB)},
+		},
+	}
+	audit := &fakeAudit{}
+	d := &Dispatcher{Queries: queries, Audit: audit}
+
+	res, _ := d.Handle(context.Background(), InboundMessage{
+		AppID:          "ok",
+		ChatType:       ChatTypeGroup,
+		AddressedToBot: false, // simulate "not @-ed FROM this bot's perspective"
+		MessageID:      "msg-shared",
+	})
+	if res.DropReason != DropReasonNotAddressedInGroup {
+		t.Fatalf("composite-key dedup miss must let group filter run, got drop reason %q", res.DropReason)
+	}
+	// And the new (0x12, msg-shared) row must now exist — only the
+	// other installation's row was pre-seeded.
+	if _, ok := queries.dedup[dedupKey(otherInst.ID, "msg-shared")]; !ok {
+		t.Fatalf("expected a fresh claim row for installation 0x12; got %v", queries.dedup)
+	}
+}
+
 // TestDispatcher_DedupBeforeIdentityCheck pins the same ordering for
 // unbound users: a replayed event from an unbound open_id must not
 // re-fire the OutcomeNeedsBinding path on every reconnect — that
@@ -536,7 +610,7 @@ func TestDispatcher_DedupBeforeIdentityCheck(t *testing.T) {
 	queries := &fakeQueries{
 		installationByApp: activeInstallation(),
 		userBindingErr:    pgx.ErrNoRows, // unbound — would normally trigger OutcomeNeedsBinding
-		dedup:             map[string]*fakeDedupRow{"msg-replay": {processed: true, token: validUUID(0xAB)}},
+		dedup: map[string]*fakeDedupRow{seedDedupKey("msg-replay"): {processed: true, token: validUUID(0xAB)}},
 	}
 	audit := &fakeAudit{}
 	d := &Dispatcher{Queries: queries, Audit: audit}
@@ -855,7 +929,7 @@ func TestDispatcher_EnsureChatSessionFailureReleasesClaim(t *testing.T) {
 	if queries.calledRelease != 1 {
 		t.Fatalf("must release the claim on pre-durable infra error; calledRelease=%d", queries.calledRelease)
 	}
-	if _, present := queries.dedup["msg-retry"]; present {
+	if _, present := queries.dedup[seedDedupKey("msg-retry")]; present {
 		t.Fatalf("release must delete the in-flight claim row; dedup=%+v", queries.dedup)
 	}
 
@@ -883,7 +957,7 @@ func TestDispatcher_EnsureChatSessionFailureReleasesClaim(t *testing.T) {
 	if queries.calledMark != 1 {
 		t.Fatalf("retry must mark processed; calledMark=%d", queries.calledMark)
 	}
-	if row, ok := queries.dedup["msg-retry"]; !ok || !row.processed {
+	if row, ok := queries.dedup[seedDedupKey("msg-retry")]; !ok || !row.processed {
 		t.Fatalf("retry must finalize claim as processed; dedup=%+v", queries.dedup)
 	}
 
@@ -1012,7 +1086,7 @@ func TestDispatcher_DurableErrorMarksClaim(t *testing.T) {
 	if queries.calledMark != 1 {
 		t.Fatalf("must mark processed: chat_message committed before the enqueue error; calledMark=%d", queries.calledMark)
 	}
-	if row, ok := queries.dedup["msg-durable-err"]; !ok || !row.processed {
+	if row, ok := queries.dedup[seedDedupKey("msg-durable-err")]; !ok || !row.processed {
 		t.Fatalf("dedup row must end up processed=true; got %+v", queries.dedup)
 	}
 }
@@ -1077,7 +1151,7 @@ func TestDispatcher_InFlightClaimDropsReplay(t *testing.T) {
 		userBinding:       boundUser(),
 		// In-flight claim (processed=false) and reclaim disabled
 		// (simulates "the row is fresh — not stale yet").
-		dedup: map[string]*fakeDedupRow{"msg-inflight": {processed: false, token: validUUID(0xAB)}},
+		dedup: map[string]*fakeDedupRow{seedDedupKey("msg-inflight"): {processed: false, token: validUUID(0xAB)}},
 	}
 	chat := &fakeChat{}
 	d := &Dispatcher{
@@ -1116,7 +1190,7 @@ func TestDispatcher_StaleInFlightClaimReclaimable(t *testing.T) {
 		installationByApp: activeInstallation(),
 		userBinding:       boundUser(),
 		chatSession:       db.ChatSession{ID: sessionID, AgentID: validUUID(0x33)},
-		dedup:             map[string]*fakeDedupRow{"msg-stale": {processed: false, token: validUUID(0xAB)}},
+		dedup: map[string]*fakeDedupRow{seedDedupKey("msg-stale"): {processed: false, token: validUUID(0xAB)}},
 		dedupReclaim:      true, // simulates received_at < now() - 60s
 	}
 	chat := &fakeChat{ensureID: sessionID, appendResult: AppendResult{}}
@@ -1195,7 +1269,10 @@ func TestDispatcher_StaleReclaimRaceDoesNotDoubleWrite(t *testing.T) {
 		// Make the existing in-flight row reclaimable, then have
 		// worker B re-Claim. This rotates claim_token under A's feet.
 		queries.dedupReclaim = true
-		if _, err := queries.ClaimLarkInboundDedup(context.Background(), p.LarkMessageID); err != nil {
+		if _, err := queries.ClaimLarkInboundDedup(context.Background(), db.ClaimLarkInboundDedupParams{
+			InstallationID: p.InstallationID,
+			MessageID:      p.LarkMessageID,
+		}); err != nil {
 			t.Fatalf("worker-B reclaim setup failed: %v", err)
 		}
 		// Switch reclaim off so the dispatcher-level retry path (the
@@ -1226,7 +1303,7 @@ func TestDispatcher_StaleReclaimRaceDoesNotDoubleWrite(t *testing.T) {
 	// got ErrClaimLost. To pin "no double write" we check that the
 	// row's processed_at was set by worker B's path (the rotated
 	// token, T_B), not by worker A's old token (T_A).
-	row, ok := queries.dedup["msg-race"]
+	row, ok := queries.dedup[seedDedupKey("msg-race")]
 	if !ok {
 		t.Fatalf("dedup row must still exist after race; got %+v", queries.dedup)
 	}
@@ -1316,7 +1393,7 @@ func TestDispatcher_InTxMarkPreventsPostCommitReclaim(t *testing.T) {
 		t.Fatalf("expected exactly one Mark call (in-tx only, no post-finalize duplicate); calledMark=%d",
 			queries.calledMark)
 	}
-	row, ok := queries.dedup["msg-atomic"]
+	row, ok := queries.dedup[seedDedupKey("msg-atomic")]
 	if !ok || !row.processed {
 		t.Fatalf("dedup row must be terminal after in-tx Mark; got %+v", queries.dedup)
 	}
@@ -1348,12 +1425,12 @@ func TestDispatcher_InTxMarkPreventsPostCommitReclaim(t *testing.T) {
 	// The dedup row must remain processed=true and unrotated — the
 	// Claim hit the terminal-row branch (no UPDATE), so claim_token
 	// did NOT mint a new value.
-	if row, ok := queries.dedup["msg-atomic"]; !ok || !row.processed {
+	if row, ok := queries.dedup[seedDedupKey("msg-atomic")]; !ok || !row.processed {
 		t.Fatalf("dedup row must stay terminal after replay; got %+v", queries.dedup)
 	}
-	if queries.dedup["msg-atomic"].rotations != 1 {
+	if queries.dedup[seedDedupKey("msg-atomic")].rotations != 1 {
 		t.Fatalf("claim_token must not rotate when the row is already processed; rotations=%d",
-			queries.dedup["msg-atomic"].rotations)
+			queries.dedup[seedDedupKey("msg-atomic")].rotations)
 	}
 }
 

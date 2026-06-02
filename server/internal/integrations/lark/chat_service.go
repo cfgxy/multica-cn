@@ -234,8 +234,9 @@ func (s *chatSessionService) AppendUserMessage(ctx context.Context, p AppendUser
 	markedInTx := false
 	if p.ClaimToken.Valid && p.LarkMessageID != "" {
 		rows, err := qtx.MarkLarkInboundDedupProcessed(ctx, db.MarkLarkInboundDedupProcessedParams{
-			MessageID:  p.LarkMessageID,
-			ClaimToken: p.ClaimToken,
+			InstallationID: p.InstallationID,
+			MessageID:      p.LarkMessageID,
+			ClaimToken:     p.ClaimToken,
 		})
 		if err != nil {
 			return AppendResult{}, fmt.Errorf("mark dedup processed: %w", err)

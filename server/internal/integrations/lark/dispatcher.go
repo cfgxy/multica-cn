@@ -142,7 +142,7 @@ type DispatcherQueries interface {
 	GetLarkInstallationByAppID(ctx context.Context, appID string) (db.LarkInstallation, error)
 	GetLarkUserBindingByOpenID(ctx context.Context, arg db.GetLarkUserBindingByOpenIDParams) (db.LarkUserBinding, error)
 	GetChatSession(ctx context.Context, id pgtype.UUID) (db.ChatSession, error)
-	ClaimLarkInboundDedup(ctx context.Context, messageID string) (db.LarkInboundMessageDedup, error)
+	ClaimLarkInboundDedup(ctx context.Context, arg db.ClaimLarkInboundDedupParams) (db.LarkInboundMessageDedup, error)
 	MarkLarkInboundDedupProcessed(ctx context.Context, arg db.MarkLarkInboundDedupProcessedParams) (int64, error)
 	ReleaseLarkInboundDedup(ctx context.Context, arg db.ReleaseLarkInboundDedupParams) (int64, error)
 	// GetWorkspace is needed to read IssuePrefix so the /issue
@@ -232,7 +232,10 @@ func (d *Dispatcher) Handle(ctx context.Context, msg InboundMessage) (DispatchRe
 	var claimToken pgtype.UUID
 	claimed := false
 	if msg.MessageID != "" {
-		claim, err := d.Queries.ClaimLarkInboundDedup(ctx, msg.MessageID)
+		claim, err := d.Queries.ClaimLarkInboundDedup(ctx, db.ClaimLarkInboundDedupParams{
+			InstallationID: inst.ID,
+			MessageID:      msg.MessageID,
+		})
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				// Either the row is processed_at IS NOT NULL
@@ -250,7 +253,7 @@ func (d *Dispatcher) Handle(ctx context.Context, msg InboundMessage) (DispatchRe
 	res, finalize, err := d.processClaimed(ctx, msg, inst, claimToken)
 
 	if claimed {
-		d.applyFinalize(ctx, msg.MessageID, claimToken, finalize)
+		d.applyFinalize(ctx, inst.ID, msg.MessageID, claimToken, finalize)
 	}
 
 	// ErrClaimLost is the dispatcher's signal that another worker
@@ -377,11 +380,12 @@ func (d *Dispatcher) processClaimed(ctx context.Context, msg InboundMessage, ins
 	//    undid the chat_message insert, so Handle treats this as a
 	//    duplicate drop. finalizeNone — the other holder owns the row.
 	appendRes, err := d.Chat.AppendUserMessage(ctx, AppendUserMessageParams{
-		ChatSessionID: sessionID,
-		Sender:        binding.MulticaUserID,
-		Body:          msg.Body,
-		LarkMessageID: msg.MessageID,
-		ClaimToken:    claimToken,
+		ChatSessionID:  sessionID,
+		Sender:         binding.MulticaUserID,
+		Body:           msg.Body,
+		InstallationID: inst.ID,
+		LarkMessageID:  msg.MessageID,
+		ClaimToken:     claimToken,
 	})
 	if err != nil {
 		if errors.Is(err, ErrClaimLost) {
@@ -477,17 +481,19 @@ func (d *Dispatcher) processClaimed(ctx context.Context, msg InboundMessage, ins
 // is a stuck in-flight row that the 60-second staleness fallback in
 // ClaimLarkInboundDedup re-takes on retry. zero-rows-affected is the
 // EXPECTED outcome whenever our token was rotated; it is not an error.
-func (d *Dispatcher) applyFinalize(ctx context.Context, messageID string, claimToken pgtype.UUID, action dedupFinalize) {
+func (d *Dispatcher) applyFinalize(ctx context.Context, installationID pgtype.UUID, messageID string, claimToken pgtype.UUID, action dedupFinalize) {
 	switch action {
 	case finalizeMark:
 		_, _ = d.Queries.MarkLarkInboundDedupProcessed(ctx, db.MarkLarkInboundDedupProcessedParams{
-			MessageID:  messageID,
-			ClaimToken: claimToken,
+			InstallationID: installationID,
+			MessageID:      messageID,
+			ClaimToken:     claimToken,
 		})
 	case finalizeRelease:
 		_, _ = d.Queries.ReleaseLarkInboundDedup(ctx, db.ReleaseLarkInboundDedupParams{
-			MessageID:  messageID,
-			ClaimToken: claimToken,
+			InstallationID: installationID,
+			MessageID:      messageID,
+			ClaimToken:     claimToken,
 		})
 	case finalizeNone:
 		// AppendUserMessage already finalized the row in-tx, or our

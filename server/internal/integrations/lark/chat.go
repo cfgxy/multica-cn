@@ -71,11 +71,12 @@ type EnsureChatSessionParams struct {
 // for callers that have already finalized dedup outside the
 // transaction.
 type AppendUserMessageParams struct {
-	ChatSessionID pgtype.UUID
-	Sender        pgtype.UUID
-	Body          string
-	LarkMessageID string
-	ClaimToken    pgtype.UUID
+	ChatSessionID  pgtype.UUID
+	Sender         pgtype.UUID
+	Body           string
+	InstallationID pgtype.UUID
+	LarkMessageID  string
+	ClaimToken     pgtype.UUID
 }
 
 // AppendResult reports what AppendUserMessage decided.

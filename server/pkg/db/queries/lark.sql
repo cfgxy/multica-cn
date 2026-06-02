@@ -244,14 +244,14 @@ WHERE chat_session_id = $1;
 -- supplying the returned claim_token. Otherwise the row sits as an
 -- in-flight claim and the next replay attempt must wait for the
 -- staleness TTL.
-INSERT INTO lark_inbound_message_dedup (message_id, claim_token)
-VALUES ($1, gen_random_uuid())
-ON CONFLICT (message_id) DO UPDATE
+INSERT INTO lark_inbound_message_dedup (installation_id, message_id, claim_token)
+VALUES ($1, $2, gen_random_uuid())
+ON CONFLICT (installation_id, message_id) DO UPDATE
     SET received_at = now(),
         claim_token = gen_random_uuid()
     WHERE lark_inbound_message_dedup.processed_at IS NULL
       AND lark_inbound_message_dedup.received_at < now() - INTERVAL '60 seconds'
-RETURNING message_id, received_at, processed_at, claim_token;
+RETURNING installation_id, message_id, received_at, processed_at, claim_token;
 
 -- name: MarkLarkInboundDedupProcessed :execrows
 -- Locks in a claim as permanently processed. Called by the dispatcher
@@ -274,8 +274,9 @@ RETURNING message_id, received_at, processed_at, claim_token;
 -- terminal.
 UPDATE lark_inbound_message_dedup
 SET processed_at = now()
-WHERE message_id = $1
-  AND claim_token = $2
+WHERE installation_id = $1
+  AND message_id = $2
+  AND claim_token = $3
   AND processed_at IS NULL;
 
 -- name: ReleaseLarkInboundDedup :execrows
@@ -288,8 +289,9 @@ WHERE message_id = $1
 -- cannot undo a Mark; guarded by claim_token so a slow-but-alive worker
 -- whose claim was reclaimed cannot delete the new holder's row.
 DELETE FROM lark_inbound_message_dedup
-WHERE message_id = $1
-  AND claim_token = $2
+WHERE installation_id = $1
+  AND message_id = $2
+  AND claim_token = $3
   AND processed_at IS NULL;
 
 -- name: PurgeLarkInboundDedup :exec
