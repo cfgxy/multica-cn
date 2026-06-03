@@ -54,6 +54,10 @@ func (s *stubAPIClientWithRecorder) SendTextMessage(ctx context.Context, p SendT
 	return "lark-text-msg-id", nil
 }
 
+func (s *stubAPIClientWithRecorder) SendMarkdownCard(ctx context.Context, p SendMarkdownCardParams) (string, error) {
+	return "lark-md-msg-id", nil
+}
+
 func (s *stubAPIClientWithRecorder) SendBindingPromptCard(ctx context.Context, p BindingPromptParams) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

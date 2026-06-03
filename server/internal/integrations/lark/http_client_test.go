@@ -356,6 +356,71 @@ func TestHTTPClient_SendTextMessage_HappyPath(t *testing.T) {
 	}
 }
 
+// TestHTTPClient_SendMarkdownCard_HappyPath pins the wire shape of the
+// schema-2.0 card we send for markdown chat replies. The MUST-haves:
+// msg_type=interactive (not text), content is a JSON-encoded card
+// envelope, the card has `schema: "2.0"` at the top level, and the
+// body element is `{tag: "markdown", content: <agent's md verbatim>}`.
+// Lark rejects malformed cards with a generic 9499xxxx code that's
+// painful to root-cause in production, so we contract-pin every level.
+func TestHTTPClient_SendMarkdownCard_HappyPath(t *testing.T) {
+	fake := newLarkFake(t)
+	fake.stubToken("tok_md", 7200)
+	fake.stubSend(
+		map[string]any{
+			"code": 0,
+			"msg":  "ok",
+			"data": map[string]string{"message_id": "om_md_1"},
+		},
+		func(r *http.Request, body map[string]string) {
+			if r.URL.Path != "/open-apis/im/v1/messages" {
+				t.Errorf("path: got %q want /open-apis/im/v1/messages", r.URL.Path)
+			}
+			if got := r.URL.Query().Get("receive_id_type"); got != "chat_id" {
+				t.Errorf("receive_id_type: got %q want chat_id", got)
+			}
+			if body["msg_type"] != "interactive" {
+				t.Errorf("msg_type: got %q want interactive (markdown cards ride the interactive endpoint)", body["msg_type"])
+			}
+			var card map[string]any
+			if err := json.Unmarshal([]byte(body["content"]), &card); err != nil {
+				t.Fatalf("content is not valid card JSON: %v (raw=%q)", err, body["content"])
+			}
+			if card["schema"] != "2.0" {
+				t.Errorf("card.schema: got %v want \"2.0\"", card["schema"])
+			}
+			bodyDoc, _ := card["body"].(map[string]any)
+			elements, _ := bodyDoc["elements"].([]any)
+			if len(elements) != 1 {
+				t.Fatalf("expected exactly one body element; got %d", len(elements))
+			}
+			el, _ := elements[0].(map[string]any)
+			if el["tag"] != "markdown" {
+				t.Errorf("element.tag: got %v want \"markdown\"", el["tag"])
+			}
+			if el["content"] != "# Heading\n- list" {
+				t.Errorf("markdown body must be forwarded verbatim; got %q", el["content"])
+			}
+		},
+	)
+
+	c := newTestClient(fake, time.Now)
+	msgID, err := c.SendMarkdownCard(context.Background(), SendMarkdownCardParams{
+		InstallationID: testCreds(),
+		ChatID:         ChatID("oc_chat_42"),
+		Markdown:       "# Heading\n- list",
+	})
+	if err != nil {
+		t.Fatalf("send markdown card: %v", err)
+	}
+	if msgID != "om_md_1" {
+		t.Errorf("message id: got %q want om_md_1", msgID)
+	}
+	if got := fake.lastAuth(); got != "Bearer tok_md" {
+		t.Errorf("Authorization header: got %q want Bearer tok_md", got)
+	}
+}
+
 // TestHTTPClient_SendTextMessage_EncodesSpecialCharacters guards the
 // inner JSON envelope's escaping. Lark's spec is "content MUST be a
 // JSON-encoded string", which means newlines and quotes have to be

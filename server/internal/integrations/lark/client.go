@@ -36,13 +36,22 @@ type APIClient interface {
 	PatchInteractiveCard(ctx context.Context, p PatchCardParams) error
 
 	// SendTextMessage posts a plain text message into a Lark chat.
-	// Used for the agent's chat reply — Bohan asked for replies to be
-	// rendered as a normal IM bubble rather than nested inside an
-	// interactive card, which feels more natural for free-form chat.
-	// Returns Lark's message_id (we don't currently persist it for the
-	// text path since each send is one-shot, but the API gives it back
-	// for consistency with SendInteractiveCard).
+	// Used for the agent's chat reply when the body has no markdown
+	// syntax — short prose / acknowledgments / pings. A plain text
+	// bubble feels like a normal IM message; we deliberately keep
+	// this path even after adding the markdown card variant because
+	// wrapping a one-liner "Hello!" inside a card just adds visual
+	// chrome the user doesn't want.
 	SendTextMessage(ctx context.Context, p SendTextParams) (string, error)
+
+	// SendMarkdownCard posts the agent's reply as a Lark interactive
+	// card (schema 2.0) with a single `tag: "markdown"` body element.
+	// This is the path the chat-reply router takes when the body
+	// contains markdown syntax (fenced code blocks, headings, lists,
+	// tables, etc.) — Lark renders the markdown into formatted text
+	// rather than leaving raw `**bold**` / `# heading` characters in
+	// the user's transcript. Returns the card's message_id.
+	SendMarkdownCard(ctx context.Context, p SendMarkdownCardParams) (string, error)
 
 	// SendBindingPromptCard is the dedicated "you need to bind"
 	// outbound. Kept separate from SendInteractiveCard so the
@@ -112,6 +121,23 @@ type SendTextParams struct {
 	InstallationID InstallationCredentials
 	ChatID         ChatID
 	Text           string
+}
+
+// SendMarkdownCardParams is the input shape for posting an agent
+// reply as a Lark interactive card with a markdown body element.
+// Markdown is forwarded to Lark verbatim; the client builds the
+// schema-2.0 card envelope around it.
+type SendMarkdownCardParams struct {
+	InstallationID InstallationCredentials
+	ChatID         ChatID
+	// Markdown is the body. Lark schema-2.0 markdown supports GFM-ish:
+	// **bold**, *italic*, `inline code`, fenced code blocks, headings,
+	// ordered + unordered lists, links, tables, blockquotes, separators.
+	Markdown string
+	// Summary, when non-empty, is rendered as the single-line preview
+	// Lark shows in the chat list / desktop notification. Empty falls
+	// back to whatever Lark derives from the body.
+	Summary string
 }
 
 // BindingPromptParams carries the data needed to render and send the
@@ -184,6 +210,11 @@ func (s *stubAPIClient) PatchInteractiveCard(ctx context.Context, p PatchCardPar
 
 func (s *stubAPIClient) SendTextMessage(ctx context.Context, p SendTextParams) (string, error) {
 	s.log.Warn("lark stub client: SendTextMessage called", "chat_id", string(p.ChatID))
+	return "", ErrAPIClientNotConfigured
+}
+
+func (s *stubAPIClient) SendMarkdownCard(ctx context.Context, p SendMarkdownCardParams) (string, error) {
+	s.log.Warn("lark stub client: SendMarkdownCard called", "chat_id", string(p.ChatID))
 	return "", ErrAPIClientNotConfigured
 }
 

@@ -289,6 +289,76 @@ func (c *httpAPIClient) SendTextMessage(ctx context.Context, p SendTextParams) (
 	return resp.Data.MessageID, nil
 }
 
+// SendMarkdownCard posts the agent's reply as an interactive card
+// using Lark's schema-2.0 envelope with a single `tag: "markdown"`
+// body element. Lark's client renders the markdown into formatted
+// text (bold, italics, lists, links, fenced code blocks, tables, …)
+// rather than showing raw markdown characters as it does for
+// `msg_type=text`. We deliberately keep `SendTextMessage` as a
+// separate path for plain-prose replies — a card around a one-line
+// "Hello!" adds visual chrome that the user doesn't want; the
+// routing decision (markdown vs text) lives at the Patcher layer.
+//
+// Why schema 2.0 rather than the legacy schema with a `div` +
+// `lark_md` text element: the legacy `lark_md` tag's markdown
+// dialect is much narrower — no fenced code blocks (syntax
+// highlighting), no tables, no heading sizes. Schema-2.0's
+// `markdown` tag is closer to GFM.
+func (c *httpAPIClient) SendMarkdownCard(ctx context.Context, p SendMarkdownCardParams) (string, error) {
+	if p.ChatID == "" {
+		return "", errors.New("lark http client: missing chat_id")
+	}
+	if p.Markdown == "" {
+		return "", errors.New("lark http client: missing markdown body")
+	}
+	token, err := c.tenantAccessToken(ctx, p.InstallationID)
+	if err != nil {
+		return "", err
+	}
+	card := map[string]any{
+		"schema": "2.0",
+		"body": map[string]any{
+			"elements": []any{
+				map[string]any{"tag": "markdown", "content": p.Markdown},
+			},
+		},
+	}
+	if p.Summary != "" {
+		card["config"] = map[string]any{
+			"summary": map[string]any{"content": p.Summary},
+		}
+	}
+	cardBytes, err := json.Marshal(card)
+	if err != nil {
+		return "", fmt.Errorf("lark http client: encode markdown card: %w", err)
+	}
+	q := url.Values{}
+	q.Set("receive_id_type", "chat_id")
+	body := map[string]string{
+		"receive_id": string(p.ChatID),
+		"msg_type":   "interactive",
+		"content":    string(cardBytes),
+	}
+	var resp struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			MessageID string `json:"message_id"`
+		} `json:"data"`
+	}
+	path := "/open-apis/im/v1/messages?" + q.Encode()
+	if err := c.doJSON(ctx, http.MethodPost, path, token, body, &resp); err != nil {
+		return "", fmt.Errorf("lark http client: send markdown card: %w", err)
+	}
+	if resp.Code != 0 || resp.Data.MessageID == "" {
+		if isTokenError(resp.Code) {
+			c.invalidateToken(p.InstallationID.AppID)
+		}
+		return "", fmt.Errorf("lark http client: send markdown card: code=%d msg=%q", resp.Code, resp.Msg)
+	}
+	return resp.Data.MessageID, nil
+}
+
 // PatchInteractiveCard updates an existing card's body. Lark's
 // message-patch endpoint replaces the whole card payload; callers
 // (i.e. the Patcher) render the full updated card each time.

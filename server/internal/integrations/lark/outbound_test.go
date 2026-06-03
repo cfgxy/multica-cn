@@ -73,11 +73,14 @@ type fakeAPIClient struct {
 	sent           []SendCardParams
 	patched        []PatchCardParams
 	textSent       []SendTextParams
+	mdCardSent     []SendMarkdownCardParams
 	sendReturn     string
 	sendErr        error
 	patchErr       error
 	textSendErr    error
 	textSendReturn string
+	mdCardErr      error
+	mdCardReturn   string
 	bindingSent    []BindingPromptParams
 }
 
@@ -100,6 +103,12 @@ func (f *fakeAPIClient) SendTextMessage(ctx context.Context, p SendTextParams) (
 	defer f.mu.Unlock()
 	f.textSent = append(f.textSent, p)
 	return f.textSendReturn, f.textSendErr
+}
+func (f *fakeAPIClient) SendMarkdownCard(ctx context.Context, p SendMarkdownCardParams) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.mdCardSent = append(f.mdCardSent, p)
+	return f.mdCardReturn, f.mdCardErr
 }
 func (f *fakeAPIClient) SendBindingPromptCard(ctx context.Context, p BindingPromptParams) error {
 	f.mu.Lock()
@@ -176,6 +185,76 @@ func TestPatcherSendsPlainTextOnChatDone(t *testing.T) {
 	if len(api.sent) != 0 || len(api.patched) != 0 {
 		t.Errorf("ChatDone must NOT send / patch any card; got sent=%d patched=%d",
 			len(api.sent), len(api.patched))
+	}
+}
+
+// TestPatcherRoutesMarkdownReplyToCard pins the two-path chat reply:
+// when the agent's body contains markdown syntax, the Patcher MUST
+// route to SendMarkdownCard (schema-2.0 interactive card with a
+// `tag: "markdown"` body element) so Lark renders the formatting
+// instead of leaving raw `**bold**` / `# heading` characters in the
+// transcript. Plain prose continues to go through SendTextMessage.
+func TestPatcherRoutesMarkdownReplyToCard(t *testing.T) {
+	p, q, api := newTestPatcher(t)
+	taskID := uuidFromString(t, "ee444444-ee44-ee44-ee44-eeeeeeeeeeee")
+
+	body := "# Summary\n\n- bullet one\n- bullet two\n\n```go\nfunc f() {}\n```\n"
+	p.handleEvent(events.Event{
+		Type:          protocol.EventChatDone,
+		TaskID:        uuidString(taskID),
+		ChatSessionID: uuidString(q.binding.ChatSessionID),
+		Payload: protocol.ChatDonePayload{
+			TaskID:        uuidString(taskID),
+			ChatSessionID: uuidString(q.binding.ChatSessionID),
+			Content:       body,
+		},
+	})
+
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.mdCardSent) != 1 {
+		t.Fatalf("expected one SendMarkdownCard call; got %d", len(api.mdCardSent))
+	}
+	got := api.mdCardSent[0]
+	if got.Markdown != body {
+		t.Errorf("markdown body must be forwarded verbatim; got %q", got.Markdown)
+	}
+	if got.ChatID != ChatID(q.binding.LarkChatID) {
+		t.Errorf("chat_id mismatch: got %q want %q", got.ChatID, q.binding.LarkChatID)
+	}
+	if len(api.textSent) != 0 {
+		t.Errorf("markdown body must NOT also fire SendTextMessage; got %d", len(api.textSent))
+	}
+	if len(api.sent) != 0 || len(api.patched) != 0 {
+		t.Errorf("ChatDone must NOT use legacy card paths; sent=%d patched=%d", len(api.sent), len(api.patched))
+	}
+}
+
+// TestPatcherRoutesPlainReplyToText is the inverse: a short prose
+// reply without any markdown syntax should stay on the cheap
+// msg_type=text path so the user sees a normal IM bubble.
+func TestPatcherRoutesPlainReplyToText(t *testing.T) {
+	p, q, api := newTestPatcher(t)
+	taskID := uuidFromString(t, "ee555555-ee55-ee55-ee55-eeeeeeeeeeee")
+
+	p.handleEvent(events.Event{
+		Type:          protocol.EventChatDone,
+		TaskID:        uuidString(taskID),
+		ChatSessionID: uuidString(q.binding.ChatSessionID),
+		Payload: protocol.ChatDonePayload{
+			TaskID:        uuidString(taskID),
+			ChatSessionID: uuidString(q.binding.ChatSessionID),
+			Content:       "Sure, on it.",
+		},
+	})
+
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.textSent) != 1 {
+		t.Fatalf("plain prose must take the text path; got %d text sends", len(api.textSent))
+	}
+	if len(api.mdCardSent) != 0 {
+		t.Errorf("plain prose must NOT wrap in a markdown card; got %d card sends", len(api.mdCardSent))
 	}
 }
 

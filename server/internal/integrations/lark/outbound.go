@@ -316,10 +316,21 @@ func (p *Patcher) processEvent(ctx context.Context, e events.Event) error {
 	return nil
 }
 
-// sendChatReply turns ChatDonePayload.Content into a plain text Lark
-// message. No card chrome, no thinking-card lifecycle, no DB row in
-// lark_outbound_card_message — each reply is a one-shot text bubble
-// indistinguishable from a user typing.
+// sendChatReply turns ChatDonePayload.Content into a Lark message.
+// The wire shape is chosen per-reply based on whether the body
+// contains any markdown syntax:
+//
+//   - Plain prose (no markdown) → `msg_type=text`. A one-line "Hi!"
+//     reply should feel like a normal IM message, not a notification
+//     card with chrome around it.
+//
+//   - Anything with markdown (headings, lists, code blocks, tables,
+//     bold/italic, links) → schema-2.0 interactive card with a
+//     `tag: "markdown"` body element so Lark's client renders the
+//     formatting instead of leaving raw `**bold**` characters in
+//     the transcript. The card is visually subtler than the legacy
+//     binding-prompt template — just a single markdown block, no
+//     header / icon / CTA buttons.
 //
 // Empty content is silently dropped: we'd rather show nothing than
 // "Done." (the prior card fallback that confused Bohan in the live
@@ -330,6 +341,16 @@ func (p *Patcher) processEvent(ctx context.Context, e events.Event) error {
 func (p *Patcher) sendChatReply(ctx context.Context, creds InstallationCredentials, binding db.LarkChatSessionBinding, payload any) error {
 	content := chatDoneContent(payload)
 	if content == "" {
+		return nil
+	}
+	if containsMarkdown(content) {
+		if _, err := p.client.SendMarkdownCard(ctx, SendMarkdownCardParams{
+			InstallationID: creds,
+			ChatID:         ChatID(binding.LarkChatID),
+			Markdown:       content,
+		}); err != nil {
+			return fmt.Errorf("send markdown card: %w", err)
+		}
 		return nil
 	}
 	if _, err := p.client.SendTextMessage(ctx, SendTextParams{
