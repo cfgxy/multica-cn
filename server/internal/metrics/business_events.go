@@ -262,7 +262,7 @@ func (m *BusinessMetrics) IncForEvent(ev analytics.Event) {
 	}
 	switch ev.Name {
 	case analytics.EventSignup:
-		m.events.signup.WithLabelValues(stringProp(ev.Properties, "signup_source")).Inc()
+		m.events.signup.WithLabelValues(NormalizeSignupSource(stringProp(ev.Properties, "signup_source"))).Inc()
 	case analytics.EventWorkspaceCreated:
 		m.events.workspaceCreated.WithLabelValues(stringProp(ev.Properties, "source")).Inc()
 	case analytics.EventTeamInviteSent:
@@ -342,7 +342,7 @@ func (m *BusinessMetrics) IncForEvent(ev analytics.Event) {
 			NormalizePlatform(stringProp(ev.Properties, "platform")),
 		).Inc()
 	case analytics.EventContactSalesSubmitted:
-		m.events.contactSalesSubmitted.WithLabelValues(NormalizeContactSalesSource(stringProp(ev.Properties, "source"))).Inc()
+		m.events.contactSalesSubmitted.WithLabelValues(NormalizeContactSalesSource(stringProp(ev.Properties, "form_source"))).Inc()
 	default:
 		// AgentTask* events are intentionally not dispatched here — their
 		// Prometheus side is handled by typed BusinessMetrics.RecordTask*

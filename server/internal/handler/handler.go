@@ -20,8 +20,8 @@ import (
 	"github.com/multica-ai/multica/server/internal/cloudruntime"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/events"
-	"github.com/multica-ai/multica/server/internal/middleware"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
+	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/service"
 	"github.com/multica-ai/multica/server/internal/storage"
@@ -111,14 +111,14 @@ type Handler struct {
 	// May be nil in tests / self-hosted with the metrics listener disabled;
 	// every Record* method is nil-safe and obsmetrics.RecordEvent treats a
 	// nil Metrics as "PostHog only".
-	Metrics               *obsmetrics.BusinessMetrics
-	PATCache              *auth.PATCache
-	DaemonTokenCache      *auth.DaemonTokenCache
-	MembershipCache       *auth.MembershipCache
-	WebhookRateLimiter    WebhookRateLimiter
-	WebhookIPRateLimiter  WebhookRateLimiter
-	CloudRuntime          cloudRuntimeProxy
-	cfg                   Config
+	Metrics              *obsmetrics.BusinessMetrics
+	PATCache             *auth.PATCache
+	DaemonTokenCache     *auth.DaemonTokenCache
+	MembershipCache      *auth.MembershipCache
+	WebhookRateLimiter   WebhookRateLimiter
+	WebhookIPRateLimiter WebhookRateLimiter
+	CloudRuntime         cloudRuntimeProxy
+	cfg                  Config
 }
 
 func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *events.Bus, emailService *service.EmailService, store storage.Storage, cfSigner *auth.CloudFrontSigner, analyticsClient analytics.Client, cfg Config, daemonHubs ...*daemonws.Hub) *Handler {

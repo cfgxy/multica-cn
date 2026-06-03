@@ -93,14 +93,21 @@ var freeEmailDomains = map[string]struct{}{
 }
 
 type CreateContactSalesRequest struct {
-	FirstName       string `json:"first_name"`
-	LastName        string `json:"last_name"`
-	BusinessEmail   string `json:"business_email"`
-	CompanyName     string `json:"company_name"`
-	CompanySize     string `json:"company_size"`
-	CountryRegion   string `json:"country_region"`
-	UseCase         string `json:"use_case"`
-	Goals           string `json:"goals"`
+	FirstName     string `json:"first_name"`
+	LastName      string `json:"last_name"`
+	BusinessEmail string `json:"business_email"`
+	CompanyName   string `json:"company_name"`
+	CompanySize   string `json:"company_size"`
+	CountryRegion string `json:"country_region"`
+	UseCase       string `json:"use_case"`
+	Goals         string `json:"goals"`
+	// Source identifies where the form was opened from. Frontend
+	// enumerates {page, onboarding, agents_page}; the metric label
+	// `multica_contact_sales_submitted_total{source=...}` reads it
+	// via the metrics.NormalizeContactSalesSource allow-list, anything
+	// else collapses to "other". Empty falls back to "page" so legacy
+	// clients that don't send the field don't blackhole the metric.
+	Source          string `json:"source"`
 	ConsentOutreach bool   `json:"consent_outreach"`
 	ConsentUpdates  bool   `json:"consent_updates"`
 }
@@ -220,11 +227,17 @@ func (h *Handler) CreateContactSales(w http.ResponseWriter, r *http.Request) {
 			"use_case", useCase,
 		)...)
 
+	formSource := strings.TrimSpace(req.Source)
+	if formSource == "" {
+		formSource = "page"
+	}
+
 	obsmetrics.RecordEvent(h.Analytics, h.Metrics, analytics.ContactSalesSubmitted(
 		inquiryID,
 		companySize,
 		countryRegion,
 		useCase,
+		formSource,
 		goals != "",
 	))
 

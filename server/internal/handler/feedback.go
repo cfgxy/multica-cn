@@ -32,8 +32,15 @@ const (
 )
 
 type CreateFeedbackRequest struct {
-	Message     string  `json:"message"`
-	URL         string  `json:"url"`
+	Message string `json:"message"`
+	URL     string `json:"url"`
+	// Kind is the coarse category the feedback picker stamps. The metric
+	// label `multica_feedback_submitted_total{kind=...}` reads it via the
+	// fixed allow-list in metrics.NormalizeFeedbackKind ("bug", "feature",
+	// "general", "praise"); anything outside collapses to "other". Empty /
+	// missing falls back to "general" so legacy clients that don't send the
+	// field don't blackhole the metric.
+	Kind        string  `json:"kind"`
 	WorkspaceID *string `json:"workspace_id,omitempty"`
 }
 
@@ -118,9 +125,15 @@ func (h *Handler) CreateFeedback(w http.ResponseWriter, r *http.Request) {
 
 	slog.Info("feedback submitted", append(logger.RequestAttrs(r), "feedback_id", uuidToString(fb.ID))...)
 
+	kind := strings.TrimSpace(req.Kind)
+	if kind == "" {
+		kind = "general"
+	}
+
 	obsmetrics.RecordEvent(h.Analytics, h.Metrics, analytics.FeedbackSubmitted(
 		userID,
 		uuidToString(fb.WorkspaceID),
+		kind,
 		len(message),
 		feedbackImageRegex.MatchString(message),
 		platform,

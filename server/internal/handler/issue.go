@@ -20,6 +20,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issueposition"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
+	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -2248,6 +2249,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 			)
 		}
 	}
+	platform, _, _ := middleware.ClientMetadataFromContext(r.Context())
 	obsmetrics.RecordEvent(h.Analytics, h.Metrics, analytics.IssueCreated(
 		analyticsActorID,
 		workspaceID,
@@ -2256,6 +2258,7 @@ func (h *Handler) CreateIssue(w http.ResponseWriter, r *http.Request) {
 		analyticsTaskID,
 		analyticsAutopilotRunID,
 		analyticsSource,
+		platform,
 	))
 
 	// Enqueue agent task when an agent-assigned issue is created.

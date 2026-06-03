@@ -34,6 +34,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issueguard"
 	"github.com/multica-ai/multica/server/internal/logger"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
+	"github.com/multica-ai/multica/server/internal/middleware"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -318,9 +319,11 @@ func (h *Handler) BootstrapOnboardingRuntime(w http.ResponseWriter, r *http.Requ
 		prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 		resp := issueToResponse(issue, prefix)
 		h.publish(protocol.EventIssueCreated, req.WorkspaceID, "member", userID, map[string]any{"issue": resp})
+		platform, _, _ := middleware.ClientMetadataFromContext(r.Context())
 		obsmetrics.RecordEvent(h.Analytics, h.Metrics, analytics.IssueCreated(
 			userID, req.WorkspaceID, uuidToString(issue.ID),
 			uuidToString(assistant.ID), "", "", analytics.SourceOnboarding,
+			platform,
 		))
 		if h.shouldEnqueueAgentTask(r.Context(), issue) {
 			h.TaskService.EnqueueTaskForIssue(r.Context(), issue)
@@ -456,9 +459,11 @@ func (h *Handler) BootstrapOnboardingNoRuntime(w http.ResponseWriter, r *http.Re
 		prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 		resp := issueToResponse(issue, prefix)
 		h.publish(protocol.EventIssueCreated, req.WorkspaceID, "member", userID, map[string]any{"issue": resp})
+		platform2, _, _ := middleware.ClientMetadataFromContext(r.Context())
 		obsmetrics.RecordEvent(h.Analytics, h.Metrics, analytics.IssueCreated(
 			userID, req.WorkspaceID, uuidToString(issue.ID),
 			"", "", "", analytics.SourceOnboarding,
+			platform2,
 		))
 	}
 	if firstCompletion {

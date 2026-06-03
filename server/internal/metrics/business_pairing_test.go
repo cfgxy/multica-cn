@@ -79,9 +79,10 @@ func TestEveryAnalyticsEventHasPrometheusCounter(t *testing.T) {
 // TestNoNakedAnalyticsCaptureInHandlersOrServices walks every Go file under
 // server/internal/handler and server/internal/service and asserts that every
 // `<x>.Analytics.Capture(analytics.<Helper>(...))` call has been migrated to
-// metrics.RecordEvent. The only exception is service/task.go's
-// captureTaskEvent helper, which is the centralised emitter for PR2's typed
-// task-lifecycle metrics.
+// metrics.RecordEvent. The only exception is the body of
+// `service/task.go`'s captureTaskEvent function — a function-granular
+// allow-list, not a whole-file one, so any new naked Capture added to the
+// same file fails CI.
 func TestNoNakedAnalyticsCaptureInHandlersOrServices(t *testing.T) {
 	t.Parallel()
 
@@ -90,11 +91,14 @@ func TestNoNakedAnalyticsCaptureInHandlersOrServices(t *testing.T) {
 		filepath.Join(repoRoot(t), "internal", "service"),
 		filepath.Join(repoRoot(t), "cmd", "server"),
 	}
-	allowedFiles := map[string]struct{}{
-		// captureTaskEvent indirection — single helper that fans out to
-		// PR2's typed RecordTask* methods. Auditing this one function lets
-		// us keep the rest of service/task.go strict.
-		filepath.Join(repoRoot(t), "internal", "service", "task.go"): {},
+	// allowedFunctions is keyed by absolute file path, valued by the set of
+	// function names whose bodies are allowed to call Analytics.Capture
+	// directly. Granularity is per-function, not per-file: anything else
+	// in the same file still trips the check.
+	allowedFunctions := map[string]map[string]struct{}{
+		filepath.Join(repoRoot(t), "internal", "service", "task.go"): {
+			"captureTaskEvent": {},
+		},
 	}
 
 	var offenders []string
@@ -108,24 +112,34 @@ func TestNoNakedAnalyticsCaptureInHandlersOrServices(t *testing.T) {
 			if strings.HasSuffix(file, "_test.go") {
 				continue
 			}
-			if _, ok := allowedFiles[file]; ok {
-				continue
-			}
 			f, err := parser.ParseFile(fset, file, nil, parser.SkipObjectResolution)
 			if err != nil {
 				t.Fatalf("parse %s: %v", file, err)
 			}
-			ast.Inspect(f, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
+			fileAllowedFns := allowedFunctions[file]
+			for _, decl := range f.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
 				if !ok {
-					return true
+					continue
 				}
-				if !isAnalyticsCapture(call) {
-					return true
+				if _, allowed := fileAllowedFns[fn.Name.Name]; allowed {
+					continue
 				}
-				offenders = append(offenders, fset.Position(call.Pos()).String())
-				return true
-			})
+				if fn.Body == nil {
+					continue
+				}
+				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					call, ok := n.(*ast.CallExpr)
+					if !ok {
+						return true
+					}
+					if !isAnalyticsCapture(call) {
+						return true
+					}
+					offenders = append(offenders, fset.Position(call.Pos()).String()+" (in "+fn.Name.Name+")")
+					return true
+				})
+			}
 		}
 	}
 
@@ -135,11 +149,13 @@ func TestNoNakedAnalyticsCaptureInHandlersOrServices(t *testing.T) {
 	}
 }
 
-// TestEveryAnalyticsCaptureSiteHasPairedRecord goes the other direction: for
-// each call site that DOES go through metrics.RecordEvent, walk back up the
-// AST to confirm the Event constructor is one of the analytics.* helpers. If
-// a future change passes an event by name string, the test fails so the
-// dispatcher can be kept exhaustive.
+// TestEveryAnalyticsRecordEventTakesAnalyticsHelper enforces the inverse of
+// TestNoNakedAnalyticsCaptureInHandlersOrServices: every call site that
+// DOES go through metrics.RecordEvent must take an analytics.* event helper
+// as its third argument. Local idents are accepted only when def-use
+// tracking inside the same function body proves the value originated from
+// an `analytics.<Helper>(...)` call — bare strings or unresolved values
+// fail CI.
 func TestEveryAnalyticsRecordEventTakesAnalyticsHelper(t *testing.T) {
 	t.Parallel()
 
@@ -164,27 +180,39 @@ func TestEveryAnalyticsRecordEventTakesAnalyticsHelper(t *testing.T) {
 			if err != nil {
 				t.Fatalf("parse %s: %v", file, err)
 			}
-			ast.Inspect(f, func(n ast.Node) bool {
-				call, ok := n.(*ast.CallExpr)
-				if !ok {
+			for _, decl := range f.Decls {
+				fn, ok := decl.(*ast.FuncDecl)
+				if !ok || fn.Body == nil {
+					continue
+				}
+				analyticsLocals := analyticsBackedIdents(fn.Body)
+				ast.Inspect(fn.Body, func(n ast.Node) bool {
+					call, ok := n.(*ast.CallExpr)
+					if !ok {
+						return true
+					}
+					if !isMetricsRecordEvent(call) {
+						return true
+					}
+					if len(call.Args) < 3 {
+						offenders = append(offenders, fset.Position(call.Pos()).String()+" (RecordEvent must be called with 3 args: client, metrics, event)")
+						return true
+					}
+					ev := call.Args[2]
+					if analyticsHelperCall(ev) {
+						return true
+					}
+					if id, ok := ev.(*ast.Ident); ok {
+						if _, traced := analyticsLocals[id.Name]; traced {
+							return true
+						}
+						offenders = append(offenders, fset.Position(call.Pos()).String()+" (third arg "+id.Name+" was not assigned from an analytics.* helper in this function)")
+						return true
+					}
+					offenders = append(offenders, fset.Position(call.Pos()).String()+" (third arg must be an analytics.* helper call or a local assigned from one)")
 					return true
-				}
-				if !isMetricsRecordEvent(call) {
-					return true
-				}
-				if len(call.Args) < 3 {
-					offenders = append(offenders, fset.Position(call.Pos()).String()+" (RecordEvent must be called with 3 args: client, metrics, event)")
-					return true
-				}
-				ev := call.Args[2]
-				// Allow either an analytics.* helper call or a *ast.Ident
-				// referring to a local that's been built from an analytics
-				// helper a few lines above (auth.go's evt pattern).
-				if !analyticsHelperCall(ev) && !isLocalIdent(ev) {
-					offenders = append(offenders, fset.Position(call.Pos()).String()+" (third arg must be an analytics.* event helper or a local built from one)")
-				}
-				return true
-			})
+				})
+			}
 		}
 	}
 
@@ -192,6 +220,54 @@ func TestEveryAnalyticsRecordEventTakesAnalyticsHelper(t *testing.T) {
 		sort.Strings(offenders)
 		t.Errorf("metrics.RecordEvent call sites must take an analytics.* event:\n  %s", strings.Join(offenders, "\n  "))
 	}
+}
+
+// analyticsBackedIdents walks a function body and returns the set of local
+// identifiers whose initial value came from an analytics.<Helper>(...) call.
+// Both `:=` short declarations and `=` assignments at any nesting depth are
+// recognised. The set is conservative — re-assignments to non-analytics
+// values keep the ident in the set (we only track the originating
+// definition); call sites that cared could rewrite to use the helper inline.
+func analyticsBackedIdents(body *ast.BlockStmt) map[string]struct{} {
+	out := map[string]struct{}{}
+	if body == nil {
+		return out
+	}
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch stmt := n.(type) {
+		case *ast.AssignStmt:
+			// Match either lhs[i] = analytics.X(...) or lhs[i], _ := analytics.X(...).
+			if len(stmt.Rhs) == 0 {
+				return true
+			}
+			for i, lhs := range stmt.Lhs {
+				if i >= len(stmt.Rhs) {
+					// Multi-return-from-single-call shape (e.g. a, b := f())
+					// — there is exactly one Rhs and we can't tell which
+					// returned position the ident binds without type info.
+					// Fall back to checking the single Rhs.
+					if len(stmt.Rhs) == 1 && analyticsHelperCall(stmt.Rhs[0]) {
+						if id, ok := lhs.(*ast.Ident); ok {
+							out[id.Name] = struct{}{}
+						}
+					}
+					continue
+				}
+				if id, ok := lhs.(*ast.Ident); ok && analyticsHelperCall(stmt.Rhs[i]) {
+					out[id.Name] = struct{}{}
+				}
+			}
+		case *ast.ValueSpec:
+			// `var x = analytics.X(...)` and the like.
+			for i, name := range stmt.Names {
+				if i < len(stmt.Values) && analyticsHelperCall(stmt.Values[i]) {
+					out[name.Name] = struct{}{}
+				}
+			}
+		}
+		return true
+	})
+	return out
 }
 
 // ---- helpers --------------------------------------------------------------
@@ -305,7 +381,7 @@ func defaultPropsForEvent(name string) map[string]any {
 	case analytics.EventFeedbackSubmitted:
 		return map[string]any{"kind": "general", "platform": "web"}
 	case analytics.EventContactSalesSubmitted:
-		return map[string]any{"source": "page"}
+		return map[string]any{"form_source": "page"}
 	}
 	return map[string]any{}
 }
@@ -360,9 +436,4 @@ func analyticsHelperCall(expr ast.Expr) bool {
 		return false
 	}
 	return pkg.Name == "analytics" && sel.Sel != nil && len(sel.Sel.Name) > 0
-}
-
-func isLocalIdent(expr ast.Expr) bool {
-	_, ok := expr.(*ast.Ident)
-	return ok
 }
