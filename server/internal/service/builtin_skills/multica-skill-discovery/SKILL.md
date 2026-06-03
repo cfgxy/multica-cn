@@ -1,141 +1,120 @@
 ---
 name: multica-skill-discovery
-description: Use when the user describes a capability but does not know which skill URL to import. Teaches metadata-only candidate search, fit selection from available search fields, and then installation through Multica's import path.
+description: Use when a user describes a capability but does not name a specific skill URL to import. Documents the facts of Multica's skill search surface — what the search returns (metadata-only candidates from clawhub.ai), which candidate fields are populated versus always-null, how upstream outage is reported, and the handoff to the import path. Discovery is candidate search, not installation; full content is only visible after import.
 user-invocable: false
 allowed-tools: Bash(multica *)
 ---
 
-# Discovering skills before import
+# Skill discovery in Multica
 
-Use this skill when the user wants a capability but does not provide a specific
-skill URL. Your job is to find candidates from search metadata, select the best
-fit, and then hand off to the Multica import path.
+Discovery turns a capability description into a list of importable skill
+candidates. It is candidate search over remote metadata. It does not install
+anything, and it does not fetch or preview remote skill content.
 
-discovery is not installation. The final installation step is still:
-
-```bash
-multica skill import --url <selected-url> --output json
-```
-
-## Start from the user need
-
-Turn the user's request into a short search query. Keep the query close to the
-capability, not the user's whole sentence.
-
-Examples:
-
-- "make better landing pages" → `landing page design`
-- "help agents find existing skills" → `find skills`
-- "generate frontend UI polish guidance" → `frontend design`
-
-## Find candidates
-
-Use Multica's structured skill search CLI first:
+## Quick start
 
 ```bash
 multica skill search <query> --output json
 ```
 
-The command returns candidate objects with fields such as:
-
-```json
-{
-  "name": "<skill-name>",
-  "url": "https://clawhub.ai/<owner>/<skill>",
-  "source": "clawhub.ai",
-  "repo": null,
-  "install_count": 123,
-  "github_stars": null,
-  "description": "..."
-}
-```
-
-Treat the response as candidates, not a product decision. The CLI normalizes the
-upstream search source so agents do not need to parse external human-readable
-output. If search returns `upstream_unavailable` or no trustworthy candidates,
-say that clearly instead of inventing a URL.
-
-Do not stop at the first result. Search output is a candidate list, not a product
-decision.
-
-## Select using metadata-only before import
-
-Selection is metadata-only before import. Current search does not expose a remote
-content preview. Compare candidates with the user's actual need using only the
-fields available in the search result:
-
-- `name`;
-- `url`;
-- `source`;
-- `repo`, only when non-null;
-- `install_count`;
-- `github_stars`, only when non-null;
-- `description`;
-- source reputation and owner/repo credibility;
-- whether the URL is importable by `multica skill import`;
-- whether the candidate appears too project-specific from its metadata.
-
-Do not claim you inspected remote skill content during search. The limitation is
-explicit: full content verification happens after import by reading the imported
-workspace skill, for example:
-
-```bash
-multica skill get <skill-id> --output json
-```
-
-If metadata is too weak to choose safely, say that and ask for a URL or a more
-specific requirement instead of importing a weak match.
-
-## Import after choosing
-
-After selecting the best candidate, import through Multica:
+This returns a JSON array of candidate objects. Pick one candidate's `url` and
+hand it to the import skill:
 
 ```bash
 multica skill import --url <selected-url> --output json
 ```
 
-Use `multica-skill-importing` for duplicate handling, returned fields, and agent
-binding.
+## Core model
 
-Do not use `npx skills add` as the final step; this is not `npx skills add`. That
-installs outside Multica and will not create a managed workspace skill.
+Three facts define the discovery surface:
 
-## Output to the user
+1. **Discovery is metadata-only candidate search.** Each result is a small
+   metadata record (name, url, source, install_count, description), not the
+   skill body. The search path never downloads a `SKILL.md`.
+2. **discovery is not installation.** `multica skill search` only lists
+   candidates. The skill is created in the workspace only by
+   `multica skill import` (see the importing skill).
+3. **There is no remote content preview during search.** You cannot inspect what
+   a candidate skill actually does from the search result.
+   **full content verification happens after import** by reading the imported
+   workspace skill.
 
-Report the decision, not the whole search dump:
+## The search CLI and API
 
-- selected skill name and URL;
-- why the metadata matched the user's request;
-- any strong rejected alternatives if relevant;
-- import result: `id`, `name`, `config.origin`, files count;
-- whether it still needs to be bound to an agent.
+`multica skill search <query> --output json` (CLI subcommand `skill search`)
+calls `GET /api/skills/search?q=...`, URL-escaping the query. The server handler
+delegates to a clawhub.ai search and normalizes the upstream response into a
+flat candidate array, so agents never parse external human-readable output.
 
-If no candidate is trustworthy, say that. Do not import a weak match just to do
-something.
+Empty query is rejected:
 
-## Incorrect → correct
+- CLI: `runSkillSearch` returns `query is required` before any request.
+- Server: the handler writes HTTP 400 `query is required` when `q` is blank.
 
-Incorrect:
+## Candidate field contract
 
-```text
-I opened the first remote skill file during search, verified its full content,
-and installed it with npx skills add.
+Every candidate is a `SkillSearchCandidateResponse`. The JSON shape is fixed,
+but only a subset of fields ever carries a value:
+
+| Field | Status today | Notes |
+| --- | --- | --- |
+| `name` | populated | display name; falls back to the slug when blank |
+| `url` | populated | always a `clawhub.ai` URL, built from owner handle + slug |
+| `source` | populated | hardcoded literal `"clawhub.ai"` |
+| `description` | populated | upstream summary; may be empty string |
+| `install_count` | sometimes populated | only fetched for the first results (stats limit); otherwise null |
+| `repo` | **always null** | the search handler never assigns it |
+| `github_stars` | **always null** | the search handler never assigns it; upstream `stars` is deliberately ignored |
+
+`repo` and `github_stars` are dead fields. The search handler builds each
+candidate with only Name/URL/Source/Description plus a conditional InstallCount
+and never sets Repo or GitHubStars, so both serialize to `null` on every result.
+A handler test pins this: it asserts `github_stars` stays null even when the
+upstream payload carries a `stars` value. **Do not rank or justify a selection
+on `repo` or `github_stars`** — they convey nothing. Rank on `install_count`,
+`source`/`url`, and `description` instead.
+
+Because `source` is the hardcoded literal `clawhub.ai` and every `url` is built
+as a clawhub.ai URL, a search result is never a `skills.sh` or `github.com`
+candidate. (Those URLs are still importable directly via the import skill — they
+are simply not search *results*.)
+
+## Upstream-unavailable handling
+
+The search depends on a live external upstream. When that upstream cannot be
+reached or returns a non-200, the server responds with:
+
+- HTTP 502
+- JSON body `{"code":"upstream_unavailable","error":"..."}`
+
+A handler test pins the `upstream_unavailable` code on a 502. When search fails
+this way, report the outage. There is no local fallback list to fall back to.
+
+## Handoff to import
+
+A candidate's `url` is the input to the import path:
+
+```bash
+multica skill import --url <selected-url> --output json
 ```
 
-Correct:
+Import is the only operation that creates a workspace skill. After import, read
+the installed skill's full body and files to confirm fit:
 
-```text
-I searched for `frontend design`, compared the top candidates by install count,
-source reputation, URL, description, and any non-null repo/github_stars metadata,
-selected the matching skills.sh URL, and imported it with `multica skill import --url <selected-url> --output json`.
+```bash
+multica skill get <skill-id> --output json
 ```
 
-## Source of truth
+This is where content becomes inspectable —
+**full content verification happens after import**, not during search.
 
-- `multica skill search <query> --output json` / `GET /api/skills/search?q=...`
-  are the supported structured discovery surfaces.
-- Search returns candidate metadata only; it is not a remote content preview.
-- `multica-skill-importing` defines the final Multica workspace import path.
-- `POST /api/skills/import` and `multica skill import --url` are the supported
-  Multica installation surfaces.
-- Discovery returns candidates; it does not replace the workspace import API.
+Import is in-platform. It is **not `npx skills add`** or any other local
+installer; those install outside Multica and do not create a managed workspace
+skill. Use the importing skill for duplicate handling, returned fields, and
+agent binding.
+
+## References
+
+`references/skill-discovery-source-map.md` maps every contract above to
+`file:line` in the server source, quotes the candidate struct, and shows the
+proof that `repo`/`github_stars` are never assigned.

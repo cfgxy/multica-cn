@@ -118,8 +118,11 @@ write it as if every member automatically receives it.
 
 ## Creation and leader membership
 
-Creating a squad requires `leader_id`. The leader must be a workspace agent and
-cannot be archived.
+Creating a squad requires `leader_id`. The leader must be a workspace agent.
+Create/update does not reject an archived leader: the lookup only checks the
+agent exists in the workspace. An archived leader fails closed later, at
+routing/dispatch — assignment, autopilot admission, and the comment/mention
+readiness gate all reject an archived leader before any task is enqueued.
 
 On create, the backend attempts to add the leader as a squad member with role
 `leader`. When updating `leader_id`, if the new leader is not already a member,

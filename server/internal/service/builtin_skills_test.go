@@ -170,14 +170,15 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 		t.Errorf("allowed-tools = %q, want access to the Multica CLI", got)
 	}
 
+	// Contract anchors only — exact file:line citations live in the skill's
+	// references/source-map.md, not here, so a downstream main merge that
+	// shifts a line cannot rot this test into pinning a stale lie.
 	mustContain := []string{
 		"multica issue pull-requests <issue-id> --output json",
 		"Closes MUL-2759",
 		"--status backlog",
 		"pr_url",
-		"server/cmd/multica/cmd_issue.go:104",
-		"server/internal/handler/github.go:466",
-		"server/internal/handler/issue.go:2523",
+		"references/working-on-issues-source-map.md",
 	}
 	for _, want := range mustContain {
 		if !strings.Contains(body, want) {
@@ -196,6 +197,10 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 		if strings.Contains(body, forbidden) {
 			t.Errorf("working-on-issues skill duplicates runtime prompt contract %q", forbidden)
 		}
+	}
+
+	if !skillHasFile(skill, "references/working-on-issues-source-map.md") {
+		t.Errorf("working-on-issues skill missing supporting file references/working-on-issues-source-map.md")
 	}
 }
 
@@ -231,6 +236,7 @@ func TestSkillImportingSkillCoversWorkspaceImportContracts(t *testing.T) {
 		"multica agent skills list <agent-id> --output json",
 		"replace-all",
 		"Use `set` only when the user explicitly wants to replace",
+		"references/skill-importing-source-map.md",
 	}
 	for _, want := range mustContain {
 		if !strings.Contains(body, want) {
@@ -246,6 +252,10 @@ func TestSkillImportingSkillCoversWorkspaceImportContracts(t *testing.T) {
 		if strings.Contains(body, forbidden) {
 			t.Errorf("skill-importing skill should not teach stale or destructive binding command %q", forbidden)
 		}
+	}
+
+	if !skillHasFile(skill, "references/skill-importing-source-map.md") {
+		t.Errorf("skill-importing skill missing supporting file references/skill-importing-source-map.md")
 	}
 }
 
@@ -263,21 +273,21 @@ func TestSkillDiscoverySkillCoversMetadataOnlyPreImportContracts(t *testing.T) {
 		t.Errorf("allowed-tools = %q, want access to the Multica CLI", got)
 	}
 
+	// repo/github_stars are intentionally NOT pinned: searchClawHubSkills never
+	// populates them (skill.go), so they are always null and the skill must not
+	// teach them as live selection signals.
 	mustContain := []string{
 		"multica skill search <query> --output json",
 		"GET /api/skills/search?q=...",
 		"clawhub.ai",
 		"upstream_unavailable",
-		"metadata-only before import",
+		"metadata-only",
 		"full content verification happens after import",
 		"install_count",
-		"github_stars",
-		"repo",
-		"source reputation",
-		"description",
 		"multica skill import --url <selected-url> --output json",
 		"not `npx skills add`",
 		"discovery is not installation",
+		"references/skill-discovery-source-map.md",
 	}
 	for _, want := range mustContain {
 		if !strings.Contains(body, want) {
@@ -295,6 +305,10 @@ func TestSkillDiscoverySkillCoversMetadataOnlyPreImportContracts(t *testing.T) {
 		if strings.Contains(body, forbidden) {
 			t.Errorf("skill-discovery skill should not imply remote content preview %q", forbidden)
 		}
+	}
+
+	if !skillHasFile(skill, "references/skill-discovery-source-map.md") {
+		t.Errorf("skill-discovery skill missing supporting file references/skill-discovery-source-map.md")
 	}
 }
 
@@ -314,25 +328,18 @@ func TestCreatingAgentsSkillCoversAgentCreationContracts(t *testing.T) {
 
 	mustContain := []string{
 		"not a parameter manual",
-		"Define the job first",
 		"`description` is a catalog summary",
 		"`instructions` is the runtime behavior contract",
 		"multica agent create --name <name> --runtime-id <runtime-id>",
-		"Prefer `--model` over model flags in `--custom-args`",
-		"`thinking_level`",
-		"custom_args",
+		"Prefer `--model`",
 		"custom_env",
 		"--custom-env-stdin",
 		"--custom-env-file",
 		"multica agent skills add <agent-id> --skill-ids <skill-id> --output json",
 		"multica agent skills list <agent-id> --output json",
 		"multica agent get <agent-id> --output json",
-		"Run a low-risk task",
-		"server/cmd/multica/cmd_agent.go:158",
-		"server/cmd/multica/cmd_agent.go:409",
-		"server/internal/handler/daemon.go:1109",
-		"server/internal/service/task.go:1684",
-		"server/pkg/db/generated/agent.sql.go",
+		"255",
+		"references/creating-agents-source-map.md",
 	}
 	for _, want := range mustContain {
 		if !strings.Contains(body, want) {
@@ -346,11 +353,20 @@ func TestCreatingAgentsSkillCoversAgentCreationContracts(t *testing.T) {
 		"template_slug",
 		"curated template",
 		"copy this parameter list",
+		// De-coaching: this skill states source-backed contracts, it does not
+		// teach a generic how-to methodology.
+		"Define the job first",
+		"Run a low-risk task",
+		"Decision flow",
 	}
 	for _, forbidden := range mustNotContain {
 		if strings.Contains(body, forbidden) {
-			t.Errorf("creating-agents skill should not teach immature template/parameter-manual content %q", forbidden)
+			t.Errorf("creating-agents skill should not teach immature template content or generic how-to coaching %q", forbidden)
 		}
+	}
+
+	if !skillHasFile(skill, "references/creating-agents-source-map.md") {
+		t.Errorf("creating-agents skill missing supporting file references/creating-agents-source-map.md")
 	}
 }
 
