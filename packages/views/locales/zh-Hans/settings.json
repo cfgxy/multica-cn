@@ -218,6 +218,7 @@
     "toast_failed": "更新 GitHub 设置失败"
   },
   "lark": {
+    "section_title": "飞书",
     "page_description": "将每个 Multica 智能体绑定到飞书 PersonalAgent Bot。成员可在飞书私聊 Bot、群聊 @ Bot，或输入 /issue 直接创建 Multica issue。",
     "not_enabled_title": "未启用飞书集成",
     "not_enabled_description_prefix": "需要在服务器上设置",

@@ -1,16 +1,22 @@
 "use client";
 
 import { LarkTab } from "./lark-tab";
+import { useT } from "../../i18n";
 
 // Integrations is the umbrella tab for third-party platform connections.
 // GitHub has its own top-level tab (see github-tab.tsx); everything else
-// — currently just Lark — lives in here so the sidebar stays compact as
-// more integrations land. Each integration owns its own section
-// (heading, status, install flow); IntegrationsTab is just the host.
+// — currently just Lark, with Slack/Linear etc. to follow — lives in
+// here under its own section heading so additional integrations slot in
+// without changing the IA. IntegrationsTab is just the host; each
+// integration owns its own description and install flow.
 export function IntegrationsTab() {
+  const { t } = useT("settings");
   return (
     <div className="space-y-10">
-      <LarkTab />
+      <section className="space-y-4">
+        <h2 className="text-sm font-semibold">{t(($) => $.lark.section_title)}</h2>
+        <LarkTab />
+      </section>
     </div>
   );
 }

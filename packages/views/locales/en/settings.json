@@ -218,6 +218,7 @@
     "toast_failed": "Failed to update GitHub settings"
   },
   "lark": {
+    "section_title": "Lark",
     "page_description": "Connect each Multica Agent to a Lark (飞书) PersonalAgent Bot. Members can DM the Bot, @ it in groups, and type /issue to spin up a new Multica issue.",
     "not_enabled_title": "Lark integration not enabled",
     "not_enabled_description_prefix": "Set",

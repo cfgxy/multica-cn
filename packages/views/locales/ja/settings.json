@@ -218,6 +218,7 @@
     "toast_failed": "GitHub 設定を更新できませんでした"
   },
   "lark": {
+    "section_title": "Lark",
     "page_description": "各 Multica エージェントを Lark (飞书) PersonalAgent ボットに接続します。メンバーはボットに DM したり、グループで @ メンションしたり、/issue と入力して新しい Multica イシューを起こすことができます。",
     "not_enabled_title": "Lark 連携が有効化されていません",
     "not_enabled_description_prefix": "Lark ボットの設置を有効化するにはサーバーに",
