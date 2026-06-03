@@ -228,6 +228,16 @@ func TestEveryAnalyticsRecordEventTakesAnalyticsHelper(t *testing.T) {
 // recognised. The set is conservative — re-assignments to non-analytics
 // values keep the ident in the set (we only track the originating
 // definition); call sites that cared could rewrite to use the helper inline.
+//
+// KNOWN LIMITATION (tracked as PR3 follow-up; see PR description):
+// matching is by ident NAME, not by SSA def-use. A pathological function
+// that shadows an analytics-backed name with a non-analytics binding in a
+// nested scope (e.g. an `if`/`for` re-declaration via `:=`) would still
+// pass this check, because the outer-scope name is in the allow-set. This
+// is rare in practice — every current call site assigns once at the same
+// scope as the RecordEvent call — but a future hardening pass should
+// switch to a real go/types or go/ssa walk so the lint is type-aware
+// rather than name-aware.
 func analyticsBackedIdents(body *ast.BlockStmt) map[string]struct{} {
 	out := map[string]struct{}{}
 	if body == nil {
@@ -407,6 +417,20 @@ func isAnalyticsCapture(call *ast.CallExpr) bool {
 	return true
 }
 
+// isMetricsRecordEvent reports whether call is a metrics.RecordEvent
+// invocation. Recognises the two import aliases used in this codebase:
+// `obsmetrics` (everywhere outside the metrics package itself) and the
+// natural package name `metrics`.
+//
+// KNOWN LIMITATION (tracked as PR3 follow-up; see PR description):
+// the alias set is HARD-CODED. A future caller that imports the metrics
+// package under a third alias (`mx "..."`, etc.) would slip past this
+// check. The follow-up plan is to walk the file's import declarations
+// and resolve the alias for `server/internal/metrics` per-file, so any
+// alias works as long as the canonical import path matches. We leave it
+// hard-coded here because every current import in handler/, service/,
+// and cmd/server/ uses one of the two names, and goimports/`gofmt`
+// guidance keeps it that way.
 func isMetricsRecordEvent(call *ast.CallExpr) bool {
 	sel, ok := call.Fun.(*ast.SelectorExpr)
 	if !ok {
