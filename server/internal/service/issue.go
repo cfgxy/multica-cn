@@ -55,8 +55,8 @@ type IssueCreateParams struct {
 	CreatorID      pgtype.UUID
 	ParentIssueID  pgtype.UUID
 	ProjectID      pgtype.UUID
-	StartDate      pgtype.Timestamptz
-	DueDate        pgtype.Timestamptz
+	StartDate      pgtype.Date
+	DueDate        pgtype.Date
 	OriginType     pgtype.Text
 	OriginID       pgtype.UUID
 	AttachmentIDs  []pgtype.UUID
@@ -87,6 +87,12 @@ type IssueCreateOpts struct {
 	// the creator agent). Resolved by the caller because it depends on
 	// transport context.
 	AnalyticsAgentID string
+
+	// Platform tags the IssueCreated analytics + business-metrics event
+	// with the client surface the request came in on (web / desktop /
+	// daemon / lark / autopilot). Derived from middleware's client
+	// metadata at the handler layer.
+	Platform string
 }
 
 // ErrActiveDuplicate signals that the duplicate guard found an active
@@ -340,6 +346,7 @@ func (s *IssueService) captureCreatedAnalytics(issue db.Issue, creatorType, acto
 		taskID,
 		autopilotRunID,
 		source,
+		opts.Platform,
 	))
 }
 

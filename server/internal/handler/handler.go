@@ -21,6 +21,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/integrations/lark"
+	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -108,12 +109,17 @@ type Handler struct {
 	Storage               storage.Storage
 	CFSigner              *auth.CloudFrontSigner
 	Analytics             analytics.Client
-	PATCache              *auth.PATCache
-	DaemonTokenCache      *auth.DaemonTokenCache
-	MembershipCache       *auth.MembershipCache
-	WebhookRateLimiter    WebhookRateLimiter
-	WebhookIPRateLimiter  WebhookRateLimiter
-	CloudRuntime          cloudRuntimeProxy
+	// Metrics is the shared business-metrics collector built by main.go.
+	// May be nil in tests / self-hosted with the metrics listener disabled;
+	// every Record* method is nil-safe and obsmetrics.RecordEvent treats a
+	// nil Metrics as "PostHog only".
+	Metrics              *obsmetrics.BusinessMetrics
+	PATCache             *auth.PATCache
+	DaemonTokenCache     *auth.DaemonTokenCache
+	MembershipCache      *auth.MembershipCache
+	WebhookRateLimiter   WebhookRateLimiter
+	WebhookIPRateLimiter WebhookRateLimiter
+	CloudRuntime         cloudRuntimeProxy
 	// Lark integration. All three are nil when the Lark master key
 	// (MULTICA_LARK_SECRET_KEY) is unset; the corresponding HTTP
 	// handlers return 503 in that case so a misconfigured self-host
@@ -228,6 +234,7 @@ func ptrToText(s *string) pgtype.Text               { return util.PtrToText(s) }
 func strToText(s string) pgtype.Text                { return util.StrToText(s) }
 func timestampToString(t pgtype.Timestamptz) string { return util.TimestampToString(t) }
 func timestampToPtr(t pgtype.Timestamptz) *string   { return util.TimestampToPtr(t) }
+func dateToPtr(d pgtype.Date) *string               { return util.DateToPtr(d) }
 func uuidToPtr(u pgtype.UUID) *string               { return util.UUIDToPtr(u) }
 func int8ToPtr(v pgtype.Int8) *int64                { return util.Int8ToPtr(v) }
 
