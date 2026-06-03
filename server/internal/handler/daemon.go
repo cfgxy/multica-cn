@@ -1110,7 +1110,11 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 	// Build response with fresh agent data (name + skills + custom_env + custom_args).
 	resp := taskToResponse(*task, runtimeWorkspaceID)
 	if agent, err := h.Queries.GetAgent(r.Context(), task.AgentID); err == nil {
+		// Workspace-bound skills first, then platform built-in skills. Built-in
+		// names carry a "multica-" prefix so their on-disk slugs never collide
+		// with a user-authored workspace skill (see writeSkillFiles).
 		skills := h.TaskService.LoadAgentSkills(r.Context(), task.AgentID)
+		skills = append(skills, h.TaskService.BuiltinSkills()...)
 		var customEnv map[string]string
 		if agent.CustomEnv != nil {
 			if err := json.Unmarshal(agent.CustomEnv, &customEnv); err != nil {
