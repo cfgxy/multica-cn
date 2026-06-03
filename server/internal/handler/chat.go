@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
+	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -475,7 +476,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("failed to touch chat session", "session_id", sessionID, "error", err)
 	}
 	taskContext := h.TaskService.AnalyticsContextForTask(r.Context(), task)
-	h.Analytics.Capture(analytics.ChatMessageSent(
+	obsmetrics.RecordEvent(h.Analytics, h.Metrics, analytics.ChatMessageSent(
 		userID,
 		workspaceID,
 		uuidToString(session.ID),

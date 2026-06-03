@@ -12,6 +12,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/logger"
+	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -26,13 +27,13 @@ import (
 // request body itself is bounded so an attacker can't POST megabytes of
 // junk into the JSONB-free TEXT columns.
 const (
-	contactSalesMaxFirstName    = 80
-	contactSalesMaxLastName     = 80
-	contactSalesMaxEmail        = 254
-	contactSalesMaxCompanyName  = 200
-	contactSalesMaxGoals        = 2000
-	contactSalesHourlyEmailCap  = 3
-	contactSalesBodyLimit       = 16 * 1024
+	contactSalesMaxFirstName   = 80
+	contactSalesMaxLastName    = 80
+	contactSalesMaxEmail       = 254
+	contactSalesMaxCompanyName = 200
+	contactSalesMaxGoals       = 2000
+	contactSalesHourlyEmailCap = 3
+	contactSalesBodyLimit      = 16 * 1024
 )
 
 // contactSalesAllowedCompanySize is the closed enum the frontend dropdown
@@ -219,7 +220,7 @@ func (h *Handler) CreateContactSales(w http.ResponseWriter, r *http.Request) {
 			"use_case", useCase,
 		)...)
 
-	h.Analytics.Capture(analytics.ContactSalesSubmitted(
+	obsmetrics.RecordEvent(h.Analytics, h.Metrics, analytics.ContactSalesSubmitted(
 		inquiryID,
 		companySize,
 		countryRegion,

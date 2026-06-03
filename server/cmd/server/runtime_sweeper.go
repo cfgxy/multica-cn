@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
+	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -118,7 +119,7 @@ func sweepStaleRuntimes(ctx context.Context, queries *db.Queries, liveness handl
 	}
 	if taskSvc != nil && taskSvc.Analytics != nil {
 		for _, row := range staleRows {
-			taskSvc.Analytics.Capture(analytics.RuntimeOffline(
+			obsmetrics.RecordEvent(taskSvc.Analytics, taskSvc.Metrics, analytics.RuntimeOffline(
 				util.UUIDToString(row.OwnerID),
 				util.UUIDToString(row.WorkspaceID),
 				util.UUIDToString(row.ID),

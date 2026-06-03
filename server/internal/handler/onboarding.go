@@ -11,6 +11,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/logger"
+	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -113,7 +114,7 @@ func (h *Handler) CompleteOnboarding(w http.ResponseWriter, r *http.Request) {
 		if user.OnboardedAt.Valid {
 			onboardedAt = user.OnboardedAt.Time.UTC().Format("2006-01-02T15:04:05Z07:00")
 		}
-		h.Analytics.Capture(analytics.OnboardingCompleted(
+		obsmetrics.RecordEvent(h.Analytics, h.Metrics, analytics.OnboardingCompleted(
 			userID,
 			req.WorkspaceID,
 			path,
@@ -249,7 +250,7 @@ func (h *Handler) PatchOnboarding(w http.ResponseWriter, r *http.Request) {
 	var after questionnaireAnswers
 	_ = json.Unmarshal(user.OnboardingQuestionnaire, &after)
 	if after.complete() && !before.complete() {
-		h.Analytics.Capture(analytics.OnboardingQuestionnaireSubmitted(
+		obsmetrics.RecordEvent(h.Analytics, h.Metrics, analytics.OnboardingQuestionnaireSubmitted(
 			userID,
 			[]string(after.Source),
 			after.Role,
@@ -323,7 +324,7 @@ func (h *Handler) JoinCloudWaitlist(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.Analytics.Capture(analytics.CloudWaitlistJoined(userID, reason != ""))
+	obsmetrics.RecordEvent(h.Analytics, h.Metrics, analytics.CloudWaitlistJoined(userID, reason != ""))
 
 	writeJSON(w, http.StatusOK, userToResponse(user))
 }

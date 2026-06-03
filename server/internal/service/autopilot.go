@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
+	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/issueposition"
 	"github.com/multica-ai/multica/server/internal/util"
@@ -735,7 +736,7 @@ func (s *AutopilotService) captureIssueCreatedFromAutopilot(ap db.Autopilot, run
 	// For PostHog the agent_id should be the agent that will actually run
 	// the work (the resolved leader for squad autopilots) so per-agent task
 	// counts line up with what daemons report.
-	s.TaskSvc.Analytics.Capture(analytics.IssueCreated(
+	obsmetrics.RecordEvent(s.TaskSvc.Analytics, s.TaskSvc.Metrics, analytics.IssueCreated(
 		autopilotActorID(ap),
 		util.UUIDToString(ap.WorkspaceID),
 		util.UUIDToString(issue.ID),
@@ -750,11 +751,12 @@ func (s *AutopilotService) captureAutopilotRunStarted(ap db.Autopilot, run db.Au
 	if s.TaskSvc == nil || s.TaskSvc.Analytics == nil {
 		return
 	}
-	s.TaskSvc.Analytics.Capture(analytics.AutopilotRunStarted(
+	obsmetrics.RecordEvent(s.TaskSvc.Analytics, s.TaskSvc.Metrics, analytics.AutopilotRunStarted(
 		autopilotActorID(ap),
 		util.UUIDToString(ap.WorkspaceID),
 		util.UUIDToString(ap.ID),
 		util.UUIDToString(run.ID),
+		triggerSource, // cadence proxy: see autopilot cadence note in metrics/labels_pr3.go
 		s.autopilotAssigneeAnalytics(ap),
 		triggerSource,
 	))
@@ -764,11 +766,12 @@ func (s *AutopilotService) captureAutopilotRunCompleted(ap db.Autopilot, run db.
 	if s.TaskSvc == nil || s.TaskSvc.Analytics == nil {
 		return
 	}
-	s.TaskSvc.Analytics.Capture(analytics.AutopilotRunCompleted(
+	obsmetrics.RecordEvent(s.TaskSvc.Analytics, s.TaskSvc.Metrics, analytics.AutopilotRunCompleted(
 		autopilotActorID(ap),
 		util.UUIDToString(ap.WorkspaceID),
 		util.UUIDToString(ap.ID),
 		util.UUIDToString(run.ID),
+		run.Source,
 		s.autopilotAssigneeAnalytics(ap),
 		run.Source,
 		autopilotRunDurationMS(run),
@@ -782,11 +785,12 @@ func (s *AutopilotService) captureAutopilotRunFailed(ap db.Autopilot, run db.Aut
 	if reason == "" {
 		reason = "unknown"
 	}
-	s.TaskSvc.Analytics.Capture(analytics.AutopilotRunFailed(
+	obsmetrics.RecordEvent(s.TaskSvc.Analytics, s.TaskSvc.Metrics, analytics.AutopilotRunFailed(
 		autopilotActorID(ap),
 		util.UUIDToString(ap.WorkspaceID),
 		util.UUIDToString(ap.ID),
 		util.UUIDToString(run.ID),
+		triggerSource,
 		s.autopilotAssigneeAnalytics(ap),
 		triggerSource,
 		reason,

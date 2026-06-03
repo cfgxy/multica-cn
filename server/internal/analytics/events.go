@@ -31,6 +31,8 @@ const (
 	EventCloudWaitlistJoined           = "cloud_waitlist_joined"
 	EventFeedbackSubmitted             = "feedback_submitted"
 	EventContactSalesSubmitted         = "contact_sales_submitted"
+	EventSquadCreated                  = "squad_created"
+	EventAutopilotCreated              = "autopilot_created"
 )
 
 const EventSchemaVersion = 2
@@ -340,18 +342,18 @@ type AutopilotAssignee struct {
 	SquadID      string // empty when AssigneeType != "squad"
 }
 
-func AutopilotRunStarted(actorID, workspaceID, autopilotID, runID string, assignee AutopilotAssignee, triggerSource string) Event {
-	return autopilotRunEvent(EventAutopilotRunStarted, actorID, workspaceID, autopilotID, runID, assignee, triggerSource, nil)
+func AutopilotRunStarted(actorID, workspaceID, autopilotID, runID, cadence string, assignee AutopilotAssignee, triggerSource string) Event {
+	return autopilotRunEvent(EventAutopilotRunStarted, actorID, workspaceID, autopilotID, runID, cadence, assignee, triggerSource, nil)
 }
 
-func AutopilotRunCompleted(actorID, workspaceID, autopilotID, runID string, assignee AutopilotAssignee, triggerSource string, durationMS int64) Event {
-	return autopilotRunEvent(EventAutopilotRunCompleted, actorID, workspaceID, autopilotID, runID, assignee, triggerSource, map[string]any{
+func AutopilotRunCompleted(actorID, workspaceID, autopilotID, runID, cadence string, assignee AutopilotAssignee, triggerSource string, durationMS int64) Event {
+	return autopilotRunEvent(EventAutopilotRunCompleted, actorID, workspaceID, autopilotID, runID, cadence, assignee, triggerSource, map[string]any{
 		"duration_ms": durationMS,
 	})
 }
 
-func AutopilotRunFailed(actorID, workspaceID, autopilotID, runID string, assignee AutopilotAssignee, triggerSource, failureReason, errorType string, willRetry bool, durationMS int64) Event {
-	return autopilotRunEvent(EventAutopilotRunFailed, actorID, workspaceID, autopilotID, runID, assignee, triggerSource, map[string]any{
+func AutopilotRunFailed(actorID, workspaceID, autopilotID, runID, cadence string, assignee AutopilotAssignee, triggerSource, failureReason, errorType string, willRetry bool, durationMS int64) Event {
+	return autopilotRunEvent(EventAutopilotRunFailed, actorID, workspaceID, autopilotID, runID, cadence, assignee, triggerSource, map[string]any{
 		"duration_ms":    durationMS,
 		"failure_reason": failureReason,
 		"error_type":     errorType,
@@ -567,6 +569,47 @@ func ContactSalesSubmitted(inquiryID, companySize, countryRegion, useCase string
 	}
 }
 
+// SquadCreated fires when a workspace member or admin creates a new squad.
+// `memberCount` is the number of members the squad was seeded with at
+// creation time (frontend can pre-populate via the picker).
+func SquadCreated(actorID, workspaceID, squadID string, memberCount int) Event {
+	return Event{
+		Name:        EventSquadCreated,
+		DistinctID:  actorID,
+		WorkspaceID: workspaceID,
+		Properties: withCoreProperties(map[string]any{
+			"squad_id":     squadID,
+			"member_count": int64(memberCount),
+		}, CoreProperties{
+			UserID:      nonAgentUserID(actorID),
+			WorkspaceID: workspaceID,
+			Source:      SourceManual,
+		}),
+	}
+}
+
+// AutopilotCreated fires when a workspace member creates a new autopilot.
+// `cadence` matches the autopilot.cadence enum (hourly/daily/weekly/...
+// /webhook). triggerKind is the initial trigger type (schedule / webhook /
+// manual) — when both schedule and webhook triggers are seeded, we report
+// the dominant one (schedule wins).
+func AutopilotCreated(actorID, workspaceID, autopilotID, cadence, triggerKind string) Event {
+	return Event{
+		Name:        EventAutopilotCreated,
+		DistinctID:  actorID,
+		WorkspaceID: workspaceID,
+		Properties: withCoreProperties(map[string]any{
+			"autopilot_id": autopilotID,
+			"cadence":      cadence,
+			"trigger_kind": triggerKind,
+		}, CoreProperties{
+			UserID:      nonAgentUserID(actorID),
+			WorkspaceID: workspaceID,
+			Source:      SourceManual,
+		}),
+	}
+}
+
 func agentTaskEvent(name string, ctx TaskContext, extra map[string]any) Event {
 	props := withCoreProperties(extra, CoreProperties(ctx))
 	return Event{
@@ -577,11 +620,15 @@ func agentTaskEvent(name string, ctx TaskContext, extra map[string]any) Event {
 	}
 }
 
-func autopilotRunEvent(name, actorID, workspaceID, autopilotID, runID string, assignee AutopilotAssignee, triggerSource string, extra map[string]any) Event {
+func autopilotRunEvent(name, actorID, workspaceID, autopilotID, runID, cadence string, assignee AutopilotAssignee, triggerSource string, extra map[string]any) Event {
 	if extra == nil {
 		extra = map[string]any{}
 	}
 	extra["trigger_source"] = triggerSource
+	extra["trigger_kind"] = triggerSource
+	if cadence != "" {
+		extra["cadence"] = cadence
+	}
 	props := withCoreProperties(extra, CoreProperties{
 		UserID:         nonAgentUserID(actorID),
 		WorkspaceID:    workspaceID,
