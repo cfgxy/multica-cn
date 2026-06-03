@@ -18,6 +18,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/cloudruntime"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
@@ -142,7 +143,16 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		CloudRuntimeFleetTimeout: envDuration("MULTICA_CLOUD_FLEET_TIMEOUT", 35*time.Second),
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
+	h.Metrics = opts.BusinessMetrics
 	h.TaskService.Metrics = opts.BusinessMetrics
+	if opts.BusinessMetrics != nil {
+		// Wire the BusinessMetrics receiver into the cloud runtime client
+		// so every outbound Fleet/Gateway request feeds the
+		// multica_cloudruntime_request_* histograms.
+		if client, ok := h.CloudRuntime.(*cloudruntime.Client); ok {
+			client.SetRecorder(opts.BusinessMetrics)
+		}
+	}
 	if opts.DaemonWakeup != nil {
 		h.TaskService.Wakeup = opts.DaemonWakeup
 	}

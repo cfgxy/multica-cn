@@ -270,6 +270,11 @@ func main() {
 		})
 		httpMetrics = metricsRegistry.HTTP
 		businessMetrics = metricsRegistry.Business
+		// Forward inbound daemon WS frames into the per-kind counter so
+		// dashboards can split heartbeat / unknown / invalid traffic.
+		if daemonHub != nil {
+			daemonHub.SetMessageKindRecorder(businessMetrics)
+		}
 		metricsServer = obsmetrics.NewServer(metricsConfig.Addr, metricsRegistry.Gatherer)
 		if !obsmetrics.IsLoopbackAddr(metricsConfig.Addr) {
 			slog.Warn(

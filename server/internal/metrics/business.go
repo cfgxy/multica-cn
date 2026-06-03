@@ -36,6 +36,10 @@ type BusinessMetrics struct {
 
 	activeMu    sync.Mutex
 	activeTasks map[string]activeTaskLabels
+
+	// PR3 funnel / community / commercial counters. See business_events.go
+	// for the field-level docs and labels.
+	events *businessEventMetrics
 }
 
 func NewBusinessMetrics() *BusinessMetrics {
@@ -142,13 +146,14 @@ func NewBusinessMetrics() *BusinessMetrics {
 			Help:      "Total dispatched or running task leases expired by the scheduler.",
 		}, metricLabels("multica_task_lease_expired_total")),
 		activeTasks: map[string]activeTaskLabels{},
+		events:      newBusinessEventMetrics(),
 	}
 	m.prewarmFailureReasons()
 	return m
 }
 
 func (m *BusinessMetrics) Collectors() []prometheus.Collector {
-	return []prometheus.Collector{
+	return append([]prometheus.Collector{
 		m.taskEnqueued,
 		m.taskDispatched,
 		m.taskStarted,
@@ -165,7 +170,7 @@ func (m *BusinessMetrics) Collectors() []prometheus.Collector {
 		m.llmRequests,
 		m.taskQueuedExpired,
 		m.taskLeaseExpired,
-	}
+	}, m.events.collectors()...)
 }
 
 func (m *BusinessMetrics) RecordTaskEnqueued(source, runtimeMode string) {
