@@ -17,7 +17,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
-	"github.com/multica-ai/multica/server/internal/skill"
+	skillpkg "github.com/multica-ai/multica/server/internal/skill"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -458,6 +458,10 @@ func (h *Handler) UpdateSkill(w http.ResponseWriter, r *http.Request) {
 		}
 		fileResps = make([]SkillFileResponse, 0, len(req.Files))
 		for _, f := range req.Files {
+			// SKILL.md is reserved for the primary skill content (skill.Content).
+			if skillpkg.IsReservedContentPath(f.Path) {
+				continue
+			}
 			sf, err := qtx.UpsertSkillFile(r.Context(), db.UpsertSkillFileParams{
 				SkillID: skill.ID,
 				Path:    sanitizeNullBytes(f.Path),
@@ -1000,7 +1004,7 @@ func fetchFromSkillsSh(httpClient *http.Client, rawURL string) (*importedSkill, 
 	if skillMdBody == nil {
 		body, err := fetchRawFile(httpClient, buildRawGitHubURL(rawPrefix, "SKILL.md"))
 		if err == nil {
-			if name, _ := skill.ParseSkillFrontmatter(string(body)); name == skillName {
+			if name, _ := skillpkg.ParseSkillFrontmatter(string(body)); name == skillName {
 				skillMdBody = body
 				skillDir = ""
 			}
@@ -1014,7 +1018,7 @@ func fetchFromSkillsSh(httpClient *http.Client, rawURL string) (*importedSkill, 
 	}
 
 	// Parse name and description from YAML frontmatter
-	name, description := skill.ParseSkillFrontmatter(string(skillMdBody))
+	name, description := skillpkg.ParseSkillFrontmatter(string(skillMdBody))
 	if name == "" {
 		name = skillName
 	}
@@ -1286,7 +1290,7 @@ func findMatchingSkillDirByFrontmatter(httpClient *http.Client, rawPrefix, skill
 			slog.Warn("github import: fallback SKILL.md fetch failed", "path", skillPath, "error", err)
 			continue
 		}
-		name, _ := skill.ParseSkillFrontmatter(string(body))
+		name, _ := skillpkg.ParseSkillFrontmatter(string(body))
 		if name == skillName {
 			return skillDirFromSkillFilePath(skillPath), body, true
 		}
@@ -1574,7 +1578,7 @@ func fetchFromGitHub(httpClient *http.Client, rawURL string) (*importedSkill, er
 			skillMdPath, spec.owner, spec.repo, spec.ref, err)
 	}
 
-	name, description := skill.ParseSkillFrontmatter(string(skillMdBody))
+	name, description := skillpkg.ParseSkillFrontmatter(string(skillMdBody))
 	if name == "" {
 		if spec.skillDir != "" {
 			name = filepath.Base(spec.skillDir)
@@ -1842,6 +1846,10 @@ func (h *Handler) UpsertSkillFile(w http.ResponseWriter, r *http.Request) {
 
 	if !validateFilePath(req.Path) {
 		writeError(w, http.StatusBadRequest, "invalid file path")
+		return
+	}
+	if skillpkg.IsReservedContentPath(req.Path) {
+		writeError(w, http.StatusBadRequest, "SKILL.md is reserved for the primary skill content")
 		return
 	}
 

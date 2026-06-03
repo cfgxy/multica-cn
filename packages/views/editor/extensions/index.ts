@@ -38,6 +38,8 @@ import type { UploadResult } from "@multica/core/hooks/use-file-upload";
 import { escapeMarkdownLabel } from "../utils/escape-markdown-label";
 import { BaseMentionExtension } from "./mention-extension";
 import { createMentionSuggestion } from "./mention-suggestion";
+import { SlashCommandExtension } from "./slash-command-extension";
+import { createSlashCommandSuggestion } from "./slash-command-suggestion";
 import { CodeBlockView } from "./code-block-view";
 import { PatchedListItem } from "./list-item";
 import { createMarkdownPasteExtension } from "./markdown-paste";
@@ -48,6 +50,7 @@ import { createFileUploadExtension } from "./file-upload";
 import { FileCardExtension } from "./file-card";
 import { ImageView } from "./image-view";
 import { BlockMathExtension, InlineMathExtension } from "./math";
+import { HighlightExtension } from "./highlight";
 
 const lowlight = createLowlight(common);
 
@@ -105,6 +108,8 @@ export interface EditorExtensionsOptions {
    * system prompts) but *preserving* an existing one still matters.
    */
   disableMentions?: boolean;
+  /** When true, attach the `/` skill picker. Default false. */
+  enableSlashCommands?: boolean;
 }
 
 export function createEditorExtensions(
@@ -140,6 +145,7 @@ export function createEditorExtensions(
     TableCell,
     BlockMathExtension,
     InlineMathExtension,
+    HighlightExtension,
     // 3-space indent so nested ordered lists survive CommonMark in ReadonlyContent.
     Markdown.configure({ indentation: { style: "space", size: 3 } }),
     // Make Cmd+C / Cmd+X / drag write Markdown source to clipboard text/plain
@@ -153,6 +159,13 @@ export function createEditorExtensions(
         : options.queryClient
           ? { suggestion: createMentionSuggestion(options.queryClient) }
           : {}),
+    }),
+    SlashCommandExtension.configure({
+      HTMLAttributes: { class: "slash-command" },
+      suggestion:
+        options.enableSlashCommands && options.queryClient
+          ? createSlashCommandSuggestion(options.queryClient)
+          : { char: "/", allow: () => false },
     }),
     Typography,
     Placeholder.configure({ placeholder: placeholderText }),

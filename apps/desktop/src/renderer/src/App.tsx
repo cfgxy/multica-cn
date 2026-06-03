@@ -191,6 +191,7 @@ function AppContent() {
     return undefined;
   }, [user, workspaceListFetched, wsCount, workspaces, hasOnboarded, qc]);
 
+
   // Validate persisted tab state against the current user's workspace list,
   // and pick an active workspace if none is set. Runs in useLayoutEffect
   // (synchronously after render, before paint) rather than the render
