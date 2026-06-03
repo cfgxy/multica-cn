@@ -55,10 +55,11 @@ multica agent create --name <name> --runtime-id <runtime-id> \
   --output json
 ```
 
-`runAgentCreate` builds a JSON body and posts it to `/api/agents`. The CLI
-only adds a key to the body when the corresponding flag was actually set
-(`Changed`), so omitted flags fall through to server defaults rather than
-sending empty strings.
+`runAgentCreate` builds a JSON body and posts it to `/api/agents`. It only
+adds a key when its flag was provided — `description`/`instructions` on a
+non-empty value, the rest (`runtime-config`, `custom-args`, `model`,
+`visibility`, …) on the flag being `Changed` — so omitted flags fall through
+to server defaults rather than sending empty strings.
 
 The HTTP body (`CreateAgentRequest`) accepts: `name`, `description`,
 `instructions`, `runtime_id`, `runtime_config`, `custom_env`, `custom_args`,
@@ -74,12 +75,18 @@ The HTTP body (`CreateAgentRequest`) accepts: `name`, `description`,
 | `runtime_id` | `agent.runtime_id` | required (400) + must resolve to a runtime in this workspace | selects runtime/provider |
 | `model` | `agent.model` (nullable) | none beyond runtime support | daemon reads; empty = runtime default |
 | `thinking_level` | `agent.thinking_level` (nullable) | provider-level enum; unknown literal → 400 | daemon; empty = runtime default |
-| `custom_args` | `agent.custom_args` (JSON array) | must be valid JSON array | daemon (extra CLI switches); defaults to `[]` |
-| `runtime_config` | `agent.runtime_config` (JSON) | must be valid JSON | runtime-specific config; defaults to `{}` |
+| `custom_args` | `agent.custom_args` (JSON array) | JSON shape checked CLI-side; server stores as-is | daemon (extra CLI switches); defaults to `[]` |
+| `runtime_config` | `agent.runtime_config` (JSON) | JSON shape checked CLI-side; server stores as-is | runtime-specific config; defaults to `{}` |
 | `custom_env` | `agent.custom_env` (JSON object) | — | daemon (process env); see Env & secrets |
+| `mcp_config` | `agent.mcp_config` (raw JSON) | literal `null` is dropped at create | daemon → provider (MCP servers) — **runtime-consumed**; redacted on read |
+| `visibility` | `agent.visibility` | — | access control; defaults to `private`; gates who can read/route a private agent (e.g. a private squad leader) — NOT the runtime prompt |
+| `max_concurrent_tasks` | `agent.max_concurrent_tasks` | — | scheduler task cap; defaults to `6` |
 
 Defaults when omitted: `runtime_config` → `{}`, `custom_env` → `{}`,
-`custom_args` → `[]` (all materialized server-side before the insert).
+`custom_args` → `[]`, `visibility` → `private`, `max_concurrent_tasks` → `6`
+(all materialized server-side before the insert). `custom_args`/`runtime_config`
+are typed `[]string`/`any` and marshaled as-is — the JSON-shape rejection
+happens in the CLI, not the create handler.
 
 `thinking_level` is validated only at the provider level: an unrecognized
 literal returns 400, but a value that is valid for the provider yet

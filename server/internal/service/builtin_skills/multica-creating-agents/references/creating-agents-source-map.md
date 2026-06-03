@@ -10,7 +10,7 @@ number) is the anchor.
 
 ```bash
 # Conformance eval for this skill (and the shared template invariants):
-go test ./internal/service -run TestCreatingAgents
+go test ./internal/service -run TestCreatingAgentsSkillCoversAgentCreationContracts
 go test ./internal/service -run TestBuiltinSkillsConformToTemplate
 ```
 
@@ -46,7 +46,11 @@ template path is immature and out of scope for this skill.
 | `runtime_id` must resolve in workspace | 642–658 | parsed + `GetAgentRuntimeForWorkspace`; unknown → 400 "invalid runtime_id" |
 | `thinking_level` provider-level validation | 673–676 | `!agent.IsKnownThinkingValue(runtime.Provider, req.ThinkingLevel)` → 400; per-model gaps deferred to daemon (comment 669–672, MUL-2339) |
 | Defaults: `{}` config/env, `[]` args | 688–701 | `RuntimeConfig`→`{}`, `CustomEnv`→`{}`, `CustomArgs`→`[]` when nil, before insert |
-| `CreateAgent` insert params | 708–722 | persists runtime_config, instructions, custom_env, custom_args, model, thinking_level, mcp_config |
+| `visibility` default | 635–636 | `if req.Visibility == "" { req.Visibility = "private" }` — access-control field, not the runtime prompt |
+| `max_concurrent_tasks` default | 638–639 | `if req.MaxConcurrentTasks == 0 { req.MaxConcurrentTasks = 6 }` — scheduler cap |
+| `mcp_config` null-skip on create | 704–705 | raw JSON copied through unless the body value is the literal `null` |
+| `mcp_config` redacted on read | 54, 848–851 | `redactMcpConfig` sets `McpConfigRedacted=true`; a private agent read by a member also redacts (494, 509) |
+| `CreateAgent` insert params | 708–722 | persists runtime_config, instructions, custom_env, custom_args, model, thinking_level, mcp_config, visibility, max_concurrent_tasks |
 | `UpdateAgent` rejects `custom_env` | 910–913 | if `custom_env` present in body → 400 "use PUT /api/agents/{id}/env (or `multica agent env set`)" |
 | `description` ≤ 255 on update too | 921–924 | same cap re-checked on update |
 
@@ -72,7 +76,7 @@ template path is immature and out of scope for this skill.
 | Fresh agent re-read on claim | 1109–1111 | `GetAgent(task.AgentID)` — claim uses persisted fields, not create output |
 | Workspace skills FIRST | 1115 | `skills := h.TaskService.LoadAgentSkills(...)` |
 | Built-ins appended | 1116 | `skills = append(skills, h.TaskService.BuiltinSkills()...)` |
-| Runtime payload | 1133–1143 | `TaskAgentData` carries `Instructions`, `Skills`, `CustomEnv`, `CustomArgs`, `Model`, `ThinkingLevel` — confirms these are runtime-consumed; `description` is absent |
+| Runtime payload | 1130–1143 | `TaskAgentData` carries `Instructions`, `Skills`, `CustomEnv`, `CustomArgs`, `Model`, `ThinkingLevel`, `McpConfig` (1130–1131, 1140) — confirms these are runtime-consumed; `description`, `visibility`, and `max_concurrent_tasks` are absent (not runtime-prompt fields) |
 
 ## Skill loading — `server/internal/service/task.go`
 
@@ -94,4 +98,4 @@ template path is immature and out of scope for this skill.
 | `CreateAgent` INSERT | 730–736 | columns include `runtime_config, runtime_id, instructions, custom_env, custom_args, mcp_config, model, thinking_level` |
 | `CreateAgentParams` | 739–756 | typed params: `RuntimeConfig []byte`, `Instructions string`, `CustomEnv []byte`, `CustomArgs []byte`, `Model pgtype.Text`, `ThinkingLevel pgtype.Text` |
 | `UpdateAgent` SET | 2552–2566 | COALESCE updates of `runtime_config, instructions, custom_env, custom_args, model, thinking_level` — note `custom_env` is COALESCE-guarded but the handler rejects it before this query runs |
-| `UpdateAgentEnv` | 2637 | `SET custom_env = $2` — the only write path for env values |
+| `UpdateAgentCustomEnv` (called by the `UpdateAgentEnv` handler) | 2652 | `SET custom_env = $2` — the only write path for env values |

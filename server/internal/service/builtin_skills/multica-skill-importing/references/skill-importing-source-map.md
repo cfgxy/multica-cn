@@ -20,8 +20,8 @@ grep -n "func IsReservedContentPath"    server/internal/skill/reserved.go
 | `ImportSkill` handler (`POST /api/skills/import`) | `server/internal/handler/skill.go:1724` |
 | Decodes `ImportSkillRequest` (`{ "url": ... }`) | `server/internal/handler/skill.go:1737-1741`, struct at `:523` |
 | Detects source family + normalizes URL | `server/internal/handler/skill.go:1743` (calls `detectImportSource`) |
-| Persists provenance into `config.origin` | `server/internal/handler/skill.go:1776-1781` (set at `:1780`) |
-| Builds skill + files via `createSkillWithFiles` | `server/internal/handler/skill.go:1783` |
+| Persists provenance into `config.origin` | `server/internal/handler/skill.go:1776-1781` — set at `:1780` **only when** `imported.origin != nil` (`:1779`); otherwise `config` stays `{}` and `origin` is absent |
+| Builds skill + files via `createSkillWithFiles` (def `server/internal/handler/skill_create.go:72`, tx body `:27`) | call site `server/internal/handler/skill.go:1783` |
 | Success: `201 Created` with the response body | `server/internal/handler/skill.go:1806` |
 | Route registration `r.Post("/import", h.ImportSkill)` | `server/cmd/server/router.go:621` (under `/api/skills`, `:617`) |
 

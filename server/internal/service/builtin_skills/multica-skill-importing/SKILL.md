@@ -70,7 +70,8 @@ supporting `files` array. Report the relevant fields:
 - `id`
 - `name`
 - `description`
-- `config.origin` (provenance: which source the skill was imported from)
+- `config.origin` (provenance: which source the skill was imported from — set
+  only when the source supplied an origin, so treat it as possibly absent)
 - `files` / files count
 - `created_at` / `updated_at`
 

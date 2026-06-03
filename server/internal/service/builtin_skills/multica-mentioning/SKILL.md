@@ -100,8 +100,10 @@ These are all silent no-ops — no error, no run:
   not retry.
 - **An archived agent**, or a squad whose leader is archived: skipped
   (`RuntimeID` invalid or `ArchivedAt` set).
-- **A private agent you cannot access:** skipped
-  (`canAccessPrivateAgent` / `canEnqueueSquadLeader` returns false).
+- **A private agent you cannot access:** skipped — the mention path gates on
+  `canAccessPrivateAgent` directly for both `@agent` and `@squad` (the
+  `canEnqueueSquadLeader` wrapper is the assignment/child-done path, not this
+  one).
 
 ## Incorrect → Correct
 
