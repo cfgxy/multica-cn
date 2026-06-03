@@ -270,7 +270,7 @@ func (m *BusinessMetrics) IncForEvent(ev analytics.Event) {
 	case analytics.EventTeamInviteAccepted:
 		m.events.teamInviteAccepted.WithLabelValues().Inc()
 	case analytics.EventOnboardingStarted:
-		m.events.onboardingStarted.WithLabelValues(stringProp(ev.Properties, "platform")).Inc()
+		m.events.onboardingStarted.WithLabelValues(NormalizePlatform(stringProp(ev.Properties, "platform"))).Inc()
 	case analytics.EventOnboardingQuestionnaireSubmit:
 		m.events.onboardingQuestionnaireSubmit.WithLabelValues().Inc()
 	case analytics.EventOnboardingCompleted:
