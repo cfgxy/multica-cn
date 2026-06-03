@@ -33,7 +33,6 @@
       "general": "General",
       "repositories": "Repositories",
       "github": "GitHub",
-      "lark": "Lark",
       "integrations": "Integrations",
       "labs": "Labs",
       "members": "Members"
@@ -175,12 +174,6 @@
     "section_placeholder_description": "Experimental settings will land here as they ship. Today this tab is intentionally empty.",
     "toast_failed": "Failed to update setting"
   },
-  "integrations": {
-    "section_title": "Integrations",
-    "empty_title": "No third-party integrations yet",
-    "empty_description": "Once Slack, Linear, and other integrations are wired up they will appear here. GitHub has moved to its own tab.",
-    "manage_hint": "Only admins and owners can manage integrations."
-  },
   "github": {
     "page_description": "Connect a GitHub App, control how Pull Requests show up inside Multica, and decide what your agents leave behind in commit history.",
     "section_master": "Enable GitHub features",
@@ -239,7 +232,6 @@
     "empty_description_cta": "Bind to Lark",
     "empty_description_suffix": "to install a Bot for it.",
     "revoked_badge": "revoked",
-    "bot_open_id_label": "Bot open_id:",
     "installed_at_label": "Installed {{when}}",
     "disconnect": "Disconnect",
     "disconnecting": "Disconnecting…",

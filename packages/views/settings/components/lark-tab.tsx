@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { ExternalLink, RefreshCw, Sparkles, Trash2 } from "lucide-react";
+import { ExternalLink, RefreshCw, Trash2 } from "lucide-react";
 import QRCode from "react-qr-code";
 import { Button } from "@multica/ui/components/ui/button";
 import { Card, CardContent } from "@multica/ui/components/ui/card";
@@ -28,9 +28,11 @@ import {
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { memberListOptions } from "@multica/core/workspace/queries";
+import { useActorName } from "@multica/core/workspace/hooks";
 import { larkInstallationsOptions, larkKeys } from "@multica/core/lark";
 import { api, ApiError } from "@multica/core/api";
 import type { LarkInstallation, LarkInstallStatusResponse } from "@multica/core/types";
+import { ActorAvatar } from "../../common/actor-avatar";
 import { useT } from "../../i18n";
 
 // LarkTab is the workspace settings panel for Lark Bot installations.
@@ -201,25 +203,33 @@ function InstallationRow({
   onDisconnect: () => void;
 }) {
   const { t } = useT("settings");
+  // The bot is bound 1:1 to a Multica Agent (per the (workspace_id,
+  // agent_id) UNIQUE in lark_installation). Render the Multica agent's
+  // identity here rather than the raw Lark app_id / bot_open_id — those
+  // mean nothing to product users. getAgentName falls back to
+  // "Unknown Agent" when the agent has been deleted; the Disconnect
+  // affordance below is the recovery path for that orphan row.
+  const { getAgentName } = useActorName();
   const isActive = installation.status === "active";
+  const agentName = getAgentName(installation.agent_id);
   return (
     <div className="flex items-start justify-between gap-4 py-3 first:pt-0 last:pb-0">
       <div className="flex items-start gap-3">
-        <div className="rounded-md border bg-muted/50 p-2 text-muted-foreground">
-          <Sparkles className="h-4 w-4" />
-        </div>
+        <ActorAvatar
+          actorType="agent"
+          actorId={installation.agent_id}
+          size={32}
+          enableHoverCard
+          profileLink
+        />
         <div className="space-y-1">
           <p className="text-sm font-medium">
-            {installation.app_id}
+            {agentName}
             {!isActive && (
               <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
                 {t(($) => $.lark.revoked_badge)}
               </span>
             )}
-          </p>
-          <p className="text-xs text-muted-foreground">
-            {t(($) => $.lark.bot_open_id_label)}{" "}
-            <code className="text-[10px]">{installation.bot_open_id}</code>
           </p>
           <p className="text-[10px] text-muted-foreground">
             {t(($) => $.lark.installed_at_label, {
