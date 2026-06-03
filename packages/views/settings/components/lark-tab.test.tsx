@@ -182,6 +182,80 @@ describe("LarkAgentBindButton (CTA gate)", () => {
     );
     expect(container.querySelector("button")).toBeNull();
   });
+
+  it("swaps the bind CTA for a 'Connected + Manage in Lark' badge when this agent already has an active installation", () => {
+    // Anti-zombie guard: re-scanning the same agent upserts the row
+    // and orphans the previously-created Lark PersonalAgent. The badge
+    // closes the install entry point and links the user to the Bot's
+    // dev console page where scopes / display name / additional
+    // permissions are actually managed.
+    installationsRef.current.installations = [
+      {
+        id: "inst-1",
+        workspace_id: "ws-1",
+        agent_id: "agent-1",
+        app_id: "cli_existing_app",
+        bot_open_id: "ou_existing_bot",
+        installer_user_id: "user-1",
+        status: "active",
+        installed_at: "2026-06-03T00:00:00Z",
+        created_at: "2026-06-03T00:00:00Z",
+        updated_at: "2026-06-03T00:00:00Z",
+      },
+    ];
+    const { container } = render(
+      <LarkAgentBindButton agentId="agent-1" agentName="Bot" />,
+      { wrapper: I18nWrapper },
+    );
+    expect(container.querySelector("button")).toBeNull();
+    expect(screen.getByText(/Connected to Lark/i)).toBeTruthy();
+    const link = screen.getByRole("link", { name: /Manage in Lark/i }) as HTMLAnchorElement;
+    expect(link.href).toBe("https://open.feishu.cn/app/cli_existing_app");
+    expect(link.target).toBe("_blank");
+    expect(link.rel).toContain("noopener");
+  });
+
+  it("still shows the bind CTA when an installation exists for a DIFFERENT agent (per-agent scoping)", () => {
+    installationsRef.current.installations = [
+      {
+        id: "inst-other",
+        workspace_id: "ws-1",
+        agent_id: "agent-other",
+        app_id: "cli_other",
+        bot_open_id: "ou_other",
+        installer_user_id: "user-1",
+        status: "active",
+        installed_at: "2026-06-03T00:00:00Z",
+        created_at: "2026-06-03T00:00:00Z",
+        updated_at: "2026-06-03T00:00:00Z",
+      },
+    ];
+    render(<LarkAgentBindButton agentId="agent-1" agentName="Bot" />, {
+      wrapper: I18nWrapper,
+    });
+    expect(screen.getByRole("button", { name: /Bind to Lark/i })).toBeTruthy();
+  });
+
+  it("still shows the bind CTA when this agent's only installation is revoked (treat as not-installed for re-bind)", () => {
+    installationsRef.current.installations = [
+      {
+        id: "inst-revoked",
+        workspace_id: "ws-1",
+        agent_id: "agent-1",
+        app_id: "cli_revoked",
+        bot_open_id: "ou_revoked",
+        installer_user_id: "user-1",
+        status: "revoked",
+        installed_at: "2026-06-03T00:00:00Z",
+        created_at: "2026-06-03T00:00:00Z",
+        updated_at: "2026-06-03T00:00:00Z",
+      },
+    ];
+    render(<LarkAgentBindButton agentId="agent-1" agentName="Bot" />, {
+      wrapper: I18nWrapper,
+    });
+    expect(screen.getByRole("button", { name: /Bind to Lark/i })).toBeTruthy();
+  });
 });
 
 describe("LarkInstallDialog (polling terminal errors)", () => {

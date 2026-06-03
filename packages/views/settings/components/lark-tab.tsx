@@ -283,6 +283,23 @@ export function LarkAgentBindButton({
 
   if (!installSupported || !canManage) return null;
 
+  // Re-scanning the same agent overwrites the existing installation row
+  // (lark_installation upserts on the (workspace_id, agent_id) UNIQUE)
+  // and leaves the previously-created PersonalAgent dangling on Lark's
+  // side as a zombie bot — users were getting trapped re-scanning when
+  // they wanted to manage scopes. When this agent already has an
+  // ACTIVE installation, we close the install entry point and surface
+  // a link to the Bot's Lark app page instead, where scopes / display
+  // name / additional permissions are managed.
+  const existing = listing?.installations.find(
+    (inst) => inst.agent_id === agentId && inst.status === "active",
+  );
+  if (existing) {
+    return (
+      <LarkAgentBotConnectedBadge installation={existing} className={className} />
+    );
+  }
+
   return (
     <>
       <Button
@@ -305,6 +322,49 @@ export function LarkAgentBindButton({
         />
       )}
     </>
+  );
+}
+
+// LarkAgentBotConnectedBadge is the "already connected" affordance the
+// agent inspector renders in place of the Bind button when this agent
+// has an active Lark installation. The badge is non-interactive (just
+// a status pill), the Manage link opens the Bot's dev console page in
+// a new tab so the user can manage scopes / display name / additional
+// permissions without re-scanning the QR.
+//
+// The dev console URL host follows the same default as the backend's
+// LARK_BASE_URL (open.feishu.cn for mainland Lark). Operators on the
+// Lark international tenant currently see the wrong host; future-
+// proofing requires the backend to surface a per-installation
+// `dev_console_url` on the listings response. Tracked separately.
+const LARK_DEV_CONSOLE_HOST = "https://open.feishu.cn";
+
+function LarkAgentBotConnectedBadge({
+  installation,
+  className,
+}: {
+  installation: LarkInstallation;
+  className?: string;
+}) {
+  const { t } = useT("settings");
+  const manageHref = `${LARK_DEV_CONSOLE_HOST}/app/${encodeURIComponent(installation.app_id)}`;
+  return (
+    <div className={className} data-testid="lark-agent-bot-connected">
+      <span className="inline-flex items-center gap-2 text-xs text-muted-foreground">
+        <span className="inline-block h-2 w-2 rounded-full bg-emerald-500" />
+        {t(($) => $.lark.agent_bot_connected_label)}
+      </span>
+      <a
+        href={manageHref}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="ml-3 inline-flex items-center gap-1 text-xs text-primary underline-offset-2 hover:underline"
+        title={t(($) => $.lark.agent_bot_manage_tooltip)}
+      >
+        <ExternalLink className="h-3 w-3" />
+        {t(($) => $.lark.agent_bot_manage_link)}
+      </a>
+    </div>
   );
 }
 
