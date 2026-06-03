@@ -235,7 +235,7 @@ func TestSkillImportingSkillCoversWorkspaceImportContracts(t *testing.T) {
 		"multica agent skills add <agent-id> --skill-ids <skill-id> --output json",
 		"multica agent skills list <agent-id> --output json",
 		"replace-all",
-		"Use `set` only when the user explicitly wants to replace",
+		"`set` is the replacement path",
 		"references/skill-importing-source-map.md",
 	}
 	for _, want := range mustContain {
@@ -259,59 +259,6 @@ func TestSkillImportingSkillCoversWorkspaceImportContracts(t *testing.T) {
 	}
 }
 
-func TestSkillDiscoverySkillCoversMetadataOnlyPreImportContracts(t *testing.T) {
-	skill, ok := findSkill(t, "multica-skill-discovery")
-	if !ok {
-		return
-	}
-	fm, body, _ := splitFrontmatter(skill.Content)
-
-	if got := strings.TrimSpace(fm["user-invocable"]); got != "false" {
-		t.Errorf("user-invocable = %q, want false (skill discovery guidance triggers from context)", got)
-	}
-	if got := strings.TrimSpace(fm["allowed-tools"]); !strings.Contains(got, "Bash(multica *)") {
-		t.Errorf("allowed-tools = %q, want access to the Multica CLI", got)
-	}
-
-	// repo/github_stars are intentionally NOT pinned: searchClawHubSkills never
-	// populates them (skill.go), so they are always null and the skill must not
-	// teach them as live selection signals.
-	mustContain := []string{
-		"multica skill search <query> --output json",
-		"GET /api/skills/search?q=...",
-		"clawhub.ai",
-		"upstream_unavailable",
-		"metadata-only",
-		"full content verification happens after import",
-		"install_count",
-		"multica skill import --url <selected-url> --output json",
-		"not `npx skills add`",
-		"discovery is not installation",
-		"references/skill-discovery-source-map.md",
-	}
-	for _, want := range mustContain {
-		if !strings.Contains(body, want) {
-			t.Errorf("skill-discovery skill missing %q", want)
-		}
-	}
-
-	mustNotContain := []string{
-		"content match in `SKILL.md`, not only the title",
-		"If a candidate looks good from the search result but the `SKILL.md` does not",
-		"source reputation, and SKILL.md content",
-		"verify before import",
-	}
-	for _, forbidden := range mustNotContain {
-		if strings.Contains(body, forbidden) {
-			t.Errorf("skill-discovery skill should not imply remote content preview %q", forbidden)
-		}
-	}
-
-	if !skillHasFile(skill, "references/skill-discovery-source-map.md") {
-		t.Errorf("skill-discovery skill missing supporting file references/skill-discovery-source-map.md")
-	}
-}
-
 func TestCreatingAgentsSkillCoversAgentCreationContracts(t *testing.T) {
 	skill, ok := findSkill(t, "multica-creating-agents")
 	if !ok {
@@ -331,7 +278,7 @@ func TestCreatingAgentsSkillCoversAgentCreationContracts(t *testing.T) {
 		"`description` is a catalog summary",
 		"`instructions` is the runtime behavior contract",
 		"multica agent create --name <name> --runtime-id <runtime-id>",
-		"Prefer `--model`",
+		"`model` is a first-class persisted column",
 		"custom_env",
 		"--custom-env-stdin",
 		"--custom-env-file",
@@ -495,7 +442,7 @@ func TestProjectsAndResourcesSkillCoversDurableContext(t *testing.T) {
 		"multica project resource list <project-id> --output json",
 		"multica project resource add <project-id> --type github_repo --url <github-url> --output json",
 		"multica project resource add <project-id> --type local_directory",
-		"Do not add a resource just because you need a one-off checkout",
+		"Project resources are durable and affect future tasks",
 		"github_repo.resource_ref.url",
 		"references/projects-and-resources-source-map.md",
 	}

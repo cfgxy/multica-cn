@@ -58,7 +58,8 @@ Check in this order:
 4. Is the runtime online? `multica runtime list --output json`.
 5. Did the daemon heartbeat recently? Runtime `last_seen_at` is the visible clue.
 6. Did the task get claimed or is it stuck pending/running/waiting for local directory?
-7. If repo checkout failed, verify the repo was in the task/project context before blaming git.
+7. If repo checkout failed, classify it after checking whether repo context was
+   present in the task/project context.
 
 ## Repos
 

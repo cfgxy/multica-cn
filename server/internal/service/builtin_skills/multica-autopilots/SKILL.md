@@ -27,8 +27,9 @@ The chain is: trigger fires (`schedule`, `webhook`, or `manual`) -> `autopilot_r
 
 Execution modes:
 
-- `create_issue` creates a Multica issue. Use it when the automation needs a visible issue for humans or future agents.
-- `run_only` creates an agent task directly. No issue is created, so report location must come from instructions.
+- `create_issue` creates a Multica issue, making the run visible as issue state.
+- `run_only` creates an agent task directly. No issue is created; any durable
+  report location has to come from other task context or instructions.
 
 `issue-title-template` only supports `{{date}}`. Do not invent `{{trigger_id}}`, `{{branch}}`, or other variables.
 

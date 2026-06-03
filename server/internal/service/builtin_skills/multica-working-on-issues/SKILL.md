@@ -44,8 +44,9 @@ Fix login MUL-2759                                 # links only — keyword not 
 ```
 
 Consequence: a bare title prefix or a branch reference links the PR but does not
-close the issue on merge. Use a closing keyword only when merge should move the
-issue to `done`.
+close the issue on merge. A closing keyword immediately adjacent to the issue key
+records close intent; on merge, that close intent can move the linked issue to
+`done`.
 
 ## Reading a linked PR's real state
 
@@ -74,13 +75,14 @@ Returns `{"pull_requests": [...]}`. Each element exposes:
 So "is it merged?" is `state == "merged"` (or `merged_at != null`); "is it still
 a draft?" is `state == "draft"`; CI status is `checks_conclusion`.
 
-If the command returns no linked PRs after you opened one, the title/body/branch
-is missing the issue key — fix the PR rather than asserting the issue is linked.
+If the command returns no linked PRs after a PR was opened, the link scanner did
+not observe a routable issue key in the PR title/body/branch.
 
 ## Metadata: high-signal keys only
 
-Read metadata on entry when the runtime supplies issue context. Write a key only
-when a future run on the same issue is likely to re-read it.
+Metadata is durable issue state. Reading metadata is safe. Writing a metadata key
+is a state mutation and should be tied to an explicit task requirement to record
+that state for later readers or runs.
 
 High-signal keys (reuse these names so queries stay consistent):
 
@@ -112,7 +114,8 @@ on it. These are the contracts, not advice:
 - **`backlog`** parks an agent-assigned issue: the assignee is set but no task
   fires. Moving `backlog → todo` (or any non-done/non-cancelled status) enqueues
   the assigned agent then.
-- **`in_review`** is the normal state once a PR is open and awaiting review.
+- **`in_review`** is an accepted issue status. Some workflows use it while a PR
+  is open and awaiting review; moving to it is an explicit mutation.
 - **`done`** on a child issue posts a system comment on its parent. If a PR
   carries close intent (`Closes MUL-XXXX`), it advances the issue to `done`
   itself on merge — you do not also need to flip it manually.

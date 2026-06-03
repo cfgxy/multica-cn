@@ -95,13 +95,11 @@ daemon-side task error at execution time.
 
 ### model vs custom_args
 
-Prefer `--model` over model flags in `--custom-args`. `model` is a first-class
-persisted column the daemon reads directly. The CLI help notes that some
-providers (codex app-server, openclaw) reject `--model` inside `custom_args` —
-but that is documented CLI guidance, not a server-enforced invariant; nothing
-in the create handler inspects `custom_args` for a model flag. Use `--model`
-because it is the supported, persisted path, not because the server blocks the
-alternative.
+`model` is a first-class persisted column the daemon reads directly.
+`custom_args` are raw provider CLI args. The CLI help notes that some providers
+(codex app-server, openclaw) reject `--model` inside `custom_args` — but that is
+documented CLI guidance, not a server-enforced invariant; nothing in the create
+handler inspects `custom_args` for a model flag.
 
 ## Env & secrets
 
@@ -129,8 +127,9 @@ Read-side facts (these are the wrong assumptions to avoid):
   role — a running agent cannot read another agent's secrets.
 - Writing values after creation does NOT go through `agent update`. The generic
   update handler rejects any `custom_env` field with a 400 ("use PUT
-  /api/agents/{id}/env"). Use `PUT /api/agents/{id}/env`
-  (`multica agent env set`), which is owner/admin-only and writes an audit row.
+  /api/agents/{id}/env"). Plaintext env writes are handled by
+  `PUT /api/agents/{id}/env` (`multica agent env set`), which is owner/admin-only
+  and writes an audit row.
 
 ## Skill binding
 
@@ -138,7 +137,7 @@ Creating an agent does NOT bind any workspace skill — binding is a separate
 call after the agent exists. Two distinct verbs:
 
 - `add` is additive — it merges the given ids with existing bindings
-  (`POST /api/agents/{id}/skills/add`). This is the normal path.
+  (`POST /api/agents/{id}/skills/add`).
 - `set` is replace-all — it overwrites the entire binding list with exactly
   the given ids (`PUT /api/agents/{id}/skills`); `--skill-ids ''` clears all.
 

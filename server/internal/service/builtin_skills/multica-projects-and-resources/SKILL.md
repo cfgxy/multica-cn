@@ -17,7 +17,8 @@ multica project get <project-id> --output json
 multica project resource list <project-id> --output json
 ```
 
-If the user asks to bind a repo or local directory to a project, use project resource commands, not an issue comment.
+Project resources are mutated through project resource commands/endpoints. Issue
+comments do not create durable project resources.
 
 ## Core model
 
@@ -49,15 +50,18 @@ Use `--ref '<json>'` only for resource types or payloads not covered by shortcut
 
 Add/update a project resource when the user asks for durable project context: "把这个 GitHub repo 绑到项目上", "以后都用这个 repo", "agent 总是拿不到这个项目的仓库", or "这个项目要在我的本地目录里跑".
 
-Do not add a resource just because you need a one-off checkout for the current task. Use `multica repo checkout` for task-local checkout.
+Project resources are durable and affect future tasks. `multica repo checkout`
+is task-local checkout state.
 
 ## Debugging wrong context
 
 1. `multica project get <project-id> --output json`.
 2. `multica project resource list <project-id> --output json`.
 3. Check `github_repo.resource_ref.url`, `default_branch_hint`, and `local_directory.resource_ref.daemon_id`.
-4. If resources are wrong, update the resource, then verify by listing again.
-5. If resources are right, inspect runtime/repo checkout path next.
+4. Updating resources is a durable mutation. After an update, listing the
+   resource is the verification path.
+5. If resources match the expected task context, inspect runtime/repo checkout
+   path next.
 
 ## Side effects
 

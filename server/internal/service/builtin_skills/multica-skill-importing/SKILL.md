@@ -1,6 +1,6 @@
 ---
 name: multica-skill-importing
-description: Use when a user provides a skill URL, slug, or clear intent to import/install a specific skill into the current Multica workspace. Teaches the workspace import API/CLI path (POST /api/skills/import), the supported URL source families, the SkillWithFilesResponse shape returned on success, duplicate 409 handling with the existing_skill body, additive agent binding vs replace-all, and the reserved SKILL.md supporting-file rule. Do not use it to decide which skill the user needs (load multica-skill-discovery for that), and never treat an external local installer like npx skills add as the final Multica install.
+description: Use when a user provides a skill URL, slug, or clear intent to import/install a specific skill into the current Multica workspace. Teaches the workspace import API/CLI path (POST /api/skills/import), the supported URL source families, the SkillWithFilesResponse shape returned on success, duplicate 409 handling with the existing_skill body, additive agent binding vs replace-all, and the reserved SKILL.md supporting-file rule. Do not use it to decide which skill the user needs, and never treat an external local installer like npx skills add as the final Multica install.
 user-invocable: false
 allowed-tools: Bash(multica *)
 ---
@@ -11,7 +11,9 @@ Use this skill when the user already provided a skill URL, slug, or a clear inte
 to import a specific skill into the current Multica workspace.
 
 Do not use this skill to decide which skill the user needs. If the user only
-describes a capability and no URL is known, load `multica-skill-discovery` first.
+describes a capability and no URL is known, external search may produce candidate
+URLs, but this import skill starts only once a URL or concrete import target is
+known.
 
 Every claim below is traced to source in
 `references/skill-importing-source-map.md`. When in doubt, read that file.
@@ -57,7 +59,8 @@ multica skill import --url github.com/owner/repo/blob/main/path/to/SKILL.md --ou
 
 ## Direct URL flow
 
-1. If the user gave a URL, do not search first. Import it directly:
+1. When the request contains a concrete URL, the import endpoint can be called
+directly; search is not required by the API:
 
 ```bash
 multica skill import --url <url> --output json
@@ -78,8 +81,8 @@ supporting `files` array. Report the relevant fields:
 Because the response is structured, read these returned fields instead of guessing
 whether the import succeeded.
 
-3. If the user wants an agent to use the skill, bind the returned skill id
-additively. `add` preserves existing assignments and appends the new id:
+3. Agent-skill binding is a separate mutable operation. `add` preserves existing
+assignments and appends the new id:
 
 ```bash
 multica agent skills add <agent-id> --skill-ids <skill-id> --output json
@@ -92,15 +95,12 @@ target skill id is present before claiming the skill is available to that agent.
 ## Additive add vs replace-all set
 
 `multica agent skills add` is additive: the server inserts the assignments without
-clearing existing ones (`AddAgentSkills`). This is the default for "let this agent
-also use the new skill."
+clearing existing ones (`AddAgentSkills`).
 
 `multica agent skills set` is replace-all: the server clears every current
 assignment, then re-adds exactly the ids you pass (`SetAgentSkills`).
-Use `set` only when the user explicitly wants to replace the full skill list.
-For a normal "add this one," never use `set`, and never pass only the new id to
-`set` — that
-would silently drop every other skill the agent already has.
+`set` is the replacement path. Passing only one id to `set` leaves the agent with
+only that one skill and drops every previous assignment.
 
 ## Reserved SKILL.md supporting file
 
@@ -177,7 +177,8 @@ Correct import:
 multica skill import --url https://skills.sh/owner/repo/skill --output json
 ```
 
-Correct follow-up when the skill must be available to an agent:
+Agent binding after import, when the caller intentionally wants to mutate that
+agent's skill assignments:
 
 ```bash
 multica agent skills add <agent-id> --skill-ids <skill-id> --output json
