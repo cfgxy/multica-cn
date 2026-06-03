@@ -95,12 +95,12 @@ func openTestPool(t *testing.T) *pgxpool.Pool {
 // lock key, and a temp directory full of deliberately non-idempotent
 // migration SQL files.
 type fixture struct {
-	pool      *pgxpool.Pool
-	schema    string
-	tableFQN  string // e.g. "migrate_test_xyz"."schema_migrations"
-	lockKey   int64
-	files     []string // sorted .up.sql paths
-	versions  []string // matching versions
+	pool       *pgxpool.Pool
+	schema     string
+	tableFQN   string // e.g. "migrate_test_xyz"."schema_migrations"
+	lockKey    int64
+	files      []string // sorted .up.sql paths
+	versions   []string // matching versions
 	tableNames []string // distinct test tables each migration creates
 }
 
@@ -115,8 +115,12 @@ func newFixture(t *testing.T) *fixture {
 	suffix := fmt.Sprintf("%d_%d", time.Now().UnixNano(), rand.Uint32())
 	schema := "migrate_test_" + suffix
 	tableFQN := schema + ".schema_migrations"
-	// Random non-zero int64; xor the high bit off so we never collide
-	// with the production migrationAdvisoryLockKey constant.
+	// Random non-zero positive int64. The high bit is masked off to
+	// keep this in the same numeric range pg_advisory_lock expects, and
+	// the OR with 1 guarantees we never end up at zero. Collision with
+	// the production migrationAdvisoryLockKey constant is not strictly
+	// impossible — both are int64 — but the probability is on the order
+	// of 1 in 2^62, which is negligible for a unit-test sandbox.
 	lockKey := int64(rand.Uint64()&0x7fffffffffffffff) | 1
 
 	ctx := context.Background()

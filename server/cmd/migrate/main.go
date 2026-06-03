@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -286,30 +287,24 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) err
 // name ("foo") or a schema-qualified name ("schema.foo") for embedding
 // into a SQL statement. Postgres does not let parametrized queries
 // supply identifiers, so we have to interpolate, but pgx.Identifier
-// does the right escaping (double-quotes, embedded-quote handling) and
-// rejects shapes that would break the SQL.
+// does the right escaping (double-quotes, embedded-quote handling).
+//
+// The accepted shape is exactly one or two dot-separated components.
+// Names containing more than one dot are rejected outright rather than
+// silently sanitized into a "schema"."b.c" reference, which is valid
+// SQL but almost certainly not what the caller meant.
 func quoteQualifiedIdentifier(name string) (string, error) {
 	if name == "" {
 		return "", fmt.Errorf("empty identifier")
 	}
-	parts := splitQualifiedIdentifier(name)
+	parts := strings.Split(name, ".")
+	if len(parts) > 2 {
+		return "", fmt.Errorf("identifier %q has more than one dot; only schema.table is supported", name)
+	}
 	for _, p := range parts {
 		if p == "" {
 			return "", fmt.Errorf("empty component in %q", name)
 		}
 	}
 	return pgx.Identifier(parts).Sanitize(), nil
-}
-
-// splitQualifiedIdentifier splits "schema.table" into ["schema", "table"]
-// and "table" into ["table"]. We split on the first dot only; nested
-// schema paths beyond two components are not supported and would fall
-// through to the empty-component check above.
-func splitQualifiedIdentifier(name string) []string {
-	for i := 0; i < len(name); i++ {
-		if name[i] == '.' {
-			return []string{name[:i], name[i+1:]}
-		}
-	}
-	return []string{name}
 }
