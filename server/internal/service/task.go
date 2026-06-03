@@ -724,8 +724,35 @@ func (s *TaskService) EnqueueQuickCreateTask(ctx context.Context, workspaceID, r
 	return task, nil
 }
 
+// ErrChatTaskAgentArchived signals that EnqueueChatTask refused to
+// queue work because the destination agent has been archived. This
+// is a productizable state — surface it to the user as "this agent
+// has been archived" rather than retrying.
+var ErrChatTaskAgentArchived = errors.New("chat task: agent archived")
+
+// ErrChatTaskAgentNoRuntime signals that EnqueueChatTask refused to
+// queue work because the agent has never been associated with a
+// runtime (agent.runtime_id IS NULL). This is the "agent has no
+// daemon configured" case — productizable as "agent offline".
+//
+// IMPORTANT: this is NOT the same as "the daemon is currently
+// disconnected". When agent.runtime_id IS set, EnqueueChatTask
+// enqueues the task and the daemon claims it on next online; that
+// path returns a task row, not this error.
+var ErrChatTaskAgentNoRuntime = errors.New("chat task: agent has no runtime")
+
 // EnqueueChatTask creates a queued task for a chat session.
 // Unlike issue tasks, chat tasks have no issue_id.
+//
+// Errors split into two layers:
+//
+//   - Productizable rejections (agent archived, no runtime) return
+//     the sentinel errors above. Callers (e.g. the Lark dispatcher)
+//     can errors.Is them to decide a user-visible outcome.
+//
+//   - Infrastructure failures (DB load / insert errors) are wrapped
+//     as ordinary errors. The caller should treat them as retryable
+//     or page-worthy, NOT as user-facing state.
 func (s *TaskService) EnqueueChatTask(ctx context.Context, chatSession db.ChatSession) (db.AgentTaskQueue, error) {
 	agent, err := s.Queries.GetAgent(ctx, chatSession.AgentID)
 	if err != nil {
@@ -733,10 +760,10 @@ func (s *TaskService) EnqueueChatTask(ctx context.Context, chatSession db.ChatSe
 		return db.AgentTaskQueue{}, fmt.Errorf("load agent: %w", err)
 	}
 	if agent.ArchivedAt.Valid {
-		return db.AgentTaskQueue{}, fmt.Errorf("agent is archived")
+		return db.AgentTaskQueue{}, ErrChatTaskAgentArchived
 	}
 	if !agent.RuntimeID.Valid {
-		return db.AgentTaskQueue{}, fmt.Errorf("agent has no runtime")
+		return db.AgentTaskQueue{}, ErrChatTaskAgentNoRuntime
 	}
 
 	task, err := s.Queries.CreateChatTask(ctx, db.CreateChatTaskParams{

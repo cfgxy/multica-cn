@@ -20,6 +20,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/cloudruntime"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/integrations/lark"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/realtime"
@@ -96,6 +97,7 @@ type Handler struct {
 	DaemonHub             *daemonws.Hub
 	Bus                   *events.Bus
 	TaskService           *service.TaskService
+	IssueService          *service.IssueService
 	AutopilotService      *service.AutopilotService
 	EmailService          *service.EmailService
 	UpdateStore           UpdateStore
@@ -118,7 +120,42 @@ type Handler struct {
 	WebhookRateLimiter   WebhookRateLimiter
 	WebhookIPRateLimiter WebhookRateLimiter
 	CloudRuntime         cloudRuntimeProxy
-	cfg                  Config
+	// Lark integration. All three are nil when the Lark master key
+	// (MULTICA_LARK_SECRET_KEY) is unset; the corresponding HTTP
+	// handlers return 503 in that case so a misconfigured self-host
+	// deployment surfaces a clear error instead of silently using a
+	// zero key. Wired in cmd/server/router.go after handler.New.
+	LarkInstallations *lark.InstallationService
+	LarkBindingTokens *lark.BindingTokenService
+	// LarkRegistration owns the device-flow install lifecycle: begin
+	// a registration session against accounts.feishu.cn, poll, and
+	// on success write lark_installation + the installer's
+	// lark_user_binding in one DB transaction. Nil when either the
+	// at-rest key is unset or the real Lark HTTP APIClient is not
+	// wired (the stub cannot complete the post-poll GetBotInfo call).
+	LarkRegistration *lark.RegistrationService
+	// LarkAPIClient is the live transport that backs SendInteractiveCard,
+	// PatchInteractiveCard, SendBindingPromptCard, GetBotInfo. It is
+	// `lark.NewStubAPIClient(...)` until the real Lark HTTP client is
+	// wired; the UI hides install entry points while IsConfigured()
+	// is false so users do not land in a flow that is guaranteed to
+	// fail at the bot-info step.
+	LarkAPIClient lark.APIClient
+	// LarkHub owns the per-installation supervisor goroutines that
+	// hold the §4.4 WS lease and run the EventConnector. Nil only
+	// when the master at-rest key (MULTICA_LARK_SECRET_KEY) is unset
+	// — the inbound pipeline does NOT depend on the outbound HTTP
+	// APIClient, so the Hub still wires up under the stub APIClient
+	// (the dispatcher and renewer touch DB rows, not Lark wire I/O).
+	// The router constructs the Hub but does NOT call Run on it; the
+	// process owner (main.go) starts it under a long-running context
+	// and joins via WaitWithTimeout (bounded wait, fenced by
+	// ShutdownTimeout) during graceful shutdown so the lease renewer
+	// can yield cleanly when the DB is healthy without blocking
+	// process exit indefinitely if the pool is frozen — at worst the
+	// next replica waits the full TTL.
+	LarkHub *lark.Hub
+	cfg     Config
 }
 
 func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *events.Bus, emailService *service.EmailService, store storage.Storage, cfSigner *auth.CloudFrontSigner, analyticsClient analytics.Client, cfg Config, daemonHubs ...*daemonws.Hub) *Handler {
@@ -146,6 +183,7 @@ func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *event
 		DaemonHub:             daemonHub,
 		Bus:                   bus,
 		TaskService:           taskSvc,
+		IssueService:          service.NewIssueService(queries, txStarter, bus, analyticsClient, taskSvc),
 		AutopilotService:      service.NewAutopilotService(queries, txStarter, bus, taskSvc),
 		EmailService:          emailService,
 		UpdateStore:           NewInMemoryUpdateStore(),
