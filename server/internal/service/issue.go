@@ -11,6 +11,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/issueguard"
 	"github.com/multica-ai/multica/server/internal/issueposition"
+	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
@@ -23,10 +24,15 @@ import (
 // service deliberately does NOT depend on http.Request — callers parse
 // their own transport and pass a fully-resolved IssueCreateParams.
 type IssueService struct {
-	Queries     *db.Queries
-	TxStarter   TxStarter
-	Bus         *events.Bus
-	Analytics   analytics.Client
+	Queries   *db.Queries
+	TxStarter TxStarter
+	Bus       *events.Bus
+	Analytics analytics.Client
+	// Metrics is the shared business-metrics collector. Wired by
+	// cmd/server/router.go after construction; nil in tests / self-hosted
+	// without the metrics listener — obsmetrics.RecordEvent treats a nil
+	// Metrics as "PostHog only", so leaving it unset is safe.
+	Metrics     *obsmetrics.BusinessMetrics
 	TaskService *TaskService
 }
 
@@ -338,7 +344,7 @@ func (s *IssueService) captureCreatedAnalytics(issue db.Issue, creatorType, acto
 	if creatorType == "agent" {
 		analyticsActorID = "agent:" + actorID
 	}
-	s.Analytics.Capture(analytics.IssueCreated(
+	obsmetrics.RecordEvent(s.Analytics, s.Metrics, analytics.IssueCreated(
 		analyticsActorID,
 		util.UUIDToString(issue.WorkspaceID),
 		util.UUIDToString(issue.ID),
