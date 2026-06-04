@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -447,6 +448,70 @@ bareword-only-line
 	// the legacy `provider:model` form gets colon→slash normalization.
 	if models[3].ID != "opencode/claude-sonnet-4-6:exp" || models[3].Provider != "opencode" {
 		t.Errorf("expected ':' inside table-format model name to be preserved: %+v", models[3])
+	}
+}
+
+// TestDiscoverPiModelsNonZeroExit verifies that discoverPiModels still returns
+// the resolvable catalog when `pi --list-models` exits non-zero. Pi exits
+// non-zero (and warns) when an agent config references stale provider/model
+// patterns that no longer match the local catalog. Before the fix the daemon
+// discarded the populated output on any non-zero exit and returned an empty
+// list, so the UI model picker was blank even though the runtime was online and
+// agents ran fine. See GitHub #3729.
+func TestDiscoverPiModelsNonZeroExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake pi binary is a /bin/sh script")
+	}
+
+	const table = "provider         model        context  max-out  thinking  images\n" +
+		"glm-coding-plan  glm-4.7      202.8K   16.4K    no        no"
+	const warning = `Warning: No models match pattern "opencode-go/mimo-v2-omni"`
+
+	cases := []struct {
+		name   string
+		script string
+	}{
+		{
+			// Newer pi prints the catalog to stdout; the stale-pattern
+			// warning goes to stderr and the process exits non-zero.
+			name: "catalog on stdout",
+			script: "#!/bin/sh\n" +
+				"cat <<'EOF'\n" + table + "\nEOF\n" +
+				"echo " + strconv.Quote(warning) + " >&2\n" +
+				"exit 1\n",
+		},
+		{
+			// Older pi prints the catalog (and the warning) to stderr; same
+			// non-zero exit. The stderr fallback must still parse the catalog.
+			name: "catalog on stderr",
+			script: "#!/bin/sh\n" +
+				"cat >&2 <<'EOF'\n" + table + "\n" + warning + "\nEOF\n" +
+				"exit 1\n",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fakePath := filepath.Join(t.TempDir(), "pi")
+			writeTestExecutable(t, fakePath, []byte(tc.script))
+
+			models, err := discoverPiModels(context.Background(), fakePath)
+			if err != nil {
+				t.Fatalf("discoverPiModels: %v", err)
+			}
+			var found bool
+			for _, m := range models {
+				if m.ID == "glm-coding-plan/glm-4.7" {
+					found = true
+				}
+				if m.ID == "Warning/" || m.Provider == "Warning" {
+					t.Errorf("warning line leaked into the catalog as a bogus model: %+v", m)
+				}
+			}
+			if !found {
+				t.Fatalf("expected glm-coding-plan/glm-4.7 despite non-zero exit, got %+v", models)
+			}
+		})
 	}
 }
 

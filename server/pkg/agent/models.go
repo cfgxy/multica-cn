@@ -362,11 +362,13 @@ func discoverOpenCodeModels(ctx context.Context, executablePath string) ([]Model
 	hideAgentWindow(cmd)
 	out, err := cmd.Output()
 	if err != nil {
-		cmd = exec.CommandContext(runCtx, executablePath, "models")
-		hideAgentWindow(cmd)
-		out, err = cmd.Output()
-		if err != nil {
-			return []Model{}, nil
+		if len(out) == 0 {
+			cmd = exec.CommandContext(runCtx, executablePath, "models")
+			hideAgentWindow(cmd)
+			out, err = cmd.Output()
+			if err != nil && len(out) == 0 {
+				return []Model{}, nil
+			}
 		}
 	}
 	return parseOpenCodeModels(string(out)), nil
@@ -562,7 +564,7 @@ func discoverPiModels(ctx context.Context, executablePath string) ([]Model, erro
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	stdout, err := cmd.Output()
-	if err != nil {
+	if err != nil && len(stdout) == 0 && stderr.Len() == 0 {
 		return []Model{}, nil
 	}
 	text := string(stdout)
@@ -604,6 +606,14 @@ func parsePiModels(output string) []Model {
 		} else if len(fields) >= 2 {
 			id = first + "/" + fields[1]
 		} else {
+			continue
+		}
+		// A real row resolves to `provider/model` with both halves present.
+		// Drop anything else — e.g. a stray `Warning: No models match pattern
+		// "..."` line, which pi can interleave with the catalog when an agent
+		// config holds stale patterns (#3729). Without this guard the leading
+		// `Warning:` token becomes a bogus `Warning/` model in the picker.
+		if slash := strings.Index(id, "/"); slash <= 0 || slash == len(id)-1 {
 			continue
 		}
 		if seen[id] {
@@ -942,7 +952,7 @@ func discoverCursorModels(ctx context.Context, executablePath string) ([]Model, 
 	cmd := exec.CommandContext(runCtx, executablePath, "--list-models")
 	hideAgentWindow(cmd)
 	out, err := cmd.Output()
-	if err != nil {
+	if err != nil && len(out) == 0 {
 		return cursorStaticModels(), nil
 	}
 	models := parseCursorModels(string(out))
@@ -1039,7 +1049,7 @@ func discoverOpenclawAgents(ctx context.Context, executablePath string) ([]Model
 		cmd := exec.CommandContext(runCtx, executablePath, jsonArgs...)
 		hideAgentWindow(cmd)
 		out, err := cmd.Output()
-		if err != nil {
+		if err != nil && len(out) == 0 {
 			continue
 		}
 		if models, ok := parseOpenclawAgentsJSON(out); ok {
@@ -1053,7 +1063,7 @@ func discoverOpenclawAgents(ctx context.Context, executablePath string) ([]Model
 	cmd := exec.CommandContext(runCtx, executablePath, "agents", "list")
 	hideAgentWindow(cmd)
 	out, err := cmd.Output()
-	if err != nil {
+	if err != nil && len(out) == 0 {
 		return []Model{}, nil
 	}
 	return parseOpenclawAgents(string(out)), nil
