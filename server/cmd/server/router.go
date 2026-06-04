@@ -319,6 +319,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				if rerr != nil {
 					slog.Error("lark: RegistrationService init failed; install disabled", "error", rerr)
 				} else {
+					// Publish lark_installation:created at row-commit time so the
+					// connection badge refreshes on every workspace client, not just
+					// the tab that polls the install status to success.
+					regSvc.SetEventBus(bus)
 					h.LarkRegistration = regSvc
 					slog.Info("lark device-flow install enabled")
 				}

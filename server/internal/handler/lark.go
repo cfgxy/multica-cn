@@ -342,16 +342,11 @@ func (h *Handler) GetLarkInstallStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	if state.InstallationID.Valid {
 		resp.InstallationID = uuidToString(state.InstallationID)
-		// Successful install — emit the lark_installation:created
-		// event so listeners (Settings tab, agent detail page) refresh
-		// without waiting for the frontend's cache invalidation.
-		// Idempotent: the event handler keys on installation_id, and
-		// a duplicate emit is a no-op refresh.
-		if state.Status == lark.RegistrationStatusSuccess {
-			h.publish(protocol.EventLarkInstallationCreated, uuidToString(wsUUID), "system", "", map[string]any{
-				"installation_id": resp.InstallationID,
-			})
-		}
+		// The lark_installation:created event is published by the
+		// RegistrationService at the row-commit point (see
+		// registration_service.go finishSuccess), not here — that keeps
+		// the connection-badge refresh independent of whether any browser
+		// polls this status endpoint to success.
 	}
 	writeJSON(w, http.StatusOK, resp)
 }

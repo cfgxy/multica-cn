@@ -12,7 +12,9 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/events"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // RegistrationSessionStatus is the discriminated state a `begin`
@@ -101,14 +103,21 @@ func (c RegistrationServiceConfig) withDefaults() RegistrationServiceConfig {
 // into Postgres would add a migration + GC sweep without delivering any
 // product capability the user can re-use across server restarts.
 type RegistrationService struct {
-	cfg       RegistrationServiceConfig
-	client    *RegistrationClient
-	api       APIClient
-	queries   *db.Queries
-	tx        TxStarter
-	installs  *InstallationService
-	binder    InstallerBinder
+	cfg         RegistrationServiceConfig
+	client      *RegistrationClient
+	api         APIClient
+	queries     *db.Queries
+	tx          TxStarter
+	installs    *InstallationService
+	binder      InstallerBinder
 	authQueries authQueriesAdapter
+
+	// bus is optional. When wired (SetEventBus), a successful install
+	// publishes lark_installation:created the moment the row commits, so
+	// every workspace client refreshes its connection badge without
+	// waiting for a browser to poll the status endpoint to success. Nil
+	// is valid — install still works, it just won't push the WS frame.
+	bus *events.Bus
 
 	mu       sync.Mutex
 	sessions map[string]*registrationSession
@@ -165,6 +174,37 @@ func NewRegistrationService(
 		authQueries: queries,
 		sessions:    make(map[string]*registrationSession),
 	}, nil
+}
+
+// SetEventBus wires the optional event bus AFTER construction so the
+// six positional constructor-validation cases stay untouched and the
+// bus remains nil-safe. With it set, finishSuccess publishes
+// lark_installation:created at the row-commit point — the authoritative
+// moment of truth — instead of relying on the HTTP status-poll handler
+// to emit it only when a browser happens to poll to success.
+func (s *RegistrationService) SetEventBus(bus *events.Bus) {
+	s.bus = bus
+}
+
+// publishInstalled emits lark_installation:created on the optional bus.
+// Mirrors the revoke path (RevokeLarkInstallation publishes
+// lark_installation:revoked from its handler): both events broadcast to
+// the whole workspace via the SubscribeAll fanout, and the frontend
+// invalidates larkKeys.installations on the lark_installation prefix, so
+// every mounted surface (agent Integrations tab, inspector, Settings)
+// refreshes its connection badge with no page reload. Covers fresh
+// installs and revoked→active re-installs alike — both ride the same
+// UpsertLarkInstallation write. Nil-safe.
+func (s *RegistrationService) publishInstalled(workspaceID, installationID pgtype.UUID) {
+	if s.bus == nil {
+		return
+	}
+	s.bus.Publish(events.Event{
+		Type:        protocol.EventLarkInstallationCreated,
+		WorkspaceID: uuidString(workspaceID),
+		ActorType:   "system",
+		Payload:     map[string]any{"installation_id": uuidString(installationID)},
+	})
 }
 
 // registrationSession is the in-memory state for one in-flight install.
@@ -248,9 +288,9 @@ type BeginInstallParams struct {
 // poll status; we deliberately do NOT echo the device_code or the
 // polling interval (which is internal scheduling state).
 type BeginInstallResult struct {
-	SessionID         string
-	QRCodeURL         string
-	ExpiresInSeconds  int
+	SessionID           string
+	QRCodeURL           string
+	ExpiresInSeconds    int
 	PollIntervalSeconds int
 }
 
@@ -505,6 +545,10 @@ func (s *RegistrationService) finishSuccess(ctx context.Context, sess *registrat
 		return
 	}
 	sess.markSuccess(inst.ID, s.gcDeadline())
+	// Publish at the commit point so the connection badge updates on every
+	// workspace client without a page refresh — not only on the tab that
+	// happens to poll the status endpoint to success.
+	s.publishInstalled(sess.workspaceID, inst.ID)
 	s.cfg.Logger.Info("lark registration: install complete",
 		"session_id", sess.id,
 		"workspace_id", uuidString(sess.workspaceID),
