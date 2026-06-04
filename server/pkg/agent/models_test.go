@@ -465,7 +465,11 @@ func TestDiscoverPiModelsNonZeroExit(t *testing.T) {
 
 	const table = "provider         model        context  max-out  thinking  images\n" +
 		"glm-coding-plan  glm-4.7      202.8K   16.4K    no        no"
-	const warning = `Warning: No models match pattern "opencode-go/mimo-v2-omni"`
+	// The unmatched-pattern warning, with and without the `Warning:` prefix —
+	// the prefix is not guaranteed across pi versions, and the bare form is
+	// what slips past a naive guard into a bogus `No/models` model.
+	const prefixed = `Warning: No models match pattern "opencode-go/mimo-v2-omni"`
+	const bare = `No models match pattern "opencode-go/mimo-v2-pro"`
 
 	cases := []struct {
 		name   string
@@ -477,15 +481,23 @@ func TestDiscoverPiModelsNonZeroExit(t *testing.T) {
 			name: "catalog on stdout",
 			script: "#!/bin/sh\n" +
 				"cat <<'EOF'\n" + table + "\nEOF\n" +
-				"echo " + strconv.Quote(warning) + " >&2\n" +
+				"echo " + strconv.Quote(prefixed) + " >&2\n" +
 				"exit 1\n",
 		},
 		{
 			// Older pi prints the catalog (and the warning) to stderr; same
 			// non-zero exit. The stderr fallback must still parse the catalog.
-			name: "catalog on stderr",
+			name: "catalog and prefixed warning on stderr",
 			script: "#!/bin/sh\n" +
-				"cat >&2 <<'EOF'\n" + table + "\n" + warning + "\nEOF\n" +
+				"cat >&2 <<'EOF'\n" + table + "\n" + prefixed + "\nEOF\n" +
+				"exit 1\n",
+		},
+		{
+			// Same, but the warning has no `Warning:` prefix — must not leak in
+			// as a `No/models` row.
+			name: "catalog and bare warning on stderr",
+			script: "#!/bin/sh\n" +
+				"cat >&2 <<'EOF'\n" + table + "\n" + bare + "\nEOF\n" +
 				"exit 1\n",
 		},
 	}
@@ -499,19 +511,43 @@ func TestDiscoverPiModelsNonZeroExit(t *testing.T) {
 			if err != nil {
 				t.Fatalf("discoverPiModels: %v", err)
 			}
-			var found bool
-			for _, m := range models {
-				if m.ID == "glm-coding-plan/glm-4.7" {
-					found = true
-				}
-				if m.ID == "Warning/" || m.Provider == "Warning" {
-					t.Errorf("warning line leaked into the catalog as a bogus model: %+v", m)
-				}
-			}
-			if !found {
-				t.Fatalf("expected glm-coding-plan/glm-4.7 despite non-zero exit, got %+v", models)
+			// Exactly the resolvable model — no warning line coined into a
+			// bogus entry, no header row.
+			if len(models) != 1 || models[0].ID != "glm-coding-plan/glm-4.7" {
+				t.Fatalf("expected exactly [glm-coding-plan/glm-4.7] despite non-zero exit, got %+v", models)
 			}
 		})
+	}
+}
+
+// TestDiscoverOpenCodeModelsFallsBackOnVerboseNoise verifies that a non-zero
+// `opencode models --verbose` whose stdout is unparseable noise still falls
+// back to the plain `opencode models` command instead of returning empty. The
+// earlier fix skipped the fallback whenever verbose printed any bytes, which
+// regressed this case. Mirrors the pi hardening in #3729.
+func TestDiscoverOpenCodeModelsFallsBackOnVerboseNoise(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fake opencode binary is a /bin/sh script")
+	}
+
+	// `opencode models --verbose` => $2 == "--verbose": emit noise + exit 1.
+	// `opencode models`           => no $2: print the plain catalog.
+	script := "#!/bin/sh\n" +
+		"if [ \"$2\" = \"--verbose\" ]; then\n" +
+		"  echo 'panic: catalog sync failed'\n" +
+		"  exit 1\n" +
+		"fi\n" +
+		"echo 'openai/gpt-4o'\n"
+
+	fakePath := filepath.Join(t.TempDir(), "opencode")
+	writeTestExecutable(t, fakePath, []byte(script))
+
+	models, err := discoverOpenCodeModels(context.Background(), fakePath)
+	if err != nil {
+		t.Fatalf("discoverOpenCodeModels: %v", err)
+	}
+	if len(models) != 1 || models[0].ID != "openai/gpt-4o" {
+		t.Fatalf("expected fallback to plain `opencode models` to yield [openai/gpt-4o], got %+v", models)
 	}
 }
 
