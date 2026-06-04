@@ -39,16 +39,22 @@ afterEach(() => {
 });
 
 describe("useDownloadAttachment (web)", () => {
-  it("opens a placeholder tab synchronously, then navigates it to the freshly signed URL", async () => {
+  it("clicks the unified download endpoint without opening a blank tab or buffering a Blob", async () => {
     getAttachmentMock.mockResolvedValueOnce({
       id: "att-1",
       url: "https://static.example.test/file.md",
+      // CloudFront mode may still return a signed CDN URL from metadata;
+      // Web download must ignore it and enter through the same-origin
+      // endpoint so the server owns cloudfront/presign/proxy selection.
       download_url: SIGNED_URL,
       filename: "file.md",
     });
 
-    const placeholder = { opener: window, location: { href: "about:blank" }, close: vi.fn() };
-    const openSpy = vi.spyOn(window, "open").mockReturnValue(placeholder as unknown as Window);
+    const openSpy = vi.spyOn(window, "open");
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => {});
+    const appendSpy = vi.spyOn(document.body, "appendChild");
 
     const { result } = renderHook(() => useDownloadAttachment());
 
@@ -56,19 +62,60 @@ describe("useDownloadAttachment (web)", () => {
       await result.current("att-1");
     });
 
-    // Placeholder MUST be opened synchronously during the click — otherwise
-    // popup blockers won't honour the gesture.
-    expect(openSpy).toHaveBeenCalledWith("about:blank", "_blank");
     expect(getAttachmentMock).toHaveBeenCalledWith("att-1");
-    // Disown the opener and redirect to the signed URL.
-    expect(placeholder.opener).toBeNull();
-    expect(placeholder.location.href).toBe(SIGNED_URL);
+    expect(openSpy).not.toHaveBeenCalled();
+    expect(clickSpy).toHaveBeenCalledOnce();
+
+    const anchor = appendSpy.mock.calls
+      .map(([node]) => node)
+      .find((node): node is HTMLAnchorElement =>
+        node instanceof HTMLAnchorElement,
+      );
+    expect(anchor).toBeDefined();
+    expect(anchor!.getAttribute("href")).toBe("/api/attachments/att-1/download");
+    // Empty download attribute intentionally defers the final filename to the
+    // endpoint / redirected object Content-Disposition header.
+    expect(anchor!.getAttribute("download")).toBe("");
+    expect(anchor!.isConnected).toBe(false);
   });
 
-  it("closes the placeholder and shows a toast when the fetch fails", async () => {
+  it("resolves the unified download endpoint against a configured API base", async () => {
+    getBaseUrlMock.mockReturnValue("https://api.example.test/");
+    getAttachmentMock.mockResolvedValueOnce({
+      id: "att 1/slash",
+      url: "https://static.example.test/file.md",
+      download_url: SIGNED_URL,
+      filename: "file.md",
+    });
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => {});
+    const appendSpy = vi.spyOn(document.body, "appendChild");
+
+    const { result } = renderHook(() => useDownloadAttachment());
+
+    await act(async () => {
+      await result.current("att 1/slash");
+    });
+
+    expect(clickSpy).toHaveBeenCalledOnce();
+    const anchor = appendSpy.mock.calls
+      .map(([node]) => node)
+      .find((node): node is HTMLAnchorElement =>
+        node instanceof HTMLAnchorElement,
+      );
+    expect(anchor).toBeDefined();
+    expect(anchor!.href).toBe(
+      "https://api.example.test/api/attachments/att%201%2Fslash/download",
+    );
+  });
+
+  it("shows a toast and does not click a download link when the metadata preflight fails", async () => {
     getAttachmentMock.mockRejectedValueOnce(new Error("boom"));
-    const placeholder = { opener: window, location: { href: "about:blank" }, close: vi.fn() };
-    vi.spyOn(window, "open").mockReturnValue(placeholder as unknown as Window);
+    const openSpy = vi.spyOn(window, "open");
+    const clickSpy = vi
+      .spyOn(HTMLAnchorElement.prototype, "click")
+      .mockImplementation(() => {});
 
     const { result } = renderHook(() => useDownloadAttachment());
 
@@ -76,7 +123,8 @@ describe("useDownloadAttachment (web)", () => {
       await result.current("att-1");
     });
 
-    expect(placeholder.close).toHaveBeenCalled();
+    expect(openSpy).not.toHaveBeenCalled();
+    expect(clickSpy).not.toHaveBeenCalled();
     await waitFor(() => expect(toast.error).toHaveBeenCalled());
   });
 });
