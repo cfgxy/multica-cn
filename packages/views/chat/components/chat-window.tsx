@@ -42,14 +42,13 @@ import {
   useMarkChatSessionRead,
   useUpdateChatSession,
 } from "@multica/core/chat/mutations";
-import { useChatStore } from "@multica/core/chat";
+import { useChatStore, type ContextAnchor } from "@multica/core/chat";
 import { ChatMessageList, ChatMessageSkeleton } from "./chat-message-list";
 import { ChatInput } from "./chat-input";
 import {
   ContextAnchorButton,
   ContextAnchorCard,
   buildAnchorMarkdown,
-  useRouteAnchorCandidate,
 } from "./context-anchor";
 import { ChatResizeHandles } from "./chat-resize-handles";
 import { useChatResize } from "./use-chat-resize";
@@ -60,6 +59,12 @@ import { useT } from "../../i18n";
 const uiLogger = createLogger("chat.ui");
 const apiLogger = createLogger("chat.api");
 const CHAT_VIRTUOSO_INITIAL_FIRST_ITEM_INDEX = 1_000_000;
+
+export function buildOutgoingChatContent(content: string, selectedContext: ContextAnchor | null): string {
+  return selectedContext
+    ? `${buildAnchorMarkdown(selectedContext)}\n\n${content}`
+    : content;
+}
 
 function seedChatMessagesPageCache(
   qc: ReturnType<typeof useQueryClient>,
@@ -213,10 +218,7 @@ export function ChatWindow() {
     // eslint-disable-next-line react-hooks/exhaustive-deps -- markRead ref stable
   }, [isOpen, activeSessionId, currentHasUnread]);
 
-  // Focus-mode anchor: derived from route each render. Prepended to the
-  // outgoing message when focus is on; the anchor persists across sends
-  // (focus mode tracks the user's page, not a per-message attachment).
-  const { candidate: anchorCandidate } = useRouteAnchorCandidate(wsId);
+  const selectedContext = useChatStore((s) => s.selectedContext);
 
   const { uploadWithToast } = useFileUpload(api);
 
@@ -294,10 +296,7 @@ export function ChatWindow() {
         return;
       }
 
-      const focusOn = useChatStore.getState().focusMode;
-      const finalContent = focusOn && anchorCandidate
-        ? `${buildAnchorMarkdown(anchorCandidate)}\n\n${content}`
-        : content;
+      const finalContent = buildOutgoingChatContent(content, selectedContext);
 
       const isNewSession = !activeSessionId;
 
@@ -306,7 +305,7 @@ export function ChatWindow() {
         isNewSession,
         agentId: activeAgent.id,
         contentLength: finalContent.length,
-        hasAnchor: focusOn && !!anchorCandidate,
+        hasAnchor: !!selectedContext,
         attachmentCount: attachmentIds?.length ?? 0,
       });
 
@@ -376,7 +375,7 @@ export function ChatWindow() {
     [
       activeSessionId,
       activeAgent,
-      anchorCandidate,
+      selectedContext,
       ensureSession,
       qc,
       setActiveSession,
