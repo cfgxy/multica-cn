@@ -55,7 +55,14 @@ func NewEmailService() *EmailService {
 	// machine hostname when SMTP_EHLO_NAME is unset.
 	smtpEHLOName := strings.TrimSpace(os.Getenv("SMTP_EHLO_NAME"))
 	if smtpEHLOName == "" {
-		smtpEHLOName, _ = os.Hostname()
+		hostname, hostErr := os.Hostname()
+		if hostErr != nil {
+			// Empty name makes sendSMTP skip Hello() and fall back to net/smtp's
+			// lazy "localhost" — which strict relays reject. Surface it so operators
+			// know to set SMTP_EHLO_NAME explicitly.
+			fmt.Printf("EmailService: os.Hostname() failed (%v); SMTP EHLO falls back to \"localhost\" — set SMTP_EHLO_NAME for strict relays\n", hostErr)
+		}
+		smtpEHLOName = hostname
 	}
 
 	// SMTP_TLS=implicit forces an immediate TLS handshake on connect (SMTPS).

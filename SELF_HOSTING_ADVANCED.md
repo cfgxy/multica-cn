@@ -46,6 +46,7 @@ Use this option when your deployment cannot reach the public internet or you alr
 | `SMTP_PASSWORD` | SMTP password | - |
 | `SMTP_TLS` | TLS mode. `implicit` (aliases `smtps`, `ssl`) forces SMTPS on connect; port `465` auto-enables it. Unset / `starttls` upgrades via STARTTLS | `starttls` |
 | `SMTP_TLS_INSECURE` | Set `true` to skip TLS certificate verification (self-signed / private CA certs) | `false` |
+| `SMTP_EHLO_NAME` | EHLO/HELO name announced to the relay. Set a real FQDN when a strict relay (e.g. Google Workspace) rejects the default greeting from a public IP | machine hostname |
 
 STARTTLS is used automatically when advertised by the server. Port 465 (SMTPS / implicit TLS) is supported and auto-enables implicit TLS; set `SMTP_TLS=implicit` (aliases `smtps`, `ssl`) to force it on a non-standard port.
 
