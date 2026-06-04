@@ -235,7 +235,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					Audit:        auditLogger,
 					IssueService: h.IssueService,
 					TaskService:  h.TaskService,
+					Logger:       slog.Default(),
 				}
+				// Debounce the per-session run trigger so a burst of
+				// messages (e.g. "forward a transcript, then type a note")
+				// collapses into one agent run instead of one per message.
+				// MUL-2968.
+				dispatcher.EnableRunBatching(lark.DefaultChatRunBatchWindow)
 
 				// WS Hub: lease + supervisor goroutines per installation.
 				// The WSLongConnConnector talks Lark's long-conn protocol
@@ -271,6 +277,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					Logger:      slog.Default(),
 				})
 				h.LarkHub.SetOutcomeReplier(replier)
+				// The agent-offline / agent-archived notice is now decided
+				// at debounce-flush time rather than synchronously from
+				// Handle, so the dispatcher drives that reply itself through
+				// the same replier. MUL-2968.
+				dispatcher.FlushReply = replier.Reply
 				slog.Info("lark inbound pipeline wired", "connector", connectorLabel)
 
 				// One-shot union_id backfill for installations created
