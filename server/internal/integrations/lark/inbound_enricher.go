@@ -22,6 +22,16 @@ const larkMsgTypeMergeForward = "merge_forward"
 // visible "... (N more truncated)" marker.
 const defaultMaxForwardChildren = 100
 
+// DefaultRecentContextSize is the window the production wiring uses for
+// the group-context prefetch: the page_size of the single list call made
+// when a user @-mentions the Bot in a group. It is a FETCH budget, not a
+// guaranteed rendered count — the trigger message itself and any quoted
+// parent are filtered out of the result, so the <recent_context> block
+// usually renders one or two fewer lines. 10 keeps the agent's prompt
+// meaningfully contextual without bloating it or straining the inbound
+// ACK budget (one list call, page_size 10).
+const DefaultRecentContextSize = 10
+
 // Enricher expands an inbound message's body with context the user
 // EXPLICITLY attached — a quoted reply or a merged-and-forwarded bundle
 // — by calling back into Lark's IM API. It runs after the (fast,
@@ -37,11 +47,18 @@ type Enricher interface {
 	Enrich(ctx context.Context, msg InboundMessage, creds InstallationCredentials) InboundMessage
 }
 
-// InboundEnricherConfig tunes the enricher. Both fields default.
+// InboundEnricherConfig tunes the enricher. All fields default.
 type InboundEnricherConfig struct {
 	// MaxForwardChildren caps inlined forward children. <=0 uses
 	// defaultMaxForwardChildren.
 	MaxForwardChildren int
+	// RecentContextSize caps how many surrounding group messages the
+	// enricher prefetches and inlines as a <recent_context> block when a
+	// user @-mentions the Bot in a group. <=0 DISABLES the prefetch
+	// entirely (only explicitly-attached quote/forward context is used);
+	// the production wiring sets DefaultRecentContextSize. Values above
+	// Lark's 50-per-page cap are clamped by the client.
+	RecentContextSize int
 	// Logger receives best-effort warnings about fetch failures. Nil
 	// uses slog.Default().
 	Logger *slog.Logger
@@ -50,6 +67,7 @@ type InboundEnricherConfig struct {
 type inboundEnricher struct {
 	client             APIClient
 	maxForwardChildren int
+	recentContextSize  int
 	logger             *slog.Logger
 }
 
@@ -66,22 +84,43 @@ func NewInboundEnricher(client APIClient, cfg InboundEnricherConfig) Enricher {
 	return &inboundEnricher{
 		client:             client,
 		maxForwardChildren: cfg.MaxForwardChildren,
+		recentContextSize:  cfg.RecentContextSize,
 		logger:             cfg.Logger,
 	}
 }
 
-// Enrich rewrites msg.Body to inline any quoted-reply parent and/or
-// forwarded bundle. Composition order matches the product spec: the
-// quoted block is prepended, then the message's own content (or, for a
-// forward, the rendered transcript) follows.
+// Enrich rewrites msg.Body to inline surrounding group context and/or
+// any quoted-reply parent and/or forwarded bundle. Composition order
+// goes broadest-to-narrowest: the surrounding group history first, then
+// the explicitly-quoted parent (a specific reference), then the message's
+// own content (or, for a forward, the rendered transcript).
+//
+//	<recent_context …>…</recent_context>
 //
 //	<quoted_message …>…</quoted_message>
 //
 //	<the user's own message, or the forwarded transcript>
+//
+// The <recent_context> block is only produced for a group message
+// addressed to the Bot, and only when RecentContextSize > 0 — it answers
+// MUL-3084 (the Bot saw only the single @-ed line, never the surrounding
+// conversation). It is the one fetch here NOT triggered by something the
+// user explicitly attached.
+//
+// Persistence note: like the quoted/forwarded blocks, the rewritten Body
+// is persisted into the addressed turn's chat_message.content downstream
+// (AppendUserMessage). Inlining nearby group messages — including ones
+// from senders who did not address the Bot — into a member's addressed
+// turn is an accepted product decision for MUL-3084. It does NOT relax
+// the MUL-2671 drop-audit invariant: a non-addressed group message still
+// never creates its own session row, and is only ever surfaced as read-
+// context attached to a turn a workspace member explicitly directed at
+// the Bot.
 func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds InstallationCredentials) InboundMessage {
 	isForward := msg.MessageType == larkMsgTypeMergeForward
-	if msg.ParentID == "" && !isForward {
-		// Nothing the user explicitly attached — no network call.
+	wantRecent := e.recentContextSize > 0 && msg.ChatType == ChatTypeGroup && msg.AddressedToBot
+	if msg.ParentID == "" && !isForward && !wantRecent {
+		// Nothing to expand and no group prefetch wanted — no network call.
 		return msg
 	}
 	// If the transport isn't wired (stub client on a deployment without
@@ -92,7 +131,15 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 	}
 
 	var b strings.Builder
+	if wantRecent {
+		if blk := e.renderRecentContext(ctx, creds, msg); blk != "" {
+			b.WriteString(blk)
+		}
+	}
 	if msg.ParentID != "" {
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
 		b.WriteString(e.renderQuoted(ctx, creds, msg.ParentID))
 	}
 
@@ -109,6 +156,79 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 
 	msg.Body = b.String()
 	return msg
+}
+
+// renderRecentContext fetches the most recent messages in the group and
+// renders a <recent_context> block of the surrounding conversation,
+// excluding the triggering message itself and the directly-quoted parent
+// (which gets its own <quoted_message> block, so it isn't duplicated).
+// Messages render oldest-first as "[<speaker>]: <text>" using the same
+// positional speaker labels the forwarded-transcript renderer uses. Any
+// fetch failure degrades to a visible placeholder; like the rest of the
+// enricher it never blocks ingestion. An empty/whitespace window yields
+// "" so Enrich emits no block at all.
+func (e *inboundEnricher) renderRecentContext(ctx context.Context, creds InstallationCredentials, msg InboundMessage) string {
+	items, err := e.client.ListChatMessages(ctx, creds, ListMessagesParams{
+		ChatID:   msg.ChatID,
+		PageSize: e.recentContextSize,
+		// Anchor the window to the trigger message's time (Lark sends it
+		// as epoch millis; end_time wants seconds) so we pull the
+		// conversation up to the @-mention, not whatever is newest by the
+		// time this prefetch runs. A missing/unparseable time yields 0,
+		// which the client treats as "no end_time" (newest N).
+		EndTime: parseLarkMillis(msg.CreateTime) / 1000,
+	})
+	if err != nil {
+		e.logger.Warn("lark enricher: recent context fetch failed",
+			"chat_id", string(msg.ChatID), "err", err)
+		return recentContextErrorBlock()
+	}
+
+	// Drop the trigger and the quoted parent so neither is duplicated
+	// alongside the user's core message / its own <quoted_message> block.
+	exclude := map[string]bool{msg.MessageID: true}
+	if msg.ParentID != "" {
+		exclude[msg.ParentID] = true
+	}
+	kept := make([]LarkMessage, 0, len(items))
+	for _, it := range items {
+		if exclude[it.MessageID] {
+			continue
+		}
+		kept = append(kept, it)
+	}
+	if len(kept) == 0 {
+		return ""
+	}
+
+	// The list endpoint returns newest-first; render oldest-first so the
+	// transcript reads top-to-bottom like the chat does.
+	sort.SliceStable(kept, func(i, j int) bool {
+		return parseLarkMillis(kept[i].CreateTime) < parseLarkMillis(kept[j].CreateTime)
+	})
+
+	labeler := newSpeakerLabeler()
+	lines := make([]string, 0, len(kept))
+	for _, m := range kept {
+		label := labeler.label(m)
+		var text string
+		switch {
+		case m.MessageType == larkMsgTypeMergeForward:
+			text = "[merge_forward, expand manually]"
+		default:
+			text = e.flattenMessage(m)
+			if text == "" {
+				text = "[empty message]"
+			}
+		}
+		lines = append(lines, fmt.Sprintf("[%s]: %s", label, text))
+	}
+	return fmt.Sprintf("<recent_context count=\"%d\">\n%s\n</recent_context>",
+		len(kept), strings.Join(lines, "\n"))
+}
+
+func recentContextErrorBlock() string {
+	return "<recent_context type=\"error\">[unable to fetch recent context]</recent_context>"
 }
 
 // renderQuoted fetches the directly-quoted parent and renders a

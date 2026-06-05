@@ -1003,11 +1003,15 @@ func buildLarkConnectorFactory(installSvc *lark.InstallationService, apiClient l
 		}
 		return creds, nil
 	})
-	// Inbound enricher: expands quoted replies / forwarded bundles into
-	// the agent's body via the IM API before dispatch. It shares the
+	// Inbound enricher: expands quoted replies / forwarded bundles AND
+	// prefetches a window of surrounding group history (MUL-3084) into the
+	// agent's body via the IM API before dispatch. It shares the
 	// connector's resolved credentials and runs under the connector's
 	// EnrichTimeout so it cannot overrun the Lark long-conn ACK budget.
-	enricher := lark.NewInboundEnricher(apiClient, lark.InboundEnricherConfig{Logger: slog.Default()})
+	enricher := lark.NewInboundEnricher(apiClient, lark.InboundEnricherConfig{
+		RecentContextSize: lark.DefaultRecentContextSize,
+		Logger:            slog.Default(),
+	})
 	conn, err := lark.NewWSLongConnConnector(lark.WSConnectorConfig{
 		Dialer:              dialer,
 		EndpointFetcher:     endpointFetcher,
