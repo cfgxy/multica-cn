@@ -82,9 +82,9 @@ export const ImageExtension = Image.extend({
     const alt = escapeMarkdownLabel(node.attrs?.alt || "");
     const title = node.attrs?.title;
     if (title) {
-      return `![${alt}](${src} "${title}")\n\n`;
+      return `![${alt}](${src} "${title}")`;
     }
-    return `![${alt}](${src})\n\n`;
+    return `![${alt}](${src})`;
   },
 }).configure({
   inline: false,
