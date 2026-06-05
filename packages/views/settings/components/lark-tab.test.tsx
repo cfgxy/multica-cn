@@ -310,10 +310,12 @@ describe("LarkAgentBindButton (CTA gate)", () => {
     expect(screen.queryByRole("button", { name: /Bind to Feishu/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /Bind to Lark/i })).toBeNull();
     // The fixture omits `region`, which the listings DTO defaults to
-    // Feishu (mainland) — so the badge text and Manage link must reflect
-    // Feishu, not the old hardcoded "Connected to Lark" / "Manage in
-    // Lark" labels. The Manage link's href is also the mainland host.
-    expect(screen.getByText(/Connected to Feishu/i)).toBeTruthy();
+    // Feishu (mainland). After the #3830 badge restructure the cloud is
+    // shown as a "Feishu" chip (not baked into the connected label) and a
+    // Disconnect action appears; the region-aware Manage link still points
+    // at the mainland host.
+    expect(screen.getByText("Feishu")).toBeTruthy();
+    expect(screen.getByTestId("lark-agent-bot-disconnect")).toBeTruthy();
     const link = screen.getByRole("link", { name: /Manage in Feishu/i }) as HTMLAnchorElement;
     expect(link.href).toBe("https://open.feishu.cn/app/cli_existing_app");
     expect(link.target).toBe("_blank");
@@ -401,8 +403,11 @@ describe("LarkAgentBindButton (CTA gate)", () => {
     // since the existing-installation check runs first.
     expect(screen.queryByRole("button", { name: /Bind to Feishu/i })).toBeNull();
     expect(screen.queryByRole("button", { name: /Bind to Lark/i })).toBeNull();
-    // Fixture omits region → defaults to Feishu in the badge copy.
-    expect(screen.getByText(/Connected to Feishu/i)).toBeTruthy();
+    // Fixture omits region → defaults to Feishu: the cloud shows as a
+    // "Feishu" chip (post-#3830 badge restructure), the Disconnect action
+    // is present, and the Manage link stays Feishu-aware.
+    expect(screen.getByText("Feishu")).toBeTruthy();
+    expect(screen.getByTestId("lark-agent-bot-disconnect")).toBeTruthy();
     expect(
       screen.getByRole("link", { name: /Manage in Feishu/i }),
     ).toBeTruthy();
