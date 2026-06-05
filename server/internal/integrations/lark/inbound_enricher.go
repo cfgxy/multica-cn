@@ -99,13 +99,22 @@ func NewInboundEnricher(client APIClient, cfg InboundEnricherConfig) Enricher {
 //
 //	<quoted_message …>…</quoted_message>
 //
-//	<the user's own message, or the forwarded transcript>
+//	<[sender name]: the user's own message, or the forwarded transcript>
 //
 // The <recent_context> block is only produced for a group message
 // addressed to the Bot, and only when RecentContextSize > 0 — it answers
 // MUL-3084 (the Bot saw only the single @-ed line, never the surrounding
 // conversation). It is the one fetch here NOT triggered by something the
 // user explicitly attached.
+//
+// In group chats, every speaker across ALL blocks (recent + quoted +
+// forwarded) and the sender who @-mentioned the Bot are resolved to real
+// display names via ONE Contact batch call, so the agent reads
+// "[Alice]: …" rather than "[User 1]: …" and knows who addressed it. This
+// is why the quote/forward items are fetched up front (Phase 1) before
+// names are resolved (Phase 2). Unresolved senders fall back to positional
+// "User N"; resolution is best-effort and never blocks. p2p chats keep
+// positional labels (identity is unambiguous in a 1:1).
 //
 // Persistence note: like the quoted/forwarded blocks, the rewritten Body
 // is persisted into the addressed turn's chat_message.content downstream
@@ -130,24 +139,76 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 		return msg
 	}
 
+	// Phase 1 — fetch every set of messages we may render. Each is
+	// best-effort; its error is handled where the block is rendered. We
+	// fetch up front (rather than fetch-and-render per block) so Phase 2
+	// can resolve display names for EVERY speaker across ALL blocks in a
+	// single Contact batch — otherwise a quoted/forwarded sender that
+	// isn't in the recent window would fall back to "User N".
+	var recentItems []LarkMessage
+	var recentErr error
+	if wantRecent {
+		recentItems, recentErr = e.fetchRecentItems(ctx, creds, msg)
+	}
+	var quotedItems []LarkMessage
+	var quotedErr error
+	if msg.ParentID != "" {
+		quotedItems, quotedErr = e.client.GetMessage(ctx, creds, msg.ParentID)
+	}
+	var forwardItems []LarkMessage
+	var forwardErr error
+	if isForward {
+		forwardItems, forwardErr = e.client.GetMessage(ctx, creds, msg.MessageID)
+	}
+
+	// Phase 2 — resolve display names for every speaker we're about to
+	// render (recent + quoted + forwarded) plus the sender who @-mentioned
+	// the Bot, in one batch. Group chats only; p2p keeps positional labels
+	// (identity is unambiguous in a 1:1). Unresolved ids fall back to
+	// "User N" per speakerLabeler.
+	var names map[string]string
+	if msg.ChatType == ChatTypeGroup {
+		ids := senderOpenIDs(recentItems)
+		ids = append(ids, senderOpenIDs(quotedItems)...)
+		ids = append(ids, senderOpenIDs(forwardItems)...)
+		if msg.SenderOpenID != "" {
+			ids = append(ids, string(msg.SenderOpenID))
+		}
+		names = e.resolveNames(ctx, creds, ids)
+	}
+
+	// Phase 3 — render broadest-to-narrowest with the complete name map.
 	var b strings.Builder
 	if wantRecent {
-		if blk := e.renderRecentContext(ctx, creds, msg); blk != "" {
-			b.WriteString(blk)
+		if recentErr != nil {
+			b.WriteString(recentContextErrorBlock())
+		} else if len(recentItems) > 0 {
+			b.WriteString(e.renderRecentContextBlock(recentItems, names))
 		}
 	}
 	if msg.ParentID != "" {
 		if b.Len() > 0 {
 			b.WriteString("\n\n")
 		}
-		b.WriteString(e.renderQuoted(ctx, creds, msg.ParentID))
+		b.WriteString(e.renderQuotedBlock(msg.ParentID, quotedItems, quotedErr, names))
 	}
 
 	var core string
 	if isForward {
-		core = e.renderForwarded(ctx, creds, msg.MessageID)
+		if forwardErr != nil {
+			e.logger.Warn("lark enricher: forward fetch failed", "message_id", msg.MessageID, "err", forwardErr)
+			core = forwardedErrorBlock()
+		} else {
+			core = e.renderForwardedItems(forwardItems, msg.MessageID, names)
+		}
 	} else {
 		core = msg.Body
+		// Label the user's own message with their real name so the agent
+		// knows WHO @-mentioned it — not just what they said. Only when the
+		// name resolved (group path); otherwise the body passes through.
+		if name := names[string(msg.SenderOpenID)]; name != "" {
+			core = fmt.Sprintf("[%s]: %s", name, msg.Body)
+		}
 	}
 	if b.Len() > 0 && core != "" {
 		b.WriteString("\n\n")
@@ -158,34 +219,70 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 	return msg
 }
 
-// renderRecentContext fetches the most recent messages in the group and
-// renders a <recent_context> block of the surrounding conversation,
-// excluding the triggering message itself and the directly-quoted parent
-// (which gets its own <quoted_message> block, so it isn't duplicated).
-// Messages render oldest-first as "[<speaker>]: <text>" using the same
-// positional speaker labels the forwarded-transcript renderer uses. Any
-// fetch failure degrades to a visible placeholder; like the rest of the
-// enricher it never blocks ingestion. An empty/whitespace window yields
-// "" so Enrich emits no block at all.
-func (e *inboundEnricher) renderRecentContext(ctx context.Context, creds InstallationCredentials, msg InboundMessage) string {
+// senderOpenIDs returns the distinct non-app sender open_ids across the
+// given messages, in first-appearance order — the input set for a
+// Contact name lookup.
+func senderOpenIDs(msgs []LarkMessage) []string {
+	seen := make(map[string]bool, len(msgs))
+	out := make([]string, 0, len(msgs))
+	for _, m := range msgs {
+		if m.SenderType == "app" || m.SenderID == "" || seen[m.SenderID] {
+			continue
+		}
+		seen[m.SenderID] = true
+		out = append(out, m.SenderID)
+	}
+	return out
+}
+
+// resolveNames batch-resolves open_ids to display names, best-effort: a
+// failure (restricted contact scope, transport error) logs and returns
+// nil so every speaker labeler degrades to positional "User N" rather
+// than blocking ingestion. Duplicate / empty ids are dropped first.
+func (e *inboundEnricher) resolveNames(ctx context.Context, creds InstallationCredentials, ids []string) map[string]string {
+	uniq := make([]string, 0, len(ids))
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		if id == "" || seen[id] {
+			continue
+		}
+		seen[id] = true
+		uniq = append(uniq, id)
+	}
+	if len(uniq) == 0 {
+		return nil
+	}
+	names, err := e.client.BatchGetUsers(ctx, creds, uniq)
+	if err != nil {
+		e.logger.Warn("lark enricher: speaker name resolution failed", "ids", len(uniq), "err", err)
+		return nil
+	}
+	return names
+}
+
+// fetchRecentItems pulls the recent group window and returns the
+// messages to render — the trigger message itself and the directly-quoted
+// parent (which gets its own <quoted_message> block) filtered out, sorted
+// oldest-first. The window is anchored to the trigger message's time so
+// it captures the conversation up to the @-mention rather than whatever
+// is newest by the time this fetch runs. A fetch failure is returned to
+// the caller (which renders the documented placeholder); it never blocks
+// ingestion.
+func (e *inboundEnricher) fetchRecentItems(ctx context.Context, creds InstallationCredentials, msg InboundMessage) ([]LarkMessage, error) {
 	items, err := e.client.ListChatMessages(ctx, creds, ListMessagesParams{
 		ChatID:   msg.ChatID,
 		PageSize: e.recentContextSize,
-		// Anchor the window to the trigger message's time (Lark sends it
-		// as epoch millis; end_time wants seconds) so we pull the
-		// conversation up to the @-mention, not whatever is newest by the
-		// time this prefetch runs. A missing/unparseable time yields 0,
-		// which the client treats as "no end_time" (newest N).
+		// Lark sends create_time as epoch millis; end_time wants seconds. A
+		// missing/unparseable time yields 0, which the client treats as
+		// "no end_time" (newest N).
 		EndTime: parseLarkMillis(msg.CreateTime) / 1000,
 	})
 	if err != nil {
 		e.logger.Warn("lark enricher: recent context fetch failed",
 			"chat_id", string(msg.ChatID), "err", err)
-		return recentContextErrorBlock()
+		return nil, err
 	}
 
-	// Drop the trigger and the quoted parent so neither is duplicated
-	// alongside the user's core message / its own <quoted_message> block.
 	exclude := map[string]bool{msg.MessageID: true}
 	if msg.ParentID != "" {
 		exclude[msg.ParentID] = true
@@ -197,17 +294,21 @@ func (e *inboundEnricher) renderRecentContext(ctx context.Context, creds Install
 		}
 		kept = append(kept, it)
 	}
-	if len(kept) == 0 {
-		return ""
-	}
 
 	// The list endpoint returns newest-first; render oldest-first so the
 	// transcript reads top-to-bottom like the chat does.
 	sort.SliceStable(kept, func(i, j int) bool {
 		return parseLarkMillis(kept[i].CreateTime) < parseLarkMillis(kept[j].CreateTime)
 	})
+	return kept, nil
+}
 
-	labeler := newSpeakerLabeler()
+// renderRecentContextBlock renders the surrounding conversation as a
+// <recent_context> block: one "[<speaker>]: <text>" line per message,
+// oldest-first, speakers labeled with real names from `names` (falling
+// back to positional "User N"). Callers pass a non-empty `kept`.
+func (e *inboundEnricher) renderRecentContextBlock(kept []LarkMessage, names map[string]string) string {
+	labeler := newSpeakerLabeler(names)
 	lines := make([]string, 0, len(kept))
 	for _, m := range kept {
 		label := labeler.label(m)
@@ -231,14 +332,14 @@ func recentContextErrorBlock() string {
 	return "<recent_context type=\"error\">[unable to fetch recent context]</recent_context>"
 }
 
-// renderQuoted fetches the directly-quoted parent and renders a
-// <quoted_message> block. A parent that is itself a merge_forward nests
-// a <forwarded_messages> transcript inside the quoted block (the
-// GetMessage response already carries both the forward sentinel and its
-// children, so no extra round-trip is needed). Any failure degrades to
-// the documented error block.
-func (e *inboundEnricher) renderQuoted(ctx context.Context, creds InstallationCredentials, parentID string) string {
-	items, err := e.client.GetMessage(ctx, creds, parentID)
+// renderQuotedBlock renders a <quoted_message> block from the already-
+// fetched GetMessage(parentID) result. A parent that is itself a
+// merge_forward nests a <forwarded_messages> transcript inside the quoted
+// block (the GetMessage response already carries both the forward
+// sentinel and its children). A fetch error / empty / deleted parent
+// degrades to the documented error block. Speakers are labeled from
+// `names` (the shared, already-resolved map), falling back to "User N".
+func (e *inboundEnricher) renderQuotedBlock(parentID string, items []LarkMessage, err error, names map[string]string) string {
 	if err != nil || len(items) == 0 {
 		e.logger.Warn("lark enricher: quoted parent fetch failed",
 			"parent_id", parentID, "items", len(items), "err", err)
@@ -249,11 +350,11 @@ func (e *inboundEnricher) renderQuoted(ctx context.Context, creds InstallationCr
 		return quotedErrorBlock(parentID)
 	}
 
-	labeler := newSpeakerLabeler()
+	labeler := newSpeakerLabeler(names)
 	sender := labeler.label(parent)
 
 	if parent.MessageType == larkMsgTypeMergeForward {
-		inner := e.renderForwardedItems(items, parentID)
+		inner := e.renderForwardedItems(items, parentID, names)
 		return wrapQuoted(parentID, sender, larkMsgTypeMergeForward, inner)
 	}
 	text := e.flattenMessage(parent)
@@ -263,25 +364,12 @@ func (e *inboundEnricher) renderQuoted(ctx context.Context, creds InstallationCr
 	return wrapQuoted(parentID, sender, parent.MessageType, text)
 }
 
-// renderForwarded fetches a merge_forward by id and renders its bundled
-// children. The GetMessage response is [sentinel, child…]; we filter the
-// forward's own record out by id (robust to whether Lark returns the
-// sentinel first or not) and render the rest.
-func (e *inboundEnricher) renderForwarded(ctx context.Context, creds InstallationCredentials, forwardID string) string {
-	items, err := e.client.GetMessage(ctx, creds, forwardID)
-	if err != nil {
-		e.logger.Warn("lark enricher: forward fetch failed", "message_id", forwardID, "err", err)
-		return forwardedErrorBlock()
-	}
-	return e.renderForwardedItems(items, forwardID)
-}
-
 // renderForwardedItems renders the children of a forward whose own
 // record id is forwardID. Children are time-ordered, capped, and each
 // rendered as "[<speaker>]: <text>"; a child that is itself a forward is
 // not recursed into (it gets a manual-expand placeholder) so the HTTP
 // fan-out on the ACK-latency-sensitive inbound path stays bounded.
-func (e *inboundEnricher) renderForwardedItems(items []LarkMessage, forwardID string) string {
+func (e *inboundEnricher) renderForwardedItems(items []LarkMessage, forwardID string, names map[string]string) string {
 	// The verified contract is that GetMessage(forward_id) returns one
 	// level of bundling: [sentinel, direct-children…]. We therefore
 	// treat every non-sentinel item as a direct child. We filter by id
@@ -312,7 +400,7 @@ func (e *inboundEnricher) renderForwardedItems(items []LarkMessage, forwardID st
 		children = children[:e.maxForwardChildren]
 	}
 
-	labeler := newSpeakerLabeler()
+	labeler := newSpeakerLabeler(names)
 	lines := make([]string, 0, len(children))
 	for _, c := range children {
 		label := labeler.label(c)
@@ -388,18 +476,20 @@ func parseLarkMillis(s string) int64 {
 
 // speakerLabeler assigns stable, human-readable labels to the senders
 // within one rendered block. Lark message items carry only a sender id
-// (no display name — resolving real names needs a separate Contact API
-// lookup, tracked as a follow-up), so we map each distinct user id to
-// "User 1", "User 2", … in first-appearance order, and app senders to
-// "Bot". This keeps the conversation's turn-taking structure legible
-// without a per-sender network round-trip.
+// (no display name in the payload), so the enricher resolves real names
+// out of band via the Contact API and passes them in as a sender-id ->
+// name map. A sender present in that map is labeled with their real
+// name; one that is not (restricted contact scope, deactivated user,
+// name lookup failed) falls back to "User 1", "User 2", … in
+// first-appearance order. App senders are always "Bot".
 type speakerLabeler struct {
-	seen map[string]string
-	n    int
+	names map[string]string // resolved open_id -> display name (may be nil)
+	seen  map[string]string
+	n     int
 }
 
-func newSpeakerLabeler() *speakerLabeler {
-	return &speakerLabeler{seen: make(map[string]string)}
+func newSpeakerLabeler(names map[string]string) *speakerLabeler {
+	return &speakerLabeler{names: names, seen: make(map[string]string)}
 }
 
 func (l *speakerLabeler) label(m LarkMessage) string {
@@ -413,8 +503,13 @@ func (l *speakerLabeler) label(m LarkMessage) string {
 	if lbl, ok := l.seen[key]; ok {
 		return lbl
 	}
-	l.n++
-	lbl := fmt.Sprintf("User %d", l.n)
+	var lbl string
+	if name := l.names[key]; name != "" {
+		lbl = name
+	} else {
+		l.n++
+		lbl = fmt.Sprintf("User %d", l.n)
+	}
 	l.seen[key] = lbl
 	return lbl
 }
