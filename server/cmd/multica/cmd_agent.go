@@ -172,6 +172,9 @@ func init() {
 	agentCreateCmd.Flags().String("custom-env", "", "Custom environment variables as JSON object, e.g. '{\"KEY\":\"value\"}'. Treated as secret material — never logged by the CLI, but values passed on the command line are visible to shell history and 'ps'; prefer --custom-env-stdin or --custom-env-file for real secrets. Pass '{}' to set an empty map.")
 	agentCreateCmd.Flags().Bool("custom-env-stdin", false, "Read the --custom-env JSON object from stdin. Keeps secrets out of shell history and 'ps'. Mutually exclusive with --custom-env and --custom-env-file.")
 	agentCreateCmd.Flags().String("custom-env-file", "", "Read the --custom-env JSON object from a file path (suggested mode: 0600). Mutually exclusive with --custom-env and --custom-env-stdin.")
+	agentCreateCmd.Flags().String("mcp-config", "", "MCP server configuration as a JSON object, e.g. '{\"mcpServers\":{\"shortcut\":{...}}}'. Treated as secret material (MCP entries often carry API tokens) — never logged by the CLI, but values passed on the command line are visible to shell history and 'ps'; prefer --mcp-config-stdin or --mcp-config-file for real secrets.")
+	agentCreateCmd.Flags().Bool("mcp-config-stdin", false, "Read the --mcp-config JSON object from stdin. Keeps secrets out of shell history and 'ps'. Mutually exclusive with --mcp-config and --mcp-config-file.")
+	agentCreateCmd.Flags().String("mcp-config-file", "", "Read the --mcp-config JSON object from a file path (suggested mode: 0600). Mutually exclusive with --mcp-config and --mcp-config-stdin.")
 	agentCreateCmd.Flags().String("visibility", "private", "Visibility: private or workspace")
 	agentCreateCmd.Flags().Int32("max-concurrent-tasks", 6, "Maximum concurrent tasks")
 	agentCreateCmd.Flags().String("output", "json", "Output format: table or json")
@@ -187,6 +190,14 @@ func init() {
 	// custom_env is intentionally NOT part of `agent update`. Use
 	// `multica agent env set <id>` — that path is owner/admin-only,
 	// denies agent actors, and writes a persisted audit trail.
+	//
+	// mcp_config, unlike custom_env, IS updatable here: it is persisted
+	// through the generic UpdateAgent endpoint (there is no dedicated
+	// audited endpoint for it). The same three secret-safe input channels
+	// as `agent create` are offered. Pass `--mcp-config null` to clear.
+	agentUpdateCmd.Flags().String("mcp-config", "", "New MCP server configuration as a JSON object, e.g. '{\"mcpServers\":{...}}'. Pass 'null' to clear. Treated as secret material — never logged by the CLI, but values passed on the command line are visible to shell history and 'ps'; prefer --mcp-config-stdin or --mcp-config-file for real secrets.")
+	agentUpdateCmd.Flags().Bool("mcp-config-stdin", false, "Read the --mcp-config JSON from stdin. Keeps secrets out of shell history and 'ps'. Mutually exclusive with --mcp-config and --mcp-config-file.")
+	agentUpdateCmd.Flags().String("mcp-config-file", "", "Read the --mcp-config JSON from a file path (suggested mode: 0600). Mutually exclusive with --mcp-config and --mcp-config-stdin.")
 	agentUpdateCmd.Flags().String("visibility", "", "New visibility: private or workspace")
 	agentUpdateCmd.Flags().String("status", "", "New status")
 	agentUpdateCmd.Flags().Int32("max-concurrent-tasks", 0, "New max concurrent tasks")
@@ -460,6 +471,11 @@ func runAgentCreate(cmd *cobra.Command, _ []string) error {
 	} else if ok {
 		body["custom_env"] = ce
 	}
+	if mc, ok, err := resolveMcpConfig(cmd); err != nil {
+		return err
+	} else if ok {
+		body["mcp_config"] = mc
+	}
 	if cmd.Flags().Changed("model") {
 		v, _ := cmd.Flags().GetString("model")
 		body["model"] = v
@@ -594,9 +610,14 @@ func runAgentUpdate(cmd *cobra.Command, args []string) error {
 		v, _ := cmd.Flags().GetInt32("max-concurrent-tasks")
 		body["max_concurrent_tasks"] = v
 	}
+	if mc, ok, err := resolveMcpConfig(cmd); err != nil {
+		return err
+	} else if ok {
+		body["mcp_config"] = mc
+	}
 
 	if len(body) == 0 {
-		return fmt.Errorf("no fields to update; use --name, --description, --instructions, --runtime-id, --runtime-config, --model, --custom-args, --visibility, --status, or --max-concurrent-tasks (env vars now live behind `multica agent env set <id>`)")
+		return fmt.Errorf("no fields to update; use --name, --description, --instructions, --runtime-id, --runtime-config, --model, --custom-args, --mcp-config, --visibility, --status, or --max-concurrent-tasks (env vars now live behind `multica agent env set <id>`)")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -1090,6 +1111,106 @@ func resolveCustomEnv(cmd *cobra.Command) (map[string]string, bool, error) {
 		return nil, false, err
 	}
 	return ce, true, nil
+}
+
+// parseMcpConfig validates the --mcp-config value and returns the raw JSON to
+// send. It accepts a JSON object (the MCP config, e.g. {"mcpServers": {…}}) or
+// the literal `null` to clear the agent's config. A top-level array or
+// primitive is rejected because it can never be a valid MCP config — this
+// mirrors the agent-settings UI (mcp-config-tab.tsx). Empty/whitespace input
+// is rejected rather than treated as a clear: for the stdin/file channels it
+// almost always signals an upstream failure (missing file, unset pipe) rather
+// than a deliberate clear, and silently wiping a secret-bearing field is the
+// wrong default — pass an explicit `null` to clear.
+//
+// The payload is treated as secret material (MCP entries routinely carry API
+// tokens), so parse errors never wrap the underlying json error, which can
+// echo short fragments of malformed input.
+func parseMcpConfig(raw string) (json.RawMessage, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, fmt.Errorf("--mcp-config: empty input; pass 'null' to clear or a JSON object to set")
+	}
+	var probe any
+	if err := json.Unmarshal([]byte(trimmed), &probe); err != nil {
+		return nil, fmt.Errorf("--mcp-config must be a valid JSON object, or 'null' to clear")
+	}
+	// null → clear (NULL column server-side; on create it is a no-op).
+	if probe == nil {
+		return json.RawMessage("null"), nil
+	}
+	if _, ok := probe.(map[string]any); !ok {
+		return nil, fmt.Errorf("--mcp-config must be a JSON object, or 'null' to clear")
+	}
+	return json.RawMessage(trimmed), nil
+}
+
+// resolveMcpConfig collects the --mcp-config, --mcp-config-stdin, and
+// --mcp-config-file flags and returns the raw JSON value to send, a bool
+// indicating whether the caller supplied any of them, and any error. The
+// three input channels are mutually exclusive so callers can't accidentally
+// provide a secret twice. Stdin and file inputs exist to keep mcp_config —
+// which routinely embeds API tokens — out of shell history and 'ps'. Mirrors
+// resolveCustomEnv; the only behavioural difference is the clear sentinel
+// (`null` here vs `{}` for custom_env), because mcp_config distinguishes an
+// explicit empty object from an absent config server-side.
+func resolveMcpConfig(cmd *cobra.Command) (json.RawMessage, bool, error) {
+	inline := cmd.Flags().Changed("mcp-config")
+	fromStdin, _ := cmd.Flags().GetBool("mcp-config-stdin")
+	filePath, _ := cmd.Flags().GetString("mcp-config-file")
+	fromFile := cmd.Flags().Changed("mcp-config-file")
+
+	count := 0
+	if inline {
+		count++
+	}
+	if fromStdin {
+		count++
+	}
+	if fromFile {
+		count++
+	}
+	switch {
+	case count == 0:
+		return nil, false, nil
+	case count > 1:
+		return nil, false, fmt.Errorf("--mcp-config, --mcp-config-stdin, and --mcp-config-file are mutually exclusive; pick one")
+	}
+
+	var raw string
+	switch {
+	case inline:
+		raw, _ = cmd.Flags().GetString("mcp-config")
+	case fromStdin:
+		buf, err := io.ReadAll(cmd.InOrStdin())
+		if err != nil {
+			return nil, false, fmt.Errorf("read --mcp-config-stdin: %w", err)
+		}
+		raw = string(buf)
+		if strings.TrimSpace(raw) == "" {
+			return nil, false, fmt.Errorf("--mcp-config-stdin: empty input; pass 'null' to clear")
+		}
+	case fromFile:
+		if filePath == "" {
+			return nil, false, fmt.Errorf("--mcp-config-file: path must not be empty")
+		}
+		buf, err := os.ReadFile(filePath)
+		if err != nil {
+			// Filesystem errors may include the path but not the contents —
+			// safe to surface via %w.
+			return nil, false, fmt.Errorf("read --mcp-config-file: %w", err)
+		}
+		raw = string(buf)
+		if strings.TrimSpace(raw) == "" {
+			return nil, false, fmt.Errorf("--mcp-config-file %q: empty contents; pass 'null' to clear", filePath)
+		}
+	}
+
+	mc, err := parseMcpConfig(raw)
+	if err != nil {
+		return nil, false, err
+	}
+	return mc, true, nil
 }
 
 func strVal(m map[string]any, key string) string {
