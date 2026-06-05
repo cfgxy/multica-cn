@@ -21,16 +21,20 @@ go test ./internal/service -run TestBuiltinSkillsConformToTemplate
 | Create flags: `name`, `description`, `instructions`, `runtime-id` | 159–162 | Registered create flags; `name`/`runtime-id` enforced in `runAgentCreate` | `multica agent create --help` |
 | `runtime-config`, `model`, `custom-args` flags | 169–171 | `model` help: "Prefer this over passing --model in --custom-args"; `custom-args` help names codex/openclaw rejecting `--model` (CLI help only, not server-enforced) | `multica agent create --help` |
 | Secret-safe env input: `custom-env`, `custom-env-stdin`, `custom-env-file` | 172–174 | `--custom-env` warns about shell history / `ps`; stdin and file modes keep secrets off the command line; mutually exclusive | `multica agent create --help` |
-| `runAgentCreate` builds body + `POST /api/agents` | 409 | Only sets a body key when the flag `Changed`; posts to `/api/agents` (line 480) | read 409–491 |
-| Body assembly: description/instructions/runtime-config/custom-args/custom-env/model | 432–474 | `resolveCustomEnv` (458) gates the three env channels; omitted flags are not sent | read 432–474 |
-| `agent skills set` = replace-all | 814 | `PUT /api/agents/{id}/skills` (832); `--skill-ids ''` clears all (821) | `multica agent skills set --help` |
-| `agent skills add` = additive | 839 | `POST /api/agents/{id}/skills/add` (860); requires ≥1 id (849) | `multica agent skills add --help` |
-| `agent skills list` | 782 | reads bindings, no side effect | `multica agent skills list --help` |
-| `agent env get` | 916 | `GET /api/agents/{id}/env` | `multica agent env get --help` |
-| `agent env set` | 951 | `PUT /api/agents/{id}/env` with full `custom_env` map (965, 971) | `multica agent env set --help` |
+| Secret-safe MCP input: `mcp-config`, `mcp-config-stdin`, `mcp-config-file` (create) | 175–177 | Same three-channel pattern as `custom-env`; `--mcp-config` warns about shell history / `ps`; value must be a JSON object or `null` | `multica agent create --help` |
+| MCP flags on `agent update` | 198–200 | Same three channels on update; `--mcp-config null` clears. Unlike `custom_env`, `mcp_config` IS settable via update | `multica agent update --help` |
+| `runAgentCreate` builds body + `POST /api/agents` | 420 | Only sets a body key when the flag `Changed`; posts to `/api/agents` (line 496) | read 420–501 |
+| Body assembly: description/instructions/runtime-config/custom-args/custom-env/mcp-config/model | 443–487 | `resolveCustomEnv` (469) and `resolveMcpConfig` (474) gate their secret channels; omitted flags are not sent | read 443–487 |
+| `runAgentUpdate` sends `mcp_config` | 613 | `resolveMcpConfig` adds `mcp_config` to the `PUT /api/agents/{id}` body (627); `custom_env` is intentionally not a flag here | read 558–633 |
+| `parseMcpConfig` / `resolveMcpConfig` helpers | 1129, 1157 | Validator (object-or-`null`, content-free errors) + three-channel resolver, mirroring `parseCustomEnv`/`resolveCustomEnv` | read 1129–1215 |
+| `agent skills set` = replace-all | 835 | `PUT /api/agents/{id}/skills` (853); `--skill-ids ''` clears all (842) | `multica agent skills set --help` |
+| `agent skills add` = additive | 860 | `POST /api/agents/{id}/skills/add` (881); requires ≥1 id (867, 871) | `multica agent skills add --help` |
+| `agent skills list` | 803 | reads bindings, no side effect | `multica agent skills list --help` |
+| `agent env get` | 937 | `GET /api/agents/{id}/env` | `multica agent env get --help` |
+| `agent env set` | 972 | `PUT /api/agents/{id}/env` with full `custom_env` map (986, 992) | `multica agent env set --help` |
 
 Note: `--from-template` exists at line 168 and short-circuits to
-`runAgentCreateFromTemplate` (line 498). It is intentionally NOT taught — the
+`runAgentCreateFromTemplate` (line 514). It is intentionally NOT taught — the
 template path is immature and out of scope for this skill.
 
 ## Create handler — `server/internal/handler/agent.go`
@@ -52,6 +56,7 @@ template path is immature and out of scope for this skill.
 | `mcp_config` redacted on read | 54, 848–851 | `redactMcpConfig` sets `McpConfigRedacted=true`; a private agent read by a member also redacts (494, 509) |
 | `CreateAgent` insert params | 708–722 | persists runtime_config, instructions, custom_env, custom_args, model, thinking_level, mcp_config, visibility, max_concurrent_tasks |
 | `UpdateAgent` rejects `custom_env` | 910–913 | if `custom_env` present in body → 400 "use PUT /api/agents/{id}/env (or `multica agent env set`)" |
+| `UpdateAgent` persists / clears `mcp_config` | 944–948, 1060–1061 | Tri-state from the raw body: key omitted → no change; literal `null` → `ClearAgentMcpConfig`; object → replace. No 400 like `custom_env` — `mcp_config` IS updatable here |
 | `description` ≤ 255 on update too | 921–924 | same cap re-checked on update |
 
 ## Env endpoint — `server/internal/handler/agent_env.go`
