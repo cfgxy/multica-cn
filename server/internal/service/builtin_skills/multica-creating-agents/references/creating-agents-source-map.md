@@ -33,12 +33,16 @@ go test ./internal/service -run TestBuiltinSkillsConformToTemplate
 | `agent env get` | 874 | `GET /api/agents/{id}/env` | `multica agent env get --help` |
 | `agent env set` | 909 | `PUT /api/agents/{id}/env` with full `custom_env` map (923, 929) | `multica agent env set --help` |
 
-Note: the agent-template product feature (registry `server/internal/agenttmpl/`,
-handler `agent_template.go`, routes `GET /api/agent-templates` and
-`POST /api/agents/from-template`) is still served and used by the onboarding
-flow, but the CLI no longer exposes a `--from-template` flag — it was an
-untaught, immature surface and was removed. This skill teaches manual
-`agent create` only.
+Note: the CLI no longer exposes `--from-template`. The agent-template backend
+still exists (registry `server/internal/agenttmpl/`, handler `agent_template.go`,
+routes `GET /api/agent-templates` and `POST /api/agents/from-template`, plus the
+`packages/core` client/query wrappers) but is currently orphaned plumbing with no
+live caller: the removed CLI flag was its only non-test consumer, and onboarding
+does NOT use it — `packages/views/onboarding/steps/step-agent.tsx` builds four
+hardcoded local presets (i18n-resolved) and creates via plain `POST /api/agents`
+(`createAgent`), never `POST /api/agents/from-template`. Do not treat the template
+API as a supported agent-creation path. This skill teaches manual `agent create`
+only.
 
 ## Create handler — `server/internal/handler/agent.go`
 
