@@ -270,12 +270,11 @@ export function createKoDict(allowSignup: boolean): LandingDict {
         {
           version: "0.3.17",
           date: "2026-06-05",
-          title: "Lark 지원과 Feishu Bot 그룹 채팅 개선",
+          title: "Feishu Bot 그룹 채팅, 사용량 스케줄링, CLI 업데이트",
           changes: [],
           features: [
-            "하나의 Multica 배포에서 Feishu와 Lark 팀을 모두 지원하며, 연결된 Bot은 알맞은 지역 콘솔을 자동으로 사용합니다.",
-            "Lark 그룹에서 에이전트를 멘션하면 주변 대화가 함께 전달되어, 에이전트가 이전 논의를 더 잘 이해할 수 있습니다.",
-            "관리자는 설정 화면으로 이동하지 않고 에이전트 연동 영역에서 바로 Lark Bot 연결을 해제할 수 있습니다.",
+            "Feishu Bot을 그룹에서 멘션하면 주변 대화가 함께 전달되어, 에이전트가 이전 논의를 더 잘 이해할 수 있습니다.",
+            "관리자는 설정 화면으로 이동하지 않고 에이전트 연동 영역에서 바로 Feishu Bot 연결을 해제할 수 있습니다.",
             "셀프호스트 워크스페이스는 별도 cron 설정 없이도 사용량 집계를 계속 실행합니다.",
             "CLI에서 외부 MCP 설정 파일로 에이전트를 만들고 업데이트할 수 있습니다.",
           ],
@@ -295,7 +294,7 @@ export function createKoDict(allowSignup: boolean): LandingDict {
             "받은함 알림 음소거 확인과 데스크톱 알림 이동은 원래 워크스페이스 기준으로 처리됩니다.",
             "GitHub 설치 후 연결된 계정 이름이 바로 표시됩니다.",
             "모델 검색 대기 시간이 일관되고, 빈 결과 뒤에도 사용 가능한 선택지를 숨기지 않습니다.",
-            "셀프호스트 Lark 환경 변수를 올바르게 받습니다.",
+            "셀프호스트 Feishu 환경 변수를 올바르게 받습니다.",
           ],
         },
         {
