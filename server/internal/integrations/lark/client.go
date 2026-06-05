@@ -81,6 +81,31 @@ type APIClient interface {
 	// slice keeps this method a thin transport adapter — flattening and
 	// block assembly are the enricher's job.
 	GetMessage(ctx context.Context, creds InstallationCredentials, messageID string) ([]LarkMessage, error)
+
+	// ListChatMessages fetches the most recent messages in a single chat
+	// via GET /open-apis/im/v1/messages?container_id_type=chat. It powers
+	// the group-context prefetch: when a user @-mentions the Bot in a busy
+	// group, the enricher pulls a bounded window of surrounding messages
+	// so the agent sees the conversation, not just the one @-ed line.
+	//
+	// Results come back newest-first (sort_type=ByCreateTimeDesc), capped
+	// at p.PageSize (Lark hard-caps a page at 50); the caller orders and
+	// trims for rendering. Only a single page is fetched — pagination is
+	// deliberately not exposed so the inbound ACK path's HTTP fan-out
+	// stays a single round-trip. Like GetMessage, this is a thin transport
+	// adapter: flattening and block assembly are the enricher's job.
+	ListChatMessages(ctx context.Context, creds InstallationCredentials, p ListMessagesParams) ([]LarkMessage, error)
+}
+
+// ListMessagesParams selects a bounded, recent window of messages in a
+// single Lark chat for the group-context prefetch. Only the fields the
+// enricher needs today are exposed; start_time/end_time and page_token
+// are intentionally omitted until a caller needs them.
+type ListMessagesParams struct {
+	ChatID ChatID
+	// PageSize is how many of the most-recent messages to fetch. The
+	// client clamps it into Lark's valid 1..50 range.
+	PageSize int
 }
 
 // LarkMessage is the normalized slice of an IM v1 message item the
@@ -278,5 +303,10 @@ func (s *stubAPIClient) GetBotInfo(ctx context.Context, creds InstallationCreden
 
 func (s *stubAPIClient) GetMessage(ctx context.Context, creds InstallationCredentials, messageID string) ([]LarkMessage, error) {
 	s.log.Warn("lark stub client: GetMessage called", "message_id", messageID)
+	return nil, ErrAPIClientNotConfigured
+}
+
+func (s *stubAPIClient) ListChatMessages(ctx context.Context, creds InstallationCredentials, p ListMessagesParams) ([]LarkMessage, error) {
+	s.log.Warn("lark stub client: ListChatMessages called", "chat_id", string(p.ChatID))
 	return nil, ErrAPIClientNotConfigured
 }

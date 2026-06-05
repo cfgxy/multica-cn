@@ -1,0 +1,209 @@
+package lark
+
+import (
+	"errors"
+	"testing"
+)
+
+// appMsg builds a Bot-sent message (sender_type "app"), so the speaker
+// labeler renders it as "Bot" inside a recent_context transcript.
+func appMsg(id, text, createTime string) LarkMessage {
+	return LarkMessage{
+		MessageID:   id,
+		MessageType: "text",
+		Content:     `{"text":"` + text + `"}`,
+		SenderID:    "cli_bot",
+		SenderType:  "app",
+		CreateTime:  createTime,
+	}
+}
+
+// groupCfg enables the recent-context prefetch with the production window.
+func groupCfg() InboundEnricherConfig {
+	return InboundEnricherConfig{RecentContextSize: DefaultRecentContextSize}
+}
+
+// TestEnrichRecentContextGroupMention is the MUL-3084 core: a bare @-bot
+// mention in a group (no quote, no forward) gets the surrounding
+// conversation inlined as a <recent_context> block ahead of the user's
+// own message. The trigger message is excluded; speakers are labeled
+// positionally with Bot replies labeled "Bot"; oldest-first ordering.
+func TestEnrichRecentContextGroupMention(t *testing.T) {
+	t.Parallel()
+	fake := newEnricherFake()
+	// Lark returns newest-first; include the trigger itself to prove it
+	// is filtered back out.
+	fake.byChat["oc_g"] = []LarkMessage{
+		textMsg("om_trigger", "ou_user", "总结一下", "3000"),
+		appMsg("om_bot", "你好", "2500"),
+		textMsg("om_b", "ou_bob", "明天发布", "2000"),
+		textMsg("om_a", "ou_alice", "我改完了登录页", "1000"),
+	}
+	in := InboundMessage{
+		MessageType:    "text",
+		MessageID:      "om_trigger",
+		ChatID:         "oc_g",
+		ChatType:       ChatTypeGroup,
+		AddressedToBot: true,
+		Body:           "总结一下",
+	}
+
+	out := enrich(t, fake, in, groupCfg())
+
+	want := `<recent_context count="3">
+[User 1]: 我改完了登录页
+[User 2]: 明天发布
+[Bot]: 你好
+</recent_context>
+
+总结一下`
+	if out.Body != want {
+		t.Errorf("body\n got = %q\nwant = %q", out.Body, want)
+	}
+	if len(fake.listCalls) != 1 || fake.listCalls[0] != "oc_g" {
+		t.Errorf("expected one ListChatMessages(oc_g), got %v", fake.listCalls)
+	}
+	if len(fake.calls) != 0 {
+		t.Errorf("no GetMessage expected, got %v", fake.calls)
+	}
+}
+
+// TestEnrichRecentContextWithQuotedReply composes both expansions: the
+// recent_context block comes first (broadest), then the quoted parent,
+// then the user's prose. The quoted parent is excluded from the
+// recent_context window so it isn't duplicated.
+func TestEnrichRecentContextWithQuotedReply(t *testing.T) {
+	t.Parallel()
+	fake := newEnricherFake()
+	fake.byID["om_parent"] = []LarkMessage{
+		textMsg("om_parent", "ou_alice", "删除按钮加一下", "1000"),
+	}
+	fake.byChat["oc_g"] = []LarkMessage{
+		textMsg("om_trigger", "ou_user", "去做", "3000"),
+		textMsg("om_x", "ou_bob", "顺便看下样式", "2000"),
+		textMsg("om_parent", "ou_alice", "删除按钮加一下", "1000"),
+	}
+	in := InboundMessage{
+		MessageType:    "text",
+		MessageID:      "om_trigger",
+		ChatID:         "oc_g",
+		ChatType:       ChatTypeGroup,
+		AddressedToBot: true,
+		Body:           "去做",
+		ParentID:       "om_parent",
+	}
+
+	out := enrich(t, fake, in, groupCfg())
+
+	want := `<recent_context count="1">
+[User 1]: 顺便看下样式
+</recent_context>
+
+<quoted_message message_id="om_parent" sender="User 1" type="text">
+删除按钮加一下
+</quoted_message>
+
+去做`
+	if out.Body != want {
+		t.Errorf("body\n got = %q\nwant = %q", out.Body, want)
+	}
+	if len(fake.listCalls) != 1 || fake.listCalls[0] != "oc_g" {
+		t.Errorf("expected one ListChatMessages(oc_g), got %v", fake.listCalls)
+	}
+	if len(fake.calls) != 1 || fake.calls[0] != "om_parent" {
+		t.Errorf("expected one GetMessage(om_parent), got %v", fake.calls)
+	}
+}
+
+// TestEnrichRecentContextFetchError degrades to a visible placeholder on
+// a list failure, without blocking ingestion or dropping the user's body.
+func TestEnrichRecentContextFetchError(t *testing.T) {
+	t.Parallel()
+	fake := newEnricherFake()
+	fake.errByChat["oc_g"] = errors.New("boom")
+	in := InboundMessage{
+		MessageType:    "text",
+		MessageID:      "om_trigger",
+		ChatID:         "oc_g",
+		ChatType:       ChatTypeGroup,
+		AddressedToBot: true,
+		Body:           "在干嘛",
+	}
+
+	out := enrich(t, fake, in, groupCfg())
+
+	want := `<recent_context type="error">[unable to fetch recent context]</recent_context>
+
+在干嘛`
+	if out.Body != want {
+		t.Errorf("body\n got = %q\nwant = %q", out.Body, want)
+	}
+}
+
+// TestEnrichRecentContextEmptyWindow emits NO block (not an empty one)
+// when the only message in the window is the trigger itself.
+func TestEnrichRecentContextEmptyWindow(t *testing.T) {
+	t.Parallel()
+	fake := newEnricherFake()
+	fake.byChat["oc_g"] = []LarkMessage{
+		textMsg("om_trigger", "ou_user", "在吗", "1000"),
+	}
+	in := InboundMessage{
+		MessageType:    "text",
+		MessageID:      "om_trigger",
+		ChatID:         "oc_g",
+		ChatType:       ChatTypeGroup,
+		AddressedToBot: true,
+		Body:           "在吗",
+	}
+
+	out := enrich(t, fake, in, groupCfg())
+
+	if out.Body != "在吗" {
+		t.Errorf("body = %q, want unchanged %q", out.Body, "在吗")
+	}
+	if len(fake.listCalls) != 1 {
+		t.Errorf("expected one ListChatMessages, got %v", fake.listCalls)
+	}
+}
+
+// TestEnrichRecentContextSkippedCases pins the three conditions under
+// which the prefetch must NOT fire: p2p chats, group messages not
+// addressed to the Bot, and a disabled window (size 0). In all three the
+// body is untouched and no list call is made.
+func TestEnrichRecentContextSkippedCases(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		msg  InboundMessage
+		cfg  InboundEnricherConfig
+	}{
+		{
+			name: "p2p chat",
+			msg:  InboundMessage{MessageType: "text", MessageID: "om1", ChatID: "oc_p", ChatType: ChatTypeP2P, AddressedToBot: true, Body: "hi"},
+			cfg:  groupCfg(),
+		},
+		{
+			name: "group but not addressed",
+			msg:  InboundMessage{MessageType: "text", MessageID: "om1", ChatID: "oc_g", ChatType: ChatTypeGroup, AddressedToBot: false, Body: "闲聊"},
+			cfg:  groupCfg(),
+		},
+		{
+			name: "prefetch disabled (size 0)",
+			msg:  InboundMessage{MessageType: "text", MessageID: "om1", ChatID: "oc_g", ChatType: ChatTypeGroup, AddressedToBot: true, Body: "在吗"},
+			cfg:  InboundEnricherConfig{},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := newEnricherFake()
+			out := enrich(t, fake, tc.msg, tc.cfg)
+			if out.Body != tc.msg.Body {
+				t.Errorf("body = %q, want unchanged %q", out.Body, tc.msg.Body)
+			}
+			if len(fake.listCalls) != 0 {
+				t.Errorf("expected no ListChatMessages, got %v", fake.listCalls)
+			}
+		})
+	}
+}

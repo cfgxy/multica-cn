@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -576,6 +577,66 @@ func (c *httpAPIClient) GetMessage(ctx context.Context, creds InstallationCreden
 			c.invalidateToken(creds.AppID)
 		}
 		return nil, fmt.Errorf("lark http client: get message: code=%d msg=%q", resp.Code, resp.Msg)
+	}
+
+	out := make([]LarkMessage, 0, len(resp.Data.Items))
+	for _, it := range resp.Data.Items {
+		out = append(out, it.normalize())
+	}
+	return out, nil
+}
+
+// larkListMessagesMaxPageSize is Lark's hard cap on a single
+// im/v1/messages page. We clamp to it so a caller asking for more
+// silently gets the max rather than a 400 from Lark.
+const larkListMessagesMaxPageSize = 50
+
+// ListChatMessages retrieves a bounded, recent window of messages in one
+// chat via GET /open-apis/im/v1/messages?container_id_type=chat. Where
+// GetMessage fetches a single message by id, this lists a conversation;
+// it backs the enricher's group-context prefetch. We pass
+// sort_type=ByCreateTimeDesc so the newest messages come first and a
+// small page_size captures "the last N" without paginating, keeping the
+// inbound ACK path's fan-out to a single round-trip. user_id_type=open_id
+// matches the identifiers the rest of the package keys on; body.content
+// is forwarded verbatim for the enricher's flattener to interpret.
+func (c *httpAPIClient) ListChatMessages(ctx context.Context, creds InstallationCredentials, p ListMessagesParams) ([]LarkMessage, error) {
+	if p.ChatID == "" {
+		return nil, errors.New("lark http client: missing chat_id")
+	}
+	size := p.PageSize
+	if size <= 0 {
+		size = 1
+	} else if size > larkListMessagesMaxPageSize {
+		size = larkListMessagesMaxPageSize
+	}
+	token, err := c.tenantAccessToken(ctx, creds)
+	if err != nil {
+		return nil, err
+	}
+	q := url.Values{}
+	q.Set("container_id_type", "chat")
+	q.Set("container_id", string(p.ChatID))
+	q.Set("sort_type", "ByCreateTimeDesc")
+	q.Set("page_size", strconv.Itoa(size))
+	q.Set("user_id_type", "open_id")
+	path := "/open-apis/im/v1/messages?" + q.Encode()
+
+	var resp struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+		Data struct {
+			Items []larkRESTMessageItem `json:"items"`
+		} `json:"data"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, path, token, nil, &resp); err != nil {
+		return nil, fmt.Errorf("lark http client: list chat messages: %w", err)
+	}
+	if resp.Code != 0 {
+		if isTokenError(resp.Code) {
+			c.invalidateToken(creds.AppID)
+		}
+		return nil, fmt.Errorf("lark http client: list chat messages: code=%d msg=%q", resp.Code, resp.Msg)
 	}
 
 	out := make([]LarkMessage, 0, len(resp.Data.Items))

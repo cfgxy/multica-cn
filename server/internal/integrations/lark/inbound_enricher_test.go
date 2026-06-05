@@ -16,6 +16,11 @@ type enricherFakeClient struct {
 	byID       map[string][]LarkMessage
 	errByID    map[string]error
 	calls      []string
+
+	// ListChatMessages canned results + recorder, keyed by chat id.
+	byChat    map[ChatID][]LarkMessage
+	errByChat map[ChatID]error
+	listCalls []ChatID
 }
 
 func newEnricherFake() *enricherFakeClient {
@@ -23,6 +28,8 @@ func newEnricherFake() *enricherFakeClient {
 		configured: true,
 		byID:       map[string][]LarkMessage{},
 		errByID:    map[string]error{},
+		byChat:     map[ChatID][]LarkMessage{},
+		errByChat:  map[ChatID]error{},
 	}
 }
 
@@ -33,6 +40,13 @@ func (f *enricherFakeClient) GetMessage(ctx context.Context, creds InstallationC
 		return nil, e
 	}
 	return f.byID[id], nil
+}
+func (f *enricherFakeClient) ListChatMessages(ctx context.Context, creds InstallationCredentials, p ListMessagesParams) ([]LarkMessage, error) {
+	f.listCalls = append(f.listCalls, p.ChatID)
+	if e, ok := f.errByChat[p.ChatID]; ok {
+		return nil, e
+	}
+	return f.byChat[p.ChatID], nil
 }
 
 // Unused-by-enricher methods — present only to satisfy APIClient.
