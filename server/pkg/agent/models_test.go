@@ -412,13 +412,26 @@ exit 1
 // doesn't keep the model picker blank for the full TTL. A non-empty result is
 // still cached. See #3729.
 func TestCachedDiscoveryDoesNotCacheEmpty(t *testing.T) {
+	const emptyKey, nonEmptyKey = "test-cache-empty", "test-cache-nonempty"
+	// modelCache is a package-level global; clear our keys up front and on
+	// cleanup so the test stays hermetic under `go test -count=N` (a leftover
+	// non-empty entry from a prior run would otherwise skip the callback).
+	resetCache := func() {
+		modelCacheMu.Lock()
+		delete(modelCache, emptyKey)
+		delete(modelCache, nonEmptyKey)
+		modelCacheMu.Unlock()
+	}
+	resetCache()
+	t.Cleanup(resetCache)
+
 	emptyCalls := 0
 	empty := func() ([]Model, error) {
 		emptyCalls++
 		return []Model{}, nil
 	}
 	for i := 0; i < 2; i++ {
-		got, err := cachedDiscovery("test-cache-empty", empty)
+		got, err := cachedDiscovery(emptyKey, empty)
 		if err != nil {
 			t.Fatalf("cachedDiscovery: %v", err)
 		}
@@ -436,7 +449,7 @@ func TestCachedDiscoveryDoesNotCacheEmpty(t *testing.T) {
 		return []Model{{ID: "provider/model"}}, nil
 	}
 	for i := 0; i < 2; i++ {
-		if _, err := cachedDiscovery("test-cache-nonempty", nonEmpty); err != nil {
+		if _, err := cachedDiscovery(nonEmptyKey, nonEmpty); err != nil {
 			t.Fatalf("cachedDiscovery: %v", err)
 		}
 	}
