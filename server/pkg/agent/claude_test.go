@@ -625,14 +625,15 @@ func TestClaudeExecuteSurfacesStderrWhenChildExitsEarly(t *testing.T) {
 		t.Skip("shell-script fixture is POSIX-only")
 	}
 
-	// Fake claude binary: drains stdin so writeClaudeInput succeeds, writes a
-	// canonical V8-abort line to stderr, then exits non-zero before emitting
-	// any stream-json to stdout. This is the exact failure mode that motivated
-	// PR #1674 — without sampling stderrBuf.Tail() after cmd.Wait() returns,
-	// Result.Error would be a useless "exit status 3".
+	// Fake claude binary: reads the initial stdin frame so writeClaudeInput
+	// succeeds, writes a canonical V8-abort line to stderr, then exits
+	// non-zero before emitting any stream-json to stdout. This is the exact
+	// failure mode that motivated PR #1674 — without sampling stderrBuf.Tail()
+	// after cmd.Wait() returns, Result.Error would be a useless
+	// "exit status 3".
 	fakePath := filepath.Join(t.TempDir(), "claude")
 	script := "#!/bin/sh\n" +
-		"cat >/dev/null\n" +
+		"IFS= read -r _\n" +
 		"echo \"FATAL ERROR: V8 abort: assertion failed\" >&2\n" +
 		"exit 3\n"
 	writeTestExecutable(t, fakePath, []byte(script))
@@ -684,7 +685,7 @@ func TestClaudeExecuteRecordsResultModelUsage(t *testing.T) {
 
 	fakePath := filepath.Join(t.TempDir(), "claude")
 	script := "#!/bin/sh\n" +
-		"cat >/dev/null\n" +
+		"IFS= read -r _\n" +
 		"printf '%s\\n' '{\"type\":\"system\",\"session_id\":\"sess-result-usage\"}'\n" +
 		"printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"sess-result-usage\",\"result\":\"done\",\"modelUsage\":{\"zhipu/coding-plan\":{\"inputTokens\":123,\"outputTokens\":45,\"cacheReadInputTokens\":7,\"cacheCreationInputTokens\":11,\"costUSD\":0.01}}}'\n"
 	writeTestExecutable(t, fakePath, []byte(script))
