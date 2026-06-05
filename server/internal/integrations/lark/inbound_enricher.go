@@ -23,10 +23,13 @@ const larkMsgTypeMergeForward = "merge_forward"
 const defaultMaxForwardChildren = 100
 
 // DefaultRecentContextSize is the window the production wiring uses for
-// the group-context prefetch: how many of the most-recent group messages
-// to inline as a <recent_context> block when a user @-mentions the Bot.
-// 10 keeps the agent's prompt meaningfully contextual without bloating it
-// or risking the inbound ACK budget (a single list call, page_size 10).
+// the group-context prefetch: the page_size of the single list call made
+// when a user @-mentions the Bot in a group. It is a FETCH budget, not a
+// guaranteed rendered count — the trigger message itself and any quoted
+// parent are filtered out of the result, so the <recent_context> block
+// usually renders one or two fewer lines. 10 keeps the agent's prompt
+// meaningfully contextual without bloating it or straining the inbound
+// ACK budget (one list call, page_size 10).
 const DefaultRecentContextSize = 10
 
 // Enricher expands an inbound message's body with context the user
@@ -103,6 +106,16 @@ func NewInboundEnricher(client APIClient, cfg InboundEnricherConfig) Enricher {
 // MUL-3084 (the Bot saw only the single @-ed line, never the surrounding
 // conversation). It is the one fetch here NOT triggered by something the
 // user explicitly attached.
+//
+// Persistence note: like the quoted/forwarded blocks, the rewritten Body
+// is persisted into the addressed turn's chat_message.content downstream
+// (AppendUserMessage). Inlining nearby group messages — including ones
+// from senders who did not address the Bot — into a member's addressed
+// turn is an accepted product decision for MUL-3084. It does NOT relax
+// the MUL-2671 drop-audit invariant: a non-addressed group message still
+// never creates its own session row, and is only ever surfaced as read-
+// context attached to a turn a workspace member explicitly directed at
+// the Bot.
 func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds InstallationCredentials) InboundMessage {
 	isForward := msg.MessageType == larkMsgTypeMergeForward
 	wantRecent := e.recentContextSize > 0 && msg.ChatType == ChatTypeGroup && msg.AddressedToBot
