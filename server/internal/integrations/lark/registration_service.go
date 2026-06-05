@@ -407,6 +407,14 @@ func (s *RegistrationService) runPolling(sess *registrationSession) {
 	}
 	domain := sess.domain
 	deviceCode := sess.deviceCode
+	// region tracks which cloud this install belongs to. It starts at
+	// Feishu (the begin host) and flips to Lark the moment the poll
+	// stream surfaces tenant_brand="lark" (the SwitchedDomain branch
+	// below). At finishSuccess time it is the authoritative per-install
+	// region, derived from the protocol's own role-based switch rather
+	// than by string-matching accounts hostnames (so staging/mock
+	// domains classify correctly too).
+	region := RegionFeishu
 
 	for {
 		select {
@@ -444,11 +452,12 @@ func (s *RegistrationService) runPolling(sess *registrationSession) {
 			// transition poll and the credential-bearing response
 			// lands on the next call to the new domain.
 			domain = res.SwitchedDomain
+			region = RegionLark
 			s.cfg.Logger.Info("lark registration: switched to lark-international domain",
 				"session_id", sess.id, "domain", domain)
 			continue
 		case res.ClientID != "" && res.ClientSecret != "":
-			s.finishSuccess(ctx, sess, res)
+			s.finishSuccess(ctx, sess, res, region)
 			return
 		case res.Err != nil:
 			reason := RegistrationReasonProtocol
@@ -473,8 +482,11 @@ func (s *RegistrationService) runPolling(sess *registrationSession) {
 // finishSuccess runs the post-poll finalization: bot info lookup +
 // installation insert + installer binding, all in a single DB
 // transaction.
-func (s *RegistrationService) finishSuccess(ctx context.Context, sess *registrationSession, res *PollResult) {
-	creds := InstallationCredentials{AppID: res.ClientID, AppSecret: res.ClientSecret}
+func (s *RegistrationService) finishSuccess(ctx context.Context, sess *registrationSession, res *PollResult, region Region) {
+	// Carry the detected region onto the credentials so the GetBotInfo
+	// call below hits the right open-platform host: a Lark-international
+	// install must reach open.larksuite.com, not the Feishu default.
+	creds := InstallationCredentials{AppID: res.ClientID, AppSecret: res.ClientSecret, Region: region}
 	info, err := s.api.GetBotInfo(ctx, creds)
 	if err != nil {
 		s.cfg.Logger.Warn("lark registration: bot info failed",
@@ -518,6 +530,7 @@ func (s *RegistrationService) finishSuccess(ctx context.Context, sess *registrat
 		BotOpenID:          string(info.OpenID),
 		BotUnionID:         textOrNull(info.UnionID),
 		InstallerUserID:    sess.initiatorID,
+		Region:             string(region),
 	})
 	if err != nil {
 		s.cfg.Logger.Warn("lark registration: upsert installation",

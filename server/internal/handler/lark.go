@@ -28,9 +28,13 @@ type LarkInstallationResponse struct {
 	BotOpenID       string  `json:"bot_open_id"`
 	InstallerUserID string  `json:"installer_user_id"`
 	Status          string  `json:"status"`
-	InstalledAt     string  `json:"installed_at"`
-	CreatedAt       string  `json:"created_at"`
-	UpdatedAt       string  `json:"updated_at"`
+	// Region is the Lark cloud this installation lives on: "feishu"
+	// (mainland) or "lark" (international). The UI uses it to render a
+	// badge and to build the correct "Manage in Lark" dev-console host.
+	Region      string `json:"region"`
+	InstalledAt string `json:"installed_at"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
 }
 
 func larkInstallationToResponse(row db.LarkInstallation) LarkInstallationResponse {
@@ -42,6 +46,7 @@ func larkInstallationToResponse(row db.LarkInstallation) LarkInstallationRespons
 		BotOpenID:       row.BotOpenID,
 		InstallerUserID: uuidToString(row.InstallerUserID),
 		Status:          row.Status,
+		Region:          row.Region,
 		InstalledAt:     row.InstalledAt.Time.UTC().Format(time.RFC3339),
 		CreatedAt:       row.CreatedAt.Time.UTC().Format(time.RFC3339),
 		UpdatedAt:       row.UpdatedAt.Time.UTC().Format(time.RFC3339),

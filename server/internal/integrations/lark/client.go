@@ -202,6 +202,14 @@ type InstallationCredentials struct {
 	AppID     string
 	AppSecret string
 	TenantKey string
+	// Region selects the Lark open-platform host (Feishu mainland vs
+	// Lark international) for every call made with these credentials.
+	// Empty defaults to Feishu. Credential-build sites copy it from
+	// lark_installation.region; the device-flow installer sets it from
+	// the auto-detected tenant. This is what lets one deployment serve
+	// both clouds — see http_client.go resolveBaseURL and
+	// ws_endpoint.go Endpoint.
+	Region Region
 }
 
 // ErrAPIClientNotConfigured is returned by the stub client to signal
