@@ -78,7 +78,7 @@ func init() {
 	f.String("runtime-name", "", "Runtime display name (env: MULTICA_AGENT_RUNTIME_NAME)")
 	f.Duration("poll-interval", 0, "Task poll interval (env: MULTICA_DAEMON_POLL_INTERVAL)")
 	f.Duration("heartbeat-interval", 0, "Heartbeat interval (env: MULTICA_DAEMON_HEARTBEAT_INTERVAL)")
-	f.Duration("agent-timeout", 0, "Per-task timeout (env: MULTICA_AGENT_TIMEOUT)")
+	f.Duration("agent-timeout", 0, "Absolute per-task wall-clock cap; 0 = no cap, rely on the watchdogs (env: MULTICA_AGENT_TIMEOUT)")
 	f.Duration("codex-semantic-inactivity-timeout", 0, "Codex semantic inactivity timeout (env: MULTICA_CODEX_SEMANTIC_INACTIVITY_TIMEOUT)")
 	f.Int("max-concurrent-tasks", 0, "Max tasks running in parallel (env: MULTICA_DAEMON_MAX_CONCURRENT_TASKS)")
 	f.Bool("no-auto-update", false, "Disable periodic CLI self-update (env: MULTICA_DAEMON_AUTO_UPDATE=false)")
@@ -97,7 +97,7 @@ func init() {
 	rf.String("runtime-name", "", "Runtime display name (env: MULTICA_AGENT_RUNTIME_NAME)")
 	rf.Duration("poll-interval", 0, "Task poll interval (env: MULTICA_DAEMON_POLL_INTERVAL)")
 	rf.Duration("heartbeat-interval", 0, "Heartbeat interval (env: MULTICA_DAEMON_HEARTBEAT_INTERVAL)")
-	rf.Duration("agent-timeout", 0, "Per-task timeout (env: MULTICA_AGENT_TIMEOUT)")
+	rf.Duration("agent-timeout", 0, "Absolute per-task wall-clock cap; 0 = no cap, rely on the watchdogs (env: MULTICA_AGENT_TIMEOUT)")
 	rf.Duration("codex-semantic-inactivity-timeout", 0, "Codex semantic inactivity timeout (env: MULTICA_CODEX_SEMANTIC_INACTIVITY_TIMEOUT)")
 	rf.Int("max-concurrent-tasks", 0, "Max tasks running in parallel (env: MULTICA_DAEMON_MAX_CONCURRENT_TASKS)")
 	rf.Bool("no-auto-update", false, "Disable periodic CLI self-update (env: MULTICA_DAEMON_AUTO_UPDATE=false)")
@@ -284,7 +284,10 @@ func buildDaemonStartArgs(cmd *cobra.Command) []string {
 	if d, _ := cmd.Flags().GetDuration("heartbeat-interval"); d > 0 {
 		args = append(args, "--heartbeat-interval", d.String())
 	}
-	if d, _ := cmd.Flags().GetDuration("agent-timeout"); d > 0 {
+	// Forward agent-timeout when explicitly set, including an explicit 0
+	// (= no cap), so it can override an environment MULTICA_AGENT_TIMEOUT.
+	if cmd.Flags().Changed("agent-timeout") {
+		d, _ := cmd.Flags().GetDuration("agent-timeout")
 		args = append(args, "--agent-timeout", d.String())
 	}
 	if d, _ := cmd.Flags().GetDuration("codex-semantic-inactivity-timeout"); d > 0 {
@@ -336,8 +339,11 @@ func runDaemonForeground(cmd *cobra.Command) error {
 	if d, _ := cmd.Flags().GetDuration("heartbeat-interval"); d > 0 {
 		overrides.HeartbeatInterval = d
 	}
-	if d, _ := cmd.Flags().GetDuration("agent-timeout"); d > 0 {
-		overrides.AgentTimeout = d
+	// Distinguish "flag not passed" from an explicit `--agent-timeout 0` so a
+	// user can turn off an env-configured cap from the CLI.
+	if cmd.Flags().Changed("agent-timeout") {
+		d, _ := cmd.Flags().GetDuration("agent-timeout")
+		overrides.AgentTimeout = &d
 	}
 	if d, _ := cmd.Flags().GetDuration("codex-semantic-inactivity-timeout"); d > 0 {
 		overrides.CodexSemanticInactivityTimeout = d
