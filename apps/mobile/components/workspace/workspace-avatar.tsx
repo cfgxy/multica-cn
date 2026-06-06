@@ -9,6 +9,14 @@
  * core's resolvePublicFileUrl — because avatar_url comes back as a server-
  * relative path on self-hosted backends without a CDN signer, which RN's
  * <Image> can't load without an absolute origin.
+ *
+ * Both branches render a `border border-border` tile and thread `className`
+ * through, matching web's <img>/<span> (both carry `border` + `className`).
+ * The logo sits inside an overflow-hidden View rather than styling the
+ * <ExpoImage> directly: NativeWind has no cssInterop for expo-image, so
+ * className/border utilities are silently dropped on <ExpoImage>. The wrapper
+ * View is how the rest of the app borders/rounds an expo-image — see
+ * lib/markdown/markdown-image.tsx.
  */
 import { View } from "react-native";
 import { Image as ExpoImage } from "expo-image";
@@ -32,12 +40,17 @@ export function WorkspaceAvatar({
 
   if (resolved) {
     return (
-      <ExpoImage
-        source={{ uri: resolved }}
-        contentFit="cover"
-        accessibilityLabel={name}
+      <View
+        className={cn("overflow-hidden border border-border", className)}
         style={{ width: size, height: size, borderRadius }}
-      />
+      >
+        <ExpoImage
+          source={{ uri: resolved }}
+          contentFit="cover"
+          accessibilityLabel={name}
+          style={{ width: "100%", height: "100%" }}
+        />
+      </View>
     );
   }
 
