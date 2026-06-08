@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -472,4 +473,27 @@ func equalStrings(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// TestRunMigrationsRejectsInvalidDirection pins the direction
+// whitelist contract: anything other than "up" or "down" must error
+// before runMigrations touches the pool. This prevents the subtle bug
+// where an empty or typo'd direction silently fell through to the
+// "down" branch (`opts.Direction == "up"` is false → else branch
+// handles it as a rollback).
+//
+// The check runs ahead of any pool/conn use, so passing nil is safe
+// and lets this case execute without a live Postgres.
+func TestRunMigrationsRejectsInvalidDirection(t *testing.T) {
+	bad := []string{"", "UP", "DOWN", "rollback", "x", " up "}
+	for _, dir := range bad {
+		err := runMigrations(context.Background(), nil, runOptions{Direction: dir})
+		if err == nil {
+			t.Errorf("direction %q: want error, got nil", dir)
+			continue
+		}
+		if !strings.Contains(err.Error(), "invalid direction") {
+			t.Errorf("direction %q: error %q does not mention 'invalid direction'", dir, err)
+		}
+	}
 }

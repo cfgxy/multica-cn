@@ -165,6 +165,13 @@ func main() {
 // already-applied EXISTS check turns each finished migration into a
 // no-op skip. See GitHub multica-ai/multica#3647 / MUL-2923.
 func runMigrations(ctx context.Context, pool *pgxpool.Pool, opts runOptions) error {
+	switch opts.Direction {
+	case "up", "down":
+		// ok
+	default:
+		return fmt.Errorf("invalid direction %q (want \"up\" or \"down\")", opts.Direction)
+	}
+
 	table := opts.SchemaMigrationsTable
 	if table == "" {
 		table = defaultSchemaMigrationsTable
