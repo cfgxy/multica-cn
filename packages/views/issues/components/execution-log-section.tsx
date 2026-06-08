@@ -15,9 +15,7 @@ import {
 } from "@multica/ui/components/ui/tooltip";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { formatDuration } from "../../agents/components/agent-activity-hover-content";
-import { TranscriptButton, buildTimeline } from "../../common/task-transcript";
-import { taskMessagesOptions } from "@multica/core/chat/queries";
-import { RunningStat } from "./running-stat";
+import { TranscriptButton } from "../../common/task-transcript";
 import { failureReasonLabel } from "../../agents/components/tabs/task-failure";
 import { useT } from "../../i18n";
 import { TerminateTaskConfirmDialog } from "./terminate-task-confirm-dialog";
@@ -245,15 +243,10 @@ function useStatusLabel(status: AgentTask["status"]): string {
   }
 }
 
-// One active (running / queued / dispatched / parked) task row. Exported so
-// the issue-detail header live-chip popover renders the exact same row as
-// this panel — same trigger text, same status treatment, same hover-reveal
-// Logs/Stop. The popover hosting it must use `keepMounted` so this row (and
-// its internal confirm dialog) survives the popover closing on Stop click.
-// Running rows read the shared per-task message cache (taskMessagesOptions,
-// kept live by useRealtimeSync's global task:message handler) so every surface
-// — this panel, the header-chip popover, and the transcript dialog — shows the
-// same live "N events (elapsed)" and the same streaming Logs from one source.
+// One active (running / queued / dispatched / parked) task row. Running rows
+// keep status to a single live elapsed timer; transcript and stop stay available
+// as hover actions. Transcript content lazy-loads on click via TranscriptButton,
+// so the row no longer fetches task messages just to render a count.
 export function ActiveTaskRow({
   task,
   issueId,
@@ -267,15 +260,6 @@ export function ActiveTaskRow({
   const tone = STATUS_TONE[task.status];
   const label = useStatusLabel(task.status);
   const trigger = useTriggerText(task);
-
-  // Live message stream for this task — only fetched while running. The shared
-  // cache means the panel row, the popover row, and the chip all dedupe to one
-  // fetch + one WS-maintained entry.
-  const { data: msgs } = useQuery({
-    ...taskMessagesOptions(task.id),
-    enabled: task.status === "running",
-  });
-  const items = useMemo(() => (msgs ? buildTimeline(msgs) : undefined), [msgs]);
 
   // Running rows show a live-ticking elapsed timer (the ticking digits carry
   // "alive", the duration carries "how long"). Only running rows tick.
@@ -320,7 +304,7 @@ export function ActiveTaskRow({
       <RowStatus title={label}>
         {task.status === "running" ? (
           <>
-            <RunningStat eventCount={msgs?.length ?? 0} elapsed={elapsed} />
+            <span className="text-info tabular-nums">{elapsed}</span>
             <span className="sr-only">{label}</span>
           </>
         ) : (
@@ -332,8 +316,7 @@ export function ActiveTaskRow({
           <TranscriptButton
             task={task}
             agentName=""
-            isLive
-            items={items}
+            isLive={task.status === "running"}
             title={t(($) => $.execution_log.transcript_tooltip)}
           />
         )}
