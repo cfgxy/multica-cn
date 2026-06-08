@@ -9,6 +9,7 @@ import {
 } from "@multica/ui/components/ui/popover";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useActorName } from "@multica/core/workspace/hooks";
+import { cn } from "@multica/ui/lib/utils";
 import { agentTaskSnapshotOptions } from "@multica/core/agents";
 import type { AgentTask } from "@multica/core/types";
 import { AgentAvatarStack } from "../../agents/components/agent-avatar-stack";
@@ -99,7 +100,15 @@ function ActiveChip({ issueId, running, queued }: ActiveChipProps) {
             <button
               type="button"
               aria-label={label}
-              className="flex h-7 max-w-[11rem] items-center gap-1.5 rounded-md px-1.5 text-muted-foreground outline-none transition-colors hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring"
+              // While an agent is actively running, the chip wears the
+              // brand border beam — a highlight sweeping around its rounded
+              // edge — so a triggered run is unmistakably "alive" in the
+              // header. Queued-only state stays calm (no beam) to reserve the
+              // motion for work that is genuinely in flight.
+              className={cn(
+                "flex h-7 max-w-[11rem] items-center gap-1.5 rounded-md px-1.5 text-muted-foreground outline-none transition-colors hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring",
+                anyRunning && "border-beam bg-brand/5",
+              )}
             />
           }
         >
