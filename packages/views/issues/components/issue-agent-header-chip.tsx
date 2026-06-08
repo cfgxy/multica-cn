@@ -10,10 +10,12 @@ import {
 } from "@multica/ui/components/ui/popover";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { agentTaskSnapshotOptions } from "@multica/core/agents";
+import { taskMessagesOptions } from "@multica/core/chat/queries";
 import type { AgentTask } from "@multica/core/types";
 import { AgentAvatarStack } from "../../agents/components/agent-avatar-stack";
 import { formatDuration } from "../../agents/components/agent-activity-hover-content";
 import { ActiveTaskRow } from "./execution-log-section";
+import { RunningStat } from "./running-stat";
 import { useT } from "../../i18n";
 
 // Per-issue "is an agent working on this right now?" chip for the issue
@@ -93,6 +95,18 @@ function ActiveChip({ issueId, running, queued }: ActiveChipProps) {
   const activeTasks = [...running, ...queued];
   const agentIds = [...new Set(activeTasks.map((task) => task.agent_id))];
   const anyRunning = running.length > 0;
+  const isSingle = agentIds.length === 1;
+
+  // Single-agent event count comes from the shared per-task message cache —
+  // the same entry the popover row and Logs read, kept live by
+  // useRealtimeSync. Only the single-running case shows a number, so we only
+  // query that one task; multi shows "N working".
+  const singleRunningTaskId =
+    isSingle && anyRunning ? (running[0]?.id ?? "") : "";
+  const { data: singleMsgs } = useQuery({
+    ...taskMessagesOptions(singleRunningTaskId),
+    enabled: singleRunningTaskId !== "",
+  });
 
   // One elapsed time = how long work has been going on this issue. When
   // anything is running, anchor on the longest-running task (earliest start =
@@ -129,9 +143,19 @@ function ActiveChip({ issueId, running, queued }: ActiveChipProps) {
             max={3}
             opacity={anyRunning ? "full" : "half"}
           />
-          {anyRunning ? (
-            <span className="text-info text-xs tabular-nums">{elapsed}</span>
+          {!isSingle ? (
+            // Multiple agents → "N working" (matches the workspace chip);
+            // per-agent time/events live in the popover rows below.
+            <span
+              className={`text-xs ${anyRunning ? "text-info" : "text-muted-foreground"}`}
+            >
+              {agentIds.length} {t(($) => $.agent_activity.chip_label)}
+            </span>
+          ) : anyRunning ? (
+            // Single running → events (primary), elapsed in muted parens.
+            <RunningStat eventCount={singleMsgs?.length ?? 0} elapsed={elapsed} />
           ) : (
+            // Single queued/parked → clock + wait time.
             <span className="flex items-center gap-1 text-xs text-muted-foreground">
               <Clock className="h-3 w-3 shrink-0" />
               <span className="tabular-nums">{elapsed}</span>
