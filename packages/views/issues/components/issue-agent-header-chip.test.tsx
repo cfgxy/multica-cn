@@ -34,6 +34,31 @@ vi.mock("@multica/core/chat/queries", () => ({
   taskMessagesOptions: mockState.taskMessagesOptions,
 }));
 
+vi.mock("@multica/ui/components/ui/popover", async () => {
+  const React = await vi.importActual<typeof import("react")>("react");
+  return {
+    Popover: ({ children }: { children: React.ReactNode }) => (
+      <div data-testid="agent-popover">{children}</div>
+    ),
+    PopoverTrigger: ({
+      render,
+      children,
+    }: {
+      render: React.ReactElement;
+      children: React.ReactNode;
+    }) => React.cloneElement(render, undefined, children),
+    PopoverContent: ({ children }: { children: React.ReactNode }) => (
+      <div data-testid="agent-popover-content">{children}</div>
+    ),
+  };
+});
+
+vi.mock("./execution-log-section", () => ({
+  ActiveTaskRow: ({ task }: { task: AgentTask }) => (
+    <div data-testid="active-task-row">{task.id}</div>
+  ),
+}));
+
 vi.mock("@tanstack/react-query", async () => {
   const actual =
     await vi.importActual<typeof import("@tanstack/react-query")>(
@@ -84,11 +109,23 @@ describe("IssueAgentHeaderChip", () => {
     renderWithI18n(<IssueAgentHeaderChip issueId="issue-1" />);
 
     expect(
-      screen.getByRole("status", { name: "Walt is working" }),
+      screen.getByRole("button", { name: "Walt is working" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Walt is working")).toBeInTheDocument();
     expect(screen.queryByText(/events?/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/\d+[smh]/i)).not.toBeInTheDocument();
+    expect(mockState.taskMessagesOptions).not.toHaveBeenCalled();
+  });
+
+  it("keeps the header popover card with active task rows", () => {
+    mockState.snapshot = [makeTask({ id: "task-running" })];
+
+    renderWithI18n(<IssueAgentHeaderChip issueId="issue-1" />);
+
+    expect(screen.getByTestId("agent-popover-content")).toBeInTheDocument();
+    expect(screen.getByTestId("active-task-row")).toHaveTextContent(
+      "task-running",
+    );
     expect(mockState.taskMessagesOptions).not.toHaveBeenCalled();
   });
 
@@ -101,9 +138,10 @@ describe("IssueAgentHeaderChip", () => {
     renderWithI18n(<IssueAgentHeaderChip issueId="issue-1" />);
 
     expect(
-      screen.getByRole("status", { name: "2 agents working" }),
+      screen.getByRole("button", { name: "2 agents working" }),
     ).toBeInTheDocument();
-    expect(screen.getByText("2 agents working")).toBeInTheDocument();
+    expect(screen.getAllByText("2 agents working")).toHaveLength(2);
+    expect(screen.getAllByTestId("active-task-row")).toHaveLength(2);
     expect(mockState.taskMessagesOptions).not.toHaveBeenCalled();
   });
 
@@ -129,6 +167,6 @@ describe("IssueAgentHeaderChip", () => {
 
     renderWithI18n(<IssueAgentHeaderChip issueId="issue-1" />);
 
-    expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 });

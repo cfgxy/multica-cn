@@ -2,11 +2,17 @@
 
 import { memo, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@multica/ui/components/ui/popover";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useActorName } from "@multica/core/workspace/hooks";
 import { agentTaskSnapshotOptions } from "@multica/core/agents";
 import type { AgentTask } from "@multica/core/types";
 import { AgentAvatarStack } from "../../agents/components/agent-avatar-stack";
+import { ActiveTaskRow } from "./execution-log-section";
 import { useT } from "../../i18n";
 
 // Per-issue "is an agent working on this right now?" chip for the issue
@@ -24,8 +30,9 @@ import { useT } from "../../i18n";
 //   - multiple agents   → avatar stack + "N agents working"
 //   - queued only       → same copy, half-opacity avatars / muted text
 //
-// Events, elapsed time, transcript, and stop controls belong to the right
-// panel ExecutionLogSection. The header is a scan-only status segment.
+// Click opens a compact Popover card with the same active rows as the right
+// panel. Those rows show necessary status/time and task entry actions, but do
+// not render event counts or prefetch task messages for a count.
 
 interface IssueAgentHeaderChipProps {
   issueId: string;
@@ -56,19 +63,19 @@ export const IssueAgentHeaderChip = memo(function IssueAgentHeaderChip({
     return { running, queued };
   }, [snapshot, issueId]);
 
-  // No active work → render nothing. Header details stay out of this component;
-  // the right panel owns per-task timing, messages, transcript, and stop controls.
+  // No active work → render nothing.
   if (running.length === 0 && queued.length === 0) return null;
 
-  return <ActiveChip running={running} queued={queued} />;
+  return <ActiveChip issueId={issueId} running={running} queued={queued} />;
 });
 
 interface ActiveChipProps {
+  issueId: string;
   running: AgentTask[];
   queued: AgentTask[];
 }
 
-function ActiveChip({ running, queued }: ActiveChipProps) {
+function ActiveChip({ issueId, running, queued }: ActiveChipProps) {
   const { t } = useT("issues");
   const { getActorName } = useActorName();
 
@@ -86,23 +93,41 @@ function ActiveChip({ running, queued }: ActiveChipProps) {
 
   return (
     <div className="flex items-center gap-1">
-      <div
-        role="status"
-        aria-label={label}
-        className="flex h-7 max-w-[11rem] items-center gap-1.5 rounded-md px-1.5 text-muted-foreground"
-      >
-        <AgentAvatarStack
-          agentIds={agentIds}
-          size={18}
-          max={3}
-          opacity={anyRunning ? "full" : "half"}
-        />
-        <span
-          className={`min-w-0 truncate text-xs ${anyRunning ? "text-info" : "text-muted-foreground"}`}
+      <Popover>
+        <PopoverTrigger
+          render={
+            <button
+              type="button"
+              aria-label={label}
+              className="flex h-7 max-w-[11rem] items-center gap-1.5 rounded-md px-1.5 text-muted-foreground outline-none transition-colors hover:bg-accent/60 focus-visible:ring-2 focus-visible:ring-ring"
+            />
+          }
         >
-          {label}
-        </span>
-      </div>
+          <AgentAvatarStack
+            agentIds={agentIds}
+            size={18}
+            max={3}
+            opacity={anyRunning ? "full" : "half"}
+          />
+          <span
+            className={`min-w-0 truncate text-xs ${anyRunning ? "text-info" : "text-muted-foreground"}`}
+          >
+            {label}
+          </span>
+        </PopoverTrigger>
+        <PopoverContent align="end" keepMounted className="w-80">
+          <div className="text-xs font-medium text-muted-foreground">
+            {t(($) => $.agent_activity.hover_header, {
+              count: agentIds.length,
+            })}
+          </div>
+          <div className="flex flex-col gap-0.5">
+            {activeTasks.map((task) => (
+              <ActiveTaskRow key={task.id} task={task} issueId={issueId} />
+            ))}
+          </div>
+        </PopoverContent>
+      </Popover>
       {/* Separator from the action buttons — the chip is a status segment,
           not another button, so a hairline keeps the two groups legible. */}
       <span className="h-4 w-px bg-border" aria-hidden="true" />
