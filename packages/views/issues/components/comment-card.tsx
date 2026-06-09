@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useCallback, useRef, useState } from "react";
+import { memo, useCallback, useRef, useState, type ReactNode } from "react";
 import { CheckCircle2, ChevronRight, ListChevronsDownUp, Copy, MoreHorizontal, Pencil, RotateCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Card } from "@multica/ui/components/ui/card";
@@ -42,6 +42,41 @@ import { useCommentCollapseStore, useCommentDraftStore } from "@multica/core/iss
 import { useT } from "../../i18n";
 import { CommentsFoldBar } from "./resolved-thread-bar";
 import { deriveThreadResolution } from "./thread-utils";
+
+const highlightedCommentBackgroundClass =
+  "bg-[color-mix(in_srgb,var(--card)_95%,var(--brand)_5%)]";
+const highlightedCommentFadeClass =
+  "after:from-[color-mix(in_srgb,var(--card)_95%,var(--brand)_5%)]";
+
+function StickyHeaderShell({
+  className,
+  sticky = true,
+  highlighted,
+  children,
+}: {
+  className?: string;
+  sticky?: boolean;
+  highlighted?: boolean;
+  children: ReactNode;
+}) {
+  if (!sticky) {
+    return <div className={className}>{children}</div>;
+  }
+
+  return (
+    <div
+      className={cn(
+        "sticky top-0 z-10 after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-2 after:bg-gradient-to-b after:to-transparent",
+        highlighted ? highlightedCommentBackgroundClass : "bg-card",
+        highlighted ? highlightedCommentFadeClass : "after:from-card",
+      )}
+    >
+      <div className={className}>
+        {children}
+      </div>
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -377,11 +412,9 @@ function CommentRow({
           row box, so a LONG reply keeps its
           author + actions visible while you scroll its body, then releases once
           this reply ends. bg-card occludes the body scrolling underneath. */}
-      <div
-        className={cn(
-          "sticky top-0 z-10 flex items-center gap-2.5 px-4 pt-1 pb-1.5",
-          isHighlighted ? "bg-brand/5" : "bg-card",
-        )}
+      <StickyHeaderShell
+        highlighted={isHighlighted}
+        className="flex items-center gap-2.5 px-4 pt-1 pb-1.5"
       >
         <ActorAvatar actorType={entry.actor_type} actorId={entry.actor_id} size={24} enableHoverCard showStatusDot />
         <span className="cursor-pointer text-sm font-medium">
@@ -474,7 +507,7 @@ function CommentRow({
             onConfirm={() => onDelete(entry.id)}
           />
         </div>
-      </div>
+      </StickyHeaderShell>
 
       {edit.editing ? (
         <div
@@ -623,7 +656,7 @@ function CommentCardImpl({
     // overflow-clip (not -hidden) clips the rounded corners WITHOUT creating a
     // scroll container, so the sticky collapse affordances below resolve to the
     // timeline's scroll parent instead of this card. See PR #3623.
-    <Card className={cn("!py-0 !gap-0 overflow-clip transition-colors duration-700", isHighlighted && "ring-2 ring-brand/50 bg-brand/5")}>
+    <Card className={cn("!py-0 !gap-0 overflow-clip transition-colors duration-700", isHighlighted && "ring-2 ring-brand/50", isHighlighted && highlightedCommentBackgroundClass)}>
       {onCollapseResolved && (
         <button
           type="button"
@@ -644,12 +677,10 @@ function CommentCardImpl({
             stays stuck behind every reply. */}
         <div>
         {/* Header — always visible, acts as toggle */}
-        <div
-          className={cn(
-            "px-4 py-3",
-            stickyHeader && "sticky top-0 z-10",
-            stickyHeader && (isHighlighted ? "bg-brand/5" : "bg-card"),
-          )}
+        <StickyHeaderShell
+          sticky={stickyHeader}
+          highlighted={isHighlighted}
+          className="px-4 py-3"
         >
           <div className="flex items-center gap-2.5">
             <CollapsibleTrigger className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors">
@@ -753,7 +784,7 @@ function CommentCardImpl({
               </div>
             )}
           </div>
-        </div>
+        </StickyHeaderShell>
 
         {/* Collapsible body */}
         <CollapsibleContent>
@@ -846,7 +877,7 @@ function CommentCardImpl({
                 </div>
               )}
               {resolutionReply && (
-                <div id={`comment-${resolutionReply.id}`} className={cn("border-t border-border/50 transition-colors duration-700", highlightedCommentId === resolutionReply.id && "bg-brand/5")}>
+                <div id={`comment-${resolutionReply.id}`} className={cn("border-t border-border/50 transition-colors duration-700", highlightedCommentId === resolutionReply.id && highlightedCommentBackgroundClass)}>
                   <CommentRow
                     issueId={issueId}
                     entry={resolutionReply}
@@ -879,7 +910,7 @@ function CommentCardImpl({
               )}
               {/* Replies — chronological; the resolution keeps its place with a badge */}
               {allNestedReplies.map((reply) => (
-                <div key={reply.id} id={`comment-${reply.id}`} className={cn("border-t border-border/50 transition-colors duration-700", highlightedCommentId === reply.id && "bg-brand/5")}>
+                <div key={reply.id} id={`comment-${reply.id}`} className={cn("border-t border-border/50 transition-colors duration-700", highlightedCommentId === reply.id && highlightedCommentBackgroundClass)}>
                   <CommentRow
                     issueId={issueId}
                     entry={reply}
