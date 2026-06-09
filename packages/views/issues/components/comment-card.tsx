@@ -1,7 +1,7 @@
 "use client";
 
 import { memo, useCallback, useRef, useState } from "react";
-import { CheckCircle2, ChevronRight, Copy, MoreHorizontal, Pencil, RotateCcw, Trash2 } from "lucide-react";
+import { CheckCircle2, ChevronRight, ListChevronsDownUp, Copy, MoreHorizontal, Pencil, RotateCcw, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { Card } from "@multica/ui/components/ui/card";
 import { Button } from "@multica/ui/components/ui/button";
@@ -40,6 +40,8 @@ import type { TimelineEntry, Attachment } from "@multica/core/types";
 import { contentReferencesAttachment } from "@multica/core/types";
 import { useCommentCollapseStore, useCommentDraftStore } from "@multica/core/issues/stores";
 import { useT } from "../../i18n";
+import { CommentsFoldBar } from "./resolved-thread-bar";
+import { deriveThreadResolution } from "./thread-utils";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -69,7 +71,7 @@ interface CommentCardProps {
   onEdit: (commentId: string, content: string, attachmentIds: string[]) => Promise<void>;
   onDelete: (commentId: string) => void;
   onToggleReaction: (commentId: string, emoji: string) => void;
-  /** Toggle the resolved state on the thread root. Only invoked for root entries. */
+  /** Resolve/unresolve any comment in this thread (commentId = the target row). */
   onResolveToggle?: (commentId: string, resolved: boolean) => void;
   /**
    * When non-null, the thread root is currently rendered as a resolved-but-
@@ -77,6 +79,13 @@ interface CommentCardProps {
    * can fold the thread back to the bar; the parent owns the session state.
    */
   onCollapseResolved?: () => void;
+  /**
+   * Per-session set of thread ROOT ids whose reply-resolution fold is expanded.
+   * Used only when a REPLY is the resolution (root-resolution folding is handled
+   * one level up in issue-detail's resolved-bar). Keyed on root id.
+   */
+  expandedResolvedIds?: ReadonlySet<string>;
+  onResolvedExpandChange?: (rootId: string, expand: boolean) => void;
   /** ID of the comment to highlight (flash animation). */
   highlightedCommentId?: string | null;
 }
@@ -322,19 +331,27 @@ function useEditAttachmentState(
 function CommentRow({
   issueId,
   entry,
+  rootId,
   currentUserId,
   canModerate = false,
+  isResolution = false,
   onEdit,
   onDelete,
   onToggleReaction,
+  onResolveToggle,
 }: {
   issueId: string;
   entry: TimelineEntry;
+  /** Root comment id of this thread — target of "Resolve thread" from a reply. */
+  rootId: string;
   currentUserId?: string;
   canModerate?: boolean;
+  /** True when this reply is the thread's resolution (shows the green badge). */
+  isResolution?: boolean;
   onEdit: (commentId: string, content: string, attachmentIds: string[]) => Promise<void>;
   onDelete: (commentId: string) => void;
   onToggleReaction: (commentId: string, emoji: string) => void;
+  onResolveToggle?: (commentId: string, resolved: boolean) => void;
 }) {
   const { t } = useT("issues");
   const timeAgo = useTimeAgo();
@@ -353,7 +370,11 @@ function CommentRow({
 
   return (
     <div className="py-3">
-      <div className="flex items-center gap-2.5">
+      {/* Header pins to the timeline's scroll parent within this reply's own
+          row (the py-3 box is its containing block), so a LONG reply keeps its
+          author + actions visible while you scroll its body, then releases once
+          this reply ends. bg-card occludes the body scrolling underneath. */}
+      <div className="sticky top-0 z-10 flex items-center gap-2.5 bg-card">
         <ActorAvatar actorType={entry.actor_type} actorId={entry.actor_id} size={24} enableHoverCard showStatusDot />
         <span className="cursor-pointer text-sm font-medium">
           {getActorName(entry.actor_type, entry.actor_id)}
@@ -370,6 +391,12 @@ function CommentRow({
             {new Date(entry.created_at).toLocaleString()}
           </TooltipContent>
         </Tooltip>
+
+        {isResolution && (
+          <span className="text-xs font-medium text-success">
+            {t(($) => $.comment.resolve.resolution_badge)}
+          </span>
+        )}
 
         <div className="ml-auto flex items-center gap-0.5">
           <QuickEmojiPicker
@@ -393,6 +420,26 @@ function CommentRow({
                 <Copy className="h-3.5 w-3.5" />
                 {t(($) => $.comment.copy_action)}
               </DropdownMenuItem>
+              {onResolveToggle && (
+                <>
+                  <DropdownMenuSeparator />
+                  {isResolution ? (
+                    <DropdownMenuItem onClick={() => onResolveToggle(entry.id, false)}>
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      {t(($) => $.comment.resolve.unresolve_action)}
+                    </DropdownMenuItem>
+                  ) : (
+                    <DropdownMenuItem onClick={() => onResolveToggle(entry.id, true)}>
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      {t(($) => $.comment.resolve.resolve_with_comment_action)}
+                    </DropdownMenuItem>
+                  )}
+                  <DropdownMenuItem onClick={() => onResolveToggle(rootId, true)}>
+                    <CheckCircle2 className="h-3.5 w-3.5" />
+                    {t(($) => $.comment.resolve.resolve_thread_action)}
+                  </DropdownMenuItem>
+                </>
+              )}
               {(canEditEntry || canDeleteEntry) && (
                 <>
                   <DropdownMenuSeparator />
@@ -507,6 +554,8 @@ function CommentCardImpl({
   onToggleReaction,
   onResolveToggle,
   onCollapseResolved,
+  expandedResolvedIds,
+  onResolvedExpandChange,
   highlightedCommentId,
 }: CommentCardProps) {
   const { t } = useT("issues");
@@ -534,25 +583,60 @@ function CommentCardImpl({
 
   const isHighlighted = highlightedCommentId === entry.id;
 
+  // Reply-resolution display. When a REPLY is the thread's resolution, the other
+  // replies fold behind a bar and the resolution stays visible (root-resolution
+  // is handled one level up in issue-detail's resolved-bar, so kind "root" here
+  // renders the normal full thread under the Collapse header).
+  const resolution = deriveThreadResolution(entry, allNestedReplies);
+  const replyResolutionId = resolution.kind === "reply" ? resolution.resolutionId : null;
+  const threadExpanded = !!expandedResolvedIds?.has(entry.id);
+  const replyFolded = replyResolutionId != null && !threadExpanded;
+  const foldedReplies = replyResolutionId
+    ? allNestedReplies.filter((r) => r.id !== replyResolutionId)
+    : allNestedReplies;
+  const resolutionReply = replyResolutionId
+    ? allNestedReplies.find((r) => r.id === replyResolutionId) ?? null
+    : null;
+
+  // Pin the root comment's header to the timeline's scroll parent while the
+  // thread is open, so a LONG root comment keeps its author + actions visible
+  // as you scroll its body (overflow-clip on the Card anchors this to the
+  // timeline, not the card — see below). The root-section wrapper below scopes
+  // its containing block to the header + body, so it releases the moment the
+  // replies begin — exactly one header is pinned at a time. Each reply pins its
+  // header the same way, scoped to its own row (see CommentRow). Skip the root
+  // header whenever a resolution collapse bar already owns the top-0 sticky slot
+  // (root resolved + expanded, or reply-resolution expanded): two sticky bars at
+  // the same offset would stack and hide one.
+  const stickyHeader =
+    open && !onCollapseResolved && !(replyResolutionId != null && threadExpanded);
+
   return (
-    <Card className={cn("!py-0 !gap-0 overflow-hidden transition-colors duration-700", isHighlighted && "ring-2 ring-brand/50 bg-brand/5")}>
+    // overflow-clip (not -hidden) clips the rounded corners WITHOUT creating a
+    // scroll container, so the sticky collapse affordances below resolve to the
+    // timeline's scroll parent instead of this card. See PR #3623.
+    <Card className={cn("!py-0 !gap-0 overflow-clip transition-colors duration-700", isHighlighted && "ring-2 ring-brand/50 bg-brand/5")}>
       {onCollapseResolved && (
         <button
           type="button"
           onClick={onCollapseResolved}
-          className="flex w-full items-center justify-between border-b border-border/50 px-4 py-2.5 text-left text-sm text-muted-foreground hover:bg-muted/50 transition-colors"
+          className="sticky top-0 z-20 flex w-full items-center gap-2.5 border-b border-border/50 bg-muted px-4 py-2.5 text-left text-sm text-muted-foreground transition-colors cursor-pointer hover:bg-accent hover:text-accent-foreground"
           aria-label={t(($) => $.comment.resolve.collapse)}
         >
-          <span className="flex items-center gap-2">
-            <CheckCircle2 className="h-3.5 w-3.5" />
-            {t(($) => $.comment.resolve.collapse)}
-          </span>
-          <ChevronRight className="h-3.5 w-3.5 -rotate-90" />
+          <ListChevronsDownUp className="h-3.5 w-3.5" />
+          {t(($) => $.comment.resolve.collapse)}
         </button>
       )}
       <Collapsible open={open} onOpenChange={handleOpenChange}>
+        {/* root-section — the sticky header's containing block. It wraps ONLY
+            the header + root body, so the header releases the moment you scroll
+            past the body into the replies (which render OUTSIDE this wrapper).
+            That is what keeps exactly one header pinned at a time: without this
+            wrapper the header's containing block is the whole thread and it
+            stays stuck behind every reply. */}
+        <div>
         {/* Header — always visible, acts as toggle */}
-        <div className="px-4 py-3">
+        <div className={cn("px-4 py-3", stickyHeader && "sticky top-0 z-10 bg-card")}>
           <div className="flex items-center gap-2.5">
             <CollapsibleTrigger className="shrink-0 rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground transition-colors">
               <ChevronRight className={cn("h-3.5 w-3.5 transition-transform", open && "rotate-90")} />
@@ -615,12 +699,12 @@ function CommentCardImpl({
                         {entry.resolved_at ? (
                           <>
                             <RotateCcw className="h-3.5 w-3.5" />
-                            {t(($) => $.comment.resolve.unresolve_action)}
+                            {t(($) => $.comment.resolve.unresolve_thread_action)}
                           </>
                         ) : (
                           <>
                             <CheckCircle2 className="h-3.5 w-3.5" />
-                            {t(($) => $.comment.resolve.resolve_action)}
+                            {t(($) => $.comment.resolve.resolve_thread_action)}
                           </>
                         )}
                       </DropdownMenuItem>
@@ -728,35 +812,90 @@ function CommentCardImpl({
               </>
             )}
           </div>
-
-          {/* Replies */}
-          {allNestedReplies.map((reply) => (
-            <div key={reply.id} id={`comment-${reply.id}`} className={cn("border-t border-border/50 px-4 transition-colors duration-700", highlightedCommentId === reply.id && "bg-brand/5")}>
-              <CommentRow
-                issueId={issueId}
-                entry={reply}
-                currentUserId={currentUserId}
-                canModerate={canModerate}
-                onEdit={onEdit}
-                onDelete={onDelete}
-                onToggleReaction={onToggleReaction}
-              />
-            </div>
-          ))}
-
-          {/* Reply input */}
-          <div className="border-t border-border/50 px-4 py-2.5">
-            <ReplyInput
-              issueId={issueId}
-              placeholder={t(($) => $.reply.placeholder)}
-              size="sm"
-              avatarType="member"
-              avatarId={currentUserId ?? ""}
-              draftKey={`reply:${issueId}:${entry.id}`}
-              onSubmit={(content, attachmentIds) => onReply(entry.id, content, attachmentIds)}
-            />
-          </div>
         </CollapsibleContent>
+        </div>
+
+        {/* Replies + reply input — rendered OUTSIDE root-section so the root
+            header's sticky containing block ends with the body. Gated on `open`
+            to mirror the body Panel's collapse visibility. */}
+        {open && (
+          <>
+          {replyFolded ? (
+            <>
+              {/* reply-mode folded: other replies behind a bar, resolution pinned below */}
+              {foldedReplies.length > 0 && (
+                <div className="border-t border-border/50 px-4 py-2.5">
+                  <CommentsFoldBar
+                    replies={foldedReplies}
+                    onExpand={() => onResolvedExpandChange?.(entry.id, true)}
+                  />
+                </div>
+              )}
+              {resolutionReply && (
+                <div id={`comment-${resolutionReply.id}`} className={cn("border-t border-border/50 px-4 transition-colors duration-700", highlightedCommentId === resolutionReply.id && "bg-brand/5")}>
+                  <CommentRow
+                    issueId={issueId}
+                    entry={resolutionReply}
+                    rootId={entry.id}
+                    currentUserId={currentUserId}
+                    canModerate={canModerate}
+                    isResolution
+                    onEdit={onEdit}
+                    onDelete={onDelete}
+                    onToggleReaction={onToggleReaction}
+                    onResolveToggle={onResolveToggle}
+                  />
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              {/* reply-mode expanded: a Collapse affordance to fold back */}
+              {replyResolutionId != null && onResolvedExpandChange && (
+                <button
+                  type="button"
+                  onClick={() => onResolvedExpandChange(entry.id, false)}
+                  className="sticky top-0 z-20 flex w-full items-center gap-2.5 border-t border-border/50 bg-muted px-4 py-2.5 text-left text-sm text-muted-foreground transition-colors cursor-pointer hover:bg-accent hover:text-accent-foreground"
+                  aria-label={t(($) => $.comment.resolve.collapse)}
+                >
+                  <ListChevronsDownUp className="h-3.5 w-3.5" />
+                  {t(($) => $.comment.resolve.collapse)}
+                </button>
+              )}
+              {/* Replies — chronological; the resolution keeps its place with a badge */}
+              {allNestedReplies.map((reply) => (
+                <div key={reply.id} id={`comment-${reply.id}`} className={cn("border-t border-border/50 px-4 transition-colors duration-700", highlightedCommentId === reply.id && "bg-brand/5")}>
+                  <CommentRow
+                    issueId={issueId}
+                    entry={reply}
+                    rootId={entry.id}
+                    currentUserId={currentUserId}
+                    canModerate={canModerate}
+                    isResolution={reply.id === replyResolutionId}
+                    onEdit={onEdit}
+                    onDelete={onDelete}
+                    onToggleReaction={onToggleReaction}
+                    onResolveToggle={onResolveToggle}
+                  />
+                </div>
+              ))}
+
+              {/* Reply input */}
+              <div className="border-t border-border/50 px-4 py-2.5">
+                <ReplyInput
+                  issueId={issueId}
+                  placeholder={t(($) => $.reply.placeholder)}
+                  size="sm"
+                  avatarType="member"
+                  avatarId={currentUserId ?? ""}
+                  draftKey={`reply:${issueId}:${entry.id}`}
+                  onSubmit={(content, attachmentIds) => onReply(entry.id, content, attachmentIds)}
+                />
+              </div>
+            </>
+          )}
+          </>
+        )}
       </Collapsible>
     </Card>
   );
