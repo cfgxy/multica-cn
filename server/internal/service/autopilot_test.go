@@ -26,47 +26,39 @@ func TestAutopilotErrorType(t *testing.T) {
 	}
 }
 
-func TestIsNoProgressTaskFailure(t *testing.T) {
+func TestTaskFailureReasonForAutopilotRun(t *testing.T) {
 	cases := []struct {
 		name string
 		task db.AgentTaskQueue
-		want bool
+		want string
 	}{
 		{
-			name: "classified codex semantic inactivity",
+			name: "prefers raw error text",
 			task: db.AgentTaskQueue{
+				Error:         pgtype.Text{String: "tests failed", Valid: true},
+				FailureReason: pgtype.Text{String: "agent_error", Valid: true},
+			},
+			want: "tests failed",
+		},
+		{
+			name: "falls back to classified reason when error is blank",
+			task: db.AgentTaskQueue{
+				Error:         pgtype.Text{String: "   ", Valid: true},
 				FailureReason: pgtype.Text{String: "codex_semantic_inactivity", Valid: true},
 			},
-			want: true,
+			want: "codex_semantic_inactivity",
 		},
 		{
-			name: "codex app-server no progress marker",
-			task: db.AgentTaskQueue{
-				Error: pgtype.Text{String: "codex app-server no progress timeout after 30s", Valid: true},
-			},
-			want: true,
-		},
-		{
-			name: "codex semantic inactivity marker",
-			task: db.AgentTaskQueue{
-				Error: pgtype.Text{String: "codex semantic inactivity timeout after 5m", Valid: true},
-			},
-			want: true,
-		},
-		{
-			name: "ordinary agent failure",
-			task: db.AgentTaskQueue{
-				FailureReason: pgtype.Text{String: "agent_error", Valid: true},
-				Error:         pgtype.Text{String: "tests failed", Valid: true},
-			},
-			want: false,
+			name: "generic default when nothing is set",
+			task: db.AgentTaskQueue{},
+			want: "task failed",
 		},
 	}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := isNoProgressTaskFailure(tc.task); got != tc.want {
-				t.Fatalf("isNoProgressTaskFailure() = %v, want %v", got, tc.want)
+			if got := taskFailureReasonForAutopilotRun(tc.task); got != tc.want {
+				t.Fatalf("taskFailureReasonForAutopilotRun() = %q, want %q", got, tc.want)
 			}
 		})
 	}
