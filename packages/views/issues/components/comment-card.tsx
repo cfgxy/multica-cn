@@ -366,7 +366,6 @@ function useEditAttachmentState(
 function CommentRow({
   issueId,
   entry,
-  rootId,
   currentUserId,
   canModerate = false,
   isResolution = false,
@@ -378,8 +377,6 @@ function CommentRow({
 }: {
   issueId: string;
   entry: TimelineEntry;
-  /** Root comment id of this thread — target of "Resolve thread" from a reply. */
-  rootId: string;
   currentUserId?: string;
   canModerate?: boolean;
   /** True when this reply is the thread's resolution (shows the green badge). */
@@ -475,10 +472,6 @@ function CommentRow({
                       {t(($) => $.comment.resolve.resolve_with_comment_action)}
                     </DropdownMenuItem>
                   )}
-                  <DropdownMenuItem onClick={() => onResolveToggle(rootId, true)}>
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                    {t(($) => $.comment.resolve.resolve_thread_action)}
-                  </DropdownMenuItem>
                 </>
               )}
               {(canEditEntry || canDeleteEntry) && (
@@ -881,7 +874,6 @@ function CommentCardImpl({
                   <CommentRow
                     issueId={issueId}
                     entry={resolutionReply}
-                    rootId={entry.id}
                     currentUserId={currentUserId}
                     canModerate={canModerate}
                     isResolution
@@ -914,7 +906,6 @@ function CommentCardImpl({
                   <CommentRow
                     issueId={issueId}
                     entry={reply}
-                    rootId={entry.id}
                     currentUserId={currentUserId}
                     canModerate={canModerate}
                     isResolution={reply.id === replyResolutionId}
