@@ -438,17 +438,34 @@ func (s *AutopilotService) SyncRunFromTask(ctx context.Context, task db.AgentTas
 	}
 }
 
-// SyncRunFromLinkedIssueTask closes a create_issue autopilot run when the
-// issue task fails before producing agent progress. create_issue tasks are
-// linked through issue_id rather than autopilot_run_id, so SyncRunFromTask
-// cannot see them directly.
+// SyncRunFromLinkedIssueTask fails a create_issue autopilot run when its
+// linked issue task fails terminally before the issue itself reaches a
+// terminal status. create_issue tasks are linked through issue_id rather than
+// autopilot_run_id, so SyncRunFromTask cannot see them directly. Without this
+// the run would hang in `issue_created` forever — and because the failure-rate
+// auto-pause monitor excludes issue_created/running runs, a consistently
+// failing autopilot would never trip the auto-pause either.
+//
+// "Terminal" means no task is still active for the issue. FailTask enqueues an
+// auto-retry for infra-shaped failures (timeout, runtime offline/recovery,
+// codex no-progress) BEFORE it broadcasts the failure event, so an active task
+// here means another attempt is already in flight — we wait for it instead of
+// failing the run prematurely. Once retries are exhausted (or the failure was
+// never retryable in the first place), the run fails carrying the task's reason.
 func (s *AutopilotService) SyncRunFromLinkedIssueTask(ctx context.Context, task db.AgentTaskQueue) {
 	if task.AutopilotRunID.Valid || !task.IssueID.Valid || task.Status != "failed" {
 		return
 	}
-	if !isNoProgressTaskFailure(task) {
-		return
+	// Only create_issue runs link through issue_id (and their linked issue is
+	// always origin_type=autopilot by construction), so a hit here both
+	// identifies an in-flight create_issue run and bails the common case of
+	// ordinary issue/chat task failures after a single query.
+	run, err := s.Queries.GetAutopilotRunByIssue(ctx, task.IssueID)
+	if err != nil {
+		return // no active run linked to this issue
 	}
+	// A still-active task — typically the auto-retry FailTask just enqueued —
+	// means the dispatch isn't terminal yet; wait for the final attempt.
 	hasActive, err := s.Queries.HasActiveTaskForIssue(ctx, task.IssueID)
 	if err != nil {
 		slog.Warn("failed to check active tasks for autopilot issue failure",
@@ -459,15 +476,6 @@ func (s *AutopilotService) SyncRunFromLinkedIssueTask(ctx context.Context, task 
 		return
 	}
 	if hasActive {
-		return
-	}
-
-	issue, err := s.Queries.GetIssue(ctx, task.IssueID)
-	if err != nil || !issue.OriginType.Valid || issue.OriginType.String != "autopilot" {
-		return
-	}
-	run, err := s.Queries.GetAutopilotRunByIssue(ctx, issue.ID)
-	if err != nil {
 		return
 	}
 	autopilot, err := s.Queries.GetAutopilot(ctx, run.AutopilotID)
@@ -483,26 +491,14 @@ func (s *AutopilotService) SyncRunFromLinkedIssueTask(ctx context.Context, task 
 	if err != nil {
 		slog.Warn("failed to fail autopilot run from linked issue task",
 			"run_id", util.UUIDToString(run.ID),
-			"issue_id", util.UUIDToString(issue.ID),
+			"issue_id", util.UUIDToString(task.IssueID),
 			"task_id", util.UUIDToString(task.ID),
 			"error", err,
 		)
 		return
 	}
 	s.captureAutopilotRunFailed(autopilot, updatedRun, updatedRun.Source, reason)
-	s.publishRunDone(util.UUIDToString(issue.WorkspaceID), updatedRun, "failed")
-}
-
-func isNoProgressTaskFailure(task db.AgentTaskQueue) bool {
-	if task.FailureReason.Valid && task.FailureReason.String == "codex_semantic_inactivity" {
-		return true
-	}
-	if !task.Error.Valid {
-		return false
-	}
-	errText := strings.ToLower(task.Error.String)
-	return strings.Contains(errText, "codex app-server no progress timeout") ||
-		strings.Contains(errText, "codex semantic inactivity timeout")
+	s.publishRunDone(util.UUIDToString(autopilot.WorkspaceID), updatedRun, "failed")
 }
 
 func taskFailureReasonForAutopilotRun(task db.AgentTaskQueue) string {
@@ -512,7 +508,7 @@ func taskFailureReasonForAutopilotRun(task db.AgentTaskQueue) string {
 	if task.FailureReason.Valid && strings.TrimSpace(task.FailureReason.String) != "" {
 		return task.FailureReason.String
 	}
-	return "task failed before agent progress"
+	return "task failed"
 }
 
 // handleDispatchSkip recognises an errDispatchSkipped returned from a
