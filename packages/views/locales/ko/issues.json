@@ -298,6 +298,8 @@
   "agent_activity": {
     "hover_header_one": "작업 중인 에이전트 {{count}}개",
     "hover_header_other": "작업 중인 에이전트 {{count}}개",
+    "hover_header_queued_one": "대기 중인 에이전트 {{count}}개",
+    "hover_header_queued_other": "대기 중인 에이전트 {{count}}개",
     "status_running": "작업 중",
     "status_queued": "대기 중",
     "chip_label": "작업 중",
@@ -312,8 +314,6 @@
     "fallback_name": "에이전트",
     "tool_count_one": "도구 {{count}}개",
     "tool_count_other": "도구 {{count}}개",
-    "event_count_one": "이벤트 {{count}}개",
-    "event_count_other": "이벤트 {{count}}개",
     "transcript_button": "트랜스크립트 보기",
     "stop_button": "중지",
     "stop_tooltip": "에이전트 중지",

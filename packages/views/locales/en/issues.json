@@ -298,6 +298,8 @@
   "agent_activity": {
     "hover_header_one": "{{count}} agent working",
     "hover_header_other": "{{count}} agents working",
+    "hover_header_queued_one": "{{count}} agent queued",
+    "hover_header_queued_other": "{{count}} agents queued",
     "status_running": "Working",
     "status_queued": "Queued",
     "chip_label": "working",
@@ -312,8 +314,6 @@
     "fallback_name": "Agent",
     "tool_count_one": "{{count}} tool",
     "tool_count_other": "{{count}} tools",
-    "event_count_one": "{{count}} event",
-    "event_count_other": "{{count}} events",
     "transcript_button": "View transcript",
     "stop_button": "Stop",
     "stop_tooltip": "Stop agent",
