@@ -155,7 +155,7 @@ function ReplyInput({
         {...dropZoneProps}
         className={cn(
           "relative min-w-0 flex-1 flex flex-col",
-          !isEmpty && "pb-7",
+          !isEmpty && "pb-9",
         )}
       >
         <div className="flex-1 min-h-0 overflow-y-auto">
