@@ -453,4 +453,79 @@ describe("RuntimeLocalSkillImportPanel", () => {
 
     expect(await screen.findByText("Updated")).toBeInTheDocument();
   });
+
+  it("keeps bulk completion behavior when conflict resolution leaves one success", async () => {
+    mockRuntimeLocalSkillsOptions.mockReturnValue({
+      queryKey: ["runtimes", "local-skills", "runtime-1"],
+      queryFn: () =>
+        Promise.resolve({
+          supported: true,
+          skills: [MOCK_SKILL_A, MOCK_SKILL_B],
+        }),
+    });
+    mockResolveRuntimeLocalSkillImport
+      .mockResolvedValueOnce({
+        status: "conflict",
+        conflict: {
+          existing_skill_id: "existing-skill-1",
+          existing_created_by: "user-1",
+          can_overwrite: true,
+        },
+      })
+      .mockRejectedValueOnce(new Error("daemon failed"))
+      .mockResolvedValueOnce({
+        status: "updated",
+        skill: {
+          ...MOCK_IMPORTED_SKILL_A,
+          id: "existing-skill-1",
+        },
+      });
+
+    const onImported = vi.fn();
+    const onBulkDone = vi.fn();
+    renderPanel({ onImported, onBulkDone });
+
+    expect(
+      await screen.findByText("Review Helper", {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
+
+    const selectAllLabel = screen.getByText(/Select all/i);
+    const selectAllCheckbox = selectAllLabel
+      .closest("label")!
+      .querySelector("input[type='checkbox']")!;
+    fireEvent.click(selectAllCheckbox);
+
+    const importButton = screen.getByRole("button", {
+      name: /Import 2 Skills/i,
+    });
+    await waitFor(() => expect(importButton).not.toBeDisabled(), {
+      timeout: 5000,
+    });
+    fireEvent.click(importButton);
+
+    expect(
+      await screen.findByText(/A skill with this name already exists/i),
+    ).toBeInTheDocument();
+
+    const applyButton = screen.getByRole("button", {
+      name: /Apply decisions/i,
+    });
+    await waitFor(() => expect(applyButton).not.toBeDisabled(), {
+      timeout: 5000,
+    });
+    fireEvent.click(applyButton);
+
+    await waitFor(
+      () => {
+        expect(
+          screen.getByRole("button", { name: /Done/i }),
+        ).toBeInTheDocument();
+      },
+      { timeout: 10000 },
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /Done/i }));
+    expect(onBulkDone).toHaveBeenCalledTimes(1);
+    expect(onImported).not.toHaveBeenCalled();
+  });
 });

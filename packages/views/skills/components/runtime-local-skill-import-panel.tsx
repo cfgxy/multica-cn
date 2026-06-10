@@ -68,6 +68,7 @@ type BulkImportState = {
   phase: "idle" | "importing" | "resolving" | "done" | "cancelled";
   total: number;
   completed: number;
+  selectedCount: number;
   results: BulkImportResult[];
 };
 
@@ -82,6 +83,7 @@ const INITIAL_BULK_STATE: BulkImportState = {
   phase: "idle",
   total: 0,
   completed: 0,
+  selectedCount: 0,
   results: [],
 };
 
@@ -622,7 +624,13 @@ export function RuntimeLocalSkillImportPanel({
     const total = skillsToImport.length;
 
     cancelRef.current = false;
-    setBulkState({ phase: "importing", total, completed: 0, results: [] });
+    setBulkState({
+      phase: "importing",
+      total,
+      completed: 0,
+      selectedCount: total,
+      results: [],
+    });
 
     const results: BulkImportResult[] = [];
 
@@ -1029,7 +1037,11 @@ export function RuntimeLocalSkillImportPanel({
     );
     // Single-import flow: navigate to the imported skill detail page.
     // Multi-import flow: close the dialog even if only one succeeded.
-    if (bulkState.total === 1 && succeeded.length === 1 && succeeded[0]!.skill) {
+    if (
+      bulkState.selectedCount === 1 &&
+      succeeded.length === 1 &&
+      succeeded[0]!.skill
+    ) {
       onImported?.(succeeded[0]!.skill);
     } else {
       onBulkDone?.();
