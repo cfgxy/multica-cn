@@ -10,6 +10,7 @@ const {
   downloadMock,
   openExternalMock,
   openByUrlMock,
+  copyTextMock,
 } = vi.hoisted(() => ({
   getAttachmentTextContentMock: vi.fn(),
   // Default: empty base URL so existing tests render site-relative URLs
@@ -20,6 +21,7 @@ const {
   downloadMock: vi.fn(),
   openExternalMock: vi.fn(),
   openByUrlMock: vi.fn(),
+  copyTextMock: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock("@multica/core/api", () => ({
@@ -29,6 +31,10 @@ vi.mock("@multica/core/api", () => ({
   },
   PreviewTooLargeError: class extends Error {},
   PreviewUnsupportedError: class extends Error {},
+}));
+
+vi.mock("@multica/ui/lib/clipboard", () => ({
+  copyText: copyTextMock,
 }));
 
 vi.mock("./use-download-attachment", () => ({
@@ -472,5 +478,87 @@ describe("Attachment — absolutize site-relative URLs (MUL-3192)", () => {
     // /api/* to the API host, so the relative path loads through the same
     // origin as the rendered HTML.
     expect(img?.getAttribute("src")).toBe("/api/attachments/abc-3/download");
+  });
+});
+
+// MUL-3192 — "Copy link" copies the rendered <img src>. When the
+// surrounding AttachmentDownloadProvider has the attachment record in
+// scope, pickInlineMediaURL swaps to the freshly-signed CloudFront URL
+// for inline rendering, and copy reflects that. The user's request was
+// to keep the description and comment surfaces consistent — they now
+// both copy whatever pickInlineMediaURL chose. The earlier inconsistency
+// (description copying the API endpoint while comment copied the signed
+// CDN URL) was caused by `issueAttachments` not being available to the
+// description's resolver in time; with the resolver populated on both
+// surfaces (descEditorAttachments + comment.attachments), both surfaces
+// copy the same shape.
+describe("Attachment — Copy link copies the rendered src so it stays consistent across surfaces (MUL-3192)", () => {
+  beforeEach(() => {
+    copyTextMock.mockClear();
+    copyTextMock.mockResolvedValue(true);
+  });
+
+  it("copies the freshly-signed CloudFront download_url when the resolver returned a record (comment / description surfaces with attachments resolved)", async () => {
+    const att = makeRecord({
+      url: "https://prod.s3.amazonaws.com/private.png",
+      markdown_url: "https://api.multica.test/api/attachments/att-1/download",
+      download_url:
+        "https://cdn.multica.test/private.png?Signature=fresh&Expires=999",
+    });
+    renderWithQuery(<Attachment attachment={{ kind: "record", attachment: att }} />);
+
+    // Sanity: <img src> is the signed URL — same value the user sees in DOM.
+    const renderedSrc = document.querySelector("img")?.getAttribute("src");
+    expect(renderedSrc).toBe(att.download_url);
+
+    fireEvent.click(screen.getByTitle("Copy link"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(copyTextMock).toHaveBeenCalledWith(renderedSrc);
+  });
+
+  it("copies the persisted markdown URL when no resolver context is available (URL-only attachment)", async () => {
+    // No surrounding AttachmentDownloadProvider — the kind=url path
+    // with no resolved record. Without a swap, `<img src>` stays on the
+    // input URL and copy mirrors it. This is the description-surface
+    // behavior before the issueAttachments query has resolved.
+    renderWithQuery(
+      <Attachment
+        attachment={{
+          kind: "url",
+          url: "https://api.multica.test/api/attachments/att-1/download",
+          filename: "shot.png",
+          forceKind: "image",
+        }}
+      />,
+    );
+
+    const renderedSrc = document.querySelector("img")?.getAttribute("src");
+    fireEvent.click(screen.getByTitle("Copy link"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(copyTextMock).toHaveBeenCalledWith(renderedSrc);
+  });
+
+  it("copies the public CDN URL when the record's storage URL is itself a durable public URL (CloudFront public mode)", async () => {
+    // markdown_url == record.url == public CDN URL, download_url is the
+    // bare API endpoint (not signed). pickInlineMediaURL falls through
+    // to record.markdown_url; copy mirrors the rendered src.
+    const att = makeRecord({
+      url: "https://cdn.multica.test/uploads/abc.png",
+      markdown_url: "https://cdn.multica.test/uploads/abc.png",
+      download_url: "/api/attachments/att-1/download",
+    });
+    renderWithQuery(<Attachment attachment={{ kind: "record", attachment: att }} />);
+
+    const renderedSrc = document.querySelector("img")?.getAttribute("src");
+    expect(renderedSrc).toBe("https://cdn.multica.test/uploads/abc.png");
+
+    fireEvent.click(screen.getByTitle("Copy link"));
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(copyTextMock).toHaveBeenCalledWith(
+      "https://cdn.multica.test/uploads/abc.png",
+    );
   });
 });
