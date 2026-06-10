@@ -45,14 +45,14 @@ describe("CommentTriggerChips", () => {
     );
 
     const chip = screen.getByRole("button");
-    expect(chip).toHaveTextContent("Walt will start working");
+    expect(chip).toHaveTextContent("Starts working when sent");
     expect(chip).toHaveAttribute("aria-pressed", "false");
 
     fireEvent.click(chip);
     expect(onToggle).toHaveBeenCalledWith("agent-1");
   });
 
-  it("dims a suppressed single agent into the skip sentence", () => {
+  it("dims a suppressed single agent into the skip state", () => {
     renderWithI18n(
       <CommentTriggerChips
         agents={[walt]}
@@ -62,11 +62,11 @@ describe("CommentTriggerChips", () => {
     );
 
     const chip = screen.getByRole("button");
-    expect(chip).toHaveTextContent("Walt won't be triggered this time");
+    expect(chip).toHaveTextContent("not this time");
     expect(chip).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("collapses several agents into a stack with an active count", () => {
+  it("collapses several agents into a stack with the shared sentence", () => {
     renderWithI18n(
       <CommentTriggerChips
         agents={[walt, bob]}
@@ -75,19 +75,19 @@ describe("CommentTriggerChips", () => {
       />,
     );
 
-    expect(screen.getByRole("button")).toHaveTextContent("2 agents will start working");
+    expect(screen.getByRole("button")).toHaveTextContent("Starts working when sent");
   });
 
-  it("counts only non-suppressed agents in the sentence", () => {
+  it("switches to the skip state when every agent is suppressed", () => {
     renderWithI18n(
       <CommentTriggerChips
         agents={[walt, bob]}
-        suppressedAgentIds={new Set(["agent-2"])}
+        suppressedAgentIds={new Set(["agent-1", "agent-2"])}
         onToggle={vi.fn()}
       />,
     );
 
-    expect(screen.getByRole("button")).toHaveTextContent("1 agent will start working");
+    expect(screen.getByRole("button")).toHaveTextContent("not this time");
   });
 
   it("opens the popover on click and toggles a row", () => {

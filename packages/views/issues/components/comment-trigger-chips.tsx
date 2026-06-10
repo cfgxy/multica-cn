@@ -148,9 +148,11 @@ function SingleTriggerChip({
   t: IssuesT;
 }) {
   const state = suppressed ? t(($) => $.comment.trigger_suppressed) : sourceLabel(agent.source, t);
+  // The avatar carries "who"; the sentence carries only condition + outcome,
+  // so it stays fixed-width and never truncates on long agent names.
   const sentence = suppressed
-    ? t(($) => $.comment.trigger_will_skip, { name: agent.name })
-    : t(($) => $.comment.trigger_will_start, { name: agent.name });
+    ? t(($) => $.comment.trigger_suppressed)
+    : t(($) => $.comment.trigger_will_start);
 
   return (
     <Tooltip>
@@ -162,8 +164,10 @@ function SingleTriggerChip({
             aria-label={t(($) => $.comment.trigger_chip_aria, { name: agent.name, state })}
             onClick={() => onToggle(agent.id)}
             className={cn(
-              "inline-flex h-6 min-w-0 max-w-full animate-in fade-in slide-in-from-bottom-1 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-[11px] font-medium transition-colors duration-200 hover:bg-muted hover:text-foreground",
-              suppressed ? "text-muted-foreground opacity-60" : "text-foreground",
+              // Sidebar-style resting state: muted until hover so the strip
+              // reads as metadata, not content (see app-sidebar nav items).
+              "inline-flex h-6 min-w-0 max-w-full animate-in fade-in cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-[11px] font-medium text-muted-foreground transition-colors duration-200 hover:bg-muted hover:text-foreground",
+              suppressed && "opacity-60",
             )}
           >
             <TriggerAgentAvatar agent={agent} suppressed={suppressed} />
@@ -197,10 +201,12 @@ function MultiTriggerChip({
   // Mirror AgentAvatarStack: ~30% overlap reads as "stacked" without
   // obscuring the next avatar.
   const overlap = Math.round(AVATAR_SIZE * 0.3);
+  // The avatar stack already shows who and how many — the sentence is the
+  // same fixed condition + outcome copy as the single chip.
   const sentence =
     activeCount === 0
       ? t(($) => $.comment.trigger_suppressed)
-      : t(($) => $.comment.trigger_will_start_count, { count: activeCount });
+      : t(($) => $.comment.trigger_will_start);
 
   const popoverTrigger = (
     <PopoverTrigger
@@ -210,8 +216,8 @@ function MultiTriggerChip({
         <button
           type="button"
           className={cn(
-            "inline-flex h-6 min-w-0 max-w-full animate-in fade-in slide-in-from-bottom-1 cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-[11px] font-medium transition-colors duration-200 hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground",
-            activeCount === 0 ? "text-muted-foreground opacity-60" : "text-foreground",
+            "inline-flex h-6 min-w-0 max-w-full animate-in fade-in cursor-pointer items-center gap-1.5 rounded-md px-1.5 text-[11px] font-medium text-muted-foreground transition-colors duration-200 hover:bg-muted hover:text-foreground aria-expanded:bg-muted aria-expanded:text-foreground",
+            activeCount === 0 && "opacity-60",
           )}
         />
       }
