@@ -64,17 +64,29 @@ export const issueKeys = {
     [...issueKeys.childrenByParentsAll(wsId), parentIds] as const,
   childProgress: (wsId: string) =>
     [...issueKeys.all(wsId), "child-progress"] as const,
+  /** Prefix-match keys for invalidating the per-issue caches below across
+   *  all issues. These keys carry no wsId, so `issueKeys.all(wsId)` does NOT
+   *  cover them — WS reconnect recovery must invalidate these `*All`
+   *  prefixes explicitly, or missed events leave them stale forever under
+   *  the staleTime: Infinity default (#3953). */
+  timelineAll: () => ["issues", "timeline"] as const,
   /** Full-issue timeline (single TanStack Query, no cursor). */
   timeline: (issueId: string) =>
-    ["issues", "timeline", issueId] as const,
-  reactions: (issueId: string) => ["issues", "reactions", issueId] as const,
+    [...issueKeys.timelineAll(), issueId] as const,
+  reactionsAll: () => ["issues", "reactions"] as const,
+  reactions: (issueId: string) =>
+    [...issueKeys.reactionsAll(), issueId] as const,
+  subscribersAll: () => ["issues", "subscribers"] as const,
   subscribers: (issueId: string) =>
-    ["issues", "subscribers", issueId] as const,
-  usage: (issueId: string) => ["issues", "usage", issueId] as const,
+    [...issueKeys.subscribersAll(), issueId] as const,
+  usageAll: () => ["issues", "usage"] as const,
+  usage: (issueId: string) => [...issueKeys.usageAll(), issueId] as const,
+  attachmentsAll: () => ["issues", "attachments"] as const,
   /** Issue-level attachments — used by the description editor so its
    *  inline file-card / image NodeViews can re-sign download URLs at
    *  click time. */
-  attachments: (issueId: string) => ["issues", "attachments", issueId] as const,
+  attachments: (issueId: string) =>
+    [...issueKeys.attachmentsAll(), issueId] as const,
   /** Per-issue task list (issue-detail Execution log section). */
   tasks: (issueId: string) => ["issues", "tasks", issueId] as const,
   /** Prefix-match key for invalidating tasks across all issues — used by
