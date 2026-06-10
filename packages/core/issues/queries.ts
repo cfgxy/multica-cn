@@ -87,12 +87,12 @@ export const issueKeys = {
    *  click time. */
   attachments: (issueId: string) =>
     [...issueKeys.attachmentsAll(), issueId] as const,
-  /** Per-issue task list (issue-detail Execution log section). */
-  tasks: (issueId: string) => ["issues", "tasks", issueId] as const,
   /** Prefix-match key for invalidating tasks across all issues — used by
    *  the global WS task: prefix path so any task lifecycle event refreshes
    *  every per-issue list, regardless of which issue is currently mounted. */
   tasksAll: () => ["issues", "tasks"] as const,
+  /** Per-issue task list (issue-detail Execution log section). */
+  tasks: (issueId: string) => [...issueKeys.tasksAll(), issueId] as const,
 };
 
 export type MyIssuesFilter = Pick<
