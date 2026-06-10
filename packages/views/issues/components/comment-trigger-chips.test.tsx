@@ -62,11 +62,11 @@ describe("CommentTriggerChips", () => {
     );
 
     const chip = screen.getByRole("button");
-    expect(chip).toHaveTextContent("not this time");
+    expect(chip).toHaveTextContent("Won't be triggered");
     expect(chip).toHaveAttribute("aria-pressed", "true");
   });
 
-  it("collapses several agents into a stack with the shared sentence", () => {
+  it("collapses several agents into a stack with an active count", () => {
     renderWithI18n(
       <CommentTriggerChips
         agents={[walt, bob]}
@@ -75,10 +75,22 @@ describe("CommentTriggerChips", () => {
       />,
     );
 
-    expect(screen.getByRole("button")).toHaveTextContent("Starts working when sent");
+    expect(screen.getByRole("button")).toHaveTextContent("2 agents start working when sent");
   });
 
-  it("switches to the skip state when every agent is suppressed", () => {
+  it("counts only non-suppressed agents in the sentence", () => {
+    renderWithI18n(
+      <CommentTriggerChips
+        agents={[walt, bob]}
+        suppressedAgentIds={new Set(["agent-2"])}
+        onToggle={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByRole("button")).toHaveTextContent("1 agent starts working when sent");
+  });
+
+  it("switches to the none-will-trigger state when every agent is suppressed", () => {
     renderWithI18n(
       <CommentTriggerChips
         agents={[walt, bob]}
@@ -87,7 +99,7 @@ describe("CommentTriggerChips", () => {
       />,
     );
 
-    expect(screen.getByRole("button")).toHaveTextContent("not this time");
+    expect(screen.getByRole("button")).toHaveTextContent("No agents will be triggered");
   });
 
   it("opens the popover on click and toggles a row", () => {

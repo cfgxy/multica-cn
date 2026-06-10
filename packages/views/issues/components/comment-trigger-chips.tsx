@@ -147,11 +147,13 @@ function SingleTriggerChip({
   onToggle: (agentId: string) => void;
   t: IssuesT;
 }) {
-  const state = suppressed ? t(($) => $.comment.trigger_suppressed) : sourceLabel(agent.source, t);
+  const state = suppressed
+    ? t(($) => $.comment.trigger_skipped_label)
+    : sourceLabel(agent.source, t);
   // The avatar carries "who"; the sentence carries only condition + outcome,
   // so it stays fixed-width and never truncates on long agent names.
   const sentence = suppressed
-    ? t(($) => $.comment.trigger_suppressed)
+    ? t(($) => $.comment.trigger_wont_trigger)
     : t(($) => $.comment.trigger_will_start);
 
   return (
@@ -201,12 +203,13 @@ function MultiTriggerChip({
   // Mirror AgentAvatarStack: ~30% overlap reads as "stacked" without
   // obscuring the next avatar.
   const overlap = Math.round(AVATAR_SIZE * 0.3);
-  // The avatar stack already shows who and how many — the sentence is the
-  // same fixed condition + outcome copy as the single chip.
+  // The avatar stack shows who; the sentence promises only what WILL happen,
+  // so the count covers non-suppressed agents — skipped ones read as the
+  // dimmed heads right next to the number.
   const sentence =
     activeCount === 0
-      ? t(($) => $.comment.trigger_suppressed)
-      : t(($) => $.comment.trigger_will_start);
+      ? t(($) => $.comment.trigger_none_will_trigger)
+      : t(($) => $.comment.trigger_will_start_count, { count: activeCount });
 
   const popoverTrigger = (
     <PopoverTrigger
@@ -270,7 +273,7 @@ function MultiTriggerChip({
           {agents.map((agent) => {
             const suppressed = suppressedAgentIds.has(agent.id);
             const state = suppressed
-              ? t(($) => $.comment.trigger_suppressed)
+              ? t(($) => $.comment.trigger_skipped_label)
               : sourceLabel(agent.source, t);
             return (
               <Tooltip key={agent.id}>
