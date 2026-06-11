@@ -78,26 +78,26 @@ that omit `on_conflict` still receive a bare `SkillWithFilesResponse`.
 
 | Behavior | File:line |
 |---|---|
-| `detectImportSource` | `server/internal/handler/skill.go:723-756` |
-| `skills.sh` / `www.skills.sh` | `server/internal/handler/skill.go:743-744` |
-| `clawhub.ai` / `www.clawhub.ai` | `server/internal/handler/skill.go:745-746` |
-| `github.com` / `www.github.com` | `server/internal/handler/skill.go:747-748` |
-| Bare slug (no host) defaults to ClawHub | `server/internal/handler/skill.go:750-753` |
-| `parseGitHubURL` handles `/tree/{ref}/...` and `/blob/{ref}/.../SKILL.md` | `server/internal/handler/skill.go:1402-1455` (tree/blob check `:1415-1432`) |
+| `detectImportSource` | `server/internal/handler/skill.go:773-804` |
+| `skills.sh` / `www.skills.sh` | `server/internal/handler/skill.go:791-792` |
+| `clawhub.ai` / `www.clawhub.ai` | `server/internal/handler/skill.go:793-794` |
+| `github.com` / `www.github.com` | `server/internal/handler/skill.go:795-796` |
+| Bare slug (no host) defaults to ClawHub | `server/internal/handler/skill.go:798-800` |
+| `parseGitHubURL` handles `/tree/{ref}/...` and `/blob/{ref}/.../SKILL.md` | `server/internal/handler/skill.go:1450-1503` (tree/blob check `:1463-1480`) |
 
 ## Additive add vs replace-all set
 
 | Behavior | File:line |
 |---|---|
-| `AddAgentSkills` (additive: AddAgentSkill loop, no RemoveAll) | `server/internal/handler/skill.go:1978`; loop `:2009-2017` |
-| Route `POST /api/agents/{id}/skills/add` | `server/cmd/server/router.go:598` |
-| `SetAgentSkills` (replace-all: RemoveAllAgentSkills then re-add) | `server/internal/handler/skill.go:1923`; `RemoveAllAgentSkills` `:1955`; re-add `:1960-1968` |
-| Route `PUT /api/agents/{id}/skills` | `server/cmd/server/router.go:597` |
+| `AddAgentSkills` (additive: AddAgentSkill loop, no RemoveAll) | `server/internal/handler/skill.go:2161`; loop `:2192-2200` |
+| Route `POST /api/agents/{id}/skills/add` | `server/cmd/server/router.go:851` |
+| `SetAgentSkills` (replace-all: RemoveAllAgentSkills then re-add) | `server/internal/handler/skill.go:2106`; `RemoveAllAgentSkills` `:2138`; re-add `:2143-2151` |
+| Route `PUT /api/agents/{id}/skills` | `server/cmd/server/router.go:850` |
 | CLI `agent skills add` def ("without replacing existing assignments") | `server/cmd/multica/cmd_agent.go:125-130` |
-| `runAgentSkillsAdd` → `POST .../skills/add` | `server/cmd/multica/cmd_agent.go:839`; POST `:860` |
+| `runAgentSkillsAdd` → `POST .../skills/add` | `server/cmd/multica/cmd_agent.go:797`; POST `:818` |
 | CLI `agent skills set` def ("replaces all current assignments") | `server/cmd/multica/cmd_agent.go:118-123` |
-| `runAgentSkillsSet` → `PUT .../skills` | `server/cmd/multica/cmd_agent.go:814`; PUT `:832` |
-| CLI `agent skills list` | `server/cmd/multica/cmd_agent.go:782`; GET `:792` |
+| `runAgentSkillsSet` → `PUT .../skills` | `server/cmd/multica/cmd_agent.go:772`; PUT `:790` |
+| CLI `agent skills list` | `server/cmd/multica/cmd_agent.go:740`; GET `:750` |
 
 ## Reserved primary-content filename (`SKILL.md`)
 
@@ -106,8 +106,8 @@ that omit `on_conflict` still receive a bare `SkillWithFilesResponse`.
 | `ContentFilename = "SKILL.md"` | `server/internal/skill/reserved.go:12` |
 | `IsReservedContentPath` (cleans path, case-insensitive compare) | `server/internal/skill/reserved.go:25-27` |
 | Import/create path: reserved supporting file is **silently skipped** (`continue`) | `server/internal/handler/skill_create.go:50-54` |
-| `UpdateSkill` (PUT `/api/skills/{id}`) replace-files path: also silently skips | `server/internal/handler/skill.go:461-464` |
-| `UpsertSkillFile` (PUT `/api/skills/{id}/files`): **rejects 400** "SKILL.md is reserved for the primary skill content" | `server/internal/handler/skill.go:1851-1854` |
+| `UpdateSkill` (PUT `/api/skills/{id}`) replace-files path: also silently skips | `server/internal/handler/skill.go:490-494` |
+| `UpsertSkillFile` (PUT `/api/skills/{id}/files`): **rejects 400** "SKILL.md is reserved for the primary skill content" | `server/internal/handler/skill.go:2014`; reserved check `:2034-2036` |
 
 Reason `SKILL.md` is reserved: the daemon writes the skill's `Content` to that path
 itself when preparing the execution environment, so a supporting file may not also
