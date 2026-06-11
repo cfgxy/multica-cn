@@ -15,6 +15,13 @@ const TEST_RESOURCES = {
 const mockResolveRuntimeLocalSkillImport = vi.hoisted(() => vi.fn());
 const mockRuntimeListOptions = vi.hoisted(() => vi.fn());
 const mockRuntimeLocalSkillsOptions = vi.hoisted(() => vi.fn());
+const mockListMembers = vi.hoisted(() => vi.fn());
+
+vi.mock("@multica/core/api", () => ({
+  api: {
+    listMembers: (...args: unknown[]) => mockListMembers(...args),
+  },
+}));
 
 vi.mock("@multica/core/hooks", () => ({
   useWorkspaceId: () => "ws-1",
@@ -151,6 +158,10 @@ describe("RuntimeLocalSkillImportPanel", () => {
       status: "created",
       skill: MOCK_IMPORTED_SKILL_A,
     });
+    mockListMembers.mockResolvedValue([
+      { user_id: "user-1", name: "Alice", email: "alice@example.com" },
+      { user_id: "user-2", name: "Bob", email: "bob@example.com" },
+    ]);
   });
 
   it("imports a single skill when selected via checkbox", async () => {
@@ -527,5 +538,75 @@ describe("RuntimeLocalSkillImportPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: /Done/i }));
     expect(onBulkDone).toHaveBeenCalledTimes(1);
     expect(onImported).not.toHaveBeenCalled();
+  });
+
+  it("renders the creator's display name for non-overwritable conflicts", async () => {
+    mockResolveRuntimeLocalSkillImport.mockResolvedValueOnce({
+      status: "conflict",
+      conflict: {
+        existing_skill_id: "existing-skill-1",
+        existing_created_by: "user-2",
+        can_overwrite: false,
+      },
+    });
+
+    renderPanel();
+
+    expect(
+      await screen.findByText("Review Helper", {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Review Helper/i }));
+    const importButton = screen.getByRole("button", {
+      name: /Import to Workspace/i,
+    });
+    await waitFor(() => expect(importButton).not.toBeDisabled(), {
+      timeout: 5000,
+    });
+    fireEvent.click(importButton);
+
+    // Bob is user-2 in the mocked member list. The locked message must show
+    // the resolved name, never the raw UUID.
+    expect(
+      await screen.findByText(/created by Bob/i, {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/user-2/)).not.toBeInTheDocument();
+  });
+
+  it("falls back to the unbranded locked message when the creator left the workspace", async () => {
+    mockResolveRuntimeLocalSkillImport.mockResolvedValueOnce({
+      status: "conflict",
+      conflict: {
+        existing_skill_id: "existing-skill-1",
+        existing_created_by: "user-gone",
+        can_overwrite: false,
+      },
+    });
+
+    renderPanel();
+
+    expect(
+      await screen.findByText("Review Helper", {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Review Helper/i }));
+    const importButton = screen.getByRole("button", {
+      name: /Import to Workspace/i,
+    });
+    await waitFor(() => expect(importButton).not.toBeDisabled(), {
+      timeout: 5000,
+    });
+    fireEvent.click(importButton);
+
+    // user-gone is not in the workspace; the UI must not leak the UUID and
+    // should render the no-creator variant of the message.
+    expect(
+      await screen.findByText(
+        /Only the creator can overwrite this skill/i,
+        {},
+        { timeout: 5000 },
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/user-gone/)).not.toBeInTheDocument();
   });
 });
