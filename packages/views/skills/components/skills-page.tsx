@@ -5,17 +5,20 @@ import {
   AlertCircle,
   AlertTriangle,
   BookOpen,
+  Download,
+  HardDrive,
+  Lock,
+  Pencil,
   Plus,
-  Search,
 } from "lucide-react";
 import type {
+  Agent,
   AgentRuntime,
   MemberWithUser,
   Skill,
   SkillSummary,
 } from "@multica/core/types";
 import { useQuery } from "@tanstack/react-query";
-import { getCoreRowModel, useReactTable } from "@tanstack/react-table";
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
@@ -26,26 +29,77 @@ import {
   skillListOptions,
 } from "@multica/core/workspace/queries";
 import { runtimeListOptions } from "@multica/core/runtimes";
+import { resolvePublicFileUrl } from "@multica/core/workspace/avatar-url";
 import { Button } from "@multica/ui/components/ui/button";
-import { DataTable } from "@multica/ui/components/ui/data-table";
-import { Input } from "@multica/ui/components/ui/input";
+import { Checkbox } from "@multica/ui/components/ui/checkbox";
+import {
+  ListGrid,
+  ListGridBody,
+  ListGridCell,
+  ListGridHeader,
+  ListGridHeaderCell,
+  ListGridRow,
+  type ListGridSortDirection,
+} from "@multica/ui/components/ui/list-grid";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@multica/ui/components/ui/tooltip";
-import { useNavigation } from "../../navigation";
+import { ActorAvatar } from "@multica/ui/components/common/actor-avatar";
+import { AppLink, useNavigation } from "../../navigation";
 import { PageHeader } from "../../layout/page-header";
 import { canEditSkill } from "../hooks/use-can-edit-skill";
-import { readOrigin } from "../lib/origin";
+import { readOrigin, type OriginInfo } from "../lib/origin";
 import { CreateSkillDialog } from "./create-skill-dialog";
-import { type SkillRow, useSkillColumns } from "./skill-columns";
-import { useT } from "../../i18n";
+import {
+  useSkillsViewStore,
+  type SkillColumnKey,
+  type SkillSortField,
+} from "@multica/core/skills/stores";
+import { SkillListToolbar } from "./skill-list-toolbar";
+import {
+  SkillBatchToolbar,
+  SkillRowActions,
+  type SkillActionsContext,
+} from "./skill-list-actions";
+import { useT, useTimeAgo } from "../../i18n";
 
-type FilterKey = "all" | "used" | "unused" | "mine";
+// Column template — single source of truth for header, rows, and skeletons.
+// Tracks: [edge 0.75rem] [checkbox 1rem] [name, only fr track]
+// [description ≤20rem, lg+] [usedBy max-content] [source max-content with
+// floor, lg+] [creator max-content, lg+] [updated 5rem, sm+] [kebab 1.75rem]
+// [edge 0.75rem]. Content cells carry a default px-2 from list-grid.tsx
+// (structural columns opt out with px-0), so the narrow edge tracks plus
+// cell padding land content 20px from the viewport edge. Hidden cells carry
+// the matching `hidden sm:flex` / `hidden lg:flex` classes.
+// Hideable columns use max-content tracks (content caps live on the cell
+// content, e.g. the description's max-w) so a user-hidden column — rendered
+// as an empty placeholder cell to keep subgrid auto-placement intact —
+// collapses to zero width instead of leaving a fixed-width hole.
+// Columns never get squashed below their content: the grid carries
+// `min-w-fit` and the page wrapper scrolls horizontally when every column
+// is enabled on a narrow viewport. Per-column caps live on cell content
+// (description max-w-[20rem], source max-w-[12rem], names max-w-[7rem]).
+const GRID_COLS =
+  "grid-cols-[0.75rem_1rem_minmax(140px,1fr)_max-content_1.75rem_0.75rem] " +
+  "sm:grid-cols-[0.75rem_1rem_minmax(140px,1fr)_max-content_max-content_max-content_1.75rem_0.75rem] " +
+  "lg:grid-cols-[0.75rem_1rem_minmax(200px,1fr)_max-content_max-content_max-content_max-content_max-content_max-content_1.75rem_0.75rem]";
 
-const SCOPE_KEYS: FilterKey[] = ["all", "used", "unused", "mine"];
+// Sort/filter/column types and defaults live in the core view store
+// (@multica/core/skills/stores/view-store) so the persisted state and the
+// UI share one definition. Re-exported here for the toolbar's convenience.
+export type SortField = SkillSortField;
+
+export interface SkillRow {
+  skill: SkillSummary;
+  agents: Agent[];
+  creator: MemberWithUser | null;
+  runtime: AgentRuntime | null;
+  originType: OriginInfo["type"];
+  canEdit: boolean;
+}
 
 // ---------------------------------------------------------------------------
 // Page header bar — uses shared PageHeader so the mobile sidebar trigger and
@@ -91,58 +145,200 @@ function PageHeaderBar({
 }
 
 // ---------------------------------------------------------------------------
-// Card toolbar — search + scope filters
+// Cells
 // ---------------------------------------------------------------------------
 
-function CardToolbar({
-  search,
-  setSearch,
-  filter,
-  setFilter,
+// Hover-revealed multi-select checkbox. Same pattern as SkillPickerList:
+// the shadcn Checkbox is presentational only (`pointer-events-none`, so the
+// Base UI button can never swallow the click) and the wrapping <button> owns
+// the interaction — preventDefault kills the row link's native navigation
+// (the cell lives inside an <a>), stopPropagation keeps AppLink's push from
+// firing, and the manual toggle drives the state.
+function CheckboxCell({
+  checked,
+  onToggle,
 }: {
-  search: string;
-  setSearch: (v: string) => void;
-  filter: FilterKey;
-  setFilter: (v: FilterKey) => void;
+  checked: boolean;
+  onToggle: () => void;
 }) {
-  const { t } = useT("skills");
   return (
-    <div className="flex h-auto shrink-0 flex-col gap-2 border-b px-3 py-3 sm:h-12 sm:flex-row sm:items-center sm:px-4 sm:py-0">
-      <div className="relative w-full sm:w-auto">
-        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-        <Input
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder={t(($) => $.page.search_placeholder)}
-          className="h-8 w-full pl-8 text-sm sm:w-64"
+    <ListGridCell className="justify-center px-0">
+      <button
+        type="button"
+        aria-pressed={checked}
+        onClick={(e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          onToggle();
+        }}
+        className={`-m-1.5 flex items-center p-1.5 ${
+          checked ? "" : "opacity-0 transition-opacity group-hover/row:opacity-100"
+        }`}
+      >
+        <Checkbox
+          checked={checked}
+          tabIndex={-1}
+          className="pointer-events-none"
         />
-      </div>
-      <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1 sm:mx-0 sm:overflow-visible sm:px-0 sm:pb-0">
-        {SCOPE_KEYS.map((scope) => (
-          <Tooltip key={scope}>
+      </button>
+    </ListGridCell>
+  );
+}
+
+function NameCell({ row }: { row: SkillRow }) {
+  const { t } = useT("skills");
+  const { skill, canEdit } = row;
+  return (
+    <ListGridCell className="gap-1.5">
+      <span className="min-w-0 truncate text-sm font-medium">
+        {skill.name}
+      </span>
+      {!canEdit && (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Lock className="h-3 w-3 shrink-0 text-muted-foreground/60" />
+            }
+          />
+          <TooltipContent>{t(($) => $.table.lock_tooltip)}</TooltipContent>
+        </Tooltip>
+      )}
+    </ListGridCell>
+  );
+}
+
+function DescriptionCell({ description }: { description: string }) {
+  return (
+    <ListGridCell className="hidden lg:flex">
+      {description ? (
+        <span className="min-w-0 max-w-[20rem] truncate text-xs text-muted-foreground">
+          {description}
+        </span>
+      ) : (
+        <span className="text-xs text-muted-foreground/40">—</span>
+      )}
+    </ListGridCell>
+  );
+}
+
+function UsedByCell({ agents }: { agents: Agent[] }) {
+  const { t } = useT("skills");
+  if (agents.length === 0) {
+    return (
+      <ListGridCell>
+        <span className="text-xs text-muted-foreground/70">
+          {t(($) => $.table.unused)}
+        </span>
+      </ListGridCell>
+    );
+  }
+  if (agents.length === 1) {
+    const agent = agents[0];
+    return (
+      <ListGridCell className="gap-1.5">
+        <ActorAvatar
+          name={agent.name}
+          initials={agent.name.slice(0, 2).toUpperCase()}
+          avatarUrl={resolvePublicFileUrl(agent.avatar_url)}
+          isAgent
+          size={22}
+        />
+        <span className="max-w-[7rem] truncate text-xs text-muted-foreground">
+          {agent.name}
+        </span>
+      </ListGridCell>
+    );
+  }
+  const visible = agents.slice(0, 3);
+  const extra = agents.length - visible.length;
+  return (
+    <ListGridCell>
+      <div className="flex items-center -space-x-1.5">
+        {visible.map((a) => (
+          <Tooltip key={a.id}>
             <TooltipTrigger
               render={
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className={
-                    filter === scope
-                      ? "shrink-0 bg-accent text-accent-foreground hover:bg-accent/80"
-                      : "shrink-0 text-muted-foreground"
-                  }
-                  onClick={() => setFilter(scope)}
-                >
-                  {t(($) => $.page.scopes[scope].label)}
-                </Button>
+                <span className="inline-flex rounded-full ring-2 ring-background">
+                  <ActorAvatar
+                    name={a.name}
+                    initials={a.name.slice(0, 2).toUpperCase()}
+                    avatarUrl={resolvePublicFileUrl(a.avatar_url)}
+                    isAgent
+                    size={22}
+                  />
+                </span>
               }
             />
-            <TooltipContent side="bottom">
-              {t(($) => $.page.scopes[scope].description)}
-            </TooltipContent>
+            <TooltipContent>{a.name}</TooltipContent>
           </Tooltip>
         ))}
+        {extra > 0 && (
+          <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-muted text-xs font-medium text-muted-foreground ring-2 ring-background">
+            +{extra}
+          </span>
+        )}
       </div>
-    </div>
+    </ListGridCell>
+  );
+}
+
+function SourceCell({
+  skill,
+  runtime,
+}: {
+  skill: SkillSummary;
+  runtime: AgentRuntime | null;
+}) {
+  const { t } = useT("skills");
+  const origin = readOrigin(skill);
+
+  let icon = <Pencil className="h-3 w-3 shrink-0" />;
+  let label: string = t(($) => $.table.source_manual);
+  if (origin.type === "runtime_local") {
+    icon = <HardDrive className="h-3 w-3 shrink-0" />;
+    label = runtime
+      ? t(($) => $.table.source_runtime_named, { name: runtime.name })
+      : origin.provider
+        ? t(($) => $.table.source_runtime_provider, {
+            provider: origin.provider,
+          })
+        : t(($) => $.table.source_runtime_unknown);
+  } else if (origin.type === "clawhub") {
+    icon = <Download className="h-3 w-3 shrink-0" />;
+    label = t(($) => $.table.source_clawhub);
+  } else if (origin.type === "skills_sh") {
+    icon = <Download className="h-3 w-3 shrink-0" />;
+    label = t(($) => $.table.source_skills_sh);
+  } else if (origin.type === "github") {
+    icon = <Download className="h-3 w-3 shrink-0" />;
+    label = t(($) => $.table.source_github);
+  }
+
+  return (
+    <ListGridCell className="hidden gap-1.5 text-xs text-muted-foreground lg:flex">
+      {icon}
+      <span className="min-w-0 max-w-[12rem] truncate">{label}</span>
+    </ListGridCell>
+  );
+}
+
+function CreatorCell({ creator }: { creator: MemberWithUser | null }) {
+  return (
+    <ListGridCell className="hidden gap-1.5 lg:flex">
+      {creator && (
+        <>
+          <ActorAvatar
+            name={creator.name}
+            initials={creator.name.slice(0, 2).toUpperCase()}
+            avatarUrl={resolvePublicFileUrl(creator.avatar_url)}
+            size={22}
+          />
+          <span className="max-w-[7rem] truncate text-xs text-muted-foreground">
+            {creator.name}
+          </span>
+        </>
+      )}
+    </ListGridCell>
   );
 }
 
@@ -170,6 +366,171 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
 }
 
 // ---------------------------------------------------------------------------
+// List
+// ---------------------------------------------------------------------------
+
+function SkillListHeader({
+  sortField,
+  sortDirection,
+  onSort,
+  allSelected,
+  someSelected,
+  onToggleAll,
+  isColVisible,
+}: {
+  sortField: SortField;
+  sortDirection: ListGridSortDirection;
+  onSort: (field: SortField) => void;
+  allSelected: boolean;
+  someSelected: boolean;
+  onToggleAll: () => void;
+  isColVisible: (key: SkillColumnKey) => boolean;
+}) {
+  const { t } = useT("skills");
+  const sorted = (field: SortField) =>
+    sortField === field ? sortDirection : false;
+  const anySelected = allSelected || someSelected;
+  return (
+    <ListGridHeader>
+      {/* Tri-state select-all in the checkbox track. Same presentational
+          Checkbox + interactive wrapper pattern as the row cells; revealed
+          on header hover or whenever a selection exists. */}
+      <div className="flex items-center justify-center">
+        <button
+          type="button"
+          aria-pressed={allSelected}
+          onClick={onToggleAll}
+          className={`-m-1.5 flex items-center p-1.5 ${
+            anySelected
+              ? ""
+              : "opacity-0 transition-opacity group-hover/header:opacity-100"
+          }`}
+        >
+          <Checkbox
+            checked={allSelected}
+            indeterminate={someSelected && !allSelected}
+            tabIndex={-1}
+            className="pointer-events-none"
+          />
+        </button>
+      </div>
+      <ListGridHeaderCell sorted={sorted("name")} onSort={() => onSort("name")}>
+        {t(($) => $.table.name)}
+      </ListGridHeaderCell>
+      {isColVisible("description") ? (
+        <ListGridHeaderCell className="hidden lg:flex">
+          {t(($) => $.table.description)}
+        </ListGridHeaderCell>
+      ) : (
+        <ListGridHeaderCell className="hidden px-0 lg:flex" />
+      )}
+      {isColVisible("usedBy") ? (
+        <ListGridHeaderCell
+          sorted={sorted("usedBy")}
+          onSort={() => onSort("usedBy")}
+        >
+          {t(($) => $.table.used_by)}
+        </ListGridHeaderCell>
+      ) : (
+        <ListGridHeaderCell className="px-0" />
+      )}
+      {isColVisible("source") ? (
+        <ListGridHeaderCell className="hidden lg:flex">
+          {t(($) => $.table.source)}
+        </ListGridHeaderCell>
+      ) : (
+        <ListGridHeaderCell className="hidden px-0 lg:flex" />
+      )}
+      {isColVisible("creator") ? (
+        <ListGridHeaderCell className="hidden lg:flex">
+          {t(($) => $.table.created_by)}
+        </ListGridHeaderCell>
+      ) : (
+        <ListGridHeaderCell className="hidden px-0 lg:flex" />
+      )}
+      {isColVisible("updated") ? (
+        <ListGridHeaderCell
+          className="hidden sm:flex"
+          sorted={sorted("updated")}
+          onSort={() => onSort("updated")}
+        >
+          {t(($) => $.table.updated)}
+        </ListGridHeaderCell>
+      ) : (
+        <ListGridHeaderCell className="hidden px-0 sm:flex" />
+      )}
+      {isColVisible("created") ? (
+        <ListGridHeaderCell
+          className="hidden sm:flex"
+          sorted={sorted("created")}
+          onSort={() => onSort("created")}
+        >
+          {t(($) => $.table.created)}
+        </ListGridHeaderCell>
+      ) : (
+        <ListGridHeaderCell className="hidden px-0 sm:flex" />
+      )}
+      <span aria-hidden="true" />
+    </ListGridHeader>
+  );
+}
+
+function LoadingSkeleton() {
+  return (
+    <ListGrid className={GRID_COLS}>
+      <ListGridHeader>
+        <span aria-hidden="true" />
+        <ListGridHeaderCell>
+          <Skeleton className="h-3 w-12" />
+        </ListGridHeaderCell>
+        <ListGridHeaderCell className="hidden lg:flex">
+          <Skeleton className="h-3 w-12" />
+        </ListGridHeaderCell>
+        <ListGridHeaderCell>
+          <Skeleton className="h-3 w-14" />
+        </ListGridHeaderCell>
+        {/* Source and created are hidden by default — keep their tracks
+            mapped with empty placeholders so the skeleton matches the
+            default layout. */}
+        <ListGridHeaderCell className="hidden px-0 lg:flex" />
+        <ListGridHeaderCell className="hidden lg:flex">
+          <Skeleton className="h-3 w-10" />
+        </ListGridHeaderCell>
+        <ListGridHeaderCell className="hidden sm:flex">
+          <Skeleton className="h-3 w-12" />
+        </ListGridHeaderCell>
+        <ListGridHeaderCell className="hidden px-0 sm:flex" />
+        <span aria-hidden="true" />
+      </ListGridHeader>
+      {Array.from({ length: 5 }).map((_, i) => (
+        <ListGridRow key={i} className="hover:bg-transparent">
+          <span aria-hidden="true" />
+          <ListGridCell>
+            <Skeleton className="h-3.5 w-40 max-w-full" />
+          </ListGridCell>
+          <ListGridCell className="hidden lg:flex">
+            <Skeleton className="h-3 w-56 max-w-full" />
+          </ListGridCell>
+          <ListGridCell>
+            <Skeleton className="h-5 w-14" />
+          </ListGridCell>
+          <ListGridCell className="hidden px-0 lg:flex" />
+          <ListGridCell className="hidden gap-1.5 lg:flex">
+            <Skeleton className="size-5 rounded-full" />
+            <Skeleton className="h-3 w-12" />
+          </ListGridCell>
+          <ListGridCell className="hidden sm:flex">
+            <Skeleton className="h-3 w-10" />
+          </ListGridCell>
+          <ListGridCell className="hidden px-0 sm:flex" />
+          <span aria-hidden="true" />
+        </ListGridRow>
+      ))}
+    </ListGrid>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
 
@@ -178,6 +539,7 @@ export default function SkillsPage() {
   const wsId = useWorkspaceId();
   const paths = useWorkspacePaths();
   const navigation = useNavigation();
+  const timeAgo = useTimeAgo();
   const currentUserId = useAuthStore((s) => s.user?.id ?? null);
 
   const {
@@ -196,14 +558,39 @@ export default function SkillsPage() {
     runtimeListOptions(wsId),
   );
 
-  const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<FilterKey>("all");
   const [createOpen, setCreateOpen] = useState(false);
-
-  const assignments = useMemo(
-    () => selectSkillAssignments(agents),
-    [agents],
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(
+    new Set(),
   );
+  const [search, setSearch] = useState("");
+
+  // Persisted view preferences (per workspace, per user/device). Header sort
+  // buttons and the toolbar's display panel mutate the SAME store, so both
+  // surfaces always agree. Search and selection stay session-local on
+  // purpose.
+  const sortField = useSkillsViewStore((s) => s.sortField);
+  const sortDirection = useSkillsViewStore((s) => s.sortDirection);
+  const hiddenColumns = useSkillsViewStore((s) => s.hiddenColumns);
+  const filters = useSkillsViewStore((s) => s.filters);
+  const handleSort = useSkillsViewStore((s) => s.toggleSort);
+  const handleSortFieldSelect = useSkillsViewStore((s) => s.setSortField);
+  const setSortDirection = useSkillsViewStore((s) => s.setSortDirection);
+  const toggleColumn = useSkillsViewStore((s) => s.toggleColumn);
+  const toggleFilter = useSkillsViewStore((s) => s.toggleFilter);
+  const clearFilters = useSkillsViewStore((s) => s.clearFilters);
+
+  const isColVisible = (key: SkillColumnKey) => !hiddenColumns.includes(key);
+
+  const toggleSelected = (id: string) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const assignments = useMemo(() => selectSkillAssignments(agents), [agents]);
 
   const membersById = useMemo(() => {
     const map = new Map<string, MemberWithUser>();
@@ -218,34 +605,20 @@ export default function SkillsPage() {
   }, [runtimes]);
 
   const myRole =
-    members.find((m) => m.user_id === currentUserId)?.role ?? null;
+    members.find((m: MemberWithUser) => m.user_id === currentUserId)?.role ??
+    null;
+  const isAdmin = myRole === "owner" || myRole === "admin";
 
-  const filtered = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    const byAssignment = (s: SkillSummary) =>
-      (assignments.get(s.id)?.length ?? 0) > 0;
-
-    return skills.filter((s) => {
-      if (
-        q &&
-        !s.name.toLowerCase().includes(q) &&
-        !s.description.toLowerCase().includes(q)
-      ) {
-        return false;
-      }
-      if (filter === "used" && !byAssignment(s)) return false;
-      if (filter === "unused" && byAssignment(s)) return false;
-      if (filter === "mine" && s.created_by !== currentUserId) return false;
-      return true;
-    });
-  }, [skills, assignments, search, filter, currentUserId]);
-
-  const handleCreated = (skill: Skill) => {
-    navigation.push(paths.skillDetail(skill.id));
+  const actionsCtx: SkillActionsContext = {
+    wsId,
+    agents,
+    currentUserId,
+    isAdmin,
   };
 
-  const skillRows = useMemo<SkillRow[]>(() => {
-    return filtered.map((skill) => {
+  // Full assembled set — toolbar option lists and counts derive from this.
+  const allRows = useMemo<SkillRow[]>(() => {
+    return skills.map((skill) => {
       const origin = readOrigin(skill);
       const runtime =
         origin.type === "runtime_local" && origin.runtime_id
@@ -258,57 +631,79 @@ export default function SkillsPage() {
           ? membersById.get(skill.created_by) ?? null
           : null,
         runtime,
-        canEdit: canEditSkill(skill, {
-          userId: currentUserId,
-          role: myRole,
-        }),
+        originType: origin.type,
+        canEdit: canEditSkill(skill, { userId: currentUserId, role: myRole }),
       };
     });
-  }, [
-    filtered,
-    assignments,
-    membersById,
-    runtimesById,
-    currentUserId,
-    myRole,
-  ]);
+  }, [skills, assignments, membersById, runtimesById, currentUserId, myRole]);
 
-  const columns = useSkillColumns();
+  // Visible rows: name search + filters, then sort.
+  const rows = useMemo<SkillRow[]>(() => {
+    const q = search.trim().toLowerCase();
+    const filtered = allRows.filter((row) => {
+      if (q && !row.skill.name.toLowerCase().includes(q)) return false;
+      if (filters.usage.length > 0) {
+        const usage = row.agents.length > 0 ? "used" : "unused";
+        if (!filters.usage.includes(usage)) return false;
+      }
+      if (
+        filters.origins.length > 0 &&
+        !filters.origins.includes(row.originType)
+      ) {
+        return false;
+      }
+      if (
+        filters.agents.length > 0 &&
+        !row.agents.some((a) => filters.agents.includes(a.id))
+      ) {
+        return false;
+      }
+      if (
+        filters.creators.length > 0 &&
+        (!row.skill.created_by ||
+          !filters.creators.includes(row.skill.created_by))
+      ) {
+        return false;
+      }
+      return true;
+    });
 
-  const table = useReactTable({
-    data: skillRows,
-    columns,
-    getCoreRowModel: getCoreRowModel(),
-    enableColumnResizing: true,
-  });
+    const dir = sortDirection === "asc" ? 1 : -1;
+    filtered.sort((a, b) => {
+      if (sortField === "name") {
+        return a.skill.name.localeCompare(b.skill.name) * dir;
+      }
+      if (sortField === "usedBy") {
+        return (
+          (a.agents.length - b.agents.length) * dir ||
+          a.skill.name.localeCompare(b.skill.name)
+        );
+      }
+      if (sortField === "created") {
+        return (
+          (Date.parse(a.skill.created_at) - Date.parse(b.skill.created_at)) *
+          dir
+        );
+      }
+      return (
+        (Date.parse(a.skill.updated_at) - Date.parse(b.skill.updated_at)) * dir
+      );
+    });
+    return filtered;
+  }, [allRows, search, filters, sortField, sortDirection]);
 
-  // --- Loading ---
-  if (isLoading) {
-    return (
-      <div className="flex flex-1 min-h-0 flex-col">
-        <PageHeaderBar totalCount={0} onCreate={() => setCreateOpen(true)} />
-        <div className="flex flex-1 min-h-0 flex-col gap-4 p-3 sm:p-6">
-          <div className="space-y-3 pl-4">
-            <Skeleton className="h-5 w-full max-w-2xl rounded-md" />
-            <Skeleton className="h-14 w-full max-w-3xl rounded-md" />
-          </div>
-          <div className="flex flex-1 min-h-0 flex-col overflow-hidden rounded-lg border">
-            <div className="flex h-auto shrink-0 flex-col gap-2 border-b px-3 py-3 sm:h-12 sm:flex-row sm:items-center sm:px-4 sm:py-0">
-              <Skeleton className="h-8 w-full rounded-md sm:w-64" />
-              <Skeleton className="h-7 w-12 rounded-md" />
-              <Skeleton className="h-7 w-14 rounded-md" />
-              <Skeleton className="h-7 w-16 rounded-md" />
-            </div>
-            <div className="space-y-2 p-4">
-              {Array.from({ length: 4 }).map((_, i) => (
-                <Skeleton key={i} className="h-14 w-full rounded-md" />
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
+  const handleCreated = (skill: Skill) => {
+    navigation.push(paths.skillDetail(skill.id));
+  };
+
+  const selectedRows = rows.filter((row) => selectedIds.has(row.skill.id));
+  const allSelected = rows.length > 0 && selectedRows.length === rows.length;
+  const someSelected = selectedRows.length > 0 && !allSelected;
+  const handleToggleAll = () => {
+    setSelectedIds(
+      allSelected ? new Set() : new Set(rows.map((r) => r.skill.id)),
     );
-  }
+  };
 
   // --- List request error ---
   if (listError) {
@@ -341,7 +736,7 @@ export default function SkillsPage() {
   }
 
   const totalCount = skills.length;
-  const showEmpty = totalCount === 0;
+  const showEmpty = !isLoading && totalCount === 0;
   const supportingQueryDown =
     !!agentsError || !!membersError || !!runtimesError;
 
@@ -362,58 +757,112 @@ export default function SkillsPage() {
         </div>
       )}
 
-      <div className="flex flex-1 min-h-0 flex-col gap-4 p-3 sm:p-6">
-        {!showEmpty && (
-          <div className="max-w-3xl rounded-r-md border-l-2 border-l-brand bg-brand/5 px-4 py-3 text-xs leading-relaxed text-muted-foreground">
-            <span className="font-medium text-foreground">
-              {t(($) => $.page.intro_banner.title)}
-            </span>{" "}
-            {t(($) => $.page.intro_banner.body)}{" "}
-            <span className="font-semibold text-brand">
-              {t(($) => $.page.intro_banner.highlight)}
-            </span>
-          </div>
-        )}
-        {showEmpty ? (
-          <div className="flex flex-1 items-center justify-center">
-            <EmptyState onCreate={() => setCreateOpen(true)} />
-          </div>
-        ) : (
-          <div className="flex flex-1 min-h-0 flex-col overflow-hidden rounded-lg border bg-background">
-            <CardToolbar
-              search={search}
-              setSearch={setSearch}
-              filter={filter}
-              setFilter={setFilter}
+      {isLoading ? (
+        <div className="flex-1 overflow-y-auto">
+          <LoadingSkeleton />
+        </div>
+      ) : showEmpty ? (
+        <div className="flex flex-1 items-center justify-center">
+          <EmptyState onCreate={() => setCreateOpen(true)} />
+        </div>
+      ) : (
+        <>
+          <SkillListToolbar
+            search={search}
+            onSearchChange={setSearch}
+            filters={filters}
+            onToggleFilter={toggleFilter}
+            onClearFilters={clearFilters}
+            sortField={sortField}
+            sortDirection={sortDirection}
+            onSortFieldChange={handleSortFieldSelect}
+            onSortDirectionChange={setSortDirection}
+            hiddenColumns={hiddenColumns}
+            onToggleColumn={toggleColumn}
+            allRows={allRows}
+          />
+          <div className="min-h-0 flex-1 overflow-x-auto">
+          <ListGrid
+            className={`${GRID_COLS} h-full min-w-fit grid-rows-[auto_minmax(0,1fr)]`}
+          >
+            <SkillListHeader
+              sortField={sortField}
+              sortDirection={sortDirection}
+              onSort={handleSort}
+              allSelected={allSelected}
+              someSelected={someSelected}
+              onToggleAll={handleToggleAll}
+              isColVisible={isColVisible}
             />
-            {filtered.length === 0 ? (
-              <div className="flex flex-1 flex-col items-center justify-center gap-2 px-4 py-16 text-center text-muted-foreground">
-                <Search className="h-8 w-8 text-muted-foreground/40" />
-                <p className="text-sm">{t(($) => $.page.no_matches.title)}</p>
-                <p className="max-w-xs text-xs">
-                  {search
-                    ? t(($) => $.page.no_matches.with_query, {
-                        query: search,
-                        filterSuffix:
-                          filter !== "all"
-                            ? t(($) => $.page.no_matches.with_query_filter_suffix)
-                            : "",
-                      })
-                    : t(($) => $.page.no_matches.filter_only)}
-                  {t(($) => $.page.no_matches.try_different)}
-                </p>
-              </div>
-            ) : (
-              <DataTable
-                table={table}
-                onRowClick={(row) =>
-                  navigation.push(paths.skillDetail(row.original.skill.id))
+            <ListGridBody>
+              {rows.length === 0 && (
+                <div className="col-span-full py-16 text-center text-sm text-muted-foreground">
+                  {t(($) => $.page.no_matches.title)}
+                </div>
+              )}
+              {rows.map((row) => (
+              <ListGridRow
+                key={row.skill.id}
+                className={
+                  selectedIds.has(row.skill.id) ? "bg-accent/30" : undefined
                 }
-              />
-            )}
+                render={<AppLink href={paths.skillDetail(row.skill.id)} />}
+              >
+                <CheckboxCell
+                  checked={selectedIds.has(row.skill.id)}
+                  onToggle={() => toggleSelected(row.skill.id)}
+                />
+                <NameCell row={row} />
+                {isColVisible("description") ? (
+                  <DescriptionCell description={row.skill.description} />
+                ) : (
+                  <ListGridCell className="hidden px-0 lg:flex" />
+                )}
+                {isColVisible("usedBy") ? (
+                  <UsedByCell agents={row.agents} />
+                ) : (
+                  <ListGridCell className="px-0" />
+                )}
+                {isColVisible("source") ? (
+                  <SourceCell skill={row.skill} runtime={row.runtime} />
+                ) : (
+                  <ListGridCell className="hidden px-0 lg:flex" />
+                )}
+                {isColVisible("creator") ? (
+                  <CreatorCell creator={row.creator} />
+                ) : (
+                  <ListGridCell className="hidden px-0 lg:flex" />
+                )}
+                {isColVisible("updated") ? (
+                  <ListGridCell className="hidden whitespace-nowrap text-xs tabular-nums text-muted-foreground sm:flex">
+                    {timeAgo(row.skill.updated_at)}
+                  </ListGridCell>
+                ) : (
+                  <ListGridCell className="hidden px-0 sm:flex" />
+                )}
+                {isColVisible("created") ? (
+                  <ListGridCell className="hidden whitespace-nowrap text-xs tabular-nums text-muted-foreground sm:flex">
+                    {timeAgo(row.skill.created_at)}
+                  </ListGridCell>
+                ) : (
+                  <ListGridCell className="hidden px-0 sm:flex" />
+                )}
+                <ListGridCell className="justify-end px-0">
+                  <SkillRowActions row={row} ctx={actionsCtx} />
+                </ListGridCell>
+              </ListGridRow>
+              ))}
+            </ListGridBody>
+          </ListGrid>
           </div>
-        )}
-      </div>
+        </>
+      )}
+
+      <SkillBatchToolbar
+        rows={selectedRows}
+        ctx={actionsCtx}
+        onClear={() => setSelectedIds(new Set())}
+      />
 
       {createOpen && (
         <CreateSkillDialog

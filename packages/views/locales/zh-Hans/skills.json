@@ -48,9 +48,12 @@
   },
   "table": {
     "name": "名称",
+    "description": "描述",
+    "created_by": "添加者",
     "used_by": "被谁使用",
-    "source": "来源 · 添加者",
+    "source": "来源",
     "updated": "更新时间",
+    "created": "创建时间",
     "no_description": "无描述",
     "lock_tooltip": "只读——只有创建者或管理员能编辑",
     "unused": "— 未使用",
@@ -63,11 +66,48 @@
     "source_skills_sh": "来自 Skills.sh",
     "source_github": "来自 GitHub"
   },
+  "actions": {
+    "row_menu": "操作",
+    "add_to_agent": "添加到智能体",
+    "my_agents": "我的智能体",
+    "other_agents": "其他智能体",
+    "no_agents": "暂无可用智能体",
+    "has_partial": "已有 {{owned}}/{{total}}",
+    "added_toast": "已添加到 {{name}}",
+    "add_failed_toast": "添加 skill 失败",
+    "delete": "删除",
+    "selected": "已选 {{count}} 项",
+    "clear_selection": "清除选择",
+    "delete_no_permission": "选中项包含仅创建者或管理员可删除的 skill",
+    "delete_dialog_title_one": "删除 {{count}} 个 skill？",
+    "delete_dialog_title_other": "删除 {{count}} 个 skill？",
+    "delete_dialog_desc_one": "将永久删除选中的 skill，并从所有智能体上移除。",
+    "delete_dialog_desc_other": "将永久删除选中的 {{count}} 个 skill，并从所有智能体上移除。",
+    "deleted_toast_one": "已删除 {{count}} 个 skill",
+    "deleted_toast_other": "已删除 {{count}} 个 skill",
+    "delete_failed_toast": "删除 skill 失败",
+    "add_dialog_description": "选择要获得所选 skill 的智能体。",
+    "cancel": "取消",
+    "add_confirm": "添加（{{num}}）",
+    "adding": "添加中...",
+    "added_multi_toast_one": "已添加到 {{count}} 个智能体",
+    "added_multi_toast_other": "已添加到 {{count}} 个智能体"
+  },
+  "toolbar": {
+    "filter_label": "筛选",
+    "filter_active_count_one": "{{count}} 项筛选",
+    "filter_active_count_other": "{{count}} 项筛选",
+    "clear_filters": "清除筛选",
+    "section_usage": "使用状态",
+    "display": "显示",
+    "sort_by": "排序",
+    "direction_asc": "升序",
+    "direction_desc": "降序",
+    "section_columns": "显示列"
+  },
   "detail": {
     "all_skills": "全部 skill",
     "read_only": "只读",
-    "delete_aria": "删除 skill",
-    "delete_tooltip": "删除 skill",
     "supporting_data_warning": "部分工作区数据加载失败。创建者归属、运行时名称、编辑权限可能要等下次刷新才完整。",
     "files_label": "文件 · {{count}}",
     "add_file_aria": "添加文件",
@@ -84,9 +124,7 @@
       "origin_clawhub": "导入自 · ClawHub",
       "origin_skills_sh": "导入自 · Skills.sh",
       "origin_github": "导入自 · GitHub",
-      "origin_workspace": "工作区",
-      "updated_label": "{{when}}更新",
-      "by_creator": "由 {{name}}"
+      "origin_workspace": "工作区"
     },
     "conflict_banner": {
       "title": "其他人更新了这个 skill",
@@ -98,28 +136,31 @@
       "save": "保存修改",
       "saving": "保存中..."
     },
-    "sidebar": {
-      "metadata": "元数据",
-      "created": "创建于",
-      "updated": "更新于",
-      "created_by": "创建者",
-      "files": "文件",
-      "id": "ID",
-      "origin": "来源",
+    "tabs": {
+      "overview": "基础信息",
+      "files": "文件"
+    },
+    "menu": {
+      "aria": "更多操作",
+      "copy_id": "复制 skill ID",
+      "copied_toast": "已复制 skill ID",
+      "copy_failed_toast": "复制 skill ID 失败"
+    },
+    "overview": {
+      "preview_empty": "SKILL.md 还没有内容。切换到「文件」标签页开始编写。",
       "used_by_one": "被 {{count}} 个智能体使用",
       "used_by_other": "被 {{count}} 个智能体使用",
-      "permissions": "权限",
-      "permissions_owner": "你可以编辑和删除这个 skill。修改在智能体下次运行时生效。",
-      "permissions_locked_creator": "只有创建者（{{name}}）或工作区管理员能编辑这个 skill。",
-      "permissions_locked": "只有创建者或工作区管理员能编辑这个 skill。",
-      "used_by_empty": "还未分配给任何智能体。打开某个智能体的 Skills 标签页进行分配。"
-    },
-    "origin_card": {
-      "imported_runtime": "从本地运行时导入",
-      "imported_clawhub": "从 ClawHub 导入",
-      "imported_skills_sh": "从 Skills.sh 导入",
-      "imported_github": "从 GitHub 导入",
-      "provider": "provider · {{provider}}"
+      "used_by_empty": "还未分配给任何智能体。",
+      "metadata": "元数据",
+      "edit": "编辑",
+      "done": "完成",
+      "name_label": "名称",
+      "creator": "创建者",
+      "updated": "更新于",
+      "origin": "来源",
+      "unbind_aria": "从 {{name}} 移除",
+      "unbound_toast": "已从 {{name}} 移除",
+      "unbind_failed_toast": "移除 skill 失败"
     },
     "not_found": {
       "title": "未找到该 skill",
@@ -266,7 +307,8 @@
     "conflict_name_still_exists": "这个名称仍然已存在。请换一个名称或跳过。"
   },
   "file_tree": {
-    "no_files": "无文件"
+    "no_files": "无文件",
+    "aria_label": "skill 文件"
   },
   "file_viewer": {
     "edit_tooltip": "编辑",
