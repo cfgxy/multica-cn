@@ -16,7 +16,7 @@ import {
   agentListOptions,
   memberListOptions,
 } from "@multica/core/workspace/queries";
-import { agentTaskSnapshotOptions, deriveWorkload } from "@multica/core/agents";
+import { agentTaskSnapshotOptions } from "@multica/core/agents";
 import {
   deriveRuntimeHealth,
   runtimeUsageOptions,
@@ -44,7 +44,6 @@ import {
 import { AppLink } from "../../navigation";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { useViewingTimezone } from "../../common/use-viewing-timezone";
-import { workloadConfig } from "../../agents/presence";
 import { ProviderLogo } from "./provider-logo";
 import { HealthIcon, useHealthLabel } from "./shared";
 import { DeleteRuntimeDialog } from "./delete-runtime-dialog";
@@ -208,9 +207,13 @@ function VisibilityBadge({ runtime }: { runtime: AgentRuntime }) {
   );
 }
 
-// Health with the workload folded in as a suffix ("Healthy · 2 running").
-// Offline-ish rows skip the suffix — health already says it all. Online
-// idle rows also skip it: idle is the unremarkable default.
+// Health with the load folded in as a "· N tasks" suffix — verbatim the
+// same form as the agents list's status cell, so the two surfaces speak
+// one language. The suffix is a unit-bearing count (running + queued);
+// offline-ish rows skip it (health already says it all), idle rows skip
+// it (idle is the unremarkable default). If "queued but nothing running"
+// ever becomes a signal worth surfacing, it belongs to the HEALTH layer
+// (a new deriveRuntimeHealth state), not to vocabulary hints here.
 function HealthCell({
   runtime,
   workload,
@@ -225,20 +228,7 @@ function HealthCell({
   const health = deriveRuntimeHealth(runtime, now);
   const offline = health === "offline" || health === "about_to_gc";
   const lastSeen = formatLastSeen(runtime.last_seen_at);
-
-  const wlState = deriveWorkload({
-    runningCount: workload.runningCount,
-    queuedCount: workload.queuedCount,
-  });
-  const wl = workloadConfig[wlState];
-  const counts =
-    wlState === "working"
-      ? workload.queuedCount > 0
-        ? `${workload.runningCount} +${workload.queuedCount}q`
-        : `${workload.runningCount}`
-      : wlState === "queued"
-        ? `${workload.queuedCount}`
-        : null;
+  const active = workload.runningCount + workload.queuedCount;
 
   return (
     <ListGridCell className="gap-1.5">
@@ -248,16 +238,10 @@ function HealthCell({
         {health !== "online" && runtime.last_seen_at && (
           <span className="text-muted-foreground"> · {lastSeen}</span>
         )}
-        {!offline && wlState !== "idle" && (
-          <span className={wl.textClass}>
+        {!offline && active > 0 && (
+          <span className="text-muted-foreground">
             {" · "}
-            {tAgents(($) => $.workload[wlState])}
-            {counts ? (
-              <span className="font-mono tabular-nums text-muted-foreground">
-                {" "}
-                {counts}
-              </span>
-            ) : null}
+            {tAgents(($) => $.row.task_count, { count: active })}
           </span>
         )}
       </span>
