@@ -772,9 +772,19 @@ export function AutopilotsPage() {
             </span>
           )}
         </div>
-        <Button size="sm" variant="outline" onClick={() => openCreate()}>
-          <Plus className="mr-1 h-3.5 w-3.5" />
-          {t(($) => $.page.new_autopilot)}
+        {/* Quiet chrome button (outline, icon-only below md) — primary is
+            reserved for the empty state's CTAs. */}
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-8 w-8 gap-1 px-0 md:w-auto md:px-2.5"
+          aria-label={t(($) => $.page.new_autopilot)}
+          onClick={() => openCreate()}
+        >
+          <Plus className="h-3.5 w-3.5" />
+          <span className="hidden md:inline">
+            {t(($) => $.page.new_autopilot)}
+          </span>
         </Button>
       </PageHeader>
 

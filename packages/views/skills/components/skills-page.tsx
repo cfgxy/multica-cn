@@ -188,9 +188,18 @@ function PageHeaderBar({
           </a>
         </p>
       </div>
-      <Button type="button" size="sm" onClick={onCreate}>
-        <Plus className="h-3 w-3" />
-        {t(($) => $.page.new_skill)}
+      {/* Quiet chrome button (outline, icon-only below md) — primary is
+          reserved for the empty state's single CTA. */}
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        className="h-8 w-8 gap-1 px-0 md:w-auto md:px-2.5"
+        aria-label={t(($) => $.page.new_skill)}
+        onClick={onCreate}
+      >
+        <Plus className="h-3.5 w-3.5" />
+        <span className="hidden md:inline">{t(($) => $.page.new_skill)}</span>
       </Button>
     </PageHeader>
   );
