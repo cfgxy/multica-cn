@@ -55,40 +55,59 @@ import type { TriggerFrequency } from "./trigger-config";
 import { useT, useTimeAgo } from "../../i18n";
 
 // Column template — single source of truth for header, rows, and skeletons.
-// Same conventions as the skills list (see list-grid.tsx): container-driven
-// responsiveness, deterministic var-width tracks (rows are virtualized),
-// columns drop by priority, no horizontal scrolling.
-//
-// INVARIANT — every tier's track sum (incl. the n-1 gap-x-3 gaps) must fit
-// inside that tier's trigger width. Current arithmetic with all columns
-// enabled:
-//   base  (≥0):     12+16+96(name min)+144+28+12 + 5×12            = 368px
-//   @2xl  (≥672px): 12+16+140+144+120+104+28+12 + 7×12             = 660px ≤ 672 ✓
-//   @4xl  (≥896px): 12+16+140+144+144+120+104+28+12 + 8×12         = 816px ≤ 896 ✓
-//   @7xl (≥1280px): 12+16+180+144+144+120+104+104+144+104+28+12 + 11×12
-//                                                                  = 1244px ≤ 1280 ✓
-// Touch a track width or add a column → redo this math and bump the tier
-// breakpoint if it no longer fits.
+// Same conventions as the skills list (see list-grid.tsx and the comment
+// there): deterministic var-width tracks (rows are virtualized), and
+// TWO-ZONE responsiveness:
+// - Container ≥ @2xl (672px): WYSIWYG — every user-enabled column renders;
+//   the grid carries min-width = Σ(enabled tracks + gaps) and the wrapper
+//   scrolls horizontally when the enabled set outgrows the container. An
+//   enabled column must NEVER silently vanish (the "dead toggle" bug).
+// - Container < @2xl: static core set (name + assignee), no horizontal
+//   scroll, column toggles don't apply.
 const GRID_COLS =
   "grid-cols-[0.75rem_1rem_minmax(96px,1fr)_var(--apc-assignee)_1.75rem_0.75rem] " +
-  "@2xl:grid-cols-[0.75rem_1rem_minmax(140px,1fr)_var(--apc-assignee)_var(--apc-lastrun)_var(--apc-nextrun)_1.75rem_0.75rem] " +
-  "@4xl:grid-cols-[0.75rem_1rem_minmax(140px,1fr)_var(--apc-assignee)_var(--apc-trigger)_var(--apc-lastrun)_var(--apc-nextrun)_1.75rem_0.75rem] " +
-  "@7xl:grid-cols-[0.75rem_1rem_minmax(180px,1fr)_var(--apc-assignee)_var(--apc-trigger)_var(--apc-lastrun)_var(--apc-nextrun)_var(--apc-mode)_var(--apc-creator)_var(--apc-created)_1.75rem_0.75rem]";
+  "@2xl:grid-cols-[0.75rem_1rem_minmax(140px,1fr)_var(--apc-assignee)_var(--apc-trigger)_var(--apc-lastrun)_var(--apc-nextrun)_var(--apc-mode)_var(--apc-creator)_var(--apc-created)_1.75rem_0.75rem]";
 
 // h-12 rows; the virtualizer's fixed-size contract.
 const ROW_HEIGHT = 48;
 
+// Single source for hideable column widths: track vars and the grid's
+// min-width derive from the same numbers.
+const COLUMN_WIDTHS: Record<AutopilotColumnKey, number> = {
+  assignee: 144,
+  trigger: 144,
+  lastRun: 120,
+  nextRun: 104,
+  mode: 104,
+  creator: 144,
+  created: 104,
+};
+
+// Fixed tracks (edges 12+12, checkbox 16, name min 140, kebab 28) plus the
+// 11 gap-x-3 gaps between the wide template's 12 tracks (zero-width tracks
+// still carry gaps).
+const FIXED_TRACKS_WIDTH = 208 + 11 * 12;
+
 function columnTrackVars(
   isVisible: (key: AutopilotColumnKey) => boolean,
 ): React.CSSProperties {
+  const width = (key: AutopilotColumnKey) =>
+    isVisible(key) ? `${COLUMN_WIDTHS[key]}px` : "0px";
+  const minWidth =
+    FIXED_TRACKS_WIDTH +
+    (Object.keys(COLUMN_WIDTHS) as AutopilotColumnKey[]).reduce(
+      (sum, key) => sum + (isVisible(key) ? COLUMN_WIDTHS[key] : 0),
+      0,
+    );
   return {
-    "--apc-assignee": isVisible("assignee") ? "9rem" : "0px",
-    "--apc-trigger": isVisible("trigger") ? "9rem" : "0px",
-    "--apc-lastrun": isVisible("lastRun") ? "7.5rem" : "0px",
-    "--apc-nextrun": isVisible("nextRun") ? "6.5rem" : "0px",
-    "--apc-mode": isVisible("mode") ? "6.5rem" : "0px",
-    "--apc-creator": isVisible("creator") ? "9rem" : "0px",
-    "--apc-created": isVisible("created") ? "6.5rem" : "0px",
+    "--apc-assignee": width("assignee"),
+    "--apc-trigger": width("trigger"),
+    "--apc-lastrun": width("lastRun"),
+    "--apc-nextrun": width("nextRun"),
+    "--apc-mode": width("mode"),
+    "--apc-creator": width("creator"),
+    "--apc-created": width("created"),
+    "--apc-minw": `${minWidth}px`,
   } as React.CSSProperties;
 }
 
@@ -269,13 +288,13 @@ function TriggerCell({ autopilot }: { autopilot: Autopilot }) {
   const kinds = autopilot.trigger_kinds ?? [];
   if (kinds.length === 0) {
     return (
-      <ListGridCell className="hidden @4xl:flex">
+      <ListGridCell className="hidden @2xl:flex">
         <span className="text-xs text-muted-foreground/40">—</span>
       </ListGridCell>
     );
   }
   return (
-    <ListGridCell className="hidden gap-2 @4xl:flex">
+    <ListGridCell className="hidden gap-2 @2xl:flex">
       {kinds.map((kind) => {
         // Server-driven enum: unknown kinds get a generic icon + raw label.
         const Icon = TRIGGER_ICONS[kind] ?? Zap;
@@ -375,7 +394,7 @@ function ModeCell({ autopilot }: { autopilot: Autopilot }) {
       ? t(($) => $.execution_mode[mode])
       : mode;
   return (
-    <ListGridCell className="hidden @7xl:flex">
+    <ListGridCell className="hidden @2xl:flex">
       <span className="truncate text-xs text-muted-foreground">{label}</span>
     </ListGridCell>
   );
@@ -384,7 +403,7 @@ function ModeCell({ autopilot }: { autopilot: Autopilot }) {
 function CreatorCell({ autopilot }: { autopilot: Autopilot }) {
   const { getActorName } = useActorName();
   return (
-    <ListGridCell className="hidden gap-1.5 @7xl:flex">
+    <ListGridCell className="hidden gap-1.5 @2xl:flex">
       <ActorAvatar
         actorType={autopilot.created_by_type}
         actorId={autopilot.created_by_id}
@@ -454,11 +473,11 @@ function AutopilotListHeader({
         <ListGridHeaderCell className="px-0" />
       )}
       {isColVisible("trigger") ? (
-        <ListGridHeaderCell className="hidden @4xl:flex">
+        <ListGridHeaderCell className="hidden @2xl:flex">
           {t(($) => $.page.table.trigger)}
         </ListGridHeaderCell>
       ) : (
-        <ListGridHeaderCell className="hidden px-0 @4xl:flex" />
+        <ListGridHeaderCell className="hidden px-0 @2xl:flex" />
       )}
       {isColVisible("lastRun") ? (
         <ListGridHeaderCell
@@ -483,29 +502,29 @@ function AutopilotListHeader({
         <ListGridHeaderCell className="hidden px-0 @2xl:flex" />
       )}
       {isColVisible("mode") ? (
-        <ListGridHeaderCell className="hidden @7xl:flex">
+        <ListGridHeaderCell className="hidden @2xl:flex">
           {t(($) => $.page.table.mode)}
         </ListGridHeaderCell>
       ) : (
-        <ListGridHeaderCell className="hidden px-0 @7xl:flex" />
+        <ListGridHeaderCell className="hidden px-0 @2xl:flex" />
       )}
       {isColVisible("creator") ? (
-        <ListGridHeaderCell className="hidden @7xl:flex">
+        <ListGridHeaderCell className="hidden @2xl:flex">
           {t(($) => $.page.table.created_by)}
         </ListGridHeaderCell>
       ) : (
-        <ListGridHeaderCell className="hidden px-0 @7xl:flex" />
+        <ListGridHeaderCell className="hidden px-0 @2xl:flex" />
       )}
       {isColVisible("created") ? (
         <ListGridHeaderCell
-          className="hidden @7xl:flex"
+          className="hidden @2xl:flex"
           sorted={sorted("created")}
           onSort={() => onSort("created")}
         >
           {t(($) => $.page.table.created)}
         </ListGridHeaderCell>
       ) : (
-        <ListGridHeaderCell className="hidden px-0 @7xl:flex" />
+        <ListGridHeaderCell className="hidden px-0 @2xl:flex" />
       )}
       <span aria-hidden="true" />
     </ListGridHeader>
@@ -528,7 +547,7 @@ function LoadingSkeleton() {
         <ListGridHeaderCell>
           <Skeleton className="h-3 w-14" />
         </ListGridHeaderCell>
-        <ListGridHeaderCell className="hidden @4xl:flex">
+        <ListGridHeaderCell className="hidden @2xl:flex">
           <Skeleton className="h-3 w-12" />
         </ListGridHeaderCell>
         <ListGridHeaderCell className="hidden @2xl:flex">
@@ -539,9 +558,9 @@ function LoadingSkeleton() {
         </ListGridHeaderCell>
         {/* mode/creator/created are hidden by default — keep their tracks
             mapped with empty placeholders. */}
-        <ListGridHeaderCell className="hidden px-0 @7xl:flex" />
-        <ListGridHeaderCell className="hidden px-0 @7xl:flex" />
-        <ListGridHeaderCell className="hidden px-0 @7xl:flex" />
+        <ListGridHeaderCell className="hidden px-0 @2xl:flex" />
+        <ListGridHeaderCell className="hidden px-0 @2xl:flex" />
+        <ListGridHeaderCell className="hidden px-0 @2xl:flex" />
         <span aria-hidden="true" />
       </ListGridHeader>
       {Array.from({ length: 5 }).map((_, i) => (
@@ -554,7 +573,7 @@ function LoadingSkeleton() {
             <Skeleton className="size-5 rounded-full" />
             <Skeleton className="h-3 w-12" />
           </ListGridCell>
-          <ListGridCell className="hidden @4xl:flex">
+          <ListGridCell className="hidden @2xl:flex">
             <Skeleton className="h-3 w-16" />
           </ListGridCell>
           <ListGridCell className="hidden @2xl:flex">
@@ -563,9 +582,9 @@ function LoadingSkeleton() {
           <ListGridCell className="hidden @2xl:flex">
             <Skeleton className="h-3 w-14" />
           </ListGridCell>
-          <ListGridCell className="hidden px-0 @7xl:flex" />
-          <ListGridCell className="hidden px-0 @7xl:flex" />
-          <ListGridCell className="hidden px-0 @7xl:flex" />
+          <ListGridCell className="hidden px-0 @2xl:flex" />
+          <ListGridCell className="hidden px-0 @2xl:flex" />
+          <ListGridCell className="hidden px-0 @2xl:flex" />
           <span aria-hidden="true" />
         </ListGridRow>
       ))}
@@ -839,9 +858,9 @@ export function AutopilotsPage() {
             allRows={scopeRows}
             visibleCount={rows.length}
           />
-          <div className="min-h-0 flex-1 @container">
+          <div className="min-h-0 flex-1 overflow-x-auto @container">
             <ListGrid
-              className={`${GRID_COLS} h-full grid-rows-[auto_minmax(0,1fr)]`}
+              className={`${GRID_COLS} h-full grid-rows-[auto_minmax(0,1fr)] @2xl:min-w-[var(--apc-minw)]`}
               style={columnTrackVars(isColVisible)}
             >
               <AutopilotListHeader
@@ -893,7 +912,7 @@ export function AutopilotsPage() {
                       {isColVisible("trigger") ? (
                         <TriggerCell autopilot={autopilot} />
                       ) : (
-                        <ListGridCell className="hidden px-0 @4xl:flex" />
+                        <ListGridCell className="hidden px-0 @2xl:flex" />
                       )}
                       {isColVisible("lastRun") ? (
                         <LastRunCell autopilot={autopilot} />
@@ -908,19 +927,19 @@ export function AutopilotsPage() {
                       {isColVisible("mode") ? (
                         <ModeCell autopilot={autopilot} />
                       ) : (
-                        <ListGridCell className="hidden px-0 @7xl:flex" />
+                        <ListGridCell className="hidden px-0 @2xl:flex" />
                       )}
                       {isColVisible("creator") ? (
                         <CreatorCell autopilot={autopilot} />
                       ) : (
-                        <ListGridCell className="hidden px-0 @7xl:flex" />
+                        <ListGridCell className="hidden px-0 @2xl:flex" />
                       )}
                       {isColVisible("created") ? (
-                        <ListGridCell className="hidden whitespace-nowrap text-xs tabular-nums text-muted-foreground @7xl:flex">
+                        <ListGridCell className="hidden whitespace-nowrap text-xs tabular-nums text-muted-foreground @2xl:flex">
                           {new Date(autopilot.created_at).toLocaleDateString()}
                         </ListGridCell>
                       ) : (
-                        <ListGridCell className="hidden px-0 @7xl:flex" />
+                        <ListGridCell className="hidden px-0 @2xl:flex" />
                       )}
                       <ListGridCell className="justify-end px-0">
                         <AutopilotRowActions row={autopilot} />

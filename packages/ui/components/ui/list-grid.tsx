@@ -15,17 +15,19 @@ import { cn } from "../../lib/utils";
 // - First and last tracks are edge-padding columns (e.g. 1.25rem) so row
 //   hover backgrounds stay full-bleed while content aligns with page chrome.
 //   ListGridHeader/ListGridRow render the matching placeholder cells.
-// - Responsive column hiding is CONTAINER-query driven: wrap the ListGrid in
-//   a `@container` element and use `@<bp>:` variants (not viewport `sm:`/
-//   `lg:`), so sidebars and split panes narrow the list correctly. Change the
-//   template per container breakpoint AND mark the corresponding cells
-//   `hidden @<bp>:flex`; display:none cells drop out of subgrid
-//   auto-placement so the remaining cells fill the right tracks.
-// - Columns drop by priority as the container narrows (most expendable
-//   first); never fall back to horizontal scrolling. Corollary: every
-//   tier's track sum (incl. column gaps) MUST fit inside that tier's
-//   trigger width — overflow is clipped unreachably, so document the
-//   arithmetic next to the template and re-check it on every width change.
+// - Responsiveness is TWO-ZONE and CONTAINER-query driven (wrap the ListGrid
+//   in a `@container` element; `@<bp>:` variants, never viewport `sm:`/`lg:`,
+//   so sidebars and split panes are accounted for):
+//   - ≥ @2xl: WYSIWYG — every user-enabled column renders. The grid carries
+//     `@2xl:min-w-[var(--…-minw)]` (Σ enabled tracks + gaps, computed from
+//     the page's column-width constants) and the wrapper has
+//     `overflow-x-auto`, so an over-provisioned column set scrolls instead
+//     of clipping. An enabled column must NEVER be silently hidden behind a
+//     width tier — that "dead toggle" bug shipped twice.
+//   - < @2xl: a static core template (name + one key column), no horizontal
+//     scroll, column toggles don't apply. Non-core cells carry
+//     `hidden @2xl:flex`; display:none cells drop out of subgrid
+//     auto-placement so the remaining cells fill the right tracks.
 // - Keep the class a literal string in the page source so Tailwind sees it.
 
 export type ListGridSortDirection = "asc" | "desc";
