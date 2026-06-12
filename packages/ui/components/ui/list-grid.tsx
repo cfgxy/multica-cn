@@ -22,7 +22,10 @@ import { cn } from "../../lib/utils";
 //   `hidden @<bp>:flex`; display:none cells drop out of subgrid
 //   auto-placement so the remaining cells fill the right tracks.
 // - Columns drop by priority as the container narrows (most expendable
-//   first); never fall back to horizontal scrolling.
+//   first); never fall back to horizontal scrolling. Corollary: every
+//   tier's track sum (incl. column gaps) MUST fit inside that tier's
+//   trigger width — overflow is clipped unreachably, so document the
+//   arithmetic next to the template and re-check it on every width change.
 // - Keep the class a literal string in the page source so Tailwind sees it.
 
 export type ListGridSortDirection = "asc" | "desc";

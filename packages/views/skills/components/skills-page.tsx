@@ -70,15 +70,15 @@ import { useT, useTimeAgo } from "../../i18n";
 
 // Column template — single source of truth for header, rows, and skeletons.
 // Tracks: [edge 0.75rem] [checkbox 1rem] [name, only fr track]
-// [usedBy] [source, @4xl+] [creator, @4xl+] [updated/created, @2xl+]
+// [usedBy] [source, @5xl+] [creator, @5xl+] [updated/created, @2xl+]
 // [kebab 1.75rem] [edge 0.75rem].
 // Content cells carry a default px-2 from list-grid.tsx
 // (structural columns opt out with px-0), so the narrow edge tracks plus
 // cell padding land content 20px from the container edge. Hidden cells carry
-// the matching `hidden @2xl:flex` / `hidden @4xl:flex` classes.
+// the matching `hidden @2xl:flex` / `hidden @5xl:flex` classes.
 // Responsiveness is CONTAINER-driven, not viewport-driven: the page wrapper
 // is the `@container`, so an open sidebar or split pane narrows the list and
-// columns drop by priority (source/creator below @4xl, updated/created
+// columns drop by priority (source/creator below @5xl, updated/created
 // below @2xl; name/usedBy never drop) instead of forcing a horizontal
 // scrollbar. A
 // user-enabled column therefore means "show when space allows" — it comes
@@ -90,10 +90,20 @@ import { useT, useTimeAgo } from "../../i18n";
 // A user-hidden column zeroes its var (columnTrackVars), collapsing the
 // track exactly like the old max-content placeholder did; the empty
 // placeholder cell stays rendered to keep subgrid auto-placement intact.
+//
+// INVARIANT — every tier's track sum (incl. the n-1 gap-x-3 gaps) must fit
+// inside that tier's trigger width, because there is no horizontal-scroll
+// fallback: anything wider is clipped unreachably. Current arithmetic with
+// all columns enabled:
+//   base  (≥0):     12+16+96(name min)+144+28+12 + 5×12  = 368px
+//   @2xl  (≥672px): 12+16+140+144+104+104+28+12  + 7×12  = 644px ≤ 672 ✓
+//   @5xl (≥1024px): 12+16+180+144+152+144+104+104+28+12 + 9×12 = 1004px ≤ 1024 ✓
+// Touch a track width or add a column → redo this math and bump the tier
+// breakpoint if it no longer fits.
 const GRID_COLS =
-  "grid-cols-[0.75rem_1rem_minmax(140px,1fr)_var(--lgc-usedby)_1.75rem_0.75rem] " +
+  "grid-cols-[0.75rem_1rem_minmax(96px,1fr)_var(--lgc-usedby)_1.75rem_0.75rem] " +
   "@2xl:grid-cols-[0.75rem_1rem_minmax(140px,1fr)_var(--lgc-usedby)_var(--lgc-updated)_var(--lgc-created)_1.75rem_0.75rem] " +
-  "@4xl:grid-cols-[0.75rem_1rem_minmax(200px,1fr)_var(--lgc-usedby)_var(--lgc-source)_var(--lgc-creator)_var(--lgc-updated)_var(--lgc-created)_1.75rem_0.75rem]";
+  "@5xl:grid-cols-[0.75rem_1rem_minmax(180px,1fr)_var(--lgc-usedby)_var(--lgc-source)_var(--lgc-creator)_var(--lgc-updated)_var(--lgc-created)_1.75rem_0.75rem]";
 
 // h-12 rows. The virtualizer's fixed-size contract: every row renders at
 // exactly this height, which is what lets it skip per-row measurement.
@@ -103,9 +113,9 @@ function columnTrackVars(
   isVisible: (key: SkillColumnKey) => boolean,
 ): React.CSSProperties {
   return {
-    "--lgc-usedby": isVisible("usedBy") ? "10rem" : "0px",
-    "--lgc-source": isVisible("source") ? "11rem" : "0px",
-    "--lgc-creator": isVisible("creator") ? "10rem" : "0px",
+    "--lgc-usedby": isVisible("usedBy") ? "9rem" : "0px",
+    "--lgc-source": isVisible("source") ? "9.5rem" : "0px",
+    "--lgc-creator": isVisible("creator") ? "9rem" : "0px",
     "--lgc-updated": isVisible("updated") ? "6.5rem" : "0px",
     "--lgc-created": isVisible("created") ? "6.5rem" : "0px",
   } as React.CSSProperties;
@@ -325,7 +335,7 @@ function SourceCell({
   }
 
   return (
-    <ListGridCell className="hidden gap-1.5 text-xs text-muted-foreground @4xl:flex">
+    <ListGridCell className="hidden gap-1.5 text-xs text-muted-foreground @5xl:flex">
       {icon}
       <span className="min-w-0 truncate">{label}</span>
     </ListGridCell>
@@ -334,7 +344,7 @@ function SourceCell({
 
 function CreatorCell({ creator }: { creator: MemberWithUser | null }) {
   return (
-    <ListGridCell className="hidden gap-1.5 @4xl:flex">
+    <ListGridCell className="hidden gap-1.5 @5xl:flex">
       {creator && (
         <>
           <ActorAvatar
@@ -438,18 +448,18 @@ function SkillListHeader({
         <ListGridHeaderCell className="px-0" />
       )}
       {isColVisible("source") ? (
-        <ListGridHeaderCell className="hidden @4xl:flex">
+        <ListGridHeaderCell className="hidden @5xl:flex">
           {t(($) => $.table.source)}
         </ListGridHeaderCell>
       ) : (
-        <ListGridHeaderCell className="hidden px-0 @4xl:flex" />
+        <ListGridHeaderCell className="hidden px-0 @5xl:flex" />
       )}
       {isColVisible("creator") ? (
-        <ListGridHeaderCell className="hidden @4xl:flex">
+        <ListGridHeaderCell className="hidden @5xl:flex">
           {t(($) => $.table.created_by)}
         </ListGridHeaderCell>
       ) : (
-        <ListGridHeaderCell className="hidden px-0 @4xl:flex" />
+        <ListGridHeaderCell className="hidden px-0 @5xl:flex" />
       )}
       {isColVisible("updated") ? (
         <ListGridHeaderCell
@@ -495,8 +505,8 @@ function LoadingSkeleton() {
         {/* Source and created are hidden by default — keep their tracks
             mapped with empty placeholders so the skeleton matches the
             default layout. */}
-        <ListGridHeaderCell className="hidden px-0 @4xl:flex" />
-        <ListGridHeaderCell className="hidden @4xl:flex">
+        <ListGridHeaderCell className="hidden px-0 @5xl:flex" />
+        <ListGridHeaderCell className="hidden @5xl:flex">
           <Skeleton className="h-3 w-10" />
         </ListGridHeaderCell>
         <ListGridHeaderCell className="hidden @2xl:flex">
@@ -514,8 +524,8 @@ function LoadingSkeleton() {
           <ListGridCell>
             <Skeleton className="h-5 w-14" />
           </ListGridCell>
-          <ListGridCell className="hidden px-0 @4xl:flex" />
-          <ListGridCell className="hidden gap-1.5 @4xl:flex">
+          <ListGridCell className="hidden px-0 @5xl:flex" />
+          <ListGridCell className="hidden gap-1.5 @5xl:flex">
             <Skeleton className="size-5 rounded-full" />
             <Skeleton className="h-3 w-12" />
           </ListGridCell>
@@ -855,12 +865,12 @@ export default function SkillsPage() {
                 {isColVisible("source") ? (
                   <SourceCell skill={row.skill} runtime={row.runtime} />
                 ) : (
-                  <ListGridCell className="hidden px-0 @4xl:flex" />
+                  <ListGridCell className="hidden px-0 @5xl:flex" />
                 )}
                 {isColVisible("creator") ? (
                   <CreatorCell creator={row.creator} />
                 ) : (
-                  <ListGridCell className="hidden px-0 @4xl:flex" />
+                  <ListGridCell className="hidden px-0 @5xl:flex" />
                 )}
                 {isColVisible("updated") ? (
                   <ListGridCell className="hidden whitespace-nowrap text-xs tabular-nums text-muted-foreground @2xl:flex">
