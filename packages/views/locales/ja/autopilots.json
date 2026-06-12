@@ -357,7 +357,6 @@
   },
   "toolbar": {
     "result_count_title": "該当する自動化 / すべての自動化",
-    "search_placeholder": "自動化を検索…",
     "filter_label": "フィルター",
     "filter_active_count_one": "{{count}} 件のフィルター",
     "filter_active_count_other": "{{count}} 件のフィルター",
@@ -376,8 +375,6 @@
     "row_menu": "自動化の操作",
     "pause": "一時停止",
     "resume": "再開",
-    "archive": "アーカイブ",
-    "unarchive": "アーカイブ解除",
     "delete": "削除",
     "selected_one": "{{count}} 件選択中",
     "selected_other": "{{count}} 件選択中",

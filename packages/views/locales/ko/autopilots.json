@@ -357,7 +357,6 @@
   },
   "toolbar": {
     "result_count_title": "일치하는 자동화 / 전체 자동화",
-    "search_placeholder": "자동화 검색…",
     "filter_label": "필터",
     "filter_active_count_one": "필터 {{count}}개",
     "filter_active_count_other": "필터 {{count}}개",
@@ -376,8 +375,6 @@
     "row_menu": "자동화 작업",
     "pause": "일시중지",
     "resume": "재개",
-    "archive": "보관",
-    "unarchive": "보관 해제",
     "delete": "삭제",
     "selected_one": "{{count}}개 선택됨",
     "selected_other": "{{count}}개 선택됨",

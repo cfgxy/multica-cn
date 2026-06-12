@@ -2,8 +2,6 @@
 
 import { useState } from "react";
 import {
-  Archive,
-  ArchiveRestore,
   Loader2,
   MoreHorizontal,
   Pause,
@@ -124,7 +122,7 @@ export function DeleteAutopilotsDialog({
 
 function useSetStatus() {
   const updateAutopilot = useUpdateAutopilot();
-  return async (rows: Autopilot[], status: "active" | "paused" | "archived") => {
+  return async (rows: Autopilot[], status: "active" | "paused") => {
     try {
       for (const row of rows) {
         if (row.status === status) continue;
@@ -180,17 +178,6 @@ export function AutopilotRowActions({ row }: { row: Autopilot }) {
               {t(($) => $.actions.resume)}
             </DropdownMenuItem>
           )}
-          {row.status !== "archived" ? (
-            <DropdownMenuItem onClick={() => setStatus([row], "archived")}>
-              <Archive className="size-3.5" />
-              {t(($) => $.actions.archive)}
-            </DropdownMenuItem>
-          ) : (
-            <DropdownMenuItem onClick={() => setStatus([row], "paused")}>
-              <ArchiveRestore className="size-3.5" />
-              {t(($) => $.actions.unarchive)}
-            </DropdownMenuItem>
-          )}
           <DropdownMenuSeparator />
           <DropdownMenuItem
             variant="destructive"
@@ -229,7 +216,6 @@ export function AutopilotBatchToolbar({
 
   const anyActive = rows.some((r) => r.status === "active");
   const anyPaused = rows.some((r) => r.status === "paused");
-  const anyUnarchived = rows.some((r) => r.status !== "archived");
 
   return (
     <>
@@ -268,16 +254,6 @@ export function AutopilotBatchToolbar({
           >
             <Play className="mr-1 size-3.5" />
             {t(($) => $.actions.resume)}
-          </Button>
-        )}
-        {anyUnarchived && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={() => setStatus(rows, "archived")}
-          >
-            <Archive className="mr-1 size-3.5" />
-            {t(($) => $.actions.archive)}
           </Button>
         )}
         <Button

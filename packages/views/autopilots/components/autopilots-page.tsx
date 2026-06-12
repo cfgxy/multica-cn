@@ -22,6 +22,7 @@ import { autopilotListOptions } from "@multica/core/autopilots/queries";
 import {
   useAutopilotsViewStore,
   AUTOPILOT_DEFAULT_HIDDEN_COLUMNS,
+  AUTOPILOT_SCOPES,
   type AutopilotColumnKey,
   type AutopilotScope,
   type AutopilotSortField,
@@ -613,9 +614,11 @@ export function AutopilotsPage() {
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(
     new Set(),
   );
-  const [search, setSearch] = useState("");
-
-  const scope = useAutopilotsViewStore((s) => s.scope);
+  // Persisted scope may hold a retired value (e.g. "archived" from an older
+  // build) — fall back to "all" instead of stranding the user on an
+  // unreachable scope.
+  const rawScope = useAutopilotsViewStore((s) => s.scope);
+  const scope = AUTOPILOT_SCOPES.includes(rawScope) ? rawScope : "all";
   const setScope = useAutopilotsViewStore((s) => s.setScope);
   const sortField = useAutopilotsViewStore((s) => s.sortField);
   const sortDirection = useAutopilotsViewStore((s) => s.sortDirection);
@@ -641,17 +644,17 @@ export function AutopilotsPage() {
   };
 
   // Scope counts come from the FULL set (filters never affect them — they
-  // are stage inventories, not result counts). "all" excludes archived.
+  // are stage inventories, not result counts). API-archived rows (no UI
+  // flow creates them) are excluded everywhere.
   const scopeCounts = useMemo<Record<AutopilotScope, number>>(() => {
     let active = 0;
     let paused = 0;
-    let archived = 0;
     for (const a of autopilots) {
-      if (a.status === "archived") archived++;
-      else if (a.status === "paused") paused++;
+      if (a.status === "archived") continue;
+      if (a.status === "paused") paused++;
       else active++;
     }
-    return { all: active + paused, active, paused, archived };
+    return { all: active + paused, active, paused };
   }, [autopilots]);
 
   // Rows within the current scope, unfiltered — toolbar option lists and
@@ -663,11 +666,9 @@ export function AutopilotsPage() {
     return autopilots.filter((a) => a.status === scope);
   }, [autopilots, scope]);
 
-  // Visible rows: title search + filters, then sort.
+  // Visible rows: filters, then sort.
   const rows = useMemo<Autopilot[]>(() => {
-    const q = search.trim().toLowerCase();
     const filtered = scopeRows.filter((a) => {
-      if (q && !a.title.toLowerCase().includes(q)) return false;
       if (
         filters.assignees.length > 0 &&
         !filters.assignees.includes(
@@ -719,7 +720,7 @@ export function AutopilotsPage() {
       return (av - bv) * dir || a.title.localeCompare(b.title);
     });
     return filtered;
-  }, [scopeRows, search, filters, sortField, sortDirection]);
+  }, [scopeRows, filters, sortField, sortDirection]);
 
   // Row virtualization — same wiring as the skills list: headless math,
   // offsets as padding on the body, fixed-height rows.
@@ -844,8 +845,6 @@ export function AutopilotsPage() {
             scope={scope}
             onScopeChange={setScope}
             scopeCounts={scopeCounts}
-            search={search}
-            onSearchChange={setSearch}
             filters={filters}
             onToggleFilter={toggleFilter}
             onClearFilters={clearFilters}

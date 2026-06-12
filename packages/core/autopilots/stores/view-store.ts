@@ -15,18 +15,14 @@ import { defaultStorage } from "../../platform/storage";
 // skills view store).
 
 // Status is the promoted SCOPE dimension (lifecycle stage, mutually
-// exclusive, must give archived a visible home outside the default view) —
-// it therefore does NOT appear in `filters`; one dimension lives in exactly
-// one place. "all" = active + paused, archived excluded (Linear archive
-// semantics).
-export type AutopilotScope = "all" | "active" | "paused" | "archived";
+// exclusive) — it therefore does NOT appear in `filters`; one dimension
+// lives in exactly one place. "all" = active + paused. There is no
+// archived scope because the product has no UI archiving flow (the DB
+// status value exists but nothing in the UI can set it); add the scope
+// back together with archive actions if that flow ever ships.
+export type AutopilotScope = "all" | "active" | "paused";
 
-export const AUTOPILOT_SCOPES: AutopilotScope[] = [
-  "all",
-  "active",
-  "paused",
-  "archived",
-];
+export const AUTOPILOT_SCOPES: AutopilotScope[] = ["all", "active", "paused"];
 
 export type AutopilotSortField = "name" | "lastRun" | "nextRun" | "created";
 

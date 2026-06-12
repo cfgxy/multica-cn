@@ -357,7 +357,6 @@
   },
   "toolbar": {
     "result_count_title": "Matching automations / all automations",
-    "search_placeholder": "Search automations…",
     "filter_label": "Filter",
     "filter_active_count_one": "{{count}} filter",
     "filter_active_count_other": "{{count}} filters",
@@ -376,8 +375,6 @@
     "row_menu": "Automation actions",
     "pause": "Pause",
     "resume": "Resume",
-    "archive": "Archive",
-    "unarchive": "Unarchive",
     "delete": "Delete",
     "selected_one": "{{count}} selected",
     "selected_other": "{{count}} selected",

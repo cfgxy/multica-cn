@@ -5,7 +5,6 @@ import {
   ArrowUp,
   ChevronDown,
   Filter,
-  Search,
   X,
 } from "lucide-react";
 import type { Autopilot } from "@multica/core/types";
@@ -30,7 +29,6 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@multica/ui/components/ui/dropdown-menu";
-import { Input } from "@multica/ui/components/ui/input";
 import {
   Popover,
   PopoverContent,
@@ -87,8 +85,6 @@ export function AutopilotListToolbar({
   scope,
   onScopeChange,
   scopeCounts,
-  search,
-  onSearchChange,
   filters,
   onToggleFilter,
   onClearFilters,
@@ -105,8 +101,6 @@ export function AutopilotListToolbar({
   onScopeChange: (scope: AutopilotScope) => void;
   /** Per-scope totals from the FULL set — scope counts ignore filters. */
   scopeCounts: Record<AutopilotScope, number>;
-  search: string;
-  onSearchChange: (v: string) => void;
   filters: AutopilotListFilters;
   onToggleFilter: (key: keyof AutopilotListFilters, value: string) => void;
   onClearFilters: () => void;
@@ -119,7 +113,7 @@ export function AutopilotListToolbar({
   /** Rows within the current scope, unfiltered — filter option lists and
    *  counts derive from this set. */
   allRows: Autopilot[];
-  /** Rows surviving search + filters — shown as "n / total" when narrowed. */
+  /** Rows surviving the filters — shown as "n / total" when narrowed. */
   visibleCount: number;
 }) {
   const { t } = useT("autopilots");
@@ -172,7 +166,6 @@ export function AutopilotListToolbar({
     all: t(($) => $.page.scope_all),
     active: t(($) => $.status.active),
     paused: t(($) => $.status.paused),
-    archived: t(($) => $.status.archived),
   };
 
   const SORT_LABELS: Record<AutopilotSortField, string> = {
@@ -199,11 +192,12 @@ export function AutopilotListToolbar({
 
   return (
     <div className="flex h-12 shrink-0 items-center justify-between gap-2 px-5">
-      {/* Left: scope buttons + search + result count. Scope is the promoted
-          status dimension (it does NOT appear in the filter dropdown); the
-          count only appears while search/filters narrow the list. Button
-          styling and the <md dropdown collapse follow the issues header's
-          scope buttons. */}
+      {/* Left: scope buttons + result count. Scope is the promoted status
+          dimension (it does NOT appear in the filter dropdown). No search
+          box: scope buttons already partition the (small) set, so search
+          was dropped by product call. The count only appears while filters
+          narrow the list. Button styling and the <md dropdown collapse
+          follow the issues header's scope buttons. */}
       <div className="flex min-w-0 items-center gap-2">
         <div className="hidden shrink-0 items-center gap-1 md:flex">
           {AUTOPILOT_SCOPES.map((s) => (
@@ -258,18 +252,7 @@ export function AutopilotListToolbar({
           </DropdownMenuContent>
         </DropdownMenu>
 
-        {/* Below md the search and count disappear entirely (issues
-            header's small-screen treatment). */}
-        <div className="relative hidden md:block">
-          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
-          <Input
-            value={search}
-            onChange={(e) => onSearchChange(e.target.value)}
-            placeholder={t(($) => $.toolbar.search_placeholder)}
-            className="h-8 w-44 pl-8 text-sm lg:w-56"
-          />
-        </div>
-        {(hasActiveFilters || search.trim().length > 0) && (
+        {hasActiveFilters && (
           <span
             title={t(($) => $.toolbar.result_count_title)}
             className="hidden shrink-0 text-xs tabular-nums text-muted-foreground md:inline"
