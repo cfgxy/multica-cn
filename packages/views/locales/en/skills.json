@@ -36,13 +36,11 @@
   },
   "table": {
     "name": "Name",
-    "description": "Description",
     "created_by": "Added by",
     "used_by": "Used by",
     "source": "Source",
     "updated": "Updated",
     "created": "Created",
-    "no_description": "No description",
     "lock_tooltip": "Read-only — only creator or admin can edit",
     "unused": "— unused",
     "by_creator": "by {{name}}",

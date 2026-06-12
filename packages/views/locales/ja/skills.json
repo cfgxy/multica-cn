@@ -36,13 +36,11 @@
   },
   "table": {
     "name": "名前",
-    "description": "説明",
     "created_by": "追加者",
     "used_by": "使用中",
     "source": "ソース",
     "updated": "更新日",
     "created": "作成日",
-    "no_description": "説明なし",
     "lock_tooltip": "読み取り専用 — 作成者または管理者のみが編集できます",
     "unused": "— 未使用",
     "by_creator": "{{name}}",

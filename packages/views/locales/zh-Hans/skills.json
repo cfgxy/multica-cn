@@ -48,13 +48,11 @@
   },
   "table": {
     "name": "名称",
-    "description": "描述",
     "created_by": "添加者",
     "used_by": "被谁使用",
     "source": "来源",
     "updated": "更新时间",
     "created": "创建时间",
-    "no_description": "无描述",
     "lock_tooltip": "只读——只有创建者或管理员能编辑",
     "unused": "— 未使用",
     "by_creator": "由 {{name}} 创建",

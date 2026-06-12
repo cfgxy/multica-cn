@@ -54,7 +54,6 @@ export const EMPTY_SKILL_FILTERS: SkillListFilters = {
 // User-hideable columns. Name and the structural columns (checkbox, kebab)
 // are always visible.
 export type SkillColumnKey =
-  | "description"
   | "usedBy"
   | "source"
   | "creator"

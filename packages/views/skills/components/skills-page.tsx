@@ -68,24 +68,24 @@ import { useT, useTimeAgo } from "../../i18n";
 
 // Column template — single source of truth for header, rows, and skeletons.
 // Tracks: [edge 0.75rem] [checkbox 1rem] [name, only fr track]
-// [description ≤20rem, lg+] [usedBy max-content] [source max-content with
-// floor, lg+] [creator max-content, lg+] [updated 5rem, sm+] [kebab 1.75rem]
+// [usedBy max-content] [source max-content with floor, lg+]
+// [creator max-content, lg+] [updated 5rem, sm+] [kebab 1.75rem]
 // [edge 0.75rem]. Content cells carry a default px-2 from list-grid.tsx
 // (structural columns opt out with px-0), so the narrow edge tracks plus
 // cell padding land content 20px from the viewport edge. Hidden cells carry
 // the matching `hidden sm:flex` / `hidden lg:flex` classes.
 // Hideable columns use max-content tracks (content caps live on the cell
-// content, e.g. the description's max-w) so a user-hidden column — rendered
+// content, e.g. the source's max-w) so a user-hidden column — rendered
 // as an empty placeholder cell to keep subgrid auto-placement intact —
 // collapses to zero width instead of leaving a fixed-width hole.
 // Columns never get squashed below their content: the grid carries
 // `min-w-fit` and the page wrapper scrolls horizontally when every column
 // is enabled on a narrow viewport. Per-column caps live on cell content
-// (description max-w-[20rem], source max-w-[12rem], names max-w-[7rem]).
+// (source max-w-[12rem], names max-w-[7rem]).
 const GRID_COLS =
   "grid-cols-[0.75rem_1rem_minmax(140px,1fr)_max-content_1.75rem_0.75rem] " +
   "sm:grid-cols-[0.75rem_1rem_minmax(140px,1fr)_max-content_max-content_max-content_1.75rem_0.75rem] " +
-  "lg:grid-cols-[0.75rem_1rem_minmax(200px,1fr)_max-content_max-content_max-content_max-content_max-content_max-content_1.75rem_0.75rem]";
+  "lg:grid-cols-[0.75rem_1rem_minmax(200px,1fr)_max-content_max-content_max-content_max-content_max-content_1.75rem_0.75rem]";
 
 // Sort/filter/column types and defaults live in the core view store
 // (@multica/core/skills/stores/view-store) so the persisted state and the
@@ -202,20 +202,6 @@ function NameCell({ row }: { row: SkillRow }) {
           />
           <TooltipContent>{t(($) => $.table.lock_tooltip)}</TooltipContent>
         </Tooltip>
-      )}
-    </ListGridCell>
-  );
-}
-
-function DescriptionCell({ description }: { description: string }) {
-  return (
-    <ListGridCell className="hidden lg:flex">
-      {description ? (
-        <span className="min-w-0 max-w-[20rem] truncate text-xs text-muted-foreground">
-          {description}
-        </span>
-      ) : (
-        <span className="text-xs text-muted-foreground/40">—</span>
       )}
     </ListGridCell>
   );
@@ -417,13 +403,6 @@ function SkillListHeader({
       <ListGridHeaderCell sorted={sorted("name")} onSort={() => onSort("name")}>
         {t(($) => $.table.name)}
       </ListGridHeaderCell>
-      {isColVisible("description") ? (
-        <ListGridHeaderCell className="hidden lg:flex">
-          {t(($) => $.table.description)}
-        </ListGridHeaderCell>
-      ) : (
-        <ListGridHeaderCell className="hidden px-0 lg:flex" />
-      )}
       {isColVisible("usedBy") ? (
         <ListGridHeaderCell
           sorted={sorted("usedBy")}
@@ -483,9 +462,6 @@ function LoadingSkeleton() {
         <ListGridHeaderCell>
           <Skeleton className="h-3 w-12" />
         </ListGridHeaderCell>
-        <ListGridHeaderCell className="hidden lg:flex">
-          <Skeleton className="h-3 w-12" />
-        </ListGridHeaderCell>
         <ListGridHeaderCell>
           <Skeleton className="h-3 w-14" />
         </ListGridHeaderCell>
@@ -507,9 +483,6 @@ function LoadingSkeleton() {
           <span aria-hidden="true" />
           <ListGridCell>
             <Skeleton className="h-3.5 w-40 max-w-full" />
-          </ListGridCell>
-          <ListGridCell className="hidden lg:flex">
-            <Skeleton className="h-3 w-56 max-w-full" />
           </ListGridCell>
           <ListGridCell>
             <Skeleton className="h-5 w-14" />
@@ -813,11 +786,6 @@ export default function SkillsPage() {
                   onToggle={() => toggleSelected(row.skill.id)}
                 />
                 <NameCell row={row} />
-                {isColVisible("description") ? (
-                  <DescriptionCell description={row.skill.description} />
-                ) : (
-                  <ListGridCell className="hidden px-0 lg:flex" />
-                )}
                 {isColVisible("usedBy") ? (
                   <UsedByCell agents={row.agents} />
                 ) : (
