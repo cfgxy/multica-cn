@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import type { Attachment } from "@multica/core/types";
 import type { UploadResult } from "@multica/core/hooks/use-file-upload";
@@ -57,9 +57,16 @@ vi.mock("./attachment-download-context", () => ({
 
 const editorRef = vi.hoisted<{ current: unknown }>(() => ({ current: null }));
 const onCreateFired = vi.hoisted(() => ({ value: false }));
+const latestEditorOptions = vi.hoisted<{
+  current?: { onUpdate?: (args: { editor: unknown }) => void };
+}>(() => ({}));
 
 vi.mock("@tiptap/react", () => ({
-  useEditor: (options: { onCreate?: (args: { editor: unknown }) => void }) => {
+  useEditor: (options: {
+    onCreate?: (args: { editor: unknown }) => void;
+    onUpdate?: (args: { editor: unknown }) => void;
+  }) => {
+    latestEditorOptions.current = options;
     if (!editorRef.current) {
       editorRef.current = {
         get isFocused() {
@@ -104,7 +111,12 @@ describe("ContentEditor", () => {
     editorState.markdown = "";
     editorRef.current = null;
     onCreateFired.value = false;
+    latestEditorOptions.current = undefined;
     providerProps.attachments = undefined;
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
   });
 
   it("focuses the editor when clicking the empty container area", () => {
@@ -209,6 +221,98 @@ describe("ContentEditor", () => {
     rerender(<ContentEditor defaultValue={"same content\n"} />);
 
     expect(mockSetContent).not.toHaveBeenCalled();
+  });
+
+  it("flushes a pending debounced update on unmount when flushPendingOnUnmount is set", () => {
+    vi.useFakeTimers();
+    const onUpdate = vi.fn();
+    editorState.markdown = "old content";
+    const { unmount } = render(
+      <ContentEditor
+        defaultValue="old content"
+        onUpdate={onUpdate}
+        debounceMs={1500}
+        flushPendingOnUnmount
+      />,
+    );
+
+    editorState.markdown = "old content\n\n![shot](/api/attachments/att-1/download)";
+    act(() => {
+      latestEditorOptions.current?.onUpdate?.({ editor: editorRef.current });
+    });
+
+    expect(onUpdate).not.toHaveBeenCalled();
+
+    // The flush must emit the copy cached at onUpdate time — by cleanup time
+    // Tiptap may already have torn the instance down, so reading the editor
+    // during unmount is not an option.
+    editorState.isDestroyed = true;
+    editorState.markdown = "";
+
+    unmount();
+
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+    expect(onUpdate).toHaveBeenCalledWith(
+      "old content\n\n![shot](/api/attachments/att-1/download)",
+    );
+    act(() => {
+      vi.advanceTimersByTime(1500);
+    });
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+  });
+
+  it("drops a pending debounced update on unmount by default", () => {
+    // Regression guard for draft resurrection: composers like comment edit
+    // cancel `clearDraft()` and then unmount this editor. A default unmount
+    // flush would re-emit the discarded markdown into onUpdate, which writes
+    // it straight back into the draft store.
+    vi.useFakeTimers();
+    const onUpdate = vi.fn();
+    editorState.markdown = "edit draft the user cancelled";
+    const { unmount } = render(
+      <ContentEditor
+        defaultValue=""
+        onUpdate={onUpdate}
+        debounceMs={300}
+      />,
+    );
+
+    act(() => {
+      latestEditorOptions.current?.onUpdate?.({ editor: editorRef.current });
+    });
+    expect(onUpdate).not.toHaveBeenCalled();
+
+    unmount();
+
+    expect(onUpdate).not.toHaveBeenCalled();
+    act(() => {
+      vi.advanceTimersByTime(300);
+    });
+    expect(onUpdate).not.toHaveBeenCalled();
+  });
+
+  it("does not re-emit on unmount when the debounce already fired", () => {
+    vi.useFakeTimers();
+    const onUpdate = vi.fn();
+    const { unmount } = render(
+      <ContentEditor
+        defaultValue=""
+        onUpdate={onUpdate}
+        debounceMs={1500}
+        flushPendingOnUnmount
+      />,
+    );
+
+    editorState.markdown = "typed content";
+    act(() => {
+      latestEditorOptions.current?.onUpdate?.({ editor: editorRef.current });
+      vi.advanceTimersByTime(1500);
+    });
+    expect(onUpdate).toHaveBeenCalledTimes(1);
+
+    unmount();
+
+    expect(onUpdate).toHaveBeenCalledTimes(1);
   });
 });
 
