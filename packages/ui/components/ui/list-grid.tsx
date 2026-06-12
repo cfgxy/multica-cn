@@ -132,13 +132,14 @@ function ListGridHeaderCell({
   );
 }
 
-// Scrollable rows area. Lets the scrollbar start BELOW the header (Linear's
-// list-wrapper structure) instead of running alongside it: give the ListGrid
-// container `h-full grid-rows-[auto_minmax(0,1fr)]` and put all rows inside
-// this body. Nested subgrid keeps the column tracks aligned with the header.
-// Known limitation: a non-overlay scrollbar consumes body width, shifting
-// row tracks ~10px relative to the header (invisible with macOS overlay
-// scrollbars).
+// Rows area — a plain subgrid passthrough that groups the rows and carries
+// the virtualization padding. It does NOT scroll: both scroll axes live on
+// the single outer wrapper (`overflow-auto @container`), with the sticky
+// header pinning inside that scroller. Splitting horizontal scrolling
+// (wrapper) from vertical scrolling (this element) connected by an h-full
+// percentage bridge caused a non-converging layout loop (flickering double
+// scrollbars), clipped the last row under the horizontal scrollbar, and
+// let a classic vertical scrollbar shift row tracks relative to the header.
 function ListGridBody({
   className,
   ...props
@@ -146,13 +147,19 @@ function ListGridBody({
   return (
     <div
       className={cn(
-        "col-span-full grid min-h-0 grid-cols-subgrid content-start overflow-x-hidden overflow-y-auto",
+        "col-span-full grid grid-cols-subgrid content-start",
         className,
       )}
       {...props}
     />
   );
 }
+
+// Bottom clearance appended to the rows area's padding so the last row can
+// scroll clear of floating UI anchored to the pane's bottom edge (the chat
+// FAB at bottom-right covers ~48px; the batch toolbar ~62px). One row of
+// extra runway keeps both off the final row's kebab.
+export const LIST_GRID_BOTTOM_CLEARANCE = 64;
 
 interface ListGridRowProps extends React.HTMLAttributes<HTMLElement> {
   /**

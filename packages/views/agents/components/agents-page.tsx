@@ -56,6 +56,7 @@ import {
   DialogTitle,
 } from "@multica/ui/components/ui/dialog";
 import {
+  LIST_GRID_BOTTOM_CLEARANCE,
   ListGrid,
   ListGridBody,
   ListGridCell,
@@ -1054,14 +1055,11 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
                 onToggleAll={handleToggleAll}
                 isColVisible={isColVisible}
               />
-              {/* Plain subgrid passthrough (NOT ListGridBody): scrolling
-                  lives on the outer wrapper, this div only groups the rows
-                  and carries the virtualization padding. */}
               <ListGridBody
-                className="overflow-x-visible overflow-y-visible"
                 style={{
                   paddingTop: virtualPadding.top,
-                  paddingBottom: virtualPadding.bottom,
+                  paddingBottom:
+                    virtualPadding.bottom + LIST_GRID_BOTTOM_CLEARANCE,
                 }}
               >
                 {rows.length === 0 && (

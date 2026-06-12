@@ -34,6 +34,7 @@ import type { Autopilot } from "@multica/core/types";
 import { Button } from "@multica/ui/components/ui/button";
 import { Checkbox } from "@multica/ui/components/ui/checkbox";
 import {
+  LIST_GRID_BOTTOM_CLEARANCE,
   ListGrid,
   ListGridBody,
   ListGridCell,
@@ -724,10 +725,10 @@ export function AutopilotsPage() {
 
   // Row virtualization — same wiring as the skills list: headless math,
   // offsets as padding on the body, fixed-height rows.
-  const listBodyRef = useRef<HTMLDivElement | null>(null);
+  const listScrollRef = useRef<HTMLDivElement | null>(null);
   const rowVirtualizer = useVirtualizer({
     count: rows.length,
-    getScrollElement: () => listBodyRef.current,
+    getScrollElement: () => listScrollRef.current,
     estimateSize: () => ROW_HEIGHT,
     overscan: 10,
   });
@@ -867,9 +868,12 @@ export function AutopilotsPage() {
             allRows={scopeRows}
             visibleCount={rows.length}
           />
-          <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden @container">
+          <div
+            ref={listScrollRef}
+            className="min-h-0 flex-1 overflow-auto @container"
+          >
             <ListGrid
-              className={`${GRID_COLS} h-full grid-rows-[auto_minmax(0,1fr)] @2xl:min-w-[var(--apc-minw)]`}
+              className={`${GRID_COLS} @2xl:min-w-[var(--apc-minw)]`}
               style={columnTrackVars(isColVisible)}
             >
               <AutopilotListHeader
@@ -882,10 +886,10 @@ export function AutopilotsPage() {
                 isColVisible={isColVisible}
               />
               <ListGridBody
-                ref={listBodyRef}
                 style={{
                   paddingTop: virtualPadding.top,
-                  paddingBottom: virtualPadding.bottom,
+                  paddingBottom:
+                    virtualPadding.bottom + LIST_GRID_BOTTOM_CLEARANCE,
                 }}
               >
                 {rows.length === 0 && (

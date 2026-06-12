@@ -34,6 +34,7 @@ import { resolvePublicFileUrl } from "@multica/core/workspace/avatar-url";
 import { Button } from "@multica/ui/components/ui/button";
 import { Checkbox } from "@multica/ui/components/ui/checkbox";
 import {
+  LIST_GRID_BOTTOM_CLEARANCE,
   ListGrid,
   ListGridBody,
   ListGridCell,
@@ -732,13 +733,15 @@ export default function SkillsPage() {
 
   // Row virtualization — Linear-style: the virtualizer only does the math
   // (visible index range + offsets); the DOM stays ours. Offsets become
-  // padding on ListGridBody, so the mounted rows remain direct subgrid
+  // padding on the rows wrapper, so the mounted rows remain direct subgrid
   // children and column alignment is untouched. Fixed ROW_HEIGHT rows mean
-  // no per-row measurement.
-  const listBodyRef = useRef<HTMLDivElement | null>(null);
+  // no per-row measurement. The scroll element is the SINGLE outer
+  // scroller (both axes) — see ListGridBody's comment for why the split
+  // scroll structure was retired.
+  const listScrollRef = useRef<HTMLDivElement | null>(null);
   const rowVirtualizer = useVirtualizer({
     count: rows.length,
-    getScrollElement: () => listBodyRef.current,
+    getScrollElement: () => listScrollRef.current,
     estimateSize: () => ROW_HEIGHT,
     overscan: 10,
   });
@@ -847,9 +850,12 @@ export default function SkillsPage() {
             allRows={allRows}
             visibleCount={rows.length}
           />
-          <div className="min-h-0 flex-1 overflow-x-auto overflow-y-hidden @container">
+          <div
+            ref={listScrollRef}
+            className="min-h-0 flex-1 overflow-auto @container"
+          >
           <ListGrid
-            className={`${GRID_COLS} h-full grid-rows-[auto_minmax(0,1fr)] @2xl:min-w-[var(--lgc-minw)]`}
+            className={`${GRID_COLS} @2xl:min-w-[var(--lgc-minw)]`}
             style={columnTrackVars(isColVisible)}
           >
             <SkillListHeader
@@ -862,10 +868,10 @@ export default function SkillsPage() {
               isColVisible={isColVisible}
             />
             <ListGridBody
-              ref={listBodyRef}
               style={{
                 paddingTop: virtualPadding.top,
-                paddingBottom: virtualPadding.bottom,
+                paddingBottom:
+                  virtualPadding.bottom + LIST_GRID_BOTTOM_CLEARANCE,
               }}
             >
               {rows.length === 0 && (
