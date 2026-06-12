@@ -137,7 +137,7 @@ function ListGridHeaderCell({
 function ListGridBody({
   className,
   ...props
-}: React.HTMLAttributes<HTMLDivElement>) {
+}: React.ComponentProps<"div">) {
   return (
     <div
       className={cn(

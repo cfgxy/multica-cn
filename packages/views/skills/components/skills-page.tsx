@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import {
   AlertCircle,
   AlertTriangle,
@@ -19,6 +19,7 @@ import type {
   SkillSummary,
 } from "@multica/core/types";
 import { useQuery } from "@tanstack/react-query";
+import { useVirtualizer } from "@tanstack/react-virtual";
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { useWorkspacePaths } from "@multica/core/paths";
@@ -55,6 +56,7 @@ import { readOrigin, type OriginInfo } from "../lib/origin";
 import { CreateSkillDialog } from "./create-skill-dialog";
 import {
   useSkillsViewStore,
+  DEFAULT_HIDDEN_COLUMNS,
   type SkillColumnKey,
   type SkillSortField,
 } from "@multica/core/skills/stores";
@@ -68,9 +70,9 @@ import { useT, useTimeAgo } from "../../i18n";
 
 // Column template — single source of truth for header, rows, and skeletons.
 // Tracks: [edge 0.75rem] [checkbox 1rem] [name, only fr track]
-// [usedBy max-content] [source max-content with floor, @4xl+]
-// [creator max-content, @4xl+] [updated 5rem, @2xl+] [kebab 1.75rem]
-// [edge 0.75rem]. Content cells carry a default px-2 from list-grid.tsx
+// [usedBy] [source, @4xl+] [creator, @4xl+] [updated/created, @2xl+]
+// [kebab 1.75rem] [edge 0.75rem].
+// Content cells carry a default px-2 from list-grid.tsx
 // (structural columns opt out with px-0), so the narrow edge tracks plus
 // cell padding land content 20px from the container edge. Hidden cells carry
 // the matching `hidden @2xl:flex` / `hidden @4xl:flex` classes.
@@ -81,16 +83,33 @@ import { useT, useTimeAgo } from "../../i18n";
 // scrollbar. A
 // user-enabled column therefore means "show when space allows" — it comes
 // back as soon as the container widens.
-// Hideable columns use max-content tracks (content caps live on the cell
-// content, e.g. the source's max-w) so a user-hidden column — rendered
-// as an empty placeholder cell to keep subgrid auto-placement intact —
-// collapses to zero width instead of leaving a fixed-width hole.
-// Per-column caps live on cell content (source max-w-[12rem],
-// names max-w-[7rem]).
+// Hideable tracks are DETERMINISTIC widths via CSS vars (no max-content):
+// rows are virtualized, so with only the visible slice mounted a
+// content-driven track would resize as different rows scrolled into view.
+// Truncation moved from per-cell max-w caps to the tracks themselves.
+// A user-hidden column zeroes its var (columnTrackVars), collapsing the
+// track exactly like the old max-content placeholder did; the empty
+// placeholder cell stays rendered to keep subgrid auto-placement intact.
 const GRID_COLS =
-  "grid-cols-[0.75rem_1rem_minmax(140px,1fr)_max-content_1.75rem_0.75rem] " +
-  "@2xl:grid-cols-[0.75rem_1rem_minmax(140px,1fr)_max-content_max-content_max-content_1.75rem_0.75rem] " +
-  "@4xl:grid-cols-[0.75rem_1rem_minmax(200px,1fr)_max-content_max-content_max-content_max-content_max-content_1.75rem_0.75rem]";
+  "grid-cols-[0.75rem_1rem_minmax(140px,1fr)_var(--lgc-usedby)_1.75rem_0.75rem] " +
+  "@2xl:grid-cols-[0.75rem_1rem_minmax(140px,1fr)_var(--lgc-usedby)_var(--lgc-updated)_var(--lgc-created)_1.75rem_0.75rem] " +
+  "@4xl:grid-cols-[0.75rem_1rem_minmax(200px,1fr)_var(--lgc-usedby)_var(--lgc-source)_var(--lgc-creator)_var(--lgc-updated)_var(--lgc-created)_1.75rem_0.75rem]";
+
+// h-12 rows. The virtualizer's fixed-size contract: every row renders at
+// exactly this height, which is what lets it skip per-row measurement.
+const ROW_HEIGHT = 48;
+
+function columnTrackVars(
+  isVisible: (key: SkillColumnKey) => boolean,
+): React.CSSProperties {
+  return {
+    "--lgc-usedby": isVisible("usedBy") ? "10rem" : "0px",
+    "--lgc-source": isVisible("source") ? "11rem" : "0px",
+    "--lgc-creator": isVisible("creator") ? "10rem" : "0px",
+    "--lgc-updated": isVisible("updated") ? "6.5rem" : "0px",
+    "--lgc-created": isVisible("created") ? "6.5rem" : "0px",
+  } as React.CSSProperties;
+}
 
 // Sort/filter/column types and defaults live in the core view store
 // (@multica/core/skills/stores/view-store) so the persisted state and the
@@ -234,7 +253,7 @@ function UsedByCell({ agents }: { agents: Agent[] }) {
           isAgent
           size={22}
         />
-        <span className="max-w-[7rem] truncate text-xs text-muted-foreground">
+        <span className="min-w-0 truncate text-xs text-muted-foreground">
           {agent.name}
         </span>
       </ListGridCell>
@@ -308,7 +327,7 @@ function SourceCell({
   return (
     <ListGridCell className="hidden gap-1.5 text-xs text-muted-foreground @4xl:flex">
       {icon}
-      <span className="min-w-0 max-w-[12rem] truncate">{label}</span>
+      <span className="min-w-0 truncate">{label}</span>
     </ListGridCell>
   );
 }
@@ -324,7 +343,7 @@ function CreatorCell({ creator }: { creator: MemberWithUser | null }) {
             avatarUrl={resolvePublicFileUrl(creator.avatar_url)}
             size={22}
           />
-          <span className="max-w-[7rem] truncate text-xs text-muted-foreground">
+          <span className="min-w-0 truncate text-xs text-muted-foreground">
             {creator.name}
           </span>
         </>
@@ -461,7 +480,10 @@ function SkillListHeader({
 
 function LoadingSkeleton() {
   return (
-    <ListGrid className={GRID_COLS}>
+    <ListGrid
+      className={GRID_COLS}
+      style={columnTrackVars((key) => !DEFAULT_HIDDEN_COLUMNS.includes(key))}
+    >
       <ListGridHeader>
         <span aria-hidden="true" />
         <ListGridHeaderCell>
@@ -670,6 +692,19 @@ export default function SkillsPage() {
     return filtered;
   }, [allRows, search, filters, sortField, sortDirection]);
 
+  // Row virtualization — Linear-style: the virtualizer only does the math
+  // (visible index range + offsets); the DOM stays ours. Offsets become
+  // padding on ListGridBody, so the mounted rows remain direct subgrid
+  // children and column alignment is untouched. Fixed ROW_HEIGHT rows mean
+  // no per-row measurement.
+  const listBodyRef = useRef<HTMLDivElement | null>(null);
+  const rowVirtualizer = useVirtualizer({
+    count: rows.length,
+    getScrollElement: () => listBodyRef.current,
+    estimateSize: () => ROW_HEIGHT,
+    overscan: 10,
+  });
+
   const handleCreated = (skill: Skill) => {
     navigation.push(paths.skillDetail(skill.id));
   };
@@ -718,6 +753,18 @@ export default function SkillsPage() {
   const supportingQueryDown =
     !!agentsError || !!membersError || !!runtimesError;
 
+  // Unmounted rows above/below the visible slice become padding on the
+  // scrolling body, exactly like Linear's --x-paddingTop/Bottom offsets.
+  const virtualItems = rowVirtualizer.getVirtualItems();
+  const virtualPadding = {
+    top: virtualItems.length > 0 ? virtualItems[0].start : 0,
+    bottom:
+      virtualItems.length > 0
+        ? rowVirtualizer.getTotalSize() -
+          virtualItems[virtualItems.length - 1].end
+        : 0,
+  };
+
   return (
     <div className="flex flex-1 min-h-0 flex-col">
       <PageHeaderBar
@@ -762,6 +809,7 @@ export default function SkillsPage() {
           <div className="min-h-0 flex-1 @container">
           <ListGrid
             className={`${GRID_COLS} h-full grid-rows-[auto_minmax(0,1fr)]`}
+            style={columnTrackVars(isColVisible)}
           >
             <SkillListHeader
               sortField={sortField}
@@ -772,13 +820,21 @@ export default function SkillsPage() {
               onToggleAll={handleToggleAll}
               isColVisible={isColVisible}
             />
-            <ListGridBody>
+            <ListGridBody
+              ref={listBodyRef}
+              style={{
+                paddingTop: virtualPadding.top,
+                paddingBottom: virtualPadding.bottom,
+              }}
+            >
               {rows.length === 0 && (
                 <div className="col-span-full py-16 text-center text-sm text-muted-foreground">
                   {t(($) => $.page.no_matches.title)}
                 </div>
               )}
-              {rows.map((row) => (
+              {virtualItems.map((vi) => {
+                const row = rows[vi.index];
+                return (
               <ListGridRow
                 key={row.skill.id}
                 className={
@@ -824,7 +880,8 @@ export default function SkillsPage() {
                   <SkillRowActions row={row} ctx={actionsCtx} />
                 </ListGridCell>
               </ListGridRow>
-              ))}
+                );
+              })}
             </ListGridBody>
           </ListGrid>
           </div>
