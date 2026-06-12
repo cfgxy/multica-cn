@@ -96,8 +96,8 @@ import { useT, useTimeAgo } from "../../i18n";
 // - Container < @2xl (phones, slim split panes): static core set
 //   (name + usedBy), no horizontal scroll, column toggles don't apply.
 const GRID_COLS =
-  "grid-cols-[0.75rem_1rem_minmax(96px,1fr)_var(--lgc-usedby)_1.75rem_0.75rem] " +
-  "@2xl:grid-cols-[0.75rem_1rem_minmax(140px,1fr)_var(--lgc-usedby)_var(--lgc-source)_var(--lgc-creator)_var(--lgc-updated)_var(--lgc-created)_1.75rem_0.75rem]";
+  "grid-cols-[0.75rem_1rem_minmax(120px,1fr)_var(--lgc-usedby)_1.75rem_0.75rem] " +
+  "@2xl:grid-cols-[0.75rem_1rem_minmax(200px,1fr)_var(--lgc-usedby)_var(--lgc-source)_var(--lgc-creator)_var(--lgc-updated)_var(--lgc-created)_1.75rem_0.75rem]";
 
 // h-12 rows. The virtualizer's fixed-size contract: every row renders at
 // exactly this height, which is what lets it skip per-row measurement.
@@ -113,10 +113,10 @@ const COLUMN_WIDTHS: Record<SkillColumnKey, number> = {
   created: 104,
 };
 
-// Fixed tracks (edges 12+12, checkbox 16, name min 140, kebab 28) plus the
+// Fixed tracks (edges 12+12, checkbox 16, name min 200, kebab 28) plus the
 // 9 gap-x-3 gaps between the wide template's 10 tracks (zero-width tracks
 // still carry gaps).
-const FIXED_TRACKS_WIDTH = 208 + 9 * 12;
+const FIXED_TRACKS_WIDTH = 268 + 9 * 12;
 
 function columnTrackVars(
   isVisible: (key: SkillColumnKey) => boolean,

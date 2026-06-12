@@ -65,8 +65,8 @@ import { useT, useTimeAgo } from "../../i18n";
 // - Container < @2xl: static core set (name + assignee), no horizontal
 //   scroll, column toggles don't apply.
 const GRID_COLS =
-  "grid-cols-[0.75rem_1rem_minmax(96px,1fr)_var(--apc-assignee)_1.75rem_0.75rem] " +
-  "@2xl:grid-cols-[0.75rem_1rem_minmax(140px,1fr)_var(--apc-assignee)_var(--apc-trigger)_var(--apc-lastrun)_var(--apc-nextrun)_var(--apc-mode)_var(--apc-creator)_var(--apc-created)_1.75rem_0.75rem]";
+  "grid-cols-[0.75rem_1rem_minmax(120px,1fr)_var(--apc-assignee)_1.75rem_0.75rem] " +
+  "@2xl:grid-cols-[0.75rem_1rem_minmax(200px,1fr)_var(--apc-assignee)_var(--apc-trigger)_var(--apc-lastrun)_var(--apc-nextrun)_var(--apc-mode)_var(--apc-creator)_var(--apc-created)_1.75rem_0.75rem]";
 
 // h-12 rows; the virtualizer's fixed-size contract.
 const ROW_HEIGHT = 48;
@@ -83,10 +83,10 @@ const COLUMN_WIDTHS: Record<AutopilotColumnKey, number> = {
   created: 104,
 };
 
-// Fixed tracks (edges 12+12, checkbox 16, name min 140, kebab 28) plus the
+// Fixed tracks (edges 12+12, checkbox 16, name min 200, kebab 28) plus the
 // 11 gap-x-3 gaps between the wide template's 12 tracks (zero-width tracks
 // still carry gaps).
-const FIXED_TRACKS_WIDTH = 208 + 11 * 12;
+const FIXED_TRACKS_WIDTH = 268 + 11 * 12;
 
 function columnTrackVars(
   isVisible: (key: AutopilotColumnKey) => boolean,
