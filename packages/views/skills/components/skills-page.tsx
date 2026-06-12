@@ -219,42 +219,24 @@ function CheckboxCell({
   );
 }
 
-// Two-line name cell: skill name plus the description as a muted subtext
-// line. The description deliberately lives HERE and not in its own column —
-// it is unsortable prose, so it gets no track, no header, and no slot in the
-// responsive arithmetic. Both lines fit the fixed 48px row (20px + 16px line
-// heights), so the virtualizer's fixed-height contract is untouched; rows
-// without a description just center the name.
 function NameCell({ row }: { row: SkillRow }) {
   const { t } = useT("skills");
   const { skill, canEdit } = row;
   return (
-    <ListGridCell>
-      <div className="flex min-w-0 flex-col">
-        <div className="flex items-center gap-1.5">
-          <span className="min-w-0 truncate text-sm font-medium">
-            {skill.name}
-          </span>
-          {!canEdit && (
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Lock className="h-3 w-3 shrink-0 text-muted-foreground/60" />
-                }
-              />
-              <TooltipContent>{t(($) => $.table.lock_tooltip)}</TooltipContent>
-            </Tooltip>
-          )}
-        </div>
-        {skill.description ? (
-          <span
-            title={skill.description}
-            className="min-w-0 max-w-[36rem] truncate text-xs text-muted-foreground"
-          >
-            {skill.description}
-          </span>
-        ) : null}
-      </div>
+    <ListGridCell className="gap-1.5">
+      <span className="min-w-0 truncate text-sm font-medium">
+        {skill.name}
+      </span>
+      {!canEdit && (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Lock className="h-3 w-3 shrink-0 text-muted-foreground/60" />
+            }
+          />
+          <TooltipContent>{t(($) => $.table.lock_tooltip)}</TooltipContent>
+        </Tooltip>
+      )}
     </ListGridCell>
   );
 }
