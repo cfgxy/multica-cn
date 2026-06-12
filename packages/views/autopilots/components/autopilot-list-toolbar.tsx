@@ -201,27 +201,62 @@ export function AutopilotListToolbar({
     <div className="flex h-12 shrink-0 items-center justify-between gap-2 px-5">
       {/* Left: scope buttons + search + result count. Scope is the promoted
           status dimension (it does NOT appear in the filter dropdown); the
-          count only appears while search/filters narrow the list. */}
+          count only appears while search/filters narrow the list. Button
+          styling and the <md dropdown collapse follow the issues header's
+          scope buttons. */}
       <div className="flex min-w-0 items-center gap-2">
-        <div className="flex shrink-0 items-center gap-0.5 rounded-lg bg-muted/60 p-0.5">
+        <div className="hidden shrink-0 items-center gap-1 md:flex">
           {AUTOPILOT_SCOPES.map((s) => (
-            <button
+            <Button
               key={s}
-              type="button"
-              onClick={() => onScopeChange(s)}
-              className={`flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs transition-colors ${
+              variant="outline"
+              size="sm"
+              className={
                 scope === s
-                  ? "bg-background font-medium shadow-sm"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
+                  ? "gap-1.5 bg-accent text-accent-foreground hover:bg-accent/80"
+                  : "gap-1.5 text-muted-foreground"
+              }
+              onClick={() => onScopeChange(s)}
             >
               {SCOPE_LABELS[s]}
-              <span className="tabular-nums text-muted-foreground/70">
+              <span className="tabular-nums text-xs text-muted-foreground/70">
                 {scopeCounts[s]}
               </span>
-            </button>
+            </Button>
           ))}
         </div>
+
+        <DropdownMenu>
+          <DropdownMenuTrigger
+            render={
+              <Button
+                variant="outline"
+                size="sm"
+                className="shrink-0 gap-1 text-muted-foreground md:hidden"
+              >
+                <span className="truncate">{SCOPE_LABELS[scope]}</span>
+                <ChevronDown className="size-3 text-muted-foreground" />
+              </Button>
+            }
+          />
+          <DropdownMenuContent align="start" className="w-auto">
+            <DropdownMenuRadioGroup
+              value={scope}
+              onValueChange={(value) =>
+                onScopeChange(value as AutopilotScope)
+              }
+            >
+              {AUTOPILOT_SCOPES.map((s) => (
+                <DropdownMenuRadioItem key={s} value={s}>
+                  {SCOPE_LABELS[s]}
+                  <span className="ml-2 tabular-nums text-xs text-muted-foreground/70">
+                    {scopeCounts[s]}
+                  </span>
+                </DropdownMenuRadioItem>
+              ))}
+            </DropdownMenuRadioGroup>
+          </DropdownMenuContent>
+        </DropdownMenu>
 
         <div className="relative hidden sm:block">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
