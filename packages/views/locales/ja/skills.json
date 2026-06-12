@@ -96,6 +96,8 @@
   "detail": {
     "all_skills": "すべてのスキル",
     "read_only": "読み取り専用",
+    "delete_aria": "スキルを削除",
+    "delete_tooltip": "スキルを削除",
     "supporting_data_warning": "一部のワークスペースデータを読み込めませんでした。次回の更新まで、作成者の表示、ランタイム名、編集権限が不完全に見える場合があります。",
     "files_label": "ファイル · {{count}}",
     "add_file_aria": "ファイルを追加",
@@ -112,7 +114,9 @@
       "origin_clawhub": "インポート済み · ClawHub",
       "origin_skills_sh": "インポート済み · Skills.sh",
       "origin_github": "インポート済み · GitHub",
-      "origin_workspace": "ワークスペース"
+      "origin_workspace": "ワークスペース",
+      "updated_label": "{{when}} に更新",
+      "by_creator": "{{name}}"
     },
     "conflict_banner": {
       "title": "他のユーザーがこのスキルを更新しました",
@@ -124,30 +128,27 @@
       "save": "変更を保存",
       "saving": "保存中…"
     },
-    "tabs": {
-      "overview": "基本情報",
-      "files": "ファイル"
-    },
-    "menu": {
-      "aria": "その他の操作",
-      "copy_id": "skill ID をコピー",
-      "copied_toast": "skill ID をコピーしました",
-      "copy_failed_toast": "skill ID のコピーに失敗しました"
-    },
-    "overview": {
-      "preview_empty": "SKILL.md はまだ空です。「ファイル」タブで編集を始めましょう。",
-      "used_by_other": "{{count}} 個のエージェントが使用中",
-      "used_by_empty": "まだどのエージェントにも割り当てられていません。",
+    "sidebar": {
       "metadata": "メタデータ",
-      "edit": "編集",
-      "done": "完了",
-      "name_label": "名前",
-      "creator": "作成者",
-      "updated": "更新日時",
+      "created": "作成日",
+      "updated": "更新日",
+      "created_by": "作成者",
+      "files": "ファイル",
+      "id": "ID",
       "origin": "ソース",
-      "unbind_aria": "{{name}} から削除",
-      "unbound_toast": "{{name}} から削除しました",
-      "unbind_failed_toast": "skill の削除に失敗しました"
+      "used_by_other": "{{count}} 個のエージェントが使用中",
+      "permissions": "権限",
+      "permissions_owner": "このスキルを編集および削除できます。変更は次回のエージェント実行から有効になります。",
+      "permissions_locked_creator": "このスキルを編集できるのは作成者（{{name}}）またはワークスペース管理者のみです。",
+      "permissions_locked": "このスキルを編集できるのは作成者またはワークスペース管理者のみです。",
+      "used_by_empty": "まだどのエージェントにも割り当てられていません。エージェントのスキルタブを開いて割り当ててください。"
+    },
+    "origin_card": {
+      "imported_runtime": "ローカルランタイムからインポート",
+      "imported_clawhub": "ClawHub からインポート",
+      "imported_skills_sh": "Skills.sh からインポート",
+      "imported_github": "GitHub からインポート",
+      "provider": "プロバイダー · {{provider}}"
     },
     "not_found": {
       "title": "スキルが見つかりません",
@@ -292,8 +293,7 @@
     "conflict_name_still_exists": "その名前はすでに存在します。別の名前を選択するか、スキップしてください。"
   },
   "file_tree": {
-    "no_files": "ファイルなし",
-    "aria_label": "skill ファイル"
+    "no_files": "ファイルなし"
   },
   "file_viewer": {
     "edit_tooltip": "編集",

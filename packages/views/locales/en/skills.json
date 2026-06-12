@@ -96,6 +96,8 @@
   "detail": {
     "all_skills": "All skills",
     "read_only": "Read-only",
+    "delete_aria": "Delete skill",
+    "delete_tooltip": "Delete skill",
     "supporting_data_warning": "Some workspace data failed to load. Creator attribution, runtime names, or edit permissions may appear incomplete until the next refresh.",
     "files_label": "Files · {{count}}",
     "add_file_aria": "Add file",
@@ -112,7 +114,9 @@
       "origin_clawhub": "Imported · ClawHub",
       "origin_skills_sh": "Imported · Skills.sh",
       "origin_github": "Imported · GitHub",
-      "origin_workspace": "Workspace"
+      "origin_workspace": "Workspace",
+      "updated_label": "Updated {{when}}",
+      "by_creator": "by {{name}}"
     },
     "conflict_banner": {
       "title": "Someone else updated this skill",
@@ -124,31 +128,28 @@
       "save": "Save changes",
       "saving": "Saving…"
     },
-    "tabs": {
-      "overview": "Overview",
-      "files": "Files"
-    },
-    "menu": {
-      "aria": "More actions",
-      "copy_id": "Copy skill ID",
-      "copied_toast": "Skill ID copied",
-      "copy_failed_toast": "Failed to copy skill ID"
-    },
-    "overview": {
-      "preview_empty": "SKILL.md is empty. Switch to the Files tab to start writing.",
+    "sidebar": {
+      "metadata": "Metadata",
+      "created": "Created",
+      "updated": "Updated",
+      "created_by": "Created by",
+      "files": "Files",
+      "id": "ID",
+      "origin": "Origin",
       "used_by_one": "Used by {{count}} agent",
       "used_by_other": "Used by {{count}} agents",
-      "used_by_empty": "Not assigned to any agent yet.",
-      "metadata": "Metadata",
-      "edit": "Edit",
-      "done": "Done",
-      "name_label": "Name",
-      "creator": "Created by",
-      "updated": "Updated",
-      "origin": "Origin",
-      "unbind_aria": "Remove from {{name}}",
-      "unbound_toast": "Removed from {{name}}",
-      "unbind_failed_toast": "Failed to remove skill"
+      "permissions": "Permissions",
+      "permissions_owner": "You can edit and delete this skill. Changes take effect on the next agent run.",
+      "permissions_locked_creator": "Only the creator ({{name}}) or a workspace admin can edit this skill.",
+      "permissions_locked": "Only the creator or a workspace admin can edit this skill.",
+      "used_by_empty": "Not assigned to any agent yet. Open an agent's Skills tab to assign."
+    },
+    "origin_card": {
+      "imported_runtime": "Imported from local runtime",
+      "imported_clawhub": "Imported from ClawHub",
+      "imported_skills_sh": "Imported from Skills.sh",
+      "imported_github": "Imported from GitHub",
+      "provider": "provider · {{provider}}"
     },
     "not_found": {
       "title": "Skill not found",
@@ -295,8 +296,7 @@
     "conflict_name_still_exists": "That name already exists. Choose another name or skip."
   },
   "file_tree": {
-    "no_files": "No files",
-    "aria_label": "Skill files"
+    "no_files": "No files"
   },
   "file_viewer": {
     "edit_tooltip": "Edit",

@@ -108,6 +108,8 @@
   "detail": {
     "all_skills": "全部 skill",
     "read_only": "只读",
+    "delete_aria": "删除 skill",
+    "delete_tooltip": "删除 skill",
     "supporting_data_warning": "部分工作区数据加载失败。创建者归属、运行时名称、编辑权限可能要等下次刷新才完整。",
     "files_label": "文件 · {{count}}",
     "add_file_aria": "添加文件",
@@ -124,7 +126,9 @@
       "origin_clawhub": "导入自 · ClawHub",
       "origin_skills_sh": "导入自 · Skills.sh",
       "origin_github": "导入自 · GitHub",
-      "origin_workspace": "工作区"
+      "origin_workspace": "工作区",
+      "updated_label": "{{when}}更新",
+      "by_creator": "由 {{name}}"
     },
     "conflict_banner": {
       "title": "其他人更新了这个 skill",
@@ -136,31 +140,28 @@
       "save": "保存修改",
       "saving": "保存中..."
     },
-    "tabs": {
-      "overview": "基础信息",
-      "files": "文件"
-    },
-    "menu": {
-      "aria": "更多操作",
-      "copy_id": "复制 skill ID",
-      "copied_toast": "已复制 skill ID",
-      "copy_failed_toast": "复制 skill ID 失败"
-    },
-    "overview": {
-      "preview_empty": "SKILL.md 还没有内容。切换到「文件」标签页开始编写。",
+    "sidebar": {
+      "metadata": "元数据",
+      "created": "创建于",
+      "updated": "更新于",
+      "created_by": "创建者",
+      "files": "文件",
+      "id": "ID",
+      "origin": "来源",
       "used_by_one": "被 {{count}} 个智能体使用",
       "used_by_other": "被 {{count}} 个智能体使用",
-      "used_by_empty": "还未分配给任何智能体。",
-      "metadata": "元数据",
-      "edit": "编辑",
-      "done": "完成",
-      "name_label": "名称",
-      "creator": "创建者",
-      "updated": "更新于",
-      "origin": "来源",
-      "unbind_aria": "从 {{name}} 移除",
-      "unbound_toast": "已从 {{name}} 移除",
-      "unbind_failed_toast": "移除 skill 失败"
+      "permissions": "权限",
+      "permissions_owner": "你可以编辑和删除这个 skill。修改在智能体下次运行时生效。",
+      "permissions_locked_creator": "只有创建者（{{name}}）或工作区管理员能编辑这个 skill。",
+      "permissions_locked": "只有创建者或工作区管理员能编辑这个 skill。",
+      "used_by_empty": "还未分配给任何智能体。打开某个智能体的 Skills 标签页进行分配。"
+    },
+    "origin_card": {
+      "imported_runtime": "从本地运行时导入",
+      "imported_clawhub": "从 ClawHub 导入",
+      "imported_skills_sh": "从 Skills.sh 导入",
+      "imported_github": "从 GitHub 导入",
+      "provider": "provider · {{provider}}"
     },
     "not_found": {
       "title": "未找到该 skill",
@@ -307,8 +308,7 @@
     "conflict_name_still_exists": "这个名称仍然已存在。请换一个名称或跳过。"
   },
   "file_tree": {
-    "no_files": "无文件",
-    "aria_label": "skill 文件"
+    "no_files": "无文件"
   },
   "file_viewer": {
     "edit_tooltip": "编辑",

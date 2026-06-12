@@ -96,6 +96,8 @@
   "detail": {
     "all_skills": "모든 스킬",
     "read_only": "읽기 전용",
+    "delete_aria": "스킬 삭제",
+    "delete_tooltip": "스킬 삭제",
     "supporting_data_warning": "일부 워크스페이스 데이터를 불러오지 못했습니다. 다음 새로고침 전까지 생성자 표시, 런타임 이름, 수정 권한이 불완전하게 보일 수 있습니다.",
     "files_label": "파일 · {{count}}",
     "add_file_aria": "파일 추가",
@@ -112,7 +114,9 @@
       "origin_clawhub": "가져옴 · ClawHub",
       "origin_skills_sh": "가져옴 · Skills.sh",
       "origin_github": "가져옴 · GitHub",
-      "origin_workspace": "워크스페이스"
+      "origin_workspace": "워크스페이스",
+      "updated_label": "{{when}} 수정됨",
+      "by_creator": "{{name}}님"
     },
     "conflict_banner": {
       "title": "다른 사람이 이 스킬을 업데이트했습니다",
@@ -124,31 +128,28 @@
       "save": "변경사항 저장",
       "saving": "저장하는 중..."
     },
-    "tabs": {
-      "overview": "기본 정보",
-      "files": "파일"
-    },
-    "menu": {
-      "aria": "추가 작업",
-      "copy_id": "skill ID 복사",
-      "copied_toast": "skill ID를 복사했습니다",
-      "copy_failed_toast": "skill ID 복사에 실패했습니다"
-    },
-    "overview": {
-      "preview_empty": "SKILL.md가 아직 비어 있습니다. '파일' 탭에서 작성을 시작하세요.",
+    "sidebar": {
+      "metadata": "메타데이터",
+      "created": "생성일",
+      "updated": "수정일",
+      "created_by": "생성자",
+      "files": "파일",
+      "id": "ID",
+      "origin": "출처",
       "used_by_one": "에이전트 {{count}}개가 사용 중",
       "used_by_other": "에이전트 {{count}}개가 사용 중",
-      "used_by_empty": "아직 어떤 에이전트에도 할당되지 않았습니다.",
-      "metadata": "메타데이터",
-      "edit": "편집",
-      "done": "완료",
-      "name_label": "이름",
-      "creator": "생성자",
-      "updated": "업데이트",
-      "origin": "출처",
-      "unbind_aria": "{{name}}에서 제거",
-      "unbound_toast": "{{name}}에서 제거했습니다",
-      "unbind_failed_toast": "skill 제거에 실패했습니다"
+      "permissions": "권한",
+      "permissions_owner": "이 스킬을 수정하고 삭제할 수 있습니다. 변경사항은 다음 에이전트 실행부터 적용됩니다.",
+      "permissions_locked_creator": "생성자({{name}}) 또는 워크스페이스 관리자만 이 스킬을 수정할 수 있습니다.",
+      "permissions_locked": "생성자 또는 워크스페이스 관리자만 이 스킬을 수정할 수 있습니다.",
+      "used_by_empty": "아직 어떤 에이전트에도 할당되지 않았습니다. 에이전트의 스킬 탭에서 할당하세요."
+    },
+    "origin_card": {
+      "imported_runtime": "로컬 런타임에서 가져옴",
+      "imported_clawhub": "ClawHub에서 가져옴",
+      "imported_skills_sh": "Skills.sh에서 가져옴",
+      "imported_github": "GitHub에서 가져옴",
+      "provider": "제공자 · {{provider}}"
     },
     "not_found": {
       "title": "스킬을 찾을 수 없습니다",
@@ -295,8 +296,7 @@
     "conflict_name_still_exists": "해당 이름이 이미 있습니다. 다른 이름을 선택하거나 건너뛰세요."
   },
   "file_tree": {
-    "no_files": "파일 없음",
-    "aria_label": "skill 파일"
+    "no_files": "파일 없음"
   },
   "file_viewer": {
     "edit_tooltip": "수정",

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useState } from "react";
 import {
   ChevronRight,
   ChevronDown,
@@ -78,31 +78,21 @@ function getFileIcon(name: string) {
 // Tree node renderer
 // ---------------------------------------------------------------------------
 
-interface TreeItemContext {
-  selectedPath: string;
-  focusPath: string;
-  collapsed: ReadonlySet<string>;
-  onSelect: (path: string) => void;
-  onToggleDir: (path: string) => void;
-  onFocusItem: (path: string) => void;
-  registerItem: (path: string, el: HTMLButtonElement | null) => void;
-}
-
 function TreeNodeItem({
   node,
-  ctx,
+  selectedPath,
+  onSelect,
   depth = 0,
 }: {
   node: FileTreeNode;
-  ctx: TreeItemContext;
+  selectedPath: string;
+  onSelect: (path: string) => void;
   depth?: number;
 }) {
-  const isSelected = node.path === ctx.selectedPath;
-  // Roving tabindex: exactly one item in the tree is tabbable.
-  const tabIndex = node.path === ctx.focusPath ? 0 : -1;
+  const [expanded, setExpanded] = useState(true);
+  const isSelected = node.path === selectedPath;
 
   if (node.isDirectory) {
-    const expanded = !ctx.collapsed.has(node.path);
     const FolderIcon = expanded ? FolderOpen : Folder;
     const ChevronIcon = expanded ? ChevronDown : ChevronRight;
 
@@ -110,13 +100,7 @@ function TreeNodeItem({
       <div>
         <button
           type="button"
-          role="treeitem"
-          aria-expanded={expanded}
-          aria-selected={false}
-          tabIndex={tabIndex}
-          ref={(el) => ctx.registerItem(node.path, el)}
-          onClick={() => ctx.onToggleDir(node.path)}
-          onFocus={() => ctx.onFocusItem(node.path)}
+          onClick={() => setExpanded(!expanded)}
           className="flex w-full items-center gap-1.5 py-1 text-left text-xs hover:bg-accent/50 rounded-sm"
           style={{ paddingLeft: `${depth * 12 + 8}px` }}
         >
@@ -125,12 +109,13 @@ function TreeNodeItem({
           <span className="truncate">{node.name}</span>
         </button>
         {expanded && (
-          <div role="group">
+          <div>
             {node.children.map((child) => (
               <TreeNodeItem
                 key={child.path}
                 node={child}
-                ctx={ctx}
+                selectedPath={selectedPath}
+                onSelect={onSelect}
                 depth={depth + 1}
               />
             ))}
@@ -145,12 +130,7 @@ function TreeNodeItem({
   return (
     <button
       type="button"
-      role="treeitem"
-      aria-selected={isSelected}
-      tabIndex={tabIndex}
-      ref={(el) => ctx.registerItem(node.path, el)}
-      onClick={() => ctx.onSelect(node.path)}
-      onFocus={() => ctx.onFocusItem(node.path)}
+      onClick={() => onSelect(node.path)}
       className={cn(
         "flex w-full items-center gap-1.5 py-1 text-left text-xs rounded-sm",
         isSelected
@@ -179,83 +159,7 @@ export function FileTree({
   onSelect: (path: string) => void;
 }) {
   const { t } = useT("skills");
-  const tree = useMemo(() => buildTree(filePaths), [filePaths]);
-  // Directories start expanded; the set tracks user-collapsed ones.
-  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
-  const [focusedPath, setFocusedPath] = useState<string | null>(null);
-  const itemRefs = useRef(new Map<string, HTMLButtonElement>());
-
-  // Visible items in document order, with parent path for ArrowLeft.
-  const visible = useMemo(() => {
-    const out: { node: FileTreeNode; parent: string | null }[] = [];
-    const walk = (nodes: FileTreeNode[], parent: string | null) => {
-      for (const n of nodes) {
-        out.push({ node: n, parent });
-        if (n.isDirectory && !collapsed.has(n.path)) walk(n.children, n.path);
-      }
-    };
-    walk(tree, null);
-    return out;
-  }, [tree, collapsed]);
-
-  // The single tabbable item: last focused if still visible, else selection,
-  // else the first item.
-  const focusPath =
-    (focusedPath && visible.some((v) => v.node.path === focusedPath)
-      ? focusedPath
-      : null) ??
-    (visible.some((v) => v.node.path === selectedPath)
-      ? selectedPath
-      : visible[0]?.node.path ?? "");
-
-  const toggleDir = (path: string) => {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(path)) next.delete(path);
-      else next.add(path);
-      return next;
-    });
-  };
-
-  const focusItem = (path: string) => {
-    setFocusedPath(path);
-    itemRefs.current.get(path)?.focus();
-  };
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    const idx = visible.findIndex((v) => v.node.path === focusPath);
-    if (idx < 0) return;
-    const { node, parent } = visible[idx]!;
-    switch (e.key) {
-      case "ArrowDown":
-        if (idx + 1 < visible.length) focusItem(visible[idx + 1]!.node.path);
-        break;
-      case "ArrowUp":
-        if (idx > 0) focusItem(visible[idx - 1]!.node.path);
-        break;
-      case "ArrowRight":
-        if (node.isDirectory) {
-          if (collapsed.has(node.path)) toggleDir(node.path);
-          else if (node.children.length > 0)
-            focusItem(node.children[0]!.path);
-        }
-        break;
-      case "ArrowLeft":
-        if (node.isDirectory && !collapsed.has(node.path))
-          toggleDir(node.path);
-        else if (parent) focusItem(parent);
-        break;
-      case "Home":
-        if (visible.length > 0) focusItem(visible[0]!.node.path);
-        break;
-      case "End":
-        if (visible.length > 0) focusItem(visible[visible.length - 1]!.node.path);
-        break;
-      default:
-        return;
-    }
-    e.preventDefault();
-  };
+  const tree = buildTree(filePaths);
 
   if (tree.length === 0) {
     return (
@@ -266,28 +170,15 @@ export function FileTree({
     );
   }
 
-  const ctx: TreeItemContext = {
-    selectedPath,
-    focusPath,
-    collapsed,
-    onSelect,
-    onToggleDir: toggleDir,
-    onFocusItem: setFocusedPath,
-    registerItem: (path, el) => {
-      if (el) itemRefs.current.set(path, el);
-      else itemRefs.current.delete(path);
-    },
-  };
-
   return (
-    <div
-      role="tree"
-      aria-label={t(($) => $.file_tree.aria_label)}
-      onKeyDown={handleKeyDown}
-      className="py-1 px-1"
-    >
+    <div className="py-1 px-1">
       {tree.map((node) => (
-        <TreeNodeItem key={node.path} node={node} ctx={ctx} />
+        <TreeNodeItem
+          key={node.path}
+          node={node}
+          selectedPath={selectedPath}
+          onSelect={onSelect}
+        />
       ))}
     </div>
   );
