@@ -123,9 +123,9 @@ describe("ApiClient schema fallback", () => {
       const client = new ApiClient("https://api.example.test");
       const res = await client.listAutopilots();
       expect(res.autopilots).toHaveLength(1);
-      expect(res.autopilots[0].assignee_type).toBe("agent");
-      expect(res.autopilots[0].trigger_kinds).toBeUndefined();
-      expect(res.autopilots[0].last_run_status).toBeUndefined();
+      expect(res.autopilots[0]?.assignee_type).toBe("agent");
+      expect(res.autopilots[0]?.trigger_kinds).toBeUndefined();
+      expect(res.autopilots[0]?.last_run_status).toBeUndefined();
     });
 
     it("passes derived fields through and tolerates enum drift", async () => {
@@ -143,12 +143,12 @@ describe("ApiClient schema fallback", () => {
       });
       const client = new ApiClient("https://api.example.test");
       const res = await client.listAutopilots();
-      expect(res.autopilots[0].trigger_kinds).toEqual([
+      expect(res.autopilots[0]?.trigger_kinds).toEqual([
         "schedule",
         "some_future_kind",
       ]);
-      expect(res.autopilots[0].next_run_at).toBe("2026-06-13T09:00:00Z");
-      expect(res.autopilots[0].last_run_status).toBe("some_future_status");
+      expect(res.autopilots[0]?.next_run_at).toBe("2026-06-13T09:00:00Z");
+      expect(res.autopilots[0]?.last_run_status).toBe("some_future_status");
     });
   });
 

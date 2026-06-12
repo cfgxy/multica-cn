@@ -252,8 +252,9 @@ function UsedByCell({ agents }: { agents: Agent[] }) {
       </ListGridCell>
     );
   }
-  if (agents.length === 1) {
-    const agent = agents[0];
+  const soleAgent = agents.length === 1 ? agents[0] : undefined;
+  if (soleAgent) {
+    const agent = soleAgent;
     return (
       <ListGridCell className="gap-1.5">
         <ActorAvatar
@@ -766,13 +767,13 @@ export default function SkillsPage() {
   // Unmounted rows above/below the visible slice become padding on the
   // scrolling body, exactly like Linear's --x-paddingTop/Bottom offsets.
   const virtualItems = rowVirtualizer.getVirtualItems();
+  const firstVirtual = virtualItems[0];
+  const lastVirtual = virtualItems[virtualItems.length - 1];
   const virtualPadding = {
-    top: virtualItems.length > 0 ? virtualItems[0].start : 0,
-    bottom:
-      virtualItems.length > 0
-        ? rowVirtualizer.getTotalSize() -
-          virtualItems[virtualItems.length - 1].end
-        : 0,
+    top: firstVirtual ? firstVirtual.start : 0,
+    bottom: lastVirtual
+      ? rowVirtualizer.getTotalSize() - lastVirtual.end
+      : 0,
   };
 
   return (
@@ -847,6 +848,7 @@ export default function SkillsPage() {
               )}
               {virtualItems.map((vi) => {
                 const row = rows[vi.index];
+                if (!row) return null;
                 return (
               <ListGridRow
                 key={row.skill.id}

@@ -269,7 +269,7 @@ export function AddToAgentDialog({
       }
       qc.invalidateQueries({ queryKey: workspaceKeys.agents(ctx.wsId) });
       toast.success(
-        targets.length === 1
+        targets.length === 1 && targets[0]
           ? t(($) => $.actions.added_toast, { name: targets[0].name })
           : t(($) => $.actions.added_multi_toast, { count: targets.length }),
       );
