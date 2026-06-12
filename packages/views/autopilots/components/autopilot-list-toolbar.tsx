@@ -258,7 +258,9 @@ export function AutopilotListToolbar({
           </DropdownMenuContent>
         </DropdownMenu>
 
-        <div className="relative hidden sm:block">
+        {/* Below md the search and count disappear entirely (issues
+            header's small-screen treatment). */}
+        <div className="relative hidden md:block">
           <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
             value={search}
@@ -270,7 +272,7 @@ export function AutopilotListToolbar({
         {(hasActiveFilters || search.trim().length > 0) && (
           <span
             title={t(($) => $.toolbar.result_count_title)}
-            className="shrink-0 text-xs tabular-nums text-muted-foreground"
+            className="hidden shrink-0 text-xs tabular-nums text-muted-foreground md:inline"
           >
             {visibleCount} / {allRows.length}
           </span>
@@ -287,8 +289,8 @@ export function AutopilotListToolbar({
                 size="sm"
                 className={
                   hasActiveFilters
-                    ? "h-8 gap-1 bg-brand px-2.5 text-white hover:bg-brand/90"
-                    : "h-8 gap-1 px-2.5 text-muted-foreground"
+                    ? "h-8 w-8 gap-1 bg-brand px-0 text-white hover:bg-brand/90 md:w-auto md:px-2.5"
+                    : "h-8 w-8 gap-1 px-0 text-muted-foreground md:w-auto md:px-2.5"
                 }
               >
                 <Filter className="size-3.5" />
@@ -313,7 +315,7 @@ export function AutopilotListToolbar({
                     role="button"
                     tabIndex={-1}
                     aria-label={t(($) => $.toolbar.clear_filters)}
-                    className="-mr-1 ml-0.5 rounded-sm p-0.5 hover:bg-white/20"
+                    className="-mr-1 ml-0.5 hidden rounded-sm p-0.5 hover:bg-white/20 md:inline-flex"
                     onClick={(e) => {
                       e.preventDefault();
                       e.stopPropagation();
@@ -474,7 +476,7 @@ export function AutopilotListToolbar({
                     <Button
                       variant="outline"
                       size="sm"
-                      className="h-8 gap-1 px-2.5 text-muted-foreground"
+                      className="h-8 w-8 gap-1 px-0 text-muted-foreground md:w-auto md:px-2.5"
                     >
                       {sortDirection === "asc" ? (
                         <ArrowUp className="size-3.5" />
