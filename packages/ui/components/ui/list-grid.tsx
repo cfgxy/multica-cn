@@ -15,9 +15,14 @@ import { cn } from "../../lib/utils";
 // - First and last tracks are edge-padding columns (e.g. 1.25rem) so row
 //   hover backgrounds stay full-bleed while content aligns with page chrome.
 //   ListGridHeader/ListGridRow render the matching placeholder cells.
-// - Responsive column hiding = change the template per breakpoint AND mark
-//   the corresponding cells `hidden <bp>:flex`; display:none cells drop out
-//   of subgrid auto-placement so the remaining cells fill the right tracks.
+// - Responsive column hiding is CONTAINER-query driven: wrap the ListGrid in
+//   a `@container` element and use `@<bp>:` variants (not viewport `sm:`/
+//   `lg:`), so sidebars and split panes narrow the list correctly. Change the
+//   template per container breakpoint AND mark the corresponding cells
+//   `hidden @<bp>:flex`; display:none cells drop out of subgrid
+//   auto-placement so the remaining cells fill the right tracks.
+// - Columns drop by priority as the container narrows (most expendable
+//   first); never fall back to horizontal scrolling.
 // - Keep the class a literal string in the page source so Tailwind sees it.
 
 export type ListGridSortDirection = "asc" | "desc";

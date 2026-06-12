@@ -68,24 +68,29 @@ import { useT, useTimeAgo } from "../../i18n";
 
 // Column template — single source of truth for header, rows, and skeletons.
 // Tracks: [edge 0.75rem] [checkbox 1rem] [name, only fr track]
-// [usedBy max-content] [source max-content with floor, lg+]
-// [creator max-content, lg+] [updated 5rem, sm+] [kebab 1.75rem]
+// [usedBy max-content] [source max-content with floor, @4xl+]
+// [creator max-content, @4xl+] [updated 5rem, @2xl+] [kebab 1.75rem]
 // [edge 0.75rem]. Content cells carry a default px-2 from list-grid.tsx
 // (structural columns opt out with px-0), so the narrow edge tracks plus
-// cell padding land content 20px from the viewport edge. Hidden cells carry
-// the matching `hidden sm:flex` / `hidden lg:flex` classes.
+// cell padding land content 20px from the container edge. Hidden cells carry
+// the matching `hidden @2xl:flex` / `hidden @4xl:flex` classes.
+// Responsiveness is CONTAINER-driven, not viewport-driven: the page wrapper
+// is the `@container`, so an open sidebar or split pane narrows the list and
+// columns drop by priority (source/creator below @4xl, updated/created
+// below @2xl; name/usedBy never drop) instead of forcing a horizontal
+// scrollbar. A
+// user-enabled column therefore means "show when space allows" — it comes
+// back as soon as the container widens.
 // Hideable columns use max-content tracks (content caps live on the cell
 // content, e.g. the source's max-w) so a user-hidden column — rendered
 // as an empty placeholder cell to keep subgrid auto-placement intact —
 // collapses to zero width instead of leaving a fixed-width hole.
-// Columns never get squashed below their content: the grid carries
-// `min-w-fit` and the page wrapper scrolls horizontally when every column
-// is enabled on a narrow viewport. Per-column caps live on cell content
-// (source max-w-[12rem], names max-w-[7rem]).
+// Per-column caps live on cell content (source max-w-[12rem],
+// names max-w-[7rem]).
 const GRID_COLS =
   "grid-cols-[0.75rem_1rem_minmax(140px,1fr)_max-content_1.75rem_0.75rem] " +
-  "sm:grid-cols-[0.75rem_1rem_minmax(140px,1fr)_max-content_max-content_max-content_1.75rem_0.75rem] " +
-  "lg:grid-cols-[0.75rem_1rem_minmax(200px,1fr)_max-content_max-content_max-content_max-content_max-content_1.75rem_0.75rem]";
+  "@2xl:grid-cols-[0.75rem_1rem_minmax(140px,1fr)_max-content_max-content_max-content_1.75rem_0.75rem] " +
+  "@4xl:grid-cols-[0.75rem_1rem_minmax(200px,1fr)_max-content_max-content_max-content_max-content_max-content_1.75rem_0.75rem]";
 
 // Sort/filter/column types and defaults live in the core view store
 // (@multica/core/skills/stores/view-store) so the persisted state and the
@@ -301,7 +306,7 @@ function SourceCell({
   }
 
   return (
-    <ListGridCell className="hidden gap-1.5 text-xs text-muted-foreground lg:flex">
+    <ListGridCell className="hidden gap-1.5 text-xs text-muted-foreground @4xl:flex">
       {icon}
       <span className="min-w-0 max-w-[12rem] truncate">{label}</span>
     </ListGridCell>
@@ -310,7 +315,7 @@ function SourceCell({
 
 function CreatorCell({ creator }: { creator: MemberWithUser | null }) {
   return (
-    <ListGridCell className="hidden gap-1.5 lg:flex">
+    <ListGridCell className="hidden gap-1.5 @4xl:flex">
       {creator && (
         <>
           <ActorAvatar
@@ -414,40 +419,40 @@ function SkillListHeader({
         <ListGridHeaderCell className="px-0" />
       )}
       {isColVisible("source") ? (
-        <ListGridHeaderCell className="hidden lg:flex">
+        <ListGridHeaderCell className="hidden @4xl:flex">
           {t(($) => $.table.source)}
         </ListGridHeaderCell>
       ) : (
-        <ListGridHeaderCell className="hidden px-0 lg:flex" />
+        <ListGridHeaderCell className="hidden px-0 @4xl:flex" />
       )}
       {isColVisible("creator") ? (
-        <ListGridHeaderCell className="hidden lg:flex">
+        <ListGridHeaderCell className="hidden @4xl:flex">
           {t(($) => $.table.created_by)}
         </ListGridHeaderCell>
       ) : (
-        <ListGridHeaderCell className="hidden px-0 lg:flex" />
+        <ListGridHeaderCell className="hidden px-0 @4xl:flex" />
       )}
       {isColVisible("updated") ? (
         <ListGridHeaderCell
-          className="hidden sm:flex"
+          className="hidden @2xl:flex"
           sorted={sorted("updated")}
           onSort={() => onSort("updated")}
         >
           {t(($) => $.table.updated)}
         </ListGridHeaderCell>
       ) : (
-        <ListGridHeaderCell className="hidden px-0 sm:flex" />
+        <ListGridHeaderCell className="hidden px-0 @2xl:flex" />
       )}
       {isColVisible("created") ? (
         <ListGridHeaderCell
-          className="hidden sm:flex"
+          className="hidden @2xl:flex"
           sorted={sorted("created")}
           onSort={() => onSort("created")}
         >
           {t(($) => $.table.created)}
         </ListGridHeaderCell>
       ) : (
-        <ListGridHeaderCell className="hidden px-0 sm:flex" />
+        <ListGridHeaderCell className="hidden px-0 @2xl:flex" />
       )}
       <span aria-hidden="true" />
     </ListGridHeader>
@@ -468,14 +473,14 @@ function LoadingSkeleton() {
         {/* Source and created are hidden by default — keep their tracks
             mapped with empty placeholders so the skeleton matches the
             default layout. */}
-        <ListGridHeaderCell className="hidden px-0 lg:flex" />
-        <ListGridHeaderCell className="hidden lg:flex">
+        <ListGridHeaderCell className="hidden px-0 @4xl:flex" />
+        <ListGridHeaderCell className="hidden @4xl:flex">
           <Skeleton className="h-3 w-10" />
         </ListGridHeaderCell>
-        <ListGridHeaderCell className="hidden sm:flex">
+        <ListGridHeaderCell className="hidden @2xl:flex">
           <Skeleton className="h-3 w-12" />
         </ListGridHeaderCell>
-        <ListGridHeaderCell className="hidden px-0 sm:flex" />
+        <ListGridHeaderCell className="hidden px-0 @2xl:flex" />
         <span aria-hidden="true" />
       </ListGridHeader>
       {Array.from({ length: 5 }).map((_, i) => (
@@ -487,15 +492,15 @@ function LoadingSkeleton() {
           <ListGridCell>
             <Skeleton className="h-5 w-14" />
           </ListGridCell>
-          <ListGridCell className="hidden px-0 lg:flex" />
-          <ListGridCell className="hidden gap-1.5 lg:flex">
+          <ListGridCell className="hidden px-0 @4xl:flex" />
+          <ListGridCell className="hidden gap-1.5 @4xl:flex">
             <Skeleton className="size-5 rounded-full" />
             <Skeleton className="h-3 w-12" />
           </ListGridCell>
-          <ListGridCell className="hidden sm:flex">
+          <ListGridCell className="hidden @2xl:flex">
             <Skeleton className="h-3 w-10" />
           </ListGridCell>
-          <ListGridCell className="hidden px-0 sm:flex" />
+          <ListGridCell className="hidden px-0 @2xl:flex" />
           <span aria-hidden="true" />
         </ListGridRow>
       ))}
@@ -731,7 +736,7 @@ export default function SkillsPage() {
       )}
 
       {isLoading ? (
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto @container">
           <LoadingSkeleton />
         </div>
       ) : showEmpty ? (
@@ -754,9 +759,9 @@ export default function SkillsPage() {
             onToggleColumn={toggleColumn}
             allRows={allRows}
           />
-          <div className="min-h-0 flex-1 overflow-x-auto">
+          <div className="min-h-0 flex-1 @container">
           <ListGrid
-            className={`${GRID_COLS} h-full min-w-fit grid-rows-[auto_minmax(0,1fr)]`}
+            className={`${GRID_COLS} h-full grid-rows-[auto_minmax(0,1fr)]`}
           >
             <SkillListHeader
               sortField={sortField}
@@ -794,26 +799,26 @@ export default function SkillsPage() {
                 {isColVisible("source") ? (
                   <SourceCell skill={row.skill} runtime={row.runtime} />
                 ) : (
-                  <ListGridCell className="hidden px-0 lg:flex" />
+                  <ListGridCell className="hidden px-0 @4xl:flex" />
                 )}
                 {isColVisible("creator") ? (
                   <CreatorCell creator={row.creator} />
                 ) : (
-                  <ListGridCell className="hidden px-0 lg:flex" />
+                  <ListGridCell className="hidden px-0 @4xl:flex" />
                 )}
                 {isColVisible("updated") ? (
-                  <ListGridCell className="hidden whitespace-nowrap text-xs tabular-nums text-muted-foreground sm:flex">
+                  <ListGridCell className="hidden whitespace-nowrap text-xs tabular-nums text-muted-foreground @2xl:flex">
                     {timeAgo(row.skill.updated_at)}
                   </ListGridCell>
                 ) : (
-                  <ListGridCell className="hidden px-0 sm:flex" />
+                  <ListGridCell className="hidden px-0 @2xl:flex" />
                 )}
                 {isColVisible("created") ? (
-                  <ListGridCell className="hidden whitespace-nowrap text-xs tabular-nums text-muted-foreground sm:flex">
+                  <ListGridCell className="hidden whitespace-nowrap text-xs tabular-nums text-muted-foreground @2xl:flex">
                     {timeAgo(row.skill.created_at)}
                   </ListGridCell>
                 ) : (
-                  <ListGridCell className="hidden px-0 sm:flex" />
+                  <ListGridCell className="hidden px-0 @2xl:flex" />
                 )}
                 <ListGridCell className="justify-end px-0">
                   <SkillRowActions row={row} ctx={actionsCtx} />
