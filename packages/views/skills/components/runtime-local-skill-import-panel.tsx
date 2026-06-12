@@ -28,6 +28,7 @@ import {
   resolveRuntimeLocalSkillImport,
 } from "@multica/core/runtimes";
 import {
+  memberListOptions,
   skillDetailOptions,
   workspaceKeys,
 } from "@multica/core/workspace/queries";
@@ -316,6 +317,8 @@ function ConflictResolutionPanel({
   onSkipAll: () => void;
 }) {
   const { t } = useT("skills");
+  const wsId = useWorkspaceId();
+  const { data: members = [] } = useQuery(memberListOptions(wsId));
   const single = conflicts.length === 1;
   const canOverwriteAny = conflicts.some((r) => r.conflict?.can_overwrite);
 
@@ -366,7 +369,10 @@ function ConflictResolutionPanel({
               action: r.conflict?.can_overwrite ? "overwrite" : "rename",
               renameName: defaultRenameName(r.name),
             } satisfies ConflictResolutionState);
-          const creator = r.conflict?.existing_created_by;
+          const creatorId = r.conflict?.existing_created_by;
+          const creatorName = creatorId
+            ? members.find((m) => m.user_id === creatorId)?.name
+            : undefined;
           return (
             <div key={r.key} className="rounded-lg border bg-card p-3">
               <div className="flex items-start gap-2">
@@ -378,9 +384,9 @@ function ConflictResolutionPanel({
                   )}
                   {!r.conflict?.can_overwrite && (
                     <p className="mt-1 text-xs text-muted-foreground">
-                      {creator
+                      {creatorName
                         ? t(($) => $.runtime_import.conflict_locked_creator, {
-                            creator,
+                            creator: creatorName,
                           })
                         : t(($) => $.runtime_import.conflict_locked)}
                     </p>
