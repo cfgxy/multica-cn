@@ -98,7 +98,9 @@ const ROW_HEIGHT = 64;
 // Single source for hideable column widths: track vars and the grid's
 // min-width derive from the same numbers.
 const COLUMN_WIDTHS: Record<AgentColumnKey, number> = {
-  status: 160,
+  // Sized for the worst case "Online · 2 tasks" (~140px incl. padding);
+  // idle rows show only the dot + label and leave some in-track slack.
+  status: 144,
   runtime: 144,
   lastActive: 120,
   runs: 88,
