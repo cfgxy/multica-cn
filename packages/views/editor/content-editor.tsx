@@ -213,20 +213,26 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     // server) take precedence — we only append session uploads the caller
     // doesn't already have, so a parent re-render that includes the same record
     // doesn't end up with two copies.
+    //
+    // One exception on id collision: when the caller's copy has an EMPTY
+    // `download_url` (the create-issue draft strips the short-lived signed URL
+    // before persisting), backfill it from the session upload. The session copy
+    // holds the this-response signed URL, so the just-pasted image first-paints
+    // from it instead of taking an extra redirect hop through `markdown_url`.
     const providerAttachments = useMemo(() => {
       if (sessionUploads.length === 0) return attachments;
-      const seen = new Set<string>();
+      const sessionById = new Map(sessionUploads.map((a) => [a.id, a]));
       const merged: Attachment[] = [];
       for (const a of attachments ?? []) {
-        if (a.id) seen.add(a.id);
-        merged.push(a);
+        const session = a.id ? sessionById.get(a.id) : undefined;
+        if (session) sessionById.delete(a.id);
+        merged.push(
+          session && !a.download_url
+            ? { ...a, download_url: session.download_url }
+            : a,
+        );
       }
-      for (const a of sessionUploads) {
-        if (!seen.has(a.id)) {
-          seen.add(a.id);
-          merged.push(a);
-        }
-      }
+      merged.push(...sessionById.values());
       return merged;
     }, [attachments, sessionUploads]);
 
