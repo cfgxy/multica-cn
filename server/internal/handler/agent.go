@@ -167,12 +167,12 @@ type AgentTaskResponse struct {
 	// inactivity sweeper hard-fails it. 0 means "use server default"
 	// (1200 = 20 min).
 	MaxInactivitySecs int `json:"max_inactivity_secs,omitempty"`
-	// ContextGuardReason is the audit reason captured at enqueue time
-	// (MUL-4059). Non-empty when the task was once parked in
-	// pending_context; the daemon only logs it (the server's guard is
-	// the authoritative gate, and a non-empty reason means the
-	// revalidation sweep has already promoted the row back to queued).
-	ContextGuardReason string `json:"context_guard_reason,omitempty"`
+	// P2-10 review fix: the audit JSON envelope that used to live
+	// here as `ContextGuardReason` was a misleading name (the field
+	// was the raw `agent_task_queue.context_guard` JSONB blob, not
+	// a "reason" string) and the daemon never read it. Dropped on
+	// the wire; the front-end can read the envelope out of the
+	// task-detail endpoint when it needs to render an audit card.
 	// WorkspaceContext is the workspace-level system prompt set in workspace
 	// settings (`workspace.context` DB column). Injected into the agent brief
 	// as `## Workspace Context` so every agent running in this workspace —
@@ -316,17 +316,16 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 	if t.WorkDir.Valid {
 		workDir = t.WorkDir.String
 	}
-	// MUL-4059: surface the resolved inactivity cap + the guard's
-	// last audit reason so the daemon can soft-kill proactively and
-	// log when a task was rescued from pending_context. Both fields
-	// are read-only on the wire — the daemon never re-evaluates them.
+	// MUL-4059: surface the resolved inactivity cap so the daemon
+	// can soft-kill proactively. The guard's audit reason stays in
+	// the row (agent_task_queue.context_guard JSONB) for the
+	// task-detail endpoint to render; the claim response no longer
+	// carries it (P2-10 review fix: the previous ContextGuardReason
+	// string was the raw JSONB, not a human-readable reason, and
+	// the daemon never consulted it).
 	var maxInactivitySecs int
 	if t.MaxInactivitySecs.Valid {
 		maxInactivitySecs = int(t.MaxInactivitySecs.Int32)
-	}
-	contextGuardReason := ""
-	if len(t.ContextGuard) > 0 {
-		contextGuardReason = string(t.ContextGuard)
 	}
 	return AgentTaskResponse{
 		ID:                uuidToString(t.ID),
@@ -335,7 +334,6 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		IssueID:           uuidToString(t.IssueID),
 		WorkspaceID:       workspaceID,
 		MaxInactivitySecs: maxInactivitySecs,
-		ContextGuardReason: contextGuardReason,
 		Status:           t.Status,
 		Priority:         t.Priority,
 		DispatchedAt:     timestampToPtr(t.DispatchedAt),

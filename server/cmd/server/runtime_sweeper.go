@@ -403,11 +403,12 @@ func reconcileAgentStatus(ctx context.Context, queries *db.Queries, bus *events.
 // ============================================================================
 
 // sweepInactiveTasks fails 'running' tasks whose daemon hasn't produced
-// any server-visible activity for AGENT_TASK_MAX_INACTIVITY_SECS (default
-// 1200 = 20 min). The per-task cap lives on agent_task_queue.max_inactivity_secs;
-// the sqlc query FailInactiveRunningTasks coalesces all rows whose
-// last_activity_at < now() - max_inactivity_secs into a single UPDATE
-// RETURNING, regardless of how many distinct caps are configured.
+// any server-visible activity for the per-task inactivity cap stored
+// on agent_task_queue.max_inactivity_secs. P0-2 review fix: the cap is
+// now read per-row via COALESCE inside FailInactiveRunningTasks, not
+// from a single scalar the caller passes in. The task-level / agent-
+// level / workspace-level / server-default chain resolved at enqueue
+// time is finally respected by the sweeper.
 //
 // Failures funnel through HandleFailedTasks so the issue rollback /
 // agent-status reconcile / auto-retry semantics match the existing
@@ -415,20 +416,9 @@ func reconcileAgentStatus(ctx context.Context, queries *db.Queries, bus *events.
 // (task.go) is the gate that decides whether the auto-retry path
 // resurrects the task.
 func sweepInactiveTasks(ctx context.Context, queries *db.Queries, taskSvc *service.TaskService) {
-	if taskSvc == nil {
-		// Tests may invoke the sweeper helpers directly without a
-		// TaskService; in that case the inactivity sweep is a no-op
-		// because we have nowhere to send the HandleFailedTasks
-		// side-effects. The DB UPDATE itself already ran, so the
-		// rows are still transitioned to 'failed' — only the
-		// post-failure side effects (issue rollback, retry, broadcast)
-		// are skipped.
-		_, _ = queries.FailInactiveRunningTasks(ctx, fmt.Sprintf("%d", inactivityDefaultSecs(taskSvc)))
-		return
-	}
+	defaultSecs := inactivityDefaultSecs(taskSvc)
 
-	maxSecs := inactivityDefaultSecs(taskSvc)
-	failed, err := queries.FailInactiveRunningTasks(ctx, fmt.Sprintf("%d", maxSecs))
+	failed, err := queries.FailInactiveRunningTasks(ctx)
 	if err != nil {
 		slog.Warn("inactivity sweeper: failed to mark inactive tasks", "error", err)
 		return
@@ -437,15 +427,18 @@ func sweepInactiveTasks(ctx context.Context, queries *db.Queries, taskSvc *servi
 		return
 	}
 	slog.Info("inactivity sweeper: failed inactive tasks",
-		"count", len(failed), "max_inactivity_secs", maxSecs)
-	taskSvc.CaptureLeaseExpiredTasks(ctx, failed)
-	taskSvc.HandleFailedTasks(ctx, failed)
+		"count", len(failed), "default_max_inactivity_secs", defaultSecs)
+	if taskSvc != nil {
+		taskSvc.CaptureLeaseExpiredTasks(ctx, failed)
+		taskSvc.HandleFailedTasks(ctx, failed)
+	}
 }
 
-// inactivityDefaultSecs returns the inactivity cap to apply when a task
-// row has max_inactivity_secs NULL (legacy rows or rows enqueued before
-// migration 120). Reads from the TaskService if set, otherwise returns
-// the package-level default (1200).
+// inactivityDefaultSecs returns the configured server default for the
+// inactivity cap. Reads from the TaskService if set, otherwise returns
+// the package-level constant (1200s = 20 min). Used for log messages
+// only — the SQL has its own hardcoded fallback (also 1200) so the two
+// stay in lockstep.
 //
 // Kept as a free function (rather than a TaskService method) so the
 // sweeper test stub path can call it without constructing a full
@@ -490,12 +483,36 @@ func sweepPendingContextTasks(ctx context.Context, queries *db.Queries, taskSvc 
 	for _, task := range pending {
 		workspaceID := workspaceIDFromTask(ctx, queries, task)
 		if !workspaceID.Valid {
-			// No workspace resolvable (e.g. chat task with a
-			// missing chat_session row). Skip — the cancel path
-			// below catches it on a later tick if it stays
-			// unresolvable. We do NOT cancel here, because the
-			// real reason would be a transient DB blip.
-			slog.Warn("pending-context sweeper: cannot resolve workspace, skipping",
+			// P1-6 review fix: the original draft `continue`d on
+			// workspace-resolution failure, which means the
+			// revalidation counter never advances and the row
+			// stays parked forever. Cancel the row instead with
+			// a clear failure_reason so the operator / user
+			// sees "your workspace was deleted while this task
+			// was waiting" rather than the row lingering on the
+			// issue card.
+			//
+			// We cancel as failure (not 'cancelled') so
+			// HandleFailedTasks's issue-rollback / agent
+			// reconcile path still runs — the auto-retry branch
+			// skips it because 'no_context' isn't in
+			// retryableReasons, but the issue status flip
+			// out of 'blocked' does happen via the broadcast
+			// fallthrough.
+			cancelledRow, err := queries.MarkAgentTaskPendingContextCancelled(ctx, db.MarkAgentTaskPendingContextCancelledParams{
+				ID:    task.ID,
+				Error: pgtype.Text{String: "workspace no longer resolvable; pending_context row will not be requeued", Valid: true},
+			})
+			if err != nil {
+				slog.Warn("pending-context sweeper: cancel-on-unresolvable failed",
+					"task_id", util.UUIDToString(task.ID), "error", err)
+				continue
+			}
+			cancelled++
+			if taskSvc != nil {
+				taskSvc.HandleFailedTasks(ctx, []db.AgentTaskQueue{cancelledRow})
+			}
+			slog.Info("pending-context sweeper: cancelled task (workspace unresolvable)",
 				"task_id", util.UUIDToString(task.ID))
 			continue
 		}
@@ -508,6 +525,20 @@ func sweepPendingContextTasks(ctx context.Context, queries *db.Queries, taskSvc 
 				continue
 			}
 			requeued++
+			// P1-8 review fix: parkIssueTaskPendingContext flipped
+			// the issue to 'blocked'. Now that the guard has
+			// passed, flip it back to 'in_progress' so the UI
+			// shows the task is actually running, not waiting on
+			// the user. The flip is best-effort: a stale
+			// 'in_progress' write against an issue the user has
+			// since closed is harmless (the next status mutation
+			// wins). The companion system comment is the same
+			// idea: a one-liner the user sees in the issue
+			// timeline explaining "the context guard now passes,
+			// resuming".
+			if taskSvc != nil && task.IssueID.Valid {
+				resumeIssueFromBlocked(ctx, queries, task, workspaceID)
+			}
 			if taskSvc != nil {
 				// Notify the daemon WS the same way Enqueue* does
 				// — close the gap between "guard passed" and
@@ -624,7 +655,7 @@ func guardVerify(ctx context.Context, queries *db.Queries, workspaceID pgtype.UU
 	}
 
 	// (B) project local_directory check (best-effort project resolution)
-	projectID := pendingContextProjectID(task)
+	projectID := pendingContextProjectID(ctx, queries, task)
 	if projectID.Valid {
 		resources, err := queries.ListProjectResources(ctx, projectID)
 		if err == nil {
@@ -647,19 +678,41 @@ func guardVerify(ctx context.Context, queries *db.Queries, workspaceID pgtype.UU
 }
 
 // pendingContextProjectID extracts the project ID for the revalidation
-// check. For issue tasks the project is on the issue row; for chat and
-// quick-create tasks the project is unknown (projectID stays invalid),
-// and the guard short-circuits to the (A) repos-only check.
-func pendingContextProjectID(task db.AgentTaskQueue) pgtype.UUID {
-	// We do NOT issue a GetIssue here to avoid a per-row round-trip in
-	// the sweep tick. Issue-driven pending_context tasks are the common
-	// case but their project_id comes from issue.project_id which we'd
-	// need to look up. The sweep falls back to (A) repos only in that
-	// case, which is conservative — a task that needs (B) may stall
-	// until the user changes the project (rare). This trade-off is
-	// documented in the revalidation hint.
-	_ = task
-	return pgtype.UUID{}
+// check. For issue tasks the project lives on the issue row and is
+// fetched on demand; for chat / quick-create tasks no project is
+// available and the function returns an invalid UUID (the guard
+// short-circuits to the (A) repos-only check, which is the right
+// behaviour for the (B)-only path because chat / quick-create have
+// no project_id by definition).
+//
+// P1-5 review fix: the original implementation returned an invalid
+// UUID unconditionally ("avoid a per-row round-trip"). That silently
+// disabled the (B) local_directory branch for issue-driven
+// pending_context tasks, so a workspace whose only context is a
+// project local_directory (no repos) would never see the guard
+// re-evaluate true — the row was eventually cancelled after 3
+// revalidation attempts even though the user had supplied valid
+// context. The cost of the GetIssue round-trip is acceptable
+// because (a) partial index keeps the candidate set tiny and (b)
+// the revalidation path already issues a GetWorkspace SELECT per
+// row, so one more PK lookup is rounding error.
+func pendingContextProjectID(ctx context.Context, queries *db.Queries, task db.AgentTaskQueue) pgtype.UUID {
+	if !task.IssueID.Valid {
+		return pgtype.UUID{}
+	}
+	issue, err := queries.GetIssue(ctx, task.IssueID)
+	if err != nil {
+		// Workspace lookup at the next call site will also fail if
+		// the issue is gone; the workspaceIDFromTask helper falls
+		// through to a non-blocking skip. The pending_context
+		// revalidation count never advances in that case, so
+		// the workspace-lookup-failure safety net (P1-6) takes
+		// over and cancels the row. Returning an invalid UUID
+		// here is therefore the conservative choice — we don't
+		// pretend we have a project when we don't.
+		return pgtype.UUID{}
+	}
+	return issue.ProjectID
 }
 
 // pendingContextRevalidationCount parses the context_guard JSONB
@@ -735,4 +788,61 @@ func bumpPendingContextCheckedAt(ctx context.Context, queries *db.Queries, taskI
 		ID:           taskID,
 		ContextGuard: payload,
 	})
+}
+
+// resumeIssueFromBlocked is the P1-8 best-effort companion to the
+// requeue path. When the no-context guard rejected a task the park
+// helper flipped the issue to 'blocked'; now that the guard has
+// passed on a revalidate, the issue should flip back to
+// 'in_progress' so the UI stops showing the parked card. Best-effort
+// because the user may have closed the issue between park and
+// revalidate — a stale UPDATE against a closed issue is harmless
+// (the next status mutation wins) but a noisy log on every tick
+// would be. We also skip the flip if the issue is already in a
+// non-blocked state (in_progress / in_review) to avoid pointless
+// writes.
+//
+// The companion system comment uses the same author attribution
+// pattern as parkIssueTaskPendingContext (workspace_id, agent_id),
+// so a future sweep that needs to surface "we unsuspended you" can
+// query by author.
+func resumeIssueFromBlocked(ctx context.Context, queries *db.Queries, task db.AgentTaskQueue, workspaceID pgtype.UUID) {
+	if !task.IssueID.Valid || !workspaceID.Valid {
+		return
+	}
+	issue, err := queries.GetIssue(ctx, task.IssueID)
+	if err != nil {
+		slog.Warn("pending-context sweeper: failed to load issue for unblock",
+			"issue_id", util.UUIDToString(task.IssueID), "error", err)
+		return
+	}
+	// Don't touch a terminal issue (the user already moved on) and
+	// don't touch a row already past 'blocked' (e.g. someone set it
+	// to in_review while the task was parked).
+	if issue.Status == "done" || issue.Status == "cancelled" {
+		return
+	}
+	if issue.Status != "blocked" {
+		return
+	}
+	if _, err := queries.UpdateIssueStatus(ctx, db.UpdateIssueStatusParams{
+		ID:          task.IssueID,
+		Status:      "in_progress",
+		WorkspaceID: workspaceID,
+	}); err != nil {
+		slog.Warn("pending-context sweeper: failed to flip issue back to in_progress",
+			"issue_id", util.UUIDToString(task.IssueID), "error", err)
+		return
+	}
+	if _, err := queries.CreateComment(ctx, db.CreateCommentParams{
+		IssueID:     task.IssueID,
+		WorkspaceID: workspaceID,
+		AuthorType:  "system",
+		AuthorID:    task.AgentID,
+		Content:     "✅ Context guard now passes; resuming the task.",
+		Type:        "comment",
+	}); err != nil {
+		slog.Warn("pending-context sweeper: failed to post 'resuming' system comment",
+			"issue_id", util.UUIDToString(task.IssueID), "error", err)
+	}
 }

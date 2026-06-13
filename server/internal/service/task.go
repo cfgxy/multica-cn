@@ -697,31 +697,51 @@ func (s *TaskService) parkIssueTaskPendingContext(
 	if err != nil {
 		slog.Warn("context guard: encode reason failed", "error", err)
 	}
-	task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
-		AgentID:           issue.AssigneeID,
-		RuntimeID:         agent.RuntimeID,
-		IssueID:           issue.ID,
-		Priority:          priorityToInt(issue.Priority),
-		TriggerCommentID:  triggerCommentID,
-		TriggerSummary:    s.buildCommentTriggerSummary(ctx, triggerCommentID),
-		ForceFreshSession: pgtype.Bool{Bool: forceFreshSession, Valid: forceFreshSession},
-		MaxInactivitySecs: pgtype.Int4{Int32: int32(maxInactivity), Valid: true},
+
+	// P1-6 review fix: the previous implementation did
+	// CreateAgentTask + MarkAgentTaskPendingContext as two separate
+	// non-transactional calls. A concurrent cancel that landed
+	// between them left the row in 'cancelled' status but still
+	// flipped the issue to 'blocked' + posted a misleading "this
+	// task is waiting because the agent has no execution context"
+	// system comment. Wrap the two writes in a single transaction
+	// so the row is either fully parked or fully cancelled — never
+	// half-parked. The post-write side effects (issue flip +
+	// comment + event) are deliberately outside the transaction so
+	// a slow / failing comment insert never holds a DB lock.
+	var task db.AgentTaskQueue
+	err = s.runInTx(ctx, func(qtx *db.Queries) error {
+		inserted, err := qtx.CreateAgentTask(ctx, db.CreateAgentTaskParams{
+			AgentID:           issue.AssigneeID,
+			RuntimeID:         agent.RuntimeID,
+			IssueID:           issue.ID,
+			Priority:          priorityToInt(issue.Priority),
+			TriggerCommentID:  triggerCommentID,
+			TriggerSummary:    s.buildCommentTriggerSummary(ctx, triggerCommentID),
+			ForceFreshSession: pgtype.Bool{Bool: forceFreshSession, Valid: forceFreshSession},
+			MaxInactivitySecs: pgtype.Int4{Int32: int32(maxInactivity), Valid: true},
+		})
+		if err != nil {
+			return fmt.Errorf("create task: %w", err)
+		}
+		parked, err := qtx.MarkAgentTaskPendingContext(ctx, db.MarkAgentTaskPendingContextParams{
+			ID:           inserted.ID,
+			ContextGuard: reasonBytes,
+		})
+		if err != nil {
+			// The transaction rolls back: the 'queued' insert and
+			// the status flip are both undone. Caller sees the
+			// error and surfaces a 5xx; the user retries. The
+			// pre-fix behaviour was a silent "task in limbo with
+			// a wrong system comment" which is strictly worse.
+			return fmt.Errorf("mark pending_context: %w", err)
+		}
+		task = parked
+		return nil
 	})
 	if err != nil {
-		return db.AgentTaskQueue{}, fmt.Errorf("create task: %w", err)
+		return db.AgentTaskQueue{}, err
 	}
-	parked, err := s.Queries.MarkAgentTaskPendingContext(ctx, db.MarkAgentTaskPendingContextParams{
-		ID:           task.ID,
-		ContextGuard: reasonBytes,
-	})
-	if err != nil {
-		slog.Warn("context guard: park task in pending_context failed",
-			"task_id", util.UUIDToString(task.ID), "error", err)
-		// The task is queued without the audit reason; the guard
-		// sweeper will re-evaluate and re-park if needed.
-		return task, nil
-	}
-	task = parked
 
 	slog.Info("task parked in pending_context",
 		"task_id", util.UUIDToString(task.ID),
@@ -740,7 +760,14 @@ func (s *TaskService) parkIssueTaskPendingContext(
 		"⚠️ This task is waiting because the agent has no execution context. "+
 			"Add a linked repository or a project local_directory to run it. "+
 			"Reason: "+reason.Hint)
-	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
+	// P2-9 review fix: emit the dedicated EventTaskPendingContext
+	// event so the front-end can subscribe precisely to "a task was
+	// parked" without parsing the snapshot. The previous broadcast
+	// re-used EventTaskQueued; that meant the UI could only learn
+	// about a park by polling the next snapshot. The general
+	// `task:` subscription still re-snapshots the workspace so this
+	// is an additive signal, not a breaking change.
+	s.broadcastTaskEvent(ctx, protocol.EventTaskPendingContext, task)
 	return task, nil
 }
 
@@ -997,7 +1024,15 @@ var ErrChatTaskAgentNoRuntime = errors.New("chat task: agent has no runtime")
 // (Lark dispatcher, web chat) map this to a user-visible "this
 // workspace has no linked repos; ask the user to link one" message
 // rather than retrying.
-var errChatTaskContextMissing = errors.New("chat task: workspace has no usable execution context")
+//
+// Exported so cross-package callers (the Lark dispatcher lives in
+// server/internal/integrations/lark, the web chat handler in
+// server/internal/handler/chat) can use `errors.Is(err,
+// service.ErrChatTaskContextMissing)` to surface a tailored message.
+// P0-3 review fix: the original draft declared this with a lowercase
+// name; both callers landed in the generic-error path, which is
+// exactly the "silent no-reply" behaviour #4059 describes.
+var ErrChatTaskContextMissing = errors.New("chat task: workspace has no usable execution context")
 
 // EnqueueChatTask creates a queued task for a chat session.
 // Unlike issue tasks, chat tasks have no issue_id.
@@ -1048,7 +1083,7 @@ func (s *TaskService) EnqueueChatTask(ctx context.Context, chatSession db.ChatSe
 				"chat_session_id", util.UUIDToString(chatSession.ID),
 				"agent_id", util.UUIDToString(chatSession.AgentID),
 				"hint", reason.Hint)
-			return db.AgentTaskQueue{}, errChatTaskContextMissing
+			return db.AgentTaskQueue{}, ErrChatTaskContextMissing
 		case contextguard.PolicyWarn:
 			slog.Warn("context guard: policy=warn, proceeding with chat",
 				"hint", reason.Hint)
@@ -1851,7 +1886,16 @@ func resumeUnsafeFailureReason(reason string) bool {
 	switch reason {
 	// Keep in sync with GetLastTaskSession / GetLastChatTaskSession and
 	// CreateRetryTask's fresh-session CASE WHEN.
-	case "iteration_limit", "agent_fallback_message", "api_invalid_request", "codex_semantic_inactivity":
+	//
+	// P1-7 review fix: 'inactivity_timeout' is also resume-unsafe.
+	// The server-side inactivity sweeper has no way to tell "the
+	// agent is genuinely stuck" from "the agent is running a
+	// long build that doesn't emit a single message for 20
+	// minutes", so resuming the same session deterministically
+	// re-plays whichever case tripped the original timeout.
+	// Forcing a fresh session (and clearing session_id +
+	// work_dir) gives the agent a clean slate on retry.
+	case "iteration_limit", "agent_fallback_message", "api_invalid_request", "codex_semantic_inactivity", "inactivity_timeout":
 		return true
 	default:
 		return false

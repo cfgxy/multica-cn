@@ -59,13 +59,9 @@ func TestTaskStruct_NewFieldsPickedUp(t *testing.T) {
 	task := Task{
 		ID:                "task-5",
 		MaxInactivitySecs: 600,
-		ContextGuardReason: `{"policy":"block_and_notify","ok":false,"hint":"no repos"}`,
 	}
 	if task.MaxInactivitySecs != 600 {
 		t.Fatalf("MaxInactivitySecs not carried: %d", task.MaxInactivitySecs)
-	}
-	if task.ContextGuardReason == "" {
-		t.Fatal("ContextGuardReason should round-trip")
 	}
 }
 

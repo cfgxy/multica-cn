@@ -86,7 +86,7 @@ func TestSweepInactiveTasks_FailsStaleRunning(t *testing.T) {
 	taskSvc := newTestTaskService(t)
 	queries := db.New(testPool)
 
-	failed, err := queries.FailInactiveRunningTasks(ctx, "60")
+	failed, err := queries.FailInactiveRunningTasks(ctx)
 	if err != nil {
 		t.Fatalf("sweep failed: %v", err)
 	}
@@ -114,7 +114,221 @@ func TestSweepInactiveTasks_FailsStaleRunning(t *testing.T) {
 	}
 }
 
-// TestSweepInactiveTasks_SkipsFreshRunning pins the negative
+// TestSweepInactiveTasks_PerRowMaxInactivityCap pins the per-row
+// inactivity cap (MUL-4059 P0-2 review fix). Two tasks are set up:
+//   - task A: last_activity_at 30s ago, max_inactivity_secs = 60
+//     (should NOT be killed; cap not exceeded)
+//   - task B: last_activity_at 90s ago, max_inactivity_secs = 60
+//     (should be killed; cap exceeded)
+//
+// A scalar @max_inactivity_secs parameter would have killed A and
+// spared B (or vice versa) depending on the server default. The
+// COALESCE(max_inactivity_secs, 1200) clause inside the SQL respects
+// the per-row cap and only fails B.
+func TestSweepInactiveTasks_PerRowMaxInactivityCap(t *testing.T) {
+	if testPool == nil {
+		t.Skip("integration test database not available")
+	}
+	ctx := context.Background()
+
+	var agentID, runtimeID string
+	err := testPool.QueryRow(ctx, `
+		SELECT a.id, a.runtime_id FROM agent a
+		JOIN member m ON m.workspace_id = a.workspace_id
+		JOIN "user" u ON u.id = m.user_id
+		WHERE u.email = $1
+		LIMIT 1
+	`, integrationTestEmail).Scan(&agentID, &runtimeID)
+	if err != nil {
+		t.Skipf("skipping: %v", err)
+	}
+
+	// Use a unique tag so we can find our rows afterwards without
+	// colliding with parallel tests / leftover rows from earlier
+	// runs. The integration test fixture cleans up by issue
+	// deletion; we delete explicitly to avoid lingering rows
+	// polluting subsequent runs.
+	tag := "perrow-cap-test"
+
+	insertTask := func(t *testing.T, label, lastActivityOffset string, maxInactivity int) string {
+		t.Helper()
+		var issueID string
+		err := testPool.QueryRow(ctx, `
+			INSERT INTO issue (workspace_id, title, status, priority, creator_type, creator_id, assignee_type, assignee_id, position, number)
+			SELECT $1, $2, 'in_progress', 'none', 'member', m.user_id, 'agent', $3, 0,
+				(SELECT COALESCE(MAX(number), 0) + 1 FROM issue WHERE workspace_id = $1)
+			FROM member m WHERE m.workspace_id = $1 LIMIT 1
+			RETURNING id
+		`, testWorkspaceID, "per-row cap test - "+label, agentID).Scan(&issueID)
+		if err != nil {
+			t.Fatalf("create issue: %v", err)
+		}
+		t.Cleanup(func() {
+			testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)
+			testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
+		})
+		var taskID string
+		err = testPool.QueryRow(ctx, `
+			INSERT INTO agent_task_queue (
+				agent_id, runtime_id, issue_id, status, priority,
+				dispatched_at, started_at, last_activity_at, max_inactivity_secs, trigger_summary
+			)
+			VALUES (
+				$1, $2, $3, 'running', 0,
+				now(), now(),
+				now() - ($4::interval),
+				$5, $6
+			)
+			RETURNING id
+		`, agentID, runtimeID, issueID, lastActivityOffset, maxInactivity, tag+"-"+label).Scan(&taskID)
+		if err != nil {
+			t.Fatalf("create task: %v", err)
+		}
+		return taskID
+	}
+
+	// A: last activity 30s ago, cap 60s -> alive.
+	taskA := insertTask(t, "A", "30 seconds", 60)
+	// B: last activity 90s ago, cap 60s -> dead.
+	taskB := insertTask(t, "B", "90 seconds", 60)
+
+	queries := db.New(testPool)
+	failed, err := queries.FailInactiveRunningTasks(ctx)
+	if err != nil {
+		t.Fatalf("sweep failed: %v", err)
+	}
+
+	failedIDs := map[string]bool{}
+	for _, row := range failed {
+		failedIDs[uuidString(row.ID)] = true
+	}
+
+	if !failedIDs[taskB] {
+		t.Fatalf("expected task B (cap=60s, idle=90s) to be killed, but it survived")
+	}
+	if failedIDs[taskA] {
+		t.Fatalf("expected task A (cap=60s, idle=30s) to be alive, but it was killed")
+	}
+}
+
+// TestSweepPendingContextTasks_ProjectLocalDirectoryPasses pins the
+// P1-5 review fix: a parked task whose only context is a project
+// local_directory (workspace has no repos) should requeue when the
+// sweeper re-evaluates. The previous version returned an invalid
+// project_id unconditionally, which silently disabled the (B) branch
+// and meant (B)-only users never requeued.
+func TestSweepPendingContextTasks_ProjectLocalDirectoryPasses(t *testing.T) {
+	if testPool == nil {
+		t.Skip("integration test database not available")
+	}
+	ctx := context.Background()
+
+	// Strip workspace repos to force (A)-fail / (B)-only scenario.
+	_, err := testPool.Exec(ctx, `UPDATE workspace SET repos = '[]'::jsonb WHERE id = $1`, testWorkspaceID)
+	if err != nil {
+		t.Fatalf("strip workspace repos: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `UPDATE workspace SET repos = '[]'::jsonb WHERE id = $1`, testWorkspaceID)
+	})
+
+	var agentID, runtimeID string
+	err = testPool.QueryRow(ctx, `
+		SELECT a.id, a.runtime_id FROM agent a
+		JOIN member m ON m.workspace_id = a.workspace_id
+		JOIN "user" u ON u.id = m.user_id
+		WHERE u.email = $1
+		LIMIT 1
+	`, integrationTestEmail).Scan(&agentID, &runtimeID)
+	if err != nil {
+		t.Skipf("skipping: %v", err)
+	}
+
+	// Create a project (owned by the integration test workspace) and
+	// attach a local_directory resource to it.
+	var projectID string
+	err = testPool.QueryRow(ctx, `
+		INSERT INTO project (workspace_id, title, description, lead_type, lead_id)
+		SELECT $1, 'B-only test project', 'temp', 'member', m.user_id
+		FROM member m WHERE m.workspace_id = $1 LIMIT 1
+		RETURNING id
+	`, testWorkspaceID).Scan(&projectID)
+	if err != nil {
+		t.Fatalf("create project: %v (testWorkspaceID=%s)", err, testWorkspaceID)
+	}
+	if err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM project_resource WHERE project_id = $1`, projectID)
+		testPool.Exec(ctx, `DELETE FROM project WHERE id = $1`, projectID)
+	})
+	_, err = testPool.Exec(ctx, `
+		INSERT INTO project_resource (project_id, workspace_id, resource_type, resource_ref, label)
+		VALUES ($1, $2, 'local_directory', '{"path":"/tmp/b-only-test"}'::jsonb, 'B-only test dir')
+	`, projectID, testWorkspaceID)
+	if err != nil {
+		t.Fatalf("create project resource: %v", err)
+	}
+
+	// Create an issue under that project.
+	var issueID string
+	err = testPool.QueryRow(ctx, `
+		INSERT INTO issue (workspace_id, project_id, title, status, priority, creator_type, creator_id, assignee_type, assignee_id, position, number)
+		SELECT $1, $2, 'B-only test issue', 'blocked', 'none', 'member', m.user_id, 'agent', $3, 0,
+			(SELECT COALESCE(MAX(number), 0) + 1 FROM issue WHERE workspace_id = $1)
+		FROM member m WHERE m.workspace_id = $1 LIMIT 1
+		RETURNING id
+	`, testWorkspaceID, projectID, agentID).Scan(&issueID)
+	if err != nil {
+		t.Fatalf("create issue: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(ctx, `DELETE FROM agent_task_queue WHERE issue_id = $1`, issueID)
+		testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, issueID)
+	})
+
+	envelope := []byte(`{"policy":"block_and_notify","ok":false,"hint":"no repos at park time","revalidations":0}`)
+	var taskID string
+	err = testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (
+			agent_id, runtime_id, issue_id, status, priority,
+			context_guard, context_guard_checked_at
+		)
+		VALUES (
+			$1, $2, $3, 'pending_context', 0,
+			$4, now() - interval '5 minutes'
+		)
+		RETURNING id
+	`, agentID, runtimeID, issueID, envelope).Scan(&taskID)
+	if err != nil {
+		t.Fatalf("create pending_context task: %v", err)
+	}
+
+	queries := db.New(testPool)
+
+	// Run the sweep directly. The (B) local_directory path should now
+	// be evaluated correctly and the task should be requeued.
+	sweepPendingContextTasks(ctx, queries, nil)
+
+	var status string
+	err = testPool.QueryRow(ctx, `SELECT status FROM agent_task_queue WHERE id = $1`, taskID).Scan(&status)
+	if err != nil {
+		t.Fatalf("read row: %v", err)
+	}
+	if status != "queued" {
+		// Diagnostic: list the project resources that the sweep
+		// saw so a future regression is easier to read.
+		var pid pgtype.UUID
+		_ = testPool.QueryRow(ctx, `SELECT project_id FROM issue WHERE id = $1`, issueID).Scan(&pid)
+		resources, _ := queries.ListProjectResources(ctx, pid)
+		t.Fatalf("expected (B)-only task to requeue after local_directory added; "+
+			"got status=%q, project_id=%v, resources=%d",
+			status, pid, len(resources))
+	}
+}
+
+// TestSweepPendingContextTasks_SkipsFreshRunning pins the negative
 // counterpart: a fresh running task is NOT killed by the sweep.
 func TestSweepInactiveTasks_SkipsFreshRunning(t *testing.T) {
 	if testPool == nil {
@@ -166,7 +380,7 @@ func TestSweepInactiveTasks_SkipsFreshRunning(t *testing.T) {
 	}
 
 	queries := db.New(testPool)
-	failed, err := queries.FailInactiveRunningTasks(ctx, "60")
+	failed, err := queries.FailInactiveRunningTasks(ctx)
 	if err != nil {
 		t.Fatalf("sweep failed: %v", err)
 	}

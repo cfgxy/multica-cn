@@ -278,13 +278,12 @@ func workspaceHasRepos(w db.Workspace) bool {
 // agent_task_queue.context_guard column. Kept as a free function
 // (rather than a Reason method) so the package can be imported by
 // both server/service and server/handler without circular deps.
+//
+// P2-11 review fix: the previous version had a vestigial `if
+// r.CheckedAt == "" {}` block that did nothing — a TODO that was
+// never followed up on. The unused guard was deleted; callers
+// that need a timestamp stamp it on the Reason struct before
+// calling this helper.
 func EncodeReason(r Reason) ([]byte, error) {
-	if r.CheckedAt == "" {
-		// Lazy default: callers usually don't bother setting this; the
-		// service stamps it when needed. Encoding without it is harmless
-		// (the audit trail just loses the precise timestamp) but the
-		// caller will overwrite the column with NULL on revalidation
-		// success, so a missing field here is fine.
-	}
 	return json.Marshal(r)
 }

@@ -114,3 +114,38 @@ func TestTaskErrorType_InactivityTimeoutIsTimeout(t *testing.T) {
 		t.Fatalf("unrelated reason must not be misclassified, got %q", got)
 	}
 }
+
+// TestResumeUnsafeFailureReason_InactivityTimeoutAdded pins the
+// P1-7 review fix: an inactivity-timeout retry must NOT inherit the
+// parent's session_id / work_dir, otherwise auto-retry deterministically
+// replays whichever hang originally tripped the inactivity sweep. The
+// server has no way to tell "genuine hang" from "long build" so the
+// safe default is fresh-session — same treatment as codex_semantic_inactivity.
+func TestResumeUnsafeFailureReason_InactivityTimeoutAdded(t *testing.T) {
+	if !resumeUnsafeFailureReason("inactivity_timeout") {
+		t.Fatal("inactivity_timeout must be classified as resume-unsafe")
+	}
+	if !resumeUnsafeFailureReason("codex_semantic_inactivity") {
+		t.Fatal("codex_semantic_inactivity must remain resume-unsafe (pre-existing invariant)")
+	}
+	if resumeUnsafeFailureReason("agent_error") {
+		t.Fatal("agent_error must NOT be resume-unsafe; auto-retry should still inherit the session")
+	}
+}
+
+// TestErrChatTaskContextMissing_Exported pins the P0-3 fix: the
+// sentinel must be visible to cross-package callers (Lark dispatcher,
+// web chat handler) so they can errors.Is it and render a tailored
+// "workspace has no linked repos" message instead of the generic 500
+// that produced the silent-no-reply symptom #4059 describes.
+func TestErrChatTaskContextMissing_Exported(t *testing.T) {
+	// Re-declared sentinel lives in service package — accessed via
+	// the package's exported variable.
+	if ErrChatTaskContextMissing == nil {
+		t.Fatal("ErrChatTaskContextMissing must be a non-nil sentinel")
+	}
+	// errors.Is must agree with the sentinel itself.
+	if !errors.Is(ErrChatTaskContextMissing, ErrChatTaskContextMissing) {
+		t.Fatal("ErrChatTaskContextMissing must compare equal to itself")
+	}
+}

@@ -1005,10 +1005,10 @@ INSERT INTO agent_task_queue (
 SELECT
     p.agent_id, p.runtime_id, p.issue_id, p.chat_session_id, p.autopilot_run_id,
     'queued', p.priority, p.trigger_comment_id, p.trigger_summary, p.context,
-    CASE WHEN p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity' THEN NULL ELSE p.session_id END,
-    CASE WHEN p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity' THEN NULL ELSE p.work_dir END,
+    CASE WHEN p.failure_reason IN ('codex_semantic_inactivity', 'inactivity_timeout') THEN NULL ELSE p.session_id END,
+    CASE WHEN p.failure_reason IN ('codex_semantic_inactivity', 'inactivity_timeout') THEN NULL ELSE p.work_dir END,
     p.attempt + 1, p.max_attempts, p.id,
-    p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity',
+    p.failure_reason IN ('codex_semantic_inactivity', 'inactivity_timeout'),
     p.is_leader_task,
     p.max_inactivity_secs
 FROM agent_task_queue p
@@ -1244,28 +1244,43 @@ const failInactiveRunningTasks = `-- name: FailInactiveRunningTasks :many
 UPDATE agent_task_queue
 SET status = 'failed',
     completed_at = now(),
-    error = 'no task activity for ' || $1::text || 's',
+    error = 'no task activity for ' || COALESCE(max_inactivity_secs, 1200)::text || 's',
     failure_reason = 'inactivity_timeout'
 WHERE status = 'running'
   AND (
-    (last_activity_at IS NOT NULL AND last_activity_at < now() - make_interval(secs => $1::double precision))
-    OR (last_activity_at IS NULL AND started_at IS NOT NULL AND started_at < now() - make_interval(secs => $1::double precision))
-    OR (last_activity_at IS NULL AND started_at IS NULL AND created_at < now() - make_interval(secs => $1::double precision))
+    (last_activity_at IS NOT NULL
+      AND last_activity_at < now() - make_interval(secs => COALESCE(max_inactivity_secs, 1200)::double precision))
+    OR (last_activity_at IS NULL AND started_at IS NOT NULL
+      AND started_at < now() - make_interval(secs => COALESCE(max_inactivity_secs, 1200)::double precision))
+    OR (last_activity_at IS NULL AND started_at IS NULL
+      AND created_at < now() - make_interval(secs => COALESCE(max_inactivity_secs, 1200)::double precision))
   )
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, context_guard, context_guard_checked_at, last_activity_at, max_inactivity_secs
 `
 
-// Fails running tasks whose last activity exceeds max_inactivity_secs.
-// Coalesces the per-task check into one query so the sweep tick stays
-// O(rows) instead of N. COALESCE on started_at ensures the cold-start
-// backfill (last_activity_at seeded from started_at) is honoured: a
-// freshly-started task with no daemon traffic yet has last_activity_at
-// = started_at and is NOT killed by the sweep. The "OR NULL" branch
-// is defence-in-depth for the rare window where the migration backfill
-// didn't catch a row (e.g. status flipped to 'running' after the
-// migration ran).
-func (q *Queries) FailInactiveRunningTasks(ctx context.Context, maxInactivitySecs string) ([]AgentTaskQueue, error) {
-	rows, err := q.db.Query(ctx, failInactiveRunningTasks, maxInactivitySecs)
+// Fails running tasks whose last activity exceeds the per-task
+// max_inactivity_secs cap, falling back to the server default when
+// the column is NULL. P0-2 review fix: the original draft used a
+// single scalar `@max_inactivity_secs` parameter and the caller
+// passed only the server default, so the entire task→agent→
+// workspace→server-default chain was dead code at the sweeper layer.
+// `COALESCE(max_inactivity_secs, 1200)` makes the cap per-row, and the
+// activity signal is computed against THAT cap rather than a global
+// scalar.
+//
+// The hardcoded server default (1200s) inside the COALESCE is a
+// belt-and-braces fallback in case the Go caller forgets to pass
+// anything; the daemon-side soft-kill watcher also receives
+// `task.MaxInactivitySecs` and uses the per-task value directly. The
+// two layers MUST stay aligned: changing the default here without
+// changing `inactivity.DefaultDefaultMaxInactivitySecs` in Go would
+// create a window where the server's hard fail trips later than the
+// daemon's soft kill (or vice versa).
+//
+// No parameters: the cap is per-row. Legacy callers that used to
+// pass `@max_inactivity_secs` as a scalar now have nothing to pass.
+func (q *Queries) FailInactiveRunningTasks(ctx context.Context) ([]AgentTaskQueue, error) {
+	rows, err := q.db.Query(ctx, failInactiveRunningTasks)
 	if err != nil {
 		return nil, err
 	}
@@ -1573,7 +1588,7 @@ WHERE agent_id = $1 AND issue_id = $2
     status = 'completed'
     OR (
       status = 'failed'
-      AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request', 'codex_semantic_inactivity')
+      AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request', 'codex_semantic_inactivity', 'inactivity_timeout')
       AND NOT (COALESCE(error, '') ILIKE '%400%' AND COALESCE(error, '') ILIKE '%invalid_request_error%')
     )
   )
@@ -1785,11 +1800,20 @@ func (q *Queries) GetWorkspaceAgentRunCounts(ctx context.Context, workspaceID pg
 
 const hasActiveTaskForIssue = `-- name: HasActiveTaskForIssue :one
 SELECT count(*) > 0 AS has_active FROM agent_task_queue
-WHERE issue_id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+WHERE issue_id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'pending_context')
 `
 
 // Returns true if there is any queued, dispatched, waiting_local_directory,
-// or running task for the issue.
+// running, or pending_context task for the issue. P1-10 review fix:
+// pending_context is included so HandleFailedTasks's fallback path
+// (which uses this query to decide whether to flip the issue back
+// to 'todo' on a failed task) leaves a 'blocked' issue alone when
+// a parked task is still waiting for context. Without this, the
+// fallback would silently re-shuffle the issue out of 'blocked' on
+// the next failure — exactly the MUL-4059 'agent does nothing for
+// 20 minutes' symptom. pending_context still doesn't make the agent
+// 'working' (see RefreshAgentStatusFromTasks below) so the agent-
+// presence indicator stays correct.
 func (q *Queries) HasActiveTaskForIssue(ctx context.Context, issueID pgtype.UUID) (bool, error) {
 	row := q.db.QueryRow(ctx, hasActiveTaskForIssue, issueID)
 	var has_active bool
@@ -2929,6 +2953,15 @@ WHERE a.id = $1
 RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level
 `
 
+// P1-10 review fix: pending_context is intentionally NOT in the
+// 'working' set. A parked task means the agent is NOT doing work
+// (it cannot even start). Including it here would incorrectly flip
+// the agent's UI status to 'working' while the task is parked —
+// a confusing state for the user. The presence indicator uses a
+// separate query (ListWorkspaceAgentTaskSnapshot) that DOES include
+// pending_context, so the two data sources are aligned: a parked
+// task is visible in the snapshot but does not mark the agent
+// 'working' here. See MUL-4059 design 1.4 for the split.
 func (q *Queries) RefreshAgentStatusFromTasks(ctx context.Context, id pgtype.UUID) (Agent, error) {
 	row := q.db.QueryRow(ctx, refreshAgentStatusFromTasks, id)
 	var i Agent

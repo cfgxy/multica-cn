@@ -2,10 +2,20 @@
 -- columns, then restores the original CHECK constraint. The down path
 -- cannot know which context_guard / last_activity_at rows were still
 -- semantically valid, so this is destructive; do not run on a system
--- where the new sweeper may still be active (it would simply stop
--- finding anything to sweep, but pre-existing pending_context rows
--- would be stranded with an unknown status once the CHECK constraint
--- snaps back).
+-- where the new sweeper may still be active.
+--
+-- P2-9 review fix: any `pending_context` rows that survive in the
+-- table would be stranded with an unknown status once the CHECK
+-- constraint snaps back (the new constraint only allows
+-- queued/dispatched/running/waiting_local_directory/completed/failed/cancelled).
+-- Mark them cancelled FIRST so the down path is fully reversible.
+-- The sweeper is disabled the moment the columns are dropped (no
+-- `pending_context` partial index to scan), so this UPDATE is
+-- race-free.
+UPDATE agent_task_queue
+SET status = 'cancelled', completed_at = now()
+WHERE status = 'pending_context';
+
 DROP INDEX IF EXISTS idx_agent_task_queue_pending_context;
 DROP INDEX IF EXISTS idx_agent_task_queue_running_activity;
 

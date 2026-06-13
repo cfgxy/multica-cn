@@ -195,10 +195,10 @@ INSERT INTO agent_task_queue (
 SELECT
     p.agent_id, p.runtime_id, p.issue_id, p.chat_session_id, p.autopilot_run_id,
     'queued', p.priority, p.trigger_comment_id, p.trigger_summary, p.context,
-    CASE WHEN p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity' THEN NULL ELSE p.session_id END,
-    CASE WHEN p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity' THEN NULL ELSE p.work_dir END,
+    CASE WHEN p.failure_reason IN ('codex_semantic_inactivity', 'inactivity_timeout') THEN NULL ELSE p.session_id END,
+    CASE WHEN p.failure_reason IN ('codex_semantic_inactivity', 'inactivity_timeout') THEN NULL ELSE p.work_dir END,
     p.attempt + 1, p.max_attempts, p.id,
-    p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity',
+    p.failure_reason IN ('codex_semantic_inactivity', 'inactivity_timeout'),
     p.is_leader_task,
     p.max_inactivity_secs
 FROM agent_task_queue p
@@ -410,7 +410,7 @@ WHERE agent_id = $1 AND issue_id = $2
     status = 'completed'
     OR (
       status = 'failed'
-      AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request', 'codex_semantic_inactivity')
+      AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request', 'codex_semantic_inactivity', 'inactivity_timeout')
       AND NOT (COALESCE(error, '') ILIKE '%400%' AND COALESCE(error, '') ILIKE '%invalid_request_error%')
     )
   )
@@ -546,9 +546,18 @@ WHERE agent_id = $1 AND status IN ('dispatched', 'running', 'waiting_local_direc
 
 -- name: HasActiveTaskForIssue :one
 -- Returns true if there is any queued, dispatched, waiting_local_directory,
--- or running task for the issue.
+-- running, or pending_context task for the issue. P1-10 review fix:
+-- pending_context is included so HandleFailedTasks's fallback path
+-- (which uses this query to decide whether to flip the issue back
+-- to 'todo' on a failed task) leaves a 'blocked' issue alone when
+-- a parked task is still waiting for context. Without this, the
+-- fallback would silently re-shuffle the issue out of 'blocked' on
+-- the next failure — exactly the MUL-4059 'agent does nothing for
+-- 20 minutes' symptom. pending_context still doesn't make the agent
+-- 'working' (see RefreshAgentStatusFromTasks below) so the agent-
+-- presence indicator stays correct.
 SELECT count(*) > 0 AS has_active FROM agent_task_queue
-WHERE issue_id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory');
+WHERE issue_id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'pending_context');
 
 -- name: HasPendingTaskForIssue :one
 -- Returns true if there is a queued or dispatched (but not yet running) task for the issue.
@@ -693,6 +702,15 @@ WHERE id = $1
 RETURNING *;
 
 -- name: RefreshAgentStatusFromTasks :one
+-- P1-10 review fix: pending_context is intentionally NOT in the
+-- 'working' set. A parked task means the agent is NOT doing work
+-- (it cannot even start). Including it here would incorrectly flip
+-- the agent's UI status to 'working' while the task is parked —
+-- a confusing state for the user. The presence indicator uses a
+-- separate query (ListWorkspaceAgentTaskSnapshot) that DOES include
+-- pending_context, so the two data sources are aligned: a parked
+-- task is visible in the snapshot but does not mark the agent
+-- 'working' here. See MUL-4059 design 1.4 for the split.
 UPDATE agent AS a
 SET status = CASE WHEN EXISTS (
     SELECT 1 FROM agent_task_queue q
@@ -806,24 +824,39 @@ SET last_activity_at = now()
 WHERE id = $1;
 
 -- name: FailInactiveRunningTasks :many
--- Fails running tasks whose last activity exceeds max_inactivity_secs.
--- Coalesces the per-task check into one query so the sweep tick stays
--- O(rows) instead of N. COALESCE on started_at ensures the cold-start
--- backfill (last_activity_at seeded from started_at) is honoured: a
--- freshly-started task with no daemon traffic yet has last_activity_at
--- = started_at and is NOT killed by the sweep. The "OR NULL" branch
--- is defence-in-depth for the rare window where the migration backfill
--- didn't catch a row (e.g. status flipped to 'running' after the
--- migration ran).
+-- Fails running tasks whose last activity exceeds the per-task
+-- max_inactivity_secs cap, falling back to the server default when
+-- the column is NULL. P0-2 review fix: the original draft used a
+-- single scalar `@max_inactivity_secs` parameter and the caller
+-- passed only the server default, so the entire task→agent→
+-- workspace→server-default chain was dead code at the sweeper layer.
+-- `COALESCE(max_inactivity_secs, 1200)` makes the cap per-row, and the
+-- activity signal is computed against THAT cap rather than a global
+-- scalar.
+--
+-- The hardcoded server default (1200s) inside the COALESCE is a
+-- belt-and-braces fallback in case the Go caller forgets to pass
+-- anything; the daemon-side soft-kill watcher also receives
+-- `task.MaxInactivitySecs` and uses the per-task value directly. The
+-- two layers MUST stay aligned: changing the default here without
+-- changing `inactivity.DefaultDefaultMaxInactivitySecs` in Go would
+-- create a window where the server's hard fail trips later than the
+-- daemon's soft kill (or vice versa).
+--
+-- No parameters: the cap is per-row. Legacy callers that used to
+-- pass `@max_inactivity_secs` as a scalar now have nothing to pass.
 UPDATE agent_task_queue
 SET status = 'failed',
     completed_at = now(),
-    error = 'no task activity for ' || @max_inactivity_secs::text || 's',
+    error = 'no task activity for ' || COALESCE(max_inactivity_secs, 1200)::text || 's',
     failure_reason = 'inactivity_timeout'
 WHERE status = 'running'
   AND (
-    (last_activity_at IS NOT NULL AND last_activity_at < now() - make_interval(secs => @max_inactivity_secs::double precision))
-    OR (last_activity_at IS NULL AND started_at IS NOT NULL AND started_at < now() - make_interval(secs => @max_inactivity_secs::double precision))
-    OR (last_activity_at IS NULL AND started_at IS NULL AND created_at < now() - make_interval(secs => @max_inactivity_secs::double precision))
+    (last_activity_at IS NOT NULL
+      AND last_activity_at < now() - make_interval(secs => COALESCE(max_inactivity_secs, 1200)::double precision))
+    OR (last_activity_at IS NULL AND started_at IS NOT NULL
+      AND started_at < now() - make_interval(secs => COALESCE(max_inactivity_secs, 1200)::double precision))
+    OR (last_activity_at IS NULL AND started_at IS NULL
+      AND created_at < now() - make_interval(secs => COALESCE(max_inactivity_secs, 1200)::double precision))
   )
 RETURNING *;

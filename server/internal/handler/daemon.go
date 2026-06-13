@@ -1469,6 +1469,28 @@ func (h *Handler) ClaimTaskByRuntime(w http.ResponseWriter, r *http.Request) {
 						}
 					}
 				}
+				// P2-8 review fix: also fill ProjectResources for
+				// the autopilot's project so the daemon's secondary
+				// context-guard check (daemonTaskHasUsableContext)
+				// sees the (B) local_directory path. Without this,
+				// an autopilot set up against a project that only
+				// has a local_directory resource (no workspace
+				// repos) gets the (B) rule skipped on the daemon
+				// side and ends up killed with failure_reason =
+				// 'no_context' despite the server-side guard having
+				// already let it through. The query is the same
+				// one the issue path uses; the per-task
+				// overhead is one SELECT against an indexed PK.
+				if ap.ProjectID.Valid {
+					for _, pr := range h.listProjectResourcesForProject(r.Context(), ap.ProjectID) {
+						resp.ProjectResources = append(resp.ProjectResources, ProjectResourceData{
+							ID:           uuidToString(pr.ID),
+							ResourceType: pr.ResourceType,
+							ResourceRef:  json.RawMessage(pr.ResourceRef),
+							Label:        pr.Label.String,
+						})
+					}
+				}
 			}
 		}
 	}

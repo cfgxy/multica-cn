@@ -27,19 +27,15 @@
 --      chain (NULL means "use server default"). The partial index keeps
 --      the sweeper scan cheap as the row count grows.
 --
---   5. Backfill: existing running rows have no last_activity_at yet.
---      We seed it from started_at (or created_at) so historical rows
---      are not instantly killed by the inactivity sweeper right after
---      this migration runs. A running task that has been alive for
---      longer than 2.5h (runningTimeoutSeconds) is already in the
---      cold-start window the existing dispatchTimeout / runningTimeout
---      sweeper handles — the new inactivity sweeper treats started_at
---      as activity so it never duplicates that decision.
-UPDATE agent_task_queue
-SET last_activity_at = COALESCE(started_at, created_at)
-WHERE status IN ('running', 'dispatched', 'waiting_local_directory')
-  AND last_activity_at IS NULL;
-
+-- ORDER MATTERS (P0 review fix): the backfill UPDATE on
+-- `last_activity_at` MUST run after the ADD COLUMN. The original draft
+-- placed it at the top of the file and the column did not exist yet,
+-- which (a) aborts transactional migration runners and (b) silently
+-- no-ops the backfill on non-transactional runners, leaving every
+-- running task with `last_activity_at IS NULL` — the inactivity sweeper
+-- then trips the cold-start branch and kills them on the first tick.
+-- The block now lives at the end of the script, gated on
+-- `last_activity_at IS NULL` so re-runs are idempotent.
 ALTER TABLE agent_task_queue
     DROP CONSTRAINT agent_task_queue_status_check;
 
@@ -75,3 +71,21 @@ CREATE INDEX idx_agent_task_queue_running_activity
 CREATE INDEX idx_agent_task_queue_pending_context
     ON agent_task_queue (context_guard_checked_at)
     WHERE status = 'pending_context';
+
+-- Backfill (P0-1 review fix). Runs LAST, after the ADD COLUMNs, so the
+-- column actually exists at UPDATE time. The IS NULL guard makes the
+-- statement idempotent — re-runs after a partial success (e.g. a
+-- migration runner that interrupted after the column was added but
+-- before this backfill committed) leave rows that already have a
+-- timestamp alone.
+--
+-- A running task that has been alive for longer than 2.5h
+-- (runningTimeoutSeconds) is already in the cold-start window the
+-- existing dispatchTimeout / runningTimeout sweeper handles; the
+-- inactivity sweeper treats started_at as activity so it never
+-- duplicates that decision. See P0-1 in the issue thread for the
+-- upgrade-incident this guard prevents.
+UPDATE agent_task_queue
+SET last_activity_at = COALESCE(started_at, created_at)
+WHERE status IN ('running', 'dispatched', 'waiting_local_directory')
+  AND last_activity_at IS NULL;

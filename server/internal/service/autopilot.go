@@ -327,12 +327,21 @@ func (s *AutopilotService) dispatchRunOnly(ctx context.Context, ap db.Autopilot,
 	// enqueueing a task the daemon would immediately fail. The
 	// failure observer logs the reason so the operator can see what
 	// to add.
+	//
+	// P0-4 review fix: the previous version consulted
+	// `reason.Policy`, but `Reason.Policy` is never assigned by
+	// `HasUsableContext` (the policy is a separate return value).
+	// Reading it always yielded "" so `AGENT_CONTEXT_GUARD_DEFAULT_POLICY=off`
+	// did not actually disable the guard for autopilot. Aligned
+	// with the issue / mention / quick_create / chat enqueue paths:
+	// use the first return value (the policy) directly.
 	if s.TaskSvc != nil {
-		_, reason, _ := s.TaskSvc.guardDecision(ctx, ap.WorkspaceID, pgtype.UUID{})
-		if reason.Policy != contextguard.PolicyOff && !reason.OK {
+		policy, reason, _ := s.TaskSvc.guardDecision(ctx, ap.WorkspaceID, pgtype.UUID{})
+		if policy != contextguard.PolicyOff && !reason.OK {
 			slog.Warn("autopilot dispatch: no-context guard rejecting run_only task",
 				"autopilot_id", util.UUIDToString(ap.ID),
 				"agent_id", util.UUIDToString(agent.ID),
+				"policy", string(policy),
 				"hint", reason.Hint)
 			return &errDispatchSkipped{reason: formatAdmissionReason(ap, "no workspace context for agent")}
 		}
