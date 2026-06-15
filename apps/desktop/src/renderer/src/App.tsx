@@ -38,9 +38,10 @@ const HTML_LANG: Record<SupportedLocale, string> = {
  * Cmd/Ctrl+W: close the active tab. When the last real tab is closed
  * (or no tabs/workspace exist — e.g. login page), close the window.
  *
- * Mounted in AppContent (not DesktopShell) so every app state — login,
- * loading, onboarding — has a working Cmd+W handler. Without this,
- * non-DesktopShell states would swallow the shortcut and do nothing.
+ * Mounted at the App root so every renderer state — including login,
+ * loading, onboarding, and runtime-config errors — has a working Cmd+W
+ * handler. Without this, states outside the tab shell would swallow the
+ * shortcut and do nothing.
  */
 function useCmdWCloseTab() {
   useEffect(() => {
@@ -69,9 +70,6 @@ function AppContent() {
   const isLoading = useAuthStore((s) => s.isLoading);
   const qc = useQueryClient();
 
-  // Cmd/Ctrl+W handler — lives here (not DesktopShell) so login page,
-  // loading screen, and onboarding all get a working close shortcut.
-  useCmdWCloseTab();
   // Deep-link login runs loginWithToken → syncToken → listWorkspaces →
   // setQueryData sequentially. loginWithToken sets user+isLoading=false
   // as soon as getMe resolves, which would cause DesktopShell to mount
@@ -332,6 +330,8 @@ export default function App() {
   const { version, os } = window.desktopAPI.appInfo;
   const systemLocale = window.desktopAPI.systemLocale;
   const runtimeConfigResult = window.desktopAPI.runtimeConfig;
+  useCmdWCloseTab();
+
   // Stable identity reference so downstream effects (WS reconnect) don't
   // tear down on every parent render.
   const identity = useMemo(
