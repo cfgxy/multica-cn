@@ -86,7 +86,6 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@multica/ui/components/ui/tooltip";
-import { cn } from "@multica/ui/lib/utils";
 import type {
   MemberWithUser,
   Project,
@@ -905,9 +904,11 @@ export function ProjectsPage() {
                 </DropdownMenuContent>
               </DropdownMenu>
 
-              {/* Display (sort + columns) — table view only */}
-              {isCompact && (
-                <Popover>
+              {/* Display (sort + columns). Always present — view mode is a
+                  pure presentation choice and must not reshape the toolbar.
+                  Sort applies to both views; the columns section is shown
+                  only in the table view (cards have no columns). */}
+              <Popover>
                   <Tooltip>
                     <PopoverTrigger
                       render={
@@ -959,62 +960,48 @@ export function ProjectsPage() {
                         </Button>
                       </div>
                     </div>
-                    <div className="px-3 py-2.5">
-                      <span className="text-xs font-medium text-muted-foreground">{t(($) => $.toolbar.section_columns)}</span>
-                      <div className="mt-2 space-y-2">
-                        {COLUMN_KEYS.map((key) => (
-                          <label key={key} className="flex cursor-pointer items-center justify-between">
-                            <span className="text-sm">{columnLabel(key)}</span>
-                            <Switch size="sm" checked={!hiddenColumns.includes(key)} onCheckedChange={() => toggleColumn(key)} />
-                          </label>
-                        ))}
+                    {isCompact && (
+                      <div className="px-3 py-2.5">
+                        <span className="text-xs font-medium text-muted-foreground">{t(($) => $.toolbar.section_columns)}</span>
+                        <div className="mt-2 space-y-2">
+                          {COLUMN_KEYS.map((key) => (
+                            <label key={key} className="flex cursor-pointer items-center justify-between">
+                              <span className="text-sm">{columnLabel(key)}</span>
+                              <Switch size="sm" checked={!hiddenColumns.includes(key)} onCheckedChange={() => toggleColumn(key)} />
+                            </label>
+                          ))}
+                        </div>
                       </div>
-                    </div>
+                    )}
                   </PopoverContent>
                 </Popover>
-              )}
 
-              {/* View toggle — table / cards */}
-              <div className="flex shrink-0 items-center gap-1">
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className={cn(
-                          "h-8 w-8 gap-1 px-0",
-                          isCompact ? "bg-accent text-accent-foreground" : "text-muted-foreground",
-                        )}
-                        aria-pressed={isCompact}
-                        onClick={() => setViewMode("compact")}
-                      >
+              {/* View toggle — a single button that flips table ⇄ cards.
+                  Pure presentation; coupled to nothing else. */}
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="h-8 w-8 gap-1 px-0 text-muted-foreground md:w-auto md:px-2.5"
+                      onClick={() => setViewMode(isCompact ? "comfortable" : "compact")}
+                    >
+                      {isCompact ? (
                         <Rows3 className="size-3.5" />
-                      </Button>
-                    }
-                  />
-                  <TooltipContent side="bottom">{t(($) => $.page.view_table)}</TooltipContent>
-                </Tooltip>
-                <Tooltip>
-                  <TooltipTrigger
-                    render={
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className={cn(
-                          "h-8 w-8 gap-1 px-0",
-                          !isCompact ? "bg-accent text-accent-foreground" : "text-muted-foreground",
-                        )}
-                        aria-pressed={!isCompact}
-                        onClick={() => setViewMode("comfortable")}
-                      >
+                      ) : (
                         <LayoutGrid className="size-3.5" />
-                      </Button>
-                    }
-                  />
-                  <TooltipContent side="bottom">{t(($) => $.page.view_cards)}</TooltipContent>
-                </Tooltip>
-              </div>
+                      )}
+                      <span className="hidden md:inline">
+                        {isCompact ? t(($) => $.page.view_table) : t(($) => $.page.view_cards)}
+                      </span>
+                    </Button>
+                  }
+                />
+                <TooltipContent side="bottom">
+                  {isCompact ? t(($) => $.page.view_cards) : t(($) => $.page.view_table)}
+                </TooltipContent>
+              </Tooltip>
             </div>
           </div>
 
