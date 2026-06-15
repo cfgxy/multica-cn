@@ -14,7 +14,10 @@
     "pin": "Pin to sidebar",
     "unpin": "Unpin",
     "delete": "Delete",
-    "no_matches": "No projects match"
+    "no_matches": "No projects match",
+    "selected_one": "{{count}} selected",
+    "selected_other": "{{count}} selected",
+    "clear_selection": "Clear selection"
   },
   "table": {
     "name": "Name",

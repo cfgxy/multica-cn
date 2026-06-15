@@ -14,7 +14,10 @@
     "pin": "钉到侧边栏",
     "unpin": "取消钉选",
     "delete": "删除",
-    "no_matches": "没有匹配的项目"
+    "no_matches": "没有匹配的项目",
+    "selected_one": "已选 {{count}} 项",
+    "selected_other": "已选 {{count}} 项",
+    "clear_selection": "清除选择"
   },
   "table": {
     "name": "名称",

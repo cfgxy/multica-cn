@@ -24,7 +24,8 @@
     "description": "“{{name}}” 将被归档，该小队当前承接的 issue 会转交给小队负责人。此操作无法撤销，如需恢复路由请新建小队。",
     "cancel": "取消",
     "confirm": "归档",
-    "archiving": "归档中…"
+    "archiving": "归档中…",
+    "success": "已归档小队"
   },
   "name_editor": {
     "cancel": "取消"

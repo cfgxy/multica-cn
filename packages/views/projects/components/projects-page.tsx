@@ -44,6 +44,7 @@ import { ActorAvatar } from "../../common/actor-avatar";
 import { FILTER_ITEM_CLASS, HoverCheck } from "../../common/hover-check";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Button } from "@multica/ui/components/ui/button";
+import { Checkbox } from "@multica/ui/components/ui/checkbox";
 import { Input } from "@multica/ui/components/ui/input";
 import {
   Dialog,
@@ -143,18 +144,19 @@ const COLUMN_WIDTHS: Record<ProjectColumnKey, number> = {
   created: 104,
 };
 
-// Fixed tracks: edges 12+12, name min 200, status 116, kebab 28 = 368, plus
-// the 9 gap-x-3 gaps between the wide template's 10 tracks.
-const FIXED_TRACKS_WIDTH = 368 + 9 * 12;
+// Fixed tracks: edges 12+12, checkbox 16, name min 200, status 116,
+// kebab 28 = 384, plus the 10 gap-x-3 gaps between the wide template's
+// 11 tracks.
+const FIXED_TRACKS_WIDTH = 384 + 10 * 12;
 
-// Render/track order: name, status (core, fixed 116px), priority, progress,
-// lead, issues, created, kebab. MUST be a literal string — Tailwind can't
-// see interpolated `grid-cols-[...]` arbitrary values, so an interpolated
-// width silently drops the whole template and the grid collapses to one
-// column.
+// Render/track order: checkbox, name, status (core, fixed 116px), priority,
+// progress, lead, issues, created, kebab. MUST be a literal string —
+// Tailwind can't see interpolated `grid-cols-[...]` arbitrary values, so an
+// interpolated width silently drops the whole template and the grid
+// collapses to one column.
 const GRID_COLS =
-  "grid-cols-[0.75rem_minmax(120px,1fr)_116px_1.75rem_0.75rem] " +
-  "@2xl:grid-cols-[0.75rem_minmax(200px,1fr)_116px_var(--pjc-priority)_var(--pjc-progress)_var(--pjc-lead)_var(--pjc-issues)_var(--pjc-created)_1.75rem_0.75rem]";
+  "grid-cols-[0.75rem_1rem_minmax(120px,1fr)_116px_1.75rem_0.75rem] " +
+  "@2xl:grid-cols-[0.75rem_1rem_minmax(200px,1fr)_116px_var(--pjc-priority)_var(--pjc-progress)_var(--pjc-lead)_var(--pjc-issues)_var(--pjc-created)_1.75rem_0.75rem]";
 
 function columnTrackVars(
   isVisible: (key: ProjectColumnKey) => boolean,
@@ -307,16 +309,43 @@ function ProjectRowActions({
   );
 }
 
+function CheckboxCell({
+  checked,
+  onToggle,
+}: {
+  checked: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <ListGridCell className="justify-center px-0">
+      <button
+        type="button"
+        aria-pressed={checked}
+        onClick={onToggle}
+        className={`-m-1.5 flex items-center p-1.5 ${
+          checked ? "" : "opacity-0 transition-opacity group-hover/row:opacity-100"
+        }`}
+      >
+        <Checkbox checked={checked} tabIndex={-1} className="pointer-events-none" />
+      </button>
+    </ListGridCell>
+  );
+}
+
 function ProjectTableRow({
   project,
   pinned,
   canDelete,
   isColVisible,
+  selected,
+  onToggleSelect,
 }: {
   project: Project;
   pinned: boolean;
   canDelete: boolean;
   isColVisible: (key: ProjectColumnKey) => boolean;
+  selected: boolean;
+  onToggleSelect: () => void;
 }) {
   const wsPaths = useWorkspacePaths();
   const formatRelativeDate = useFormatRelativeDate();
@@ -327,7 +356,8 @@ function ProjectTableRow({
   );
 
   return (
-    <ListGridRow className="h-11">
+    <ListGridRow className={`h-11 ${selected ? "bg-accent/30" : ""}`}>
+      <CheckboxCell checked={selected} onToggle={onToggleSelect} />
       <ListGridCell className="gap-2">
         <ProjectIcon project={project} size="sm" />
         <AppLink
@@ -414,17 +444,41 @@ function ProjectTableHeader({
   sortDirection,
   onSort,
   isColVisible,
+  allSelected,
+  someSelected,
+  onToggleAll,
 }: {
   sortField: ProjectSortField;
   sortDirection: ListGridSortDirection;
   onSort: (field: ProjectSortField) => void;
   isColVisible: (key: ProjectColumnKey) => boolean;
+  allSelected: boolean;
+  someSelected: boolean;
+  onToggleAll: () => void;
 }) {
   const { t } = useT("projects");
   const sorted = (field: ProjectSortField) =>
     sortField === field ? sortDirection : false;
+  const anySelected = allSelected || someSelected;
   return (
     <ListGridHeader>
+      <div className="flex items-center justify-center">
+        <button
+          type="button"
+          aria-pressed={allSelected}
+          onClick={onToggleAll}
+          className={`-m-1.5 flex items-center p-1.5 ${
+            anySelected ? "" : "opacity-0 transition-opacity group-hover/header:opacity-100"
+          }`}
+        >
+          <Checkbox
+            checked={allSelected}
+            indeterminate={someSelected && !allSelected}
+            tabIndex={-1}
+            className="pointer-events-none"
+          />
+        </button>
+      </div>
       <ListGridHeaderCell sorted={sorted("name")} onSort={() => onSort("name")}>
         {t(($) => $.table.name)}
       </ListGridHeaderCell>
@@ -605,6 +659,102 @@ function countActiveFilters(f: ProjectListFilters): number {
   return c;
 }
 
+// Batch toolbar — page-anchored (not viewport). Pin all selected (any
+// member) + Delete (workspace admin). Mirrors the other lists.
+function ProjectBatchToolbar({
+  rows,
+  pinnedIds,
+  canDelete,
+  onClear,
+}: {
+  rows: Project[];
+  pinnedIds: Set<string>;
+  canDelete: boolean;
+  onClear: () => void;
+}) {
+  const { t } = useT("projects");
+  const createPin = useCreatePin();
+  const deleteProject = useDeleteProject();
+  const [confirmDelete, setConfirmDelete] = useState(false);
+
+  if (rows.length === 0) return null;
+  const anyUnpinned = rows.some((p) => !pinnedIds.has(p.id));
+
+  return (
+    <>
+      <div className="absolute bottom-6 left-1/2 z-50 flex -translate-x-1/2 items-center gap-1 rounded-lg border bg-background px-2 py-1.5 shadow-lg">
+        <div className="mr-1 flex items-center gap-1.5 border-r pl-1 pr-2">
+          <span className="text-sm font-medium">
+            {t(($) => $.page.selected, { count: rows.length })}
+          </span>
+          <button
+            type="button"
+            aria-label={t(($) => $.page.clear_selection)}
+            onClick={onClear}
+            className="rounded p-0.5 transition-colors hover:bg-accent"
+          >
+            <X className="size-3.5 text-muted-foreground" />
+          </button>
+        </div>
+        {anyUnpinned && (
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => {
+              for (const p of rows) {
+                if (!pinnedIds.has(p.id)) {
+                  createPin.mutate({ item_type: "project", item_id: p.id });
+                }
+              }
+              onClear();
+            }}
+          >
+            <Pin className="mr-1 size-3.5" />
+            {t(($) => $.page.pin)}
+          </Button>
+        )}
+        {canDelete && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="text-destructive hover:text-destructive"
+            onClick={() => setConfirmDelete(true)}
+          >
+            <Trash2 className="mr-1 size-3.5" />
+            {t(($) => $.page.delete)}
+          </Button>
+        )}
+      </div>
+
+      <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>{t(($) => $.delete_dialog.title)}</DialogTitle>
+            <DialogDescription>{t(($) => $.delete_dialog.description)}</DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button type="button" variant="outline" size="sm" onClick={() => setConfirmDelete(false)}>
+              {t(($) => $.delete_dialog.cancel)}
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              size="sm"
+              onClick={() => {
+                for (const p of rows) deleteProject.mutate(p.id);
+                setConfirmDelete(false);
+                onClear();
+              }}
+            >
+              {t(($) => $.delete_dialog.confirm)}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Page
 // ---------------------------------------------------------------------------
@@ -651,6 +801,14 @@ export function ProjectsPage() {
   }, [pins]);
 
   const [search, setSearch] = useState("");
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set());
+  const toggleSelected = (id: string) =>
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
   const activeFilterCount = countActiveFilters(filters);
   const hasActiveFilters = activeFilterCount > 0;
@@ -709,6 +867,12 @@ export function ProjectsPage() {
     return sorted;
   }, [projects, search, filters, sortField, sortDirection]);
 
+  const selectedProjects = visible.filter((p) => selectedIds.has(p.id));
+  const allSelected = visible.length > 0 && selectedProjects.length === visible.length;
+  const someSelected = selectedProjects.length > 0 && !allSelected;
+  const handleToggleAll = () =>
+    setSelectedIds(allSelected ? new Set() : new Set(visible.map((p) => p.id)));
+
   const sortLabel = (f: ProjectSortField) =>
     f === "name"
       ? t(($) => $.table.name)
@@ -736,7 +900,8 @@ export function ProjectsPage() {
   );
 
   return (
-    <div className="flex flex-1 min-h-0 flex-col">
+    // relative: positioning anchor for the page-centered batch toolbar.
+    <div className="relative flex flex-1 min-h-0 flex-col">
       <PageHeader className="justify-between px-5">
         <div className="flex items-center gap-2">
           <FolderKanban className="h-4 w-4 text-muted-foreground" />
@@ -1027,6 +1192,9 @@ export function ProjectsPage() {
                   sortDirection={sortDirection}
                   onSort={toggleSort}
                   isColVisible={isColVisible}
+                  allSelected={allSelected}
+                  someSelected={someSelected}
+                  onToggleAll={handleToggleAll}
                 />
                 {visible.map((project) => (
                   <ProjectTableRow
@@ -1035,6 +1203,8 @@ export function ProjectsPage() {
                     pinned={pinnedProjectIds.has(project.id)}
                     canDelete={isWorkspaceAdmin}
                     isColVisible={isColVisible}
+                    selected={selectedIds.has(project.id)}
+                    onToggleSelect={() => toggleSelected(project.id)}
                   />
                 ))}
               </ListGrid>
@@ -1056,6 +1226,13 @@ export function ProjectsPage() {
               </div>
             </div>
           )}
+
+          <ProjectBatchToolbar
+            rows={selectedProjects}
+            pinnedIds={pinnedProjectIds}
+            canDelete={isWorkspaceAdmin}
+            onClear={() => setSelectedIds(new Set())}
+          />
         </>
       )}
     </div>

@@ -14,7 +14,10 @@
     "pin": "サイドバーにピン留め",
     "unpin": "ピン留め解除",
     "delete": "削除",
-    "no_matches": "該当するプロジェクトはありません"
+    "no_matches": "該当するプロジェクトはありません",
+    "selected_one": "{{count}} 件選択中",
+    "selected_other": "{{count}} 件選択中",
+    "clear_selection": "選択を解除"
   },
   "table": {
     "name": "名前",

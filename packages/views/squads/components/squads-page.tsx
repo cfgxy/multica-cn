@@ -56,6 +56,7 @@ import {
   ListGridHeader,
   ListGridHeaderCell,
   ListGridRow,
+  LIST_GRID_BOTTOM_CLEARANCE,
   type ListGridSortDirection,
 } from "@multica/ui/components/ui/list-grid";
 import {
@@ -254,7 +255,7 @@ function ArchiveSquadDialog({
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: workspaceKeys.squads(wsId) });
       onOpenChange(false);
-      toast.success(t(($) => $.archive_dialog.title));
+      toast.success(t(($) => $.archive_dialog.success));
     },
     onError: (err) =>
       toast.error(err instanceof Error ? err.message : String(err)),
@@ -744,7 +745,10 @@ export function SquadsPage() {
           <div className="min-h-0 flex-1 overflow-auto @container">
             <ListGrid
               className={`${GRID_COLS} @2xl:min-w-[var(--sqc-minw)]`}
-              style={columnTrackVars(isColVisible, isWorkspaceAdmin)}
+              style={{
+                ...columnTrackVars(isColVisible, isWorkspaceAdmin),
+                paddingBottom: LIST_GRID_BOTTOM_CLEARANCE,
+              }}
             >
               <SquadListHeader
                 sortField={sortField}
