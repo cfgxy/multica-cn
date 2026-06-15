@@ -357,16 +357,45 @@ func (h *Handler) DeleteRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Guard: refuse to delete while active agents depend on this profile's
-	// runtimes, mirroring the runtime-delete guard.
+	// Enumerate the runtime instance rows registered against this profile.
+	// The profile-delete cascade must run the SAME teardown the runtime-delete
+	// path uses for each one: agent.runtime_id is ON DELETE RESTRICT, so an
+	// archived agent still pointing at one of these rows would turn a bare
+	// delete into a 500. We refuse active agents (409) and clean archived
+	// agents / their archived squad+autopilot references before deleting.
+	runtimeIDs, err := h.Queries.ListAgentRuntimeIDsByProfile(r.Context(), profileUUID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to enumerate profile runtimes")
+		return
+	}
+
+	// Guard 1: refuse while any active (non-archived) agent is bound to one of
+	// the profile's runtimes. Keep this a 409 — deleting would orphan live
+	// agents.
 	agentCount, err := h.Queries.CountAgentsByProfile(r.Context(), profileUUID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to check profile usage")
 		return
 	}
 	if agentCount > 0 {
-		writeError(w, http.StatusConflict, "cannot delete runtime profile: agents are still bound to its runtimes")
+		writeError(w, http.StatusConflict, "cannot delete runtime profile: active agents are still bound to its runtimes")
 		return
+	}
+
+	// Guard 2: refuse (before any teardown) if any runtime still has an active
+	// squad whose leader is already archived on it — same rule the
+	// runtime-delete path enforces. Checked per runtime up front so we never
+	// half-tear-down and then 409.
+	for _, rid := range runtimeIDs {
+		activeSquadCount, err := h.Queries.CountActiveSquadsWithArchivedLeadersByRuntime(r.Context(), rid)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to check runtime squad dependencies")
+			return
+		}
+		if activeSquadCount > 0 {
+			writeError(w, http.StatusConflict, "cannot delete runtime profile: a runtime has active squads led by archived agents. Archive those squads or assign them a new leader first.")
+			return
+		}
 	}
 
 	tx, err := h.TxStarter.Begin(r.Context())
@@ -377,7 +406,34 @@ func (h *Handler) DeleteRuntimeProfile(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
 
-	// App-layer cascade: remove registered instances first, then the profile.
+	// App-layer cascade, per runtime, mirroring DeleteAgentRuntime: pause
+	// autopilots pointing at the archived agents, drop archived squads led by
+	// them, then hard-delete the archived agents so the RESTRICT FK on
+	// agent.runtime_id no longer blocks removing the runtime row.
+	for _, rid := range runtimeIDs {
+		archivedAgentIDs, err := qtx.ListArchivedAgentIDsByRuntime(r.Context(), rid)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to enumerate archived agents")
+			return
+		}
+		if len(archivedAgentIDs) > 0 {
+			if err := qtx.PauseAutopilotsByAgentAssignees(r.Context(), archivedAgentIDs); err != nil {
+				writeError(w, http.StatusInternalServerError, "failed to pause autopilots")
+				return
+			}
+		}
+		if err := qtx.DeleteSquadsByArchivedAgentsOnRuntime(r.Context(), rid); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to clean up squads referencing archived agents")
+			return
+		}
+		if err := qtx.DeleteArchivedAgentsByRuntime(r.Context(), rid); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to clean up archived agents")
+			return
+		}
+	}
+
+	// Now the runtime rows have no agent references; remove them, then the
+	// profile itself.
 	if _, err := qtx.DeleteAgentRuntimesByProfile(r.Context(), profileUUID); err != nil {
 		slog.Error("DeleteAgentRuntimesByProfile failed", "error", err, "profile_id", uuidToString(profileUUID))
 		writeError(w, http.StatusInternalServerError, "failed to clean up runtime instances")

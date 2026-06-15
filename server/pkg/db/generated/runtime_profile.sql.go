@@ -202,6 +202,36 @@ func (q *Queries) GetRuntimeProfileForWorkspace(ctx context.Context, arg GetRunt
 	return i, err
 }
 
+const listAgentRuntimeIDsByProfile = `-- name: ListAgentRuntimeIDsByProfile :many
+SELECT id FROM agent_runtime
+WHERE profile_id = $1
+`
+
+// Enumerates the runtime instance rows registered against a profile. The
+// profile-delete cascade walks these so it can run the same archived-agent /
+// archived-squad / autopilot teardown the runtime-delete path uses before
+// removing each runtime row — agent.runtime_id is ON DELETE RESTRICT, so a
+// bare delete would 500 whenever an archived agent still references the row.
+func (q *Queries) ListAgentRuntimeIDsByProfile(ctx context.Context, profileID pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listAgentRuntimeIDsByProfile, profileID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listEnabledRuntimeProfilesForWorkspace = `-- name: ListEnabledRuntimeProfilesForWorkspace :many
 SELECT id, workspace_id, display_name, protocol_family, command_name, description, fixed_args, visibility, created_by, enabled, created_at, updated_at FROM runtime_profile
 WHERE workspace_id = $1 AND enabled = true

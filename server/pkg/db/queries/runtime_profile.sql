@@ -72,3 +72,12 @@ RETURNING id, workspace_id, owner_id, daemon_id, provider;
 SELECT count(*) FROM agent a
 JOIN agent_runtime ar ON ar.id = a.runtime_id
 WHERE ar.profile_id = $1 AND a.archived_at IS NULL;
+
+-- name: ListAgentRuntimeIDsByProfile :many
+-- Enumerates the runtime instance rows registered against a profile. The
+-- profile-delete cascade walks these so it can run the same archived-agent /
+-- archived-squad / autopilot teardown the runtime-delete path uses before
+-- removing each runtime row — agent.runtime_id is ON DELETE RESTRICT, so a
+-- bare delete would 500 whenever an archived agent still references the row.
+SELECT id FROM agent_runtime
+WHERE profile_id = $1;
