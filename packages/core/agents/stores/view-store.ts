@@ -171,7 +171,15 @@ export const useAgentsViewStore = create<AgentsViewState>()(
       // persisted is undefined, which would leak state across workspaces.
       merge: (persisted, current) => {
         if (!persisted) return { ...current, ...DEFAULTS };
-        return { ...current, ...(persisted as Partial<AgentsViewState>) };
+        const p = persisted as Partial<AgentsViewState>;
+        // Deep-merge filters so a payload persisted before a new filter
+        // dimension existed (e.g. `owners`) still gets that key's default
+        // instead of dropping it to `undefined` and crashing `.length`.
+        return {
+          ...current,
+          ...p,
+          filters: { ...EMPTY_AGENT_FILTERS, ...(p.filters ?? {}) },
+        };
       },
     },
   ),
