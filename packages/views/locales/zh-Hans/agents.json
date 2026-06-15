@@ -459,7 +459,8 @@
     "direction_asc": "升序",
     "direction_desc": "降序",
     "section_columns": "列",
-    "section_owner": "Owner"
+    "section_owner": "Owner",
+    "section_model": "模型"
   },
   "actions": {
     "selected_one": "已选 {{count}} 项",

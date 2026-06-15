@@ -43,11 +43,26 @@ export type SquadColumnKey = "members" | "creator" | "created";
  *  workspace-admin only), so labelling it Owner would mislead. */
 export const SQUAD_DEFAULT_HIDDEN_COLUMNS: SquadColumnKey[] = ["created"];
 
+/** Multi-select filters — the categorical columns (leader, creator). Empty
+ *  array per dimension = inactive. */
+export interface SquadListFilters {
+  /** Leader agent ids. */
+  leaders: string[];
+  /** Creator member user ids. */
+  creators: string[];
+}
+
+export const EMPTY_SQUAD_FILTERS: SquadListFilters = {
+  leaders: [],
+  creators: [],
+};
+
 export interface SquadsViewState {
   scope: SquadsScope;
   sortField: SquadSortField;
   sortDirection: SquadSortDirection;
   hiddenColumns: SquadColumnKey[];
+  filters: SquadListFilters;
   setScope: (scope: SquadsScope) => void;
   /** Header click: toggles direction on the active field, otherwise switches
    *  to the field with its default direction. */
@@ -56,6 +71,8 @@ export interface SquadsViewState {
   setSortField: (field: SquadSortField) => void;
   setSortDirection: (direction: SquadSortDirection) => void;
   toggleColumn: (key: SquadColumnKey) => void;
+  toggleFilter: (key: keyof SquadListFilters, value: string) => void;
+  clearFilters: () => void;
 }
 
 const DEFAULTS = {
@@ -63,6 +80,7 @@ const DEFAULTS = {
   sortField: "name" as SquadSortField,
   sortDirection: SQUAD_SORT_DEFAULT_DIRECTION.name,
   hiddenColumns: SQUAD_DEFAULT_HIDDEN_COLUMNS,
+  filters: EMPTY_SQUAD_FILTERS,
 };
 
 export const useSquadsViewStore = create<SquadsViewState>()(
@@ -97,6 +115,15 @@ export const useSquadsViewStore = create<SquadsViewState>()(
             ? state.hiddenColumns.filter((k) => k !== key)
             : [...state.hiddenColumns, key],
         })),
+      toggleFilter: (key, value) =>
+        set((state) => {
+          const list = state.filters[key] as string[];
+          const next = list.includes(value)
+            ? list.filter((v) => v !== value)
+            : [...list, value];
+          return { filters: { ...state.filters, [key]: next } };
+        }),
+      clearFilters: () => set({ filters: EMPTY_SQUAD_FILTERS }),
     }),
     {
       name: "multica_squads_view",
@@ -108,12 +135,19 @@ export const useSquadsViewStore = create<SquadsViewState>()(
         sortField: state.sortField,
         sortDirection: state.sortDirection,
         hiddenColumns: state.hiddenColumns,
+        filters: state.filters,
       }),
       // On rehydrate, if the new workspace has no persisted value, reset to
       // the defaults instead of leaking the previous workspace's state.
+      // Deep-merge filters so a pre-filters payload backfills defaults.
       merge: (persisted, current) => {
         if (!persisted) return { ...current, ...DEFAULTS };
-        return { ...current, ...(persisted as Partial<SquadsViewState>) };
+        const p = persisted as Partial<SquadsViewState>;
+        return {
+          ...current,
+          ...p,
+          filters: { ...EMPTY_SQUAD_FILTERS, ...(p.filters ?? {}) },
+        };
       },
     },
   ),

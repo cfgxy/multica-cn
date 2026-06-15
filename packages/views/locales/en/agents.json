@@ -471,7 +471,8 @@
     "direction_asc": "Ascending",
     "direction_desc": "Descending",
     "section_columns": "Columns",
-    "section_owner": "Owner"
+    "section_owner": "Owner",
+    "section_model": "Model"
   },
   "actions": {
     "selected_one": "{{count}} selected",

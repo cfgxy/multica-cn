@@ -471,7 +471,8 @@
     "direction_asc": "오름차순",
     "direction_desc": "내림차순",
     "section_columns": "열",
-    "section_owner": "소유자"
+    "section_owner": "소유자",
+    "section_model": "모델"
   },
   "actions": {
     "selected_one": "{{count}}개 선택됨",

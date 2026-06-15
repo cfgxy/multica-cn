@@ -947,6 +947,12 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
       ) {
         return false;
       }
+      if (
+        filters.models.length > 0 &&
+        !filters.models.includes(row.agent.model)
+      ) {
+        return false;
+      }
       return true;
     });
 

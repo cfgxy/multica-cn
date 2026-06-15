@@ -5,11 +5,13 @@ import {
   ArrowDown,
   ArrowUp,
   ChevronDown,
+  Filter,
   Loader2,
   MoreHorizontal,
   Plus,
   Trash2,
   Users,
+  X,
 } from "lucide-react";
 import { useQuery, useQueryClient, useMutation } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -29,6 +31,7 @@ import {
   SQUAD_SCOPES,
   SQUAD_DEFAULT_HIDDEN_COLUMNS,
   type SquadColumnKey,
+  type SquadListFilters,
   type SquadsScope,
   type SquadSortField,
 } from "@multica/core/squads/stores";
@@ -44,10 +47,14 @@ import {
 } from "@multica/ui/components/ui/dialog";
 import {
   DropdownMenu,
+  DropdownMenuCheckboxItem,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuRadioGroup,
   DropdownMenuRadioItem,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@multica/ui/components/ui/dropdown-menu";
 import {
@@ -73,6 +80,7 @@ import {
 } from "@multica/ui/components/ui/tooltip";
 import { ActorAvatar as ActorAvatarBase } from "@multica/ui/components/common/actor-avatar";
 import { ActorAvatar } from "../../common/actor-avatar";
+import { FILTER_ITEM_CLASS, HoverCheck } from "../../common/hover-check";
 import { AppLink } from "../../navigation";
 import { PageHeader } from "../../layout/page-header";
 import { useT } from "../../i18n";
@@ -405,10 +413,23 @@ function SquadListHeader({
 const COLUMN_KEYS: SquadColumnKey[] = ["members", "creator", "created"];
 const SORT_FIELDS: SquadSortField[] = ["name", "members", "created"];
 
+interface ActorOption {
+  id: string;
+  name: string;
+  count: number;
+}
+
 function SquadListToolbar({
   scope,
   onScopeChange,
   scopeCounts,
+  filters,
+  onToggleFilter,
+  onClearFilters,
+  leaderOptions,
+  creatorOptions,
+  visibleCount,
+  totalCount,
   sortField,
   sortDirection,
   onSortFieldChange,
@@ -419,6 +440,13 @@ function SquadListToolbar({
   scope: SquadsScope;
   onScopeChange: (scope: SquadsScope) => void;
   scopeCounts: Record<SquadsScope, number>;
+  filters: SquadListFilters;
+  onToggleFilter: (key: keyof SquadListFilters, value: string) => void;
+  onClearFilters: () => void;
+  leaderOptions: ActorOption[];
+  creatorOptions: ActorOption[];
+  visibleCount: number;
+  totalCount: number;
   sortField: SquadSortField;
   sortDirection: ListGridSortDirection;
   onSortFieldChange: (field: SquadSortField) => void;
@@ -427,6 +455,13 @@ function SquadListToolbar({
   onToggleColumn: (key: SquadColumnKey) => void;
 }) {
   const { t } = useT("squads");
+  const activeFilterCount =
+    (filters.leaders.length > 0 ? 1 : 0) +
+    (filters.creators.length > 0 ? 1 : 0);
+  const hasActiveFilters = activeFilterCount > 0;
+  const countBadge = (n: number) => (
+    <span className="ml-auto pl-3 text-xs text-muted-foreground">{n}</span>
+  );
   const SCOPE_LABELS: Record<SquadsScope, string> = {
     mine: t(($) => $.scope.mine),
     all: t(($) => $.scope.all),
@@ -495,7 +530,110 @@ function SquadListToolbar({
             </DropdownMenuRadioGroup>
           </DropdownMenuContent>
         </DropdownMenu>
+
+        {hasActiveFilters && (
+          <span
+            title={t(($) => $.toolbar.result_count_title)}
+            className="hidden shrink-0 text-xs tabular-nums text-muted-foreground md:inline"
+          >
+            {visibleCount} / {totalCount}
+          </span>
+        )}
       </div>
+
+      <div className="flex shrink-0 items-center gap-1">
+      {/* Filter */}
+      <DropdownMenu>
+        <DropdownMenuTrigger
+          render={
+            <Button
+              variant={hasActiveFilters ? "default" : "outline"}
+              size="sm"
+              className={
+                hasActiveFilters
+                  ? "h-8 w-8 gap-1 bg-brand px-0 text-white hover:bg-brand/90 md:w-auto md:px-2.5"
+                  : "h-8 w-8 gap-1 px-0 text-muted-foreground md:w-auto md:px-2.5"
+              }
+            >
+              <Filter className="size-3.5" />
+              {hasActiveFilters ? (
+                <>
+                  <span className="hidden md:inline">
+                    {t(($) => $.toolbar.filter_active_count, { count: activeFilterCount })}
+                  </span>
+                  <span className="tabular-nums md:hidden">{activeFilterCount}</span>
+                </>
+              ) : (
+                <span className="hidden md:inline">{t(($) => $.toolbar.filter_label)}</span>
+              )}
+              {hasActiveFilters && (
+                <span
+                  role="button"
+                  tabIndex={-1}
+                  aria-label={t(($) => $.toolbar.clear_filters)}
+                  className="-mr-1 ml-0.5 hidden rounded-sm p-0.5 hover:bg-white/20 md:inline-flex"
+                  onClick={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    onClearFilters();
+                  }}
+                  onPointerDown={(e) => e.stopPropagation()}
+                >
+                  <X className="size-3" />
+                </span>
+              )}
+            </Button>
+          }
+        />
+        <DropdownMenuContent align="end" className="w-auto">
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
+              <span className="flex-1">{t(($) => $.page.table.leader)}</span>
+              {filters.leaders.length > 0 && (
+                <span className="text-xs font-medium text-primary">{filters.leaders.length}</span>
+              )}
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="max-h-72 w-auto min-w-48 overflow-y-auto">
+              {leaderOptions.map((o) => (
+                <DropdownMenuCheckboxItem
+                  key={o.id}
+                  checked={filters.leaders.includes(o.id)}
+                  onCheckedChange={() => onToggleFilter("leaders", o.id)}
+                  className={FILTER_ITEM_CLASS}
+                >
+                  <HoverCheck checked={filters.leaders.includes(o.id)} />
+                  <ActorAvatar actorType="agent" actorId={o.id} size={16} />
+                  <span className="min-w-0 truncate">{o.name}</span>
+                  {countBadge(o.count)}
+                </DropdownMenuCheckboxItem>
+              ))}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
+              <span className="flex-1">{t(($) => $.page.table.creator)}</span>
+              {filters.creators.length > 0 && (
+                <span className="text-xs font-medium text-primary">{filters.creators.length}</span>
+              )}
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="max-h-72 w-auto min-w-48 overflow-y-auto">
+              {creatorOptions.map((o) => (
+                <DropdownMenuCheckboxItem
+                  key={o.id}
+                  checked={filters.creators.includes(o.id)}
+                  onCheckedChange={() => onToggleFilter("creators", o.id)}
+                  className={FILTER_ITEM_CLASS}
+                >
+                  <HoverCheck checked={filters.creators.includes(o.id)} />
+                  <ActorAvatar actorType="member" actorId={o.id} size={16} />
+                  <span className="min-w-0 truncate">{o.name}</span>
+                  {countBadge(o.count)}
+                </DropdownMenuCheckboxItem>
+              ))}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        </DropdownMenuContent>
+      </DropdownMenu>
 
       {/* Display settings */}
       <Popover>
@@ -602,6 +740,7 @@ function SquadListToolbar({
           </div>
         </PopoverContent>
       </Popover>
+      </div>
     </div>
   );
 }
@@ -651,6 +790,9 @@ export function SquadsPage() {
   const handleSortFieldSelect = useSquadsViewStore((s) => s.setSortField);
   const setSortDirection = useSquadsViewStore((s) => s.setSortDirection);
   const toggleColumn = useSquadsViewStore((s) => s.toggleColumn);
+  const filters = useSquadsViewStore((s) => s.filters);
+  const toggleFilter = useSquadsViewStore((s) => s.toggleFilter);
+  const clearFilters = useSquadsViewStore((s) => s.clearFilters);
 
   const isColVisible = (key: SquadColumnKey) => !hiddenColumns.includes(key);
 
@@ -662,10 +804,57 @@ export function SquadsPage() {
     return { mine, all: squads.length };
   }, [squads, currentUser]);
 
-  const rows = useMemo<Squad[]>(() => {
-    const inScope = squads.filter((s) => {
+  // Rows within the current scope, unfiltered — filter option lists + the
+  // "n / total" denominator derive from this.
+  const scopeRows = useMemo<Squad[]>(() => {
+    return squads.filter((s) => {
       if (scope === "mine") {
         return !!currentUser && s.creator_id === currentUser.id;
+      }
+      return true;
+    });
+  }, [squads, scope, currentUser]);
+
+  const leaderOptions = useMemo(() => {
+    const m = new Map<string, { id: string; name: string; count: number }>();
+    for (const s of scopeRows) {
+      const e = m.get(s.leader_id);
+      if (e) e.count += 1;
+      else
+        m.set(s.leader_id, {
+          id: s.leader_id,
+          name: agentsById.get(s.leader_id)?.name ?? s.leader_id.slice(0, 8),
+          count: 1,
+        });
+    }
+    return [...m.values()];
+  }, [scopeRows, agentsById]);
+
+  const creatorOptions = useMemo(() => {
+    const m = new Map<string, { id: string; name: string; count: number }>();
+    for (const s of scopeRows) {
+      const e = m.get(s.creator_id);
+      if (e) e.count += 1;
+      else
+        m.set(s.creator_id, {
+          id: s.creator_id,
+          name: membersById.get(s.creator_id)?.name ?? s.creator_id.slice(0, 8),
+          count: 1,
+        });
+    }
+    return [...m.values()];
+  }, [scopeRows, membersById]);
+
+  const rows = useMemo<Squad[]>(() => {
+    const inScope = scopeRows.filter((s) => {
+      if (filters.leaders.length > 0 && !filters.leaders.includes(s.leader_id)) {
+        return false;
+      }
+      if (
+        filters.creators.length > 0 &&
+        !filters.creators.includes(s.creator_id)
+      ) {
+        return false;
       }
       return true;
     });
@@ -685,7 +874,7 @@ export function SquadsPage() {
       return a.name.localeCompare(b.name) * dir;
     });
     return sorted;
-  }, [squads, scope, currentUser, sortField, sortDirection]);
+  }, [scopeRows, filters, sortField, sortDirection]);
 
   return (
     <div className="flex flex-1 min-h-0 flex-col">
@@ -735,6 +924,13 @@ export function SquadsPage() {
             scope={scope}
             onScopeChange={setScope}
             scopeCounts={scopeCounts}
+            filters={filters}
+            onToggleFilter={toggleFilter}
+            onClearFilters={clearFilters}
+            leaderOptions={leaderOptions}
+            creatorOptions={creatorOptions}
+            visibleCount={rows.length}
+            totalCount={scopeRows.length}
             sortField={sortField}
             sortDirection={sortDirection}
             onSortFieldChange={handleSortFieldSelect}

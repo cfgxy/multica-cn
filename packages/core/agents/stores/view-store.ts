@@ -49,12 +49,15 @@ export interface AgentListFilters {
    *  toggleFilter. So owner-as-filter and Mine never coexist, which keeps
    *  the axis orthogonal (no "mine + owner=someone-else = empty" state). */
   owners: string[];
+  /** Runtime-native model identifiers (e.g. claude / codex / gpt-…). */
+  models: string[];
 }
 
 export const EMPTY_AGENT_FILTERS: AgentListFilters = {
   availability: [],
   runtimes: [],
   owners: [],
+  models: [],
 };
 
 // User-hideable columns. Name and the structural columns (checkbox, kebab)

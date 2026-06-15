@@ -93,6 +93,11 @@
     "sort_by": "Sort by",
     "direction_asc": "Ascending",
     "direction_desc": "Descending",
-    "section_columns": "Columns"
+    "section_columns": "Columns",
+    "result_count_title": "Matching squads / all squads",
+    "filter_label": "Filter",
+    "filter_active_count_one": "{{count}} filter",
+    "filter_active_count_other": "{{count}} filters",
+    "clear_filters": "Clear filters"
   }
 }

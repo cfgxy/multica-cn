@@ -459,7 +459,8 @@
     "direction_asc": "昇順",
     "direction_desc": "降順",
     "section_columns": "列",
-    "section_owner": "オーナー"
+    "section_owner": "オーナー",
+    "section_model": "モデル"
   },
   "actions": {
     "selected_one": "{{count}} 件選択中",
