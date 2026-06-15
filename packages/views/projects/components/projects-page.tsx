@@ -136,7 +136,6 @@ function leadFilterValue(p: Project): string | null {
 // behaviour and avoiding navigate-vs-edit conflicts.
 // ---------------------------------------------------------------------------
 
-const STATUS_WIDTH = 116;
 const COLUMN_WIDTHS: Record<ProjectColumnKey, number> = {
   priority: 116,
   progress: 88,
@@ -149,12 +148,14 @@ const COLUMN_WIDTHS: Record<ProjectColumnKey, number> = {
 // the 9 gap-x-3 gaps between the wide template's 10 tracks.
 const FIXED_TRACKS_WIDTH = 368 + 9 * 12;
 
-// Render/track order: name, status (core), priority, progress, lead, issues,
-// created, kebab. status sits right after name so it survives in the <@2xl
-// core template.
+// Render/track order: name, status (core, fixed 116px), priority, progress,
+// lead, issues, created, kebab. MUST be a literal string — Tailwind can't
+// see interpolated `grid-cols-[...]` arbitrary values, so an interpolated
+// width silently drops the whole template and the grid collapses to one
+// column.
 const GRID_COLS =
-  `grid-cols-[0.75rem_minmax(120px,1fr)_${STATUS_WIDTH}px_1.75rem_0.75rem] ` +
-  `@2xl:grid-cols-[0.75rem_minmax(200px,1fr)_${STATUS_WIDTH}px_var(--pjc-priority)_var(--pjc-progress)_var(--pjc-lead)_var(--pjc-issues)_var(--pjc-created)_1.75rem_0.75rem]`;
+  "grid-cols-[0.75rem_minmax(120px,1fr)_116px_1.75rem_0.75rem] " +
+  "@2xl:grid-cols-[0.75rem_minmax(200px,1fr)_116px_var(--pjc-priority)_var(--pjc-progress)_var(--pjc-lead)_var(--pjc-issues)_var(--pjc-created)_1.75rem_0.75rem]";
 
 function columnTrackVars(
   isVisible: (key: ProjectColumnKey) => boolean,
