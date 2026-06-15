@@ -5,6 +5,14 @@
 -- `agent_runtime` a stable `profile_id` so the same daemon can host multiple
 -- runtimes of the same protocol family.
 --
+-- Referential integrity policy (house rule): this migration does NOT add any
+-- new database foreign keys or ON DELETE cascades. `workspace_id`,
+-- `created_by` and `agent_runtime.profile_id` are plain UUID columns; the
+-- relationships they model are enforced in the application layer, not by the
+-- database. In particular, deleting a runtime_profile must clean up its
+-- associated agent_runtime instance rows in application code (PR2's profile
+-- delete path) — the database will no longer cascade that for us.
+--
 -- Scope is deliberately additive only:
 --   * The legacy `UNIQUE (workspace_id, daemon_id, provider)` constraint on
 --     agent_runtime is left INTACT so the existing registration upsert
@@ -23,7 +31,9 @@
 
 CREATE TABLE runtime_profile (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    workspace_id UUID NOT NULL REFERENCES workspace(id) ON DELETE CASCADE,
+    -- Owning workspace. Plain UUID; integrity (and cleanup on workspace
+    -- delete) is enforced in the application layer, not by a DB FK.
+    workspace_id UUID NOT NULL,
     display_name TEXT NOT NULL,
     -- protocol_family must stay in lockstep with the agent.New() switch in
     -- server/pkg/agent/agent.go. A profile may only be based on a backend
@@ -47,7 +57,8 @@ CREATE TABLE runtime_profile (
     description TEXT,
     fixed_args JSONB NOT NULL DEFAULT '[]',
     visibility TEXT NOT NULL DEFAULT 'workspace' CHECK (visibility IN ('workspace', 'private')),
-    created_by UUID REFERENCES "user"(id) ON DELETE SET NULL,
+    -- Creating user. Plain UUID, nullable; no DB FK.
+    created_by UUID,
     enabled BOOLEAN NOT NULL DEFAULT true,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -58,9 +69,11 @@ CREATE INDEX idx_runtime_profile_workspace ON runtime_profile(workspace_id);
 
 -- Stable profile identity on the runtime instance row. NULL = built-in runtime
 -- (registered the legacy way); non-NULL = a registered instance of a custom
--- profile. ON DELETE CASCADE: removing a profile tears down its runtime rows.
+-- profile. Plain UUID with no DB FK: the link to runtime_profile, and the
+-- cleanup of these rows when a profile is deleted, is the application layer's
+-- responsibility (PR2).
 ALTER TABLE agent_runtime
-    ADD COLUMN profile_id UUID REFERENCES runtime_profile(id) ON DELETE CASCADE;
+    ADD COLUMN profile_id UUID;
 
 -- Custom-runtime uniqueness: one instance per (workspace, daemon, profile).
 -- Partial so it never touches built-in rows (profile_id IS NULL) and never
