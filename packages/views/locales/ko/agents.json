@@ -70,7 +70,8 @@
     "runs": "실행",
     "last_active": "최근 활동",
     "model": "모델",
-    "created": "생성일"
+    "created": "생성일",
+    "owner": "소유자"
   },
   "row": {
     "you": "나",
@@ -469,7 +470,8 @@
     "sort_by": "정렬",
     "direction_asc": "오름차순",
     "direction_desc": "내림차순",
-    "section_columns": "열"
+    "section_columns": "열",
+    "section_owner": "소유자"
   },
   "actions": {
     "selected_one": "{{count}}개 선택됨",

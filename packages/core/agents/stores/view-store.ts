@@ -43,24 +43,33 @@ export interface AgentListFilters {
   availability: string[];
   /** Runtime ids. */
   runtimes: string[];
+  /** Owner user ids. Owner is the same person-axis as the Mine scope: the
+   *  "mine" scope is the clean no-filter personal view, and applying any
+   *  filter (owner or otherwise) leaves it for "all" — see setScope /
+   *  toggleFilter. So owner-as-filter and Mine never coexist, which keeps
+   *  the axis orthogonal (no "mine + owner=someone-else = empty" state). */
+  owners: string[];
 }
 
 export const EMPTY_AGENT_FILTERS: AgentListFilters = {
   availability: [],
   runtimes: [],
+  owners: [],
 };
 
 // User-hideable columns. Name and the structural columns (checkbox, kebab)
 // are always visible.
 export type AgentColumnKey =
   | "status"
+  | "owner"
   | "runtime"
   | "lastActive"
   | "runs"
   | "model"
   | "created";
 
-/** Model and created are opt-in: hidden until the user enables them. */
+/** Model and created are opt-in: hidden until the user enables them. Owner
+ *  is shown by default (the user wants to see who owns each agent). */
 export const AGENT_DEFAULT_HIDDEN_COLUMNS: AgentColumnKey[] = [
   "model",
   "created",
@@ -98,7 +107,11 @@ export const useAgentsViewStore = create<AgentsViewState>()(
   persist(
     (set) => ({
       ...DEFAULTS,
-      setScope: (scope) => set({ scope }),
+      // "Mine" is the clean personal view: entering it clears all filters,
+      // so Mine never carries filters. Switching to all/archived leaves
+      // filters intact (you can carry "owner = Bob" between them).
+      setScope: (scope) =>
+        set(scope === "mine" ? { scope, filters: EMPTY_AGENT_FILTERS } : { scope }),
       toggleSort: (field) =>
         set((state) =>
           state.sortField === field
@@ -132,7 +145,11 @@ export const useAgentsViewStore = create<AgentsViewState>()(
           const next = list.includes(value)
             ? list.filter((v) => v !== value)
             : [...list, value];
-          return { filters: { ...state.filters, [key]: next } };
+          // Applying any filter leaves the clean "mine" view for "all" —
+          // Mine is the no-filter mode (see setScope). Archived keeps its
+          // own scope (it can carry filters).
+          const scope = state.scope === "mine" ? "all" : state.scope;
+          return { scope, filters: { ...state.filters, [key]: next } };
         }),
       clearFilters: () => set({ filters: EMPTY_AGENT_FILTERS }),
     }),

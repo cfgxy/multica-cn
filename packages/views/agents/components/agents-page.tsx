@@ -18,6 +18,7 @@ import type {
   Agent,
   AgentRuntime,
   CreateAgentRequest,
+  MemberWithUser,
 } from "@multica/core/types";
 import {
   type AgentActivity,
@@ -91,7 +92,7 @@ import { useT } from "../../i18n";
 // the documented exception to the single-line management-list rule.
 const GRID_COLS =
   "grid-cols-[0.75rem_1rem_minmax(120px,1fr)_var(--agc-status)_1.75rem_0.75rem] " +
-  "@2xl:grid-cols-[0.75rem_1rem_minmax(200px,1fr)_var(--agc-status)_var(--agc-runtime)_var(--agc-lastactive)_var(--agc-runs)_var(--agc-model)_var(--agc-created)_1.75rem_0.75rem]";
+  "@2xl:grid-cols-[0.75rem_1rem_minmax(200px,1fr)_var(--agc-status)_var(--agc-owner)_var(--agc-runtime)_var(--agc-lastactive)_var(--agc-runs)_var(--agc-model)_var(--agc-created)_1.75rem_0.75rem]";
 
 // Two-line rows; the virtualizer's fixed-size contract.
 const ROW_HEIGHT = 64;
@@ -102,6 +103,7 @@ const COLUMN_WIDTHS: Record<AgentColumnKey, number> = {
   // Sized for the worst case "Online · 2 tasks" (~140px incl. padding);
   // idle rows show only the dot + label and leave some in-track slack.
   status: 144,
+  owner: 144,
   runtime: 144,
   lastActive: 120,
   runs: 88,
@@ -110,9 +112,9 @@ const COLUMN_WIDTHS: Record<AgentColumnKey, number> = {
 };
 
 // Fixed tracks (edges 12+12, checkbox 16, name min 200, kebab 28) plus the
-// 10 gap-x-3 gaps between the wide template's 11 tracks (zero-width tracks
+// 11 gap-x-3 gaps between the wide template's 12 tracks (zero-width tracks
 // still carry gaps).
-const FIXED_TRACKS_WIDTH = 268 + 10 * 12;
+const FIXED_TRACKS_WIDTH = 268 + 11 * 12;
 
 function columnTrackVars(
   isVisible: (key: AgentColumnKey) => boolean,
@@ -127,6 +129,7 @@ function columnTrackVars(
     );
   return {
     "--agc-status": width("status"),
+    "--agc-owner": width("owner"),
     "--agc-runtime": width("runtime"),
     "--agc-lastactive": width("lastActive"),
     "--agc-runs": width("runs"),
@@ -144,7 +147,7 @@ export interface AgentListRow {
   runCount: number;
   /** Days since the last bucket with runs; null = nothing in the window. */
   lastActiveDays: number | null;
-  ownerIdToShow: string | null;
+  owner: MemberWithUser | null;
   isOwnedByMe: boolean;
   canManage: boolean;
 }
@@ -316,7 +319,7 @@ function CheckboxCell({
 // Slack member list).
 function NameCell({ row }: { row: AgentListRow }) {
   const { t } = useT("agents");
-  const { agent, ownerIdToShow, isOwnedByMe } = row;
+  const { agent, isOwnedByMe } = row;
   const isArchived = !!agent.archived_at;
   const isPrivate = agent.visibility === "private";
   return (
@@ -347,13 +350,10 @@ function NameCell({ row }: { row: AgentListRow }) {
               <TooltipContent>{VISIBILITY_TOOLTIP.private}</TooltipContent>
             </Tooltip>
           )}
-          {isOwnedByMe && !ownerIdToShow && (
+          {isOwnedByMe && (
             <span className="shrink-0 rounded bg-muted px-1 text-[10px] font-medium text-muted-foreground">
               {t(($) => $.row.you)}
             </span>
-          )}
-          {ownerIdToShow && (
-            <ActorAvatar actorType="member" actorId={ownerIdToShow} size={14} />
           )}
         </div>
         {agent.description ? (
@@ -400,6 +400,28 @@ function StatusCell({ row }: { row: AgentListRow }) {
             {t(($) => $.row.task_count, { count: active })}
           </span>
         )}
+      </span>
+    </ListGridCell>
+  );
+}
+
+// Owner = the agent's owner_id, which is set to the creator at creation and
+// never transferred (so owner ≡ creator). It carries management rights, so
+// the column is "Owner", not "Created by".
+function OwnerCell({ row }: { row: AgentListRow }) {
+  const { agent, owner } = row;
+  if (!agent.owner_id) {
+    return (
+      <ListGridCell className="hidden @2xl:flex">
+        <span className="text-xs text-muted-foreground/40">—</span>
+      </ListGridCell>
+    );
+  }
+  return (
+    <ListGridCell className="hidden gap-1.5 @2xl:flex">
+      <ActorAvatar actorType="member" actorId={agent.owner_id} size={18} />
+      <span className="min-w-0 truncate text-xs text-muted-foreground">
+        {owner?.name ?? agent.owner_id.slice(0, 8)}
       </span>
     </ListGridCell>
   );
@@ -494,6 +516,13 @@ function AgentListHeader({
       ) : (
         <ListGridHeaderCell className="px-0" />
       )}
+      {isColVisible("owner") ? (
+        <ListGridHeaderCell className="hidden @2xl:flex">
+          {t(($) => $.columns.owner)}
+        </ListGridHeaderCell>
+      ) : (
+        <ListGridHeaderCell className="hidden px-0 @2xl:flex" />
+      )}
       {isColVisible("runtime") ? (
         <ListGridHeaderCell className="hidden @2xl:flex">
           {t(($) => $.columns.runtime)}
@@ -570,6 +599,9 @@ function LoadingSkeleton() {
           <Skeleton className="h-3 w-14" />
         </ListGridHeaderCell>
         <ListGridHeaderCell className="hidden @2xl:flex">
+          <Skeleton className="h-3 w-14" />
+        </ListGridHeaderCell>
+        <ListGridHeaderCell className="hidden @2xl:flex">
           <Skeleton className="h-3 w-10" />
         </ListGridHeaderCell>
         <ListGridHeaderCell className="hidden px-0 @2xl:flex" />
@@ -588,6 +620,10 @@ function LoadingSkeleton() {
           </ListGridCell>
           <ListGridCell>
             <Skeleton className="h-3 w-16" />
+          </ListGridCell>
+          <ListGridCell className="hidden gap-1.5 @2xl:flex">
+            <Skeleton className="size-5 rounded-full" />
+            <Skeleton className="h-3 w-12" />
           </ListGridCell>
           <ListGridCell className="hidden @2xl:flex">
             <Skeleton className="h-3 w-16" />
@@ -821,6 +857,12 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
     return m;
   }, [runCountsRaw]);
 
+  const membersById = useMemo(() => {
+    const m = new Map<string, MemberWithUser>();
+    for (const mem of members) m.set(mem.user_id, mem);
+    return m;
+  }, [members]);
+
   const isWorkspaceAdmin = useMemo(() => {
     if (!currentUser) return false;
     const me = members.find((m) => m.user_id === currentUser.id);
@@ -866,12 +908,7 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
         activity,
         runCount: runCountsById.get(agent.id) ?? 0,
         lastActiveDays: lastActiveDaysAgo(activity),
-        ownerIdToShow:
-          scope !== "mine" &&
-          agent.owner_id &&
-          agent.owner_id !== currentUser?.id
-            ? agent.owner_id
-            : null,
+        owner: agent.owner_id ? membersById.get(agent.owner_id) ?? null : null,
         isOwnedByMe: isOwner,
         canManage: isWorkspaceAdmin || isOwner,
       };
@@ -881,6 +918,7 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
     scope,
     currentUser,
     runtimesById,
+    membersById,
     presenceMap,
     activityMap,
     runCountsById,
@@ -900,6 +938,12 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
       if (
         filters.runtimes.length > 0 &&
         !filters.runtimes.includes(row.agent.runtime_id)
+      ) {
+        return false;
+      }
+      if (
+        filters.owners.length > 0 &&
+        (!row.agent.owner_id || !filters.owners.includes(row.agent.owner_id))
       ) {
         return false;
       }
@@ -1036,6 +1080,7 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
             hiddenColumns={hiddenColumns}
             onToggleColumn={toggleColumn}
             allRows={scopeRows}
+            members={members}
             visibleCount={rows.length}
           />
           <div
@@ -1089,6 +1134,11 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
                         <StatusCell row={row} />
                       ) : (
                         <ListGridCell className="px-0" />
+                      )}
+                      {isColVisible("owner") ? (
+                        <OwnerCell row={row} />
+                      ) : (
+                        <ListGridCell className="hidden px-0 @2xl:flex" />
                       )}
                       {isColVisible("runtime") ? (
                         <RuntimeCell row={row} />

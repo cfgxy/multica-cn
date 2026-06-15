@@ -69,7 +69,8 @@
     "runs": "运行次数",
     "last_active": "最近活跃",
     "model": "模型",
-    "created": "创建时间"
+    "created": "创建时间",
+    "owner": "Owner"
   },
   "row": {
     "you": "你",
@@ -457,7 +458,8 @@
     "sort_by": "排序",
     "direction_asc": "升序",
     "direction_desc": "降序",
-    "section_columns": "列"
+    "section_columns": "列",
+    "section_owner": "Owner"
   },
   "actions": {
     "selected_one": "已选 {{count}} 项",

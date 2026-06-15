@@ -8,6 +8,8 @@ import {
   X,
 } from "lucide-react";
 import type { AgentAvailability } from "@multica/core/agents";
+import type { MemberWithUser } from "@multica/core/types";
+import { resolvePublicFileUrl } from "@multica/core/workspace/avatar-url";
 import {
   AGENT_SCOPES,
   type AgentColumnKey,
@@ -39,6 +41,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@multica/ui/components/ui/tooltip";
+import { ActorAvatar } from "@multica/ui/components/common/actor-avatar";
 import { FILTER_ITEM_CLASS, HoverCheck } from "../../common/hover-check";
 import { availabilityConfig } from "../presence";
 import { useT } from "../../i18n";
@@ -46,6 +49,7 @@ import type { AgentListRow } from "./agents-page";
 
 const COLUMN_KEYS: AgentColumnKey[] = [
   "status",
+  "owner",
   "runtime",
   "lastActive",
   "runs",
@@ -72,6 +76,7 @@ export function countActiveFilterDimensions(
   let count = 0;
   if (filters.availability.length > 0) count++;
   if (filters.runtimes.length > 0) count++;
+  if (filters.owners.length > 0) count++;
   return count;
 }
 
@@ -89,6 +94,7 @@ export function AgentListToolbar({
   hiddenColumns,
   onToggleColumn,
   allRows,
+  members,
   visibleCount,
 }: {
   scope: AgentsScope;
@@ -107,6 +113,7 @@ export function AgentListToolbar({
   /** Rows within the current scope, unfiltered — filter option lists and
    *  counts derive from this set. */
   allRows: AgentListRow[];
+  members: MemberWithUser[];
   /** Rows surviving the filters — shown as "n / total" when narrowed. */
   visibleCount: number;
 }) {
@@ -134,6 +141,14 @@ export function AgentListToolbar({
     }
   }
 
+  // Owner options: members who own at least one agent in the current scope.
+  const memberById = new Map(members.map((m) => [m.user_id, m]));
+  const ownerCounts = new Map<string, number>();
+  for (const row of allRows) {
+    const oid = row.agent.owner_id;
+    if (oid) ownerCounts.set(oid, (ownerCounts.get(oid) ?? 0) + 1);
+  }
+
   const SCOPE_LABELS: Record<AgentsScope, string> = {
     mine: t(($) => $.scope.mine),
     all: t(($) => $.scope.all),
@@ -149,6 +164,7 @@ export function AgentListToolbar({
 
   const COLUMN_LABELS: Record<AgentColumnKey, string> = {
     status: t(($) => $.columns.status),
+    owner: t(($) => $.columns.owner),
     runtime: t(($) => $.columns.runtime),
     lastActive: t(($) => $.columns.last_active),
     runs: t(($) => $.columns.runs),
@@ -343,6 +359,47 @@ export function AgentListToolbar({
                     {countBadge(count)}
                   </DropdownMenuCheckboxItem>
                 ))}
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+
+            {/* Owner — the same person-axis as the Mine scope. Picking an
+                owner here leaves the clean "mine" view for "all" (store
+                rule), so Mine + owner never coexist. */}
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger>
+                <span className="flex-1">
+                  {t(($) => $.toolbar.section_owner)}
+                </span>
+                {filters.owners.length > 0 && (
+                  <span className="text-xs font-medium text-primary">
+                    {filters.owners.length}
+                  </span>
+                )}
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent className="max-h-72 w-auto min-w-48 overflow-y-auto">
+                {[...ownerCounts.entries()].map(([userId, count]) => {
+                  const m = memberById.get(userId);
+                  return (
+                    <DropdownMenuCheckboxItem
+                      key={userId}
+                      checked={filters.owners.includes(userId)}
+                      onCheckedChange={() => onToggleFilter("owners", userId)}
+                      className={FILTER_ITEM_CLASS}
+                    >
+                      <HoverCheck checked={filters.owners.includes(userId)} />
+                      <ActorAvatar
+                        name={m?.name ?? userId.slice(0, 8)}
+                        initials={(m?.name ?? "?").slice(0, 2).toUpperCase()}
+                        avatarUrl={resolvePublicFileUrl(m?.avatar_url ?? null)}
+                        size={16}
+                      />
+                      <span className="min-w-0 truncate">
+                        {m?.name ?? userId.slice(0, 8)}
+                      </span>
+                      {countBadge(count)}
+                    </DropdownMenuCheckboxItem>
+                  );
+                })}
               </DropdownMenuSubContent>
             </DropdownMenuSub>
           </DropdownMenuContent>

@@ -37,11 +37,11 @@ export const SQUAD_SORT_DEFAULT_DIRECTION: Record<
 // are always visible.
 export type SquadColumnKey = "members" | "creator" | "created";
 
-/** Creator and created are opt-in: hidden until the user enables them. */
-export const SQUAD_DEFAULT_HIDDEN_COLUMNS: SquadColumnKey[] = [
-  "creator",
-  "created",
-];
+/** Created (date) is opt-in. Creator ("Created by") is shown by default —
+ *  the user wants to see who made each squad. Note it's "Created by", NOT
+ *  "Owner": the squad creator holds no management rights (archiving is
+ *  workspace-admin only), so labelling it Owner would mislead. */
+export const SQUAD_DEFAULT_HIDDEN_COLUMNS: SquadColumnKey[] = ["created"];
 
 export interface SquadsViewState {
   scope: SquadsScope;

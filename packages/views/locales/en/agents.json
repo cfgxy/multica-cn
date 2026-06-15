@@ -70,7 +70,8 @@
     "runs": "Runs",
     "last_active": "Last active",
     "model": "Model",
-    "created": "Created"
+    "created": "Created",
+    "owner": "Owner"
   },
   "row": {
     "you": "You",
@@ -469,7 +470,8 @@
     "sort_by": "Sort by",
     "direction_asc": "Ascending",
     "direction_desc": "Descending",
-    "section_columns": "Columns"
+    "section_columns": "Columns",
+    "section_owner": "Owner"
   },
   "actions": {
     "selected_one": "{{count}} selected",

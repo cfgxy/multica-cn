@@ -629,6 +629,12 @@ export function SquadsPage() {
     return m;
   }, [agents]);
 
+  const membersById = useMemo(() => {
+    const m = new Map<string, MemberWithUser>();
+    for (const mem of members) m.set(mem.user_id, mem);
+    return m;
+  }, [members]);
+
   const isWorkspaceAdmin = useMemo(() => {
     if (!currentUser) return false;
     const me = members.find((mem: MemberWithUser) => mem.user_id === currentUser.id);
@@ -773,6 +779,10 @@ export function SquadsPage() {
                           actorId={squad.creator_id}
                           size={18}
                         />
+                        <span className="min-w-0 truncate text-xs text-muted-foreground">
+                          {membersById.get(squad.creator_id)?.name ??
+                            squad.creator_id.slice(0, 8)}
+                        </span>
                       </ListGridCell>
                     ) : (
                       <ListGridCell className="hidden px-0 @2xl:flex" />
