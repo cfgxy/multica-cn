@@ -22,7 +22,6 @@ import {
   runtimeUsageOptions,
 } from "@multica/core/runtimes";
 import { useWorkspacePaths } from "@multica/core/paths";
-import { Button } from "@multica/ui/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -41,7 +40,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@multica/ui/components/ui/tooltip";
-import { AppLink } from "../../navigation";
+import { useRowLink } from "../../navigation";
 import { ActorAvatar } from "../../common/actor-avatar";
 import { useViewingTimezone } from "../../common/use-viewing-timezone";
 import { ProviderLogo } from "./provider-logo";
@@ -393,22 +392,16 @@ export function RuntimeRowMenu({
       <DropdownMenu>
         <DropdownMenuTrigger
           render={
-            <Button
-              variant="ghost"
-              size="icon-sm"
+            <button
+              type="button"
               aria-label={t(($) => $.list.row_actions_aria)}
-              onClick={(e) => e.stopPropagation()}
-              onKeyDown={(e) => e.stopPropagation()}
-            />
+              className="flex size-7 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-accent hover:text-accent-foreground group-hover/row:opacity-100 data-popup-open:bg-accent data-popup-open:opacity-100 data-popup-open:text-accent-foreground"
+            >
+              <MoreHorizontal className="size-4" />
+            </button>
           }
-        >
-          <MoreHorizontal className="h-4 w-4 text-muted-foreground" />
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          align="end"
-          className="w-40"
-          onClick={(e) => e.stopPropagation()}
-        >
+        />
+        <DropdownMenuContent align="end" className="w-40">
           <DropdownMenuItem
             variant="destructive"
             onClick={() => setDeleteOpen(true)}
@@ -456,6 +449,7 @@ export function RuntimeList({
   const { t } = useT("runtimes");
   const wsId = useWorkspaceId();
   const wsPaths = useWorkspacePaths();
+  const rowLink = useRowLink();
   const user = useAuthStore((s) => s.user);
 
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
@@ -540,7 +534,8 @@ export function RuntimeList({
         {rows.map((row) => (
           <ListGridRow
             key={row.runtime.id}
-            render={<AppLink href={wsPaths.runtimeDetail(row.runtime.id)} />}
+            className="cursor-pointer"
+            {...rowLink(wsPaths.runtimeDetail(row.runtime.id))}
           >
             <RuntimeNameCell runtime={row.runtime} />
             <HealthCell
@@ -579,10 +574,7 @@ export function RuntimeList({
             </ListGridCell>
             <ListGridCell className="justify-end px-0">
               <span
-                onClick={(e) => {
-                  e.preventDefault();
-                  e.stopPropagation();
-                }}
+                onClick={(e) => e.stopPropagation()}
                 className="flex items-center"
               >
                 <RuntimeRowMenu
