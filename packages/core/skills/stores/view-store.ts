@@ -141,7 +141,15 @@ export const useSkillsViewStore = create<SkillsViewState>()(
       // view state in place (same rationale as the agents view store).
       merge: (persisted, current) => {
         if (!persisted) return { ...current, ...DEFAULTS };
-        return { ...current, ...(persisted as Partial<SkillsViewState>) };
+        const p = persisted as Partial<SkillsViewState>;
+        // Deep-merge filters so a payload persisted before a new filter
+        // dimension existed still gets that key's default instead of
+        // dropping it to undefined (which crashes `.length` reads).
+        return {
+          ...current,
+          ...p,
+          filters: { ...EMPTY_SKILL_FILTERS, ...(p.filters ?? {}) },
+        };
       },
     },
   ),
