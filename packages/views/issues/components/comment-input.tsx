@@ -72,6 +72,10 @@ function CommentInput({ issueId, onSubmit }: CommentInputProps) {
   }, [uploadWithToast, issueId]);
 
   useEffect(() => {
+    setSuppressedAgentIds(new Set());
+  }, [issueId]);
+
+  useEffect(() => {
     const visible = new Set(triggerPreview.agents.map((agent) => agent.id));
     setSuppressedAgentIds((prev) => {
       const next = new Set([...prev].filter((id) => visible.has(id)));
@@ -151,6 +155,7 @@ function CommentInput({ issueId, onSubmit }: CommentInputProps) {
           agents={triggerPreview.agents}
           suppressedAgentIds={suppressedAgentIds}
           onToggle={toggleSuppressedAgent}
+          context="comment"
         />
       </div>
       <div className="absolute bottom-1 right-1.5 flex items-center gap-1">

@@ -283,6 +283,10 @@ function useEditAttachmentState(
     return result;
   }, [uploadWithToast, issueId]);
 
+  useEffect(() => {
+    setSuppressedAgentIds(new Set());
+  }, [issueId, entry.id, entry.parent_id]);
+
   const { isDragOver, dropZoneProps } = useFileDropZone({
     onDrop: (files) => files.forEach((f) => editorRef.current?.uploadFile(f)),
     enabled: editing,
@@ -579,6 +583,7 @@ function CommentRow({
                 agents={edit.triggerPreview.agents}
                 suppressedAgentIds={edit.suppressedAgentIds}
                 onToggle={edit.toggleSuppressedAgent}
+                context="edit"
               />
               <FileUploadButton
                 size="sm"
@@ -859,6 +864,7 @@ function CommentCardImpl({
                       agents={edit.triggerPreview.agents}
                       suppressedAgentIds={edit.suppressedAgentIds}
                       onToggle={edit.toggleSuppressedAgent}
+                      context="edit"
                     />
                     <FileUploadButton
                       size="sm"

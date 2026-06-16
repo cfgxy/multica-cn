@@ -95,6 +95,10 @@ function ReplyInput({
   }, [uploadWithToast, issueId]);
 
   useEffect(() => {
+    setSuppressedAgentIds(new Set());
+  }, [issueId, parentId]);
+
+  useEffect(() => {
     const visible = new Set(triggerPreview.agents.map((agent) => agent.id));
     setSuppressedAgentIds((prev) => {
       const next = new Set([...prev].filter((id) => visible.has(id)));
@@ -185,6 +189,7 @@ function ReplyInput({
             agents={triggerPreview.agents}
             suppressedAgentIds={suppressedAgentIds}
             onToggle={toggleSuppressedAgent}
+            context="reply"
           />
         </div>
         <div className="absolute bottom-0 right-0 flex items-center gap-1">

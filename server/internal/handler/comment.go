@@ -873,7 +873,7 @@ func (h *Handler) PreviewCommentTriggers(w http.ResponseWriter, r *http.Request)
 
 	var parentID pgtype.UUID
 	if req.ParentID != nil {
-		parentID, ok := parseUUIDOrBadRequest(w, *req.ParentID, "parent_id")
+		parentID, ok = parseUUIDOrBadRequest(w, *req.ParentID, "parent_id")
 		if !ok {
 			return
 		}
