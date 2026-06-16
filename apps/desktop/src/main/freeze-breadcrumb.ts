@@ -10,7 +10,15 @@ import type { FreezeBreadcrumb } from "../shared/freeze-breadcrumb";
 
 export type { FreezeBreadcrumb };
 
-/** Best-effort write. A breadcrumb we can't persist is lost, never fatal. */
+/**
+ * Best-effort write. A breadcrumb we can't persist is lost, never fatal.
+ *
+ * Known limitation: this is a single slot — last write wins. Multiple failures
+ * within one session collapse to the last one, so per-session failure counts
+ * are undercounted. Acceptable for now: telemetry aggregates presence and
+ * frequency across users, not exhaustive per-session sequences. Upgrade to an
+ * append/ring buffer if per-session failure chains become a question.
+ */
 export function writeFreezeBreadcrumb(filePath: string, breadcrumb: FreezeBreadcrumb): void {
   try {
     writeFileSync(filePath, JSON.stringify(breadcrumb), "utf8");

@@ -77,6 +77,10 @@ export function installRendererRecoveryHandlers(
     maybePromptReload(payload);
   });
 
+  // preload-error intentionally does NOT persist a breadcrumb: it's a startup
+  // failure of the preload script itself, and the breadcrumb-flush path depends
+  // on that same preload exposing `getLastFreeze` — if preload is broken, the
+  // next boot couldn't read it back anyway. We only prompt for reload here.
   window.webContents.on("preload-error", (_event, preloadPath, error) => {
     if (isDev) log("preload-error", `path=${preloadPath} err=${formatError(error)}`);
     maybePromptReload({

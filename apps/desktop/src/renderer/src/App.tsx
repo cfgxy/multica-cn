@@ -343,11 +343,13 @@ export default function App() {
     if (!last) return;
     const crashed = last.kind === "render-process-gone";
     captureEvent(crashed ? "client_crash" : "client_unresponsive", {
+      // Spread context FIRST so our explicit fields below always win — a
+      // future context key (e.g. its own `source`) must not silently override.
+      ...last.context,
       source: crashed ? "render-process-gone" : "main-unresponsive",
       recovered: false,
       breadcrumb_ts: last.ts,
       crashed_version: last.version,
-      ...last.context,
     });
   }, []);
 
