@@ -56,7 +56,8 @@ let lastCapturedPath: string | null = null;
 // buffer stays small (~one step-transition worth).
 type PendingOp =
   | { kind: "event"; name: string; props?: Record<string, unknown> }
-  | { kind: "set"; props: Record<string, unknown> };
+  | { kind: "set"; props: Record<string, unknown> }
+  | { kind: "exception"; error: unknown; props?: Record<string, unknown> };
 const pendingOps: PendingOp[] = [];
 // Cached super-properties so resetAnalytics() can re-register them after
 // posthog.reset() wipes the persisted set. Without this, logout / account
@@ -142,7 +143,14 @@ export function initAnalytics(config: AnalyticsConfig | null | undefined): boole
     autocapture: false,
     capture_heatmaps: false,
     capture_dead_clicks: false,
-    capture_exceptions: false,
+    // Exception autocapture IS on: posthog-js attaches window.onerror +
+    // unhandledrejection handlers and sends `$exception` events with the
+    // error's stack. Unlike the click/heatmap autocapture above, this is
+    // explicit failure signal (not behavioral noise) and is the one PostHog
+    // surface that natively handles thrown JS errors — see the failure-tier
+    // split in packages/core/diagnostics. (Production builds are minified;
+    // upload source maps to PostHog to de-minify the stacks.)
+    capture_exceptions: true,
     disable_session_recording: true,
     disable_surveys: true,
   });
@@ -184,6 +192,8 @@ export function initAnalytics(config: AnalyticsConfig | null | undefined): boole
     const op = pendingOps.shift()!;
     if (op.kind === "event") {
       posthog.capture(op.name, withClientEventProperties(op.props));
+    } else if (op.kind === "exception") {
+      posthog.captureException(op.error, withClientEventProperties(op.props));
     } else {
       capturePersonSet(op.props);
     }
@@ -248,6 +258,31 @@ export function captureEvent(
     return;
   }
   posthog.capture(name, withClientEventProperties(props));
+}
+
+/**
+ * Report a caught exception that never reached `window.onerror` — a React
+ * render-phase error swallowed by an error boundary. Global uncaught errors
+ * and unhandled rejections are already captured automatically by posthog-js
+ * (`capture_exceptions: true`); this wrapper is for the boundary case those
+ * handlers can't see.
+ *
+ * Currently called by the web route-level `global-error`. Section-level
+ * `@multica/ui` ErrorBoundary can opt in by passing `onError={captureException}`
+ * at its call sites; it is not wired app-wide (those failures already degrade
+ * gracefully with fallback UI).
+ *
+ * Calls before initAnalytics() buffer in order, same as captureEvent.
+ */
+export function captureException(
+  error: unknown,
+  props?: Record<string, unknown>,
+): void {
+  if (!initialized) {
+    pendingOps.push({ kind: "exception", error, props });
+    return;
+  }
+  posthog.captureException(error, withClientEventProperties(props));
 }
 
 /**
