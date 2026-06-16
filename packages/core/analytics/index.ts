@@ -13,6 +13,7 @@
 // backend returns an empty key and this module stays inert.
 
 import posthog from "posthog-js";
+import { redactExceptionProperties } from "./redact-exception";
 
 export const EVENT_SCHEMA_VERSION = 2;
 
@@ -150,7 +151,18 @@ export function initAnalytics(config: AnalyticsConfig | null | undefined): boole
     // surface that natively handles thrown JS errors — see the failure-tier
     // split in packages/core/diagnostics. (Production builds are minified;
     // upload source maps to PostHog to de-minify the stacks.)
+    //
+    // Error messages can interpolate user input (a validation error with the
+    // typed value, a URL with a token), so `before_send` scrubs the message
+    // and `$exception_list[].value` before the event leaves the client. Stack
+    // frames (code locations) are kept. See redact-exception.ts.
     capture_exceptions: true,
+    before_send: (event) => {
+      if (event && event.event === "$exception") {
+        redactExceptionProperties(event.properties);
+      }
+      return event;
+    },
     disable_session_recording: true,
     disable_surveys: true,
   });
