@@ -331,6 +331,185 @@ func stubProfilePathExecutable(t *testing.T, executable map[string]bool) {
 	profilePathExecutable = func(path string) bool { return executable[path] }
 	t.Cleanup(func() { profilePathExecutable = orig })
 }
+
+// TestRegisterRuntimes_SkipsCustomProfileSharingProviderWithBuiltin is the
+// MUL-3373 regression guard for the daemon side: during the migration-121
+// compatibility stage the legacy unique(workspace_id, daemon_id, provider)
+// constraint is still in place, so a Register batch that contains both a
+// built-in `codex` runtime and a custom profile of protocol_family=codex on
+// the same daemon would collide on it server-side. The daemon must drop the
+// colliding profile before the request leaves the box: the built-in stays
+// online, the custom profile is silently skipped, and its command path is
+// not recorded (the runtime never registers, so customCommandPathForRuntime
+// has nothing to look up by).
+func TestRegisterRuntimes_SkipsCustomProfileSharingProviderWithBuiltin(t *testing.T) {
+	t.Cleanup(stubAgentVersion(t))
+	stubLookPath(t, map[string]string{"company-codex": "/opt/bin/company-codex"})
+
+	profiles := []RuntimeProfile{{
+		ID:             "prof-codex",
+		WorkspaceID:    "ws-1",
+		DisplayName:    "Company Codex",
+		ProtocolFamily: "codex", // SAME provider as the built-in below
+		CommandName:    "company-codex",
+		Visibility:     "workspace",
+		Enabled:        true,
+	}}
+	fx := newProfileRegisterFixture(t, profiles, http.StatusOK)
+	d := fx.daemon
+	// Built-in codex agent on this host: occupies the legacy
+	// unique(workspace_id, daemon_id, provider='codex') key server-side.
+	d.cfg.Agents = map[string]AgentEntry{"codex": {Path: "/usr/bin/true"}}
+
+	resp, sig, err := d.registerRuntimesForWorkspace(context.Background(), "ws-1")
+	if err != nil {
+		t.Fatalf("registerRuntimesForWorkspace: %v", err)
+	}
+
+	// The Register request must carry only the built-in codex runtime; the
+	// colliding profile must be dropped client-side.
+	if len(fx.sentRuntimes) != 1 {
+		t.Fatalf("sent runtimes = %d, want 1 (only the built-in): %+v", len(fx.sentRuntimes), fx.sentRuntimes)
+	}
+	sent := fx.sentRuntimes[0]
+	if sent["type"] != "codex" {
+		t.Errorf("sent type = %v, want codex (the built-in)", sent["type"])
+	}
+	if sent["profile_id"] != nil && sent["profile_id"] != "" {
+		t.Errorf("sent profile_id = %v, want empty (built-in carries no profile_id)", sent["profile_id"])
+	}
+
+	// The profile's resolved command path must NOT be recorded: the runtime
+	// never registers, so no claimed task can ever look it up by profile_id.
+	if _, ok := d.profileCommandPaths["prof-codex"]; ok {
+		t.Errorf("profileCommandPaths must not record the skipped profile, got %v", d.profileCommandPaths)
+	}
+
+	// The signature must still cover the full fetched profile list (not the
+	// post-skip subset), so the drift loop's tick-to-tick comparison reflects
+	// server-side changes instead of local skips. Otherwise removing the
+	// built-in agent would silently change the digest and re-register the
+	// profile under a stale signature.
+	wantSig := profileSetSignature(profiles)
+	if sig != wantSig {
+		t.Errorf("profileSig = %q, want %q (digest of fetched profiles, ignoring local skips)", sig, wantSig)
+	}
+
+	// Response must reflect the one runtime that was actually sent.
+	if len(resp.Runtimes) != 1 || resp.Runtimes[0].Provider != "codex" {
+		t.Fatalf("response runtimes wrong: %+v", resp.Runtimes)
+	}
+}
+
+// TestRegisterRuntimes_KeepsCustomProfileForDifferentProvider verifies that
+// the same-provider skip is scoped strictly to the colliding protocol_family:
+// a custom profile with a different protocol_family from every built-in
+// runtime in the batch is unaffected and registers normally.
+func TestRegisterRuntimes_KeepsCustomProfileForDifferentProvider(t *testing.T) {
+	t.Cleanup(stubAgentVersion(t))
+	stubLookPath(t, map[string]string{"company-claude": "/opt/bin/company-claude"})
+
+	profiles := []RuntimeProfile{{
+		ID:             "prof-claude",
+		WorkspaceID:    "ws-1",
+		DisplayName:    "Company Claude",
+		ProtocolFamily: "claude", // DIFFERENT provider from the built-in
+		CommandName:    "company-claude",
+		Visibility:     "workspace",
+		Enabled:        true,
+	}}
+	fx := newProfileRegisterFixture(t, profiles, http.StatusOK)
+	d := fx.daemon
+	d.cfg.Agents = map[string]AgentEntry{"codex": {Path: "/usr/bin/true"}}
+
+	if _, _, err := d.registerRuntimesForWorkspace(context.Background(), "ws-1"); err != nil {
+		t.Fatalf("registerRuntimesForWorkspace: %v", err)
+	}
+
+	if len(fx.sentRuntimes) != 2 {
+		t.Fatalf("sent runtimes = %d, want 2 (built-in codex + custom claude): %+v",
+			len(fx.sentRuntimes), fx.sentRuntimes)
+	}
+	var sawBuiltin, sawCustom bool
+	for _, rt := range fx.sentRuntimes {
+		switch rt["type"] {
+		case "codex":
+			if rt["profile_id"] != nil && rt["profile_id"] != "" {
+				t.Errorf("built-in codex carries unexpected profile_id %v", rt["profile_id"])
+			}
+			sawBuiltin = true
+		case "claude":
+			if rt["profile_id"] != "prof-claude" {
+				t.Errorf("custom runtime profile_id = %v, want prof-claude", rt["profile_id"])
+			}
+			sawCustom = true
+		default:
+			t.Errorf("unexpected runtime type %v in batch", rt["type"])
+		}
+	}
+	if !sawBuiltin || !sawCustom {
+		t.Errorf("expected both built-in and custom in batch (built-in=%v custom=%v)", sawBuiltin, sawCustom)
+	}
+	if got := d.profileCommandPaths["prof-claude"]; got != "/opt/bin/company-claude" {
+		t.Errorf("profileCommandPaths[prof-claude] = %q, want /opt/bin/company-claude", got)
+	}
+}
+
+// TestRegisterRuntimes_SkipsOnlyCollidingProfile verifies that when the
+// workspace has multiple custom profiles, only the one whose protocol_family
+// collides with a built-in runtime is dropped — the other profile still
+// registers in the same batch.
+func TestRegisterRuntimes_SkipsOnlyCollidingProfile(t *testing.T) {
+	t.Cleanup(stubAgentVersion(t))
+	stubLookPath(t, map[string]string{
+		"company-codex":  "/opt/bin/company-codex",
+		"company-claude": "/opt/bin/company-claude",
+	})
+
+	profiles := []RuntimeProfile{
+		{
+			ID:             "prof-codex",
+			WorkspaceID:    "ws-1",
+			DisplayName:    "Company Codex",
+			ProtocolFamily: "codex", // collides with built-in
+			CommandName:    "company-codex",
+			Enabled:        true,
+		},
+		{
+			ID:             "prof-claude",
+			WorkspaceID:    "ws-1",
+			DisplayName:    "Company Claude",
+			ProtocolFamily: "claude", // safe
+			CommandName:    "company-claude",
+			Enabled:        true,
+		},
+	}
+	fx := newProfileRegisterFixture(t, profiles, http.StatusOK)
+	d := fx.daemon
+	d.cfg.Agents = map[string]AgentEntry{"codex": {Path: "/usr/bin/true"}}
+
+	if _, _, err := d.registerRuntimesForWorkspace(context.Background(), "ws-1"); err != nil {
+		t.Fatalf("registerRuntimesForWorkspace: %v", err)
+	}
+
+	// Only built-in codex + custom claude should leave the box.
+	if len(fx.sentRuntimes) != 2 {
+		t.Fatalf("sent runtimes = %d, want 2 (built-in codex + custom claude): %+v",
+			len(fx.sentRuntimes), fx.sentRuntimes)
+	}
+	for _, rt := range fx.sentRuntimes {
+		if rt["profile_id"] == "prof-codex" {
+			t.Errorf("colliding profile prof-codex must not be sent: %+v", rt)
+		}
+	}
+	if _, ok := d.profileCommandPaths["prof-codex"]; ok {
+		t.Errorf("colliding profile prof-codex must not record a command path")
+	}
+	if got := d.profileCommandPaths["prof-claude"]; got != "/opt/bin/company-claude" {
+		t.Errorf("profileCommandPaths[prof-claude] = %q, want /opt/bin/company-claude", got)
+	}
+}
+
 // bookkeeping that runTask relies on to override the launch path.
 func TestCustomCommandPathForRuntime(t *testing.T) {
 	d := freshDaemon("")

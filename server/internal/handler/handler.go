@@ -332,6 +332,29 @@ func isUniqueViolation(err error) bool {
 	return errors.As(err, &pgErr) && pgErr.Code == "23505"
 }
 
+// legacyAgentRuntimeProviderConstraintName is the legacy full unique
+// constraint on agent_runtime kept around during the migration-121 rolling
+// deploy compatibility stage. See migrations/121_agent_runtime_provider_
+// partial_unique.up.sql for the full rationale.
+const legacyAgentRuntimeProviderConstraintName = "agent_runtime_workspace_id_daemon_id_provider_key"
+
+// isLegacyAgentRuntimeProviderConflict reports whether err is a 23505 on the
+// legacy (workspace_id, daemon_id, provider) UNIQUE constraint. The
+// profile-aware upsert (UpsertAgentRuntimeWithProfile) uses a partial index
+// on profile_id IS NOT NULL as its arbiter, so a same-provider collision
+// with a pre-existing built-in runtime row is not caught by the ON CONFLICT
+// clause and surfaces here as a unique-violation. DaemonRegister translates
+// it to a soft-skip so a single colliding profile can't fail the whole
+// register batch (MUL-3373). Once the follow-up migration drops the legacy
+// constraint this helper will stop matching anything by construction.
+func isLegacyAgentRuntimeProviderConflict(err error) bool {
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) {
+		return false
+	}
+	return pgErr.Code == "23505" && pgErr.ConstraintName == legacyAgentRuntimeProviderConstraintName
+}
+
 // isCheckViolation reports whether err is a PostgreSQL CHECK constraint
 // violation (SQLSTATE 23514). Used to translate column-level CHECK failures
 // into a 4xx instead of a generic 500.

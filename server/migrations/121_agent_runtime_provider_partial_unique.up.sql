@@ -20,6 +20,20 @@
 -- coexisting on one daemon during this compatibility stage; a later, separately
 -- released migration may drop agent_runtime_workspace_id_daemon_id_provider_key
 -- after every running server build has stopped using the old conflict target.
+--
+-- During this stage the same-provider built-in + custom combination on a single
+-- daemon is therefore unsupported and is enforced from two layers (MUL-3373):
+--   1. The daemon (appendProfileRuntimes in server/internal/daemon/daemon.go)
+--      skips a custom profile whose protocol_family already matches a built-in
+--      runtime collected in the same Register batch, so the colliding row is
+--      never sent.
+--   2. The server (DaemonRegister handler in
+--      server/internal/handler/daemon.go) treats a 23505 on this legacy
+--      constraint coming from UpsertAgentRuntimeWithProfile as a soft-skip
+--      rather than a 500, so an older daemon that has not yet picked up the
+--      client-side guard does not fail the entire register batch.
+-- When the legacy constraint is dropped in a follow-up migration both guards
+-- become no-ops and built-in + custom of the same provider can coexist.
 
 CREATE UNIQUE INDEX IF NOT EXISTS agent_runtime_workspace_daemon_provider_key
     ON agent_runtime (workspace_id, daemon_id, provider)

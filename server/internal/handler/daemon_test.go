@@ -15,6 +15,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/middleware"
@@ -3976,5 +3977,298 @@ func TestClaimTaskByRuntime_CommentResumeDefaultOn(t *testing.T) {
 	resp := claimCommentTask(t, runtimeID, "comment-resume-default")
 	if resp.Task.PriorSessionID != priorSession {
 		t.Errorf("prior_session_id = %q, want %q (comment resume is default-on)", resp.Task.PriorSessionID, priorSession)
+	}
+}
+
+
+// TestDaemonRegister_LegacyProviderConstraintCompatSkip is the MUL-3373
+// regression guard for the server side: during the migration-121 rolling
+// deploy compatibility stage the legacy
+// agent_runtime_workspace_id_daemon_id_provider_key constraint is still in
+// place. A daemon that registers a custom runtime profile whose
+// protocol_family already matches a built-in runtime row on the same daemon
+// would collide on that constraint inside UpsertAgentRuntimeWithProfile —
+// the partial-unique arbiter on profile_id IS NOT NULL is not the real
+// arbiter for the conflict, so DO UPDATE never fires and the statement
+// fails with 23505. Before this fix the handler returned 500 and the entire
+// register batch failed; this test confirms the soft-skip path: the call
+// returns 200, the built-in row stays online, the colliding profile is
+// silently skipped (no agent_runtime row is inserted for it), and a
+// non-colliding custom profile in the SAME batch still registers.
+func TestDaemonRegister_LegacyProviderConstraintCompatSkip(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	const daemonID = "test-daemon-mul3373-compat-skip"
+
+	// Pre-stage: an existing built-in `codex` runtime on this daemon.
+	// ProfileID is NULL — same shape DaemonRegister produces for a built-in.
+	var builtinRuntimeID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_runtime (
+			workspace_id, daemon_id, name, runtime_mode, provider,
+			status, device_info, metadata, owner_id, last_seen_at
+		)
+		VALUES ($1, $2, 'codex (built-in)', 'local', 'codex', 'online', 'codex 1.0', '{}'::jsonb, $3, now())
+		RETURNING id
+	`, testWorkspaceID, daemonID, testUserID).Scan(&builtinRuntimeID); err != nil {
+		t.Fatalf("seed built-in runtime: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE id = $1`, builtinRuntimeID)
+	})
+
+	// A workspace runtime profile of the SAME protocol_family as the built-in.
+	// This is the row whose registration must NOT 500 the batch.
+	collidingProfileID := insertRuntimeProfileFixture(t, ctx, "Compat Codex", "codex", "company-codex-compat")
+	// And a profile of a DIFFERENT protocol_family that MUST still register
+	// even though the colliding one in the same batch is skipped.
+	safeProfileID := insertRuntimeProfileFixture(t, ctx, "Compat Claude", "claude", "company-claude-compat")
+
+	// Send a register batch that includes BOTH the colliding profile and a
+	// safe profile of a different family. The handler must skip the
+	// colliding one (legacy constraint conflict) and still register the
+	// safe one. We deliberately do NOT include the built-in row in the
+	// request: an older daemon that just picked up a new profile may not
+	// re-send all built-in runtimes in every register call, and the test
+	// asserts that the pre-existing built-in row is preserved untouched.
+	w := httptest.NewRecorder()
+	req := newDaemonTokenRequest("POST", "/api/daemon/register", map[string]any{
+		"workspace_id": testWorkspaceID,
+		"daemon_id":    daemonID,
+		"device_name":  "compat-skip-test",
+		"runtimes": []map[string]any{
+			// Colliding custom profile: codex protocol_family, same daemon.
+			{
+				"name":       "Compat Codex (compat-skip-test)",
+				"type":       "codex",
+				"version":    "1.0",
+				"status":     "online",
+				"profile_id": collidingProfileID,
+			},
+			// Safe custom profile: different protocol_family, must register.
+			{
+				"name":       "Compat Claude (compat-skip-test)",
+				"type":       "claude",
+				"version":    "1.0",
+				"status":     "online",
+				"profile_id": safeProfileID,
+			},
+		},
+	}, testWorkspaceID, daemonID)
+
+	testHandler.DaemonRegister(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("DaemonRegister: expected 200 (legacy constraint conflict must soft-skip, not 500), got %d: %s",
+			w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	respRuntimes, _ := resp["runtimes"].([]any)
+	// Only the safe profile should appear in the response: the colliding
+	// profile was skipped server-side, and the built-in is not in this
+	// request batch.
+	if len(respRuntimes) != 1 {
+		t.Fatalf("response runtimes = %d, want 1 (only the non-colliding profile): %s", len(respRuntimes), w.Body.String())
+	}
+	registered := respRuntimes[0].(map[string]any)
+	if registered["provider"] != "claude" {
+		t.Errorf("registered runtime provider = %v, want claude", registered["provider"])
+	}
+	registeredID, _ := registered["id"].(string)
+	if registeredID != "" {
+		t.Cleanup(func() {
+			testPool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE id = $1`, registeredID)
+		})
+	}
+
+	// The built-in runtime row must still exist and still be online — the
+	// soft-skip path must not corrupt it.
+	var builtinStatus string
+	if err := testPool.QueryRow(ctx, `SELECT status FROM agent_runtime WHERE id = $1`, builtinRuntimeID).Scan(&builtinStatus); err != nil {
+		t.Fatalf("read built-in runtime: %v", err)
+	}
+	if builtinStatus != "online" {
+		t.Errorf("built-in runtime status = %q, want online (legacy constraint soft-skip must not alter the existing row)", builtinStatus)
+	}
+
+	// The colliding profile must NOT have an agent_runtime row on this
+	// daemon — the entire point of the skip is to never insert it during
+	// the compat window.
+	var collidingCount int
+	if err := testPool.QueryRow(ctx, `
+		SELECT count(*) FROM agent_runtime
+		WHERE workspace_id = $1 AND daemon_id = $2 AND profile_id = $3
+	`, testWorkspaceID, daemonID, collidingProfileID).Scan(&collidingCount); err != nil {
+		t.Fatalf("count colliding runtime rows: %v", err)
+	}
+	if collidingCount != 0 {
+		t.Errorf("expected 0 agent_runtime rows for colliding profile %s (skipped), got %d", collidingProfileID, collidingCount)
+	}
+
+	// And the safe profile MUST have a registered row, scoped to this daemon.
+	var safeCount int
+	if err := testPool.QueryRow(ctx, `
+		SELECT count(*) FROM agent_runtime
+		WHERE workspace_id = $1 AND daemon_id = $2 AND profile_id = $3
+	`, testWorkspaceID, daemonID, safeProfileID).Scan(&safeCount); err != nil {
+		t.Fatalf("count safe runtime rows: %v", err)
+	}
+	if safeCount != 1 {
+		t.Errorf("expected exactly 1 agent_runtime row for safe profile %s, got %d", safeProfileID, safeCount)
+	}
+}
+
+// TestDaemonRegister_LegacyProviderConstraintCompatSkip_DoesNotCrossDaemon is
+// a guard that the soft-skip path only suppresses conflicts scoped to the
+// SAME (workspace_id, daemon_id, provider) tuple as the legacy constraint.
+// A custom profile registered against daemon A must still succeed even when
+// a built-in runtime of the same provider exists on a different daemon B —
+// nothing collides because the legacy constraint includes daemon_id.
+func TestDaemonRegister_LegacyProviderConstraintCompatSkip_DoesNotCrossDaemon(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	const daemonA = "test-daemon-mul3373-cross-A"
+	const daemonB = "test-daemon-mul3373-cross-B"
+
+	// Built-in codex runtime on daemon A.
+	var builtinAID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_runtime (
+			workspace_id, daemon_id, name, runtime_mode, provider,
+			status, device_info, metadata, owner_id, last_seen_at
+		)
+		VALUES ($1, $2, 'codex (daemon A)', 'local', 'codex', 'online', '', '{}'::jsonb, $3, now())
+		RETURNING id
+	`, testWorkspaceID, daemonA, testUserID).Scan(&builtinAID); err != nil {
+		t.Fatalf("seed built-in runtime on daemon A: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE id = $1`, builtinAID)
+	})
+
+	profileID := insertRuntimeProfileFixture(t, ctx, "Cross Daemon Codex", "codex", "company-codex-cross")
+
+	// Register the custom codex profile against daemon B — different daemon
+	// from the one with the built-in codex row, so no conflict.
+	w := httptest.NewRecorder()
+	req := newDaemonTokenRequest("POST", "/api/daemon/register", map[string]any{
+		"workspace_id": testWorkspaceID,
+		"daemon_id":    daemonB,
+		"device_name":  "cross-daemon-test",
+		"runtimes": []map[string]any{
+			{
+				"name":       "Cross Daemon Codex (cross-daemon-test)",
+				"type":       "codex",
+				"version":    "1.0",
+				"status":     "online",
+				"profile_id": profileID,
+			},
+		},
+	}, testWorkspaceID, daemonB)
+
+	testHandler.DaemonRegister(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("DaemonRegister cross-daemon: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]any
+	if err := json.NewDecoder(w.Body).Decode(&resp); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	respRuntimes, _ := resp["runtimes"].([]any)
+	if len(respRuntimes) != 1 {
+		t.Fatalf("response runtimes = %d, want 1 (cross-daemon must not skip): %s", len(respRuntimes), w.Body.String())
+	}
+	registered := respRuntimes[0].(map[string]any)
+	registeredID, _ := registered["id"].(string)
+	if registeredID == "" {
+		t.Fatalf("missing id in registered runtime: %v", registered)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE id = $1`, registeredID)
+	})
+
+	// Verify a row was created on daemon B for the profile and the daemon A
+	// built-in row is untouched.
+	var crossCount int
+	if err := testPool.QueryRow(ctx, `
+		SELECT count(*) FROM agent_runtime
+		WHERE workspace_id = $1 AND daemon_id = $2 AND profile_id = $3
+	`, testWorkspaceID, daemonB, profileID).Scan(&crossCount); err != nil {
+		t.Fatalf("count cross-daemon row: %v", err)
+	}
+	if crossCount != 1 {
+		t.Errorf("expected 1 row on daemon B for profile %s, got %d", profileID, crossCount)
+	}
+
+	var aCount int
+	if err := testPool.QueryRow(ctx, `SELECT count(*) FROM agent_runtime WHERE id = $1`, builtinAID).Scan(&aCount); err != nil {
+		t.Fatalf("count daemon A built-in row: %v", err)
+	}
+	if aCount != 1 {
+		t.Errorf("expected daemon A built-in row to remain, got count=%d", aCount)
+	}
+}
+
+// TestIsLegacyAgentRuntimeProviderConflict verifies the helper that drives
+// the soft-skip branch matches ONLY the legacy provider unique constraint
+// — not other 23505 violations and not unrelated DB errors. This is a unit
+// test for the constraint-name matcher rather than the full handler path.
+func TestIsLegacyAgentRuntimeProviderConflict(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "exact legacy provider constraint",
+			err: &pgconn.PgError{
+				Code:           "23505",
+				ConstraintName: legacyAgentRuntimeProviderConstraintName,
+			},
+			want: true,
+		},
+		{
+			name: "23505 on a different constraint",
+			err: &pgconn.PgError{
+				Code:           "23505",
+				ConstraintName: "agent_runtime_workspace_daemon_profile_key",
+			},
+			want: false,
+		},
+		{
+			name: "23514 (check violation) on the right constraint name",
+			err: &pgconn.PgError{
+				Code:           "23514",
+				ConstraintName: legacyAgentRuntimeProviderConstraintName,
+			},
+			want: false,
+		},
+		{
+			name: "non-pgconn error",
+			err:  errors.New("some other error"),
+			want: false,
+		},
+		{
+			name: "nil",
+			err:  nil,
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isLegacyAgentRuntimeProviderConflict(tc.err); got != tc.want {
+				t.Errorf("isLegacyAgentRuntimeProviderConflict(%v) = %v, want %v", tc.err, got, tc.want)
+			}
+		})
 	}
 }

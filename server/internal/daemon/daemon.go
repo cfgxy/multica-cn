@@ -996,10 +996,60 @@ func (d *Daemon) appendProfileRuntimes(ctx context.Context, workspaceID string, 
 		// later transition (zero → first profile added).
 		return profileSetSignature(nil)
 	}
+
+	// Build the set of provider names already claimed by a built-in runtime
+	// in this Register batch. Custom profiles with a matching protocol_family
+	// MUST be skipped client-side during the migration-121 compatibility
+	// window: the legacy UNIQUE (workspace_id, daemon_id, provider) constraint
+	// is still in place (so old server builds can keep upserting), and it
+	// fires before the partial-unique arbiter on `(workspace_id, daemon_id,
+	// profile_id) WHERE profile_id IS NOT NULL` that
+	// UpsertAgentRuntimeWithProfile declares. The result, before this guard,
+	// was a 23505 with no matching DO UPDATE branch — the entire register
+	// batch failed and the daemon could not register / heartbeat / claim
+	// tasks (MUL-3373). The handler also tolerates this collision as a
+	// soft-skip for older daemons that haven't picked up this dedup; the
+	// daemon-side guard avoids the round-trip entirely. When the legacy
+	// constraint is finally dropped in a follow-up migration this skip turns
+	// into a no-op and built-in + custom of the same provider can coexist.
+	builtinProviders := make(map[string]struct{}, len(*runtimes))
+	for _, rt := range *runtimes {
+		// Defensive: appendProfileRuntimes runs after the built-in collection
+		// loop, so every entry currently in *runtimes is a built-in (no
+		// profile_id). Filter explicitly anyway so future call-site changes
+		// don't silently treat a custom entry as a built-in.
+		if rt["profile_id"] != "" {
+			continue
+		}
+		if t := strings.TrimSpace(rt["type"]); t != "" {
+			builtinProviders[t] = struct{}{}
+		}
+	}
+
 	for _, profile := range resp.RuntimeProfiles {
 		if profile.CommandName == "" || profile.ProtocolFamily == "" {
 			d.logger.Warn("skip custom runtime profile: missing command_name or protocol_family",
 				"workspace_id", workspaceID, "profile_id", profile.ID, "display_name", profile.DisplayName)
+			continue
+		}
+		if _, dup := builtinProviders[profile.ProtocolFamily]; dup {
+			// Migration-121 compatibility skip (MUL-3373). A same-provider
+			// custom profile would collide on the legacy
+			// agent_runtime_workspace_id_daemon_id_provider_key constraint
+			// and fail the entire register batch. Skip this profile until
+			// the legacy constraint is dropped in a follow-up migration; the
+			// built-in runtime stays online so the daemon keeps working.
+			// The skip is intentionally not surfaced to the server (no
+			// degraded row is sent) — the operator sees it in the daemon
+			// log and the side channel is not strong enough to require a
+			// dedicated metric. Do not record a command path either: the
+			// runtime never registers, so customCommandPathForRuntime would
+			// have nothing to look up by.
+			d.logger.Warn("skip custom runtime profile: protocol_family is already covered by a built-in runtime on this daemon (compatibility skip; remove the built-in agent or wait for the legacy constraint drop migration)",
+				"workspace_id", workspaceID,
+				"profile_id", profile.ID,
+				"protocol_family", profile.ProtocolFamily,
+				"command_name", profile.CommandName)
 			continue
 		}
 		// Resolve the executable to launch for this profile. A per-machine

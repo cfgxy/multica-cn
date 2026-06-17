@@ -377,6 +377,40 @@ func (h *Handler) DaemonRegister(w http.ResponseWriter, r *http.Request) {
 				ProfileID:   profileUUID,
 			})
 			if err != nil {
+				// Migration-121 compatibility soft-skip (MUL-3373). A row
+				// targeting both the partial-unique arbiter (profile_id IS
+				// NOT NULL) and the legacy full unique constraint
+				// (workspace_id, daemon_id, provider) collides on the legacy
+				// constraint when an existing built-in runtime of the same
+				// provider on the same daemon already occupies that key.
+				// ON CONFLICT only declares the partial arbiter, so the
+				// collision surfaces here as a unique-violation and would
+				// otherwise return 500 — failing the entire register batch
+				// and pushing the daemon into a re-register storm. Modern
+				// daemons skip this case client-side
+				// (server/internal/daemon/daemon.go appendProfileRuntimes);
+				// this branch tolerates older daemons that still send the
+				// colliding row. The skip is logged and an analytics event
+				// is recorded; the built-in runtime stays online and other
+				// runtimes in the same batch still register.
+				if isLegacyAgentRuntimeProviderConflict(err) {
+					slog.Info("skip custom runtime profile registration: legacy provider unique constraint conflict (a built-in runtime of the same provider is already registered on this daemon)",
+						"workspace_id", req.WorkspaceID,
+						"daemon_id", req.DaemonID,
+						"profile_id", runtime.ProfileID,
+						"provider", provider,
+					)
+					obsmetrics.RecordEvent(h.Analytics, h.Metrics, analytics.RuntimeFailed(
+						uuidToString(ownerID),
+						req.WorkspaceID,
+						req.DaemonID,
+						provider,
+						"registration_skipped",
+						"legacy_provider_constraint_compat",
+						true, // recoverable: drop the built-in agent or wait for the legacy constraint drop migration
+					))
+					continue
+				}
 				obsmetrics.RecordEvent(h.Analytics, h.Metrics, analytics.RuntimeFailed(
 					uuidToString(ownerID),
 					req.WorkspaceID,
