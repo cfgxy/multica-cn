@@ -140,6 +140,13 @@ interface ContentEditorProps {
 interface ContentEditorRef {
   getMarkdown: () => string;
   clearContent: () => void;
+  /** Drop any pending debounced `onUpdate` without flushing it. Used by chat
+   *  at the START of a send so a trailing editor→store write can't fire after
+   *  `activeSessionId` flips and land the draft under the new session key —
+   *  which the pre-send `clearInputDraft(keyAtSend)` would then miss, leaving
+   *  the just-sent text to be replayed back into the cleared editor. Makes a
+   *  send atomic with respect to the draft store. */
+  cancelPendingUpdate: () => void;
   focus: () => void;
   /** Drop focus from the editor — used by chat after send so the caret
    *  stops competing with the StatusPill / streaming reply for the user's
@@ -461,6 +468,27 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
       getMarkdown: () => stripBlobUrls(editor?.getMarkdown() ?? ""),
       clearContent: () => {
         editor?.commands.clearContent();
+        // clearContent dispatches a transaction that fires onUpdate
+        // synchronously, arming a fresh debounce. Cancel it so the clear
+        // doesn't trail a "" write under a key the caller didn't intend, and
+        // reset the dirty baseline so the defaultValue sync effect treats the
+        // now-empty editor as clean (not as unsaved local edits).
+        if (debounceRef.current) {
+          clearTimeout(debounceRef.current);
+          debounceRef.current = undefined;
+        }
+        pendingFlushRef.current = null;
+        lastEmittedRef.current = "";
+      },
+      cancelPendingUpdate: () => {
+        if (debounceRef.current) {
+          clearTimeout(debounceRef.current);
+          debounceRef.current = undefined;
+        }
+        pendingFlushRef.current = null;
+        // Align the dirty baseline to what's currently in the editor so the
+        // dropped write leaves no "unsaved edits" residue for the sync effect.
+        lastEmittedRef.current = stripBlobUrls(editor?.getMarkdown() ?? "").trimEnd();
       },
       focus: () => {
         editor?.commands.focus();

@@ -71,6 +71,7 @@ vi.mock("../../editor", () => ({
       clearContent: () => {
         valueRef.current = "";
       },
+      cancelPendingUpdate: () => {},
       blur: () => {},
       focus: () => {},
       uploadFile: async (file: File) => {

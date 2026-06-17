@@ -8,6 +8,9 @@ import { CommentInput } from "./comment-input";
 import { ReplyInput } from "./reply-input";
 
 const uploadWithToast = vi.hoisted(() => vi.fn());
+// Mutable editor state shared with the ContentEditor mock so a test can
+// simulate "an upload is still in flight" and assert submit is blocked.
+const editorState = vi.hoisted(() => ({ hasActiveUploads: false }));
 
 vi.mock("@multica/core/api", () => ({
   api: {},
@@ -60,7 +63,7 @@ vi.mock("../../editor", () => ({
         valueRef.current = `${valueRef.current}\n${result.url}`.trim();
         onUpdate?.(valueRef.current);
       },
-      hasActiveUploads: () => false,
+      hasActiveUploads: () => editorState.hasActiveUploads,
     }));
 
     return (
@@ -121,6 +124,7 @@ function getSubmitButton(container: HTMLElement): HTMLButtonElement {
 
 beforeEach(() => {
   uploadWithToast.mockReset();
+  editorState.hasActiveUploads = false;
   localStorage.clear();
 });
 
@@ -183,5 +187,33 @@ describe("comment composers", () => {
     await waitFor(() => {
       expect(onSubmit).toHaveBeenCalledWith("thread reply", undefined, undefined);
     });
+  });
+
+  it("blocks comment submit while a file is still uploading", async () => {
+    editorState.hasActiveUploads = true;
+    const { container, onSubmit } = renderCommentInput();
+
+    fireEvent.change(screen.getByTestId("editor"), {
+      target: { value: "comment with pending upload" },
+    });
+    fireEvent.click(getSubmitButton(container));
+
+    // The mid-upload submit must be dropped — otherwise the comment sends
+    // without its attachment bound and the placeholder keeps spinning.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(onSubmit).not.toHaveBeenCalled();
+  });
+
+  it("blocks reply submit while a file is still uploading", async () => {
+    editorState.hasActiveUploads = true;
+    const { container, onSubmit } = renderReplyInput();
+
+    fireEvent.change(screen.getByTestId("editor"), {
+      target: { value: "reply with pending upload" },
+    });
+    fireEvent.click(getSubmitButton(container));
+
+    await new Promise((r) => setTimeout(r, 0));
+    expect(onSubmit).not.toHaveBeenCalled();
   });
 });

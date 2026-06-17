@@ -38,6 +38,10 @@ function CommentInput({ issueId, onSubmit }: CommentInputProps) {
   //  - the editor's AttachmentDownloadProvider, so file-card Eye buttons can
   //    resolve text/code/markdown previews that require the attachment id.
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
+  // Number of in-flight uploads. Drives the SubmitButton disabled state so it
+  // greys out the instant an upload starts; handleSubmit ALSO gates on the
+  // editor's hasActiveUploads() for the Mod+Enter path that bypasses the button.
+  const [pendingUploads, setPendingUploads] = useState(0);
   const { uploadWithToast } = useFileUpload(api);
   const { isDragOver, dropZoneProps } = useFileDropZone({
     onDrop: (files) => files.forEach((f) => editorRef.current?.uploadFile(f)),
@@ -64,11 +68,16 @@ function CommentInput({ issueId, onSubmit }: CommentInputProps) {
   }, [draftKey, setDraft]);
 
   const handleUpload = useCallback(async (file: File) => {
-    const result = await uploadWithToast(file, { issueId });
-    if (result) {
-      setPendingAttachments((prev) => [...prev, result]);
+    setPendingUploads((n) => n + 1);
+    try {
+      const result = await uploadWithToast(file, { issueId });
+      if (result) {
+        setPendingAttachments((prev) => [...prev, result]);
+      }
+      return result;
+    } finally {
+      setPendingUploads((n) => Math.max(0, n - 1));
     }
-    return result;
   }, [uploadWithToast, issueId]);
 
   useEffect(() => {
@@ -95,6 +104,12 @@ function CommentInput({ issueId, onSubmit }: CommentInputProps) {
   const handleSubmit = async () => {
     const content = editorRef.current?.getMarkdown()?.replace(/(\n\s*)+$/, "").trim();
     if (!content || submitting) return;
+    // Block submit while a file is still uploading. The attachment id isn't in
+    // pendingAttachments until the upload resolves, so a submit mid-upload drops
+    // attachment_ids (the file binds to nothing) and leaves the uploading
+    // placeholder spinning inside an already-sent comment. The SubmitButton is
+    // disabled via pendingUploads, but Mod+Enter bypasses it so we gate here too.
+    if (editorRef.current?.hasActiveUploads()) return;
     // Track every attachment whose stable download URL OR legacy
     // storage URL is referenced in the markdown body. Both shapes
     // can appear in the same comment during the MUL-3130 rollout —
@@ -165,7 +180,7 @@ function CommentInput({ issueId, onSubmit }: CommentInputProps) {
         />
         <SubmitButton
           onClick={handleSubmit}
-          disabled={isEmpty}
+          disabled={isEmpty || submitting || pendingUploads > 0}
           loading={submitting}
           tooltip={`${t(($) => $.comment.send_tooltip)} · ${formatShortcut(modKey, enterKey)}`}
         />

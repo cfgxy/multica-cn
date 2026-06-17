@@ -204,6 +204,14 @@ export function ChatInput({
       draftKey: keyAtSend,
       attachmentCount: activeIds.length,
     });
+    // Freeze the editor→store debounce channel for the duration of this send.
+    // onSend lazy-creates the session and flips activeSessionId, which changes
+    // draftKey from `__new__:agent` → the session id. A trailing debounced
+    // onUpdate firing after that flip would write the draft under the NEW key,
+    // which clearInputDraft(keyAtSend) — keyed on the pre-send draft — never
+    // clears; the defaultValue sync would then replay the stranded text back
+    // into the just-cleared editor. Cancelling here makes the send atomic.
+    editorRef.current?.cancelPendingUpdate();
     setIsSubmitting(true);
     let accepted: void | boolean;
     try {

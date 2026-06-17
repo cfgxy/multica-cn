@@ -66,6 +66,9 @@ function ReplyInput({
   // Attachments uploaded in this composer session — see CommentInput for the
   // rationale (drives both submit-time attachment_ids and editor previews).
   const [pendingAttachments, setPendingAttachments] = useState<Attachment[]>([]);
+  // In-flight upload count — disables the send button while a file is still
+  // uploading. handleSubmit also gates on hasActiveUploads() for Mod+Enter.
+  const [pendingUploads, setPendingUploads] = useState(0);
   const { uploadWithToast } = useFileUpload(api);
   const { isDragOver, dropZoneProps } = useFileDropZone({
     onDrop: (files) => files.forEach((f) => editorRef.current?.uploadFile(f)),
@@ -88,11 +91,16 @@ function ReplyInput({
   }, [draftKey, setDraft]);
 
   const handleUpload = useCallback(async (file: File) => {
-    const result = await uploadWithToast(file, { issueId });
-    if (result) {
-      setPendingAttachments((prev) => [...prev, result]);
+    setPendingUploads((n) => n + 1);
+    try {
+      const result = await uploadWithToast(file, { issueId });
+      if (result) {
+        setPendingAttachments((prev) => [...prev, result]);
+      }
+      return result;
+    } finally {
+      setPendingUploads((n) => Math.max(0, n - 1));
     }
-    return result;
   }, [uploadWithToast, issueId]);
 
   useEffect(() => {
@@ -119,6 +127,10 @@ function ReplyInput({
   const handleSubmit = async () => {
     const content = editorRef.current?.getMarkdown()?.replace(/(\n\s*)+$/, "").trim();
     if (!content || submitting) return;
+    // Block submit while a file is still uploading — see CommentInput: a
+    // mid-upload submit drops attachment_ids and strands the spinning
+    // placeholder in an already-sent reply. Gate here for the Mod+Enter path.
+    if (editorRef.current?.hasActiveUploads()) return;
     // Track every attachment whose stable download URL OR legacy
     // storage URL is referenced in the markdown body. Both shapes
     // can appear in the same comment during the MUL-3130 rollout.
@@ -202,7 +214,7 @@ function ReplyInput({
             type="button"
             variant={isEmpty ? "ghost" : "default"}
             size="icon-xs"
-            disabled={isEmpty || submitting}
+            disabled={isEmpty || submitting || pendingUploads > 0}
             onClick={handleSubmit}
           >
             {submitting ? (
