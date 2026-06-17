@@ -264,7 +264,16 @@ export function ChatInput({
         )}
         aria-disabled={noAgent || undefined}
       >
-        <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2">
+        {/* Lock the editor while a send is in flight (mirrors the no-agent
+            lock and the comment/reply composers): keep the text visible but
+            non-interactive until onSend settles and we clear on success. */}
+        <div
+          className={cn(
+            "flex-1 min-h-0 overflow-y-auto px-3 py-2",
+            isSubmitting && "pointer-events-none opacity-60",
+          )}
+          aria-busy={isSubmitting || undefined}
+        >
           <ContentEditor
             // See the editorKey / draftKey split note above — editorKey
             // intentionally does not depend on activeSessionId.
