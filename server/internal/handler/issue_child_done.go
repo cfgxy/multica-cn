@@ -21,9 +21,11 @@ import (
 // hardcoding because the agent did not always know the workspace prefix).
 //
 // Guards on whether the comment fires at all:
-//   - prev.Status must not already be "done" (idempotent — repeat saves of
-//     done do not re-fire; only the transition fires)
-//   - issue.Status must be "done"
+//   - the child must transition from a non-terminal status INTO a terminal one
+//     (done or cancelled). Repeat saves of an already-terminal child do not
+//     re-fire; only the entering transition does. Cancelled counts because a
+//     cancelled sibling never finishes and so closes its stage (see the entry
+//     guard and isTerminalChildStatus).
 //   - issue.ParentIssueID must be set
 //   - parent must not be "done" or "cancelled" — the parent is already
 //     closed and a notification has no follow-up to drive
@@ -67,7 +69,14 @@ func (h *Handler) notifyParentOfChildDone(ctx context.Context, prev, issue db.Is
 	if !issue.ParentIssueID.Valid {
 		return
 	}
-	if prev.Status == "done" || issue.Status != "done" {
+	// Fire on a transition INTO a terminal status (done OR cancelled), not only
+	// `done`. A cancelled child can close a stage too: isTerminalChildStatus
+	// treats cancelled as terminal (a cancelled sibling never finishes, so it
+	// must not hold the stage open), so the barrier has to be evaluated when the
+	// last open child of a stage is cancelled. Keying on the transition also
+	// makes a later cancelled -> done edit a no-op (terminal -> terminal), which
+	// avoids a lagging duplicate wake.
+	if isTerminalChildStatus(prev.Status) || !isTerminalChildStatus(issue.Status) {
 		return
 	}
 	parent, err := h.Queries.GetIssue(ctx, issue.ParentIssueID)
@@ -129,8 +138,12 @@ func (h *Handler) notifyParentOfChildDone(ctx context.Context, prev, issue db.Is
 	mentionPrefix := h.buildParentAssigneeMention(ctx, parent)
 
 	var content string
+	// When the set is staged and the barrier closed, the completed child is
+	// guaranteed to carry a stage (stageBarrierClosed returns false for an
+	// unstaged completed child in a staged set), so issue.Stage.Int32 is safe.
 	if staged {
-		summary, nextStage := stageProgressSummary(children, stageOrdinal(issue))
+		closedStage := issue.Stage.Int32
+		summary, nextStage := stageProgressSummary(children, closedStage)
 		var advance string
 		if nextStage > 0 {
 			advance = fmt.Sprintf(
@@ -142,7 +155,7 @@ func (h *Handler) notifyParentOfChildDone(ctx context.Context, prev, issue db.Is
 		}
 		content = fmt.Sprintf(
 			"%sStage %d of this issue is complete — its last sub-issue [%s](mention://issue/%s) — \"%s\" — just finished. Stage progress — %s.%s",
-			mentionPrefix, stageOrdinal(issue), identifier, childID, title, summary, advance,
+			mentionPrefix, closedStage, identifier, childID, title, summary, advance,
 		)
 	} else {
 		content = fmt.Sprintf(
@@ -195,17 +208,6 @@ func isTerminalChildStatus(status string) bool {
 	return status == "done" || status == "cancelled"
 }
 
-// stageOrdinal returns the comparable stage ordinal for a child. Unstaged
-// children (NULL stage) sort as 0 — before stage 1 — so that in a partially
-// staged sibling set they belong to the earliest frontier. In a fully
-// unstaged set the value is unused (siblingsAreStaged short-circuits).
-func stageOrdinal(c db.Issue) int32 {
-	if c.Stage.Valid {
-		return c.Stage.Int32
-	}
-	return 0
-}
-
 // siblingsAreStaged reports whether any child in the set carries an explicit
 // stage. A set with no stages is treated as a single implicit stage.
 func siblingsAreStaged(children []db.Issue) bool {
@@ -221,13 +223,17 @@ func siblingsAreStaged(children []db.Issue) bool {
 // stage barrier among `children` — the full sibling set under one parent,
 // already reflecting completed's terminal status.
 //
-//   - Unstaged sibling set: a single implicit stage. The barrier closes only
-//     when every child is terminal — the "wake once when the last sub-issue
-//     finishes" default.
-//   - Staged sibling set: the completed child's stage S closes when every
-//     child in stage <= S is terminal (frontier closure). Later stages are
-//     normally parked in `backlog`, so they cannot fire out of order; the
-//     caller's idempotency guard collapses any duplicate wake.
+//   - Unstaged sibling set (no child carries a stage): a single implicit
+//     stage. The barrier closes only when every child is terminal — the "wake
+//     once when the last sub-issue finishes" default.
+//   - Staged sibling set: only children that carry a stage form stages.
+//     Unstaged children do NOT participate (matches migration 123: a NULL
+//     stage does not take part in staged grouping) — completing one closes
+//     nothing, and a non-terminal unstaged child never holds a stage open.
+//     The completed child's stage S closes when every *staged* child with
+//     stage <= S is terminal (frontier closure). Later stages are normally
+//     parked in `backlog`, so they cannot fire out of order; the caller's
+//     idempotency guard collapses any duplicate wake.
 func stageBarrierClosed(children []db.Issue, completed db.Issue) bool {
 	if !siblingsAreStaged(children) {
 		for _, c := range children {
@@ -237,9 +243,17 @@ func stageBarrierClosed(children []db.Issue, completed db.Issue) bool {
 		}
 		return true
 	}
-	s := stageOrdinal(completed)
+	// Staged set: an unstaged completed child belongs to no stage, so it closes
+	// nothing.
+	if !completed.Stage.Valid {
+		return false
+	}
+	s := completed.Stage.Int32
 	for _, c := range children {
-		if stageOrdinal(c) <= s && !isTerminalChildStatus(c.Status) {
+		if !c.Stage.Valid {
+			continue // unstaged children are ignored by the frontier
+		}
+		if c.Stage.Int32 <= s && !isTerminalChildStatus(c.Status) {
 			return false
 		}
 	}
@@ -249,14 +263,18 @@ func stageBarrierClosed(children []db.Issue, completed db.Issue) bool {
 // stageProgressSummary renders a compact per-stage breakdown for the
 // child-done system comment (e.g. "Stage 1: 3/3 done; Stage 2: 0/4 done") and
 // returns the lowest stage above closedStage that still has non-terminal
-// children — the next group to promote — or 0 when none remain. Only
-// meaningful for staged sibling sets.
+// children — the next group to promote — or 0 when none remain. Unstaged
+// children are skipped (they are not part of any stage), so the breakdown
+// never renders a "Stage 0".
 func stageProgressSummary(children []db.Issue, closedStage int32) (summary string, nextStage int32) {
 	type agg struct{ total, done int }
 	byStage := map[int32]*agg{}
 	order := []int32{}
 	for _, c := range children {
-		s := stageOrdinal(c)
+		if !c.Stage.Valid {
+			continue // unstaged children do not belong to any stage
+		}
+		s := c.Stage.Int32
 		a, ok := byStage[s]
 		if !ok {
 			a = &agg{}

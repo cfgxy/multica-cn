@@ -2865,7 +2865,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 		req.Updates.Priority != nil ||
 		req.Updates.Position != nil
 	if !hasMutation {
-		for _, k := range []string{"assignee_type", "assignee_id", "start_date", "due_date", "parent_issue_id", "project_id"} {
+		for _, k := range []string{"assignee_type", "assignee_id", "start_date", "due_date", "parent_issue_id", "project_id", "stage"} {
 			if _, ok := rawUpdates[k]; ok {
 				hasMutation = true
 				break
