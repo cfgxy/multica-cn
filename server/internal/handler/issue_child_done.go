@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -36,6 +37,15 @@ import (
 //     and there is nothing to "trigger" on a human assignee. Skipping the
 //     comment entirely (Bohan's call on MUL-2538) also sidesteps the
 //     mention question — no comment, no mention, no inbox row.
+//   - the completion must close a STAGE barrier (MUL-3508). Sub-issues under
+//     a parent can be grouped into ordered stages via issue.stage; the
+//     notification + wake fire only when every sibling in the lowest
+//     unfinished stage is terminal (stageBarrierClosed). An unstaged sibling
+//     set is one implicit stage, so this fires once when the last sub-issue
+//     finishes instead of on every child — the default fix for the
+//     fire-on-every-child cascade reported in #4320. The woken assignee
+//     decides whether to promote the next stage (agent-driven advancement);
+//     the server only detects the barrier and wakes.
 //
 // The comment is inserted directly via db.Queries (not through the
 // CreateComment HTTP handler) so it bypasses the generic on_comment trigger
@@ -86,20 +96,60 @@ func (h *Handler) notifyParentOfChildDone(ctx context.Context, prev, issue db.Is
 		return
 	}
 
+	// Stage barrier (MUL-3508 / discussion #4320). The notification + assignee
+	// wake fire only when this completion *closes a stage* — i.e. every sibling
+	// in the lowest unfinished stage is now terminal. An unstaged sibling set is
+	// one implicit stage, so this collapses to "wake once when the last
+	// sub-issue finishes" instead of the old fire-on-every-child behavior that
+	// caused the surprise cascade. A completion that does not close a stage is
+	// silent: no comment, no wake. ListChildIssues already reflects this child's
+	// committed `done` status (the status update commits before this runs).
+	children, err := h.Queries.ListChildIssues(ctx, parent.ID)
+	if err != nil {
+		slog.Warn("child done: failed to list siblings for stage barrier",
+			"error", err,
+			"child_id", uuidToString(issue.ID),
+			"parent_id", uuidToString(parent.ID))
+		return
+	}
+	if !stageBarrierClosed(children, issue) {
+		return
+	}
+	staged := siblingsAreStaged(children)
+
 	prefix := h.getIssuePrefix(ctx, issue.WorkspaceID)
 	identifier := prefix + "-" + strconv.Itoa(int(issue.Number))
 	childID := uuidToString(issue.ID)
 	title := sanitizeChildTitleForSystemComment(issue.Title)
+	parentID := uuidToString(parent.ID)
 
 	// Build the parent-assignee mention prefix. Empty when the parent has no
 	// assignee or the assignee row is missing (deleted member, archived
 	// agent the workspace lost track of, etc.).
 	mentionPrefix := h.buildParentAssigneeMention(ctx, parent)
 
-	content := fmt.Sprintf(
-		"%sSub-issue [%s](mention://issue/%s) — \"%s\" — is done. Before promoting any waiting `backlog` sub-issue, read each sibling's description and only promote items whose stated dependencies are already satisfied — do not rely on this parent's higher-level breakdown alone. If a sibling's description conflicts with that breakdown (e.g. it lists a prerequisite the parent treats as parallel), do NOT change its status — leave it `backlog` and post a comment to confirm first.",
-		mentionPrefix, identifier, childID, title,
-	)
+	var content string
+	if staged {
+		summary, nextStage := stageProgressSummary(children, stageOrdinal(issue))
+		var advance string
+		if nextStage > 0 {
+			advance = fmt.Sprintf(
+				" Stage %d is next. Review the full layout with `multica issue children %s`, and if Stage %d's dependencies are satisfied promote its `backlog` sub-issues to `todo` to continue. Read each sub-issue's description first and only promote items whose stated dependencies are already met — do not rely on this parent's higher-level breakdown alone. If a description conflicts with that breakdown, leave it `backlog` and post a comment to confirm first.",
+				nextStage, parentID, nextStage,
+			)
+		} else {
+			advance = " This was the final stage. Wrap up the parent — synthesize the results and move it forward, or close it out if nothing remains."
+		}
+		content = fmt.Sprintf(
+			"%sStage %d of this issue is complete — its last sub-issue [%s](mention://issue/%s) — \"%s\" — just finished. Stage progress — %s.%s",
+			mentionPrefix, stageOrdinal(issue), identifier, childID, title, summary, advance,
+		)
+	} else {
+		content = fmt.Sprintf(
+			"%sAll sub-issues are complete — the last one, [%s](mention://issue/%s) — \"%s\", just finished. Continue the parent: synthesize the children's results and move it forward, or close it out if nothing remains.",
+			mentionPrefix, identifier, childID, title,
+		)
+	}
 
 	// author_type='system', author_id=zero UUID. The zero UUID is a valid 16
 	// byte value and the column is NOT NULL; frontend code should branch on
@@ -136,6 +186,100 @@ func (h *Handler) notifyParentOfChildDone(ctx context.Context, prev, issue db.Is
 	// title inert and gives the platform a single place to apply the loop
 	// and idempotency guards.
 	h.dispatchParentAssigneeTrigger(ctx, parent, issue, comment, actorType, actorID)
+}
+
+// isTerminalChildStatus reports whether a child issue status counts as
+// "finished" for stage-barrier purposes. Cancelled counts as terminal: a
+// cancelled sibling will never complete, so it must not hold a stage open.
+func isTerminalChildStatus(status string) bool {
+	return status == "done" || status == "cancelled"
+}
+
+// stageOrdinal returns the comparable stage ordinal for a child. Unstaged
+// children (NULL stage) sort as 0 — before stage 1 — so that in a partially
+// staged sibling set they belong to the earliest frontier. In a fully
+// unstaged set the value is unused (siblingsAreStaged short-circuits).
+func stageOrdinal(c db.Issue) int32 {
+	if c.Stage.Valid {
+		return c.Stage.Int32
+	}
+	return 0
+}
+
+// siblingsAreStaged reports whether any child in the set carries an explicit
+// stage. A set with no stages is treated as a single implicit stage.
+func siblingsAreStaged(children []db.Issue) bool {
+	for _, c := range children {
+		if c.Stage.Valid {
+			return true
+		}
+	}
+	return false
+}
+
+// stageBarrierClosed reports whether the completion of `completed` closed a
+// stage barrier among `children` — the full sibling set under one parent,
+// already reflecting completed's terminal status.
+//
+//   - Unstaged sibling set: a single implicit stage. The barrier closes only
+//     when every child is terminal — the "wake once when the last sub-issue
+//     finishes" default.
+//   - Staged sibling set: the completed child's stage S closes when every
+//     child in stage <= S is terminal (frontier closure). Later stages are
+//     normally parked in `backlog`, so they cannot fire out of order; the
+//     caller's idempotency guard collapses any duplicate wake.
+func stageBarrierClosed(children []db.Issue, completed db.Issue) bool {
+	if !siblingsAreStaged(children) {
+		for _, c := range children {
+			if !isTerminalChildStatus(c.Status) {
+				return false
+			}
+		}
+		return true
+	}
+	s := stageOrdinal(completed)
+	for _, c := range children {
+		if stageOrdinal(c) <= s && !isTerminalChildStatus(c.Status) {
+			return false
+		}
+	}
+	return true
+}
+
+// stageProgressSummary renders a compact per-stage breakdown for the
+// child-done system comment (e.g. "Stage 1: 3/3 done; Stage 2: 0/4 done") and
+// returns the lowest stage above closedStage that still has non-terminal
+// children — the next group to promote — or 0 when none remain. Only
+// meaningful for staged sibling sets.
+func stageProgressSummary(children []db.Issue, closedStage int32) (summary string, nextStage int32) {
+	type agg struct{ total, done int }
+	byStage := map[int32]*agg{}
+	order := []int32{}
+	for _, c := range children {
+		s := stageOrdinal(c)
+		a, ok := byStage[s]
+		if !ok {
+			a = &agg{}
+			byStage[s] = a
+			order = append(order, s)
+		}
+		a.total++
+		if isTerminalChildStatus(c.Status) {
+			a.done++
+		}
+	}
+	sort.Slice(order, func(i, j int) bool { return order[i] < order[j] })
+	parts := make([]string, 0, len(order))
+	for _, s := range order {
+		a := byStage[s]
+		label := fmt.Sprintf("Stage %d: %d/%d done", s, a.done, a.total)
+		if nextStage == 0 && s > closedStage && a.done < a.total {
+			nextStage = s
+			label += " (next)"
+		}
+		parts = append(parts, label)
+	}
+	return strings.Join(parts, "; "), nextStage
 }
 
 // sanitizeChildTitleForSystemComment removes mention-style markdown from a
