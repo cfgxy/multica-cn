@@ -36,6 +36,7 @@ import { Button } from "@multica/ui/components/ui/button";
 import { Switch } from "@multica/ui/components/ui/switch";
 import { ContentEditor, type ContentEditorRef, TitleEditor, useFileDropZone, FileDropOverlay } from "../editor";
 import { StatusIcon, StatusPicker, PriorityPicker, StagePicker, AssigneePicker, StartDatePicker, DueDatePicker } from "../issues/components";
+import { maxSiblingStage } from "../issues/components/pickers/stage-picker";
 import { BacklogAgentHintContent } from "../issues/components/backlog-agent-hint-dialog";
 import { ProjectPicker } from "../projects/components/project-picker";
 import { useCurrentWorkspace, useWorkspacePaths } from "@multica/core/paths";
@@ -43,7 +44,7 @@ import { useWorkspaceId } from "@multica/core/hooks";
 import { useIssueDraftStore } from "@multica/core/issues/stores/draft-store";
 import { useCreateModeStore } from "@multica/core/issues/stores/create-mode-store";
 import { useQuickCreateStore } from "@multica/core/issues/stores/quick-create-store";
-import { issueDetailOptions } from "@multica/core/issues/queries";
+import { issueDetailOptions, childIssuesOptions } from "@multica/core/issues/queries";
 import { useCreateIssue, useUpdateIssue } from "@multica/core/issues/mutations";
 import { useFileUpload } from "@multica/core/hooks/use-file-upload";
 import {
@@ -160,6 +161,12 @@ export function ManualCreatePanel({
   const wsId = useWorkspaceId();
   const { data: parentIssue } = useQuery({
     ...issueDetailOptions(wsId, parentIssueId ?? ""),
+    enabled: !!parentIssueId,
+  });
+  // Sibling stages under the chosen parent, so the Stage picker can offer the
+  // already-used max stage (and one beyond) instead of flooring at Stage 1–3.
+  const { data: parentChildren = [] } = useQuery({
+    ...childIssuesOptions(wsId, parentIssueId ?? ""),
     enabled: !!parentIssueId,
   });
 
@@ -583,6 +590,7 @@ export function ManualCreatePanel({
                 <StagePicker
                   stage={stage}
                   onUpdate={(u) => setStage(u.stage ?? null)}
+                  maxStage={maxSiblingStage(parentChildren)}
                   triggerRender={<PillButton />}
                   align="start"
                 />

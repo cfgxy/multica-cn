@@ -90,6 +90,10 @@ vi.mock("@multica/core/issues/queries", () => ({
     queryKey: ["issues", wsId, "detail", id],
     queryFn: () => Promise.resolve(null),
   }),
+  childIssuesOptions: (wsId: string, id: string) => ({
+    queryKey: ["issues", wsId, "children", id],
+    queryFn: () => Promise.resolve([]),
+  }),
 }));
 
 vi.mock("@multica/core/issues/stores/draft-store", () => ({
