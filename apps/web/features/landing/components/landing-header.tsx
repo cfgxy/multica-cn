@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { Menu, Star, X } from "lucide-react";
+import { Menu, X } from "lucide-react";
 import { MulticaIcon } from "@multica/ui/components/common/multica-icon";
 import { cn } from "@multica/ui/lib/utils";
 import { useAuthStore } from "@multica/core/auth";
@@ -159,14 +159,14 @@ export function LandingHeader({
 }
 
 /** Star-count segment appended to the header's GitHub button — a faint
- *  divider, a filled star, and the compact count (e.g. "37.6k"). Inherits the
+ *  divider and the compact count (e.g. "37.6k"). No star glyph: in the GitHub
+ *  button context the number reads as the star count on its own. Inherits the
  *  button's text color so it adapts to both the dark and light header
  *  variants. */
 function GitHubStarsBadge({ label }: { label: string }) {
   return (
-    <span className="inline-flex items-center gap-1 tabular-nums">
+    <span className="inline-flex items-center gap-1.5 tabular-nums">
       <span aria-hidden className="h-3 w-px bg-current opacity-25" />
-      <Star className="size-3 fill-current" aria-hidden />
       {label}
     </span>
   );
