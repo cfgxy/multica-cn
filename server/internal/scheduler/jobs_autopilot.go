@@ -203,6 +203,15 @@ func autopilotScopes(
 // recent one. This matches the legacy goroutine's "collapse missed
 // fires" semantics; a future per-trigger catch_up_mode column can flip
 // the policy without touching scheduler internals.
+//
+// Retry-eligible state is handled specially: when the most recent
+// stored plan_time is a FAILED row with attempts remaining and
+// next_retry_at <= now, the hook returns THAT plan_time unchanged so
+// tryClaim's FAILED-with-retry branch can fire. Without this branch,
+// the half-open (latest.PlanTime, now] enumeration below would skip
+// past the failed bucket and the occurrence would be lost — the
+// canonical bug from the #4444 review where a claim+crash sequence
+// could leak a scheduled occurrence (MUL-3551 acceptance ③).
 func autopilotPlansForScope(cache *autopilotScheduleCache) func(
 	ctx context.Context, scope Scope, now time.Time, latest LatestPlanInfo,
 ) ([]time.Time, error) {
@@ -214,6 +223,19 @@ func autopilotPlansForScope(cache *autopilotScheduleCache) func(
 			// or was filtered out. Nothing to plan — silent no-op is
 			// correct.
 			return nil, nil
+		}
+
+		// Retry path: the manager's stale-lease sweep has already
+		// promoted any abandoned RUNNING row to FAILED. If that
+		// FAILED row still has attempts remaining and its
+		// next_retry_at has passed, the same plan_time is eligible
+		// for another claim. tryClaim's retry-from-FAILED branch only
+		// fires when the planner returns that exact plan_time, so we
+		// MUST surface it here — moving forward to a newer occurrence
+		// would strand the FAILED row at attempt < max_attempts
+		// forever and leak the missed dispatch.
+		if latest.RetryEligible(now) {
+			return []time.Time{latest.PlanTime}, nil
 		}
 
 		// Anchor on the most recent stored plan_time so the cron evaluator

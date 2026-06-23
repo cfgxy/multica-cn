@@ -209,39 +209,62 @@ func TestAutopilotScheduleJobMissedSchedulesCollapse(t *testing.T) {
 }
 
 // TestAutopilotScheduleJobCrashRecovery covers MUL-3551 §5: a runner
-// that crashes between "claim plan_time" and "write terminal SUCCESS"
-// must NOT duplicate the autopilot_run on the next tick. The stale
-// lease is reclaimed via AllowStaleReentry + the DispatchAutopilotForPlan
-// idempotency lookup reuses the prior run row.
+// that crashes after claiming a plan_time and creating its
+// downstream issue/task — but before writing terminal SUCCESS — must
+// be recovered on the next tick. The stale lease is swept to FAILED
+// (error_code='stale_timeout'), the planner returns the SAME
+// plan_time (because latest.RetryEligible(now) is true), tryClaim's
+// FAILED-with-retry branch fires (incrementing attempt), the
+// dispatch path is re-entered, DispatchAutopilotForPlan sees the
+// already-complete run from the first attempt and reuses it, and
+// the row finally transitions to SUCCESS — all without duplicating
+// the autopilot_run.
 func TestAutopilotScheduleJobCrashRecovery(t *testing.T) {
 	ctx := context.Background()
 
 	trigger, mgr, _ := setupAutopilotScheduleJob(t, "*/1 * * * *")
 
-	// Tick 1: dispatch happens, sys_cron_executions has SUCCESS, one
-	// autopilot_run row exists.
+	// Tick 1: dispatch creates run + task; sys_cron_executions row
+	// reaches SUCCESS.
 	if err := mgr.RunOnce(ctx); err != nil {
 		t.Fatalf("tick 1: %v", err)
 	}
 	var execID, leaseToken string
 	var planTime time.Time
+	var attempt int
 	if err := testPool.QueryRow(ctx, `
-		SELECT id, lease_token, plan_time
+		SELECT id, lease_token, plan_time, attempt
 		  FROM sys_cron_executions
 		 WHERE job_name = $1 AND scope_kind = $2 AND scope_id = $3
 	`, scheduler.JobNameAutopilotScheduleDispatch, scheduler.ScopeKindAutopilotTrigger,
-		util.UUIDToString(trigger.ID)).Scan(&execID, &leaseToken, &planTime); err != nil {
+		util.UUIDToString(trigger.ID)).Scan(&execID, &leaseToken, &planTime, &attempt); err != nil {
 		t.Fatalf("read first exec row: %v", err)
 	}
+	if attempt != 1 {
+		t.Fatalf("first attempt must be attempt=1, got %d", attempt)
+	}
 
-	// Simulate a crash mid-dispatch at the SAME plan_time: rewrite
-	// the row to RUNNING with an expired lease, AND keep the
-	// autopilot_run row that the first tick created. This is exactly
-	// the state where the OLD scheduler would lose the occurrence
-	// (next_run_at IS NULL recovery would jump to "now") — under the
-	// new model, the lease theft + planned_at lookup must produce
-	// a SECOND attempt at the SAME plan_time without creating a
-	// duplicate run.
+	// The first-tick run carries planned_at + a real task linkage —
+	// that's the "complete" snapshot the retry must reuse, not
+	// duplicate.
+	var firstRunID pgtype.UUID
+	var firstRunTaskValid bool
+	if err := testPool.QueryRow(ctx, `
+		SELECT id, task_id IS NOT NULL FROM autopilot_run WHERE trigger_id = $1
+	`, trigger.ID).Scan(&firstRunID, &firstRunTaskValid); err != nil {
+		t.Fatalf("read first run: %v", err)
+	}
+	if !firstRunTaskValid {
+		t.Fatalf("first attempt must have created a real downstream task; task_id is NULL")
+	}
+
+	// Simulate a crash AFTER the first attempt's terminal write
+	// would have been ignored: rewrite the exec row to RUNNING with
+	// an expired stale_after AND a different (ghost) lease_token, so
+	// it looks exactly like the post-crash state where the runner
+	// died before its terminal UPDATE landed. The autopilot_run row
+	// from tick 1 stays as the "complete" snapshot — that is what
+	// DispatchAutopilotForPlan must reuse on the retry.
 	if _, err := testPool.Exec(ctx, `
 		UPDATE sys_cron_executions
 		   SET status      = 'RUNNING',
@@ -256,34 +279,59 @@ func TestAutopilotScheduleJobCrashRecovery(t *testing.T) {
 		t.Fatalf("simulate crash mid-dispatch: %v", err)
 	}
 
-	// Tick 2: stale-steal sweeps the abandoned lease, the planner
-	// returns the same plan_time again because cfg.CreatedAt is the
-	// only floor (the LatestPlanInfo lookup now sees a FAILED row,
-	// which the every_plan retry path would handle — but for our
-	// CatchUpLatestOnly hook the "latest cron occurrence in window"
-	// is still that same plan_time, so a fresh attempt happens).
-	//
-	// What we actually want to assert: NO duplicate autopilot_run is
-	// created even after the second attempt runs through the
-	// handler. The DispatchAutopilotForPlan lookup is the guard.
-	//
-	// Note: the stale row will be transitioned to FAILED on the next
-	// tick first, then a new attempt is started. The retry path in
-	// tryClaim only re-uses the same row at the same plan_time —
-	// which is exactly what we want here. Either way, autopilot_run
-	// must not duplicate.
+	// Tick 2: stale sweep + retry + dispatch + final SUCCESS.
 	if err := mgr.RunOnce(ctx); err != nil {
 		t.Fatalf("tick 2 (recovery): %v", err)
 	}
 
-	var runRows int
+	// The exec row must now be SUCCESS at attempt=2, still at the
+	// SAME plan_time (proving the retry path fired and the planner
+	// did not silently advance past the FAILED bucket — the canonical
+	// bug from the #4444 review).
+	var recoveredStatus string
+	var recoveredAttempt int
+	var recoveredPlan time.Time
 	if err := testPool.QueryRow(ctx, `
-		SELECT COUNT(*) FROM autopilot_run WHERE trigger_id = $1
-	`, trigger.ID).Scan(&runRows); err != nil {
-		t.Fatalf("count run rows after recovery: %v", err)
+		SELECT status, attempt, plan_time
+		  FROM sys_cron_executions
+		 WHERE id = $1
+	`, execID).Scan(&recoveredStatus, &recoveredAttempt, &recoveredPlan); err != nil {
+		t.Fatalf("read recovered exec row: %v", err)
 	}
-	if runRows != 1 {
-		t.Fatalf("crash recovery must NOT duplicate autopilot_run; got %d rows", runRows)
+	if !recoveredPlan.Equal(planTime) {
+		t.Fatalf("retry must stay on the same plan_time: tick1=%s tick2=%s",
+			planTime.Format(time.RFC3339), recoveredPlan.Format(time.RFC3339))
+	}
+	if recoveredAttempt != 2 {
+		t.Fatalf("retry must increment attempt (the FAILED-retry branch fired); got attempt=%d", recoveredAttempt)
+	}
+	if recoveredStatus != "SUCCESS" {
+		t.Fatalf("retry must reach terminal SUCCESS on the same row; got status=%q", recoveredStatus)
+	}
+
+	// Exactly one autopilot_run, and it is the SAME one tick 1
+	// created — DispatchAutopilotForPlan's idempotency + the
+	// complete-run reuse path in isAutopilotRunComplete prevent a
+	// duplicate.
+	rows, err := testPool.Query(ctx, `SELECT id FROM autopilot_run WHERE trigger_id = $1`, trigger.ID)
+	if err != nil {
+		t.Fatalf("list run rows: %v", err)
+	}
+	defer rows.Close()
+	var seenIDs []pgtype.UUID
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		seenIDs = append(seenIDs, id)
+	}
+	if len(seenIDs) != 1 {
+		t.Fatalf("crash recovery must keep autopilot_run at exactly one row, got %d", len(seenIDs))
+	}
+	if seenIDs[0] != firstRunID {
+		t.Fatalf("retry must reuse tick-1's run row; got new id %s",
+			util.UUIDToString(seenIDs[0]))
 	}
 }
 
@@ -415,32 +463,30 @@ func TestAutopilotScheduleJobDisabledTriggerSkips(t *testing.T) {
 }
 
 // TestAutopilotScheduleJobPausedAutopilotSkipsAtHandler covers the
-// race window between the scope-list (which filters
-// a.status='active') and the handler (which re-reads autopilot.status
-// in case it changed). If we pause the autopilot between those two
-// points, the handler returns a SUCCESS no-op carrying the reason in
-// the result JSON — no run is created.
+// in-handler race window: scope-list says "active" at tick start,
+// but the autopilot is paused before the per-scope handler runs
+// (e.g. by an HTTP PUT that landed between scope-list and dispatch).
+// The handler MUST re-read autopilot.status and treat the run as a
+// SUCCESS no-op (skipped_reason: "autopilot_inactive") instead of
+// firing a real dispatch.
+//
+// Driving this via `mgr.RunOnce` would not exercise the guard —
+// scope-list's SQL filter already excludes paused autopilots so the
+// handler is never reached. Instead we invoke `job.Handler` directly
+// with a stub HandlerInput, which is exactly how the manager calls
+// it after a successful claim. JobSpec.Handler is a public field on
+// the JobSpec, so no test-only export is needed.
 func TestAutopilotScheduleJobPausedAutopilotSkipsAtHandler(t *testing.T) {
 	ctx := context.Background()
 	queries := db.New(testPool)
-	trigger, mgr, _ := setupAutopilotScheduleJob(t, "*/1 * * * *")
+	bus := events.New()
+	taskSvc := service.NewTaskService(queries, testPool, nil, bus)
+	autopilotSvc := service.NewAutopilotService(queries, testPool, bus, taskSvc)
 
-	// Tick once to register a baseline: this populates the cache and
-	// produces one row.
-	if err := mgr.RunOnce(ctx); err != nil {
-		t.Fatalf("baseline tick: %v", err)
-	}
-	var baselineExec int
-	if err := testPool.QueryRow(ctx, `
-		SELECT COUNT(*) FROM sys_cron_executions
-		 WHERE job_name = $1 AND scope_kind = $2 AND scope_id = $3
-	`, scheduler.JobNameAutopilotScheduleDispatch, scheduler.ScopeKindAutopilotTrigger,
-		util.UUIDToString(trigger.ID)).Scan(&baselineExec); err != nil {
-		t.Fatalf("count baseline exec rows: %v", err)
-	}
+	trigger, _, _ := setupAutopilotScheduleJob(t, "*/1 * * * *")
 
-	// Pause the autopilot; the scope-list SQL will exclude it, so
-	// the planner will produce zero plans on the next tick.
+	// Pause the parent autopilot AFTER setup — simulates the
+	// "paused after scope-list" race the in-handler guard exists for.
 	if _, err := queries.UpdateAutopilot(ctx, db.UpdateAutopilotParams{
 		ID:     trigger.AutopilotID,
 		Status: pgtype.Text{String: "paused", Valid: true},
@@ -448,39 +494,67 @@ func TestAutopilotScheduleJobPausedAutopilotSkipsAtHandler(t *testing.T) {
 		t.Fatalf("pause autopilot: %v", err)
 	}
 
-	if err := mgr.RunOnce(ctx); err != nil {
-		t.Fatalf("second tick after pause: %v", err)
+	job := scheduler.AutopilotScheduleDispatchJob(testPool, queries, autopilotSvc)
+
+	// Drive the handler directly. plan_time is arbitrary — what we
+	// are asserting is that the handler re-reads autopilot.status
+	// and returns a SUCCESS no-op WITHOUT calling DispatchAutopilotForPlan.
+	planTime := time.Now().UTC().Truncate(time.Minute)
+	result, err := job.Handler(ctx, scheduler.HandlerInput{
+		Job:      &job,
+		Scope:    scheduler.Scope{Kind: scheduler.ScopeKindAutopilotTrigger, ID: util.UUIDToString(trigger.ID)},
+		PlanTime: planTime,
+		Attempt:  1,
+		RunnerID: "handler-guard-test",
+		Heartbeat: func(ctx context.Context) error { return nil },
+	})
+	if err != nil {
+		t.Fatalf("handler returned error: %v", err)
+	}
+	if result.RowsAffected != 0 {
+		t.Fatalf("paused autopilot must produce a no-op (rows_affected=0), got %d", result.RowsAffected)
+	}
+	if got, _ := result.Result["skipped_reason"].(string); got != "autopilot_inactive" {
+		t.Fatalf("expected skipped_reason=autopilot_inactive, got %q", got)
 	}
 
-	// No NEW exec row should appear — the scope-list excludes paused
-	// autopilots, so the planner is never invoked for this scope.
-	var afterExec int
+	// And — critically — no autopilot_run should have been created
+	// by this handler invocation. (Dispatch would have produced one.)
+	var runRows int
 	if err := testPool.QueryRow(ctx, `
-		SELECT COUNT(*) FROM sys_cron_executions
-		 WHERE job_name = $1 AND scope_kind = $2 AND scope_id = $3
-	`, scheduler.JobNameAutopilotScheduleDispatch, scheduler.ScopeKindAutopilotTrigger,
-		util.UUIDToString(trigger.ID)).Scan(&afterExec); err != nil {
-		t.Fatalf("count exec rows after pause: %v", err)
+		SELECT COUNT(*) FROM autopilot_run WHERE trigger_id = $1
+	`, trigger.ID).Scan(&runRows); err != nil {
+		t.Fatalf("count run rows: %v", err)
 	}
-	if afterExec != baselineExec {
-		t.Fatalf("paused autopilot should not produce additional exec rows; baseline=%d after=%d", baselineExec, afterExec)
+	if runRows != 0 {
+		t.Fatalf("paused-autopilot handler guard must not create a run, got %d", runRows)
 	}
 }
 
-// TestAutopilotScheduleJobBadCronFailsLoudly verifies that a trigger
-// with a bad cron expression produces a FAILED audit row (with a
-// useful error_msg) rather than silently doing nothing. This is the
-// fail-loud property MUL-3551 requires: dispatch errors must be
-// observable through sys_cron_executions.
-func TestAutopilotScheduleJobBadCronFailsLoudly(t *testing.T) {
+// TestAutopilotScheduleJobBadCronStaysSilent locks in the failure
+// surface for malformed cron expressions: the trigger create/update
+// handlers reject bad cron at HTTP time (so this is a defence in
+// depth), but if a corrupt expression ever lands in
+// autopilot_trigger.cron_expression, the planner hook must fail
+// without dispatching anything.
+//
+// The hook returns its parse error to manager.runJob, which logs a
+// warning and SKIPS this scope for the tick. No row is inserted
+// into sys_cron_executions because nothing was ever claimed —
+// `tryClaim` only writes when a plan_time is offered. This is the
+// right shape: a parse error is a permanent configuration problem,
+// not a transient lease failure, so the retry-with-FAILED-row
+// machinery does not apply. The audit signal is the manager
+// warning log instead.
+//
+// The contract this test pins is therefore: NO dispatch, NO exec
+// row, and NO autopilot_run created. The bad cron MUST NOT silently
+// look like a SUCCESS.
+func TestAutopilotScheduleJobBadCronStaysSilent(t *testing.T) {
 	ctx := context.Background()
 
 	trigger, mgr, _ := setupAutopilotScheduleJob(t, "*/1 * * * *")
 
-	// Replace the cron with an invalid expression. The scope-list
-	// SQL still returns it (its filter only checks cron_expression IS
-	// NOT NULL AND <> ''), and the planner hook will fail to parse —
-	// the manager records a FAILED row with the parse error.
 	if _, err := testPool.Exec(ctx,
 		`UPDATE autopilot_trigger SET cron_expression = $2 WHERE id = $1`,
 		trigger.ID, "garbage not a cron",
@@ -492,11 +566,18 @@ func TestAutopilotScheduleJobBadCronFailsLoudly(t *testing.T) {
 		t.Fatalf("tick: %v", err)
 	}
 
-	// The plan hook failure surfaces as a manager warning log; it
-	// does not create a sys_cron_executions row because the row is
-	// only inserted when a plan_time is claimed. We instead assert
-	// that NO autopilot_run was created — i.e. a bad cron does not
-	// accidentally fire something.
+	var execRows int
+	if err := testPool.QueryRow(ctx, `
+		SELECT COUNT(*) FROM sys_cron_executions
+		 WHERE job_name = $1 AND scope_kind = $2 AND scope_id = $3
+	`, scheduler.JobNameAutopilotScheduleDispatch, scheduler.ScopeKindAutopilotTrigger,
+		util.UUIDToString(trigger.ID)).Scan(&execRows); err != nil {
+		t.Fatalf("count exec rows: %v", err)
+	}
+	if execRows != 0 {
+		t.Fatalf("bad cron must not produce sys_cron_executions rows (no claim happens), got %d", execRows)
+	}
+
 	var runRows int
 	if err := testPool.QueryRow(ctx, `
 		SELECT COUNT(*) FROM autopilot_run WHERE trigger_id = $1
