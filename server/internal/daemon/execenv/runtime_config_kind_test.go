@@ -125,16 +125,17 @@ func TestTaskKindHasIssueContext(t *testing.T) {
 }
 
 // TestBuildMetaSkillContentKindMatrix locks in which sections each kind
-// emits today. This is the post-refactor structural canary for MUL-3560
-// PR 0.5: any later PR that drops a section from a kind must update the
-// negative expectations here in lockstep, and any PR that accidentally
-// adds a section back fails this test.
+// emits today, after MUL-3560 PR 0.6's content gating. This is the
+// single machine-checked source of truth for the Section × Kind matrix
+// documented on `buildMetaSkillContent` — any later PR that drops or
+// re-adds a section for a kind must update the expectations here in
+// lockstep, and any PR that accidentally regresses fails this test.
 //
 // The fixtures here intentionally use the minimal context required to
-// trigger each kind, with one repo and one skill so Repositories / Skills
-// fire. They are NOT meant to exercise every conditional inside each
-// section — that is covered by the dedicated per-section tests in the
-// rest of this package.
+// trigger each kind, with one repo and one skill so Repositories /
+// Skills can fire when the matrix allows them. They are NOT meant to
+// exercise every conditional inside each section — that is covered by
+// the dedicated per-section tests in the rest of this package.
 func TestBuildMetaSkillContentKindMatrix(t *testing.T) {
 	t.Parallel()
 
@@ -149,6 +150,7 @@ func TestBuildMetaSkillContentKindMatrix(t *testing.T) {
 		// in mustHave should not have it)
 	}
 	checks := []sectionCheck{
+		// Always-on rows — every kind gets these.
 		{
 			heading:  "# Multica Agent Runtime",
 			mustHave: allKinds(),
@@ -157,9 +159,6 @@ func TestBuildMetaSkillContentKindMatrix(t *testing.T) {
 			heading:  "## Background Task Safety",
 			mustHave: allKinds(),
 		},
-		// Identity is only rendered when AgentName/ID/Instructions are
-		// present; the matrix tests below provide AgentName for every
-		// kind so it should fire across the board.
 		{
 			heading:  "## Agent Identity",
 			mustHave: allKinds(),
@@ -169,12 +168,34 @@ func TestBuildMetaSkillContentKindMatrix(t *testing.T) {
 			mustHave: allKinds(),
 		},
 		{
-			heading:  "## Comment Formatting",
+			heading:  "### Workflow",
 			mustHave: allKinds(),
 		},
 		{
-			heading:  "## Repositories",
+			heading:  "## Important: Always Use the `multica` CLI",
 			mustHave: allKinds(),
+		},
+		{
+			heading:  "## Output",
+			mustHave: allKinds(),
+		},
+
+		// Gated rows — present only on the kinds the matrix allows.
+		{
+			heading: "## Comment Formatting",
+			mustHave: map[taskKind]bool{
+				kindCommentTriggered:    true,
+				kindAssignmentTriggered: true,
+			},
+		},
+		{
+			heading: "## Repositories",
+			mustHave: map[taskKind]bool{
+				kindCommentTriggered:    true,
+				kindAssignmentTriggered: true,
+				kindAutopilotRunOnly:    true,
+				kindChat:                true,
+			},
 		},
 		{
 			heading: "## Issue Metadata",
@@ -190,10 +211,6 @@ func TestBuildMetaSkillContentKindMatrix(t *testing.T) {
 			},
 		},
 		{
-			heading:  "### Workflow",
-			mustHave: allKinds(),
-		},
-		{
 			heading: "## Sub-issue Creation",
 			mustHave: map[taskKind]bool{
 				kindCommentTriggered:    true,
@@ -201,24 +218,27 @@ func TestBuildMetaSkillContentKindMatrix(t *testing.T) {
 			},
 		},
 		{
-			heading:  "## Skills",
-			mustHave: allKinds(),
+			heading: "## Skills",
+			mustHave: map[taskKind]bool{
+				kindCommentTriggered:    true,
+				kindAssignmentTriggered: true,
+				kindAutopilotRunOnly:    true,
+				kindChat:                true,
+			},
 		},
 		{
-			heading:  "## Mentions",
-			mustHave: allKinds(),
+			heading: "## Mentions",
+			mustHave: map[taskKind]bool{
+				kindCommentTriggered:    true,
+				kindAssignmentTriggered: true,
+			},
 		},
 		{
-			heading:  "## Attachments",
-			mustHave: allKinds(),
-		},
-		{
-			heading:  "## Important: Always Use the `multica` CLI",
-			mustHave: allKinds(),
-		},
-		{
-			heading:  "## Output",
-			mustHave: allKinds(),
+			heading: "## Attachments",
+			mustHave: map[taskKind]bool{
+				kindCommentTriggered:    true,
+				kindAssignmentTriggered: true,
+			},
 		},
 	}
 
@@ -264,7 +284,19 @@ func TestBuildMetaSkillContentKindMatrix(t *testing.T) {
 	for kind, ctx := range fixtures {
 		out := buildMetaSkillContent("claude", ctx)
 		for _, c := range checks {
-			present := strings.Contains(out, c.heading)
+			// Match the heading as a discrete line (preceded by a
+			// newline and followed by the trailing blank line every
+			// section helper writes). A bare substring check would
+			// also fire on inline references like "See ## Comment
+			// Formatting below" inside Available Commands, which
+			// is a reference, not the heading itself.
+			//
+			// Special-case the very first line: the H1 banner has
+			// no leading newline, so an explicit prefix check
+			// covers it.
+			needle := "\n" + c.heading + "\n"
+			firstLine := c.heading + "\n"
+			present := strings.HasPrefix(out, firstLine) || strings.Contains(out, needle)
 			want := c.mustHave[kind]
 			if want && !present {
 				t.Errorf("kind=%d: expected heading %q in brief", kind, c.heading)
@@ -272,6 +304,56 @@ func TestBuildMetaSkillContentKindMatrix(t *testing.T) {
 			if !want && present {
 				t.Errorf("kind=%d: heading %q should NOT be in brief (matrix gating regression)", kind, c.heading)
 			}
+		}
+	}
+}
+
+// TestBuildMetaSkillContentQuickCreateAvailableCommands locks in the
+// quick-create-specific minimal Available Commands variant introduced in
+// MUL-3560 PR 0.6. Quick-create's hard guardrails forbid any CLI other
+// than `issue create`, so the full Core list (which advertises get /
+// status / metadata / comment add / etc.) is replaced with a single
+// `issue create` line plus the "everything else is `multica --help`"
+// escape hatch.
+func TestBuildMetaSkillContentQuickCreateAvailableCommands(t *testing.T) {
+	t.Parallel()
+	out := buildMetaSkillContent("codex", TaskContextForEnv{
+		QuickCreatePrompt: "create an issue about flaky tests",
+		AgentName:         "Agent X",
+		AgentID:           "agent-x",
+	})
+
+	// The minimal variant keeps the `issue create` line plus the help
+	// escape hatch...
+	for _, want := range []string{
+		"## Available Commands",
+		"multica issue create --title",
+		"`multica --help`",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("quick_create Available Commands missing %q", want)
+		}
+	}
+
+	// ...and intentionally drops every command quick-create's hard
+	// guardrails forbid. Listing them is pure noise the model is told
+	// not to call.
+	for _, banned := range []string{
+		"multica issue get <id>",
+		"multica issue comment list <issue-id>",
+		"multica issue update <id>",
+		"multica issue status <id> <status>",
+		"multica issue comment add <issue-id>",
+		"multica issue metadata list <issue-id>",
+		"multica issue metadata set <issue-id>",
+		"multica issue metadata delete <issue-id>",
+		"multica issue children <id>",
+		"multica repo checkout <url>",
+		"### Squad maintenance",
+		"multica squad member set-role",
+	} {
+		if strings.Contains(out, banned) {
+			t.Errorf("quick_create Available Commands should NOT advertise %q (hard guardrails forbid the call)", banned)
 		}
 	}
 }

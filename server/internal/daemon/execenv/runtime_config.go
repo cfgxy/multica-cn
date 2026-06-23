@@ -366,14 +366,34 @@ func CleanupRuntimeConfig(workDir, provider string) error {
 // As of MUL-3560 PR 0.5 the builder is a thin kind-aware dispatcher: each
 // section of the brief lives in its own `writeXxx` helper (see
 // runtime_config_sections.go), and the assembly order is driven by the
-// taskKind classification (see runtime_config_kind.go). This PR is a
-// pure refactor — output is byte-for-byte identical to the pre-refactor
-// monolithic builder for every existing test fixture. The follow-up PR
-// (0.6) will start gating sections per the Section × Kind matrix from
-// Eve's MUL-3560 design comment (e.g. drop Mentions / Comment Formatting /
-// Issue Metadata out of quick-create), with negative assertions added
-// alongside each removal so each kind's brief contract becomes
-// machine-checked.
+// taskKind classification (see runtime_config_kind.go).
+//
+// PR 0.6 layers per-kind section gating on top of that dispatcher: every
+// section that a given kind has no use for is now elided at the call site
+// instead of rendered and ignored. The current matrix is:
+//
+//	Section               | comment | assign | autopilot | quick_create | chat
+//	----------------------+---------+--------+-----------+--------------+------
+//	Available Commands    |   full  |  full  |   full    |   minimal    | full
+//	Comment Formatting    |    ✓    |   ✓    |     —     |      —       |  —
+//	Repositories          |    △    |   △    |     △     |      —       |  △
+//	Project Context       |    △    |   △    |     —     |      —       |  —
+//	Issue Metadata        |    ✓    |   ✓    |     —     |      —       |  —
+//	Instruction Precedence|    —    |   ✓    |     —     |      —       |  —
+//	Sub-issue Creation    |    ✓    |   ✓    |     —     |      —       |  —
+//	Skills                |    ✓    |   ✓    |     ✓     |      —       |  ✓
+//	Mentions              |    ✓    |   ✓    |     —     |      —       |  —
+//	Attachments           |    ✓    |   ✓    |     —     |      —       |  —
+//
+// (✓ always; — never; △ data-driven inside the helper.) Always-on rows —
+// Header, Background Task Safety, Agent Identity, Requesting User, Task
+// Initiator, Workspace Context, Workflow, Always Use CLI, Output — are
+// shared by every kind and emitted unconditionally (or gated by their own
+// data preconditions).
+//
+// The matrix above is the source of truth for any later content-gating
+// change; updating either side without the other is the regression
+// TestBuildMetaSkillContentKindMatrix catches.
 func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 	var b strings.Builder
 	kind := classifyTask(ctx)
@@ -394,19 +414,48 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 	writeTaskInitiator(&b, ctx)
 	writeWorkspaceContext(&b, ctx)
 
-	// === Available Commands + Comment Formatting ===
+	// === Available Commands ===
 	//
-	// In the pre-refactor builder both sections are unconditional. PR 0.5
-	// preserves that — the follow-up PR will replace Available Commands
-	// with a per-kind subset (quick-create gets only `issue create`,
-	// autopilot gets a read-only subset, etc.) and drop Comment Formatting
-	// for kinds that never post comments.
-	writeAvailableCommands(&b)
-	writeCommentFormatting(&b)
+	// Most kinds get the full Core CLI list. Quick-create collapses to a
+	// minimal "just `issue create`" form because its hard guardrails
+	// forbid get / status / comment add anyway — there is no value in
+	// rendering 4k chars of commands the agent must not call. Autopilot
+	// keeps the full list because run-only autopilot tasks are open-
+	// ended and may need any command via their instructions.
+	switch kind {
+	case kindQuickCreate:
+		writeAvailableCommandsQuickCreate(&b)
+	default:
+		writeAvailableCommands(&b)
+	}
+
+	// === Comment Formatting ===
+	//
+	// Only kinds that actually post issue comments need the
+	// `--content-file` shell-safety drill. Chat replies go through the
+	// chat pipeline, not `comment add`; quick-create runs exactly one
+	// `issue create` then exits; autopilot run-only does not comment by
+	// default (per its workflow guardrails).
+	if kind == kindCommentTriggered || kind == kindAssignmentTriggered {
+		writeCommentFormatting(&b)
+	}
 
 	// === Conditional context sections ===
-	writeRepositories(&b, ctx)
-	writeProjectContext(&b, ctx)
+	//
+	// Repositories: cut from quick-create only — that kind's hard
+	// guardrails forbid checkout. All other kinds keep the existing
+	// data-driven `if len(ctx.Repos) > 0` guard inside the helper.
+	if kind != kindQuickCreate {
+		writeRepositories(&b, ctx)
+	}
+
+	// Project Context: scoped to issue kinds. Chat / quick-create /
+	// autopilot do not operate on an issue belonging to a project, and
+	// even when they did, the project resources pointer would be noise
+	// for their workflows.
+	if kind.hasIssueContext() {
+		writeProjectContext(&b, ctx)
+	}
 
 	// Issue Metadata: only kinds that operate on a real Multica issue
 	// (comment-triggered / assignment-triggered) can read or pin metadata,
@@ -454,9 +503,31 @@ func buildMetaSkillContent(provider string, ctx TaskContextForEnv) string {
 		writeSubIssueCreation(&b)
 	}
 
-	writeSkills(&b, provider, ctx)
-	writeMentions(&b)
-	writeAttachments(&b)
+	// Skills: kept for every kind that may chain into a discovered
+	// skill at runtime (comment / assignment / autopilot / chat).
+	// Quick-create is a one-shot `issue create` and never loads skills,
+	// so we drop the list. The helper still no-ops when ctx.AgentSkills
+	// is empty.
+	if kind != kindQuickCreate {
+		writeSkills(&b, provider, ctx)
+	}
+
+	// Mentions: only the kinds that produce a comment need the
+	// `@mention` side-effect discipline. Chat / quick-create / autopilot
+	// never emit a comment under their workflow, so the section is pure
+	// noise for them.
+	if kind == kindCommentTriggered || kind == kindAssignmentTriggered {
+		writeMentions(&b)
+	}
+
+	// Attachments: same shape as Comment Formatting / Mentions — only
+	// kinds that work on a real issue (and therefore could surface an
+	// attached file in the issue / comment timeline) need the CLI
+	// pointer.
+	if kind == kindCommentTriggered || kind == kindAssignmentTriggered {
+		writeAttachments(&b)
+	}
+
 	writeAlwaysUseCLI(&b)
 	writeOutput(&b, kind, ctx)
 

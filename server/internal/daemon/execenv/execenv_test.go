@@ -4003,16 +4003,23 @@ func TestInjectRuntimeConfigAssignmentTriggerMentionsRecent(t *testing.T) {
 // when the task carries a real issue id (comment-triggered or
 // assignment-triggered). Chat / quick-create / run-only autopilot don't
 // have an issue, so injecting the section there would just guarantee a
-// failed CLI call on every entry. The discovery line in Available
-// Commands → Core is global and must appear everywhere so that the agent
-// can still reach the commands if a future workflow path needs them.
+// failed CLI call on every entry.
+//
+// The Available Commands → Core discovery lines are emitted for every
+// kind EXCEPT quick-create: quick-create gets a minimal `issue create`-
+// only Available Commands variant (introduced in MUL-3560 PR 0.6)
+// because its hard guardrails forbid `issue get` / `issue status` /
+// `issue comment add` / metadata commands anyway. Listing them in
+// Available Commands would tempt the model to bend the guardrail. The
+// other four kinds (comment / assignment / autopilot / chat) keep the
+// full Core list so an agent that needs metadata discovery has it.
 func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 	t.Parallel()
 
-	// Discovery lines in Available Commands → Core must appear in EVERY
-	// runtime config, regardless of trigger type. These are the single
-	// discovery point for the CLI when an agent decides to read or write
-	// metadata outside the numbered workflow.
+	// Discovery lines in Available Commands → Core must appear in every
+	// runtime config EXCEPT quick-create. These are the single discovery
+	// point for the CLI when an agent decides to read or write metadata
+	// outside the numbered workflow.
 	coreDiscoveryLines := []string{
 		"multica issue metadata list <issue-id>",
 		"multica issue metadata set <issue-id> --key <k> --value <v> [--type string|number|bool]",
@@ -4165,10 +4172,23 @@ func TestInjectRuntimeConfigIssueMetadataSectionScope(t *testing.T) {
 			}
 			s := string(data)
 
-			// Global Core discovery lines apply everywhere.
-			for _, want := range coreDiscoveryLines {
-				if !strings.Contains(s, want) {
-					t.Errorf("Available Commands → Core missing %q\n---\n%s", want, s)
+			// Global Core discovery lines apply everywhere EXCEPT
+			// quick-create, which uses the minimal Available
+			// Commands variant introduced in MUL-3560 PR 0.6. For
+			// quick-create we assert the inverse — the lines must
+			// be absent — so a future regression that re-adds the
+			// full Core list to quick-create fails this test.
+			if tc.ctx.QuickCreatePrompt != "" {
+				for _, banned := range coreDiscoveryLines {
+					if strings.Contains(s, banned) {
+						t.Errorf("quick_create Available Commands should NOT advertise %q (minimal variant)\n---\n%s", banned, s)
+					}
+				}
+			} else {
+				for _, want := range coreDiscoveryLines {
+					if !strings.Contains(s, want) {
+						t.Errorf("Available Commands → Core missing %q\n---\n%s", want, s)
+					}
 				}
 			}
 

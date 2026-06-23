@@ -82,8 +82,21 @@ func classifyTask(ctx TaskContextForEnv) taskKind {
 }
 
 // hasIssueContext returns true for the kinds that operate on a real Multica
-// issue and therefore can read / pin issue-scoped state (Issue Metadata,
-// Sub-issue Creation, Project Context). Equivalent to the pre-refactor
+// issue and therefore can read / pin issue-scoped state. As of MUL-3560
+// PR 0.6 the dispatcher gates these sections on this predicate:
+//
+//   - Project Context
+//   - Issue Metadata
+//   - Sub-issue Creation
+//
+// All three are meaningless without an issue id and would either render an
+// empty body or steer the agent into a guaranteed-failed CLI call. Mentions
+// / Comment Formatting / Attachments are NOT gated by this predicate even
+// though they look similar — those have their own dispatch rule because
+// they care about whether the kind posts a comment, not whether it has an
+// issue id (see runtime_config.go).
+//
+// Equivalent to the pre-refactor scattered check
 // `ctx.ChatSessionID == "" && ctx.QuickCreatePrompt == "" && ctx.AutopilotRunID == ""`
 // — extracted so the predicate has a name and every call site agrees on its
 // meaning.

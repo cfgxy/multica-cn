@@ -149,6 +149,26 @@ func writeAvailableCommands(b *strings.Builder) {
 	b.WriteString("- `multica squad member set-role <squad-id> --member-id <id> --member-type <agent|member> --role <role> [--output json]` — Change a squad member role in place; use this instead of remove+add when only the role changes.\n\n")
 }
 
+// writeAvailableCommandsQuickCreate emits a minimal Available Commands
+// section for quick-create runs. Quick-create's hard workflow guardrails
+// require **exactly one** `multica issue create` invocation and forbid
+// `issue get` / `issue status` / `issue comment add`, so the full Core
+// list (4k+ chars) is pure noise — every other command would just tempt
+// the model to bend the guardrail. Squad maintenance is also dropped:
+// quick-create is a one-shot prompt-to-issue translator and cannot edit
+// squads.
+//
+// The shape mirrors writeAvailableCommands so a reader knows what they
+// are looking at, but the body is the single command line plus the
+// "everything else is `multica --help`" escape hatch. ~500 chars vs
+// ~4400 for the full variant.
+func writeAvailableCommandsQuickCreate(b *strings.Builder) {
+	b.WriteString("## Available Commands\n\n")
+	b.WriteString("**Use `--output json` for structured data.** For anything beyond `issue create`, run `multica --help` or `multica <command> --help`.\n\n")
+	b.WriteString("### Core\n")
+	b.WriteString("- `multica issue create --title \"...\" [--description \"...\" | --description-file <path> | --description-stdin] [--priority X] [--status X] [--assignee X | --assignee-id <uuid>] [--parent <issue-id>] [--stage N] [--project <project-id>] [--due-date <RFC3339>] [--attachment <path>]` — Create a new issue; `--attachment` may be repeated. For agent-authored long descriptions, prefer `--description-file <path>` over `--description-stdin` (flags after a HEREDOC terminator can be silently swallowed, #4182).\n\n")
+}
+
 // writeCommentFormatting emits the cross-platform "write to file then post
 // with --content-file" guardrail. Windows branch uses Remove-Item; everything
 // else uses rm. See BuildCommentReplyInstructions for the canonical inline
