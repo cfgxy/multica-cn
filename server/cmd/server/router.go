@@ -184,13 +184,36 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		h.WebhookIPRateLimiter = handler.NewRedisWebhookIPRateLimiter(rdb, handler.DefaultWebhookIPRateLimit())
 	}
 
+	// Channel engine (MUL-3620): the platform-agnostic inbound runtime.
+	// Built UNCONDITIONALLY — it drives any channel.Channel, not just
+	// Feishu, so it must not depend on the Lark master key (a future
+	// Slack-only deployment has no Lark key). Platform adapters register a
+	// Factory + ResolverSet into it below; the Supervisor enumerates active
+	// installations across ALL channel types and routes each to its
+	// registered platform. With no platform registered it simply finds no
+	// installations and idles. The Router is the single shared inbound
+	// handler injected into every Channel.
+	channelRegistry := channel.NewRegistry()
+	channelRouter := engine.NewRouter(h.IssueService, h.TaskService, queries, engine.RouterConfig{Logger: slog.Default()})
+	// Debounce the per-session run trigger so a burst of messages collapses
+	// into one agent run instead of one per message (MUL-2968).
+	channelRouter.EnableRunBatching(engine.DefaultChatRunBatchWindow)
+	h.ChannelRouter = channelRouter
+	h.ChannelSupervisor = engine.NewSupervisor(
+		lark.NewChannelInstallationStore(queries),
+		channelRegistry,
+		channelRouter.Handle,
+		engine.Config{},
+	)
+
 	// Lark integration. Only wired when MULTICA_LARK_SECRET_KEY is set:
 	// the InstallationService refuses to fall back to plaintext storage
 	// for app_secret, and the BindingTokenService cannot mint usable
 	// tokens without it either. When the key is absent the Lark
 	// handlers return 503 with a clear message; the rest of the server
 	// continues to start so self-host deployments that have not opted
-	// in to Lark are unaffected.
+	// in to Lark are unaffected. Feishu registers its Factory + ResolverSet
+	// into the channel engine above.
 	if larkKey, err := secretbox.LoadKey("MULTICA_LARK_SECRET_KEY"); err == nil {
 		box, err := secretbox.New(larkKey)
 		if err != nil {
@@ -242,46 +265,23 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				typingIndicator := lark.NewTypingIndicatorManager(larkClient, installSvc, cs, slog.Default())
 				patcher.SetTypingIndicatorManager(typingIndicator)
 
-				// Inbound pipeline: lark_inbound_audit logger,
-				// channel-aware ChatSessionService, and the
-				// Dispatcher that orders identity / dedup / append /
-				// /issue / enqueue per §4.3. The Dispatcher depends
-				// on the same IssueService + TaskService that back
-				// HTTP, so /issue-created issues share counter, dup
+				// Inbound pipeline seams: lark_inbound_audit logger and the
+				// channel-aware ChatSessionService. They back the Feishu
+				// ResolverSet that the channel-agnostic engine.Router runs
+				// through, sharing the same IssueService + TaskService that
+				// back HTTP, so /issue-created issues share counter, dup
 				// guard, project boundary, broadcast, analytics and
 				// agent-enqueue with the rest of the product.
 				auditLogger := lark.NewAuditLogger(queries)
 				chatSvc := lark.NewChatSessionService(queries, pool)
-				dispatcher := &lark.Dispatcher{
-					Queries:      cs,
-					Chat:         chatSvc,
-					Audit:        auditLogger,
-					IssueService: h.IssueService,
-					TaskService:  h.TaskService,
-					Logger:       slog.Default(),
-				}
-				// Debounce the per-session run trigger so a burst of
-				// messages (e.g. "forward a transcript, then type a note")
-				// collapses into one agent run instead of one per message.
-				// MUL-2968.
-				dispatcher.EnableRunBatching(lark.DefaultChatRunBatchWindow)
 
-				// Feishu inbound runtime: runs the Dispatcher and drives
-				// the detached typing indicator + OutcomeReplier off the
-				// connector's ACK critical path (formerly Hub.handleEvent).
-				larkRuntime := lark.NewFeishuRuntime(dispatcher, lark.FeishuRuntimeConfig{Logger: slog.Default()})
-				larkRuntime.SetTypingIndicatorManager(typingIndicator)
-				h.LarkRuntime = larkRuntime
-
-				// OutcomeReplier wires the outbound side of the
-				// EventEmitter contract: NeedsBinding / AgentOffline /
-				// AgentArchived translate to a Lark-side reply card.
-				// Requires the real APIClient (the stub returns
-				// ErrAPIClientNotConfigured on every send) and the
-				// binding token service. When either is missing, the
-				// runtime falls back to the noop replier and the outcomes
-				// get logged but not delivered — clearly visible in
-				// boot output so operators understand the gap.
+				// OutcomeReplier wires the outbound side: NeedsBinding /
+				// AgentOffline / AgentArchived / issue-created translate to a
+				// Lark-side reply card. Requires the real APIClient and the
+				// binding token service; otherwise it falls back to the noop
+				// replier (outcomes logged, not delivered). We only register
+				// it on the ResolverSet when it can actually deliver, so a
+				// pre-outbound deployment pays no reply-goroutine cost.
 				replier := lark.NewLarkOutcomeReplier(lark.OutcomeReplierConfig{
 					APIClient:   larkClient,
 					BindingSvc:  h.LarkBindingTokens,
@@ -290,44 +290,36 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					PublicURL:   signupConfig.PublicURL,
 					Logger:      slog.Default(),
 				})
-				larkRuntime.SetOutcomeReplier(replier)
-				// The agent-offline / agent-archived notice is now decided
-				// at debounce-flush time rather than synchronously from
-				// Handle, so the dispatcher drives that reply itself through
-				// the same replier. MUL-2968.
-				dispatcher.FlushReply = replier.Reply
+				var resolverReplier lark.OutcomeReplier
+				if larkClient.IsConfigured() {
+					resolverReplier = replier
+				}
 
-				// Feishu channel adapter + channel-agnostic engine
-				// Supervisor (MUL-3620). The WSLongConnConnector talks
-				// Lark's long-conn protocol over gorilla/websocket and
-				// wraps every read with a ctx-cancel watchdog so lease
-				// loss / shutdown breaks the blocking ReadMessage in
-				// bounded time — the invariant §4.4 leans on. If the
-				// endpoint fetcher fails to initialize (bad
-				// MULTICA_LARK_CALLBACK_BASE_URL or similar), buildLarkConnector
-				// logs and falls back to the NoopConnector so the lease /
-				// supervisor lifecycle still runs against real DB rows —
-				// inbound messages are silently dropped until the config is
-				// fixed, with the boot log labelling the mode "noop".
+				// Feishu adapter (MUL-3620): the WSLongConnConnector talks
+				// Lark's long-conn protocol over gorilla/websocket and wraps
+				// every read with a ctx-cancel watchdog so lease loss /
+				// shutdown breaks the blocking ReadMessage in bounded time —
+				// the invariant §4.4 leans on. If the endpoint fetcher fails
+				// to initialize (bad MULTICA_LARK_CALLBACK_BASE_URL or
+				// similar), buildLarkConnector logs and falls back to the
+				// NoopConnector so the lease / supervisor lifecycle still runs
+				// against real DB rows — inbound messages are silently dropped
+				// until the config is fixed, with the boot log labelling the
+				// mode "noop".
 				//
-				// The Supervisor enumerates active installations across ALL
-				// channel types and builds each via the Registry, so adding
-				// a platform is "register a Factory" — no engine edit.
+				// Registering the Factory (connect/send) + ResolverSet
+				// (inbound pipeline seams) is all it takes to add the platform
+				// to the engine — no engine edit.
 				connector, connectorLabel := buildLarkConnector(installSvc, larkClient)
-				channelRegistry := channel.NewRegistry()
 				lark.RegisterFeishu(channelRegistry, lark.FeishuChannelDeps{
 					Connector:   connector,
-					Runtime:     larkRuntime,
 					APIClient:   larkClient,
 					Credentials: installSvc,
 					Logger:      slog.Default(),
 				})
-				h.ChannelSupervisor = engine.NewSupervisor(
-					lark.NewChannelInstallationStore(queries),
-					channelRegistry,
-					nil, // shared inbound handler seam; Feishu drives its own runtime for now
-					engine.Config{},
-				)
+				channelRouter.Register(channel.TypeFeishu, lark.NewFeishuResolverSet(
+					cs, chatSvc, auditLogger, resolverReplier, typingIndicator,
+				))
 				slog.Info("lark inbound pipeline wired", "connector", connectorLabel)
 
 				// One-shot union_id backfill for installations created

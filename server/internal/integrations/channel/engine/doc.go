@@ -5,7 +5,7 @@
 // that engine — the "通用引擎" of MUL-3620, generalized out of the
 // Feishu-specific lark.Hub / lark.Dispatcher.
 //
-// It currently provides:
+// It provides:
 //
 //  1. Supervisor — the per-installation connection supervisor generalized
 //     from lark.Hub. It enumerates active installations across ALL
@@ -13,12 +13,19 @@
 //     lease CAS so at most one replica connects per installation, builds
 //     the platform Channel via the channel.Registry, drives its
 //     Connect/Disconnect lifecycle with exponential backoff + jitter, and
-//     restarts a connection whose credentials rotated. It knows nothing
-//     about any specific platform — adding a platform is "register a
-//     factory", never "edit the engine".
+//     restarts a connection whose credentials rotated.
 //
-// The engine depends only on the channel package and small interfaces
-// (InstallationStore); it has no database, network, or platform imports.
-// The DB-backed InstallationStore and the concrete platform adapters are
-// wired by the application at boot.
+//  2. Router — the inbound pipeline generalized from lark.Dispatcher. It is
+//     the single shared channel.InboundHandler the Supervisor injects into
+//     every Channel: it routes by ChannelType to that platform's registered
+//     ResolverSet and runs the same ordered pipeline for every platform
+//     (installation route → two-phase dedup → group @bot filter → identity +
+//     membership → ensure session → append+mark → /issue → debounced run),
+//     then drives the detached OutboundReplier + typing indicator.
+//
+// Everything platform-specific lives behind the resolver interfaces in
+// resolvers.go; adding a platform is "register a Factory + ResolverSet",
+// never "edit the engine". The engine depends only on the channel package,
+// the platform-agnostic service layer, and small interfaces; the DB-backed
+// store/resolvers and the concrete platform adapters are wired at boot.
 package engine

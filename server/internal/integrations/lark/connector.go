@@ -17,7 +17,8 @@ import "context"
 //
 // Historically the Feishu Hub passed this to the connector; with the
 // channel-agnostic engine the feishuChannel adapter wraps the connector and
-// supplies an emit backed by FeishuRuntime.handleEvent.
+// supplies an emit that normalizes each event and hands it to the engine
+// Router (injected via channel.Config.Handler).
 type EventEmitter func(ctx context.Context, msg InboundMessage) (DispatchResult, error)
 
 // EventConnector is the per-installation Feishu transport: it opens the

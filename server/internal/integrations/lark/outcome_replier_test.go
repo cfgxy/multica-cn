@@ -287,9 +287,10 @@ func TestLarkOutcomeReplierOfflineSwallowsAPIError(t *testing.T) {
 	rep.Reply(context.Background(), Installation{}, InboundMessage{ChatID: "oc"}, DispatchResult{Outcome: OutcomeAgentOffline})
 }
 
-// The "NewHub installs a noop replier by default" contract now lives on
-// FeishuRuntime — see TestFeishuRuntimeDefaultsToNoopReplier in
-// feishu_runtime_test.go.
+// The legacy "install a noop replier by default" safety is now split: the
+// engine Router skips reply scheduling entirely when no OutboundReplier is
+// registered (boot registers one only when larkClient.IsConfigured()), and
+// NewLarkOutcomeReplier still falls back to its own noop when unconfigured.
 
 // TestLarkOutcomeReplierIssueCreatedSendsConfirmation pins the
 // recovered /issue confirmation path. Before the plain-text refactor

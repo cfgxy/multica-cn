@@ -161,12 +161,13 @@ type Handler struct {
 	// yields cleanly when the DB is healthy without blocking process exit
 	// if the pool is frozen — at worst the next replica waits the full TTL.
 	ChannelSupervisor *engine.Supervisor
-	// LarkRuntime is the Feishu inbound runtime (Dispatcher + detached
-	// outbound replier). main.go calls Drain on it during shutdown, after
-	// the Supervisor has stopped delivering events, to flush debounced run
-	// triggers and join in-flight reply goroutines. Nil when Lark is off.
-	LarkRuntime *lark.FeishuRuntime
-	cfg         Config
+	// ChannelRouter is the channel-agnostic inbound pipeline (the shared
+	// handler the Supervisor injects into every Channel). main.go calls
+	// Drain on it during shutdown, after the Supervisor has stopped
+	// delivering events, to flush debounced run triggers and join in-flight
+	// reply goroutines. Built unconditionally (even without Lark).
+	ChannelRouter *engine.Router
+	cfg           Config
 }
 
 func New(queries *db.Queries, txStarter txStarter, hub *realtime.Hub, bus *events.Bus, emailService *service.EmailService, store storage.Storage, cfSigner *auth.CloudFrontSigner, analyticsClient analytics.Client, cfg Config, daemonHubs ...*daemonws.Hub) *Handler {

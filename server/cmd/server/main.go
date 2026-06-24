@@ -491,8 +491,8 @@ func main() {
 				"timeout", h.ChannelSupervisor.ShutdownTimeout().String(),
 			)
 		}
-		if h.LarkRuntime != nil {
-			h.LarkRuntime.Drain()
+		if h.ChannelRouter != nil {
+			h.ChannelRouter.Drain()
 		}
 	}
 
