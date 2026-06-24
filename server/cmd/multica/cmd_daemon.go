@@ -19,8 +19,10 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon"
+	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 	logger_pkg "github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/util"
+	"github.com/multica-ai/multica/server/pkg/featureflag"
 )
 
 var daemonCmd = &cobra.Command{
@@ -389,6 +391,23 @@ func runDaemonForeground(cmd *cobra.Command) error {
 	defer stop()
 
 	logger := logger_pkg.NewLogger("daemon")
+
+	// MUL-3560: wire the daemon's process-level feature flag service into
+	// execenv. The daemon is the process that calls
+	// execenv.InjectRuntimeConfig (the API server never does), so this is
+	// the toggle point that actually decides whether a given task gets the
+	// slim or legacy runtime brief. Reads the same env conventions as the
+	// API server: MULTICA_FEATURE_FLAGS_FILE for the YAML rule set,
+	// FF_<KEY> for per-flag env overrides (e.g. FF_RUNTIME_BRIEF_SLIM=true).
+	// nil-safe — a misconfigured rule file fails startup loudly, matching
+	// the DATABASE_URL parse-error precedent.
+	flags, err := featureflag.NewServiceFromEnv(featureflag.WithLogger(logger))
+	if err != nil {
+		logger.Error("feature flag configuration failed to load", "error", err)
+		return err
+	}
+	execenv.SetFeatureFlags(flags)
+
 	d := daemon.New(cfg, logger)
 
 	// Write PID file so "daemon stop" can find us.
