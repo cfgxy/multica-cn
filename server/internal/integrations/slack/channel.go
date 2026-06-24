@@ -113,7 +113,9 @@ func (c *slackChannel) Send(ctx context.Context, out channel.OutboundMessage) (c
 	}
 	threadTS := outboundThreadTS(out)
 	var lastTS string
-	for _, chunk := range chunkMessage(out.Text, maxMessageRunes) {
+	// Convert the agent's standard Markdown to Slack mrkdwn before posting so
+	// bold/headers/links render instead of showing literal markup.
+	for _, chunk := range chunkMessage(formatMrkdwn(out.Text), maxMessageRunes) {
 		opts := []slack.MsgOption{
 			slack.MsgOptionText(chunk, false),
 			slack.MsgOptionDisableLinkUnfurl(),
