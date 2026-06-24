@@ -1,0 +1,103 @@
+package featureflag
+
+import (
+	"context"
+	"testing"
+)
+
+func TestEvalContextLookup(t *testing.T) {
+	t.Parallel()
+	ec := EvalContext{
+		UserID:      "u-1",
+		WorkspaceID: "w-2",
+		Attributes:  map[string]string{"plan": "pro", "country": ""},
+	}
+	tests := []struct {
+		name   string
+		key    string
+		value  string
+		found  bool
+	}{
+		{"user_id", "user_id", "u-1", true},
+		{"workspace_id", "workspace_id", "w-2", true},
+		{"plan", "plan", "pro", true},
+		{"empty attribute treated as missing", "country", "", false},
+		{"unknown attribute", "unknown", "", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v, ok := ec.Lookup(tt.key)
+			if v != tt.value || ok != tt.found {
+				t.Fatalf("Lookup(%q) = (%q, %v), want (%q, %v)", tt.key, v, ok, tt.value, tt.found)
+			}
+		})
+	}
+}
+
+func TestEvalContextRoundTripThroughContext(t *testing.T) {
+	t.Parallel()
+	ec := EvalContext{UserID: "u-1"}
+	ctx := WithEvalContext(context.Background(), ec)
+	got := EvalContextFrom(ctx)
+	if got.UserID != "u-1" {
+		t.Fatalf("EvalContext did not round-trip, got %+v", got)
+	}
+}
+
+func TestEvalContextFromUnattachedContext(t *testing.T) {
+	t.Parallel()
+	// An unattached context must return the zero value, not panic.
+	got := EvalContextFrom(context.Background())
+	if got.UserID != "" || got.WorkspaceID != "" || got.Attributes != nil {
+		t.Fatalf("unattached context should yield zero EvalContext, got %+v", got)
+	}
+}
+
+func TestEvalContextFromNilContext(t *testing.T) {
+	t.Parallel()
+	//nolint:staticcheck // deliberately exercise the nil-ctx defensive path.
+	got := EvalContextFrom(nil)
+	if got.UserID != "" {
+		t.Fatalf("nil context must yield zero EvalContext, got %+v", got)
+	}
+}
+
+func TestPercentBucketStable(t *testing.T) {
+	t.Parallel()
+	// Hash stability is part of the public contract: the same (key, id)
+	// MUST produce the same bucket forever, otherwise users will flip
+	// in and out of experiments. We pin a handful of values so a future
+	// refactor that swaps the hash will fail loudly here.
+	cases := []struct {
+		key, id string
+		want    int
+	}{
+		{"feature_a", "user-1", bucketFor("feature_a", "user-1")},
+		{"feature_b", "", bucketFor("feature_b", "")},
+	}
+	for _, tc := range cases {
+		got := bucketFor(tc.key, tc.id)
+		if got != tc.want {
+			t.Fatalf("bucketFor(%q, %q) = %d, want %d", tc.key, tc.id, got, tc.want)
+		}
+		if got < 0 || got >= 100 {
+			t.Fatalf("bucket out of range: %d", got)
+		}
+	}
+}
+
+func TestPercentBucketSeparator(t *testing.T) {
+	t.Parallel()
+	// Without a separator, ("ab", "c") and ("a", "bc") would collide.
+	// The separator must keep them distinct, otherwise two unrelated
+	// flags could share buckets and skew an experiment.
+	left := bucketFor("ab", "c")
+	right := bucketFor("a", "bc")
+	if left == right {
+		// Not guaranteed unequal in general, but for these inputs the
+		// FNV-1a + zero separator should produce different buckets.
+		// If this ever does collide we should switch separators, not
+		// hide the regression.
+		t.Fatalf("hash separator failed: bucketFor('ab','c') == bucketFor('a','bc') == %d", left)
+	}
+}

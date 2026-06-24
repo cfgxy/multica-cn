@@ -1,0 +1,51 @@
+/**
+ * FNV-1a 32-bit hash used for deterministic percent-rollout bucketing.
+ *
+ * The same (key, identifier) pair MUST always produce the same bucket;
+ * otherwise users would flip in and out of experiments across requests. The
+ * algorithm matches the Go-side server/pkg/featureflag/hash.go so a flag
+ * evaluated on the frontend and on the backend lands in the same bucket for
+ * the same user.
+ *
+ * FNV-1a is used because it is cheap, dependency-free, and well-distributed
+ * enough for sub-100 bucketing. It is NOT cryptographic; do not use it for
+ * anything beyond bucketing.
+ */
+function fnv1a(parts: ReadonlyArray<string>): number {
+  // 32-bit FNV-1a: offset basis 0x811c9dc5, prime 0x01000193.
+  let hash = 0x811c9dc5;
+  for (let p = 0; p < parts.length; p++) {
+    const s = parts[p]!;
+    for (let i = 0; i < s.length; i++) {
+      hash ^= s.charCodeAt(i);
+      // Multiply by FNV prime mod 2^32. Using Math.imul keeps the result
+      // in a 32-bit integer without slipping into float territory.
+      hash = Math.imul(hash, 0x01000193);
+    }
+    // Zero separator between parts so ("ab", "c") and ("a", "bc") cannot
+    // hash to the same value.
+    hash ^= 0;
+    hash = Math.imul(hash, 0x01000193);
+  }
+  // Force unsigned 32-bit before the modulo to match Go's uint32 arithmetic.
+  return hash >>> 0;
+}
+
+/**
+ * bucketFor returns a deterministic bucket in [0, 100) for the supplied
+ * (key, identifier) pair.
+ */
+export function bucketFor(key: string, identifier: string): number {
+  return fnv1a([key, identifier]) % 100;
+}
+
+/**
+ * inPercent reports whether (key, identifier) falls within the first
+ * `percent` buckets. Values outside [0, 100] are clamped: <=0 disables for
+ * everyone, >=100 enables for everyone.
+ */
+export function inPercent(key: string, identifier: string, percent: number): boolean {
+  if (percent <= 0) return false;
+  if (percent >= 100) return true;
+  return bucketFor(key, identifier) < percent;
+}
