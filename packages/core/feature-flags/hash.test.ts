@@ -22,6 +22,24 @@ describe("feature-flags hash", () => {
     expect(bucketFor("ab", "c")).not.toBe(bucketFor("a", "bc"));
   });
 
+  // Pinned (key, identifier) -> bucket values that MUST agree with the
+  // Go-side server/pkg/featureflag/hash_test.go::TestPercentBucketCrossLanguageGolden.
+  // The shared golden table is the single source of truth for "same user,
+  // same bucket" across backend and frontend; if either side drifts, both
+  // tests fail and one must be brought back in sync.
+  it("cross-language golden: bucket values match the Go side exactly", () => {
+    const cases: ReadonlyArray<[string, string, number]> = [
+      ["billing_new_invoice", "user-42", 97],
+      ["feature_a", "user-1", 50],
+      ["checkout_algo", "u-7f8a", 11],
+      ["ws_rollout", "workspace-1", 62],
+      ["empty_id_flag", "", 83],
+    ];
+    for (const [key, id, want] of cases) {
+      expect(bucketFor(key, id)).toBe(want);
+    }
+  });
+
   it("inPercent clamps boundary values", () => {
     expect(inPercent("any", "any", 0)).toBe(false);
     expect(inPercent("any", "any", -10)).toBe(false);

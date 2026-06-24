@@ -54,6 +54,36 @@ describe("StaticProvider", () => {
     expect(d?.enabled).toBe(true);
   });
 
+  // Regression test for the MUL-3615 review: when a rule sets `variant`
+  // but the rule itself evaluates to enabled=false (deny match, percent
+  // miss, default-off), the decision MUST report variant="off", never
+  // the on-variant. Otherwise a switch on `useVariant()` would route
+  // non-rolled-in users into the experiment arm.
+  it("variant: returns 'off' when the rule evaluates to disabled", () => {
+    const sp = new StaticProvider({
+      exp: {
+        default: false,
+        variant: "experiment-v2",
+        deny: ["banned-user"],
+        percent: { percent: 0 },
+      },
+    });
+    for (const userId of ["banned-user", "random-user", ""]) {
+      const d = sp.lookup("exp", { userId });
+      expect(d?.enabled).toBe(false);
+      expect(d?.variant).toBe("off");
+    }
+  });
+
+  it("variant: returns the on-variant when the rule evaluates to enabled", () => {
+    const sp = new StaticProvider({
+      exp: { default: false, variant: "experiment-v2", allow: ["rolled-in"] },
+    });
+    const d = sp.lookup("exp", { userId: "rolled-in" });
+    expect(d?.enabled).toBe(true);
+    expect(d?.variant).toBe("experiment-v2");
+  });
+
   it("loadRules replaces, not merges, the rule map", () => {
     const sp = new StaticProvider({ old: { default: true } });
     sp.loadRules({ fresh: { default: true } });

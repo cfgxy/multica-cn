@@ -80,10 +80,18 @@ function decisionFromRule(
   enabled: boolean,
   reason: Decision["reason"],
 ): Decision {
+  // Variant policy: rule.variant is the ON-variant. When the rule
+  // evaluates to false we return the canonical "off" so a caller
+  // branching on the variant cannot accidentally enter the experiment
+  // arm for a user that did not roll in.
+  let variant = boolToVariant(enabled);
+  if (enabled && rule.variant && rule.variant.length > 0) {
+    variant = rule.variant;
+  }
   return {
     key,
     enabled,
-    variant: rule.variant && rule.variant.length > 0 ? rule.variant : boolToVariant(enabled),
+    variant,
     reason,
     source: "static",
   };

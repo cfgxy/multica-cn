@@ -29,9 +29,17 @@ type Rule struct {
 	// Default is the value returned when no targeting rule matches.
 	Default bool
 
-	// Variant overrides the boolean "on" / "off" projection with an
-	// arbitrary variant identifier. Use this for multi-arm flags.
-	// When Variant != "", the boolean Default still controls Enabled.
+	// Variant is the variant identifier returned WHEN the rule evaluates
+	// to enabled=true. For multi-arm experiments, set Variant to the
+	// experiment-arm identifier (e.g. "experiment-v2"); for plain on/off
+	// flags leave it empty.
+	//
+	// When the rule evaluates to enabled=false (default-off, deny hit,
+	// percent miss, ...) the resulting Decision's Variant is always the
+	// canonical "off". This is deliberate: a caller that branches on
+	// Variant("checkout_algo", "control") would otherwise be routed into
+	// the experiment arm even though the user did not roll into the
+	// experiment cohort.
 	Variant string
 
 	// Allow is the set of identifier values that force the flag ON.
@@ -178,9 +186,13 @@ func evaluateRule(key string, rule Rule, ec EvalContext) Decision {
 }
 
 func decisionFromRule(key string, rule Rule, enabled bool, reason Reason) Decision {
-	variant := rule.Variant
-	if variant == "" {
-		variant = boolToVariant(enabled)
+	// Variant policy: rule.Variant is the ON-variant. When the rule
+	// evaluates to false we return the canonical "off" so a caller
+	// branching on Variant() cannot accidentally enter the experiment
+	// arm for a user that did not roll in.
+	variant := boolToVariant(enabled)
+	if enabled && rule.Variant != "" {
+		variant = rule.Variant
 	}
 	return Decision{
 		Key:     key,

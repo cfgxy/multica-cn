@@ -189,6 +189,49 @@ func TestStaticProviderCustomAttribute(t *testing.T) {
 	}
 }
 
+// TestStaticProviderVariantOnlyWhenEnabled is the regression test for the
+// review feedback from MUL-3615: a Rule with Variant="experiment-v2" but
+// enabled=false (deny match, percent miss, default-off) MUST surface
+// Variant="off", not the on-variant. Otherwise a caller branching on
+// Variant() would route control users into the experiment arm.
+func TestStaticProviderVariantOnlyWhenEnabled(t *testing.T) {
+	t.Parallel()
+	sp := NewStaticProvider()
+	sp.Set("exp", Rule{
+		Default: false,
+		Variant: "experiment-v2",
+		Deny:    []string{"banned-user"},
+		Percent: &PercentRollout{Percent: 0}, // 0% rollout: nobody is in.
+	})
+
+	for _, userID := range []string{"banned-user", "random-user", ""} {
+		ctx := WithEvalContext(context.Background(), EvalContext{UserID: userID})
+		d, _ := sp.Lookup(ctx, "exp")
+		if d.Enabled {
+			t.Fatalf("user=%q must be disabled at 0%% rollout, got %+v", userID, d)
+		}
+		if d.Variant != "off" {
+			t.Fatalf("user=%q got Variant=%q, want %q — on-variant must not leak when disabled",
+				userID, d.Variant, "off")
+		}
+	}
+}
+
+func TestStaticProviderVariantWhenEnabled(t *testing.T) {
+	t.Parallel()
+	sp := NewStaticProvider()
+	sp.Set("exp", Rule{
+		Default: false,
+		Variant: "experiment-v2",
+		Allow:   []string{"rolled-in-user"},
+	})
+	ctx := WithEvalContext(context.Background(), EvalContext{UserID: "rolled-in-user"})
+	d, _ := sp.Lookup(ctx, "exp")
+	if !d.Enabled || d.Variant != "experiment-v2" {
+		t.Fatalf("enabled user should see the on-variant, got %+v", d)
+	}
+}
+
 // randomUserID returns a stable user identifier derived from i. It exists
 // so the rollout distribution test is deterministic across runs (no rand).
 func randomUserID(i int) string {

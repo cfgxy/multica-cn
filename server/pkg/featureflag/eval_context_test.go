@@ -101,3 +101,33 @@ func TestPercentBucketSeparator(t *testing.T) {
 		t.Fatalf("hash separator failed: bucketFor('ab','c') == bucketFor('a','bc') == %d", left)
 	}
 }
+
+// TestPercentBucketCrossLanguageGolden pins concrete (key, identifier) ->
+// bucket values that the Go side MUST agree on with the TS side. The same
+// values are duplicated in packages/core/feature-flags/hash.test.ts; if
+// either side drifts, both tests fail and one must be brought back in
+// sync. This is the single source of truth for "same user, same bucket"
+// across the backend and the frontend.
+func TestPercentBucketCrossLanguageGolden(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		key, id string
+		want    int
+	}{
+		{"billing_new_invoice", "user-42", 97},
+		{"feature_a", "user-1", 50},
+		{"checkout_algo", "u-7f8a", 11},
+		{"ws_rollout", "workspace-1", 62},
+		{"empty_id_flag", "", 83},
+	}
+	for _, tc := range cases {
+		got := bucketFor(tc.key, tc.id)
+		if got != tc.want {
+			t.Fatalf(
+				"cross-language golden mismatch: bucketFor(%q, %q) = %d, want %d. "+
+					"If you changed the hash you MUST also update hash.test.ts.",
+				tc.key, tc.id, got, tc.want,
+			)
+		}
+	}
+}

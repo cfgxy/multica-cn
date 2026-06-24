@@ -3,9 +3,10 @@
  *
  * The same (key, identifier) pair MUST always produce the same bucket;
  * otherwise users would flip in and out of experiments across requests. The
- * algorithm matches the Go-side server/pkg/featureflag/hash.go so a flag
- * evaluated on the frontend and on the backend lands in the same bucket for
- * the same user.
+ * algorithm matches the Go-side server/pkg/featureflag/hash.go byte-for-byte
+ * so a flag evaluated on the frontend and on the backend lands in the same
+ * bucket for the same user. Cross-language equality is exercised by golden
+ * tests on both sides; see hash.test.ts and hash_test.go.
  *
  * FNV-1a is used because it is cheap, dependency-free, and well-distributed
  * enough for sub-100 bucketing. It is NOT cryptographic; do not use it for
@@ -15,17 +16,22 @@ function fnv1a(parts: ReadonlyArray<string>): number {
   // 32-bit FNV-1a: offset basis 0x811c9dc5, prime 0x01000193.
   let hash = 0x811c9dc5;
   for (let p = 0; p < parts.length; p++) {
+    if (p > 0) {
+      // Zero-byte separator BETWEEN parts (not after the last one). This
+      // matches what the Go side writes via h.Write([]byte{0}) between
+      // key and identifier and is what prevents ("ab", "c") and
+      // ("a", "bc") from colliding. A trailing separator would diverge
+      // from Go and silently break cross-tier bucket parity.
+      hash ^= 0;
+      hash = Math.imul(hash, 0x01000193);
+    }
     const s = parts[p]!;
     for (let i = 0; i < s.length; i++) {
       hash ^= s.charCodeAt(i);
-      // Multiply by FNV prime mod 2^32. Using Math.imul keeps the result
-      // in a 32-bit integer without slipping into float territory.
+      // Multiply by FNV prime mod 2^32. Math.imul keeps the result in a
+      // 32-bit integer without slipping into float territory.
       hash = Math.imul(hash, 0x01000193);
     }
-    // Zero separator between parts so ("ab", "c") and ("a", "bc") cannot
-    // hash to the same value.
-    hash ^= 0;
-    hash = Math.imul(hash, 0x01000193);
   }
   // Force unsigned 32-bit before the modulo to match Go's uint32 arithmetic.
   return hash >>> 0;
@@ -33,7 +39,8 @@ function fnv1a(parts: ReadonlyArray<string>): number {
 
 /**
  * bucketFor returns a deterministic bucket in [0, 100) for the supplied
- * (key, identifier) pair.
+ * (key, identifier) pair. Identical to the Go bucketFor in
+ * server/pkg/featureflag/hash.go.
  */
 export function bucketFor(key: string, identifier: string): number {
   return fnv1a([key, identifier]) % 100;

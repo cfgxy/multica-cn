@@ -102,6 +102,8 @@ default:
 }
 ```
 
+`Rule.Variant` is the **on-variant**: it is only returned when the rule evaluates to enabled=true (allow hit, percent hit, default-on). When the rule evaluates to disabled (deny hit, percent miss, default-off) the Service returns `"off"` so callers branching on `Variant()` cannot route control users into the experiment arm. This is exercised by `TestStaticProviderVariantOnlyWhenEnabled` and is the same on the TS side.
+
 The Service is nil-safe and missing-key-safe: `(*Service)(nil).IsEnabled(ctx, "any", true)` returns `true`. Business code never needs to guard against a missing flag.
 
 ---

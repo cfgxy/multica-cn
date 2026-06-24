@@ -78,8 +78,11 @@ export interface Rule {
   /** Value returned when no targeting rule matches. Defaults to false. */
   default?: boolean;
   /**
-   * Optional variant identifier returned alongside the boolean. Use for
-   * multi-arm flags ("control" / "experiment-v2" / "experiment-v3").
+   * Variant identifier returned WHEN the rule evaluates to enabled=true.
+   * Use for multi-arm experiments (e.g. "experiment-v2"). When the rule
+   * evaluates to enabled=false the Decision's variant is always "off",
+   * so callers branching on `Variant()` cannot accidentally enter the
+   * experiment arm for users that did not roll in.
    */
   variant?: string;
   /** Identifier values that force the flag ON. */
