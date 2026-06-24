@@ -330,6 +330,33 @@ func TestSend(t *testing.T) {
 	}
 }
 
+// TestSend_AppliesMrkdwn guards the wiring: Send must run the agent's Markdown
+// through formatMrkdwn before posting, so Slack renders it instead of showing
+// literal markup. (The converter itself is covered in mrkdwn_test.go.)
+func TestSend_AppliesMrkdwn(t *testing.T) {
+	var gotText string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		gotText = r.PostForm.Get("text")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true,"channel":"C1","ts":"1.1"}`))
+	}))
+	defer srv.Close()
+
+	api := slack.New("xoxb-test", slack.OptionAPIURL(srv.URL+"/"))
+	c := newSlackChannel(credentials{TeamID: "T1"}, api, nil, nil)
+
+	if _, err := c.Send(context.Background(), channel.OutboundMessage{
+		ChatID: "C1",
+		Text:   "**bold** see [docs](http://x.com)",
+	}); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	if gotText != "*bold* see <http://x.com|docs>" {
+		t.Errorf("Send must convert Markdown to mrkdwn before posting, got %q", gotText)
+	}
+}
+
 func TestOutboundThreadTS(t *testing.T) {
 	if got := outboundThreadTS(channel.OutboundMessage{ReplyTo: "111.1", ThreadID: "222.2"}); got != "111.1" {
 		t.Errorf("explicit ReplyTo should win: %q", got)
