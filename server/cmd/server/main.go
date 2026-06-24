@@ -374,12 +374,13 @@ func main() {
 	go runAutopilotFailureMonitor(autopilotCtx, queries, bus, envFailureMonitorConfig())
 	go runDBStatsLogger(sweepCtx, pool)
 
-	// Lark inbound supervisor: holds the §4.4 WS lease per installation
-	// and runs the EventConnector for each. Nil when the Lark master
-	// key is unset — self-host deployments that have not opted in to
-	// Lark do not pay any goroutine cost. Lifecycle is bound to
-	// sweepCtx so the Hub winds down alongside the other long-running
-	// workers, AFTER the HTTP server has drained.
+	// Channel inbound supervisor (MUL-3620): holds the §4.4 WS lease per
+	// installation and drives each channel.Channel. It is built
+	// unconditionally (it is channel-agnostic, not Lark-specific), so it
+	// always exists here; with no platform registered or no installation
+	// rows it simply idles. Lifecycle is bound to sweepCtx so it winds down
+	// alongside the other long-running workers, AFTER the HTTP server has
+	// drained.
 	// Cutover control (MUL-3515): MULTICA_LARK_HUB_DISABLED parks the inbound
 	// channel supervisor WITHOUT taking down the rest of the API — the process
 	// still serves HTTP normally, it just never claims a WS lease or opens a
@@ -389,11 +390,11 @@ func main() {
 	// first to stop the old hub on the current build so migration 124 takes a
 	// clean snapshot, then to hold this build's new supervisor dormant until
 	// that migration has run and the old pods have drained, so the two never
-	// double-process the same bot. Nil-ing it here reuses the same "Lark not
-	// configured" path, so the shutdown join below also skips it. The operator
-	// flips it off last to bring the new supervisor up on channel_*. See
-	// migration 124's ROLLOUT note for the full order. The env var keeps its
-	// name for operator/runbook compatibility across the cutover.
+	// double-process the same bot. Nil-ing it here makes the start below and
+	// the shutdown join skip it. The operator flips it off last to bring the
+	// new supervisor up on channel_*. See migration 124's ROLLOUT note for the
+	// full order. The env var keeps its name for operator/runbook
+	// compatibility across the cutover.
 	if h.ChannelSupervisor != nil && os.Getenv("MULTICA_LARK_HUB_DISABLED") == "true" {
 		slog.Warn("Lark inbound supervisor disabled via MULTICA_LARK_HUB_DISABLED; API serves normally but no Feishu WebSocket is opened")
 		h.ChannelSupervisor = nil

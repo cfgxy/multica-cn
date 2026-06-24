@@ -196,8 +196,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// Slack-only deployment has no Lark key). Platform adapters register a
 	// Factory + ResolverSet into it below; the Supervisor enumerates active
 	// installations across ALL channel types and routes each to its
-	// registered platform. With no platform registered it simply finds no
-	// installations and idles. The Router is the single shared inbound
+	// registered platform's Factory. With no platform registered the store
+	// still lists any active installation rows, but Registry.Build returns
+	// ErrUnknownType for them, so the supervisor logs and backs off without
+	// opening a connection (the normal state is simply that no rows exist
+	// for an unregistered platform). The Router is the single shared inbound
 	// handler injected into every Channel.
 	channelRegistry := channel.NewRegistry()
 	channelRouter := engine.NewRouter(h.IssueService, h.TaskService, queries, engine.RouterConfig{Logger: slog.Default()})

@@ -155,13 +155,15 @@ type Handler struct {
 	// ChannelSupervisor owns the per-installation supervisor goroutines
 	// that hold the §4.4 WS lease and drive each channel.Channel
 	// (MUL-3620 generalized the Feishu-only Hub into this channel-agnostic
-	// engine). Nil only when the master at-rest key
-	// (MULTICA_LARK_SECRET_KEY) is unset. The router constructs it but
-	// does NOT call Run; the process owner (main.go) starts it under a
-	// long-running context and joins via WaitWithTimeout (bounded, fenced
-	// by ShutdownTimeout) during graceful shutdown so the lease renewer
-	// yields cleanly when the DB is healthy without blocking process exit
-	// if the pool is frozen — at worst the next replica waits the full TTL.
+	// engine). The router constructs it UNCONDITIONALLY — it drives any
+	// channel type, not just Feishu, so it does not depend on the Lark
+	// master key; each platform registers its Factory only when configured
+	// (Feishu when MULTICA_LARK_SECRET_KEY is set). The router does NOT
+	// call Run; the process owner (main.go) starts it under a long-running
+	// context and joins via WaitWithTimeout (bounded, fenced by
+	// ShutdownTimeout) during graceful shutdown so the lease renewer yields
+	// cleanly when the DB is healthy without blocking process exit if the
+	// pool is frozen — at worst the next replica waits the full TTL.
 	ChannelSupervisor *engine.Supervisor
 	// ChannelRouter is the channel-agnostic inbound pipeline (the shared
 	// handler the Supervisor injects into every Channel). main.go calls
