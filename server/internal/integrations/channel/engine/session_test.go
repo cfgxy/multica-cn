@@ -41,6 +41,7 @@ type fakeSessionQueries struct {
 	messages        []string
 	touched         int
 	replyTargets    int
+	lastConfig      []byte // config of the most recent CreateChannelChatSessionBinding
 
 	prevMessage      *string // GetMostRecentUserChatMessage result; nil → ErrNoRows
 	markRows         int64   // MarkChannelInboundDedupProcessed result
@@ -70,6 +71,7 @@ func (f *fakeSessionQueries) CreateChatSession(_ context.Context, _ db.CreateCha
 }
 
 func (f *fakeSessionQueries) CreateChannelChatSessionBinding(_ context.Context, arg db.CreateChannelChatSessionBindingParams) (db.ChannelChatSessionBinding, error) {
+	f.lastConfig = arg.Config
 	if f.createBindingErr != nil {
 		// Simulate the race winner having committed its binding first.
 		f.bindings[bindKey(arg.InstallationID, arg.ChannelChatID)] = f.raceWinner
@@ -112,7 +114,7 @@ func newTestSession(f SessionQueries) *ChatSession {
 func TestEnsureSession_CreateThenReuse(t *testing.T) {
 	f := newFake()
 	s := newTestSession(f)
-	in := EnsureSessionInput{InstallationID: uid(1), ChatID: "chatA", ChatType: channel.ChatTypeP2P, Sender: uid(7)}
+	in := EnsureSessionInput{InstallationID: uid(1), BindingKey: "chatA", ChatType: channel.ChatTypeP2P, Sender: uid(7)}
 
 	id1, err := s.EnsureSession(context.Background(), in)
 	if err != nil {
@@ -140,12 +142,73 @@ func TestEnsureSession_RaceUniqueViolation(t *testing.T) {
 	f.raceWinner = uid(99)
 	s := newTestSession(f)
 
-	id, err := s.EnsureSession(context.Background(), EnsureSessionInput{InstallationID: uid(1), ChatID: "chatA", ChatType: channel.ChatTypeGroup})
+	id, err := s.EnsureSession(context.Background(), EnsureSessionInput{InstallationID: uid(1), BindingKey: "chatA", ChatType: channel.ChatTypeGroup})
 	if err != nil {
 		t.Fatalf("EnsureSession on race: %v", err)
 	}
 	if id != uid(99) {
 		t.Errorf("lost-race re-read should return the winner's session: %v", id)
+	}
+}
+
+// TestEnsureSession_ThreadRootIsolation is the regression guard for Elon's
+// must-fix: two @bot threads in the SAME Slack channel must NOT collapse into
+// one chat_session. The Slack resolver composes BindingKey = channel + thread
+// root, so distinct thread roots map to distinct sessions while a follow-up in
+// the same thread reuses its session.
+func TestEnsureSession_ThreadRootIsolation(t *testing.T) {
+	f := newFake()
+	s := newTestSession(f)
+	mk := func(key string) pgtype.UUID {
+		id, err := s.EnsureSession(context.Background(), EnsureSessionInput{
+			InstallationID: uid(1), BindingKey: key, ChatType: channel.ChatTypeGroup,
+		})
+		if err != nil {
+			t.Fatalf("EnsureSession(%q): %v", key, err)
+		}
+		return id
+	}
+
+	thread1 := mk("C123:1111.0001")
+	thread2 := mk("C123:2222.0002") // same channel, different thread root
+	if thread1 == thread2 {
+		t.Fatal("distinct thread roots in one channel must get distinct sessions")
+	}
+	if f.createdSessions != 2 {
+		t.Fatalf("createdSessions = %d, want 2", f.createdSessions)
+	}
+
+	again := mk("C123:1111.0001") // a follow-up in thread 1
+	if again != thread1 {
+		t.Error("same thread root must reuse its session")
+	}
+	if f.createdSessions != 2 {
+		t.Errorf("a thread follow-up must not create a new session: createdSessions = %d", f.createdSessions)
+	}
+}
+
+func TestEnsureSession_StoresBindingConfig(t *testing.T) {
+	f := newFake()
+	s := newTestSession(f)
+	if _, err := s.EnsureSession(context.Background(), EnsureSessionInput{
+		InstallationID: uid(1), BindingKey: "C123:1111.0001", ChatType: channel.ChatTypeGroup,
+		BindingConfig: []byte(`{"channel_id":"C123"}`),
+	}); err != nil {
+		t.Fatalf("EnsureSession: %v", err)
+	}
+	if string(f.lastConfig) != `{"channel_id":"C123"}` {
+		t.Errorf("opaque outbound routing must be persisted on the binding: %q", f.lastConfig)
+	}
+
+	// Empty BindingConfig defaults to the "{}" object (the column is NOT NULL).
+	f2 := newFake()
+	if _, err := newTestSession(f2).EnsureSession(context.Background(), EnsureSessionInput{
+		InstallationID: uid(1), BindingKey: "chatA", ChatType: channel.ChatTypeP2P,
+	}); err != nil {
+		t.Fatalf("EnsureSession: %v", err)
+	}
+	if string(f2.lastConfig) != "{}" {
+		t.Errorf("empty BindingConfig should default to {}: %q", f2.lastConfig)
 	}
 }
 

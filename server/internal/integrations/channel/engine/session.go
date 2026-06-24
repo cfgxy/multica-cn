@@ -123,25 +123,41 @@ func newChatSessionWith(q SessionQueries, tx TxStarter, channelType channel.Type
 	return &ChatSession{q: q, tx: tx, channelType: channelType, titles: titles}
 }
 
-// EnsureSessionInput is the channel-agnostic input for EnsureSession. Sender is
-// the already-resolved Multica user (the session creator: the sole human for
-// p2p, the installer for group chats — the caller decides which).
+// EnsureSessionInput is the channel-agnostic input for EnsureSession.
+//
+// BindingKey is the SESSION-ISOLATION key (stored as channel_chat_id; one
+// chat_session per (installation_id, BindingKey)). It is intentionally NOT the
+// same thing as "the chat to reply into": the adapter composes it so that
+// distinct conversations get distinct sessions — Feishu passes the chat id;
+// Slack passes the channel id for a DM, and the channel id PLUS the thread root
+// for a channel/thread, so two @bot threads in one Slack channel do not collapse
+// into one transcript (the Hermes model: IM-independent, Slack groups isolated
+// by thread root). A raw platform chat id must never be passed straight through
+// as the key for a threaded platform.
+//
+// BindingConfig is opaque platform routing the key alone cannot carry — e.g.
+// Slack's real channel_id when BindingKey is a composite — persisted on the
+// binding's config for the outbound path to read back. nil means "{}".
+//
+// Sender is the already-resolved Multica user (the session creator: the sole
+// human for p2p, the installer for group chats — the caller decides which).
 type EnsureSessionInput struct {
 	WorkspaceID    pgtype.UUID
 	AgentID        pgtype.UUID
 	InstallationID pgtype.UUID
 	Sender         pgtype.UUID
-	ChatID         string
+	BindingKey     string
+	BindingConfig  []byte
 	ChatType       channel.ChatType
 }
 
-// EnsureSession returns the chat_session.id bound to (installation, chat),
+// EnsureSession returns the chat_session.id bound to (installation, BindingKey),
 // creating it (with its channel_chat_session_binding) on first contact. The
 // race between two concurrent first messages is resolved by the
 // UNIQUE (installation_id, channel_chat_id) constraint: the loser re-reads the
 // winner's row.
 func (s *ChatSession) EnsureSession(ctx context.Context, in EnsureSessionInput) (pgtype.UUID, error) {
-	lookup := db.GetChannelChatSessionBindingParams{InstallationID: in.InstallationID, ChannelChatID: in.ChatID}
+	lookup := db.GetChannelChatSessionBindingParams{InstallationID: in.InstallationID, ChannelChatID: in.BindingKey}
 
 	existing, err := s.q.GetChannelChatSessionBinding(ctx, lookup)
 	if err == nil {
@@ -182,12 +198,17 @@ func (s *ChatSession) createSessionAndBinding(ctx context.Context, in EnsureSess
 	if err != nil {
 		return pgtype.UUID{}, fmt.Errorf("create chat session: %w", err)
 	}
+	bindingConfig := in.BindingConfig
+	if len(bindingConfig) == 0 {
+		bindingConfig = []byte("{}")
+	}
 	if _, err := qtx.CreateChannelChatSessionBinding(ctx, db.CreateChannelChatSessionBindingParams{
 		ChatSessionID:  session.ID,
 		InstallationID: in.InstallationID,
 		ChannelType:    string(s.channelType),
-		ChannelChatID:  in.ChatID,
+		ChannelChatID:  in.BindingKey,
 		ChatType:       string(in.ChatType),
+		Config:         bindingConfig,
 	}); err != nil {
 		return pgtype.UUID{}, err
 	}
@@ -202,6 +223,12 @@ func (s *ChatSession) createSessionAndBinding(ctx context.Context, in EnsureSess
 // user's OWN typed text used for `/issue` parsing (empty falls back to Body) —
 // the adapter supplies it because enrichment is platform-specific. ClaimToken
 // is the dedup owner-fence: when valid, the Mark runs inside this method's tx.
+//
+// MessageID and ThreadID are the REAL platform message id and thread id of this
+// trigger — the outbound reply target recorded on the binding (last_message_id /
+// last_thread_id), NOT the session BindingKey. Because each isolated session has
+// its own binding row, recording the real thread here per session does not clash
+// across sibling threads.
 type AppendInput struct {
 	SessionID      pgtype.UUID
 	Sender         pgtype.UUID
