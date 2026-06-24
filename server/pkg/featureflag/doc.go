@@ -22,8 +22,15 @@
 //   - Deterministic percent rollouts: the same (key, identifier) pair always
 //     evaluates to the same bucket so a user does not flip in and out of an
 //     experiment across requests.
-//   - No third-party dependencies. The package only uses the Go standard
-//     library so it is safe to import from any subsystem.
+//
+// Wiring:
+//
+// The standard way to construct the Service inside the multica server is
+// featureflag.NewServiceFromEnv, which reads MULTICA_FEATURE_FLAGS_FILE for
+// the YAML rule set and layers an EnvProvider on top so individual flags
+// can be overridden at runtime via FF_<KEY> env vars. The core types only
+// depend on the standard library; the YAML loader pulls in gopkg.in/yaml.v3
+// which is already a server-level dependency.
 //
 // See server/pkg/featureflag/service.go for the public Service API and
 // docs/feature-flags.md for end-to-end usage examples.

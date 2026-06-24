@@ -40,29 +40,46 @@ Manage them in the same provider but treat them differently: Release flags get d
 
 ### Wiring at startup
 
+The server constructs a `featureflag.Service` once in `cmd/server/main.go` via the standard helper:
+
 ```go
-import "github.com/multica-ai/multica/server/pkg/featureflag"
-
-static := featureflag.NewStaticProvider()
-static.LoadRules(map[string]featureflag.Rule{
-    "billing_new_invoice_email": {Default: true},
-    "checkout_algo": {
-        Default: false,
-        Variant: "experiment-v2",
-        Percent: &featureflag.PercentRollout{Percent: 25, By: "user_id"},
-    },
-    "ops_disable_recommendations": {Default: false},
-})
-
-// Env overrides win over static config so SREs can flip kill switches
-// without redeploying: `FF_OPS_DISABLE_RECOMMENDATIONS=true ./multica-server`.
-env := featureflag.NewEnvProvider("FF_")
-
-flags := featureflag.NewService(
-    featureflag.NewChainProvider(env, static),
-    featureflag.WithLogger(logger),
-)
+flags, err := featureflag.NewServiceFromEnv(featureflag.WithLogger(slog.Default()))
+if err != nil {
+    slog.Error("feature flag configuration failed to load", "error", err)
+    os.Exit(1)
+}
 ```
+
+`NewServiceFromEnv` reads two env vars — both follow the same `MULTICA_*_FILE` / `FF_*` conventions documented in `.env.example`:
+
+| Env var | Role |
+|---|---|
+| `MULTICA_FEATURE_FLAGS_FILE` | Path to the YAML rule set (optional; absent = no static rules). |
+| `FF_<FLAG_KEY>` | Per-flag runtime override. `FF_BILLING_NEW_INVOICE_EMAIL=false` / `25%` / `experiment-v2`. Beats the YAML, no redeploy. |
+
+The provider chain is `EnvProvider → YAML StaticProvider`. The server can boot with zero flag config — every `IsEnabled` call falls back to the caller's default until someone authors a rule.
+
+### YAML schema
+
+```yaml
+# /etc/multica/feature-flags.yaml
+billing_new_invoice_email:
+  default: true
+
+checkout_algo:
+  default: false
+  variant: experiment-v2
+  percent:
+    percent: 25
+    by: user_id
+
+ops_disable_recommendations:
+  default: false
+  allow: ["user-internal-1", "user-internal-2"]
+  allow_by: user_id
+```
+
+Every field except `default` is optional. `variant` is the on-variant — see the multi-arm note below. An empty file is a valid "no flags yet" state. Malformed YAML fails startup the same way `DATABASE_URL` parse errors do, so misconfig surfaces loudly.
 
 ### Attaching evaluation context to the request
 
