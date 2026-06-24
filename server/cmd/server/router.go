@@ -275,14 +275,20 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				patcher.SetTypingIndicatorManager(typingIndicator)
 
 				// Inbound pipeline seams: lark_inbound_audit logger and the
-				// channel-aware ChatSessionService. They back the Feishu
-				// ResolverSet that the channel-agnostic engine.Router runs
-				// through, sharing the same IssueService + TaskService that
-				// back HTTP, so /issue-created issues share counter, dup
-				// guard, project boundary, broadcast, analytics and
-				// agent-enqueue with the rest of the product.
+				// shared channel-agnostic chat-session service. They back the
+				// Feishu ResolverSet that the engine.Router runs through,
+				// sharing the same IssueService + TaskService that back HTTP, so
+				// /issue-created issues share counter, dup guard, project
+				// boundary, broadcast, analytics and agent-enqueue with the rest
+				// of the product. Feishu is just another consumer of the shared
+				// engine.ChatSession (channel_type-keyed); the Lark session
+				// titles preserve the pre-cutover wording.
 				auditLogger := lark.NewAuditLogger(queries)
-				chatSvc := lark.NewChatSessionService(queries, pool)
+				feishuSession := engine.NewChatSession(queries, pool, channel.TypeFeishu, engine.SessionTitles{
+					Group:    "Lark group chat",
+					Direct:   "Lark direct message",
+					Fallback: "Lark chat",
+				})
 
 				// OutcomeReplier wires the outbound side: NeedsBinding /
 				// AgentOffline / AgentArchived / issue-created translate to a
@@ -327,7 +333,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					Logger:      slog.Default(),
 				})
 				channelRouter.Register(channel.TypeFeishu, lark.NewFeishuResolverSet(
-					cs, chatSvc, auditLogger, resolverReplier, typingIndicator,
+					cs, feishuSession, auditLogger, resolverReplier, typingIndicator,
 				))
 				slog.Info("lark inbound pipeline wired", "connector", connectorLabel)
 
