@@ -43,6 +43,7 @@ jobs:
               - 'apps/desktop/**'
               - 'packages/**'
               - 'package.json'
+              - '.npmrc'
               - 'pnpm-lock.yaml'
               - 'pnpm-workspace.yaml'
               - 'turbo.json'
