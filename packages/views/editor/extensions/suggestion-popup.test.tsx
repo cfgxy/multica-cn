@@ -6,7 +6,8 @@ import { PluginKey } from "@tiptap/pm/state";
 import { forwardRef, useImperativeHandle } from "react";
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
-import { createSuggestionPopupRender } from "./suggestion-popup";
+import { createSuggestionPopupRender, isPickerAcceptKey } from "./suggestion-popup";
+import { PatchedListItem } from "./list-item";
 
 interface TestItem {
   id: string;
@@ -213,4 +214,156 @@ describe("createSuggestionPopupRender", () => {
       });
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// isPickerAcceptKey — the shared accept-key policy (MUL-3685)
+// ---------------------------------------------------------------------------
+
+describe("isPickerAcceptKey", () => {
+  const accepts = (init: KeyboardEventInit) =>
+    isPickerAcceptKey(new KeyboardEvent("keydown", init));
+
+  it("treats Enter and plain Tab as accept keys", () => {
+    expect(accepts({ key: "Enter" })).toBe(true);
+    expect(accepts({ key: "Tab" })).toBe(true);
+  });
+
+  it("keeps Enter an accept key regardless of modifiers (Mod-Enter unchanged)", () => {
+    expect(accepts({ key: "Enter", metaKey: true })).toBe(true);
+  });
+
+  it("does not treat Shift+Tab or Ctrl/Cmd/Alt+Tab as accept keys", () => {
+    expect(accepts({ key: "Tab", shiftKey: true })).toBe(false);
+    expect(accepts({ key: "Tab", ctrlKey: true })).toBe(false);
+    expect(accepts({ key: "Tab", metaKey: true })).toBe(false);
+    expect(accepts({ key: "Tab", altKey: true })).toBe(false);
+  });
+
+  it("ignores unrelated keys", () => {
+    expect(accepts({ key: "ArrowDown" })).toBe(false);
+    expect(accepts({ key: "Escape" })).toBe(false);
+    expect(accepts({ key: "a" })).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plugin-order guard (MUL-3685): when a suggestion is open inside a list item,
+// the suggestion layer's Tab handling must outrank PatchedListItem's
+// Tab -> sinkListItem keymap. This replicates the real extension ordering and
+// fires Tab through ProseMirror's actual handleKeyDown dispatch, so a future
+// reorder that lets the list keymap win is caught here.
+// ---------------------------------------------------------------------------
+
+const AcceptOnTabList = forwardRef<TestListRef, TestListProps>(
+  function AcceptOnTabList({ items, command }, ref) {
+    useImperativeHandle(ref, () => ({
+      // Mirror the real mention/slash lists: accept the highlighted row on the
+      // shared accept keys (Enter / plain Tab), fall through otherwise.
+      onKeyDown: ({ event }) => {
+        if (isPickerAcceptKey(event)) {
+          command(items[0]!);
+          return true;
+        }
+        return false;
+      },
+    }));
+
+    return (
+      <div data-testid="suggestion-popup">
+        {items.map((item) => (
+          <button key={item.id} type="button" onClick={() => command(item)}>
+            {item.label}
+          </button>
+        ))}
+      </div>
+    );
+  },
+);
+
+function makeListEditor() {
+  const pluginKey = new PluginKey("test-list-suggestion");
+  const item: TestItem = { id: "u1", label: "Alice" };
+
+  const TestListSuggestionExtension = Extension.create({
+    name: "testListSuggestion",
+    addProseMirrorPlugins() {
+      return [
+        Suggestion<TestItem, TestItem>({
+          editor: this.editor,
+          char: "@",
+          pluginKey,
+          items: () => [item],
+          command: ({ editor: ed, range, props }) => {
+            ed.commands.insertContentAt(range, `@${props.label}`);
+          },
+          render: createSuggestionPopupRender<TestItem, TestItem, TestListRef, TestListProps>({
+            pluginKey,
+            component: AcceptOnTabList,
+            getProps: (props: SuggestionProps<TestItem, TestItem>) => ({
+              items: props.items,
+              command: props.command,
+            }),
+            onKeyDown: (ref, props) => ref?.onKeyDown(props) ?? false,
+          }),
+        }),
+      ];
+    },
+  });
+
+  editor = new Editor({
+    // Mirror the real wiring (extensions/index.ts): StarterKit's stock list
+    // item is disabled in favour of PatchedListItem, which binds
+    // Tab -> sinkListItem / Shift-Tab -> liftListItem.
+    extensions: [
+      StarterKit.configure({ listItem: false }),
+      PatchedListItem,
+      TestListSuggestionExtension,
+    ],
+    content: "",
+  });
+  render(<EditorContent editor={editor} />);
+  return editor;
+}
+
+// Open the suggestion with the caret INSIDE a bullet list item, so a Tab press
+// has both an active picker AND PatchedListItem's Tab -> sinkListItem keymap in
+// scope. Building the list from empty keeps the `@` at the start of the item
+// (a valid suggestion boundary) without depending on HTML-parse whitespace.
+async function triggerSuggestionInList(ed: Editor) {
+  await act(async () => {
+    ed.commands.focus();
+    ed.commands.toggleBulletList();
+  });
+  await triggerSuggestion(ed, "@a");
+}
+
+describe("suggestion Tab priority over the list-item keymap", () => {
+  it("accepts the highlighted row on Tab even with the cursor inside a list item", async () => {
+    const ed = makeListEditor();
+    await triggerSuggestionInList(ed);
+
+    await act(async () => {
+      fireEvent.keyDown(ed.view.dom, { key: "Tab" });
+    });
+
+    // Accept won over PatchedListItem's Tab -> sinkListItem: the mention text
+    // was inserted and the list was NOT indented (still a single <ul>).
+    await waitFor(() => {
+      expect(ed.getText()).toContain("@Alice");
+    });
+    expect(ed.getHTML().match(/<ul/g)?.length ?? 0).toBe(1);
+  });
+
+  it("does not accept on Shift+Tab inside a list item — reverse nav is preserved", async () => {
+    const ed = makeListEditor();
+    await triggerSuggestionInList(ed);
+
+    await act(async () => {
+      fireEvent.keyDown(ed.view.dom, { key: "Tab", shiftKey: true });
+    });
+
+    // Shift+Tab is not an accept key, so the suggestion never committed.
+    expect(ed.getText()).not.toContain("@Alice");
+  });
 });
