@@ -671,7 +671,11 @@ func (s *Service) verifyAccountOwnership(ctx context.Context, connectedAccountID
 	// config the connect link used. An empty expected value (state missing it,
 	// or a resolver gap) is rejected rather than skipped — skipping is the
 	// fail-open hole that let a cross-toolkit account id be bound here.
-	if expectedAuthConfigID == "" || acct.AuthConfigID != expectedAuthConfigID {
+	accountAuthConfigID := acct.AuthConfigID
+	if accountAuthConfigID == "" {
+		accountAuthConfigID = acct.AuthConfig.ID
+	}
+	if expectedAuthConfigID == "" || accountAuthConfigID != expectedAuthConfigID {
 		return ErrAccountVerification
 	}
 	return nil

@@ -34,11 +34,12 @@ type fakeSDK struct {
 	// ListConnectedAccounts echoes the requested id with acctUserID /
 	// acctAuthConfigID so success-path tests can opt in to a matching account;
 	// acctMissing returns no items, listAccountsErr forces a transport error.
-	acctUserID       string
-	acctAuthConfigID string
-	acctMissing      bool
-	listAccountsErr  error
-	lastListAccounts sdk.ListConnectedAccountsRequest
+	acctUserID             string
+	acctAuthConfigID       string
+	acctNestedAuthConfigID string
+	acctMissing            bool
+	listAccountsErr        error
+	lastListAccounts       sdk.ListConnectedAccountsRequest
 	// auth-config resolution (BeginConnect / ListToolkits connectable flag).
 	// authConfigs nil => a default single notion→ac_notion ENABLED config so
 	// existing connect tests keep resolving; set explicitly to override.
@@ -77,6 +78,7 @@ func (f *fakeSDK) ListConnectedAccounts(_ context.Context, req sdk.ListConnected
 		ID:           id,
 		UserID:       f.acctUserID,
 		AuthConfigID: f.acctAuthConfigID,
+		AuthConfig:   sdk.AuthConfigRef{ID: f.acctNestedAuthConfigID},
 	}}}, nil
 }
 
@@ -402,6 +404,29 @@ func TestCompleteCallback_SuccessAndIdempotent(t *testing.T) {
 	}
 	if row.AuthConfigID != "ac_notion" || row.ToolkitSlug != "notion" || row.Status != "active" {
 		t.Errorf("row = %+v", row)
+	}
+}
+
+func TestCompleteCallback_AcceptsNestedAuthConfig(t *testing.T) {
+	t.Parallel()
+	store := newFakeStore()
+	userID := mintUUID(30)
+	// Composio v3.1 returns connected-account auth config under auth_config.id,
+	// not always as a top-level auth_config_id.
+	sdkFake := &fakeSDK{acctUserID: util.UUIDToString(userID), acctNestedAuthConfigID: "ac_notion"}
+	svc := newTestService(t, sdkFake, store)
+	state, _ := signState(testSecret, stateClaims{
+		UserID:       util.UUIDToString(userID),
+		ToolkitSlug:  "notion",
+		AuthConfigID: "ac_notion",
+		Exp:          time.Unix(1_700_000_000, 0).Add(time.Minute).Unix(),
+	})
+
+	if _, err := svc.CompleteCallback(context.Background(), state, "success", "ca_nested"); err != nil {
+		t.Fatalf("CompleteCallback: %v", err)
+	}
+	if len(store.rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(store.rows))
 	}
 }
 
