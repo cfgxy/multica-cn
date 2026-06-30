@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
@@ -189,7 +191,7 @@ func TestBuildTaskOverlay_NoMatchingConnectionIsNoOp(t *testing.T) {
 // TestBuildTaskOverlay_HappyPath_FiltersBothWays — the canonical
 // successful dispatch. Asserts:
 //   - CreateSession was called with the Multica user id verbatim
-//   - both filters were passed (toolkits.slugs AND connected_accounts)
+//   - both filters were passed (toolkits.enable AND connected_accounts)
 //   - the slug set is exactly the intersection (allowlist ∩ active)
 //   - connected_accounts pins the correct connected_account_id per slug
 //   - the returned overlay JSON has the daemon-expected shape
@@ -225,22 +227,18 @@ func TestBuildTaskOverlay_HappyPath_FiltersBothWays(t *testing.T) {
 	if sdkFake.lastSessReq.UserID != uuidToString(owner) {
 		t.Errorf("CreateSession user id: got %q, want %q", sdkFake.lastSessReq.UserID, uuidToString(owner))
 	}
-	// Toolkits.slugs filter must be the intersection, not the agent's
+	// Toolkits.enable filter must be the intersection, not the agent's
 	// full allowlist nor the user's full connection set.
-	tk, _ := sdkFake.lastSessReq.Toolkits["slugs"].([]string)
+	tk, _ := sdkFake.lastSessReq.Toolkits["enable"].([]string)
 	if len(tk) != 2 || !containsString(tk, "notion") || !containsString(tk, "github") {
-		t.Errorf("CreateSession toolkits.slugs = %v, want exactly [notion github]", tk)
+		t.Errorf("CreateSession toolkits.enable = %v, want exactly [notion github]", tk)
 	}
 	if containsString(tk, "slack") {
-		t.Errorf("non-allowlisted slack leaked into toolkits.slugs: %v", tk)
+		t.Errorf("non-allowlisted slack leaked into toolkits.enable: %v", tk)
 	}
 	// connected_accounts pinning
-	if got := sdkFake.lastSessReq.ConnectedAccounts["notion"]; got != "ca_owner_notion" {
-		t.Errorf("connected_accounts[notion] = %v, want ca_owner_notion", got)
-	}
-	if got := sdkFake.lastSessReq.ConnectedAccounts["github"]; got != "ca_owner_github" {
-		t.Errorf("connected_accounts[github] = %v, want ca_owner_github", got)
-	}
+	assertPinnedAccount(t, sdkFake.lastSessReq, "notion", "ca_owner_notion")
+	assertPinnedAccount(t, sdkFake.lastSessReq, "github", "ca_owner_github")
 	if _, leaked := sdkFake.lastSessReq.ConnectedAccounts["slack"]; leaked {
 		t.Errorf("non-allowlisted slack leaked into connected_accounts")
 	}
@@ -261,6 +259,84 @@ func TestBuildTaskOverlay_HappyPath_FiltersBothWays(t *testing.T) {
 	}
 	if srv.Headers["x-api-key"] != "secret" {
 		t.Errorf("headers missing x-api-key: %v", srv.Headers)
+	}
+}
+
+func TestBuildTaskOverlay_CreateSessionWireContract(t *testing.T) {
+	t.Parallel()
+
+	postedCh := make(chan map[string]any, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/tool_router/session" {
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("x-api-key"); got != "test-key" {
+			t.Errorf("x-api-key header = %q", got)
+		}
+		var posted map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&posted); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		postedCh <- posted
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		if err := json.NewEncoder(w).Encode(map[string]any{
+			"session_id": "trs_wire",
+			"mcp":        map[string]any{"type": "http", "url": "https://mcp.example/session/wire"},
+		}); err != nil {
+			t.Errorf("write response: %v", err)
+		}
+	}))
+	defer upstream.Close()
+
+	client, err := sdk.NewClient(sdk.Options{APIKey: "test-key", BaseURL: upstream.URL})
+	if err != nil {
+		t.Fatalf("new client: %v", err)
+	}
+	store := newFakeStore()
+	svc := newTestService(t, client, store)
+	owner := mintUUID(17)
+	agent := makeAgent(owner, "notion", "github")
+	seedActiveConnection(t, store, owner, "notion", "ca_owner_notion")
+	seedActiveConnection(t, store, owner, "github", "ca_owner_github")
+	seedActiveConnection(t, store, owner, "slack", "ca_owner_slack")
+
+	overlay, err := svc.BuildTaskOverlay(context.Background(), owner, agent)
+	if err != nil {
+		t.Fatalf("BuildTaskOverlay: %v", err)
+	}
+	if len(overlay) == 0 {
+		t.Fatal("expected non-empty overlay")
+	}
+	var posted map[string]any
+	select {
+	case posted = <-postedCh:
+	default:
+	}
+	if posted == nil {
+		t.Fatal("upstream did not receive a request body")
+	}
+	if got := posted["user_id"]; got != uuidToString(owner) {
+		t.Fatalf("user_id = %v, want %q", got, uuidToString(owner))
+	}
+
+	toolkits, ok := posted["toolkits"].(map[string]any)
+	if !ok {
+		t.Fatalf("toolkits = %T(%v), want object", posted["toolkits"], posted["toolkits"])
+	}
+	assertJSONStringArraySet(t, toolkits["enable"], "notion", "github")
+	if _, wrong := toolkits["enabled"]; wrong {
+		t.Fatalf("toolkits used unexpected key \"enabled\": %v", toolkits)
+	}
+
+	connected, ok := posted["connected_accounts"].(map[string]any)
+	if !ok {
+		t.Fatalf("connected_accounts = %T(%v), want object", posted["connected_accounts"], posted["connected_accounts"])
+	}
+	assertJSONStringArraySet(t, connected["notion"], "ca_owner_notion")
+	assertJSONStringArraySet(t, connected["github"], "ca_owner_github")
+	if _, leaked := connected["slack"]; leaked {
+		t.Fatalf("non-allowlisted slack leaked into connected_accounts: %v", connected)
 	}
 }
 
@@ -296,8 +372,8 @@ func TestBuildTaskOverlay_EmptyURL(t *testing.T) {
 
 // TestBuildTaskOverlay_SDKError — an SDK failure (Composio outage, network
 // blip, …) must surface as an error so the caller can log it. The caller
-// (TaskService.applyRuntimeMCPOverlay) is responsible for swallowing the
-// error and proceeding with no overlay — best-effort enqueue.
+// (TaskService.buildRuntimeMCPOverlay) is responsible for swallowing the error
+// and proceeding with no overlay — best-effort enqueue.
 func TestBuildTaskOverlay_SDKError(t *testing.T) {
 	t.Parallel()
 	sdkFake := &fakeSDK{createSessErr: errors.New("composio: 503 backend")}
@@ -350,9 +426,7 @@ func TestBuildTaskOverlay_NormalisesAllowlistAndConnectionSlugs(t *testing.T) {
 	if overlay == nil {
 		t.Fatalf("expected non-empty overlay despite uppercase/padded allowlist")
 	}
-	if got := sdkFake.lastSessReq.ConnectedAccounts["notion"]; got != "ca_a" {
-		t.Errorf("normalised match failed: connected_accounts[notion] = %v", got)
-	}
+	assertPinnedAccount(t, sdkFake.lastSessReq, "notion", "ca_a")
 }
 
 // containsString reports whether haystack contains needle. Small local
@@ -365,4 +439,39 @@ func containsString(haystack []string, needle string) bool {
 		}
 	}
 	return false
+}
+
+func assertJSONStringArraySet(t *testing.T, raw any, want ...string) {
+	t.Helper()
+	arr, ok := raw.([]any)
+	if !ok {
+		t.Fatalf("value = %T(%v), want JSON string array %v", raw, raw, want)
+	}
+	got := make(map[string]struct{}, len(arr))
+	for _, item := range arr {
+		s, ok := item.(string)
+		if !ok {
+			t.Fatalf("array item = %T(%v), want string", item, item)
+		}
+		got[s] = struct{}{}
+	}
+	if len(got) != len(want) {
+		t.Fatalf("array = %v, want set %v", arr, want)
+	}
+	for _, w := range want {
+		if _, ok := got[w]; !ok {
+			t.Fatalf("array = %v, missing %q", arr, w)
+		}
+	}
+}
+
+func assertPinnedAccount(t *testing.T, req sdk.CreateSessionRequest, slug, want string) {
+	t.Helper()
+	got, ok := req.ConnectedAccounts[slug].([]string)
+	if !ok {
+		t.Fatalf("connected_accounts[%s] = %T(%v), want []string{%q}", slug, req.ConnectedAccounts[slug], req.ConnectedAccounts[slug], want)
+	}
+	if len(got) != 1 || got[0] != want {
+		t.Errorf("connected_accounts[%s] = %v, want [%s]", slug, got, want)
+	}
 }

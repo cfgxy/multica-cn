@@ -64,9 +64,10 @@ const defaultAuthCacheTTL = 5 * time.Minute
 // pathological or buggy upstream cursor cannot spin forever. At limit=1000 per
 // page these cover far more than any real project / catalog.
 const (
-	maxAuthConfigPages = 20
-	maxToolkitPages    = 20
-	listPageLimit      = 1000
+	maxAuthConfigPages  = 20
+	maxToolkitPages     = 20
+	listPageLimit       = 1000
+	composioLogoBaseURL = "https://logos.composio.dev/api"
 )
 
 // SDK is the subset of *sdk.Client the service depends on. Declared as an
@@ -212,6 +213,17 @@ type ToolkitView struct {
 	LogoURL     string `json:"logo,omitempty"`
 	Category    string `json:"category,omitempty"`
 	Connectable bool   `json:"connectable"`
+}
+
+func toolkitLogoURL(slug, upstreamLogoURL string) string {
+	if upstreamLogoURL != "" {
+		return upstreamLogoURL
+	}
+	slug = strings.ToLower(strings.TrimSpace(slug))
+	if slug == "" {
+		return ""
+	}
+	return composioLogoBaseURL + "/" + url.PathEscape(slug)
 }
 
 // BeginConnect validates the toolkit, mints a signed state, and asks Composio
@@ -389,18 +401,17 @@ func (s *Service) Disconnect(ctx context.Context, userID, connectionID pgtype.UU
 // connections — callers treat that as "no MCP overlay for this user".
 //
 // connected_accounts is pinned per toolkit to the user's own connected account
-// id so the session cannot surface accounts the user did not connect. This
+// id array so the session cannot surface accounts the user did not connect. This
 // helper is NOT yet wired into task dispatch (Stage 3); it exists so that wiring
 // is a pure consumer of an already-tested seam.
 //
 // Single-account constraint (v1, PR 4608 review follow-up): the MVP connect
 // flow assumes AT MOST ONE active connection per (user, toolkit) — there is no
-// UI or API to hold several, and connected_accounts is keyed by toolkit slug so
-// it physically cannot carry two accounts for the same toolkit. Should
-// duplicates ever exist, we must choose deterministically: rows arrive
-// newest-first (ListActive orders by connected_at DESC), so we keep the FIRST
-// occurrence per toolkit (the most recently connected account) instead of
-// letting a later map write silently select an older one.
+// UI or API to hold several. Should duplicates ever exist, we must choose
+// deterministically: rows arrive newest-first (ListActive orders by
+// connected_at DESC), so we keep the FIRST occurrence per toolkit (the most
+// recently connected account) instead of letting a later map write silently
+// select an older one.
 //
 // Stage 3 owns the real decision before this is wired into dispatch: either
 // enforce the single-active constraint at connect time (revoke the previous
@@ -422,7 +433,7 @@ func (s *Service) CreateMCPSession(ctx context.Context, userID pgtype.UUID) (*MC
 		if _, exists := connectedAccounts[row.ToolkitSlug]; exists {
 			continue
 		}
-		connectedAccounts[row.ToolkitSlug] = row.ConnectedAccountID
+		connectedAccounts[row.ToolkitSlug] = []string{row.ConnectedAccountID}
 	}
 
 	resp, err := s.sdk.CreateSession(ctx, sdk.CreateSessionRequest{
@@ -515,7 +526,7 @@ func (s *Service) ListToolkits(ctx context.Context) ([]ToolkitView, error) {
 			out = append(out, ToolkitView{
 				Slug:        tk.Slug,
 				Name:        tk.Name,
-				LogoURL:     tk.LogoURL,
+				LogoURL:     toolkitLogoURL(slug, tk.LogoURL),
 				Category:    category,
 				Connectable: canConnect,
 			})

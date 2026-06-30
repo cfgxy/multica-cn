@@ -173,64 +173,30 @@ func (s *TaskService) captureTaskQueued(ctx context.Context, task db.AgentTaskQu
 	}
 }
 
-// applyRuntimeMCPOverlay computes the per-task Composio MCP overlay for the
-// task's originator user and writes it to agent_task_queue.runtime_mcp_overlay.
-// Called by every Enqueue* path AFTER the task row is inserted and BEFORE
-// the daemon is notified, so by the time the claim handler reads the row
-// the overlay is in place (or has been deterministically skipped).
-//
-// Best-effort: any failure here is logged and swallowed. The agent must
-// still run with its base agent.mcp_config — losing third-party tools is a
-// degraded UX, refusing to enqueue is a worse one.
-//
-// No-op when:
-//   - s.Composio is nil — Composio integration not configured (the common
-//     case for any deployment that hasn't set COMPOSIO_API_KEY).
-//   - taskID is not a valid UUID — defensive; should never happen because
-//     every caller threads in a row that was just inserted.
-//   - BuildTaskOverlay returns (nil, nil) — see ComposioOverlayBuilder
-//     doc for the five-gate enumeration that produces this.
-//
-// agent is passed verbatim because the builder needs agent.OwnerID and
-// agent.ComposioToolkitAllowlist for the originator-vs-owner gate
-// (MUL-3869). Each Enqueue* path has already loaded the agent for its
-// own runtime / archive checks, so passing the value is free and avoids
-// a second GetAgent round-trip in the hot path.
-func (s *TaskService) applyRuntimeMCPOverlay(ctx context.Context, taskID, originatorUserID pgtype.UUID, agent db.Agent) {
+// buildRuntimeMCPOverlay computes the optional per-task Composio MCP overlay.
+// Enqueue paths call this BEFORE inserting the queued row so the daemon cannot
+// claim a task during the network round-trip to Composio and miss the overlay.
+func (s *TaskService) buildRuntimeMCPOverlay(ctx context.Context, originatorUserID pgtype.UUID, agent db.Agent) json.RawMessage {
 	if s == nil || s.Composio == nil {
-		return
-	}
-	if !taskID.Valid {
-		return
+		return nil
 	}
 	overlay, err := s.Composio.BuildTaskOverlay(ctx, originatorUserID, agent)
 	if err != nil {
 		slog.Warn("runtime mcp overlay: BuildTaskOverlay failed; task will run without composio overlay",
-			"task_id", util.UUIDToString(taskID),
 			"originator_user_id", util.UUIDToString(originatorUserID),
 			"agent_id", util.UUIDToString(agent.ID),
 			"error", err,
 		)
-		return
+		return nil
 	}
 	if len(overlay) == 0 {
-		return
-	}
-	if err := s.Queries.SetAgentTaskRuntimeMCPOverlay(ctx, db.SetAgentTaskRuntimeMCPOverlayParams{
-		ID:                taskID,
-		RuntimeMcpOverlay: overlay,
-	}); err != nil {
-		slog.Warn("runtime mcp overlay: SetAgentTaskRuntimeMCPOverlay failed; task will run without composio overlay",
-			"task_id", util.UUIDToString(taskID),
-			"error", err,
+		slog.Debug("runtime mcp overlay: no composio overlay for task",
+			"originator_user_id", util.UUIDToString(originatorUserID),
+			"agent_id", util.UUIDToString(agent.ID),
 		)
-		return
+		return nil
 	}
-	slog.Debug("runtime mcp overlay: attached composio session",
-		"task_id", util.UUIDToString(taskID),
-		"originator_user_id", util.UUIDToString(originatorUserID),
-		"agent_id", util.UUIDToString(agent.ID),
-	)
+	return overlay
 }
 
 // resolveOriginatorFromTriggerComment returns the top-of-chain HUMAN user
@@ -277,6 +243,34 @@ func (s *TaskService) resolveOriginatorFromTriggerComment(ctx context.Context, c
 			return pgtype.UUID{}
 		}
 		return parent.OriginatorUserID
+	default:
+		return pgtype.UUID{}
+	}
+}
+
+// resolveOriginatorForIssueTask returns the top-of-chain human for issue-backed
+// dispatches. Comment-triggered runs keep the existing comment-chain semantics;
+// direct issue assignment/creation falls back to the issue's member creator.
+// Agent-created quick-create issues have an explicit origin link back to the
+// quick-create task, so they can inherit that task's originator safely. Other
+// agent/system origins, including autopilot, deliberately remain unattributed.
+func (s *TaskService) resolveOriginatorForIssueTask(ctx context.Context, issue db.Issue, triggerCommentID pgtype.UUID) pgtype.UUID {
+	if triggerCommentID.Valid {
+		return s.resolveOriginatorFromTriggerComment(ctx, triggerCommentID)
+	}
+	if issue.CreatorType == "member" && issue.CreatorID.Valid {
+		return issue.CreatorID
+	}
+	if s == nil || s.Queries == nil || !issue.OriginType.Valid || !issue.OriginID.Valid {
+		return pgtype.UUID{}
+	}
+	switch issue.OriginType.String {
+	case "quick_create":
+		task, err := s.Queries.GetAgentTask(ctx, issue.OriginID)
+		if err != nil {
+			return pgtype.UUID{}
+		}
+		return task.OriginatorUserID
 	default:
 		return pgtype.UUID{}
 	}
@@ -611,6 +605,8 @@ func (s *TaskService) enqueueIssueTask(ctx context.Context, issue db.Issue, trig
 		return db.AgentTaskQueue{}, fmt.Errorf("agent has no runtime")
 	}
 
+	originatorUserID := s.resolveOriginatorForIssueTask(ctx, issue, triggerCommentID)
+	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
 	task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
 		AgentID:           issue.AssigneeID,
 		RuntimeID:         agent.RuntimeID,
@@ -620,7 +616,8 @@ func (s *TaskService) enqueueIssueTask(ctx context.Context, issue db.Issue, trig
 		TriggerSummary:    s.buildCommentTriggerSummary(ctx, triggerCommentID),
 		ForceFreshSession: pgtype.Bool{Bool: forceFreshSession, Valid: forceFreshSession},
 		HandoffNote:       pgtype.Text{String: handoffNote, Valid: handoffNote != ""},
-		OriginatorUserID:  s.resolveOriginatorFromTriggerComment(ctx, triggerCommentID),
+		OriginatorUserID:  originatorUserID,
+		RuntimeMcpOverlay: runtimeMCPOverlay,
 	})
 	if err != nil {
 		slog.Error("task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "error", err)
@@ -639,7 +636,6 @@ func (s *TaskService) enqueueIssueTask(ctx context.Context, issue db.Issue, trig
 	// queued broadcast afterwards risks the dispatch event reaching clients
 	// before the queued one (rare but unsafe-by-construction). Publishing
 	// in the desired observe-order makes correctness independent of timing.
-	s.applyRuntimeMCPOverlay(ctx, task.ID, task.OriginatorUserID, agent)
 	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
 	s.NotifyTaskEnqueued(ctx, task)
 	return task, nil
@@ -695,6 +691,8 @@ func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, ag
 		return db.AgentTaskQueue{}, fmt.Errorf("agent has no runtime")
 	}
 
+	originatorUserID := s.resolveOriginatorForIssueTask(ctx, issue, triggerCommentID)
+	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, originatorUserID, agent)
 	task, err := s.Queries.CreateAgentTask(ctx, db.CreateAgentTaskParams{
 		AgentID:           agentID,
 		RuntimeID:         agent.RuntimeID,
@@ -706,7 +704,8 @@ func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, ag
 		ForceFreshSession: pgtype.Bool{Bool: forceFreshSession, Valid: forceFreshSession},
 		HandoffNote:       pgtype.Text{String: handoffNote, Valid: handoffNote != ""},
 		SquadID:           squadID,
-		OriginatorUserID:  s.resolveOriginatorFromTriggerComment(ctx, triggerCommentID),
+		OriginatorUserID:  originatorUserID,
+		RuntimeMcpOverlay: runtimeMCPOverlay,
 	})
 	if err != nil {
 		slog.Error("mention task enqueue failed", "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "error", err)
@@ -715,7 +714,6 @@ func (s *TaskService) enqueueMentionTask(ctx context.Context, issue db.Issue, ag
 
 	slog.Info("mention task enqueued", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(issue.ID), "agent_id", util.UUIDToString(agentID), "is_leader_task", isLeader)
 	// See EnqueueTaskForIssue for ordering rationale.
-	s.applyRuntimeMCPOverlay(ctx, task.ID, task.OriginatorUserID, agent)
 	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
 	s.NotifyTaskEnqueued(ctx, task)
 	return task, nil
@@ -860,12 +858,14 @@ func (s *TaskService) EnqueueQuickCreateTask(ctx context.Context, workspaceID, r
 		return db.AgentTaskQueue{}, fmt.Errorf("marshal quick-create context: %w", err)
 	}
 
+	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, requesterID, agent)
 	task, err := s.Queries.CreateQuickCreateTask(ctx, db.CreateQuickCreateTaskParams{
-		AgentID:          agentID,
-		RuntimeID:        agent.RuntimeID,
-		Priority:         priorityToInt("high"),
-		Context:          contextJSON,
-		OriginatorUserID: requesterID,
+		AgentID:           agentID,
+		RuntimeID:         agent.RuntimeID,
+		Priority:          priorityToInt("high"),
+		Context:           contextJSON,
+		OriginatorUserID:  requesterID,
+		RuntimeMcpOverlay: runtimeMCPOverlay,
 	})
 	if err != nil {
 		return db.AgentTaskQueue{}, fmt.Errorf("create quick-create task: %w", err)
@@ -885,7 +885,6 @@ func (s *TaskService) EnqueueQuickCreateTask(ctx context.Context, workspaceID, r
 	// cycle. Without this the user perceives "quick create never
 	// triggered" because the modal closes immediately and the task
 	// sits in 'queued' until the next sleepWithContextOrWakeup tick.
-	s.applyRuntimeMCPOverlay(ctx, task.ID, requesterID, agent)
 	s.NotifyTaskEnqueued(ctx, task)
 	return task, nil
 }
@@ -944,6 +943,7 @@ func (s *TaskService) EnqueueChatTask(ctx context.Context, chatSession db.ChatSe
 		return db.AgentTaskQueue{}, ErrChatTaskAgentNoRuntime
 	}
 
+	runtimeMCPOverlay := s.buildRuntimeMCPOverlay(ctx, initiatorUserID, agent)
 	task, err := s.Queries.CreateChatTask(ctx, db.CreateChatTaskParams{
 		AgentID:          chatSession.AgentID,
 		RuntimeID:        agent.RuntimeID,
@@ -955,6 +955,7 @@ func (s *TaskService) EnqueueChatTask(ctx context.Context, chatSession db.ChatSe
 			Bool:  forceFreshSession,
 			Valid: true,
 		},
+		RuntimeMcpOverlay: runtimeMCPOverlay,
 	})
 	if err != nil {
 		slog.Error("chat task enqueue failed", "chat_session_id", util.UUIDToString(chatSession.ID), "error", err)
@@ -963,7 +964,6 @@ func (s *TaskService) EnqueueChatTask(ctx context.Context, chatSession db.ChatSe
 
 	slog.Info("chat task enqueued", "task_id", util.UUIDToString(task.ID), "chat_session_id", util.UUIDToString(chatSession.ID), "agent_id", util.UUIDToString(chatSession.AgentID))
 	// See EnqueueTaskForIssue for ordering rationale.
-	s.applyRuntimeMCPOverlay(ctx, task.ID, initiatorUserID, agent)
 	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
 	s.NotifyTaskEnqueued(ctx, task)
 	return task, nil
@@ -1886,7 +1886,24 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 		return nil, nil
 	}
 
-	child, err := s.Queries.CreateRetryTask(ctx, parent.ID)
+	var runtimeMCPOverlay json.RawMessage
+	agent, agentErr := s.Queries.GetAgent(ctx, parent.AgentID)
+	if agentErr != nil {
+		// Best-effort: failing to resolve the agent for the overlay is not
+		// retry-fatal. Log and continue — the daemon will reject the claim
+		// later if the agent is genuinely gone.
+		slog.Warn("task auto-retry: load agent for overlay failed",
+			"parent_task_id", util.UUIDToString(parent.ID),
+			"agent_id", util.UUIDToString(parent.AgentID),
+			"error", agentErr,
+		)
+	} else {
+		runtimeMCPOverlay = s.buildRuntimeMCPOverlay(ctx, parent.OriginatorUserID, agent)
+	}
+	child, err := s.Queries.CreateRetryTask(ctx, db.CreateRetryTaskParams{
+		ID:                parent.ID,
+		RuntimeMcpOverlay: runtimeMCPOverlay,
+	})
 	if err != nil {
 		slog.Warn("task auto-retry failed",
 			"parent_task_id", util.UUIDToString(parent.ID),
@@ -1906,27 +1923,6 @@ func (s *TaskService) MaybeRetryFailedTask(ctx context.Context, parent db.AgentT
 	// as EnqueueTaskFor*. Broadcast queued first, then notify the daemon —
 	// see EnqueueTaskForIssue for ordering rationale.
 	//
-	// The originator_user_id is inherited from the parent row in SQL (see
-	// CreateRetryTask in agent.sql), so child.OriginatorUserID is the
-	// canonical, transparent source for the overlay decision: the human
-	// behind the original run has not changed. Loading the agent costs one
-	// extra round-trip vs. the previous "always pass parent.InitiatorUserID"
-	// path, but the overlay builder now needs OwnerID + allowlist anyway —
-	// an unrelated retry of a chat task on an archived agent already
-	// catches this kind of mid-life-cycle drift before we get here.
-	agent, agentErr := s.Queries.GetAgent(ctx, child.AgentID)
-	if agentErr != nil {
-		// Best-effort: failing to resolve the agent for the overlay is not
-		// retry-fatal. Log and continue — the daemon will reject the claim
-		// later if the agent is genuinely gone.
-		slog.Warn("task auto-retry: load agent for overlay failed",
-			"child_task_id", util.UUIDToString(child.ID),
-			"agent_id", util.UUIDToString(child.AgentID),
-			"error", agentErr,
-		)
-	} else {
-		s.applyRuntimeMCPOverlay(ctx, child.ID, child.OriginatorUserID, agent)
-	}
 	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, child)
 	s.NotifyTaskEnqueued(ctx, child)
 	return &child, nil

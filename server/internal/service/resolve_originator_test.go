@@ -2,12 +2,15 @@ package service
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -36,6 +39,28 @@ func newResolveOriginatorPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
+type stubOverlayBuilder struct {
+	calls     int
+	lastUser  pgtype.UUID
+	lastAgent db.Agent
+	resp      json.RawMessage
+	err       error
+	respIsNil bool
+}
+
+func (s *stubOverlayBuilder) BuildTaskOverlay(_ context.Context, originatorUserID pgtype.UUID, agent db.Agent) (json.RawMessage, error) {
+	s.calls++
+	s.lastUser = originatorUserID
+	s.lastAgent = agent
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.respIsNil {
+		return nil, nil
+	}
+	return s.resp, nil
+}
+
 // seedOriginatorFanout builds the minimal fixture for an agent→agent
 // fanout chain:
 //
@@ -44,15 +69,15 @@ func newResolveOriginatorPool(t *testing.T) *pgxpool.Pool {
 //	agent A posts a reply comment C (author_type=agent, source_task_id=T_A) →
 //	agent B picks up C as its trigger
 //
-// Returns: workspace id, member-authored comment id (C0), agent-authored
-// comment id (C1, with source_task_id=T_A), and U as pgtype.UUID. T_A's
-// originator_user_id is U so the agent-fanout branch can prove the
+// Returns: member-authored comment id (C0), agent-authored comment id (C1, with
+// source_task_id=T_A), T_A's task id, and U as pgtype.UUID. T_A's
+// originator_user_id is U so the fanout / quick-create branches can prove the
 // inheritance.
-func seedOriginatorFanout(t *testing.T, pool *pgxpool.Pool) (memberCommentID, agentCommentID, userID pgtype.UUID) {
+func seedOriginatorFanout(t *testing.T, pool *pgxpool.Pool) (memberCommentID, agentCommentID, taskAID, userID pgtype.UUID) {
 	t.Helper()
 	ctx := context.Background()
 
-	var workspaceID, agentAID, agentBID, runtimeID, issueID, taskAID, userIDStr, commentMemberID, commentAgentID string
+	var workspaceID, agentAID, agentBID, runtimeID, issueID, taskAIDStr, userIDStr, commentMemberID, commentAgentID string
 
 	if err := pool.QueryRow(ctx, `
 		INSERT INTO "user" (name, email)
@@ -136,7 +161,7 @@ func seedOriginatorFanout(t *testing.T, pool *pgxpool.Pool) (memberCommentID, ag
 		)
 		VALUES ($1, $2, $3, 'completed', 0, $4)
 		RETURNING id
-	`, agentAID, runtimeID, issueID, userIDStr).Scan(&taskAID); err != nil {
+	`, agentAID, runtimeID, issueID, userIDStr).Scan(&taskAIDStr); err != nil {
 		t.Fatalf("seed task A: %v", err)
 	}
 
@@ -155,12 +180,13 @@ func seedOriginatorFanout(t *testing.T, pool *pgxpool.Pool) (memberCommentID, ag
 		INSERT INTO comment (issue_id, workspace_id, author_type, author_id, content, source_task_id)
 		VALUES ($1, $2, 'agent', $3, 'agent comment', $4)
 		RETURNING id
-	`, issueID, workspaceID, agentAID, taskAID).Scan(&commentAgentID); err != nil {
+	`, issueID, workspaceID, agentAID, taskAIDStr).Scan(&commentAgentID); err != nil {
 		t.Fatalf("seed agent comment: %v", err)
 	}
 
 	memberCommentID = util.MustParseUUID(commentMemberID)
 	agentCommentID = util.MustParseUUID(commentAgentID)
+	taskAID = util.MustParseUUID(taskAIDStr)
 	userID = util.MustParseUUID(userIDStr)
 	return
 }
@@ -170,7 +196,7 @@ func seedOriginatorFanout(t *testing.T, pool *pgxpool.Pool) (memberCommentID, ag
 // originator is the comment's own author_id.
 func TestResolveOriginatorFromTriggerComment_MemberAuthored(t *testing.T) {
 	pool := newResolveOriginatorPool(t)
-	memberCommentID, _, userID := seedOriginatorFanout(t, pool)
+	memberCommentID, _, _, userID := seedOriginatorFanout(t, pool)
 	svc := &TaskService{Queries: db.New(pool)}
 
 	got := svc.resolveOriginatorFromTriggerComment(context.Background(), memberCommentID)
@@ -190,7 +216,7 @@ func TestResolveOriginatorFromTriggerComment_MemberAuthored(t *testing.T) {
 // parent.originator_user_id, yielding U.
 func TestResolveOriginatorFromTriggerComment_AgentAuthoredInheritsFromParent(t *testing.T) {
 	pool := newResolveOriginatorPool(t)
-	_, agentCommentID, userID := seedOriginatorFanout(t, pool)
+	_, agentCommentID, _, userID := seedOriginatorFanout(t, pool)
 	svc := &TaskService{Queries: db.New(pool)}
 
 	got := svc.resolveOriginatorFromTriggerComment(context.Background(), agentCommentID)
@@ -200,6 +226,147 @@ func TestResolveOriginatorFromTriggerComment_AgentAuthoredInheritsFromParent(t *
 	if got.Bytes != userID.Bytes {
 		t.Errorf("originator = %s, want %s (parent task's originator_user_id)",
 			util.UUIDToString(got), util.UUIDToString(userID))
+	}
+}
+
+// TestResolveOriginatorForIssueTask_MemberCreatedNoComment covers direct issue
+// assignment/creation: there is no trigger comment to inspect, but the issue's
+// human creator is still the run originator for Composio overlay gating.
+func TestResolveOriginatorForIssueTask_MemberCreatedNoComment(t *testing.T) {
+	userID := util.MustParseUUID("11111111-1111-1111-1111-111111111111")
+	svc := &TaskService{}
+	issue := db.Issue{CreatorType: "member", CreatorID: userID}
+
+	got := svc.resolveOriginatorForIssueTask(context.Background(), issue, pgtype.UUID{})
+	if !got.Valid {
+		t.Fatalf("expected valid originator for member-created issue, got invalid")
+	}
+	if got.Bytes != userID.Bytes {
+		t.Errorf("originator = %s, want %s", util.UUIDToString(got), util.UUIDToString(userID))
+	}
+}
+
+// TestResolveOriginatorForIssueTask_QuickCreateIssueInheritsParentTask covers
+// agent-created issues that have an explicit quick-create origin stamp. The
+// issue creator is the agent, but the top-of-chain human is stored on the
+// parent quick-create task and must be inherited for downstream dispatch.
+func TestResolveOriginatorForIssueTask_QuickCreateIssueInheritsParentTask(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	_, _, parentTaskID, userID := seedOriginatorFanout(t, pool)
+	svc := &TaskService{Queries: db.New(pool)}
+	issue := db.Issue{
+		CreatorType: "agent",
+		OriginType:  pgtype.Text{String: "quick_create", Valid: true},
+		OriginID:    parentTaskID,
+	}
+
+	got := svc.resolveOriginatorForIssueTask(context.Background(), issue, pgtype.UUID{})
+	if !got.Valid {
+		t.Fatalf("expected quick-create issue to inherit originator, got invalid")
+	}
+	if got.Bytes != userID.Bytes {
+		t.Errorf("originator = %s, want %s", util.UUIDToString(got), util.UUIDToString(userID))
+	}
+}
+
+// TestEnqueueTaskForIssueStoresRuntimeMCPOverlayInQueuedRow guards the race
+// where the daemon could poll-claim a newly inserted queued task while the old
+// post-insert overlay updater was still making the outbound Composio session
+// call. The overlay must be computed before INSERT and returned on the queued
+// row.
+func TestEnqueueTaskForIssueStoresRuntimeMCPOverlayInQueuedRow(t *testing.T) {
+	pool := newResolveOriginatorPool(t)
+	ctx := context.Background()
+	q := db.New(pool)
+	suffix := time.Now().UnixNano()
+	email := fmt.Sprintf("runtime-overlay-insert-%d@multica.test", suffix)
+	workspaceSlug := fmt.Sprintf("runtime-overlay-insert-%d", suffix)
+
+	var userIDStr, workspaceIDStr, runtimeIDStr, agentIDStr, issueIDStr string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO "user" (name, email)
+		VALUES ('Runtime Overlay Insert User', $1)
+		RETURNING id
+	`, email).Scan(&userIDStr); err != nil {
+		t.Fatalf("seed user: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM "user" WHERE id = $1`, userIDStr)
+	})
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO workspace (name, slug)
+		VALUES ('runtime overlay insert ws', $1)
+		RETURNING id
+	`, workspaceSlug).Scan(&workspaceIDStr); err != nil {
+		t.Fatalf("seed workspace: %v", err)
+	}
+	t.Cleanup(func() {
+		pool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, workspaceIDStr)
+	})
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO member (workspace_id, user_id, role)
+		VALUES ($1, $2, 'owner')
+	`, workspaceIDStr, userIDStr); err != nil {
+		t.Fatalf("seed member: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO agent_runtime (
+			workspace_id, name, runtime_mode, provider, status, device_info, metadata, owner_id
+		) VALUES ($1, 'runtime-overlay-r', 'cloud', 'codex', 'online', '', '{}'::jsonb, $2)
+		RETURNING id
+	`, workspaceIDStr, userIDStr).Scan(&runtimeIDStr); err != nil {
+		t.Fatalf("seed runtime: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO agent (
+			workspace_id, name, runtime_mode, runtime_config,
+			runtime_id, visibility, max_concurrent_tasks, owner_id,
+			instructions, custom_env, custom_args, composio_toolkit_allowlist
+		)
+		VALUES ($1, 'runtime-overlay-agent', 'cloud', '{}'::jsonb,
+		        $2, 'workspace', 1, $3, '', '{}'::jsonb, '[]'::jsonb, ARRAY['notion'])
+		RETURNING id
+	`, workspaceIDStr, runtimeIDStr, userIDStr).Scan(&agentIDStr); err != nil {
+		t.Fatalf("seed agent: %v", err)
+	}
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO issue (
+			workspace_id, title, creator_type, creator_id, assignee_type, assignee_id, priority
+		)
+		VALUES ($1, 'runtime overlay issue', 'member', $2, 'agent', $3, 'medium')
+		RETURNING id
+	`, workspaceIDStr, userIDStr, agentIDStr).Scan(&issueIDStr); err != nil {
+		t.Fatalf("seed issue: %v", err)
+	}
+
+	overlay := json.RawMessage(`{"mcpServers":{"composio":{"type":"http","url":"https://mcp.example/session"}}}`)
+	builder := &stubOverlayBuilder{resp: overlay}
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New(), Composio: builder}
+	userID := util.MustParseUUID(userIDStr)
+	task, err := svc.EnqueueTaskForIssue(ctx, db.Issue{
+		ID:           util.MustParseUUID(issueIDStr),
+		AssigneeID:   util.MustParseUUID(agentIDStr),
+		Priority:     "medium",
+		CreatorType:  "member",
+		CreatorID:    userID,
+		WorkspaceID:  util.MustParseUUID(workspaceIDStr),
+		AssigneeType: pgtype.Text{String: "agent", Valid: true},
+	})
+	if err != nil {
+		t.Fatalf("EnqueueTaskForIssue: %v", err)
+	}
+	if builder.calls != 1 {
+		t.Fatalf("BuildTaskOverlay calls = %d, want 1", builder.calls)
+	}
+	if len(task.RuntimeMcpOverlay) == 0 {
+		t.Fatalf("returned queued task has empty runtime_mcp_overlay")
+	}
+	var stored []byte
+	if err := pool.QueryRow(ctx, `SELECT runtime_mcp_overlay FROM agent_task_queue WHERE id = $1`, task.ID).Scan(&stored); err != nil {
+		t.Fatalf("read stored overlay: %v", err)
+	}
+	if len(stored) == 0 {
+		t.Fatal("stored queued task has empty runtime_mcp_overlay")
 	}
 }
 

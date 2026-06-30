@@ -12,6 +12,7 @@ import {
 } from "@multica/core/composio";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { Checkbox } from "@multica/ui/components/ui/checkbox";
+import { ComposioToolkitLogo } from "../../../common/composio-toolkit-logo";
 import { AppLink } from "../../../navigation";
 import { useT } from "../../../i18n";
 
@@ -134,7 +135,7 @@ export function AgentMcpTab({ agent }: { agent: Agent }) {
             const checked = allowlist.includes(slug);
             return (
               <li key={slug} className="flex items-center gap-3 p-3">
-                <ToolkitLogo name={name} logo={tk?.logo} />
+                <ComposioToolkitLogo slug={slug} name={name} fallbackLogo={tk?.logo} />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{name}</p>
                   <p className="truncate text-[10px] uppercase tracking-wide text-emerald-600">
@@ -161,23 +162,6 @@ export function AgentMcpTab({ agent }: { agent: Agent }) {
           {t(($) => $.tab_body.composio_mcp.saving)}
         </p>
       )}
-    </div>
-  );
-}
-
-function ToolkitLogo({ name, logo }: { name: string; logo?: string }) {
-  if (logo) {
-    return (
-      <img
-        src={logo}
-        alt=""
-        className="h-8 w-8 shrink-0 rounded bg-muted object-contain"
-      />
-    );
-  }
-  return (
-    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-muted text-xs font-semibold text-muted-foreground">
-      {name.charAt(0).toUpperCase()}
     </div>
   );
 }

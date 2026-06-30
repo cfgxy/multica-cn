@@ -24,6 +24,7 @@ import {
   composioToolkitsOptions,
 } from "@multica/core/composio";
 import type { ComposioToolkit } from "@multica/core/types";
+import { ComposioToolkitLogo } from "../../common/composio-toolkit-logo";
 import { useT, useTimeAgo } from "../../i18n";
 import { useNavigation } from "../../navigation";
 
@@ -286,7 +287,11 @@ function ToolkitCard({
   return (
     <Card>
       <CardContent className="flex items-center gap-3 p-3">
-        <ToolkitLogo toolkit={toolkit} />
+        <ComposioToolkitLogo
+          slug={toolkit.slug}
+          name={toolkit.name}
+          fallbackLogo={toolkit.logo}
+        />
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium">{toolkit.name || toolkit.slug}</p>
           {isConnected ? (
@@ -356,23 +361,5 @@ function ToolkitCard({
         )}
       </CardContent>
     </Card>
-  );
-}
-
-function ToolkitLogo({ toolkit }: { toolkit: ComposioToolkit }) {
-  const initial = (toolkit.name || toolkit.slug).charAt(0).toUpperCase();
-  if (toolkit.logo) {
-    return (
-      <img
-        src={toolkit.logo}
-        alt=""
-        className="h-8 w-8 shrink-0 rounded bg-muted object-contain"
-      />
-    );
-  }
-  return (
-    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-muted text-xs font-semibold text-muted-foreground">
-      {initial}
-    </div>
   );
 }

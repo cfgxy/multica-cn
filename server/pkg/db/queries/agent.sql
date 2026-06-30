@@ -161,7 +161,7 @@ ORDER BY created_at DESC;
 INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, status, priority, trigger_comment_id,
     trigger_summary, force_fresh_session, is_leader_task, handoff_note,
-    squad_id, originator_user_id
+    squad_id, originator_user_id, runtime_mcp_overlay
 )
 VALUES (
     $1, $2, $3, 'queued', $4, sqlc.narg(trigger_comment_id),
@@ -170,7 +170,8 @@ VALUES (
     COALESCE(sqlc.narg('is_leader_task')::boolean, FALSE),
     sqlc.narg(handoff_note),
     sqlc.narg(squad_id),
-    sqlc.narg(originator_user_id)
+    sqlc.narg(originator_user_id),
+    sqlc.narg(runtime_mcp_overlay)
 )
 RETURNING *;
 
@@ -179,9 +180,10 @@ RETURNING *;
 -- description (prompt, requester, workspace) lives in context JSONB. The
 -- daemon detects this variant via context.type == "quick_create".
 INSERT INTO agent_task_queue (
-    agent_id, runtime_id, issue_id, status, priority, context, originator_user_id
+    agent_id, runtime_id, issue_id, status, priority, context, originator_user_id,
+    runtime_mcp_overlay
 )
-VALUES ($1, $2, NULL, 'queued', $3, $4, sqlc.narg(originator_user_id))
+VALUES ($1, $2, NULL, 'queued', $3, $4, sqlc.narg(originator_user_id), sqlc.narg(runtime_mcp_overlay))
 RETURNING *;
 
 -- name: CreateDeferredAgentTask :one
@@ -213,18 +215,6 @@ UPDATE agent_task_queue
 SET issue_id = $2
 WHERE id = $1 AND issue_id IS NULL;
 
--- name: SetAgentTaskRuntimeMCPOverlay :exec
--- Attaches the per-task MCP overlay (computed at dispatch time from the
--- initiator user's active integrations — currently Composio) to a task
--- still in 'queued'. The status guard means a task that already started
--- (or was cancelled / failed between Create and this update) is never
--- rewritten, so the daemon never reads a half-applied overlay. The trigger
--- trg_clear_runtime_mcp_overlay automatically wipes the column whenever a
--- task enters a terminal state, so callers do not need a paired clear.
-UPDATE agent_task_queue
-SET runtime_mcp_overlay = $2
-WHERE id = $1 AND status = 'queued';
-
 -- name: CreateRetryTask :one
 -- Clones a parent task into a fresh queued attempt. Carries forward the
 -- agent's resume context (session_id/work_dir) so the child can continue
@@ -240,14 +230,14 @@ WHERE id = $1 AND status = 'queued';
 --
 -- originator_user_id is inherited so the Composio overlay decision sees the
 -- same top-of-chain human across the retry: the user behind the original
--- run has not changed, and the dispatch hook in TaskService can keep gating
+-- run has not changed, and the enqueue hook in TaskService can keep gating
 -- on (originator == agent.owner_id) without a separate parent lookup.
 INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, chat_session_id, autopilot_run_id,
     status, priority, trigger_comment_id, trigger_summary, context,
     session_id, work_dir,
     attempt, max_attempts, parent_task_id, force_fresh_session, is_leader_task,
-    squad_id, originator_user_id
+    squad_id, originator_user_id, runtime_mcp_overlay
 )
 SELECT
     p.agent_id, p.runtime_id, p.issue_id, p.chat_session_id, p.autopilot_run_id,
@@ -258,7 +248,8 @@ SELECT
     p.failure_reason IS NOT DISTINCT FROM 'codex_semantic_inactivity',
     p.is_leader_task,
     p.squad_id,
-    p.originator_user_id
+    p.originator_user_id,
+    sqlc.narg(runtime_mcp_overlay)
 FROM agent_task_queue p
 WHERE p.id = $1
 RETURNING *;

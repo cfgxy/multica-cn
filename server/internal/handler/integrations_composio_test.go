@@ -222,6 +222,9 @@ func TestComposio_ListToolkits(t *testing.T) {
 		if tk.Slug == "github" && tk.Connectable {
 			t.Error("github has no auth config and must not be connectable")
 		}
+		if tk.Logo == "" {
+			t.Errorf("toolkit %q missing logo", tk.Slug)
+		}
 	}
 }
 

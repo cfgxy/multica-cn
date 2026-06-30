@@ -348,6 +348,11 @@ func TestListToolkits_ConnectableFlagAndOrder(t *testing.T) {
 			t.Errorf("toolkit %q should not be connectable", tk.Slug)
 		}
 	}
+	for _, tk := range tks {
+		if tk.Slug == "slack" && tk.LogoURL != "https://logos.composio.dev/api/slack" {
+			t.Errorf("slack default logo = %q", tk.LogoURL)
+		}
+	}
 }
 
 // TestListToolkits_PaginatesAndResolverErrorIsSoft: a paginated catalog is
@@ -690,9 +695,7 @@ func TestCreateMCPSession_PinsConnectedAccounts(t *testing.T) {
 	if sdkFake.lastSessReq.UserID != util.UUIDToString(userID) {
 		t.Errorf("session user id = %q", sdkFake.lastSessReq.UserID)
 	}
-	if got := sdkFake.lastSessReq.ConnectedAccounts["notion"]; got != "ca_pin" {
-		t.Errorf("connected_accounts pin = %v, want ca_pin", got)
-	}
+	assertPinnedAccount(t, sdkFake.lastSessReq, "notion", "ca_pin")
 }
 
 func TestCallbackRedirect(t *testing.T) {

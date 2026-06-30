@@ -26,11 +26,8 @@ const mcpOverlayServerName = "composio"
 // (Cursor, Codex, Claude, OpenCode, OpenClaw, Hermes/Kiro) consumes.
 //
 // `type: http` is what marks the entry as a streamable HTTP MCP endpoint —
-// the form Composio's session helper returns. Headers carry the per-session
-// bearer token (`Authorization: Bearer mcp_…`). Bearer secret material in
-// the value, so callers must NEVER log this struct without redacting
-// Headers; the daemon's redact pipeline already pattern-matches the
-// `Bearer mcp_…` shape, but the safe rule remains "log the URL only".
+// the form Composio's session helper returns. Headers carry the Composio API
+// key, so callers must NEVER log this struct without redacting Headers.
 type composioMCPServer struct {
 	Type    string            `json:"type"`
 	URL     string            `json:"url"`
@@ -90,7 +87,7 @@ type mcpOverlayPayload struct {
 //
 //	{"mcpServers": {"composio": {"type": "http", "url": "...", "headers": {...}}}}
 //
-// CreateSession is called with BOTH the `toolkits.slugs` allowlist filter
+// CreateSession is called with BOTH the `toolkits.enable` allowlist filter
 // and `connected_accounts` pinning so the session is narrowed twice over:
 // the tool-router only sees the intersection of what the agent owner
 // allowlisted AND what the originator has live credentials for. This is
@@ -128,7 +125,7 @@ func (s *Service) BuildTaskOverlay(ctx context.Context, originatorUserID pgtype.
 		// owner per gate 2) has not connected — or has revoked since.
 		return nil, nil
 	}
-	// `toolkits.slugs` narrows what the tool-router exposes; pair it with
+	// `toolkits.enable` narrows what the tool-router exposes; pair it with
 	// the connected-account pin so the session can never surface an
 	// account outside the (allowlist ∩ active connections) set.
 	slugs := make([]string, 0, len(pinned))
@@ -138,7 +135,7 @@ func (s *Service) BuildTaskOverlay(ctx context.Context, originatorUserID pgtype.
 
 	resp, err := s.sdk.CreateSession(ctx, sdk.CreateSessionRequest{
 		UserID:            util.UUIDToString(originatorUserID),
-		Toolkits:          map[string]any{"slugs": slugs},
+		Toolkits:          map[string]any{"enable": slugs},
 		ConnectedAccounts: pinned,
 	})
 	if err != nil {
@@ -189,10 +186,11 @@ func normaliseAllowlistToSet(allow []string) map[string]struct{} {
 }
 
 // pinConnectedAccounts intersects the originator's active connection rows
-// with the allowlist set and returns the `connected_accounts` map shape
-// the Composio /tool_router/session endpoint expects: one entry per
-// (allowlisted) toolkit slug, value = the originator's connected account
-// id for that toolkit.
+// with the allowlist set and returns the `connected_accounts` map shape the
+// Composio /tool_router/session endpoint expects: one entry per allowlisted
+// toolkit slug, value = array of the originator's connected account ids for
+// that toolkit. The product currently permits one active account per toolkit,
+// so each array has one element.
 //
 // Newest-wins on duplicates: rows arrive ordered by connected_at DESC
 // (see ListActiveUserComposioConnections), so the first row seen for a
@@ -211,7 +209,7 @@ func pinConnectedAccounts(rows []db.UserComposioConnection, allowSet map[string]
 		if _, dup := pinned[slug]; dup {
 			continue
 		}
-		pinned[slug] = row.ConnectedAccountID
+		pinned[slug] = []string{row.ConnectedAccountID}
 	}
 	return pinned
 }
