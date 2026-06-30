@@ -77,9 +77,13 @@ describe("StepSource (single-select primary source)", () => {
       source: ["social_linkedin"],
     });
 
-    expect(screen.getByText("Source statistics")).toBeInTheDocument();
     expect(
-      screen.getByRole("switch", { name: /send this instance's domain/i }),
+      screen.getByText(
+        "Help us understand how you heard about Multica. No extra information is sent.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: /allow sending domain/i }),
     ).toBeChecked();
   });
 
@@ -94,7 +98,7 @@ describe("StepSource (single-select primary source)", () => {
     });
 
     await user.click(
-      screen.getByRole("switch", { name: /send this instance's domain/i }),
+      screen.getByRole("switch", { name: /allow sending domain/i }),
     );
 
     expect(onChange).toHaveBeenLastCalledWith({

@@ -149,12 +149,20 @@ describe("SourceBackfillModal", () => {
     });
     const user = userEvent.setup();
     renderModal();
-    expect(screen.queryByText("Source statistics")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        "Help us understand how you heard about Multica. No extra information is sent.",
+      ),
+    ).not.toBeInTheDocument();
     await user.click(await screen.findByText("Friends or colleagues"));
 
-    expect(screen.getByText("Source statistics")).toBeInTheDocument();
     expect(
-      screen.getByRole("switch", { name: /send this instance's domain/i }),
+      screen.getByText(
+        "Help us understand how you heard about Multica. No extra information is sent.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("switch", { name: /allow sending domain/i }),
     ).toBeChecked();
   });
 
@@ -210,7 +218,7 @@ describe("SourceBackfillModal", () => {
     renderModal();
     await user.click(await screen.findByText("Friends or colleagues"));
     await user.click(
-      screen.getByRole("switch", { name: /send this instance's domain/i }),
+      screen.getByRole("switch", { name: /allow sending domain/i }),
     );
     await user.click(screen.getByRole("button", { name: "Submit" }));
 

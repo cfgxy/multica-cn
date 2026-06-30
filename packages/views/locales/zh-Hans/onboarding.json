@@ -50,13 +50,9 @@
     "hint_ready": "看起来不错，准备好就点提交。"
   },
   "source_reporting": {
-    "summary": {
-      "title": "来源统计",
-      "description": "会发送你选择的来源；如果选择“其他”，也会发送补充说明。"
-    },
+    "description": "帮助我们了解你从哪里知道 Multica，不会发送额外信息。",
     "domain": {
-      "label": "发送本实例域名",
-      "description": "开启后会发送本实例域名和域名的 MD5 哈希；关闭后只发送域名的 MD5 哈希，不发送明文域名。"
+      "label": "允许发送域名"
     }
   },
   "questions": {

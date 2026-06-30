@@ -50,13 +50,9 @@
     "hint_ready": "Looks good. Hit Submit when you're ready."
   },
   "source_reporting": {
-    "summary": {
-      "title": "Source statistics",
-      "description": "Sends the source you pick. If you choose Other, it also sends your note."
-    },
+    "description": "Help us understand how you heard about Multica. No extra information is sent.",
     "domain": {
-      "label": "Send this instance's domain",
-      "description": "On sends the domain and its MD5 hash. Off sends only the domain hash, not the plaintext domain."
+      "label": "Allow sending domain"
     }
   },
   "questions": {
