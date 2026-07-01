@@ -15,6 +15,8 @@ import (
 const SchemaVersion = 1
 const SourceOtherMaxRunes = 512
 const DomainMaxLength = 255
+const OfficialMulticaAPIURL = "https://api.multica.ai"
+const officialMulticaAPIHost = "api.multica.ai"
 
 type Report struct {
 	SchemaVersion int     `json:"schema_version"`
@@ -81,24 +83,19 @@ func NormalizeSourceOther(channel, sourceOther string) string {
 	return sourceOther
 }
 
-func ReportingDomain(r *http.Request) string {
-	for _, key := range []string{"MULTICA_PUBLIC_URL", "MULTICA_APP_URL", "FRONTEND_ORIGIN"} {
-		if domain := NormalizeDomain(os.Getenv(key)); domain != "" {
-			return domain
-		}
+func ReportingAPIBaseURL(r *http.Request) string {
+	if base := strings.TrimSpace(os.Getenv("MULTICA_PUBLIC_URL")); base != "" {
+		return base
 	}
 	if r == nil {
 		return ""
 	}
-	if domain := NormalizeDomain(r.Host); domain != "" {
-		return domain
-	}
-	return ""
+	return r.Host
 }
 
-func ShouldReportDomain(domain string) bool {
-	domain = NormalizeDomain(domain)
-	return domain != "" && !IsOfficialMulticaDomain(domain)
+func ShouldReportAPIBaseURL(apiBaseURL string) bool {
+	domain := NormalizeDomain(apiBaseURL)
+	return domain != "" && !IsOfficialMulticaAPIURL(apiBaseURL)
 }
 
 func NormalizeDomain(raw string) string {
@@ -134,9 +131,23 @@ func NormalizeDomain(raw string) string {
 	return raw
 }
 
-func IsOfficialMulticaDomain(domain string) bool {
-	domain = NormalizeDomain(domain)
-	return domain == "multica.ai" || strings.HasSuffix(domain, ".multica.ai")
+func IsOfficialMulticaAPIURL(apiBaseURL string) bool {
+	raw := strings.TrimSpace(apiBaseURL)
+	if raw == "" {
+		return false
+	}
+	if strings.Contains(raw, "://") {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return false
+		}
+		path := strings.TrimRight(u.EscapedPath(), "/")
+		return u.Scheme == "https" &&
+			strings.EqualFold(u.Hostname(), officialMulticaAPIHost) &&
+			(u.Port() == "" || u.Port() == "443") &&
+			path == ""
+	}
+	return NormalizeDomain(raw) == officialMulticaAPIHost
 }
 
 func DomainMD5(domain string) string {

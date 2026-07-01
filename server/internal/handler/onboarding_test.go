@@ -48,7 +48,7 @@ type recordedSourceChannelReport struct {
 	userID        string
 	channel       string
 	sourceOther   string
-	domain        string
+	apiBaseURL    string
 	includeDomain bool
 }
 
@@ -56,8 +56,8 @@ type recordingSourceChannelReporter struct {
 	calls []recordedSourceChannelReport
 }
 
-func (r *recordingSourceChannelReporter) ReportSelfHostSourceChannel(userID, channel, sourceOther, domain string, includeDomain bool) {
-	r.calls = append(r.calls, recordedSourceChannelReport{userID: userID, channel: channel, sourceOther: sourceOther, domain: domain, includeDomain: includeDomain})
+func (r *recordingSourceChannelReporter) ReportSelfHostSourceChannel(userID, channel, sourceOther, apiBaseURL string, includeDomain bool) {
+	r.calls = append(r.calls, recordedSourceChannelReport{userID: userID, channel: channel, sourceOther: sourceOther, apiBaseURL: apiBaseURL, includeDomain: includeDomain})
 }
 
 func installRecordingSourceChannelReporter(t *testing.T) *recordingSourceChannelReporter {

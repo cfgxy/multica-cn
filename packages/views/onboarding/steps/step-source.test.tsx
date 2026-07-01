@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { configStore } from "@multica/core/config";
+import { ApiClient, setApiInstance } from "@multica/core/api";
 import type { QuestionnaireAnswers } from "@multica/core/onboarding";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
@@ -46,9 +46,7 @@ function renderStep(answers: QuestionnaireAnswers = EMPTY) {
 describe("StepSource (single-select primary source)", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
-    configStore.getState().setSourceChannelReportingConfig({
-      sourceChannelReportingEnabled: false,
-    });
+    setApiInstance(new ApiClient("https://api.multica.ai"));
   });
 
   it("clicking a non-Other option writes a one-element source array", async () => {
@@ -67,10 +65,8 @@ describe("StepSource (single-select primary source)", () => {
     expect(onAdvance).not.toHaveBeenCalled();
   });
 
-  it("shows the reporting controls after a source is selected when reporting is enabled", () => {
-    configStore.getState().setSourceChannelReportingConfig({
-      sourceChannelReportingEnabled: true,
-    });
+  it("shows reporting controls after a source is selected on a non-official API URL", () => {
+    setApiInstance(new ApiClient("https://api.customer.example"));
 
     renderStep({
       ...EMPTY,
@@ -88,9 +84,7 @@ describe("StepSource (single-select primary source)", () => {
   });
 
   it("lets the user disable plaintext domain reporting", async () => {
-    configStore.getState().setSourceChannelReportingConfig({
-      sourceChannelReportingEnabled: true,
-    });
+    setApiInstance(new ApiClient("https://api.customer.example"));
     const user = userEvent.setup();
     const { onChange } = renderStep({
       ...EMPTY,

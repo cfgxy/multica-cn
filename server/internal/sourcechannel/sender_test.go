@@ -3,8 +3,8 @@ package sourcechannel
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -20,23 +20,41 @@ func (f fakeSettingStore) GetOrCreateSystemSetting(context.Context, db.GetOrCrea
 	return f.value, nil
 }
 
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
+	return f(req)
+}
+
+func recordingClient(t *testing.T, got chan<- Report) *http.Client {
+	t.Helper()
+	return &http.Client{
+		Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if req.Method != http.MethodPost {
+				t.Errorf("method: want POST, got %s", req.Method)
+			}
+			if req.URL.String() != OfficialMulticaAPIURL+ReportPath {
+				t.Errorf("url: want %s, got %s", OfficialMulticaAPIURL+ReportPath, req.URL.String())
+			}
+			var payload Report
+			if err := json.NewDecoder(req.Body).Decode(&payload); err != nil {
+				t.Errorf("decode payload: %v", err)
+			}
+			got <- payload
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(strings.NewReader("")),
+				Request:    req,
+			}, nil
+		}),
+	}
+}
+
 func TestSenderReportsChannelOtherTextAndAnonymousHashes(t *testing.T) {
 	got := make(chan Report, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != ReportPath {
-			t.Errorf("path: want %s, got %s", ReportPath, r.URL.Path)
-		}
-		var payload Report
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Errorf("decode payload: %v", err)
-		}
-		got <- payload
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
 	sender := MustNewSender(fakeSettingStore{value: strings.Repeat("f", 64)}, SenderConfig{
-		APIBaseURL: server.URL,
+		HTTPClient: recordingClient(t, got),
 		Timeout:    time.Second,
 	})
 	sender.ReportSelfHostSourceChannel("user-123", "Other", "  a podcast  ", "https://Example.com:443/path", true)
@@ -71,18 +89,8 @@ func TestSenderReportsChannelOtherTextAndAnonymousHashes(t *testing.T) {
 
 func TestSenderCanReportDomainHashWithoutPlaintextDomain(t *testing.T) {
 	got := make(chan Report, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		var payload Report
-		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
-			t.Errorf("decode payload: %v", err)
-		}
-		got <- payload
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
 	sender := MustNewSender(fakeSettingStore{value: strings.Repeat("f", 64)}, SenderConfig{
-		APIBaseURL: server.URL,
+		HTTPClient: recordingClient(t, got),
 		Timeout:    time.Second,
 	})
 	sender.ReportSelfHostSourceChannel("user-123", "search", "", "https://Example.com:443/path", false)
@@ -102,15 +110,19 @@ func TestSenderCanReportDomainHashWithoutPlaintextDomain(t *testing.T) {
 
 func TestSenderDropsUnknownChannel(t *testing.T) {
 	got := make(chan struct{}, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got <- struct{}{}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
 	sender := MustNewSender(fakeSettingStore{value: strings.Repeat("f", 64)}, SenderConfig{
-		APIBaseURL: server.URL,
-		Timeout:    50 * time.Millisecond,
+		HTTPClient: &http.Client{
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				got <- struct{}{}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader("")),
+					Request:    req,
+				}, nil
+			}),
+		},
+		Timeout: 50 * time.Millisecond,
 	})
 	sender.ReportSelfHostSourceChannel("user-123", "private_text", "text", "example.com", true)
 
@@ -121,19 +133,23 @@ func TestSenderDropsUnknownChannel(t *testing.T) {
 	}
 }
 
-func TestSenderDropsOfficialMulticaDomain(t *testing.T) {
+func TestSenderDropsOfficialMulticaAPIURL(t *testing.T) {
 	got := make(chan struct{}, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		got <- struct{}{}
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer server.Close()
-
 	sender := MustNewSender(fakeSettingStore{value: strings.Repeat("f", 64)}, SenderConfig{
-		APIBaseURL: server.URL,
-		Timeout:    50 * time.Millisecond,
+		HTTPClient: &http.Client{
+			Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+				got <- struct{}{}
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     make(http.Header),
+					Body:       io.NopCloser(strings.NewReader("")),
+					Request:    req,
+				}, nil
+			}),
+		},
+		Timeout: 50 * time.Millisecond,
 	})
-	sender.ReportSelfHostSourceChannel("user-123", "search", "", "https://api.multica.ai", true)
+	sender.ReportSelfHostSourceChannel("user-123", "search", "", OfficialMulticaAPIURL, true)
 
 	select {
 	case <-got:
@@ -159,11 +175,17 @@ func TestDomainHelpers(t *testing.T) {
 		}
 	}
 
-	if !IsOfficialMulticaDomain("https://api.multica.ai") {
-		t.Fatal("api.multica.ai should be official")
+	if !IsOfficialMulticaAPIURL(OfficialMulticaAPIURL) {
+		t.Fatalf("%s should be official", OfficialMulticaAPIURL)
 	}
-	if IsOfficialMulticaDomain("multica.example.com") {
-		t.Fatal("multica.example.com should not be official")
+	if IsOfficialMulticaAPIURL("http://api.multica.ai") {
+		t.Fatal("http://api.multica.ai should not be official")
+	}
+	if IsOfficialMulticaAPIURL("https://multica.ai") {
+		t.Fatal("https://multica.ai should not be the official API")
+	}
+	if !ShouldReportAPIBaseURL("https://api.customer.example") {
+		t.Fatal("customer API URL should report")
 	}
 	if got := DomainMD5("Example.com"); got != "5ababd603b22780302dd8d83498e5172" {
 		t.Fatalf("DomainMD5 = %q", got)

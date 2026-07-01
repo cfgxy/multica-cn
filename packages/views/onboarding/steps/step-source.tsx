@@ -9,8 +9,11 @@ import {
   Newspaper,
   Users,
 } from "lucide-react";
-import type { QuestionnaireAnswers, Source } from "@multica/core/onboarding";
-import { useConfigStore } from "@multica/core/config";
+import {
+  shouldShowSourceChannelReporting,
+  type QuestionnaireAnswers,
+  type Source,
+} from "@multica/core/onboarding";
 import {
   GoogleIcon,
   LinkedInIcon,
@@ -41,9 +44,7 @@ export function StepSource({
   onBack?: () => void;
 }) {
   const { t } = useT("onboarding");
-  const sourceChannelReportingEnabled = useConfigStore(
-    (s) => s.sourceChannelReportingEnabled,
-  );
+  const showSourceReporting = shouldShowSourceChannelReporting();
 
   const options: QuestionOption[] = [
     { slug: "friends_colleagues", icon: <Users className="h-4 w-4" />, label: t(($) => $.questions.source.friends_colleagues) },
@@ -103,7 +104,7 @@ export function StepSource({
       }}
       onBack={onBack}
       afterOptions={
-        sourceChannelReportingEnabled && selected.length > 0 ? (
+        showSourceReporting && selected.length > 0 ? (
           <SourceReportingControls
             domainConsent={domainConsent}
             onDomainConsentChange={(enabled) =>

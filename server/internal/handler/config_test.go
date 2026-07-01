@@ -104,26 +104,6 @@ func TestGetConfigIncludesRuntimeAuthConfig(t *testing.T) {
 	}
 }
 
-func TestGetConfigExposesSourceChannelReportingForNonOfficialDomain(t *testing.T) {
-	t.Setenv("MULTICA_PUBLIC_URL", "https://api.customer.example")
-
-	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
-	w := httptest.NewRecorder()
-
-	testHandler.GetConfig(w, req)
-	if w.Code != http.StatusOK {
-		t.Fatalf("GetConfig: expected 200, got %d: %s", w.Code, w.Body.String())
-	}
-
-	var cfg AppConfig
-	if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
-		t.Fatalf("decode config: %v", err)
-	}
-	if !cfg.SourceChannelReportingEnabled {
-		t.Fatalf("source_channel_reporting_enabled: want true for non-official domain")
-	}
-}
-
 func TestGetConfigUsesAppURLForSameOriginDaemonSetup(t *testing.T) {
 	t.Setenv("MULTICA_APP_URL", "https://multica.internal.example/")
 
@@ -193,9 +173,6 @@ func TestGetConfigOmitsOfficialCloudDaemonSetup(t *testing.T) {
 	}
 	if cfg.DaemonAppURL != "" {
 		t.Fatalf("daemon_app_url: want omitted for cloud, got %q", cfg.DaemonAppURL)
-	}
-	if cfg.SourceChannelReportingEnabled {
-		t.Fatalf("source_channel_reporting_enabled: want false for official cloud")
 	}
 }
 

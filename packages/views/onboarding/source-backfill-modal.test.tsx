@@ -1,7 +1,7 @@
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { configStore } from "@multica/core/config";
+import { ApiClient, setApiInstance } from "@multica/core/api";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../locales/en/common.json";
 import enOnboarding from "../locales/en/onboarding.json";
@@ -83,9 +83,7 @@ beforeEach(() => {
   mockSaveQuestionnaire.mockReset();
   mockSaveQuestionnaire.mockResolvedValue(undefined);
   mockCaptureEvent.mockReset();
-  configStore.getState().setSourceChannelReportingConfig({
-    sourceChannelReportingEnabled: false,
-  });
+  setApiInstance(new ApiClient("https://api.multica.ai"));
   setUser(null);
   wipeDismissCounters();
   mockPrefersReducedMotion(true);
@@ -138,10 +136,8 @@ describe("SourceBackfillModal", () => {
     expect(mockCaptureEvent).toHaveBeenCalledWith("source_backfill_shown");
   });
 
-  it("shows reporting controls after a source is selected when reporting is enabled", async () => {
-    configStore.getState().setSourceChannelReportingConfig({
-      sourceChannelReportingEnabled: true,
-    });
+  it("shows reporting controls after a source is selected on a non-official API URL", async () => {
+    setApiInstance(new ApiClient("https://api.customer.example"));
     setUser({
       id: "u1",
       onboarded_at: "2026-01-01T00:00:00Z",
@@ -201,9 +197,7 @@ describe("SourceBackfillModal", () => {
   });
 
   it("persists false when the user disables plaintext domain reporting", async () => {
-    configStore.getState().setSourceChannelReportingConfig({
-      sourceChannelReportingEnabled: true,
-    });
+    setApiInstance(new ApiClient("https://api.customer.example"));
     setUser({
       id: "u1",
       onboarded_at: "2026-01-01T00:00:00Z",

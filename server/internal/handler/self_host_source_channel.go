@@ -58,7 +58,7 @@ func (h *Handler) RecordSelfHostSourceChannel(w http.ResponseWriter, r *http.Req
 		writeError(w, http.StatusBadRequest, "invalid subject_hash")
 		return
 	}
-	if req.Domain != nil && (domain == "" || sourcechannel.IsOfficialMulticaDomain(domain)) {
+	if req.Domain != nil && (domain == "" || sourcechannel.IsOfficialMulticaAPIURL(domain)) {
 		writeError(w, http.StatusBadRequest, "invalid domain")
 		return
 	}

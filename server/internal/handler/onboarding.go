@@ -301,7 +301,7 @@ func (h *Handler) reportSelfHostSourceChannelIfNeeded(r *http.Request, userID st
 	backfillSubmitted := beforeOnboarded && len(before.Source) == 0 && !before.SourceSkipped && len(after.Source) > 0
 	sourceChangedAfterCompletion := before.complete() && after.complete() && sourceAttributionChanged(before, after)
 	if questionnaireJustCompleted || backfillSubmitted || sourceChangedAfterCompletion {
-		h.SourceChannelReporter.ReportSelfHostSourceChannel(userID, channel, after.SourceOther, sourcechannel.ReportingDomain(r), after.SourceDomainConsent)
+		h.SourceChannelReporter.ReportSelfHostSourceChannel(userID, channel, after.SourceOther, sourcechannel.ReportingAPIBaseURL(r), after.SourceDomainConsent)
 	}
 }
 

@@ -13,10 +13,10 @@ import {
 import { toast } from "sonner";
 import { captureEvent } from "@multica/core/analytics";
 import { useAuthStore } from "@multica/core/auth";
-import { useConfigStore } from "@multica/core/config";
 import {
   needsSourceBackfill,
   saveQuestionnaire,
+  shouldShowSourceChannelReporting,
   type QuestionnaireAnswers,
   type Source,
 } from "@multica/core/onboarding";
@@ -165,9 +165,7 @@ function SourceBackfillDialogBody({
   onComplete: () => void;
 }) {
   const { t } = useT("onboarding");
-  const sourceChannelReportingEnabled = useConfigStore(
-    (s) => s.sourceChannelReportingEnabled,
-  );
+  const showSourceReporting = shouldShowSourceChannelReporting();
 
   const [answers, setAnswers] = useState(EMPTY_BACKFILL);
   const [busy, setBusy] = useState(false);
@@ -350,7 +348,7 @@ function SourceBackfillDialogBody({
           )}
         </fieldset>
 
-        {sourceChannelReportingEnabled && pickedSlug !== null ? (
+        {showSourceReporting && pickedSlug !== null ? (
           <div className="pt-4">
             <SourceReportingControls
               domainConsent={domainConsent}

@@ -10,7 +10,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -19,10 +18,9 @@ import (
 )
 
 const (
-	defaultAPIBaseURL = "https://api.multica.ai"
-	ReportPath        = "/api/acquisition/self-host-source"
-	systemSaltKey     = "self_host_source_channel_salt"
-	defaultTimeout    = 3 * time.Second
+	ReportPath     = "/api/acquisition/self-host-source"
+	systemSaltKey  = "self_host_source_channel_salt"
+	defaultTimeout = 3 * time.Second
 )
 
 type settingStore interface {
@@ -30,7 +28,6 @@ type settingStore interface {
 }
 
 type SenderConfig struct {
-	APIBaseURL string
 	HTTPClient *http.Client
 	Timeout    time.Duration
 	Logger     *slog.Logger
@@ -51,14 +48,6 @@ func NewSender(settings settingStore, cfg SenderConfig) (*Sender, error) {
 	if settings == nil {
 		return nil, errors.New("sourcechannel: settings store is nil")
 	}
-	base := strings.TrimSpace(cfg.APIBaseURL)
-	if base == "" {
-		base = defaultAPIBaseURL
-	}
-	endpoint, err := endpointFromBase(base)
-	if err != nil {
-		return nil, err
-	}
 	client := cfg.HTTPClient
 	if client == nil {
 		client = http.DefaultClient
@@ -74,7 +63,7 @@ func NewSender(settings settingStore, cfg SenderConfig) (*Sender, error) {
 	return &Sender{
 		settings: settings,
 		client:   client,
-		endpoint: endpoint,
+		endpoint: OfficialMulticaAPIURL + ReportPath,
 		timeout:  timeout,
 		logger:   logger,
 	}, nil
@@ -88,7 +77,7 @@ func MustNewSender(settings settingStore, cfg SenderConfig) *Sender {
 	return s
 }
 
-func (s *Sender) ReportSelfHostSourceChannel(userID, channel, sourceOther, domain string, includeDomain bool) {
+func (s *Sender) ReportSelfHostSourceChannel(userID, channel, sourceOther, apiBaseURL string, includeDomain bool) {
 	if s == nil {
 		return
 	}
@@ -97,8 +86,8 @@ func (s *Sender) ReportSelfHostSourceChannel(userID, channel, sourceOther, domai
 	if userID == "" || !ValidChannel(channel) {
 		return
 	}
-	domain = NormalizeDomain(domain)
-	if !ShouldReportDomain(domain) {
+	domain := NormalizeDomain(apiBaseURL)
+	if !ShouldReportAPIBaseURL(apiBaseURL) {
 		return
 	}
 	sourceOther = NormalizeSourceOther(channel, sourceOther)
@@ -188,18 +177,4 @@ func randomSalt() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
-}
-
-func endpointFromBase(base string) (string, error) {
-	u, err := url.Parse(strings.TrimSpace(base))
-	if err != nil {
-		return "", err
-	}
-	if u.Scheme == "" || u.Host == "" {
-		return "", errors.New("sourcechannel: API base URL must be absolute")
-	}
-	u.Path = strings.TrimRight(u.Path, "/") + ReportPath
-	u.RawQuery = ""
-	u.Fragment = ""
-	return u.String(), nil
 }

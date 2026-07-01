@@ -177,9 +177,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
 	h.Metrics = opts.BusinessMetrics
 	if pool != nil {
-		if reporter, err := sourcechannel.NewSender(queries, sourcechannel.SenderConfig{
-			APIBaseURL: strings.TrimSpace(os.Getenv("MULTICA_SOURCE_CHANNEL_API_BASE_URL")),
-		}); err != nil {
+		if reporter, err := sourcechannel.NewSender(queries, sourcechannel.SenderConfig{}); err != nil {
 			slog.Warn("source channel reporter disabled", "error", err)
 		} else {
 			h.SourceChannelReporter = reporter
