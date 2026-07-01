@@ -18,9 +18,11 @@ import (
 )
 
 const (
-	ReportPath     = "/api/acquisition/self-host-source"
-	systemSaltKey  = "self_host_source_channel_salt"
-	defaultTimeout = 3 * time.Second
+	ReportPath = "/api/acquisition/self-host-source"
+	// Temporary validation target for the dev/staging rollout of #4741.
+	sourceChannelReportAPIURL = "https://multica-api.copilothub.ai"
+	systemSaltKey             = "self_host_source_channel_salt"
+	defaultTimeout            = 3 * time.Second
 )
 
 type settingStore interface {
@@ -63,7 +65,7 @@ func NewSender(settings settingStore, cfg SenderConfig) (*Sender, error) {
 	return &Sender{
 		settings: settings,
 		client:   client,
-		endpoint: OfficialMulticaAPIURL + ReportPath,
+		endpoint: sourceChannelReportAPIURL + ReportPath,
 		timeout:  timeout,
 		logger:   logger,
 	}, nil
