@@ -31,7 +31,6 @@ import (
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/service"
-	"github.com/multica-ai/multica/server/internal/sourcechannel"
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/internal/util/secretbox"
@@ -176,14 +175,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
 	h.Metrics = opts.BusinessMetrics
-	if pool != nil {
-		if reporter, err := sourcechannel.NewSender(queries, sourcechannel.SenderConfig{}); err != nil {
-			slog.Warn("source channel reporter disabled", "error", err)
-		} else {
-			h.SourceChannelReporter = reporter
-			slog.Info("source channel reporter enabled")
-		}
-	}
 	if opts.FeatureFlags != nil {
 		h.DaemonFeatureFlags = featureflagdispatch.NewEvaluator(opts.FeatureFlags)
 	}
@@ -478,11 +469,26 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			// agent asks, instead of force-assembling it on every inbound.
 			h.SlackHistory = slack.NewHistory(queries, box.Open, slog.Default())
 
+			// `/issue` slash command (MUL-3908): a real Slack slash command,
+			// delivered over the same Socket Mode connection. It is a quick-create
+			// entry point — the invoker's natural-language description is enqueued as
+			// a quick-create task (no chat session or chat run) and the agent authors
+			// the well-formed issue in the background — reusing the shared TaskService
+			// + binding service. The invoker gets a private ephemeral acknowledgement
+			// and a Multica notification when the issue lands.
+			slackSlash := slack.NewSlashCommandProcessor(slack.SlashCommandConfig{
+				Queries: queries,
+				Tasks:   h.TaskService,
+				Binding: slackBindingSvc,
+				AppURL:  appURLFromEnv(),
+				Logger:  slog.Default(),
+			})
+
 			// Per-installation inbound: the Supervisor builds + supervises one
 			// Socket Mode connection per active Slack installation, authenticated
 			// with that installation's OWN app-level token (xapp-, pasted at BYO
 			// install) — no deployment-level app token, no single connection.
-			slack.RegisterSlack(channelRegistry, slack.ChannelDeps{Decrypt: box.Open, Logger: slog.Default()})
+			slack.RegisterSlack(channelRegistry, slack.ChannelDeps{Decrypt: box.Open, Logger: slog.Default(), Slash: slackSlash})
 
 			// BYO self-serve install (paste bot token + app-level token). The
 			// InstallService needs only the at-rest encryption key — there is no
@@ -611,7 +617,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	authRL := middleware.RateLimit(rdb, envPositiveInt("RATE_LIMIT_AUTH", 5), time.Minute, trustedProxies)
 	authVerifyRL := middleware.RateLimit(rdb, envPositiveInt("RATE_LIMIT_AUTH_VERIFY", 20), time.Minute, trustedProxies)
 	contactSalesRL := middleware.RateLimit(rdb, envPositiveInt("RATE_LIMIT_CONTACT_SALES", 5), time.Hour, trustedProxies)
-	selfHostSourceRL := middleware.RateLimit(rdb, 60, time.Minute, trustedProxies)
 	r.With(authRL).Post("/auth/send-code", h.SendCode)
 	r.With(authVerifyRL).Post("/auth/verify-code", h.VerifyCode)
 	r.With(authRL).Post("/auth/google", h.GoogleLogin)
@@ -619,7 +624,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 	// Public API
 	r.Get("/api/config", h.GetConfig)
-	r.With(selfHostSourceRL).Post("/api/acquisition/self-host-source", h.RecordSelfHostSourceChannel)
 	r.With(contactSalesRL).Post("/api/contact-sales", h.CreateContactSales)
 
 	// Webhook ingress for autopilots. Outside the authenticated group on

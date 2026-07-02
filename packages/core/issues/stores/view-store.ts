@@ -88,6 +88,10 @@ export interface IssueViewState {
   sortBy: SortField;
   sortDirection: SortDirection;
   cardProperties: CardProperties;
+  // When false, issues that have a parent (sub-issues) are hidden from the
+  // board / list / swimlane so users can focus on top-level parent issues.
+  // Purely a display filter — it never touches the parent/child relationship.
+  showSubIssues: boolean;
   listCollapsedStatuses: IssueStatus[];
   ganttZoom: GanttZoom;
   ganttShowCompleted: boolean;
@@ -121,6 +125,7 @@ export interface IssueViewState {
   setSortBy: (field: SortField) => void;
   setSortDirection: (dir: SortDirection) => void;
   toggleCardProperty: (key: keyof CardProperties) => void;
+  toggleShowSubIssues: () => void;
   toggleListCollapsed: (status: IssueStatus) => void;
   setSwimlaneGrouping: (grouping: SwimlaneGrouping) => void;
   /** Update the lane order for the currently active swimlane grouping. */
@@ -155,6 +160,7 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
     childProgress: true,
     labels: true,
   },
+  showSubIssues: true,
   listCollapsedStatuses: [],
   ganttZoom: "week",
   ganttShowCompleted: false,
@@ -264,6 +270,8 @@ export const viewStoreSlice = (set: StoreApi<IssueViewState>["setState"]): Issue
         [key]: !state.cardProperties[key],
       },
     })),
+  toggleShowSubIssues: () =>
+    set((state) => ({ showSubIssues: !state.showSubIssues })),
   toggleListCollapsed: (status) =>
     set((state) => ({
       listCollapsedStatuses: state.listCollapsedStatuses.includes(status)
@@ -311,6 +319,7 @@ export const viewStorePersistOptions = (name: string) => ({
     sortBy: state.sortBy,
     sortDirection: state.sortDirection,
     cardProperties: state.cardProperties,
+    showSubIssues: state.showSubIssues,
     listCollapsedStatuses: state.listCollapsedStatuses,
     ganttZoom: state.ganttZoom,
     ganttShowCompleted: state.ganttShowCompleted,
