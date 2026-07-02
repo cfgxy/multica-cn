@@ -294,6 +294,37 @@ export function createEnDict(allowSignup: boolean): LandingDict {
     },
     entries: [
       {
+        version: "0.3.35",
+        date: "2026-07-02",
+        title: "Faster issue views, Show sub-issues toggle, and safer agent CLI writes",
+        changes: [],
+        features: [
+          "Issue views gain a 'Show sub-issues' display toggle so you can focus on parent Issues across board, list, swimlane, and Gantt.",
+          "The manual create-issue dialog now surfaces a Labels picker inline; Due date moves into the ⋯ overflow menu.",
+          "Each skill's detail page can attach the skill to several agents in one action, with an agent search box in the picker.",
+          "Self-hosted: S3-compatible object storage now supports a path-style addressing flag for providers that require it.",
+        ],
+        improvements: [
+          "Board, list, swimlane, and Gantt now share one query and cache path — Members / Agents tab totals and load-more pages are exact, cross-project moves reconcile per-list, and off-window field changes stop triggering refetch storms. A shared refresh indicator fades in on slow networks so sort and filter changes never feel dead.",
+          "The chat live timeline no longer remounts on every streamed task message, so long agent runs no longer freeze the renderer while Markdown is re-parsed.",
+        ],
+        fixes: [
+          "A sub-Issue closing inside the same squad now wakes the parent's squad leader, so a squad decomposing its own parent Issue no longer stalls the parent in in_progress.",
+          "Daemon-managed agent CLI calls that lose their task token now fail closed instead of silently reusing the user's personal token — agent writes no longer land as the workspace owner. (Community-reported.)",
+          "Slack alert cards (Grafana, incoming webhooks) whose body lives only in attachments, blocks, or rich_text runs are recovered when the chat agent reads history, so @mentioning the agent under an alert card works again.",
+          "Inline base64 images (QR codes, screenshots, charts) render in Markdown and read-only Issue comments instead of showing as broken images.",
+          "Comment attachment links keep resolving when the comment moves between Issues.",
+          "Antigravity runs that end with empty stdout now surface the recovered transcript reply in the run timeline instead of leaving a blank result.",
+          "Attachment preview accepts the same text file types the frontend advertises, fixing a mismatch that hid supported previews.",
+          "The Mermaid renderer no longer leaks its built-in error graphic onto the page on invalid syntax — the compact error state renders instead.",
+          "Local skills are exposed to ACP-based runtimes again.",
+          "In-app feedback submissions now validate the server response and forward the error kind, so desktop route-renderer errors submit as bug feedback.",
+          "The daemon now times out stuck repo-cache git commands so a hung git call can't wedge the runtime. (Community-reported.)",
+          "Runtime pending keys stay in a single Redis slot on cluster deployments. (Community-reported.)",
+          "The web Docker image derives its pnpm version from packageManager, matching the pin used in the repo. (Community-reported.)",
+        ],
+      },
+      {
         version: "0.3.34",
         date: "2026-07-01",
         title: "Slack /issue slash command, ByteDance TRAE CLI runtime, and Claude Sonnet 5",
