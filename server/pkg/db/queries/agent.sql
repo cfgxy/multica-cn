@@ -21,12 +21,13 @@ INSERT INTO agent (
     workspace_id, name, description, avatar_url, runtime_mode,
     runtime_config, runtime_id, visibility, max_concurrent_tasks, owner_id,
     instructions, custom_env, custom_args, mcp_config, model, thinking_level,
-    composio_toolkit_allowlist
+    composio_toolkit_allowlist, permission_mode
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $9, $10,
     $11, $12, $13, $14, $15, $16,
-    sqlc.narg('composio_toolkit_allowlist')::text[]
+    sqlc.narg('composio_toolkit_allowlist')::text[],
+    COALESCE(sqlc.narg('permission_mode'), 'private')
 )
 RETURNING *;
 
@@ -45,6 +46,7 @@ UPDATE agent SET
     runtime_mode = COALESCE(sqlc.narg('runtime_mode'), runtime_mode),
     runtime_id = COALESCE(sqlc.narg('runtime_id'), runtime_id),
     visibility = COALESCE(sqlc.narg('visibility'), visibility),
+    permission_mode = COALESCE(sqlc.narg('permission_mode'), permission_mode),
     status = COALESCE(sqlc.narg('status'), status),
     max_concurrent_tasks = COALESCE(sqlc.narg('max_concurrent_tasks'), max_concurrent_tasks),
     instructions = COALESCE(sqlc.narg('instructions'), instructions),
@@ -230,8 +232,9 @@ WHERE id = $1 AND issue_id IS NULL;
 --
 -- originator_user_id is inherited so the Composio overlay decision sees the
 -- same top-of-chain human across the retry: the user behind the original
--- run has not changed, and the enqueue hook in TaskService can keep gating
--- on (originator == agent.owner_id) without a separate parent lookup.
+-- run has not changed. The Composio overlay follows the agent's invocation
+-- permission and uses the agent owner's connection (MUL-3963); originator is
+-- carried for A2A/audit, not as an originator == agent.owner_id gate.
 INSERT INTO agent_task_queue (
     agent_id, runtime_id, issue_id, chat_session_id, autopilot_run_id,
     status, priority, trigger_comment_id, trigger_summary, context,
