@@ -32,6 +32,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/storage"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/featureflag"
 )
 
 // randomID returns a random 16-byte hex string used as a request ID for
@@ -120,6 +121,7 @@ type Handler struct {
 	ModelListStore        ModelListStore
 	LocalSkillListStore   LocalSkillListStore
 	LocalSkillImportStore LocalSkillImportStore
+	FeatureFlags          *featureflag.Service
 	DaemonFeatureFlags    *featureflagdispatch.Evaluator
 	LivenessStore         LivenessStore
 	HeartbeatScheduler    HeartbeatScheduler

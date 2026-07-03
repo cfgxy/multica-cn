@@ -670,7 +670,9 @@ func (h *Handler) ListAgents(w http.ResponseWriter, r *http.Request) {
 		// (MUL-3963), so surfacing the slugs to admins gives them nothing
 		// actionable. Agent actors are also redacted (same A2A
 		// lateral-movement reasoning as mcp_config).
-		if actorType == "agent" || uuidToString(a.OwnerID) != userID {
+		if !h.composioMCPAppsEnabled(r.Context()) {
+			suppressComposioToolkitAllowlist(&resp)
+		} else if actorType == "agent" || uuidToString(a.OwnerID) != userID {
 			redactComposioToolkitAllowlist(&resp)
 		}
 		visible = append(visible, resp)
@@ -728,7 +730,9 @@ func (h *Handler) GetAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	// composio_toolkit_allowlist visibility is strictly owner-only (see
 	// ListAgents for the rationale). No workspace owner/admin bypass.
-	if actorType == "agent" || uuidToString(agent.OwnerID) != userID {
+	if !h.composioMCPAppsEnabled(r.Context()) {
+		suppressComposioToolkitAllowlist(&resp)
+	} else if actorType == "agent" || uuidToString(agent.OwnerID) != userID {
 		redactComposioToolkitAllowlist(&resp)
 	}
 
@@ -914,6 +918,9 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	// column on insert. An explicitly empty list (`[]`) is preserved as an
 	// empty TEXT[] (the dispatch path treats NULL and `{}` identically).
 	allowlist := normaliseComposioToolkitAllowlist(req.ComposioToolkitAllowlist)
+	if !h.composioMCPAppsEnabled(r.Context()) {
+		allowlist = nil
+	}
 
 	created, err := h.Queries.CreateAgent(r.Context(), db.CreateAgentParams{
 		WorkspaceID:              wsUUID,
@@ -979,6 +986,9 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 	))
 
 	redactAgentResponseForActor(&resp, actorType)
+	if !h.composioMCPAppsEnabled(r.Context()) {
+		suppressComposioToolkitAllowlist(&resp)
+	}
 	writeJSON(w, http.StatusCreated, resp)
 }
 
@@ -1121,6 +1131,11 @@ func redactComposioToolkitAllowlist(resp *AgentResponse) {
 		resp.ComposioToolkitAllowlist = nil
 		resp.ComposioToolkitAllowlistRedacted = true
 	}
+}
+
+func suppressComposioToolkitAllowlist(resp *AgentResponse) {
+	resp.ComposioToolkitAllowlist = nil
+	resp.ComposioToolkitAllowlistRedacted = false
 }
 
 // normaliseComposioToolkitAllowlist canonicalises an incoming allowlist
@@ -1441,7 +1456,10 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	shouldClearComposioAllowlist := false
 	if _, hasAllowlist := rawFields["composio_toolkit_allowlist"]; hasAllowlist {
 		isAgentOwner := uuidToString(existing.OwnerID) == requestUserID(r)
-		if !isAgentOwner {
+		if !h.composioMCPAppsEnabled(r.Context()) {
+			slog.Debug("update agent: composio_toolkit_allowlist write dropped because feature flag is disabled",
+				append(logger.RequestAttrs(r), "agent_id", id)...)
+		} else if !isAgentOwner {
 			slog.Debug("update agent: composio_toolkit_allowlist write by non-owner silently dropped",
 				append(logger.RequestAttrs(r), "agent_id", id)...)
 		} else if req.ComposioToolkitAllowlist == nil {
@@ -1529,7 +1547,9 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 	// admin actions (e.g. bulk reassigning agents off a leaving member's
 	// runtime), but they must not learn the agent owner's composio allowlist
 	// from the mutation response. See ListAgents/GetAgent for the same gate.
-	if uuidToString(updated.OwnerID) != userID {
+	if !h.composioMCPAppsEnabled(r.Context()) {
+		suppressComposioToolkitAllowlist(&resp)
+	} else if uuidToString(updated.OwnerID) != userID {
 		redactComposioToolkitAllowlist(&resp)
 	}
 	writeJSON(w, http.StatusOK, resp)

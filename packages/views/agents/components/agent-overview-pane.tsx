@@ -16,6 +16,8 @@ import {
 import { useQuery } from "@tanstack/react-query";
 import type { Agent, AgentRuntime } from "@multica/core/types";
 import { providerSupportsMcpConfig } from "@multica/core/agents";
+import { useFeatureEnabled } from "@multica/core/config";
+import { COMPOSIO_MCP_APPS_FLAG } from "@multica/core/feature-flags";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { larkInstallationsOptions } from "@multica/core/lark";
 import { slackInstallationsOptions } from "@multica/core/slack";
@@ -136,6 +138,7 @@ export function AgentOverviewPane({
 }: AgentOverviewPaneProps) {
   const { t } = useT("agents");
   const wsId = useWorkspaceId();
+  const composioMCPAppsEnabled = useFeatureEnabled(COMPOSIO_MCP_APPS_FLAG, false);
   const [activeTab, setActiveTab] = useState<DetailTab>("activity");
   const [activeDirty, setActiveDirty] = useState(false);
   // Holds the destination when a tab change is intercepted by the dirty
@@ -186,7 +189,10 @@ export function AgentOverviewPane({
     // (redacted + write-dropped for everyone else — MUL-3870 / MUL-3869).
     // Hide the entry entirely for non-owners, and while auth is still loading.
     const showComposioMcp =
-      !!currentUserId && !!agent.owner_id && agent.owner_id === currentUserId;
+      composioMCPAppsEnabled &&
+      !!currentUserId &&
+      !!agent.owner_id &&
+      agent.owner_id === currentUserId;
     return detailTabs.filter((tab) => {
       if (tab.id === "mcp_config") return showMcp;
       if (tab.id === "composio_mcp") return showComposioMcp;
@@ -194,7 +200,7 @@ export function AgentOverviewPane({
       if (tab.id === "runtime_config") return showRuntimeConfig;
       return true;
     });
-  }, [runtime, integrationsConfigured, currentUserId, agent.owner_id]);
+  }, [runtime, integrationsConfigured, composioMCPAppsEnabled, currentUserId, agent.owner_id]);
 
   // If the active tab disappears (e.g. user just switched the agent's
   // runtime to one that doesn't read mcp_config), fall back to Activity

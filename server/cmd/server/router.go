@@ -23,6 +23,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/daemonws"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/featureflagdispatch"
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/handler"
 	"github.com/multica-ai/multica/server/internal/integrations/channel"
 	"github.com/multica-ai/multica/server/internal/integrations/channel/engine"
@@ -178,9 +179,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	}
 	h := handler.New(queries, pool, hub, bus, emailSvc, store, cfSigner, analyticsClient, signupConfig, daemonHub)
 	h.Metrics = opts.BusinessMetrics
+	h.FeatureFlags = opts.FeatureFlags
 	if opts.FeatureFlags != nil {
 		h.DaemonFeatureFlags = featureflagdispatch.NewEvaluator(opts.FeatureFlags)
 	}
+	h.TaskService.FeatureFlags = opts.FeatureFlags
 	h.TaskService.Metrics = opts.BusinessMetrics
 	h.IssueService.Metrics = opts.BusinessMetrics
 	if opts.BusinessMetrics != nil {
@@ -508,51 +511,56 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		slog.Info("slack integration disabled (MULTICA_SLACK_SECRET_KEY not set)")
 	}
 
-	// Composio integration (MUL-3720). Gated by COMPOSIO_API_KEY — the
-	// project-scoped key the standalone SDK authenticates Composio with (sent
-	// as x-api-key; the project is resolved from the key, so NO project id is
-	// configured). When unset the whole block is skipped and the composio HTTP
-	// handlers return 503; existing deployments are unaffected. An operator opts
-	// in by setting COMPOSIO_API_KEY plus a callback base
+	// Composio integration (MUL-3720). Gated by COMPOSIO_API_KEY plus the
+	// composio_mcp_apps feature flag. The env var is the project-scoped key the
+	// standalone SDK authenticates Composio with (sent as x-api-key; the project
+	// is resolved from the key, so NO project id is configured). When unset or
+	// flag-disabled the whole block is skipped and the composio HTTP handlers
+	// return 503; existing deployments are unaffected. An operator opts in by
+	// setting COMPOSIO_API_KEY plus a callback base
 	// (COMPOSIO_CALLBACK_BASE_URL, falling back to MULTICA_PUBLIC_URL). The
 	// toolkit→auth-config mapping is NOT configured here — it is resolved
 	// dynamically from the project's /auth_configs at request time, so enabling
 	// a toolkit is a dashboard action, not a redeploy. State signing uses
 	// COMPOSIO_STATE_SECRET, or a key derived from JWT_SECRET when that is unset.
 	if composioAPIKey := strings.TrimSpace(os.Getenv("COMPOSIO_API_KEY")); composioAPIKey != "" {
-		sdkClient, err := composiosdk.NewClient(composiosdk.Options{APIKey: composioAPIKey})
-		if err != nil {
-			slog.Error("composio: SDK client init failed; composio integration disabled", "error", err)
+		if !featureflags.ComposioMCPAppsEnabled(context.Background(), opts.FeatureFlags) {
+			slog.Info("composio integration disabled (feature flag off)")
 		} else {
-			stateSecret := composioStateSecret()
-			callbackBase := composioCallbackBaseURL(signupConfig.PublicURL)
-			switch {
-			case len(stateSecret) == 0:
-				slog.Error("composio: no state secret (set COMPOSIO_STATE_SECRET or JWT_SECRET); composio integration disabled")
-			case callbackBase == "":
-				slog.Error("composio: no callback base url (set COMPOSIO_CALLBACK_BASE_URL or MULTICA_PUBLIC_URL); composio integration disabled")
-			default:
-				svc, serr := composiointeg.NewService(sdkClient, queries, composiointeg.Config{
-					StateSecret:     stateSecret,
-					CallbackBaseURL: callbackBase,
-					FrontendBaseURL: appURLFromEnv(),
-				})
-				if serr != nil {
-					slog.Error("composio: service init failed; composio integration disabled", "error", serr)
-				} else {
-					h.Composio = svc
-					// Stage 3 (MUL-3721) hook: feed the per-task MCP
-					// overlay builder into TaskService so every Enqueue*
-					// path attaches the initiator user's Composio session
-					// URL to the task row before the daemon claims it.
-					// taskSvc already exists by this point — it was
-					// constructed inside NewHandler — and exposes its
-					// Composio field for exactly this kind of late wiring,
-					// so no Handler-level mutation is needed.
-					if h.TaskService != nil {
-						h.TaskService.Composio = svc
+			sdkClient, err := composiosdk.NewClient(composiosdk.Options{APIKey: composioAPIKey})
+			if err != nil {
+				slog.Error("composio: SDK client init failed; composio integration disabled", "error", err)
+			} else {
+				stateSecret := composioStateSecret()
+				callbackBase := composioCallbackBaseURL(signupConfig.PublicURL)
+				switch {
+				case len(stateSecret) == 0:
+					slog.Error("composio: no state secret (set COMPOSIO_STATE_SECRET or JWT_SECRET); composio integration disabled")
+				case callbackBase == "":
+					slog.Error("composio: no callback base url (set COMPOSIO_CALLBACK_BASE_URL or MULTICA_PUBLIC_URL); composio integration disabled")
+				default:
+					svc, serr := composiointeg.NewService(sdkClient, queries, composiointeg.Config{
+						StateSecret:     stateSecret,
+						CallbackBaseURL: callbackBase,
+						FrontendBaseURL: appURLFromEnv(),
+					})
+					if serr != nil {
+						slog.Error("composio: service init failed; composio integration disabled", "error", serr)
+					} else {
+						h.Composio = svc
+						// Stage 3 (MUL-3721) hook: feed the per-task MCP
+						// overlay builder into TaskService so every Enqueue*
+						// path attaches the initiator user's Composio session
+						// URL to the task row before the daemon claims it.
+						// taskSvc already exists by this point — it was
+						// constructed inside NewHandler — and exposes its
+						// Composio field for exactly this kind of late wiring,
+						// so no Handler-level mutation is needed.
+						if h.TaskService != nil {
+							h.TaskService.Composio = svc
+						}
+						slog.Info("composio integration enabled")
 					}
-					slog.Info("composio integration enabled")
 				}
 			}
 		}

@@ -80,6 +80,7 @@ func TestUpdateAgent_AllowlistRoundtripForOwner(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
+	withComposioMCPAppsFlag(t, testHandler, true)
 	agentID, ownerID := allowlistFixture(t)
 
 	// 1. Owner writes a noisy list — trims/casefolds/dedupes inline.
@@ -145,6 +146,7 @@ func TestUpdateAgent_AllowlistSilentlyDroppedForNonOwner(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
+	withComposioMCPAppsFlag(t, testHandler, true)
 	agentID, _ := allowlistFixture(t)
 
 	// Seed an existing allowlist via direct SQL so we can prove the
@@ -205,6 +207,7 @@ func TestGetAgent_AllowlistVisibility(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
+	withComposioMCPAppsFlag(t, testHandler, true)
 	agentID, ownerID := allowlistFixture(t)
 	if _, err := testPool.Exec(context.Background(), `
 		UPDATE agent SET composio_toolkit_allowlist = $2 WHERE id = $1
@@ -248,6 +251,54 @@ func TestGetAgent_AllowlistVisibility(t *testing.T) {
 	}
 	if !adminResp.ComposioToolkitAllowlistRedacted {
 		t.Errorf("ws-owner response should mark allowlist redacted")
+	}
+}
+
+func TestAgentAllowlistSuppressedWhenComposioFlagDisabled(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	withComposioMCPAppsFlag(t, testHandler, false)
+	agentID, ownerID := allowlistFixture(t)
+	if _, err := testPool.Exec(context.Background(), `
+		UPDATE agent SET composio_toolkit_allowlist = $2 WHERE id = $1
+	`, agentID, []string{"notion"}); err != nil {
+		t.Fatalf("seed allowlist: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	testHandler.UpdateAgent(w, withURLParam(newRequestAs(
+		ownerID, http.MethodPut, "/api/agents/"+agentID,
+		map[string]any{"composio_toolkit_allowlist": []string{"github"}},
+	), "id", agentID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("UpdateAgent owner write with flag off: got %d: %s", w.Code, w.Body.String())
+	}
+	stored, isNull := readAllowlistColumn(t, agentID)
+	if isNull || len(stored) != 1 || stored[0] != "notion" {
+		t.Fatalf("flag-off write changed allowlist: stored=%v isNull=%v; want unchanged [notion]", stored, isNull)
+	}
+	var updateResp AgentResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &updateResp); err != nil {
+		t.Fatalf("decode update response: %v", err)
+	}
+	if len(updateResp.ComposioToolkitAllowlist) != 0 || updateResp.ComposioToolkitAllowlistRedacted {
+		t.Fatalf("flag-off update response exposed allowlist state: %+v", updateResp)
+	}
+
+	w = httptest.NewRecorder()
+	testHandler.GetAgent(w, withURLParam(newRequestAs(
+		ownerID, http.MethodGet, "/api/agents/"+agentID, nil,
+	), "id", agentID))
+	if w.Code != http.StatusOK {
+		t.Fatalf("GetAgent owner with flag off: got %d: %s", w.Code, w.Body.String())
+	}
+	var getResp AgentResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &getResp); err != nil {
+		t.Fatalf("decode get response: %v", err)
+	}
+	if len(getResp.ComposioToolkitAllowlist) != 0 || getResp.ComposioToolkitAllowlistRedacted {
+		t.Fatalf("flag-off get response exposed allowlist state: %+v", getResp)
 	}
 }
 

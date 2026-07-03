@@ -5,16 +5,17 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/featureflag"
 )
 
 // newResolveOriginatorPool mirrors the local-postgres pattern used in
@@ -62,6 +63,41 @@ func (s *stubOverlayBuilder) BuildTaskOverlay(_ context.Context, originatorUserI
 		return runtimeapps.MCPOverlayResult{}, nil
 	}
 	return runtimeapps.MCPOverlayResult{MCPOverlay: s.resp, ConnectedApps: s.apps}, nil
+}
+
+func composioMCPAppsTestFlags(enabled bool) *featureflag.Service {
+	provider := featureflag.NewStaticProvider()
+	provider.Set(featureflags.ComposioMCPApps, featureflag.Rule{Default: enabled})
+	return featureflag.NewService(provider)
+}
+
+func TestBuildRuntimeMCPOverlaySkipsBuilderWhenComposioFlagDisabled(t *testing.T) {
+	builder := &stubOverlayBuilder{
+		resp: json.RawMessage(`{"mcpServers":{"composio":{"type":"http","url":"https://mcp.example/session"}}}`),
+		apps: []runtimeapps.ConnectedApp{{
+			Provider:    "composio",
+			ServerName:  "composio",
+			ToolkitSlug: "notion",
+			ToolkitName: "Notion",
+		}},
+	}
+	svc := &TaskService{
+		Composio:     builder,
+		FeatureFlags: composioMCPAppsTestFlags(false),
+	}
+	var userBytes [16]byte
+	userBytes[15] = 1
+	var agentBytes [16]byte
+	agentBytes[15] = 2
+	got := svc.buildRuntimeMCPOverlay(context.Background(), pgtype.UUID{Bytes: userBytes, Valid: true}, db.Agent{
+		ID: pgtype.UUID{Bytes: agentBytes, Valid: true},
+	})
+	if builder.calls != 0 {
+		t.Fatalf("BuildTaskOverlay calls = %d, want 0", builder.calls)
+	}
+	if len(got.Overlay) != 0 || len(got.ConnectedApps) != 0 {
+		t.Fatalf("flag-off overlay = %+v; want empty", got)
+	}
 }
 
 // seedOriginatorFanout builds the minimal fixture for an agent→agent
@@ -352,7 +388,7 @@ func TestEnqueueTaskForIssueStoresRuntimeMCPOverlayInQueuedRow(t *testing.T) {
 			ToolkitName: "Notion",
 		}},
 	}
-	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New(), Composio: builder}
+	svc := &TaskService{Queries: q, TxStarter: pool, Bus: events.New(), Composio: builder, FeatureFlags: composioMCPAppsTestFlags(true)}
 	userID := util.MustParseUUID(userIDStr)
 	task, err := svc.EnqueueTaskForIssue(ctx, db.Issue{
 		ID:           util.MustParseUUID(issueIDStr),
@@ -386,8 +422,12 @@ func TestEnqueueTaskForIssueStoresRuntimeMCPOverlayInQueuedRow(t *testing.T) {
 	if len(storedApps) == 0 {
 		t.Fatal("stored queued task has empty runtime_connected_apps")
 	}
-	if !strings.Contains(string(storedApps), `"toolkit_slug":"notion"`) {
-		t.Fatalf("stored connected apps missing notion: %s", string(storedApps))
+	var apps []runtimeapps.ConnectedApp
+	if err := json.Unmarshal(storedApps, &apps); err != nil {
+		t.Fatalf("unmarshal stored connected apps: %v", err)
+	}
+	if len(apps) != 1 || apps[0].ToolkitSlug != "notion" {
+		t.Fatalf("stored connected apps = %+v; want notion", apps)
 	}
 }
 

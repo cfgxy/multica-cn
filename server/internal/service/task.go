@@ -15,11 +15,13 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/runtimeapps"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/featureflag"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/redact"
 	"github.com/multica-ai/multica/server/pkg/skillbundle"
@@ -34,6 +36,9 @@ type TaskService struct {
 	Analytics analytics.Client
 	Metrics   *obsmetrics.BusinessMetrics
 	Wakeup    TaskWakeupNotifier
+	// FeatureFlags is the server-side toggle router. Nil is valid and returns
+	// each call site's default.
+	FeatureFlags *featureflag.Service
 	// EmptyClaim caches "this runtime has no queued task" so the daemon
 	// poll path can skip a Postgres scan on the steady-state empty case.
 	// Optional — a nil cache disables the fast path and every claim
@@ -184,6 +189,9 @@ type runtimeMCPOverlayData struct {
 // claim a task during the network round-trip to Composio and miss the overlay.
 func (s *TaskService) buildRuntimeMCPOverlay(ctx context.Context, originatorUserID pgtype.UUID, agent db.Agent) runtimeMCPOverlayData {
 	if s == nil || s.Composio == nil {
+		return runtimeMCPOverlayData{}
+	}
+	if !featureflags.ComposioMCPAppsEnabled(ctx, s.FeatureFlags) {
 		return runtimeMCPOverlayData{}
 	}
 	result, err := s.Composio.BuildTaskOverlay(ctx, originatorUserID, agent)

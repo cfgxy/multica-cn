@@ -43,6 +43,7 @@ export interface AppConfigResponse {
   daemon_server_url?: string;
   daemon_app_url?: string;
   workspace_creation_disabled?: boolean;
+  feature_flags?: Record<string, boolean>;
 }
 
 // ---------------------------------------------------------------------------
@@ -172,6 +173,14 @@ const BooleanWithDefaultSchema = (fallback: boolean) =>
     z.boolean().default(fallback),
   );
 
+const FeatureFlagsSchema = z.preprocess(
+  (value) =>
+    value && typeof value === "object" && !Array.isArray(value)
+      ? value
+      : undefined,
+  z.record(z.string(), BooleanWithDefaultSchema(false)).default({}),
+);
+
 export const AppConfigSchema = z.object({
   cdn_domain: z.string().default(""),
   cdn_signed: BooleanWithDefaultSchema(false),
@@ -183,6 +192,7 @@ export const AppConfigSchema = z.object({
   daemon_server_url: OptionalStringSchema,
   daemon_app_url: OptionalStringSchema,
   workspace_creation_disabled: BooleanWithDefaultSchema(false).optional(),
+  feature_flags: FeatureFlagsSchema,
 }).loose();
 
 export const EMPTY_APP_CONFIG: AppConfigResponse = {
@@ -193,6 +203,7 @@ export const EMPTY_APP_CONFIG: AppConfigResponse = {
   daemon_server_url: "",
   daemon_app_url: "",
   workspace_creation_disabled: false,
+  feature_flags: {},
 };
 
 export const CreateFeedbackResponseSchema = z.object({

@@ -1,12 +1,14 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	composio "github.com/multica-ai/multica/server/internal/integrations/composio"
 )
 
@@ -53,11 +55,15 @@ type ComposioToolkitResponse struct {
 	Connectable bool   `json:"connectable"`
 }
 
+func (h *Handler) composioMCPAppsEnabled(ctx context.Context) bool {
+	return featureflags.ComposioMCPAppsEnabled(ctx, h.FeatureFlags)
+}
+
 // ComposioConnectInit (POST /api/integrations/composio/connect/init) starts a
 // hosted Composio auth flow for the requested toolkit and returns the redirect
 // URL. An unsupported toolkit slug is a 400 (the MVP only wires Notion).
 func (h *Handler) ComposioConnectInit(w http.ResponseWriter, r *http.Request) {
-	if h.Composio == nil {
+	if h.Composio == nil || !h.composioMCPAppsEnabled(r.Context()) {
 		writeError(w, http.StatusServiceUnavailable, "composio integration not configured")
 		return
 	}
@@ -102,7 +108,7 @@ func (h *Handler) ComposioConnectInit(w http.ResponseWriter, r *http.Request) {
 // to the settings page; any failure redirects to the same page with a stable
 // error code so the user is never left on a blank API response.
 func (h *Handler) ComposioCallback(w http.ResponseWriter, r *http.Request) {
-	if h.Composio == nil {
+	if h.Composio == nil || !h.composioMCPAppsEnabled(r.Context()) {
 		writeError(w, http.StatusServiceUnavailable, "composio integration not configured")
 		return
 	}
@@ -125,7 +131,7 @@ func (h *Handler) ComposioCallback(w http.ResponseWriter, r *http.Request) {
 // ListComposioConnections (GET /api/integrations/composio/connections) returns
 // the caller's active connections.
 func (h *Handler) ListComposioConnections(w http.ResponseWriter, r *http.Request) {
-	if h.Composio == nil {
+	if h.Composio == nil || !h.composioMCPAppsEnabled(r.Context()) {
 		writeError(w, http.StatusServiceUnavailable, "composio integration not configured")
 		return
 	}
@@ -162,7 +168,7 @@ func (h *Handler) ListComposioConnections(w http.ResponseWriter, r *http.Request
 // it. The catalog itself is project-global (not per-user), but the route is
 // user-scoped (requireUser) like the rest of the block.
 func (h *Handler) ListComposioToolkits(w http.ResponseWriter, r *http.Request) {
-	if h.Composio == nil {
+	if h.Composio == nil || !h.composioMCPAppsEnabled(r.Context()) {
 		writeError(w, http.StatusServiceUnavailable, "composio integration not configured")
 		return
 	}
@@ -191,7 +197,7 @@ func (h *Handler) ListComposioToolkits(w http.ResponseWriter, r *http.Request) {
 // disconnects a connection the caller owns. Idempotent at the service layer;
 // a connection that does not belong to the caller is a 404.
 func (h *Handler) DeleteComposioConnection(w http.ResponseWriter, r *http.Request) {
-	if h.Composio == nil {
+	if h.Composio == nil || !h.composioMCPAppsEnabled(r.Context()) {
 		writeError(w, http.StatusServiceUnavailable, "composio integration not configured")
 		return
 	}

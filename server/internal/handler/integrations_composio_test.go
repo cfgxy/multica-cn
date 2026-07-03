@@ -138,7 +138,9 @@ func newComposioTestHandler(t *testing.T, sdkFake composio.SDK, store composio.S
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
-	return &Handler{Composio: svc}
+	h := &Handler{Composio: svc}
+	withComposioMCPAppsFlag(t, h, true)
+	return h
 }
 
 func composioReq(method, target, body string) *http.Request {
@@ -164,6 +166,17 @@ func TestComposio_ServiceUnavailableWhenNil(t *testing.T) {
 		if w.Code != http.StatusServiceUnavailable {
 			t.Errorf("expected 503 when Composio nil, got %d", w.Code)
 		}
+	}
+}
+
+func TestComposio_ServiceUnavailableWhenFlagDisabled(t *testing.T) {
+	h := newComposioTestHandler(t, &composioFakeSDK{}, &composioFakeStore{})
+	withComposioMCPAppsFlag(t, h, false)
+
+	w := httptest.NewRecorder()
+	h.ListComposioToolkits(w, composioReq(http.MethodGet, "/toolkits", ""))
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when feature flag disabled, got %d", w.Code)
 	}
 }
 

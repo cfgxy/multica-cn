@@ -6,10 +6,12 @@ import { AlertTriangle, Loader2, Lock, Plug } from "lucide-react";
 import { toast } from "sonner";
 import type { Agent, ComposioToolkit } from "@multica/core/types";
 import { useUpdateAgentAllowlist } from "@multica/core/agents";
+import { useFeatureEnabled } from "@multica/core/config";
 import {
   composioConnectionsOptions,
   composioToolkitsOptions,
 } from "@multica/core/composio";
+import { COMPOSIO_MCP_APPS_FLAG } from "@multica/core/feature-flags";
 import { useWorkspacePaths } from "@multica/core/paths";
 import { Checkbox } from "@multica/ui/components/ui/checkbox";
 import { ComposioToolkitLogo } from "../../../common/composio-toolkit-logo";
@@ -37,10 +39,17 @@ import { useT } from "../../../i18n";
 export function AgentMcpTab({ agent }: { agent: Agent }) {
   const { t } = useT("agents");
   const paths = useWorkspacePaths();
+  const composioEnabled = useFeatureEnabled(COMPOSIO_MCP_APPS_FLAG, false);
   const updateAllowlist = useUpdateAgentAllowlist(agent.id);
 
-  const connectionsQuery = useQuery(composioConnectionsOptions());
-  const toolkitsQuery = useQuery(composioToolkitsOptions());
+  const connectionsQuery = useQuery({
+    ...composioConnectionsOptions(),
+    enabled: composioEnabled,
+  });
+  const toolkitsQuery = useQuery({
+    ...composioToolkitsOptions(),
+    enabled: composioEnabled,
+  });
 
   // Toolkit metadata (name / logo) keyed by slug, so each connection row can
   // render a friendly label instead of the bare slug. The catalog is a
@@ -84,6 +93,10 @@ export function AgentMcpTab({ agent }: { agent: Agent }) {
     agent.invocation_targets.some((target) => target.target_type === "workspace");
   const showSharedWarning =
     !isPrivate && (allowlist.length > 0 || activeSlugs.length > 0);
+
+  if (!composioEnabled) {
+    return null;
+  }
 
   const handleToggle = (slug: string, checked: boolean) => {
     const set = new Set(allowlist);

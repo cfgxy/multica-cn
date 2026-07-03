@@ -5,6 +5,8 @@ import type { ReactNode } from "react";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { Agent } from "@multica/core/types";
+import { configStore } from "@multica/core/config";
+import { COMPOSIO_MCP_APPS_FLAG } from "@multica/core/feature-flags";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../../locales/en/common.json";
 import enAgents from "../../../locales/en/agents.json";
@@ -24,11 +26,15 @@ const queryStateRef = vi.hoisted(() => ({
   isLoading: false,
   isError: false,
 }));
+const queryCallsRef = vi.hoisted(() => ({
+  current: [] as { queryKey: unknown[]; enabled?: boolean }[],
+}));
 const mutateSpy = vi.hoisted(() => vi.fn());
 const isPendingRef = vi.hoisted(() => ({ current: false }));
 
 vi.mock("@tanstack/react-query", () => ({
-  useQuery: (opts: { queryKey: unknown[] }) => {
+  useQuery: (opts: { queryKey: unknown[]; enabled?: boolean }) => {
+    queryCallsRef.current.push(opts);
     const key = JSON.stringify(opts.queryKey);
     if (queryStateRef.isLoading) return { data: undefined, isLoading: true, isError: false };
     if (queryStateRef.isError) return { data: undefined, isLoading: false, isError: true };
@@ -119,6 +125,18 @@ describe("AgentMcpTab", () => {
     queryStateRef.isLoading = false;
     queryStateRef.isError = false;
     isPendingRef.current = false;
+    queryCallsRef.current = [];
+    configStore.getState().setFeatureFlags({ [COMPOSIO_MCP_APPS_FLAG]: true });
+  });
+
+  it("renders nothing and disables Composio queries when the feature flag is off", () => {
+    configStore.getState().setFeatureFlags({ [COMPOSIO_MCP_APPS_FLAG]: false });
+
+    const { container } = renderTab({ composio_toolkit_allowlist: ["notion"] });
+
+    expect(container.firstChild).toBeNull();
+    expect(queryCallsRef.current).toHaveLength(2);
+    expect(queryCallsRef.current.every((call) => call.enabled === false)).toBe(true);
   });
 
   it("lists active connections with checkbox state reflecting the allowlist", () => {
