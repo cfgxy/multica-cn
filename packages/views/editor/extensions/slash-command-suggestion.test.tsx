@@ -91,6 +91,7 @@ function items(qc: QueryClient, query = ""): SlashCommandItem[] {
   return config.items!({
     query,
     editor: {} as never,
+    signal: new AbortController().signal,
   }) as SlashCommandItem[];
 }
 

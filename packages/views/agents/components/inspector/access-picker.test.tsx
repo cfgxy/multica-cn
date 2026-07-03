@@ -88,7 +88,7 @@ describe("AccessPicker owner-only editing (MUL-3963)", () => {
     fireEvent.click(screen.getByRole("button"));
     // Checkbox order in the open popover: [0] workspace, [1] Alice, [2] Bob.
     const boxes = screen.getAllByRole("checkbox");
-    fireEvent.click(boxes[1]);
+    fireEvent.click(boxes[1]!);
     expect(onChange).toHaveBeenCalledWith({
       permission_mode: "public_to",
       invocation_targets: [{ target_type: "member", target_id: "u1" }],
@@ -107,7 +107,7 @@ describe("AccessPicker owner-only editing (MUL-3963)", () => {
     fireEvent.click(screen.getByRole("button"));
     const boxes = screen.getAllByRole("checkbox");
     // [0] is the "Everyone in workspace" toggle.
-    fireEvent.click(boxes[0]);
+    fireEvent.click(boxes[0]!);
     expect(onChange).toHaveBeenCalledWith({
       permission_mode: "public_to",
       invocation_targets: [
