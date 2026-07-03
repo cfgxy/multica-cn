@@ -516,7 +516,11 @@
     "no_data": "No execution data recorded.",
     "sort_label": "Sort",
     "sort_chronological": "Oldest first",
-    "sort_newest_first": "Newest first"
+    "sort_newest_first": "Newest first",
+    "expand_visible": "Expand visible",
+    "collapse_visible": "Collapse visible",
+    "preserve_filters": "Preserve filters",
+    "default_expanded": "Open details by default"
   },
   "task_failure": {
     "agent_error": "Agent execution error",
