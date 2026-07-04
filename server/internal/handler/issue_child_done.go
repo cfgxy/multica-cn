@@ -144,15 +144,7 @@ func (h *Handler) notifyParentOfChildDone(ctx context.Context, prev, issue db.Is
 	if staged {
 		closedStage := issue.Stage.Int32
 		summary, nextStage := stageProgressSummary(children, closedStage)
-		var advance string
-		if nextStage > 0 {
-			advance = fmt.Sprintf(
-				" Stage %d is next. Review the full layout with `multica issue children %s`, and if Stage %d's dependencies are satisfied promote its `backlog` sub-issues to `todo` to continue. Read each sub-issue's description first and only promote items whose stated dependencies are already met — do not rely on this parent's higher-level breakdown alone. If a description conflicts with that breakdown, leave it `backlog` and post a comment to confirm first.",
-				nextStage, parentID, nextStage,
-			)
-		} else {
-			advance = " This was the final stage. Wrap up the parent — synthesize the results and move it forward, or close it out if nothing remains."
-		}
+		advance := stageAdvanceInstruction(nextStage, parentID)
 		content = fmt.Sprintf(
 			"%sStage %d of this issue is complete — its last sub-issue [%s](mention://issue/%s) — \"%s\" — just finished. Stage progress — %s.%s",
 			mentionPrefix, closedStage, identifier, childID, title, summary, advance,
@@ -298,6 +290,32 @@ func stageProgressSummary(children []db.Issue, closedStage int32) (summary strin
 		parts = append(parts, label)
 	}
 	return strings.Join(parts, "; "), nextStage
+}
+
+// stageAdvanceInstruction returns the trailing instruction appended to a
+// staged child-done system comment, given the next stage with pending work
+// among the sub-issues that currently exist (nextStage, 0 = none).
+//
+//   - nextStage > 0: a later stage with unfinished work already exists, so
+//     point the leader at it.
+//   - nextStage == 0: no later stage exists *among the sub-issues created so
+//     far*. This deliberately does NOT assert that the workflow is finished.
+//     The server has no declarative workflow model — stages are agent-driven
+//     and often created lazily (stage N+1's sub-issues are only written after
+//     stage N produces the inputs they depend on), so an intermediate stage in
+//     such a pipeline reaches nextStage == 0 exactly like a true final stage
+//     does. The old wording ("This was the final stage. Wrap up the parent")
+//     asserted a finality the server cannot know and pushed leaders to wrap up
+//     mid-workflow (MUL-4062 / #4927). The message now names both possibilities
+//     and hands the create-next-vs-wrap-up decision back to the leader.
+func stageAdvanceInstruction(nextStage int32, parentID string) string {
+	if nextStage > 0 {
+		return fmt.Sprintf(
+			" Stage %d is next. Review the full layout with `multica issue children %s`, and if Stage %d's dependencies are satisfied promote its `backlog` sub-issues to `todo` to continue. Read each sub-issue's description first and only promote items whose stated dependencies are already met — do not rely on this parent's higher-level breakdown alone. If a description conflicts with that breakdown, leave it `backlog` and post a comment to confirm first.",
+			nextStage, parentID, nextStage,
+		)
+	}
+	return " Completing this stage does not mean the whole issue is done. Decide whether the issue is actually complete — if so, wrap up the parent (synthesize the results and move it forward, or close it out) — or whether the next stage still needs to be created, in which case create that stage and its sub-issues now."
 }
 
 // sanitizeChildTitleForSystemComment removes mention-style markdown from a
