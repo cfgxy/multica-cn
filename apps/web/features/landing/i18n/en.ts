@@ -294,6 +294,34 @@ export function createEnDict(allowSignup: boolean): LandingDict {
     },
     entries: [
       {
+        version: "0.3.39",
+        date: "2026-07-06",
+        title: "Qoder and Trae CLI as custom runtime bases, faster self-hosted search, and squad + long-run reliability",
+        changes: [],
+        features: [
+          "Qoder is now a first-class base for custom runtime profiles. Qoder CN (`qoderclicn`) users can build custom runtimes directly on Qoder without having to route through the Kiro backend.",
+          "ByteDance TRAE CLI (`traecli`) joins the custom runtime profile family — custom profiles based on TRAE are accepted end to end and appear in the runtime family picker.",
+        ],
+        improvements: [
+          "Public docs and the runtime provider page are refreshed to the current 14-runtime lineup, including Qoder and TRAE CLI, across every localized site.",
+        ],
+        fixes: [
+          "Private-leader squads: closing a child Issue via an agent or system actor now wakes the parent's squad leader correctly, so multi-stage squad pipelines no longer strand at their first stage.",
+          "The staged \"child done\" system comment no longer calls an intermediate stage the final stage when no next stage exists yet — the leader is offered both options (create the next stage, or wrap up) and picks.",
+          "The server no longer kills healthy long-running tasks on wall clock alone. The running-task sweeper now also requires the daemon's runtime row to be offline or stale before failing a running task, so genuine multi-hour research and training runs finish instead of being reaped mid-flight.",
+          "Self-hosted search that used to hang on Postgres images without pg_bigm now falls back to a pg_trgm GIN index (shipped by every standard Postgres), plus a per-query statement timeout — first-time search on large workspaces returns instead of freezing.",
+          "Pasting a Java stacktrace or crafted long text into the Issue or comment editor no longer freezes the tab. The mention, slash-command, and file-card label parsers were rewritten to run in linear time.",
+          "The Antigravity runtime no longer trips over Claude-specific settings flags on hosts where both runtimes are installed.",
+          "The Windows browser MCP config is generated with paths and quoting that survive Windows shells, so browser MCP starts on Windows agents.",
+          "Codex MCP allowlist config renders correctly again, so the MCP allowlist stays effective.",
+          "Pi (`pi-coding-agent`) tasks now surface only the final answer in their result — intermediate turn output is discarded.",
+          "Autopilots no longer dispatch the same Issue twice in a row when a run takes longer than expected.",
+          "PRs that only reference an Issue key in passing (e.g. \"Related to MUL-…\") are hidden from the Issue's PR list — only PRs that actually target the Issue via title prefix, branch, or a closing keyword are shown.",
+          "The Issue action menu's nested \"More\" submenu is renamed to \"Relations\" with a Network icon, matching the sibling submenus (Status, Priority, Start date, Due date).",
+          "Every attachment upload button in the app — chat composer, create-issue modal, quick-create, Issue description, feedback modal — now allows multi-file selection from the OS file dialog.",
+        ],
+      },
+      {
         version: "0.3.36",
         date: "2026-07-03",
         title: "Transcript view memory, external PostgreSQL for Helm, and reliability fixes",

@@ -294,6 +294,34 @@ export function createZhDict(allowSignup: boolean): LandingDict {
     },
     entries: [
       {
+        version: "0.3.39",
+        date: "2026-07-06",
+        title: "Qoder 与 TRAE CLI 作为自定义运行时基座、自托管搜索更稳，以及小队和长任务可靠性修复",
+        changes: [],
+        features: [
+          "Qoder 可作为自定义运行时配置的基座。使用 Qoder CN（`qoderclicn`）时，可以直接在 Qoder 上构建自定义运行时，不再需要绕道 Kiro 后端。",
+          "字节 TRAE CLI（`traecli`）加入自定义运行时的基座名单——基于 TRAE 的自定义运行时配置能被端到端接受，并出现在基座选择器里。",
+        ],
+        improvements: [
+          "官网文档与运行时供应商页更新到当前 14 款运行时的完整名单（新增 Qoder 与 TRAE CLI），覆盖所有语言站点。",
+        ],
+        fixes: [
+          "私有 Leader 的小队：子 Issue 由智能体或系统关闭时，父 Issue 所在小队的 Leader 现在会被正确唤醒，多阶段小队流水线不再卡在第一阶段。",
+          "分阶段小队里，「子任务完成」父级评论不再在还没创建下一阶段时就断言当前阶段就是「最终阶段」——评论会列出两种可能（创建下一阶段或收尾），把决策交回 Leader。",
+          "服务端不再仅凭挂钟时间就杀掉正常运行的长任务：运行中任务清理器现在需要守护进程运行时下线或心跳过期才会失败一条运行中的记录，多小时的研究和训练任务能真正跑完，不再被中途回收。",
+          "自托管环境下因为 Postgres 镜像未装 pg_bigm 而卡住的搜索现在会回退到标准 Postgres 都自带的 pg_trgm GIN 索引，并叠加单条查询超时保护——大型工作区首次搜索能真正返回，而不是转圈。",
+          "Issue 或评论编辑器里粘贴 Java 堆栈或经过构造的长字符串时不再冻结页面——mention、斜杠命令与文件卡片的标签解析器已改为线性时间。",
+          "Antigravity 运行时不再因同时装了 Claude 的宿主机上传入 Claude 专属的 settings flag 而挂掉。",
+          "Windows 上的 Browser MCP 配置改用能在 Windows Shell 下正确解析的路径与转义，Browser MCP 能在 Windows 智能体上启动。",
+          "Codex 的 MCP allowlist 配置能被正确渲染，白名单不再失效。",
+          "Pi（`pi-coding-agent`）任务的最终输出只保留最终答案，不再包含中间步骤文本。",
+          "自动驾驶（Autopilot）不再在单次运行超时后重复派发同一个 Issue。",
+          "只是在描述里顺带提到 Issue key 的 PR（如「Related to MUL-…」）不再出现在 Issue 的 PR 列表里——只有真正标注为目标（标题前缀、分支名或关闭关键字）的 PR 会展示。",
+          "Issue 操作菜单里嵌套的「更多」子菜单更名为「关系」，改用 Network 图标，与「状态」「优先级」「开始日期」「截止日期」这些语义化子菜单保持一致。",
+          "所有附件上传按钮——对话输入框、Issue 创建弹窗、快速创建、Issue 描述以及反馈弹窗——都支持在系统文件对话框里多选。",
+        ],
+      },
+      {
         version: "0.3.36",
         date: "2026-07-03",
         title: "任务日志偏好记忆、Helm 外部 PostgreSQL 支持，与稳定性修复",
