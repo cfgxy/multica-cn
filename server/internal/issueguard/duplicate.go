@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -77,6 +78,39 @@ func LockAndFindActiveDuplicate(
 	return duplicate, true, nil
 }
 
+func LockAndFindRecentAutopilotDuplicate(
+	ctx context.Context,
+	q *db.Queries,
+	workspaceID pgtype.UUID,
+	autopilotID pgtype.UUID,
+	projectID pgtype.UUID,
+	title string,
+	window time.Duration,
+) (db.Issue, bool, error) {
+	normalizedTitle := NormalizeTitle(title)
+	if normalizedTitle == "" || !autopilotID.Valid || window <= 0 {
+		return db.Issue{}, false, nil
+	}
+	if err := q.LockIssueDuplicateKey(ctx, recentAutopilotLockKey(workspaceID, autopilotID, projectID, normalizedTitle)); err != nil {
+		return db.Issue{}, false, err
+	}
+
+	duplicate, err := q.FindRecentAutopilotDuplicateIssue(ctx, db.FindRecentAutopilotDuplicateIssueParams{
+		WorkspaceID:     workspaceID,
+		OriginID:        autopilotID,
+		ProjectID:       projectID,
+		NormalizedTitle: normalizedTitle,
+		CreatedAfter:    pgtype.Timestamptz{Time: time.Now().UTC().Add(-window), Valid: true},
+	})
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return db.Issue{}, false, nil
+		}
+		return db.Issue{}, false, err
+	}
+	return duplicate, true, nil
+}
+
 func lockKey(workspaceID, teamID, projectID, parentIssueID pgtype.UUID, normalizedTitle string) string {
 	return strings.Join([]string{
 		"issue-active-duplicate",
@@ -84,6 +118,16 @@ func lockKey(workspaceID, teamID, projectID, parentIssueID pgtype.UUID, normaliz
 		util.UUIDToString(teamID),
 		util.UUIDToString(projectID),
 		util.UUIDToString(parentIssueID),
+		normalizedTitle,
+	}, "|")
+}
+
+func recentAutopilotLockKey(workspaceID, autopilotID, projectID pgtype.UUID, normalizedTitle string) string {
+	return strings.Join([]string{
+		"autopilot-recent-duplicate",
+		util.UUIDToString(workspaceID),
+		util.UUIDToString(autopilotID),
+		util.UUIDToString(projectID),
 		normalizedTitle,
 	}, "|")
 }

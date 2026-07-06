@@ -110,6 +110,13 @@ type IssueCreateOpts struct {
 	// create transaction commits. It is for same-transaction side effects that
 	// must be visible when EventIssueCreated fires.
 	BeforeCommit func(ctx context.Context, qtx *db.Queries, issue db.Issue) error
+
+	// PreCreate runs inside the create transaction before validation,
+	// numbering, and insert. It is for caller-specific guards whose locks
+	// must be held until the transaction commits (e.g. the autopilot
+	// recent-duplicate guard). Its error aborts the create and is
+	// propagated to the caller unwrapped.
+	PreCreate func(ctx context.Context, qtx *db.Queries) error
 }
 
 // ErrActiveDuplicate signals that the duplicate guard found an active
@@ -211,6 +218,12 @@ func (s *IssueService) Create(ctx context.Context, p IssueCreateParams, opts Iss
 	}
 	defer tx.Rollback(ctx)
 	qtx := s.Queries.WithTx(tx)
+
+	if opts.PreCreate != nil {
+		if err := opts.PreCreate(ctx, qtx); err != nil {
+			return IssueCreateResult{}, err
+		}
+	}
 
 	// Resolve and validate parent / project before reading from the
 	// duplicate guard so a forged parent or project ID is rejected

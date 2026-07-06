@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/events"
+	"github.com/multica-ai/multica/server/internal/issueguard"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -38,6 +39,8 @@ type AutopilotService struct {
 // timezone fails to load. Exported so the scheduler can use the same default
 // when computing next run times.
 const DefaultAutopilotTriggerTimezone = "UTC"
+
+const autopilotRecentDuplicateWindow = 60 * time.Second
 
 func NewAutopilotService(q *db.Queries, tx TxStarter, bus *events.Bus, taskSvc *TaskService) *AutopilotService {
 	return &AutopilotService{
@@ -311,6 +314,7 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 	description := s.buildIssueDescription(ap, *run, triggerTimezone)
 
 	var templateSubs []db.AutopilotSubscriber
+	var linkedRun db.AutopilotRun
 	result, err := s.issueSvc.Create(ctx, IssueCreateParams{
 		WorkspaceID:    ap.WorkspaceID,
 		TeamID:         ap.TeamID,
@@ -336,6 +340,20 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 		BroadcastPayload: func(issue db.Issue, _ []db.Attachment, teamKey string) map[string]any {
 			return map[string]any{"issue": issueToMap(issue, teamKey)}
 		},
+		// Recent-duplicate guard (WS-1465). Runs inside the create tx so its
+		// advisory lock is held until commit: concurrent dispatches of the
+		// same autopilot+title serialize, and the loser sees the winner's
+		// committed issue with its run link already in place.
+		PreCreate: func(ctx context.Context, qtx *db.Queries) error {
+			if duplicate, found, err := issueguard.LockAndFindRecentAutopilotDuplicate(
+				ctx, qtx, ap.WorkspaceID, ap.ID, ap.ProjectID, title, autopilotRecentDuplicateWindow,
+			); err != nil {
+				return fmt.Errorf("recent duplicate guard: %w", err)
+			} else if found {
+				return &errDispatchSkipped{reason: "recent duplicate autopilot issue: " + util.UUIDToString(duplicate.ID)}
+			}
+			return nil
+		},
 		BeforeCommit: func(ctx context.Context, qtx *db.Queries, issue db.Issue) error {
 			subs, err := qtx.ListAutopilotSubscribers(ctx, ap.ID)
 			if err != nil {
@@ -352,6 +370,18 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 					return fmt.Errorf("add autopilot subscriber to issue: %w", err)
 				}
 			}
+			// Link the run inside the same tx as the issue insert (WS-1465):
+			// the recent-duplicate guard only counts issues with a linked
+			// run, and same-tx linking avoids a crash window where recovery
+			// would see an orphan issue but no linked run.
+			updatedRun, err := qtx.UpdateAutopilotRunIssueCreated(ctx, db.UpdateAutopilotRunIssueCreatedParams{
+				ID:      run.ID,
+				IssueID: issue.ID,
+			})
+			if err != nil {
+				return fmt.Errorf("link run to issue: %w", err)
+			}
+			linkedRun = updatedRun
 			return nil
 		},
 	})
@@ -359,16 +389,7 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 		return fmt.Errorf("create issue: %w", err)
 	}
 	issue := result.Issue
-
-	// Update run with the linked issue.
-	updatedRun, err := s.Queries.UpdateAutopilotRunIssueCreated(ctx, db.UpdateAutopilotRunIssueCreatedParams{
-		ID:      run.ID,
-		IssueID: issue.ID,
-	})
-	if err != nil {
-		return fmt.Errorf("link run to issue: %w", err)
-	}
-	*run = updatedRun
+	*run = linkedRun
 
 	s.captureIssueCreatedFromAutopilot(ap, run, issue, leader.ID)
 
@@ -1348,6 +1369,7 @@ func isSupportedIssueTitleVariable(name string) bool {
 //   - public_to agent -> workspace target admits any workspace-member creator
 //     (and agent-created autopilots as workspace principals); member target
 //     admits the matching creator; team targets are inert.
+//
 // Fail-closed on any lookup error.
 func (s *AutopilotService) canCreatorInvokeAgent(ctx context.Context, ap db.Autopilot, agent db.Agent) bool {
 	creatorID := util.UUIDToString(ap.CreatedByID)
