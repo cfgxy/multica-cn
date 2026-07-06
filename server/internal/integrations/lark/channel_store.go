@@ -142,17 +142,21 @@ func (s *ChannelStore) UpsertLarkInstallation(ctx context.Context, arg UpsertIns
 	return installationFromRow(row)
 }
 
-// RemoveRevokedInstallationByAppID hard-deletes a revoked installation keyed by its
-// platform app identity. This clears the (channel_type, config->>'app_id') unique
-// slot so the caller can re-install the same Lark/Feishu app against a different
-// agent without tripping the functional unique index. The delete is fenced to one
-// workspace and only matches status='revoked' — an active installation is never
-// removed through this path.
-func (s *ChannelStore) RemoveRevokedInstallationByAppID(ctx context.Context, workspaceID pgtype.UUID, appID string) error {
+// RemoveRevokedInstallationByAppID hard-deletes a revoked installation that
+// belongs to a DIFFERENT agent, keyed by its platform app identity. This clears
+// the (channel_type, config->>'app_id') unique slot so the caller can re-install
+// the same Lark/Feishu app against a different agent without tripping the
+// functional unique index. The delete is fenced to one workspace, to
+// status='revoked', and to agent_id <> agentID: the agent being (re)installed is
+// excluded so its own revoked row is reactivated in place by the upsert with all
+// its bindings preserved, never orphaned. An active installation is never removed
+// through this path.
+func (s *ChannelStore) RemoveRevokedInstallationByAppID(ctx context.Context, workspaceID, agentID pgtype.UUID, appID string) error {
 	return s.Queries.DeleteChannelInstallationByAppID(ctx, db.DeleteChannelInstallationByAppIDParams{
 		ChannelType: channelTypeFeishu,
 		AppID:       appID,
 		WorkspaceID: workspaceID,
+		AgentID:     agentID,
 	})
 }
 

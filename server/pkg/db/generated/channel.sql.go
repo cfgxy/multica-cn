@@ -384,6 +384,50 @@ func (q *Queries) DeleteChannelChatSessionBindingsByInstallation(ctx context.Con
 	return err
 }
 
+const deleteChannelInstallationByAppID = `-- name: DeleteChannelInstallationByAppID :exec
+DELETE FROM channel_installation
+WHERE channel_type = $1
+  AND config ->> 'app_id' = $2::text
+  AND workspace_id = $3
+  AND agent_id <> $4
+  AND status = 'revoked'
+`
+
+type DeleteChannelInstallationByAppIDParams struct {
+	ChannelType string      `json:"channel_type"`
+	AppID       string      `json:"app_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+}
+
+// Hard-delete a REVOKED installation that belongs to a DIFFERENT agent,
+// keyed by its platform app identity. When a Feishu/Lark Bot is disconnected
+// from agent A (status → 'revoked') and the same Bot (same app_id) is later
+// bound to a DIFFERENT agent B, agent A's revoked row still occupies the
+// (channel_type, config->>'app_id') unique slot and blocks the
+// UpsertChannelInstallation INSERT for B. Removing that placeholder first lets
+// the upsert create a fresh row for the new agent.
+//
+// The `agent_id <> arg` fence is load-bearing: re-connecting the SAME agent
+// must NOT delete its own revoked row. UpsertChannelInstallation conflicts on
+// (workspace_id, agent_id, channel_type), so the same agent's revoked row is
+// reactivated in place (status → 'active') with its installation_id — and every
+// channel_user_binding / channel_chat_session_binding hanging off it —
+// preserved. Deleting it here would force an INSERT with a fresh installation_id
+// and orphan all of that agent's member links and chat sessions.
+//
+// Fenced to one workspace AND status='revoked' so an active installation can
+// never be silently deleted through this path.
+func (q *Queries) DeleteChannelInstallationByAppID(ctx context.Context, arg DeleteChannelInstallationByAppIDParams) error {
+	_, err := q.db.Exec(ctx, deleteChannelInstallationByAppID,
+		arg.ChannelType,
+		arg.AppID,
+		arg.WorkspaceID,
+		arg.AgentID,
+	)
+	return err
+}
+
 const deleteChannelUserBindingsByWorkspaceMember = `-- name: DeleteChannelUserBindingsByWorkspaceMember :exec
 DELETE FROM channel_user_binding
 WHERE workspace_id = $1 AND multica_user_id = $2
@@ -587,25 +631,6 @@ func (q *Queries) GetChannelInstallationByAppID(ctx context.Context, arg GetChan
 		&i.UpdatedAt,
 	)
 	return i, err
-}
-
-const deleteChannelInstallationByAppID = `-- name: DeleteChannelInstallationByAppID :exec
-DELETE FROM channel_installation
-WHERE channel_type = $1
-  AND config ->> 'app_id' = $2::text
-  AND workspace_id = $3
-  AND status = 'revoked'
-`
-
-type DeleteChannelInstallationByAppIDParams struct {
-	ChannelType string      `json:"channel_type"`
-	AppID       string      `json:"app_id"`
-	WorkspaceID pgtype.UUID `json:"workspace_id"`
-}
-
-func (q *Queries) DeleteChannelInstallationByAppID(ctx context.Context, arg DeleteChannelInstallationByAppIDParams) error {
-	_, err := q.db.Exec(ctx, deleteChannelInstallationByAppID, arg.ChannelType, arg.AppID, arg.WorkspaceID)
-	return err
 }
 
 const getChannelInstallationInWorkspace = `-- name: GetChannelInstallationInWorkspace :one
