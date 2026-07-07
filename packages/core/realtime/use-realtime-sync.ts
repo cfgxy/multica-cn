@@ -98,6 +98,27 @@ export function invalidateChatMessageQueries(
   qc.invalidateQueries({ queryKey: chatKeys.messagesPage(sessionId) });
 }
 
+// refetchPendingChatAggregate marks the current user's cross-session pending
+// aggregate stale so it is refetched from the permission-filtering endpoint
+// (/api/chat/pending-tasks[/has-any]).
+//
+// SECURITY (review on PR #5018 / MUL-4159): this is deliberately an
+// invalidate, NOT an optimistic setQueryData. Chat `task:*` events are a
+// workspace fanout delivered to every member with no creator / agent
+// visibility in the payload, so optimistically writing the aggregate from them
+// would let one member's task flip another member's FAB to has_pending=true,
+// bypassing the server-side permission filter. Invalidation forces the
+// authoritative, creator+agent-scoped server response to be the source of
+// truth. The has-any key is nested under pendingTasks, so invalidating
+// pendingTasks refreshes both the detailed list and the boolean fast-path.
+export function refetchPendingChatAggregate(
+  qc: QueryClient,
+  wsId: string | null | undefined,
+) {
+  if (!wsId) return;
+  qc.invalidateQueries({ queryKey: chatKeys.pendingTasks(wsId) });
+}
+
 export function applyChatDoneToCache(
   qc: QueryClient,
   payload: ChatDonePayload,
@@ -866,9 +887,35 @@ export function useRealtimeSync(
     });
 
     // Helpers reused by chat lifecycle handlers.
+    //
+    // SECURITY (review on PR #5018 / MUL-4159): chat `task:*` events are a
+    // *workspace fanout* — every member of the workspace receives them — and
+    // the payload carries no creator / agent-visibility. So we must NEVER
+    // optimistically write the cross-session pending AGGREGATE
+    // (chatKeys.pendingTasks / chatKeys.pendingTasksHasAny) from these events:
+    // member B starting a chat task would otherwise flip member A's FAB to
+    // has_pending=true, bypassing the server-side permission filter on
+    // /api/chat/pending-tasks[/has-any]. Instead we authoritatively (debounced)
+    // invalidate the aggregate so it is refetched through the filtering
+    // endpoint, which only returns the caller's own creator-owned,
+    // accessible-agent tasks.
+    //
+    // The per-session `pendingTask` cache IS still written directly by the
+    // handlers below — it is keyed by chat_session_id and only rendered for a
+    // session the user is allowed to open (server-gated), so it is not a
+    // cross-user aggregate leak.
+    //
+    // chat:message is intentionally NOT a trigger (it fires per streamed
+    // message and would re-create the request storm MUL-4159 fixed); the
+    // aggregate is refreshed only on task lifecycle transitions, which are
+    // per-task and low-frequency, then coalesced by the debounce below.
+    let aggregateRefreshTimer: ReturnType<typeof setTimeout> | null = null;
     const invalidatePendingAggregate = () => {
-      const id = getCurrentWsId();
-      if (id) qc.invalidateQueries({ queryKey: chatKeys.pendingTasks(id) });
+      if (aggregateRefreshTimer) clearTimeout(aggregateRefreshTimer);
+      aggregateRefreshTimer = setTimeout(() => {
+        aggregateRefreshTimer = null;
+        refetchPendingChatAggregate(qc, getCurrentWsId());
+      }, 750);
     };
     const invalidateSessionLists = () => {
       const id = getCurrentWsId();
@@ -880,7 +927,9 @@ export function useRealtimeSync(
       chatWsLogger.info("chat:message (global)", { chat_session_id: payload.chat_session_id });
       invalidateChatMessageQueries(qc, payload.chat_session_id);
       qc.invalidateQueries({ queryKey: chatKeys.pendingTask(payload.chat_session_id) });
-      invalidatePendingAggregate();
+      // NOTE: intentionally does NOT touch the pending aggregate. chat:message
+      // fires per streamed message with no status; the aggregate is maintained
+      // by the task lifecycle handlers below (MUL-4159).
     });
 
     const unsubChatDone = ws.on("chat:done", (p) => {
@@ -903,7 +952,10 @@ export function useRealtimeSync(
       // work: they ignore the extra fields and rely on the invalidate
       // below, which keeps the old behavior alive.
       applyChatDoneToCache(qc, payload);
-      invalidatePendingAggregate();
+      // NOTE: the pending aggregate is left to the task:completed / task:failed
+      // handlers (which carry the task_id needed to remove the right entry).
+      // chat:done no longer invalidates it, so a chatty session doesn't refetch
+      // the aggregate on every turn (MUL-4159).
       // Assistant message just landed → has_unread may have flipped to true.
       invalidateSessionLists();
     });
@@ -948,6 +1000,7 @@ export function useRealtimeSync(
           return { ...old, status: "running" };
         },
       );
+      invalidatePendingAggregate();
     });
 
     // task:running fires when the daemon transitions a previously-parked task
@@ -965,6 +1018,7 @@ export function useRealtimeSync(
           return { ...old, status: "running" };
         },
       );
+      invalidatePendingAggregate();
     });
 
     // task:waiting_local_directory fires when the daemon dequeues a task but
@@ -984,6 +1038,7 @@ export function useRealtimeSync(
             return { ...old, status: "waiting_local_directory" };
           },
         );
+        invalidatePendingAggregate();
       },
     );
 
@@ -1140,6 +1195,7 @@ export function useRealtimeSync(
       unsubChatSessionRead();
       unsubChatSessionDeleted();
       unsubChatSessionUpdated();
+      if (aggregateRefreshTimer) clearTimeout(aggregateRefreshTimer);
       timers.forEach(clearTimeout);
       timers.clear();
     };
