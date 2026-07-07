@@ -193,7 +193,7 @@ func (p *SlashCommandProcessor) process(ctx context.Context, cmd slack.SlashComm
 		prompt,
 		pgtype.UUID{}, // no project
 		pgtype.UUID{}, // no parent issue
-		pgtype.UUID{}, // no team
+		pgtype.UUID{}, // no space
 		nil,           // no attachments
 	); err != nil {
 		p.logger.WarnContext(ctx, "slack slash command: enqueue quick-create failed",

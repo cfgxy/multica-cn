@@ -964,7 +964,7 @@ func (h *Handler) enqueueSquadLeaderTask(ctx context.Context, issue db.Issue, tr
 
 	// Member authors are their own originator; agent-authored triggers have no
 	// request context here, so the originator is left empty (canInvokeAgent
-	// then fails closed for member/team targets — a workspace target still
+	// then fails closed for member/space targets — a workspace target still
 	// admits the agent as a workspace principal).
 	leaderOriginator := ""
 	if authorType == "member" {

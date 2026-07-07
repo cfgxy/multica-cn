@@ -317,7 +317,7 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 	var linkedRun db.AutopilotRun
 	result, err := s.issueSvc.Create(ctx, IssueCreateParams{
 		WorkspaceID:    ap.WorkspaceID,
-		TeamID:         ap.TeamID,
+		SpaceID:        ap.SpaceID,
 		Title:          title,
 		Description:    description,
 		Status:         "todo",
@@ -337,8 +337,8 @@ func (s *AutopilotService) dispatchCreateIssue(ctx context.Context, ap db.Autopi
 		ActorID:          util.UUIDToString(leader.ID),
 		AnalyticsAgentID: util.UUIDToString(leader.ID),
 		Platform:         "autopilot",
-		BroadcastPayload: func(issue db.Issue, _ []db.Attachment, teamKey string) map[string]any {
-			return map[string]any{"issue": issueToMap(issue, teamKey)}
+		BroadcastPayload: func(issue db.Issue, _ []db.Attachment, spaceKey string) map[string]any {
+			return map[string]any{"issue": issueToMap(issue, spaceKey)}
 		},
 		// Recent-duplicate guard (WS-1465). Runs inside the create tx so its
 		// advisory lock is held until commit: concurrent dispatches of the
@@ -1368,7 +1368,7 @@ func isSupportedIssueTitleVariable(name string) bool {
 //   - private agent -> only the owner (NO admin bypass, NO agent-created bypass)
 //   - public_to agent -> workspace target admits any workspace-member creator
 //     (and agent-created autopilots as workspace principals); member target
-//     admits the matching creator; team targets are inert.
+//     admits the matching creator; space targets are inert.
 //
 // Fail-closed on any lookup error.
 func (s *AutopilotService) canCreatorInvokeAgent(ctx context.Context, ap db.Autopilot, agent db.Agent) bool {

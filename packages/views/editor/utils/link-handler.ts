@@ -28,7 +28,7 @@ const WORKSPACE_ROUTE_SEGMENTS = new Set([
   "my-issues",
   "runtimes",
   "skills",
-  "team",
+  "space",
   "settings",
 ]);
 
