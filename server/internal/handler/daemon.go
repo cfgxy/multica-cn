@@ -1965,24 +1965,49 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			resp.TriggerCommentContent = "The newest triggering comment is no longer available. Address every earlier comment included below."
 		}
 
-		// Look up the prior session for this (agent, issue) pair so the daemon
-		// can resume the Claude Code conversation context.
-		//
-		// Skip all prior state when the task was flagged as a manual rerun:
-		// the user just judged the prior output bad, so the daemon must start a
-		// fresh agent session in a fresh workdir instead of resuming anything
-		// from the same conversation that produced that output.
-		if !task.ForceFreshSession {
+		// Resolve the prior agent session / workdir to resume.
+		if task.RerunOfTaskID.Valid {
+			// Manual retry: resume precisely from the source task the user
+			// clicked, NOT the most-recent (agent, issue) row — a parallel task
+			// on the same issue must never hijack the resume (MUL-4869). The
+			// workdir is ALWAYS reused when it still exists; the session is
+			// resumed only when the source failure did not poison the
+			// conversation AND the source ran on this runtime.
+			//
+			// Resume-safety is computed HERE from the source task, not read off
+			// task.ForceFreshSession: RerunIssue pins that flag to true so an OLD
+			// claim handler mid rolling-deploy degrades to a clean start instead
+			// of resuming a different execution via the (agent, issue) lookup.
+			// service.ResumeUnsafeFailure mirrors GetLastTaskSession, including
+			// its 400/invalid_request_error text defense for legacy /
+			// mis-classified rows that the exact-source path would otherwise miss.
+			//
+			// When the source workdir is gone (GC'd), absent on this runtime, or
+			// was never recorded (failed too early), execenv.Reuse falls back to a
+			// fresh Prepare and gateResumeToReusedWorkdir drops the now-unusable
+			// session — reuse is best-effort, never a silent swap onto a stale
+			// directory. PriorWorkDir is offered regardless of runtime (a shared
+			// mount may still resolve it); only the per-cwd session is
+			// runtime-gated.
+			if src, err := h.Queries.GetAgentTask(r.Context(), task.RerunOfTaskID); err == nil {
+				if src.WorkDir.Valid {
+					resp.PriorWorkDir = src.WorkDir.String
+				}
+				if !service.ResumeUnsafeFailure(src.FailureReason.String, src.Error.String) &&
+					src.SessionID.Valid && src.RuntimeID == task.RuntimeID {
+					resp.PriorSessionID = src.SessionID.String
+				}
+			}
+		} else if !task.ForceFreshSession {
+			// Non-rerun follow-up on the same issue: resume the most recent
+			// (agent, issue) session so the agent keeps the issue's conversation
+			// context across turns. The "Focus on THIS comment" guard in
+			// prompt.go defends against inheriting the prior turn's "Done."
+			// marker, and GetLastTaskSession already excludes poisoned sessions.
 			if prior, err := h.Queries.GetLastTaskSession(r.Context(), db.GetLastTaskSessionParams{
 				AgentID: task.AgentID,
 				IssueID: task.IssueID,
 			}); err == nil && prior.SessionID.Valid {
-				// Resume the prior session when it ran on the same runtime —
-				// including comment-triggered follow-ups, so the agent keeps the
-				// issue's conversation context across turns. The "Focus on THIS
-				// comment" guard in prompt.go defends against inheriting the prior
-				// turn's "Done." marker, and GetLastTaskSession already excludes
-				// poisoned sessions.
 				if prior.RuntimeID == task.RuntimeID {
 					resp.PriorSessionID = prior.SessionID.String
 				}
