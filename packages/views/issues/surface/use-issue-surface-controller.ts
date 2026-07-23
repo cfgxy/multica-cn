@@ -14,6 +14,7 @@ import type {
   IssueTableQuerySpec,
   Project,
 } from "@multica/core/types";
+import { workspaceWorkingAgentsOptions } from "@multica/core/agents";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { ALL_STATUSES } from "@multica/core/issues/config";
 import { dateOnlyToLocalDate } from "@multica/core/issues/date";
@@ -36,7 +37,6 @@ import type { IssueFilters } from "../utils/filter";
 import type { ChildProgress } from "../components/list-row";
 import { IssueTableExportIntegrityError } from "../components/table-view-model";
 import type { IssueSurfaceMode } from "./types";
-import { useIssueSurfaceActivity, type IssueSurfaceActivity } from "./activity";
 import type { IssueSurfaceActions } from "./actions-context";
 import {
   type IssueSurfaceSelection,
@@ -94,8 +94,10 @@ export interface IssueSurfaceController {
   /** Exact group catalog plus independent row cursors for Assignee/Property
    * Board and compound Swimlane cells. */
   groupBranches?: IssueGroupBranches;
-  activeFilters: Omit<IssueFilters, "statusFilters" | "runningIssueIds">;
-  activity: IssueSurfaceActivity;
+  activeFilters: Omit<
+    IssueFilters,
+    "statusFilters" | "agentRunningFilter" | "runningIssueIds"
+  >;
   actions: IssueSurfaceActions;
   selection: IssueSurfaceSelection;
   childProgressMap: Map<string, ChildProgress>;
@@ -319,7 +321,39 @@ export function useIssueSurfaceController({
   const { projectFilters: viewProjectFilters, includeNoProject: viewIncludeNoProject } =
     projectFilterState;
 
-  const activity = useIssueSurfaceActivity();
+  const workingAgentMineRelation =
+    scope.type === "my"
+      ? scope.relation === "all"
+        ? "any"
+        : scope.relation
+      : undefined;
+  const { data: workspaceWorkingAgents = [] } = useQuery(
+    workspaceWorkingAgentsOptions(wsId, "issue", workingAgentMineRelation),
+  );
+  const workingAssigneeFilters = useMemo(() => {
+    const workingAgentIds = new Set(
+      workspaceWorkingAgents.map((agent) => agent.id),
+    );
+    if (assigneeFilters.length === 0) {
+      return workspaceWorkingAgents.map((agent) => ({
+        type: "agent" as const,
+        id: agent.id,
+      }));
+    }
+
+    // The quick filter and the regular assignee picker are both predicates
+    // on the same field, so compose them with intersection (AND semantics).
+    return assigneeFilters.filter(
+      (assignee) =>
+        assignee.type === "agent" && workingAgentIds.has(assignee.id),
+    );
+  }, [assigneeFilters, workspaceWorkingAgents]);
+  const effectiveAssigneeFilters = agentRunningFilter
+    ? workingAssigneeFilters
+    : assigneeFilters;
+  const effectiveIncludeNoAssignee = agentRunningFilter
+    ? false
+    : includeNoAssignee;
 
   const tableQuerySpec = useMemo<IssueTableQuerySpec>(() => {
     let queryScope: IssueTableQuerySpec["scope"];
@@ -366,8 +400,14 @@ export function useIssueSurfaceController({
       filters: {
         ...(statusFilters.length > 0 ? { statuses: statusFilters } : {}),
         ...(priorityFilters.length > 0 ? { priorities: priorityFilters } : {}),
-        ...(assigneeFilters.length > 0 ? { assignees: assigneeFilters } : {}),
-        ...(includeNoAssignee ? { include_no_assignee: true } : {}),
+        ...(agentRunningFilter
+          ? { assignees: effectiveAssigneeFilters }
+          : assigneeFilters.length > 0
+            ? { assignees: assigneeFilters }
+            : {}),
+        ...(effectiveIncludeNoAssignee
+          ? { include_no_assignee: true }
+          : {}),
         ...(creatorFilters.length > 0 ? { creators: creatorFilters } : {}),
         ...(viewProjectFilters.length > 0
           ? { project_ids: viewProjectFilters }
@@ -378,7 +418,6 @@ export function useIssueSurfaceController({
           ? { properties: effectivePropertyFilters }
           : {}),
         ...(date ? { date } : {}),
-        ...(agentRunningFilter ? { working_only: true } : {}),
         include_sub_issues: showSubIssues,
       },
       ...(debouncedActiveSearch ? { search: debouncedActiveSearch } : {}),
@@ -393,8 +432,9 @@ export function useIssueSurfaceController({
     creatorFilters,
     dateParams,
     debouncedActiveSearch,
+    effectiveAssigneeFilters,
+    effectiveIncludeNoAssignee,
     effectivePropertyFilters,
-    includeNoAssignee,
     labelFilters,
     priorityFilters,
     scope,
@@ -562,17 +602,17 @@ export function useIssueSurfaceController({
     serverGroupBranches,
     ganttShowCompleted,
     sort,
-    activity,
     statusFilters,
     priorityFilters,
-    assigneeFilters,
-    includeNoAssignee,
+    assigneeFilters: effectiveAssigneeFilters,
+    includeNoAssignee: effectiveIncludeNoAssignee,
+    assigneeFilterActive: agentRunningFilter,
     creatorFilters,
     projectFilters: viewProjectFilters,
     includeNoProject: viewIncludeNoProject,
     labelFilters,
     propertyFilters: effectivePropertyFilters,
-    agentRunningFilter,
+    workingAssigneeFilters,
     showSubIssues,
     loadProjects:
       cardProperties.project ||
