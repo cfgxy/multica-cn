@@ -15,7 +15,6 @@ import { useT } from "../../i18n";
 import { CommentTriggerChips } from "./comment-trigger-chips";
 import { useCommentTriggerPreview } from "../hooks/use-comment-trigger-preview";
 import { useCommentUploads } from "./use-comment-uploads";
-import { ComposerUploadChips } from "./composer-upload-chips";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -251,9 +250,6 @@ function ReplyInput({
             slashCommandMode="command"
           />
         </div>
-        )}
-        {uploads.some((u) => u.status !== "uploaded") && (
-          <ComposerUploadChips uploads={uploads} onRemove={removeUpload} className="mt-1" />
         )}
         {/* Static shell — clones the empty single-line reply box (see
             CommentInput for the pattern). */}

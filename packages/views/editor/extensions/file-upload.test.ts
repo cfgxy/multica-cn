@@ -9,6 +9,8 @@ import { FileCardExtension } from "./file-card";
 import {
   createFileUploadExtension,
   uploadAndInsertFile,
+  insertUploadPlaceholder,
+  settleUploadNode,
   pastedTextSource,
   PASTED_TEXT_FILENAME,
 } from "./file-upload";
@@ -28,6 +30,7 @@ function makeEditor() {
     extensions: [
       StarterKit,
       ImageExtension,
+      FileCardExtension,
       Markdown.configure({ indentation: { style: "space", size: 3 } }),
     ],
   });
@@ -159,13 +162,16 @@ describe("uploadAndInsertFile", () => {
 
     const uploadTask = uploadAndInsertFile(editor, file, handler);
 
-    expect(handler).toHaveBeenCalledWith(file);
+    expect(handler).toHaveBeenCalledWith(file, expect.any(String));
     expect(editor.state.selection.$from.parent.type.name).toBe("paragraph");
 
     editor.commands.insertContent("after");
-    expect(editor.getMarkdown().trimEnd()).toBe(
-      [`![photo.png](${BLOB_URL})`, "", "after"].join("\n"),
-    );
+    // The blob preview is visible in the document but is NOT content: the
+    // document is the persisted draft body, and a process-local blob: URL
+    // would outlive the upload as a dead link. It becomes markdown only once
+    // the swap below gives it a real URL.
+    expect(editor.getMarkdown()).not.toContain(BLOB_URL);
+    expect(editor.getMarkdown().trim()).toBe("after");
 
     upload.resolve(
       makeUpload({ id: "attachment-1", link: FINAL_URL, filename: "photo.png" }),
@@ -254,6 +260,82 @@ describe("uploadAndInsertFile", () => {
     expect(editor.getMarkdown().trimEnd()).toBe(`![photo.png](${STABLE_URL})`);
     expect(editor.getMarkdown()).not.toContain("?exp=");
     expect(editor.getMarkdown()).not.toContain("?sig=");
+  });
+});
+
+describe("one identity from node to draft", () => {
+  it("hands the node's uploadId to the uploader, so both records name the same upload", async () => {
+    const editor = makeEditor();
+    const handler = vi.fn(async (_file: File, _uploadId: string) => null);
+    await uploadAndInsertFile(editor, new File(["x"], "photo.png", { type: "image/png" }), handler);
+    const [, uploadId] = handler.mock.calls[0]!;
+    expect(typeof uploadId).toBe("string");
+    expect(uploadId).toBeTruthy();
+  });
+
+  it("settles a placeholder a DIFFERENT document drew, by id alone", async () => {
+    // The reopen case: this editor never ran the upload, it only rebuilt the
+    // card from the draft record. Only a shared id can connect the two.
+    const editor = makeEditor();
+    expect(
+      insertUploadPlaceholder(editor, { uploadId: "u-1", filename: "report.pdf", size: 12 }),
+    ).toBe(true);
+    expect(editor.getMarkdown()).not.toContain("report.pdf");
+
+    expect(
+      settleUploadNode(
+        editor,
+        "u-1",
+        makeUpload({
+          id: "att-1",
+          link: "/api/attachments/att-1/download",
+          filename: "report.pdf",
+          content_type: "application/pdf",
+        }),
+      ),
+    ).toBe(true);
+    expect(editor.getMarkdown()).toContain("!file[report.pdf](/api/attachments/att-1/download)");
+  });
+
+  it("promotes a rebuilt card to an image when that is what arrived", async () => {
+    // The rebuild path has only a filename, never bytes, so it always draws a
+    // card; the settle is where the document learns it was an image.
+    const editor = makeEditor();
+    insertUploadPlaceholder(editor, { uploadId: "u-2", filename: "shot.png" });
+    settleUploadNode(
+      editor,
+      "u-2",
+      makeUpload({
+        id: "att-2",
+        link: "/api/attachments/att-2/download",
+        filename: "shot.png",
+        content_type: "image/png",
+      }),
+    );
+    expect(editor.getMarkdown()).toContain("![shot.png](/api/attachments/att-2/download)");
+  });
+
+  it("reports false when this document holds no node for the id", () => {
+    const editor = makeEditor();
+    expect(
+      settleUploadNode(
+        editor,
+        "nope",
+        makeUpload({ id: "a", link: "/l", filename: "f", content_type: "application/pdf" }),
+      ),
+    ).toBe(false);
+  });
+
+  it("is idempotent, so a retrying caller cannot draw two cards", () => {
+    const editor = makeEditor();
+    expect(insertUploadPlaceholder(editor, { uploadId: "u-3", filename: "a.pdf" })).toBe(true);
+    expect(insertUploadPlaceholder(editor, { uploadId: "u-3", filename: "a.pdf" })).toBe(true);
+    let cards = 0;
+    editor.state.doc.descendants((n) => {
+      if (n.type.name === "fileCard") cards++;
+      return undefined;
+    });
+    expect(cards).toBe(1);
   });
 });
 

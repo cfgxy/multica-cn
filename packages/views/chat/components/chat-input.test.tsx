@@ -17,6 +17,11 @@ const mockApiUploadFile = vi.hoisted(() => vi.fn());
 // delivers into the live editor through this method.
 const insertMarkdownSpy = vi.hoisted(() => vi.fn());
 
+// The real handle mints an id when it inserts the placeholder and hands it to
+// the uploader, which adopts it as the draft `clientUploadId`. Mocks must do
+// the same or the two records drift apart only in tests.
+let mockUploadIdSeq = 0;
+
 vi.mock("@multica/core/api", () => ({
   api: { uploadFile: mockApiUploadFile },
 }));
@@ -80,7 +85,7 @@ vi.mock("../../editor", async () => ({
       value?: string;
       onUpdate?: (md: string) => void;
       placeholder?: string;
-      onUploadFile?: (file: File) => Promise<UploadResult | null>;
+      onUploadFile?: (file: File, uploadId: string) => Promise<UploadResult | null>;
       onUploadingChange?: (uploading: boolean) => void;
       mentionMode?: string;
       mentionContextItems?: unknown[];
@@ -119,7 +124,7 @@ vi.mock("../../editor", async () => ({
         // the host learns about it through onUploadingChange, not by polling.
         if (uploadingRef.current === 1) onUploadingChange?.(true);
         try {
-          const result = await onUploadFile?.(file);
+          const result = await onUploadFile?.(file, `mock-upload-${++mockUploadIdSeq}`);
           if (result) {
             // Mirror the real editor (uploadAndInsertFile in
             // packages/views/editor/extensions/file-upload.ts): the
@@ -139,6 +144,11 @@ vi.mock("../../editor", async () => ({
         }
       },
       hasActiveUploads: () => uploadingRef.current > 0,
+      // Placeholder rebuild contract: the real handle draws a card for an
+      // upload the document is not showing and reports whether it landed.
+      // Mocks track ids only — no document to draw into.
+      insertUploadPlaceholder: () => true,
+      settleUploadPlaceholder: () => false,
       insertMarkdownAtEnd: (md: string) => {
         insertMarkdownSpy(md);
         valueRef.current = `${valueRef.current}\n\n${md}`.trim();

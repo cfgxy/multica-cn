@@ -76,6 +76,14 @@ export const ImageExtension = Image.extend({
           attrs.uploading ? { "data-uploading": "" } : {},
         parseHTML: (el: HTMLElement) => el.hasAttribute("data-uploading"),
       },
+      // The upload this placeholder belongs to — the same value the draft
+      // store knows as `clientUploadId`. Lets a settle arriving at a mount
+      // that did not start the upload find the node to replace. Render-only,
+      // and cleared once the node holds a real URL.
+      uploadId: {
+        default: null,
+        rendered: false,
+      },
       // Intrinsic pixel dimensions, captured on upload (file-upload.ts). The
       // browser uses width/height on <img> to compute aspect-ratio and reserve
       // the box before the image decodes, so inserting an image causes no
@@ -107,6 +115,11 @@ export const ImageExtension = Image.extend({
   },
   renderMarkdown: (node: any) => {
     const src = node.attrs?.src || "";
+    // Same rule as fileCard: an in-flight placeholder is not content. Its src
+    // is a process-local `blob:` URL that expires on reload, so emitting it
+    // would put a dead link in the persisted draft. This replaces the
+    // after-the-fact regex scrub ContentEditor used to run on every serialise.
+    if (node.attrs?.uploading === true || !src) return "";
     const alt = escapeMarkdownLabel(node.attrs?.alt || "");
     const title = node.attrs?.title;
     if (title) {
@@ -131,7 +144,7 @@ export interface EditorExtensionsOptions {
   queryClient?: import("@tanstack/react-query").QueryClient;
   onSubmitRef?: RefObject<(() => void) | undefined>;
   onUploadFileRef?: RefObject<
-    ((file: File) => Promise<UploadResult | null>) | undefined
+    ((file: File, uploadId: string) => Promise<UploadResult | null>) | undefined
   >;
   /**
    * Character count above which a plain-text paste becomes a .txt attachment

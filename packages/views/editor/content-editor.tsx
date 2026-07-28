@@ -57,7 +57,11 @@ import {
 import type { MentionItem } from "./extensions/mention-suggestion";
 import type { IssueIdentifierResolver } from "./extensions/issue-identifier-autolink";
 import { createEditorExtensions } from "./extensions";
-import { uploadAndInsertFile } from "./extensions/file-upload";
+import {
+  uploadAndInsertFile,
+  insertUploadPlaceholder,
+  settleUploadNode,
+} from "./extensions/file-upload";
 import { configStore } from "@multica/core/config";
 import { preprocessMarkdown } from "./utils/preprocess";
 import { repairEmptyListItems } from "./utils/repair-list-items";
@@ -74,21 +78,22 @@ import "./styles/index.css";
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Blob URLs (blob:http://…) are process-local and expire on reload. Strip them
- *  from serialised markdown so they never reach the database. */
-const BLOB_IMAGE_RE = /!\[[^\]]*\]\(blob:[^)]*\)\n?/g;
-
-function stripBlobUrls(md: string): string {
-  return md.replace(BLOB_IMAGE_RE, "");
-}
-
-/** Canonical comparison form for a markdown string: drop process-local blob
- *  URLs and trailing blank lines so both sides of a dirty check compare
- *  like-for-like. One definition for the normalization rule — a future tweak
- *  (e.g. stripping another ephemeral token) lands here instead of in the
- *  several call sites it used to be copy-pasted across. */
+/** Canonical comparison form for a markdown string: drop the blank lines a
+ *  block leaves behind at either end, so both sides of a dirty check compare
+ *  like-for-like.
+ *
+ *  This used to also strip `blob:` image lines with a regex, because an
+ *  in-flight image serialised its process-local blob URL into the body. That
+ *  is now impossible at the source: the image and fileCard `renderMarkdown`
+ *  implementations emit nothing while `attrs.uploading` is set, so a
+ *  placeholder never becomes text that has to be scrubbed back out.
+ *
+ *  Leading blank lines are trimmed too, not just trailing: a placeholder in
+ *  the FIRST block leaves its blank line at the head of the document, and a
+ *  draft that opens with an empty line is the same content as one that does
+ *  not. (The old regex left one such newline behind for the same reason.) */
 function normalizeMarkdown(md: string): string {
-  return stripBlobUrls(md).trimEnd();
+  return md.trim();
 }
 
 /** `normalizeMarkdown` applied to the live editor's serialized content. */
@@ -120,7 +125,14 @@ interface ContentEditorBaseProps {
   debounceMs?: number;
   onSubmit?: () => void;
   onBlur?: () => void;
-  onUploadFile?: (file: File) => Promise<UploadResult | null>;
+  /**
+   * Upload transport. `uploadId` is minted by the editor when it inserts the
+   * placeholder node; a host backed by a draft store MUST adopt it as the
+   * upload's `clientUploadId` so both records share one identity — that is
+   * what lets a settle find its placeholder in a document a later mount
+   * rebuilt. Hosts with no persistence may ignore it.
+   */
+  onUploadFile?: (file: File, uploadId: string) => Promise<UploadResult | null>;
   /**
    * Character count above which a plain-text paste is uploaded as a
    * `pasted-text.txt` attachment instead of being inserted as body text.
@@ -267,6 +279,29 @@ interface ContentEditorRef {
    */
   insertMarkdownAtEnd: (markdown: string) => boolean;
   /**
+   * Draw a placeholder for an upload this document is not showing yet, and
+   * report whether it landed.
+   *
+   * A composer that reopens over an upload a previous mount started has the
+   * draft's record of it but no node — placeholders are never serialised, so
+   * they die with the document that drew them. Without this the user faces a
+   * composer that looks idle while a send gate quietly blocks on the upload.
+   * Returns false when the Tiptap instance is not up yet (the handle exists
+   * from first commit, the instance arrives a passive effect later), so the
+   * caller can retry rather than assume.
+   */
+  insertUploadPlaceholder: (upload: {
+    uploadId: string;
+    filename: string;
+    size?: number;
+  }) => boolean;
+  /**
+   * Turn a placeholder into the finished attachment, in place. False when this
+   * document holds no node for the id — the caller then falls back to
+   * appending the link.
+   */
+  settleUploadPlaceholder: (uploadId: string, result: UploadResult) => boolean;
+  /**
    * Cancel the pending debounced `onUpdate` and hand its markdown back to the
    * caller instead of firing it. Returns null when nothing is pending.
    *
@@ -343,7 +378,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     const onReadyRef = useRef(onReady);
     const onUploadingChangeRef = useRef(onUploadingChange);
     const onUploadFileRef = useRef<
-      ((file: File) => Promise<UploadResult | null>) | undefined
+      ((file: File, uploadId: string) => Promise<UploadResult | null>) | undefined
     >(undefined);
     // Same reasoning as placeholderRef below: the extension array is built once
     // at mount, so the paste-as-file threshold is read through a ref to stay
@@ -377,8 +412,8 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     // stable across renders the way the original passthrough did.
     const wrappedOnUploadFile = useMemo(() => {
       if (!onUploadFile) return undefined;
-      return async (file: File): Promise<UploadResult | null> => {
-        const result = await onUploadFile(file);
+      return async (file: File, uploadId: string): Promise<UploadResult | null> => {
+        const result = await onUploadFile(file, uploadId);
         // Only track attachments that carry a persisted id — the no-workspace
         // avatar branch returns an id-less record that the resolver can't key
         // off of, and tracking it would just bloat memory without helping
@@ -796,9 +831,12 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
     }, [editor, placeholderText]);
 
     useImperativeHandle(ref, () => ({
-      // Intentionally NOT routed through `normalizeMarkdown` — this refactor
-      // must preserve the exact current return value (no `trimEnd`).
-      getMarkdown: () => stripBlobUrls(editor?.getMarkdown() ?? ""),
+      // Intentionally NOT routed through `normalizeMarkdown` — see the "stays
+      // untrimmed" safety net in content-editor.test.tsx. It used to also pass
+      // through `stripBlobUrls`; that wrapper is gone because an in-flight
+      // placeholder no longer serialises at all, which is strictly stronger
+      // than scrubbing it back out afterwards.
+      getMarkdown: () => editor?.getMarkdown() ?? "",
       clearContent: () => {
         editor?.commands.clearContent();
       },
@@ -834,6 +872,14 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         uploadAndInsertFile(editor, file, onUploadFileRef.current, endPos);
       },
       hasActiveUploads: () => (editor ? hasUploadingNode(editor) : false),
+      insertUploadPlaceholder: (upload) => {
+        if (!editor || editor.isDestroyed) return false;
+        return insertUploadPlaceholder(editor, upload);
+      },
+      settleUploadPlaceholder: (uploadId, result) => {
+        if (!editor || editor.isDestroyed) return false;
+        return settleUploadNode(editor, uploadId, result);
+      },
       insertMarkdownAtEnd: (markdown: string) => {
         if (!editor || editor.isDestroyed) return false;
         editor.commands.insertContentAt(editor.state.doc.content.size, markdown, {
