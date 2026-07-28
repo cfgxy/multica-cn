@@ -271,7 +271,7 @@ export function createKoDict(allowSignup: boolean): LandingDict {
         {
           version: "0.4.13",
           date: "2026-07-28",
-          title: "오류 분석, GitHub 저장소 가져오기, 더 안정적인 초안",
+          title: "Claude Code 재개 시 캐시를 다시 만들지 않고, 오류 분석까지",
           changes: [],
           features: [
             "사용량 페이지에서 오류 추이와 실패 유형, 확인이 필요한 에이전트를 볼 수 있습니다.",
@@ -285,11 +285,11 @@ export function createKoDict(allowSignup: boolean): LandingDict {
             "업로드는 한 번만 표시되고 완료된 뒤 초안에 반영됩니다.",
             "Webhook URL은 기본으로 숨겨지고 필요할 때만 표시할 수 있습니다.",
             "워크스페이스가 많아도 Multica를 시작할 때 에이전트 도구를 반복 확인하지 않습니다.",
-            "에이전트가 Issue 작업을 이어갈 때 더 빠르게 재개하고 토큰 사용량도 줄었습니다.",
             "사용량 순위는 상위 에이전트에 집중되고 실패 정렬도 더 명확해졌습니다.",
             "전송 후 커서가 각 입력 화면에 맞는 위치로 이동합니다.",
           ],
           fixes: [
+            "Claude Code로 긴 Issue 작업을 이어갈 때 반복되는 캐시 쓰기가 약 95% 줄었습니다.",
             "Issue를 삭제하면 열기 전에 보던 목록으로 돌아갑니다.",
             "스킬 다운로드가 멈추면 자동으로 재시도하고 이유를 알려 줍니다.",
             "Slack과 Lark에는 최종 답변만 전달되며 Qoder 에이전트도 중간 설명을 섞지 않습니다.",

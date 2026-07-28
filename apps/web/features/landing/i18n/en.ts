@@ -296,7 +296,7 @@ export function createEnDict(allowSignup: boolean): LandingDict {
       {
         version: "0.4.13",
         date: "2026-07-28",
-        title: "Usage insights, GitHub imports, and sturdier drafts",
+        title: "Claude Code resumes without rewriting its cache, plus usage insights",
         changes: [],
         features: [
           "Usage now shows error trends, failure types, and the agents needing attention.",
@@ -310,11 +310,11 @@ export function createEnDict(allowSignup: boolean): LandingDict {
           "Uploads now appear once and become draft content only after they finish.",
           "Webhook URLs now hide their secret tokens until you choose to reveal them.",
           "Starting Multica with many workspaces now launches far fewer agent checks.",
-          "Follow-up agent runs now resume faster and use fewer tokens.",
           "Usage rankings now focus on the top agents and sort failures more clearly.",
           "Each composer now leaves the cursor where that surface expects it.",
         ],
         fixes: [
+          "Continuing a long issue with Claude Code no longer repeats about 95% of its cache writes.",
           "Deleting an issue now returns you to the list you came from.",
           "Stalled skill downloads now retry and show a clear reason.",
           "Slack and Lark now receive only the final answer, including from Qoder agents.",
