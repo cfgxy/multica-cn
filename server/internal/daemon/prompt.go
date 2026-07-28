@@ -21,6 +21,43 @@ func freshSessionRetryPrompt(prompt string) string {
 	return notice + prompt
 }
 
+// Turn-mode markers consumed by the runtime brief's mode router
+// (execenv.writeWorkflowIssue). The brief is byte-identical on every run and
+// therefore cannot say what triggered this turn; these lines do, and they are
+// emitted unconditionally from the same branches BuildPrompt uses to pick a
+// path, so the two can never disagree.
+//
+// Reply mode = respond to the triggering comment, do not touch issue status.
+// Ownership mode = an assignment/status change started this run; own the
+// status arc. Applying the wrong one silently changes issue status.
+const (
+	turnModeReply     = "**Turn mode: Reply.** Follow the Reply-mode block in your runtime workflow file for this turn; the Ownership-mode status steps do not apply.\n\n"
+	turnModeOwnership = "**Turn mode: Ownership.** Follow the Ownership-mode block in your runtime workflow file for this turn; the Reply-mode rules do not apply.\n\n"
+)
+
+// perTurnContextBlocks renders the run-scoped context blocks that used to live
+// in the runtime brief (CLAUDE.md / AGENTS.md).
+//
+// Every value here changes from one run to the next on the same issue — the
+// initiator differs whenever another person comments, the continuity notice is
+// true of one run and false of the next, and the connected-app set is resolved
+// per run from the runtime MCP overlay. Claude Code loads the brief into
+// messages[0], ahead of the entire conversation, so rendering these there threw
+// away the prompt cache for the whole history on every resume. Appending them
+// to the per-turn user message puts them after the cached prefix instead, where
+// changing them costs only this turn's own tokens (MUL-5377).
+//
+// Returns "" when none of the blocks apply.
+func perTurnContextBlocks(task Task) string {
+	var b strings.Builder
+	if task.PriorSessionResumeUnavailable {
+		b.WriteString(execenv.SessionContinuityNotice)
+	}
+	b.WriteString(execenv.BuildTaskInitiatorBlock(task.InitiatorType, task.InitiatorName, task.InitiatorEmail))
+	b.WriteString(execenv.BuildConnectedAppsBlock(task.ConnectedApps))
+	return b.String()
+}
+
 // BuildPrompt constructs the task prompt for an agent CLI.
 // Keep this minimal — detailed instructions live in CLAUDE.md / AGENTS.md
 // injected by execenv.InjectRuntimeConfig. The provider string is threaded
@@ -29,6 +66,20 @@ func freshSessionRetryPrompt(prompt string) string {
 // post with `--content-file`) because the shell-layer corruption it guards
 // against is not specific to any one provider or host (MUL-2904, #4182).
 func BuildPrompt(task Task, provider string) string {
+	body := buildPromptBody(task, provider)
+	// Run-scoped context is appended, never prepended: everything ahead of it
+	// is stable across runs of a resumed session, and appending keeps it after
+	// the cached prefix (MUL-5377).
+	if blocks := perTurnContextBlocks(task); blocks != "" {
+		if !strings.HasSuffix(body, "\n\n") {
+			body += "\n"
+		}
+		body += blocks
+	}
+	return body
+}
+
+func buildPromptBody(task Task, provider string) string {
 	if task.ChatSessionID != "" {
 		return buildChatPrompt(task)
 	}
@@ -44,6 +95,7 @@ func BuildPrompt(task Task, provider string) string {
 	var b strings.Builder
 	b.WriteString("You are running as a local coding agent for a Multica workspace.\n\n")
 	fmt.Fprintf(&b, "Your assigned issue ID is: %s\n\n", task.IssueID)
+	b.WriteString(turnModeOwnership)
 	// Assignment handoff (MUL-3375): a free-text instruction the person who
 	// assigned/promoted this issue left for you. Frame it as a handoff, not a
 	// comment to reply to — there is no comment thread to answer here.
@@ -170,6 +222,13 @@ func buildCommentPrompt(task Task, provider string) string {
 	var b strings.Builder
 	b.WriteString("You are running as a local coding agent for a Multica workspace.\n\n")
 	fmt.Fprintf(&b, "Your assigned issue ID is: %s\n\n", task.IssueID)
+	// Mode marker for the brief's router. Emitted unconditionally from the same
+	// branch that selects this code path, so the brief and the prompt can never
+	// disagree about which mode this turn is in. It must NOT be gated on
+	// TriggerCommentContent: an empty comment body (or an older server that
+	// doesn't send one) would otherwise leave the turn unlabelled, and the
+	// agent would fall through to Ownership mode and change the issue status.
+	b.WriteString(turnModeReply)
 	if task.TriggerCommentContent != "" {
 		authorLabel := "A user"
 		if task.TriggerAuthorType == "agent" {
