@@ -20,6 +20,9 @@ const editorDefaultValues = vi.hoisted(() => ({
 // Observability + failure control for the write-back insert path (MUL-5181):
 // `insertMarkdownAtEnd` returns false while the (simulated) Tiptap instance
 // doesn't exist yet, exactly like the real handle.
+// Post-send caret policy: the top-level composer blurs (the page scrolls to the
+// posted comment instead), a thread reply keeps the caret for the next reply.
+const focusCalls = vi.hoisted(() => ({ focused: 0, blurred: 0 }));
 const insertMarkdownSpy = vi.hoisted(() => vi.fn());
 const insertMarkdownBehavior = vi.hoisted(() => ({ succeed: true }));
 
@@ -108,9 +111,9 @@ vi.mock("../../editor", async () => ({
       clearContent: () => {
         valueRef.current = "";
       },
-      focus: () => {},
+      focus: () => { focusCalls.focused += 1; },
       focusAtCoords: () => {},
-      blur: () => {},
+      blur: () => { focusCalls.blurred += 1; },
       uploadFile: async (file: File) => {
         inFlightRef.current += 1;
         if (inFlightRef.current === 1) onUploadingChange?.(true);
@@ -219,6 +222,8 @@ beforeEach(() => {
   // path and hide the shell the next test expects.
   useCommentDraftStore.setState({ drafts: {} });
   editorDefaultValues.values = [];
+  focusCalls.focused = 0;
+  focusCalls.blurred = 0;
 });
 
 describe("comment composers", () => {
@@ -346,6 +351,50 @@ describe("comment composers", () => {
     expect(screen.getByTestId("editor").closest("[aria-busy]")).toBeNull();
   });
 
+  // Post-send caret policy. The two composers deliberately disagree: posting a
+  // top-level comment ends the turn and drops the caret, while a thread reply
+  // leaves the user mid-conversation with the box ready for the next one.
+  it("blurs the top-level composer after a posted comment", async () => {
+    const { container } = renderCommentInput();
+
+    activateComposer("comment-composer-shell");
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "posted" } });
+    // Discard the focus the lazy shell→editor swap performed; what follows is
+    // entirely the post-send policy.
+    focusCalls.focused = 0;
+    fireEvent.click(getSubmitButton(container));
+
+    await waitFor(() => expect(focusCalls.blurred).toBeGreaterThan(0));
+    expect(focusCalls.focused).toBe(0);
+  });
+
+  it("keeps the caret in the reply box after a posted reply", async () => {
+    const { container } = renderReplyInput();
+
+    activateComposer("reply-composer-shell");
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "replied" } });
+    // Discard the shell→editor activation focus; what follows is the refocus.
+    focusCalls.focused = 0;
+    fireEvent.click(getSubmitButton(container));
+
+    await waitFor(() => expect(focusCalls.focused).toBeGreaterThan(0));
+    expect(focusCalls.blurred).toBe(0);
+  });
+
+  it("does not refocus the reply box when the send fails", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(false);
+    const { container } = renderReplyInput({ onSubmit });
+
+    activateComposer("reply-composer-shell");
+    fireEvent.change(screen.getByTestId("editor"), { target: { value: "nope" } });
+    focusCalls.focused = 0;
+    fireEvent.click(getSubmitButton(container));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    expect(focusCalls.focused).toBe(0);
+  });
+
   // Regression: the tab-switch flush re-writes IDENTICAL content mid-flight;
   // that must not read as "edited during the request" — the posted comment's
   // draft still clears (it previously resurrected with Send re-enabled).
@@ -399,6 +448,38 @@ describe("comment composers", () => {
     });
 
     expect(useCommentDraftStore.getState().getDraft("new:issue-1")).toBe("draft A plus more");
+    // …and the post-send caret policy must stand down with it: the guard left
+    // the editor holding "draft A plus more", so blurring would yank the caret
+    // out of the sentence the user is still writing.
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    expect(focusCalls.blurred).toBe(0);
+  });
+
+  // Same coupling on the reply side: refocus is bound to having actually wiped
+  // the editor, not merely to acceptance.
+  it("does not refocus a reply box whose mid-flight draft was kept", async () => {
+    let resolveSubmit!: (v: boolean) => void;
+    const onSubmit = vi.fn(() => new Promise<boolean>((r) => { resolveSubmit = r; }));
+    renderReplyInput({ onSubmit, draftKey: "reply:issue-1:comment-1" });
+    activateComposer("reply-composer-shell");
+    const editor = screen.getByTestId("editor");
+    fireEvent.change(editor, { target: { value: "reply A" } });
+    fireEvent.keyDown(editor, { key: "Enter", metaKey: true });
+    await waitFor(() => expect(onSubmit).toHaveBeenCalled());
+
+    fireEvent.change(editor, { target: { value: "reply A plus more" } });
+    focusCalls.focused = 0;
+
+    await act(async () => {
+      resolveSubmit(true);
+      await Promise.resolve();
+    });
+
+    expect(useCommentDraftStore.getState().getDraft("reply:issue-1:comment-1")).toBe(
+      "reply A plus more",
+    );
+    await new Promise((resolve) => requestAnimationFrame(() => resolve(null)));
+    expect(focusCalls.focused).toBe(0);
   });
 
   // MUL-5181 P0: a submit that outlives its composer may only clear the draft

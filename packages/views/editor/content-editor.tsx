@@ -233,9 +233,9 @@ interface ContentEditorRef {
    * long documents.
    */
   focusAtAnchor: (anchor: TextAnchor) => void;
-  /** Drop focus from the editor — used by chat after send so the caret
-   *  stops competing with the StatusPill / streaming reply for the user's
-   *  attention. */
+  /** Drop focus from the editor. Used by `useComposerSubmit`'s
+   *  `afterAccepted: "blur"` on surfaces where a send ends the turn, so the
+   *  composer stops reading as "still writing". */
   blur: () => void;
   uploadFile: (file: File) => void;
   /** True when file uploads are still in progress. */
