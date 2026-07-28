@@ -2085,6 +2085,11 @@ export class ApiClient {
   async uploadFile(
     file: File,
     opts?: { issueId?: string; commentId?: string; chatSessionId?: string },
+    // Optional abort signal so a module-level upload coordinator (MUL-5181)
+    // can cancel an in-flight upload on logout. When aborted, `fetch` rejects
+    // with an AbortError, which the coordinator distinguishes from a real
+    // failure via `signal.aborted` / `err.name === "AbortError"`.
+    signal?: AbortSignal,
   ): Promise<Attachment> {
     const formData = new FormData();
     formData.append("file", file);
@@ -2101,6 +2106,7 @@ export class ApiClient {
       headers: this.authHeaders(),
       body: formData,
       credentials: "include",
+      signal,
     });
 
     if (!res.ok) {
