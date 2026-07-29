@@ -251,6 +251,24 @@ type Daemon struct {
 	versionsMu    sync.RWMutex      // guards agentVersions
 	agentVersions map[string]string // provider -> detected CLI version (set during registration)
 
+	// agentsAvailable holds the current built-in agent CLI availability set —
+	// the same shape as cfg.Agents, which it supersedes as the read path.
+	//
+	// It is copy-on-write, NOT a mutable map: refreshAgentAvailability swaps in
+	// a whole new map, and readers (agents()) take the pointer once and then
+	// only read. cfg.Agents used to be read unlocked from task-execution paths
+	// (resolveAgentEntry, runTask), so making the discovery set refreshable at
+	// runtime (MUL-5439) would otherwise be a data race.
+	agentsAvailable atomic.Pointer[map[string]AgentEntry]
+
+	// skippedAgents records why a discovered provider did not make it into the
+	// last registration round (version undetectable, below minimum). Purely
+	// diagnostic: surfaced on /health so the UI can tell "not installed" apart
+	// from "installed but dropped", instead of silently showing nothing
+	// (MUL-5439). Guarded by skippedAgentsMu.
+	skippedAgentsMu sync.RWMutex
+	skippedAgents   map[string]string // provider -> human-readable reason
+
 	// resolvedPathsMu guards resolvedPaths, the self-healed executable paths.
 	// The daemon pins each agent's absolute path at startup so a later PATH
 	// change can't redirect a task launch. When that pinned path later vanishes
@@ -396,6 +414,7 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 		profileLaunchSpecs:        make(map[string]profileLaunchSpec),
 		runtimeSet:                newRuntimeSetWatcher(),
 		agentVersions:             make(map[string]string),
+		skippedAgents:             make(map[string]string),
 		resolvedPaths:             make(map[string]healedAgent),
 		wsHBLastAck:               make(map[string]time.Time),
 		activeEnvRoots:            make(map[string]int),
@@ -414,6 +433,14 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 	}
 	d.activeEnvRootsCond = sync.NewCond(&d.activeEnvRootsMu)
 	d.activeCodexStoresCond = sync.NewCond(&d.activeCodexStoresMu)
+	// Seed the copy-on-write availability set from the startup probe. Callers
+	// must go through d.agents() from here on; cfg.Agents is the initial value
+	// only and does not track later refreshes.
+	initialAgents := make(map[string]AgentEntry, len(cfg.Agents))
+	for name, entry := range cfg.Agents {
+		initialAgents[name] = entry
+	}
+	d.agentsAvailable.Store(&initialAgents)
 	d.executionEnvironmentCommand = defaultExecutionEnvironmentCommand
 	d.runner = taskRunnerFunc(d.runTask)
 	d.runUpdateFn = d.runUpdate
@@ -883,6 +910,91 @@ func (d *Daemon) applyRegisterResponseInPlace(workspaceID string, resp *Register
 	return newIDs, droppedIDs, true
 }
 
+// mergeBuiltinRegisterResponse applies a builtins-only register response
+// ADDITIVELY: returned built-in runtimes are indexed and appended, and a prior
+// runtime ID that the response did not mention is left alone.
+//
+// applyRegisterResponseInPlace treats the response as authoritative and drops
+// unmentioned IDs, which is right for the convergence paths that deliberately
+// re-derive a workspace's whole runtime set. It is wrong for CLI discovery
+// (MUL-5439): that payload carries built-in runtimes only, so under the
+// authoritative rule it would evict the workspace's custom profile runtimes from
+// runtimeIndex and stop their heartbeats, possibly mid-task. The server's
+// register endpoint is a pure per-entry upsert and prunes nothing, so omitted
+// runtimes still exist server-side and must be kept locally.
+//
+// Two deliberate omissions keep this path out of custom-profile business:
+//
+//   - Entries with a ProfileID are ignored. Discovery registers built-ins only,
+//     so this is an invariant guard: a custom runtime must never enter the set
+//     through here.
+//   - profileSetSig is neither read nor written. Caching a signature observed
+//     during discovery would tell refreshWorkspaceRuntimeProfiles that the
+//     profile set was already converged, and a profile disabled at that moment
+//     would keep its runtime alive forever.
+//
+// ID rotation is still handled: when the response returns a different ID for a
+// built-in provider the workspace already had, that specific old ID is replaced
+// rather than accumulating a duplicate heartbeat.
+func (d *Daemon) mergeBuiltinRegisterResponse(workspaceID string, resp *RegisterResponse) (newIDs []string, ok bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	ws, exists := d.workspaces[workspaceID]
+	if !exists {
+		return nil, false
+	}
+
+	// Index the workspace's current built-in runtimes by provider so a rotated
+	// ID replaces its predecessor instead of doubling it.
+	existingByProvider := make(map[string]string, len(ws.runtimeIDs))
+	kept := make([]string, 0, len(ws.runtimeIDs)+len(resp.Runtimes))
+	present := make(map[string]struct{}, len(ws.runtimeIDs))
+	for _, id := range ws.runtimeIDs {
+		if rt, found := d.runtimeIndex[id]; found && rt.ProfileID == "" {
+			existingByProvider[rt.Provider] = id
+		}
+		kept = append(kept, id)
+		present[id] = struct{}{}
+	}
+
+	for _, rt := range resp.Runtimes {
+		if rt.ProfileID != "" {
+			// Not ours to manage; the drift path owns custom profiles.
+			continue
+		}
+		d.runtimeIndex[rt.ID] = rt
+		if _, already := present[rt.ID]; already {
+			continue
+		}
+		if oldID, rotated := existingByProvider[rt.Provider]; rotated && oldID != rt.ID {
+			// Same runtime, new ID: swap in place and retire the old entry.
+			for i, id := range kept {
+				if id == oldID {
+					kept[i] = rt.ID
+					break
+				}
+			}
+			delete(d.runtimeIndex, oldID)
+			delete(present, oldID)
+		} else {
+			kept = append(kept, rt.ID)
+		}
+		present[rt.ID] = struct{}{}
+		existingByProvider[rt.Provider] = rt.ID
+		newIDs = append(newIDs, rt.ID)
+	}
+	ws.runtimeIDs = kept
+
+	if resp.ReposVersion != "" {
+		ws.reposVersion = resp.ReposVersion
+		ws.allowedRepoURLs = repoAllowlist(resp.Repos)
+	}
+	if len(resp.Settings) > 0 {
+		ws.settings = resp.Settings
+	}
+	return newIDs, true
+}
+
 func (d *Daemon) reregisterWorkspaceAfterRuntimeGone(ctx context.Context, workspaceID string) error {
 	resp, profileSig, err := d.registerRuntimesForWorkspace(ctx, workspaceID)
 	if err != nil {
@@ -1020,8 +1132,8 @@ func (d *Daemon) Run(ctx context.Context) error {
 		return err
 	}
 
-	agentNames := make([]string, 0, len(d.cfg.Agents))
-	for name := range d.cfg.Agents {
+	agentNames := make([]string, 0, len(d.agents()))
+	for name := range d.agents() {
 		agentNames = append(agentNames, name)
 	}
 	logFields := []any{"version", d.cfg.CLIVersion, "agents", agentNames, "server", d.cfg.ServerBaseURL}
@@ -1085,6 +1197,11 @@ func (d *Daemon) Run(ctx context.Context) error {
 
 	// Start workspace sync loop to discover newly created workspaces.
 	go d.workspaceSyncLoop(ctx)
+
+	// Discover agent CLIs installed after startup (MUL-5439). Separate from the
+	// workspace sync loop because that one runs on a thirty-minute consistency
+	// interval — far too slow for "install a CLI, see it under Runtimes".
+	go d.agentDiscoveryLoop(ctx)
 
 	taskWakeups := make(chan taskWakeup, 256)
 	go d.taskWakeupLoop(ctx, taskWakeups)
@@ -1266,7 +1383,12 @@ var runtimeVersionProbeRetryWindow = time.Second
 // false when the provider must be dropped from this round's registration
 // payload: its version could not be detected, or it is below the minimum
 // supported version.
-func (d *Daemon) probeBuiltinRuntime(ctx context.Context, name string, entry AgentEntry) (string, bool) {
+//
+// The second return value is a short human-readable reason when ok is false.
+// It is surfaced on /health as skipped_agents so a user can tell "CLI not
+// installed" apart from "CLI installed but dropped at registration", which was
+// previously only visible in the daemon log (MUL-5439).
+func (d *Daemon) probeBuiltinRuntime(ctx context.Context, name string, entry AgentEntry) (string, string, bool) {
 	var (
 		lastErr  error
 		attempts int
@@ -1316,14 +1438,18 @@ func (d *Daemon) probeBuiltinRuntime(ctx context.Context, name string, entry Age
 		// so a retry would reach the same conclusion — drop the provider now.
 		if err := checkAgentMinVersion(name, version); err != nil {
 			d.logger.Warn("skip registering runtime: version too old", "name", name, "version", version, "error", err)
-			return "", false
+			return "", err.Error(), false
 		}
 		d.setAgentVersion(name, version)
 		d.logger.Debug("agent version detected", "name", name, "version", version, "path", resolved.Path)
-		return version, true
+		return version, "", true
 	}
 	d.logger.Warn("skip registering runtime", "name", name, "attempts", attempts, "error", lastErr)
-	return "", false
+	reason := "version detection failed"
+	if lastErr != nil {
+		reason = fmt.Sprintf("version detection failed: %v", lastErr)
+	}
+	return "", reason, false
 }
 
 // detectBuiltinRuntimes version-detects every configured built-in agent CLI and
@@ -1358,14 +1484,18 @@ func (d *Daemon) detectBuiltinRuntimes(ctx context.Context) []map[string]string 
 	var (
 		mu      sync.Mutex
 		results []detected
+		skipped = map[string]string{}
 		g       errgroup.Group
 	)
 	g.SetLimit(runtimeVersionProbeConcurrency)
-	for name, entry := range d.cfg.Agents {
+	for name, entry := range d.agents() {
 		name, entry := name, entry
 		g.Go(func() error {
-			version, ok := d.probeBuiltinRuntime(ctx, name, entry)
+			version, reason, ok := d.probeBuiltinRuntime(ctx, name, entry)
 			if !ok {
+				mu.Lock()
+				skipped[name] = reason
+				mu.Unlock()
 				return nil
 			}
 			mu.Lock()
@@ -1377,6 +1507,11 @@ func (d *Daemon) detectBuiltinRuntimes(ctx context.Context) []map[string]string 
 	// No probe returns a non-nil error — failures are logged and skipped above —
 	// so Wait only blocks for the in-flight probes to finish.
 	_ = g.Wait()
+
+	// Publish this round's drops for /health. Replacing (not merging) keeps the
+	// diagnostic honest: a provider that registered successfully this round must
+	// not stay listed as skipped.
+	d.setSkippedAgents(skipped)
 
 	// Source iteration (a map) and parallel completion order are both
 	// nondeterministic; sort by provider so the registration payload is stable
@@ -1445,7 +1580,7 @@ func (d *Daemon) registerRuntimesForWorkspace(ctx context.Context, workspaceID s
 // builtins is treated as read-only and is copied before this workspace's custom
 // runtime profiles are appended.
 func (d *Daemon) registerRuntimesForWorkspaceBatch(ctx context.Context, workspaceID string, builtins []map[string]string) (*RegisterResponse, string, error) {
-	d.logger.Debug("registering runtimes for workspace", "workspace_id", workspaceID, "agent_count", len(d.cfg.Agents))
+	d.logger.Debug("registering runtimes for workspace", "workspace_id", workspaceID, "agent_count", len(d.agents()))
 	runtimes := cloneRuntimeEntries(builtins)
 	var failedProfiles []map[string]string
 
@@ -1491,6 +1626,48 @@ func (d *Daemon) registerRuntimesForWorkspaceBatch(ctx context.Context, workspac
 	}
 	d.logger.Debug("register response", "workspace_id", workspaceID, "runtimes", len(resp.Runtimes), "repos", len(resp.Repos), "repos_version", resp.ReposVersion)
 	return resp, profileSig, nil
+}
+
+// registerBuiltinRuntimesForWorkspace registers ONLY the built-in runtimes for a
+// workspace: no custom runtime profiles are fetched or sent, and no profile
+// signature is produced.
+//
+// This exists for the CLI-discovery path (MUL-5439), which must not participate
+// in custom-profile convergence at all. Going through the profile-appending
+// registration made discovery observe the profile set as a side effect, and
+// caching that observation told the drift path "already converged" — so a
+// profile disabled at the same moment a new CLI was discovered would keep its
+// runtime alive forever (refreshWorkspaceRuntimeProfiles short-circuits on a
+// matching signature). Custom profile add/edit/disable stays exclusively with
+// the existing drift path.
+//
+// builtins is treated as read-only.
+func (d *Daemon) registerBuiltinRuntimesForWorkspace(ctx context.Context, workspaceID string, builtins []map[string]string) (*RegisterResponse, error) {
+	runtimes := cloneRuntimeEntries(builtins)
+	if len(runtimes) == 0 {
+		return nil, ErrNoRuntimesToRegister
+	}
+	req := map[string]any{
+		"workspace_id":      workspaceID,
+		"daemon_id":         d.cfg.DaemonID,
+		"legacy_daemon_ids": d.cfg.LegacyDaemonIDs,
+		"device_name":       d.cfg.DeviceName,
+		"cli_version":       d.cfg.CLIVersion,
+		"launched_by":       d.cfg.LaunchedBy,
+		"runtimes":          runtimes,
+		// Deliberately empty: this call carries no profiles, so it must not
+		// report profile failures either.
+		"failed_profiles": []map[string]string{},
+	}
+	resp, err := d.client.Register(ctx, req)
+	if err != nil {
+		return nil, fmt.Errorf("register builtin runtimes: %w", err)
+	}
+	if len(resp.Runtimes) == 0 {
+		return nil, fmt.Errorf("register builtin runtimes: empty response")
+	}
+	d.logger.Debug("builtin register response", "workspace_id", workspaceID, "runtimes", len(resp.Runtimes))
+	return resp, nil
 }
 
 // appendProfileRuntimes fetches the workspace's enabled custom runtime
@@ -2610,7 +2787,7 @@ func (d *Daemon) handleHeartbeatActions(ctx context.Context, runtimeID string, r
 func (d *Daemon) handleModelList(ctx context.Context, rt Runtime, requestID string) {
 	d.logger.Info("model list requested", "runtime_id", rt.ID, "request_id", requestID, "provider", rt.Provider)
 
-	entry, ok := d.cfg.Agents[rt.Provider]
+	entry, ok := d.agents()[rt.Provider]
 	if !ok {
 		d.reportModelListResult(ctx, rt, requestID, map[string]any{
 			"status": "failed",
@@ -4367,7 +4544,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 	d.registerTaskRepos(task.WorkspaceID, task.ID, task.Repos)
 	defer d.clearTaskRepoRefs(task.WorkspaceID, task.ID)
 
-	entry, ok := d.cfg.Agents[provider]
+	entry, ok := d.agents()[provider]
 	// A custom runtime profile (MUL-3284) overrides the executable path: the
 	// runtime's protocol_family is the provider (so agent.New still selects
 	// the right backend), but the actual binary on PATH is the profile's
