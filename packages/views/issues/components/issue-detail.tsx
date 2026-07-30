@@ -897,6 +897,95 @@ interface IssueDetailProps {
 }
 
 // ---------------------------------------------------------------------------
+// Not found
+// ---------------------------------------------------------------------------
+
+/**
+ * Exported so `IssueDetailRoute` can render it for an identifier that names no
+ * issue. The route must NOT fall through to `IssueDetail` in that case: doing
+ * so mounts a second observer on the already-failed query, which refetches it
+ * and restarts the resolve/remount cycle indefinitely.
+ */
+export function IssueNotFound({ showBackLink = true }: { showBackLink?: boolean }) {
+  const { t } = useT("issues");
+  const backOrReplace = useBackOrReplace();
+  const paths = useWorkspacePaths();
+
+  return (
+    <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-body text-muted-foreground">
+      <p>{t(($) => $.detail.not_found)}</p>
+      {showBackLink && (
+        <Button variant="outline" size="sm" onClick={() => backOrReplace(paths.issues())}>
+          <ChevronLeft className="mr-1 h-3.5 w-3.5" />
+          {t(($) => $.detail.back)}
+        </Button>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Loading skeleton
+// ---------------------------------------------------------------------------
+
+/**
+ * Exported so `IssueDetailRoute` can show the identical frame while it resolves
+ * an identifier URL to its issue — the two waits are indistinguishable to the
+ * user, and rendering the same skeleton keeps them that way.
+ */
+export function IssueDetailSkeleton() {
+  return (
+    <div className="flex flex-1 min-h-0 flex-col">
+      <div className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
+        <Skeleton className="h-4 w-16" />
+        <Skeleton className="h-4 w-4" />
+        <Skeleton className="h-4 w-24" />
+      </div>
+      <div className="flex flex-1 min-h-0">
+        {/* Same scrollbar-gutter as the loaded scroller below, so the skeleton
+            column doesn't shift sideways when real content mounts. */}
+        <div className="flex-1 overflow-y-auto [scrollbar-gutter:stable_both-edges]">
+          <div className="mx-auto w-full max-w-4xl px-8 py-8 space-y-6">
+            <Skeleton className="h-8 w-3/4" />
+            <div className="space-y-2">
+              <Skeleton className="h-4 w-full" />
+              <Skeleton className="h-4 w-5/6" />
+              <Skeleton className="h-4 w-2/3" />
+            </div>
+            <Skeleton className="h-px w-full" />
+            <div className="space-y-3">
+              <Skeleton className="h-4 w-20" />
+              <div className="flex items-start gap-3">
+                <Skeleton className="h-8 w-8 shrink-0 rounded-full" />
+                <div className="flex-1 space-y-2">
+                  <Skeleton className="h-4 w-32" />
+                  <Skeleton className="h-16 w-full rounded-lg" />
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div className="hidden md:block w-80 border-l p-4 space-y-5">
+          {Array.from({ length: 4 }).map((_, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <Skeleton className="h-3 w-16 shrink-0" />
+              <Skeleton className="h-5 w-24" />
+            </div>
+          ))}
+          <Skeleton className="h-px w-full" />
+          {Array.from({ length: 3 }).map((_, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <Skeleton className="h-3 w-16 shrink-0" />
+              <Skeleton className="h-4 w-28" />
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // IssueDetail
 // ---------------------------------------------------------------------------
 
@@ -904,7 +993,6 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const { t } = useT("issues");
   const timeAgo = useTimeAgo();
   const id = issueId;
-  const backOrReplace = useBackOrReplace();
   const user = useAuthStore((s) => s.user);
   const paths = useWorkspacePaths();
 
@@ -1698,69 +1786,11 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   });
 
   if (loading) {
-    return (
-      <div className="flex flex-1 min-h-0 flex-col">
-        <div className="flex h-12 shrink-0 items-center gap-2 border-b px-4">
-          <Skeleton className="h-4 w-16" />
-          <Skeleton className="h-4 w-4" />
-          <Skeleton className="h-4 w-24" />
-        </div>
-        <div className="flex flex-1 min-h-0">
-          {/* Same scrollbar-gutter as the loaded scroller below, so the skeleton
-              column doesn't shift sideways when real content mounts. */}
-          <div className="flex-1 overflow-y-auto [scrollbar-gutter:stable_both-edges]">
-            <div className="mx-auto w-full max-w-4xl px-8 py-8 space-y-6">
-              <Skeleton className="h-8 w-3/4" />
-              <div className="space-y-2">
-                <Skeleton className="h-4 w-full" />
-                <Skeleton className="h-4 w-5/6" />
-                <Skeleton className="h-4 w-2/3" />
-              </div>
-              <Skeleton className="h-px w-full" />
-              <div className="space-y-3">
-                <Skeleton className="h-4 w-20" />
-                <div className="flex items-start gap-3">
-                  <Skeleton className="h-8 w-8 shrink-0 rounded-full" />
-                  <div className="flex-1 space-y-2">
-                    <Skeleton className="h-4 w-32" />
-                    <Skeleton className="h-16 w-full rounded-lg" />
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-          <div className="hidden md:block w-80 border-l p-4 space-y-5">
-            {Array.from({ length: 4 }).map((_, i) => (
-              <div key={i} className="flex items-center gap-2">
-                <Skeleton className="h-3 w-16 shrink-0" />
-                <Skeleton className="h-5 w-24" />
-              </div>
-            ))}
-            <Skeleton className="h-px w-full" />
-            {Array.from({ length: 3 }).map((_, i) => (
-              <div key={i} className="flex items-center gap-2">
-                <Skeleton className="h-3 w-16 shrink-0" />
-                <Skeleton className="h-4 w-28" />
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
-    );
+    return <IssueDetailSkeleton />;
   }
 
   if (!issue) {
-    return (
-      <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-body text-muted-foreground">
-        <p>{t(($) => $.detail.not_found)}</p>
-        {!onDelete && (
-          <Button variant="outline" size="sm" onClick={() => backOrReplace(paths.issues())}>
-            <ChevronLeft className="mr-1 h-3.5 w-3.5" />
-            {t(($) => $.detail.back)}
-          </Button>
-        )}
-      </div>
-    );
+    return <IssueNotFound showBackLink={!onDelete} />;
   }
 
   const sidebarContent = (
