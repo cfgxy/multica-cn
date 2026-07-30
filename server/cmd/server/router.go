@@ -855,6 +855,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/tasks/{taskId}/wait-local-directory", h.MarkTaskWaitingLocalDirectory)
 		r.Post("/tasks/{taskId}/progress", h.ReportTaskProgress)
 		r.Post("/tasks/{taskId}/complete", h.CompleteTask)
+		r.Post("/tasks/{taskId}/quick-actions", h.SupplementTaskQuickActions)
 		r.Post("/tasks/{taskId}/fail", h.FailTask)
 		r.Post("/tasks/{taskId}/usage", h.ReportTaskUsage)
 		r.Post("/tasks/{taskId}/messages", h.ReportTaskMessages)
@@ -1432,6 +1433,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Patch("/archive", h.SetChatSessionArchived)
 					r.Delete("/", h.DeleteChatSession)
 					r.Post("/messages", h.SendChatMessage)
+					// Explicit "refresh" of a turn's quick actions: re-runs the
+					// daemon suggestion pass for the latest assistant reply (MUL-5149).
+					r.Post("/quick-actions/regenerate", h.RegenerateChatQuickActions)
 					r.Get("/messages", h.ListChatMessages)
 					r.Get("/messages/page", h.ListChatMessagesPage)
 					r.Get("/pending-task", h.GetPendingChatTask)

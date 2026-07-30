@@ -187,6 +187,8 @@ import {
   AttachmentResponseSchema,
   CancelTaskResponseSchema,
   ChatDraftRestoresResponseSchema,
+  ChatMessageListSchema,
+  ChatMessagesPageSchema,
   ChildIssuesResponseSchema,
   CommentsListSchema,
   CommentTriggerPreviewSchema,
@@ -207,6 +209,7 @@ import {
   EMPTY_AGENT_TEMPLATE_SUMMARY_LIST,
   EMPTY_APP_CONFIG,
   EMPTY_ATTACHMENT,
+  EMPTY_CHAT_MESSAGE_LIST,
   EMPTY_CLOUD_RUNTIME_NODE,
   EMPTY_CLOUD_RUNTIME_NODE_LIST,
   EMPTY_CREATE_AGENT_FROM_TEMPLATE_RESPONSE,
@@ -2204,6 +2207,26 @@ export class ApiClient {
     await this.fetch(`/api/chat/sessions/${id}`, { method: "DELETE" });
   }
 
+  // Refresh the quick-action suggestions for a session's latest assistant turn.
+  // Fire-and-forget: the server enqueues a background regeneration pass and the
+  // refreshed pills arrive over the chat:quick_actions realtime event, so the
+  // caller anchors its pending placeholder on the turn it already knows rather
+  // than on this response.
+  // Refresh the quick actions for the given assistant turn. Sends the message
+  // id the caller is refreshing so the server can atomically confirm it is still
+  // the session's latest turn (409 otherwise) — that keeps the client's pending
+  // marker aligned with the turn chat:quick_actions will resolve, with no
+  // response reconciliation needed even under a WS-before-HTTP race (MUL-5149).
+  async regenerateChatQuickActions(
+    sessionId: string,
+    messageId: string,
+  ): Promise<void> {
+    await this.fetch(`/api/chat/sessions/${sessionId}/quick-actions/regenerate`, {
+      method: "POST",
+      body: JSON.stringify({ message_id: messageId }),
+    });
+  }
+
   async updateChatSession(
     id: string,
     data: { title: string } | { project_id: string | null },
@@ -2245,7 +2268,10 @@ export class ApiClient {
   }
 
   async listChatMessages(sessionId: string): Promise<ChatMessage[]> {
-    return this.fetch(`/api/chat/sessions/${sessionId}/messages`);
+    const raw: unknown = await this.fetch(`/api/chat/sessions/${sessionId}/messages`);
+    return parseWithFallback(raw, ChatMessageListSchema, EMPTY_CHAT_MESSAGE_LIST, {
+      endpoint: "GET /api/chat/sessions/:id/messages",
+    });
   }
 
   async listChatMessagesPage(
@@ -2259,8 +2285,16 @@ export class ApiClient {
       query.set("before_id", params.before.id);
     }
     try {
-      return await this.fetch(
+      const raw: unknown = await this.fetch(
         `/api/chat/sessions/${sessionId}/messages/page?${query.toString()}`,
+      );
+      return parseWithFallback(
+        raw,
+        ChatMessagesPageSchema,
+        { messages: [], limit, has_more: false, next_cursor: null },
+        {
+          endpoint: "GET /api/chat/sessions/:id/messages/page",
+        },
       );
     } catch (err) {
       // Deployment-order compatibility: a backend deployed before this endpoint
@@ -2283,10 +2317,20 @@ export class ApiClient {
     sessionId: string,
     content: string,
     attachmentIds?: string[],
+    options?: { quickActionsEnabled?: boolean },
   ): Promise<SendChatMessageResponse> {
-    const body: { content: string; attachment_ids?: string[] } = { content };
+    const body: {
+      content: string;
+      attachment_ids?: string[];
+      quick_actions_enabled?: boolean;
+    } = { content };
     if (attachmentIds && attachmentIds.length > 0) {
       body.attachment_ids = attachmentIds;
+    }
+    // Only an explicit false is sent: absent means enabled server-side, so
+    // older payload shapes keep generating suggestions unchanged.
+    if (options?.quickActionsEnabled === false) {
+      body.quick_actions_enabled = false;
     }
     return this.fetch(`/api/chat/sessions/${sessionId}/messages`, {
       method: "POST",
