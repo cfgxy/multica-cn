@@ -48,11 +48,16 @@ import {
   useUpdateChatSession,
 } from "@multica/core/chat/mutations";
 import { useChatStore } from "@multica/core/chat";
+import {
+  enqueuePendingChatTask,
+  removePendingChatTask,
+} from "@multica/core/chat/pending";
 import { removeChatMessageFromCaches } from "@multica/core/realtime";
 import { useChatDraftRestore } from "./use-chat-draft-restore";
 import { useChatInputFocus } from "./use-chat-input-focus";
 import { ChatMessageList, ChatMessageSkeleton } from "./chat-message-list";
 import { ChatInput } from "./chat-input";
+import { ChatQueue } from "./chat-queue";
 import { ChatResizeHandles } from "./chat-resize-handles";
 import { useChatContextItems } from "./use-chat-context-items";
 import { useChatResize } from "./use-chat-resize";
@@ -389,7 +394,10 @@ export function ChatWindow() {
         sessionId,
         source: options.source,
       });
-      qc.setQueryData(chatKeys.pendingTask(sessionId), {});
+      qc.setQueryData<ChatPendingTask>(
+        chatKeys.pendingTask(sessionId),
+        (old) => removePendingChatTask(old, taskId),
+      );
 
       try {
         const result = await api.cancelTaskById(taskId);
@@ -422,9 +430,12 @@ export function ChatWindow() {
         qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
         qc.invalidateQueries({ queryKey: chatKeys.messagesPage(sessionId) });
         return null;
+      } finally {
+        qc.invalidateQueries({ queryKey: chatKeys.pendingTask(sessionId) });
+        if (wsId) qc.invalidateQueries({ queryKey: chatKeys.pendingTasks(wsId) });
       }
     },
-    [qc, enqueueLocalRestore],
+    [qc, enqueueLocalRestore, wsId],
   );
 
   const handleSend = useCallback(
@@ -518,11 +529,16 @@ export function ChatWindow() {
         chatKeys.messages(sessionId),
         (old) => (old ? [...old, sent] : [sent]),
       );
-      qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(sessionId), {
-        task_id: result.task_id,
-        status: "queued",
-        created_at: result.created_at,
-      });
+      qc.setQueryData<ChatPendingTask>(
+        chatKeys.pendingTask(sessionId),
+        (old) => enqueuePendingChatTask(old, {
+          task_id: result.task_id,
+          status: "queued",
+          created_at: result.created_at,
+          message_id: result.message_id,
+          content: finalContent,
+        }),
+      );
       // Cache primed → publish the new active session, but only if the user
       // hasn't navigated away mid-send. Compare the live store against the
       // closure-captured target; see isStillOnComposeTarget for the rule, which
@@ -594,6 +610,17 @@ export function ChatWindow() {
       source: "active-input",
     });
   }, [pendingTaskId, activeSessionId, cancelChatTask]);
+
+  const handleRemoveQueuedTask = useCallback(
+    async (taskId: string) => {
+      if (!activeSessionId) return;
+      await cancelChatTask(taskId, activeSessionId, {
+        restoreDraftToInput: true,
+        source: "queued-message",
+      });
+    },
+    [activeSessionId, cancelChatTask],
+  );
 
   const handleSelectAgent = useCallback(
     (agent: Agent) => {
@@ -854,6 +881,11 @@ export function ChatWindow() {
       ) : (
         <OfflineBanner agentName={activeAgent?.name} availability={availability} />
       )}
+
+      <ChatQueue
+        tasks={pendingTask?.queued_tasks ?? []}
+        onRemove={handleRemoveQueuedTask}
+      />
 
       {/* Input — disabled for legacy archived sessions and for sessions whose
        *  agent has been archived (read-only); locked out entirely when there's
