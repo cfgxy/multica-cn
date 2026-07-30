@@ -10,7 +10,6 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
-	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -963,6 +962,11 @@ type acpDiscoveryProvider struct {
 	// Legacy discovery providers keep their empty-list behavior; Grok enables
 	// this so it can log the actual fallback reason.
 	strictErrors bool
+	// annotate receives the parsed catalog plus the raw session/new result so a
+	// provider can enrich models from parts of the response the shared parser
+	// ignores. CodeBuddy uses it to read its effort catalog out of the same
+	// handshake, which is why it needs no separate discovery call at all.
+	annotate func([]Model, json.RawMessage)
 }
 
 // discoverACPModels runs the ACP handshake for any agent CLI that
@@ -1138,6 +1142,9 @@ func discoverACPModels(ctx context.Context, executablePath string, p acpDiscover
 	}
 	if err := runCtx.Err(); err != nil {
 		return fail("completion", err)
+	}
+	if p.annotate != nil {
+		p.annotate(models, sessionResult)
 	}
 	return models, nil
 }
@@ -1721,81 +1728,57 @@ func isOpenclawIdentifier(s string) bool {
 
 // ── CodeBuddy model discovery ──
 
-// codebuddyModelRe matches the `--model <model> ... Currently supported: (m1, m2, ...)`
-// line in `codebuddy --help` output.
-var codebuddyModelRe = regexp.MustCompile(`--model\s*<[^>]+>\s*.*?Currently supported:\s*\(([^)]+)\)`)
-
-// discoverCodebuddyModels runs `codebuddy --help` and extracts the supported
-// model list from its output, falling back to a static list when the binary is
-// missing or the output cannot be parsed.
+// discoverCodebuddyModels asks CodeBuddy for its catalog over ACP
+// (`codebuddy --acp`), the same handshake Copilot / Kimi / Kiro / Qoder / Grok /
+// TRAE already use. `session/new` answers with a structured catalog under
+// `models.availableModels` plus a `currentModelId`, which is what the shared
+// parseACPSessionNewModels reads.
 //
-// It runs `--help` AT MOST ONCE per call: the single capture feeds both the
-// model catalog and the per-model effort catalog, and the fallback paths skip
-// the effort pass entirely. A slow or failing --help therefore cannot be paid
-// for twice inside one model-list request, which would exceed the server's 60s
-// running timeout and cost the user even the fallback list (MUL-5549).
+// This replaces scraping the `--model` line out of `codebuddy --help` (MUL-5549).
+// The help text carried IDs and nothing else, so labels had to be guessed from
+// the ID and produced names CodeBuddy does not use ("Kimi K3 1" for what the CLI
+// calls Kimi-K3, "Deepseek V3 2 Volc" for DeepSeek-V3.2), the default model was
+// a "first entry wins" guess rather than the advertised currentModelId, and the
+// effort catalog needed a second regex over the same output. Measured against
+// CodeBuddy 2.130.0 the handshake is also markedly faster than --help — which
+// matters because that command is slow enough to have been the prime suspect for
+// the timeouts behind #6180.
+//
+// Falls back to the static catalog (marked Fallback, so it can never be cached
+// as authoritative) when the handshake fails — including the not-logged-in case,
+// where session/new may legitimately refuse.
 func discoverCodebuddyModels(ctx context.Context, executablePath string) (Catalog, error) {
-	if executablePath == "" {
-		executablePath = "codebuddy"
-	}
-	if _, err := exec.LookPath(executablePath); err != nil {
+	models, err := discoverACPModels(ctx, executablePath, acpDiscoveryProvider{
+		defaultBin:   "codebuddy",
+		clientName:   "multica-model-discovery",
+		tmpdirPrefix: "multica-codebuddy-discovery-",
+		acpArgs:      []string{"--acp"},
+		strictErrors: true,
+		annotate:     annotateCodebuddyThinkingFromACP,
+	})
+	if err != nil || len(models) == 0 {
+		if err != nil {
+			slog.Debug("codebuddy model discovery fell back to static catalog", "error", err)
+		}
 		return codebuddyFallbackCatalog(), nil
 	}
-	helpOut := codebuddyHelpOutput(ctx, executablePath)
-	if helpOut == "" {
-		return codebuddyFallbackCatalog(), nil
+	// Same post-pass Copilot runs: the ACP payload carries no vendor, and
+	// acpModelEntry can only recover one from a `vendor:model` id. CodeBuddy's
+	// ids are bare (`glm-5.2`, `kimi-k3-1`), so without this every model lands
+	// in one unlabelled group instead of the Zhipu / Kimi / DeepSeek sections
+	// the picker renders from Provider.
+	for i := range models {
+		if models[i].Provider == "" {
+			models[i].Provider = codebuddyModelProvider(models[i].ID)
+		}
 	}
-	models := parseCodebuddyModels(helpOut)
-	if len(models) == 0 {
-		return codebuddyFallbackCatalog(), nil
-	}
-	annotateCodebuddyThinking(ctx, models, executablePath, helpOut)
 	return Catalog{Models: models}, nil
 }
 
-// codebuddyFallbackCatalog is the static stand-in for a failed discovery.
-//
-// It applies the static effort levels directly instead of shelling out again:
-// whatever broke `--help` for the model catalog (missing binary, missing `node`
-// interpreter, timeout) breaks it for the effort catalog too, and a second 35s
-// attempt inside one request would push past the server's 60s running timeout —
-// costing the user even the fallback list this function exists to provide
-// (MUL-5549).
-func codebuddyFallbackCatalog() Catalog {
-	models := codebuddyStaticModels()
-	applyCodebuddyStaticThinking(models)
-	return Catalog{Models: models, Fallback: true}
-}
-
-// parseCodebuddyModels extracts model IDs from codebuddy --help output.
-// The help text contains a line like:
-//
-//	--model <model>  ... Currently supported: (model1, model2, ...)
-//
-// The first model in the list is marked as default.
-func parseCodebuddyModels(helpOutput string) []Model {
-	match := codebuddyModelRe.FindStringSubmatch(helpOutput)
-	if len(match) < 2 {
-		return nil
-	}
-	raw := strings.Split(match[1], ",")
-	var models []Model
-	for _, s := range raw {
-		id := strings.TrimSpace(s)
-		if id == "" {
-			continue
-		}
-		models = append(models, Model{
-			ID:       id,
-			Label:    codebuddyModelLabel(id),
-			Provider: codebuddyModelProvider(id),
-			Default:  len(models) == 0,
-		})
-	}
-	return models
-}
-
-// codebuddyModelProvider infers a provider name from a model ID prefix.
+// codebuddyModelProvider infers a vendor from a CodeBuddy model ID prefix.
+// CodeBuddy aggregates several vendors under its own account, and neither the
+// ACP catalog nor the static fallback carries a vendor field, so the ID prefix
+// is the only signal available for grouping the picker.
 func codebuddyModelProvider(id string) string {
 	switch {
 	case strings.HasPrefix(id, "claude-"):
@@ -1819,25 +1802,23 @@ func codebuddyModelProvider(id string) string {
 	}
 }
 
-// codebuddyModelLabel generates a human-readable label from a model ID.
-// Capitalizes each dash-separated part; special-cases GPT/GLM to uppercase
-// and rewrites the "-ioa" suffix as "IOA".
-func codebuddyModelLabel(id string) string {
-	parts := strings.Split(id, "-")
-	for i, p := range parts {
-		if strings.EqualFold(p, "gpt") || strings.EqualFold(p, "glm") {
-			parts[i] = strings.ToUpper(p)
-		} else if strings.EqualFold(p, "ioa") {
-			parts[i] = "IOA"
-		} else if len(p) > 0 {
-			parts[i] = strings.ToUpper(p[:1]) + p[1:]
-		}
-	}
-	return strings.Join(parts, " ")
+// codebuddyFallbackCatalog is the static stand-in for a failed discovery. It
+// applies the static effort levels locally rather than probing again: whatever
+// broke the ACP handshake (binary missing, CLI not logged in, timeout) would
+// break a second attempt too.
+func codebuddyFallbackCatalog() Catalog {
+	models := codebuddyStaticModels()
+	applyCodebuddyStaticThinking(models)
+	return Catalog{Models: models, Fallback: true}
 }
 
-// codebuddyStaticModels is the fallback catalog when dynamic discovery
-// fails (binary missing, parse error, timeout).
+// codebuddyStaticModels is the fallback catalog when ACP discovery fails
+// (binary missing, CLI not logged in, handshake timeout).
+//
+// These IDs do not overlap CodeBuddy's real catalog at all, so this list is a
+// last-resort affordance to keep the picker usable, never an answer. It is
+// always returned marked Fallback so it cannot be cached as authoritative
+// (MUL-5549).
 func codebuddyStaticModels() []Model {
 	return []Model{
 		{ID: "claude-sonnet-4.6", Label: "Claude Sonnet 4.6", Provider: "anthropic", Default: true},
