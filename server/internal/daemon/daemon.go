@@ -4254,9 +4254,10 @@ func gcMetaForTask(task Task) (execenv.GCMeta, bool) {
 // name when simple title-casing would read awkwardly. Providers not listed
 // here fall back to capitalizing the key (claude → "Claude", codex → "Codex").
 var runtimeDisplayNameOverrides = map[string]string{
-	"traecli": "Trae",
-	"grok":    "Grok",
-	"qwen":    "Qwen Code",
+	"traecli":    "Trae",
+	"grok":       "Grok",
+	"qoderclicn": "Qoder CN",
+	"qwen":       "Qwen Code",
 }
 
 // providerDisplayName returns the human-facing runtime name for a provider key.
@@ -5734,7 +5735,7 @@ func shouldRetryWithFreshSession(result agent.Result, priorSessionID string, too
 	// why this needs its own branch rather than a phrase added to the
 	// rejection list.
 	//
-	// It applies to all 17 backends, not the ResumeRejectionUndetectable
+	// It applies to all 18 backends, not the ResumeRejectionUndetectable
 	// subset below, and that is deliberate: this is the one failure class
 	// where dropping the session is provably the fix without the backend
 	// having to detect anything. The evidence is in the provider's own error
