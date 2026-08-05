@@ -1466,6 +1466,10 @@ var ErrChatQuickActionsStale = errors.New("chat quick actions: refresh target is
 // quota-spending pass (MUL-5149).
 var ErrChatQuickActionsBusy = errors.New("chat quick actions: session busy")
 
+// ErrChatSessionArchived signals that a direct-chat send lost a race with
+// archiving the session and therefore must not persist a new turn.
+var ErrChatSessionArchived = errors.New("chat task: session archived")
+
 // EnqueueChatTask creates a task-owned input batch for a chat session. Channel
 // media makes the task deferred until binding completes or its durable fallback
 // deadline expires; other chat tasks are queued immediately. Unlike issue
@@ -1725,9 +1729,8 @@ type DirectChatSendResult struct {
 // instead of scanning trailing history.
 //
 // The caller must have already gated the session and preflighted the agent
-// (archived / no-runtime), passing the loaded agent in; this method trusts those
-// permission checks. It does NOT trust the agent's runtime_id: that field is
-// re-read inside the transaction (see below).
+// (archived / no-runtime), passing the loaded agent in. Those checks are repeated
+// under the transaction locks below because either row may change before enqueue.
 func (s *TaskService) SendDirectChatMessage(ctx context.Context, session db.ChatSession, agent db.Agent, initiatorUserID pgtype.UUID, content string, attachmentIDs []pgtype.UUID, uploaderType string, uploaderID pgtype.UUID) (*DirectChatSendResult, error) {
 	// Build the per-task Composio overlay before the transaction — it can do
 	// network I/O and must not run with a DB transaction open.
@@ -1758,9 +1761,19 @@ func (s *TaskService) SendDirectChatMessage(ctx context.Context, session db.Chat
 		if _, err := qtx.LockChatSessionForRuntimeBind(ctx, session.ID); err != nil {
 			return fmt.Errorf("lock chat session: %w", err)
 		}
-		carrier, err := qtx.GetAgent(ctx, session.AgentID)
+		currentSession, err := qtx.GetChatSession(ctx, session.ID)
+		if err != nil {
+			return fmt.Errorf("reload chat session: %w", err)
+		}
+		if currentSession.Status != "active" {
+			return ErrChatSessionArchived
+		}
+		carrier, err := qtx.GetAgentForClaimUpdate(ctx, session.AgentID)
 		if err != nil {
 			return fmt.Errorf("reload chat agent: %w", err)
+		}
+		if carrier.ArchivedAt.Valid {
+			return ErrChatTaskAgentArchived
 		}
 		if !carrier.RuntimeID.Valid {
 			return ErrChatTaskAgentNoRuntime
@@ -1924,6 +1937,11 @@ func (s *TaskService) BroadcastCancelledTasks(ctx context.Context, cancelled []d
 	s.notifyTasksFinished(cancelled)
 }
 
+// BroadcastTaskQueued emits a post-commit queue invalidation for clients.
+func (s *TaskService) BroadcastTaskQueued(ctx context.Context, task db.AgentTaskQueue) {
+	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, task)
+}
+
 func (s *TaskService) CaptureCancelledTasks(ctx context.Context, cancelled []db.AgentTaskQueue) {
 	for _, t := range cancelled {
 		s.captureTaskCancelled(ctx, t)
@@ -1946,6 +1964,8 @@ type CancelTaskResult struct {
 	CancelledChatMessage *CancelledChatMessageResult
 }
 
+var ErrTaskNoLongerQueued = errors.New("task is no longer queued")
+
 // CancelTaskOptions carries what the caller knows about the client that asked
 // for the cancellation.
 type CancelTaskOptions struct {
@@ -1955,6 +1975,10 @@ type CancelTaskOptions struct {
 	// stays synchronous, because the cancel response is their only chance to get
 	// the prompt back. See protocol.AppCapabilityChatDraftRestoreV1.
 	ClientSupportsDraftRestore bool
+	// QueuedOnly turns queue edit/remove into a session-scoped compare-and-set.
+	QueuedOnly          bool
+	ExpectedChatSession pgtype.UUID
+	QueueAction         string
 }
 
 // CancelTask cancels a single task by ID. It broadcasts a task:cancelled event
@@ -1976,29 +2000,55 @@ func (s *TaskService) CancelTask(ctx context.Context, taskID pgtype.UUID) (*db.A
 // CancelTaskWithResult cancels a single task and returns any chat-specific
 // cleanup result needed by user-facing callers.
 func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UUID, opts CancelTaskOptions) (*CancelTaskResult, error) {
-	// The status flip and the chat resume-pointer advance commit together. Split
-	// across two statements, the `cancelled` status becomes visible to every
-	// other connection while the pointer still names the PREVIOUS turn's
-	// session — and a follow-up the user had already queued can be claimed in
-	// that gap and resume the older session, which is the bug this change is
-	// supposed to remove (GH #6340). AdvanceCancelledChatSessionPointer reads
-	// the row this transaction just wrote, so it also sees a session pinned
-	// concurrently rather than a stale in-memory copy.
-	var task db.AgentTaskQueue
-	err := s.runInTx(ctx, func(qtx *db.Queries) error {
-		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
+	var (
+		task                 db.AgentTaskQueue
+		cancelledChatMessage *CancelledChatMessageResult
+		err                  error
+	)
+	if opts.QueuedOnly {
+		if opts.QueueAction != "edit" && opts.QueueAction != "remove" {
+			return nil, errors.New("queue action must be edit or remove")
+		}
+		err = s.runInTx(ctx, func(qtx *db.Queries) error {
+			if _, err := qtx.LockChatSessionForTask(ctx, taskID); err != nil {
+				return fmt.Errorf("lock queued chat session: %w", err)
+			}
+			task, err = qtx.CancelQueuedAgentTask(ctx, db.CancelQueuedAgentTaskParams{
+				ID:            taskID,
+				ChatSessionID: opts.ExpectedChatSession,
+			})
+			if errors.Is(err, pgx.ErrNoRows) {
+				return ErrTaskNoLongerQueued
+			}
+			if err != nil {
+				return fmt.Errorf("cancel queued task: %w", err)
+			}
+			cancelledChatMessage, err = s.settleQueuedChatInput(ctx, qtx, task, opts.QueueAction)
 			return err
-		}
-		cancelled, err := qtx.CancelAgentTask(ctx, taskID)
-		if err != nil {
-			return err
-		}
-		task = cancelled
-		if !cancelled.ChatSessionID.Valid {
-			return nil
-		}
-		return qtx.AdvanceCancelledChatSessionPointer(ctx, cancelled.ID)
-	})
+		})
+	} else {
+		// The status flip and the chat resume-pointer advance commit together. Split
+		// across two statements, the `cancelled` status becomes visible to every
+		// other connection while the pointer still names the previous turn's
+		// session, and a queued follow-up can resume that older session.
+		err = s.runInTx(ctx, func(qtx *db.Queries) error {
+			if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
+				return err
+			}
+			cancelled, err := qtx.CancelAgentTask(ctx, taskID)
+			if err != nil {
+				return err
+			}
+			task = cancelled
+			if !cancelled.ChatSessionID.Valid {
+				return nil
+			}
+			return qtx.AdvanceCancelledChatSessionPointer(ctx, cancelled.ID)
+		})
+	}
+	if errors.Is(err, ErrTaskNoLongerQueued) {
+		return nil, err
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
 		existing, err := s.Queries.GetAgentTask(ctx, taskID)
 		if err != nil {
@@ -2012,7 +2062,9 @@ func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UU
 
 	slog.Info("task cancelled", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
 	s.captureTaskCancelled(ctx, task)
-	cancelledChatMessage := s.finalizeCancelledChatMessage(ctx, task, opts)
+	if !opts.QueuedOnly {
+		cancelledChatMessage = s.finalizeCancelledChatMessage(ctx, task, opts)
+	}
 
 	// Reconcile agent status
 	s.ReconcileAgentStatus(ctx, task.AgentID)
@@ -2025,6 +2077,50 @@ func (s *TaskService) CancelTaskWithResult(ctx context.Context, taskID pgtype.UU
 		Task:                 task,
 		CancelledChatMessage: cancelledChatMessage,
 	}, nil
+}
+
+// CancelQueuedChatTasks atomically cancels every queued follow-up in a chat
+// session. The session lock preserves the delete path's session -> agent -> task
+// order; the agent lock then prevents ClaimTask from promoting a row mid-update.
+func (s *TaskService) CancelQueuedChatTasks(ctx context.Context, sessionID, agentID pgtype.UUID) error {
+	var tasks []db.AgentTaskQueue
+	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
+		if _, err := qtx.LockChatSessionForDelete(ctx, sessionID); err != nil {
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			return fmt.Errorf("lock chat session: %w", err)
+		}
+		if _, err := qtx.GetAgentForClaimUpdate(ctx, agentID); err != nil {
+			return fmt.Errorf("lock chat agent: %w", err)
+		}
+		var err error
+		tasks, err = qtx.CancelQueuedAgentTasksForSession(ctx, sessionID)
+		if err != nil {
+			return fmt.Errorf("cancel queued chat tasks: %w", err)
+		}
+		for _, task := range tasks {
+			if _, err := s.settleQueuedChatInput(ctx, qtx, task, "remove"); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	for _, task := range tasks {
+		slog.Info("task cancelled", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
+		s.captureTaskCancelled(ctx, task)
+	}
+	if len(tasks) > 0 {
+		s.ReconcileAgentStatus(ctx, agentID)
+	}
+	for _, task := range tasks {
+		s.broadcastTaskEvent(ctx, protocol.EventTaskCancelled, task)
+	}
+	s.notifyTasksFinished(tasks)
+	return nil
 }
 
 // lockChatSessionForTaskWrite takes the chat_session row a task belongs to. It
@@ -2062,6 +2158,74 @@ func chatInputOwnerID(task db.AgentTaskQueue) pgtype.UUID {
 		return task.ChatInputTaskID
 	}
 	return task.ID
+}
+
+func (s *TaskService) settleQueuedChatInput(
+	ctx context.Context,
+	qtx *db.Queries,
+	task db.AgentTaskQueue,
+	action string,
+) (*CancelledChatMessageResult, error) {
+	if !task.ChatSessionID.Valid {
+		return nil, nil
+	}
+	inputOwnerID := chatInputOwnerID(task)
+	channelIngested, err := qtx.TaskHasChannelIngestedMessages(ctx, inputOwnerID)
+	if err != nil {
+		return nil, fmt.Errorf("check queued chat channel provenance: %w", err)
+	}
+	if channelIngested {
+		if _, err := qtx.CreateChatMessage(ctx, db.CreateChatMessageParams{
+			ChatSessionID: task.ChatSessionID,
+			Role:          "assistant",
+			Content:       "Stopped.",
+			TaskID:        task.ID,
+			ElapsedMs:     computeChatElapsedMs(task),
+		}); err != nil {
+			return nil, fmt.Errorf("create cancelled queued chat message: %w", err)
+		}
+		return nil, nil
+	}
+
+	var detached []db.Attachment
+	if action == "edit" {
+		detached, err = qtx.DetachAttachmentsFromUserChatMessageByTask(ctx, inputOwnerID)
+		if err != nil {
+			return nil, fmt.Errorf("detach edited queued chat attachments: %w", err)
+		}
+	}
+	deleted, err := qtx.DeleteUserChatMessageByTask(ctx, inputOwnerID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("delete queued chat input: %w", err)
+	}
+	cancelled := &CancelledChatMessageResult{
+		ChatSessionID: util.UUIDToString(deleted.ChatSessionID),
+		MessageID:     util.UUIDToString(deleted.ID),
+		Content:       deleted.Content,
+	}
+	if action == "remove" {
+		return cancelled, nil
+	}
+
+	attachmentIDs := make([]pgtype.UUID, 0, len(detached))
+	for _, attachment := range detached {
+		attachmentIDs = append(attachmentIDs, attachment.ID)
+	}
+	if _, err := qtx.CreateChatDraftRestore(ctx, db.CreateChatDraftRestoreParams{
+		ID:            deleted.ID,
+		ChatSessionID: task.ChatSessionID,
+		TaskID:        task.ID,
+		Content:       deleted.Content,
+		AttachmentIds: attachmentIDs,
+	}); err != nil {
+		return nil, fmt.Errorf("create queued chat draft restore: %w", err)
+	}
+	cancelled.RestoreToInput = true
+	cancelled.Attachments = detached
+	return cancelled, nil
 }
 
 func (s *TaskService) finalizeCancelledChatMessage(ctx context.Context, task db.AgentTaskQueue, opts CancelTaskOptions) *CancelledChatMessageResult {
@@ -2119,14 +2283,15 @@ func (s *TaskService) finalizeCancelledChatMessage(ctx context.Context, task db.
 			return nil
 		}
 		if restorable {
+			inputOwnerID := chatInputOwnerID(task)
 			// Detach attachments BEFORE deleting the user message — the
 			// attachment FK is ON DELETE CASCADE, so deleting first would
 			// destroy rows the restored draft needs to re-bind.
-			detached, err := qtx.DetachAttachmentsFromUserChatMessageByTask(ctx, task.ID)
+			detached, err := qtx.DetachAttachmentsFromUserChatMessageByTask(ctx, inputOwnerID)
 			if err != nil {
 				return fmt.Errorf("detach cancelled chat message attachments: %w", err)
 			}
-			deleted, err := qtx.DeleteUserChatMessageByTask(ctx, task.ID)
+			deleted, err := qtx.DeleteUserChatMessageByTask(ctx, inputOwnerID)
 			if errors.Is(err, pgx.ErrNoRows) {
 				return nil
 			}
@@ -2238,6 +2403,7 @@ func (s *TaskService) FinalizeDeferredCancelledChat(ctx context.Context, taskID 
 			restorable = !channelIngested
 		}
 		if restorable {
+			inputOwnerID := chatInputOwnerID(claimed)
 			// The transcript stayed empty through the daemon flush: same
 			// outcome as the synchronous empty branch, but the cancel HTTP
 			// response is long gone and the broadcast is best-effort. The
@@ -2246,11 +2412,11 @@ func (s *TaskService) FinalizeDeferredCancelledChat(ctx context.Context, taskID 
 			// misses the event recovers it on the next session open; the
 			// event itself carries no content and is only an invalidation
 			// hint.
-			detached, err := qtx.DetachAttachmentsFromUserChatMessageByTask(ctx, claimed.ID)
+			detached, err := qtx.DetachAttachmentsFromUserChatMessageByTask(ctx, inputOwnerID)
 			if err != nil {
 				return fmt.Errorf("detach cancelled chat message attachments: %w", err)
 			}
-			deleted, err := qtx.DeleteUserChatMessageByTask(ctx, claimed.ID)
+			deleted, err := qtx.DeleteUserChatMessageByTask(ctx, inputOwnerID)
 			if errors.Is(err, pgx.ErrNoRows) {
 				payload.Outcome = ""
 				return nil

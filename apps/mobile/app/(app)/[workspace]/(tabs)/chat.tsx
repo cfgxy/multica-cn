@@ -45,6 +45,10 @@ import type {
   ChatMessage,
   ChatPendingTask,
 } from "@multica/core/types";
+import {
+  hideQueuedChatMessages,
+  removePendingChatTask,
+} from "@multica/core/chat/pending";
 import { api } from "@/data/api";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
@@ -68,6 +72,10 @@ import {
 } from "@/data/stores/chat-drafts-store";
 import { useChatSessionPickerStore } from "@/data/stores/chat-session-picker-store";
 import { useChatSessionRealtime } from "@/data/realtime/use-chat-session-realtime";
+import {
+  invalidatePendingTask,
+  seedAcceptedPendingTask,
+} from "@/data/realtime/chat-ws-updaters";
 import { canAssignAgent } from "@/lib/can-assign-agent";
 import { useWorkspaceAgentAvailability } from "@/lib/workspace-agent-availability";
 import { useAgentPresence } from "@/lib/use-agent-presence";
@@ -133,6 +141,7 @@ export default function ChatTab() {
   const { data: pendingTask } = useQuery(
     pendingChatTaskOptions(activeSessionId),
   );
+  const visibleMessages = hideQueuedChatMessages(messages, pendingTask);
   // Live execution trace for the in-flight task. `task:message` WS events
   // append rows to this same cache key via `appendTaskMessage`, so the
   // list/pill stay in sync without a polling fetch. `enabled` is gated by
@@ -287,10 +296,11 @@ export default function ChatTab() {
         const result = await api.sendChatMessage(sessionId, content, {
           attachmentIds: attachmentIds.length > 0 ? attachmentIds : undefined,
         });
-        qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(sessionId), {
+        seedAcceptedPendingTask(qc, {
+          chat_session_id: sessionId,
           task_id: result.task_id,
-          status: "queued",
           created_at: result.created_at,
+          supports_queue: result.supports_queue,
         });
         qc.invalidateQueries({ queryKey: chatKeys.messages(sessionId) });
         if (options.clearDraft !== false) {
@@ -318,11 +328,18 @@ export default function ChatTab() {
   // ── Cancel in-flight ───────────────────────────────────────────────────
   const handleStop = useCallback(() => {
     if (!pendingTask?.task_id || !activeSessionId) return;
-    qc.setQueryData(chatKeys.pendingTask(activeSessionId), {});
-    void api.cancelTaskById(pendingTask.task_id).catch(() => {
-      // Silent — task may have already terminated server-side.
-    });
-  }, [pendingTask?.task_id, activeSessionId, qc]);
+    if (pendingTask.status === "queued") return;
+    const taskId = pendingTask.task_id;
+    const sessionId = activeSessionId;
+    qc.setQueryData<ChatPendingTask>(chatKeys.pendingTask(sessionId), (old) =>
+      removePendingChatTask(old, taskId),
+    );
+    void api.cancelTaskById(taskId)
+      .catch(() => {
+        // Silent — task may have already terminated server-side.
+      })
+      .finally(() => invalidatePendingTask(qc, sessionId));
+  }, [pendingTask?.task_id, pendingTask?.status, activeSessionId, qc]);
 
   // ── Header / sheet actions ─────────────────────────────────────────────
   const handleNewChat = useCallback(() => {
@@ -415,7 +432,7 @@ export default function ChatTab() {
         className="flex-1"
       >
         <ChatMessageList
-          messages={messages}
+          messages={visibleMessages}
           loading={messagesLoading}
           hasSessions={sessions.length > 0}
           agentName={currentAgent?.name}
@@ -442,6 +459,7 @@ export default function ChatTab() {
           onSend={handleSend}
           onStop={handleStop}
           sending={sending}
+          allowStop={pendingTask?.status !== "queued"}
           disabled={disabled}
           disabledReason={disabledReason}
         />
