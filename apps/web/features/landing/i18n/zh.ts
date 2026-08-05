@@ -304,6 +304,7 @@ export function createZhDict(allowSignup: boolean): LandingDict {
           "新增 Reasonix 运行时，可以直接用它跑任务。",
           "新增 QwenPaw 后端，智能体也能跑在它上面。",
           "打开图片后可以用方向键继续往前往后翻看。",
+          "任务头部会列出全部讨论，可以搜出某一条直接跳过去。",
           "中日韩界面改用当地日常说法来称呼任务。",
         ],
         improvements: [

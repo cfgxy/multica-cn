@@ -304,6 +304,7 @@ export function createEnDict(allowSignup: boolean): LandingDict {
           "Reasonix is now a supported runtime, ready to pick up your work.",
           "QwenPaw can now run your agents as well.",
           "Open an image and page through the rest with the arrow keys.",
+          "The Issue header now lists every discussion, so you can search one out and jump straight to it.",
           "Chinese, Japanese, and Korean now use the everyday local word for a filed task.",
         ],
         improvements: [

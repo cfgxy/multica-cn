@@ -279,6 +279,7 @@ export function createKoDict(allowSignup: boolean): LandingDict {
             "Reasonix 런타임을 지원해, 바로 작업을 맡길 수 있습니다.",
             "QwenPaw으로도 에이전트를 실행할 수 있습니다.",
             "이미지를 열고 화살표 키로 앞뒤 이미지를 넘겨 볼 수 있습니다.",
+            "태스크 헤더에 모든 논의가 나열돼, 찾아서 바로 그 자리로 이동합니다.",
             "중국어, 일본어, 한국어에서 일상적인 표현에 맞춘 용어를 씁니다.",
           ],
           improvements: [

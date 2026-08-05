@@ -280,6 +280,7 @@ export function createJaDict(allowSignup: boolean): LandingDict {
             "Reasonix ランタイムに対応し、そのまま作業を任せられます。",
             "QwenPaw でもエージェントを動かせるようになりました。",
             "画像を開いたあと、矢印キーで前後の画像をたどれます。",
+            "タスクのヘッダーに議論の一覧が並び、検索してそのまま該当箇所へ移動できます。",
             "中国語・日本語・韓国語で、日常的な言い方に合わせた用語になりました。",
           ],
           improvements: [
