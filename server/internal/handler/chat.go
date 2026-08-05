@@ -688,6 +688,7 @@ type SendChatMessageResponse struct {
 	MessageID     string `json:"message_id"`
 	TaskID        string `json:"task_id"`
 	SupportsQueue bool   `json:"supports_queue"`
+	Queued        bool   `json:"queued"`
 	// AttachmentIDs are the attachment rows actually bound to this message by
 	// the server. The client diffs these against the ids it requested so it
 	// can warn the user when an attachment silently failed to bind — no extra
@@ -869,6 +870,7 @@ func (h *Handler) SendChatMessage(w http.ResponseWriter, r *http.Request) {
 		MessageID:     uuidToString(msg.ID),
 		TaskID:        uuidToString(task.ID),
 		SupportsQueue: true,
+		Queued:        sent.Queued,
 		CreatedAt:     timestampToString(task.CreatedAt),
 		AttachmentIDs: boundAttachmentIDs,
 	})
@@ -1481,8 +1483,8 @@ func (h *Handler) GetPendingChatTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	head := tasks[0]
-	queued := make([]QueuedChatTaskResponse, 0, len(tasks))
-	for _, task := range tasks {
+	queued := make([]QueuedChatTaskResponse, 0, len(tasks)-1)
+	for _, task := range tasks[1:] {
 		if task.Status != "queued" {
 			continue
 		}
@@ -1543,6 +1545,21 @@ func (h *Handler) PrioritizeQueuedChatTask(w http.ResponseWriter, r *http.Reques
 		db.PrioritizeQueuedChatTaskParams{ID: taskID, ChatSessionID: session.ID},
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
+		// The compare-and-set rejects both a stale queue row and a still-valid
+		// follow-up that has no claimed reply to replace. Distinguish them for
+		// current clients while preserving the same 409 compatibility contract.
+		queuedTask, loadErr := qtx.GetAgentTask(r.Context(), taskID)
+		if loadErr != nil && !errors.Is(loadErr, pgx.ErrNoRows) {
+			writeError(w, http.StatusInternalServerError, "failed to load queued task")
+			return
+		}
+		if loadErr == nil &&
+			queuedTask.Status == "queued" &&
+			queuedTask.ChatSessionID.Valid &&
+			uuidToString(queuedTask.ChatSessionID) == uuidToString(session.ID) {
+			writeError(w, http.StatusConflict, "there is no active reply to replace")
+			return
+		}
 		writeError(w, http.StatusConflict, "task is no longer queued")
 		return
 	}
@@ -1568,7 +1585,7 @@ func (h *Handler) PrioritizeQueuedChatTask(w http.ResponseWriter, r *http.Reques
 }
 
 // ClearQueuedChatTasks cancels every queued follow-up without touching the
-// task already running for the session.
+// session's current positional head, even when that head is not claimed yet.
 func (h *Handler) ClearQueuedChatTasks(w http.ResponseWriter, r *http.Request) {
 	userID, ok := requireUserID(w, r)
 	if !ok {

@@ -950,7 +950,7 @@ SELECT EXISTS (
   FROM agent_task_queue atq
   JOIN chat_session cs ON cs.id = atq.chat_session_id
   WHERE atq.chat_session_id IS NOT NULL
-    AND atq.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+    AND atq.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
     -- Background quick-actions regeneration passes own no visible turn and must
     -- never light the FAB "running" indicator (MUL-5149 refresh follow-up).
     AND atq.regenerate_quick_actions_for IS NULL
@@ -977,6 +977,27 @@ type HasPendingChatTasksByCreatorParams struct {
 // an empty array yields false.
 func (q *Queries) HasPendingChatTasksByCreator(ctx context.Context, arg HasPendingChatTasksByCreatorParams) (bool, error) {
 	row := q.db.QueryRow(ctx, hasPendingChatTasksByCreator, arg.WorkspaceID, arg.CreatorID, arg.AgentIds)
+	var has_pending bool
+	err := row.Scan(&has_pending)
+	return has_pending, err
+}
+
+const hasPendingChatTurnForSession = `-- name: HasPendingChatTurnForSession :one
+SELECT EXISTS (
+  SELECT 1 FROM agent_task_queue
+  WHERE chat_session_id = $1
+    AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+    AND regenerate_quick_actions_for IS NULL
+) AS has_pending
+`
+
+// Position-only check for a direct send. Unlike GetPendingChatTask this is an
+// EXISTS query and includes deferred retries: a new user turn must remain a
+// follow-up while an older retry waits for its backoff, otherwise promotion of
+// that retry would make the new message disappear from the visible transcript.
+// Background quick-action regeneration owns no visible turn and is excluded.
+func (q *Queries) HasPendingChatTurnForSession(ctx context.Context, chatSessionID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, hasPendingChatTurnForSession, chatSessionID)
 	var has_pending bool
 	err := row.Scan(&has_pending)
 	return has_pending, err
@@ -1332,11 +1353,39 @@ WHERE message.chat_session_id = $1
       WHERE task.chat_session_id = message.chat_session_id
         AND task.status = 'queued'
         AND task.id = message.task_id
+        -- "Queued follow-up" is positional, not the row's transient status:
+        -- the first pending task is the current turn even before claim.
+        AND task.id <> (
+          SELECT head.id
+          FROM agent_task_queue AS head
+          WHERE head.chat_session_id = $1
+            AND head.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+            AND head.regenerate_quick_actions_for IS NULL
+          ORDER BY
+            CASE
+              WHEN head.status IN ('dispatched', 'running', 'waiting_local_directory') THEN 0
+              WHEN head.status = 'deferred' THEN 1
+              ELSE 2
+            END,
+            head.priority DESC,
+            head.created_at ASC,
+            head.id ASC
+          LIMIT 1
+        )
     )
   )
 ORDER BY message.created_at ASC, message.id ASC
 `
 
+// IMPORTANT: the visible-head selector below is also used by
+// ListChatMessagesForLegacyTask, ListChatMessagesPage,
+// ListPendingChatTasksForSession, and CancelQueuedAgentTasksForSession in
+// agent.sql. Keep the eligible statuses and ordering identical: a claimed task
+// is current, a deferred retry precedes still-queued work, and queued peers use
+// claim priority/FIFO order. Background quick-action regeneration is invisible.
+// This is a presentation/visibility order, not a scheduling guarantee:
+// deferred rows are not claimable before promotion, so a queued row may be
+// claimed during the backoff and then becomes the visible claimed head.
 func (q *Queries) ListChatMessages(ctx context.Context, chatSessionID pgtype.UUID) ([]ChatMessage, error) {
 	rows, err := q.db.Query(ctx, listChatMessages, chatSessionID)
 	if err != nil {
@@ -1381,6 +1430,23 @@ WHERE message.chat_session_id = $1
       WHERE task.chat_session_id = message.chat_session_id
         AND task.status = 'queued'
         AND task.id = message.task_id
+        AND task.id <> (
+          SELECT head.id
+          FROM agent_task_queue AS head
+          WHERE head.chat_session_id = $1
+            AND head.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+            AND head.regenerate_quick_actions_for IS NULL
+          ORDER BY
+            CASE
+              WHEN head.status IN ('dispatched', 'running', 'waiting_local_directory') THEN 0
+              WHEN head.status = 'deferred' THEN 1
+              ELSE 2
+            END,
+            head.priority DESC,
+            head.created_at ASC,
+            head.id ASC
+          LIMIT 1
+        )
     )
   )
 ORDER BY message.created_at ASC, message.id ASC
@@ -1432,6 +1498,23 @@ WHERE message.chat_session_id = $1
       WHERE task.chat_session_id = message.chat_session_id
         AND task.status = 'queued'
         AND task.id = message.task_id
+        AND task.id <> (
+          SELECT head.id
+          FROM agent_task_queue AS head
+          WHERE head.chat_session_id = $1
+            AND head.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+            AND head.regenerate_quick_actions_for IS NULL
+          ORDER BY
+            CASE
+              WHEN head.status IN ('dispatched', 'running', 'waiting_local_directory') THEN 0
+              WHEN head.status = 'deferred' THEN 1
+              ELSE 2
+            END,
+            head.priority DESC,
+            head.created_at ASC,
+            head.id ASC
+          LIMIT 1
+        )
     )
   )
   AND (
@@ -1591,7 +1674,7 @@ SELECT atq.id AS task_id, atq.status, atq.chat_session_id, cs.agent_id
 FROM agent_task_queue atq
 JOIN chat_session cs ON cs.id = atq.chat_session_id
 WHERE atq.chat_session_id IS NOT NULL
-  AND atq.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+  AND atq.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
   -- Exclude background quick-actions regeneration passes: they own no assistant
   -- turn and must not surface as "running" chat work (MUL-5149 refresh follow-up).
   AND atq.regenerate_quick_actions_for IS NULL
@@ -1622,7 +1705,7 @@ type ListPendingChatTasksByCreatorRow struct {
 //
 // atq.chat_session_id IS NOT NULL is redundant given the JOIN, but stated
 // explicitly so the planner can prove the query predicate is a subset of the
-// idx_agent_task_queue_chat_pending_v2 partial-index predicate and use it.
+// idx_agent_task_queue_chat_pending_v3 partial-index predicate and use it.
 func (q *Queries) ListPendingChatTasksByCreator(ctx context.Context, arg ListPendingChatTasksByCreatorParams) ([]ListPendingChatTasksByCreatorRow, error) {
 	rows, err := q.db.Query(ctx, listPendingChatTasksByCreator, arg.WorkspaceID, arg.CreatorID)
 	if err != nil {
@@ -1665,10 +1748,14 @@ LEFT JOIN LATERAL (
     LIMIT 1
 ) AS message ON TRUE
 WHERE task.chat_session_id = $1
-  AND task.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+  AND task.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
   AND task.regenerate_quick_actions_for IS NULL
 ORDER BY
-    CASE WHEN task.status = 'queued' THEN 1 ELSE 0 END,
+    CASE
+      WHEN task.status IN ('dispatched', 'running', 'waiting_local_directory') THEN 0
+      WHEN task.status = 'deferred' THEN 1
+      ELSE 2
+    END,
     task.priority DESC,
     task.created_at ASC,
     task.id ASC
@@ -1682,7 +1769,10 @@ type ListPendingChatTasksForSessionRow struct {
 	Content   string             `json:"content"`
 }
 
-// Returns the active task first, followed by prioritized then FIFO follow-ups.
+// Returns a claimed task first, then a deferred retry, followed by prioritized
+// then FIFO queued work. See the shared visible-head invariant above
+// ListChatMessages; changing this order requires changing every selector named
+// there in the same patch.
 // The message lateral join reads only the immutable input owned by each task;
 // it avoids loading the session's complete message history just to render a
 // one-line queue preview. GetPendingChatTask remains for legacy callers that
@@ -1929,6 +2019,16 @@ WITH target AS MATERIALIZED (
   WHERE candidate.id = $2
     AND candidate.chat_session_id = $1
     AND candidate.status = 'queued'
+    -- "Send now" is valid only while there is a visible claimed task for the
+    -- client to cancel. If the visible head is still queued (or deferred), the
+    -- selected row would otherwise replace it without any active_task_id.
+    AND EXISTS (
+      SELECT 1
+      FROM agent_task_queue AS active
+      WHERE active.chat_session_id = $1
+        AND active.status IN ('dispatched', 'running', 'waiting_local_directory')
+        AND active.regenerate_quick_actions_for IS NULL
+    )
   FOR UPDATE
 ), demoted AS (
   UPDATE agent_task_queue AS queued
@@ -1952,6 +2052,7 @@ SELECT
     FROM agent_task_queue AS active
     WHERE active.chat_session_id = $1
       AND active.status IN ('dispatched', 'running', 'waiting_local_directory')
+      AND active.regenerate_quick_actions_for IS NULL
     ORDER BY active.created_at ASC, active.id ASC
     LIMIT 1
   )::uuid AS active_task_id
