@@ -4298,6 +4298,7 @@ var runtimeDisplayNameOverrides = map[string]string{
 	"grok":       "Grok",
 	"qoderclicn": "Qoder CN",
 	"qwen":       "Qwen Code",
+	"qwenpaw":    "QwenPaw",
 }
 
 // providerDisplayName returns the human-facing runtime name for a provider key.
@@ -4331,7 +4332,7 @@ func providerDisplayName(name string) string {
 // 2.13.0 ACP smoke — see the call site. Still unprobed: grok, qoder, codebuddy.
 func providerNeedsInlineSystemPrompt(provider string) bool {
 	switch provider {
-	case "openclaw", "kimi", "traecli":
+	case "openclaw", "kimi", "traecli", "qwenpaw":
 		return true
 	default:
 		return false
@@ -5253,6 +5254,13 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		agentCustomEnv = task.Agent.CustomEnv
 	}
 	layerCustomEnvAndHermesHome(agentEnv, agentCustomEnv, env.HermesHome, d.logger)
+	if provider == "reasonix" {
+		reasonixStateHome, err := prepareReasonixTaskStateHome(d.cfg.Profile, task.RuntimeID, task.AgentID)
+		if err != nil {
+			return TaskResult{}, fmt.Errorf("prepare reasonix state home: %w", err)
+		}
+		agentEnv["REASONIX_STATE_HOME"] = reasonixStateHome
+	}
 	if err := configureCodexTaskShellEnvironment(provider, env.CodexHome, os.Environ(), agentEnv, agentCustomEnv, d.logger); err != nil {
 		return TaskResult{}, err
 	}
@@ -5395,6 +5403,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		ServiceTier:        serviceTier,
 		OpenclawMode:       openclawMode,
 		ClaudeSettingsPath: env.ClaudeSettingsPath,
+		QwenpawWorkspace:   env.QwenpawWorkspace,
 	}
 	// Some providers do not reliably load the per-task runtime config files we
 	// write into the task workdir:
@@ -6636,7 +6645,7 @@ func isBlockedEnvKey(key string) bool {
 		return true
 	}
 	switch upper {
-	case "HOME", "PATH", "USER", "SHELL", "TERM", "TMPDIR", "TMP", "TEMP", "CODEX_HOME", "CURSOR_DATA_DIR", execenv.CursorMcpAuthSourceEnv, "OPENCLAW_CONFIG_PATH", "OPENCLAW_INCLUDE_ROOTS":
+	case "HOME", "PATH", "USER", "SHELL", "TERM", "TMPDIR", "TMP", "TEMP", "CODEX_HOME", "REASONIX_STATE_HOME", "CURSOR_DATA_DIR", execenv.CursorMcpAuthSourceEnv, "OPENCLAW_CONFIG_PATH", "OPENCLAW_INCLUDE_ROOTS":
 		return true
 	}
 	return false
@@ -6699,6 +6708,49 @@ func layerCustomEnvAndHermesHome(agentEnv, customEnv map[string]string, overlayH
 	}
 }
 
+// prepareReasonixTaskStateHome isolates persisted transcripts and leases per
+// (runtime, agent) while leaving REASONIX_HOME untouched. Current Reasonix
+// reads credentials/config from REASONIX_HOME and state from
+// REASONIX_STATE_HOME, so `reasonix setup` remains the sole credential owner
+// and Multica never copies API keys into task-managed files.
+func prepareReasonixTaskStateHome(profile, runtimeID, agentID string) (string, error) {
+	profileDir, err := cli.ProfileDir(profile)
+	if err != nil {
+		return "", err
+	}
+	runtimeSegment, err := validateReasonixStateSegment("runtime", runtimeID)
+	if err != nil {
+		return "", err
+	}
+	agentSegment, err := validateReasonixStateSegment("agent", agentID)
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(profileDir, "reasonix-state", runtimeSegment, agentSegment)
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(path, 0o700); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func validateReasonixStateSegment(name, value string) (string, error) {
+	if value == "" {
+		return "", fmt.Errorf("%s ID is required", name)
+	}
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_':
+			continue
+		default:
+			return "", fmt.Errorf("%s ID contains an unsafe path character", name)
+		}
+	}
+	return value, nil
+}
+
 // codexShellAuthorizedCustomEnvNames returns names from the current agent's
 // custom_env that pass the same daemon blocklist used when assembling the child
 // environment. Returning names only keeps credential values out of the managed
@@ -6748,6 +6800,8 @@ func defaultArgsForProvider(cfg Config, provider string) []string {
 		args = cfg.CodebuddyArgs
 	case "qwen":
 		args = cfg.QwenArgs
+	case "qwenpaw":
+		args = cfg.QwenpawArgs
 	default:
 		return nil
 	}

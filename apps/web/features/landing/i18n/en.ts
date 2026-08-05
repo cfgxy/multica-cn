@@ -116,7 +116,7 @@ export function createEnDict(allowSignup: boolean): LandingDict {
         {
           title: "Auto-detection on first run",
           description:
-            "Multica scans for 14 supported coding tools \u2014 Antigravity, Claude Code, CodeBuddy, Codex, Cursor, Copilot, Hermes, Kimi, Kiro CLI, OpenCode, OpenClaw, Pi, Qoder, and Trae CLI \u2014 and registers a runtime for each one it finds.",
+            "Multica scans for 15 supported coding tools \u2014 Antigravity, Claude Code, CodeBuddy, Codex, Cursor, Copilot, Hermes, Kimi, Reasonix, Kiro CLI, OpenCode, OpenClaw, Pi, Qoder, and Trae CLI \u2014 and registers a runtime for each one it finds.",
         },
       ],
     },
@@ -136,7 +136,7 @@ export function createEnDict(allowSignup: boolean): LandingDict {
       {
         title: "Install the CLI & connect your machine",
         description:
-          "Run multica setup \u2014 it walks you through OAuth, starts the daemon, and scans for the 14 supported coding tools (Antigravity, Claude Code, CodeBuddy, Codex, Cursor, Copilot, Hermes, Kimi, Kiro CLI, OpenCode, OpenClaw, Pi, Qoder, Trae CLI). Whichever ones you already have installed get registered as runtimes automatically.",
+          "Run multica setup \u2014 it walks you through OAuth, starts the daemon, and scans for the 15 supported coding tools (Antigravity, Claude Code, CodeBuddy, Codex, Cursor, Copilot, Hermes, Kimi, Reasonix, Kiro CLI, OpenCode, OpenClaw, Pi, Qoder, Trae CLI). Whichever ones you already have installed get registered as runtimes automatically.",
       },
       {
         title: "Create your first agent",
@@ -192,7 +192,7 @@ export function createEnDict(allowSignup: boolean): LandingDict {
       {
         question: "What coding agents does Multica support?",
         answer:
-          "Multica supports 14 coding tools out of the box: Antigravity, Claude Code, CodeBuddy, Codex, Cursor, Copilot, Hermes, Kimi, Kiro CLI, OpenCode, OpenClaw, Pi, Qoder, and Trae CLI. The daemon auto-detects whichever CLIs you already have installed and registers a runtime for each one. Since it's open source, you can also add your own backends.",
+          "Multica supports 15 coding tools out of the box: Antigravity, Claude Code, CodeBuddy, Codex, Cursor, Copilot, Hermes, Kimi, Reasonix, Kiro CLI, OpenCode, OpenClaw, Pi, Qoder, and Trae CLI. The daemon auto-detects whichever CLIs you already have installed and registers a runtime for each one. Since it's open source, you can also add your own backends.",
       },
       {
         question: "Do I need to self-host, or is there a cloud version?",
@@ -293,6 +293,41 @@ export function createEnDict(allowSignup: boolean): LandingDict {
       fixes: "Bug Fixes",
     },
     entries: [
+      {
+        version: "0.4.18",
+        date: "2026-08-04",
+        title: "Leaner agent instructions and a broad round of fixes",
+        changes: [],
+        features: [
+          "The assignment confirmation can now be completed with your send shortcut.",
+          "The conversation you designed an agent in is kept, so you can revisit it later.",
+        ],
+        improvements: [
+          "Leaving the agent creation page open no longer slows down the rest of your workspace.",
+          "What you write while creating an agent is saved, so switching pages keeps it.",
+          "Skill files can be opened for editing directly from the row menu.",
+          "Chat suggestions now follow the language you are writing in.",
+          "Agents read shorter instructions on every run, leaving more of it for your work.",
+          "Runtimes built from source are labelled as local builds instead of offering an unavailable update.",
+          "A runtime's detail page no longer repeats the machine name in its title.",
+        ],
+        fixes: [
+          "Stopping a reply and sending the next message no longer makes the agent forget the conversation.",
+          "The agent creation input clears after sending, and text typed right after is no longer lost.",
+          "Clicking a file inside a Skill opens it instead of only showing the row menu.",
+          "Unsubscribing from an Issue now takes effect.",
+          "Typing / in the reply box also lists your workspace's quick actions.",
+          "Opening a running agent's log from the Issue header no longer closes it immediately.",
+          "OpenClaw replies arrive as soon as they are finished instead of waiting.",
+          "Sending /new on its own in Slack or Feishu no longer creates an empty message and run.",
+          "In newly connected chat channels, agents no longer report sending a file they cannot send.",
+          "A long project or label name no longer stretches its pill across the whole row.",
+          "Clearing a field is now the first row of every picker.",
+          "A wide Autopilot runbook no longer pushes the settings panel out of the dialog.",
+          "The Discord link in the Chinese sidebar is no longer truncated.",
+          "Assigning an Issue to a squad no longer produces errors.",
+        ],
+      },
       {
         version: "0.4.17",
         date: "2026-08-03",

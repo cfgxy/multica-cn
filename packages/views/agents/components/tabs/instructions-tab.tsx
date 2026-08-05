@@ -61,10 +61,10 @@ export function InstructionsTab({
       {hasSystemLayer && (
         <div className="rounded-lg border bg-muted/30">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2.5">
-            <span className="text-sm font-medium">
+            <span className="text-body font-medium">
               {t(($) => $.tab_body.instructions.system_layer_label)}
             </span>
-            <p className="min-w-0 flex-1 text-xs leading-snug text-muted-foreground">
+            <p className="min-w-0 flex-1 text-caption leading-snug text-muted-foreground">
               {t(($) => $.tab_body.instructions.system_layer_hint)}
             </p>
             <Button
@@ -80,7 +80,7 @@ export function InstructionsTab({
             </Button>
           </div>
           {systemOpen && (
-            <pre className="max-h-80 overflow-auto border-t px-3 py-2.5 text-xs leading-6 whitespace-pre-wrap text-muted-foreground">
+            <pre className="max-h-80 overflow-auto border-t px-3 py-2.5 text-caption leading-6 whitespace-pre-wrap text-muted-foreground">
               {systemInstructions}
             </pre>
           )}

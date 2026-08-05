@@ -104,7 +104,7 @@ func buildPromptBody(task Task, provider string) string {
 		fmt.Fprintf(&b, "> %s\n\n", task.HandoffNote)
 	}
 	fmt.Fprintf(&b, "Start by running `multica issue get %s --output json` to understand your task, then complete it.\n", task.IssueID)
-	fmt.Fprintf(&b, "For comment history, follow the rule in your runtime workflow file (assignment-triggered tasks treat the read as mandatory). Scan the threads first with `multica issue comment list %s --roots-only --summary --output json`, then expand only what matters with `--thread <thread-id> --tail 30`. Your runtime workflow file documents the rest of the read surface, including pagination and `--since` for incremental polling.\n", task.IssueID)
+	fmt.Fprintf(&b, "For comment history, follow the rule in your runtime workflow file (assignment-triggered tasks treat the read as mandatory). Scan the threads first with `multica issue comment list %s --roots-only --summary --output json`, then expand only what matters with `--thread <thread-id> --tail 30`. For `--since` incremental polling, pagination, and folding, see `multica issue comment list --help`.\n", task.IssueID)
 	return b.String()
 }
 
@@ -200,7 +200,7 @@ func buildQuickCreatePrompt(task Task) string {
 		}
 	}
 	b.WriteString("- **status**: omit (defaults to `todo`).\n")
-	b.WriteString("- **attachments**: do NOT pass `--attachment`. The flag only accepts LOCAL file paths. Any image URL in the user input is already markdown — keep it inline in `--description` instead.\n\n")
+	b.WriteString("- **attachments**: `--attachment` takes LOCAL file paths, never URLs. Image URLs in the user input are already markdown — keep them inline. Files you produced: see `## Output`.\n\n")
 
 	// output format
 	b.WriteString("Output format:\n")
@@ -420,7 +420,18 @@ func buildChatPrompt(task Task) string {
 
 	var b strings.Builder
 	b.WriteString("You are running as a chat assistant for a Multica workspace.\n")
-	b.WriteString("A user is chatting with you directly. Respond to their message.\n\n")
+	// Audience is per-session context, so keep it out of the cached runtime
+	// brief. The compact anchors here preserve the non-inferable boundaries: a
+	// group reply is not private to its sender and people not otherwise present
+	// in the run context may read it. Unknown never defaults to private.
+	switch execenv.AudienceOf(task.ChatChannelType, task.ChatType) {
+	case execenv.ChatAudienceGroup:
+		b.WriteString("Audience: group room; not private; unseen members may read replies.\n\n")
+	case execenv.ChatAudienceUnknown:
+		b.WriteString("Audience: unknown.\n\n")
+	default:
+		b.WriteString("Audience: direct room.\n\n")
+	}
 	// Channel awareness (MUL-3871). When the session is backed by an IM channel,
 	// the agent must KNOW it is operating inside that channel — otherwise an ask
 	// like "what did you just talk about" sends it to read Multica instead of the
@@ -568,6 +579,9 @@ func buildAutopilotPrompt(task Task) string {
 	} else {
 		b.WriteString("Complete the instructions above.\n")
 	}
-	b.WriteString("Do not run `multica issue get`; this run does not have an issue ID.\n")
+	// The issue-command boundary (execenv.AutopilotIssueCommandsGuard) is NOT
+	// restated here: the brief's autopilot workflow section is its single
+	// emission point, and a second hand-maintained per-turn copy is exactly
+	// how the two surfaces drifted into conflict before (MUL-5696).
 	return b.String()
 }
