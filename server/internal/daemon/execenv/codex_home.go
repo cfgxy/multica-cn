@@ -391,9 +391,8 @@ func codexSessionStoreNamespace(profile string) string {
 
 // ResolveCodexSessionStoreScope chooses the server-provided stable scope when
 // it is a safe single directory segment, otherwise preserving the legacy
-// issue-id scope. The daemon resolves once and passes that exact value to both
-// the active-store GC guard and mount preparation, so they cannot disagree
-// about which store is in use.
+// issue-id scope. Both the active-store GC guard and mount preparation call
+// this resolver so they cannot disagree about which store is in use.
 //
 // A quick-created issue intentionally keeps qc_<origin_task_id> as its on-disk
 // scope instead of being renamed to the issue id: that stable name avoids
@@ -402,17 +401,6 @@ func codexSessionStoreNamespace(profile string) string {
 func ResolveCodexSessionStoreScope(explicitScope, issueID string) string {
 	if ValidCodexSessionStoreScope(explicitScope) {
 		return explicitScope
-	}
-	return issueID
-}
-
-// effectiveCodexSessionStoreScope preserves the issue-id default for direct
-// execenv callers that predate SessionStoreScope. Runtime tasks pass the value
-// already validated by ResolveCodexSessionStoreScope; resolving the wire value
-// is deliberately owned by the daemon boundary, not repeated during mount.
-func effectiveCodexSessionStoreScope(resolvedScope, issueID string) string {
-	if resolvedScope != "" {
-		return resolvedScope
 	}
 	return issueID
 }

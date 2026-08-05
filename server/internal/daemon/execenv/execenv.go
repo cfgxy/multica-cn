@@ -43,10 +43,10 @@ type PrepareParams struct {
 	// scoped Codex session store so a second profile-daemon sharing the same
 	// ~/.codex cannot see or GC this daemon's stores (MUL-4424).
 	Profile string
-	// SessionStoreScope is the stable Codex rollout-store scope resolved by the
-	// daemon task boundary. Quick-create handoffs use their origin task id so the
+	// SessionStoreScope optionally overrides Task.IssueID as the stable Codex
+	// rollout-store scope. Quick-create handoffs use their origin task id so the
 	// source and created issue share one store. Empty preserves the issue-id
-	// behavior for old/direct callers.
+	// behavior for old callers.
 	SessionStoreScope string
 	Provider          string // agent provider (determines runtime config and skill injection paths)
 	CodexVersion      string // detected Codex CLI version (only used when Provider == "codex")
@@ -348,7 +348,7 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	// For Codex, set up a per-task CODEX_HOME seeded from ~/.codex/ with skills.
 	if params.Provider == "codex" {
 		codexHome := filepath.Join(envRoot, codexHomeDirName)
-		if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{CodexVersion: params.CodexVersion, IsLocalDirectory: params.LocalWorkDir != "", SessionStoreKey: codexSessionStoreKey(params.Profile, params.Task.AgentID, effectiveCodexSessionStoreScope(params.SessionStoreScope, params.Task.IssueID)), CodexCustomArgs: params.CodexCustomArgs}, logger); err != nil {
+		if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{CodexVersion: params.CodexVersion, IsLocalDirectory: params.LocalWorkDir != "", SessionStoreKey: codexSessionStoreKey(params.Profile, params.Task.AgentID, ResolveCodexSessionStoreScope(params.SessionStoreScope, params.Task.IssueID)), CodexCustomArgs: params.CodexCustomArgs}, logger); err != nil {
 			return nil, fmt.Errorf("execenv: prepare codex-home: %w", err)
 		}
 		if err := hydrateCodexSkills(codexHome, params.Task.AgentSkills, params.Task.DisabledRuntimeSkills, logger); err != nil {
@@ -573,7 +573,7 @@ func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
 	// config (especially sandbox/network access) is up to date.
 	if params.Provider == "codex" {
 		codexHome := filepath.Join(env.RootDir, codexHomeDirName)
-		if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{CodexVersion: params.CodexVersion, ResumeSessionID: params.ResumeSessionID, IsLocalDirectory: params.LocalDirectory, SessionStoreKey: codexSessionStoreKey(params.Profile, params.Task.AgentID, effectiveCodexSessionStoreScope(params.SessionStoreScope, params.Task.IssueID)), CodexCustomArgs: params.CodexCustomArgs}, logger); err != nil {
+		if err := prepareCodexHomeWithOpts(codexHome, CodexHomeOptions{CodexVersion: params.CodexVersion, ResumeSessionID: params.ResumeSessionID, IsLocalDirectory: params.LocalDirectory, SessionStoreKey: codexSessionStoreKey(params.Profile, params.Task.AgentID, ResolveCodexSessionStoreScope(params.SessionStoreScope, params.Task.IssueID)), CodexCustomArgs: params.CodexCustomArgs}, logger); err != nil {
 			logger.Warn("execenv: refresh codex-home failed", "error", err)
 		} else {
 			env.CodexHome = codexHome
