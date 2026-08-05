@@ -379,10 +379,15 @@ SELECT EXISTS (
 -- name: GetChannelMediaPendingUntil :one
 -- The latest unexpired media deadline gates a channel task. Using a durable
 -- task fire_at means a process restart still produces the placeholder fallback.
+-- Only a turn that can join a task's input batch may gate one: channel_command
+-- turns are excluded from the seal below, so an unrelated later message would
+-- otherwise wait out a command's media (or its whole fallback budget, since a
+-- command whose create failed never runs the binder that clears the marker).
 SELECT channel_media_pending_until
 FROM chat_message
 WHERE chat_session_id = $1
   AND role = 'user'
+  AND message_kind != 'channel_command'
   AND channel_media_pending_until > now()
 ORDER BY channel_media_pending_until DESC
 LIMIT 1;
@@ -401,11 +406,14 @@ WHERE id = $1 AND role = 'user';
 -- Seals the trailing channel-message batch to its task. The task row and these
 -- links are committed together, so an older in-flight task cannot absorb a
 -- newer media message and a later assistant row cannot hide that message.
+-- channel_command turns were already handled synchronously by Router; keeping
+-- them visible but unowned prevents both immediate and delayed re-execution.
 UPDATE chat_message AS message
 SET task_id = @task_id
 WHERE message.chat_session_id = @chat_session_id
   AND message.role = 'user'
   AND message.task_id IS NULL
+  AND message.message_kind != 'channel_command'
   AND NOT EXISTS (
       SELECT 1
       FROM chat_message AS prior
@@ -537,7 +545,10 @@ RETURNING *;
 -- name: PromoteChannelChatTasksIfMediaReady :many
 -- Media completion may race with the 3s run batcher. Promote every original
 -- channel task waiting for this session only after all unexpired media markers
--- are gone; retry/escalation/direct-chat deferred tasks are excluded.
+-- are gone; retry/escalation/direct-chat deferred tasks are excluded. The
+-- marker scan uses the same population as GetChannelMediaPendingUntil and the
+-- seal: a channel_command turn belongs to no batch, so it must not hold a
+-- deferred task back either.
 UPDATE agent_task_queue AS task
 SET status = 'queued', fire_at = NULL
 WHERE task.chat_session_id = @chat_session_id
@@ -550,6 +561,7 @@ WHERE task.chat_session_id = @chat_session_id
       FROM chat_message AS message
       WHERE message.chat_session_id = @chat_session_id
         AND message.role = 'user'
+        AND message.message_kind != 'channel_command'
         AND message.channel_media_pending_until > now()
   )
 RETURNING task.*;
