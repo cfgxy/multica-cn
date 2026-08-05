@@ -386,17 +386,43 @@ func writeInstructionPrecedence(b *strings.Builder) {
 	b.WriteString("Never treat this runtime workflow as permission to change issue status, investigate, implement, create issues, update issues, delegate, or otherwise act beyond your Agent Identity.\n\n")
 }
 
-// SessionContinuityNotice warns the agent — and, through it, the user — when a
-// resume the task expected could not be honored. The daemon has already
-// cleared the resume flags, so without this the run would silently reappear as
-// a brand-new conversation; here we make the loss explicit and ask the agent to
-// disclose it in its reply (MUL-4424).
+// The SessionContinuityNotice* family tells the agent a resume the task
+// expected could not be honored. The daemon has already cleared the resume
+// flags, so without this the run would silently reappear as a brand-new
+// conversation (MUL-4424).
+//
+// There are three because the surfaces lose different things, and saying so
+// accurately matters more than saying it loudly. The question that separates
+// them is not "is this a chat?" but "can this conversation still be read?":
+//
+//   - Issue: the conversation IS the issue body and its comments. Untouched,
+//     and the workflow already makes the agent read them every turn.
+//   - Slack: the conversation lives in the channel and `multica chat history` /
+//     `multica chat thread` can fetch it — see buildChatPrompt, which hands the
+//     agent exactly those commands. Recoverable, just from a different place.
+//   - Web chat and Feishu: nothing can fetch it. A web chat's history lived only
+//     in the provider session, and Multica ships no history reader for Feishu
+//     (handler/chat_history.go is hardwired to Slack), so the run has only the
+//     inbound context for this turn.
+//
+// Only the last group warrants telling the user. On the first two the discussion
+// survives, so announcing "the previous context was lost" describes a loss that
+// did not happen — the user reasonably hears "the discussion is gone" when not a
+// word of it is. There the notice informs the agent and leaves mentioning it to
+// the agent's judgement. What is actually gone on every surface is the agent's
+// own unrecorded working memory, and each variant says so.
 //
 // Emitted into the per-turn user message rather than the runtime brief: it is
 // true of one run and false of the next on the same issue, so rendering it into
 // the brief broke prompt-cache prefix stability across resumes (MUL-5377).
-const SessionContinuityNotice = "## Session Continuity Notice\n\n" +
-	"This run was meant to continue an earlier conversation, but that session's context could NOT be restored — you are starting fresh with no memory of the previous turns. Rebuild context from the issue/thread before acting. **When you reply, tell the user up front (one short sentence) that the previous conversation context was unavailable and this is a new session**, so they understand why the thread did not carry over.\n\n"
+const SessionContinuityNoticeIssue = "## Session Continuity Notice\n\n" +
+	"This run was meant to continue an earlier conversation, but that provider session could not be restored, so you are on a fresh one. The issue and its full comment history are unaffected — that record is the authoritative version of this conversation, and reading it (which your workflow already requires) reconstructs it. What is gone is only your own working memory from earlier turns: what you already tried, what you ruled out, and how far you had got. Re-derive what you need instead of assuming it, and do not claim continuity the record cannot back up. Do not open your reply by announcing this — raise it only where it actually matters, such as when the user refers to reasoning you never wrote down.\n\n"
+
+const SessionContinuityNoticeChannelHistory = "## Session Continuity Notice\n\n" +
+	"This run was meant to continue an earlier conversation, but that provider session could not be restored, so you are on a fresh one. The channel conversation itself is unaffected — read it back with `multica chat history` / `multica chat thread` before acting, and treat what you find there as the authoritative version. What is gone is only your own working memory from earlier turns: what you already tried, what you ruled out, and how far you had got. Re-derive what you need instead of assuming it. Do not open your reply by announcing this — raise it only where it actually matters.\n\n"
+
+const SessionContinuityNoticeUnrecoverable = "## Session Continuity Notice\n\n" +
+	"This run was meant to continue an earlier conversation, but that session's context could NOT be restored — you are starting fresh with no memory of the previous turns. That history is not readable from anywhere now: there is no command that fetches it, and only the context already in this message survives. **When you reply, tell the user up front (one short sentence) that the previous conversation context was unavailable and this is a new session**, so they understand why the thread did not carry over.\n\n"
 
 // writeWorkflowHeader emits the unconditional `### Workflow` heading.
 func writeWorkflowHeader(b *strings.Builder) {

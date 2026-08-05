@@ -5391,19 +5391,26 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		HandshakeTimeout:          d.cfg.CodexHandshakeTimeout,
 		ResumeSessionID:           task.PriorSessionID,
 		// Post-gate intent: PriorSessionID here already reflects the pre-flight
-		// resume gates (a dropped resume is surfaced via the brief instead). If it
-		// survived to here, the backend must disclose to the user when the live
+		// resume gates (a dropped resume is surfaced via the prompt instead). If it
+		// survived to here, the backend must disclose the loss when the live
 		// resume still fails — even across the fresh-session retry below, which
 		// clears ResumeSessionID but not this (MUL-4424).
-		ResumeExpected:     task.PriorSessionID != "",
-		ExtraArgs:          extraArgs,
-		CustomArgs:         customArgs,
-		McpConfig:          mcpConfig,
-		ThinkingLevel:      thinkingLevel,
-		ServiceTier:        serviceTier,
-		OpenclawMode:       openclawMode,
-		ClaudeSettingsPath: env.ClaudeSettingsPath,
-		QwenpawWorkspace:   env.QwenpawWorkspace,
+		//
+		// What that disclosure SAYS, and whether it addresses the user at all,
+		// depends on whether this surface's conversation is still readable, which
+		// only the daemon knows — hence handing the backend finished text rather
+		// than a flag. Empty when the prompt already carries the notice, so a turn
+		// can never pay for it twice (MUL-5722).
+		ResumeExpected:         task.PriorSessionID != "",
+		ResumeContinuityNotice: backendResumeContinuityNotice(task),
+		ExtraArgs:              extraArgs,
+		CustomArgs:             customArgs,
+		McpConfig:              mcpConfig,
+		ThinkingLevel:          thinkingLevel,
+		ServiceTier:            serviceTier,
+		OpenclawMode:           openclawMode,
+		ClaudeSettingsPath:     env.ClaudeSettingsPath,
+		QwenpawWorkspace:       env.QwenpawWorkspace,
 	}
 	// Some providers do not reliably load the per-task runtime config files we
 	// write into the task workdir:
@@ -5493,13 +5500,18 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		//     like Kiro load themselves).
 		//   - clearing task.PriorSessionID rebuilds the prompt on the cold
 		//     comment-reading path instead of the warm resumed one.
-		// The current user prompt is preserved and prefixed with an explicit
-		// context-loss disclosure so the agent re-reads the issue/thread
-		// instead of assuming continuity it no longer has.
+		//   - PriorSessionResumeUnavailable=true makes BuildPrompt append the
+		//     continuity notice for this surface, so the agent knows not to
+		//     assume continuity it no longer has. This is now the ONLY injector
+		//     on the retry path: the backend's own copy is suppressed below,
+		//     because before MUL-5722 both fired and the turn carried the same
+		//     paragraph twice.
 		// task and taskCtx are local (runTask takes task by value), so these
 		// mutations only affect the retry.
 		execOpts.ResumeSessionID = ""
 		task.PriorSessionID = ""
+		task.PriorSessionResumeUnavailable = true
+		execOpts.ResumeContinuityNotice = ""
 		taskCtx.PriorSessionResumed = false
 		if freshBrief, briefErr := execenv.InjectRuntimeConfig(env.WorkDir, provider, taskCtx); briefErr != nil {
 			taskLog.Warn("execenv: re-inject cold runtime config for fresh retry failed (non-fatal)", "error", briefErr)
@@ -5509,7 +5521,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 				execOpts.SystemPrompt = runtimeBrief
 			}
 		}
-		freshPrompt := freshSessionRetryPrompt(BuildPrompt(task, provider))
+		freshPrompt := BuildPrompt(task, provider)
 
 		retryResult, retryTools, retryErr := d.executeAndDrain(ctx, backend, freshPrompt, execOpts, taskLog, task.ID, env.CodexHome, &msgSeq)
 		if retryErr != nil {
@@ -5705,8 +5717,35 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// conversation permanently blocks the issue: every follow-up
 		// task resumes the same poisoned session and hits the same 400.
 		failureReason, _ := classifyPoisonedError(errMsg)
+		if failureReason == "" {
+			// A resume we could not read back leaves the same oversized thread
+			// recorded as this issue's resume pointer. Reaching here means the
+			// in-turn fresh-session retry did not save the run (it is gated on
+			// tools == 0, and can fail on its own), so classify it to keep the
+			// NEXT task off that thread rather than replaying the overflow
+			// forever (MUL-5722).
+			failureReason, _ = classifyResumeUnsafeTransport(provider, errMsg)
+			if failureReason != "" && retiredSessionID == "" && task.PriorSessionID != "" {
+				// Name the thread explicitly. The failure happens before the
+				// turn starts, so the backend has no session id to report and
+				// this row lands with session_id NULL — which means neither
+				// the reason above nor any error-text filter on this row can
+				// identify WHICH session to avoid. retired_session_id is the
+				// one channel that does not depend on the failed row carrying
+				// the session, and it is what the resume lookups and the chat
+				// pointer cleanup both key off.
+				//
+				// Belt-and-braces, not the live path: an overflowed resume
+				// fails before any tool runs, so shouldRetryWithFreshSession's
+				// tools == 0 gate is always satisfied and the retry above has
+				// already recorded the same id. This covers the case where a
+				// future condition stops the retry from firing, so the session
+				// is still retired rather than silently kept.
+				retiredSessionID = task.PriorSessionID
+			}
+		}
 		if failureReason != "" {
-			taskLog.Warn("agent failed with poisoned API error, classifying as blocked",
+			taskLog.Warn("agent failed with a resume-unsafe error, retiring the session",
 				"failure_reason", failureReason,
 			)
 		} else {
