@@ -408,8 +408,12 @@ func writeWorkflowHeader(b *strings.Builder) {
 // post-completion suggestion pass (chat_suggest.go), because an optional
 // formatting instruction in this brief proved unreliable across providers and
 // long conversations.
+//
+// Room shape is run context rather than an agent/provider invariant, so it is
+// emitted by daemon.BuildPrompt instead of fragmenting this cached brief across
+// group, direct, and unknown-audience chat sessions (MUL-5377, MUL-5442).
 func writeWorkflowChat(b *strings.Builder) {
-	b.WriteString("**You are in chat mode.** A user is messaging you directly in a chat window.\n\n")
+	b.WriteString("**You are in chat mode.**\n\n")
 	b.WriteString("- Respond conversationally and helpfully to the user's message\n")
 	b.WriteString("- You have full access to the `multica` CLI to look up issues, workspace info, members, agents, etc.\n")
 	b.WriteString("- If asked about issues, use `multica issue list --output json` or `multica issue get <id> --output json`\n")

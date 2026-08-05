@@ -489,6 +489,67 @@ func TestBuildChatPromptFeishuIgnoresChatInThread(t *testing.T) {
 	}
 }
 
+// Audience is a per-turn platform fact. Semantic anchors pin the group privacy
+// boundary without pinning a full sentence, and the count guard prevents a
+// second copy from creeping into another prompt section.
+func TestBuildChatPromptAudience(t *testing.T) {
+	cases := []struct {
+		name string
+		task Task
+		want []string
+		deny []string
+	}{
+		{
+			name: "group",
+			task: Task{ChatSessionID: "s", ChatChannelType: execenv.ChannelTypeSlack, ChatType: execenv.ChatTypeGroup, ChatMessage: "hi"},
+			want: []string{"Audience: group room", "not private", "unseen members"},
+			deny: []string{"Audience: direct", "do not share", "never mention", "avoid discussing"},
+		},
+		{
+			name: "direct channel",
+			task: Task{ChatSessionID: "s", ChatChannelType: execenv.ChannelTypeFeishu, ChatType: execenv.ChatTypeP2P, ChatMessage: "hi"},
+			want: []string{"Audience: direct room"},
+			deny: []string{"Audience: group", "not private", "unseen members"},
+		},
+		{
+			name: "direct web chat",
+			task: Task{ChatSessionID: "s", ChatMessage: "hi"},
+			want: []string{"Audience: direct room"},
+			deny: []string{"Audience: group", "Audience: unknown"},
+		},
+		{
+			name: "channel from an older server",
+			task: Task{ChatSessionID: "s", ChatChannelType: execenv.ChannelTypeWecom, ChatMessage: "hi"},
+			want: []string{"Audience: unknown"},
+			deny: []string{"Audience: group", "Audience: direct", "not private"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := BuildPrompt(tc.task, "claude")
+			if got := strings.Count(out, "Audience:"); got != 1 {
+				t.Fatalf("audience fact count = %d, want 1\n--- output ---\n%s", got, out)
+			}
+			for _, want := range tc.want {
+				if !strings.Contains(out, want) {
+					t.Errorf("prompt missing audience anchor %q\n--- output ---\n%s", want, out)
+				}
+			}
+			deny := append([]string{}, tc.deny...)
+			deny = append(deny, "chatting with you directly")
+			for _, deny := range deny {
+				if strings.Contains(out, deny) {
+					t.Errorf("prompt contains retired/contradictory audience text %q\n--- output ---\n%s", deny, out)
+				}
+			}
+			if !strings.Contains(out, "User message:\nhi") {
+				t.Errorf("prompt must still carry the user message\n--- output ---\n%s", out)
+			}
+		})
+	}
+}
+
 func TestBuildChatPromptAgentIntro(t *testing.T) {
 	// The proactive self-introduction chat (MUL-4230) has no user message: the
 	// prompt must tell the agent to open the conversation itself, and must NOT
