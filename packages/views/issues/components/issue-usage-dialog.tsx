@@ -84,17 +84,24 @@ export function IssueUsageDialog({
     [priced, pricings],
   );
 
+  // Floor, not round: on a cache-heavy issue 99.55% rounds to "100% hit rate",
+  // which claims every single token came from cache. Flooring only ever says
+  // 100% when it is actually 100%, and one percentage point of pessimism is
+  // cheaper than an impossible-looking number.
   const cacheHitRate =
     total && total.input + total.cacheRead > 0
-      ? Math.round((total.cacheRead / (total.input + total.cacheRead)) * 100)
+      ? Math.floor((total.cacheRead / (total.input + total.cacheRead)) * 100)
       : 0;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       {/* DialogContent's base is `sm:max-w-sm`, which the same-specificity
           `max-w-4xl` does not beat — the table then overflows the box instead
-          of the box growing. `!` wins it, matching the transcript dialog. */}
-      <DialogContent className="!max-w-4xl !w-[calc(100vw-4rem)]">
+          of the box growing. `!` wins it, matching the transcript dialog.
+          5xl rather than 4xl because nine columns plus the token bar need
+          ~920px: at 4xl the Cost column — the one people open this for —
+          landed outside the scroll viewport. */}
+      <DialogContent className="!max-w-5xl !w-[calc(100vw-4rem)]">
         <DialogHeader>
           <DialogTitle>{t(($) => $.usage_detail.title)}</DialogTitle>
           <DialogDescription>
@@ -110,7 +117,13 @@ export function IssueUsageDialog({
             {t(($) => $.usage_detail.empty)}
           </p>
         ) : (
-          <div className="flex flex-col gap-5">
+          /* `min-w-0`: DialogContent is a grid, and a grid item defaults to
+             `min-width: auto` — it sizes to its content's minimum rather than
+             to the track. Without this the wide run table pushes this column
+             past the dialog's own max-width, and every sibling (KPI cards,
+             by-agent bars, footnotes) stretches with it and paints outside
+             the box. */
+          <div className="flex min-w-0 flex-col gap-5">
             <div className="grid grid-cols-3 divide-x rounded-lg border bg-card">
               <KpiCard
                 label={t(($) => $.usage_detail.kpi_cost)}
@@ -268,7 +281,12 @@ function RunTable({ tasks, total }: { tasks: AgentTask[]; total: TaskUsageSummar
     // Nine columns of numbers have a floor width; on a narrow window they
     // scroll sideways rather than squeezing the trigger text to nothing or
     // pushing the totals outside the dialog.
-    <div className="max-h-[45vh] overflow-auto">
+    //
+    // `min-w-0` is what makes `overflow-auto` actually clip: as a flex item
+    // this box defaults to `min-width: auto`, so it grows to the table's
+    // min-content width and never scrolls. Removing it puts the table back
+    // outside the dialog.
+    <div className="max-h-[45vh] min-w-0 overflow-auto">
       <table className="w-full min-w-[46rem]">
         <thead className="sticky top-0 bg-popover">
           <tr className="text-micro text-muted-foreground [&>th]:whitespace-nowrap [&>th]:px-2 [&>th]:pb-1.5 [&>th]:text-right [&>th]:font-normal">
@@ -340,8 +358,17 @@ function RunRow({ task, maxTokens }: { task: AgentTask; maxTokens: number }) {
           )}
         </div>
       </td>
-      <td className="text-micro text-muted-foreground">
-        {summary.models.join(", ") || "—"}
+      {/* A run that spilled across models lists them all, and real model ids
+          are long (`claude-haiku-4-5-20251001, claude-opus-5[1m]`). Left
+          uncapped that single cell sets the table's width and forces every
+          other issue's dialog to scroll sideways, so cap it and keep the full
+          list in the title. `whitespace-nowrap` comes from the row, so the
+          cell needs its own width bound for `truncate` to have anything to
+          truncate against. */}
+      <td className="max-w-[11rem] text-micro text-muted-foreground">
+        <span className="block truncate" title={summary.models.join(", ")}>
+          {summary.models.join(", ") || "—"}
+        </span>
       </td>
       <td className="text-muted-foreground">{duration || "—"}</td>
       <td>{formatTokens(summary.input)}</td>
