@@ -695,7 +695,13 @@
     "copy_workdir": "作業ディレクトリをコピー",
     "close": "閉じる",
     "fact_created": "作成 {{time}}",
-    "fact_took": "所要 {{duration}}"
+    "fact_took": "所要 {{duration}}",
+    "details_input": "入力",
+    "details_output": "出力",
+    "details_cache_read": "キャッシュ読み取り",
+    "details_cache_write": "キャッシュ書き込み",
+    "details_cost": "費用",
+    "usage_chip_title": "この実行のトークンと推定費用"
   },
   "task_failure": {
     "agent_error": "エージェント実行エラー",

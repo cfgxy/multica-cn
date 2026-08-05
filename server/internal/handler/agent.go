@@ -398,6 +398,17 @@ type AgentTaskResponse struct {
 	// pure taskToResponse builds the labels + raw ids); initiator/originator names
 	// are hydrated from the global user table only on user-facing surfaces.
 	Attribution *TaskAttribution `json:"attribution,omitempty"`
+	// Usage is this run's own token consumption, one entry per (provider, model)
+	// it used — the same grain `task_usage` stores and the same grain the client
+	// prices at. Hydrated only on the issue-facing execution-log endpoint
+	// (ListTasksByIssue); the daemon claim path leaves it nil so the claim
+	// payload does not carry accounting the agent has no use for.
+	//
+	// nil and [] are both "no usage recorded" and the UI renders an em dash for
+	// them — a run that predates usage reporting, or one that died before any
+	// model call, genuinely has no number, and showing 0 would assert it was
+	// free. omitempty keeps both off the wire.
+	Usage []TaskUsageData `json:"usage,omitempty"`
 	// AuthToken is the task-scoped `mat_` token the daemon must inject as
 	// MULTICA_TOKEN in the agent process environment. The server binds it to
 	// this (agent_id, task_id) pair at claim time and treats any request
@@ -574,6 +585,26 @@ type CoalescedCommentData struct {
 	AuthorName string `json:"author_name,omitempty"`
 	Content    string `json:"content"`
 	CreatedAt  string `json:"created_at,omitempty"`
+}
+
+// TaskUsageData is one (provider, model) slice of a single run's token usage.
+// Field names match the runtime/dashboard usage rows exactly so the client can
+// feed it to the same `estimateCost` / `estimateCacheSavings` helpers without
+// an adapter.
+//
+// CostUsdTicks is the provider's own price for these tokens (1e-10 USD) and is
+// nil when the provider reported none — the client then estimates that slice
+// from its rate table. A pointer, not a zero value: 0 ticks is a real answer
+// ("the provider says this was free") and must stay distinguishable from
+// "the provider said nothing".
+type TaskUsageData struct {
+	Provider         string `json:"provider,omitempty"`
+	Model            string `json:"model"`
+	InputTokens      int64  `json:"input_tokens"`
+	OutputTokens     int64  `json:"output_tokens"`
+	CacheReadTokens  int64  `json:"cache_read_tokens"`
+	CacheWriteTokens int64  `json:"cache_write_tokens"`
+	CostUsdTicks     *int64 `json:"cost_usd_ticks,omitempty"`
 }
 
 // TaskAgentData holds agent info included in claim responses so the daemon

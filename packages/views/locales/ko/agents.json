@@ -703,7 +703,13 @@
     "copy_workdir": "작업 디렉터리 복사",
     "close": "닫기",
     "fact_created": "생성 {{time}}",
-    "fact_took": "소요 {{duration}}"
+    "fact_took": "소요 {{duration}}",
+    "details_input": "입력",
+    "details_output": "출력",
+    "details_cache_read": "캐시 읽기",
+    "details_cache_write": "캐시 쓰기",
+    "details_cost": "비용",
+    "usage_chip_title": "이 실행의 토큰 및 예상 비용"
   },
   "task_failure": {
     "agent_error": "에이전트 실행 오류",

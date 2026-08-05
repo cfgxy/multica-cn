@@ -8,6 +8,7 @@ export type {
   AgentInvocationTarget,
   AgentInvocationTargetInput,
   AgentTask,
+  TaskUsage,
   TaskAttribution,
   AttributionUser,
   TaskEvidence,

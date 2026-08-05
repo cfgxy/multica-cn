@@ -1164,6 +1164,20 @@ const OptionalStringArraySchema = z.preprocess(
   z.array(z.string()).optional(),
 );
 
+// One (provider, model) slice of a run's token usage. Token counts default to
+// 0 rather than failing the row: a slice missing one counter is still worth
+// pricing on the counters it does have, and the "we have no usage at all" case
+// is carried by the field's absence, not by a zeroed entry.
+const TaskUsageSchema = z.object({
+  provider: z.string().optional(),
+  model: z.string().default(""),
+  input_tokens: z.number().default(0),
+  output_tokens: z.number().default(0),
+  cache_read_tokens: z.number().default(0),
+  cache_write_tokens: z.number().default(0),
+  cost_usd_ticks: z.number().optional(),
+}).loose();
+
 export const AgentTaskSchema = z.object({
   id: z.string(),
   agent_id: z.string().default(""),
@@ -1194,6 +1208,12 @@ export const AgentTaskSchema = z.object({
   work_dir: z.string().optional(),
   relative_work_dir: z.string().optional(),
   attribution: TaskAttributionSchema.optional(),
+  // Per-run token usage. Same independent-degradation rule as the coverage
+  // arrays above: usage is additive display metadata, so one malformed entry
+  // must cost the row its usage figure, not erase the whole execution log.
+  // `.catch(undefined)` collapses a bad array to "no usage recorded", which
+  // the UI already renders as an em dash.
+  usage: z.array(TaskUsageSchema).optional().catch(undefined),
 }).loose();
 
 export const AgentTaskListSchema = z.array(AgentTaskSchema);
