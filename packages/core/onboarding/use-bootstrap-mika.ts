@@ -1,7 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import { chatKeys } from "../chat/queries";
-import type { Agent, ChatPendingTask, ChatSession } from "../types";
+import type { ChatPendingTask, ChatSession, MikaBootstrapResponse } from "../types";
 import { workspaceKeys } from "../workspace/queries";
 
 export type MikaOnboardingLanguage = "en" | "zh" | "ko" | "ja";
@@ -27,7 +27,7 @@ export interface BootstrapMikaInput {
 }
 
 export interface BootstrapMikaResult {
-  agent: Agent;
+  agent: MikaBootstrapResponse;
   chatSession: ChatSession;
 }
 
@@ -36,9 +36,10 @@ export interface BootstrapMikaResult {
  *
  * Every step is idempotent server-side, so a retry, a double-submit, or two
  * clients racing the same workspace converge on one agent, one session, and
- * one opening turn. Nothing about Mika's configuration is decided here — the
- * server owns it, which is why this can no longer drift from the product
- * definition the way a client-built payload could.
+ * one opening turn — the agent and session under their own advisory locks, the
+ * opening turn under the session lock. Nothing about Mika's configuration is
+ * decided here; the server owns it, which is why this can no longer drift from
+ * the product definition the way a client-built payload could.
  */
 export async function bootstrapMika(
   input: BootstrapMikaInput,
@@ -52,29 +53,20 @@ export async function bootstrapMika(
       runtime_id: input.runtimeId,
       language: input.language,
       model: input.model,
+      session_title: input.title,
     },
     input.workspaceSlug,
   );
 
-  const sessions = await api.listChatSessions(
-    { status: "all" },
-    input.workspaceSlug,
-  );
-  const existingSession = sessions.find(
-    (session) =>
-      session.status === "active" &&
-      session.agent_id === agent.id &&
-      session.title === input.title,
-  );
-  const chatSession =
-    existingSession ??
-    (await api.createChatSession(
-      {
-        agent_id: agent.id,
-        title: input.title,
-      },
-      input.workspaceSlug,
-    ));
+  // The server resolves agent and session together. This used to list the
+  // member's sessions and create one when it saw no title match — a
+  // check-then-insert with nothing serializing it, so two tabs each opened
+  // their own onboarding conversation, and switching language between a
+  // failed attempt and its retry opened another (the title is localized).
+  const chatSession = agent.onboarding_session;
+  if (!chatSession) {
+    throw new Error("Mika onboarding session was not returned");
+  }
 
   const kickoff = await api.startMikaOnboarding(
     chatSession.id,

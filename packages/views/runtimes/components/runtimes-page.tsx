@@ -13,7 +13,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { useBootstrapMika } from "@multica/core/onboarding";
+import { useBootstrapMika, workspaceNeedsMika } from "@multica/core/onboarding";
 import { MIKA_PLACEHOLDER_EMOJI } from "../../onboarding/components/mika-intro";
 import { useRequiredWorkspaceSlug, useWorkspacePaths } from "@multica/core/paths";
 import { agentTaskSnapshotOptions } from "@multica/core/agents";
@@ -172,7 +172,7 @@ export function RuntimesPage({
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto flex w-full max-w-[1440px] flex-col p-4 sm:p-6">
-            {!agentsLoading && agents.length === 0 && runtimes.length > 0 && (
+            {!agentsLoading && workspaceNeedsMika(agents) && runtimes.length > 0 && (
               <MikaSetupCard
                 workspaceId={wsId}
                 runtimes={runtimes}

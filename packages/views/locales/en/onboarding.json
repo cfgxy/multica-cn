@@ -145,6 +145,10 @@
       "subtitle": "We've added one issue to help you connect a runtime. When it's ready, start with Mika from Runtimes.",
       "got_it": "Got it",
       "status_in_progress": "In progress",
+      "error_title": "We couldn't set that up",
+      "error_body": "The runtime guide didn't get created. You can try again, or connect a runtime from the Runtimes page whenever you're ready.",
+      "retry": "Try again",
+      "dismiss": "Not now",
       "cards": {
         "install_runtime": {
           "title": "Connect a runtime",

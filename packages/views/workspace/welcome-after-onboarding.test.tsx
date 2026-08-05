@@ -161,7 +161,10 @@ describe("WelcomeAfterOnboarding", () => {
     });
   });
 
-  it("dismisses the one-shot surface when guide provisioning fails", async () => {
+  // The surface is one-shot and the signal is not persisted, so dismissing on
+  // failure used to be terminal: no guide issue, no message, nothing to
+  // reload. A failure has to stay on screen and offer a way forward.
+  it("offers a retry instead of dismissing when guide provisioning fails", async () => {
     mockCreateIssue.mockRejectedValueOnce(new Error("network down"));
     useWelcomeStore.getState().set({
       workspaceId: "ws-1",
@@ -170,9 +173,42 @@ describe("WelcomeAfterOnboarding", () => {
 
     renderWelcome();
 
+    expect(
+      await screen.findByRole("button", { name: /try again/i }),
+    ).toBeInTheDocument();
+    expect(useWelcomeStore.getState().dismissed).toBe(false);
+  });
+
+  it("provisions the guide issue when the member retries", async () => {
+    mockCreateIssue
+      .mockRejectedValueOnce(new Error("network down"))
+      .mockResolvedValueOnce({ id: "issue-install", workspace_id: "ws-1" });
+    useWelcomeStore.getState().set({
+      workspaceId: "ws-1",
+      choice: "skip",
+    });
+
+    renderWelcome();
+
+    fireEvent.click(await screen.findByRole("button", { name: /try again/i }));
+
+    expect(await screen.findByText(/Welcome to Multica/i)).toBeInTheDocument();
+    expect(mockCreateIssue).toHaveBeenCalledTimes(2);
+  });
+
+  it("dismisses only when the member chooses to", async () => {
+    mockCreateIssue.mockRejectedValueOnce(new Error("network down"));
+    useWelcomeStore.getState().set({
+      workspaceId: "ws-1",
+      choice: "skip",
+    });
+
+    renderWelcome();
+
+    fireEvent.click(await screen.findByRole("button", { name: /not now/i }));
+
     await waitFor(() => {
       expect(useWelcomeStore.getState().dismissed).toBe(true);
     });
-    expect(screen.queryByText(/Welcome to Multica/i)).not.toBeInTheDocument();
   });
 });

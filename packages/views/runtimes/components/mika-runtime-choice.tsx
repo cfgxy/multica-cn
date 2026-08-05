@@ -66,6 +66,7 @@ export function MikaRuntimeChoice({
               runtime={rt}
               selected={rt.id === value.runtimeId}
               onSelect={() => selectRuntime(rt.id)}
+              disabled={disabled}
             />
           ))}
         </div>

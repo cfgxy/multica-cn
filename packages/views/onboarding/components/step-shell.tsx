@@ -5,7 +5,7 @@ import { cn } from "@multica/ui/lib/utils";
 import { useScrollFade } from "@multica/ui/hooks/use-scroll-fade";
 import { DragStrip } from "@multica/views/platform";
 import type { OnboardingStep } from "@multica/core/onboarding";
-import { StepSidebar } from "./step-sidebar";
+import { StepProgressBar, StepSidebar } from "./step-sidebar";
 
 /**
  * Geometry for the onboarding steps, taken from the ReUI onboarding-3 block so
@@ -139,7 +139,14 @@ export function StepShell({
           style={fadeStyle}
           className={cn("min-h-0 min-w-0 flex-1 overflow-y-auto", STEP_GUTTER)}
         >
-          <div className={STEP_COLUMN}>{children}</div>
+          <div className={STEP_COLUMN}>
+            <StepProgressBar
+              currentStep={currentStep}
+              onBack={onBack}
+              backDisabled={backDisabled}
+            />
+            {children}
+          </div>
         </main>
       </div>
     </div>

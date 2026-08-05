@@ -145,6 +145,10 @@
       "subtitle": "我们建了一个任务帮你连接运行时。准备好后，在 \"运行时\" 页面就能开始使用 Mika。",
       "got_it": "知道了",
       "status_in_progress": "进行中",
+      "error_title": "没能帮你准备好",
+      "error_body": "运行时引导任务没有创建成功。可以重试，也可以随时在\"运行时\"页面自己连接。",
+      "retry": "重试",
+      "dismiss": "暂不",
       "cards": {
         "install_runtime": {
           "title": "连接一个运行时",

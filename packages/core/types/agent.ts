@@ -1,3 +1,5 @@
+import type { ChatSession } from "./chat";
+
 export type AgentStatus = "idle" | "working" | "blocked" | "error" | "offline";
 
 export type AgentRuntimeMode = "local" | "cloud";
@@ -404,6 +406,17 @@ export interface TaskUsage {
   cache_read_tokens: number;
   cache_write_tokens: number;
   cost_usd_ticks?: number;
+}
+
+/**
+ * Response of the Mika bootstrap endpoint: the workspace's Mika plus the
+ * caller's conversation with it, resolved together server-side so two clients
+ * cannot each open their own onboarding session.
+ */
+export interface MikaBootstrapResponse extends Agent {
+  /** Absent only when the server could not resolve the session; retry the
+   *  same call rather than creating one client-side. */
+  onboarding_session?: ChatSession;
 }
 
 export interface Agent {

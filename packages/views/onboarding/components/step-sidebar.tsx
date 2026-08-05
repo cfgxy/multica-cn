@@ -50,6 +50,68 @@ import { useT } from "../../i18n";
  *     each step's validation and submit, so jumping ahead from the rail would
  *     skip it; going back is always safe.
  */
+/**
+ * The rail's job — where am I, and how do I go back — at widths too narrow to
+ * hold the rail itself. Rendered only below `md`, where StepSidebar is hidden.
+ *
+ * Segments rather than a repeat of the full step list: the point at 375px is
+ * to spend as little vertical space as possible, and the current step's name
+ * plus how far along it sits is what the list was communicating anyway. It
+ * reuses the same `step_nav` copy, so there is one place to translate.
+ */
+export function StepProgressBar({
+  currentStep,
+  onBack,
+  backDisabled,
+}: {
+  currentStep: OnboardingStep;
+  onBack?: () => void;
+  backDisabled?: boolean;
+}) {
+  const { t } = useT("onboarding");
+  const currentIndex = Math.max(0, ONBOARDING_STEP_ORDER.indexOf(currentStep));
+  const key = ONBOARDING_STEP_ORDER[currentIndex] as Exclude<
+    OnboardingStep,
+    "welcome"
+  >;
+
+  return (
+    <div className="mb-6 flex items-center gap-3 md:hidden">
+      {onBack ? (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          onClick={onBack}
+          disabled={backDisabled}
+          aria-label={t(($) => $.common.back)}
+          className="-ml-2 shrink-0"
+          style={{ WebkitAppRegion: "no-drag" } as CSSProperties}
+        >
+          <ArrowLeft />
+        </Button>
+      ) : null}
+      <span
+        aria-hidden
+        className="flex flex-1 items-center gap-1.5"
+      >
+        {ONBOARDING_STEP_ORDER.map((stepId, index) => (
+          <span
+            key={stepId}
+            className={cn(
+              "h-1 flex-1 rounded-full transition-colors",
+              index <= currentIndex ? "bg-foreground" : "bg-border",
+            )}
+          />
+        ))}
+      </span>
+      <span className="shrink-0 text-caption font-medium text-muted-foreground">
+        {t(($) => $.step_nav[key].label)}
+      </span>
+    </div>
+  );
+}
+
 export function StepSidebar({
   currentStep,
   onBack,
@@ -73,7 +135,12 @@ export function StepSidebar({
   const currentIndex = Math.max(0, ONBOARDING_STEP_ORDER.indexOf(currentStep));
 
   return (
-    <aside className="w-[15rem] shrink-0 p-2 md:w-[19rem] md:p-3 lg:w-[22rem] lg:p-4">
+    // Hidden below `md`, where it does not fit: the panel never went under
+    // 15rem while the content pane kept its 3rem gutter, so a 375px browser
+    // was left with ~87px of form. StepProgressBar carries the same
+    // information — and the Back button that lives in this header — at those
+    // widths.
+    <aside className="hidden w-[15rem] shrink-0 p-2 md:block md:w-[19rem] md:p-3 lg:w-[22rem] lg:p-4">
       <div className="dark relative isolate flex h-full w-full flex-col overflow-hidden rounded-2xl bg-background px-5 pb-5 text-foreground ring-1 ring-border">
         <div
           aria-hidden

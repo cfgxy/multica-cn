@@ -141,11 +141,42 @@ function SkipWelcome({ workspaceId, onDismiss }: SkipWelcomeProps) {
     };
   }, [bundle, failed, i18n.language, me, queryClient, workspaceId]);
 
-  useEffect(() => {
-    if (failed) onDismiss();
-  }, [failed, onDismiss]);
+  if (!me) return null;
 
-  if (failed || !me) return null;
+  // A failure used to dismiss the surface silently. Nothing recovered it: the
+  // welcome signal is deliberately not persisted, onboarding is already marked
+  // complete, and seedIssueDeduped's cache is one in-flight promise — so a
+  // blip left the member with no guide issue, no message, and no way back.
+  // Retry re-runs the effect (the `failed` guard is what gates it), and
+  // dismissing is now a choice rather than the default.
+  if (failed) {
+    return (
+      <Dialog
+        open={true}
+        modal={true}
+        onOpenChange={(open) => {
+          if (!open) onDismiss();
+        }}
+      >
+        <DialogContent className="max-w-md sm:max-w-md">
+          <DialogTitle className="text-title font-semibold">
+            {t(($) => $.welcome_after_onboarding.skip.error_title)}
+          </DialogTitle>
+          <DialogDescription className="text-body text-muted-foreground">
+            {t(($) => $.welcome_after_onboarding.skip.error_body)}
+          </DialogDescription>
+          <div className="mt-6 flex justify-end gap-2">
+            <Button variant="ghost" onClick={onDismiss}>
+              {t(($) => $.welcome_after_onboarding.skip.dismiss)}
+            </Button>
+            <Button onClick={() => setFailed(false)}>
+              {t(($) => $.welcome_after_onboarding.skip.retry)}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    );
+  }
 
   if (!bundle) {
     return (

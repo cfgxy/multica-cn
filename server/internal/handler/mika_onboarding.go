@@ -85,10 +85,13 @@ func (h *Handler) StartMikaOnboarding(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "onboarding can only be started with the workspace's built-in agent")
 		return
 	}
-	if uuidToString(agent.OwnerID) != userID {
-		writeError(w, http.StatusForbidden, "only Mika's owner can start onboarding")
-		return
-	}
+	// Deliberately not gated on ownership. Mika is created workspace-visible
+	// and workspace-invocable, and CreateMikaAgent hands every later member
+	// the *first* member's agent — so an owner check would 403 the exact race
+	// that handler's advisory lock exists to survive: the loser gets a valid
+	// Mika, opens a session, and then cannot start onboarding at all. The two
+	// gates that matter already ran: gateChatSessionForUser proved the session
+	// is the caller's, and canInvokeAgent below proves they may invoke Mika.
 	if agent.ArchivedAt.Valid {
 		writeError(w, http.StatusConflict, "chat agent is archived")
 		return

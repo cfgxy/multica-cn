@@ -20,6 +20,7 @@ import type {
   IssueTableRowsRequest,
   IssueTableRowsResponse,
   Agent,
+  MikaBootstrapResponse,
   CreateAgentRequest,
   AgentTemplate,
   AgentTemplateSummary,
@@ -1170,9 +1171,13 @@ export class ApiClient {
       language: "en" | "zh" | "ko" | "ja";
       /** Empty means "whatever the runtime defaults to". */
       model?: string;
+      /** Label for the onboarding conversation, used only if this call is the
+       *  one that creates it. The session's identity is the member and Mika,
+       *  never this string — it is localized. */
+      session_title?: string;
     },
     workspaceSlug?: string,
-  ): Promise<Agent> {
+  ): Promise<MikaBootstrapResponse> {
     return this.fetch("/api/agents/mika", {
       method: "POST",
       headers: workspaceHeader(workspaceSlug),

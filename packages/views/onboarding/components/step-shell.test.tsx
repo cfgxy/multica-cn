@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
@@ -86,18 +86,40 @@ describe("onboarding step shell", () => {
     expect(screen.getByText("Name it to continue.")).toBeInTheDocument();
   });
 
+  // Two Back buttons is the intended shape, not a duplicate: the rail is
+  // hidden below `md` and the compact bar above the content is hidden at and
+  // above it. jsdom applies no media queries, so both are in the tree here.
   it("renders Back only when the step can go back", () => {
     const { unmount } = renderShell();
-    expect(screen.queryByRole("button", { name: /back/i })).toBeNull();
+    expect(screen.queryAllByRole("button", { name: /back/i })).toHaveLength(0);
     unmount();
 
     renderShell({ onBack: () => {} });
-    expect(screen.getByRole("button", { name: /back/i })).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /back/i })).toHaveLength(2);
   });
 
   it("disables Back while the step reports work in flight", () => {
     renderShell({ onBack: () => {}, backDisabled: true });
-    expect(screen.getByRole("button", { name: /back/i })).toBeDisabled();
+    for (const back of screen.getAllByRole("button", { name: /back/i })) {
+      expect(back).toBeDisabled();
+    }
+  });
+
+  // The rail does not fit under `md` — it never went below 15rem while the
+  // content pane kept its gutter, which left ~87px of form at 375px. Hiding it
+  // is only safe because the compact bar carries the same two jobs.
+  it("keeps a compact progress bar for widths where the rail is hidden", () => {
+    const { container } = renderShell({
+      currentStep: "runtime",
+      onBack: () => {},
+    });
+
+    expect(container.querySelector("aside")!.className).toContain("hidden");
+
+    const compact = container.querySelector("main .md\\:hidden")!;
+    expect(compact).not.toBeNull();
+    expect(compact.textContent).toContain("Meet Mika");
+    expect(compact.querySelector("button")).not.toBeNull();
   });
 });
 
@@ -106,11 +128,14 @@ describe("onboarding progress rail", () => {
   // how much was left but never what was coming — so the runtime step always
   // arrived unannounced. Naming every step is the whole point of the change.
   it("names all three steps up front", () => {
-    renderShell({ currentStep: "about_you" });
+    const { container } = renderShell({ currentStep: "about_you" });
 
-    expect(screen.getByText("About you")).toBeInTheDocument();
-    expect(screen.getByText("Workspace")).toBeInTheDocument();
-    expect(screen.getByText("Meet Mika")).toBeInTheDocument();
+    // Scoped to the rail: the compact bar also prints the current step's name,
+    // so an unscoped query matches it twice.
+    const rail = within(container.querySelector("aside")!);
+    expect(rail.getByText("About you")).toBeInTheDocument();
+    expect(rail.getByText("Workspace")).toBeInTheDocument();
+    expect(rail.getByText("Meet Mika")).toBeInTheDocument();
   });
 
   it("marks the current step for assistive tech", () => {

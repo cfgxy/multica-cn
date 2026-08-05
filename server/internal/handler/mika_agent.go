@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"strings"
 
@@ -48,6 +49,24 @@ type createMikaAgentRequest struct {
 	// "whatever the runtime defaults to", which is what every deployment
 	// without per-agent model support gets anyway.
 	Model string `json:"model"`
+	// SessionTitle names the onboarding conversation when this call is the one
+	// that creates it. It is only ever a label: the session's identity is
+	// (workspace, member, Mika), so sending a different title later reuses the
+	// existing session rather than opening a second one.
+	SessionTitle string `json:"session_title"`
+}
+
+// mikaAgentResponse is the agent plus the caller's onboarding conversation.
+//
+// They are returned together because every caller needs both and the pair has
+// to be produced atomically. The client used to list sessions and then create
+// one if it saw no match, which is an unprotected check-then-insert:
+// LockWorkspaceForChatSessionCreate takes FOR KEY SHARE precisely so that
+// concurrent session creators do not block each other, so two tabs each
+// created a session and each got its own "idempotent" kickoff.
+type mikaAgentResponse struct {
+	AgentResponse
+	OnboardingSession *ChatSessionResponse `json:"onboarding_session,omitempty"`
 }
 
 // CreateMikaAgent provisions the workspace's built-in Chief of Staff on the
@@ -70,14 +89,30 @@ func (h *Handler) CreateMikaAgent(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
+
+	agent, created, ok := h.resolveMikaAgent(w, r, workspaceID, userID, req)
+	if !ok {
+		return
+	}
+	// Deliberately outside resolveMikaAgent's transaction: the session
+	// get-or-create opens its own, and running it while the workspace
+	// provisioning lock is still held would queue every member's session
+	// behind a lock that has nothing to do with sessions.
+	h.writeMikaAgentResponse(w, r, agent, workspaceID, userID, req.SessionTitle, created)
+}
+
+// resolveMikaAgent returns the workspace's Mika — the existing one if there is
+// one, otherwise a freshly provisioned one. The bool pair is (created, ok);
+// when ok is false it has already written the error response.
+func (h *Handler) resolveMikaAgent(w http.ResponseWriter, r *http.Request, workspaceID, userID string, req createMikaAgentRequest) (db.Agent, bool, bool) {
 	description, ok := mikaAgentDescriptions[req.Language]
 	if !ok {
 		writeError(w, http.StatusBadRequest, "language must be en, zh, ko, or ja")
-		return
+		return db.Agent{}, false, false
 	}
 	runtimeID, ok := parseUUIDOrBadRequest(w, req.RuntimeID, "runtime_id")
 	if !ok {
-		return
+		return db.Agent{}, false, false
 	}
 	wsUUID := parseUUID(workspaceID)
 
@@ -87,31 +122,30 @@ func (h *Handler) CreateMikaAgent(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID: wsUUID,
 		SystemKey:   pgtype.Text{String: service.MikaSystemKey, Valid: true},
 	}); err == nil {
-		h.writeMikaAgentResponse(w, r, existing, workspaceID, false)
-		return
+		return existing, false, true
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "failed to look up the workspace agent")
-		return
+		return db.Agent{}, false, false
 	}
 
 	member, ok := h.workspaceMember(w, r, workspaceID)
 	if !ok {
-		return
+		return db.Agent{}, false, false
 	}
 	runtime, err := h.Queries.GetAgentRuntime(r.Context(), runtimeID)
 	if err != nil || uuidToString(runtime.WorkspaceID) != workspaceID {
 		writeError(w, http.StatusBadRequest, "runtime not found in this workspace")
-		return
+		return db.Agent{}, false, false
 	}
 	if !canUseRuntimeForAgent(member, runtime) {
 		writeError(w, http.StatusForbidden, "you cannot bind an agent to this runtime")
-		return
+		return db.Agent{}, false, false
 	}
 
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to start agent create transaction")
-		return
+		return db.Agent{}, false, false
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
@@ -127,7 +161,7 @@ func (h *Handler) CreateMikaAgent(w http.ResponseWriter, r *http.Request) {
 		"mika:"+workspaceID,
 	); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to lock the workspace agent")
-		return
+		return db.Agent{}, false, false
 	}
 	// Re-check under the lock: a request that was mid-flight when we started
 	// may have committed by now.
@@ -135,11 +169,10 @@ func (h *Handler) CreateMikaAgent(w http.ResponseWriter, r *http.Request) {
 		WorkspaceID: wsUUID,
 		SystemKey:   pgtype.Text{String: service.MikaSystemKey, Valid: true},
 	}); err == nil {
-		h.writeMikaAgentResponse(w, r, existing, workspaceID, false)
-		return
+		return existing, false, true
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		writeError(w, http.StatusInternalServerError, "failed to look up the workspace agent")
-		return
+		return db.Agent{}, false, false
 	}
 
 	created, err := qtx.CreateSystemUserAgent(r.Context(), db.CreateSystemUserAgentParams{
@@ -159,18 +192,18 @@ func (h *Handler) CreateMikaAgent(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Warn("create mika agent failed", append(logger.RequestAttrs(r), "error", err, "workspace_id", workspaceID)...)
 		writeError(w, http.StatusInternalServerError, "failed to create the workspace agent")
-		return
+		return db.Agent{}, false, false
 	}
 	// Workspace-invocable: every member may chat with Mika and assign it work.
 	if err := replaceInvocationTargetsWithQueries(r.Context(), qtx, created.ID, parseUUID(userID), []targetSpec{
 		{targetType: invocationTargetWorkspace, targetID: wsUUID},
 	}); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to save agent access")
-		return
+		return db.Agent{}, false, false
 	}
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to commit agent create")
-		return
+		return db.Agent{}, false, false
 	}
 	slog.Info("mika agent created", append(logger.RequestAttrs(r), "agent_id", uuidToString(created.ID), "workspace_id", workspaceID)...)
 
@@ -178,21 +211,96 @@ func (h *Handler) CreateMikaAgent(w http.ResponseWriter, r *http.Request) {
 		h.TaskService.ReconcileAgentStatus(r.Context(), created.ID)
 		created, _ = h.Queries.GetAgent(r.Context(), created.ID)
 	}
-	h.writeMikaAgentResponse(w, r, created, workspaceID, true)
+	return created, true, true
 }
 
-func (h *Handler) writeMikaAgentResponse(w http.ResponseWriter, r *http.Request, agent db.Agent, workspaceID string, created bool) {
+func (h *Handler) writeMikaAgentResponse(w http.ResponseWriter, r *http.Request, agent db.Agent, workspaceID, userID, sessionTitle string, created bool) {
 	resp := h.agentToResponse(agent)
 	if err := h.enrichAgentResponseWithTargets(r.Context(), &resp, agent.ID); err != nil {
 		slog.Warn("mika agent: load invocation targets failed", append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(agent.ID))...)
 	}
+
+	out := mikaAgentResponse{AgentResponse: resp}
+	session, err := h.getOrCreateMikaSession(r.Context(), agent, workspaceID, userID, sessionTitle)
+	if err != nil {
+		// The agent is already committed, so failing the whole call would
+		// leave a provisioned Mika behind and make the retry look like a
+		// different error. Omitting the session is a state the client can
+		// recover from; it simply retries this endpoint.
+		slog.Warn("mika agent: get-or-create onboarding session failed", append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(agent.ID))...)
+	} else {
+		sessionResp := chatSessionToResponse(session)
+		out.OnboardingSession = &sessionResp
+	}
+
 	if created {
 		actorType, actorID := h.resolveActor(r, uuidToString(agent.OwnerID), workspaceID)
 		h.publish(protocol.EventAgentCreated, workspaceID, actorType, actorID, map[string]any{"agent": broadcastAgentResponse(resp)})
-		writeJSON(w, http.StatusCreated, resp)
+		writeJSON(w, http.StatusCreated, out)
 		return
 	}
-	writeJSON(w, http.StatusOK, resp)
+	writeJSON(w, http.StatusOK, out)
+}
+
+// getOrCreateMikaSession returns the caller's Mika conversation, creating it
+// only if they do not have one yet.
+//
+// Serialized per (workspace, member) by an advisory lock rather than by a
+// unique index, because chat_session has no uniqueness constraint to lean on
+// and the repository does not add database FKs or indexes casually. The lookup
+// is by (workspace, creator, agent) — deliberately not by title, which is
+// localized: changing language between a failed attempt and its retry used to
+// produce a second onboarding conversation with its own kickoff task.
+func (h *Handler) getOrCreateMikaSession(ctx context.Context, agent db.Agent, workspaceID, userID, title string) (db.ChatSession, error) {
+	wsUUID := parseUUID(workspaceID)
+	creatorUUID := parseUUID(userID)
+
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return db.ChatSession{}, err
+	}
+	defer tx.Rollback(ctx)
+	qtx := h.Queries.WithTx(tx)
+
+	if _, err := tx.Exec(ctx,
+		"SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+		"mika-session:"+workspaceID+":"+userID,
+	); err != nil {
+		return db.ChatSession{}, err
+	}
+	// Same workspace delete/create protocol every other session creator uses
+	// (#5219): FOR KEY SHARE here conflicts with DeleteWorkspace's FOR UPDATE.
+	if _, err := qtx.LockWorkspaceForChatSessionCreate(ctx, wsUUID); err != nil {
+		return db.ChatSession{}, err
+	}
+
+	existing, err := qtx.GetOldestActiveChatSessionForCreatorAgent(ctx, db.GetOldestActiveChatSessionForCreatorAgentParams{
+		WorkspaceID: wsUUID,
+		CreatorID:   creatorUUID,
+		AgentID:     agent.ID,
+	})
+	if err == nil {
+		if err := tx.Commit(ctx); err != nil {
+			return db.ChatSession{}, err
+		}
+		return existing, nil
+	} else if !errors.Is(err, pgx.ErrNoRows) {
+		return db.ChatSession{}, err
+	}
+
+	created, err := qtx.CreateChatSession(ctx, db.CreateChatSessionParams{
+		WorkspaceID: wsUUID,
+		AgentID:     agent.ID,
+		CreatorID:   creatorUUID,
+		Title:       strings.TrimSpace(title),
+	})
+	if err != nil {
+		return db.ChatSession{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return db.ChatSession{}, err
+	}
+	return created, nil
 }
 
 // systemInstructionsFor exposes the product-owned half of a system agent's
