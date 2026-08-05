@@ -103,7 +103,7 @@ describe("ChatQueue", () => {
     }));
 
     const scroller = actions.container.querySelector('[data-slot="chat-queue-list"]');
-    expect(scroller).toHaveClass("max-h-48");
+    expect(scroller).toHaveClass("max-h-40");
 
     const clearTrigger = screen.getAllByLabelText("More queue actions")[0]!;
     fireEvent.click(clearTrigger);
