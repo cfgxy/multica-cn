@@ -750,6 +750,19 @@ WITH retired_sessions AS (
     FROM agent_task_queue r
     WHERE r.chat_session_id = $1
       AND r.retired_session_id IS NOT NULL
+), resume_overflow_at AS (
+    -- completed_at alone, where the issue-side twin coalesces four columns:
+    -- this query already selects and orders by bare completed_at throughout,
+    -- so the cutoff has to be measured on the same clock as the values it is
+    -- compared against. Change both halves together if that ever moves.
+    SELECT MAX(t.completed_at) AS at
+    FROM agent_task_queue t
+    WHERE t.chat_session_id = $1
+      AND t.status = 'failed'
+      AND (
+        COALESCE(t.failure_reason, '') = 'codex_resume_oversized'
+        OR (COALESCE(t.error, '') ILIKE '%thread/resume failed%' AND COALESCE(t.error, '') ILIKE '%token too long%')
+      )
 ), latest_per_session AS (
     SELECT DISTINCT ON (t.session_id)
         t.session_id, t.work_dir, t.runtime_id, t.status, t.failure_reason, t.error, t.completed_at
@@ -765,11 +778,20 @@ WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
     status IN ('completed', 'cancelled')
     OR (
       status = 'failed'
-      AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request', 'codex_semantic_inactivity', 'agent_error.context_overflow')
+      AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request', 'codex_semantic_inactivity', 'agent_error.context_overflow', 'codex_resume_oversized')
       AND NOT (COALESCE(error, '') ILIKE '%400%' AND COALESCE(error, '') ILIKE '%invalid_request_error%')
       AND NOT (COALESCE(error, '') ~* 'must not be empty|must be non-?empty|must have non-?empty|non-?empty content|cannot be empty|should not be empty'
                AND COALESCE(error, '') ~* 'role[^a-z0-9]{0,2}assistant|assistant message|message at position|messages\.[0-9]|messages\[[0-9]')
     )
+  )
+  -- MUL-5722, mirroring GetLastTaskSession: an overflowed resume records no
+  -- session, so exclude by time instead of by matching the failed row. Note
+  -- this only guards the FALLBACK — the claim handler reads
+  -- chat_session.session_id first, so a pointer still naming the oversized
+  -- thread has to be cleared at fail time (see FailTask) to be covered.
+  AND (
+    (SELECT at FROM resume_overflow_at) IS NULL
+    OR completed_at > (SELECT at FROM resume_overflow_at)
   )
 ORDER BY completed_at DESC
 LIMIT 1
@@ -1379,6 +1401,7 @@ ORDER BY message.created_at ASC, message.id ASC
 
 // IMPORTANT: the visible-head selector below is also used by
 // ListChatMessagesForLegacyTask, ListChatMessagesPage,
+// ReanchorClaimedDirectChatInput, ReanchorNextQueuedDirectChatInput,
 // ListPendingChatTasksForSession, and CancelQueuedAgentTasksForSession in
 // agent.sql. Keep the eligible statuses and ordering identical: a claimed task
 // is current, a deferred retry precedes still-queued work, and queued peers use
@@ -2174,11 +2197,14 @@ func (q *Queries) PromoteChannelChatTasksIfMediaReady(ctx context.Context, chatS
 }
 
 const reanchorClaimedDirectChatInput = `-- name: ReanchorClaimedDirectChatInput :exec
-UPDATE chat_message AS claimed_input
-SET created_at = GREATEST(
-    $1::timestamptz,
-    COALESCE((
-        SELECT prior.created_at + interval '1 microsecond'
+WITH latest_visible AS (
+    SELECT
+        claimed_input.id AS claimed_input_id,
+        claimed_input.created_at AS input_created_at,
+        prior.created_at AS prior_created_at
+    FROM chat_message AS claimed_input
+    CROSS JOIN LATERAL (
+        SELECT prior.created_at
         FROM chat_message AS prior
         WHERE prior.chat_session_id = claimed_input.chat_session_id
           AND prior.id != claimed_input.id
@@ -2190,15 +2216,40 @@ SET created_at = GREATEST(
               WHERE queued_task.chat_session_id = prior.chat_session_id
                 AND queued_task.status = 'queued'
                 AND queued_task.id = prior.task_id
+                AND queued_task.id <> (
+                  SELECT head.id
+                  FROM agent_task_queue AS head
+                  WHERE head.chat_session_id = claimed_input.chat_session_id
+                    AND head.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+                    AND head.regenerate_quick_actions_for IS NULL
+                  ORDER BY
+                    CASE
+                      WHEN head.status IN ('dispatched', 'running', 'waiting_local_directory') THEN 0
+                      WHEN head.status = 'deferred' THEN 1
+                      ELSE 2
+                    END,
+                    head.priority DESC,
+                    head.created_at ASC,
+                    head.id ASC
+                  LIMIT 1
+                )
             )
           )
         ORDER BY prior.created_at DESC, prior.id DESC
         LIMIT 1
-    ), $1::timestamptz)
+    ) AS prior
+    WHERE claimed_input.task_id = $2
+      AND claimed_input.role = 'user'
+      AND NOT claimed_input.channel_ingested
 )
-WHERE claimed_input.task_id = $2
-  AND claimed_input.role = 'user'
-  AND NOT claimed_input.channel_ingested
+UPDATE chat_message AS claimed_input
+SET created_at = GREATEST(
+    $1::timestamptz,
+    latest_visible.prior_created_at + interval '1 microsecond'
+)
+FROM latest_visible
+WHERE claimed_input.id = latest_visible.claimed_input_id
+  AND latest_visible.prior_created_at >= latest_visible.input_created_at
 `
 
 type ReanchorClaimedDirectChatInputParams struct {
@@ -2206,10 +2257,12 @@ type ReanchorClaimedDirectChatInputParams struct {
 	TaskID       pgtype.UUID        `json:"task_id"`
 }
 
-// A direct follow-up is persisted at enqueue time but hidden from the settled
-// transcript while its task remains queued. When that task is claimed, move
-// the user row to the claim boundary so it becomes visible after the previous
-// assistant outcome instead of jumping back to its original enqueue time.
+// An idle direct send is visible while it is the positional queue head. A
+// older/pre-deploy follow-up whose enqueue timestamp puts it before a newer
+// settled reply can still reach claim; this is the fallback that moves only
+// that out-of-order user row to the new turn boundary. In-order visible heads
+// keep their original timestamp, so an idle send already returned to a cursor
+// client never moves merely because a daemon claimed it.
 //
 // The task's own created_at remains immutable and continues to drive queue
 // FIFO, wait duration, and elapsed time. Only the message timestamp changes,
@@ -2218,12 +2271,72 @@ type ReanchorClaimedDirectChatInputParams struct {
 // ordering can never put the new user turn before the previous assistant row.
 //
 // channel_ingested excludes sealed Slack/Lark batches, which can own multiple
-// user rows and must preserve their original provider order. Retry children
-// are excluded by the caller because their chat_input_task_id names the root
-// task rather than themselves. Stale dispatched reclaim bypasses this query,
-// so re-delivery does not move an already-visible turn.
+// user rows and must preserve their original provider order. A direct send
+// owns exactly one non-channel user row today; if direct batching is added,
+// this query must assign a stable per-row offset instead of one timestamp.
+// Retry children are excluded by the caller because their chat_input_task_id
+// names the root task rather than themselves. Stale dispatched reclaim bypasses
+// this query, so re-delivery does not move an already-visible turn.
+//
+// Lock order is task row first (ClaimAgentTask), then this non-FK message-only
+// update. The visibility subqueries take no row locks, avoiding an inverse
+// message -> task lock edge with send/completion transactions.
 func (q *Queries) ReanchorClaimedDirectChatInput(ctx context.Context, arg ReanchorClaimedDirectChatInputParams) error {
 	_, err := q.db.Exec(ctx, reanchorClaimedDirectChatInput, arg.DispatchedAt, arg.TaskID)
+	return err
+}
+
+const reanchorNextQueuedDirectChatInput = `-- name: ReanchorNextQueuedDirectChatInput :exec
+UPDATE chat_message AS queued_input
+SET created_at = $2::timestamptz + interval '1 microsecond'
+WHERE queued_input.chat_session_id = $1
+  AND queued_input.role = 'user'
+  AND NOT queued_input.channel_ingested
+  AND queued_input.created_at <= $2::timestamptz
+  AND EXISTS (
+    SELECT 1
+    FROM agent_task_queue AS queued_task
+    WHERE queued_task.id = queued_input.task_id
+      AND queued_task.chat_session_id = queued_input.chat_session_id
+      AND queued_task.status = 'queued'
+      AND queued_task.chat_input_task_id = queued_task.id
+      AND queued_task.regenerate_quick_actions_for IS NULL
+      AND queued_task.id = (
+        SELECT head.id
+        FROM agent_task_queue AS head
+        WHERE head.chat_session_id = queued_input.chat_session_id
+          AND head.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+          AND head.regenerate_quick_actions_for IS NULL
+        ORDER BY
+          CASE
+            WHEN head.status IN ('dispatched', 'running', 'waiting_local_directory') THEN 0
+            WHEN head.status = 'deferred' THEN 1
+            ELSE 2
+          END,
+          head.priority DESC,
+          head.created_at ASC,
+          head.id ASC
+        LIMIT 1
+      )
+  )
+`
+
+type ReanchorNextQueuedDirectChatInputParams struct {
+	ChatSessionID      pgtype.UUID        `json:"chat_session_id"`
+	AssistantCreatedAt pgtype.Timestamptz `json:"assistant_created_at"`
+}
+
+// An assistant outcome can make the next queued direct task the positional
+// head before a daemon claims it (MUL-5750). Its user row was persisted before
+// this reply, so move that still-hidden single-row input just after the reply.
+// Callers run this immediately after CreateChatMessage in the same transaction:
+// readers see either the old active head without the reply, or the settled
+// reply followed by the newly-visible head — never user B before assistant A.
+// Channel batches are excluded because their immutable provider ordering may
+// contain multiple user rows. Direct chat currently owns exactly one row; if
+// direct batching is added, assign stable per-row offsets here.
+func (q *Queries) ReanchorNextQueuedDirectChatInput(ctx context.Context, arg ReanchorNextQueuedDirectChatInputParams) error {
+	_, err := q.db.Exec(ctx, reanchorNextQueuedDirectChatInput, arg.ChatSessionID, arg.AssistantCreatedAt)
 	return err
 }
 
