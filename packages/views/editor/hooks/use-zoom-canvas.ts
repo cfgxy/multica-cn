@@ -153,22 +153,29 @@ export function useZoomCanvas({
     return () => observer.disconnect();
   }, [viewportNode]);
 
-  // Fit once, on first open. Deliberately not re-fitting on later viewport
-  // changes: a theme switch re-renders the content at the same size, and
-  // silently snapping the user's zoom back to fit would lose their place.
-  useEffect(() => {
+  // Fit once, on first open — a layout effect, so the first painted frame is
+  // already fitted. Deliberately not re-fitting on later viewport changes: a
+  // theme switch re-renders the content at the same size, and silently
+  // snapping the user's zoom back to fit would lose their place.
+  useLayoutEffect(() => {
     if (!ready || hasFittedRef.current) return;
     hasFittedRef.current = true;
     setTransform(computeFitTransform(contentSize, viewport));
   }, [ready, contentSize, viewport]);
 
-  // Genuinely different content (new natural size) starts fresh.
+  // Genuinely different content (new natural size) starts fresh. Also a
+  // layout effect, and never eased: swapping to another image (sequence
+  // navigation) is content replacement, not a camera move on the same
+  // content. The new frame must paint already fitted — a plain effect would
+  // paint it once under the previous image's pan/zoom, and a leftover
+  // `isAnimated` from the last discrete control would ease the correction.
   const contentKey = `${contentSize.width}x${contentSize.height}`;
   const previousContentKeyRef = useRef(contentKey);
-  useEffect(() => {
+  useLayoutEffect(() => {
     if (previousContentKeyRef.current === contentKey) return;
     previousContentKeyRef.current = contentKey;
     if (!ready) return;
+    setIsAnimated(false);
     setTransform(computeFitTransform(contentSize, viewport));
   }, [contentKey, ready, contentSize, viewport]);
 
