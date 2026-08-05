@@ -121,7 +121,36 @@
     "archive_dialog_title": "\"{{name}}\"을(를) 보관할까요?",
     "archive_dialog_description": "이 에이전트는 할당하거나 멘션할 수 없고, 활성 작업은 모두 취소됩니다. 기록은 유지되며 나중에 복원할 수 있습니다.",
     "archive_dialog_cancel": "취소",
-    "archive_dialog_confirm": "보관"
+    "archive_dialog_confirm": "보관",
+    "switch_runtime": "런타임 전환",
+    "inject_env": "환경 변수 추가"
+  },
+  "migrate_dialog": {
+    "title_single": "\"{{name}}\" 런타임 전환",
+    "title_bulk_other": "에이전트 {{count}}개의 런타임 전환",
+    "description": "대기 중인 작업은 에이전트와 함께 새 런타임으로 이동합니다. 이미 실행 중인 작업은 완료될 때까지 현재 런타임에 남습니다.",
+    "checking": "변경 내용을 확인하는 중…",
+    "tasks_migrating_other": "대기 중인 작업 {{count}}개가 새 런타임으로 이동합니다.",
+    "tasks_staying_other": "실행 중인 작업 {{count}}개는 완료될 때까지 현재 런타임에 남습니다.",
+    "clearing_title": "다음 런타임 전용 설정이 초기화됩니다",
+    "skipped_notice_other": "선택한 에이전트 중 {{count}}개는 건너뜁니다.",
+    "target_offline": "이 런타임은 오프라인입니다. 다시 연결될 때까지 작업이 대기합니다.",
+    "nothing_to_do": "이동할 에이전트가 없습니다. 이미 이 런타임에 있거나 관리 권한이 없습니다.",
+    "cancel": "취소",
+    "confirm": "런타임 전환",
+    "success_toast_other": "에이전트 {{count}}개 이동 · 대기 작업 {{tasks}}개 함께 이동",
+    "skipped_toast_other": "{{count}}개를 건너뛰었습니다",
+    "failed_toast": "런타임 전환에 실패했습니다"
+  },
+  "inject_env_dialog": {
+    "title_single": "\"{{name}}\"에 환경 변수 추가",
+    "title_bulk_other": "에이전트 {{count}}개에 환경 변수 추가",
+    "description": "입력한 키만 추가하거나 덮어씁니다. 다른 변수는 그대로 유지되며 기존 값은 여기에 표시되지 않습니다.",
+    "current_key_count_other": "변수 {{count}}개",
+    "confirm": "적용",
+    "success_toast": "에이전트 {{agents}}개에 적용 · {{added}}개 추가 · {{overwritten}}개 덮어씀",
+    "skipped_toast_other": "{{count}}개를 건너뛰었습니다",
+    "failed_toast": "환경 변수 업데이트에 실패했습니다"
   },
   "detail": {
     "back_to_agents": "에이전트",

@@ -41,11 +41,18 @@ export function AgentBatchToolbar({
   members,
   currentUserId,
   onClear,
+  onSwitchRuntime,
+  onInjectEnv,
 }: {
   rows: AgentListRow[];
   members: MemberWithUser[];
   currentUserId: string | null;
   onClear: () => void;
+  // Bulk quick actions. Like the row menu, the toolbar only announces intent —
+  // the page owns the dialogs so the single-agent and bulk paths mount the
+  // exact same component.
+  onSwitchRuntime: (rows: AgentListRow[]) => void;
+  onInjectEnv: (rows: AgentListRow[]) => void;
 }) {
   const { t } = useT("agents");
   const wsId = useWorkspaceId();
@@ -74,6 +81,16 @@ export function AgentBatchToolbar({
   }, []);
 
   const allManageable = rows.every((r) => r.canManage);
+  // Runtime switch and env injection are gated on canManage (agent owner or
+  // workspace admin) rather than isOwnedByMe — that is the rule the server
+  // applies to both. Non-manageable rows are dropped from the hand-off rather
+  // than sent and skipped, so the dialog's counts describe what will actually
+  // happen. Archived rows are excluded for the same reason the row menu hides
+  // these actions on them.
+  const manageableActiveRows = rows.filter(
+    (r) => r.canManage && !r.agent.archived_at,
+  );
+  const anyManageableActive = manageableActiveRows.length > 0;
   const ownedRows = rows.filter((r) => r.isOwnedByMe);
   const anyOwned = ownedRows.length > 0;
   const anyActive = rows.some((r) => !r.agent.archived_at);
@@ -199,6 +216,26 @@ export function AgentBatchToolbar({
           >
             <ArchiveRestore className="mr-1 size-3.5" />
             {t(($) => $.row_actions.restore)}
+          </Button>
+        )}
+        {anyActive && (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={!anyManageableActive || busy}
+            onClick={() => onSwitchRuntime(manageableActiveRows)}
+          >
+            {t(($) => $.row_actions.switch_runtime)}
+          </Button>
+        )}
+        {anyActive && (
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={!anyManageableActive || busy}
+            onClick={() => onInjectEnv(manageableActiveRows)}
+          >
+            {t(($) => $.row_actions.inject_env)}
           </Button>
         )}
         {anyActive && (

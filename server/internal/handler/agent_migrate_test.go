@@ -1,0 +1,456 @@
+package handler
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"github.com/google/uuid"
+)
+
+// createMigrationTestRuntime seeds an extra runtime in the handler test
+// workspace. Migration always needs at least two runtimes, and the private
+// variant backs the target-permission test.
+func createMigrationTestRuntime(t *testing.T, name, visibility, ownerID string) string {
+	t.Helper()
+
+	var runtimeID string
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO agent_runtime (
+			workspace_id, daemon_id, name, runtime_mode, provider, status,
+			device_info, metadata, owner_id, visibility, last_seen_at
+		)
+		VALUES ($1, NULL, $2, 'cloud', 'handler_test_runtime', 'online', $2, '{}'::jsonb, $3, $4, now())
+		RETURNING id
+	`, testWorkspaceID, name, ownerID, visibility).Scan(&runtimeID); err != nil {
+		t.Fatalf("create migration test runtime %s: %v", name, err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_runtime WHERE id = $1`, runtimeID)
+	})
+	return runtimeID
+}
+
+// seedTaskWithStatus creates one agent_task_queue row in an explicit status.
+// completed_at is stamped for terminal statuses so the
+// agent_task_queue_active_requires_runtime check stays satisfied either way.
+func seedTaskWithStatus(t *testing.T, agentID, runtimeID, status string) string {
+	t.Helper()
+
+	var taskID string
+	if err := testPool.QueryRow(context.Background(), `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, status, priority, fire_at)
+		VALUES ($1, $2, $3, 0, CASE WHEN $3 = 'deferred' THEN now() + interval '1 hour' ELSE NULL END)
+		RETURNING id
+	`, agentID, runtimeID, status).Scan(&taskID); err != nil {
+		t.Fatalf("seed %s task: %v", status, err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM agent_task_queue WHERE id = $1`, taskID)
+	})
+	return taskID
+}
+
+func taskRuntimeID(t *testing.T, taskID string) string {
+	t.Helper()
+
+	var runtimeID string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT runtime_id FROM agent_task_queue WHERE id = $1`, taskID).Scan(&runtimeID); err != nil {
+		t.Fatalf("read task runtime: %v", err)
+	}
+	return runtimeID
+}
+
+func agentRuntimeIDOf(t *testing.T, agentID string) string {
+	t.Helper()
+
+	var runtimeID string
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT COALESCE(runtime_id::text, '') FROM agent WHERE id = $1`, agentID).Scan(&runtimeID); err != nil {
+		t.Fatalf("read agent runtime: %v", err)
+	}
+	return runtimeID
+}
+
+func migrateRequest(t *testing.T, userID, targetRuntimeID string, body any) *httptest.ResponseRecorder {
+	t.Helper()
+
+	req := withURLParam(
+		newRequestAs(userID, http.MethodPost, "/api/runtimes/"+targetRuntimeID+"/migrate-agents", body),
+		"runtimeId", targetRuntimeID,
+	)
+	w := httptest.NewRecorder()
+	testHandler.MigrateAgentsToRuntime(w, req)
+	return w
+}
+
+func decodeMigrateResponse(t *testing.T, w *httptest.ResponseRecorder) migrateAgentsToRuntimeResponse {
+	t.Helper()
+
+	var resp migrateAgentsToRuntimeResponse
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode migrate response: %v (body: %s)", err, w.Body.String())
+	}
+	return resp
+}
+
+// TestMigrateAgentsToRuntime_MovesUnclaimedTasksOnly is the core of MUL-5758.
+//
+// Daemons list claim candidates by agent_task_queue.runtime_id, so a task
+// queued before a runtime switch stays visible only to the runtime the agent
+// left — stranded for good when that machine is the failing one being
+// evacuated. Migration must therefore carry 'queued' and 'deferred' rows onto
+// the new runtime while leaving 'dispatched' / 'running' /
+// 'waiting_local_directory' where they are: those are already claimed and
+// executing, and re-pointing them would desync the owning daemon.
+func TestMigrateAgentsToRuntime_MovesUnclaimedTasksOnly(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	source := handlerTestRuntimeID(t)
+	target := createMigrationTestRuntime(t, "migrate-target", "public", testUserID)
+	agentID := createHandlerTestAgent(t, "migrate-tasks-agent", nil)
+	if _, err := testPool.Exec(ctx, `
+		UPDATE agent SET model = 'claude-opus-4', thinking_level = 'high', service_tier = 'priority'
+		WHERE id = $1
+	`, agentID); err != nil {
+		t.Fatalf("seed model settings: %v", err)
+	}
+
+	queued := seedTaskWithStatus(t, agentID, source, "queued")
+	deferredTask := seedTaskWithStatus(t, agentID, source, "deferred")
+	dispatched := seedTaskWithStatus(t, agentID, source, "dispatched")
+	running := seedTaskWithStatus(t, agentID, source, "running")
+	waiting := seedTaskWithStatus(t, agentID, source, "waiting_local_directory")
+
+	w := migrateRequest(t, testUserID, target, map[string]any{"agent_ids": []string{agentID}})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := decodeMigrateResponse(t, w)
+
+	if len(resp.Migrated) != 1 || resp.Migrated[0].AgentID != agentID {
+		t.Fatalf("expected the agent in migrated, got %+v", resp.Migrated)
+	}
+	if resp.TasksMigrated != 2 {
+		t.Errorf("expected 2 unclaimed tasks moved (queued + deferred), got %d", resp.TasksMigrated)
+	}
+	if resp.TasksStayingActive != 3 {
+		t.Errorf("expected 3 claimed tasks left in place, got %d", resp.TasksStayingActive)
+	}
+
+	if got := agentRuntimeIDOf(t, agentID); got != target {
+		t.Errorf("agent runtime = %s, want %s", got, target)
+	}
+	for _, tc := range []struct {
+		name   string
+		taskID string
+		want   string
+	}{
+		{"queued", queued, target},
+		{"deferred", deferredTask, target},
+		{"dispatched", dispatched, source},
+		{"running", running, source},
+		{"waiting_local_directory", waiting, source},
+	} {
+		if got := taskRuntimeID(t, tc.taskID); got != tc.want {
+			t.Errorf("%s task runtime = %s, want %s", tc.name, got, tc.want)
+		}
+	}
+
+	// Runtime-native settings are cleared so the new runtime resolves its own
+	// defaults, and the response names what was discarded so the confirmation
+	// dialog can show it instead of clearing silently.
+	var model, thinking, tier string
+	if err := testPool.QueryRow(ctx, `
+		SELECT model, COALESCE(thinking_level, ''), COALESCE(service_tier, '') FROM agent WHERE id = $1
+	`, agentID).Scan(&model, &thinking, &tier); err != nil {
+		t.Fatalf("read model settings: %v", err)
+	}
+	if model != "" || thinking != "" || tier != "" {
+		t.Errorf("expected model settings cleared, got model=%q thinking=%q tier=%q", model, thinking, tier)
+	}
+	if resp.Migrated[0].ClearedModel != "claude-opus-4" ||
+		resp.Migrated[0].ClearedThinkingLevel != "high" ||
+		resp.Migrated[0].ClearedServiceTier != "priority" {
+		t.Errorf("response must report what it cleared, got %+v", resp.Migrated[0])
+	}
+}
+
+// TestMigrateAgentsToRuntime_DryRunReportsSplitWithoutWriting covers the
+// confirmation dialog's data source. No client-side projection can produce this
+// split: derive-presence folds 'dispatched' and 'waiting_local_directory' into
+// "queued" and ignores 'deferred' entirely.
+func TestMigrateAgentsToRuntime_DryRunReportsSplitWithoutWriting(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	source := handlerTestRuntimeID(t)
+	target := createMigrationTestRuntime(t, "migrate-dryrun-target", "public", testUserID)
+	agentID := createHandlerTestAgent(t, "migrate-dryrun-agent", nil)
+
+	queued := seedTaskWithStatus(t, agentID, source, "queued")
+	seedTaskWithStatus(t, agentID, source, "deferred")
+	seedTaskWithStatus(t, agentID, source, "running")
+
+	w := migrateRequest(t, testUserID, target, map[string]any{
+		"agent_ids": []string{agentID},
+		"dry_run":   true,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := decodeMigrateResponse(t, w)
+
+	if !resp.DryRun {
+		t.Error("expected dry_run=true in the response")
+	}
+	if resp.TasksMigrated != 2 || resp.TasksStayingActive != 1 {
+		t.Errorf("expected 2 to move / 1 to stay, got %d / %d", resp.TasksMigrated, resp.TasksStayingActive)
+	}
+	if len(resp.Migrated) != 1 {
+		t.Fatalf("expected 1 agent projected, got %+v", resp.Migrated)
+	}
+
+	if got := agentRuntimeIDOf(t, agentID); got != source {
+		t.Errorf("dry run must not move the agent; runtime = %s, want %s", got, source)
+	}
+	if got := taskRuntimeID(t, queued); got != source {
+		t.Errorf("dry run must not move tasks; queued task runtime = %s, want %s", got, source)
+	}
+}
+
+// TestMigrateAgentsToRuntime_SkipsInsteadOfFailing pins the bulk contract: a
+// selection may legitimately contain agents the caller cannot write, ids that
+// do not resolve, and agents already on the target. None of those is an error —
+// they are reported per agent so "select all, migrate what you may" works.
+func TestMigrateAgentsToRuntime_SkipsInsteadOfFailing(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	target := createMigrationTestRuntime(t, "migrate-skip-target", "public", testUserID)
+	callerID := createPermissionTestMember(t, "migrate-skip-caller@multica.test")
+	otherOwnerID := createPermissionTestMember(t, "migrate-skip-other@multica.test")
+
+	movable := createHandlerTestAgent(t, "migrate-skip-movable", nil)
+	foreign := createHandlerTestAgent(t, "migrate-skip-foreign", nil)
+	alreadyThere := createHandlerTestAgent(t, "migrate-skip-already", nil)
+	if _, err := testPool.Exec(ctx, `UPDATE agent SET owner_id = $1 WHERE id = $2`, callerID, movable); err != nil {
+		t.Fatalf("assign movable owner: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE agent SET owner_id = $1 WHERE id = $2`, otherOwnerID, foreign); err != nil {
+		t.Fatalf("assign foreign owner: %v", err)
+	}
+	if _, err := testPool.Exec(ctx, `UPDATE agent SET owner_id = $1, runtime_id = $2 WHERE id = $3`,
+		callerID, target, alreadyThere); err != nil {
+		t.Fatalf("assign already-on-target agent: %v", err)
+	}
+	missing := uuid.NewString()
+
+	w := migrateRequest(t, callerID, target, map[string]any{
+		"agent_ids": []string{movable, foreign, alreadyThere, missing},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := decodeMigrateResponse(t, w)
+
+	if len(resp.Migrated) != 1 || resp.Migrated[0].AgentID != movable {
+		t.Fatalf("expected only the caller's own agent migrated, got %+v", resp.Migrated)
+	}
+	reasons := map[string]string{}
+	for _, s := range resp.Skipped {
+		reasons[s.AgentID] = s.Reason
+	}
+	if reasons[foreign] != migrateSkipForbidden {
+		t.Errorf("expected %q for another member's agent, got %q", migrateSkipForbidden, reasons[foreign])
+	}
+	if reasons[alreadyThere] != migrateSkipAlreadyOnTarget {
+		t.Errorf("expected %q for an agent already on the target, got %q", migrateSkipAlreadyOnTarget, reasons[alreadyThere])
+	}
+	if reasons[missing] != migrateSkipNotFound {
+		t.Errorf("expected %q for an unknown id, got %q", migrateSkipNotFound, reasons[missing])
+	}
+
+	// The skipped agent must be untouched, not half-migrated.
+	if got := agentRuntimeIDOf(t, foreign); got == target {
+		t.Error("a forbidden agent must not be moved")
+	}
+}
+
+// TestMigrateAgentsToRuntime_CrossWorkspaceAgentIsNotFound checks the
+// non-disclosure rule: an agent in a workspace the caller is not acting in is
+// reported exactly like an id that never existed, and is never written.
+func TestMigrateAgentsToRuntime_CrossWorkspaceAgentIsNotFound(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	target := createMigrationTestRuntime(t, "migrate-xws-target", "public", testUserID)
+
+	var otherWorkspaceID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO workspace (name, slug, description, issue_prefix)
+		VALUES ('Other WS', 'migrate-xws', '', 'XWS')
+		RETURNING id
+	`).Scan(&otherWorkspaceID); err != nil {
+		t.Fatalf("create other workspace: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, otherWorkspaceID)
+	})
+
+	var otherRuntimeID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_runtime (workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at)
+		VALUES ($1, NULL, 'other-ws-runtime', 'cloud', 'handler_test_runtime', 'online', 'other', '{}'::jsonb, now())
+		RETURNING id
+	`, otherWorkspaceID).Scan(&otherRuntimeID); err != nil {
+		t.Fatalf("create other workspace runtime: %v", err)
+	}
+	var otherAgentID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent (workspace_id, name, description, runtime_mode, runtime_config, runtime_id,
+			visibility, permission_mode, max_concurrent_tasks, owner_id)
+		VALUES ($1, 'other-ws-agent', '', 'cloud', '{}'::jsonb, $2, 'workspace', 'public_to', 1, $3)
+		RETURNING id
+	`, otherWorkspaceID, otherRuntimeID, testUserID).Scan(&otherAgentID); err != nil {
+		t.Fatalf("create other workspace agent: %v", err)
+	}
+
+	w := migrateRequest(t, testUserID, target, map[string]any{"agent_ids": []string{otherAgentID}})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := decodeMigrateResponse(t, w)
+
+	if len(resp.Migrated) != 0 {
+		t.Fatalf("a cross-workspace agent must never be migrated, got %+v", resp.Migrated)
+	}
+	if len(resp.Skipped) != 1 || resp.Skipped[0].Reason != migrateSkipNotFound {
+		t.Fatalf("expected a not_found skip, got %+v", resp.Skipped)
+	}
+	if resp.Skipped[0].Name != "" {
+		t.Error("a not_found skip must not leak the agent name")
+	}
+	if got := agentRuntimeIDOf(t, otherAgentID); got != otherRuntimeID {
+		t.Errorf("cross-workspace agent runtime changed: %s", got)
+	}
+}
+
+// TestMigrateAgentsToRuntime_PrivateTargetForbidden mirrors the single-agent
+// gate in UpdateAgent: a private runtime accepts agents only from its owner or
+// a workspace admin, and the refusal is a hard 403 rather than a per-agent skip
+// because the target — not the selection — is the problem.
+func TestMigrateAgentsToRuntime_PrivateTargetForbidden(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	runtimeOwnerID := createPermissionTestMember(t, "migrate-private-owner@multica.test")
+	callerID := createPermissionTestMember(t, "migrate-private-caller@multica.test")
+	target := createMigrationTestRuntime(t, "migrate-private-target", "private", runtimeOwnerID)
+	agentID := createHandlerTestAgent(t, "migrate-private-agent", nil)
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE agent SET owner_id = $1 WHERE id = $2`, callerID, agentID); err != nil {
+		t.Fatalf("assign agent owner: %v", err)
+	}
+
+	w := migrateRequest(t, callerID, target, map[string]any{"agent_ids": []string{agentID}})
+	if w.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 for a private target runtime, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := agentRuntimeIDOf(t, agentID); got == target {
+		t.Error("agent must not be moved onto a private runtime the caller may not use")
+	}
+}
+
+// TestMigrateAgentsToRuntime_StalePlanConflict covers the Runtime detail entry
+// point, where the user confirms a set the page rendered earlier. If that set
+// moved in the meantime the server refuses with the latest snapshot instead of
+// migrating agents the user never saw — same contract as the runtime cascade
+// delete's expected_active_agent_ids.
+func TestMigrateAgentsToRuntime_StalePlanConflict(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	source := createMigrationTestRuntime(t, "migrate-stale-source", "public", testUserID)
+	target := createMigrationTestRuntime(t, "migrate-stale-target", "public", testUserID)
+	confirmed := createHandlerTestAgent(t, "migrate-stale-confirmed", nil)
+	appeared := createHandlerTestAgent(t, "migrate-stale-appeared", nil)
+	for _, id := range []string{confirmed, appeared} {
+		if _, err := testPool.Exec(context.Background(),
+			`UPDATE agent SET runtime_id = $1 WHERE id = $2`, source, id); err != nil {
+			t.Fatalf("bind agent to source runtime: %v", err)
+		}
+	}
+
+	// The dialog only saw `confirmed`; `appeared` landed on the runtime after.
+	w := migrateRequest(t, testUserID, target, map[string]any{
+		"agent_ids":                  []string{confirmed},
+		"expected_source_runtime_id": source,
+	})
+	if w.Code != http.StatusConflict {
+		t.Fatalf("expected 409 for a changed plan, got %d: %s", w.Code, w.Body.String())
+	}
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode conflict body: %v", err)
+	}
+	if body["code"] != "runtime_migration_plan_changed" {
+		t.Errorf("expected runtime_migration_plan_changed, got %v", body["code"])
+	}
+	active, _ := body["active_agents"].([]any)
+	if len(active) != 2 {
+		t.Errorf("conflict must carry the latest agent set, got %d entries", len(active))
+	}
+	if got := agentRuntimeIDOf(t, confirmed); got != source {
+		t.Error("a refused migration must not move anything")
+	}
+
+	// Confirming the current set succeeds.
+	w = migrateRequest(t, testUserID, target, map[string]any{
+		"agent_ids":                  []string{confirmed, appeared},
+		"expected_source_runtime_id": source,
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 after confirming the live set, got %d: %s", w.Code, w.Body.String())
+	}
+	if got := agentRuntimeIDOf(t, confirmed); got != target {
+		t.Errorf("confirmed agent runtime = %s, want %s", got, target)
+	}
+}
+
+// TestParseBulkAgentIDs covers the shared input guard both bulk endpoints use:
+// non-empty, all-UUID, de-duplicated, bounded.
+func TestParseBulkAgentIDs(t *testing.T) {
+	a := uuid.NewString()
+	b := uuid.NewString()
+
+	if _, ok := parseBulkAgentIDs(httptest.NewRecorder(), nil, 10); ok {
+		t.Error("an empty id list must be rejected")
+	}
+	if _, ok := parseBulkAgentIDs(httptest.NewRecorder(), []string{a, b, a}, 2); ok {
+		t.Error("the limit applies to the raw list, before de-duplication")
+	}
+	if _, ok := parseBulkAgentIDs(httptest.NewRecorder(), []string{"not-a-uuid"}, 10); ok {
+		t.Error("a malformed id must be rejected")
+	}
+	got, ok := parseBulkAgentIDs(httptest.NewRecorder(), []string{a, b, a}, 10)
+	if !ok {
+		t.Fatal("a valid list must be accepted")
+	}
+	if len(got) != 2 || uuidToString(got[0]) != a || uuidToString(got[1]) != b {
+		t.Fatalf("expected de-duplication preserving order, got %v", got)
+	}
+}

@@ -259,6 +259,96 @@ WHERE runtime_id = $1 AND kind = 'user'
 ORDER BY id
 FOR UPDATE;
 
+-- name: ListAgentsByIDsForWorkspace :many
+-- Workspace-scoped fetch of an explicit agent id set (MUL-5758). Every bulk
+-- endpoint resolves its request ids through this query rather than trusting
+-- the caller: an id from another workspace simply does not come back, so a
+-- cross-workspace probe cannot distinguish "not yours" from "does not exist".
+-- kind = 'user' keeps system agents (invisible execution infrastructure) out
+-- of every bulk write. Non-locking variant, used by dry runs.
+SELECT * FROM agent
+WHERE id = ANY(@agent_ids::uuid[]) AND workspace_id = @workspace_id AND kind = 'user'
+ORDER BY name ASC;
+
+-- name: ListAgentsByIDsForWorkspaceForUpdate :many
+-- FOR UPDATE variant of ListAgentsByIDsForWorkspace, used by the committing
+-- path of every bulk write. Locks each targeted row so a concurrent
+-- archive / runtime move / env write blocks until our transaction commits,
+-- which is what makes the snapshot we validated against the request stable.
+-- Ordered by id (not name) so concurrent bulk writes acquire row locks in the
+-- same order and cannot deadlock against each other.
+SELECT * FROM agent
+WHERE id = ANY(@agent_ids::uuid[]) AND workspace_id = @workspace_id AND kind = 'user'
+ORDER BY id
+FOR UPDATE;
+
+-- name: MigrateAgentsToRuntime :many
+-- Re-binds an explicit agent set onto one target runtime (MUL-5758).
+--
+-- clear_model_settings mirrors what the agent detail inspector has always done
+-- on a single-agent runtime switch: model / thinking_level / service_tier are
+-- runtime-native, so carrying them across a provider change either smuggles a
+-- foreign model id to the daemon or trips UpdateAgent's literal-invalid
+-- thinking_level / service_tier guard. Clearing lets the new runtime resolve
+-- its own defaults. model is a NOT NULL column cleared to '' (same as the
+-- inspector's `model: ""`), while thinking_level / service_tier are nullable
+-- and cleared to NULL (same as ClearAgentThinkingLevel / ClearAgentServiceTier).
+--
+-- The caller has already row-locked these ids via
+-- ListAgentsByIDsForWorkspaceForUpdate and filtered out everything it may not
+-- write, so this statement takes the id set verbatim.
+UPDATE agent SET
+    runtime_id = @runtime_id,
+    runtime_mode = @runtime_mode,
+    model = CASE WHEN @clear_model_settings::boolean THEN '' ELSE model END,
+    thinking_level = CASE WHEN @clear_model_settings::boolean THEN NULL ELSE thinking_level END,
+    service_tier = CASE WHEN @clear_model_settings::boolean THEN NULL ELSE service_tier END,
+    updated_at = now()
+WHERE id = ANY(@agent_ids::uuid[])
+RETURNING *;
+
+-- name: RepointUnclaimedTasksToRuntime :many
+-- Moves an agent set's not-yet-claimed tasks onto the runtime those agents
+-- were just migrated to (MUL-5758).
+--
+-- Without this, a runtime switch strands work: the daemon lists claim
+-- candidates by agent_task_queue.runtime_id (ListQueuedClaimCandidatesByRuntime)
+-- and ClaimTask only accepts a row whose runtime_id matches the claiming
+-- runtime, so a task queued before the switch stays visible ONLY to the old
+-- runtime — which, in the runtime-failure migration this feature exists for, is
+-- exactly the machine that is gone.
+--
+-- Deliberately restricted to 'queued' and 'deferred', the two statuses no
+-- daemon owns yet. 'dispatched' / 'running' / 'waiting_local_directory' are
+-- already claimed by the old runtime and are actively being executed there;
+-- re-pointing them would desync that daemon's ownership and risk a double run.
+-- Those stay put and are reported to the caller instead.
+--
+-- Not filtered by source runtime: a bulk selection can span several runtimes,
+-- and any unclaimed task of a migrated agent belongs on its new runtime.
+UPDATE agent_task_queue
+SET runtime_id = @to_runtime_id
+WHERE agent_id = ANY(@agent_ids::uuid[])
+  AND status IN ('queued', 'deferred')
+  AND runtime_id IS DISTINCT FROM @to_runtime_id
+RETURNING *;
+
+-- name: CountAgentTasksByMigrationGroup :one
+-- Splits an agent set's non-terminal tasks into the two groups a runtime
+-- migration treats differently (MUL-5758): `unclaimed` is what
+-- RepointUnclaimedTasksToRuntime will move, `active` is what stays on the old
+-- runtime because a daemon already owns it.
+--
+-- The confirmation dialog reads these numbers from a dry run rather than from
+-- the presence projection: derive-presence's queuedCount folds 'dispatched' and
+-- 'waiting_local_directory' into "queued" and drops 'deferred' entirely, so it
+-- can never state the migration split correctly.
+SELECT
+    COUNT(*) FILTER (WHERE status IN ('queued', 'deferred'))::bigint AS unclaimed_count,
+    COUNT(*) FILTER (WHERE status IN ('dispatched', 'running', 'waiting_local_directory'))::bigint AS active_count
+FROM agent_task_queue
+WHERE agent_id = ANY(@agent_ids::uuid[]);
+
 -- name: RestoreAgent :one
 UPDATE agent SET archived_at = NULL, archived_by = NULL, updated_at = now()
 WHERE id = $1

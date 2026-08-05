@@ -88,6 +88,9 @@ function makeRow(
   };
 }
 
+const onSwitchRuntime = vi.fn();
+const onInjectEnv = vi.fn();
+
 function renderToolbar(rows: AgentListRow[]) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const ui = (nextRows: AgentListRow[]) => (
@@ -98,6 +101,8 @@ function renderToolbar(rows: AgentListRow[]) {
           members={[]}
           currentUserId="user-1"
           onClear={() => {}}
+          onSwitchRuntime={onSwitchRuntime}
+          onInjectEnv={onInjectEnv}
         />
       </I18nProvider>
     </QueryClientProvider>
@@ -110,13 +115,15 @@ function renderToolbar(rows: AgentListRow[]) {
 }
 
 beforeEach(() => {
+  onSwitchRuntime.mockClear();
+  onInjectEnv.mockClear();
   updateAgentSpy.mockClear();
   updateAgentSpy.mockResolvedValue({});
 });
 
 describe("AgentBatchToolbar — action order", () => {
   it("renders Archive last, after the other batch actions", () => {
-    // One archived + one active owned row surfaces all three actions at once.
+    // One archived + one active owned row surfaces every action at once.
     renderToolbar([
       makeRow("a", "user-1", { archived_at: "2026-01-01T00:00:00Z" }),
       makeRow("b", "user-1"),
@@ -128,7 +135,13 @@ describe("AgentBatchToolbar — action order", () => {
       .map((b) => b.textContent?.trim())
       .filter((text): text is string => !!text);
 
-    expect(actions).toEqual(["Restore", "Set access scope", "Archive"]);
+    expect(actions).toEqual([
+      "Restore",
+      "Switch runtime",
+      "Add env variables",
+      "Set access scope",
+      "Archive",
+    ]);
   });
 });
 

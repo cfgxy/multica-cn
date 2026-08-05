@@ -1534,6 +1534,35 @@ func (q *Queries) CompleteAgentTask(ctx context.Context, arg CompleteAgentTaskPa
 	return i, err
 }
 
+const countAgentTasksByMigrationGroup = `-- name: CountAgentTasksByMigrationGroup :one
+SELECT
+    COUNT(*) FILTER (WHERE status IN ('queued', 'deferred'))::bigint AS unclaimed_count,
+    COUNT(*) FILTER (WHERE status IN ('dispatched', 'running', 'waiting_local_directory'))::bigint AS active_count
+FROM agent_task_queue
+WHERE agent_id = ANY($1::uuid[])
+`
+
+type CountAgentTasksByMigrationGroupRow struct {
+	UnclaimedCount int64 `json:"unclaimed_count"`
+	ActiveCount    int64 `json:"active_count"`
+}
+
+// Splits an agent set's non-terminal tasks into the two groups a runtime
+// migration treats differently (MUL-5758): `unclaimed` is what
+// RepointUnclaimedTasksToRuntime will move, `active` is what stays on the old
+// runtime because a daemon already owns it.
+//
+// The confirmation dialog reads these numbers from a dry run rather than from
+// the presence projection: derive-presence's queuedCount folds 'dispatched' and
+// 'waiting_local_directory' into "queued" and drops 'deferred' entirely, so it
+// can never state the migration split correctly.
+func (q *Queries) CountAgentTasksByMigrationGroup(ctx context.Context, agentIds []pgtype.UUID) (CountAgentTasksByMigrationGroupRow, error) {
+	row := q.db.QueryRow(ctx, countAgentTasksByMigrationGroup, agentIds)
+	var i CountAgentTasksByMigrationGroupRow
+	err := row.Scan(&i.UnclaimedCount, &i.ActiveCount)
+	return i, err
+}
+
 const countRunningTasks = `-- name: CountRunningTasks :one
 SELECT count(*) FROM agent_task_queue
 WHERE agent_id = $1 AND status IN ('dispatched', 'running', 'waiting_local_directory')
@@ -3859,6 +3888,139 @@ func (q *Queries) ListAgents(ctx context.Context, workspaceID pgtype.UUID) ([]Ag
 	return items, nil
 }
 
+const listAgentsByIDsForWorkspace = `-- name: ListAgentsByIDsForWorkspace :many
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier FROM agent
+WHERE id = ANY($1::uuid[]) AND workspace_id = $2 AND kind = 'user'
+ORDER BY name ASC
+`
+
+type ListAgentsByIDsForWorkspaceParams struct {
+	AgentIds    []pgtype.UUID `json:"agent_ids"`
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+}
+
+// Workspace-scoped fetch of an explicit agent id set (MUL-5758). Every bulk
+// endpoint resolves its request ids through this query rather than trusting
+// the caller: an id from another workspace simply does not come back, so a
+// cross-workspace probe cannot distinguish "not yours" from "does not exist".
+// kind = 'user' keeps system agents (invisible execution infrastructure) out
+// of every bulk write. Non-locking variant, used by dry runs.
+func (q *Queries) ListAgentsByIDsForWorkspace(ctx context.Context, arg ListAgentsByIDsForWorkspaceParams) ([]Agent, error) {
+	rows, err := q.db.Query(ctx, listAgentsByIDsForWorkspace, arg.AgentIds, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Agent{}
+	for rows.Next() {
+		var i Agent
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Name,
+			&i.AvatarUrl,
+			&i.RuntimeMode,
+			&i.RuntimeConfig,
+			&i.Visibility,
+			&i.Status,
+			&i.MaxConcurrentTasks,
+			&i.OwnerID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Description,
+			&i.RuntimeID,
+			&i.Instructions,
+			&i.ArchivedAt,
+			&i.ArchivedBy,
+			&i.CustomEnv,
+			&i.CustomArgs,
+			&i.McpConfig,
+			&i.Model,
+			&i.ThinkingLevel,
+			&i.ComposioToolkitAllowlist,
+			&i.PermissionMode,
+			&i.Kind,
+			&i.SystemKey,
+			&i.DisabledRuntimeSkills,
+			&i.ServiceTier,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listAgentsByIDsForWorkspaceForUpdate = `-- name: ListAgentsByIDsForWorkspaceForUpdate :many
+SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier FROM agent
+WHERE id = ANY($1::uuid[]) AND workspace_id = $2 AND kind = 'user'
+ORDER BY id
+FOR UPDATE
+`
+
+type ListAgentsByIDsForWorkspaceForUpdateParams struct {
+	AgentIds    []pgtype.UUID `json:"agent_ids"`
+	WorkspaceID pgtype.UUID   `json:"workspace_id"`
+}
+
+// FOR UPDATE variant of ListAgentsByIDsForWorkspace, used by the committing
+// path of every bulk write. Locks each targeted row so a concurrent
+// archive / runtime move / env write blocks until our transaction commits,
+// which is what makes the snapshot we validated against the request stable.
+// Ordered by id (not name) so concurrent bulk writes acquire row locks in the
+// same order and cannot deadlock against each other.
+func (q *Queries) ListAgentsByIDsForWorkspaceForUpdate(ctx context.Context, arg ListAgentsByIDsForWorkspaceForUpdateParams) ([]Agent, error) {
+	rows, err := q.db.Query(ctx, listAgentsByIDsForWorkspaceForUpdate, arg.AgentIds, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Agent{}
+	for rows.Next() {
+		var i Agent
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Name,
+			&i.AvatarUrl,
+			&i.RuntimeMode,
+			&i.RuntimeConfig,
+			&i.Visibility,
+			&i.Status,
+			&i.MaxConcurrentTasks,
+			&i.OwnerID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Description,
+			&i.RuntimeID,
+			&i.Instructions,
+			&i.ArchivedAt,
+			&i.ArchivedBy,
+			&i.CustomEnv,
+			&i.CustomArgs,
+			&i.McpConfig,
+			&i.Model,
+			&i.ThinkingLevel,
+			&i.ComposioToolkitAllowlist,
+			&i.PermissionMode,
+			&i.Kind,
+			&i.SystemKey,
+			&i.DisabledRuntimeSkills,
+			&i.ServiceTier,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listAllAgents = `-- name: ListAllAgents :many
 SELECT id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier FROM agent
 WHERE workspace_id = $1 AND kind = 'user'
@@ -5090,6 +5252,93 @@ func (q *Queries) MergeCommentIntoPendingTask(ctx context.Context, arg MergeComm
 	return i, err
 }
 
+const migrateAgentsToRuntime = `-- name: MigrateAgentsToRuntime :many
+UPDATE agent SET
+    runtime_id = $1,
+    runtime_mode = $2,
+    model = CASE WHEN $3::boolean THEN '' ELSE model END,
+    thinking_level = CASE WHEN $3::boolean THEN NULL ELSE thinking_level END,
+    service_tier = CASE WHEN $3::boolean THEN NULL ELSE service_tier END,
+    updated_at = now()
+WHERE id = ANY($4::uuid[])
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier
+`
+
+type MigrateAgentsToRuntimeParams struct {
+	RuntimeID          pgtype.UUID   `json:"runtime_id"`
+	RuntimeMode        string        `json:"runtime_mode"`
+	ClearModelSettings bool          `json:"clear_model_settings"`
+	AgentIds           []pgtype.UUID `json:"agent_ids"`
+}
+
+// Re-binds an explicit agent set onto one target runtime (MUL-5758).
+//
+// clear_model_settings mirrors what the agent detail inspector has always done
+// on a single-agent runtime switch: model / thinking_level / service_tier are
+// runtime-native, so carrying them across a provider change either smuggles a
+// foreign model id to the daemon or trips UpdateAgent's literal-invalid
+// thinking_level / service_tier guard. Clearing lets the new runtime resolve
+// its own defaults. model is a NOT NULL column cleared to ” (same as the
+// inspector's `model: ""`), while thinking_level / service_tier are nullable
+// and cleared to NULL (same as ClearAgentThinkingLevel / ClearAgentServiceTier).
+//
+// The caller has already row-locked these ids via
+// ListAgentsByIDsForWorkspaceForUpdate and filtered out everything it may not
+// write, so this statement takes the id set verbatim.
+func (q *Queries) MigrateAgentsToRuntime(ctx context.Context, arg MigrateAgentsToRuntimeParams) ([]Agent, error) {
+	rows, err := q.db.Query(ctx, migrateAgentsToRuntime,
+		arg.RuntimeID,
+		arg.RuntimeMode,
+		arg.ClearModelSettings,
+		arg.AgentIds,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []Agent{}
+	for rows.Next() {
+		var i Agent
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Name,
+			&i.AvatarUrl,
+			&i.RuntimeMode,
+			&i.RuntimeConfig,
+			&i.Visibility,
+			&i.Status,
+			&i.MaxConcurrentTasks,
+			&i.OwnerID,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Description,
+			&i.RuntimeID,
+			&i.Instructions,
+			&i.ArchivedAt,
+			&i.ArchivedBy,
+			&i.CustomEnv,
+			&i.CustomArgs,
+			&i.McpConfig,
+			&i.Model,
+			&i.ThinkingLevel,
+			&i.ComposioToolkitAllowlist,
+			&i.PermissionMode,
+			&i.Kind,
+			&i.SystemKey,
+			&i.DisabledRuntimeSkills,
+			&i.ServiceTier,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const promoteDueDeferredTasksForRuntime = `-- name: PromoteDueDeferredTasksForRuntime :many
 UPDATE agent_task_queue
 SET status = 'queued'
@@ -5729,6 +5978,110 @@ func (q *Queries) RegisterPlannedCommentForActiveTask(ctx context.Context, arg R
 	var i RegisterPlannedCommentForActiveTaskRow
 	err := row.Scan(&i.ID, &i.CoalescedCommentIds)
 	return i, err
+}
+
+const repointUnclaimedTasksToRuntime = `-- name: RepointUnclaimedTasksToRuntime :many
+UPDATE agent_task_queue
+SET runtime_id = $1
+WHERE agent_id = ANY($2::uuid[])
+  AND status IN ('queued', 'deferred')
+  AND runtime_id IS DISTINCT FROM $1
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for
+`
+
+type RepointUnclaimedTasksToRuntimeParams struct {
+	ToRuntimeID pgtype.UUID   `json:"to_runtime_id"`
+	AgentIds    []pgtype.UUID `json:"agent_ids"`
+}
+
+// Moves an agent set's not-yet-claimed tasks onto the runtime those agents
+// were just migrated to (MUL-5758).
+//
+// Without this, a runtime switch strands work: the daemon lists claim
+// candidates by agent_task_queue.runtime_id (ListQueuedClaimCandidatesByRuntime)
+// and ClaimTask only accepts a row whose runtime_id matches the claiming
+// runtime, so a task queued before the switch stays visible ONLY to the old
+// runtime — which, in the runtime-failure migration this feature exists for, is
+// exactly the machine that is gone.
+//
+// Deliberately restricted to 'queued' and 'deferred', the two statuses no
+// daemon owns yet. 'dispatched' / 'running' / 'waiting_local_directory' are
+// already claimed by the old runtime and are actively being executed there;
+// re-pointing them would desync that daemon's ownership and risk a double run.
+// Those stay put and are reported to the caller instead.
+//
+// Not filtered by source runtime: a bulk selection can span several runtimes,
+// and any unclaimed task of a migrated agent belongs on its new runtime.
+func (q *Queries) RepointUnclaimedTasksToRuntime(ctx context.Context, arg RepointUnclaimedTasksToRuntimeParams) ([]AgentTaskQueue, error) {
+	rows, err := q.db.Query(ctx, repointUnclaimedTasksToRuntime, arg.ToRuntimeID, arg.AgentIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentTaskQueue{}
+	for rows.Next() {
+		var i AgentTaskQueue
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.IssueID,
+			&i.Status,
+			&i.Priority,
+			&i.DispatchedAt,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.Result,
+			&i.Error,
+			&i.CreatedAt,
+			&i.Context,
+			&i.RuntimeID,
+			&i.SessionID,
+			&i.WorkDir,
+			&i.TriggerCommentID,
+			&i.ChatSessionID,
+			&i.AutopilotRunID,
+			&i.Attempt,
+			&i.MaxAttempts,
+			&i.ParentTaskID,
+			&i.FailureReason,
+			&i.TriggerSummary,
+			&i.ForceFreshSession,
+			&i.IsLeaderTask,
+			&i.WaitReason,
+			&i.InitiatorUserID,
+			&i.HandoffNote,
+			&i.PrepareLeaseExpiresAt,
+			&i.SquadID,
+			&i.RuntimeMcpOverlay,
+			&i.EscalationForTaskID,
+			&i.FireAt,
+			&i.OriginatorUserID,
+			&i.RuntimeConnectedApps,
+			&i.CoalescedCommentIds,
+			&i.DeliveredCommentIds,
+			&i.ChatInputTaskID,
+			&i.ChatFinalizeDeferredAt,
+			&i.OriginatorSource,
+			&i.DelegatedFromTaskID,
+			&i.RetryOfTaskID,
+			&i.RerunOfTaskID,
+			&i.RuleVersionID,
+			&i.TriggerEvidenceKind,
+			&i.TriggerEvidenceRefID,
+			&i.AccountableUserID,
+			&i.SessionRolloutMissing,
+			&i.RetiredSessionID,
+			&i.QuickActionsDisabled,
+			&i.RegenerateQuickActionsFor,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const requeueAgentTaskAfterClaimFailure = `-- name: RequeueAgentTaskAfterClaimFailure :one

@@ -113,7 +113,36 @@
     "archive_dialog_title": "\"{{name}}\" をアーカイブしますか？",
     "archive_dialog_description": "このエージェントは割り当てやメンションができなくなり、アクティブな作業はすべてキャンセルされます。履歴はすべて保持され、後で復元できます。",
     "archive_dialog_cancel": "キャンセル",
-    "archive_dialog_confirm": "アーカイブ"
+    "archive_dialog_confirm": "アーカイブ",
+    "switch_runtime": "ランタイムを切り替え",
+    "inject_env": "環境変数を追加"
+  },
+  "migrate_dialog": {
+    "title_single": "「{{name}}」のランタイムを切り替え",
+    "title_bulk_other": "{{count}} 件のエージェントのランタイムを切り替え",
+    "description": "待機中の作業はエージェントとともに新しいランタイムへ移ります。実行中の作業は現在のランタイムで完了するまでそのまま残ります。",
+    "checking": "変更内容を確認しています…",
+    "tasks_migrating_other": "待機中の作業 {{count}} 件が新しいランタイムへ移ります。",
+    "tasks_staying_other": "実行中の作業 {{count}} 件は完了まで現在のランタイムに残ります。",
+    "clearing_title": "次のランタイム依存の設定がクリアされます",
+    "skipped_notice_other": "選択したエージェントのうち {{count}} 件はスキップされます。",
+    "target_offline": "このランタイムはオフラインです。再接続するまで作業は待機します。",
+    "nothing_to_do": "移行できるエージェントがありません。すでにこのランタイム上にあるか、管理権限がありません。",
+    "cancel": "キャンセル",
+    "confirm": "ランタイムを切り替え",
+    "success_toast_other": "{{count}} 件のエージェントを移行しました · 待機中の作業 {{tasks}} 件も移行",
+    "skipped_toast_other": "{{count}} 件をスキップしました",
+    "failed_toast": "ランタイムの切り替えに失敗しました"
+  },
+  "inject_env_dialog": {
+    "title_single": "「{{name}}」に環境変数を追加",
+    "title_bulk_other": "{{count}} 件のエージェントに環境変数を追加",
+    "description": "入力したキーだけが追加・上書きされます。他の変数はそのまま残り、既存の値がここに表示されることはありません。",
+    "current_key_count_other": "変数 {{count}} 件",
+    "confirm": "適用",
+    "success_toast": "{{agents}} 件のエージェントに適用 · 追加 {{added}} 件 · 上書き {{overwritten}} 件",
+    "skipped_toast_other": "{{count}} 件をスキップしました",
+    "failed_toast": "環境変数の更新に失敗しました"
   },
   "detail": {
     "back_to_agents": "エージェント",

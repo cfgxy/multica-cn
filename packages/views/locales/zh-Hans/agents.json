@@ -121,7 +121,36 @@
     "archive_dialog_title": "归档\"{{name}}\"？",
     "archive_dialog_description": "归档后这个智能体将无法被分配或提及，进行中的 task 会被取消。所有历史会被保留，可以稍后恢复。",
     "archive_dialog_cancel": "取消",
-    "archive_dialog_confirm": "归档"
+    "archive_dialog_confirm": "归档",
+    "switch_runtime": "切换 Runtime",
+    "inject_env": "注入环境变量"
+  },
+  "migrate_dialog": {
+    "title_single": "为\"{{name}}\"切换 Runtime",
+    "title_bulk_other": "为 {{count}} 个 agent 切换 Runtime",
+    "description": "排队中的 task 会跟随 agent 迁移到新 Runtime。已经在运行的 task 会留在原 Runtime 上跑完。",
+    "checking": "正在确认这次操作的影响…",
+    "tasks_migrating_other": "{{count}} 个排队中的 task 会迁移到新 Runtime。",
+    "tasks_staying_other": "{{count}} 个运行中的 task 会留在原 Runtime 上跑完。",
+    "clearing_title": "以下 Runtime 相关设置会被清空",
+    "skipped_notice_other": "{{count}} 个选中的 agent 会被跳过。",
+    "target_offline": "该 Runtime 当前离线，task 会等待它重新连接。",
+    "nothing_to_do": "没有可迁移的 agent——选中的 agent 要么已经在这个 Runtime 上，要么你无权管理。",
+    "cancel": "取消",
+    "confirm": "切换 Runtime",
+    "success_toast_other": "已迁移 {{count}} 个 agent · {{tasks}} 个排队 task 一并迁移",
+    "skipped_toast_other": "跳过了 {{count}} 个 agent",
+    "failed_toast": "切换 Runtime 失败"
+  },
+  "inject_env_dialog": {
+    "title_single": "为\"{{name}}\"注入环境变量",
+    "title_bulk_other": "为 {{count}} 个 agent 注入环境变量",
+    "description": "只会新增或覆盖你填写的变量，其他变量保持不变，这里也不会显示已有变量的值。",
+    "current_key_count_other": "{{count}} 个变量",
+    "confirm": "应用",
+    "success_toast": "已应用到 {{agents}} 个 agent · 新增 {{added}} 个 · 覆盖 {{overwritten}} 个",
+    "skipped_toast_other": "跳过了 {{count}} 个 agent",
+    "failed_toast": "更新环境变量失败"
   },
   "detail": {
     "back_to_agents": "智能体",

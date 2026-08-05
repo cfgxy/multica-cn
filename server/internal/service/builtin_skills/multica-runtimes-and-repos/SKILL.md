@@ -41,11 +41,18 @@ multica runtime usage <runtime-id> --output json
 multica runtime activity <runtime-id> --output json
 multica runtime update <runtime-id> --target-version <version> --output json
 multica runtime delete <runtime-id>
+multica runtime migrate-agents <target-runtime-id> --agent <agent-id> [--agent <agent-id>...] [--from <source-runtime-id>] [--dry-run]
 multica repo checkout <url>
 multica repo checkout <url> --ref <branch-or-sha>
 ```
 
 `runtime update` and `runtime delete` are writes. Starting a runtime update is limited to its owner or a workspace owner/admin; the original initiator may keep polling that specific in-flight request if their admin role changes. `runtime delete` removes a runtime registration; if active agents are still bound, it refuses unless the user explicitly passes `--cascade`, which unbinds those agents and cancels their queued/running tasks before deleting the runtime. Unbinding keeps the agents and everything they own — instructions, skills, chats, labels, channel installations, autopilots and task history — and only clears `agent.runtime_id`; an unbound agent cannot run until it is bound to a runtime again (`multica agent update <id> --runtime-id <runtime-id>`), and every trigger path refuses it with `agent_runtime_required`. `repo checkout` creates a dedicated branch in the task working directory. Most runtimes use a linked worktree; Linux Codex uses task-local Git metadata so a task can stage and commit without making the shared `.repos` cache writable.
+
+`runtime migrate-agents` moves agents ONTO the runtime named in the command (the path runtime is the target) and is the recovery path when a machine goes down: rebinding agents one by one leaves their already-queued work behind. Because the daemon lists claim candidates by `agent_task_queue.runtime_id`, a task queued before a plain rebind stays visible only to the runtime the agent left — permanently stuck when that runtime is the dead one. This command moves `queued` and `deferred` tasks along with the agents in the same transaction, then wakes the target runtime so it claims the inherited work instead of waiting out its "no work here" cache.
+
+Tasks already claimed (`dispatched` / `running` / `waiting_local_directory`) are NOT moved: a daemon owns them and is executing them, so they finish where they are and are reported as `tasks_staying_active`. Cancel them explicitly first if you need the runtime fully drained.
+
+`model`, `thinking_level` and `service_tier` are runtime-native, so migration clears them and reports each cleared value; the new runtime then resolves its own defaults. Agents you cannot manage, and agents already on the target, come back in `skipped` rather than failing the request — everything else is all-or-nothing. `--dry-run` performs every check and count and writes nothing, which is what the confirmation dialog in the UI reads. `--from <source-runtime-id>` makes the server re-derive that runtime's agent set inside the transaction and refuse with `runtime_migration_plan_changed` (409) if it drifted since you listed it; use it whenever you built the agent list from an earlier `runtime list` / agent query. Same server endpoint as the UI's Agent List row menu, batch toolbar, agent detail runtime field and the Runtime page's migrate action — one agent is simply a one-element request.
 
 `repo checkout` requires `MULTICA_DAEMON_PORT`; it is intended to run inside a daemon task. If absent, you are not in the normal agent checkout path. When a project `github_repo` resource has `resource_ref.ref`, `repo checkout <url>` uses that ref by default for the current task; an explicit `repo checkout <url> --ref <branch-or-sha>` overrides it.
 
