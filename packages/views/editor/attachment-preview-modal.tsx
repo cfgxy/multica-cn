@@ -565,6 +565,33 @@ function PreviewPanel({
           </span>
         </div>
         <div className="ml-auto flex items-center gap-1">
+          {/* Navigation leads the action cluster, arrows off the image
+              (they covered exactly the content being looked at) and the
+              counter between the arrows it describes. min-w keeps the
+              arrows from shifting as digit counts change. */}
+          {sequence && (
+            <div className="mr-1 flex shrink-0 items-center gap-0.5">
+              <SequenceButton
+                side="prev"
+                label={t(($) => $.image.previous)}
+                onClick={sequence.onPrev}
+              />
+              <span
+                className="min-w-10 select-none text-center text-caption tabular-nums text-muted-foreground"
+                aria-live="polite"
+              >
+                {t(($) => $.image.sequence_position, {
+                  index: sequence.index + 1,
+                  total: sequence.total,
+                })}
+              </span>
+              <SequenceButton
+                side="next"
+                label={t(($) => $.image.next)}
+                onClick={sequence.onNext}
+              />
+            </div>
+          )}
           {/* Standalone preview keeps the original gate — no controls until
               the image is measured, and none at all for content that has no
               intrinsic size to drive. In a sequence they stay mounted
@@ -635,32 +662,6 @@ function PreviewPanel({
             onDownload={onDownload}
           />
         )}
-        {sequence && (
-          <>
-            <SequenceButton
-              side="prev"
-              label={t(($) => $.image.previous)}
-              onClick={sequence.onPrev}
-            />
-            <SequenceButton
-              side="next"
-              label={t(($) => $.image.next)}
-              onClick={sequence.onNext}
-            />
-            {/* Position lives with the navigation it describes, not in the
-                header's action cluster — same bottom-counter shape as the
-                mobile lightbox. */}
-            <span
-              className="pointer-events-none absolute bottom-3 left-1/2 z-10 -translate-x-1/2 select-none rounded-full bg-background/80 px-2.5 py-1 text-caption tabular-nums text-foreground shadow-sm backdrop-blur-sm"
-              aria-live="polite"
-            >
-              {t(($) => $.image.sequence_position, {
-                index: sequence.index + 1,
-                total: sequence.total,
-              })}
-            </span>
-          </>
-        )}
       </div>
     </>
   );
@@ -670,10 +671,12 @@ function PreviewPanel({
 // Sequence controls
 // ---------------------------------------------------------------------------
 
-// Edge-anchored chevrons, the shape every image viewer uses. `onClick`
+// Header chevrons in the same idiom as the download/close buttons. `onClick`
 // undefined means "boundary reached": the button stays mounted but disabled,
 // so the reader can see they are at one end instead of the control vanishing
-// and shifting nothing into its place.
+// and shifting the counter into its place. `enabled:hover` so the disabled
+// state gets no hover feedback (and no pointer-events-none — a disabled
+// control should still catch the cursor and read as "nothing here").
 function SequenceButton({
   side,
   label,
@@ -687,22 +690,13 @@ function SequenceButton({
   return (
     <button
       type="button"
-      className={cn(
-        "absolute top-1/2 z-10 -translate-y-1/2 rounded-full bg-background/80 p-2 text-foreground shadow-sm backdrop-blur-sm transition-opacity",
-        // No disabled:pointer-events-none (the shadcn default): this button
-        // floats over the zoom canvas, and letting a disabled boundary arrow
-        // pass pointer events through would show the canvas's grab cursor —
-        // "draggable here" — exactly where the UI means "nothing to click".
-        // The disabled attribute already blocks activation.
-        "enabled:hover:bg-background disabled:opacity-30",
-        side === "prev" ? "left-3" : "right-3",
-      )}
+      className="rounded-md p-1.5 text-muted-foreground transition-colors enabled:hover:bg-secondary enabled:hover:text-foreground disabled:opacity-30"
       title={label}
       aria-label={label}
       disabled={!onClick}
       onClick={onClick}
     >
-      <Icon className="size-5" />
+      <Icon className="size-4" />
     </button>
   );
 }
