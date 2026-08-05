@@ -39,7 +39,7 @@ function renderQueue(headStatus = "running") {
 }
 
 describe("ChatQueue", () => {
-  it("matches the ChatGPT desktop queue chrome without a separate header", () => {
+  it("renders a standalone queue card without a separate header", () => {
     const { container } = renderQueue();
 
     expect(screen.getByRole("region", { name: "2 queued messages" })).toBeInTheDocument();
@@ -53,12 +53,14 @@ describe("ChatQueue", () => {
 
     const shell = container.querySelector('[data-slot="chat-queue-shell"]');
     const queue = container.querySelector('[data-slot="chat-queue"]');
-    expect(shell).toHaveClass("-mb-8");
+    // Tucked stack, owned entirely by the queue: it slides under the composer
+    // (negative margin + z-0) while the composer's chrome stays untouched.
+    expect(shell).toHaveClass("z-0", "-mb-3");
     expect(queue).toHaveClass(
-      "rounded-4xl",
+      "rounded-lg",
       "border-surface-border",
       "bg-surface",
-      "pb-10",
+      "pb-4",
     );
     expect(container.querySelectorAll('[data-slot="chat-queue-row"]')).toHaveLength(2);
     expect(container.querySelectorAll('[data-slot="chat-queue-item-icon"]')).toHaveLength(2);
@@ -101,7 +103,7 @@ describe("ChatQueue", () => {
     }));
 
     const scroller = actions.container.querySelector('[data-slot="chat-queue-list"]');
-    expect(scroller).toHaveClass("max-h-48");
+    expect(scroller).toHaveClass("max-h-40");
 
     const clearTrigger = screen.getAllByLabelText("More queue actions")[0]!;
     fireEvent.click(clearTrigger);

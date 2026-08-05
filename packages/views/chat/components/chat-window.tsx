@@ -914,7 +914,6 @@ export function ChatWindow() {
         onStop={handleStop}
         isRunning={!!pendingTaskId}
         allowSubmitWhileRunning={pendingTask?.supports_queue === true}
-        hasQueue={queuedTasks.length > 0}
         disabled={
           isSessionArchived || isAgentArchived || !activeAgentRuntimeBound
         }
