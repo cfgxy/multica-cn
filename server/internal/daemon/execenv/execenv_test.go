@@ -2101,7 +2101,7 @@ func TestInjectRuntimeConfigCodexWindowsUsesContentFile(t *testing.T) {
 		"On Windows, **always write the comment body to a UTF-8 file",
 		"$OutputEncoding",
 		"--content-file",
-		"silently dropping non-ASCII characters as `?`",
+		"silently drops non-ASCII characters as `?`",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("AGENTS.md missing Codex/Windows file-first guidance %q\n---\n%s", want, s)
@@ -4951,8 +4951,10 @@ func TestInjectRuntimeConfigMentionLoopHardening(t *testing.T) {
 		for _, want := range []string{
 			"side-effecting actions",
 			"enqueues a new run for that agent",
-			"When NOT to use a mention link",
-			"When a mention IS appropriate",
+			// MUL-5442 judgment rewrite: the two H3 subsections merged into one
+			// paragraph — pin the policy anchors, not the retired headings.
+			"Default: NO mention",
+			"Mention only when escalating to a human owner",
 			"end with no mention at all",
 			"Silence ends conversations",
 		} {
