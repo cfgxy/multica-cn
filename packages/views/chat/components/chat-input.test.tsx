@@ -663,21 +663,14 @@ describe("ChatInput project context", () => {
     expect(screen.queryByRole("button", { name: "Queue message" })).not.toBeInTheDocument();
   });
 
-  it("raises and rounds the composer above an attached queue", () => {
-    const { container } = renderInput({ hasQueue: true });
-
-    expect(container.firstElementChild).toHaveClass("relative", "z-10");
-    expect(container.querySelector('[data-slot="chat-input-surface"]')).toHaveClass(
-      "rounded-4xl",
-      "shadow-[var(--menu-shadow)]",
-    );
-  });
-
-  it("keeps the default composer chrome without an attached queue", () => {
-    const { container } = renderInput({ hasQueue: false });
+  it("keeps the composer chrome independent of the queue", () => {
+    // The follow-up queue tucks its bottom edge under the composer, which
+    // therefore ALWAYS paints on top (static z-10) — but the queue's presence
+    // must never restyle the input surface itself.
+    const { container } = renderInput();
     const surface = container.querySelector('[data-slot="chat-input-surface"]');
 
-    expect(container.firstElementChild).not.toHaveClass("relative", "z-10");
+    expect(container.firstElementChild).toHaveClass("relative", "z-10");
     expect(surface).toHaveClass("rounded-lg");
     expect(surface).not.toHaveClass(
       "rounded-4xl",
