@@ -4065,6 +4065,39 @@ func TestClaimTask_QuickCreateHandoffWaitIsBounded(t *testing.T) {
 		t.Fatalf("active handoff claimed task %s before wait bound", uuidToString(claimed.ID))
 	}
 
+	// The delayed handoff is filtered before ORDER BY/LIMIT, so a lower-priority
+	// unrelated task for the same agent must still run instead of sitting behind
+	// the handoff at the head of the queue.
+	var unrelatedIssueID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO issue (
+			workspace_id, title, creator_type, creator_id,
+			assignee_type, assignee_id, priority, number
+		)
+		VALUES (
+			$1, 'Unrelated task behind quick-create handoff', 'agent', $2,
+			'agent', $2, 'low',
+			(SELECT COALESCE(MAX(number), 0) + 1 FROM issue WHERE workspace_id = $1)
+		)
+		RETURNING id
+	`, testWorkspaceID, fixture.agentID).Scan(&unrelatedIssueID); err != nil {
+		t.Fatalf("setup: create unrelated issue: %v", err)
+	}
+	t.Cleanup(func() { testPool.Exec(ctx, `DELETE FROM issue WHERE id = $1`, unrelatedIssueID) })
+
+	var unrelatedTaskID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_task_queue (agent_id, runtime_id, issue_id, status, priority)
+		VALUES ($1, $2, $3, 'queued', 0)
+		RETURNING id
+	`, fixture.agentID, fixture.runtimeID, unrelatedIssueID).Scan(&unrelatedTaskID); err != nil {
+		t.Fatalf("setup: create unrelated queued task: %v", err)
+	}
+	unrelated := claimTaskForRuntimeGuard(t, fixture.runtimeID, fixture.daemonID)
+	if unrelated.ID != unrelatedTaskID {
+		t.Fatalf("claimed task = %q, want unrelated task %q while handoff waits", unrelated.ID, unrelatedTaskID)
+	}
+
 	if _, err := testPool.Exec(ctx, `
 		UPDATE agent_task_queue SET created_at = now() - interval '10 minutes' WHERE id = $1
 	`, fixture.issueTaskID); err != nil {

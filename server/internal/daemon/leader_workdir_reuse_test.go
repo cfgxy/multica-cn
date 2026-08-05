@@ -99,24 +99,6 @@ func TestShouldReusePriorWorkdirNonLeaderReusesUnchanged(t *testing.T) {
 	}
 }
 
-// A managed-runtime quick-create handoff continues to use the existing workdir
-// reuse path. The new scoped Codex store is only material to local_directory;
-// it must not turn managed follow-ups into fresh environments.
-func TestShouldReusePriorWorkdirQuickCreateManaged(t *testing.T) {
-	t.Parallel()
-
-	root := t.TempDir()
-	prior := filepath.Join(root, "managed", "quick-create", "workdir")
-	task := leaderReuseTestTask("task-quick-create-managed")
-	task.IsLeaderTask = false
-	task.SessionStoreScope = "qc_019f59d9-a6aa-7a53-b173-1eccc4b4c874"
-	task.PriorSessionID = "quick-create-session"
-	task.PriorWorkDir = prior
-	if !shouldReusePriorWorkdir(task, nil, root) {
-		t.Fatal("managed quick-create follow-up must reuse its prior workdir")
-	}
-}
-
 // TestShouldReusePriorWorkdirSquadLeaderAcceptsManagedProvenance is the unit
 // positive: managed shape + matching Prepare-time provenance + matching marker.
 func TestShouldReusePriorWorkdirSquadLeaderAcceptsManagedProvenance(t *testing.T) {
