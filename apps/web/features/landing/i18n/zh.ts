@@ -296,7 +296,7 @@ export function createZhDict(allowSignup: boolean): LandingDict {
       {
         version: "0.4.19",
         date: "2026-08-05",
-        title: "智能体运行时也能继续发消息",
+        title: "prompt 继续瘦身、支持新 Runtime 和聊天模式消息队列",
         changes: [],
         features: [
           "智能体运行时也能继续发消息，会自动排队依次执行。",

@@ -296,7 +296,7 @@ export function createEnDict(allowSignup: boolean): LandingDict {
       {
         version: "0.4.19",
         date: "2026-08-05",
-        title: "Queue your next messages while an agent works",
+        title: "Leaner prompts, new runtimes, and a chat message queue",
         changes: [],
         features: [
           "You can keep sending while an agent works — messages line up and run one by one.",

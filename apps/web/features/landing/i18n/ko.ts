@@ -271,7 +271,7 @@ export function createKoDict(allowSignup: boolean): LandingDict {
         {
           version: "0.4.19",
           date: "2026-08-05",
-          title: "에이전트가 일하는 중에도 다음 메시지를 보냅니다",
+          title: "프롬프트 추가 경량화, 새 런타임과 채팅 메시지 대기열",
           changes: [],
           features: [
             "에이전트가 실행 중에도 보낼 수 있고, 메시지는 차례대로 처리됩니다.",

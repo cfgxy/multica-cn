@@ -272,7 +272,7 @@ export function createJaDict(allowSignup: boolean): LandingDict {
         {
           version: "0.4.19",
           date: "2026-08-05",
-          title: "エージェントの実行中も次のメッセージを送れます",
+          title: "プロンプトをさらに軽量化、新しいランタイムとチャットのメッセージ キュー",
           changes: [],
           features: [
             "エージェントの実行中でも送信でき、メッセージは順番に処理されます。",
