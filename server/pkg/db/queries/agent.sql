@@ -248,6 +248,23 @@ WHERE runtime_id = $1 AND archived_at IS NULL AND kind = 'user'
 ORDER BY name ASC
 FOR UPDATE;
 
+-- name: ListActiveAgentsByRuntimeForWorkspaceForUpdate :many
+-- Workspace-scoped ListActiveAgentsByRuntimeForUpdate (MUL-5758).
+--
+-- The unscoped variant is safe for the cascade delete, whose runtime came from
+-- an authorized path param. The migration endpoint's source runtime comes from
+-- the request body, and its rows are echoed back in the stale-plan 409 — so
+-- this variant makes it structurally impossible for that response to name an
+-- agent outside the caller's workspace, even if a future edit drops the
+-- handler's own workspace check on the id.
+SELECT * FROM agent
+WHERE runtime_id = $1
+  AND workspace_id = @workspace_id
+  AND archived_at IS NULL
+  AND kind = 'user'
+ORDER BY name ASC
+FOR UPDATE;
+
 -- name: ListUserAgentsByRuntimeForUpdate :many
 -- Locks active AND archived user agents before a runtime teardown. Locking only
 -- the active snapshot leaves a restore race: an archived row can become active

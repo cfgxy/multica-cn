@@ -83,6 +83,7 @@ only.
 | `MergeAgentsEnv` bulk merge | `agent_env.go` `MergeAgentsEnv` | `PATCH /api/agents/env`. Rejects agent actors first, then per agent: unresolvable/cross-workspace → `skipped` `not_found`, not writable → `skipped` `forbidden`. Persist + one `agent_env_updated` audit row per agent share one transaction (audit failure rolls the whole batch back). Response carries only submitted key names, never values (MUL-5758) |
 | `mergeEnvKeys` merge rule | `agent_env.go` `mergeEnvKeys` | Submitted keys win, all other keys survive; a resubmitted identical value is reported in neither `added_keys` nor `overwritten_keys` |
 | Bulk input guards | `agent_migrate.go` `parseBulkAgentIDs`; `MergeAgentsEnv` | Non-empty, all-UUID, de-duplicated, ≤ 200 ids; blank keys, an empty `set` and the `****` sentinel are 400 |
+| Env key normalisation | `agent_env.go` `MergeAgentsEnv` | Keys are trimmed at the request boundary and two keys that collide after trimming (`"KEY"` and `" KEY "`) are rejected with 400 rather than resolved — otherwise Go's randomised map iteration would decide which value is stored. `mergeEnvKeys` therefore receives already-normalised keys |
 | `UpdateAgent` persists / clears `mcp_config` | 944–948, 1060–1061 | Tri-state from the raw body: key omitted → no change; literal `null` → `ClearAgentMcpConfig`; object → replace. No 400 like `custom_env` — `mcp_config` IS updatable here |
 | `description` ≤ 255 on update too | 921–924 | same cap re-checked on update |
 

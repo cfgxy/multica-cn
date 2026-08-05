@@ -328,6 +328,11 @@ func TestMergeAgentsEnv_RejectsUnusableInput(t *testing.T) {
 		{"empty set", map[string]string{}},
 		{"blank key", map[string]string{"   ": "value"}},
 		{"masked placeholder", map[string]string{"KEY": envSentinel}},
+		// Keys are trimmed before they are stored, so these two name one
+		// variable. Accepting both would let Go's randomised map iteration
+		// pick the winner: the same request would write a different secret on
+		// different runs. The UI cannot produce this; the API and CLI can.
+		{"keys colliding after trim", map[string]string{"KEY": "one", " KEY ": "two"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -342,6 +347,48 @@ func TestMergeAgentsEnv_RejectsUnusableInput(t *testing.T) {
 	}
 	if got := storedEnv(t, agentID); len(got) != 0 {
 		t.Errorf("rejected requests must write nothing, got %v", got)
+	}
+}
+
+// TestMergeAgentsEnv_TrimsKeysBeforeWriting pins the other half of the trim
+// rule: a single padded key is accepted and stored under its trimmed name, so
+// `" KEY "` and a later `"KEY"` address the same variable instead of silently
+// creating two.
+func TestMergeAgentsEnv_TrimsKeysBeforeWriting(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	agentID := createHandlerTestAgent(t, "env-merge-trim", nil)
+
+	w := mergeEnvRequest(t, testUserID, map[string]any{
+		"agent_ids": []string{agentID},
+		"set":       map[string]string{"  PADDED  ": "value"},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	stored := storedEnv(t, agentID)
+	if stored["PADDED"] != "value" || len(stored) != 1 {
+		t.Fatalf("expected the key stored trimmed, got %v", stored)
+	}
+	resp := decodeMergeEnvResponse(t, w)
+	if len(resp.Results) != 1 || strings.Join(resp.Results[0].AddedKeys, ",") != "PADDED" {
+		t.Errorf("response should report the trimmed key, got %+v", resp.Results)
+	}
+
+	// Re-submitting the same variable unpadded is an overwrite of that one
+	// key, not a second key.
+	w = mergeEnvRequest(t, testUserID, map[string]any{
+		"agent_ids": []string{agentID},
+		"set":       map[string]string{"PADDED": "second"},
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 on the second write, got %d: %s", w.Code, w.Body.String())
+	}
+	if stored := storedEnv(t, agentID); stored["PADDED"] != "second" || len(stored) != 1 {
+		t.Errorf("expected one key overwritten, got %v", stored)
 	}
 }
 

@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -353,8 +354,16 @@ func (h *Handler) MergeAgentsEnv(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "set must contain at least one key")
 		return
 	}
+	// Normalise at the boundary and reject collisions rather than resolving
+	// them. Keys are trimmed before they are stored, so `"KEY"` and `" KEY "`
+	// name the same variable; accepting both would let Go's randomised map
+	// iteration decide which value survives, and the same request would write
+	// different secrets on different runs. The UI cannot produce this, but the
+	// API and CLI can.
+	normalizedSet := make(map[string]string, len(req.Set))
 	for key, value := range req.Set {
-		if strings.TrimSpace(key) == "" {
+		trimmed := strings.TrimSpace(key)
+		if trimmed == "" {
 			writeError(w, http.StatusBadRequest, "env keys must not be blank")
 			return
 		}
@@ -366,6 +375,11 @@ func (h *Handler) MergeAgentsEnv(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "env values must not be the masked placeholder")
 			return
 		}
+		if _, dup := normalizedSet[trimmed]; dup {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("duplicate env key %q after trimming whitespace", trimmed))
+			return
+		}
+		normalizedSet[trimmed] = value
 	}
 
 	workspaceID := h.resolveWorkspaceID(r)
@@ -431,7 +445,7 @@ func (h *Handler) MergeAgentsEnv(w http.ResponseWriter, r *http.Request) {
 		}
 
 		existing := unmarshalCustomEnv(agent)
-		merged, result := mergeEnvKeys(existing, req.Set)
+		merged, result := mergeEnvKeys(existing, normalizedSet)
 		result.AgentID = key
 		result.Name = agent.Name
 
@@ -506,13 +520,17 @@ func (h *Handler) MergeAgentsEnv(w http.ResponseWriter, r *http.Request) {
 			"workspace_id", workspaceID,
 			"agents", len(out.Results),
 			"skipped", len(out.Skipped),
-			"keys", len(req.Set))...)
+			"keys", len(normalizedSet))...)
 
 	writeJSON(w, http.StatusOK, out)
 }
 
 // mergeEnvKeys applies an injection to one agent's env: every submitted key is
 // written, every other key is left exactly as it was.
+//
+// `set` must already be normalised — trimmed keys, no duplicates. The handler
+// does that at the request boundary and rejects collisions there, so this
+// function never has to pick a winner between two spellings of one key.
 //
 // Returns the map to persist plus the per-agent result, whose key lists cover
 // only what the caller submitted — the caller never learns a key name it did
@@ -523,8 +541,7 @@ func mergeEnvKeys(existing, set map[string]string) (map[string]string, mergeAgen
 		merged[k] = v
 	}
 	result := mergeAgentsEnvResult{AddedKeys: []string{}, OverwrittenKeys: []string{}}
-	for k, v := range set {
-		key := strings.TrimSpace(k)
+	for key, v := range set {
 		old, had := existing[key]
 		switch {
 		case !had:

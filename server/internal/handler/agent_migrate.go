@@ -3,11 +3,13 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"sort"
 
 	"github.com/go-chi/chi/v5"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/logger"
@@ -171,11 +173,24 @@ func (h *Handler) MigrateAgentsToRuntime(w http.ResponseWriter, r *http.Request)
 	// down while we bind agents onto it; locking the source keeps its agent
 	// set stable for the stale-plan comparison below. Sorted order so two
 	// migrations in opposite directions cannot deadlock on the pair.
+	//
+	// Both locks are workspace-scoped. The target came from the path and was
+	// already resolved in this workspace, but expected_source_runtime_id comes
+	// straight from the request body with no prior check — locking it unscoped
+	// would let a caller authorized here name a runtime in ANOTHER workspace
+	// and then read its agents out of the stale-plan 409 below.
 	lockIDs := []pgtype.UUID{target.ID}
 	if expectedSource.Valid && uuidToString(expectedSource) != uuidToString(target.ID) {
 		lockIDs = append(lockIDs, expectedSource)
 	}
-	if err := lockRuntimesInIDOrder(r.Context(), qtx, lockIDs); err != nil {
+	if err := lockRuntimesInIDOrder(r.Context(), qtx, target.WorkspaceID, lockIDs); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			// Only the source can be missing: the target was loaded from this
+			// workspace above. One message for "no such runtime" and "not your
+			// workspace" keeps the two indistinguishable.
+			writeError(w, http.StatusBadRequest, "invalid expected_source_runtime_id")
+			return
+		}
 		slog.Warn("migrate agents: lock runtimes failed",
 			append(logger.RequestAttrs(r), "error", err, "runtime_id", uuidToString(target.ID))...)
 		writeError(w, http.StatusInternalServerError, "failed to lock runtime")
@@ -186,7 +201,14 @@ func (h *Handler) MigrateAgentsToRuntime(w http.ResponseWriter, r *http.Request)
 		// The Runtime detail entry point confirmed a set the page rendered
 		// before this request. Re-derive it under the lock and refuse if it
 		// moved, so the user never migrates a plan they did not see.
-		current, err := qtx.ListActiveAgentsByRuntimeForUpdate(r.Context(), expectedSource)
+		//
+		// Workspace-scoped again rather than relying on the lock check alone:
+		// these rows are echoed back to the caller, so the query itself should
+		// make a cross-workspace row unreachable.
+		current, err := qtx.ListActiveAgentsByRuntimeForWorkspaceForUpdate(r.Context(), db.ListActiveAgentsByRuntimeForWorkspaceForUpdateParams{
+			RuntimeID:   expectedSource,
+			WorkspaceID: target.WorkspaceID,
+		})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to enumerate the source runtime's agents")
 			return
@@ -448,17 +470,25 @@ func uuidSetOf(ids []pgtype.UUID) map[string]struct{} {
 	return out
 }
 
-// lockRuntimesInIDOrder takes the runtime row locks a migration needs. Sorting
-// by id gives every caller the same acquisition order, so concurrent
-// migrations between the same two runtimes queue instead of deadlocking.
-func lockRuntimesInIDOrder(ctx context.Context, qtx *db.Queries, ids []pgtype.UUID) error {
+// lockRuntimesInIDOrder takes the runtime row locks a migration needs, scoped
+// to one workspace. Sorting by id gives every caller the same acquisition
+// order, so concurrent migrations between the same two runtimes queue instead
+// of deadlocking.
+//
+// Returns pgx.ErrNoRows when an id does not exist IN THIS WORKSPACE, which the
+// caller must surface as a plain input rejection — never as a distinct
+// "belongs to another workspace" signal.
+func lockRuntimesInIDOrder(ctx context.Context, qtx *db.Queries, workspaceID pgtype.UUID, ids []pgtype.UUID) error {
 	sorted := make([]pgtype.UUID, len(ids))
 	copy(sorted, ids)
 	sort.Slice(sorted, func(i, j int) bool {
 		return uuidToString(sorted[i]) < uuidToString(sorted[j])
 	})
 	for _, id := range sorted {
-		if _, err := qtx.LockAgentRuntime(ctx, id); err != nil {
+		if _, err := qtx.LockAgentRuntimeForWorkspace(ctx, db.LockAgentRuntimeForWorkspaceParams{
+			ID:          id,
+			WorkspaceID: workspaceID,
+		}); err != nil {
 			return err
 		}
 	}

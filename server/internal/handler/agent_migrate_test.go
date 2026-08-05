@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/google/uuid"
@@ -428,6 +429,96 @@ func TestMigrateAgentsToRuntime_StalePlanConflict(t *testing.T) {
 	}
 	if got := agentRuntimeIDOf(t, confirmed); got != target {
 		t.Errorf("confirmed agent runtime = %s, want %s", got, target)
+	}
+}
+
+// TestMigrateAgentsToRuntime_ForeignSourceRuntimeLeaksNothing is the MUL-5758
+// review regression: expected_source_runtime_id arrives in the REQUEST BODY,
+// so it has had none of the authorization the path runtime got.
+//
+// Before the fix the source was locked and its agents listed by runtime id
+// alone, so a caller legitimately migrating inside their own workspace could
+// name a runtime belonging to a different workspace and read that runtime's
+// active agents — ids and names — straight out of the stale-plan 409 body.
+// The explicit-agent-id path never leaked existence like that, and this one
+// must not either.
+func TestMigrateAgentsToRuntime_ForeignSourceRuntimeLeaksNothing(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	target := createMigrationTestRuntime(t, "migrate-foreign-target", "public", testUserID)
+	ownAgent := createHandlerTestAgent(t, "migrate-foreign-own", nil)
+
+	// A separate workspace the caller is not acting in, holding a runtime with
+	// an active agent whose name is the thing that must not come back.
+	var otherWorkspaceID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO workspace (name, slug, description, issue_prefix)
+		VALUES ('Foreign WS', 'migrate-foreign-ws', '', 'FGN')
+		RETURNING id
+	`).Scan(&otherWorkspaceID); err != nil {
+		t.Fatalf("create foreign workspace: %v", err)
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM workspace WHERE id = $1`, otherWorkspaceID)
+	})
+
+	var foreignRuntimeID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent_runtime (workspace_id, daemon_id, name, runtime_mode, provider, status, device_info, metadata, last_seen_at)
+		VALUES ($1, NULL, 'foreign-runtime', 'cloud', 'handler_test_runtime', 'online', 'foreign', '{}'::jsonb, now())
+		RETURNING id
+	`, otherWorkspaceID).Scan(&foreignRuntimeID); err != nil {
+		t.Fatalf("create foreign runtime: %v", err)
+	}
+	const secretAgentName = "top-secret-foreign-agent"
+	var foreignAgentID string
+	if err := testPool.QueryRow(ctx, `
+		INSERT INTO agent (workspace_id, name, description, runtime_mode, runtime_config, runtime_id,
+			visibility, permission_mode, max_concurrent_tasks, owner_id)
+		VALUES ($1, $2, '', 'cloud', '{}'::jsonb, $3, 'workspace', 'public_to', 1, $4)
+		RETURNING id
+	`, otherWorkspaceID, secretAgentName, foreignRuntimeID, testUserID).Scan(&foreignAgentID); err != nil {
+		t.Fatalf("create foreign agent: %v", err)
+	}
+
+	w := migrateRequest(t, testUserID, target, map[string]any{
+		"agent_ids":                  []string{ownAgent},
+		"expected_source_runtime_id": foreignRuntimeID,
+	})
+
+	// Rejected as bad input, not as a conflict: a 409 would carry the foreign
+	// agent set, and any wording that distinguished "another workspace's
+	// runtime" from "no such runtime" would itself confirm the id exists.
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a foreign expected_source_runtime_id, got %d: %s", w.Code, w.Body.String())
+	}
+	body := w.Body.String()
+	if strings.Contains(body, secretAgentName) || strings.Contains(body, foreignAgentID) {
+		t.Fatalf("response leaked the foreign workspace's agents: %s", body)
+	}
+
+	// And nothing was written on either side.
+	if got := agentRuntimeIDOf(t, foreignAgentID); got != foreignRuntimeID {
+		t.Errorf("foreign agent runtime changed: %s", got)
+	}
+	if got := agentRuntimeIDOf(t, ownAgent); got == target {
+		t.Error("a rejected request must not migrate anything")
+	}
+
+	// The same wording must come back for an id that exists nowhere, so the
+	// two cases stay indistinguishable.
+	unknown := migrateRequest(t, testUserID, target, map[string]any{
+		"agent_ids":                  []string{ownAgent},
+		"expected_source_runtime_id": uuid.NewString(),
+	})
+	if unknown.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for an unknown expected_source_runtime_id, got %d: %s", unknown.Code, unknown.Body.String())
+	}
+	if unknown.Body.String() != body {
+		t.Errorf("a foreign runtime and a nonexistent one must be indistinguishable:\n foreign: %s\n unknown: %s", body, unknown.Body.String())
 	}
 }
 
