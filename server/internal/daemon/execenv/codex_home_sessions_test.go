@@ -426,6 +426,47 @@ func TestPrepareCodexSessionsDir_LocalDirectoryResumeAcrossTaskIDs(t *testing.T)
 	}
 }
 
+// A quick-create source has no issue id, while the issue task it creates does.
+// The explicit origin scope must make both fresh local_directory homes mount
+// the same store so the second task can actually resolve the first rollout.
+func TestPrepareCodexSessionsDir_QuickCreateHandoffAcrossIssueBoundary(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	sharedHome := filepath.Join(root, "shared")
+	const (
+		agentID = "agent-quick-create"
+		issueID = "019f59d9-a6aa-7a53-b173-1eccc4b4c873"
+		scope   = "qc_019f59d9-a6aa-7a53-b173-1eccc4b4c874"
+		session = "019f59d9-a6aa-7a53-b173-1eccc4b4c875"
+	)
+	sourceKey := codexSessionStoreKey("", agentID, ResolveCodexSessionStoreScope(scope, ""))
+	issueKey := codexSessionStoreKey("", agentID, ResolveCodexSessionStoreScope(scope, issueID))
+	if sourceKey != issueKey {
+		t.Fatalf("quick-create handoff keys differ: source=%q issue=%q", sourceKey, issueKey)
+	}
+
+	sourceHome := filepath.Join(root, "source-task", "codex-home")
+	if err := os.MkdirAll(sourceHome, 0o755); err != nil {
+		t.Fatalf("mkdir source home: %v", err)
+	}
+	if err := prepareCodexSessionsDir(sourceHome, sharedHome, CodexHomeOptions{IsLocalDirectory: true, SessionStoreKey: sourceKey}, testLogger()); err != nil {
+		t.Fatalf("prepare source home: %v", err)
+	}
+	seedRolloutAt(t, filepath.Join(sourceHome, "sessions", "2026", "08", "05", "rollout-2026-08-05T00-00-00-"+session+".jsonl"), 32)
+
+	issueHome := filepath.Join(root, "issue-task", "codex-home")
+	if err := os.MkdirAll(issueHome, 0o755); err != nil {
+		t.Fatalf("mkdir issue home: %v", err)
+	}
+	if err := prepareCodexSessionsDir(issueHome, sharedHome, CodexHomeOptions{IsLocalDirectory: true, SessionStoreKey: issueKey, ResumeSessionID: session}, testLogger()); err != nil {
+		t.Fatalf("prepare issue home: %v", err)
+	}
+	if !CodexResumeRolloutPresent(issueHome, session) {
+		t.Fatal("first issue task cannot see quick-create source rollout")
+	}
+}
+
 // A managed home migrated on a prior reuse already links the per-issue store; a
 // subsequent reuse must treat that link as authoritative and not re-migrate it.
 func TestPrepareCodexSessionsDir_ReusedStoreLinkIsAuthoritative(t *testing.T) {
@@ -637,6 +678,37 @@ func TestCodexSessionStoreNamespace_FitsDirectorySegment(t *testing.T) {
 		if err := os.MkdirAll(filepath.Join(base, ns), 0o755); err != nil {
 			t.Errorf("namespace for profile (len %d) could not be created: %v", len(profile), err)
 		}
+	}
+}
+
+func TestResolveCodexSessionStoreScope(t *testing.T) {
+	t.Parallel()
+
+	const (
+		issueID = "019f59d9-a6aa-7a53-b173-1eccc4b4c873"
+		quickID = "qc_019f59d9-a6aa-7a53-b173-1eccc4b4c874"
+	)
+	for _, tc := range []struct {
+		name     string
+		explicit string
+		want     string
+	}{
+		{name: "quick-create scope", explicit: quickID, want: quickID},
+		{name: "old server omitted field", explicit: "", want: issueID},
+		{name: "path separator rejected", explicit: "qc_bad/scope", want: issueID},
+		{name: "punctuation rejected", explicit: "qc_bad:scope", want: issueID},
+		{name: "overlong segment rejected", explicit: strings.Repeat("q", 256), want: issueID},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ResolveCodexSessionStoreScope(tc.explicit, issueID); got != tc.want {
+				t.Fatalf("ResolveCodexSessionStoreScope(%q, %q) = %q, want %q", tc.explicit, issueID, got, tc.want)
+			}
+		})
+	}
+
+	key := codexSessionStoreKey("", "agent-1", quickID)
+	if filepath.Base(key) != quickID {
+		t.Fatalf("quick-create scope must remain one exact path segment, key = %q", key)
 	}
 }
 
