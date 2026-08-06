@@ -5023,6 +5023,17 @@ func TestInjectRuntimeConfigMentionLoopHardening(t *testing.T) {
 			"exit with no output",
 			"Silence is a valid and preferred way",
 			"conditional on the reply rule",
+			// #6493 review: the ledger named five retired pins but only
+			// guarded two — the missing three let the old apparatus
+			// coexist with the new sentences. Ordinary-agent scope only:
+			// the leader's no_action bullet says "DO NOT post any
+			// comment", which none of these match.
+			"produced actual work",
+			"pure acknowledgment / thanks / sign-off",
+			"do NOT reply",
+			// Leader-leak guard: the carve-out imperative is
+			// leader-brief-only.
+			"Unless your outcome is",
 		} {
 			if strings.Contains(s, banned) {
 				t.Errorf("comment-triggered CLAUDE.md still carries retired no-reply text %q", banned)
@@ -5054,15 +5065,24 @@ func TestInjectRuntimeConfigSquadLeaderCommentTriggeredNoAction(t *testing.T) {
 	}
 	s := string(data)
 
-	// The comment-triggered workflow must contain the squad leader no_action rule.
+	// The comment-triggered workflow must contain the squad leader no_action
+	// rule, and the reply imperative must carry the no_action carve-out so a
+	// later bullet never contradicts it (MUL-5442 #6493 review).
 	for _, want := range []string{
 		"Squad leader rule",
 		"DO NOT post any comment",
 		"multica squad activity",
+		"Unless your outcome is `no_action` (Squad leader rule above), posting your reply as a comment is mandatory",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("squad leader comment-triggered CLAUDE.md missing %q", want)
 		}
+	}
+	// Capital-P form = the ordinary unconditional bullet; the leader brief
+	// must carry only the carve-out variant (its lowercase "posting your
+	// reply as a comment is mandatory" tail is expected and legal).
+	if strings.Contains(s, "Posting your reply as a comment is mandatory") {
+		t.Errorf("squad leader CLAUDE.md still carries the unconditional reply bullet")
 	}
 
 	// The Output section must use strong prohibition language.

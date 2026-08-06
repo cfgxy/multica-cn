@@ -162,11 +162,11 @@ func activeThreadID(triggerThreadID, triggerCommentID string) string {
 //
 // provider is retained for caller symmetry and future per-provider tweaks; the
 // guardrail itself is intentionally identical across providers and hosts.
-func BuildCommentReplyInstructions(provider, issueID, triggerCommentID string) string {
+func BuildCommentReplyInstructions(provider, issueID, triggerCommentID string, squadLeader bool) string {
 	if triggerCommentID == "" {
 		return ""
 	}
-	return buildCommentReplyInstructionsSlim(provider, issueID, triggerCommentID)
+	return buildCommentReplyInstructionsSlim(provider, issueID, triggerCommentID, squadLeader)
 }
 
 // buildCommentReplyInstructionsSlim is the compressed reply-instructions
@@ -182,10 +182,18 @@ func BuildCommentReplyInstructions(provider, issueID, triggerCommentID string) s
 // canonical `## Comment Formatting` section the same brief carries, so
 // repeating it inline at every comment-triggered step 7 would be
 // duplication, not signal.
-func buildCommentReplyInstructionsSlim(provider, issueID, triggerCommentID string) string {
+func buildCommentReplyInstructionsSlim(provider, issueID, triggerCommentID string, squadLeader bool) string {
+	// The squad leader's `no_action` exit (recorded via `squad activity`) is
+	// the one path where posting no comment is correct — the imperative must
+	// carry its own carve-out so a later line never contradicts the
+	// no_action rule injected above it (MUL-5442 #6493 review).
+	lead := "Post your reply as a comment — always use the trigger comment ID below, "
+	if squadLeader {
+		lead = "Unless your outcome is `no_action`, post your reply as a comment — always use the trigger comment ID below, "
+	}
 	if runtimeGOOS == "windows" {
 		return fmt.Sprintf(
-			"Post your reply as a comment — always use the trigger comment ID below, "+
+			lead+
 				"do NOT reuse --parent values from previous turns in this session.\n\n"+
 				"Write the body file first — never pipe via `--content-stdin` (PowerShell drops non-ASCII; full rules: ## Comment Formatting above):\n\n"+
 				"    multica issue comment add %s --parent %s --content-file ./reply.md\n"+
@@ -195,7 +203,7 @@ func buildCommentReplyInstructionsSlim(provider, issueID, triggerCommentID strin
 		)
 	}
 	return fmt.Sprintf(
-		"Post your reply as a comment — always use the trigger comment ID below, "+
+		lead+
 			"do NOT reuse --parent values from previous turns in this session.\n\n"+
 			"Write the body file first (rules: ## Comment Formatting above — MUL-2904 / #4182):\n\n"+
 			"    multica issue comment add %s --parent %s --content-file ./reply.md\n"+

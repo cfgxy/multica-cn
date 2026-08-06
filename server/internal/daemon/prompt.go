@@ -330,7 +330,7 @@ func buildCommentPrompt(task Task, provider string) string {
 			fmt.Fprintf(&b, "Fetch each id you still need directly: `multica issue comment list %s --thread <comment-id> --tail 30 --output json`. `--thread` accepts a reply id, not just a thread root, so you do not need to know which thread the comment lives in. If it is older than those 30 replies, page back with the `Next reply cursor` values (`--before` / `--before-id`) until it appears. Do not finish this turn until every id above is accounted for.\n\n",
 				task.IssueID)
 		}
-		if task.Agent != nil && strings.Contains(task.Agent.Instructions, "## Squad Operating Protocol") {
+		if taskIsSquadLeader(task) {
 			fmt.Fprintf(&b, "⚠️ **Squad leader no_action rule:** If you decide no action is needed, call `multica squad activity %s no_action --reason \"...\"` and EXIT. DO NOT post any comment — not even one that says \"no action needed\" or \"exiting silently\". The squad activity call records your decision; a comment is redundant noise.\n\n", task.IssueID)
 		}
 	}
@@ -358,7 +358,7 @@ func buildCommentPrompt(task Task, provider string) string {
 	if targets := commentReplyThreads(task); len(targets) >= 2 {
 		b.WriteString(execenv.BuildMultiThreadCommentReplyInstructions(task.IssueID, targets))
 	} else {
-		b.WriteString(execenv.BuildCommentReplyInstructions(provider, task.IssueID, task.TriggerCommentID))
+		b.WriteString(execenv.BuildCommentReplyInstructions(provider, task.IssueID, task.TriggerCommentID, taskIsSquadLeader(task)))
 	}
 	return b.String()
 }
@@ -601,4 +601,11 @@ func buildAutopilotPrompt(task Task) string {
 	// emission point, and a second hand-maintained per-turn copy is exactly
 	// how the two surfaces drifted into conflict before (MUL-5696).
 	return b.String()
+}
+
+// taskIsSquadLeader mirrors the check gating the per-turn no_action block:
+// leadership is agent configuration (the Squad Operating Protocol section in
+// the agent's instructions), never per-run state.
+func taskIsSquadLeader(task Task) bool {
+	return task.Agent != nil && strings.Contains(task.Agent.Instructions, "## Squad Operating Protocol")
 }
