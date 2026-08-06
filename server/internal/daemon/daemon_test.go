@@ -1042,11 +1042,10 @@ func TestBuildPromptCommentTriggered(t *testing.T) {
 		commentID,
 		"multica issue comment add " + issueID + " --parent " + commentID,
 		"do NOT reuse --parent values from previous turns",
-		// Silence-as-valid-exit for agent-to-agent loops depends on the
-		// reply command being framed conditionally rather than as a hard
-		// requirement. Guard the phrasing so the conflict with the new
-		// workflow (MUL-1323) doesn't come back.
-		"If you decide to reply",
+		// MUL-5442 (2026-08-06): with the generic no-reply rule retired,
+		// the reply command is framed as a plain imperative again — the
+		// squad leader's `no_action` block states its own exception.
+		"Post your reply as a comment",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q\n---\n%s", want, prompt)
@@ -1059,11 +1058,17 @@ func TestBuildPromptCommentTriggered(t *testing.T) {
 	}
 }
 
-// TestBuildPromptCommentTriggeredByAgent covers the agent-to-agent mention
-// loop signal injected into the per-turn prompt (MUL-1323 / GH#1576). When
-// the triggering comment was posted by another agent, the prompt must name
-// the author, warn against sign-off @mentions, and point at silence as a
-// valid exit.
+// TestBuildPromptCommentTriggeredByAgent covers the trigger-attribution
+// line for agent-authored triggers, and guards the RETIREMENT of the
+// generic no-reply warning block that used to follow it (MUL-1323 /
+// GH#1576). Retired by MUL-5442 owner decision (2026-08-06): an agent
+// comment cannot wake an ordinary agent without an explicit @mention
+// (computeCommentAgentTriggers routes agent-authored comments only via
+// mentions, plus the squad-leader wake), so loop prevention belongs to the
+// mention discipline in the brief's `## Mentions`, and recorded silence
+// stays squad-leader-only (`no_action`). Retired pins, now negative
+// guards: "do not @mention the other agent as a sign-off", "Silence is
+// the preferred way".
 func TestBuildPromptCommentTriggeredByAgent(t *testing.T) {
 	t.Parallel()
 
@@ -1076,13 +1081,17 @@ func TestBuildPromptCommentTriggeredByAgent(t *testing.T) {
 		Agent:                 &AgentData{Name: "Test"},
 	}, "claude")
 
-	for _, want := range []string{
-		"Another agent (Atlas)",
-		"do not @mention the other agent as a sign-off",
+	if !strings.Contains(prompt, "Another agent (Atlas)") {
+		t.Fatalf("prompt missing trigger attribution\n---\n%s", prompt)
+	}
+	for _, banned := range []string{
 		"Silence is the preferred way",
+		"do not @mention the other agent as a sign-off",
+		"reply is warranted",
+		"exit with no output",
 	} {
-		if !strings.Contains(prompt, want) {
-			t.Fatalf("prompt missing %q\n---\n%s", want, prompt)
+		if strings.Contains(prompt, banned) {
+			t.Fatalf("per-turn prompt still carries retired no-reply warning %q\n---\n%s", banned, prompt)
 		}
 	}
 }
@@ -1108,15 +1117,16 @@ func TestBuildPromptCommentTriggeredByMember(t *testing.T) {
 	if strings.Contains(prompt, "Another agent") {
 		t.Fatalf("member-triggered prompt should not claim the author was another agent")
 	}
-	// Must NOT use the old "You MUST respond" language — that conflicts with
-	// the agent-to-agent silence-as-valid-exit workflow. Even on human-authored
-	// triggers, the reply command is framed conditionally for a single
-	// consistent rule across turn types.
+	// Must NOT use the old "You MUST respond" language: the reply command is
+	// shared across turn types, and a squad leader's `no_action` exit — the
+	// one silent path left after MUL-5442 retired the generic no-reply rule —
+	// must not be shouted over by the per-turn channel. The unconditional
+	// one-comment contract for ordinary agents lives in the brief.
 	if strings.Contains(prompt, "MUST respond") {
 		t.Fatalf("prompt should not contain unconditional \"MUST respond\" language\n---\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "If you decide to reply") {
-		t.Fatalf("prompt should frame the reply command conditionally\n---\n%s", prompt)
+	if !strings.Contains(prompt, "Post your reply as a comment") {
+		t.Fatalf("prompt should carry the imperative reply command\n---\n%s", prompt)
 	}
 }
 

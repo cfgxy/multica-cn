@@ -4995,28 +4995,37 @@ func TestInjectRuntimeConfigMentionLoopHardening(t *testing.T) {
 		}
 	})
 
-	t.Run("workflow-carries-silence-as-exit-and-no-signoff-mention", func(t *testing.T) {
+	t.Run("workflow-reply-is-unconditional-and-no-signoff-mention", func(t *testing.T) {
 		t.Parallel()
 		s := readClaudeMD(t, commentTriggerCtx)
-		// The anti-loop signal must reach the brief; lock in the key phrases so
-		// it can't decay back into pure prose again. The reply-warranted rules
-		// live in the Reply mode block, while the no-sign-off-mention rule is
-		// mention policy and lives in `## Mentions` (MUL-5442) — these
-		// assertions are file-wide on purpose, so the signal is pinned without
-		// pinning which section carries it.
+		// MUL-5442 owner decision (2026-08-06): the generic no-reply rule is
+		// retired. It never carried the loop prevention — agent comments
+		// trigger nothing without an explicit @mention (the sole implicit
+		// wake is the squad-leader path), so the mention discipline pinned in
+		// the Mentions subtest above is the real defense. Ordinary agents are
+		// back on the unconditional one-comment-per-run contract; recorded
+		// silence via `no_action` remains squad-leader-only. Retired pins,
+		// replaced by the negative guards below so the apparatus cannot creep
+		// back: "Decide whether a reply is warranted", "produced actual
+		// work", "pure acknowledgment / thanks / sign-off", "do NOT reply",
+		// "Silence is a valid and preferred way".
 		for _, want := range []string{
-			"Decide whether a reply is warranted",
-			// Both outcomes pinned individually (MUL-5442 stage-1 review):
-			// the work-produced arm and the silent-exit arm must each
-			// survive compression, not just the bullet's heading.
-			"produced actual work",
-			"pure acknowledgment / thanks / sign-off",
-			"do NOT reply",
-			"Silence is a valid and preferred way",
+			"Posting your reply as a comment is mandatory",
+			"Do any requested work first",
 			"Never @mention the agent you are replying to as a thank-you or sign-off",
 		} {
 			if !strings.Contains(s, want) {
 				t.Errorf("comment-triggered CLAUDE.md missing %q", want)
+			}
+		}
+		for _, banned := range []string{
+			"Decide whether a reply is warranted",
+			"exit with no output",
+			"Silence is a valid and preferred way",
+			"conditional on the reply rule",
+		} {
+			if strings.Contains(s, banned) {
+				t.Errorf("comment-triggered CLAUDE.md still carries retired no-reply text %q", banned)
 			}
 		}
 	})

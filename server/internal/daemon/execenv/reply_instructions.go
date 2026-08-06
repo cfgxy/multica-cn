@@ -185,7 +185,7 @@ func BuildCommentReplyInstructions(provider, issueID, triggerCommentID string) s
 func buildCommentReplyInstructionsSlim(provider, issueID, triggerCommentID string) string {
 	if runtimeGOOS == "windows" {
 		return fmt.Sprintf(
-			"If you decide to reply, post it as a comment — always use the trigger comment ID below, "+
+			"Post your reply as a comment — always use the trigger comment ID below, "+
 				"do NOT reuse --parent values from previous turns in this session.\n\n"+
 				"Write the body file first — never pipe via `--content-stdin` (PowerShell drops non-ASCII; full rules: ## Comment Formatting above):\n\n"+
 				"    multica issue comment add %s --parent %s --content-file ./reply.md\n"+
@@ -195,7 +195,7 @@ func buildCommentReplyInstructionsSlim(provider, issueID, triggerCommentID strin
 		)
 	}
 	return fmt.Sprintf(
-		"If you decide to reply, post it as a comment — always use the trigger comment ID below, "+
+		"Post your reply as a comment — always use the trigger comment ID below, "+
 			"do NOT reuse --parent values from previous turns in this session.\n\n"+
 			"Write the body file first (rules: ## Comment Formatting above — MUL-2904 / #4182):\n\n"+
 			"    multica issue comment add %s --parent %s --content-file ./reply.md\n"+
