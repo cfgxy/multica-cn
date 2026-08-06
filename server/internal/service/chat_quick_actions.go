@@ -224,6 +224,14 @@ func (s *TaskService) chatQuickActionsEligible(ctx context.Context, task db.Agen
 			return false
 		}
 	}
+	// The onboarding opening carries the product's starter cards instead of
+	// suggestion chips (MUL-5765) — skip the pass for that turn. Fail open on a
+	// lookup error: a missed skip costs one wasted pass, while suppressing an
+	// ordinary turn's chips would be a visible regression.
+	kickoff, err := s.Queries.TaskHasOnboardingKickoffInput(ctx, task.ID)
+	if err == nil && kickoff {
+		return false
+	}
 	return true
 }
 

@@ -606,9 +606,8 @@ function AssistantMessage({
             isPending={isPending}
           />
           {onQuickAction && showStarterCards ? (
-            // The opening's starter cards own this turn's suggestion strip;
-            // any LLM chips the server generated for it are old-client
-            // fallback and stay hidden here (MUL-5765).
+            // The opening's starter cards own this turn's suggestion strip
+            // (MUL-5765); the server skips chip generation for it.
             <OnboardingStarterCards
               onPick={onQuickAction}
               disabled={quickActionsDisabled || isPending}
