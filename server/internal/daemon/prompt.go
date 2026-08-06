@@ -123,6 +123,17 @@ func buildPromptBody(task Task, provider string) string {
 		b.WriteString("You were handed this issue with a handoff note. Treat it as the assigner's scoping instruction for this run; follow it before doing anything broader, and do not reply to it as if it were a comment:\n\n")
 		fmt.Fprintf(&b, "> %s\n\n", task.HandoffNote)
 	}
+	if taskIsSquadLeader(task) {
+		// Same channel rule as the comment path: leader content is per-task
+		// role state and must never reach the cached brief. The brief's
+		// Ownership-mode block says "When done, run in_review" — for a
+		// dispatch turn that is exactly wrong, so the override must ride
+		// every leader assignment prompt.
+		fmt.Fprintf(&b, "⚠️ **Squad leader rules for this turn** — where these conflict with the brief's general rules, these rules win:\n\n"+
+			"- After dispatching members, leave the parent issue `in_progress` — do NOT move it to `in_review` or `done` on this turn; dispatching members is not completion. You will be re-triggered when members post updates or a stage closes; only then, if the overall goal is met, move the parent to `in_review`.\n"+
+			"- If your outcome is `no_action` (nothing to dispatch), call `multica squad activity %s no_action --reason \"...\"` and exit without posting a comment — the one exception to the brief's mandatory-comment rule.\n"+
+			"- **Squad maintenance:** `multica squad member set-role <squad-id> --member-id <id> --member-type <agent|member> --role <role>` changes a member's role in place (use it instead of remove+add).\n\n", task.IssueID)
+	}
 	fmt.Fprintf(&b, "Start by running `multica issue get %s --output json` to understand your task, then complete it.\n", task.IssueID)
 	fmt.Fprintf(&b, "For comment history, follow the rule in your runtime workflow file (assignment-triggered tasks treat the read as mandatory). Scan the threads first with `multica issue comment list %s --roots-only --summary --output json`, then expand only what matters with `--thread <thread-id> --tail 30`. For `--since` incremental polling, pagination, and folding, see `multica issue comment list --help`.\n", task.IssueID)
 	return b.String()
@@ -331,7 +342,17 @@ func buildCommentPrompt(task Task, provider string) string {
 				task.IssueID)
 		}
 		if taskIsSquadLeader(task) {
-			fmt.Fprintf(&b, "⚠️ **Squad leader no_action rule:** If you decide no action is needed, call `multica squad activity %s no_action --reason \"...\"` and EXIT. DO NOT post any comment — not even one that says \"no action needed\" or \"exiting silently\". The squad activity call records your decision; a comment is redundant noise.\n\n", task.IssueID)
+			// Leadership is a per-task role (the handler appends the Squad
+			// Operating Protocol only to leader tasks), so every
+			// leader-specific rule rides this uncacheable channel — the
+			// cached brief must stay byte-identical across role flips
+			// (MUL-5377; MUL-5442 #6493 review). These rules land AFTER the
+			// brief in context order, and each names the general rule it
+			// overrides, so the exception always follows the rule.
+			fmt.Fprintf(&b, "⚠️ **Squad leader rules for this turn** — your instructions carry the Squad Operating Protocol; where these conflict with the brief's general rules, these rules win:\n\n"+
+				"- **no_action rule:** If you decide no action is needed, call `multica squad activity %s no_action --reason \"...\"` and EXIT with no comment — the one exception to the brief's mandatory-reply and one-comment-per-run rules. DO NOT post any comment announcing no_action, acknowledging another agent, or saying you are exiting silently; the `squad activity` call already records your decision.\n"+
+				"- **Parent status:** if the protocol's \"Own the parent issue status\" responsibility appears in your instructions, treat it as a standing grant — move the parent to `in_review` on the turn you confirm the overall goal is met, without waiting to be asked. If that section is absent (guest leader), the brief's do-not-change-status rule is absolute.\n"+
+				"- **Squad maintenance:** `multica squad member set-role <squad-id> --member-id <id> --member-type <agent|member> --role <role>` changes a member's role in place (use it instead of remove+add).\n\n", task.IssueID)
 		}
 	}
 	fmt.Fprintf(&b, "Start by running `multica issue get %s --output json` to understand your task, then decide how to proceed.\n\n", task.IssueID)
@@ -356,7 +377,7 @@ func buildCommentPrompt(task Task, provider string) string {
 	// group upstream, so they keep the ordinary single-parent path below and can
 	// never be split into duplicate replies.
 	if targets := commentReplyThreads(task); len(targets) >= 2 {
-		b.WriteString(execenv.BuildMultiThreadCommentReplyInstructions(task.IssueID, targets))
+		b.WriteString(execenv.BuildMultiThreadCommentReplyInstructions(task.IssueID, targets, taskIsSquadLeader(task)))
 	} else {
 		b.WriteString(execenv.BuildCommentReplyInstructions(provider, task.IssueID, task.TriggerCommentID, taskIsSquadLeader(task)))
 	}

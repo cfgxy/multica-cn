@@ -236,7 +236,7 @@ type ThreadReplyTarget struct {
 // before this instruction is emitted, so a per-thread fan-out cannot split it.
 //
 // Returns "" for fewer than two targets; callers keep the single-parent path.
-func BuildMultiThreadCommentReplyInstructions(issueID string, targets []ThreadReplyTarget) string {
+func BuildMultiThreadCommentReplyInstructions(issueID string, targets []ThreadReplyTarget, squadLeader bool) string {
 	if issueID == "" || len(targets) < 2 {
 		return ""
 	}
@@ -270,8 +270,15 @@ func BuildMultiThreadCommentReplyInstructions(issueID string, targets []ThreadRe
 		)
 	}
 
+	// Same carve-out as the single-thread cookbook (MUL-5442 #6493 review):
+	// the leader's no_action exit must not be contradicted by this later
+	// imperative; ordinary agents keep the unconditional form byte-for-byte.
+	lead := "This run coalesced comments from %d DISTINCT threads. Post ONE reply per thread"
+	if squadLeader {
+		lead = "This run coalesced comments from %d DISTINCT threads. Unless your outcome is `no_action`, post ONE reply per thread"
+	}
 	return fmt.Sprintf(
-		"This run coalesced comments from %d DISTINCT threads. Post ONE reply per thread — %d replies in total — each threaded under its own conversation. This OVERRIDES the general \"post exactly one comment per run\" guidance: for THIS run multiple replies are required and correct. Do NOT merge separate threads into a single comment, and do NOT post more than one reply in the same thread.\n\n"+
+		lead+" — %d replies in total — each threaded under its own conversation. This OVERRIDES the general \"post exactly one comment per run\" guidance: for THIS run multiple replies are required and correct. Do NOT merge separate threads into a single comment, and do NOT post more than one reply in the same thread.\n\n"+
 			"Post the replies in the order listed below — OLDEST thread first, the newest (triggering) thread LAST — so they land in chronological order. Do NOT answer the newest/triggering comment first.\n\n"+
 			"Reply targets, in the order to post them (use the exact `--parent` for each — do NOT reuse `--parent` values from previous turns in this session):\n"+
 			"%s\n"+

@@ -1169,9 +1169,17 @@ func TestBuildPromptSquadLeaderNoActionProhibition(t *testing.T) {
 	}, "claude")
 
 	for _, want := range []string{
-		"Squad leader no_action rule",
+		"Squad leader rules for this turn",
+		"no_action rule:",
 		"DO NOT post any comment",
 		"multica squad activity",
+		// Relocated from the brief (MUL-5442 #6493 review): leadership is a
+		// per-task role, so the status-ownership grant and the leader-only
+		// CLI surface ride this per-turn block now.
+		"Own the parent issue status",
+		"without waiting to be asked",
+		"guest leader",
+		"multica squad member set-role",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("squad leader prompt missing %q\n---\n%s", want, prompt)
@@ -1191,7 +1199,7 @@ func TestBuildPromptSquadLeaderNoActionProhibition(t *testing.T) {
 		},
 	}, "claude")
 
-	if strings.Contains(nonLeaderPrompt, "Squad leader no_action rule") {
+	if strings.Contains(nonLeaderPrompt, "no_action rule:") {
 		t.Fatalf("non-squad-leader prompt should NOT contain squad leader rule\n---\n%s", nonLeaderPrompt)
 	}
 }
@@ -5024,6 +5032,8 @@ func TestFreshSessionMayHelp(t *testing.T) {
 	const hermesAuth = "hermes provider error: \"Could not resolve authentication method. Expected either api_key or auth_token to be set. Or for one of the X-Api-Key or Authorization headers to be explicitly omitted\""
 	if !freshSessionMayHelp(hermesAuth) {
 		t.Fatalf("freshSessionMayHelp(auth-resolution error) = false; a fresh session cures this failure, it must report session-fixable")
+	}
+}
 
 // TestBuildPromptSquadLeaderReplyCommandCarvesOutNoAction renders the COMPLETE
 // leader prompt and pins the exception's scope relation (MUL-5442 #6493
@@ -5046,7 +5056,10 @@ func TestBuildPromptSquadLeaderReplyCommandCarvesOutNoAction(t *testing.T) {
 		},
 	}, "claude")
 
-	if !strings.Contains(prompt, "Squad leader no_action rule") {
+	if !strings.Contains(prompt, "Squad leader rules for this turn") {
+		t.Fatalf("leader prompt missing the leader rules block\n---\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "no_action rule:") {
 		t.Fatalf("leader prompt missing the no_action rule\n---\n%s", prompt)
 	}
 	if !strings.Contains(prompt, "Unless your outcome is `no_action`, post your reply as a comment") {
@@ -5054,5 +5067,90 @@ func TestBuildPromptSquadLeaderReplyCommandCarvesOutNoAction(t *testing.T) {
 	}
 	if strings.Contains(prompt, "Post your reply as a comment") {
 		t.Fatalf("leader prompt still carries the unconditional reply imperative\n---\n%s", prompt)
+	}
+}
+
+// TestBuildPromptSquadLeaderAssignmentKeepsParentInProgress carries the
+// dispatch-status contract that used to live in the brief (MUL-5442 #6493
+// review): leadership is a per-task role, so the keep-parent-in_progress
+// rule rides the leader's assignment per-turn block. The brief tells
+// everyone "When done, run in_review"; for a dispatch turn that is exactly
+// wrong, so the override must appear in every leader assignment prompt —
+// and never in an ordinary agent's.
+func TestBuildPromptSquadLeaderAssignmentKeepsParentInProgress(t *testing.T) {
+	t.Parallel()
+
+	leaderTask := Task{
+		IssueID: "issue-1",
+		Agent: &AgentData{
+			Name:         "Lead",
+			Instructions: "Some instructions\n\n## Squad Operating Protocol\n\nYou are the LEADER...",
+		},
+	}
+	prompt := BuildPrompt(leaderTask, "claude")
+	for _, want := range []string{
+		"Squad leader rules for this turn",
+		"leave the parent issue `in_progress`",
+		"do NOT move it to `in_review` or `done` on this turn",
+		"only then, if the overall goal is met, move the parent to `in_review`",
+		"multica squad activity",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("leader assignment prompt missing %q\n---\n%s", want, prompt)
+		}
+	}
+
+	ordinary := BuildPrompt(Task{
+		IssueID: "issue-1",
+		Agent:   &AgentData{Name: "Reg", Instructions: "You are a regular agent."},
+	}, "claude")
+	if strings.Contains(ordinary, "Squad leader rules") {
+		t.Fatalf("ordinary assignment prompt leaked the leader block\n---\n%s", ordinary)
+	}
+}
+
+// TestBuildPromptSquadLeaderMultiThreadCarvesOutNoAction renders the
+// complete leader prompt on the cross-thread fan-out path (MUL-5442 #6493
+// review round 2): the multi-thread imperative fires AFTER the no_action
+// rule, so it must carry the same carve-out as the single-thread cookbook —
+// a bare "Post ONE reply per thread" in a leader prompt re-opens the
+// contradiction. The ordinary fan-out output keeps the unconditional form.
+func TestBuildPromptSquadLeaderMultiThreadCarvesOutNoAction(t *testing.T) {
+	t.Parallel()
+
+	leaderTask := Task{
+		IssueID:               "issue-1",
+		TriggerCommentID:      "comment-9",
+		TriggerThreadID:       "thread-B",
+		TriggerCommentContent: "second update",
+		TriggerAuthorType:     "agent",
+		TriggerAuthorName:     "Worker",
+		CoalescedComments: []CoalescedCommentData{
+			{ID: "comment-8", ThreadID: "thread-A", Content: "first update"},
+		},
+		Agent: &AgentData{
+			Name:         "Lead",
+			Instructions: "Some instructions\n\n## Squad Operating Protocol\n\nYou are the LEADER...",
+		},
+	}
+	prompt := BuildPrompt(leaderTask, "claude")
+	if !strings.Contains(prompt, "no_action rule:") {
+		t.Fatalf("leader multi-thread prompt missing the no_action rule\n---\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Unless your outcome is `no_action`, post ONE reply per thread") {
+		t.Fatalf("leader multi-thread prompt missing the carve-out imperative\n---\n%s", prompt)
+	}
+	if strings.Contains(prompt, ". Post ONE reply per thread") {
+		t.Fatalf("leader multi-thread prompt still carries the unconditional imperative\n---\n%s", prompt)
+	}
+
+	ordinaryTask := leaderTask
+	ordinaryTask.Agent = &AgentData{Name: "Reg", Instructions: "You are a regular agent."}
+	ordinary := BuildPrompt(ordinaryTask, "claude")
+	if !strings.Contains(ordinary, ". Post ONE reply per thread") {
+		t.Fatalf("ordinary multi-thread prompt missing the unconditional imperative\n---\n%s", ordinary)
+	}
+	if strings.Contains(ordinary, "Unless your outcome is") {
+		t.Fatalf("ordinary multi-thread prompt leaked the leader carve-out\n---\n%s", ordinary)
 	}
 }

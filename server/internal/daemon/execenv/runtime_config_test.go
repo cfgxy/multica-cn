@@ -169,36 +169,30 @@ func TestCommentTriggeredProtocolDoesNotForceInReview(t *testing.T) {
 	}
 }
 
-// A squad leader on a comment-triggered turn gets the same guardrail plus a
-// named exception. Without it the guardrail and the Squad Operating Protocol's
-// "Own the parent issue status" responsibility contradict each other on the
-// @mention-dispatch shape, where the member's delivery comment never asks for
-// a status change and no child-done system comment exists to ask on its
-// behalf — so the parent would sit in in_progress forever.
-func TestCommentTriggeredSquadLeaderDefersToStatusOwnershipGrant(t *testing.T) {
+// TestCommentTriggeredBriefIsRoleIndependent replaces the old
+// squad-leader status-grant brief test (MUL-5442 #6493 review). Leadership
+// is a PER-TASK role, so the brief must render byte-identically for leader
+// and worker turns of the same agent — the status-ownership grant, the
+// no_action rule, and every other leader rule now ride the per-turn channel
+// (daemon/prompt.go, TestBuildPromptSquadLeaderNoActionProhibition).
+// Retired brief pins, all relocated to per-turn tests: "Own the parent
+// issue status", "only appears when this issue is assigned to your squad",
+// "without waiting to be asked", "When it is absent, the rule above is
+// absolute.".
+func TestCommentTriggeredBriefIsRoleIndependent(t *testing.T) {
 	t.Parallel()
-	out := buildMetaSkillContent("claude", TaskContextForEnv{
+	base := TaskContextForEnv{
 		IssueID:          "55555555-6666-7777-8888-999999999999",
 		TriggerCommentID: "66666666-7777-8888-9999-aaaaaaaaaaaa",
-		IsSquadLeader:    true,
-	})
-
-	for _, want := range []string{
-		"Do NOT change the issue status unless the comment explicitly asks for it",
-		`Squad Operating Protocol's "Own the parent issue status"`,
-		"only appears when this issue is assigned to your squad",
-		"without waiting to be asked",
-		"When it is absent, the rule above is absolute.",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("squad-leader comment brief missing %q\n---\n%s", want, out)
-		}
 	}
-
-	// The unqualified sentence must be gone: its presence alongside the grant
-	// is the contradiction this branch exists to remove.
-	if strings.Contains(out, "explicitly asks for it\n") {
-		t.Errorf("squad-leader comment brief still ends the guardrail unqualified\n---\n%s", out)
+	leader := base
+	leader.IsSquadLeader = true
+	ordinary := buildMetaSkillContent("claude", base)
+	if got := buildMetaSkillContent("claude", leader); got != ordinary {
+		t.Errorf("comment-triggered brief must be byte-identical across roles; leader render diverges\n---\n%s", got)
+	}
+	if strings.Contains(ordinary, "Own the parent issue status") {
+		t.Errorf("brief must not carry the squad status grant (per-turn content):\n%s", ordinary)
 	}
 }
 
@@ -379,32 +373,27 @@ func TestIssueWorkflowHonorsAgentIdentity(t *testing.T) {
 	}
 }
 
-// Squad-leader briefs must open the parent with in_progress, but must not
-// treat the first dispatch turn as completion (no unconditional in_review).
-func TestSquadLeaderIssueWorkflowKeepsParentInProgress(t *testing.T) {
+// TestIssueBriefIsRoleIndependent replaces the old squad-leader dispatch
+// brief test (MUL-5442 #6493 review): the keep-parent-in_progress dispatch
+// rule is per-task role content and now rides the leader's assignment
+// per-turn block (daemon/prompt.go,
+// TestBuildPromptSquadLeaderAssignmentKeepsParentInProgress). The brief
+// renders the ordinary Ownership-mode step for everyone and must be
+// byte-identical across roles. Retired brief pins, relocated per-turn:
+// "After this initial dispatch, leave the parent issue `in_progress`",
+// "do NOT move it to `in_review` or `done` on this turn", "only then, if
+// the overall goal is met, move the parent to `in_review`".
+func TestIssueBriefIsRoleIndependent(t *testing.T) {
 	t.Parallel()
-	const issueID = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
-	out := buildMetaSkillContent("claude", TaskContextForEnv{
-		IssueID:       issueID,
-		IsSquadLeader: true,
-	})
-
-	for _, want := range []string{
-		"Before step 4, run `multica issue status <issue-id> in_progress`.",
-		"After this initial dispatch, leave the parent issue `in_progress`",
-		// The guest-leader contract test (handler side) bans any runnable
-		// in_review command shape from reaching a guest — the dispatch rule
-		// therefore states the prohibition without a command form.
-		"do NOT move it to `in_review` or `done` on this turn",
-		"only then, if the overall goal is met, move the parent to `in_review`",
-	} {
-		if !strings.Contains(out, want) {
-			t.Errorf("squad-leader issue brief missing %q\n---\n%s", want, out)
-		}
+	base := TaskContextForEnv{IssueID: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"}
+	leader := base
+	leader.IsSquadLeader = true
+	ordinary := buildMetaSkillContent("claude", base)
+	if got := buildMetaSkillContent("claude", leader); got != ordinary {
+		t.Errorf("issue brief must be byte-identical across roles; leader render diverges\n---\n%s", got)
 	}
-
-	if strings.Contains(out, "When done, run `multica issue status <issue-id> in_review`") {
-		t.Errorf("squad-leader issue brief must not contain the ordinary-agent completion step\n---\n%s", out)
+	if !strings.Contains(ordinary, "When done, run `multica issue status <issue-id> in_review`.") {
+		t.Errorf("issue brief missing the ordinary completion step\n---\n%s", ordinary)
 	}
 }
 
@@ -1549,7 +1538,7 @@ func TestMultiThreadReplyInstructionsFanOut(t *testing.T) {
 		{ThreadID: "c1", ParentID: "c1"},
 		{ThreadID: "c2", ParentID: "c2"},
 		{ThreadID: "c3", ParentID: "c3"},
-	})
+	}, false)
 
 	for _, want := range []string{"3 DISTINCT threads", "Post ONE reply per thread", "--parent c1", "--parent c2", "--parent c3"} {
 		if !strings.Contains(out, want) {
@@ -1639,6 +1628,14 @@ func TestInjectRuntimeConfigByteIdenticalAcrossTriggers(t *testing.T) {
 			c.InitiatorType = "agent"
 			c.InitiatorID = "agent-9"
 			c.InitiatorName = "GPT-Boy"
+		}},
+		// Leadership is a per-task role (#6493 review): the same agent can
+		// be leader one turn and worker the next while session resume keys
+		// on (agent_id, issue_id). This variant is what makes the test
+		// actually verify the role-independence invariant.
+		{"leader-role-task", func(c *TaskContextForEnv) {
+			c.TriggerCommentID = "comment-6"
+			c.IsSquadLeader = true
 		}},
 		{"connected-apps", func(c *TaskContextForEnv) {
 			c.ConnectedApps = []runtimeapps.ConnectedApp{{

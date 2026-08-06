@@ -141,7 +141,12 @@ type TaskContextForEnv struct {
 	AutopilotTriggerPayload string
 	QuickCreatePrompt       string // non-empty for quick-create tasks
 	HandoffNote             string // assignment handoff instruction; rendered into issue_context.md (MUL-3375)
-	IsSquadLeader           bool   // true when the agent is acting as a squad leader (may exit silently on no_action)
+	// IsSquadLeader is true when THIS TASK runs the agent as a squad leader.
+	// It is a per-task role, not agent configuration — the brief builder must
+	// never branch on it (leader rules ride the per-turn channel; #6493
+	// review), and the byte-identity test toggles it to prove the brief
+	// ignores it.
+	IsSquadLeader bool
 	// WorkspaceContext is the workspace-level system prompt (workspace.context
 	// in the DB). Rendered into the brief as `## Workspace Context` when
 	// non-empty so every agent in the workspace sees the same shared context,

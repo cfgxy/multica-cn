@@ -1095,12 +1095,15 @@ func TestInjectRuntimeConfigAvailableCommandsCoreOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to read leader AGENTS.md: %v", err)
 	}
-	for _, want := range []string{
+	// #6493 review: Squad maintenance moved to the per-turn leader block —
+	// leadership is per-task role, so leader-only CLI surface can no longer
+	// ride the cached brief. Negative guard against regression.
+	for _, banned := range []string{
 		"### Squad maintenance",
 		"multica squad member set-role <squad-id>",
 	} {
-		if !strings.Contains(string(leader), want) {
-			t.Errorf("squad-leader AGENTS.md missing %q\n---\n%s", want, leader)
+		if strings.Contains(string(leader), banned) {
+			t.Errorf("AGENTS.md must not carry leader-only CLI surface %q\n---\n%s", banned, leader)
 		}
 	}
 
@@ -5050,63 +5053,47 @@ func TestInjectRuntimeConfigMentionLoopHardening(t *testing.T) {
 func TestInjectRuntimeConfigSquadLeaderCommentTriggeredNoAction(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-	ctx := TaskContextForEnv{
-		IssueID:          "issue-1",
-		TriggerCommentID: "comment-1",
-		IsSquadLeader:    true,
-	}
-	if _, err := InjectRuntimeConfig(dir, "claude", ctx); err != nil {
-		t.Fatalf("InjectRuntimeConfig failed: %v", err)
-	}
-	data, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
-	if err != nil {
-		t.Fatalf("read CLAUDE.md: %v", err)
-	}
-	s := string(data)
-
-	// The comment-triggered workflow must contain the squad leader no_action
-	// rule, and the reply imperative must carry the no_action carve-out so a
-	// later bullet never contradicts it (MUL-5442 #6493 review).
-	for _, want := range []string{
-		"Squad leader rule",
-		"DO NOT post any comment",
-		"multica squad activity",
-		"Unless your outcome is `no_action` (Squad leader rule above), posting your reply as a comment is mandatory",
-	} {
-		if !strings.Contains(s, want) {
-			t.Errorf("squad leader comment-triggered CLAUDE.md missing %q", want)
+	// MUL-5442 #6493 review: leadership is a per-task role, so the leader
+	// no_action rule, the reply carve-out, and the Output exception all left
+	// the brief for the per-turn channel (daemon/prompt.go). The injected
+	// CLAUDE.md must now be byte-identical across roles, and no leader
+	// wording may remain. Retired brief pins, relocated to per-turn tests:
+	// "Squad leader rule", "DO NOT post any comment", "multica squad
+	// activity", "Unless your outcome is `no_action` (Squad leader rule
+	// above), posting your reply as a comment is mandatory", "you MUST exit
+	// without posting any comment".
+	render := func(t *testing.T, leader bool) string {
+		t.Helper()
+		dir := t.TempDir()
+		ctx := TaskContextForEnv{
+			IssueID:          "issue-1",
+			TriggerCommentID: "comment-1",
+			IsSquadLeader:    leader,
 		}
-	}
-	// Capital-P form = the ordinary unconditional bullet; the leader brief
-	// must carry only the carve-out variant (its lowercase "posting your
-	// reply as a comment is mandatory" tail is expected and legal).
-	if strings.Contains(s, "Posting your reply as a comment is mandatory") {
-		t.Errorf("squad leader CLAUDE.md still carries the unconditional reply bullet")
-	}
-
-	// The Output section must use strong prohibition language.
-	if !strings.Contains(s, "you MUST exit without posting any comment") {
-		t.Errorf("Output section missing strong prohibition for squad leader no_action")
+		if _, err := InjectRuntimeConfig(dir, "claude", ctx); err != nil {
+			t.Fatalf("InjectRuntimeConfig failed: %v", err)
+		}
+		data, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
+		if err != nil {
+			t.Fatalf("read CLAUDE.md: %v", err)
+		}
+		return string(data)
 	}
 
-	// Non-squad-leader should NOT have the squad leader rule in comment-triggered path.
-	dir2 := t.TempDir()
-	ctx2 := TaskContextForEnv{
-		IssueID:          "issue-1",
-		TriggerCommentID: "comment-1",
-		IsSquadLeader:    false,
+	leader := render(t, true)
+	ordinary := render(t, false)
+	if leader != ordinary {
+		t.Errorf("CLAUDE.md must render byte-identically across roles; leader render diverges")
 	}
-	if _, err := InjectRuntimeConfig(dir2, "claude", ctx2); err != nil {
-		t.Fatalf("InjectRuntimeConfig failed: %v", err)
-	}
-	data2, err := os.ReadFile(filepath.Join(dir2, "CLAUDE.md"))
-	if err != nil {
-		t.Fatalf("read CLAUDE.md: %v", err)
-	}
-	s2 := string(data2)
-	if strings.Contains(s2, "Squad leader rule") {
-		t.Errorf("non-squad-leader CLAUDE.md should NOT contain squad leader rule")
+	for _, banned := range []string{
+		"Squad leader rule",
+		"multica squad activity",
+		"no_action",
+		"Unless your outcome is",
+	} {
+		if strings.Contains(leader, banned) {
+			t.Errorf("CLAUDE.md still carries leader-only wording %q", banned)
+		}
 	}
 }
 
