@@ -10,7 +10,16 @@ import {
   useViewStore,
   ViewStoreProvider,
 } from "@multica/core/issues/stores/view-store-context";
-import { getIssueSurfaceViewStore } from "@multica/core/issues/stores/surface-view-store";
+import {
+  getIssueSurfaceViewStore,
+  seedIssueSurfaceViewState,
+} from "@multica/core/issues/stores/surface-view-store";
+import { useActiveIssueView } from "@multica/core/issue-views/use-active-view";
+import { baselineFromQuery } from "@multica/core/issue-views/baseline";
+import { ViewBaselineProvider, useViewBaseline } from "./view-baseline-context";
+import type { IssueViewScope } from "@multica/core/issue-views/queries";
+import { useFeatureEnabled } from "@multica/core/config";
+import { SAVED_ISSUE_VIEWS_FLAG } from "@multica/core/feature-flags";
 import { issueScopeKey } from "@multica/core/issues/surface/scope";
 import type { Issue } from "@multica/core/types";
 import { BoardView } from "../components/board-view";
@@ -60,18 +69,49 @@ export function IssueSurface({
   contentClassName,
 }: IssueSurfaceComponentProps) {
   const wsId = useWorkspaceId();
-  const resolvedSurfaceKey = surfaceKey ?? issueScopeKey(scope);
-  const store = useMemo(
-    () => getIssueSurfaceViewStore(resolvedSurfaceKey),
-    [resolvedSurfaceKey],
+  const savedViewsEnabled = useFeatureEnabled(SAVED_ISSUE_VIEWS_FLAG) === true;
+  // Saved views exist on workspace / my / project surfaces only.
+  const viewScope: IssueViewScope | null =
+    scope.type === "workspace"
+      ? { scope_type: "workspace" }
+      : scope.type === "my"
+        ? { scope_type: "my" }
+        : scope.type === "project"
+          ? { scope_type: "project", scope_id: scope.projectId }
+          : null;
+  const { activeView } = useActiveIssueView(wsId, viewScope, savedViewsEnabled);
+
+  // An open saved view swaps the surface onto its own view-preference key:
+  // display/extra-filter adjustments persist per user per view, and the
+  // underlying built-in surface state is never touched (no draft machinery).
+  const resolvedSurfaceKey = activeView
+    ? `view:${activeView.id}`
+    : (surfaceKey ?? issueScopeKey(scope));
+  const seedDefinition = activeView
+    ? { ...activeView.query, ...activeView.display }
+    : null;
+  const viewBaseline = useMemo(
+    () => (activeView ? baselineFromQuery(activeView.query) : null),
+    [activeView],
   );
+  const store = useMemo(() => {
+    // First-open seeding happens HERE, at store-creation time for this key:
+    // no React component has subscribed to the new key's store yet, so the
+    // setState inside cannot cascade into an in-render update loop (it did
+    // when this ran in the component body).
+    if (seedDefinition) {
+      seedIssueSurfaceViewState(resolvedSurfaceKey, seedDefinition);
+    }
+    return getIssueSurfaceViewStore(resolvedSurfaceKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- seed identity follows the key
+  }, [resolvedSurfaceKey]);
 
   // Every change of this key tears down and remounts the ENTIRE surface
   // (providers, DnD, all columns/cards) — by design for data-window changes,
   // but expensive enough that unexpected flips are performance bugs. Dev-only
   // breadcrumb so a Performance trace showing double mounts can be tied to
   // the exact key transition.
-  const contentKey = `${wsId}:${issueScopeKey(scope)}`;
+  const contentKey = `${wsId}:${issueScopeKey(scope)}:${activeView ? `view:${activeView.id}` : "default"}`;
   useEffect(() => {
     if (process.env.NODE_ENV !== "production") {
       console.warn(`[issue-surface] mount ${contentKey}`);
@@ -80,6 +120,7 @@ export function IssueSurface({
 
   return (
     <ViewStoreProvider store={store}>
+      <ViewBaselineProvider baseline={viewBaseline}>
       {/* Remount on data-window change: the list queries keep the previous
           key's data as a placeholder (keepPreviousData) so sort/filter
           changes within ONE surface never flash a skeleton — but reusing the
@@ -105,6 +146,7 @@ export function IssueSurface({
         batchToolbar={batchToolbar}
         contentClassName={contentClassName}
       />
+      </ViewBaselineProvider>
     </ViewStoreProvider>
   );
 }
@@ -205,6 +247,13 @@ function IssueSurfaceContent({
             }
             tableFacetCounts={controller.tableFacetCounts}
             onTableFacetChange={controller.setActiveTableFacet}
+            saveViewScope={
+              scope.type === "project"
+                ? { kind: "project", projectId: scope.projectId }
+                : scope.type === "workspace"
+                  ? { kind: "workspace" }
+                  : null
+            }
           />
         )}
         {controller.isLoading ? (
@@ -331,13 +380,20 @@ function IssueSurfaceContent({
 function FilteredEmptyState() {
   const { t } = useT("issues");
   const clearFilters = useViewStore((s) => s.clearFilters);
+  const resetFiltersTo = useViewStore((s) => s.resetFiltersTo);
+  // Inside a saved view "clear" returns to the view's own conditions — the
+  // baseline is not clearable from here (only the edit dialog changes it).
+  const baseline = useViewBaseline();
+  const handleClear = baseline
+    ? () => resetFiltersTo(baseline.raw)
+    : clearFilters;
 
   return (
     <div className="flex flex-1 min-h-0 flex-col items-center justify-center gap-3 text-muted-foreground">
       <FilterX className="h-10 w-10 text-faint-foreground" />
       <p className="text-body">{t(($) => $.filtered_empty.title)}</p>
       <p className="text-caption">{t(($) => $.filtered_empty.hint)}</p>
-      <Button variant="outline" size="sm" className="mt-1" onClick={clearFilters}>
+      <Button variant="outline" size="sm" className="mt-1" onClick={handleClear}>
         {t(($) => $.filtered_empty.clear_button)}
       </Button>
     </div>

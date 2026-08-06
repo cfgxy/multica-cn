@@ -29,6 +29,7 @@ import type {
   UpdateIssueRequest,
 } from "@multica/core/types";
 import { useViewStore, useViewStoreApi } from "@multica/core/issues/stores/view-store-context";
+import { useViewBaseline } from "../surface/view-baseline-context";
 import { filterIssues, type IssueFilters } from "../utils/filter";
 import { getMoveAnchors } from "../utils/drag-utils";
 import type { SwimlaneGrouping } from "@multica/core/issues/stores/view-store";
@@ -648,6 +649,7 @@ function SwimLaneViewImpl({
   const { t } = useT("issues");
   const paths = useWorkspacePaths();
   const viewStoreApi = useViewStoreApi();
+  const viewBaseline = useViewBaseline();
   const sortBy = useViewStore((s) => s.sortBy);
   const sortDirection = useViewStore((s) => s.sortDirection);
   const swimlaneGrouping = useViewStore((s) => s.swimlaneGrouping);
@@ -1454,6 +1456,12 @@ function SwimLaneViewImpl({
                         />
                         <DropdownMenuContent align="end">
                           <DropdownMenuItem
+                            disabled={viewBaseline?.status.has(status) === true}
+                            title={
+                              viewBaseline?.status.has(status) === true
+                                ? t(($) => $.filters.in_view)
+                                : undefined
+                            }
                             onClick={() => viewStoreApi.getState().hideStatus(status)}
                           >
                             <EyeOff className="size-3.5" />
