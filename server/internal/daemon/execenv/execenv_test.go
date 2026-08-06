@@ -2048,17 +2048,31 @@ func TestInjectRuntimeConfigLinuxCommentFormattingEmphasizesFile(t *testing.T) {
 			}
 			s := string(data)
 
+			// Assert inside the section slice: "#4182" also appears in
+			// Available Commands, so a whole-file Contains would stay green
+			// with the HEREDOC ban deleted here (review catch on #6453).
+			// Match the HEADING at line start — Available Commands references
+			// "## Comment Formatting" inline earlier in the file.
+			cfStart := strings.Index(s, "\n## Comment Formatting\n")
+			if cfStart < 0 {
+				t.Fatalf("%s missing ## Comment Formatting section\n---\n%s", fileName, s)
+			}
+			cf := s[cfStart+1:]
+			if next := strings.Index(cf[3:], "\n## "); next >= 0 {
+				cf = cf[:next+3]
+			}
 			for _, want := range []string{
-				"## Comment Formatting",
 				"always write the comment body to a UTF-8 file with your file-write tool first, then post it with `--content-file <path>`",
-				"#4182",
 				"Never use inline `--content` for agent-authored comments",
+				"never use `--content-stdin` HEREDOCs alongside other flags",
+				"#4182",
+				"never `/tmp` or shared paths",
 				"Keep the same `--parent` value",
 				"rm ./reply.md",
 				"do not rely on `\\n` escapes",
 			} {
-				if !strings.Contains(s, want) {
-					t.Errorf("%s missing comment-formatting guidance %q\n---\n%s", fileName, want, s)
+				if !strings.Contains(cf, want) {
+					t.Errorf("%s Comment Formatting section missing %q\n---\n%s", fileName, want, cf)
 				}
 			}
 
@@ -2101,7 +2115,7 @@ func TestInjectRuntimeConfigCodexWindowsUsesContentFile(t *testing.T) {
 		"On Windows, **always write the comment body to a UTF-8 file",
 		"$OutputEncoding",
 		"--content-file",
-		"silently dropping non-ASCII characters as `?`",
+		"may replace non-ASCII characters with `?`",
 	} {
 		if !strings.Contains(s, want) {
 			t.Errorf("AGENTS.md missing Codex/Windows file-first guidance %q\n---\n%s", want, s)
@@ -4951,8 +4965,17 @@ func TestInjectRuntimeConfigMentionLoopHardening(t *testing.T) {
 		for _, want := range []string{
 			"side-effecting actions",
 			"enqueues a new run for that agent",
-			"When NOT to use a mention link",
-			"When a mention IS appropriate",
+			// MUL-5442 judgment rewrite: the two H3 subsections merged into one
+			// paragraph — pin the policy anchors, not the retired headings.
+			"Default: NO mention",
+			// Each warranted-case scope qualifier pinned separately — "not yet
+			// involved" and "for the first time" ARE the anti-repeat-notify
+			// scope, not decoration (review catch on #6453).
+			"restarts an agent-to-agent loop and costs the user money",
+			"Mention only when escalating to a human owner",
+			"not yet involved",
+			"for the first time",
+			"explicitly asks to loop someone in",
 			"end with no mention at all",
 			"Silence ends conversations",
 		} {
