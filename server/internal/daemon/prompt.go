@@ -603,9 +603,13 @@ func buildAutopilotPrompt(task Task) string {
 	return b.String()
 }
 
-// taskIsSquadLeader mirrors the check gating the per-turn no_action block:
-// leadership is agent configuration (the Squad Operating Protocol section in
-// the agent's instructions), never per-run state.
+// taskIsSquadLeader reports whether THIS TASK runs the agent as a squad
+// leader, identified (for now) by the squad briefing marker the server
+// appends to Instructions on leader tasks. Leadership is a PER-TASK role —
+// the same agent can be leader one turn and worker the next — so everything
+// gated on this rides the per-turn channel. Making the cached brief fully
+// role-independent (and replacing this marker check with an explicit role
+// signal) is MUL-5811.
 func taskIsSquadLeader(task Task) bool {
 	return task.Agent != nil && strings.Contains(task.Agent.Instructions, "## Squad Operating Protocol")
 }
