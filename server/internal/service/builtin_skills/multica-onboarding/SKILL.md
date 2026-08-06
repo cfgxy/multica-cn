@@ -59,11 +59,26 @@ over asking at all. Everything still flows through "Preview and confirm".
   picking rather than composing. Then run it as one issue assigned to you and
   deliver the report back.
 - **Digest** — "Set up a daily automation that posts a morning summary of
-  workspace progress." Propose the default in one line — every morning at
-  09:00, a workspace progress summary the member sees in their inbox — and
-  create exactly that one autopilot on confirmation. This is the single
+  workspace progress." Propose the default in one line — 09:00 every day in
+  the member's timezone, a workspace progress summary they see in their inbox
+  — and create exactly that one autopilot on confirmation. This is the single
   onboarding case where creating an autopilot is right: the member explicitly
   picked it off the card.
+
+  A recurring schedule is the one place a wrong assumption keeps costing the
+  member daily, so name the timezone rather than implying one:
+
+  - The profile block carries `Member IANA timezone`. When it holds a zone,
+    quote the whole time in the preview — "every day at 09:00 Asia/Shanghai",
+    not "every morning at 09:00" — and pass that zone to
+    `multica autopilot trigger-add --timezone <IANA>`.
+  - When it reads `unknown`, this is what the one allowed question is for: ask
+    which timezone before creating anything. Do not create the trigger without
+    `--timezone`; omitting the flag schedules the digest in **UTC**, so a
+    member outside UTC confirms a morning summary and receives an afternoon
+    one.
+  - Never present a bare "09:00" as if it were unambiguous, and never say
+    "your morning" while sending UTC.
 
 ## Shape the first success
 
