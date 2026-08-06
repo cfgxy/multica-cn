@@ -7,6 +7,8 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 任意の[エージェント](/agents)を DingTalk Bot に接続すれば、チームは DingTalk の中から直接それを使えます——Bot に DM したり、グループで @ メンションしたり、スクリーンショットを送ったり、`/issue` と入力してアプリを開かずに [Multica イシュー](/issues)を起票したりできます。
 
+DingTalk 連携はコミュニティによってメンテナンスされています。毎リリースに同梱されますが、公式のサポート SLA は付きません。問題があれば [GitHub issues](https://github.com/multica-ai/multica/issues) に報告してください。
+
 DingTalk は**自分のアプリを持ち込む（BYO: bring-your-own-app）**モデルを採用しています。ワークスペースの admin が DingTalk アプリを作成し、それに Stream モードのロボットを追加して、その認証情報を Multica に貼り付けます。エージェントごとに**専用の** DingTalk アプリを持つため、同じ組織内で複数のエージェントがそれぞれ別個に @ メンションできる異なる Bot を持てます。（これは紐づけがスキャンしてインストールするフローである [Lark](/lark-bot-integration) とは異なります。）
 
 セットアップ全体は以下のとおりで、所要時間は約 5 分です。最終的に、Multica に貼り付ける 2 つの認証情報が得られます。
