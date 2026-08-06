@@ -1544,11 +1544,16 @@ func (q *Queries) CompleteAgentTask(ctx context.Context, arg CompleteAgentTaskPa
 
 const countAgentTasksByMigrationGroup = `-- name: CountAgentTasksByMigrationGroup :one
 SELECT
-    COUNT(*) FILTER (WHERE status IN ('queued', 'deferred'))::bigint AS unclaimed_count,
+    COUNT(*) FILTER (WHERE status IN ('queued', 'deferred') AND runtime_id IS DISTINCT FROM $1)::bigint AS unclaimed_count,
     COUNT(*) FILTER (WHERE status IN ('dispatched', 'running', 'waiting_local_directory'))::bigint AS active_count
 FROM agent_task_queue
-WHERE agent_id = ANY($1::uuid[])
+WHERE agent_id = ANY($2::uuid[])
 `
+
+type CountAgentTasksByMigrationGroupParams struct {
+	ToRuntimeID pgtype.UUID   `json:"to_runtime_id"`
+	AgentIds    []pgtype.UUID `json:"agent_ids"`
+}
 
 type CountAgentTasksByMigrationGroupRow struct {
 	UnclaimedCount int64 `json:"unclaimed_count"`
@@ -1560,12 +1565,18 @@ type CountAgentTasksByMigrationGroupRow struct {
 // RepointUnclaimedTasksToRuntime will move, `active` is what stays on the old
 // runtime because a daemon already owns it.
 //
+// The unclaimed filter mirrors RepointUnclaimedTasksToRuntime exactly,
+// including the IS DISTINCT FROM guard: agents already on the target are
+// eligible for in-place settings updates, but their queued tasks do not move,
+// so counting them would make the dry run promise migrations the write path
+// then does not perform.
+//
 // The confirmation dialog reads these numbers from a dry run rather than from
 // the presence projection: derive-presence's queuedCount folds 'dispatched' and
 // 'waiting_local_directory' into "queued" and drops 'deferred' entirely, so it
 // can never state the migration split correctly.
-func (q *Queries) CountAgentTasksByMigrationGroup(ctx context.Context, agentIds []pgtype.UUID) (CountAgentTasksByMigrationGroupRow, error) {
-	row := q.db.QueryRow(ctx, countAgentTasksByMigrationGroup, agentIds)
+func (q *Queries) CountAgentTasksByMigrationGroup(ctx context.Context, arg CountAgentTasksByMigrationGroupParams) (CountAgentTasksByMigrationGroupRow, error) {
+	row := q.db.QueryRow(ctx, countAgentTasksByMigrationGroup, arg.ToRuntimeID, arg.AgentIds)
 	var i CountAgentTasksByMigrationGroupRow
 	err := row.Scan(&i.UnclaimedCount, &i.ActiveCount)
 	return i, err
@@ -5668,11 +5679,11 @@ const migrateAgentsToRuntime = `-- name: MigrateAgentsToRuntime :many
 UPDATE agent SET
     runtime_id = $1,
     runtime_mode = $2,
-    model = CASE WHEN $3::boolean THEN '' ELSE model END,
-    thinking_level = CASE WHEN $3::boolean THEN NULL ELSE thinking_level END,
-    service_tier = CASE WHEN $3::boolean THEN NULL ELSE service_tier END,
+    model = CASE WHEN $3::boolean THEN $4::text ELSE model END,
+    thinking_level = CASE WHEN $3::boolean THEN NULLIF($5::text, '') ELSE thinking_level END,
+    service_tier = CASE WHEN $3::boolean THEN NULLIF($6::text, '') ELSE service_tier END,
     updated_at = now()
-WHERE id = ANY($4::uuid[])
+WHERE id = ANY($7::uuid[])
 RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier
 `
 
@@ -5680,6 +5691,9 @@ type MigrateAgentsToRuntimeParams struct {
 	RuntimeID          pgtype.UUID   `json:"runtime_id"`
 	RuntimeMode        string        `json:"runtime_mode"`
 	ClearModelSettings bool          `json:"clear_model_settings"`
+	NewModel           string        `json:"new_model"`
+	NewThinkingLevel   string        `json:"new_thinking_level"`
+	NewServiceTier     string        `json:"new_service_tier"`
 	AgentIds           []pgtype.UUID `json:"agent_ids"`
 }
 
@@ -5697,11 +5711,22 @@ type MigrateAgentsToRuntimeParams struct {
 // The caller has already row-locked these ids via
 // ListAgentsByIDsForWorkspaceForUpdate and filtered out everything it may not
 // write, so this statement takes the id set verbatim.
+//
+// new_model / new_thinking_level / new_service_tier are the optional uniform
+// replacement the caller picked for the target runtime. Empty strings keep
+// the original clear-to-default behaviour: model is a NOT NULL column where
+// ” means "runtime default", while thinking_level / service_tier are
+// nullable, so their empty string is normalised to NULL via NULLIF. The
+// handler has already validated non-empty values against the target
+// provider's enums and rejected them when clear_model_settings is false.
 func (q *Queries) MigrateAgentsToRuntime(ctx context.Context, arg MigrateAgentsToRuntimeParams) ([]Agent, error) {
 	rows, err := q.db.Query(ctx, migrateAgentsToRuntime,
 		arg.RuntimeID,
 		arg.RuntimeMode,
 		arg.ClearModelSettings,
+		arg.NewModel,
+		arg.NewThinkingLevel,
+		arg.NewServiceTier,
 		arg.AgentIds,
 	)
 	if err != nil {

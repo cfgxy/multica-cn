@@ -322,12 +322,20 @@ FOR UPDATE;
 -- The caller has already row-locked these ids via
 -- ListAgentsByIDsForWorkspaceForUpdate and filtered out everything it may not
 -- write, so this statement takes the id set verbatim.
+--
+-- new_model / new_thinking_level / new_service_tier are the optional uniform
+-- replacement the caller picked for the target runtime. Empty strings keep
+-- the original clear-to-default behaviour: model is a NOT NULL column where
+-- '' means "runtime default", while thinking_level / service_tier are
+-- nullable, so their empty string is normalised to NULL via NULLIF. The
+-- handler has already validated non-empty values against the target
+-- provider's enums and rejected them when clear_model_settings is false.
 UPDATE agent SET
     runtime_id = @runtime_id,
     runtime_mode = @runtime_mode,
-    model = CASE WHEN @clear_model_settings::boolean THEN '' ELSE model END,
-    thinking_level = CASE WHEN @clear_model_settings::boolean THEN NULL ELSE thinking_level END,
-    service_tier = CASE WHEN @clear_model_settings::boolean THEN NULL ELSE service_tier END,
+    model = CASE WHEN @clear_model_settings::boolean THEN @new_model::text ELSE model END,
+    thinking_level = CASE WHEN @clear_model_settings::boolean THEN NULLIF(@new_thinking_level::text, '') ELSE thinking_level END,
+    service_tier = CASE WHEN @clear_model_settings::boolean THEN NULLIF(@new_service_tier::text, '') ELSE service_tier END,
     updated_at = now()
 WHERE id = ANY(@agent_ids::uuid[])
 RETURNING *;
@@ -364,12 +372,18 @@ RETURNING *;
 -- RepointUnclaimedTasksToRuntime will move, `active` is what stays on the old
 -- runtime because a daemon already owns it.
 --
+-- The unclaimed filter mirrors RepointUnclaimedTasksToRuntime exactly,
+-- including the IS DISTINCT FROM guard: agents already on the target are
+-- eligible for in-place settings updates, but their queued tasks do not move,
+-- so counting them would make the dry run promise migrations the write path
+-- then does not perform.
+--
 -- The confirmation dialog reads these numbers from a dry run rather than from
 -- the presence projection: derive-presence's queuedCount folds 'dispatched' and
 -- 'waiting_local_directory' into "queued" and drops 'deferred' entirely, so it
 -- can never state the migration split correctly.
 SELECT
-    COUNT(*) FILTER (WHERE status IN ('queued', 'deferred'))::bigint AS unclaimed_count,
+    COUNT(*) FILTER (WHERE status IN ('queued', 'deferred') AND runtime_id IS DISTINCT FROM @to_runtime_id)::bigint AS unclaimed_count,
     COUNT(*) FILTER (WHERE status IN ('dispatched', 'running', 'waiting_local_directory'))::bigint AS active_count
 FROM agent_task_queue
 WHERE agent_id = ANY(@agent_ids::uuid[]);

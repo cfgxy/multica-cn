@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"sort"
@@ -13,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/multica-ai/multica/server/internal/logger"
+	agentpkg "github.com/multica-ai/multica/server/pkg/agent"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
@@ -27,9 +29,8 @@ const maxMigrateAgentsBatch = 200
 // request failure, which is what makes "select everything, migrate what you
 // may" a usable bulk gesture.
 const (
-	migrateSkipForbidden       = "forbidden"
-	migrateSkipNotFound        = "not_found"
-	migrateSkipAlreadyOnTarget = "already_on_target"
+	migrateSkipForbidden = "forbidden"
+	migrateSkipNotFound  = "not_found"
 )
 
 // migrateAgentsToRuntimeRequest is the wire shape for
@@ -50,8 +51,21 @@ type migrateAgentsToRuntimeRequest struct {
 	ExpectedSourceRuntimeID string `json:"expected_source_runtime_id"`
 	// Defaults to true when omitted: clearing the runtime-native model
 	// settings is what a runtime switch has always done on the single-agent
-	// path, and the confirmation dialog lists exactly what will be cleared.
+	// path.
 	ClearModelSettings *bool `json:"clear_model_settings"`
+	// Optional uniform replacement for the cleared model settings, applied to
+	// every migrated agent. The dialog offers it when the target runtime's
+	// model catalog is reachable; empty means today's behaviour (clear to the
+	// runtime default). ThinkingLevel and ServiceTier are model-native, so
+	// they are only accepted alongside Model, and all three are only accepted
+	// while clear_model_settings is true — "keep the old settings AND set new
+	// ones" is contradictory and gets a 400 instead of a silent winner.
+	// Values are validated against the target provider's enums the same way
+	// UpdateAgent validates them; exact per-model compatibility stays
+	// daemon-owned, as everywhere else.
+	Model         string `json:"model"`
+	ThinkingLevel string `json:"thinking_level"`
+	ServiceTier   string `json:"service_tier"`
 	// When true, run every read, permission check and stale-plan check but
 	// write nothing. Backs the confirmation dialog's exact task split.
 	DryRun bool `json:"dry_run"`
@@ -98,10 +112,12 @@ type migrateAgentsToRuntimeResponse struct {
 // agent is just N=1; there is no second code path whose behaviour could drift
 // from the bulk one.
 //
-// Failure model, decided with the issue's reviewers (MUL-5758):
-//   - Agents the caller may not manage, agents outside this workspace and
-//     agents already on the target are reported in `skipped`. They are not
-//     errors and do not roll anything back.
+// Failure model, decided with the issue's reviewers (MUL-5758), amended
+// 2026-08-06 to declarative-overwrite semantics:
+//   - Agents the caller may not manage and agents outside this workspace are
+//     reported in `skipped`. They are not errors and do not roll anything
+//     back. Agents already on the target are NOT skipped — they are updated
+//     in place with whatever the request declares.
 //   - Anything else is all-or-nothing: the whole transaction rolls back, so a
 //     partially migrated selection can never be observed.
 //
@@ -153,6 +169,31 @@ func (h *Handler) MigrateAgentsToRuntime(w http.ResponseWriter, r *http.Request)
 	clearModelSettings := true
 	if req.ClearModelSettings != nil {
 		clearModelSettings = *req.ClearModelSettings
+	}
+
+	// Optional uniform replacement settings. Validated before the dry-run
+	// branch so a preview surfaces a bad combination exactly like a real run
+	// would refuse it.
+	hasReplacement := req.Model != "" || req.ThinkingLevel != "" || req.ServiceTier != ""
+	if hasReplacement {
+		if !clearModelSettings {
+			writeError(w, http.StatusBadRequest, "model settings can only be provided when clear_model_settings is true")
+			return
+		}
+		if req.Model == "" {
+			writeError(w, http.StatusBadRequest, "thinking_level and service_tier require model to be set")
+			return
+		}
+		// Same literal-enum line UpdateAgent holds for the target provider;
+		// per-model compatibility stays daemon-owned.
+		if req.ThinkingLevel != "" && !agentpkg.IsKnownThinkingValue(target.Provider, req.ThinkingLevel) {
+			writeError(w, http.StatusBadRequest, thinkingLevelRejection(target.Provider, req.ThinkingLevel))
+			return
+		}
+		if req.ServiceTier != "" && !agentpkg.IsKnownServiceTier(target.Provider, req.ServiceTier) {
+			writeError(w, http.StatusBadRequest, fmt.Sprintf("service_tier %q is not a recognised value for runtime %q", req.ServiceTier, target.Provider))
+			return
+		}
 	}
 
 	if req.DryRun {
@@ -236,7 +277,7 @@ func (h *Handler) MigrateAgentsToRuntime(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	plan := planAgentMigration(agents, agentIDs, member, target.ID, clearModelSettings)
+	plan := planAgentMigration(agents, agentIDs, member, clearModelSettings)
 	out := migrateAgentsToRuntimeResponse{
 		TargetRuntimeID: uuidToString(target.ID),
 		Migrated:        plan.migrated,
@@ -255,7 +296,10 @@ func (h *Handler) MigrateAgentsToRuntime(w http.ResponseWriter, r *http.Request)
 
 	// Counted before the writes: afterwards the unclaimed rows carry the
 	// target runtime and the split would report zero to move.
-	counts, err := qtx.CountAgentTasksByMigrationGroup(r.Context(), plan.eligibleIDs)
+	counts, err := qtx.CountAgentTasksByMigrationGroup(r.Context(), db.CountAgentTasksByMigrationGroupParams{
+		ToRuntimeID: target.ID,
+		AgentIds:    plan.eligibleIDs,
+	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to inspect agent tasks")
 		return
@@ -266,6 +310,9 @@ func (h *Handler) MigrateAgentsToRuntime(w http.ResponseWriter, r *http.Request)
 		RuntimeID:          target.ID,
 		RuntimeMode:        target.RuntimeMode,
 		ClearModelSettings: clearModelSettings,
+		NewModel:           req.Model,
+		NewThinkingLevel:   req.ThinkingLevel,
+		NewServiceTier:     req.ServiceTier,
 		AgentIds:           plan.eligibleIDs,
 	})
 	if err != nil {
@@ -346,7 +393,7 @@ func (h *Handler) previewAgentMigration(
 		return
 	}
 
-	plan := planAgentMigration(agents, agentIDs, member, target.ID, clearModelSettings)
+	plan := planAgentMigration(agents, agentIDs, member, clearModelSettings)
 	out := migrateAgentsToRuntimeResponse{
 		TargetRuntimeID: uuidToString(target.ID),
 		DryRun:          true,
@@ -354,7 +401,10 @@ func (h *Handler) previewAgentMigration(
 		Skipped:         plan.skipped,
 	}
 	if len(plan.eligibleIDs) > 0 {
-		counts, err := h.Queries.CountAgentTasksByMigrationGroup(r.Context(), plan.eligibleIDs)
+		counts, err := h.Queries.CountAgentTasksByMigrationGroup(r.Context(), db.CountAgentTasksByMigrationGroupParams{
+			ToRuntimeID: target.ID,
+			AgentIds:    plan.eligibleIDs,
+		})
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to inspect agent tasks")
 			return
@@ -379,11 +429,16 @@ type agentMigrationPlan struct {
 // on their row; ids that did not come back are reported as not_found without
 // any further probing — an agent in another workspace and an id that never
 // existed are deliberately indistinguishable to the caller.
+//
+// Agents already on the target runtime are NOT skipped (decided 2026-08-06,
+// superseding the original MUL-5758 contract): the dialog is a declarative
+// "set runtime + model settings" form, and what it displays is what gets
+// written — including "runtime default" for an empty model. Their tasks are
+// untouched either way; the repoint query is guarded by IS DISTINCT FROM.
 func planAgentMigration(
 	agents []db.Agent,
 	requested []pgtype.UUID,
 	member db.Member,
-	targetRuntimeID pgtype.UUID,
 	clearModelSettings bool,
 ) agentMigrationPlan {
 	byID := make(map[string]db.Agent, len(agents))
@@ -395,7 +450,6 @@ func planAgentMigration(
 		migrated: []migratedAgentResult{},
 		skipped:  []skippedAgentResult{},
 	}
-	targetKey := uuidToString(targetRuntimeID)
 	for _, id := range requested {
 		key := uuidToString(id)
 		agent, found := byID[key]
@@ -408,14 +462,6 @@ func planAgentMigration(
 				AgentID: key,
 				Name:    agent.Name,
 				Reason:  migrateSkipForbidden,
-			})
-			continue
-		}
-		if agent.RuntimeID.Valid && uuidToString(agent.RuntimeID) == targetKey {
-			plan.skipped = append(plan.skipped, skippedAgentResult{
-				AgentID: key,
-				Name:    agent.Name,
-				Reason:  migrateSkipAlreadyOnTarget,
 			})
 			continue
 		}

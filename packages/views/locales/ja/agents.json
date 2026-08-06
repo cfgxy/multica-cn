@@ -102,6 +102,7 @@
     "cancelled_tasks_toast_other": "作業 {{count}} 件をキャンセルしました",
     "cancel_failed_toast": "作業をキャンセルできませんでした",
     "cancel_dialog_title": "\"{{name}}\" のすべての作業をキャンセルしますか？",
+    "cancel_dialog_title_bulk_other": "{{count}} 件のエージェントのすべての作業をキャンセルしますか？",
     "cancel_dialog_no_tasks": "キャンセルできるアクティブな作業がありません。",
     "cancel_dialog_running_other": "実行中 {{count}} 件",
     "cancel_dialog_queued_other": "待機中 {{count}} 件",
@@ -114,23 +115,21 @@
     "archive_dialog_description": "このエージェントは割り当てやメンションができなくなり、アクティブな作業はすべてキャンセルされます。履歴はすべて保持され、後で復元できます。",
     "archive_dialog_cancel": "キャンセル",
     "archive_dialog_confirm": "アーカイブ",
-    "switch_runtime": "ランタイムを切り替え",
+    "switch_runtime": "ランタイム / モデルを切り替え",
     "inject_env": "環境変数を追加"
   },
   "migrate_dialog": {
-    "title_single": "「{{name}}」のランタイムを切り替え",
-    "title_bulk_other": "{{count}} 件のエージェントのランタイムを切り替え",
-    "description": "待機中の作業はエージェントとともに新しいランタイムへ移ります。実行中の作業は現在のランタイムで完了するまでそのまま残ります。",
-    "checking": "変更内容を確認しています…",
+    "title_single": "\"{{name}}\" のランタイム / モデルを切り替え",
+    "title_bulk_other": "{{count}} 件のエージェントのランタイム / モデルを切り替え",
     "tasks_migrating_other": "待機中の作業 {{count}} 件が新しいランタイムへ移ります。",
     "tasks_staying_other": "実行中の作業 {{count}} 件は完了まで現在のランタイムに残ります。",
-    "clearing_title": "次のランタイム依存の設定がクリアされます",
-    "skipped_notice_other": "選択したエージェントのうち {{count}} 件はスキップされます。",
+    "model_section_title": "切り替え後のモデル（任意・空欄ならランタイムのデフォルト）",
+    "blocker_no_target": "まず移行先のランタイムを選択してください。",
+    "blocker_no_agents": "エージェントがすべて未選択です。少なくとも 1 件チェックしてください。",
     "target_offline": "このランタイムはオフラインです。再接続するまで作業は待機します。",
-    "nothing_to_do": "移行できるエージェントがありません。すでにこのランタイム上にあるか、管理権限がありません。",
     "cancel": "キャンセル",
-    "confirm": "ランタイムを切り替え",
-    "success_toast_other": "{{count}} 件のエージェントを移行しました · 待機中の作業 {{tasks}} 件も移行",
+    "confirm": "適用",
+    "success_toast_other": "{{count}} 件のエージェントに適用 · 待機中の作業 {{tasks}} 件を移動",
     "skipped_toast_other": "{{count}} 件をスキップしました",
     "failed_toast": "ランタイムの切り替えに失敗しました"
   },
@@ -876,6 +875,7 @@
   },
   "actions": {
     "selected_other": "{{count}} 件選択中",
-    "clear_selection": "選択を解除"
+    "clear_selection": "選択を解除",
+    "menu": "アクション"
   }
 }

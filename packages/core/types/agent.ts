@@ -1320,6 +1320,13 @@ export interface MigrateAgentsToRuntimeRequest {
   expected_source_runtime_id?: string;
   /** Defaults to true server-side. */
   clear_model_settings?: boolean;
+  /** Optional uniform replacement applied to every migrated agent instead of
+   *  clearing to the runtime default. thinking_level / service_tier are
+   *  model-native: the server rejects them without `model`, and rejects all
+   *  three when `clear_model_settings` is false. */
+  model?: string;
+  thinking_level?: string;
+  service_tier?: string;
   /** Run every check and count, write nothing. Backs the confirmation dialog. */
   dry_run?: boolean;
 }

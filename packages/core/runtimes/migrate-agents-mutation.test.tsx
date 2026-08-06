@@ -87,6 +87,32 @@ describe("useMigrateAgentsToRuntime", () => {
     });
   });
 
+  it("passes the optional replacement model settings through in wire casing", async () => {
+    const qc = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const { result } = renderHook(() => useMigrateAgentsToRuntime(WS), {
+      wrapper: wrapper(qc),
+    });
+
+    await result.current.mutateAsync({
+      targetRuntimeId: "rt-b",
+      agentIds: ["agent-1"],
+      model: "claude-sonnet-5",
+      thinkingLevel: "high",
+      serviceTier: "priority",
+    });
+
+    expect(migrateSpy).toHaveBeenCalledWith("rt-b", {
+      agent_ids: ["agent-1"],
+      expected_source_runtime_id: undefined,
+      clear_model_settings: undefined,
+      model: "claude-sonnet-5",
+      thinking_level: "high",
+      service_tier: "priority",
+    });
+  });
+
   it("still refreshes the caches when the migration fails", async () => {
     // onSettled, not onSuccess: a failed request may still have been a partial
     // observation of a changed world (409 carries a fresh agent set), and a

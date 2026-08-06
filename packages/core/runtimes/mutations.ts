@@ -90,16 +90,27 @@ export function useMigrateAgentsToRuntime(wsId: string) {
       agentIds,
       expectedSourceRuntimeId,
       clearModelSettings,
+      model,
+      thinkingLevel,
+      serviceTier,
     }: {
       targetRuntimeId: string;
       agentIds: string[];
       expectedSourceRuntimeId?: string;
       clearModelSettings?: boolean;
+      /** Optional uniform replacement for the cleared model settings; see
+       *  MigrateAgentsToRuntimeRequest. */
+      model?: string;
+      thinkingLevel?: string;
+      serviceTier?: string;
     }) =>
       api.migrateAgentsToRuntime(targetRuntimeId, {
         agent_ids: agentIds,
         expected_source_runtime_id: expectedSourceRuntimeId,
         clear_model_settings: clearModelSettings,
+        model,
+        thinking_level: thinkingLevel,
+        service_tier: serviceTier,
       }),
     onSettled: () => {
       qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });

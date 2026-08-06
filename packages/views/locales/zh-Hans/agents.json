@@ -110,6 +110,7 @@
     "cancelled_tasks_toast_other": "已取消 {{count}} 个 task",
     "cancel_failed_toast": "取消 task 失败",
     "cancel_dialog_title": "取消\"{{name}}\"的全部 task？",
+    "cancel_dialog_title_bulk_other": "取消 {{count}} 个 agent 的全部 task？",
     "cancel_dialog_no_tasks": "没有要取消的活动 task。",
     "cancel_dialog_running_other": "{{count}} 个进行中",
     "cancel_dialog_queued_other": "{{count}} 个排队中",
@@ -122,23 +123,21 @@
     "archive_dialog_description": "归档后这个智能体将无法被分配或提及，进行中的 task 会被取消。所有历史会被保留，可以稍后恢复。",
     "archive_dialog_cancel": "取消",
     "archive_dialog_confirm": "归档",
-    "switch_runtime": "切换 Runtime",
+    "switch_runtime": "切换 Runtime / 模型",
     "inject_env": "注入环境变量"
   },
   "migrate_dialog": {
-    "title_single": "为\"{{name}}\"切换 Runtime",
-    "title_bulk_other": "为 {{count}} 个 agent 切换 Runtime",
-    "description": "排队中的 task 会跟随 agent 迁移到新 Runtime。已经在运行的 task 会留在原 Runtime 上跑完。",
-    "checking": "正在确认这次操作的影响…",
+    "title_single": "为\"{{name}}\"切换 Runtime / 模型",
+    "title_bulk_other": "为 {{count}} 个 agent 切换 Runtime / 模型",
     "tasks_migrating_other": "{{count}} 个排队中的 task 会迁移到新 Runtime。",
     "tasks_staying_other": "{{count}} 个运行中的 task 会留在原 Runtime 上跑完。",
-    "clearing_title": "以下 Runtime 相关设置会被清空",
-    "skipped_notice_other": "{{count}} 个选中的 agent 会被跳过。",
+    "model_section_title": "迁移后使用的模型（可选，留空用 Runtime 默认）",
+    "blocker_no_target": "请先选择目标 Runtime。",
+    "blocker_no_agents": "所有 agent 都未勾选，至少勾选一个再迁移。",
     "target_offline": "该 Runtime 当前离线，task 会等待它重新连接。",
-    "nothing_to_do": "没有可迁移的 agent——选中的 agent 要么已经在这个 Runtime 上，要么你无权管理。",
     "cancel": "取消",
-    "confirm": "切换 Runtime",
-    "success_toast_other": "已迁移 {{count}} 个 agent · {{tasks}} 个排队 task 一并迁移",
+    "confirm": "应用",
+    "success_toast_other": "已应用到 {{count}} 个 agent · {{tasks}} 个排队 task 迁移",
     "skipped_toast_other": "跳过了 {{count}} 个 agent",
     "failed_toast": "切换 Runtime 失败"
   },
@@ -876,6 +875,7 @@
   },
   "actions": {
     "selected_other": "已选 {{count}} 项",
-    "clear_selection": "清除选择"
+    "clear_selection": "清除选择",
+    "menu": "操作"
   }
 }

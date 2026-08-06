@@ -227,10 +227,12 @@ func TestMigrateAgentsToRuntime_DryRunReportsSplitWithoutWriting(t *testing.T) {
 	}
 }
 
-// TestMigrateAgentsToRuntime_SkipsInsteadOfFailing pins the bulk contract: a
-// selection may legitimately contain agents the caller cannot write, ids that
-// do not resolve, and agents already on the target. None of those is an error —
-// they are reported per agent so "select all, migrate what you may" works.
+// TestMigrateAgentsToRuntime_SkipsInsteadOfFailing pins the bulk contract
+// (amended 2026-08-06 to declarative-overwrite semantics): agents the caller
+// cannot write and ids that do not resolve are reported per agent, not
+// errors, so "select all, apply what you may" works. An agent already on the
+// target is NOT a skip — the request declares the desired state, so it is
+// updated in place.
 func TestMigrateAgentsToRuntime_SkipsInsteadOfFailing(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
@@ -264,26 +266,144 @@ func TestMigrateAgentsToRuntime_SkipsInsteadOfFailing(t *testing.T) {
 	}
 	resp := decodeMigrateResponse(t, w)
 
-	if len(resp.Migrated) != 1 || resp.Migrated[0].AgentID != movable {
-		t.Fatalf("expected only the caller's own agent migrated, got %+v", resp.Migrated)
+	migrated := map[string]bool{}
+	for _, m := range resp.Migrated {
+		migrated[m.AgentID] = true
+	}
+	if len(resp.Migrated) != 2 || !migrated[movable] || !migrated[alreadyThere] {
+		t.Fatalf("expected the caller's own agent AND the already-on-target agent applied, got %+v", resp.Migrated)
 	}
 	reasons := map[string]string{}
 	for _, s := range resp.Skipped {
 		reasons[s.AgentID] = s.Reason
 	}
+	if len(resp.Skipped) != 2 {
+		t.Fatalf("expected exactly 2 skips, got %+v", resp.Skipped)
+	}
 	if reasons[foreign] != migrateSkipForbidden {
 		t.Errorf("expected %q for another member's agent, got %q", migrateSkipForbidden, reasons[foreign])
-	}
-	if reasons[alreadyThere] != migrateSkipAlreadyOnTarget {
-		t.Errorf("expected %q for an agent already on the target, got %q", migrateSkipAlreadyOnTarget, reasons[alreadyThere])
 	}
 	if reasons[missing] != migrateSkipNotFound {
 		t.Errorf("expected %q for an unknown id, got %q", migrateSkipNotFound, reasons[missing])
 	}
 
-	// The skipped agent must be untouched, not half-migrated.
+	// The already-on-target agent stays on the target (idempotent), and the
+	// skipped agent must be untouched, not half-migrated.
+	if got := agentRuntimeIDOf(t, alreadyThere); got != target {
+		t.Errorf("in-place agent runtime = %s, want %s", got, target)
+	}
 	if got := agentRuntimeIDOf(t, foreign); got == target {
 		t.Error("a forbidden agent must not be moved")
+	}
+}
+
+// TestMigrateAgentsToRuntime_InPlaceModelUpdate covers the bulk-model-change
+// use of the endpoint: an agent already on the target runtime is updated in
+// place with the request's replacement model, and its queued tasks are NOT
+// re-pointed (they already carry the target) — neither in the real run's
+// tasks_migrated nor in the dry run's projection, which regressed once when
+// CountAgentTasksByMigrationGroup lacked the IS DISTINCT FROM guard.
+func TestMigrateAgentsToRuntime_InPlaceModelUpdate(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+
+	target := createMigrationTestRuntime(t, "migrate-inplace-target", "public", testUserID)
+	agentID := createHandlerTestAgent(t, "migrate-inplace-agent", nil)
+	if _, err := testPool.Exec(ctx, `
+		UPDATE agent SET runtime_id = $1, model = 'old-model' WHERE id = $2
+	`, target, agentID); err != nil {
+		t.Fatalf("bind agent to target: %v", err)
+	}
+	queued := seedTaskWithStatus(t, agentID, target, "queued")
+
+	// Dry run first: the queued task already lives on the target, so the
+	// projection must not promise to move it.
+	w := migrateRequest(t, testUserID, target, map[string]any{
+		"agent_ids": []string{agentID},
+		"dry_run":   true,
+		"model":     "new-model",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("dry run: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if resp := decodeMigrateResponse(t, w); resp.TasksMigrated != 0 {
+		t.Errorf("dry run promised %d task moves for tasks already on the target, want 0", resp.TasksMigrated)
+	}
+
+	w = migrateRequest(t, testUserID, target, map[string]any{
+		"agent_ids": []string{agentID},
+		"model":     "new-model",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	resp := decodeMigrateResponse(t, w)
+
+	if len(resp.Migrated) != 1 || resp.Migrated[0].AgentID != agentID {
+		t.Fatalf("expected the in-place agent applied, got %+v", resp.Migrated)
+	}
+	if resp.TasksMigrated != 0 {
+		t.Errorf("tasks already on the target must not count as migrated, got %d", resp.TasksMigrated)
+	}
+
+	var model string
+	if err := testPool.QueryRow(ctx, `SELECT model FROM agent WHERE id = $1`, agentID).Scan(&model); err != nil {
+		t.Fatalf("read model: %v", err)
+	}
+	if model != "new-model" {
+		t.Errorf("model = %q, want %q", model, "new-model")
+	}
+	if got := agentRuntimeIDOf(t, agentID); got != target {
+		t.Errorf("agent runtime = %s, want %s (unchanged)", got, target)
+	}
+	if got := taskRuntimeID(t, queued); got != target {
+		t.Errorf("queued task runtime = %s, want %s (untouched)", got, target)
+	}
+}
+
+// TestMigrateAgentsToRuntime_ReplacementValidation pins the 400 contract for
+// the optional replacement settings: thinking/tier are model-native, the
+// combination with clear_model_settings=false is contradictory, and non-empty
+// enum values are checked against the target provider (the test provider has
+// no thinking enum, so any value is literal-invalid).
+func TestMigrateAgentsToRuntime_ReplacementValidation(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	target := createMigrationTestRuntime(t, "migrate-validate-target", "public", testUserID)
+	agentID := createHandlerTestAgent(t, "migrate-validate-agent", nil)
+
+	for name, body := range map[string]map[string]any{
+		"thinking without model": {
+			"agent_ids":      []string{agentID},
+			"thinking_level": "high",
+		},
+		"model with clear_model_settings=false": {
+			"agent_ids":            []string{agentID},
+			"model":                "some-model",
+			"clear_model_settings": false,
+		},
+		"thinking invalid for provider": {
+			"agent_ids":      []string{agentID},
+			"model":          "some-model",
+			"thinking_level": "high",
+		},
+		"service tier on non-codex provider": {
+			"agent_ids":    []string{agentID},
+			"model":        "some-model",
+			"service_tier": "priority",
+		},
+	} {
+		if w := migrateRequest(t, testUserID, target, body); w.Code != http.StatusBadRequest {
+			t.Errorf("%s: expected 400, got %d: %s", name, w.Code, w.Body.String())
+		}
+	}
+
+	if got := agentRuntimeIDOf(t, agentID); got == target {
+		t.Error("a rejected request must not move the agent")
 	}
 }
 

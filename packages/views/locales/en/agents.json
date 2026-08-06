@@ -115,6 +115,8 @@
     "cancelled_tasks_toast_other": "Cancelled {{count}} tasks",
     "cancel_failed_toast": "Failed to cancel tasks",
     "cancel_dialog_title": "Cancel all tasks for \"{{name}}\"?",
+    "cancel_dialog_title_bulk_one": "Cancel all tasks for {{count}} agent?",
+    "cancel_dialog_title_bulk_other": "Cancel all tasks for {{count}} agents?",
     "cancel_dialog_no_tasks": "There are no active tasks to cancel.",
     "cancel_dialog_running_one": "{{count}} running",
     "cancel_dialog_running_other": "{{count}} running",
@@ -130,28 +132,25 @@
     "archive_dialog_description": "The agent won't be assignable or mentionable, and any active tasks will be cancelled. All history is preserved and you can restore it later.",
     "archive_dialog_cancel": "Cancel",
     "archive_dialog_confirm": "Archive",
-    "switch_runtime": "Switch runtime",
+    "switch_runtime": "Switch runtime / model",
     "inject_env": "Add env variables"
   },
   "migrate_dialog": {
-    "title_single": "Switch runtime for \"{{name}}\"",
-    "title_bulk_one": "Switch runtime for {{count}} agent",
-    "title_bulk_other": "Switch runtime for {{count}} agents",
-    "description": "Queued work moves to the new runtime with the agents. Tasks a runtime is already running stay where they are until they finish.",
-    "checking": "Checking what this will change…",
+    "title_single": "Switch runtime or model for \"{{name}}\"",
+    "title_bulk_one": "Switch runtime or model for {{count}} agent",
+    "title_bulk_other": "Switch runtime or model for {{count}} agents",
     "tasks_migrating_one": "{{count}} queued task moves to the new runtime.",
     "tasks_migrating_other": "{{count}} queued tasks move to the new runtime.",
     "tasks_staying_one": "{{count}} running task stays on its current runtime until it finishes.",
     "tasks_staying_other": "{{count}} running tasks stay on their current runtime until they finish.",
-    "clearing_title": "These runtime-specific settings will be cleared",
-    "skipped_notice_one": "{{count}} selected agent will be skipped.",
-    "skipped_notice_other": "{{count}} selected agents will be skipped.",
+    "model_section_title": "Model after the switch (optional — empty uses the runtime default)",
+    "blocker_no_target": "Pick a target runtime first.",
+    "blocker_no_agents": "Every agent is unchecked — check at least one to migrate.",
     "target_offline": "This runtime is offline. Work will wait until it reconnects.",
-    "nothing_to_do": "Nothing to move — every selected agent is already on this runtime or cannot be managed by you.",
     "cancel": "Cancel",
-    "confirm": "Switch runtime",
-    "success_toast_one": "Moved {{count}} agent · {{tasks}} queued tasks followed",
-    "success_toast_other": "Moved {{count}} agents · {{tasks}} queued tasks followed",
+    "confirm": "Apply",
+    "success_toast_one": "Applied to {{count}} agent · {{tasks}} queued tasks moved",
+    "success_toast_other": "Applied to {{count}} agents · {{tasks}} queued tasks moved",
     "skipped_toast_one": "{{count}} agent skipped",
     "skipped_toast_other": "{{count}} agents skipped",
     "failed_toast": "Failed to switch runtime"
@@ -903,6 +902,7 @@
   "actions": {
     "selected_one": "{{count}} selected",
     "selected_other": "{{count}} selected",
-    "clear_selection": "Clear selection"
+    "clear_selection": "Clear selection",
+    "menu": "Actions"
   }
 }
