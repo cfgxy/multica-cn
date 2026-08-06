@@ -570,7 +570,11 @@ func writeWorkflowIssue(b *strings.Builder, ctx TaskContextForEnv) {
 		b.WriteString("- **Squad leader rule:** If your evaluation outcome is `no_action`, call `multica squad activity <issue-id> no_action --reason \"...\"` and then EXIT IMMEDIATELY. DO NOT post any comment whose only purpose is to announce that you are taking no action, exiting silently, or acknowledging another agent. A comment like \"No action needed\" or \"Exiting silently\" is noise — the `squad activity` call already records your decision in the timeline.\n")
 	}
 	b.WriteString("- Do any requested work first, then **decide whether to include any `@mention` link.** The default is NO mention; `## Mentions` states when one is warranted.\n")
-	b.WriteString("- **Posting your reply as a comment is mandatory** (`## Output`). Use the `--parent` value the per-turn user message gives you for this turn; do NOT reuse a `--parent` from an earlier turn in this session. When that message lists more than one thread to answer, post one reply per thread instead of merging them.\n")
+	if ctx.IsSquadLeader {
+		b.WriteString("- **Unless your outcome is `no_action` (Squad leader rule above), posting your reply as a comment is mandatory** (`## Output`). Use the `--parent` value the per-turn user message gives you for this turn; do NOT reuse a `--parent` from an earlier turn in this session. When that message lists more than one thread to answer, post one reply per thread instead of merging them.\n")
+	} else {
+		b.WriteString("- **Posting your reply as a comment is mandatory** (`## Output`). Use the `--parent` value the per-turn user message gives you for this turn; do NOT reuse a `--parent` from an earlier turn in this session. When that message lists more than one thread to answer, post one reply per thread instead of merging them.\n")
+	}
 	if ctx.IsSquadLeader {
 		// The default rule below and the Squad Operating Protocol's
 		// "Own the parent issue status" responsibility would otherwise

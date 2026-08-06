@@ -1089,6 +1089,9 @@ func TestBuildPromptCommentTriggeredByAgent(t *testing.T) {
 		"do not @mention the other agent as a sign-off",
 		"reply is warranted",
 		"exit with no output",
+		// The conditional reply framing was the door the retired rule
+		// walked through — guard it shut (MUL-5442 #6493 review).
+		"If you decide to reply",
 	} {
 		if strings.Contains(prompt, banned) {
 			t.Fatalf("per-turn prompt still carries retired no-reply warning %q\n---\n%s", banned, prompt)
@@ -5021,5 +5024,35 @@ func TestFreshSessionMayHelp(t *testing.T) {
 	const hermesAuth = "hermes provider error: \"Could not resolve authentication method. Expected either api_key or auth_token to be set. Or for one of the X-Api-Key or Authorization headers to be explicitly omitted\""
 	if !freshSessionMayHelp(hermesAuth) {
 		t.Fatalf("freshSessionMayHelp(auth-resolution error) = false; a fresh session cures this failure, it must report session-fixable")
+
+// TestBuildPromptSquadLeaderReplyCommandCarvesOutNoAction renders the COMPLETE
+// leader prompt and pins the exception's scope relation (MUL-5442 #6493
+// review): the no_action rule and the reply imperative appear in the same
+// prompt, so the imperative must carry the carve-out itself — a bare
+// unconditional "Post your reply as a comment" anywhere in a leader prompt
+// re-opens the contradiction the carve-out exists to close.
+func TestBuildPromptSquadLeaderReplyCommandCarvesOutNoAction(t *testing.T) {
+	t.Parallel()
+
+	prompt := BuildPrompt(Task{
+		IssueID:               "issue-1",
+		TriggerCommentID:      "comment-1",
+		TriggerCommentContent: "team update posted",
+		TriggerAuthorType:     "member",
+		TriggerAuthorName:     "Bohan",
+		Agent: &AgentData{
+			Name:         "Lead",
+			Instructions: "Some instructions\n\n## Squad Operating Protocol\n\nYou are the LEADER...",
+		},
+	}, "claude")
+
+	if !strings.Contains(prompt, "Squad leader no_action rule") {
+		t.Fatalf("leader prompt missing the no_action rule\n---\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "Unless your outcome is `no_action`, post your reply as a comment") {
+		t.Fatalf("leader prompt missing the carve-out reply imperative\n---\n%s", prompt)
+	}
+	if strings.Contains(prompt, "Post your reply as a comment") {
+		t.Fatalf("leader prompt still carries the unconditional reply imperative\n---\n%s", prompt)
 	}
 }
