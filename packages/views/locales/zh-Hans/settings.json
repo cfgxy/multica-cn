@@ -328,8 +328,12 @@
         "description": "你订阅的任务状态变化时（例如 todo、in progress、done）"
       },
       "comments": {
-        "label": "评论与提及",
-        "description": "你订阅的任务有新评论，或有人 @ 你时"
+        "label": "评论",
+        "description": "你订阅的任务有新评论时"
+      },
+      "mentions": {
+        "label": "提及",
+        "description": "有人 @ 你时，包括 @all 和 @squad"
       },
       "updates": {
         "label": "优先级与截止日期",

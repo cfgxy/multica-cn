@@ -328,8 +328,12 @@
         "description": "팔로우 중인 태스크의 상태가 바뀔 때(예: 할 일, 진행 중, 완료)"
       },
       "comments": {
-        "label": "댓글 및 멘션",
-        "description": "팔로우 중인 태스크에 새 댓글이 달리거나 누군가 나를 @멘션할 때"
+        "label": "댓글",
+        "description": "팔로우 중인 태스크에 새 댓글이 달릴 때"
+      },
+      "mentions": {
+        "label": "멘션",
+        "description": "누군가 나를 @멘션할 때(@all, @squad 포함)"
       },
       "updates": {
         "label": "우선순위 및 마감일",
