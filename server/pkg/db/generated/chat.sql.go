@@ -907,6 +907,51 @@ func (q *Queries) GetMostRecentUserChatMessage(ctx context.Context, chatSessionI
 	return i, err
 }
 
+const getOldestActiveChatSessionForCreatorAgent = `-- name: GetOldestActiveChatSessionForCreatorAgent :one
+SELECT id, workspace_id, agent_id, creator_id, title, session_id, work_dir, status, created_at, updated_at, unread_since, runtime_id, last_read_at, is_agent_intro, pinned_at, project_id FROM chat_session
+WHERE workspace_id = $1
+  AND creator_id = $2
+  AND agent_id = $3
+  AND status = 'active'
+ORDER BY created_at ASC
+LIMIT 1
+`
+
+type GetOldestActiveChatSessionForCreatorAgentParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	CreatorID   pgtype.UUID `json:"creator_id"`
+	AgentID     pgtype.UUID `json:"agent_id"`
+}
+
+// Identity for "this member's conversation with this agent", independent of
+// the session title. Mika's onboarding session used to be matched on its
+// localized title from the client, which made the lookup both racy and
+// language-dependent. Oldest wins so the answer stays stable once a member
+// has opened more than one session with the same agent.
+func (q *Queries) GetOldestActiveChatSessionForCreatorAgent(ctx context.Context, arg GetOldestActiveChatSessionForCreatorAgentParams) (ChatSession, error) {
+	row := q.db.QueryRow(ctx, getOldestActiveChatSessionForCreatorAgent, arg.WorkspaceID, arg.CreatorID, arg.AgentID)
+	var i ChatSession
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.AgentID,
+		&i.CreatorID,
+		&i.Title,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.Status,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.UnreadSince,
+		&i.RuntimeID,
+		&i.LastReadAt,
+		&i.IsAgentIntro,
+		&i.PinnedAt,
+		&i.ProjectID,
+	)
+	return i, err
+}
+
 const getPendingChatTask = `-- name: GetPendingChatTask :one
 SELECT id, status, created_at FROM agent_task_queue
 WHERE chat_session_id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')

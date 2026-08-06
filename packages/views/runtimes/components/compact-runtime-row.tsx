@@ -1,7 +1,7 @@
 import { cn } from "@multica/ui/lib/utils";
 import type { AgentRuntime } from "@multica/core/types";
 import { runtimeDisplayName } from "@multica/core/runtimes";
-import { ProviderLogo } from "../../runtimes/components/provider-logo";
+import { ProviderLogo } from "./provider-logo";
 import { useT } from "../../i18n";
 
 /**
@@ -15,26 +15,30 @@ export function CompactRuntimeRow({
   runtime,
   selected,
   onSelect,
+  disabled = false,
 }: {
   runtime: AgentRuntime;
   selected: boolean;
   onSelect: () => void;
+  /** Set while a submit is in flight, so the choice cannot change under it. */
+  disabled?: boolean;
 }) {
   const { t: tAgents } = useT("agents");
   const online = runtime.status === "online";
   return (
-    <div
-      role="button"
-      tabIndex={0}
+    // A real button rather than role="button": it brings disabled, focus, and
+    // Enter/Space for free. The hand-rolled keydown branch this replaces did
+    // not honour disabled at all, so a member could switch runtimes mid-submit
+    // and end up with Mika on a machine they no longer had selected.
+    <button
+      type="button"
       onClick={onSelect}
-      onKeyDown={(e) => {
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onSelect();
-        }
-      }}
+      disabled={disabled}
+      aria-pressed={selected}
       className={cn(
-        "flex cursor-pointer flex-row items-center gap-3 rounded-lg border bg-card p-4 transition-colors",
+        "flex w-full flex-row items-center gap-3 rounded-lg border bg-card p-4 text-left transition-colors",
+        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        "disabled:pointer-events-none disabled:opacity-60",
         selected
           ? "border-primary ring-1 ring-primary"
           : "hover:border-foreground/20",
@@ -54,6 +58,6 @@ export function CompactRuntimeRow({
         )}
         aria-label={online ? tAgents(($) => $.availability.online) : tAgents(($) => $.availability.offline)}
       />
-    </div>
+    </button>
   );
 }
