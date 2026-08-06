@@ -1175,3 +1175,17 @@ WHERE id = (
     LIMIT 1
 )
 RETURNING *;
+
+-- name: GetOldestActiveChatSessionForCreatorAgent :one
+-- Identity for "this member's conversation with this agent", independent of
+-- the session title. Mika's onboarding session used to be matched on its
+-- localized title from the client, which made the lookup both racy and
+-- language-dependent. Oldest wins so the answer stays stable once a member
+-- has opened more than one session with the same agent.
+SELECT * FROM chat_session
+WHERE workspace_id = $1
+  AND creator_id = $2
+  AND agent_id = $3
+  AND status = 'active'
+ORDER BY created_at ASC
+LIMIT 1;

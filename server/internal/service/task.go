@@ -1835,6 +1835,8 @@ type DirectChatSendResult struct {
 	Queued             bool
 }
 
+var ErrChatSessionAlreadyStarted = errors.New("chat session already has a user message")
+
 // SendDirectChatMessage atomically persists one web/mobile direct-chat turn:
 // the owning task (which claims its own input batch via chat_input_task_id), the
 // user message bound to that task, any attachment bindings, and the session
@@ -1847,6 +1849,52 @@ type DirectChatSendResult struct {
 // (archived / no-runtime), passing the loaded agent in. Those checks are repeated
 // under the transaction locks below because either row may change before enqueue.
 func (s *TaskService) SendDirectChatMessage(ctx context.Context, session db.ChatSession, agent db.Agent, initiatorUserID pgtype.UUID, content string, attachmentIDs []pgtype.UUID, uploaderType string, uploaderID pgtype.UUID) (*DirectChatSendResult, error) {
+	return s.sendDirectChatMessage(
+		ctx,
+		session,
+		agent,
+		initiatorUserID,
+		content,
+		attachmentIDs,
+		uploaderType,
+		uploaderID,
+		protocol.ChatMessageKindMessage,
+		false,
+	)
+}
+
+// StartMikaOnboardingChat enqueues the product-authored opening turn for a
+// newly-created Mika session. The turn is stored with a dedicated message kind
+// so clients can keep it out of the visible transcript. requireEmptySession is
+// enforced under the chat-session lock, making retries and double-submits
+// idempotent even when they race.
+func (s *TaskService) StartMikaOnboardingChat(ctx context.Context, session db.ChatSession, agent db.Agent, initiatorUserID pgtype.UUID, content string, uploaderType string, uploaderID pgtype.UUID) (*DirectChatSendResult, error) {
+	return s.sendDirectChatMessage(
+		ctx,
+		session,
+		agent,
+		initiatorUserID,
+		content,
+		nil,
+		uploaderType,
+		uploaderID,
+		protocol.ChatMessageKindOnboardingKickoff,
+		true,
+	)
+}
+
+func (s *TaskService) sendDirectChatMessage(
+	ctx context.Context,
+	session db.ChatSession,
+	agent db.Agent,
+	initiatorUserID pgtype.UUID,
+	content string,
+	attachmentIDs []pgtype.UUID,
+	uploaderType string,
+	uploaderID pgtype.UUID,
+	messageKind string,
+	requireEmptySession bool,
+) (*DirectChatSendResult, error) {
 	// Build the per-task Composio overlay before the transaction — it can do
 	// network I/O and must not run with a DB transaction open.
 	overlay := s.buildRuntimeMCPOverlay(ctx, initiatorUserID, agent)
@@ -1892,6 +1940,15 @@ func (s *TaskService) SendDirectChatMessage(ctx context.Context, session db.Chat
 		}
 		if !carrier.RuntimeID.Valid {
 			return ErrChatTaskAgentNoRuntime
+		}
+		if requireEmptySession {
+			hasUserMessage, err := qtx.ChatSessionHasUserMessage(ctx, session.ID)
+			if err != nil {
+				return fmt.Errorf("check chat session input: %w", err)
+			}
+			if hasUserMessage {
+				return ErrChatSessionAlreadyStarted
+			}
 		}
 
 		// The database status of every newly-created task is "queued" until a
@@ -1939,6 +1996,7 @@ func (s *TaskService) SendDirectChatMessage(ctx context.Context, session db.Chat
 			Role:          "user",
 			Content:       content,
 			TaskID:        task.ID,
+			MessageKind:   pgtype.Text{String: messageKind, Valid: true},
 		})
 		if err != nil {
 			return fmt.Errorf("create user chat message: %w", err)
@@ -2455,8 +2513,11 @@ func (s *TaskService) finalizeCancelledChatMessage(ctx context.Context, task db.
 				ChatSessionID:  util.UUIDToString(deleted.ChatSessionID),
 				MessageID:      util.UUIDToString(deleted.ID),
 				Content:        deleted.Content,
-				RestoreToInput: true,
+				RestoreToInput: deleted.MessageKind != protocol.ChatMessageKindOnboardingKickoff,
 				Attachments:    detached,
+			}
+			if deleted.MessageKind == protocol.ChatMessageKindOnboardingKickoff {
+				cancelled.Content = ""
 			}
 			return nil
 		}
@@ -2576,6 +2637,14 @@ func (s *TaskService) FinalizeDeferredCancelledChat(ctx context.Context, taskID 
 			}
 			if err != nil {
 				return fmt.Errorf("delete empty cancelled chat user message: %w", err)
+			}
+			if deleted.MessageKind == protocol.ChatMessageKindOnboardingKickoff {
+				// The hidden kickoff was authored by the product, not typed by
+				// the member. Delete it like any empty cancelled input batch,
+				// but never persist it as a composer draft.
+				payload.Outcome = protocol.ChatCancelOutcomeRestored
+				payload.MessageID = util.UUIDToString(deleted.ID)
+				return nil
 			}
 			attachmentIDs := make([]pgtype.UUID, 0, len(detached))
 			for _, a := range detached {
