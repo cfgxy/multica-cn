@@ -5640,7 +5640,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		PriorSessionResumeUnavailable:    task.PriorSessionResumeUnavailable,
 		AgentID:                          agentID,
 		AgentName:                        agentName,
-		AgentInstructions:                instructions,
+		AgentInstructions:                stableAgentInstructions(instructions),
 		AgentSkills:                      convertSkillsForEnv(skills),
 		DisabledRuntimeSkills:            convertDisabledRuntimeSkillsForEnv(task.Agent, task.RuntimeID, provider),
 		Repos:                            convertReposForEnv(task.Repos),
@@ -7624,4 +7624,15 @@ func defaultArgsForProvider(cfg Config, provider string) []string {
 		return nil
 	}
 	return append([]string(nil), args...)
+}
+
+// stableAgentInstructions returns the role-independent half of the agent's
+// instructions for the cached brief. The server appends the per-task squad
+// leader briefing to Instructions on leader tasks; passing it through would
+// flip the brief's bytes between leader and worker turns of the same agent
+// (MUL-5442 #6493 review). The briefing itself rides the per-turn prompt
+// (BuildPrompt).
+func stableAgentInstructions(instructions string) string {
+	stable, _ := execenv.SplitSquadBriefing(instructions)
+	return stable
 }

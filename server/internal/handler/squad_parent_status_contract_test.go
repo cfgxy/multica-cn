@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/multica-ai/multica/server/internal/daemon"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 )
 
@@ -22,16 +23,47 @@ import (
 // So each test assembles both halves for one real scenario and asserts the
 // combined instruction set points one way.
 
-// leaderCommentRuntimeBrief renders the CLAUDE.md a squad leader receives on a
-// comment-triggered turn.
-func leaderCommentRuntimeBrief(t *testing.T, instructions string) string {
+// leaderCommentSurfaces renders BOTH surfaces a squad leader receives on a
+// comment-triggered turn, the way the daemon actually assembles them since
+// MUL-5442 #6493 round 3: the cached brief gets only the STABLE half of the
+// instructions (the briefing is split off so the brief stays byte-identical
+// across leader/worker turns), and the per-turn prompt carries the full
+// briefing plus the leader rules block.
+func leaderCommentSurfaces(t *testing.T, instructions string) (brief, prompt string) {
+	t.Helper()
+	stable, _ := execenv.SplitSquadBriefing(instructions)
+	dir := t.TempDir()
+	if _, err := execenv.InjectRuntimeConfig(dir, "claude", execenv.TaskContextForEnv{
+		IssueID:           "issue-1",
+		TriggerCommentID:  "comment-1",
+		AgentInstructions: stable,
+		IsSquadLeader:     true,
+	}); err != nil {
+		t.Fatalf("InjectRuntimeConfig: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "CLAUDE.md"))
+	if err != nil {
+		t.Fatalf("read CLAUDE.md: %v", err)
+	}
+	prompt = daemon.BuildPrompt(daemon.Task{
+		IssueID:               "issue-1",
+		TriggerCommentID:      "comment-1",
+		TriggerCommentContent: "done — all subtasks finished",
+		TriggerAuthorType:     "member",
+		Agent:                 &daemon.AgentData{Name: "Lead", Instructions: instructions},
+	}, "claude")
+	return string(data), prompt
+}
+
+// workerRuntimeBrief renders the CLAUDE.md the same agent receives on a
+// non-leader turn (plain instructions, no briefing appended).
+func workerRuntimeBrief(t *testing.T, stableInstructions string) string {
 	t.Helper()
 	dir := t.TempDir()
 	if _, err := execenv.InjectRuntimeConfig(dir, "claude", execenv.TaskContextForEnv{
 		IssueID:           "issue-1",
 		TriggerCommentID:  "comment-1",
-		AgentInstructions: instructions,
-		IsSquadLeader:     true,
+		AgentInstructions: stableInstructions,
 	}); err != nil {
 		t.Fatalf("InjectRuntimeConfig: %v", err)
 	}
@@ -53,33 +85,38 @@ func TestSquadAssignedLeaderCanWrapUpOnCommentTurn(t *testing.T) {
 
 	// The issue is assigned to this squad → the server grants status ownership.
 	briefing := buildSquadLeaderBriefing(ctx, testHandler.Queries, squad, true)
-	brief := leaderCommentRuntimeBrief(t, briefing)
+	stableInstr := "Coordinate the team."
+	combinedInstr := stableInstr + "\n\n" + briefing
+	brief, prompt := leaderCommentSurfaces(t, combinedInstr)
 
 	if !strings.Contains(briefing, "Own the parent issue status") {
 		t.Fatalf("squad-assigned briefing must grant status ownership:\n%s", briefing)
 	}
 
-	// The runtime brief must not restate the prohibition in its absolute form,
-	// which is what contradicted the grant. The absolute sentence ends right
-	// after "explicitly asks for it"; the leader variant continues past it.
-	if strings.Contains(brief, "explicitly asks for it\n") {
-		t.Error("leader runtime brief still carries the unqualified no-status-change rule, " +
-			"which contradicts the Own-the-parent-issue-status grant")
+	// MUL-5442 #6493 round 3: the brief is role-independent — byte-identical
+	// to the worker-turn render — so the grant carve-out and the briefing
+	// itself must arrive via the per-turn prompt instead.
+	if worker := workerRuntimeBrief(t, stableInstr); brief != worker {
+		t.Error("leader-turn brief diverges from the worker-turn brief — the squad briefing leaked into the cached surface")
 	}
 	for _, want := range []string{
 		// The carve-out must name the granting section, not gesture at it —
 		// the leader has to be able to tell whether it applies to this turn.
-		`Squad Operating Protocol's "Own the parent issue status"`,
-		"only appears when this issue is assigned to your squad",
+		`"Own the parent issue status"`,
+		"treat it as a standing grant",
 		"without waiting to be asked",
+		// The full briefing itself rides the prompt.
+		"## Squad Operating Protocol",
 	} {
-		if !strings.Contains(brief, want) {
-			t.Errorf("leader runtime brief missing %q\n--- brief ---\n%s", want, brief)
+		if !strings.Contains(prompt, want) {
+			t.Errorf("leader per-turn prompt missing %q\n--- prompt ---\n%s", want, prompt)
 		}
 	}
 
-	// End to end: both halves must agree that in_review is reachable here.
-	combined := briefing + "\n" + brief
+	// End to end: the surfaces the leader actually sees must agree that
+	// in_review is reachable here (the wrap-up command arrives with the
+	// briefing inside the prompt).
+	combined := brief + "\n" + prompt
 	if !strings.Contains(combined, "multica issue status <issue-id> in_review") {
 		t.Error("combined instructions never tell the owning leader how to wrap up")
 	}
@@ -97,7 +134,7 @@ func TestGuestLeaderCannotChangeStatusOnCommentTurn(t *testing.T) {
 
 	// The issue is assigned to someone else → no status ownership.
 	briefing := buildSquadLeaderBriefing(ctx, testHandler.Queries, squad, false)
-	brief := leaderCommentRuntimeBrief(t, briefing)
+	brief, prompt := leaderCommentSurfaces(t, "Coordinate the team.\n\n"+briefing)
 
 	// The leader still gets the coordination context it was pulled in for —
 	// withholding status authority must not withhold the roster too.
@@ -117,7 +154,11 @@ func TestGuestLeaderCannotChangeStatusOnCommentTurn(t *testing.T) {
 	if strings.Contains(briefing, "Own the parent issue status") {
 		t.Errorf("guest leader must not receive the status-ownership grant:\n%s", briefing)
 	}
-	combined := briefing + "\n" + brief
+	// #6493 round 3: compose what the guest leader actually sees — the
+	// role-independent brief plus the per-turn prompt (which carries the
+	// guest briefing and the leader rules). No surface may hand it a
+	// runnable in_review command.
+	combined := brief + "\n" + prompt
 	if strings.Contains(combined, "multica issue status <issue-id> in_review") {
 		t.Error("combined instructions hand a guest leader an in_review command for " +
 			"an issue assigned to someone else")

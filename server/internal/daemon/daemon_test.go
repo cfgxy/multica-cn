@@ -5137,8 +5137,24 @@ func TestBuildPromptSquadLeaderMultiThreadCarvesOutNoAction(t *testing.T) {
 	if !strings.Contains(prompt, "no_action rule:") {
 		t.Fatalf("leader multi-thread prompt missing the no_action rule\n---\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "Unless your outcome is `no_action`, post ONE reply per thread") {
-		t.Fatalf("leader multi-thread prompt missing the carve-out imperative\n---\n%s", prompt)
+	// #6493 round 3: the scope sentence must govern the ENTIRE fan-out —
+	// assert it precedes every later obligation, not just the first verb.
+	scope := strings.Index(prompt, "skip this ENTIRE fan-out block")
+	if scope < 0 {
+		t.Fatalf("leader multi-thread prompt missing the whole-block scope sentence\n---\n%s", prompt)
+	}
+	for _, obligation := range []string{
+		"multiple replies are required and correct",
+		"Post the replies in the order listed below",
+		"For EACH thread above",
+	} {
+		idx := strings.Index(prompt, obligation)
+		if idx < 0 {
+			t.Fatalf("leader multi-thread prompt missing obligation %q\n---\n%s", obligation, prompt)
+		}
+		if idx < scope {
+			t.Fatalf("obligation %q precedes the no_action scope sentence — it escapes the carve-out\n---\n%s", obligation, prompt)
+		}
 	}
 	if strings.Contains(prompt, ". Post ONE reply per thread") {
 		t.Fatalf("leader multi-thread prompt still carries the unconditional imperative\n---\n%s", prompt)
@@ -5152,5 +5168,74 @@ func TestBuildPromptSquadLeaderMultiThreadCarvesOutNoAction(t *testing.T) {
 	}
 	if strings.Contains(ordinary, "Unless your outcome is") {
 		t.Fatalf("ordinary multi-thread prompt leaked the leader carve-out\n---\n%s", ordinary)
+	}
+}
+
+// TestStableAgentInstructionsStripsSquadBriefing pins the daemon half of the
+// #6493 round-3 invariant with the handler's real join shape: the brief
+// receives only the stable half of Instructions, so a leader turn and a
+// worker turn of the same agent hand execenv byte-identical instructions.
+func TestStableAgentInstructionsStripsSquadBriefing(t *testing.T) {
+	t.Parallel()
+
+	const stable = "Think from first principles."
+	briefing := "## Squad Operating Protocol\n\nYou are the LEADER.\n\n## Squad Roster\n\n- Leader (you): Eve\n"
+	if got := stableAgentInstructions(stable + "\n\n" + briefing); got != stable {
+		t.Fatalf("leader-task instructions not reduced to the stable half: %q", got)
+	}
+	if got := stableAgentInstructions(stable); got != stable {
+		t.Fatalf("worker-task instructions must pass through: %q", got)
+	}
+	if got := stableAgentInstructions(briefing); got != "" {
+		t.Fatalf("briefing-only instructions must reduce to empty: %q", got)
+	}
+}
+
+// TestBuildPromptCarriesSquadBriefing pins the other half: the briefing
+// stripped from the brief must arrive in the per-turn prompt on every leader
+// prompt shape — comment-triggered (including the old-server empty-body
+// form, #6493 round 3) and assignment-triggered.
+func TestBuildPromptCarriesSquadBriefing(t *testing.T) {
+	t.Parallel()
+
+	instructions := "Some instructions\n\n## Squad Operating Protocol\n\nYou are the LEADER.\n\n## Squad Roster\n\n- Leader (you): Eve\n"
+	shapes := []struct {
+		name string
+		task Task
+	}{
+		{"comment", Task{
+			IssueID: "issue-1", TriggerCommentID: "comment-1",
+			TriggerCommentContent: "status?", TriggerAuthorType: "member",
+			Agent: &AgentData{Name: "Lead", Instructions: instructions},
+		}},
+		{"comment-empty-body-old-server", Task{
+			IssueID: "issue-1", TriggerCommentID: "comment-1",
+			Agent: &AgentData{Name: "Lead", Instructions: instructions},
+		}},
+		{"assignment", Task{
+			IssueID: "issue-1",
+			Agent:   &AgentData{Name: "Lead", Instructions: instructions},
+		}},
+	}
+	for _, shape := range shapes {
+		prompt := BuildPrompt(shape.task, "claude")
+		for _, want := range []string{
+			"## Squad Operating Protocol",
+			"## Squad Roster",
+			"Squad leader rules for this turn",
+		} {
+			if !strings.Contains(prompt, want) {
+				t.Fatalf("%s: leader prompt missing %q\n---\n%s", shape.name, want, prompt)
+			}
+		}
+	}
+
+	ordinary := BuildPrompt(Task{
+		IssueID: "issue-1", TriggerCommentID: "comment-1",
+		TriggerCommentContent: "status?", TriggerAuthorType: "member",
+		Agent: &AgentData{Name: "Reg", Instructions: "You are a regular agent."},
+	}, "claude")
+	if strings.Contains(ordinary, "## Squad Operating Protocol") {
+		t.Fatalf("ordinary prompt leaked a squad briefing\n---\n%s", ordinary)
 	}
 }

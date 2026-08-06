@@ -354,7 +354,9 @@ func TestIssueWorkflowHonorsAgentIdentity(t *testing.T) {
 		// Step 4 keeps only what the enumeration cannot express: a
 		// delegation-only role stops once the delegation is delivered.
 		"If your role is delegation-only, perform the allowed delegation work and stop once that outcome is delivered",
-		"When done, run `multica issue status <issue-id> in_review`.",
+		// #6493 round 3: no runnable in_review shape in the brief — it also
+		// reaches guest leaders (squad_parent_status_contract_test).
+		"When done, set the issue status to `in_review` (syntax: `## Available Commands`).",
 		"If blocked, run `multica issue status <issue-id> blocked`, and post a comment explaining the blocker unless your Agent Identity forbids issue comments.",
 	} {
 		if !strings.Contains(out, want) {
@@ -392,7 +394,7 @@ func TestIssueBriefIsRoleIndependent(t *testing.T) {
 	if got := buildMetaSkillContent("claude", leader); got != ordinary {
 		t.Errorf("issue brief must be byte-identical across roles; leader render diverges\n---\n%s", got)
 	}
-	if !strings.Contains(ordinary, "When done, run `multica issue status <issue-id> in_review`.") {
+	if !strings.Contains(ordinary, "When done, set the issue status to `in_review` (syntax: `## Available Commands`).") {
 		t.Errorf("issue brief missing the ordinary completion step\n---\n%s", ordinary)
 	}
 }

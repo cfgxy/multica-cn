@@ -6038,3 +6038,56 @@ func TestEnvironmentCleanupStandardModeRemovesWorkdir(t *testing.T) {
 		t.Fatalf("output/ removed by partial cleanup: %v", err)
 	}
 }
+
+// TestSplitSquadBriefingBriefEquality pins the #6493 round-3 invariant with
+// handler-shaped inputs: the server appends the squad briefing to
+// Instructions as `stable + "\n\n" + briefing` (or briefing alone when the
+// stable part is empty), and the brief rendered from the split stable half
+// must be byte-identical to the brief a worker turn renders from the plain
+// instructions. Toggling ctx.IsSquadLeader alone cannot catch this — the
+// production difference arrives through AgentInstructions.
+func TestSplitSquadBriefingBriefEquality(t *testing.T) {
+	t.Parallel()
+
+	const stableInstr = "Think from first principles."
+	briefingText := SquadBriefingMarker + "\n\nYou are the LEADER.\n\n## Squad Roster\n\n- Leader (you): Eve\n- Worker: Bob\n"
+
+	for _, tc := range []struct {
+		name     string
+		combined string
+	}{
+		{"appended", stableInstr + "\n\n" + briefingText},
+		{"briefing-only", briefingText},
+		{"trailing-newline-stable", stableInstr + "\n" + "\n\n" + briefingText},
+	} {
+		stable, briefing := SplitSquadBriefing(tc.combined)
+		if briefing == "" {
+			t.Fatalf("%s: briefing not detected", tc.name)
+		}
+		wantStable, _ := SplitSquadBriefing(stableInstr)
+		if tc.name == "briefing-only" {
+			wantStable = ""
+		}
+		if stable != wantStable {
+			t.Fatalf("%s: stable half %q != plain %q", tc.name, stable, wantStable)
+		}
+
+		leaderCtx := TaskContextForEnv{
+			IssueID: "issue-1", TriggerCommentID: "comment-1",
+			AgentName: "Eve", AgentID: "agent-1",
+			AgentInstructions: stable,
+			IsSquadLeader:     true,
+		}
+		workerCtx := leaderCtx
+		workerCtx.AgentInstructions = wantStable
+		workerCtx.IsSquadLeader = false
+		if buildMetaSkillContent("claude", leaderCtx) != buildMetaSkillContent("claude", workerCtx) {
+			t.Fatalf("%s: brief diverges between leader and worker renders", tc.name)
+		}
+	}
+
+	stable, briefing := SplitSquadBriefing(stableInstr)
+	if briefing != "" || stable != stableInstr {
+		t.Fatalf("no-marker input must pass through: stable=%q briefing=%q", stable, briefing)
+	}
+}

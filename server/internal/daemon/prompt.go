@@ -96,6 +96,23 @@ func BuildPrompt(task Task, provider string) string {
 		}
 		body += blocks
 	}
+	// The per-task squad leader briefing (Protocol + Roster + Squad
+	// Instructions) is stripped from the cached brief by
+	// stableAgentInstructions and delivered here instead, on every prompt
+	// shape (#6493 review round 3) — losing it would cost the leader its
+	// entire protocol, and letting it reach the brief flips cached bytes
+	// between leader and worker turns.
+	if task.Agent != nil {
+		if _, briefing := execenv.SplitSquadBriefing(task.Agent.Instructions); briefing != "" {
+			if !strings.HasSuffix(body, "\n\n") {
+				body += "\n"
+			}
+			body += briefing
+			if !strings.HasSuffix(body, "\n") {
+				body += "\n"
+			}
+		}
+	}
 	return body
 }
 
@@ -341,19 +358,23 @@ func buildCommentPrompt(task Task, provider string) string {
 			fmt.Fprintf(&b, "Fetch each id you still need directly: `multica issue comment list %s --thread <comment-id> --tail 30 --output json`. `--thread` accepts a reply id, not just a thread root, so you do not need to know which thread the comment lives in. If it is older than those 30 replies, page back with the `Next reply cursor` values (`--before` / `--before-id`) until it appears. Do not finish this turn until every id above is accounted for.\n\n",
 				task.IssueID)
 		}
-		if taskIsSquadLeader(task) {
-			// Leadership is a per-task role (the handler appends the Squad
-			// Operating Protocol only to leader tasks), so every
-			// leader-specific rule rides this uncacheable channel — the
-			// cached brief must stay byte-identical across role flips
-			// (MUL-5377; MUL-5442 #6493 review). These rules land AFTER the
-			// brief in context order, and each names the general rule it
-			// overrides, so the exception always follows the rule.
-			fmt.Fprintf(&b, "⚠️ **Squad leader rules for this turn** — your instructions carry the Squad Operating Protocol; where these conflict with the brief's general rules, these rules win:\n\n"+
-				"- **no_action rule:** If you decide no action is needed, call `multica squad activity %s no_action --reason \"...\"` and EXIT with no comment — the one exception to the brief's mandatory-reply and one-comment-per-run rules. DO NOT post any comment announcing no_action, acknowledging another agent, or saying you are exiting silently; the `squad activity` call already records your decision.\n"+
-				"- **Parent status:** if the protocol's \"Own the parent issue status\" responsibility appears in your instructions, treat it as a standing grant — move the parent to `in_review` on the turn you confirm the overall goal is met, without waiting to be asked. If that section is absent (guest leader), the brief's do-not-change-status rule is absolute.\n"+
-				"- **Squad maintenance:** `multica squad member set-role <squad-id> --member-id <id> --member-type <agent|member> --role <role>` changes a member's role in place (use it instead of remove+add).\n\n", task.IssueID)
-		}
+	}
+	// The leader block sits OUTSIDE the TriggerCommentContent conditional:
+	// older servers may send the trigger id without a body (#6493 review
+	// round 3), and an empty body must not cost a leader its no_action,
+	// status-grant, and maintenance rules.
+	if taskIsSquadLeader(task) {
+		// Leadership is a per-task role (the handler appends the Squad
+		// Operating Protocol only to leader tasks), so every leader-specific
+		// rule rides this uncacheable channel — the cached brief must stay
+		// byte-identical across role flips (MUL-5377; MUL-5442 #6493
+		// review). These rules land AFTER the brief in context order, and
+		// each names the general rule it overrides, so the exception always
+		// follows the rule.
+		fmt.Fprintf(&b, "⚠️ **Squad leader rules for this turn** — your instructions carry the Squad Operating Protocol; where these conflict with the brief's general rules, these rules win:\n\n"+
+			"- **no_action rule:** If you decide no action is needed, call `multica squad activity %s no_action --reason \"...\"` and EXIT with no comment — the one exception to the brief's mandatory-reply and one-comment-per-run rules. DO NOT post any comment announcing no_action, acknowledging another agent, or saying you are exiting silently; the `squad activity` call already records your decision.\n"+
+			"- **Parent status:** if the protocol's \"Own the parent issue status\" responsibility appears in your instructions, treat it as a standing grant — move the parent to `in_review` on the turn you confirm the overall goal is met, without waiting to be asked. If that section is absent (guest leader), the brief's do-not-change-status rule is absolute.\n"+
+			"- **Squad maintenance:** `multica squad member set-role <squad-id> --member-id <id> --member-type <agent|member> --role <role>` changes a member's role in place (use it instead of remove+add).\n\n", task.IssueID)
 	}
 	fmt.Fprintf(&b, "Start by running `multica issue get %s --output json` to understand your task, then decide how to proceed.\n\n", task.IssueID)
 	// Comment-reading pointer. Warm path with new comments: issue-wide
@@ -624,9 +645,12 @@ func buildAutopilotPrompt(task Task) string {
 	return b.String()
 }
 
-// taskIsSquadLeader mirrors the check gating the per-turn no_action block:
-// leadership is agent configuration (the Squad Operating Protocol section in
-// the agent's instructions), never per-run state.
+// taskIsSquadLeader reports whether THIS TASK runs the agent as a squad
+// leader. Leadership is a per-task role, not agent configuration: the server
+// appends the squad briefing to Instructions only when the task's
+// is_leader_task is set, and the same agent can be leader one turn and
+// worker the next. Everything gated on this must ride the per-turn channel,
+// never the cached brief (#6493 review).
 func taskIsSquadLeader(task Task) bool {
-	return task.Agent != nil && strings.Contains(task.Agent.Instructions, "## Squad Operating Protocol")
+	return task.Agent != nil && strings.Contains(task.Agent.Instructions, execenv.SquadBriefingMarker)
 }

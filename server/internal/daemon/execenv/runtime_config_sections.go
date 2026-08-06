@@ -105,6 +105,28 @@ func writeBackgroundTaskSafetySlim(b *strings.Builder) {
 
 // writeAgentIdentity emits the Agent Identity heading and (optionally) the
 // agent's instructions body.
+// SquadBriefingMarker opens the per-task squad leader briefing the server
+// appends to Agent.Instructions for leader tasks (handler
+// buildSquadLeaderBriefing). It is both the leadership check and the split
+// point for SplitSquadBriefing.
+const SquadBriefingMarker = "## Squad Operating Protocol"
+
+// SplitSquadBriefing separates an agent's stable instructions from the
+// per-task squad leader briefing. Leadership is a per-task role — the same
+// agent flips leader/worker between turns while session resume keys on
+// (agent_id, issue_id) — so the briefing must never reach the cached brief
+// (MUL-5377; MUL-5442 #6493 review): the stable part feeds the brief, the
+// briefing rides the per-turn prompt. The stable part is
+// trailing-newline-normalized on BOTH paths so a leader turn's stable half
+// is byte-identical to a worker turn's whole.
+func SplitSquadBriefing(instructions string) (stable, briefing string) {
+	i := strings.Index(instructions, SquadBriefingMarker)
+	if i < 0 {
+		return strings.TrimRight(instructions, "\n"), ""
+	}
+	return strings.TrimRight(instructions[:i], "\n"), instructions[i:]
+}
+
 func writeAgentIdentity(b *strings.Builder, ctx TaskContextForEnv) {
 	if ctx.AgentName != "" || ctx.AgentID != "" {
 		b.WriteString("## Agent Identity\n\n")
@@ -550,7 +572,11 @@ func writeWorkflowIssue(b *strings.Builder, ctx TaskContextForEnv) {
 
 	b.WriteString("**Ownership mode only — you own the issue status this run** (skip any status call below that your Agent Identity forbids)\n\n")
 	b.WriteString("- Before step 4, run `multica issue status <issue-id> in_progress`.\n")
-	b.WriteString("- When done, run `multica issue status <issue-id> in_review`.\n")
+	// No runnable in_review command shape here: the brief is role-independent
+	// and also reaches guest squad leaders, whose combined instructions must
+	// never carry one (squad_parent_status_contract_test). The syntax lives
+	// in ## Available Commands.
+	b.WriteString("- When done, set the issue status to `in_review` (syntax: `## Available Commands`).\n")
 	b.WriteString("- If blocked, run `multica issue status <issue-id> blocked`, and post a comment explaining the blocker unless your Agent Identity forbids issue comments.\n\n")
 
 	b.WriteString("**Reply mode only — respond to the comment in the user message**\n\n")
