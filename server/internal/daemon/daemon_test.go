@@ -1078,6 +1078,12 @@ func TestBuildPromptCommentTriggeredByAgent(t *testing.T) {
 
 	for _, want := range []string{
 		"Another agent (Atlas)",
+		// MUL-5442 #6484 review: the compressed block's SHAPE is the
+		// behaviour — pin the canonical pointer and both outcome arms as
+		// sequential relations, not just the closing anchors.
+		"Apply the reply-warranted rule and mention discipline from your brief",
+		"produced real work → post the result as a normal reply",
+		"no work and only an acknowledgment / thanks / sign-off → exit with no output",
 		"do not @mention the other agent as a sign-off",
 		"Silence is the preferred way",
 	} {

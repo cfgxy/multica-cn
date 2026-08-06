@@ -5010,6 +5010,11 @@ func TestInjectRuntimeConfigMentionLoopHardening(t *testing.T) {
 			// the work-produced arm and the silent-exit arm must each
 			// survive compression, not just the bullet's heading.
 			"produced actual work",
+			// The work-category boundary: investigation-only and answer-only
+			// turns COUNT as deliverable work. The per-turn agent-trigger
+			// block points here for this definition (MUL-5442 #6484 review) —
+			// dropping any category silently un-defines the pointer target.
+			"investigation, a fix, or an answer to a real question",
 			"pure acknowledgment / thanks / sign-off",
 			"do NOT reply",
 			"Silence is a valid and preferred way",

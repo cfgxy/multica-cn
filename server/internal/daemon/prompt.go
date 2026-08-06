@@ -331,7 +331,7 @@ func buildCommentPrompt(task Task, provider string) string {
 				task.IssueID)
 		}
 		if task.TriggerAuthorType == "agent" {
-			b.WriteString("⚠️ This trigger comment is from another agent. Apply the reply-warranted rule and mention discipline from your brief: produced real work → post the result as a normal reply; pure acknowledgment / thanks / sign-off and no work → exit with no output. Silence is the preferred way to end agent-to-agent threads; do not @mention the other agent as a sign-off (that re-triggers them).\n\n")
+			b.WriteString("⚠️ This trigger comment is from another agent. Apply the reply-warranted rule and mention discipline from your brief: produced real work → post the result as a normal reply; no work and only an acknowledgment / thanks / sign-off → exit with no output. Silence is the preferred way to end agent-to-agent threads; do not @mention the other agent as a sign-off (that re-triggers them).\n\n")
 		}
 		if task.Agent != nil && strings.Contains(task.Agent.Instructions, "## Squad Operating Protocol") {
 			fmt.Fprintf(&b, "⚠️ **Squad leader no_action rule:** If you decide no action is needed, call `multica squad activity %s no_action --reason \"...\"` and EXIT. DO NOT post any comment — not even one that says \"no action needed\" or \"exiting silently\". The squad activity call records your decision; a comment is redundant noise.\n\n", task.IssueID)
