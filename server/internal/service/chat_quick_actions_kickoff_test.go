@@ -95,15 +95,29 @@ func TestWriteChatCompletionOutcomeStampsOnboardingOpening(t *testing.T) {
 		return taskID
 	}
 
+	newTaskID := func() string {
+		var id string
+		if err := pool.QueryRow(ctx, `SELECT gen_random_uuid()::text`).Scan(&id); err != nil {
+			t.Fatalf("new task id: %v", err)
+		}
+		return id
+	}
+
 	svc := &TaskService{Queries: q, TxStarter: pool}
 	result, _ := json.Marshal(protocol.TaskCompletedPayload{Output: "Hi, I'm Mika."})
 
-	complete := func(taskID string) db.ChatMessage {
-		row, err := svc.writeChatCompletionOutcome(ctx, q, db.AgentTaskQueue{
+	// chatInputTaskID empty means the task owns its own input batch, which is
+	// the root direct task's shape.
+	complete := func(taskID, chatInputTaskID string) db.ChatMessage {
+		task := db.AgentTaskQueue{
 			ID:            util.MustParseUUID(taskID),
 			ChatSessionID: util.MustParseUUID(chatSessionID),
 			AgentID:       util.MustParseUUID(agentID),
-		}, result)
+		}
+		if chatInputTaskID != "" {
+			task.ChatInputTaskID = util.MustParseUUID(chatInputTaskID)
+		}
+		row, err := svc.writeChatCompletionOutcome(ctx, q, task, result)
 		if err != nil {
 			t.Fatalf("writeChatCompletionOutcome: %v", err)
 		}
@@ -113,13 +127,31 @@ func TestWriteChatCompletionOutcomeStampsOnboardingOpening(t *testing.T) {
 		return *row
 	}
 
-	opening := complete(seedInput("onboarding_kickoff"))
+	opening := complete(seedInput("onboarding_kickoff"), "")
 	if opening.MessageKind != protocol.ChatMessageKindOnboardingOpening {
 		t.Errorf("kickoff reply kind = %q, want onboarding_opening", opening.MessageKind)
 	}
 
-	ordinary := complete(seedInput("message"))
+	ordinary := complete(seedInput("message"), "")
 	if ordinary.MessageKind == protocol.ChatMessageKindOnboardingOpening {
 		t.Errorf("ordinary reply must not be stamped as the opening")
+	}
+
+	// An auto-retry clone carries a fresh id while inheriting the root's
+	// chat_input_task_id (MUL-4351), and the kickoff user row stays bound to
+	// the root. Keying the check on the child's own id answers false, so an
+	// opening that only succeeded after a retriable failure would persist as a
+	// plain 'message': no starter cards, and a chips pass for a turn whose copy
+	// points at cards that never render.
+	retried := complete(newTaskID(), seedInput("onboarding_kickoff"))
+	if retried.MessageKind != protocol.ChatMessageKindOnboardingOpening {
+		t.Errorf("retry clone reply kind = %q, want onboarding_opening", retried.MessageKind)
+	}
+
+	// The same lineage must not over-stamp: a retry of an ordinary turn stays
+	// a plain message.
+	retriedOrdinary := complete(newTaskID(), seedInput("message"))
+	if retriedOrdinary.MessageKind == protocol.ChatMessageKindOnboardingOpening {
+		t.Errorf("retry clone of an ordinary turn must not be stamped as the opening")
 	}
 }

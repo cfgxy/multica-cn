@@ -3628,7 +3628,15 @@ func (s *TaskService) writeChatCompletionOutcome(ctx context.Context, qtx *db.Qu
 		// exception: the reply to the hidden onboarding kickoff self-describes
 		// as the opening, which is what makes chat render the starter cards
 		// under it — the kickoff row itself never reaches clients (MUL-5765).
-		kickoff, err := qtx.TaskHasOnboardingKickoffInput(ctx, task.ID)
+		//
+		// Keyed on chatInputOwnerID, not task.ID: an auto-retry clone gets a
+		// fresh id while inheriting the root's chat_input_task_id (MUL-4351),
+		// and the kickoff user row stays bound to the root. Asking about the
+		// child's own id would answer false, so an opening that only landed
+		// after a retriable failure would persist as a plain 'message' — no
+		// starter cards, and chips generated for a turn whose copy points at
+		// cards that never render.
+		kickoff, err := qtx.TaskHasOnboardingKickoffInput(ctx, chatInputOwnerID(task))
 		if err != nil {
 			return nil, fmt.Errorf("check onboarding kickoff input: %w", err)
 		}
