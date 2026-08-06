@@ -5091,10 +5091,17 @@ func TestBuildPromptSquadLeaderMultiThreadCarvesOutNoAction(t *testing.T) {
 	if scope < 0 {
 		t.Fatalf("leader multi-thread prompt missing the whole-block scope sentence\n---\n%s", prompt)
 	}
+	// Obligation strings track the converged fan-out block (MUL-5825). Pin
+	// ledger: "Post the replies in the order listed below" → the order rule
+	// merged into the targets header ("OLDEST thread first"); "For EACH
+	// thread above" → the embedded cookbook collapsed to the
+	// `## Comment Formatting` pointer plus the per-thread file delta
+	// ("DISTINCT body file per thread"). The assertion shape is unchanged:
+	// every obligation must sit AFTER the no_action scope sentence.
 	for _, obligation := range []string{
 		"multiple replies are required and correct",
-		"Post the replies in the order listed below",
-		"For EACH thread above",
+		"OLDEST thread first",
+		"DISTINCT body file per thread",
 	} {
 		idx := strings.Index(prompt, obligation)
 		if idx < 0 {

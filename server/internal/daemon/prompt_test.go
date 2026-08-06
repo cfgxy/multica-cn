@@ -1156,6 +1156,16 @@ func TestBuildCommentPromptCrossThreadFansOutReplies(t *testing.T) {
 	if strings.Contains(out, "always use the trigger comment ID below") {
 		t.Errorf("cross-thread prompt must not emit the single-parent reply cookbook, got:\n%s", out)
 	}
+	// MUL-5825: the fan-out block points at the brief's `## Comment
+	// Formatting` for the posting mechanism instead of restating it, so the
+	// assembled cross-thread prompt carries no `comment add` example commands
+	// at all — the `--parent` targets plus the pointer are the whole recipe.
+	if strings.Contains(out, "multica issue comment add") {
+		t.Errorf("cross-thread prompt re-grew embedded comment-add commands (mechanism lives in ## Comment Formatting — MUL-5825), got:\n%s", out)
+	}
+	if !strings.Contains(out, "`## Comment Formatting`") {
+		t.Errorf("cross-thread prompt must point at the brief's Comment Formatting mechanism, got:\n%s", out)
+	}
 
 	// Chronological ordering (MUL-4348 test-round-2 problem #1): replies must be
 	// posted oldest thread first, the newest (triggering) thread last — so the

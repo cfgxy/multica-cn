@@ -1551,9 +1551,66 @@ func TestMultiThreadReplyInstructionsFanOut(t *testing.T) {
 		{ThreadID: "c3", ParentID: "c3"},
 	}, false)
 
-	for _, want := range []string{"3 DISTINCT threads", "Post ONE reply per thread", "--parent c1", "--parent c2", "--parent c3"} {
+	for _, want := range []string{
+		"3 DISTINCT threads",
+		"Post ONE reply per thread",
+		"OVERRIDES",
+		"--parent c1", "--parent c2", "--parent c3",
+		"OLDEST thread first",
+		// MUL-5825: the posting mechanism is a pointer at the brief's
+		// canonical section plus the one multi-thread-specific delta.
+		"`## Comment Formatting`",
+		"DISTINCT body file per thread",
+		"never reuse a `--parent` from an earlier turn",
+	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("cross-thread instructions must contain %q, got:\n%s", want, out)
+		}
+	}
+
+	// Pin ledger (MUL-5825): the embedded file-operations cookbook was
+	// retired in favour of the `## Comment Formatting` pointer above — it
+	// triple-wrote the mechanism already carried by the brief and the
+	// single-thread cookbook (~1KB per multi-thread turn). These strings are
+	// the retired machinery; none may reappear in the fan-out block:
+	for _, banned := range []string{
+		"For EACH thread above",                // old cookbook opener
+		"UTF-8 file with your file-write tool", // restated mechanism
+		"multica issue comment add",            // embedded example commands
+		"--content-stdin",                      // restated HEREDOC ban
+		"rm ./reply-",                          // unix cleanup example
+		"Remove-Item",                          // windows cleanup example
+		"Do NOT write literal",                 // restated \n-escape rule
+	} {
+		if strings.Contains(out, banned) {
+			t.Errorf("fan-out block re-grew retired cookbook text %q (mechanism lives in ## Comment Formatting — MUL-5825), got:\n%s", banned, out)
+		}
+	}
+}
+
+// TestMultiThreadReplyInstructionsOSInvariant pins that the fan-out block is
+// byte-identical across host OSes (MUL-5825). The only OS-dependent text was
+// the embedded cleanup command pair (`rm` vs `Remove-Item`), which left with
+// the cookbook; the OS split now lives solely in the brief's
+// `## Comment Formatting`. If this fails, OS-specific mechanism text crept
+// back into the block — move it to the brief instead.
+//
+// Not parallel: mutates the package-level runtimeGOOS.
+func TestMultiThreadReplyInstructionsOSInvariant(t *testing.T) {
+	saved := runtimeGOOS
+	t.Cleanup(func() { runtimeGOOS = saved })
+
+	targets := []ThreadReplyTarget{
+		{ThreadID: "c1", ParentID: "c1"},
+		{ThreadID: "c2", ParentID: "c2"},
+	}
+	for _, leader := range []bool{false, true} {
+		runtimeGOOS = "linux"
+		linux := BuildMultiThreadCommentReplyInstructions("55555555-6666-7777-8888-999999999999", targets, leader)
+		runtimeGOOS = "windows"
+		windows := BuildMultiThreadCommentReplyInstructions("55555555-6666-7777-8888-999999999999", targets, leader)
+		if linux != windows {
+			t.Errorf("fan-out block (leader=%v) must be OS-invariant\nlinux:\n%s\nwindows:\n%s", leader, linux, windows)
 		}
 	}
 }
