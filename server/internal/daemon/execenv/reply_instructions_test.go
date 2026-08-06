@@ -94,7 +94,7 @@ func TestBuildCommentReplyInstructionsNonCodexLinux(t *testing.T) {
 					"#4182",
 					"rm ./reply.md",
 					"do NOT reuse --parent values from previous turns",
-					"If you decide to reply",
+					"Post your reply as a comment",
 				} {
 					if !strings.Contains(got, want) {
 						t.Errorf("%s reply instructions missing %q\n---\n%s", name, want, got)
