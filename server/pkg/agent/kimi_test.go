@@ -713,6 +713,56 @@ done
 `
 }
 
+func fakeKimiACPPromptUsageScript() string {
+	return `#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{}}}\n' "$id"
+      ;;
+    *'"method":"session/new"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"session_prompt_usage"}}\n' "$id"
+      ;;
+    *'"method":"session/prompt"'*)
+      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"session_prompt_usage","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"done"}}}}\n'
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn","usage":{"inputTokens":17,"outputTokens":5,"cachedReadTokens":3,"cachedWriteTokens":2,"costUsdTicks":900}}}\n' "$id"
+      exit 0
+      ;;
+  esac
+done
+`
+}
+
+func TestKimiBackendPropagatesACPPromptUsage(t *testing.T) {
+	t.Parallel()
+
+	fakePath := filepath.Join(t.TempDir(), "kimi")
+	writeTestExecutable(t, fakePath, []byte(fakeKimiACPPromptUsageScript()))
+
+	backend, err := New("kimi", Config{ExecutablePath: fakePath, Logger: slog.Default()})
+	if err != nil {
+		t.Fatalf("new kimi backend: %v", err)
+	}
+	session, err := backend.Execute(context.Background(), "task", ExecOptions{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	go func() {
+		for range session.Messages {
+		}
+	}()
+
+	result := <-session.Result
+	if result.Status != "completed" {
+		t.Fatalf("status=%q error=%q", result.Status, result.Error)
+	}
+	want := TokenUsage{InputTokens: 17, OutputTokens: 5, CacheReadTokens: 3, CacheWriteTokens: 2, CostUSDTicks: 900}
+	if usage := result.Usage["unknown"]; usage != want {
+		t.Fatalf("usage = %+v, want %+v", usage, want)
+	}
+}
+
 // TestKimiBackendReportsUsageFromWireLog is the end-to-end proof for
 // MUL-5773 / #6448: with an ACP peer that reports no usage at all — which is
 // what kimi-code 0.33.0 actually does — the task still lands on the dashboard

@@ -375,17 +375,12 @@ func (b *kimiBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 					finalStatus = "aborted"
 					finalError = "kimi cancelled the prompt"
 				}
-				c.usageMu.Lock()
-				c.usage.InputTokens += pr.usage.InputTokens
-				c.usage.OutputTokens += pr.usage.OutputTokens
 				// kimi-code 0.33.0 sends no usage at all on this path,
-				// so these two are inert today; they exist so a future
+				// so this is inert today; it exists so a future
 				// kimi that does populate the ACP result is billed
-				// correctly instead of silently dropping its cache
-				// split. scanKimiSessionUsage below is the live path.
-				c.usage.CacheReadTokens += pr.usage.CacheReadTokens
-				c.usage.CacheWriteTokens += pr.usage.CacheWriteTokens
-				c.usageMu.Unlock()
+				// correctly instead of silently dropping cache or cost
+				// fields. scanKimiSessionUsage below is the live path.
+				c.mergeUsage(pr.usage)
 			default:
 			}
 			waitForACPNotificationQuiescence(runCtx, activity, readerDone, acpNotificationQuietTime, kimiReaderDrainGrace)
@@ -415,9 +410,7 @@ func (b *kimiBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 		// stays visible.
 		finalStatus, finalError = promoteACPResultOnProviderError(finalStatus, finalError, providerErrorOutput, providerErr)
 
-		c.usageMu.Lock()
-		u := c.usage
-		c.usageMu.Unlock()
+		u := c.accumulatedUsage()
 
 		// Fallback: kimi-code 0.33.0 exports no token counters over ACP.
 		// Its session/prompt result carries only stopReason, and its
@@ -449,6 +442,17 @@ func (b *kimiBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 				resumed:       opts.ResumeSessionID != "",
 				fallbackModel: fallbackModel,
 			})
+			// A future Kimi build may expose provider cost before it exposes
+			// token buckets over ACP. Preserve that cost alongside the current
+			// wire-log fallback instead of dropping either source.
+			if u.CostUSDTicks > 0 {
+				modelUsage := usageMap[fallbackModel]
+				modelUsage.CostUSDTicks = u.CostUSDTicks
+				if usageMap == nil {
+					usageMap = make(map[string]TokenUsage)
+				}
+				usageMap[fallbackModel] = modelUsage
+			}
 		}
 
 		resCh <- Result{
