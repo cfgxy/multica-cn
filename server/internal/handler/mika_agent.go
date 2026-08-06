@@ -220,22 +220,29 @@ func (h *Handler) writeMikaAgentResponse(w http.ResponseWriter, r *http.Request,
 		slog.Warn("mika agent: load invocation targets failed", append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(agent.ID))...)
 	}
 
-	out := mikaAgentResponse{AgentResponse: resp}
-	session, err := h.getOrCreateMikaSession(r.Context(), agent, workspaceID, userID, sessionTitle)
-	if err != nil {
-		// The agent is already committed, so failing the whole call would
-		// leave a provisioned Mika behind and make the retry look like a
-		// different error. Omitting the session is a state the client can
-		// recover from; it simply retries this endpoint.
-		slog.Warn("mika agent: get-or-create onboarding session failed", append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(agent.ID))...)
-	} else {
-		sessionResp := chatSessionToResponse(session)
-		out.OnboardingSession = &sessionResp
-	}
-
+	// Announced before the session step can fail, because the agent itself is
+	// already committed and other clients' agent lists are stale until they
+	// hear about it.
 	if created {
 		actorType, actorID := h.resolveActor(r, uuidToString(agent.OwnerID), workspaceID)
 		h.publish(protocol.EventAgentCreated, workspaceID, actorType, actorID, map[string]any{"agent": broadcastAgentResponse(resp)})
+	}
+
+	session, err := h.getOrCreateMikaSession(r.Context(), agent, workspaceID, userID, sessionTitle)
+	if err != nil {
+		// Reporting success with the session omitted was worse than failing:
+		// the caller cannot tell a partial bootstrap from a complete one, and
+		// the surfaces that offer to finish it key off the agent, which now
+		// exists. Every step here is idempotent, so a retry converges — say so
+		// with an error rather than handing back a half-built flow.
+		slog.Warn("mika agent: get-or-create onboarding session failed", append(logger.RequestAttrs(r), "error", err, "agent_id", uuidToString(agent.ID))...)
+		writeError(w, http.StatusInternalServerError, "failed to open the Mika conversation")
+		return
+	}
+	sessionResp := chatSessionToResponse(session)
+	out := mikaAgentResponse{AgentResponse: resp, OnboardingSession: &sessionResp}
+
+	if created {
 		writeJSON(w, http.StatusCreated, out)
 		return
 	}

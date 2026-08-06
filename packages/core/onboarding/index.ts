@@ -29,4 +29,9 @@ export {
   useWelcomeStore,
   type WelcomeSignal,
 } from "./welcome-store";
-export { MIKA_SYSTEM_KEY, isMikaAgent, workspaceNeedsMika } from "./mika";
+export {
+  MIKA_SYSTEM_KEY,
+  isMikaAgent,
+  memberNeedsMikaSetup,
+  workspaceNeedsMika,
+} from "./mika";

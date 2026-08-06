@@ -107,7 +107,7 @@ describe("onboarding step shell", () => {
 
   // The rail does not fit under `md` — it never went below 15rem while the
   // content pane kept its gutter, which left ~87px of form at 375px. Hiding it
-  // is only safe because the compact bar carries the same two jobs.
+  // is only safe because the compact bar carries the same jobs.
   it("keeps a compact progress bar for widths where the rail is hidden", () => {
     const { container } = renderShell({
       currentStep: "runtime",
@@ -120,6 +120,25 @@ describe("onboarding step shell", () => {
     expect(compact).not.toBeNull();
     expect(compact.textContent).toContain("Meet Mika");
     expect(compact.querySelector("button")).not.toBeNull();
+  });
+
+  // The escape hatch lived only in the rail's footer, so hiding the rail left
+  // every step but Welcome with no way to log out on a narrow screen.
+  it("renders the escape hatch in whichever chrome is visible", () => {
+    const { container } = renderShell({
+      currentStep: "runtime",
+      chromeFooter: <button type="button">Log out</button>,
+    });
+
+    const rail = within(container.querySelector("aside")!);
+    expect(rail.getByRole("button", { name: /log out/i })).toBeInTheDocument();
+
+    const compact = within(
+      container.querySelector("main .md\\:hidden") as HTMLElement,
+    );
+    expect(
+      compact.getByRole("button", { name: /log out/i }),
+    ).toBeInTheDocument();
   });
 });
 

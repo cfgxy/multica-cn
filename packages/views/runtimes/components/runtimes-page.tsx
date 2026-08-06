@@ -13,10 +13,11 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspaceId } from "@multica/core/hooks";
-import { useBootstrapMika, workspaceNeedsMika } from "@multica/core/onboarding";
+import { memberNeedsMikaSetup, useBootstrapMika } from "@multica/core/onboarding";
 import { MIKA_PLACEHOLDER_EMOJI } from "../../onboarding/components/mika-intro";
 import { useRequiredWorkspaceSlug, useWorkspacePaths } from "@multica/core/paths";
 import { agentTaskSnapshotOptions } from "@multica/core/agents";
+import { chatSessionsOptions } from "@multica/core/chat/queries";
 import { runtimeProfileListOptions } from "@multica/core/runtimes";
 import { runtimeListOptions, runtimeKeys } from "@multica/core/runtimes/queries";
 import { useWSEvent } from "@multica/core/realtime";
@@ -103,6 +104,12 @@ export function RuntimesPage({
     agentListOptions(wsId),
   );
   const { data: snapshot = [] } = useQuery(agentTaskSnapshotOptions(wsId));
+  // The Mika entrypoint is per member, not per workspace: the agent alone does
+  // not say whether *this* member's conversation was ever opened and kicked
+  // off. See memberNeedsMikaSetup.
+  const { data: chatSessions = [], isLoading: chatSessionsLoading } = useQuery(
+    chatSessionsOptions(wsId),
+  );
 
   const handleDaemonEvent = useCallback(() => {
     qc.invalidateQueries({ queryKey: runtimeKeys.all(wsId) });
@@ -172,7 +179,10 @@ export function RuntimesPage({
       ) : (
         <div className="min-h-0 flex-1 overflow-y-auto">
           <div className="mx-auto flex w-full max-w-[1440px] flex-col p-4 sm:p-6">
-            {!agentsLoading && workspaceNeedsMika(agents) && runtimes.length > 0 && (
+            {!agentsLoading &&
+              !chatSessionsLoading &&
+              memberNeedsMikaSetup(agents, chatSessions) &&
+              runtimes.length > 0 && (
               <MikaSetupCard
                 workspaceId={wsId}
                 runtimes={runtimes}

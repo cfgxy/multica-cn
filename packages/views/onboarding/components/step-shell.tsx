@@ -98,7 +98,7 @@ export function StepShell({
   onBack,
   backDisabled,
   onStepChange,
-  sidebarFooter,
+  chromeFooter,
   children,
 }: {
   currentStep: OnboardingStep;
@@ -107,8 +107,9 @@ export function StepShell({
   backDisabled?: boolean;
   /** Return to an already-completed step from the rail. */
   onStepChange?: (step: OnboardingStep) => void;
-  /** Injected by the flow — the Log out escape hatch. */
-  sidebarFooter?: ReactNode;
+  /** Injected by the flow — the Log out escape hatch. Rendered in whichever
+   *  chrome is visible: the rail at `md` and up, the compact bar below it. */
+  chromeFooter?: ReactNode;
   children: ReactNode;
 }) {
   const mainRef = useRef<HTMLElement>(null);
@@ -131,7 +132,7 @@ export function StepShell({
           onBack={onBack}
           backDisabled={backDisabled}
           onStepChange={onStepChange}
-          footer={sidebarFooter}
+          footer={chromeFooter}
         />
 
         <main
@@ -144,6 +145,7 @@ export function StepShell({
               currentStep={currentStep}
               onBack={onBack}
               backDisabled={backDisabled}
+              footer={chromeFooter}
             />
             {children}
           </div>

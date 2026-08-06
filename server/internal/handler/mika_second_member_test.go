@@ -107,6 +107,51 @@ func TestStartMikaOnboarding_AllowsAnyMemberNotJustTheOwner(t *testing.T) {
 	}
 }
 
+// TestCreateMikaAgent_RecoversFromAPartialBootstrap is the retry path for the
+// state that used to be terminal: the agent committed but the member's session
+// did not. The endpoint has to rebuild the missing half rather than treat the
+// surviving agent as proof the flow finished.
+func TestCreateMikaAgent_RecoversFromAPartialBootstrap(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	cleanupMika(t)
+	runtimeID := handlerTestRuntimeID(t)
+
+	first := decodeMika(t, createMika(t, map[string]any{
+		"runtime_id": runtimeID, "language": "en", "session_title": "Getting started with Mika",
+	}))
+	if first.OnboardingSession == nil {
+		t.Fatal("first call returned no onboarding session")
+	}
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM chat_session WHERE creator_id = $1`, testUserID)
+	})
+
+	// Stand in for "the session step failed after the agent committed".
+	if _, err := testPool.Exec(context.Background(),
+		`DELETE FROM chat_session WHERE id = $1`, first.OnboardingSession.ID); err != nil {
+		t.Fatalf("drop session: %v", err)
+	}
+
+	retry := createMika(t, map[string]any{
+		"runtime_id": runtimeID, "language": "en", "session_title": "Getting started with Mika",
+	})
+	if retry.Code != http.StatusOK {
+		t.Fatalf("retry: expected 200, got %d: %s", retry.Code, retry.Body.String())
+	}
+	retryResp := decodeMika(t, retry)
+	if retryResp.OnboardingSession == nil {
+		t.Fatal("retry must rebuild the missing session, got none")
+	}
+	if retryResp.OnboardingSession.ID == first.OnboardingSession.ID {
+		t.Fatal("retry returned the deleted session id")
+	}
+	if retryResp.ID != first.ID {
+		t.Fatalf("retry must reuse the same Mika, got %s then %s", first.ID, retryResp.ID)
+	}
+}
+
 // TestCreateMikaAgent_SessionIsPerMemberAndStable covers the other half: the
 // session used to be resolved client-side by listing sessions and matching on
 // the localized title, which is both a check-then-insert race and

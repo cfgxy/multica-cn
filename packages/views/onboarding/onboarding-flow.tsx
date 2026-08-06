@@ -383,7 +383,7 @@ function OnboardingStepFlow({
       onBack={stepBack}
       backDisabled={stepBusy}
       onStepChange={handleStepChange}
-      sidebarFooter={headerTrailing}
+      chromeFooter={headerTrailing}
     >
       {step === "about_you" && (
         <StepAboutYou

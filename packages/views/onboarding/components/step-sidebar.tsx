@@ -63,10 +63,15 @@ export function StepProgressBar({
   currentStep,
   onBack,
   backDisabled,
+  footer,
 }: {
   currentStep: OnboardingStep;
   onBack?: () => void;
   backDisabled?: boolean;
+  /** Same slot the rail's footer takes — the Log out escape hatch. It has to
+   *  be repeated here rather than left to the rail: the rail is hidden at
+   *  these widths, which stranded every step but Welcome with no way out. */
+  footer?: ReactNode;
 }) {
   const { t } = useT("onboarding");
   const currentIndex = Math.max(0, ONBOARDING_STEP_ORDER.indexOf(currentStep));
@@ -105,9 +110,10 @@ export function StepProgressBar({
           />
         ))}
       </span>
-      <span className="shrink-0 text-caption font-medium text-muted-foreground">
+      <span className="min-w-0 truncate text-caption font-medium text-muted-foreground">
         {t(($) => $.step_nav[key].label)}
       </span>
+      {footer ? <span className="shrink-0">{footer}</span> : null}
     </div>
   );
 }
