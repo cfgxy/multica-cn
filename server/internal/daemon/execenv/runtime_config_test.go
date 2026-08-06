@@ -1549,7 +1549,7 @@ func TestMultiThreadReplyInstructionsFanOut(t *testing.T) {
 		{ThreadID: "c1", ParentID: "c1"},
 		{ThreadID: "c2", ParentID: "c2"},
 		{ThreadID: "c3", ParentID: "c3"},
-	})
+	}, false)
 
 	for _, want := range []string{"3 DISTINCT threads", "Post ONE reply per thread", "--parent c1", "--parent c2", "--parent c3"} {
 		if !strings.Contains(out, want) {

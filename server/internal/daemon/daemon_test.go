@@ -5024,6 +5024,8 @@ func TestFreshSessionMayHelp(t *testing.T) {
 	const hermesAuth = "hermes provider error: \"Could not resolve authentication method. Expected either api_key or auth_token to be set. Or for one of the X-Api-Key or Authorization headers to be explicitly omitted\""
 	if !freshSessionMayHelp(hermesAuth) {
 		t.Fatalf("freshSessionMayHelp(auth-resolution error) = false; a fresh session cures this failure, it must report session-fixable")
+	}
+}
 
 // TestBuildPromptSquadLeaderReplyCommandCarvesOutNoAction renders the COMPLETE
 // leader prompt and pins the exception's scope relation (MUL-5442 #6493
@@ -5054,5 +5056,65 @@ func TestBuildPromptSquadLeaderReplyCommandCarvesOutNoAction(t *testing.T) {
 	}
 	if strings.Contains(prompt, "Post your reply as a comment") {
 		t.Fatalf("leader prompt still carries the unconditional reply imperative\n---\n%s", prompt)
+	}
+}
+
+// TestBuildPromptSquadLeaderMultiThreadCarvesOutNoAction renders the complete
+// leader prompt on the cross-thread fan-out path (MUL-5442 #6493 review): the
+// fan-out imperative fires AFTER the no_action rule, so its scope sentence
+// must govern the ENTIRE block — assert it precedes every later obligation,
+// not just the first verb. The ordinary fan-out output keeps the
+// unconditional form byte-for-byte.
+func TestBuildPromptSquadLeaderMultiThreadCarvesOutNoAction(t *testing.T) {
+	t.Parallel()
+
+	leaderTask := Task{
+		IssueID:               "issue-1",
+		TriggerCommentID:      "comment-9",
+		TriggerThreadID:       "thread-B",
+		TriggerCommentContent: "second update",
+		TriggerAuthorType:     "agent",
+		TriggerAuthorName:     "Worker",
+		CoalescedComments: []CoalescedCommentData{
+			{ID: "comment-8", ThreadID: "thread-A", Content: "first update"},
+		},
+		Agent: &AgentData{
+			Name:         "Lead",
+			Instructions: "Some instructions\n\n## Squad Operating Protocol\n\nYou are the LEADER...",
+		},
+	}
+	prompt := BuildPrompt(leaderTask, "claude")
+	if !strings.Contains(prompt, "Squad leader no_action rule") {
+		t.Fatalf("leader multi-thread prompt missing the no_action rule\n---\n%s", prompt)
+	}
+	scope := strings.Index(prompt, "skip this ENTIRE fan-out block")
+	if scope < 0 {
+		t.Fatalf("leader multi-thread prompt missing the whole-block scope sentence\n---\n%s", prompt)
+	}
+	for _, obligation := range []string{
+		"multiple replies are required and correct",
+		"Post the replies in the order listed below",
+		"For EACH thread above",
+	} {
+		idx := strings.Index(prompt, obligation)
+		if idx < 0 {
+			t.Fatalf("leader multi-thread prompt missing obligation %q\n---\n%s", obligation, prompt)
+		}
+		if idx < scope {
+			t.Fatalf("obligation %q precedes the no_action scope sentence — it escapes the carve-out\n---\n%s", obligation, prompt)
+		}
+	}
+	if strings.Contains(prompt, ". Post ONE reply per thread") {
+		t.Fatalf("leader multi-thread prompt still carries the unconditional imperative\n---\n%s", prompt)
+	}
+
+	ordinaryTask := leaderTask
+	ordinaryTask.Agent = &AgentData{Name: "Reg", Instructions: "You are a regular agent."}
+	ordinary := BuildPrompt(ordinaryTask, "claude")
+	if !strings.Contains(ordinary, ". Post ONE reply per thread") {
+		t.Fatalf("ordinary multi-thread prompt missing the unconditional imperative\n---\n%s", ordinary)
+	}
+	if strings.Contains(ordinary, "Unless your outcome is") || strings.Contains(ordinary, "skip this ENTIRE fan-out block") {
+		t.Fatalf("ordinary multi-thread prompt leaked the leader carve-out\n---\n%s", ordinary)
 	}
 }
