@@ -329,8 +329,12 @@
         "description": "When an issue you follow changes status (e.g. todo, in progress, done)"
       },
       "comments": {
-        "label": "Comments & Mentions",
-        "description": "New comments on issues you follow, or when someone @mentions you"
+        "label": "Comments",
+        "description": "New comments on issues you follow"
+      },
+      "mentions": {
+        "label": "Mentions",
+        "description": "When someone @mentions you, including @all and @squad"
       },
       "updates": {
         "label": "Priority & Due date",

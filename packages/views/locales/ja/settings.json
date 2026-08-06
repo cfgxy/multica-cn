@@ -328,8 +328,12 @@
         "description": "フォロー中のタスクのステータスが変わったとき（例: todo、in progress、done）"
       },
       "comments": {
-        "label": "コメントとメンション",
-        "description": "フォロー中のタスクに新しいコメントが付いたとき、または誰かがあなたを @メンションしたとき"
+        "label": "コメント",
+        "description": "フォロー中のタスクに新しいコメントが付いたとき"
+      },
+      "mentions": {
+        "label": "メンション",
+        "description": "誰かがあなたを @メンションしたとき（@all と @squad を含む）"
       },
       "updates": {
         "label": "優先度と期限",
