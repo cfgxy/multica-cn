@@ -207,22 +207,17 @@ export function ChatMessageList({
     return null;
   }, [messages]);
 
-  // Mika's onboarding opening — the first assistant reply after the hidden
-  // kickoff — carries the product's starter cards instead of that turn's LLM
-  // quick-action chips (MUL-5765). Detected from the loaded window: onboarding
-  // sessions are one short page, so the kickoff is present whenever the
-  // opening itself is.
-  const starterCardsMessageId = useMemo(() => {
-    const kickoffIndex = messages.findIndex(
-      (m) => m.message_kind === "onboarding_kickoff",
-    );
-    if (kickoffIndex === -1) return null;
-    for (let i = kickoffIndex + 1; i < messages.length; i++) {
-      const m = messages[i];
-      if (m && m.role === "assistant") return m.id;
-    }
-    return null;
-  }, [messages]);
+  // Mika's onboarding opening self-describes (message_kind stamped by the
+  // completion path — the hidden kickoff row never reaches clients) and
+  // carries the product's starter cards instead of that turn's quick-action
+  // chips (MUL-5765).
+  const starterCardsMessageId = useMemo(
+    () =>
+      messages.find(
+        (m) => m.role === "assistant" && m.message_kind === "onboarding_opening",
+      )?.id ?? null,
+    [messages],
+  );
 
   // Once the assistant message for this pending task has landed in the
   // messages list, AssistantMessage owns its rendering — suppress the live
