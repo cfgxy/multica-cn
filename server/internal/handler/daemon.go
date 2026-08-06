@@ -3961,8 +3961,52 @@ func (h *Handler) ListTasksByIssue(w http.ResponseWriter, r *http.Request) {
 	// issue-facing surface must resolve initiator/originator names (departed-safe,
 	// one batch) — otherwise the badge falls back to "someone" on issue detail.
 	h.hydrateTaskAttributions(r.Context(), attributionsOf(resp))
+	h.hydrateTaskUsage(r.Context(), issue.ID, resp)
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// hydrateTaskUsage attaches each run's own token usage to the execution-log
+// rows. One query for the whole issue, then a map join — not one query per
+// task, which would be an N+1 over a list the UI always renders in full.
+//
+// Usage is display metadata: a failure here must not take the execution log
+// down with it, so the error is swallowed and every row keeps its nil Usage,
+// which the UI already renders as "no usage recorded".
+func (h *Handler) hydrateTaskUsage(ctx context.Context, issueID pgtype.UUID, resp []AgentTaskResponse) {
+	if len(resp) == 0 {
+		return
+	}
+
+	rows, err := h.Queries.ListIssueTaskUsage(ctx, issueID)
+	if err != nil || len(rows) == 0 {
+		return
+	}
+
+	byTask := make(map[string][]TaskUsageData, len(resp))
+	for _, row := range rows {
+		var cost *int64
+		if row.CostUsdTicks.Valid {
+			v := row.CostUsdTicks.Int64
+			cost = &v
+		}
+		taskID := uuidToString(row.TaskID)
+		byTask[taskID] = append(byTask[taskID], TaskUsageData{
+			Provider:         row.Provider,
+			Model:            row.Model,
+			InputTokens:      row.InputTokens,
+			OutputTokens:     row.OutputTokens,
+			CacheReadTokens:  row.CacheReadTokens,
+			CacheWriteTokens: row.CacheWriteTokens,
+			CostUsdTicks:     cost,
+		})
+	}
+
+	for i := range resp {
+		if usage, ok := byTask[resp[i].ID]; ok {
+			resp[i].Usage = usage
+		}
+	}
 }
 
 // ListTaskMessagesByUser returns task messages for a task.

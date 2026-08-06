@@ -416,6 +416,64 @@ VALUES (
 )
 RETURNING *;
 
+-- name: CreateDeferredChannelIssueTask :one
+-- Channel /issue media resolves after issue creation. Persist the assigned
+-- issue task up front for crash safety, but keep it inert until attachment
+-- binding settles or the fire_at fallback is promoted by the normal sweeper.
+INSERT INTO agent_task_queue (
+    agent_id, runtime_id, issue_id, status, priority, trigger_comment_id,
+    coalesced_comment_ids, trigger_summary, force_fresh_session, is_leader_task, handoff_note,
+    squad_id, context, originator_user_id, accountable_user_id, runtime_mcp_overlay, runtime_connected_apps,
+    originator_source, delegated_from_task_id, rule_version_id, rerun_of_task_id,
+    trigger_evidence_kind, trigger_evidence_ref_id, fire_at
+)
+VALUES (
+    $1, $2, $3, 'deferred', $4, sqlc.narg(trigger_comment_id),
+    COALESCE(sqlc.narg(coalesced_comment_ids)::uuid[], '{}'),
+    sqlc.narg(trigger_summary),
+    COALESCE(sqlc.narg('force_fresh_session')::boolean, FALSE),
+    COALESCE(sqlc.narg('is_leader_task')::boolean, FALSE),
+    sqlc.narg(handoff_note),
+    sqlc.narg(squad_id),
+    jsonb_strip_nulls(jsonb_build_object(
+        'head_sha', NULLIF(COALESCE(sqlc.narg('head_sha')::text, ''), ''),
+        'channel_issue_media_pending', TRUE
+    )),
+    sqlc.narg(originator_user_id),
+    sqlc.narg(accountable_user_id),
+    sqlc.narg(runtime_mcp_overlay),
+    sqlc.narg(runtime_connected_apps),
+    sqlc.narg(originator_source),
+    sqlc.narg(delegated_from_task_id),
+    sqlc.narg(rule_version_id),
+    sqlc.narg(rerun_of_task_id),
+    sqlc.narg(trigger_evidence_kind),
+    sqlc.narg(trigger_evidence_ref_id),
+    @fire_at
+)
+RETURNING *;
+
+-- name: PromoteDeferredChannelIssueTask :one
+-- Early promotion is idempotent at the service layer: a task already promoted
+-- by the fire_at sweeper no longer matches and is treated as settled.
+UPDATE agent_task_queue
+SET status = 'queued', fire_at = NULL
+WHERE id = $1 AND issue_id IS NOT NULL AND status = 'deferred'
+RETURNING *;
+
+-- name: SetDeferredChannelIssueTaskRuntimeOverlay :execrows
+-- The issue and its inert media-gated task commit atomically before the optional
+-- external overlay is built. Only hydrate the untouched original plan: a comment
+-- merge may already have replaced the trigger, attribution, and matching overlay.
+UPDATE agent_task_queue
+SET runtime_mcp_overlay = sqlc.narg(runtime_mcp_overlay),
+    runtime_connected_apps = sqlc.narg(runtime_connected_apps)
+WHERE id = @id
+  AND status = 'deferred'
+  AND context->>'channel_issue_media_pending' = 'true'
+  AND trigger_comment_id IS NULL
+  AND originator_user_id IS NOT DISTINCT FROM sqlc.narg(expected_originator_user_id)::uuid;
+
 -- name: CreateQuickCreateTask :one
 -- Quick-create tasks have no issue / chat / autopilot link; the entire job
 -- description (prompt, requester, workspace) lives in context JSONB. The
@@ -864,12 +922,14 @@ RETURNING *;
 -- Tasks that ended in a known "poisoned" terminal state are also excluded
 -- here so even auto-retry does not inherit the bad session. The daemon
 -- classifies these failures (iteration_limit, agent_fallback_message,
--- api_invalid_request, codex_semantic_inactivity, agent_error.context_overflow)
+-- api_invalid_request, codex_semantic_inactivity, agent_error.context_overflow,
+-- codex_resume_oversized)
 -- when it detects either an agent fallback marker in the output, an upstream
 -- API 400 that means the conversation history itself is unprocessable
 -- (oversized image, malformed base64, etc.), a Codex semantic inactivity
--- timeout whose recorded session may replay the same stuck state, or a context
--- window overflow that would immediately overflow again on resume. Keep this
+-- timeout whose recorded session may replay the same stuck state, a context
+-- window overflow that would immediately overflow again on resume, or a Codex
+-- thread/resume response too large to read back (MUL-5722). Keep this
 -- list in sync with resumeUnsafeFailureReason and GetLastChatTaskSession.
 --
 -- The error-text ILIKE clause is defense-in-depth for the api_invalid_request
@@ -905,6 +965,15 @@ RETURNING *;
 -- exactly as narrow as classifyPoisonedError and the Kiro detector — an
 -- unrelated error that only mentions image dimensions is NOT excluded.
 --
+-- MUL-5722 needed a different shape, and the reason is worth stating because
+-- the first attempt got it wrong: a row-level guard like the ones above CANNOT
+-- work for an overflowed resume. That failure happens before the turn starts,
+-- so the backend has no session id to report and the row lands with session_id
+-- NULL — which the latest_per_session CTE drops before any filter runs. The
+-- only row naming the oversized thread is the OLDER completed one, which looks
+-- perfectly healthy. Hence resume_overflow_at below: block by TIME, which needs
+-- nothing from the failed row but its existence. See the clause for details.
+--
 -- The final pair of regexes is the provider-agnostic version of the same
 -- guard, and it matters most for self-hosted installs: daemons upgrade on
 -- their own cadence, so a host still running a daemon without
@@ -928,6 +997,15 @@ WITH retired_sessions AS (
     FROM agent_task_queue r
     WHERE r.agent_id = $1 AND r.issue_id = $2
       AND r.retired_session_id IS NOT NULL
+), resume_overflow_at AS (
+    SELECT MAX(COALESCE(t.completed_at, t.started_at, t.dispatched_at, t.created_at)) AS at
+    FROM agent_task_queue t
+    WHERE t.agent_id = $1 AND t.issue_id = $2
+      AND t.status = 'failed'
+      AND (
+        COALESCE(t.failure_reason, '') = 'codex_resume_oversized'
+        OR (COALESCE(t.error, '') ILIKE '%thread/resume failed%' AND COALESCE(t.error, '') ILIKE '%token too long%')
+      )
 ), latest_per_session AS (
     SELECT DISTINCT ON (t.session_id)
         t.session_id, t.work_dir, t.runtime_id, t.status, t.failure_reason, t.error,
@@ -944,12 +1022,23 @@ WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
     status IN ('completed', 'cancelled')
     OR (
       status = 'failed'
-      AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request', 'codex_semantic_inactivity', 'agent_error.context_overflow')
+      AND COALESCE(failure_reason, '') NOT IN ('iteration_limit', 'agent_fallback_message', 'api_invalid_request', 'codex_semantic_inactivity', 'agent_error.context_overflow', 'codex_resume_oversized')
       AND NOT (COALESCE(error, '') ILIKE '%400%' AND COALESCE(error, '') ILIKE '%invalid_request_error%')
       AND NOT (COALESCE(error, '') ILIKE '%image dimensions exceed max allowed size%' AND COALESCE(error, '') ILIKE '%image.source.base64.data%')
       AND NOT (COALESCE(error, '') ~* 'must not be empty|must be non-?empty|must have non-?empty|non-?empty content|cannot be empty|should not be empty'
                AND COALESCE(error, '') ~* 'role[^a-z0-9]{0,2}assistant|assistant message|message at position|messages\.[0-9]|messages\[[0-9]')
     )
+  )
+  -- MUL-5722: a resume that overflowed the reader names no session, so it can
+  -- only be excluded by time, not by matching the failed row. Drop every
+  -- session whose last terminal activity predates the newest such failure: one
+  -- of them IS the oversized thread, and the row that would tell us which is
+  -- exactly the row that could not be written. Anything that terminated after
+  -- the overflow is the fresh thread that replaced it, so this un-blocks itself
+  -- as soon as one succeeds.
+  AND (
+    (SELECT at FROM resume_overflow_at) IS NULL
+    OR terminal_at > (SELECT at FROM resume_overflow_at)
   )
 ORDER BY terminal_at DESC
 LIMIT 1;
@@ -1259,7 +1348,8 @@ WHERE issue_id = $1 AND status IN ('queued', 'dispatched');
 
 -- name: HasPendingTaskForIssueAndAgent :one
 -- Returns true if a specific agent already has a queued or dispatched task
--- for the given issue. Used by @mention trigger dedup.
+-- for the given issue, or the explicitly-marked deferred task whose channel
+-- media must bind before the issue agent runs. Used by @mention trigger dedup.
 --
 -- head_sha keys the dedup on the commit under review (TEN-356): when a caller
 -- passes a non-empty head_sha, a pending task only dedups if it was stamped
@@ -1269,7 +1359,11 @@ WHERE issue_id = $1 AND status IN ('queued', 'dispatched');
 -- When head_sha is empty/NULL (issue has no linked PR) the check falls back to
 -- the pre-TEN-356 (issue_id, agent_id) key so non-PR issues keep coalescing.
 SELECT count(*) > 0 AS has_pending FROM agent_task_queue
-WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'dispatched')
+WHERE issue_id = $1 AND agent_id = $2
+  AND (
+    status IN ('queued', 'dispatched')
+    OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+  )
   AND (
     COALESCE(sqlc.narg('head_sha')::text, '') = ''
     OR context->>'head_sha' = sqlc.narg('head_sha')::text
@@ -1283,7 +1377,10 @@ WHERE issue_id = $1 AND agent_id = $2 AND status IN ('queued', 'dispatched')
 SELECT count(*) > 0 AS has_pending FROM agent_task_queue
 WHERE issue_id = @issue_id
   AND agent_id = @agent_id
-  AND status IN ('queued', 'dispatched')
+  AND (
+    status IN ('queued', 'dispatched')
+    OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+  )
   AND trigger_comment_id IS DISTINCT FROM @exclude_trigger_comment_id::uuid
   AND (
     COALESCE(sqlc.narg('head_sha')::text, '') = ''
@@ -1299,22 +1396,21 @@ WHERE issue_id = @issue_id
 -- the latest deliberate instruction while the single run is still told to
 -- address every folded comment.
 --
--- Target is restricted to the single 'queued' task on purpose (MUL-4195 review
--- rounds 2–4). This merge is only reached when HasPendingTaskForIssueAndAgent
--- matched a 'queued'/'dispatched' task, and 'dispatched' is deliberately NOT a
+-- Target is restricted to a pre-claim task on purpose (MUL-4195 review rounds
+-- 2–4). This merge is reached when HasPendingTaskForIssueAndAgent matched a
+-- 'queued'/'dispatched' task, or the channel-media deferred task described
+-- below. 'dispatched' is deliberately NOT a
 -- target: a dispatched / waiting_local_directory / running task has already had
 -- its claim response built. Folding afterward would add a planned id that is
 -- absent from that response's delivered_comment_ids receipt; completion
--- reconciliation handles it instead. 'deferred' is also NOT
--- a target: a deferred row is an assignee-fallback escalation with its own
--- fire_at/promotion lifecycle, and it never sets AlreadyPending
--- (HasPendingTaskForIssueAndAgent only looks at queued/dispatched). If a newer
--- deferred fallback and an older queued task coexisted, a status-IN target would
--- pick the deferred one by created_at and steal the coalescing target away from
--- the queued run that is actually about to be claimed — so we match ONLY the
--- queued row (the idx_one_pending_task_per_issue_agent unique index guarantees
--- at most one). coalesced_comment_ids remains the pre-claim plan; the claim
--- path records the actual embedded subset in delivered_comment_ids.
+-- reconciliation handles it instead. Ordinary 'deferred' rows remain excluded:
+-- assignee-fallback escalations have their own fire_at lifecycle and may coexist
+-- with a queued primary. The one exception is a task explicitly marked
+-- channel_issue_media_pending. It is the issue's sole assigned-agent task and
+-- has not been claimable yet, so a new comment must merge into it instead of
+-- creating a competing queued task. coalesced_comment_ids remains the pre-claim
+-- plan; the claim path records the actual embedded subset in
+-- delivered_comment_ids.
 --
 -- Recompute-on-merge (MUL-4195 review must-fix #1): originator_user_id,
 -- runtime_mcp_overlay and runtime_connected_apps are re-stamped to the NEW
@@ -1362,7 +1458,10 @@ WHERE id = (
     SELECT t.id FROM agent_task_queue t
     WHERE t.issue_id = @issue_id
       AND t.agent_id = @agent_id
-      AND t.status = 'queued'
+      AND (
+          t.status = 'queued'
+          OR (t.status = 'deferred' AND t.context->>'channel_issue_media_pending' = 'true')
+      )
       -- Head-scoped (TEN-356, #5914): never fold across HEADs. The physical
       -- unique index is only (issue_id, agent_id), so an insert-race loser can
       -- collide with a pending task stamped for a DIFFERENT head_sha; merging
@@ -1424,7 +1523,8 @@ RETURNING id, coalesced_comment_ids;
 -- name: HasActiveTaskForIssueAndAgent :one
 -- MUL-4195: true when the (issue, agent) pair has any non-terminal task in a
 -- state whose completion will run completion reconciliation — queued,
--- dispatched, running, or waiting_local_directory. Used by the comment enqueue
+-- dispatched, running, waiting_local_directory, or the explicitly-marked
+-- channel-media deferred state. Used by the comment enqueue
 -- path: when a merge into a pre-claim task fails (the task is already
 -- dispatched/running, or a mismatched pre-claim task exists), a fresh queued
 -- INSERT would collide with idx_one_pending_task_per_issue_agent AND would risk
@@ -1433,7 +1533,10 @@ RETURNING id, coalesced_comment_ids;
 -- NO active task exists.
 SELECT count(*) > 0 AS has_active FROM agent_task_queue
 WHERE issue_id = $1 AND agent_id = $2
-  AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory');
+  AND (
+    status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+    OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+  );
 
 -- name: GetLatestTaskRoleForIssueAndAgent :one
 -- Returns the role markers from the agent's most recent task on this issue.
