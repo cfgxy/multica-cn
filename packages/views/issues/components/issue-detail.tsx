@@ -507,7 +507,7 @@ function ActivityBlock({
   if (!expanded) {
     const count = entries.length;
     return (
-      <div className="pb-3 px-4">
+      <div className="pb-3 px-4 max-md:px-3">
         <button
           type="button"
           onClick={onToggle}
@@ -533,7 +533,7 @@ function ActivityBlock({
   // fold the whole block back to a single count line.
   const showHeader = hiddenOlderCount === 0;
   return (
-    <div className="pb-3 px-4 flex flex-col gap-3">
+    <div className="pb-3 px-4 max-md:px-3 flex flex-col gap-3">
       {showHeader && (
         <button
           type="button"
