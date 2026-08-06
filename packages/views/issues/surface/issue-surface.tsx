@@ -20,7 +20,7 @@ import { ViewBaselineProvider, useViewBaseline } from "./view-baseline-context";
 import type { IssueViewScope } from "@multica/core/issue-views/queries";
 import { useFeatureEnabled } from "@multica/core/config";
 import { SAVED_ISSUE_VIEWS_FLAG } from "@multica/core/feature-flags";
-import { issueScopeKey } from "@multica/core/issues/surface/scope";
+import { issueScopeKey, type IssueScope } from "@multica/core/issues/surface/scope";
 import type { Issue } from "@multica/core/types";
 import { BoardView } from "../components/board-view";
 import { BatchActionToolbar } from "../components/batch-action-toolbar";
@@ -94,6 +94,14 @@ export function IssueSurface({
     () => (activeView ? baselineFromQuery(activeView.query) : null),
     [activeView],
   );
+  // The workspace tabs' coarse assignee-type filter must not leak into an
+  // open view: the same shared view has to return the same rows no matter
+  // which tab the user stood on when opening it. The tabs are already
+  // dimmed while a view is active — this makes the query match the UI.
+  const effectiveScope: IssueScope =
+    activeView && scope.type === "workspace" && scope.actorKind !== "all"
+      ? { ...scope, actorKind: "all" }
+      : scope;
   const store = useMemo(() => {
     // First-open seeding happens HERE, at store-creation time for this key:
     // no React component has subscribed to the new key's store yet, so the
@@ -111,7 +119,7 @@ export function IssueSurface({
   // but expensive enough that unexpected flips are performance bugs. Dev-only
   // breadcrumb so a Performance trace showing double mounts can be tied to
   // the exact key transition.
-  const contentKey = `${wsId}:${issueScopeKey(scope)}:${activeView ? `view:${activeView.id}` : "default"}`;
+  const contentKey = `${wsId}:${issueScopeKey(effectiveScope)}:${activeView ? `view:${activeView.id}` : "default"}`;
   useEffect(() => {
     if (process.env.NODE_ENV !== "production") {
       console.warn(`[issue-surface] mount ${contentKey}`);
@@ -134,7 +142,7 @@ export function IssueSurface({
           by data identity, not surfaceKey (view-preference identity). */}
       <IssueSurfaceContent
         key={contentKey}
-        scope={scope}
+        scope={effectiveScope}
         modes={modes}
         createDefaults={createDefaults}
         search={search}
