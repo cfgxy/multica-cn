@@ -2609,6 +2609,30 @@ func (q *Queries) TaskHasChannelIngestedMessages(ctx context.Context, taskID pgt
 	return channel_ingested, err
 }
 
+const taskHasOnboardingKickoffInput = `-- name: TaskHasOnboardingKickoffInput :one
+SELECT EXISTS (
+    SELECT 1 FROM chat_message
+    WHERE task_id = $1
+      AND role = 'user'
+      AND message_kind = 'onboarding_kickoff'
+)
+`
+
+// Whether this input batch is the product-authored onboarding kickoff. The
+// opening it produces renders the starter cards instead of suggestion chips
+// (MUL-5765), so the quick-actions pass skips that turn.
+//
+// $1 is the INPUT-OWNING task id — COALESCE(task.chat_input_task_id, task.id),
+// i.e. chatInputOwnerID — never a retry clone's own id. The whole retry chain
+// consumes the root's input batch (MUL-4351), so only the root owns the
+// kickoff user row; passing a child's id here silently answers false.
+func (q *Queries) TaskHasOnboardingKickoffInput(ctx context.Context, taskID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, taskHasOnboardingKickoffInput, taskID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const touchChatSession = `-- name: TouchChatSession :exec
 UPDATE chat_session SET updated_at = now()
 WHERE id = $1
