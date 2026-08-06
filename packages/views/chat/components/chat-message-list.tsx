@@ -45,6 +45,7 @@ import type {
 } from "@multica/core/types";
 import type { ChatTimelineItem } from "@multica/core/chat";
 import { buildTimeline } from "../../common/task-transcript";
+import { OnboardingStarterCards } from "./onboarding-starter-cards";
 import { TaskStatusPill } from "./task-status-pill";
 import { CHAT_COLUMN, CHAT_GUTTER } from "./chat-column";
 import { formatElapsedMs } from "../lib/format";
@@ -206,6 +207,23 @@ export function ChatMessageList({
     return null;
   }, [messages]);
 
+  // Mika's onboarding opening — the first assistant reply after the hidden
+  // kickoff — carries the product's starter cards instead of that turn's LLM
+  // quick-action chips (MUL-5765). Detected from the loaded window: onboarding
+  // sessions are one short page, so the kickoff is present whenever the
+  // opening itself is.
+  const starterCardsMessageId = useMemo(() => {
+    const kickoffIndex = messages.findIndex(
+      (m) => m.message_kind === "onboarding_kickoff",
+    );
+    if (kickoffIndex === -1) return null;
+    for (let i = kickoffIndex + 1; i < messages.length; i++) {
+      const m = messages[i];
+      if (m && m.role === "assistant") return m.id;
+    }
+    return null;
+  }, [messages]);
+
   // Once the assistant message for this pending task has landed in the
   // messages list, AssistantMessage owns its rendering — suppress the live
   // timeline (and pill) to avoid rendering the same content in two places
@@ -337,6 +355,7 @@ export function ChatMessageList({
               onRegenerateQuickActions={onRegenerateQuickActions}
               latestAssistantMessageId={latestAssistantMessageId}
               quickActionsPendingMessageId={quickActionsPendingMessageId}
+              starterCardsMessageId={starterCardsMessageId}
             />
           </div>
         )}
@@ -401,6 +420,7 @@ const MessageBubble = memo(function MessageBubble({
   onRegenerateQuickActions,
   latestAssistantMessageId,
   quickActionsPendingMessageId,
+  starterCardsMessageId,
 }: {
   item: ChatRenderItem;
   isPending: boolean;
@@ -410,6 +430,7 @@ const MessageBubble = memo(function MessageBubble({
   onRegenerateQuickActions?: (message: ChatMessage) => void | Promise<unknown>;
   latestAssistantMessageId: string | null;
   quickActionsPendingMessageId: string | null;
+  starterCardsMessageId: string | null;
 }) {
   // The live row and the persisted assistant row both land here under one key,
   // and both render <AssistantMessage> — same component type, same position —
@@ -464,6 +485,7 @@ const MessageBubble = memo(function MessageBubble({
       onRegenerateQuickActions={onRegenerateQuickActions}
       canRegenerateQuickActions={message.id === latestAssistantMessageId}
       quickActionsPending={quickActionsPendingMessageId === message.id}
+      showStarterCards={message.id === starterCardsMessageId}
     />
   );
 });
@@ -495,6 +517,7 @@ function AssistantMessage({
   onRegenerateQuickActions,
   canRegenerateQuickActions = false,
   quickActionsPending = false,
+  showStarterCards = false,
 }: {
   taskId: string | null;
   message?: ChatMessage;
@@ -505,6 +528,8 @@ function AssistantMessage({
   onRegenerateQuickActions?: (message: ChatMessage) => void | Promise<unknown>;
   canRegenerateQuickActions?: boolean;
   quickActionsPending?: boolean;
+  /** This turn is Mika's onboarding opening — render starter cards, not chips. */
+  showStarterCards?: boolean;
 }) {
   const canFetchTaskMessages = isTaskMessageTaskId(taskId);
 
@@ -580,7 +605,15 @@ function AssistantMessage({
             timeline={timeline}
             isPending={isPending}
           />
-          {onQuickAction && (message.quick_actions?.length ?? 0) > 0 ? (
+          {onQuickAction && showStarterCards ? (
+            // The opening's starter cards own this turn's suggestion strip;
+            // any LLM chips the server generated for it are old-client
+            // fallback and stay hidden here (MUL-5765).
+            <OnboardingStarterCards
+              onPick={onQuickAction}
+              disabled={quickActionsDisabled || isPending}
+            />
+          ) : onQuickAction && (message.quick_actions?.length ?? 0) > 0 ? (
             <QuickActions
               actions={message.quick_actions ?? []}
               disabled={quickActionsDisabled || isPending}
