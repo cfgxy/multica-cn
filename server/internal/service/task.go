@@ -3233,6 +3233,11 @@ func (s *TaskService) StartTask(ctx context.Context, taskID pgtype.UUID) (*db.Ag
 
 	slog.Info("task started", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
 	s.captureTaskStarted(ctx, task)
+	// A local-directory waiter was reconciled out of the persisted working
+	// status while parked. Restore working as soon as it enters running; the
+	// normal dispatched -> running path is already working, so this is
+	// intentionally idempotent there.
+	s.ReconcileAgentStatus(ctx, task.AgentID)
 	// Tell every connected workspace WS client that this task transitioned
 	// (dispatched | waiting_local_directory) → running. Without this, the
 	// workspace-wide `agentTaskSnapshot` query only refreshes on the 30s
@@ -3316,6 +3321,11 @@ func (s *TaskService) MarkTaskWaitingLocalDirectory(ctx context.Context, taskID 
 		"issue_id", util.UUIDToString(task.IssueID),
 		"reason", reason,
 	)
+	// waiting_local_directory is owned/queued work, not executing work. The
+	// claim path marked the agent working while the row was dispatched, so
+	// reconcile immediately when it parks instead of leaving that persisted
+	// status stale until a terminal transition.
+	s.ReconcileAgentStatus(ctx, task.AgentID)
 	s.broadcastTaskEvent(ctx, protocol.EventTaskWaitingLocalDirectory, task)
 	return &task, nil
 }
@@ -4587,7 +4597,9 @@ func (s *TaskService) ReportProgress(ctx context.Context, taskID string, workspa
 	})
 }
 
-// ReconcileAgentStatus refreshes agent status from the current active task set.
+// ReconcileAgentStatus refreshes agent status from the current working task
+// set. The query returns no row when the status is already correct, which
+// avoids rewriting updated_at and broadcasting a zero-information event.
 func (s *TaskService) ReconcileAgentStatus(ctx context.Context, agentID pgtype.UUID) {
 	agent, err := s.Queries.RefreshAgentStatusFromTasks(ctx, agentID)
 	if err != nil {
