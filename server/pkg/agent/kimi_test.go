@@ -661,7 +661,7 @@ func TestScanKimiSessionUsageSkipsLogsUntouchedSinceStart(t *testing.T) {
 		t.Fatalf("chtimes: %v", err)
 	}
 
-	usage := kimiScanTotal(kimiUsageScan{startTime: time.Now().Add(-time.Minute), kimiHome: home, sessionID: "session_old", fallbackModel: "unknown"})
+	usage := kimiScanTotal(kimiUsageScan{startTime: time.Now().Add(-time.Minute), kimiHome: home, sessionID: "session_old", resumed: true, fallbackModel: "unknown"})
 	if acpTokenUsagePresent(usage) {
 		t.Fatalf("re-billed a log from before this turn: %+v", usage)
 	}
@@ -828,11 +828,18 @@ func TestScanKimiSessionUsageSkipsPriorRunOnResume(t *testing.T) {
 	t.Parallel()
 
 	home := t.TempDir()
-	turnStart := time.Now()
-	writeKimiWireLog(t, home, "session_r", "main",
+	turnStart := time.Now().Truncate(time.Second).Add(500 * time.Millisecond)
+	path := writeKimiWireLog(t, home, "session_r", "main",
 		kimiWireRecordLineAt(turnStart.Add(-time.Hour), 5000, 500, 9000, 0), // previous task
 		kimiWireRecordLineAt(turnStart.Add(time.Second), 120, 12, 340, 0),   // this task
 	)
+	// Simulate a filesystem that stores mtimes at one-second precision: the
+	// log was touched during this turn, but its rounded mtime precedes the
+	// sub-second turn boundary.
+	coarseMtime := turnStart.Truncate(time.Second)
+	if err := os.Chtimes(path, coarseMtime, coarseMtime); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
 
 	usage := kimiScanTotal(kimiUsageScan{startTime: turnStart, kimiHome: home, sessionID: "session_r", resumed: true, fallbackModel: "unknown"})
 
