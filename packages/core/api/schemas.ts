@@ -20,6 +20,7 @@ import type {
   ChatPendingTask,
   PrioritizeQueuedChatTaskResponse,
   SendChatMessageResponse,
+  StartMikaOnboardingResponse,
   Comment,
   CreateAgentFromTemplateResponse,
   CreateBillingCheckoutSessionResponse,
@@ -1304,6 +1305,15 @@ export const SendChatMessageResponseSchema: z.ZodType<SendChatMessageResponse> =
   queued: z.boolean().optional().catch(undefined),
   created_at: z.string().min(1),
   attachment_ids: z.array(z.string()).nullish().transform((ids) => ids ?? undefined),
+}).loose();
+
+// `started` is the only field the flow branches on, and a malformed response
+// must not be read as "the opening landed" — parseWithFallback's fallback says
+// it did not, which leaves the flow's own retry as the recovery path.
+export const StartMikaOnboardingResponseSchema: z.ZodType<StartMikaOnboardingResponse> = z.object({
+  started: z.boolean(),
+  message_id: z.string().nullish().transform((id) => id ?? undefined),
+  created_at: z.string().nullish().transform((at) => at ?? undefined),
 }).loose();
 
 export const PrioritizeQueuedChatTaskResponseSchema:
