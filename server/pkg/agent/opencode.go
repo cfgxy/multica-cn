@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -97,7 +98,16 @@ func (b *opencodeBackend) Execute(ctx context.Context, prompt string, opts ExecO
 		args = append(args, "--session", opts.ResumeSessionID)
 	}
 	args = append(args, filterCustomArgs(opts.CustomArgs, opencodeBlockedArgs, b.cfg.Logger)...)
-	args = append(args, prompt)
+	// The task prompt is delivered on stdin, never argv — see the StdinPipe
+	// wiring below. `opencode run` merges its variadic [message..] positional
+	// with whatever is piped in, so an invocation that passes no positional
+	// makes the piped text the entire run message. Inlining it instead fails
+	// hard on Windows: CreateProcess caps lpCommandLine at 32,767 characters
+	// (8,191 when a .cmd shim routes the call through cmd.exe), and a prompt
+	// carrying the workspace's models and skills clears that on its own — the
+	// process then never starts and Go surfaces the misleading "The filename or
+	// extension is too long" (#6538). Keeping the prompt off argv also stops it
+	// from being echoed into the "agent command" log line below.
 
 	cmd := exec.CommandContext(runCtx, execPath, args...)
 	hideAgentWindow(cmd)
@@ -113,7 +123,7 @@ func (b *opencodeBackend) Execute(ctx context.Context, prompt string, opts ExecO
 	// signalled. Returning nil here keeps os/exec from racing us with its own
 	// kill; WaitDelay remains the hard backstop.
 	cmd.Cancel = func() error { return nil }
-	b.cfg.Logger.Info("agent command", "exec", execPath, "args", args)
+	b.cfg.Logger.Info("agent command", "exec", execPath, "args", args, "prompt_bytes", len(prompt))
 	cmd.WaitDelay = 10 * time.Second
 	if opts.Cwd != "" {
 		cmd.Dir = opts.Cwd
@@ -164,9 +174,17 @@ func (b *opencodeBackend) Execute(ctx context.Context, prompt string, opts ExecO
 		cancel()
 		return nil, fmt.Errorf("opencode stdout pipe: %w", err)
 	}
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		cancel()
+		return nil, fmt.Errorf("opencode stdin pipe: %w", err)
+	}
+	var closeStdinOnce sync.Once
+	closeStdin := func() { closeStdinOnce.Do(func() { _ = stdin.Close() }) }
 	cmd.Stderr = newLogWriter(b.cfg.Logger, "[opencode:stderr] ")
 
 	if err := cmd.Start(); err != nil {
+		closeStdin()
 		cancel()
 		return nil, fmt.Errorf("start opencode: %w", err)
 	}
@@ -179,6 +197,19 @@ func (b *opencodeBackend) Execute(ctx context.Context, prompt string, opts ExecO
 	// procDone closes once cmd.Wait() returns, letting the cancellation handler
 	// skip a process that already exited and avoid signalling a dead pid.
 	procDone := make(chan struct{})
+
+	// Write the prompt from its own goroutine so it cannot deadlock against the
+	// stdout reader below: a prompt larger than the OS pipe buffer (~64 KiB)
+	// blocks mid-write until OpenCode drains it, and OpenCode cannot drain while
+	// nobody is consuming its stdout. Closing stdin is what ends the prompt —
+	// OpenCode reads it to EOF (`await Bun.stdin.text()`), so a stdin left open
+	// hangs the run forever. Close on every path, success or error.
+	writeErrCh := make(chan error, 1)
+	go func() {
+		_, err := io.WriteString(stdin, prompt)
+		closeStdin()
+		writeErrCh <- err
+	}()
 
 	// On cancellation / timeout, terminate opencode (and the tool subprocesses
 	// it spawned) BEFORE unblocking the scanner. The previous implementation
@@ -196,6 +227,10 @@ func (b *opencodeBackend) Execute(ctx context.Context, prompt string, opts ExecO
 			return // finished on its own; nothing to terminate
 		case <-runCtx.Done():
 		}
+		// Release a prompt write still blocked on a full stdin pipe — an
+		// OpenCode that stopped reading before draining it would otherwise
+		// strand that goroutine for the lifetime of the daemon.
+		closeStdin()
 		if cmd.Process != nil {
 			signalProcessGroup(cmd.Process, syscall.SIGTERM)
 			select {
@@ -220,6 +255,10 @@ func (b *opencodeBackend) Execute(ctx context.Context, prompt string, opts ExecO
 		close(procDone)
 		duration := time.Since(startTime)
 
+		// Wait closes the process pipes, so a prompt write still blocked when
+		// OpenCode exited has returned by now. The writer sends exactly once.
+		writeErr := <-writeErrCh
+
 		if runCtx.Err() == context.DeadlineExceeded {
 			scanResult.status = "timeout"
 			scanResult.errMsg = fmt.Sprintf("opencode timed out after %s", timeout)
@@ -234,6 +273,25 @@ func (b *opencodeBackend) Execute(ctx context.Context, prompt string, opts ExecO
 			// the process exit detail so a mid-step crash still surfaces the
 			// signal / exit code that killed it.
 			scanResult.errMsg = fmt.Sprintf("%s; opencode exited with error: %v", scanResult.errMsg, exitErr)
+		} else if writeErr != nil && !scanResult.sawTerminalSignal {
+			// A failed prompt write is only benign once the run is PROVEN to have
+			// finished: OpenCode reads stdin to EOF before it does any work, so a
+			// run that reached a terminal signal necessarily received the whole
+			// prompt, and an EPIPE recorded after that just means the pipe closed
+			// on its way out — failing on it would discard a successful result.
+			//
+			// Absence of failure is not that proof. status starts at "completed"
+			// and processEvents only fails closed on structural evidence, so a
+			// child that emits nothing and exits 0 still reports "completed". If
+			// the prompt never landed, that is precisely the run we must not pass
+			// off as a clean success, so key on sawTerminalSignal instead.
+			// Append rather than overwrite so the stream's own diagnosis survives.
+			if scanResult.errMsg == "" {
+				scanResult.errMsg = fmt.Sprintf("opencode prompt write failed: %v", writeErr)
+			} else {
+				scanResult.errMsg = fmt.Sprintf("%s; opencode prompt write failed: %v", scanResult.errMsg, writeErr)
+			}
+			scanResult.status = "failed"
 		}
 
 		b.cfg.Logger.Info("opencode finished", "pid", cmd.Process.Pid, "status", scanResult.status, "duration", duration.Round(time.Millisecond).String())
@@ -273,6 +331,14 @@ type eventResult struct {
 	sessionID        string
 	usage            TokenUsage // accumulated token usage across all steps
 	noTerminalSignal bool       // guard fired: the stream ended without evidence the run actually finished
+	// sawTerminalSignal is positive evidence that the run actually finished: a
+	// step_finish closed the last step with no continuation pending and with
+	// something to show for it. It is NOT the negation of noTerminalSignal — a
+	// stream with no events at all sets neither, because there is nothing to
+	// fail closed on and nothing that proves completion either. Callers that
+	// need "this run really completed" must test this field; status defaults to
+	// "completed" and cannot carry that meaning on its own.
+	sawTerminalSignal bool
 }
 
 // processEvents reads JSON lines from r, dispatches events to ch, and returns
@@ -303,6 +369,7 @@ func (b *opencodeBackend) processEvents(r io.Reader, ch chan<- Message) eventRes
 	openStep := false                // between a step_start and its step_finish
 	stepHasContinuationTool := false // current step has a local tool result OpenCode must feed back
 	awaitingContinuation := false    // the last step_finish still required another step
+	sawStepFinish := false           // at least one step closed; see eventResult.sawTerminalSignal
 
 	// Step bracketing still misses a third shape: a step that opens and closes
 	// cleanly while carrying nothing at all — no text, no tool call, and no
@@ -360,6 +427,7 @@ func (b *opencodeBackend) processEvents(r io.Reader, ch chan<- Message) eventRes
 			trySend(ch, Message{Type: MessageStatus, Status: "running"})
 		case "step_finish":
 			openStep = false
+			sawStepFinish = true
 			awaitingContinuation = event.Part.Reason == "tool-calls" ||
 				(event.Part.Reason != "" && stepHasContinuationTool)
 			stepHasContinuationTool = false
@@ -416,12 +484,13 @@ func (b *opencodeBackend) processEvents(r io.Reader, ch chan<- Message) eventRes
 	}
 
 	return eventResult{
-		status:           finalStatus,
-		errMsg:           finalError,
-		output:           output.String(),
-		sessionID:        sessionID,
-		usage:            usage,
-		noTerminalSignal: noTerminalSignal,
+		status:            finalStatus,
+		errMsg:            finalError,
+		output:            output.String(),
+		sessionID:         sessionID,
+		usage:             usage,
+		noTerminalSignal:  noTerminalSignal,
+		sawTerminalSignal: sawStepFinish && !noTerminalSignal,
 	}
 }
 
