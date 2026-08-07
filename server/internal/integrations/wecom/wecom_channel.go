@@ -167,7 +167,7 @@ func (c *wecomChannel) Connect(ctx context.Context) error {
 	// on exit so a stale sender for a dead connection is never dispatched to.
 	if c.senders != nil && c.installationID.Valid {
 		c.senders.set(c.installationID, sender)
-		defer c.senders.clear(c.installationID)
+		defer c.senders.clear(c.installationID, sender)
 	}
 
 	// Heartbeat — WeCom kills silent sockets past ~90s. We ping every 30s
@@ -405,11 +405,10 @@ type ChannelDeps struct {
 	Credentials CredentialsResolver
 	Logger      *slog.Logger
 
-	// Senders is the package-level installation→wsSender registry. The
-	// OutboundReplier and the wecomChannel.Send path both look up the live
-	// wsSender through it. Boot passes ONE registry instance shared with
-	// the OutboundReplier constructor. Nil in tests that don't exercise
-	// outbound.
+	// Senders is the package-level installation→wsSender registry.
+	// OutboundReplier and Outbound both look up the live wsSender through
+	// it. Boot passes ONE registry instance shared with the OutboundReplier
+	// constructor. Nil in tests that don't exercise outbound.
 	Senders *sendersRegistry
 
 	// Dialer overrides the default gorilla dialer. Tests point it at an
