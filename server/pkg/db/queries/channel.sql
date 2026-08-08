@@ -641,6 +641,37 @@ INSERT INTO channel_binding_token (
 )
 RETURNING *;
 
+-- name: FindLiveChannelBindingToken :one
+-- Mint guard: the newest token for this platform user that is still
+-- unconsumed, unexpired, and recent enough that the link already sitting in
+-- their chat is the one to point back at. Without it every message from an
+-- unbound user mints another row, so a user who keeps typing at a bot they
+-- have not linked yet writes one row per message. This narrows that to
+-- roughly one row per window; it is not a hard guarantee, since the caller
+-- runs this and the insert as two statements.
+--
+-- `mint_interval` is the caller's throttle window (see
+-- wecom.BindingTokenMintInterval). It is subtracted from now() rather than
+-- passed in as an absolute cutoff so the whole window is measured on the
+-- database clock: created_at is stamped by the column default, and comparing
+-- it against an application-side timestamp would let clock skew between the
+-- two stretch or shrink the window. The consumed_at / expires_at predicates
+-- keep an already-redeemed or stale token from suppressing a mint the user
+-- actually needs.
+--
+-- idx_channel_binding_token_installation covers the installation_id prefix;
+-- the rest is a filter over that installation's live tokens, which is a small
+-- set because nothing here outlives the 15-minute TTL.
+SELECT * FROM channel_binding_token
+WHERE installation_id = $1
+  AND channel_type = $2
+  AND channel_user_id = $3
+  AND consumed_at IS NULL
+  AND expires_at > now()
+  AND created_at >= now() - sqlc.arg('mint_interval')::interval
+ORDER BY created_at DESC
+LIMIT 1;
+
 -- name: ConsumeChannelBindingToken :one
 -- Atomic redemption: returns the row only if the hash exists, is
 -- unconsumed, and unexpired. Two simultaneous redemptions cannot both win.
