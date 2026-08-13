@@ -237,6 +237,7 @@ multica config show
 | `workspace_id` | 空 | デフォルトのワークスペース |
 | `device_name` | ホスト名 | ランタイム一覧に表示されるデバイス名 |
 | `runtime_name` | `Local Agent` | ランタイムの表示名 |
+| `workspaces_root` | `~` 配下のプロファイル別パス | タスク作業ディレクトリのルート |
 | `max_concurrent_tasks` | `20` | 同時実行タスク上限。`0` または空は未設定を意味します |
 | `poll_interval` | `30s` | タスクのポーリング間隔 |
 | `heartbeat_interval` | `15s` | ハートビート間隔 |
@@ -252,6 +253,7 @@ multica config show
 - duration 系のキーは正の Go duration（`10s`、`2h` など）を受け付け、`0s` と負の値は拒否されます。唯一の例外は `agent_timeout` で、`0s` は有効な値として実行時間上限を明示的に無効化します。
 - 空文字列を渡すと永続化された値がクリアされ、環境変数または組み込みデフォルトに戻ります。例: `multica config set poll_interval ""`。
 - `max_concurrent_tasks` には非負の整数が必要です。
+- 相対パスの `workspaces_root` は保存時に絶対パスへ変換されます。
 
 ## 可観測性と分析
 
