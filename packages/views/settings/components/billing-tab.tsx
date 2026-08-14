@@ -517,6 +517,7 @@ function BillingTabContent() {
     selectedPrice?.intervalCount === 1 && formattedUnitPrice !== null;
   const hasDisplayableEstimatedTotal =
     hasDisplayableUnitPrice && formattedEstimatedTotal !== null;
+  const canRetryPrice = !pricesQuery.isLoading && selectedPrice === null;
 
   return (
     <SettingsTab
@@ -701,6 +702,36 @@ function BillingTabContent() {
                 <p className="max-w-[65ch] text-caption leading-5 text-muted-foreground">
                   {t(($) => $.workspace.upgrade.price_at_checkout)}
                 </p>
+                {canRetryPrice ? (
+                  <>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      aria-busy={pricesQuery.isFetching}
+                      disabled={pricesQuery.isFetching}
+                      onClick={() => void pricesQuery.refetch()}
+                    >
+                      {pricesQuery.isFetching ? (
+                        <Loader2 className="animate-spin" />
+                      ) : (
+                        <RefreshCw />
+                      )}
+                      {t(($) => $.workspace.actions.retry)}
+                    </Button>
+                    {pricesQuery.isFetching ? (
+                      <span
+                        className="sr-only"
+                        role="status"
+                        aria-label={t(
+                          ($) => $.workspace.upgrade.price_loading,
+                        )}
+                      >
+                        {t(($) => $.workspace.upgrade.price_loading)}
+                      </span>
+                    ) : null}
+                  </>
+                ) : null}
               </div>
               {canManage ? (
                 <Button

@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   portal: vi.fn(),
   reconcile: vi.fn(),
   refetch: vi.fn(),
+  refetchPrices: vi.fn(),
   openExternal: vi.fn(),
   role: "owner" as "owner" | "admin" | "member",
   workspaceId: "workspace-1",
@@ -30,6 +31,7 @@ const mocks = vi.hoisted(() => ({
     };
   } | null,
   pricesLoading: false,
+  pricesFetching: false,
   pricesError: false,
   entitlements: {
     workspaceId: "workspace-1",
@@ -121,6 +123,7 @@ describe("BillingTab", () => {
       },
     };
     mocks.pricesLoading = false;
+    mocks.pricesFetching = false;
     mocks.pricesError = false;
     Object.assign(mocks.entitlements, {
       plan: "free",
@@ -138,7 +141,9 @@ describe("BillingTab", () => {
         return {
           data: mocks.prices,
           isLoading: mocks.pricesLoading,
+          isFetching: mocks.pricesFetching,
           isError: mocks.pricesError,
+          refetch: mocks.refetchPrices,
         };
       }
       return {
@@ -202,6 +207,9 @@ describe("BillingTab", () => {
     expect(
       screen.queryByText("Estimated monthly total: $30.00"),
     ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Retry" }),
+    ).not.toBeInTheDocument();
   });
 
   it("formats Stripe minor units for decimal, zero-decimal, and special currencies", () => {
@@ -232,6 +240,21 @@ describe("BillingTab", () => {
     ).toBeEnabled();
   });
 
+  it("announces a price-only retry without blocking Checkout", () => {
+    mocks.prices = null;
+    mocks.pricesFetching = true;
+
+    renderWithI18n(<BillingTab />);
+
+    expect(screen.getByRole("button", { name: "Retry" })).toBeDisabled();
+    expect(
+      screen.getByRole("status", { name: "Loading subscription prices" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Upgrade to Pro" }),
+    ).toBeEnabled();
+  });
+
   it.each([
     ["query error", true],
     ["malformed response", false],
@@ -250,6 +273,9 @@ describe("BillingTab", () => {
         ),
       ).toBeInTheDocument();
       expect(screen.queryByText(/\$0/)).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: "Retry" }));
+      expect(mocks.refetchPrices).toHaveBeenCalledOnce();
 
       await user.click(screen.getByRole("button", { name: "Upgrade to Pro" }));
       await user.click(
@@ -292,6 +318,9 @@ describe("BillingTab", () => {
     expect(
       screen.getByText(/Stripe Checkout shows the authoritative per-seat price/),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Retry" }),
+    ).not.toBeInTheDocument();
   });
 
   it("creates Checkout with a client idempotency key and opens Stripe externally", async () => {
