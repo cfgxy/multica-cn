@@ -70,6 +70,7 @@ import type {
   TimelineEntry,
   User,
   WebhookDelivery,
+  WorkspaceMcpConfig,
 } from "../types";
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
 import type { CreateFeedbackResponse } from "../feedback/types";
@@ -2565,4 +2566,35 @@ export const EMPTY_SKILL: Skill = {
   created_at: "",
   updated_at: "",
   files: [],
+};
+
+/**
+ * Read shape of the workspace's shared MCP configuration.
+ *
+ * These two are the ONLY schemas in this file that must not be `.loose()`.
+ * Everywhere else, keeping unknown fields is forward-compatibility; here it
+ * would be a hole in the write-only boundary — a server that regressed to
+ * returning the document (or a server entry's `url` / `headers`) would have it
+ * land in the parsed object and in the query cache. zod strips unknown keys by
+ * default, so the client only ever holds the safe inventory.
+ *
+ * `transport` stays a plain string (not an enum) so an unknown value from a
+ * newer backend still parses — the UI has a default branch for it.
+ */
+export const WorkspaceMcpServerSchema = z.object({
+  name: z.string().default(""),
+  transport: z.string().default("unknown"),
+  enabled: z.boolean().default(true),
+});
+
+export const WorkspaceMcpConfigSchema = z.object({
+  workspace_id: z.string().default(""),
+  servers: z.array(WorkspaceMcpServerSchema).default([]),
+  server_count: z.number().default(0),
+});
+
+export const EMPTY_WORKSPACE_MCP_CONFIG: WorkspaceMcpConfig = {
+  workspace_id: "",
+  servers: [],
+  server_count: 0,
 };
