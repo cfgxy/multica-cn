@@ -17,6 +17,7 @@ import {
   useCreateWorkspaceSubscriptionPortal,
   useReconcileWorkspaceSubscriptionSeats,
   workspaceSubscriptionEntitlementsOptions,
+  workspaceSubscriptionPricesOptions,
 } from "@multica/core/billing";
 import { useFeatureEnabled } from "@multica/core/config";
 import { BILLING_WORKSPACE_SUBSCRIPTIONS_FLAG } from "@multica/core/feature-flags";
@@ -53,6 +54,32 @@ import {
 
 const CHECKOUT_SYNC_TIMEOUT_MS = 30_000;
 
+const STRIPE_ZERO_DECIMAL_CURRENCIES = new Set([
+  "BIF",
+  "CLP",
+  "DJF",
+  "GNF",
+  "JPY",
+  "KMF",
+  "KRW",
+  "MGA",
+  "PYG",
+  "RWF",
+  "VND",
+  "VUV",
+  "XAF",
+  "XOF",
+  "XPF",
+]);
+const STRIPE_TWO_DECIMAL_COMPAT_CURRENCIES = new Set(["ISK", "UGX"]);
+const STRIPE_THREE_DECIMAL_CURRENCIES = new Set([
+  "BHD",
+  "JOD",
+  "KWD",
+  "OMR",
+  "TND",
+]);
+
 type WorkspaceBillingReturnResult = "success" | "cancel" | "portal";
 
 function parseReturnResult(
@@ -80,6 +107,49 @@ function formatDate(value: string | null, locale: string): string | null {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
   return new Intl.DateTimeFormat(locale, { dateStyle: "medium" }).format(date);
+}
+
+/**
+ * Stripe API amounts use its own minor-unit contract: two decimals by default,
+ * an explicit zero-decimal list, five three-decimal currencies, and ISK/UGX in
+ * a backwards-compatible two-decimal representation. Intl localizes the
+ * already-converted major amount; it must not decide the divisor.
+ */
+export function formatStripeMinorAmount(
+  amount: number,
+  currency: string,
+  locale: string,
+): string | null {
+  if (!Number.isSafeInteger(amount) || amount < 0) return null;
+  const normalizedCurrency = currency.trim().toUpperCase();
+  if (!normalizedCurrency) return null;
+
+  try {
+    const fractionDigits = STRIPE_TWO_DECIMAL_COMPAT_CURRENCIES.has(
+      normalizedCurrency,
+    )
+      ? 2
+      : STRIPE_ZERO_DECIMAL_CURRENCIES.has(normalizedCurrency)
+        ? 0
+        : STRIPE_THREE_DECIMAL_CURRENCIES.has(normalizedCurrency)
+          ? 3
+          : 2;
+    const majorAmount = amount / 10 ** fractionDigits;
+    const showStripeFraction = !Number.isInteger(majorAmount);
+    const formatter = new Intl.NumberFormat(locale, {
+      style: "currency",
+      currency: normalizedCurrency,
+      ...(showStripeFraction
+        ? {
+            minimumFractionDigits: fractionDigits,
+            maximumFractionDigits: fractionDigits,
+          }
+        : {}),
+    });
+    return formatter.format(majorAmount);
+  } catch {
+    return null;
+  }
 }
 
 function planBadgeVariant(plan: string): "default" | "secondary" | "outline" {
@@ -207,10 +277,19 @@ function BillingTabContent() {
     ...workspaceSubscriptionEntitlementsOptions(wsId),
     refetchInterval: isSyncingCheckout ? 2_000 : false,
   });
+  const entitlements = entitlementQuery.data;
+  const canUpgrade =
+    entitlements?.plan === "free" &&
+    entitlements.status !== "active" &&
+    entitlements.status !== "trialing" &&
+    entitlements.status !== "past_due";
+  const pricesQuery = useQuery({
+    ...workspaceSubscriptionPricesOptions(wsId),
+    enabled: wsId.length > 0 && canUpgrade,
+  });
   const checkoutMutation = useCreateWorkspaceSubscriptionCheckout(wsId);
   const portalMutation = useCreateWorkspaceSubscriptionPortal(wsId);
   const reconcileMutation = useReconcileWorkspaceSubscriptionSeats(wsId);
-  const entitlements = entitlementQuery.data;
   const refetchEntitlements = entitlementQuery.refetch;
 
   useEffect(() => {
@@ -408,7 +487,6 @@ function BillingTabContent() {
   }
 
   const periodEnd = formatDate(entitlements.currentPeriodEnd, locale);
-  const isFree = entitlements.plan === "free";
   const isPro = entitlements.plan === "pro";
   const hasManagedSubscription =
     isPro ||
@@ -419,6 +497,26 @@ function BillingTabContent() {
     checkoutMutation.isPending ||
     portalMutation.isPending ||
     reconcileMutation.isPending;
+  const selectedPrice = pricesQuery.data?.[interval] ?? null;
+  const formattedUnitPrice = selectedPrice
+    ? formatStripeMinorAmount(
+        selectedPrice.unitAmount,
+        selectedPrice.currency,
+        locale,
+      )
+    : null;
+  const formattedEstimatedTotal =
+    selectedPrice && entitlements.seats > 0
+    ? formatStripeMinorAmount(
+        selectedPrice.unitAmount * entitlements.seats,
+        selectedPrice.currency,
+        locale,
+      )
+    : null;
+  const hasDisplayableUnitPrice =
+    selectedPrice?.intervalCount === 1 && formattedUnitPrice !== null;
+  const hasDisplayableEstimatedTotal =
+    hasDisplayableUnitPrice && formattedEstimatedTotal !== null;
 
   return (
     <SettingsTab
@@ -537,7 +635,7 @@ function BillingTabContent() {
         </SettingsCard>
       </SettingsSection>
 
-      {isFree && !hasManagedSubscription ? (
+      {canUpgrade ? (
         <SettingsSection
           title={t(($) => $.workspace.upgrade.title)}
           description={t(($) => $.workspace.upgrade.description)}
@@ -566,12 +664,40 @@ function BillingTabContent() {
                   </button>
                 ))}
               </div>
-              <div className="space-y-1">
+              <div className="space-y-2">
                 <p className="text-body font-medium">
                   {t(($) => $.workspace.upgrade.pro_for_team, {
                     count: entitlements.seats,
                   })}
                 </p>
+                {pricesQuery.isLoading ? (
+                  <div
+                    className="space-y-2 motion-reduce:[&_[data-slot=skeleton]]:animate-none"
+                    role="status"
+                    aria-label={t(($) => $.workspace.upgrade.price_loading)}
+                  >
+                    <Skeleton className="h-5 w-48" />
+                    <Skeleton className="h-4 w-64 max-w-full" />
+                  </div>
+                ) : hasDisplayableUnitPrice ? (
+                  <div className="space-y-1">
+                    <p className="text-body font-semibold tabular-nums">
+                      {t(($) => $.workspace.upgrade.unit_price, {
+                        price: formattedUnitPrice,
+                      })}
+                    </p>
+                    {hasDisplayableEstimatedTotal ? (
+                      <p className="text-caption leading-5 text-muted-foreground tabular-nums">
+                        {t(
+                          interval === "month"
+                            ? ($) => $.workspace.upgrade.estimated_monthly_total
+                            : ($) => $.workspace.upgrade.estimated_yearly_total,
+                          { price: formattedEstimatedTotal },
+                        )}
+                      </p>
+                    ) : null}
+                  </div>
+                ) : null}
                 <p className="max-w-[65ch] text-caption leading-5 text-muted-foreground">
                   {t(($) => $.workspace.upgrade.price_at_checkout)}
                 </p>
