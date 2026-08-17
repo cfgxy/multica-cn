@@ -124,6 +124,8 @@ import type {
   PinnedItemType,
   ReorderPinsRequest,
   Invitation,
+  ShareLink,
+  ShareLinkInfo,
   Autopilot,
   AutopilotTrigger,
   AutopilotRun,
@@ -387,6 +389,13 @@ import {
   EMPTY_REMOTE_MCP_OAUTH_START_RESPONSE,
   WorkspaceMcpServerListSchema,
   WorkspaceMcpServerSchema,
+  ShareLinkSchema,
+  ShareLinkListResponseSchema,
+  ShareLinkInfoSchema,
+  JoinShareLinkResponseSchema,
+  EMPTY_SHARE_LINK,
+  EMPTY_SHARE_LINK_INFO,
+  EMPTY_JOIN_SHARE_LINK_RESPONSE,
   type IssueView,
   type IssueViewPreference,
   type CreateIssueViewRequest,
@@ -2582,6 +2591,46 @@ export class ApiClient {
   async declineInvitation(invitationId: string): Promise<void> {
     await this.fetch(`/api/invitations/${invitationId}/decline`, {
       method: "POST",
+    });
+  }
+
+  async createShareLink(workspaceId: string, data: { role?: string; expires_in?: number; max_uses?: number }): Promise<ShareLink> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/share-links`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, ShareLinkSchema, EMPTY_SHARE_LINK, {
+      endpoint: "POST /api/workspaces/{id}/share-links",
+    });
+  }
+
+  async listShareLinks(workspaceId: string): Promise<ShareLink[]> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/share-links`);
+    return parseWithFallback(raw, ShareLinkListResponseSchema, [], {
+      endpoint: "GET /api/workspaces/{id}/share-links",
+    });
+  }
+
+  async revokeShareLink(workspaceId: string, linkId: string): Promise<void> {
+    await this.fetch(`/api/workspaces/${workspaceId}/share-links/${linkId}`, {
+      method: "DELETE",
+    });
+  }
+
+  async joinByShareLink(code: string): Promise<{ member: MemberWithUser; workspace_id: string; workspace_slug: string }> {
+    const raw = await this.fetch<unknown>("/api/share-links/join", {
+      method: "POST",
+      body: JSON.stringify({ code }),
+    });
+    return parseWithFallback(raw, JoinShareLinkResponseSchema, EMPTY_JOIN_SHARE_LINK_RESPONSE, {
+      endpoint: "POST /api/share-links/join",
+    });
+  }
+
+  async getShareLinkInfo(code: string): Promise<ShareLinkInfo> {
+    const raw = await this.fetch<unknown>(`/api/share-links/${encodeURIComponent(code)}`);
+    return parseWithFallback(raw, ShareLinkInfoSchema, EMPTY_SHARE_LINK_INFO, {
+      endpoint: "GET /api/share-links/{code}",
     });
   }
 

@@ -1041,6 +1041,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// Public API
 	r.Get("/api/config", h.GetConfig)
 	r.With(contactSalesRL).Post("/api/contact-sales", h.CreateContactSales)
+	// Public share-link preview — no auth: shows the workspace name/slug and
+	// inviter so a not-yet-logged-in visitor can see what they're joining.
+	r.Get("/api/share-links/{code}", h.GetShareLinkInfo)
 
 	// Webhook ingress for autopilots. Outside the authenticated group on
 	// purpose: the bearer token in the URL path IS the credential. Workspace
@@ -1225,6 +1228,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/mcp-servers", h.CreateWorkspaceMcpServer)
 					r.Put("/mcp-servers/{serverId}", h.UpdateWorkspaceMcpServer)
 					r.Delete("/mcp-servers/{serverId}", h.DeleteWorkspaceMcpServer)
+					r.Post("/share-links", h.CreateShareLink)
+					r.Delete("/share-links/{linkId}", h.RevokeShareLink)
+					r.Get("/share-links", h.ListShareLinks)
 					// Custom runtime profile mutations (admin-only).
 					r.Post("/runtime-profiles", h.CreateRuntimeProfile)
 					r.Patch("/runtime-profiles/{profileId}", h.UpdateRuntimeProfile)
@@ -1358,6 +1364,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Get("/api/invitations/{id}", h.GetMyInvitation)
 		r.Post("/api/invitations/{id}/accept", h.AcceptInvitation)
 		r.Post("/api/invitations/{id}/decline", h.DeclineInvitation)
+		r.Post("/api/share-links/join", h.JoinByShareLink)
 
 		r.Route("/api/tokens", func(r chi.Router) {
 			r.Get("/", h.ListPersonalAccessTokens)
