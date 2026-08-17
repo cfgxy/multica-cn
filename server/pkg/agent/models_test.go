@@ -1781,9 +1781,9 @@ func TestAntigravityModelSelectionSupported(t *testing.T) {
 	}
 }
 
-// TestParseAntigravityModels covers the `agy models` line-per-name format:
-// each non-blank line becomes a Model whose ID and Label are the verbatim
-// display string `--model` expects, duplicates collapse, and blanks drop.
+// TestParseAntigravityModels covers the legacy single-column `agy models`
+// format (pre-1.1.11): each non-blank tab-free line becomes a Model whose ID
+// and Label are that verbatim value, duplicates collapse, and blanks drop.
 func TestParseAntigravityModels(t *testing.T) {
 	t.Parallel()
 
@@ -1808,6 +1808,32 @@ func TestParseAntigravityModels(t *testing.T) {
 		if !reflect.DeepEqual(got[i], want[i]) {
 			t.Errorf("model[%d] = %+v, want %+v", i, got[i], want[i])
 		}
+	}
+}
+
+// TestParseAntigravityModelsTabSeparated covers the catalog format introduced
+// by agy 1.1.11: the first tab-delimited field is the value accepted by
+// --model, while the second field is the human-readable picker label.
+func TestParseAntigravityModelsTabSeparated(t *testing.T) {
+	t.Parallel()
+
+	out := strings.Join([]string{
+		"gemini-3.6-flash-high\tGemini 3.6 Flash (High)",
+		"claude-opus-4-6-thinking\tClaude Opus 4.6 (Thinking)\tfuture metadata is ignored",
+		"gemini-3.6-flash-high\tDuplicate label is ignored",
+	}, "\n")
+
+	got := parseAntigravityModels(out)
+	want := []Model{
+		{ID: "gemini-3.6-flash-high", Label: "Gemini 3.6 Flash (High)", Provider: "antigravity"},
+		{ID: "claude-opus-4-6-thinking", Label: "Claude Opus 4.6 (Thinking)", Provider: "antigravity"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseAntigravityModels = %+v, want %+v", got, want)
+	}
+
+	if err := antigravityModelError("gemini-3.6-flash-high", got); err != nil {
+		t.Fatalf("exact model slug from tab-separated catalog was rejected: %v", err)
 	}
 }
 
