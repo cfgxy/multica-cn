@@ -1191,6 +1191,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // Virtuoso prop would never receive the element. Callback ref + state fixes
   // that: setState triggers the re-render that hands Virtuoso the element.
   const [scrollContainerEl, setScrollContainerEl] = useState<HTMLDivElement | null>(null);
+  // Bottom comment composer. Measured when scrolling a freshly posted comment
+  // into view so its bottom lands above the composer rather than behind it.
+  const composerRef = useRef<HTMLDivElement | null>(null);
   // Pull-based scroll restoration (MUL-4741): the platform serves the offset
   // captured when this route was last left. The ref-attach assignment covers
   // the flat render modes (real heights at commit); the virtualized browsing
@@ -1228,6 +1231,10 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     },
     [restoreScrollRef],
   );
+  const [pendingPostedCommentId, setPendingPostedCommentId] = useState<string | null>(null);
+  const scrollToTimelineBottom = useCallback((commentId: string) => {
+    setPendingPostedCommentId(commentId);
+  }, []);
   const [highlightedId, setHighlightedId] = useState<string | null>(null);
   // User preference: pin the bottom comment bar to the scroll viewport. Off
   // below `md` regardless of the preference — see the hook.
@@ -1577,6 +1584,73 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // Virtuoso instance — minimap jumps drive the scroll container directly.
   const isFlatTimeline = !!highlightCommentId || find.open;
   const virtuosoRef = useRef<VirtuosoHandle>(null);
+  // Scroll a freshly posted comment into view, aligned so its bottom sits just
+  // above the sticky composer (never behind it). A reply lives inside its root
+  // CommentCard, so the containing top-level row is the scroll target. Flat and
+  // virtualized timelines need separate scroll drivers, so they split into two
+  // effects below — kept apart because only the flat one depends on
+  // `scrollContainerEl`, and adding that dep to the virtualized effect would
+  // let a container re-measure cancel its in-flight scroll mid-flight.
+
+  // Virtualized mode: Virtuoso owns the scroll. The first jump materializes the
+  // row at its estimated height; once measured, the repeat aligns using the
+  // real height. The extra `offset` lifts the row's bottom clear of the sticky
+  // composer.
+  useEffect(() => {
+    if (!pendingPostedCommentId || isFlatTimeline) return;
+    const rootId = replyToRoot.get(pendingPostedCommentId) ?? pendingPostedCommentId;
+    const index = items.findIndex((item) => item.id === rootId);
+    if (index < 0) return;
+    let timer: number | undefined;
+    const scrollEnd = () => {
+      const composerHeight = composerRef.current?.getBoundingClientRect().height ?? 0;
+      virtuosoRef.current?.scrollToIndex({ index, align: "end", offset: composerHeight });
+    };
+    const frame = requestAnimationFrame(() => {
+      scrollEnd();
+      timer = window.setTimeout(() => {
+        scrollEnd();
+        setPendingPostedCommentId(null);
+      }, 100);
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [pendingPostedCommentId, items, replyToRoot, isFlatTimeline]);
+
+  // Flat mode (find bar / deep link) has no Virtuoso, so drive scrollTop by
+  // hand: align the row's bottom to the composer's top edge. The comment's
+  // async layout (markdown, code highlight, images) keeps shifting its height,
+  // so re-align each frame until it settles (within 1px) or ~0.5s elapses — the
+  // same rAF stabilization the deep-link landing uses.
+  useEffect(() => {
+    if (!pendingPostedCommentId || !isFlatTimeline) return;
+    const rootId = replyToRoot.get(pendingPostedCommentId) ?? pendingPostedCommentId;
+    if (items.findIndex((item) => item.id === rootId) < 0) return;
+    let rafId = 0;
+    let frames = 0;
+    let last = -1;
+    const alignBottom = () => {
+      const el = document.getElementById(`comment-${rootId}`);
+      const container = scrollContainerEl;
+      if (el && container) {
+        const c = container.getBoundingClientRect();
+        const e = el.getBoundingClientRect();
+        const composerHeight = composerRef.current?.getBoundingClientRect().height ?? 0;
+        const target = Math.max(0, container.scrollTop + (e.bottom - c.bottom) + composerHeight);
+        container.scrollTop = target;
+        if (Math.abs(target - last) > 1 && ++frames < 30) {
+          last = target;
+          rafId = requestAnimationFrame(alignBottom);
+          return;
+        }
+      }
+      setPendingPostedCommentId(null);
+    };
+    rafId = requestAnimationFrame(alignBottom);
+    return () => cancelAnimationFrame(rafId);
+  }, [pendingPostedCommentId, items, replyToRoot, isFlatTimeline, scrollContainerEl]);
   const jumpFlashTimerRef = useRef<number | null>(null);
   useEffect(
     () => () => {
@@ -2472,6 +2546,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             currentUserId={user?.id}
             canModerate={canModerateComments}
             onReply={submitReply}
+            onReplyAccepted={scrollToTimelineBottom}
             onEdit={editComment}
             onDelete={deleteComment}
             onToggleReaction={handleToggleReaction}
@@ -3146,6 +3221,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
               off the viewport edge — with -mb-4 giving the padding back to
               the column's py-8 so the at-rest layout doesn't shift. */}
           <div
+            ref={composerRef}
             className={cn(
               "mt-4",
               stickyComposer &&
@@ -3157,7 +3233,12 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
                 keeps the previous issue's in-memory content and the
                 next keystroke would flush it into the new issue's
                 draft key. */}
-            <CommentInput key={id} issueId={id} onSubmit={submitComment} />
+            <CommentInput
+              key={id}
+              issueId={id}
+              onSubmit={submitComment}
+              onAccepted={scrollToTimelineBottom}
+            />
           </div>
         </div>
         </div>
