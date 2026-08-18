@@ -641,6 +641,22 @@ RETURNING *;
 SELECT * FROM agent_task_queue
 WHERE id = $1;
 
+-- name: GetAgentTaskForDelegatedFailureUpdate :one
+-- Serializes the idempotent delegated-failure recovery signal for one failed
+-- task. FailTask and the stale-task sweepers can converge on the same row; the
+-- lock ensures they cannot create two recovery comments/tasks for it.
+SELECT * FROM agent_task_queue
+WHERE id = $1
+FOR UPDATE;
+
+-- name: HasRetryTaskForParent :one
+-- Defense-in-depth for the recovery path: a delegated failure with any retry
+-- child is still intermediate and must not wake its coordinator.
+SELECT count(*) > 0
+FROM agent_task_queue
+WHERE parent_task_id = $1
+  AND status <> 'cancelled';
+
 -- name: GetAgentTaskInWorkspace :one
 -- Loads a task only when its owning agent lives in the given workspace.
 -- agent_id is NOT NULL on every task row (and ON DELETE CASCADE, so the agent
@@ -1331,10 +1347,72 @@ WHERE retry.id = victims.id
 RETURNING retry.*;
 
 -- name: CancelAgentTask :one
+-- Automatic cancellation without an explicit persisted failure reason. Unlike
+-- CancelAgentTaskByUser, this deliberately leaves recovery inputs replayable.
 UPDATE agent_task_queue
 SET status = 'cancelled', completed_at = now(), prepare_lease_expires_at = NULL
 WHERE id = $1 AND status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
 RETURNING *;
+
+-- name: CancelAgentTaskByUser :one
+-- An explicit user cancellation is a terminal acknowledgement for any
+-- delegated-failure recovery signal planned into this task. Server-initiated
+-- cancellations keep using CancelAgentTask / CancelAgentTaskWithReason so a
+-- stale plan, claim failure, or other automatic repair can still be replayed.
+UPDATE agent_task_queue AS task
+SET status = 'cancelled',
+    completed_at = now(),
+    prepare_lease_expires_at = NULL,
+    delivered_comment_ids = CASE
+      -- Chat and ordinary issue tasks almost never carry a delegated-failure
+      -- recovery signal. Keep their high-frequency user-cancel path to a
+      -- no-join update; only validate task lineage after the cheap comment
+      -- shape probe finds a possible recovery signal.
+      WHEN task.trigger_comment_id IS NULL
+       AND COALESCE(cardinality(task.coalesced_comment_ids), 0) = 0
+        THEN task.delivered_comment_ids
+      WHEN NOT EXISTS (
+        SELECT 1
+        FROM comment recovery_signal
+        WHERE (
+            recovery_signal.id = task.trigger_comment_id
+            OR recovery_signal.id = ANY(task.coalesced_comment_ids)
+        )
+          AND recovery_signal.author_type = 'system'
+          AND recovery_signal.type = 'progress_update'
+          AND recovery_signal.source_task_id IS NOT NULL
+      ) THEN task.delivered_comment_ids
+      ELSE (
+        SELECT COALESCE(array_agg(DISTINCT receipt.id), '{}')::uuid[]
+        FROM unnest(array_cat(
+            task.delivered_comment_ids,
+            ARRAY(
+                SELECT recovery.id
+                FROM comment recovery
+                JOIN agent_task_queue failed ON failed.id = recovery.source_task_id
+                JOIN agent_task_queue source ON source.id = failed.delegated_from_task_id
+                WHERE (
+                    recovery.id = task.trigger_comment_id
+                    OR recovery.id = ANY(task.coalesced_comment_ids)
+                )
+                  AND recovery.author_type = 'system'
+                  AND recovery.type = 'progress_update'
+                  AND recovery.source_task_id IS NOT NULL
+                  AND failed.status = 'failed'
+                  AND failed.delegated_from_task_id IS NOT NULL
+                  AND failed.autopilot_run_id IS NULL
+                  AND failed.trigger_evidence_kind IS DISTINCT FROM 'delegated_failure'
+                  AND source.autopilot_run_id IS NULL
+                  AND source.issue_id = task.issue_id
+                  AND source.agent_id = task.agent_id
+                  AND recovery.issue_id = source.issue_id
+            )
+        )) AS receipt(id)
+      )
+    END
+WHERE task.id = $1
+  AND task.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory', 'deferred')
+RETURNING task.*;
 
 -- name: SetAgentTaskBranchName :exec
 -- Records the delivered branch on a CANCELLED task. Needed because the daemon
@@ -1370,12 +1448,11 @@ WHERE id = sqlc.arg('id') AND (error IS NULL OR error = '') AND status = 'cancel
 -- name: CancelAgentTaskWithReason :one
 -- Cancels a task AND records why, for cancellations the user did not ask for.
 --
--- Plain CancelAgentTask leaves error/failure_reason NULL, which is right for a
--- user-initiated cancel — the user knows why. A server-initiated one is the
--- opposite: without a persisted reason the run surfaces as an unexplained
--- "cancelled", and the only trace is a 4xx in a daemon log the user never sees.
--- Retrying cannot help either (the task is refused for a durable reason), so
--- this is a terminal state that has to carry its own explanation.
+-- CancelAgentTaskByUser leaves error/failure_reason NULL because the user knows
+-- why. A server-initiated refusal is the opposite: without a persisted reason
+-- the run surfaces as an unexplained "cancelled", and the only trace is a 4xx
+-- in a daemon log the user never sees. Retrying cannot help either (the task is
+-- refused for a durable reason), so this terminal state carries its explanation.
 UPDATE agent_task_queue
 SET status = 'cancelled',
     completed_at = now(),
@@ -1650,6 +1727,154 @@ WHERE id = (
     LIMIT 1
 )
 RETURNING id, coalesced_comment_ids;
+
+-- name: MergeDelegatedFailureCommentIntoPendingTask :one
+-- A delegated failure is a platform-owned input, not a new human instruction:
+-- fold it into the coordinator's pre-claim task without replacing that task's
+-- attribution snapshot. The recovery comment is the newest input, so it becomes
+-- the trigger and the prior trigger joins the coalesced plan. This preserves the
+-- claim/prompt invariant that trigger_comment_id names the newest comment while
+-- retaining the pending task's original human authority and connected apps.
+UPDATE agent_task_queue
+SET coalesced_comment_ids = (
+        SELECT COALESCE(array_agg(DISTINCT e), '{}')
+        FROM unnest(array_append(coalesced_comment_ids, trigger_comment_id)) AS e
+        WHERE e IS NOT NULL AND e <> @comment_id::uuid
+    ),
+    trigger_comment_id = @comment_id::uuid,
+    trigger_summary = sqlc.narg('trigger_summary')
+WHERE id = (
+    SELECT t.id FROM agent_task_queue t
+    WHERE t.issue_id = @issue_id
+      AND t.agent_id = @agent_id
+      AND (
+          t.status = 'queued'
+          OR (t.status = 'deferred' AND t.context->>'channel_issue_media_pending' = 'true')
+      )
+      AND t.trigger_comment_id IS DISTINCT FROM @comment_id::uuid
+      AND NOT (@comment_id::uuid = ANY(t.coalesced_comment_ids))
+    ORDER BY t.created_at DESC
+    LIMIT 1
+)
+RETURNING *;
+
+-- name: HasTaskCoveringDelegatedFailureComment :one
+-- Durable idempotency check for a recovery comment. The completion reconciler
+-- excludes its own just-completed task when replaying a planned-but-undelivered
+-- signal. A planned comment is covered only while its task can still execute;
+-- after a task becomes terminal, delivered_comment_ids is the sole durable
+-- receipt. This prevents cancelled/failed pre-delivery tasks from swallowing
+-- the recovery obligation while still avoiding a loop after real delivery.
+SELECT count(*) > 0 AS covered
+FROM agent_task_queue
+WHERE issue_id = @issue_id
+  AND agent_id = @agent_id
+  AND (
+      @comment_id::uuid = ANY(delivered_comment_ids)
+      OR (
+          id IS DISTINCT FROM sqlc.narg('exclude_task_id')::uuid
+          AND (
+              status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+              OR (status = 'deferred' AND context->>'channel_issue_media_pending' = 'true')
+          )
+          AND (trigger_comment_id = @comment_id::uuid OR @comment_id::uuid = ANY(coalesced_comment_ids))
+      )
+  );
+
+-- name: CountDelegatedFailureRecoveryTasks :one
+-- Counts dedicated coordinator wakeups for one failed delegated task. Merged
+-- recovery signals do not create a new row and therefore do not consume an
+-- automatic attempt until they need a standalone successor.
+SELECT count(*)
+FROM agent_task_queue
+WHERE trigger_evidence_kind = 'delegated_failure'
+  AND trigger_evidence_ref_id = @failed_task_id;
+
+-- name: AcknowledgeExhaustedDelegatedFailureRecovery :one
+-- Once the bounded automatic attempts are exhausted, record a terminal
+-- acknowledgement on the newest recovery task. The outbox treats this receipt
+-- as settled, while the service writes a separate visible system comment that
+-- tells the user why no further task will be generated.
+UPDATE agent_task_queue AS acknowledged
+SET delivered_comment_ids = (
+    SELECT COALESCE(array_agg(DISTINCT receipt.id), '{}')::uuid[]
+    FROM unnest(array_append(acknowledged.delivered_comment_ids, @comment_id::uuid)) AS receipt(id)
+)
+WHERE acknowledged.id = (
+    SELECT attempt.id
+    FROM agent_task_queue attempt
+    WHERE attempt.trigger_evidence_kind = 'delegated_failure'
+      AND attempt.trigger_evidence_ref_id = @failed_task_id
+    ORDER BY attempt.created_at DESC, attempt.id DESC
+    LIMIT 1
+    FOR UPDATE
+)
+  AND (
+      SELECT count(*)
+      FROM agent_task_queue attempt_count
+      WHERE attempt_count.trigger_evidence_kind = 'delegated_failure'
+        AND attempt_count.trigger_evidence_ref_id = @failed_task_id
+  ) >= @max_attempts::int
+RETURNING acknowledged.*;
+
+-- name: ListPendingDelegatedFailureRecoveries :many
+-- Durable outbox scan for platform recovery comments that are not yet owned by
+-- an executable task and have no terminal delivery receipt. Starting from the
+-- explicit recovery signal avoids retroactively waking unrelated historical
+-- delegated failures. A bounded runtime sweeper replays these comments after a
+-- transient dispatch error or process restart.
+SELECT recovery.*
+FROM comment recovery
+JOIN agent_task_queue failed ON failed.id = recovery.source_task_id
+JOIN agent_task_queue source ON source.id = failed.delegated_from_task_id
+JOIN issue source_issue ON source_issue.id = source.issue_id
+JOIN agent source_agent ON source_agent.id = source.agent_id
+WHERE recovery.author_type = 'system'
+  AND recovery.type = 'progress_update'
+  AND recovery.source_task_id IS NOT NULL
+  AND recovery.issue_id = source_issue.id
+  AND recovery.workspace_id = source_issue.workspace_id
+  AND failed.status = 'failed'
+  AND failed.delegated_from_task_id IS NOT NULL
+  AND failed.autopilot_run_id IS NULL
+  AND failed.trigger_evidence_kind IS DISTINCT FROM 'delegated_failure'
+  AND source.autopilot_run_id IS NULL
+  AND source.issue_id IS NOT NULL
+  AND source.agent_id <> failed.agent_id
+  AND issue_effective_status(source_issue.workspace_id, source_issue.status) NOT IN ('done', 'cancelled', 'backlog')
+  AND source_agent.archived_at IS NULL
+  AND source_agent.runtime_id IS NOT NULL
+  AND source_agent.workspace_id = source_issue.workspace_id
+  AND NOT EXISTS (
+      SELECT 1
+      FROM agent_task_queue retry
+      WHERE retry.parent_task_id = failed.id
+        AND retry.status <> 'cancelled'
+  )
+  AND NOT EXISTS (
+      SELECT 1
+      FROM agent_task_queue covering
+      WHERE covering.issue_id = source_issue.id
+        AND covering.agent_id = source.agent_id
+        AND (
+            recovery.id = ANY(covering.delivered_comment_ids)
+            OR (
+                (
+                    covering.status IN ('queued', 'dispatched', 'running', 'waiting_local_directory')
+                    OR (
+                        covering.status = 'deferred'
+                        AND covering.context->>'channel_issue_media_pending' = 'true'
+                    )
+                )
+                AND (
+                    covering.trigger_comment_id = recovery.id
+                    OR recovery.id = ANY(covering.coalesced_comment_ids)
+                )
+            )
+        )
+  )
+ORDER BY recovery.created_at ASC, recovery.id ASC
+LIMIT @max_per_tick;
 
 -- name: HasActiveTaskForIssueAndAgent :one
 -- MUL-4195: true when the (issue, agent) pair has any non-terminal task in a
