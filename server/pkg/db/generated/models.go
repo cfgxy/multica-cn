@@ -955,6 +955,7 @@ type PluginInstallation struct {
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 	TokenHash      pgtype.Text        `json:"token_hash"`
 	TokenRotatedAt pgtype.Timestamptz `json:"token_rotated_at"`
+	McpApprovals   []byte             `json:"mcp_approvals"`
 }
 
 type PluginInvocation struct {
@@ -1053,15 +1054,16 @@ type RuntimeProfile struct {
 }
 
 type Skill struct {
-	ID          pgtype.UUID        `json:"id"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	Name        string             `json:"name"`
-	Description string             `json:"description"`
-	Content     string             `json:"content"`
-	Config      []byte             `json:"config"`
-	CreatedBy   pgtype.UUID        `json:"created_by"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	ID                   pgtype.UUID        `json:"id"`
+	WorkspaceID          pgtype.UUID        `json:"workspace_id"`
+	Name                 string             `json:"name"`
+	Description          string             `json:"description"`
+	Content              string             `json:"content"`
+	Config               []byte             `json:"config"`
+	CreatedBy            pgtype.UUID        `json:"created_by"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+	PluginInstallationID pgtype.UUID        `json:"plugin_installation_id"`
 }
 
 type SkillFile struct {
