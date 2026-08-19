@@ -58,6 +58,21 @@ export default ({ config }: ConfigContext): ExpoConfig => {
           ? "ai.multica.mobile.staging"
           : (process.env.EXPO_BUNDLE_IDENTIFIER_DEV ?? "ai.multica.mobile.dev"),
     },
+    android: {
+      // 与 iOS 同一套 per-variant 包名策略:variant 各自独立、可被环境变量
+      // 覆盖(自建副本换成自有反向域名),三个变体可在同一台设备共存。
+      package: isProd
+        ? (process.env.EXPO_ANDROID_PACKAGE_PROD ?? "ai.multica.mobile")
+        : isStaging
+          ? "ai.multica.mobile.staging"
+          : (process.env.EXPO_ANDROID_PACKAGE_DEV ?? "ai.multica.mobile.dev"),
+      // 复用与 iOS 相同的 1024 源图标;Android 12+ 实际展示的是
+      // adaptiveIcon,monochromeImage 供主题图标(Material You)使用。
+      adaptiveIcon: {
+        foregroundImage: "./assets/adaptive-icon.png",
+        backgroundColor: "#1C212C",
+      },
+    },
     plugins: [
       "expo-router",
       "expo-secure-store",
