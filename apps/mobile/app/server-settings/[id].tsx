@@ -26,7 +26,9 @@ import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useServerStore } from "@/data/server-store";
 import {
+  SERVER_PROBE_PATH,
   findDuplicateServer,
+  interpretProbeResponse,
   isPlainHttp,
   isValidServerUrl,
   normalizeUrl,
@@ -34,7 +36,7 @@ import {
 import { THEME } from "@/lib/theme";
 import { useColorScheme } from "@/lib/use-color-scheme";
 
-/** 「测试连接」的超时。后端 liveness 端点(server/cmd/server/router.go)。 */
+/** 「测试连接」的超时。探活端点与判读规则见 server-config.ts。 */
 const PROBE_TIMEOUT_MS = 8_000;
 
 type ProbeState = "idle" | "probing" | "ok" | "failed";
@@ -91,10 +93,14 @@ export default function ServerFormScreen() {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
     try {
-      const res = await fetch(`${normalizeUrl(apiUrl)}/health`, {
+      const res = await fetch(`${normalizeUrl(apiUrl)}${SERVER_PROBE_PATH}`, {
         signal: controller.signal,
       });
-      setProbe(res.ok ? "ok" : "failed");
+      const reachable = interpretProbeResponse(
+        res.status,
+        res.headers.get("content-type"),
+      );
+      setProbe(reachable ? "ok" : "failed");
     } catch {
       setProbe("failed");
     } finally {

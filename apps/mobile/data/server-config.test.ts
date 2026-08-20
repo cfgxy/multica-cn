@@ -14,9 +14,11 @@
 import { describe, expect, it } from "vitest";
 import {
   BUILT_IN_SERVER_ID,
+  SERVER_PROBE_PATH,
   buildBuiltInServer,
   composeServerList,
   findDuplicateServer,
+  interpretProbeResponse,
   isPlainHttp,
   isValidServerUrl,
   normalizeUrl,
@@ -85,6 +87,38 @@ describe("isValidServerUrl", () => {
 
   it("拒绝没有 host 的地址", () => {
     expect(isValidServerUrl("http://")).toBe(false);
+    expect(isValidServerUrl("https://")).toBe(false);
+    expect(isValidServerUrl("://nohost")).toBe(false);
+  });
+
+  /**
+   * 这一组是校验从 URL 构造器换成正则的原因(QA 评审 P0-3):RN 的全局
+   * URL 是 Libraries/Blob/URL.js 的 polyfill,单参构造从不抛异常,含空白
+   * 的地址在真机上会被放行,而 vitest 的 node 环境用标准 WHATWG URL 判
+   * 非法 —— 测试通过不代表真机正确。正则在两个环境行为一致。
+   */
+  it("拒绝内部含空白的地址(移动端粘贴常见)", () => {
+    expect(isValidServerUrl("https:// spaces.example.test")).toBe(false);
+    expect(isValidServerUrl("https://spaces .example.test")).toBe(false);
+    expect(isValidServerUrl("https://a.test /api")).toBe(false);
+    expect(isValidServerUrl("https://a.test\tb")).toBe(false);
+  });
+
+  it("拒绝 userinfo 混淆的地址", () => {
+    expect(isValidServerUrl("https://evil.test@real.test")).toBe(false);
+  });
+
+  it("拒绝带 query / fragment 的地址(基地址不该有)", () => {
+    expect(isValidServerUrl("https://a.test?x=1")).toBe(false);
+    expect(isValidServerUrl("https://a.test#frag")).toBe(false);
+  });
+
+  it("接受带端口与路径前缀的地址(反代挂子路径的部署)", () => {
+    expect(isValidServerUrl("https://a.test:8443/multica")).toBe(true);
+  });
+
+  it("file:// 等其他协议一律拒绝", () => {
+    expect(isValidServerUrl("file:///etc/passwd")).toBe(false);
   });
 });
 
@@ -323,6 +357,43 @@ describe("持久化载荷", () => {
     const parsed = parsePersistedState(raw);
     expect(parsed?.servers[0].apiUrl).toBe("https://a.example.test");
     expect(parsed?.servers[0].webUrl).toBeNull();
+  });
+});
+
+/**
+ * 探活判读(QA 评审 P0-1 / P2)。参照对 owner 真实自建后端
+ * selfhost.example.test 的实测:单域名反代下 `/health` 返回 404
+ * text/html(落到 Web 前端的 404 页),`/api/me` 返回 401 —— 后者才是
+ * 「server 活着」的可靠信号。
+ */
+describe("interpretProbeResponse", () => {
+  it("401 / 403 判为可达 —— 探活不带 token,这正是 API 活着的信号", () => {
+    expect(interpretProbeResponse(401, "text/plain; charset=utf-8")).toBe(true);
+    expect(interpretProbeResponse(403, "application/json")).toBe(true);
+  });
+
+  it("2xx 且非 HTML 判为可达", () => {
+    expect(interpretProbeResponse(200, "application/json")).toBe(true);
+    expect(interpretProbeResponse(204, null)).toBe(true);
+  });
+
+  it("2xx 但返回 HTML 判为不可达 —— 请求落到了 Web 前端,没转到 server", () => {
+    expect(interpretProbeResponse(200, "text/html; charset=utf-8")).toBe(false);
+  });
+
+  it("404 判为不可达", () => {
+    expect(interpretProbeResponse(404, "text/html; charset=utf-8")).toBe(false);
+    expect(interpretProbeResponse(404, "text/plain")).toBe(false);
+  });
+
+  it("5xx 判为不可达", () => {
+    expect(interpretProbeResponse(502, "text/html")).toBe(false);
+  });
+});
+
+describe("SERVER_PROBE_PATH", () => {
+  it("是 /api/me —— /health 挂在根路由上,单域名部署下不可达", () => {
+    expect(SERVER_PROBE_PATH).toBe("/api/me");
   });
 });
 
