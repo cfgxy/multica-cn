@@ -161,7 +161,9 @@ pnpm android:mobile:prod:release --  -PreactNativeArchitectures=x86_64   # emula
 adb shell getprop ro.product.cpu.abilist
 ```
 
-A `x86_64,arm64-v8a` emulator is a specific trap: it *claims* arm64 support and will happily install an arm64-only APK (`dumpsys package` even reports `primaryCpuAbi=arm64-v8a`), but its translation layer never unpacks the arm64 `.so` files, so the app can't start. Build with `x86_64` in the list for that emulator; use `arm64-v8a` for essentially any physical phone.
+A `x86_64,arm64-v8a` emulator is a specific trap: it *claims* arm64 support and will happily install an arm64-only APK (`dumpsys package` even reports `primaryCpuAbi=arm64-v8a`), yet the arm64 `.so` files never become loadable and the app can't start. Build with `x86_64` in the list for that emulator; use `arm64-v8a` for essentially any physical phone.
+
+Don't diagnose this by looking for the app's `lib/` directory on device. These APKs ship `extractNativeLibs=false`, so `.so` files are mapped straight out of the APK and `/data/app/*/<pkg>-*/lib/` is **absent even when everything works** — verified on a healthy two-ABI install. The only reliable check is matching `aapt2 dump badging | grep native-code` against `adb shell getprop ro.product.cpu.abilist`.
 
 Never trim ABIs by deleting `lib/<abi>/` out of a built APK — the APK becomes unstartable in exactly the same way, and it invalidates the signature. Pass `-PreactNativeArchitectures` and let Gradle build the variant you want.
 
@@ -183,6 +185,16 @@ The plugin reads four Gradle properties and **nothing is stored in the repo**:
 | `MULTICA_RELEASE_KEY_PASSWORD` | Key password |
 
 If `MULTICA_RELEASE_STORE_FILE` is absent the config copies the debug keystore instead (`initWith signingConfigs.debug`), so a contributor who just wants a runnable APK isn't blocked on generating a keystore. That explicit fallback matters: `release` is unconditionally pointed at `signingConfigs.release`, so leaving the config empty would yield an *unsigned* release APK that `adb install` refuses — not a debug-signed one. Check which key an APK actually carries with `apksigner verify --print-certs`; the debug key's DN is `CN=Android Debug`, and a debug-signed release also comes out `v3 scheme: false` since the v2/v3 flags live in the credentialed branch.
+
+#### Verify the signing config
+
+```bash
+pnpm android:mobile:verify-signing
+```
+
+Probes both branches through AGP's variant API and asserts each resolves to the keystore it should — the credentialed one to your release keystore, the uncredentialed one to `android/app/debug.keystore`. Run it after touching the plugin or the Gradle properties.
+
+This lives outside `vitest` on purpose. The unit tests can only assert on the `build.gradle` text the plugin emits; they cannot see what Gradle makes of it. That gap is not hypothetical — an earlier version of this config emitted text that *read* like a debug fallback but resolved to an unsigned release variant, and the string-level tests passed the whole way. The probe needs an Android SDK and about a minute, so it stays off the default test path rather than slowing every run.
 
 #### Generate a keystore
 

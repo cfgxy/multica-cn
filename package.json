@@ -23,6 +23,7 @@
     "android:mobile:staging": "pnpm -C apps/mobile android:staging",
     "android:mobile:prod": "pnpm -C apps/mobile android:prod",
     "android:mobile:prod:release": "pnpm -C apps/mobile android:prod:release",
+    "android:mobile:verify-signing": "pnpm -C apps/mobile android:verify-signing",
     "build": "turbo build --filter=!@multica/mobile",
     "typecheck": "turbo typecheck --filter=!@multica/mobile",
     "test": "turbo test --filter=!@multica/mobile",
