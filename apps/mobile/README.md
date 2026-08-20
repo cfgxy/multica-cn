@@ -145,9 +145,9 @@ For a local backend from the **emulator**, `localhost` points at the emulator it
 pnpm android:mobile:prod:release
 ```
 
-Produces a signed Release APK at `apps/mobile/android/app/build/outputs/apk/release/app-release.apk` — no dev-launcher, no Metro probe, installable and runnable on its own. Requires the signing setup below; without it the build still succeeds but falls back to Android's debug key (see [Signing](#signing)).
+Produces a signed Release APK at `apps/mobile/android/app/build/outputs/apk/release/app-release.apk` — no dev-launcher, no Metro probe, installable and runnable on its own. Requires the signing setup below; without it the build still succeeds but signs with Android's debug key (see [Signing](#signing)).
 
-The first release build compiles React Native and every native module from source across four ABIs — **expect 60–90 minutes** on a typical machine, and roughly 105 MB of APK. Later builds reuse Gradle's cache and are far quicker. If Gradle's own distribution download crawls (it's the first thing `gradlew` does, before any of your code builds), a regional mirror in `android/gradle/wrapper/gradle-wrapper.properties` fixes it — but that file is prebuild output, so treat the change as local and temporary rather than something to commit.
+The first release build compiles React Native and every native module from source across four ABIs — **expect 60–90 minutes** on a typical machine, and roughly 106 MiB of APK. Later builds reuse Gradle's cache and are far quicker. If Gradle's own distribution download crawls (it's the first thing `gradlew` does, before any of your code builds), a regional mirror in `android/gradle/wrapper/gradle-wrapper.properties` fixes it — but that file is prebuild output, so treat the change as local and temporary rather than something to commit.
 
 To cut build time while iterating, restrict the ABIs to the ones you actually run:
 
@@ -165,7 +165,7 @@ A `x86_64,arm64-v8a` emulator is a specific trap: it *claims* arm64 support and 
 
 Never trim ABIs by deleting `lib/<abi>/` out of a built APK — the APK becomes unstartable in exactly the same way, and it invalidates the signature. Pass `-PreactNativeArchitectures` and let Gradle build the variant you want.
 
-Full four-ABI APKs run about 105 MB; a two-ABI (`arm64-v8a,x86_64`) build is closer to 68 MB. If something downstream imposes a file-size cap, trim ABIs at build time rather than post-processing the APK — and note in the hand-off which ABIs the artifact actually carries, since a trimmed build is not what you'd distribute.
+Full four-ABI APKs run about 106 MiB (111165136 bytes); a two-ABI (`arm64-v8a,x86_64`) build is closer to 68 MiB (71380570 bytes). If something downstream imposes a file-size cap, trim ABIs at build time rather than post-processing the APK — and note in the hand-off which ABIs the artifact actually carries, since a trimmed build is not what you'd distribute.
 
 ### Signing
 
@@ -182,7 +182,7 @@ The plugin reads four Gradle properties and **nothing is stored in the repo**:
 | `MULTICA_RELEASE_STORE_PASSWORD` | Keystore password |
 | `MULTICA_RELEASE_KEY_PASSWORD` | Key password |
 
-If `MULTICA_RELEASE_STORE_FILE` is absent the whole block is skipped and the build falls back to the debug key — so a contributor who just wants a runnable APK isn't blocked on generating a keystore. Check which key an APK actually carries with `apksigner verify --print-certs`; the debug key's DN is `CN=Android Debug`.
+If `MULTICA_RELEASE_STORE_FILE` is absent the config copies the debug keystore instead (`initWith signingConfigs.debug`), so a contributor who just wants a runnable APK isn't blocked on generating a keystore. That explicit fallback matters: `release` is unconditionally pointed at `signingConfigs.release`, so leaving the config empty would yield an *unsigned* release APK that `adb install` refuses — not a debug-signed one. Check which key an APK actually carries with `apksigner verify --print-certs`; the debug key's DN is `CN=Android Debug`, and a debug-signed release also comes out `v3 scheme: false` since the v2/v3 flags live in the credentialed branch.
 
 #### Generate a keystore
 
