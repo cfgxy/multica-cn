@@ -43,27 +43,31 @@ export function normalizeUrl(raw: string): string {
 }
 
 /**
- * 合法性校验:必须是 http/https 协议且带非空 host。
- * 注意用 URL 构造器而不是正则 —— Hermes 已内置 URL,行为与运行时 fetch 一致。
+ * 服务器基地址的形态约束,刻意用正则而不是 URL 构造器。
+ *
+ * 原因:RN 在 `Libraries/Core/setUpXHR.js` 里用 `polyfillGlobal` 把全局
+ * URL 换成了 `Libraries/Blob/URL.js` 的实现,而那份实现的单参构造**从不
+ * 抛异常**(只有传 base 时才校验),hostname/protocol 是正则 getter。
+ * vitest 跑在 node 环境用的是标准 WHATWG URL —— 两者对 `https:// x.com`
+ * 这类含空白的输入判定相反,等于「测试覆盖的实现 ≠ 真机运行的实现」。
+ * 纯正则在两个环境行为完全一致,单测结论才对真机有效(QA 评审 P0-3)。
+ *
+ * 约束:http/https 协议、host 段非空且不含空白与 `@`(拒绝
+ * `https://evil.com@real.com` 这类混淆)、允许端口与路径前缀、不接受
+ * query 与 fragment(基地址带这些一定是用户粘错了)。
  */
+const SERVER_URL_PATTERN = /^https?:\/\/[^\s/?#@]+(?:\/[^\s?#]*)?$/i;
+
+/** 合法性校验:必须是 http/https 协议且带非空 host。 */
 export function isValidServerUrl(raw: string): boolean {
-  const normalized = normalizeUrl(raw);
-  if (!normalized) return false;
-  let parsed: URL;
-  try {
-    parsed = new URL(normalized);
-  } catch {
-    return false;
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
-  return parsed.hostname.length > 0;
+  return SERVER_URL_PATTERN.test(normalizeUrl(raw));
 }
 
 /** 明文 http:// —— 保存不拦截,只给一次性弱警告(自建内网场景)。 */
 export function isPlainHttp(raw: string): boolean {
   const normalized = normalizeUrl(raw);
   if (!isValidServerUrl(normalized)) return false;
-  return new URL(normalized).protocol === "http:";
+  return /^http:\/\//i.test(normalized);
 }
 
 /**
@@ -194,6 +198,37 @@ export function pickActiveServer(
     servers.find((s) => s.builtIn) ??
     servers[0]
   );
+}
+
+/**
+ * 「测试连接」打的探活路径。
+ *
+ * 不能用 `/health`:它挂在 server 根路由上(server/cmd/server/router.go),
+ * 只在「API 独立域名」的部署形态下可达。自建最常见的单域名反代把根路径
+ * 交给 Web 前端、只把 `/api/*` 转给 server,此时 `/health` 会落到前端的
+ * 404 页 —— 地址完全可用却被判为不可达(QA 评审 P0-1,已对
+ * selfhost.example.test 实测复现)。
+ *
+ * `/api/me` 在两种形态下都由 server 处理,且无凭证时稳定返回 401 ——
+ * 这恰恰是「API 活着」的最强信号,不需要任何认证态。
+ */
+export const SERVER_PROBE_PATH = "/api/me";
+
+/**
+ * 判读探活响应。抽成纯函数是为了让这套分支能在 vitest 里覆盖。
+ *
+ * - 401/403:server 收到并鉴权了 —— 可达(探活不带 token,这是预期返回)
+ * - 2xx:可达,但要排掉 HTML —— 单域名部署下 Web 前端对未知路径返回
+ *   200 HTML 是可能的,那说明请求根本没转到 server(QA 评审 P2)
+ * - 其余(含 404):不可达
+ */
+export function interpretProbeResponse(
+  status: number,
+  contentType: string | null,
+): boolean {
+  if (status === 401 || status === 403) return true;
+  if (status < 200 || status >= 300) return false;
+  return !/\btext\/html\b/i.test(contentType ?? "");
 }
 
 /** http(s):// → ws(s)://,再接 `/ws`。realtime 连接时现算,不做模块级派生。 */

@@ -7,15 +7,15 @@
  * 视觉沿用 `more/settings.tsx` 的 SectionGroup / 行模式,不引入新组件。
  * 内置项置顶且没有「…」菜单 —— 不可编辑删除直接体现为「没有可点的入口」,
  * 而不是置灰按钮让用户点一次才知道禁用。
+ *
+ * 行内「…」用 `components/ui/dropdown-menu`(@rn-primitives)而不是
+ * `ActionSheetIOS`:后者的原生模块只在 iOS 侧实现,Android 上
+ * `TurboModuleRegistry.get('ActionSheetManager')` 返回 null,组件内的
+ * invariant 会直接抛 —— 编辑/删除是自定义服务器的唯一入口,在 Android
+ * 上崩掉等于填错地址就只能卸载重装(QA 评审 P0-2)。
  */
 import { useCallback } from "react";
-import {
-  ActionSheetIOS,
-  Alert,
-  Pressable,
-  ScrollView,
-  View,
-} from "react-native";
+import { Alert, Pressable, ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { Stack, router } from "expo-router";
@@ -23,6 +23,12 @@ import { useQueryClient } from "@tanstack/react-query";
 import { Text } from "@/components/ui/text";
 import { Separator } from "@/components/ui/separator";
 import { IconButton } from "@/components/ui/icon-button";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from "@/components/ui/dropdown-menu";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useServerStore } from "@/data/server-store";
@@ -114,31 +120,6 @@ export default function ServerListScreen() {
     [removeServer],
   );
 
-  const onPressMenu = useCallback(
-    (entry: ServerEntry) => {
-      // 当前生效项不给删除项 —— 删掉正在用的服务器会造成一次隐式的地址
-      // 变化,行为不可预期。用户需要先切走再删。
-      const canDelete = entry.id !== active.id;
-      const options = canDelete
-        ? ["Cancel", "Edit", "Delete"]
-        : ["Cancel", "Edit"];
-      ActionSheetIOS.showActionSheetWithOptions(
-        {
-          options,
-          cancelButtonIndex: 0,
-          destructiveButtonIndex: canDelete ? 2 : undefined,
-          title: entry.name || entry.apiUrl,
-        },
-        (i) => {
-          const label = options[i];
-          if (label === "Edit") router.push(`/server-settings/${entry.id}`);
-          else if (label === "Delete") onDelete(entry);
-        },
-      );
-    },
-    [active.id, onDelete],
-  );
-
   return (
     <SafeAreaView className="flex-1 bg-background" edges={["bottom"]}>
       <Stack.Screen
@@ -170,9 +151,8 @@ export default function ServerListScreen() {
                   isActive={entry.id === active.id}
                   iconColor={mutedFg}
                   onPress={() => onSelect(entry)}
-                  onPressMenu={
-                    entry.builtIn ? undefined : () => onPressMenu(entry)
-                  }
+                  onEdit={() => router.push(`/server-settings/${entry.id}`)}
+                  onDelete={() => onDelete(entry)}
                 />
                 {idx < servers.length - 1 ? <Separator /> : null}
               </View>
@@ -188,53 +168,80 @@ export default function ServerListScreen() {
   );
 }
 
+/**
+ * 「…」菜单刻意是行 Pressable 的**兄弟节点**而非子节点。
+ *
+ * 之前的结构把它嵌在设了 `disabled={isActive}` 的 Pressable 里,而 RN 的
+ * `disabled` 会经 usePressability 吞掉整棵子树的手势响应 —— 当前生效的
+ * 自定义服务器因此连编辑入口都点不动(QA 评审 P1)。拆成兄弟节点后,
+ * 行的可点状态与菜单的可用性彻底解耦,`disabled` 也就不再需要:
+ * `onSelect` 内部对「点的就是当前项」已经直接 return。
+ */
 function ServerRow({
   entry,
   isActive,
   iconColor,
   onPress,
-  onPressMenu,
+  onEdit,
+  onDelete,
 }: {
   entry: ServerEntry;
   isActive: boolean;
   iconColor: string;
   onPress: () => void;
-  /** 内置项不传 —— 没有可编辑/删除的操作,也就不出「…」。 */
-  onPressMenu?: () => void;
+  onEdit: () => void;
+  onDelete: () => void;
 }) {
   return (
-    <Pressable
-      onPress={onPress}
-      disabled={isActive}
-      className="flex-row items-center px-4 py-3.5 active:bg-secondary gap-3"
-    >
-      <View className="flex-1">
-        <View className="flex-row items-center gap-2">
-          <Text className="text-base font-medium text-foreground">
-            {entry.name || entry.apiUrl}
+    <View className="flex-row items-center pr-2">
+      <Pressable
+        onPress={onPress}
+        className="flex-1 flex-row items-center px-4 py-3.5 active:bg-secondary gap-3"
+      >
+        <View className="flex-1">
+          <View className="flex-row items-center gap-2">
+            <Text className="text-base font-medium text-foreground">
+              {entry.name || entry.apiUrl}
+            </Text>
+            {entry.builtIn ? (
+              <View className="rounded bg-muted px-1.5 py-0.5">
+                <Text className="text-xs text-muted-foreground">Built-in</Text>
+              </View>
+            ) : null}
+          </View>
+          <Text className="text-xs text-muted-foreground mt-0.5">
+            {entry.apiUrl}
           </Text>
-          {entry.builtIn ? (
-            <View className="rounded bg-muted px-1.5 py-0.5">
-              <Text className="text-xs text-muted-foreground">Built-in</Text>
-            </View>
-          ) : null}
         </View>
-        <Text className="text-xs text-muted-foreground mt-0.5">
-          {entry.apiUrl}
-        </Text>
-      </View>
-      {isActive ? (
-        <Ionicons name="checkmark" size={18} color={iconColor} />
-      ) : null}
-      {onPressMenu ? (
-        <IconButton
-          name="ellipsis-horizontal"
-          iconSize={18}
-          color={iconColor}
-          onPress={onPressMenu}
-          accessibilityLabel={`Actions for ${entry.name || entry.apiUrl}`}
-        />
-      ) : null}
-    </Pressable>
+        {isActive ? (
+          <Ionicons name="checkmark" size={18} color={iconColor} />
+        ) : null}
+      </Pressable>
+      {/* 内置项不可编辑不可删,直接不出菜单 —— 没有可点的入口比置灰更清楚。 */}
+      {entry.builtIn ? null : (
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <IconButton
+              name="ellipsis-horizontal"
+              iconSize={18}
+              color={iconColor}
+              accessibilityLabel={`Actions for ${entry.name || entry.apiUrl}`}
+            />
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end" className="w-40">
+            <DropdownMenuItem onPress={onEdit}>
+              <Text>Edit</Text>
+            </DropdownMenuItem>
+            {/* 当前生效项不给删除 —— 删掉正在用的服务器会造成一次隐式的
+                地址变化,行为不可预期。用户需要先切走再删。 */}
+            {isActive ? null : (
+              <DropdownMenuItem variant="destructive" onPress={onDelete}>
+                <Text>Delete</Text>
+              </DropdownMenuItem>
+            )}
+          </DropdownMenuContent>
+        </DropdownMenu>
+      )}
+    </View>
   );
 }

@@ -148,9 +148,24 @@ export const useServerStore = create<ServerState>((set, get) => {
   };
 });
 
-/** 同步读取当前生效项 —— 供非 React 代码用(镜像 getCurrentSlug 模式)。 */
+/**
+ * 同步读取当前生效项 —— 供非 React 代码用(镜像 getCurrentSlug 模式)。
+ *
+ * hydrate 未完成就走到这里属于编程错误(初始化顺序被改坏了),表现是
+ * 短暂连到内置默认服务器上,很难从现象反推。正确性目前由
+ * `authStore.initialize()` 里的 `await hydrate()` 时序保证,这里只做一道
+ * 开发期断言 —— 否则 `hydrated` 就是个没有消费点的死字段,会让后来人
+ * 误以为存在一道运行时守卫(QA 评审 P2)。
+ */
 export function getActiveServer(): ServerEntry {
-  const { servers, activeServerId } = useServerStore.getState();
+  const { servers, activeServerId, hydrated } = useServerStore.getState();
+  if (__DEV__ && !hydrated) {
+    console.warn(
+      "[server-store] getActiveServer() called before hydrate() finished — " +
+        "the request will go to the built-in server. Check that " +
+        "authStore.initialize() still awaits useServerStore.hydrate() first.",
+    );
+  }
   return pickActiveServer(servers, activeServerId);
 }
 
