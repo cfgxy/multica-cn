@@ -99,6 +99,9 @@ export default ({ config }: ConfigContext): ExpoConfig => {
           },
         },
       ],
+      // android/ 是 prebuild 产物且被 gitignore,release 签名配置只能靠 plugin
+      // 每次重新注入。凭据从构建机的 Gradle 属性读取,不进仓库。
+      "./plugins/with-android-release-signing",
     ],
     extra: { APP_ENV: env },
   };

@@ -1,6 +1,8 @@
-# Multica Mobile (iOS)
+# Multica Mobile (iOS + Android)
 
-Expo + React Native iOS client for Multica. Independent from web/desktop — shares only types from `@multica/core/`. See [`CLAUDE.md`](./CLAUDE.md) for the locked tech-stack baseline and import rules.
+Expo + React Native mobile client for Multica. Independent from web/desktop — shares only types from `@multica/core/`. See [`CLAUDE.md`](./CLAUDE.md) for the locked tech-stack baseline and import rules.
+
+Both platforms build from the same JS/TS source and the same `app.config.ts`. iOS is documented first (it shipped first); the [Android](#android) section below covers everything Android-specific.
 
 ## Just want to use it on your phone? (no development)
 
@@ -49,8 +51,12 @@ Everything below is for app developers — you can ignore the rest if you only w
 | `pnpm ios:mobile:device:staging:release` | Full rebuild + install on **USB iPhone**, Release (standalone) | staging |
 | `pnpm ios:mobile:device:prod` | Full rebuild + install on **USB iPhone**, Debug | production |
 | `pnpm ios:mobile:device:prod:release` | Full rebuild + install on **USB iPhone**, Release (standalone) | production |
+| `pnpm android:mobile` | Full rebuild + install on **Android emulator/device**, Debug | local |
+| `pnpm android:mobile:staging` | Full rebuild + install on **Android emulator/device**, Debug | staging |
+| `pnpm android:mobile:prod` | Full rebuild + install on **Android emulator/device**, Debug | production |
+| `pnpm android:mobile:prod:release` | Full rebuild + install, Release (standalone, signed) | production |
 
-`dev:*` runs Metro only — assumes the matching variant is already installed. `ios:mobile*` does a full native rebuild + install.
+`dev:*` runs Metro only — assumes the matching variant is already installed. `ios:mobile*` / `android:mobile*` do a full native rebuild + install.
 
 Bundle id and display name switch on `APP_ENV` (see `app.config.ts`), so Dev / Staging / Production variants can coexist on the same device or simulator.
 
@@ -103,11 +109,122 @@ Boots the simulator, builds, installs the dev-client. Faster to iterate than a d
 
 A free Apple ID signs builds for **7 days only**, Debug and Release both. After that the app refuses to launch on the iPhone. Plug back into the Mac and re-run the corresponding `ios:mobile:device*` script to re-sign. Simulator builds are unaffected. The only workaround for the device limit is an Apple Developer Program account ($99/yr), which extends to 1 year.
 
+## Android
+
+Builds from the same source as iOS — no separate codebase, no separate config. Unlike iOS it runs on Linux/Windows too, and Android signing has no 7-day expiry: a self-signed key you generate once is valid for as long as you set it to be.
+
+### Prerequisites
+
+| What | Why / where |
+|---|---|
+| **JDK 17** | AGP 8.x requires it. Older JDKs fail deep inside Gradle with errors that don't name the JVM as the cause. Set `JAVA_HOME` explicitly — do not rely on the system default. |
+| **Android SDK** | Platform 36 + Build-Tools 36.0.0 + NDK 27.1. Install via Android Studio's SDK Manager or `sdkmanager`. Point `ANDROID_HOME` at it (commonly `~/Android/Sdk`). |
+| **An emulator or a USB device** | `adb devices` must list exactly one. USB devices need USB debugging enabled in Developer options. |
+
+```bash
+export JAVA_HOME=/usr/lib/jvm/java-17-openjdk   # adjust to your JDK 17 path
+export ANDROID_HOME="$HOME/Android/Sdk"
+export PATH="$JAVA_HOME/bin:$ANDROID_HOME/platform-tools:$PATH"
+```
+
+Expo's [Set up your environment](https://docs.expo.dev/get-started/set-up-your-environment/) (pick **Development build → Android**) covers the SDK install in more depth.
+
+### Day-to-day development
+
+```bash
+pnpm android:mobile:staging
+```
+
+Debug build with `expo-dev-launcher` embedded — same hot-reload flow as iOS, same `dev:mobile:staging` Metro loop afterward. Works against an emulator or a USB device interchangeably.
+
+For a local backend from the **emulator**, `localhost` points at the emulator itself, not your machine — use `http://10.0.2.2:8080` in `.env.development.local`. From a **USB device**, use your machine's LAN IP.
+
+### Standalone release build
+
+```bash
+pnpm android:mobile:prod:release
+```
+
+Produces a signed Release APK at `apps/mobile/android/app/build/outputs/apk/release/app-release.apk` — no dev-launcher, no Metro probe, installable and runnable on its own. Requires the signing setup below; without it the build still succeeds but falls back to Android's debug key (see [Signing](#signing)).
+
+The first release build compiles React Native and every native module from source across four ABIs — **expect 60–90 minutes** on a typical machine, and roughly 105 MB of APK. Later builds reuse Gradle's cache and are far quicker. If Gradle's own distribution download crawls (it's the first thing `gradlew` does, before any of your code builds), a regional mirror in `android/gradle/wrapper/gradle-wrapper.properties` fixes it — but that file is prebuild output, so treat the change as local and temporary rather than something to commit.
+
+To cut build time while iterating, restrict the ABIs to the one you actually run:
+
+```bash
+pnpm android:mobile:prod:release --  -PreactNativeArchitectures=x86_64   # emulator only
+```
+
+### Signing
+
+Android release builds must be signed with a key you control. The upstream React Native template signs `release` with the **debug** key — fine for a smoke test, unacceptable for anything distributed: the debug key is public, identical on every machine, and an APK signed with it can be impersonated by anyone.
+
+`plugins/with-android-release-signing.js` (an Expo config plugin, wired up in `app.config.ts`) rewrites the generated `android/app/build.gradle` on every prebuild so `release` uses a real keystore. It has to be a plugin rather than a hand-edit: `android/` is prebuild output and gitignored, so any manual change there is erased by the next `expo prebuild` or lost on a fresh clone.
+
+The plugin reads four Gradle properties and **nothing is stored in the repo**:
+
+| Property | Meaning |
+|---|---|
+| `MULTICA_RELEASE_STORE_FILE` | Absolute path to the keystore |
+| `MULTICA_RELEASE_KEY_ALIAS` | Key alias inside it |
+| `MULTICA_RELEASE_STORE_PASSWORD` | Keystore password |
+| `MULTICA_RELEASE_KEY_PASSWORD` | Key password |
+
+If `MULTICA_RELEASE_STORE_FILE` is absent the whole block is skipped and the build falls back to the debug key — so a contributor who just wants a runnable APK isn't blocked on generating a keystore. Check which key an APK actually carries with `apksigner verify --print-certs`; the debug key's DN is `CN=Android Debug`.
+
+#### Generate a keystore
+
+```bash
+keytool -genkeypair -v \
+  -keystore ~/.android/keystores/multica-release.keystore \
+  -alias multica-release \
+  -keyalg RSA -keysize 4096 -validity 10000 \
+  -dname "CN=Multica, OU=Mobile, O=Multica, L=<city>, ST=<state>, C=<country>"
+```
+
+`keytool` prompts for the password. Use a generated one, not a memorable one — it never needs typing again after the next step.
+
+#### Supply the credentials
+
+Put them in `~/.gradle/gradle.properties` (outside the repo, `chmod 600`):
+
+```properties
+MULTICA_RELEASE_STORE_FILE=/home/you/.android/keystores/multica-release.keystore
+MULTICA_RELEASE_KEY_ALIAS=multica-release
+MULTICA_RELEASE_STORE_PASSWORD=…
+MULTICA_RELEASE_KEY_PASSWORD=…
+```
+
+On CI, pass them as `ORG_GRADLE_PROJECT_MULTICA_RELEASE_*` environment variables from the secret store instead — same property names, no file on disk.
+
+**Never commit the keystore or its passwords.** `apps/mobile/.gitignore` ignores `android/` wholesale, which covers a keystore placed there, but the safe habit is to keep it outside the repo entirely.
+
+#### Back up the keystore
+
+Losing it means losing the ability to ship an update that existing installs will accept — Android refuses to install an update signed by a different key, and the user's only path is uninstall + reinstall, which wipes app data. Store the keystore file and its passwords in whatever the team uses for secrets (password manager, encrypted vault) the moment you generate it, not later.
+
+Builds are signed with **APK Signature Scheme v2 + v3**; v1 (JAR signing) is off because minSdk 24 makes it redundant. v3 is what carries proof-of-rotation, and it cannot be added to an already-published APK — which is why it's on from the first release rather than deferred to whenever a key rotation actually comes up.
+
+### Package names
+
+Same per-variant scheme as iOS, so dev / staging / production coexist on one device:
+
+| Variant | Package | Label |
+|---|---|---|
+| development | `ai.multica.mobile.dev` | Multica (Dev) |
+| staging | `ai.multica.mobile.staging` | Multica (Staging) |
+| production | `ai.multica.mobile` | Multica |
+
+Building a personal copy under a namespace you own? Override with `EXPO_ANDROID_PACKAGE_DEV` / `EXPO_ANDROID_PACKAGE_PROD`. Unlike iOS there's no provisioning profile forcing your hand — the override exists for parity and for anyone publishing their own fork.
+
 ## Pointing at a different backend
 
 Edit `EXPO_PUBLIC_API_URL` in `.env.staging`, `.env.production`, or `.env.development.local` (whichever variant you're running). Then:
 
 - For an installed **Debug build**: restart Metro (`pnpm dev:mobile:staging`) so the next JS bundle picks up the new value.
-- For an installed **Release build**: re-run the `ios:mobile:device:staging:release` command — the value is baked into the embedded bundle at build time.
+- For an installed **Release build**: re-run the corresponding `*:release` command (`ios:mobile:device:staging:release` / `android:mobile:prod:release`) — the value is baked into the embedded bundle at build time.
 
-For local backend testing, use your Mac's LAN IP (`ipconfig getifaddr en0`), not `localhost`.
+For local backend testing, `localhost` won't reach your machine from the phone or emulator:
+
+- **iOS device / simulator, Android USB device** — use your machine's LAN IP (`ipconfig getifaddr en0` on macOS, `hostname -I` on Linux).
+- **Android emulator** — use `http://10.0.2.2:<port>`, the emulator's alias for the host loopback.
