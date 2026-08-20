@@ -10,18 +10,22 @@
  * (ORG_GRADLE_PROJECT_* / -P) 读取,永远不进仓库:
  *   MULTICA_RELEASE_STORE_FILE / _KEY_ALIAS / _STORE_PASSWORD / _KEY_PASSWORD
  *
- * 属性缺失时不报错,回退到上游默认的 debug 签名 —— 贡献者跑 `android:prod` 只是想
- * 装个能跑的包,不该被"你没有发布 keystore"卡住;真正的发布构建由 CI/发布人负责
+ * 属性缺失时不报错,显式回退到上游默认的 debug 签名 —— 贡献者跑 `android:prod` 只是
+ * 想装个能跑的包,不该被"你没有发布 keystore"卡住;真正的发布构建由 CI/发布人负责
  * 提供属性。要确认某个 APK 用的是哪把 key,`apksigner verify --print-certs` 一看
  * 便知(debug key 的 CN 是 "Android Debug")。
+ *
+ * 注意 else 分支不能省:buildTypes.release 已被无条件改写为 signingConfigs.release,
+ * 只写 if 的话属性缺失时得到的是一个 storeFile=null 的空 signingConfig,AGP 会产出
+ * **未签名**的 release APK(装不上),而不是回退 debug。这是评审实测出的 P0。
  */
 const { withAppBuildGradle } = require("@expo/config-plugins");
 
 // 插入到 signingConfigs { ... } 内部的 release 配置块。
 const RELEASE_SIGNING_CONFIG = `
         release {
-            // 由 with-android-release-signing.js 注入。属性缺失时该块整体跳过,
-            // release 回退到 debug 签名(见插件头部注释)。
+            // 由 with-android-release-signing.js 注入。属性缺失时走 else,
+            // 逐字段复制 debug 签名(见插件头部注释)。
             if (project.hasProperty('MULTICA_RELEASE_STORE_FILE')) {
                 storeFile file(MULTICA_RELEASE_STORE_FILE)
                 storePassword MULTICA_RELEASE_STORE_PASSWORD
@@ -35,6 +39,11 @@ const RELEASE_SIGNING_CONFIG = `
                 enableV1Signing false
                 enableV2Signing true
                 enableV3Signing true
+            } else {
+                // 没有发布凭据:逐字段复制 debug 签名。不能只留空块 —— release
+                // buildType 已指向本配置,storeFile 为 null 会让 AGP 产出未签名
+                // 的 release APK,adb install 直接拒绝。
+                initWith project.android.signingConfigs.debug
             }
         }`;
 

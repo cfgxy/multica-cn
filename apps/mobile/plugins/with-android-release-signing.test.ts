@@ -75,12 +75,23 @@ describe("addReleaseSigning", () => {
     expect(out).toContain("enableV1Signing false");
   });
 
-  it("属性缺失时整块跳过,不会让构建硬失败", () => {
+  it("属性缺失时显式回退 debug 签名,而不是留下空配置", () => {
     const out = addReleaseSigning(UPSTREAM);
 
     expect(out).toContain(
       "if (project.hasProperty('MULTICA_RELEASE_STORE_FILE'))",
     );
+    // 这条 else 是评审实测出的 P0 修复:release buildType 已无条件指向
+    // signingConfigs.release,只写 if 的话属性缺失时得到 storeFile=null 的
+    // 空配置,AGP 产出未签名 APK(装不上),而非回退 debug。
+    expect(out).toContain("} else {");
+    expect(out).toContain("initWith project.android.signingConfigs.debug");
+    // else 必须在 release signingConfig 内部,不能漏到别处。
+    const cfgBlock = out.slice(
+      out.indexOf("release {"),
+      out.indexOf("buildTypes"),
+    );
+    expect(cfgBlock).toContain("initWith project.android.signingConfigs.debug");
   });
 
   it("幂等 —— prebuild 重跑不会重复注入", () => {
