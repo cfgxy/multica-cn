@@ -149,11 +149,23 @@ Produces a signed Release APK at `apps/mobile/android/app/build/outputs/apk/rele
 
 The first release build compiles React Native and every native module from source across four ABIs — **expect 60–90 minutes** on a typical machine, and roughly 105 MB of APK. Later builds reuse Gradle's cache and are far quicker. If Gradle's own distribution download crawls (it's the first thing `gradlew` does, before any of your code builds), a regional mirror in `android/gradle/wrapper/gradle-wrapper.properties` fixes it — but that file is prebuild output, so treat the change as local and temporary rather than something to commit.
 
-To cut build time while iterating, restrict the ABIs to the one you actually run:
+To cut build time while iterating, restrict the ABIs to the ones you actually run:
 
 ```bash
 pnpm android:mobile:prod:release --  -PreactNativeArchitectures=x86_64   # emulator only
 ```
+
+**Whatever you pass must include the ABI of the device you're installing onto.** A mismatch is not caught at install time — `adb install` still prints `Success`, and the app dies on first launch with `SoLoaderDSONotFoundError: couldn't find DSO to load: libreactnative.so`. Check the target's ABI first:
+
+```bash
+adb shell getprop ro.product.cpu.abilist
+```
+
+A `x86_64,arm64-v8a` emulator is a specific trap: it *claims* arm64 support and will happily install an arm64-only APK (`dumpsys package` even reports `primaryCpuAbi=arm64-v8a`), but its translation layer never unpacks the arm64 `.so` files, so the app can't start. Build with `x86_64` in the list for that emulator; use `arm64-v8a` for essentially any physical phone.
+
+Never trim ABIs by deleting `lib/<abi>/` out of a built APK — the APK becomes unstartable in exactly the same way, and it invalidates the signature. Pass `-PreactNativeArchitectures` and let Gradle build the variant you want.
+
+Full four-ABI APKs run about 105 MB; a two-ABI (`arm64-v8a,x86_64`) build is closer to 68 MB. If something downstream imposes a file-size cap, trim ABIs at build time rather than post-processing the APK — and note in the hand-off which ABIs the artifact actually carries, since a trimmed build is not what you'd distribute.
 
 ### Signing
 
