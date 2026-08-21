@@ -27,6 +27,8 @@ import type {
   WorkspaceSubscriptionPrices,
   CreateWorkspaceSubscriptionCheckoutResponse,
   WorkspaceSubscriptionSeatReconcileResult,
+  WorkspaceSeatPurchasePreview,
+  PurchaseWorkspaceSeatsResponse,
   CreateWorkspaceSubscriptionPortalResponse,
   CronPreviewResponse,
   DingTalkInstallation,
@@ -2443,6 +2445,20 @@ export const WorkspaceSubscriptionSummarySchema = z
     actual_seats: z.number().int().nonnegative(),
     billed_seats: z.number().int().nonnegative().nullable().optional(),
     pending_seat_quantity: z.number().int().nonnegative().nullable().optional(),
+    used_seats: z.number().int().nonnegative().optional().catch(undefined),
+    reserved_seats: z.number().int().nonnegative().optional().catch(0),
+    purchase_version: z.number().int().positive().optional().catch(undefined),
+    active_seat_purchase: z
+      .object({
+        request_id: z.string(),
+        target_seats: z.number().int().positive(),
+        status: z.enum(["pending", "processing", "submitted"]),
+        expires_at: z.string().min(1).optional().catch(undefined),
+      })
+      .loose()
+      .nullable()
+      .optional()
+      .catch(null),
     cancel_at_period_end: z.boolean().optional(),
     grace_until: z.string().nullable().optional(),
     has_stripe_customer: z.boolean().optional(),
@@ -2455,6 +2471,17 @@ export const WorkspaceSubscriptionSummarySchema = z
       actualSeats: value.actual_seats,
       billedSeats: value.billed_seats ?? null,
       pendingSeatQuantity: value.pending_seat_quantity ?? null,
+      usedSeats: value.used_seats ?? value.actual_seats,
+      reservedSeats: value.reserved_seats ?? 0,
+      purchaseVersion: value.purchase_version ?? null,
+      activeSeatPurchase: value.active_seat_purchase
+        ? {
+            requestId: value.active_seat_purchase.request_id,
+            targetSeats: value.active_seat_purchase.target_seats,
+            status: value.active_seat_purchase.status,
+            expiresAt: value.active_seat_purchase.expires_at ?? null,
+          }
+        : null,
       cancelAtPeriodEnd: value.cancel_at_period_end ?? false,
       graceUntil: value.grace_until ?? null,
       hasStripeCustomer: value.has_stripe_customer ?? false,
@@ -2530,6 +2557,56 @@ export const WorkspaceSubscriptionSeatReconcileResultSchema = z
       billedSeats: value.billed_seats,
       actualSeats: value.actual_seats,
       action: value.action,
+    }),
+  );
+
+export const WorkspaceSeatPurchasePreviewSchema = z
+  .object({
+    current_seats: z.number().int().positive(),
+    additional_seats: z.number().int().positive(),
+    resulting_seats: z.number().int().positive(),
+    purchase_version: z.number().int().positive(),
+    currency: z.string().regex(/^[a-z]{3}$/),
+    proration_amount: z.number().int().nonnegative(),
+    next_invoice_amount: z.number().int().nonnegative(),
+    quoted_at: z.string().min(1),
+  })
+  .loose()
+  .transform(
+    (value): WorkspaceSeatPurchasePreview => ({
+      currentSeats: value.current_seats,
+      additionalSeats: value.additional_seats,
+      resultingSeats: value.resulting_seats,
+      purchaseVersion: value.purchase_version,
+      currency: value.currency,
+      prorationAmount: value.proration_amount,
+      nextInvoiceAmount: value.next_invoice_amount,
+      quotedAt: value.quoted_at,
+    }),
+  );
+
+export const PurchaseWorkspaceSeatsResponseSchema = z
+  .object({
+    request_id: z.string(),
+    current_seats: z.number().int().positive(),
+    additional_seats: z.number().int().positive(),
+    resulting_seats: z.number().int().positive(),
+    currency: z.string().regex(/^[a-z]{3}$/),
+    proration_amount: z.number().int().nonnegative(),
+    next_invoice_amount: z.number().int().nonnegative(),
+    status: z.enum(["pending", "submitted", "confirmed"]),
+  })
+  .loose()
+  .transform(
+    (value): PurchaseWorkspaceSeatsResponse => ({
+      requestId: value.request_id,
+      currentSeats: value.current_seats,
+      additionalSeats: value.additional_seats,
+      resultingSeats: value.resulting_seats,
+      currency: value.currency,
+      prorationAmount: value.proration_amount,
+      nextInvoiceAmount: value.next_invoice_amount,
+      status: value.status,
     }),
   );
 
