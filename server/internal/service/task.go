@@ -51,6 +51,10 @@ type TaskService struct {
 	// goes through the DB. Wired in router.go from the shared Redis
 	// client.
 	EmptyClaim *EmptyClaimCache
+	// ReclaimCheck schedules the next time a runtime can plausibly contain a
+	// stale dispatched task. It removes the unconditional reclaim UPDATE from
+	// idle claim polls while missing/error states preserve the DB fallback.
+	ReclaimCheck *ReclaimCheckCache
 	// Composio computes the per-task MCP overlay (Stage 3 of the Composio
 	// epic, MUL-3721) — the integration's "current user's connected apps
 	// → MCP session URL" hook called from each Enqueue* path. Optional: a
@@ -177,6 +181,52 @@ const (
 	claimResponseRecoveryWindow = 90 * time.Second
 	prepareLeaseDuration        = 45 * time.Second
 )
+
+func (s *TaskService) trackTaskForReclaim(task db.AgentTaskQueue, checkAfter time.Time) {
+	if !task.RuntimeID.Valid || !task.ID.Valid || task.Status != "dispatched" {
+		return
+	}
+	// The Redis hint is advisory and intentionally uses an application-clock
+	// elapsed deadline captured beside the DB command. Comparing PostgreSQL's
+	// absolute dispatched_at/lease timestamps with time.Now would mix clocks;
+	// PostgreSQL remains authoritative when the reclaim query actually runs.
+	// A bounded background context lets this best-effort write outlive a request
+	// cancellation without allowing Redis to stall the hot path indefinitely.
+	s.ReclaimCheck.Track(
+		context.Background(),
+		util.UUIDToString(task.RuntimeID),
+		util.UUIDToString(task.ID),
+		checkAfter,
+	)
+}
+
+func (s *TaskService) extendTaskReclaimHint(task db.AgentTaskQueue, checkAfter time.Time) {
+	if !task.RuntimeID.Valid || !task.ID.Valid || task.Status != "dispatched" {
+		return
+	}
+	// Preserve a later initial recovery deadline; a short prepare lease should
+	// only move the hint when repeated extensions actually protect the task for
+	// longer. See trackTaskForReclaim for the clock/context rationale.
+	s.ReclaimCheck.TrackLater(
+		context.Background(),
+		util.UUIDToString(task.RuntimeID),
+		util.UUIDToString(task.ID),
+		checkAfter,
+	)
+}
+
+func (s *TaskService) forgetTaskReclaim(task db.AgentTaskQueue) {
+	if !task.RuntimeID.Valid || !task.ID.Valid {
+		return
+	}
+	// This cleanup is best-effort and uses the cache's bounded timeout; request
+	// cancellation must not make a committed task transition leave a stale hint.
+	s.ReclaimCheck.Forget(
+		context.Background(),
+		util.UUIDToString(task.RuntimeID),
+		util.UUIDToString(task.ID),
+	)
+}
 
 // buildCommentTriggerSummary fetches the comment content and truncates
 // it for storage on the task row. Returns an invalid pgtype.Text when
@@ -2998,6 +3048,7 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 	outcome := "unknown"
 	var getAgentMs, countRunningMs, claimAgentMs, reanchorMs, updateStatusMs, dispatchMs int64
 	var claimed *db.AgentTaskQueue
+	var reclaimCheckAfter time.Time
 	defer func() {
 		s.maybeLogClaimSlow(agentID, outcome, start, getAgentMs, countRunningMs, claimAgentMs, reanchorMs, updateStatusMs, dispatchMs)
 	}()
@@ -3033,6 +3084,7 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 		}
 
 		t0 = time.Now()
+		reclaimCheckAfter = t0.Add(claimResponseRecoveryWindow + ReclaimCheckHintSafetyMargin)
 		task, err := qtx.ClaimAgentTask(ctx, db.ClaimAgentTaskParams{
 			AgentID:          agentID,
 			RuntimeID:        claimRuntimeID,
@@ -3084,6 +3136,7 @@ func (s *TaskService) claimTask(ctx context.Context, agentID, runtimeID pgtype.U
 	if claimed == nil {
 		return nil, nil
 	}
+	s.trackTaskForReclaim(*claimed, reclaimCheckAfter)
 
 	slog.Info("task claimed", "task_id", util.UUIDToString(claimed.ID), "agent_id", util.UUIDToString(agentID))
 	s.captureTaskDispatched(ctx, *claimed)
@@ -3144,27 +3197,45 @@ func (s *TaskService) ClaimTaskForRuntime(ctx context.Context, runtimeID pgtype.
 		return nil, err
 	}
 
-	// Check this before EmptyClaim: a lost claim response moves the task out of
-	// `queued`, so the empty-queued cache cannot represent recoverability.
-	stale, err := s.Queries.ReclaimStaleDispatchedTaskForRuntime(ctx, db.ReclaimStaleDispatchedTaskForRuntimeParams{
-		RuntimeID:         runtimeID,
-		ClaimRecoverySecs: claimResponseRecoveryWindow.Seconds(),
-		PrepareLeaseSecs:  prepareLeaseDuration.Seconds(),
-		RuntimeStaleSecs:  RuntimeClaimFreshnessSeconds,
-	})
-	if err == nil {
-		outcome = "reclaimed_dispatched"
-		claimedFlag = true
-		slog.Info("stale dispatched task reclaimed",
-			"task_id", util.UUIDToString(stale.ID),
-			"runtime_id", runtimeKey,
-			"agent_id", util.UUIDToString(stale.AgentID),
+	// Keep stale-response recovery before EmptyClaim because the queued-only
+	// cache cannot represent dispatched work. ReclaimCheck independently skips
+	// the UPDATE until a task hint or bounded DB backstop is due.
+	checkStarted := time.Now()
+	if due := s.ReclaimCheck.DueRuntimeIDs(ctx, []string{runtimeKey}, checkStarted); len(due) > 0 {
+		reclaimCheckAfter := time.Now().Add(claimResponseRecoveryWindow + ReclaimCheckHintSafetyMargin)
+		stale, err := s.Queries.ReclaimStaleDispatchedTaskForRuntime(ctx, db.ReclaimStaleDispatchedTaskForRuntimeParams{
+			RuntimeID:         runtimeID,
+			ClaimRecoverySecs: claimResponseRecoveryWindow.Seconds(),
+			PrepareLeaseSecs:  prepareLeaseDuration.Seconds(),
+			RuntimeStaleSecs:  RuntimeClaimFreshnessSeconds,
+		})
+		if err == nil {
+			s.ReclaimCheck.MarkChecked(
+				ctx,
+				[]string{runtimeKey},
+				checkStarted,
+				time.Now().Add(ReclaimCheckRetryInterval),
+			)
+			s.trackTaskForReclaim(stale, reclaimCheckAfter)
+			outcome = "reclaimed_dispatched"
+			claimedFlag = true
+			slog.Info("stale dispatched task reclaimed",
+				"task_id", util.UUIDToString(stale.ID),
+				"runtime_id", runtimeKey,
+				"agent_id", util.UUIDToString(stale.AgentID),
+			)
+			return &stale, nil
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			outcome = "error_reclaim_dispatched"
+			return nil, fmt.Errorf("reclaim stale dispatched task: %w", err)
+		}
+		s.ReclaimCheck.MarkChecked(
+			ctx,
+			[]string{runtimeKey},
+			checkStarted,
+			time.Now().Add(ReclaimCheckRetryInterval),
 		)
-		return &stale, nil
-	}
-	if !errors.Is(err, pgx.ErrNoRows) {
-		outcome = "error_reclaim_dispatched"
-		return nil, fmt.Errorf("reclaim stale dispatched task: %w", err)
 	}
 
 	if s.EmptyClaim.IsEmpty(ctx, runtimeKey) {
@@ -3293,6 +3364,7 @@ func (s *TaskService) RequeueTaskAfterClaimFailure(ctx context.Context, task db.
 	if err != nil {
 		return nil, fmt.Errorf("requeue task after claim failure: %w", err)
 	}
+	s.forgetTaskReclaim(requeued)
 	s.ReconcileAgentStatus(ctx, requeued.AgentID)
 	s.broadcastTaskEvent(ctx, protocol.EventTaskQueued, requeued)
 	s.notifyTaskAvailable(requeued)
@@ -3380,18 +3452,43 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 		s.NotifyTaskEnqueued(ctx, task)
 	}
 
-	// 2. Reclaim lost-response dispatched tasks across the set, up to maxTasks.
-	reclaimed, err := s.Queries.ReclaimStaleDispatchedTasksForRuntimes(ctx, db.ReclaimStaleDispatchedTasksForRuntimesParams{
-		RuntimeIds:        uniqueIDs,
-		ClaimRecoverySecs: claimResponseRecoveryWindow.Seconds(),
-		PrepareLeaseSecs:  prepareLeaseDuration.Seconds(),
-		RuntimeStaleSecs:  RuntimeClaimFreshnessSeconds,
-		MaxTasks:          int32(maxTasks),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("reclaim stale dispatched tasks: %w", err)
+	// 2. Reclaim lost-response dispatched tasks when any runtime's task schedule
+	// or bounded DB backstop is due. The query always receives the complete
+	// machine-level set so per-runtime backstops stay aligned and fixed UPDATE
+	// setup/locking cost is paid at a predictable cadence. A nil/missing/failed
+	// cache preserves the historical query path.
+	runtimeKeys := make([]string, 0, len(uniqueIDs))
+	for _, rid := range uniqueIDs {
+		runtimeKeys = append(runtimeKeys, util.UUIDToString(rid))
+	}
+	checkStarted := time.Now()
+	dueKeys := s.ReclaimCheck.DueRuntimeIDs(ctx, runtimeKeys, checkStarted)
+	var reclaimed []db.AgentTaskQueue
+	var reclaimCheckAfter time.Time
+	if len(dueKeys) > 0 {
+		reclaimCheckAfter = time.Now().Add(claimResponseRecoveryWindow + ReclaimCheckHintSafetyMargin)
+		reclaimed, err = s.Queries.ReclaimStaleDispatchedTasksForRuntimes(ctx, db.ReclaimStaleDispatchedTasksForRuntimesParams{
+			RuntimeIds:        uniqueIDs,
+			ClaimRecoverySecs: claimResponseRecoveryWindow.Seconds(),
+			PrepareLeaseSecs:  prepareLeaseDuration.Seconds(),
+			RuntimeStaleSecs:  RuntimeClaimFreshnessSeconds,
+			MaxTasks:          int32(maxTasks),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("reclaim stale dispatched tasks: %w", err)
+		}
+		// The UPDATE's fixed setup/locking cost dominates array width. Query and
+		// advance the complete machine-level set together so per-runtime backstops
+		// cannot drift into one UPDATE on almost every daemon poll.
+		s.ReclaimCheck.MarkChecked(
+			ctx,
+			runtimeKeys,
+			checkStarted,
+			time.Now().Add(ReclaimCheckRetryInterval),
+		)
 	}
 	for i := range reclaimed {
+		s.trackTaskForReclaim(reclaimed[i], reclaimCheckAfter)
 		claimed = append(claimed, reclaimed[i])
 		slog.Info("stale dispatched task reclaimed (batch)",
 			"task_id", util.UUIDToString(reclaimed[i].ID),
@@ -3581,6 +3678,7 @@ func (s *TaskService) StartTask(ctx context.Context, taskID pgtype.UUID) (*db.Ag
 	if err != nil {
 		return nil, fmt.Errorf("start task: %w", err)
 	}
+	s.forgetTaskReclaim(task)
 	s.cancelDeferredEscalationsForTask(ctx, task.ID)
 
 	slog.Info("task started", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
@@ -3648,6 +3746,15 @@ func (s *TaskService) ExtendTaskPrepareLease(ctx context.Context, taskID, runtim
 	if err != nil {
 		return nil, fmt.Errorf("extend task prepare lease: %w", err)
 	}
+	if task.Status == "dispatched" {
+		// Use the successful response time as a conservative application-clock
+		// approximation of the DB lease start. Scheduling slightly late by query
+		// latency is safer than an early failed check suppressing the hint until
+		// the next backstop.
+		s.extendTaskReclaimHint(task, time.Now().Add(prepareLeaseDuration))
+	} else {
+		s.forgetTaskReclaim(task)
+	}
 	return &task, nil
 }
 
@@ -3667,6 +3774,7 @@ func (s *TaskService) MarkTaskWaitingLocalDirectory(ctx context.Context, taskID 
 	if err != nil {
 		return nil, fmt.Errorf("mark task waiting_local_directory: %w", err)
 	}
+	s.forgetTaskReclaim(task)
 
 	slog.Info("task waiting_local_directory",
 		"task_id", util.UUIDToString(task.ID),
@@ -6003,6 +6111,7 @@ func (s *TaskService) NotifyTaskEnqueued(ctx context.Context, task db.AgentTaskQ
 // is not available; the hint only means that a queued successor may have
 // become claimable because an agent-capacity or serialization barrier cleared.
 func (s *TaskService) NotifyTaskFinished(task db.AgentTaskQueue) {
+	s.forgetTaskReclaim(task)
 	s.notifyRuntimeMayHaveWork(task.RuntimeID, "")
 }
 
@@ -6015,6 +6124,7 @@ func (s *TaskService) notifyTasksFinished(tasks []db.AgentTaskQueue) {
 		if !task.RuntimeID.Valid {
 			continue
 		}
+		s.forgetTaskReclaim(task)
 		runtimeKey := util.UUIDToString(task.RuntimeID)
 		if _, ok := seen[runtimeKey]; ok {
 			continue
