@@ -97,6 +97,14 @@ export default ({ config }: ConfigContext): ExpoConfig => {
           ios: {
             buildReactNativeFromSource: true,
           },
+          android: {
+            // 自定义服务器地址由用户在运行时添加,无法用域名白名单覆盖。
+            // 产品语义允许用户确认弱警告后访问 http 自建服务;显式开启
+            // Android cleartext,HTTPS 仍由 TLS 校验保护。若产品以后改为
+            // 禁止明文,删除此项并重新 prebuild/release 即可回退到 Android
+            // 默认拒绝策略。
+            usesCleartextTraffic: true,
+          },
         },
       ],
       // android/ 是 prebuild 产物且被 gitignore,release 签名配置只能靠 plugin
