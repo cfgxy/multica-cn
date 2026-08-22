@@ -166,7 +166,10 @@ export default function IssueDetail() {
                       <DropdownMenuTrigger asChild>
                         <IconButton
                           name="ellipsis-horizontal"
-                          accessibilityLabel="Issue actions" /* mobile-only string; no web resource key */
+                          accessibilityLabel={t(
+                            "mobile.detail.actions_a11y",
+                            "Issue actions",
+                          )}
                         />
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-44">
@@ -174,15 +177,17 @@ export default function IssueDetail() {
                           <Text>{isPinned ? t("detail.unpin_tooltip", "Unpin from sidebar") : t("detail.pin_tooltip", "Pin to sidebar")}</Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onEditDetails}>
-                          {/* mobile-only string; no web resource key */}
-                          <Text>Edit details</Text>
+                          <Text>
+                            {t("mobile.detail.edit_details", "Edit details")}
+                          </Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onCopyLink}>
                           <Text>{t("actions.copy_link", "Copy link")}</Text>
                         </DropdownMenuItem>
                         <DropdownMenuItem onPress={onOpenOnWeb}>
-                          {/* mobile-only string; no web resource key */}
-                          <Text>Open on web</Text>
+                          <Text>
+                            {t("mobile.detail.open_on_web", "Open on web")}
+                          </Text>
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
                         <DropdownMenuItem variant="destructive" onPress={onDelete}>
@@ -202,13 +207,16 @@ export default function IssueDetail() {
       ) : detail.error || !issue ? (
         <View className="flex-1 items-center justify-center px-6 gap-3">
           <Text className="text-sm text-destructive text-center">
-            Failed to load issue:{" "}
-            {detail.error instanceof Error
-              ? detail.error.message
-              : "not found"}
+            {/* 同 select-workspace：整句插值，不做「失败：<详情>」拼接。 */}
+            {t("mobile.detail.load_failed", "Failed to load issue: {{reason}}", {
+              reason:
+                detail.error instanceof Error
+                  ? detail.error.message
+                  : t("mobile.detail.not_found", "not found"),
+            })}
           </Text>
           <Button variant="outline" onPress={() => detail.refetch()}>
-            <Text>Retry</Text>
+            <Text>{t("mobile.detail.retry", "Retry")}</Text>
           </Button>
         </View>
       ) : (

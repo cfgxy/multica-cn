@@ -791,8 +791,8 @@
       "pill_label": "댓글 추가, @로 멘션"
     },
     "comment": {
-      "resolved_bar_other": "해결됨 · {{authors}}님의 메시지 {{count}}개",
-      "resolved_bar_a11y_other": "{{authors}}님의 해결된 스레드, 메시지 {{count}}개. 탭하여 펼치기.",
+      "resolved_bar_other": "해결됨 · 메시지 {{count}}개 ({{authors}}님)",
+      "resolved_bar_a11y_other": "해결된 스레드, 메시지 {{count}}개 ({{authors}}님). 탭하여 펼치기.",
       "resolved_by": "해결한 사람",
       "collapse": "접기",
       "collapse_a11y": "해결된 스레드 접기",
@@ -802,6 +802,14 @@
       "retry_a11y": "댓글 다시 보내기",
       "discard": "삭제",
       "discard_a11y": "실패한 댓글 삭제"
+    },
+    "detail": {
+      "actions_a11y": "태스크 작업",
+      "edit_details": "세부 정보 편집",
+      "open_on_web": "웹에서 열기",
+      "load_failed": "태스크를 불러오지 못했습니다: {{reason}}",
+      "not_found": "찾을 수 없음",
+      "retry": "다시 시도"
     }
   }
 }

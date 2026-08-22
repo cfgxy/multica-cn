@@ -834,6 +834,14 @@
       "retry_a11y": "Retry sending comment",
       "discard": "Discard",
       "discard_a11y": "Discard failed comment"
+    },
+    "detail": {
+      "actions_a11y": "Issue actions",
+      "edit_details": "Edit details",
+      "open_on_web": "Open on web",
+      "load_failed": "Failed to load issue: {{reason}}",
+      "not_found": "not found",
+      "retry": "Retry"
     }
   }
 }

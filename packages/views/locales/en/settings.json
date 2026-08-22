@@ -1234,6 +1234,12 @@
     },
     "notifications": {
       "load_failed": "Failed to load notification preferences."
+    },
+    "page": {
+      "sign_out_body": "You'll need to sign in again to use Multica on this device.",
+      "notifications_subtitle": "Inbox and system alerts",
+      "server_section": "Server",
+      "workspaces_load_failed": "Failed to load workspaces"
     }
   }
 }

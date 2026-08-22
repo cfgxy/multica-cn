@@ -76,9 +76,13 @@ export default function SettingsPage() {
   const onSignOut = () => {
     Alert.alert(
       i18n.t("layout:sidebar.log_out", "Log out"),
-      "You'll need to sign in again to use Multica on this device." /* mobile-only string; no web resource key */,
+      t(
+        "mobile.page.sign_out_body",
+        "You'll need to sign in again to use Multica on this device.",
+      ),
       [
-        { text: "Cancel", style: "cancel" } /* mobile-only alert */,
+        // 绑定的是 settings ns，"Cancel" 在 common 里，用 ns 前缀跨取。
+        { text: t("common:cancel", "Cancel"), style: "cancel" },
         {
           text: i18n.t("layout:sidebar.log_out", "Log out"),
           style: "destructive",
@@ -124,11 +128,14 @@ export default function SettingsPage() {
           onPress={goNotifications}
           chevronColor={mutedFg}
           title={t("page.tabs.notifications", "Notifications")}
-          subtitle={"Inbox and system alerts" /* mobile-only string; no web resource key */}
+          subtitle={t(
+            "mobile.page.notifications_subtitle",
+            "Inbox and system alerts",
+          )}
         />
       </SectionGroup>
 
-      <SectionGroup title="Server">
+      <SectionGroup title={t("mobile.page.server_section", "Server")}>
         <NavRow
           onPress={() => router.push("/server-settings")}
           chevronColor={mutedFg}
@@ -145,7 +152,7 @@ export default function SettingsPage() {
         ) : error ? (
           <View className="p-4">
             <Text className="text-sm text-destructive">
-              Failed to load workspaces
+              {t("mobile.page.workspaces_load_failed", "Failed to load workspaces")}
             </Text>
           </View>
         ) : (

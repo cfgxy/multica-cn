@@ -30,5 +30,15 @@
     "description": "This workspace doesn't exist or you don't have access.",
     "go_to_workspaces": "Go to my workspaces",
     "sign_in_different": "Sign in as a different user"
+  },
+  "mobile": {
+    "select": {
+      "signed_in_as": "Signed in as",
+      "title": "Select a workspace",
+      "load_failed": "Failed to load workspaces: {{reason}}",
+      "unknown_error": "unknown error",
+      "retry": "Retry",
+      "no_workspaces": "You don't belong to any workspaces yet. Contact your workspace admin to be invited."
+    }
   }
 }

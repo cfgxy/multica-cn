@@ -121,5 +121,16 @@
     "export_png": "下载 PNG",
     "export_svg": "下载 SVG",
     "export_source": "下载 .mmd"
+  },
+  "mobile": {
+    "toolbar": {
+      "mention": "提及某人",
+      "bullet_list": "无序列表",
+      "checklist": "待办列表",
+      "code_block": "代码块",
+      "quote": "引用",
+      "attach_image": "插入图片",
+      "attach_file": "添加附件"
+    }
   }
 }
