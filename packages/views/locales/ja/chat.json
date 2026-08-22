@@ -229,5 +229,14 @@
     "delete": "チャットを削除",
     "archive": "チャットをアーカイブ",
     "unarchive": "アーカイブを解除"
+  },
+  "mobile": {
+    "send_blocked": {
+      "no_permission_title": "このエージェントを実行する権限がありません",
+      "no_permission_message": "このエージェントを実行する権限がなくなったため、メッセージは送信されませんでした。所有者にアクセス権を依頼してください。",
+      "runtime_required_title": "ランタイムが必要です",
+      "runtime_required_message": "メッセージを送信する前に、ウェブ版またはデスクトップ版でこのエージェントにランタイムをバインドしてください。",
+      "failed_title": "メッセージは送信されませんでした"
+    }
   }
 }

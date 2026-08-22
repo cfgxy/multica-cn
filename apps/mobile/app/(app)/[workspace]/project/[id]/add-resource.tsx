@@ -13,12 +13,15 @@ import { useLocalSearchParams, router } from "expo-router";
 import { Text } from "@/components/ui/text";
 import { TextField } from "@/components/ui/text-field";
 import { useCreateProjectResource } from "@/data/mutations/projects";
+import { useT } from "@/lib/use-t";
 
 const GITHUB_PATTERN = /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+(\/|$)/i;
 
 export default function AddResourceRoute() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const createResource = useCreateProjectResource(id);
+  const { t } = useT("common");
+  const { t: tProjects } = useT("projects");
 
   const [url, setUrl] = useState("");
   const [label, setLabel] = useState("");
@@ -38,19 +41,24 @@ export default function AddResourceRoute() {
         onSuccess: () => router.back(),
         onError: (err) => {
           Alert.alert(
-            "Failed to attach resource",
-            err instanceof Error ? err.message : "Unknown error",
+            tProjects(
+              "mobile.resource.attach_failed",
+              "Failed to attach resource",
+            ),
+            err instanceof Error
+              ? err.message
+              : t("unknown_error", "Unknown error"),
           );
         },
       },
     );
-  }, [valid, submitting, createResource, url, label]);
+  }, [valid, submitting, createResource, url, label, t, tProjects]);
 
   return (
     <View className="flex-1">
       <View className="flex-row items-center justify-between px-4 pt-4 pb-2">
         <Text className="text-base font-semibold text-foreground">
-          Attach repository
+          {tProjects("mobile.resource.attach_title", "Attach repository")}
         </Text>
         <Pressable
           onPress={onSubmit}
@@ -61,13 +69,15 @@ export default function AddResourceRoute() {
           }`}
         >
           <Text className="text-sm font-semibold text-primary">
-            {submitting ? "Attaching…" : "Attach"}
+            {submitting ? t("attaching", "Attaching…") : t("attach", "Attach")}
           </Text>
         </Pressable>
       </View>
       <View className="px-4 pt-4 gap-4">
         <View className="gap-1">
-          <Text className="text-xs text-muted-foreground">Repository URL</Text>
+          <Text className="text-xs text-muted-foreground">
+            {tProjects("mobile.resource.url_label", "Repository URL")}
+          </Text>
           <TextField
             value={url}
             onChangeText={setUrl}
@@ -80,12 +90,15 @@ export default function AddResourceRoute() {
         </View>
         <View className="gap-1">
           <Text className="text-xs text-muted-foreground">
-            Label (optional)
+            {tProjects("mobile.resource.label_optional", "Label (optional)")}
           </Text>
           <TextField
             value={label}
             onChangeText={setLabel}
-            placeholder="e.g. Backend"
+            placeholder={tProjects(
+              "mobile.resource.label_placeholder",
+              "e.g. Backend",
+            )}
           />
         </View>
       </View>

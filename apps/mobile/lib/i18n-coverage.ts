@@ -28,14 +28,21 @@
  *   - **变量引用**：`const hint = "Session expired"; <Text>{hint}</Text>`。
  *     要判定得做作用域内的常量传播，正则做不到，也容易误伤纯数据变量。
  *   - **跨文件常量**：从 `constants.ts` / 后端响应导入的英文串。
- *   - **数组 / 对象取值**：`{["A","B"][i]}`、`{MAP[key]}`。字面量在表达式里
- *     但语义是数据查表，采了误报高于收益。
+ *   - **外部定义的数组 / 映射取值**：`{MAP[key]}`、`{LABELS[i]}` —— 字面量
+ *     不在 JSX 里，取不到。注意**内联**写法 `{["A","B"][i]}` 实际会被采到：
+ *     字面量就在 `{}` 内，`extractStringLiterals` 一视同仁。行为比这里的
+ *     声明更严，不是 bug。
  *   - **含 `${}` 的模板串**：`` {`Hello ${name}`} ``。这类必然要走带插值的
  *     t()，但拆插值后的碎片易触发误报，暂不采。
  *   - **`Alert.alert` 的第三个参数**（buttons 数组里的 `text`）与
  *     `Alert.prompt`。
  *   - **props 上的表达式字面量**：`title={cond ? "A" : "B"}`；只采
  *     `prop="字面量"` 形态。
+ *   - **文件内局部封装组件的裸文本**：`<SectionLabel>Status</SectionLabel>`
+ *     —— 标签名不在 `TEXT_TAGS` 里就不采，哪怕它内部渲染的就是 `<Text>`
+ *     （见 `issues-filter.tsx:150` 的 `function SectionLabel(...)`）。把每个
+ *     项目自定义组件都列进 `TEXT_TAGS` 不现实，判定「该组件最终渲染文本」
+ *     又要跨函数分析。这类只能靠人工 review 兜住。
  *
  * 以上任一类进入 P1 视野时，补齐点都在 `extractStringLiterals` /
  * `extractTextProps` 附近，测试用「注入 → 应失败」的方式验证。
@@ -91,6 +98,8 @@ export function looksLikeUserFacingEnglish(raw: string): boolean {
   if (/^[\w.-]+@[\w.-]+$/.test(text)) return false;
   if (/^[/@#.]/.test(text)) return false;
   if (/^[a-z0-9_.-]+$/.test(text)) return false;
+  // HTML 实体（`&quot;` / `&amp;`）：源码里的转义写法，不是待译文案。
+  if (/^&[a-z]+;$/.test(text)) return false;
   // className 串（`text-sm text-muted-foreground`）：每个 token 都带
   // `-` / `:` 且全小写，没有任何一个是普通英文单词。
   const tokens = text.split(/\s+/);
@@ -105,11 +114,38 @@ export function looksLikeUserFacingEnglish(raw: string): boolean {
   return true;
 }
 
-/** 剥掉行注释与块注释，保持偏移不变（用等长空格填充）。 */
+/**
+ * 剥掉行注释与块注释，保持偏移不变（用等长空格填充）。
+ *
+ * 必须带引号状态逐字符扫，不能直接用正则：`placeholder="https://github.com/o/r"`
+ * 里的 `//` 会被朴素正则当成行注释，把后半截 URL 连同同一行剩下的属性一起
+ * 抹掉，采出 `https:` 这种半截垃圾条目落进 baseline。
+ */
 function stripComments(src: string): string {
-  return src
-    .replace(/\/\*[\s\S]*?\*\//g, (m) => " ".repeat(m.length))
-    .replace(/\/\/[^\n]*/g, (m) => " ".repeat(m.length));
+  const out = src.split("");
+  let quote: string | null = null;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (quote) {
+      if (ch === "\\") i += 1;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "/" && src[i + 1] === "/") {
+      while (i < src.length && src[i] !== "\n") out[i++] = " ";
+      i -= 1;
+    } else if (ch === "/" && src[i + 1] === "*") {
+      const end = src.indexOf("*/", i + 2);
+      const stop = end === -1 ? src.length : end + 2;
+      for (; i < stop; i++) if (src[i] !== "\n") out[i] = " ";
+      i -= 1;
+    }
+  }
+  return out.join("");
 }
 
 /**
@@ -145,13 +181,17 @@ function findTagEnd(
 }
 
 /**
- * 把 `t(...)` / `i18n.t(...)` 调用整段挖空（等长空格，偏移不变）。
+ * 把翻译函数调用整段挖空（等长空格，偏移不变）。
  *
  * 调用里的字符串是 key 与英文 fallback，本来就该是英文，采进来全是误报。
  * 按括号深度找配对的 `)`，字符串内的括号不计数。
+ *
+ * 认三种形态：`t(…)`、`i18n.t(…)`，以及一个组件里绑定多个 namespace 时的
+ * 重命名写法 `const { t: tIssues } = useT("issues")` → `tIssues(…)`。第三种
+ * 必须认：漏掉它会把已经走了 t() 的文案报成违规，是会误伤的方向。
  */
 function stripTCalls(expr: string): string {
-  const re = /(?<![A-Za-z0-9_$.])(?:i18n\.)?t\s*\(/g;
+  const re = /(?<![A-Za-z0-9_$.])(?:i18n\.)?t(?:[A-Z][A-Za-z0-9]*)?\s*\(/g;
   let out = expr;
   for (const m of expr.matchAll(re)) {
     const start = m.index ?? 0;
@@ -393,7 +433,15 @@ export function listTsxFiles(dir: string): string[] {
 
 /** 扫描单个文件，返回未走 t() 的用户可见英文字面量。 */
 export function scanFile(absPath: string, relPath: string): Violation[] {
-  const src = stripComments(readFileSync(absPath, "utf8"));
+  return scanSource(readFileSync(absPath, "utf8"), relPath);
+}
+
+/**
+ * 扫描一段源码。给测试用的纯字符串入口 —— 不落盘就能对单条规则做
+ * 「注入应报红 / 已走 t() 应放行」的断言。
+ */
+export function scanSource(rawSrc: string, relPath = "<source>"): Violation[] {
+  const src = stripComments(rawSrc);
   const found: Violation[] = [];
   for (const tag of TEXT_TAGS) {
     for (const text of extractTextChildren(src, tag)) {

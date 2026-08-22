@@ -77,7 +77,7 @@
     "agents_group": "智能体",
     "squads_group": "小队",
     "issue_count_other": "{{count}} 个任务",
-    "reset": "重置全部筛选",
+    "reset": "重置",
     "chip_remove": "移除{{name}}筛选",
     "chip_status_count_other": "{{count}} 个状态",
     "chip_priority_count_other": "{{count}} 个优先级",
@@ -780,5 +780,11 @@
     "hook_refused": "{{name}} 未被执行。",
     "hook_activity": "最近调用",
     "hook_never_run": "该 hook 尚未运行过。"
+  },
+  "mobile": {
+    "edit": {
+      "discard_message": "你对此 Issue 的修改将会丢失。",
+      "save_failed": "保存失败"
+    }
   }
 }

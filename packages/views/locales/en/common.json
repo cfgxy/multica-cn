@@ -123,5 +123,20 @@
   },
   "navigation": {
     "open_in_new_tab": "Open in new tab"
+  },
+  "saving": "Saving…",
+  "creating": "Creating…",
+  "create": "Create",
+  "attach": "Attach",
+  "attaching": "Attaching…",
+  "unknown_error": "Unknown error",
+  "discard_dialog": {
+    "changes_title": "Discard changes?",
+    "keep_editing": "Keep editing",
+    "discard": "Discard"
+  },
+  "field": {
+    "title": "Title",
+    "description": "Description"
   }
 }

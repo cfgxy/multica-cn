@@ -168,5 +168,26 @@
     "direction_desc": "Descending",
     "section_columns": "Columns",
     "view": "View"
+  },
+  "mobile": {
+    "new": {
+      "discard_title": "Discard project?",
+      "discard_message": "Your draft will be lost.",
+      "create_failed": "Failed to create project",
+      "icon_label": "Icon (emoji)",
+      "title_placeholder": "Project title",
+      "description_placeholder": "What is this project about?"
+    },
+    "edit": {
+      "discard_message": "Your edits to this project will be lost.",
+      "save_failed": "Failed to save"
+    },
+    "resource": {
+      "attach_title": "Attach repository",
+      "url_label": "Repository URL",
+      "label_optional": "Label (optional)",
+      "label_placeholder": "e.g. Backend",
+      "attach_failed": "Failed to attach resource"
+    }
   }
 }

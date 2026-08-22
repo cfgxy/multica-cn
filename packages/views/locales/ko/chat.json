@@ -229,5 +229,14 @@
     "delete": "채팅 삭제",
     "archive": "채팅 보관",
     "unarchive": "채팅 보관 해제"
+  },
+  "mobile": {
+    "send_blocked": {
+      "no_permission_title": "이 에이전트를 실행할 권한이 없습니다",
+      "no_permission_message": "이 에이전트를 실행할 권한이 없어 메시지가 전송되지 않았습니다. 소유자에게 액세스 권한을 요청하세요.",
+      "runtime_required_title": "런타임 필요",
+      "runtime_required_message": "메시지를 보내기 전에 웹 또는 데스크톱에서 이 에이전트에 런타임을 바인딩하세요.",
+      "failed_title": "메시지가 전송되지 않았습니다"
+    }
   }
 }

@@ -123,5 +123,20 @@
   },
   "navigation": {
     "open_in_new_tab": "在新标签页打开"
+  },
+  "saving": "保存中…",
+  "creating": "创建中…",
+  "create": "创建",
+  "attach": "关联",
+  "attaching": "关联中…",
+  "unknown_error": "未知错误",
+  "discard_dialog": {
+    "changes_title": "放弃更改？",
+    "keep_editing": "继续编辑",
+    "discard": "放弃"
+  },
+  "field": {
+    "title": "标题",
+    "description": "描述"
   }
 }

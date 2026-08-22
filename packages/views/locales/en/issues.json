@@ -78,7 +78,7 @@
     "squads_group": "Squads",
     "issue_count_one": "{{count}} issue",
     "issue_count_other": "{{count}} issues",
-    "reset": "Reset all filters",
+    "reset": "Reset",
     "chip_remove": "Remove {{name}} filter",
     "chip_status_count_other": "{{count}} statuses",
     "chip_priority_count_other": "{{count}} priorities",
@@ -810,5 +810,11 @@
     "hook_refused": "{{name}} was not run.",
     "hook_activity": "Recent calls",
     "hook_never_run": "This hook has not run yet."
+  },
+  "mobile": {
+    "edit": {
+      "discard_message": "Your edits to this issue will be lost.",
+      "save_failed": "Failed to save"
+    }
   }
 }

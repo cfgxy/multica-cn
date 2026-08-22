@@ -77,7 +77,7 @@
     "agents_group": "에이전트",
     "squads_group": "스쿼드",
     "issue_count_other": "태스크 {{count}}개",
-    "reset": "필터 모두 초기화",
+    "reset": "초기화",
     "chip_remove": "{{name}} 필터 제거",
     "chip_status_count_other": "상태 {{count}}개",
     "chip_priority_count_other": "우선순위 {{count}}개",
@@ -780,5 +780,11 @@
     "hook_refused": "{{name}}이(가) 실행되지 않았습니다.",
     "hook_activity": "최근 호출",
     "hook_never_run": "이 훅은 아직 실행되지 않았습니다."
+  },
+  "mobile": {
+    "edit": {
+      "discard_message": "이 이슈에 대한 편집 내용이 사라집니다.",
+      "save_failed": "저장 실패"
+    }
   }
 }

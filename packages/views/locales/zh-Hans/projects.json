@@ -166,5 +166,26 @@
     "direction_desc": "降序",
     "section_columns": "列",
     "view": "视图"
+  },
+  "mobile": {
+    "new": {
+      "discard_title": "放弃创建项目？",
+      "discard_message": "草稿将会丢失。",
+      "create_failed": "创建项目失败",
+      "icon_label": "图标（emoji）",
+      "title_placeholder": "项目标题",
+      "description_placeholder": "这个项目是做什么的？"
+    },
+    "edit": {
+      "discard_message": "你对此项目的修改将会丢失。",
+      "save_failed": "保存失败"
+    },
+    "resource": {
+      "attach_title": "关联仓库",
+      "url_label": "仓库地址",
+      "label_optional": "标签（可选）",
+      "label_placeholder": "例如：后端",
+      "attach_failed": "关联资源失败"
+    }
   }
 }

@@ -229,5 +229,14 @@
     "delete": "删除会话",
     "archive": "归档会话",
     "unarchive": "取消归档"
+  },
+  "mobile": {
+    "send_blocked": {
+      "no_permission_title": "无权运行此 Agent",
+      "no_permission_message": "你已不再拥有运行此 Agent 的权限，消息未发送。请向其所有者申请访问权限。",
+      "runtime_required_title": "需要绑定运行时",
+      "runtime_required_message": "请先在网页版或桌面端为此 Agent 绑定运行时，然后再发送消息。",
+      "failed_title": "消息未发送"
+    }
   }
 }

@@ -166,5 +166,26 @@
     "direction_desc": "내림차순",
     "section_columns": "열",
     "view": "보기"
+  },
+  "mobile": {
+    "new": {
+      "discard_title": "프로젝트 생성을 취소할까요?",
+      "discard_message": "임시 저장한 내용이 사라집니다.",
+      "create_failed": "프로젝트 생성 실패",
+      "icon_label": "아이콘(이모지)",
+      "title_placeholder": "프로젝트 제목",
+      "description_placeholder": "이 프로젝트는 무엇에 관한 것인가요?"
+    },
+    "edit": {
+      "discard_message": "이 프로젝트에 대한 편집 내용이 사라집니다.",
+      "save_failed": "저장 실패"
+    },
+    "resource": {
+      "attach_title": "저장소 연결",
+      "url_label": "저장소 URL",
+      "label_optional": "라벨(선택)",
+      "label_placeholder": "예: 백엔드",
+      "attach_failed": "리소스 연결 실패"
+    }
   }
 }
