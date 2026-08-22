@@ -63,7 +63,15 @@ export default function ProfileSettingsScreen() {
 
   const handleAvatarPick = () => {
     // 相机/相册是 mobile 专属选项文案，web 资源无对应 key。
-    const options = ["Take Photo", "Choose from Library", "Remove Photo", "Cancel"];
+    // 这四条在数组里而非 JSX 内，覆盖率扫描器采不到（漏采清单第 3 类
+    // 「外部定义的数组取值」），但它们是 ActionSheet 上实打实的可见文案，
+    // 一并汉化——baseline 数字不会因此变化。
+    const options = [
+      t("mobile.avatar.take_photo", "Take Photo"),
+      t("mobile.avatar.choose_from_library", "Choose from Library"),
+      t("mobile.avatar.remove_photo", "Remove Photo"),
+      t("mobile.avatar.cancel", "Cancel"),
+    ];
     const removeIndex = user?.avatar_url ? 2 : -1;
     const cancelIndex = user?.avatar_url ? 3 : 2;
     const visibleOptions = user?.avatar_url ? options : options.filter((_, i) => i !== 2);
@@ -84,7 +92,13 @@ export default function ProfileSettingsScreen() {
   const pickFromCamera = async () => {
     const perm = await ImagePicker.requestCameraPermissionsAsync();
     if (!perm.granted) {
-      Alert.alert("Permission needed" /* mobile-only string */, "Camera access is required to take a photo.");
+      Alert.alert(
+        t("mobile.avatar.permission_title", "Permission needed"),
+        t(
+          "mobile.avatar.permission_camera",
+          "Camera access is required to take a photo.",
+        ),
+      );
       return;
     }
     const result = await ImagePicker.launchCameraAsync({
@@ -108,7 +122,10 @@ export default function ProfileSettingsScreen() {
 
   const uploadAvatar = async (asset: ImagePicker.ImagePickerAsset) => {
     if (asset.fileSize && asset.fileSize > MAX_AVATAR_BYTES) {
-      Alert.alert("Image too large" /* mobile-only string */, "Pick an image under 5 MB." /* mobile-only string; no web resource key */);
+      Alert.alert(
+        t("mobile.avatar.too_large_title", "Image too large"),
+        t("mobile.avatar.too_large_body", "Pick an image under 5 MB."),
+      );
       return;
     }
     const fileAsset: FileAsset = {
@@ -127,7 +144,9 @@ export default function ProfileSettingsScreen() {
     } catch (err) {
       Alert.alert(
         i18n.t("common:avatar_upload.failed", "Failed to upload avatar"),
-        err instanceof Error ? err.message : "Could not upload avatar." /* mobile-only string; no web resource key */,
+        err instanceof Error
+          ? err.message
+          : t("mobile.avatar.upload_failed_body", "Could not upload avatar."),
       );
     } finally {
       setUploading(false);
@@ -141,8 +160,10 @@ export default function ProfileSettingsScreen() {
       setUser(updated);
     } catch (err) {
       Alert.alert(
-        "Remove failed" /* mobile-only string */,
-        err instanceof Error ? err.message : "Could not remove avatar." /* mobile-only string; no web resource key */,
+        t("mobile.avatar.remove_failed_title", "Remove failed"),
+        err instanceof Error
+          ? err.message
+          : t("mobile.avatar.remove_failed_body", "Could not remove avatar."),
       );
     } finally {
       setUploading(false);
@@ -157,7 +178,7 @@ export default function ProfileSettingsScreen() {
       setUser(updated);
     } catch (err) {
       Alert.alert(
-        "Save failed" /* mobile-only string */,
+        t("mobile.account.save_failed_title", "Save failed"),
         err instanceof Error ? err.message : t("account.toast_profile_failed", "Failed to update profile"),
       );
     } finally {
@@ -201,7 +222,7 @@ export default function ProfileSettingsScreen() {
           <TextField
             value={name}
             onChangeText={setName}
-            placeholder="Your name"
+            placeholder={t("mobile.account.name_placeholder", "Your name")}
             autoCapitalize="words"
             autoCorrect={false}
             returnKeyType="done"
@@ -215,7 +236,10 @@ export default function ProfileSettingsScreen() {
             </Text>
           </View>
           <Text className="text-xs text-muted-foreground mt-1.5">
-            {"Email is set at sign-up and can't be changed here." /* mobile-only string; no web resource key */}
+            {t(
+              "mobile.account.email_hint",
+              "Email is set at sign-up and can't be changed here.",
+            )}
           </Text>
         </View>
       </View>

@@ -52,6 +52,7 @@ import { useFailedCommentsStore } from "@/data/stores/failed-comments-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/use-t";
 import { ReactionBar } from "./reaction-bar";
 import { useCommentLongPress } from "./comment-context-menu";
 import { ActionSheetModal } from "@/components/ui/action-sheet";
@@ -212,6 +213,7 @@ function ResolvedThreadBar({
   onExpand: () => void;
 }) {
   const { getName } = useActorLookup();
+  const { t } = useT("issues");
   const { colorScheme } = useColorScheme();
   const mutedFg = THEME[colorScheme].mutedForeground;
 
@@ -246,15 +248,24 @@ function ResolvedThreadBar({
         onPress={onExpand}
         className="flex-row items-center gap-2.5 px-4 py-3 rounded-2xl bg-surface-1 active:opacity-70"
         accessibilityRole="button"
-        accessibilityLabel={`Resolved thread by ${authorsLabel}, ${total} ${total === 1 ? "message" : "messages"}. Tap to expand.`}
+        accessibilityLabel={t(
+          "mobile.comment.resolved_bar_a11y",
+          "Resolved thread by {{authors}}, {{count}} messages. Tap to expand.",
+          { count: total, authors: authorsLabel },
+        )}
       >
         <Ionicons name="checkmark-circle" size={18} color={mutedFg} />
         <Text
           className="flex-1 text-sm text-muted-foreground"
           numberOfLines={1}
         >
-          Resolved · {total} {total === 1 ? "message" : "messages"} by{" "}
-          {authorsLabel}
+          {/* 单复数交给 i18next 的 count 规则，不再手写三元：中日韩没有
+              语法数，硬拼 `1 message` / `2 messages` 翻不出来。 */}
+          {t(
+            "mobile.comment.resolved_bar",
+            "Resolved · {{count}} messages by {{authors}}",
+            { count: total, authors: authorsLabel },
+          )}
         </Text>
         <Ionicons name="chevron-down" size={14} color={mutedFg} />
       </Pressable>
@@ -280,6 +291,7 @@ function ResolvedIndicator({
   onCollapse: () => void;
 }) {
   const { getName } = useActorLookup();
+  const { t } = useT("issues");
   const { colorScheme } = useColorScheme();
   const mutedFg = THEME[colorScheme].mutedForeground;
   const resolverName = getName(
@@ -292,17 +304,25 @@ function ResolvedIndicator({
       onPress={onCollapse}
       className="flex-row items-center gap-2 active:opacity-60"
       accessibilityRole="button"
-      accessibilityLabel="Collapse resolved thread"
+      accessibilityLabel={t(
+        "mobile.comment.collapse_a11y",
+        "Collapse resolved thread",
+      )}
     >
       <Ionicons name="checkmark-circle" size={14} color={mutedFg} />
       <Text className="text-xs text-muted-foreground flex-1" numberOfLines={1}>
-        Resolved by{" "}
+        {/* 名字嵌在句中要保留独立字号/字重，不能整句插值，所以 label 与
+            名字分成两段。中日韩「解决者 / 解決者 / 해결한 사람」放在名字
+            前同样成立，语序不需要倒置。 */}
+        {t("mobile.comment.resolved_by", "Resolved by")}{" "}
         <Text className="text-xs text-foreground font-medium">
           {resolverName}
         </Text>
         {entry.resolved_at ? ` · ${timeAgo(entry.resolved_at)}` : ""}
       </Text>
-      <Text className="text-xs text-muted-foreground">Collapse</Text>
+      <Text className="text-xs text-muted-foreground">
+        {t("mobile.comment.collapse", "Collapse")}
+      </Text>
     </Pressable>
   );
 }
@@ -392,6 +412,7 @@ function CommentBody({
     (s) => s.selectingId === entry.id,
   );
   const { getName } = useActorLookup();
+  const { t } = useT("issues");
   const userId = useAuthStore((s) => s.user?.id);
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const toggle = useToggleCommentReaction(issueId);
@@ -490,7 +511,7 @@ function CommentBody({
         <Text className="text-sm font-medium text-foreground">{name}</Text>
         <Text className="text-xs text-muted-foreground">
           · {timeAgo(entry.created_at)}
-          {edited ? " · (edited)" : ""}
+          {edited ? t("mobile.comment.edited_suffix", " · (edited)") : ""}
         </Text>
       </View>
       {entry.content ? (
@@ -548,6 +569,7 @@ function FailedActions({
   onRetry: () => void;
   onDiscard: () => void;
 }) {
+  const { t } = useT("issues");
   const { colorScheme } = useColorScheme();
   const destructive = THEME[colorScheme].destructive;
   return (
@@ -557,24 +579,34 @@ function FailedActions({
         className="flex-1 text-xs text-destructive"
         numberOfLines={1}
       >
-        {error || "Couldn't send"}
+        {/* `error` 来自服务端/网络层，本身可能是英文；这里只兜底空值。
+            服务端消息的本地化不在本批次范围内。 */}
+        {error || t("mobile.comment.send_failed", "Couldn't send")}
       </Text>
       <Pressable
         onPress={onRetry}
         hitSlop={6}
         accessibilityRole="button"
-        accessibilityLabel="Retry sending comment"
+        accessibilityLabel={t(
+          "mobile.comment.retry_a11y",
+          "Retry sending comment",
+        )}
       >
-        <Text className="text-xs text-primary font-medium">Retry</Text>
+        <Text className="text-xs text-primary font-medium">
+          {t("mobile.comment.retry", "Retry")}
+        </Text>
       </Pressable>
       <Pressable
         onPress={onDiscard}
         hitSlop={6}
         accessibilityRole="button"
-        accessibilityLabel="Discard failed comment"
+        accessibilityLabel={t(
+          "mobile.comment.discard_a11y",
+          "Discard failed comment",
+        )}
       >
         <Text className="text-xs text-muted-foreground font-medium">
-          Discard
+          {t("mobile.comment.discard", "Discard")}
         </Text>
       </Pressable>
     </View>

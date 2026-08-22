@@ -1211,5 +1211,28 @@
       "change_message": "连接到新地址前会先退出当前账号。",
       "cancel": "取消"
     }
+  },
+  "mobile": {
+    "avatar": {
+      "take_photo": "拍照",
+      "choose_from_library": "从相册选择",
+      "remove_photo": "移除头像",
+      "cancel": "取消",
+      "permission_title": "需要权限",
+      "permission_camera": "拍照需要访问相机权限。",
+      "too_large_title": "图片过大",
+      "too_large_body": "请选择小于 5 MB 的图片。",
+      "upload_failed_body": "无法上传头像。",
+      "remove_failed_title": "移除失败",
+      "remove_failed_body": "无法移除头像。"
+    },
+    "account": {
+      "save_failed_title": "保存失败",
+      "name_placeholder": "你的姓名",
+      "email_hint": "邮箱在注册时设定，无法在此修改。"
+    },
+    "notifications": {
+      "load_failed": "无法加载通知偏好设置。"
+    }
   }
 }

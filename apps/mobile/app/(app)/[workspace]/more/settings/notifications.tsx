@@ -107,7 +107,10 @@ export default function NotificationsSettingsScreen() {
     return (
       <View className="flex-1 items-center justify-center bg-background px-6">
         <Text className="text-sm text-destructive text-center">
-          {"Failed to load notification preferences." /* mobile-only string; no web resource key */}
+          {t(
+            "mobile.notifications.load_failed",
+            "Failed to load notification preferences.",
+          )}
         </Text>
       </View>
     );
