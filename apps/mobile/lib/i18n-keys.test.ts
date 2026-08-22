@@ -55,17 +55,37 @@ function collectCalls(): Call[] {
 }
 
 function collectFromFile(file: string, prefix: string): Call[] {
-  const src = readFileSync(file, "utf8");
+  // 先剥掉 // 行注释与 /* */ 块注释——注释里出现的 i18n.t("ns:key")
+  // 示例文字不是调用点，混进采集会造成假红/假绿。
+  const src = readFileSync(file, "utf8")
+    .replace(/\/\*[\s\S]*?\*\//g, (m) => " ".repeat(m.length))
+    .replace(/\/\/[^\n]*/g, (m) => " ".repeat(m.length));
   const rel = `${prefix}/${file.slice(MOBILE_ROOT.length + 1)}`;
   const calls: Call[] = [];
-  // ns binding: const { t } = useT("ns")
-  const bindMatch = src.match(/const\s*\{\s*t\s*\}\s*=\s*useT\(\s*(?:["']([^"']+)["'])?/);
-  const boundNs = bindMatch?.[1] ?? "common";
-  // t("key", "fallback") — 拒绝模板串与动态 key（只审字面量）
-  const callRe = /(?<![A-Za-z0-9_.])t\(\s*(["'])([^"']+)\1\s*(?:,\s*(["'`])([^"'`]*)\3)?\s*[,)]/g;
+  // ns bindings: const { t } = useT("ns") —— 同文件可出现多次（每个组件
+  // 一次），按位置建索引，每个调用点就近取它之前最近的一次绑定，而不是
+  // 只认文件里第一个绑定（多 ns 绑定文件会错配 ns）。
+  const bindings: { at: number; ns: string }[] = [];
+  const bindRe = /const\s*\{\s*t\s*\}\s*=\s*useT\(\s*(?:["']([^"']+)["'])?/g;
+  for (const m of src.matchAll(bindRe)) {
+    bindings.push({ at: m.index ?? 0, ns: m[1] ?? "common" });
+  }
+  const nsAt = (pos: number): string => {
+    let ns = "common";
+    for (const b of bindings) {
+      if (b.at <= pos) ns = b.ns;
+      else break;
+    }
+    return ns;
+  };
+  // i18n.t("ns:key", fb) / t("key", fb) —— 交替匹配 i18n.t 与裸 t，拒绝
+  // 模板串与动态 key（只审字面量）。负向后顾排除标识符字符但不排除 "."
+  // 之前的版本会把 45 处 i18n.t(...) 全部漏采——金小欣注入实验证明的防线
+  // 漏洞；同时仍需排除 t 作为其他对象属性的情况（如 foo.t(...)）。
+  const callRe = /(?<![A-Za-z0-9_])(?:i18n\.)?t\(\s*(["'])([^"']+)\1\s*(?:,\s*(["'`])([^"'`]*)\3)?\s*[,)]/g;
   for (const m of src.matchAll(callRe)) {
     const raw = m[2];
-    let ns = boundNs;
+    let ns = nsAt(m.index ?? 0);
     let key = raw;
     if (raw.includes(":")) {
       const idx = raw.indexOf(":");
@@ -80,8 +100,11 @@ function collectFromFile(file: string, prefix: string): Call[] {
 describe("mobile t() key existence (real resources)", () => {
   const calls = collectCalls();
 
-  it("finds t() call sites (sanity)", () => {
-    expect(calls.length).toBeGreaterThan(40);
+  it("finds t()/i18n.t() call sites (sanity)", () => {
+    // 阈值贴近实际调用点数（当前 93，与金小欣复审口径一致）：若采集器
+    // 回归漏采（如正则改动把 i18n.t 形式排除在外），此处先红——这是
+    // 注入实验暴露过的防线漏洞。
+    expect(calls.length).toBeGreaterThanOrEqual(90);
   });
 
   it("every literal t() key resolves in zh-Hans", () => {

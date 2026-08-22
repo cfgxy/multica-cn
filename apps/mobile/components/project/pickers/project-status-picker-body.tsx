@@ -11,7 +11,7 @@ import { Text } from "@/components/ui/text";
 import { ProjectStatusIcon } from "@/components/ui/project-status-icon";
 import {
   PROJECT_STATUSES,
-  PROJECT_STATUS_LABEL,
+  projectStatusLabel,
 } from "@/lib/project-status";
 import { THEME } from "@/lib/theme";
 
@@ -41,7 +41,7 @@ export function ProjectStatusPickerBody({ value, onChange }: Props) {
             >
               <ProjectStatusIcon status={status} size={18} />
               <Text className="flex-1 text-base text-foreground">
-                {PROJECT_STATUS_LABEL[status]}
+                {projectStatusLabel(status)}
               </Text>
               {selected ? (
                 <Ionicons name="checkmark" size={20} color={checkColor} />
