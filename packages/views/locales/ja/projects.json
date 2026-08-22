@@ -166,5 +166,26 @@
     "direction_desc": "降順",
     "section_columns": "列",
     "view": "ビュー"
+  },
+  "mobile": {
+    "new": {
+      "discard_title": "プロジェクトの作成を破棄しますか？",
+      "discard_message": "下書きは失われます。",
+      "create_failed": "プロジェクトの作成に失敗しました",
+      "icon_label": "アイコン（絵文字）",
+      "title_placeholder": "プロジェクト名",
+      "description_placeholder": "このプロジェクトについて教えてください"
+    },
+    "edit": {
+      "discard_message": "このプロジェクトへの編集内容は失われます。",
+      "save_failed": "保存に失敗しました"
+    },
+    "resource": {
+      "attach_title": "リポジトリを追加",
+      "url_label": "リポジトリ URL",
+      "label_optional": "ラベル（任意）",
+      "label_placeholder": "例：バックエンド",
+      "attach_failed": "リソースの追加に失敗しました"
+    }
   }
 }

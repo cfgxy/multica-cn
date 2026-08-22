@@ -77,7 +77,7 @@
     "agents_group": "エージェント",
     "squads_group": "スクワッド",
     "issue_count_other": "タスク {{count}} 件",
-    "reset": "すべてのフィルターをリセット",
+    "reset": "リセット",
     "chip_remove": "{{name}}フィルターを削除",
     "chip_status_count_other": "ステータス{{count}}件",
     "chip_priority_count_other": "優先度{{count}}件",
@@ -780,5 +780,11 @@
     "hook_refused": "{{name}} は実行されませんでした。",
     "hook_activity": "最近の呼び出し",
     "hook_never_run": "このフックはまだ実行されていません。"
+  },
+  "mobile": {
+    "edit": {
+      "discard_message": "この Issue への編集内容は失われます。",
+      "save_failed": "保存に失敗しました"
+    }
   }
 }

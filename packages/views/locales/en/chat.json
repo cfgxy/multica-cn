@@ -233,5 +233,14 @@
     "archive": "Archive chat",
     "unarchive": "Unarchive chat",
     "delete": "Delete chat"
+  },
+  "mobile": {
+    "send_blocked": {
+      "no_permission_title": "No permission to run this agent",
+      "no_permission_message": "You no longer have permission to run this agent, so the message was not sent. Ask its owner for access.",
+      "runtime_required_title": "Runtime required",
+      "runtime_required_message": "Bind a runtime to this agent on web or desktop before sending a message.",
+      "failed_title": "Message not sent"
+    }
   }
 }

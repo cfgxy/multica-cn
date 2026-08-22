@@ -123,5 +123,20 @@
   },
   "navigation": {
     "open_in_new_tab": "新しいタブで開く"
+  },
+  "saving": "保存中…",
+  "creating": "作成中…",
+  "create": "作成",
+  "attach": "追加",
+  "attaching": "追加中…",
+  "unknown_error": "不明なエラー",
+  "discard_dialog": {
+    "changes_title": "変更を破棄しますか？",
+    "keep_editing": "編集を続ける",
+    "discard": "破棄"
+  },
+  "field": {
+    "title": "タイトル",
+    "description": "説明"
   }
 }

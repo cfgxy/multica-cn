@@ -2,7 +2,11 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { looksLikeUserFacingEnglish, scanRoots } from "./i18n-coverage";
+import {
+  looksLikeUserFacingEnglish,
+  scanRoots,
+  scanSource,
+} from "./i18n-coverage";
 
 /**
  * i18n 覆盖率防线（RUYI-22）。
@@ -60,6 +64,52 @@ describe("mobile i18n coverage (hardcoded English guard)", () => {
     const current = new Set(violations.map(fingerprint));
     const stale = BASELINE.filter((f) => !current.has(f));
     expect(stale).toEqual([]);
+  });
+});
+
+describe("扫描规则", () => {
+  it("认得重命名的翻译绑定（tIssues / tProjects），不误报已走 t() 的文案", () => {
+    const src = `
+      const { t: tIssues } = useT("issues");
+      Alert.alert(tIssues("edit.save_failed", "Failed to save"), "");
+      <Text>{tIssues("edit.title", "Edit this issue")}</Text>
+    `;
+    expect(scanSource(src)).toEqual([]);
+  });
+
+  it("不放过没走 t() 的三元 / 模板串 / Alert.alert", () => {
+    const src = `
+      <Text>{busy ? "Sending your message" : "Tap to continue"}</Text>
+      <Text>{\`Could not reach the server\`}</Text>
+      Alert.alert("Upload failed", "Pick a smaller file and retry.");
+    `;
+    expect(
+      scanSource(src)
+        .map((v) => v.text)
+        .sort(),
+    ).toEqual([
+      "Could not reach the server",
+      "Pick a smaller file and retry.",
+      "Sending your message",
+      "Tap to continue",
+      "Upload failed",
+    ]);
+  });
+
+  it("字符串里的 // 不被当成行注释剥掉", () => {
+    // 曾把 `https://github.com/o/r` 之后的整行抹掉，采出半截 `https:`
+    // 条目，同时把同一行剩下的真文案一起吞掉（造成假绿）。
+    const src = `
+      <TextInput placeholder="https://github.com/owner/repo" />
+      <Text>Paste the repository address here</Text>
+    `;
+    expect(scanSource(src).map((v) => v.text)).toEqual([
+      "Paste the repository address here",
+    ]);
+  });
+
+  it("HTML 实体不算待译文案", () => {
+    expect(scanSource(`<Text>&quot;</Text>`)).toEqual([]);
   });
 });
 
