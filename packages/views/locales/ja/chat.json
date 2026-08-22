@@ -255,6 +255,35 @@
       "no_agents_in_workspace": "このワークスペースにエージェントがありません",
       "archived": "このチャットはアーカイブ済みです",
       "runtime_missing": "エージェントにランタイムが必要です"
+    },
+    "failure_reason": {
+      "queued_expired": "キューで期限切れ",
+      "runtime_offline": "デーモンがオフライン",
+      "runtime_recovery": "デーモンが再起動しました",
+      "timeout": "task がタイムアウトしました",
+      "iteration_limit": "反復回数の上限に達しました",
+      "agent_blocked": "人間の入力を待っています",
+      "api_invalid_request": "モデル API に拒否されました",
+      "skill_bundle_unavailable": "エージェントのスキルをダウンロードできませんでした",
+      "runtime_cli_timeout": "ローカルランタイム CLI がタイムアウトしました",
+      "agent_error__provider_auth_or_access": "プロバイダーの認証に失敗しました",
+      "agent_error__provider_quota_limit": "プロバイダーのクォータを使い切りました",
+      "agent_error__provider_capacity_or_rate_limit": "プロバイダーによりレート制限されました",
+      "agent_error__provider_server_error": "プロバイダーのサーバーエラー",
+      "agent_error__provider_network": "プロバイダーへの接続でネットワークエラー",
+      "agent_error__process_failure": "エージェントのプロセスがクラッシュしました",
+      "agent_error__empty_or_unparseable_output": "エージェントが有効な出力を返しませんでした",
+      "agent_error__agent_timeout": "エージェントがタイムアウトしました",
+      "agent_error__context_overflow": "コンテキストウィンドウを超過しました",
+      "agent_error__missing_config": "API キーまたは設定がありません",
+      "agent_error__model_not_found_or_unavailable": "モデルを利用できません",
+      "agent_error__runtime_version_unsupported": "ランナー CLI のバージョンが未対応です",
+      "agent_error__runtime_missing_executable": "ランナー CLI がインストールされていません",
+      "agent_error__unknown": "エージェントの実行エラー",
+      "agent_error": "エージェントの実行エラー",
+      "codex_semantic_inactivity": "Codex の無応答タイムアウト",
+      "manual": "ユーザーによるキャンセル",
+      "fallback": "失敗"
     }
   }
 }
