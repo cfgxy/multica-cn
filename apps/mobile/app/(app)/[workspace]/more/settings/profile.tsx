@@ -1,10 +1,9 @@
 /**
  * Profile edit subscreen — name + avatar.
  *
- * Avatar tap opens an iOS native ActionSheet (Take Photo / Choose from Library
- * / Remove). Mirrors the avatar upload flow in
- * packages/views/settings/components/account-tab.tsx but the picker uses
- * native APIs per CLAUDE.md "iOS native > RNR > discuss" waterfall.
+ * Avatar tap opens a cross-platform ActionSheet (Take Photo / Choose from Library
+ * / Remove). Uses useActionSheet() hook: iOS delegates to ActionSheetIOS native,
+ * Android uses a Modal-based bottom sheet.
  *
  * Save runs PATCH /api/me then writes the returned user back to the auth
  * store via setUser — same source-of-truth pattern as web (server response
@@ -12,7 +11,6 @@
  */
 import { useEffect, useState } from "react";
 import {
-  ActionSheetIOS,
   Alert,
   ActivityIndicator,
   Pressable,
@@ -25,9 +23,12 @@ import { Button } from "@/components/ui/button";
 import { TextField } from "@/components/ui/text-field";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Separator } from "@/components/ui/separator";
+import { useActionSheet, ActionSheetModal } from "@/components/ui/action-sheet";
 import { useAuthStore } from "@/data/auth-store";
 import { api } from "@/data/api";
 import type { FileAsset } from "@/data/api";
+import i18n from "i18next";
+import { useT } from "@/lib/use-t";
 
 const MAX_AVATAR_BYTES = 5 * 1024 * 1024; // 5 MB — matches what's reasonable on cellular.
 
@@ -45,6 +46,8 @@ function initialsOf(name: string | undefined): string {
 export default function ProfileSettingsScreen() {
   const user = useAuthStore((s) => s.user);
   const setUser = useAuthStore((s) => s.setUser);
+  const sheet = useActionSheet();
+  const { t } = useT("settings");
 
   const [name, setName] = useState(user?.name ?? "");
   const [saving, setSaving] = useState(false);
@@ -59,30 +62,29 @@ export default function ProfileSettingsScreen() {
   const dirty = name.trim() !== (user?.name ?? "") && name.trim().length > 0;
 
   const handleAvatarPick = () => {
+    // 相机/相册是 mobile 专属选项文案，web 资源无对应 key。
     const options = ["Take Photo", "Choose from Library", "Remove Photo", "Cancel"];
     const removeIndex = user?.avatar_url ? 2 : -1;
     const cancelIndex = user?.avatar_url ? 3 : 2;
     const visibleOptions = user?.avatar_url ? options : options.filter((_, i) => i !== 2);
 
-    ActionSheetIOS.showActionSheetWithOptions(
-      {
-        options: visibleOptions,
-        cancelButtonIndex: cancelIndex,
-        destructiveButtonIndex: removeIndex >= 0 ? removeIndex : undefined,
-      },
-      async (index) => {
+    sheet.show({
+      options: visibleOptions,
+      cancelButtonIndex: cancelIndex,
+      destructiveButtonIndex: removeIndex >= 0 ? removeIndex : undefined,
+      onSelect: async (index) => {
         if (index === cancelIndex) return;
         if (index === 0) await pickFromCamera();
         else if (index === 1) await pickFromLibrary();
         else if (index === removeIndex) await removeAvatar();
       },
-    );
+    });
   };
 
   const pickFromCamera = async () => {
     const perm = await ImagePicker.requestCameraPermissionsAsync();
     if (!perm.granted) {
-      Alert.alert("Permission needed", "Camera access is required to take a photo.");
+      Alert.alert("Permission needed" /* mobile-only string */, "Camera access is required to take a photo.");
       return;
     }
     const result = await ImagePicker.launchCameraAsync({
@@ -106,7 +108,7 @@ export default function ProfileSettingsScreen() {
 
   const uploadAvatar = async (asset: ImagePicker.ImagePickerAsset) => {
     if (asset.fileSize && asset.fileSize > MAX_AVATAR_BYTES) {
-      Alert.alert("Image too large", "Pick an image under 5 MB.");
+      Alert.alert("Image too large" /* mobile-only string */, "Pick an image under 5 MB." /* mobile-only string; no web resource key */);
       return;
     }
     const fileAsset: FileAsset = {
@@ -124,8 +126,8 @@ export default function ProfileSettingsScreen() {
       setUser(updated);
     } catch (err) {
       Alert.alert(
-        "Upload failed",
-        err instanceof Error ? err.message : "Could not upload avatar.",
+        i18n.t("common:avatar_upload.failed", "Failed to upload avatar"),
+        err instanceof Error ? err.message : "Could not upload avatar." /* mobile-only string; no web resource key */,
       );
     } finally {
       setUploading(false);
@@ -139,8 +141,8 @@ export default function ProfileSettingsScreen() {
       setUser(updated);
     } catch (err) {
       Alert.alert(
-        "Remove failed",
-        err instanceof Error ? err.message : "Could not remove avatar.",
+        "Remove failed" /* mobile-only string */,
+        err instanceof Error ? err.message : "Could not remove avatar." /* mobile-only string; no web resource key */,
       );
     } finally {
       setUploading(false);
@@ -155,8 +157,8 @@ export default function ProfileSettingsScreen() {
       setUser(updated);
     } catch (err) {
       Alert.alert(
-        "Save failed",
-        err instanceof Error ? err.message : "Could not update profile.",
+        "Save failed" /* mobile-only string */,
+        err instanceof Error ? err.message : t("account.toast_profile_failed", "Failed to update profile"),
       );
     } finally {
       setSaving(false);
@@ -186,7 +188,7 @@ export default function ProfileSettingsScreen() {
           <ActivityIndicator />
         ) : (
           <Text className="text-xs text-muted-foreground">
-            Tap to change photo
+            {i18n.t("common:avatar_upload.change", "Change avatar")}
           </Text>
         )}
       </View>
@@ -195,7 +197,7 @@ export default function ProfileSettingsScreen() {
 
       <View className="gap-4">
         <View>
-          <Text className="text-xs text-muted-foreground mb-1.5">Name</Text>
+          <Text className="text-xs text-muted-foreground mb-1.5">{t("account.name_label", "Name")}</Text>
           <TextField
             value={name}
             onChangeText={setName}
@@ -206,21 +208,22 @@ export default function ProfileSettingsScreen() {
           />
         </View>
         <View>
-          <Text className="text-xs text-muted-foreground mb-1.5">Email</Text>
+          <Text className="text-xs text-muted-foreground mb-1.5">{i18n.t("auth:common.email", "Email")}</Text>
           <View className="rounded-md border border-border bg-muted px-3 py-2.5">
             <Text className="text-base text-muted-foreground">
               {user?.email ?? "—"}
             </Text>
           </View>
           <Text className="text-xs text-muted-foreground mt-1.5">
-            Email is set at sign-up and can&apos;t be changed here.
+            {"Email is set at sign-up and can't be changed here." /* mobile-only string; no web resource key */}
           </Text>
         </View>
       </View>
 
       <Button onPress={handleSave} disabled={!dirty || saving}>
-        <Text>{saving ? "Saving…" : "Save"}</Text>
+        <Text>{saving ? t("account.saving", "Updating...") : t("account.save", "Update Profile")}</Text>
       </Button>
+      <ActionSheetModal {...sheet.modalProps} />
     </ScrollView>
   );
 }

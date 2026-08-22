@@ -22,7 +22,7 @@
  * when expanded the resolved indicator stays at the top of the body so the
  * user keeps the "this thread is resolved" signal even while reading.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, Fragment, useMemo, useState } from "react";
 import { Pressable, View } from "react-native";
 import Animated, {
   useAnimatedStyle,
@@ -54,6 +54,7 @@ import { THEME } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { ReactionBar } from "./reaction-bar";
 import { useCommentLongPress } from "./comment-context-menu";
+import { ActionSheetModal } from "@/components/ui/action-sheet";
 import { useCommentSelectStore } from "@/data/comment-select-store";
 
 interface Props {
@@ -522,9 +523,12 @@ function CommentBody({
   if (isSelecting) return body;
 
   return (
-    <Pressable onLongPress={longPress.onLongPress} delayLongPress={500}>
-      {body}
-    </Pressable>
+    <Fragment>
+      <Pressable onLongPress={longPress.onLongPress} delayLongPress={500}>
+        {body}
+      </Pressable>
+      <ActionSheetModal {...longPress.modalProps} />
+    </Fragment>
   );
 }
 

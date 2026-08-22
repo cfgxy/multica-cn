@@ -8,11 +8,13 @@ import { CardPressable } from "@/components/ui/card";
 import { workspaceListOptions } from "@/data/queries/workspaces";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { useT } from "@/lib/use-t";
 
 export default function SelectWorkspace() {
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
   const setCurrentWorkspace = useWorkspaceStore((s) => s.setCurrentWorkspace);
+  const { t } = useT();
   const { data, isLoading, error, refetch } = useQuery(workspaceListOptions());
 
   const onSelect = async (id: string, slug: string) => {
@@ -32,7 +34,7 @@ export default function SelectWorkspace() {
 
         <View className="gap-3">
           <Text className="text-2xl font-semibold text-foreground">
-            Select a workspace
+            {"Select a workspace" /* mobile-only string; no web resource key */}
           </Text>
 
           {isLoading ? (
@@ -80,7 +82,7 @@ export default function SelectWorkspace() {
 
         <View className="pt-4 border-t border-border">
           <Button variant="outline" onPress={() => logout()}>
-            <Text>Sign out</Text>
+            <Text>{t("layout:sidebar.log_out", "Log out")}</Text>
           </Button>
         </View>
       </ScrollView>

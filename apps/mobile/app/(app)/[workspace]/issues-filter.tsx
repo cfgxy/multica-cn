@@ -17,7 +17,7 @@ import { StatusIcon } from "@/components/ui/status-icon";
 import { PriorityIcon } from "@/components/ui/priority-icon";
 import { useIssuesViewStore } from "@/data/stores/issues-view-store";
 import { useMyIssuesViewStore } from "@/data/stores/my-issues-view-store";
-import { BOARD_STATUSES, STATUS_LABEL } from "@/lib/issue-status";
+import { BOARD_STATUSES, priorityLabel, statusLabel } from "@/lib/issue-status";
 import { cn } from "@/lib/utils";
 
 const ALL_STATUSES: IssueStatus[] = [...BOARD_STATUSES, "cancelled"];
@@ -31,15 +31,6 @@ const PRIORITY_ORDER: IssuePriority[] = [
   "none",
 ];
 
-// Label map duplicated across several mobile files — out of scope to
-// consolidate per the SheetShell migration plan.
-const PRIORITY_LABEL: Record<IssuePriority, string> = {
-  urgent: "Urgent",
-  high: "High",
-  medium: "Medium",
-  low: "Low",
-  none: "No priority",
-};
 
 type Scope = "my" | "all";
 
@@ -103,7 +94,7 @@ export default function IssuesFilterRoute() {
             >
               <StatusIcon status={status} size={16} />
               <Text className="flex-1 text-sm text-foreground">
-                {STATUS_LABEL[status]}
+                {statusLabel(status)}
               </Text>
               <CheckMark checked={checked} />
             </Pressable>
@@ -124,7 +115,7 @@ export default function IssuesFilterRoute() {
             >
               <PriorityIcon priority={priority} />
               <Text className="flex-1 text-sm text-foreground">
-                {PRIORITY_LABEL[priority]}
+                {priorityLabel(priority)}
               </Text>
               <CheckMark checked={checked} />
             </Pressable>

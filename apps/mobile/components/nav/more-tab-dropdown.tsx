@@ -34,9 +34,10 @@
  *     Earlier shape (every workspace inlined here) made the popover long
  *     and offered no friction against accidental taps.
  */
-import { useMemo } from "react";
-import { Image, Pressable, View } from "react-native";
+import { type ComponentProps, useMemo } from "react";
+import { Image, Platform, Pressable, View } from "react-native";
 import { Image as ExpoImage } from "expo-image";
+import { Ionicons } from "@expo/vector-icons";
 import { router, usePathname } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -57,6 +58,7 @@ import { useWorkspaceStore } from "@/data/workspace-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { cn } from "@/lib/utils";
+import i18n from "i18next";
 
 // iOS bottom tab bar default height (above safe-area). React Navigation
 // doesn't expose this as a layout constant, but the value is stable
@@ -67,16 +69,18 @@ const TAB_BAR_HEIGHT = 49;
 
 interface NavItem {
   label: string;
-  /** SF Symbol name, rendered via expo-image `source: "sf:<name>"`. */
+  /** SF Symbol name for iOS (rendered via expo-image `source: "sf:<name>"`). */
   icon: string;
+  /** Ionicons name for Android. */
+  androidIcon: ComponentProps<typeof Ionicons>["name"];
   /** Path under /:slug/ — final href is `/${slug}${path}`. */
   path: string;
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { label: "Pinned", icon: "pin", path: "/more/pins" },
-  { label: "Issues", icon: "list.bullet", path: "/more/issues" },
-  { label: "Projects", icon: "square.stack", path: "/more/projects" },
+  { label: i18n.t("layout:sidebar.pinned_label", "Pinned"), icon: "pin", androidIcon: "pin", path: "/more/pins" },
+  { label: i18n.t("layout:nav.issues", "Issues"), icon: "list.bullet", androidIcon: "list-outline", path: "/more/issues" },
+  { label: i18n.t("layout:nav.projects", "Projects"), icon: "square.stack", androidIcon: "layers-outline", path: "/more/projects" },
 ];
 
 export function MoreTabDropdownAnchor({
@@ -158,11 +162,19 @@ export function MoreTabDropdownAnchor({
                 isActive(item.path) && "bg-secondary",
               )}
             >
-              <ExpoImage
-                source={`sf:${item.icon}`}
-                tintColor={t.foreground}
-                style={{ width: 18, height: 18 }}
-              />
+              {Platform.OS === "ios" ? (
+                <ExpoImage
+                  source={`sf:${item.icon}`}
+                  tintColor={t.foreground}
+                  style={{ width: 18, height: 18 }}
+                />
+              ) : (
+                <Ionicons
+                  name={item.androidIcon}
+                  size={18}
+                  color={t.foreground}
+                />
+              )}
               <Text className="text-sm text-foreground">{item.label}</Text>
             </DropdownMenuItem>
           ))}
@@ -192,7 +204,7 @@ function UserCard({
     <DropdownMenuItem
       onPress={onPress}
       className="h-12 gap-3"
-      accessibilityLabel="Account settings"
+      accessibilityLabel={i18n.t("settings:page.my_account", "My Account")}
     >
       {user?.avatar_url ? (
         <Image
@@ -222,11 +234,15 @@ function UserCard({
           </Text>
         ) : null}
       </View>
-      <ExpoImage
-        source="sf:chevron.right"
-        tintColor={chevronTint}
-        style={{ width: 12, height: 12 }}
-      />
+      {Platform.OS === "ios" ? (
+        <ExpoImage
+          source="sf:chevron.right"
+          tintColor={chevronTint}
+          style={{ width: 12, height: 12 }}
+        />
+      ) : (
+        <Ionicons name="chevron-forward" size={12} color={chevronTint} />
+      )}
     </DropdownMenuItem>
   );
 }
@@ -266,7 +282,7 @@ function WorkspaceCard({
       disabled={!canSwitch}
       className="h-12 gap-3"
       accessibilityLabel={
-        canSwitch ? "Switch workspace" : currentWorkspaceName ?? "Workspace"
+        canSwitch ? "Switch workspace" /* mobile-only string */ : currentWorkspaceName ?? "Workspace"
       }
     >
       <WorkspaceAvatar
@@ -283,11 +299,15 @@ function WorkspaceCard({
         </Text>
       </View>
       {canSwitch ? (
-        <ExpoImage
-          source="sf:chevron.right"
-          tintColor={chevronTint}
-          style={{ width: 12, height: 12 }}
-        />
+        Platform.OS === "ios" ? (
+          <ExpoImage
+            source="sf:chevron.right"
+            tintColor={chevronTint}
+            style={{ width: 12, height: 12 }}
+          />
+        ) : (
+          <Ionicons name="chevron-forward" size={12} color={chevronTint} />
+        )
       ) : null}
     </DropdownMenuItem>
   );

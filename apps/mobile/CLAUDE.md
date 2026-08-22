@@ -6,6 +6,8 @@ For cross-app sharing rules, see the root `CLAUDE.md` *Sharing Principles* secti
 
 - `import type` from `@multica/core/types/*` (zero runtime coupling)
 - Pure functions from `@multica/core/`
+- `@multica/core/i18n` — 纯类型（`SupportedLocale`）+ 纯常量（`DEFAULT_LOCALE`），无运行时耦合
+- `@multica/views/locales` — 纯数据（`RESOURCES` JSON 对象），仅被 `lib/i18n.ts` 消费，无运行时耦合
 
 Everything else, mobile writes its own.
 

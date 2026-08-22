@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import type { ComponentProps } from "react";
 import { Redirect, Stack, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
+import i18n from "i18next";
 import { workspaceListOptions } from "@/data/queries/workspaces";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { RealtimeProvider } from "@/data/realtime/realtime-provider";
@@ -135,21 +136,21 @@ export default function WorkspaceLayout() {
         <Stack.Screen
           name="issue/[id]"
           options={{
-            title: "Issue",
+            title: i18n.t("layout:nav.issues", "Issues"),
             headerBackTitle: "Back",
           }}
         />
         <Stack.Screen
           name="project/[id]"
           options={{
-            title: "Project",
+            title: i18n.t("layout:nav.projects", "Projects"),
             headerBackTitle: "Back",
           }}
         />
         <Stack.Screen
           name="project/[id]/edit"
           options={{
-            title: "Edit Project",
+            title: i18n.t("modals:create_project.title", "New Project"),
             presentation: "modal",
             headerLeft: () => <ModalCloseButton />,
           }}
@@ -157,7 +158,7 @@ export default function WorkspaceLayout() {
         <Stack.Screen
           name="issue/[id]/edit"
           options={{
-            title: "Edit Issue",
+            title: i18n.t("modals:create_issue.sr_manual", "New Issue"),
             presentation: "modal",
             headerLeft: () => <ModalCloseButton />,
           }}
@@ -165,7 +166,7 @@ export default function WorkspaceLayout() {
         <Stack.Screen
           name="project/new"
           options={{
-            title: "New Project",
+            title: i18n.t("modals:create_project.title", "New Project"),
             presentation: "modal",
             headerLeft: () => <ModalCloseButton />,
           }}
@@ -195,7 +196,7 @@ export default function WorkspaceLayout() {
           options={{
             ...SHEET_OPTIONS,
             headerShown: true,
-            title: "Assignee",
+            title: i18n.t("issues:actions.assignee", "Assignee"),
           }}
         />
         <Stack.Screen
@@ -207,7 +208,7 @@ export default function WorkspaceLayout() {
           options={{
             ...SHEET_OPTIONS,
             headerShown: true,
-            title: "Mention",
+            title: "Mention" /* mobile-only string; no web resource key */,
           }}
         />
         <Stack.Screen
@@ -260,7 +261,7 @@ export default function WorkspaceLayout() {
           options={{
             ...SHEET_OPTIONS,
             headerShown: true,
-            title: "Assignee",
+            title: i18n.t("issues:actions.assignee", "Assignee"),
           }}
         />
         <Stack.Screen
@@ -291,36 +292,36 @@ export default function WorkspaceLayout() {
         <Stack.Screen name="switch-workspace" options={SHEET_OPTIONS} />
         <Stack.Screen
           name="more/issues"
-          options={{ title: "Issues", headerBackTitle: "Back" }}
+          options={{ title: i18n.t("layout:nav.issues", "Issues"), headerBackTitle: "Back" }}
         />
         <Stack.Screen
           name="more/projects"
-          options={{ title: "Projects", headerBackTitle: "Back" }}
+          options={{ title: i18n.t("layout:nav.projects", "Projects"), headerBackTitle: "Back" }}
         />
         <Stack.Screen
           name="more/agents"
-          options={{ title: "Agents", headerBackTitle: "Back" }}
+          options={{ title: i18n.t("layout:nav.agents", "Agents"), headerBackTitle: "Back" }}
         />
         <Stack.Screen
           name="more/pins"
-          options={{ title: "Pinned", headerBackTitle: "Back" }}
+          options={{ title: i18n.t("layout:sidebar.pinned_label", "Pinned"), headerBackTitle: "Back" }}
         />
         <Stack.Screen
           name="more/settings"
-          options={{ title: "Settings", headerBackTitle: "Back" }}
+          options={{ title: i18n.t("layout:nav.settings", "Settings"), headerBackTitle: "Back" }}
         />
         <Stack.Screen
           name="more/settings/profile"
-          options={{ title: "Profile", headerBackTitle: "Settings" }}
+          options={{ title: i18n.t("settings:page.tabs.profile", "Profile"), headerBackTitle: i18n.t("layout:nav.settings", "Settings") }}
         />
         <Stack.Screen
           name="more/settings/notifications"
-          options={{ title: "Notifications", headerBackTitle: "Settings" }}
+          options={{ title: i18n.t("settings:page.tabs.notifications", "Notifications"), headerBackTitle: i18n.t("layout:nav.settings", "Settings") }}
         />
         <Stack.Screen
           name="new-issue"
           options={{
-            title: "New Issue",
+            title: i18n.t("modals:create_issue.sr_manual", "New Issue"),
             presentation: "modal",
             headerLeft: () => <ModalCloseButton />,
           }}
@@ -328,7 +329,7 @@ export default function WorkspaceLayout() {
         <Stack.Screen
           name="search"
           options={{
-            title: "Search",
+            title: i18n.t("search:title", "Search"),
             presentation: "modal",
             headerLeft: () => <ModalCloseButton />,
           }}

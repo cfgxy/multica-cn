@@ -19,46 +19,62 @@ import { Separator } from "@/components/ui/separator";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { notificationPreferenceOptions } from "@/data/queries/notification-preferences";
 import { useUpdateNotificationPreferences } from "@/data/mutations/notification-preferences";
+import { useT } from "@/lib/use-t";
 
-const INBOX_GROUPS: Array<{
+const INBOX_GROUP_KEYS: Array<{
   key: Exclude<NotificationGroupKey, "system_notifications">;
-  label: string;
-  description: string;
+  labelKey: string;
+  labelFallback: string;
+  descKey: string;
+  descFallback: string;
 }> = [
   {
     key: "assignments",
-    label: "Assignments",
-    description: "When you're assigned an issue or removed as assignee.",
+    labelKey: "notifications.groups.assignments.label",
+    labelFallback: "Assignments",
+    descKey: "notifications.groups.assignments.description",
+    descFallback: "When you're assigned an issue or removed as assignee.",
   },
   {
     key: "status_changes",
-    label: "Status changes",
-    description: "When an issue's status changes.",
+    labelKey: "notifications.groups.status_changes.label",
+    labelFallback: "Status changes",
+    descKey: "notifications.groups.status_changes.description",
+    descFallback: "When an issue's status changes.",
   },
   {
     key: "comments",
-    label: "Comments",
-    description: "New comments on issues you're subscribed to.",
+    labelKey: "notifications.groups.comments.label",
+    labelFallback: "Comments",
+    descKey: "notifications.groups.comments.description",
+    descFallback: "New comments on issues you're subscribed to.",
   },
   {
     key: "mentions",
-    label: "Mentions",
-    description: "When someone @mentions you, including @all and @squad.",
+    labelKey: "notifications.groups.mentions.label",
+    labelFallback: "Mentions",
+    descKey: "notifications.groups.mentions.description",
+    descFallback: "When someone @mentions you, including @all and @squad.",
   },
   {
     key: "updates",
-    label: "Issue updates",
-    description: "Edits to title, description, labels, priority, or due date.",
+    labelKey: "notifications.groups.updates.label",
+    labelFallback: "Priority & Due date",
+    descKey: "notifications.groups.updates.description",
+    descFallback: "Edits to title, description, labels, priority, or due date.",
   },
   {
     key: "agent_activity",
-    label: "Agent activity",
-    description: "When an agent picks up, runs, or completes a task.",
+    labelKey: "notifications.groups.agent_activity.label",
+    labelFallback: "Agent activity",
+    descKey: "notifications.groups.agent_activity.description",
+    descFallback: "When an agent picks up, runs, or completes a task.",
   },
 ];
 
 export default function NotificationsSettingsScreen() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const { t } = useT("settings");
   const { data, isLoading, error } = useQuery(
     notificationPreferenceOptions(wsId),
   );
@@ -91,7 +107,7 @@ export default function NotificationsSettingsScreen() {
     return (
       <View className="flex-1 items-center justify-center bg-background px-6">
         <Text className="text-sm text-destructive text-center">
-          Failed to load notification preferences.
+          {"Failed to load notification preferences." /* mobile-only string; no web resource key */}
         </Text>
       </View>
     );
@@ -103,21 +119,21 @@ export default function NotificationsSettingsScreen() {
       contentContainerClassName="px-4 py-4 gap-6"
     >
       <Section
-        title="Inbox notifications"
-        description="Which events show up in your inbox."
+        title={t("notifications.title", "Inbox Notifications")}
+        description={t("notifications.description", "Control which events generate inbox notifications. Muted event types are silently filtered — you can still see them by visiting the issue directly.")}
       >
-        {INBOX_GROUPS.map((group, idx) => {
+        {INBOX_GROUP_KEYS.map((group, idx) => {
           const enabled = preferences[group.key] !== "muted";
-          const isLast = idx === INBOX_GROUPS.length - 1;
+          const isLast = idx === INBOX_GROUP_KEYS.length - 1;
           return (
             <View key={group.key}>
               <View className="flex-row items-center px-4 py-3 gap-3">
                 <View className="flex-1">
                   <Text className="text-base font-medium text-foreground">
-                    {group.label}
+                    {t(group.labelKey, group.labelFallback)}
                   </Text>
                   <Text className="text-xs text-muted-foreground mt-0.5">
-                    {group.description}
+                    {t(group.descKey, group.descFallback)}
                   </Text>
                 </View>
                 <Switch
@@ -132,16 +148,16 @@ export default function NotificationsSettingsScreen() {
       </Section>
 
       <Section
-        title="System"
-        description="Multica-wide announcements and important account events."
+        title={t("notifications.system.title", "System Notifications")}
+        description={t("notifications.system.description", "Control native OS notification banners shown when Multica is in the background.")}
       >
         <View className="flex-row items-center px-4 py-3 gap-3">
           <View className="flex-1">
             <Text className="text-base font-medium text-foreground">
-              System notifications
+              {t("notifications.system.label", "Show system notifications")}
             </Text>
             <Text className="text-xs text-muted-foreground mt-0.5">
-              Account changes, security alerts, product updates.
+              {t("notifications.system.hint", "Show a banner from your operating system for new inbox items when the app isn't focused.")}
             </Text>
           </View>
           <Switch

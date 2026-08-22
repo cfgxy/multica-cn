@@ -44,12 +44,13 @@ import {
 import { useClearFiltersOnWorkspaceChange } from "@/lib/use-clear-filters-on-workspace-change";
 import {
   BOARD_STATUSES,
-  PRIORITY_LABEL,
-  STATUS_LABEL,
+  priorityLabel,
+  statusLabel,
 } from "@/lib/issue-status";
 import { filterIssues } from "@/lib/filter-issues";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
+import { useT } from "@/lib/use-t";
 
 type IssueSection = { status: IssueStatus; data: Issue[] };
 
@@ -58,15 +59,21 @@ type IssueSection = { status: IssueStatus; data: Issue[] };
 // either, and on SE3 (375pt) "(123)" appended to each label pushes the
 // row past the safe width when filter icon shares the row. Per-status
 // counts still appear on the SectionList headers below.
-const SCOPES: { value: IssuesScope; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "members", label: "Members" },
-  { value: "agents", label: "Agents" },
-];
+// Scope 标签在组件内用 t() 计算（不能在模块顶层求值——见 i18n 初始化时序）。
+function useScopes(): { value: IssuesScope; label: string }[] {
+  const { t } = useT("issues");
+  return [
+    { value: "all", label: t("scope.all_label", "All") },
+    { value: "members", label: t("scope.members_label", "Members") },
+    { value: "agents", label: t("scope.agents_label", "Agents") },
+  ];
+}
 
 export default function IssuesPage() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
+  const { t } = useT("issues");
+  const scopes = useScopes();
 
   const scope = useIssuesViewStore((s) => s.scope);
   const setScope = useIssuesViewStore((s) => s.setScope);
@@ -138,7 +145,7 @@ export default function IssuesPage() {
   return (
     <View className="flex-1 bg-background">
       <ScopeToolbar
-        scopes={SCOPES}
+        scopes={scopes}
         scope={scope}
         onChange={(v) => setScope(v)}
         onOpenFilter={openFilter}
@@ -172,7 +179,7 @@ export default function IssuesPage() {
         <EmptyState
           message={
             hasActiveFilters
-              ? "No issues match the current filters."
+              ? t("filtered_empty.title", "No issues match these filters")
               : emptyMessageForScope(scope)
           }
         />
@@ -311,14 +318,14 @@ function ActiveFilterChips({
       {statusFilters.map((s) => (
         <Chip
           key={`s-${s}`}
-          label={STATUS_LABEL[s]}
+          label={statusLabel(s)}
           onClear={() => onClearStatus(s)}
         />
       ))}
       {priorityFilters.map((p) => (
         <Chip
           key={`p-${p}`}
-          label={PRIORITY_LABEL[p]}
+          label={priorityLabel(p)}
           onClear={() => onClearPriority(p)}
         />
       ))}
@@ -354,7 +361,7 @@ function SectionHeader({
     <View className="flex-row items-center gap-2 px-4 py-2 bg-background">
       <StatusIcon status={status} size={14} />
       <Text className="text-xs uppercase tracking-wider text-muted-foreground font-medium">
-        {STATUS_LABEL[status]}
+        {statusLabel(status)}
       </Text>
       <Text className="text-xs text-muted-foreground/60">{count}</Text>
     </View>
@@ -374,10 +381,10 @@ function EmptyState({ message }: { message: string }) {
 function emptyMessageForScope(scope: IssuesScope): string {
   switch (scope) {
     case "all":
-      return "No issues in this workspace.";
+      return "No issues in this workspace." /* mobile-only string; no web resource key */;
     case "members":
-      return "No issues assigned to a member.";
+      return "No issues assigned to a member." /* mobile-only string; no web resource key */;
     case "agents":
-      return "No issues assigned to agents or squads.";
+      return "No issues assigned to agents or squads." /* mobile-only string; no web resource key */;
   }
 }

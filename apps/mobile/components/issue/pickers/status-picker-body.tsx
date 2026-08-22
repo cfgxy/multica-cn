@@ -14,7 +14,7 @@ import { useColorScheme } from "nativewind";
 import type { IssueStatus } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { StatusIcon } from "@/components/ui/status-icon";
-import { BOARD_STATUSES, STATUS_LABEL } from "@/lib/issue-status";
+import { BOARD_STATUSES, statusLabel } from "@/lib/issue-status";
 import { THEME } from "@/lib/theme";
 
 const ALL_STATUSES: IssueStatus[] = [...BOARD_STATUSES, "cancelled"];
@@ -45,7 +45,7 @@ export function StatusPickerBody({ value, onChange }: Props) {
             >
               <StatusIcon status={status} size={18} />
               <Text className="flex-1 text-base text-foreground">
-                {STATUS_LABEL[status]}
+                {statusLabel(status)}
               </Text>
               {selected ? (
                 <Ionicons name="checkmark" size={20} color={checkColor} />

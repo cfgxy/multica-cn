@@ -33,17 +33,13 @@ import { AttributeChip } from "./attribute-chip";
 import { useActorLookup } from "@/data/use-actor-name";
 import { findProject, projectListOptions } from "@/data/queries/projects";
 import { useWorkspaceStore } from "@/data/workspace-store";
-import {
-  STATUS_LABEL,
-  PRIORITY_LABEL as PRIORITY_FULL_LABEL,
-} from "@/lib/issue-status";
+import { priorityLabel, statusLabel } from "@/lib/issue-status";
 
 // Chip placeholder shortens `none` from "No priority" → "Priority" so the
 // unset chip reads as a placeholder, not as a confusing assigned value.
-const PRIORITY_CHIP_LABEL: Record<IssuePriority, string> = {
-  ...PRIORITY_FULL_LABEL,
-  none: "Priority",
-};
+function priorityChipLabel(priority: IssuePriority): string {
+  return priority === "none" ? "Priority" : priorityLabel(priority);
+}
 
 /**
  * The picker fields the issue-detail attribute row can open. Bound to a
@@ -113,7 +109,7 @@ export function AttributeRow({ issue }: { issue: Issue }) {
       {/* Status — always shown */}
       <AttributeChip
         icon={<StatusIcon status={issue.status} size={14} />}
-        label={STATUS_LABEL[issue.status]}
+        label={statusLabel(issue.status)}
         variant="filled"
         onPress={() => openPicker("status")}
       />
@@ -121,7 +117,7 @@ export function AttributeRow({ issue }: { issue: Issue }) {
       {/* Priority */}
       <AttributeChip
         icon={<PriorityIcon priority={issue.priority} size={14} />}
-        label={PRIORITY_CHIP_LABEL[issue.priority]}
+        label={priorityChipLabel(issue.priority)}
         variant={issue.priority === "none" ? "dimmed" : "filled"}
         onPress={() => openPicker("priority")}
       />
