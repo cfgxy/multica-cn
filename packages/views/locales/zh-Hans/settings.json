@@ -1233,6 +1233,12 @@
     },
     "notifications": {
       "load_failed": "无法加载通知偏好设置。"
+    },
+    "page": {
+      "sign_out_body": "你需要重新登录才能在此设备上使用 Multica。",
+      "notifications_subtitle": "收件箱与系统提醒",
+      "server_section": "服务器",
+      "workspaces_load_failed": "无法加载工作区"
     }
   }
 }

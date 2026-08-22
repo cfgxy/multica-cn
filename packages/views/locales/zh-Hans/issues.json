@@ -791,8 +791,8 @@
       "pill_label": "添加评论，输入 @ 可提及"
     },
     "comment": {
-      "resolved_bar_other": "已解决 · 来自 {{authors}} 的 {{count}} 条消息",
-      "resolved_bar_a11y_other": "{{authors}} 的已解决话题，共 {{count}} 条消息。点按展开。",
+      "resolved_bar_other": "已解决 · {{count}} 条消息，来自 {{authors}}",
+      "resolved_bar_a11y_other": "已解决话题，共 {{count}} 条消息，来自 {{authors}}。点按展开。",
       "resolved_by": "解决者",
       "collapse": "收起",
       "collapse_a11y": "收起已解决话题",
@@ -802,6 +802,14 @@
       "retry_a11y": "重新发送评论",
       "discard": "丢弃",
       "discard_a11y": "丢弃发送失败的评论"
+    },
+    "detail": {
+      "actions_a11y": "任务操作",
+      "edit_details": "编辑详情",
+      "open_on_web": "在网页中打开",
+      "load_failed": "无法加载任务：{{reason}}",
+      "not_found": "未找到",
+      "retry": "重试"
     }
   }
 }

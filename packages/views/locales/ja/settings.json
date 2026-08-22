@@ -1233,6 +1233,12 @@
     },
     "notifications": {
       "load_failed": "通知設定を読み込めませんでした。"
+    },
+    "page": {
+      "sign_out_body": "このデバイスで Multica を使うには、再度サインインする必要があります。",
+      "notifications_subtitle": "受信トレイとシステム通知",
+      "server_section": "サーバー",
+      "workspaces_load_failed": "ワークスペースを読み込めませんでした"
     }
   }
 }

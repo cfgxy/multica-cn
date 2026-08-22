@@ -121,5 +121,16 @@
     "commands": {
       "note": "メモを追加 — エージェントをトリガーしません"
     }
+  },
+  "mobile": {
+    "toolbar": {
+      "mention": "メンバーをメンション",
+      "bullet_list": "箇条書き",
+      "checklist": "チェックリスト",
+      "code_block": "コードブロック",
+      "quote": "引用",
+      "attach_image": "画像を追加",
+      "attach_file": "ファイルを添付"
+    }
   }
 }
