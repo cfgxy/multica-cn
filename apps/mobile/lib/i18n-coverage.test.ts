@@ -23,19 +23,13 @@ const MOBILE_ROOT = join(__dirname, "..");
 const ROOTS = ["app", "components"];
 
 /**
- * 白名单：确认「不需要翻译」的字面量。
- * 品牌名、协议标识、示例地址属于此类；任何业务文案不得进入。
+ * 这里曾有一份「不需要翻译」的白名单（品牌名 / 示例地址 / 示例邮箱），
+ * 但审计下来三条正则实际命中 0 条 —— 品牌名与示例值早已走 t() 或被
+ * `looksLikeUserFacingEnglish` 的判据直接排除。留着只会让人误以为防线
+ * 有豁免口，故删除。真需要豁免时再按具体条目加回，并在注释里写明理由。
  */
-const ALLOWLIST: RegExp[] = [
-  /^Multica$/,
-  /^https:\/\/api\.example\.com$/,
-  /^you@example\.com$/,
-];
-
 function currentViolations() {
-  return scanRoots(MOBILE_ROOT, ROOTS).filter(
-    (v) => !ALLOWLIST.some((re) => re.test(v.text)),
-  );
+  return scanRoots(MOBILE_ROOT, ROOTS);
 }
 
 function fingerprint(v: { file: string; kind: string; text: string }): string {
