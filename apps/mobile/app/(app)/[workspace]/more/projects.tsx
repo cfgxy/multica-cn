@@ -28,10 +28,12 @@ import { IconButton } from "@/components/ui/icon-button";
 import { ProjectRow } from "@/components/project/project-row";
 import { projectListOptions } from "@/data/queries/projects";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { useT } from "@/lib/use-t";
 
 export default function ProjectsPage() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
+  const { t } = useT("projects");
 
   const { data, isLoading, error, refetch, isRefetching } = useQuery(
     projectListOptions(wsId),
@@ -99,27 +101,28 @@ export default function ProjectsPage() {
 }
 
 function PlusButton({ onPress }: { onPress: () => void }) {
+  const { t } = useT("projects");
   return (
     <IconButton
       name="add"
       onPress={onPress}
-      accessibilityLabel="New project"
+      accessibilityLabel={t("page.new_project", "New project")}
     />
   );
 }
 
 function EmptyState({ onCreate }: { onCreate: () => void }) {
+  const { t } = useT("projects");
   return (
     <View className="flex-1 items-center justify-center px-6 gap-4">
       <Text className="text-base font-medium text-foreground">
-        No projects yet
+        {t("page.empty", "No projects yet")}
       </Text>
       <Text className="text-sm text-muted-foreground text-center">
-        Group related issues into a project to track progress and assign a
-        lead.
+        {"Group related issues into a project to track progress and assign a lead." /* mobile-only string; no web resource key */}
       </Text>
       <Button variant="default" onPress={onCreate}>
-        <Text>Create project</Text>
+        <Text>{t("page.create_first", "Create your first project")}</Text>
       </Button>
     </View>
   );

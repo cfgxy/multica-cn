@@ -45,9 +45,10 @@ import {
   useViewedIssuesStore,
 } from "@/data/viewed-issues-store";
 import { issueDetailOptions } from "@/data/queries/issues";
-import { STATUS_LABEL } from "@/lib/issue-status";
+import { statusLabel as issueStatusLabel } from "@/lib/issue-status";
 import { projectStatusLabel } from "@/lib/project-status";
 import { buildSearchRows, type RowItem } from "@/lib/search-rows";
+import { useT } from "@/lib/use-t";
 
 const DEBOUNCE_MS = 300;
 const ISSUE_LIMIT = 20;
@@ -161,7 +162,7 @@ function SearchIssueRow({ item, query, slug }: SearchIssueRowProps) {
   // (server/internal/handler/issue.go:592). Keep mobile strictly aligned.
   const showSnippet =
     item.match_source === "comment" && !!item.matched_snippet;
-  const statusLabel = STATUS_LABEL[item.status as IssueStatus] ?? item.status;
+  const statusText = issueStatusLabel(item.status as IssueStatus) ?? item.status;
   return (
     <Pressable
       onPress={() => navigateOnTap(slug, `/${slug}/issue/${item.id}`)}
@@ -182,7 +183,7 @@ function SearchIssueRow({ item, query, slug }: SearchIssueRowProps) {
           />
         </View>
         <Text className={`text-xs shrink-0 ${issueIconColor(item.status as IssueStatus)}`}>
-          {statusLabel}
+          {statusText}
         </Text>
       </View>
       {showSnippet ? (
@@ -260,7 +261,7 @@ interface RecentRowProps {
 }
 
 function RecentRow({ item, slug }: RecentRowProps) {
-  const statusLabel = STATUS_LABEL[item.status as IssueStatus] ?? item.status;
+  const statusText = issueStatusLabel(item.status as IssueStatus) ?? item.status;
   return (
     <Pressable
       onPress={() => navigateOnTap(slug, `/${slug}/issue/${item.id}`)}
@@ -275,7 +276,7 @@ function RecentRow({ item, slug }: RecentRowProps) {
           {item.title}
         </Text>
         <Text className={`text-xs shrink-0 ${issueIconColor(item.status as IssueStatus)}`}>
-          {statusLabel}
+          {statusText}
         </Text>
       </View>
     </Pressable>
@@ -296,6 +297,7 @@ const EMPTY_RESULTS: SearchResultsState = { issues: [], projects: [] };
 export default function SearchModal() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const slug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
+  const { t } = useT("search");
 
   const [query, setQuery] = useState("");
   const [results, setResults] = useState<SearchResultsState>(EMPTY_RESULTS);
@@ -433,7 +435,7 @@ export default function SearchModal() {
           <TextInput
             value={query}
             onChangeText={handleChange}
-            placeholder="Search issues and projects"
+            placeholder={t("placeholder", "Type a command or search...")}
             placeholderTextColor="#a1a1aa"
             autoFocus
             autoCorrect={false}
@@ -459,13 +461,13 @@ export default function SearchModal() {
             ) : trimmedQuery && !hasResults ? (
               <View className="items-center justify-center py-12 px-6">
                 <Text className="text-sm text-muted-foreground text-center">
-                  No results for &ldquo;{trimmedQuery}&rdquo;
+                  {t("empty.no_results", "No results found.")}
                 </Text>
               </View>
             ) : !trimmedQuery && recentIssues.length === 0 ? (
               <View className="items-center justify-center py-12 px-6">
                 <Text className="text-sm text-muted-foreground text-center">
-                  Type to search issues and projects.
+                  {t("empty.type_to_search", "Type to search issues and projects")}
                 </Text>
               </View>
             ) : null

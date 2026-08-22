@@ -92,9 +92,11 @@ import { OfflineBanner } from "@/components/chat/offline-banner";
 import { RuntimeRequiredBanner } from "@/components/chat/runtime-required-banner";
 import { useChatSelectStore } from "@/data/chat-select-store";
 import { isAgentRuntimeBound } from "@/lib/is-agent-runtime-bound";
+import { useT } from "@/lib/use-t";
 
 export default function ChatTab() {
   const qc = useQueryClient();
+  const { t } = useT("chat");
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const userId = useAuthStore((s) => s.user?.id);
@@ -449,12 +451,12 @@ export default function ChatTab() {
   const handleDeleteActive = useCallback(() => {
     if (!activeSession) return;
     Alert.alert(
-      "Delete this chat?",
-      activeSession.title || "Untitled chat",
+      t("session_history.delete_dialog.title", "Delete chat session"),
+      activeSession.title || t("session_history.untitled", "Untitled"),
       [
-        { text: "Cancel", style: "cancel" },
+        { text: t("session_history.delete_dialog.cancel", "Cancel"), style: "cancel" },
         {
-          text: "Delete",
+          text: t("session_history.delete_dialog.confirm", "Delete"),
           style: "destructive",
           onPress: () => {
             const id = activeSession.id;

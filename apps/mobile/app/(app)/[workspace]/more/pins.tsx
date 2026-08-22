@@ -47,11 +47,13 @@ import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
+import { useT } from "@/lib/use-t";
 
 export default function PinsPage() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const userId = useAuthStore((s) => s.user?.id ?? null);
+  const { t } = useT("layout");
 
   const { data, isLoading, error, refetch, isRefetching } = useQuery(
     pinListOptions(wsId, userId),
@@ -90,8 +92,7 @@ export default function PinsPage() {
     return (
       <View className="flex-1 items-center justify-center bg-background px-6">
         <Text className="text-sm text-muted-foreground text-center">
-          No pins yet. Pin an issue or project from its actions menu to
-          surface it here.
+          {"No pins yet. Pin an issue or project from its actions menu to surface it here." /* mobile-only string; no web resource key */}
         </Text>
       </View>
     );
@@ -216,11 +217,12 @@ function MissingPinRow({
 }) {
   const { colorScheme } = useColorScheme();
   const deletePin = useDeletePin();
+  const { t } = useT("layout");
   return (
     <Pressable
       onPress={() => deletePin.mutate({ itemType, itemId })}
       className="px-4 py-3 flex-row items-center gap-3 active:bg-secondary opacity-60"
-      accessibilityLabel={`Unavailable ${itemType}, tap to unpin`}
+      accessibilityLabel={`Unavailable ${itemType}, tap to unpin` /* mobile-only string; no web resource key */}
     >
       <Ionicons
         name="alert-circle-outline"

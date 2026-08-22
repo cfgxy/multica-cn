@@ -32,7 +32,7 @@ import { IssueRow } from "@/components/issue/issue-row";
 import { IssuesLoading } from "@/components/issue/issues-loading";
 import { projectIssuesOptions } from "@/data/queries/projects";
 import { useWorkspaceStore } from "@/data/workspace-store";
-import { BOARD_STATUSES, STATUS_LABEL } from "@/lib/issue-status";
+import { BOARD_STATUSES, statusLabel } from "@/lib/issue-status";
 
 interface Props {
   projectId: string;
@@ -116,7 +116,7 @@ function SectionHeader({
     <View className="flex-row items-center gap-2 px-4 py-2 bg-background">
       <StatusIcon status={status} size={14} />
       <Text className="text-xs uppercase tracking-wider text-muted-foreground font-medium">
-        {STATUS_LABEL[status]}
+        {statusLabel(status)}
       </Text>
       <Text className="text-xs text-muted-foreground/60">{count}</Text>
     </View>

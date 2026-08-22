@@ -61,6 +61,7 @@ import { formatElapsedMs } from "@/lib/format-elapsed";
 import { cn } from "@/lib/utils";
 import { useChatSelectStore } from "@/data/chat-select-store";
 import { useChatMessageLongPress } from "./message-long-press";
+import { ActionSheetModal } from "@/components/ui/action-sheet";
 import { ChatEmptyState } from "./chat-empty-state";
 import { ChatTimeline } from "./chat-timeline";
 // Reuse the comment thread's standalone attachment list — same design web
@@ -416,9 +417,12 @@ function AssistantRow({
     </View>
   );
   const messageBody = isSelecting ? body : (
-    <Pressable onLongPress={longPress.onLongPress} delayLongPress={500}>
-      {body}
-    </Pressable>
+    <>
+      <Pressable onLongPress={longPress.onLongPress} delayLongPress={500}>
+        {body}
+      </Pressable>
+      <ActionSheetModal {...longPress.modalProps} />
+    </>
   );
   if (!onQuickAction || (message.quick_actions?.length ?? 0) === 0) {
     return messageBody;
@@ -590,8 +594,11 @@ function FailureBubble({
   );
   if (isSelecting) return body;
   return (
-    <Pressable onLongPress={longPress.onLongPress} delayLongPress={500}>
-      {body}
-    </Pressable>
+    <>
+      <Pressable onLongPress={longPress.onLongPress} delayLongPress={500}>
+        {body}
+      </Pressable>
+      <ActionSheetModal {...longPress.modalProps} />
+    </>
   );
 }
