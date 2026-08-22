@@ -149,5 +149,18 @@
     "upload_file": "Upload file",
     "file_too_large_title": "File too large",
     "file_too_large_message": "Files must be smaller than {{size}} MB."
+  },
+  "mobile": {
+    "actor": {
+      "system": "System",
+      "unknown_member": "Unknown",
+      "unknown_agent": "Unknown Agent",
+      "unknown_squad": "Squad"
+    },
+    "common": {
+      "no_matches": "No matches.",
+      "retry": "Retry",
+      "unknown_error": "unknown error"
+    }
   }
 }

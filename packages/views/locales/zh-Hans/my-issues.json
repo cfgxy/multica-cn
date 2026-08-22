@@ -40,5 +40,12 @@
   },
   "errors": {
     "move_failed": "移动任务失败"
+  },
+  "mobile": {
+    "page": {
+      "title": "我的任务",
+      "filter_a11y": "筛选",
+      "load_failed": "无法加载任务：{{reason}}"
+    }
   }
 }

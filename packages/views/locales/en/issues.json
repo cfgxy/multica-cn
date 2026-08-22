@@ -842,6 +842,18 @@
       "load_failed": "Failed to load issue: {{reason}}",
       "not_found": "not found",
       "retry": "Retry"
+    },
+    "picker": {
+      "unassigned": "Unassigned",
+      "agent": "Agent",
+      "member": "Member",
+      "squad": "Squad",
+      "needs_runtime": "Needs runtime",
+      "leader_needs_runtime": "Leader needs runtime",
+      "everyone_all": "Everyone (@all)"
+    },
+    "mention": {
+      "everyone": "Everyone"
     }
   }
 }

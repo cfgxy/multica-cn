@@ -810,6 +810,18 @@
       "load_failed": "无法加载任务：{{reason}}",
       "not_found": "未找到",
       "retry": "重试"
+    },
+    "picker": {
+      "unassigned": "未指派",
+      "agent": "智能体",
+      "member": "成员",
+      "squad": "小队",
+      "needs_runtime": "需绑定运行时",
+      "leader_needs_runtime": "队长需绑定运行时",
+      "everyone_all": "所有人（@all）"
+    },
+    "mention": {
+      "everyone": "所有人"
     }
   }
 }

@@ -35,7 +35,6 @@ import { useWorkspaceStore } from "@/data/workspace-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { deduplicateInboxItems } from "@/lib/inbox-display";
-import i18n from "i18next";
 import { useT } from "@/lib/use-t";
 
 export default function Inbox() {
@@ -90,10 +89,14 @@ export default function Inbox() {
   const onArchiveAll = () => {
     Alert.alert(
       t("menu.archive_all", "Archive all"),
-      "This archives every inbox item, read or unread. You can still find them via the issue pages." /* mobile-only string; no web resource key */,
+      t(
+        "mobile.page.archive_all_body",
+        "This archives every inbox item, read or unread. You can still find them via the issue pages.",
+      ),
       [
-        // "Cancel" 是字面量：inbox ns 没有 cancel key，跨 ns 取 common:cancel 需 i18n.t
-        { text: i18n.t("common:cancel", "Cancel"), style: "cancel" },
+        // 绑定的是 inbox ns，cancel 在 common 里，用 ns 前缀跨取即可——
+        // t 就在作用域内，不需要 i18n 对象（i18next 默认 nsSeparator 是 ":"）。
+        { text: t("common:cancel", "Cancel"), style: "cancel" },
         {
           text: t("menu.archive_all", "Archive all"),
           style: "destructive",
@@ -113,7 +116,10 @@ export default function Inbox() {
               <DropdownMenuTrigger asChild>
                 <IconButton
                   name="ellipsis-horizontal"
-                  accessibilityLabel="Inbox actions" /* mobile-only string; no web resource key */
+                  accessibilityLabel={t(
+                    "mobile.page.actions_a11y",
+                    "Inbox actions",
+                  )}
                 />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-48">
@@ -141,11 +147,15 @@ export default function Inbox() {
       ) : error ? (
         <View className="px-4 gap-3 pt-4">
           <Text className="text-sm text-destructive">
-            Failed to load inbox:{" "}
-            {error instanceof Error ? error.message : "unknown error"}
+            {t("mobile.page.load_failed", "Failed to load inbox: {{reason}}", {
+              reason:
+                error instanceof Error
+                  ? error.message
+                  : t("common:mobile.common.unknown_error", "unknown error"),
+            })}
           </Text>
           <Button variant="outline" onPress={() => refetch()}>
-            <Text>Retry</Text>
+            <Text>{t("common:mobile.common.retry", "Retry")}</Text>
           </Button>
         </View>
       ) : !data || data.length === 0 ? (

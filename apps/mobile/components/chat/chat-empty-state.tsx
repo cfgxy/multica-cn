@@ -70,7 +70,14 @@ export function ChatEmptyState({ hasSessions, agentName, onPickPrompt }: Props) 
                 插值。中日韩的语序与英文一致（「它们了解你的工作区——任务、
                 项目、skill。」），拆句不会造成语序错乱。 */}
             <Text className="text-sm text-muted-foreground">
-              {t("empty_state.first_time_intro", "✨ They know your workspace —")}{" "}
+              {/* 破折号与 pillars 之间的空格由译文自己带（en/ja/ko 末尾
+                  有一个空格，zh-Hans 的全角「——」自带间距所以没有）。
+                  这里不再写 {" "} 硬空格——它对 zh 会多出一个可见的缝，
+                  而按语言判断要不要加空格属于把排版规则写进代码。 */}
+              {t(
+                "empty_state.first_time_intro",
+                "✨ They know your workspace — ",
+              )}
             </Text>
             <Text className="text-sm font-medium text-foreground">
               {t("empty_state.first_time_pillars", "issues, projects, skills")}
