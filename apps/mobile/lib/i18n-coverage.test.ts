@@ -93,6 +93,23 @@ describe("扫描规则", () => {
     ).toEqual(["Due next Monday", "Parsed from raw input"]);
   });
 
+  // 绑定名提取曾是一条把四件事硬编码在一起的正则（`t:` 紧贴左括号、`}`
+  // 紧贴 `=`、`(` 紧跟函数名），下列写法全部漏提取 —— 已走 t() 的文案被
+  // 报成违规（误伤方向）。开发者面对「明明已翻译却报红」最省事的处置是把
+  // 条目塞进 baseline，防线就此退化成许可证，所以每种写法都要锁住。
+  it.each([
+    ["单属性单行", `const { t: tIssues } = useT("issues");`],
+    ["prettier 尾逗号", `const {\n  t: tIssues,\n} = useT("issues");`],
+    ["类型注解", `const { t: tIssues }: { t: TFunction } = useT("issues");`],
+    ["多属性（t 在前）", `const { t: tIssues, i18n } = useT("issues");`],
+    ["多属性（t 在后）", `const { i18n, t: tIssues } = useT("issues");`],
+    ["换行与空格混排", `const {  t  :  tIssues  }\n  =\n  useT( "issues" );`],
+    ["泛型参数", `const { t: tIssues } = useTranslation<"issues">("issues");`],
+  ])("提取得到绑定名：%s", (_name, decl) => {
+    const src = `${decl}\n<Text>{tIssues("k", "Failed to save the issue")}</Text>`;
+    expect(scanSource(src)).toEqual([]);
+  });
+
   it("绑定名必须来自本文件；同名函数在没有绑定的文件里不豁免", () => {
     expect(scanSource(`<Text>{tIssues("Save this issue now")}</Text>`)).toEqual(
       [

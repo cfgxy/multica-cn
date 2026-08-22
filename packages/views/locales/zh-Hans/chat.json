@@ -248,6 +248,13 @@
       "no_permission": "你已不再拥有运行此 Agent 的权限，消息未发送。",
       "runtime_required": "请先为此 Agent 绑定运行时，然后再发送消息。",
       "generic": "消息发送失败，请重试。"
+    },
+    "disabled_reason": {
+      "no_agent": "未选择 Agent",
+      "access_revoked": "你已不能运行此 Agent",
+      "no_agents_in_workspace": "此工作空间没有 Agent",
+      "archived": "此聊天已归档",
+      "runtime_missing": "Agent 需要绑定运行时"
     }
   }
 }

@@ -485,16 +485,28 @@ export default function ChatTab() {
     availability === "none" ||
     isArchived === true ||
     !runtimeBound;
+  // 与上面 `disabled` 同集合、同顺序、同判据，无 undefined 出口：
+  // `disabled === true` ⟺ `disabledReason !== undefined`。这五条是禁用态
+  // 下 composer pill 上唯一实际可见的文案（覆盖掉 pillLabel）。
   const disabledReason = !currentAgent
-    ? "No agent selected"
+    ? t("mobile.disabled_reason.no_agent", "No agent selected")
     : accessRevoked
-      ? "You can no longer run this agent"
+      ? t(
+          "mobile.disabled_reason.access_revoked",
+          "You can no longer run this agent",
+        )
       : availability === "none"
-        ? "No agents in this workspace"
+        ? t(
+            "mobile.disabled_reason.no_agents_in_workspace",
+            "No agents in this workspace",
+          )
         : isArchived
-          ? "This chat is archived"
+          ? t("mobile.disabled_reason.archived", "This chat is archived")
           : !runtimeBound
-            ? "Agent needs a runtime"
+            ? t(
+                "mobile.disabled_reason.runtime_missing",
+                "Agent needs a runtime",
+              )
             : undefined;
 
   return (

@@ -48,6 +48,15 @@
  *     只采到 `See https:`。`stripComments` 只跟踪引号状态，JSX 裸文本区不在
  *     引号内，认不出来。失效方向是**漏采**（同行后续文案静默丢失），不是
  *     误采。仓库现无此写法，代价小于为它改造 stripComments 的 JSX 感知。
+ *   - **写进内部状态字段、但没有渲染消费点的英文串**：如
+ *     `message-composer.tsx` 上传失败分支的 `"Unknown error"` —— 它落进
+ *     `ComposerAttachmentItem.error`（定义见
+ *     `components/issue/composer-attachment-row.tsx`），而该字段全仓无任何
+ *     读取点，失败态 UI 只渲染重试图标 + destructive 色 + 文件名。这类既
+ *     不在 JSX / props / Alert 三个检测面内（采不到），**采到了也不该报**
+ *     （不进 UI，翻译它是无效工作）。判据是「有没有渲染消费点」，不是
+ *     「像不像用户文案」；字段一旦被渲染就必须走 t()，届时清单要同步删掉
+ *     这条。
  *
  * 以上任一类进入 P1 视野时，补齐点都在 `extractStringLiterals` /
  * `extractTextProps` 附近，测试用「注入 → 应失败」的方式验证。
@@ -197,13 +206,86 @@ function findTagEnd(
  * 模式匹配是开放式的，`tParse(...)`、`tFormatDate(...)` 这种与 i18n 无关
  * 的工具函数会被一并挖空，其中的英文字面量就此静默逃过检测——**失效方向
  * 是假绿，且没有任何红灯提示**。收敛成精确集合后，非绑定名一律照常上报。
+ *
+ * 两步拆解，不堆单条正则：先定位 `useT` / `useTranslation` 调用，再往左
+ * 找配对的解构块，在块内独立提取 `t: <name>`。曾经的单条正则把四件事
+ * 硬编码进一个匹配式（`t:` 紧贴左括号、`}` 紧贴 `=`、`(` 紧跟函数名），
+ * 于是多属性、prettier 尾逗号、类型注解、泛型参数每种写法都要补一个
+ * 分支；拆成两步后这些是同一处逻辑天然覆盖。
+ *
+ * 失效方向是**误伤**（已走 t() 的文案被报成违规）。开发者面对「明明已翻译
+ * 却报红」最省事的处置就是把条目塞进 baseline，防线从此退化成许可证——
+ * 所以这里宁可提取宽一点。
  */
 function collectTranslatorNames(src: string): string[] {
   const out = new Set<string>();
-  const re =
-    /\{\s*t\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\}\s*=\s*use(?:T|Translation)\s*\(/g;
-  for (const m of src.matchAll(re)) out.add(m[1]);
+  for (const m of src.matchAll(/use(?:T|Translation)\b/g)) {
+    // 往左跳过空白、泛型参数 `<"issues">`、类型注解，找解构块的 `}`。
+    // 只认紧邻的一段：中间出现别的实义字符就说明不是解构赋值。
+    const head = src.slice(0, m.index ?? 0);
+    const eq = head.lastIndexOf("=");
+    if (eq === -1 || !/^[\s<>"'`,\w.$[\]]*$/.test(head.slice(eq + 1))) continue;
+    // 往左逐个吃掉大括号块。`const { t: tIssues }: { t: TFunction } = useT()`
+    // 里最靠近 `=` 的那个块是**类型注解**，提取它只会拿到类型名；块左侧
+    // 紧跟 `:` 就是这种情况，跳过它继续往左找真正的解构块。
+    let close = head.lastIndexOf("}", eq);
+    if (close === -1 || head.slice(close + 1, eq).trim() !== "") continue;
+    let open = matchingOpenBrace(head, close);
+    while (open > 0 && head.slice(0, open).trimEnd().endsWith(":")) {
+      close = head.lastIndexOf("}", open);
+      if (close === -1) break;
+      open = matchingOpenBrace(head, close);
+    }
+    if (open === -1 || close === -1) continue;
+    // 块内按顶层逗号切属性，逐个找 `t: name`。属性自身的类型注解
+    // （`t: tIssues as TFunction`）落在名字之后，正则到此截断即可。
+    for (const prop of splitTopLevel(head.slice(open + 1, close))) {
+      const hit = /^\s*t\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)/.exec(prop);
+      if (hit) out.add(hit[1]);
+    }
+  }
   return [...out];
+}
+
+/** 从 `close` 处的 `}` 往左找配对的 `{`，计深度。找不到返回 -1。 */
+function matchingOpenBrace(src: string, close: number): number {
+  let depth = 0;
+  for (let i = close; i >= 0; i--) {
+    if (src[i] === "}") depth += 1;
+    else if (src[i] === "{") {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+/**
+ * 按顶层逗号切分解构块内容。嵌套的 `{}` / `[]` / `<>` 与字符串内的逗号
+ * 不算分隔符（`{ t, i18n: { language } }`、`{ t }: Props<"a,b">`）。
+ */
+function splitTopLevel(body: string): string[] {
+  const parts: string[] = [];
+  let depth = 0;
+  let quote: string | null = null;
+  let start = 0;
+  for (let i = 0; i < body.length; i++) {
+    const ch = body[i];
+    if (quote) {
+      if (ch === "\\") i += 1;
+      else if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === "`") quote = ch;
+    else if (ch === "{" || ch === "[" || ch === "<") depth += 1;
+    else if (ch === "}" || ch === "]" || ch === ">") depth -= 1;
+    else if (ch === "," && depth === 0) {
+      parts.push(body.slice(start, i));
+      start = i + 1;
+    }
+  }
+  parts.push(body.slice(start));
+  return parts;
 }
 
 /**
@@ -216,9 +298,14 @@ function collectTranslatorNames(src: string): string[] {
  * 从本文件实际提取到的重命名绑定。
  */
 function stripTCalls(expr: string, names: string[] = []): string {
+  // 名字来自源码，拼进 RegExp 前必须转义：JS 标识符允许 `$`，而 `$` 在
+  // 正则里是行尾锚点（`t$x` 会拼成一个永不匹配的模式）。
+  const escaped = names.map((n) => n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
   // 长的排前面：alternation 取先匹配上的分支，`t` 排在 `tIssues` 前会让
   // `tIssues(` 走上更曲折的回溯路径，直接按长度降序更稳。
-  const alts = ["i18n\\.t", ...names, "t"].sort((a, b) => b.length - a.length);
+  const alts = ["i18n\\.t", ...escaped, "t"].sort(
+    (a, b) => b.length - a.length,
+  );
   const re = new RegExp(
     `(?<![A-Za-z0-9_$.])(?:${alts.join("|")})(?![A-Za-z0-9_$])\\s*\\(`,
     "g",
