@@ -819,6 +819,21 @@
     "composer": {
       "placeholder": "Add a comment…",
       "pill_label": "Add a comment, @ to mention…"
+    },
+    "comment": {
+      "resolved_bar_one": "Resolved · {{count}} message by {{authors}}",
+      "resolved_bar_other": "Resolved · {{count}} messages by {{authors}}",
+      "resolved_bar_a11y_one": "Resolved thread by {{authors}}, {{count}} message. Tap to expand.",
+      "resolved_bar_a11y_other": "Resolved thread by {{authors}}, {{count}} messages. Tap to expand.",
+      "resolved_by": "Resolved by",
+      "collapse": "Collapse",
+      "collapse_a11y": "Collapse resolved thread",
+      "edited_suffix": " · (edited)",
+      "send_failed": "Couldn't send",
+      "retry": "Retry",
+      "retry_a11y": "Retry sending comment",
+      "discard": "Discard",
+      "discard_a11y": "Discard failed comment"
     }
   }
 }

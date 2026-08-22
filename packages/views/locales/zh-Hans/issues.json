@@ -789,6 +789,19 @@
     "composer": {
       "placeholder": "添加评论…",
       "pill_label": "添加评论，输入 @ 可提及"
+    },
+    "comment": {
+      "resolved_bar_other": "已解决 · 来自 {{authors}} 的 {{count}} 条消息",
+      "resolved_bar_a11y_other": "{{authors}} 的已解决话题，共 {{count}} 条消息。点按展开。",
+      "resolved_by": "解决者",
+      "collapse": "收起",
+      "collapse_a11y": "收起已解决话题",
+      "edited_suffix": " ·（已编辑）",
+      "send_failed": "发送失败",
+      "retry": "重试",
+      "retry_a11y": "重新发送评论",
+      "discard": "丢弃",
+      "discard_a11y": "丢弃发送失败的评论"
     }
   }
 }

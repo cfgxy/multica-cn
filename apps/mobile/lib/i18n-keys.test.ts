@@ -17,7 +17,7 @@ const MOBILE_ROOT = join(__dirname, "..");
 const zh = RESOURCES["zh-Hans"] as Record<string, Record<string, unknown>>;
 const en = RESOURCES.en as Record<string, Record<string, unknown>>;
 
-function lookup(bundle: Record<string, Record<string, unknown>>, ns: string, dotted: string): string | null {
+function lookupExact(bundle: Record<string, Record<string, unknown>>, ns: string, dotted: string): string | null {
   let cur: unknown = bundle[ns];
   if (cur == null) return null;
   for (const seg of dotted.split(".")) {
@@ -25,6 +25,18 @@ function lookup(bundle: Record<string, Record<string, unknown>>, ns: string, dot
     cur = (cur as Record<string, unknown>)[seg];
   }
   return typeof cur === "string" ? cur : null;
+}
+
+function lookup(bundle: Record<string, Record<string, unknown>>, ns: string, dotted: string): string | null {
+  const exact = lookupExact(bundle, ns, dotted);
+  if (exact != null) return exact;
+  // 复数 key：`t("k", fb, { count })` 在资源里存的是 `k_one` / `k_other`，
+  // 源码里写的始终是不带后缀的基名，精确查找必然落空。i18next 对任何
+  // count 都保证 `_other` 分支存在（zh/ja/ko 的 CLDR 更是只有 other，
+  // 见 packages/views/locales/parity.test.ts 的 dead plural-key guard），
+  // 所以退回 `_other` 既充分又不会放过真正缺失的 key——`k_other` 不存在
+  // 时仍返回 null 报红。
+  return lookupExact(bundle, ns, `${dotted}_other`);
 }
 
 function listSourceFiles(dir: string): string[] {
@@ -112,6 +124,18 @@ describe("mobile t() key existence (real resources)", () => {
     expect(
       misses.map((c) => `${c.file}  ${c.ns}:${c.key}`),
     ).toEqual([]);
+  });
+
+  it("复数 key 按 _other 分支解析，且缺失时仍报红", () => {
+    // comment-card.tsx 的 resolved_bar 是 mobile 第一处 count 复数调用点。
+    // 精确查找对它必然落空（源码写基名、资源存 _one/_other），退化前这条
+    // 防线会把已翻译的 key 报成缺失（误伤方向）。
+    expect(lookup(zh, "issues", "mobile.comment.resolved_bar")).toBe(
+      lookupExact(zh, "issues", "mobile.comment.resolved_bar_other"),
+    );
+    expect(lookup(zh, "issues", "mobile.comment.resolved_bar")).not.toBeNull();
+    // 反向：基名与 _other 都不存在时不得静默豁免。
+    expect(lookup(zh, "issues", "mobile.comment.no_such_key")).toBeNull();
   });
 
   it("every default value matches the en resource text", () => {

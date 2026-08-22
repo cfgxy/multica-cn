@@ -1212,5 +1212,28 @@
       "change_message": "You'll be signed out of the current account before connecting to the new address.",
       "cancel": "Cancel"
     }
+  },
+  "mobile": {
+    "avatar": {
+      "take_photo": "Take Photo",
+      "choose_from_library": "Choose from Library",
+      "remove_photo": "Remove Photo",
+      "cancel": "Cancel",
+      "permission_title": "Permission needed",
+      "permission_camera": "Camera access is required to take a photo.",
+      "too_large_title": "Image too large",
+      "too_large_body": "Pick an image under 5 MB.",
+      "upload_failed_body": "Could not upload avatar.",
+      "remove_failed_title": "Remove failed",
+      "remove_failed_body": "Could not remove avatar."
+    },
+    "account": {
+      "save_failed_title": "Save failed",
+      "name_placeholder": "Your name",
+      "email_hint": "Email is set at sign-up and can't be changed here."
+    },
+    "notifications": {
+      "load_failed": "Failed to load notification preferences."
+    }
   }
 }

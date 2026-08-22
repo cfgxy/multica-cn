@@ -789,6 +789,19 @@
     "composer": {
       "placeholder": "コメントを追加…",
       "pill_label": "コメントを追加、@ でメンション"
+    },
+    "comment": {
+      "resolved_bar_other": "解決済み · {{authors}} によるメッセージ {{count}} 件",
+      "resolved_bar_a11y_other": "{{authors}} の解決済みスレッド、メッセージ {{count}} 件。タップして展開します。",
+      "resolved_by": "解決者",
+      "collapse": "折りたたむ",
+      "collapse_a11y": "解決済みスレッドを折りたたむ",
+      "edited_suffix": " ·（編集済み）",
+      "send_failed": "送信できませんでした",
+      "retry": "再試行",
+      "retry_a11y": "コメントを再送信",
+      "discard": "破棄",
+      "discard_a11y": "送信に失敗したコメントを破棄"
     }
   }
 }

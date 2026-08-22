@@ -1211,5 +1211,28 @@
       "change_message": "新しいアドレスに接続する前に、現在のアカウントからサインアウトします。",
       "cancel": "キャンセル"
     }
+  },
+  "mobile": {
+    "avatar": {
+      "take_photo": "写真を撮る",
+      "choose_from_library": "ライブラリから選択",
+      "remove_photo": "写真を削除",
+      "cancel": "キャンセル",
+      "permission_title": "権限が必要です",
+      "permission_camera": "写真を撮るにはカメラへのアクセスが必要です。",
+      "too_large_title": "画像が大きすぎます",
+      "too_large_body": "5 MB 未満の画像を選択してください。",
+      "upload_failed_body": "アバターをアップロードできませんでした。",
+      "remove_failed_title": "削除に失敗しました",
+      "remove_failed_body": "アバターを削除できませんでした。"
+    },
+    "account": {
+      "save_failed_title": "保存に失敗しました",
+      "name_placeholder": "お名前",
+      "email_hint": "メールアドレスはサインアップ時に設定され、ここでは変更できません。"
+    },
+    "notifications": {
+      "load_failed": "通知設定を読み込めませんでした。"
+    }
   }
 }
