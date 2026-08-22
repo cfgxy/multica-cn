@@ -9,8 +9,10 @@ import { Button } from "@/components/ui/button";
 import { MulticaLogo } from "@/components/brand/multica-logo";
 import { useAuthStore } from "@/data/auth-store";
 import { mapAuthError } from "@/lib/auth-error";
+import { useT } from "@/lib/use-t";
 
 export default function Login() {
+  const { t } = useT("auth");
   const sendCode = useAuthStore((s) => s.sendCode);
   const [email, setEmail] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -27,7 +29,12 @@ export default function Login() {
       router.push({ pathname: "/verify", params: { email: trimmed } });
     } catch (err) {
       void Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
-      setError(mapAuthError(err, "Couldn't send the code. Try again."));
+      setError(
+        mapAuthError(
+          err,
+          t("mobile.errors.send_failed", "Couldn't send the code. Try again."),
+        ),
+      );
     } finally {
       setSubmitting(false);
     }
@@ -44,10 +51,10 @@ export default function Login() {
             <MulticaLogo size={32} />
             <View className="gap-1 items-center">
               <Text className="text-2xl font-semibold text-foreground">
-                Sign in to Multica
+                {t("signin.title", "Sign in to Multica")}
               </Text>
               <Text className="text-sm text-muted-foreground text-center">
-                Enter your email and we&apos;ll send you a verification code.
+                {t("signin.description", "Enter your email to get a login code")}
               </Text>
             </View>
           </View>
@@ -58,7 +65,7 @@ export default function Login() {
               autoComplete="email"
               autoFocus
               keyboardType="email-address"
-              placeholder="you@example.com"
+              placeholder={t("common.email_placeholder", "you@example.com")}
               value={email}
               onChangeText={setEmail}
               onSubmitEditing={onSubmit}
@@ -76,7 +83,11 @@ export default function Login() {
             disabled={submitting || !email.trim()}
             onPress={onSubmit}
           >
-            <Text>{submitting ? "Sending..." : "Send code"}</Text>
+            <Text>
+              {submitting
+                ? t("signin.sending", "Sending code...")
+                : t("mobile.send_code", "Send code")}
+            </Text>
           </Button>
         </View>
 
@@ -86,7 +97,9 @@ export default function Login() {
           onPress={() => router.push("/server-settings")}
           className="items-center pb-4 active:opacity-60"
         >
-          <Text className="text-xs text-muted-foreground">Server settings</Text>
+          <Text className="text-xs text-muted-foreground">
+            {t("mobile.server_settings", "Server settings")}
+          </Text>
         </Pressable>
       </KeyboardAvoidingView>
     </SafeAreaView>
