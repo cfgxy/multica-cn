@@ -237,6 +237,17 @@
       "runtime_required_title": "ランタイムが必要です",
       "runtime_required_message": "メッセージを送信する前に、ウェブ版またはデスクトップ版でこのエージェントにランタイムをバインドしてください。",
       "failed_title": "メッセージは送信されませんでした"
+    },
+    "composer": {
+      "placeholder": "メッセージ…",
+      "agent_working": "エージェント処理中…",
+      "unavailable": "チャットを利用できません",
+      "stop_agent": "エージェントを停止"
+    },
+    "send_failure": {
+      "no_permission": "このエージェントを実行する権限がなくなったため、メッセージは送信されませんでした。",
+      "runtime_required": "メッセージを送信する前に、このエージェントにランタイムをバインドしてください。",
+      "generic": "メッセージを送信できませんでした。もう一度お試しください。"
     }
   }
 }

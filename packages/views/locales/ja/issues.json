@@ -785,6 +785,10 @@
     "edit": {
       "discard_message": "この Issue への編集内容は失われます。",
       "save_failed": "保存に失敗しました"
+    },
+    "composer": {
+      "placeholder": "コメントを追加…",
+      "pill_label": "コメントを追加、@ でメンション"
     }
   }
 }

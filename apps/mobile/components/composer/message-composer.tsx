@@ -56,6 +56,7 @@ import { api, MAX_FILE_SIZE } from "@/data/api";
 import { useMentionDraftStore } from "@/data/stores/mention-draft-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { stripMarkdown } from "@/lib/strip-markdown";
+import { useT } from "@/lib/use-t";
 import { THEME } from "@/lib/theme";
 import { Text } from "@/components/ui/text";
 import { IconButton } from "@/components/ui/icon-button";
@@ -90,6 +91,9 @@ interface Props {
    *  the message id assigned by the server post-send). */
   uploadContext?: { issueId?: string; commentId?: string };
 
+  /** 省略时回退到 `common:composer.placeholder`（走 t()，随语言切换）。
+   *  不写成默认参数值：默认参数是模块加载期求值的裸英文串，语言切换后
+   *  不会重算，也会绕过 i18n 覆盖率防线。 */
   placeholder?: string;
   pillLabel?: string;
   pillIcon?: keyof typeof Ionicons.glyphMap;
@@ -144,11 +148,7 @@ function serializeMentions(chips: MentionChip[]): string {
   return chips
     .map((m) => {
       const label =
-        m.type === "issue"
-          ? m.name
-          : m.type === "all"
-            ? "@all"
-            : `@${m.name}`;
+        m.type === "issue" ? m.name : m.type === "all" ? "@all" : `@${m.name}`;
       return `[${label}](mention://${m.type}/${m.id})`;
     })
     .join(" ");
@@ -158,8 +158,8 @@ export function MessageComposer({
   onSubmit,
   mentionPickerPath,
   uploadContext,
-  placeholder = "Type a message…",
-  pillLabel = "Type a message…",
+  placeholder,
+  pillLabel,
   pillIcon = "chatbubble-ellipses-outline",
   value: controlledValue,
   onChangeText: controlledOnChange,
@@ -172,6 +172,7 @@ export function MessageComposer({
   disabledReason,
   manageKeyboard = true,
 }: Props) {
+  const { t } = useT("common");
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme];
   const insets = useSafeAreaInsets();
@@ -184,6 +185,10 @@ export function MessageComposer({
   // Hybrid controlled / uncontrolled pattern (React-canonical). Chat
   // passes `value`/`onChangeText` for cross-session draft persistence;
   // comment omits both and the composer manages local state.
+  const defaultLabel = t("composer.placeholder", "Type a message…");
+  const resolvedPlaceholder = placeholder ?? defaultLabel;
+  const resolvedPillLabel = pillLabel ?? defaultLabel;
+
   const isControlled =
     controlledValue !== undefined && controlledOnChange !== undefined;
   const text = isControlled ? controlledValue : internalText;
@@ -213,11 +218,7 @@ export function MessageComposer({
   // Auto-expand + focus when an `expandTrigger` changes. Comment uses
   // this to react to the long-press → reply flow setting a reply target.
   const triggerSeen = useRef<string | null>(null);
-  if (
-    expandTrigger &&
-    triggerSeen.current !== expandTrigger &&
-    !disabled
-  ) {
+  if (expandTrigger && triggerSeen.current !== expandTrigger && !disabled) {
     triggerSeen.current = expandTrigger;
     setExpanded(true);
     requestAnimationFrame(() => inputRef.current?.focus());
@@ -285,21 +286,11 @@ export function MessageComposer({
     } catch {
       setText(textSnap);
       setAttachments(attachmentsSnap);
-      mentionsSnap.forEach((m) =>
-        useMentionDraftStore.getState().toggle(m),
-      );
+      mentionsSnap.forEach((m) => useMentionDraftStore.getState().toggle(m));
     } finally {
       setSubmitting(false);
     }
-  }, [
-    canSend,
-    text,
-    mentions,
-    attachments,
-    setText,
-    clearMentions,
-    onSubmit,
-  ]);
+  }, [canSend, text, mentions, attachments, setText, clearMentions, onSubmit]);
 
   /** Streams a picked asset to /api/upload-file, updating the matching
    *  thumbnail's status as it goes. Pulled out so retry can call it
@@ -347,7 +338,16 @@ export function MessageComposer({
     const picked = picker.assets[0];
     if (!picked) return;
     if (picked.fileSize != null && picked.fileSize > MAX_FILE_SIZE) {
-      Alert.alert("File too large", "Files must be smaller than 100 MB.");
+      Alert.alert(
+        t("composer.file_too_large_title", "File too large"),
+        t(
+          "composer.file_too_large_message",
+          "Files must be smaller than {{size}} MB.",
+          {
+            size: Math.round(MAX_FILE_SIZE / (1024 * 1024)),
+          },
+        ),
+      );
       return;
     }
     const filename = picked.fileName ?? `image-${Date.now()}.jpg`;
@@ -369,7 +369,7 @@ export function MessageComposer({
       name: filename,
       type: mimeType,
     });
-  }, [startUpload]);
+  }, [startUpload, t]);
 
   const onFilePress = useCallback(async () => {
     const picker = await DocumentPicker.getDocumentAsync({
@@ -380,7 +380,16 @@ export function MessageComposer({
     const picked = picker.assets[0];
     if (!picked) return;
     if (picked.size != null && picked.size > MAX_FILE_SIZE) {
-      Alert.alert("File too large", "Files must be smaller than 100 MB.");
+      Alert.alert(
+        t("composer.file_too_large_title", "File too large"),
+        t(
+          "composer.file_too_large_message",
+          "Files must be smaller than {{size}} MB.",
+          {
+            size: Math.round(MAX_FILE_SIZE / (1024 * 1024)),
+          },
+        ),
+      );
       return;
     }
     const mimeType = picked.mimeType ?? "application/octet-stream";
@@ -401,7 +410,7 @@ export function MessageComposer({
       name: picked.name,
       type: mimeType,
     });
-  }, [startUpload]);
+  }, [startUpload, t]);
 
   const onRemoveAttachment = useCallback((localId: string) => {
     setAttachments((prev) => prev.filter((it) => it.localId !== localId));
@@ -458,17 +467,13 @@ export function MessageComposer({
         onPress={expand}
         disabled={disabled}
         accessibilityRole="button"
-        accessibilityLabel={pillLabel}
+        accessibilityLabel={resolvedPillLabel}
         accessibilityState={{ disabled }}
         className="flex-row items-center gap-2 h-11 px-4 rounded-full bg-secondary active:opacity-80"
       >
-        <Ionicons
-          name={pillIcon}
-          size={18}
-          color={theme.mutedForeground}
-        />
+        <Ionicons name={pillIcon} size={18} color={theme.mutedForeground} />
         <Text className="text-base text-muted-foreground">
-          {disabled && disabledReason ? disabledReason : pillLabel}
+          {disabled && disabledReason ? disabledReason : resolvedPillLabel}
         </Text>
       </Pressable>
     </View>
@@ -491,13 +496,15 @@ export function MessageComposer({
               className="flex-1 text-xs font-medium text-muted-foreground"
               numberOfLines={1}
             >
-              Replying to {replyTarget.actorName}
+              {t("composer.replying_to", "Replying to {{name}}", {
+                name: replyTarget.actorName,
+              })}
             </Text>
             <Pressable
               onPress={onClearReplyTarget}
               hitSlop={8}
               accessibilityRole="button"
-              accessibilityLabel="Cancel reply"
+              accessibilityLabel={t("composer.cancel_reply", "Cancel reply")}
             >
               <Ionicons
                 name="close-circle"
@@ -521,7 +528,7 @@ export function MessageComposer({
         className="rounded-3xl border border-border bg-secondary"
         style={{ borderCurve: "continuous" }}
       >
-        {(mentions.length > 0 || attachments.length > 0) ? (
+        {mentions.length > 0 || attachments.length > 0 ? (
           <View className="px-2 pt-2 pb-1">
             <ComposerAttachmentRow
               mentions={mentions}
@@ -538,7 +545,7 @@ export function MessageComposer({
           value={text}
           onChangeText={setText}
           onBlur={onBlur}
-          placeholder={placeholder}
+          placeholder={resolvedPlaceholder}
           placeholderTextColor={theme.mutedForeground}
           multiline
           editable={!disabled}
@@ -555,21 +562,24 @@ export function MessageComposer({
             iconSize={20}
             color={mentions.length > 0 ? theme.primary : undefined}
             onPress={onAtPress}
-            accessibilityLabel="Mention someone or an issue"
+            accessibilityLabel={t(
+              "composer.mention_hint",
+              "Mention someone or an issue",
+            )}
             className="h-8 w-8"
           />
           <IconButton
             name="image-outline"
             iconSize={20}
             onPress={onImagePress}
-            accessibilityLabel="Upload image"
+            accessibilityLabel={t("composer.upload_image", "Upload image")}
             className="h-8 w-8"
           />
           <IconButton
             name="attach-outline"
             iconSize={20}
             onPress={onFilePress}
-            accessibilityLabel="Upload file"
+            accessibilityLabel={t("composer.upload_file", "Upload file")}
             className="h-8 w-8"
           />
           <View className="flex-1" />
@@ -585,7 +595,7 @@ export function MessageComposer({
               disabled={!canSend}
               hitSlop={12}
               className="h-8 w-8 rounded-full"
-              accessibilityLabel="Send"
+              accessibilityLabel={t("send", "Send")}
               accessibilityState={{ disabled: !canSend }}
             />
           )}

@@ -138,5 +138,16 @@
   "field": {
     "title": "タイトル",
     "description": "説明"
+  },
+  "send": "送信",
+  "composer": {
+    "placeholder": "メッセージを入力…",
+    "replying_to": "{{name}} に返信",
+    "cancel_reply": "返信をキャンセル",
+    "mention_hint": "メンバーまたは課題をメンション",
+    "upload_image": "画像をアップロード",
+    "upload_file": "ファイルをアップロード",
+    "file_too_large_title": "ファイルサイズが大きすぎます",
+    "file_too_large_message": "ファイルは {{size}} MB 未満である必要があります。"
   }
 }

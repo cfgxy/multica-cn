@@ -43,6 +43,11 @@
  *     （见 `issues-filter.tsx:150` 的 `function SectionLabel(...)`）。把每个
  *     项目自定义组件都列进 `TEXT_TAGS` 不现实，判定「该组件最终渲染文本」
  *     又要跨函数分析。这类只能靠人工 review 兜住。
+ *   - **裸文本里的 URL 会截断同行后续文案**：`<Text>See https://x.dev for
+ *     details</Text>` 中 `//` 之后到行尾被 `stripComments` 当行注释抹掉，
+ *     只采到 `See https:`。`stripComments` 只跟踪引号状态，JSX 裸文本区不在
+ *     引号内，认不出来。失效方向是**漏采**（同行后续文案静默丢失），不是
+ *     误采。仓库现无此写法，代价小于为它改造 stripComments 的 JSX 感知。
  *
  * 以上任一类进入 P1 视野时，补齐点都在 `extractStringLiterals` /
  * `extractTextProps` 附近，测试用「注入 → 应失败」的方式验证。
@@ -181,17 +186,43 @@ function findTagEnd(
 }
 
 /**
+ * 从源码里取出实际存在的翻译函数绑定名。
+ *
+ * 一个组件绑定多个 namespace 时写成
+ * `const { t: tIssues } = useT("issues")`，调用点就成了 `tIssues(...)`。
+ * 这些名字必须和 `t` / `i18n.t` 一样被挖空，否则已走 t() 的文案会被报成
+ * 违规（误伤方向）。
+ *
+ * 只认**本文件里真实出现过的**解构绑定，不用 `t[A-Z]\w*` 这类模式匹配：
+ * 模式匹配是开放式的，`tParse(...)`、`tFormatDate(...)` 这种与 i18n 无关
+ * 的工具函数会被一并挖空，其中的英文字面量就此静默逃过检测——**失效方向
+ * 是假绿，且没有任何红灯提示**。收敛成精确集合后，非绑定名一律照常上报。
+ */
+function collectTranslatorNames(src: string): string[] {
+  const out = new Set<string>();
+  const re =
+    /\{\s*t\s*:\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*\}\s*=\s*use(?:T|Translation)\s*\(/g;
+  for (const m of src.matchAll(re)) out.add(m[1]);
+  return [...out];
+}
+
+/**
  * 把翻译函数调用整段挖空（等长空格，偏移不变）。
  *
  * 调用里的字符串是 key 与英文 fallback，本来就该是英文，采进来全是误报。
  * 按括号深度找配对的 `)`，字符串内的括号不计数。
  *
- * 认三种形态：`t(…)`、`i18n.t(…)`，以及一个组件里绑定多个 namespace 时的
- * 重命名写法 `const { t: tIssues } = useT("issues")` → `tIssues(…)`。第三种
- * 必须认：漏掉它会把已经走了 t() 的文案报成违规，是会误伤的方向。
+ * 认 `t(…)` / `i18n.t(…)`，外加 `names` 里由 `collectTranslatorNames`
+ * 从本文件实际提取到的重命名绑定。
  */
-function stripTCalls(expr: string): string {
-  const re = /(?<![A-Za-z0-9_$.])(?:i18n\.)?t(?:[A-Z][A-Za-z0-9]*)?\s*\(/g;
+function stripTCalls(expr: string, names: string[] = []): string {
+  // 长的排前面：alternation 取先匹配上的分支，`t` 排在 `tIssues` 前会让
+  // `tIssues(` 走上更曲折的回溯路径，直接按长度降序更稳。
+  const alts = ["i18n\\.t", ...names, "t"].sort((a, b) => b.length - a.length);
+  const re = new RegExp(
+    `(?<![A-Za-z0-9_$.])(?:${alts.join("|")})(?![A-Za-z0-9_$])\\s*\\(`,
+    "g",
+  );
   let out = expr;
   for (const m of expr.matchAll(re)) {
     const start = m.index ?? 0;
@@ -224,8 +255,8 @@ function stripTCalls(expr: string): string {
  * 覆盖 `"…"` / `'…'` 与不含 `${}` 的模板串；带插值的模板串、变量引用、
  * 数组取值都不采（见模块头「已知漏采清单」）。
  */
-function extractStringLiterals(expr: string): string[] {
-  const src = stripTCalls(expr);
+function extractStringLiterals(expr: string, names: string[] = []): string[] {
+  const src = stripTCalls(expr, names);
   const out: string[] = [];
   for (let i = 0; i < src.length; i++) {
     const q = src[i];
@@ -302,7 +333,11 @@ function skipElement(src: string, from: number, tag: string): number {
  * 嵌套同名标签用计数配对；嵌套的其他文本标签整段跳过，由它自己那轮扫描
  * 负责，避免一句文案被重复上报。
  */
-function extractTextChildren(src: string, tag: string): string[] {
+function extractTextChildren(
+  src: string,
+  tag: string,
+  names: string[] = [],
+): string[] {
   const out: string[] = [];
   const open = new RegExp(`<${tag}(?![A-Za-z0-9_])`, "g");
   for (const m of src.matchAll(open)) {
@@ -328,7 +363,7 @@ function extractTextChildren(src: string, tag: string): string[] {
         else expr += ch;
       } else if (ch === "}") {
         braces = Math.max(0, braces - 1);
-        if (braces === 0) out.push(...extractStringLiterals(expr));
+        if (braces === 0) out.push(...extractStringLiterals(expr, names));
         else expr += ch;
       } else if (ch === "<" && /^<\/?[A-Za-z]/.test(src.slice(i, i + 3))) {
         // 跳过任意子标签本身，只丢标签不丢文本。同名嵌套要计深度，
@@ -387,7 +422,7 @@ function extractTextProps(src: string): { prop: string; text: string }[] {
  * 仓库里 6 处英文 Alert 就是这么漏过去的。第三个参数（buttons 数组）
  * 暂不采，见模块头「已知漏采清单」。
  */
-function extractAlertTexts(src: string): string[] {
+function extractAlertTexts(src: string, names: string[] = []): string[] {
   const out: string[] = [];
   for (const m of src.matchAll(/(?<![A-Za-z0-9_$.])Alert\s*\.\s*alert\s*\(/g)) {
     const open = (m.index ?? 0) + m[0].length - 1;
@@ -414,7 +449,7 @@ function extractAlertTexts(src: string): string[] {
     // 前两个参数 = bounds[0..1] 与 bounds[1..2] 之间的片段。
     for (let a = 0; a < 2 && a + 1 < bounds.length; a++) {
       const arg = src.slice(bounds[a] + 1, bounds[a + 1]);
-      out.push(...extractStringLiterals(arg));
+      out.push(...extractStringLiterals(arg, names));
     }
   }
   return out;
@@ -442,15 +477,16 @@ export function scanFile(absPath: string, relPath: string): Violation[] {
  */
 export function scanSource(rawSrc: string, relPath = "<source>"): Violation[] {
   const src = stripComments(rawSrc);
+  const names = collectTranslatorNames(src);
   const found: Violation[] = [];
   for (const tag of TEXT_TAGS) {
-    for (const text of extractTextChildren(src, tag)) {
+    for (const text of extractTextChildren(src, tag, names)) {
       if (looksLikeUserFacingEnglish(text)) {
         found.push({ file: relPath, text, kind: `<${tag}>` });
       }
     }
   }
-  for (const text of extractAlertTexts(src)) {
+  for (const text of extractAlertTexts(src, names)) {
     if (looksLikeUserFacingEnglish(text)) {
       found.push({ file: relPath, text, kind: "Alert.alert" });
     }

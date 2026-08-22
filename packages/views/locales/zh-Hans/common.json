@@ -138,5 +138,16 @@
   "field": {
     "title": "标题",
     "description": "描述"
+  },
+  "send": "发送",
+  "composer": {
+    "placeholder": "输入消息…",
+    "replying_to": "回复 {{name}}",
+    "cancel_reply": "取消回复",
+    "mention_hint": "提及成员或议题",
+    "upload_image": "上传图片",
+    "upload_file": "上传文件",
+    "file_too_large_title": "文件过大",
+    "file_too_large_message": "文件必须小于 {{size}} MB。"
   }
 }

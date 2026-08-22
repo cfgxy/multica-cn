@@ -785,6 +785,10 @@
     "edit": {
       "discard_message": "이 이슈에 대한 편집 내용이 사라집니다.",
       "save_failed": "저장 실패"
+    },
+    "composer": {
+      "placeholder": "댓글 추가…",
+      "pill_label": "댓글 추가, @로 멘션"
     }
   }
 }

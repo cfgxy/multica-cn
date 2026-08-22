@@ -237,6 +237,17 @@
       "runtime_required_title": "需要绑定运行时",
       "runtime_required_message": "请先在网页版或桌面端为此 Agent 绑定运行时，然后再发送消息。",
       "failed_title": "消息未发送"
+    },
+    "composer": {
+      "placeholder": "发消息…",
+      "agent_working": "Agent 处理中…",
+      "unavailable": "聊天不可用",
+      "stop_agent": "停止 Agent"
+    },
+    "send_failure": {
+      "no_permission": "你已不再拥有运行此 Agent 的权限，消息未发送。",
+      "runtime_required": "请先为此 Agent 绑定运行时，然后再发送消息。",
+      "generic": "消息发送失败，请重试。"
     }
   }
 }

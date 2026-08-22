@@ -815,6 +815,10 @@
     "edit": {
       "discard_message": "Your edits to this issue will be lost.",
       "save_failed": "Failed to save"
+    },
+    "composer": {
+      "placeholder": "Add a comment…",
+      "pill_label": "Add a comment, @ to mention…"
     }
   }
 }
