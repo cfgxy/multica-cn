@@ -854,6 +854,50 @@
     },
     "mention": {
       "everyone": "Everyone"
+    },
+    "run_failure": {
+      "queued_expired": "Queue expired",
+      "runtime_offline": "Runtime offline",
+      "runtime_recovery": "Runtime recovery",
+      "timeout": "Timeout",
+      "iteration_limit": "Iteration limit",
+      "agent_blocked": "Needs input",
+      "api_invalid_request": "Request rejected",
+      "skill_bundle_unavailable": "Skill download failed",
+      "runtime_cli_timeout": "Runtime CLI timeout",
+      "agent_error__provider_auth_or_access": "Auth failed",
+      "agent_error__provider_quota_limit": "Quota exhausted",
+      "agent_error__provider_capacity_or_rate_limit": "Rate limited",
+      "agent_error__provider_server_error": "Provider error",
+      "agent_error__provider_network": "Network error",
+      "agent_error__process_failure": "Process crashed",
+      "agent_error__empty_or_unparseable_output": "No usable output",
+      "agent_error__agent_timeout": "Agent timeout",
+      "agent_error__context_overflow": "Context overflow",
+      "agent_error__missing_config": "Config missing",
+      "agent_error__model_not_found_or_unavailable": "Model unavailable",
+      "agent_error__runtime_version_unsupported": "CLI unsupported",
+      "agent_error__runtime_missing_executable": "CLI not installed",
+      "agent_error__unknown": "Agent error",
+      "agent_error": "Agent error",
+      "codex_semantic_inactivity": "Codex inactivity",
+      "manual": "Manual"
+    },
+    "run_summary": {
+      "comment": "Comment task",
+      "autopilot": "Autopilot run",
+      "chat": "Chat task",
+      "quick_create": "Quick create",
+      "direct": "Task"
+    },
+    "run_status": {
+      "queued": "Queued",
+      "dispatched": "Starting",
+      "waiting_local_directory": "Waiting for directory",
+      "running": "Running",
+      "completed": "Done",
+      "failed": "Failed",
+      "cancelled": "Cancelled"
     }
   }
 }

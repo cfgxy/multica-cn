@@ -94,6 +94,9 @@
       "actions_a11y": "收件箱操作",
       "archive_all_body": "这会归档收件箱中的所有条目，无论是否已读。归档后仍可通过任务页面找到它们。",
       "load_failed": "无法加载收件箱：{{reason}}"
+    },
+    "label": {
+      "reacted_with": "用 {{emoji}} 回应"
     }
   }
 }

@@ -16,32 +16,24 @@ import type {
   TimelineEntry,
 } from "@multica/core/types";
 import { formatDateOnly } from "@multica/core/issues/date";
+import {
+  PRIORITY_LABEL,
+  STATUS_LABEL,
+  priorityLabel,
+  statusLabel,
+} from "@/lib/issue-status";
 
-const STATUS_LABEL: Record<IssueStatus, string> = {
-  backlog: "Backlog",
-  todo: "Todo",
-  in_progress: "In Progress",
-  in_review: "In Review",
-  done: "Done",
-  blocked: "Blocked",
-  cancelled: "Cancelled",
-};
-
-const PRIORITY_LABEL: Record<IssuePriority, string> = {
-  urgent: "Urgent",
-  high: "High",
-  medium: "Medium",
-  low: "Low",
-  none: "No priority",
-};
-
+// 状态/优先级标签复用 lib/issue-status.ts —— 那两张表与本文件原先各自
+// 持有的副本逐字相同，接 i18n 时再维护两份等于给「两处只改一处」留口子。
+// `in` 判断仍打在英文兜底表上：它是 key 的权威集合，用来把服务端新增的
+// 未知枚举值原样透出（顶部注释的 API Response Compatibility 规则）。
 function statusName(s: string | undefined): string {
-  if (s && s in STATUS_LABEL) return STATUS_LABEL[s as IssueStatus];
+  if (s && s in STATUS_LABEL) return statusLabel(s as IssueStatus);
   return s ?? "?";
 }
 
 function priorityName(p: string | undefined): string {
-  if (p && p in PRIORITY_LABEL) return PRIORITY_LABEL[p as IssuePriority];
+  if (p && p in PRIORITY_LABEL) return priorityLabel(p as IssuePriority);
   return p ?? "?";
 }
 

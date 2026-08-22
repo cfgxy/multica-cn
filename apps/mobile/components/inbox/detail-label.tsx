@@ -7,8 +7,9 @@
  * status to ✓ Done", mobile must show "Set status to ✓ Done" (rendered
  * with mobile primitives, not the literal HTML).
  *
- * Web is i18n-driven (useT). Mobile v1 is English-only; when mobile ships
- * i18n, mirror the namespace structure.
+ * Web is i18n-driven (useT); mobile now is too, and shares web's `inbox:types.*`
+ * / `issues:status.*` / `issues:priority.*` keys rather than minting mobile-only
+ * ones — same surface, same words, one place to retranslate.
  */
 import { View } from "react-native";
 import type {
@@ -22,50 +23,44 @@ import { Text } from "@/components/ui/text";
 import { StatusIcon } from "@/components/ui/status-icon";
 import { PriorityIcon } from "@/components/ui/priority-icon";
 import { useActorLookup } from "@/data/use-actor-name";
+import { priorityLabel, statusLabel } from "@/lib/issue-status";
+import { useT } from "@/lib/use-t";
 import { cn } from "@/lib/utils";
 
-// Mirrors STATUS_CONFIG.label in packages/core/issues/config/status.ts
-const STATUS_LABEL: Record<IssueStatus, string> = {
-  backlog: "Backlog",
-  todo: "Todo",
-  in_progress: "In Progress",
-  in_review: "In Review",
-  done: "Done",
-  blocked: "Blocked",
-  cancelled: "Cancelled",
-};
-
-// Mirrors PRIORITY_CONFIG.label in packages/core/issues/config/priority.ts
-const PRIORITY_LABEL: Record<IssuePriority, string> = {
-  urgent: "Urgent",
-  high: "High",
-  medium: "Medium",
-  low: "Low",
-  none: "No priority",
-};
-
 // Mirrors useTypeLabels in packages/views/inbox/components/inbox-detail-label.tsx
-const TYPE_LABEL: Record<InboxItemType, string> = {
-  issue_assigned: "Assigned",
-  issue_subscribed: "Subscribed",
-  unassigned: "Unassigned",
-  assignee_changed: "Reassigned",
-  status_changed: "Status changed",
-  priority_changed: "Priority changed",
-  start_date_changed: "Start date changed",
-  due_date_changed: "Due date changed",
-  new_comment: "New comment",
-  mentioned: "Mentioned",
-  review_requested: "Review requested",
-  task_completed: "Task completed",
-  task_failed: "Task failed",
-  agent_blocked: "Agent blocked",
-  agent_completed: "Agent completed",
-  reaction_added: "Reaction added",
-  quick_create_done: "Quick-create done",
-  quick_create_failed: "Quick-create failed",
-  quick_create_unconfirmed: "Quick-create needs a check",
-};
+// — same ns, same keys, so the two surfaces can't drift apart in translation.
+// English fallbacks are web's en copy verbatim (a few differed from mobile's
+// old hand-written strings; web's wording wins, it's the mirrored source).
+function useTypeLabels(): Record<InboxItemType, string> {
+  const { t } = useT("inbox");
+  return {
+    issue_assigned: t("types.issue_assigned", "Assigned"),
+    issue_subscribed: t("types.issue_subscribed", "Subscribed"),
+    unassigned: t("types.unassigned", "Unassigned"),
+    assignee_changed: t("types.assignee_changed", "Assignee changed"),
+    status_changed: t("types.status_changed", "Status changed"),
+    priority_changed: t("types.priority_changed", "Priority changed"),
+    start_date_changed: t("types.start_date_changed", "Start date changed"),
+    due_date_changed: t("types.due_date_changed", "Due date changed"),
+    new_comment: t("types.new_comment", "New comment"),
+    mentioned: t("types.mentioned", "Mentioned"),
+    review_requested: t("types.review_requested", "Review requested"),
+    task_completed: t("types.task_completed", "Task completed"),
+    task_failed: t("types.task_failed", "Task failed"),
+    agent_blocked: t("types.agent_blocked", "Agent blocked"),
+    agent_completed: t("types.agent_completed", "Agent completed"),
+    reaction_added: t("types.reaction_added", "Reacted"),
+    quick_create_done: t("types.quick_create_done", "Created with agent"),
+    quick_create_failed: t(
+      "types.quick_create_failed",
+      "Create with agent failed",
+    ),
+    quick_create_unconfirmed: t(
+      "types.quick_create_unconfirmed",
+      "Create with agent unconfirmed",
+    ),
+  };
+}
 
 // due_date is a calendar day — format timezone-safely (no offset day shift).
 function shortDate(dateStr: string): string {
@@ -84,6 +79,8 @@ export function InboxDetailLabel({
   className?: string;
 }) {
   const { getName } = useActorLookup();
+  const { t } = useT("inbox");
+  const typeLabel = useTypeLabels();
   const details = item.details ?? {};
 
   // Cases with inline icons → Row layout.
@@ -91,10 +88,12 @@ export function InboxDetailLabel({
     const status = details.to as IssueStatus;
     return (
       <View className={cn("flex-row items-center gap-1", className)}>
-        <Text className="text-xs text-muted-foreground">Set status to</Text>
+        <Text className="text-xs text-muted-foreground">
+          {t("labels.set_status_to", "Set status to")}
+        </Text>
         <StatusIcon status={status} size={12} />
         <Text className="text-xs text-muted-foreground" numberOfLines={1}>
-          {STATUS_LABEL[status] ?? status}
+          {statusLabel(status)}
         </Text>
       </View>
     );
@@ -104,16 +103,19 @@ export function InboxDetailLabel({
     const priority = details.to as IssuePriority;
     return (
       <View className={cn("flex-row items-center gap-1", className)}>
-        <Text className="text-xs text-muted-foreground">Set priority to</Text>
+        <Text className="text-xs text-muted-foreground">
+          {t("labels.set_priority_to", "Set priority to")}
+        </Text>
         <PriorityIcon priority={priority} size={12} />
         <Text className="text-xs text-muted-foreground" numberOfLines={1}>
-          {PRIORITY_LABEL[priority] ?? priority}
+          {priorityLabel(priority)}
         </Text>
       </View>
     );
   }
 
-  // Single-string cases.
+  // Single-string cases. 整句插值，不做「前缀 + 值」的字符串拼接——中日韩
+  // 里名字/日期的位置与英文不同。
   const text = (() => {
     switch (item.type) {
       case "issue_assigned":
@@ -123,38 +125,48 @@ export function InboxDetailLabel({
             (details.new_assignee_type ?? "member") as "member" | "agent",
             details.new_assignee_id,
           );
-          return `Assigned to ${name}`;
+          return t("labels.assigned_to", "Assigned to {{name}}", { name });
         }
-        return TYPE_LABEL[item.type];
+        return typeLabel[item.type];
       case "unassigned":
-        return "Removed assignee";
+        return t("labels.removed_assignee", "Removed assignee");
       case "due_date_changed":
         return details.to
-          ? `Set due date to ${shortDate(details.to)}`
-          : "Removed due date";
+          ? t("labels.set_due_date_to", "Set due date to {{date}}", {
+              date: shortDate(details.to),
+            })
+          : t("labels.removed_due_date", "Removed due date");
       case "new_comment":
-        return singleLine(item.body) || TYPE_LABEL[item.type];
+        return singleLine(item.body) || typeLabel[item.type];
       case "reaction_added":
         return details.emoji
-          ? `Reacted with ${details.emoji}`
-          : TYPE_LABEL[item.type];
+          ? t("mobile.label.reacted_with", "Reacted with {{emoji}}", {
+              emoji: details.emoji,
+            })
+          : typeLabel[item.type];
       case "quick_create_done":
         return details.identifier
-          ? `Created with agent: ${details.identifier}`
-          : TYPE_LABEL[item.type];
+          ? t(
+              "labels.created_with_agent",
+              "Created with agent: {{identifier}}",
+              { identifier: details.identifier },
+            )
+          : typeLabel[item.type];
       case "quick_create_failed": {
         const detail = singleLine(details.error) || singleLine(item.body);
-        return detail ? `Failed: ${detail}` : TYPE_LABEL[item.type];
+        return detail
+          ? t("labels.failed_with_detail", "Failed: {{detail}}", { detail })
+          : typeLabel[item.type];
       }
       // Mirrors packages/views/inbox/components/inbox-detail-label.tsx: the
       // unconfirmed outcome deliberately drops the "Failed:" prefix, because
       // the issue may actually have been created.
       case "quick_create_unconfirmed": {
         const detail = singleLine(details.error) || singleLine(item.body);
-        return detail || TYPE_LABEL[item.type];
+        return detail || typeLabel[item.type];
       }
       default:
-        return TYPE_LABEL[item.type] ?? item.type;
+        return typeLabel[item.type] ?? item.type;
     }
   })();
 

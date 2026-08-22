@@ -822,6 +822,50 @@
     },
     "mention": {
       "everyone": "모든 사람"
+    },
+    "run_failure": {
+      "queued_expired": "대기열 만료",
+      "runtime_offline": "런타임 오프라인",
+      "runtime_recovery": "런타임 복구",
+      "timeout": "시간 초과",
+      "iteration_limit": "반복 한도",
+      "agent_blocked": "입력 대기",
+      "api_invalid_request": "요청 거부",
+      "skill_bundle_unavailable": "스킬 내려받기 실패",
+      "runtime_cli_timeout": "CLI 시간 초과",
+      "agent_error__provider_auth_or_access": "인증 실패",
+      "agent_error__provider_quota_limit": "할당량 소진",
+      "agent_error__provider_capacity_or_rate_limit": "속도 제한",
+      "agent_error__provider_server_error": "제공자 오류",
+      "agent_error__provider_network": "네트워크 오류",
+      "agent_error__process_failure": "프로세스 충돌",
+      "agent_error__empty_or_unparseable_output": "출력 없음",
+      "agent_error__agent_timeout": "에이전트 시간 초과",
+      "agent_error__context_overflow": "컨텍스트 초과",
+      "agent_error__missing_config": "설정 누락",
+      "agent_error__model_not_found_or_unavailable": "모델 사용 불가",
+      "agent_error__runtime_version_unsupported": "CLI 미지원",
+      "agent_error__runtime_missing_executable": "CLI 미설치",
+      "agent_error__unknown": "에이전트 오류",
+      "agent_error": "에이전트 오류",
+      "codex_semantic_inactivity": "Codex 비활성",
+      "manual": "수동 취소"
+    },
+    "run_summary": {
+      "comment": "댓글 task",
+      "autopilot": "자동 실행",
+      "chat": "채팅 task",
+      "quick_create": "빠른 생성",
+      "direct": "task"
+    },
+    "run_status": {
+      "queued": "대기 중",
+      "dispatched": "시작 중",
+      "waiting_local_directory": "디렉터리 대기",
+      "running": "실행 중",
+      "completed": "완료",
+      "failed": "실패",
+      "cancelled": "취소됨"
     }
   }
 }

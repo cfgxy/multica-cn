@@ -52,8 +52,6 @@
   "components/chat/offline-banner.tsx\t<Text>\tis offline. Messages will wait until its runtime is back.",
   "components/chat/offline-banner.tsx\t<Text>\tmay have just disconnected — your message will queue.",
   "components/chat/runtime-required-banner.tsx\t<Text>\tneeds a runtime before it can run. Bind one on web or desktop.",
-  "components/inbox/detail-label.tsx\t<Text>\tSet priority to",
-  "components/inbox/detail-label.tsx\t<Text>\tSet status to",
   "components/inbox/swipeable-inbox-row.tsx\t<Text>\tArchive",
   "components/inbox/swipeable-inbox-row.tsx\tprop:accessibilityLabel\tArchive",
   "components/issue/agent-activity-row.tsx\t<Text>\tRuns ·",

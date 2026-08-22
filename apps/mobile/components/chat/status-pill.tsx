@@ -39,6 +39,7 @@ import type {
 import type { AgentAvailability } from "@multica/core/agents";
 import { Text } from "@/components/ui/text";
 import { formatElapsedSecs } from "@/lib/format-elapsed";
+import { useT } from "@/lib/use-t";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 
@@ -57,42 +58,76 @@ interface Stage {
   static?: boolean;
 }
 
-const TOOL_LABELS: Record<string, string> = {
-  bash: "Running command",
-  exec: "Running command",
-  read: "Reading files",
-  glob: "Reading files",
-  grep: "Searching code",
-  write: "Making edits",
-  edit: "Making edits",
-  multi_edit: "Making edits",
-  multiedit: "Making edits",
-  web_search: "Searching web",
-  websearch: "Searching web",
+// tool slug → `chat:status_pill.tools.*` 的 key 片段。与 web 的
+// TOOL_KEY_BY_SLUG 同构：把「哪些 slug 归为同一档」的判断留在这里，标签
+// 文本交给 i18n，两侧共用同一批 key。
+const TOOL_KEY_BY_SLUG: Record<string, string> = {
+  bash: "running_command",
+  exec: "running_command",
+  read: "reading_files",
+  glob: "reading_files",
+  grep: "searching_code",
+  write: "making_edits",
+  edit: "making_edits",
+  multi_edit: "making_edits",
+  multiedit: "making_edits",
+  web_search: "searching_web",
+  websearch: "searching_web",
 };
+
+// i18n key 缺失时的英文兜底。沿用 mobile 原有的更短措辞（web 是
+// "Running a command"，这里与 pill 的单行宽度匹配）。
+const TOOL_LABEL_EN: Record<string, string> = {
+  running_command: "Running a command",
+  reading_files: "Reading files",
+  searching_code: "Searching the code",
+  making_edits: "Making edits",
+  searching_web: "Searching the web",
+  fallback: "Working",
+};
+
+const STAGE_LABEL_EN: Record<string, string> = {
+  offline: "Offline",
+  reconnecting: "Reconnecting",
+  retrying: "Retrying",
+  queued: "Queued",
+  starting_up: "Starting up",
+  thinking: "Thinking",
+  typing: "Typing",
+};
+
+// 组件文件按 mobile 的接线范式走 useT：`t` 由 StatusPill 从 hook 取好后
+// 传进来，pickStage 保持纯函数（web 的同名逻辑也是纯的，便于对照）。
+type TFn = ReturnType<typeof useT>["t"];
 
 function pickStage(
   status: string | undefined,
   taskMessages: readonly TaskMessagePayload[],
   availability: AgentAvailability | undefined,
+  t: TFn,
 ): Stage {
+  const stageLabel = (key: string) =>
+    t(`status_pill.stages.${key}`, STAGE_LABEL_EN[key]);
+  const toolLabel = (key: string) =>
+    t(`status_pill.tools.${key}`, TOOL_LABEL_EN[key]);
+
   // Mirrors web: deferred is an older turn waiting for retry backoff, not
   // active model work, so it must not fall through to "Thinking".
-  if (status === "deferred") return { label: "Retrying" };
+  if (status === "deferred") return { label: stageLabel("retrying") };
   if (
     (status === "queued" || status === "dispatched") &&
     availability === "offline"
   ) {
-    return { label: "Offline", static: true };
+    return { label: stageLabel("offline"), static: true };
   }
   if (
     (status === "queued" || status === "dispatched") &&
     availability === "unstable"
   ) {
-    return { label: "Reconnecting" };
+    return { label: stageLabel("reconnecting") };
   }
-  if (status === "queued") return { label: "Queued" };
-  if (status === "dispatched") return { label: "Starting up" };
+  if (status === "queued") return { label: stageLabel("queued") };
+  if (status === "dispatched") return { label: stageLabel("starting_up") };
 
   let latest: TaskMessagePayload | null = null;
   for (let i = taskMessages.length - 1; i >= 0; i--) {
@@ -102,14 +137,14 @@ function pickStage(
       break;
     }
   }
-  if (!latest) return { label: "Thinking" };
-  if (latest.type === "thinking") return { label: "Thinking" };
-  if (latest.type === "text") return { label: "Typing" };
+  if (!latest) return { label: stageLabel("thinking") };
+  if (latest.type === "thinking") return { label: stageLabel("thinking") };
+  if (latest.type === "text") return { label: stageLabel("typing") };
   if (latest.type === "tool_use") {
     const slug = (latest.tool ?? "").toLowerCase();
-    return { label: TOOL_LABELS[slug] ?? "Working" };
+    return { label: toolLabel(TOOL_KEY_BY_SLUG[slug] ?? "fallback") };
   }
-  return { label: "Thinking" };
+  return { label: stageLabel("thinking") };
 }
 
 // Tabular figures for the 1Hz counter — proportional digits change the text
@@ -129,6 +164,7 @@ export function StatusPill({
 }: Props) {
   const taskId = pendingTask?.task_id;
   const createdAt = pendingTask?.created_at;
+  const { t } = useT("chat");
 
   // Anchor — locked per task. Reset on task_id change so a new run
   // restarts the timer from 0; mid-run we never reassign, otherwise the
@@ -154,7 +190,7 @@ export function StatusPill({
         ? "running"
         : pendingTask?.status;
   const elapsedSec = Math.max(0, Math.floor((Date.now() - anchorMs) / 1000));
-  const stage = pickStage(status, taskMessages, availability);
+  const stage = pickStage(status, taskMessages, availability, t);
 
   return (
     <View

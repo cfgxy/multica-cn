@@ -255,6 +255,35 @@
       "no_agents_in_workspace": "이 워크스페이스에 에이전트가 없습니다",
       "archived": "이 채팅은 보관되었습니다",
       "runtime_missing": "에이전트에 런타임이 필요합니다"
+    },
+    "failure_reason": {
+      "queued_expired": "대기열에서 만료됨",
+      "runtime_offline": "데몬 오프라인",
+      "runtime_recovery": "데몬 재시작됨",
+      "timeout": "task 시간 초과",
+      "iteration_limit": "반복 횟수 한도 도달",
+      "agent_blocked": "사람의 입력 대기 중",
+      "api_invalid_request": "모델 API에서 거부됨",
+      "skill_bundle_unavailable": "에이전트 스킬을 내려받지 못했습니다",
+      "runtime_cli_timeout": "로컬 런타임 CLI 시간 초과",
+      "agent_error__provider_auth_or_access": "제공자 인증 실패",
+      "agent_error__provider_quota_limit": "제공자 할당량 소진",
+      "agent_error__provider_capacity_or_rate_limit": "제공자에 의해 속도 제한됨",
+      "agent_error__provider_server_error": "제공자 서버 오류",
+      "agent_error__provider_network": "제공자 연결 네트워크 오류",
+      "agent_error__process_failure": "에이전트 프로세스 충돌",
+      "agent_error__empty_or_unparseable_output": "에이전트가 사용할 수 있는 출력을 반환하지 않음",
+      "agent_error__agent_timeout": "에이전트 시간 초과",
+      "agent_error__context_overflow": "컨텍스트 창 초과",
+      "agent_error__missing_config": "API 키 또는 설정 누락",
+      "agent_error__model_not_found_or_unavailable": "모델 사용 불가",
+      "agent_error__runtime_version_unsupported": "러너 CLI 버전 미지원",
+      "agent_error__runtime_missing_executable": "러너 CLI가 설치되지 않음",
+      "agent_error__unknown": "에이전트 실행 오류",
+      "agent_error": "에이전트 실행 오류",
+      "codex_semantic_inactivity": "Codex 의미적 비활성 시간 초과",
+      "manual": "사용자가 취소함",
+      "fallback": "실패"
     }
   }
 }
