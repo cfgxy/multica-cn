@@ -114,7 +114,11 @@ export function ChatComposer({
         sending
           ? agentWorking
           : disabled
-            ? (disabledReason ??
+            ? // 当前唯一调用方 chat.tsx 的 `disabledReason` 与 `disabled`
+              // 同集合同判据、无 undefined 出口，所以右侧不可达。保留为
+              // 防御性兜底：防未来新增调用方传 disabled 却漏传 reason，
+              // 那时 pill 会空白而不是给出原因。
+              (disabledReason ??
               t("mobile.composer.unavailable", "Chat unavailable"))
             : idlePlaceholder
       }

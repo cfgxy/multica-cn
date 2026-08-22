@@ -248,6 +248,13 @@
       "no_permission": "이 에이전트를 실행할 권한이 없어 메시지가 전송되지 않았습니다.",
       "runtime_required": "메시지를 보내기 전에 이 에이전트에 런타임을 바인딩하세요.",
       "generic": "메시지를 보내지 못했습니다. 다시 시도하세요."
+    },
+    "disabled_reason": {
+      "no_agent": "선택된 에이전트 없음",
+      "access_revoked": "더 이상 이 에이전트를 실행할 수 없습니다",
+      "no_agents_in_workspace": "이 워크스페이스에 에이전트가 없습니다",
+      "archived": "이 채팅은 보관되었습니다",
+      "runtime_missing": "에이전트에 런타임이 필요합니다"
     }
   }
 }

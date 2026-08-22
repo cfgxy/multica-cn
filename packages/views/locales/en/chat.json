@@ -252,6 +252,13 @@
       "no_permission": "You no longer have permission to run this agent, so the message was not sent.",
       "runtime_required": "Bind a runtime to this agent before sending a message.",
       "generic": "Your message could not be sent. Please try again."
+    },
+    "disabled_reason": {
+      "no_agent": "No agent selected",
+      "access_revoked": "You can no longer run this agent",
+      "no_agents_in_workspace": "No agents in this workspace",
+      "archived": "This chat is archived",
+      "runtime_missing": "Agent needs a runtime"
     }
   }
 }
