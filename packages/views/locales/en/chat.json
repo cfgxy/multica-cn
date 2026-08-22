@@ -241,6 +241,17 @@
       "runtime_required_title": "Runtime required",
       "runtime_required_message": "Bind a runtime to this agent on web or desktop before sending a message.",
       "failed_title": "Message not sent"
+    },
+    "composer": {
+      "placeholder": "Message…",
+      "agent_working": "Agent is working…",
+      "unavailable": "Chat unavailable",
+      "stop_agent": "Stop agent"
+    },
+    "send_failure": {
+      "no_permission": "You no longer have permission to run this agent, so the message was not sent.",
+      "runtime_required": "Bind a runtime to this agent before sending a message.",
+      "generic": "Your message could not be sent. Please try again."
     }
   }
 }

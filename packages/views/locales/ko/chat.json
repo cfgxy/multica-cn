@@ -237,6 +237,17 @@
       "runtime_required_title": "런타임 필요",
       "runtime_required_message": "메시지를 보내기 전에 웹 또는 데스크톱에서 이 에이전트에 런타임을 바인딩하세요.",
       "failed_title": "메시지가 전송되지 않았습니다"
+    },
+    "composer": {
+      "placeholder": "메시지…",
+      "agent_working": "에이전트 작업 중…",
+      "unavailable": "채팅을 사용할 수 없음",
+      "stop_agent": "에이전트 중지"
+    },
+    "send_failure": {
+      "no_permission": "이 에이전트를 실행할 권한이 없어 메시지가 전송되지 않았습니다.",
+      "runtime_required": "메시지를 보내기 전에 이 에이전트에 런타임을 바인딩하세요.",
+      "generic": "메시지를 보내지 못했습니다. 다시 시도하세요."
     }
   }
 }

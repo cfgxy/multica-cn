@@ -77,6 +77,34 @@ describe("扫描规则", () => {
     expect(scanSource(src)).toEqual([]);
   });
 
+  it("只挖空真实存在的绑定名，非绑定的 tXxx() 照常上报", () => {
+    // 曾用 `t[A-Z]\w*` 模式匹配，任何以 t 开头的驼峰函数都被挖空 ——
+    // 与 i18n 无关的工具函数里的英文就此静默逃过检测（假绿方向，无红灯）。
+    const src = `
+      const { t: tIssues } = useT("issues");
+      <Text>{tIssues("a", "Real translation call")}</Text>
+      <Text>{tParse("Parsed from raw input")}</Text>
+      <Text>{tFormatDate("Due next Monday")}</Text>
+    `;
+    expect(
+      scanSource(src)
+        .map((v) => v.text)
+        .sort(),
+    ).toEqual(["Due next Monday", "Parsed from raw input"]);
+  });
+
+  it("绑定名必须来自本文件；同名函数在没有绑定的文件里不豁免", () => {
+    expect(scanSource(`<Text>{tIssues("Save this issue now")}</Text>`)).toEqual(
+      [
+        {
+          file: "<source>",
+          text: "Save this issue now",
+          kind: "<Text>",
+        },
+      ],
+    );
+  });
+
   it("不放过没走 t() 的三元 / 模板串 / Alert.alert", () => {
     const src = `
       <Text>{busy ? "Sending your message" : "Tap to continue"}</Text>

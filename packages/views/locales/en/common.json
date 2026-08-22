@@ -138,5 +138,16 @@
   "field": {
     "title": "Title",
     "description": "Description"
+  },
+  "send": "Send",
+  "composer": {
+    "placeholder": "Type a message…",
+    "replying_to": "Replying to {{name}}",
+    "cancel_reply": "Cancel reply",
+    "mention_hint": "Mention someone or an issue",
+    "upload_image": "Upload image",
+    "upload_file": "Upload file",
+    "file_too_large_title": "File too large",
+    "file_too_large_message": "Files must be smaller than {{size}} MB."
   }
 }
