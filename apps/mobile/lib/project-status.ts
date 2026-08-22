@@ -47,10 +47,6 @@ const PROJECT_PRIORITY_LABEL_EN: Record<ProjectPriority, string> = {
   none: "No priority",
 };
 
-export const PROJECT_STATUS_LABEL: Record<ProjectStatus, string> = PROJECT_STATUS_LABEL_EN;
-
-export const PROJECT_PRIORITY_LABEL: Record<ProjectPriority, string> = PROJECT_PRIORITY_LABEL_EN;
-
 // Single hex per status, used by the SVG status icon (NativeWind classes
 // can't be read by Svg props at runtime). Matches the semantic intent of
 // the web tokens: planned/paused/cancelled are muted, in_progress is amber,
