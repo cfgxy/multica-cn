@@ -40,5 +40,12 @@
   },
   "errors": {
     "move_failed": "タスクを移動できませんでした"
+  },
+  "mobile": {
+    "page": {
+      "title": "自分のタスク",
+      "filter_a11y": "絞り込み",
+      "load_failed": "タスクを読み込めませんでした：{{reason}}"
+    }
   }
 }

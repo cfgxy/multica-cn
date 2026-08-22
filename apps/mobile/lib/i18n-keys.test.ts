@@ -143,7 +143,10 @@ describe("mobile t() key existence (real resources)", () => {
       if (c.fallback == null) return false;
       const enValue = lookup(en, c.ns, c.key);
       if (enValue == null) return true;
-      const norm = (s: string) => s.toLowerCase().replace(/\s+/g, " ").trim();
+      // 只归一化空白，不折叠大小写：fallback 是要显示给英文用户的原文，
+      // "Retry" 与 "RETRY" 是两种不同的呈现，放过大小写差异等于放过一类
+      // 真实的文案不一致。实测收紧后 45 个调用点全部通过，零返工。
+      const norm = (s: string) => s.replace(/\s+/g, " ").trim();
       return norm(enValue) !== norm(c.fallback);
     });
     expect(

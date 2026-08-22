@@ -810,6 +810,18 @@
       "load_failed": "태스크를 불러오지 못했습니다: {{reason}}",
       "not_found": "찾을 수 없음",
       "retry": "다시 시도"
+    },
+    "picker": {
+      "unassigned": "미할당",
+      "agent": "에이전트",
+      "member": "멤버",
+      "squad": "스쿼드",
+      "needs_runtime": "런타임 필요",
+      "leader_needs_runtime": "리더에게 런타임 필요",
+      "everyone_all": "모든 사람(@all)"
+    },
+    "mention": {
+      "everyone": "모든 사람"
     }
   }
 }

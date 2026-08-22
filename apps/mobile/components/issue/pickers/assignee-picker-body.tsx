@@ -33,6 +33,7 @@ import { useScrollToTopOnChange } from "@/lib/use-scroll-to-top-on-change";
 import { THEME } from "@/lib/theme";
 import { cn } from "@/lib/utils";
 import { isAgentRuntimeBound } from "@/lib/is-agent-runtime-bound";
+import { useT } from "@/lib/use-t";
 
 const AVATAR_SIZE = 36;
 
@@ -78,6 +79,7 @@ export function AssigneePickerBody({ value, query, onChange }: Props) {
     [agents],
   );
   const listRef = useScrollToTopOnChange(query);
+  const { t } = useT("issues");
   const { colorScheme } = useColorScheme();
   // Tint color for the checkmark accessory. Project uses a monochrome
   // shadcn palette where `primary` is the canonical tint (near-black light /
@@ -184,7 +186,7 @@ export function AssigneePickerBody({ value, query, onChange }: Props) {
           )}
           <Text className="flex-1 text-base text-foreground">
             {item.kind === "unassigned"
-              ? "Unassigned"
+              ? t("mobile.picker.unassigned", "Unassigned")
               : item.kind === "member"
                 ? item.member.name
                 : item.kind === "agent"
@@ -197,11 +199,15 @@ export function AssigneePickerBody({ value, query, onChange }: Props) {
               the same row. Members carry no tag (they're the default actor). */}
           {item.kind === "agent" ? (
             <Text className="text-sm text-muted-foreground">
-              {isAgentRuntimeBound(item.agent) ? "Agent" : "Needs runtime"}
+              {isAgentRuntimeBound(item.agent)
+                ? t("mobile.picker.agent", "Agent")
+                : t("mobile.picker.needs_runtime", "Needs runtime")}
             </Text>
           ) : item.kind === "squad" ? (
             <Text className="text-sm text-muted-foreground">
-              {needsRuntime ? "Leader needs runtime" : "Squad"}
+              {needsRuntime
+                ? t("mobile.picker.leader_needs_runtime", "Leader needs runtime")
+                : t("mobile.picker.squad", "Squad")}
             </Text>
           ) : null}
           {isSelected(item) ? (
@@ -212,7 +218,9 @@ export function AssigneePickerBody({ value, query, onChange }: Props) {
       }}
       ListEmptyComponent={
         <View className="px-3 py-8 items-center">
-          <Text className="text-sm text-muted-foreground">No matches.</Text>
+          <Text className="text-sm text-muted-foreground">
+            {t("common:mobile.common.no_matches", "No matches.")}
+          </Text>
         </View>
       }
     />

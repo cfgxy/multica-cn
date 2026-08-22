@@ -149,5 +149,18 @@
     "upload_file": "上传文件",
     "file_too_large_title": "文件过大",
     "file_too_large_message": "文件必须小于 {{size}} MB。"
+  },
+  "mobile": {
+    "actor": {
+      "system": "系统",
+      "unknown_member": "未知用户",
+      "unknown_agent": "未知智能体",
+      "unknown_squad": "小队"
+    },
+    "common": {
+      "no_matches": "没有匹配项。",
+      "retry": "重试",
+      "unknown_error": "未知错误"
+    }
   }
 }

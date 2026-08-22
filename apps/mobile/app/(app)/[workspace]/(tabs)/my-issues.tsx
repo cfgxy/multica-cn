@@ -45,6 +45,7 @@ import {
 import { filterIssues } from "@/lib/filter-issues";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
+import { useT } from "@/lib/use-t";
 
 // Mobile pill row has tight width on SE3 (375pt). Three pills + Filter icon
 // must fit in 343pt usable space, so the agents scope renders "Agents" — the
@@ -62,6 +63,7 @@ type IssueSection = { status: IssueStatus; data: Issue[] };
 
 export default function MyIssues() {
   const isFocused = useIsFocused();
+  const { t } = useT("my-issues");
   const userId = useAuthStore((s) => s.user?.id ?? null);
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
@@ -128,7 +130,10 @@ export default function MyIssues() {
 
   return (
     <View className="flex-1 bg-background">
-      <Header title="My Issues" right={<HeaderActions />} />
+      <Header
+        title={t("mobile.page.title", "My Issues")}
+        right={<HeaderActions />}
+      />
       <ScopeToolbar
         scopes={SCOPES}
         scope={scope}
@@ -153,11 +158,17 @@ export default function MyIssues() {
       ) : error ? (
         <View className="px-4 gap-3 pt-4">
           <Text className="text-sm text-destructive">
-            Failed to load issues:{" "}
-            {error instanceof Error ? error.message : "unknown error"}
+            {/* 整句插值，不做「失败：」+ 详情的拼接——中日韩里详情的
+                位置与英文不同。与 select-workspace / issue 详情同一处理。 */}
+            {t("mobile.page.load_failed", "Failed to load issues: {{reason}}", {
+              reason:
+                error instanceof Error
+                  ? error.message
+                  : t("common:mobile.common.unknown_error", "unknown error"),
+            })}
           </Text>
           <Button variant="outline" onPress={() => refetch()}>
-            <Text>Retry</Text>
+            <Text>{t("common:mobile.common.retry", "Retry")}</Text>
           </Button>
         </View>
       ) : showEmptyState ? (
@@ -216,13 +227,14 @@ function FilterButton({
   hasActiveFilters: boolean;
 }) {
   const { colorScheme } = useColorScheme();
+  const { t } = useT("my-issues");
   return (
     <View style={{ position: "relative" }} className="ml-2">
       <Button
         variant="outline"
         size="sm"
         onPress={onPress}
-        accessibilityLabel="Filter"
+        accessibilityLabel={t("mobile.page.filter_a11y", "Filter")}
         className="w-9 px-0"
       >
         <Ionicons

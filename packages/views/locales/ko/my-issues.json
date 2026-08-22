@@ -40,5 +40,12 @@
   },
   "errors": {
     "move_failed": "태스크를 이동하지 못했습니다"
+  },
+  "mobile": {
+    "page": {
+      "title": "내 태스크",
+      "filter_a11y": "필터",
+      "load_failed": "태스크를 불러오지 못했습니다: {{reason}}"
+    }
   }
 }

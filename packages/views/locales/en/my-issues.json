@@ -41,5 +41,12 @@
   },
   "errors": {
     "move_failed": "Failed to move issue"
+  },
+  "mobile": {
+    "page": {
+      "title": "My Issues",
+      "filter_a11y": "Filter",
+      "load_failed": "Failed to load issues: {{reason}}"
+    }
   }
 }

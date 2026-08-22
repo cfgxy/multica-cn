@@ -141,7 +141,7 @@
   },
   "empty_state": {
     "first_time_title": "Chat with your agents",
-    "first_time_intro": "✨ They know your workspace —",
+    "first_time_intro": "✨ They know your workspace — ",
     "first_time_pillars": "issues, projects, skills",
     "first_time_pillars_suffix": ".",
     "first_time_actions": "Ask for a summary, plan your day, or hand off a quick task.",
