@@ -162,10 +162,12 @@ describe("mobile t() key existence (real resources)", () => {
       if (c.fallback == null) return false;
       const enValue = lookup(en, c.ns, c.key);
       if (enValue == null) return true;
-      // 只归一化空白，不折叠大小写：fallback 是要显示给英文用户的原文，
-      // "Retry" 与 "RETRY" 是两种不同的呈现，放过大小写差异等于放过一类
-      // 真实的文案不一致。实测收紧后 45 个调用点全部通过，零返工。
-      const norm = (s: string) => s.replace(/\s+/g, " ").trim();
+      // 归一化只折叠空格与制表符，且不折叠大小写 —— 两条同族的理由：
+      // 放过的差异必须是「用户看不见的」。空格数量用户看不见（渲染时会
+      // 塌缩），换行看得见（它是排版，一行变两行）；大小写同样看得见，
+      // "Retry" 与 "RETRY" 是两种不同的呈现。所以 \s+ 收窄成 [ \t]+：
+      // 前者会把 "a.\nb" 和 "a. b" 判成相同，等于放过一类真实的排版不一致。
+      const norm = (s: string) => s.replace(/[ \t]+/g, " ").trim();
       return norm(enValue) !== norm(c.fallback);
     });
     expect(
