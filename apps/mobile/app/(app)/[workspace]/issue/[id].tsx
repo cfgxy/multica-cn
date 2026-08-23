@@ -153,7 +153,10 @@ export default function IssueDetail() {
     <View className="flex-1 bg-background">
       <Stack.Screen
         options={{
-          title: issue?.identifier ?? "Issue",
+          // 兜底串走 i18n：`_layout.tsx` 的同名路由 title 已本地化，这里
+          // 若留英文硬编码，加载期非英文用户会先闪一下 "Issue" 再变。
+          // `Stack.Screen` 在组件 return 内，求值时机晚于 initI18n()。
+          title: issue?.identifier ?? i18n.t("layout:tab.issue", "Issue"),
           headerBackTitle: "Back",
           headerRight: issue
             ? () => (

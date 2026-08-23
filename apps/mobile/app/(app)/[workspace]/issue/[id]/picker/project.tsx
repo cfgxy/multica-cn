@@ -12,6 +12,7 @@ import { findProject, projectListOptions } from "@/data/queries/projects";
 import { useUpdateIssue } from "@/data/mutations/issues";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useNativeSearchBar } from "@/lib/use-native-search-bar";
+import i18n from "i18next";
 
 export default function IssueProjectPickerRoute() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -19,7 +20,10 @@ export default function IssueProjectPickerRoute() {
   const { data: issue } = useQuery(issueDetailOptions(wsId, id));
   const { data: projects = [] } = useQuery(projectListOptions(wsId));
   const updateIssue = useUpdateIssue(id);
-  const query = useNativeSearchBar("Search projects", { autoFocus: true });
+  const query = useNativeSearchBar(
+    i18n.t("projects:picker.search_placeholder", "Search projects..."),
+    { autoFocus: true },
+  );
 
   const project = useMemo(
     () => findProject(projects, issue?.project_id ?? null),

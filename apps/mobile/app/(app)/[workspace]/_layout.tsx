@@ -203,9 +203,19 @@ export default function WorkspaceLayout() {
             title: i18n.t("issues:actions.assignee", "Assignee"),
           }}
         />
+        {/* 与上面 assignee 同构：`SHEET_OPTIONS.headerShown` 为 false 时
+            native header 不存在，`headerSearchBarOptions` 无处挂载
+            （`ScreenStackFragment` 要先有 header 才 attach searchView），
+            搜索框在 iOS / Android 上都不渲染 —— `issues:mobile.picker.
+            create_label`（批次 9 由 JSX 硬编码转成的 key）因此从未被渲染过。
+            标题用既有单数实体名 `issues:filters.section_label`（en "Label"）。 */}
         <Stack.Screen
           name="issue/[id]/picker/label"
-          options={SHEET_OPTIONS}
+          options={{
+            ...SHEET_OPTIONS,
+            headerShown: true,
+            title: i18n.t("issues:filters.section_label", "Label"),
+          }}
         />
         <Stack.Screen
           name="mention-picker"
