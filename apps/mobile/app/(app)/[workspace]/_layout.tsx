@@ -136,21 +136,24 @@ export default function WorkspaceLayout() {
         <Stack.Screen
           name="issue/[id]"
           options={{
-            title: i18n.t("layout:nav.issues", "Issues"),
+            // 单条任务详情，用单数实体名 `layout:tab.issue`（en "Issue"）;
+            // `layout:nav.issues` 是列表页导航项，复数，语义不匹配。
+            title: i18n.t("layout:tab.issue", "Issue"),
             headerBackTitle: "Back",
           }}
         />
         <Stack.Screen
           name="project/[id]"
           options={{
-            title: i18n.t("layout:nav.projects", "Projects"),
+            title: i18n.t("layout:tab.project", "Project"),
             headerBackTitle: "Back",
           }}
         />
         <Stack.Screen
           name="project/[id]/edit"
           options={{
-            title: i18n.t("modals:create_project.title", "New Project"),
+            // 编辑现有项目，不能复用 `create_project.title`（渲染成「新建项目」）。
+            title: i18n.t("modals:edit_project.title", "Edit Project"),
             presentation: "modal",
             headerLeft: () => <ModalCloseButton />,
           }}
@@ -158,7 +161,8 @@ export default function WorkspaceLayout() {
         <Stack.Screen
           name="issue/[id]/edit"
           options={{
-            title: i18n.t("modals:create_issue.sr_manual", "New Issue"),
+            // 同上：编辑现有任务不能复用 `create_issue.sr_manual`（「新建任务」）。
+            title: i18n.t("modals:edit_issue.title", "Edit Issue"),
             presentation: "modal",
             headerLeft: () => <ModalCloseButton />,
           }}

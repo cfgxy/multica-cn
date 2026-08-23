@@ -212,7 +212,7 @@ export function AttributeRow({ issue }: { issue: Issue }) {
       {/* Due date */}
       <AttributeChip
         icon={<Text className="text-xs text-muted-foreground/80">📅</Text>}
-        label={dueLabel ?? "Due date"}
+        label={dueLabel ?? t("detail.prop_due_date", "Due date")}
         variant={dueLabel ? "filled" : "dimmed"}
         onPress={() => openPicker("due-date")}
       />

@@ -77,17 +77,25 @@ interface NavItem {
   path: string;
 }
 
-const NAV_ITEMS: NavItem[] = [
-  { label: i18n.t("layout:sidebar.pinned_label", "Pinned"), icon: "pin", androidIcon: "pin", path: "/more/pins" },
-  { label: i18n.t("layout:nav.issues", "Issues"), icon: "list.bullet", androidIcon: "list-outline", path: "/more/issues" },
-  { label: i18n.t("layout:nav.projects", "Projects"), icon: "square.stack", androidIcon: "layers-outline", path: "/more/projects" },
-];
-
+/**
+ * `navItems` 刻意放在组件体内,不要提回模块顶层的 `const NAV_ITEMS`。
+ * `initI18n()` 在 `app/_layout.tsx` 的模块体里调用,而本模块由它间接
+ * import,模块顶层的 `i18n.t()` 因此在 i18n 初始化之前求值,拿到空串 ——
+ * 下拉里三个条目只剩图标、标签全空,四语全中(RUYI-25 批次 14 实测)。
+ * 同仓库正例是 `app/(app)/[workspace]/(tabs)/_layout.tsx` 的 Tab title:
+ * 那几个 `i18n.t()` 写在 `TabsLayout()` 函数体内,渲染时才求值,所以一直
+ * 正常 —— 同一份代码里正反两例并存,属范式误用而非环境问题。
+ */
 export function MoreTabDropdownAnchor({
   triggerRef,
 }: {
   triggerRef: React.RefObject<TriggerRef | null>;
 }) {
+  const navItems: NavItem[] = [
+    { label: i18n.t("layout:sidebar.pinned_label", "Pinned"), icon: "pin", androidIcon: "pin", path: "/more/pins" },
+    { label: i18n.t("layout:nav.issues", "Issues"), icon: "list.bullet", androidIcon: "list-outline", path: "/more/issues" },
+    { label: i18n.t("layout:nav.projects", "Projects"), icon: "square.stack", androidIcon: "layers-outline", path: "/more/projects" },
+  ];
   const insets = useSafeAreaInsets();
   const slug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const user = useAuthStore((s) => s.user);
@@ -152,7 +160,7 @@ export function MoreTabDropdownAnchor({
 
           <DropdownMenuSeparator />
 
-          {NAV_ITEMS.map((item) => (
+          {navItems.map((item) => (
             <DropdownMenuItem
               key={item.path}
               onPress={() => slug && router.push(`/${slug}${item.path}`)}
