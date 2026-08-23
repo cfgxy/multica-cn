@@ -379,7 +379,15 @@ function extractStringLiterals(expr: string, names: string[] = []): string[] {
     i = j;
     // 与 JSX 裸文本同口径归一空白，保证 baseline 指纹稳定。
     const text = body.replace(/\s+/g, " ").trim();
-    if (text && !interpolated) out.push(text);
+    // 带插值的模板串同样参与判定：`${…}` 已在上面被跳过，剩下的静态段
+    // 就是用户看得见的那部分文案。原先整条丢弃，`` `${x}\n…(truncated)` ``
+    // 这类只有一段静态文本的模板串就整条漏采。
+    //
+    // 注意本补丁的边界：它只捞回「模板串直接出现在被扫描位置」的形态。
+    // 先赋给变量再渲染（`const label = \`Replied in ${x}\`` 后
+    // `<Text>{label}</Text>`）仍然采不到 —— 那是采集器不做变量追踪，与
+    // 本行无关，不在本补丁的解决范围内。
+    if (text) out.push(text);
   }
   return out;
 }
