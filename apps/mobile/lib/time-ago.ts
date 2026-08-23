@@ -5,6 +5,7 @@
  * parity rule in apps/mobile/CLAUDE.md).
  */
 import i18n from "i18next";
+import { displayLocale } from "@/lib/display-locale";
 
 export function timeAgo(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();
@@ -16,8 +17,8 @@ export function timeAgo(dateStr: string): string {
   const days = Math.floor(hours / 24);
   if (days < 7) return i18n.t("common:time.days_ago", `{{count}}d ago`, { count: days });
   const weeks = Math.floor(days / 7);
-  if (weeks < 5) return `${weeks}w ago`;
-  return new Date(dateStr).toLocaleDateString("en-US", {
+  if (weeks < 5) return i18n.t("common:time.weeks_ago", `{{count}}w ago`, { count: weeks });
+  return new Date(dateStr).toLocaleDateString(displayLocale(), {
     month: "short",
     day: "numeric",
   });

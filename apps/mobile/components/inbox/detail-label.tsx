@@ -23,6 +23,7 @@ import { Text } from "@/components/ui/text";
 import { StatusIcon } from "@/components/ui/status-icon";
 import { PriorityIcon } from "@/components/ui/priority-icon";
 import { useActorLookup } from "@/data/use-actor-name";
+import { displayLocale } from "@/lib/display-locale";
 import { priorityLabel, statusLabel } from "@/lib/issue-status";
 import { useT } from "@/lib/use-t";
 import { cn } from "@/lib/utils";
@@ -64,7 +65,11 @@ function useTypeLabels(): Record<InboxItemType, string> {
 
 // due_date is a calendar day — format timezone-safely (no offset day shift).
 function shortDate(dateStr: string): string {
-  return formatDateOnly(dateStr, { month: "short", day: "numeric" }, "en-US");
+  return formatDateOnly(
+    dateStr,
+    { month: "short", day: "numeric" },
+    displayLocale(),
+  );
 }
 
 function singleLine(value: string | null | undefined): string {

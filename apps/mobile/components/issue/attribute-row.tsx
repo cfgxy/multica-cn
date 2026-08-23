@@ -33,6 +33,7 @@ import { AttributeChip } from "./attribute-chip";
 import { useActorLookup } from "@/data/use-actor-name";
 import { findProject, projectListOptions } from "@/data/queries/projects";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { displayLocale } from "@/lib/display-locale";
 import { priorityLabel, statusLabel } from "@/lib/issue-status";
 import { useT } from "@/lib/use-t";
 
@@ -75,7 +76,10 @@ const ISSUE_PICKER_PATHNAMES = {
 // with the viewer's offset. Mirrors web's formatDate in list-row/board-card.
 function formatDueDate(iso: string | null): string | null {
   if (!iso) return null;
-  return formatDateOnly(iso, { month: "short", day: "numeric" }, "en-US") || null;
+  return (
+    formatDateOnly(iso, { month: "short", day: "numeric" }, displayLocale()) ||
+    null
+  );
 }
 
 export function AttributeRow({ issue }: { issue: Issue }) {
