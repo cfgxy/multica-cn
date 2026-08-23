@@ -225,9 +225,16 @@ export default function WorkspaceLayout() {
             title: i18n.t("issues:mobile.mention.screen_title", "Mention"),
           }}
         />
+        {/* 同 label：无 native header 则 `headerSearchBarOptions` 无处挂载，
+            搜索框不渲染，`query` 恒为空 —— 本批新增的
+            `common:mobile.common.no_matches`（搜索态才渲染）因此永不可达。 */}
         <Stack.Screen
           name="issue/[id]/picker/project"
-          options={SHEET_OPTIONS}
+          options={{
+            ...SHEET_OPTIONS,
+            headerShown: true,
+            title: i18n.t("layout:tab.project", "Project"),
+          }}
         />
         <Stack.Screen
           name="issue/[id]/picker/due-date"
@@ -250,9 +257,16 @@ export default function WorkspaceLayout() {
           name="project/[id]/picker/priority"
           options={SHEET_OPTIONS}
         />
+        {/* 同上。标题用既有 `projects:toolbar.section_lead`（en "Lead"），
+            与 label 用 `issues:filters.section_label` 同构：筛选区 section
+            的单数实体名。`projects:detail.prop_lead` 在 origin/main 不存在。 */}
         <Stack.Screen
           name="project/[id]/picker/lead"
-          options={SHEET_OPTIONS}
+          options={{
+            ...SHEET_OPTIONS,
+            headerShown: true,
+            title: i18n.t("projects:toolbar.section_lead", "Lead"),
+          }}
         />
         <Stack.Screen
           name="project/[id]/add-resource"
@@ -278,9 +292,14 @@ export default function WorkspaceLayout() {
             title: i18n.t("issues:actions.assignee", "Assignee"),
           }}
         />
+        {/* 同 issue/[id]/picker/project。 */}
         <Stack.Screen
           name="new-issue-picker/project"
-          options={SHEET_OPTIONS}
+          options={{
+            ...SHEET_OPTIONS,
+            headerShown: true,
+            title: i18n.t("layout:tab.project", "Project"),
+          }}
         />
         <Stack.Screen
           name="new-issue-picker/due-date"
