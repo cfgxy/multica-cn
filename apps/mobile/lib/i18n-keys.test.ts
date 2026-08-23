@@ -90,6 +90,22 @@ function collectFromFile(file: string, prefix: string): Call[] {
     }
     return ns;
   };
+  /**
+   * 把源码字面量里的转义序列还原成运行时字符。只处理 JS 字符串字面量里
+   * 可能出现的几种；未知转义（如 `\d`）按 JS 语义退化为字符本身。
+   */
+  const unescapeLiteral = (s: string | undefined): string | undefined =>
+    s?.replace(/\\(u\{[0-9a-fA-F]+\}|u[0-9a-fA-F]{4}|x[0-9a-fA-F]{2}|.)/g, (_, e: string) => {
+      if (e[0] === "u" || e[0] === "x") {
+        const hex = e[1] === "{" ? e.slice(2, -1) : e.slice(1);
+        return String.fromCodePoint(parseInt(hex, 16));
+      }
+      const map: Record<string, string> = {
+        n: "\n", t: "\t", r: "\r", b: "\b", f: "\f", v: "\v", "0": "\0",
+      };
+      return map[e] ?? e;
+    });
+
   // i18n.t("ns:key", fb) / t("key", fb) —— 交替匹配 i18n.t 与裸 t，拒绝
   // 模板串与动态 key（只审字面量）。负向后顾排除标识符字符但不排除 "."
   // 之前的版本会把 45 处 i18n.t(...) 全部漏采——金小欣注入实验证明的防线
@@ -104,7 +120,10 @@ function collectFromFile(file: string, prefix: string): Call[] {
       ns = raw.slice(0, idx);
       key = raw.slice(idx + 1);
     }
-    calls.push({ file: rel, ns, key, fallback: m[4] });
+    // 源码里的 fallback 是字面量文本，`\n` 等转义序列此刻还是两个字符；
+    // 资源 JSON 存的是解转义后的真字符。不还原就会把语义相同的一对判成
+    // 不一致（project-picker-body 的换行文案即是）。
+    calls.push({ file: rel, ns, key, fallback: unescapeLiteral(m[4]) });
   }
   return calls;
 }

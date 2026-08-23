@@ -19,6 +19,7 @@ import { projectListOptions } from "@/data/queries/projects";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useScrollToTopOnChange } from "@/lib/use-scroll-to-top-on-change";
 import { THEME } from "@/lib/theme";
+import { useT } from "@/lib/use-t";
 
 type Row = { kind: "none" } | { kind: "project"; project: Project };
 
@@ -29,6 +30,7 @@ interface Props {
 }
 
 export function ProjectPickerBody({ value, query, onChange }: Props) {
+  const { t } = useT("projects");
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const { data: projects = [] } = useQuery(projectListOptions(wsId));
   const listRef = useScrollToTopOnChange(query);
@@ -96,7 +98,9 @@ export function ProjectPickerBody({ value, query, onChange }: Props) {
             className="flex-1 text-base text-foreground"
             numberOfLines={1}
           >
-            {item.kind === "none" ? "No project" : item.project.title}
+            {item.kind === "none"
+              ? t("picker.no_project", "No project")
+              : item.project.title}
           </Text>
           {isSelected(item) ? (
             <Ionicons name="checkmark" size={20} color={checkColor} />
@@ -107,8 +111,11 @@ export function ProjectPickerBody({ value, query, onChange }: Props) {
         <View className="px-3 py-8 items-center">
           <Text className="text-sm text-muted-foreground text-center">
             {query
-              ? "No matches."
-              : "No projects in this workspace yet.\nCreate them on web."}
+              ? t("common:mobile.common.no_matches", "No matches.")
+              : t(
+                  "mobile.picker.no_projects",
+                  "No projects in this workspace yet.\nCreate them on web.",
+                )}
           </Text>
         </View>
       }

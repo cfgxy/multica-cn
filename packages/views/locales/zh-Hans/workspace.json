@@ -39,6 +39,11 @@
       "unknown_error": "未知错误",
       "retry": "重试",
       "no_workspaces": "你还不属于任何工作区。请联系工作区管理员邀请你加入。"
+    },
+    "switch": {
+      "title": "切换工作区",
+      "confirm_action": "切换",
+      "confirm_message": "切换到「{{name}}」？"
     }
   }
 }

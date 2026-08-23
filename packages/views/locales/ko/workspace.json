@@ -39,6 +39,11 @@
       "unknown_error": "알 수 없는 오류",
       "retry": "다시 시도",
       "no_workspaces": "아직 속한 워크스페이스가 없습니다. 워크스페이스 관리자에게 초대를 요청하세요."
+    },
+    "switch": {
+      "title": "워크스페이스 전환",
+      "confirm_action": "전환",
+      "confirm_message": "'{{name}}'(으)로 전환할까요?"
     }
   }
 }

@@ -105,6 +105,7 @@ import type { ImageSequenceBlock } from "@multica/core/attachments/image-sequenc
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { useCommentSelectStore } from "@/data/comment-select-store";
+import { useT } from "@/lib/use-t";
 
 interface Props {
   issue: Issue;
@@ -148,6 +149,7 @@ export function TimelineList({
   highlightCommentId,
   highlightNonce,
 }: Props) {
+  const { t } = useT("issues");
   // Top-level selection subscription gates the outer "tap-outside-to-dismiss"
   // Pressable below. When null, the Pressable stays disabled and every tap
   // passes through to comment cards / chip rows / reactions normally.
@@ -363,7 +365,7 @@ export function TimelineList({
       <IssueReactionRow issue={issue} />
       <View className="px-4 pt-4 pb-2 border-t border-border">
         <Text className="text-xs uppercase tracking-wider text-muted-foreground font-medium">
-          Activity
+          {t("detail.activity_section", "Activity")}
         </Text>
       </View>
       {timelineLoading && (!entries || entries.length === 0) ? (

@@ -146,12 +146,10 @@ export default function ProjectDetail() {
                       <Text>{isPinned ? t("page.unpin", "Unpin") : t("page.pin", "Pin to sidebar")}</Text>
                     </DropdownMenuItem>
                     <DropdownMenuItem onPress={onEditDetails}>
-                      {/* mobile-only string; no web resource key */}
-                    <Text>Edit details</Text>
+                      <Text>{t("mobile.detail.edit_details", "Edit details")}</Text>
                     </DropdownMenuItem>
                     <DropdownMenuItem onPress={onOpenOnWeb}>
-                      {/* mobile-only string; no web resource key */}
-                    <Text>Open on web</Text>
+                      <Text>{t("mobile.detail.open_on_web", "Open on web")}</Text>
                     </DropdownMenuItem>
                     <DropdownMenuSeparator />
                     <DropdownMenuItem variant="destructive" onPress={onDelete}>
@@ -170,13 +168,15 @@ export default function ProjectDetail() {
       ) : detail.error || projectMissing ? (
         <View className="flex-1 items-center justify-center px-6 gap-3">
           <Text className="text-sm text-destructive text-center">
-            Failed to load project:{" "}
-            {detail.error instanceof Error
-              ? detail.error.message
-              : "not found"}
+            {t("mobile.detail.load_failed", "Failed to load project: {{reason}}", {
+              reason:
+                detail.error instanceof Error
+                  ? detail.error.message
+                  : t("mobile.detail.not_found", "not found"),
+            })}
           </Text>
           <Button variant="outline" onPress={() => detail.refetch()}>
-            <Text>Retry</Text>
+            <Text>{t("common:mobile.common.retry", "Retry")}</Text>
           </Button>
         </View>
       ) : (

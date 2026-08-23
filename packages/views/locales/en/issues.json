@@ -833,7 +833,10 @@
       "retry": "Retry",
       "retry_a11y": "Retry sending comment",
       "discard": "Discard",
-      "discard_a11y": "Discard failed comment"
+      "discard_a11y": "Discard failed comment",
+      "add_reaction": "Add Reaction",
+      "delete_title": "Delete comment?",
+      "delete_desc": "This comment will be permanently deleted. Replies in the thread will also be removed. This cannot be undone."
     },
     "detail": {
       "actions_a11y": "Issue actions",
@@ -841,7 +844,8 @@
       "open_on_web": "Open on web",
       "load_failed": "Failed to load issue: {{reason}}",
       "not_found": "not found",
-      "retry": "Retry"
+      "retry": "Retry",
+      "no_description": "No description."
     },
     "picker": {
       "unassigned": "Unassigned",
@@ -850,7 +854,11 @@
       "squad": "Squad",
       "needs_runtime": "Needs runtime",
       "leader_needs_runtime": "Leader needs runtime",
-      "everyone_all": "Everyone (@all)"
+      "everyone_all": "Everyone (@all)",
+      "done": "Done",
+      "create_label": "Create “{{name}}”",
+      "no_labels": "No labels in this workspace yet.",
+      "no_members_or_agents": "No members or agents in this workspace yet."
     },
     "mention": {
       "everyone": "Everyone"
@@ -898,6 +906,29 @@
       "completed": "Done",
       "failed": "Failed",
       "cancelled": "Cancelled"
+    },
+    "runs": {
+      "title": "Agent Runs",
+      "section_active": "Active",
+      "section_past": "Past",
+      "cancel_title": "Cancel task?",
+      "cancel_body": "The agent will stop after the current step."
+    },
+    "list": {
+      "load_failed": "Failed to load issues: {{reason}}",
+      "empty_all": "No issues in this workspace.",
+      "empty_members": "No issues assigned to a member.",
+      "empty_agents": "No issues assigned to agents or squads."
+    },
+    "agent_activity": {
+      "runs_count": "Runs · {{count}}",
+      "badge_a11y": "Agent working — open runs"
+    },
+    "description_field": {
+      "placeholder": "Description… (type @ to mention)"
+    },
+    "new": {
+      "submit_a11y": "Create issue"
     }
   }
 }

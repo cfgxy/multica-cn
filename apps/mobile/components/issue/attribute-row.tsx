@@ -34,11 +34,18 @@ import { useActorLookup } from "@/data/use-actor-name";
 import { findProject, projectListOptions } from "@/data/queries/projects";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { priorityLabel, statusLabel } from "@/lib/issue-status";
+import { useT } from "@/lib/use-t";
+
+type TFn = ReturnType<typeof useT>["t"];
 
 // Chip placeholder shortens `none` from "No priority" → "Priority" so the
 // unset chip reads as a placeholder, not as a confusing assigned value.
-function priorityChipLabel(priority: IssuePriority): string {
-  return priority === "none" ? "Priority" : priorityLabel(priority);
+// 纯函数不持有 i18n 状态，由调用侧把 `t` 传进来。传入实例绑定的 ns 在这里
+// 看不见（静态检查器只能按调用点位置猜，会猜成 common），故用绝对 key。
+function priorityChipLabel(priority: IssuePriority, t: TFn): string {
+  return priority === "none"
+    ? t("issues:detail.prop_priority", "Priority")
+    : priorityLabel(priority);
 }
 
 /**
@@ -72,6 +79,7 @@ function formatDueDate(iso: string | null): string | null {
 }
 
 export function AttributeRow({ issue }: { issue: Issue }) {
+  const { t } = useT("issues");
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { getName } = useActorLookup();
@@ -117,7 +125,7 @@ export function AttributeRow({ issue }: { issue: Issue }) {
       {/* Priority */}
       <AttributeChip
         icon={<PriorityIcon priority={issue.priority} size={14} />}
-        label={priorityChipLabel(issue.priority)}
+        label={priorityChipLabel(issue.priority, t)}
         variant={issue.priority === "none" ? "dimmed" : "filled"}
         onPress={() => openPicker("priority")}
       />
@@ -133,7 +141,10 @@ export function AttributeRow({ issue }: { issue: Issue }) {
               showPresence
             />
           }
-          label={assigneeName ?? "Unknown"}
+          label={
+            assigneeName ??
+            t("common:mobile.actor.unknown_member", "Unknown")
+          }
           variant="filled"
           onPress={() => openPicker("assignee")}
         />
@@ -142,7 +153,7 @@ export function AttributeRow({ issue }: { issue: Issue }) {
           icon={
             <View className="size-4 rounded-full border border-dashed border-muted-foreground/40" />
           }
-          label="Assignee"
+          label={t("detail.prop_assignee", "Assignee")}
           variant="dimmed"
           onPress={() => openPicker("assignee")}
         />
@@ -169,7 +180,7 @@ export function AttributeRow({ issue }: { issue: Issue }) {
       {labels.length === 0 ? (
         <AttributeChip
           icon={<Text className="text-xs text-muted-foreground/70">◯</Text>}
-          label="Label"
+          label={t("filters.section_label", "Label")}
           variant="dimmed"
           onPress={() => openPicker("label")}
         />
@@ -188,7 +199,7 @@ export function AttributeRow({ issue }: { issue: Issue }) {
           icon={
             <View className="size-3.5 rounded-sm border border-dashed border-muted-foreground/40" />
           }
-          label="Project"
+          label={t("detail.prop_project", "Project")}
           variant="dimmed"
           onPress={() => openPicker("project")}
         />

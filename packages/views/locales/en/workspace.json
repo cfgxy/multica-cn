@@ -39,6 +39,11 @@
       "unknown_error": "unknown error",
       "retry": "Retry",
       "no_workspaces": "You don't belong to any workspaces yet. Contact your workspace admin to be invited."
+    },
+    "switch": {
+      "title": "Switch workspace",
+      "confirm_action": "Switch",
+      "confirm_message": "Switch to \"{{name}}\"?"
     }
   }
 }

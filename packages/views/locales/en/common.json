@@ -160,7 +160,9 @@
     "common": {
       "no_matches": "No matches.",
       "retry": "Retry",
-      "unknown_error": "unknown error"
+      "unknown_error": "unknown error",
+      "search": "Search",
+      "close": "Close"
     }
   }
 }

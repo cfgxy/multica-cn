@@ -801,7 +801,10 @@
       "retry": "重试",
       "retry_a11y": "重新发送评论",
       "discard": "丢弃",
-      "discard_a11y": "丢弃发送失败的评论"
+      "discard_a11y": "丢弃发送失败的评论",
+      "add_reaction": "添加表情回应",
+      "delete_title": "删除评论？",
+      "delete_desc": "此评论将被永久删除，话题中的回复也会一并移除。此操作无法撤销。"
     },
     "detail": {
       "actions_a11y": "任务操作",
@@ -809,7 +812,8 @@
       "open_on_web": "在网页中打开",
       "load_failed": "无法加载任务：{{reason}}",
       "not_found": "未找到",
-      "retry": "重试"
+      "retry": "重试",
+      "no_description": "暂无描述。"
     },
     "picker": {
       "unassigned": "未指派",
@@ -818,7 +822,11 @@
       "squad": "小队",
       "needs_runtime": "需绑定运行时",
       "leader_needs_runtime": "队长需绑定运行时",
-      "everyone_all": "所有人（@all）"
+      "everyone_all": "所有人（@all）",
+      "done": "完成",
+      "create_label": "创建「{{name}}」",
+      "no_labels": "此工作区还没有标签。",
+      "no_members_or_agents": "此工作区还没有成员或 Agent。"
     },
     "mention": {
       "everyone": "所有人"
@@ -866,6 +874,29 @@
       "completed": "已完成",
       "failed": "失败",
       "cancelled": "已取消"
+    },
+    "runs": {
+      "title": "Agent 运行记录",
+      "section_active": "进行中",
+      "section_past": "历史",
+      "cancel_title": "取消 task？",
+      "cancel_body": "Agent 会在完成当前步骤后停止。"
+    },
+    "list": {
+      "load_failed": "无法加载任务：{{reason}}",
+      "empty_all": "此工作区还没有任务。",
+      "empty_members": "没有指派给成员的任务。",
+      "empty_agents": "没有指派给 Agent 或小队的任务。"
+    },
+    "agent_activity": {
+      "runs_count": "运行 · {{count}} 次",
+      "badge_a11y": "Agent 运行中 —— 查看运行记录"
+    },
+    "description_field": {
+      "placeholder": "描述…（输入 @ 可提及）"
+    },
+    "new": {
+      "submit_a11y": "创建任务"
     }
   }
 }

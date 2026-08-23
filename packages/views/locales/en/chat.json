@@ -288,6 +288,37 @@
       "codex_semantic_inactivity": "Codex semantic inactivity timeout",
       "manual": "Cancelled by user",
       "fallback": "Failed"
+    },
+    "sessions": {
+      "untitled": "Untitled chat",
+      "delete_title": "Delete this chat?",
+      "title": "Chats",
+      "empty": "No chats yet.",
+      "archived": "archived",
+      "actions_a11y": "Session actions",
+      "title_button_a11y": "Sessions and agent picker"
+    },
+    "agent_picker": {
+      "title": "Choose an agent",
+      "empty": "No agents available."
+    },
+    "no_agent_banner": {
+      "a11y": "No agents available, open agents settings",
+      "title": "No agents available",
+      "hint": "Add or enable an agent in More → Agents to start chatting."
+    },
+    "offline_banner": {
+      "fallback_name": "This agent",
+      "unstable": "{{name}} may have just disconnected — your message will queue.",
+      "offline": "{{name}} is offline. Messages will wait until its runtime is back."
+    },
+    "runtime_required_banner": {
+      "fallback_name": "This agent",
+      "message": "{{name}} needs a runtime before it can run. Bind one on web or desktop."
+    },
+    "message_list": {
+      "quick_actions_a11y": "Suggested follow-ups",
+      "show_error_details_a11y": "Show error details"
     }
   }
 }

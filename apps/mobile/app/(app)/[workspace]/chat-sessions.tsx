@@ -19,6 +19,7 @@ import { chatSessionsOptions } from "@/data/queries/chat";
 import { useDeleteChatSession } from "@/data/mutations/chat";
 import { useChatSessionPickerStore } from "@/data/stores/chat-session-picker-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { useT } from "@/lib/use-t";
 import { cn } from "@/lib/utils";
 
 export default function ChatSessionsRoute() {
@@ -27,15 +28,20 @@ export default function ChatSessionsRoute() {
   const activeSessionId = useChatSessionPickerStore((s) => s.activeSessionId);
   const requestSelect = useChatSessionPickerStore((s) => s.requestSelect);
   const deleteSession = useDeleteChatSession();
+  const { t } = useT("chat");
+
+  // 不能复用 chat:window.untitled —— 那条 en 是 "New chat"（web 侧指「新建
+  // 会话」入口），与这里「无标题会话」的语义不同。
+  const untitled = t("mobile.sessions.untitled", "Untitled chat");
 
   const confirmDelete = (session: ChatSession) => {
     Alert.alert(
-      "Delete this chat?",
-      session.title || "Untitled chat",
+      t("mobile.sessions.delete_title", "Delete this chat?"),
+      session.title || untitled,
       [
-        { text: "Cancel", style: "cancel" },
+        { text: t("common:cancel", "Cancel"), style: "cancel" },
         {
-          text: "Delete",
+          text: t("common:delete", "Delete"),
           style: "destructive",
           onPress: () => {
             deleteSession.mutate(session.id);
@@ -54,13 +60,15 @@ export default function ChatSessionsRoute() {
   return (
     <View className="flex-1">
       <View className="px-4 pt-4 pb-3">
-        <Text className="text-base font-semibold text-foreground">Chats</Text>
+        <Text className="text-base font-semibold text-foreground">
+          {t("mobile.sessions.title", "Chats")}
+        </Text>
       </View>
       <ScrollView className="flex-1" showsVerticalScrollIndicator={false}>
         {sessions.length === 0 ? (
           <View className="px-4 py-8">
             <Text className="text-sm text-muted-foreground text-center">
-              No chats yet.
+              {t("mobile.sessions.empty", "No chats yet.")}
             </Text>
           </View>
         ) : (
@@ -100,11 +108,11 @@ export default function ChatSessionsRoute() {
                     )}
                     numberOfLines={1}
                   >
-                    {session.title || "Untitled chat"}
+                    {session.title || untitled}
                   </Text>
                   {archived ? (
                     <Text className="text-xs text-muted-foreground mt-0.5">
-                      archived
+                      {t("mobile.sessions.archived", "archived")}
                     </Text>
                   ) : null}
                 </View>
