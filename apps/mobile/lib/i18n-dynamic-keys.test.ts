@@ -382,13 +382,23 @@ describe("两份 failure 表的关系", () => {
 
 /**
  * 组件文件的 ns 读不到：`useT("chat")` 把 ns 绑在 hook 上，模板串里只剩
- * 后半段。这张表补上那一段映射（只涉及两个组件文件）。lib/ 下走
- * `i18n.t("ns:…")`，ns 就在串里，不需要登记。
+ * 后半段。这里从源码正则读回该文件的 `useT("<ns>")` 补上映射。lib/ 下走
+ * `i18n.t("ns:…")`，ns 就在串里，不走这条路径。
+ *
+ * 早先这是一张手写映射表。手写表会漂移：文件把 useT("issues") 改成别的
+ * ns，表还停在旧值，前缀锁就会拿错 ns 去解析——解析得到的节点可能碰巧
+ * 存在，于是整支防线静默失效。从源码读回则不存在这个偏差源。
+ *
+ * 一个文件出现多个 useT 时不猜：返回 null 让调用侧记成「ns 不可判定」并
+ * 报红，由人显式处理，而不是取第一个赌它对。
  */
-const FILE_NS: Record<string, string> = {
-  "components/chat/status-pill.tsx": "chat",
-  "components/issue/run-row.tsx": "issues",
-};
+function nsOfFile(src: string): string | null {
+  const nss = [...src.matchAll(/useT\(\s*["']([^"']+)["']\s*\)/g)].map(
+    (m) => m[1]!,
+  );
+  const uniq = [...new Set(nss)];
+  return uniq.length === 1 ? uniq[0]! : null;
+}
 
 /** 前缀 → 该前缀下源码会拼出的枚举值（资源节点必须是它的超集）。 */
 const PREFIX_VALUES: Record<string, string[]> = {
@@ -422,7 +432,10 @@ function collectPrefixes(): { file: string; full: string }[] {
     for (const file of walk(join(MOBILE_ROOT, root))) {
       const rel = file.slice(MOBILE_ROOT.length + 1).replace(/\\/g, "/");
       const src = readFileSync(file, "utf8");
-      for (const m of src.matchAll(/(?:i18n\.)?\bt\(`([^`]*?)\$\{/g)) {
+      const fileNs = nsOfFile(src);
+      // `t(` 与反引号之间允许空白/换行：prettier 会把超长调用拆成多行
+      // （`t(\n  \`前缀.${v}\`,\n  en,\n)`），紧贴形态的正则会整条漏采。
+      for (const m of src.matchAll(/(?:i18n\.)?\bt\(\s*`([^`]*?)\$\{/g)) {
         const head = m[1]!;
         // 只处理「前缀 + 尾点 + ${枚举}」这一种形态；句中插值（`{{name}}`
         // 之类走的是 options，不会进这个分支）不是 key 拼接，跳过。
@@ -430,7 +443,7 @@ function collectPrefixes(): { file: string; full: string }[] {
         const body = head.slice(0, -1);
         const full = body.includes(":")
           ? body
-          : `${FILE_NS[rel] ?? "<未登记 ns>"}:${body}`;
+          : `${fileNs ?? "<ns 不可判定>"}:${body}`;
         hits.push({ file: rel, full });
       }
     }
@@ -479,8 +492,8 @@ describe("动态 key 的前缀锁", () => {
 
   // ── 正题 ──────────────────────────────────────────────────────
 
-  it("每个源码前缀的 ns 都能确定（组件文件必须在 FILE_NS 里登记）", () => {
-    expect(found.filter((h) => h.full.startsWith("<未登记 ns>"))).toEqual([]);
+  it("每个源码前缀的 ns 都能确定（组件文件须有唯一的 useT 绑定）", () => {
+    expect(found.filter((h) => h.full.startsWith("<ns 不可判定>"))).toEqual([]);
   });
 
   it("每个源码前缀在资源里都解析到一个对象节点", () => {

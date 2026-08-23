@@ -879,7 +879,7 @@
       "title": "Agent 运行记录",
       "section_active": "进行中",
       "section_past": "历史",
-      "cancel_title": "取消 task？",
+      "cancel_title": "停止 task？",
       "cancel_body": "Agent 会在完成当前步骤后停止。"
     },
     "list": {
