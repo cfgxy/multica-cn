@@ -34,7 +34,8 @@ import { useActorLookup } from "@/data/use-actor-name";
 import { findProject, projectListOptions } from "@/data/queries/projects";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { displayLocale } from "@/lib/display-locale";
-import { priorityLabel, statusLabel } from "@/lib/issue-status";
+import { localizedStatusLabel, priorityLabel } from "@/lib/issue-status";
+import { useIssueStatuses } from "@/lib/use-issue-statuses";
 import { useT } from "@/lib/use-t";
 
 type TFn = ReturnType<typeof useT>["t"];
@@ -87,6 +88,13 @@ export function AttributeRow({ issue }: { issue: Issue }) {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { getName } = useActorLookup();
+  // The chip shows the issue's own status, which may be a custom one — name
+  // and colour come from the workspace catalog, the glyph from its category.
+  // (MUL-6243)
+  // `labelOf` 换成 `localizedStatusLabel(catalog, ...)`：内置状态走 i18n，
+  // 自定义状态仍取目录 `name`，分支判据与 `labelOf` 一致。
+  const catalog = useIssueStatuses();
+  const { categoryOf, colorOf } = catalog;
 
   // Project read-only — fetch list to look up the title + icon. Cheap
   // (cached after first issue-detail visit).
@@ -120,8 +128,15 @@ export function AttributeRow({ issue }: { issue: Issue }) {
     <View className="flex-row flex-wrap gap-2">
       {/* Status — always shown */}
       <AttributeChip
-        icon={<StatusIcon status={issue.status} size={14} />}
-        label={statusLabel(issue.status)}
+        icon={
+          <StatusIcon
+            status={issue.status}
+            category={categoryOf(issue.status)}
+            color={colorOf(issue.status)}
+            size={14}
+          />
+        }
+        label={localizedStatusLabel(catalog, issue.status)}
         variant="filled"
         onPress={() => openPicker("status")}
       />

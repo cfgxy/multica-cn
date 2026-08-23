@@ -11,28 +11,35 @@
  * crash). Unknown actions must also never be interpolated into a key: a
  * server-invented value would resolve to nothing and render blank.
  */
-import type {
-  IssuePriority,
-  IssueStatus,
-  TimelineEntry,
-} from "@multica/core/types";
+import type { IssuePriority, TimelineEntry } from "@multica/core/types";
 import { formatDateOnly } from "@multica/core/issues/date";
 import i18n from "i18next";
 import { displayLocale } from "@/lib/display-locale";
 import {
   PRIORITY_LABEL,
-  STATUS_LABEL,
+  isIssueStatusCategory,
   priorityLabel,
   statusLabel,
 } from "@/lib/issue-status";
 
-// 状态/优先级标签复用 lib/issue-status.ts —— 那两张表与本文件原先各自
-// 持有的副本逐字相同，接 i18n 时再维护两份等于给「两处只改一处」留口子。
-// `in` 判断仍打在英文兜底表上：它是 key 的权威集合，用来把服务端新增的
-// 未知枚举值原样透出（顶部注释的 API Response Compatibility 规则）。
-function statusName(s: string | undefined): string {
-  if (s && s in STATUS_LABEL) return statusLabel(s as IssueStatus);
-  return s ?? "?";
+/**
+ * Names a status KEY out of a timeline entry. `resolveLabel` comes from the
+ * workspace catalog and is what names a CUSTOM status; without it (or for a key
+ * the catalog never heard of) a built-in still gets its own copy and anything
+ * else falls back to the raw key rather than rendering blank. Mirrors web's
+ * `statusLabel` in packages/views/issues/components/issue-detail.tsx.
+ * (MUL-6243)
+ *
+ * 汉化改动只落在内置那一支：`statusLabel()` 走 `issues:status.*`，其余分支
+ * 与上游逐字一致。自定义状态名来自工作区目录，是数据不是文案，不翻译。
+ */
+function statusName(
+  s: string | undefined,
+  resolveLabel?: (statusKey: string) => string,
+): string {
+  if (!s) return "?";
+  if (resolveLabel) return resolveLabel(s);
+  return isIssueStatusCategory(s) ? statusLabel(s) : s;
 }
 
 function priorityName(p: string | undefined): string {
@@ -58,16 +65,22 @@ export function formatActivity(
     type: string | null | undefined,
     id: string | null | undefined,
   ) => string,
+  resolveStatusLabel?: (statusKey: string) => string,
 ): string {
   const details = (entry.details ?? {}) as Record<string, string>;
   switch (entry.action) {
     case "created":
       return i18n.t("issues:activity.created", "created this issue");
     case "status_changed":
+      // 上游新增的 `resolveStatusLabel` 透传下去（自定义状态才能拿到目录里
+      // 的名字），外层文案仍走 i18n —— 两边改的是同一句的不同部分。
       return i18n.t(
         "issues:activity.status_changed",
         "changed status from {{from}} to {{to}}",
-        { from: statusName(details.from), to: statusName(details.to) },
+        {
+          from: statusName(details.from, resolveStatusLabel),
+          to: statusName(details.to, resolveStatusLabel),
+        },
       );
     case "priority_changed":
       return i18n.t(
