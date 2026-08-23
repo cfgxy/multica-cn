@@ -43,7 +43,7 @@
     "switch": {
       "title": "切换工作区",
       "confirm_action": "切换",
-      "confirm_message": "切换到「{{name}}」？"
+      "confirm_message": "切换到\"{{name}}\"？"
     }
   }
 }

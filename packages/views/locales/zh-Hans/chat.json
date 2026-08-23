@@ -301,7 +301,7 @@
     "no_agent_banner": {
       "a11y": "没有可用的 Agent，打开 Agent 设置",
       "title": "没有可用的 Agent",
-      "hint": "在「更多 → 智能体」中添加或启用一个 Agent 后即可开始聊天。"
+      "hint": "在\"更多 → 智能体\"中添加或启用一个智能体后即可开始聊天。"
     },
     "offline_banner": {
       "fallback_name": "此 Agent",

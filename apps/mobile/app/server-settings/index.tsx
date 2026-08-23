@@ -4,6 +4,10 @@
  * 路由刻意放在 (auth) / (app) 两个分组之外:未登录用户连自建后端是核心
  * 场景,登录前必须可达。
  *
+ * header 用屏内自绘的 `<Header />`(分组 layout 已关掉原生 Stack header),
+ * 它自己处理 top inset;原生 header 在 Android 上会压住状态栏,详见
+ * `_layout.tsx` 的注释(RUYI-25)。
+ *
  * 视觉沿用 `more/settings.tsx` 的 SectionGroup / 行模式,不引入新组件。
  * 内置项置顶且没有「…」菜单 —— 不可编辑删除直接体现为「没有可点的入口」,
  * 而不是置灰按钮让用户点一次才知道禁用。
@@ -18,9 +22,10 @@ import { useCallback } from "react";
 import { Alert, Pressable, ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { Stack, router } from "expo-router";
+import { router } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { Text } from "@/components/ui/text";
+import { Header } from "@/components/ui/header";
 import { Separator } from "@/components/ui/separator";
 import { IconButton } from "@/components/ui/icon-button";
 import {
@@ -126,18 +131,22 @@ export default function ServerListScreen() {
 
   return (
     <SafeAreaView className="flex-1 bg-background" edges={["bottom"]}>
-      <Stack.Screen
-        options={{
-          title: t("server.title", "Servers"),
-          headerBackTitle: t("server.back", "Back"),
-          headerRight: () => (
-            <IconButton
-              name="add"
-              onPress={() => router.push("/server-settings/new")}
-              accessibilityLabel={t("server.add", "Add server")}
-            />
-          ),
-        }}
+      <Header
+        title={t("server.title", "Servers")}
+        left={
+          <IconButton
+            name="arrow-back"
+            onPress={() => router.back()}
+            accessibilityLabel={t("server.back", "Back")}
+          />
+        }
+        right={
+          <IconButton
+            name="add"
+            onPress={() => router.push("/server-settings/new")}
+            accessibilityLabel={t("server.add", "Add server")}
+          />
+        }
       />
       <ScrollView
         className="flex-1"
