@@ -150,32 +150,48 @@ export function MentionPickerBody({ query, mode = "comment" }: Props) {
         .sort((a, b) => a.name.localeCompare(b.name))
         .map((m): Row => ({ kind: "member", member: m }));
       if (memberRows.length > 0) {
-        out.push({ kind: "section", label: "People" }, ...memberRows);
+        out.push(
+          {
+            kind: "section",
+            label: t("mobile.mention.group_people", "People"),
+          },
+          ...memberRows,
+        );
       }
       const agentRows = [...agents]
         .filter((a) => matchName(a.name))
         .sort((a, b) => a.name.localeCompare(b.name))
         .map((a): Row => ({ kind: "agent", agent: a }));
       if (agentRows.length > 0) {
-        out.push({ kind: "section", label: "Agents" }, ...agentRows);
+        out.push(
+          { kind: "section", label: t("pickers.assignee.agents_group", "Agents") },
+          ...agentRows,
+        );
       }
       const squadRows = [...squads]
         .filter((s) => !s.archived_at && matchName(s.name))
         .sort((a, b) => a.name.localeCompare(b.name))
         .map((s): Row => ({ kind: "squad", squad: s }));
       if (squadRows.length > 0) {
-        out.push({ kind: "section", label: "Squads" }, ...squadRows);
+        out.push(
+          { kind: "section", label: t("pickers.assignee.squads_group", "Squads") },
+          ...squadRows,
+        );
       }
     }
 
     if (issueResults.length > 0) {
-      out.push({ kind: "section", label: "Issues" });
+      out.push({
+        kind: "section",
+        label: t("page.breadcrumb_title", "Issues"),
+      });
       for (const i of issueResults) {
         out.push({ kind: "issue", issue: i });
       }
     }
     return out;
-  }, [mode, members, agents, squads, issueResults, query]);
+    // `t` 进依赖：分组标题是译文，切语言后 memo 必须重算。
+  }, [mode, members, agents, squads, issueResults, query, t]);
 
   const pick = (row: Row) => {
     let chip: MentionChipDraft | null = null;

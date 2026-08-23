@@ -24,6 +24,7 @@ import {
   deriveNotificationPreferencePatch,
   rollbackNotificationPreferencePatch,
 } from "@multica/core/notification-preferences/patch";
+import i18n from "i18next";
 import { api } from "@/data/api";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { notificationPreferenceKeys } from "@/data/queries/notification-preferences";
@@ -99,7 +100,10 @@ export function useUpdateNotificationPreferences() {
     mutationFn: ({ patch, workspaceSlug: targetWorkspaceSlug }) => {
       if (!targetWorkspaceSlug) {
         throw new Error(
-          "Workspace context is required to update notifications",
+          i18n.t(
+            "settings:mobile.notifications.missing_workspace",
+            "Workspace context is required to update notifications",
+          ),
         );
       }
       return api.updateNotificationPreferences(patch, targetWorkspaceSlug);

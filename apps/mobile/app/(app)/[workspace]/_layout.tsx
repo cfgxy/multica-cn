@@ -208,7 +208,7 @@ export default function WorkspaceLayout() {
           options={{
             ...SHEET_OPTIONS,
             headerShown: true,
-            title: "Mention" /* mobile-only string; no web resource key */,
+            title: i18n.t("issues:mobile.mention.screen_title", "Mention"),
           }}
         />
         <Stack.Screen

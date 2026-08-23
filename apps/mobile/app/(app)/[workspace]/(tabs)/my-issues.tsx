@@ -45,6 +45,7 @@ import {
 import { filterIssues } from "@/lib/filter-issues";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
+import type { TFunction } from "i18next";
 import { useT } from "@/lib/use-t";
 
 // Mobile pill row has tight width on SE3 (375pt). Three pills + Filter icon
@@ -53,17 +54,21 @@ import { useT } from "@/lib/use-t";
 // under Dynamic Type. Semantics unchanged: same backend predicate
 // (`involves_user_id`, MUL-2397) covers owned agents + related squads; the
 // empty state copy still says "agents or squads".
-const SCOPES: { value: MyIssuesScope; label: string }[] = [
-  { value: "assigned", label: "Assigned" },
-  { value: "created", label: "Created" },
-  { value: "agents", label: "Agents" },
-];
-
 type IssueSection = { status: IssueStatus; data: Issue[] };
 
 export default function MyIssues() {
   const isFocused = useIsFocused();
   const { t } = useT("my-issues");
+  // 模块级常量会在 i18n 初始化之前求值一次就固化，切语言不重算——所以
+  // 放进组件里跟 t 一起重算（同 apps/mobile/CLAUDE.md 的 i18n 规则）。
+  const scopes = useMemo<{ value: MyIssuesScope; label: string }[]>(
+    () => [
+      { value: "assigned", label: t("header.scope.assigned_label", "Assigned") },
+      { value: "created", label: t("header.scope.created_label", "Created") },
+      { value: "agents", label: t("issues:scope.agents_label", "Agents") },
+    ],
+    [t],
+  );
   const userId = useAuthStore((s) => s.user?.id ?? null);
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
@@ -135,7 +140,7 @@ export default function MyIssues() {
         right={<HeaderActions />}
       />
       <ScopeToolbar
-        scopes={SCOPES}
+        scopes={scopes}
         scope={scope}
         onChange={(v) => setScope(v)}
         onOpenFilter={openFilter}
@@ -175,8 +180,8 @@ export default function MyIssues() {
         <EmptyState
           message={
             hasActiveFilters
-              ? "No issues match the current filters."
-              : emptyMessageForScope(scope)
+              ? t("mobile.empty.filtered", "No issues match the current filters.")
+              : emptyMessageForScope(scope, t)
           }
         />
       ) : (
@@ -374,13 +379,19 @@ function EmptyState({ message }: { message: string }) {
   );
 }
 
-function emptyMessageForScope(scope: MyIssuesScope): string {
+function emptyMessageForScope(
+  scope: MyIssuesScope,
+  t: TFunction,
+): string {
   switch (scope) {
     case "assigned":
-      return "No issues assigned to you.";
+      return t("mobile.empty.assigned", "No issues assigned to you.");
     case "created":
-      return "You haven't created any issues.";
+      return t("mobile.empty.created", "You haven't created any issues.");
     case "agents":
-      return "No issues assigned to your agents or squads yet.";
+      return t(
+        "mobile.empty.agents",
+        "No issues assigned to your agents or squads yet.",
+      );
   }
 }

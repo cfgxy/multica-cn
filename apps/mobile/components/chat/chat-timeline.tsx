@@ -179,6 +179,7 @@ function ToolCallRow({ item }: { item: TaskMessagePayload }) {
 }
 
 function ToolResultRow({ item }: { item: TaskMessagePayload }) {
+  const { t } = useT("chat");
   const output = item.output ?? "";
   if (!output) return null;
   const preview = output.length > 80 ? `${output.slice(0, 80)}…` : output;
@@ -206,7 +207,7 @@ function ToolResultRow({ item }: { item: TaskMessagePayload }) {
         <View className="ml-4 mt-1 rounded bg-muted/40 px-2 py-1.5">
           <Text className="text-xs text-muted-foreground">
             {output.length > 4000
-              ? `${output.slice(0, 4000)}\n…(truncated)`
+              ? `${output.slice(0, 4000)}\n${t("mobile.timeline.truncated", "…(truncated)")}`
               : output}
           </Text>
         </View>

@@ -1232,7 +1232,8 @@
       "email_hint": "이메일은 가입 시 설정되며 여기서 변경할 수 없습니다."
     },
     "notifications": {
-      "load_failed": "알림 환경설정을 불러오지 못했습니다."
+      "load_failed": "알림 환경설정을 불러오지 못했습니다.",
+      "missing_workspace": "알림 설정을 변경하려면 워크스페이스가 지정되어야 합니다"
     },
     "page": {
       "sign_out_body": "이 기기에서 Multica를 사용하려면 다시 로그인해야 합니다.",

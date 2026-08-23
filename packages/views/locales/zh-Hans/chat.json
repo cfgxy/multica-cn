@@ -315,6 +315,9 @@
     "message_list": {
       "quick_actions_a11y": "推荐的后续提问",
       "show_error_details_a11y": "查看错误详情"
+    },
+    "timeline": {
+      "truncated": "…（已截断）"
     }
   }
 }

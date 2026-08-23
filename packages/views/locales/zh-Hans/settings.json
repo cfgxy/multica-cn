@@ -1232,7 +1232,8 @@
       "email_hint": "邮箱在注册时设定，无法在此修改。"
     },
     "notifications": {
-      "load_failed": "无法加载通知偏好设置。"
+      "load_failed": "无法加载通知偏好设置。",
+      "missing_workspace": "更新通知设置需要先确定所属工作区"
     },
     "page": {
       "sign_out_body": "你需要重新登录才能在此设备上使用 Multica。",

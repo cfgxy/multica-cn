@@ -40,7 +40,8 @@
     "just_now": "방금 전",
     "minutes_ago": "{{count}}분 전",
     "hours_ago": "{{count}}시간 전",
-    "days_ago": "{{count}}일 전"
+    "days_ago": "{{count}}일 전",
+    "weeks_ago": "{{count}}주 전"
   },
   "lark_bind": {
     "page_title": "Lark 계정 연결",
@@ -148,7 +149,8 @@
     "upload_image": "이미지 업로드",
     "upload_file": "파일 업로드",
     "file_too_large_title": "파일이 너무 큼",
-    "file_too_large_message": "파일은 {{size}} MB 미만이어야 합니다."
+    "file_too_large_message": "파일은 {{size}} MB 미만이어야 합니다.",
+    "upload_failed_title": "업로드 실패"
   },
   "mobile": {
     "actor": {
@@ -162,7 +164,8 @@
       "retry": "다시 시도",
       "unknown_error": "알 수 없는 오류",
       "search": "검색",
-      "close": "닫기"
+      "close": "닫기",
+      "request_timeout": "요청 시간이 초과되었습니다({{seconds}}초)"
     }
   }
 }

@@ -829,7 +829,11 @@
       "no_members_or_agents": "이 워크스페이스에는 아직 멤버나 에이전트가 없습니다."
     },
     "mention": {
-      "everyone": "모든 사람"
+      "everyone": "모든 사람",
+      "screen_title": "멘션",
+      "group_recent": "최근",
+      "group_my_issues": "내 태스크",
+      "group_people": "멤버"
     },
     "run_failure": {
       "queued_expired": "대기열 만료",

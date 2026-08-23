@@ -315,6 +315,9 @@
     "message_list": {
       "quick_actions_a11y": "おすすめの追加質問",
       "show_error_details_a11y": "エラーの詳細を表示"
+    },
+    "timeline": {
+      "truncated": "…（省略されました）"
     }
   }
 }

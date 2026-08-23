@@ -315,6 +315,9 @@
     "message_list": {
       "quick_actions_a11y": "추천 후속 질문",
       "show_error_details_a11y": "오류 세부 정보 보기"
+    },
+    "timeline": {
+      "truncated": "…(잘림)"
     }
   }
 }
