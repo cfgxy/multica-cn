@@ -783,7 +783,7 @@
   },
   "mobile": {
     "edit": {
-      "discard_message": "你对此 Issue 的修改将会丢失。",
+      "discard_message": "你对此任务的修改将会丢失。",
       "save_failed": "保存失败"
     },
     "composer": {

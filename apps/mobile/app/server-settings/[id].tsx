@@ -7,6 +7,10 @@
  * 主字段只有「名称 + 服务器地址」两项:绝大多数自建部署是单域名反代
  * (Web 与 API 同源),填一个地址就该通。Web 地址降级为默认收起的折叠
  * 高级项,留空即沿用服务器地址 —— 普通用户从头到尾看不到这四个字。
+ *
+ * header 用屏内自绘的 `<Header />`(分组 layout 已关掉原生 Stack header),
+ * 它自己处理 top inset;原生 header 在 Android 上会压住状态栏,详见
+ * `_layout.tsx` 的注释(RUYI-25)。
  */
 import { useMemo, useState } from "react";
 import {
@@ -16,11 +20,14 @@ import {
   ScrollView,
   View,
 } from "react-native";
+import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { Stack, router, useLocalSearchParams } from "expo-router";
+import { router, useLocalSearchParams } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
+import { Header } from "@/components/ui/header";
+import { IconButton } from "@/components/ui/icon-button";
 import { TextField } from "@/components/ui/text-field";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
@@ -186,163 +193,179 @@ export default function ServerFormScreen() {
   // 表单,直接告诉用户找不到。
   if (!isNew && !existing) {
     return (
-      <View className="flex-1 items-center justify-center bg-background px-6">
-        <Stack.Screen
-          options={{ title: t("server.form.detail_title", "Server") }}
+      <SafeAreaView className="flex-1 bg-background" edges={["bottom"]}>
+        <Header
+          title={t("server.form.detail_title", "Server")}
+          left={
+            <IconButton
+              name="arrow-back"
+              onPress={() => router.back()}
+              accessibilityLabel={t("server.back", "Back")}
+            />
+          }
         />
-        <Text className="text-sm text-muted-foreground text-center">
-          {t(
-            "server.form.missing",
-            "This server is no longer saved on this device.",
-          )}
-        </Text>
-      </View>
+        <View className="flex-1 items-center justify-center px-6">
+          <Text className="text-sm text-muted-foreground text-center">
+            {t(
+              "server.form.missing",
+              "This server is no longer saved on this device.",
+            )}
+          </Text>
+        </View>
+      </SafeAreaView>
     );
   }
 
   return (
-    <ScrollView
-      className="flex-1 bg-background"
-      contentContainerClassName="px-4 py-6 gap-6"
-      keyboardShouldPersistTaps="handled"
-    >
-      <Stack.Screen
-        options={{
-          title: isNew
+    <SafeAreaView className="flex-1 bg-background" edges={["bottom"]}>
+      <Header
+        title={
+          isNew
             ? t("server.form.title_new", "Add server")
-            : t("server.form.title_edit", "Edit server"),
-          headerBackTitle: t("server.back", "Back"),
-        }}
-      />
-
-      <View className="gap-4">
-        <View>
-          <Text className="text-xs text-muted-foreground mb-1.5">
-            {t("server.form.name_label", "Name (optional)")}
-          </Text>
-          <TextField
-            value={name}
-            onChangeText={setName}
-            placeholder={t("server.form.name_placeholder", "e.g. Home lab")}
-            autoCapitalize="none"
-            autoCorrect={false}
-            returnKeyType="next"
+            : t("server.form.title_edit", "Edit server")
+        }
+        left={
+          <IconButton
+            name="arrow-back"
+            onPress={() => router.back()}
+            accessibilityLabel={t("server.back", "Back")}
           />
+        }
+      />
+      <ScrollView
+        className="flex-1"
+        contentContainerClassName="px-4 py-6 gap-6"
+        keyboardShouldPersistTaps="handled"
+      >
+        <View className="gap-4">
+          <View>
+            <Text className="text-xs text-muted-foreground mb-1.5">
+              {t("server.form.name_label", "Name (optional)")}
+            </Text>
+            <TextField
+              value={name}
+              onChangeText={setName}
+              placeholder={t("server.form.name_placeholder", "e.g. Home lab")}
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="next"
+            />
+          </View>
+
+          <View>
+            <Text className="text-xs text-muted-foreground mb-1.5">
+              {t("server.form.api_label", "Server address")}
+            </Text>
+            <TextField
+              value={apiUrl}
+              onChangeText={(v) => {
+                setApiUrl(v);
+                setProbe("idle");
+              }}
+              placeholder={t(
+                "server.form.api_placeholder",
+                "https://api.example.com",
+              )}
+              keyboardType="url"
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="done"
+              invalid={!!apiError}
+            />
+            {apiError ? (
+              <Text className="text-xs text-destructive mt-1.5">{apiError}</Text>
+            ) : isPlainHttp(apiUrl) ? (
+              // 弱警告,不阻断保存 —— 自建内网用 http 是正常场景。
+              <Text className="text-xs text-muted-foreground mt-1.5">
+                {t(
+                  "server.form.plain_http",
+                  "This address uses plain http. Traffic won't be encrypted.",
+                )}
+              </Text>
+            ) : null}
+          </View>
+
+          <View className="gap-2">
+            <Pressable
+              onPress={() => setAdvancedOpen((v) => !v)}
+              className="flex-row items-center gap-2 py-1 active:opacity-60"
+            >
+              <Ionicons
+                name={advancedOpen ? "chevron-down" : "chevron-forward"}
+                size={14}
+                color={mutedFg}
+              />
+              <Text className="text-sm text-muted-foreground">
+                {t("server.form.advanced", "Advanced: web address")}
+              </Text>
+            </Pressable>
+            {advancedOpen ? (
+              <View>
+                <Text className="text-xs text-muted-foreground mb-1.5">
+                  {t(
+                    "server.form.web_hint",
+                    "Only needed when the web app is on a different domain than the server. Leave empty to reuse the server address.",
+                  )}
+                </Text>
+                <TextField
+                  value={webUrl}
+                  onChangeText={setWebUrl}
+                  placeholder={t(
+                    "server.form.web_placeholder",
+                    "Leave empty to reuse the server address",
+                  )}
+                  keyboardType="url"
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  returnKeyType="done"
+                  invalid={!!webError}
+                />
+                {webError ? (
+                  <Text className="text-xs text-destructive mt-1.5">
+                    {webError}
+                  </Text>
+                ) : null}
+              </View>
+            ) : null}
+          </View>
         </View>
 
-        <View>
-          <Text className="text-xs text-muted-foreground mb-1.5">
-            {t("server.form.api_label", "Server address")}
-          </Text>
-          <TextField
-            value={apiUrl}
-            onChangeText={(v) => {
-              setApiUrl(v);
-              setProbe("idle");
-            }}
-            placeholder={t(
-              "server.form.api_placeholder",
-              "https://api.example.com",
-            )}
-            keyboardType="url"
-            autoCapitalize="none"
-            autoCorrect={false}
-            returnKeyType="done"
-            invalid={!!apiError}
-          />
-          {apiError ? (
-            <Text className="text-xs text-destructive mt-1.5">{apiError}</Text>
-          ) : isPlainHttp(apiUrl) ? (
-            // 弱警告,不阻断保存 —— 自建内网用 http 是正常场景。
-            <Text className="text-xs text-muted-foreground mt-1.5">
+        <View className="gap-2">
+          <Button variant="outline" onPress={onProbe} disabled={!apiValid}>
+            <View className="flex-row items-center gap-2">
+              {probe === "probing" ? <ActivityIndicator size="small" /> : null}
+              <Text>
+                {probe === "probing"
+                  ? t("server.form.testing", "Testing…")
+                  : t("server.form.test", "Test connection")}
+              </Text>
+            </View>
+          </Button>
+          {probe === "ok" ? (
+            <View className="flex-row items-center gap-1.5">
+              <Ionicons name="checkmark-circle" size={14} color="#16a34a" />
+              <Text className="text-xs" style={{ color: "#16a34a" }}>
+                {t("server.form.connected", "Connected")}
+              </Text>
+            </View>
+          ) : probe === "failed" ? (
+            <Text className="text-xs text-destructive">
               {t(
-                "server.form.plain_http",
-                "This address uses plain http. Traffic won't be encrypted.",
+                "server.form.unreachable",
+                "Couldn't reach this address. You can still save it.",
               )}
             </Text>
           ) : null}
         </View>
 
-        <View className="gap-2">
-          <Pressable
-            onPress={() => setAdvancedOpen((v) => !v)}
-            className="flex-row items-center gap-2 py-1 active:opacity-60"
-          >
-            <Ionicons
-              name={advancedOpen ? "chevron-down" : "chevron-forward"}
-              size={14}
-              color={mutedFg}
-            />
-            <Text className="text-sm text-muted-foreground">
-              {t("server.form.advanced", "Advanced: web address")}
-            </Text>
-          </Pressable>
-          {advancedOpen ? (
-            <View>
-              <Text className="text-xs text-muted-foreground mb-1.5">
-                {t(
-                  "server.form.web_hint",
-                  "Only needed when the web app is on a different domain than the server. Leave empty to reuse the server address.",
-                )}
-              </Text>
-              <TextField
-                value={webUrl}
-                onChangeText={setWebUrl}
-                placeholder={t(
-                  "server.form.web_placeholder",
-                  "Leave empty to reuse the server address",
-                )}
-                keyboardType="url"
-                autoCapitalize="none"
-                autoCorrect={false}
-                returnKeyType="done"
-                invalid={!!webError}
-              />
-              {webError ? (
-                <Text className="text-xs text-destructive mt-1.5">
-                  {webError}
-                </Text>
-              ) : null}
-            </View>
-          ) : null}
-        </View>
-      </View>
-
-      <View className="gap-2">
-        <Button variant="outline" onPress={onProbe} disabled={!apiValid}>
-          <View className="flex-row items-center gap-2">
-            {probe === "probing" ? <ActivityIndicator size="small" /> : null}
-            <Text>
-              {probe === "probing"
-                ? t("server.form.testing", "Testing…")
-                : t("server.form.test", "Test connection")}
-            </Text>
-          </View>
-        </Button>
-        {probe === "ok" ? (
-          <View className="flex-row items-center gap-1.5">
-            <Ionicons name="checkmark-circle" size={14} color="#16a34a" />
-            <Text className="text-xs" style={{ color: "#16a34a" }}>
-              {t("server.form.connected", "Connected")}
-            </Text>
-          </View>
-        ) : probe === "failed" ? (
-          <Text className="text-xs text-destructive">
-            {t(
-              "server.form.unreachable",
-              "Couldn't reach this address. You can still save it.",
-            )}
+        <Button onPress={onSave} disabled={!canSave}>
+          <Text>
+            {saving
+              ? t("server.form.saving", "Saving…")
+              : t("server.form.save", "Save")}
           </Text>
-        ) : null}
-      </View>
-
-      <Button onPress={onSave} disabled={!canSave}>
-        <Text>
-          {saving
-            ? t("server.form.saving", "Saving…")
-            : t("server.form.save", "Save")}
-        </Text>
-      </Button>
-    </ScrollView>
+        </Button>
+      </ScrollView>
+    </SafeAreaView>
   );
 }
