@@ -160,7 +160,9 @@
     "common": {
       "no_matches": "一致する項目がありません。",
       "retry": "再試行",
-      "unknown_error": "不明なエラー"
+      "unknown_error": "不明なエラー",
+      "search": "検索",
+      "close": "閉じる"
     }
   }
 }

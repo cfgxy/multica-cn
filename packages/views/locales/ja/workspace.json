@@ -39,6 +39,11 @@
       "unknown_error": "不明なエラー",
       "retry": "再試行",
       "no_workspaces": "まだどのワークスペースにも所属していません。ワークスペース管理者に招待を依頼してください。"
+    },
+    "switch": {
+      "title": "ワークスペースを切り替え",
+      "confirm_action": "切り替え",
+      "confirm_message": "「{{name}}」に切り替えますか？"
     }
   }
 }

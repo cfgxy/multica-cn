@@ -8,6 +8,7 @@
  * rest of the header toolbar.
  */
 import { IconButton } from "@/components/ui/icon-button";
+import { useT } from "@/lib/use-t";
 
 interface Props {
   showMore: boolean;
@@ -20,20 +21,24 @@ export function ChatSessionActions({
   onMorePress,
   onNewPress,
 }: Props) {
+  const { t } = useT("chat");
   return (
     <>
       {showMore ? (
         <IconButton
           name="ellipsis-horizontal"
           onPress={onMorePress}
-          accessibilityLabel="Session actions"
+          accessibilityLabel={t(
+            "mobile.sessions.actions_a11y",
+            "Session actions",
+          )}
         />
       ) : null}
       <IconButton
         name="add"
         iconSize={24}
         onPress={onNewPress}
-        accessibilityLabel="New chat"
+        accessibilityLabel={t("window.new_chat_tooltip", "New chat")}
       />
     </>
   );

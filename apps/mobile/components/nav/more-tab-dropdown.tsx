@@ -275,6 +275,11 @@ function WorkspaceCard({
 }) {
   const { data } = useQuery(workspaceListOptions());
   const canSwitch = (data?.length ?? 0) > 1;
+  // 本文件按既有范式用 i18n.t() 取绝对 key（模块级 MORE_ITEMS 也这么写）。
+  const workspaceFallbackName = i18n.t(
+    "layout:sidebar.workspace_group",
+    "Workspace",
+  );
 
   return (
     <DropdownMenuItem
@@ -282,11 +287,13 @@ function WorkspaceCard({
       disabled={!canSwitch}
       className="h-12 gap-3"
       accessibilityLabel={
-        canSwitch ? "Switch workspace" /* mobile-only string */ : currentWorkspaceName ?? "Workspace"
+        canSwitch
+          ? "Switch workspace" /* mobile-only string */
+          : currentWorkspaceName ?? workspaceFallbackName
       }
     >
       <WorkspaceAvatar
-        name={currentWorkspaceName ?? "Workspace"}
+        name={currentWorkspaceName ?? workspaceFallbackName}
         avatarUrl={currentWorkspaceAvatarUrl}
         size={32}
       />
@@ -295,7 +302,7 @@ function WorkspaceCard({
           className="text-sm font-medium text-foreground"
           numberOfLines={1}
         >
-          {currentWorkspaceName ?? "Workspace"}
+          {currentWorkspaceName ?? workspaceFallbackName}
         </Text>
       </View>
       {canSwitch ? (

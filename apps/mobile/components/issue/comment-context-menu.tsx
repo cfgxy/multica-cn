@@ -40,6 +40,7 @@ import {
   useActionSheet,
   ActionSheetModal,
 } from "@/components/ui/action-sheet";
+import { useT } from "@/lib/use-t";
 
 const QUICK_ROW_SIZE = 5;
 
@@ -48,6 +49,7 @@ export function useCommentLongPress(
   issueId: string,
   issueIdentifier: string | undefined,
 ): { onLongPress: () => void; isPressed: boolean; modalProps: React.ComponentProps<typeof ActionSheetModal> } {
+  const { t } = useT("issues");
   const [isPressed, setIsPressed] = useState(false);
   const mainSheet = useActionSheet();
   const reactSheet = useActionSheet();
@@ -182,13 +184,21 @@ export function useCommentLongPress(
             });
             return;
           case "delete":
+            // web 的 comment.delete_title 无问号、delete_desc_with_replies 措辞
+            // 也不同（"this comment and all its replies"），故用 mobile 专属键。
             Alert.alert(
-              "Delete comment?",
-              "This comment will be permanently deleted. Replies in the thread will also be removed. This cannot be undone.",
+              t("mobile.comment.delete_title", "Delete comment?"),
+              t(
+                "mobile.comment.delete_desc",
+                "This comment will be permanently deleted. Replies in the thread will also be removed. This cannot be undone.",
+              ),
               [
-                { text: "Cancel", style: "cancel" },
                 {
-                  text: "Delete",
+                  text: t("common:cancel", "Cancel"),
+                  style: "cancel",
+                },
+                {
+                  text: t("common:delete", "Delete"),
                   style: "destructive",
                   onPress: () => deleteComment.mutate(entry.id),
                 },
@@ -207,6 +217,7 @@ export function useCommentLongPress(
     toggleReaction,
     deleteComment,
     resolveComment,
+    t,
   ]);
 
   return { onLongPress, isPressed, modalProps: { ...mainSheet.modalProps, ...reactSheet.modalProps } };

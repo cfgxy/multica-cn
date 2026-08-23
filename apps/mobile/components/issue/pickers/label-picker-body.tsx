@@ -25,6 +25,7 @@ import { useWorkspaceStore } from "@/data/workspace-store";
 import { useScrollToTopOnChange } from "@/lib/use-scroll-to-top-on-change";
 import { pickInlineColor } from "@/lib/inline-color";
 import { THEME } from "@/lib/theme";
+import { useT } from "@/lib/use-t";
 
 type Row =
   | { kind: "create"; name: string }
@@ -46,6 +47,7 @@ export function LabelPickerBody({
   onDetach,
   onCreate,
 }: Props) {
+  const { t } = useT("issues");
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const { data: labels = [] } = useQuery(labelListOptions(wsId));
   const listRef = useScrollToTopOnChange(query);
@@ -118,7 +120,11 @@ export function LabelPickerBody({
               style={{ backgroundColor: pickInlineColor(item.name) }}
             />
             <Text className="flex-1 text-base text-foreground">
-              Create &ldquo;{item.name}&rdquo;
+              {/* 整句插值：中文引号形态与英文的 &ldquo;/&rdquo; 不同，
+                  由资源自带引号，不在 JSX 里拼接。 */}
+              {t("mobile.picker.create_label", "Create “{{name}}”", {
+                name: item.name,
+              })}
             </Text>
             <Ionicons name="add" size={20} color={checkColor} />
           </Pressable>
@@ -147,8 +153,11 @@ export function LabelPickerBody({
         <View className="px-3 py-8 items-center">
           <Text className="text-sm text-muted-foreground text-center">
             {query
-              ? "No matches."
-              : "No labels in this workspace yet."}
+              ? t("common:mobile.common.no_matches", "No matches.")
+              : t(
+                  "mobile.picker.no_labels",
+                  "No labels in this workspace yet.",
+                )}
           </Text>
         </View>
       }

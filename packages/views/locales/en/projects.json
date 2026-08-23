@@ -188,6 +188,27 @@
       "label_optional": "Label (optional)",
       "label_placeholder": "e.g. Backend",
       "attach_failed": "Failed to attach resource"
+    },
+    "list": {
+      "load_failed": "Failed to load projects: {{reason}}",
+      "empty_hint": "Group related issues into a project to track progress and assign a lead."
+    },
+    "detail": {
+      "edit_details": "Edit details",
+      "open_on_web": "Open on web",
+      "load_failed": "Failed to load project: {{reason}}",
+      "not_found": "not found",
+      "add_description": "Add a description",
+      "issues_load_failed": "Failed to load issues: {{reason}}",
+      "no_issues_yet": "No issues yet."
+    },
+    "picker": {
+      "no_projects": "No projects in this workspace yet.\nCreate them on web."
+    },
+    "resources": {
+      "detach_title": "Detach resource?",
+      "detach_confirm": "Detach",
+      "add": "Add"
     }
   }
 }

@@ -168,11 +168,15 @@ export default function IssuesPage() {
       ) : error ? (
         <View className="px-4 gap-3 pt-4">
           <Text className="text-sm text-destructive">
-            Failed to load issues:{" "}
-            {error instanceof Error ? error.message : "unknown error"}
+            {t("mobile.list.load_failed", "Failed to load issues: {{reason}}", {
+              reason:
+                error instanceof Error
+                  ? error.message
+                  : t("common:mobile.common.unknown_error", "unknown error"),
+            })}
           </Text>
           <Button variant="outline" onPress={() => refetch()}>
-            <Text>Retry</Text>
+            <Text>{t("common:mobile.common.retry", "Retry")}</Text>
           </Button>
         </View>
       ) : showEmptyState ? (
@@ -180,7 +184,7 @@ export default function IssuesPage() {
           message={
             hasActiveFilters
               ? t("filtered_empty.title", "No issues match these filters")
-              : emptyMessageForScope(scope)
+              : emptyMessageForScope(scope, t)
           }
         />
       ) : (
@@ -224,13 +228,14 @@ function FilterButton({
   hasActiveFilters: boolean;
 }) {
   const { colorScheme } = useColorScheme();
+  const { t } = useT("issues");
   return (
     <View style={{ position: "relative" }} className="ml-2">
       <Button
         variant="outline"
         size="sm"
         onPress={onPress}
-        accessibilityLabel="Filter"
+        accessibilityLabel={t("filters.tooltip", "Filter")}
         className="w-9 px-0"
       >
         <Ionicons
@@ -378,13 +383,19 @@ function EmptyState({ message }: { message: string }) {
   );
 }
 
-function emptyMessageForScope(scope: IssuesScope): string {
+// `t` 由调用方（组件）从 useT 取好后传进来，本函数保持纯函数便于单测。
+type TFn = ReturnType<typeof useT>["t"];
+
+function emptyMessageForScope(scope: IssuesScope, t: TFn): string {
   switch (scope) {
     case "all":
-      return "No issues in this workspace." /* mobile-only string; no web resource key */;
+      return t("mobile.list.empty_all", "No issues in this workspace.");
     case "members":
-      return "No issues assigned to a member." /* mobile-only string; no web resource key */;
+      return t("mobile.list.empty_members", "No issues assigned to a member.");
     case "agents":
-      return "No issues assigned to agents or squads." /* mobile-only string; no web resource key */;
+      return t(
+        "mobile.list.empty_agents",
+        "No issues assigned to agents or squads.",
+      );
   }
 }

@@ -58,5 +58,18 @@
       "title": "Join our Discord",
       "dismiss": "Dismiss"
     }
+  },
+  "mobile": {
+    "agents": {
+      "coming_soon": "Agents coming soon."
+    },
+    "pins": {
+      "load_failed": "Failed to load pins: {{reason}}",
+      "empty": "No pins yet. Pin an issue or project from its actions menu to surface it here.",
+      "type_issue": "issue",
+      "type_project": "project",
+      "unavailable_a11y": "Unavailable {{type}}, tap to unpin",
+      "unavailable": "Unavailable {{type}} — tap to unpin"
+    }
   }
 }

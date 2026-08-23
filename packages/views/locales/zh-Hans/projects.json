@@ -186,6 +186,27 @@
       "label_optional": "标签（可选）",
       "label_placeholder": "例如：后端",
       "attach_failed": "关联资源失败"
+    },
+    "list": {
+      "load_failed": "无法加载项目：{{reason}}",
+      "empty_hint": "把相关任务归入一个项目，即可跟踪进度并指定负责人。"
+    },
+    "detail": {
+      "edit_details": "编辑详情",
+      "open_on_web": "在网页中打开",
+      "load_failed": "无法加载项目：{{reason}}",
+      "not_found": "未找到",
+      "add_description": "添加描述",
+      "issues_load_failed": "无法加载任务：{{reason}}",
+      "no_issues_yet": "目前还没有任务。"
+    },
+    "picker": {
+      "no_projects": "此工作区还没有项目。\n请在网页版中创建。"
+    },
+    "resources": {
+      "detach_title": "取消关联资源？",
+      "detach_confirm": "取消关联",
+      "add": "添加"
     }
   }
 }

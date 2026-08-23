@@ -66,11 +66,15 @@ export default function ProjectsPage() {
       ) : error ? (
         <View className="px-4 gap-3 pt-4">
           <Text className="text-sm text-destructive">
-            Failed to load projects:{" "}
-            {error instanceof Error ? error.message : "unknown error"}
+            {t("mobile.list.load_failed", "Failed to load projects: {{reason}}", {
+              reason:
+                error instanceof Error
+                  ? error.message
+                  : t("common:mobile.common.unknown_error", "unknown error"),
+            })}
           </Text>
           <Button variant="outline" onPress={() => refetch()}>
-            <Text>Retry</Text>
+            <Text>{t("common:mobile.common.retry", "Retry")}</Text>
           </Button>
         </View>
       ) : sorted.length === 0 ? (
@@ -119,7 +123,10 @@ function EmptyState({ onCreate }: { onCreate: () => void }) {
         {t("page.empty", "No projects yet")}
       </Text>
       <Text className="text-sm text-muted-foreground text-center">
-        {"Group related issues into a project to track progress and assign a lead." /* mobile-only string; no web resource key */}
+        {t(
+          "mobile.list.empty_hint",
+          "Group related issues into a project to track progress and assign a lead.",
+        )}
       </Text>
       <Button variant="default" onPress={onCreate}>
         <Text>{t("page.create_first", "Create your first project")}</Text>

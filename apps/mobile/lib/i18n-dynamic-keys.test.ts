@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { RESOURCES } from "@multica/views/locales";
@@ -41,6 +41,21 @@ function lookup(locale: string, ns: string, dotted: string): string | null {
   return typeof cur === "string" ? cur : null;
 }
 
+/**
+ * 「照抄 en」的判据：大小写 + 空白不敏感。
+ *
+ * 与 lib/i18n-keys.test.ts 里对大小写**敏感**的比较不冲突，两处的比较对象
+ * 根本不同：
+ *   - 那边比的是「代码里的 fallback 参数」vs「en 资源原文」——两边都是英文，
+ *     `"Retry"` 与 `"RETRY"` 是要显示给英文用户的两种不同呈现，大小写差异
+ *     就是真的文案不一致，必须报红。
+ *   - 这边比的是「zh-Hans 译文」是否照抄了 en 原文。在「翻没翻」这个问题上
+ *     `'task'` 与 `'Task'` 是同一个答案：没翻。放过大小写差异等于给「把英文
+ *     小写一下塞进 zh」开后门。
+ * 两者同向：都是不让「看起来不一样」掩盖「实质一样」。
+ */
+const norm = (s: string) => s.replace(/\s+/g, " ").trim().toLowerCase();
+
 /** 中英同形、不要求 zh != en 的条目（ns:key 全路径）。 */
 const SAME_AS_EN_OK = new Set<string>([
   // 「task」在本产品的中文语境里保留英文原词（见 zh-Hans 各处 "task 已完成"）。
@@ -79,7 +94,7 @@ function checkTable(
         if (SAME_AS_EN_OK.has(full)) return false;
         const zh = lookup("zh-Hans", ns, `${prefix}.${v}`);
         const en = lookup("en", ns, `${prefix}.${v}`);
-        return zh != null && en != null && zh === en;
+        return zh != null && en != null && norm(zh) === norm(en);
       });
       expect(untranslated).toEqual([]);
     });
@@ -193,6 +208,16 @@ const PILL_STAGES = [
   "typing",
 ];
 
+const PROJECT_STATUSES = [
+  "planned",
+  "in_progress",
+  "paused",
+  "completed",
+  "cancelled",
+];
+
+const PROJECT_PRIORITIES = ["urgent", "high", "medium", "low", "none"];
+
 const PILL_TOOLS = [
   "running_command",
   "reading_files",
@@ -256,6 +281,21 @@ checkTable(
 );
 
 checkTable("chat:status_pill.tools.*", "chat", "status_pill.tools", PILL_TOOLS);
+
+// lib/project-status.ts —— 这两组此前连枚举对账都没有（批次 9 补）。
+checkTable(
+  "projects:status.*",
+  "projects",
+  "status",
+  PROJECT_STATUSES,
+);
+
+checkTable(
+  "projects:priority.*",
+  "projects",
+  "priority",
+  PROJECT_PRIORITIES,
+);
 
 describe("两份 failure 表的关系", () => {
   it("key 集合完全一致（长版多一个 fallback）", () => {
@@ -329,6 +369,150 @@ describe("两份 failure 表的关系", () => {
       (k) => (issues[k]?.length ?? 0) > (chat[k]?.length ?? 0),
     );
     expect(longer).toEqual([]);
+  });
+});
+
+// ─── 前缀锁（批次 9）────────────────────────────────────────────────
+//
+// 上面的 checkTable 只锁住了 key 的**后半段**（枚举值）——前半段（前缀）
+// 是裸奔的：把 `mobile.run_failure` 敲成 `mobile.run_failuer`，26 条文案
+// 会静默全部退回英文 fallback，而 tsc 0 + vitest 全绿。金小欣与蔡小星各
+// 复现过一次。这支 describe 从**源码**正则读回真正拼出的前缀，再回资源里
+// 核对该节点确实存在。
+
+/**
+ * 组件文件的 ns 读不到：`useT("chat")` 把 ns 绑在 hook 上，模板串里只剩
+ * 后半段。这张表补上那一段映射（只涉及两个组件文件）。lib/ 下走
+ * `i18n.t("ns:…")`，ns 就在串里，不需要登记。
+ */
+const FILE_NS: Record<string, string> = {
+  "components/chat/status-pill.tsx": "chat",
+  "components/issue/run-row.tsx": "issues",
+};
+
+/** 前缀 → 该前缀下源码会拼出的枚举值（资源节点必须是它的超集）。 */
+const PREFIX_VALUES: Record<string, string[]> = {
+  "chat:mobile.failure_reason": [...FAILURE_REASONS, "fallback"],
+  "issues:mobile.run_failure": FAILURE_REASONS,
+  "issues:mobile.run_status": TASK_STATUSES as string[],
+  "issues:status": ISSUE_STATUSES as string[],
+  "issues:priority": ISSUE_PRIORITIES as string[],
+  "chat:status_pill.stages": PILL_STAGES,
+  "chat:status_pill.tools": PILL_TOOLS,
+  "projects:status": PROJECT_STATUSES,
+  "projects:priority": PROJECT_PRIORITIES,
+};
+
+const MOBILE_ROOT = join(__dirname, "..");
+
+function walk(dir: string, out: string[] = []): string[] {
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    if (e.name === "node_modules" || e.name.startsWith(".")) continue;
+    const p = join(dir, e.name);
+    if (e.isDirectory()) walk(p, out);
+    else if (/\.tsx?$/.test(e.name) && !/\.test\.tsx?$/.test(e.name)) out.push(p);
+  }
+  return out;
+}
+
+/** 从源码里正则读回全部「模板串动态 key」的前缀，附带 ns 归属。 */
+function collectPrefixes(): { file: string; full: string }[] {
+  const hits: { file: string; full: string }[] = [];
+  for (const root of ["lib", "components", "app", "data"]) {
+    for (const file of walk(join(MOBILE_ROOT, root))) {
+      const rel = file.slice(MOBILE_ROOT.length + 1).replace(/\\/g, "/");
+      const src = readFileSync(file, "utf8");
+      for (const m of src.matchAll(/(?:i18n\.)?\bt\(`([^`]*?)\$\{/g)) {
+        const head = m[1]!;
+        // 只处理「前缀 + 尾点 + ${枚举}」这一种形态；句中插值（`{{name}}`
+        // 之类走的是 options，不会进这个分支）不是 key 拼接，跳过。
+        if (!head.endsWith(".")) continue;
+        const body = head.slice(0, -1);
+        const full = body.includes(":")
+          ? body
+          : `${FILE_NS[rel] ?? "<未登记 ns>"}:${body}`;
+        hits.push({ file: rel, full });
+      }
+    }
+  }
+  return hits;
+}
+
+/** 资源里定位一个前缀节点；不存在或不是对象则返回 null。 */
+function resolveNode(full: string): Record<string, unknown> | null {
+  const [ns, prefix] = full.split(":") as [string, string];
+  let cur: unknown = (RESOURCES as unknown as Record<string, Bundle>)[
+    "zh-Hans"
+  ]?.[ns];
+  for (const seg of prefix.split(".")) {
+    if (cur == null || typeof cur !== "object") return null;
+    cur = (cur as Record<string, unknown>)[seg];
+  }
+  return cur != null && typeof cur === "object"
+    ? (cur as Record<string, unknown>)
+    : null;
+}
+
+describe("动态 key 的前缀锁", () => {
+  const found = collectPrefixes();
+
+  // ── 非恒真自证（硬约束）──────────────────────────────────────
+  // 正则一旦失配，found 为空，下面所有 for 循环空跑、断言恒真通过——那正是
+  // 本文件存在的理由（假绿）的同构版本。三条自证把它堵死。
+
+  it("自证 1：正则确实扫到了源码里的动态前缀（否则本组断言恒真）", () => {
+    expect(found.length).toBeGreaterThanOrEqual(
+      Object.keys(PREFIX_VALUES).length,
+    );
+  });
+
+  it("自证 2：编造的前缀必须判为缺失（证明 resolveNode 不恒真）", () => {
+    expect(resolveNode("issues:mobile.run_failuer")).toBeNull();
+    expect(resolveNode("issues:mobile.run_failure.timeout")).toBeNull(); // 叶子不是对象
+    expect(resolveNode("nosuchns:whatever")).toBeNull();
+  });
+
+  it("自证 3：真实前缀必须判为存在（证明 resolveNode 不恒假）", () => {
+    expect(resolveNode("issues:mobile.run_failure")).not.toBeNull();
+    expect(resolveNode("chat:status_pill.stages")).not.toBeNull();
+  });
+
+  // ── 正题 ──────────────────────────────────────────────────────
+
+  it("每个源码前缀的 ns 都能确定（组件文件必须在 FILE_NS 里登记）", () => {
+    expect(found.filter((h) => h.full.startsWith("<未登记 ns>"))).toEqual([]);
+  });
+
+  it("每个源码前缀在资源里都解析到一个对象节点", () => {
+    const misses = found
+      .filter((h) => resolveNode(h.full) == null)
+      .map((h) => `${h.file} → ${h.full}`);
+    expect([...new Set(misses)]).toEqual([]);
+  });
+
+  it("资源节点的子键集合 ⊇ 源码枚举副本", () => {
+    // 只能用 ⊇ 不能用 == ：`chat:status_pill.stages` 资源侧 8 键，源码
+    // STAGE_LABEL_EN 7 键，多出的 waiting_local_directory 是 web 侧既有
+    // key（88bcce1 之前就在），mobile 不拼它，枚举副本 7 条是正确的。
+    const gaps: string[] = [];
+    for (const [full, values] of Object.entries(PREFIX_VALUES)) {
+      const node = resolveNode(full);
+      if (node == null) {
+        gaps.push(`${full}：节点缺失`);
+        continue;
+      }
+      for (const v of values) {
+        if (!(v in node)) gaps.push(`${full}.${v}`);
+      }
+    }
+    expect(gaps).toEqual([]);
+  });
+
+  it("PREFIX_VALUES 覆盖源码里出现的每一个前缀（新增前缀不能漏登记）", () => {
+    const unregistered = [...new Set(found.map((h) => h.full))].filter(
+      (f) => !(f in PREFIX_VALUES),
+    );
+    expect(unregistered).toEqual([]);
   });
 });
 

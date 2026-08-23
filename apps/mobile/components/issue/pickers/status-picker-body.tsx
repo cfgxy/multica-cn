@@ -16,6 +16,7 @@ import { Text } from "@/components/ui/text";
 import { StatusIcon } from "@/components/ui/status-icon";
 import { BOARD_STATUSES, statusLabel } from "@/lib/issue-status";
 import { THEME } from "@/lib/theme";
+import { useT } from "@/lib/use-t";
 
 const ALL_STATUSES: IssueStatus[] = [...BOARD_STATUSES, "cancelled"];
 
@@ -25,6 +26,7 @@ interface Props {
 }
 
 export function StatusPickerBody({ value, onChange }: Props) {
+  const { t } = useT("issues");
   const { colorScheme } = useColorScheme();
   const checkColor =
     colorScheme === "dark" ? THEME.dark.primary : THEME.light.primary;
@@ -32,7 +34,9 @@ export function StatusPickerBody({ value, onChange }: Props) {
   return (
     <ScrollView showsVerticalScrollIndicator={false}>
       <View className="px-4 pt-3 pb-2">
-        <Text className="text-lg font-semibold text-foreground">Status</Text>
+        <Text className="text-lg font-semibold text-foreground">
+          {t("detail.prop_status", "Status")}
+        </Text>
       </View>
       <View className="px-2">
         {ALL_STATUSES.map((status) => {

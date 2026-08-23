@@ -37,7 +37,7 @@ import { workspaceListOptions } from "@/data/queries/workspaces";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
-import i18n from "i18next";
+import { useT } from "@/lib/use-t";
 import { cn } from "@/lib/utils";
 
 export default function SwitchWorkspaceRoute() {
@@ -45,16 +45,19 @@ export default function SwitchWorkspaceRoute() {
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme];
   const { data, isLoading } = useQuery(workspaceListOptions());
+  const { t } = useT("workspace");
 
   const onSelect = (ws: Workspace) => {
     if (ws.slug === activeSlug) return;
     Alert.alert(
-      "Switch workspace" /* mobile-only string; no web resource key */,
-      `Switch to "${ws.name}"?` /* mobile-only string */,
+      t("mobile.switch.title", "Switch workspace"),
+      t("mobile.switch.confirm_message", 'Switch to "{{name}}"?', {
+        name: ws.name,
+      }),
       [
-        { text: "Cancel", style: "cancel" } /* mobile-only alert */,
+        { text: t("common:cancel", "Cancel"), style: "cancel" },
         {
-          text: "Switch", /* mobile-only string */
+          text: t("mobile.switch.confirm_action", "Switch"),
           onPress: () => {
             router.dismiss();
             router.replace(`/${ws.slug}/inbox`);
@@ -68,7 +71,7 @@ export default function SwitchWorkspaceRoute() {
     <View className="flex-1">
       <View className="px-4 pt-4 pb-3">
         <Text className="text-base font-semibold text-foreground">
-          {"Switch workspace" /* mobile-only string; no web resource key */}
+          {t("mobile.switch.title", "Switch workspace")}
         </Text>
       </View>
       {isLoading ? (

@@ -801,7 +801,10 @@
       "retry": "다시 시도",
       "retry_a11y": "댓글 다시 보내기",
       "discard": "삭제",
-      "discard_a11y": "실패한 댓글 삭제"
+      "discard_a11y": "실패한 댓글 삭제",
+      "add_reaction": "리액션 추가",
+      "delete_title": "댓글을 삭제할까요?",
+      "delete_desc": "이 댓글은 영구적으로 삭제되며 스레드의 답글도 함께 제거됩니다. 이 작업은 되돌릴 수 없습니다."
     },
     "detail": {
       "actions_a11y": "태스크 작업",
@@ -809,7 +812,8 @@
       "open_on_web": "웹에서 열기",
       "load_failed": "태스크를 불러오지 못했습니다: {{reason}}",
       "not_found": "찾을 수 없음",
-      "retry": "다시 시도"
+      "retry": "다시 시도",
+      "no_description": "설명이 없습니다."
     },
     "picker": {
       "unassigned": "미할당",
@@ -818,7 +822,11 @@
       "squad": "스쿼드",
       "needs_runtime": "런타임 필요",
       "leader_needs_runtime": "리더에게 런타임 필요",
-      "everyone_all": "모든 사람(@all)"
+      "everyone_all": "모든 사람(@all)",
+      "done": "완료",
+      "create_label": "'{{name}}' 만들기",
+      "no_labels": "이 워크스페이스에는 아직 라벨이 없습니다.",
+      "no_members_or_agents": "이 워크스페이스에는 아직 멤버나 에이전트가 없습니다."
     },
     "mention": {
       "everyone": "모든 사람"
@@ -866,6 +874,29 @@
       "completed": "완료",
       "failed": "실패",
       "cancelled": "취소됨"
+    },
+    "runs": {
+      "title": "에이전트 실행 기록",
+      "section_active": "진행 중",
+      "section_past": "지난 기록",
+      "cancel_title": "task를 취소할까요?",
+      "cancel_body": "에이전트가 현재 단계를 마친 후 중지됩니다."
+    },
+    "list": {
+      "load_failed": "태스크를 불러오지 못했습니다: {{reason}}",
+      "empty_all": "이 워크스페이스에는 태스크가 없습니다.",
+      "empty_members": "멤버에게 할당된 태스크가 없습니다.",
+      "empty_agents": "에이전트나 스쿼드에 할당된 태스크가 없습니다."
+    },
+    "agent_activity": {
+      "runs_count": "실행 · {{count}}회",
+      "badge_a11y": "에이전트 실행 중 — 실행 기록 열기"
+    },
+    "description_field": {
+      "placeholder": "설명… (@를 입력해 멘션)"
+    },
+    "new": {
+      "submit_a11y": "태스크 만들기"
     }
   }
 }

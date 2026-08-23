@@ -96,16 +96,26 @@ function CancelButton({
   taskId: string;
   issueId: string;
 }) {
+  const { t } = useT("issues");
   const mutation = useCancelTask(issueId);
 
   const onPress = () => {
+    // web 的 terminate_dialog 说的是「不可恢复」，mobile 说的是「跑完当前
+    // 步骤后停」——语义不同，标题和正文用 mobile 专属键；两个按钮文案与 web
+    // 一致，直接复用。
     Alert.alert(
-      "Cancel task?",
-      "The agent will stop after the current step.",
+      t("mobile.runs.cancel_title", "Cancel task?"),
+      t(
+        "mobile.runs.cancel_body",
+        "The agent will stop after the current step.",
+      ),
       [
-        { text: "Keep running", style: "cancel" },
         {
-          text: "Cancel task",
+          text: t("terminate_dialog.keep", "Keep running"),
+          style: "cancel",
+        },
+        {
+          text: t("execution_log.cancel_task_tooltip", "Cancel task"),
           style: "destructive",
           onPress: () => mutation.mutate(taskId),
         },
@@ -119,7 +129,9 @@ function CancelButton({
       disabled={mutation.isPending}
       className="px-3 py-1.5 rounded-md bg-secondary active:opacity-70"
     >
-      <Text className="text-xs font-medium text-foreground">Cancel</Text>
+      <Text className="text-xs font-medium text-foreground">
+        {t("common:cancel", "Cancel")}
+      </Text>
     </Pressable>
   );
 }
