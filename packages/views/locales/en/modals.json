@@ -95,6 +95,12 @@
     "toast_failed": "Failed to create squad",
     "toast_member_add_failed": "Failed to add {{name}}: {{error}}"
   },
+  "edit_project": {
+    "title": "Edit Project"
+  },
+  "edit_issue": {
+    "title": "Edit Issue"
+  },
   "create_project": {
     "title": "New Project",
     "title_breadcrumb": "New project",

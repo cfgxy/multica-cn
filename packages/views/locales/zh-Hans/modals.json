@@ -94,6 +94,12 @@
     "toast_failed": "创建 Squad 失败",
     "toast_member_add_failed": "添加 {{name}} 失败：{{error}}"
   },
+  "edit_project": {
+    "title": "编辑项目"
+  },
+  "edit_issue": {
+    "title": "编辑任务"
+  },
   "create_project": {
     "title": "新建项目",
     "title_breadcrumb": "新建项目",
