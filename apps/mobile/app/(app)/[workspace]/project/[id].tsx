@@ -50,6 +50,7 @@ import { useAuthStore } from "@/data/auth-store";
 import { useProjectRealtime } from "@/data/realtime/use-project-realtime";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { getWebUrl } from "@/data/server-store";
+import i18n from "i18next";
 import { useT } from "@/lib/use-t";
 
 export default function ProjectDetail() {
@@ -130,7 +131,8 @@ export default function ProjectDetail() {
     <SafeAreaView className="flex-1 bg-background" edges={["bottom"]}>
       <Stack.Screen
         options={{
-          title: project?.title || "Project",
+          // 同 issue/[id].tsx：兜底串走 i18n，避免加载期英文闪现。
+          title: project?.title || i18n.t("layout:tab.project", "Project"),
           headerBackTitle: "Back",
           headerRight: project
             ? () => (

@@ -16,6 +16,7 @@ import {
 import { useCreateLabel } from "@/data/mutations/labels";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useNativeSearchBar } from "@/lib/use-native-search-bar";
+import i18n from "i18next";
 
 export default function IssueLabelPickerRoute() {
   const { id } = useLocalSearchParams<{ id: string }>();
@@ -24,7 +25,10 @@ export default function IssueLabelPickerRoute() {
   const attachLabel = useAttachLabel(id);
   const detachLabel = useDetachLabel(id);
   const createLabel = useCreateLabel();
-  const query = useNativeSearchBar("Search labels", { autoFocus: true });
+  const query = useNativeSearchBar(
+    i18n.t("issues:pickers.label.search_placeholder", "Find or create a label…"),
+    { autoFocus: true },
+  );
 
   // Synchronous lock to prevent double-submit on rapid taps on the Create
   // row before React state updates — mirrors web's `creatingRef` pattern in

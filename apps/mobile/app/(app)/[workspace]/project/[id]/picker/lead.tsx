@@ -10,15 +10,17 @@ import { projectDetailOptions } from "@/data/queries/projects";
 import { useUpdateProject } from "@/data/mutations/projects";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useNativeSearchBar } from "@/lib/use-native-search-bar";
+import i18n from "i18next";
 
 export default function ProjectLeadPickerRoute() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const { data: project } = useQuery(projectDetailOptions(wsId, id));
   const updateProject = useUpdateProject(id);
-  const query = useNativeSearchBar("Search members or agents", {
-    autoFocus: true,
-  });
+  const query = useNativeSearchBar(
+    i18n.t("projects:lead.assign_placeholder", "Assign lead..."),
+    { autoFocus: true },
+  );
 
   const value =
     project?.lead_type && project?.lead_id

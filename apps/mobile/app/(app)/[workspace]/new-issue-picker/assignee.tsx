@@ -8,11 +8,15 @@ import { router } from "expo-router";
 import { AssigneePickerBody } from "@/components/issue/pickers/assignee-picker-body";
 import { useNewIssueDraftStore } from "@/data/stores/new-issue-draft-store";
 import { useNativeSearchBar } from "@/lib/use-native-search-bar";
+import i18n from "i18next";
 
 export default function NewIssueAssigneePickerRoute() {
   const assignee = useNewIssueDraftStore((s) => s.assignee);
   const setAssignee = useNewIssueDraftStore((s) => s.setAssignee);
-  const query = useNativeSearchBar("Search people", { autoFocus: true });
+  const query = useNativeSearchBar(
+    i18n.t("issues:pickers.assignee.search_placeholder", "Assign to..."),
+    { autoFocus: true },
+  );
 
   return (
     <AssigneePickerBody
