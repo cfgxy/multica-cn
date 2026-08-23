@@ -140,11 +140,17 @@ export function MentionSuggestionBar({
 
       const out: Row[] = [];
       if (matchedRecent.length > 0) {
-        out.push({ kind: "section", label: "Recent" });
+        out.push({
+          kind: "section",
+          label: t("mobile.mention.group_recent", "Recent"),
+        });
         for (const i of matchedRecent) out.push({ kind: "issue", issue: i });
       }
       if (matchedMine.length > 0) {
-        out.push({ kind: "section", label: "My issues" });
+        out.push({
+          kind: "section",
+          label: t("mobile.mention.group_my_issues", "My issues"),
+        });
         for (const i of matchedMine) out.push({ kind: "issue", issue: i });
       }
       if (out.length === 0) out.push({ kind: "empty" });
@@ -193,20 +199,41 @@ export function MentionSuggestionBar({
     const out: Row[] = [];
     if (showAll) out.push({ kind: "all" });
     if (matchedMembers.length > 0) {
-      out.push({ kind: "section", label: "Members" });
+      out.push({
+        kind: "section",
+        label: t("pickers.assignee.members_group", "Members"),
+      });
       for (const m of matchedMembers) out.push({ kind: "member", member: m });
     }
     if (matchedAgents.length > 0) {
-      out.push({ kind: "section", label: "Agents" });
+      out.push({
+        kind: "section",
+        label: t("pickers.assignee.agents_group", "Agents"),
+      });
       for (const a of matchedAgents) out.push({ kind: "agent", agent: a });
     }
     if (matchedSquads.length > 0) {
-      out.push({ kind: "section", label: "Squads" });
+      out.push({
+        kind: "section",
+        label: t("pickers.assignee.squads_group", "Squads"),
+      });
       for (const s of matchedSquads) out.push({ kind: "squad", squad: s });
     }
     if (out.length === 0) out.push({ kind: "empty" });
     return out;
-  }, [isChat, query, recentIssues, myIssuesAll, members, agents, squads, userId]);
+    // `t` 进依赖：分组标题现在是译文，切语言后必须重算，否则旧语言的
+    // 标题会一直挂在 memo 里。
+  }, [
+    isChat,
+    query,
+    recentIssues,
+    myIssuesAll,
+    members,
+    agents,
+    squads,
+    userId,
+    t,
+  ]);
 
   if (!visible) return null;
 

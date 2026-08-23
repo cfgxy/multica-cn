@@ -861,7 +861,11 @@
       "no_members_or_agents": "No members or agents in this workspace yet."
     },
     "mention": {
-      "everyone": "Everyone"
+      "everyone": "Everyone",
+      "screen_title": "Mention",
+      "group_recent": "Recent",
+      "group_my_issues": "My issues",
+      "group_people": "People"
     },
     "run_failure": {
       "queued_expired": "Queue expired",

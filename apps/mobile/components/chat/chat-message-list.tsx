@@ -521,12 +521,16 @@ function ElapsedCaption({
   variant: "replied" | "failed" | "finished";
   elapsedMs: number;
 }) {
+  const { t } = useT("chat");
+  const elapsed = formatElapsedMs(elapsedMs);
   const label =
     variant === "replied"
-      ? `Replied in ${formatElapsedMs(elapsedMs)}`
+      ? t("message_list.replied_in", "Replied in {{elapsed}}", { elapsed })
       : variant === "finished"
-        ? `Finished in ${formatElapsedMs(elapsedMs)}`
-        : `Failed after ${formatElapsedMs(elapsedMs)}`;
+        ? t("message_list.finished_in", "Finished in {{elapsed}}", { elapsed })
+        : t("message_list.failed_after", "Failed after {{elapsed}}", {
+            elapsed,
+          });
   return (
     <Text className="text-xs text-muted-foreground/80 mt-1">{label}</Text>
   );

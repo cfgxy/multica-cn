@@ -829,7 +829,11 @@
       "no_members_or_agents": "此工作区还没有成员或 Agent。"
     },
     "mention": {
-      "everyone": "所有人"
+      "everyone": "所有人",
+      "screen_title": "提及",
+      "group_recent": "最近",
+      "group_my_issues": "我的任务",
+      "group_people": "成员"
     },
     "run_failure": {
       "queued_expired": "队列过期",

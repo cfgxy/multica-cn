@@ -21,6 +21,7 @@ import { Alert } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
 import { api, MAX_FILE_SIZE, type FileAsset } from "@/data/api";
+import { useT } from "@/lib/use-t";
 
 export interface FileAttachResult {
   /** Attachment id from the server. Callers MUST carry this to the mutation
@@ -43,6 +44,7 @@ interface PickedAsset extends FileAsset {
 }
 
 export function useFileAttach() {
+  const { t } = useT("common");
   const [uploading, setUploading] = useState(false);
 
   const upload = useCallback(
@@ -52,8 +54,14 @@ export function useFileAttach() {
     ): Promise<FileAttachResult | null> => {
       if (asset.size != null && asset.size > MAX_FILE_SIZE) {
         Alert.alert(
-          "File too large",
-          "Files must be smaller than 100 MB.",
+          t("composer.file_too_large_title", "File too large"),
+          // 100 是 MAX_FILE_SIZE 的字节数换算，不再写死在文案里——改上限
+          // 时只需改常量，四语文案自动跟随。
+          t(
+            "composer.file_too_large_message",
+            "Files must be smaller than {{size}} MB.",
+            { size: Math.floor(MAX_FILE_SIZE / (1024 * 1024)) },
+          ),
         );
         return null;
       }
@@ -67,15 +75,18 @@ export function useFileAttach() {
         };
       } catch (err) {
         Alert.alert(
-          "Upload failed",
-          err instanceof Error ? err.message : "Unknown error",
+          t("composer.upload_failed_title", "Upload failed"),
+          err instanceof Error
+            ? err.message
+            : t("unknown_error", "Unknown error"),
         );
         return null;
       } finally {
         setUploading(false);
       }
     },
-    [],
+    // `t` 进依赖：Alert 文案是译文，切语言后回调必须重建。
+    [t],
   );
 
   const pickAndUploadImage = useCallback(

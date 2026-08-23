@@ -40,7 +40,8 @@
     "just_now": "刚刚",
     "minutes_ago": "{{count}} 分钟前",
     "hours_ago": "{{count}} 小时前",
-    "days_ago": "{{count}} 天前"
+    "days_ago": "{{count}} 天前",
+    "weeks_ago": "{{count}} 周前"
   },
   "lark_bind": {
     "page_title": "绑定飞书账号",
@@ -148,7 +149,8 @@
     "upload_image": "上传图片",
     "upload_file": "上传文件",
     "file_too_large_title": "文件过大",
-    "file_too_large_message": "文件必须小于 {{size}} MB。"
+    "file_too_large_message": "文件必须小于 {{size}} MB。",
+    "upload_failed_title": "上传失败"
   },
   "mobile": {
     "actor": {
@@ -162,7 +164,8 @@
       "retry": "重试",
       "unknown_error": "未知错误",
       "search": "搜索",
-      "close": "关闭"
+      "close": "关闭",
+      "request_timeout": "请求超时（{{seconds}} 秒）"
     }
   }
 }

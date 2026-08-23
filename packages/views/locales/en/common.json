@@ -40,7 +40,8 @@
     "just_now": "just now",
     "minutes_ago": "{{count}}m ago",
     "hours_ago": "{{count}}h ago",
-    "days_ago": "{{count}}d ago"
+    "days_ago": "{{count}}d ago",
+    "weeks_ago": "{{count}}w ago"
   },
   "lark_bind": {
     "page_title": "Bind your Lark account",
@@ -148,7 +149,8 @@
     "upload_image": "Upload image",
     "upload_file": "Upload file",
     "file_too_large_title": "File too large",
-    "file_too_large_message": "Files must be smaller than {{size}} MB."
+    "file_too_large_message": "Files must be smaller than {{size}} MB.",
+    "upload_failed_title": "Upload failed"
   },
   "mobile": {
     "actor": {
@@ -162,7 +164,8 @@
       "retry": "Retry",
       "unknown_error": "unknown error",
       "search": "Search",
-      "close": "Close"
+      "close": "Close",
+      "request_timeout": "Request timed out after {{seconds}}s"
     }
   }
 }

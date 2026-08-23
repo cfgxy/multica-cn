@@ -319,6 +319,9 @@
     "message_list": {
       "quick_actions_a11y": "Suggested follow-ups",
       "show_error_details_a11y": "Show error details"
+    },
+    "timeline": {
+      "truncated": "…(truncated)"
     }
   }
 }

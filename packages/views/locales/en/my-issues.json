@@ -47,6 +47,12 @@
       "title": "My Issues",
       "filter_a11y": "Filter",
       "load_failed": "Failed to load issues: {{reason}}"
+    },
+    "empty": {
+      "assigned": "No issues assigned to you.",
+      "created": "You haven't created any issues.",
+      "agents": "No issues assigned to your agents or squads yet.",
+      "filtered": "No issues match the current filters."
     }
   }
 }

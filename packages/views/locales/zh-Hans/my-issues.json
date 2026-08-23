@@ -46,6 +46,12 @@
       "title": "我的任务",
       "filter_a11y": "筛选",
       "load_failed": "无法加载任务：{{reason}}"
+    },
+    "empty": {
+      "assigned": "没有分配给你的任务。",
+      "created": "你还没有创建任何任务。",
+      "agents": "还没有分配给你的 Agent 或小队的任务。",
+      "filtered": "没有符合当前筛选条件的任务。"
     }
   }
 }

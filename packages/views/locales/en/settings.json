@@ -1233,7 +1233,8 @@
       "email_hint": "Email is set at sign-up and can't be changed here."
     },
     "notifications": {
-      "load_failed": "Failed to load notification preferences."
+      "load_failed": "Failed to load notification preferences.",
+      "missing_workspace": "Workspace context is required to update notifications"
     },
     "page": {
       "sign_out_body": "You'll need to sign in again to use Multica on this device.",

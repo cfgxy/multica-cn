@@ -316,7 +316,10 @@ export function MessageComposer({
           ),
         );
       } catch (err) {
-        const message = err instanceof Error ? err.message : "Unknown error";
+        const message =
+          err instanceof Error
+            ? err.message
+            : t("unknown_error", "Unknown error");
         setAttachments((prev) =>
           prev.map((it) =>
             it.localId === localId
@@ -326,7 +329,8 @@ export function MessageComposer({
         );
       }
     },
-    [uploadContext],
+    // `t` 进依赖：兜底错误文案现在是译文，切语言后回调必须重建。
+    [uploadContext, t],
   );
 
   const onImagePress = useCallback(async () => {

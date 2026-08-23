@@ -829,7 +829,11 @@
       "no_members_or_agents": "このワークスペースにはまだメンバーもエージェントもいません。"
     },
     "mention": {
-      "everyone": "全員"
+      "everyone": "全員",
+      "screen_title": "メンション",
+      "group_recent": "最近",
+      "group_my_issues": "自分のタスク",
+      "group_people": "メンバー"
     },
     "run_failure": {
       "queued_expired": "キュー期限切れ",
