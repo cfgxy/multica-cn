@@ -40,7 +40,7 @@ func (h *Handler) InvokePluginHook(w http.ResponseWriter, r *http.Request) {
 	// A hook invoked from the UI is invoked BY somebody. A plugin's own server
 	// calling this would be asking us to call it back, which is a loop with no
 	// person in it and no reason to exist.
-	if !actor.requireMember(w) {
+	if !actor.requireMember(w, r) {
 		return
 	}
 
@@ -174,7 +174,7 @@ type pluginTokenResponse struct {
 	// SigningSecret is what the author configures on their own server to verify
 	// our signature. Derived from the deployment key rather than stored, so it
 	// is stable for an installation and reproducible without a database copy.
-	SigningSecret string `json:"signing_secret"`
+	SigningSecret string `json:"signing_secret,omitempty"`
 }
 
 // RotatePluginToken — POST /api/workspaces/{id}/plugins/{installationId}/token
@@ -183,17 +183,12 @@ func (h *Handler) RotatePluginToken(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	token, err := h.PluginService.IssueInstallToken(r.Context(), installation.ID)
+	credentials, err := h.PluginService.RotateInstallCredentials(r.Context(), installation.ID)
 	if err != nil {
 		writePluginError(w, err, "failed to issue the Plugin token")
 		return
 	}
-	secret, err := h.PluginService.HookSigningSecret(installation.ID)
-	if err != nil {
-		writePluginError(w, err, "failed to derive the signing secret")
-		return
-	}
-	writeJSON(w, http.StatusOK, pluginTokenResponse{Token: token, SigningSecret: secret})
+	writeJSON(w, http.StatusOK, pluginTokenResponse{Token: credentials.Token, SigningSecret: credentials.SigningSecret})
 }
 
 // RevokePluginToken — DELETE /api/workspaces/{id}/plugins/{installationId}/token
