@@ -23,7 +23,8 @@ import { useActorLookup } from "@/data/use-actor-name";
 import { useNewIssueDraftStore } from "@/data/stores/new-issue-draft-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { displayLocale } from "@/lib/display-locale";
-import { priorityLabel, statusLabel } from "@/lib/issue-status";
+import { localizedStatusLabel, priorityLabel } from "@/lib/issue-status";
+import { useIssueStatuses } from "@/lib/use-issue-statuses";
 import { useT } from "@/lib/use-t";
 
 /**
@@ -57,6 +58,11 @@ export function CreateFormAttributeRow() {
   const { t } = useT("issues");
   const { getName } = useActorLookup();
   const dueDateLabel = t("actions.due_date", "Due date");
+  // The draft can hold a custom status the user picked in the sheet. (MUL-6243)
+  // `labelOf` 换成 `localizedStatusLabel(catalog, ...)`：内置状态走 i18n，
+  // 自定义状态仍取目录 `name`，分支判据与 `labelOf` 一致。
+  const catalog = useIssueStatuses();
+  const { categoryOf, colorOf } = catalog;
   const assigneeLabel = assignee
     ? getName(assignee.type, assignee.id)
     : t("actions.assignee", "Assignee");
@@ -77,8 +83,15 @@ export function CreateFormAttributeRow() {
     <View>
       <View className="flex-row flex-wrap gap-2">
         <AttributeChip
-          icon={<StatusIcon status={status} size={12} />}
-          label={statusLabel(status)}
+          icon={
+            <StatusIcon
+              status={status}
+              category={categoryOf(status)}
+              color={colorOf(status)}
+              size={12}
+            />
+          }
+          label={localizedStatusLabel(catalog, status)}
           variant="filled"
           onPress={() => open("status")}
         />

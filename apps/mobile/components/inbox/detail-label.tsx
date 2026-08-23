@@ -15,7 +15,6 @@ import { View } from "react-native";
 import type {
   InboxItem,
   InboxItemType,
-  IssueStatus,
   IssuePriority,
 } from "@multica/core/types";
 import { formatDateOnly } from "@multica/core/issues/date";
@@ -24,9 +23,11 @@ import { StatusIcon } from "@/components/ui/status-icon";
 import { PriorityIcon } from "@/components/ui/priority-icon";
 import { useActorLookup } from "@/data/use-actor-name";
 import { displayLocale } from "@/lib/display-locale";
-import { priorityLabel, statusLabel } from "@/lib/issue-status";
+import { localizedStatusLabel, priorityLabel } from "@/lib/issue-status";
+import { useIssueStatuses } from "@/lib/use-issue-statuses";
 import { useT } from "@/lib/use-t";
 import { cn } from "@/lib/utils";
+
 
 // Mirrors useTypeLabels in packages/views/inbox/components/inbox-detail-label.tsx
 // — same ns, same keys, so the two surfaces can't drift apart in translation.
@@ -86,19 +87,29 @@ export function InboxDetailLabel({
   const { getName } = useActorLookup();
   const { t } = useT("inbox");
   const typeLabel = useTypeLabels();
+  // `details.to` is a status KEY and may be a custom one, so its name, colour
+  // and glyph all resolve through the workspace catalog. (MUL-6243)
+  // 名字取 `localizedStatusLabel`：内置走 i18n，自定义仍用目录 `name`。
+  const catalog = useIssueStatuses();
+  const { categoryOf, colorOf } = catalog;
   const details = item.details ?? {};
 
   // Cases with inline icons → Row layout.
   if (item.type === "status_changed" && details.to) {
-    const status = details.to as IssueStatus;
+    const status = details.to;
     return (
       <View className={cn("flex-row items-center gap-1", className)}>
         <Text className="text-xs text-muted-foreground">
           {t("labels.set_status_to", "Set status to")}
         </Text>
-        <StatusIcon status={status} size={12} />
+        <StatusIcon
+          status={status}
+          category={categoryOf(status)}
+          color={colorOf(status)}
+          size={12}
+        />
         <Text className="text-xs text-muted-foreground" numberOfLines={1}>
-          {statusLabel(status)}
+          {localizedStatusLabel(catalog, status)}
         </Text>
       </View>
     );

@@ -152,6 +152,7 @@ import type {
   PluginInstallation,
   PluginInstallationListResponse,
   PluginInvocation,
+  PluginMCPTool,
   PluginPreview,
   PluginTokenIssue,
   PluginPreviewRequest,
@@ -405,6 +406,7 @@ import {
   PluginHookResultSchema,
   PluginInstallationListResponseSchema,
   PluginInvocationListSchema,
+  PluginMCPToolListSchema,
   PluginTokenIssueSchema,
   PluginInstallationSchema,
   PluginPreviewSchema,
@@ -501,6 +503,20 @@ export function dispatchReasonCode(err: unknown): string | undefined {
   if (err instanceof ApiError && err.body && typeof err.body === "object") {
     const code = (err.body as { reason_code?: unknown }).reason_code;
     if (typeof code === "string" && code.length > 0) return code;
+  }
+  return undefined;
+}
+
+// clientErrorMessage returns the server's message only when it is a CLIENT
+// error (4xx). Handlers write those for the user — "autopilot is not active",
+// "Idempotency-Key is too long" — so they are worth rendering. A 5xx message is
+// internal detail (Go error chains, pgx table/constraint names, internal ids)
+// that must never reach a toast (MUL-6472), and a non-ApiError is a transport
+// failure whose message ("Failed to fetch") says nothing a user can act on.
+// Both return undefined so the caller falls back to its own localized sentence.
+export function clientErrorMessage(err: unknown): string | undefined {
+  if (err instanceof ApiError && err.status >= 400 && err.status < 500) {
+    return err.message || undefined;
   }
   return undefined;
 }
@@ -2559,6 +2575,45 @@ export class ApiClient {
 
   async revokePluginToken(workspaceId: string, installationId: string): Promise<void> {
     await this.fetch(`/api/workspaces/${workspaceId}/plugins/${installationId}/token`, { method: "DELETE" });
+  }
+
+  /**
+   * Lists what an `mcp`-transport hook's server currently offers.
+   *
+   * Read-only: discovering a tool adopts nothing. approvePluginMCPTools is the
+   * grant, which is the difference from an `http` hook — that one declares a
+   * single endpoint in a manifest an administrator already read, while an MCP
+   * server decides its own tool list at runtime and can change it later.
+   */
+  async listPluginMCPTools(workspaceId: string, installationId: string, hookKey: string): Promise<PluginMCPTool[]> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/plugins/${installationId}/mcp/${encodeURIComponent(hookKey)}/tools`,
+    );
+    return parseWithFallback(raw, PluginMCPToolListSchema, { tools: [] }, {
+      endpoint: "GET /api/workspaces/{id}/plugins/{installationId}/mcp/{hookKey}/tools",
+    }).tools;
+  }
+
+  /**
+   * Pins the approved tool set for one hook.
+   *
+   * `tools` is the COMPLETE set, not a delta — removing one is the same request
+   * shape as adding one, so there is no way to think you revoked something and
+   * have it stay. An empty array withdraws the hook entirely.
+   */
+  async approvePluginMCPTools(
+    workspaceId: string,
+    installationId: string,
+    hookKey: string,
+    tools: string[],
+  ): Promise<PluginInstallation> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/plugins/${installationId}/mcp/${encodeURIComponent(hookKey)}/tools`,
+      { method: "PUT", body: JSON.stringify({ tools }) },
+    );
+    return parseWithFallback(raw, PluginInstallationSchema, EMPTY_PLUGIN_INSTALLATION, {
+      endpoint: "PUT /api/workspaces/{id}/plugins/{installationId}/mcp/{hookKey}/tools",
+    });
   }
 
   async uninstallPlugin(workspaceId: string, installationId: string): Promise<void> {

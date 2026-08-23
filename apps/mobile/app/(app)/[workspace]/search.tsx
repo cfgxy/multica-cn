@@ -29,7 +29,7 @@ import { router } from "expo-router";
 import { Ionicons } from "@expo/vector-icons";
 import type {
   Issue,
-  IssueStatus,
+  IssueStatusCategory,
   SearchIssueResult,
   SearchProjectResult,
 } from "@multica/core/types";
@@ -45,7 +45,11 @@ import {
   useViewedIssuesStore,
 } from "@/data/viewed-issues-store";
 import { issueDetailOptions } from "@/data/queries/issues";
-import { statusLabel as issueStatusLabel } from "@/lib/issue-status";
+import {
+  issueColumnCategory,
+  localizedStatusLabel,
+} from "@/lib/issue-status";
+import { useIssueStatuses } from "@/lib/use-issue-statuses";
 import { projectStatusLabel } from "@/lib/project-status";
 import { buildSearchRows, type RowItem } from "@/lib/search-rows";
 import { useT } from "@/lib/use-t";
@@ -121,11 +125,12 @@ function HighlightText({
 // RowItem + buildSearchRows live in lib/search-rows.ts so the ordering rules
 // (including the cancelled partition) are testable without mounting the screen.
 
-function issueIconColor(status: IssueStatus): string {
+function issueIconColor(category: IssueStatusCategory): string {
   // Tag color for the status label at the end of an issue row.
-  // Mirrors STATUS_CONFIG.iconColor (status-icon.tsx STATUS_COLOR) so the
-  // text tint matches the leading status icon visually.
-  switch (status) {
+  // Mirrors STATUS_CONFIG.iconColor (status-icon.tsx CATEGORY_COLOR) so the
+  // text tint matches the leading status icon visually. Keyed on CATEGORY: a
+  // custom status inherits its category's tint, exactly as its glyph does.
+  switch (category) {
     case "in_progress":
       return "text-warning";
     case "in_review":
@@ -162,14 +167,23 @@ function SearchIssueRow({ item, query, slug }: SearchIssueRowProps) {
   // (server/internal/handler/issue.go:592). Keep mobile strictly aligned.
   const showSnippet =
     item.match_source === "comment" && !!item.matched_snippet;
-  const statusText = issueStatusLabel(item.status as IssueStatus) ?? item.status;
+  const catalog = useIssueStatuses();
+  const { colorOf } = catalog;
+  const category = issueColumnCategory(item);
+  // 内置状态走 i18n，自定义状态用目录 `name`（分支判据同 `labelOf`）。
+  const statusText = localizedStatusLabel(catalog, item.status);
   return (
     <Pressable
       onPress={() => navigateOnTap(slug, `/${slug}/issue/${item.id}`)}
       className="active:bg-secondary px-4 py-3"
     >
       <View className="flex-row items-center gap-3">
-        <StatusIcon status={item.status as IssueStatus} size={14} />
+        <StatusIcon
+          status={item.status}
+          category={category}
+          color={colorOf(item.status)}
+          size={14}
+        />
         <PriorityIcon priority={item.priority} size={14} />
         <Text className="text-xs text-muted-foreground shrink-0 w-16">
           {item.identifier}
@@ -182,7 +196,7 @@ function SearchIssueRow({ item, query, slug }: SearchIssueRowProps) {
             numberOfLines={1}
           />
         </View>
-        <Text className={`text-xs shrink-0 ${issueIconColor(item.status as IssueStatus)}`}>
+        <Text className={`text-xs shrink-0 ${issueIconColor(category)}`}>
           {statusText}
         </Text>
       </View>
@@ -261,21 +275,29 @@ interface RecentRowProps {
 }
 
 function RecentRow({ item, slug }: RecentRowProps) {
-  const statusText = issueStatusLabel(item.status as IssueStatus) ?? item.status;
+  const catalog = useIssueStatuses();
+  const { colorOf } = catalog;
+  const category = issueColumnCategory(item);
+  const statusText = localizedStatusLabel(catalog, item.status);
   return (
     <Pressable
       onPress={() => navigateOnTap(slug, `/${slug}/issue/${item.id}`)}
       className="active:bg-secondary px-4 py-3"
     >
       <View className="flex-row items-center gap-3">
-        <StatusIcon status={item.status as IssueStatus} size={14} />
+        <StatusIcon
+          status={item.status}
+          category={category}
+          color={colorOf(item.status)}
+          size={14}
+        />
         <Text className="text-xs text-muted-foreground shrink-0 w-16">
           {item.identifier}
         </Text>
         <Text className="flex-1 text-sm text-foreground" numberOfLines={1}>
           {item.title}
         </Text>
-        <Text className={`text-xs shrink-0 ${issueIconColor(item.status as IssueStatus)}`}>
+        <Text className={`text-xs shrink-0 ${issueIconColor(category)}`}>
           {statusText}
         </Text>
       </View>
