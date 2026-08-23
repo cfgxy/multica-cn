@@ -435,7 +435,20 @@ function collectPrefixes(): { file: string; full: string }[] {
       const fileNs = nsOfFile(src);
       // `t(` 与反引号之间允许空白/换行：prettier 会把超长调用拆成多行
       // （`t(\n  \`前缀.${v}\`,\n  en,\n)`），紧贴形态的正则会整条漏采。
-      for (const m of src.matchAll(/(?:i18n\.)?\bt\(\s*`([^`]*?)\$\{/g)) {
+      //
+      // 函数名放宽到 `t` 与 `t<大写开头>` 两种：一个文件同时用两个 ns 时
+      // 必须重命名解构（`const { t: tIssues } = useT("issues")`），此形态
+      // 出现在 new-issue.tsx / issue/[id]/edit.tsx / project/new.tsx /
+      // project/[id]/edit.tsx / project/[id]/add-resource.tsx 五个文件。
+      // 旧正则的 `\bt\(` 采不到 `tIssues(`，这五个文件的动态前缀无论拼错
+      // 成什么都不会报红——前缀锁在它们身上等于不存在。
+      //
+      // 注意 `t[A-Z]\w*` 只是形态匹配，不保证该别名真的绑到某个 ns：这些
+      // 文件有多个 useT，nsOfFile 会返回 null，于是相对前缀落到
+      // 「<ns 不可判定>」并被「每个源码前缀的 ns 都能确定」那条挡住——要求
+      // 人在这类文件里显式写绝对 key（`\`issues:xxx.${v}\``）。这是刻意的：
+      // 猜别名到 ns 的映射正是本文件开头批判的「手写表会漂移」。
+      for (const m of src.matchAll(/(?:i18n\.)?\bt(?:[A-Z]\w*)?\(\s*`([^`]*?)\$\{/g)) {
         const head = m[1]!;
         // 只处理「前缀 + 尾点 + ${枚举}」这一种形态；句中插值（`{{name}}`
         // 之类走的是 options，不会进这个分支）不是 key 拼接，跳过。
