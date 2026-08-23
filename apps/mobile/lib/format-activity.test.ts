@@ -305,6 +305,23 @@ describe("formatActivity 的活动文案接线", () => {
     );
   });
 
+  it("fallback 按「N 个不同 task」写，不含「N 次」式的重复计数措辞", () => {
+    // 回归锁：这两条曾写作「completed the task ({{count}} times)」，语义与
+    // 数据相反——coalesced_count 数的是 N 个不同 task（CompleteAgentTask 的
+    // `WHERE ... AND status = 'running'` 幂等守卫使同一行至多产生一条完成
+    // 活动）。锁住 fallback 措辞，挡住改回「N 次」式表述的回归。
+    for (const action of ["task_completed", "task_failed"]) {
+      mockT.mockClear();
+      formatActivity(
+        { action, details: {}, coalesced_count: 2 } as never,
+        noName,
+      );
+      const fallback = mockT.mock.calls[0]?.[1] as string;
+      expect(fallback).toContain("{{count}} task");
+      expect(fallback).not.toMatch(/times|the task\b/);
+    }
+  });
+
   it("未知 action 仍原样透出，不进 i18n —— API Response Compatibility 规则", () => {
     mockT.mockClear();
     expect(

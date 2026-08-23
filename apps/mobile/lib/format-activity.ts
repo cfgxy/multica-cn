@@ -130,16 +130,29 @@ export function formatActivity(
     // `completed 2 tasks` / `completed a task` 这种英语分叉翻不出来。
     // 默认值给 _other 分支的原文（i18n-keys.test.ts 的 lookup 也按
     // _other 解析基名）。
+    //
+    // 这两条的文案语义是「完成了 N 个不同 task」，不是「同一 task 完成了
+    // N 次」：`coalesced_count` 数的是被合并的连续活动条数，而一条
+    // task_completed 活动对应一个 task 行的唯一一次完成——
+    // `CompleteAgentTask`（server/pkg/db/queries/agent.sql）是
+    // `WHERE id = $1 AND status = 'running'` 的幂等守卫，二次调用匹配不到行
+    // 就回滚，走不到 broadcastTaskEvent；重试走 CreateRetryTask 克隆出独立
+    // id 的子行。活动记录的 Details 又是 "{}"，不含 task_id。所以 N 条连续
+    // 活动 = N 个不同 task。
+    //
+    // 译文一律把数量内联进句子而非放进补充括号：中日韩按 CLDR 只有 _other
+    // 分支，「完成了 task（{{count}} 次）」这类括号形态在 count=1 时会渲染
+    // 出多余的「（1 次）」，内联写法读作「完成了 1 个 task」则自然。
     case "task_completed":
       return i18n.t(
         "issues:activity.task_completed",
-        "completed the task ({{count}} times)",
+        "completed {{count}} tasks",
         { count: entry.coalesced_count ?? 1 },
       );
     case "task_failed":
       return i18n.t(
         "issues:activity.task_failed",
-        "task failed ({{count}} times)",
+        "{{count}} tasks failed",
         { count: entry.coalesced_count ?? 1 },
       );
     case "squad_leader_evaluated": {
