@@ -2257,9 +2257,11 @@ func discoverGrokModels(ctx context.Context, runtimeCmd Command) (Catalog, error
 
 // grokStaticModels is the offline fallback catalog for the Grok Build CLI.
 // IDs match a typical signed-in `session/new` / `grok models` listing.
+// Grok 4.6 is the current Grok Build default (xAI, 2026-08-12).
 func grokStaticModels() []Model {
 	models := []Model{
-		{ID: "grok-4.5", Label: "Grok 4.5", Provider: "xai", Default: true},
+		{ID: "grok-4.6", Label: "Grok 4.6", Provider: "xai", Default: true},
+		{ID: "grok-4.5", Label: "Grok 4.5", Provider: "xai"},
 		{ID: "grok-composer-2.5-fast", Label: "Grok Composer 2.5 Fast", Provider: "xai"},
 	}
 	annotateGrokThinking(models)
@@ -2267,20 +2269,35 @@ func grokStaticModels() []Model {
 }
 
 // annotateGrokThinking attaches only capabilities confirmed by xAI's
-// per-model reasoning documentation. session/new does not advertise effort
-// catalogs, so unknown and composer models deliberately keep Thinking nil
-// instead of exposing values that may fail at runtime.
+// per-model reasoning documentation and Grok Build's `--effort` flag.
+// session/new does not advertise effort catalogs on the versions this
+// table covers, so unknown and composer models deliberately keep Thinking
+// nil instead of exposing values that may fail at runtime.
+//
+// grok-4.6 documents and accepts `xhigh` (docs.x.ai/developers/grok-4-6,
+// grok 1.0.5 `--effort`). grok-4.5 does not; the server enum lets the
+// token through and ValidateThinkingLevel still fails it closed for 4.5.
 func annotateGrokThinking(models []Model) {
 	for i := range models {
-		if models[i].ID != "grok-4.5" {
-			continue
+		switch models[i].ID {
+		case "grok-4.6":
+			models[i].Thinking = grokThinkingCatalog(true)
+		case "grok-4.5":
+			models[i].Thinking = grokThinkingCatalog(false)
 		}
-		models[i].Thinking = &ModelThinking{SupportedLevels: []ThinkingLevel{
-			{Value: "low", Label: "Low"},
-			{Value: "medium", Label: "Medium"},
-			{Value: "high", Label: "High"},
-		}}
 	}
+}
+
+func grokThinkingCatalog(includeXHigh bool) *ModelThinking {
+	levels := []ThinkingLevel{
+		{Value: "low", Label: "Low"},
+		{Value: "medium", Label: "Medium"},
+		{Value: "high", Label: "High"},
+	}
+	if includeXHigh {
+		levels = append(levels, ThinkingLevel{Value: "xhigh", Label: "Extra high"})
+	}
+	return &ModelThinking{SupportedLevels: levels}
 }
 
 // discoverCursorModels runs `cursor-agent --list-models` and parses
