@@ -137,7 +137,7 @@
   },
   "empty_state": {
     "first_time_title": "에이전트와 채팅하기",
-    "first_time_intro": "✨ 에이전트는 내 워크스페이스를 알고 있습니다 —",
+    "first_time_intro": "✨ 에이전트는 내 워크스페이스를 알고 있습니다 — ",
     "first_time_pillars": "태스크, 프로젝트, 스킬",
     "first_time_pillars_suffix": ".",
     "first_time_actions": "요약을 요청하거나, 오늘 할 일을 계획하거나, 간단한 작업을 맡겨보세요.",
@@ -229,5 +229,95 @@
     "delete": "채팅 삭제",
     "archive": "채팅 보관",
     "unarchive": "채팅 보관 해제"
+  },
+  "mobile": {
+    "send_blocked": {
+      "no_permission_title": "이 에이전트를 실행할 권한이 없습니다",
+      "no_permission_message": "이 에이전트를 실행할 권한이 없어 메시지가 전송되지 않았습니다. 소유자에게 액세스 권한을 요청하세요.",
+      "runtime_required_title": "런타임 필요",
+      "runtime_required_message": "메시지를 보내기 전에 웹 또는 데스크톱에서 이 에이전트에 런타임을 바인딩하세요.",
+      "failed_title": "메시지가 전송되지 않았습니다"
+    },
+    "composer": {
+      "placeholder": "메시지…",
+      "agent_working": "에이전트 작업 중…",
+      "unavailable": "채팅을 사용할 수 없음",
+      "stop_agent": "에이전트 중지"
+    },
+    "send_failure": {
+      "no_permission": "이 에이전트를 실행할 권한이 없어 메시지가 전송되지 않았습니다.",
+      "runtime_required": "메시지를 보내기 전에 이 에이전트에 런타임을 바인딩하세요.",
+      "generic": "메시지를 보내지 못했습니다. 다시 시도하세요."
+    },
+    "disabled_reason": {
+      "no_agent": "선택된 에이전트 없음",
+      "access_revoked": "더 이상 이 에이전트를 실행할 수 없습니다",
+      "no_agents_in_workspace": "이 워크스페이스에 에이전트가 없습니다",
+      "archived": "이 채팅은 보관되었습니다",
+      "runtime_missing": "에이전트에 런타임이 필요합니다"
+    },
+    "failure_reason": {
+      "queued_expired": "대기열에서 만료됨",
+      "runtime_offline": "데몬 오프라인",
+      "runtime_recovery": "데몬 재시작됨",
+      "timeout": "task 시간 초과",
+      "iteration_limit": "반복 횟수 한도 도달",
+      "agent_blocked": "사람의 입력 대기 중",
+      "api_invalid_request": "모델 API에서 거부됨",
+      "skill_bundle_unavailable": "에이전트 스킬을 내려받지 못했습니다",
+      "runtime_cli_timeout": "로컬 런타임 CLI 시간 초과",
+      "agent_error__provider_auth_or_access": "제공자 인증 실패",
+      "agent_error__provider_quota_limit": "제공자 할당량 소진",
+      "agent_error__provider_capacity_or_rate_limit": "제공자에 의해 속도 제한됨",
+      "agent_error__provider_server_error": "제공자 서버 오류",
+      "agent_error__provider_network": "제공자 연결 네트워크 오류",
+      "agent_error__process_failure": "에이전트 프로세스 충돌",
+      "agent_error__empty_or_unparseable_output": "에이전트가 사용할 수 있는 출력을 반환하지 않음",
+      "agent_error__agent_timeout": "에이전트 시간 초과",
+      "agent_error__context_overflow": "컨텍스트 창 초과",
+      "agent_error__missing_config": "API 키 또는 설정 누락",
+      "agent_error__model_not_found_or_unavailable": "모델 사용 불가",
+      "agent_error__runtime_version_unsupported": "러너 CLI 버전 미지원",
+      "agent_error__runtime_missing_executable": "러너 CLI가 설치되지 않음",
+      "agent_error__unknown": "에이전트 실행 오류",
+      "agent_error": "에이전트 실행 오류",
+      "codex_semantic_inactivity": "Codex 의미적 비활성 시간 초과",
+      "manual": "사용자가 취소함",
+      "fallback": "실패"
+    },
+    "sessions": {
+      "untitled": "제목 없는 채팅",
+      "delete_title": "이 채팅을 삭제할까요?",
+      "title": "채팅",
+      "empty": "아직 채팅이 없습니다.",
+      "archived": "보관됨",
+      "actions_a11y": "세션 작업",
+      "title_button_a11y": "세션 및 에이전트 선택"
+    },
+    "agent_picker": {
+      "title": "에이전트 선택",
+      "empty": "사용 가능한 에이전트가 없습니다."
+    },
+    "no_agent_banner": {
+      "a11y": "사용 가능한 에이전트가 없습니다. 에이전트 설정 열기",
+      "title": "사용 가능한 에이전트가 없습니다",
+      "hint": "'더 보기 → 에이전트'에서 에이전트를 추가하거나 활성화하면 채팅을 시작할 수 있습니다."
+    },
+    "offline_banner": {
+      "fallback_name": "이 에이전트",
+      "unstable": "{{name}}의 연결이 방금 끊겼을 수 있습니다. 메시지는 대기열에 들어갑니다.",
+      "offline": "{{name}}이(가) 오프라인입니다. 런타임이 복구될 때까지 메시지가 대기합니다."
+    },
+    "runtime_required_banner": {
+      "fallback_name": "이 에이전트",
+      "message": "{{name}}을(를) 실행하려면 런타임이 필요합니다. 웹 또는 데스크톱에서 연결하세요."
+    },
+    "message_list": {
+      "quick_actions_a11y": "추천 후속 질문",
+      "show_error_details_a11y": "오류 세부 정보 보기"
+    },
+    "timeline": {
+      "truncated": "…(잘림)"
+    }
   }
 }

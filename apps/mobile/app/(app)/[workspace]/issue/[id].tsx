@@ -9,10 +9,12 @@
  * Header note: the parent _layout.tsx already declares the `issue/[id]`
  * Stack.Screen with title "Issue". We override that here once the data
  * lands so the navigation bar shows `MUL-123` (Linear-style).
+ *
+ * Right-top "…" menu uses @rn-primitives DropdownMenu (pure JS, cross-
+ * platform). Previous ActionSheetIOS implementation crashed on Android.
  */
 import { useCallback, useEffect } from "react";
 import {
-  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   Linking,
@@ -25,6 +27,13 @@ import type { Issue } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
 import { TimelineList } from "@/components/issue/timeline-list";
 import { AgentHeaderBadge } from "@/components/issue/agent-header-badge";
 import { InlineCommentComposer } from "@/components/issue/inline-comment-composer";
@@ -43,8 +52,11 @@ import { getWebUrl } from "@/data/server-store";
 import { useViewedIssuesStore } from "@/data/viewed-issues-store";
 import { useCommentSelectStore } from "@/data/comment-select-store";
 import { useReplyTargetStore } from "@/data/stores/reply-target-store";
+import i18n from "i18next";
+import { useT } from "@/lib/use-t";
 
 export default function IssueDetail() {
+  const { t } = useT("issues");
   // `highlight` + `h` come from inbox deep-link (apps/mobile/app/(app)/
   // [workspace]/(tabs)/inbox.tsx). `highlight` is the target comment id;
   // `h` is a per-tap nonce so re-tapping the same row re-fires the
@@ -106,58 +118,45 @@ export default function IssueDetail() {
   const createPin = useCreatePin();
   const deletePin = useDeletePin();
 
-  // Three-dot menu: Pin/Unpin / Copy link / Open on web / Delete. Mirrors
-  // apps/mobile/app/(app)/[workspace]/project/[id].tsx — same ActionSheetIOS +
-  // Alert.alert confirm pattern. Property edits (status, priority, assignee,
-  // due_date) live on the IssueHeaderCard chips inside the timeline list, not
-  // in this menu — one entry per action.
-  const onPressMore = useCallback(() => {
-    if (!issue || !wsSlug) return;
-    // getWebUrl() 恒有值(未单独配置 Web 地址时回退当前服务器地址),所以
-    // 链接类菜单项恒显示 —— 不再有「webUrl 为空则隐藏」的分支(RUYI-4)。
-    const issueLink = `${getWebUrl()}/${wsSlug}/issue/${issue.identifier}`;
-    const options: string[] = ["Cancel"];
-    options.push(isPinned ? "Unpin" : "Pin");
-    options.push("Edit details");
-    options.push("Copy link");
-    options.push("Open on web");
-    options.push("Delete issue");
-    const destructiveIndex = options.length - 1;
-    ActionSheetIOS.showActionSheetWithOptions(
-      {
-        options,
-        cancelButtonIndex: 0,
-        destructiveButtonIndex: destructiveIndex,
-        title: issue.identifier,
-      },
-      (i) => {
-        const label = options[i];
-        if (label === "Pin") {
-          createPin.mutate({ item_type: "issue", item_id: issue.id });
-        } else if (label === "Unpin") {
-          deletePin.mutate({ itemType: "issue", itemId: issue.id });
-        } else if (label === "Edit details") {
-          if (wsSlug) router.push(`/${wsSlug}/issue/${issue.id}/edit`);
-        } else if (label === "Copy link") {
-          Clipboard.setStringAsync(issueLink);
-        } else if (label === "Open on web") {
-          Linking.openURL(issueLink);
-        } else if (label === "Delete issue") {
-          confirmDelete(issue, () =>
-            deleteIssue.mutate(issue.id, {
-              onSuccess: () => router.back(),
-            }),
-          );
-        }
-      },
+  // Three-dot menu: Pin/Unpin / Edit details / Copy link / Open on web / Delete.
+  // Cross-platform: uses @rn-primitives DropdownMenu (pure JS, no native deps).
+  const issueLink = issue && wsSlug
+    ? `${getWebUrl()}/${wsSlug}/issue/${issue.identifier}`
+    : "";
+  const onTogglePin = useCallback(() => {
+    if (!issue) return;
+    if (isPinned) {
+      deletePin.mutate({ itemType: "issue", itemId: issue.id });
+    } else {
+      createPin.mutate({ item_type: "issue", item_id: issue.id });
+    }
+  }, [issue, isPinned, createPin, deletePin]);
+  const onEditDetails = useCallback(() => {
+    if (wsSlug && issue) router.push(`/${wsSlug}/issue/${issue.id}/edit`);
+  }, [wsSlug, issue]);
+  const onCopyLink = useCallback(() => {
+    if (issueLink) Clipboard.setStringAsync(issueLink);
+  }, [issueLink]);
+  const onOpenOnWeb = useCallback(() => {
+    if (issueLink) Linking.openURL(issueLink);
+  }, [issueLink]);
+  const onDelete = useCallback(() => {
+    if (!issue) return;
+    confirmDelete(issue, () =>
+      deleteIssue.mutate(issue.id, {
+        onSuccess: () => router.back(),
+      }),
     );
-  }, [issue, wsSlug, deleteIssue, isPinned, createPin, deletePin]);
+  }, [issue, deleteIssue]);
 
   return (
     <View className="flex-1 bg-background">
       <Stack.Screen
         options={{
-          title: issue?.identifier ?? "Issue",
+          // 兜底串走 i18n：`_layout.tsx` 的同名路由 title 已本地化，这里
+          // 若留英文硬编码，加载期非英文用户会先闪一下 "Issue" 再变。
+          // `Stack.Screen` 在组件 return 内，求值时机晚于 initI18n()。
+          title: issue?.identifier ?? i18n.t("layout:tab.issue", "Issue"),
           headerBackTitle: "Back",
           headerRight: issue
             ? () => (
@@ -166,11 +165,39 @@ export default function IssueDetail() {
                    *  active tasks, so it doesn't crowd the header in the
                    *  common case. See agent-header-badge.tsx. */}
                   <AgentHeaderBadge issueId={id} />
-                  <IconButton
-                    name="ellipsis-horizontal"
-                    onPress={onPressMore}
-                    accessibilityLabel="Issue actions"
-                  />
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <IconButton
+                          name="ellipsis-horizontal"
+                          accessibilityLabel={t(
+                            "mobile.detail.actions_a11y",
+                            "Issue actions",
+                          )}
+                        />
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-44">
+                        <DropdownMenuItem onPress={onTogglePin}>
+                          <Text>{isPinned ? t("detail.unpin_tooltip", "Unpin from sidebar") : t("detail.pin_tooltip", "Pin to sidebar")}</Text>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onPress={onEditDetails}>
+                          <Text>
+                            {t("mobile.detail.edit_details", "Edit details")}
+                          </Text>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onPress={onCopyLink}>
+                          <Text>{t("actions.copy_link", "Copy link")}</Text>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onPress={onOpenOnWeb}>
+                          <Text>
+                            {t("mobile.detail.open_on_web", "Open on web")}
+                          </Text>
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem variant="destructive" onPress={onDelete}>
+                          <Text>{t("actions.delete_issue", "Delete issue")}</Text>
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
                 </View>
               )
             : undefined,
@@ -183,13 +210,16 @@ export default function IssueDetail() {
       ) : detail.error || !issue ? (
         <View className="flex-1 items-center justify-center px-6 gap-3">
           <Text className="text-sm text-destructive text-center">
-            Failed to load issue:{" "}
-            {detail.error instanceof Error
-              ? detail.error.message
-              : "not found"}
+            {/* 同 select-workspace：整句插值，不做「失败：<详情>」拼接。 */}
+            {t("mobile.detail.load_failed", "Failed to load issue: {{reason}}", {
+              reason:
+                detail.error instanceof Error
+                  ? detail.error.message
+                  : t("mobile.detail.not_found", "not found"),
+            })}
           </Text>
           <Button variant="outline" onPress={() => detail.refetch()}>
-            <Text>Retry</Text>
+            <Text>{t("mobile.detail.retry", "Retry")}</Text>
           </Button>
         </View>
       ) : (
@@ -211,12 +241,13 @@ export default function IssueDetail() {
 }
 
 function confirmDelete(issue: Issue, onConfirm: () => void) {
+  // 普通函数（由 onDelete 回调调用），不能调 Hook——直接用 i18n.t("ns:key")。
   Alert.alert(
-    "Delete issue?",
-    `${issue.identifier} and its comments, reactions, and attachments will be permanently deleted. This cannot be undone.`,
+    i18n.t("modals:delete_issue.title", "Delete issue"),
+    `${issue.identifier} ` + i18n.t("modals:delete_issue.description", "This will permanently delete this issue and all its comments. This action cannot be undone."),
     [
-      { text: "Cancel", style: "cancel" },
-      { text: "Delete", style: "destructive", onPress: onConfirm },
+      { text: i18n.t("common:cancel", "Cancel"), style: "cancel" },
+      { text: i18n.t("modals:delete_issue.confirm", "Delete"), style: "destructive", onPress: onConfirm },
     ],
   );
 }

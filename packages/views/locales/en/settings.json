@@ -1177,5 +1177,80 @@
     "expiry_7d": "7 days",
     "expiry_30d": "30 days",
     "expiry_never": "Never"
+  },
+  "server": {
+    "title": "Servers",
+    "back": "Back",
+    "add": "Add server",
+    "hint": "Tap a server to connect to it. Switching signs you out of the current account.",
+    "built_in": "Built-in",
+    "row_actions": "Actions for {{name}}",
+    "edit": "Edit",
+    "delete": "Delete",
+    "cancel": "Cancel",
+    "switch_failed_title": "Switch failed",
+    "switch_failed_message": "Could not switch servers.",
+    "switch_title": "Switch server?",
+    "switch_message": "You'll be signed out of the current account before connecting to {{name}}.",
+    "switch_confirm": "Switch",
+    "delete_title": "Delete server",
+    "delete_message": "Remove {{name}} from this device?",
+    "form": {
+      "title_new": "Add server",
+      "title_edit": "Edit server",
+      "detail_title": "Server",
+      "missing": "This server is no longer saved on this device.",
+      "name_label": "Name (optional)",
+      "name_placeholder": "e.g. Home lab",
+      "api_label": "Server address",
+      "api_placeholder": "https://api.example.com",
+      "invalid_url": "Enter a valid http(s) address",
+      "duplicate": "This address is already saved",
+      "plain_http": "This address uses plain http. Traffic won't be encrypted.",
+      "advanced": "Advanced: web address",
+      "web_hint": "Only needed when the web app is on a different domain than the server. Leave empty to reuse the server address.",
+      "web_placeholder": "Leave empty to reuse the server address",
+      "test": "Test connection",
+      "testing": "Testing…",
+      "connected": "Connected",
+      "unreachable": "Couldn't reach this address. You can still save it.",
+      "save": "Save",
+      "saving": "Saving…",
+      "save_failed_title": "Save failed",
+      "save_failed_message": "Could not save the server.",
+      "change_title": "Change server address?",
+      "change_message": "You'll be signed out of the current account before connecting to the new address.",
+      "cancel": "Cancel"
+    }
+  },
+  "mobile": {
+    "avatar": {
+      "take_photo": "Take Photo",
+      "choose_from_library": "Choose from Library",
+      "remove_photo": "Remove Photo",
+      "cancel": "Cancel",
+      "permission_title": "Permission needed",
+      "permission_camera": "Camera access is required to take a photo.",
+      "too_large_title": "Image too large",
+      "too_large_body": "Pick an image under 5 MB.",
+      "upload_failed_body": "Could not upload avatar.",
+      "remove_failed_title": "Remove failed",
+      "remove_failed_body": "Could not remove avatar."
+    },
+    "account": {
+      "save_failed_title": "Save failed",
+      "name_placeholder": "Your name",
+      "email_hint": "Email is set at sign-up and can't be changed here."
+    },
+    "notifications": {
+      "load_failed": "Failed to load notification preferences.",
+      "missing_workspace": "Workspace context is required to update notifications"
+    },
+    "page": {
+      "sign_out_body": "You'll need to sign in again to use Multica on this device.",
+      "notifications_subtitle": "Inbox and system alerts",
+      "server_section": "Server",
+      "workspaces_load_failed": "Failed to load workspaces"
+    }
   }
 }

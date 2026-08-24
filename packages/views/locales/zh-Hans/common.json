@@ -40,7 +40,8 @@
     "just_now": "刚刚",
     "minutes_ago": "{{count}} 分钟前",
     "hours_ago": "{{count}} 小时前",
-    "days_ago": "{{count}} 天前"
+    "days_ago": "{{count}} 天前",
+    "weeks_ago": "{{count}} 周前"
   },
   "lark_bind": {
     "page_title": "绑定飞书账号",
@@ -123,5 +124,48 @@
   },
   "navigation": {
     "open_in_new_tab": "在新标签页打开"
+  },
+  "saving": "保存中…",
+  "creating": "创建中…",
+  "create": "创建",
+  "attach": "关联",
+  "attaching": "关联中…",
+  "unknown_error": "未知错误",
+  "discard_dialog": {
+    "changes_title": "放弃更改？",
+    "keep_editing": "继续编辑",
+    "discard": "放弃"
+  },
+  "field": {
+    "title": "标题",
+    "description": "描述"
+  },
+  "send": "发送",
+  "composer": {
+    "placeholder": "输入消息…",
+    "replying_to": "回复 {{name}}",
+    "cancel_reply": "取消回复",
+    "mention_hint": "提及成员或议题",
+    "upload_image": "上传图片",
+    "upload_file": "上传文件",
+    "file_too_large_title": "文件过大",
+    "file_too_large_message": "文件必须小于 {{size}} MB。",
+    "upload_failed_title": "上传失败"
+  },
+  "mobile": {
+    "actor": {
+      "system": "系统",
+      "unknown_member": "未知用户",
+      "unknown_agent": "未知智能体",
+      "unknown_squad": "小队"
+    },
+    "common": {
+      "no_matches": "没有匹配项。",
+      "retry": "重试",
+      "unknown_error": "未知错误",
+      "search": "搜索",
+      "close": "关闭",
+      "request_timeout": "请求超时（{{seconds}} 秒）"
+    }
   }
 }

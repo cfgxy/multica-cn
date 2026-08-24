@@ -229,5 +229,95 @@
     "delete": "删除会话",
     "archive": "归档会话",
     "unarchive": "取消归档"
+  },
+  "mobile": {
+    "send_blocked": {
+      "no_permission_title": "无权运行此 Agent",
+      "no_permission_message": "你已不再拥有运行此 Agent 的权限，消息未发送。请向其所有者申请访问权限。",
+      "runtime_required_title": "需要绑定运行时",
+      "runtime_required_message": "请先在网页版或桌面端为此 Agent 绑定运行时，然后再发送消息。",
+      "failed_title": "消息未发送"
+    },
+    "composer": {
+      "placeholder": "发消息…",
+      "agent_working": "Agent 处理中…",
+      "unavailable": "聊天不可用",
+      "stop_agent": "停止 Agent"
+    },
+    "send_failure": {
+      "no_permission": "你已不再拥有运行此 Agent 的权限，消息未发送。",
+      "runtime_required": "请先为此 Agent 绑定运行时，然后再发送消息。",
+      "generic": "消息发送失败，请重试。"
+    },
+    "disabled_reason": {
+      "no_agent": "未选择 Agent",
+      "access_revoked": "你已不能运行此 Agent",
+      "no_agents_in_workspace": "此工作空间没有 Agent",
+      "archived": "此聊天已归档",
+      "runtime_missing": "Agent 需要绑定运行时"
+    },
+    "failure_reason": {
+      "queued_expired": "在队列中已过期",
+      "runtime_offline": "守护进程离线",
+      "runtime_recovery": "守护进程已重启",
+      "timeout": "task 已超时",
+      "iteration_limit": "达到迭代次数上限",
+      "agent_blocked": "等待人工输入",
+      "api_invalid_request": "被模型 API 拒绝",
+      "skill_bundle_unavailable": "无法下载智能体的技能包",
+      "runtime_cli_timeout": "本地运行时 CLI 超时",
+      "agent_error__provider_auth_or_access": "服务商鉴权失败",
+      "agent_error__provider_quota_limit": "服务商配额已用尽",
+      "agent_error__provider_capacity_or_rate_limit": "被服务商限流",
+      "agent_error__provider_server_error": "服务商服务端错误",
+      "agent_error__provider_network": "连接服务商网络出错",
+      "agent_error__process_failure": "智能体进程崩溃",
+      "agent_error__empty_or_unparseable_output": "智能体没有返回可用输出",
+      "agent_error__agent_timeout": "智能体超时",
+      "agent_error__context_overflow": "超出上下文窗口",
+      "agent_error__missing_config": "缺少 API key 或配置",
+      "agent_error__model_not_found_or_unavailable": "模型不可用",
+      "agent_error__runtime_version_unsupported": "运行器 CLI 版本不受支持",
+      "agent_error__runtime_missing_executable": "未安装运行器 CLI",
+      "agent_error__unknown": "智能体执行出错",
+      "agent_error": "智能体执行出错",
+      "codex_semantic_inactivity": "Codex 语义静默超时",
+      "manual": "用户取消",
+      "fallback": "失败"
+    },
+    "sessions": {
+      "untitled": "未命名聊天",
+      "delete_title": "删除此聊天？",
+      "title": "聊天",
+      "empty": "还没有聊天。",
+      "archived": "已归档",
+      "actions_a11y": "会话操作",
+      "title_button_a11y": "会话与 Agent 选择器"
+    },
+    "agent_picker": {
+      "title": "选择 Agent",
+      "empty": "没有可用的 Agent。"
+    },
+    "no_agent_banner": {
+      "a11y": "没有可用的 Agent，打开 Agent 设置",
+      "title": "没有可用的 Agent",
+      "hint": "在\"更多 → 智能体\"中添加或启用一个智能体后即可开始聊天。"
+    },
+    "offline_banner": {
+      "fallback_name": "此 Agent",
+      "unstable": "{{name}} 可能刚刚断开连接 —— 你的消息会先排队。",
+      "offline": "{{name}} 已离线。消息会等到其运行时恢复后再发送。"
+    },
+    "runtime_required_banner": {
+      "fallback_name": "此 Agent",
+      "message": "{{name}} 需要先绑定运行时才能运行。请在网页版或桌面端绑定。"
+    },
+    "message_list": {
+      "quick_actions_a11y": "推荐的后续提问",
+      "show_error_details_a11y": "查看错误详情"
+    },
+    "timeline": {
+      "truncated": "…（已截断）"
+    }
   }
 }

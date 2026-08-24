@@ -50,6 +50,7 @@ import {
 import type { MentionMarker } from "@/lib/mention-serialize";
 import { cn } from "@/lib/utils";
 import { isAgentRuntimeBound } from "@/lib/is-agent-runtime-bound";
+import { useT } from "@/lib/use-t";
 
 type Mode = "comment" | "chat";
 
@@ -81,6 +82,7 @@ export function MentionSuggestionBar({
   mode = "comment",
 }: Props) {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const { t } = useT("issues");
   const isChat = mode === "chat";
   // Rows are icon-only, so colour is the only thing that can carry a custom
   // status's identity here. (MUL-6243)
@@ -147,11 +149,17 @@ export function MentionSuggestionBar({
 
       const out: Row[] = [];
       if (matchedRecent.length > 0) {
-        out.push({ kind: "section", label: "Recent" });
+        out.push({
+          kind: "section",
+          label: t("mobile.mention.group_recent", "Recent"),
+        });
         for (const i of matchedRecent) out.push({ kind: "issue", issue: i });
       }
       if (matchedMine.length > 0) {
-        out.push({ kind: "section", label: "My issues" });
+        out.push({
+          kind: "section",
+          label: t("mobile.mention.group_my_issues", "My issues"),
+        });
         for (const i of matchedMine) out.push({ kind: "issue", issue: i });
       }
       if (out.length === 0) out.push({ kind: "empty" });
@@ -200,20 +208,41 @@ export function MentionSuggestionBar({
     const out: Row[] = [];
     if (showAll) out.push({ kind: "all" });
     if (matchedMembers.length > 0) {
-      out.push({ kind: "section", label: "Members" });
+      out.push({
+        kind: "section",
+        label: t("pickers.assignee.members_group", "Members"),
+      });
       for (const m of matchedMembers) out.push({ kind: "member", member: m });
     }
     if (matchedAgents.length > 0) {
-      out.push({ kind: "section", label: "Agents" });
+      out.push({
+        kind: "section",
+        label: t("pickers.assignee.agents_group", "Agents"),
+      });
       for (const a of matchedAgents) out.push({ kind: "agent", agent: a });
     }
     if (matchedSquads.length > 0) {
-      out.push({ kind: "section", label: "Squads" });
+      out.push({
+        kind: "section",
+        label: t("pickers.assignee.squads_group", "Squads"),
+      });
       for (const s of matchedSquads) out.push({ kind: "squad", squad: s });
     }
     if (out.length === 0) out.push({ kind: "empty" });
     return out;
-  }, [isChat, query, recentIssues, myIssuesAll, members, agents, squads, userId]);
+    // `t` 进依赖：分组标题现在是译文，切语言后必须重算，否则旧语言的
+    // 标题会一直挂在 memo 里。
+  }, [
+    isChat,
+    query,
+    recentIssues,
+    myIssuesAll,
+    members,
+    agents,
+    squads,
+    userId,
+    t,
+  ]);
 
   if (!visible) return null;
 
@@ -263,7 +292,7 @@ export function MentionSuggestionBar({
             return (
               <View className="px-3 py-3">
                 <Text className="text-xs text-muted-foreground">
-                  No matches.
+                  {t("common:mobile.common.no_matches", "No matches.")}
                 </Text>
               </View>
             );
@@ -280,8 +309,10 @@ export function MentionSuggestionBar({
                   <Text className="text-xs font-medium text-brand">@</Text>
                 </View>
                 <Text className="flex-1 text-sm text-foreground">
-                  Everyone
+                  {t("mobile.mention.everyone", "Everyone")}
                 </Text>
+                {/* Badge 的 "All" 是 @all 这个字面标记本身，不是可译
+                    文案——译成「全部」会和用户实际要输入的 @all 对不上。 */}
                 <Badge label="All" />
               </Pressable>
             );
@@ -306,7 +337,7 @@ export function MentionSuggestionBar({
                 <Text className="flex-1 text-sm text-foreground">
                   {item.member.name}
                 </Text>
-                <Badge label="Member" />
+                <Badge label={t("mobile.picker.member", "Member")} />
               </Pressable>
             );
           }
@@ -332,7 +363,11 @@ export function MentionSuggestionBar({
                   {item.agent.name}
                 </Text>
                 <Badge
-                  label={runtimeBound ? "Agent" : "Needs runtime"}
+                  label={
+                    runtimeBound
+                      ? t("mobile.picker.agent", "Agent")
+                      : t("mobile.picker.needs_runtime", "Needs runtime")
+                  }
                   tone={runtimeBound ? "brand" : "outline"}
                 />
               </Pressable>
@@ -354,7 +389,10 @@ export function MentionSuggestionBar({
                 <Text className="flex-1 text-sm text-foreground">
                   {item.squad.name}
                 </Text>
-                <Badge label="Squad" tone="outline" />
+                <Badge
+                  label={t("mobile.picker.squad", "Squad")}
+                  tone="outline"
+                />
               </Pressable>
             );
           }

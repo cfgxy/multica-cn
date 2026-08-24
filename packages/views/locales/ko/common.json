@@ -40,7 +40,8 @@
     "just_now": "방금 전",
     "minutes_ago": "{{count}}분 전",
     "hours_ago": "{{count}}시간 전",
-    "days_ago": "{{count}}일 전"
+    "days_ago": "{{count}}일 전",
+    "weeks_ago": "{{count}}주 전"
   },
   "lark_bind": {
     "page_title": "Lark 계정 연결",
@@ -123,5 +124,48 @@
   },
   "navigation": {
     "open_in_new_tab": "새 탭에서 열기"
+  },
+  "saving": "저장 중…",
+  "creating": "생성 중…",
+  "create": "생성",
+  "attach": "연결",
+  "attaching": "연결 중…",
+  "unknown_error": "알 수 없는 오류",
+  "discard_dialog": {
+    "changes_title": "변경 사항을 취소할까요?",
+    "keep_editing": "계속 편집",
+    "discard": "취소"
+  },
+  "field": {
+    "title": "제목",
+    "description": "설명"
+  },
+  "send": "보내기",
+  "composer": {
+    "placeholder": "메시지 입력…",
+    "replying_to": "{{name}}에게 답장",
+    "cancel_reply": "답장 취소",
+    "mention_hint": "멤버 또는 이슈 멘션",
+    "upload_image": "이미지 업로드",
+    "upload_file": "파일 업로드",
+    "file_too_large_title": "파일이 너무 큼",
+    "file_too_large_message": "파일은 {{size}} MB 미만이어야 합니다.",
+    "upload_failed_title": "업로드 실패"
+  },
+  "mobile": {
+    "actor": {
+      "system": "시스템",
+      "unknown_member": "알 수 없음",
+      "unknown_agent": "알 수 없는 에이전트",
+      "unknown_squad": "스쿼드"
+    },
+    "common": {
+      "no_matches": "일치하는 항목이 없습니다.",
+      "retry": "다시 시도",
+      "unknown_error": "알 수 없는 오류",
+      "search": "검색",
+      "close": "닫기",
+      "request_timeout": "요청 시간이 초과되었습니다({{seconds}}초)"
+    }
   }
 }

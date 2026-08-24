@@ -9,13 +9,11 @@
  * Per-record realtime: `useProjectRealtime(id, onDeleted=back)` subscribes
  * to `project:updated` (full replace) and `project:deleted` (pop back).
  *
- * Right-top "…" menu (ActionSheetIOS) → Edit / Delete. Delete asks for
- * confirmation via `Alert.alert` per iOS HIG (destructive actions need
- * a second tap).
+ * Right-top "…" menu (@rn-primitives DropdownMenu) → Pin / Edit / Open on web /
+ * Delete. Delete asks for confirmation via `Alert.alert`.
  */
 import { useCallback } from "react";
 import {
-  ActionSheetIOS,
   ActivityIndicator,
   Alert,
   Linking,
@@ -29,6 +27,13 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
 import { ProjectHeaderCard } from "@/components/project/project-header-card";
 import { ProjectPropertiesSection } from "@/components/project/project-properties-section";
 import { ProjectRelatedIssues } from "@/components/project/project-related-issues";
@@ -45,8 +50,11 @@ import { useAuthStore } from "@/data/auth-store";
 import { useProjectRealtime } from "@/data/realtime/use-project-realtime";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { getWebUrl } from "@/data/server-store";
+import i18n from "i18next";
+import { useT } from "@/lib/use-t";
 
 export default function ProjectDetail() {
+  const { t } = useT("projects");
   const { id } = useLocalSearchParams<{ id: string }>();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
@@ -85,58 +93,29 @@ export default function ProjectDetail() {
   const createPin = useCreatePin();
   const deletePin = useDeletePin();
 
-  const onPressMore = () => {
+  const wsUrl = getWebUrl();
+  const onTogglePin = useCallback(() => {
     if (!project) return;
-    // getWebUrl() 恒有值(未单独配置 Web 地址时回退当前服务器地址),
-    // 「Open on web」恒显示 —— 不再有空值隐藏分支(RUYI-4)。
-    const wsUrl = getWebUrl();
-    const options = [
-      "Cancel",
-      isPinned ? "Unpin" : "Pin",
-      "Edit details",
-      "Open on web",
-      "Delete",
-    ];
-    const destructiveIndex = options.length - 1;
-    ActionSheetIOS.showActionSheetWithOptions(
-      {
-        options,
-        cancelButtonIndex: 0,
-        destructiveButtonIndex: destructiveIndex,
-      },
-      (i) => {
-        const label = options[i];
-        if (label === "Pin") {
-          createPin.mutate({ item_type: "project", item_id: project.id });
-          return;
-        }
-        if (label === "Unpin") {
-          deletePin.mutate({ itemType: "project", itemId: project.id });
-          return;
-        }
-        if (label === "Edit details") {
-          if (wsSlug) router.push(`/${wsSlug}/project/${id}/edit`);
-          return;
-        }
-        if (label === "Open on web") {
-          Linking.openURL(`${wsUrl}/${wsSlug}/projects/${id}`);
-          return;
-        }
-        if (i === destructiveIndex) {
-          onDelete();
-        }
-      },
-    );
-  };
-
+    if (isPinned) {
+      deletePin.mutate({ itemType: "project", itemId: project.id });
+    } else {
+      createPin.mutate({ item_type: "project", item_id: project.id });
+    }
+  }, [project, isPinned, createPin, deletePin]);
+  const onEditDetails = useCallback(() => {
+    if (wsSlug) router.push(`/${wsSlug}/project/${id}/edit`);
+  }, [wsSlug, id]);
+  const onOpenOnWeb = useCallback(() => {
+    if (project) Linking.openURL(`${wsUrl}/${wsSlug}/projects/${id}`);
+  }, [project, wsSlug, id, wsUrl]);
   const onDelete = () => {
     Alert.alert(
-      "Delete project?",
-      "This cannot be undone. Issues in this project will become unassigned from any project.",
+      t("delete_dialog.title", "Delete project"),
+      t("delete_dialog.description", "This will delete the project. Issues will not be deleted but will be unlinked."),
       [
-        { text: "Cancel", style: "cancel" },
+        { text: t("delete_dialog.cancel", "Cancel"), style: "cancel" },
         {
-          text: "Delete",
+          text: t("delete_dialog.confirm", "Delete"),
           style: "destructive",
           onPress: () => {
             deleteProject.mutate(undefined, {
@@ -152,15 +131,34 @@ export default function ProjectDetail() {
     <SafeAreaView className="flex-1 bg-background" edges={["bottom"]}>
       <Stack.Screen
         options={{
-          title: project?.title || "Project",
+          // 同 issue/[id].tsx：兜底串走 i18n，避免加载期英文闪现。
+          title: project?.title || i18n.t("layout:tab.project", "Project"),
           headerBackTitle: "Back",
           headerRight: project
             ? () => (
-                <IconButton
-                  name="ellipsis-horizontal"
-                  onPress={onPressMore}
-                  accessibilityLabel="Project actions"
-                />
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <IconButton
+                      name="ellipsis-horizontal"
+                      accessibilityLabel={t("page.row_menu", "Project actions")}
+                    />
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-44">
+                    <DropdownMenuItem onPress={onTogglePin}>
+                      <Text>{isPinned ? t("page.unpin", "Unpin") : t("page.pin", "Pin to sidebar")}</Text>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onPress={onEditDetails}>
+                      <Text>{t("mobile.detail.edit_details", "Edit details")}</Text>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onPress={onOpenOnWeb}>
+                      <Text>{t("mobile.detail.open_on_web", "Open on web")}</Text>
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem variant="destructive" onPress={onDelete}>
+                      <Text>{t("delete_dialog.confirm", "Delete")}</Text>
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               )
             : undefined,
         }}
@@ -172,13 +170,15 @@ export default function ProjectDetail() {
       ) : detail.error || projectMissing ? (
         <View className="flex-1 items-center justify-center px-6 gap-3">
           <Text className="text-sm text-destructive text-center">
-            Failed to load project:{" "}
-            {detail.error instanceof Error
-              ? detail.error.message
-              : "not found"}
+            {t("mobile.detail.load_failed", "Failed to load project: {{reason}}", {
+              reason:
+                detail.error instanceof Error
+                  ? detail.error.message
+                  : t("mobile.detail.not_found", "not found"),
+            })}
           </Text>
           <Button variant="outline" onPress={() => detail.refetch()}>
-            <Text>Retry</Text>
+            <Text>{t("common:mobile.common.retry", "Retry")}</Text>
           </Button>
         </View>
       ) : (

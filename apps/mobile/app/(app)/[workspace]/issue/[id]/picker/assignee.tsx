@@ -11,13 +11,17 @@ import { issueDetailOptions } from "@/data/queries/issues";
 import { useUpdateIssue } from "@/data/mutations/issues";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useNativeSearchBar } from "@/lib/use-native-search-bar";
+import i18n from "i18next";
 
 export default function IssueAssigneePickerRoute() {
   const { id } = useLocalSearchParams<{ id: string }>();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const { data: issue } = useQuery(issueDetailOptions(wsId, id));
   const updateIssue = useUpdateIssue(id);
-  const query = useNativeSearchBar("Search people", { autoFocus: true });
+  const query = useNativeSearchBar(
+    i18n.t("issues:pickers.assignee.search_placeholder", "Assign to..."),
+    { autoFocus: true },
+  );
 
   const value =
     issue?.assignee_type && issue?.assignee_id

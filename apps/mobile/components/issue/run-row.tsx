@@ -17,6 +17,7 @@ import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { useCancelTask } from "@/data/mutations/issues";
 import { useActorLookup } from "@/data/use-actor-name";
 import { timeAgo } from "@/lib/time-ago";
+import { useT } from "@/lib/use-t";
 
 interface Props {
   task: AgentTask;
@@ -31,8 +32,9 @@ const ACTIVE_STATUSES: readonly AgentTask["status"][] = [
 
 export function RunRow({ task, issueId }: Props) {
   const { getName } = useActorLookup();
+  const { t } = useT("issues");
   const isActive = ACTIVE_STATUSES.includes(task.status);
-  const summary = task.trigger_summary?.trim() || fallbackSummary(task);
+  const summary = task.trigger_summary?.trim() || fallbackSummary(task, t);
   // Past tasks use completed_at when present (server fills it for terminal
   // statuses); active tasks fall back to created_at so the user sees how
   // long it's been waiting.
@@ -62,16 +64,24 @@ export function RunRow({ task, issueId }: Props) {
 }
 
 function StatusBadge({ task }: { task: AgentTask }) {
-  const label = STATUS_LABEL[task.status] ?? task.status;
+  const { t } = useT("issues");
+  const en = STATUS_LABEL[task.status];
+  // 未知 status 原样透出（API Response Compatibility：服务端可能新增枚举
+  // 值，装机版本必须能渲染而不是崩）。只有已知值才去查 i18n——拿未知值
+  // 拼 key 会命中缺失分支，i18next 返回 key 本身，等于把内部串泄漏出去。
+  const label = en == null ? task.status : t(`mobile.run_status.${task.status}`, en);
   const cls = STATUS_CLASS[task.status] ?? "text-muted-foreground";
   // For failed tasks, surface the failure_reason inline so users don't have
   // to drill in. Missing / empty / unrecognised stays as just "Failed".
   if (task.status === "failed" && task.failure_reason) {
-    const reasonLabel = FAILURE_REASON_LABEL[task.failure_reason];
-    if (reasonLabel) {
+    const reasonEn = FAILURE_REASON_LABEL[task.failure_reason];
+    if (reasonEn) {
+      // wire 值里的点号会被 i18next 当成嵌套层级分隔符，换成双下划线，与
+      // 资源文件里的写法对齐（同 lib/failure-reason-label.ts）。
+      const seg = task.failure_reason.replace(/\./g, "__");
       return (
         <Text className={`text-xs ${cls}`}>
-          {label} · {reasonLabel}
+          {label} · {t(`mobile.run_failure.${seg}`, reasonEn)}
         </Text>
       );
     }
@@ -86,16 +96,26 @@ function CancelButton({
   taskId: string;
   issueId: string;
 }) {
+  const { t } = useT("issues");
   const mutation = useCancelTask(issueId);
 
   const onPress = () => {
+    // web 的 terminate_dialog 说的是「不可恢复」，mobile 说的是「跑完当前
+    // 步骤后停」——语义不同，标题和正文用 mobile 专属键；两个按钮文案与 web
+    // 一致，直接复用。
     Alert.alert(
-      "Cancel task?",
-      "The agent will stop after the current step.",
+      t("mobile.runs.cancel_title", "Cancel task?"),
+      t(
+        "mobile.runs.cancel_body",
+        "The agent will stop after the current step.",
+      ),
       [
-        { text: "Keep running", style: "cancel" },
         {
-          text: "Cancel task",
+          text: t("terminate_dialog.keep", "Keep running"),
+          style: "cancel",
+        },
+        {
+          text: t("execution_log.cancel_task_tooltip", "Cancel task"),
           style: "destructive",
           onPress: () => mutation.mutate(taskId),
         },
@@ -109,24 +129,30 @@ function CancelButton({
       disabled={mutation.isPending}
       className="px-3 py-1.5 rounded-md bg-secondary active:opacity-70"
     >
-      <Text className="text-xs font-medium text-foreground">Cancel</Text>
+      <Text className="text-xs font-medium text-foreground">
+        {t("common:cancel", "Cancel")}
+      </Text>
     </Pressable>
   );
 }
 
-function fallbackSummary(task: AgentTask): string {
+// 本文件是组件文件，按 mobile 的接线范式走 useT——`t` 由调用方（RunRow）
+// 从 hook 取好后传进来，这个纯函数本身不持有 i18n 状态，仍可单独测试。
+type TFn = ReturnType<typeof useT>["t"];
+
+function fallbackSummary(task: AgentTask, t: TFn): string {
   switch (task.kind) {
     case "comment":
-      return "Comment task";
+      return t("mobile.run_summary.comment", "Comment task");
     case "autopilot":
-      return "Autopilot run";
+      return t("mobile.run_summary.autopilot", "Autopilot run");
     case "chat":
-      return "Chat task";
+      return t("mobile.run_summary.chat", "Chat task");
     case "quick_create":
-      return "Quick create";
+      return t("mobile.run_summary.quick_create", "Quick create");
     case "direct":
     default:
-      return "Task";
+      return t("mobile.run_summary.direct", "Task");
   }
 }
 

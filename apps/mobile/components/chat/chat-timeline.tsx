@@ -29,6 +29,7 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
+import { useT } from "@/lib/use-t";
 
 interface Props {
   items: TaskMessagePayload[];
@@ -38,24 +39,27 @@ interface Props {
 }
 
 export function ChatTimeline({ items, isStreaming = false }: Props) {
+  const { t } = useT("chat");
   const processSteps = items.filter((i) => i.type !== "text");
   if (processSteps.length === 0) return null;
+
+  // 整句复数键（_one / _other），不做 "N" + " step(s)" 拼接 —— 中日韩无复数
+  // 形态，量词位置也与英文不同。
+  const stepsLabel = t("message_list.process_steps", "{{count}} steps", {
+    count: processSteps.length,
+  });
 
   return (
     <Collapsible defaultOpen={isStreaming}>
       <CollapsibleTrigger asChild>
         <View
           accessibilityRole="button"
-          accessibilityLabel={`${processSteps.length} step${processSteps.length === 1 ? "" : "s"}`}
+          accessibilityLabel={stepsLabel}
           className="flex-row items-center gap-1 active:opacity-70"
         >
           <Ionicons name="chevron-forward" size={12} color="#71717a" />
           {isStreaming ? <StreamingDot /> : null}
-          <Text className="text-xs text-muted-foreground">
-            {processSteps.length === 1
-              ? "1 step"
-              : `${processSteps.length} steps`}
-          </Text>
+          <Text className="text-xs text-muted-foreground">{stepsLabel}</Text>
         </View>
       </CollapsibleTrigger>
       <CollapsibleContent>
@@ -175,6 +179,7 @@ function ToolCallRow({ item }: { item: TaskMessagePayload }) {
 }
 
 function ToolResultRow({ item }: { item: TaskMessagePayload }) {
+  const { t } = useT("chat");
   const output = item.output ?? "";
   if (!output) return null;
   const preview = output.length > 80 ? `${output.slice(0, 80)}…` : output;
@@ -202,7 +207,7 @@ function ToolResultRow({ item }: { item: TaskMessagePayload }) {
         <View className="ml-4 mt-1 rounded bg-muted/40 px-2 py-1.5">
           <Text className="text-xs text-muted-foreground">
             {output.length > 4000
-              ? `${output.slice(0, 4000)}\n…(truncated)`
+              ? `${output.slice(0, 4000)}\n${t("mobile.timeline.truncated", "…(truncated)")}`
               : output}
           </Text>
         </View>

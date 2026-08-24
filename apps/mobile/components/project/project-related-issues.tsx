@@ -36,15 +36,17 @@ import { projectIssuesOptions } from "@/data/queries/projects";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import {
   BOARD_CATEGORIES,
-  STATUS_LABEL,
   issueColumnCategory,
+  statusLabel,
 } from "@/lib/issue-status";
+import { useT } from "@/lib/use-t";
 
 interface Props {
   projectId: string;
 }
 
 export function ProjectRelatedIssues({ projectId }: Props) {
+  const { t } = useT("projects");
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { data, isLoading, error, refetch } = useQuery(
@@ -71,11 +73,19 @@ export function ProjectRelatedIssues({ projectId }: Props) {
     return (
       <View className="px-4 py-6 gap-3">
         <Text className="text-sm text-destructive">
-          Failed to load issues:{" "}
-          {error instanceof Error ? error.message : "unknown error"}
+          {t(
+            "mobile.detail.issues_load_failed",
+            "Failed to load issues: {{reason}}",
+            {
+              reason:
+                error instanceof Error
+                  ? error.message
+                  : t("common:mobile.common.unknown_error", "unknown error"),
+            },
+          )}
         </Text>
         <Button variant="outline" onPress={() => refetch()}>
-          <Text>Retry</Text>
+          <Text>{t("common:mobile.common.retry", "Retry")}</Text>
         </Button>
       </View>
     );
@@ -84,7 +94,11 @@ export function ProjectRelatedIssues({ projectId }: Props) {
   if ((data?.length ?? 0) === 0) {
     return (
       <View className="px-4 py-6">
-        <Text className="text-sm text-muted-foreground">No issues yet.</Text>
+        <Text className="text-sm text-muted-foreground">
+          {/* web 的 detail.no_issues_yet 不带句点，mobile 这里是完整句子，
+              保留句点故用 mobile 专属键。 */}
+          {t("mobile.detail.no_issues_yet", "No issues yet.")}
+        </Text>
       </View>
     );
   }
@@ -123,7 +137,9 @@ function SectionHeader({
       {/* A category IS a built-in status key, so it resolves to its own glyph. */}
       <StatusIcon status={category} size={14} />
       <Text className="text-xs uppercase tracking-wider text-muted-foreground font-medium">
-        {STATUS_LABEL[category]}
+        {/* category 本身就是内置状态键，`statusLabel` 走 `issues:status.*`，
+            取不到时回落到上游的英文常量表。 */}
+        {statusLabel(category)}
       </Text>
       <Text className="text-xs text-muted-foreground/60">{count}</Text>
     </View>

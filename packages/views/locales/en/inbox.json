@@ -88,5 +88,15 @@
     "archive_completed_failed": "Failed to archive completed",
     "unarchive_failed": "Failed to unarchive",
     "archived_load_failed": "Failed to load archived notifications"
+  },
+  "mobile": {
+    "page": {
+      "actions_a11y": "Inbox actions",
+      "archive_all_body": "This archives every inbox item, read or unread. You can still find them via the issue pages.",
+      "load_failed": "Failed to load inbox: {{reason}}"
+    },
+    "label": {
+      "reacted_with": "Reacted with {{emoji}}"
+    }
   }
 }

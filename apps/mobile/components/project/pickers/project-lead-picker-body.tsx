@@ -24,6 +24,7 @@ import { memberListOptions } from "@/data/queries/members";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useScrollToTopOnChange } from "@/lib/use-scroll-to-top-on-change";
 import { THEME } from "@/lib/theme";
+import { useT } from "@/lib/use-t";
 
 const AVATAR_SIZE = 36;
 
@@ -52,6 +53,7 @@ function isRowSelected(value: LeadValue | null, row: Row): boolean {
 }
 
 export function ProjectLeadPickerBody({ value, query, onChange }: Props) {
+  const { t } = useT("issues");
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const { data: members = [] } = useQuery(memberListOptions(wsId));
   const { data: agents = [] } = useQuery(agentListOptions(wsId));
@@ -141,14 +143,16 @@ export function ProjectLeadPickerBody({ value, query, onChange }: Props) {
             numberOfLines={1}
           >
             {item.kind === "unassigned"
-              ? "Unassigned"
+              ? t("mobile.picker.unassigned", "Unassigned")
               : item.kind === "member"
                 ? item.member.name
                 : item.agent.name}
           </Text>
           {/* Inline type tag — Apple UITableViewCellStyleValue1. */}
           {item.kind === "agent" ? (
-            <Text className="text-sm text-muted-foreground">Agent</Text>
+            <Text className="text-sm text-muted-foreground">
+              {t("mobile.picker.agent", "Agent")}
+            </Text>
           ) : null}
           {isRowSelected(value, item) ? (
             <Ionicons name="checkmark" size={20} color={checkColor} />
@@ -159,8 +163,11 @@ export function ProjectLeadPickerBody({ value, query, onChange }: Props) {
         <View className="px-3 py-8 items-center">
           <Text className="text-sm text-muted-foreground text-center">
             {query
-              ? "No matches."
-              : "No members or agents in this workspace yet."}
+              ? t("common:mobile.common.no_matches", "No matches.")
+              : t(
+                  "mobile.picker.no_members_or_agents",
+                  "No members or agents in this workspace yet.",
+                )}
           </Text>
         </View>
       }

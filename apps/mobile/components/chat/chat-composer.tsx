@@ -35,6 +35,7 @@ import { MessageComposer } from "@/components/composer/message-composer";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
+import { useT } from "@/lib/use-t";
 
 interface Props {
   /** Current draft text (controlled). Empty string = no draft. */
@@ -71,6 +72,7 @@ export function ChatComposer({
   disabled = false,
   disabledReason,
 }: Props) {
+  const { t } = useT("chat");
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
 
   const onSubmit = useCallback(
@@ -88,6 +90,9 @@ export function ChatComposer({
     [onSend],
   );
 
+  const idlePlaceholder = t("mobile.composer.placeholder", "Message…");
+  const agentWorking = t("mobile.composer.agent_working", "Agent is working…");
+
   const handleStop = useCallback(() => {
     if (IS_IOS) {
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
@@ -104,25 +109,33 @@ export function ChatComposer({
         pathname: "/[workspace]/mention-picker",
         params: { workspace: wsSlug ?? "", mode: "chat" },
       }}
-      placeholder={sending ? "Agent is working…" : "Message…"}
+      placeholder={sending ? agentWorking : idlePlaceholder}
       pillLabel={
         sending
-          ? "Agent is working…"
+          ? agentWorking
           : disabled
-            ? (disabledReason ?? "Chat unavailable")
-            : "Message…"
+            ? // 当前唯一调用方 chat.tsx 的 `disabledReason` 与 `disabled`
+              // 同集合同判据、无 undefined 出口，所以右侧不可达。保留为
+              // 防御性兜底：防未来新增调用方传 disabled 却漏传 reason，
+              // 那时 pill 会空白而不是给出原因。
+              (disabledReason ??
+              t("mobile.composer.unavailable", "Chat unavailable"))
+            : idlePlaceholder
       }
       pillIcon="chatbubble-ellipses-outline"
       disabled={disabled}
       disabledReason={disabledReason}
       isSending={sending}
-      renderStop={allowStop ? () => <StopButton onPress={handleStop} /> : undefined}
+      renderStop={
+        allowStop ? () => <StopButton onPress={handleStop} /> : undefined
+      }
       manageKeyboard={false}
     />
   );
 }
 
 function StopButton({ onPress }: { onPress: () => void }) {
+  const { t } = useT("chat");
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme];
   return (
@@ -136,7 +149,7 @@ function StopButton({ onPress }: { onPress: () => void }) {
         className="h-8 w-8 items-center justify-center rounded-full bg-foreground active:opacity-80"
         hitSlop={12}
         accessibilityRole="button"
-        accessibilityLabel="Stop agent"
+        accessibilityLabel={t("mobile.composer.stop_agent", "Stop agent")}
       >
         <View
           style={{

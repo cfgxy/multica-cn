@@ -25,6 +25,7 @@ import type {
   TimelineEntry,
   UpdateIssueRequest,
 } from "@multica/core/types";
+import i18n from "i18next";
 import { api } from "@/data/api";
 import { isIssueStatusCategory } from "@/lib/issue-status";
 import { issueKeys } from "@/data/queries/issues";
@@ -122,7 +123,10 @@ export function useCreateComment(issueId: string) {
           content: vars.content,
           parentId: vars.parentId,
           attachmentIds: vars.attachmentIds,
-          error: err instanceof Error ? err.message : "Send failed",
+          error:
+            err instanceof Error
+              ? err.message
+              : i18n.t("issues:mobile.comment.send_failed", "Couldn't send"),
         });
       }
     },

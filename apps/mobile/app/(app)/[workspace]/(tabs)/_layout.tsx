@@ -21,9 +21,12 @@
  * scheme via THEME so dark mode picks contrasting values automatically.
  */
 import { useRef } from "react";
+import { Platform } from "react-native";
 import { Tabs } from "expo-router";
 import { Image } from "expo-image";
+import { Ionicons } from "@expo/vector-icons";
 import { View } from "react-native";
+import i18n from "i18next";
 import type { TriggerRef } from "@rn-primitives/dropdown-menu";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
@@ -77,57 +80,89 @@ export default function TabsLayout() {
         <Tabs.Screen
           name="inbox"
           options={{
-            title: "Inbox",
+            title: i18n.t("layout:nav.inbox", "Inbox"),
             tabBarBadge: inboxBadge,
             tabBarBadgeStyle: BADGE_STYLE,
-            tabBarIcon: ({ color, size, focused }) => (
-              <Image
-                source={focused ? "sf:tray.fill" : "sf:tray"}
-                tintColor={color}
-                style={{ width: size, height: size }}
-              />
-            ),
+            tabBarIcon: Platform.OS === "ios"
+              ? ({ color, size, focused }) => (
+                  <Image
+                    source={focused ? "sf:tray.fill" : "sf:tray"}
+                    tintColor={color}
+                    style={{ width: size, height: size }}
+                  />
+                )
+              : ({ color, size, focused }) => (
+                  <Ionicons
+                    name={focused ? "mail" : "mail-outline"}
+                    size={size}
+                    color={color}
+                  />
+                ),
           }}
         />
         <Tabs.Screen
           name="my-issues"
           options={{
-            title: "My Issues",
-            tabBarIcon: ({ color, size, focused }) => (
-              <Image
-                source={focused ? "sf:checklist" : "sf:checklist.unchecked"}
-                tintColor={color}
-                style={{ width: size, height: size }}
-              />
-            ),
+            title: i18n.t("layout:nav.my_issues", "My Issues"),
+            tabBarIcon: Platform.OS === "ios"
+              ? ({ color, size, focused }) => (
+                  <Image
+                    source={focused ? "sf:checklist" : "sf:checklist.unchecked"}
+                    tintColor={color}
+                    style={{ width: size, height: size }}
+                  />
+                )
+              : ({ color, size, focused }) => (
+                  <Ionicons
+                    name={focused ? "checkbox" : "square-outline"}
+                    size={size}
+                    color={color}
+                  />
+                ),
           }}
         />
         <Tabs.Screen
           name="chat"
           options={{
-            title: "Chat",
+            title: i18n.t("layout:nav.chat", "Chat"),
             tabBarBadge: chatBadge,
             tabBarBadgeStyle: BADGE_STYLE,
-            tabBarIcon: ({ color, size, focused }) => (
-              <Image
-                source={focused ? "sf:bubble.left.fill" : "sf:bubble.left"}
-                tintColor={color}
-                style={{ width: size, height: size }}
-              />
-            ),
+            tabBarIcon: Platform.OS === "ios"
+              ? ({ color, size, focused }) => (
+                  <Image
+                    source={focused ? "sf:bubble.left.fill" : "sf:bubble.left"}
+                    tintColor={color}
+                    style={{ width: size, height: size }}
+                  />
+                )
+              : ({ color, size, focused }) => (
+                  <Ionicons
+                    name={focused ? "chatbubble" : "chatbubble-outline"}
+                    size={size}
+                    color={color}
+                  />
+                ),
           }}
         />
         <Tabs.Screen
           name="more"
           options={{
-            title: "More",
-            tabBarIcon: ({ color, size }) => (
-              <Image
-                source="sf:ellipsis"
-                tintColor={color}
-                style={{ width: size, height: size }}
-              />
-            ),
+            title: i18n.t("agents:transcript.more_actions", "More"),
+            tabBarIcon: Platform.OS === "ios"
+              ? ({ color, size }) => (
+                  <Image
+                    source="sf:ellipsis"
+                    tintColor={color}
+                    style={{ width: size, height: size }}
+                  />
+                )
+              : ({ color, size }) => (
+                  <Ionicons
+                    name="ellipsis-horizontal"
+                    size={size}
+                    color={color}
+                  />
+                ),
           }}
           listeners={() => ({
             tabPress: (e) => {

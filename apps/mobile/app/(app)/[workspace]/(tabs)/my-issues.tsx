@@ -45,12 +45,18 @@ import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useMyIssuesViewStore } from "@/data/stores/my-issues-view-store";
 import { useClearFiltersOnWorkspaceChange } from "@/lib/use-clear-filters-on-workspace-change";
-import { PRIORITY_LABEL, STATUS_LABEL } from "@/lib/issue-status";
+import {
+  localizedStatusLabel,
+  priorityLabel,
+  statusLabel,
+} from "@/lib/issue-status";
 import { useIssueStatuses } from "@/lib/use-issue-statuses";
 import { groupIssuesByCategory } from "@/lib/group-issues-by-category";
 import { filterIssues } from "@/lib/filter-issues";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
+import type { TFunction } from "i18next";
+import { useT } from "@/lib/use-t";
 
 // Mobile pill row has tight width on SE3 (375pt). Three pills + Filter icon
 // must fit in 343pt usable space, so the agents scope renders "Agents" — the
@@ -58,14 +64,23 @@ import { THEME } from "@/lib/theme";
 // under Dynamic Type. Semantics unchanged: same backend predicate
 // (`involves_user_id`, MUL-2397) covers owned agents + related squads; the
 // empty state copy still says "agents or squads".
-const SCOPES: { value: MyIssuesScope; label: string }[] = [
-  { value: "assigned", label: "Assigned" },
-  { value: "created", label: "Created" },
-  { value: "agents", label: "Agents" },
-];
+// 两侧的模块级常量都已无引用：分组交给上游的 `groupIssuesByCategory`
+// （不再需要 `IssueSection`），scope 列表移进组件内跟 t 一起重算
+// （模块顶层的 `SCOPES` 会在 i18n 初始化前固化，切语言不重算）。
 
 export default function MyIssues() {
   const isFocused = useIsFocused();
+  const { t } = useT("my-issues");
+  // 模块级常量会在 i18n 初始化之前求值一次就固化，切语言不重算——所以
+  // 放进组件里跟 t 一起重算（同 apps/mobile/CLAUDE.md 的 i18n 规则）。
+  const scopes = useMemo<{ value: MyIssuesScope; label: string }[]>(
+    () => [
+      { value: "assigned", label: t("header.scope.assigned_label", "Assigned") },
+      { value: "created", label: t("header.scope.created_label", "Created") },
+      { value: "agents", label: t("issues:scope.agents_label", "Agents") },
+    ],
+    [t],
+  );
   const userId = useAuthStore((s) => s.user?.id ?? null);
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
@@ -120,9 +135,12 @@ export default function MyIssues() {
 
   return (
     <View className="flex-1 bg-background">
-      <Header title="My Issues" right={<HeaderActions />} />
+      <Header
+        title={t("mobile.page.title", "My Issues")}
+        right={<HeaderActions />}
+      />
       <ScopeToolbar
-        scopes={SCOPES}
+        scopes={scopes}
         scope={scope}
         onChange={(v) => setScope(v)}
         onOpenFilter={openFilter}
@@ -132,7 +150,7 @@ export default function MyIssues() {
         <ActiveFilterChips
           statusFilters={statusFilters}
           priorityFilters={priorityFilters}
-          statusLabelOf={catalog.labelOf}
+          statusLabelOf={(s) => localizedStatusLabel(catalog, s)}
           onClearStatus={(s) =>
             useMyIssuesViewStore.getState().toggleStatusFilter(s)
           }
@@ -146,19 +164,25 @@ export default function MyIssues() {
       ) : error ? (
         <View className="px-4 gap-3 pt-4">
           <Text className="text-sm text-destructive">
-            Failed to load issues:{" "}
-            {error instanceof Error ? error.message : "unknown error"}
+            {/* 整句插值，不做「失败：」+ 详情的拼接——中日韩里详情的
+                位置与英文不同。与 select-workspace / issue 详情同一处理。 */}
+            {t("mobile.page.load_failed", "Failed to load issues: {{reason}}", {
+              reason:
+                error instanceof Error
+                  ? error.message
+                  : t("common:mobile.common.unknown_error", "unknown error"),
+            })}
           </Text>
           <Button variant="outline" onPress={() => refetch()}>
-            <Text>Retry</Text>
+            <Text>{t("common:mobile.common.retry", "Retry")}</Text>
           </Button>
         </View>
       ) : showEmptyState ? (
         <EmptyState
           message={
             hasActiveFilters
-              ? "No issues match the current filters."
-              : emptyMessageForScope(scope)
+              ? t("mobile.empty.filtered", "No issues match the current filters.")
+              : emptyMessageForScope(scope, t)
           }
         />
       ) : (
@@ -209,13 +233,14 @@ function FilterButton({
   hasActiveFilters: boolean;
 }) {
   const { colorScheme } = useColorScheme();
+  const { t } = useT("my-issues");
   return (
     <View style={{ position: "relative" }} className="ml-2">
       <Button
         variant="outline"
         size="sm"
         onPress={onPress}
-        accessibilityLabel="Filter"
+        accessibilityLabel={t("mobile.page.filter_a11y", "Filter")}
         className="w-9 px-0"
       >
         <Ionicons
@@ -307,7 +332,7 @@ function ActiveFilterChips({
         <Chip key={`s-${s}`} label={statusLabelOf(s)} onClear={() => onClearStatus(s)} />
       ))}
       {priorityFilters.map((p) => (
-        <Chip key={`p-${p}`} label={PRIORITY_LABEL[p]} onClear={() => onClearPriority(p)} />
+        <Chip key={`p-${p}`} label={priorityLabel(p)} onClear={() => onClearPriority(p)} />
       ))}
     </View>
   );
@@ -345,7 +370,8 @@ function SectionHeader({
       {/* A category IS a built-in status key, so it resolves to its own glyph. */}
       <StatusIcon status={category} size={14} />
       <Text className="text-xs uppercase tracking-wider text-muted-foreground font-medium">
-        {STATUS_LABEL[category]}
+        {/* category 本身就是内置状态键，`statusLabel` 走 `issues:status.*`。 */}
+        {statusLabel(category)}
       </Text>
       <Text className="text-xs text-muted-foreground/60">{count}</Text>
     </View>
@@ -362,13 +388,19 @@ function EmptyState({ message }: { message: string }) {
   );
 }
 
-function emptyMessageForScope(scope: MyIssuesScope): string {
+function emptyMessageForScope(
+  scope: MyIssuesScope,
+  t: TFunction,
+): string {
   switch (scope) {
     case "assigned":
-      return "No issues assigned to you.";
+      return t("mobile.empty.assigned", "No issues assigned to you.");
     case "created":
-      return "You haven't created any issues.";
+      return t("mobile.empty.created", "You haven't created any issues.");
     case "agents":
-      return "No issues assigned to your agents or squads yet.";
+      return t(
+        "mobile.empty.agents",
+        "No issues assigned to your agents or squads yet.",
+      );
   }
 }

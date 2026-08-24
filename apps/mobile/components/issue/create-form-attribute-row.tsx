@@ -22,8 +22,10 @@ import { formatDateOnly } from "@multica/core/issues/date";
 import { useActorLookup } from "@/data/use-actor-name";
 import { useNewIssueDraftStore } from "@/data/stores/new-issue-draft-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
-import { PRIORITY_LABEL } from "@/lib/issue-status";
+import { displayLocale } from "@/lib/display-locale";
+import { localizedStatusLabel, priorityLabel } from "@/lib/issue-status";
 import { useIssueStatuses } from "@/lib/use-issue-statuses";
+import { useT } from "@/lib/use-t";
 
 /**
  * Picker fields the new-issue draft form can open. Bound to a typed map
@@ -53,14 +55,21 @@ export function CreateFormAttributeRow() {
   const dueDate = useNewIssueDraftStore((s) => s.dueDate);
   const project = useNewIssueDraftStore((s) => s.project);
 
+  const { t } = useT("issues");
   const { getName } = useActorLookup();
+  const dueDateLabel = t("actions.due_date", "Due date");
   // The draft can hold a custom status the user picked in the sheet. (MUL-6243)
-  const { categoryOf, colorOf, labelOf } = useIssueStatuses();
+  // `labelOf` 换成 `localizedStatusLabel(catalog, ...)`：内置状态走 i18n，
+  // 自定义状态仍取目录 `name`，分支判据与 `labelOf` 一致。
+  const catalog = useIssueStatuses();
+  const { categoryOf, colorOf } = catalog;
   const assigneeLabel = assignee
     ? getName(assignee.type, assignee.id)
-    : "Assignee";
-  const priorityLabel =
-    priority === "none" ? "Priority" : PRIORITY_LABEL[priority];
+    : t("actions.assignee", "Assignee");
+  const priorityText =
+    priority === "none"
+      ? t("actions.priority", "Priority")
+      : priorityLabel(priority);
 
   const open = (field: NewIssuePickerField) => {
     if (!wsSlug) return;
@@ -82,13 +91,13 @@ export function CreateFormAttributeRow() {
               size={12}
             />
           }
-          label={labelOf(status)}
+          label={localizedStatusLabel(catalog, status)}
           variant="filled"
           onPress={() => open("status")}
         />
         <AttributeChip
           icon={<PriorityIcon priority={priority} />}
-          label={priorityLabel}
+          label={priorityText}
           variant={priority === "none" ? "dimmed" : "filled"}
           onPress={() => open("priority")}
         />
@@ -121,7 +130,7 @@ export function CreateFormAttributeRow() {
               color={dueDate ? undefined : "#a1a1aa"}
             />
           }
-          label={dueDate ? formatDueDate(dueDate) : "Due date"}
+          label={dueDate ? formatDueDate(dueDate, dueDateLabel) : dueDateLabel}
           variant={dueDate ? "filled" : "dimmed"}
           onPress={() => open("due-date")}
         />
@@ -133,7 +142,7 @@ export function CreateFormAttributeRow() {
               <Ionicons name="folder-outline" size={14} color="#a1a1aa" />
             )
           }
-          label={project?.title ?? "Project"}
+          label={project?.title ?? t("detail.prop_project", "Project")}
           variant={project ? "filled" : "dimmed"}
           onPress={() => open("project")}
         />
@@ -142,7 +151,19 @@ export function CreateFormAttributeRow() {
   );
 }
 
-// due_date is a calendar day — format timezone-safely (no offset day shift).
-function formatDueDate(iso: string): string {
-  return formatDateOnly(iso, { month: "short", day: "numeric" }) || "Due date";
+/**
+ * due_date is a calendar day — format timezone-safely (no offset day shift).
+ *
+ * locale 走 `displayLocale()`，与 `attribute-row.tsx` / `detail-label.tsx` /
+ * `format-activity.ts` 同一出口。这里原先省略第三参跟随的是**系统** locale，
+ * 那三处硬编码 `"en-US"` —— 同一个 due_date 在详情页显示 `Mar 5`、在新建
+ * 表单显示 `3月5日`，方向相反的两种不一致。
+ *
+ * 空值 fallback 由调用方传入（本函数在组件外，取不到 t()）。
+ */
+function formatDueDate(iso: string, emptyLabel: string): string {
+  return (
+    formatDateOnly(iso, { month: "short", day: "numeric" }, displayLocale()) ||
+    emptyLabel
+  );
 }

@@ -77,7 +77,7 @@
     "agents_group": "智能体",
     "squads_group": "小队",
     "issue_count_other": "{{count}} 个任务",
-    "reset": "重置全部筛选",
+    "reset": "重置",
     "chip_remove": "移除{{name}}筛选",
     "chip_status_count_other": "{{count}} 个状态",
     "chip_priority_count_other": "{{count}} 个优先级",
@@ -390,8 +390,8 @@
     "due_date_removed": "移除了截止日期",
     "title_renamed": "把这个任务从\"{{from}}\"重命名为\"{{to}}\"",
     "description_updated": "更新了描述",
-    "task_completed_other": "完成了 task（{{count}} 次）",
-    "task_failed_other": "task 失败（{{count}} 次）",
+    "task_completed_other": "完成了 {{count}} 个 task",
+    "task_failed_other": "{{count}} 个 task 失败",
     "squad_leader_evaluated": "评估了小队触发",
     "squad_leader_action": "已评估并采取了操作",
     "squad_leader_action_reason": "已评估并采取了操作：{{reason}}",
@@ -783,5 +783,127 @@
     "hook_refused": "{{name}} 未被执行。",
     "hook_activity": "最近调用",
     "hook_never_run": "该 hook 尚未运行过。"
+  },
+  "mobile": {
+    "edit": {
+      "discard_message": "你对此任务的修改将会丢失。",
+      "save_failed": "保存失败"
+    },
+    "composer": {
+      "placeholder": "添加评论…",
+      "pill_label": "添加评论，输入 @ 可提及"
+    },
+    "comment": {
+      "resolved_bar_other": "已解决 · {{count}} 条消息，来自 {{authors}}",
+      "resolved_bar_a11y_other": "已解决话题，共 {{count}} 条消息，来自 {{authors}}。点按展开。",
+      "resolved_by": "解决者",
+      "collapse": "收起",
+      "collapse_a11y": "收起已解决话题",
+      "edited_suffix": " ·（已编辑）",
+      "send_failed": "发送失败",
+      "retry": "重试",
+      "retry_a11y": "重新发送评论",
+      "discard": "丢弃",
+      "discard_a11y": "丢弃发送失败的评论",
+      "add_reaction": "添加表情回应",
+      "delete_title": "删除评论？",
+      "delete_desc": "此评论将被永久删除，话题中的回复也会一并移除。此操作无法撤销。"
+    },
+    "detail": {
+      "actions_a11y": "任务操作",
+      "edit_details": "编辑详情",
+      "open_on_web": "在网页中打开",
+      "load_failed": "无法加载任务：{{reason}}",
+      "not_found": "未找到",
+      "retry": "重试",
+      "no_description": "暂无描述。"
+    },
+    "picker": {
+      "unassigned": "未指派",
+      "agent": "智能体",
+      "member": "成员",
+      "squad": "小队",
+      "needs_runtime": "需绑定运行时",
+      "leader_needs_runtime": "队长需绑定运行时",
+      "everyone_all": "所有人（@all）",
+      "done": "完成",
+      "create_label": "创建\"{{name}}\"",
+      "no_labels": "此工作区还没有标签。",
+      "no_members_or_agents": "此工作区还没有成员或 Agent。"
+    },
+    "mention": {
+      "everyone": "所有人",
+      "screen_title": "提及",
+      "group_recent": "最近",
+      "group_my_issues": "我的任务",
+      "group_people": "成员"
+    },
+    "run_failure": {
+      "queued_expired": "队列过期",
+      "runtime_offline": "运行时离线",
+      "runtime_recovery": "运行时恢复",
+      "timeout": "超时",
+      "iteration_limit": "迭代超限",
+      "agent_blocked": "待输入",
+      "api_invalid_request": "请求被拒",
+      "skill_bundle_unavailable": "技能下载失败",
+      "runtime_cli_timeout": "CLI 超时",
+      "agent_error__provider_auth_or_access": "鉴权失败",
+      "agent_error__provider_quota_limit": "配额耗尽",
+      "agent_error__provider_capacity_or_rate_limit": "被限流",
+      "agent_error__provider_server_error": "服务商错误",
+      "agent_error__provider_network": "网络错误",
+      "agent_error__process_failure": "进程崩溃",
+      "agent_error__empty_or_unparseable_output": "无可用输出",
+      "agent_error__agent_timeout": "响应超时",
+      "agent_error__context_overflow": "上下文超限",
+      "agent_error__missing_config": "配置缺失",
+      "agent_error__model_not_found_or_unavailable": "无模型",
+      "agent_error__runtime_version_unsupported": "CLI 不支持",
+      "agent_error__runtime_missing_executable": "CLI 未安装",
+      "agent_error__unknown": "智能体出错",
+      "agent_error": "智能体出错",
+      "codex_semantic_inactivity": "Codex 静默",
+      "manual": "手动取消"
+    },
+    "run_summary": {
+      "comment": "评论 task",
+      "autopilot": "自动化运行",
+      "chat": "聊天 task",
+      "quick_create": "快速创建",
+      "direct": "task"
+    },
+    "run_status": {
+      "queued": "排队中",
+      "dispatched": "启动中",
+      "waiting_local_directory": "等待目录",
+      "running": "运行中",
+      "completed": "已完成",
+      "failed": "失败",
+      "cancelled": "已取消"
+    },
+    "runs": {
+      "title": "Agent 运行记录",
+      "section_active": "进行中",
+      "section_past": "历史",
+      "cancel_title": "停止 task？",
+      "cancel_body": "Agent 会在完成当前步骤后停止。"
+    },
+    "list": {
+      "load_failed": "无法加载任务：{{reason}}",
+      "empty_all": "此工作区还没有任务。",
+      "empty_members": "没有指派给成员的任务。",
+      "empty_agents": "没有指派给 Agent 或小队的任务。"
+    },
+    "agent_activity": {
+      "runs_count": "运行 · {{count}} 次",
+      "badge_a11y": "Agent 运行中 —— 查看运行记录"
+    },
+    "description_field": {
+      "placeholder": "描述…（输入 @ 可提及）"
+    },
+    "new": {
+      "submit_a11y": "创建任务"
+    }
   }
 }

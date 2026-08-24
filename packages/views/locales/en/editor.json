@@ -121,5 +121,16 @@
     "export_png": "Download PNG",
     "export_svg": "Download SVG",
     "export_source": "Download .mmd"
+  },
+  "mobile": {
+    "toolbar": {
+      "mention": "Mention someone",
+      "bullet_list": "Bullet list",
+      "checklist": "Checklist",
+      "code_block": "Code block",
+      "quote": "Quote",
+      "attach_image": "Attach image",
+      "attach_file": "Attach file"
+    }
   }
 }

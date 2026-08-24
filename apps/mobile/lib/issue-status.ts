@@ -23,6 +23,7 @@ import type {
   IssueStatusCategory,
   IssueStatusEntry,
 } from "@multica/core/types";
+import i18n from "i18next";
 
 /**
  * The 7 categories in canonical display order. Mirrors `ALL_STATUSES` in
@@ -68,13 +69,58 @@ export const STATUS_LABEL: Record<IssueStatusCategory, string> = {
   cancelled: "Cancelled",
 };
 
-export const PRIORITY_LABEL: Record<IssuePriority, string> = {
+const PRIORITY_LABEL_EN: Record<IssuePriority, string> = {
   none: "No priority",
   low: "Low",
   medium: "Medium",
   high: "High",
   urgent: "Urgent",
 };
+
+export const PRIORITY_LABEL: Record<IssuePriority, string> = PRIORITY_LABEL_EN;
+
+/**
+ * 本地化的内置状态名（RUYI-25 汉化 × MUL-6457 合并）。
+ *
+ * 上面的 `STATUS_LABEL` 是上游的英文常量表，`buildIssueStatusCatalog` 的
+ * `labelOf` 与 `statusOptions` 都读它，且 `issue-status.test.ts` 以 node
+ * 环境断言英文字面量 —— 那是纯函数契约，不能改成走 i18n。
+ *
+ * 所以本地化加在它之上而不是替换它：UI 渲染路径改调这两个函数，纯数据
+ * 路径（目录解析、分组、测试）继续读常量表。内置状态走 i18n key，自定义
+ * 状态走目录里管理员填的 `name`（那是工作区数据，不该被翻译）。
+ */
+export function statusLabel(status: IssueStatus): string {
+  return isIssueStatusCategory(status)
+    ? i18n.t(`issues:status.${status}`, STATUS_LABEL[status])
+    : status;
+}
+
+export function priorityLabel(priority: IssuePriority): string {
+  return i18n.t(`issues:priority.${priority}`, PRIORITY_LABEL_EN[priority]);
+}
+
+/**
+ * `catalog.labelOf` 的本地化版本：内置走 i18n，自定义状态保留目录 `name`。
+ * 与 `labelOf` 的分支判据严格一致，只在内置那一支替换取值来源。
+ */
+export function localizedStatusLabel(
+  catalog: IssueStatusCatalog,
+  statusKey: string,
+): string {
+  if (isIssueStatusCategory(statusKey)) return statusLabel(statusKey);
+  return catalog.entryOf(statusKey)?.name ?? statusKey;
+}
+
+/** `statusOptions` 的本地化版本，供 picker / filter 渲染使用。 */
+export function localizedStatusOptions(
+  catalog: IssueStatusCatalog,
+): StatusOption[] {
+  return statusOptions(catalog).map((option) => ({
+    ...option,
+    label: localizedStatusLabel(catalog, option.key),
+  }));
+}
 
 const CATEGORY_SET = new Set<string>(STATUS_CATEGORIES);
 

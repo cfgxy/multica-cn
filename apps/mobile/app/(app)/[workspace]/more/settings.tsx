@@ -33,11 +33,13 @@ import {
 } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { cn } from "@/lib/utils";
+import i18n from "i18next";
+import { useT } from "@/lib/use-t";
 
-const THEME_OPTIONS: Array<{ value: ThemePreference; label: string }> = [
-  { value: "light", label: "Light" },
-  { value: "dark", label: "Dark" },
-  { value: "system", label: "System" },
+const THEME_OPTIONS: Array<{ value: ThemePreference; labelKey: string; fallback: string }> = [
+  { value: "light", labelKey: "preferences.theme.light", fallback: "Light" },
+  { value: "dark", labelKey: "preferences.theme.dark", fallback: "Dark" },
+  { value: "system", labelKey: "preferences.theme.system", fallback: "System" },
 ];
 
 function initialsOf(name: string | undefined): string {
@@ -63,6 +65,7 @@ export default function SettingsPage() {
   const { data, isLoading, error } = useQuery(workspaceListOptions());
   const { preference, setPreference, colorScheme } = useColorScheme();
   const mutedFg = THEME[colorScheme].mutedForeground;
+  const { t } = useT("settings");
 
   const onSwitch = async (ws: Workspace) => {
     if (ws.slug === currentSlug) return;
@@ -72,12 +75,16 @@ export default function SettingsPage() {
 
   const onSignOut = () => {
     Alert.alert(
-      "Sign out",
-      "You'll need to sign in again to use Multica on this device.",
+      i18n.t("layout:sidebar.log_out", "Log out"),
+      t(
+        "mobile.page.sign_out_body",
+        "You'll need to sign in again to use Multica on this device.",
+      ),
       [
-        { text: "Cancel", style: "cancel" },
+        // 绑定的是 settings ns，"Cancel" 在 common 里，用 ns 前缀跨取。
+        { text: t("common:cancel", "Cancel"), style: "cancel" },
         {
-          text: "Sign out",
+          text: i18n.t("layout:sidebar.log_out", "Log out"),
           style: "destructive",
           onPress: async () => {
             await clearWorkspace();
@@ -97,7 +104,7 @@ export default function SettingsPage() {
       className="flex-1 bg-background"
       contentContainerClassName="px-4 py-4 gap-6"
     >
-      <SectionGroup title="Account">
+      <SectionGroup title={t("page.my_account", "My Account")}>
         <NavRow
           onPress={goProfile}
           chevronColor={mutedFg}
@@ -120,13 +127,15 @@ export default function SettingsPage() {
         <NavRow
           onPress={goNotifications}
           chevronColor={mutedFg}
-          title="Notifications"
-          subtitle="Inbox and system alerts"
+          title={t("page.tabs.notifications", "Notifications")}
+          subtitle={t(
+            "mobile.page.notifications_subtitle",
+            "Inbox and system alerts",
+          )}
         />
       </SectionGroup>
 
-      {/* 网络配置在层级上属于账号之下、工作区之上(RUYI-4)。 */}
-      <SectionGroup title="Server">
+      <SectionGroup title={t("mobile.page.server_section", "Server")}>
         <NavRow
           onPress={() => router.push("/server-settings")}
           chevronColor={mutedFg}
@@ -135,7 +144,7 @@ export default function SettingsPage() {
         />
       </SectionGroup>
 
-      <SectionGroup title="Workspaces">
+      <SectionGroup title={i18n.t("layout:sidebar.workspaces_label", "Workspaces")}>
         {isLoading ? (
           <View className="py-4 items-center">
             <ActivityIndicator />
@@ -143,7 +152,7 @@ export default function SettingsPage() {
         ) : error ? (
           <View className="p-4">
             <Text className="text-sm text-destructive">
-              Failed to load workspaces
+              {t("mobile.page.workspaces_load_failed", "Failed to load workspaces")}
             </Text>
           </View>
         ) : (
@@ -166,7 +175,7 @@ export default function SettingsPage() {
         )}
       </SectionGroup>
 
-      <SectionGroup title="Appearance">
+      <SectionGroup title={i18n.t("settings:page.tabs.preferences", "Preferences")}>
         {/* Two converging entry points by design, NOT a double-fire:
               - Tap on small radio circle  → RadioGroupItem (Pressable, inner) consumes → onValueChange fires
               - Tap on text / row padding  → outer Pressable.onPress fires
@@ -189,7 +198,7 @@ export default function SettingsPage() {
                 >
                   <RadioGroupItem value={opt.value} />
                   <Text className="flex-1 text-base font-medium text-foreground">
-                    {opt.label}
+                    {t(opt.labelKey, opt.fallback)}
                   </Text>
                 </Pressable>
                 {!isLast ? <Separator /> : null}
@@ -201,7 +210,7 @@ export default function SettingsPage() {
 
       <View className="pt-2">
         <Button variant="destructive" onPress={onSignOut}>
-          <Text>Sign out</Text>
+          <Text>{i18n.t("layout:sidebar.log_out", "Log out")}</Text>
         </Button>
       </View>
     </ScrollView>

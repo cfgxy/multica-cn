@@ -40,7 +40,8 @@
     "just_now": "just now",
     "minutes_ago": "{{count}}m ago",
     "hours_ago": "{{count}}h ago",
-    "days_ago": "{{count}}d ago"
+    "days_ago": "{{count}}d ago",
+    "weeks_ago": "{{count}}w ago"
   },
   "lark_bind": {
     "page_title": "Bind your Lark account",
@@ -123,5 +124,48 @@
   },
   "navigation": {
     "open_in_new_tab": "Open in new tab"
+  },
+  "saving": "Saving…",
+  "creating": "Creating…",
+  "create": "Create",
+  "attach": "Attach",
+  "attaching": "Attaching…",
+  "unknown_error": "Unknown error",
+  "discard_dialog": {
+    "changes_title": "Discard changes?",
+    "keep_editing": "Keep editing",
+    "discard": "Discard"
+  },
+  "field": {
+    "title": "Title",
+    "description": "Description"
+  },
+  "send": "Send",
+  "composer": {
+    "placeholder": "Type a message…",
+    "replying_to": "Replying to {{name}}",
+    "cancel_reply": "Cancel reply",
+    "mention_hint": "Mention someone or an issue",
+    "upload_image": "Upload image",
+    "upload_file": "Upload file",
+    "file_too_large_title": "File too large",
+    "file_too_large_message": "Files must be smaller than {{size}} MB.",
+    "upload_failed_title": "Upload failed"
+  },
+  "mobile": {
+    "actor": {
+      "system": "System",
+      "unknown_member": "Unknown",
+      "unknown_agent": "Unknown Agent",
+      "unknown_squad": "Squad"
+    },
+    "common": {
+      "no_matches": "No matches.",
+      "retry": "Retry",
+      "unknown_error": "unknown error",
+      "search": "Search",
+      "close": "Close",
+      "request_timeout": "Request timed out after {{seconds}}s"
+    }
   }
 }

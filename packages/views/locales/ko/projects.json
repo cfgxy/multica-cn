@@ -166,5 +166,47 @@
     "direction_desc": "내림차순",
     "section_columns": "열",
     "view": "보기"
+  },
+  "mobile": {
+    "new": {
+      "discard_title": "프로젝트 생성을 취소할까요?",
+      "discard_message": "임시 저장한 내용이 사라집니다.",
+      "create_failed": "프로젝트 생성 실패",
+      "icon_label": "아이콘(이모지)",
+      "title_placeholder": "프로젝트 제목",
+      "description_placeholder": "이 프로젝트는 무엇에 관한 것인가요?"
+    },
+    "edit": {
+      "discard_message": "이 프로젝트에 대한 편집 내용이 사라집니다.",
+      "save_failed": "저장 실패"
+    },
+    "resource": {
+      "attach_title": "저장소 연결",
+      "url_label": "저장소 URL",
+      "label_optional": "라벨(선택)",
+      "label_placeholder": "예: 백엔드",
+      "attach_failed": "리소스 연결 실패"
+    },
+    "list": {
+      "load_failed": "프로젝트를 불러오지 못했습니다: {{reason}}",
+      "empty_hint": "관련 태스크를 프로젝트로 묶으면 진행 상황을 추적하고 리드를 지정할 수 있습니다."
+    },
+    "detail": {
+      "edit_details": "세부 정보 편집",
+      "open_on_web": "웹에서 열기",
+      "load_failed": "프로젝트를 불러오지 못했습니다: {{reason}}",
+      "not_found": "찾을 수 없음",
+      "add_description": "설명 추가",
+      "issues_load_failed": "태스크를 불러오지 못했습니다: {{reason}}",
+      "no_issues_yet": "아직 태스크가 없습니다."
+    },
+    "picker": {
+      "no_projects": "이 워크스페이스에는 아직 프로젝트가 없습니다.\n웹에서 만들어 주세요."
+    },
+    "resources": {
+      "detach_title": "리소스 연결을 해제할까요?",
+      "detach_confirm": "연결 해제",
+      "add": "추가"
+    }
   }
 }

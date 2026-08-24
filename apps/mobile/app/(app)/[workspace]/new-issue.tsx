@@ -31,6 +31,7 @@ import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { useCreateIssue } from "@/data/mutations/issues";
 import { useNewIssueDraftStore } from "@/data/stores/new-issue-draft-store";
 import { useMentionInput } from "@/lib/use-mention-input";
+import { useT } from "@/lib/use-t";
 
 export default function NewIssueModal() {
   const [title, setTitle] = useState("");
@@ -57,6 +58,9 @@ export default function NewIssueModal() {
   const createIssue = useCreateIssue();
   const isSubmitting = createIssue.isPending;
 
+  const { t } = useT("common");
+  const { t: tIssues } = useT("issues");
+
   const canSubmit = !isSubmitting && title.trim().length > 0;
 
   const onSubmit = useCallback(async () => {
@@ -78,8 +82,10 @@ export default function NewIssueModal() {
       router.back();
     } catch (err) {
       Alert.alert(
-        "Failed to create issue",
-        err instanceof Error ? err.message : "Unknown error",
+        tIssues("table.quick_create_failed", "Failed to create issue"),
+        err instanceof Error
+          ? err.message
+          : t("unknown_error", "Unknown error"),
       );
     }
   }, [
@@ -91,6 +97,8 @@ export default function NewIssueModal() {
     dueDate,
     project,
     createIssue,
+    t,
+    tIssues,
   ]);
 
   const headerRight = useCallback(
@@ -119,17 +127,14 @@ export default function NewIssueModal() {
           <TextInput
             value={title}
             onChangeText={setTitle}
-            placeholder="Issue title"
+            placeholder={tIssues("detail.title_placeholder", "Issue title")}
             placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
             className="text-2xl font-semibold text-foreground py-2"
             autoFocus
             returnKeyType="next"
             editable={!isSubmitting}
           />
-          <DescriptionField
-            description={description}
-            disabled={isSubmitting}
-          />
+          <DescriptionField description={description} disabled={isSubmitting} />
           <CreateFormAttributeRow />
         </ScrollView>
 

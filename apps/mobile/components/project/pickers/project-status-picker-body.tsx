@@ -11,9 +11,10 @@ import { Text } from "@/components/ui/text";
 import { ProjectStatusIcon } from "@/components/ui/project-status-icon";
 import {
   PROJECT_STATUSES,
-  PROJECT_STATUS_LABEL,
+  projectStatusLabel,
 } from "@/lib/project-status";
 import { THEME } from "@/lib/theme";
+import { useT } from "@/lib/use-t";
 
 interface Props {
   value: ProjectStatus | string;
@@ -21,6 +22,7 @@ interface Props {
 }
 
 export function ProjectStatusPickerBody({ value, onChange }: Props) {
+  const { t } = useT("projects");
   const { colorScheme } = useColorScheme();
   const checkColor =
     colorScheme === "dark" ? THEME.dark.primary : THEME.light.primary;
@@ -28,7 +30,9 @@ export function ProjectStatusPickerBody({ value, onChange }: Props) {
   return (
     <ScrollView showsVerticalScrollIndicator={false}>
       <View className="px-4 pt-3 pb-2">
-        <Text className="text-lg font-semibold text-foreground">Status</Text>
+        <Text className="text-lg font-semibold text-foreground">
+          {t("table.status", "Status")}
+        </Text>
       </View>
       <View className="px-2">
         {PROJECT_STATUSES.map((status) => {
@@ -41,7 +45,7 @@ export function ProjectStatusPickerBody({ value, onChange }: Props) {
             >
               <ProjectStatusIcon status={status} size={18} />
               <Text className="flex-1 text-base text-foreground">
-                {PROJECT_STATUS_LABEL[status]}
+                {projectStatusLabel(status)}
               </Text>
               {selected ? (
                 <Ionicons name="checkmark" size={20} color={checkColor} />

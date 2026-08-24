@@ -30,5 +30,20 @@
     "description": "존재하지 않는 워크스페이스이거나 접근 권한이 없습니다.",
     "go_to_workspaces": "내 워크스페이스로 이동",
     "sign_in_different": "다른 계정으로 로그인"
+  },
+  "mobile": {
+    "select": {
+      "signed_in_as": "로그인 계정",
+      "title": "워크스페이스 선택",
+      "load_failed": "워크스페이스를 불러오지 못했습니다: {{reason}}",
+      "unknown_error": "알 수 없는 오류",
+      "retry": "다시 시도",
+      "no_workspaces": "아직 속한 워크스페이스가 없습니다. 워크스페이스 관리자에게 초대를 요청하세요."
+    },
+    "switch": {
+      "title": "워크스페이스 전환",
+      "confirm_action": "전환",
+      "confirm_message": "'{{name}}'(으)로 전환할까요?"
+    }
   }
 }

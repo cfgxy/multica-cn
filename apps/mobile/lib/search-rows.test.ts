@@ -1,9 +1,17 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import type {
   Issue,
   SearchIssueResult,
   SearchProjectResult,
 } from "@multica/core/types";
+
+/**
+ * 分组标题接的是 `search:groups.*`。这里让 mock 直接回显 key，断言里的
+ * `#search:groups.recent` 就同时锁住了两件事：标题真的经过 i18n，且用的
+ * 是哪个 key —— 若换成英文字面量或接错 key，形状断言立刻报红。
+ */
+vi.mock("i18next", () => ({ default: { t: (key: string) => key } }));
+
 import { buildSearchRows } from "./search-rows";
 
 function issue(
@@ -42,7 +50,7 @@ describe("buildSearchRows", () => {
       projects: [],
       recentIssues: [{ id: "r1" } as Issue, { id: "r2" } as Issue],
     });
-    expect(shape(rows)).toEqual(["#Recent", "r-r1", "r-r2"]);
+    expect(shape(rows)).toEqual(["#search:groups.recent", "r-r1", "r-r2"]);
   });
 
   it("returns nothing when there is neither a query nor recent history", () => {
@@ -62,9 +70,9 @@ describe("buildSearchRows", () => {
     });
 
     expect(shape(rows)).toEqual([
-      "#Issues",
+      "#search:groups.issues",
       "i-i-live",
-      "#Cancelled",
+      "#search:groups.cancelled",
       "p-p-dead",
     ]);
   });
@@ -85,13 +93,13 @@ describe("buildSearchRows", () => {
     });
 
     expect(shape(rows)).toEqual([
-      "#Projects",
+      "#search:groups.projects",
       "p-p-live",
-      "#Issues",
+      "#search:groups.issues",
       // 'done' stays live — only cancelled work is demoted.
       "i-i-live",
       "i-i-done",
-      "#Cancelled",
+      "#search:groups.cancelled",
       "p-p-dead",
       "i-i-dead",
     ]);
@@ -105,7 +113,7 @@ describe("buildSearchRows", () => {
       recentIssues: [],
     });
 
-    expect(shape(rows)).toEqual(["#Issues", "i-i-hit"]);
+    expect(shape(rows)).toEqual(["#search:groups.issues", "i-i-hit"]);
   });
 
   it("omits the Cancelled section when nothing is demoted", () => {
@@ -115,6 +123,6 @@ describe("buildSearchRows", () => {
       projects: [project({ id: "p1", status: "completed" })],
       recentIssues: [],
     });
-    expect(shape(rows)).toEqual(["#Projects", "p-p1", "#Issues", "i-i1"]);
+    expect(shape(rows)).toEqual(["#search:groups.projects", "p-p1", "#search:groups.issues", "i-i1"]);
   });
 });

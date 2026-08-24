@@ -11,8 +11,10 @@
 import { router } from "expo-router";
 import { IconButton } from "@/components/ui/icon-button";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { useT } from "@/lib/use-t";
 
 export function HeaderActions() {
+  const { t } = useT("common");
   const slug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
 
   const onSearch = () => {
@@ -27,13 +29,15 @@ export function HeaderActions() {
       <IconButton
         name="search"
         onPress={onSearch}
-        accessibilityLabel="Search"
+        accessibilityLabel={t("mobile.common.search", "Search")}
       />
       <IconButton
         name="add"
         iconSize={24}
         onPress={onCreate}
-        accessibilityLabel="New issue"
+        // fallback 与 layout:sidebar.new_issue 的 en 值逐字一致（'New Issue'），
+        // 资源缺失时不产生大小写漂移。
+        accessibilityLabel={t("layout:sidebar.new_issue", "New Issue")}
       />
     </>
   );

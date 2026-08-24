@@ -1,11 +1,10 @@
 /**
  * Long-press handler for a comment bubble. Exposes `onLongPress` (drives a
- * native iOS ActionSheetIOS) and `isPressed` (drives the caller's highlight
+ * cross-platform ActionSheet) and `isPressed` (drives the caller's highlight
  * ring while the sheet is on screen).
  *
- * iOS-native first per apps/mobile/CLAUDE.md §UI components → waterfall step
- * 1: `ActionSheetIOS.showActionSheetWithOptions`. Zero custom layout, zero
- * animation, zero overflow math, zero new deps.
+ * Uses useActionSheet() hook: iOS delegates to ActionSheetIOS native,
+ * Android uses a Modal-based bottom sheet.
  *
  * Item set (conditional, mirrors web's comment context menu):
  *   Reply (stub) · React… (opens nested sheet) · Copy · Select Text ·
@@ -16,9 +15,11 @@
  * fired from INSIDE the outer sheet's completion callback rather than
  * inline, because iOS will refuse to present a second ActionSheet while the
  * first is still dismissing — the callback runs after dismissal completes.
+ * On Android the same ordering works because we dismiss the modal before
+ * calling onSelect.
  */
-import { useCallback, useState } from "react";
-import { ActionSheetIOS, Alert } from "react-native";
+import React, { useCallback, useState } from "react";
+import { Alert } from "react-native";
 import { router } from "expo-router";
 import * as Clipboard from "expo-clipboard";
 import * as Haptics from "expo-haptics";
@@ -35,6 +36,11 @@ import {
   useToggleCommentReaction,
 } from "@/data/mutations/issues";
 import { QUICK_EMOJIS } from "@/lib/quick-emojis";
+import {
+  useActionSheet,
+  ActionSheetModal,
+} from "@/components/ui/action-sheet";
+import { useT } from "@/lib/use-t";
 
 const QUICK_ROW_SIZE = 5;
 
@@ -42,8 +48,11 @@ export function useCommentLongPress(
   entry: TimelineEntry,
   issueId: string,
   issueIdentifier: string | undefined,
-): { onLongPress: () => void; isPressed: boolean } {
+): { onLongPress: () => void; isPressed: boolean; modalProps: React.ComponentProps<typeof ActionSheetModal> } {
+  const { t } = useT("issues");
   const [isPressed, setIsPressed] = useState(false);
+  const mainSheet = useActionSheet();
+  const reactSheet = useActionSheet();
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const userId = useAuthStore((s) => s.user?.id);
   const toggleReaction = useToggleCommentReaction(issueId);
@@ -102,16 +111,14 @@ export function useCommentLongPress(
       ? actions.findIndex((a) => a.kind === "delete")
       : undefined;
 
-    ActionSheetIOS.showActionSheetWithOptions(
-      {
-        options,
-        cancelButtonIndex,
-        ...(destructiveButtonIndex !== undefined &&
-        destructiveButtonIndex >= 0
-          ? { destructiveButtonIndex }
-          : {}),
-      },
-      (i) => {
+    mainSheet.show({
+      options,
+      cancelButtonIndex,
+      ...(destructiveButtonIndex !== undefined &&
+      destructiveButtonIndex >= 0
+        ? { destructiveButtonIndex }
+        : {}),
+      onSelect: (i) => {
         setIsPressed(false);
         const action = actions[i];
         if (!action || action.kind === "cancel") return;
@@ -147,6 +154,7 @@ export function useCommentLongPress(
                   emoji,
                   existing,
                 }),
+              reactSheet,
             });
             return;
           case "copy":
@@ -176,13 +184,21 @@ export function useCommentLongPress(
             });
             return;
           case "delete":
+            // web 的 comment.delete_title 无问号、delete_desc_with_replies 措辞
+            // 也不同（"this comment and all its replies"），故用 mobile 专属键。
             Alert.alert(
-              "Delete comment?",
-              "This comment will be permanently deleted. Replies in the thread will also be removed. This cannot be undone.",
+              t("mobile.comment.delete_title", "Delete comment?"),
+              t(
+                "mobile.comment.delete_desc",
+                "This comment will be permanently deleted. Replies in the thread will also be removed. This cannot be undone.",
+              ),
               [
-                { text: "Cancel", style: "cancel" },
                 {
-                  text: "Delete",
+                  text: t("common:cancel", "Cancel"),
+                  style: "cancel",
+                },
+                {
+                  text: t("common:delete", "Delete"),
                   style: "destructive",
                   onPress: () => deleteComment.mutate(entry.id),
                 },
@@ -191,7 +207,7 @@ export function useCommentLongPress(
             return;
         }
       },
-    );
+    });
   }, [
     entry,
     issueId,
@@ -201,9 +217,10 @@ export function useCommentLongPress(
     toggleReaction,
     deleteComment,
     resolveComment,
+    t,
   ]);
 
-  return { onLongPress, isPressed };
+  return { onLongPress, isPressed, modalProps: { ...mainSheet.modalProps, ...reactSheet.modalProps } };
 }
 
 function presentReactSheet(args: {
@@ -213,15 +230,17 @@ function presentReactSheet(args: {
   wsSlug: string | null;
   issueId: string;
   toggle: (emoji: string, existing: Reaction | undefined) => void;
+  reactSheet: ReturnType<typeof useActionSheet>;
 }) {
-  const { entry, reactions, userId, wsSlug, issueId, toggle } = args;
+  const { entry, reactions, userId, wsSlug, issueId, toggle, reactSheet } = args;
   const emojis = QUICK_EMOJIS.slice(0, QUICK_ROW_SIZE);
   const options = [...emojis, "More reactions…", "Cancel"];
   const cancelButtonIndex = options.length - 1;
 
-  ActionSheetIOS.showActionSheetWithOptions(
-    { options, cancelButtonIndex },
-    (i) => {
+  reactSheet.show({
+    options,
+    cancelButtonIndex,
+    onSelect: (i) => {
       if (i === cancelButtonIndex) return;
       if (i === emojis.length) {
         if (!wsSlug) return;
@@ -246,5 +265,5 @@ function presentReactSheet(args: {
       );
       toggle(emoji, existing);
     },
-  );
+  });
 }

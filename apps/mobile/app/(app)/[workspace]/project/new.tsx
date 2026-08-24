@@ -35,11 +35,9 @@ import {
 } from "@/components/ui/input-tokens";
 import { ProjectStatusIcon } from "@/components/ui/project-status-icon";
 import { ProjectPriorityIcon } from "@/components/ui/project-priority-icon";
-import {
-  projectPriorityLabel,
-  projectStatusLabel,
-} from "@/lib/project-status";
+import { projectPriorityLabel, projectStatusLabel } from "@/lib/project-status";
 import { useCreateProject } from "@/data/mutations/projects";
+import { useT } from "@/lib/use-t";
 import { useNewProjectDraftStore } from "@/data/stores/new-project-draft-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 
@@ -56,6 +54,8 @@ const NEW_PROJECT_PICKER_PATHNAMES = {
 
 export default function NewProject() {
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
+  const { t } = useT("common");
+  const { t: tProjects } = useT("projects");
   const create = useCreateProject();
 
   const [title, setTitle] = useState("");
@@ -92,12 +92,15 @@ export default function NewProject() {
       return;
     }
     Alert.alert(
-      "Discard project?",
-      "Your draft will be lost.",
+      tProjects("mobile.new.discard_title", "Discard project?"),
+      tProjects("mobile.new.discard_message", "Your draft will be lost."),
       [
-        { text: "Keep editing", style: "cancel" },
         {
-          text: "Discard",
+          text: t("discard_dialog.keep_editing", "Keep editing"),
+          style: "cancel",
+        },
+        {
+          text: t("discard_dialog.discard", "Discard"),
           style: "destructive",
           onPress: () => {
             resetDraft();
@@ -106,7 +109,7 @@ export default function NewProject() {
         },
       ],
     );
-  }, [dirty, resetDraft]);
+  }, [dirty, resetDraft, t, tProjects]);
 
   const onCreate = useCallback(() => {
     if (!canCreate) return;
@@ -133,8 +136,10 @@ export default function NewProject() {
         },
         onError: (err) => {
           Alert.alert(
-            "Failed to create project",
-            err instanceof Error ? err.message : "Unknown error",
+            tProjects("mobile.new.create_failed", "Failed to create project"),
+            err instanceof Error
+              ? err.message
+              : t("unknown_error", "Unknown error"),
           );
         },
       },
@@ -149,15 +154,17 @@ export default function NewProject() {
     priority,
     wsSlug,
     resetDraft,
+    t,
+    tProjects,
   ]);
 
   const headerLeft = useCallback(() => {
     return (
       <Pressable onPress={onCancel} className="px-1 py-1">
-        <Text className="text-base text-brand">Cancel</Text>
+        <Text className="text-base text-brand">{t("cancel", "Cancel")}</Text>
       </Pressable>
     );
-  }, [onCancel]);
+  }, [onCancel, t]);
 
   const headerRight = useCallback(() => {
     return (
@@ -167,11 +174,13 @@ export default function NewProject() {
         className={canCreate ? "px-1 py-1" : "px-1 py-1 opacity-40"}
       >
         <Text className="text-base text-brand font-semibold">
-          {create.isPending ? "Creating…" : "Create"}
+          {create.isPending
+            ? t("creating", "Creating…")
+            : t("create", "Create")}
         </Text>
       </Pressable>
     );
-  }, [canCreate, onCreate, create.isPending]);
+  }, [canCreate, onCreate, create.isPending, t]);
 
   return (
     <>
@@ -185,7 +194,7 @@ export default function NewProject() {
           contentContainerClassName="px-4 pt-4 pb-6 gap-4"
           keyboardShouldPersistTaps="handled"
         >
-          <Field label="Icon (emoji)">
+          <Field label={tProjects("mobile.new.icon_label", "Icon (emoji)")}>
             <TextInput
               value={icon}
               onChangeText={(v) => setIcon(v.slice(0, 4))}
@@ -196,11 +205,14 @@ export default function NewProject() {
             />
           </Field>
 
-          <Field label="Title">
+          <Field label={t("field.title", "Title")}>
             <TextInput
               value={title}
               onChangeText={setTitle}
-              placeholder="Project title"
+              placeholder={tProjects(
+                "mobile.new.title_placeholder",
+                "Project title",
+              )}
               placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
               className="text-base text-foreground bg-secondary/50 rounded-md px-3 py-2"
               autoFocus
@@ -208,11 +220,14 @@ export default function NewProject() {
             />
           </Field>
 
-          <Field label="Description">
+          <Field label={t("field.description", "Description")}>
             <AutosizeTextArea
               value={description}
               onChangeText={setDescription}
-              placeholder="What is this project about?"
+              placeholder={tProjects(
+                "mobile.new.description_placeholder",
+                "What is this project about?",
+              )}
               className="bg-secondary/50 rounded-md px-3 py-2"
               minHeight={MIN_BODY_INPUT_HEIGHT_PX}
             />
@@ -220,7 +235,7 @@ export default function NewProject() {
 
           <View className="flex-row gap-2">
             <View className="flex-1">
-              <Field label="Status">
+              <Field label={tProjects("table.status", "Status")}>
                 <Pressable
                   onPress={() => openPicker("status")}
                   className="flex-row items-center gap-2 bg-secondary/50 rounded-md px-3 py-2.5"
@@ -233,7 +248,7 @@ export default function NewProject() {
               </Field>
             </View>
             <View className="flex-1">
-              <Field label="Priority">
+              <Field label={tProjects("table.priority", "Priority")}>
                 <Pressable
                   onPress={() => openPicker("priority")}
                   className="flex-row items-center gap-2 bg-secondary/50 rounded-md px-3 py-2.5"

@@ -10,10 +10,10 @@
  *     is NOT hidden.
  *   - Priority enum order is identical to web. `none` renders as "No
  *     priority", not as an absence.
- *   - Labels are the canonical English strings; i18n lands later when
- *     mobile picks an i18n lib (web uses i18next).
+ *   - Labels use i18n with English fallback.
  */
 import type { ProjectPriority, ProjectStatus } from "@multica/core/types";
+import i18n from "i18next";
 
 export const PROJECT_STATUSES: ProjectStatus[] = [
   "planned",
@@ -31,7 +31,7 @@ export const PROJECT_PRIORITIES: ProjectPriority[] = [
   "none",
 ];
 
-export const PROJECT_STATUS_LABEL: Record<ProjectStatus, string> = {
+const PROJECT_STATUS_LABEL_EN: Record<ProjectStatus, string> = {
   planned: "Planned",
   in_progress: "In Progress",
   paused: "Paused",
@@ -39,7 +39,7 @@ export const PROJECT_STATUS_LABEL: Record<ProjectStatus, string> = {
   cancelled: "Cancelled",
 };
 
-export const PROJECT_PRIORITY_LABEL: Record<ProjectPriority, string> = {
+const PROJECT_PRIORITY_LABEL_EN: Record<ProjectPriority, string> = {
   urgent: "Urgent",
   high: "High",
   medium: "Medium",
@@ -72,11 +72,15 @@ export const PROJECT_PRIORITY_BARS: Record<ProjectPriority, number> = {
 // (root CLAUDE.md "API Response Compatibility"). Returns a sensible default
 // so a future enum value still renders a labelled chip.
 export function projectStatusLabel(value: string): string {
-  return (PROJECT_STATUS_LABEL as Record<string, string>)[value] ?? value;
+  const en = (PROJECT_STATUS_LABEL_EN as Record<string, string>)[value];
+  if (en) return i18n.t(`projects:status.${value}`, en);
+  return value;
 }
 
 export function projectPriorityLabel(value: string): string {
-  return (PROJECT_PRIORITY_LABEL as Record<string, string>)[value] ?? value;
+  const en = (PROJECT_PRIORITY_LABEL_EN as Record<string, string>)[value];
+  if (en) return i18n.t(`projects:priority.${value}`, en);
+  return value;
 }
 
 export function projectStatusColor(value: string): string {

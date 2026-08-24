@@ -13,6 +13,7 @@
  *   3. X-Request-ID per request + structured logger (debug + tracing)
  *   4. Bearer auth + X-Workspace-Slug — NOT cookie auth (no CSRF, no credentials)
  */
+import i18n from "i18next";
 import type {
   Agent,
   AgentTask,
@@ -228,7 +229,18 @@ class ApiClient {
     //       spinner stuck on the screen indefinitely.
     const controller = new AbortController();
     const timeoutId = setTimeout(() => {
-      controller.abort(new Error(`request timed out after ${FETCH_TIMEOUT_MS}ms`));
+      // 这条 message 会经 ApiError 一路冒泡到 18 处屏幕的错误行/Alert 正文
+      // （见 components/**/*.tsx 的 err.message 落点），所以必须是译文而
+      // 不是内部日志串。
+      controller.abort(
+        new Error(
+          i18n.t(
+            "common:mobile.common.request_timeout",
+            "Request timed out after {{seconds}}s",
+            { seconds: Math.round(FETCH_TIMEOUT_MS / 1000) },
+          ),
+        ),
+      );
     }, FETCH_TIMEOUT_MS);
     const callerSignal = init.signal;
     const onCallerAbort = () => controller.abort(callerSignal?.reason);

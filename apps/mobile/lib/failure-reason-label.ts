@@ -17,6 +17,10 @@
  * a message, so an unrecognised reason degrades to a plain "Failed" instead of
  * leaking an enum string at them.
  */
+import i18n from "i18next";
+
+// 英文兜底表——i18n key 缺失时回落到这里，保留不删（照 lib/issue-status.ts
+// 的 *_EN 范式）。
 const LABELS: Record<string, string> = {
   // Platform / scheduler side.
   queued_expired: "Expired in queue",
@@ -53,7 +57,21 @@ const LABELS: Record<string, string> = {
   manual: "Cancelled by user",
 };
 
+/**
+ * wire 值 → i18n key 片段。`failure_reason` 里的点号（`agent_error.provider_network`）
+ * 会被 i18next 当作嵌套层级分隔符，直接拼进 key 会去找一个并不存在的
+ * `provider_network` 子对象；统一换成双下划线，与资源文件里的写法对齐。
+ */
+function reasonKeySegment(reason: string): string {
+  return reason.replace(/\./g, "__");
+}
+
 export function failureReasonLabel(reason: string | null | undefined): string {
-  if (!reason) return "Failed";
-  return LABELS[reason] ?? "Failed";
+  if (!reason) return i18n.t("chat:mobile.failure_reason.fallback", "Failed");
+  const en = LABELS[reason];
+  // 未识别的 reason 不落到 i18n 查找——那会拼出一个不存在的 key，i18next
+  // 在缺失时返回 key 本身，等于把 wire 值泄漏给用户（本文件顶部注释里
+  // 刻意与 web 分道扬镳的那一点）。走同一条 fallback 分支。
+  if (en == null) return i18n.t("chat:mobile.failure_reason.fallback", "Failed");
+  return i18n.t(`chat:mobile.failure_reason.${reasonKeySegment(reason)}`, en);
 }
