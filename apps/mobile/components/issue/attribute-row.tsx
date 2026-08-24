@@ -33,15 +33,22 @@ import { AttributeChip } from "./attribute-chip";
 import { useActorLookup } from "@/data/use-actor-name";
 import { findProject, projectListOptions } from "@/data/queries/projects";
 import { useWorkspaceStore } from "@/data/workspace-store";
-import { PRIORITY_LABEL as PRIORITY_FULL_LABEL } from "@/lib/issue-status";
+import { displayLocale } from "@/lib/display-locale";
+import { localizedStatusLabel, priorityLabel } from "@/lib/issue-status";
 import { useIssueStatuses } from "@/lib/use-issue-statuses";
+import { useT } from "@/lib/use-t";
+
+type TFn = ReturnType<typeof useT>["t"];
 
 // Chip placeholder shortens `none` from "No priority" → "Priority" so the
 // unset chip reads as a placeholder, not as a confusing assigned value.
-const PRIORITY_CHIP_LABEL: Record<IssuePriority, string> = {
-  ...PRIORITY_FULL_LABEL,
-  none: "Priority",
-};
+// 纯函数不持有 i18n 状态，由调用侧把 `t` 传进来。传入实例绑定的 ns 在这里
+// 看不见（静态检查器只能按调用点位置猜，会猜成 common），故用绝对 key。
+function priorityChipLabel(priority: IssuePriority, t: TFn): string {
+  return priority === "none"
+    ? t("issues:detail.prop_priority", "Priority")
+    : priorityLabel(priority);
+}
 
 /**
  * The picker fields the issue-detail attribute row can open. Bound to a
@@ -70,17 +77,24 @@ const ISSUE_PICKER_PATHNAMES = {
 // with the viewer's offset. Mirrors web's formatDate in list-row/board-card.
 function formatDueDate(iso: string | null): string | null {
   if (!iso) return null;
-  return formatDateOnly(iso, { month: "short", day: "numeric" }, "en-US") || null;
+  return (
+    formatDateOnly(iso, { month: "short", day: "numeric" }, displayLocale()) ||
+    null
+  );
 }
 
 export function AttributeRow({ issue }: { issue: Issue }) {
+  const { t } = useT("issues");
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { getName } = useActorLookup();
   // The chip shows the issue's own status, which may be a custom one — name
   // and colour come from the workspace catalog, the glyph from its category.
   // (MUL-6243)
-  const { categoryOf, colorOf, labelOf } = useIssueStatuses();
+  // `labelOf` 换成 `localizedStatusLabel(catalog, ...)`：内置状态走 i18n，
+  // 自定义状态仍取目录 `name`，分支判据与 `labelOf` 一致。
+  const catalog = useIssueStatuses();
+  const { categoryOf, colorOf } = catalog;
 
   // Project read-only — fetch list to look up the title + icon. Cheap
   // (cached after first issue-detail visit).
@@ -122,7 +136,7 @@ export function AttributeRow({ issue }: { issue: Issue }) {
             size={14}
           />
         }
-        label={labelOf(issue.status)}
+        label={localizedStatusLabel(catalog, issue.status)}
         variant="filled"
         onPress={() => openPicker("status")}
       />
@@ -130,7 +144,7 @@ export function AttributeRow({ issue }: { issue: Issue }) {
       {/* Priority */}
       <AttributeChip
         icon={<PriorityIcon priority={issue.priority} size={14} />}
-        label={PRIORITY_CHIP_LABEL[issue.priority]}
+        label={priorityChipLabel(issue.priority, t)}
         variant={issue.priority === "none" ? "dimmed" : "filled"}
         onPress={() => openPicker("priority")}
       />
@@ -146,7 +160,10 @@ export function AttributeRow({ issue }: { issue: Issue }) {
               showPresence
             />
           }
-          label={assigneeName ?? "Unknown"}
+          label={
+            assigneeName ??
+            t("common:mobile.actor.unknown_member", "Unknown")
+          }
           variant="filled"
           onPress={() => openPicker("assignee")}
         />
@@ -155,7 +172,7 @@ export function AttributeRow({ issue }: { issue: Issue }) {
           icon={
             <View className="size-4 rounded-full border border-dashed border-muted-foreground/40" />
           }
-          label="Assignee"
+          label={t("detail.prop_assignee", "Assignee")}
           variant="dimmed"
           onPress={() => openPicker("assignee")}
         />
@@ -182,7 +199,7 @@ export function AttributeRow({ issue }: { issue: Issue }) {
       {labels.length === 0 ? (
         <AttributeChip
           icon={<Text className="text-xs text-muted-foreground/70">◯</Text>}
-          label="Label"
+          label={t("filters.section_label", "Label")}
           variant="dimmed"
           onPress={() => openPicker("label")}
         />
@@ -201,7 +218,7 @@ export function AttributeRow({ issue }: { issue: Issue }) {
           icon={
             <View className="size-3.5 rounded-sm border border-dashed border-muted-foreground/40" />
           }
-          label="Project"
+          label={t("detail.prop_project", "Project")}
           variant="dimmed"
           onPress={() => openPicker("project")}
         />
@@ -210,7 +227,7 @@ export function AttributeRow({ issue }: { issue: Issue }) {
       {/* Due date */}
       <AttributeChip
         icon={<Text className="text-xs text-muted-foreground/80">📅</Text>}
-        label={dueLabel ?? "Due date"}
+        label={dueLabel ?? t("detail.prop_due_date", "Due date")}
         variant={dueLabel ? "filled" : "dimmed"}
         onPress={() => openPicker("due-date")}
       />

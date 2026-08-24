@@ -59,5 +59,18 @@
       "title": "加入 Discord",
       "dismiss": "关闭"
     }
+  },
+  "mobile": {
+    "agents": {
+      "coming_soon": "智能体功能即将上线。"
+    },
+    "pins": {
+      "load_failed": "无法加载固定项：{{reason}}",
+      "empty": "还没有固定项。在任务或项目的操作菜单中固定后，就会显示在这里。",
+      "type_issue": "任务",
+      "type_project": "项目",
+      "unavailable_a11y": "{{type}}不可用，点按取消固定",
+      "unavailable": "{{type}}不可用 —— 点按取消固定"
+    }
   }
 }

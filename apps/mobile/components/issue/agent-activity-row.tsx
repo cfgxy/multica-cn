@@ -26,6 +26,7 @@ import {
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
+import { useT } from "@/lib/use-t";
 
 interface Props {
   issueId: string;
@@ -87,20 +88,27 @@ export function AgentActivityRow({ issueId }: Props) {
 }
 
 function ActiveContent({ actors }: { actors: StackActor[] }) {
+  const { t } = useT("issues");
   return (
     <View className="flex-1 flex-row items-center gap-2">
       <AvatarStack actors={actors} max={3} size={24} />
       <PulseDot />
-      <Text className="text-sm font-medium text-foreground">Working</Text>
+      <Text className="text-sm font-medium text-foreground">
+        {t("agent_activity.status_running", "Working")}
+      </Text>
     </View>
   );
 }
 
 function IdleContent({ count, mutedFg }: { count: number; mutedFg: string }) {
+  const { t } = useT("issues");
   return (
     <View className="flex-1 flex-row items-center gap-2">
       <Ionicons name="time-outline" size={16} color={mutedFg} />
-      <Text className="text-sm text-foreground">Runs · {count}</Text>
+      {/* 整句插值：中日韩的量词与分隔符位置和英文不同，不做 "Runs · " + count 拼接 */}
+      <Text className="text-sm text-foreground">
+        {t("mobile.agent_activity.runs_count", "Runs · {{count}}", { count })}
+      </Text>
     </View>
   );
 }

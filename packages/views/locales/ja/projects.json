@@ -166,5 +166,47 @@
     "direction_desc": "降順",
     "section_columns": "列",
     "view": "ビュー"
+  },
+  "mobile": {
+    "new": {
+      "discard_title": "プロジェクトの作成を破棄しますか？",
+      "discard_message": "下書きは失われます。",
+      "create_failed": "プロジェクトの作成に失敗しました",
+      "icon_label": "アイコン（絵文字）",
+      "title_placeholder": "プロジェクト名",
+      "description_placeholder": "このプロジェクトについて教えてください"
+    },
+    "edit": {
+      "discard_message": "このプロジェクトへの編集内容は失われます。",
+      "save_failed": "保存に失敗しました"
+    },
+    "resource": {
+      "attach_title": "リポジトリを追加",
+      "url_label": "リポジトリ URL",
+      "label_optional": "ラベル（任意）",
+      "label_placeholder": "例：バックエンド",
+      "attach_failed": "リソースの追加に失敗しました"
+    },
+    "list": {
+      "load_failed": "プロジェクトを読み込めませんでした：{{reason}}",
+      "empty_hint": "関連するタスクをプロジェクトにまとめると、進捗を追跡し、リードを割り当てられます。"
+    },
+    "detail": {
+      "edit_details": "詳細を編集",
+      "open_on_web": "ウェブで開く",
+      "load_failed": "プロジェクトを読み込めませんでした：{{reason}}",
+      "not_found": "見つかりません",
+      "add_description": "説明を追加",
+      "issues_load_failed": "タスクを読み込めませんでした：{{reason}}",
+      "no_issues_yet": "タスクはまだありません。"
+    },
+    "picker": {
+      "no_projects": "このワークスペースにはまだプロジェクトがありません。\nウェブ版で作成してください。"
+    },
+    "resources": {
+      "detach_title": "リソースの関連付けを解除しますか？",
+      "detach_confirm": "解除",
+      "add": "追加"
+    }
   }
 }

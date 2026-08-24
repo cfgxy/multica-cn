@@ -49,6 +49,7 @@ import { useScrollToTopOnChange } from "@/lib/use-scroll-to-top-on-change";
 import { THEME } from "@/lib/theme";
 import { isAgentRuntimeBound } from "@/lib/is-agent-runtime-bound";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/use-t";
 
 const AVATAR_SIZE = 36;
 
@@ -87,6 +88,7 @@ export function MentionPickerBody({ query, mode = "comment" }: Props) {
     [agents],
   );
   const listRef = useScrollToTopOnChange(query);
+  const { t } = useT("issues");
   const { colorScheme } = useColorScheme();
   const checkColor =
     colorScheme === "dark" ? THEME.dark.primary : THEME.light.primary;
@@ -152,32 +154,48 @@ export function MentionPickerBody({ query, mode = "comment" }: Props) {
         .sort((a, b) => a.name.localeCompare(b.name))
         .map((m): Row => ({ kind: "member", member: m }));
       if (memberRows.length > 0) {
-        out.push({ kind: "section", label: "People" }, ...memberRows);
+        out.push(
+          {
+            kind: "section",
+            label: t("mobile.mention.group_people", "People"),
+          },
+          ...memberRows,
+        );
       }
       const agentRows = [...agents]
         .filter((a) => matchName(a.name))
         .sort((a, b) => a.name.localeCompare(b.name))
         .map((a): Row => ({ kind: "agent", agent: a }));
       if (agentRows.length > 0) {
-        out.push({ kind: "section", label: "Agents" }, ...agentRows);
+        out.push(
+          { kind: "section", label: t("pickers.assignee.agents_group", "Agents") },
+          ...agentRows,
+        );
       }
       const squadRows = [...squads]
         .filter((s) => !s.archived_at && matchName(s.name))
         .sort((a, b) => a.name.localeCompare(b.name))
         .map((s): Row => ({ kind: "squad", squad: s }));
       if (squadRows.length > 0) {
-        out.push({ kind: "section", label: "Squads" }, ...squadRows);
+        out.push(
+          { kind: "section", label: t("pickers.assignee.squads_group", "Squads") },
+          ...squadRows,
+        );
       }
     }
 
     if (issueResults.length > 0) {
-      out.push({ kind: "section", label: "Issues" });
+      out.push({
+        kind: "section",
+        label: t("page.breadcrumb_title", "Issues"),
+      });
       for (const i of issueResults) {
         out.push({ kind: "issue", issue: i });
       }
     }
     return out;
-  }, [mode, members, agents, squads, issueResults, query]);
+    // `t` 进依赖：分组标题是译文，切语言后 memo 必须重算。
+  }, [mode, members, agents, squads, issueResults, query, t]);
 
   const pick = (row: Row) => {
     let chip: MentionChipDraft | null = null;
@@ -288,7 +306,7 @@ export function MentionPickerBody({ query, mode = "comment" }: Props) {
             ) : (
               <Text className="flex-1 text-base text-foreground">
                 {item.kind === "all"
-                  ? "Everyone (@all)"
+                  ? t("mobile.picker.everyone_all", "Everyone (@all)")
                   : item.kind === "member"
                     ? item.member.name
                     : item.kind === "agent"
@@ -298,11 +316,18 @@ export function MentionPickerBody({ query, mode = "comment" }: Props) {
             )}
             {item.kind === "agent" ? (
               <Text className="text-sm text-muted-foreground">
-                {isAgentRuntimeBound(item.agent) ? "Agent" : "Needs runtime"}
+                {isAgentRuntimeBound(item.agent)
+                  ? t("mobile.picker.agent", "Agent")
+                  : t("mobile.picker.needs_runtime", "Needs runtime")}
               </Text>
             ) : item.kind === "squad" ? (
               <Text className="text-sm text-muted-foreground">
-                {needsRuntime ? "Leader needs runtime" : "Squad"}
+                {needsRuntime
+                  ? t(
+                      "mobile.picker.leader_needs_runtime",
+                      "Leader needs runtime",
+                    )
+                  : t("mobile.picker.squad", "Squad")}
               </Text>
             ) : null}
             {isSelected(item) ? (
@@ -313,7 +338,9 @@ export function MentionPickerBody({ query, mode = "comment" }: Props) {
       }}
       ListEmptyComponent={
         <View className="px-3 py-8 items-center">
-          <Text className="text-sm text-muted-foreground">No matches.</Text>
+          <Text className="text-sm text-muted-foreground">
+            {t("common:mobile.common.no_matches", "No matches.")}
+          </Text>
         </View>
       }
     />

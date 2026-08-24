@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import type { ComponentProps } from "react";
 import { Redirect, Stack, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
+import i18n from "i18next";
 import { workspaceListOptions } from "@/data/queries/workspaces";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { RealtimeProvider } from "@/data/realtime/realtime-provider";
@@ -135,21 +136,24 @@ export default function WorkspaceLayout() {
         <Stack.Screen
           name="issue/[id]"
           options={{
-            title: "Issue",
+            // 单条任务详情，用单数实体名 `layout:tab.issue`（en "Issue"）;
+            // `layout:nav.issues` 是列表页导航项，复数，语义不匹配。
+            title: i18n.t("layout:tab.issue", "Issue"),
             headerBackTitle: "Back",
           }}
         />
         <Stack.Screen
           name="project/[id]"
           options={{
-            title: "Project",
+            title: i18n.t("layout:tab.project", "Project"),
             headerBackTitle: "Back",
           }}
         />
         <Stack.Screen
           name="project/[id]/edit"
           options={{
-            title: "Edit Project",
+            // 编辑现有项目，不能复用 `create_project.title`（渲染成「新建项目」）。
+            title: i18n.t("modals:edit_project.title", "Edit Project"),
             presentation: "modal",
             headerLeft: () => <ModalCloseButton />,
           }}
@@ -157,7 +161,8 @@ export default function WorkspaceLayout() {
         <Stack.Screen
           name="issue/[id]/edit"
           options={{
-            title: "Edit Issue",
+            // 同上：编辑现有任务不能复用 `create_issue.sr_manual`（「新建任务」）。
+            title: i18n.t("modals:edit_issue.title", "Edit Issue"),
             presentation: "modal",
             headerLeft: () => <ModalCloseButton />,
           }}
@@ -165,7 +170,7 @@ export default function WorkspaceLayout() {
         <Stack.Screen
           name="project/new"
           options={{
-            title: "New Project",
+            title: i18n.t("modals:create_project.title", "New Project"),
             presentation: "modal",
             headerLeft: () => <ModalCloseButton />,
           }}
@@ -195,24 +200,41 @@ export default function WorkspaceLayout() {
           options={{
             ...SHEET_OPTIONS,
             headerShown: true,
-            title: "Assignee",
+            title: i18n.t("issues:actions.assignee", "Assignee"),
           }}
         />
+        {/* 与上面 assignee 同构：`SHEET_OPTIONS.headerShown` 为 false 时
+            native header 不存在，`headerSearchBarOptions` 无处挂载
+            （`ScreenStackFragment` 要先有 header 才 attach searchView），
+            搜索框在 iOS / Android 上都不渲染 —— `issues:mobile.picker.
+            create_label`（批次 9 由 JSX 硬编码转成的 key）因此从未被渲染过。
+            标题用既有单数实体名 `issues:filters.section_label`（en "Label"）。 */}
         <Stack.Screen
           name="issue/[id]/picker/label"
-          options={SHEET_OPTIONS}
+          options={{
+            ...SHEET_OPTIONS,
+            headerShown: true,
+            title: i18n.t("issues:filters.section_label", "Label"),
+          }}
         />
         <Stack.Screen
           name="mention-picker"
           options={{
             ...SHEET_OPTIONS,
             headerShown: true,
-            title: "Mention",
+            title: i18n.t("issues:mobile.mention.screen_title", "Mention"),
           }}
         />
+        {/* 同 label：无 native header 则 `headerSearchBarOptions` 无处挂载，
+            搜索框不渲染，`query` 恒为空 —— 本批新增的
+            `common:mobile.common.no_matches`（搜索态才渲染）因此永不可达。 */}
         <Stack.Screen
           name="issue/[id]/picker/project"
-          options={SHEET_OPTIONS}
+          options={{
+            ...SHEET_OPTIONS,
+            headerShown: true,
+            title: i18n.t("layout:tab.project", "Project"),
+          }}
         />
         <Stack.Screen
           name="issue/[id]/picker/due-date"
@@ -235,9 +257,16 @@ export default function WorkspaceLayout() {
           name="project/[id]/picker/priority"
           options={SHEET_OPTIONS}
         />
+        {/* 同上。标题用既有 `projects:toolbar.section_lead`（en "Lead"），
+            与 label 用 `issues:filters.section_label` 同构：筛选区 section
+            的单数实体名。`projects:detail.prop_lead` 在 origin/main 不存在。 */}
         <Stack.Screen
           name="project/[id]/picker/lead"
-          options={SHEET_OPTIONS}
+          options={{
+            ...SHEET_OPTIONS,
+            headerShown: true,
+            title: i18n.t("projects:toolbar.section_lead", "Lead"),
+          }}
         />
         <Stack.Screen
           name="project/[id]/add-resource"
@@ -260,12 +289,17 @@ export default function WorkspaceLayout() {
           options={{
             ...SHEET_OPTIONS,
             headerShown: true,
-            title: "Assignee",
+            title: i18n.t("issues:actions.assignee", "Assignee"),
           }}
         />
+        {/* 同 issue/[id]/picker/project。 */}
         <Stack.Screen
           name="new-issue-picker/project"
-          options={SHEET_OPTIONS}
+          options={{
+            ...SHEET_OPTIONS,
+            headerShown: true,
+            title: i18n.t("layout:tab.project", "Project"),
+          }}
         />
         <Stack.Screen
           name="new-issue-picker/due-date"
@@ -291,36 +325,36 @@ export default function WorkspaceLayout() {
         <Stack.Screen name="switch-workspace" options={SHEET_OPTIONS} />
         <Stack.Screen
           name="more/issues"
-          options={{ title: "Issues", headerBackTitle: "Back" }}
+          options={{ title: i18n.t("layout:nav.issues", "Issues"), headerBackTitle: "Back" }}
         />
         <Stack.Screen
           name="more/projects"
-          options={{ title: "Projects", headerBackTitle: "Back" }}
+          options={{ title: i18n.t("layout:nav.projects", "Projects"), headerBackTitle: "Back" }}
         />
         <Stack.Screen
           name="more/agents"
-          options={{ title: "Agents", headerBackTitle: "Back" }}
+          options={{ title: i18n.t("layout:nav.agents", "Agents"), headerBackTitle: "Back" }}
         />
         <Stack.Screen
           name="more/pins"
-          options={{ title: "Pinned", headerBackTitle: "Back" }}
+          options={{ title: i18n.t("layout:sidebar.pinned_label", "Pinned"), headerBackTitle: "Back" }}
         />
         <Stack.Screen
           name="more/settings"
-          options={{ title: "Settings", headerBackTitle: "Back" }}
+          options={{ title: i18n.t("layout:nav.settings", "Settings"), headerBackTitle: "Back" }}
         />
         <Stack.Screen
           name="more/settings/profile"
-          options={{ title: "Profile", headerBackTitle: "Settings" }}
+          options={{ title: i18n.t("settings:page.tabs.profile", "Profile"), headerBackTitle: i18n.t("layout:nav.settings", "Settings") }}
         />
         <Stack.Screen
           name="more/settings/notifications"
-          options={{ title: "Notifications", headerBackTitle: "Settings" }}
+          options={{ title: i18n.t("settings:page.tabs.notifications", "Notifications"), headerBackTitle: i18n.t("layout:nav.settings", "Settings") }}
         />
         <Stack.Screen
           name="new-issue"
           options={{
-            title: "New Issue",
+            title: i18n.t("modals:create_issue.sr_manual", "New Issue"),
             presentation: "modal",
             headerLeft: () => <ModalCloseButton />,
           }}
@@ -328,7 +362,7 @@ export default function WorkspaceLayout() {
         <Stack.Screen
           name="search"
           options={{
-            title: "Search",
+            title: i18n.t("search:title", "Search"),
             presentation: "modal",
             headerLeft: () => <ModalCloseButton />,
           }}

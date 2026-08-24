@@ -40,8 +40,11 @@ import { useUpdateIssue } from "@/data/mutations/issues";
 import { buildIssueTextUpdate } from "@/data/issue-edit";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useMentionInput } from "@/lib/use-mention-input";
+import { useT } from "@/lib/use-t";
 
 export default function EditIssue() {
+  const { t } = useT("common");
+  const { t: tIssues } = useT("issues");
   const { id } = useLocalSearchParams<{ id: string }>();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const detail = useQuery(issueDetailOptions(wsId, id));
@@ -78,7 +81,14 @@ export default function EditIssue() {
       currentDescription.trim() !==
         stripChannelMediaMarkers(initialDescription).trim()
     );
-  }, [detail.data, seeded, title, initialTitle, currentDescription, initialDescription]);
+  }, [
+    detail.data,
+    seeded,
+    title,
+    initialTitle,
+    currentDescription,
+    initialDescription,
+  ]);
 
   const canSave =
     seeded && title.trim().length > 0 && dirty && !update.isPending;
@@ -89,18 +99,24 @@ export default function EditIssue() {
       return;
     }
     Alert.alert(
-      "Discard changes?",
-      "Your edits to this issue will be lost.",
+      t("discard_dialog.changes_title", "Discard changes?"),
+      tIssues(
+        "mobile.edit.discard_message",
+        "Your edits to this issue will be lost.",
+      ),
       [
-        { text: "Keep editing", style: "cancel" },
         {
-          text: "Discard",
+          text: t("discard_dialog.keep_editing", "Keep editing"),
+          style: "cancel",
+        },
+        {
+          text: t("discard_dialog.discard", "Discard"),
           style: "destructive",
           onPress: () => router.back(),
         },
       ],
     );
-  }, [dirty]);
+  }, [dirty, t, tIssues]);
 
   const onSave = useCallback(() => {
     if (!canSave) return;
@@ -115,20 +131,22 @@ export default function EditIssue() {
       onSuccess: () => router.back(),
       onError: (err) => {
         Alert.alert(
-          "Failed to save",
-          err instanceof Error ? err.message : "Unknown error",
+          tIssues("mobile.edit.save_failed", "Failed to save"),
+          err instanceof Error
+            ? err.message
+            : t("unknown_error", "Unknown error"),
         );
       },
     });
-  }, [canSave, title, currentDescription, update]);
+  }, [canSave, title, currentDescription, update, t, tIssues]);
 
   const headerLeft = useCallback(
     () => (
       <Pressable onPress={onCancel} className="px-1 py-1">
-        <Text className="text-base text-brand">Cancel</Text>
+        <Text className="text-base text-brand">{t("cancel", "Cancel")}</Text>
       </Pressable>
     ),
-    [onCancel],
+    [onCancel, t],
   );
 
   const headerRight = useCallback(
@@ -139,11 +157,11 @@ export default function EditIssue() {
         className={canSave ? "px-1 py-1" : "px-1 py-1 opacity-40"}
       >
         <Text className="text-base text-brand font-semibold">
-          {update.isPending ? "Saving…" : "Save"}
+          {update.isPending ? t("saving", "Saving…") : t("save", "Save")}
         </Text>
       </Pressable>
     ),
-    [canSave, onSave, update.isPending],
+    [canSave, onSave, update.isPending, t],
   );
 
   return (
@@ -159,14 +177,19 @@ export default function EditIssue() {
           keyboardShouldPersistTaps="handled"
         >
           {!detail.data ? (
-            <Text className="text-sm text-muted-foreground">Loading…</Text>
+            <Text className="text-sm text-muted-foreground">
+              {t("loading", "Loading...")}
+            </Text>
           ) : (
             <>
-              <Field label="Title">
+              <Field label={t("field.title", "Title")}>
                 <TextInput
                   value={title}
                   onChangeText={setTitle}
-                  placeholder="Issue title"
+                  placeholder={tIssues(
+                    "detail.title_placeholder",
+                    "Issue title",
+                  )}
                   placeholderTextColor={MOBILE_PLACEHOLDER_COLOR}
                   className="text-base text-foreground bg-secondary/50 rounded-md px-3 py-2"
                   returnKeyType="next"
@@ -174,7 +197,7 @@ export default function EditIssue() {
                 />
               </Field>
 
-              <Field label="Description">
+              <Field label={t("field.description", "Description")}>
                 <DescriptionField
                   description={description}
                   disabled={update.isPending}

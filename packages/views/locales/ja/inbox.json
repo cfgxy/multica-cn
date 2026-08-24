@@ -88,5 +88,15 @@
     "archive_completed_failed": "完了した項目をアーカイブできませんでした",
     "unarchive_failed": "アーカイブ解除に失敗しました",
     "archived_load_failed": "アーカイブ済み通知を読み込めませんでした"
+  },
+  "mobile": {
+    "page": {
+      "actions_a11y": "受信トレイの操作",
+      "archive_all_body": "既読・未読を問わず、受信トレイのすべての項目をアーカイブします。アーカイブ後もタスクページから確認できます。",
+      "load_failed": "受信トレイを読み込めませんでした：{{reason}}"
+    },
+    "label": {
+      "reacted_with": "{{emoji}} でリアクション"
+    }
   }
 }

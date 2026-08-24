@@ -59,8 +59,10 @@ import { ImageSequenceProvider } from "@/lib/markdown/image-sequence";
 import { failureReasonLabel } from "@/lib/failure-reason-label";
 import { formatElapsedMs } from "@/lib/format-elapsed";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/use-t";
 import { useChatSelectStore } from "@/data/chat-select-store";
 import { useChatMessageLongPress } from "./message-long-press";
+import { ActionSheetModal } from "@/components/ui/action-sheet";
 import { ChatEmptyState } from "./chat-empty-state";
 import { ChatTimeline } from "./chat-timeline";
 // Reuse the comment thread's standalone attachment list — same design web
@@ -370,6 +372,7 @@ function AssistantRow({
   onQuickAction?: (action: ChatQuickAction) => void | Promise<unknown>;
   quickActionsDisabled: boolean;
 }) {
+  const { t } = useT("chat");
   // Read the cached timeline if any. `enabled` (in taskMessagesOptions) is
   // gated on isTaskMessageTaskId — optimistic id prefixes never fetch, so
   // freshly-sent messages don't spam the API while waiting for the real
@@ -390,7 +393,10 @@ function AssistantRow({
       ) : null}
       {isNoResponse ? (
         <Text className="text-sm italic text-muted-foreground">
-          The agent finished this turn without a text reply.
+          {t(
+            "message_list.no_response",
+            "The agent finished this turn without a text reply.",
+          )}
         </Text>
       ) : (
         <Markdown
@@ -416,9 +422,12 @@ function AssistantRow({
     </View>
   );
   const messageBody = isSelecting ? body : (
-    <Pressable onLongPress={longPress.onLongPress} delayLongPress={500}>
-      {body}
-    </Pressable>
+    <>
+      <Pressable onLongPress={longPress.onLongPress} delayLongPress={500}>
+        {body}
+      </Pressable>
+      <ActionSheetModal {...longPress.modalProps} />
+    </>
   );
   if (!onQuickAction || (message.quick_actions?.length ?? 0) === 0) {
     return messageBody;
@@ -444,6 +453,7 @@ function QuickActions({
   disabled: boolean;
   onSelect: (action: ChatQuickAction) => void | Promise<unknown>;
 }) {
+  const { t } = useT("chat");
   const [submitting, setSubmitting] = useState(false);
   const blocked = disabled || submitting;
 
@@ -463,7 +473,10 @@ function QuickActions({
   return (
     <View
       className="flex-row flex-wrap gap-2 pt-0.5"
-      accessibilityLabel="Suggested follow-ups"
+      accessibilityLabel={t(
+        "mobile.message_list.quick_actions_a11y",
+        "Suggested follow-ups",
+      )}
     >
       {actions.slice(0, 3).map((action, index) => (
         <Pressable
@@ -508,12 +521,16 @@ function ElapsedCaption({
   variant: "replied" | "failed" | "finished";
   elapsedMs: number;
 }) {
+  const { t } = useT("chat");
+  const elapsed = formatElapsedMs(elapsedMs);
   const label =
     variant === "replied"
-      ? `Replied in ${formatElapsedMs(elapsedMs)}`
+      ? t("message_list.replied_in", "Replied in {{elapsed}}", { elapsed })
       : variant === "finished"
-        ? `Finished in ${formatElapsedMs(elapsedMs)}`
-        : `Failed after ${formatElapsedMs(elapsedMs)}`;
+        ? t("message_list.finished_in", "Finished in {{elapsed}}", { elapsed })
+        : t("message_list.failed_after", "Failed after {{elapsed}}", {
+            elapsed,
+          });
   return (
     <Text className="text-xs text-muted-foreground/80 mt-1">{label}</Text>
   );
@@ -532,6 +549,7 @@ function FailureBubble({
   isSelecting: boolean;
   longPress: ReturnType<typeof useChatMessageLongPress>;
 }) {
+  const { t } = useT("chat");
   const hasRawError = rawError.trim().length > 0;
 
   // B6: pass `selectable={isSelecting}` rather than hard-coding
@@ -557,7 +575,10 @@ function FailureBubble({
             <CollapsibleTrigger asChild>
               <View
                 accessibilityRole="button"
-                accessibilityLabel="Show error details"
+                accessibilityLabel={t(
+                  "mobile.message_list.show_error_details_a11y",
+                  "Show error details",
+                )}
                 className="mt-1 flex-row items-center gap-1 active:opacity-70"
               >
                 <Ionicons
@@ -566,7 +587,7 @@ function FailureBubble({
                   color="#71717a"
                 />
                 <Text className="text-xs text-muted-foreground">
-                  Show details
+                  {t("message_list.show_details", "Show details")}
                 </Text>
               </View>
             </CollapsibleTrigger>
@@ -590,8 +611,11 @@ function FailureBubble({
   );
   if (isSelecting) return body;
   return (
-    <Pressable onLongPress={longPress.onLongPress} delayLongPress={500}>
-      {body}
-    </Pressable>
+    <>
+      <Pressable onLongPress={longPress.onLongPress} delayLongPress={500}>
+        {body}
+      </Pressable>
+      <ActionSheetModal {...longPress.modalProps} />
+    </>
   );
 }

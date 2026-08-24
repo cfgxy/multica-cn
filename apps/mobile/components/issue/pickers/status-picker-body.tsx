@@ -20,9 +20,10 @@ import { useColorScheme } from "nativewind";
 import type { IssueStatus } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { StatusIcon } from "@/components/ui/status-icon";
-import { statusOptions } from "@/lib/issue-status";
+import { localizedStatusOptions } from "@/lib/issue-status";
 import { useIssueStatuses } from "@/lib/use-issue-statuses";
 import { THEME } from "@/lib/theme";
+import { useT } from "@/lib/use-t";
 
 interface Props {
   value: IssueStatus;
@@ -30,16 +31,21 @@ interface Props {
 }
 
 export function StatusPickerBody({ value, onChange }: Props) {
+  const { t } = useT("issues");
   const { colorScheme } = useColorScheme();
   const checkColor =
     colorScheme === "dark" ? THEME.dark.primary : THEME.light.primary;
   const catalog = useIssueStatuses();
-  const options = statusOptions(catalog);
+  // 用本地化版本：结构与 `statusOptions` 相同，只把内置状态的 label 换成
+  // i18n 取值，自定义状态仍用目录里的 `name`。
+  const options = localizedStatusOptions(catalog);
 
   return (
     <ScrollView showsVerticalScrollIndicator={false}>
       <View className="px-4 pt-3 pb-2">
-        <Text className="text-lg font-semibold text-foreground">Status</Text>
+        <Text className="text-lg font-semibold text-foreground">
+          {t("detail.prop_status", "Status")}
+        </Text>
       </View>
       <View className="px-2">
         {options.map((option) => {

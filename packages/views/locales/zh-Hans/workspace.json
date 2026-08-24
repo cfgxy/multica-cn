@@ -30,5 +30,20 @@
     "description": "该工作区不存在，或你没有访问权限。",
     "go_to_workspaces": "前往我的工作区",
     "sign_in_different": "使用其他账号登录"
+  },
+  "mobile": {
+    "select": {
+      "signed_in_as": "当前登录",
+      "title": "选择工作区",
+      "load_failed": "无法加载工作区：{{reason}}",
+      "unknown_error": "未知错误",
+      "retry": "重试",
+      "no_workspaces": "你还不属于任何工作区。请联系工作区管理员邀请你加入。"
+    },
+    "switch": {
+      "title": "切换工作区",
+      "confirm_action": "切换",
+      "confirm_message": "切换到\"{{name}}\"？"
+    }
   }
 }

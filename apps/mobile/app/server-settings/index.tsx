@@ -4,6 +4,10 @@
  * 路由刻意放在 (auth) / (app) 两个分组之外:未登录用户连自建后端是核心
  * 场景,登录前必须可达。
  *
+ * header 用屏内自绘的 `<Header />`(分组 layout 已关掉原生 Stack header),
+ * 它自己处理 top inset;原生 header 在 Android 上会压住状态栏,详见
+ * `_layout.tsx` 的注释(RUYI-25)。
+ *
  * 视觉沿用 `more/settings.tsx` 的 SectionGroup / 行模式,不引入新组件。
  * 内置项置顶且没有「…」菜单 —— 不可编辑删除直接体现为「没有可点的入口」,
  * 而不是置灰按钮让用户点一次才知道禁用。
@@ -18,9 +22,10 @@ import { useCallback } from "react";
 import { Alert, Pressable, ScrollView, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
-import { Stack, router } from "expo-router";
+import { router } from "expo-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { Text } from "@/components/ui/text";
+import { Header } from "@/components/ui/header";
 import { Separator } from "@/components/ui/separator";
 import { IconButton } from "@/components/ui/icon-button";
 import {
@@ -35,8 +40,10 @@ import { useServerStore } from "@/data/server-store";
 import { pickActiveServer, type ServerEntry } from "@/data/server-config";
 import { THEME } from "@/lib/theme";
 import { useColorScheme } from "@/lib/use-color-scheme";
+import { useT } from "@/lib/use-t";
 
 export default function ServerListScreen() {
+  const { t } = useT("settings");
   const servers = useServerStore((s) => s.servers);
   const activeServerId = useServerStore((s) => s.activeServerId);
   const setActiveServer = useServerStore((s) => s.setActiveServer);
@@ -64,8 +71,10 @@ export default function ServerListScreen() {
         await setActiveServer(entry.id);
       } catch (err) {
         Alert.alert(
-          "Switch failed",
-          err instanceof Error ? err.message : "Could not switch servers.",
+          t("server.switch_failed_title", "Switch failed"),
+          err instanceof Error
+            ? err.message
+            : t("server.switch_failed_message", "Could not switch servers."),
         );
         return;
       }
@@ -75,7 +84,7 @@ export default function ServerListScreen() {
       qc.clear();
       router.replace("/login");
     },
-    [user, clearWorkspace, logout, qc, setActiveServer],
+    [user, clearWorkspace, logout, qc, setActiveServer, t],
   );
 
   const onSelect = useCallback(
@@ -87,53 +96,57 @@ export default function ServerListScreen() {
         return;
       }
       Alert.alert(
-        "Switch server?",
-        `You'll be signed out of the current account before connecting to ${entry.name || entry.apiUrl}.`,
+        t("server.switch_title", "Switch server?"),
+        t("server.switch_message", { name: entry.name || entry.apiUrl }),
         [
-          { text: "Cancel", style: "cancel" },
+          { text: t("server.cancel", "Cancel"), style: "cancel" },
           {
-            text: "Switch",
+            text: t("server.switch_confirm", "Switch"),
             style: "destructive",
             onPress: () => void doSwitch(entry),
           },
         ],
       );
     },
-    [active.id, user, doSwitch],
+    [active.id, user, doSwitch, t],
   );
 
   const onDelete = useCallback(
     (entry: ServerEntry) => {
       Alert.alert(
-        "Delete server",
-        `Remove ${entry.name || entry.apiUrl} from this device?`,
+        t("server.delete_title", "Delete server"),
+        t("server.delete_message", { name: entry.name || entry.apiUrl }),
         [
-          { text: "Cancel", style: "cancel" },
+          { text: t("server.cancel", "Cancel"), style: "cancel" },
           {
-            text: "Delete",
+            text: t("server.delete", "Delete"),
             style: "destructive",
             onPress: () => void removeServer(entry.id),
           },
         ],
       );
     },
-    [removeServer],
+    [removeServer, t],
   );
 
   return (
     <SafeAreaView className="flex-1 bg-background" edges={["bottom"]}>
-      <Stack.Screen
-        options={{
-          title: "Servers",
-          headerBackTitle: "Back",
-          headerRight: () => (
-            <IconButton
-              name="add"
-              onPress={() => router.push("/server-settings/new")}
-              accessibilityLabel="Add server"
-            />
-          ),
-        }}
+      <Header
+        title={t("server.title", "Servers")}
+        left={
+          <IconButton
+            name="arrow-back"
+            onPress={() => router.back()}
+            accessibilityLabel={t("server.back", "Back")}
+          />
+        }
+        right={
+          <IconButton
+            name="add"
+            onPress={() => router.push("/server-settings/new")}
+            accessibilityLabel={t("server.add", "Add server")}
+          />
+        }
       />
       <ScrollView
         className="flex-1"
@@ -141,7 +154,7 @@ export default function ServerListScreen() {
       >
         <View className="gap-2">
           <Text className="text-xs uppercase tracking-wider text-muted-foreground px-1">
-            Servers
+            {t("server.title", "Servers")}
           </Text>
           <View className="rounded-md border border-border bg-card overflow-hidden">
             {servers.map((entry, idx) => (
@@ -159,8 +172,10 @@ export default function ServerListScreen() {
             ))}
           </View>
           <Text className="text-xs text-muted-foreground px-1">
-            Tap a server to connect to it. Switching signs you out of the
-            current account.
+            {t(
+              "server.hint",
+              "Tap a server to connect to it. Switching signs you out of the current account.",
+            )}
           </Text>
         </View>
       </ScrollView>
@@ -192,6 +207,7 @@ function ServerRow({
   onEdit: () => void;
   onDelete: () => void;
 }) {
+  const { t } = useT("settings");
   return (
     <View className="flex-row items-center pr-2">
       <Pressable
@@ -205,7 +221,9 @@ function ServerRow({
             </Text>
             {entry.builtIn ? (
               <View className="rounded bg-muted px-1.5 py-0.5">
-                <Text className="text-xs text-muted-foreground">Built-in</Text>
+                <Text className="text-xs text-muted-foreground">
+                  {t("server.built_in", "Built-in")}
+                </Text>
               </View>
             ) : null}
           </View>
@@ -225,18 +243,20 @@ function ServerRow({
               name="ellipsis-horizontal"
               iconSize={18}
               color={iconColor}
-              accessibilityLabel={`Actions for ${entry.name || entry.apiUrl}`}
+              accessibilityLabel={t("server.row_actions", {
+                name: entry.name || entry.apiUrl,
+              })}
             />
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end" className="w-40">
             <DropdownMenuItem onPress={onEdit}>
-              <Text>Edit</Text>
+              <Text>{t("server.edit", "Edit")}</Text>
             </DropdownMenuItem>
             {/* 当前生效项不给删除 —— 删掉正在用的服务器会造成一次隐式的
                 地址变化,行为不可预期。用户需要先切走再删。 */}
             {isActive ? null : (
               <DropdownMenuItem variant="destructive" onPress={onDelete}>
-                <Text>Delete</Text>
+                <Text>{t("server.delete", "Delete")}</Text>
               </DropdownMenuItem>
             )}
           </DropdownMenuContent>

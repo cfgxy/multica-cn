@@ -121,5 +121,16 @@
     "commands": {
       "note": "메모 추가 — 에이전트를 트리거하지 않음"
     }
+  },
+  "mobile": {
+    "toolbar": {
+      "mention": "멤버 멘션",
+      "bullet_list": "글머리 기호 목록",
+      "checklist": "체크리스트",
+      "code_block": "코드 블록",
+      "quote": "인용",
+      "attach_image": "이미지 첨부",
+      "attach_file": "파일 첨부"
+    }
   }
 }

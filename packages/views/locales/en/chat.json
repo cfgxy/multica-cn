@@ -141,7 +141,7 @@
   },
   "empty_state": {
     "first_time_title": "Chat with your agents",
-    "first_time_intro": "✨ They know your workspace —",
+    "first_time_intro": "✨ They know your workspace — ",
     "first_time_pillars": "issues, projects, skills",
     "first_time_pillars_suffix": ".",
     "first_time_actions": "Ask for a summary, plan your day, or hand off a quick task.",
@@ -233,5 +233,95 @@
     "archive": "Archive chat",
     "unarchive": "Unarchive chat",
     "delete": "Delete chat"
+  },
+  "mobile": {
+    "send_blocked": {
+      "no_permission_title": "No permission to run this agent",
+      "no_permission_message": "You no longer have permission to run this agent, so the message was not sent. Ask its owner for access.",
+      "runtime_required_title": "Runtime required",
+      "runtime_required_message": "Bind a runtime to this agent on web or desktop before sending a message.",
+      "failed_title": "Message not sent"
+    },
+    "composer": {
+      "placeholder": "Message…",
+      "agent_working": "Agent is working…",
+      "unavailable": "Chat unavailable",
+      "stop_agent": "Stop agent"
+    },
+    "send_failure": {
+      "no_permission": "You no longer have permission to run this agent, so the message was not sent.",
+      "runtime_required": "Bind a runtime to this agent before sending a message.",
+      "generic": "Your message could not be sent. Please try again."
+    },
+    "disabled_reason": {
+      "no_agent": "No agent selected",
+      "access_revoked": "You can no longer run this agent",
+      "no_agents_in_workspace": "No agents in this workspace",
+      "archived": "This chat is archived",
+      "runtime_missing": "Agent needs a runtime"
+    },
+    "failure_reason": {
+      "queued_expired": "Expired in queue",
+      "runtime_offline": "Daemon offline",
+      "runtime_recovery": "Daemon restarted",
+      "timeout": "Task timed out",
+      "iteration_limit": "Hit the iteration limit",
+      "agent_blocked": "Waiting on human input",
+      "api_invalid_request": "Rejected by the model API",
+      "skill_bundle_unavailable": "Couldn't download the agent's skills",
+      "runtime_cli_timeout": "Local runtime CLI timed out",
+      "agent_error__provider_auth_or_access": "Provider auth failed",
+      "agent_error__provider_quota_limit": "Provider quota exhausted",
+      "agent_error__provider_capacity_or_rate_limit": "Rate limited by provider",
+      "agent_error__provider_server_error": "Provider server error",
+      "agent_error__provider_network": "Network error reaching provider",
+      "agent_error__process_failure": "Agent process crashed",
+      "agent_error__empty_or_unparseable_output": "Agent returned no usable output",
+      "agent_error__agent_timeout": "Agent timed out",
+      "agent_error__context_overflow": "Context window exceeded",
+      "agent_error__missing_config": "Missing API key or configuration",
+      "agent_error__model_not_found_or_unavailable": "Model unavailable",
+      "agent_error__runtime_version_unsupported": "Runner CLI version unsupported",
+      "agent_error__runtime_missing_executable": "Runner CLI not installed",
+      "agent_error__unknown": "Agent execution error",
+      "agent_error": "Agent execution error",
+      "codex_semantic_inactivity": "Codex semantic inactivity timeout",
+      "manual": "Cancelled by user",
+      "fallback": "Failed"
+    },
+    "sessions": {
+      "untitled": "Untitled chat",
+      "delete_title": "Delete this chat?",
+      "title": "Chats",
+      "empty": "No chats yet.",
+      "archived": "archived",
+      "actions_a11y": "Session actions",
+      "title_button_a11y": "Sessions and agent picker"
+    },
+    "agent_picker": {
+      "title": "Choose an agent",
+      "empty": "No agents available."
+    },
+    "no_agent_banner": {
+      "a11y": "No agents available, open agents settings",
+      "title": "No agents available",
+      "hint": "Add or enable an agent in More → Agents to start chatting."
+    },
+    "offline_banner": {
+      "fallback_name": "This agent",
+      "unstable": "{{name}} may have just disconnected — your message will queue.",
+      "offline": "{{name}} is offline. Messages will wait until its runtime is back."
+    },
+    "runtime_required_banner": {
+      "fallback_name": "This agent",
+      "message": "{{name}} needs a runtime before it can run. Bind one on web or desktop."
+    },
+    "message_list": {
+      "quick_actions_a11y": "Suggested follow-ups",
+      "show_error_details_a11y": "Show error details"
+    },
+    "timeline": {
+      "truncated": "…(truncated)"
+    }
   }
 }

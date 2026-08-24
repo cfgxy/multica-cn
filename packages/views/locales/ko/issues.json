@@ -77,7 +77,7 @@
     "agents_group": "에이전트",
     "squads_group": "스쿼드",
     "issue_count_other": "태스크 {{count}}개",
-    "reset": "필터 모두 초기화",
+    "reset": "초기화",
     "chip_remove": "{{name}} 필터 제거",
     "chip_status_count_other": "상태 {{count}}개",
     "chip_priority_count_other": "우선순위 {{count}}개",
@@ -390,8 +390,8 @@
     "due_date_removed": "마감일을 제거했습니다",
     "title_renamed": "태스크 제목을 \"{{from}}\"에서 \"{{to}}\"로 바꿨습니다",
     "description_updated": "설명을 업데이트했습니다",
-    "task_completed_other": "작업을 완료했습니다({{count}}회)",
-    "task_failed_other": "작업이 실패했습니다({{count}}회)",
+    "task_completed_other": "작업 {{count}}개를 완료했습니다",
+    "task_failed_other": "작업 {{count}}개가 실패했습니다",
     "squad_leader_evaluated": "스쿼드 트리거를 평가했습니다",
     "squad_leader_action": "평가 후 작업을 수행했습니다",
     "squad_leader_action_reason": "평가 후 작업을 수행했습니다: {{reason}}",
@@ -783,5 +783,127 @@
     "hook_refused": "{{name}}이(가) 실행되지 않았습니다.",
     "hook_activity": "최근 호출",
     "hook_never_run": "이 훅은 아직 실행되지 않았습니다."
+  },
+  "mobile": {
+    "edit": {
+      "discard_message": "이 이슈에 대한 편집 내용이 사라집니다.",
+      "save_failed": "저장 실패"
+    },
+    "composer": {
+      "placeholder": "댓글 추가…",
+      "pill_label": "댓글 추가, @로 멘션"
+    },
+    "comment": {
+      "resolved_bar_other": "해결됨 · 메시지 {{count}}개 ({{authors}}님)",
+      "resolved_bar_a11y_other": "해결된 스레드, 메시지 {{count}}개 ({{authors}}님). 탭하여 펼치기.",
+      "resolved_by": "해결한 사람",
+      "collapse": "접기",
+      "collapse_a11y": "해결된 스레드 접기",
+      "edited_suffix": " ·(수정됨)",
+      "send_failed": "보내지 못했습니다",
+      "retry": "다시 시도",
+      "retry_a11y": "댓글 다시 보내기",
+      "discard": "삭제",
+      "discard_a11y": "실패한 댓글 삭제",
+      "add_reaction": "리액션 추가",
+      "delete_title": "댓글을 삭제할까요?",
+      "delete_desc": "이 댓글은 영구적으로 삭제되며 스레드의 답글도 함께 제거됩니다. 이 작업은 되돌릴 수 없습니다."
+    },
+    "detail": {
+      "actions_a11y": "태스크 작업",
+      "edit_details": "세부 정보 편집",
+      "open_on_web": "웹에서 열기",
+      "load_failed": "태스크를 불러오지 못했습니다: {{reason}}",
+      "not_found": "찾을 수 없음",
+      "retry": "다시 시도",
+      "no_description": "설명이 없습니다."
+    },
+    "picker": {
+      "unassigned": "미할당",
+      "agent": "에이전트",
+      "member": "멤버",
+      "squad": "스쿼드",
+      "needs_runtime": "런타임 필요",
+      "leader_needs_runtime": "리더에게 런타임 필요",
+      "everyone_all": "모든 사람(@all)",
+      "done": "완료",
+      "create_label": "'{{name}}' 만들기",
+      "no_labels": "이 워크스페이스에는 아직 라벨이 없습니다.",
+      "no_members_or_agents": "이 워크스페이스에는 아직 멤버나 에이전트가 없습니다."
+    },
+    "mention": {
+      "everyone": "모든 사람",
+      "screen_title": "멘션",
+      "group_recent": "최근",
+      "group_my_issues": "내 태스크",
+      "group_people": "멤버"
+    },
+    "run_failure": {
+      "queued_expired": "대기열 만료",
+      "runtime_offline": "런타임 오프라인",
+      "runtime_recovery": "런타임 복구",
+      "timeout": "시간 초과",
+      "iteration_limit": "반복 한도",
+      "agent_blocked": "입력 대기",
+      "api_invalid_request": "요청 거부",
+      "skill_bundle_unavailable": "스킬 내려받기 실패",
+      "runtime_cli_timeout": "CLI 시간 초과",
+      "agent_error__provider_auth_or_access": "인증 실패",
+      "agent_error__provider_quota_limit": "할당량 소진",
+      "agent_error__provider_capacity_or_rate_limit": "속도 제한",
+      "agent_error__provider_server_error": "제공자 오류",
+      "agent_error__provider_network": "네트워크 오류",
+      "agent_error__process_failure": "프로세스 충돌",
+      "agent_error__empty_or_unparseable_output": "출력 없음",
+      "agent_error__agent_timeout": "에이전트 시간 초과",
+      "agent_error__context_overflow": "컨텍스트 초과",
+      "agent_error__missing_config": "설정 누락",
+      "agent_error__model_not_found_or_unavailable": "모델 사용 불가",
+      "agent_error__runtime_version_unsupported": "CLI 미지원",
+      "agent_error__runtime_missing_executable": "CLI 미설치",
+      "agent_error__unknown": "에이전트 오류",
+      "agent_error": "에이전트 오류",
+      "codex_semantic_inactivity": "Codex 비활성",
+      "manual": "수동 취소"
+    },
+    "run_summary": {
+      "comment": "댓글 task",
+      "autopilot": "자동 실행",
+      "chat": "채팅 task",
+      "quick_create": "빠른 생성",
+      "direct": "task"
+    },
+    "run_status": {
+      "queued": "대기 중",
+      "dispatched": "시작 중",
+      "waiting_local_directory": "디렉터리 대기",
+      "running": "실행 중",
+      "completed": "완료",
+      "failed": "실패",
+      "cancelled": "취소됨"
+    },
+    "runs": {
+      "title": "에이전트 실행 기록",
+      "section_active": "진행 중",
+      "section_past": "지난 기록",
+      "cancel_title": "task를 취소할까요?",
+      "cancel_body": "에이전트가 현재 단계를 마친 후 중지됩니다."
+    },
+    "list": {
+      "load_failed": "태스크를 불러오지 못했습니다: {{reason}}",
+      "empty_all": "이 워크스페이스에는 태스크가 없습니다.",
+      "empty_members": "멤버에게 할당된 태스크가 없습니다.",
+      "empty_agents": "에이전트나 스쿼드에 할당된 태스크가 없습니다."
+    },
+    "agent_activity": {
+      "runs_count": "실행 · {{count}}회",
+      "badge_a11y": "에이전트 실행 중 — 실행 기록 열기"
+    },
+    "description_field": {
+      "placeholder": "설명… (@를 입력해 멘션)"
+    },
+    "new": {
+      "submit_a11y": "태스크 만들기"
+    }
   }
 }

@@ -40,7 +40,8 @@
     "just_now": "たった今",
     "minutes_ago": "{{count}}分前",
     "hours_ago": "{{count}}時間前",
-    "days_ago": "{{count}}日前"
+    "days_ago": "{{count}}日前",
+    "weeks_ago": "{{count}}週間前"
   },
   "lark_bind": {
     "page_title": "Lark アカウントを連携",
@@ -123,5 +124,48 @@
   },
   "navigation": {
     "open_in_new_tab": "新しいタブで開く"
+  },
+  "saving": "保存中…",
+  "creating": "作成中…",
+  "create": "作成",
+  "attach": "追加",
+  "attaching": "追加中…",
+  "unknown_error": "不明なエラー",
+  "discard_dialog": {
+    "changes_title": "変更を破棄しますか？",
+    "keep_editing": "編集を続ける",
+    "discard": "破棄"
+  },
+  "field": {
+    "title": "タイトル",
+    "description": "説明"
+  },
+  "send": "送信",
+  "composer": {
+    "placeholder": "メッセージを入力…",
+    "replying_to": "{{name}} に返信",
+    "cancel_reply": "返信をキャンセル",
+    "mention_hint": "メンバーまたは課題をメンション",
+    "upload_image": "画像をアップロード",
+    "upload_file": "ファイルをアップロード",
+    "file_too_large_title": "ファイルサイズが大きすぎます",
+    "file_too_large_message": "ファイルは {{size}} MB 未満である必要があります。",
+    "upload_failed_title": "アップロードに失敗しました"
+  },
+  "mobile": {
+    "actor": {
+      "system": "システム",
+      "unknown_member": "不明",
+      "unknown_agent": "不明なエージェント",
+      "unknown_squad": "スクワッド"
+    },
+    "common": {
+      "no_matches": "一致する項目がありません。",
+      "retry": "再試行",
+      "unknown_error": "不明なエラー",
+      "search": "検索",
+      "close": "閉じる",
+      "request_timeout": "リクエストがタイムアウトしました（{{seconds}} 秒）"
+    }
   }
 }

@@ -14,17 +14,19 @@ import {
   type DueDatePickerBodyHandle,
 } from "@/components/issue/pickers/due-date-picker-body";
 import { useNewIssueDraftStore } from "@/data/stores/new-issue-draft-store";
+import { useT } from "@/lib/use-t";
 
 export default function NewIssueDueDatePickerRoute() {
   const dueDate = useNewIssueDraftStore((s) => s.dueDate);
   const setDueDate = useNewIssueDraftStore((s) => s.setDueDate);
   const ref = useRef<DueDatePickerBodyHandle>(null);
+  const { t } = useT("issues");
 
   return (
     <View className="flex-1">
       <View className="flex-row items-center justify-between px-4 pt-4 pb-2">
         <Text className="text-base font-semibold text-foreground">
-          Due date
+          {t("detail.prop_due_date", "Due date")}
         </Text>
         <View className="flex-row items-center gap-1">
           {dueDate ? (
@@ -36,7 +38,9 @@ export default function NewIssueDueDatePickerRoute() {
               hitSlop={6}
               className="px-2 py-1 rounded-md active:bg-secondary"
             >
-              <Text className="text-sm text-destructive">Clear</Text>
+              <Text className="text-sm text-destructive">
+                {t("filters.chip_clear", "Clear")}
+              </Text>
             </Pressable>
           ) : null}
           <Pressable
@@ -48,7 +52,9 @@ export default function NewIssueDueDatePickerRoute() {
             hitSlop={6}
             className="px-2 py-1 rounded-md active:bg-secondary"
           >
-            <Text className="text-sm font-medium text-primary">Done</Text>
+            <Text className="text-sm font-medium text-primary">
+              {t("mobile.picker.done", "Done")}
+            </Text>
           </Pressable>
         </View>
       </View>

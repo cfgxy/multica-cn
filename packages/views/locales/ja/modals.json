@@ -97,6 +97,12 @@
     "toast_failed": "スクワッドを作成できませんでした",
     "toast_member_add_failed": "{{name}} を追加できませんでした: {{error}}"
   },
+  "edit_project": {
+    "title": "プロジェクトを編集"
+  },
+  "edit_issue": {
+    "title": "タスクを編集"
+  },
   "create_project": {
     "title": "新規プロジェクト",
     "title_breadcrumb": "新規プロジェクト",

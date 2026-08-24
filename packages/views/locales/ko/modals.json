@@ -97,6 +97,12 @@
     "toast_failed": "스쿼드를 만들지 못했습니다",
     "toast_member_add_failed": "{{name}}을(를) 추가하지 못했습니다: {{error}}"
   },
+  "edit_project": {
+    "title": "프로젝트 편집"
+  },
+  "edit_issue": {
+    "title": "태스크 편집"
+  },
   "create_project": {
     "title": "새 프로젝트",
     "title_breadcrumb": "새 프로젝트",

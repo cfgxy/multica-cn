@@ -23,6 +23,7 @@ import {
 import { useActorLookup } from "@/data/use-actor-name";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
+import { useT } from "@/lib/use-t";
 
 interface Props {
   project: Project;
@@ -37,6 +38,7 @@ export function ProjectPropertiesSection({
   onPressPriority,
   onPressLead,
 }: Props) {
+  const { t } = useT("projects");
   const { getName } = useActorLookup();
   const leadName =
     project.lead_type && project.lead_id
@@ -46,7 +48,7 @@ export function ProjectPropertiesSection({
   return (
     <View className="border-y border-border bg-background">
       <Row
-        label="Status"
+        label={t("table.status", "Status")}
         onPress={onPressStatus}
         left={<ProjectStatusIcon status={project.status} size={16} />}
         right={
@@ -57,7 +59,7 @@ export function ProjectPropertiesSection({
       />
       <Separator />
       <Row
-        label="Priority"
+        label={t("table.priority", "Priority")}
         onPress={onPressPriority}
         left={<ProjectPriorityIcon priority={project.priority} size={16} />}
         right={
@@ -68,7 +70,7 @@ export function ProjectPropertiesSection({
       />
       <Separator />
       <Row
-        label="Lead"
+        label={t("table.lead", "Lead")}
         onPress={onPressLead}
         left={
           leadName ? (
@@ -90,7 +92,7 @@ export function ProjectPropertiesSection({
                 : "text-sm text-muted-foreground"
             }
           >
-            {leadName ?? "Unassigned"}
+            {leadName ?? t("issues:mobile.picker.unassigned", "Unassigned")}
           </Text>
         }
       />

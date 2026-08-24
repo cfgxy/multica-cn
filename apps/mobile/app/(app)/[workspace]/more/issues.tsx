@@ -46,27 +46,38 @@ import {
   type IssuesScope,
 } from "@/data/stores/issues-view-store";
 import { useClearFiltersOnWorkspaceChange } from "@/lib/use-clear-filters-on-workspace-change";
-import { PRIORITY_LABEL, STATUS_LABEL } from "@/lib/issue-status";
+import {
+  localizedStatusLabel,
+  priorityLabel,
+  statusLabel,
+} from "@/lib/issue-status";
 import { useIssueStatuses } from "@/lib/use-issue-statuses";
 import { groupIssuesByCategory } from "@/lib/group-issues-by-category";
 import { filterIssues } from "@/lib/filter-issues";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
+import { useT } from "@/lib/use-t";
 
 // Scope tab definitions. Mirrors web `issuesScopeStore`. Counts are NOT
 // rendered on the pill labels — web's `IssuesHeader` doesn't show them
 // either, and on SE3 (375pt) "(123)" appended to each label pushes the
 // row past the safe width when filter icon shares the row. Per-status
 // counts still appear on the SectionList headers below.
-const SCOPES: { value: IssuesScope; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "members", label: "Members" },
-  { value: "agents", label: "Agents" },
-];
+// Scope 标签在组件内用 t() 计算（不能在模块顶层求值——见 i18n 初始化时序）。
+function useScopes(): { value: IssuesScope; label: string }[] {
+  const { t } = useT("issues");
+  return [
+    { value: "all", label: t("scope.all_label", "All") },
+    { value: "members", label: t("scope.members_label", "Members") },
+    { value: "agents", label: t("scope.agents_label", "Agents") },
+  ];
+}
 
 export default function IssuesPage() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
+  const { t } = useT("issues");
+  const scopes = useScopes();
 
   const scope = useIssuesViewStore((s) => s.scope);
   const setScope = useIssuesViewStore((s) => s.setScope);
@@ -125,7 +136,7 @@ export default function IssuesPage() {
   return (
     <View className="flex-1 bg-background">
       <ScopeToolbar
-        scopes={SCOPES}
+        scopes={scopes}
         scope={scope}
         onChange={(v) => setScope(v)}
         onOpenFilter={openFilter}
@@ -135,7 +146,7 @@ export default function IssuesPage() {
         <ActiveFilterChips
           statusFilters={statusFilters}
           priorityFilters={priorityFilters}
-          statusLabelOf={catalog.labelOf}
+          statusLabelOf={(s) => localizedStatusLabel(catalog, s)}
           onClearStatus={(s) =>
             useIssuesViewStore.getState().toggleStatusFilter(s)
           }
@@ -149,19 +160,23 @@ export default function IssuesPage() {
       ) : error ? (
         <View className="px-4 gap-3 pt-4">
           <Text className="text-sm text-destructive">
-            Failed to load issues:{" "}
-            {error instanceof Error ? error.message : "unknown error"}
+            {t("mobile.list.load_failed", "Failed to load issues: {{reason}}", {
+              reason:
+                error instanceof Error
+                  ? error.message
+                  : t("common:mobile.common.unknown_error", "unknown error"),
+            })}
           </Text>
           <Button variant="outline" onPress={() => refetch()}>
-            <Text>Retry</Text>
+            <Text>{t("common:mobile.common.retry", "Retry")}</Text>
           </Button>
         </View>
       ) : showEmptyState ? (
         <EmptyState
           message={
             hasActiveFilters
-              ? "No issues match the current filters."
-              : emptyMessageForScope(scope)
+              ? t("filtered_empty.title", "No issues match these filters")
+              : emptyMessageForScope(scope, t)
           }
         />
       ) : (
@@ -208,13 +223,14 @@ function FilterButton({
   hasActiveFilters: boolean;
 }) {
   const { colorScheme } = useColorScheme();
+  const { t } = useT("issues");
   return (
     <View style={{ position: "relative" }} className="ml-2">
       <Button
         variant="outline"
         size="sm"
         onPress={onPress}
-        accessibilityLabel="Filter"
+        accessibilityLabel={t("filters.tooltip", "Filter")}
         className="w-9 px-0"
       >
         <Ionicons
@@ -312,7 +328,7 @@ function ActiveFilterChips({
       {priorityFilters.map((p) => (
         <Chip
           key={`p-${p}`}
-          label={PRIORITY_LABEL[p]}
+          label={priorityLabel(p)}
           onClear={() => onClearPriority(p)}
         />
       ))}
@@ -352,7 +368,8 @@ function SectionHeader({
       {/* A category IS a built-in status key, so it resolves to its own glyph. */}
       <StatusIcon status={category} size={14} />
       <Text className="text-xs uppercase tracking-wider text-muted-foreground font-medium">
-        {STATUS_LABEL[category]}
+        {/* category 本身就是内置状态键，`statusLabel` 走 `issues:status.*`。 */}
+        {statusLabel(category)}
       </Text>
       <Text className="text-xs text-muted-foreground/60">{count}</Text>
     </View>
@@ -369,13 +386,19 @@ function EmptyState({ message }: { message: string }) {
   );
 }
 
-function emptyMessageForScope(scope: IssuesScope): string {
+// `t` 由调用方（组件）从 useT 取好后传进来，本函数保持纯函数便于单测。
+type TFn = ReturnType<typeof useT>["t"];
+
+function emptyMessageForScope(scope: IssuesScope, t: TFn): string {
   switch (scope) {
     case "all":
-      return "No issues in this workspace.";
+      return t("mobile.list.empty_all", "No issues in this workspace.");
     case "members":
-      return "No issues assigned to a member.";
+      return t("mobile.list.empty_members", "No issues assigned to a member.");
     case "agents":
-      return "No issues assigned to agents or squads.";
+      return t(
+        "mobile.list.empty_agents",
+        "No issues assigned to agents or squads.",
+      );
   }
 }

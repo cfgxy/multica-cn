@@ -78,7 +78,7 @@
     "squads_group": "Squads",
     "issue_count_one": "{{count}} issue",
     "issue_count_other": "{{count}} issues",
-    "reset": "Reset all filters",
+    "reset": "Reset",
     "chip_remove": "Remove {{name}} filter",
     "chip_status_count_other": "{{count}} statuses",
     "chip_priority_count_other": "{{count}} priorities",
@@ -395,10 +395,10 @@
     "due_date_removed": "removed due date",
     "title_renamed": "renamed this issue from \"{{from}}\" to \"{{to}}\"",
     "description_updated": "updated the description",
-    "task_completed_one": "completed the task",
-    "task_completed_other": "completed the task ({{count}} times)",
-    "task_failed_one": "task failed",
-    "task_failed_other": "task failed ({{count}} times)",
+    "task_completed_one": "completed a task",
+    "task_completed_other": "completed {{count}} tasks",
+    "task_failed_one": "a task failed",
+    "task_failed_other": "{{count}} tasks failed",
     "squad_leader_evaluated": "evaluated the squad trigger",
     "squad_leader_action": "evaluated and took action",
     "squad_leader_action_reason": "evaluated and took action: {{reason}}",
@@ -813,5 +813,129 @@
     "hook_refused": "{{name}} was not run.",
     "hook_activity": "Recent calls",
     "hook_never_run": "This hook has not run yet."
+  },
+  "mobile": {
+    "edit": {
+      "discard_message": "Your edits to this issue will be lost.",
+      "save_failed": "Failed to save"
+    },
+    "composer": {
+      "placeholder": "Add a comment…",
+      "pill_label": "Add a comment, @ to mention…"
+    },
+    "comment": {
+      "resolved_bar_one": "Resolved · {{count}} message by {{authors}}",
+      "resolved_bar_other": "Resolved · {{count}} messages by {{authors}}",
+      "resolved_bar_a11y_one": "Resolved thread by {{authors}}, {{count}} message. Tap to expand.",
+      "resolved_bar_a11y_other": "Resolved thread by {{authors}}, {{count}} messages. Tap to expand.",
+      "resolved_by": "Resolved by",
+      "collapse": "Collapse",
+      "collapse_a11y": "Collapse resolved thread",
+      "edited_suffix": " · (edited)",
+      "send_failed": "Couldn't send",
+      "retry": "Retry",
+      "retry_a11y": "Retry sending comment",
+      "discard": "Discard",
+      "discard_a11y": "Discard failed comment",
+      "add_reaction": "Add Reaction",
+      "delete_title": "Delete comment?",
+      "delete_desc": "This comment will be permanently deleted. Replies in the thread will also be removed. This cannot be undone."
+    },
+    "detail": {
+      "actions_a11y": "Issue actions",
+      "edit_details": "Edit details",
+      "open_on_web": "Open on web",
+      "load_failed": "Failed to load issue: {{reason}}",
+      "not_found": "not found",
+      "retry": "Retry",
+      "no_description": "No description."
+    },
+    "picker": {
+      "unassigned": "Unassigned",
+      "agent": "Agent",
+      "member": "Member",
+      "squad": "Squad",
+      "needs_runtime": "Needs runtime",
+      "leader_needs_runtime": "Leader needs runtime",
+      "everyone_all": "Everyone (@all)",
+      "done": "Done",
+      "create_label": "Create “{{name}}”",
+      "no_labels": "No labels in this workspace yet.",
+      "no_members_or_agents": "No members or agents in this workspace yet."
+    },
+    "mention": {
+      "everyone": "Everyone",
+      "screen_title": "Mention",
+      "group_recent": "Recent",
+      "group_my_issues": "My issues",
+      "group_people": "People"
+    },
+    "run_failure": {
+      "queued_expired": "Queue expired",
+      "runtime_offline": "Runtime offline",
+      "runtime_recovery": "Runtime recovery",
+      "timeout": "Timeout",
+      "iteration_limit": "Iteration limit",
+      "agent_blocked": "Needs input",
+      "api_invalid_request": "Request rejected",
+      "skill_bundle_unavailable": "Skill download failed",
+      "runtime_cli_timeout": "Runtime CLI timeout",
+      "agent_error__provider_auth_or_access": "Auth failed",
+      "agent_error__provider_quota_limit": "Quota exhausted",
+      "agent_error__provider_capacity_or_rate_limit": "Rate limited",
+      "agent_error__provider_server_error": "Provider error",
+      "agent_error__provider_network": "Network error",
+      "agent_error__process_failure": "Process crashed",
+      "agent_error__empty_or_unparseable_output": "No usable output",
+      "agent_error__agent_timeout": "Agent timeout",
+      "agent_error__context_overflow": "Context overflow",
+      "agent_error__missing_config": "Config missing",
+      "agent_error__model_not_found_or_unavailable": "Model unavailable",
+      "agent_error__runtime_version_unsupported": "CLI unsupported",
+      "agent_error__runtime_missing_executable": "CLI not installed",
+      "agent_error__unknown": "Agent error",
+      "agent_error": "Agent error",
+      "codex_semantic_inactivity": "Codex inactivity",
+      "manual": "Manual"
+    },
+    "run_summary": {
+      "comment": "Comment task",
+      "autopilot": "Autopilot run",
+      "chat": "Chat task",
+      "quick_create": "Quick create",
+      "direct": "Task"
+    },
+    "run_status": {
+      "queued": "Queued",
+      "dispatched": "Starting",
+      "waiting_local_directory": "Waiting for directory",
+      "running": "Running",
+      "completed": "Done",
+      "failed": "Failed",
+      "cancelled": "Cancelled"
+    },
+    "runs": {
+      "title": "Agent Runs",
+      "section_active": "Active",
+      "section_past": "Past",
+      "cancel_title": "Cancel task?",
+      "cancel_body": "The agent will stop after the current step."
+    },
+    "list": {
+      "load_failed": "Failed to load issues: {{reason}}",
+      "empty_all": "No issues in this workspace.",
+      "empty_members": "No issues assigned to a member.",
+      "empty_agents": "No issues assigned to agents or squads."
+    },
+    "agent_activity": {
+      "runs_count": "Runs · {{count}}",
+      "badge_a11y": "Agent working — open runs"
+    },
+    "description_field": {
+      "placeholder": "Description… (type @ to mention)"
+    },
+    "new": {
+      "submit_a11y": "Create issue"
+    }
   }
 }

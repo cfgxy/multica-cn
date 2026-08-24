@@ -1,6 +1,5 @@
 import { useMemo } from "react";
 import {
-  ActionSheetIOS,
   Alert,
   FlatList,
   View,
@@ -15,6 +14,13 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Header } from "@/components/ui/header";
 import { IconButton } from "@/components/ui/icon-button";
 import { HeaderActions } from "@/components/ui/app-header-actions";
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+} from "@/components/ui/dropdown-menu";
 import { SwipeableInboxRow } from "@/components/inbox/swipeable-inbox-row";
 import { inboxListOptions } from "@/data/queries/inbox";
 import {
@@ -29,11 +35,13 @@ import { useWorkspaceStore } from "@/data/workspace-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { deduplicateInboxItems } from "@/lib/inbox-display";
+import { useT } from "@/lib/use-t";
 
 export default function Inbox() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { colorScheme } = useColorScheme();
+  const { t } = useT("inbox");
   const { data: rawItems, isLoading, error, refetch, isRefetching } = useQuery(
     inboxListOptions(wsId),
   );
@@ -75,54 +83,61 @@ export default function Inbox() {
   // (packages/views/inbox/components/inbox-page.tsx). "Mark all read" is
   // first (most common batch op); "Archive all" is destructive so it gets
   // the iOS red treatment + Alert confirm.
-  const onPressMenu = () => {
-    const options = [
-      "Cancel",
-      "Mark all read",
-      "Archive all read",
-      "Archive completed",
-      "Archive all",
-    ];
-    ActionSheetIOS.showActionSheetWithOptions(
-      {
-        options,
-        cancelButtonIndex: 0,
-        destructiveButtonIndex: 4,
-        title: "Inbox",
-      },
-      (i) => {
-        if (i === 1) markAllRead.mutate();
-        else if (i === 2) archiveAllRead.mutate();
-        else if (i === 3) archiveCompleted.mutate();
-        else if (i === 4) {
-          Alert.alert(
-            "Archive all?",
-            "This archives every inbox item, read or unread. You can still find them via the issue pages.",
-            [
-              { text: "Cancel", style: "cancel" },
-              {
-                text: "Archive all",
-                style: "destructive",
-                onPress: () => archiveAll.mutate(),
-              },
-            ],
-          );
-        }
-      },
+  const onMarkAllRead = () => markAllRead.mutate();
+  const onArchiveAllRead = () => archiveAllRead.mutate();
+  const onArchiveCompleted = () => archiveCompleted.mutate();
+  const onArchiveAll = () => {
+    Alert.alert(
+      t("menu.archive_all", "Archive all"),
+      t(
+        "mobile.page.archive_all_body",
+        "This archives every inbox item, read or unread. You can still find them via the issue pages.",
+      ),
+      [
+        // 绑定的是 inbox ns，cancel 在 common 里，用 ns 前缀跨取即可——
+        // t 就在作用域内，不需要 i18n 对象（i18next 默认 nsSeparator 是 ":"）。
+        { text: t("common:cancel", "Cancel"), style: "cancel" },
+        {
+          text: t("menu.archive_all", "Archive all"),
+          style: "destructive",
+          onPress: () => archiveAll.mutate(),
+        },
+      ],
     );
   };
 
   return (
     <View className="flex-1 bg-background">
       <Header
-        title="Inbox"
+        title={t("page.title", "Inbox")}
         right={
           <>
-            <IconButton
-              name="ellipsis-horizontal"
-              onPress={onPressMenu}
-              accessibilityLabel="Inbox actions"
-            />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <IconButton
+                  name="ellipsis-horizontal"
+                  accessibilityLabel={t(
+                    "mobile.page.actions_a11y",
+                    "Inbox actions",
+                  )}
+                />
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuItem onPress={onMarkAllRead}>
+                  <Text>{t("menu.mark_all_read", "Mark all as read")}</Text>
+                </DropdownMenuItem>
+                <DropdownMenuItem onPress={onArchiveAllRead}>
+                  <Text>{t("menu.archive_all_read", "Archive all read")}</Text>
+                </DropdownMenuItem>
+                <DropdownMenuItem onPress={onArchiveCompleted}>
+                  <Text>{t("menu.archive_completed", "Archive completed")}</Text>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem variant="destructive" onPress={onArchiveAll}>
+                  <Text>{t("menu.archive_all", "Archive all")}</Text>
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
             <HeaderActions />
           </>
         }
@@ -132,11 +147,15 @@ export default function Inbox() {
       ) : error ? (
         <View className="px-4 gap-3 pt-4">
           <Text className="text-sm text-destructive">
-            Failed to load inbox:{" "}
-            {error instanceof Error ? error.message : "unknown error"}
+            {t("mobile.page.load_failed", "Failed to load inbox: {{reason}}", {
+              reason:
+                error instanceof Error
+                  ? error.message
+                  : t("common:mobile.common.unknown_error", "unknown error"),
+            })}
           </Text>
           <Button variant="outline" onPress={() => refetch()}>
-            <Text>Retry</Text>
+            <Text>{t("common:mobile.common.retry", "Retry")}</Text>
           </Button>
         </View>
       ) : !data || data.length === 0 ? (
@@ -184,15 +203,15 @@ function InboxLoading() {
 }
 
 function InboxEmpty({ iconColor }: { iconColor: string }) {
+  const { t } = useT("inbox");
   return (
     <View className="flex-1 items-center justify-center px-8 gap-3">
       <Ionicons name="mail-open-outline" size={42} color={iconColor} />
       <Text className="text-base font-medium text-foreground text-center">
-        Inbox zero
+        {t("list.empty", "No notifications")}
       </Text>
       <Text className="text-sm text-muted-foreground text-center">
-        When someone @mentions you, assigns an issue, or an agent finishes a
-        task, it shows up here.
+        {t("detail.empty", "Your inbox is empty")}
       </Text>
     </View>
   );

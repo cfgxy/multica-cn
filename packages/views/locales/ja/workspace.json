@@ -30,5 +30,20 @@
     "description": "このワークスペースは存在しないか、アクセス権がありません。",
     "go_to_workspaces": "マイワークスペースへ移動",
     "sign_in_different": "別のユーザーでログイン"
+  },
+  "mobile": {
+    "select": {
+      "signed_in_as": "ログイン中",
+      "title": "ワークスペースを選択",
+      "load_failed": "ワークスペースを読み込めませんでした：{{reason}}",
+      "unknown_error": "不明なエラー",
+      "retry": "再試行",
+      "no_workspaces": "まだどのワークスペースにも所属していません。ワークスペース管理者に招待を依頼してください。"
+    },
+    "switch": {
+      "title": "ワークスペースを切り替え",
+      "confirm_action": "切り替え",
+      "confirm_message": "「{{name}}」に切り替えますか？"
+    }
   }
 }

@@ -59,5 +59,18 @@
       "title": "Discord に参加",
       "dismiss": "閉じる"
     }
+  },
+  "mobile": {
+    "agents": {
+      "coming_soon": "エージェント機能は近日公開予定です。"
+    },
+    "pins": {
+      "load_failed": "ピン留めを読み込めませんでした：{{reason}}",
+      "empty": "ピン留めはまだありません。タスクやプロジェクトの操作メニューからピン留めすると、ここに表示されます。",
+      "type_issue": "タスク",
+      "type_project": "プロジェクト",
+      "unavailable_a11y": "利用できない{{type}}。タップしてピン留めを解除",
+      "unavailable": "利用できない{{type}} — タップしてピン留めを解除"
+    }
   }
 }

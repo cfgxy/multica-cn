@@ -77,7 +77,7 @@
     "agents_group": "エージェント",
     "squads_group": "スクワッド",
     "issue_count_other": "タスク {{count}} 件",
-    "reset": "すべてのフィルターをリセット",
+    "reset": "リセット",
     "chip_remove": "{{name}}フィルターを削除",
     "chip_status_count_other": "ステータス{{count}}件",
     "chip_priority_count_other": "優先度{{count}}件",
@@ -390,8 +390,8 @@
     "due_date_removed": "期限を削除しました",
     "title_renamed": "このタスクのタイトルを \"{{from}}\" から \"{{to}}\" に変更しました",
     "description_updated": "説明を更新しました",
-    "task_completed_other": "作業を完了しました（{{count}} 回）",
-    "task_failed_other": "作業が失敗しました（{{count}} 回）",
+    "task_completed_other": "{{count}} 件の作業を完了しました",
+    "task_failed_other": "{{count}} 件の作業が失敗しました",
     "squad_leader_evaluated": "スクワッドのトリガーを評価しました",
     "squad_leader_action": "評価してアクションを実行しました",
     "squad_leader_action_reason": "評価してアクションを実行しました: {{reason}}",
@@ -783,5 +783,127 @@
     "hook_refused": "{{name}} は実行されませんでした。",
     "hook_activity": "最近の呼び出し",
     "hook_never_run": "このフックはまだ実行されていません。"
+  },
+  "mobile": {
+    "edit": {
+      "discard_message": "この Issue への編集内容は失われます。",
+      "save_failed": "保存に失敗しました"
+    },
+    "composer": {
+      "placeholder": "コメントを追加…",
+      "pill_label": "コメントを追加、@ でメンション"
+    },
+    "comment": {
+      "resolved_bar_other": "解決済み · メッセージ {{count}} 件（{{authors}}）",
+      "resolved_bar_a11y_other": "解決済みスレッド、メッセージ {{count}} 件（{{authors}}）。タップして展開します。",
+      "resolved_by": "解決者",
+      "collapse": "折りたたむ",
+      "collapse_a11y": "解決済みスレッドを折りたたむ",
+      "edited_suffix": " ·（編集済み）",
+      "send_failed": "送信できませんでした",
+      "retry": "再試行",
+      "retry_a11y": "コメントを再送信",
+      "discard": "破棄",
+      "discard_a11y": "送信に失敗したコメントを破棄",
+      "add_reaction": "リアクションを追加",
+      "delete_title": "コメントを削除しますか？",
+      "delete_desc": "このコメントは完全に削除され、スレッド内の返信もあわせて削除されます。この操作は元に戻せません。"
+    },
+    "detail": {
+      "actions_a11y": "タスクの操作",
+      "edit_details": "詳細を編集",
+      "open_on_web": "ウェブで開く",
+      "load_failed": "タスクを読み込めませんでした：{{reason}}",
+      "not_found": "見つかりません",
+      "retry": "再試行",
+      "no_description": "説明はありません。"
+    },
+    "picker": {
+      "unassigned": "未割り当て",
+      "agent": "エージェント",
+      "member": "メンバー",
+      "squad": "スクワッド",
+      "needs_runtime": "ランタイムが必要",
+      "leader_needs_runtime": "リーダーにランタイムが必要",
+      "everyone_all": "全員（@all）",
+      "done": "完了",
+      "create_label": "「{{name}}」を作成",
+      "no_labels": "このワークスペースにはまだラベルがありません。",
+      "no_members_or_agents": "このワークスペースにはまだメンバーもエージェントもいません。"
+    },
+    "mention": {
+      "everyone": "全員",
+      "screen_title": "メンション",
+      "group_recent": "最近",
+      "group_my_issues": "自分のタスク",
+      "group_people": "メンバー"
+    },
+    "run_failure": {
+      "queued_expired": "キュー期限切れ",
+      "runtime_offline": "ランタイム停止",
+      "runtime_recovery": "ランタイム復旧",
+      "timeout": "タイムアウト",
+      "iteration_limit": "反復上限",
+      "agent_blocked": "入力待ち",
+      "api_invalid_request": "要求拒否",
+      "skill_bundle_unavailable": "スキル取得失敗",
+      "runtime_cli_timeout": "CLI タイムアウト",
+      "agent_error__provider_auth_or_access": "認証失敗",
+      "agent_error__provider_quota_limit": "クォータ超過",
+      "agent_error__provider_capacity_or_rate_limit": "レート制限",
+      "agent_error__provider_server_error": "プロバイダー障害",
+      "agent_error__provider_network": "ネットワーク障害",
+      "agent_error__process_failure": "プロセス異常終了",
+      "agent_error__empty_or_unparseable_output": "出力なし",
+      "agent_error__agent_timeout": "エージェント時間切れ",
+      "agent_error__context_overflow": "コンテキスト超過",
+      "agent_error__missing_config": "設定不足",
+      "agent_error__model_not_found_or_unavailable": "モデル不可",
+      "agent_error__runtime_version_unsupported": "CLI 未対応",
+      "agent_error__runtime_missing_executable": "CLI 未導入",
+      "agent_error__unknown": "エージェント異常",
+      "agent_error": "エージェント異常",
+      "codex_semantic_inactivity": "Codex 無応答",
+      "manual": "手動キャンセル"
+    },
+    "run_summary": {
+      "comment": "コメント task",
+      "autopilot": "自動実行",
+      "chat": "チャット task",
+      "quick_create": "クイック作成",
+      "direct": "task"
+    },
+    "run_status": {
+      "queued": "待機中",
+      "dispatched": "開始中",
+      "waiting_local_directory": "ディレクトリ待ち",
+      "running": "実行中",
+      "completed": "完了",
+      "failed": "失敗",
+      "cancelled": "キャンセル済み"
+    },
+    "runs": {
+      "title": "エージェントの実行履歴",
+      "section_active": "進行中",
+      "section_past": "過去",
+      "cancel_title": "task をキャンセルしますか？",
+      "cancel_body": "エージェントは現在のステップを終えてから停止します。"
+    },
+    "list": {
+      "load_failed": "タスクを読み込めませんでした：{{reason}}",
+      "empty_all": "このワークスペースにはタスクがありません。",
+      "empty_members": "メンバーに割り当てられたタスクはありません。",
+      "empty_agents": "エージェントまたはスクワッドに割り当てられたタスクはありません。"
+    },
+    "agent_activity": {
+      "runs_count": "実行 · {{count}}件",
+      "badge_a11y": "エージェントが実行中 — 実行履歴を開く"
+    },
+    "description_field": {
+      "placeholder": "説明…（@ を入力してメンション）"
+    },
+    "new": {
+      "submit_a11y": "タスクを作成"
+    }
   }
 }

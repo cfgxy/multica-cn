@@ -1176,5 +1176,80 @@
     "expiry_7d": "7日",
     "expiry_30d": "30日",
     "expiry_never": "無期限"
+  },
+  "server": {
+    "title": "サーバー",
+    "back": "戻る",
+    "add": "サーバーを追加",
+    "hint": "サーバーをタップすると接続します。切り替えると現在のアカウントからサインアウトします。",
+    "built_in": "組み込み",
+    "row_actions": "{{name}}の操作",
+    "edit": "編集",
+    "delete": "削除",
+    "cancel": "キャンセル",
+    "switch_failed_title": "切り替えに失敗しました",
+    "switch_failed_message": "サーバーを切り替えられませんでした。",
+    "switch_title": "サーバーを切り替えますか？",
+    "switch_message": "{{name}}に接続する前に、現在のアカウントからサインアウトします。",
+    "switch_confirm": "切り替える",
+    "delete_title": "サーバーを削除",
+    "delete_message": "{{name}}をこのデバイスから削除しますか？",
+    "form": {
+      "title_new": "サーバーを追加",
+      "title_edit": "サーバーを編集",
+      "detail_title": "サーバー",
+      "missing": "このサーバーはこのデバイスに保存されていません。",
+      "name_label": "名前（任意）",
+      "name_placeholder": "例：ホームラボ",
+      "api_label": "サーバーアドレス",
+      "api_placeholder": "https://api.example.com",
+      "invalid_url": "有効なhttp(s)アドレスを入力してください",
+      "duplicate": "このアドレスは既に保存されています",
+      "plain_http": "このアドレスは平文のhttpを使用します。通信は暗号化されません。",
+      "advanced": "詳細設定：Webアドレス",
+      "web_hint": "Webアプリがサーバーと異なるドメインにある場合のみ必要です。空欄の場合はサーバーアドレスを使用します。",
+      "web_placeholder": "空欄の場合はサーバーアドレスを使用します",
+      "test": "接続をテスト",
+      "testing": "テスト中…",
+      "connected": "接続済み",
+      "unreachable": "このアドレスに接続できませんでした。保存は可能です。",
+      "save": "保存",
+      "saving": "保存中…",
+      "save_failed_title": "保存に失敗しました",
+      "save_failed_message": "サーバーを保存できませんでした。",
+      "change_title": "サーバーアドレスを変更しますか？",
+      "change_message": "新しいアドレスに接続する前に、現在のアカウントからサインアウトします。",
+      "cancel": "キャンセル"
+    }
+  },
+  "mobile": {
+    "avatar": {
+      "take_photo": "写真を撮る",
+      "choose_from_library": "ライブラリから選択",
+      "remove_photo": "写真を削除",
+      "cancel": "キャンセル",
+      "permission_title": "権限が必要です",
+      "permission_camera": "写真を撮るにはカメラへのアクセスが必要です。",
+      "too_large_title": "画像が大きすぎます",
+      "too_large_body": "5 MB 未満の画像を選択してください。",
+      "upload_failed_body": "アバターをアップロードできませんでした。",
+      "remove_failed_title": "削除に失敗しました",
+      "remove_failed_body": "アバターを削除できませんでした。"
+    },
+    "account": {
+      "save_failed_title": "保存に失敗しました",
+      "name_placeholder": "お名前",
+      "email_hint": "メールアドレスはサインアップ時に設定され、ここでは変更できません。"
+    },
+    "notifications": {
+      "load_failed": "通知設定を読み込めませんでした。",
+      "missing_workspace": "通知設定を更新するにはワークスペースの指定が必要です"
+    },
+    "page": {
+      "sign_out_body": "このデバイスで Multica を使うには、再度サインインする必要があります。",
+      "notifications_subtitle": "受信トレイとシステム通知",
+      "server_section": "サーバー",
+      "workspaces_load_failed": "ワークスペースを読み込めませんでした"
+    }
   }
 }
