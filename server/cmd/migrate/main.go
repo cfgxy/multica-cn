@@ -261,6 +261,9 @@ var concurrentIndexCleanups = map[string]string{
 	"412_issue_source_context_object_intent_key_index":          "idx_issue_source_context_object_intent_key",
 	"413_issue_source_context_object_intent_due_index":          "idx_issue_source_context_object_intent_due",
 	"414_issue_source_context_object_intent_context_index":      "idx_issue_source_context_object_intent_context",
+	"416_seat_capacity_operation_token_index":                   "idx_seat_capacity_outbox_operation_token",
+	"418_seat_capacity_due_index":                               "idx_seat_capacity_outbox_due",
+	"419_seat_capacity_share_join_index":                        "idx_seat_capacity_outbox_share_join",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
