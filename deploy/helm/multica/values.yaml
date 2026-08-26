@@ -123,6 +123,7 @@ backend:
     databaseConnectTimeout: 5s
     appEnv: production
     appUrl: http://multica.dev.lan
+    codexCapacityRetryCount: 6
     frontendOrigin: http://multica.dev.lan
     corsAllowedOrigins: ""
     cookieDomain: ""
