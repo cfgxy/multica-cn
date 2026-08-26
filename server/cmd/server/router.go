@@ -342,6 +342,24 @@ func strictPositiveDurationEnv(name string, fallback time.Duration) (time.Durati
 	return value, nil
 }
 
+func seatCapacityExecutorFromEnv(cloudURL string) seatcapacity.Executor {
+	executor, err := seatcapacity.New(seatcapacity.Config{
+		BaseURL:      cloudURL,
+		ServiceToken: os.Getenv("MULTICA_SUBSCRIPTION_CAPACITY_SERVICE_TOKEN"),
+		Timeout:      envDuration("MULTICA_SUBSCRIPTION_CAPACITY_TIMEOUT", 3*time.Second),
+	})
+	if err == nil {
+		return executor
+	}
+	// A Cloud-connected deployment with malformed credentials must not
+	// silently restore unlimited membership. The fail-closed executor returns
+	// 503 until the operator repairs the machine credential; it is deliberately
+	// ineligible for recovery-worker startup so queued intents keep their retry
+	// budget while configuration is broken.
+	slog.Error("subscription seat capacity executor unavailable", "error", err)
+	return seatcapacity.NewUnavailable(err)
+}
+
 // NewRouterWithOptions builds the fully-configured Chi router and
 // returns the *handler.Handler it was constructed from. Callers that
 // need to drive background lifecycle on services attached to the
@@ -381,8 +399,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		PublicURL:                strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_PUBLIC_URL")), "/"),
 		AppURL:                   appURLFromEnv(),
 		TrustedProxies:           parseTrustedProxies(os.Getenv("MULTICA_TRUSTED_PROXIES")),
-		CloudRuntimeFleetURL:     cloudRuntimeFleetURLFromEnv(),
-		CloudRuntimeFleetTimeout: envDuration("MULTICA_CLOUD_FLEET_TIMEOUT", 35*time.Second),
+		CloudURL:                 strings.TrimSpace(os.Getenv("MULTICA_CLOUD_URL")),
+		CloudTimeout:             envDuration("MULTICA_CLOUD_TIMEOUT", 35*time.Second),
 		AttachmentDownloadMode:   os.Getenv("ATTACHMENT_DOWNLOAD_MODE"),
 		AttachmentDownloadURLTTL: envDuration("ATTACHMENT_DOWNLOAD_URL_TTL", 30*time.Minute),
 		AttachmentFrameAncestors: origins,
@@ -421,27 +439,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		h.AutopilotService.Entitlements = entitlementClient
 		h.AutopilotService.QuotaMetrics = opts.BusinessMetrics
 	}
-	// This is deployment wiring, not a business mode: when connected, admission
-	// and settlement both follow Cloud's single strict prepaid-seat policy.
-	capacityEnabled := envBool("MULTICA_SUBSCRIPTION_CAPACITY_ENABLED", false)
-	capacityClient, capacityErr := seatcapacity.New(seatcapacity.Config{
-		Enabled:      capacityEnabled,
-		BaseURL:      strings.TrimSpace(os.Getenv("MULTICA_SUBSCRIPTION_CAPACITY_URL")),
-		ServiceToken: os.Getenv("MULTICA_SUBSCRIPTION_CAPACITY_SERVICE_TOKEN"),
-		Timeout:      envDuration("MULTICA_SUBSCRIPTION_CAPACITY_TIMEOUT", 3*time.Second),
-	})
-	if capacityErr != nil {
-		// Explicit enablement with malformed config must not silently restore
-		// unlimited membership. The fail-closed executor returns 503 until the
-		// operator repairs the service URL or credential.
-		slog.Error("subscription seat capacity executor unavailable", "error", capacityErr)
-		h.SeatCapacity = seatcapacity.NewUnavailable(capacityErr)
-	} else {
-		h.SeatCapacity = capacityClient
-	}
+	// Cloud Runtime and strict seat capacity are one managed deployment. Reuse
+	// the same base URL so Billing cannot be readable while invitation writes
+	// silently skip Cloud's authoritative seat policy.
+	h.SeatCapacity = seatCapacityExecutorFromEnv(signupConfig.CloudURL)
 	capacityLocker := seatcapacity.NewWorkspaceLocker(pool)
 	h.SeatCapacityLocker = capacityLocker
-	if capacityEnabled && h.SeatCapacity.Enabled() {
+	if seatcapacity.CanRunWorker(h.SeatCapacity) {
 		h.SeatCapacityWorker = seatcapacity.NewWorker(queries, h.SeatCapacity, capacityLocker, seatcapacity.WorkerConfig{
 			Metrics: opts.SeatCapacityMetrics,
 		})
@@ -1193,13 +1197,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	h.MembershipCache = auth.NewMembershipCache(rdb)
 
 	// Cloud PAT verifier: validates mcn_ tokens against Multica Cloud
-	// Fleet. Returns nil when no Fleet URL is configured — the Auth /
+	// Fleet. Returns nil when no Cloud URL is configured — the Auth /
 	// DaemonAuth middlewares treat nil as "mcn_ not supported" and
 	// reject with 401, instead of falling through to mul_/JWT paths.
-	// Reuses MULTICA_CLOUD_FLEET_URL (the same URL the cloud-runtime
-	// proxy uses) so a deployment doesn't need a second config knob.
+	// Reuses MULTICA_CLOUD_URL (the same URL the cloud-runtime proxy uses) so a
+	// deployment has one authoritative multica-cloud connection.
 	cloudPATVerifier := auth.NewCloudPATVerifier(auth.CloudPATVerifierConfig{
-		FleetBaseURL: signupConfig.CloudRuntimeFleetURL,
+		FleetBaseURL: signupConfig.CloudURL,
 		Redis:        rdb,
 	})
 
@@ -2397,13 +2401,6 @@ func splitAndTrim(s string) []string {
 		}
 	}
 	return res
-}
-
-func cloudRuntimeFleetURLFromEnv() string {
-	if url := strings.TrimSpace(os.Getenv("MULTICA_CLOUD_FLEET_URL")); url != "" {
-		return url
-	}
-	return strings.TrimSpace(os.Getenv("MULTICA_FLEET_URL"))
 }
 
 // composioStateSecret resolves the HMAC key for the connect-state. Prefers an
