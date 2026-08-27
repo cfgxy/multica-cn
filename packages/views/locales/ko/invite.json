@@ -49,5 +49,27 @@
     "row_inviter_fallback": "누군가",
     "row_invited_admin": "{{inviter}}님이 관리자로 초대했습니다",
     "row_invited_member": "{{inviter}}님이 멤버로 초대했습니다"
+  },
+  "join": {
+    "title": "{{workspace_name}} 워크스페이스에 초대되었습니다",
+    "invited_by": "초대한 사람: {{name}}",
+    "join_as": "이 워크스페이스에 다음 역할로 참여합니다",
+    "role_admin": "관리자",
+    "role_member": "멤버",
+    "need_login": "이 워크스페이스에 가입하려면 로그인이 필요합니다.",
+    "joined_title": "가입 완료!",
+    "redirecting": "워크스페이스로 이동하는 중...",
+    "loading": "초대 정보를 불러오는 중...",
+    "loading_suspense": "불러오는 중...",
+    "oops_title": "오류",
+    "go_home": "홈으로",
+    "btn_join": "워크스페이스 가입",
+    "btn_login_join": "로그인 후 가입",
+    "btn_joining": "가입 중...",
+    "error_no_code": "초대 코드를 찾을 수 없습니다. 유효한 공유 링크를 사용해 주세요.",
+    "error_invalid_link": "이 초대 링크는 유효하지 않거나 만료되었습니다.",
+    "error_failed": "워크스페이스 가입에 실패했습니다. 링크가 만료되었을 수 있습니다.",
+    "error_seat_capacity_full": "구매한 멤버 시트가 모두 사용 중입니다. 워크스페이스 관리자에게 시트 추가를 요청한 후 다시 시도해 주세요.",
+    "error_seat_capacity_unavailable": "멤버 용량을 확인할 수 없습니다. 잠시 후 다시 시도해 주세요."
   }
 }

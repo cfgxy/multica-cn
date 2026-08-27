@@ -65,6 +65,7 @@ _features/
 
 # runtime
 *.pid
+.omc/
 
 # platform specific
 *.dmg

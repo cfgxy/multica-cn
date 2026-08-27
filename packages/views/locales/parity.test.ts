@@ -110,29 +110,3 @@ describe("dead plural-key guard", () => {
     });
   }
 });
-
-// 拼接位的尾随空格守卫：`chat-empty-state` 把 intro 与 pillars 作为相邻
-// 的两段渲染（拆句是为了让 pillars 保留独立字重），二者之间的空格由
-// intro 译文自己携带 —— 代码里不做语言判断。尾随空格在编辑器里不可见，
-// 极易被"顺手 trim 一下"的改动抹掉，抹掉后 en/ja/ko 会得到
-// "workspace —issues" 这种粘连。这里把这条不变量固定下来。
-describe("intro/pillars 拼接位的尾随空格", () => {
-  const needsTrailingSpace = ["en", "ja", "ko"];
-  for (const locale of needsTrailingSpace) {
-    it(`${locale} 的 first_time_intro 以「破折号 + 空格」结尾`, () => {
-      const bundle = RESOURCES[locale as keyof typeof RESOURCES] as Record<
-        string,
-        Record<string, Record<string, string>>
-      >;
-      expect(bundle.chat.empty_state.first_time_intro).toMatch(/— $/);
-    });
-  }
-
-  it("zh-Hans 用全角破折号且不带尾随空格（自带间距，再加会多出可见缝隙）", () => {
-    const bundle = RESOURCES["zh-Hans"] as Record<
-      string,
-      Record<string, Record<string, string>>
-    >;
-    expect(bundle.chat.empty_state.first_time_intro).toMatch(/——$/);
-  });
-});

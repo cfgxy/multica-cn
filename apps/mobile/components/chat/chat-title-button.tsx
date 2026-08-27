@@ -9,6 +9,7 @@ import type { Agent, ChatSession } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { useT } from "@/lib/use-t";
+import { chatSessionDisplayTitle } from "@/lib/chat-session-title";
 
 interface Props {
   currentSession: ChatSession | null;
@@ -22,8 +23,13 @@ export function ChatTitleButton({
   onPress,
 }: Props) {
   const { t } = useT("chat");
-  const agentName = currentAgent?.name ?? "Chat";
-  const subtitle = currentSession?.title || "New chat";
+  const agentName = currentAgent?.name ?? t("page.title", "Chat");
+  // 无激活会话时副标题语义是「新建会话」而非「无标题会话」，与 web 的
+  // chat:window.untitled 同源；mobile.sessions.untitled 是另一条文案。
+  const subtitle = chatSessionDisplayTitle(
+    currentSession?.title,
+    t("window.untitled", "New chat"),
+  );
 
   return (
     <Pressable
@@ -52,10 +58,7 @@ export function ChatTitleButton({
           </Text>
           <Text className="text-xs text-muted-foreground">▼</Text>
         </View>
-        <Text
-          className="text-xs text-muted-foreground"
-          numberOfLines={1}
-        >
+        <Text className="text-xs text-muted-foreground" numberOfLines={1}>
           {subtitle}
         </Text>
       </View>

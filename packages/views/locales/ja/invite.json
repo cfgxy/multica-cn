@@ -49,5 +49,27 @@
     "row_inviter_fallback": "誰か",
     "row_invited_admin": "{{inviter}}さんがあなたをadminとして招待しました",
     "row_invited_member": "{{inviter}}さんがあなたをmemberとして招待しました"
+  },
+  "join": {
+    "title": "{{workspace_name}} への招待です",
+    "invited_by": "招待者: {{name}}",
+    "join_as": "このワークスペースには次の役割で参加します",
+    "role_admin": "管理者",
+    "role_member": "メンバー",
+    "need_login": "このワークスペースに参加するにはログインが必要です。",
+    "joined_title": "参加しました！",
+    "redirecting": "ワークスペースに移動しています…",
+    "loading": "招待情報を読み込んでいます…",
+    "loading_suspense": "読み込み中…",
+    "oops_title": "エラー",
+    "go_home": "ホームに戻る",
+    "btn_join": "ワークスペースに参加",
+    "btn_login_join": "ログインして参加",
+    "btn_joining": "参加中…",
+    "error_no_code": "招待コードが見つかりません。有効な共有リンクをご利用ください。",
+    "error_invalid_link": "この招待リンクは無効か、有効期限が切れています。",
+    "error_failed": "ワークスペースへの参加に失敗しました。リンクの有効期限が切れている可能性があります。",
+    "error_seat_capacity_full": "購入済みメンバーシートがすべて使用中です。ワークスペース管理者にシートの追加を依頼してから、再度お試しください。",
+    "error_seat_capacity_unavailable": "メンバー容量を確認できませんでした。しばらくしてからもう一度お試しください。"
   }
 }

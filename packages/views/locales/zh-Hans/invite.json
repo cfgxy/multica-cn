@@ -49,5 +49,27 @@
     "row_inviter_fallback": "某人",
     "row_invited_admin": "{{inviter}} 邀请你以管理员身份加入",
     "row_invited_member": "{{inviter}} 邀请你以成员身份加入"
+  },
+  "join": {
+    "title": "你被邀请加入 {{workspace_name}}",
+    "invited_by": "邀请人：{{name}}",
+    "join_as": "你将以以下身份加入此工作区",
+    "role_admin": "管理员",
+    "role_member": "成员",
+    "need_login": "你需要先登录才能加入此工作区。",
+    "joined_title": "已加入！",
+    "redirecting": "正在跳转到你的工作区…",
+    "loading": "正在加载邀请信息…",
+    "loading_suspense": "加载中…",
+    "oops_title": "出错了",
+    "go_home": "返回首页",
+    "btn_join": "加入工作区",
+    "btn_login_join": "登录并加入",
+    "btn_joining": "加入中…",
+    "error_no_code": "未找到邀请码，请使用有效的分享链接。",
+    "error_invalid_link": "此邀请链接无效或已过期。",
+    "error_failed": "加入工作区失败，链接可能已过期。",
+    "error_seat_capacity_full": "所有已购成员席位都已占用，请联系工作区管理员增加席位后再试。",
+    "error_seat_capacity_unavailable": "暂时无法核验成员席位，请稍后重试。"
   }
 }
