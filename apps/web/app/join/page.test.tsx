@@ -6,11 +6,17 @@ import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "@multica/views/locales/en/common.json";
 import enAuth from "@multica/views/locales/en/auth.json";
 import enSettings from "@multica/views/locales/en/settings.json";
+import enInvite from "@multica/views/locales/en/invite.json";
 import { ApiError } from "@multica/core/api";
 import type { ReactNode } from "react";
 
 const TEST_RESOURCES = {
-  en: { common: enCommon, auth: enAuth, settings: enSettings },
+  en: {
+    common: enCommon,
+    auth: enAuth,
+    settings: enSettings,
+    invite: enInvite,
+  },
 };
 
 function createWrapper() {
