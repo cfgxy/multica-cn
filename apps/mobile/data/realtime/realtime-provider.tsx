@@ -39,12 +39,14 @@ import NetInfo from "@react-native-community/netinfo";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { getToken } from "@/data/secure-storage";
-import { getApiUrl } from "@/data/server-store";
+import { getApiUrl, useServerStore } from "@/data/server-store";
 import { toWebSocketUrl } from "@/data/server-config";
 import { WSClient } from "./ws-client";
 
 // WS 地址不做模块级派生:用户可在应用内切换服务器(RUYI-4),连接时现算。
-// 切换服务器会强制登出 → userId 置空 → 下面的 effect 依赖自然触发断连重建。
+// 切换服务器会重跑 authStore.initialize():开头把 user 置空 → 下面的 effect
+// 依赖先断连,恢复目标服务器会话后再以新地址重连(即使两台服务器是同一
+// 账号,id 也会经过 null 中间态,不会复用旧连接)。
 
 const RealtimeContext = createContext<WSClient | null>(null);
 
@@ -77,7 +79,10 @@ export function RealtimeProvider({ children }: { children: React.ReactNode }) {
     let netInfoUnsub: (() => void) | null = null;
 
     void (async () => {
-      const token = await getToken();
+      // Token is scoped to the active server (per-server session snapshot);
+      // the provider remounts on user.id change, so this reads the server
+      // the restored session belongs to.
+      const token = await getToken(useServerStore.getState().activeServerId);
       if (cancelled || !token) return;
 
       ws = new WSClient({
