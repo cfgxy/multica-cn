@@ -10,14 +10,16 @@
  * the router or React context on every fetch would be ugly. Routes
  * sync into the store on mount via setCurrentWorkspace.
  *
- * Logic mirrors packages/core/platform/workspace-storage.ts:
- *   - One slug + one id at a time (no multi-ws state)
- *   - Cleared on logout
+ * The slug persists under the active server's scoped key
+ * (secure-storage.slugKeyFor) — part of the per-server session snapshot, so
+ * switching servers restores each server's own last-used workspace.
+ * Logic mirrors packages/core/platform/workspace-storage.ts, scoped per
+ * server instead of one global value.
  */
 import { create } from "zustand";
-import * as SecureStore from "expo-secure-store";
 
-const SLUG_KEY = "multica_current_workspace_slug";
+import { clearSlug, getSlug, setSlug } from "./secure-storage";
+import { useServerStore } from "./server-store";
 
 interface WorkspaceState {
   currentWorkspaceId: string | null;
@@ -25,8 +27,8 @@ interface WorkspaceState {
   /** Set the active workspace and persist the slug (id is in-memory only —
    *  it's resolved from the workspaces list query, not stored). */
   setCurrentWorkspace: (id: string, slug: string) => Promise<void>;
-  /** Restore the slug from SecureStore on cold start. id stays null until
-   *  the workspaces list query resolves. */
+  /** Restore the slug from SecureStore on cold start / server switch. id
+   *  stays null until the workspaces list query resolves. */
   restoreSlug: () => Promise<string | null>;
   clear: () => Promise<void>;
 }
@@ -37,18 +39,25 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
 
   setCurrentWorkspace: async (id, slug) => {
     set({ currentWorkspaceId: id, currentWorkspaceSlug: slug });
-    await SecureStore.setItemAsync(SLUG_KEY, slug);
+    const { activeServerId } = useServerStore.getState();
+    await setSlug(activeServerId, slug);
   },
 
   restoreSlug: async () => {
-    const slug = await SecureStore.getItemAsync(SLUG_KEY);
-    if (slug) set({ currentWorkspaceSlug: slug });
+    const { activeServerId } = useServerStore.getState();
+    const slug = await getSlug(activeServerId);
+    // Unconditional overwrite (including null): restoreSlug also runs on
+    // server switch, where a target server without a saved snapshot must
+    // NOT inherit the previous server's in-memory slug — otherwise the
+    // entry redirect would route straight into the old server's workspace.
+    set({ currentWorkspaceId: null, currentWorkspaceSlug: slug });
     return slug;
   },
 
   clear: async () => {
     set({ currentWorkspaceId: null, currentWorkspaceSlug: null });
-    await SecureStore.deleteItemAsync(SLUG_KEY);
+    const { activeServerId } = useServerStore.getState();
+    await clearSlug(activeServerId);
   },
 }));
 

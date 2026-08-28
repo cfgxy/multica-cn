@@ -12,7 +12,12 @@
 import { create } from "zustand";
 import type { User } from "@multica/core/types";
 import { api, ApiError } from "./api";
-import { clearToken, getToken, setToken } from "./secure-storage";
+import {
+  clearToken,
+  getToken,
+  migrateLegacySession,
+  setToken,
+} from "./secure-storage";
 import { useWorkspaceStore } from "./workspace-store";
 import { useServerStore } from "./server-store";
 
@@ -33,16 +38,26 @@ export const useAuthStore = create<AuthState>((set) => ({
   isLoading: true,
 
   initialize: async () => {
+    // Reset in-memory state first: initialize() runs both on cold start and
+    // on server switch, where the previous server's user/slug must not flash
+    // while the target server's session is being restored.
+    set({ user: null, isLoading: true });
+
     // 服务器配置必须最先就绪 —— 下面的 api.getMe() 是首个网络请求,地址
     // 取自 server-store。晚一步就会打到内置默认服务器上(RUYI-4)。
     await useServerStore.getState().hydrate();
+    const { activeServerId } = useServerStore.getState();
+
+    // 会话按服务器分键存储。切换服务器 = 重跑 initialize():目标服务器有
+    // 已存 token 则直接恢复会话(getMe 重建 user),没有则自然落到登录页。
+    await migrateLegacySession(activeServerId);
 
     // Restore the persisted workspace slug alongside the auth token so the
     // entry redirect (app/index.tsx) can route directly to the last-used
     // workspace without flashing /select-workspace.
     await useWorkspaceStore.getState().restoreSlug();
 
-    const token = await getToken();
+    const token = await getToken(activeServerId);
     if (!token) {
       set({ isLoading: false });
       return;
@@ -55,7 +70,7 @@ export const useAuthStore = create<AuthState>((set) => ({
       // Only clear token on a genuine 401. Network blips / 5xx keep the
       // token so the next launch (or a manual refresh) can retry.
       if (err instanceof ApiError && err.status === 401) {
-        await clearToken();
+        await clearToken(activeServerId);
         api.setToken(null);
       }
       set({ user: null, isLoading: false });
@@ -68,14 +83,19 @@ export const useAuthStore = create<AuthState>((set) => ({
 
   verifyCode: async (email, code) => {
     const { token, user } = await api.verifyCode(email, code);
-    await setToken(token);
+    const { activeServerId } = useServerStore.getState();
+    await setToken(activeServerId, token);
     api.setToken(token);
     set({ user });
     return user;
   },
 
   logout: async () => {
-    await clearToken();
+    // Scoped to the active server: signing out of server A must not erase
+    // the saved session of server B. The 401 path shares this — an expired
+    // token only invalidates the server that rejected it.
+    const { activeServerId } = useServerStore.getState();
+    await clearToken(activeServerId);
     api.setToken(null);
     set({ user: null });
   },
