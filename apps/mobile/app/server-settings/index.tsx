@@ -35,6 +35,7 @@ import {
   DropdownMenuItem,
 } from "@/components/ui/dropdown-menu";
 import { useAuthStore } from "@/data/auth-store";
+import { api } from "@/data/api";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useServerStore } from "@/data/server-store";
 import { pickActiveServer, type ServerEntry } from "@/data/server-config";
@@ -49,8 +50,6 @@ export default function ServerListScreen() {
   const setActiveServer = useServerStore((s) => s.setActiveServer);
   const removeServer = useServerStore((s) => s.removeServer);
   const user = useAuthStore((s) => s.user);
-  const logout = useAuthStore((s) => s.logout);
-  const clearWorkspace = useWorkspaceStore((s) => s.clear);
   const qc = useQueryClient();
   const { colorScheme } = useColorScheme();
   const mutedFg = THEME[colorScheme].mutedForeground;
@@ -58,15 +57,16 @@ export default function ServerListScreen() {
   const active = pickActiveServer(servers, activeServerId);
 
   /**
-   * 真正执行切换。除清 token 外必须同时清 workspace-store 与 React Query
-   * 缓存 —— 不同后端的工作区 slug 与数据互不相通,漏清会把 A 后端的缓存
-   * 渲染在 B 后端会话里。
+   * 真正执行切换。会话按服务器分键保存(secure-storage),切换 = 换生效
+   * 服务器 + 清 React Query 缓存 + 重跑 initialize() 恢复目标服务器的
+   * 快照(token + slug → getMe 重建 user)。缓存无条件清:不同后端的数
+   * 据互不相通,漏清会把 A 后端的缓存渲染在 B 后端会话里。
+   *
+   * 顺序仍是「先落盘再动会话」:落盘失败时用户留在原会话里;反过来就
+   * 会先把人踢出当前服务器却什么都没切成。
    */
   const doSwitch = useCallback(
     async (entry: ServerEntry) => {
-      // 先切换并落盘,成功后才清本地会话 —— 落盘失败时用户留在原会话里,
-      // 反过来就会把人踢出去却什么都没切成。logout 只清本地 token,
-      // 不发网络请求,所以此刻地址已变也不影响。
       try {
         await setActiveServer(entry.id);
       } catch (err) {
@@ -78,19 +78,31 @@ export default function ServerListScreen() {
         );
         return;
       }
-      if (!user) return;
-      await clearWorkspace();
-      await logout();
+      // 立即丢弃内存中的旧 token:setActiveServer 后 api 的地址已指向新
+      // 服务器,继续带着 A 的 token 发请求会以「B 返回 401」的形式触发
+      // 全局登出路径,反过来毁掉 B 的已存快照。A 的持久化快照不受影响
+      // (secure-storage 分键保存);initialize 随后按目标服务器重设。
+      api.setToken(null);
+      // 覆盖未登录场景:未登录时 initialize() 读不到分键 token,自然落
+      // 到登录页,与旧流程等价。
       qc.clear();
-      router.replace("/login");
+      await useAuthStore.getState().initialize();
+      const { user: nextUser } = useAuthStore.getState();
+      const slug = useWorkspaceStore.getState().currentWorkspaceSlug;
+      // 目标服务器没有已保存会话(或 getMe 网络失败但 token 已保留——
+      // 与冷启动同行为,重试即恢复)→ 登录页;有 token 无 slug → 选工作区。
+      router.replace(
+        !nextUser ? "/login" : !slug ? "/select-workspace" : `/${slug}/inbox`,
+      );
     },
-    [user, clearWorkspace, logout, qc, setActiveServer, t],
+    [qc, setActiveServer, t],
   );
 
   const onSelect = useCallback(
     (entry: ServerEntry) => {
       if (entry.id === active.id) return;
-      // 未登录时直接切换,不打扰;已登录必须二次确认(会退出账号)。
+      // 未登录时直接切换,不打扰;已登录弹确认(切换会重载该服务器的
+      // 会话数据,非破坏性,不用 destructive 样式)。
       if (!user) {
         void doSwitch(entry);
         return;
@@ -102,7 +114,6 @@ export default function ServerListScreen() {
           { text: t("server.cancel", "Cancel"), style: "cancel" },
           {
             text: t("server.switch_confirm", "Switch"),
-            style: "destructive",
             onPress: () => void doSwitch(entry),
           },
         ],
@@ -174,7 +185,7 @@ export default function ServerListScreen() {
           <Text className="text-xs text-muted-foreground px-1">
             {t(
               "server.hint",
-              "Tap a server to connect to it. Switching signs you out of the current account.",
+              "Tap a server to connect to it. Each server keeps its own signed-in session on this device.",
             )}
           </Text>
         </View>

@@ -25,6 +25,7 @@ import {
   serializePersistedState,
   type ServerEntry,
 } from "./server-config";
+import { clearServerSession } from "./secure-storage";
 
 const STORAGE_KEY = "multica_servers";
 
@@ -138,6 +139,10 @@ export const useServerStore = create<ServerState>((set, get) => {
         servers.filter((s) => s.id !== id),
         activeServerId,
       );
+      // 条目删掉后它的会话快照(token + slug)就是孤儿凭证,一并从
+      // SecureStore 清掉。放在 commit 之后:落盘失败上抛时凭证还在,
+      // 与「列表项仍在」保持一致。
+      await clearServerSession(id);
     },
 
     setActiveServer: async (id) => {
