@@ -33,16 +33,11 @@ interface AuthState {
   setUser: (user: User) => void;
 }
 
-export const useAuthStore = create<AuthState>((set) => ({
-  user: null,
-  isLoading: true,
-
-  initialize: async () => {
-    // Reset in-memory state first: initialize() runs both on cold start and
-    // on server switch, where the previous server's user/slug must not flash
-    // while the target server's session is being restored.
-    set({ user: null, isLoading: true });
-
+export const useAuthStore = create<AuthState>((set) => {
+  // The original hydration chain, extracted so initialize() can own one
+  // uniform failure boundary around it. Exits with isLoading:false at every
+  // branch — the entry redirect depends on isLoading settling either way.
+  const initializeFromStorage = async () => {
     // 服务器配置必须最先就绪 —— 下面的 api.getMe() 是首个网络请求,地址
     // 取自 server-store。晚一步就会打到内置默认服务器上(RUYI-4)。
     await useServerStore.getState().hydrate();
@@ -75,7 +70,29 @@ export const useAuthStore = create<AuthState>((set) => ({
       }
       set({ user: null, isLoading: false });
     }
-  },
+  };
+
+  return {
+    user: null,
+    isLoading: true,
+
+    initialize: async () => {
+      // Reset in-memory state first: initialize() runs both on cold start and
+      // on server switch, where the previous server's user/slug must not flash
+      // while the target server's session is being restored.
+      set({ user: null, isLoading: true });
+
+      // Storage/hydration failures must never wedge the boot spinner: the
+      // entry redirect (app/index.tsx) waits on isLoading forever unless the
+      // failure lands here. Degrade to signed-out state — the user reaches
+      // /login and can retry, instead of a silent hang (RUYI-31).
+      try {
+        await initializeFromStorage();
+      } catch (err) {
+        console.error("[auth] initialize failed — continuing signed out:", err);
+        set({ user: null, isLoading: false });
+      }
+    },
 
   sendCode: async (email) => {
     await api.sendCode(email);
@@ -101,4 +118,5 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   setUser: (user) => set({ user }),
-}));
+  };
+});
