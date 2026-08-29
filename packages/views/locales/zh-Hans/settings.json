@@ -1250,6 +1250,24 @@
       "notifications_subtitle": "收件箱与系统提醒",
       "server_section": "服务器",
       "workspaces_load_failed": "无法加载工作区"
+    },
+    "update": {
+      "about_section": "关于",
+      "action": "检查更新",
+      "version_label": "版本",
+      "up_to_date_title": "已是最新版本",
+      "up_to_date_body": "Multica {{version}} 已是最新版本。",
+      "available_title": "发现新版本",
+      "available_body": "新版本 {{version}} 已发布（当前版本：{{current}}）。",
+      "download": "下载安装包",
+      "failed_title": "检查更新失败",
+      "failed_network": "无网络连接，请稍后重试。",
+      "failed_rate_limited": "GitHub 请求受限，请稍后再试。",
+      "failed_no_release": "尚未发布任何版本。",
+      "failed_no_apk": "最新版本尚未提供 Android 安装包。",
+      "failed_incomparable": "无法比对当前版本与最新版本。",
+      "failed_invalid_local": "无法读取当前版本号。",
+      "failed_unexpected": "出了点问题，请稍后重试。"
     }
   }
 }
