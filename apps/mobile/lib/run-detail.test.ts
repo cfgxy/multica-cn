@@ -9,6 +9,7 @@ import {
   formatStepDuration,
   runCopyAllText,
   runDurationMs,
+  runErrorText,
   runOutcomeSummary,
   runStepCopyText,
   redactedDetailBody,
@@ -98,6 +99,26 @@ describe("redactedDetailBody", () => {
     expect(r.truncated).toBe(true);
     expect(r.body).not.toContain(SECRET);
     expect(r.body.length).toBeLessThanOrEqual(8000 + "[REDACTED API KEY]".length + 1);
+  });
+});
+
+describe("runErrorText — failure/cancel panel exit (RUYI-33 review fix)", () => {
+  it("redacts credentials embedded in persisted error text", () => {
+    const r = runErrorText(
+      'FATAL: password authentication failed for user "app"\n' +
+        "connection string: postgres://app:Sup3rSecret@db.internal:5432/prod",
+    );
+    expect(r.truncated).toBe(false);
+    expect(r.body).not.toContain("Sup3rSecret");
+    expect(r.body).toContain("[REDACTED CONNECTION STRING]");
+  });
+
+  it("clamps an over-long error and still redacts the visible slice", () => {
+    const secret = "xoxb-123456789-abcdefghijklmnop";
+    const err = `slack call failed with token ${secret}\n${"z".repeat(9000)}`;
+    const r = runErrorText(err);
+    expect(r.truncated).toBe(true);
+    expect(r.body).not.toContain(secret);
   });
 });
 
