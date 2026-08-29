@@ -6,11 +6,13 @@
  * dispatched, running}`, and the status badge / colour swaps based on the
  * AgentTask.status enum.
  *
- * Tapping a past row is a no-op in v1 — the transcript-detail screen is
- * explicitly out of scope per /Users/qingnaiyuan/.claude/plans/
- * ok-plan-linked-taco.md.
+ * Tapping any non-queued row pushes the run-detail sheet (RUYI-33) —
+ * the v1 no-op is gone. queued rows stay inert: the task never started, so
+ * there is no transcript to show (same rule as web's picker).
  */
 import { Alert, Pressable, View } from "react-native";
+import { router } from "expo-router";
+import { useWorkspaceStore } from "@/data/workspace-store";
 import type { AgentTask } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
@@ -30,8 +32,19 @@ const ACTIVE_STATUSES: readonly AgentTask["status"][] = [
   "running",
 ];
 
+/** queued has no messages yet, so it gets no detail entry (spec ②). */
+const DETAIL_STATUSES: readonly AgentTask["status"][] = [
+  "dispatched",
+  "waiting_local_directory",
+  "running",
+  "completed",
+  "failed",
+  "cancelled",
+];
+
 export function RunRow({ task, issueId }: Props) {
   const { getName } = useActorLookup();
+  const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { t } = useT("issues");
   const isActive = ACTIVE_STATUSES.includes(task.status);
   const summary = task.trigger_summary?.trim() || fallbackSummary(task, t);
@@ -39,9 +52,22 @@ export function RunRow({ task, issueId }: Props) {
   // statuses); active tasks fall back to created_at so the user sees how
   // long it's been waiting.
   const timestamp = task.completed_at || task.created_at;
+  const detailAvailable = DETAIL_STATUSES.includes(task.status);
 
   return (
-    <View className="flex-row items-start gap-3 py-2">
+    <Pressable
+      disabled={!detailAvailable}
+      onPress={() => {
+        if (!wsSlug) return;
+        router.push({
+          pathname: "/[workspace]/issue/[id]/runs/[taskId]",
+          params: { workspace: wsSlug, id: issueId, taskId: task.id },
+        });
+      }}
+      className={`flex-row items-start gap-3 py-2 ${
+        detailAvailable ? "active:opacity-70" : ""
+      }`}
+    >
       <ActorAvatar type="agent" id={task.agent_id} size={28} showPresence />
       <View className="flex-1 gap-1">
         <Text
@@ -59,7 +85,7 @@ export function RunRow({ task, issueId }: Props) {
         </View>
       </View>
       {isActive ? <CancelButton taskId={task.id} issueId={issueId} /> : null}
-    </View>
+    </Pressable>
   );
 }
 

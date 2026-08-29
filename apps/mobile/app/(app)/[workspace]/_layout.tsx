@@ -241,6 +241,12 @@ export default function WorkspaceLayout() {
           options={SHEET_OPTIONS}
         />
         <Stack.Screen name="issue/[id]/runs" options={SHEET_OPTIONS} />
+        {/* Run detail (RUYI-33) — stacked on the runs sheet. Same sheet
+            chrome; the body draws its own title + Copy-all + close. */}
+        <Stack.Screen
+          name="issue/[id]/runs/[taskId]"
+          options={SHEET_OPTIONS}
+        />
         {/* Full emoji picker for a comment reaction. Pushed from the "+"
             button inside the comment long-press tapback row — see
             components/issue/comment-context-menu.tsx. */}

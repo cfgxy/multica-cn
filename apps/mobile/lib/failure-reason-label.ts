@@ -75,3 +75,14 @@ export function failureReasonLabel(reason: string | null | undefined): string {
   if (en == null) return i18n.t("chat:mobile.failure_reason.fallback", "Failed");
   return i18n.t(`chat:mobile.failure_reason.${reasonKeySegment(reason)}`, en);
 }
+
+/**
+ * Whether the reason has a human label in the map above. Callers that must
+ * distinguish "recognised" from "generic Failed fallback" (e.g. the run-detail
+ * cancel-reason classification, which would otherwise read
+ * "Cancelled · Failed") gate on this instead of string-comparing the fallback.
+ */
+export function isKnownFailureReason(reason: string | null | undefined): boolean {
+  if (!reason) return false;
+  return Object.prototype.hasOwnProperty.call(LABELS, reason);
+}
