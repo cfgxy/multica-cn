@@ -1250,6 +1250,24 @@
       "notifications_subtitle": "받은 편지함 및 시스템 알림",
       "server_section": "서버",
       "workspaces_load_failed": "워크스페이스를 불러오지 못했습니다"
+    },
+    "update": {
+      "about_section": "정보",
+      "action": "업데이트 확인",
+      "version_label": "버전",
+      "up_to_date_title": "최신 버전입니다",
+      "up_to_date_body": "Multica {{version}}이(가) 최신 버전입니다.",
+      "available_title": "업데이트 있음",
+      "available_body": "버전 {{version}}이(가) 출시되었습니다(현재: {{current}}).",
+      "download": "APK 다운로드",
+      "failed_title": "업데이트를 확인할 수 없습니다",
+      "failed_network": "네트워크에 연결되어 있지 않습니다. 나중에 다시 시도해 주세요.",
+      "failed_rate_limited": "GitHub 요청 제한에 걸렸습니다. 잠시 후 다시 시도해 주세요.",
+      "failed_no_release": "아직 릴리스가 없습니다.",
+      "failed_no_apk": "최신 릴리스에 Android 패키지가 포함되어 있지 않습니다.",
+      "failed_incomparable": "설치된 버전과 최신 버전을 비교할 수 없습니다.",
+      "failed_invalid_local": "설치된 버전을 읽을 수 없습니다.",
+      "failed_unexpected": "문제가 발생했습니다. 나중에 다시 시도해 주세요."
     }
   }
 }

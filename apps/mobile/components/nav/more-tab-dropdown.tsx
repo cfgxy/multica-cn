@@ -55,6 +55,7 @@ import { WorkspaceAvatar } from "@/components/workspace/workspace-avatar";
 import { workspaceListOptions } from "@/data/queries/workspaces";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { useAppUpdate } from "@/lib/use-check-app-update";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { cn } from "@/lib/utils";
@@ -103,6 +104,7 @@ export function MoreTabDropdownAnchor({
   const { colorScheme } = useColorScheme();
   const t = THEME[colorScheme];
   const currentWorkspace = useCurrentWorkspace(slug);
+  const { currentVersion, checkForUpdates } = useAppUpdate();
 
   const isActive = (path: string) => {
     if (!slug) return false;
@@ -186,6 +188,38 @@ export function MoreTabDropdownAnchor({
               <Text className="text-sm text-foreground">{item.label}</Text>
             </DropdownMenuItem>
           ))}
+
+          <DropdownMenuSeparator />
+
+          {/* 检查更新（RUYI-36）：Owner 定案入口在更多面板一级；右侧展示
+              当前版本号。点击后在面板关闭状态下执行匿名 GitHub Release
+              检查，结果以系统 Alert 三态反馈（见 useAppUpdate）。 */}
+          <DropdownMenuItem
+            onPress={checkForUpdates}
+            accessibilityLabel={i18n.t(
+              "settings:mobile.update.action",
+              "Check for Updates",
+            )}
+            className="h-9 gap-3"
+          >
+            {Platform.OS === "ios" ? (
+              <ExpoImage
+                source="sf:arrow.down.circle"
+                tintColor={t.foreground}
+                style={{ width: 18, height: 18 }}
+              />
+            ) : (
+              <Ionicons name="cloud-download-outline" size={18} color={t.foreground} />
+            )}
+            <Text className="flex-1 text-sm text-foreground">
+              {i18n.t("settings:mobile.update.action", "Check for Updates")}
+            </Text>
+            {currentVersion ? (
+              <Text className="text-xs text-muted-foreground">
+                {currentVersion}
+              </Text>
+            ) : null}
+          </DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
     </View>
