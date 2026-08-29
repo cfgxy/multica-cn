@@ -116,23 +116,30 @@ describe("dead plural-key guard", () => {
 // intro 译文自己携带 —— 代码里不做语言判断。尾随空格在编辑器里不可见，
 // 极易被"顺手 trim 一下"的改动抹掉，抹掉后 en/ja/ko 会得到
 // "workspace —issues" 这种粘连。这里把这条不变量固定下来。
+//
+// 资源读取用显式结构类型标注：LocaleResources 是 string 索引签名，在
+// noUncheckedIndexedAccess 下每层索引都可能 undefined（TS18048），宽泛的
+// `as Record<...>` 套娃救不回来，`!` 断言又是禁用的绕行。守卫只读这一条
+// 已知路径，把真实形状写进类型即可，结构漂移由上方的 parity 套件兜住。
+type ChatEmptyStateBundle = {
+  chat: {
+    empty_state: {
+      first_time_intro: string;
+    };
+  };
+};
+
 describe("intro/pillars 拼接位的尾随空格", () => {
   const needsTrailingSpace = ["en", "ja", "ko"];
   for (const locale of needsTrailingSpace) {
     it(`${locale} 的 first_time_intro 以「破折号 + 空格」结尾`, () => {
-      const bundle = RESOURCES[locale as keyof typeof RESOURCES] as Record<
-        string,
-        Record<string, Record<string, string>>
-      >;
+      const bundle = RESOURCES[locale as keyof typeof RESOURCES] as ChatEmptyStateBundle;
       expect(bundle.chat.empty_state.first_time_intro).toMatch(/— $/);
     });
   }
 
   it("zh-Hans 用全角破折号且不带尾随空格（自带间距，再加会多出可见缝隙）", () => {
-    const bundle = RESOURCES["zh-Hans"] as Record<
-      string,
-      Record<string, Record<string, string>>
-    >;
+    const bundle = RESOURCES["zh-Hans"] as ChatEmptyStateBundle;
     expect(bundle.chat.empty_state.first_time_intro).toMatch(/——$/);
   });
 });
