@@ -414,7 +414,15 @@ export const AgentTaskSchema: z.ZodType<AgentTask> = z.object({
   runtime_id: z.string().default(""),
   issue_id: z.string().default(""),
   status: z
-    .enum(["queued", "dispatched", "running", "completed", "failed", "cancelled"])
+    .enum([
+      "queued",
+      "dispatched",
+      "waiting_local_directory",
+      "running",
+      "completed",
+      "failed",
+      "cancelled",
+    ])
     .catch("queued"),
   priority: z.number().default(0),
   dispatched_at: z.string().nullable().default(null),
@@ -426,8 +434,14 @@ export const AgentTaskSchema: z.ZodType<AgentTask> = z.object({
   // `omitempty` on a custom string-typed enum). Normalize that to `undefined`
   // so downstream truthy checks (`if (task.failure_reason)`) don't have to
   // special-case both null/undefined AND "".
+  //
+  // Open string, NOT a closed enum: `failure_reason` grows as backend
+  // classifier rules land (the `agent_error.*` refinements since MUL-1949).
+  // The previous closed six-value enum `.catch()`-ed every refined reason to
+  // undefined, so neither the runs-list badge nor the run-detail
+  // classification could ever show one (RUYI-33).
   failure_reason: z
-    .enum(["agent_error", "timeout", "runtime_offline", "runtime_recovery", "manual", ""])
+    .string()
     .optional()
     .catch("")
     .transform((v) => (v === "" ? undefined : v)),
