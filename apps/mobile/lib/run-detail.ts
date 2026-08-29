@@ -50,6 +50,21 @@ export function redactedDetailBody(
   return { body: redactSecrets(truncated ? text.slice(0, max) : text), truncated };
 }
 
+/**
+ * Failure/cancel panel body (RUYI-33 review fix). The persisted task error
+ * is a display AND copy exit exactly like the timeline rows — it routinely
+ * carries connection strings, URLs and tokens — so it must not be rendered
+ * raw (`selectable` makes a raw render copyable). Same clamp+redact
+ * pipeline as every other exit, named for the panel so call sites stay
+ * self-documenting.
+ */
+export function runErrorText(
+  text: string,
+  max: number = DETAIL_TEXT_CLAMP,
+): ClampedBody {
+  return redactedDetailBody(text, max);
+}
+
 // ─── Durations ──────────────────────────────────────────────────────────────
 
 /** Step-duration column, verbatim from web's formatStepDuration. */

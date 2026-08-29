@@ -36,6 +36,7 @@ import {
   formatRunDuration,
   runCopyAllText,
   runDurationMs,
+  runErrorText,
   runOutcomeSummary,
   runStatusLabel,
 } from "@/lib/run-detail";
@@ -222,8 +223,10 @@ function FailurePanel({ task }: { task: AgentTask }) {
     failed && isKnownFailureReason(task.failure_reason)
       ? failureReasonLabel(task.failure_reason)
       : null;
-  const hasError = !!task.error;
-  if (!label && !hasError) return null;
+  // Error text is a display + copy exit like every other (selectable makes a
+  // raw render copyable) — clamp + redact through the single model layer.
+  const error = task.error ? runErrorText(task.error) : null;
+  if (!label && !error) return null;
   return (
     <View className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 gap-1">
       <Text className="text-xs font-semibold uppercase tracking-wide text-destructive">
@@ -232,10 +235,17 @@ function FailurePanel({ task }: { task: AgentTask }) {
           : t("mobile.run_detail.cancel_reason_heading", "Cancellation reason")}
       </Text>
       {label ? <Text className="text-xs font-medium text-destructive">{label}</Text> : null}
-      {hasError ? (
-        <Text className="text-xs text-destructive" selectable>
-          {task.error}
-        </Text>
+      {error ? (
+        <>
+          <Text className="text-xs text-destructive" selectable>
+            {error.body}
+          </Text>
+          {error.truncated ? (
+            <Text className="text-[10px] italic text-muted-foreground/70">
+              {t("mobile.run_detail.truncated", "… (truncated)")}
+            </Text>
+          ) : null}
+        </>
       ) : null}
     </View>
   );
