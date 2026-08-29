@@ -21,6 +21,7 @@ import { useChatSessionPickerStore } from "@/data/stores/chat-session-picker-sto
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useT } from "@/lib/use-t";
 import { cn } from "@/lib/utils";
+import { chatSessionDisplayTitle } from "@/lib/chat-session-title";
 
 export default function ChatSessionsRoute() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
@@ -37,7 +38,7 @@ export default function ChatSessionsRoute() {
   const confirmDelete = (session: ChatSession) => {
     Alert.alert(
       t("mobile.sessions.delete_title", "Delete this chat?"),
-      session.title || untitled,
+      chatSessionDisplayTitle(session.title, untitled),
       [
         { text: t("common:cancel", "Cancel"), style: "cancel" },
         {
@@ -108,7 +109,7 @@ export default function ChatSessionsRoute() {
                     )}
                     numberOfLines={1}
                   >
-                    {session.title || untitled}
+                    {chatSessionDisplayTitle(session.title, untitled)}
                   </Text>
                   {archived ? (
                     <Text className="text-xs text-muted-foreground mt-0.5">
