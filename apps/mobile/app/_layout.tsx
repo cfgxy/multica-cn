@@ -69,7 +69,14 @@ export default function RootLayout() {
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
-        <KeyboardProvider>
+        {/* RN 0.83 起 Android 强制 edge-to-edge（窗口不再随键盘 resize），
+            keyboard-controller 计算键盘动画时须把状态栏/导航栏视为
+            translucent，否则 KeyboardStickyView 等 offset 偏一个系统栏
+            高度。回退：删去这两个 prop 即恢复旧行为。RUYI-30。 */}
+        <KeyboardProvider
+          statusBarTranslucent
+          navigationBarTranslucent
+        >
           <QueryClientProvider client={queryClient}>
             <ThemeProvider value={NAV_THEME[colorScheme]}>
               <I18nextProvider i18n={i18n}>

@@ -17,6 +17,9 @@ import {
   ScrollView,
   View,
 } from "react-native";
+// RN 0.83 edge-to-edge 下 Android 的窗口 resize 失效，避让统一走
+// keyboard-controller（behavior="padding" 两端一致），见 RUYI-30。
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import * as ImagePicker from "expo-image-picker";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
@@ -187,67 +190,69 @@ export default function ProfileSettingsScreen() {
   };
 
   return (
-    <ScrollView
-      className="flex-1 bg-background"
-      contentContainerClassName="px-4 py-6 gap-6"
-      keyboardShouldPersistTaps="handled"
-    >
-      <View className="items-center gap-3">
-        <Pressable onPress={handleAvatarPick} disabled={uploading}>
-          <Avatar alt={user?.name ?? "Your avatar"} className="size-24">
-            {user?.avatar_url ? (
-              <AvatarImage source={{ uri: user.avatar_url }} />
-            ) : null}
-            <AvatarFallback>
-              <Text className="text-2xl font-semibold text-muted-foreground">
-                {initialsOf(user?.name)}
-              </Text>
-            </AvatarFallback>
-          </Avatar>
-        </Pressable>
-        {uploading ? (
-          <ActivityIndicator />
-        ) : (
-          <Text className="text-xs text-muted-foreground">
-            {i18n.t("common:avatar_upload.change", "Change avatar")}
-          </Text>
-        )}
-      </View>
-
-      <Separator />
-
-      <View className="gap-4">
-        <View>
-          <Text className="text-xs text-muted-foreground mb-1.5">{t("account.name_label", "Name")}</Text>
-          <TextField
-            value={name}
-            onChangeText={setName}
-            placeholder={t("mobile.account.name_placeholder", "Your name")}
-            autoCapitalize="words"
-            autoCorrect={false}
-            returnKeyType="done"
-          />
+    <KeyboardAvoidingView className="flex-1" behavior="padding">
+      <ScrollView
+        className="flex-1 bg-background"
+        contentContainerClassName="px-4 py-6 gap-6"
+        keyboardShouldPersistTaps="handled"
+      >
+        <View className="items-center gap-3">
+          <Pressable onPress={handleAvatarPick} disabled={uploading}>
+            <Avatar alt={user?.name ?? "Your avatar"} className="size-24">
+              {user?.avatar_url ? (
+                <AvatarImage source={{ uri: user.avatar_url }} />
+              ) : null}
+              <AvatarFallback>
+                <Text className="text-2xl font-semibold text-muted-foreground">
+                  {initialsOf(user?.name)}
+                </Text>
+              </AvatarFallback>
+            </Avatar>
+          </Pressable>
+          {uploading ? (
+            <ActivityIndicator />
+          ) : (
+            <Text className="text-xs text-muted-foreground">
+              {i18n.t("common:avatar_upload.change", "Change avatar")}
+            </Text>
+          )}
         </View>
-        <View>
-          <Text className="text-xs text-muted-foreground mb-1.5">{i18n.t("auth:common.email", "Email")}</Text>
-          <View className="rounded-md border border-border bg-muted px-3 py-2.5">
-            <Text className="text-base text-muted-foreground">
-              {user?.email ?? "—"}
+
+        <Separator />
+
+        <View className="gap-4">
+          <View>
+            <Text className="text-xs text-muted-foreground mb-1.5">{t("account.name_label", "Name")}</Text>
+            <TextField
+              value={name}
+              onChangeText={setName}
+              placeholder={t("mobile.account.name_placeholder", "Your name")}
+              autoCapitalize="words"
+              autoCorrect={false}
+              returnKeyType="done"
+            />
+          </View>
+          <View>
+            <Text className="text-xs text-muted-foreground mb-1.5">{i18n.t("auth:common.email", "Email")}</Text>
+            <View className="rounded-md border border-border bg-muted px-3 py-2.5">
+              <Text className="text-base text-muted-foreground">
+                {user?.email ?? "—"}
+              </Text>
+            </View>
+            <Text className="text-xs text-muted-foreground mt-1.5">
+              {t(
+                "mobile.account.email_hint",
+                "Email is set at sign-up and can't be changed here.",
+              )}
             </Text>
           </View>
-          <Text className="text-xs text-muted-foreground mt-1.5">
-            {t(
-              "mobile.account.email_hint",
-              "Email is set at sign-up and can't be changed here.",
-            )}
-          </Text>
         </View>
-      </View>
 
-      <Button onPress={handleSave} disabled={!dirty || saving}>
-        <Text>{saving ? t("account.saving", "Updating...") : t("account.save", "Update Profile")}</Text>
-      </Button>
-      <ActionSheetModal {...sheet.modalProps} />
-    </ScrollView>
+        <Button onPress={handleSave} disabled={!dirty || saving}>
+          <Text>{saving ? t("account.saving", "Updating...") : t("account.save", "Update Profile")}</Text>
+        </Button>
+        <ActionSheetModal {...sheet.modalProps} />
+      </ScrollView>
+    </KeyboardAvoidingView>
   );
 }
