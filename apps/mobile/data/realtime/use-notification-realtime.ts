@@ -17,6 +17,7 @@
  * background/cold-start surface as inbox unread dots instead.
  */
 import { useEffect, useRef } from "react";
+import { AppState } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useTranslation } from "react-i18next";
 import type { InboxItem } from "@multica/core/types";
@@ -42,6 +43,7 @@ import {
 import {
   ensureInboxNotificationChannel,
   presentInboxNotification,
+  refreshInboxNotificationPermission,
 } from "@/data/notifications/present-inbox-notification";
 
 export function useNotificationRealtime() {
@@ -87,6 +89,21 @@ export function useNotificationRealtime() {
       cancelled = true;
     };
   }, [serverId, userId]);
+
+  // D2: re-probe permission on every foreground transition. A user who
+  // granted POST_NOTIFICATIONS from system settings while we were
+  // backgrounded must re-arm notifications on return — grantedRef only
+  // refreshes with server/user identity otherwise, which kept alerts
+  // disabled until the next full restart.
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (status) => {
+      if (status !== "active") return;
+      void refreshInboxNotificationPermission().then((granted) => {
+        grantedRef.current = granted;
+      });
+    });
+    return () => sub.remove();
+  }, []);
 
   useWSSubscriptions(
     (ws) => {
