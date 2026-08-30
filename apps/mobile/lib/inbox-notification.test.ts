@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { InboxItem } from "@multica/core/types";
 import {
   inboxNotificationBodyKey,
+  isNotificationPermissionGranted,
   isInboxTransitionToBlocked,
   shouldNotifyInboxItem,
 } from "./inbox-notification";
@@ -167,5 +168,49 @@ describe("inboxNotificationBodyKey", () => {
     expect(
       inboxNotificationBodyKey("brand_new_future_type" as InboxItem["type"]),
     ).toBeNull();
+  });
+});
+
+describe("isNotificationPermissionGranted", () => {
+  it("is true when the cross-platform status is granted", () => {
+    expect(
+      isNotificationPermissionGranted({ status: "granted" }),
+    ).toBe(true);
+  });
+
+  it("is true for iOS authorized / provisional statuses", () => {
+    expect(
+      isNotificationPermissionGranted({
+        status: "undetermined",
+        ios: { status: "authorized" },
+      }),
+    ).toBe(true);
+    expect(
+      isNotificationPermissionGranted({
+        status: "undetermined",
+        ios: { status: "provisional" },
+      }),
+    ).toBe(true);
+  });
+
+  it("is false when denied, blocked, or undetermined", () => {
+    for (const status of ["denied", "blocked", "undetermined"]) {
+      expect(isNotificationPermissionGranted({ status }), status).toBe(false);
+    }
+  });
+
+  it("is false when only iOS status is denied/undetermined", () => {
+    expect(
+      isNotificationPermissionGranted({
+        status: "undetermined",
+        ios: { status: "denied" },
+      }),
+    ).toBe(false);
+    expect(
+      isNotificationPermissionGranted({
+        status: "undetermined",
+        ios: { status: "undetermined" },
+      }),
+    ).toBe(false);
   });
 });

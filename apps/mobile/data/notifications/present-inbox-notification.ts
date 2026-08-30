@@ -22,6 +22,7 @@
  */
 import * as Notifications from "expo-notifications";
 import type { InboxItem } from "@multica/core/types";
+import { isNotificationPermissionGranted } from "@/lib/inbox-notification";
 
 export const INBOX_NOTIFICATION_CHANNEL_ID = "inbox";
 
@@ -40,15 +41,11 @@ Notifications.setNotificationHandler({
 export async function ensureInboxNotificationChannel(): Promise<boolean> {
   try {
     const current = await Notifications.getPermissionsAsync();
-    const iosGranted =
-      current.ios?.status === Notifications.IosAuthorizationStatus.AUTHORIZED ||
-      current.ios?.status ===
-        Notifications.IosAuthorizationStatus.PROVISIONAL;
-    const granted =
-      current.status === "granted" || iosGranted;
-    if (!granted && current.canAskAgain) {
+    if (!isNotificationPermissionGranted(current) && current.canAskAgain) {
       const asked = await Notifications.requestPermissionsAsync();
-      if (asked.status !== "granted") return false;
+      if (!isNotificationPermissionGranted(asked)) return false;
+    } else if (!isNotificationPermissionGranted(current)) {
+      return false;
     }
 
     await Notifications.setNotificationChannelAsync(
@@ -67,6 +64,23 @@ export async function ensureInboxNotificationChannel(): Promise<boolean> {
     // Permission plumbing must never take the app down (e.g. expo-notifications
     // native module missing from a stale dev client build).
     console.warn("[notifications] channel/permission setup failed", err);
+    return false;
+  }
+}
+
+/**
+ * Re-probe the current permission state WITHOUT prompting (D2). Called on
+ * every foreground transition: a user who granted the permission from system
+ * settings while we were backgrounded must re-arm notifications on return,
+ * without an app restart.
+ */
+export async function refreshInboxNotificationPermission(): Promise<boolean> {
+  try {
+    return isNotificationPermissionGranted(
+      await Notifications.getPermissionsAsync(),
+    );
+  } catch (err) {
+    console.warn("[notifications] permission refresh failed", err);
     return false;
   }
 }

@@ -74,3 +74,32 @@ export function inboxNotificationBodyKey(
   if (NOTIFYING_TYPES.has(type)) return `types.${type}`;
   return null;
 }
+
+/**
+ * Whether a notification-permission probe means "alerts may be posted".
+ *
+ * Pure decision over the shape expo-notifications' PermissionResponse gives
+ * us (structural subset — no expo import, vitest-loadable). iOS can report
+ * granted ONLY through its own nested status even when the cross-platform
+ * `status` is still "undetermined" (provisional grants), so both layers are
+ * checked. Used by the realtime hook on every foreground transition (D2):
+ * a user granting the permission from system settings mid-session must
+ * re-arm notifications without an app restart.
+ */
+export interface NotificationPermissionProbe {
+  status: string;
+  /** expo's IosAuthorizationStatus is a TS enum — typed `unknown` here so
+   *  the structural probe accepts it without importing expo types into the
+   *  vitest lane; the check normalizes via String(). */
+  ios?: { status?: unknown };
+}
+
+const IOS_GRANTED = new Set(["authorized", "provisional"]);
+
+export function isNotificationPermissionGranted(
+  probe: NotificationPermissionProbe,
+): boolean {
+  if (probe.status === "granted") return true;
+  const ios = probe.ios?.status;
+  return typeof ios === "string" && IOS_GRANTED.has(ios);
+}
