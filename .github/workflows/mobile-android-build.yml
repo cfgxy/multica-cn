@@ -6,8 +6,29 @@ name: Mobile Android Build
 #
 # `android/` 是被忽略的 Expo prebuild 产物，全新 checkout 中不存在，
 # 因此这里显式执行 prebuild，而不是依赖需要设备或模拟器的 expo run:android。
+#
+# 触发通道：
+# - push 到 main（路径过滤与 PR 一致）：构建 production APK，并整体替换
+#   滚动 GitHub Release（tag `mobile-android-latest`）——免登录稳定直链，
+#   每次构建在 Release 正文携带 commit / run 标识可追溯来源。
+# - pull_request / workflow_dispatch：行为不变，产物仅上传为 Actions
+#   artifact，不发布 Release。
+#
+# Release 发布只发生在 push 通道：`publish-release` 以 event/ref 为条件，
+# PR（含 fork）路径既不运行该 job，也不会获得其 job 级 `contents: write`
+# 提升（permissions 声明随被跳过的 job 一起不生效）。
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/mobile/**"
+      - "packages/core/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "turbo.json"
+      - ".github/workflows/mobile-android-build.yml"
   pull_request:
     branches: [main]
     paths:
@@ -32,8 +53,11 @@ on:
 permissions:
   contents: read
 
+# 三个触发通道各自成组：push 与 dispatch 原本都会落到 github.ref 的同组，
+# push 通道引入后会把对方取消；PR 仍按 PR 号成组。组内取消语义不变——
+# 连续 push 到 main 时只有最新一次构建会跑完并发布 Release。
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -93,3 +117,64 @@ jobs:
           name: multica-mobile-${{ env.APP_ENV }}-release-apk
           path: apps/mobile/android/app/build/outputs/apk/release/*.apk
           if-no-files-found: error
+
+  # 仅 push 到 main 时发布 GitHub Release。本 job 的 permissions 是整个
+  # workflow 唯一的写权限提升点，且随 if 一起只作用于 push 通道。
+  publish-release:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      RELEASE_TAG: mobile-android-latest
+      # 与 build job 上传的 artifact 名对应：push 通道固定 production。
+      ARTIFACT_NAME: multica-mobile-production-release-apk
+      # 资产名固定，直链才稳定；与 gradle 产物名解耦。
+      APK_NAME: multica-mobile-production.apk
+    steps:
+      - name: Download built APK
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: apk
+
+      # 稳定直链要求资产名固定；gradle 产物名可能随构建配置变化，这里
+      # 归一化，并在产物数量异常时直接失败而不是静默传错文件。
+      - name: Normalize APK filename
+        run: |
+          count=$(find apk -maxdepth 1 -name '*.apk' | wc -l)
+          if [ "$count" -ne 1 ]; then
+            echo "::error::Expected exactly 1 APK in artifact '$ARTIFACT_NAME', found $count"
+            exit 1
+          fi
+          mv "apk/$(find apk -maxdepth 1 -name '*.apk' -printf '%f')" "apk/$APK_NAME"
+
+      - name: Write release notes
+        run: |
+          cat > release-notes.md <<'EOF'
+          Automated production build of the Multica Android app from `main`.
+
+          | | |
+          |---|---|
+          | Commit | `${{ github.sha }}` |
+          | Workflow run | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
+          | APP_ENV | production |
+
+          Install: download `multica-mobile-production.apk` below — no GitHub sign-in required. Each push to `main` replaces this release with the newest build.
+          EOF
+
+      # 幂等替换：先删旧 Release（连同其 tag），再清掉可能残留的孤儿 tag，
+      # 最后在触发本次构建的 commit 上重建。同一 tag 已存在不会导致失败。
+      - name: Replace rolling release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+          gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" || true
+          gh release create "$RELEASE_TAG" "apk/$APK_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Multica Android (production) — build ${{ github.run_number }}" \
+            --notes-file release-notes.md \
+            --latest=false
