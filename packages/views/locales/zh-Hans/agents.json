@@ -35,6 +35,9 @@
     "idle": "空闲"
   },
   "presence_status_aria": "状态：{{status}}",
+  "avatar_stack": {
+    "overflow_aria_other": "还有 {{count}} 个智能体"
+  },
   "archived": {
     "active_link": "活跃智能体",
     "title": "已归档智能体"
@@ -576,6 +579,10 @@
       "dialog_headers_label": "HTTP Headers",
       "dialog_add_header": "添加 Header",
       "dialog_remove_header": "移除 Header",
+      "dialog_pair_key_placeholder": "键",
+      "dialog_pair_value_placeholder": "值",
+      "dialog_pair_key_aria": "{{label}}：键 {{index}}",
+      "dialog_pair_value_aria": "{{label}}：值 {{index}}",
       "dialog_native_json_hint": "这是历史 Provider 原生格式，将继续以 JSON 原样编辑，不会自动转换。",
       "dialog_json_label": "单个 Server 配置",
       "dialog_json_aria": "MCP Server JSON 配置",
