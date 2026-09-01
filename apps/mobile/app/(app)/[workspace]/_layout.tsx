@@ -7,6 +7,7 @@ import { workspaceListOptions } from "@/data/queries/workspaces";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { RealtimeProvider } from "@/data/realtime/realtime-provider";
 import { useInboxRealtime } from "@/data/realtime/use-inbox-realtime";
+import { useNotificationRealtime } from "@/data/realtime/use-notification-realtime";
 import { useIssuesRealtime } from "@/data/realtime/use-issues-realtime";
 import { useMyIssuesRealtime } from "@/data/realtime/use-my-issues-realtime";
 import { useChatSessionsRealtime } from "@/data/realtime/use-chat-sessions-realtime";
@@ -75,6 +76,8 @@ export const unstable_settings = { anchor: "(tabs)" } as const;
  */
 function RealtimeSubscriptions() {
   useInboxRealtime();
+  // RUYI-37: inbox:new → Android status-bar notification (deduped, tap-to-issue).
+  useNotificationRealtime();
   useIssuesRealtime();
   useMyIssuesRealtime();
   useChatSessionsRealtime();
