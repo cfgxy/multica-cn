@@ -8,9 +8,11 @@ name: Mobile Android Build
 # 因此这里显式执行 prebuild，而不是依赖需要设备或模拟器的 expo run:android。
 #
 # 触发通道：
-# - push 到 main（路径过滤与 PR 一致）：构建 production APK，并整体替换
-#   滚动 GitHub Release（tag `mobile-android-latest`）——免登录稳定直链，
-#   每次构建在 Release 正文携带 commit / run 标识可追溯来源。
+# - push 到 main（路径过滤与 PR 一致）：构建 production APK，并发布两个
+#   GitHub Release——滚动 Release（tag `mobile-android-latest`，整体替换，
+#   免登录稳定直链）与版本化 Release（tag `mobile-android-v<版本>-b<构建号>`，
+#   tag 携带 APK 版本号，供应用内「检查更新」解析对比）。每次构建在
+#   Release 正文携带 commit / run 标识可追溯来源。
 # - pull_request / workflow_dispatch：行为不变，产物仅上传为 Actions
 #   artifact，不发布 Release。
 #
@@ -65,6 +67,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       APP_ENV: ${{ inputs.app_env || 'production' }}
+    outputs:
+      # APK 实际版本号，供 publish-release 生成带版本的 Release tag。
+      app_version: ${{ steps.version.outputs.version }}
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -111,6 +116,21 @@ jobs:
         working-directory: apps/mobile/android
         run: ./gradlew assembleRelease --no-daemon
 
+      # 版本取自 prebuild 产物 build.gradle 的 versionName（app.config.ts
+      # 的 version 经 Expo 写入），与 APK 内实际版本、应用内「检查更新」
+      # 对比的版本同源；不取 package.json，避免两处漂移时 tag 与安装包
+      # 版本不一致。解析为空直接失败，防止发布无版本的 tag。
+      - name: Resolve app version
+        id: version
+        working-directory: apps/mobile/android
+        run: |
+          version=$(sed -n 's/^ *versionName "\([^"]*\)".*/\1/p' app/build.gradle | head -n 1)
+          if [ -z "$version" ]; then
+            echo "::error::versionName not found in apps/mobile/android/app/build.gradle"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
@@ -127,7 +147,11 @@ jobs:
     permissions:
       contents: write
     env:
-      RELEASE_TAG: mobile-android-latest
+      ROLLING_TAG: mobile-android-latest
+      # 版本化 tag 携带 APK 版本号（x.y.z 三段，可被版本解析器提取）；
+      # -b<run_number> 保证每次构建 tag 唯一，rerun 同一 run 时同 tag 重建。
+      APP_VERSION: ${{ needs.build.outputs.app_version }}
+      VERSION_TAG: mobile-android-v${{ needs.build.outputs.app_version }}-b${{ github.run_number }}
       # 与 build job 上传的 artifact 名对应：push 通道固定 production。
       ARTIFACT_NAME: multica-mobile-production-release-apk
       # 资产名固定，直链才稳定；与 gradle 产物名解耦。
@@ -157,6 +181,7 @@ jobs:
 
           | | |
           |---|---|
+          | Version | v${{ needs.build.outputs.app_version }} |
           | Commit | `${{ github.sha }}` |
           | Workflow run | [#${{ github.run_number }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
           | APP_ENV | production |
@@ -166,15 +191,32 @@ jobs:
 
       # 幂等替换：先删旧 Release（连同其 tag），再清掉可能残留的孤儿 tag，
       # 最后在触发本次构建的 commit 上重建。同一 tag 已存在不会导致失败。
+      # 滚动 Release 维持固定 tag，既有免登录稳定直链不变。
       - name: Replace rolling release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release delete "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
-          gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$RELEASE_TAG" || true
-          gh release create "$RELEASE_TAG" "apk/$APK_NAME" \
+          gh release delete "$ROLLING_TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+          gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$ROLLING_TAG" || true
+          gh release create "$ROLLING_TAG" "apk/$APK_NAME" \
             --repo "$GITHUB_REPOSITORY" \
             --target "$GITHUB_SHA" \
             --title "Multica Android (production) — build ${{ github.run_number }}" \
+            --notes-file release-notes.md \
+            --latest=false
+
+      # 版本化 Release：tag 携带版本号，供应用内「检查更新」解析对比；
+      # 同样 --latest=false，不抢占仓库级 latest（不影响服务端 release.yml
+      # 的 semver Release）。删除重建仅发生在 rerun 同一 run 时（同 tag）。
+      - name: Publish versioned release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete "$VERSION_TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+          gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$VERSION_TAG" || true
+          gh release create "$VERSION_TAG" "apk/$APK_NAME" \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Multica Android (production) v$APP_VERSION — build ${{ github.run_number }}" \
             --notes-file release-notes.md \
             --latest=false
