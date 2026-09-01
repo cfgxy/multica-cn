@@ -18,11 +18,16 @@ export const LEGACY_TOKEN_KEY = "multica_token";
 export const LEGACY_SLUG_KEY = "multica_current_workspace_slug";
 
 export function tokenKeyFor(serverId: string): string {
-  return `multica_token:${serverId}`;
+  // Separator must be "." — expo-secure-store only accepts /^[\w.-]+$/ and
+  // rejects ":" (RUYI-31: the original ":" separator made every scoped-key
+  // call reject, which wedged the boot spinner forever). No device ever
+  // persisted data under the ":" keys — writes failed with the same
+  // validation error — so the format change needs no migration.
+  return `multica_token.${serverId}`;
 }
 
 export function slugKeyFor(serverId: string): string {
-  return `multica_workspace_slug:${serverId}`;
+  return `multica_workspace_slug.${serverId}`;
 }
 
 export interface LegacyMigrationInput {

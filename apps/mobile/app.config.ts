@@ -64,6 +64,9 @@ export default ({ config }: ConfigContext): ExpoConfig => {
     plugins: [
       "expo-router",
       "expo-secure-store",
+      // RUYI-37: 系统通知。plugin 注入 Android POST_NOTIFICATIONS 声明与
+      // 本地通知所需 manifest 条目；无 FCM/远程推送（后续单）。
+      "expo-notifications",
       "@react-native-community/datetimepicker",
       "react-native-enriched-markdown",
       [
