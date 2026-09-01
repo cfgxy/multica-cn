@@ -27,6 +27,7 @@ import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useServerStore } from "@/data/server-store";
 import { pickActiveServer } from "@/data/server-config";
+import { useAppUpdate } from "@/lib/use-check-app-update";
 import {
   useColorScheme,
   type ThemePreference,
@@ -66,6 +67,7 @@ export default function SettingsPage() {
   const { preference, setPreference, colorScheme } = useColorScheme();
   const mutedFg = THEME[colorScheme].mutedForeground;
   const { t } = useT("settings");
+  const { currentVersion, checkForUpdates } = useAppUpdate();
 
   const onSwitch = async (ws: Workspace) => {
     if (ws.slug === currentSlug) return;
@@ -142,6 +144,28 @@ export default function SettingsPage() {
           title={activeServer.name || activeServer.apiUrl}
           subtitle={activeServer.apiUrl}
         />
+      </SectionGroup>
+
+      {/* 关于（RUYI-36）：版本展示 + 检查更新入口。与更多面板的检查更新
+          条目共用 useAppUpdate 的三态反馈逻辑。版本行是静态信息，无
+          chevron、不可点。 */}
+      <SectionGroup title={t("mobile.update.about_section", "About")}>
+        <NavRow
+          onPress={checkForUpdates}
+          chevronColor={mutedFg}
+          title={t("mobile.update.action", "Check for Updates")}
+        />
+        <Separator />
+        <View className="flex-row items-center px-4 py-3.5">
+          <View className="flex-1">
+            <Text className="text-base font-medium text-foreground">
+              {t("mobile.update.version_label", "Version")}
+            </Text>
+          </View>
+          <Text className="text-sm text-muted-foreground">
+            {currentVersion ? `v${currentVersion}` : "—"}
+          </Text>
+        </View>
       </SectionGroup>
 
       <SectionGroup title={i18n.t("layout:sidebar.workspaces_label", "Workspaces")}>

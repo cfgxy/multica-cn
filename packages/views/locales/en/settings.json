@@ -1295,6 +1295,24 @@
       "notifications_subtitle": "Inbox and system alerts",
       "server_section": "Server",
       "workspaces_load_failed": "Failed to load workspaces"
+    },
+    "update": {
+      "about_section": "About",
+      "action": "Check for Updates",
+      "version_label": "Version",
+      "up_to_date_title": "You're up to date",
+      "up_to_date_body": "Multica {{version}} is the latest version.",
+      "available_title": "Update available",
+      "available_body": "Version {{version}} is available (installed: {{current}}).",
+      "download": "Download APK",
+      "failed_title": "Couldn't check for updates",
+      "failed_network": "No network connection. Try again later.",
+      "failed_rate_limited": "GitHub is rate-limiting requests. Try again in a minute.",
+      "failed_no_release": "No release has been published yet.",
+      "failed_no_apk": "The latest release doesn't include an Android package yet.",
+      "failed_incomparable": "Couldn't compare the installed version with the latest release.",
+      "failed_invalid_local": "Couldn't read the installed version.",
+      "failed_unexpected": "Something went wrong. Try again later."
     }
   }
 }
