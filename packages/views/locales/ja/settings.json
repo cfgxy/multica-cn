@@ -1292,6 +1292,24 @@
       "notifications_subtitle": "受信トレイとシステム通知",
       "server_section": "サーバー",
       "workspaces_load_failed": "ワークスペースを読み込めませんでした"
+    },
+    "update": {
+      "about_section": "このアプリ",
+      "action": "アップデートを確認",
+      "version_label": "バージョン",
+      "up_to_date_title": "最新です",
+      "up_to_date_body": "Multica {{version}} は最新バージョンです。",
+      "available_title": "アップデートあり",
+      "available_body": "バージョン {{version}} が利用可能です（現在：{{current}}）。",
+      "download": "APK をダウンロード",
+      "failed_title": "アップデートを確認できません",
+      "failed_network": "ネットワークに接続されていません。後でもう一度お試しください。",
+      "failed_rate_limited": "GitHub のレート制限です。しばらくしてからもう一度お試しください。",
+      "failed_no_release": "まだリリースがありません。",
+      "failed_no_apk": "最新リリースには Android パッケージが含まれていません。",
+      "failed_incomparable": "バージョンを比較できませんでした。",
+      "failed_invalid_local": "インストール済みのバージョンを読み取れません。",
+      "failed_unexpected": "問題が発生しました。後でもう一度お試しください。"
     }
   }
 }
