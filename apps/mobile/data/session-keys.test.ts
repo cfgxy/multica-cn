@@ -16,11 +16,23 @@ import {
 
 describe("session key derivation", () => {
   it("scopes keys by server id", () => {
-    expect(tokenKeyFor("srv_abc")).toBe("multica_token:srv_abc");
-    expect(slugKeyFor("srv_abc")).toBe("multica_workspace_slug:srv_abc");
+    expect(tokenKeyFor("srv_abc")).toBe("multica_token.srv_abc");
+    expect(slugKeyFor("srv_abc")).toBe("multica_workspace_slug.srv_abc");
     // Different servers must never collide on the same SecureStore key.
     expect(tokenKeyFor("srv_a")).not.toBe(tokenKeyFor("srv_b"));
     expect(slugKeyFor("srv_a")).not.toBe(slugKeyFor("srv_b"));
+  });
+
+  it("never emits characters outside expo-secure-store's key charset", () => {
+    // expo-secure-store validates keys against /^[\w.-]+$/ and REJECTS
+    // everything else. The original separator was ":" (RUYI-31): every
+    // getToken/setToken rejected, the rejection escaped initialize()'s
+    // un-caught await chain, and the app hung on the boot spinner forever.
+    const VALID = /^[\w.-]+$/;
+    for (const serverId of ["default", "srv_abc", "srv_123", "x".repeat(64)]) {
+      expect(tokenKeyFor(serverId)).toMatch(VALID);
+      expect(slugKeyFor(serverId)).toMatch(VALID);
+    }
   });
 
   it("keeps the legacy global key constants aligned with the pre-snapshot build", () => {
