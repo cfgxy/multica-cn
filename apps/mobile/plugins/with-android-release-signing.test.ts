@@ -11,7 +11,7 @@ const { addReleaseSigning } = plugin as {
  * 改动导致锚点失配,这里会先红。
  */
 const UPSTREAM = `android {
-    namespace 'ai.multica.mobile.dev'
+    namespace 'ai.multica.mobile'
     signingConfigs {
         debug {
             storeFile file('debug.keystore')

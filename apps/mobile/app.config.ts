@@ -43,29 +43,17 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       // the intended team on every `scripts/ios-run.sh` run, which also repairs
       // an already-mispinned checkout.
       appleTeamId: process.env.EXPO_APPLE_TEAM_ID,
-      // Per-variant bundle id overrides exist for one reason: an Apple ID
-      // can only sign bundle prefixes it owns, so contributors not on the
-      // Multica Apple Developer team (and external users self-building a
-      // personal copy against production) need to swap to a reverse-domain
-      // they control. Each variant has its own `_<VARIANT>` suffix and is
-      // only read inside that variant's branch — a generic
-      // `EXPO_BUNDLE_IDENTIFIER` would leak across variants (Expo CLI
-      // auto-loads `.env.<mode>.local` regardless of APP_ENV) and collapse
-      // dev / staging / prod onto a single id.
-      bundleIdentifier: isProd
-        ? (process.env.EXPO_BUNDLE_IDENTIFIER_PROD ?? "ai.multica.mobile")
-        : isStaging
-          ? "ai.multica.mobile.staging"
-          : (process.env.EXPO_BUNDLE_IDENTIFIER_DEV ?? "ai.multica.mobile.dev"),
+      // 统一包名（Owner 2026-09-01 裁决）：所有环境共用 `ai.multica.mobile`，
+      // 不再有 per-variant 身份分叉——变体只差服务器配置与显示名，同包名
+      // 覆盖安装即切换。`EXPO_BUNDLE_IDENTIFIER` 是自建副本的单点出口
+      // （Apple 只允许签名自己拥有的前缀，默认前缀被认领时换一个反向域
+      // 名）；分环境包名废除后，环境变量"泄漏到其他变体"不再是问题。
+      bundleIdentifier:
+        process.env.EXPO_BUNDLE_IDENTIFIER ?? "ai.multica.mobile",
     },
     android: {
-      // 与 iOS 同一套 per-variant 包名策略:variant 各自独立、可被环境变量
-      // 覆盖(自建副本换成自有反向域名),三个变体可在同一台设备共存。
-      package: isProd
-        ? (process.env.EXPO_ANDROID_PACKAGE_PROD ?? "ai.multica.mobile")
-        : isStaging
-          ? "ai.multica.mobile.staging"
-          : (process.env.EXPO_ANDROID_PACKAGE_DEV ?? "ai.multica.mobile.dev"),
+      // 与 iOS 同一套统一包名：环境变量为自建副本的单点覆盖出口。
+      package: process.env.EXPO_ANDROID_PACKAGE ?? "ai.multica.mobile",
       // 复用与 iOS 相同的 1024 源图标;Android 12+ 实际展示的是
       // adaptiveIcon,monochromeImage 供主题图标(Material You)使用。
       adaptiveIcon: {

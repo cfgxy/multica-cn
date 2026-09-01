@@ -21,7 +21,7 @@ Xcode signs the build with the "Personal Team" your Apple ID automatically owns 
 **If Xcode rejects signing with "No matching provisioning profiles found"** — rare, happens if someone has claimed the default bundle id `ai.multica.mobile` on Apple's developer portal. Pick any reverse-domain you own and re-run:
 
 ```bash
-export EXPO_BUNDLE_IDENTIFIER_PROD=com.yourname.multica
+export EXPO_BUNDLE_IDENTIFIER=com.yourname.multica
 pnpm ios:mobile:device:prod:release
 ```
 
@@ -58,7 +58,7 @@ Everything below is for app developers — you can ignore the rest if you only w
 
 `dev:*` runs Metro only — assumes the matching variant is already installed. `ios:mobile*` / `android:mobile*` do a full native rebuild + install.
 
-Bundle id and display name switch on `APP_ENV` (see `app.config.ts`), so Dev / Staging / Production variants can coexist on the same device or simulator.
+Display name switches on `APP_ENV` (see `app.config.ts`); the bundle id is the same `ai.multica.mobile` in every environment, so installing one variant replaces the other.
 
 ## First-time setup
 
@@ -69,7 +69,7 @@ cp apps/mobile/.env.example apps/mobile/.env.development.local
 # then edit EXPO_PUBLIC_API_URL inside it to your Mac's LAN IP, e.g. http://192.168.1.42:8080
 ```
 
-If your Apple ID isn't on the Multica Apple Developer team yet, also uncomment and set `EXPO_BUNDLE_IDENTIFIER_DEV` to a reverse-domain you own (e.g. `com.yourname.multica.dev`). This **only** overrides the dev variant — staging / production bundle ids are intentionally not overridable so variants can coexist.
+If your Apple ID isn't on the Multica Apple Developer team yet, also set `EXPO_BUNDLE_IDENTIFIER` to a reverse-domain you own (e.g. `com.yourname.multica`). All environments share one bundle id, so the override applies to every build.
 
 If your Apple ID belongs to more than one Apple Developer team, also set `EXPO_APPLE_TEAM_ID` to the team that should sign your builds. Unlike the bundle id overrides it applies to every variant, and it is re-applied on each run — so it also fixes a checkout that has already latched onto the wrong team.
 
@@ -231,15 +231,9 @@ Builds are signed with **APK Signature Scheme v2 + v3**; v1 (JAR signing) is off
 
 ### Package names
 
-Same per-variant scheme as iOS, so dev / staging / production coexist on one device:
+One package name for every environment: `ai.multica.mobile`. Variants differ only in backend configuration and the desktop label (`Multica` / `Multica (Staging)` / `Multica (Dev)`), so installing one replaces the other instead of coexisting.
 
-| Variant | Package | Label |
-|---|---|---|
-| development | `ai.multica.mobile.dev` | Multica (Dev) |
-| staging | `ai.multica.mobile.staging` | Multica (Staging) |
-| production | `ai.multica.mobile` | Multica |
-
-Building a personal copy under a namespace you own? Override with `EXPO_ANDROID_PACKAGE_DEV` / `EXPO_ANDROID_PACKAGE_PROD`. Unlike iOS there's no provisioning profile forcing your hand — the override exists for parity and for anyone publishing their own fork.
+Building a personal copy under a namespace you own? Override with `EXPO_ANDROID_PACKAGE`. Unlike iOS there's no provisioning profile forcing your hand — the override exists for parity and for anyone publishing their own fork.
 
 ## Pointing at a different backend
 
