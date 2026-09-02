@@ -889,6 +889,26 @@
       "cancel_title": "task를 취소할까요?",
       "cancel_body": "에이전트가 현재 단계를 마친 후 중지됩니다."
     },
+    "run_detail": {
+      "title": "실행 상세",
+      "copy": "복사",
+      "copied": "복사됨",
+      "copy_all": "전체 복사",
+      "loading": "불러오는 중…",
+      "took": "소요 시간 {{duration}}",
+      "started_at": "시작",
+      "completed_at": "종료",
+      "failure_heading": "실패 이유",
+      "cancel_reason_heading": "취소 이유",
+      "cancelled_by_system": "시스템에 의해 취소됨",
+      "timeline_heading": "타임라인",
+      "outcome_files_other": "파일 {{count}}개",
+      "outcome_commands_other": "명령 {{count}}개",
+      "result_label": "결과",
+      "truncated": "…(잘림)",
+      "empty": "이 실행에 기록된 이벤트가 없습니다.",
+      "empty_queued": "아직 시작하지 않은 실행입니다."
+    },
     "list": {
       "load_failed": "태스크를 불러오지 못했습니다: {{reason}}",
       "empty_all": "이 워크스페이스에는 태스크가 없습니다.",
