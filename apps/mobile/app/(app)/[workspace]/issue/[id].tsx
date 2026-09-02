@@ -121,7 +121,8 @@ export default function IssueDetail() {
   const createPin = useCreatePin();
   const deletePin = useDeletePin();
 
-  // Three-dot menu: Pin/Unpin / Edit details / Copy link / Open on web / Delete.
+  // Three-dot menu: Pin/Unpin / Edit details / Copy link / Open on web /
+  // Related PRs / Delete.
   // Cross-platform: uses @rn-primitives DropdownMenu (pure JS, no native deps).
   const issueLink = issue && wsSlug
     ? `${getWebUrl()}/${wsSlug}/issue/${issue.identifier}`
@@ -143,6 +144,13 @@ export default function IssueDetail() {
   const onOpenOnWeb = useCallback(() => {
     if (issueLink) Linking.openURL(issueLink);
   }, [issueLink]);
+  // Related PRs (RUYI-43) — mobile counterpart of the web sidebar's
+  // "Pull requests" section (same endpoint, data/queries/github.ts).
+  const onOpenPullRequests = useCallback(() => {
+    if (wsSlug && issue) {
+      router.push(`/${wsSlug}/issue/${issue.id}/pull-requests`);
+    }
+  }, [wsSlug, issue]);
   const onDelete = useCallback(() => {
     if (!issue) return;
     confirmDelete(issue, () =>
@@ -218,6 +226,14 @@ export default function IssueDetail() {
                         <DropdownMenuItem onPress={onOpenOnWeb}>
                           <Text>
                             {t("mobile.detail.open_on_web", "Open on web")}
+                          </Text>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onPress={onOpenPullRequests}>
+                          <Text>
+                            {t(
+                              "detail.section_pull_requests",
+                              "Pull requests",
+                            )}
                           </Text>
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
