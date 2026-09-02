@@ -54,6 +54,9 @@ function workspaceScoped(slug: string) {
     skills: () => `${ws}/skills`,
     skillDetail: (id: string) => `${ws}/skills/${encode(id)}`,
     settings: () => `${ws}/settings`,
+    /** Instance-level admin area (RUYI-47); data is global, the URL rides
+     *  the workspace tab architecture like /settings does. */
+    admin: () => `${ws}/admin`,
     attachmentPreview: (id: string) => `${ws}/attachments/${encode(id)}/preview`,
   };
 }

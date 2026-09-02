@@ -19,7 +19,10 @@ const (
 // teardown. Adding a table requires an explicit ownership decision here; the
 // handler deletion graph must then implement that decision before CI passes.
 var workspaceDeletionManifest = map[string]workspaceDeleteAction{
-	"activity_log":                    workspaceDelete,
+	"activity_log": workspaceDelete,
+	// Instance-level admin audit trail (RUYI-47): audit history survives
+	// workspace teardown; rows reference the deleted workspace by id only.
+	"admin_audit_log":                 workspaceDeleteKeep,
 	"agent":                           workspaceDelete,
 	"agent_builder_draft":             workspaceDelete,
 	"agent_invocation_target":         workspaceDelete,

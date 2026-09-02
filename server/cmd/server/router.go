@@ -341,6 +341,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		AllowSignup:              os.Getenv("ALLOW_SIGNUP") != "false",
 		AllowedEmails:            splitAndTrim(os.Getenv("ALLOWED_EMAILS")),
 		AllowedEmailDomains:      splitAndTrim(os.Getenv("ALLOWED_EMAIL_DOMAINS")),
+		SuperAdminEmails:         splitAndTrim(os.Getenv("SUPER_ADMIN_EMAILS")),
 		DisableWorkspaceCreation: os.Getenv("DISABLE_WORKSPACE_CREATION") == "true",
 		VCSIntegrationEnabled:    os.Getenv("MULTICA_VCS_INTEGRATION_ENABLED") == "true",
 		PublicURL:                strings.TrimRight(strings.TrimSpace(os.Getenv("MULTICA_PUBLIC_URL")), "/"),
@@ -1121,6 +1122,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	h.PATCache = patCache
 	h.DaemonTokenCache = daemonTokenCache
 	h.MembershipCache = auth.NewMembershipCache(rdb)
+	// UserStateCache fronts the persisted disabled flag (RUYI-47) for
+	// every auth path. userDisabledLookup is the production
+	// auth.DisabledLookup shared by Auth, DaemonAuth, and the realtime
+	// WebSocket handshake, so one disable write cuts off all of them
+	// within UserStateCacheTTL.
+	userStateCache := auth.NewUserStateCache(rdb)
+	h.UserStateCache = userStateCache
+	userDisabledLookup := middleware.NewDisabledLookup(queries, userStateCache)
 
 	// Cloud PAT verifier: validates mcn_ tokens against Multica Cloud
 	// Fleet. Returns nil when no Fleet URL is configured — the Auth /
@@ -1203,7 +1212,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		return util.UUIDToString(ws.ID), nil
 	})
 	r.Get("/ws", func(w http.ResponseWriter, r *http.Request) {
-		realtime.HandleWebSocket(hub, mc, pr, slugResolver, w, r)
+		realtime.HandleWebSocket(hub, mc, pr, slugResolver, userDisabledLookup, w, r)
 	})
 
 	// Local file serving (when using local storage). Served through the
@@ -1293,7 +1302,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 	// Daemon API routes (require daemon token or valid user token)
 	r.Route("/api/daemon", func(r chi.Router) {
-		r.Use(middleware.DaemonAuth(queries, patCache, daemonTokenCache, cloudPATVerifier))
+		r.Use(middleware.DaemonAuth(queries, patCache, daemonTokenCache, cloudPATVerifier, userDisabledLookup))
 
 		r.Post("/register", h.DaemonRegister)
 		r.Post("/deregister", h.DaemonDeregister)
@@ -1362,7 +1371,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	//
 	// The workspace always comes from the installation, never from the client.
 	r.Group(func(r chi.Router) {
-		r.Use(middleware.PluginAuth(middleware.Auth(queries, patCache, cloudPATVerifier)))
+		r.Use(middleware.PluginAuth(middleware.Auth(queries, patCache, cloudPATVerifier, userDisabledLookup)))
 		r.Route("/api/v1/plugin", func(r chi.Router) {
 			r.Get("/context", h.GetPluginContext)
 			r.Get("/issues/{id}", h.GetPluginIssue)
@@ -1380,7 +1389,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	})
 
 	r.Group(func(r chi.Router) {
-		r.Use(middleware.Auth(queries, patCache, cloudPATVerifier))
+		r.Use(middleware.Auth(queries, patCache, cloudPATVerifier, userDisabledLookup))
 		r.Use(middleware.RefreshCloudFrontCookies(cfSigner))
 
 		// Plugin Action API. Called by the HOST PAGE on the signed-in user's
@@ -1406,6 +1415,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/api/me/onboarding/runtime-bootstrap", h.BootstrapOnboardingRuntime)
 		r.Post("/api/me/onboarding/no-runtime-bootstrap", h.BootstrapOnboardingNoRuntime)
 		r.Post("/api/cli-token", h.IssueCliToken)
+		// Impersonation exit. Deliberately OUTSIDE the /api/admin group:
+		// the caller authenticates as the impersonated user via the
+		// shadow JWT, and the handler re-mints the impersonator's own
+		// login token after re-reading their (still enabled, still
+		// super-admin) row. RequireSuperAdmin would check the wrong
+		// identity.
+		r.Post("/api/impersonation/stop", h.StopImpersonation)
 		r.Post("/api/upload-file", h.UploadFile)
 		r.Post("/api/feedback", h.CreateFeedback)
 		r.With(handler.RequireHumanActor).Post("/api/client-usage", h.UpsertClientUsage)
@@ -1429,6 +1445,20 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// because they are JSON-API consumers that always have
 		// workspace context.
 		r.Get("/api/attachments/{id}/download", h.DownloadAttachment)
+
+		// Instance-level admin area (RUYI-47). RequireSuperAdmin
+		// re-reads is_super_admin/disabled_at from the DB on every
+		// request — role authorization never rides the user-state
+		// cache — and rejects impersonation sessions outright.
+		r.Route("/api/admin", func(r chi.Router) {
+			r.Use(middleware.RequireSuperAdmin(queries))
+			r.Get("/users", h.AdminListUsers)
+			r.Patch("/users/{id}/disabled", h.AdminSetUserDisabled)
+			r.Patch("/users/{id}/super-admin", h.AdminSetUserSuperAdmin)
+			r.Post("/users/{id}/impersonate", h.AdminImpersonate)
+			r.Get("/workspaces", h.AdminListWorkspaces)
+			r.Post("/workspaces/{id}/members", h.AdminAddWorkspaceMember)
+		})
 
 		r.Route("/api/workspaces", func(r chi.Router) {
 			r.Get("/", h.ListWorkspaces)
