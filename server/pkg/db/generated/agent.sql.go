@@ -107,6 +107,34 @@ func (q *Queries) AcknowledgeExhaustedDelegatedFailureRecovery(ctx context.Conte
 	return i, err
 }
 
+const appendDeliveredCommentIds = `-- name: AppendDeliveredCommentIds :one
+UPDATE agent_task_queue
+SET delivered_comment_ids = (
+        SELECT COALESCE(array_agg(DISTINCT e), '{}')
+        FROM unnest(array_cat(delivered_comment_ids, $1::uuid[])) AS e
+        WHERE e IS NOT NULL
+    )
+WHERE id = $2::uuid
+  AND status IN ('dispatched', 'running', 'waiting_local_directory')
+RETURNING delivered_comment_ids
+`
+
+type AppendDeliveredCommentIdsParams struct {
+	CommentIds []pgtype.UUID `json:"comment_ids"`
+	TaskID     pgtype.UUID   `json:"task_id"`
+}
+
+// Fold consumed queued messages into the running task's claim receipt so
+// reconcileCommentsOnCompletion treats them as delivered. The status guard
+// re-checks activeness inside the statement: a task that went terminal between
+// the transaction's row lock and this update must not gain receipts.
+func (q *Queries) AppendDeliveredCommentIds(ctx context.Context, arg AppendDeliveredCommentIdsParams) ([]pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, appendDeliveredCommentIds, arg.CommentIds, arg.TaskID)
+	var delivered_comment_ids []pgtype.UUID
+	err := row.Scan(&delivered_comment_ids)
+	return delivered_comment_ids, err
+}
+
 const archiveAgent = `-- name: ArchiveAgent :one
 UPDATE agent SET archived_at = now(), archived_by = $2, updated_at = now()
 WHERE id = $1
@@ -2070,6 +2098,127 @@ func (q *Queries) CompleteAgentTask(ctx context.Context, arg CompleteAgentTaskPa
 		&i.ChannelContextRevision,
 	)
 	return i, err
+}
+
+const consumeQueuedTasksForRunningTask = `-- name: ConsumeQueuedTasksForRunningTask :many
+UPDATE agent_task_queue
+SET status = 'cancelled',
+    completed_at = now(),
+    prepare_lease_expires_at = NULL,
+    error = $1,
+    failure_reason = $2,
+    parent_task_id = $3::uuid
+WHERE issue_id = $4::uuid
+  AND agent_id = $5::uuid
+  AND status = 'queued'
+  AND (
+      COALESCE($6::text, '') = ''
+      OR context->>'head_sha' = $6::text
+  )
+RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir
+`
+
+type ConsumeQueuedTasksForRunningTaskParams struct {
+	Error         pgtype.Text `json:"error"`
+	FailureReason pgtype.Text `json:"failure_reason"`
+	ParentTaskID  pgtype.UUID `json:"parent_task_id"`
+	IssueID       pgtype.UUID `json:"issue_id"`
+	AgentID       pgtype.UUID `json:"agent_id"`
+	HeadSha       pgtype.Text `json:"head_sha"`
+}
+
+// RUYI-48: release every same-(issue, agent) QUEUED task into the caller's
+// running task. The consuming task formally declares "this run has read and is
+// handling the queued messages", so the queued rows become cancelled (audit:
+// parent_task_id points at the consumer, failure_reason names the act) and the
+// caller appends their comments to its own delivered_comment_ids receipt, which
+// keeps reconcileCommentsOnCompletion from replaying them as a duplicate
+// follow-up run.
+//
+// Head-scoped exactly like MergeCommentIntoPendingTask (TEN-356): with a
+// non-empty consumer head_sha only same-head queued tasks are consumed, so an
+// old-HEAD run can never swallow a new-HEAD request. Empty/absent head (no
+// linked PR) consumes regardless of the queued task's head, preserving the
+// non-PR coalescing behavior.
+func (q *Queries) ConsumeQueuedTasksForRunningTask(ctx context.Context, arg ConsumeQueuedTasksForRunningTaskParams) ([]AgentTaskQueue, error) {
+	rows, err := q.db.Query(ctx, consumeQueuedTasksForRunningTask,
+		arg.Error,
+		arg.FailureReason,
+		arg.ParentTaskID,
+		arg.IssueID,
+		arg.AgentID,
+		arg.HeadSha,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []AgentTaskQueue{}
+	for rows.Next() {
+		var i AgentTaskQueue
+		if err := rows.Scan(
+			&i.ID,
+			&i.AgentID,
+			&i.IssueID,
+			&i.Status,
+			&i.Priority,
+			&i.DispatchedAt,
+			&i.StartedAt,
+			&i.CompletedAt,
+			&i.Result,
+			&i.Error,
+			&i.CreatedAt,
+			&i.Context,
+			&i.RuntimeID,
+			&i.SessionID,
+			&i.WorkDir,
+			&i.TriggerCommentID,
+			&i.ChatSessionID,
+			&i.AutopilotRunID,
+			&i.Attempt,
+			&i.MaxAttempts,
+			&i.ParentTaskID,
+			&i.FailureReason,
+			&i.TriggerSummary,
+			&i.ForceFreshSession,
+			&i.IsLeaderTask,
+			&i.WaitReason,
+			&i.InitiatorUserID,
+			&i.HandoffNote,
+			&i.PrepareLeaseExpiresAt,
+			&i.SquadID,
+			&i.RuntimeMcpOverlay,
+			&i.EscalationForTaskID,
+			&i.FireAt,
+			&i.OriginatorUserID,
+			&i.RuntimeConnectedApps,
+			&i.CoalescedCommentIds,
+			&i.DeliveredCommentIds,
+			&i.ChatInputTaskID,
+			&i.ChatFinalizeDeferredAt,
+			&i.OriginatorSource,
+			&i.DelegatedFromTaskID,
+			&i.RetryOfTaskID,
+			&i.RerunOfTaskID,
+			&i.RuleVersionID,
+			&i.TriggerEvidenceKind,
+			&i.TriggerEvidenceRefID,
+			&i.AccountableUserID,
+			&i.SessionRolloutMissing,
+			&i.RetiredSessionID,
+			&i.QuickActionsDisabled,
+			&i.RegenerateQuickActionsFor,
+			&i.BranchName,
+			&i.DurableWorkDir,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const countDelegatedFailureRecoveryTasks = `-- name: CountDelegatedFailureRecoveryTasks :one
@@ -4349,6 +4498,77 @@ func (q *Queries) GetAgentTaskForDelegatedFailureUpdate(ctx context.Context, id 
 		&i.BranchName,
 		&i.DurableWorkDir,
 		&i.ChannelContextRevision,
+	)
+	return i, err
+}
+
+const getAgentTaskForUpdate = `-- name: GetAgentTaskForUpdate :one
+SELECT id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir FROM agent_task_queue
+WHERE id = $1::uuid
+FOR UPDATE
+`
+
+// Row-locked load of one task. ConsumeQueuedTasksForRunningTask holds this lock
+// across the whole consumption transaction so a concurrent CompleteTask (which
+// flips the task terminal and then reconciles comments) serializes against the
+// consumption: whichever lands first wins, and the loser sees the settled state.
+func (q *Queries) GetAgentTaskForUpdate(ctx context.Context, taskID pgtype.UUID) (AgentTaskQueue, error) {
+	row := q.db.QueryRow(ctx, getAgentTaskForUpdate, taskID)
+	var i AgentTaskQueue
+	err := row.Scan(
+		&i.ID,
+		&i.AgentID,
+		&i.IssueID,
+		&i.Status,
+		&i.Priority,
+		&i.DispatchedAt,
+		&i.StartedAt,
+		&i.CompletedAt,
+		&i.Result,
+		&i.Error,
+		&i.CreatedAt,
+		&i.Context,
+		&i.RuntimeID,
+		&i.SessionID,
+		&i.WorkDir,
+		&i.TriggerCommentID,
+		&i.ChatSessionID,
+		&i.AutopilotRunID,
+		&i.Attempt,
+		&i.MaxAttempts,
+		&i.ParentTaskID,
+		&i.FailureReason,
+		&i.TriggerSummary,
+		&i.ForceFreshSession,
+		&i.IsLeaderTask,
+		&i.WaitReason,
+		&i.InitiatorUserID,
+		&i.HandoffNote,
+		&i.PrepareLeaseExpiresAt,
+		&i.SquadID,
+		&i.RuntimeMcpOverlay,
+		&i.EscalationForTaskID,
+		&i.FireAt,
+		&i.OriginatorUserID,
+		&i.RuntimeConnectedApps,
+		&i.CoalescedCommentIds,
+		&i.DeliveredCommentIds,
+		&i.ChatInputTaskID,
+		&i.ChatFinalizeDeferredAt,
+		&i.OriginatorSource,
+		&i.DelegatedFromTaskID,
+		&i.RetryOfTaskID,
+		&i.RerunOfTaskID,
+		&i.RuleVersionID,
+		&i.TriggerEvidenceKind,
+		&i.TriggerEvidenceRefID,
+		&i.AccountableUserID,
+		&i.SessionRolloutMissing,
+		&i.RetiredSessionID,
+		&i.QuickActionsDisabled,
+		&i.RegenerateQuickActionsFor,
+		&i.BranchName,
+		&i.DurableWorkDir,
 	)
 	return i, err
 }

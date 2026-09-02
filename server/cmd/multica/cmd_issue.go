@@ -356,6 +356,17 @@ var issueCancelTaskCmd = &cobra.Command{
 	RunE: runIssueCancelTask,
 }
 
+var issueConsumeQueuedCmd = &cobra.Command{
+	Use:   "consume-queued <issue-id>",
+	Short: "Absorb the issue's queued agent tasks into the current running task",
+	Long: "Declares that THIS running task has read and is handling the issue's queued messages. " +
+		"Cancels the (issue, agent) queued task(s), folding their comments into the running " +
+		"task so they are not executed again after it completes. Only valid from inside an " +
+		"agent run (task-token credential); a no-op success when nothing is queued.",
+	Args: exactArgs(1),
+	RunE: runIssueConsumeQueued,
+}
+
 var issueSearchCmd = &cobra.Command{
 	Use:   "search <query>",
 	Short: "Search issues by title, description, or comments",
@@ -462,6 +473,7 @@ func init() {
 	issueCmd.AddCommand(issueUsageCmd)
 	issueCmd.AddCommand(issueRerunCmd)
 	issueCmd.AddCommand(issueCancelTaskCmd)
+	issueCmd.AddCommand(issueConsumeQueuedCmd)
 	issueCmd.AddCommand(issueSearchCmd)
 
 	issueCommentCmd.AddCommand(issueCommentListCmd)
@@ -572,6 +584,9 @@ func init() {
 
 	// issue rerun
 	issueRerunCmd.Flags().String("output", "json", "Output format: table or json")
+	// issue consume-queued
+	issueConsumeQueuedCmd.Flags().String("output", "json", "Output format: table or json")
+
 	// issue cancel-task
 	issueCancelTaskCmd.Flags().String("output", "json", "Output format: table or json")
 	issueCancelTaskCmd.Flags().String("issue", "", "Issue ID/key to scope short task ID prefix resolution")
@@ -2291,6 +2306,44 @@ func runIssueRunMessages(cmd *cobra.Command, args []string) error {
 // ---------------------------------------------------------------------------
 // Search command
 // ---------------------------------------------------------------------------
+
+// runIssueConsumeQueued calls POST /api/issues/{id}/consume-queued-tasks with
+// the caller's own credential. Inside an agent run that credential is the
+// claim-minted mat_ task token, whose (agent, task) binding the server
+// resolves; the endpoint refuses any other credential shape.
+func runIssueConsumeQueued(cmd *cobra.Command, args []string) error {
+	client, err := newAPIClient(cmd)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := cli.APIContext(context.Background())
+	defer cancel()
+
+	issueRef, err := resolveIssueRef(ctx, client, args[0])
+	if err != nil {
+		return fmt.Errorf("resolve issue: %w", err)
+	}
+
+	var result struct {
+		ConsumedTasks []struct {
+			ID     string `json:"id"`
+			Status string `json:"status"`
+		} `json:"consumed_tasks"`
+		ConsumedCommentIDs []string `json:"consumed_comment_ids"`
+	}
+	if err := client.PostJSON(ctx, "/api/issues/"+url.PathEscape(issueRef.ID)+"/consume-queued-tasks", map[string]any{}, &result); err != nil {
+		return fmt.Errorf("consume queued tasks: %w", err)
+	}
+
+	output, _ := cmd.Flags().GetString("output")
+	if output == "json" {
+		return cli.PrintJSON(os.Stdout, result)
+	}
+	fmt.Fprintf(os.Stdout, "Consumed %d queued task(s), %d comment(s) folded into the current run\n",
+		len(result.ConsumedTasks), len(result.ConsumedCommentIDs))
+	return nil
+}
 
 func runIssueRerun(cmd *cobra.Command, args []string) error {
 	client, err := newAPIClient(cmd)
