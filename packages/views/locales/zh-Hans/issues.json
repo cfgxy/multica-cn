@@ -903,7 +903,8 @@
       "comments_search_placeholder": "按作者或正文筛选…",
       "comments_empty": "还没有评论。",
       "comments_no_match": "没有匹配的评论。",
-      "comments_open_a11y": "浏览评论"
+      "comments_open_a11y": "浏览评论",
+      "pull_request_open_failed": "无法打开这个 PR。"
     },
     "picker": {
       "unassigned": "未指派",

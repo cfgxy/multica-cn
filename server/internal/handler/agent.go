@@ -411,6 +411,7 @@ type AgentTaskResponse struct {
 	ProjectID            string                 `json:"project_id,omitempty"`          // issue's project, when present
 	ProjectTitle         string                 `json:"project_title,omitempty"`       // for surfacing in agent context
 	ProjectDescription   string                 `json:"project_description,omitempty"` // durable project-level context injected into the brief
+	ProjectInstructions  string                 `json:"project_instructions,omitempty"` // per-project agent instructions injected after Workspace Context (RUYI-46). Mirror field: internal/daemon/types.go, same JSON name
 	ProjectResources     []ProjectResourceData  `json:"project_resources,omitempty"`   // resources attached to the project
 	CreatedAt            string                 `json:"created_at"`
 	PriorSessionID       string                 `json:"prior_session_id,omitempty"` // session ID from a previous task on same issue

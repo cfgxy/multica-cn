@@ -16,9 +16,14 @@
  * Behavioral parity (apps/mobile/CLAUDE.md "Counts and visibility must agree"):
  * the N rendered here MUST equal the N web shows for the same user/workspace.
  */
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { countUnreadChatMessages } from "@multica/core/chat/unread";
-import { inboxListOptions } from "@/data/queries/inbox";
+import { unreadWorkspaceIds } from "@multica/core/inbox/unread";
+import {
+  inboxListOptions,
+  inboxUnreadSummaryOptions,
+} from "@/data/queries/inbox";
 import { chatSessionsOptions } from "@/data/queries/chat";
 import { deduplicateInboxItems } from "@/lib/inbox-display";
 
@@ -56,4 +61,27 @@ export function useChatUnreadMessageCount(
     select: (sessions) => countUnreadChatMessages(sessions),
   });
   return data ?? 0;
+}
+
+/**
+ * Set of workspace ids holding unread inbox items, for the switch-workspace
+ * sheet's per-workspace blue dot (RUYI-44). Consumes the same account-level
+ * summary endpoint as web's sidebar and derives the set with the SAME core
+ * predicate (`unreadWorkspaceIds` from @multica/core/inbox/unread — the
+ * shared definition web's switcher dropdown calls), so the platforms cannot
+ * disagree on which workspace shows a dot.
+ *
+ * `wsId` only gates fetching (the endpoint is account-level; web's call site
+ * gates the same way). Memoized on the summary reference — same shape as
+ * web's app-sidebar (`useMemo(() => unreadWorkspaceIds(unreadSummary),
+ * [unreadSummary])`) — so consumers can call `.has()` per row without
+ * re-deriving on every render.
+ */
+export function useWorkspaceUnreadIds(
+  wsId: string | null | undefined,
+): Set<string> {
+  const { data: unreadSummary = [] } = useQuery(
+    inboxUnreadSummaryOptions(wsId ?? null),
+  );
+  return useMemo(() => unreadWorkspaceIds(unreadSummary), [unreadSummary]);
 }
