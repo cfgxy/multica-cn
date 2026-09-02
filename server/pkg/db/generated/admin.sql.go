@@ -298,6 +298,51 @@ func (q *Queries) ListAllWorkspaces(ctx context.Context, arg ListAllWorkspacesPa
 	return items, nil
 }
 
+const listOpenImpersonationSessions = `-- name: ListOpenImpersonationSessions :many
+SELECT started.target_id, started.metadata->>'session_id' AS session_id
+FROM admin_audit_log AS started
+WHERE started.actor_id = $1
+  AND started.action = 'impersonation.start'
+  AND started.metadata->>'session_id' IS NOT NULL
+  AND (started.metadata->>'expires_at')::timestamptz > now()
+  AND NOT EXISTS (
+      SELECT 1 FROM admin_audit_log closed
+      WHERE closed.actor_id = started.actor_id
+        AND closed.action = 'impersonation.stop'
+        AND closed.metadata->>'session_id' = started.metadata->>'session_id'
+  )
+`
+
+type ListOpenImpersonationSessionsRow struct {
+	TargetID  pgtype.UUID `json:"target_id"`
+	SessionID interface{} `json:"session_id"`
+}
+
+// Impersonation sessions the given super admin opened and never closed
+// (no matching stop row) whose shadow token has not naturally expired.
+// Pairing rides the session_id both rows carry in metadata; the natural
+// expiry check reads the expires_at the start row stamped. Drives the
+// forced-termination audit written when the admin is disabled (P2-2).
+func (q *Queries) ListOpenImpersonationSessions(ctx context.Context, actorID pgtype.UUID) ([]ListOpenImpersonationSessionsRow, error) {
+	rows, err := q.db.Query(ctx, listOpenImpersonationSessions, actorID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListOpenImpersonationSessionsRow{}
+	for rows.Next() {
+		var i ListOpenImpersonationSessionsRow
+		if err := rows.Scan(&i.TargetID, &i.SessionID); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const revokeAllPersonalAccessTokensByUser = `-- name: RevokeAllPersonalAccessTokensByUser :many
 UPDATE personal_access_token
 SET revoked = TRUE

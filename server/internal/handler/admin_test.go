@@ -46,6 +46,48 @@ func setSuperAdminEmailsForTest(t *testing.T, emails []string) {
 	})
 }
 
+// latestImpersonationSessionID returns the session_id stamped in the most
+// recent impersonation.start row for (actorID, targetID).
+func latestImpersonationSessionID(t *testing.T, actorID, targetID string) string {
+	t.Helper()
+	var sid *string
+	dbfx.QueryRow(t,
+		`SELECT metadata->>'session_id' FROM admin_audit_log
+		 WHERE action = $1 AND actor_id::text = $2 AND target_id::text = $3
+		 ORDER BY created_at DESC, id DESC LIMIT 1`,
+		AuditActionImpersonateStart, actorID, targetID).Scan(&sid)
+	if sid == nil {
+		t.Fatal("impersonation.start row has no session_id in metadata")
+	}
+	return *sid
+}
+
+// countStopRowsWithSession counts impersonation.stop rows for (actorID,
+// targetID) carrying the given session_id.
+func countStopRowsWithSession(t *testing.T, actorID, targetID, sessionID string) int64 {
+	t.Helper()
+	var n int64
+	dbfx.QueryRow(t,
+		`SELECT count(*) FROM admin_audit_log
+		 WHERE action = $1 AND actor_id::text = $2 AND target_id::text = $3
+		   AND metadata->>'session_id' = $4`,
+		AuditActionImpersonateStop, actorID, targetID, sessionID).Scan(&n)
+	return n
+}
+
+// countForcedStopRows counts only FORCE-TERMINATED stop rows (the ones the
+// disable path writes, terminated_by=admin_disabled) for the session.
+func countForcedStopRows(t *testing.T, actorID, targetID, sessionID string) int64 {
+	t.Helper()
+	var n int64
+	dbfx.QueryRow(t,
+		`SELECT count(*) FROM admin_audit_log
+		 WHERE action = $1 AND actor_id::text = $2 AND target_id::text = $3
+		   AND metadata->>'session_id' = $4 AND metadata->>'terminated_by' = 'admin_disabled'`,
+		AuditActionImpersonateStop, actorID, targetID, sessionID).Scan(&n)
+	return n
+}
+
 func countAdminAuditRows(t *testing.T, action, actorID, targetID string) int64 {
 	t.Helper()
 	var n int64
@@ -271,6 +313,13 @@ func TestAdminImpersonate_IssuesShadowTokenAndAuditsStart(t *testing.T) {
 		t.Fatalf("shadow token TTL = %s, want %s", ttl, ImpersonationTokenTTL)
 	}
 
+	// P2-1: the login-style response must already carry impersonator_id so
+	// the client's applySession renders the identity-switch banner
+	// immediately, without waiting for a /api/me refresh.
+	if body.User.ImpersonatorID == nil || *body.User.ImpersonatorID != admin {
+		t.Fatalf("impersonate response user.impersonator_id = %v, want %s", body.User.ImpersonatorID, admin)
+	}
+
 	if n := countAdminAuditRows(t, AuditActionImpersonateStart, admin, target); n != 1 {
 		t.Fatalf("expected one impersonation.start audit row, got %d", n)
 	}
@@ -295,9 +344,17 @@ func TestStopImpersonation(t *testing.T) {
 	})
 
 	t.Run("re-mints the impersonator token and audits stop", func(t *testing.T) {
+		// Establish the open session first: the stop row pairs with the
+		// start row's session_id.
+		doImpersonate(t, admin, target)
+		startSID := latestImpersonationSessionID(t, admin, target)
+
 		req := newRequest("POST", "/api/impersonation/stop", nil)
 		req.Header.Set("X-User-ID", target)
 		req.Header.Set("X-Impersonator-ID", admin)
+		// The middleware relays the token's sid claim into this header;
+		// handler-level tests stub it the same way.
+		req.Header.Set("X-Impersonation-Session", startSID)
 		resp := testutil.Call(t, testHandler.StopImpersonation, req).Want(http.StatusOK)
 
 		var body LoginResponse
@@ -319,6 +376,11 @@ func TestStopImpersonation(t *testing.T) {
 
 		if n := countAdminAuditRows(t, AuditActionImpersonateStop, admin, target); n != 1 {
 			t.Fatalf("expected one impersonation.stop audit row, got %d", n)
+		}
+		// P2-2 pairing: the stop row must carry the session_id of the
+		// impersonation.start row it closes.
+		if n := countStopRowsWithSession(t, admin, target, startSID); n != 1 {
+			t.Fatalf("expected exactly one stop row paired with session %s, got %d", startSID, n)
 		}
 	})
 }
@@ -479,5 +541,114 @@ func TestDisabledUserRejectedOnLoginPath(t *testing.T) {
 	_, _, err := testHandler.findOrCreateUser(t.Context(), "login-disabled@test.local")
 	if err == nil || !strings.Contains(err.Error(), auth.UserDisabledError) {
 		t.Fatalf("expected disabled rejection, got %v", err)
+	}
+}
+
+// doImpersonate is a test helper that drives AdminImpersonate and returns
+// the shadow LoginResponse.
+func doImpersonate(t *testing.T, adminID, targetID string) LoginResponse {
+	t.Helper()
+	req := newRequest("POST", "/api/admin/users/"+targetID+"/impersonate", AdminImpersonateRequest{Reason: "session-fix"})
+	req = withURLParam(req, "id", targetID)
+	req.Header.Set("X-User-ID", adminID)
+	resp := testutil.Call(t, testHandler.AdminImpersonate, req).Want(http.StatusOK)
+	var body LoginResponse
+	resp.JSON(&body)
+	return body
+}
+
+func doDisable(t *testing.T, actorID, targetID string, disabled bool) {
+	t.Helper()
+	req := newRequest("PATCH", "/api/admin/users/"+targetID+"/disabled", AdminSetUserDisabledRequest{Disabled: disabled, Reason: "term-fix"})
+	req = withURLParam(req, "id", targetID)
+	req.Header.Set("X-User-ID", actorID)
+	testutil.Call(t, testHandler.AdminSetUserDisabled, req).Want(http.StatusOK)
+}
+
+// P2-2: disabling a super admin force-terminates their open impersonation
+// sessions; each open session must get an impersonation.stop audit row
+// (metadata.terminated_by = admin_disabled, session_id paired with its
+// start row) so the trail stays symmetric with normal start/stop.
+func TestAdminDisableSuperAdmin_WritesTerminationAuditForOpenSessions(t *testing.T) {
+	disabler := insertAdminTestUser(t, "admin-term-disabler@test.local", "Term Disabler", true)
+	terminator := insertAdminTestUser(t, "admin-term-admin@test.local", "Term Admin", true)
+	target := insertAdminTestUser(t, "admin-term-target@test.local", "Term Target", false)
+
+	body := doImpersonate(t, terminator, target)
+	sid := latestImpersonationSessionID(t, terminator, target)
+	if body.User.ImpersonatorID == nil {
+		t.Fatal("precondition: impersonate response must carry impersonator_id")
+	}
+
+	doDisable(t, disabler, terminator, true)
+
+	// The termination row impersonates the same actor/target pair as the
+	// start row, carries the session_id, and explains itself.
+	n := countStopRowsWithSession(t, terminator, target, sid)
+	if n != 1 {
+		t.Fatalf("expected exactly one forced impersonation.stop row for session %s, got %d", sid, n)
+	}
+	var terminatedBy *string
+	dbfx.QueryRow(t,
+		`SELECT metadata->>'terminated_by' FROM admin_audit_log
+		 WHERE action = $1 AND actor_id::text = $2 AND target_id::text = $3
+		   AND metadata->>'session_id' = $4`,
+		AuditActionImpersonateStop, terminator, target, sid).Scan(&terminatedBy)
+	if terminatedBy == nil || *terminatedBy != "admin_disabled" {
+		t.Fatalf("forced stop row terminated_by = %v, want admin_disabled", terminatedBy)
+	}
+
+	// Disabling again must not duplicate termination rows: the session is
+	// already closed by the first pass.
+	doDisable(t, disabler, terminator, false)
+	doDisable(t, disabler, terminator, true)
+	if n := countStopRowsWithSession(t, terminator, target, sid); n != 1 {
+		t.Fatalf("re-disable duplicated termination rows for session %s: got %d, want 1", sid, n)
+	}
+}
+
+// P2-2 scoping: closed sessions (normal stop) and naturally expired
+// sessions are NOT terminated again; only genuinely open sessions are.
+func TestAdminDisableSuperAdmin_SkipsClosedAndExpiredSessions(t *testing.T) {
+	disabler := insertAdminTestUser(t, "admin-scope-disabler@test.local", "Scope Disabler", true)
+	terminator := insertAdminTestUser(t, "admin-scope-admin@test.local", "Scope Admin", true)
+	closedTarget := insertAdminTestUser(t, "admin-scope-closed@test.local", "Scope Closed", false)
+	expiredTarget := insertAdminTestUser(t, "admin-scope-expired@test.local", "Scope Expired", false)
+	openTarget := insertAdminTestUser(t, "admin-scope-open@test.local", "Scope Open", false)
+
+	// Closed session: start + explicit stop (session header relayed the
+	// way the middleware does for a real shadow token).
+	doImpersonate(t, terminator, closedTarget)
+	closedSID := latestImpersonationSessionID(t, terminator, closedTarget)
+	stopReq := newRequest("POST", "/api/impersonation/stop", nil)
+	stopReq.Header.Set("X-User-ID", closedTarget)
+	stopReq.Header.Set("X-Impersonator-ID", terminator)
+	stopReq.Header.Set("X-Impersonation-Session", closedSID)
+	testutil.Call(t, testHandler.StopImpersonation, stopReq).Want(http.StatusOK)
+
+	// Expired session: start row backdated past its own expires_at.
+	doImpersonate(t, terminator, expiredTarget)
+	expiredSID := latestImpersonationSessionID(t, terminator, expiredTarget)
+	dbfx.Exec(t,
+		`UPDATE admin_audit_log SET metadata = jsonb_set(metadata, '{expires_at}', to_jsonb(to_char((now() - interval '1 hour') AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')))
+		 WHERE action = $1 AND actor_id::text = $2 AND target_id::text = $3 AND metadata->>'session_id' = $4`,
+		AuditActionImpersonateStart, terminator, expiredTarget, expiredSID)
+
+	// Open session: left in flight.
+	doImpersonate(t, terminator, openTarget)
+	openSID := latestImpersonationSessionID(t, terminator, openTarget)
+
+	doDisable(t, disabler, terminator, true)
+
+	// Only genuinely open sessions get forced-termination rows; the closed
+	// session keeps just its explicit stop, the expired one stays rowless.
+	if n := countForcedStopRows(t, terminator, closedTarget, closedSID); n != 0 {
+		t.Fatalf("closed session must not be terminated again, got %d forced rows", n)
+	}
+	if n := countForcedStopRows(t, terminator, expiredTarget, expiredSID); n != 0 {
+		t.Fatalf("expired session must not be terminated, got %d forced rows", n)
+	}
+	if n := countForcedStopRows(t, terminator, openTarget, openSID); n != 1 {
+		t.Fatalf("open session must be terminated exactly once, got %d forced rows", n)
 	}
 }
