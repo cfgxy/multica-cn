@@ -48,6 +48,17 @@
     "original_input": "元の入力",
     "retry_with_context": "コンテキストを保持して再試行",
     "edit_advanced": "詳細フォームで編集",
+    "fallback_title": "通知",
+    "unavailable": "この通知は利用できなくなりました。",
+    "close_notification": "通知を閉じる",
+    "billing_disabled": "このワークスペースでは請求情報の変更はできません。ワークスペースの管理者にご相談ください。",
+    "contact_admin": "ワークスペースの owner または admin に請求オプションの確認をご依頼ください。",
+    "review_billing_options": "請求オプションを確認",
+    "review_billing_on_web": "Multica の Web 版で請求オプションをご確認ください。",
+    "autopilot_quota_exceeded_body": "このワークスペースは現在の期間の自動化実行上限 {{limit}} 回に達しました。実行枠が {{resetAt}} にリセットされるまで、以降の自動化は開始されません。",
+    "autopilot_quota_body": "現在の期間の自動化実行 {{limit}} 回の上限に達したため、今回の実行は開始されませんでした。実行枠は {{resetAt}} にリセットされます。",
+    "autopilot_quota_body_named": "自動化「{{title}}」は、現在の期間の {{limit}} 回の実行上限に達したため開始されませんでした。実行枠は {{resetAt}} にリセットされます。",
+    "autopilot_quota_upgrade": "アップグレード方法を見る",
     "archive": "アーカイブ",
     "unarchive": "アーカイブ解除"
   },
@@ -70,7 +81,9 @@
     "reaction_added": "リアクションあり",
     "quick_create_done": "エージェントで作成",
     "quick_create_failed": "エージェントでの作成に失敗",
-    "quick_create_unconfirmed": "エージェントでの作成結果は未確認"
+    "quick_create_unconfirmed": "エージェントでの作成結果は未確認",
+    "autopilot_paused": "自動化を一時停止しました",
+    "autopilot_quota_exceeded": "自動化の実行上限に達しました"
   },
   "labels": {
     "set_status_to": "ステータスを変更:",
@@ -83,7 +96,8 @@
     "removed_due_date": "期限を削除",
     "reacted_to_comment": "あなたのコメントに {{emoji}} のリアクションをしました",
     "created_with_agent": "エージェントで作成: {{identifier}}",
-    "failed_with_detail": "失敗: {{detail}}"
+    "failed_with_detail": "失敗: {{detail}}",
+    "autopilot_quota_blocked": "上限に達したため実行をブロックしました"
   },
   "toasts": {
     "source_context_retry_started": "元のコンテキストで再試行を開始しました",
