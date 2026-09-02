@@ -261,6 +261,19 @@ export default function WorkspaceLayout() {
             presentation: "modal",
           }}
         />
+        {/* Related pull requests (RUYI-43) — full-page modal, same
+            container rationale as issue/[id]/comments above: a browse
+            surface with a back-stack entry, not a picker row. Title reuses
+            the existing web sidebar section key
+            `issues:detail.section_pull_requests` (en "Pull requests"),
+            already localized in every bundle. */}
+        <Stack.Screen
+          name="issue/[id]/pull-requests"
+          options={{
+            title: i18n.t("issues:detail.section_pull_requests", "Pull requests"),
+            presentation: "modal",
+          }}
+        />
         {/* Project-detail formSheet pickers. */}
         <Stack.Screen
           name="project/[id]/picker/status"
