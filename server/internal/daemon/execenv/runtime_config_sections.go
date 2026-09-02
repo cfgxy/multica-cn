@@ -45,7 +45,7 @@ func writeHeader(b *strings.Builder) {
 }
 
 // writeBackgroundTaskSafetySlim emits the Background Task Safety section
-// in its judgment form (MUL-5442): three paragraphs — the platform fact
+// in its judgment form (MUL-5442): four paragraphs — the platform fact
 // everything else derives from (turn exit is task-terminal, no wakeup
 // exists, never background-and-yield), the external-systems/CI boundary
 // with its single explicit-ask exception, and the persistent-service
@@ -101,6 +101,7 @@ func writeBackgroundTaskSafetySlim(b *strings.Builder) {
 	b.WriteString("Multica marks the task terminal the moment your top-level turn exits — any run-owned work still active is orphaned, its result lost, and the final comment you meant to post never sends. There is no background-completion wakeup, whatever a tool response promises. Never background-and-yield: collect required results inside foreground tool calls that block to completion, run unobservable work synchronously, and never end a turn \"standing by\" for something to finish — that message becomes your final output.\n\n")
 	b.WriteString("External systems triggered by your completed actions — CI, GitHub Actions after a successful push — are not run-owned: do not wait for them, and do not run `gh pr checks --watch`, `gh run watch`, or sleep/retry polls. A repo's merge gate (\"CI must be green before merge\") is NOT your delivery acceptance criteria. Deliver what you have — \"Local tests pass; CI running: <PR link>\" is a complete hand-off. The one exception: when the trigger comment or the issue's acceptance criteria explicitly ask for the CI result, collect it as ONE foreground blocking call (`gh pr checks <pr> --watch`) inside this same turn.\n\n")
 	b.WriteString("A user explicitly asking for a local service to stay available after the turn is a persistent service handoff, not background-and-yield — allowed only when the running service itself is the requested deliverable. Detach its lifecycle from this run first (durable logs, a recorded cleanup handle such as PID/profile), verify readiness, and reply with the URL, logs, and stop instructions. Without a supervisor, describe survival as best-effort, not guaranteed.\n\n")
+	b.WriteString("Never terminate `multica` or `multica.exe` by executable name: a long-lived matching process may be the workspace daemon. Cancel only the exact child PID you started, and before terminating it compare that PID with `multica daemon status --output json`; never kill it if it is the reported daemon PID.\n\n")
 }
 
 // writeAgentIdentity emits the Agent Identity heading and (optionally) the
@@ -189,6 +190,24 @@ func writeWorkspaceContext(b *strings.Builder, ctx TaskContextForEnv) {
 	}
 	b.WriteString("## Workspace Context\n\n")
 	b.WriteString(ctxText)
+	b.WriteString("\n\n")
+}
+
+// writeProjectInstructions emits the per-project agent instructions (RUYI-46)
+// the project lead set on the project detail page. Rendered immediately after
+// the workspace-level context so precedence reads top-down — workspace-wide
+// rules, then the active project's rules, then generic workflow — and before
+// Available Commands. Same storage/injection semantics as workspace.context:
+// plain text injected verbatim, empty (or whitespace-only) means the section
+// is not rendered at all. Instructions are set per project and never change
+// mid-run, so the section keeps the brief's byte-stability contract.
+func writeProjectInstructions(b *strings.Builder, ctx TaskContextForEnv) {
+	projText := strings.TrimRight(ctx.ProjectInstructions, " \t\r\n")
+	if projText == "" {
+		return
+	}
+	b.WriteString("## Project Instructions\n\n")
+	b.WriteString(projText)
 	b.WriteString("\n\n")
 }
 
@@ -894,6 +913,7 @@ func writeOutput(b *strings.Builder, kind taskKind, ctx TaskContextForEnv) {
 //	Comment Formatting    |    ✓    |   ✓    |     —     |      —       |  —
 //	Repositories          |    △    |   △    |     △     |      —       |  △
 //	Project Context       |    △    |   △    |     △     |      △       |  △
+//	Project Instructions  |    △    |   △    |     △     |      △       |  △
 //	Issue Metadata        |    ✓    |   ✓    |     —     |      —       |  —
 //	Instruction Precedence|    —    |   ✓    |     —     |      —       |  —
 //	Sub-issue Creation    |    ✓    |   ✓    |     —     |      —       |  —
@@ -902,9 +922,9 @@ func writeOutput(b *strings.Builder, kind taskKind, ctx TaskContextForEnv) {
 //	Attachments           |    ✓    |   ✓    |     —     |      —       |  —
 //
 // Always-on rows — Header, Background Task Safety, Agent Identity,
-// Requesting User, Task Initiator, Workspace Context, Connected Apps,
-// Workflow, Always Use CLI, Output — are shared by every kind and emitted
-// unconditionally (or gated by their own data preconditions).
+// Requesting User, Task Initiator, Workspace Context, Project Instructions,
+// Connected Apps, Workflow, Always Use CLI, Output — are shared by every kind
+// and emitted unconditionally (or gated by their own data preconditions).
 func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 	var b strings.Builder
 	kind := classifyTask(ctx)
@@ -918,6 +938,7 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 	writeAgentIdentity(&b, ctx)
 	writeRequestingUser(&b, ctx)
 	writeWorkspaceContext(&b, ctx)
+	writeProjectInstructions(&b, ctx)
 
 	switch kind {
 	case kindQuickCreate:

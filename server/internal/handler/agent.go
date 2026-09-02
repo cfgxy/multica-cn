@@ -411,6 +411,7 @@ type AgentTaskResponse struct {
 	ProjectID            string                 `json:"project_id,omitempty"`          // issue's project, when present
 	ProjectTitle         string                 `json:"project_title,omitempty"`       // for surfacing in agent context
 	ProjectDescription   string                 `json:"project_description,omitempty"` // durable project-level context injected into the brief
+	ProjectInstructions  string                 `json:"project_instructions,omitempty"` // per-project agent instructions injected after Workspace Context (RUYI-46). Mirror field: internal/daemon/types.go, same JSON name
 	ProjectResources     []ProjectResourceData  `json:"project_resources,omitempty"`   // resources attached to the project
 	CreatedAt            string                 `json:"created_at"`
 	PriorSessionID       string                 `json:"prior_session_id,omitempty"` // session ID from a previous task on same issue
@@ -2352,11 +2353,12 @@ func (h *Handler) ArchiveAgent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Cancel all pending/active tasks for this agent. Discard the returned
-	// rows here — the agent:archived event below already triggers a full
-	// active-tasks invalidation on every connected client, so per-task
-	// task:cancelled events would be redundant noise.
-	if cancelled, err := h.Queries.CancelAgentTasksByAgent(r.Context(), agent.ID); err != nil {
+	// Cancel all pending/active tasks for this agent. The cancel and its
+	// delegated-failure settlement commit together — a settlement issued after
+	// the cancel committed could never be repaired. Per-task task:cancelled
+	// events are still skipped: the agent:archived event below already triggers
+	// a full active-tasks invalidation on every connected client.
+	if cancelled, err := h.TaskService.CancelTasksForArchivedAgent(r.Context(), agent.ID); err != nil {
 		slog.Warn("cancel agent tasks on archive failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 	} else {
 		h.TaskService.CaptureCancelledTasks(r.Context(), cancelled)

@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   role: "admin",
   copyText: vi.fn(),
   deleteProject: vi.fn(),
+  updateProject: vi.fn(),
   getShareableUrl: vi.fn((path: string) => `https://app.example${path}`),
   push: vi.fn(),
   recordVisit: vi.fn(),
@@ -45,7 +46,7 @@ vi.mock("@multica/core/projects/queries", () => ({
 }));
 
 vi.mock("@multica/core/projects/mutations", () => ({
-  useUpdateProject: () => ({ mutate: vi.fn() }),
+  useUpdateProject: () => ({ mutate: mocks.updateProject }),
   useDeleteProject: () => ({ mutate: mocks.deleteProject }),
 }));
 
@@ -261,6 +262,7 @@ const PROJECT: Project = {
   workspace_id: "workspace-1",
   title: "Launch Plan",
   description: null,
+  instructions: null,
   icon: null,
   status: "in_progress",
   priority: "high",
@@ -297,6 +299,8 @@ beforeEach(() => {
   mocks.role = "admin";
   mocks.copyText.mockReset().mockResolvedValue(true);
   mocks.deleteProject.mockReset();
+  mocks.updateProject.mockReset();
+  PROJECT.instructions = null;
   mocks.getShareableUrl.mockClear();
   mocks.push.mockReset();
   mocks.recordVisit.mockReset();
@@ -354,5 +358,66 @@ describe("ProjectDetail project deletion", () => {
     expect(
       screen.queryByRole("button", { name: "Delete project" }),
     ).not.toBeInTheDocument();
+  });
+});
+
+describe("ProjectDetail agent instructions", () => {
+  it("hides the editing area while empty, offering only the add entry", async () => {
+    renderProjectDetail();
+
+    // Empty state: no textarea, no editing area — just the add button.
+    expect(
+      screen.queryByRole("textbox", { name: "Agent instructions" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Add agent instructions" }),
+    ).toBeInTheDocument();
+  });
+
+  it("opens the editing area from the add entry and saves on blur", async () => {
+    const user = userEvent.setup();
+    renderProjectDetail();
+
+    await user.click(screen.getByRole("button", { name: "Add agent instructions" }));
+
+    const editor = screen.getByRole("textbox", { name: "Agent instructions" });
+    await user.type(editor, "Always write Go.");
+
+    // The counter reflects the typed length.
+    expect(screen.getByText("16 / 32000")).toBeInTheDocument();
+
+    await user.tab(); // blur -> save
+
+    expect(mocks.updateProject).toHaveBeenCalledTimes(1);
+    expect(mocks.updateProject).toHaveBeenCalledWith(
+      expect.objectContaining({ instructions: "Always write Go." }),
+    );
+    // Saved value collapses the editing area back to empty state (project
+    // cache still null until invalidation) — the textarea goes away.
+    expect(
+      screen.queryByRole("textbox", { name: "Agent instructions" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("edits and saves existing instructions, distinguishing copy from description", async () => {
+    PROJECT.instructions = "Commit messages follow Conventional Commits.";
+    const user = userEvent.setup();
+    renderProjectDetail();
+
+    // Both sections are labelled distinctly.
+    expect(screen.getByText("Agent instructions")).toBeInTheDocument();
+    expect(screen.getByText("Description")).toBeInTheDocument();
+
+    await user.click(screen.getByText("Agent instructions"));
+    const editor = screen.getByRole("textbox", { name: "Agent instructions" });
+    expect(editor).toHaveValue("Commit messages follow Conventional Commits.");
+
+    await user.clear(editor);
+    await user.type(editor, "Updated rules.");
+    await user.tab();
+
+    expect(mocks.updateProject).toHaveBeenCalledWith(
+      expect.objectContaining({ instructions: "Updated rules." }),
+    );
   });
 });

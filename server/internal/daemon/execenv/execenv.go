@@ -160,6 +160,7 @@ type TaskContextForEnv struct {
 	ProjectID                     string                  // active project for this task, when present
 	ProjectTitle                  string                  // human-readable project title
 	ProjectDescription            string                  // durable project-level context, rendered into the brief's Project Context section
+	ProjectInstructions           string                  // per-project agent instructions, rendered into the brief's Project Instructions section right after Workspace Context (RUYI-46)
 	ProjectResources              []ProjectResourceForEnv // resources attached to the project
 	ChatSessionID                 string                  // non-empty for chat tasks
 	// ChatChannelType is the IM platform behind a chat session ("slack",
@@ -336,7 +337,7 @@ type Environment struct {
 	// GC reclaimed between turns, a switched Hermes profile and an operator's
 	// `rm` all mount cleanly onto nothing. The daemon reads THIS, not the store
 	// path, as the answer to "can a prior session id still resolve here?" — see
-	// gateResumeToReusedWorkdir.
+	// gateResumeToReachableSession.
 	HermesSessionHistoryPresent bool
 	// QwenpawWorkspace is the path to the per-task QwenPaw workspace directory
 	// (set only for the qwenpaw provider). It is populated with the bound skills
@@ -530,6 +531,9 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 		wtParams.EnvRoot = envRoot
 		wtParams.AgentName = params.AgentName
 		wtParams.TaskID = params.TaskID
+		wtParams.ConversationKey, wtParams.ConversationID = localWorktreeConversation(params)
+		wtParams.WorkspaceID = params.WorkspaceID
+		wtParams.AgentID = params.Task.AgentID
 		var err error
 		localWorktree, err = PrepareLocalWorktree(wtParams, logger)
 		if err != nil {

@@ -562,6 +562,7 @@ describe("ChatInput project context", () => {
     workspace_id: "ws-1",
     title: "Project Alpha",
     description: null,
+    instructions: null,
     icon: "📘",
     status: "planned",
     priority: "none",
