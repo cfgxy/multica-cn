@@ -4,6 +4,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -23,7 +24,9 @@ func TestAgentWebhookMaskSegmentIsFixedWidth(t *testing.T) {
 	if webhookURLMaskSegment != "••••••••••••" {
 		t.Fatalf("mask segment drifted: %q", webhookURLMaskSegment)
 	}
-	if strings.Contains(webhookURLMaskSegment, "awt_") || len(webhookURLMaskSegment) != 12 {
+	// Rune count, not len(): each bullet is 3 bytes in UTF-8 and the display
+	// contract is 12 characters.
+	if strings.Contains(webhookURLMaskSegment, "awt_") || utf8.RuneCountInString(webhookURLMaskSegment) != 12 {
 		t.Fatalf("mask must stay 12 fixed characters: %q", webhookURLMaskSegment)
 	}
 }

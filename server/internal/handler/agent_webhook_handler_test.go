@@ -275,10 +275,9 @@ func TestAgentWebhookCRUD_ManagerLifecycleAndTokenPolicy(t *testing.T) {
 
 	// Update must keep the token; only name/prompt move.
 	w = httptest.NewRecorder()
-	req = withURLParam(newRequest("PUT", "/api/agents/"+agentID+"/webhooks/"+created.ID, map[string]any{
+	req = withURLParams(newRequest("PUT", "/api/agents/"+agentID+"/webhooks/"+created.ID, map[string]any{
 		"name": "renamed", "prompt": "new prompt",
-	}), "id", agentID)
-	req = withURLParam(req, "webhookId", created.ID)
+	}), "id", agentID, "webhookId", created.ID)
 	testHandler.UpdateAgentWebhook(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("update: expected 200, got %d body=%s", w.Code, w.Body.String())
@@ -296,10 +295,9 @@ func TestAgentWebhookCRUD_ManagerLifecycleAndTokenPolicy(t *testing.T) {
 
 	// Disable stops the ingress.
 	w = httptest.NewRecorder()
-	req = withURLParam(newRequest("PUT", "/api/agents/"+agentID+"/webhooks/"+created.ID+"/enabled", map[string]any{
+	req = withURLParams(newRequest("PUT", "/api/agents/"+agentID+"/webhooks/"+created.ID+"/enabled", map[string]any{
 		"enabled": false,
-	}), "id", agentID)
-	req = withURLParam(req, "webhookId", created.ID)
+	}), "id", agentID, "webhookId", created.ID)
 	testHandler.SetAgentWebhookEnabled(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("disable: expected 200, got %d body=%s", w.Code, w.Body.String())
@@ -311,8 +309,7 @@ func TestAgentWebhookCRUD_ManagerLifecycleAndTokenPolicy(t *testing.T) {
 
 	// Delete removes the credential: the URL is dead afterwards.
 	w = httptest.NewRecorder()
-	req = withURLParam(newRequest("DELETE", "/api/agents/"+agentID+"/webhooks/"+created.ID, nil), "id", agentID)
-	req = withURLParam(req, "webhookId", created.ID)
+	req = withURLParams(newRequest("DELETE", "/api/agents/"+agentID+"/webhooks/"+created.ID, nil), "id", agentID, "webhookId", created.ID)
 	testHandler.DeleteAgentWebhook(w, req)
 	if w.Code != http.StatusOK {
 		t.Fatalf("delete: expected 200, got %d body=%s", w.Code, w.Body.String())
@@ -373,8 +370,7 @@ func TestAgentWebhookCRUD_NonManagerSeesNoCredential(t *testing.T) {
 		{"DELETE", "/api/agents/" + agentID + "/webhooks/" + uuidToString(row.ID), nil, func(w *httptest.ResponseRecorder, r *http.Request) { testHandler.DeleteAgentWebhook(w, r) }},
 	} {
 		w := httptest.NewRecorder()
-		req := withURLParam(newRequestAs(memberID, tc.method, tc.path, tc.body), "id", agentID)
-		req = withURLParam(req, "webhookId", uuidToString(row.ID))
+		req := withURLParams(newRequestAs(memberID, tc.method, tc.path, tc.body), "id", agentID, "webhookId", uuidToString(row.ID))
 		tc.handler(w, req)
 		if w.Code != http.StatusForbidden {
 			t.Fatalf("%s %s as member: expected 403, got %d body=%s", tc.method, tc.path, w.Code, w.Body.String())
