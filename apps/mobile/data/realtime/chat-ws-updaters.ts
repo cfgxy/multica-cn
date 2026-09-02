@@ -35,32 +35,66 @@ import type {
   TaskQueuedPayload,
   TaskDispatchPayload,
 } from "@multica/core/types";
-import { chatKeys } from "@/data/queries/chat";
+import { chatKeys, sortChatSessions } from "@/data/queries/chat";
 
 // =====================================================
 // Sessions list (ChatSession[] keyed by wsId)
 // =====================================================
 
-export function patchSessionListAfterRename(
+/**
+ * Patch the cached sessions row for a `chat:session_updated` event (rename,
+ * pin/unpin, archive/unarchive from any tab/device) instead of refetching the
+ * whole list. Mirrors web's `applyChatSessionUpdatedToCache` in
+ * packages/core/realtime/use-realtime-sync.ts.
+ *
+ * `pinned` is present only on pin/unpin events and `status` only on
+ * archive/unarchive; a plain rename omits both, so absent fields leave
+ * existing state untouched. When either changes we re-sort (mirror of
+ * sortChatSessions in data/queries/chat.ts) so the row lands in the right
+ * place (pin → top; archive boundary) like the server order.
+ *
+ * Archiving MUST also zero the row's unread here: the payload carries only
+ * status/updated_at and chatSessionsOptions is `staleTime: Infinity`, so a
+ * stale cache would otherwise keep an archived session's unread badge lit
+ * forever (the MUL-4360 stuck-badge class). Unarchive does NOT fabricate a
+ * count — the true unread state comes back from the server refetch
+ * (last_read_at is untouched).
+ *
+ * `project_id` (web also patches it from this event) is deliberately not
+ * mirrored: mobile renders no chat project-context chip, so there is no
+ * consumer for the field.
+ */
+export function applyChatSessionUpdatedToCache(
   qc: QueryClient,
   wsId: string | null,
   payload: {
     chat_session_id: string;
     title?: string;
+    pinned?: boolean;
+    status?: "active" | "archived";
     updated_at?: string;
   },
 ) {
-  qc.setQueryData<ChatSession[]>(chatKeys.sessions(wsId), (old) =>
-    old?.map((s) =>
+  qc.setQueryData<ChatSession[]>(chatKeys.sessions(wsId), (old) => {
+    if (!old) return old;
+    const next = old.map((s) =>
       s.id === payload.chat_session_id
         ? {
             ...s,
             title: payload.title ?? s.title,
+            pinned: payload.pinned ?? s.pinned,
+            status: payload.status ?? s.status,
             updated_at: payload.updated_at ?? s.updated_at,
+            ...(payload.status === "archived"
+              ? { unread_count: 0, has_unread: false }
+              : {}),
           }
         : s,
-    ),
-  );
+    );
+    return payload.pinned === undefined && payload.status === undefined
+      ? next
+      : sortChatSessions(next);
+  });
 }
 
 export function dropSessionFromList(
