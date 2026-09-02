@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5"
@@ -20,16 +21,23 @@ import (
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
+// maxProjectInstructionsLen caps the per-project agent instructions (RUYI-46).
+// The value is injected verbatim into every task brief in the project, so an
+// unbounded field would let one project inflate every related run's prompt.
+// Counted in runes to match the frontend counter's notion of "characters".
+const maxProjectInstructionsLen = 32000
+
 type ProjectResponse struct {
-	ID          string  `json:"id"`
-	WorkspaceID string  `json:"workspace_id"`
-	Title       string  `json:"title"`
-	Description *string `json:"description"`
-	Icon        *string `json:"icon"`
-	Status      string  `json:"status"`
-	Priority    string  `json:"priority"`
-	LeadType    *string `json:"lead_type"`
-	LeadID      *string `json:"lead_id"`
+	ID           string  `json:"id"`
+	WorkspaceID  string  `json:"workspace_id"`
+	Title        string  `json:"title"`
+	Description  *string `json:"description"`
+	Instructions *string `json:"instructions"`
+	Icon         *string `json:"icon"`
+	Status       string  `json:"status"`
+	Priority     string  `json:"priority"`
+	LeadType     *string `json:"lead_type"`
+	LeadID       *string `json:"lead_id"`
 	// StartDate / DueDate are calendar days ("YYYY-MM-DD"), no time-of-day or
 	// timezone — same contract as issue.start_date / issue.due_date.
 	StartDate  *string `json:"start_date"`
@@ -47,19 +55,20 @@ type ProjectResponse struct {
 
 func projectToResponse(p db.Project) ProjectResponse {
 	return ProjectResponse{
-		ID:          uuidToString(p.ID),
-		WorkspaceID: uuidToString(p.WorkspaceID),
-		Title:       p.Title,
-		Description: textToPtr(p.Description),
-		Icon:        textToPtr(p.Icon),
-		Status:      p.Status,
-		Priority:    p.Priority,
-		LeadType:    textToPtr(p.LeadType),
-		LeadID:      uuidToPtr(p.LeadID),
-		StartDate:   dateToPtr(p.StartDate),
-		DueDate:     dateToPtr(p.DueDate),
-		CreatedAt:   timestampToString(p.CreatedAt),
-		UpdatedAt:   timestampToString(p.UpdatedAt),
+		ID:           uuidToString(p.ID),
+		WorkspaceID:  uuidToString(p.WorkspaceID),
+		Title:        p.Title,
+		Description:  textToPtr(p.Description),
+		Instructions: textToPtr(p.Instructions),
+		Icon:         textToPtr(p.Icon),
+		Status:       p.Status,
+		Priority:     p.Priority,
+		LeadType:     textToPtr(p.LeadType),
+		LeadID:       uuidToPtr(p.LeadID),
+		StartDate:    dateToPtr(p.StartDate),
+		DueDate:      dateToPtr(p.DueDate),
+		CreatedAt:    timestampToString(p.CreatedAt),
+		UpdatedAt:    timestampToString(p.UpdatedAt),
 	}
 }
 
@@ -80,16 +89,17 @@ func (h *Handler) loadProjectResourceCount(ctx context.Context, projectID pgtype
 }
 
 type CreateProjectRequest struct {
-	Title       string                                `json:"title"`
-	Description *string                               `json:"description"`
-	Icon        *string                               `json:"icon"`
-	Status      string                                `json:"status"`
-	Priority    string                                `json:"priority"`
-	LeadType    *string                               `json:"lead_type"`
-	LeadID      *string                               `json:"lead_id"`
-	StartDate   *string                               `json:"start_date"`
-	DueDate     *string                               `json:"due_date"`
-	Resources   []CreateProjectResourceRequestPayload `json:"resources,omitempty"`
+	Title        string    `json:"title"`
+	Description  *string   `json:"description"`
+	Instructions *string   `json:"instructions"`
+	Icon         *string   `json:"icon"`
+	Status       string    `json:"status"`
+	Priority     string    `json:"priority"`
+	LeadType     *string   `json:"lead_type"`
+	LeadID       *string   `json:"lead_id"`
+	StartDate    *string   `json:"start_date"`
+	DueDate      *string   `json:"due_date"`
+	Resources    []CreateProjectResourceRequestPayload `json:"resources,omitempty"`
 }
 
 // CreateProjectResourceRequestPayload mirrors CreateProjectResourceRequest but
@@ -103,15 +113,30 @@ type CreateProjectResourceRequestPayload struct {
 }
 
 type UpdateProjectRequest struct {
-	Title       *string `json:"title"`
-	Description *string `json:"description"`
-	Icon        *string `json:"icon"`
-	Status      *string `json:"status"`
-	Priority    *string `json:"priority"`
-	LeadType    *string `json:"lead_type"`
-	LeadID      *string `json:"lead_id"`
-	StartDate   *string `json:"start_date"`
-	DueDate     *string `json:"due_date"`
+	Title        *string `json:"title"`
+	Description  *string `json:"description"`
+	Instructions *string `json:"instructions"`
+	Icon         *string `json:"icon"`
+	Status       *string `json:"status"`
+	Priority     *string `json:"priority"`
+	LeadType     *string `json:"lead_type"`
+	LeadID       *string `json:"lead_id"`
+	StartDate    *string `json:"start_date"`
+	DueDate      *string `json:"due_date"`
+}
+
+// validateProjectInstructions enforces the 32,000-rune cap on the per-project
+// agent instructions. Runs before any DB work so an oversized value gets a
+// clean 400 in both the create and update paths.
+func validateProjectInstructions(w http.ResponseWriter, instructions *string) bool {
+	if instructions == nil {
+		return true
+	}
+	if utf8.RuneCountInString(*instructions) > maxProjectInstructionsLen {
+		writeError(w, http.StatusBadRequest, fmt.Sprintf("instructions exceeds the maximum length of %d characters", maxProjectInstructionsLen))
+		return false
+	}
+	return true
 }
 
 func (h *Handler) ListProjects(w http.ResponseWriter, r *http.Request) {
@@ -260,6 +285,9 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	if !validateProjectEnum(w, "priority", priority, validProjectPriorities) {
 		return
 	}
+	if !validateProjectInstructions(w, req.Instructions) {
+		return
+	}
 	var leadType pgtype.Text
 	var leadID pgtype.UUID
 	if req.LeadType != nil {
@@ -344,16 +372,17 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	createParams := db.CreateProjectParams{
-		WorkspaceID: wsUUID,
-		Title:       req.Title,
-		Description: ptrToText(req.Description),
-		Icon:        ptrToText(req.Icon),
-		Status:      status,
-		LeadType:    leadType,
-		LeadID:      leadID,
-		Priority:    priority,
-		StartDate:   startDate,
-		DueDate:     dueDate,
+		WorkspaceID:  wsUUID,
+		Title:        req.Title,
+		Description:  ptrToText(req.Description),
+		Instructions: ptrToText(req.Instructions),
+		Icon:         ptrToText(req.Icon),
+		Status:       status,
+		LeadType:     leadType,
+		LeadID:       leadID,
+		Priority:     priority,
+		StartDate:    startDate,
+		DueDate:      dueDate,
 	}
 
 	// Without resources, keep the simple non-tx path.
@@ -480,13 +509,14 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 	json.Unmarshal(bodyBytes, &rawFields)
 
 	params := db.UpdateProjectParams{
-		ID:          prevProject.ID,
-		Description: prevProject.Description,
-		Icon:        prevProject.Icon,
-		LeadType:    prevProject.LeadType,
-		LeadID:      prevProject.LeadID,
-		StartDate:   prevProject.StartDate,
-		DueDate:     prevProject.DueDate,
+		ID:           prevProject.ID,
+		Description:  prevProject.Description,
+		Instructions: prevProject.Instructions,
+		Icon:         prevProject.Icon,
+		LeadType:     prevProject.LeadType,
+		LeadID:       prevProject.LeadID,
+		StartDate:    prevProject.StartDate,
+		DueDate:      prevProject.DueDate,
 	}
 	if req.Title != nil {
 		params.Title = pgtype.Text{String: *req.Title, Valid: true}
@@ -502,6 +532,16 @@ func (h *Handler) UpdateProject(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		params.Priority = pgtype.Text{String: *req.Priority, Valid: true}
+	}
+	if _, ok := rawFields["instructions"]; ok {
+		if !validateProjectInstructions(w, req.Instructions) {
+			return
+		}
+		if req.Instructions != nil {
+			params.Instructions = pgtype.Text{String: *req.Instructions, Valid: true}
+		} else {
+			params.Instructions = pgtype.Text{Valid: false}
+		}
 	}
 	if _, ok := rawFields["description"]; ok {
 		if req.Description != nil {
