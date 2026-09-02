@@ -11,6 +11,7 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/logger"
@@ -271,6 +272,16 @@ func (h *Handler) AdminSetUserDisabled(w http.ResponseWriter, r *http.Request) {
 		pgtype.UUID{}, adminReason(req.Reason), map[string]any{
 			"target_email": target.Email,
 		})
+
+	// P2-2 forced termination: disabling a super admin kills their in-flight
+	// shadow sessions on the next request; write the closing audit rows here
+	// so the trail stays symmetric with normal start/stop. Rows carry
+	// terminated_by=admin_disabled and pair with their start row's
+	// session_id, tying them to this user.disable action. Closed and
+	// naturally expired sessions are skipped by the open-session query.
+	if req.Disabled && target.IsSuperAdmin {
+		h.terminateOpenImpersonationSessions(r, targetID)
+	}
 
 	updated, err := h.Queries.GetUser(r.Context(), targetID)
 	if err != nil {
@@ -580,13 +591,19 @@ func (h *Handler) AdminImpersonate(w http.ResponseWriter, r *http.Request) {
 	}
 
 	now := time.Now()
+	// sessionID pairs the audit rows (start + stop/termination) and rides
+	// the token as the sid claim so the stop endpoint closes exactly the
+	// session it belongs to.
+	sessionID := uuid.NewString()
+	expiresAt := now.Add(ImpersonationTokenTTL)
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub":   uuidToString(target.ID),
 		"email": target.Email,
 		"name":  target.Name,
 		"imp":   actorID,
+		"sid":   sessionID,
 		"iat":   now.Unix(),
-		"exp":   now.Add(ImpersonationTokenTTL).Unix(),
+		"exp":   expiresAt.Unix(),
 	})
 	tokenString, err := token.SignedString(auth.JWTSecret())
 	if err != nil {
@@ -601,7 +618,8 @@ func (h *Handler) AdminImpersonate(w http.ResponseWriter, r *http.Request) {
 
 	h.writeAdminAudit(r.Context(), actorID, AuditActionImpersonateStart, AuditTargetTypeUser, targetID,
 		pgtype.UUID{}, adminReason(req.Reason), map[string]any{
-			"expires_at": now.Add(ImpersonationTokenTTL).UTC().Format(time.RFC3339),
+			"session_id": sessionID,
+			"expires_at": expiresAt.UTC().Format(time.RFC3339),
 		})
 
 	slog.Info("impersonation session started",
@@ -610,9 +628,14 @@ func (h *Handler) AdminImpersonate(w http.ResponseWriter, r *http.Request) {
 			"target_id", uuidToString(target.ID),
 			"ttl_seconds", int(ImpersonationTokenTTL.Seconds()))...)
 
+	// P2-1: the response IS the new session — the client installs it with
+	// applySession without re-fetching /api/me, so impersonator_id must be
+	// present here for the identity-switch banner to render immediately.
+	resp := h.userToResponse(target)
+	resp.ImpersonatorID = &actorID
 	writeJSON(w, http.StatusOK, LoginResponse{
 		Token: tokenString,
-		User:  h.userToResponse(target),
+		User:  resp,
 	})
 }
 
@@ -656,11 +679,39 @@ func (h *Handler) StopImpersonation(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("failed to set auth cookies", "error", err)
 	}
 
+	stopMeta := map[string]any{}
+	if sessionID := r.Header.Get("X-Impersonation-Session"); sessionID != "" {
+		stopMeta["session_id"] = sessionID
+	}
 	h.writeAdminAudit(r.Context(), impersonatorID, AuditActionImpersonateStop, AuditTargetTypeUser,
-		parseUUID(targetID), pgtype.UUID{}, pgtype.Text{}, nil)
+		parseUUID(targetID), pgtype.UUID{}, pgtype.Text{}, stopMeta)
 
 	writeJSON(w, http.StatusOK, LoginResponse{
 		Token: tokenString,
 		User:  h.userToResponse(impersonator),
 	})
+}
+
+// terminateOpenImpersonationSessions writes an impersonation.stop audit row
+// for every open (unpaired, unexpired) session the disabled super admin had
+// started. Best-effort like all audit writes: failures are logged, never
+// mask the disable itself.
+func (h *Handler) terminateOpenImpersonationSessions(r *http.Request, adminID pgtype.UUID) {
+	sessions, err := h.Queries.ListOpenImpersonationSessions(r.Context(), adminID)
+	if err != nil {
+		slog.Warn("admin disable: listing open impersonation sessions failed",
+			append(logger.RequestAttrs(r), "error", err, "admin_id", uuidToString(adminID))...)
+		return
+	}
+	for _, session := range sessions {
+		h.writeAdminAudit(r.Context(), uuidToString(adminID), AuditActionImpersonateStop,
+			AuditTargetTypeUser, session.TargetID, pgtype.UUID{}, pgtype.Text{}, map[string]any{
+				"session_id":    session.SessionID,
+				"terminated_by": "admin_disabled",
+			})
+	}
+	if len(sessions) > 0 {
+		slog.Info("admin disable terminated open impersonation sessions",
+			append(logger.RequestAttrs(r), "admin_id", uuidToString(adminID), "sessions", len(sessions))...)
+	}
 }

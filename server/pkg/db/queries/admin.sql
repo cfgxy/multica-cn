@@ -105,6 +105,25 @@ SET revoked = TRUE
 WHERE user_id = $1 AND revoked = FALSE
 RETURNING token_hash;
 
+-- name: ListOpenImpersonationSessions :many
+-- Impersonation sessions the given super admin opened and never closed
+-- (no matching stop row) whose shadow token has not naturally expired.
+-- Pairing rides the session_id both rows carry in metadata; the natural
+-- expiry check reads the expires_at the start row stamped. Drives the
+-- forced-termination audit written when the admin is disabled (P2-2).
+SELECT started.target_id, started.metadata->>'session_id' AS session_id
+FROM admin_audit_log AS started
+WHERE started.actor_id = $1
+  AND started.action = 'impersonation.start'
+  AND started.metadata->>'session_id' IS NOT NULL
+  AND (started.metadata->>'expires_at')::timestamptz > now()
+  AND NOT EXISTS (
+      SELECT 1 FROM admin_audit_log closed
+      WHERE closed.actor_id = started.actor_id
+        AND closed.action = 'impersonation.stop'
+        AND closed.metadata->>'session_id' = started.metadata->>'session_id'
+  );
+
 -- name: CreateAdminAuditLog :exec
 -- One row per instance-level admin action and per impersonation
 -- session start/stop. Metadata carries action-specific context (e.g. the

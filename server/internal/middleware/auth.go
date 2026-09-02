@@ -57,6 +57,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			// request came from another identity.
 			r.Header.Del("X-Actor-Source")
 			r.Header.Del("X-Impersonator-ID")
+			r.Header.Del("X-Impersonation-Session")
 
 			tokenString, fromCookie := extractToken(r)
 			if tokenString == "" {
@@ -264,11 +265,18 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 			// admin must not leave pre-minted shadow tokens alive past
 			// this request. Handlers see the pair through X-User-ID (the
 			// acting identity) + X-Impersonator-ID (the accountable one).
+			// The sid claim carries the audit session id, relayed as
+			// X-Impersonation-Session (server-set only, stripped above)
+			// so the stop endpoint closes exactly the session in the
+			// token.
 			if impID, _ := claims["imp"].(string); strings.TrimSpace(impID) != "" {
 				if rejectDisabledUser(w, r, disabled, impID, "jwt_impersonator") {
 					return
 				}
 				r.Header.Set("X-Impersonator-ID", impID)
+				if sid, _ := claims["sid"].(string); strings.TrimSpace(sid) != "" {
+					r.Header.Set("X-Impersonation-Session", sid)
+				}
 			}
 
 			next.ServeHTTP(w, r)
