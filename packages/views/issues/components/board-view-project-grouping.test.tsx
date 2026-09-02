@@ -80,6 +80,7 @@ function makeProject(id: string, title: string, icon: string | null): Project {
     workspace_id: "ws-1",
     title,
     description: null,
+    instructions: null,
     icon,
     status: "in_progress",
     priority: "none",

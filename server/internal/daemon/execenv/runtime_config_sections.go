@@ -192,6 +192,24 @@ func writeWorkspaceContext(b *strings.Builder, ctx TaskContextForEnv) {
 	b.WriteString("\n\n")
 }
 
+// writeProjectInstructions emits the per-project agent instructions (RUYI-46)
+// the project lead set on the project detail page. Rendered immediately after
+// the workspace-level context so precedence reads top-down — workspace-wide
+// rules, then the active project's rules, then generic workflow — and before
+// Available Commands. Same storage/injection semantics as workspace.context:
+// plain text injected verbatim, empty (or whitespace-only) means the section
+// is not rendered at all. Instructions are set per project and never change
+// mid-run, so the section keeps the brief's byte-stability contract.
+func writeProjectInstructions(b *strings.Builder, ctx TaskContextForEnv) {
+	projText := strings.TrimRight(ctx.ProjectInstructions, " \t\r\n")
+	if projText == "" {
+		return
+	}
+	b.WriteString("## Project Instructions\n\n")
+	b.WriteString(projText)
+	b.WriteString("\n\n")
+}
+
 // BuildConnectedAppsBlock renders the Connected Apps block for the per-turn
 // user message. The app set is per-run state (runtime MCP overlays are
 // resolved at enqueue time), so it cannot live in the runtime brief without
@@ -894,6 +912,7 @@ func writeOutput(b *strings.Builder, kind taskKind, ctx TaskContextForEnv) {
 //	Comment Formatting    |    ✓    |   ✓    |     —     |      —       |  —
 //	Repositories          |    △    |   △    |     △     |      —       |  △
 //	Project Context       |    △    |   △    |     △     |      △       |  △
+//	Project Instructions  |    △    |   △    |     △     |      △       |  △
 //	Issue Metadata        |    ✓    |   ✓    |     —     |      —       |  —
 //	Instruction Precedence|    —    |   ✓    |     —     |      —       |  —
 //	Sub-issue Creation    |    ✓    |   ✓    |     —     |      —       |  —
@@ -902,9 +921,9 @@ func writeOutput(b *strings.Builder, kind taskKind, ctx TaskContextForEnv) {
 //	Attachments           |    ✓    |   ✓    |     —     |      —       |  —
 //
 // Always-on rows — Header, Background Task Safety, Agent Identity,
-// Requesting User, Task Initiator, Workspace Context, Connected Apps,
-// Workflow, Always Use CLI, Output — are shared by every kind and emitted
-// unconditionally (or gated by their own data preconditions).
+// Requesting User, Task Initiator, Workspace Context, Project Instructions,
+// Connected Apps, Workflow, Always Use CLI, Output — are shared by every kind
+// and emitted unconditionally (or gated by their own data preconditions).
 func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 	var b strings.Builder
 	kind := classifyTask(ctx)
@@ -918,6 +937,7 @@ func buildMetaSkillContentSlim(provider string, ctx TaskContextForEnv) string {
 	writeAgentIdentity(&b, ctx)
 	writeRequestingUser(&b, ctx)
 	writeWorkspaceContext(&b, ctx)
+	writeProjectInstructions(&b, ctx)
 
 	switch kind {
 	case kindQuickCreate:

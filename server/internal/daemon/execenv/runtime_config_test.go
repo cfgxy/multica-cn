@@ -768,6 +768,145 @@ func TestWorkspaceContextHeadingSkippedWhenEmpty(t *testing.T) {
 	}
 }
 
+// Project Instructions (RUYI-46): the per-project system prompt project leads
+// set on the project detail page. Injected right after the workspace-level
+// context so precedence reads top-down: workspace-wide rules, then the active
+// project's rules, then generic workflow. Must hold across every task kind —
+// issue / chat / quick-create / autopilot all resolve project context.
+func TestProjectInstructionsRenderedAfterWorkspaceContext(t *testing.T) {
+	t.Parallel()
+	const wsContext = "All comments must be in English."
+	const projInstructions = "Always write Go, never Python. Commit messages follow Conventional Commits."
+	cases := []struct {
+		name string
+		ctx  TaskContextForEnv
+	}{
+		{
+			name: "assignment-triggered",
+			ctx: TaskContextForEnv{
+				IssueID:             "11111111-2222-3333-4444-555555555555",
+				WorkspaceContext:    wsContext,
+				ProjectID:           "proj-1",
+				ProjectInstructions: projInstructions,
+			},
+		},
+		{
+			name: "comment-triggered",
+			ctx: TaskContextForEnv{
+				IssueID:             "22222222-3333-4444-5555-666666666666",
+				TriggerCommentID:    "33333333-4444-5555-6666-777777777777",
+				WorkspaceContext:    wsContext,
+				ProjectInstructions: projInstructions,
+			},
+		},
+		{
+			name: "chat",
+			ctx: TaskContextForEnv{
+				ChatSessionID:       "chat-1",
+				WorkspaceContext:    wsContext,
+				ProjectID:           "proj-1",
+				ProjectInstructions: projInstructions,
+			},
+		},
+		{
+			name: "quick-create",
+			ctx: TaskContextForEnv{
+				QuickCreatePrompt:   "create me an issue",
+				WorkspaceContext:    wsContext,
+				ProjectInstructions: projInstructions,
+			},
+		},
+		{
+			name: "autopilot run-only",
+			ctx: TaskContextForEnv{
+				AutopilotRunID:      "run-1",
+				WorkspaceContext:    wsContext,
+				ProjectID:           "proj-1",
+				ProjectInstructions: projInstructions,
+			},
+		},
+		// Workspace context and project instructions are independent: a
+		// project's instructions must render even when the workspace has no
+		// context of its own.
+		{
+			name: "without workspace context",
+			ctx: TaskContextForEnv{
+				IssueID:             "44444444-5555-6666-7777-888888888888",
+				ProjectID:           "proj-1",
+				ProjectInstructions: projInstructions,
+			},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := buildMetaSkillContent("claude", tc.ctx)
+
+			if !strings.Contains(out, "## Project Instructions") {
+				t.Fatalf("[%s] expected `## Project Instructions` heading", tc.name)
+			}
+			if !strings.Contains(out, projInstructions) {
+				t.Errorf("[%s] brief missing project instructions body %q", tc.name, projInstructions)
+			}
+			// Position contract: after Workspace Context (it exists in every
+			// case above), before Available Commands.
+			if wsIdx := strings.Index(out, "## Workspace Context"); wsIdx != -1 {
+				piIdx := strings.Index(out, "## Project Instructions")
+				if piIdx == -1 || piIdx < wsIdx {
+					t.Errorf("[%s] `## Project Instructions` must appear after `## Workspace Context` (ws=%d, pi=%d)", tc.name, wsIdx, piIdx)
+				}
+			}
+			cmdsIdx := strings.Index(out, "## Available Commands")
+			piIdx := strings.Index(out, "## Project Instructions")
+			if cmdsIdx == -1 || piIdx == -1 || piIdx > cmdsIdx {
+				t.Errorf("[%s] `## Project Instructions` must appear above `## Available Commands` (pi=%d, cmds=%d)", tc.name, piIdx, cmdsIdx)
+			}
+		})
+	}
+}
+
+func TestProjectInstructionsHeadingSkippedWhenEmpty(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		ctx  TaskContextForEnv
+	}{
+		{
+			name: "empty string",
+			ctx: TaskContextForEnv{
+				IssueID:             "11111111-2222-3333-4444-555555555555",
+				ProjectID:           "proj-1",
+				ProjectInstructions: "",
+			},
+		},
+		{
+			name: "whitespace only",
+			ctx: TaskContextForEnv{
+				IssueID:             "11111111-2222-3333-4444-555555555555",
+				ProjectID:           "proj-1",
+				ProjectInstructions: "   \n\t  \r\n",
+			},
+		},
+		{
+			name: "no project at all",
+			ctx: TaskContextForEnv{
+				IssueID: "11111111-2222-3333-4444-555555555555",
+			},
+		},
+	}
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			out := buildMetaSkillContent("claude", tc.ctx)
+			if strings.Contains(out, "## Project Instructions") {
+				t.Errorf("[%s] empty project instructions must NOT emit the heading", tc.name)
+			}
+		})
+	}
+}
+
 // Connected Apps moved to the per-turn prompt (MUL-5377): the app set is
 // resolved per run from the runtime MCP overlay.
 func TestConnectedAppsBlockLivesOutsideBrief(t *testing.T) {
