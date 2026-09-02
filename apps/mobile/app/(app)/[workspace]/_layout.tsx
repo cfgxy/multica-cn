@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import type { ComponentProps } from "react";
+import { Platform } from "react-native";
 import { Redirect, Stack, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import i18n from "i18next";
@@ -244,6 +245,27 @@ export default function WorkspaceLayout() {
           options={SHEET_OPTIONS}
         />
         <Stack.Screen name="issue/[id]/runs" options={SHEET_OPTIONS} />
+        {/* Run detail (RUYI-33) — stacked on the runs sheet. Same sheet
+            chrome on iOS; the body draws its own title + Copy-all + close.
+            Android: full-screen modal instead of a second formSheet. The
+            nested-formSheet dismiss path is broken upstream (react-native-
+            screens #4331 — native backdrop/swipe dismiss desyncs the JS
+            router so the sheet reopens from stale stack state, and #4090 —
+            the screen underneath loses touches/scroll until the app is
+            killed), which is exactly defect D / D3. Single-layer formSheets
+            (runs, pickers) stay on the long-validated path. */}
+        <Stack.Screen
+          name="issue/[id]/runs/[taskId]"
+          options={
+            Platform.OS === "android"
+              ? {
+                  presentation: "modal" as const,
+                  contentStyle: { flex: 1 },
+                  headerShown: false,
+                }
+              : SHEET_OPTIONS
+          }
+        />
         {/* Full emoji picker for a comment reaction. Pushed from the "+"
             button inside the comment long-press tapback row — see
             components/issue/comment-context-menu.tsx. */}
