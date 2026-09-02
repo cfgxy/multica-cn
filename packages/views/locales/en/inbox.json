@@ -50,6 +50,17 @@
     "original_input": "Original input",
     "retry_with_context": "Retry with context",
     "edit_advanced": "Edit as advanced form",
+    "fallback_title": "Notification",
+    "unavailable": "This notification is no longer available.",
+    "close_notification": "Close notification",
+    "billing_disabled": "Billing changes are unavailable for this workspace. Contact your workspace administrator for help.",
+    "contact_admin": "Ask a workspace owner or admin to review the billing options.",
+    "review_billing_options": "Review billing options",
+    "review_billing_on_web": "Open Multica on the web to review billing options.",
+    "autopilot_quota_exceeded_body": "This workspace has reached its limit of {{limit}} autopilot runs for the current period. Further autopilot runs will not start until the allowance resets {{resetAt}}.",
+    "autopilot_quota_body": "This workspace has reached its limit of {{limit}} autopilot runs for the current period. This execution was not started. The allowance resets {{resetAt}}.",
+    "autopilot_quota_body_named": "Autopilot “{{title}}” was not started because this workspace has reached its limit of {{limit}} runs for the current period. The allowance resets {{resetAt}}.",
+    "autopilot_quota_upgrade": "View upgrade options",
     "archive": "Archive",
     "unarchive": "Unarchive"
   },
@@ -72,7 +83,9 @@
     "reaction_added": "Reacted",
     "quick_create_done": "Created with agent",
     "quick_create_failed": "Create with agent failed",
-    "quick_create_unconfirmed": "Create with agent unconfirmed"
+    "quick_create_unconfirmed": "Create with agent unconfirmed",
+    "autopilot_paused": "Autopilot paused",
+    "autopilot_quota_exceeded": "Autopilot run limit reached"
   },
   "labels": {
     "set_status_to": "Set status to",
@@ -85,7 +98,8 @@
     "removed_due_date": "Removed due date",
     "reacted_to_comment": "Reacted {{emoji}} to your comment",
     "created_with_agent": "Created with agent: {{identifier}}",
-    "failed_with_detail": "Failed: {{detail}}"
+    "failed_with_detail": "Failed: {{detail}}",
+    "autopilot_quota_blocked": "Run blocked because the limit was reached"
   },
   "toasts": {
     "source_context_retry_started": "Retry started with the original context",

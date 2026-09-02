@@ -187,6 +187,7 @@ const PROJECT: Project = {
   workspace_id: "workspace-1",
   title: "Launch Plan",
   description: null,
+  instructions: null,
   icon: null,
   status: "in_progress",
   priority: "high",

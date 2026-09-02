@@ -41,6 +41,7 @@ func foreignWorkspaceWithProject(t *testing.T, slug, prefix string) (string, str
 	foreignProjectID := dbfx.Project(t, foreignProjectTitle, testutil.Cols{
 		"workspace_id": foreignWorkspaceID,
 		"description":  foreignProjectDescription,
+		"instructions": foreignProjectInstructions,
 	})
 	dbfx.Insert(t, "project_resource", testutil.Cols{
 		"project_id":    foreignProjectID,
@@ -60,11 +61,15 @@ func foreignWorkspaceWithProject(t *testing.T, slug, prefix string) (string, str
 }
 
 const (
-	foreignProjectTitle       = "Foreign project must not leak"
-	foreignProjectDescription = "Foreign project instructions must not leak"
-	foreignRepoURL            = "https://github.com/example/foreign-tenant-repo"
-	foreignLocalPath          = "/srv/foreign-tenant-project"
-	localFallbackRepoURL      = "https://github.com/example/local-workspace-fallback"
+	foreignProjectTitle        = "Foreign project must not leak"
+	foreignProjectDescription  = "Foreign project instructions must not leak"
+	foreignProjectInstructions = "Foreign agent instructions must not leak"
+	foreignRepoURL             = "https://github.com/example/foreign-tenant-repo"
+	foreignLocalPath           = "/srv/foreign-tenant-project"
+	localFallbackRepoURL       = "https://github.com/example/local-workspace-fallback"
+	localProjectTitle          = "Instructions carrier project"
+	localProjectDescription    = "Local project description"
+	localProjectInstructions   = "Local agent instructions: keep changes minimal and test-first"
 )
 
 // assertNoForeignContext fails when any part of the foreign tenant's project
@@ -74,6 +79,7 @@ func assertNoForeignContext(t *testing.T, body string, extra ...string) {
 	for _, leaked := range append([]string{
 		foreignProjectTitle,
 		foreignProjectDescription,
+		foreignProjectInstructions,
 		foreignRepoURL,
 		foreignLocalPath,
 	}, extra...) {
@@ -87,12 +93,13 @@ func assertNoForeignContext(t *testing.T, body string, extra ...string) {
 }
 
 type claimProjectFields struct {
-	WorkspaceID        string                `json:"workspace_id"`
-	Repos              []RepoData            `json:"repos"`
-	ProjectID          string                `json:"project_id"`
-	ProjectTitle       string                `json:"project_title"`
-	ProjectDescription string                `json:"project_description"`
-	ProjectResources   []ProjectResourceData `json:"project_resources"`
+	WorkspaceID         string                `json:"workspace_id"`
+	Repos               []RepoData            `json:"repos"`
+	ProjectID           string                `json:"project_id"`
+	ProjectTitle        string                `json:"project_title"`
+	ProjectDescription  string                `json:"project_description"`
+	ProjectInstructions string                `json:"project_instructions"`
+	ProjectResources    []ProjectResourceData `json:"project_resources"`
 }
 
 // An issue whose project_id points at another workspace's project must degrade
@@ -523,5 +530,62 @@ func TestRejectClaimSourceLoad_MissingRow_CancelsTask(t *testing.T) {
 	dbfx.QueryRow(t, `SELECT status FROM agent_task_queue WHERE id = $1`, taskID).Scan(&status)
 	if status != "cancelled" {
 		t.Errorf("task status = %q, want cancelled for an unrecoverable source reference", status)
+	}
+}
+
+// Project instructions (RUYI-46) ride the same claim path as the other
+// project context: the claiming task's project carries them into the claim
+// response, and a foreign tenant's instructions must never leak. The issue
+// branch stands in for all claim paths — they share resolveClaimProjectContext.
+func TestClaimTask_ProjectInstructionsFromOwningWorkspace(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	setHandlerTestWorkspaceRepos(t, []map[string]string{
+		{"url": localFallbackRepoURL, "description": "local"},
+	})
+	_, foreignProjectID := foreignWorkspaceWithProject(t, "instructions-foreign-ws", "IFW")
+
+	localProjectID := dbfx.Project(t, localProjectTitle, testutil.Cols{
+		"description":  localProjectDescription,
+		"instructions": localProjectInstructions,
+	})
+
+	var agentID, runtimeID string
+	dbfx.QueryRow(t,
+		`SELECT id, runtime_id FROM agent WHERE workspace_id = $1 LIMIT 1`,
+		testWorkspaceID,
+	).Scan(&agentID, &runtimeID)
+
+	issueID := dbfx.Issue(t, "issue with project instructions", testutil.Cols{
+		"project_id": localProjectID,
+		"priority":   "medium",
+		"number":     88201,
+	})
+	dbfx.Task(t, agentID, testutil.Cols{
+		"runtime_id": runtimeID,
+		"issue_id":   issueID,
+	})
+
+	req := newDaemonTokenRequest("POST", "/api/daemon/runtimes/"+runtimeID+"/claim", nil,
+		testWorkspaceID, "test-claim-project-instructions")
+	req = withURLParam(req, "runtimeId", runtimeID)
+	w := testutil.Call(t, testHandler.ClaimTaskByRuntime, req).Want(http.StatusOK)
+
+	var resp struct {
+		Task *claimProjectFields `json:"task"`
+	}
+	w.JSON(&resp)
+	if resp.Task == nil {
+		t.Fatal("expected task in response")
+	}
+	assertNoForeignContext(t, w.Text(), foreignProjectID)
+
+	if resp.Task.ProjectID != localProjectID {
+		t.Errorf("project_id = %q, want %q", resp.Task.ProjectID, localProjectID)
+	}
+	if resp.Task.ProjectInstructions != localProjectInstructions {
+		t.Errorf("project_instructions = %q, want %q", resp.Task.ProjectInstructions, localProjectInstructions)
 	}
 }

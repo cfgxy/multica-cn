@@ -128,10 +128,12 @@ export function useCommentLongPress(
             // Set the reply target — the InlineCommentComposer subscribes
             // to this store, auto-expands, and threads the next submit
             // under entry.id via useCreateComment's `parentId`.
-            const actorName = getName(
-              entry.actor_type as "member" | "agent" | null | undefined,
-              entry.actor_id,
-            );
+            const actorName =
+              entry.actor_name ||
+              getName(
+                entry.actor_type as "member" | "agent" | null | undefined,
+                entry.actor_id,
+              );
             useReplyTargetStore.getState().setTarget({
               commentId: entry.id,
               actorName: actorName || "comment",
@@ -218,6 +220,7 @@ export function useCommentLongPress(
     deleteComment,
     resolveComment,
     t,
+    getName,
   ]);
 
   return { onLongPress, isPressed, modalProps: { ...mainSheet.modalProps, ...reactSheet.modalProps } };
