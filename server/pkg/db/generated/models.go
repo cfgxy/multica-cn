@@ -21,6 +21,18 @@ type ActivityLog struct {
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 }
 
+type AdminAuditLog struct {
+	ID          pgtype.UUID        `json:"id"`
+	ActorID     pgtype.UUID        `json:"actor_id"`
+	Action      string             `json:"action"`
+	TargetType  string             `json:"target_type"`
+	TargetID    pgtype.UUID        `json:"target_id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Reason      pgtype.Text        `json:"reason"`
+	Metadata    []byte             `json:"metadata"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+}
+
 type Agent struct {
 	ID                 pgtype.UUID        `json:"id"`
 	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
@@ -1227,7 +1239,10 @@ type User struct {
 	Language                pgtype.Text        `json:"language"`
 	ProfileDescription      string             `json:"profile_description"`
 	// User-preferred IANA timezone for report rendering (Viewing tz). NULL means "use the browser-detected tz at render time". Affects dashboards, charts, and any "today" label shown to this user. Does not affect data materialisation — all rollups remain in UTC.
-	Timezone pgtype.Text `json:"timezone"`
+	Timezone     pgtype.Text        `json:"timezone"`
+	IsSuperAdmin bool               `json:"is_super_admin"`
+	DisabledAt   pgtype.Timestamptz `json:"disabled_at"`
+	DisabledBy   pgtype.UUID        `json:"disabled_by"`
 }
 
 type UserComposioConnection struct {

@@ -3,6 +3,7 @@ import "i18next";
 // packages/ui/types/i18next.ts. Side-effect import is required for views'
 // typecheck program to see ui's contribution to `I18nResources`.
 import "@multica/ui/i18n-types";
+import type admin from "../locales/en/admin.json";
 import type common from "../locales/en/common.json";
 import type auth from "../locales/en/auth.json";
 import type settings from "../locales/en/settings.json";
@@ -67,6 +68,7 @@ declare global {
     layout: typeof layout;
     usage: typeof usage;
     squads: typeof squads;
+    admin: typeof admin;
     billing: typeof billing;
   }
 }
