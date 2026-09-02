@@ -1949,6 +1949,60 @@ WHERE id = (
 )
 RETURNING id, coalesced_comment_ids;
 
+-- name: GetAgentTaskForUpdate :one
+-- Row-locked load of one task. ConsumeQueuedTasksForRunningTask holds this lock
+-- across the whole consumption transaction so a concurrent CompleteTask (which
+-- flips the task terminal and then reconciles comments) serializes against the
+-- consumption: whichever lands first wins, and the loser sees the settled state.
+SELECT * FROM agent_task_queue
+WHERE id = sqlc.arg('task_id')::uuid
+FOR UPDATE;
+
+-- name: ConsumeQueuedTasksForRunningTask :many
+-- RUYI-48: release every same-(issue, agent) QUEUED task into the caller's
+-- running task. The consuming task formally declares "this run has read and is
+-- handling the queued messages", so the queued rows become cancelled (audit:
+-- parent_task_id points at the consumer, failure_reason names the act) and the
+-- caller appends their comments to its own delivered_comment_ids receipt, which
+-- keeps reconcileCommentsOnCompletion from replaying them as a duplicate
+-- follow-up run.
+--
+-- Head-scoped exactly like MergeCommentIntoPendingTask (TEN-356): with a
+-- non-empty consumer head_sha only same-head queued tasks are consumed, so an
+-- old-HEAD run can never swallow a new-HEAD request. Empty/absent head (no
+-- linked PR) consumes regardless of the queued task's head, preserving the
+-- non-PR coalescing behavior.
+UPDATE agent_task_queue
+SET status = 'cancelled',
+    completed_at = now(),
+    prepare_lease_expires_at = NULL,
+    error = sqlc.narg('error'),
+    failure_reason = sqlc.narg('failure_reason'),
+    parent_task_id = sqlc.narg('parent_task_id')::uuid
+WHERE issue_id = sqlc.arg('issue_id')::uuid
+  AND agent_id = sqlc.arg('agent_id')::uuid
+  AND status = 'queued'
+  AND (
+      COALESCE(sqlc.narg('head_sha')::text, '') = ''
+      OR context->>'head_sha' = sqlc.narg('head_sha')::text
+  )
+RETURNING *;
+
+-- name: AppendDeliveredCommentIds :one
+-- Fold consumed queued messages into the running task's claim receipt so
+-- reconcileCommentsOnCompletion treats them as delivered. The status guard
+-- re-checks activeness inside the statement: a task that went terminal between
+-- the transaction's row lock and this update must not gain receipts.
+UPDATE agent_task_queue
+SET delivered_comment_ids = (
+        SELECT COALESCE(array_agg(DISTINCT e), '{}')
+        FROM unnest(array_cat(delivered_comment_ids, sqlc.arg('comment_ids')::uuid[])) AS e
+        WHERE e IS NOT NULL
+    )
+WHERE id = sqlc.arg('task_id')::uuid
+  AND status IN ('dispatched', 'running', 'waiting_local_directory')
+RETURNING delivered_comment_ids;
+
 -- name: MergeDelegatedFailureCommentIntoPendingTask :one
 -- A delegated failure is a platform-owned input, not a new human instruction:
 -- fold it into the coordinator's pre-claim task without replacing that task's
