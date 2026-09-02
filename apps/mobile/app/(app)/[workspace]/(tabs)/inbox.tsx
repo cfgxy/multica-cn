@@ -106,6 +106,10 @@ export default function Inbox() {
         title={t("page.title", "Inbox")}
         right={
           <>
+            {/* RUYI-51: the ⋯ menu moved AFTER the utility buttons so the
+                "More" affordance sits rightmost — the unified position rule
+                shared with the chat / issue / project headers. */}
+            <HeaderActions />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <IconButton
@@ -132,7 +136,6 @@ export default function Inbox() {
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-            <HeaderActions />
           </>
         }
       />

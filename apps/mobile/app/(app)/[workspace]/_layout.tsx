@@ -347,6 +347,17 @@ export default function WorkspaceLayout() {
         <Stack.Screen name="issues-filter" options={SHEET_OPTIONS} />
         {/* Chat session-switch sheet. */}
         <Stack.Screen name="chat-sessions" options={SHEET_OPTIONS} />
+        {/* Chat session rename sheet (RUYI-51) — reached from the chat
+            header's ⋯ menu. Isolated sheet (no chip-row neighbours), so it
+            may override the detents with fitToContents; see the SHEET_OPTIONS
+            comment for why the shared default can't. */}
+        <Stack.Screen
+          name="chat-rename"
+          options={{
+            ...SHEET_OPTIONS,
+            sheetAllowedDetents: "fitToContents",
+          }}
+        />
         {/* Workspace switcher — reached from the More popover's collapsed
             WorkspaceCard. Two-step (pick → iOS Alert confirm → switch). */}
         <Stack.Screen name="switch-workspace" options={SHEET_OPTIONS} />

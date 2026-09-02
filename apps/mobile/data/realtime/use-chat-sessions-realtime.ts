@@ -14,8 +14,8 @@ import { useQueryClient } from "@tanstack/react-query";
 import { chatKeys } from "@/data/queries/chat";
 import { useWSSubscriptions } from "@/lib/use-ws-subscriptions";
 import {
+  applyChatSessionUpdatedToCache,
   dropSessionFromList,
-  patchSessionListAfterRename,
 } from "./chat-ws-updaters";
 
 export function useChatSessionsRealtime() {
@@ -41,15 +41,31 @@ export function useChatSessionsRealtime() {
         ws.on("chat:session_created", (payload) => {
           if (payload.workspace_id === wsId) invalidateSessions();
         }),
-        // chat:session_updated has no formal payload type yet — server
-        // emits {chat_session_id, title?, updated_at?}. Narrow inline.
+        // chat:session_updated has no formal payload type in
+        // packages/core/types/events.ts (`unknown`). Server emits
+        // {chat_session_id, title, updated_at} plus `pinned?` (pin/unpin
+        // path) and `status?` ("active"|"archived", archive path) — see
+        // protocol.ChatSessionUpdatedPayload. Narrow inline; `status` is
+        // clamped to the two known values so an unknown server value
+        // leaves the row untouched (enum drift defense).
         ws.on("chat:session_updated", (p) => {
           const payload = p as {
             chat_session_id: string;
             title?: string;
+            pinned?: boolean;
+            status?: string;
             updated_at?: string;
           };
-          patchSessionListAfterRename(qc, wsId, payload);
+          applyChatSessionUpdatedToCache(qc, wsId, {
+            chat_session_id: payload.chat_session_id,
+            title: payload.title,
+            pinned: payload.pinned,
+            status:
+              payload.status === "active" || payload.status === "archived"
+                ? payload.status
+                : undefined,
+            updated_at: payload.updated_at,
+          });
         }),
         ws.on("chat:session_deleted", (payload) => {
           dropSessionFromList(qc, wsId, payload);
