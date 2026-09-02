@@ -11,7 +11,9 @@
     "usage": "분석",
     "runtimes": "런타임",
     "skills": "스킬",
-    "settings": "설정"
+    "settings": "설정",
+
+    "admin": "관리"
   },
   "tab": {
     "issue": "태스크",
@@ -49,6 +51,7 @@
     "invitation_join": "참가",
     "invitation_decline": "거절",
     "log_out": "로그아웃",
+    "admin_area": "관리",
     "new_issue": "새 태스크",
     "new_issue_shortcut": "C",
     "pinned_label": "고정됨",

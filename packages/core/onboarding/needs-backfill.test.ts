@@ -16,6 +16,8 @@ const BASE_USER: User = {
   language: null,
   profile_description: "",
   timezone: null,
+  is_super_admin: false,
+  impersonator_id: null,
   created_at: "2025-01-01T00:00:00Z",
   updated_at: "2025-01-01T00:00:00Z",
 };

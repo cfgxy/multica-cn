@@ -22,6 +22,7 @@ import { Layers,
   ChevronRight,
   LogOut,
   Plus,
+  Shield,
   Check,
   SquarePen,
   X,
@@ -712,6 +713,19 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                             </button>
                           </div>
                         ))}
+                      </DropdownMenuGroup>
+                    </>
+                  )}
+                  {/* RUYI-47: instance-level admin area; the server still
+                      enforces the flag on every /api/admin request. */}
+                  {user?.is_super_admin === true && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuGroup>
+                        <DropdownMenuItem onClick={() => push(p.admin())}>
+                          <Shield className="h-3.5 w-3.5" />
+                          {t(($) => $.sidebar.admin_area)}
+                        </DropdownMenuItem>
                       </DropdownMenuGroup>
                     </>
                   )}
