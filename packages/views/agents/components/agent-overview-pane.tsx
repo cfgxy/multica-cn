@@ -35,6 +35,7 @@ import { CustomArgsTab } from "./tabs/custom-args-tab";
 import { McpConfigTab } from "./tabs/mcp-config-tab";
 import { AgentMcpTab } from "./tabs/agent-mcp-tab";
 import { IntegrationsTab } from "./tabs/integrations-tab";
+import { WebhooksTab } from "./tabs/webhooks-tab";
 import { RuntimeConfigTab } from "./tabs/runtime-config-tab";
 import { AgentDetailInspector } from "./agent-detail-inspector";
 import { AgentAccessSettings } from "./agent-access-settings";
@@ -53,6 +54,7 @@ export type DetailTab =
   | "mcp_config"
   | "composio_mcp"
   | "integrations"
+  | "webhooks"
   | "general"
   | "access"
   | "env"
@@ -67,6 +69,7 @@ type SecondaryTab = {
     | "mcp_config"
     | "composio_mcp"
     | "integrations"
+    | "webhooks"
     | "general"
     | "access"
     | "environment"
@@ -80,6 +83,7 @@ const CAPABILITY_TABS: SecondaryTab[] = [
   { id: "mcp_config", labelKey: "mcp_config" },
   { id: "composio_mcp", labelKey: "composio_mcp" },
   { id: "integrations", labelKey: "integrations" },
+  { id: "webhooks", labelKey: "webhooks" },
 ];
 
 const SETTINGS_TABS: SecondaryTab[] = [
@@ -454,6 +458,7 @@ export function AgentOverviewPane({
                   {effectiveView === "integrations" && (
                     <IntegrationsTab agent={agent} />
                   )}
+                  {effectiveView === "webhooks" && <WebhooksTab agent={agent} />}
                   {effectiveView === "general" && (
                     <AgentDetailInspector
                       agent={agent}
