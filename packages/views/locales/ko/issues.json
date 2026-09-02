@@ -894,7 +894,8 @@
       "comments_search_placeholder": "작성자 또는 본문으로 필터링…",
       "comments_empty": "아직 댓글이 없습니다.",
       "comments_no_match": "일치하는 댓글이 없습니다.",
-      "comments_open_a11y": "댓글 찾아보기"
+      "comments_open_a11y": "댓글 찾아보기",
+      "pull_request_open_failed": "이 Pull request를 열 수 없습니다."
     },
     "picker": {
       "unassigned": "미할당",

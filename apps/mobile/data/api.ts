@@ -26,6 +26,7 @@ import type {
   CreateLabelRequest,
   CreateProjectRequest,
   CreateProjectResourceRequest,
+  GitHubPullRequest,
   InboxItem,
   Issue,
   IssueLabelsResponse,
@@ -60,9 +61,11 @@ import type {
   Workspace,
 } from "@multica/core/types";
 import {
+  EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
   EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
   EMPTY_LIST_ISSUES_RESPONSE,
   EMPTY_TIMELINE_ENTRIES,
+  IssuePullRequestsResponseSchema,
   IssueSchema,
   ListIssuesResponseSchema,
   ListIssueStatusesResponseSchema,
@@ -901,6 +904,27 @@ class ApiClient {
       ListIssueStatusesResponseSchema,
       EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
       { ...opts, endpoint: "GET /api/issue-statuses" },
+    );
+  }
+
+  // --- Related pull requests (RUYI-43) ---
+  /**
+   * PRs linked to an issue (branch name / title / body referenced its
+   * identifier) — the data behind the web sidebar's "Pull requests"
+   * section (`issuePullRequestsOptions` in packages/core/github/queries.ts,
+   * endpoint mirrors packages/core/api/client.ts listIssuePullRequests).
+   * Schema + empty fallback come from @multica/core/api/schemas (pure
+   * Zod, mobile sharing whitelist), like the issue-list endpoints above.
+   */
+  async listIssuePullRequests(
+    issueId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<{ pull_requests: GitHubPullRequest[] }> {
+    return this.fetchValidated(
+      `/api/issues/${issueId}/pull-requests`,
+      IssuePullRequestsResponseSchema,
+      EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
+      { ...opts, endpoint: "GET /api/issues/:id/pull-requests" },
     );
   }
 
