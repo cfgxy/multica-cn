@@ -61,6 +61,11 @@ function useTypeLabels(): Record<InboxItemType, string> {
       "types.quick_create_unconfirmed",
       "Create with agent unconfirmed",
     ),
+    autopilot_paused: t("types.autopilot_paused", "Autopilot paused"),
+    autopilot_quota_exceeded: t(
+      "types.autopilot_quota_exceeded",
+      "Autopilot run limit reached",
+    ),
   };
 }
 
@@ -181,6 +186,8 @@ export function InboxDetailLabel({
         const detail = singleLine(details.error) || singleLine(item.body);
         return detail || typeLabel[item.type];
       }
+      case "autopilot_quota_exceeded":
+        return t("labels.autopilot_quota_blocked", "Run blocked because the limit was reached");
       default:
         return typeLabel[item.type] ?? item.type;
     }

@@ -3,7 +3,7 @@
 本文件记录 cfgxy/multica（本 fork）相对上游主线 [multica-ai/multica](https://github.com/multica-ai/multica) 的改动，供使用本 fork 的团队了解上游之外的新增能力与修复。
 
 - 上游（upstream）：`multica-ai/multica`
-- 对照基准：`upstream/main` @ `64ec7f54163d918d5d7fd4dcae857f241b7842d0`（2026-08-29 同步）
+- 对照基准：`upstream/main` @ `d4a712abf3880dfbd3daeac5daac1bd4bfb39b6f`（2026-09-02 同步）
 - 初次整理时本 fork `main` @ `425e0cb9369071213d73d0e58ad96e71fbe1f59b`：领先上游 48 个提交（非 merge 39 个 + merge 9 个）
 
 ## 维护约定
@@ -13,6 +13,25 @@
 - **唯一事实来源是 git**：核对命令 `git log --no-merges upstream/main..main`；不得写入 git 历史中不存在的条目。
 - 同步上游时用 merge（保留本 fork 提交历史），同步后更新顶部「对照基准」一行。
 - CI 自动生成暂未启用；如后续引入，以 workflow 输出为准并修订本约定。
+
+## 2026-09（2026-08-30 ~ 2026-09-02）
+
+### 发布与分发（Release APK 流水线与应用内更新）
+
+- `53441b09a` chore(mobile): publish release APK to rolling GitHub Release on push to main (RUYI-34)
+- `b26d959ef` ci(mobile-android): carry app version in versioned release tag
+- `9fca6dea0` feat(mobile): serverless app-update check via GitHub Releases (RUYI-36)
+
+### 移动端功能与交互修复
+
+- `3b7c9e7f5` fix(mobile): SecureStore 会话键冒号非法字符导致启动永久卡 spinner（RUYI-38）
+- `6aa2113ef` feat(mobile): issue-creation attachments + multi-select pickers (RUYI-42)
+- `8ead61914` feat(mobile): issue 详情更多菜单新增「关联 PR」入口（RUYI-43）
+- `0a28c5948` feat(mobile): workspace unread dot in switch-workspace sheet (RUYI-44)
+
+### 文档
+
+- `08d0a95a6` docs: add fork CHANGELOG and link it from both READMEs
 
 ## 2026-08（2026-08-20 ~ 2026-08-29，初次整理）
 
