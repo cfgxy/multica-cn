@@ -1273,3 +1273,40 @@ export interface RuntimeLocalSkillImportResult {
   skill?: Skill;
   conflict?: RuntimeLocalSkillImportConflict;
 }
+
+// ---------------------------------------------------------------------------
+// Agent webhooks (RUYI-52)
+//
+// A public, token-bearing trigger URL bound to a fixed prompt. Every visit to
+// the URL starts a fresh chat session whose first user message is the bound
+// prompt. The token is a bearer credential; the server strips the credential
+// fields for non-managers (only webhook_path_masked remains, safe to render).
+// ---------------------------------------------------------------------------
+
+export interface AgentWebhook {
+  id: string;
+  agent_id: string;
+  name: string;
+  prompt: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+  /** Ingress path with the token replaced by the fixed-width mask. */
+  webhook_path_masked: string;
+  /** Manager-only: the raw bearer token. Null for non-managers. */
+  webhook_token?: string | null;
+  /** Manager-only: "/api/webhooks/agents/{token}". */
+  webhook_path?: string | null;
+  /** Manager-only absolute URL, present only when the server has MULTICA_PUBLIC_URL. */
+  webhook_url?: string | null;
+}
+
+export interface CreateAgentWebhookRequest {
+  name: string;
+  prompt: string;
+}
+
+export interface UpdateAgentWebhookRequest {
+  name: string;
+  prompt: string;
+}
