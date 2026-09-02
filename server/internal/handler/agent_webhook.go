@@ -11,6 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
+	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -442,7 +443,7 @@ func (h *Handler) HandleAgentWebhook(w http.ResponseWriter, r *http.Request) {
 		h.writeAgentWebhookIgnored(w, row.ID, "agent_archived")
 		return
 	}
-	if verdict, err := service.AgentReadiness(r.Context(), h.Queries, agent); err == nil && verdict.Blocked() {
+	if verdict, err := service.AgentReadiness(r.Context(), h.runtimeLookup(obsmetrics.RuntimeLookupSourceChat), agent); err == nil && verdict.Blocked() {
 		h.writeAgentWebhookIgnored(w, row.ID, "agent_unavailable")
 		return
 	}
