@@ -28,6 +28,7 @@ import type {
   CreateProjectResourceRequest,
   GitHubPullRequest,
   InboxItem,
+  InboxWorkspaceUnread,
   Issue,
   IssueLabelsResponse,
   Label,
@@ -91,6 +92,7 @@ import {
   EMPTY_CHAT_SESSION_LIST,
   EMPTY_COMMENT,
   EMPTY_INBOX_LIST,
+  EMPTY_INBOX_UNREAD_SUMMARY,
   EMPTY_ISSUE_FALLBACK,
   EMPTY_LIST_LABELS_RESPONSE,
   EMPTY_LIST_PROJECT_RESOURCES_RESPONSE,
@@ -106,6 +108,7 @@ import {
   EMPTY_USER,
   EMPTY_WORKSPACE_LIST,
   InboxListSchema,
+  InboxUnreadSummarySchema,
   NotificationPreferenceResponseSchema,
   ListLabelsResponseSchema,
   ListProjectResourcesResponseSchema,
@@ -463,6 +466,25 @@ class ApiClient {
     return parseWithFallback(raw, InboxListSchema, EMPTY_INBOX_LIST, {
       endpoint: "listInbox",
     });
+  }
+
+  // Cross-workspace unread summary: one entry per workspace the user belongs
+  // to that has unread inbox items. Backs the switch-workspace sheet's
+  // per-workspace blue dot (RUYI-44) — the same endpoint web's sidebar dot
+  // consumes. Schema-guarded so a contract drift hides the dot rather than
+  // crashing the sheet (mirrors packages/core/api/client.ts getInboxUnreadSummary).
+  async getInboxUnreadSummary(opts?: {
+    signal?: AbortSignal;
+  }): Promise<InboxWorkspaceUnread[]> {
+    const raw = await this.fetch<unknown>("/api/inbox/unread-summary", {
+      signal: opts?.signal,
+    });
+    return parseWithFallback(
+      raw,
+      InboxUnreadSummarySchema,
+      EMPTY_INBOX_UNREAD_SUMMARY,
+      { endpoint: "getInboxUnreadSummary" },
+    );
   }
 
   async markInboxRead(id: string): Promise<InboxItem> {

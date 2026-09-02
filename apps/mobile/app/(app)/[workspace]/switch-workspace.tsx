@@ -3,7 +3,11 @@
  *
  * Reached from the More popover's WorkspaceCard (collapsed single-row entry).
  * Lists every workspace the user belongs to, current one disabled with a
- * checkmark. Tapping a non-current row triggers an iOS-native `Alert.alert`
+ * checkmark. Rows of workspaces holding unread inbox items show a small
+ * blue dot before the name (RUYI-44) — same account-level summary and
+ * predicate as web's sidebar switcher (`unreadWorkspaceIds`,
+ * @multica/core/inbox/unread), so both platforms point at the same
+ * workspaces. Tapping a non-current row triggers an iOS-native `Alert.alert`
  * confirm — only after the user confirms do we dismiss the sheet and
  * `router.replace` to the target slug.
  *
@@ -35,6 +39,7 @@ import { Text } from "@/components/ui/text";
 import { WorkspaceAvatar } from "@/components/workspace/workspace-avatar";
 import { workspaceListOptions } from "@/data/queries/workspaces";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { useWorkspaceUnreadIds } from "@/lib/unread-counts";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { useT } from "@/lib/use-t";
@@ -45,6 +50,7 @@ export default function SwitchWorkspaceRoute() {
   const { colorScheme } = useColorScheme();
   const theme = THEME[colorScheme];
   const { data, isLoading } = useQuery(workspaceListOptions());
+  const unreadWsIds = useWorkspaceUnreadIds(activeSlug);
   const { t } = useT("workspace");
 
   const onSelect = (ws: Workspace) => {
@@ -80,15 +86,22 @@ export default function SwitchWorkspaceRoute() {
         </View>
       ) : (
         <ScrollView className="flex-1" showsVerticalScrollIndicator={false}>
-          {(data ?? []).map((ws) => (
-            <WorkspaceRow
-              key={ws.id}
-              workspace={ws}
-              active={ws.slug === activeSlug}
-              onPress={() => onSelect(ws)}
-              iconTint={theme.foreground}
-            />
-          ))}
+          {(data ?? []).map((ws) => {
+            const active = ws.slug === activeSlug;
+            return (
+              <WorkspaceRow
+                key={ws.id}
+                workspace={ws}
+                active={active}
+                // Active workspace excluded — its own unread already shows
+                // on the Inbox tab badge, same rule as web's switcher
+                // dropdown (so dot and check never share a row).
+                hasUnread={!active && unreadWsIds.has(ws.id)}
+                onPress={() => onSelect(ws)}
+                iconTint={theme.foreground}
+              />
+            );
+          })}
         </ScrollView>
       )}
     </View>
@@ -98,11 +111,13 @@ export default function SwitchWorkspaceRoute() {
 function WorkspaceRow({
   workspace,
   active,
+  hasUnread,
   onPress,
   iconTint,
 }: {
   workspace: Workspace;
   active: boolean;
+  hasUnread: boolean;
   onPress: () => void;
   iconTint: string;
 }) {
@@ -125,6 +140,13 @@ function WorkspaceRow({
         avatarUrl={workspace.avatar_url}
         size={24}
       />
+      {/* Unread dot BEFORE the name, per RUYI-44 spec. Data and predicate
+          are web-identical (account-level unread summary +
+          unreadWorkspaceIds in @multica/core/inbox/unread); only placement
+          differs — web puts the dot on the row's right edge, the mobile
+          sheet puts it ahead of the name. Rendered only when there IS
+          unread so rows without unread keep their rhythm. */}
+      {hasUnread ? <View className="h-2 w-2 rounded-full bg-brand" /> : null}
       <Text
         className={cn(
           "flex-1 text-sm text-foreground",
