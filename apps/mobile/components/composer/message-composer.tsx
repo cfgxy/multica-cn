@@ -44,7 +44,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Alert, Keyboard, Pressable, TextInput, View } from "react-native";
+import { Keyboard, Pressable, TextInput, View } from "react-native";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -54,6 +54,12 @@ import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
 import { api, MAX_FILE_SIZE } from "@/data/api";
 import { useMentionDraftStore } from "@/data/stores/mention-draft-store";
+import {
+  assetFromDocumentPicker,
+  assetFromImagePicker,
+  partitionOversize,
+} from "@/lib/picked-asset";
+import { useOversizeAlert } from "@/components/editor/use-file-attach";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { stripMarkdown } from "@/lib/strip-markdown";
 import { useT } from "@/lib/use-t";
@@ -206,6 +212,8 @@ export function MessageComposer({
   const mentions = useMentionDraftStore((s) => s.mentions);
   const removeMention = useMentionDraftStore((s) => s.remove);
   const clearMentions = useMentionDraftStore((s) => s.clear);
+  // RUYI-42 multi-select: one shared alert for the oversize part of a pick.
+  const onOversize = useOversizeAlert();
 
   // Drop mention draft on composer unmount so navigating away doesn't
   // leak chips into the next composer's session.
@@ -333,88 +341,67 @@ export function MessageComposer({
     [uploadContext, t],
   );
 
+  /** Add one chip per picked asset, then upload all of them concurrently —
+   *  RUYI-42 multi-select: one picker pass, N chips. Each chip carries its
+   *  own uploading → completed/failed status exactly like the single-pick
+   *  flow did. */
+  const enqueueAttachments = useCallback(
+    (picked: { uri: string; name: string; type: string }[]) => {
+      const entries = picked.map((asset) => {
+        const localId = makeLocalId();
+        return { localId, asset };
+      });
+      setAttachments((prev) => [
+        ...prev,
+        ...entries.map(({ localId, asset }) => ({
+          localId,
+          localUri: asset.uri,
+          filename: asset.name,
+          mimeType: asset.type,
+          status: "uploading" as const,
+        })),
+      ]);
+      requestAnimationFrame(() => inputRef.current?.focus());
+      return Promise.all(
+        entries.map(({ localId, asset }) => startUpload(localId, asset)),
+      );
+    },
+    [startUpload],
+  );
+
   const onImagePress = useCallback(async () => {
     const picker = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.Images,
       quality: 1,
+      // RUYI-42: one picker pass, N chips (Android 13+ photo picker).
+      allowsMultipleSelection: true,
     });
     if (picker.canceled) return;
-    const picked = picker.assets[0];
-    if (!picked) return;
-    if (picked.fileSize != null && picked.fileSize > MAX_FILE_SIZE) {
-      Alert.alert(
-        t("composer.file_too_large_title", "File too large"),
-        t(
-          "composer.file_too_large_message",
-          "Files must be smaller than {{size}} MB.",
-          {
-            size: Math.round(MAX_FILE_SIZE / (1024 * 1024)),
-          },
-        ),
-      );
-      return;
-    }
-    const filename = picked.fileName ?? `image-${Date.now()}.jpg`;
-    const mimeType = picked.mimeType ?? "image/jpeg";
-    const localId = makeLocalId();
-    setAttachments((prev) => [
-      ...prev,
-      {
-        localId,
-        localUri: picked.uri,
-        filename,
-        mimeType,
-        status: "uploading",
-      },
-    ]);
-    requestAnimationFrame(() => inputRef.current?.focus());
-    await startUpload(localId, {
-      uri: picked.uri,
-      name: filename,
-      type: mimeType,
-    });
-  }, [startUpload, t]);
+    const assets = (picker.assets ?? []).map(assetFromImagePicker);
+    const { ok, oversized } = partitionOversize(assets, MAX_FILE_SIZE);
+    onOversize(oversized);
+    if (ok.length === 0) return;
+    await enqueueAttachments(
+      ok.map(({ uri, name, type }) => ({ uri, name, type })),
+    );
+  }, [enqueueAttachments, onOversize]);
 
   const onFilePress = useCallback(async () => {
     const picker = await DocumentPicker.getDocumentAsync({
       type: "*/*",
       copyToCacheDirectory: true,
+      // RUYI-42: one picker pass, N chips.
+      multiple: true,
     });
     if (picker.canceled) return;
-    const picked = picker.assets[0];
-    if (!picked) return;
-    if (picked.size != null && picked.size > MAX_FILE_SIZE) {
-      Alert.alert(
-        t("composer.file_too_large_title", "File too large"),
-        t(
-          "composer.file_too_large_message",
-          "Files must be smaller than {{size}} MB.",
-          {
-            size: Math.round(MAX_FILE_SIZE / (1024 * 1024)),
-          },
-        ),
-      );
-      return;
-    }
-    const mimeType = picked.mimeType ?? "application/octet-stream";
-    const localId = makeLocalId();
-    setAttachments((prev) => [
-      ...prev,
-      {
-        localId,
-        localUri: picked.uri,
-        filename: picked.name,
-        mimeType,
-        status: "uploading",
-      },
-    ]);
-    requestAnimationFrame(() => inputRef.current?.focus());
-    await startUpload(localId, {
-      uri: picked.uri,
-      name: picked.name,
-      type: mimeType,
-    });
-  }, [startUpload, t]);
+    const assets = (picker.assets ?? []).map(assetFromDocumentPicker);
+    const { ok, oversized } = partitionOversize(assets, MAX_FILE_SIZE);
+    onOversize(oversized);
+    if (ok.length === 0) return;
+    await enqueueAttachments(
+      ok.map(({ uri, name, type }) => ({ uri, name, type })),
+    );
+  }, [enqueueAttachments, onOversize]);
 
   const onRemoveAttachment = useCallback((localId: string) => {
     setAttachments((prev) => prev.filter((it) => it.localId !== localId));

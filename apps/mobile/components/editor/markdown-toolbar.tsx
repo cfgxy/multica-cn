@@ -24,14 +24,16 @@ import { useT } from "@/lib/use-t";
 export interface MarkdownToolbarProps {
   /** Toolbar `@` button → hook.handlers.onAtButtonPress. */
   onAt: () => void;
-  /** Insert `- ` at the start of the current line. */
-  onList: () => void;
-  /** Insert `- [ ] ` at the start of the current line. */
-  onCheckbox: () => void;
+  /** Insert `- ` at the start of the current line. Hidden when omitted —
+   *  RUYI-42 wires only @ / image / file into the new-issue composer; the
+   *  literal-format buttons stay available for surfaces that want them. */
+  onList?: () => void;
+  /** Insert `- [ ] ` at the start of the current line. Hidden when omitted. */
+  onCheckbox?: () => void;
   /** Insert a fenced code block; caret lands in the empty middle line. */
-  onCode: () => void;
-  /** Insert `> ` at the start of the current line. */
-  onQuote: () => void;
+  onCode?: () => void;
+  /** Insert `> ` at the start of the current line. Hidden when omitted. */
+  onQuote?: () => void;
   /** Open image picker → upload → insert `![](url)`. Hidden when omitted. */
   onImage?: () => void;
   /** Open document picker → upload → insert `[📎 name](url)`. Hidden when omitted. */
@@ -64,38 +66,46 @@ export function MarkdownToolbar({
       >
         <Text className="text-base text-muted-foreground leading-none">@</Text>
       </ToolbarButton>
-      <ToolbarButton
-        accessibilityLabel={t("mobile.toolbar.bullet_list", "Bullet list")}
-        onPress={onList}
-        disabled={disabled}
-      >
-        <Ionicons name="list-outline" size={18} color={ICON_COLOR} />
-      </ToolbarButton>
-      <ToolbarButton
-        accessibilityLabel={t("mobile.toolbar.checklist", "Checklist")}
-        onPress={onCheckbox}
-        disabled={disabled}
-      >
-        <Ionicons name="checkbox-outline" size={18} color={ICON_COLOR} />
-      </ToolbarButton>
-      <ToolbarButton
-        accessibilityLabel={t("mobile.toolbar.code_block", "Code block")}
-        onPress={onCode}
-        disabled={disabled}
-      >
-        <Ionicons name="code-slash-outline" size={18} color={ICON_COLOR} />
-      </ToolbarButton>
-      <ToolbarButton
-        accessibilityLabel={t("mobile.toolbar.quote", "Quote")}
-        onPress={onQuote}
-        disabled={disabled}
-      >
-        {/* Ionicons has no good quote glyph — use the literal " character at
-         *   a slightly larger size for visual parity with adjacent icons. */}
-        <Text className="text-xl text-muted-foreground leading-none -mt-1">
-          &quot;
-        </Text>
-      </ToolbarButton>
+      {onList ? (
+        <ToolbarButton
+          accessibilityLabel={t("mobile.toolbar.bullet_list", "Bullet list")}
+          onPress={onList}
+          disabled={disabled}
+        >
+          <Ionicons name="list-outline" size={18} color={ICON_COLOR} />
+        </ToolbarButton>
+      ) : null}
+      {onCheckbox ? (
+        <ToolbarButton
+          accessibilityLabel={t("mobile.toolbar.checklist", "Checklist")}
+          onPress={onCheckbox}
+          disabled={disabled}
+        >
+          <Ionicons name="checkbox-outline" size={18} color={ICON_COLOR} />
+        </ToolbarButton>
+      ) : null}
+      {onCode ? (
+        <ToolbarButton
+          accessibilityLabel={t("mobile.toolbar.code_block", "Code block")}
+          onPress={onCode}
+          disabled={disabled}
+        >
+          <Ionicons name="code-slash-outline" size={18} color={ICON_COLOR} />
+        </ToolbarButton>
+      ) : null}
+      {onQuote ? (
+        <ToolbarButton
+          accessibilityLabel={t("mobile.toolbar.quote", "Quote")}
+          onPress={onQuote}
+          disabled={disabled}
+        >
+          {/* Ionicons has no good quote glyph — use the literal " character at
+           *   a slightly larger size for visual parity with adjacent icons. */}
+          <Text className="text-xl text-muted-foreground leading-none -mt-1">
+            &quot;
+          </Text>
+        </ToolbarButton>
+      ) : null}
       {onImage ? (
         <ToolbarButton
           accessibilityLabel={t("mobile.toolbar.attach_image", "Attach image")}
