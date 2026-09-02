@@ -1006,6 +1006,7 @@ describe("IssueDetail (shared)", () => {
       workspace_id: "ws-1",
       title: "Marketing site refresh",
       description: null,
+      instructions: null,
       icon: "🚀",
       status: "in_progress",
       priority: "none",

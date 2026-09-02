@@ -504,6 +504,7 @@ describe("project progress invalidation", () => {
         workspace_id: WS_ID,
         title: "Project",
         description: null,
+        instructions: null,
         icon: null,
         status: "in_progress",
         priority: "none",
