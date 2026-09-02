@@ -20,6 +20,7 @@ import type {
   ChatSession,
   Comment,
   InboxItem,
+  InboxWorkspaceUnread,
   IssueLabelsResponse,
   Label,
   ListLabelsResponse,
@@ -572,6 +573,22 @@ const InboxItemSchema: z.ZodType<InboxItem> = z.object({
 
 export const InboxListSchema = z.array(InboxItemSchema).default([]);
 export const EMPTY_INBOX_LIST: InboxItem[] = [];
+
+/** Cross-workspace unread inbox summary (GET /api/inbox/unread-summary),
+ *  backing the switch-workspace sheet's per-workspace blue dot (RUYI-44).
+ *  Mirrors web's InboxUnreadSummarySchema (packages/core/api/schemas.ts):
+ *  `.loose()` so a future server field can't blank the dot; on malformed
+ *  JSON parseWithFallback returns the empty list, which just hides dots. */
+export const InboxUnreadSummarySchema = z.array(
+  z
+    .object({
+      workspace_id: z.string(),
+      count: z.number(),
+    })
+    .loose(),
+);
+
+export const EMPTY_INBOX_UNREAD_SUMMARY: InboxWorkspaceUnread[] = [];
 
 export const MemberWithUserSchema: z.ZodType<MemberWithUser> = z.object({
   id: z.string(),
