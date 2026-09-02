@@ -72,7 +72,18 @@ import {
 } from "@multica/ui/components/ui/alert-dialog";
 import { useT } from "../../i18n";
 import { useProjectStatusLabels, useProjectPriorityLabels } from "./labels";
+import { Textarea } from "@multica/ui/components/ui/textarea";
 import { matchesPinyin } from "../../editor/extensions/pinyin-match";
+
+// ---------------------------------------------------------------------------
+// Agent instructions (RUYI-46) — shared limits and counting
+// ---------------------------------------------------------------------------
+
+// Must match maxProjectInstructionsLen on the server (rune/code-point count).
+const MAX_PROJECT_INSTRUCTIONS = 32000;
+
+// Code points, matching Go's utf8.RuneCountInString (not UTF-16 .length).
+const instructionsLength = (s: string) => [...s].length;
 
 // ---------------------------------------------------------------------------
 // Property row — sidebar property display
@@ -150,6 +161,10 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   const [propertiesOpen, setPropertiesOpen] = useState(true);
   const [progressOpen, setProgressOpen] = useState(true);
   const [descriptionOpen, setDescriptionOpen] = useState(true);
+  const [instructionsOpen, setInstructionsOpen] = useState(false);
+  const [instructionsEditing, setInstructionsEditing] = useState(false);
+  const [instructionsDraft, setInstructionsDraft] = useState("");
+  const instructionsOverLimit = instructionsLength(instructionsDraft) > MAX_PROJECT_INSTRUCTIONS;
 
   // Sidebar panel
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
@@ -213,6 +228,16 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
     },
     [project, updateProject],
   );
+
+  const saveInstructionsDraft = useCallback(() => {
+    // Stay in editing mode while over the cap; the red counter explains why.
+    if (instructionsLength(instructionsDraft) > MAX_PROJECT_INSTRUCTIONS) return;
+    const trimmed = instructionsDraft.trim();
+    if (trimmed !== (project?.instructions ?? "")) {
+      handleUpdateField({ instructions: trimmed || null });
+    }
+    setInstructionsEditing(false);
+  }, [instructionsDraft, project?.instructions, handleUpdateField]);
 
   const handleDelete = useCallback(() => {
     if (!project) return;
@@ -466,6 +491,49 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
             {t(($) => $.detail.description_hint)}
           </p>
         </div>}
+      </div>
+
+      {/* Agent instructions — plain text injected into every task brief in
+          this project (RUYI-46). Edited as raw text in a Textarea, not the
+          rich ContentEditor, because the value is passed through to the agent
+          verbatim. Hidden entirely while empty except for the add button. */}
+      <div>
+        <button
+          type="button"
+          className={`flex w-full items-center gap-1 rounded-md px-2 py-1 text-caption font-medium transition-colors mb-2 hover:bg-accent/70 ${instructionsOpen ? "" : "text-muted-foreground hover:text-foreground"}`}
+          onClick={() => { setInstructionsDraft(project.instructions ?? ""); setInstructionsOpen(!instructionsOpen); }}
+        >
+          {t(($) => $.detail.section_instructions)}
+          <ChevronRight className={`!size-3 shrink-0 stroke-[2.5] text-muted-foreground transition-transform ${instructionsOpen ? "rotate-90" : ""}`} />
+        </button>
+        {instructionsOpen && (project.instructions || instructionsEditing) && <div className="pl-2">
+          <Textarea
+            name="project-instructions"
+            autoComplete="off"
+            aria-label={t(($) => $.detail.section_instructions)}
+            value={instructionsDraft}
+            onChange={(e) => setInstructionsDraft(e.target.value)}
+            onBlur={saveInstructionsDraft}
+            rows={4}
+            className="resize-none"
+            placeholder={t(($) => $.detail.instructions_placeholder)}
+          />
+          <p className={cn("mt-1 px-2 text-caption", instructionsOverLimit ? "text-destructive" : "text-muted-foreground")}>
+            {t(($) => $.detail.instructions_count, { length: instructionsLength(instructionsDraft) })}
+          </p>
+          <p className="px-2 text-caption text-muted-foreground">
+            {t(($) => $.detail.instructions_hint)}
+          </p>
+        </div>}
+        {!project.instructions && !instructionsEditing && (
+          <button
+            type="button"
+            onClick={() => { setInstructionsDraft(""); setInstructionsOpen(true); setInstructionsEditing(true); }}
+            className="ml-2 rounded-md px-2 py-1 text-caption text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground"
+          >
+            {t(($) => $.detail.instructions_add)}
+          </button>
+        )}
       </div>
 
       {/* Resources */}

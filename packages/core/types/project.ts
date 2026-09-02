@@ -7,6 +7,10 @@ export interface Project {
   workspace_id: string;
   title: string;
   description: string | null;
+  // Per-project agent instructions (RUYI-46): plain text injected into every
+  // task brief in this project, right after the workspace context. Server caps
+  // it at 32,000 characters.
+  instructions: string | null;
   icon: string | null;
   status: ProjectStatus;
   priority: ProjectPriority;
@@ -26,6 +30,7 @@ export interface Project {
 export interface CreateProjectRequest {
   title: string;
   description?: string;
+  instructions?: string;
   icon?: string;
   status?: ProjectStatus;
   priority?: ProjectPriority;
@@ -41,6 +46,8 @@ export interface CreateProjectRequest {
 export interface UpdateProjectRequest {
   title?: string;
   description?: string | null;
+  // Omit the key to leave instructions untouched; send null to clear them.
+  instructions?: string | null;
   icon?: string | null;
   status?: ProjectStatus;
   priority?: ProjectPriority;
