@@ -66,6 +66,12 @@ type Config struct {
 	AllowSignup         bool
 	AllowedEmails       []string
 	AllowedEmailDomains []string
+	// SuperAdminEmails is the SUPER_ADMIN_EMAILS deployment env (comma
+	// separated, RUYI-47). At login, an account whose email is on the list
+	// is granted the instance-level super-admin flag idempotently. The
+	// value is configuration, not a credential: it never appears in
+	// logs, audit rows, or API responses.
+	SuperAdminEmails []string
 	// DisableWorkspaceCreation, when true, makes POST /api/workspaces return
 	// 403 for every caller. There is no role/owner exception because the repo
 	// has no platform-admin concept; operators bootstrap the workspace with
@@ -206,10 +212,16 @@ type Handler struct {
 	// May be nil in tests / self-hosted with the metrics listener disabled;
 	// every Record* method is nil-safe and obsmetrics.RecordEvent treats a
 	// nil Metrics as "PostHog only".
-	Metrics                      *obsmetrics.BusinessMetrics
-	PATCache                     *auth.PATCache
-	DaemonTokenCache             *auth.DaemonTokenCache
-	MembershipCache              *auth.MembershipCache
+	Metrics          *obsmetrics.BusinessMetrics
+	PATCache         *auth.PATCache
+	DaemonTokenCache *auth.DaemonTokenCache
+	MembershipCache  *auth.MembershipCache
+	// UserStateCache fronts the persisted disabled flag for the auth
+	// paths (RUYI-47). Admin handlers invalidate the entry for a user
+	// right after flipping disabled/super-admin state so the change is
+	// visible to this node immediately and to other nodes within one
+	// Redis write. Nil-safe: invalidation then waits out the TTL.
+	UserStateCache               *auth.UserStateCache
 	WebhookRateLimiter           WebhookRateLimiter
 	WebhookIPRateLimiter         WebhookRateLimiter
 	WebhookAbsoluteIPRateLimiter WebhookRateLimiter

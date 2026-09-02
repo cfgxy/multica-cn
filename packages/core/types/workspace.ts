@@ -80,6 +80,18 @@ export interface User {
   profile_description: string;
   /** Pinned IANA tz; null means "use browser-detected tz at render time". */
   timezone: string | null;
+  /**
+   * Instance-level super-admin flag (RUYI-47). Presentation only — the
+   * server re-checks the flag on every /api/admin request. Older backends
+   * omit the field; treat false as the default.
+   */
+  is_super_admin: boolean;
+  /**
+   * Set on /api/me only while the session carries an impersonation shadow
+   * JWT (RUYI-47). Drives the global identity-switch banner. Older
+   * backends omit it; treat null as "not impersonating".
+   */
+  impersonator_id: string | null;
   created_at: string;
   updated_at: string;
 }

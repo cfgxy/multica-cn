@@ -17,7 +17,7 @@ fi
 hash_value="$(printf '%s' "$PWD" | cksum | awk '{print $1}')"
 offset=$((hash_value % 1000))
 
-postgres_db="multica_${slug}_${offset}"
+postgres_db="multica"
 postgres_port=5432
 backend_port=$((18080 + offset))
 
@@ -27,6 +27,7 @@ backend_port=$((18080 + offset))
 main_env="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null | sed 's|/\.git$||')/.env"
 if [ -f "$main_env" ]; then
   POSTGRES_PASSWORD="$(grep -E '^POSTGRES_PASSWORD=' "$main_env" | head -1 | cut -d= -f2-)"
+  POSTGRES_DB="$(grep -E '^POSTGRES_DB=' "$main_env" | head -1 | cut -d= -f2-)"
 fi
 if [ -z "${POSTGRES_PASSWORD:-}" ]; then
   echo "错误：无法从主检出 $main_env 读取 POSTGRES_PASSWORD，拒绝生成弱口令环境文件" >&2

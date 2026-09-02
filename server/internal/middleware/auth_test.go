@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -59,9 +60,19 @@ func validClaims() jwt.MapClaims {
 	}
 }
 
-// authMiddleware returns the Auth middleware with nil queries (JWT-only tests).
+// authMiddleware returns the Auth middleware with nil queries and no
+// disabled gate (JWT-only tests). Tests that exercise the account-disable
+// path build Auth directly with a stub auth.DisabledLookup.
 func authMiddleware(next http.Handler) http.Handler {
-	return Auth(nil, nil, nil)(next)
+	return Auth(nil, nil, nil, nil)(next)
+}
+
+// stubDisabledLookup is a configurable auth.DisabledLookup for middleware
+// tests: a fixed set of disabled user IDs.
+type stubDisabledLookup map[string]bool
+
+func (s stubDisabledLookup) IsDisabled(_ context.Context, userID string) bool {
+	return s[userID]
 }
 
 func TestAuth_MissingHeader(t *testing.T) {
@@ -196,13 +207,18 @@ func TestAuth_ValidToken(t *testing.T) {
 	}
 }
 
-func TestAuth_TemporarilyDisabledJWTByUserID(t *testing.T) {
-	handler := authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+// TestAuth_DisabledJWTByUserID pins the RUYI-47 contract: the persisted
+// disabled flag (via the DisabledLookup) rejects an otherwise valid JWT
+// with 403 and the stable "account disabled" reason.
+func TestAuth_DisabledJWTByUserID(t *testing.T) {
+	const disabledID = "514492f7-b30f-4147-bd33-c0e8ce5d6d4f"
+	mw := Auth(nil, nil, nil, stubDisabledLookup{disabledID: true})
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("next handler should not be called")
 	}))
 
 	claims := validClaims()
-	claims["sub"] = "514492f7-b30f-4147-bd33-c0e8ce5d6d4f"
+	claims["sub"] = disabledID
 	token := generateToken(claims, auth.JWTSecret())
 
 	req := httptest.NewRequest("GET", "/api/me", nil)
@@ -213,25 +229,93 @@ func TestAuth_TemporarilyDisabledJWTByUserID(t *testing.T) {
 	if w.Code != http.StatusForbidden {
 		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
 	}
+	if !strings.Contains(w.Body.String(), "account disabled") {
+		t.Fatalf("expected account disabled reason, got %s", w.Body.String())
+	}
 }
 
-func TestAuth_TemporarilyDisabledJWTByEmail(t *testing.T) {
-	handler := authMiddleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		t.Fatal("next handler should not be called")
+// TestAuth_DisabledIsPerUserNotPerEmail pins that the email claim alone no
+// longer drives rejection: the disable gate is keyed on the authenticated
+// user ID only, so an unrelated account sharing nothing with a disabled
+// user passes.
+func TestAuth_EnabledUserPassesDisabledGate(t *testing.T) {
+	mw := Auth(nil, nil, nil, stubDisabledLookup{"514492f7-b30f-4147-bd33-c0e8ce5d6d4f": true})
+	var gotUserID string
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUserID = r.Header.Get("X-User-ID")
+		w.WriteHeader(http.StatusOK)
 	}))
 
-	claims := validClaims()
-	claims["sub"] = "not-the-disabled-id"
-	claims["email"] = "pdzzer68@embassybase.com"
-	token := generateToken(claims, auth.JWTSecret())
-
+	token := generateToken(validClaims(), auth.JWTSecret())
 	req := httptest.NewRequest("GET", "/api/me", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	w := httptest.NewRecorder()
 	handler.ServeHTTP(w, req)
 
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	if gotUserID != "test-user-id" {
+		t.Fatalf("expected X-User-ID to pass through, got %q", gotUserID)
+	}
+}
+
+// TestAuth_ImpersonationTokenStampsImpersonator pins the shadow-JWT wiring:
+// a signed imp claim surfaces as X-Impersonator-ID, a client-supplied value
+// never survives, and the middleware also consults the impersonator's
+// account state.
+func TestAuth_ImpersonationTokenStampsImpersonator(t *testing.T) {
+	mw := Auth(nil, nil, nil, stubDisabledLookup{"disabled-admin-id": true})
+	var gotUserID, gotImp string
+	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUserID = r.Header.Get("X-User-ID")
+		gotImp = r.Header.Get("X-Impersonator-ID")
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	// 1. Valid shadow token: imp is stamped.
+	claims := validClaims()
+	claims["sub"] = "target-user-id"
+	claims["imp"] = "admin-user-id"
+	token := generateToken(claims, auth.JWTSecret())
+	req := httptest.NewRequest("GET", "/api/me", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for shadow token, got %d: %s", w.Code, w.Body.String())
+	}
+	if gotUserID != "target-user-id" || gotImp != "admin-user-id" {
+		t.Fatalf("expected sub+imp passthrough, got user=%q imp=%q", gotUserID, gotImp)
+	}
+
+	// 2. Disabled impersonator: rejected even though the target is fine.
+	claims["imp"] = "disabled-admin-id"
+	token = generateToken(claims, auth.JWTSecret())
+	req = httptest.NewRequest("GET", "/api/me", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
 	if w.Code != http.StatusForbidden {
-		t.Fatalf("expected 403, got %d: %s", w.Code, w.Body.String())
+		t.Fatalf("expected 403 for disabled impersonator, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// 3. Client-forged X-Impersonator-ID without a signed claim: dropped.
+	claims = validClaims()
+	token = generateToken(claims, auth.JWTSecret())
+	req = httptest.NewRequest("GET", "/api/me", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("X-Impersonator-ID", "admin-user-id")
+	w = httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 for plain token, got %d", w.Code)
+	}
+	if gotImp == "admin-user-id" {
+		t.Fatalf("client-supplied X-Impersonator-ID must not survive; got %q", gotImp)
 	}
 }
 
@@ -280,7 +364,7 @@ func TestAuth_InvalidPAT(t *testing.T) {
 // boundary MUL-2600 introduces.
 func TestAuth_StripsClientSuppliedActorSource(t *testing.T) {
 	var gotActorSource string
-	mw := Auth(nil, nil, nil)
+	mw := Auth(nil, nil, nil, nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotActorSource = r.Header.Get("X-Actor-Source")
 		w.WriteHeader(http.StatusOK)
@@ -323,7 +407,7 @@ func TestAuth_PATCacheHit(t *testing.T) {
 	cache.Set(context.Background(), hash, "cached-user-id", auth.AuthCacheTTL)
 
 	var gotUserID string
-	mw := Auth(nil, cache, nil) // nil queries — only safe on cache hit
+	mw := Auth(nil, cache, nil, nil) // nil queries — only safe on cache hit
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotUserID = r.Header.Get("X-User-ID")
 		w.WriteHeader(http.StatusOK)
@@ -348,7 +432,7 @@ func TestAuth_PATCacheHit(t *testing.T) {
 // We don't fall through — an mcn_ string can't be a valid mul_ PAT or
 // JWT, so any fall-through would be wasted work.
 func TestAuth_MCN_NoVerifierConfigured(t *testing.T) {
-	mw := Auth(nil, nil, nil)
+	mw := Auth(nil, nil, nil, nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("next must not be called when verifier is unconfigured")
 	}))
@@ -377,7 +461,7 @@ func TestAuth_MCN_ValidTokenSetsUserID(t *testing.T) {
 	verifier := auth.NewCloudPATVerifier(auth.CloudPATVerifierConfig{FleetBaseURL: srv.URL})
 
 	var gotUser, gotActorSource string
-	mw := Auth(nil, nil, verifier)
+	mw := Auth(nil, nil, verifier, nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotUser = r.Header.Get("X-User-ID")
 		gotActorSource = r.Header.Get("X-Actor-Source")
@@ -415,7 +499,7 @@ func TestAuth_MCN_InvalidReturns401(t *testing.T) {
 	defer srv.Close()
 
 	verifier := auth.NewCloudPATVerifier(auth.CloudPATVerifierConfig{FleetBaseURL: srv.URL})
-	mw := Auth(nil, nil, verifier)
+	mw := Auth(nil, nil, verifier, nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("next must not be called when token is invalid")
 	}))
@@ -439,7 +523,7 @@ func TestAuth_MCN_FleetUnreachableReturns503(t *testing.T) {
 	defer srv.Close()
 
 	verifier := auth.NewCloudPATVerifier(auth.CloudPATVerifierConfig{FleetBaseURL: srv.URL})
-	mw := Auth(nil, nil, verifier)
+	mw := Auth(nil, nil, verifier, nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("next must not be called when fleet is unavailable")
 	}))

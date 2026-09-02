@@ -17,6 +17,8 @@ export const mockUser: User = {
   language: null,
   timezone: null,
   profile_description: "",
+  is_super_admin: false,
+  impersonator_id: null,
   created_at: "2026-01-01T00:00:00Z",
   updated_at: "2026-01-01T00:00:00Z",
 };
