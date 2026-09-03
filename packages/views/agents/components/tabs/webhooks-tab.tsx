@@ -104,6 +104,11 @@ export function WebhooksTab({ agent }: WebhooksTabProps) {
 
   const removeWebhook = useMutation({
     mutationFn: (id: string) => api.deleteAgentWebhook(agent.id, id),
+    // Close the confirmation only on success: a failed delete keeps the
+    // dialog up (and its destructive button re-clickable) so the action can
+    // be retried. QA round 1 caught the dialog lingering over the page and
+    // blocking every click after the row was already gone.
+    onSuccess: () => setDeleting(null),
     onSettled: invalidate,
   });
 
@@ -349,27 +354,32 @@ function WebhookRow({
         {webhook.prompt}
       </p>
       {canManage ? (
-        <div className="flex flex-wrap items-center gap-1.5">
-          <WebhookUrlField
-            url={url}
-            size="sm"
-            actions={
-              <>
-                <RowIconButton label={t(($) => $.webhooks.edit)} onClick={onEdit}>
-                  <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
-                </RowIconButton>
-                <RowIconButton label={t(($) => $.webhooks.rotate)} onClick={onRotate}>
-                  <RotateCw className="h-3.5 w-3.5 text-muted-foreground" />
-                </RowIconButton>
-                <RowIconButton label={t(($) => $.webhooks.delete)} onClick={onDelete}>
-                  <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
-                </RowIconButton>
-              </>
-            }
-          />
-        </div>
+        // No wrapper flex: the field sits as a plain block child of the row
+        // card, so its root gets the full card width and the inner
+        // `flex-1 min-w-0 truncate` value can actually shrink on narrow
+        // viewports — wrapping it in a flex container made it a flex item
+        // whose min-content (the unbreakable mask run) forced the row past
+        // the viewport edge and pushed the row actions out of reach
+        // (QA round 1 defect 3).
+        <WebhookUrlField
+          url={url}
+          size="sm"
+          actions={
+            <>
+              <RowIconButton label={t(($) => $.webhooks.edit)} onClick={onEdit}>
+                <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
+              </RowIconButton>
+              <RowIconButton label={t(($) => $.webhooks.rotate)} onClick={onRotate}>
+                <RotateCw className="h-3.5 w-3.5 text-muted-foreground" />
+              </RowIconButton>
+              <RowIconButton label={t(($) => $.webhooks.delete)} onClick={onDelete}>
+                <Trash2 className="h-3.5 w-3.5 text-muted-foreground" />
+              </RowIconButton>
+            </>
+          }
+        />
       ) : (
-        <code className="block truncate rounded bg-muted px-2 py-1 font-mono text-caption text-foreground">
+        <code className="block max-w-full truncate rounded bg-muted px-2 py-1 font-mono text-caption text-foreground">
           {url}
         </code>
       )}

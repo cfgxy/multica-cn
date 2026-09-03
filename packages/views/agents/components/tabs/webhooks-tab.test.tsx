@@ -107,6 +107,7 @@ vi.mock("@multica/ui/lib/clipboard", () => ({
 vi.mock("sonner", () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { within } from "@testing-library/react";
 import { WebhooksTab } from "./webhooks-tab";
 
 const TEST_RESOURCES = {
@@ -256,6 +257,29 @@ describe("WebhooksTab — walkthrough items 1/3/5/6/10", () => {
 
     expect(screen.getByText("Couldn't load webhooks")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+  });
+});
+
+describe("WebhooksTab — delete flow", () => {
+  it("closes the confirmation dialog after a successful delete", async () => {
+    const user = userEvent.setup();
+    webhooksRef.current = [webhookFixture()];
+    apiSpies.remove.mockResolvedValue(undefined);
+    renderTab();
+
+    // Open the delete confirmation from the row action.
+    await user.click(screen.getByRole("button", { name: /^delete$/i }));
+    const dialog = screen.getByRole("alertdialog");
+    await user.click(within(dialog).getByRole("button", { name: "Delete" }));
+
+    await waitFor(() => {
+      expect(apiSpies.remove).toHaveBeenCalledWith("agent-1", "wh-1");
+    });
+    // QA round 1 defect 2: the dialog must not linger over the page after
+    // the row is gone.
+    await waitFor(() => {
+      expect(screen.queryByRole("alertdialog")).not.toBeInTheDocument();
+    });
   });
 });
 

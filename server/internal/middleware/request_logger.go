@@ -41,32 +41,44 @@ func webhookTriggerIDFromContext(ctx context.Context) string {
 	return v
 }
 
-// webhookIngressPathPrefix is the public webhook ingress path. The path
-// segment after this prefix IS a bearer credential, so the logger must
+// webhookIngressPathPrefixes are the public webhook ingress paths. The path
+// segment after each prefix IS a bearer credential, so the logger must
 // redact it — see redactWebhookPath.
-const webhookIngressPathPrefix = "/api/webhooks/autopilots/"
+var webhookIngressPathPrefixes = []string{
+	"/api/webhooks/autopilots/",
+	// Agent webhooks (RUYI-52) share the bearer-URL credential model: the
+	// trailing segment gates the route exactly like an autopilot token.
+	"/api/webhooks/agents/",
+}
 
 // redactWebhookPath returns a logger-safe version of a request path. For
-// the autopilot webhook ingress path the trailing token segment is replaced
-// with "[redacted]"; every other path passes through untouched.
+// a webhook ingress path the trailing token segment is replaced with
+// "[redacted]"; every other path passes through untouched.
 //
 // Why this exists: r.URL.Path for a successful webhook delivery is
-// "/api/webhooks/autopilots/awt_<32-byte-base64>", and the token is the
-// only credential gating the route. Without redaction, every successful
-// delivery prints a replayable URL into the structured log stream.
+// "/api/webhooks/<autopilots|agents>/awt_<32-byte-base64>", and the token is
+// the only credential gating the route. Without redaction, every successful
+// delivery prints a replayable URL into the structured log stream. QA round
+// 1 (RUYI-52) caught exactly that for the agents prefix when only the
+// autopilots prefix was listed here.
 func redactWebhookPath(path string) string {
-	if !strings.HasPrefix(path, webhookIngressPathPrefix) {
-		return path
+	for _, prefix := range webhookIngressPathPrefixes {
+		if !strings.HasPrefix(path, prefix) {
+			continue
+		}
+		rest := path[len(prefix):]
+		if rest == "" {
+			return path
+		}
+		// The token segment ends at the next '/' (defensive sub-path) or
+		// '?' (query string on a GET test-trigger); redact only up to it.
+		end := len(rest)
+		if i := strings.IndexAny(rest, "/?"); i >= 0 {
+			end = i
+		}
+		return prefix + "[redacted]" + rest[end:]
 	}
-	rest := path[len(webhookIngressPathPrefix):]
-	if rest == "" {
-		return path
-	}
-	// Preserve any sub-path after the token (currently none, but defensive).
-	if slash := strings.IndexByte(rest, '/'); slash >= 0 {
-		return webhookIngressPathPrefix + "[redacted]" + rest[slash:]
-	}
-	return webhookIngressPathPrefix + "[redacted]"
+	return path
 }
 
 // boundedBuffer captures up to Cap bytes from a stream then silently drops the
