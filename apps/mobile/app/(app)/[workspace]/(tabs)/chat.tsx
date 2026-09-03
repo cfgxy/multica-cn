@@ -61,6 +61,8 @@ import {
   useCreateChatSession,
   useDeleteChatSession,
   useMarkChatSessionRead,
+  useSetChatSessionArchived,
+  useSetChatSessionPinned,
 } from "@/data/mutations/chat";
 import {
   DRAFT_NEW_SESSION,
@@ -245,6 +247,8 @@ export default function ChatTab() {
   // ── Mutations ──────────────────────────────────────────────────────────
   const createSession = useCreateChatSession();
   const deleteSession = useDeleteChatSession();
+  const setSessionPinned = useSetChatSessionPinned();
+  const setSessionArchived = useSetChatSessionArchived();
 
   // ── Send burst ─────────────────────────────────────────────────────────
   const sessionPromiseRef = useRef<Promise<string | null> | null>(null);
@@ -485,6 +489,40 @@ export default function ChatTab() {
     );
   }, [activeSession, deleteSession, t]);
 
+  // ── Session-menu actions (RUYI-51) ─────────────────────────────────────
+  // Rename opens a self-contained formSheet route (text input → form sheet
+  // per apps/mobile CLAUDE.md Lesson 5); pin/archive mutate optimistically
+  // and stay on the open session. Mobile divergence from web, documented:
+  // web's header menu links to an agent profile page — mobile has no agent
+  // detail screen yet (more/agents.tsx is a placeholder), so no "view
+  // profile" item.
+  const handleRenameActive = useCallback(() => {
+    if (!activeSession || !wsSlug) return;
+    router.push({
+      pathname: "/[workspace]/chat-rename",
+      params: { workspace: wsSlug, sessionId: activeSession.id },
+    });
+  }, [activeSession, wsSlug]);
+
+  const handleTogglePinActive = useCallback(() => {
+    if (!activeSession) return;
+    setSessionPinned.mutate({
+      sessionId: activeSession.id,
+      pinned: !activeSession.pinned,
+    });
+  }, [activeSession, setSessionPinned]);
+
+  const handleToggleArchiveActive = useCallback(() => {
+    if (!activeSession) return;
+    // Keep the archived session open: the composer already renders its
+    // archived disabled state (isArchived → disabledReason), so the user
+    // sees the result in place and can switch via the title button.
+    setSessionArchived.mutate({
+      sessionId: activeSession.id,
+      archived: !isArchived,
+    });
+  }, [activeSession, isArchived, setSessionArchived]);
+
   // ── Composer disabled-state ────────────────────────────────────────────
   const disabled =
     !currentAgent ||
@@ -535,7 +573,12 @@ export default function ChatTab() {
         right={
           <ChatSessionActions
             showMore={!!activeSession}
-            onMorePress={handleDeleteActive}
+            isArchived={isArchived}
+            isPinned={activeSession?.pinned === true}
+            onRename={handleRenameActive}
+            onTogglePin={handleTogglePinActive}
+            onToggleArchive={handleToggleArchiveActive}
+            onDelete={handleDeleteActive}
             onNewPress={handleNewChat}
           />
         }

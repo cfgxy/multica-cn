@@ -1095,13 +1095,18 @@ class ApiClient {
 
   // --- Chat ---
   // Mirrors the surface area of packages/core/api/client.ts chat methods.
-  // v1 omits getChatSession + updateChatSession (rename) — see the v1 cut
-  // list in /Users/qingnaiyuan/.claude/plans/plan-velvety-puddle.md.
+  // v1 omitted getChatSession + updateChatSession (rename) — the session
+  // management writes (update / pin / archive) landed in RUYI-51; the
+  // single-row getChatSession read remains omitted (mobile reads the list
+  // cache instead).
 
   async listChatSessions(
-    opts?: { signal?: AbortSignal },
+    opts?: { status?: string; signal?: AbortSignal },
   ): Promise<ChatSession[]> {
-    const raw = await this.fetch<unknown>("/api/chat/sessions", {
+    const search = new URLSearchParams();
+    if (opts?.status) search.set("status", opts.status);
+    const suffix = search.size > 0 ? `?${search.toString()}` : "";
+    const raw = await this.fetch<unknown>(`/api/chat/sessions${suffix}`, {
       signal: opts?.signal,
     });
     return parseWithFallback(
@@ -1206,6 +1211,35 @@ class ApiClient {
       `/api/chat/sessions/${sessionId}/read`,
       { method: "POST" },
     );
+  }
+
+  // Session-management writes (rename / pin / archive) — RUYI-51. Mirror
+  // web's surface in packages/core/api/client.ts; responses are not consumed
+  // by UI logic (mutations patch the cache optimistically and re-invalidates
+  // on settle), so a raw `as void` fetch is the accepted form here per the
+  // helper table in apps/mobile/CLAUDE.md.
+  async updateChatSession(
+    id: string,
+    data: { title: string },
+  ): Promise<void> {
+    await this.fetch<void>(`/api/chat/sessions/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async setChatSessionPinned(id: string, pinned: boolean): Promise<void> {
+    await this.fetch<void>(`/api/chat/sessions/${id}/pin`, {
+      method: "PATCH",
+      body: JSON.stringify({ pinned }),
+    });
+  }
+
+  async setChatSessionArchived(id: string, archived: boolean): Promise<void> {
+    await this.fetch<void>(`/api/chat/sessions/${id}/archive`, {
+      method: "PATCH",
+      body: JSON.stringify({ archived }),
+    });
   }
 
   async cancelTaskById(taskId: string): Promise<void> {
