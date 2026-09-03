@@ -258,6 +258,9 @@ func buildPromptBody(task Task, provider string) string {
 	}
 	fmt.Fprintf(&b, "Start by running `multica issue get %s --output json` to understand your task, then complete it.\n", task.IssueID)
 	fmt.Fprintf(&b, "For comment history, follow the rule in your runtime workflow file (assignment-triggered tasks treat the read as mandatory). Scan the threads first with `multica issue comment list %s --roots-only --summary --compact --output json`, then expand only what matters with `--thread <thread-id> --tail 30`. For `--since` incremental polling, pagination, and folding, see `multica issue comment list --help`.\n", task.IssueID)
+	// Mid-run queued-message adoption (RUYI-53): same exposure as the
+	// comment-triggered path — a mention arriving mid-run queues separately.
+	b.WriteString(execenv.BuildConsumeQueuedHint(task.IssueID))
 	return b.String()
 }
 
@@ -490,6 +493,11 @@ func buildCommentPrompt(task Task, provider string) string {
 	} else {
 		fmt.Fprintf(&b, "Read the discussion: scan with `multica issue comment list %s --roots-only --summary --compact --output json`, then expand what matters with `--thread <thread-id> --tail 30`.\n\n", task.IssueID)
 	}
+	// Mid-run queued-message adoption (RUYI-48, prompt side RUYI-53): a
+	// mention arriving while this run is in flight queues separately. The
+	// agent must handle it and consume the queue, or the same work
+	// re-executes after this run completes.
+	b.WriteString(execenv.BuildConsumeQueuedHint(task.IssueID))
 	// Reply routing. When this run coalesced comments spanning MORE THAN ONE
 	// root thread, answer each thread in its own thread instead of dumping one
 	// merged comment (MUL-4348). Same-thread follow-ups collapse to a single
