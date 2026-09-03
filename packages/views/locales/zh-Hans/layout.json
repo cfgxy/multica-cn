@@ -50,6 +50,7 @@
     "invitation_workspace_fallback": "工作区",
     "invitation_join": "加入",
     "invitation_decline": "拒绝",
+    "stop_impersonation": "退出仿冒",
     "log_out": "退出登录",
     "admin_area": "管理",
     "new_issue": "新建任务",

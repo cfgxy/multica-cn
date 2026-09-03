@@ -23,6 +23,7 @@ import { Layers,
   LogOut,
   Plus,
   Shield,
+  ShieldOff,
   Check,
   SquarePen,
   X,
@@ -428,7 +429,13 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
   const { pathname, push } = useNavigation();
   const user = useAuthStore((s) => s.user);
   const userId = useAuthStore((s) => s.user?.id);
+  const applySession = useAuthStore((s) => s.applySession);
   const logout = useLogout();
+  const isImpersonating = user != null && user.impersonator_id != null;
+  const stopImpersonationMut = useMutation({
+    mutationFn: () => api.stopImpersonation(),
+    onSuccess: ({ token, user: restored }) => applySession(token, restored),
+  });
   const workspace = useCurrentWorkspace();
   const p = useWorkspacePaths();
   const { data: workspaces = EMPTY_WORKSPACES } = useQuery(workspaceListOptions());
@@ -725,6 +732,22 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                         <DropdownMenuItem onClick={() => push(p.admin())}>
                           <Shield className="h-3.5 w-3.5" />
                           {t(($) => $.sidebar.admin_area)}
+                        </DropdownMenuItem>
+                      </DropdownMenuGroup>
+                    </>
+                  )}
+                  {isImpersonating && (
+                    <>
+                      <DropdownMenuSeparator />
+                      <DropdownMenuGroup>
+                        <DropdownMenuItem
+                          disabled={stopImpersonationMut.isPending}
+                          onClick={() => stopImpersonationMut.mutate()}
+                        >
+                          <span data-testid="stop-impersonation-item" className="contents">
+                            <ShieldOff className="h-3.5 w-3.5" />
+                            {t(($) => $.sidebar.stop_impersonation)}
+                          </span>
                         </DropdownMenuItem>
                       </DropdownMenuGroup>
                     </>

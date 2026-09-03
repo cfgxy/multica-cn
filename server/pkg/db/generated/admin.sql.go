@@ -206,17 +206,18 @@ func (q *Queries) ListAllUsers(ctx context.Context, arg ListAllUsersParams) ([]L
 
 const listAllWorkspaces = `-- name: ListAllWorkspaces :many
 SELECT w.id, w.name, w.slug, w.description, w.settings, w.created_at, w.updated_at, w.context, w.repos, w.issue_prefix, w.issue_counter, w.avatar_url, w.attribution_fail_closed,
-       o.owner_id, o.owner_name, o.owner_email,
+       u2.id AS owner_id, u2.name AS owner_name, u2.email AS owner_email,
        COALESCE(mc.member_count, 0) AS member_count
 FROM workspace w
-LEFT JOIN LATERAL (
-    SELECT u2.id AS owner_id, u2.name AS owner_name, u2.email AS owner_email
-    FROM member m2
-    JOIN "user" u2 ON u2.id = m2.user_id
-    WHERE m2.workspace_id = w.id AND m2.role = 'owner'
-    ORDER BY m2.created_at ASC, m2.id ASC
-    LIMIT 1
-) o ON TRUE
+LEFT JOIN member m2 ON m2.workspace_id = w.id
+    AND m2.role = 'owner'
+    AND NOT EXISTS (
+        SELECT 1 FROM member m3
+        WHERE m3.workspace_id = m2.workspace_id
+          AND m3.role = 'owner'
+          AND (m3.created_at, m3.id) < (m2.created_at, m2.id)
+    )
+LEFT JOIN "user" u2 ON u2.id = m2.user_id
 LEFT JOIN (
     SELECT workspace_id, count(*) AS member_count
     FROM member
@@ -251,8 +252,8 @@ type ListAllWorkspacesRow struct {
 	AvatarUrl             pgtype.Text        `json:"avatar_url"`
 	AttributionFailClosed bool               `json:"attribution_fail_closed"`
 	OwnerID               pgtype.UUID        `json:"owner_id"`
-	OwnerName             string             `json:"owner_name"`
-	OwnerEmail            string             `json:"owner_email"`
+	OwnerName             pgtype.Text        `json:"owner_name"`
+	OwnerEmail            pgtype.Text        `json:"owner_email"`
 	MemberCount           int64              `json:"member_count"`
 }
 

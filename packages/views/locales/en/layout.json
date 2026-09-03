@@ -50,6 +50,7 @@
     "invitation_workspace_fallback": "Workspace",
     "invitation_join": "Join",
     "invitation_decline": "Decline",
+    "stop_impersonation": "Stop impersonating",
     "log_out": "Log out",
     "admin_area": "Admin",
     "new_issue": "New Issue",
