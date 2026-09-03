@@ -1,12 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
 import type { ChatSession } from "@multica/core/types";
 
-import { sortChatSessions } from "./chat";
+import { chatSessionsOptions, sortChatSessions } from "./chat";
 
 // data/queries/chat transitively imports the native fetch client via api.ts.
 // Mock it so the Node test never loads RN modules — sortChatSessions itself
 // is a pure function and needs nothing from api.
-vi.mock("@/data/api", () => ({ api: {} }));
+const { listChatSessions } = vi.hoisted(() => ({
+  listChatSessions: vi.fn(),
+}));
+vi.mock("@/data/api", () => ({ api: { listChatSessions } }));
 
 function session(
   over: Partial<ChatSession> & { id: string },
@@ -83,5 +86,16 @@ describe("sortChatSessions", () => {
     sortChatSessions(input);
 
     expect(input.map((s) => s.id)).toEqual(snapshot.map((s) => s.id));
+  });
+});
+
+describe("chatSessionsOptions", () => {
+  it("includes archived sessions while forwarding the query cancellation signal", async () => {
+    const signal = new AbortController().signal;
+    const query = chatSessionsOptions("workspace-id");
+
+    await query.queryFn?.({ signal } as never);
+
+    expect(listChatSessions).toHaveBeenCalledWith({ status: "all", signal });
   });
 });

@@ -1101,9 +1101,12 @@ class ApiClient {
   // cache instead).
 
   async listChatSessions(
-    opts?: { signal?: AbortSignal },
+    opts?: { status?: string; signal?: AbortSignal },
   ): Promise<ChatSession[]> {
-    const raw = await this.fetch<unknown>("/api/chat/sessions", {
+    const search = new URLSearchParams();
+    if (opts?.status) search.set("status", opts.status);
+    const suffix = search.size > 0 ? `?${search.toString()}` : "";
+    const raw = await this.fetch<unknown>(`/api/chat/sessions${suffix}`, {
       signal: opts?.signal,
     });
     return parseWithFallback(

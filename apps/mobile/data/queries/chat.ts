@@ -77,7 +77,7 @@ export function isTaskMessageTaskId(
 export const chatSessionsOptions = (wsId: string | null) =>
   queryOptions({
     queryKey: chatKeys.sessions(wsId),
-    queryFn: ({ signal }) => api.listChatSessions({ signal }),
+    queryFn: ({ signal }) => api.listChatSessions({ status: "all", signal }),
     enabled: !!wsId,
     staleTime: Infinity,
   });
