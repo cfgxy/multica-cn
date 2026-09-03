@@ -50,6 +50,7 @@
     "invitation_workspace_fallback": "워크스페이스",
     "invitation_join": "참가",
     "invitation_decline": "거절",
+    "stop_impersonation": "가장 종료",
     "log_out": "로그아웃",
     "admin_area": "관리",
     "new_issue": "새 태스크",

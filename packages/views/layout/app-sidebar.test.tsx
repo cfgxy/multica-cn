@@ -3,8 +3,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "@multica/core/api";
 import { AppSidebar } from "./app-sidebar";
 
-const { appForeground, chatSessions, chatStore, detail, deletePin, inboxItems, navigation, pins, sidebarState, summary, workspaces } = vi.hoisted(() => ({
+const { appForeground, authState, chatSessions, chatStore, detail, deletePin, inboxItems, navigation, pins, sidebarState, stopImpersonation, summary, workspaces } = vi.hoisted(() => ({
   appForeground: { current: true },
+  authState: {
+    current: {
+      user: { id: "user-1", impersonator_id: null as string | null },
+      applySession: vi.fn(),
+    },
+  },
   sidebarState: { setOpenMobile: vi.fn() },
   chatSessions: { current: [] as { id?: string; unread_count?: number }[] },
   chatStore: { current: { activeSessionId: null as string | null, isOpen: false } },
@@ -12,6 +18,7 @@ const { appForeground, chatSessions, chatStore, detail, deletePin, inboxItems, n
   deletePin: vi.fn(),
   inboxItems: { current: [] as { id: string; read: boolean }[] },
   navigation: { current: { pathname: "/acme/issues" } },
+  stopImpersonation: vi.fn(),
   summary: { current: [] as { workspace_id: string; count: number }[] },
   workspaces: {
     current: [] as { id: string; name: string; slug: string; avatar_url: string | null }[],
@@ -74,7 +81,19 @@ vi.mock("@multica/ui/components/ui/dropdown-menu", () => ({
   DropdownMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   DropdownMenuContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   DropdownMenuGroup: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  DropdownMenuItem: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  DropdownMenuItem: ({
+    children,
+    onClick,
+    disabled,
+  }: {
+    children: React.ReactNode;
+    onClick?: () => void;
+    disabled?: boolean;
+  }) => (
+    <button type="button" onClick={onClick} disabled={disabled}>
+      {children}
+    </button>
+  ),
   DropdownMenuLabel: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   DropdownMenuSeparator: () => null,
   DropdownMenuTrigger: ({ render }: { render: React.ReactNode }) => <>{render}</>,
@@ -104,7 +123,7 @@ vi.mock("../workspace/workspace-avatar", () => ({ WorkspaceAvatar: () => <span /
 vi.mock("@multica/ui/components/common/actor-avatar", () => ({ ActorAvatar: () => <span /> }));
 
 vi.mock("@multica/core/auth", () => ({
-  useAuthStore: (selector: (state: { user: { id: string } }) => unknown) => selector({ user: { id: "user-1" } }),
+  useAuthStore: (selector: (state: typeof authState.current) => unknown) => selector(authState.current),
 }));
 // Callable-store shape (selectorFn + getState) per the repo testing rules.
 vi.mock("@multica/core/chat", () => ({
@@ -145,6 +164,7 @@ vi.mock("@multica/core/api", async (importOriginal) => {
     api: {
       ...actual.api,
       getBaseUrl: () => "http://127.0.0.1:8080",
+      stopImpersonation,
     },
   };
 });
@@ -176,7 +196,12 @@ vi.mock("@multica/core/workspace/queries", () => ({
 }));
 vi.mock("@tanstack/react-query", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@tanstack/react-query")>()),
-  useMutation: () => ({ isPending: false, mutate: vi.fn() }),
+  useMutation: (options: { mutationFn: () => Promise<unknown>; onSuccess?: (data: unknown) => void }) => ({
+    isPending: false,
+    mutate: () => {
+      void options.mutationFn().then((data) => options.onSuccess?.(data));
+    },
+  }),
   useQuery: ({ queryKey }: { queryKey: readonly unknown[] }) => {
     if (queryKey[0] === "pins") return { data: pins.current };
     if (queryKey[0] === "issue") return detail.current;
@@ -427,5 +452,50 @@ describe("personal nav — Chat", () => {
     appForeground.current = false;
     const { container } = render(<AppSidebar />);
     expect(chatBadge(container)).toHaveAttribute("aria-label", "5");
+  });
+});
+
+// RUYI-47 rework: the impersonation banner is the only exit for a shadow
+// session and it isn't mounted on every screen, so BUG1 left admins with no
+// reliable way out. The workspace/user dropdown now surfaces the same exit
+// above "Log out" whenever the session carries impersonator_id.
+describe("stop impersonation menu item", () => {
+  beforeEach(() => {
+    authState.current = {
+      user: { id: "user-1", impersonator_id: null },
+      applySession: vi.fn(),
+    };
+    stopImpersonation.mockReset();
+    navigation.current = { pathname: "/acme/issues" };
+  });
+
+  it("is hidden when the session is not impersonating", () => {
+    render(<AppSidebar />);
+    expect(screen.queryByTestId("stop-impersonation-item")).not.toBeInTheDocument();
+  });
+
+  it("is shown above Log out when the session is impersonating", () => {
+    authState.current = {
+      user: { id: "user-1", impersonator_id: "admin-1" },
+      applySession: vi.fn(),
+    };
+    render(<AppSidebar />);
+    expect(screen.getByTestId("stop-impersonation-item")).toBeInTheDocument();
+  });
+
+  it("restores the real session and hides itself once clicked", async () => {
+    authState.current = {
+      user: { id: "user-1", impersonator_id: "admin-1" },
+      applySession: vi.fn(),
+    };
+    const restoredUser = { id: "user-1", impersonator_id: null };
+    stopImpersonation.mockResolvedValue({ token: "real-token", user: restoredUser });
+
+    render(<AppSidebar />);
+    const item = screen.getByTestId("stop-impersonation-item");
+    item.closest("button")?.click();
+
+    await waitFor(() => expect(stopImpersonation).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(authState.current.applySession).toHaveBeenCalledWith("real-token", restoredUser));
   });
 });
