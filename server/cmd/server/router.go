@@ -1396,6 +1396,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	// purpose: the bearer token in the URL path IS the credential. Workspace
 	// context is derived from the trigger row, never from request headers.
 	r.Post("/api/webhooks/autopilots/{token}", h.HandleAutopilotWebhook)
+	// Agent webhook ingress (RUYI-52). Same bearer-URL credential model; the
+	// bound prompt alone starts a fresh chat session, so the body is never
+	// read and GET (browser test) and POST (workflow step) are equivalent.
+	r.Get("/api/webhooks/agents/{token}", h.HandleAgentWebhook)
+	r.Post("/api/webhooks/agents/{token}", h.HandleAgentWebhook)
 	// GitHub App webhook (no Multica auth — requests are authenticated via
 	// HMAC-SHA256 signature in the handler) and post-install setup callback.
 	r.Post("/api/webhooks/github", h.HandleGitHubWebhook)
@@ -2112,6 +2117,18 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// internal/handler/agent_env.go.
 					r.Get("/env", h.GetAgentEnv)
 					r.Put("/env", h.UpdateAgentEnv)
+					// Agent webhooks (RUYI-52): list for any viewer of the
+					// agent (credential fields stripped for non-managers);
+					// writes gate through canManageAgent. See
+					// internal/handler/agent_webhook.go.
+					r.Get("/webhooks", h.ListAgentWebhooks)
+					r.Post("/webhooks", h.CreateAgentWebhook)
+					r.Route("/webhooks/{webhookId}", func(r chi.Router) {
+						r.Put("/", h.UpdateAgentWebhook)
+						r.Put("/enabled", h.SetAgentWebhookEnabled)
+						r.Post("/rotate", h.RotateAgentWebhook)
+						r.Delete("/", h.DeleteAgentWebhook)
+					})
 				})
 			})
 

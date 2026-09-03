@@ -60,6 +60,9 @@ import type {
   UpdateSkillRequest,
   SetAgentSkillsRequest,
   SetAgentRuntimeSkillEnabledRequest,
+  AgentWebhook,
+  CreateAgentWebhookRequest,
+  UpdateAgentWebhookRequest,
   PersonalAccessToken,
   CreatePersonalAccessTokenRequest,
   CreatePersonalAccessTokenResponse,
@@ -3106,6 +3109,47 @@ export class ApiClient {
 			body: JSON.stringify({ enabled }),
 		});
 	}
+
+  // Agent webhooks (RUYI-52): public trigger URLs bound to a fixed prompt.
+  // webhook_token / webhook_path / webhook_url come back only for managers —
+  // the server strips them for anyone else.
+  async listAgentWebhooks(agentId: string): Promise<AgentWebhook[]> {
+    return this.fetch(`/api/agents/${agentId}/webhooks`);
+  }
+
+  async createAgentWebhook(agentId: string, data: CreateAgentWebhookRequest): Promise<AgentWebhook> {
+    return this.fetch(`/api/agents/${agentId}/webhooks`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async updateAgentWebhook(agentId: string, webhookId: string, data: UpdateAgentWebhookRequest): Promise<AgentWebhook> {
+    return this.fetch(`/api/agents/${agentId}/webhooks/${webhookId}`, {
+      method: "PUT",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async setAgentWebhookEnabled(agentId: string, webhookId: string, enabled: boolean): Promise<AgentWebhook> {
+    return this.fetch(`/api/agents/${agentId}/webhooks/${webhookId}/enabled`, {
+      method: "PUT",
+      body: JSON.stringify({ enabled }),
+    });
+  }
+
+  async rotateAgentWebhook(agentId: string, webhookId: string): Promise<AgentWebhook> {
+    return this.fetch(`/api/agents/${agentId}/webhooks/${webhookId}/rotate`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+  }
+
+  async deleteAgentWebhook(agentId: string, webhookId: string): Promise<void> {
+    await this.fetch(`/api/agents/${agentId}/webhooks/${webhookId}`, {
+      method: "DELETE",
+    });
+  }
 
   async setAgentRuntimeSkillEnabled(
     agentId: string,
