@@ -5,11 +5,13 @@ import type {
   ChatMessage,
   ChatPendingTask,
   ChatQuickActionsPayload,
+  ChatSession,
 } from "@multica/core/types";
 
 import {
   applyChatDoneToCache,
   applyChatQuickActionsToCache,
+  applyChatSessionUpdatedToCache,
   promotePendingTaskToRunning,
   seedAcceptedPendingTask,
   seedPendingTaskFromQueued,
@@ -385,5 +387,150 @@ describe("applyChatQuickActionsToCache", () => {
       { label: "Draft it", prompt: "Draft the complete plan", primary: true },
     ]);
     unsub();
+  });
+});
+
+// =====================================================
+// chat:session_updated (rename / pin / archive from any device)
+// =====================================================
+
+function chatSession(over: Partial<ChatSession> & { id: string }): ChatSession {
+  return {
+    workspace_id: "",
+    agent_id: "",
+    creator_id: "",
+    title: "",
+    status: "active",
+    has_unread: false,
+    created_at: "2026-08-01T00:00:00Z",
+    updated_at: "2026-08-01T00:00:00Z",
+    ...over,
+  };
+}
+
+function sessionUpdatedPayload(
+  over: Partial<Parameters<typeof applyChatSessionUpdatedToCache>[2]> = {},
+): Parameters<typeof applyChatSessionUpdatedToCache>[2] {
+  return { chat_session_id: SESSION, ...over };
+}
+
+describe("applyChatSessionUpdatedToCache", () => {
+  it("patches a plain rename without re-sorting", () => {
+    const rows = [
+      chatSession({
+        id: SESSION,
+        title: "before",
+        updated_at: "2026-08-02T00:00:00Z",
+      }),
+      chatSession({ id: "b", updated_at: "2026-08-01T00:00:00Z" }),
+    ];
+    const qc = new QueryClient();
+    qc.setQueryData<ChatSession[]>(chatKeys.sessions("ws"), rows);
+
+    applyChatSessionUpdatedToCache(
+      qc,
+      "ws",
+      sessionUpdatedPayload({ title: "after", updated_at: "2026-08-03T00:00:00Z" }),
+    );
+
+    const next = qc.getQueryData<ChatSession[]>(chatKeys.sessions("ws"));
+    expect(next?.map((s) => s.id)).toEqual([SESSION, "b"]);
+    expect(next?.[0].title).toBe("after");
+    expect(next?.[0].updated_at).toBe("2026-08-03T00:00:00Z");
+  });
+
+  it("flips pinned and re-sorts pinned-first on a pin event", () => {
+    const rows = [
+      chatSession({ id: "recent", updated_at: "2026-08-05T00:00:00Z" }),
+      chatSession({ id: SESSION, updated_at: "2026-08-01T00:00:00Z" }),
+    ];
+    const qc = new QueryClient();
+    qc.setQueryData<ChatSession[]>(chatKeys.sessions("ws"), rows);
+
+    applyChatSessionUpdatedToCache(
+      qc,
+      "ws",
+      sessionUpdatedPayload({ pinned: true, updated_at: "2026-08-06T00:00:00Z" }),
+    );
+
+    const next = qc.getQueryData<ChatSession[]>(chatKeys.sessions("ws"));
+    expect(next?.map((s) => s.id)).toEqual([SESSION, "recent"]);
+    expect(next?.[0].pinned).toBe(true);
+  });
+
+  it("flips status and zeroes unread when a session is archived (MUL-4360 stuck-badge mirror)", () => {
+    const rows = [
+      chatSession({
+        id: SESSION,
+        has_unread: true,
+        unread_count: 3,
+        updated_at: "2026-08-01T00:00:00Z",
+      }),
+      chatSession({ id: "b", updated_at: "2026-08-02T00:00:00Z" }),
+    ];
+    const qc = new QueryClient();
+    qc.setQueryData<ChatSession[]>(chatKeys.sessions("ws"), rows);
+
+    applyChatSessionUpdatedToCache(
+      qc,
+      "ws",
+      sessionUpdatedPayload({ status: "archived", updated_at: "2026-08-06T00:00:00Z" }),
+    );
+
+    const next = qc.getQueryData<ChatSession[]>(chatKeys.sessions("ws"));
+    const archived = next?.find((s) => s.id === SESSION);
+    expect(archived?.status).toBe("archived");
+    expect(archived?.has_unread).toBe(false);
+    expect(archived?.unread_count).toBe(0);
+  });
+
+  it("does not fabricate an unread count when a session is unarchived", () => {
+    const qc = new QueryClient();
+    qc.setQueryData<ChatSession[]>(chatKeys.sessions("ws"), [
+      chatSession({ id: SESSION, status: "archived", has_unread: false }),
+    ]);
+
+    applyChatSessionUpdatedToCache(
+      qc,
+      "ws",
+      sessionUpdatedPayload({ status: "active" }),
+    );
+
+    const next = qc.getQueryData<ChatSession[]>(chatKeys.sessions("ws"));
+    expect(next?.[0].status).toBe("active");
+    expect(next?.[0].has_unread).toBe(false);
+    expect(next?.[0].unread_count).toBeUndefined();
+  });
+
+  it("leaves absent fields untouched (pin event carries no title/status)", () => {
+    const rows = [
+      chatSession({ id: SESSION, title: "kept", status: "active", pinned: false }),
+    ];
+    const qc = new QueryClient();
+    qc.setQueryData<ChatSession[]>(chatKeys.sessions("ws"), rows);
+
+    applyChatSessionUpdatedToCache(
+      qc,
+      "ws",
+      sessionUpdatedPayload({ pinned: true }),
+    );
+
+    const next = qc.getQueryData<ChatSession[]>(chatKeys.sessions("ws"));
+    expect(next?.[0].title).toBe("kept");
+    expect(next?.[0].status).toBe("active");
+  });
+
+  it("is a no-op for an unknown session id", () => {
+    const rows = [chatSession({ id: "a" })];
+    const qc = new QueryClient();
+    qc.setQueryData<ChatSession[]>(chatKeys.sessions("ws"), rows);
+
+    applyChatSessionUpdatedToCache(
+      qc,
+      "ws",
+      sessionUpdatedPayload({ chat_session_id: "ghost", pinned: true }),
+    );
+
+    expect(qc.getQueryData<ChatSession[]>(chatKeys.sessions("ws"))).toEqual(rows);
   });
 });
