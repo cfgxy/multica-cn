@@ -1271,6 +1271,43 @@ func TestBuildPromptResumedNoDeltaDoesNotForceThreadRead(t *testing.T) {
 	}
 }
 
+// TestBuildPromptConsumeQueuedAdoption pins the RUYI-53 wiring: issue-scoped
+// run prompts (comment-triggered AND assignment) carry the consume-queued
+// adoption + anti-misuse hint, because a mention arriving while either shape
+// of run is in flight queues separately and re-executes after the run unless
+// the agent handles it and consumes the queue (RUYI-48). Chat prompts have no
+// issue-task queue to consume against and must stay free of the hint.
+func TestBuildPromptConsumeQueuedAdoption(t *testing.T) {
+	const issueID = "issue-consume-1"
+
+	commentOut := BuildPrompt(Task{
+		IssueID:               issueID,
+		TriggerCommentID:      "trigger-1",
+		TriggerThreadID:       "thread-root-1",
+		TriggerCommentContent: "please handle",
+		TriggerAuthorType:     "member",
+	}, "claude")
+
+	assignmentOut := BuildPrompt(Task{IssueID: issueID}, "claude")
+
+	for name, out := range map[string]string{"comment": commentOut, "assignment": assignmentOut} {
+		for _, want := range []string{
+			"multica issue consume-queued " + issueID,
+			"ONLY AFTER you have actually read and handled",
+			"silently lost",
+		} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s prompt missing consume-queued guidance %q\n---\n%s", name, want, out)
+			}
+		}
+	}
+
+	chatOut := BuildPrompt(Task{IssueID: issueID, ChatSessionID: "chat-1", TriggerAuthorType: "member"}, "claude")
+	if strings.Contains(chatOut, "consume-queued") {
+		t.Errorf("chat prompt must not carry the issue-queue consumption hint\n---\n%s", chatOut)
+	}
+}
+
 // TestBuildCommentPromptCoalescedCrossThread pins MUL-4195 review should-fix #3:
 // when a run coalesces comments that span MULTIPLE threads, the prompt must
 // embed each folded comment's content with its OWN thread id instead of
