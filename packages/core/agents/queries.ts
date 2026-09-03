@@ -156,3 +156,20 @@ export function agentBuilderSessionListOptions(wsId: string) {
     staleTime: 0,
   });
 }
+
+// Agent webhooks (RUYI-52): public trigger URLs bound to a fixed prompt.
+// Scoped per agent; invalidated locally by the tab's own mutations.
+export const agentWebhooksKeys = {
+  all: (agentId: string) => ["agents", agentId, "webhooks"] as const,
+  list: (agentId: string) => [...agentWebhooksKeys.all(agentId), "list"] as const,
+};
+
+export function agentWebhooksOptions(agentId: string) {
+  return queryOptions({
+    queryKey: agentWebhooksKeys.list(agentId),
+    queryFn: () => api.listAgentWebhooks(agentId),
+    enabled: agentId.length > 0,
+    staleTime: 30 * 1000,
+    gcTime: 5 * 60 * 1000,
+  });
+}
