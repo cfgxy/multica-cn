@@ -425,10 +425,14 @@ func (h *Handler) AdminListWorkspaces(w http.ResponseWriter, r *http.Request) {
 		if row.OwnerID.Valid {
 			id := uuidToString(row.OwnerID)
 			ws.OwnerID = &id
-			name := row.OwnerName
-			ws.OwnerName = &name
-			email := row.OwnerEmail
-			ws.OwnerEmail = &email
+			if row.OwnerName.Valid {
+				name := row.OwnerName.String
+				ws.OwnerName = &name
+			}
+			if row.OwnerEmail.Valid {
+				email := row.OwnerEmail.String
+				ws.OwnerEmail = &email
+			}
 		}
 		workspaces = append(workspaces, ws)
 	}

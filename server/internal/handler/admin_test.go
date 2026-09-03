@@ -490,6 +490,44 @@ func TestAdminListWorkspaces_ReturnsOwnerAndCounts(t *testing.T) {
 	}
 }
 
+// TestAdminListWorkspaces_OwnerlessWorkspaceDoesNotError is a regression
+// test for RUYI-47 rework: a workspace with no owner-role member must not
+// break the query. Before the fix, ListAllWorkspacesRow declared
+// OwnerName/OwnerEmail as non-nullable Go strings while the underlying join
+// can legitimately return NULL for both, so pgx failed to scan the row and
+// the endpoint returned 500 for every request that touched such a
+// workspace (including the unfiltered admin page load).
+func TestAdminListWorkspaces_OwnerlessWorkspaceDoesNotError(t *testing.T) {
+	admin := insertAdminTestUser(t, "admin-wslist-ownerless-admin@test.local", "WsList Ownerless Admin", true)
+	ws := dbfx.Insert(t, "workspace", testutil.Cols{"name": "Admin WsList Ownerless", "slug": "admin-wslist-ownerless"})
+	// Non-owner membership only: no row in `member` has role='owner' for
+	// this workspace, so the LEFT JOIN chain in ListAllWorkspaces must
+	// leave owner_id/owner_name/owner_email NULL rather than erroring.
+	member := insertAdminTestUser(t, "admin-wslist-ownerless-member@test.local", "WsList Ownerless Member", false)
+	dbfx.Insert(t, "member", testutil.Cols{"workspace_id": ws, "user_id": member, "role": "member"})
+
+	req := newRequest("GET", "/api/admin/workspaces?query=admin-wslist-ownerless", nil)
+	req.Header.Set("X-User-ID", admin)
+	resp := testutil.Call(t, testHandler.AdminListWorkspaces, req).Want(http.StatusOK)
+
+	var body AdminWorkspaceListResponse
+	resp.JSON(&body)
+
+	if len(body.Workspaces) != 1 || body.Total != 1 {
+		t.Fatalf("expected exactly one workspace, got total=%d rows=%d", body.Total, len(body.Workspaces))
+	}
+	got := body.Workspaces[0]
+	if got.ID != ws {
+		t.Fatalf("unexpected workspace row: %+v", got)
+	}
+	if got.OwnerID != nil || got.OwnerName != nil || got.OwnerEmail != nil {
+		t.Fatalf("ownerless workspace must have nil owner fields, got: %+v", got)
+	}
+	if got.MemberCount != 1 {
+		t.Fatalf("expected member_count=1, got %d", got.MemberCount)
+	}
+}
+
 func TestMaybeGrantSuperAdmin_IsIdempotentBootstrap(t *testing.T) {
 	setSuperAdminEmailsForTest(t, []string{"bootstrap-admin@test.local"})
 
