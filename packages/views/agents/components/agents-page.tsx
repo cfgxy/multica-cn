@@ -87,7 +87,7 @@ import { matchesPinyin } from "../../editor/extensions/pinyin-match";
 // the documented exception to the single-line management-list rule.
 const GRID_COLS =
   "grid-cols-[0.75rem_minmax(120px,1fr)_var(--agc-status-mobile)_1.75rem_0.75rem] " +
-  "@2xl:grid-cols-[0.75rem_1rem_minmax(200px,1fr)_var(--agc-status-desktop)_var(--agc-owner)_var(--agc-access)_var(--agc-runtime)_var(--agc-lastactive)_var(--agc-runs)_var(--agc-model)_var(--agc-created)_1.75rem_0.75rem]";
+  "@2xl:grid-cols-[0.75rem_1rem_minmax(200px,1fr)_var(--agc-status-desktop)_var(--agc-owner)_var(--agc-access)_var(--agc-runtime)_var(--agc-model)_var(--agc-lastactive)_var(--agc-runs)_var(--agc-created)_1.75rem_0.75rem]";
 
 // Two-line rows; the virtualizer's fixed-size contract.
 const ROW_HEIGHT = 64;
@@ -642,6 +642,13 @@ function AgentListHeader({
       ) : (
         <ListGridHeaderCell className="hidden px-0 @2xl:flex" />
       )}
+      {isColVisible("model") ? (
+        <ListGridHeaderCell className="hidden @2xl:flex">
+          {t(($) => $.columns.model)}
+        </ListGridHeaderCell>
+      ) : (
+        <ListGridHeaderCell className="hidden px-0 @2xl:flex" />
+      )}
       {isColVisible("lastActive") ? (
         <ListGridHeaderCell
           className="hidden @2xl:flex"
@@ -661,13 +668,6 @@ function AgentListHeader({
           onSort={() => onSort("runs")}
         >
           {t(($) => $.columns.runs)}
-        </ListGridHeaderCell>
-      ) : (
-        <ListGridHeaderCell className="hidden px-0 @2xl:flex" />
-      )}
-      {isColVisible("model") ? (
-        <ListGridHeaderCell className="hidden @2xl:flex">
-          {t(($) => $.columns.model)}
         </ListGridHeaderCell>
       ) : (
         <ListGridHeaderCell className="hidden px-0 @2xl:flex" />
@@ -714,12 +714,14 @@ function LoadingSkeleton() {
           <Skeleton className="h-3 w-14" />
         </ListGridHeaderCell>
         <ListGridHeaderCell className="hidden @2xl:flex">
+          <Skeleton className="h-3 w-12" />
+        </ListGridHeaderCell>
+        <ListGridHeaderCell className="hidden @2xl:flex">
           <Skeleton className="h-3 w-14" />
         </ListGridHeaderCell>
         <ListGridHeaderCell className="hidden @2xl:flex">
           <Skeleton className="h-3 w-10" />
         </ListGridHeaderCell>
-        <ListGridHeaderCell className="hidden px-0 @2xl:flex" />
         <ListGridHeaderCell className="hidden px-0 @2xl:flex" />
         <span aria-hidden="true" />
       </ListGridHeader>
@@ -749,10 +751,12 @@ function LoadingSkeleton() {
           <ListGridCell className="hidden @2xl:flex">
             <Skeleton className="h-3 w-12" />
           </ListGridCell>
+          <ListGridCell className="hidden @2xl:flex">
+            <Skeleton className="h-3 w-12" />
+          </ListGridCell>
           <ListGridCell className="hidden justify-end @2xl:flex">
             <Skeleton className="h-3 w-8" />
           </ListGridCell>
-          <ListGridCell className="hidden px-0 @2xl:flex" />
           <ListGridCell className="hidden px-0 @2xl:flex" />
           <span aria-hidden="true" />
         </ListGridRow>
@@ -1134,6 +1138,15 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
                       ) : (
                         <ListGridCell className="hidden px-0 @2xl:flex" />
                       )}
+                      {isColVisible("model") ? (
+                        <ListGridCell className="hidden @2xl:flex">
+                          <span className="min-w-0 truncate text-caption text-muted-foreground">
+                            {row.agent.model || "—"}
+                          </span>
+                        </ListGridCell>
+                      ) : (
+                        <ListGridCell className="hidden px-0 @2xl:flex" />
+                      )}
                       {isColVisible("lastActive") ? (
                         <LastActiveCell row={row} />
                       ) : (
@@ -1142,15 +1155,6 @@ export function AgentsPage(_props: AgentsPageProps = {}) {
                       {isColVisible("runs") ? (
                         <ListGridCell className="hidden justify-end font-mono text-caption tabular-nums text-muted-foreground @2xl:flex">
                           {row.runCount.toLocaleString(locale)}
-                        </ListGridCell>
-                      ) : (
-                        <ListGridCell className="hidden px-0 @2xl:flex" />
-                      )}
-                      {isColVisible("model") ? (
-                        <ListGridCell className="hidden @2xl:flex">
-                          <span className="min-w-0 truncate text-caption text-muted-foreground">
-                            {row.agent.model || "—"}
-                          </span>
                         </ListGridCell>
                       ) : (
                         <ListGridCell className="hidden px-0 @2xl:flex" />
