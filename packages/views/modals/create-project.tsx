@@ -488,10 +488,15 @@ export function CreateProjectModal({ onClose }: { onClose: () => void }) {
             onUpdate={(md) => setDraft({ description: md })}
             debounceMs={500}
           />
-          <p className="mt-1 text-caption text-muted-foreground">
-            {t(($) => $.create_project.description_hint)}
-          </p>
         </div>
+        {/* Hint lives OUTSIDE the scrollable editor area and is shrink-0: the
+            editor's min-h-full otherwise fills the dialog body exactly,
+            pushing the hint below the fold (Owner-reported occlusion). Fixed
+            here, it stays visible at the default dialog size regardless of
+            editor content height. */}
+        <p className="shrink-0 mt-1 px-5 text-caption text-muted-foreground">
+          {t(($) => $.create_project.description_hint)}
+        </p>
 
         {/* Property toolbar — mirrors the create-issue footer: a wrapping pill
             row whose low-frequency fields (start/due date) collapse into a ⋯
