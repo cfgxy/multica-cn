@@ -132,6 +132,9 @@ and is hidden from the PR list.
 | `StartTask` / `CompleteTask` do not write issue status (agent CLI owns progress) | `server/internal/service/task.go` (`StartTask` / `CompleteTask` comments) | new citation |
 | Runtime brief: status written whenever the work changes it, mid-turn included — starting the issue's own ask → `in_progress` immediately (workflow step 3); delivery → `in_review`, continuing → `in_progress`, stuck → `blocked`; a turn producing none of the issue's own deliverable → no write at any point; the activity kind never decides (research/design/planning/review count as work when they are the ask); no assignee gate; squad leader dispatch is not delivery (MUL-6417) | `server/internal/daemon/execenv/runtime_config_sections.go` (`writeWorkflowIssue`) | new citation |
 | Failed task may roll `in_progress` → `todo` when no active task remains | `server/internal/service/task.go` (`HandleFailedTasks`) | new citation |
+| Custom statuses inherit their category's behavior in full; enqueue/park contracts resolve the effective category via `issuestatus.Effective` / `Resolve` (MUL-6243) | `server/internal/issuestatus/issuestatus.go` (`Effective`, `Resolve`) | new citation |
+| Runtime brief lists the workspace's active custom statuses grouped by category; catalog rides the claim payload (MUL-6460) | `server/internal/daemon/execenv/runtime_config_sections.go` (`writeIssueStatusCommand`); claim injection in `server/internal/handler/daemon.go` (`buildClaimedTaskResponse`, status catalog block) | new citation |
+| Literal-key exceptions to category rules: failed-task rollback writes the `todo` key; merged close-intent PR writes the `done` key | `server/internal/service/task.go` (`HandleFailedTasks`); `server/internal/handler/github.go` (merge close-intent path) | new citation |
 
 Creation with `--status todo` (or any non-backlog status) on an agent-assigned
 issue fires the agent immediately; `--status backlog` parks it with the assignee
@@ -154,6 +157,12 @@ away, so no task is left orphaned.
 | Trusted direct self-assignment suppresses enqueue only when the target `(issue, agent)` already has a non-terminal task | `server/internal/service/issue_trigger.go` (`WillEnqueueRun`), `server/internal/handler/issue_trigger.go` (`shouldSuppressActiveSelfAssignment`) |
 | Claim responses expose a bounded, workspace-scoped snapshot of the same agent's other dispatched/running/waiting issue tasks; queued tasks are excluded | `server/pkg/db/queries/agent.sql` (`ListActiveSiblingIssueTasks`), `server/internal/handler/daemon.go` (`buildClaimedTaskResponse`) |
 | Daemon prompts point to the target's comment history and concrete sibling `run-messages` commands | `server/internal/daemon/prompt.go` (`buildActiveSiblingRunsBlock`) |
+| `issue runs --active` / `--siblings` send `active=true` / `scope=family` to the task-runs endpoint | `server/cmd/multica/cmd_issue.go` (`runIssueRuns`) |
+| `scope=family` roots at the issue's parent, or the issue itself when it has none, and returns in-flight runs on that root plus all of its children | `server/internal/handler/daemon.go` (`ListTasksByIssue`), `server/pkg/db/queries/agent.sql` (`ListActiveTasksByIssueFamily`) |
+| Invalid `active` / `scope` values are rejected rather than silently answering with the full history | `server/internal/handler/daemon.go` (`ListTasksByIssue`) |
+| The family cap fetches one row past `familyActiveRunCap` and reports truncation on `X-Active-Runs-Truncated`, which the CLI surfaces on stderr | `server/internal/handler/daemon.go` (`familyActiveRunCap`, `HeaderActiveRunsTruncated`), `server/cmd/multica/cmd_issue.go` (`runIssueRuns`) |
+| The active path skips usage hydration, which is keyed by issue and spans the full history | `server/internal/handler/daemon.go` (`ListTasksByIssue`), `server/pkg/db/queries/task_usage.sql` (`ListIssueTaskUsage`) |
+| The family read returns its own compact row rather than the execution-log record, and skips usage and attribution hydration | `server/internal/handler/daemon.go` (`ActiveRunSummary`), `server/pkg/db/queries/agent.sql` (`ListActiveTasksByIssueFamily`) |
 
 The self-assignment guard is intentionally pair-scoped. It does not treat
 "this agent is busy on some other issue" as a reason to suppress a fresh
@@ -195,6 +204,10 @@ about the issue — there is no assignee gate (MUL-6417).
 |---|---|
 | `multica property list/get/create/update/archive/unarchive` | `server/cmd/multica/cmd_property.go` |
 | `multica issue property list/set/unset` (name→id translation) | `server/cmd/multica/cmd_property.go` (`encodeIssuePropertyValue`) |
+| `issue list --property "Name=Value"` filter (OR within a definition, AND across; `__none__` unset sentinel; scalar values sent in their stored spelling) | `server/cmd/multica/cmd_property.go` (`buildPropertiesFilterQueryParam`, `resolvePropertyFilterValue`, `propertyNoValueSentinel`) |
+| `issue list --sort property:<name-or-id>` (archived + orderless types rejected up front) | `server/cmd/multica/cmd_property.go` (`resolveSortableProperty`, `issueSortablePropertyTypes`); `server/cmd/multica/cmd_issue.go` (`runIssueList`) |
+| Server `properties=` filter contract the CLI forwards to | `server/internal/handler/property.go` (`parsePropertiesFilterParam`, `noPropertyValue`) |
+| Select sort follows option order (ordinal scales sort by meaning) | `server/internal/handler/property.go` (`propertySortExpr`, `selectPropertySortExpr`) |
 | Definition CRUD, admin gate, agent-actor rejection | `server/internal/handler/property.go` (`requirePropertyAdmin`) |
 | Optional catalog icon field and allowlist validation | `server/internal/handler/property.go` (`PropertyResponse`, `validatePropertyIcon`) |
 | Per-type value validation (self-correcting errors) | `server/internal/handler/property.go` (`validatePropertyValue`) |

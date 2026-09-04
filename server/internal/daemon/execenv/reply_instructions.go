@@ -213,6 +213,42 @@ func buildCommentReplyInstructionsSlim(provider, issueID, triggerCommentID strin
 	)
 }
 
+// BuildConsumeQueuedHint returns the adoption guidance for RUYI-48's
+// consume-queued channel. The channel is opt-in by construction: while an
+// agent run is in flight, a new mention on the same issue enqueues a SEPARATE
+// task (the (issue, agent) unique index only covers queued/dispatched), and
+// the running job is never told — it only helps the message if it happens to
+// read the issue mid-run. If it reads and handles the message but nobody
+// consumes the queue, the queued task re-executes the same work after this
+// run completes; so the running agent must be taught the loop, which is what
+// this hint is for (RUYI-53, the prompt-side adoption the RUYI-48 delivery
+// card filed as its remaining gap).
+//
+// The hint also carries the anti-misuse rule that delivery card registered as
+// a design trade-off: consumption is the running task's SELF-DECLARATION, and
+// it permanently cancels the queued task. A message left unconsumed keeps the
+// at-least-once fallback (the completion reconcile replays it once as a
+// bounded follow-up run), but a consumed-but-unhandled one has no fallback
+// and is silently lost — hence "handle first, consume second", never the
+// reverse. The no-op fact is stated because a correctly-ordered call must
+// stay cheap: when nothing is queued the endpoint succeeds with zero
+// consumed, so the agent never needs a pre-flight check.
+func BuildConsumeQueuedHint(issueID string) string {
+	if issueID == "" {
+		return ""
+	}
+	return fmt.Sprintf(
+		"Mentions that arrive while you run enqueue as SEPARATE queued tasks on this issue — they are not part of this run. "+
+			"If you find one (a comment addressed to you that arrived after this run started and is not covered by this run's prompt), "+
+			"read and handle it as part of this turn, then run `multica issue consume-queued %s`: "+
+			"the queued task is cancelled and its comments fold into this run, so the same work does not re-execute after this run completes.\n\n"+
+			"Call it ONLY AFTER you have actually read and handled those messages. Consumption permanently cancels the queued task — "+
+			"a message you leave unconsumed is replayed once as a bounded follow-up run after this run completes, "+
+			"but a consumed-but-unhandled one has no fallback and is silently lost. When nothing is queued the call is a harmless no-op.\n\n",
+		issueID,
+	)
+}
+
 // ThreadReplyTarget is one root-thread group a coalesced run must answer.
 // ThreadID labels the conversation (its root comment id); ParentID is the exact
 // `--parent` the agent must pass so its reply lands inside that thread.

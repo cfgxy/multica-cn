@@ -13,7 +13,7 @@
  * Right-top "…" menu uses @rn-primitives DropdownMenu (pure JS, cross-
  * platform). Previous ActionSheetIOS implementation crashed on Android.
  */
-import { useCallback, useEffect } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -34,7 +34,10 @@ import {
   DropdownMenuItem,
   DropdownMenuSeparator,
 } from "@/components/ui/dropdown-menu";
-import { TimelineList } from "@/components/issue/timeline-list";
+import {
+  TimelineList,
+  type TimelineListHandle,
+} from "@/components/issue/timeline-list";
 import { AgentHeaderBadge } from "@/components/issue/agent-header-badge";
 import { InlineCommentComposer } from "@/components/issue/inline-comment-composer";
 import {
@@ -118,7 +121,8 @@ export default function IssueDetail() {
   const createPin = useCreatePin();
   const deletePin = useDeletePin();
 
-  // Three-dot menu: Pin/Unpin / Edit details / Copy link / Open on web / Delete.
+  // Three-dot menu: Pin/Unpin / Edit details / Copy link / Open on web /
+  // Related PRs / Delete.
   // Cross-platform: uses @rn-primitives DropdownMenu (pure JS, no native deps).
   const issueLink = issue && wsSlug
     ? `${getWebUrl()}/${wsSlug}/issue/${issue.identifier}`
@@ -140,6 +144,13 @@ export default function IssueDetail() {
   const onOpenOnWeb = useCallback(() => {
     if (issueLink) Linking.openURL(issueLink);
   }, [issueLink]);
+  // Related PRs (RUYI-43) — mobile counterpart of the web sidebar's
+  // "Pull requests" section (same endpoint, data/queries/github.ts).
+  const onOpenPullRequests = useCallback(() => {
+    if (wsSlug && issue) {
+      router.push(`/${wsSlug}/issue/${issue.id}/pull-requests`);
+    }
+  }, [wsSlug, issue]);
   const onDelete = useCallback(() => {
     if (!issue) return;
     confirmDelete(issue, () =>
@@ -148,6 +159,15 @@ export default function IssueDetail() {
       }),
     );
   }, [issue, deleteIssue]);
+
+  // Timeline imperative handle (RUYI-28): reporting the server comment id
+  // of THIS user's just-published comment lets the timeline expand the
+  // owning root without guessing from last-row diffs (which also fired for
+  // other users' realtime arrivals).
+  const timelineRef = useRef<TimelineListHandle>(null);
+  const onCommentPublished = useCallback((commentId: string) => {
+    timelineRef.current?.expandPublished(commentId);
+  }, []);
 
   return (
     <View className="flex-1 bg-background">
@@ -165,6 +185,22 @@ export default function IssueDetail() {
                    *  active tasks, so it doesn't crowd the header in the
                    *  common case. See agent-header-badge.tsx. */}
                   <AgentHeaderBadge issueId={id} />
+                  {/* Comments directory (RUYI-28) — browse/filter root
+                   *  comments; tapping an entry expands + locates that
+                   *  thread in the timeline below. */}
+                  <IconButton
+                    name="list"
+                    accessibilityLabel={t(
+                      "mobile.detail.comments_open_a11y",
+                      "Browse comments",
+                    )}
+                    onPress={
+                      wsSlug
+                        ? () =>
+                            router.push(`/${wsSlug}/issue/${issue.id}/comments`)
+                        : undefined
+                    }
+                  />
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
                         <IconButton
@@ -190,6 +226,14 @@ export default function IssueDetail() {
                         <DropdownMenuItem onPress={onOpenOnWeb}>
                           <Text>
                             {t("mobile.detail.open_on_web", "Open on web")}
+                          </Text>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onPress={onOpenPullRequests}>
+                          <Text>
+                            {t(
+                              "detail.section_pull_requests",
+                              "Pull requests",
+                            )}
                           </Text>
                         </DropdownMenuItem>
                         <DropdownMenuSeparator />
@@ -225,6 +269,7 @@ export default function IssueDetail() {
       ) : (
         <View className="flex-1">
           <TimelineList
+            ref={timelineRef}
             issue={issue}
             entries={timeline.data}
             timelineLoading={timeline.isLoading}
@@ -232,8 +277,12 @@ export default function IssueDetail() {
             onRefresh={onRefresh}
             highlightCommentId={highlight}
             highlightNonce={h}
+            onCommentPublished={onCommentPublished}
           />
-          <InlineCommentComposer issueId={id} />
+          <InlineCommentComposer
+            issueId={id}
+            onPublished={onCommentPublished}
+          />
         </View>
       )}
     </View>

@@ -504,6 +504,7 @@ describe("project progress invalidation", () => {
         workspace_id: WS_ID,
         title: "Project",
         description: null,
+        instructions: null,
         icon: null,
         status: "in_progress",
         priority: "none",
@@ -551,6 +552,36 @@ describe("onIssueCreated — carries the label snapshot into list cache", () => 
     const cache = qc.getQueryData<ListIssuesCache>(issueKeys.list(WS_ID));
     const cached = cache?.byStatus.todo?.issues.find((i) => i.id === ISSUE_ID);
     expect(cached?.labels).toEqual([labelA, labelB]);
+  });
+});
+
+describe("onIssueUpdated — source deletion detaches sub-issues", () => {
+  it("patches the detached child and invalidates the former parent's hierarchy caches", () => {
+    const qc = new QueryClient();
+    const child: Issue = { ...parentedIssue, stage: 2, revision: 1 };
+    const oldChildrenKey = issueKeys.children(WS_ID, PARENT_ISSUE_ID);
+    const batchedChildrenKey = issueKeys.childrenByParents(WS_ID, [PARENT_ISSUE_ID]);
+    qc.setQueryData(issueKeys.detail(WS_ID, ISSUE_ID), child);
+    qc.setQueryData<ListIssuesCache>(issueKeys.list(WS_ID), makeListCache(child));
+    qc.setQueryData<Issue[]>(oldChildrenKey, [child]);
+    qc.setQueryData(batchedChildrenKey, new Map([[PARENT_ISSUE_ID, [child]]]));
+    qc.setQueryData(issueKeys.childProgress(WS_ID), []);
+
+    onIssueUpdated(qc, WS_ID, {
+      ...child,
+      parent_issue_id: null,
+      stage: null,
+      revision: 2,
+    });
+
+    expect(qc.getQueryData<Issue>(issueKeys.detail(WS_ID, ISSUE_ID))).toMatchObject({
+      parent_issue_id: null,
+      stage: null,
+      revision: 2,
+    });
+    expectInvalidated(qc, oldChildrenKey);
+    expectInvalidated(qc, batchedChildrenKey);
+    expectInvalidated(qc, issueKeys.childProgress(WS_ID));
   });
 });
 

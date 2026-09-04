@@ -34,7 +34,10 @@ import {
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
-import { deduplicateInboxItems } from "@/lib/inbox-display";
+import {
+  deduplicateInboxItems,
+  getInboxNavigationTarget,
+} from "@/lib/inbox-display";
 import { useT } from "@/lib/use-t";
 
 export default function Inbox() {
@@ -66,17 +69,8 @@ export default function Inbox() {
       // snapshot for the native stack push transition.
       markRead.mutate(item.id);
     }
-    if (item.issue_id && wsSlug) {
-      router.push({
-        pathname: "/[workspace]/issue/[id]",
-        params: {
-          workspace: wsSlug,
-          id: item.issue_id,
-          highlight: item.details?.comment_id,
-          h: String(Date.now()),
-        },
-      });
-    }
+    const target = getInboxNavigationTarget(item, wsSlug, String(Date.now()));
+    if (target) router.push(target);
   };
 
   // Trailing batch menu — mirrors web's dropdown
@@ -112,6 +106,10 @@ export default function Inbox() {
         title={t("page.title", "Inbox")}
         right={
           <>
+            {/* RUYI-51: the ⋯ menu moved AFTER the utility buttons so the
+                "More" affordance sits rightmost — the unified position rule
+                shared with the chat / issue / project headers. */}
+            <HeaderActions />
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <IconButton
@@ -138,7 +136,6 @@ export default function Inbox() {
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-            <HeaderActions />
           </>
         }
       />

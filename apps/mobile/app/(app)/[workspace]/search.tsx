@@ -16,13 +16,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ActivityIndicator,
   FlatList,
-  KeyboardAvoidingView,
-  Platform,
   Pressable,
   TextInput,
   View,
   type ListRenderItem,
 } from "react-native";
+// RN 0.83 edge-to-edge 下 Android 的窗口 resize 失效，避让统一走
+// keyboard-controller（behavior="padding" 两端一致），见 RUYI-30。
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useQueries } from "@tanstack/react-query";
 import { router } from "expo-router";
@@ -449,7 +450,7 @@ export default function SearchModal() {
     <SafeAreaView className="flex-1 bg-background" edges={["bottom"]}>
       <KeyboardAvoidingView
         className="flex-1"
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior="padding"
       >
         {/* Search input row */}
         <View className="flex-row items-center gap-3 border-b border-border px-4 py-2">

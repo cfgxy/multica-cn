@@ -8,26 +8,47 @@
  * as a `useState` inside `chat.tsx`, but now that session picking happens
  * on a separate route screen, we need a cross-screen channel. Same minimum
  * pattern as `useNewIssueDraftStore` for the new-issue form.
+ *
+ * RUYI-51: long-press used to jump straight to the delete confirm — a hidden
+ * destructive shortcut with no menu, the same icon-semantics/entry-point
+ * mismatch the chat header ⋯ had. It now opens a cross-platform action sheet
+ * (`useActionSheet` — iOS native, Android modal, same pattern as the comment
+ * long-press menu) with the same operation set as the header menu:
+ * rename / pin / archive / delete. Delete keeps its confirm Alert.
  */
 import { Alert, Pressable, ScrollView, View } from "react-native";
 import { router } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
+import * as Haptics from "expo-haptics";
 import type { ChatSession } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { chatSessionsOptions } from "@/data/queries/chat";
-import { useDeleteChatSession } from "@/data/mutations/chat";
+import {
+  useDeleteChatSession,
+  useSetChatSessionArchived,
+  useSetChatSessionPinned,
+} from "@/data/mutations/chat";
 import { useChatSessionPickerStore } from "@/data/stores/chat-session-picker-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import {
+  useActionSheet,
+  ActionSheetModal,
+} from "@/components/ui/action-sheet";
 import { useT } from "@/lib/use-t";
 import { cn } from "@/lib/utils";
+import { chatSessionDisplayTitle } from "@/lib/chat-session-title";
 
 export default function ChatSessionsRoute() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
+  const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { data: sessions = [] } = useQuery(chatSessionsOptions(wsId));
   const activeSessionId = useChatSessionPickerStore((s) => s.activeSessionId);
   const requestSelect = useChatSessionPickerStore((s) => s.requestSelect);
   const deleteSession = useDeleteChatSession();
+  const setPinned = useSetChatSessionPinned();
+  const setArchived = useSetChatSessionArchived();
+  const sheet = useActionSheet();
   const { t } = useT("chat");
 
   // 不能复用 chat:window.untitled —— 那条 en 是 "New chat"（web 侧指「新建
@@ -37,7 +58,7 @@ export default function ChatSessionsRoute() {
   const confirmDelete = (session: ChatSession) => {
     Alert.alert(
       t("mobile.sessions.delete_title", "Delete this chat?"),
-      session.title || untitled,
+      chatSessionDisplayTitle(session.title, untitled),
       [
         { text: t("common:cancel", "Cancel"), style: "cancel" },
         {
@@ -55,6 +76,77 @@ export default function ChatSessionsRoute() {
       ],
       { cancelable: true },
     );
+  };
+
+  const showSessionActions = (session: ChatSession) => {
+    const archived = session.status === "archived";
+    Haptics.selectionAsync().catch(() => {});
+
+    const actions: (
+      | { kind: "rename" }
+      | { kind: "pin" }
+      | { kind: "archive" }
+      | { kind: "delete" }
+      | { kind: "cancel" }
+    )[] = [];
+    const options: string[] = [];
+    const push = (
+      label: string,
+      action: (typeof actions)[number],
+    ) => {
+      options.push(label);
+      actions.push(action);
+    };
+
+    push(t("header.rename", "Rename chat"), { kind: "rename" });
+    push(
+      session.pinned ? t("list.unpin", "Unpin") : t("list.pin", "Pin"),
+      { kind: "pin" },
+    );
+    push(
+      archived
+        ? t("header.unarchive", "Unarchive chat")
+        : t("header.archive", "Archive chat"),
+      { kind: "archive" },
+    );
+    push(t("header.delete", "Delete chat"), { kind: "delete" });
+    push(t("common:cancel", "Cancel"), { kind: "cancel" });
+
+    sheet.show({
+      options,
+      cancelButtonIndex: options.length - 1,
+      destructiveButtonIndex: options.length - 2,
+      title: chatSessionDisplayTitle(session.title, untitled),
+      onSelect: (i) => {
+        const action = actions[i];
+        if (!action || action.kind === "cancel") return;
+        switch (action.kind) {
+          case "rename":
+            if (wsSlug) {
+              router.push({
+                pathname: "/[workspace]/chat-rename",
+                params: { workspace: wsSlug, sessionId: session.id },
+              });
+            }
+            return;
+          case "pin":
+            setPinned.mutate({
+              sessionId: session.id,
+              pinned: !session.pinned,
+            });
+            return;
+          case "archive":
+            setArchived.mutate({
+              sessionId: session.id,
+              archived: !archived,
+            });
+            return;
+          case "delete":
+            confirmDelete(session);
+            return;
+        }
+      },
+    });
   };
 
   return (
@@ -82,7 +174,7 @@ export default function ChatSessionsRoute() {
                   requestSelect(session.id);
                   router.back();
                 }}
-                onLongPress={() => confirmDelete(session)}
+                onLongPress={() => showSessionActions(session)}
                 className={cn(
                   "flex-row items-center gap-3 px-4 py-3 active:bg-secondary",
                   selected && "bg-secondary/60",
@@ -108,7 +200,7 @@ export default function ChatSessionsRoute() {
                     )}
                     numberOfLines={1}
                   >
-                    {session.title || untitled}
+                    {chatSessionDisplayTitle(session.title, untitled)}
                   </Text>
                   {archived ? (
                     <Text className="text-xs text-muted-foreground mt-0.5">
@@ -124,6 +216,7 @@ export default function ChatSessionsRoute() {
           })
         )}
       </ScrollView>
+      <ActionSheetModal {...sheet.modalProps} />
     </View>
   );
 }

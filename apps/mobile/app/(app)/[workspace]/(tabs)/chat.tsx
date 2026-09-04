@@ -31,7 +31,10 @@
  *   patch pendingTask with server task_id + created_at.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Alert, KeyboardAvoidingView, Platform, View } from "react-native";
+import { Alert, View } from "react-native";
+// RN 0.83 edge-to-edge 下 Android 的窗口 resize 失效，避让统一走
+// keyboard-controller（behavior="padding" 两端一致），见 RUYI-30。
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { router } from "expo-router";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
@@ -58,6 +61,8 @@ import {
   useCreateChatSession,
   useDeleteChatSession,
   useMarkChatSessionRead,
+  useSetChatSessionArchived,
+  useSetChatSessionPinned,
 } from "@/data/mutations/chat";
 import {
   DRAFT_NEW_SESSION,
@@ -84,6 +89,7 @@ import { RuntimeRequiredBanner } from "@/components/chat/runtime-required-banner
 import { useChatSelectStore } from "@/data/chat-select-store";
 import { isAgentRuntimeBound } from "@/lib/is-agent-runtime-bound";
 import { useT } from "@/lib/use-t";
+import { chatSessionDisplayTitle } from "@/lib/chat-session-title";
 
 export default function ChatTab() {
   const qc = useQueryClient();
@@ -241,6 +247,8 @@ export default function ChatTab() {
   // ── Mutations ──────────────────────────────────────────────────────────
   const createSession = useCreateChatSession();
   const deleteSession = useDeleteChatSession();
+  const setSessionPinned = useSetChatSessionPinned();
+  const setSessionArchived = useSetChatSessionArchived();
 
   // ── Send burst ─────────────────────────────────────────────────────────
   const sessionPromiseRef = useRef<Promise<string | null> | null>(null);
@@ -458,7 +466,10 @@ export default function ChatTab() {
     if (!activeSession) return;
     Alert.alert(
       t("session_history.delete_dialog.title", "Delete chat session"),
-      activeSession.title || t("session_history.untitled", "Untitled"),
+      chatSessionDisplayTitle(
+        activeSession.title,
+        t("session_history.untitled", "Untitled"),
+      ),
       [
         {
           text: t("session_history.delete_dialog.cancel", "Cancel"),
@@ -477,6 +488,40 @@ export default function ChatTab() {
       { cancelable: true },
     );
   }, [activeSession, deleteSession, t]);
+
+  // ── Session-menu actions (RUYI-51) ─────────────────────────────────────
+  // Rename opens a self-contained formSheet route (text input → form sheet
+  // per apps/mobile CLAUDE.md Lesson 5); pin/archive mutate optimistically
+  // and stay on the open session. Mobile divergence from web, documented:
+  // web's header menu links to an agent profile page — mobile has no agent
+  // detail screen yet (more/agents.tsx is a placeholder), so no "view
+  // profile" item.
+  const handleRenameActive = useCallback(() => {
+    if (!activeSession || !wsSlug) return;
+    router.push({
+      pathname: "/[workspace]/chat-rename",
+      params: { workspace: wsSlug, sessionId: activeSession.id },
+    });
+  }, [activeSession, wsSlug]);
+
+  const handleTogglePinActive = useCallback(() => {
+    if (!activeSession) return;
+    setSessionPinned.mutate({
+      sessionId: activeSession.id,
+      pinned: !activeSession.pinned,
+    });
+  }, [activeSession, setSessionPinned]);
+
+  const handleToggleArchiveActive = useCallback(() => {
+    if (!activeSession) return;
+    // Keep the archived session open: the composer already renders its
+    // archived disabled state (isArchived → disabledReason), so the user
+    // sees the result in place and can switch via the title button.
+    setSessionArchived.mutate({
+      sessionId: activeSession.id,
+      archived: !isArchived,
+    });
+  }, [activeSession, isArchived, setSessionArchived]);
 
   // ── Composer disabled-state ────────────────────────────────────────────
   const disabled =
@@ -528,21 +573,23 @@ export default function ChatTab() {
         right={
           <ChatSessionActions
             showMore={!!activeSession}
-            onMorePress={handleDeleteActive}
+            isArchived={isArchived}
+            isPinned={activeSession?.pinned === true}
+            onRename={handleRenameActive}
+            onTogglePin={handleTogglePinActive}
+            onToggleArchive={handleToggleArchiveActive}
+            onDelete={handleDeleteActive}
             onNewPress={handleNewChat}
           />
         }
       />
       {availability === "none" ? <NoAgentBanner /> : null}
-      <KeyboardAvoidingView
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
-        className="flex-1"
-      >
+      <KeyboardAvoidingView behavior="padding" className="flex-1">
         <ChatMessageList
           messages={visibleMessages}
           loading={messagesLoading}
           hasSessions={sessions.length > 0}
-          agentName={currentAgent?.name}
+          agent={currentAgent}
           onPickPrompt={(text) => setDraft(draftKey, text)}
           onQuickAction={(action) =>
             handleSend(action.prompt, [], { clearDraft: false })

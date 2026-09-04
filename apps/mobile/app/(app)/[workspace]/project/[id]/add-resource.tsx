@@ -9,6 +9,9 @@
  */
 import { useCallback, useState } from "react";
 import { Alert, Pressable, View } from "react-native";
+// RN 0.83 edge-to-edge 下 Android 的窗口 resize 失效，避让统一走
+// keyboard-controller（behavior="padding" 两端一致），见 RUYI-30。
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useLocalSearchParams, router } from "expo-router";
 import { Text } from "@/components/ui/text";
 import { TextField } from "@/components/ui/text-field";
@@ -55,53 +58,55 @@ export default function AddResourceRoute() {
   }, [valid, submitting, createResource, url, label, t, tProjects]);
 
   return (
-    <View className="flex-1">
-      <View className="flex-row items-center justify-between px-4 pt-4 pb-2">
-        <Text className="text-base font-semibold text-foreground">
-          {tProjects("mobile.resource.attach_title", "Attach repository")}
-        </Text>
-        <Pressable
-          onPress={onSubmit}
-          disabled={!valid || submitting}
-          hitSlop={6}
-          className={`px-3 py-1.5 rounded-md ${
-            !valid || submitting ? "opacity-50" : "active:bg-secondary"
-          }`}
-        >
-          <Text className="text-sm font-semibold text-primary">
-            {submitting ? t("attaching", "Attaching…") : t("attach", "Attach")}
+    <KeyboardAvoidingView className="flex-1" behavior="padding">
+      <View className="flex-1">
+        <View className="flex-row items-center justify-between px-4 pt-4 pb-2">
+          <Text className="text-base font-semibold text-foreground">
+            {tProjects("mobile.resource.attach_title", "Attach repository")}
           </Text>
-        </Pressable>
-      </View>
-      <View className="px-4 pt-4 gap-4">
-        <View className="gap-1">
-          <Text className="text-xs text-muted-foreground">
-            {tProjects("mobile.resource.url_label", "Repository URL")}
-          </Text>
-          <TextField
-            value={url}
-            onChangeText={setUrl}
-            placeholder="https://github.com/owner/repo"
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="url"
-            autoFocus
-          />
+          <Pressable
+            onPress={onSubmit}
+            disabled={!valid || submitting}
+            hitSlop={6}
+            className={`px-3 py-1.5 rounded-md ${
+              !valid || submitting ? "opacity-50" : "active:bg-secondary"
+            }`}
+          >
+            <Text className="text-sm font-semibold text-primary">
+              {submitting ? t("attaching", "Attaching…") : t("attach", "Attach")}
+            </Text>
+          </Pressable>
         </View>
-        <View className="gap-1">
-          <Text className="text-xs text-muted-foreground">
-            {tProjects("mobile.resource.label_optional", "Label (optional)")}
-          </Text>
-          <TextField
-            value={label}
-            onChangeText={setLabel}
-            placeholder={tProjects(
-              "mobile.resource.label_placeholder",
-              "e.g. Backend",
-            )}
-          />
+        <View className="px-4 pt-4 gap-4">
+          <View className="gap-1">
+            <Text className="text-xs text-muted-foreground">
+              {tProjects("mobile.resource.url_label", "Repository URL")}
+            </Text>
+            <TextField
+              value={url}
+              onChangeText={setUrl}
+              placeholder="https://github.com/owner/repo"
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+              autoFocus
+            />
+          </View>
+          <View className="gap-1">
+            <Text className="text-xs text-muted-foreground">
+              {tProjects("mobile.resource.label_optional", "Label (optional)")}
+            </Text>
+            <TextField
+              value={label}
+              onChangeText={setLabel}
+              placeholder={tProjects(
+                "mobile.resource.label_placeholder",
+                "e.g. Backend",
+              )}
+            />
+          </View>
         </View>
       </View>
-    </View>
+    </KeyboardAvoidingView>
   );
 }

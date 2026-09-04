@@ -22,7 +22,7 @@ import { useActorName } from "@multica/core/workspace/hooks";
 import { PROJECT_STATUS_ORDER, PROJECT_STATUS_CONFIG, PROJECT_PRIORITY_ORDER } from "@multica/core/projects/config";
 import { getProjectIssueMetrics } from "./project-issue-metrics";
 import { ActorAvatar } from "../../common/actor-avatar";
-import { useNavigation } from "../../navigation";
+import { currentPath, useNavigation } from "../../navigation";
 import { TitleEditor, ContentEditor, type ContentEditorRef } from "../../editor";
 import { PriorityIcon } from "../../issues/components/priority-icon";
 import { ProjectResourcesSection } from "./project-resources-section";
@@ -58,6 +58,7 @@ import {
   getAnimatedRightSidebarInitialOpen,
   rightSidebarPanelMotionProps,
   useAnimatedRightSidebarState,
+  useRightSidebarShortcut,
 } from "../../layout/animated-right-sidebar";
 import {
   AlertDialog,
@@ -71,7 +72,18 @@ import {
 } from "@multica/ui/components/ui/alert-dialog";
 import { useT } from "../../i18n";
 import { useProjectStatusLabels, useProjectPriorityLabels } from "./labels";
+import { Textarea } from "@multica/ui/components/ui/textarea";
 import { matchesPinyin } from "../../editor/extensions/pinyin-match";
+
+// ---------------------------------------------------------------------------
+// Agent instructions (RUYI-46) — shared limits and counting
+// ---------------------------------------------------------------------------
+
+// Must match maxProjectInstructionsLen on the server (rune/code-point count).
+const MAX_PROJECT_INSTRUCTIONS = 32000;
+
+// Code points, matching Go's utf8.RuneCountInString (not UTF-16 .length).
+const instructionsLength = (s: string) => [...s].length;
 
 // ---------------------------------------------------------------------------
 // Property row — sidebar property display
@@ -149,12 +161,17 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
   const [propertiesOpen, setPropertiesOpen] = useState(true);
   const [progressOpen, setProgressOpen] = useState(true);
   const [descriptionOpen, setDescriptionOpen] = useState(true);
+  const [instructionsOpen, setInstructionsOpen] = useState(false);
+  const [instructionsEditing, setInstructionsEditing] = useState(false);
+  const [instructionsDraft, setInstructionsDraft] = useState("");
+  const instructionsOverLimit = instructionsLength(instructionsDraft) > MAX_PROJECT_INSTRUCTIONS;
 
   // Sidebar panel
   const { defaultLayout, onLayoutChanged } = useDefaultLayout({
     id: "multica_project_detail_layout",
   });
   const sidebarRef = usePanelRef();
+  const rightSidebarShortcutTargetRef = useRef<HTMLDivElement | null>(null);
   const desktopSidebarInitialOpen = getAnimatedRightSidebarInitialOpen(
     true,
     defaultLayout,
@@ -195,6 +212,8 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
     });
   }, [beginDesktopSidebarToggle, isMobile, sidebarRef]);
 
+  useRightSidebarShortcut(rightSidebarShortcutTargetRef, handleToggleSidebar);
+
   // Lead popover
   const [leadOpen, setLeadOpen] = useState(false);
   const [leadFilter, setLeadFilter] = useState("");
@@ -209,6 +228,16 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
     },
     [project, updateProject],
   );
+
+  const saveInstructionsDraft = useCallback(() => {
+    // Stay in editing mode while over the cap; the red counter explains why.
+    if (instructionsLength(instructionsDraft) > MAX_PROJECT_INSTRUCTIONS) return;
+    const trimmed = instructionsDraft.trim();
+    if (trimmed !== (project?.instructions ?? "")) {
+      handleUpdateField({ instructions: trimmed || null });
+    }
+    setInstructionsEditing(false);
+  }, [instructionsDraft, project?.instructions, handleUpdateField]);
 
   const handleDelete = useCallback(() => {
     if (!project) return;
@@ -464,6 +493,49 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
         </div>}
       </div>
 
+      {/* Agent instructions — plain text injected into every task brief in
+          this project (RUYI-46). Edited as raw text in a Textarea, not the
+          rich ContentEditor, because the value is passed through to the agent
+          verbatim. Hidden entirely while empty except for the add button. */}
+      <div>
+        <button
+          type="button"
+          className={`flex w-full items-center gap-1 rounded-md px-2 py-1 text-caption font-medium transition-colors mb-2 hover:bg-accent/70 ${instructionsOpen ? "" : "text-muted-foreground hover:text-foreground"}`}
+          onClick={() => { setInstructionsDraft(project.instructions ?? ""); setInstructionsOpen(!instructionsOpen); }}
+        >
+          {t(($) => $.detail.section_instructions)}
+          <ChevronRight className={`!size-3 shrink-0 stroke-[2.5] text-muted-foreground transition-transform ${instructionsOpen ? "rotate-90" : ""}`} />
+        </button>
+        {instructionsOpen && (project.instructions || instructionsEditing) && <div className="pl-2">
+          <Textarea
+            name="project-instructions"
+            autoComplete="off"
+            aria-label={t(($) => $.detail.section_instructions)}
+            value={instructionsDraft}
+            onChange={(e) => setInstructionsDraft(e.target.value)}
+            onBlur={saveInstructionsDraft}
+            rows={4}
+            className="resize-none"
+            placeholder={t(($) => $.detail.instructions_placeholder)}
+          />
+          <p className={cn("mt-1 px-2 text-caption", instructionsOverLimit ? "text-destructive" : "text-muted-foreground")}>
+            {t(($) => $.detail.instructions_count, { length: instructionsLength(instructionsDraft) })}
+          </p>
+          <p className="px-2 text-caption text-muted-foreground">
+            {t(($) => $.detail.instructions_hint)}
+          </p>
+        </div>}
+        {!project.instructions && !instructionsEditing && (
+          <button
+            type="button"
+            onClick={() => { setInstructionsDraft(""); setInstructionsOpen(true); setInstructionsEditing(true); }}
+            className="ml-2 rounded-md px-2 py-1 text-caption text-muted-foreground transition-colors hover:bg-accent/70 hover:text-foreground"
+          >
+            {t(($) => $.detail.instructions_add)}
+          </button>
+        )}
+      </div>
+
       {/* Resources */}
       <ProjectResourcesSection projectId={projectId} />
     </div>
@@ -473,7 +545,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
     <>
     <ResizablePanelGroup orientation="horizontal" className="flex-1 min-h-0" defaultLayout={defaultLayout} onLayoutChanged={onLayoutChanged}>
       <ResizablePanel id="content" minSize="50%">
-        <div className="flex h-full flex-col">
+        <div ref={rightSidebarShortcutTargetRef} className="flex h-full flex-col">
           <BreadcrumbHeader
             segments={[{ href: wsPaths.projects(), label: t(($) => $.detail.breadcrumb_fallback) }]}
             leaf={<span className="truncate font-medium text-foreground">{project.title}</span>}
@@ -504,7 +576,7 @@ export function ProjectDetail({ projectId }: { projectId: string }) {
                 />
                 <DropdownMenuContent align="end" className="w-auto">
                   <DropdownMenuItem onClick={() => {
-                    void copyText(window.location.href).then((ok) => {
+                    void copyText(router.getShareableUrl(currentPath(router))).then((ok) => {
                       if (ok) toast.success(t(($) => $.detail.toast_link_copied));
                     });
                   }}>
