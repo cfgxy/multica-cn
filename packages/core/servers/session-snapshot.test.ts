@@ -143,6 +143,58 @@ describe("switchActiveServerSync", () => {
     expect(switchActiveServerSync(bare, "srv_b")).toBe(false);
   });
 
+  it("switches between two custom entries, snapshotting each way", () => {
+    const storage = makeStorage({
+      [TOKEN_STORAGE_KEY]: "tok-a",
+      [serverTokenKey("srv_b")]: "tok-b",
+    });
+    persistServers(
+      storage,
+      [
+        { id: "srv_a", apiUrl: "https://a.example.com" },
+        { id: "srv_b", apiUrl: "https://b.example.com" },
+      ],
+      "srv_a",
+    );
+
+    expect(switchActiveServerSync(storage, "srv_b")).toBe(true);
+    // A's live session captured, B's restored, active id moved.
+    expect(storage.getItem(serverTokenKey("srv_a"))).toBe("tok-a");
+    expect(storage.getItem(TOKEN_STORAGE_KEY)).toBe("tok-b");
+    const persisted = JSON.parse(storage.getItem("multica_servers")!);
+    expect(persisted.activeServerId).toBe("srv_b");
+  });
+
+  it("switches BACK to the built-in server (RUYI-59 review blocker)", () => {
+    const storage = makeStorage({
+      [TOKEN_STORAGE_KEY]: "tok-b",
+      [serverTokenKey(BUILT_IN_SERVER_ID)]: "tok-default",
+    });
+    persistServers(storage, [B], "srv_b");
+
+    expect(switchActiveServerSync(storage, BUILT_IN_SERVER_ID)).toBe(true);
+    // The custom server's session is captured for a future switch back.
+    expect(storage.getItem(serverTokenKey("srv_b"))).toBe("tok-b");
+    // The built-in server's snapshot becomes the live token.
+    expect(storage.getItem(TOKEN_STORAGE_KEY)).toBe("tok-default");
+    // The built-in entry never persists; the active id points at it.
+    const persisted = JSON.parse(storage.getItem("multica_servers")!);
+    expect(persisted.servers.map((s: { id: string }) => s.id)).toEqual(["srv_b"]);
+    expect(persisted.activeServerId).toBe(BUILT_IN_SERVER_ID);
+  });
+
+  it("switches back to the built-in server without a saved snapshot", () => {
+    const storage = makeStorage({ [TOKEN_STORAGE_KEY]: "tok-b" });
+    persistServers(storage, [B], "srv_b");
+
+    expect(switchActiveServerSync(storage, BUILT_IN_SERVER_ID)).toBe(true);
+    // Built-in has no snapshot → signed out of the live key.
+    expect(storage.getItem(TOKEN_STORAGE_KEY)).toBeNull();
+    expect(storage.getItem(serverTokenKey("srv_b"))).toBe("tok-b");
+    const persisted = JSON.parse(storage.getItem("multica_servers")!);
+    expect(persisted.activeServerId).toBe(BUILT_IN_SERVER_ID);
+  });
+
   it("keeps the payload version stable across a switch", () => {
     const storage = makeStorage({});
     persistServers(storage, [B], BUILT_IN_SERVER_ID);

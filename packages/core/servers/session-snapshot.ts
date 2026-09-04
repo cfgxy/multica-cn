@@ -70,19 +70,26 @@ export function clearServerToken(
  * failure here leaves the user on the current server untouched), then
  * swap the session snapshots. The caller reloads the window on `true`.
  *
- * Returns false when the target id is unknown — nothing is written.
+ * `targetId` is valid when it names the built-in entry (which never
+ * persists, so it is matched by id — mobile validates against the
+ * composed list for the same reason) or one of the persisted custom
+ * entries. Returns false for anything else — nothing is written.
  */
 export function switchActiveServerSync(
   storage: StorageAdapter,
   targetId: string,
+  builtInId: string = BUILT_IN_SERVER_ID,
 ): boolean {
   const persisted = parsePersistedState(
     storage.getItem(SERVERS_STORAGE_KEY),
   );
   const customServers = persisted?.servers ?? [];
-  if (!customServers.some((s) => s.id === targetId)) return false;
+  const knownTarget =
+    targetId === builtInId ||
+    customServers.some((s) => s.id === targetId);
+  if (!knownTarget) return false;
 
-  const currentId = persisted?.activeServerId ?? BUILT_IN_SERVER_ID;
+  const currentId = persisted?.activeServerId ?? builtInId;
   // 1. Persist the new active id.
   storage.setItem(
     SERVERS_STORAGE_KEY,

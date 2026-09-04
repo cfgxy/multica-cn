@@ -2,6 +2,10 @@
  * 服务器配置的纯逻辑层 —— URL 规范化/校验、内置默认项合成、持久化载荷的
  * 序列化与解析。
  *
+ * 桌面端共享副本：packages/core/servers/server-config.ts（RUYI-59 起存在,
+ * 语义镜像本文件）。两份拷贝按约定同步演进 —— 任何校验/载荷/切换语义的
+ * 变更必须两侧同动,否则桌面与移动的行为会漂移（RUYI-59 Review 实证）。
+ *
  * 拆成独立模块而不是塞进 server-store.ts,是为了让这些分支能在 vitest 的
  * node 环境里直接测(见 vitest.config.ts 的说明:store 本身依赖
  * AsyncStorage 原生模块,不在可测范围内;逻辑全在这里,store 只负责状态
