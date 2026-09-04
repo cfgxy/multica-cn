@@ -33,6 +33,13 @@ export interface AuthState {
   logout: () => void;
   setUser: (user: User) => void;
   refreshMe: () => Promise<void>;
+  /**
+   * Install a session the server just minted (RUYI-47 impersonation start
+   * / stop). Token mode persists the token; cookie mode relies on the
+   * HttpOnly Set-Cookie the same response carried. Unlike loginWithToken
+   * it does not re-fetch /api/me — the caller supplies the fresh user.
+   */
+  applySession: (token: string, user: User) => void;
 }
 
 export function createAuthStore(options: AuthStoreOptions) {
@@ -105,6 +112,14 @@ export function createAuthStore(options: AuthStoreOptions) {
     },
 
     setUser: (user: User) => {
+      set({ user, isLoading: false, status: "authenticated" });
+    },
+
+    applySession: (token: string, user: User) => {
+      if (!cookieAuth) {
+        storage.setItem("multica_token", token);
+        api.setToken(token);
+      }
       set({ user, isLoading: false, status: "authenticated" });
     },
 

@@ -59,10 +59,18 @@ func (s staticPATResolver) ResolveToken(_ context.Context, token string) (string
 	return userID, ok
 }
 
-func TestAuthenticateTokenRejectsTemporarilyDisabledJWTUser(t *testing.T) {
-	token := makeTestTokenForUser(t, "514492f7-b30f-4147-bd33-c0e8ce5d6d4f", "")
+// stubWSDisabledLookup drives the persisted-disable gate in hub tests.
+type stubWSDisabledLookup map[string]bool
 
-	uid, errMsg := authenticateToken(token, nil, context.Background())
+func (s stubWSDisabledLookup) IsDisabled(_ context.Context, userID string) bool {
+	return s[userID]
+}
+
+func TestAuthenticateTokenRejectsDisabledJWTUser(t *testing.T) {
+	const disabledID = "514492f7-b30f-4147-bd33-c0e8ce5d6d4f"
+	token := makeTestTokenForUser(t, disabledID, "")
+
+	uid, errMsg := authenticateToken(token, nil, stubWSDisabledLookup{disabledID: true}, context.Background())
 	if uid != "" {
 		t.Fatalf("expected no user ID, got %q", uid)
 	}
@@ -71,15 +79,28 @@ func TestAuthenticateTokenRejectsTemporarilyDisabledJWTUser(t *testing.T) {
 	}
 }
 
-func TestAuthenticateTokenRejectsTemporarilyDisabledPATUser(t *testing.T) {
+func TestAuthenticateTokenRejectsDisabledPATUser(t *testing.T) {
+	const disabledID = "1d542296-17c6-484a-9914-dcee589be116"
 	uid, errMsg := authenticateToken("mul_disabled", staticPATResolver{
-		"mul_disabled": "1d542296-17c6-484a-9914-dcee589be116",
-	}, context.Background())
+		"mul_disabled": disabledID,
+	}, stubWSDisabledLookup{disabledID: true}, context.Background())
 	if uid != "" {
 		t.Fatalf("expected no user ID, got %q", uid)
 	}
 	if !strings.Contains(errMsg, "account disabled") {
 		t.Fatalf("expected account disabled error, got %q", errMsg)
+	}
+}
+
+// TestAuthenticateTokenNilLookupAllows pins the nil contract: a missing
+// DisabledLookup (test wiring, legacy callers) never rejects.
+func TestAuthenticateTokenNilLookupAllows(t *testing.T) {
+	uid, errMsg := authenticateToken(makeTestToken(t), nil, nil, context.Background())
+	if errMsg != "" {
+		t.Fatalf("expected success, got %q", errMsg)
+	}
+	if uid != testUserID {
+		t.Fatalf("expected %q, got %q", testUserID, uid)
 	}
 }
 
@@ -91,7 +112,7 @@ func newTestHub(t *testing.T) (*Hub, *httptest.Server) {
 	mc := &mockMembershipChecker{}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", func(w http.ResponseWriter, r *http.Request) {
-		HandleWebSocket(hub, mc, nil, nil, w, r)
+		HandleWebSocket(hub, mc, nil, nil, nil, w, r)
 	})
 	server := httptest.NewServer(mux)
 	return hub, server

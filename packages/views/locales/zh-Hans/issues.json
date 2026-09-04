@@ -978,6 +978,26 @@
       "cancel_title": "停止 task？",
       "cancel_body": "Agent 会在完成当前步骤后停止。"
     },
+    "run_detail": {
+      "title": "运行详情",
+      "copy": "复制",
+      "copied": "已复制",
+      "copy_all": "复制全文",
+      "loading": "加载中…",
+      "took": "用时 {{duration}}",
+      "started_at": "开始",
+      "completed_at": "结束",
+      "failure_heading": "失败原因",
+      "cancel_reason_heading": "取消原因",
+      "cancelled_by_system": "已被系统取消",
+      "timeline_heading": "时间线",
+      "outcome_files_other": "{{count}} 个文件",
+      "outcome_commands_other": "{{count}} 条命令",
+      "result_label": "结果",
+      "truncated": "…（已截断）",
+      "empty": "该运行没有记录任何事件。",
+      "empty_queued": "该运行尚未开始。"
+    },
     "list": {
       "load_failed": "无法加载任务：{{reason}}",
       "empty_all": "此工作区还没有任务。",

@@ -11,7 +11,9 @@
     "usage": "Analytics",
     "runtimes": "Runtimes",
     "skills": "Skills",
-    "settings": "Settings"
+    "settings": "Settings",
+
+    "admin": "Admin"
   },
   "tab": {
     "issue": "Issue",
@@ -48,7 +50,9 @@
     "invitation_workspace_fallback": "Workspace",
     "invitation_join": "Join",
     "invitation_decline": "Decline",
+    "stop_impersonation": "Stop impersonating",
     "log_out": "Log out",
+    "admin_area": "Admin",
     "new_issue": "New Issue",
     "new_issue_shortcut": "C",
     "pinned_label": "Pinned",

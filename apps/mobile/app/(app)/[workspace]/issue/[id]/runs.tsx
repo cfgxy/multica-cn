@@ -9,7 +9,8 @@
  * the legacy `useRunsSheetStore` is gone since the route system is the
  * single source of truth for what's open.
  *
- * Past-row tap is a no-op in v1 — transcript drilldown is deferred.
+ * Since RUYI-33, tapping a non-queued row pushes the run-detail sheet at
+ * `issue/[id]/runs/[taskId]` (see run-row.tsx); queued rows stay inert.
  */
 import { useMemo } from "react";
 import { ScrollView, View } from "react-native";

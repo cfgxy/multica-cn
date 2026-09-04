@@ -63,8 +63,16 @@ type UserResponse struct {
 	OnboardingQuestionnaire json.RawMessage `json:"onboarding_questionnaire"`
 	StarterContentState     *string         `json:"starter_content_state"`
 	ProfileDescription      string          `json:"profile_description"`
-	CreatedAt               string          `json:"created_at"`
-	UpdatedAt               string          `json:"updated_at"`
+	// Instance-level admin flag (RUYI-47). Gates the /admin management
+	// area in the clients; the server re-checks it on every /api/admin
+	// request via RequireSuperAdmin, so this field is presentation only.
+	IsSuperAdmin bool `json:"is_super_admin"`
+	// Present only when /api/me is called with a shadow JWT minted by
+	// AdminImpersonate; the client renders the identity-switch banner
+	// from it. Server-set from the signed imp claim, never client input.
+	ImpersonatorID *string `json:"impersonator_id"`
+	CreatedAt      string  `json:"created_at"`
+	UpdatedAt      string  `json:"updated_at"`
 }
 
 // MaxProfileDescriptionLen caps the user-supplied profile_description body.
@@ -92,6 +100,7 @@ func (h *Handler) userToResponse(u db.User) UserResponse {
 		OnboardingQuestionnaire: json.RawMessage(q),
 		StarterContentState:     textToPtr(u.StarterContentState),
 		ProfileDescription:      u.ProfileDescription,
+		IsSuperAdmin:            u.IsSuperAdmin,
 		CreatedAt:               timestampToString(u.CreatedAt),
 		UpdatedAt:               timestampToString(u.UpdatedAt),
 	}
@@ -150,8 +159,8 @@ func isSixDigitCode(code string) bool {
 }
 
 func (h *Handler) issueJWT(user db.User) (string, error) {
-	if auth.IsTemporarilyDisabledUser(uuidToString(user.ID), user.Email) {
-		return "", auth.ErrTemporarilyDisabledUser
+	if user.DisabledAt.Valid {
+		return "", auth.ErrUserDisabled
 	}
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
 		"sub":   uuidToString(user.ID),
@@ -168,17 +177,16 @@ func (h *Handler) issueJWT(user db.User) (string, error) {
 // event fires on that edge, covering both the verification-code and Google
 // OAuth entry points.
 func (h *Handler) findOrCreateUser(ctx context.Context, email string) (user db.User, isNew bool, err error) {
-	if auth.IsTemporarilyDisabledUserEmail(email) {
-		return db.User{}, false, auth.ErrTemporarilyDisabledUser
-	}
-
 	user, err = h.Queries.GetUserByEmail(ctx, email)
 	isNew = isNotFound(err)
 	if err != nil && !isNew {
 		return db.User{}, false, err
 	}
-	if !isNew && auth.IsTemporarilyDisabledUser(uuidToString(user.ID), user.Email) {
-		return db.User{}, false, auth.ErrTemporarilyDisabledUser
+	// Disable is persisted on the row, so the lookup above is the
+	// authoritative check: new logins are rejected with no cache in
+	// front of it.
+	if !isNew && user.DisabledAt.Valid {
+		return db.User{}, false, auth.ErrUserDisabled
 	}
 
 	if err := h.checkSignupAllowed(email, isNew); err != nil {
@@ -186,7 +194,7 @@ func (h *Handler) findOrCreateUser(ctx context.Context, email string) (user db.U
 	}
 
 	if !isNew {
-		return user, false, nil
+		return h.maybeGrantSuperAdmin(ctx, user), false, nil
 	}
 
 	name := email
@@ -200,7 +208,43 @@ func (h *Handler) findOrCreateUser(ctx context.Context, email string) (user db.U
 	if err != nil {
 		return db.User{}, false, err
 	}
-	return created, true, nil
+	return h.maybeGrantSuperAdmin(ctx, created), true, nil
+}
+
+// maybeGrantSuperAdmin is the Q1=A bootstrap: emails listed in the
+// SUPER_ADMIN_EMAILS deployment env become super admins on login,
+// idempotently — an already-flagged account takes no write. A grant for a
+// disabled account still lands (it is just a flag; the login itself was
+// already rejected above), so re-enabling the operator restores their
+// admin access without re-login choreography.
+func (h *Handler) maybeGrantSuperAdmin(ctx context.Context, user db.User) db.User {
+	if user.IsSuperAdmin || !matchesSuperAdminEmail(h.cfg.SuperAdminEmails, user.Email) {
+		return user
+	}
+	updated, err := h.Queries.SetUserSuperAdmin(ctx, db.SetUserSuperAdminParams{
+		ID:           user.ID,
+		IsSuperAdmin: true,
+	})
+	if err != nil {
+		// Bootstrap is best-effort: a failed grant must not block
+		// login. The flag can be granted later via the admin API or
+		// the next login retry.
+		slog.Warn("super admin bootstrap grant failed", "user_id", uuidToString(user.ID), "error", err)
+		return user
+	}
+	slog.Info("super admin granted via SUPER_ADMIN_EMAILS bootstrap", "user_id", uuidToString(user.ID))
+	return updated
+}
+
+// matchesSuperAdminEmail compares case-insensitively against the configured
+// list; user emails are stored lowercased, config entries may not be.
+func matchesSuperAdminEmail(configured []string, email string) bool {
+	for _, candidate := range configured {
+		if strings.EqualFold(strings.TrimSpace(candidate), email) {
+			return true
+		}
+	}
+	return false
 }
 
 // signupSourceFromRequest reads the attribution cookie the web frontend
@@ -287,10 +331,6 @@ func (h *Handler) SendCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "email is required")
 		return
 	}
-	if auth.IsTemporarilyDisabledUserEmail(email) {
-		writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
-		return
-	}
 
 	// Check signup restrictions before sending magic link
 	existingUser, err := h.Queries.GetUserByEmail(r.Context(), email)
@@ -312,9 +352,10 @@ func (h *Handler) SendCode(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else {
-		// User already exists → always allowed to login
-		if auth.IsTemporarilyDisabledUser(uuidToString(existingUser.ID), existingUser.Email) {
-			writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
+		// User already exists → always allowed to login, unless the
+		// persisted account state says otherwise.
+		if existingUser.DisabledAt.Valid {
+			writeError(w, http.StatusForbidden, auth.UserDisabledError)
 			return
 		}
 		isNewUser := false
@@ -379,10 +420,6 @@ func (h *Handler) VerifyCode(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "email and code are required")
 		return
 	}
-	if auth.IsTemporarilyDisabledUserEmail(email) {
-		writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
-		return
-	}
 
 	dbCode, err := h.Queries.GetLatestVerificationCode(r.Context(), email)
 	if err != nil {
@@ -404,8 +441,8 @@ func (h *Handler) VerifyCode(w http.ResponseWriter, r *http.Request) {
 
 	user, isNew, err := h.findOrCreateUser(r.Context(), email)
 	if err != nil {
-		if errors.Is(err, auth.ErrTemporarilyDisabledUser) {
-			writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
+		if errors.Is(err, auth.ErrUserDisabled) {
+			writeError(w, http.StatusForbidden, auth.UserDisabledError)
 			return
 		}
 		var signupErr SignupError
@@ -422,8 +459,8 @@ func (h *Handler) VerifyCode(w http.ResponseWriter, r *http.Request) {
 
 	tokenString, err := h.issueJWT(user)
 	if err != nil {
-		if errors.Is(err, auth.ErrTemporarilyDisabledUser) {
-			writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
+		if errors.Is(err, auth.ErrUserDisabled) {
+			writeError(w, http.StatusForbidden, auth.UserDisabledError)
 			return
 		}
 		slog.Warn("login failed", append(logger.RequestAttrs(r), "error", err, "email", req.Email)...)
@@ -462,7 +499,15 @@ func (h *Handler) GetMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, h.userToResponse(user))
+	resp := h.userToResponse(user)
+	// The middleware writes X-Impersonator-ID only after verifying the
+	// signed imp claim, so a non-empty value here is authoritative and
+	// lets the client restore the identity-switch banner after reload.
+	if impID := r.Header.Get("X-Impersonator-ID"); impID != "" {
+		resp.ImpersonatorID = &impID
+	}
+
+	writeJSON(w, http.StatusOK, resp)
 }
 
 type UpdateMeRequest struct {
@@ -577,15 +622,11 @@ func (h *Handler) GoogleLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	email := strings.ToLower(strings.TrimSpace(gUser.Email))
-	if auth.IsTemporarilyDisabledUserEmail(email) {
-		writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
-		return
-	}
 
 	user, isNew, err := h.findOrCreateUser(r.Context(), email)
 	if err != nil {
-		if errors.Is(err, auth.ErrTemporarilyDisabledUser) {
-			writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
+		if errors.Is(err, auth.ErrUserDisabled) {
+			writeError(w, http.StatusForbidden, auth.UserDisabledError)
 			return
 		}
 		var signupErr SignupError
@@ -630,8 +671,8 @@ func (h *Handler) GoogleLogin(w http.ResponseWriter, r *http.Request) {
 
 	tokenString, err := h.issueJWT(user)
 	if err != nil {
-		if errors.Is(err, auth.ErrTemporarilyDisabledUser) {
-			writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
+		if errors.Is(err, auth.ErrUserDisabled) {
+			writeError(w, http.StatusForbidden, auth.UserDisabledError)
 			return
 		}
 		slog.Warn("google login failed", append(logger.RequestAttrs(r), "error", err, "email", email)...)
@@ -673,8 +714,8 @@ func (h *Handler) IssueCliToken(w http.ResponseWriter, r *http.Request) {
 
 	tokenString, err := h.issueJWT(user)
 	if err != nil {
-		if errors.Is(err, auth.ErrTemporarilyDisabledUser) {
-			writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
+		if errors.Is(err, auth.ErrUserDisabled) {
+			writeError(w, http.StatusForbidden, auth.UserDisabledError)
 			return
 		}
 		slog.Warn("cli-token: failed to issue JWT", append(logger.RequestAttrs(r), "error", err, "user_id", userID)...)
