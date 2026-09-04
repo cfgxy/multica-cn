@@ -1,6 +1,6 @@
-# Changelog
+# Upstream Diff
 
-本文件记录 cfgxy/multica（本 fork）相对上游主线 [multica-ai/multica](https://github.com/multica-ai/multica) 的改动，供使用本 fork 的团队了解上游之外的新增能力与修复。
+本文件记录 cfgxy/multica（本 fork）当前版本相对上游官方版本 [multica-ai/multica](https://github.com/multica-ai/multica) 的优化点与差异，供使用本 fork 的团队了解上游之外的新增能力与修复。
 
 - 上游（upstream）：`multica-ai/multica`
 - 对照基准：`upstream/main` @ `d4a712abf3880dfbd3daeac5daac1bd4bfb39b6f`（2026-09-02 同步）
@@ -14,13 +14,52 @@
 - 同步上游时用 merge（保留本 fork 提交历史），同步后更新顶部「对照基准」一行。
 - CI 自动生成暂未启用；如后续引入，以 workflow 输出为准并修订本约定。
 
-## 2026-09（2026-08-30 ~ 2026-09-02）
+## 2026-09（2026-08-30 ~ 2026-09-04）
 
 ### 发布与分发（Release APK 流水线与应用内更新）
 
 - `53441b09a` chore(mobile): publish release APK to rolling GitHub Release on push to main (RUYI-34)
 - `b26d959ef` ci(mobile-android): carry app version in versioned release tag
 - `9fca6dea0` feat(mobile): serverless app-update check via GitHub Releases (RUYI-36)
+- `ec90eda0f` refactor(mobile): 废除分环境包名，全环境统一 ai.multica.mobile（RUYI-33 / Owner 裁决）
+
+### 移动端 Run 详情页（单次 run 时间线 / 工具调用日志 / 失败取消原因）
+
+- `3227bf4d6` feat(mobile): run 详情页——单次 run 时间线/工具调用日志/失败取消原因（RUYI-33）
+- `e1b524363` fix(mobile): run 详情失败/取消面板 error 文本经脱敏出口（RUYI-33 review 返工）
+- `d511527b4` fix(mobile): Android 端 run 详情改全屏 modal，规避嵌套 formSheet 交互缺陷（RUYI-33 缺陷 D）
+- `9ec2aa13d` fix(web): 移除评论 sticky 头部外溢渐隐叠绘，消除接缝文字叠压（RUYI-33）
+- `48dbada5a` fix(mobile): 评论高亮叠层动画中断时复位，消除接缝残留色框（RUYI-33）
+- `d5d694bea` fix(mobile): 升级 @shopify/flash-list 2.0.2 → 2.3.2，修复时间线长评论接缝叠压（RUYI-33）
+
+### 移动端系统通知（mention / 失败 / 阻塞）
+
+- `109f94088` feat(mobile): system notifications for mentions, agent failures, and blocked issues (RUYI-37)
+- `a5ca0e979` fix(mobile): staging env injection into bundle + notification permission re-arm + cold-start tap navigation (RUYI-37 rework)
+- `a2db7b6fc` fix(mobile): readiness-driven cold-start notification tap probe (RUYI-37 D3 round 2)
+
+### 服务端任务队列与派发（排队任务消费）
+
+- `72fe1ae13` feat(queue): 运行中任务可消费排队任务——自动解除排队并防重复执行（RUYI-48）
+- `8552de766` feat(daemon): teach running agents the consume-queued adoption loop (RUYI-53)
+
+### Agent Webhook 触发（绑定固定 prompt 的触发 URL）
+
+- `326db5a6a` feat(agents): webhook trigger URLs bound to a fixed prompt (RUYI-52)
+- `b5872142c` fix(agents): renumber migration to 450 and adapt readiness seam after main merge (RUYI-52)
+- `d661c8f7b` fix(agents): register agent_webhook in the workspace deletion manifest; unbreak CRUD tests (RUYI-52)
+- `493ac00bb` fix(agents): redact agent webhook tokens in access logs; close delete dialog; fix narrow-viewport URL row (RUYI-52)
+
+### 实例级超级管理员与审计（全局用户/空间管理 + 身份切换）
+
+- `6bdb0359b` feat(admin): 实例级超级管理员——全局用户/空间管理 + 身份切换（RUYI-47）
+- `ce8d3a9e3` fix(admin): impersonate 响应携带 impersonator_id + 强制终止补写审计（QA P2-1/P2-2）
+- `dd19e384e` fix(RUYI-47): admin workspace list 500 on ownerless workspaces; add stop-impersonation exit
+- `a7502ca83` fix(RUYI-56): classify admin_audit_log as Settle, not Keep
+
+### 项目级 Agent 指令
+
+- `8d37bfb5b` feat(projects): per-project agent instructions injected into task briefs (RUYI-46)
 
 ### 移动端功能与交互修复
 
@@ -28,6 +67,13 @@
 - `6aa2113ef` feat(mobile): issue-creation attachments + multi-select pickers (RUYI-42)
 - `8ead61914` feat(mobile): issue 详情更多菜单新增「关联 PR」入口（RUYI-43）
 - `0a28c5948` feat(mobile): workspace unread dot in switch-workspace sheet (RUYI-44)
+- `77cf7a689` feat(mobile): chat header ⋯ becomes dropdown menu; unify More placement; add session rename/pin/archive (RUYI-51)
+- `46e79b6cb` fix(mobile): 保留已归档聊天会话可达性 (RUYI-51)
+
+### 本地开发环境（worktree 共享栈适配）
+
+- `6ff28b473` fix(worktree): .env.worktree 数据库口令继承主检出, 不再写死弱口令 multica
+- `410d775b2` fix(worktree): worktree 实例直接使用主库 multica——不按 worktree 隔离数据库名（Owner 2026-08-31 裁决：共享栈上修，同一数据库）
 
 ### 文档
 
