@@ -324,6 +324,58 @@ func TestInjectRuntimeConfigWindowsAssignmentBriefStaysFileOnly(t *testing.T) {
 	}
 }
 
+// TestBuildConsumeQueuedHint pins the RUYI-53 adoption guidance for RUYI-48's
+// consume-queued channel. The hint must carry BOTH halves the issue pins: the
+// adoption loop (discover → read and handle → consume) and the anti-misuse
+// rule the RUYI-48 delivery card registered — consumption is the running
+// task's self-declaration, so a consume that fires before the queued messages
+// were actually handled silently loses them (the completion reconcile replays
+// only UNconsumed messages).
+func TestBuildConsumeQueuedHint(t *testing.T) {
+	t.Parallel()
+
+	const issueID = "issue-queued-1"
+	got := BuildConsumeQueuedHint(issueID)
+
+	for _, want := range []string{
+		// The exact command, runnable as-is.
+		"multica issue consume-queued " + issueID,
+		// Adoption loop ordering: handle first, consume second.
+		"read and handle it as part of this turn",
+		"ONLY AFTER you have actually read and handled",
+		// What consumption buys: release + fold, no re-execution.
+		"queued task is cancelled",
+		"fold into this run",
+		"after this run completes",
+		// The fallback asymmetry that makes misuse lossy.
+		"replayed once",
+		"silently lost",
+		// The no-op fact keeps a correctly-ordered call cheap.
+		"harmless no-op",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("consume-queued hint missing %q\n---\n%s", want, got)
+		}
+	}
+
+	// The guard must govern the command, not float as detached prose: it may
+	// only appear after the command has been introduced.
+	firstCmd := strings.Index(got, "multica issue consume-queued")
+	guard := strings.Index(got, "ONLY AFTER you have actually read and handled")
+	if firstCmd < 0 || guard < 0 || guard < firstCmd {
+		t.Errorf("anti-misuse guard must follow the command's introduction\n---\n%s", got)
+	}
+}
+
+// An empty issue id must render nothing so callers can append unconditionally.
+func TestBuildConsumeQueuedHintEmptyIssue(t *testing.T) {
+	t.Parallel()
+
+	if got := BuildConsumeQueuedHint(""); got != "" {
+		t.Fatalf("expected empty hint for empty issue id, got %q", got)
+	}
+}
+
 // TestBuildCommentReplyInstructionsSquadLeaderCarveOut pins that the squad
 // leader variant scopes the reply imperative with the `no_action` exception
 // (MUL-5442 #6493 review): the leader's only silent path must not be

@@ -112,6 +112,7 @@ export const RUNTIME_PROFILE_PROTOCOL_FAMILIES = [
   "codex",
   "copilot",
   "opencode",
+  "codearts",
   "deveco",
   "openclaw",
   "hermes",
@@ -130,6 +131,7 @@ export const RUNTIME_PROFILE_PROTOCOL_FAMILIES = [
   "qwen",
   "qwenpaw",
   "mcode",
+  "zeroclaw",
 ] as const;
 
 export type RuntimeProtocolFamily =
@@ -476,6 +478,8 @@ export interface Agent {
   /** What this agent's owner wrote. For a system agent this holds only the
    *  workspace's own notes — the product half is `system_instructions`. */
   instructions: string;
+  /** Up to three agent-authored first-turn suggestions. Older servers omit it. */
+  conversation_starters?: AgentConversationStarter[];
   /** Set for product-defined agents (e.g. "mika"). Absent for user- and
    *  template-created agents. Identity for "maintained by Multica" checks —
    *  never the display name, which owners may change. */
@@ -587,6 +591,13 @@ export interface Agent {
   archived_by: string | null;
 }
 
+export interface AgentConversationStarter {
+  /** Short chip label shown in the empty state. */
+  label: string;
+  /** Full editable text copied into the composer when selected. */
+  prompt: string;
+}
+
 export interface DisabledRuntimeSkill {
   runtime_id: string;
   provider: string;
@@ -624,6 +635,7 @@ export interface CreateAgentRequest {
   name: string;
   description?: string;
   instructions?: string;
+  conversation_starters?: AgentConversationStarter[];
   avatar_url?: string;
   runtime_id: string;
   runtime_config?: Record<string, unknown>;
@@ -676,6 +688,7 @@ export interface StoredAgentDraft {
   name: string;
   description: string;
   instructions: string;
+  conversation_starters: AgentConversationStarter[];
   avatar_url: string | null;
   model: string;
   thinking_level: string;
@@ -718,6 +731,7 @@ export interface UpdateAgentRequest {
   name?: string;
   description?: string;
   instructions?: string;
+  conversation_starters?: AgentConversationStarter[];
   avatar_url?: string;
   runtime_id?: string;
   runtime_config?: Record<string, unknown>;
@@ -848,6 +862,19 @@ export interface CreateSkillRequest {
   content?: string;
   config?: Record<string, unknown>;
   files?: { path: string; content: string }[];
+}
+
+/** Structured body of POST /api/skills/import when uploading an archive. */
+export interface SkillImportResult {
+  status: "created" | "updated" | "conflict" | "skipped" | "failed";
+  reason?: string;
+  skill?: Skill;
+  existing_skill?: {
+    id: string;
+    name: string;
+    created_by?: string;
+    can_overwrite?: boolean;
+  };
 }
 
 export interface UpdateSkillRequest {
@@ -1076,6 +1103,28 @@ export interface RuntimeModel {
   thinking?: RuntimeModelThinking;
   /** Runtime-native execution tiers advertised for this exact model. */
   service_tiers?: RuntimeModelServiceTier[];
+  /**
+   * Whether this runtime's installed Codex CLI accepts the request-only
+   * `default` sentinel for explicit standard routing. Missing means false so
+   * a new client stays safe when connected to an older daemon.
+   */
+  supports_explicit_standard_service_tier?: boolean;
+}
+
+/**
+ * A model the runtime named but will not run on that host — today only Claude
+ * Code, reporting one that needs a newer CLI than the installed one.
+ *
+ * These arrive in their own list and never inside `models`, which is what keeps
+ * an older client from offering one: it reads `models`, and they are not there.
+ * The picker shows them greyed out with `reason` so the gap reads as "your CLI
+ * is behind" rather than "Multica does not support this model" (MUL-6961).
+ */
+export interface RuntimeUnavailableModel {
+  id: string;
+  label: string;
+  /** The runtime's own remedy, e.g. "Update to 2.1.255+ to use Fable 5.1". */
+  reason?: string;
 }
 
 export interface RuntimeModelServiceTier {
@@ -1120,6 +1169,8 @@ export interface RuntimeModelListRequest {
   runtime_id: string;
   status: RuntimeModelListStatus;
   models?: RuntimeModel[];
+  /** Advisory rows the runtime cannot run; never selectable. */
+  unavailable_models?: RuntimeUnavailableModel[];
   supported: boolean;
   error?: string;
   created_at: string;
@@ -1140,6 +1191,13 @@ export interface RuntimeModelListRequest {
 // from "provider does not honour per-agent model selection".
 export interface RuntimeModelsResult {
   models: RuntimeModel[];
+  /**
+   * Rows the runtime named but cannot run. Kept out of `models` on purpose —
+   * see RuntimeUnavailableModel. Optional like `cached` beside it: the resolver
+   * always sets it, but a backend older than the field contributes nothing, so
+   * consumers read it defensively.
+   */
+  unavailableModels?: RuntimeUnavailableModel[];
   supported: boolean;
   /**
    * True when the server answered from its catalog cache rather than a live
@@ -1246,4 +1304,41 @@ export interface RuntimeLocalSkillImportResult {
   status: "created" | "updated" | "conflict";
   skill?: Skill;
   conflict?: RuntimeLocalSkillImportConflict;
+}
+
+// ---------------------------------------------------------------------------
+// Agent webhooks (RUYI-52)
+//
+// A public, token-bearing trigger URL bound to a fixed prompt. Every visit to
+// the URL starts a fresh chat session whose first user message is the bound
+// prompt. The token is a bearer credential; the server strips the credential
+// fields for non-managers (only webhook_path_masked remains, safe to render).
+// ---------------------------------------------------------------------------
+
+export interface AgentWebhook {
+  id: string;
+  agent_id: string;
+  name: string;
+  prompt: string;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string;
+  /** Ingress path with the token replaced by the fixed-width mask. */
+  webhook_path_masked: string;
+  /** Manager-only: the raw bearer token. Null for non-managers. */
+  webhook_token?: string | null;
+  /** Manager-only: "/api/webhooks/agents/{token}". */
+  webhook_path?: string | null;
+  /** Manager-only absolute URL, present only when the server has MULTICA_PUBLIC_URL. */
+  webhook_url?: string | null;
+}
+
+export interface CreateAgentWebhookRequest {
+  name: string;
+  prompt: string;
+}
+
+export interface UpdateAgentWebhookRequest {
+  name: string;
+  prompt: string;
 }

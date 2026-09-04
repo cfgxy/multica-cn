@@ -16,6 +16,7 @@
  * use-chat-session-realtime.ts).
  */
 import { queryOptions } from "@tanstack/react-query";
+import type { ChatSession } from "@multica/core/types";
 import { api } from "@/data/api";
 
 export const chatKeys = {
@@ -42,6 +43,31 @@ export const chatKeys = {
 const UUID_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
+/** Last-activity timestamp used to rank the chat list (newest first).
+ *  Mirrors `sessionActivityTime` in packages/core/chat/queries.ts. */
+function sessionActivityTime(s: ChatSession): number {
+  return new Date(s.last_message?.created_at ?? s.updated_at).getTime();
+}
+
+/**
+ * Orders the chat list pinned-first, then by most-recent activity — mirrors
+ * `sortChatSessions` in packages/core/chat/queries.ts (mobile-owned copy per
+ * the "mirror, don't import" rule; the server returns this order, and the
+ * mirror re-sorts a flat cache after an optimistic pin/unpin / archive patch
+ * or a pin/status WS event so the list never renders out of server order).
+ * Returns a new array; stable for equal keys (Array.prototype.sort is
+ * stable), so pinned rows keep their server order when pin timestamps aren't
+ * carried in the list payload.
+ */
+export function sortChatSessions(sessions: ChatSession[]): ChatSession[] {
+  return [...sessions].sort((a, b) => {
+    const ap = a.pinned ? 1 : 0;
+    const bp = b.pinned ? 1 : 0;
+    if (ap !== bp) return bp - ap;
+    return sessionActivityTime(b) - sessionActivityTime(a);
+  });
+}
+
 export function isTaskMessageTaskId(
   taskId: string | null | undefined,
 ): taskId is string {
@@ -51,7 +77,7 @@ export function isTaskMessageTaskId(
 export const chatSessionsOptions = (wsId: string | null) =>
   queryOptions({
     queryKey: chatKeys.sessions(wsId),
-    queryFn: ({ signal }) => api.listChatSessions({ signal }),
+    queryFn: ({ signal }) => api.listChatSessions({ status: "all", signal }),
     enabled: !!wsId,
     staleTime: Infinity,
   });

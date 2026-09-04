@@ -26,7 +26,9 @@ import type {
   CreateLabelRequest,
   CreateProjectRequest,
   CreateProjectResourceRequest,
+  GitHubPullRequest,
   InboxItem,
+  InboxWorkspaceUnread,
   Issue,
   IssueLabelsResponse,
   Label,
@@ -58,16 +60,23 @@ import type {
   UpdateProjectRequest,
   User,
   Workspace,
+  WorkspaceSubscriptionSummary,
 } from "@multica/core/types";
 import {
+  AppConfigSchema,
+  EMPTY_APP_CONFIG,
+  EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
   EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
   EMPTY_LIST_ISSUES_RESPONSE,
   EMPTY_TIMELINE_ENTRIES,
+  IssuePullRequestsResponseSchema,
   IssueSchema,
   ListIssuesResponseSchema,
   ListIssueStatusesResponseSchema,
   TimelineEntriesSchema,
+  WorkspaceSubscriptionSummarySchema,
 } from "@multica/core/api/schemas";
+import type { AppConfigResponse } from "@multica/core/api/schemas";
 import {
   ActiveTasksResponseSchema,
   AgentListSchema,
@@ -88,6 +97,7 @@ import {
   EMPTY_CHAT_SESSION_LIST,
   EMPTY_COMMENT,
   EMPTY_INBOX_LIST,
+  EMPTY_INBOX_UNREAD_SUMMARY,
   EMPTY_ISSUE_FALLBACK,
   EMPTY_LIST_LABELS_RESPONSE,
   EMPTY_LIST_PROJECT_RESOURCES_RESPONSE,
@@ -103,6 +113,7 @@ import {
   EMPTY_USER,
   EMPTY_WORKSPACE_LIST,
   InboxListSchema,
+  InboxUnreadSummarySchema,
   NotificationPreferenceResponseSchema,
   ListLabelsResponseSchema,
   ListProjectResourcesResponseSchema,
@@ -397,6 +408,26 @@ class ApiClient {
     );
   }
 
+  async getConfig(opts?: { signal?: AbortSignal }): Promise<AppConfigResponse> {
+    return this.fetchValidated<AppConfigResponse>(
+      "/api/config",
+      AppConfigSchema,
+      EMPTY_APP_CONFIG,
+      { ...opts, endpoint: "getConfig" },
+    );
+  }
+
+  async getWorkspaceSubscriptionSummary(opts?: {
+    signal?: AbortSignal;
+  }): Promise<WorkspaceSubscriptionSummary | null> {
+    return this.fetchValidated<WorkspaceSubscriptionSummary | null>(
+      "/api/cloud-subscriptions/summary",
+      WorkspaceSubscriptionSummarySchema,
+      null,
+      { ...opts, endpoint: "getWorkspaceSubscriptionSummary" },
+    );
+  }
+
   // PATCH /api/me — name, avatar_url, language. Server returns the updated
   // user; we parse so a partial drift doesn't bleed into the auth store.
   async updateMe(data: UpdateMeRequest): Promise<User> {
@@ -460,6 +491,25 @@ class ApiClient {
     return parseWithFallback(raw, InboxListSchema, EMPTY_INBOX_LIST, {
       endpoint: "listInbox",
     });
+  }
+
+  // Cross-workspace unread summary: one entry per workspace the user belongs
+  // to that has unread inbox items. Backs the switch-workspace sheet's
+  // per-workspace blue dot (RUYI-44) — the same endpoint web's sidebar dot
+  // consumes. Schema-guarded so a contract drift hides the dot rather than
+  // crashing the sheet (mirrors packages/core/api/client.ts getInboxUnreadSummary).
+  async getInboxUnreadSummary(opts?: {
+    signal?: AbortSignal;
+  }): Promise<InboxWorkspaceUnread[]> {
+    const raw = await this.fetch<unknown>("/api/inbox/unread-summary", {
+      signal: opts?.signal,
+    });
+    return parseWithFallback(
+      raw,
+      InboxUnreadSummarySchema,
+      EMPTY_INBOX_UNREAD_SUMMARY,
+      { endpoint: "getInboxUnreadSummary" },
+    );
   }
 
   async markInboxRead(id: string): Promise<InboxItem> {
@@ -904,6 +954,27 @@ class ApiClient {
     );
   }
 
+  // --- Related pull requests (RUYI-43) ---
+  /**
+   * PRs linked to an issue (branch name / title / body referenced its
+   * identifier) — the data behind the web sidebar's "Pull requests"
+   * section (`issuePullRequestsOptions` in packages/core/github/queries.ts,
+   * endpoint mirrors packages/core/api/client.ts listIssuePullRequests).
+   * Schema + empty fallback come from @multica/core/api/schemas (pure
+   * Zod, mobile sharing whitelist), like the issue-list endpoints above.
+   */
+  async listIssuePullRequests(
+    issueId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<{ pull_requests: GitHubPullRequest[] }> {
+    return this.fetchValidated(
+      `/api/issues/${issueId}/pull-requests`,
+      IssuePullRequestsResponseSchema,
+      EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
+      { ...opts, endpoint: "GET /api/issues/:id/pull-requests" },
+    );
+  }
+
   // --- Projects ---
   async listProjects(opts?: {
     signal?: AbortSignal;
@@ -1024,13 +1095,18 @@ class ApiClient {
 
   // --- Chat ---
   // Mirrors the surface area of packages/core/api/client.ts chat methods.
-  // v1 omits getChatSession + updateChatSession (rename) — see the v1 cut
-  // list in /Users/qingnaiyuan/.claude/plans/plan-velvety-puddle.md.
+  // v1 omitted getChatSession + updateChatSession (rename) — the session
+  // management writes (update / pin / archive) landed in RUYI-51; the
+  // single-row getChatSession read remains omitted (mobile reads the list
+  // cache instead).
 
   async listChatSessions(
-    opts?: { signal?: AbortSignal },
+    opts?: { status?: string; signal?: AbortSignal },
   ): Promise<ChatSession[]> {
-    const raw = await this.fetch<unknown>("/api/chat/sessions", {
+    const search = new URLSearchParams();
+    if (opts?.status) search.set("status", opts.status);
+    const suffix = search.size > 0 ? `?${search.toString()}` : "";
+    const raw = await this.fetch<unknown>(`/api/chat/sessions${suffix}`, {
       signal: opts?.signal,
     });
     return parseWithFallback(
@@ -1135,6 +1211,35 @@ class ApiClient {
       `/api/chat/sessions/${sessionId}/read`,
       { method: "POST" },
     );
+  }
+
+  // Session-management writes (rename / pin / archive) — RUYI-51. Mirror
+  // web's surface in packages/core/api/client.ts; responses are not consumed
+  // by UI logic (mutations patch the cache optimistically and re-invalidates
+  // on settle), so a raw `as void` fetch is the accepted form here per the
+  // helper table in apps/mobile/CLAUDE.md.
+  async updateChatSession(
+    id: string,
+    data: { title: string },
+  ): Promise<void> {
+    await this.fetch<void>(`/api/chat/sessions/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async setChatSessionPinned(id: string, pinned: boolean): Promise<void> {
+    await this.fetch<void>(`/api/chat/sessions/${id}/pin`, {
+      method: "PATCH",
+      body: JSON.stringify({ pinned }),
+    });
+  }
+
+  async setChatSessionArchived(id: string, archived: boolean): Promise<void> {
+    await this.fetch<void>(`/api/chat/sessions/${id}/archive`, {
+      method: "PATCH",
+      body: JSON.stringify({ archived }),
+    });
   }
 
   async cancelTaskById(taskId: string): Promise<void> {

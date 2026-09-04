@@ -34,6 +34,11 @@
     "queued": "Queued",
     "idle": "Idle"
   },
+  "presence_status_aria": "Status: {{status}}",
+  "avatar_stack": {
+    "overflow_aria_one": "{{count}} more agent",
+    "overflow_aria_other": "{{count}} more agents"
+  },
   "archived": {
     "active_link": "Active agents",
     "title": "Archived agents"
@@ -227,8 +232,11 @@
     "model_managed_by_runtime": "Managed by runtime",
     "model_search_placeholder": "Search or type a model ID",
     "model_discovering": "Discovering models…",
+    "model_discovery_failed_title": "Could not list this runtime's models.",
+    "model_discovery_failed_hint": "Type a model ID above to enter one manually.",
     "model_empty": "No models available",
     "model_empty_with_dot": "No models available.",
+    "model_unavailable_heading": "Needs a newer CLI",
     "model_custom_tooltip": "Use \"{{value}}\" as a custom model id",
     "model_custom_use": "Use \"{{value}}\"",
     "model_clear": "Clear (use provider default)",
@@ -238,6 +246,8 @@
     "thinking_clear": "Follow CLI config",
     "thinking_clear_title": "Clear the override and let the local CLI config (claude/codex) decide the reasoning level",
     "service_tier_default": "Runtime default",
+    "service_tier_standard": "Standard",
+    "service_tier_standard_description": "Standard speed and standard usage",
     "service_tier_tooltip": "Speed · {{value}}",
     "service_tier_clear": "Runtime default",
     "service_tier_clear_title": "Clear the speed override and let the local Codex configuration decide"
@@ -274,7 +284,8 @@
     "discard_dialog_title": "Discard unsaved changes?",
     "discard_dialog_description": "You have unsaved changes in this tab. Leaving now will discard them.",
     "discard_keep": "Keep editing",
-    "discard_confirm": "Discard changes"
+    "discard_confirm": "Discard changes",
+    "webhooks": "Webhook"
   },
   "creation_studio": {
     "title": "Create an agent",
@@ -441,6 +452,19 @@
       "upload_failed_toast": "Avatar upload failed"
     }
   },
+  "conversation_starters": {
+    "label": "Conversation starters",
+    "hint": "Up to three examples, shown when someone opens a new chat with this agent. Selecting one fills the composer without sending it.",
+    "add": "Add suggestion",
+    "item_label": "Suggestion {{number}} label",
+    "prompt_label": "Suggestion {{number}} prompt",
+    "label_placeholder": "Review a pull request",
+    "prompt_placeholder": "Review the open pull request, summarize the risks, and recommend next steps.",
+    "incomplete": "Complete or remove each suggestion before saving.",
+    "remove": "Remove suggestion {{number}}",
+    "preview_label": "Preview of a new chat",
+    "preview_defaults": "These are the built-in defaults. Add a suggestion above to replace all three."
+  },
   "tab_body": {
     "common": {
       "save": "Save",
@@ -571,6 +595,10 @@
       "dialog_headers_label": "HTTP headers",
       "dialog_add_header": "Add header",
       "dialog_remove_header": "Remove header",
+      "dialog_pair_key_placeholder": "Key",
+      "dialog_pair_value_placeholder": "Value",
+      "dialog_pair_key_aria": "{{label}} key {{index}}",
+      "dialog_pair_value_aria": "{{label}} value {{index}}",
       "dialog_native_json_hint": "This historical provider-native entry can be edited in JSON without changing its format.",
       "dialog_json_label": "Server configuration",
       "dialog_json_aria": "MCP server JSON configuration",
@@ -671,7 +699,7 @@
     },
     "integrations": {
       "intro": "Connect this agent to external chat platforms so people can work with it where they already are.",
-      "members_note": "Only workspace owners and admins can connect an agent to an external chat platform. You can view connected bots in Settings → Integrations."
+      "members_note": "Only workspace owners and admins can manage this connection. You can view connected bots in Settings → Integrations."
     },
     "activity": {
       "status": {
@@ -844,6 +872,7 @@
     "usage_chip_title": "Tokens and estimated cost for this run",
     "details_branch": "Branch",
     "details_reason": "Reason",
+    "details_diagnostics": "Technical details",
     "copy_branch": "Copy branch name",
     "lane_model": "Model",
     "lane_tool": "Tools",
@@ -877,11 +906,44 @@
     "tool_kind_misc": "Other"
   },
   "task_failure": {
-    "agent_error": "Agent execution error",
-    "timeout": "Task timed out",
-    "runtime_offline": "Daemon offline",
-    "runtime_recovery": "Daemon restarted",
-    "manual": "Cancelled by user"
+    "cancelled_by_system": "Cancelled by the system",
+    "reasons": {
+      "queued_expired": "Expired in queue",
+      "runtime_offline": "Daemon offline",
+      "runtime_reconnect_timeout": "Daemon did not reconnect in time",
+      "runtime_recovery": "Daemon restarted",
+      "timeout": "Task timed out",
+      "iteration_limit": "Hit the iteration limit",
+      "agent_blocked": "Waiting on human input",
+      "api_invalid_request": "Rejected by the model API",
+      "skill_bundle_unavailable": "Couldn't download the agent's skills",
+      "runtime_cli_timeout": "Local runtime CLI timed out",
+      "environment_prepare_failed": "Couldn't prepare the execution environment",
+      "invalid_task_identity": "Task identity mismatch",
+      "agent_error_provider_auth_or_access": "Provider auth failed",
+      "agent_error_provider_quota_limit": "Provider quota exhausted",
+      "agent_error_provider_capacity_or_rate_limit": "Rate limited by provider",
+      "agent_error_provider_server_error": "Provider server error",
+      "agent_error_provider_network": "Network error reaching provider",
+      "agent_error_process_failure": "Agent process crashed",
+      "agent_error_empty_or_unparseable_output": "Agent returned no usable output",
+      "agent_error_agent_timeout": "Agent timed out",
+      "agent_error_context_overflow": "Context window exceeded",
+      "agent_error_missing_config": "Missing API key or configuration",
+      "agent_error_model_not_found_or_unavailable": "Model unavailable",
+      "agent_error_runtime_version_unsupported": "Runner CLI version unsupported",
+      "agent_error_runtime_missing_executable": "Runner CLI not installed",
+      "agent_error_unknown": "Agent execution error",
+      "agent_fallback_message": "Agent returned a fallback message",
+      "codex_resume_oversized": "Session too large to resume",
+      "idle_watchdog": "Agent stopped after inactivity",
+      "local_directory_error": "Local directory error",
+      "cancelled": "Cancelled by the system",
+      "agent_error": "Agent execution error",
+      "codex_semantic_inactivity": "Codex semantic inactivity timeout",
+      "manual": "Cancelled by user",
+      "user_cancelled": "Cancelled by user"
+    }
   },
   "last_active": {
     "today": "Today",
@@ -910,5 +972,50 @@
     "selected_one": "{{count}} selected",
     "selected_other": "{{count}} selected",
     "clear_selection": "Clear selection"
+  },
+  "webhooks": {
+    "intro": "Trigger this agent over HTTP: each webhook binds a fixed prompt and gets a unique, sign-in-free link. Every visit starts a new chat session with that prompt.",
+    "security_hint": "⚠ A link is a credential: anyone who holds it can trigger this agent and consume run resources. Treat links like passwords.",
+    "add": "Add webhook",
+    "limit_reached": "Limit reached (max {{max}} per agent)",
+    "load_failed": "Couldn't load webhooks",
+    "retry": "Retry",
+    "disabled_badge": "Disabled",
+    "prompt_prefix": "Prompt: ",
+    "edit": "Edit name and prompt",
+    "rotate": "Regenerate link",
+    "delete": "Delete",
+    "delete_title": "Delete webhook “{{name}}”?",
+    "delete_description": "The link stops working immediately and external integrations (such as GitHub) will fail to trigger. The bound prompt is removed too. This cannot be undone.",
+    "delete_confirm": "Delete",
+    "deleting": "Deleting…",
+    "rotate_title": "Regenerate link?",
+    "rotate_description": "The old link stops working immediately and must be updated in the external system (such as GitHub). Copy the new link after regenerating.",
+    "rotate_confirm": "Regenerate",
+    "rotating": "Regenerating…",
+    "cancel": "Cancel",
+    "empty_title": "No webhooks yet",
+    "empty_description": "Add one to get a sign-in-free unique link; every visit starts a new session with the bound prompt.",
+    "empty_readonly": "This agent has no webhooks configured.",
+    "form_title": "Add webhook",
+    "form_name_label": "Name",
+    "form_name_placeholder": "e.g. GitHub push trigger",
+    "form_name_too_long": "Name must be at most 50 characters",
+    "form_prompt_label": "Prompt",
+    "form_prompt_placeholder": "When the webhook is visited, the agent starts a new session with this prompt. e.g. Check the repository's latest commits and summarize changes and risks.",
+    "form_prompt_too_long": "Prompt must be at most 4000 characters",
+    "form_create": "Create",
+    "form_creating": "Creating…",
+    "form_save": "Save",
+    "form_saving": "Saving…",
+    "form_submit_failed": "Something went wrong. Please try again.",
+    "created_title": "Webhook created",
+    "created_description": "Copy the link below and configure it in GitHub or any other external system. Every visit starts a new chat session with the bound prompt.",
+    "url_label": "Webhook link",
+    "created_warning": "A link is a credential — do not share it publicly. After this panel closes the link is masked in the list; you can copy it again at any time.",
+    "created_test_hint": "Tip: open the link directly in a browser to test the trigger.",
+    "created_done": "Done",
+    "edit_title": "Edit webhook",
+    "edit_url_unchanged": "The link and its token stay the same — only the name and prompt change."
   }
 }

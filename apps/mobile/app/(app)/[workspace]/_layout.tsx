@@ -179,6 +179,7 @@ export default function WorkspaceLayout() {
             headerLeft: () => <ModalCloseButton />,
           }}
         />
+        <Stack.Screen name="inbox/[id]" options={SHEET_OPTIONS} />
         {/* Issue-detail formSheet pickers. All share the same sheet config:
             explicit numeric detents to dodge expo/expo#42904+#42965 (the
             `fitToContents` zero-size / padding bugs on iOS 26 + Expo 55),
@@ -273,6 +274,32 @@ export default function WorkspaceLayout() {
           name="issue/[id]/comment/[commentId]/emoji-picker"
           options={SHEET_OPTIONS}
         />
+        {/* Comments directory (RUYI-28) — Android-first navigation aid.
+            Full-page modal (not a formSheet): it's a browse/search surface
+            with a back-stack entry, not a picker row. Body draws its own
+            header per the modal-container rules; Android system back
+            closes it. Deliberately does NOT reuse the deep-link
+            `highlight` param — see comments.tsx header comment. */}
+        <Stack.Screen
+          name="issue/[id]/comments"
+          options={{
+            title: i18n.t("issues:mobile.detail.comments_title", "Comments"),
+            presentation: "modal",
+          }}
+        />
+        {/* Related pull requests (RUYI-43) — full-page modal, same
+            container rationale as issue/[id]/comments above: a browse
+            surface with a back-stack entry, not a picker row. Title reuses
+            the existing web sidebar section key
+            `issues:detail.section_pull_requests` (en "Pull requests"),
+            already localized in every bundle. */}
+        <Stack.Screen
+          name="issue/[id]/pull-requests"
+          options={{
+            title: i18n.t("issues:detail.section_pull_requests", "Pull requests"),
+            presentation: "modal",
+          }}
+        />
         {/* Project-detail formSheet pickers. */}
         <Stack.Screen
           name="project/[id]/picker/status"
@@ -345,6 +372,17 @@ export default function WorkspaceLayout() {
         <Stack.Screen name="issues-filter" options={SHEET_OPTIONS} />
         {/* Chat session-switch sheet. */}
         <Stack.Screen name="chat-sessions" options={SHEET_OPTIONS} />
+        {/* Chat session rename sheet (RUYI-51) — reached from the chat
+            header's ⋯ menu. Isolated sheet (no chip-row neighbours), so it
+            may override the detents with fitToContents; see the SHEET_OPTIONS
+            comment for why the shared default can't. */}
+        <Stack.Screen
+          name="chat-rename"
+          options={{
+            ...SHEET_OPTIONS,
+            sheetAllowedDetents: "fitToContents",
+          }}
+        />
         {/* Workspace switcher — reached from the More popover's collapsed
             WorkspaceCard. Two-step (pick → iOS Alert confirm → switch). */}
         <Stack.Screen name="switch-workspace" options={SHEET_OPTIONS} />

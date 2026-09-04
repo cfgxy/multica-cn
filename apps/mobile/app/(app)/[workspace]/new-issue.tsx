@@ -6,27 +6,37 @@
  * toolbar. Property chips are part of the form, not pinned above keyboard.
  * MentionSuggestionBar floats above keyboard only when the user is mid-@.
  *
- * No markdown toolbar / upload buttons in v1: mobile users creating an
- * issue rarely format markdown, and attachment upload is deferred to a
- * later release (see plan-issue-majestic-rabin.md "skip uploads").
+ * Attachments (RUYI-42): the description field carries the shared
+ * MarkdownToolbar with @ / image / file buttons. Picked files upload
+ * immediately (multi-select) and their durable markdown link is appended
+ * to the description text — the same "the body references it, therefore
+ * it's bound" model as web's create-issue dialog. Submit gates on
+ * in-flight uploads (MUL-3339 mobile mirror) and derives
+ * `attachment_ids` via `referencedAttachmentIds`, so deleting the
+ * reference line really unbinds the file, exactly like web.
  *
  * Mention pipeline shares `useMentionInput` with `issue/[id]/new-comment.tsx`
  * — both surfaces produce canonical `[@name](mention://type/id)` markdown
  * recognised by util.ParseMentions on the server.
  */
 import { useCallback, useEffect, useState } from "react";
-import {
-  Alert,
-  KeyboardAvoidingView,
-  Platform,
-  ScrollView,
-  TextInput,
-} from "react-native";
+import { Alert, ScrollView, TextInput } from "react-native";
+// RN 0.83 edge-to-edge 下 Android 的窗口 resize 失效，避让统一走
+// keyboard-controller（behavior="padding" 两端一致），见 RUYI-30。
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { Stack, router } from "expo-router";
+import type { Attachment } from "@multica/core/types";
 import { SubmitIssueButton } from "@/components/issue/submit-issue-button";
 import { CreateFormAttributeRow } from "@/components/issue/create-form-attribute-row";
 import { MentionSuggestionBar } from "@/components/issue/mention-suggestion-bar";
 import { DescriptionField } from "@/components/issue/description-field";
+import { MarkdownToolbar } from "@/components/editor/markdown-toolbar";
+import { useFileAttach } from "@/components/editor/use-file-attach";
+import {
+  appendBodyMarkdown,
+  attachmentMarkdown,
+  referencedAttachmentIds,
+} from "@/lib/attachment-markdown";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { useCreateIssue } from "@/data/mutations/issues";
 import { useNewIssueDraftStore } from "@/data/stores/new-issue-draft-store";
@@ -36,6 +46,12 @@ import { useT } from "@/lib/use-t";
 export default function NewIssueModal() {
   const [title, setTitle] = useState("");
   const description = useMentionInput();
+  // Completed uploads from this draft session. The markdown link in the
+  // description text is the user-visible half; this array is the id half
+  // that `referencedAttachmentIds` filters against at submit time.
+  const [uploadedAttachments, setUploadedAttachments] = useState<Attachment[]>(
+    [],
+  );
   // Attribute chips (status / priority / assignee / due date / project)
   // live in `useNewIssueDraftStore` so the new-issue-picker/* formSheet
   // routes can read and write the same values without a parent-child
@@ -55,18 +71,58 @@ export default function NewIssueModal() {
     };
   }, [resetDraft]);
 
+  // Uploads run with no issue/comment context — the issue doesn't exist
+  // yet; `attachment_ids` on the create request is what binds them
+  // (api.uploadFile docstring, same flow as web).
+  const { pickAndUploadImages, pickAndUploadFiles, uploading } = useFileAttach();
+
+  const onPickImages = useCallback(async () => {
+    const uploaded = await pickAndUploadImages();
+    if (uploaded.length === 0) return;
+    setUploadedAttachments((prev) => [...prev, ...uploaded]);
+    // Insert at END (not the caret): uploads complete async, and web's
+    // coordinated uploads deliver finished links the same way
+    // (insertMarkdownAtEnd). The functional updater keeps any typing the
+    // user did during the await.
+    uploaded.forEach((att) => {
+      description.setText((prev) =>
+        appendBodyMarkdown(prev, attachmentMarkdown(att)),
+      );
+    });
+  }, [pickAndUploadImages, description]);
+
+  const onPickFiles = useCallback(async () => {
+    const uploaded = await pickAndUploadFiles();
+    if (uploaded.length === 0) return;
+    setUploadedAttachments((prev) => [...prev, ...uploaded]);
+    uploaded.forEach((att) => {
+      description.setText((prev) =>
+        appendBodyMarkdown(prev, attachmentMarkdown(att)),
+      );
+    });
+  }, [pickAndUploadFiles, description]);
+
   const createIssue = useCreateIssue();
   const isSubmitting = createIssue.isPending;
 
   const { t } = useT("common");
   const { t: tIssues } = useT("issues");
 
-  const canSubmit = !isSubmitting && title.trim().length > 0;
+  // In-flight uploads block submit: submitting now would drop their
+  // markdown inserts and strand the ids unbound (web MUL-3339 parity).
+  const canSubmit =
+    !isSubmitting && !uploading && title.trim().length > 0;
 
   const onSubmit = useCallback(async () => {
     const trimmedTitle = title.trim();
     if (trimmedTitle.length === 0) return;
     const finalDescription = description.serialize().trim();
+    // Web create-issue parity: bind ONLY uploads the final body still
+    // references — deleting the reference line really unbinds the file.
+    const attachmentIds = referencedAttachmentIds(
+      uploadedAttachments,
+      finalDescription,
+    );
     try {
       await createIssue.mutateAsync({
         title: trimmedTitle,
@@ -78,6 +134,7 @@ export default function NewIssueModal() {
           : {}),
         ...(dueDate ? { due_date: dueDate } : {}),
         ...(project ? { project_id: project.id } : {}),
+        ...(attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : {}),
       });
       router.back();
     } catch (err) {
@@ -91,6 +148,7 @@ export default function NewIssueModal() {
   }, [
     title,
     description,
+    uploadedAttachments,
     status,
     priority,
     assignee,
@@ -117,7 +175,7 @@ export default function NewIssueModal() {
       <Stack.Screen options={{ headerRight }} />
       <KeyboardAvoidingView
         className="flex-1 bg-background"
-        behavior={Platform.OS === "ios" ? "padding" : undefined}
+        behavior="padding"
       >
         <ScrollView
           className="flex-1"
@@ -135,6 +193,12 @@ export default function NewIssueModal() {
             editable={!isSubmitting}
           />
           <DescriptionField description={description} disabled={isSubmitting} />
+          <MarkdownToolbar
+            onAt={description.handlers.onAtButtonPress}
+            onImage={onPickImages}
+            onFile={onPickFiles}
+            disabled={isSubmitting || uploading}
+          />
           <CreateFormAttributeRow />
         </ScrollView>
 

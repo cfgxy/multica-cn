@@ -146,6 +146,13 @@ func TestRedactWebhookPath(t *testing.T) {
 		{"/api/webhooks/autopilots/awt_secret", "/api/webhooks/autopilots/[redacted]"},
 		{"/api/webhooks/autopilots/awt_secret/", "/api/webhooks/autopilots/[redacted]/"},
 		{"/api/webhooks/autopilots/", "/api/webhooks/autopilots/"},
+		// Agent webhook ingress (RUYI-52) carries the same bearer-token
+		// shape; the token segment must redact identically.
+		{"/api/webhooks/agents/awt_secret", "/api/webhooks/agents/[redacted]"},
+		{"/api/webhooks/agents/awt_secret/", "/api/webhooks/agents/[redacted]/"},
+		{"/api/webhooks/agents/", "/api/webhooks/agents/"},
+		// GET with a query string still redacts the token segment.
+		{"/api/webhooks/agents/awt_secret?honest=1", "/api/webhooks/agents/[redacted]?honest=1"},
 		{"/api/webhooks/github", "/api/webhooks/github"},
 		{"/api/runtimes/abc", "/api/runtimes/abc"},
 		{"/", "/"},
@@ -170,6 +177,25 @@ func TestRequestLogger_RedactsWebhookTokenInPath(t *testing.T) {
 	}
 	if !strings.Contains(out, "[redacted]") {
 		t.Fatalf("expected [redacted] in logs:\n%s", out)
+	}
+}
+
+// The agent webhook ingress (RUYI-52) shares the bearer-URL credential
+// model; QA round 1 caught the shared access logger printing the full
+// agent-ingress URL because only the autopilots prefix was redacted.
+func TestRequestLogger_RedactsAgentWebhookTokenInPath(t *testing.T) {
+	logs := withCapturedLogs(t)
+	handler := RequestLogger(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/api/webhooks/agents/awt_agentsecret", nil)
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+	out := logs.String()
+	if strings.Contains(out, "awt_agentsecret") {
+		t.Fatalf("agent webhook token leaked into logs:\n%s", out)
+	}
+	if !strings.Contains(out, "/api/webhooks/agents/[redacted]") {
+		t.Fatalf("expected redacted agent webhook path in logs:\n%s", out)
 	}
 }
 

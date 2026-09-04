@@ -68,6 +68,16 @@ type ActiveSiblingRunData struct {
 	StartedAt       string `json:"started_at,omitempty"`
 }
 
+// IssueStatusData mirrors one active custom workspace status from the claim
+// payload (MUL-6460). Mirror field: internal/handler/agent.go
+// TaskIssueStatusData, same JSON names.
+type IssueStatusData struct {
+	Key         string `json:"key"`
+	Name        string `json:"name"`
+	Category    string `json:"category"`
+	Description string `json:"description,omitempty"`
+}
+
 // Task represents a claimed task from the server.
 // Agent data (name, skills) is populated by the claim endpoint.
 type Task struct {
@@ -76,6 +86,8 @@ type Task struct {
 	RuntimeID            string                 `json:"runtime_id"`
 	IssueID              string                 `json:"issue_id"`
 	WorkspaceID          string                 `json:"workspace_id"`
+	WorkspaceSlug        string                 `json:"workspace_slug,omitempty"`
+	IssueIdentifier      string                 `json:"issue_identifier,omitempty"`
 	RemoteMCPConnections []remotemcp.Connection `json:"remote_mcp_connections,omitempty"`
 	// RemoteMCPDaemonToken stays inside the daemon and authenticates the local
 	// broker's credential-resolution calls. It must never enter agent env/config.
@@ -88,7 +100,14 @@ type Task struct {
 	// prompt set in Settings → General). Server populates this on every claim
 	// regardless of task kind so the daemon can inject `## Workspace Context`
 	// into the brief. Empty when the owner hasn't set one.
-	WorkspaceContext              string                 `json:"workspace_context,omitempty"`
+	WorkspaceContext string `json:"workspace_context,omitempty"`
+	// IssueStatuses mirrors the claim payload's active CUSTOM status catalog
+	// (MUL-6460): key/name/category/description per status, already in catalog
+	// order. Rendered into the brief's status-command line; empty (including on
+	// old servers that never send the field) keeps the brief byte-identical to
+	// the built-in-only form. IssueStatusesOmitted is the cap overflow count.
+	IssueStatuses                 []IssueStatusData      `json:"issue_statuses,omitempty"`
+	IssueStatusesOmitted          int                    `json:"issue_statuses_omitted,omitempty"`
 	ActiveSiblingRuns             []ActiveSiblingRunData `json:"active_sibling_runs,omitempty"`
 	ThreadName                    string                 `json:"thread_name,omitempty"` // semantic title for provider-native session/thread history
 	Agent                         *AgentData             `json:"agent,omitempty"`
@@ -97,6 +116,7 @@ type Task struct {
 	ProjectID                     string                 `json:"project_id,omitempty"`                       // active project for this task, when present
 	ProjectTitle                  string                 `json:"project_title,omitempty"`                    // human-readable project title for context injection
 	ProjectDescription            string                 `json:"project_description,omitempty"`              // durable project-level context injected into the brief
+	ProjectInstructions           string                 `json:"project_instructions,omitempty"`             // per-project agent instructions injected after Workspace Context (RUYI-46)
 	ProjectResources              []ProjectResourceData  `json:"project_resources,omitempty"`                // project-scoped resources to expose to the agent
 	IsLeaderTask                  bool                   `json:"is_leader_task,omitempty"`                   // true when executing in the squad-leader coordinator role
 	LeaderRoleResolved            bool                   `json:"leader_role_resolved,omitempty"`             // server capability: IsLeaderTask/SquadID authoritatively answer "is this a leader run". Absent on servers predating it — those before #4951 never sent is_leader_task at all, later ones send it without this guarantee — so taskIsSquadLeader falls back to the briefing marker for both (MUL-5811)
@@ -131,6 +151,7 @@ type Task struct {
 	QuickCreatePriority           string                 `json:"quick_create_priority,omitempty"`            // explicit priority selected in quick-create
 	QuickCreateDueDate            string                 `json:"quick_create_due_date,omitempty"`            // explicit calendar due date selected in quick-create
 	QuickCreateAttachmentIDs      []string               `json:"quick_create_attachment_ids,omitempty"`      // attachments uploaded in the quick-create prompt and bound by issue create
+	QuickCreateSourceContext      json.RawMessage        `json:"quick_create_source_context,omitempty"`      // immutable historical context, separate from the new instruction
 	HandoffNote                   string                 `json:"handoff_note,omitempty"`                     // assignment handoff instruction; rendered into the opening prompt + issue_context.md
 
 	SquadID               string `json:"squad_id,omitempty"`                // when the picker was a squad, the squad's UUID; Agent is still the resolved leader

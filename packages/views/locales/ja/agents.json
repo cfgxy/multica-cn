@@ -34,6 +34,10 @@
     "queued": "待機中",
     "idle": "アイドル"
   },
+  "presence_status_aria": "ステータス: {{status}}",
+  "avatar_stack": {
+    "overflow_aria_other": "他 {{count}} 件のエージェント"
+  },
   "archived": {
     "active_link": "アクティブなエージェント",
     "title": "アーカイブ済みエージェント"
@@ -210,8 +214,11 @@
     "model_managed_by_runtime": "ランタイムで管理",
     "model_search_placeholder": "モデル ID を検索または入力",
     "model_discovering": "モデルを検出中...",
+    "model_discovery_failed_title": "このランタイムのモデルを取得できませんでした。",
+    "model_discovery_failed_hint": "上の入力欄にモデル ID を直接入力して手動で指定できます。",
     "model_empty": "利用可能なモデルがありません",
     "model_empty_with_dot": "利用可能なモデルがありません。",
+    "model_unavailable_heading": "新しい CLI が必要",
     "model_custom_tooltip": "\"{{value}}\" をカスタムモデル ID として使用",
     "model_custom_use": "\"{{value}}\" を使用",
     "model_clear": "クリア（プロバイダーのデフォルトを使用）",
@@ -221,6 +228,8 @@
     "thinking_clear": "CLI 設定に従う",
     "thinking_clear_title": "上書きをクリアし、推論レベルをローカルの CLI 設定（claude/codex）に任せます",
     "service_tier_default": "ランタイムのデフォルト",
+    "service_tier_standard": "標準",
+    "service_tier_standard_description": "通常速度と標準使用量",
     "service_tier_tooltip": "速度 · {{value}}",
     "service_tier_clear": "ランタイムのデフォルト",
     "service_tier_clear_title": "速度の上書きをクリアし、ローカルの Codex 設定に任せます"
@@ -257,7 +266,8 @@
     "discard_dialog_title": "保存していない変更を破棄しますか？",
     "discard_dialog_description": "このタブに保存していない変更があります。今移動すると変更は破棄されます。",
     "discard_keep": "編集を続ける",
-    "discard_confirm": "変更を破棄"
+    "discard_confirm": "変更を破棄",
+    "webhooks": "Webhook"
   },
   "create_dialog": {
     "title_create": "エージェントを作成",
@@ -323,6 +333,19 @@
       "select_image_toast": "画像ファイルを選択してください。",
       "upload_failed_toast": "アバターのアップロードに失敗しました"
     }
+  },
+  "conversation_starters": {
+    "label": "会話の開始例",
+    "hint": "このエージェントで新しいチャットを開いたときに表示される例（最大3件）。選ぶと送信せずに入力欄へ入ります。",
+    "add": "候補を追加",
+    "item_label": "候補 {{number}} のラベル",
+    "prompt_label": "候補 {{number}} のプロンプト",
+    "label_placeholder": "プルリクエストをレビュー",
+    "prompt_placeholder": "開いているプルリクエストをレビューし、リスクと次の手順をまとめてください。",
+    "incomplete": "各候補を完成させるか削除してから保存してください。",
+    "remove": "候補 {{number}} を削除",
+    "preview_label": "新しいチャットのプレビュー",
+    "preview_defaults": "これは組み込みの初期値です。上で候補を1件追加すると3件すべて置き換わります。"
   },
   "tab_body": {
     "common": {
@@ -453,6 +476,10 @@
       "dialog_headers_label": "HTTP ヘッダー",
       "dialog_add_header": "ヘッダーを追加",
       "dialog_remove_header": "ヘッダーを削除",
+      "dialog_pair_key_placeholder": "キー",
+      "dialog_pair_value_placeholder": "値",
+      "dialog_pair_key_aria": "{{label}}：キー {{index}}",
+      "dialog_pair_value_aria": "{{label}}：値 {{index}}",
       "dialog_native_json_hint": "過去の Provider ネイティブ形式です。形式を変更せず JSON で編集できます。",
       "dialog_json_label": "単一 Server 設定",
       "dialog_json_aria": "MCP Server JSON 設定",
@@ -552,7 +579,7 @@
     },
     "integrations": {
       "intro": "このエージェントを外部のチャットプラットフォームに接続し、普段使っているツールから直接やり取りできるようにします。",
-      "members_note": "エージェントを外部チャットプラットフォームに接続できるのはワークスペースのオーナーと管理者のみです。接続済みの Bot は「設定 → 連携」で確認できます。"
+      "members_note": "この接続を管理できるのはワークスペースのオーナーと管理者のみです。接続済みの Bot は「設定 → 連携」で確認できます。"
     },
     "activity": {
       "status": {
@@ -723,6 +750,7 @@
     "usage_chip_title": "この実行のトークンと推定費用",
     "details_branch": "ブランチ",
     "details_reason": "理由",
+    "details_diagnostics": "技術的な詳細",
     "copy_branch": "ブランチ名をコピー",
     "lane_model": "モデル",
     "lane_tool": "ツール",
@@ -752,11 +780,44 @@
     "tool_kind_misc": "その他"
   },
   "task_failure": {
-    "agent_error": "エージェント実行エラー",
-    "timeout": "作業がタイムアウトしました",
-    "runtime_offline": "デーモンがオフライン",
-    "runtime_recovery": "デーモンが再起動しました",
-    "manual": "ユーザーがキャンセルしました"
+    "cancelled_by_system": "システムによってキャンセルされました",
+    "reasons": {
+      "queued_expired": "キュー内で期限切れになりました",
+      "runtime_offline": "デーモンがオフライン",
+      "runtime_reconnect_timeout": "デーモンが時間内に再接続しませんでした",
+      "runtime_recovery": "デーモンが再起動しました",
+      "timeout": "作業がタイムアウトしました",
+      "iteration_limit": "反復回数の上限に達しました",
+      "agent_blocked": "人による入力を待機中",
+      "api_invalid_request": "モデル API に拒否されました",
+      "skill_bundle_unavailable": "エージェントのスキルをダウンロードできませんでした",
+      "runtime_cli_timeout": "ローカルランタイム CLI がタイムアウトしました",
+      "environment_prepare_failed": "実行環境を準備できませんでした",
+      "invalid_task_identity": "作業のエージェント情報が一致しません",
+      "agent_error_provider_auth_or_access": "プロバイダーの認証に失敗しました",
+      "agent_error_provider_quota_limit": "プロバイダーのクォータを使い切りました",
+      "agent_error_provider_capacity_or_rate_limit": "プロバイダーによるレート制限",
+      "agent_error_provider_server_error": "プロバイダーのサーバーエラー",
+      "agent_error_provider_network": "プロバイダーへの接続でネットワークエラー",
+      "agent_error_process_failure": "エージェントプロセスがクラッシュしました",
+      "agent_error_empty_or_unparseable_output": "エージェントから使用可能な出力がありません",
+      "agent_error_agent_timeout": "エージェントがタイムアウトしました",
+      "agent_error_context_overflow": "コンテキストウィンドウを超過しました",
+      "agent_error_missing_config": "API キーまたは設定がありません",
+      "agent_error_model_not_found_or_unavailable": "モデルを利用できません",
+      "agent_error_runtime_version_unsupported": "ランナー CLI のバージョンはサポートされていません",
+      "agent_error_runtime_missing_executable": "ランナー CLI がインストールされていません",
+      "agent_error_unknown": "エージェント実行エラー",
+      "agent_fallback_message": "エージェントがフォールバックメッセージを返しました",
+      "codex_resume_oversized": "セッションが大きすぎて再開できません",
+      "idle_watchdog": "エージェントが長時間応答しなかったため停止しました",
+      "local_directory_error": "ローカルディレクトリエラー",
+      "cancelled": "システムによってキャンセルされました",
+      "agent_error": "エージェント実行エラー",
+      "codex_semantic_inactivity": "Codex に進行がないままタイムアウトしました",
+      "manual": "ユーザーがキャンセルしました",
+      "user_cancelled": "ユーザーがキャンセルしました"
+    }
   },
   "runtime_filter": {
     "all": "すべてのランタイム",
@@ -889,5 +950,50 @@
   "actions": {
     "selected_other": "{{count}} 件選択中",
     "clear_selection": "選択を解除"
+  },
+  "webhooks": {
+    "intro": "HTTP 経由でこのエージェントをトリガー：各 Webhook は固定プロンプトに紐付き、サインイン不要の一意なリンクを生成します。リンクにアクセスするたびに、そのプロンプトで新しいチャットセッションが開始されます。",
+    "security_hint": "⚠ リンクは認証情報です：リンクを知る誰もがエージェントを実行しリソースを消費できます。パスワードと同じように取り扱ってください。",
+    "add": "Webhook を追加",
+    "limit_reached": "上限に到達（エージェントあたり最大 {{max}} 件）",
+    "load_failed": "Webhook の読み込みに失敗しました",
+    "retry": "再試行",
+    "disabled_badge": "無効",
+    "prompt_prefix": "プロンプト：",
+    "edit": "名前とプロンプトを編集",
+    "rotate": "リンクを再生成",
+    "delete": "削除",
+    "delete_title": "Webhook「{{name}}」を削除しますか？",
+    "delete_description": "削除するとリンクは直ちに無効になり、GitHub などの外部連携はトリガーに失敗します。紐付けられたプロンプトも削除されます。この操作は元に戻せません。",
+    "delete_confirm": "削除",
+    "deleting": "削除中…",
+    "rotate_title": "リンクを再生成しますか？",
+    "rotate_description": "古いリンクは直ちに無効になります。GitHub などの外部システムで新しいリンクに更新してください。再生成後に新しいリンクをコピーしてください。",
+    "rotate_confirm": "再生成",
+    "rotating": "再生成中…",
+    "cancel": "キャンセル",
+    "empty_title": "Webhook はまだありません",
+    "empty_description": "追加するとサインイン不要の一意なリンクが生成され、アクセスごとに紐付けられたプロンプトで新しいセッションが始まります。",
+    "empty_readonly": "このエージェントには Webhook が設定されていません。",
+    "form_title": "Webhook を追加",
+    "form_name_label": "名前",
+    "form_name_placeholder": "例：GitHub push トリガー",
+    "form_name_too_long": "名前は 50 文字以内にしてください",
+    "form_prompt_label": "プロンプト",
+    "form_prompt_placeholder": "Webhook にアクセスすると、エージェントはこのプロンプトで新しいセッションを開始します。例：リポジトリの最新コミットを確認し、変更点とリスクを要約する。",
+    "form_prompt_too_long": "プロンプトは 4000 文字以内にしてください",
+    "form_create": "作成",
+    "form_creating": "作成中…",
+    "form_save": "保存",
+    "form_saving": "保存中…",
+    "form_submit_failed": "問題が発生しました。もう一度お試しください。",
+    "created_title": "Webhook を作成しました",
+    "created_description": "下のリンクをコピーして GitHub などの外部システムに設定してください。アクセスするたびに、紐付けられたプロンプトで新しいチャットセッションが作成されます。",
+    "url_label": "Webhook リンク",
+    "created_warning": "リンクは認証情報です。公開で共有しないでください。このパネルを閉じた後、リンクはリスト内でマスク表示され、いつでも再コピーできます。",
+    "created_test_hint": "ヒント：リンクをブラウザで直接開くとトリガーをテストできます。",
+    "created_done": "完了",
+    "edit_title": "Webhook を編集",
+    "edit_url_unchanged": "リンクとトークンは変更されません。名前とプロンプトのみが更新されます。"
   }
 }

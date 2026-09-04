@@ -7,6 +7,10 @@ export interface Project {
   workspace_id: string;
   title: string;
   description: string | null;
+  // Per-project agent instructions (RUYI-46): plain text injected into every
+  // task brief in this project, right after the workspace context. Server caps
+  // it at 32,000 characters.
+  instructions: string | null;
   icon: string | null;
   status: ProjectStatus;
   priority: ProjectPriority;
@@ -26,6 +30,7 @@ export interface Project {
 export interface CreateProjectRequest {
   title: string;
   description?: string;
+  instructions?: string;
   icon?: string;
   status?: ProjectStatus;
   priority?: ProjectPriority;
@@ -41,6 +46,8 @@ export interface CreateProjectRequest {
 export interface UpdateProjectRequest {
   title?: string;
   description?: string | null;
+  // Omit the key to leave instructions untouched; send null to clear them.
+  instructions?: string | null;
   icon?: string | null;
   status?: ProjectStatus;
   priority?: ProjectPriority;
@@ -79,8 +86,13 @@ export interface GithubRepoResourceRef {
  *   one at a time — a second task waits in `waiting_local_directory`. Edits
  *   land in the user's working copy.
  * - `worktree`: each task gets its own git worktree of that repo inside the
- *   runtime's workspace, so tasks run concurrently and deliver their work as an
- *   `agent/<agent>/<task>` branch instead of touching the working copy.
+ *   runtime's workspace, so tasks run concurrently and deliver their work as a
+ *   branch instead of touching the working copy. Every task of one conversation
+ *   shares that branch — `agent/<agent>/<issue>` — so a follow-up continues the
+ *   previous turn's work; a task with no conversation behind it gets
+ *   `agent/<agent>/<task>`. Continuation is decided by an ownership record in
+ *   the repo, not by the branch name, so a same-named branch the user made is
+ *   never adopted.
  *
  * Absent means `in_place`: resources created before the mode existed keep their
  * original behavior, so this is optional rather than defaulted on the server.
