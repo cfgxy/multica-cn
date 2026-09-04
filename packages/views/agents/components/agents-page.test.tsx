@@ -1,6 +1,6 @@
 import React from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import type { Agent } from "@multica/core/types";
 import type { AgentActivity } from "@multica/core/agents";
 import { renderWithI18n } from "../../test/i18n";
@@ -107,7 +107,7 @@ vi.mock("@multica/core/agents", () => ({
 vi.mock("@multica/core/agents/stores", () => ({
   useAgentsViewStore: (selector: (state: unknown) => unknown) =>
     selector(mocks.viewState),
-  AGENT_DEFAULT_HIDDEN_COLUMNS: ["model", "created"],
+  AGENT_DEFAULT_HIDDEN_COLUMNS: ["created"],
   AGENT_SCOPES: ["mine", "all", "archived"],
 }));
 
@@ -334,5 +334,61 @@ describe("AgentsPage listReady gate", () => {
 
     expect(screen.getByText("No agents yet")).toBeInTheDocument();
     expect(screen.queryByTestId("skeleton")).not.toBeInTheDocument();
+  });
+});
+
+// RUYI-58: the model column moved next to Runtime (right after it) and is
+// default-visible; the cell shows the agent's configured model with an
+// em-dash fallback.
+describe("AgentsPage model column", () => {
+  beforeEach(() => {
+    // Model visible, matching the new default; created stays hidden.
+    mocks.viewState.hiddenColumns = ["created"];
+  });
+
+  it("renders the Model header immediately after the Runtime header", () => {
+    renderPage();
+
+    const runtimeHeader = screen
+      .getByText("Runtime")
+      .closest('[role="columnheader"]') as HTMLElement;
+    const modelHeader = screen
+      .getByText("Model")
+      .closest('[role="columnheader"]') as HTMLElement;
+
+    expect(modelHeader.previousElementSibling).toBe(runtimeHeader);
+  });
+
+  it("shows each agent's model in the row, with — for an empty model", () => {
+    mocks.agents = [
+      ALPHA,
+      makeAgent({ id: "a-gamma", name: "Gamma Agent", model: "" }),
+    ];
+
+    renderPage();
+
+    expect(screen.getByText("claude")).toBeInTheDocument();
+
+    // Runtime is unresolved in this harness, so every row already carries
+    // exactly one em-dash from the runtime cell; the empty-model row has
+    // precisely one more — the model cell's fallback.
+    const alphaRow = screen
+      .getByText("Alpha Agent")
+      .closest('[role="row"]') as HTMLElement;
+    const gammaRow = screen
+      .getByText("Gamma Agent")
+      .closest('[role="row"]') as HTMLElement;
+    expect(within(gammaRow).getAllByText("—")).toHaveLength(
+      within(alphaRow).getAllByText("—").length + 1,
+    );
+  });
+
+  it("renders no model header or cell when the user hides the column", () => {
+    mocks.viewState.hiddenColumns = ["model", "created"];
+
+    renderPage();
+
+    expect(screen.queryByText("Model")).not.toBeInTheDocument();
+    expect(screen.queryByText("claude")).not.toBeInTheDocument();
   });
 });
