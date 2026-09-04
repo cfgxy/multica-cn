@@ -1,6 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { useAgentsViewStore } from "./view-store";
+import {
+  AGENT_DEFAULT_HIDDEN_COLUMNS,
+  useAgentsViewStore,
+} from "./view-store";
 import { setCurrentWorkspace } from "../../platform/workspace-storage";
 
 const flush = () => new Promise((resolve) => queueMicrotask(() => resolve(null)));
@@ -196,6 +199,107 @@ describe("useAgentsViewStore", () => {
       await flush();
 
       expect(useAgentsViewStore.getState().filters.access).toEqual([]);
+    });
+  });
+
+  // RUYI-58: the model column moved next to Runtime as a default-visible
+  // column. Legacy persisted preferences must be overridden exactly once;
+  // the user's own post-delivery toggles must keep winning.
+  describe("model column default visibility", () => {
+    it("no longer hides the model column by default", () => {
+      expect(AGENT_DEFAULT_HIDDEN_COLUMNS).not.toContain("model");
+      expect(AGENT_DEFAULT_HIDDEN_COLUMNS).toContain("created");
+    });
+
+    it("a browser with no persisted prefs shows the model column", async () => {
+      setCurrentWorkspace("fresh", "ws_fresh");
+      await flush();
+      await flush();
+      expect(useAgentsViewStore.getState().hiddenColumns).toEqual(
+        AGENT_DEFAULT_HIDDEN_COLUMNS,
+      );
+      expect(useAgentsViewStore.getState().hiddenColumns).not.toContain("model");
+    });
+
+    it("overrides a legacy v0 preference that hides model (one-time)", async () => {
+      // Every pre-RUYI-58 browser persisted hiddenColumns containing
+      // "model" — it was in the old default set. The v0 → v1 migration
+      // strips it so the new default wins.
+      localStorage.setItem(
+        "multica_agents_view:acme",
+        JSON.stringify({
+          state: { scope: "all", hiddenColumns: ["model", "created"] },
+          version: 0,
+        }),
+      );
+      setCurrentWorkspace("acme", "ws_a");
+      await flush();
+      await flush();
+      const hidden = useAgentsViewStore.getState().hiddenColumns;
+      expect(hidden).not.toContain("model");
+      expect(hidden).toContain("created");
+    });
+
+    it("keeps a legacy v0 preference that already showed model", async () => {
+      localStorage.setItem(
+        "multica_agents_view:acme",
+        JSON.stringify({
+          state: { scope: "all", hiddenColumns: ["created"] },
+          version: 0,
+        }),
+      );
+      setCurrentWorkspace("acme", "ws_a");
+      await flush();
+      await flush();
+      expect(useAgentsViewStore.getState().hiddenColumns).not.toContain("model");
+    });
+
+    it("respects the user's own post-delivery hide (v1 payload is final)", async () => {
+      localStorage.setItem(
+        "multica_agents_view:acme",
+        JSON.stringify({
+          state: { scope: "all", hiddenColumns: ["model", "created"] },
+          version: 1,
+        }),
+      );
+      setCurrentWorkspace("acme", "ws_a");
+      await flush();
+      await flush();
+      expect(useAgentsViewStore.getState().hiddenColumns).toContain("model");
+    });
+
+    it("persists post-migration toggles at v1 so the override never re-fires", async () => {
+      localStorage.setItem(
+        "multica_agents_view:acme",
+        JSON.stringify({
+          state: { scope: "all", hiddenColumns: ["model", "created"] },
+          version: 0,
+        }),
+      );
+      setCurrentWorkspace("acme", "ws_a");
+      await flush();
+      await flush();
+      expect(
+        useAgentsViewStore.getState().hiddenColumns,
+      ).not.toContain("model");
+
+      // The user hides the model column themselves after the migration.
+      useAgentsViewStore.getState().toggleColumn("model");
+      await flush();
+      const parsed = JSON.parse(
+        localStorage.getItem("multica_agents_view:acme") as string,
+      );
+      expect(parsed.version).toBe(1);
+      expect(parsed.state.hiddenColumns).toContain("model");
+
+      // A later rehydrate must not strip it again.
+      setCurrentWorkspace("beta", "ws_b");
+      await flush();
+      await flush();
+      setCurrentWorkspace("acme", "ws_a");
+      await flush();
+      await flush();
+      expect(useAgentsViewStore.getState().hiddenColumns).toContain("model");
     });
   });
 });

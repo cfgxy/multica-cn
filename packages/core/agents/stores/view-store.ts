@@ -76,12 +76,40 @@ export type AgentColumnKey =
   | "model"
   | "created";
 
-/** Model and created are opt-in: hidden until the user enables them. Owner
- *  is shown by default (the user wants to see who owns each agent). */
+/** Created is opt-in: hidden until the user enables it. Model sits next to
+ *  Runtime as a default-visible column (RUYI-58); rehydrated pre-RUYI-58
+ *  payloads are stripped of a persisted model-hide exactly once — see
+ *  migrateAgentsViewState. Owner is shown by default (the user wants to see
+ *  who owns each agent). */
 export const AGENT_DEFAULT_HIDDEN_COLUMNS: AgentColumnKey[] = [
-  "model",
   "created",
 ];
+
+/** Persist payload version. v0 = payloads written before the model column
+ *  became default-visible (RUYI-58); v1 = current. */
+export const AGENTS_VIEW_PERSIST_VERSION = 1;
+
+/** Migrate older persisted payloads on rehydrate. v0 → v1: the model column
+ *  became default-visible next to Runtime, so drop it from any persisted
+ *  hiddenColumns — a one-time override of legacy preferences. Payloads saved
+ *  at v1+ never enter this branch, so the user's own later hide/show toggles
+ *  are respected. */
+export function migrateAgentsViewState(
+  persisted: unknown,
+  version: number,
+): Partial<AgentsViewState> {
+  const p = (persisted ?? {}) as Partial<AgentsViewState>;
+  if (
+    version >= AGENTS_VIEW_PERSIST_VERSION ||
+    !Array.isArray(p.hiddenColumns)
+  ) {
+    return p;
+  }
+  return {
+    ...p,
+    hiddenColumns: p.hiddenColumns.filter((key) => key !== "model"),
+  };
+}
 
 export interface AgentsViewState {
   scope: AgentsScope;
@@ -163,6 +191,8 @@ export const useAgentsViewStore = create<AgentsViewState>()(
     }),
     {
       name: "multica_agents_view",
+      version: AGENTS_VIEW_PERSIST_VERSION,
+      migrate: migrateAgentsViewState,
       storage: createJSONStorage(() =>
         createWorkspaceAwareStorage(defaultStorage),
       ),

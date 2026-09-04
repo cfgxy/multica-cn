@@ -61,9 +61,9 @@ const COLUMN_KEYS: AgentColumnKey[] = [
   "owner",
   "access",
   "runtime",
+  "model",
   "lastActive",
   "runs",
-  "model",
   "created",
 ];
 
