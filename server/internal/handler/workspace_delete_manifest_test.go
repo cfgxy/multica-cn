@@ -21,8 +21,11 @@ const (
 var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"activity_log": workspaceDelete,
 	// Instance-level admin audit trail (RUYI-47): audit history survives
-	// workspace teardown; rows reference the deleted workspace by id only.
-	"admin_audit_log":                    workspaceDeleteKeep,
+	// workspace teardown and keeps its workspace_id un-nulled so the trail
+	// still shows which workspace an action affected; classified Settle
+	// (not Keep) because the row is left in place with workspace_id intact
+	// rather than being genuinely workspace-agnostic.
+	"admin_audit_log":                    workspaceDeleteSettle,
 	"agent":                              workspaceDelete,
 	"agent_builder_draft":                workspaceDelete,
 	"agent_invocation_target":            workspaceDelete,
