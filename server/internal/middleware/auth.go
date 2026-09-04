@@ -17,26 +17,21 @@ import (
 
 func uuidToString(u pgtype.UUID) string { return util.UUIDToString(u) }
 
-func rejectTemporarilyDisabledUser(w http.ResponseWriter, r *http.Request, userID, email, authPath string) bool {
-	if !auth.IsTemporarilyDisabledUser(userID, email) {
-		return false
-	}
-	slog.Warn(
-		"auth: temporarily disabled user rejected",
-		"path", r.URL.Path,
-		"user_id", userID,
-		"auth_path", authPath,
-	)
-	writeError(w, http.StatusForbidden, auth.TemporarilyDisabledUserError)
-	return true
-}
-
 // Auth middleware validates JWT tokens or Personal Access Tokens.
 // Token sources (in priority order):
 //  1. Authorization: Bearer <token> header (PAT or JWT)
 //  2. multica_auth HttpOnly cookie (JWT) — requires valid CSRF token for state-changing requests
 //
-// Sets X-User-ID and X-User-Email headers on the request for downstream handlers.
+// Sets X-User-ID and X-User-Email headers on the request for downstream
+// handlers. When the JWT carries an impersonation claim (imp, RUYI-47) the
+// impersonator's user ID is stamped into X-Impersonator-ID; like
+// X-Actor-Source that header is server-set only — any client-supplied value
+// is discarded before the auth branches run.
+//
+// disabled is the account-state gate backed by user.disabled_at (RUYI-47);
+// nil skips the check (JWT-only unit tests). Every credential branch
+// consults it, so a disabled account loses JWT, PAT, task-token, and
+// cloud-PAT access within the same short TTL window.
 //
 // patCache is optional; when non-nil, PAT lookups are cached with a short
 // TTL (auth.AuthCacheTTL). On cache hit the middleware skips both the DB
@@ -48,17 +43,21 @@ func rejectTemporarilyDisabledUser(w http.ResponseWriter, r *http.Request, userI
 // local DB. When nil (Fleet URL unset) mcn_ tokens are rejected at the
 // prefix branch — we don't fall through to the mul_ / JWT paths, since
 // an mcn_ string is by construction not a valid mul_ PAT or JWT.
-func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATVerifier) func(http.Handler) http.Handler {
+func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATVerifier, disabled auth.DisabledLookup) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// X-Actor-Source is server-set only — any value supplied by
-			// the client is untrusted and discarded before the auth
-			// branches run. Only the mat_ branch below re-sets it. This
+			// X-Actor-Source and X-Impersonator-ID are server-set only —
+			// any value supplied by the client is untrusted and discarded
+			// before the auth branches run. Only the mat_ branch below
+			// re-sets X-Actor-Source, and only the JWT branch re-sets
+			// X-Impersonator-ID (from a signed impersonation claim). This
 			// is what prevents a client from sending a normal mul_ PAT
-			// plus a forged `X-Actor-Source: member` (or anything else)
-			// to convince a downstream handler that its request came
-			// from a non-task-token path.
+			// plus a forged `X-Actor-Source: member` or a forged
+			// X-Impersonator-ID to convince a downstream handler that its
+			// request came from another identity.
 			r.Header.Del("X-Actor-Source")
+			r.Header.Del("X-Impersonator-ID")
+			r.Header.Del("X-Impersonation-Session")
 
 			tokenString, fromCookie := extractToken(r)
 			if tokenString == "" {
@@ -97,7 +96,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 					return
 				}
 				userID := uuidToString(tt.UserID)
-				if rejectTemporarilyDisabledUser(w, r, userID, "", "task_token") {
+				if rejectDisabledUser(w, r, disabled, userID, "task_token") {
 					return
 				}
 				r.Header.Set("X-User-ID", userID)
@@ -154,7 +153,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 					http.Error(w, `{"error":"cloud pat verifier unavailable"}`, http.StatusServiceUnavailable)
 					return
 				}
-				if rejectTemporarilyDisabledUser(w, r, identity.OwnerID, "", "cloud_pat") {
+				if rejectDisabledUser(w, r, disabled, identity.OwnerID, "cloud_pat") {
 					return
 				}
 				r.Header.Set("X-User-ID", identity.OwnerID)
@@ -183,7 +182,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				// entry since. Skip the DB SELECT and the last_used_at
 				// UPDATE — last_used_at is bumped once per TTL window.
 				if userID, ok := patCache.Get(r.Context(), hash); ok {
-					if rejectTemporarilyDisabledUser(w, r, userID, "", "pat_cache") {
+					if rejectDisabledUser(w, r, disabled, userID, "pat_cache") {
 						return
 					}
 					r.Header.Set("X-User-ID", userID)
@@ -203,7 +202,7 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				}
 
 				userID := uuidToString(pat.UserID)
-				if rejectTemporarilyDisabledUser(w, r, userID, "", "pat") {
+				if rejectDisabledUser(w, r, disabled, userID, "pat") {
 					return
 				}
 				r.Header.Set("X-User-ID", userID)
@@ -253,12 +252,31 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				return
 			}
 			email, _ := claims["email"].(string)
-			if rejectTemporarilyDisabledUser(w, r, sub, email, "jwt") {
+			if rejectDisabledUser(w, r, disabled, sub, "jwt") {
 				return
 			}
 			r.Header.Set("X-User-ID", sub)
 			if email != "" {
 				r.Header.Set("X-User-Email", email)
+			}
+			// Impersonation claim (RUYI-47): a shadow JWT acts as sub but
+			// stays attributable to the super admin who minted it. The
+			// impersonator's account state is checked too — disabling the
+			// admin must not leave pre-minted shadow tokens alive past
+			// this request. Handlers see the pair through X-User-ID (the
+			// acting identity) + X-Impersonator-ID (the accountable one).
+			// The sid claim carries the audit session id, relayed as
+			// X-Impersonation-Session (server-set only, stripped above)
+			// so the stop endpoint closes exactly the session in the
+			// token.
+			if impID, _ := claims["imp"].(string); strings.TrimSpace(impID) != "" {
+				if rejectDisabledUser(w, r, disabled, impID, "jwt_impersonator") {
+					return
+				}
+				r.Header.Set("X-Impersonator-ID", impID)
+				if sid, _ := claims["sid"].(string); strings.TrimSpace(sid) != "" {
+					r.Header.Set("X-Impersonation-Session", sid)
+				}
 			}
 
 			next.ServeHTTP(w, r)

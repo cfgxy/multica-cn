@@ -33,6 +33,7 @@ export type RouteIconName =
   | "Server"
   | "BookOpenText"
   | "Settings"
+  | "Shield"
   | "File"
   | "FileText"
   | "FileImage"
@@ -55,7 +56,8 @@ export type NavLabelKey =
   | "usage"
   | "runtimes"
   | "skills"
-  | "settings";
+  | "settings"
+  | "admin";
 
 /** Stable identifier for each workspace navigation page. */
 export type WorkspacePageKey =
@@ -70,7 +72,8 @@ export type WorkspacePageKey =
   | "usage"
   | "runtimes"
   | "skills"
-  | "settings";
+  | "settings"
+  | "admin";
 
 export interface WorkspacePage {
   /** Route segment at index 1 of `/{slug}/{segment}/...`. */
@@ -98,6 +101,10 @@ export const WORKSPACE_PAGES: Record<WorkspacePageKey, WorkspacePage> = {
   runtimes: { segment: "runtimes", icon: "Monitor", navKey: "runtimes" },
   skills: { segment: "skills", icon: "BookOpenText", navKey: "skills" },
   settings: { segment: "settings", icon: "Settings", navKey: "settings" },
+  // RUYI-47: instance-level admin area. The registry entry gives the tab
+  // bar and search an icon/page mapping; the sidebar entry itself stays
+  // gated on the super-admin flag.
+  admin: { segment: "admin", icon: "Shield", navKey: "admin" },
 };
 
 /** Reverse lookup: route segment → page key. */

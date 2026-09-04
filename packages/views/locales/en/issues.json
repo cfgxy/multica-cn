@@ -1015,6 +1015,28 @@
       "cancel_title": "Cancel task?",
       "cancel_body": "The agent will stop after the current step."
     },
+    "run_detail": {
+      "title": "Run details",
+      "copy": "Copy",
+      "copied": "Copied",
+      "copy_all": "Copy all",
+      "loading": "Loading…",
+      "took": "Took {{duration}}",
+      "started_at": "Started",
+      "completed_at": "Finished",
+      "failure_heading": "Failure reason",
+      "cancel_reason_heading": "Cancellation reason",
+      "cancelled_by_system": "Cancelled by the system",
+      "timeline_heading": "Timeline",
+      "outcome_files_one": "{{count}} file",
+      "outcome_files_other": "{{count}} files",
+      "outcome_commands_one": "{{count}} command",
+      "outcome_commands_other": "{{count}} commands",
+      "result_label": "Result",
+      "truncated": "… (truncated)",
+      "empty": "No events were recorded for this run.",
+      "empty_queued": "This run hasn't started yet."
+    },
     "list": {
       "load_failed": "Failed to load issues: {{reason}}",
       "empty_all": "No issues in this workspace.",

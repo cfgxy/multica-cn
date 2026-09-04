@@ -16,6 +16,7 @@ import { queryClient } from "@/data/query-client";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { LightboxProvider, prewarmHighlighter } from "@/lib/markdown";
+import { NotificationResponseNavigator } from "@/components/notifications/notification-response-navigator";
 import { NAV_THEME } from "@/lib/theme";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { initI18n } from "@/lib/i18n";
@@ -90,6 +91,8 @@ export default function RootLayout() {
                     {/* 登录前后都可达 —— 未登录用户连自建后端是核心场景。 */}
                     <Stack.Screen name="server-settings" />
                   </Stack>
+                  {/* RUYI-37: 系统通知点击 → 对应 Issue（冷启动与运行时两条入口）。 */}
+                  <NotificationResponseNavigator />
                   <PortalHost />
                 </LightboxProvider>
               </AuthInitializer>

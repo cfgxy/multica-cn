@@ -40,6 +40,12 @@ import {
   EMPTY_INBOX_UNREAD_SUMMARY,
   EMPTY_SEARCH_PROJECTS_RESPONSE,
   EMPTY_USER,
+  AdminUserListSchema,
+  AdminWorkspaceListSchema,
+  ImpersonationResponseSchema,
+  EMPTY_ADMIN_USER_LIST,
+  EMPTY_ADMIN_WORKSPACE_LIST,
+  EMPTY_IMPERSONATION_RESPONSE,
   InboxItemListSchema,
   InboxUnreadSummarySchema,
   IssueTriggerPreviewSchema,
@@ -2102,5 +2108,98 @@ describe("issue status catalog schemas", () => {
       { endpoint: "POST /api/issue-statuses" },
     );
     expect(parsed).toEqual(EMPTY_ISSUE_STATUS_ENTRY);
+  });
+});
+
+
+// ---------------------------------------------------------------------------
+// RUYI-47 admin schemas. The /api/admin payloads render management tables;
+// a malformed response must degrade to empty lists rather than crash the
+// page, and older backends that never send is_super_admin / impersonator_id
+// must parse cleanly with the documented defaults.
+// ---------------------------------------------------------------------------
+describe("Admin schemas (RUYI-47)", () => {
+  const baseUser = {
+    id: "22222222-2222-2222-2222-222222222222",
+    name: "Grace",
+    email: "grace@example.com",
+  };
+
+  it("UserSchema defaults is_super_admin to false and impersonator_id to null", () => {
+    const parsed = UserSchema.parse(baseUser);
+    expect(parsed.is_super_admin).toBe(false);
+    expect(parsed.impersonator_id).toBe(null);
+  });
+
+  it("UserSchema preserves an impersonation session", () => {
+    const parsed = UserSchema.parse({
+      ...baseUser,
+      is_super_admin: false,
+      impersonator_id: "33333333-3333-3333-3333-333333333333",
+    });
+    expect(parsed.impersonator_id).toBe("33333333-3333-3333-3333-333333333333");
+  });
+
+  it("falls back to EMPTY_USER when is_super_admin is the wrong type", () => {
+    const parsed = parseWithFallback(
+      { ...baseUser, is_super_admin: "yes" },
+      UserSchema,
+      EMPTY_USER,
+      { endpoint: "GET /api/me" },
+    );
+    expect(parsed).toEqual(EMPTY_USER);
+  });
+
+  it("AdminUserListSchema tolerates missing fields and unknown extras", () => {
+    const parsed = AdminUserListSchema.parse({
+      users: [{ id: "u1" }],
+      total: 1,
+      future_field: true,
+    });
+    expect(parsed.users).toHaveLength(1);
+    expect(parsed.users[0]?.email).toBe("");
+    expect(parsed.users[0]?.is_super_admin).toBe(false);
+    expect(parsed.users[0]?.disabled_at).toBeNull();
+    expect(parsed.users[0]?.workspace_count).toBe(0);
+    expect(parsed.total).toBe(1);
+  });
+
+  it("falls back to an empty directory on a malformed users response", () => {
+    const parsed = parseWithFallback(
+      { users: "all-of-them", total: null },
+      AdminUserListSchema,
+      EMPTY_ADMIN_USER_LIST,
+      { endpoint: "GET /api/admin/users" },
+    );
+    expect(parsed).toEqual(EMPTY_ADMIN_USER_LIST);
+  });
+
+  it("AdminWorkspaceListSchema defaults owner fields to null", () => {
+    const parsed = AdminWorkspaceListSchema.parse({
+      workspaces: [{ id: "w1", name: "WS", slug: "ws" }],
+      total: 1,
+    });
+    expect(parsed.workspaces[0]?.owner_id).toBeNull();
+    expect(parsed.workspaces[0]?.member_count).toBe(0);
+  });
+
+  it("falls back to an empty directory on a malformed workspaces response", () => {
+    const parsed = parseWithFallback(
+      null,
+      AdminWorkspaceListSchema,
+      EMPTY_ADMIN_WORKSPACE_LIST,
+      { endpoint: "GET /api/admin/workspaces" },
+    );
+    expect(parsed).toEqual(EMPTY_ADMIN_WORKSPACE_LIST);
+  });
+
+  it("ImpersonationResponseSchema falls back on a malformed stop response", () => {
+    const parsed = parseWithFallback(
+      { token: 42 },
+      ImpersonationResponseSchema,
+      EMPTY_IMPERSONATION_RESPONSE,
+      { endpoint: "POST /api/impersonation/stop" },
+    );
+    expect(parsed).toEqual(EMPTY_IMPERSONATION_RESPONSE);
   });
 });

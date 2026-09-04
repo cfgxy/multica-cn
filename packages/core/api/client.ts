@@ -227,6 +227,11 @@ import type {
 } from "../types";
 import type { OnboardingCompletionPath } from "../onboarding/types";
 import type {
+  AdminUserList,
+  AdminWorkspaceList,
+  ImpersonationResponse,
+} from "../admin/types";
+import type {
   CreateFeedbackResponse,
   FeedbackContext,
   FeedbackKind,
@@ -327,6 +332,12 @@ import {
   SubscribersListSchema,
   TimelineEntriesSchema,
   UserSchema,
+  AdminUserListSchema,
+  AdminWorkspaceListSchema,
+  ImpersonationResponseSchema,
+  EMPTY_ADMIN_USER_LIST,
+  EMPTY_ADMIN_WORKSPACE_LIST,
+  EMPTY_IMPERSONATION_RESPONSE,
   WebhookDeliveryResponseSchema,
   BillingBalanceSchema,
   BillingTransactionsPageSchema,
@@ -872,6 +883,81 @@ export class ApiClient {
     });
     return parseWithFallback(raw, UserSchema, EMPTY_USER, {
       endpoint: "PATCH /api/me",
+    });
+  }
+
+  // Admin (RUYI-47) — instance-level user & workspace management. Every
+  // endpoint 403s server-side unless the caller is a live super admin.
+  async adminListUsers(params?: { query?: string; limit?: number; offset?: number }): Promise<AdminUserList> {
+    const search = new URLSearchParams();
+    if (params?.query) search.set("query", params.query);
+    if (params?.limit) search.set("limit", String(params.limit));
+    if (params?.offset) search.set("offset", String(params.offset));
+    const qs = search.toString();
+    const raw = await this.fetch<unknown>(`/api/admin/users${qs ? `?${qs}` : ""}`);
+    return parseWithFallback(raw, AdminUserListSchema, EMPTY_ADMIN_USER_LIST, {
+      endpoint: "GET /api/admin/users",
+    });
+  }
+
+  async adminSetUserDisabled(userId: string, disabled: boolean, reason?: string): Promise<User> {
+    const raw = await this.fetch<unknown>(`/api/admin/users/${userId}/disabled`, {
+      method: "PATCH",
+      body: JSON.stringify({ disabled, reason: reason || undefined }),
+    });
+    return parseWithFallback(raw, UserSchema, EMPTY_USER, {
+      endpoint: "PATCH /api/admin/users/:id/disabled",
+    });
+  }
+
+  async adminSetUserSuperAdmin(userId: string, granted: boolean, reason?: string): Promise<User> {
+    const raw = await this.fetch<unknown>(`/api/admin/users/${userId}/super-admin`, {
+      method: "PATCH",
+      body: JSON.stringify({ granted, reason: reason || undefined }),
+    });
+    return parseWithFallback(raw, UserSchema, EMPTY_USER, {
+      endpoint: "PATCH /api/admin/users/:id/super-admin",
+    });
+  }
+
+  async adminImpersonate(userId: string, reason?: string): Promise<ImpersonationResponse> {
+    const raw = await this.fetch<unknown>(`/api/admin/users/${userId}/impersonate`, {
+      method: "POST",
+      body: JSON.stringify({ reason: reason || undefined }),
+    });
+    return parseWithFallback(raw, ImpersonationResponseSchema, EMPTY_IMPERSONATION_RESPONSE, {
+      endpoint: "POST /api/admin/users/:id/impersonate",
+    });
+  }
+
+  async adminListWorkspaces(params?: { query?: string; limit?: number; offset?: number }): Promise<AdminWorkspaceList> {
+    const search = new URLSearchParams();
+    if (params?.query) search.set("query", params.query);
+    if (params?.limit) search.set("limit", String(params.limit));
+    if (params?.offset) search.set("offset", String(params.offset));
+    const qs = search.toString();
+    const raw = await this.fetch<unknown>(`/api/admin/workspaces${qs ? `?${qs}` : ""}`);
+    return parseWithFallback(raw, AdminWorkspaceListSchema, EMPTY_ADMIN_WORKSPACE_LIST, {
+      endpoint: "GET /api/admin/workspaces",
+    });
+  }
+
+  async adminAddWorkspaceMember(
+    workspaceId: string,
+    data: { email?: string; user_id?: string; role: "member" | "admin"; reason?: string },
+  ): Promise<void> {
+    await this.fetch(`/api/admin/workspaces/${workspaceId}/members`, {
+      method: "POST",
+      body: JSON.stringify({ ...data, reason: data.reason || undefined }),
+    });
+  }
+
+  async stopImpersonation(): Promise<ImpersonationResponse> {
+    const raw = await this.fetch<unknown>("/api/impersonation/stop", {
+      method: "POST",
+    });
+    return parseWithFallback(raw, ImpersonationResponseSchema, EMPTY_IMPERSONATION_RESPONSE, {
+      endpoint: "POST /api/impersonation/stop",
     });
   }
 

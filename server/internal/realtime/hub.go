@@ -676,7 +676,9 @@ func (h *Hub) Snapshot() map[string]any {
 }
 
 // authenticateToken validates a JWT or PAT string and returns the user ID.
-func authenticateToken(tokenStr string, pr PATResolver, ctx context.Context) (string, string) {
+// disabled is the persisted account-state gate (RUYI-47); nil skips the
+// check, preserving the old in-memory-map-free shape for tests.
+func authenticateToken(tokenStr string, pr PATResolver, disabled auth.DisabledLookup, ctx context.Context) (string, string) {
 	if strings.HasPrefix(tokenStr, "mul_") {
 		if pr == nil {
 			return "", `{"error":"invalid token"}`
@@ -685,7 +687,7 @@ func authenticateToken(tokenStr string, pr PATResolver, ctx context.Context) (st
 		if !ok {
 			return "", `{"error":"invalid token"}`
 		}
-		if auth.IsTemporarilyDisabledUserID(uid) {
+		if isDisabledForWS(disabled, ctx, uid) {
 			return "", `{"error":"account disabled"}`
 		}
 		return uid, ""
@@ -710,11 +712,17 @@ func authenticateToken(tokenStr string, pr PATResolver, ctx context.Context) (st
 	if !ok || strings.TrimSpace(uid) == "" {
 		return "", `{"error":"invalid claims"}`
 	}
-	email, _ := claims["email"].(string)
-	if auth.IsTemporarilyDisabledUser(uid, email) {
+	if isDisabledForWS(disabled, ctx, uid) {
 		return "", `{"error":"account disabled"}`
 	}
 	return uid, ""
+}
+
+// isDisabledForWS consults the injected lookup; a nil lookup never rejects,
+// matching the middleware contract that a missing dependency must not take
+// down auth.
+func isDisabledForWS(disabled auth.DisabledLookup, ctx context.Context, uid string) bool {
+	return disabled != nil && disabled.IsDisabled(ctx, uid)
 }
 
 // firstMessageAuth reads the first WebSocket message expecting an auth payload.
@@ -772,7 +780,10 @@ func writeWSAuthErrorAndClose(conn *websocket.Conn, payload []byte, attrs ...any
 
 // HandleWebSocket upgrades an HTTP connection to WebSocket with cookie or
 // first-message auth.
-func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, resolveSlug SlugResolver, w http.ResponseWriter, r *http.Request) {
+// HandleWebSocket upgrades an HTTP connection to WebSocket with cookie or
+// first-message token auth. disabled is the persisted account-state gate
+// shared with the HTTP middlewares (RUYI-47); nil skips the check.
+func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, resolveSlug SlugResolver, disabled auth.DisabledLookup, w http.ResponseWriter, r *http.Request) {
 	workspaceID := r.URL.Query().Get("workspace_id")
 	if workspaceID == "" {
 		if slug := r.URL.Query().Get("workspace_slug"); slug != "" && resolveSlug != nil {
@@ -791,7 +802,7 @@ func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, resolveSlug
 
 	var userID string
 	if cookie, err := r.Cookie(auth.AuthCookieName); err == nil && cookie.Value != "" {
-		uid, errMsg := authenticateToken(cookie.Value, pr, r.Context())
+		uid, errMsg := authenticateToken(cookie.Value, pr, disabled, r.Context())
 		if errMsg != "" {
 			status := http.StatusUnauthorized
 			if errMsg == `{"error":"account disabled"}` {
@@ -827,7 +838,7 @@ func HandleWebSocket(hub *Hub, mc MembershipChecker, pr PATResolver, resolveSlug
 			writeWSAuthErrorAndClose(conn, []byte(errMsg), "workspace_id", workspaceID)
 			return
 		}
-		uid, errMsg := authenticateToken(tokenStr, pr, r.Context())
+		uid, errMsg := authenticateToken(tokenStr, pr, disabled, r.Context())
 		if errMsg != "" {
 			writeWSAuthErrorAndClose(conn, []byte(errMsg), "workspace_id", workspaceID)
 			return

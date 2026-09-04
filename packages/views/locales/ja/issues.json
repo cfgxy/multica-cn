@@ -978,6 +978,26 @@
       "cancel_title": "task をキャンセルしますか？",
       "cancel_body": "エージェントは現在のステップを終えてから停止します。"
     },
+    "run_detail": {
+      "title": "実行の詳細",
+      "copy": "コピー",
+      "copied": "コピーしました",
+      "copy_all": "すべてコピー",
+      "loading": "読み込み中…",
+      "took": "所要時間 {{duration}}",
+      "started_at": "開始",
+      "completed_at": "終了",
+      "failure_heading": "失敗の理由",
+      "cancel_reason_heading": "キャンセルの理由",
+      "cancelled_by_system": "システムによってキャンセルされました",
+      "timeline_heading": "タイムライン",
+      "outcome_files_other": "{{count}} ファイル",
+      "outcome_commands_other": "{{count}} コマンド",
+      "result_label": "結果",
+      "truncated": "…（切り捨て）",
+      "empty": "この実行で記録されたイベントはありません。",
+      "empty_queued": "この実行はまだ開始していません。"
+    },
     "list": {
       "load_failed": "タスクを読み込めませんでした：{{reason}}",
       "empty_all": "このワークスペースにはタスクがありません。",

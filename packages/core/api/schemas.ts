@@ -84,6 +84,16 @@ import type {
   Squad,
   TimelineEntry,
   User,
+} from "../types";
+import type {
+  AdminUser,
+  AdminUserList,
+  AdminWorkspace,
+  AdminWorkspaceList,
+  ImpersonationResponse,
+} from "../admin/types";
+import type {
+
   WebhookDelivery,
   WorkspaceMcpServer,
 } from "../types";
@@ -2359,6 +2369,12 @@ export const UserSchema = z.object({
   language: z.string().nullable().default(null),
   profile_description: z.string().default(""),
   timezone: z.string().nullable().default(null),
+  // RUYI-47: instance-level admin flag. Older backends omit it — default
+  // false keeps the type tight and hides the /admin entry point.
+  is_super_admin: z.boolean().default(false),
+  // RUYI-47: present on /api/me only while the session carries a shadow
+  // JWT; drives the identity-switch banner. Default null on older backends.
+  impersonator_id: z.string().nullable().default(null),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
 }).loose();
@@ -2374,8 +2390,91 @@ export const EMPTY_USER: User = {
   language: null,
   profile_description: "",
   timezone: null,
+  is_super_admin: false,
+  impersonator_id: null,
   created_at: "",
   updated_at: "",
+};
+
+// ---------------------------------------------------------------------------
+// Instance-level admin directory (`/api/admin/users`, `/api/admin/workspaces`,
+// RUYI-47). Lenient per house rules; rows render defensively so a malformed
+// response degrades to an empty page, never a crash.
+// ---------------------------------------------------------------------------
+
+export const AdminUserSchema = z.object({
+  id: z.string(),
+  name: z.string().default(""),
+  email: z.string().default(""),
+  avatar_url: z.string().nullable().default(null),
+  is_super_admin: z.boolean().default(false),
+  disabled_at: z.string().nullable().default(null),
+  workspace_count: z.number().default(0),
+  created_at: z.string().default(""),
+}).loose();
+
+export const EMPTY_ADMIN_USER: AdminUser = {
+  id: "",
+  name: "",
+  email: "",
+  avatar_url: null,
+  is_super_admin: false,
+  disabled_at: null,
+  workspace_count: 0,
+  created_at: "",
+};
+
+export const AdminUserListSchema = z.object({
+  users: z.array(AdminUserSchema).default([]),
+  total: z.number().default(0),
+}).loose();
+
+export const EMPTY_ADMIN_USER_LIST: AdminUserList = {
+  users: [],
+  total: 0,
+};
+
+export const AdminWorkspaceSchema = z.object({
+  id: z.string(),
+  name: z.string().default(""),
+  slug: z.string().default(""),
+  owner_id: z.string().nullable().default(null),
+  owner_name: z.string().nullable().default(null),
+  owner_email: z.string().nullable().default(null),
+  member_count: z.number().default(0),
+  created_at: z.string().default(""),
+}).loose();
+
+export const EMPTY_ADMIN_WORKSPACE: AdminWorkspace = {
+  id: "",
+  name: "",
+  slug: "",
+  owner_id: null,
+  owner_name: null,
+  owner_email: null,
+  member_count: 0,
+  created_at: "",
+};
+
+export const AdminWorkspaceListSchema = z.object({
+  workspaces: z.array(AdminWorkspaceSchema).default([]),
+  total: z.number().default(0),
+}).loose();
+
+export const EMPTY_ADMIN_WORKSPACE_LIST: AdminWorkspaceList = {
+  workspaces: [],
+  total: 0,
+};
+
+// Impersonation start/stop reuse the login response shape ({token, user}).
+export const ImpersonationResponseSchema = z.object({
+  token: z.string().default(""),
+  user: UserSchema,
+}).loose();
+
+export const EMPTY_IMPERSONATION_RESPONSE: ImpersonationResponse = {
+  token: "",
+  user: EMPTY_USER,
 };
 
 // ---------------------------------------------------------------------------

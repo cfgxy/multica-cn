@@ -25,6 +25,7 @@
 import { useCallback, useEffect, Fragment, useMemo, useState } from "react";
 import { Pressable, View } from "react-native";
 import Animated, {
+  cancelAnimation,
   useAnimatedStyle,
   useSharedValue,
   withDelay,
@@ -532,6 +533,13 @@ function RootHighlightOverlay({ active }: { active: boolean }) {
       withTiming(1, { duration: 700 }),
       withDelay(1800, withTiming(0, { duration: 700 })),
     );
+    // `active` flipping false mid-sequence must not leave the overlay stuck
+    // at an intermediate opacity — a frozen brand frame/wash reads as text
+    // pressed under a tinted layer at the comment seam (defect: 接缝文字叠压).
+    return () => {
+      cancelAnimation(progress);
+      progress.value = 0;
+    };
   }, [active, progress]);
 
   const style = useAnimatedStyle(() => ({ opacity: progress.value }));
@@ -563,6 +571,11 @@ function ReplyHighlightOverlay({ active }: { active: boolean }) {
       withTiming(1, { duration: 700 }),
       withDelay(1800, withTiming(0, { duration: 700 })),
     );
+    // Same mid-sequence reset as RootHighlightOverlay.
+    return () => {
+      cancelAnimation(progress);
+      progress.value = 0;
+    };
   }, [active, progress]);
 
   const style = useAnimatedStyle(() => ({ opacity: progress.value }));
