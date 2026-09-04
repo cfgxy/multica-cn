@@ -44,6 +44,8 @@
   },
   "sidebar": {
     "unpin_tooltip": "Unpin",
+    "servers_label": "Servers",
+    "manage_servers": "Manage servers",
     "workspaces_label": "Workspaces",
     "create_workspace": "Create workspace",
     "pending_invitations_label": "Pending invitations",
