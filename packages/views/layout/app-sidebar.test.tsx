@@ -499,3 +499,27 @@ describe("stop impersonation menu item", () => {
     await waitFor(() => expect(authState.current.applySession).toHaveBeenCalledWith("real-token", restoredUser));
   });
 });
+
+describe("workspace-switcher serversSlot (RUYI-59)", () => {
+  it("renders the slot above the workspaces group", () => {
+    workspaces.current = [
+      { id: "ws-1", name: "Anchor WS", slug: "anchor", avatar_url: null },
+    ];
+    const { container } = render(
+      <AppSidebar serversSlot={<div data-testid="servers-slot">servers</div>} />,
+    );
+    // The slot must precede the first workspace row inside the dropdown.
+    const slot = screen.getByTestId("servers-slot");
+    const anchorRow = screen.getByText("Anchor WS");
+    expect(
+      slot.compareDocumentPosition(anchorRow) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(container).toBeDefined();
+  });
+
+  it("renders nothing extra when the slot is absent (web)", () => {
+    render(<AppSidebar />);
+    expect(screen.queryByTestId("servers-slot")).toBeNull();
+  });
+});
