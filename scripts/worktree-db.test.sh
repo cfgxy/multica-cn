@@ -105,6 +105,19 @@ if printf 'y\n' | PATH="$stub_dir:$PATH" DOCKER_LOG="$docker_log" \
 fi
 require_contains "$output" "Refusing to drop the default main database"
 
+# make db-reset drops without a y/N prompt, so it carries the same guard: with
+# the shared-database model a worktree env file names `multica` by default and
+# an unguarded reset would wipe the running platform's data (RUYI-66).
+: >"$docker_log"
+if PATH="$stub_dir:$PATH" DOCKER_LOG="$docker_log" \
+  make --no-print-directory -C "$root_dir" db-reset ENV_FILE="$main_env" >"$output" 2>&1; then
+  fail "db-reset must protect the default main database"
+fi
+require_contains "$output" "Refusing to reset the default main database"
+if [ -s "$docker_log" ]; then
+  fail "db-reset invoked docker before the main-database guard"
+fi
+
 : >"$docker_log"
 cancel_status=0
 PATH="$stub_dir:$PATH" DOCKER_LOG="$docker_log" \

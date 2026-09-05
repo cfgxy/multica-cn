@@ -48,6 +48,15 @@ generated="$(read_generated_password "$tmp_root/inherit.env")"
 [ "$generated" = "fixture-main-password" ] ||
   fail "linked worktree must inherit the main checkout password, got: $generated"
 
+# The worktree shares the platform's main database (RUYI-66): the generated
+# file must name `multica` even when the main checkout's .env names a
+# different database (the fixture uses POSTGRES_DB=fixture_db). The password
+# is inherited; the database name is not.
+grep -q '^POSTGRES_DB=multica$' "$tmp_root/inherit.env" ||
+  fail "generated env must record the shared main database 'multica', got: $(grep '^POSTGRES_DB=' "$tmp_root/inherit.env" || echo '<missing>')"
+grep -q '^DATABASE_URL=postgres://multica:fixture-main-password@localhost:5432/multica?sslmode=disable$' "$tmp_root/inherit.env" ||
+  fail "generated DATABASE_URL must point at the shared main database, got: $(grep '^DATABASE_URL=' "$tmp_root/inherit.env" || echo '<missing>')"
+
 # --- linked worktree without a main .env fails closed -----------------------
 mv "$main_repo/.env" "$main_repo/.env.bak"
 if (
