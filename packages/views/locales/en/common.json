@@ -166,6 +166,11 @@
       "search": "Search",
       "close": "Close",
       "request_timeout": "Request timed out after {{seconds}}s"
+    },
+    "create_issue": {
+      "mode_smart": "Smart",
+      "mode_manual": "Manual",
+      "smart_hint": "The agent drafts the title and description — you'll get an inbox notification when it's done."
     }
   }
 }
