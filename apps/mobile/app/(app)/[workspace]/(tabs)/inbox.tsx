@@ -23,6 +23,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { SwipeableInboxRow } from "@/components/inbox/swipeable-inbox-row";
 import { inboxListOptions } from "@/data/queries/inbox";
+import { agentTaskSnapshotOptions } from "@/data/queries/agent-task-snapshot";
+import { deriveIssueActivityMap } from "@/lib/issue-agent-activity";
 import {
   useArchiveAllInbox,
   useArchiveAllReadInbox,
@@ -53,6 +55,19 @@ export default function Inbox() {
   const data = useMemo(
     () => deduplicateInboxItems(rawItems ?? []),
     [rawItems],
+  );
+  // RUYI-76 ③: per-issue agent activity (running/queued runs), sliced from
+  // the ONE shared workspace snapshot — the same query the presence
+  // prefetch warms at workspace entry and use-presence-realtime keeps
+  // fresh, so this adds no new fetch on the hot path. Screen-level
+  // derivation (one pass) instead of web's per-row useQuery(select):
+  // same visibility, without N query observers on a long list.
+  const { data: activitySnapshot = [] } = useQuery(
+    agentTaskSnapshotOptions(wsId),
+  );
+  const activityByIssue = useMemo(
+    () => deriveIssueActivityMap(activitySnapshot),
+    [activitySnapshot],
   );
   const markRead = useMarkInboxRead();
   const markAllRead = useMarkAllInboxRead();
@@ -168,6 +183,9 @@ export default function Inbox() {
           renderItem={({ item }) => (
             <SwipeableInboxRow
               item={item}
+              activity={
+                item.issue_id ? activityByIssue.get(item.issue_id) : undefined
+              }
               onPress={() => onPressItem(item)}
               onArchive={() => archive.mutate(item.id)}
             />

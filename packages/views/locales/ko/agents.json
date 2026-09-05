@@ -9,7 +9,8 @@
     "of_total": "{{total}}개 중 {{visible}}개",
     "list_load_failed": "에이전트 목록을 불러오지 못했습니다",
     "list_load_failed_default": "에이전트 목록을 가져오는 중 문제가 발생했습니다.",
-    "try_again": "다시 시도"
+    "try_again": "다시 시도",
+    "list_loading": "에이전트 불러오는 중…"
   },
   "scope": {
     "mine": "내 것",
@@ -995,5 +996,11 @@
     "created_done": "완료",
     "edit_title": "Webhook 편집",
     "edit_url_unchanged": "링크와 토큰은 변경되지 않으며 이름과 프롬프트만 수정됩니다."
+  },
+  "mobile": {
+    "tasks": {
+      "empty": "현재 실행 중인 작업이 없습니다.",
+      "agent_missing": "에이전트를 찾을 수 없습니다."
+    }
   }
 }
