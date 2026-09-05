@@ -19,9 +19,19 @@
  * user switches workspaces, the draft is invalid. Reset is wired in
  * `app/(app)/[workspace]/_layout.tsx` via `useResetOnWorkspaceChange()` —
  * that's the only place that calls it on workspace-id transitions.
+ *
+ * Last-assignee memory (RUYI-79, web parity): `useNewIssueLastAssigneeStore`
+ * below persists the assignee submitted with a SUCCESSFUL create, keyed by
+ * server(account) × workspace slug, mirroring web's `lastAssigneeType/Id`
+ * on the issue draft store (packages/core/issues/stores/draft-store.ts).
+ * The in-memory draft store above deliberately stays non-persistent — only
+ * the submitted assignee crosses a cold start, same as web (the draft
+ * itself is a session concern; see spec §6 non-goals).
  */
 import { useEffect, useRef } from "react";
 import { create } from "zustand";
+import { createJSONStorage, persist } from "zustand/middleware";
+import AsyncStorage from "@react-native-async-storage/async-storage";
 import type {
   IssuePriority,
   IssueStatus,
@@ -81,4 +91,107 @@ export function useNewIssueDraftResetOnWorkspaceChange(wsId: string | null) {
       prevRef.current = wsId;
     }
   }, [wsId]);
+}
+
+// ---------------------------------------------------------------------------
+// Last-assignee memory (RUYI-79) — persisted, server × workspace scoped.
+//
+// Shape: serverId → workspace slug → the assignee submitted with the last
+// successful create from that workspace. `null` is a real value meaning
+// "last create was Unassigned" (web parity: Owner decision — unassigned is
+// remembered like any other choice); `undefined` (no entry) means no
+// history. Callers pass the active serverId/slug explicitly so this module
+// stays free of server/workspace store imports (and unit-testable) — the
+// same reason it never touches SecureStore: nothing here is a credential,
+// AsyncStorage matches the issue-read-state-store pattern.
+//
+// Isolation & cleanup mirror web's draft cleanup registry:
+//   - workspace switch → different key, different value (no rehydrate
+//     dance needed since the whole map is in memory);
+//   - logout (auth-store) and server removal (server-store) call
+//     `clearServerMemory` so the next login on the same server entry never
+//     inherits the previous account's pick (web resetInMemory + storage
+//     removal semantics).
+// A stale id is NOT validated against the workspace directory — web
+// renders it through the actor-name fallback ("Unknown*") and so does the
+// mobile form chip; removing the value would be new semantics (Owner:
+// mirror web exactly).
+
+type LastAssigneeMemory = Record<string, Partial<Record<string, AssigneeValue>>>;
+
+interface NewIssueLastAssigneeState {
+  byServer: LastAssigneeMemory;
+  setLastAssignee: (serverId: string, slug: string, value: AssigneeValue) => void;
+  clearServer: (serverId: string) => void;
+}
+
+export const useNewIssueLastAssigneeStore = create<NewIssueLastAssigneeState>()(
+  persist(
+    (set) => ({
+      byServer: {},
+      setLastAssignee: (serverId, slug, value) =>
+        set((s) => ({
+          byServer: {
+            ...s.byServer,
+            [serverId]: { ...s.byServer[serverId], [slug]: value },
+          },
+        })),
+      clearServer: (serverId) =>
+        set((s) => {
+          if (!(serverId in s.byServer)) return s;
+          const { [serverId]: _removed, ...rest } = s.byServer;
+          return { byServer: rest };
+        }),
+    }),
+    {
+      name: "multica_mobile_new_issue_last_assignee",
+      storage: createJSONStorage(() => AsyncStorage),
+    },
+  ),
+);
+
+/** Last assignee submitted from `slug` on `serverId`, or undefined = no history. */
+export function getLastAssigneeFor(
+  serverId: string,
+  slug: string,
+): AssigneeValue | undefined {
+  return useNewIssueLastAssigneeStore.getState().byServer[serverId]?.[slug];
+}
+
+/** Record the assignee submitted with a successful create (web `setLastAssignee`). */
+export function setLastAssigneeFor(
+  serverId: string,
+  slug: string,
+  value: AssigneeValue,
+): void {
+  useNewIssueLastAssigneeStore.getState().setLastAssignee(serverId, slug, value);
+}
+
+/** Drop the whole server subtree — logout / server removal. */
+export function clearServerMemory(serverId: string): void {
+  useNewIssueLastAssigneeStore.getState().clearServer(serverId);
+}
+
+/**
+ * Seed the draft's assignee from the remembered choice for this server ×
+ * workspace (web `clearDraft` re-seed parity). Returns whether a memory
+ * existed; a stale/invalid remembered id is seeded as-is on purpose — the
+ * form chip renders it through the actor-name "Unknown*" fallback, exactly
+ * like web. Absent memory leaves the fresh draft's unassigned default.
+ */
+export async function seedDraftAssigneeFromMemory(
+  serverId: string,
+  slug: string,
+): Promise<boolean> {
+  const memoryStore = useNewIssueLastAssigneeStore;
+  // AsyncStorage hydration is async; opening the form before it lands (deep
+  // link straight into new-issue on a cold start) would read a pre-hydration
+  // empty map and skip the seed.
+  if (!memoryStore.persist.hasHydrated()) {
+    await memoryStore.persist.rehydrate();
+  }
+  const remembered = getLastAssigneeFor(serverId, slug);
+  if (remembered === undefined) return false;
+  useNewIssueDraftStore.getState().setAssignee(remembered);
+  return true;
 }

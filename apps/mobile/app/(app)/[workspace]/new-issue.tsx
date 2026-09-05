@@ -39,7 +39,13 @@ import {
 } from "@/lib/attachment-markdown";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { useCreateIssue } from "@/data/mutations/issues";
-import { useNewIssueDraftStore } from "@/data/stores/new-issue-draft-store";
+import {
+  seedDraftAssigneeFromMemory,
+  setLastAssigneeFor,
+  useNewIssueDraftStore,
+} from "@/data/stores/new-issue-draft-store";
+import { useWorkspaceStore } from "@/data/workspace-store";
+import { useServerStore } from "@/data/server-store";
 import { useMentionInput } from "@/lib/use-mention-input";
 import { useT } from "@/lib/use-t";
 
@@ -66,6 +72,14 @@ export default function NewIssueModal() {
 
   useEffect(() => {
     resetDraft();
+    // RUYI-79 web parity: prefill the assignee with the last one submitted
+    // from this server × workspace. Reads AsyncStorage (awaited inside);
+    // fire-and-forget is safe — it only ever SETS the freshly reset field.
+    const { activeServerId } = useServerStore.getState();
+    const slug = useWorkspaceStore.getState().currentWorkspaceSlug;
+    if (activeServerId && slug) {
+      void seedDraftAssigneeFromMemory(activeServerId, slug);
+    }
     return () => {
       resetDraft();
     };
@@ -136,6 +150,14 @@ export default function NewIssueModal() {
         ...(project ? { project_id: project.id } : {}),
         ...(attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : {}),
       });
+      // RUYI-79 web parity (create-issue onAccepted): remember the SUBMITTED
+      // assignee — not the live draft — only after the server accepted the
+      // create. Unassigned is remembered as a value too.
+      const { activeServerId } = useServerStore.getState();
+      const slug = useWorkspaceStore.getState().currentWorkspaceSlug;
+      if (activeServerId && slug) {
+        setLastAssigneeFor(activeServerId, slug, assignee ?? null);
+      }
       router.back();
     } catch (err) {
       Alert.alert(
