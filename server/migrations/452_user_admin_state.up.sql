@@ -13,11 +13,15 @@
 --
 -- No foreign keys by repo convention; actor/target integrity is enforced in
 -- application code.
-ALTER TABLE "user" ADD COLUMN is_super_admin BOOLEAN NOT NULL DEFAULT false;
-ALTER TABLE "user" ADD COLUMN disabled_at TIMESTAMPTZ;
-ALTER TABLE "user" ADD COLUMN disabled_by UUID;
+--
+-- Renumbered 441 → 452 (RUYI-75): prefix 441 collides with the upstream
+-- 441_runtime_profile_add_codearts. DDL is idempotent so databases that
+-- already applied the old 441 stem re-run this as 452 harmlessly.
+ALTER TABLE "user" ADD COLUMN IF NOT EXISTS is_super_admin BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE "user" ADD COLUMN IF NOT EXISTS disabled_at TIMESTAMPTZ;
+ALTER TABLE "user" ADD COLUMN IF NOT EXISTS disabled_by UUID;
 
-CREATE TABLE admin_audit_log (
+CREATE TABLE IF NOT EXISTS admin_audit_log (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     actor_id UUID NOT NULL,
     action TEXT NOT NULL,
