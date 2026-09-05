@@ -118,6 +118,8 @@ import {
   useCommentFocusStore,
   type CommentFocusIntent,
 } from "@/data/stores/comment-focus-store";
+import { useIssueReadStateStore } from "@/data/stores/issue-read-state-store";
+import { computeReentryExpandedRoots } from "@/lib/comment-collapse-policy";
 import {
   CommentLocateController,
   resolvePublishedRootIds,
@@ -420,6 +422,44 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
   const focus = useCommentFocusStore((s) => s.focus);
   const expandedRoots = useCommentFocusStore((s) => s.expandedRoots[issue.id]);
   const expandRoot = useCommentFocusStore((s) => s.expandRoot);
+
+  // ── RUYI-78 re-entry collapse policy (read state) ─────────────────────
+  // Owner target behavior (RUYI-78 acceptance ①): once an Issue has been
+  // opened before, every later entry starts with each agent's
+  // chronologically-last comment thread expanded and all other existing
+  // comments collapsed; a first entry keeps the collapsed-by-default
+  // RUYI-28 behavior. The decision rule itself lives in
+  // lib/comment-collapse-policy.ts (node-testable).
+  //
+  // "Re-entry" must be read as of THIS mount: the snapshot reads the
+  // store during render, which always precedes this component's own
+  // markRead effect — so a first visit can never flag itself as a
+  // re-entry, regardless of effect ordering against parent screens.
+  // Same render-time ref pattern as lastViewedSnapshotRef above.
+  const isReentryRef = useRef<boolean | undefined>(undefined);
+  if (isReentryRef.current === undefined) {
+    isReentryRef.current = useIssueReadStateStore.getState().isRead(issue.id);
+  }
+  useEffect(() => {
+    useIssueReadStateStore.getState().markRead(issue.id);
+  }, [issue.id]);
+
+  // Applied at most once per mount, on the first non-empty data render —
+  // "既有 Comment" means the timeline as the user finds it on entry; WS
+  // arrivals later in the visit follow the collapsed default and are
+  // picked up by the policy on the NEXT entry. The policy only ADDS
+  // expansions (expandRoot), so it cannot fight the directory focus,
+  // deep-link, or just-published channels — an explicitly-opened thread
+  // always wins over the default set.
+  const reentryAppliedRef = useRef(false);
+  useEffect(() => {
+    if (!isReentryRef.current || reentryAppliedRef.current) return;
+    if (data.length === 0) return;
+    reentryAppliedRef.current = true;
+    for (const rootId of computeReentryExpandedRoots(data)) {
+      expandRoot(issue.id, rootId);
+    }
+  }, [data, issue.id, expandRoot]);
 
   const focusForIssue: CommentFocusIntent | null =
     focus && focus.issueId === issue.id ? focus : null;

@@ -22,7 +22,7 @@
  * when expanded the resolved indicator stays at the top of the body so the
  * user keeps the "this thread is resolved" signal even while reading.
  */
-import { useCallback, useEffect, Fragment, useMemo, useState } from "react";
+import { useCallback, useEffect, Fragment, useMemo, useRef, useState } from "react";
 import { Pressable, View } from "react-native";
 import Animated, {
   cancelAnimation,
@@ -151,12 +151,23 @@ export function CommentCard({
   // ALSO written to the per-issue store so it survives FlashList recycling
   // (a deep-linked row that scrolls out of view mid-read must not
   // re-collapse when it remounts).
+  //
+  // RUYI-78 one-shot guard: `replies` gets a new array identity on every
+  // timeline data change, so inside the highlight window any WS event or
+  // refetch re-ran this effect and re-expanded a root the user had just
+  // manually collapsed — one of the "该折叠的不折叠" sources. The guard
+  // pins the effect to fire at most once per mounted target id; a fresh
+  // mount (recycled row scrolling back into view) re-arms it, preserving
+  // the flash-plays-on-mount deep-link design.
+  const appliedHighlightRef = useRef<string | null>(null);
   useEffect(() => {
     if (!highlightedCommentId) return;
+    if (appliedHighlightRef.current === highlightedCommentId) return;
     if (
       highlightedCommentId === entry.id ||
       replies.some((r) => r.id === highlightedCommentId)
     ) {
+      appliedHighlightRef.current = highlightedCommentId;
       setExpanded(true);
       expandStore(issueId, entry.id);
     }
