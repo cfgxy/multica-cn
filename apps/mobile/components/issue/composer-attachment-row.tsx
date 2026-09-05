@@ -28,6 +28,8 @@
 import { useMemo } from "react";
 import { ActivityIndicator, Linking, Pressable, ScrollView, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
+import { api } from "@/data/api";
+import { openAttachmentDownload } from "@/lib/attachment-open";
 import { resolveAttachmentUrl } from "@/lib/attachment-url";
 import { useLightbox } from "@/lib/markdown/lightbox-provider";
 import { useColorScheme } from "@/lib/use-color-scheme";
@@ -195,16 +197,23 @@ function AttachmentChipView({ item, onRemove, onRetry }: AttachmentChipProps) {
       // no signed-URL round-trip, works the same pre/post upload.
       open(item.localUri);
     } else {
-      // Non-image file chip: open the canonical download URL in Safari.
-      // `downloadUrl` comes from `api.uploadFile(...).download_url`, which
-      // on non-CloudFront deployments is a server-relative path like
-      // `/api/attachments/{id}/download` (MUL-2976). RN's `Linking.openURL`
-      // requires an absolute http(s) URL — `Cannot open URL` otherwise — so
-      // resolve against the active server's API base first. Already-absolute
-      // CloudFront/presigned URLs pass through unchanged. `null` (no
-      // downloadUrl yet) falls through to a no-op.
-      const target = resolveAttachmentUrl(item.downloadUrl);
-      if (target) void Linking.openURL(target);
+      // Non-image file chip: mint a fresh credential-free URL at tap time
+      // and open it in the system viewer (RUYI-73). The upload response's
+      // `downloadUrl` is the auth-gated stable
+      // `/api/attachments/{id}/download` path on non-CloudFront deployments
+      // (MUL-2976) — the system browser has neither the app's Bearer token
+      // nor a session cookie, so opening it directly lands on the server's
+      // 401 JSON body. Mirrors web's use-download-attachment: click-time
+      // re-sign via GET /api/attachments/{id}; `downloadUrl` is only the
+      // mint-failure fallback. Uncompleted items have no id yet — handled
+      // by the status guard above.
+      if (!item.id) return;
+      void openAttachmentDownload(item.id, {
+        source: api,
+        opener: Linking,
+        resolveUrl: resolveAttachmentUrl,
+        fallbackUrl: item.downloadUrl,
+      });
     }
   };
 
