@@ -418,13 +418,20 @@ interface AppSidebarProps {
   topSlot?: React.ReactNode;
   /** Rendered in the header between workspace switcher and new-issue button (e.g. search trigger) */
   searchSlot?: React.ReactNode;
+  /**
+   * Rendered inside the workspace switcher dropdown between the user
+   * header and the workspaces group (e.g. desktop's server switcher).
+   * The host owns the content and its DropdownMenuGroup; this component
+   * only supplies the trailing separator.
+   */
+  serversSlot?: React.ReactNode;
   /** Extra className for SidebarHeader */
   headerClassName?: string;
   /** Extra style for SidebarHeader */
   headerStyle?: React.CSSProperties;
 }
 
-export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }: AppSidebarProps = {}) {
+export function AppSidebar({ topSlot, searchSlot, serversSlot, headerClassName, headerStyle }: AppSidebarProps = {}) {
   const { t } = useT("layout");
   const { pathname, push } = useNavigation();
   const user = useAuthStore((s) => s.user);
@@ -650,6 +657,8 @@ export function AppSidebar({ topSlot, searchSlot, headerClassName, headerStyle }
                     </div>
                   </div>
                   <DropdownMenuSeparator />
+                  {serversSlot}
+                  {serversSlot && <DropdownMenuSeparator />}
                   <DropdownMenuGroup>
                     <DropdownMenuLabel className="text-caption text-muted-foreground">
                       {t(($) => $.sidebar.workspaces_label)}
