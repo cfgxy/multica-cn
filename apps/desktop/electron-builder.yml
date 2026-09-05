@@ -6,7 +6,7 @@ files:
   - "!**/.vscode/*"
   - "!src/*"
   - "!electron.vite.config.*"
-  - "!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}"
+  - "!{.eslintignore,.eslintrc.cjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,UPSTREAM_DIFF.md,README.md,README.en.md,README.zh.md}"
   - "!{tsconfig.json,tsconfig.node.json,tsconfig.web.json}"
   # Never repack the electron-builder output directory into the app.
   # Multi-arch release builds (scripts/package.mjs) run each target in the
