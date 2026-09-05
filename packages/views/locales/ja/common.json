@@ -166,6 +166,11 @@
       "search": "検索",
       "close": "閉じる",
       "request_timeout": "リクエストがタイムアウトしました（{{seconds}} 秒）"
+    },
+    "create_issue": {
+      "mode_smart": "スマート",
+      "mode_manual": "手動",
+      "smart_hint": "エージェントがタイトルと説明を作成します。完了すると受信箱に通知が届きます。"
     }
   }
 }

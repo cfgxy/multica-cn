@@ -27,6 +27,7 @@ import type {
 } from "@multica/core/types";
 import i18n from "i18next";
 import { api } from "@/data/api";
+import type { QuickCreateIssueRequest } from "@/data/api";
 import { isIssueStatusCategory } from "@/lib/issue-status";
 import { issueKeys } from "@/data/queries/issues";
 import { inboxKeys } from "@/data/queries/inbox";
@@ -673,6 +674,22 @@ export function useCreateIssue() {
       qc.invalidateQueries({ queryKey: issueKeys.myAll(wsId) });
       qc.invalidateQueries({ queryKey: inboxKeys.all(wsId) });
     },
+  });
+}
+
+/**
+ * Smart-mode (agent quick-create) mutation. Mirrors web, which calls
+ * `api.quickCreateIssue` directly with no mutation wrapper and no cache
+ * writes: the server only enqueues an agent run and returns `{ task_id }` —
+ * no issue exists yet, so there is nothing to optimistically insert or
+ * invalidate. The issue surfaces later through the normal WS events
+ * (`issue:created` etc.), which the listing-level realtime hooks already
+ * fold into the my-issues / inbox caches.
+ */
+export function useQuickCreateIssue() {
+  return useMutation({
+    mutationFn: (body: QuickCreateIssueRequest) =>
+      api.quickCreateIssue(body),
   });
 }
 
