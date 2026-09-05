@@ -101,11 +101,14 @@ function StatusBadge({ task }: { task: AgentTask }) {
   // For failed tasks, surface the failure_reason inline so users don't have
   // to drill in. Missing / empty / unrecognised stays as just "Failed".
   if (task.status === "failed") {
-    const reasonEn = runFailureBadgeLabel(task.failure_reason);
-    if (reasonEn) {
+    // Local const so TS narrows the optional wire field for the .replace
+    // below (runFailureBadgeLabel's truthy return doesn't narrow it).
+    const reason = task.failure_reason;
+    const reasonEn = runFailureBadgeLabel(reason);
+    if (reason && reasonEn) {
       // wire 值里的点号会被 i18next 当成嵌套层级分隔符，换成双下划线，与
       // 资源文件里的写法对齐（同 lib/failure-reason-label.ts）。
-      const seg = task.failure_reason.replace(/\./g, "__");
+      const seg = reason.replace(/\./g, "__");
       return (
         <Text className={`text-xs ${cls}`}>
           {label} · {t(`mobile.run_failure.${seg}`, reasonEn)}
