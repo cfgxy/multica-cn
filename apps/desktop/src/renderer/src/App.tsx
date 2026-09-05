@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { CoreProvider } from "@multica/core/platform";
+import { CoreProvider, defaultStorage } from "@multica/core/platform";
 import { pickLocale, type SupportedLocale } from "@multica/core/i18n";
 import { useAuthStore } from "@multica/core/auth";
 import { useWelcomeStore } from "@multica/core/onboarding";
@@ -29,6 +29,12 @@ import { DesktopClientUsageReporter } from "./platform/client-usage-reporter";
 import { DiagnosticRouteReporter } from "./platform/diagnostic-route-reporter";
 import { flushFreezeBreadcrumb } from "./freeze-flush";
 import { DesktopAuthSessionBridge } from "./platform/auth-session-bridge";
+import {
+  ensureServerStore,
+  resolveEffectiveRuntimeConfig,
+} from "./platform/desktop-servers";
+import { DEFAULT_RUNTIME_CONFIG } from "../../shared/runtime-config";
+import type { RuntimeConfig } from "../../shared/runtime-config";
 
 // BCP-47 region tags for the <html lang> attribute, mirroring
 // apps/web/app/layout.tsx HTML_LANG. index.html ships a static lang="en";
@@ -97,7 +103,7 @@ function IssueWindowContent() {
   return user ? <IssueWindow context={context} /> : <DesktopLoginPage />;
 }
 
-function AppContent() {
+function AppContent({ effectiveConfig }: { effectiveConfig: RuntimeConfig }) {
   const user = useAuthStore((s) => s.user);
   const isLoading = useAuthStore((s) => s.isLoading);
   const authStatus = useAuthStore((s) => s.status);
@@ -112,16 +118,13 @@ function AppContent() {
   // first render.
   const [bootstrapping, setBootstrapping] = useState(false);
 
-  const runtimeConfig = window.desktopAPI.runtimeConfig.ok
-    ? window.desktopAPI.runtimeConfig.config
-    : null;
-
   // Tell the main process which backend URL we talk to, so daemon-manager
   // can pick the matching CLI profile (server_url from ~/.multica config).
+  // Uses the EFFECTIVE url: an active custom server (RUYI-59) retargets
+  // the daemon exactly like a config change would.
   useEffect(() => {
-    if (!runtimeConfig) return;
-    window.daemonAPI.setTargetApiUrl(runtimeConfig.apiUrl);
-  }, [runtimeConfig]);
+    window.daemonAPI.setTargetApiUrl(effectiveConfig.apiUrl);
+  }, [effectiveConfig]);
 
   // Listen for invite IDs delivered via deep link (multica://invite/<id>).
   // We open the overlay regardless of login state — if the user isn't logged
@@ -160,7 +163,7 @@ function AppContent() {
   // Sync token and start the daemon whenever the user logs in. The ordering
   // inside syncDaemonOnLogin is load-bearing — see that module.
   useEffect(() => {
-    if (!user || !runtimeConfig) return;
+    if (!user) return;
     const token = localStorage.getItem("multica_token");
     if (!token) return;
     const userId = user.id;
@@ -168,7 +171,7 @@ function AppContent() {
       try {
         await syncDaemonOnLogin(
           window.daemonAPI,
-          runtimeConfig.apiUrl,
+          effectiveConfig.apiUrl,
           token,
           userId,
         );
@@ -176,7 +179,7 @@ function AppContent() {
         console.error("Failed to sync daemon on login", err);
       }
     })();
-  }, [user, runtimeConfig]);
+  }, [user, effectiveConfig]);
 
   // When a user who started the session with zero workspaces creates their
   // first one, restart the daemon so it picks up the new workspace
@@ -379,6 +382,17 @@ export default function App() {
   const { version, os } = window.desktopAPI.appInfo;
   const systemLocale = window.desktopAPI.systemLocale;
   const runtimeConfigResult = window.desktopAPI.runtimeConfig;
+  // Server switcher (RUYI-59): a persisted active server overrides the
+  // boot runtime config BEFORE CoreProvider creates the ApiClient, so the
+  // whole app — this window, issue windows, daemon wiring — targets the
+  // active instance. Runs for both window kinds since App is their root.
+  const builtinConfig = runtimeConfigResult.ok
+    ? runtimeConfigResult.config
+    : DEFAULT_RUNTIME_CONFIG;
+  const effectiveConfig = useMemo(() => {
+    ensureServerStore(builtinConfig);
+    return resolveEffectiveRuntimeConfig(builtinConfig, defaultStorage);
+  }, [builtinConfig]);
   // The fallback keeps renderer HMR safe while a main/preload rebuild is
   // restarting Electron; packaged builds always expose windowContext.
   const windowContext =
@@ -452,8 +466,8 @@ export default function App() {
     <ThemeProvider>
       {runtimeConfigResult.ok ? (
         <CoreProvider
-          apiBaseUrl={runtimeConfigResult.config.apiUrl}
-          wsUrl={runtimeConfigResult.config.wsUrl}
+          apiBaseUrl={effectiveConfig.apiUrl}
+          wsUrl={effectiveConfig.wsUrl}
           onLogout={
             windowContext.kind === "main" ? handleDaemonLogout : undefined
           }
@@ -465,14 +479,12 @@ export default function App() {
           <DesktopAuthSessionBridge />
           {windowContext.kind === "main" && <DiagnosticRouteReporter />}
           {windowContext.kind === "main" && (
-            <DesktopClientUsageReporter
-              apiUrl={runtimeConfigResult.config.apiUrl}
-            />
+            <DesktopClientUsageReporter apiUrl={effectiveConfig.apiUrl} />
           )}
           {windowContext.kind === "issue" ? (
             <IssueWindowContent />
           ) : (
-            <AppContent />
+            <AppContent effectiveConfig={effectiveConfig} />
           )}
         </CoreProvider>
       ) : (

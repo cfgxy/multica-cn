@@ -13,6 +13,7 @@ import {
   useSidebar,
 } from "@multica/ui/components/ui/sidebar";
 import { ModalRegistry } from "@multica/views/modals/registry";
+import { ServerSwitcherGroup } from "./server-switcher-group";
 import {
   AppSidebar,
   GlobalShortcuts,
@@ -35,6 +36,7 @@ import {
 import { TabBar } from "./tab-bar";
 import { TabContent } from "./tab-content";
 import { WindowOverlay } from "./window-overlay";
+import { ServerSwitcherDialogs } from "./server-switcher-dialogs";
 
 const TOP_BAR_HEIGHT_CLASS = "h-12";
 const WINDOW_TOOLBAR_CLEARANCE = 184;
@@ -287,7 +289,7 @@ export function DesktopShell() {
           >
             {slug && <GlobalShortcuts />}
             {slug && <WindowToolbar />}
-            {slug && <AppSidebar topSlot={<SidebarTopSpacer />} searchSlot={<SearchTrigger />} />}
+            {slug && <AppSidebar topSlot={<SidebarTopSpacer />} searchSlot={<SearchTrigger />} serversSlot={<ServerSwitcherGroup />} />}
             {/* Right side: header + content container */}
             <div className="flex flex-1 min-w-0 flex-col">
               <MainTopBar />
@@ -305,6 +307,7 @@ export function DesktopShell() {
           </SidebarProvider>
         </div>
         {slug && <ModalRegistry />}
+        {slug && <ServerSwitcherDialogs />}
         {slug && <SearchCommand />}
         <WindowOverlay />
       </WorkspaceSlugProvider>

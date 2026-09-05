@@ -12,7 +12,6 @@
     "runtimes": "런타임",
     "skills": "스킬",
     "settings": "설정",
-
     "admin": "관리"
   },
   "tab": {
@@ -44,6 +43,8 @@
   },
   "sidebar": {
     "unpin_tooltip": "고정 해제",
+    "servers_label": "서버",
+    "manage_servers": "서버 관리",
     "workspaces_label": "워크스페이스",
     "create_workspace": "워크스페이스 만들기",
     "pending_invitations_label": "대기 중인 초대",
