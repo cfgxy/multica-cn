@@ -21,7 +21,7 @@ back for review. Self-hostable, works with 26 agent CLIs, no lock-in.
 
 [Website](https://multica.ai) · [Docs](https://multica.ai/docs) · [Quickstart](https://multica.ai/docs/cloud-quickstart) · [Download](https://multica.ai/download) · [Vision](VISION.md) · [Self-Hosting](SELF_HOSTING.md) · [Upstream Diff](UPSTREAM_DIFF.md) · [Discord](https://discord.gg/W8gYBn226t) · [X](https://x.com/MulticaAI)
 
-**English | [简体中文](README.md)**
+**English | [简体中文](README.zh.md)**
 
 </div>
 
