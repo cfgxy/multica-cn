@@ -43,6 +43,7 @@ interface NewIssueDraftState {
   status: IssueStatus;
   priority: IssuePriority;
   assignee: AssigneeValue;
+  assigneeVersion: number;
   dueDate: string | null;
   project: Project | null;
   setStatus: (next: IssueStatus) => void;
@@ -66,12 +67,21 @@ const INITIAL: Pick<
 
 export const useNewIssueDraftStore = create<NewIssueDraftState>((set) => ({
   ...INITIAL,
+  assigneeVersion: 0,
   setStatus: (next) => set({ status: next }),
   setPriority: (next) => set({ priority: next }),
-  setAssignee: (next) => set({ assignee: next }),
+  setAssignee: (next) =>
+    set((state) => ({
+      assignee: next,
+      assigneeVersion: state.assigneeVersion + 1,
+    })),
   setDueDate: (next) => set({ dueDate: next }),
   setProject: (next) => set({ project: next }),
-  reset: () => set({ ...INITIAL }),
+  reset: () =>
+    set((state) => ({
+      ...INITIAL,
+      assigneeVersion: state.assigneeVersion + 1,
+    })),
 }));
 
 /**
@@ -182,6 +192,7 @@ export function clearServerMemory(serverId: string): void {
 export async function seedDraftAssigneeFromMemory(
   serverId: string,
   slug: string,
+  expectedAssigneeVersion?: number,
 ): Promise<boolean> {
   const memoryStore = useNewIssueLastAssigneeStore;
   // AsyncStorage hydration is async; opening the form before it lands (deep
@@ -192,6 +203,14 @@ export async function seedDraftAssigneeFromMemory(
   }
   const remembered = getLastAssigneeFor(serverId, slug);
   if (remembered === undefined) return false;
+  // Hydration may finish after the user has changed the picker. Only seed the
+  // untouched draft instance captured when this asynchronous read began.
+  if (
+    expectedAssigneeVersion !== undefined &&
+    useNewIssueDraftStore.getState().assigneeVersion !== expectedAssigneeVersion
+  ) {
+    return false;
+  }
   useNewIssueDraftStore.getState().setAssignee(remembered);
   return true;
 }
