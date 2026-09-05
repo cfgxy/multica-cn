@@ -68,3 +68,65 @@ export function computeBottomChipVisible(geo: ScrollGeometry): boolean {
     distToPhysicalEnd(geo.contentHeight, geo.offsetY, geo.viewportHeight),
   );
 }
+
+/**
+ * "To top" chip (RUYI-81) — the exact mirror of the bottom-chip block
+ * above. Same 48px band, same pure/single-decision-function discipline:
+ * the chip depends ONLY on physical distance from the FlashList's content
+ * start (`offsetY`), never on newCount / divider / last-viewed state.
+ */
+export const TOP_CHIP_MIN_GAP_PX = 48;
+
+/**
+ * Pixel distance from the scroll viewport's top edge to the physical start
+ * of the content — i.e. the current scroll offset. Clamped at 0: overscroll
+ * bounce above the first row reports negative offsets, which must read as
+ * "at top", not a phantom distance.
+ */
+export function distFromPhysicalTop(offsetY: number): number {
+  return Math.max(0, offsetY);
+}
+
+export function shouldShowTopChip(distFromTop: number): boolean {
+  return distFromTop > TOP_CHIP_MIN_GAP_PX;
+}
+
+/**
+ * Mirror of {@link computeBottomChipVisible} for the content start.
+ * Zeroed geometry still yields "hidden" — no layout means no trustworthy
+ * offset yet.
+ */
+export function computeTopChipVisible(geo: ScrollGeometry): boolean {
+  if (geo.viewportHeight <= 0) return false;
+  return shouldShowTopChip(distFromPhysicalTop(geo.offsetY));
+}
+
+/** Slot indexes into the chip stack's bottom offsets — see
+ *  `CHIP_SLOT_BOTTOM_CLASSES` in timeline-list.tsx (bottom-3 / bottom-14 /
+ *  bottom-25, the 44px pitch RUYI-28 established for the first two). */
+export interface ChipStackSlots {
+  newChip: number;
+  bottomChip: number;
+  topChip: number;
+}
+
+/**
+ * Pack the three floating chips into stacking slots so no two overlap,
+ * whatever the visible combination. Fixed packing order new → bottom →
+ * top: a lone chip always gets slot 0 (thumb-closest); each additional
+ * visible chip pushes the later ones one slot up. Hidden chips get -1.
+ * Pure so every combination stays regression-tested.
+ */
+export function assignChipStackSlots(visible: {
+  newChip: boolean;
+  bottomChip: boolean;
+  topChip: boolean;
+}): ChipStackSlots {
+  let next = 0;
+  const assign = (on: boolean) => (on ? next++ : -1);
+  return {
+    newChip: assign(visible.newChip),
+    bottomChip: assign(visible.bottomChip),
+    topChip: assign(visible.topChip),
+  };
+}

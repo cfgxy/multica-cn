@@ -883,6 +883,8 @@
       "delete_desc": "此评论将被永久删除，话题中的回复也会一并移除。此操作无法撤销。",
       "jump_bottom": "到底部",
       "jump_bottom_a11y": "滚动到对话末尾",
+      "jump_top": "到顶部",
+      "jump_top_a11y": "滚动到对话开头",
       "new_count_other": "{{count}} 条新消息",
       "jump_new_a11y_other": "跳转到 {{count}} 条新消息",
       "root_collapsed_a11y_other": "{{authors}} 的评论，共 {{count}} 条消息。点按展开。",
