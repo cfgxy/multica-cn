@@ -143,6 +143,27 @@ function getMermaidLayout(svg: string): Size | null {
   return null;
 }
 
+/**
+ * Inline frame sizing (RUYI-80). A diagram wider than its column used to
+ * render at natural width and scroll sideways, cutting nodes off until the
+ * viewer was opened. The frame now carries its natural width plus
+ * `aspect-ratio`, and the stylesheet caps it with `max-width: 100%` — the
+ * sandbox document's `svg { max-width: 100%; height: auto }` then scales the
+ * drawing down to exactly the resolved width, so the whole diagram stays
+ * visible with nothing cropped. Narrow diagrams render at natural size
+ * because the cap only bites when the natural width exceeds the column.
+ * `height` must stay unset: the frame's height derives from `aspect-ratio`
+ * and the resolved width.
+ */
+export function inlineFrameStyle(layout: Size | null): CSSProperties | undefined {
+  if (!layout) return undefined;
+
+  return {
+    width: `${layout.width}px`,
+    aspectRatio: `${layout.width} / ${layout.height}`,
+  };
+}
+
 // Default skeleton height while Mermaid loads + renders for the first time
 // in this session. Picked to absorb most issue-detail diagrams without
 // excessive empty space; web.dev's CLS guidance recommends reserving any
@@ -265,52 +286,6 @@ function useThemeVersion() {
   return themeVersion;
 }
 
-/**
- * Tracks which horizontal edges of a scroll container have content beyond
- * them, so CSS can fade those edges as an affordance that the diagram
- * continues off-screen.
- */
-function useHorizontalOverflow(ref: React.RefObject<HTMLElement | null>, deps: unknown[]) {
-  const [edges, setEdges] = useState<{ start: boolean; end: boolean }>({
-    start: false,
-    end: false,
-  });
-
-  useEffect(() => {
-    const element = ref.current;
-    if (!element) return;
-
-    const measure = () => {
-      const { scrollLeft, scrollWidth, clientWidth } = element;
-      const maxScroll = scrollWidth - clientWidth;
-      setEdges((previous) => {
-        // 1px tolerance: fractional layout widths otherwise leave a fade
-        // permanently stuck on at rest.
-        const start = scrollLeft > 1;
-        const end = scrollLeft < maxScroll - 1;
-        return previous.start === start && previous.end === end
-          ? previous
-          : { start, end };
-      });
-    };
-
-    measure();
-    element.addEventListener("scroll", measure, { passive: true });
-
-    const observer =
-      typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
-    observer?.observe(element);
-
-    return () => {
-      element.removeEventListener("scroll", measure);
-      observer?.disconnect();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ref, ...deps]);
-
-  return edges;
-}
-
 // Size the viewer falls back to when the SVG carries no usable viewBox. Mermaid
 // always emits one, but the viewer's transform math needs a concrete content
 // size, and rendering nothing at all would be a worse failure than an
@@ -334,8 +309,7 @@ export function MermaidDiagram({ chart }: { chart: string }) {
   const reactId = useId();
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const expandButtonRef = useRef<HTMLButtonElement>(null);
-  const diagramId = useMemo(
+  const expandButtonRef = useRef<HTMLButtonElement>(null);  const diagramId = useMemo(
     () => `mermaid-${reactId.replace(/[^a-zA-Z0-9_-]/g, "")}`,
     [reactId],
   );
@@ -422,7 +396,6 @@ export function MermaidDiagram({ chart }: { chart: string }) {
     };
   }, [chart, diagramId, themeVersion]);
 
-  const overflow = useHorizontalOverflow(scrollRef, [rendered?.inlineDocument]);
   const openViewer = useCallback(() => setViewerOpen(true), []);
   const dragToScroll = useDragToScroll({ onTap: openViewer });
 
@@ -471,8 +444,6 @@ export function MermaidDiagram({ chart }: { chart: string }) {
       className="mermaid-diagram"
       aria-label={t(($) => $.mermaid.diagram_label)}
       style={containerStyle}
-      data-overflow-start={overflow.start ? "" : undefined}
-      data-overflow-end={overflow.end ? "" : undefined}
     >
       {rendered ? (
         <>
@@ -492,10 +463,7 @@ export function MermaidDiagram({ chart }: { chart: string }) {
               className="mermaid-diagram-frame"
               sandbox=""
               srcDoc={rendered.inlineDocument}
-              style={{
-                height: rendered.layout ? `${rendered.layout.height}px` : undefined,
-                width: rendered.layout ? `${rendered.layout.width}px` : undefined,
-              }}
+              style={inlineFrameStyle(rendered.layout)}
               title={t(($) => $.mermaid.diagram_label)}
             />
           </div>

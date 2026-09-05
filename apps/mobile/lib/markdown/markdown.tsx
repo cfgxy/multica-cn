@@ -48,6 +48,7 @@ import { useMarkdownStyle } from "./markdown-style";
 import { splitMarkdown } from "./split-markdown";
 import { CodeBlock } from "./code-block";
 import { MarkdownImage } from "./markdown-image";
+import { MermaidDiagram } from "./mermaid-diagram";
 
 interface Props {
   content: string;
@@ -205,6 +206,10 @@ export function Markdown({
                 selectable={selectable}
               />
             );
+          case "mermaid":
+            // RUYI-80: drawn by the DOM component (Expo DOM Components
+            // WebView) — see mermaid-diagram.tsx for the security contract.
+            return <MermaidDiagram key={i} code={seg.code} />;
           case "image":
             return (
               <MarkdownImage
