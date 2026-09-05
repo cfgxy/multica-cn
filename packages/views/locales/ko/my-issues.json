@@ -14,7 +14,8 @@
       "created_label": "내가 만든 태스크",
       "created_description": "내가 생성한 태스크",
       "agents_label": "내 에이전트와 스쿼드",
-      "agents_description": "내 에이전트에게 할당된 태스크"
+      "agents_description": "내 에이전트에게 할당된 태스크",
+      "actionable_label": "내 진행 필요"
     },
     "filter_button": "필터",
     "filter_status": "상태",
@@ -51,7 +52,8 @@
       "assigned": "나에게 할당된 태스크가 없습니다.",
       "created": "아직 만든 태스크가 없습니다.",
       "agents": "에이전트 또는 스쿼드에 할당된 태스크가 아직 없습니다.",
-      "filtered": "현재 필터 조건에 맞는 태스크가 없습니다."
+      "filtered": "현재 필터 조건에 맞는 태스크가 없습니다.",
+      "actionable": "내 진행이 필요한 작업이 없습니다."
     }
   }
 }

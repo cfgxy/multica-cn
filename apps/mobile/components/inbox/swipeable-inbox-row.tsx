@@ -40,6 +40,7 @@ import ReanimatedSwipeable, {
 import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import type { InboxItem } from "@multica/core/types";
+import type { IssueActivity } from "@/lib/issue-agent-activity";
 import { Text } from "@/components/ui/text";
 import { useT } from "@/lib/use-t";
 import { InboxRow } from "./inbox-row";
@@ -48,11 +49,13 @@ const ACTION_WIDTH = 80;
 
 interface Props {
   item: InboxItem;
+  /** Agent activity badge input — passed straight through to InboxRow. */
+  activity?: IssueActivity;
   onPress: () => void;
   onArchive: () => void;
 }
 
-export function SwipeableInboxRow({ item, onPress, onArchive }: Props) {
+export function SwipeableInboxRow({ item, activity, onPress, onArchive }: Props) {
   const ref = useRef<SwipeableMethods>(null);
 
   const fireArchive = () => {
@@ -71,7 +74,7 @@ export function SwipeableInboxRow({ item, onPress, onArchive }: Props) {
         <ArchiveAction onPress={fireArchive} drag={drag} />
       )}
     >
-      <InboxRow item={item} onPress={onPress} />
+      <InboxRow item={item} activity={activity} onPress={onPress} />
     </ReanimatedSwipeable>
   );
 }

@@ -1006,13 +1006,18 @@
     },
     "agent_activity": {
       "runs_count": "실행 · {{count}}회",
-      "badge_a11y": "에이전트 실행 중 — 실행 기록 열기"
+      "badge_a11y": "에이전트 실행 중 — 실행 기록 열기",
+      "row_running_a11y": "에이전트가 이 작업 처리 중",
+      "row_queued_a11y": "에이전트 작업 대기 중"
     },
     "description_field": {
       "placeholder": "설명… (@를 입력해 멘션)"
     },
     "new": {
       "submit_a11y": "태스크 만들기"
+    },
+    "tasks": {
+      "issue_unavailable": "작업을 볼 수 없음"
     }
   }
 }
