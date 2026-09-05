@@ -413,6 +413,19 @@
       "save": "保存批准",
       "approved": "已更新批准的工具。"
     },
+    "marketplace": {
+      "title": "插件市场",
+      "description": "发现此 Multica 实例中其他工作区发布的不可变插件版本。",
+      "loading": "正在加载插件市场",
+      "load_failed": "无法加载插件市场",
+      "empty": "市场中还没有上架插件。",
+      "publisher": "由 {{workspace}} · {{author}} 发布",
+      "review": "查看并安装",
+      "list": "上架到市场",
+      "unlist": "从市场下架",
+      "listed": "插件已上架到市场",
+      "unlisted": "插件已从市场下架"
+    },
     "publish": {
       "title": "发布插件",
       "description": "上传插件产物包。Multica 负责存储和分发，作者不需要自己的服务器。",

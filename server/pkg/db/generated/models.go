@@ -1037,6 +1037,15 @@ type LarkUserBinding struct {
 	BoundAt        pgtype.Timestamptz `json:"bound_at"`
 }
 
+type MarketplacePluginListing struct {
+	PackageID            pgtype.UUID        `json:"package_id"`
+	VersionID            pgtype.UUID        `json:"version_id"`
+	PublisherWorkspaceID pgtype.UUID        `json:"publisher_workspace_id"`
+	ListedBy             pgtype.UUID        `json:"listed_by"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Member struct {
 	ID          pgtype.UUID        `json:"id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`

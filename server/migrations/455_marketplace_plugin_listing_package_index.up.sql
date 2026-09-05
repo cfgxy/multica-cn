@@ -1,0 +1,1 @@
+CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS idx_marketplace_plugin_listing_package ON marketplace_plugin_listing(package_id);

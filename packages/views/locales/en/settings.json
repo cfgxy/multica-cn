@@ -414,6 +414,19 @@
       "save": "Save approvals",
       "approved": "Approved tools updated."
     },
+    "marketplace": {
+      "title": "Plugin marketplace",
+      "description": "Discover immutable Plugin versions published by other workspaces in this Multica instance.",
+      "loading": "Loading Plugin marketplace",
+      "load_failed": "Plugin marketplace couldn't be loaded",
+      "empty": "No Plugins are listed in the marketplace yet.",
+      "publisher": "Published by {{workspace}} · {{author}}",
+      "review": "Review and install",
+      "list": "List in marketplace",
+      "unlist": "Remove from marketplace",
+      "listed": "Plugin listed in marketplace",
+      "unlisted": "Plugin removed from marketplace"
+    },
     "publish": {
       "title": "Publish a Plugin",
       "description": "Upload a plugin package. Multica stores and serves it, so a plugin author needs no server of their own.",

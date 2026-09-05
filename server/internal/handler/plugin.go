@@ -25,6 +25,14 @@ func (h *Handler) requirePluginsV1(w http.ResponseWriter, r *http.Request) bool 
 	return false
 }
 
+func (h *Handler) requirePluginMarketplace(w http.ResponseWriter, r *http.Request) bool {
+	if h.pluginsV1Enabled(r.Context()) && featureflags.MarketplaceV1Enabled(r.Context(), h.FeatureFlags) {
+		return true
+	}
+	writeError(w, http.StatusServiceUnavailable, "Plugin marketplace is not enabled")
+	return false
+}
+
 // writePluginError maps a service error onto a status. Kinds exist so the
 // handler never has to string-match a message to pick a status code.
 func writePluginError(w http.ResponseWriter, err error, fallback string) {

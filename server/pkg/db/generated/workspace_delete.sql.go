@@ -11,6 +11,23 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 )
 
+const countExternalPluginInstallationsForWorkspace = `-- name: CountExternalPluginInstallationsForWorkspace :one
+SELECT count(*)
+FROM plugin_installation i
+JOIN plugin_package_version v ON v.id = i.package_version_id
+WHERE v.workspace_id = $1 AND i.workspace_id <> $1
+`
+
+// Marketplace packages are shared immutable artifacts, not copied into each
+// installer. A publisher workspace therefore cannot disappear while another
+// workspace still runs one of its versions.
+func (q *Queries) CountExternalPluginInstallationsForWorkspace(ctx context.Context, workspaceID pgtype.UUID) (int64, error) {
+	row := q.db.QueryRow(ctx, countExternalPluginInstallationsForWorkspace, workspaceID)
+	var count int64
+	err := row.Scan(&count)
+	return count, err
+}
+
 const deleteTaskBatch = `-- name: DeleteTaskBatch :exec
 WITH
 batch AS MATERIALIZED (
@@ -501,7 +518,11 @@ func (q *Queries) DeleteWorkspaceLeafData(ctx context.Context, workspaceID pgtyp
 }
 
 const deleteWorkspacePluginData = `-- name: DeleteWorkspacePluginData :exec
-WITH installations AS MATERIALIZED (
+WITH deleted_marketplace_listings AS (
+    DELETE FROM marketplace_plugin_listing
+    WHERE publisher_workspace_id = $1
+),
+installations AS MATERIALIZED (
     SELECT plugin_installation.id
     FROM plugin_installation
     WHERE plugin_installation.workspace_id = $1
@@ -551,8 +572,8 @@ DELETE FROM plugin_installation WHERE id IN (SELECT id FROM installations)
 // Published artifacts are workspace-scoped too, and independent of whether
 // anything installed them. Deleting the workspace without these would leave the
 // stored bundles as the largest orphan the plugin surface can produce.
-func (q *Queries) DeleteWorkspacePluginData(ctx context.Context, workspaceID pgtype.UUID) error {
-	_, err := q.db.Exec(ctx, deleteWorkspacePluginData, workspaceID)
+func (q *Queries) DeleteWorkspacePluginData(ctx context.Context, publisherWorkspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteWorkspacePluginData, publisherWorkspaceID)
 	return err
 }
 

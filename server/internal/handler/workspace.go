@@ -1121,6 +1121,15 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 		failWorkspaceDelete(w, r, workspaceID, "lock workspace", err)
 		return
 	}
+	externalPluginInstallations, err := qtx.CountExternalPluginInstallationsForWorkspace(r.Context(), requester.WorkspaceID)
+	if err != nil {
+		failWorkspaceDelete(w, r, workspaceID, "count external Plugin installations", err)
+		return
+	}
+	if externalPluginInstallations > 0 {
+		writeError(w, http.StatusConflict, "workspace has marketplace Plugins installed by other workspaces")
+		return
+	}
 
 	if _, err := qtx.LockChatSessionsByWorkspace(r.Context(), requester.WorkspaceID); err != nil {
 		failWorkspaceDelete(w, r, workspaceID, "lock chat sessions", err)
