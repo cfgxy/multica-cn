@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_marketplace_plugin_listing_version;

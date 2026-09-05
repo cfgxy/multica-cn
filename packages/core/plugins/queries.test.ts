@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { pluginSurfaceLaunchOptions } from "./queries";
+import { marketplacePluginsOptions, pluginSurfaceLaunchOptions } from "./queries";
+
+describe("marketplacePluginsOptions", () => {
+  it("does not request the marketplace when its feature flag is off", () => {
+    expect(marketplacePluginsOptions("workspace-1", false).enabled).toBe(false);
+  });
+});
 
 describe("pluginSurfaceLaunchOptions", () => {
   it("uses a new cache entry when a mounted panel moves to another issue", () => {

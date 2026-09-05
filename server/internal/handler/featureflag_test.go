@@ -15,6 +15,23 @@ func withPluginsV1Flag(t *testing.T, h *Handler, enabled bool) {
 	withFeatureFlag(t, h, featureflags.PluginsV1, enabled)
 }
 
+func withPluginMarketplaceFlags(t *testing.T, h *Handler, marketplaceEnabled bool) {
+	t.Helper()
+	provider := featureflag.NewStaticProvider()
+	provider.Set(featureflags.PluginsV1, featureflag.Rule{Default: true})
+	provider.Set(featureflags.MarketplaceV1, featureflag.Rule{Default: marketplaceEnabled})
+	flags := featureflag.NewService(provider)
+
+	origHandlerFlags := h.FeatureFlags
+	origPluginFlags := h.PluginService.FeatureFlags
+	h.FeatureFlags = flags
+	h.PluginService.FeatureFlags = flags
+	t.Cleanup(func() {
+		h.FeatureFlags = origHandlerFlags
+		h.PluginService.FeatureFlags = origPluginFlags
+	})
+}
+
 func withFeatureFlag(t *testing.T, h *Handler, key string, enabled bool) {
 	t.Helper()
 	provider := featureflag.NewStaticProvider()

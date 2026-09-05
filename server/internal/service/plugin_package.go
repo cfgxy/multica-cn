@@ -123,6 +123,9 @@ func (s *PluginService) publish(ctx context.Context, workspaceID, userID pgtype.
 	defer func() { _ = tx.Rollback(ctx) }()
 	queries := s.Queries.WithTx(tx)
 
+	if err := lockPluginPublisherWorkspace(ctx, queries, workspaceID); err != nil {
+		return PluginPackageSummary{}, err
+	}
 	if err := lockPluginPackageKey(ctx, queries, workspaceID, bundle.Manifest.Key); err != nil {
 		return PluginPackageSummary{}, err
 	}
@@ -225,6 +228,34 @@ func resolvePublishVersion(version string, existing []db.PluginPackageVersion, d
 func lockPluginPackageKey(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, pluginKey string) error {
 	if err := queries.LockPluginPackageKey(ctx, uuidString(workspaceID)+":"+pluginKey); err != nil {
 		return &PluginError{Kind: PluginErrorUnavailable, Message: "lock plugin package", Err: err}
+	}
+	return nil
+}
+
+func lockPluginPublisherWorkspace(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID) error {
+	if _, err := queries.LockPluginPublisherWorkspace(ctx, workspaceID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return pluginErrf(PluginErrorConflict, "the publishing workspace was deleted")
+		}
+		return &PluginError{Kind: PluginErrorUnavailable, Message: "lock Plugin publisher workspace", Err: err}
+	}
+	return nil
+}
+
+func lockPluginInstallWorkspaces(ctx context.Context, queries *db.Queries, targetWorkspaceID, publisherWorkspaceID pgtype.UUID) error {
+	locked, err := queries.LockPluginInstallWorkspaces(ctx, []pgtype.UUID{targetWorkspaceID, publisherWorkspaceID})
+	if err != nil {
+		return &PluginError{Kind: PluginErrorUnavailable, Message: "lock Plugin install workspaces", Err: err}
+	}
+	lockedIDs := make(map[string]struct{}, len(locked))
+	for _, workspaceID := range locked {
+		lockedIDs[uuidString(workspaceID)] = struct{}{}
+	}
+	if _, ok := lockedIDs[uuidString(targetWorkspaceID)]; !ok {
+		return pluginErrf(PluginErrorConflict, "the installation workspace was deleted")
+	}
+	if _, ok := lockedIDs[uuidString(publisherWorkspaceID)]; !ok {
+		return pluginErrf(PluginErrorConflict, "the publishing workspace was deleted")
 	}
 	return nil
 }
@@ -358,6 +389,9 @@ func (s *PluginService) DeletePackage(ctx context.Context, workspaceID pgtype.UU
 	defer func() { _ = tx.Rollback(ctx) }()
 	queries := s.Queries.WithTx(tx)
 
+	if err := lockPluginPublisherWorkspace(ctx, queries, workspaceID); err != nil {
+		return err
+	}
 	if err := lockPluginPackageKey(ctx, queries, workspaceID, pkg.PluginKey); err != nil {
 		return err
 	}
@@ -370,6 +404,9 @@ func (s *PluginService) DeletePackage(ctx context.Context, workspaceID pgtype.UU
 	}
 	if installed > 0 {
 		return pluginErrf(PluginErrorConflict, "this plugin is still installed; uninstall it before deleting the published package")
+	}
+	if err := queries.DeleteMarketplacePluginListingByPackage(ctx, pkg.ID); err != nil {
+		return &PluginError{Kind: PluginErrorUnavailable, Message: "remove marketplace listing", Err: err}
 	}
 
 	// Files first: they name a version that is about to stop existing, and there

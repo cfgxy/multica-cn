@@ -104,6 +104,8 @@ export type {
   PluginPackage,
   PluginPackageVersion,
   PluginPackageListResponse,
+  MarketplacePlugin,
+  MarketplacePluginListResponse,
   PluginSurfaceLaunch,
   PluginPreview,
   PluginPreviewRequest,

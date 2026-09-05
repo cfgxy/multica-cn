@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { I18nProvider } from "@multica/core/i18n/react";
+import { configStore } from "@multica/core/config";
+import { MARKETPLACE_V1_FLAG } from "@multica/core/feature-flags";
 import enCommon from "../../locales/en/common.json";
 import enSettings from "../../locales/en/settings.json";
 
@@ -13,10 +15,13 @@ const mockSetEnabled = vi.hoisted(() => vi.fn());
 const mockUninstall = vi.hoisted(() => vi.fn());
 const mockPublish = vi.hoisted(() => vi.fn());
 const mockDeletePackage = vi.hoisted(() => vi.fn());
+const mockListMarketplace = vi.hoisted(() => vi.fn());
+const mockUnlistMarketplace = vi.hoisted(() => vi.fn());
 
 const data = vi.hoisted(() => ({
   installed: { plugins: [] as Array<Record<string, unknown>> },
   packages: { packages: [] as Array<Record<string, unknown>> },
+  marketplace: { plugins: [] as Array<Record<string, unknown>> },
   role: "owner" as "owner" | "admin" | "member",
 }));
 
@@ -27,12 +32,15 @@ vi.mock("@tanstack/react-query", () => ({
   useQuery: (options: { queryKey?: readonly unknown[] }) =>
     options?.queryKey?.[1] === "packages"
       ? { data: data.packages, isLoading: false, isError: false }
-      : { data: data.installed, isLoading: false, isError: false },
+      : options?.queryKey?.[1] === "marketplace"
+        ? { data: data.marketplace, isLoading: false, isError: false }
+        : { data: data.installed, isLoading: false, isError: false },
 }));
 
 vi.mock("@multica/core/plugins", () => ({
   pluginInstallationsOptions: () => ({ queryKey: ["plugins", "installed"] }),
   pluginPackagesOptions: () => ({ queryKey: ["plugins", "packages"] }),
+  marketplacePluginsOptions: () => ({ queryKey: ["plugins", "marketplace"] }),
   usePreviewPlugin: () => ({ mutateAsync: mockPreview, isPending: false }),
   useInstallPlugin: () => ({ mutateAsync: mockInstall, isPending: false }),
   useConfigurePlugin: () => ({ mutateAsync: mockConfigure, isPending: false }),
@@ -40,6 +48,8 @@ vi.mock("@multica/core/plugins", () => ({
   useUninstallPlugin: () => ({ mutateAsync: mockUninstall, isPending: false }),
   usePublishPluginPackage: () => ({ mutateAsync: mockPublish, isPending: false }),
   useDeletePluginPackage: () => ({ mutateAsync: mockDeletePackage, isPending: false }),
+  useListPluginPackageInMarketplace: () => ({ mutateAsync: mockListMarketplace, isPending: false }),
+  useUnlistPluginPackageFromMarketplace: () => ({ mutateAsync: mockUnlistMarketplace, isPending: false }),
 }));
 
 vi.mock("@multica/core/paths", () => ({
@@ -127,17 +137,36 @@ const PACKAGE = {
   ],
 };
 
+const MARKETPLACE_PLUGIN = {
+  package_id: "market-package-1",
+  version_id: "market-version-1",
+  plugin_key: "com.example.market",
+  name: "Market Panel",
+  description: "A shared marketplace panel.",
+  author_name: "example",
+  version: "1.0.0",
+  digest: "abcdef0123456789",
+  publisher_workspace_id: "22222222-2222-2222-2222-222222222222",
+  publisher_workspace_slug: "publisher",
+  listed_at: "2026-09-06T00:00:00Z",
+  installed: false,
+};
+
 describe("PluginsTab", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     data.role = "owner";
     data.installed.plugins = [];
     data.packages.packages = [PACKAGE];
+    data.marketplace.plugins = [];
+    configStore.getState().setFeatureFlags({ [MARKETPLACE_V1_FLAG]: true });
     mockPreview.mockResolvedValue(PREVIEW);
     mockInstall.mockResolvedValue(INSTALLATION);
     mockConfigure.mockResolvedValue(INSTALLATION);
     mockSetEnabled.mockResolvedValue(INSTALLATION);
     mockUninstall.mockResolvedValue(undefined);
+    mockListMarketplace.mockResolvedValue(undefined);
+    mockUnlistMarketplace.mockResolvedValue(undefined);
   });
 
   it("shows the scope consent screen before anything is installed", async () => {
@@ -191,6 +220,45 @@ describe("PluginsTab", () => {
     const bundle = new File(["zip bytes"], "plugin.zip", { type: "application/zip" });
     await user.upload(screen.getByLabelText("Upload package"), bundle);
     await waitFor(() => expect(mockPublish).toHaveBeenCalledWith(bundle));
+  });
+
+  it("browses a cross-workspace marketplace entry through the existing consent flow", async () => {
+    data.packages.packages = [];
+    data.marketplace.plugins = [MARKETPLACE_PLUGIN];
+    mockPreview.mockResolvedValue({ ...PREVIEW, version_id: "market-version-1" });
+    const user = userEvent.setup();
+    render(<PluginsTab />, { wrapper: Wrapper });
+
+    expect(screen.getByText("Market Panel")).toBeInTheDocument();
+    expect(screen.getByText("Published by publisher · example")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Review and install" }));
+    await waitFor(() => expect(mockPreview).toHaveBeenCalledWith({ version_id: "market-version-1" }));
+    await user.click(screen.getByRole("button", { name: "Grant and install" }));
+    await waitFor(() => expect(mockInstall).toHaveBeenCalledWith({
+      version_id: "market-version-1",
+      granted_scopes: PREVIEW.scopes,
+    }));
+  });
+
+  it("lists a published immutable version in the marketplace", async () => {
+    const user = userEvent.setup();
+    render(<PluginsTab />, { wrapper: Wrapper });
+
+    await user.click(screen.getAllByRole("button", { name: "List in marketplace" })[0]!);
+    await waitFor(() => expect(mockListMarketplace).toHaveBeenCalledWith({
+      packageId: "package-1",
+      versionId: "version-2",
+    }));
+  });
+
+  it("hides the marketplace when its independent flag is off", () => {
+    configStore.getState().setFeatureFlags({ [MARKETPLACE_V1_FLAG]: false });
+    data.marketplace.plugins = [MARKETPLACE_PLUGIN];
+    render(<PluginsTab />, { wrapper: Wrapper });
+
+    expect(screen.queryByText("Plugin marketplace")).not.toBeInTheDocument();
+    expect(screen.queryByText("Market Panel")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "List in marketplace" })).not.toBeInTheDocument();
   });
 
   it("renders the configuration form from the manifest and never shows a stored secret", async () => {
