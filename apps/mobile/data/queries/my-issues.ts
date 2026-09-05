@@ -10,6 +10,9 @@
  *               Direct member assignment is intentionally EXCLUDED — that's
  *               the `assigned` scope's meaning.
  *
+ * The mobile-only `actionable`（待我推进）scope (RUYI-76 ①) has no filter of
+ * its own — see `myScopeFilters` + `lib/my-actionable-issues.ts`.
+ *
  * Cache key shape is `issueKeys.myList(wsId, scope, filter)` — same prefix
  * as web's `packages/core/issues/queries.ts` so a future WS handler can
  * invalidate `issueKeys.myAll(wsId)` and reach both clients.
@@ -20,10 +23,11 @@ import {
   issueKeys,
   type MyIssuesFilter,
   type MyIssuesScope,
+  type SingleRelationScope,
 } from "./issue-keys";
 
 export function buildMyIssuesFilter(
-  scope: MyIssuesScope,
+  scope: SingleRelationScope,
   userId: string,
 ): MyIssuesFilter {
   switch (scope) {
@@ -34,6 +38,23 @@ export function buildMyIssuesFilter(
     case "agents":
       return { involves_user_id: userId };
   }
+}
+
+/**
+ * The three per-relation filters behind the merged `actionable`（待我推进）
+ * scope (RUYI-76 ①). Same shapes as the single scopes' filters so the union
+ * view reads the exact cache entries the individual tabs populate — no
+ * duplicate wire requests beyond the three lists themselves. Merge +
+ * category restriction live in `lib/my-actionable-issues.ts`.
+ */
+export function myScopeFilters(
+  userId: string,
+): Record<SingleRelationScope, MyIssuesFilter> {
+  return {
+    assigned: { assignee_id: userId },
+    created: { creator_id: userId },
+    agents: { involves_user_id: userId },
+  };
 }
 
 export const myIssueListOptions = (

@@ -14,7 +14,8 @@
       "created_label": "作成済み",
       "created_description": "自分が作成したタスク",
       "agents_label": "自分のエージェントとスクワッド",
-      "agents_description": "自分のエージェントに割り当てられたタスク"
+      "agents_description": "自分のエージェントに割り当てられたタスク",
+      "actionable_label": "要対応"
     },
     "filter_button": "フィルター",
     "filter_status": "ステータス",
@@ -51,7 +52,8 @@
       "assigned": "あなたに割り当てられたタスクはありません。",
       "created": "まだタスクを作成していません。",
       "agents": "エージェントまたはスクワッドに割り当てられたタスクはまだありません。",
-      "filtered": "現在のフィルター条件に一致するタスクはありません。"
+      "filtered": "現在のフィルター条件に一致するタスクはありません。",
+      "actionable": "あなたの対応待ちのタスクはありません。"
     }
   }
 }
