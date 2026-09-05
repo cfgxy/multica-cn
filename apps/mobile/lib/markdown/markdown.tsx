@@ -42,6 +42,12 @@ import { Linking, View } from "react-native";
 import { router } from "expo-router";
 import { EnrichedMarkdownText } from "react-native-enriched-markdown";
 import type { Attachment } from "@multica/core/types";
+import { api } from "@/data/api";
+import {
+  attachmentIdFromUrl,
+  openAttachmentDownload,
+} from "@/lib/attachment-open";
+import { resolveAttachmentUrl } from "@/lib/attachment-url";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { preprocessMobileMarkdown } from "./preprocess";
 import { useMarkdownStyle } from "./markdown-style";
@@ -161,6 +167,24 @@ export function Markdown({
           if (type === "issue") router.push(`/${wsSlug}/issue/${id}`);
           else if (type === "project") router.push(`/${wsSlug}/project/${id}`);
         }
+        return;
+      }
+      // Attachment links — persisted `/api/attachments/<id>/download` file
+      // cards (`!file[...]`, preprocessed to a 📎 link), inline
+      // `[name](url)` attachment references, signed capability URLs, and
+      // `mc://file/<id>` — re-sign at tap time and open with their own
+      // credential (RUYI-73). Without this the raw href is either
+      // server-relative (Linking.openURL throws on relative URLs → the tap
+      // silently dies) or the auth-gated stable path (the system browser
+      // has neither Bearer nor cookie → 401 JSON page).
+      const attachmentId = attachmentIdFromUrl(url);
+      if (attachmentId) {
+        void openAttachmentDownload(attachmentId, {
+          source: api,
+          opener: Linking,
+          resolveUrl: resolveAttachmentUrl,
+          fallbackUrl: url,
+        });
         return;
       }
       // Everything else — http(s), mailto, tel, app-scheme deep links —
