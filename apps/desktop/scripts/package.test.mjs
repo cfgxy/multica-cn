@@ -476,4 +476,32 @@ describe("electron-builder.yml packaging config", () => {
     expect(entries.length).toBeGreaterThan(0);
     expect(entries).toContain("!dist/**");
   });
+
+  // electron-updater reads resources/app-update.yml, which electron-builder
+  // generates from the top-level `publish:` block at package time — so these
+  // three keys are exactly what an installed client's auto-update check
+  // resolves to. Pin them here so a feed drift (e.g. back to the upstream
+  // multica-ai/multica releases, which this fork cannot publish to) fails in
+  // CI instead of shipping an installer that silently checks the wrong repo.
+  function readPublishBlock(raw) {
+    const lines = raw.split("\n");
+    const start = lines.findIndex((l) => /^publish:\s*$/.test(l));
+    if (start === -1) return {};
+    const values = {};
+    for (let i = start + 1; i < lines.length; i += 1) {
+      const line = lines[i];
+      if (/^\S/.test(line)) break; // next top-level key ends the block
+      const m = line.trim().match(/^([A-Za-z][\w-]*):\s*(\S+)\s*$/);
+      if (m) values[m[1]] = m[2];
+    }
+    return values;
+  }
+
+  it("publishes the auto-update feed to the cfgxy/multica GitHub repo", () => {
+    expect(configPath, "electron-builder.yml not found").toBeTruthy();
+    const publish = readPublishBlock(readFileSync(configPath, "utf-8"));
+    expect(publish.provider).toBe("github");
+    expect(publish.owner).toBe("cfgxy");
+    expect(publish.repo).toBe("multica");
+  });
 });
