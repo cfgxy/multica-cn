@@ -159,6 +159,10 @@ export const ProjectSchema = z.object({
   workspace_id: z.string(),
   title: z.string(),
   description: z.string().nullable(),
+  // RUYI-46: per-project agent instructions. .default(null) so an older
+  // backend that omits the key parses to null instead of degrading the
+  // batch to the empty fallback.
+  instructions: z.string().nullable().default(null),
   icon: z.string().nullable(),
   status: z.string(),
   priority: z.string(),
@@ -196,6 +200,7 @@ export const EMPTY_PROJECT: Project = {
   workspace_id: "",
   title: "",
   description: null,
+  instructions: null,
   icon: null,
   status: "planned",
   priority: "none",
@@ -510,6 +515,11 @@ export const UserSchema: z.ZodType<User> = z.object({
   language: z.string().nullable().default(null),
   profile_description: z.string().default(""),
   timezone: z.string().nullable().default(null),
+  // RUYI-47: super-admin flag + impersonation marker. Defaults mirror the
+  // core type contract — an older backend that omits them reads as
+  // "not a super admin, not impersonating".
+  is_super_admin: z.boolean().default(false),
+  impersonator_id: z.string().nullable().default(null),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
 }).loose();
@@ -528,6 +538,8 @@ export const EMPTY_USER: User = {
   language: null,
   profile_description: "",
   timezone: null,
+  is_super_admin: false,
+  impersonator_id: null,
   created_at: "",
   updated_at: "",
 };
