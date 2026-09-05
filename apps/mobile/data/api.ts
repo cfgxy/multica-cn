@@ -64,7 +64,9 @@ import type {
 } from "@multica/core/types";
 import {
   AppConfigSchema,
+  AttachmentResponseSchema,
   EMPTY_APP_CONFIG,
+  EMPTY_ATTACHMENT,
   EMPTY_ISSUE_PULL_REQUESTS_RESPONSE,
   EMPTY_LIST_ISSUE_STATUSES_RESPONSE,
   EMPTY_LIST_ISSUES_RESPONSE,
@@ -715,6 +717,29 @@ class ApiClient {
       EMPTY_ATTACHMENT_LIST,
       { ...opts, endpoint: "GET /api/issues/:id/attachments" },
     );
+  }
+
+  // GET /api/attachments/:id — single-attachment metadata whose response
+  // carries freshly minted, credential-free download URLs for THIS reply
+  // (signed proxy capability / S3 presign / CloudFront, per storage mode —
+  // see GetAttachmentByID). This is the click-time re-sign endpoint web's
+  // use-download-attachment uses; mobile needs it for the same reason: list
+  // `download_url`s hold the auth-gated stable path, which a system-browser
+  // hand-off can neither authenticate (no Bearer header) nor survive (401
+  // JSON page). Same parse-with-fallback shape as the core client's
+  // getAttachment: a shape-mismatched reply degrades to the empty record,
+  // whose empty URLs the open helper (lib/attachment-open) treats as "no
+  // URL" and reports as a typed failure instead of opening a stale link.
+  async getAttachment(
+    attachmentId: string,
+    opts?: { signal?: AbortSignal },
+  ): Promise<Attachment> {
+    const raw = await this.fetch<unknown>(`/api/attachments/${attachmentId}`, {
+      signal: opts?.signal,
+    });
+    return parseWithFallback(raw, AttachmentResponseSchema, EMPTY_ATTACHMENT, {
+      endpoint: "GET /api/attachments/{id}",
+    });
   }
 
   // Active tasks for an issue (status in queued/dispatched/running). Returns
