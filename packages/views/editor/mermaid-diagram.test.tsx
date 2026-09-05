@@ -26,7 +26,7 @@ vi.mock("mermaid", () => ({
 
 const MOCK_SVG = '<svg viewBox="0 0 1000 500"><g><text>mock diagram</text></g></svg>';
 
-import { MermaidDiagram } from "./mermaid-diagram";
+import { inlineFrameStyle, MermaidDiagram } from "./mermaid-diagram";
 
 const CHART = "graph LR\n  A[Start] --> B[Done]";
 const VIEWPORT = { width: 800, height: 400 };
@@ -252,7 +252,7 @@ describe("MermaidDiagram rendering config", () => {
 });
 
 describe("MermaidDiagram inline presentation", () => {
-  it("renders the diagram in an empty sandbox at its natural size", async () => {
+  it("fits a wide diagram to the column while keeping its aspect ratio", async () => {
     render(<MermaidDiagram chart={CHART} />);
 
     expect(screen.getByLabelText("Mermaid diagram")).toBeInTheDocument();
@@ -264,9 +264,35 @@ describe("MermaidDiagram inline presentation", () => {
     });
 
     expect(frame.getAttribute("sandbox")).toBe("");
+    // RUYI-80: a 1000px diagram in a ~700px column used to render at natural
+    // width and scroll sideways, cutting off nodes until the viewer was
+    // opened. The frame now carries natural width + aspect-ratio and the
+    // stylesheet caps it with `max-width: 100%`, so the whole diagram scales
+    // to the column and stays visible with nothing cropped.
     expect(frame.style.width).toBe("1000px");
-    expect(frame.style.height).toBe("500px");
+    expect(frame.style.aspectRatio).toBe("1000 / 500");
+    expect(frame.style.height).toBe("");
     expect(frame.title).toBe("Mermaid diagram");
+  });
+
+  it("renders a narrow diagram at natural size, not upscaled to the column", async () => {
+    // The mock SVG drives the layout, so drive it with a narrow diagram here.
+    mermaidRenderMock.mockResolvedValue({
+      svg: '<svg viewBox="0 0 300 200"><g><text>narrow</text></g></svg>',
+    });
+    render(<MermaidDiagram chart="graph TD\n  A --> B" />);
+
+    const frame = await waitFor(() => {
+      const found = document.querySelector<HTMLIFrameElement>(".mermaid-diagram-frame");
+      expect(found).not.toBeNull();
+      return found!;
+    });
+
+    // Small diagrams keep natural size (only oversized ones shrink); the
+    // stylesheet's `max-width` cap just never lets the natural 300px grow
+    // past the column.
+    expect(frame.style.width).toBe("300px");
+    expect(frame.style.aspectRatio).toBe("300 / 200");
   });
 
   it("copies the source straight from the inline toolbar", async () => {
@@ -434,5 +460,42 @@ describe("MermaidDiagram error state", () => {
     await waitFor(() => {
       expect(copyTextMock).toHaveBeenCalledWith(CHART);
     });
+  });
+});
+
+// RUYI-80: the inline frame must never be wider than its column. A wide
+// diagram scales down to fit (whole diagram visible, viewer still one tap
+// away); a narrow one keeps natural size; an unreadable viewBox keeps the
+// old unsized fallback. Expressed as a pure contract because jsdom has no
+// layout to observe the rendered result against a real column.
+describe("inlineFrameStyle", () => {
+  it("carries natural width and aspect ratio for a wide layout", () => {
+    expect(inlineFrameStyle({ width: 1000, height: 500 })).toEqual({
+      width: "1000px",
+      aspectRatio: "1000 / 500",
+    });
+  });
+
+  it("carries natural width and aspect ratio for a narrow layout", () => {
+    expect(inlineFrameStyle({ width: 300, height: 200 })).toEqual({
+      width: "300px",
+      aspectRatio: "300 / 200",
+    });
+  });
+
+  it("falls back to unsized when the viewBox was unreadable", () => {
+    expect(inlineFrameStyle(null)).toBeUndefined();
+  });
+
+  it("caps the frame at the column width in the stylesheet", () => {
+    // jsdom has no layout, so the column clamp cannot be observed on the
+    // element; assert the rule that produces it instead. With
+    // `max-width: 100%` + inline width + `aspect-ratio`, a wide diagram
+    // resolves to exactly its column width and a proportional height.
+    const mermaidCss = readFileSync("editor/styles/mermaid.css", "utf8");
+    const start = mermaidCss.indexOf(".rich-text-editor .mermaid-diagram-frame {");
+    expect(start).toBeGreaterThan(-1);
+    const block = mermaidCss.slice(start, mermaidCss.indexOf("}", start));
+    expect(block).toContain("max-width: 100%");
   });
 });
