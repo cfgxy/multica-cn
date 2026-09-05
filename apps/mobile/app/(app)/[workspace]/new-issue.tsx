@@ -73,12 +73,13 @@ export default function NewIssueModal() {
   useEffect(() => {
     resetDraft();
     // RUYI-79 web parity: prefill the assignee with the last one submitted
-    // from this server × workspace. Reads AsyncStorage (awaited inside);
-    // fire-and-forget is safe — it only ever SETS the freshly reset field.
+    // from this server × workspace. The version guard prevents a delayed
+    // AsyncStorage read from replacing a picker choice made after this reset.
+    const assigneeVersion = useNewIssueDraftStore.getState().assigneeVersion;
     const { activeServerId } = useServerStore.getState();
     const slug = useWorkspaceStore.getState().currentWorkspaceSlug;
     if (activeServerId && slug) {
-      void seedDraftAssigneeFromMemory(activeServerId, slug);
+      void seedDraftAssigneeFromMemory(activeServerId, slug, assigneeVersion);
     }
     return () => {
       resetDraft();

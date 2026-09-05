@@ -136,6 +136,29 @@ describe("new-issue last-assignee memory (RUYI-79)", () => {
     expect(mod.useNewIssueDraftStore.getState().assignee).toEqual(remembered);
   });
 
+  it("does not overwrite an assignee chosen while async memory hydration is pending", async () => {
+    const mod = await freshStore();
+    const remembered = { type: "agent" as const, id: "agent-1" };
+    mod.setLastAssigneeFor("srv-1", "ws-a", remembered);
+    const initialVersion = mod.useNewIssueDraftStore.getState().assigneeVersion;
+
+    mod.useNewIssueDraftStore
+      .getState()
+      .setAssignee({ type: "member", id: "selected-after-open" });
+
+    const seed = await mod.seedDraftAssigneeFromMemory(
+      "srv-1",
+      "ws-a",
+      initialVersion,
+    );
+
+    expect(seed).toBe(false);
+    expect(mod.useNewIssueDraftStore.getState().assignee).toEqual({
+      type: "member",
+      id: "selected-after-open",
+    });
+  });
+
   it("memory survives a cold start (re-import rehydrates from storage)", async () => {
     let mod = await freshStore();
     const value = { type: "agent" as const, id: "agent-1" };
