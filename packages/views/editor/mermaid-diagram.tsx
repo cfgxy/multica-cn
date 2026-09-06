@@ -309,7 +309,8 @@ export function MermaidDiagram({ chart }: { chart: string }) {
   const reactId = useId();
   const containerRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
-  const expandButtonRef = useRef<HTMLButtonElement>(null);  const diagramId = useMemo(
+  const expandButtonRef = useRef<HTMLButtonElement>(null);
+  const diagramId = useMemo(
     () => `mermaid-${reactId.replace(/[^a-zA-Z0-9_-]/g, "")}`,
     [reactId],
   );
