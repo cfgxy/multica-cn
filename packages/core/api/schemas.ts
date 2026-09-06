@@ -20,6 +20,9 @@ import type {
   SendChatMessageResponse,
   StartMikaOnboardingResponse,
   Comment,
+  ExecutionProfile,
+  ExecutionProfileActivationResponse,
+  ExecutionProfileListResponse,
   CreateBillingCheckoutSessionResponse,
   CreateBillingPortalSessionResponse,
   WorkspaceSubscriptionEntitlements,
@@ -3441,4 +3444,83 @@ export const EMPTY_JOIN_SHARE_LINK_RESPONSE: {
   },
   workspace_id: "",
   workspace_slug: "",
+};
+
+// ---------------------------------------------------------------------------
+// Execution profiles (RUYI-57)
+// ---------------------------------------------------------------------------
+
+export const ExecutionProfileEntrySchema = z.object({
+  agent_id: z.string(),
+  runtime_id: z.string().optional().default(""),
+  model: z.string().optional().default(""),
+  // Tri-state; null (no opinion) and "" (clear to runtime default) mean
+  // different things at activation, so null must not be coerced to "".
+  thinking_level: z.string().nullable().optional().default(null),
+  updated_at: z.string().optional().default(""),
+}).loose();
+
+export const ExecutionProfileSchema = z.object({
+  id: z.string(),
+  workspace_id: z.string().optional().default(""),
+  name: z.string().optional().default(""),
+  description: z.string().nullable().optional().default(null),
+  created_by: z.string().nullable().optional().default(null),
+  is_active: z.boolean().optional().default(false),
+  entry_count: z.number().optional().default(0),
+  last_activated_at: z.string().nullable().optional().default(null),
+  created_at: z.string().optional().default(""),
+  updated_at: z.string().optional().default(""),
+  entries: z.array(ExecutionProfileEntrySchema).optional().default([]),
+}).loose();
+
+export const EMPTY_EXECUTION_PROFILE: ExecutionProfile = {
+  id: "",
+  workspace_id: "",
+  name: "",
+  description: null,
+  created_by: null,
+  is_active: false,
+  entry_count: 0,
+  last_activated_at: null,
+  created_at: "",
+  updated_at: "",
+  entries: [],
+};
+
+export const ExecutionProfileListResponseSchema = z.object({
+  execution_profiles: z.array(ExecutionProfileSchema).optional().default([]),
+  active_execution_profile_id: z.string().nullable().optional().default(null),
+}).loose();
+
+export const EMPTY_EXECUTION_PROFILE_LIST: ExecutionProfileListResponse = {
+  execution_profiles: [],
+  active_execution_profile_id: null,
+};
+
+// `status` stays a plain string so an outcome kind added server-side still
+// parses; the UI switches on it with a default branch.
+export const ExecutionProfileActivationResultSchema = z.object({
+  agent_id: z.string(),
+  status: z.string().optional().default("failed"),
+  reason: z.string().optional().default(""),
+}).loose();
+
+export const ExecutionProfileActivationResponseSchema = z.object({
+  profile: ExecutionProfileSchema,
+  applied: z.number().optional().default(0),
+  skipped: z.number().optional().default(0),
+  failed: z.number().optional().default(0),
+  results: z.array(ExecutionProfileActivationResultSchema).optional().default([]),
+}).loose();
+
+// The all-failed shape. A malformed activation response must never be read as
+// "it worked": every count is zero and the profile reports is_active false, so
+// the UI shows the failure path rather than moving the checkmark.
+export const EMPTY_EXECUTION_PROFILE_ACTIVATION: ExecutionProfileActivationResponse = {
+  profile: EMPTY_EXECUTION_PROFILE,
+  applied: 0,
+  skipped: 0,
+  failed: 0,
+  results: [],
 };
