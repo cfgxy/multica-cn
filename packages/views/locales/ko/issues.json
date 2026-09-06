@@ -883,6 +883,8 @@
       "delete_desc": "이 댓글은 영구적으로 삭제되며 스레드의 답글도 함께 제거됩니다. 이 작업은 되돌릴 수 없습니다.",
       "jump_bottom": "맨 아래로",
       "jump_bottom_a11y": "대화 끝으로 스크롤",
+      "jump_top": "맨 위로",
+      "jump_top_a11y": "대화 시작으로 스크롤",
       "new_count_other": "새 항목 {{count}}개",
       "jump_new_a11y_other": "새 항목 {{count}}개로 이동",
       "root_collapsed_a11y_other": "{{authors}}의 댓글, 메시지 {{count}}개. 탭하여 펼치기.",
