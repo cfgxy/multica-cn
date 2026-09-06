@@ -42,6 +42,12 @@
 
     "apps/docs": {},
 
+    // The MCP server's bin points at dist/ (built output knip cannot map to
+    // source), so src/ would look unreachable; index.ts is the real entry.
+    "apps/mcp": {
+      "entry": ["eslint.config.mjs", "src/index.ts"]
+    },
+
     // The three shared packages export raw .ts/.tsx compiled by their
     // consumers (CLAUDE.md "Project Shape"), so `entry` names only the config
     // files knip would otherwise miss and the apps supply the real entry
