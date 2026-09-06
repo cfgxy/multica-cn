@@ -7,10 +7,26 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5/pgtype"
+	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/service"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
+
+// requireMarketplaceV1 closes both marketplace endpoints when the flag is off.
+//
+// It gates only discovery and install orchestration. Skill import, skill
+// management, the workspace MCP library, and agent binding each keep their own
+// endpoints and are untouched by this switch — the marketplace never became
+// the way to reach them, so turning it off removes a front door rather than a
+// capability.
+func (h *Handler) requireMarketplaceV1(w http.ResponseWriter, r *http.Request) bool {
+	if featureflags.MarketplaceV1Enabled(r.Context(), h.FeatureFlags) {
+		return true
+	}
+	writeError(w, http.StatusServiceUnavailable, "The marketplace is not enabled")
+	return false
+}
 
 // MarketplaceItemResponse is one catalog entry as the listing shows it, plus
 // whether this workspace already has it.
@@ -86,6 +102,9 @@ func marketplaceItemMatches(item service.MarketplaceItem, query string) bool {
 // workspace already installed. Member-visible: the payload carries no
 // credential material, and seeing what is available is not a write.
 func (h *Handler) ListMarketplaceItems(w http.ResponseWriter, r *http.Request) {
+	if !h.requireMarketplaceV1(w, r) {
+		return
+	}
 	workspaceID := h.resolveWorkspaceID(r)
 	workspaceUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace_id")
 	if !ok {
@@ -202,6 +221,9 @@ type MarketplaceInstallRequest struct {
 // runtime discovers either — is untouched, so an installed item is
 // indistinguishable from one added by hand.
 func (h *Handler) InstallMarketplaceItem(w http.ResponseWriter, r *http.Request) {
+	if !h.requireMarketplaceV1(w, r) {
+		return
+	}
 	workspaceID := h.resolveWorkspaceID(r)
 	workspaceUUID, ok := parseUUIDOrBadRequest(w, workspaceID, "workspace_id")
 	if !ok {
