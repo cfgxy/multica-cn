@@ -1,0 +1,1 @@
+DROP INDEX CONCURRENTLY IF EXISTS idx_execution_profile_workspace_name;

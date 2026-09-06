@@ -663,6 +663,28 @@ type DingtalkGroupRoute struct {
 	UpdatedAt         pgtype.Timestamptz `json:"updated_at"`
 }
 
+type ExecutionProfile struct {
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	Name            string             `json:"name"`
+	Description     pgtype.Text        `json:"description"`
+	CreatedBy       pgtype.UUID        `json:"created_by"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	LastActivatedAt pgtype.Timestamptz `json:"last_activated_at"`
+}
+
+type ExecutionProfileEntry struct {
+	ID            pgtype.UUID        `json:"id"`
+	ProfileID     pgtype.UUID        `json:"profile_id"`
+	AgentID       pgtype.UUID        `json:"agent_id"`
+	RuntimeID     pgtype.UUID        `json:"runtime_id"`
+	Model         string             `json:"model"`
+	ThinkingLevel pgtype.Text        `json:"thinking_level"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Feedback struct {
 	ID          pgtype.UUID        `json:"id"`
 	UserID      pgtype.UUID        `json:"user_id"`
@@ -1557,6 +1579,8 @@ type Workspace struct {
 	AvatarUrl    pgtype.Text        `json:"avatar_url"`
 	// When TRUE, an agent run that resolves to no precise accountable human (would be owner_fallback) is refused at enqueue instead of degrading to the agent owner (MUL-4302 §3.5). Default FALSE = owner_fallback. Never affects authorization (originator_user_id).
 	AttributionFailClosed bool `json:"attribution_fail_closed"`
+	// Execution profile most recently activated in this workspace (RUYI-57). Display state only: it records which profile last wrote the agents' runtime/model/thinking_level, not a live binding. Cleared when that profile is deleted; the agents keep the configuration the activation wrote. No FK, app-layer integrity.
+	ActiveExecutionProfileID pgtype.UUID `json:"active_execution_profile_id"`
 }
 
 type WorkspaceInvitation struct {
