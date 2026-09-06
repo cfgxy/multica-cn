@@ -20,7 +20,10 @@ import {
 } from "./secure-storage";
 import { useWorkspaceStore } from "./workspace-store";
 import { useServerStore } from "./server-store";
-import { clearServerMemory } from "./stores/new-issue-draft-store";
+import {
+  clearServerMemory,
+  invalidateNewIssueSubmissionContext,
+} from "./stores/new-issue-draft-store";
 
 interface AuthState {
   user: User | null;
@@ -116,10 +119,13 @@ export const useAuthStore = create<AuthState>((set) => {
     // RUYI-79: drop this account's last-assignee memory before the session
     // goes away, so the next login on this server entry never inherits the
     // previous account's pick (web draft-cleanup parity).
+    invalidateNewIssueSubmissionContext();
     clearServerMemory(activeServerId);
+    // Make any late create callback observe a signed-out context before the
+    // asynchronous credential cleanup yields control.
+    set({ user: null });
     await clearToken(activeServerId);
     api.setToken(null);
-    set({ user: null });
   },
 
   setUser: (user) => set({ user }),

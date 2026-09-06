@@ -20,6 +20,7 @@ import { create } from "zustand";
 
 import { clearSlug, getSlug, setSlug } from "./secure-storage";
 import { useServerStore } from "./server-store";
+import { invalidateNewIssueSubmissionContext } from "./stores/new-issue-draft-store";
 
 interface WorkspaceState {
   currentWorkspaceId: string | null;
@@ -33,11 +34,14 @@ interface WorkspaceState {
   clear: () => Promise<void>;
 }
 
-export const useWorkspaceStore = create<WorkspaceState>((set) => ({
+export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   currentWorkspaceId: null,
   currentWorkspaceSlug: null,
 
   setCurrentWorkspace: async (id, slug) => {
+    if (get().currentWorkspaceSlug !== slug) {
+      invalidateNewIssueSubmissionContext();
+    }
     set({ currentWorkspaceId: id, currentWorkspaceSlug: slug });
     const { activeServerId } = useServerStore.getState();
     await setSlug(activeServerId, slug);
@@ -50,11 +54,17 @@ export const useWorkspaceStore = create<WorkspaceState>((set) => ({
     // server switch, where a target server without a saved snapshot must
     // NOT inherit the previous server's in-memory slug — otherwise the
     // entry redirect would route straight into the old server's workspace.
+    if (get().currentWorkspaceSlug !== slug) {
+      invalidateNewIssueSubmissionContext();
+    }
     set({ currentWorkspaceId: null, currentWorkspaceSlug: slug });
     return slug;
   },
 
   clear: async () => {
+    if (get().currentWorkspaceSlug !== null) {
+      invalidateNewIssueSubmissionContext();
+    }
     set({ currentWorkspaceId: null, currentWorkspaceSlug: null });
     const { activeServerId } = useServerStore.getState();
     await clearSlug(activeServerId);

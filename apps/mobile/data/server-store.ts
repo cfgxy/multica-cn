@@ -26,7 +26,10 @@ import {
   type ServerEntry,
 } from "./server-config";
 import { clearServerSession } from "./secure-storage";
-import { clearServerMemory } from "./stores/new-issue-draft-store";
+import {
+  clearServerMemory,
+  invalidateNewIssueSubmissionContext,
+} from "./stores/new-issue-draft-store";
 
 const STORAGE_KEY = "multica_servers";
 
@@ -150,8 +153,13 @@ export const useServerStore = create<ServerState>((set, get) => {
     },
 
     setActiveServer: async (id) => {
-      const { servers } = get();
+      const { servers, activeServerId } = get();
       if (!servers.some((s) => s.id === id)) return;
+      if (id !== activeServerId) {
+        // The server switch has started even while its persisted state is
+        // pending, so creates from the previous context must expire now.
+        invalidateNewIssueSubmissionContext();
+      }
       await commit(servers, id);
     },
   };

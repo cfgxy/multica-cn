@@ -121,6 +121,62 @@ describe("new-issue last-assignee memory (RUYI-79)", () => {
     expect(mod.useNewIssueDraftStore.getState().assignee).toBeNull();
   });
 
+  it("does not persist a successful create after its workspace or account context changes", async () => {
+    const mod = await freshStore();
+    const submittedContext = {
+      serverId: "srv-1",
+      workspaceSlug: "ws-a",
+      userId: "user-a",
+      generation: mod.getNewIssueSubmissionContextGeneration(),
+    };
+    const value = { type: "agent" as const, id: "agent-1" };
+
+    expect(
+      mod.rememberLastAssigneeAfterSuccessfulCreate(
+        submittedContext,
+        { ...submittedContext, workspaceSlug: "ws-b" },
+        value,
+      ),
+    ).toBe(false);
+    expect(mod.getLastAssigneeFor("srv-1", "ws-a")).toBeUndefined();
+    expect(mod.getLastAssigneeFor("srv-1", "ws-b")).toBeUndefined();
+
+    expect(
+      mod.rememberLastAssigneeAfterSuccessfulCreate(
+        submittedContext,
+        { ...submittedContext, userId: "user-b" },
+        value,
+      ),
+    ).toBe(false);
+    expect(mod.getLastAssigneeFor("srv-1", "ws-a")).toBeUndefined();
+
+    mod.setLastAssigneeFor("srv-1", "ws-a", value);
+    mod.clearServerMemory("srv-1");
+    expect(
+      mod.rememberLastAssigneeAfterSuccessfulCreate(
+        submittedContext,
+        null,
+        value,
+      ),
+    ).toBe(false);
+    // Logout clears memory and immediately exposes a null user context, so a
+    // late success cannot restore the cleared value while token cleanup runs.
+    expect(mod.getLastAssigneeFor("srv-1", "ws-a")).toBeUndefined();
+
+    mod.invalidateNewIssueSubmissionContext();
+    expect(
+      mod.rememberLastAssigneeAfterSuccessfulCreate(
+        submittedContext,
+        {
+          ...submittedContext,
+          generation: mod.getNewIssueSubmissionContextGeneration(),
+        },
+        value,
+      ),
+    ).toBe(false);
+    expect(mod.getLastAssigneeFor("srv-1", "ws-a")).toBeUndefined();
+  });
+
   it("seeding overwrites a leftover in-draft selection with the remembered one", async () => {
     const mod = await freshStore();
     const remembered = { type: "member" as const, id: "member-1" };
