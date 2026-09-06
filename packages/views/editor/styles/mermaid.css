@@ -16,8 +16,10 @@
 
 .rich-text-editor .mermaid-diagram-scroll {
   display: flex;
-  /* Small diagrams sit centered at natural size; only oversized ones scroll.
-     Upscaling a small diagram to fill the column would just coarsen it. */
+  /* Small diagrams sit centered at natural size; oversized ones are scaled
+     down to the column by the frame's `min()`/`aspect-ratio` sizing
+     (RUYI-80), so nothing overflows anymore. `overflow-x: auto` stays as a
+     safety valve for pathological cases only. */
   justify-content: center;
   overflow-x: auto;
   overflow-y: hidden;
@@ -33,46 +35,17 @@
 .rich-text-editor .mermaid-diagram-frame {
   border: 0;
   display: block;
-  /* Natural width, never shrunk to the column: a wide diagram must keep a
-     readable font size and scroll sideways instead of being squashed until the
-     labels are unreadable. `flex: none` stops the flex parent from shrinking
-     it; a `max-width` here would defeat the scroll entirely. */
+  /* Natural width comes from the inline `inlineFrameStyle` (RUYI-80) along
+     with `aspect-ratio`. The `max-width` cap below scales a wide diagram down
+     to the column so the whole diagram is visible — `aspect-ratio` then keeps
+     the height proportional to the resolved width — while narrow ones keep
+     natural size. */
+  max-width: 100%;
   flex: none;
   /* The iframe cannot forward clicks to this document, so it would swallow
      the click-to-open gesture. Disabling pointer events hands wheel, click,
      and drag to the scroll container instead. */
   pointer-events: none;
-}
-
-/* Edge fades: a hint that the diagram continues past the container. Driven by
-   data attributes the component sets from scroll position, so a diagram that
-   fits shows no fade, and a scrolled-to-the-end one fades only on the left. */
-.rich-text-editor .mermaid-diagram::before,
-.rich-text-editor .mermaid-diagram::after {
-  content: "";
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  width: 2rem;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 0.15s;
-  z-index: 1;
-}
-
-.rich-text-editor .mermaid-diagram::before {
-  left: 0;
-  background: linear-gradient(to right, var(--muted), transparent);
-}
-
-.rich-text-editor .mermaid-diagram::after {
-  right: 0;
-  background: linear-gradient(to left, var(--muted), transparent);
-}
-
-.rich-text-editor .mermaid-diagram[data-overflow-start]::before,
-.rich-text-editor .mermaid-diagram[data-overflow-end]::after {
-  opacity: 1;
 }
 
 .rich-text-editor .mermaid-diagram-loading,

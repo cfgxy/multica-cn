@@ -114,6 +114,13 @@ jobs:
 
       - name: Build release APK
         working-directory: apps/mobile/android
+        env:
+          # RUYI-80: DOM components（mermaid 渲染）经 expo export 的
+          # split-chunks 路径会在 HTML 序列化时抛 "Asset not found:
+          # __common-*.js"（@expo/cli 的 DOM bundle 资产清单缺共享 chunk，
+          # export:embed 与 expo export 同路径）。本 app 只有一个 DOM 组件，
+          # 分包没有收益，官方逃生口 EXPO_NO_BUNDLE_SPLITTING=1 直接绕开。
+          EXPO_NO_BUNDLE_SPLITTING: "1"
         run: ./gradlew assembleRelease --no-daemon
 
       # 版本取自 prebuild 产物 build.gradle 的 versionName（app.config.ts
