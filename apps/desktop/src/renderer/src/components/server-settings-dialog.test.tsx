@@ -26,7 +26,8 @@ const translations = {
     delete_title: "Delete server",
     delete_message: "Remove {{name}} from this device?",
     cancel: "Cancel",
-    switch_confirm: "Active",
+    current: "Current",
+    switch_confirm: "Switch",
     empty_title: "No other servers yet",
     empty_description: "Add a server to connect to another Multica instance.",
     form: {
@@ -181,7 +182,7 @@ describe("ServerSettingsDialog — list", () => {
     );
     store.getState().hydrate();
     renderDialog();
-    expect(screen.getByText("Active")).toBeInTheDocument();
+    expect(screen.getByText("Current")).toBeInTheDocument();
     expect(screen.queryByLabelText("Delete")).toBeNull();
   });
 });

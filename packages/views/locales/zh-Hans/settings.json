@@ -1311,6 +1311,7 @@
     "switch_title": "切换服务器？",
     "switch_message": "将恢复 {{name}} 在本机保存的登录状态;没有已保存会话的服务器会进入登录页。",
     "switch_confirm": "切换",
+    "current": "当前",
     "delete_title": "删除服务器",
     "delete_message": "从本设备移除 {{name}}？",
     "form": {
