@@ -1308,6 +1308,52 @@ describe("IssueDetail (shared)", () => {
     expect(screen.getByText("I can help with this")).toBeInTheDocument();
   });
 
+  it("orders thread cards by their latest reply", async () => {
+    mockApiObj.listTimeline.mockResolvedValue([
+      {
+        ...mockTimeline[0],
+        id: "long-thread-root",
+        content: "Long-running thread",
+      },
+      {
+        ...mockTimeline[1],
+        id: "short-thread-root",
+        content: "Short thread",
+        created_at: "2026-01-16T01:00:00Z",
+      },
+      {
+        ...mockTimeline[1],
+        id: "short-thread-reply",
+        content: "Short thread finished",
+        parent_id: "short-thread-root",
+        created_at: "2026-01-16T02:00:00Z",
+      },
+      {
+        ...mockTimeline[1],
+        id: "long-thread-reply",
+        content: "Long thread finished later",
+        parent_id: "long-thread-root",
+        created_at: "2026-01-18T00:00:00Z",
+      },
+    ]);
+
+    renderIssueDetail();
+
+    const shortThread = (await screen.findByText("Short thread")).closest(
+      "[id='comment-short-thread-root']",
+    );
+    const longThread = screen.getByText("Long-running thread").closest(
+      "[id='comment-long-thread-root']",
+    );
+
+    expect(shortThread).not.toBeNull();
+    expect(longThread).not.toBeNull();
+    expect(
+      shortThread!.compareDocumentPosition(longThread!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
   it("prefers timeline identity when the actor is absent from the member directory", async () => {
     mockApiObj.listTimeline.mockResolvedValue([
       {
