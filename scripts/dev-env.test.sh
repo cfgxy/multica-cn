@@ -309,6 +309,11 @@ require_contains "$out" "Cancelled."
 # Sharing the main database is explicit: destroy releases slot, profile and
 # manifest, reports clearly, and no DROP statement is ever issued.
 write_manifest_consistent "shared-main-905" "$tmp_dir/shared-main-checkout" 905 "multica"
+printf 'n\n' | dev_env destroy shared-main-905 > "$out" 2>&1 || fail "取消共享环境销毁失败"
+require_contains "$out" "保留共享主库 multica"
+if grep -Fq 'This drops database multica' "$out"; then
+  fail "确认提示仍声称会删除受保护主库"
+fi
 : >"$psql_log"
 dev_env destroy shared-main-905 --yes > "$out" 2>&1 || fail "destroying a shared-main environment must succeed"
 if grep -Fq "DROP DATABASE" "$psql_log"; then
