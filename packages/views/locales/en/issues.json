@@ -916,6 +916,8 @@
       "delete_desc": "This comment will be permanently deleted. Replies in the thread will also be removed. This cannot be undone.",
       "jump_bottom": "To bottom",
       "jump_bottom_a11y": "Scroll to the end of the conversation",
+      "jump_top": "To top",
+      "jump_top_a11y": "Scroll to the start of the conversation",
       "new_count_one": "{{count}} new",
       "new_count_other": "{{count}} new",
       "jump_new_a11y_one": "Jump to {{count}} new message",
