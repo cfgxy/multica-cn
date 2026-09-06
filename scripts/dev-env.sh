@@ -1255,7 +1255,11 @@ cmd_destroy() {
   resolve_env_for_read "$name"
 
   if [ "$assume_yes" != 1 ]; then
-    printf 'Destroy %s? This drops database %s and profile %s. [y/N] ' "$NAME" "$DB_NAME" "$PROFILE"
+    if [ "$DB_NAME" = "$MAIN_DATABASE_NAME" ]; then
+      printf '销毁 %s？将清理进程和配置 %s，保留共享主库 %s。[y/N] ' "$NAME" "$PROFILE" "$DB_NAME"
+    else
+      printf 'Destroy %s? This drops database %s and profile %s. [y/N] ' "$NAME" "$DB_NAME" "$PROFILE"
+    fi
     read -r reply || reply=n
     case "$reply" in y|Y|yes|YES) ;; *) printf 'Cancelled.\n'; return 0 ;; esac
   fi
