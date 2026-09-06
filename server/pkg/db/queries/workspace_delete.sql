@@ -600,7 +600,11 @@ DELETE FROM skill WHERE skill.workspace_id = $1;
 -- Plugin relationships have no foreign keys or cascades. Storage and secrets
 -- hang off the installation, so both leaf tables are cleared through the
 -- workspace's installation ids before the installations themselves.
-WITH installations AS MATERIALIZED (
+WITH deleted_marketplace_listings AS (
+    DELETE FROM marketplace_plugin_listing
+    WHERE publisher_workspace_id = $1
+),
+installations AS MATERIALIZED (
     SELECT plugin_installation.id
     FROM plugin_installation
     WHERE plugin_installation.workspace_id = $1
@@ -645,6 +649,15 @@ deleted_packages AS (
     WHERE workspace_id = $1
 )
 DELETE FROM plugin_installation WHERE id IN (SELECT id FROM installations);
+
+-- name: CountExternalPluginInstallationsForWorkspace :one
+-- Marketplace packages are shared immutable artifacts, not copied into each
+-- installer. A publisher workspace therefore cannot disappear while another
+-- workspace still runs one of its versions.
+SELECT count(*)
+FROM plugin_installation i
+JOIN plugin_package_version v ON v.id = i.package_version_id
+WHERE v.workspace_id = $1 AND i.workspace_id <> $1;
 
 -- name: DeleteWorkspaceAgents :exec
 DELETE FROM agent WHERE agent.workspace_id = $1;

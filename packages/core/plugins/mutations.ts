@@ -48,6 +48,23 @@ export function useDeletePluginPackage(wsId: string) {
   });
 }
 
+export function useListPluginPackageInMarketplace(wsId: string) {
+  const invalidate = useInvalidatePlugins(wsId);
+  return useMutation({
+    mutationFn: ({ packageId, versionId }: { packageId: string; versionId: string }) =>
+      api.listPluginPackageInMarketplace(wsId, packageId, versionId),
+    onSettled: invalidate,
+  });
+}
+
+export function useUnlistPluginPackageFromMarketplace(wsId: string) {
+  const invalidate = useInvalidatePlugins(wsId);
+  return useMutation({
+    mutationFn: (packageId: string) => api.unlistPluginPackageFromMarketplace(wsId, packageId),
+    onSettled: invalidate,
+  });
+}
+
 export function useInstallPlugin(wsId: string) {
   const invalidate = useInvalidatePlugins(wsId);
   return useMutation({

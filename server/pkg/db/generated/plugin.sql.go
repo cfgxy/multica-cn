@@ -337,6 +337,15 @@ func (q *Queries) DeleteExpiredPluginInvocations(ctx context.Context, createdAt 
 	return result.RowsAffected(), nil
 }
 
+const deleteMarketplacePluginListingByPackage = `-- name: DeleteMarketplacePluginListingByPackage :exec
+DELETE FROM marketplace_plugin_listing WHERE package_id = $1
+`
+
+func (q *Queries) DeleteMarketplacePluginListingByPackage(ctx context.Context, packageID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteMarketplacePluginListingByPackage, packageID)
+	return err
+}
+
 const deletePluginHookSchedule = `-- name: DeletePluginHookSchedule :exec
 DELETE FROM plugin_hook_schedule WHERE id = $1
 `
@@ -496,6 +505,30 @@ WHERE installation_id = $1
 func (q *Queries) DisablePluginHookSchedules(ctx context.Context, installationID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, disablePluginHookSchedules, installationID)
 	return err
+}
+
+const getMarketplacePluginVersion = `-- name: GetMarketplacePluginVersion :one
+SELECT v.id, v.package_id, v.workspace_id, v.version, v.manifest, v.digest, v.size_bytes, v.published_by, v.created_at
+FROM marketplace_plugin_listing l
+JOIN plugin_package_version v ON v.id = l.version_id
+WHERE l.version_id = $1
+`
+
+func (q *Queries) GetMarketplacePluginVersion(ctx context.Context, versionID pgtype.UUID) (PluginPackageVersion, error) {
+	row := q.db.QueryRow(ctx, getMarketplacePluginVersion, versionID)
+	var i PluginPackageVersion
+	err := row.Scan(
+		&i.ID,
+		&i.PackageID,
+		&i.WorkspaceID,
+		&i.Version,
+		&i.Manifest,
+		&i.Digest,
+		&i.SizeBytes,
+		&i.PublishedBy,
+		&i.CreatedAt,
+	)
+	return i, err
 }
 
 const getPluginHookSchedule = `-- name: GetPluginHookSchedule :one
@@ -837,6 +870,19 @@ func (q *Queries) GetWorkspacePluginPackageVersion(ctx context.Context, arg GetW
 	return i, err
 }
 
+const isMarketplacePluginVersionListed = `-- name: IsMarketplacePluginVersionListed :one
+SELECT EXISTS (
+    SELECT 1 FROM marketplace_plugin_listing WHERE version_id = $1
+)
+`
+
+func (q *Queries) IsMarketplacePluginVersionListed(ctx context.Context, versionID pgtype.UUID) (bool, error) {
+	row := q.db.QueryRow(ctx, isMarketplacePluginVersionListed, versionID)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const listEnabledPluginHookSchedules = `-- name: ListEnabledPluginHookSchedules :many
 SELECT id, installation_id, workspace_id, hook_key, cron_expression, timezone, generation, activated_at, next_run_at, enabled, created_at, updated_at FROM plugin_hook_schedule
 WHERE enabled
@@ -867,6 +913,77 @@ func (q *Queries) ListEnabledPluginHookSchedules(ctx context.Context) ([]PluginH
 			&i.Enabled,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listMarketplacePluginListings = `-- name: ListMarketplacePluginListings :many
+SELECT
+    l.package_id,
+    l.version_id,
+    l.publisher_workspace_id,
+    l.created_at AS listed_at,
+    p.plugin_key,
+    p.name,
+    v.version,
+    v.manifest,
+    v.digest,
+    w.slug AS publisher_workspace_slug,
+    EXISTS (
+        SELECT 1 FROM plugin_installation i
+        WHERE i.workspace_id = $1
+          AND i.plugin_key = p.plugin_key
+          AND i.package_version_id = l.version_id
+    ) AS installed
+FROM marketplace_plugin_listing l
+JOIN plugin_package p ON p.id = l.package_id
+JOIN plugin_package_version v ON v.id = l.version_id
+JOIN workspace w ON w.id = l.publisher_workspace_id
+ORDER BY l.created_at DESC, p.name ASC
+`
+
+type ListMarketplacePluginListingsRow struct {
+	PackageID              pgtype.UUID        `json:"package_id"`
+	VersionID              pgtype.UUID        `json:"version_id"`
+	PublisherWorkspaceID   pgtype.UUID        `json:"publisher_workspace_id"`
+	ListedAt               pgtype.Timestamptz `json:"listed_at"`
+	PluginKey              string             `json:"plugin_key"`
+	Name                   string             `json:"name"`
+	Version                string             `json:"version"`
+	Manifest               []byte             `json:"manifest"`
+	Digest                 string             `json:"digest"`
+	PublisherWorkspaceSlug string             `json:"publisher_workspace_slug"`
+	Installed              bool               `json:"installed"`
+}
+
+func (q *Queries) ListMarketplacePluginListings(ctx context.Context, workspaceID pgtype.UUID) ([]ListMarketplacePluginListingsRow, error) {
+	rows, err := q.db.Query(ctx, listMarketplacePluginListings, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListMarketplacePluginListingsRow{}
+	for rows.Next() {
+		var i ListMarketplacePluginListingsRow
+		if err := rows.Scan(
+			&i.PackageID,
+			&i.VersionID,
+			&i.PublisherWorkspaceID,
+			&i.ListedAt,
+			&i.PluginKey,
+			&i.Name,
+			&i.Version,
+			&i.Manifest,
+			&i.Digest,
+			&i.PublisherWorkspaceSlug,
+			&i.Installed,
 		); err != nil {
 			return nil, err
 		}
@@ -1215,6 +1332,36 @@ func (q *Queries) ListWorkspacePluginPackages(ctx context.Context, workspaceID p
 	return items, nil
 }
 
+const lockPluginInstallWorkspaces = `-- name: LockPluginInstallWorkspaces :many
+SELECT id FROM workspace
+WHERE id = ANY($1::uuid[])
+ORDER BY id
+FOR KEY SHARE
+`
+
+// Install depends on both the installation target and the publisher. Lock both
+// rows in UUID order so opposite cross-workspace installs cannot deadlock, then
+// let the service verify that every requested row still exists before writing.
+func (q *Queries) LockPluginInstallWorkspaces(ctx context.Context, workspaceIds []pgtype.UUID) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, lockPluginInstallWorkspaces, workspaceIds)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var id pgtype.UUID
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		items = append(items, id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const lockPluginPackageKey = `-- name: LockPluginPackageKey :exec
 SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
 `
@@ -1233,6 +1380,20 @@ SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0))
 func (q *Queries) LockPluginPackageKey(ctx context.Context, dollar_1 string) error {
 	_, err := q.db.Exec(ctx, lockPluginPackageKey, dollar_1)
 	return err
+}
+
+const lockPluginPublisherWorkspace = `-- name: LockPluginPublisherWorkspace :one
+SELECT id FROM workspace WHERE id = $1 FOR KEY SHARE
+`
+
+// Taken before the package advisory lock. Workspace deletion takes FOR UPDATE,
+// so it cannot remove shared artifact rows while publish/list/install/delete is
+// deciding against them.
+func (q *Queries) LockPluginPublisherWorkspace(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, lockPluginPublisherWorkspace, id)
+	var id_2 pgtype.UUID
+	err := row.Scan(&id_2)
+	return id_2, err
 }
 
 const reactivatePluginHookSchedule = `-- name: ReactivatePluginHookSchedule :one
@@ -1549,6 +1710,34 @@ func (q *Queries) UpdatePluginPackageName(ctx context.Context, arg UpdatePluginP
 		&i.UpdatedAt,
 	)
 	return i, err
+}
+
+const upsertMarketplacePluginListing = `-- name: UpsertMarketplacePluginListing :exec
+INSERT INTO marketplace_plugin_listing (
+    package_id, version_id, publisher_workspace_id, listed_by
+) VALUES ($1, $2, $3, $4)
+ON CONFLICT (package_id) DO UPDATE SET
+    version_id = EXCLUDED.version_id,
+    listed_by = EXCLUDED.listed_by,
+    created_at = now(),
+    updated_at = now()
+`
+
+type UpsertMarketplacePluginListingParams struct {
+	PackageID            pgtype.UUID `json:"package_id"`
+	VersionID            pgtype.UUID `json:"version_id"`
+	PublisherWorkspaceID pgtype.UUID `json:"publisher_workspace_id"`
+	ListedBy             pgtype.UUID `json:"listed_by"`
+}
+
+func (q *Queries) UpsertMarketplacePluginListing(ctx context.Context, arg UpsertMarketplacePluginListingParams) error {
+	_, err := q.db.Exec(ctx, upsertMarketplacePluginListing,
+		arg.PackageID,
+		arg.VersionID,
+		arg.PublisherWorkspaceID,
+		arg.ListedBy,
+	)
+	return err
 }
 
 const upsertPluginSecret = `-- name: UpsertPluginSecret :exec

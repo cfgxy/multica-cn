@@ -72,6 +72,8 @@ import type {
   NotificationPreferenceResponse,
   PluginInstallation,
   PluginInstallationListResponse,
+  MarketplacePlugin,
+  MarketplacePluginListResponse,
   PluginPackage,
   PluginPackageListResponse,
   PluginPreview,
@@ -329,6 +331,41 @@ export const EMPTY_PLUGIN_PACKAGE: PluginPackage = {
   name: "",
   versions: [],
   created_at: "",
+};
+
+export const MarketplacePluginSchema = z.object({
+  package_id: z.string().uuid(),
+  version_id: z.string().uuid(),
+  plugin_key: z.string().min(1),
+  name: z.string().min(1),
+  description: z.string().optional(),
+  author_name: z.string().min(1),
+  version: z.string().min(1),
+  digest: z.string().min(1),
+  publisher_workspace_id: z.string().uuid(),
+  publisher_workspace_slug: z.string().min(1),
+  listed_at: z.string().min(1),
+  installed: z.boolean(),
+}).loose();
+
+export const MarketplacePluginListResponseSchema = z.object({
+  plugins: z.array(MarketplacePluginSchema).default([]),
+}).loose();
+
+export const EMPTY_MARKETPLACE_PLUGIN_LIST: MarketplacePluginListResponse = { plugins: [] };
+
+export const EMPTY_MARKETPLACE_PLUGIN: MarketplacePlugin = {
+  package_id: "",
+  version_id: "",
+  plugin_key: "",
+  name: "",
+  author_name: "",
+  version: "",
+  digest: "",
+  publisher_workspace_id: "",
+  publisher_workspace_slug: "",
+  listed_at: "",
+  installed: false,
 };
 
 /** A malformed launch becomes unavailable, never a partly trusted frame. */

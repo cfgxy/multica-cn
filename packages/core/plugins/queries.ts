@@ -5,6 +5,7 @@ export const pluginKeys = {
   all: (wsId: string) => ["workspaces", wsId, "plugins"] as const,
   installed: (wsId: string) => [...pluginKeys.all(wsId), "installed"] as const,
   packages: (wsId: string) => [...pluginKeys.all(wsId), "packages"] as const,
+  marketplace: (wsId: string) => [...pluginKeys.all(wsId), "marketplace"] as const,
 };
 
 export function pluginInstallationsOptions(wsId: string) {
@@ -12,6 +13,14 @@ export function pluginInstallationsOptions(wsId: string) {
     queryKey: pluginKeys.installed(wsId),
     queryFn: () => api.listPluginInstallations(wsId),
     enabled: wsId.length > 0,
+  });
+}
+
+export function marketplacePluginsOptions(wsId: string, enabled = true) {
+  return queryOptions({
+    queryKey: pluginKeys.marketplace(wsId),
+    queryFn: () => api.listMarketplacePlugins(wsId),
+    enabled: enabled && wsId.length > 0,
   });
 }
 

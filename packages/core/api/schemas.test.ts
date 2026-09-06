@@ -66,6 +66,7 @@ import {
   UserSchema,
   PluginInstallationSchema,
   PluginInstallationListResponseSchema,
+  MarketplacePluginListResponseSchema,
   PluginMCPToolListSchema,
   PluginPreviewSchema,
   EMPTY_PLUGIN_INSTALLATION_LIST,
@@ -1963,6 +1964,46 @@ describe("Plugin schemas", () => {
     });
     expect(parsed).toEqual(EMPTY_PLUGIN_PREVIEW);
     expect(parsed.scopes).toEqual([]);
+  });
+
+  it("degrades a malformed marketplace response to an empty catalog", () => {
+    const fallback = { plugins: [] };
+    const valid = {
+      package_id: "11111111-1111-1111-1111-111111111111",
+      version_id: "22222222-2222-2222-2222-222222222222",
+      plugin_key: "com.example.market",
+      name: "Market Plugin",
+      author_name: "Example",
+      version: "1.0.0",
+      digest: "digest",
+      publisher_workspace_id: "33333333-3333-3333-3333-333333333333",
+      publisher_workspace_slug: "publisher",
+      listed_at: "2026-09-06T00:00:00Z",
+      installed: false,
+    };
+    for (const malformed of [
+      { plugins: "not-a-list" },
+      { plugins: [{ ...valid, package_id: "" }] },
+      { plugins: [{ ...valid, version_id: "" }] },
+      { plugins: [{ ...valid, plugin_key: "" }] },
+      { plugins: [{ ...valid, name: "" }] },
+      { plugins: [{ ...valid, author_name: "" }] },
+      { plugins: [{ ...valid, version: "" }] },
+      { plugins: [{ ...valid, digest: "" }] },
+      { plugins: [{ ...valid, publisher_workspace_id: "" }] },
+      { plugins: [{ ...valid, publisher_workspace_slug: "" }] },
+      { plugins: [{ ...valid, listed_at: "" }] },
+      { plugins: [{ ...valid, installed: "no" }] },
+      { plugins: [{ ...valid, installed: undefined }] },
+    ]) {
+      const parsed = parseWithFallback(
+        malformed,
+        MarketplacePluginListResponseSchema,
+        fallback,
+        { endpoint: "GET /api/workspaces/{id}/marketplace/plugins" },
+      );
+      expect(parsed).toBe(fallback);
+    }
   });
 
   it("degrades a malformed MCP tool list to empty rather than showing tools as approved", () => {

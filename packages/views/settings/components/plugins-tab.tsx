@@ -2,24 +2,30 @@
 
 import { useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AlertCircle, CalendarClock, Loader2, Trash2, Upload } from "lucide-react";
+import { AlertCircle, CalendarClock, Loader2, Store, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
+import { useFeatureEnabled } from "@multica/core/config";
+import { MARKETPLACE_V1_FLAG } from "@multica/core/feature-flags";
 import { useCurrentMember } from "@multica/core/permissions";
 import {
   pluginInstallationsOptions,
+  marketplacePluginsOptions,
   pluginPackagesOptions,
   useConfigurePlugin,
   useDeletePluginPackage,
   useInstallPlugin,
+  useListPluginPackageInMarketplace,
   usePreviewPlugin,
   usePublishPluginPackage,
   useSetPluginEnabled,
+  useUnlistPluginPackageFromMarketplace,
   useUninstallPlugin,
 } from "@multica/core/plugins";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import type {
   PluginConfigField,
   PluginInstallation,
+  MarketplacePlugin,
   PluginPackage,
   PluginPreview,
 } from "@multica/core/types";
@@ -318,19 +324,98 @@ function ConfigField({
  * what makes the consent screen below a statement about the code and not just
  * about the manifest.
  */
-function PublishAndInstall({ wsId, canManage }: { wsId: string; canManage: boolean }) {
+function PluginConsentPanel({
+  preview,
+  canManage,
+  installPending,
+  onCancel,
+  onConfirm,
+}: {
+  preview: PluginPreview;
+  canManage: boolean;
+  installPending: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const { t } = useT("settings");
+  const scheduledHooks = (preview.manifest.contributes?.hooks ?? [])
+    .filter((hook) => hook.schedule !== undefined);
+
+  return (
+    <div className="space-y-4 border-t border-surface-border px-4 py-4">
+      <div>
+        <div className="text-body font-semibold">{preview.manifest.name}</div>
+        <p className="text-caption text-muted-foreground">
+          {t(($) => $.plugins.byline, {
+            author: preview.manifest.author.name,
+            version: preview.version,
+          })}
+          {preview.installed
+            ? t(($) => $.plugins.consent.upgrade_from, { version: preview.installed_version ?? "" })
+            : ""}
+        </p>
+        {preview.manifest.description ? (
+          <p className="mt-2 text-caption">{preview.manifest.description}</p>
+        ) : null}
+      </div>
+
+      <Alert>
+        <AlertCircle />
+        <AlertTitle>{t(($) => $.plugins.consent.title)}</AlertTitle>
+        <AlertDescription>{t(($) => $.plugins.consent.description)}</AlertDescription>
+      </Alert>
+
+      <ScopeList scopes={preview.scopes} highlighted={preview.added_scopes} />
+
+      {scheduledHooks.length > 0 ? (
+        <Alert>
+          <CalendarClock />
+          <AlertTitle>{t(($) => $.plugins.schedule.consent_title)}</AlertTitle>
+          <AlertDescription>
+            {t(($) => $.plugins.schedule.consent_description)}
+            <ScheduleList hooks={scheduledHooks} />
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      <div className="flex justify-end gap-2">
+        <Button variant="ghost" onClick={onCancel}>
+          {t(($) => $.plugins.consent.cancel)}
+        </Button>
+        <Button disabled={!canManage || installPending} onClick={onConfirm}>
+          {installPending ? <Loader2 className="animate-spin" /> : null}
+          {preview.installed
+            ? t(($) => $.plugins.consent.confirm_upgrade)
+            : t(($) => $.plugins.consent.confirm)}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function PublishAndInstall({
+  wsId,
+  canManage,
+  marketplaceEnabled,
+  marketplacePlugins,
+}: {
+  wsId: string;
+  canManage: boolean;
+  marketplaceEnabled: boolean;
+  marketplacePlugins: MarketplacePlugin[];
+}) {
   const { t } = useT("settings");
   const { data, isLoading } = useQuery(pluginPackagesOptions(wsId));
   const publishMutation = usePublishPluginPackage(wsId);
   const deleteMutation = useDeletePluginPackage(wsId);
+  const listMarketplaceMutation = useListPluginPackageInMarketplace(wsId);
+  const unlistMarketplaceMutation = useUnlistPluginPackageFromMarketplace(wsId);
   const previewMutation = usePreviewPlugin(wsId);
   const installMutation = useInstallPlugin(wsId);
   const fileRef = useRef<HTMLInputElement>(null);
   const [preview, setPreview] = useState<PluginPreview | null>(null);
 
   const packages = useMemo(() => data?.packages ?? [], [data]);
-  const scheduledHooks = (preview?.manifest.contributes?.hooks ?? [])
-    .filter((hook) => hook.schedule !== undefined);
 
   const reportError = (error: unknown) => {
     toast.error(error instanceof Error ? error.message : t(($) => $.plugins.action_failed));
@@ -411,8 +496,18 @@ function PublishAndInstall({ wsId, canManage }: { wsId: string; canManage: boole
               key={pluginPackage.id}
               pluginPackage={pluginPackage}
               canManage={canManage}
-              busy={previewMutation.isPending || deleteMutation.isPending}
+              busy={previewMutation.isPending || deleteMutation.isPending || listMarketplaceMutation.isPending || unlistMarketplaceMutation.isPending}
+              marketplaceEnabled={marketplaceEnabled}
+              marketplaceVersionId={marketplacePlugins.find((entry) => entry.package_id === pluginPackage.id)?.version_id}
               onReview={review}
+              onListMarketplace={(packageId, versionId) => listMarketplaceMutation
+                .mutateAsync({ packageId, versionId })
+                .then(() => toast.success(t(($) => $.plugins.marketplace.listed)))
+                .catch(reportError)}
+              onUnlistMarketplace={(packageId) => unlistMarketplaceMutation
+                .mutateAsync(packageId)
+                .then(() => toast.success(t(($) => $.plugins.marketplace.unlisted)))
+                .catch(reportError)}
               onDelete={(packageId) => deleteMutation
                 .mutateAsync(packageId)
                 .then(() => toast.success(t(($) => $.plugins.publish.deleted)))
@@ -422,54 +517,13 @@ function PublishAndInstall({ wsId, canManage }: { wsId: string; canManage: boole
         )}
 
         {preview ? (
-          <div className="space-y-4 border-t border-surface-border px-4 py-4">
-            <div>
-              <div className="text-body font-semibold">{preview.manifest.name}</div>
-              <p className="text-caption text-muted-foreground">
-                {t(($) => $.plugins.byline, {
-                  author: preview.manifest.author.name,
-                  version: preview.version,
-                })}
-                {preview.installed
-                  ? t(($) => $.plugins.consent.upgrade_from, { version: preview.installed_version ?? "" })
-                  : ""}
-              </p>
-              {preview.manifest.description ? (
-                <p className="mt-2 text-caption">{preview.manifest.description}</p>
-              ) : null}
-            </div>
-
-            <Alert>
-              <AlertCircle />
-              <AlertTitle>{t(($) => $.plugins.consent.title)}</AlertTitle>
-              <AlertDescription>{t(($) => $.plugins.consent.description)}</AlertDescription>
-            </Alert>
-
-            <ScopeList scopes={preview.scopes} highlighted={preview.added_scopes} />
-
-            {scheduledHooks.length > 0 ? (
-              <Alert>
-                <CalendarClock />
-                <AlertTitle>{t(($) => $.plugins.schedule.consent_title)}</AlertTitle>
-                <AlertDescription>
-                  {t(($) => $.plugins.schedule.consent_description)}
-                  <ScheduleList hooks={scheduledHooks} />
-                </AlertDescription>
-              </Alert>
-            ) : null}
-
-            <div className="flex justify-end gap-2">
-              <Button variant="ghost" onClick={() => setPreview(null)}>
-                {t(($) => $.plugins.consent.cancel)}
-              </Button>
-              <Button disabled={!canManage || installMutation.isPending} onClick={confirmInstall}>
-                {installMutation.isPending ? <Loader2 className="animate-spin" /> : null}
-                {preview.installed
-                  ? t(($) => $.plugins.consent.confirm_upgrade)
-                  : t(($) => $.plugins.consent.confirm)}
-              </Button>
-            </div>
-          </div>
+          <PluginConsentPanel
+            preview={preview}
+            canManage={canManage}
+            installPending={installMutation.isPending}
+            onCancel={() => setPreview(null)}
+            onConfirm={confirmInstall}
+          />
         ) : null}
       </SettingsCard>
     </SettingsSection>
@@ -480,13 +534,21 @@ function PublishedPackage({
   pluginPackage,
   canManage,
   busy,
+  marketplaceEnabled,
+  marketplaceVersionId,
   onReview,
+  onListMarketplace,
+  onUnlistMarketplace,
   onDelete,
 }: {
   pluginPackage: PluginPackage;
   canManage: boolean;
   busy: boolean;
+  marketplaceEnabled: boolean;
+  marketplaceVersionId?: string;
   onReview: (versionId: string) => void;
+  onListMarketplace: (packageId: string, versionId: string) => void;
+  onUnlistMarketplace: (packageId: string) => void;
   onDelete: (packageId: string) => void;
 }) {
   const { t } = useT("settings");
@@ -524,17 +586,39 @@ function PublishedPackage({
             <span className="font-mono text-muted-foreground" title={version.digest}>
               {version.digest.slice(0, 12)}
             </span>
-            {version.installed === true ? null : (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="ml-auto"
-                disabled={!canManage || busy}
-                onClick={() => onReview(version.id)}
-              >
-                {installed ? t(($) => $.plugins.publish.review_upgrade) : t(($) => $.plugins.publish.review_install)}
-              </Button>
-            )}
+            <div className="ml-auto flex flex-wrap items-center gap-1">
+              {marketplaceEnabled ? marketplaceVersionId === version.id ? (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={!canManage || busy}
+                  onClick={() => onUnlistMarketplace(pluginPackage.id)}
+                >
+                  <Store />
+                  {t(($) => $.plugins.marketplace.unlist)}
+                </Button>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={!canManage || busy}
+                  onClick={() => onListMarketplace(pluginPackage.id, version.id)}
+                >
+                  <Store />
+                  {t(($) => $.plugins.marketplace.list)}
+                </Button>
+              ) : null}
+              {version.installed === true ? null : (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={!canManage || busy}
+                  onClick={() => onReview(version.id)}
+                >
+                  {installed ? t(($) => $.plugins.publish.review_upgrade) : t(($) => $.plugins.publish.review_install)}
+                </Button>
+              )}
+            </div>
           </li>
         ))}
       </ul>
@@ -668,15 +752,129 @@ function InstalledPlugin({
   );
 }
 
+function MarketplaceSection({
+  wsId,
+  canManage,
+  plugins,
+  isLoading,
+  isError,
+}: {
+  wsId: string;
+  canManage: boolean;
+  plugins: MarketplacePlugin[];
+  isLoading: boolean;
+  isError: boolean;
+}) {
+  const { t } = useT("settings");
+  const previewMutation = usePreviewPlugin(wsId);
+  const installMutation = useInstallPlugin(wsId);
+  const [preview, setPreview] = useState<PluginPreview | null>(null);
+
+  const reportError = (error: unknown) => {
+    toast.error(error instanceof Error ? error.message : t(($) => $.plugins.action_failed));
+  };
+  const review = async (versionId: string) => {
+    try {
+      setPreview(await previewMutation.mutateAsync({ version_id: versionId }));
+    } catch (error) {
+      setPreview(null);
+      reportError(error);
+    }
+  };
+  const confirmInstall = async () => {
+    if (!preview) return;
+    try {
+      await installMutation.mutateAsync({ version_id: preview.version_id, granted_scopes: preview.scopes });
+      setPreview(null);
+      toast.success(t(($) => $.plugins.consent.installed));
+    } catch (error) {
+      reportError(error);
+    }
+  };
+
+  return (
+    <SettingsSection
+      title={t(($) => $.plugins.marketplace.title)}
+      description={t(($) => $.plugins.marketplace.description)}
+    >
+      <SettingsCard>
+        {isLoading ? (
+          <div className="px-4 py-4">
+            <Skeleton className="h-20 w-full" aria-label={t(($) => $.plugins.marketplace.loading)} />
+          </div>
+        ) : isError ? (
+          <Alert variant="destructive" className="m-4">
+            <AlertCircle />
+            <AlertTitle>{t(($) => $.plugins.marketplace.load_failed)}</AlertTitle>
+          </Alert>
+        ) : plugins.length === 0 ? (
+          <p className="px-4 py-6 text-caption text-muted-foreground">
+            {t(($) => $.plugins.marketplace.empty)}
+          </p>
+        ) : (
+          plugins.map((plugin) => (
+            <div key={plugin.package_id} className="flex flex-col gap-3 border-t border-surface-border px-4 py-4 first:border-t-0 sm:flex-row sm:items-start sm:justify-between">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-body font-medium">{plugin.name}</span>
+                  <Badge variant="secondary">{t(($) => $.plugins.version, { version: plugin.version })}</Badge>
+                  {plugin.installed ? (
+                    <Badge variant="outline">{t(($) => $.plugins.publish.installed_version)}</Badge>
+                  ) : null}
+                </div>
+                <p className="text-caption text-muted-foreground">
+                  {t(($) => $.plugins.marketplace.publisher, {
+                    workspace: plugin.publisher_workspace_slug,
+                    author: plugin.author_name,
+                  })}
+                </p>
+                {plugin.description ? <p className="mt-2 max-w-2xl text-caption">{plugin.description}</p> : null}
+                <p className="mt-2 font-mono text-caption text-muted-foreground" title={plugin.digest}>
+                  {plugin.digest.slice(0, 12)}
+                </p>
+              </div>
+              {plugin.installed ? null : (
+                <Button
+                  size="sm"
+                  disabled={!canManage || previewMutation.isPending}
+                  onClick={() => review(plugin.version_id)}
+                >
+                  {previewMutation.isPending ? <Loader2 className="animate-spin" /> : null}
+                  {t(($) => $.plugins.marketplace.review)}
+                </Button>
+              )}
+            </div>
+          ))
+        )}
+        {preview ? (
+          <PluginConsentPanel
+            preview={preview}
+            canManage={canManage}
+            installPending={installMutation.isPending}
+            onCancel={() => setPreview(null)}
+            onConfirm={confirmInstall}
+          />
+        ) : null}
+      </SettingsCard>
+    </SettingsSection>
+  );
+}
+
 export function PluginsTab() {
   const { t } = useT("settings");
   const workspace = useCurrentWorkspace();
   const wsId = workspace?.id ?? "";
   const { role } = useCurrentMember(wsId);
   const canManage = role === "owner" || role === "admin";
+  const marketplaceEnabled = useFeatureEnabled(MARKETPLACE_V1_FLAG, false);
 
   const { data, isLoading, isError } = useQuery(pluginInstallationsOptions(wsId));
+  const marketplaceQuery = useQuery(marketplacePluginsOptions(wsId, marketplaceEnabled));
   const installations = useMemo(() => data?.plugins ?? [], [data]);
+  const marketplacePlugins = useMemo(
+    () => marketplaceQuery.data?.plugins ?? [],
+    [marketplaceQuery.data],
+  );
 
   return (
     <SettingsTab title={t(($) => $.plugins.title)} description={t(($) => $.plugins.description)}>
@@ -688,7 +886,24 @@ export function PluginsTab() {
         </Alert>
       ) : null}
 
-      {canManage ? <PublishAndInstall wsId={wsId} canManage={canManage} /> : null}
+      {marketplaceEnabled ? (
+        <MarketplaceSection
+          wsId={wsId}
+          canManage={canManage}
+          plugins={marketplacePlugins}
+          isLoading={marketplaceQuery.isLoading}
+          isError={marketplaceQuery.isError}
+        />
+      ) : null}
+
+      {canManage ? (
+        <PublishAndInstall
+          wsId={wsId}
+          canManage={canManage}
+          marketplaceEnabled={marketplaceEnabled}
+          marketplacePlugins={marketplacePlugins}
+        />
+      ) : null}
 
       <SettingsSection title={t(($) => $.plugins.installed.title)}>
         {isLoading ? (

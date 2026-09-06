@@ -3,6 +3,8 @@ package featureflags
 import (
 	"context"
 	"testing"
+
+	"github.com/multica-ai/multica/server/pkg/featureflag"
 )
 
 func TestResourceLabelsCompatDecisionStaysEnabled(t *testing.T) {
@@ -60,6 +62,22 @@ func TestPluginsV1DefaultsOff(t *testing.T) {
 	flags := EvaluateFrontendPublicFlags(context.Background(), nil)
 	if flags[PluginsV1] {
 		t.Fatal("plugins_v1 must stay disabled unless explicitly enabled")
+	}
+}
+
+func TestMarketplaceV1DefaultsOff(t *testing.T) {
+	flags := EvaluateFrontendPublicFlags(context.Background(), nil)
+	if flags[MarketplaceV1] {
+		t.Fatal("marketplace_v1 must stay disabled unless explicitly enabled")
+	}
+}
+
+func TestMarketplaceV1IsPublishedWhenEnabled(t *testing.T) {
+	provider := featureflag.NewStaticProvider()
+	provider.Set(MarketplaceV1, featureflag.Rule{Default: true})
+	flags := EvaluateFrontendPublicFlags(context.Background(), featureflag.NewService(provider))
+	if !flags[MarketplaceV1] {
+		t.Fatal("marketplace_v1 must be published to frontend clients when enabled")
 	}
 }
 

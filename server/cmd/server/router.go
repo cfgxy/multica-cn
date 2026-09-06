@@ -1640,6 +1640,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// see what is mounted in their workspace and which scopes
 					// it holds; install / configure / remove stay admin-only.
 					r.Get("/plugins", h.ListPlugins)
+					r.Get("/marketplace/plugins", h.ListMarketplacePlugins)
 					// One short-lived hosted surface launch. Member-visible
 					// because opening an issue is what asks for it; executable
 					// bytes stay off the authenticated app/API origin.
@@ -1685,6 +1686,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/plugins/packages", h.PublishPluginPackage)
 					r.Post("/plugins/packages/local", h.PublishLocalPluginPackage)
 					r.Delete("/plugins/packages/{packageId}", h.DeletePluginPackage)
+					r.Put("/plugins/packages/{packageId}/marketplace", h.ListPluginPackageInMarketplace)
+					r.Delete("/plugins/packages/{packageId}/marketplace", h.UnlistPluginPackageFromMarketplace)
 					// Installing a Plugin is two steps on purpose: preview
 					// reads the published version's manifest and returns the
 					// scope list without writing anything, so the consent

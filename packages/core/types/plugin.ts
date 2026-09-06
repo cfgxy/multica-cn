@@ -141,9 +141,9 @@ export interface PluginPackageVersion {
 }
 
 /**
- * A plugin published into this workspace. Publishing is workspace-private: a
- * public directory needs review, reporting and takedown, which is a separate
- * decision from where the artifact lives.
+ * A plugin published into this workspace. It remains workspace-private until an
+ * administrator explicitly points the instance-local marketplace at one of its
+ * immutable versions.
  */
 export interface PluginPackage {
   id: string;
@@ -156,6 +156,27 @@ export interface PluginPackage {
 
 export interface PluginPackageListResponse {
   packages: PluginPackage[];
+}
+
+/** Discovery metadata for one immutable Plugin version listed by another workspace. */
+export interface MarketplacePlugin {
+  package_id: string;
+  version_id: string;
+  plugin_key: string;
+  name: string;
+  description?: string;
+  author_name: string;
+  version: string;
+  digest: string;
+  publisher_workspace_id: string;
+  publisher_workspace_slug: string;
+  listed_at: string;
+  /** True only when this workspace already runs the listed version. */
+  installed: boolean;
+}
+
+export interface MarketplacePluginListResponse {
+  plugins: MarketplacePlugin[];
 }
 
 /** One short-lived, installation-bound launch of a hosted surface. */

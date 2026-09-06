@@ -261,7 +261,7 @@ func (s *PluginService) isDevOrigin(sourceURL string) bool {
 // It is the first half of the two-step install: the administrator must see the
 // scopes before an installation row exists.
 func (s *PluginService) PreviewPlugin(ctx context.Context, workspaceID pgtype.UUID, versionID string) (*PluginPreview, error) {
-	version, err := s.VersionForWorkspace(ctx, workspaceID, versionID)
+	version, err := s.versionForInstall(ctx, workspaceID, versionID)
 	if err != nil {
 		return nil, err
 	}
@@ -338,7 +338,7 @@ func decodeScopes(raw []byte) []string {
 // consent, which is what makes "approved the manifest, ran the code" a true
 // statement rather than an aspiration.
 func (s *PluginService) InstallPlugin(ctx context.Context, workspaceID, userID pgtype.UUID, versionID string, grantedScopes []string) (db.PluginInstallation, error) {
-	version, err := s.VersionForWorkspace(ctx, workspaceID, versionID)
+	version, err := s.versionForInstall(ctx, workspaceID, versionID)
 	if err != nil {
 		return db.PluginInstallation{}, err
 	}
@@ -372,10 +372,13 @@ func (s *PluginService) InstallPlugin(ctx context.Context, workspaceID, userID p
 		defer func() { _ = tx.Rollback(ctx) }()
 		queries := s.Queries.WithTx(tx)
 
-		if lockErr := lockPluginPackageKey(ctx, queries, workspaceID, manifest.Key); lockErr != nil {
+		if lockErr := lockPluginInstallWorkspaces(ctx, queries, workspaceID, version.WorkspaceID); lockErr != nil {
 			return db.PluginInstallation{}, lockErr
 		}
-		if recheckErr := requireVersionStillPublished(ctx, queries, workspaceID, version.ID); recheckErr != nil {
+		if lockErr := lockPluginPackageKey(ctx, queries, version.WorkspaceID, manifest.Key); lockErr != nil {
+			return db.PluginInstallation{}, lockErr
+		}
+		if recheckErr := s.requireVersionInstallable(ctx, queries, workspaceID, version); recheckErr != nil {
 			return db.PluginInstallation{}, recheckErr
 		}
 
@@ -432,10 +435,13 @@ func (s *PluginService) InstallPlugin(ctx context.Context, workspaceID, userID p
 	defer func() { _ = tx.Rollback(ctx) }()
 	queries := s.Queries.WithTx(tx)
 
-	if err := lockPluginPackageKey(ctx, queries, workspaceID, manifest.Key); err != nil {
+	if err := lockPluginInstallWorkspaces(ctx, queries, workspaceID, version.WorkspaceID); err != nil {
 		return db.PluginInstallation{}, err
 	}
-	if err := requireVersionStillPublished(ctx, queries, workspaceID, version.ID); err != nil {
+	if err := lockPluginPackageKey(ctx, queries, version.WorkspaceID, manifest.Key); err != nil {
+		return db.PluginInstallation{}, err
+	}
+	if err := s.requireVersionInstallable(ctx, queries, workspaceID, version); err != nil {
 		return db.PluginInstallation{}, err
 	}
 

@@ -164,6 +164,7 @@ import type {
   PluginInstallationListResponse,
   PluginPackage,
   PluginPackageListResponse,
+  MarketplacePluginListResponse,
   PluginSurfaceLaunch,
   PluginInvocation,
   PluginMCPTool,
@@ -454,11 +455,13 @@ import {
   EMPTY_PLUGIN_PREVIEW,
   EMPTY_PLUGIN_PACKAGE,
   EMPTY_PLUGIN_PACKAGE_LIST,
+  EMPTY_MARKETPLACE_PLUGIN_LIST,
   EMPTY_PLUGIN_SURFACE_LAUNCH,
   PluginHookResultSchema,
   PluginInstallationListResponseSchema,
   PluginPackageListResponseSchema,
   PluginPackageSchema,
+  MarketplacePluginListResponseSchema,
   PluginSurfaceLaunchSchema,
   PluginInvocationListSchema,
   PluginMCPToolListSchema,
@@ -2850,7 +2853,7 @@ export class ApiClient {
 
   /** Removes a library entry and every assignment to it. */
   async deleteWorkspaceMcpServer(workspaceId: string, serverId: string): Promise<void> {
-    await this.fetch<unknown>(
+    await this.fetch<void>(
       `/api/workspaces/${workspaceId}/mcp-servers/${encodeURIComponent(serverId)}`,
       { method: "DELETE" },
     );
@@ -2955,6 +2958,27 @@ export class ApiClient {
 
   async deletePluginPackage(workspaceId: string, packageId: string): Promise<void> {
     await this.fetch<void>(`/api/workspaces/${workspaceId}/plugins/packages/${packageId}`, { method: "DELETE" });
+  }
+
+  async listMarketplacePlugins(workspaceId: string): Promise<MarketplacePluginListResponse> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/marketplace/plugins`);
+    return parseWithFallback(raw, MarketplacePluginListResponseSchema, EMPTY_MARKETPLACE_PLUGIN_LIST, {
+      endpoint: "GET /api/workspaces/{id}/marketplace/plugins",
+    });
+  }
+
+  async listPluginPackageInMarketplace(workspaceId: string, packageId: string, versionId: string): Promise<void> {
+    await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/plugins/packages/${packageId}/marketplace`,
+      { method: "PUT", body: JSON.stringify({ version_id: versionId }) },
+    );
+  }
+
+  async unlistPluginPackageFromMarketplace(workspaceId: string, packageId: string): Promise<void> {
+    await this.fetch<void>(
+      `/api/workspaces/${workspaceId}/plugins/packages/${packageId}/marketplace`,
+      { method: "DELETE" },
+    );
   }
 
   /** Mint one hosted document URL and its single-use bridge proof. */
