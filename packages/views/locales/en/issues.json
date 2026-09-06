@@ -1045,13 +1045,18 @@
     },
     "agent_activity": {
       "runs_count": "Runs · {{count}}",
-      "badge_a11y": "Agent working — open runs"
+      "badge_a11y": "Agent working — open runs",
+      "row_running_a11y": "Agent working on this issue",
+      "row_queued_a11y": "Agent task queued for this issue"
     },
     "description_field": {
       "placeholder": "Description… (type @ to mention)"
     },
     "new": {
       "submit_a11y": "Create issue"
+    },
+    "tasks": {
+      "issue_unavailable": "Issue unavailable"
     }
   }
 }

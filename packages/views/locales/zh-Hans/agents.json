@@ -9,7 +9,8 @@
     "of_total": "{{visible}} / {{total}}",
     "list_load_failed": "无法加载智能体列表",
     "list_load_failed_default": "获取智能体列表时出错。",
-    "try_again": "重试"
+    "try_again": "重试",
+    "list_loading": "正在加载智能体…"
   },
   "scope": {
     "mine": "我的",
@@ -995,5 +996,11 @@
     "created_done": "完成",
     "edit_title": "编辑 Webhook",
     "edit_url_unchanged": "链接与 token 保持不变，仅修改名称与提示词。"
+  },
+  "mobile": {
+    "tasks": {
+      "empty": "当前没有运行中的任务。",
+      "agent_missing": "智能体不存在或已被删除。"
+    }
   }
 }

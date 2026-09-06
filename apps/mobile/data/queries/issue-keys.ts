@@ -9,7 +9,18 @@
  */
 import type { ListIssuesParams } from "@multica/core/types";
 
-export type MyIssuesScope = "assigned" | "created" | "agents";
+/**
+ * `actionable`（待我推进）is mobile-only (RUYI-76 ①): a client-side union of
+ * the three server relations restricted to the four action categories
+ * (backlog/todo/in_progress/in_review). It has NO single server filter —
+ * `buildMyIssuesFilter` deliberately doesn't accept it; the screen mounts the
+ * three per-relation queries (whose keys match the single scopes' exactly, so
+ * cache entries are shared) and merges via `buildActionableIssues`.
+ */
+export type MyIssuesScope = "assigned" | "created" | "agents" | "actionable";
+
+/** The scopes that map to one server filter each. */
+export type SingleRelationScope = Exclude<MyIssuesScope, "actionable">;
 
 export type MyIssuesFilter = Pick<
   ListIssuesParams,
