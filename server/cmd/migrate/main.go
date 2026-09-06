@@ -299,6 +299,8 @@ var concurrentIndexCleanups = map[string]string{
 	"445_comment_delegated_failure_unsettled_index":             "idx_comment_delegated_failure_unsettled",
 	"446_issue_properties_bigm_index":                           "idx_issue_properties_bigm",
 	"453_admin_audit_log_actor_index":                           "idx_admin_audit_log_actor_created",
+	"455_execution_profile_name_index":                          "idx_execution_profile_workspace_name",
+	"456_execution_profile_entry_index":                         "idx_execution_profile_entry_profile_agent",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
