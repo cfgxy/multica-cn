@@ -63,6 +63,20 @@ func TestPluginsV1DefaultsOff(t *testing.T) {
 	}
 }
 
+// The marketplace has to be published (the client fails closed on absence) and
+// off (a workspace that has not opted in must not see the tab or reach the
+// install API).
+func TestMarketplaceV1IsPublishedAndDefaultsOff(t *testing.T) {
+	flags := EvaluateFrontendPublicFlags(context.Background(), nil)
+	enabled, published := flags[MarketplaceV1]
+	if !published {
+		t.Fatal("marketplace_v1 must be published so the client can read it")
+	}
+	if enabled {
+		t.Fatal("marketplace_v1 must stay disabled unless explicitly enabled")
+	}
+}
+
 func TestPluginSubFlagsAreNotPublished(t *testing.T) {
 	flags := EvaluateFrontendPublicFlags(context.Background(), nil)
 	for _, retired := range []string{"private_plugins_v1", "remote_mcp_plugins_v1"} {
