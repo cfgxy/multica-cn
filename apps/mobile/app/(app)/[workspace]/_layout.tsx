@@ -399,6 +399,10 @@ export default function WorkspaceLayout() {
           options={{ title: i18n.t("layout:nav.agents", "Agents"), headerBackTitle: "Back" }}
         />
         <Stack.Screen
+          name="more/agents/[id]"
+          options={{ title: i18n.t("layout:nav.agents", "Agents"), headerBackTitle: "Back" }}
+        />
+        <Stack.Screen
           name="more/pins"
           options={{ title: i18n.t("layout:sidebar.pinned_label", "Pinned"), headerBackTitle: "Back" }}
         />

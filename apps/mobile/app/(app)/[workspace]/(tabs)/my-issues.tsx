@@ -1,9 +1,17 @@
 /**
- * "My Issues" tab. Three scopes — assigned / created / agents — mirroring
- * web's `packages/views/my-issues/components/my-issues-page.tsx:48-65`. The
- * `agents` scope label is "Agents and Squads" because the backend predicate
- * (`involves_user_id`, MUL-2397) surfaces both the user's owned agents and
- * squads they're involved in (member / leader / has an owned agent inside).
+ * "My Issues" tab. Scopes mirror web's
+ * `packages/views/my-issues/components/my-issues-page.tsx:48-65` —
+ * assigned / created / agents — plus the mobile-only merged
+ * `actionable`（待我推进）scope (RUYI-76 ①): the client-side union of the
+ * three server relations restricted to the four action categories
+ * (待规划/待办/进行中/待审核). It exists because the `assigned` scope filters
+ * `assignee_id = <user>` server-side, and in squad-driven workspaces issues
+ * carry the SQUAD's UUID, so the personal assigned list is legitimately
+ * empty most days and read as "the tab is broken". Merge semantics:
+ * `lib/my-actionable-issues.ts` (dedupe by id, category-restricted,
+ * server position order). The `agents` scope label is "Agents" because the
+ * backend predicate (`involves_user_id`, MUL-2397) surfaces both the user's
+ * owned agents and squads they're involved in.
  *
  * Issues are grouped by status CATEGORY using SectionList in
  * `BOARD_CATEGORIES` order; empty sections are filtered out so the screen
@@ -19,7 +27,7 @@
  * change via the shared `useClearFiltersOnWorkspaceChange` hook.
  */
 import { useMemo } from "react";
-import { Pressable, SectionList, View } from "react-native";
+import { Pressable, SectionList, ScrollView, View } from "react-native";
 import { useQuery } from "@tanstack/react-query";
 import { useIsFocused } from "@react-navigation/native";
 import { router } from "expo-router";
@@ -39,8 +47,13 @@ import { IssuesLoading } from "@/components/issue/issues-loading";
 import {
   buildMyIssuesFilter,
   myIssueListOptions,
+  myScopeFilters,
 } from "@/data/queries/my-issues";
-import type { MyIssuesScope } from "@/data/queries/issue-keys";
+import type {
+  MyIssuesFilter,
+  MyIssuesScope,
+} from "@/data/queries/issue-keys";
+import { buildActionableIssues } from "@/lib/my-actionable-issues";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useMyIssuesViewStore } from "@/data/stores/my-issues-view-store";
@@ -58,12 +71,14 @@ import { THEME } from "@/lib/theme";
 import type { TFunction } from "i18next";
 import { useT } from "@/lib/use-t";
 
-// Mobile pill row has tight width on SE3 (375pt). Three pills + Filter icon
-// must fit in 343pt usable space, so the agents scope renders "Agents" — the
-// full "Agents and Squads" label (~135pt) blows past safe limits and breaks
-// under Dynamic Type. Semantics unchanged: same backend predicate
-// (`involves_user_id`, MUL-2397) covers owned agents + related squads; the
-// empty state copy still says "agents or squads".
+// Mobile pill row has tight width on SE3 (375pt). Four pills + Filter icon
+// cannot fit in 343pt usable space (the "待我推进" addition pushed three
+// past the limit), so the pill row scrolls horizontally — semantics
+// unchanged. The agents scope renders "Agents": the full "Agents and
+// Squads" label (~135pt) breaks under Dynamic Type. Semantics unchanged:
+// same backend predicate (`involves_user_id`, MUL-2397) covers owned
+// agents + related squads; the empty state copy still says "agents or
+// squads".
 // 两侧的模块级常量都已无引用：分组交给上游的 `groupIssuesByCategory`
 // （不再需要 `IssueSection`），scope 列表移进组件内跟 t 一起重算
 // （模块顶层的 `SCOPES` 会在 i18n 初始化前固化，切语言不重算）。
@@ -73,8 +88,13 @@ export default function MyIssues() {
   const { t } = useT("my-issues");
   // 模块级常量会在 i18n 初始化之前求值一次就固化，切语言不重算——所以
   // 放进组件里跟 t 一起重算（同 apps/mobile/CLAUDE.md 的 i18n 规则）。
+  // 待我推进排第一：它是本 tab 的默认 scope（RUYI-76 ①）。
   const scopes = useMemo<{ value: MyIssuesScope; label: string }[]>(
     () => [
+      {
+        value: "actionable",
+        label: t("header.scope.actionable_label", "Actionable"),
+      },
       { value: "assigned", label: t("header.scope.assigned_label", "Assigned") },
       { value: "created", label: t("header.scope.created_label", "Created") },
       { value: "agents", label: t("issues:scope.agents_label", "Agents") },
@@ -103,15 +123,86 @@ export default function MyIssues() {
     wsId,
   );
 
-  const filter = useMemo(
-    () => (userId ? buildMyIssuesFilter(scope, userId) : { assignee_id: "" }),
+  const isActionable = scope === "actionable";
+
+  // Single-relation scopes keep their one server-filtered query; the merged
+  // actionable scope mounts all three relation queries (same cache keys the
+  // single scopes use) and unions them client-side.
+  const singleFilter: MyIssuesFilter | null = useMemo(
+    () =>
+      scope !== "actionable" && userId
+        ? buildMyIssuesFilter(scope, userId)
+        : null,
     [scope, userId],
   );
+  const relationFilters = useMemo(
+    () => (userId ? myScopeFilters(userId) : null),
+    [userId],
+  );
 
-  const { data, isLoading, error, refetch, isRefetching } = useQuery({
-    ...myIssueListOptions(wsId, scope, filter),
-    enabled: !!wsId && !!userId,
+  const singleQuery = useQuery({
+    ...myIssueListOptions(
+      wsId,
+      // singleFilter is non-null exactly when !isActionable, so scope is a
+      // single-relation scope here.
+      scope as Exclude<MyIssuesScope, "actionable">,
+      singleFilter ?? { assignee_id: "" },
+    ),
+    enabled: !!wsId && !!userId && !isActionable,
   });
+  const assignedQuery = useQuery({
+    ...myIssueListOptions(wsId, "assigned", relationFilters?.assigned ?? { assignee_id: "" }),
+    enabled: !!wsId && !!userId && isActionable,
+  });
+  const createdQuery = useQuery({
+    ...myIssueListOptions(wsId, "created", relationFilters?.created ?? { creator_id: "" }),
+    enabled: !!wsId && !!userId && isActionable,
+  });
+  const involvedQuery = useQuery({
+    ...myIssueListOptions(wsId, "agents", relationFilters?.agents ?? { involves_user_id: "" }),
+    enabled: !!wsId && !!userId && isActionable,
+  });
+
+  const data = useMemo(() => {
+    if (!isActionable) return singleQuery.data;
+    if (
+      !assignedQuery.data ||
+      !createdQuery.data ||
+      !involvedQuery.data
+    ) {
+      return undefined; // still loading — render the loading state
+    }
+    return buildActionableIssues({
+      assigned: assignedQuery.data,
+      created: createdQuery.data,
+      involved: involvedQuery.data,
+    });
+  }, [
+    isActionable,
+    singleQuery.data,
+    assignedQuery.data,
+    createdQuery.data,
+    involvedQuery.data,
+  ]);
+
+  const isLoading = isActionable
+    ? !assignedQuery.data || !createdQuery.data || !involvedQuery.data
+    : singleQuery.isLoading;
+  const error = isActionable
+    ? (assignedQuery.error ?? createdQuery.error ?? involvedQuery.error)
+    : singleQuery.error;
+  const refetch = isActionable
+    ? () => {
+        assignedQuery.refetch();
+        createdQuery.refetch();
+        involvedQuery.refetch();
+      }
+    : singleQuery.refetch;
+  const isRefetching = isActionable
+    ? assignedQuery.isRefetching ||
+      createdQuery.isRefetching ||
+      involvedQuery.isRefetching
+    : singleQuery.isRefetching;
 
   // Only the active-filter chips need the catalog: sections group on the
   // category the server already resolved onto each issue, so the list never
@@ -266,6 +357,10 @@ function FilterButton({
  * filters are active). Replaces the previous full-width segmented tabs +
  * Filter-in-title-bar split — keeps scope and the filter affordance in the
  * same row, because they both control the list directly below.
+ *
+ * The pill group scrolls horizontally since RUYI-76 ① added the fourth
+ * (待我推进) scope — four pills + the Filter icon no longer fit a 375pt
+ * (SE3) row, and clipping a scope the user can't see is worse than a scroll.
  */
 function ScopeToolbar<S extends string>({
   scopes,
@@ -281,8 +376,13 @@ function ScopeToolbar<S extends string>({
   hasActiveFilters: boolean;
 }) {
   return (
-    <View className="flex-row items-center justify-between px-4 pt-2 pb-2">
-      <View className="flex-row items-center gap-1 flex-shrink min-w-0">
+    <View className="flex-row items-center px-4 pt-2 pb-2">
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        className="flex-1"
+        contentContainerClassName="flex-row items-center gap-1"
+      >
         {scopes.map((s) => {
           const active = scope === s.value;
           return (
@@ -303,7 +403,7 @@ function ScopeToolbar<S extends string>({
             </Button>
           );
         })}
-      </View>
+      </ScrollView>
       <FilterButton
         onPress={onOpenFilter}
         hasActiveFilters={hasActiveFilters}
@@ -393,6 +493,12 @@ function emptyMessageForScope(
   t: TFunction,
 ): string {
   switch (scope) {
+    case "actionable":
+      // 待规划/待办/进行中/待审核四个类别下都没有等待「我」的 issue。
+      return t(
+        "mobile.empty.actionable",
+        "Nothing is waiting on you right now.",
+      );
     case "assigned":
       return t("mobile.empty.assigned", "No issues assigned to you.");
     case "created":

@@ -9,7 +9,8 @@
     "of_total": "{{total}} 件中 {{visible}} 件",
     "list_load_failed": "エージェントを読み込めませんでした",
     "list_load_failed_default": "エージェント一覧の取得中に問題が発生しました。",
-    "try_again": "再試行"
+    "try_again": "再試行",
+    "list_loading": "エージェントを読み込み中…"
   },
   "scope": {
     "mine": "自分のもの",
@@ -995,5 +996,11 @@
     "created_done": "完了",
     "edit_title": "Webhook を編集",
     "edit_url_unchanged": "リンクとトークンは変更されません。名前とプロンプトのみが更新されます。"
+  },
+  "mobile": {
+    "tasks": {
+      "empty": "現在実行中のタスクはありません。",
+      "agent_missing": "エージェントが見つかりません。"
+    }
   }
 }
