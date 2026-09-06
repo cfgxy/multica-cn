@@ -125,9 +125,13 @@ import {
   resolvePublishedRootIds,
 } from "@/lib/comment-locate";
 import {
+  assignChipStackSlots,
   computeBottomChipVisible,
+  computeTopChipVisible,
+  distFromPhysicalTop,
   distToPhysicalEnd,
   shouldShowBottomChip,
+  shouldShowTopChip,
   type ScrollGeometry,
 } from "@/lib/timeline-scroll-metrics";
 import { useT } from "@/lib/use-t";
@@ -314,21 +318,23 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
     setNewCount((prev) => prev + diff);
   }, [data.length]);
 
-  // ── Independent "to bottom" chip (RUYI-28) ─────────────────────────────
-  // Purely physical: visible only when the viewport's bottom edge is more
-  // than 48px from the FlashList content end, regardless of newCount / the
-  // unread divider / last-viewed. Deliberately does NOT read or write any
-  // of the new-message chip's state — the two chips stack independently
-  // (spec: stacks alongside the existing new-message chip).
+  // ── Independent "to bottom" / "to top" chips (RUYI-28 / RUYI-81) ──────
+  // Purely physical pair: the bottom chip is visible when the viewport's
+  // bottom edge is more than 48px from the FlashList content end; the top
+  // chip (RUYI-81) is its exact mirror for the content start — visible
+  // when scrolled more than 48px away from the header. Many issue actions
+  // (status, priority, assignee) live in the header, so a long timeline
+  // needs the way back up. Neither chip reads or writes the new-message
+  // chip's state; all three stack via assignChipStackSlots.
   //
   // onScroll alone is NOT sufficient: it only fires once the user drags.
-  // The chip must also recompute on mount, after data grows (WS append,
+  // The chips must also recompute on mount, after data grows (WS append,
   // published comment, expansion resizing a row) and after the viewport
   // resizes (rotation, sheet). So every geometry source — scroll events,
   // FlashList's onContentSizeChange, the outer onLayout — writes into
-  // `scrollGeoRef` and runs the SAME pure recompute
-  // (computeBottomChipVisible). One decision function, three triggers,
-  // no divergent state.
+  // `scrollGeoRef` and runs the SAME pure recompute (computeBottomChipVisible
+  // + computeTopChipVisible). One decision function per chip, three
+  // triggers, no divergent state.
   const scrollGeoRef = useRef<ScrollGeometry>({
     contentHeight: 0,
     offsetY: 0,
@@ -341,22 +347,36 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
     farFromEndRef.current = next;
     setFarFromEnd(next);
   }, []);
-  const recomputeBottomChip = useCallback(() => {
+  const [farFromStart, setFarFromStart] = useState(false);
+  const farFromStartRef = useRef(false);
+  const setFarFromStartIfChanged = useCallback((next: boolean) => {
+    if (farFromStartRef.current === next) return;
+    farFromStartRef.current = next;
+    setFarFromStart(next);
+  }, []);
+  const recomputeChips = useCallback(() => {
     setFarFromEndIfChanged(computeBottomChipVisible(scrollGeoRef.current));
-  }, [setFarFromEndIfChanged]);
+    setFarFromStartIfChanged(computeTopChipVisible(scrollGeoRef.current));
+  }, [setFarFromEndIfChanged, setFarFromStartIfChanged]);
   const onJumpToBottom = useCallback(() => {
     listRef.current?.scrollToEnd({ animated: true });
+  }, []);
+  const onJumpToTop = useCallback(() => {
+    // Offset 0 lands on the ListHeader (title / description / reactions),
+    // which is exactly where the issue actions live (RUYI-81).
+    listRef.current?.scrollToOffset({ offset: 0, animated: true });
   }, []);
 
   // Content size changes with async markdown passes, image natural sizes,
   // WS appends and root expansion/collapse. All of them can move the
-  // content end across the 48px band without any scroll event.
+  // content end — or the start, via MVCP's offset compensation — across a
+  // 48px band without any scroll event.
   const handleContentSizeChange = useCallback(
     (w: number, h: number) => {
       scrollGeoRef.current.contentHeight = h;
-      recomputeBottomChip();
+      recomputeChips();
     },
-    [recomputeBottomChip],
+    [recomputeChips],
   );
   // Viewport resize (rotation, split view, chrome shifts) — the wrapper
   // View's onLayout is the only geometry source that fires in that case.
@@ -365,16 +385,16 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
       const h = e.nativeEvent.layout.height;
       if (h <= 0 || h === scrollGeoRef.current.viewportHeight) return;
       scrollGeoRef.current.viewportHeight = h;
-      recomputeBottomChip();
+      recomputeChips();
     },
-    [recomputeBottomChip],
+    [recomputeChips],
   );
   // First layout + first content measurement can land in either order (and
   // both may precede any scroll event) — this effect makes mount publish
   // the initial chip state from whatever geometry is already known.
   useEffect(() => {
-    recomputeBottomChip();
-  }, [recomputeBottomChip]);
+    recomputeChips();
+  }, [recomputeChips]);
 
   const handleScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
@@ -403,8 +423,12 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
           ),
         ),
       );
+      // Physical-start chip (RUYI-81): mirror decision over the raw offset.
+      setFarFromStartIfChanged(
+        shouldShowTopChip(distFromPhysicalTop(contentOffset.y)),
+      );
     },
-    [newCount, setFarFromEndIfChanged],
+    [newCount, setFarFromEndIfChanged, setFarFromStartIfChanged],
   );
 
   const onJumpToNew = useCallback(() => {
@@ -822,14 +846,28 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
         contentContainerStyle={{ paddingBottom: 16 }}
       />
       </Pressable>
-      {/* Two independent chips, stacked when both are active (RUYI-28):
-          "↓ N new" (unread arrivals while scrolled up) and "To bottom"
-          (purely physical distance to the content end). Neither reads the
-          other's state; they clear on different conditions. */}
-      {newCount > 0 ? (
-        <NewCommentChip count={newCount} onPress={onJumpToNew} />
-      ) : null}
-      {farFromEnd ? <BottomChip onPress={onJumpToBottom} /> : null}
+      {/* Three independent chips (RUYI-28 / RUYI-81), stacked bottom-up
+          without overlap via assignChipStackSlots: "↓ N new" (unread
+          arrivals while scrolled up), "To bottom" (physical distance to
+          the content end) and "To top" (physical distance from the
+          content start — the header holds the issue actions). None reads
+          the others' state; they clear on different conditions. */}
+      {(() => {
+        const slots = assignChipStackSlots({
+          newChip: newCount > 0,
+          bottomChip: farFromEnd,
+          topChip: farFromStart,
+        });
+        return (
+          <>
+            {newCount > 0 ? (
+              <NewCommentChip count={newCount} onPress={onJumpToNew} slot={slots.newChip} />
+            ) : null}
+            {farFromEnd ? <BottomChip onPress={onJumpToBottom} slot={slots.bottomChip} /> : null}
+            {farFromStart ? <TopChip onPress={onJumpToTop} slot={slots.topChip} /> : null}
+          </>
+        );
+      })()}
     </View>
     </ImageSequenceProvider>
   );
@@ -865,6 +903,23 @@ function UnreadDivider() {
 }
 
 /**
+ * Bottom offsets per stacking slot (see assignChipStackSlots) — the 44px
+ * pitch RUYI-28 established: chip height ~28px + breathing room, so any
+ * visible combination stays tappable.
+ */
+const CHIP_SLOT_BOTTOM_CLASSES = ["bottom-3", "bottom-14", "bottom-25"];
+
+/** Shared chip shadow — system shadow, not Tailwind, so the chip stays
+ *  readable against either light or dark timeline content beneath. */
+const CHIP_SHADOW = {
+  shadowColor: "#000",
+  shadowOffset: { width: 0, height: 2 },
+  shadowOpacity: 0.18,
+  shadowRadius: 6,
+  elevation: 4,
+} as const;
+
+/**
  * Floating "↓ N new" chip pinned above the composer area. Surfaces WS
  * arrivals the user can't currently see because they're scrolled up.
  * Tap → smooth scrollToEnd + reset counter. Reaching the bottom by hand
@@ -873,15 +928,17 @@ function UnreadDivider() {
  * Positioned absolute bottom-center inside the parent <View flex-1> wrap;
  * doesn't overlap content because the timeline's `contentContainer`
  * already has its own bottom padding for breathing room above the
- * composer hand-off. When the independent BottomChip is also visible it
- * stacks ABOVE this one (see BottomChip's bottom offset note).
+ * composer hand-off. Its stacking slot comes from assignChipStackSlots
+ * so the RUYI-81 TopChip never overlaps it.
  */
 function NewCommentChip({
   count,
   onPress,
+  slot,
 }: {
   count: number;
   onPress: () => void;
+  slot: number;
 }) {
   const { t } = useT("issues");
   const { colorScheme } = useColorScheme();
@@ -889,7 +946,7 @@ function NewCommentChip({
   return (
     <Pressable
       onPress={onPress}
-      className="absolute bottom-3 self-center px-3.5 py-1.5 rounded-full bg-primary active:opacity-80 flex-row items-center gap-1.5"
+      className={`absolute ${CHIP_SLOT_BOTTOM_CLASSES[slot]} self-center px-3.5 py-1.5 rounded-full bg-primary active:opacity-80 flex-row items-center gap-1.5`}
       accessibilityRole="button"
       accessibilityLabel={t(
         "mobile.comment.jump_new_a11y",
@@ -913,17 +970,23 @@ function NewCommentChip({
  * scrollToEnd. Clears itself purely via geometry in handleScroll; never
  * touches newCount or the unread divider.
  *
- * Stacks above the "N new" chip: bottom-14 (56px) vs bottom-3 (12px) so
- * both are tappable when both are visible.
+ * Stacking slot comes from assignChipStackSlots so it never overlaps the
+ * "N new" / "To top" chips when several are visible at once.
  */
-function BottomChip({ onPress }: { onPress: () => void }) {
+function BottomChip({
+  onPress,
+  slot,
+}: {
+  onPress: () => void;
+  slot: number;
+}) {
   const { t } = useT("issues");
   const { colorScheme } = useColorScheme();
   const fg = THEME[colorScheme].primaryForeground;
   return (
     <Pressable
       onPress={onPress}
-      className="absolute bottom-14 self-center px-3.5 py-1.5 rounded-full bg-primary active:opacity-80 flex-row items-center gap-1.5"
+      className={`absolute ${CHIP_SLOT_BOTTOM_CLASSES[slot]} self-center px-3.5 py-1.5 rounded-full bg-primary active:opacity-80 flex-row items-center gap-1.5`}
       accessibilityRole="button"
       accessibilityLabel={t(
         "mobile.comment.jump_bottom_a11y",
@@ -939,12 +1002,36 @@ function BottomChip({ onPress }: { onPress: () => void }) {
   );
 }
 
-/** Shared chip shadow — system shadow, not Tailwind, so the chip stays
- *  readable against either light or dark timeline content beneath. */
-const CHIP_SHADOW = {
-  shadowColor: "#000",
-  shadowOffset: { width: 0, height: 2 },
-  shadowOpacity: 0.18,
-  shadowRadius: 6,
-  elevation: 4,
-} as const;
+/**
+ * "To top" chip (RUYI-81) — exact visual/interaction mirror of
+ * BottomChip. Shown whenever the viewport is more than 48px from the
+ * content START (raw offsetY), i.e. the header with the issue's metadata
+ * and actions is scrolled away. Tap → scrollToOffset(0), landing on the
+ * ListHeader (title / description / reactions). Clears itself purely via
+ * geometry in handleScroll; never touches newCount or the unread divider.
+ *
+ * Stacks with the other chips via assignChipStackSlots; a lone chip gets
+ * the lowest (thumb-closest) slot.
+ */
+function TopChip({ onPress, slot }: { onPress: () => void; slot: number }) {
+  const { t } = useT("issues");
+  const { colorScheme } = useColorScheme();
+  const fg = THEME[colorScheme].primaryForeground;
+  return (
+    <Pressable
+      onPress={onPress}
+      className={`absolute ${CHIP_SLOT_BOTTOM_CLASSES[slot]} self-center px-3.5 py-1.5 rounded-full bg-primary active:opacity-80 flex-row items-center gap-1.5`}
+      accessibilityRole="button"
+      accessibilityLabel={t(
+        "mobile.comment.jump_top_a11y",
+        "Scroll to the start of the conversation",
+      )}
+      style={CHIP_SHADOW}
+    >
+      <Ionicons name="arrow-up-sharp" size={14} color={fg} />
+      <Text className="text-xs font-semibold text-primary-foreground">
+        {t("mobile.comment.jump_top", "To top")}
+      </Text>
+    </Pressable>
+  );
+}
