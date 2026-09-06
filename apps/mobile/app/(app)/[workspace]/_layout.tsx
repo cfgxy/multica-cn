@@ -426,6 +426,20 @@ export default function WorkspaceLayout() {
             headerLeft: () => <ModalCloseButton />,
           }}
         />
+        {/* Smart-mode actor picker (RUYI-68) — stacked on the new-issue
+            modal like the other new-issue-picker sheets; the search header
+            mirrors new-issue-picker/assignee. */}
+        <Stack.Screen
+          name="new-issue-picker/actor"
+          options={{
+            ...SHEET_OPTIONS,
+            headerShown: true,
+            title: i18n.t(
+              "modals:create_issue.agent.created_by",
+              "Created by",
+            ),
+          }}
+        />
         <Stack.Screen
           name="search"
           options={{
