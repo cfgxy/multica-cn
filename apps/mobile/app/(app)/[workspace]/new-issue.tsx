@@ -39,7 +39,15 @@ import {
 } from "@/lib/attachment-markdown";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { useCreateIssue } from "@/data/mutations/issues";
-import { useNewIssueDraftStore } from "@/data/stores/new-issue-draft-store";
+import {
+  getNewIssueSubmissionContextGeneration,
+  rememberLastAssigneeAfterSuccessfulCreate,
+  seedDraftAssigneeFromMemory,
+  useNewIssueDraftStore,
+} from "@/data/stores/new-issue-draft-store";
+import { useAuthStore } from "@/data/auth-store";
+import { useWorkspaceStore } from "@/data/workspace-store";
+import { useServerStore } from "@/data/server-store";
 import { useMentionInput } from "@/lib/use-mention-input";
 import { useT } from "@/lib/use-t";
 
@@ -66,6 +74,15 @@ export default function NewIssueModal() {
 
   useEffect(() => {
     resetDraft();
+    // RUYI-79 web parity: prefill the assignee with the last one submitted
+    // from this server × workspace. The version guard prevents a delayed
+    // AsyncStorage read from replacing a picker choice made after this reset.
+    const assigneeVersion = useNewIssueDraftStore.getState().assigneeVersion;
+    const { activeServerId } = useServerStore.getState();
+    const slug = useWorkspaceStore.getState().currentWorkspaceSlug;
+    if (activeServerId && slug) {
+      void seedDraftAssigneeFromMemory(activeServerId, slug, assigneeVersion);
+    }
     return () => {
       resetDraft();
     };
@@ -117,6 +134,12 @@ export default function NewIssueModal() {
     const trimmedTitle = title.trim();
     if (trimmedTitle.length === 0) return;
     const finalDescription = description.serialize().trim();
+    // Capture the context that the request is sent from. The user can dismiss
+    // this modal and switch account or workspace before its response arrives.
+    const submittedServerId = useServerStore.getState().activeServerId;
+    const submittedWorkspaceSlug = useWorkspaceStore.getState().currentWorkspaceSlug;
+    const submittedUserId = useAuthStore.getState().user?.id;
+    const submittedGeneration = getNewIssueSubmissionContextGeneration();
     // Web create-issue parity: bind ONLY uploads the final body still
     // references — deleting the reference line really unbinds the file.
     const attachmentIds = referencedAttachmentIds(
@@ -136,6 +159,29 @@ export default function NewIssueModal() {
         ...(project ? { project_id: project.id } : {}),
         ...(attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : {}),
       });
+      // RUYI-79 web parity (create-issue onAccepted): remember the SUBMITTED
+      // assignee — not the live draft — only after the server accepted the
+      // create. Unassigned is remembered as a value too.
+      const { activeServerId } = useServerStore.getState();
+      const workspaceSlug = useWorkspaceStore.getState().currentWorkspaceSlug;
+      const userId = useAuthStore.getState().user?.id;
+      if (submittedWorkspaceSlug && submittedUserId && workspaceSlug && userId) {
+        rememberLastAssigneeAfterSuccessfulCreate(
+          {
+            serverId: submittedServerId,
+            workspaceSlug: submittedWorkspaceSlug,
+            userId: submittedUserId,
+            generation: submittedGeneration,
+          },
+          {
+            serverId: activeServerId,
+            workspaceSlug,
+            userId,
+            generation: getNewIssueSubmissionContextGeneration(),
+          },
+          assignee ?? null,
+        );
+      }
       router.back();
     } catch (err) {
       Alert.alert(
