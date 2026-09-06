@@ -20,6 +20,8 @@ const marketplaceMcpItemKey = "mcp:modelcontextprotocol/github"
 func listMarketplaceForTest(t *testing.T, query string, mutate func(*http.Request)) (int, []MarketplaceItemResponse, string) {
 	t.Helper()
 
+	withMarketplaceV1Flag(t, testHandler, true)
+
 	path := "/api/marketplace/items"
 	if query != "" {
 		path += "?" + query
@@ -44,6 +46,8 @@ func listMarketplaceForTest(t *testing.T, query string, mutate func(*http.Reques
 
 func installMarketplaceForTest(t *testing.T, body any, mutate func(*http.Request)) (int, string) {
 	t.Helper()
+
+	withMarketplaceV1Flag(t, testHandler, true)
 
 	req := newRequest(http.MethodPost, "/api/marketplace/install", body)
 	req = withURLParam(req, "id", testWorkspaceID)
