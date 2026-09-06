@@ -48,7 +48,18 @@ import { marked, type Tokens } from "marked";
 export type MarkdownSegment =
   | { type: "prose"; content: string }
   | { type: "code"; lang: string | undefined; code: string }
+  | { type: "mermaid"; code: string }
   | { type: "image"; uri: string; alt: string };
+
+/**
+ * Languages that upgrade to a rich block on mobile. Mirrors web's
+ * `isRichFenceLanguage` (packages/views/rich-content/rich-code-block.tsx):
+ * the whole language token must equal `mermaid` — `mermaidx` is an ordinary
+ * Shiki language, never a diagram.
+ */
+function isMermaidFence(lang: string | undefined): boolean {
+  return lang === "mermaid";
+}
 
 export function splitMarkdown(input: string): MarkdownSegment[] {
   if (!input) return [];
@@ -69,11 +80,15 @@ export function splitMarkdown(input: string): MarkdownSegment[] {
     if (token.type === "code") {
       flushProse();
       const t = token as Tokens.Code;
-      out.push({
-        type: "code",
-        lang: t.lang ? t.lang : undefined,
-        code: t.text,
-      });
+      if (isMermaidFence(t.lang)) {
+        out.push({ type: "mermaid", code: t.text });
+      } else {
+        out.push({
+          type: "code",
+          lang: t.lang ? t.lang : undefined,
+          code: t.text,
+        });
+      }
       continue;
     }
 

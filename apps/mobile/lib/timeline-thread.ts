@@ -23,8 +23,11 @@
  *
  * Total comment+activity count emitted is identical to the input (just
  * fewer rows because replies are folded into parents). That preserves the
- * "Counts must agree" parity rule against web.
+ * "Counts must agree" parity rule against web. Thread rows follow the same
+ * latest-reply ordering as web/desktop so all clients place stale threads at
+ * the same point in the timeline.
  */
+import { sortTimelineEntriesForThreadedDisplay } from "@multica/core/issues/timeline-sort";
 import type { TimelineEntry } from "@multica/core/types";
 
 export interface TimelineRow {
@@ -37,15 +40,16 @@ export interface TimelineRow {
 export function buildTimelineRows(
   entries: TimelineEntry[],
 ): TimelineRow[] {
+  const displayEntries = sortTimelineEntriesForThreadedDisplay(entries);
   const commentIds = new Set<string>();
-  for (const e of entries) {
+  for (const e of displayEntries) {
     if (e.type === "comment") commentIds.add(e.id);
   }
 
   const topLevel: TimelineEntry[] = [];
   const childrenByParent = new Map<string, TimelineEntry[]>();
 
-  for (const e of entries) {
+  for (const e of displayEntries) {
     if (
       e.type === "comment" &&
       e.parent_id &&

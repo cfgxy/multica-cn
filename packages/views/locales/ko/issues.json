@@ -883,6 +883,8 @@
       "delete_desc": "이 댓글은 영구적으로 삭제되며 스레드의 답글도 함께 제거됩니다. 이 작업은 되돌릴 수 없습니다.",
       "jump_bottom": "맨 아래로",
       "jump_bottom_a11y": "대화 끝으로 스크롤",
+      "jump_top": "맨 위로",
+      "jump_top_a11y": "대화 시작으로 스크롤",
       "new_count_other": "새 항목 {{count}}개",
       "jump_new_a11y_other": "새 항목 {{count}}개로 이동",
       "root_collapsed_a11y_other": "{{authors}}의 댓글, 메시지 {{count}}개. 탭하여 펼치기.",
@@ -1006,13 +1008,18 @@
     },
     "agent_activity": {
       "runs_count": "실행 · {{count}}회",
-      "badge_a11y": "에이전트 실행 중 — 실행 기록 열기"
+      "badge_a11y": "에이전트 실행 중 — 실행 기록 열기",
+      "row_running_a11y": "에이전트가 이 작업 처리 중",
+      "row_queued_a11y": "에이전트 작업 대기 중"
     },
     "description_field": {
       "placeholder": "설명… (@를 입력해 멘션)"
     },
     "new": {
       "submit_a11y": "태스크 만들기"
+    },
+    "tasks": {
+      "issue_unavailable": "작업을 볼 수 없음"
     }
   }
 }

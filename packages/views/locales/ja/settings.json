@@ -1324,6 +1324,7 @@
     "switch_title": "サーバーを切り替えますか？",
     "switch_message": "{{name}} には端末に保存されたサインイン状態があります。切り替えるとそれを復元します。保存がない場合はログイン画面を表示します。",
     "switch_confirm": "切り替える",
+    "current": "現在",
     "delete_title": "サーバーを削除",
     "delete_message": "{{name}}をこのデバイスから削除しますか？",
     "form": {

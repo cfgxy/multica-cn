@@ -298,6 +298,22 @@ checkTable(
   PROJECT_PRIORITIES,
 );
 
+// components/agents/agent-presence-line.tsx —— presence 两维标签
+// （RUYI-76 ②）。枚举副本取自 @multica/core/agents 的
+// AgentAvailability / Workload；资源节点是 web agents 命名空间的既有键。
+checkTable("agents:availability.*", "agents", "availability", [
+  "online",
+  "unstable",
+  "offline",
+  "archived",
+]);
+
+checkTable("agents:workload.*", "agents", "workload", [
+  "working",
+  "queued",
+  "idle",
+]);
+
 describe("两份 failure 表的关系", () => {
   it("key 集合完全一致（长版多一个 fallback）", () => {
     const long = Object.keys(
@@ -412,6 +428,8 @@ const PREFIX_VALUES: Record<string, string[]> = {
   "chat:status_pill.tools": PILL_TOOLS,
   "projects:status": PROJECT_STATUSES,
   "projects:priority": PROJECT_PRIORITIES,
+  "agents:availability": ["online", "unstable", "offline", "archived"],
+  "agents:workload": ["working", "queued", "idle"],
 };
 
 const MOBILE_ROOT = join(__dirname, "..");

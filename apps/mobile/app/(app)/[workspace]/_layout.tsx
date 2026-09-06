@@ -399,6 +399,10 @@ export default function WorkspaceLayout() {
           options={{ title: i18n.t("layout:nav.agents", "Agents"), headerBackTitle: "Back" }}
         />
         <Stack.Screen
+          name="more/agents/[id]"
+          options={{ title: i18n.t("layout:nav.agents", "Agents"), headerBackTitle: "Back" }}
+        />
+        <Stack.Screen
           name="more/pins"
           options={{ title: i18n.t("layout:sidebar.pinned_label", "Pinned"), headerBackTitle: "Back" }}
         />
@@ -420,6 +424,20 @@ export default function WorkspaceLayout() {
             title: i18n.t("modals:create_issue.sr_manual", "New Issue"),
             presentation: "modal",
             headerLeft: () => <ModalCloseButton />,
+          }}
+        />
+        {/* Smart-mode actor picker (RUYI-68) — stacked on the new-issue
+            modal like the other new-issue-picker sheets; the search header
+            mirrors new-issue-picker/assignee. */}
+        <Stack.Screen
+          name="new-issue-picker/actor"
+          options={{
+            ...SHEET_OPTIONS,
+            headerShown: true,
+            title: i18n.t(
+              "modals:create_issue.agent.created_by",
+              "Created by",
+            ),
           }}
         />
         <Stack.Screen

@@ -1331,6 +1331,7 @@
     "switch_title": "Switch server?",
     "switch_message": "{{name}} has a saved session on this device — switching will restore it. Servers without one open the login screen.",
     "switch_confirm": "Switch",
+    "current": "Current",
     "delete_title": "Delete server",
     "delete_message": "Remove {{name}} from this device?",
     "form": {

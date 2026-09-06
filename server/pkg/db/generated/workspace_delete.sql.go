@@ -597,10 +597,21 @@ deleted_runtimes AS (
 ),
 deleted_profiles AS (
     DELETE FROM runtime_profile WHERE runtime_profile.workspace_id = $1
+),
+deleted_execution_profile_entries AS (
+    DELETE FROM execution_profile_entry
+    WHERE profile_id IN (SELECT id FROM execution_profile WHERE workspace_id = $1)
+),
+deleted_execution_profiles AS (
+    DELETE FROM execution_profile WHERE execution_profile.workspace_id = $1
 )
 DELETE FROM project WHERE project.workspace_id = $1
 `
 
+// execution_profile has no FK to workspace (house rule), so teardown owns it.
+// Entries are matched through the profile set rather than a workspace column:
+// an entry only exists under a profile, and deleting both in one statement
+// keeps the pair atomic without needing a second CTE ordering rule.
 func (q *Queries) DeleteWorkspaceRuntimesAndProjects(ctx context.Context, workspaceID pgtype.UUID) error {
 	_, err := q.db.Exec(ctx, deleteWorkspaceRuntimesAndProjects, workspaceID)
 	return err
