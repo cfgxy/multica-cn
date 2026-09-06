@@ -9,7 +9,7 @@
       "publisher": "Anthropic",
       "homepage_url": "https://github.com/anthropics/skills",
       "categories": ["documents"],
-      "source_url": "https://github.com/anthropics/skills/tree/main/document-skills/pdf"
+      "source_url": "https://github.com/anthropics/skills/tree/main/skills/pdf"
     },
     {
       "key": "skill:anthropics/skills/docx",
@@ -20,7 +20,7 @@
       "publisher": "Anthropic",
       "homepage_url": "https://github.com/anthropics/skills",
       "categories": ["documents"],
-      "source_url": "https://github.com/anthropics/skills/tree/main/document-skills/docx"
+      "source_url": "https://github.com/anthropics/skills/tree/main/skills/docx"
     },
     {
       "key": "skill:anthropics/skills/xlsx",
@@ -31,7 +31,7 @@
       "publisher": "Anthropic",
       "homepage_url": "https://github.com/anthropics/skills",
       "categories": ["documents", "data"],
-      "source_url": "https://github.com/anthropics/skills/tree/main/document-skills/xlsx"
+      "source_url": "https://github.com/anthropics/skills/tree/main/skills/xlsx"
     },
     {
       "key": "skill:anthropics/skills/pptx",
@@ -42,7 +42,7 @@
       "publisher": "Anthropic",
       "homepage_url": "https://github.com/anthropics/skills",
       "categories": ["documents"],
-      "source_url": "https://github.com/anthropics/skills/tree/main/document-skills/pptx"
+      "source_url": "https://github.com/anthropics/skills/tree/main/skills/pptx"
     }
   ]
 }
