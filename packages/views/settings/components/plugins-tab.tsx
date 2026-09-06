@@ -817,7 +817,7 @@ function MarketplaceSection({
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-body font-medium">{plugin.name}</span>
-                  <Badge variant="secondary">v{plugin.version}</Badge>
+                  <Badge variant="secondary">{t(($) => $.plugins.version, { version: plugin.version })}</Badge>
                   {plugin.installed ? (
                     <Badge variant="outline">{t(($) => $.plugins.publish.installed_version)}</Badge>
                   ) : null}
