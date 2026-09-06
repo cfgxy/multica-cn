@@ -90,6 +90,7 @@ export type {
 } from "./agent";
 export { RUNTIME_PROFILE_PROTOCOL_FAMILIES } from "./agent";
 export type { Workspace, WorkspaceRepo, WorkspaceMcpServer, Member, MemberRole, User, MemberWithUser, Invitation, ShareLink, ShareLinkInfo } from "./workspace";
+export type { MarketplaceItem, MarketplaceItemKind, MarketplacePlaceholder } from "./marketplace";
 export type {
   PluginInstallation,
   PluginConfigField,

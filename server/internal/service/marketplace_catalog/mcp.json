@@ -1,0 +1,81 @@
+{
+  "items": [
+    {
+      "key": "mcp:modelcontextprotocol/filesystem",
+      "kind": "mcp",
+      "name": "filesystem",
+      "summary": "Read and write files under a directory you nominate.",
+      "description": "The reference filesystem MCP server. Access is limited to the roots passed at install time, so the directory you name here is the whole of what a bound agent can reach.",
+      "publisher": "Model Context Protocol",
+      "homepage_url": "https://github.com/modelcontextprotocol/servers",
+      "categories": ["files"],
+      "config_template": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "${root_path}"]
+      },
+      "placeholders": [
+        {
+          "key": "root_path",
+          "label": "Allowed directory",
+          "description": "Absolute path the server may read and write. Everything outside it stays unreachable.",
+          "secret": false,
+          "required": true
+        }
+      ]
+    },
+    {
+      "key": "mcp:modelcontextprotocol/github",
+      "kind": "mcp",
+      "name": "github",
+      "summary": "Browse repositories, issues, and pull requests on GitHub.",
+      "description": "The GitHub MCP server. It acts as whoever owns the personal access token supplied at install time; scope that token to the repositories the workspace should reach.",
+      "publisher": "Model Context Protocol",
+      "homepage_url": "https://github.com/modelcontextprotocol/servers",
+      "categories": ["development"],
+      "config_template": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-github"],
+        "env": {
+          "GITHUB_PERSONAL_ACCESS_TOKEN": "${github_token}"
+        }
+      },
+      "placeholders": [
+        {
+          "key": "github_token",
+          "label": "GitHub personal access token",
+          "description": "Stored write-only with the workspace MCP server entry and never returned by any read endpoint.",
+          "secret": true,
+          "required": true
+        }
+      ]
+    },
+    {
+      "key": "mcp:modelcontextprotocol/fetch",
+      "kind": "mcp",
+      "name": "fetch",
+      "summary": "Fetch a web page and hand back its content as text.",
+      "description": "The reference fetch MCP server. It takes no credentials, so a bound agent can retrieve public pages and nothing more.",
+      "publisher": "Model Context Protocol",
+      "homepage_url": "https://github.com/modelcontextprotocol/servers",
+      "categories": ["web"],
+      "config_template": {
+        "command": "uvx",
+        "args": ["mcp-server-fetch"]
+      }
+    },
+    {
+      "key": "mcp:modelcontextprotocol/memory",
+      "kind": "mcp",
+      "name": "memory",
+      "summary": "A knowledge graph an agent can write notes into and read back.",
+      "description": "The reference memory MCP server, backed by a local knowledge graph file. Takes no credentials.",
+      "publisher": "Model Context Protocol",
+      "homepage_url": "https://github.com/modelcontextprotocol/servers",
+      "categories": ["productivity"],
+      "config_template": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-memory"]
+      }
+    }
+  ]
+}
