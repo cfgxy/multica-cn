@@ -80,12 +80,12 @@ make up               # start this checkout's environment (C=api,web,daemon,desk
 make status           # what is running, with pid/commit proof it is yours
 make list             # every development environment on this machine
 make down             # stop the processes, keep the database
-make destroy          # stop, then drop the database and free the slot
+make destroy          # stop, preserve multica, then free the slot
 make dev              # auto-setup and start the app in the foreground
 make start            # start backend + frontend
 make stop             # stop app processes for this checkout
-make db-drop          # permanently drop this checkout's local database
-make remove-worktree WORKTREE=../path  # drop a linked worktree DB, then remove it
+make db-drop          # permanently drop an explicitly configured disposable database
+make remove-worktree WORKTREE=../path  # preserve multica, then remove the worktree
 make server           # run Go server only
 make daemon           # run local daemon
 make test             # Go tests
@@ -101,9 +101,9 @@ pnpm exec playwright test
 pnpm ui:add badge     # shadcn/Base UI component into packages/ui
 ```
 
-`make up` records each environment in `~/.multica/dev/`, allocates its API, Web and Desktop renderer ports plus database name under a lock instead of recomputing them from the path, and verifies the database through `DATABASE_URL` rather than `docker exec` — a `docker exec` create lands in the wrong server whenever a native PostgreSQL owns 5432. It reuses an API only when `/health` proves its listener pid, process group and commit belong to this checkout. `make down` keeps the data; `make destroy` consumes the database, profile, daemon workspaces, Desktop userData and registry entry. Agent-owned TTL environments are collected best-effort on the next `make up`, or explicitly with `make gc`.
+`make up` records each environment in `~/.multica/dev/`, allocates its API, Web and Desktop renderer ports under a lock instead of recomputing them from the path, and verifies the database through `DATABASE_URL` rather than `docker exec` — a `docker exec` create lands in the wrong server whenever a native PostgreSQL owns 5432. It reuses an API only when `/health` proves its listener pid, process group and commit belong to this checkout. `make down` keeps the data; `make destroy` consumes the profile, daemon workspaces, Desktop userData and registry entry, while always preserving the shared main database `multica`. Agent-owned TTL environments are collected best-effort on the next `make up`, or explicitly with `make gc`.
 
-Worktrees share one PostgreSQL container and get isolated DB names/ports via `.env.worktree`. `make dev` auto-detects this. For manual setup use `make worktree-env`, `make setup-worktree`, and `make start-worktree`. Direct `pnpm dev:desktop` self-isolates from the path; `make up C=desktop` overrides that fallback with the registry-allocated renderer port and app name so Desktop shares the environment ledger.
+Worktrees share the PostgreSQL container and the main database `multica`; `.env.worktree` isolates ports, profiles, process state and Desktop data, not application rows. `make dev` auto-detects this. For manual setup use `make worktree-env`, `make setup-worktree`, and `make start-worktree`. Direct `pnpm dev:desktop` self-isolates from the path; `make up C=desktop` overrides that fallback with the registry-allocated renderer port and app name so Desktop shares the environment ledger.
 
 CI runs Node 22, the latest Go 1.26 patch, and a `pgvector/pgvector:pg17` PostgreSQL service.
 

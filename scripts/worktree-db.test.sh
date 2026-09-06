@@ -105,6 +105,19 @@ if printf 'y\n' | PATH="$stub_dir:$PATH" DOCKER_LOG="$docker_log" \
 fi
 require_contains "$output" "Refusing to drop the default main database"
 
+# make db-reset drops without a y/N prompt, so it carries the same guard: with
+# the shared-database model a worktree env file names `multica` by default and
+# an unguarded reset would wipe the running platform's data (RUYI-66).
+: >"$docker_log"
+if PATH="$stub_dir:$PATH" DOCKER_LOG="$docker_log" \
+  make --no-print-directory -C "$root_dir" db-reset ENV_FILE="$main_env" >"$output" 2>&1; then
+  fail "db-reset must protect the default main database"
+fi
+require_contains "$output" "Refusing to reset the default main database"
+if [ -s "$docker_log" ]; then
+  fail "db-reset invoked docker before the main-database guard"
+fi
+
 : >"$docker_log"
 cancel_status=0
 PATH="$stub_dir:$PATH" DOCKER_LOG="$docker_log" \
@@ -168,6 +181,24 @@ if [ -e "$worktree" ]; then
 fi
 require_contains "$docker_log" \
   "compose exec -T postgres dropdb --username multica --maintenance-db postgres --if-exists --force -- multica_worktree_456"
+
+shared_worktree="$tmp_dir/shared-worktree"
+git -C "$repo" worktree add -q -b shared-feature "$shared_worktree"
+cat >"$shared_worktree/.env.worktree" <<'EOF'
+POSTGRES_DB=multica
+POSTGRES_USER=multica
+DATABASE_URL=postgres://multica:multica@localhost:5432/multica?sslmode=disable
+EOF
+: >"$docker_log"
+(cd "$repo" && PATH="$stub_dir:$PATH" DOCKER_LOG="$docker_log" \
+  bash "$root_dir/scripts/remove-worktree.sh" "$shared_worktree") >"$output"
+require_contains "$output" "Preserving shared main database 'multica'."
+if [ -e "$shared_worktree" ]; then
+  fail "remove-worktree did not remove a worktree that shares the main database"
+fi
+if [ -s "$docker_log" ]; then
+  fail "remove-worktree attempted to drop the shared main database"
+fi
 
 dirty_worktree="$tmp_dir/dirty-worktree"
 git -C "$repo" worktree add -q -b dirty-feature "$dirty_worktree"

@@ -1624,6 +1624,13 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// are admin-gated below).
 					r.Get("/runtime-profiles", h.ListRuntimeProfiles)
 					r.Get("/runtime-profiles/{profileId}", h.GetRuntimeProfile)
+					// Execution profiles — the members page renders the
+					// Profile picker for everyone, so reading is
+					// member-visible; creating, editing and ACTIVATING are
+					// admin-gated below because activation rewrites every
+					// named agent's runtime and model.
+					r.Get("/execution-profiles", h.ListExecutionProfiles)
+					r.Get("/execution-profiles/{profileId}", h.GetExecutionProfile)
 					// The workspace MCP library — member-visible so an agent
 					// owner can see what is available to add to their agent.
 					// The payload is names and transports only; the stored
@@ -1664,6 +1671,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Patch("/runtime-profiles/{profileId}", h.UpdateRuntimeProfile)
 					r.Put("/runtime-profiles/{profileId}", h.UpdateRuntimeProfile)
 					r.Delete("/runtime-profiles/{profileId}", h.DeleteRuntimeProfile)
+					// Execution profile mutations and activation (admin-only).
+					r.Post("/execution-profiles", h.CreateExecutionProfile)
+					r.Patch("/execution-profiles/{profileId}", h.UpdateExecutionProfile)
+					r.Put("/execution-profiles/{profileId}", h.UpdateExecutionProfile)
+					r.Delete("/execution-profiles/{profileId}", h.DeleteExecutionProfile)
+					r.Put("/execution-profiles/{profileId}/entries", h.UpsertExecutionProfileEntry)
+					r.Delete("/execution-profiles/{profileId}/entries/{agentId}", h.DeleteExecutionProfileEntry)
+					r.Post("/execution-profiles/{profileId}/activate", h.ActivateExecutionProfile)
 					// Publishing. The author uploads an artifact bundle and we
 					// store it; a version is immutable once published, so
 					// there is no update route here by design.

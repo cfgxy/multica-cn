@@ -15,6 +15,8 @@ import type { InboxItem } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { StatusIcon } from "@/components/ui/status-icon";
+import { IssueAgentActivityBadge } from "@/components/issue/issue-agent-activity-badge";
+import type { IssueActivity } from "@/lib/issue-agent-activity";
 import { InboxDetailLabel } from "@/components/inbox/detail-label";
 import { getInboxDisplayTitle } from "@/lib/inbox-display";
 import { useIssueStatuses } from "@/lib/use-issue-statuses";
@@ -23,10 +25,17 @@ import { cn } from "@/lib/utils";
 
 interface Props {
   item: InboxItem;
+  /**
+   * Active agent-task groups for this item's issue, sliced from the shared
+   * workspace snapshot by the screen (RUYI-76 ③). Undefined / empty groups
+   * render nothing — same visibility rule as web's inbox badge
+   * (IssueAgentActivityIndicator with hoverCard={false}).
+   */
+  activity?: IssueActivity;
   onPress: () => void;
 }
 
-export function InboxRow({ item, onPress }: Props) {
+export function InboxRow({ item, activity, onPress }: Props) {
   const isUnread = !item.read;
   const { categoryOf, colorOf } = useIssueStatuses();
   const displayTitle = getInboxDisplayTitle(item);
@@ -71,10 +80,10 @@ export function InboxRow({ item, onPress }: Props) {
               />
             ) : null}
           </View>
-          {/* Bottom row: [type-aware detail label] (left) | [time] (right).
-              Detail label mirrors web InboxDetailLabel — same per-type
-              wording (Mentioned / Set status to ... / Assigned to ... / etc),
-              not the raw markdown body. */}
+          {/* Bottom row: [type-aware detail label] (left) | [agent activity
+              badge + time] (right). Badge placement mirrors web's
+              InboxListItem — badge sits immediately left of the timestamp
+              (packages/views/inbox/components/inbox-list-item.tsx:200). */}
           <View className="flex-row items-center gap-2 mt-0.5">
             <View className="flex-1 min-w-0">
               <InboxDetailLabel
@@ -86,6 +95,14 @@ export function InboxRow({ item, onPress }: Props) {
                 }
               />
             </View>
+            {item.issue_id && activity && (activity.running.length > 0 || activity.queued.length > 0) ? (
+              <View className="mr-1 shrink-0">
+                <IssueAgentActivityBadge
+                  running={activity.running}
+                  queued={activity.queued}
+                />
+              </View>
+            ) : null}
             <Text
               className={cn(
                 "text-xs shrink-0",

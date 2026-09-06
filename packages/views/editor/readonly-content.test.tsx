@@ -439,8 +439,11 @@ describe("ReadonlyContent Mermaid rendering", () => {
       expect(iframe).not.toBeNull();
       expect(iframe?.getAttribute("sandbox")).toBe("");
       expect(iframe?.srcdoc).toContain("mock diagram");
+      // RUYI-80: natural width + aspect-ratio inline, column clamp via the
+      // stylesheet's max-width — height is no longer pinned in px.
       expect(iframe?.style.width).toBe("123px");
-      expect(iframe?.style.height).toBe("45px");
+      expect(iframe?.style.aspectRatio).toBe("123 / 45");
+      expect(iframe?.style.height).toBe("");
     });
 
     expect(mermaid.initialize).toHaveBeenCalledWith(

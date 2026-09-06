@@ -166,6 +166,11 @@
       "search": "검색",
       "close": "닫기",
       "request_timeout": "요청 시간이 초과되었습니다({{seconds}}초)"
+    },
+    "create_issue": {
+      "mode_smart": "스마트",
+      "mode_manual": "수동",
+      "smart_hint": "에이전트가 제목과 설명을 작성합니다. 완료되면 받은함에서 알림을 받습니다."
     }
   }
 }

@@ -205,7 +205,7 @@ func (q *Queries) ListAllUsers(ctx context.Context, arg ListAllUsersParams) ([]L
 }
 
 const listAllWorkspaces = `-- name: ListAllWorkspaces :many
-SELECT w.id, w.name, w.slug, w.description, w.settings, w.created_at, w.updated_at, w.context, w.repos, w.issue_prefix, w.issue_counter, w.avatar_url, w.attribution_fail_closed,
+SELECT w.id, w.name, w.slug, w.description, w.settings, w.created_at, w.updated_at, w.context, w.repos, w.issue_prefix, w.issue_counter, w.avatar_url, w.attribution_fail_closed, w.active_execution_profile_id,
        u2.id AS owner_id, u2.name AS owner_name, u2.email AS owner_email,
        COALESCE(mc.member_count, 0) AS member_count
 FROM workspace w
@@ -238,23 +238,24 @@ type ListAllWorkspacesParams struct {
 }
 
 type ListAllWorkspacesRow struct {
-	ID                    pgtype.UUID        `json:"id"`
-	Name                  string             `json:"name"`
-	Slug                  string             `json:"slug"`
-	Description           pgtype.Text        `json:"description"`
-	Settings              []byte             `json:"settings"`
-	CreatedAt             pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt             pgtype.Timestamptz `json:"updated_at"`
-	Context               pgtype.Text        `json:"context"`
-	Repos                 []byte             `json:"repos"`
-	IssuePrefix           string             `json:"issue_prefix"`
-	IssueCounter          int32              `json:"issue_counter"`
-	AvatarUrl             pgtype.Text        `json:"avatar_url"`
-	AttributionFailClosed bool               `json:"attribution_fail_closed"`
-	OwnerID               pgtype.UUID        `json:"owner_id"`
-	OwnerName             pgtype.Text        `json:"owner_name"`
-	OwnerEmail            pgtype.Text        `json:"owner_email"`
-	MemberCount           int64              `json:"member_count"`
+	ID                       pgtype.UUID        `json:"id"`
+	Name                     string             `json:"name"`
+	Slug                     string             `json:"slug"`
+	Description              pgtype.Text        `json:"description"`
+	Settings                 []byte             `json:"settings"`
+	CreatedAt                pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt                pgtype.Timestamptz `json:"updated_at"`
+	Context                  pgtype.Text        `json:"context"`
+	Repos                    []byte             `json:"repos"`
+	IssuePrefix              string             `json:"issue_prefix"`
+	IssueCounter             int32              `json:"issue_counter"`
+	AvatarUrl                pgtype.Text        `json:"avatar_url"`
+	AttributionFailClosed    bool               `json:"attribution_fail_closed"`
+	ActiveExecutionProfileID pgtype.UUID        `json:"active_execution_profile_id"`
+	OwnerID                  pgtype.UUID        `json:"owner_id"`
+	OwnerName                pgtype.Text        `json:"owner_name"`
+	OwnerEmail               pgtype.Text        `json:"owner_email"`
+	MemberCount              int64              `json:"member_count"`
 }
 
 // Instance-wide workspace directory for the admin workspace-management
@@ -284,6 +285,7 @@ func (q *Queries) ListAllWorkspaces(ctx context.Context, arg ListAllWorkspacesPa
 			&i.IssueCounter,
 			&i.AvatarUrl,
 			&i.AttributionFailClosed,
+			&i.ActiveExecutionProfileID,
 			&i.OwnerID,
 			&i.OwnerName,
 			&i.OwnerEmail,

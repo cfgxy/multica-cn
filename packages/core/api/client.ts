@@ -40,6 +40,13 @@ import type {
   RuntimeProfile,
   CreateRuntimeProfileRequest,
   UpdateRuntimeProfileRequest,
+  ExecutionProfile,
+  ExecutionProfileEntry,
+  ExecutionProfileListResponse,
+  ExecutionProfileActivationResponse,
+  CreateExecutionProfileRequest,
+  UpdateExecutionProfileRequest,
+  UpsertExecutionProfileEntryRequest,
   InboxItem,
   InboxWorkspaceUnread,
   IssueSubscriber,
@@ -325,6 +332,13 @@ import {
   RuntimeUsageByAgentListSchema,
   RuntimeUsageByHourListSchema,
   RuntimeUsageListSchema,
+  ExecutionProfileSchema,
+  ExecutionProfileEntrySchema,
+  ExecutionProfileListResponseSchema,
+  ExecutionProfileActivationResponseSchema,
+  EMPTY_EXECUTION_PROFILE,
+  EMPTY_EXECUTION_PROFILE_LIST,
+  EMPTY_EXECUTION_PROFILE_ACTIVATION,
   SearchIssuesResponseSchema,
   SearchProjectsResponseSchema,
   SquadSchema,
@@ -2152,6 +2166,134 @@ export class ApiClient {
     await this.fetch(
       `/api/workspaces/${workspaceId}/runtime-profiles/${profileId}`,
       { method: "DELETE" },
+    );
+  }
+
+  // --- Execution profiles (RUYI-57) ---------------------------------------
+  //
+  // Named per-agent execution configuration for the whole workspace. All
+  // responses are schema-parsed: the activation response in particular must
+  // never be read optimistically, so its fallback is the all-failed shape.
+
+  async listExecutionProfiles(
+    workspaceId: string,
+  ): Promise<ExecutionProfileListResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/execution-profiles`,
+    );
+    return parseWithFallback<ExecutionProfileListResponse>(
+      raw,
+      ExecutionProfileListResponseSchema,
+      EMPTY_EXECUTION_PROFILE_LIST,
+      { endpoint: "GET /api/workspaces/:id/execution-profiles" },
+    );
+  }
+
+  async getExecutionProfile(
+    workspaceId: string,
+    profileId: string,
+  ): Promise<ExecutionProfile> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/execution-profiles/${profileId}`,
+    );
+    return parseWithFallback<ExecutionProfile>(
+      raw,
+      ExecutionProfileSchema,
+      EMPTY_EXECUTION_PROFILE,
+      { endpoint: "GET /api/workspaces/:id/execution-profiles/:profileId" },
+    );
+  }
+
+  async createExecutionProfile(
+    workspaceId: string,
+    body: CreateExecutionProfileRequest,
+  ): Promise<ExecutionProfile> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/execution-profiles`,
+      { method: "POST", body: JSON.stringify(body) },
+    );
+    return parseWithFallback<ExecutionProfile>(
+      raw,
+      ExecutionProfileSchema,
+      EMPTY_EXECUTION_PROFILE,
+      { endpoint: "POST /api/workspaces/:id/execution-profiles" },
+    );
+  }
+
+  async updateExecutionProfile(
+    workspaceId: string,
+    profileId: string,
+    patch: UpdateExecutionProfileRequest,
+  ): Promise<ExecutionProfile> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/execution-profiles/${profileId}`,
+      { method: "PATCH", body: JSON.stringify(patch) },
+    );
+    return parseWithFallback<ExecutionProfile>(
+      raw,
+      ExecutionProfileSchema,
+      EMPTY_EXECUTION_PROFILE,
+      { endpoint: "PATCH /api/workspaces/:id/execution-profiles/:profileId" },
+    );
+  }
+
+  async deleteExecutionProfile(
+    workspaceId: string,
+    profileId: string,
+  ): Promise<void> {
+    await this.fetch(
+      `/api/workspaces/${workspaceId}/execution-profiles/${profileId}`,
+      { method: "DELETE" },
+    );
+  }
+
+  async upsertExecutionProfileEntry(
+    workspaceId: string,
+    profileId: string,
+    body: UpsertExecutionProfileEntryRequest,
+  ): Promise<ExecutionProfileEntry> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/execution-profiles/${profileId}/entries`,
+      { method: "PUT", body: JSON.stringify(body) },
+    );
+    return parseWithFallback<ExecutionProfileEntry>(
+      raw,
+      ExecutionProfileEntrySchema,
+      { agent_id: body.agent_id, runtime_id: "", model: "", thinking_level: null, updated_at: "" },
+      {
+        endpoint:
+          "PUT /api/workspaces/:id/execution-profiles/:profileId/entries",
+      },
+    );
+  }
+
+  async deleteExecutionProfileEntry(
+    workspaceId: string,
+    profileId: string,
+    agentId: string,
+  ): Promise<void> {
+    await this.fetch(
+      `/api/workspaces/${workspaceId}/execution-profiles/${profileId}/entries/${agentId}`,
+      { method: "DELETE" },
+    );
+  }
+
+  async activateExecutionProfile(
+    workspaceId: string,
+    profileId: string,
+  ): Promise<ExecutionProfileActivationResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/execution-profiles/${profileId}/activate`,
+      { method: "POST" },
+    );
+    return parseWithFallback<ExecutionProfileActivationResponse>(
+      raw,
+      ExecutionProfileActivationResponseSchema,
+      EMPTY_EXECUTION_PROFILE_ACTIVATION,
+      {
+        endpoint:
+          "POST /api/workspaces/:id/execution-profiles/:profileId/activate",
+      },
     );
   }
 

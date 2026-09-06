@@ -1324,6 +1324,7 @@
     "switch_title": "서버를 전환할까요?",
     "switch_message": "{{name}}에 이 기기에 저장된 세션이 있습니다 — 전환하면 복원됩니다. 저장된 세션이 없으면 로그인 화면이 열립니다.",
     "switch_confirm": "전환",
+    "current": "현재",
     "delete_title": "서버 삭제",
     "delete_message": "이 기기에서 {{name}}을(를) 삭제할까요?",
     "form": {

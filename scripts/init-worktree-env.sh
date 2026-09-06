@@ -17,6 +17,10 @@ fi
 hash_value="$(printf '%s' "$PWD" | cksum | awk '{print $1}')"
 offset=$((hash_value % 1000))
 
+# worktree 环境共享平台主库 `multica` 是显式行为（RUYI-66，Owner 方案B）：
+# 库名只写这一处，不读主检出 .env 的 POSTGRES_DB——口令继承、库名固定。
+# `make destroy` 据此拒绝 drop 主库；确需独占库的检出手工改写本文件的
+# POSTGRES_DB 与 DATABASE_URL，销毁路径会要求 registry 与本文件一致后才删。
 postgres_db="multica"
 postgres_port=5432
 backend_port=$((18080 + offset))
@@ -33,7 +37,6 @@ common_dir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null 
 main_env="$(printf '%s' "$common_dir" | sed 's|/\.git$||')/.env"
 if [ -n "$common_dir" ] && [ -f "$main_env" ]; then
   POSTGRES_PASSWORD="$(sed -n 's/^POSTGRES_PASSWORD=//p' "$main_env" | head -n 1)"
-  POSTGRES_DB="$(sed -n 's/^POSTGRES_DB=//p' "$main_env" | head -n 1)"
 fi
 if [ -z "${POSTGRES_PASSWORD:-}" ]; then
   if [ -n "$git_dir" ] && [ "$git_dir" != "$common_dir" ]; then
