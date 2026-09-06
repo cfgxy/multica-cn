@@ -30,15 +30,17 @@ See the [LICENSE](LICENSE) file for the full terms.
 
 ## Development Model
 
-Local development uses one shared PostgreSQL container and one database per checkout.
+Local development uses one shared PostgreSQL container and the shared main database `multica`.
 
 - the main checkout usually uses `.env` and `POSTGRES_DB=multica`
-- each Git worktree uses its own `.env.worktree`
+- each Git worktree uses its own `.env.worktree` for ports and process identity
 - every checkout connects to the same PostgreSQL host: `localhost:5432`
-- isolation happens at the database level, not by starting a separate Docker Compose project
+- checkouts intentionally share application data in `multica`
 - backend and frontend ports are still unique per worktree
 
-This keeps Docker simple while still isolating schema and data.
+This keeps Docker simple while isolating processes and UI profiles. Do not use
+the shared database for tests that mutate or destroy data; use a disposable
+PostgreSQL instance for those tests.
 
 ## Prerequisites
 
@@ -56,7 +58,8 @@ This keeps Docker simple while still isolating schema and data.
 Why:
 
 - the current command flow prefers `.env` over `.env.worktree`
-- if a worktree contains `.env`, it can accidentally point back to the main database
+- if a worktree contains `.env`, it overrides `.env.worktree` and loses the
+  worktree's allocated ports, profile and process identity
 
 ## Environment Files
 
@@ -89,16 +92,16 @@ make worktree-env
 That generates values like:
 
 ```bash
-POSTGRES_DB=multica_my_feature_702
+POSTGRES_DB=multica
 POSTGRES_PORT=5432
 PORT=18782
 FRONTEND_PORT=13702
-DATABASE_URL=postgres://multica:multica@localhost:5432/multica_my_feature_702?sslmode=disable
+DATABASE_URL=postgres://multica:multica@localhost:5432/multica?sslmode=disable
 ```
 
 Notes:
 
-- `POSTGRES_DB` is unique per worktree
+- `POSTGRES_DB` remains the shared main database `multica`
 - `POSTGRES_PORT` stays fixed at `5432`
 - backend and frontend ports are derived from the worktree path hash
 - `make worktree-env` refuses to overwrite an existing `.env.worktree`
@@ -111,8 +114,9 @@ FORCE=1 make worktree-env
 
 ## Environments
 
-An environment is the database, ports, CLI profile and processes that belong to
-one checkout. It is a named object: it can be listed, inspected and deleted.
+An environment is the ports, CLI profile and processes that belong to one
+checkout. It is a named object: it can be listed, inspected and deleted. The
+database is shared unless a test explicitly points `DATABASE_URL` elsewhere.
 
 ```bash
 make up                      # start this checkout's environment (api + web)
@@ -120,7 +124,7 @@ make up C=api,web,daemon     # choose the components
 make status                  # what is running, and whether it is yours
 make list                    # every environment on this machine
 make down                    # stop the processes, keep the data
-make destroy                 # stop, then drop the database and free the slot
+make destroy                 # stop, preserve multica, then remove profile and slot
 make gc                      # collect expired environments or ones whose checkout is gone
 ```
 
@@ -131,7 +135,7 @@ profile and any component already healthy.
 
 Three properties are worth knowing because the old flow lacked them:
 
-- **API, Web and Desktop renderer ports, database names and profiles are allocated, not recomputed.** The
+- **API, Web and Desktop renderer ports and profiles are allocated, not recomputed.** The
   allocator starts from this directory's path hash, so a checkout keeps the
   numbers it has always had, and moves only when the registry or a live
   listener says the slot is taken. The registry lives in `~/.multica/dev/`;
@@ -143,9 +147,10 @@ Three properties are worth knowing because the old flow lacked them:
   leftover on the same port.
 - **`down` and `destroy` differ deliberately.** `down` stops processes and
   keeps the database, profile and slot, so the next `make up` is seconds.
-  `destroy` consumes the database, profile, daemon task workspaces, Desktop
-  userData and slot. If any deletion fails, it keeps the manifest and exits
-  non-zero so cleanup can be retried instead of losing the deletion recipe.
+  `destroy` consumes the profile, daemon task workspaces, Desktop userData and
+  slot while preserving `multica`. If a separately configured database cannot
+  be safely verified or deleted, it keeps the manifest and exits non-zero so
+  cleanup can be retried instead of losing the deletion recipe.
 - **Temporary environments have a best-effort fallback.** `make up
   ARGS=--ephemeral` records a 24-hour TTL. The next `make up` automatically
   collects expired and directory-less environments; `make gc` runs the same
@@ -246,21 +251,22 @@ make check-worktree   # verify
 ### Removing a Worktree
 
 Git does not provide a `pre-worktree-remove` hook. Use the repository wrapper
-from another checkout so database cleanup happens before Git removes the
-worktree directory:
+from another checkout so optional disposable-database cleanup happens before
+Git removes the worktree directory:
 
 ```bash
 make remove-worktree WORKTREE=../multica-feature
 ```
 
 The command refuses to remove the primary checkout, the current checkout, a
-locked worktree, or a worktree with uncommitted changes. If the target contains
-`.env.worktree`, it shows the database name and asks for `y/N` confirmation,
-drops that database, and only then runs `git worktree remove`. A worktree that
-was never set up has no `.env.worktree`, so database cleanup is skipped.
+locked worktree, or a worktree with uncommitted changes. The default
+`.env.worktree` names the shared main database `multica`; the wrapper preserves
+it and removes the worktree. If the worktree explicitly names a disposable
+database, the wrapper shows its name, asks for `y/N` confirmation, drops it,
+and only then runs `git worktree remove`.
 
-Running `git worktree remove` directly bypasses this cleanup and can leave an
-orphaned local database.
+Running `git worktree remove` directly bypasses optional disposable-database
+cleanup and can leave that database behind.
 
 ## Running Main and Worktree at the Same Time
 
@@ -273,7 +279,7 @@ Example:
   - backend: `8080`
   - frontend: `3000`
 - worktree checkout
-  - database: `multica_my_feature_702`
+  - database: `multica`
   - backend: generated worktree port such as `18782`
   - frontend: generated worktree port such as `13702`
 
@@ -282,7 +288,8 @@ Both checkouts use:
 - the same PostgreSQL container
 - the same PostgreSQL port: `5432`
 
-But they do not share application data, because each uses a different database.
+They share application data. Use distinct test fixtures, or point destructive
+tests at a disposable PostgreSQL instance.
 
 ## Command Reference
 
@@ -507,7 +514,7 @@ Look for:
 docker compose exec -T postgres psql -U multica -d postgres -At -c "select datname from pg_database order by datname;"
 ```
 
-### Worktree Is Accidentally Using the Main Database
+### Worktree Is Missing Its Isolated Process Settings
 
 Check whether the worktree contains `.env`.
 
@@ -545,8 +552,8 @@ If you want to stop PostgreSQL and keep your local databases:
 make db-down
 ```
 
-If you want a fresh database for the current checkout only (drops the
-database named in `POSTGRES_DB`, recreates it, and runs all migrations):
+If you want a fresh disposable database (drops the database named in
+`POSTGRES_DB`, recreates it, and runs all migrations):
 
 ```bash
 make stop        # stop backend/frontend first
@@ -554,11 +561,13 @@ make db-reset
 make start
 ```
 
-- only affects the current env's database; other worktree databases are untouched
+- refuses to reset the shared main database `multica` unless
+  `ALLOW_MAIN_DB_DROP=1` is explicitly supplied
 - refuses to run if `DATABASE_URL` points at a remote host
-- pass `ENV_FILE=.env.worktree` to target a specific worktree
+- point `ENV_FILE` at a configuration that names the disposable database
 
-To permanently drop the current worktree database without recreating it:
+To permanently drop an explicitly configured disposable database without
+recreating it:
 
 ```bash
 make db-drop ENV_FILE=.env.worktree
@@ -580,7 +589,7 @@ docker compose down -v
 Warning:
 
 - this deletes the shared Docker volume
-- this deletes the main database and every worktree database in that volume
+- this deletes the shared main database and any additional databases in that volume
 - after that you must run `make setup-main` or `make setup-worktree` again
 
 ## Typical Flows

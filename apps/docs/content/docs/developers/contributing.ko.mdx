@@ -38,7 +38,7 @@ API: http://localhost:8080
 
 ## worktree에서 개발
 
-저장소는 기본 checkout과 여러 worktree를 동시에 실행할 수 있습니다. 하나의 PostgreSQL 컨테이너를 공유하지만 서로 다른 데이터베이스와 port를 사용합니다.
+저장소는 기본 checkout과 여러 worktree를 동시에 실행할 수 있습니다. PostgreSQL 컨테이너와 기본 데이터베이스 `multica`를 공유하고, port와 프로세스 설정은 분리합니다.
 
 ```bash
 git worktree add ../multica-feature -b feat/my-change main
@@ -47,7 +47,7 @@ make setup-worktree
 make start-worktree
 ```
 
-`make setup-worktree`는 `.env.worktree`를 만들고 경로를 기준으로 데이터베이스 이름과 port를 정합니다. 다시 시작하려면 다음을 실행합니다.
+`make setup-worktree`는 `.env.worktree`를 만듭니다. port와 프로세스 식별자는 경로를 기준으로 정하고, `POSTGRES_DB`는 `multica`로 유지합니다. 다시 시작하려면 다음을 실행합니다.
 
 ```bash
 make start-worktree
@@ -62,7 +62,7 @@ make stop-worktree
 `make dev`를 바로 실행할 수도 있습니다. 스크립트가 `.git` 파일을 통해 worktree를 감지하고 `.env.worktree`를 선택합니다.
 
 <Callout type="info">
-worktree는 PostgreSQL 컨테이너만 공유하며 데이터베이스는 공유하지 않습니다. worktree마다 새 Compose project를 시작하지 마세요. 먼저 `.env.worktree`의 `POSTGRES_DB`, `PORT`, `FRONTEND_PORT`를 확인하세요.
+worktree는 PostgreSQL 컨테이너와 `multica`를 공유합니다. worktree마다 새 Compose project를 시작하지 마세요. 먼저 `.env.worktree`의 `PORT`와 `FRONTEND_PORT`를 확인하고, 파괴적인 테스트에는 일회용 데이터베이스를 사용하세요.
 </Callout>
 
 ## 자주 사용하는 명령
