@@ -38,6 +38,7 @@ import type {
   Project,
 } from "@multica/core/types";
 import type { AssigneeValue } from "@/components/issue/pickers/assignee-picker-body";
+import type { QuickCreateActorRef } from "@/lib/quick-create";
 
 interface NewIssueDraftState {
   status: IssueStatus;
@@ -46,23 +47,35 @@ interface NewIssueDraftState {
   assigneeVersion: number;
   dueDate: string | null;
   project: Project | null;
+  /**
+   * Smart-mode (agent quick-create) actor pick. Same cross-screen rationale
+   * as the chips above: the actor formSheet route (`new-issue-picker/actor`)
+   * has no React relationship with the new-issue screen. Distinct from
+   * `assignee` — quick-create routes the pick to agent/squad only and the
+   * server derives title/description; the manual form's assignee is a plain
+   * issue field. Web mirrors this split as quick-create-store's actor vs
+   * draft-store's assignee (packages/core/issues/stores/).
+   */
+  smartActor: QuickCreateActorRef | null;
   setStatus: (next: IssueStatus) => void;
   setPriority: (next: IssuePriority) => void;
   setAssignee: (next: AssigneeValue) => void;
   setDueDate: (next: string | null) => void;
   setProject: (next: Project | null) => void;
+  setSmartActor: (next: QuickCreateActorRef | null) => void;
   reset: () => void;
 }
 
 const INITIAL: Pick<
   NewIssueDraftState,
-  "status" | "priority" | "assignee" | "dueDate" | "project"
+  "status" | "priority" | "assignee" | "dueDate" | "project" | "smartActor"
 > = {
   status: "todo",
   priority: "none",
   assignee: null,
   dueDate: null,
   project: null,
+  smartActor: null,
 };
 
 export const useNewIssueDraftStore = create<NewIssueDraftState>((set) => ({
@@ -77,6 +90,7 @@ export const useNewIssueDraftStore = create<NewIssueDraftState>((set) => ({
     })),
   setDueDate: (next) => set({ dueDate: next }),
   setProject: (next) => set({ project: next }),
+  setSmartActor: (next) => set({ smartActor: next }),
   reset: () =>
     set((state) => ({
       ...INITIAL,
