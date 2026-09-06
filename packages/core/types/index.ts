@@ -190,6 +190,17 @@ export type {
 } from "./project";
 export type { PinnedItem, PinnedItemType, CreatePinRequest, ReorderPinsRequest } from "./pin";
 export type {
+  ExecutionProfile,
+  ExecutionProfileEntry,
+  ExecutionProfileListResponse,
+  CreateExecutionProfileRequest,
+  UpdateExecutionProfileRequest,
+  UpsertExecutionProfileEntryRequest,
+  ExecutionProfileActivationStatus,
+  ExecutionProfileActivationResult,
+  ExecutionProfileActivationResponse,
+} from "./execution-profile";
+export type {
   GitHubInstallation,
   GitHubMergeableState,
   GitHubPullRequest,
