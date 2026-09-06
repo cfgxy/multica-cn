@@ -2256,7 +2256,7 @@ export class ApiClient {
     return parseWithFallback<ExecutionProfileEntry>(
       raw,
       ExecutionProfileEntrySchema,
-      { agent_id: body.agent_id, runtime_id: "", model: "", thinking_level: "", updated_at: "" },
+      { agent_id: body.agent_id, runtime_id: "", model: "", thinking_level: null, updated_at: "" },
       {
         endpoint:
           "PUT /api/workspaces/:id/execution-profiles/:profileId/entries",

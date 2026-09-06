@@ -428,3 +428,152 @@ func TestExecutionProfile_WorkspaceIsolation(t *testing.T) {
 		t.Fatalf("profile leaked into another workspace's list: %s", body)
 	}
 }
+
+// TestActivateExecutionProfile_EmptyThinkingLevelClearsTheAgent is the guard
+// for the three-field overwrite promise. An entry saved with an explicit empty
+// thinking level means "runtime default", so activation must CLEAR the agent's
+// level — not leave a stale `high` standing beside a freshly written runtime
+// and model, which would carry the old provider's reasoning setting into every
+// task the new runtime runs.
+func TestActivateExecutionProfile_EmptyThinkingLevelClearsTheAgent(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	clearActiveProfile(t)
+
+	fromRuntime := dbfx.Runtime(t, "EP Thinking From", testutil.Cols{"provider": "claude"})
+	toRuntime := dbfx.Runtime(t, "EP Thinking To", testutil.Cols{"provider": "claude"})
+	agentID := dbfx.Agent(t, "EP Thinking Agent", fromRuntime,
+		testutil.Cols{"model": "old", "thinking_level": "high"})
+
+	profileID := newExecutionProfile(t, "EP Thinking Profile")
+	// "" is the drawer's "runtime default" choice: an opinion, not silence.
+	putEntry(t, profileID, map[string]any{
+		"agent_id": agentID, "runtime_id": toRuntime, "model": "new", "thinking_level": "",
+	}).Want(http.StatusOK)
+
+	var out ExecutionProfileActivationResponse
+	activate(t, profileID).Want(http.StatusOK).JSON(&out)
+	if out.Applied != 1 {
+		t.Fatalf("expected the entry to apply, got %+v", out)
+	}
+
+	var level *string
+	var model string
+	dbfx.QueryRow(t, `SELECT thinking_level, model FROM agent WHERE id = $1`, agentID).Scan(&level, &model)
+	if model != "new" {
+		t.Fatalf("model should have been overwritten, got %q", model)
+	}
+	if level != nil {
+		t.Fatalf("thinking_level must be cleared by an explicit empty entry, got %q", *level)
+	}
+}
+
+// TestActivateExecutionProfile_OmittedThinkingLevelKeepsTheAgentValue is the
+// other half of the tri-state: an entry that never expressed an opinion must
+// leave the agent's level alone, so "clear" and "no opinion" stay distinct.
+func TestActivateExecutionProfile_OmittedThinkingLevelKeepsTheAgentValue(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	clearActiveProfile(t)
+
+	fromRuntime := dbfx.Runtime(t, "EP Keep From", testutil.Cols{"provider": "claude"})
+	toRuntime := dbfx.Runtime(t, "EP Keep To", testutil.Cols{"provider": "claude"})
+	agentID := dbfx.Agent(t, "EP Keep Agent", fromRuntime,
+		testutil.Cols{"model": "old", "thinking_level": "high"})
+
+	profileID := newExecutionProfile(t, "EP Keep Profile")
+	// thinking_level omitted entirely.
+	putEntry(t, profileID, map[string]any{
+		"agent_id": agentID, "runtime_id": toRuntime, "model": "new",
+	}).Want(http.StatusOK)
+
+	var out ExecutionProfileActivationResponse
+	activate(t, profileID).Want(http.StatusOK).JSON(&out)
+	if out.Applied != 1 {
+		t.Fatalf("expected the entry to apply, got %+v", out)
+	}
+
+	var level *string
+	dbfx.QueryRow(t, `SELECT thinking_level FROM agent WHERE id = $1`, agentID).Scan(&level)
+	if level == nil || *level != "high" {
+		t.Fatalf("an entry with no opinion must not touch thinking_level, got %v", level)
+	}
+}
+
+// TestUpsertExecutionProfileEntry_AppliesRuntimeThinkingCapability: the Profile
+// path must hold the same capability line as UpdateAgent. `hermes` covers two
+// binaries and only the discovered catalog says which one answered, so a
+// runtime with no catalog cannot be handed a level here when the single-agent
+// API would refuse it.
+func TestUpsertExecutionProfileEntry_AppliesRuntimeThinkingCapability(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+
+	runtimeID := dbfx.Runtime(t, "EP Capability Runtime", testutil.Cols{"provider": "hermes"})
+	agentID := dbfx.Agent(t, "EP Capability Agent", runtimeID)
+	profileID := newExecutionProfile(t, "EP Capability Profile")
+
+	// No catalog has been reported for this runtime: ambiguous provider, so
+	// the capability answer is "unknown" and the level is refused.
+	putEntry(t, profileID, map[string]any{
+		"agent_id": agentID, "runtime_id": runtimeID, "model": "hermes-4",
+		"thinking_level": "high",
+	}).Want(http.StatusBadRequest)
+
+	// Same entry without a level is fine — the gate is on the level, not on
+	// the runtime.
+	putEntry(t, profileID, map[string]any{
+		"agent_id": agentID, "runtime_id": runtimeID, "model": "hermes-4",
+	}).Want(http.StatusOK)
+}
+
+// TestActivateExecutionProfile_RechecksPrivateRuntimePermission is the
+// permission guard. canUseRuntimeForAgent has no admin override (MUL-6126): a
+// private runtime is someone's own machine, credentials and files. The entry
+// was authorised when it was saved, but a runtime can be flipped to private
+// afterwards, so activation must re-authorise against the CURRENT caller and
+// the runtime's CURRENT visibility rather than trusting the stored entry.
+func TestActivateExecutionProfile_RechecksPrivateRuntimePermission(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	clearActiveProfile(t)
+
+	otherUser := dbfx.User(t, "EP Runtime Owner", "ep-runtime-owner@example.com")
+	fromRuntime := dbfx.Runtime(t, "EP Perm From")
+	// Public at save time, so the entry is legitimately storable.
+	toRuntime := dbfx.Runtime(t, "EP Perm To", testutil.Cols{"visibility": "public"})
+	agentID := dbfx.Agent(t, "EP Perm Agent", fromRuntime, testutil.Cols{"model": "old"})
+
+	profileID := newExecutionProfile(t, "EP Perm Profile")
+	putEntry(t, profileID, map[string]any{
+		"agent_id": agentID, "runtime_id": toRuntime, "model": "new",
+	}).Want(http.StatusOK)
+
+	// The owner takes their machine back: public -> private, owned by someone
+	// who is not the caller.
+	dbfx.Exec(t, `UPDATE agent_runtime SET visibility = 'private', owner_id = $1 WHERE id = $2`,
+		otherUser, toRuntime)
+
+	var out ExecutionProfileActivationResponse
+	activate(t, profileID).Want(http.StatusOK).JSON(&out)
+
+	if out.Applied != 0 || out.Failed != 1 {
+		t.Fatalf("expected the entry to be refused, got %+v", out)
+	}
+	if len(out.Results) != 1 || out.Results[0].Reason != "runtime_forbidden" {
+		t.Fatalf("expected a runtime_forbidden reason the dialog can name, got %+v", out.Results)
+	}
+
+	var runtime, model string
+	dbfx.QueryRow(t, `SELECT runtime_id::text, model FROM agent WHERE id = $1`, agentID).Scan(&runtime, &model)
+	if runtime != fromRuntime || model != "old" {
+		t.Fatalf("agent must not be bound to a runtime the caller may not use: runtime=%s model=%s", runtime, model)
+	}
+	if got := activeProfileID(t); got != "" {
+		t.Fatalf("nothing applied, so the pointer must not move, got %q", got)
+	}
+}

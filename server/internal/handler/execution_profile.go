@@ -57,10 +57,13 @@ type ExecutionProfileEntryResponse struct {
 	AgentID   string `json:"agent_id"`
 	RuntimeID string `json:"runtime_id"`
 	Model     string `json:"model"`
-	// Empty string means the profile expresses no opinion on thinking level;
-	// activation then leaves the agent's current value alone.
-	ThinkingLevel string `json:"thinking_level"`
-	UpdatedAt     string `json:"updated_at"`
+	// Tri-state, matching the single-agent API: null means the profile has no
+	// opinion and activation leaves the agent's level alone; "" means the
+	// profile says "runtime default" and activation clears the agent's level;
+	// a value is written as-is. Collapsing the first two is what let a stale
+	// `high` survive an activation that overwrote runtime and model.
+	ThinkingLevel *string `json:"thinking_level"`
+	UpdatedAt     string  `json:"updated_at"`
 }
 
 type ExecutionProfileResponse struct {
@@ -103,7 +106,7 @@ func executionProfileEntryToResponse(e db.ExecutionProfileEntry) ExecutionProfil
 		AgentID:       uuidToString(e.AgentID),
 		RuntimeID:     uuidToString(e.RuntimeID),
 		Model:         e.Model,
-		ThinkingLevel: e.ThinkingLevel.String,
+		ThinkingLevel: textToPtr(e.ThinkingLevel),
 		UpdatedAt:     timestampToString(e.UpdatedAt),
 	}
 }
@@ -443,8 +446,8 @@ type upsertExecutionProfileEntryRequest struct {
 	AgentID   string `json:"agent_id"`
 	RuntimeID string `json:"runtime_id"`
 	Model     string `json:"model"`
-	// Omitted or "" means the profile expresses no opinion; activation then
-	// leaves the agent's thinking_level alone.
+	// Tri-state, same shape as UpdateAgent: omitted / null = no opinion,
+	// "" = clear to the runtime default on activation, value = write it.
 	ThinkingLevel *string `json:"thinking_level"`
 }
 
@@ -529,12 +532,28 @@ func (h *Handler) UpsertExecutionProfileEntry(w http.ResponseWriter, r *http.Req
 		return
 	}
 
+	// Tri-state storage: SQL NULL = no opinion, '' = explicit "runtime
+	// default" (cleared on activation), value = write that level.
 	thinkingLevel := pgtype.Text{}
-	if req.ThinkingLevel != nil && *req.ThinkingLevel != "" {
+	if req.ThinkingLevel != nil {
 		value := *req.ThinkingLevel
-		if !agent.IsKnownThinkingValue(runtime.Provider, value) {
-			writeError(w, http.StatusBadRequest, thinkingLevelRejection(runtime.Provider, value))
-			return
+		if value != "" {
+			if !agent.IsKnownThinkingValue(runtime.Provider, value) {
+				writeError(w, http.StatusBadRequest, thinkingLevelRejection(runtime.Provider, value))
+				return
+			}
+			// Same capability gate UpdateAgent applies. Without it a profile
+			// is a way to persist a level onto a runtime whose daemon never
+			// advertised a reasoning effort — a configuration the
+			// single-agent API refuses outright.
+			switch h.acpThinkingDecision(r.Context(), runtime.Provider, runtimeUUID) {
+			case acpEffortAbsent:
+				writeError(w, http.StatusBadRequest, thinkingCapabilityRejection(runtime.Provider))
+				return
+			case acpEffortUnknown:
+				writeError(w, http.StatusBadRequest, thinkingCapabilityUnknownRejection(runtime.Provider))
+				return
+			}
 		}
 		thinkingLevel = pgtype.Text{String: value, Valid: true}
 	}
@@ -609,6 +628,13 @@ func (h *Handler) ActivateExecutionProfile(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// Resolved once and passed down: every entry is re-authorised against the
+	// caller who is activating now, not against whoever saved the entry.
+	member, ok := h.workspaceMember(w, r, uuidToString(ws.ID))
+	if !ok {
+		return
+	}
+
 	tx, err := h.TxStarter.Begin(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to begin transaction")
@@ -648,7 +674,7 @@ func (h *Handler) ActivateExecutionProfile(w http.ResponseWriter, r *http.Reques
 	results := make([]ExecutionProfileActivationResult, 0, len(entries))
 	applied, skipped, failed := 0, 0, 0
 	for _, entry := range entries {
-		result := h.applyExecutionProfileEntry(r, qtx, ws.ID, entry)
+		result := h.applyExecutionProfileEntry(r, qtx, ws.ID, member, entry)
 		results = append(results, result)
 		switch result.Status {
 		case executionProfileEntryApplied:
@@ -713,6 +739,7 @@ func (h *Handler) applyExecutionProfileEntry(
 	r *http.Request,
 	qtx *db.Queries,
 	workspaceID pgtype.UUID,
+	member db.Member,
 	entry db.ExecutionProfileEntry,
 ) ExecutionProfileActivationResult {
 	result := ExecutionProfileActivationResult{AgentID: uuidToString(entry.AgentID)}
@@ -742,24 +769,48 @@ func (h *Handler) applyExecutionProfileEntry(
 		result.Reason = "runtime_unavailable"
 		return result
 	}
+	// Re-check the private-runtime rule against the CURRENT caller and the
+	// runtime's CURRENT visibility. Saving the entry checked this once, but a
+	// runtime can be flipped public -> private afterwards; without this an
+	// admin could activate an old profile and bind agents to someone else's
+	// machine, credentials and files (MUL-6126 has no admin override).
+	if !canUseRuntimeForAgent(member, runtime) {
+		result.Status = executionProfileEntryFailed
+		result.Reason = "runtime_forbidden"
+		return result
+	}
 	// The thinking token is re-checked because the entry may have been saved
 	// against a different provider's runtime, or the runtime's provider may
 	// have changed. Writing a literal-invalid token would smuggle it to the
-	// daemon, which the single-agent path refuses outright.
-	if entry.ThinkingLevel.Valid && entry.ThinkingLevel.String != "" &&
-		!agent.IsKnownThinkingValue(runtime.Provider, entry.ThinkingLevel.String) {
-		result.Status = executionProfileEntryFailed
-		result.Reason = "thinking_level_unsupported"
-		return result
+	// daemon, which the single-agent path refuses outright. The capability
+	// decision is re-run for the same reason: a runtime whose catalog now
+	// advertises no reasoning effort must not be handed a level here when
+	// UpdateAgent would reject it.
+	if entry.ThinkingLevel.Valid && entry.ThinkingLevel.String != "" {
+		if !agent.IsKnownThinkingValue(runtime.Provider, entry.ThinkingLevel.String) {
+			result.Status = executionProfileEntryFailed
+			result.Reason = "thinking_level_unsupported"
+			return result
+		}
+		switch h.acpThinkingDecision(r.Context(), runtime.Provider, entry.RuntimeID) {
+		case acpEffortAbsent, acpEffortUnknown:
+			result.Status = executionProfileEntryFailed
+			result.Reason = "thinking_level_unsupported"
+			return result
+		}
 	}
 
 	updated, err := qtx.ApplyExecutionProfileEntryToAgent(r.Context(), db.ApplyExecutionProfileEntryToAgentParams{
-		ID:            entry.AgentID,
-		WorkspaceID:   workspaceID,
-		RuntimeID:     entry.RuntimeID,
-		RuntimeMode:   runtime.RuntimeMode,
-		Model:         pgtype.Text{String: entry.Model, Valid: true},
-		ThinkingLevel: entry.ThinkingLevel,
+		ID:          entry.AgentID,
+		WorkspaceID: workspaceID,
+		RuntimeID:   entry.RuntimeID,
+		RuntimeMode: runtime.RuntimeMode,
+		Model:       pgtype.Text{String: entry.Model, Valid: true},
+		// Present drives the CASE in the query: an entry that stores '' is an
+		// explicit "runtime default" and must clear the agent's level, not
+		// leave the old one standing next to a new runtime and model.
+		ThinkingLevelPresent: entry.ThinkingLevel.Valid,
+		ThinkingLevel:        pgtype.Text{String: entry.ThinkingLevel.String, Valid: entry.ThinkingLevel.Valid && entry.ThinkingLevel.String != ""},
 	})
 	if err != nil {
 		slog.Warn("apply execution profile entry failed",

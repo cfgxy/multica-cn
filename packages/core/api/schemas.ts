@@ -3454,7 +3454,9 @@ export const ExecutionProfileEntrySchema = z.object({
   agent_id: z.string(),
   runtime_id: z.string().optional().default(""),
   model: z.string().optional().default(""),
-  thinking_level: z.string().optional().default(""),
+  // Tri-state; null (no opinion) and "" (clear to runtime default) mean
+  // different things at activation, so null must not be coerced to "".
+  thinking_level: z.string().nullable().optional().default(null),
   updated_at: z.string().optional().default(""),
 }).loose();
 

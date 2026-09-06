@@ -14,14 +14,20 @@
 // One member's configuration inside a profile.
 //
 // `runtime_id` and `model` are always both present: the server refuses to
-// store a half-filled entry, because a stored entry must be activatable. An
-// empty `thinking_level` means the profile has no opinion — activation leaves
-// the agent's current value alone rather than clearing it.
+// store a half-filled entry, because a stored entry must be activatable.
+//
+// `thinking_level` is tri-state, the same shape the single-agent API uses:
+//   null — the profile has no opinion; activation leaves the agent's level
+//          alone.
+//   ""   — the profile says "runtime default"; activation CLEARS the agent's
+//          level. Without this state an activation would overwrite runtime and
+//          model while a stale level survived next to them.
+//   value — written as-is.
 export interface ExecutionProfileEntry {
   agent_id: string;
   runtime_id: string;
   model: string;
-  thinking_level: string;
+  thinking_level: string | null;
   updated_at: string;
 }
 
@@ -59,13 +65,14 @@ export interface UpdateExecutionProfileRequest {
   description?: string;
 }
 
-// PUT body for one member's slot. Omitting `thinking_level` (or sending "")
-// means "no opinion", which is distinct from the agent API's "" = clear.
+// PUT body for one member's slot. `thinking_level` carries the same tri-state
+// as the stored entry: omitted / null = no opinion, "" = clear to the runtime
+// default on activation, value = write it.
 export interface UpsertExecutionProfileEntryRequest {
   agent_id: string;
   runtime_id: string;
   model: string;
-  thinking_level?: string;
+  thinking_level?: string | null;
 }
 
 // What happened to one member during activation.

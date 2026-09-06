@@ -238,6 +238,39 @@ describe("ExecutionProfileManageSheet", () => {
     ).toBeInTheDocument();
   });
 
+  it("treats clearing a no-opinion thinking level as a change worth saving", async () => {
+    // A stored null means the entry has no opinion and activation leaves the
+    // member's level alone; the drawer's empty field means "runtime default",
+    // which activation writes as an explicit clear. Collapsing the two would
+    // leave Save disabled and make the clear unreachable from the UI.
+    const noOpinion = {
+      ...PROFILE,
+      entries: [{ ...PROFILE.entries[0]!, thinking_level: null }],
+    };
+    mockListExecutionProfiles.mockResolvedValue({
+      execution_profiles: [noOpinion],
+      active_execution_profile_id: "p-a",
+    });
+    mockGetExecutionProfile.mockResolvedValue(noOpinion);
+
+    const user = userEvent.setup();
+    renderSheet();
+    await screen.findByText("Alpha");
+
+    const save = screen.getAllByRole("button", { name: "Save" })[0]!;
+    expect(save).toBeEnabled();
+    await user.click(save);
+
+    await waitFor(() =>
+      expect(mockUpsertEntry).toHaveBeenCalledWith("w-1", "p-a", {
+        agent_id: "a-1",
+        runtime_id: "r-1",
+        model: "model-a",
+        thinking_level: "",
+      }),
+    );
+  });
+
   it("shows a duplicate name inline instead of a silent no-op", async () => {
     const { ApiError } = await import("@multica/core/api");
     mockUpdateExecutionProfile.mockRejectedValue(

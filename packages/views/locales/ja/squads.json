@@ -127,6 +127,7 @@
     "reason_agent_not_found": "このワークスペースのメンバーではありません",
     "reason_agent_archived": "メンバーはアーカイブ済みです",
     "reason_runtime_unavailable": "指定されたランタイムは利用できません",
+    "reason_runtime_forbidden": "このランタイムは現在プライベートで、所有者のみが使用できます",
     "reason_thinking_unsupported": "現在のモデルはこの思考レベルに対応していません",
     "reason_update_failed": "書き込みに失敗しました",
     "active_badge": "適用中",
