@@ -72,7 +72,7 @@ chose:
 | Prose (paragraphs, headings, lists, quotes, tables, inline code, links, strong/em) | enriched-markdown (path A) | Would otherwise need React tree → CJK + inline-code chip = 5-7 line breakage per chip (the 2026-05-09 incident) |
 | Fenced code block | own `CodeBlock` with one `<Text>` per line, token spans nested but **content is code only — no CJK paragraphs to trigger UAX #14**. Shiki for highlighting | Native rendering can't expose Shiki tokens; React tree of code-only doesn't trigger the CJK amplification of the nested-text bug |
 | Image | `expo-image` wrapped in `Pressable` for lightbox dispatch. **One element, no nested-text mixing** | RN `<Image>` can't be inline in `<Text>`; lightbox needs `Pressable` not addressable inside attributed string |
-| (future) LaTeX / Mermaid | not yet — when needed, separate component running Expo DOM Components | path C is the only one that gets these for free, but the WebView penalty isn't worth paying for prose |
+| Mermaid fence (added RUYI-80, 2026-09) | **Expo DOM Components (path C)** — `lib/markdown/mermaid-diagram.dom.tsx` renders with the `mermaid` npm package inside a `@expo/dom-webview` WebView | Mermaid needs a real DOM to lay out; paths A/B cannot provide one. Security: `securityLevel: "strict"` + `htmlLabels: false` (see `lib/markdown/mermaid-config.ts`), chart text is untrusted input |
 
 ### Marked@18 is used as a **lexer only**
 
@@ -123,6 +123,14 @@ upgrade because newly-added color fields may ship light-mode defaults.
 - Full GFM support via enriched-markdown's `flavor="github"`
 - Light / dark mode that follows `lib/use-color-scheme`
 - Expo's own A-tier recommendation as our prose engine
+- Mermaid diagram rendering via Expo DOM Components (RUYI-80, 2026-09):
+  `mermaid` is bundled into a dedicated WebView bundle (`www.bundle/`),
+  offline-safe (no CDN), with the same `securityLevel: "strict"` +
+  `htmlLabels: false` contract as web. Build note: static export of DOM
+  components requires `EXPO_NO_BUNDLE_SPLITTING=1` until @expo/cli ships
+  the DOM split-chunk serialization fix ("Asset not found: __common-*.js");
+  wired into the Android release build workflow and the local
+  `android:*:release` scripts.
 
 ### What we pay
 
@@ -131,7 +139,7 @@ upgrade because newly-added color fields may ship light-mode defaults.
   hidden-default trap re-emerges on every enriched upgrade
 - Code blocks nested in a list item stay with the enriched prose stream
   (don't get Shiki) — top-level code is the >95% case, acceptable
-- LaTeX / Mermaid not currently supported
+- LaTeX not currently supported (Mermaid now is — see the segment table)
 
 ### Known limitations and mitigations
 
@@ -209,10 +217,13 @@ React-tree renderer:
 - enriched-markdown ships custom React leaf-node rendering (currently
   not on roadmap — roadmap addresses `EnrichedMarkdownTextInput`, the
   *editor*, not the *renderer*)
-- A new library appears that satisfies path A + path B simultaneously
+- A new library appears that satisfies path A + B simultaneously
 - Expo SDK ships a first-party markdown renderer (currently doesn't)
-- The product team commits to LaTeX / Mermaid as core features — Expo
-  DOM Components becomes the right answer for that surface
+- ~~The product team commits to LaTeX / Mermaid as core features — Expo
+  DOM Components becomes the right answer for that surface~~ **Met for
+  Mermaid (RUYI-80, 2026-09)**: shipped as `lib/markdown/mermaid-
+  diagram.dom.tsx` on Expo DOM Components, exactly the escape hatch this
+  ADR reserved. LaTeX remains parked on the original condition.
 
 ---
 
@@ -255,4 +266,7 @@ React-tree renderer:
 - `apps/mobile/lib/markdown/markdown-style.ts` — `useMarkdownStyle()` theme bridge
 - `apps/mobile/lib/markdown/code-block.tsx` — Shiki-powered code segment
 - `apps/mobile/lib/markdown/markdown-image.tsx` — lightbox-aware image segment
+- `apps/mobile/lib/markdown/mermaid-diagram.tsx` — RN host for the mermaid segment (RUYI-80)
+- `apps/mobile/lib/markdown/mermaid-diagram.dom.tsx` — DOM component that renders mermaid (RUYI-80)
+- `apps/mobile/lib/markdown/mermaid-config.ts` — shared mermaid config + security contract (RUYI-80)
 - `apps/mobile/CLAUDE.md` — mobile-wide rules including theme/CSS-variable system
