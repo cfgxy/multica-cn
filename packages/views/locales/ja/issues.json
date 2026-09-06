@@ -1006,13 +1006,18 @@
     },
     "agent_activity": {
       "runs_count": "実行 · {{count}}件",
-      "badge_a11y": "エージェントが実行中 — 実行履歴を開く"
+      "badge_a11y": "エージェントが実行中 — 実行履歴を開く",
+      "row_running_a11y": "エージェントがこのタスクを処理中",
+      "row_queued_a11y": "エージェントのタスクが待機中"
     },
     "description_field": {
       "placeholder": "説明…（@ を入力してメンション）"
     },
     "new": {
       "submit_a11y": "タスクを作成"
+    },
+    "tasks": {
+      "issue_unavailable": "タスクが表示できません"
     }
   }
 }

@@ -14,7 +14,8 @@
       "created_label": "Created",
       "created_description": "Issues I created",
       "agents_label": "My Agents and Squads",
-      "agents_description": "Issues assigned to my agents"
+      "agents_description": "Issues assigned to my agents",
+      "actionable_label": "Actionable"
     },
     "filter_button": "Filter",
     "filter_status": "Status",
@@ -52,7 +53,8 @@
       "assigned": "No issues assigned to you.",
       "created": "You haven't created any issues.",
       "agents": "No issues assigned to your agents or squads yet.",
-      "filtered": "No issues match the current filters."
+      "filtered": "No issues match the current filters.",
+      "actionable": "Nothing is waiting on you right now."
     }
   }
 }
