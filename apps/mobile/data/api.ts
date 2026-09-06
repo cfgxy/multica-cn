@@ -31,6 +31,7 @@ import type {
   InboxWorkspaceUnread,
   Issue,
   IssueLabelsResponse,
+  IssuePriority,
   Label,
   IssueReaction,
   ListIssuesParams,
@@ -148,6 +149,19 @@ import { buildCommentUpdateBody } from "./revision";
 export interface LoginResponse {
   token: string;
   user: User;
+}
+
+/** Smart-mode (agent quick-create) request body. Field-for-field mirror of
+ *  the inline body type on web's `ApiClient.quickCreateIssue`
+ *  (packages/core/api/client.ts); mobile v1 does not send parent_issue_id /
+ *  attachment_ids (no parent-issue entry, no prompt attachments). */
+export interface QuickCreateIssueRequest {
+  agent_id?: string;
+  squad_id?: string;
+  prompt: string;
+  priority?: IssuePriority;
+  due_date?: string;
+  project_id?: string | null;
 }
 
 /** Mobile file payload for `uploadFile`. RN doesn't have a browser `File`
@@ -680,6 +694,21 @@ class ApiClient {
   // applies its own defaults for anything omitted.
   async createIssue(body: CreateIssueRequest): Promise<Issue> {
     return this.fetch<Issue>("/api/issues", {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+  }
+
+  // Smart-mode (agent quick-create) write endpoint — mirrors web
+  // packages/core/api/client.ts quickCreateIssue → POST /api/issues/quick-create
+  // (server/internal/handler QuickCreateIssue). The server enqueues an agent
+  // run that generates the title/description; the response `{ task_id }` is
+  // never consumed by UI logic, so a raw fetch is acceptable here (same rule
+  // as createIssue above).
+  async quickCreateIssue(
+    body: QuickCreateIssueRequest,
+  ): Promise<{ task_id: string }> {
+    return this.fetch("/api/issues/quick-create", {
       method: "POST",
       body: JSON.stringify(body),
     });

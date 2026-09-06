@@ -166,6 +166,11 @@
       "search": "搜索",
       "close": "关闭",
       "request_timeout": "请求超时（{{seconds}} 秒）"
+    },
+    "create_issue": {
+      "mode_smart": "智能",
+      "mode_manual": "手动",
+      "smart_hint": "由智能体起草标题和描述——完成后你会收到收件箱通知。"
     }
   }
 }
