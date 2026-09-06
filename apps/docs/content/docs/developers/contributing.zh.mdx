@@ -38,7 +38,7 @@ API: http://localhost:8080
 
 ## 在 worktree 中开发
 
-仓库支持主 checkout 和多个 worktree 同时运行。它们共用一个 PostgreSQL 容器，但使用不同数据库和端口。
+仓库支持主 checkout 和多个 worktree 同时运行。它们共用 PostgreSQL 容器和主库 `multica`，但使用不同端口和进程配置。
 
 ```bash
 git worktree add ../multica-feature -b feat/my-change main
@@ -47,7 +47,7 @@ make setup-worktree
 make start-worktree
 ```
 
-`make setup-worktree` 会生成 `.env.worktree`，数据库名和端口根据路径确定。再次启动：
+`make setup-worktree` 会生成 `.env.worktree`；端口和进程标识根据路径确定，`POSTGRES_DB` 保持为 `multica`。再次启动：
 
 ```bash
 make start-worktree
@@ -62,7 +62,7 @@ make stop-worktree
 也可以直接运行 `make dev`，脚本会通过 `.git` 文件识别 worktree 并选择 `.env.worktree`。
 
 <Callout type="info">
-不同 worktree 共用 PostgreSQL 容器，不共用数据库。不要为每个 worktree 启动新的 Compose project；先检查 `.env.worktree` 中的 `POSTGRES_DB`、`PORT` 和 `FRONTEND_PORT`。
+不同 worktree 会共用 PostgreSQL 容器和 `multica`。不要为每个 worktree 启动新的 Compose project；先检查 `.env.worktree` 中的 `PORT` 和 `FRONTEND_PORT`，破坏性测试必须使用一次性数据库。
 </Callout>
 
 ## 常用命令

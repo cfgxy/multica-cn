@@ -70,23 +70,28 @@ if [ "$locked" = "1" ]; then
 fi
 
 if [ -n "$(git -C "$target" status --porcelain --untracked-files=all)" ]; then
-  echo "Refusing to remove dirty worktree before its database is dropped: $target" >&2
+  echo "Refusing to remove dirty worktree: $target" >&2
   echo "Commit, stash, or discard its changes first." >&2
   exit 1
 fi
 
 worktree_env="$target/.env.worktree"
 if [ -f "$worktree_env" ]; then
-  db_drop_status=0
-  bash "$script_dir/drop-database.sh" "$worktree_env" || db_drop_status=$?
-  case "$db_drop_status" in
-    0) ;;
-    2)
-      echo "Worktree was not removed."
-      exit 0
-      ;;
-    *) exit "$db_drop_status" ;;
-  esac
+  db_name="$(bash -c 'set -a; . "$1"; printf "%s" "${POSTGRES_DB:-}"' _ "$worktree_env")"
+  if [ "$db_name" = "multica" ]; then
+    echo "Preserving shared main database 'multica'."
+  else
+    db_drop_status=0
+    bash "$script_dir/drop-database.sh" "$worktree_env" || db_drop_status=$?
+    case "$db_drop_status" in
+      0) ;;
+      2)
+        echo "Worktree was not removed."
+        exit 0
+        ;;
+      *) exit "$db_drop_status" ;;
+    esac
+  fi
 else
   echo "No .env.worktree found; skipping database cleanup."
 fi
