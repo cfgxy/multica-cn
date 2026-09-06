@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -35,11 +36,25 @@ func (s *PluginService) ListMarketplacePlugins(ctx context.Context, workspaceID 
 	if err != nil {
 		return nil, &PluginError{Kind: PluginErrorUnavailable, Message: "list Plugin marketplace", Err: err}
 	}
+	return marketplaceSummaries(rows), nil
+}
+
+// marketplaceSummaries renders listing rows into catalog entries. A listed
+// version whose manifest no longer parses is skipped rather than failing the
+// request: the publish path validates every manifest, so an unreadable one here
+// means a database, migration or operations fault, and one damaged row must not
+// hide every healthy Plugin in the directory.
+func marketplaceSummaries(rows []db.ListMarketplacePluginListingsRow) []MarketplacePluginSummary {
 	plugins := make([]MarketplacePluginSummary, 0, len(rows))
 	for _, row := range rows {
 		manifest, _, err := plugincontract.ParseManifest(row.Manifest)
 		if err != nil {
-			return nil, &PluginError{Kind: PluginErrorUnavailable, Message: "read marketplace Plugin manifest", Err: err}
+			slog.Warn("plugins: skipping a marketplace listing with an unreadable manifest",
+				"version_id", uuidString(row.VersionID),
+				"plugin_key", row.PluginKey,
+				"error", err,
+			)
+			continue
 		}
 		plugins = append(plugins, MarketplacePluginSummary{
 			PackageID:              uuidString(row.PackageID),
@@ -56,7 +71,7 @@ func (s *PluginService) ListMarketplacePlugins(ctx context.Context, workspaceID 
 			Installed:              row.Installed,
 		})
 	}
-	return plugins, nil
+	return plugins
 }
 
 // ListPackageInMarketplace points the catalog at one already-published immutable

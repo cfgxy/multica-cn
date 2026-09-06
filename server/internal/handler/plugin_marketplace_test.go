@@ -224,6 +224,67 @@ func TestMarketplaceRejectsUnlistedCrossWorkspaceVersion(t *testing.T) {
 	}
 }
 
+// Mirrors the operations fault QA reproduced: a listed version whose stored
+// manifest is valid JSON but semantically invalid must not take the catalog
+// down with it.
+func TestMarketplaceCatalogSkipsDamagedManifestAndKeepsHealthyListings(t *testing.T) {
+	withPluginMarketplaceFlags(t, testHandler, true)
+	withHostCapabilities(t)
+	cleanupPluginInstallations(t)
+
+	damaged, damagedWorkspaceID := publishMarketplaceFixture(t)
+	if err := testHandler.PluginService.ListPackageInMarketplace(
+		t.Context(), parseUUID(damagedWorkspaceID), parseUUID(testUserID), damaged.ID, damaged.Versions[0].ID,
+	); err != nil {
+		t.Fatalf("list damaged fixture: %v", err)
+	}
+	healthy, healthyWorkspaceID := publishMarketplaceFixture(t)
+	healthyVersionID := healthy.Versions[0].ID
+	if err := testHandler.PluginService.ListPackageInMarketplace(
+		t.Context(), parseUUID(healthyWorkspaceID), parseUUID(testUserID), healthy.ID, healthyVersionID,
+	); err != nil {
+		t.Fatalf("list healthy fixture: %v", err)
+	}
+	if _, err := testPool.Exec(t.Context(),
+		`UPDATE plugin_package_version SET manifest = $2 WHERE id = $1`,
+		damaged.Versions[0].ID, []byte(`{"manifest_version": 1, "key": "com.example.broken"}`),
+	); err != nil {
+		t.Fatalf("damage stored manifest: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	testHandler.ListMarketplacePlugins(recorder, pluginHandlerRequest(
+		http.MethodGet,
+		"/marketplace/plugins",
+		nil,
+		map[string]string{"id": testWorkspaceID},
+	))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("browse marketplace with a damaged listing: status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var response struct {
+		Plugins []service.MarketplacePluginSummary `json:"plugins"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode marketplace catalog: %v", err)
+	}
+	var healthyEntries int
+	for _, plugin := range response.Plugins {
+		if plugin.VersionID == damaged.Versions[0].ID {
+			t.Fatalf("damaged listing was rendered: %+v", plugin)
+		}
+		if plugin.VersionID == healthyVersionID {
+			healthyEntries++
+			if plugin.Name != "Published Panel" {
+				t.Fatalf("healthy listing name = %q, want the listed manifest name", plugin.Name)
+			}
+		}
+	}
+	if healthyEntries != 1 {
+		t.Fatalf("healthy listing entries = %d, want 1: %+v", healthyEntries, response.Plugins)
+	}
+}
+
 func TestMarketplaceFlagOffLeavesExistingPluginFlowAndHidesCatalog(t *testing.T) {
 	withPluginMarketplaceFlags(t, testHandler, false)
 	withHostCapabilities(t)
