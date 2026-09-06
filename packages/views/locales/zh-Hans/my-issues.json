@@ -14,7 +14,8 @@
       "created_label": "我创建的",
       "created_description": "我创建的任务",
       "agents_label": "我的智能体和小队",
-      "agents_description": "分配给我的智能体的任务"
+      "agents_description": "分配给我的智能体的任务",
+      "actionable_label": "待我推进"
     },
     "filter_button": "筛选",
     "filter_status": "状态",
@@ -51,7 +52,8 @@
       "assigned": "没有分配给你的任务。",
       "created": "你还没有创建任何任务。",
       "agents": "还没有分配给你的 Agent 或小队的任务。",
-      "filtered": "没有符合当前筛选条件的任务。"
+      "filtered": "没有符合当前筛选条件的任务。",
+      "actionable": "没有等待你推进的任务。"
     }
   }
 }
