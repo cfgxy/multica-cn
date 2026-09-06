@@ -245,11 +245,10 @@ db-drop: ## Permanently drop the current env's local database after confirmation
 		if [ "$$status" -eq 2 ]; then exit 0; fi; \
 		exit "$$status"
 
-# Drop + recreate the current env's database, then run all migrations.
-# Use for a clean slate in local dev. Only affects the DB named in
-# ENV_FILE (POSTGRES_DB); the shared postgres container and other
-# worktree DBs are untouched. Refuses to run against a remote host, and
-# refuses the main database `multica` without ALLOW_MAIN_DB_DROP=1: under
+# Drop + recreate the database named by the current env, then run all migrations.
+# Use only with a disposable database for a clean slate in local dev. Refuses
+# to run against a remote host, and refuses the main database `multica` without
+# ALLOW_MAIN_DB_DROP=1: under
 # the shared-database model a worktree env file names it by default, and
 # this target drops without a confirmation prompt (RUYI-66).
 db-reset: ## Drop and recreate the current env's database, then re-run all migrations
@@ -273,7 +272,7 @@ db-reset: ## Drop and recreate the current env's database, then re-run all migra
 	@echo ""
 	@echo "✓ Database '$(POSTGRES_DB)' reset. Run 'make start' to launch the app."
 
-worktree-env: ## Generate .env.worktree with a unique DB name and app ports for this worktree
+worktree-env: ## Generate .env.worktree with shared DB settings and unique app ports
 	@bash scripts/init-worktree-env.sh .env.worktree
 
 setup-main: ## Prepare the main checkout using .env
@@ -306,7 +305,7 @@ stop-worktree: ## Stop this worktree's backend and frontend processes
 check-worktree: ## Run the full verification pipeline for this worktree
 	@ENV_FILE=$(WORKTREE_ENV_FILE) bash scripts/check.sh
 
-remove-worktree: ## Drop a linked worktree's database, then remove it (WORKTREE=path)
+remove-worktree: ## Preserve multica, clean an optional disposable DB, then remove a worktree
 	@bash scripts/remove-worktree.sh "$(WORKTREE)"
 
 # ---------- Individual commands ----------

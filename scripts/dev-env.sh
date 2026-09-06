@@ -379,6 +379,24 @@ database_name_from_url() {
   ' "$1" 2>/dev/null
 }
 
+database_endpoint_from_url() {
+  node -e '
+    const url = new URL(process.argv[1]);
+    if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") process.exit(1);
+    process.stdout.write(`${url.hostname}:${url.port || "5432"}`);
+  ' "$1" 2>/dev/null
+}
+
+database_url_uses_shared_postgres() {
+  local endpoint
+  [ -z "${DATABASE_URL:-}" ] && return 0
+  endpoint="$(database_endpoint_from_url "$DATABASE_URL")" || return 1
+  case "$endpoint" in
+    localhost:5432|127.0.0.1:5432|'[::1]:5432') return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 # A drop decision needs two agreeing sources (RUYI-66): the registry record AND
 # the env file the application actually runs from. The registry alone once
 # pointed at the shared main database after a checkout had been re-pointed at
@@ -399,18 +417,19 @@ env_file_agrees_on_database() {
 # something other than the container owns 5432, so the container never bound
 # the host port and a docker-exec create landed in the wrong server.
 diagnose_database() {
-  local owner
-  owner="$(lsof -nP -iTCP:"${POSTGRES_PORT:-5432}" -sTCP:LISTEN 2>/dev/null | awk 'NR==2 {print $1" (pid "$2", user "$3")"}')"
+  local owner endpoint="configured endpoint"
+  owner="$(lsof -nP -iTCP:"${POSTGRES_PORT:-5432}" -sTCP:LISTEN 2>/dev/null | awk 'NR==2 {print $1" (pid "$2", user "$3")"}' || true)"
+  endpoint="$(database_endpoint_from_url "${DATABASE_URL:-}" 2>/dev/null || printf 'configured endpoint')"
   printf '\n'
   warn "The database the tooling created is not the one the application reaches."
   info "Port ${POSTGRES_PORT:-5432} is served by: ${owner:-nothing}"
-  info "DATABASE_URL: ${DATABASE_URL}"
+  info "DATABASE_URL endpoint: $endpoint"
   info "If that is a native PostgreSQL, the Docker container never bound the host port."
   info "Either stop it (brew services stop postgresql@17) or point DATABASE_URL at it."
 }
 
 ensure_database() {
-  local admin_url=""
+  local admin_url="" endpoint="unknown endpoint"
   if command -v psql >/dev/null 2>&1 && [ -n "${DATABASE_URL:-}" ]; then
     admin_url="$(admin_database_url "$DATABASE_URL")"
   fi
@@ -423,6 +442,10 @@ ensure_database() {
       info "Created database ${POSTGRES_DB} through DATABASE_URL."
     fi
   else
+    if ! database_url_uses_shared_postgres; then
+      endpoint="$(database_endpoint_from_url "${DATABASE_URL:-}" 2>/dev/null || printf 'configured endpoint')"
+      die "Cannot prepare PostgreSQL at $endpoint through DATABASE_URL. Install psql or start that database explicitly; refusing to operate the shared Docker PostgreSQL instance."
+    fi
     info "Nothing is answering on ${POSTGRES_PORT:-5432} yet; starting the shared container."
     bash "$REPO_ROOT/scripts/ensure-postgres.sh" "$ENV_FILE" | sed 's/^/    /'
   fi

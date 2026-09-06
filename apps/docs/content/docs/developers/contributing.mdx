@@ -38,7 +38,7 @@ The fixed local verification code comes from the development configuration. Do n
 
 ## Developing in a worktree
 
-The repository supports running the primary checkout and multiple worktrees at the same time. They share one PostgreSQL container but use separate databases and ports.
+The repository supports running the primary checkout and multiple worktrees at the same time. They share the PostgreSQL container and the main database `multica`, while using separate ports and process profiles.
 
 ```bash
 git worktree add ../multica-feature -b feat/my-change main
@@ -47,7 +47,7 @@ make setup-worktree
 make start-worktree
 ```
 
-`make setup-worktree` generates `.env.worktree`; the database name and ports are derived from the path. To start it again:
+`make setup-worktree` generates `.env.worktree`; ports and process identity are derived from the path, while `POSTGRES_DB` remains `multica`. To start it again:
 
 ```bash
 make start-worktree
@@ -62,7 +62,7 @@ make stop-worktree
 You may also run `make dev` directly. The script detects a worktree through its `.git` file and selects `.env.worktree`.
 
 <Callout type="info">
-Different worktrees share the PostgreSQL container, not the database. Do not start a new Compose project for every worktree. Check `POSTGRES_DB`, `PORT`, and `FRONTEND_PORT` in `.env.worktree` first.
+Different worktrees intentionally share the PostgreSQL container and `multica`. Do not start a new Compose project for every worktree. Check `PORT` and `FRONTEND_PORT` in `.env.worktree`, and use a disposable database for destructive tests.
 </Callout>
 
 ## Common commands

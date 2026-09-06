@@ -155,6 +155,77 @@ if bash -c 'source "$1"; database_name_from_url "mysql://dev@127.0.0.1:3306/nope
   fail "database name extraction accepted a non-PostgreSQL URL"
 fi
 
+# Falling back to Docker is valid only for the repository's canonical shared
+# PostgreSQL endpoint. A local database on another port is an independent
+# target; if psql cannot reach it, starting the shared Compose service would
+# create the database in the wrong server (RUYI-90).
+bash -c '
+  source "$1"
+  DATABASE_URL="postgres://multica:pw@localhost:5432/multica?sslmode=disable"
+  database_url_uses_shared_postgres
+' _ "$root_dir/scripts/dev-env.sh" \
+  || fail "canonical shared PostgreSQL URL was not recognized"
+
+bash -c '
+  source "$1"
+  DATABASE_URL="postgres://multica:pw@[::1]:5432/multica?sslmode=disable"
+  database_url_uses_shared_postgres
+' _ "$root_dir/scripts/dev-env.sh" \
+  || fail "canonical IPv6 shared PostgreSQL URL was not recognized"
+
+if bash -c '
+  source "$1"
+  DATABASE_URL="not-a-postgres-url"
+  database_url_uses_shared_postgres
+' _ "$root_dir/scripts/dev-env.sh"; then
+  fail "invalid DATABASE_URL was mistaken for the shared service"
+fi
+
+if bash -c '
+  source "$1"
+  DATABASE_URL="postgres://multica:pw@127.0.0.1:15432/multica_test?sslmode=disable"
+  database_url_uses_shared_postgres
+' _ "$root_dir/scripts/dev-env.sh"; then
+  fail "independent local PostgreSQL URL was mistaken for the shared service"
+fi
+
+status=0
+bash -c '
+  source "$1"
+  psql() { return 1; }
+  DATABASE_URL="postgres://multica:pw@127.0.0.1:15432/multica_test?sslmode=disable"
+  POSTGRES_DB=multica_test
+  POSTGRES_PORT=15432
+  ENV_FILE=.env.worktree
+  ensure_database
+' _ "$root_dir/scripts/dev-env.sh" > "$out" 2>&1 || status=$?
+[ "$status" -ne 0 ] || fail "unreachable independent PostgreSQL silently fell back to shared Docker"
+require_contains "$out" "refusing to operate the shared Docker PostgreSQL instance"
+require_contains "$out" "127.0.0.1:15432"
+
+status=0
+bash -c '
+  source "$1"
+  psql() { return 1; }
+  fallback_log="$2"
+  bash() { printf "%s\n" "$*" >"$fallback_log"; }
+  DATABASE_URL="postgres://multica:secret@localhost:5432/multica?sslmode=disable"
+  POSTGRES_DB=multica
+  POSTGRES_PORT=5432
+  ENV_FILE=.env.worktree
+  ensure_database
+' _ "$root_dir/scripts/dev-env.sh" "$tmp_dir/shared-fallback.log" > "$out" 2>&1 || status=$?
+[ "$status" -eq 0 ] || fail "canonical shared PostgreSQL endpoint did not use the Docker fallback"
+require_contains "$tmp_dir/shared-fallback.log" "$root_dir/scripts/ensure-postgres.sh .env.worktree"
+
+DATABASE_URL="postgres://multica:secret@127.0.0.1:15432/multica_test?sslmode=disable" \
+POSTGRES_PORT=15432 \
+bash -c 'source "$1"; diagnose_database' _ "$root_dir/scripts/dev-env.sh" > "$out" 2>&1
+require_contains "$out" "DATABASE_URL endpoint: 127.0.0.1:15432"
+if grep -Fq "secret" "$out"; then
+  fail "database diagnostics leaked DATABASE_URL credentials"
+fi
+
 # Slot reallocation moves ports and nothing else: under the shared-database
 # model the env file keeps naming the database it has always named, so the
 # registry, the env file and the running backend cannot drift apart.
