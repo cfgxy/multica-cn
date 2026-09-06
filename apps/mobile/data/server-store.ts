@@ -26,6 +26,10 @@ import {
   type ServerEntry,
 } from "./server-config";
 import { clearServerSession } from "./secure-storage";
+import {
+  clearServerMemory,
+  invalidateNewIssueSubmissionContext,
+} from "./stores/new-issue-draft-store";
 
 const STORAGE_KEY = "multica_servers";
 
@@ -143,11 +147,19 @@ export const useServerStore = create<ServerState>((set, get) => {
       // SecureStore 清掉。放在 commit 之后:落盘失败上抛时凭证还在,
       // 与「列表项仍在」保持一致。
       await clearServerSession(id);
+      // RUYI-79: 会话一起删的还有该服务器的创建表单负责人记忆,
+      // 与 logout 的清空范围一致(仅该条目,不影响其他服务器)。
+      clearServerMemory(id);
     },
 
     setActiveServer: async (id) => {
-      const { servers } = get();
+      const { servers, activeServerId } = get();
       if (!servers.some((s) => s.id === id)) return;
+      if (id !== activeServerId) {
+        // The server switch has started even while its persisted state is
+        // pending, so creates from the previous context must expire now.
+        invalidateNewIssueSubmissionContext();
+      }
       await commit(servers, id);
     },
   };
