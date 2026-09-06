@@ -21,6 +21,10 @@ export const workspaceKeys = {
   skills: (wsId: string) => ["workspaces", wsId, "skills"] as const,
   assigneeFrequency: (wsId: string) => ["workspaces", wsId, "assignee-frequency"] as const,
   mcpServers: (wsId: string) => ["workspaces", wsId, "mcp-servers"] as const,
+  // Installed state is per workspace, so the catalog cache is keyed by
+  // workspace even though the catalog itself is global.
+  marketplace: (wsId: string, kind: string, q: string) =>
+    ["workspaces", wsId, "marketplace", kind, q] as const,
 };
 
 export function workspaceListOptions() {
@@ -189,6 +193,23 @@ export function workspaceMcpServersOptions(wsId: string) {
   return queryOptions({
     queryKey: workspaceKeys.mcpServers(wsId),
     queryFn: () => api.listWorkspaceMcpServers(wsId),
+    enabled: wsId !== "",
+  });
+}
+
+/**
+ * The unified marketplace catalog for this workspace. Member-visible: the
+ * payload is discovery metadata only, and installing is gated server-side.
+ */
+export function marketplaceItemsOptions(
+  wsId: string,
+  filter: { kind?: string; q?: string } = {},
+) {
+  const kind = filter.kind ?? "";
+  const q = filter.q ?? "";
+  return queryOptions({
+    queryKey: workspaceKeys.marketplace(wsId, kind, q),
+    queryFn: () => api.listMarketplaceItems({ kind, q }),
     enabled: wsId !== "",
   });
 }
