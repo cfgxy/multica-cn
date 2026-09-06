@@ -42,6 +42,13 @@ WORKSPACE_SLUG="${MULTICA_DEV_WORKSPACE_SLUG:-dev}"
 ALL_COMPONENTS="api web daemon desktop"
 DEFAULT_COMPONENTS="api web"
 
+# The platform's main database: the compose project is fixed at `multica` and
+# the main checkout's .env names this database, so worktree environments
+# deliberately share it (RUYI-66). A drop statement may never fire for it —
+# not for a legitimately shared environment, and not for a stale registry
+# entry that still names it after a checkout was re-pointed by hand.
+MAIN_DATABASE_NAME="multica"
+
 # An agent runs with TMPDIR=/tmp/multica-task-<id>, deleted when the run ends.
 # Anything the Go toolchain builds there goes with it, so a binary started from
 # such a build stops being re-executable the moment its creator finishes.
@@ -334,18 +341,17 @@ ensure_dev_code() {
   info "Set MULTICA_DEV_VERIFICATION_CODE=$DEV_CODE_DEFAULT in $1 (ignored when APP_ENV=production)."
 }
 
+# Moves an environment to another slot. Ports only: the database name and the
+# connection string stay exactly as the env file has them, so the registry,
+# the env file and the running backend cannot drift apart across a slot move.
 rewrite_env_ports() {
-  local file="$REPO_ROOT/$1" offset=$2 backend=$3 frontend=$4 db=$5 tmp database_url escaped_database_url
-  database_url="$(database_url_with_name "${DATABASE_URL:-}" "$db")" \
-    || die "DATABASE_URL is not a valid PostgreSQL URL: ${DATABASE_URL:-<unset>}"
-  escaped_database_url="$(printf '%s' "$database_url" | sed 's/[\\&|]/\\&/g')"
+  local file=$1 offset=$2 backend=$3 frontend=$4 tmp
+  case "$file" in /*) ;; *) file="$REPO_ROOT/$file" ;; esac
   tmp="$(mktemp)"
   sed \
     -e "s|^PORT=.*|PORT=${backend}|" \
     -e "s|^FRONTEND_PORT=.*|FRONTEND_PORT=${frontend}|" \
     -e "s|^FRONTEND_ORIGIN=.*|FRONTEND_ORIGIN=http://localhost:${frontend}|" \
-    -e "s|^POSTGRES_DB=.*|POSTGRES_DB=${db}|" \
-    -e "s|^DATABASE_URL=.*|DATABASE_URL=${escaped_database_url}|" \
     -e "s|^MULTICA_SERVER_URL=.*|MULTICA_SERVER_URL=ws://localhost:${backend}/ws|" \
     -e "s|^MULTICA_PUBLIC_URL=.*|MULTICA_PUBLIC_URL=http://localhost:${backend}|" \
     -e "s|^MULTICA_APP_URL=.*|MULTICA_APP_URL=http://localhost:${frontend}|" \
@@ -365,31 +371,65 @@ admin_database_url() {
   ' "$1" 2>/dev/null || true
 }
 
-database_url_with_name() {
+database_name_from_url() {
   node -e '
     const url = new URL(process.argv[1]);
     if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") process.exit(1);
-    url.pathname = "/" + process.argv[2];
-    process.stdout.write(url.toString());
-  ' "$1" "$2" 2>/dev/null
+    process.stdout.write(decodeURIComponent(url.pathname.replace(/^\//, "")));
+  ' "$1" 2>/dev/null
+}
+
+database_endpoint_from_url() {
+  node -e '
+    const url = new URL(process.argv[1]);
+    if (url.protocol !== "postgres:" && url.protocol !== "postgresql:") process.exit(1);
+    process.stdout.write(`${url.hostname}:${url.port || "5432"}`);
+  ' "$1" 2>/dev/null
+}
+
+database_url_uses_shared_postgres() {
+  local endpoint
+  [ -z "${DATABASE_URL:-}" ] && return 0
+  endpoint="$(database_endpoint_from_url "$DATABASE_URL")" || return 1
+  case "$endpoint" in
+    localhost:5432|127.0.0.1:5432|'[::1]:5432') return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# A drop decision needs two agreeing sources (RUYI-66): the registry record AND
+# the env file the application actually runs from. The registry alone once
+# pointed at the shared main database after a checkout had been re-pointed at
+# an isolated one by hand, and destroy offered to drop exactly that.
+env_file_agrees_on_database() {
+  local declared url_db manifest_url_db
+  [ -n "${ENV_FILE:-}" ] && [ -f "$DIR/$ENV_FILE" ] || return 1
+  declared="$(sed -n 's/^POSTGRES_DB=//p' "$DIR/$ENV_FILE" | head -n 1)"
+  [ -n "$declared" ] || return 1
+  url_db="$(database_name_from_url "$(sed -n 's/^DATABASE_URL=//p' "$DIR/$ENV_FILE" | head -n 1)")"
+  [ -n "$url_db" ] || return 1
+  manifest_url_db="$(database_name_from_url "${DATABASE_URL:-}")"
+  [ -n "$manifest_url_db" ] || return 1
+  [ "$declared" = "$DB_NAME" ] && [ "$url_db" = "$DB_NAME" ] && [ "$manifest_url_db" = "$DB_NAME" ]
 }
 
 # Diagnoses the failure mode this whole script exists to make impossible:
 # something other than the container owns 5432, so the container never bound
 # the host port and a docker-exec create landed in the wrong server.
 diagnose_database() {
-  local owner
-  owner="$(lsof -nP -iTCP:"${POSTGRES_PORT:-5432}" -sTCP:LISTEN 2>/dev/null | awk 'NR==2 {print $1" (pid "$2", user "$3")"}')"
+  local owner endpoint="configured endpoint"
+  owner="$(lsof -nP -iTCP:"${POSTGRES_PORT:-5432}" -sTCP:LISTEN 2>/dev/null | awk 'NR==2 {print $1" (pid "$2", user "$3")"}' || true)"
+  endpoint="$(database_endpoint_from_url "${DATABASE_URL:-}" 2>/dev/null || printf 'configured endpoint')"
   printf '\n'
   warn "The database the tooling created is not the one the application reaches."
   info "Port ${POSTGRES_PORT:-5432} is served by: ${owner:-nothing}"
-  info "DATABASE_URL: ${DATABASE_URL}"
+  info "DATABASE_URL endpoint: $endpoint"
   info "If that is a native PostgreSQL, the Docker container never bound the host port."
   info "Either stop it (brew services stop postgresql@17) or point DATABASE_URL at it."
 }
 
 ensure_database() {
-  local admin_url=""
+  local admin_url="" endpoint="unknown endpoint"
   if command -v psql >/dev/null 2>&1 && [ -n "${DATABASE_URL:-}" ]; then
     admin_url="$(admin_database_url "$DATABASE_URL")"
   fi
@@ -402,6 +442,10 @@ ensure_database() {
       info "Created database ${POSTGRES_DB} through DATABASE_URL."
     fi
   else
+    if ! database_url_uses_shared_postgres; then
+      endpoint="$(database_endpoint_from_url "${DATABASE_URL:-}" 2>/dev/null || printf 'configured endpoint')"
+      die "Cannot prepare PostgreSQL at $endpoint through DATABASE_URL. Install psql or start that database explicitly; refusing to operate the shared Docker PostgreSQL instance."
+    fi
     info "Nothing is answering on ${POSTGRES_PORT:-5432} yet; starting the shared container."
     bash "$REPO_ROOT/scripts/ensure-postgres.sh" "$ENV_FILE" | sed 's/^/    /'
   fi
@@ -1145,10 +1189,9 @@ Start the rest with 'make up C=api,web', or run 'make up C=daemon' from your own
       fi
       offset="$(allocate_offset "$REPO_ROOT")" || die "No free slot left; run 'make gc' or 'make list'."
       local new_backend=$((18080 + offset)) new_frontend=$((13000 + offset))
-      local new_db="multica_$(slugify "$(basename "$REPO_ROOT")")_${offset}"
-      rewrite_env_ports "$ENV_FILE" "$offset" "$new_backend" "$new_frontend" "$new_db"
+      rewrite_env_ports "$ENV_FILE" "$offset" "$new_backend" "$new_frontend"
       load_env_file "$ENV_FILE"
-      info "Allocated slot $offset — backend $new_backend, frontend $new_frontend, database $new_db"
+      info "Allocated slot $offset — backend $new_backend, frontend $new_frontend (database stays $POSTGRES_DB)"
     fi
 
     NAME="${name:-$(slugify "$(basename "$REPO_ROOT")")-${offset}}"
@@ -1235,7 +1278,11 @@ cmd_destroy() {
   resolve_env_for_read "$name"
 
   if [ "$assume_yes" != 1 ]; then
-    printf 'Destroy %s? This drops database %s and profile %s. [y/N] ' "$NAME" "$DB_NAME" "$PROFILE"
+    if [ "$DB_NAME" = "$MAIN_DATABASE_NAME" ]; then
+      printf '销毁 %s？将清理进程和配置 %s，保留共享主库 %s。[y/N] ' "$NAME" "$PROFILE" "$DB_NAME"
+    else
+      printf 'Destroy %s? This drops database %s and profile %s. [y/N] ' "$NAME" "$DB_NAME" "$PROFILE"
+    fi
     read -r reply || reply=n
     case "$reply" in y|Y|yes|YES) ;; *) printf 'Cancelled.\n'; return 0 ;; esac
   fi
@@ -1247,7 +1294,15 @@ cmd_destroy() {
     if ! stop_component "$comp"; then failures=$((failures + 1)); fi
   done
 
-  if command -v psql >/dev/null 2>&1; then
+  # Drop only on agreement (see env_file_agrees_on_database) and never the
+  # shared main database: it outlives every environment registered against it.
+  if [ "$DB_NAME" = "$MAIN_DATABASE_NAME" ]; then
+    ok "database $DB_NAME is the shared main database — left in place, never dropped by destroy"
+    info "Reset it deliberately with ALLOW_MAIN_DB_DROP=1 make db-reset, or by hand via psql."
+  elif ! command -v psql >/dev/null 2>&1; then
+    warn "psql not found; $DB_NAME was left in place."
+    failures=$((failures + 1))
+  elif env_file_agrees_on_database; then
     admin_url="$(admin_database_url "$DATABASE_URL")"
     if PGCONNECT_TIMEOUT=3 psql "$admin_url" -tAc 'SELECT 1' >/dev/null 2>&1; then
       if psql "$admin_url" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"$DB_NAME\" WITH (FORCE)" >/dev/null; then
@@ -1261,7 +1316,8 @@ cmd_destroy() {
       failures=$((failures + 1))
     fi
   else
-    warn "psql not found; $DB_NAME was left in place."
+    warn "refusing to drop database $DB_NAME: the registry and $ENV_FILE must both name it before a drop"
+    info "Compare $DIR/$ENV_FILE with the manifest, resolve by hand, then re-run to release the slot."
     failures=$((failures + 1))
   fi
 

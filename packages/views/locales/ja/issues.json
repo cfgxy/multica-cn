@@ -883,6 +883,8 @@
       "delete_desc": "このコメントは完全に削除され、スレッド内の返信もあわせて削除されます。この操作は元に戻せません。",
       "jump_bottom": "最下部へ",
       "jump_bottom_a11y": "会話の末尾へスクロール",
+      "jump_top": "最上部へ",
+      "jump_top_a11y": "会話の先頭へスクロール",
       "new_count_other": "新着 {{count}} 件",
       "jump_new_a11y_other": "新着 {{count}} 件へ移動",
       "root_collapsed_a11y_other": "{{authors}} のコメント、メッセージ {{count}} 件。タップして展開します。",
