@@ -40,10 +40,12 @@ import {
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { useCreateIssue } from "@/data/mutations/issues";
 import {
+  getNewIssueSubmissionContextGeneration,
+  rememberLastAssigneeAfterSuccessfulCreate,
   seedDraftAssigneeFromMemory,
-  setLastAssigneeFor,
   useNewIssueDraftStore,
 } from "@/data/stores/new-issue-draft-store";
+import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useServerStore } from "@/data/server-store";
 import { useMentionInput } from "@/lib/use-mention-input";
@@ -132,6 +134,12 @@ export default function NewIssueModal() {
     const trimmedTitle = title.trim();
     if (trimmedTitle.length === 0) return;
     const finalDescription = description.serialize().trim();
+    // Capture the context that the request is sent from. The user can dismiss
+    // this modal and switch account or workspace before its response arrives.
+    const submittedServerId = useServerStore.getState().activeServerId;
+    const submittedWorkspaceSlug = useWorkspaceStore.getState().currentWorkspaceSlug;
+    const submittedUserId = useAuthStore.getState().user?.id;
+    const submittedGeneration = getNewIssueSubmissionContextGeneration();
     // Web create-issue parity: bind ONLY uploads the final body still
     // references — deleting the reference line really unbinds the file.
     const attachmentIds = referencedAttachmentIds(
@@ -155,9 +163,24 @@ export default function NewIssueModal() {
       // assignee — not the live draft — only after the server accepted the
       // create. Unassigned is remembered as a value too.
       const { activeServerId } = useServerStore.getState();
-      const slug = useWorkspaceStore.getState().currentWorkspaceSlug;
-      if (activeServerId && slug) {
-        setLastAssigneeFor(activeServerId, slug, assignee ?? null);
+      const workspaceSlug = useWorkspaceStore.getState().currentWorkspaceSlug;
+      const userId = useAuthStore.getState().user?.id;
+      if (submittedWorkspaceSlug && submittedUserId && workspaceSlug && userId) {
+        rememberLastAssigneeAfterSuccessfulCreate(
+          {
+            serverId: submittedServerId,
+            workspaceSlug: submittedWorkspaceSlug,
+            userId: submittedUserId,
+            generation: submittedGeneration,
+          },
+          {
+            serverId: activeServerId,
+            workspaceSlug,
+            userId,
+            generation: getNewIssueSubmissionContextGeneration(),
+          },
+          assignee ?? null,
+        );
       }
       router.back();
     } catch (err) {

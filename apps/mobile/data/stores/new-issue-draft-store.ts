@@ -129,6 +129,13 @@ export function useNewIssueDraftResetOnWorkspaceChange(wsId: string | null) {
 
 type LastAssigneeMemory = Record<string, Partial<Record<string, AssigneeValue>>>;
 
+export interface NewIssueSubmissionContext {
+  serverId: string;
+  workspaceSlug: string;
+  userId: string;
+  generation: number;
+}
+
 interface NewIssueLastAssigneeState {
   byServer: LastAssigneeMemory;
   setLastAssignee: (serverId: string, slug: string, value: AssigneeValue) => void;
@@ -175,6 +182,41 @@ export function setLastAssigneeFor(
   value: AssigneeValue,
 ): void {
   useNewIssueLastAssigneeStore.getState().setLastAssignee(serverId, slug, value);
+}
+
+let submissionContextGeneration = 0;
+
+/** Invalidate creates that were sent from a context that is no longer active. */
+export function invalidateNewIssueSubmissionContext(): void {
+  submissionContextGeneration += 1;
+}
+
+/** Return the generation to capture immediately before sending a create request. */
+export function getNewIssueSubmissionContextGeneration(): number {
+  return submissionContextGeneration;
+}
+
+/**
+ * Persist a successful create only when its original account and workspace
+ * and generation are still active. A late mutation result must never update
+ * another context, including one that changed away and back before it arrived.
+ */
+export function rememberLastAssigneeAfterSuccessfulCreate(
+  submitted: NewIssueSubmissionContext,
+  current: NewIssueSubmissionContext | null,
+  value: AssigneeValue,
+): boolean {
+  if (
+    !current ||
+    submitted.serverId !== current.serverId ||
+    submitted.workspaceSlug !== current.workspaceSlug ||
+    submitted.userId !== current.userId ||
+    submitted.generation !== current.generation
+  ) {
+    return false;
+  }
+  setLastAssigneeFor(submitted.serverId, submitted.workspaceSlug, value);
+  return true;
 }
 
 /** Drop the whole server subtree — logout / server removal. */
