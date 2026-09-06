@@ -107,11 +107,13 @@ function ResultRow({
           ? t(($) => $.execution_profile.reason_agent_archived)
           : row.reason === "runtime_unavailable"
             ? t(($) => $.execution_profile.reason_runtime_unavailable)
-            : row.reason === "thinking_level_unsupported"
-              ? t(($) => $.execution_profile.reason_thinking_unsupported)
-              : row.reason === "update_failed"
-                ? t(($) => $.execution_profile.reason_update_failed)
-                : (row.reason ?? null);
+            : row.reason === "runtime_forbidden"
+              ? t(($) => $.execution_profile.reason_runtime_forbidden)
+              : row.reason === "thinking_level_unsupported"
+                ? t(($) => $.execution_profile.reason_thinking_unsupported)
+                : row.reason === "update_failed"
+                  ? t(($) => $.execution_profile.reason_update_failed)
+                  : (row.reason ?? null);
 
   const icon =
     row.status === "applied" ? (

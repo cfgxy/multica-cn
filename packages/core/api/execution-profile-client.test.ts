@@ -165,6 +165,62 @@ describe("execution profile writes", () => {
     });
   });
 
+  it("keeps null and \"\" apart when parsing an entry", async () => {
+    // The two states drive different activation behaviour — null leaves the
+    // member's thinking level alone, "" clears it — so coercing null to ""
+    // here would silently turn "no opinion" into an explicit clear.
+    stubJSON({
+      agent_id: "a1",
+      runtime_id: "r1",
+      model: "gpt-5",
+      thinking_level: null,
+      updated_at: "2026-09-06T00:00:00Z",
+    });
+    const noOpinion = await client().upsertExecutionProfileEntry("w1", "p1", {
+      agent_id: "a1",
+      runtime_id: "r1",
+      model: "gpt-5",
+    });
+    expect(noOpinion.thinking_level).toBeNull();
+
+    stubJSON({
+      agent_id: "a1",
+      runtime_id: "r1",
+      model: "gpt-5",
+      thinking_level: "",
+      updated_at: "2026-09-06T00:00:00Z",
+    });
+    const cleared = await client().upsertExecutionProfileEntry("w1", "p1", {
+      agent_id: "a1",
+      runtime_id: "r1",
+      model: "gpt-5",
+      thinking_level: "",
+    });
+    expect(cleared.thinking_level).toBe("");
+  });
+
+  it("sends an explicit empty thinking level through untouched", async () => {
+    const fetchMock = stubJSON({
+      agent_id: "a1",
+      runtime_id: "r1",
+      model: "gpt-5",
+      thinking_level: "",
+      updated_at: "2026-09-06T00:00:00Z",
+    });
+
+    await client().upsertExecutionProfileEntry("w1", "p1", {
+      agent_id: "a1",
+      runtime_id: "r1",
+      model: "gpt-5",
+      thinking_level: "",
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    // Dropping the key would make the server read "no opinion" and keep the
+    // member's stale level next to the new runtime and model.
+    expect(JSON.parse(String(init.body))).toHaveProperty("thinking_level", "");
+  });
+
   it("targets the member slot on entry delete", async () => {
     // 204 carries no body, so it cannot go through stubJSON.
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
