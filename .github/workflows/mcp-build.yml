@@ -1,0 +1,88 @@
+name: MCP Server Build
+
+# RUYI-82: Owner 决策「像 mobile 那样放到同一个仓库，push 时自动构建」。
+# apps/mcp 变更即自动构建 npm 包（tarball）并上传为 Actions artifact，
+# 供 QA/使用方下载核验。与 mobile-android-build.yml 的分阶语义一致：
+# - push main / workflow_dispatch：构建并上传 artifact（含 SHA256 校验值）。
+# - pull_request：同样构建上传，仅用于 PR 门禁，不产生额外发布动作。
+#
+# 该 workflow 不做发布（npm registry 发布另行决策）；构建结果由 Leader
+# 在 push 后核对。
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/mcp/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "turbo.json"
+      - ".github/workflows/mcp-build.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "apps/mcp/**"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "turbo.json"
+      - ".github/workflows/mcp-build.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm exec turbo typecheck --filter=@multica/mcp
+
+      - name: Lint
+        run: pnpm exec turbo lint --filter=@multica/mcp
+
+      - name: Test
+        run: pnpm exec turbo test --filter=@multica/mcp
+
+      - name: Build
+        run: pnpm exec turbo build --filter=@multica/mcp
+
+      - name: Pack
+        run: pnpm --filter @multica/mcp pack --pack-destination "$RUNNER_TEMP"
+
+      - name: Checksum
+        working-directory: ${{ runner.temp }}
+        run: |
+          for f in multica-mcp-*.tgz; do
+            sha256sum "$f" | tee "$f.sha256"
+          done
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: multica-mcp-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/multica-mcp-*.tgz
+            ${{ runner.temp }}/multica-mcp-*.tgz.sha256
+          if-no-files-found: error

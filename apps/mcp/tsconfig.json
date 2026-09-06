@@ -1,0 +1,14 @@
+{
+  "extends": "@multica/tsconfig/base.json",
+  "compilerOptions": {
+    // Node runs this package as native ESM: NodeNext resolution makes tsc
+    // enforce the explicit `.js` specifiers the runtime requires, which the
+    // shared base config's `bundler` resolution would silently skip.
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "types": ["node"],
+    "noEmit": true
+  },
+  "include": ["src", "test"],
+  "exclude": ["node_modules", "dist"]
+}
