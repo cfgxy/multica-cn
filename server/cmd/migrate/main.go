@@ -298,11 +298,11 @@ var concurrentIndexCleanups = map[string]string{
 	"443_issue_project_status_index":                            "idx_issue_project_status",
 	"445_comment_delegated_failure_unsettled_index":             "idx_comment_delegated_failure_unsettled",
 	"446_issue_properties_bigm_index":                           "idx_issue_properties_bigm",
-	"453_admin_audit_log_actor_index":                           "idx_admin_audit_log_actor_created",
-	"455_execution_profile_name_index":                          "idx_execution_profile_workspace_name",
-	"456_execution_profile_entry_index":                         "idx_execution_profile_entry_profile_agent",
-	"458_marketplace_plugin_listing_package_index":              "idx_marketplace_plugin_listing_package",
-	"459_marketplace_plugin_listing_version_index":              "idx_marketplace_plugin_listing_version",
+	"903_admin_audit_log_actor_index":                           "idx_admin_audit_log_actor_created",
+	"905_execution_profile_name_index":                          "idx_execution_profile_workspace_name",
+	"906_execution_profile_entry_index":                         "idx_execution_profile_entry_profile_agent",
+	"908_marketplace_plugin_listing_package_index":              "idx_marketplace_plugin_listing_package",
+	"909_marketplace_plugin_listing_version_index":              "idx_marketplace_plugin_listing_version",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
