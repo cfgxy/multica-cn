@@ -58,6 +58,7 @@ import {
   PickerEmpty,
 } from "../../issues/components/pickers/property-picker";
 import { ChevronDown, UserPlus } from "lucide-react";
+import { ExecutionProfilePicker } from "./execution-profile-picker";
 import { toast } from "sonner";
 import type { Squad, SquadMember, SquadMemberStatus, SquadMemberStatusValue, Agent, MemberWithUser } from "@multica/core/types";
 import { useT } from "../../i18n";
@@ -1120,6 +1121,7 @@ function SquadMembersTab({
   const { t } = useT("squads");
   const timeAgo = useTimeAgo();
   const p = useWorkspacePaths();
+  const wsId = useWorkspaceId();
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
@@ -1130,7 +1132,8 @@ function SquadMembersTab({
           </p>
         </div>
         {canManage && (
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <ExecutionProfilePicker wsId={wsId} />
             {createAgentHref && (
               <Button
                 size="sm"
