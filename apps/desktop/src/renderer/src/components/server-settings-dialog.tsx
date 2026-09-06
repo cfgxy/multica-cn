@@ -371,7 +371,7 @@ export function ServerSettingsDialog({
                         )}
                         {isActive && (
                           <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-micro font-medium text-primary">
-                            {t(($) => $.server.switch_confirm)}
+                            {t(($) => $.server.current)}
                           </span>
                         )}
                       </div>
