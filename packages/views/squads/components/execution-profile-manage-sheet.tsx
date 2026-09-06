@@ -492,6 +492,9 @@ function MemberEntryCard({
     entry?.runtime_id ?? (isAgentRuntimeBound(agent) ? agent.runtime_id : ""),
   );
   const [model, setModel] = useState(entry?.model ?? agent.model ?? "");
+  // The drawer always states an opinion: "" here is the field's "runtime
+  // default" choice, which the entry stores as an explicit clear. A stored
+  // null (no opinion, only reachable via the API) seeds the same empty field.
   const [thinking, setThinking] = useState(
     entry?.thinking_level ?? agent.thinking_level ?? "",
   );
@@ -500,7 +503,7 @@ function MemberEntryCard({
     if (!entry) return;
     setRuntimeId(entry.runtime_id);
     setModel(entry.model);
-    setThinking(entry.thinking_level);
+    setThinking(entry.thinking_level ?? "");
   }, [entry?.runtime_id, entry?.model, entry?.thinking_level]);
 
   const runtime = runtimes.find((r) => r.id === runtimeId) ?? null;
@@ -510,7 +513,9 @@ function MemberEntryCard({
     entry === null ||
     entry.runtime_id !== runtimeId ||
     entry.model !== model ||
-    entry.thinking_level !== thinking;
+    // A stored null and a staged "" differ: saving turns "no opinion" into an
+    // explicit clear, so that must count as a change worth saving.
+    (entry.thinking_level ?? null) !== thinking;
 
   return (
     <div className="space-y-2 rounded-lg border p-3">

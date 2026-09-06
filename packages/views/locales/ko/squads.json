@@ -127,6 +127,7 @@
     "reason_agent_not_found": "더 이상 이 워크스페이스의 멤버가 아닙니다",
     "reason_agent_archived": "보관된 멤버입니다",
     "reason_runtime_unavailable": "지정된 런타임을 사용할 수 없습니다",
+    "reason_runtime_forbidden": "이 런타임은 현재 비공개이며 소유자만 사용할 수 있습니다",
     "reason_thinking_unsupported": "현재 모델이 해당 사고 수준을 지원하지 않습니다",
     "reason_update_failed": "쓰기에 실패했습니다",
     "active_badge": "적용 중",

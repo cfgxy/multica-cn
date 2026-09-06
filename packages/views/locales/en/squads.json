@@ -130,6 +130,7 @@
     "reason_agent_not_found": "No longer a member of this workspace",
     "reason_agent_archived": "Member is archived",
     "reason_runtime_unavailable": "The configured runtime is no longer available",
+    "reason_runtime_forbidden": "The runtime is now private and only its owner can use it",
     "reason_thinking_unsupported": "The current model does not accept that thinking level",
     "reason_update_failed": "The write failed",
     "active_badge": "Active",

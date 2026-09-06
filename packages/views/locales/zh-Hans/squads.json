@@ -127,6 +127,7 @@
     "reason_agent_not_found": "成员已不在当前空间",
     "reason_agent_archived": "成员已归档",
     "reason_runtime_unavailable": "指定的运行时已不可用",
+    "reason_runtime_forbidden": "该运行时现为私有，仅其所有者可使用",
     "reason_thinking_unsupported": "当前模型不支持该思考等级",
     "reason_update_failed": "写入失败",
     "active_badge": "已激活",

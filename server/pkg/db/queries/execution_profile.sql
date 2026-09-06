@@ -100,14 +100,22 @@ WHERE id = $1 AND active_execution_profile_id = $2;
 -- from another workspace cannot be reached, and by archived_at so an archived
 -- agent is reported as skipped instead of silently reconfigured.
 --
--- thinking_level uses sqlc.narg: NULL leaves the agent's current value alone
--- (the profile did not express an opinion), which is distinct from the agent
--- API's '' meaning "clear".
+-- thinking_level is tri-state, which one nullable parameter cannot express:
+--   thinking_level_present = false → the entry has no opinion, keep the
+--     agent's current value.
+--   present = true, narg NULL      → the entry says "runtime default", so the
+--     column is cleared. COALESCE could never reach this state, which is why
+--     an entry saved with an empty thinking level used to leave a stale
+--     `high` on the agent while runtime and model were overwritten.
+--   present = true, narg set       → write that level.
 UPDATE agent
 SET runtime_id     = @runtime_id,
     runtime_mode   = @runtime_mode,
     model          = @model,
-    thinking_level = COALESCE(sqlc.narg('thinking_level'), thinking_level),
+    thinking_level = CASE
+        WHEN @thinking_level_present::boolean THEN sqlc.narg('thinking_level')
+        ELSE thinking_level
+    END,
     updated_at     = now()
 WHERE id = @id AND workspace_id = @workspace_id AND archived_at IS NULL
 RETURNING *;

@@ -16,33 +16,44 @@ UPDATE agent
 SET runtime_id     = $1,
     runtime_mode   = $2,
     model          = $3,
-    thinking_level = COALESCE($4, thinking_level),
+    thinking_level = CASE
+        WHEN $4::boolean THEN $5
+        ELSE thinking_level
+    END,
     updated_at     = now()
-WHERE id = $5 AND workspace_id = $6 AND archived_at IS NULL
+WHERE id = $6 AND workspace_id = $7 AND archived_at IS NULL
 RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters
 `
 
 type ApplyExecutionProfileEntryToAgentParams struct {
-	RuntimeID     pgtype.UUID `json:"runtime_id"`
-	RuntimeMode   string      `json:"runtime_mode"`
-	Model         pgtype.Text `json:"model"`
-	ThinkingLevel pgtype.Text `json:"thinking_level"`
-	ID            pgtype.UUID `json:"id"`
-	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	RuntimeID            pgtype.UUID `json:"runtime_id"`
+	RuntimeMode          string      `json:"runtime_mode"`
+	Model                pgtype.Text `json:"model"`
+	ThinkingLevelPresent bool        `json:"thinking_level_present"`
+	ThinkingLevel        pgtype.Text `json:"thinking_level"`
+	ID                   pgtype.UUID `json:"id"`
+	WorkspaceID          pgtype.UUID `json:"workspace_id"`
 }
 
 // The activation write. Scoped by workspace_id so a stale or forged agent_id
 // from another workspace cannot be reached, and by archived_at so an archived
 // agent is reported as skipped instead of silently reconfigured.
 //
-// thinking_level uses sqlc.narg: NULL leaves the agent's current value alone
-// (the profile did not express an opinion), which is distinct from the agent
-// API's ” meaning "clear".
+// thinking_level is tri-state, which one nullable parameter cannot express:
+//
+//	thinking_level_present = false → the entry has no opinion, keep the
+//	  agent's current value.
+//	present = true, narg NULL      → the entry says "runtime default", so the
+//	  column is cleared. COALESCE could never reach this state, which is why
+//	  an entry saved with an empty thinking level used to leave a stale
+//	  `high` on the agent while runtime and model were overwritten.
+//	present = true, narg set       → write that level.
 func (q *Queries) ApplyExecutionProfileEntryToAgent(ctx context.Context, arg ApplyExecutionProfileEntryToAgentParams) (Agent, error) {
 	row := q.db.QueryRow(ctx, applyExecutionProfileEntryToAgent,
 		arg.RuntimeID,
 		arg.RuntimeMode,
 		arg.Model,
+		arg.ThinkingLevelPresent,
 		arg.ThinkingLevel,
 		arg.ID,
 		arg.WorkspaceID,
