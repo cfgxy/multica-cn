@@ -138,6 +138,10 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"workspace":                          workspaceDelete,
 	"workspace_invitation":               workspaceDelete,
 	"workspace_share_link":               workspaceDelete,
+	// Marketplace catalog rows reference a publisher workspace's immutable
+	// versions (RUYI-62) and own no artifact bytes. Teardown deletes them by
+	// publisher_workspace_id, so the table carries no workspace_id column.
+	"marketplace_plugin_listing": workspaceDelete,
 }
 
 func TestWorkspaceDeletionManifestCoversPublicSchema(t *testing.T) {
