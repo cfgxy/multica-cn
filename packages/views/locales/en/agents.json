@@ -9,7 +9,8 @@
     "of_total": "{{visible}} of {{total}}",
     "list_load_failed": "Couldn't load agents",
     "list_load_failed_default": "Something went wrong fetching the agent list.",
-    "try_again": "Try again"
+    "try_again": "Try again",
+    "list_loading": "Loading agents…"
   },
   "scope": {
     "mine": "Mine",
@@ -1017,5 +1018,11 @@
     "created_done": "Done",
     "edit_title": "Edit webhook",
     "edit_url_unchanged": "The link and its token stay the same — only the name and prompt change."
+  },
+  "mobile": {
+    "tasks": {
+      "empty": "No active runs right now.",
+      "agent_missing": "Agent not found."
+    }
   }
 }

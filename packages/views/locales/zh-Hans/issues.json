@@ -1006,13 +1006,18 @@
     },
     "agent_activity": {
       "runs_count": "运行 · {{count}} 次",
-      "badge_a11y": "Agent 运行中 —— 查看运行记录"
+      "badge_a11y": "Agent 运行中 —— 查看运行记录",
+      "row_running_a11y": "智能体正在处理此任务",
+      "row_queued_a11y": "智能体任务已排队"
     },
     "description_field": {
       "placeholder": "描述…（输入 @ 可提及）"
     },
     "new": {
       "submit_a11y": "创建任务"
+    },
+    "tasks": {
+      "issue_unavailable": "任务不可见"
     }
   }
 }

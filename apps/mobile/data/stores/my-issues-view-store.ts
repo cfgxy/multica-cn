@@ -29,7 +29,11 @@ interface MyIssuesViewState {
 }
 
 export const useMyIssuesViewStore = create<MyIssuesViewState>((set) => ({
-  scope: "assigned",
+  // Mobile default is the merged 待我推进 view, not web's "assigned": in
+  // squad-driven workspaces `assignee_id = me` is legitimately empty most
+  // days (issues carry the squad's UUID), which read as "the tab is broken"
+  // (RUYI-76 ①). The actionable union answers "what waits on me" instead.
+  scope: "actionable",
   statusFilters: [],
   priorityFilters: [],
   setScope: (scope) => set({ scope }),
