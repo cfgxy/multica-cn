@@ -3353,6 +3353,43 @@ export const WorkspaceMcpServerSchema = z.object({
 
 export const WorkspaceMcpServerListSchema = z.array(WorkspaceMcpServerSchema);
 
+export const MarketplacePlaceholderSchema = z.object({
+  key: z.string().default(""),
+  label: z.string().default(""),
+  description: z.string().default(""),
+  secret: z.boolean().default(false),
+  required: z.boolean().default(false),
+}).loose();
+
+/**
+ * One marketplace catalog entry.
+ *
+ * Like WorkspaceMcpServerSchema, this one is NOT `.loose()`. The marketplace
+ * listing sits next to the write-only MCP boundary, and a server that
+ * regressed to returning a rendered entry (or the raw `config_template`) would
+ * have it land in the parsed object and in the query cache. Stripping unknown
+ * keys keeps the client holding only what the listing is allowed to show.
+ *
+ * `kind` stays a plain string so an extension kind added by a newer backend
+ * still parses; the listing has a default branch for one it cannot install.
+ */
+export const MarketplaceItemSchema = z.object({
+  key: z.string().default(""),
+  kind: z.string().default(""),
+  name: z.string().default(""),
+  summary: z.string().default(""),
+  description: z.string().default(""),
+  publisher: z.string().default(""),
+  homepage_url: z.string().default(""),
+  categories: z.array(z.string()).default([]),
+  source_url: z.string().optional(),
+  placeholders: z.array(MarketplacePlaceholderSchema).optional(),
+  installed: z.boolean().default(false),
+  installed_id: z.string().optional(),
+});
+
+export const MarketplaceItemListSchema = z.array(MarketplaceItemSchema);
+
 export const EMPTY_WORKSPACE_MCP_SERVER: WorkspaceMcpServer = {
   id: "",
   workspace_id: "",

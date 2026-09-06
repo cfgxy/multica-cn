@@ -52,6 +52,7 @@ import type {
   Workspace,
   WorkspaceRepo,
   WorkspaceMcpServer,
+  MarketplaceItem,
   MemberWithUser,
   User,
   Skill,
@@ -453,6 +454,7 @@ import {
   PluginPreviewSchema,
   WorkspaceMcpServerListSchema,
   WorkspaceMcpServerSchema,
+  MarketplaceItemListSchema,
   ShareLinkSchema,
   ShareLinkListResponseSchema,
   ShareLinkInfoSchema,
@@ -2712,6 +2714,46 @@ export class ApiClient {
       `/api/workspaces/${workspaceId}/mcp-servers/${encodeURIComponent(serverId)}`,
       { method: "DELETE" },
     );
+  }
+
+  /**
+   * The unified marketplace catalog, annotated with what this workspace has
+   * already installed. Filtering is server-side so the listing stays correct
+   * as the catalog grows.
+   */
+  async listMarketplaceItems(
+    filter: { kind?: string; q?: string } = {},
+  ): Promise<MarketplaceItem[]> {
+    const params = new URLSearchParams();
+    if (filter.kind) params.set("kind", filter.kind);
+    if (filter.q) params.set("q", filter.q);
+    const query = params.toString();
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/items${query ? `?${query}` : ""}`,
+    );
+    return parseWithFallback(raw, MarketplaceItemListSchema, [] as MarketplaceItem[], {
+      endpoint: "GET /api/marketplace/items",
+    });
+  }
+
+  /**
+   * Installs a catalog entry into the workspace.
+   *
+   * `values` carries the placeholder values an MCP entry needs, secrets
+   * included — it goes up and is never read back. The response is
+   * intentionally left unparsed here: a skill install answers with an import
+   * envelope and an MCP install with a server summary, and the caller knows
+   * which it asked for.
+   */
+  async installMarketplaceItem(input: {
+    key: string;
+    name?: string;
+    values?: Record<string, string>;
+  }): Promise<unknown> {
+    return this.fetch<unknown>(`/api/marketplace/install`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
   }
 
   /** The workspace MCP servers assigned to this agent, with their toggles. */

@@ -2197,6 +2197,16 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				})
 			})
 
+			// Marketplace — the unified place to discover and install the
+			// platform's dynamic extension capabilities. Listing is
+			// member-visible; installing writes to the workspace's shared
+			// library and enforces the human owner/admin gate in the handler,
+			// the same one adding an MCP server by hand takes.
+			r.Route("/api/marketplace", func(r chi.Router) {
+				r.Get("/items", h.ListMarketplaceItems)
+				r.Post("/install", h.InstallMarketplaceItem)
+			})
+
 			// Dashboard — workspace-wide token + run-time rollups for the
 			// "/{slug}/dashboard" page. Optional ?project_id filter scopes
 			// the rollup to a single project.

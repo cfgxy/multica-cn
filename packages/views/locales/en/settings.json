@@ -284,6 +284,31 @@
       "start_date": "Start date"
     }
   },
+  "marketplace": {
+    "title": "Marketplace",
+    "description": "Discover skills and MCP servers and install them into this workspace. An install uses the same paths as adding one by hand, so what you get here behaves identically.",
+    "browse_title": "Browse",
+    "binding_note": "Installing adds the item to this workspace. It reaches no agent until an agent owner assigns it on the agent's own tab.",
+    "search_placeholder": "Search the marketplace",
+    "filter_all": "All",
+    "filter_skills": "Skills",
+    "filter_mcp": "MCP servers",
+    "empty_title": "Nothing matches",
+    "empty_description": "Try a different search term, or clear the filter to see everything available.",
+    "installed_badge": "Installed",
+    "install": "Install",
+    "install_again": "Install again",
+    "install_title": "Install {{name}}",
+    "server_name": "Server name",
+    "name_taken": "This workspace already has a server with that name.",
+    "skill_source_note": "The skill will be imported from {{url}}.",
+    "optional": "(optional)",
+    "secret_note": "Credentials are stored write-only — they are never shown again, and changing one means supplying it in full.",
+    "cancel": "Cancel",
+    "installed_toast": "{{name}} installed",
+    "install_failed_toast": "Install failed",
+    "admin_only_note": "Only workspace owners and admins can install from the marketplace."
+  },
   "mcp": {
     "title": "MCP",
     "description": "A library of MCP servers for this workspace. Adding one here gives it to no agent — an agent owner assigns it on the agent's own MCP tab, where it also gets a per-agent on/off toggle.",
@@ -329,6 +354,7 @@
       "properties": "Properties",
       "quick_actions": "Quick Actions",
       "plugins": "Plugins",
+      "marketplace": "Marketplace",
       "mcp": "MCP",
       "billing": "Billing"
     }
