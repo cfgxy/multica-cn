@@ -5,6 +5,7 @@ import {
   TOP_CHIP_MIN_GAP_PX,
   assignChipStackSlots,
   computeBottomChipVisible,
+  computeJumpChipVisible,
   computeTopChipVisible,
   distFromPhysicalTop,
   distToPhysicalEnd,
@@ -155,57 +156,90 @@ describe("top chip (RUYI-81) — physical scroll-start geometry", () => {
   });
 });
 
-describe("assignChipStackSlots (RUYI-81)", () => {
-  it("packs visible chips into bottom-up slots in fixed order new→bottom→top", () => {
-    expect(assignChipStackSlots({ newChip: true, bottomChip: true, topChip: true })).toEqual({
+describe("assignChipStackSlots (RUYI-81 / RUYI-101)", () => {
+  it("只打包底部锚定的两个 chip，to-top 已移出该栈（RUYI-101）", () => {
+    expect(assignChipStackSlots({ newChip: true, bottomChip: true })).toEqual({
       newChip: 0,
       bottomChip: 1,
-      topChip: 2,
     });
-    expect(assignChipStackSlots({ newChip: false, bottomChip: true, topChip: true })).toEqual({
+    expect(assignChipStackSlots({ newChip: false, bottomChip: true })).toEqual({
       newChip: -1,
       bottomChip: 0,
-      topChip: 1,
     });
   });
 
   it("gives a lone chip the lowest (thumb-closest) slot", () => {
-    expect(assignChipStackSlots({ newChip: false, bottomChip: false, topChip: true })).toEqual({
-      newChip: -1,
-      bottomChip: -1,
-      topChip: 0,
-    });
-    expect(assignChipStackSlots({ newChip: false, bottomChip: true, topChip: false })).toEqual({
+    expect(assignChipStackSlots({ newChip: false, bottomChip: true })).toEqual({
       newChip: -1,
       bottomChip: 0,
-      topChip: -1,
     });
-    expect(assignChipStackSlots({ newChip: true, bottomChip: false, topChip: false })).toEqual({
+    expect(assignChipStackSlots({ newChip: true, bottomChip: false })).toEqual({
       newChip: 0,
       bottomChip: -1,
-      topChip: -1,
     });
   });
 
   it("never assigns two chips the same slot", () => {
     for (const newChip of [true, false]) {
       for (const bottomChip of [true, false]) {
-        for (const topChip of [true, false]) {
-          const slots = assignChipStackSlots({ newChip, bottomChip, topChip });
-          const used = [slots.newChip, slots.bottomChip, slots.topChip].filter(
-            (s) => s >= 0,
-          );
-          expect(new Set(used).size).toBe(used.length);
-        }
+        const slots = assignChipStackSlots({ newChip, bottomChip });
+        const used = [slots.newChip, slots.bottomChip].filter((s) => s >= 0);
+        expect(new Set(used).size).toBe(used.length);
       }
     }
   });
 
   it("hidden chips get -1", () => {
-    expect(assignChipStackSlots({ newChip: false, bottomChip: false, topChip: false })).toEqual({
+    expect(assignChipStackSlots({ newChip: false, bottomChip: false })).toEqual({
       newChip: -1,
       bottomChip: -1,
-      topChip: -1,
     });
+  });
+});
+
+describe("computeJumpChipVisible (RUYI-101)", () => {
+  it("几何与滚动活跃必须同时成立才显示", () => {
+    expect(computeJumpChipVisible(true, true)).toBe(true);
+    expect(computeJumpChipVisible(true, false)).toBe(false);
+    expect(computeJumpChipVisible(false, true)).toBe(false);
+    expect(computeJumpChipVisible(false, false)).toBe(false);
+  });
+
+  it("位于物理顶部/底部时，即使刚滚动过也不显示对应 chip", () => {
+    // 用户一路滚到底：滚动活跃为 true，但到底 chip 的几何条件已不成立。
+    const atEnd: ScrollGeometry = {
+      contentHeight: 4000,
+      offsetY: 3300,
+      viewportHeight: 700,
+    };
+    expect(
+      computeJumpChipVisible(computeBottomChipVisible(atEnd), true),
+    ).toBe(false);
+    // 同理，滚回顶部后到顶 chip 不该驻留。
+    const atTop: ScrollGeometry = {
+      contentHeight: 4000,
+      offsetY: 0,
+      viewportHeight: 700,
+    };
+    expect(computeJumpChipVisible(computeTopChipVisible(atTop), true)).toBe(
+      false,
+    );
+  });
+
+  it("旋转/内容尺寸变化只改几何，不足以让 chip 驻留", () => {
+    // 非滚动事件把几何刷成「远离两端」，但没有滚动活跃 → 仍隐藏。
+    const mid: ScrollGeometry = {
+      contentHeight: 4000,
+      offsetY: 1200,
+      viewportHeight: 700,
+    };
+    expect(computeBottomChipVisible(mid)).toBe(true);
+    expect(computeTopChipVisible(mid)).toBe(true);
+    expect(computeJumpChipVisible(computeBottomChipVisible(mid), false)).toBe(
+      false,
+    );
+    expect(computeJumpChipVisible(computeTopChipVisible(mid), false)).toBe(
+      false,
+    );
   });
 });
