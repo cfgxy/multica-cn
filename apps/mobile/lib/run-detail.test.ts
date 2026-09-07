@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
 import type { TimelineItem } from "@multica/core/task-transcript";
-import type { AgentTask } from "@multica/core/types";
+import type { AgentTask, TaskMessagePayload } from "@multica/core/types";
 import {
   buildRunStepViews,
   cancelReasonLabel,
@@ -12,6 +12,7 @@ import {
   runErrorText,
   runOutcomeSummary,
   runStepCopyText,
+  runTimelineItems,
   redactedDetailBody,
 } from "./run-detail";
 
@@ -119,6 +120,101 @@ describe("runErrorText — failure/cancel panel exit (RUYI-33 review fix)", () =
     const r = runErrorText(err);
     expect(r.truncated).toBe(true);
     expect(r.body).not.toContain(secret);
+  });
+});
+
+describe("runTimelineItems — 流式片段聚合（与 Web 同一语义）", () => {
+  function msg(overrides: Partial<TaskMessagePayload>): TaskMessagePayload {
+    return {
+      task_id: "t1",
+      issue_id: "i1",
+      seq: 1,
+      type: "text",
+      ...overrides,
+    } as TaskMessagePayload;
+  }
+
+  it("把相邻的 text 片段合并成完整段落", () => {
+    const items = runTimelineItems([
+      msg({ seq: 1, type: "text", content: "这句话" }),
+      msg({ seq: 2, type: "text", content: "被 daemon" }),
+      msg({ seq: 3, type: "text", content: "切成了三片。" }),
+    ]);
+    expect(items).toHaveLength(1);
+    expect(items[0]?.content).toBe("这句话被 daemon切成了三片。");
+  });
+
+  it("按 seq 排序后再合并，乱序到达不产生错位段落", () => {
+    const items = runTimelineItems([
+      msg({ seq: 2, type: "text", content: "world" }),
+      msg({ seq: 1, type: "text", content: "hello " }),
+    ]);
+    expect(items).toHaveLength(1);
+    expect(items[0]?.content).toBe("hello world");
+  });
+
+  it("thinking 与 text 类型切换会中断合并", () => {
+    const items = runTimelineItems([
+      msg({ seq: 1, type: "thinking", content: "先想" }),
+      msg({ seq: 2, type: "thinking", content: "一下" }),
+      msg({ seq: 3, type: "text", content: "再答" }),
+    ]);
+    expect(items.map((i) => [i.type, i.content])).toEqual([
+      ["thinking", "先想一下"],
+      ["text", "再答"],
+    ]);
+  });
+
+  it("工具调用会中断合并，且时序与配对不变", () => {
+    const items = runTimelineItems([
+      msg({ seq: 1, type: "text", content: "调用前" }),
+      msg({ seq: 2, type: "tool_use", tool: "Bash", input: { command: "pnpm test" } }),
+      msg({ seq: 3, type: "tool_result", tool: "Bash", output: `"ok"` }),
+      msg({ seq: 4, type: "text", content: "调用后A" }),
+      msg({ seq: 5, type: "text", content: "调用后B" }),
+    ]);
+    expect(items.map((i) => i.type)).toEqual([
+      "text",
+      "tool_use",
+      "tool_result",
+      "text",
+    ]);
+    expect(items[3]?.content).toBe("调用后A调用后B");
+  });
+
+  it("合并后的段落仍然脱敏", () => {
+    const items = runTimelineItems([
+      msg({ seq: 1, type: "text", content: "key is " }),
+      msg({ seq: 2, type: "text", content: SECRET }),
+    ]);
+    expect(items[0]?.content).not.toContain(SECRET);
+    expect(items[0]?.content).toContain("[REDACTED API KEY]");
+  });
+
+  it("合并后的时间线喂给 buildRunStepViews 只产出一行完整正文", () => {
+    const views = buildRunStepViews(
+      runTimelineItems([
+        msg({ seq: 1, type: "text", content: "第一段", created_at: "2026-08-30T10:00:00Z" }),
+        msg({ seq: 2, type: "text", content: "第二段", created_at: "2026-08-30T10:00:01Z" }),
+      ]),
+      Date.parse("2026-08-30T10:00:00Z"),
+    );
+    expect(views).toHaveLength(1);
+    expect(views[0]?.kind).toBe("text");
+    if (views[0]?.kind === "text") {
+      expect(views[0].body.body).toBe("第一段第二段");
+    }
+  });
+
+  it("复制全文按合并后的段落输出，不再逐片重复表头", () => {
+    const text = runCopyAllText(
+      runTimelineItems([
+        msg({ seq: 1, type: "text", content: "上半句" }),
+        msg({ seq: 2, type: "text", content: "下半句" }),
+      ]),
+    );
+    expect(text).toContain("上半句下半句");
+    expect(text.split("\n\n")).toHaveLength(1);
   });
 });
 
