@@ -39,6 +39,7 @@ import {
   runErrorText,
   runOutcomeSummary,
   runStatusLabel,
+  runTimelineItems,
 } from "@/lib/run-detail";
 import {
   failureReasonLabel,
@@ -79,7 +80,10 @@ export default function RunDetailRoute() {
     [taskId, qc],
   );
 
-  const items = useMemo(() => messages ?? [], [messages]);
+  // 与 Web 一致：原始 task-messages 先经 runTimelineItems（排序 → 合并相邻
+  // text/thinking 流式片段 → 脱敏），再交给渲染与复制出口；直接用原始
+  // messages 会把同一句回复拆成许多细碎行。
+  const items = useMemo(() => runTimelineItems(messages ?? []), [messages]);
   const views = useMemo(() => buildRunStepViews(items), [items]);
   const outcome = useMemo(() => runOutcomeSummary(items), [items]);
   const durationMs = task ? runDurationMs(task) : null;
