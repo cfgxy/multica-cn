@@ -126,6 +126,14 @@
     "export_svg": "Download SVG",
     "export_source": "Download .mmd"
   },
+  "table": {
+    "row_detail": {
+      "position": "Row {{index}} of {{total}}",
+      "prev_row": "Previous row",
+      "next_row": "Next row",
+      "unnamed_column": "Column {{index}}"
+    }
+  },
   "mobile": {
     "toolbar": {
       "mention": "Mention someone",
