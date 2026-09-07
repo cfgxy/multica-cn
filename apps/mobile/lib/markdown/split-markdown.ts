@@ -20,6 +20,12 @@
  *   - Run `marked.lexer` (we already depend on it for preprocess).
  *   - Walk the top-level token list.
  *   - `code` token → emit a `code` segment.
+ *   - `table` token → emit a `table` segment (RUYI-72). Same reason as the
+ *     ones above: a wide table on a phone hides its trailing columns behind
+ *     horizontal scroll, and the fix — tap a row to open a row-detail sheet —
+ *     needs a Pressable that enriched's native table can't host. The segment
+ *     carries the lexer's header/row cells so the renderer never re-parses
+ *     the pipe syntax.
  *   - `paragraph` token containing image tokens → split the paragraph
  *     at each image boundary. Each image becomes its own `image`
  *     segment; the surrounding text rejoins the prose stream. (RN's
@@ -45,11 +51,33 @@
  */
 import { marked, type Tokens } from "marked";
 
+/**
+ * One table cell as the lexer produced it. `text` is the raw markdown source
+ * of the cell (what the row-detail sheet renders through enriched); `tokens`
+ * is the parsed inline token list, kept so callers can inspect cell structure
+ * without re-lexing.
+ */
+export interface MarkdownTableCell {
+  text: string;
+  tokens: unknown[];
+}
+
 export type MarkdownSegment =
   | { type: "prose"; content: string }
   | { type: "code"; lang: string | undefined; code: string }
   | { type: "mermaid"; code: string }
-  | { type: "image"; uri: string; alt: string };
+  | { type: "image"; uri: string; alt: string }
+  | {
+      type: "table";
+      headers: MarkdownTableCell[];
+      rows: MarkdownTableCell[][];
+      /** Per-column alignment from the delimiter row; null = default. */
+      align: (("left" | "center" | "right") | null)[];
+    };
+
+function toCell(cell: Tokens.TableCell): MarkdownTableCell {
+  return { text: cell.text, tokens: cell.tokens ?? [] };
+}
 
 /**
  * Languages that upgrade to a rich block on mobile. Mirrors web's
@@ -89,6 +117,18 @@ export function splitMarkdown(input: string): MarkdownSegment[] {
           code: t.text,
         });
       }
+      continue;
+    }
+
+    if (token.type === "table") {
+      flushProse();
+      const t = token as Tokens.Table;
+      out.push({
+        type: "table",
+        headers: t.header.map(toCell),
+        rows: t.rows.map((row) => row.map(toCell)),
+        align: t.align ?? [],
+      });
       continue;
     }
 
