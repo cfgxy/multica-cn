@@ -2295,10 +2295,27 @@ func (h *Handler) ImportSkill(w http.ResponseWriter, r *http.Request) {
 		strategy = importOnConflictFail
 	}
 
-	source, normalized, err := detectImportSource(req.URL)
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
+	imported, status, msg := fetchSkillFromURL(r.Context(), req.URL)
+	if msg != "" {
+		writeError(w, status, msg)
 		return
+	}
+
+	h.finishSkillImport(w, r, workspaceID, workspaceUUID, creatorUUID, creatorID, strategy, structuredResult, imported)
+}
+
+// fetchSkillFromURL resolves a hosted skill URL and downloads its bundle. It is
+// the shared front half of every URL-sourced install — the skill import
+// endpoint and the marketplace installer both enter here, so a marketplace
+// entry is fetched under exactly the caps, deadline, and source allowlist a
+// hand-typed import gets.
+//
+// On failure it returns the HTTP status and message to write; msg is empty on
+// success.
+func fetchSkillFromURL(parent context.Context, rawURL string) (*importedSkill, int, string) {
+	source, normalized, err := detectImportSource(rawURL)
+	if err != nil {
+		return nil, http.StatusBadRequest, err.Error()
 	}
 
 	httpClient := &http.Client{Timeout: 30 * time.Second}
@@ -2308,7 +2325,7 @@ func (h *Handler) ImportSkill(w http.ResponseWriter, r *http.Request) {
 	// If an upstream is slow, the import returns a clear error instead of the
 	// proxy severing the connection with a 504, and a client disconnect cancels
 	// the in-flight fetch instead of letting it run on orphaned.
-	ctx, cancel := context.WithTimeout(r.Context(), importFetchTimeout)
+	ctx, cancel := context.WithTimeout(parent, importFetchTimeout)
 	defer cancel()
 
 	var imported *importedSkill
@@ -2322,11 +2339,9 @@ func (h *Handler) ImportSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		status, msg := importFetchErrorResponse(ctx, err)
-		writeError(w, status, msg)
-		return
+		return nil, status, msg
 	}
-
-	h.finishSkillImport(w, r, workspaceID, workspaceUUID, creatorUUID, creatorID, strategy, structuredResult, imported)
+	return imported, 0, ""
 }
 
 // importFetchTimeout bounds the total time spent fetching a skill's files from

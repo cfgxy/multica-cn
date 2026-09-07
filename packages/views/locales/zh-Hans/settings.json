@@ -284,6 +284,31 @@
       "start_date": "开始日期"
     }
   },
+  "marketplace": {
+    "title": "应用市场",
+    "description": "浏览 Skill 与 MCP 服务并安装到当前工作空间。安装走的是与手动添加相同的路径，安装结果与手动添加完全一致。",
+    "browse_title": "浏览",
+    "binding_note": "安装只是把条目加入当前工作空间。在 Agent 自己的标签页中绑定之前，它不会对任何 Agent 生效。",
+    "search_placeholder": "搜索应用市场",
+    "filter_all": "全部",
+    "filter_skills": "Skill",
+    "filter_mcp": "MCP 服务",
+    "empty_title": "没有匹配项",
+    "empty_description": "换一个搜索词，或清除筛选查看全部可用条目。",
+    "installed_badge": "已安装",
+    "install": "安装",
+    "install_again": "再次安装",
+    "install_title": "安装 {{name}}",
+    "server_name": "服务名称",
+    "name_taken": "当前工作空间已存在同名服务。",
+    "skill_source_note": "该 Skill 将从 {{url}} 导入。",
+    "optional": "（可选）",
+    "secret_note": "凭据只写不读——保存后不会再次显示，修改凭据需要完整重新填写。",
+    "cancel": "取消",
+    "installed_toast": "{{name}} 已安装",
+    "install_failed_toast": "安装失败",
+    "admin_only_note": "仅工作空间所有者和管理员可以从应用市场安装。"
+  },
   "mcp": {
     "title": "MCP",
     "description": "本工作区的 MCP 服务库。在这里添加不会分配给任何智能体——由智能体的负责人在该智能体自己的 MCP 页里分配，并可按智能体单独开关。",
@@ -329,6 +354,7 @@
       "properties": "属性",
       "quick_actions": "快捷操作",
       "plugins": "Plugins",
+      "marketplace": "应用市场",
       "mcp": "MCP",
       "billing": "账单与套餐"
     }

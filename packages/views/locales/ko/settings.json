@@ -284,6 +284,31 @@
       "start_date": "시작일"
     }
   },
+  "marketplace": {
+    "title": "마켓플레이스",
+    "description": "스킬과 MCP 서버를 찾아 이 워크스페이스에 설치합니다. 설치는 직접 추가할 때와 같은 경로를 사용하므로 결과도 동일하게 동작합니다.",
+    "browse_title": "둘러보기",
+    "binding_note": "설치는 항목을 이 워크스페이스에 추가할 뿐입니다. 에이전트 소유자가 해당 에이전트 탭에서 할당하기 전까지는 어떤 에이전트에도 적용되지 않습니다.",
+    "search_placeholder": "마켓플레이스 검색",
+    "filter_all": "전체",
+    "filter_skills": "스킬",
+    "filter_mcp": "MCP 서버",
+    "empty_title": "일치하는 항목이 없습니다",
+    "empty_description": "다른 검색어를 사용하거나 필터를 해제해 전체 항목을 확인하세요.",
+    "installed_badge": "설치됨",
+    "install": "설치",
+    "install_again": "다시 설치",
+    "install_title": "{{name}} 설치",
+    "server_name": "서버 이름",
+    "name_taken": "이 워크스페이스에 같은 이름의 서버가 이미 있습니다.",
+    "skill_source_note": "이 스킬은 {{url}} 에서 가져옵니다.",
+    "optional": "(선택)",
+    "secret_note": "자격 증명은 쓰기 전용으로 저장되어 다시 표시되지 않으며, 변경하려면 전체를 다시 입력해야 합니다.",
+    "cancel": "취소",
+    "installed_toast": "{{name}} 설치 완료",
+    "install_failed_toast": "설치 실패",
+    "admin_only_note": "마켓플레이스에서 설치할 수 있는 사용자는 워크스페이스 소유자와 관리자뿐입니다."
+  },
   "mcp": {
     "title": "MCP",
     "description": "이 워크스페이스의 MCP 서버 라이브러리입니다. 여기에 추가해도 어떤 에이전트에도 할당되지 않으며, 에이전트 소유자가 해당 에이전트의 MCP 탭에서 할당하고 에이전트별로 켜고 끌 수 있습니다.",
@@ -329,6 +354,7 @@
       "properties": "속성",
       "quick_actions": "퀵 액션",
       "plugins": "Plugins",
+      "marketplace": "마켓플레이스",
       "mcp": "MCP",
       "billing": "결제 및 요금제"
     }
