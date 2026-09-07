@@ -101,32 +101,54 @@ export function computeTopChipVisible(geo: ScrollGeometry): boolean {
   return shouldShowTopChip(distFromPhysicalTop(geo.offsetY));
 }
 
-/** Slot indexes into the chip stack's bottom offsets — see
- *  `CHIP_SLOT_BOTTOM_CLASSES` in timeline-list.tsx (bottom-3 / bottom-14 /
- *  bottom-25, the 44px pitch RUYI-28 established for the first two). */
+/** Slot indexes into the BOTTOM-anchored chip stack's offsets — see
+ *  `CHIP_SLOT_BOTTOM_CLASSES` in timeline-list.tsx (bottom-3 / bottom-14,
+ *  the 44px pitch RUYI-28 established).
+ *
+ *  RUYI-101 moved the "to top" chip out of this stack: it is now anchored
+ *  to the TOP of the screen (its target — the issue header — is up there,
+ *  and stacking three chips over the composer was what crowded the read
+ *  area). Only the new-message and to-bottom chips share the bottom stack. */
 export interface ChipStackSlots {
   newChip: number;
   bottomChip: number;
-  topChip: number;
 }
 
 /**
- * Pack the three floating chips into stacking slots so no two overlap,
- * whatever the visible combination. Fixed packing order new → bottom →
- * top: a lone chip always gets slot 0 (thumb-closest); each additional
- * visible chip pushes the later ones one slot up. Hidden chips get -1.
- * Pure so every combination stays regression-tested.
+ * Pack the two bottom-anchored floating chips into stacking slots so they
+ * never overlap. Fixed packing order new → bottom: a lone chip always gets
+ * slot 0 (thumb-closest); the second visible chip goes one slot up. Hidden
+ * chips get -1. Pure so every combination stays regression-tested.
  */
 export function assignChipStackSlots(visible: {
   newChip: boolean;
   bottomChip: boolean;
-  topChip: boolean;
 }): ChipStackSlots {
   let next = 0;
   const assign = (on: boolean) => (on ? next++ : -1);
   return {
     newChip: assign(visible.newChip),
     bottomChip: assign(visible.bottomChip),
-    topChip: assign(visible.topChip),
   };
+}
+
+/**
+ * RUYI-101 — final visibility for the two jump chips ("to top" / "to
+ * bottom"): geometry AND recent scroll activity must both hold.
+ *
+ * Geometry alone (RUYI-28 / RUYI-81 behaviour) left both chips parked over
+ * the timeline for the whole read session. Activity alone would pop a
+ * useless "to top" chip while the user is already sitting at the top. The
+ * conjunction keeps every existing "don't offer a jump you're already at"
+ * guarantee and adds the transient-affordance rule on top.
+ *
+ * The new-message chip deliberately does NOT go through here: it carries
+ * unread state the user must not lose track of, so it stays until it is
+ * tapped or the user reaches the bottom (RUYI-28 semantics, untouched).
+ */
+export function computeJumpChipVisible(
+  geometryVisible: boolean,
+  scrollActive: boolean,
+): boolean {
+  return geometryVisible && scrollActive;
 }
