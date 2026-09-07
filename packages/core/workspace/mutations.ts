@@ -129,6 +129,27 @@ export function useDeleteWorkspaceMcpServer(wsId: string) {
 }
 
 /**
+ * Installs a marketplace entry.
+ *
+ * An install lands in the same library a hand-created entry does, so it
+ * invalidates the skill and MCP caches alongside the catalog — otherwise the
+ * newly installed thing would be missing from the very list the user is about
+ * to bind it from.
+ */
+export function useInstallMarketplaceItem(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: { key: string; name?: string; values?: Record<string, string> }) =>
+      api.installMarketplaceItem(input),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: ["workspaces", wsId, "marketplace"] });
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.mcpServers(wsId) });
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.skills(wsId) });
+    },
+  });
+}
+
+/**
  * Assignment writes all return the agent's resulting list, so the cache is
  * updated from the server's answer rather than a guess.
  */

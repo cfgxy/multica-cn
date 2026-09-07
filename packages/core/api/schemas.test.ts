@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   AppConfigSchema,
+  MarketplaceItemSchema,
+  MarketplaceItemListSchema,
   WecomInstallationSchema,
   ListWecomInstallationsResponseSchema,
   RedeemWecomBindingTokenResponseSchema,
@@ -2201,5 +2203,67 @@ describe("Admin schemas (RUYI-47)", () => {
       { endpoint: "POST /api/impersonation/stop" },
     );
     expect(parsed).toEqual(EMPTY_IMPERSONATION_RESPONSE);
+  });
+});
+
+describe("MarketplaceItemSchema", () => {
+  const entry = {
+    key: "mcp:modelcontextprotocol/github",
+    kind: "mcp",
+    name: "github",
+    summary: "Read and write GitHub issues.",
+    description: "",
+    publisher: "Model Context Protocol",
+    homepage_url: "https://example.invalid",
+    categories: ["development"],
+    placeholders: [
+      { key: "github_token", label: "Token", description: "", secret: true, required: true },
+    ],
+    installed: false,
+  };
+
+  it("parses a catalog entry and its placeholders", () => {
+    const parsed = MarketplaceItemSchema.parse(entry);
+    expect(parsed.kind).toBe("mcp");
+    expect(parsed.placeholders?.[0]?.secret).toBe(true);
+    expect(parsed.installed).toBe(false);
+  });
+
+  // The listing must never become a way to read a workspace's stored config
+  // back out. The server does not send these fields; a regression that made it
+  // start would otherwise land them in the parsed object and the query cache.
+  it("strips a config or rendered entry a regressed server might send", () => {
+    const parsed = MarketplaceItemSchema.parse({
+      ...entry,
+      config_template: { command: "npx", env: { GITHUB_PERSONAL_ACCESS_TOKEN: "ghp-x" } },
+      config: { env: { GITHUB_PERSONAL_ACCESS_TOKEN: "ghp-x" } },
+    });
+    expect(parsed).not.toHaveProperty("config_template");
+    expect(parsed).not.toHaveProperty("config");
+    expect(JSON.stringify(parsed)).not.toContain("ghp-x");
+  });
+
+  // An extension kind added by a newer backend must still parse; the listing
+  // has a default branch for a kind it cannot install.
+  it("keeps an unknown kind rather than dropping the entry", () => {
+    const parsed = MarketplaceItemSchema.parse({ ...entry, kind: "workflow" });
+    expect(parsed.kind).toBe("workflow");
+  });
+
+  it("defaults the optional listing fields", () => {
+    const parsed = MarketplaceItemSchema.parse({ key: "skill:a", kind: "skill", name: "pdf" });
+    expect(parsed.categories).toEqual([]);
+    expect(parsed.installed).toBe(false);
+    expect(parsed.placeholders).toBeUndefined();
+  });
+
+  it("falls back to an empty catalog on a malformed listing", () => {
+    const parsed = parseWithFallback(
+      { items: "all-of-them" },
+      MarketplaceItemListSchema,
+      [],
+      { endpoint: "GET /api/marketplace/items" },
+    );
+    expect(parsed).toEqual([]);
   });
 });

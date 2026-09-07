@@ -438,6 +438,9 @@ func TestGetConfigExposesFrontendFeatureFlags(t *testing.T) {
 	if cfg.FeatureFlags["plugins_v1"] {
 		t.Fatalf("plugins_v1: want false by default, got true")
 	}
+	if cfg.FeatureFlags["marketplace_v1"] {
+		t.Fatalf("marketplace_v1: want false by default, got true")
+	}
 	for _, retired := range []string{"private_plugins_v1", "remote_mcp_plugins_v1"} {
 		if _, published := cfg.FeatureFlags[retired]; published {
 			t.Fatalf("retired Plugin sub-flag %q must not be published", retired)
@@ -487,6 +490,27 @@ func TestGetConfigExposesEnabledPluginsV1Flag(t *testing.T) {
 	}
 	if !cfg.FeatureFlags["plugins_v1"] {
 		t.Fatal("plugins_v1: want true with flag enabled, got false")
+	}
+}
+
+// The marketplace tab is published through the same channel and fails closed in
+// the client, so the key has to arrive as true before the tab can appear.
+func TestGetConfigExposesEnabledMarketplaceV1Flag(t *testing.T) {
+	h := &Handler{}
+	withMarketplaceV1Flag(t, h, true)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/config", nil)
+	w := httptest.NewRecorder()
+	h.GetConfig(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("GetConfig enabled marketplace_v1: expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+	var cfg AppConfig
+	if err := json.Unmarshal(w.Body.Bytes(), &cfg); err != nil {
+		t.Fatalf("decode enabled config: %v", err)
+	}
+	if !cfg.FeatureFlags["marketplace_v1"] {
+		t.Fatal("marketplace_v1: want true with flag enabled, got false")
 	}
 }
 
