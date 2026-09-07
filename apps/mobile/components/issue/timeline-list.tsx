@@ -127,6 +127,7 @@ import {
 import {
   assignChipStackSlots,
   computeBottomChipVisible,
+  computeJumpChipVisible,
   computeTopChipVisible,
   distFromPhysicalTop,
   distToPhysicalEnd,
@@ -134,6 +135,7 @@ import {
   shouldShowTopChip,
   type ScrollGeometry,
 } from "@/lib/timeline-scroll-metrics";
+import { ScrollActivityTracker } from "@/lib/scroll-activity";
 import { useT } from "@/lib/use-t";
 
 interface Props {
@@ -325,7 +327,15 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
   // when scrolled more than 48px away from the header. Many issue actions
   // (status, priority, assignee) live in the header, so a long timeline
   // needs the way back up. Neither chip reads or writes the new-message
-  // chip's state; all three stack via assignChipStackSlots.
+  // chip's state.
+  //
+  // RUYI-101 layers a SECOND, independent condition on top of this
+  // geometry: recent scroll activity (see `scrollActive` below). Geometry
+  // decides "would this jump be meaningful"; activity decides "does the
+  // user want the affordance on screen right now". Both must hold —
+  // computeJumpChipVisible. Keeping the two axes separate is what lets a
+  // rotation or an async content resize refresh the geometry without ever
+  // parking a chip over the text the user is reading.
   //
   // onScroll alone is NOT sufficient: it only fires once the user drags.
   // The chips must also recompute on mount, after data grows (WS append,
@@ -358,6 +368,24 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
     setFarFromEndIfChanged(computeBottomChipVisible(scrollGeoRef.current));
     setFarFromStartIfChanged(computeTopChipVisible(scrollGeoRef.current));
   }, [setFarFromEndIfChanged, setFarFromStartIfChanged]);
+
+  // ── Scroll-activity gate (RUYI-101) ───────────────────────────────────
+  // The jump chips are a transient affordance: they appear on scroll and
+  // hide 3s after the last scroll event, so they never sit on top of the
+  // text during a long read. Timing rules live in lib/scroll-activity.ts
+  // (node-testable); this component only owns one tracker per mount and
+  // disposes it on unmount so no timer survives into an unmounted tree.
+  const [scrollActive, setScrollActive] = useState(false);
+  const scrollActivityRef = useRef<ScrollActivityTracker | null>(null);
+  if (!scrollActivityRef.current) {
+    scrollActivityRef.current = new ScrollActivityTracker(setScrollActive);
+  }
+  const scrollActivity = scrollActivityRef.current;
+  useEffect(() => {
+    return () => {
+      scrollActivity.dispose();
+    };
+  }, [scrollActivity]);
   const onJumpToBottom = useCallback(() => {
     listRef.current?.scrollToEnd({ animated: true });
   }, []);
@@ -399,6 +427,9 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
   const handleScroll = useCallback(
     (e: NativeSyntheticEvent<NativeScrollEvent>) => {
       const { contentOffset, contentSize, layoutMeasurement } = e.nativeEvent;
+      // RUYI-101: scrolling is the ONLY thing that arms the jump chips, and
+      // it re-arms the 3s hide deadline on every frame of a long gesture.
+      scrollActivity.notifyScroll();
       // Keep the geometry snapshot current for the non-scroll triggers.
       scrollGeoRef.current.contentHeight = contentSize.height;
       scrollGeoRef.current.offsetY = contentOffset.y;
@@ -428,7 +459,12 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
         shouldShowTopChip(distFromPhysicalTop(contentOffset.y)),
       );
     },
-    [newCount, setFarFromEndIfChanged, setFarFromStartIfChanged],
+    [
+      newCount,
+      scrollActivity,
+      setFarFromEndIfChanged,
+      setFarFromStartIfChanged,
+    ],
   );
 
   const onJumpToNew = useCallback(() => {
@@ -846,25 +882,31 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
         contentContainerStyle={{ paddingBottom: 16 }}
       />
       </Pressable>
-      {/* Three independent chips (RUYI-28 / RUYI-81), stacked bottom-up
-          without overlap via assignChipStackSlots: "↓ N new" (unread
-          arrivals while scrolled up), "To bottom" (physical distance to
-          the content end) and "To top" (physical distance from the
-          content start — the header holds the issue actions). None reads
-          the others' state; they clear on different conditions. */}
+      {/* Three independent chips (RUYI-28 / RUYI-81 / RUYI-101):
+            · "↓ N new"   — bottom-anchored, unread arrivals while scrolled
+                            up. Persistent: it carries state the user must
+                            not lose, so scroll activity does NOT gate it.
+            · "To bottom" — bottom-anchored, geometry AND scroll activity.
+            · "To top"    — TOP-anchored (RUYI-101). Its target, the issue
+                            header, is up there, and pulling it out of the
+                            bottom stack stops the three chips from piling
+                            up over the composer. Same activity gate.
+          The two bottom chips share slots via assignChipStackSlots so they
+          never overlap; the top chip needs no slot of its own. */}
       {(() => {
+        const showBottom = computeJumpChipVisible(farFromEnd, scrollActive);
+        const showTop = computeJumpChipVisible(farFromStart, scrollActive);
         const slots = assignChipStackSlots({
           newChip: newCount > 0,
-          bottomChip: farFromEnd,
-          topChip: farFromStart,
+          bottomChip: showBottom,
         });
         return (
           <>
             {newCount > 0 ? (
               <NewCommentChip count={newCount} onPress={onJumpToNew} slot={slots.newChip} />
             ) : null}
-            {farFromEnd ? <BottomChip onPress={onJumpToBottom} slot={slots.bottomChip} /> : null}
-            {farFromStart ? <TopChip onPress={onJumpToTop} slot={slots.topChip} /> : null}
+            {showBottom ? <BottomChip onPress={onJumpToBottom} slot={slots.bottomChip} /> : null}
+            {showTop ? <TopChip onPress={onJumpToTop} /> : null}
           </>
         );
       })()}
@@ -905,9 +947,27 @@ function UnreadDivider() {
 /**
  * Bottom offsets per stacking slot (see assignChipStackSlots) — the 44px
  * pitch RUYI-28 established: chip height ~28px + breathing room, so any
- * visible combination stays tappable.
+ * visible combination stays tappable. Only two slots since RUYI-101 moved
+ * the "to top" chip to the top edge.
  */
-const CHIP_SLOT_BOTTOM_CLASSES = ["bottom-3", "bottom-14", "bottom-25"];
+const CHIP_SLOT_BOTTOM_CLASSES = ["bottom-3", "bottom-14"];
+
+/**
+ * Shared chip skin (RUYI-101). `bg-primary/85` is the translucency Owner
+ * asked for: the text underneath stays legible through a still-visible
+ * chip, while 85% keeps the chip's own label above the WCAG-AA contrast
+ * the opaque version had (light: near-black at 85% over white; dark:
+ * near-white at 85% over near-black — both keep the foreground token
+ * readable). Pressing goes the OTHER way, to fully opaque `bg-primary`,
+ * instead of the usual `active:opacity-80`: fading an already-translucent
+ * chip on touch is exactly the "can't tell what I'm pressing" failure the
+ * acceptance criteria call out.
+ *
+ * `py-1.5 px-3.5` (unchanged from RUYI-28) keeps the ~28px height and the
+ * full-width tap target; translucency changes pixels, not hit-testing.
+ */
+const CHIP_BASE_CLASS =
+  "absolute self-center px-3.5 py-1.5 rounded-full bg-primary/85 active:bg-primary flex-row items-center gap-1.5";
 
 /** Shared chip shadow — system shadow, not Tailwind, so the chip stays
  *  readable against either light or dark timeline content beneath. */
@@ -946,7 +1006,7 @@ function NewCommentChip({
   return (
     <Pressable
       onPress={onPress}
-      className={`absolute ${CHIP_SLOT_BOTTOM_CLASSES[slot]} self-center px-3.5 py-1.5 rounded-full bg-primary active:opacity-80 flex-row items-center gap-1.5`}
+      className={`${CHIP_BASE_CLASS} ${CHIP_SLOT_BOTTOM_CLASSES[slot]}`}
       accessibilityRole="button"
       accessibilityLabel={t(
         "mobile.comment.jump_new_a11y",
@@ -986,7 +1046,7 @@ function BottomChip({
   return (
     <Pressable
       onPress={onPress}
-      className={`absolute ${CHIP_SLOT_BOTTOM_CLASSES[slot]} self-center px-3.5 py-1.5 rounded-full bg-primary active:opacity-80 flex-row items-center gap-1.5`}
+      className={`${CHIP_BASE_CLASS} ${CHIP_SLOT_BOTTOM_CLASSES[slot]}`}
       accessibilityRole="button"
       accessibilityLabel={t(
         "mobile.comment.jump_bottom_a11y",
@@ -1003,24 +1063,29 @@ function BottomChip({
 }
 
 /**
- * "To top" chip (RUYI-81) — exact visual/interaction mirror of
- * BottomChip. Shown whenever the viewport is more than 48px from the
- * content START (raw offsetY), i.e. the header with the issue's metadata
- * and actions is scrolled away. Tap → scrollToOffset(0), landing on the
- * ListHeader (title / description / reactions). Clears itself purely via
- * geometry in handleScroll; never touches newCount or the unread divider.
+ * "To top" chip (RUYI-81, repositioned in RUYI-101) — same skin and
+ * interaction as BottomChip, but anchored to the TOP edge of the list
+ * area instead of the bottom stack: the jump target (the issue header
+ * with title / status / assignee) is up there, and the direction of the
+ * affordance should match the direction of the travel. It also empties
+ * the bottom stack down to two chips so nothing crowds the composer.
  *
- * Stacks with the other chips via assignChipStackSlots; a lone chip gets
- * the lowest (thumb-closest) slot.
+ * `top-3` is measured from the timeline wrapper, which already starts
+ * BELOW the native Stack header — so the chip can never collide with the
+ * status bar or the navigation bar; no extra safe-area inset needed.
+ *
+ * Shown when the viewport is more than 48px from the content START AND
+ * the user has scrolled within the last 3s (computeJumpChipVisible).
+ * Tap → scrollToOffset(0). Never touches newCount or the unread divider.
  */
-function TopChip({ onPress, slot }: { onPress: () => void; slot: number }) {
+function TopChip({ onPress }: { onPress: () => void }) {
   const { t } = useT("issues");
   const { colorScheme } = useColorScheme();
   const fg = THEME[colorScheme].primaryForeground;
   return (
     <Pressable
       onPress={onPress}
-      className={`absolute ${CHIP_SLOT_BOTTOM_CLASSES[slot]} self-center px-3.5 py-1.5 rounded-full bg-primary active:opacity-80 flex-row items-center gap-1.5`}
+      className={`${CHIP_BASE_CLASS} top-3`}
       accessibilityRole="button"
       accessibilityLabel={t(
         "mobile.comment.jump_top_a11y",
