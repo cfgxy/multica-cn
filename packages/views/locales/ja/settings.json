@@ -284,6 +284,31 @@
       "start_date": "開始日"
     }
   },
+  "marketplace": {
+    "title": "マーケットプレイス",
+    "description": "スキルと MCP サーバーを探して、このワークスペースにインストールします。インストールは手動追加と同じ経路を使うため、動作は手動追加とまったく同じです。",
+    "browse_title": "一覧",
+    "binding_note": "インストールは項目をこのワークスペースに追加するだけです。エージェントの担当者が各エージェントのタブで割り当てるまで、どのエージェントにも反映されません。",
+    "search_placeholder": "マーケットプレイスを検索",
+    "filter_all": "すべて",
+    "filter_skills": "スキル",
+    "filter_mcp": "MCP サーバー",
+    "empty_title": "該当する項目がありません",
+    "empty_description": "検索語を変えるか、フィルターを解除してすべての項目を表示してください。",
+    "installed_badge": "インストール済み",
+    "install": "インストール",
+    "install_again": "再インストール",
+    "install_title": "{{name}} をインストール",
+    "server_name": "サーバー名",
+    "name_taken": "このワークスペースには同じ名前のサーバーが既にあります。",
+    "skill_source_note": "このスキルは {{url}} からインポートされます。",
+    "optional": "（任意）",
+    "secret_note": "認証情報は書き込み専用で保存されます。再表示されないため、変更するには改めて全体を入力してください。",
+    "cancel": "キャンセル",
+    "installed_toast": "{{name}} をインストールしました",
+    "install_failed_toast": "インストールに失敗しました",
+    "admin_only_note": "マーケットプレイスからインストールできるのはワークスペースのオーナーと管理者のみです。"
+  },
   "mcp": {
     "title": "MCP",
     "description": "このワークスペースの MCP サーバーライブラリ。ここに追加してもどのエージェントにも割り当てられません。エージェントの所有者が各エージェントの MCP タブで割り当て、エージェントごとにオン/オフを切り替えます。",
@@ -329,6 +354,7 @@
       "properties": "プロパティ",
       "quick_actions": "クイックアクション",
       "plugins": "Plugins",
+      "marketplace": "マーケットプレイス",
       "mcp": "MCP",
       "billing": "請求とプラン"
     }

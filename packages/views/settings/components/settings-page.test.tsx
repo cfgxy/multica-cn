@@ -5,6 +5,7 @@ import { SidebarProvider, useSidebar } from "@multica/ui/components/ui/sidebar";
 import { configStore } from "@multica/core/config";
 import {
   BILLING_WORKSPACE_SUBSCRIPTIONS_FLAG,
+  MARKETPLACE_V1_FLAG,
   PLUGINS_V1_FLAG,
 } from "@multica/core/feature-flags";
 import { renderWithI18n } from "../../test/i18n";
@@ -31,6 +32,8 @@ vi.mock("./properties-tab", stub("PropertiesTab"));
 vi.mock("./quick-actions-tab", stub("QuickActionsTab"));
 vi.mock("./keyboard-shortcuts-tab", stub("KeyboardShortcutsTab"));
 vi.mock("./plugins-tab", stub("PluginsTab"));
+vi.mock("./marketplace-tab", stub("MarketplaceTab"));
+vi.mock("./mcp-tab", stub("McpTab"));
 vi.mock("./billing-tab", stub("BillingTab"));
 
 vi.mock("@multica/core/paths", () => ({
@@ -136,6 +139,43 @@ describe("SettingsPage Plugin feature flag", () => {
 
     expect(screen.getByRole("tab", { name: "Plugins" })).toBeInTheDocument();
     expect(screen.getByText("PluginsTab")).toBeInTheDocument();
+  });
+});
+
+describe("SettingsPage marketplace feature flag", () => {
+  it("hides Marketplace and falls back from a direct tab URL when disabled", () => {
+    navigationState.search = "tab=marketplace";
+
+    renderWithI18n(<SettingsPage />);
+
+    expect(
+      screen.queryByRole("tab", { name: "Marketplace" }),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByText("MarketplaceTab")).not.toBeInTheDocument();
+    expect(screen.getByText("AccountTab")).toBeInTheDocument();
+  });
+
+  // The acceptance condition the flag exists for: closing the marketplace must
+  // not take the manual entry points down with it.
+  it("leaves the manual MCP entry point reachable when disabled", () => {
+    navigationState.search = "tab=mcp";
+
+    renderWithI18n(<SettingsPage />);
+
+    expect(screen.getByRole("tab", { name: "MCP" })).toBeInTheDocument();
+    expect(screen.getByText("McpTab")).toBeInTheDocument();
+  });
+
+  it("shows and mounts Marketplace only when explicitly enabled", () => {
+    navigationState.search = "tab=marketplace";
+    configStore.getState().setFeatureFlags({ [MARKETPLACE_V1_FLAG]: true });
+
+    renderWithI18n(<SettingsPage />);
+
+    expect(
+      screen.getByRole("tab", { name: "Marketplace" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("MarketplaceTab")).toBeInTheDocument();
   });
 });
 

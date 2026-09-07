@@ -15,6 +15,10 @@ func withPluginsV1Flag(t *testing.T, h *Handler, enabled bool) {
 	withFeatureFlag(t, h, featureflags.PluginsV1, enabled)
 }
 
+func withMarketplaceV1Flag(t *testing.T, h *Handler, enabled bool) {
+	withFeatureFlag(t, h, featureflags.MarketplaceV1, enabled)
+}
+
 func withFeatureFlag(t *testing.T, h *Handler, key string, enabled bool) {
 	t.Helper()
 	provider := featureflag.NewStaticProvider()
