@@ -126,6 +126,14 @@
       "note": "메모 추가 — 에이전트를 트리거하지 않음"
     }
   },
+  "table": {
+    "row_detail": {
+      "position": "전체 {{total}}행 중 {{index}}행",
+      "prev_row": "이전 행",
+      "next_row": "다음 행",
+      "unnamed_column": "{{index}}번째 열"
+    }
+  },
   "mobile": {
     "toolbar": {
       "mention": "멤버 멘션",
