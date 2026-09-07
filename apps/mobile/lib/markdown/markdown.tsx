@@ -11,6 +11,10 @@
  *     palettes.
  *   - Images → in-house `MarkdownImage` with expo-image + auto aspect
  *     ratio + tap-to-lightbox dispatch.
+ *   - GFM tables → in-house `TableBlock` with tap-a-row → row-detail sheet
+ *     (RUYI-72). Same "enriched can't host React" constraint: a wide table
+ *     on a phone hides its trailing columns and the native table has
+ *     nowhere to attach the row gesture.
  *
  * Why hybrid instead of pure enriched: enriched does not let us inject
  * React for any leaf node (issues #54, #232 — maintainer: "no custom
@@ -43,10 +47,7 @@ import { router } from "expo-router";
 import { EnrichedMarkdownText } from "react-native-enriched-markdown";
 import type { Attachment } from "@multica/core/types";
 import { api } from "@/data/api";
-import {
-  attachmentIdFromUrl,
-  openAttachmentDownload,
-} from "@/lib/attachment-open";
+import { openAttachmentDownload } from "@/lib/attachment-open";
 import { resolveAttachmentUrl } from "@/lib/attachment-url";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { preprocessMobileMarkdown } from "./preprocess";
@@ -55,6 +56,8 @@ import { splitMarkdown } from "./split-markdown";
 import { CodeBlock } from "./code-block";
 import { MarkdownImage } from "./markdown-image";
 import { MermaidDiagram } from "./mermaid-diagram";
+import { TableBlock } from "./table-block";
+import { resolveLinkAction } from "./link-route";
 
 interface Props {
   content: string;
@@ -140,60 +143,36 @@ export function Markdown({
     return splitMarkdown(processed);
   }, [content]);
 
+  // Where each link SHAPE goes is decided by `resolveLinkAction` (pure,
+  // unit-tested — `link-route.ts`); this callback only performs the effect.
+  // Splitting them out became necessary with RUYI-72: the table row-detail
+  // sheet renders its own enriched instances and must share these exact
+  // semantics rather than re-implement (or, as the first cut did, silently
+  // drop) them.
   const onLinkPress = useCallback(
     ({ url }: { url: string }) => {
-      // `mention://` is an internal scheme — never hand it to the system.
-      // No app is registered for it, so `Linking.openURL("mention://...")`
-      // would surface iOS's "Cannot open URL" prompt or silently fail
-      // (depending on iOS version). Handle every shape inline and ALWAYS
-      // return without falling through to Linking.
-      //
-      //   mention://issue/<uuid>   → navigate to that issue detail
-      //   mention://project/<uuid> → navigate to that project detail
-      //   mention://member/<uuid>  → no-op (no member profile screen yet)
-      //   mention://agent/<uuid>   → no-op (no agent profile screen yet)
-      //   mention://squad/<uuid>   → no-op (no squad profile screen yet)
-      //   mention://all/all        → no-op (semantic only — "everyone")
-      //   anything malformed       → no-op
-      if (url.startsWith("mention://")) {
-        const rest = url.slice("mention://".length);
-        const slash = rest.indexOf("/");
-        if (slash < 0) return;
-        const type = rest.slice(0, slash);
-        const id = rest.slice(slash + 1);
-        if (id && wsSlug) {
-          // Route segments are singular on mobile (`/issue/`, `/project/`)
-          // while the mention type and web's route are the same word — keep
-          // the mapping explicit so a new type can't silently no-op.
-          if (type === "issue") router.push(`/${wsSlug}/issue/${id}`);
-          else if (type === "project") router.push(`/${wsSlug}/project/${id}`);
-        }
-        return;
+      const action = resolveLinkAction(url, wsSlug ?? null);
+      switch (action.kind) {
+        case "route":
+          router.push(action.path);
+          return;
+        case "attachment":
+          void openAttachmentDownload(action.id, {
+            source: api,
+            opener: Linking,
+            resolveUrl: resolveAttachmentUrl,
+            fallbackUrl: action.fallbackUrl,
+          });
+          return;
+        case "external":
+          // Linking.openURL throws if no app handles the URL; the catch
+          // keeps a stray tap from crashing the screen. Silent: failing
+          // loudly is worse than a no-op tap.
+          Linking.openURL(action.url).catch(() => {});
+          return;
+        case "noop":
+          return;
       }
-      // Attachment links — persisted `/api/attachments/<id>/download` file
-      // cards (`!file[...]`, preprocessed to a 📎 link), inline
-      // `[name](url)` attachment references, signed capability URLs, and
-      // `mc://file/<id>` — re-sign at tap time and open with their own
-      // credential (RUYI-73). Without this the raw href is either
-      // server-relative (Linking.openURL throws on relative URLs → the tap
-      // silently dies) or the auth-gated stable path (the system browser
-      // has neither Bearer nor cookie → 401 JSON page).
-      const attachmentId = attachmentIdFromUrl(url);
-      if (attachmentId) {
-        void openAttachmentDownload(attachmentId, {
-          source: api,
-          opener: Linking,
-          resolveUrl: resolveAttachmentUrl,
-          fallbackUrl: url,
-        });
-        return;
-      }
-      // Everything else — http(s), mailto, tel, app-scheme deep links —
-      // hand off to the system. Linking.openURL throws if no app handles
-      // the URL; the catch keeps a stray tap from crashing the screen.
-      Linking.openURL(url).catch(() => {
-        // Silent: failing loudly is worse than a no-op tap.
-      });
     },
     [wsSlug],
   );
@@ -234,6 +213,20 @@ export function Markdown({
             // RUYI-80: drawn by the DOM component (Expo DOM Components
             // WebView) — see mermaid-diagram.tsx for the security contract.
             return <MermaidDiagram key={i} code={seg.code} />;
+          case "table":
+            // RUYI-72: wide tables render as a tappable grid + row-detail
+            // sheet; the sheet's enriched instances share this component's
+            // `onLinkPress` so link behaviour never forks from prose.
+            return (
+              <TableBlock
+                key={i}
+                headers={seg.headers}
+                rows={seg.rows}
+                align={seg.align}
+                onLinkPress={onLinkPress}
+                selectable={selectable}
+              />
+            );
           case "image":
             return (
               <MarkdownImage
