@@ -15,6 +15,7 @@ import i18n from "i18next";
 import {
   buildRunOutcome,
   buildSteps,
+  buildTimeline,
   redactSecrets,
   traceEventCopyText,
   traceEventDetail,
@@ -27,8 +28,24 @@ import {
   type TraceEvent,
   type TraceStep,
 } from "@multica/core/task-transcript";
-import type { AgentTask } from "@multica/core/types";
+import type { AgentTask, TaskMessagePayload } from "@multica/core/types";
 import { failureReasonLabel, isKnownFailureReason } from "./failure-reason-label";
+
+// ─── Transcript 入口 ────────────────────────────────────────────────────────
+
+/**
+ * 原始 `task-messages` → 可渲染时间线，是屏幕唯一的 transcript 入口。
+ *
+ * daemon 按 flush 时机切分流式输出，同一句回复会落成多条相邻 `text`（或
+ * `thinking`）记录。Web 端 `AgentTranscriptDialog` 在 `useQuery` 与 JSX 之间
+ * 跑的正是 `buildTimeline`（按 seq 排序 → 合并相邻同类型片段 → 脱敏），手机端
+ * 此前直接把原始 `messages` 喂给 `buildRunStepViews`，于是同一句被拆成许多细碎
+ * 行（RUYI-33 Owner 实机反馈）。这里复用同一段共享实现，保证两端段落语义一致；
+ * 类型切换与工具调用天然中断合并，时序与 tool_use/tool_result 配对不受影响。
+ */
+export function runTimelineItems(msgs: TaskMessagePayload[]): TimelineItem[] {
+  return buildTimeline(msgs);
+}
 
 /**
  * Long-body clamp, mirroring web's 8000-character affordance
