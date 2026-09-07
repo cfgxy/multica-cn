@@ -126,6 +126,14 @@
       "note": "メモを追加 — エージェントをトリガーしません"
     }
   },
+  "table": {
+    "row_detail": {
+      "position": "{{total}} 行中の {{index}} 行目",
+      "prev_row": "前の行",
+      "next_row": "次の行",
+      "unnamed_column": "列 {{index}}"
+    }
+  },
   "mobile": {
     "toolbar": {
       "mention": "メンバーをメンション",

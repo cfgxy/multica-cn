@@ -126,6 +126,14 @@
     "export_svg": "下载 SVG",
     "export_source": "下载 .mmd"
   },
+  "table": {
+    "row_detail": {
+      "position": "第 {{index}} / {{total}} 行",
+      "prev_row": "上一行",
+      "next_row": "下一行",
+      "unnamed_column": "第 {{index}} 列"
+    }
+  },
   "mobile": {
     "toolbar": {
       "mention": "提及某人",
