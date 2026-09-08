@@ -50,6 +50,7 @@ import { api } from "@/data/api";
 import { openAttachmentDownload } from "@/lib/attachment-open";
 import { resolveAttachmentUrl } from "@/lib/attachment-url";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { useCommentAnchor } from "@/lib/comment-anchor-context";
 import { preprocessMobileMarkdown } from "./preprocess";
 import { useMarkdownStyle } from "./markdown-style";
 import { splitMarkdown } from "./split-markdown";
@@ -122,6 +123,9 @@ export function Markdown({
   compact = false,
 }: Props) {
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
+  // 评论锚点的落地方（RUYI-108）。issue 时间线挂 provider；其余渲染场景
+  // 拿到的是 no-op 实现，点击安静无事发生。
+  const commentAnchor = useCommentAnchor();
   const baseStyle = useMarkdownStyle();
   const markdownStyle = useMemo(
     () =>
@@ -156,6 +160,11 @@ export function Markdown({
         case "route":
           router.push(action.path);
           return;
+        case "commentAnchor":
+          // 页内定位，不换路由：由时间线判断目标是否在已加载数据里，
+          // 命中则展开+滚动+高亮，未命中给降级反馈（不发请求、不透作者）。
+          commentAnchor.focus(action.commentId);
+          return;
         case "attachment":
           void openAttachmentDownload(action.id, {
             source: api,
@@ -174,7 +183,7 @@ export function Markdown({
           return;
       }
     },
-    [wsSlug],
+    [wsSlug, commentAnchor],
   );
 
   if (segments.length === 0) return null;

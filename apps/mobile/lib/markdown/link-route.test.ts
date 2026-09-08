@@ -24,6 +24,20 @@ describe("resolveLinkAction", () => {
     });
   });
 
+  it("mention://comment 解析为同任务单内的评论锚点", () => {
+    expect(resolveLinkAction("mention://comment/c1", "ws")).toEqual({
+      kind: "commentAnchor",
+      commentId: "c1",
+    });
+  });
+
+  it("评论锚点不依赖 workspace slug（定位发生在当前任务单内）", () => {
+    expect(resolveLinkAction("mention://comment/c1", null)).toEqual({
+      kind: "commentAnchor",
+      commentId: "c1",
+    });
+  });
+
   it("没有详情页的 mention 类型静默忽略，绝不交给系统", () => {
     for (const url of [
       "mention://member/m1",
@@ -31,6 +45,8 @@ describe("resolveLinkAction", () => {
       "mention://squad/s1",
       "mention://all/all",
       "mention://issue",
+      "mention://comment",
+      "mention://comment/",
     ]) {
       expect(resolveLinkAction(url, "ws")).toEqual({ kind: "noop" });
     }
