@@ -191,17 +191,22 @@ describe("AttachmentPreviewModal — dispatch", () => {
     render(<AttachmentPreviewModal source={{ kind: "full", attachment: att }} open onClose={() => {}} />);
     const img = document.querySelector("img");
     expect(img).toBeTruthy();
-    expect(img?.getAttribute("src")).toBe(att.download_url);
+    expect(img?.getAttribute("src")).toBe("/api/attachments/att-1/download");
     expect(img?.getAttribute("alt")).toBe(att.filename);
   });
 
-  it("falls back to durable media URLs when a full attachment has no download_url", () => {
+  // RUYI-103. The signed download_url in an attachment record was minted when
+  // the surface loaded and expires on the server's clock; a preview opened an
+  // hour later used to load a dead signature, fail, and (in a gallery) skip to
+  // a neighbour — the "I clicked A and got B" report. The image preview asks
+  // for the stable endpoint instead, which re-signs per request.
+  it("previews an image from the stable endpoint, never the pre-minted signature", () => {
     const att = makeAttachment({
       filename: "shot.png",
       content_type: "image/png",
-      download_url: "",
-      markdown_url: "https://api.example.test/api/attachments/att-1/download",
-      url: "https://cdn.example.test/att-1.png?Signature=old",
+      download_url: "https://cdn.example.test/att-1.png?Signature=minted-at-page-load",
+      markdown_url: "https://cdn.example.test/att-1.png",
+      url: "https://cdn.example.test/att-1.png?Signature=older",
     });
     render(
       <AttachmentPreviewModal
@@ -211,8 +216,55 @@ describe("AttachmentPreviewModal — dispatch", () => {
       />,
     );
     const img = document.querySelector("img");
-    expect(img?.getAttribute("src")).toBe(att.markdown_url);
+    expect(img?.getAttribute("src")).toBe("/api/attachments/att-1/download");
     expect(img?.getAttribute("src")).not.toContain("Signature=");
+  });
+
+  // The narrowing that keeps the stable-endpoint swap from costing a second
+  // download: a URL with no expiring signature is already durable, and the
+  // inline <img> on the page has its bytes cached under exactly that URL.
+  it("keeps a durable image URL so the preview reuses the inline bytes", () => {
+    const att = makeAttachment({
+      filename: "shot.png",
+      content_type: "image/png",
+      download_url: "",
+      markdown_url: "https://cdn.example.test/uploads/ws/shot.png",
+      url: "https://cdn.example.test/uploads/ws/shot.png",
+    });
+    render(
+      <AttachmentPreviewModal
+        source={{ kind: "full", attachment: att }}
+        open
+        onClose={() => {}}
+      />,
+    );
+    const img = document.querySelector("img");
+    expect(img?.getAttribute("src")).toBe(
+      "https://cdn.example.test/uploads/ws/shot.png",
+    );
+  });
+
+  it("falls back to durable media URLs when a full attachment has no download_url", () => {
+    // Non-image kinds keep the download_url -> markdown_url -> url chain:
+    // they hand their src straight to a native element with no re-sign hook
+    // behind it, so an auth-gated path would break the desktop shell.
+    const att = makeAttachment({
+      filename: "clip.mp4",
+      content_type: "video/mp4",
+      download_url: "",
+      markdown_url: "https://api.example.test/api/attachments/att-1/download",
+      url: "https://cdn.example.test/att-1.mp4?Signature=old",
+    });
+    render(
+      <AttachmentPreviewModal
+        source={{ kind: "full", attachment: att }}
+        open
+        onClose={() => {}}
+      />,
+    );
+    const video = document.querySelector("video");
+    expect(video?.getAttribute("src")).toBe(att.markdown_url);
+    expect(video?.getAttribute("src")).not.toContain("Signature=");
   });
 
   it("renders an <img> from a URL-only source for image filenames", () => {
@@ -398,12 +450,15 @@ describe("AttachmentPreviewModal — server-relative download_url resolution (MU
     );
   });
 
+  // Uses a PDF: since RUYI-103 the image kind resolves the stable endpoint
+  // rather than whatever download_url the record carried, so it is no longer
+  // the kind that exercises absolute-URL passthrough.
   it("passes an already-absolute CloudFront/presigned download_url through unchanged", () => {
     getBaseUrlMock.mockReturnValue("https://api.example.test");
     const att = makeAttachment({
-      filename: "shot.png",
-      content_type: "image/png",
-      download_url: "https://cdn.example.test/att-1.png?Signature=s",
+      filename: "manual.pdf",
+      content_type: "application/pdf",
+      download_url: "https://cdn.example.test/att-1.pdf?Signature=s",
     });
     render(
       <AttachmentPreviewModal
@@ -412,9 +467,9 @@ describe("AttachmentPreviewModal — server-relative download_url resolution (MU
         onClose={() => {}}
       />,
     );
-    const img = document.querySelector("img");
-    expect(img?.getAttribute("src")).toBe(
-      "https://cdn.example.test/att-1.png?Signature=s",
+    const iframe = document.querySelector("iframe");
+    expect(iframe?.getAttribute("src")).toBe(
+      "https://cdn.example.test/att-1.pdf?Signature=s",
     );
   });
 });
