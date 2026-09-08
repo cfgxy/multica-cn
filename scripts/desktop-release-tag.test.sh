@@ -95,15 +95,40 @@ expect_failure "empty tag on push" push ""
 # electron-builder resolves the release by `v${version}`, so a dispatch that
 # lands exactly on a tag cannot be renamed to a separate prerelease without
 # breaking that mapping — it is refused instead (fail closed).
+#
+# `dispatch <describe> [<exact-match-tag>]`: the second argument is
+# `git describe --exact-match`'s answer to "is HEAD itself a tag", which is
+# authoritative where string-matching the describe value is not. Both the
+# exact-match input and the syntax backstop must refuse, so a tag the push
+# channel accepts can never slip through this channel.
 
-expect_failure "dispatch exactly on a stable tag" dispatch v0.4.42
-expect_failure "dispatch exactly on a prerelease tag" dispatch v1.0.0-rc.1
+expect_failure "dispatch exactly on a stable tag" dispatch v0.4.42 v0.4.42
+expect_failure "dispatch exactly on a prerelease tag" dispatch v1.0.0-rc.1 v1.0.0-rc.1
+# Every tag shape `push` accepts must be refused here, including the hyphenated
+# prerelease suffixes `SEMVER_RE` allows (`-rc-test`, `-beta-2`): a narrower
+# bare-tag pattern would let them through as manual prereleases.
+expect_failure "dispatch exactly on a hyphenated prerelease tag" \
+  dispatch v1.0.0-rc-test v1.0.0-rc-test
+expect_failure "dispatch exactly on a multi-hyphen prerelease tag" \
+  dispatch v2.3.4-beta-2-internal v2.3.4-beta-2-internal
+
+# Syntax backstop: even with no exact-match argument, a describe value that is
+# itself valid release-tag syntax and carries no `-<distance>-g<hash>` suffix is
+# a bare tag and must be refused.
+expect_failure "dispatch bare stable tag without exact-match input" dispatch v0.4.42
+expect_failure "dispatch bare prerelease tag without exact-match input" dispatch v1.0.0-rc.1
+expect_failure "dispatch bare hyphenated tag without exact-match input" dispatch v1.0.0-rc-test
 
 # Commits past a tag: `git describe`'s own prerelease form is already valid
 # semver once the leading `v` is stripped, so it passes through untouched, and
 # the `-N-g<hash>` distance suffix proves it is not a tagged release point.
 expect_output "dispatch past a tag" \
-  "v0.4.41-182-g0a76682d0" "0.4.41-182-g0a76682d0" "true" dispatch v0.4.41-182-g0a76682d0
+  "v0.4.41-182-g0a76682d0" "0.4.41-182-g0a76682d0" "true" dispatch v0.4.41-182-g0a76682d0 ""
+# A commit past a hyphenated prerelease tag keeps that tag's suffix and stays
+# publishable — the distance suffix is what makes it not a release point.
+expect_output "dispatch past a hyphenated prerelease tag" \
+  "v1.0.0-rc-test-7-gdeadbee" "1.0.0-rc-test-7-gdeadbee" "true" \
+  dispatch v1.0.0-rc-test-7-gdeadbee ""
 
 # No reachable tag: package.mjs coerces a bare hash to 0.0.0-g<hash> because a
 # hash is never valid semver. The tag must follow it, `g` prefix included.

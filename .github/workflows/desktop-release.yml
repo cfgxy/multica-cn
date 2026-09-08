@@ -74,11 +74,13 @@ jobs:
           else
             # Manual run: name the release after the same `git describe` value
             # that scripts/package.mjs bakes into the installers, so the
-            # release tag and the artifact version always match. The script
-            # refuses a describe value that is exactly a tag, so this channel
-            # can never name the release a tag push owns.
+            # release tag and the artifact version always match. The second
+            # argument is git's own answer to "is HEAD itself a tag" (empty when
+            # it is not); the script refuses on it, so this channel can never
+            # name the release a tag push owns.
             bash scripts/desktop-release-tag.sh dispatch \
-              "$(git describe --tags --match 'v[0-9]*' --always --dirty)"
+              "$(git describe --tags --match 'v[0-9]*' --always --dirty)" \
+              "$(git describe --tags --match 'v[0-9]*' --exact-match 2>/dev/null || true)"
           fi
 
       - name: Create GitHub Release if missing
