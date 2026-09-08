@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -42,6 +43,11 @@ type PluginPackageVersionSummary struct {
 	// Installed marks the version this workspace currently runs, so "which one
 	// am I on" is answerable without cross-referencing two lists.
 	Installed bool `json:"installed"`
+	// WithdrawnAt is set while the publisher has taken this version off the
+	// directory. It is reported rather than hidden: a workspace already running
+	// a withdrawn version needs to see that it is running one, and the publisher
+	// needs to see what they withdrew in order to put it back.
+	WithdrawnAt string `json:"withdrawn_at,omitempty"`
 }
 
 // PluginPackageSummary is one publishable plugin identity with its versions,
@@ -52,6 +58,13 @@ type PluginPackageSummary struct {
 	Name      string                        `json:"name"`
 	Versions  []PluginPackageVersionSummary `json:"versions"`
 	CreatedAt string                        `json:"created_at"`
+	// Visibility is "private" or "public": whether this package appears on the
+	// instance directory.
+	Visibility string `json:"visibility"`
+	// PublisherWorkspaceID identifies who published this, which matters only on
+	// the directory — a reader browsing packages from other workspaces needs to
+	// know a listing is not their own before they consent to run it.
+	PublisherWorkspaceID string `json:"publisher_workspace_id,omitempty"`
 }
 
 const pluginTimeFormat = "2006-01-02T15:04:05Z07:00"
@@ -114,6 +127,14 @@ func (s *PluginService) PublishLocalBundle(ctx context.Context, workspaceID, use
 func (s *PluginService) publish(ctx context.Context, workspaceID, userID pgtype.UUID, bundle plugincontract.Bundle, devLoop bool) (PluginPackageSummary, error) {
 	if err := bundle.Manifest.CheckCapabilities(s.Host); err != nil {
 		return PluginPackageSummary{}, &PluginError{Kind: PluginErrorIncompatible, Message: capabilityMessage(err), Err: err}
+	}
+	// Before anything is written. A version is immutable and the directory can
+	// serve it to the whole instance, so a credential that reaches this table
+	// is published — there is no later point at which refusing still helps.
+	// The dev loop takes the same check: MULTICA_PLUGIN_DIR is where an author's
+	// working `.env` actually lives.
+	if err := scanBundleForSecrets(bundle); err != nil {
+		return PluginPackageSummary{}, err
 	}
 
 	tx, err := s.TxStarter.Begin(ctx)
@@ -310,6 +331,10 @@ func (s *PluginService) packageSummary(ctx context.Context, workspaceID pgtype.U
 	rendered := make([]PluginPackageVersionSummary, 0, len(versions))
 	for _, version := range versions {
 		id := uuidString(version.ID)
+		withdrawnAt := ""
+		if version.WithdrawnAt.Valid {
+			withdrawnAt = version.WithdrawnAt.Time.UTC().Format(pluginTimeFormat)
+		}
 		rendered = append(rendered, PluginPackageVersionSummary{
 			ID:          id,
 			Version:     version.Version,
@@ -317,14 +342,17 @@ func (s *PluginService) packageSummary(ctx context.Context, workspaceID pgtype.U
 			SizeBytes:   version.SizeBytes,
 			PublishedAt: version.CreatedAt.Time.UTC().Format(pluginTimeFormat),
 			Installed:   id != "" && id == installedVersionID,
+			WithdrawnAt: withdrawnAt,
 		})
 	}
 	return PluginPackageSummary{
-		ID:        uuidString(pkg.ID),
-		PluginKey: pkg.PluginKey,
-		Name:      pkg.Name,
-		Versions:  rendered,
-		CreatedAt: pkg.CreatedAt.Time.UTC().Format(pluginTimeFormat),
+		ID:                   uuidString(pkg.ID),
+		PluginKey:            pkg.PluginKey,
+		Name:                 pkg.Name,
+		Versions:             rendered,
+		CreatedAt:            pkg.CreatedAt.Time.UTC().Format(pluginTimeFormat),
+		Visibility:           pkg.Visibility,
+		PublisherWorkspaceID: uuidString(pkg.WorkspaceID),
 	}, nil
 }
 
@@ -411,9 +439,15 @@ func requireVersionStillPublished(ctx context.Context, queries *db.Queries, work
 	return nil
 }
 
-// VersionForWorkspace loads a published version and confirms it belongs to the
-// workspace in the URL. Publishing is workspace-private, so a version id from
-// another workspace must not be installable here.
+// VersionForWorkspace loads a version this workspace is allowed to install.
+//
+// Two ways to qualify, and the order matters. A version published here is
+// installable whatever its listing state, because withdrawal is a signal to
+// other workspaces and must not lock a publisher out of their own draft. A
+// version from elsewhere qualifies only through the directory: its package
+// listed public and the version not withdrawn. Anything else is reported as not
+// found rather than forbidden — a version id is guessable, and "forbidden"
+// would confirm to a stranger that it exists.
 func (s *PluginService) VersionForWorkspace(ctx context.Context, workspaceID pgtype.UUID, versionID string) (db.PluginPackageVersion, error) {
 	parsed, err := util.ParseUUID(strings.TrimSpace(versionID))
 	if err != nil {
@@ -423,13 +457,108 @@ func (s *PluginService) VersionForWorkspace(ctx context.Context, workspaceID pgt
 		WorkspaceID: workspaceID,
 		ID:          parsed,
 	})
+	if err == nil {
+		return version, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return db.PluginPackageVersion{}, &PluginError{Kind: PluginErrorUnavailable, Message: "load published plugin version", Err: err}
+	}
+
+	version, err = s.Queries.GetPublicPluginPackageVersion(ctx, parsed)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return db.PluginPackageVersion{}, pluginErrf(PluginErrorNotFound, "published plugin version not found")
 	}
 	if err != nil {
-		return db.PluginPackageVersion{}, &PluginError{Kind: PluginErrorUnavailable, Message: "load published plugin version", Err: err}
+		return db.PluginPackageVersion{}, &PluginError{Kind: PluginErrorUnavailable, Message: "load public plugin version", Err: err}
 	}
 	return version, nil
+}
+
+// ListPublicPackages returns the instance directory: every package its
+// publisher has listed, with versions.
+//
+// workspaceID is the reader's, not a filter — it is what makes the "installed"
+// flag on each version mean "installed here", so the directory can show an
+// administrator which listings they already run.
+func (s *PluginService) ListPublicPackages(ctx context.Context, workspaceID pgtype.UUID) ([]PluginPackageSummary, error) {
+	packages, err := s.Queries.ListPublicPluginPackages(ctx)
+	if err != nil {
+		return nil, &PluginError{Kind: PluginErrorUnavailable, Message: "list public plugin packages", Err: err}
+	}
+	summaries := make([]PluginPackageSummary, 0, len(packages))
+	for _, pkg := range packages {
+		summary, err := s.packageSummary(ctx, workspaceID, pkg)
+		if err != nil {
+			return nil, err
+		}
+		summaries = append(summaries, summary)
+	}
+	return summaries, nil
+}
+
+// SetPackageVisibility lists a package on the instance directory, or unlists it.
+//
+// Unlisting stops discovery and new installs and nothing else. The workspaces
+// already running a version keep running it, because the alternative — a
+// publisher's listing decision breaking someone else's workspace — would make
+// unlisting an action nobody dares take, and a directory nobody can leave is
+// worse than no directory.
+func (s *PluginService) SetPackageVisibility(ctx context.Context, workspaceID pgtype.UUID, packageID string, public bool) (PluginPackageSummary, error) {
+	parsed, err := util.ParseUUID(strings.TrimSpace(packageID))
+	if err != nil {
+		return PluginPackageSummary{}, pluginErrf(PluginErrorNotFound, "plugin package not found")
+	}
+	visibility := "private"
+	if public {
+		visibility = "public"
+	}
+	pkg, err := s.Queries.SetPluginPackageVisibility(ctx, db.SetPluginPackageVisibilityParams{
+		WorkspaceID: workspaceID,
+		ID:          parsed,
+		Visibility:  visibility,
+	})
+	if errors.Is(err, pgx.ErrNoRows) {
+		return PluginPackageSummary{}, pluginErrf(PluginErrorNotFound, "plugin package not found")
+	}
+	if err != nil {
+		return PluginPackageSummary{}, &PluginError{Kind: PluginErrorUnavailable, Message: "set plugin package visibility", Err: err}
+	}
+	return s.packageSummary(ctx, workspaceID, pkg)
+}
+
+// SetVersionWithdrawn takes one published version off the directory, or puts it
+// back.
+//
+// Per version because that is the granularity a bad release has. Withdrawing is
+// never a delete: the artifact stays readable so the installations that
+// consented to it keep loading their surfaces, and putting it back is the same
+// call with withdrawn=false rather than a re-publish, which the immutability
+// rule would refuse anyway.
+func (s *PluginService) SetVersionWithdrawn(ctx context.Context, workspaceID, userID pgtype.UUID, versionID string, withdrawn bool) (PluginPackageSummary, error) {
+	parsed, err := util.ParseUUID(strings.TrimSpace(versionID))
+	if err != nil {
+		return PluginPackageSummary{}, pluginErrf(PluginErrorNotFound, "published plugin version not found")
+	}
+	params := db.SetPluginPackageVersionWithdrawnParams{WorkspaceID: workspaceID, ID: parsed}
+	if withdrawn {
+		params.WithdrawnAt = pgtype.Timestamptz{Time: time.Now().UTC(), Valid: true}
+		params.WithdrawnBy = userID
+	}
+	version, err := s.Queries.SetPluginPackageVersionWithdrawn(ctx, params)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return PluginPackageSummary{}, pluginErrf(PluginErrorNotFound, "published plugin version not found")
+	}
+	if err != nil {
+		return PluginPackageSummary{}, &PluginError{Kind: PluginErrorUnavailable, Message: "set plugin version withdrawal", Err: err}
+	}
+	pkg, err := s.Queries.GetWorkspacePluginPackage(ctx, db.GetWorkspacePluginPackageParams{
+		WorkspaceID: workspaceID,
+		ID:          version.PackageID,
+	})
+	if err != nil {
+		return PluginPackageSummary{}, &PluginError{Kind: PluginErrorUnavailable, Message: "load plugin package", Err: err}
+	}
+	return s.packageSummary(ctx, workspaceID, pkg)
 }
 
 // PluginSurfaceScript is the code one surface runs, plus the digest of the

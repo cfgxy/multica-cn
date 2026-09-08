@@ -362,14 +362,18 @@ func TestPluginScheduleLifecycleReconcilesAtomically(t *testing.T) {
 
 func TestPluginManagementRequiresPluginsV1(t *testing.T) {
 	withPluginsV1Flag(t, testHandler, false)
+	// Everything that could start plugin work. Listing and uninstall are
+	// deliberately absent — see TestPluginCleanupSurvivesPluginsV1Off.
 	for name, handler := range map[string]http.HandlerFunc{
-		"list":      testHandler.ListPlugins,
-		"preview":   testHandler.PreviewPlugin,
-		"install":   testHandler.InstallPlugin,
-		"configure": testHandler.ConfigurePlugin,
-		"enable":    testHandler.EnablePlugin,
-		"disable":   testHandler.DisablePlugin,
-		"uninstall": testHandler.UninstallPlugin,
+		"preview":    testHandler.PreviewPlugin,
+		"install":    testHandler.InstallPlugin,
+		"configure":  testHandler.ConfigurePlugin,
+		"enable":     testHandler.EnablePlugin,
+		"disable":    testHandler.DisablePlugin,
+		"publish":    testHandler.PublishPluginPackage,
+		"directory":  testHandler.ListPublicPluginPackages,
+		"visibility": testHandler.SetPluginPackageVisibility,
+		"withdraw":   testHandler.SetPluginVersionWithdrawn,
 	} {
 		t.Run(name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
@@ -378,6 +382,78 @@ func TestPluginManagementRequiresPluginsV1(t *testing.T) {
 				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 			}
 		})
+	}
+}
+
+// Turning the flag off must not strand what was installed while it was on.
+//
+// An operator who disables plugins after an incident still has to be able to
+// see what is installed and remove it; if these routes closed with the rest,
+// their only remaining move would be deleting rows by hand. The read also has
+// to say WHY the page is read-only, which is what plugins_enabled carries.
+func TestPluginCleanupSurvivesPluginsV1Off(t *testing.T) {
+	withPluginsV1Flag(t, testHandler, true)
+	cleanupPluginInstallations(t)
+	versionID := withLocalPluginSource(t, handlerTestManifest)
+
+	body, _ := json.Marshal(map[string]any{
+		"version_id":     versionID,
+		"granted_scopes": []string{"issues:read", "comments:write", "storage:user"},
+	})
+	recorder := httptest.NewRecorder()
+	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID}))
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("install status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var installed struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &installed); err != nil {
+		t.Fatalf("decode installation: %v", err)
+	}
+
+	withPluginsV1Flag(t, testHandler, false)
+
+	recorder = httptest.NewRecorder()
+	testHandler.ListPlugins(recorder, pluginHandlerRequest(http.MethodGet, "/plugins", nil, map[string]string{"id": testWorkspaceID}))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("list with the flag off status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var listed struct {
+		Plugins []struct {
+			ID string `json:"id"`
+		} `json:"plugins"`
+		PluginsEnabled bool `json:"plugins_enabled"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if listed.PluginsEnabled {
+		t.Fatal("the list claims plugins are enabled while the flag is off — the page would offer actions that cannot work")
+	}
+	found := false
+	for _, plugin := range listed.Plugins {
+		if plugin.ID == installed.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("an installation made while the flag was on is invisible with it off — there would be no supported way to remove it")
+	}
+
+	params := map[string]string{"id": testWorkspaceID, "installationId": installed.ID}
+	recorder = httptest.NewRecorder()
+	testHandler.UninstallPlugin(recorder, pluginHandlerRequest(http.MethodDelete, "/plugins", nil, params))
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("uninstall with the flag off status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	// Publishing stays closed throughout: cleanup shrinks what is installed
+	// and must never be a way back in.
+	recorder = httptest.NewRecorder()
+	testHandler.PublishLocalPluginPackage(recorder, pluginHandlerRequest(http.MethodPost, "/plugins/packages/local", []byte(`{"name":"hello"}`), map[string]string{"id": testWorkspaceID}))
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("publish with the flag off status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 

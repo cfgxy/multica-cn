@@ -2,7 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AlertCircle, CalendarClock, Loader2, Trash2, Upload } from "lucide-react";
+import { AlertCircle, CalendarClock, Globe, Loader2, Lock, Trash2, Upload } from "lucide-react";
 import { toast } from "sonner";
 import { useCurrentMember } from "@multica/core/permissions";
 import {
@@ -14,6 +14,8 @@ import {
   usePreviewPlugin,
   usePublishPluginPackage,
   useSetPluginEnabled,
+  useSetPluginPackageVisibility,
+  useSetPluginVersionWithdrawn,
   useUninstallPlugin,
 } from "@multica/core/plugins";
 import { useCurrentWorkspace } from "@multica/core/paths";
@@ -38,112 +40,9 @@ import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { Switch } from "@multica/ui/components/ui/switch";
 import { mcpHooks, PluginHookActivity, PluginMCPApproval, PluginScheduleActivity } from "../../plugins";
-import { useLocale, useT } from "../../i18n";
+import { useT } from "../../i18n";
+import { PluginConsent, PluginScheduleList, PluginScopeList } from "./plugin-consent";
 import { SettingsCard, SettingsSection, SettingsTab } from "./settings-layout";
-
-/**
- * The scope list is the entire trust model: there is no signature, no
- * publisher verification, and no trust tier. So the consent screen shows the
- * raw scope strings alongside a plain-language line, and never summarizes them
- * away.
- */
-function ScopeList({ scopes, highlighted }: { scopes: string[]; highlighted?: string[] }) {
-  const { t } = useT("settings");
-  const added = new Set(highlighted ?? []);
-  return (
-    <ul className="space-y-1.5">
-      {scopes.map((scope) => (
-        <li key={scope} className="flex items-baseline gap-2 text-caption">
-          <code className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono">{scope}</code>
-          <span className="text-muted-foreground">{scopeDescription(scope, t)}</span>
-          {added.has(scope) ? (
-            <Badge variant="secondary">{t(($) => $.plugins.consent.new_scope)}</Badge>
-          ) : null}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-type ScheduledHook = {
-  key: string;
-  name: string;
-  schedule?: { cron: string; timezone: string; next_run_at?: string };
-};
-
-function ScheduleList({ hooks, showNextRun = false }: { hooks: ScheduledHook[]; showNextRun?: boolean }) {
-  const { t } = useT("settings");
-  const locale = useLocale();
-  return (
-    <ul className="mt-2 space-y-1.5">
-      {hooks.map((hook) => (
-        <li key={hook.key} className="flex flex-wrap items-baseline gap-2 text-caption">
-          <span className="font-medium">{hook.name}</span>
-          <span>{scheduleFrequency(hook.schedule?.cron ?? "", t)}</span>
-          <code className="rounded bg-muted px-1.5 py-0.5 font-mono">{hook.schedule?.cron ?? ""}</code>
-          <span className="text-muted-foreground">{hook.schedule?.timezone ?? ""}</span>
-          {showNextRun && hook.schedule?.next_run_at ? (
-            <span className="text-muted-foreground">
-              {t(($) => $.plugins.schedule.next_run, {
-                time: formatScheduleTime(hook.schedule?.next_run_at, locale),
-              })}
-            </span>
-          ) : null}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function formatScheduleTime(value: string | undefined, locale: string): string {
-  if (!value) return "—";
-  const timestamp = Date.parse(value);
-  if (Number.isNaN(timestamp)) return "—";
-  return new Intl.DateTimeFormat(locale, {
-    dateStyle: "medium",
-    timeStyle: "short",
-  }).format(new Date(timestamp));
-}
-
-type Translate = ReturnType<typeof useT<"settings">>["t"];
-
-function scheduleFrequency(cron: string, t: Translate): string {
-  const fields = cron.trim().split(/\s+/);
-  if (fields.length !== 5) return t(($) => $.plugins.schedule.frequency_custom);
-  const everyMinutes = /^\*\/(\d+)$/.exec(fields[0] ?? "");
-  if (everyMinutes && fields.slice(1).every((field) => field === "*")) {
-    return t(($) => $.plugins.schedule.frequency_minutes, { count: Number(everyMinutes[1]) });
-  }
-  if (/^\d+$/.test(fields[0] ?? "") && fields.slice(1).every((field) => field === "*")) {
-    return t(($) => $.plugins.schedule.frequency_hourly, { minute: fields[0] });
-  }
-  if (/^\d+$/.test(fields[0] ?? "") && /^\d+$/.test(fields[1] ?? "") && fields.slice(2).every((field) => field === "*")) {
-    return t(($) => $.plugins.schedule.frequency_daily, {
-      hour: String(fields[1]).padStart(2, "0"),
-      minute: String(fields[0]).padStart(2, "0"),
-    });
-  }
-  return t(($) => $.plugins.schedule.frequency_custom);
-}
-
-function scopeDescription(scope: string, t: Translate): string {
-  if (scope.startsWith("net:")) {
-    return t(($) => $.plugins.scopes.net, { domain: scope.slice("net:".length) });
-  }
-  switch (scope) {
-    case "issues:read": return t(($) => $.plugins.scopes.issues_read);
-    case "issues:write": return t(($) => $.plugins.scopes.issues_write);
-    case "comments:read": return t(($) => $.plugins.scopes.comments_read);
-    case "comments:write": return t(($) => $.plugins.scopes.comments_write);
-    case "tasks:read": return t(($) => $.plugins.scopes.tasks_read);
-    case "tasks:write": return t(($) => $.plugins.scopes.tasks_write);
-    case "agents:read": return t(($) => $.plugins.scopes.agents_read);
-    case "members:read": return t(($) => $.plugins.scopes.members_read);
-    case "storage:user": return t(($) => $.plugins.scopes.storage_user);
-    case "storage:workspace": return t(($) => $.plugins.scopes.storage_workspace);
-    default: return t(($) => $.plugins.scopes.unknown);
-  }
-}
 
 /**
  * The configuration form is generated from the manifest, not supplied by the
@@ -329,8 +228,6 @@ function PublishAndInstall({ wsId, canManage }: { wsId: string; canManage: boole
   const [preview, setPreview] = useState<PluginPreview | null>(null);
 
   const packages = useMemo(() => data?.packages ?? [], [data]);
-  const scheduledHooks = (preview?.manifest.contributes?.hooks ?? [])
-    .filter((hook) => hook.schedule !== undefined);
 
   const reportError = (error: unknown) => {
     toast.error(error instanceof Error ? error.message : t(($) => $.plugins.action_failed));
@@ -409,6 +306,7 @@ function PublishAndInstall({ wsId, canManage }: { wsId: string; canManage: boole
           packages.map((pluginPackage) => (
             <PublishedPackage
               key={pluginPackage.id}
+              wsId={wsId}
               pluginPackage={pluginPackage}
               canManage={canManage}
               busy={previewMutation.isPending || deleteMutation.isPending}
@@ -422,53 +320,14 @@ function PublishAndInstall({ wsId, canManage }: { wsId: string; canManage: boole
         )}
 
         {preview ? (
-          <div className="space-y-4 border-t border-surface-border px-4 py-4">
-            <div>
-              <div className="text-body font-semibold">{preview.manifest.name}</div>
-              <p className="text-caption text-muted-foreground">
-                {t(($) => $.plugins.byline, {
-                  author: preview.manifest.author.name,
-                  version: preview.version,
-                })}
-                {preview.installed
-                  ? t(($) => $.plugins.consent.upgrade_from, { version: preview.installed_version ?? "" })
-                  : ""}
-              </p>
-              {preview.manifest.description ? (
-                <p className="mt-2 text-caption">{preview.manifest.description}</p>
-              ) : null}
-            </div>
-
-            <Alert>
-              <AlertCircle />
-              <AlertTitle>{t(($) => $.plugins.consent.title)}</AlertTitle>
-              <AlertDescription>{t(($) => $.plugins.consent.description)}</AlertDescription>
-            </Alert>
-
-            <ScopeList scopes={preview.scopes} highlighted={preview.added_scopes} />
-
-            {scheduledHooks.length > 0 ? (
-              <Alert>
-                <CalendarClock />
-                <AlertTitle>{t(($) => $.plugins.schedule.consent_title)}</AlertTitle>
-                <AlertDescription>
-                  {t(($) => $.plugins.schedule.consent_description)}
-                  <ScheduleList hooks={scheduledHooks} />
-                </AlertDescription>
-              </Alert>
-            ) : null}
-
-            <div className="flex justify-end gap-2">
-              <Button variant="ghost" onClick={() => setPreview(null)}>
-                {t(($) => $.plugins.consent.cancel)}
-              </Button>
-              <Button disabled={!canManage || installMutation.isPending} onClick={confirmInstall}>
-                {installMutation.isPending ? <Loader2 className="animate-spin" /> : null}
-                {preview.installed
-                  ? t(($) => $.plugins.consent.confirm_upgrade)
-                  : t(($) => $.plugins.consent.confirm)}
-              </Button>
-            </div>
+          <div className="border-t border-surface-border px-4 py-4">
+            <PluginConsent
+              preview={preview}
+              installing={installMutation.isPending}
+              canInstall={canManage}
+              onCancel={() => setPreview(null)}
+              onConfirm={confirmInstall}
+            />
           </div>
         ) : null}
       </SettingsCard>
@@ -477,12 +336,14 @@ function PublishAndInstall({ wsId, canManage }: { wsId: string; canManage: boole
 }
 
 function PublishedPackage({
+  wsId,
   pluginPackage,
   canManage,
   busy,
   onReview,
   onDelete,
 }: {
+  wsId: string;
   pluginPackage: PluginPackage;
   canManage: boolean;
   busy: boolean;
@@ -490,53 +351,124 @@ function PublishedPackage({
   onDelete: (packageId: string) => void;
 }) {
   const { t } = useT("settings");
+  const visibilityMutation = useSetPluginPackageVisibility(wsId);
+  const withdrawMutation = useSetPluginVersionWithdrawn(wsId);
   // Versions arrive newest first, and the installed one is marked rather than
   // inferred: after a publish those are different rows, and that difference is
   // the whole reason an upgrade is a decision somebody makes.
   const installed = pluginPackage.versions.find((version) => version.installed === true);
+  const isPublic = pluginPackage.visibility === "public";
+  const listingBusy = visibilityMutation.isPending || withdrawMutation.isPending;
+
+  const reportError = (error: unknown) => {
+    toast.error(error instanceof Error ? error.message : t(($) => $.plugins.action_failed));
+  };
 
   return (
     <div className="space-y-3 border-t border-surface-border px-4 py-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <div className="text-body font-medium">{pluginPackage.name}</div>
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="text-body font-medium">{pluginPackage.name}</span>
+            <Badge variant={isPublic ? "secondary" : "outline"}>
+              {isPublic ? <Globe className="h-3 w-3" /> : <Lock className="h-3 w-3" />}
+              {isPublic
+                ? t(($) => $.plugins.publish.listed_badge)
+                : t(($) => $.plugins.publish.private_badge)}
+            </Badge>
+          </div>
           <p className="text-caption text-muted-foreground">{pluginPackage.plugin_key}</p>
         </div>
-        <Button
-          size="icon"
-          variant="ghost"
-          aria-label={t(($) => $.plugins.publish.delete)}
-          disabled={!canManage || busy}
-          onClick={() => onDelete(pluginPackage.id)}
-        >
-          <Trash2 />
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={!canManage || busy || listingBusy}
+            onClick={() => visibilityMutation
+              .mutateAsync({ packageId: pluginPackage.id, isPublic: !isPublic })
+              .then(() => toast.success(isPublic
+                ? t(($) => $.plugins.publish.unlisted)
+                : t(($) => $.plugins.publish.listed)))
+              .catch(reportError)}
+          >
+            {visibilityMutation.isPending ? <Loader2 className="animate-spin" /> : null}
+            {isPublic
+              ? t(($) => $.plugins.publish.unlist)
+              : t(($) => $.plugins.publish.list)}
+          </Button>
+          <Button
+            size="icon"
+            variant="ghost"
+            aria-label={t(($) => $.plugins.publish.delete)}
+            disabled={!canManage || busy}
+            onClick={() => onDelete(pluginPackage.id)}
+          >
+            <Trash2 />
+          </Button>
+        </div>
       </div>
 
+      {/*
+        Listing the package is what makes the directory show it; withdrawing a
+        version is how a bad release comes off without unlisting the plugin
+        wholesale. Both stop discovery and new installs only — a workspace
+        already running a version keeps running it, which is what lets a
+        publisher take either action at all.
+      */}
+      <p className="text-caption text-muted-foreground">
+        {isPublic
+          ? t(($) => $.plugins.publish.listed_note)
+          : t(($) => $.plugins.publish.private_note)}
+      </p>
+
       <ul className="space-y-1.5">
-        {pluginPackage.versions.map((version) => (
-          <li key={version.id} className="flex flex-wrap items-center gap-2 text-caption">
-            <code className="rounded bg-muted px-1.5 py-0.5 font-mono">{version.version}</code>
-            {version.installed === true ? (
-              <Badge variant="secondary">{t(($) => $.plugins.publish.installed_version)}</Badge>
-            ) : null}
-            <span className="text-muted-foreground">{version.published_at.slice(0, 10)}</span>
-            <span className="font-mono text-muted-foreground" title={version.digest}>
-              {version.digest.slice(0, 12)}
-            </span>
-            {version.installed === true ? null : (
-              <Button
-                size="sm"
-                variant="ghost"
-                className="ml-auto"
-                disabled={!canManage || busy}
-                onClick={() => onReview(version.id)}
-              >
-                {installed ? t(($) => $.plugins.publish.review_upgrade) : t(($) => $.plugins.publish.review_install)}
-              </Button>
-            )}
-          </li>
-        ))}
+        {pluginPackage.versions.map((version) => {
+          const withdrawn = version.withdrawn_at !== undefined && version.withdrawn_at !== "";
+          return (
+            <li key={version.id} className="flex flex-wrap items-center gap-2 text-caption">
+              <code className="rounded bg-muted px-1.5 py-0.5 font-mono">{version.version}</code>
+              {version.installed === true ? (
+                <Badge variant="secondary">{t(($) => $.plugins.publish.installed_version)}</Badge>
+              ) : null}
+              {withdrawn ? (
+                <Badge variant="outline">{t(($) => $.plugins.publish.withdrawn_badge)}</Badge>
+              ) : null}
+              <span className="text-muted-foreground">{version.published_at.slice(0, 10)}</span>
+              <span className="font-mono text-muted-foreground" title={version.digest}>
+                {version.digest.slice(0, 12)}
+              </span>
+              <div className="ml-auto flex items-center gap-1">
+                {isPublic ? (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={!canManage || busy || listingBusy}
+                    onClick={() => withdrawMutation
+                      .mutateAsync({ versionId: version.id, withdrawn: !withdrawn })
+                      .then(() => toast.success(withdrawn
+                        ? t(($) => $.plugins.publish.restored)
+                        : t(($) => $.plugins.publish.withdrawn)))
+                      .catch(reportError)}
+                  >
+                    {withdrawn
+                      ? t(($) => $.plugins.publish.restore)
+                      : t(($) => $.plugins.publish.withdraw)}
+                  </Button>
+                ) : null}
+                {version.installed === true ? null : (
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={!canManage || busy}
+                    onClick={() => onReview(version.id)}
+                  >
+                    {installed ? t(($) => $.plugins.publish.review_upgrade) : t(($) => $.plugins.publish.review_install)}
+                  </Button>
+                )}
+              </div>
+            </li>
+          );
+        })}
       </ul>
     </div>
   );
@@ -546,10 +478,18 @@ function InstalledPlugin({
   installation,
   wsId,
   canManage,
+  canRemove,
 }: {
   installation: PluginInstallation;
   wsId: string;
+  /** Configure, enable/disable, approve MCP tools — off once plugins_v1 is. */
   canManage: boolean;
+  /**
+   * Uninstall only. Separate from canManage because removal outlives the
+   * feature flag: an operator who turned plugins off still has to be able to
+   * take out what was installed while they were on.
+   */
+  canRemove: boolean;
 }) {
   const { t } = useT("settings");
   const enabledMutation = useSetPluginEnabled(wsId);
@@ -609,7 +549,7 @@ function InstalledPlugin({
               size="icon"
               variant="ghost"
               aria-label={t(($) => $.plugins.uninstall)}
-              disabled={!canManage || isMutating}
+              disabled={!canRemove || isMutating}
               onClick={() => uninstallMutation.mutateAsync(installation.id)
                 .then(() => toast.success(t(($) => $.plugins.uninstalled)))
                 .catch(reportError)}
@@ -621,7 +561,7 @@ function InstalledPlugin({
 
         <div className="space-y-2">
           <div className="text-caption font-medium">{t(($) => $.plugins.granted_scopes)}</div>
-          <ScopeList scopes={installation.granted_scopes} />
+          <PluginScopeList scopes={installation.granted_scopes} />
         </div>
 
         {scheduledHooks.length > 0 ? (
@@ -630,7 +570,7 @@ function InstalledPlugin({
               <CalendarClock className="size-4" />
               {t(($) => $.plugins.schedule.title)}
             </div>
-            <ScheduleList hooks={scheduledHooks} showNextRun />
+            <PluginScheduleList hooks={scheduledHooks} showNextRun />
             <PluginScheduleActivity
               wsId={wsId}
               installationId={installation.id}
@@ -677,9 +617,27 @@ export function PluginsTab() {
 
   const { data, isLoading, isError } = useQuery(pluginInstallationsOptions(wsId));
   const installations = useMemo(() => data?.plugins ?? [], [data]);
+  // The server decides, not a client-side flag read: listing and uninstall stay
+  // open when plugins_v1 is off precisely so an operator can clean up, and the
+  // response says which mode it answered in. Defaulting to enabled while the
+  // query is in flight keeps the first paint from flashing the disabled banner
+  // at a workspace where nothing is wrong.
+  const pluginsEnabled = data?.plugins_enabled ?? true;
+  // Everything that would start new plugin work is gated on both: publishing
+  // and installing are what the flag closes, and only an owner or admin could
+  // do them anyway.
+  const canInstall = canManage && pluginsEnabled;
 
   return (
     <SettingsTab title={t(($) => $.plugins.title)} description={t(($) => $.plugins.description)}>
+      {!pluginsEnabled ? (
+        <Alert>
+          <AlertCircle />
+          <AlertTitle>{t(($) => $.plugins.disabled_title)}</AlertTitle>
+          <AlertDescription>{t(($) => $.plugins.disabled_description)}</AlertDescription>
+        </Alert>
+      ) : null}
+
       {!canManage ? (
         <Alert>
           <AlertCircle />
@@ -688,7 +646,7 @@ export function PluginsTab() {
         </Alert>
       ) : null}
 
-      {canManage ? <PublishAndInstall wsId={wsId} canManage={canManage} /> : null}
+      {canInstall ? <PublishAndInstall wsId={wsId} canManage={canInstall} /> : null}
 
       <SettingsSection title={t(($) => $.plugins.installed.title)}>
         {isLoading ? (
@@ -710,7 +668,8 @@ export function PluginsTab() {
                 key={installation.id}
                 installation={installation}
                 wsId={wsId}
-                canManage={canManage}
+                canManage={canInstall}
+                canRemove={canManage}
               />
             ))}
           </div>

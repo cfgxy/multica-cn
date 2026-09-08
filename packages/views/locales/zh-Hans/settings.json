@@ -307,7 +307,14 @@
     "cancel": "取消",
     "installed_toast": "{{name}} 已安装",
     "install_failed_toast": "安装失败",
-    "admin_only_note": "仅工作空间所有者和管理员可以从应用市场安装。"
+    "admin_only_note": "仅工作空间所有者和管理员可以从应用市场安装。",
+    "filter_plugins": "插件",
+    "plugin_kind": "插件",
+    "plugins_title": "本实例的插件",
+    "plugins_description": "其他工作空间上架的插件。安装时会显示与发布自有插件相同的授权确认页：你批准的权限范围就是全部授权，你批准的版本就是实际运行的版本。",
+    "plugins_empty_title": "还没有上架的插件",
+    "plugins_empty_description": "工作空间在发布插件后，可在「设置 → 插件」中将其上架。",
+    "all_versions_withdrawn": "所有版本均已撤回"
   },
   "mcp": {
     "title": "MCP",
@@ -362,6 +369,8 @@
   "plugins": {
     "title": "Plugins",
     "description": "在这个工作区里发布插件，然后安装某个具体版本，并逐条确认它能访问什么。",
+    "disabled_title": "插件管理已关闭",
+    "disabled_description": "插件功能关闭期间，无法安装、升级或发布插件。已安装的插件仍会在下方列出，并且可以卸载。",
     "loading": "正在加载 Plugins",
     "load_failed": "无法加载 Plugins",
     "load_failed_description": "请重试。已安装的 Plugin 不受影响。",
@@ -450,7 +459,20 @@
       "deleted": "已删除发布的插件",
       "installed_version": "使用中",
       "review_install": "查看并安装",
-      "review_upgrade": "查看并升级"
+      "review_upgrade": "查看并升级",
+      "list": "上架到目录",
+      "unlist": "撤下",
+      "listed": "已上架到实例目录",
+      "unlisted": "已从目录撤下",
+      "listed_badge": "已上架",
+      "private_badge": "私有",
+      "listed_note": "本实例内的所有工作空间都能发现并安装该插件。撤下只会阻止新的安装，已经在运行某个版本的工作空间不受影响。",
+      "private_note": "只有当前工作空间可以安装该插件。上架后，本实例内的所有工作空间都能发现它。",
+      "withdraw": "撤回",
+      "restore": "恢复",
+      "withdrawn": "该版本已从目录撤回",
+      "restored": "该版本已恢复上架",
+      "withdrawn_badge": "已撤回"
     }
   },
   "properties": {
