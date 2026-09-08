@@ -226,7 +226,7 @@
     "concurrency_tooltip": "Concurrency · {{value}} max concurrent tasks",
     "concurrency_range": "Max concurrent tasks ({{min}}–{{max}})",
     "session_max_context_tokens_range": "Context ceiling in tokens ({{min}}–{{max}}), or 0 to turn this off",
-    "session_compact_pct_range": "Start a fresh session at this percentage of the ceiling ({{min}}–{{max}})",
+    "session_compact_pct_range": "Start a fresh session at this percentage of the ceiling ({{min}}–{{max}}) — actually at {{threshold}} tokens, since the switch never fires below 50,000",
     "session_context_disabled": "Turned off — sessions resume regardless of size",
     "runtime_none": "No runtime",
     "runtime_tooltip": "Runtime · {{name}} · {{status}}",

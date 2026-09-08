@@ -216,7 +216,7 @@
     "concurrency_tooltip": "동시 실행 · 최대 {{value}}개 작업",
     "concurrency_range": "최대 동시 작업 수({{min}}-{{max}})",
     "session_max_context_tokens_range": "컨텍스트 상한 토큰 수({{min}}-{{max}}), 0이면 사용하지 않습니다",
-    "session_compact_pct_range": "상한의 이 비율에 도달하면 새 세션을 시작합니다({{min}}-{{max}})",
+    "session_compact_pct_range": "상한의 이 비율에 도달하면 새 세션을 시작합니다({{min}}-{{max}}). 전환은 50,000 토큰 미만에서는 일어나지 않으므로 실제 임계값은 {{threshold}} 토큰입니다",
     "session_context_disabled": "사용 안 함 — 크기와 무관하게 세션을 이어갑니다",
     "runtime_none": "런타임 없음",
     "runtime_tooltip": "런타임 · {{name}} · {{status}}",

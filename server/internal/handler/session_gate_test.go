@@ -5,10 +5,6 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
-
-	"github.com/jackc/pgx/v5/pgtype"
-
-	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 func TestPriorRunResultText(t *testing.T) {
@@ -68,18 +64,22 @@ func TestClipForBrief(t *testing.T) {
 	}
 }
 
-func TestBriefCommentLineIsAnAnchorNotContent(t *testing.T) {
+func TestBriefAnchorRenderKeepsOneCommentPerLine(t *testing.T) {
 	t.Parallel()
 
-	row := db.ListRootCommentsForIssueRow{
-		ID:             parseUUID("11111111-2222-3333-4444-555555555555"),
-		AuthorType:     "member",
-		Content:        strings.Repeat("x", priorContextBriefCommentBytes*3),
-		ReplyCount:     7,
-		LastActivityAt: pgtype.Timestamptz{Valid: false},
+	rootID := parseUUID("11111111-2222-3333-4444-555555555555")
+	replyID := parseUUID("99999999-8888-7777-6666-555555555555")
+
+	root := briefAnchor{
+		id:        rootID,
+		author:    "Bohan",
+		authorKey: "member",
+		content:   strings.Repeat("x", priorContextBriefCommentBytes*3),
+		replies:   7,
+		hasCount:  true,
 	}
 
-	line := briefCommentLine(row, "Bohan")
+	line := root.render()
 	if !strings.Contains(line, "`11111111`") {
 		t.Errorf("line must carry a short comment id for Ctrl+F, got %q", line)
 	}
@@ -94,7 +94,27 @@ func TestBriefCommentLineIsAnAnchorNotContent(t *testing.T) {
 
 	// Falling back to the author TYPE keeps the line readable when the name
 	// lookup fails, instead of rendering an anonymous bullet.
-	if line := briefCommentLine(row, ""); !strings.Contains(line, "member") {
-		t.Errorf("missing author name must fall back to the author type, got %q", line)
+	anonymous := root
+	anonymous.author = ""
+	if got := anonymous.render(); !strings.Contains(got, "member") {
+		t.Errorf("missing author name must fall back to the author type, got %q", got)
+	}
+
+	// A reply names the ROOT it hangs under, because `comment list --thread`
+	// takes the root id: an anchor pointing at the reply's own id would send
+	// the agent to a thread that does not exist.
+	reply := briefAnchor{
+		id:        replyID,
+		thread:    rootID,
+		author:    "Xingchen",
+		authorKey: "agent",
+		content:   "the decisive reply",
+	}
+	replyLine := reply.render()
+	if !strings.Contains(replyLine, "`99999999`") || !strings.Contains(replyLine, "in thread `11111111`") {
+		t.Errorf("a reply line must carry its own id and its thread's id, got %q", replyLine)
+	}
+	if strings.Contains(replyLine, "replies") {
+		t.Errorf("a reply is not a thread and must not claim a reply count, got %q", replyLine)
 	}
 }

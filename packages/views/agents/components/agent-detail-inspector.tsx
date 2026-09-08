@@ -16,6 +16,7 @@ import {
   AGENT_SESSION_MAX_CONTEXT_TOKENS_DISABLED,
   AGENT_SESSION_MAX_CONTEXT_TOKENS_MAX,
   AGENT_SESSION_MAX_CONTEXT_TOKENS_MIN,
+  agentSessionEffectiveCompactThreshold,
 } from "@multica/core/agents";
 import {
   isRuntimeUsableForUser,
@@ -410,9 +411,18 @@ function SessionContextSection({
                     AGENT_SESSION_MAX_CONTEXT_TOKENS_DISABLED
                 }
                 label={t(($) => $.inspector.prop_session_compact_pct)}
+                // The hint states the token count the switch REALLY happens at,
+                // not the percentage the user typed: the server floors the
+                // trigger at 50K, so a low percentage on a small ceiling fires
+                // later than the arithmetic suggests, and a hint showing only
+                // the range would misdescribe the setting it labels.
                 hint={t(($) => $.pickers.session_compact_pct_range, {
                   min: AGENT_SESSION_COMPACT_PCT_MIN,
                   max: AGENT_SESSION_COMPACT_PCT_MAX,
+                  threshold: agentSessionEffectiveCompactThreshold(
+                    maxContextTokens,
+                    compactPct,
+                  ),
                 })}
                 onSave={(next) => update({ session_compact_pct: next })}
               />

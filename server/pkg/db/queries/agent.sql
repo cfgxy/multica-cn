@@ -1215,22 +1215,9 @@ WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
 ORDER BY terminal_at DESC
 LIMIT 1;
 
--- name: GetLatestTaskRolloutMissing :one
--- Reports whether the most recent terminal task for (agent_id, issue_id)
--- withheld its Codex session because the rollout was missing (MUL-5305). When
--- true, GetLastTaskSession fell back to an older session, so the next run must
--- disclose that the most recent turn's context could not be carried over. Any
--- later task that records a real session resets this to FALSE by being the new
--- most-recent row, so the disclosure fires once and then clears.
-SELECT COALESCE(session_rollout_missing, FALSE) FROM agent_task_queue
-WHERE agent_id = $1 AND issue_id = $2
-  AND status IN ('completed', 'failed')
-  AND started_at IS NOT NULL
-ORDER BY COALESCE(completed_at, started_at, dispatched_at, created_at) DESC
-LIMIT 1;
-
 -- name: GetLatestChatTaskRolloutMissing :one
--- Chat-session counterpart of GetLatestTaskRolloutMissing (MUL-5305): reports
+-- Chat-session counterpart of the issue-side rollout-missing signal now folded
+-- into GetLatestTerminalTaskForBrief (MUL-5305): reports
 -- whether the most recent terminal task on this chat session withheld its Codex
 -- session because the rollout was missing. When true the next chat claim resumed
 -- an older session (or none), so it must disclose the continuity gap.
@@ -2810,3 +2797,30 @@ INSERT INTO agent (
     @owner_id, '', '{}'::jsonb, '[]'::jsonb, 'user', @system_key
 )
 RETURNING *;
+
+-- name: GetLatestTerminalTaskForBrief :one
+-- The most recent terminal task for (agent_id, issue_id) together with the two
+-- facts a compacting claim needs from it (RUYI-107): the result it reported,
+-- and whether it withheld its Codex session because the rollout was missing.
+--
+-- The two facts come from ONE row on purpose: they answer questions about the
+-- SAME turn — "what did the last turn say" and "was the last turn's context
+-- carried over" — and two separate queries could land either side of a
+-- concurrent terminal write and describe two different turns as one. This
+-- replaces the issue-side GetLatestTaskRolloutMissing, whose row selection
+-- (statuses, started_at guard, ordering) it keeps verbatim; the chat-session
+-- counterpart GetLatestChatTaskRolloutMissing still exists unchanged.
+--
+-- This is deliberately NOT the task GetLastTaskSession names. That query
+-- returns the task owning the RESUMABLE session, which after a withheld
+-- rollout is an older turn; judging the session by that task's context reading
+-- is correct (it is that session's own size), but reporting that task's output
+-- as "what your previous run reported" would silently rewind the hand-off to a
+-- turn the user already saw superseded.
+SELECT id, result, COALESCE(session_rollout_missing, FALSE) AS session_rollout_missing
+FROM agent_task_queue
+WHERE agent_id = $1 AND issue_id = $2
+  AND status IN ('completed', 'failed')
+  AND started_at IS NOT NULL
+ORDER BY COALESCE(completed_at, started_at, dispatched_at, created_at) DESC
+LIMIT 1;
