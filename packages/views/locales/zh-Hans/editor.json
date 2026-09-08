@@ -46,7 +46,8 @@
     "sequence_position": "第 {{index}} / {{total}} 张",
     "unavailable": "这张图片已失效,已跳过。",
     "skipped_notice": "你点击的图片无法加载,当前显示的是下一张可用图片。",
-    "unavailable_notice": "这张图片无法加载,可能已被删除或你已无访问权限。"
+    "unavailable_notice": "这张图片无法加载,可能已被删除或你已无访问权限。",
+    "loading_notice": "正在加载你选择的图片，当前仍显示上一张。"
   },
   "canvas": {
     "zoom_in": "放大",

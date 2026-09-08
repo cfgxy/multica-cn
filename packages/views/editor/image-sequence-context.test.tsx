@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   act,
   fireEvent,
@@ -58,6 +58,7 @@ const STRINGS: Record<string, Record<string, string>> = {
       "The image you clicked couldn't be loaded — showing the next available one.",
     unavailable_notice:
       "This image couldn't be loaded. It may have been deleted or you may no longer have access.",
+    loading_notice: "Loading the image you selected — still showing the previous one.",
   },
   canvas: {
     zoom_in: "Zoom in",
@@ -153,6 +154,69 @@ function nextButton(): HTMLButtonElement {
 beforeEach(() => {
   vi.clearAllMocks();
 });
+
+// jsdom's HTMLImageElement has no `decode()`, so `useSettledImageURL` swaps the
+// canvas synchronously and the decode window under test never exists. This
+// installs a probe whose decode() is resolved by hand, one deferred per URL, so
+// a test can inspect the panel BEFORE the target frame lands.
+function installControllableDecode() {
+  const pending = new Map<string, { resolve: () => void; reject: () => void }>();
+  const RealImage = window.Image;
+  class ProbeImage {
+    #src = "";
+    set src(value: string) {
+      this.#src = value;
+    }
+    get src() {
+      return this.#src;
+    }
+    decode(): Promise<void> {
+      const url = this.#src;
+      return new Promise<void>((resolve, reject) => {
+        pending.set(url, { resolve: () => resolve(), reject: () => reject(new Error("decode failed")) });
+      });
+    }
+  }
+  // @ts-expect-error test double, only `src` + `decode` are exercised
+  window.Image = ProbeImage;
+  // Settling is async: the hook's state update rides the decode promise's
+  // continuation, so the awaiting `act` has to let the microtask queue drain.
+  const take = (url: string) => {
+    const d = pending.get(url);
+    if (!d) throw new Error(`no pending decode for ${url}`);
+    pending.delete(url);
+    return d;
+  };
+  return {
+    async settle(url: string) {
+      const d = take(url);
+      await act(async () => {
+        d.resolve();
+      });
+    },
+    async fail(url: string) {
+      const d = take(url);
+      await act(async () => {
+        d.reject();
+      });
+    },
+    restore() {
+      window.Image = RealImage;
+    },
+  };
+}
+
+// The stable endpoint the preview asks for — `stablePreviewImageURL` rewrites
+// the record's expiring signature to this shape.
+const stableUrl = (att: Attachment) => `/api/attachments/${att.id}/download`;
+
+function canvasSrc(): string {
+  return screen.getByRole("dialog").querySelector("img")!.getAttribute("src")!;
+}
+
+function dialogLabel(): string {
+  return screen.getByRole("dialog").getAttribute("aria-label")!;
+}
 
 describe("ImageSequenceProvider", () => {
   it("opens at the clicked image's real position and reports X / Y", () => {
@@ -412,6 +476,116 @@ describe("ImageSequenceProvider", () => {
       fireEvent.error(img());
     });
     expect(toastErrorMock).toHaveBeenCalledTimes(2);
+  });
+
+  // RUYI-103 A2. `useSettledImageURL` deliberately holds the previous frame on
+  // the canvas until the target decodes; the header meanwhile already reads the
+  // target's filename and "x / N". Silently, that window IS "new name + old
+  // picture" — the reported defect, just narrower than the expiry case.
+  describe("while the next image is still decoding", () => {
+    let decode: ReturnType<typeof installControllableDecode>;
+
+    beforeEach(() => {
+      decode = installControllableDecode();
+    });
+    afterEach(() => {
+      decode.restore();
+    });
+
+    it("says the canvas is still on the previous frame until the target decodes", async () => {
+      render(
+        <ImageSequenceProvider items={sequenceOf(THREE)}>
+          <Opener openKey={THREE[0]!.id} />
+        </ImageSequenceProvider>,
+      );
+      act(() => {
+        fireEvent.click(screen.getByText("open"));
+      });
+
+      // Opening settles synchronously — the first frame IS the target.
+      expectCounter("1 / 3");
+      expect(canvasSrc()).toBe(stableUrl(THREE[0]!));
+      expect(screen.queryByRole("status")).toBeNull();
+
+      act(() => {
+        fireEvent.click(nextButton());
+      });
+
+      // Before the decode resolves: header has moved, canvas has not, and the
+      // banner is what keeps the two from contradicting each other.
+      expectCounter("2 / 3");
+      expect(dialogLabel()).toBe("shot-2.png");
+      expect(canvasSrc()).toBe(stableUrl(THREE[0]!));
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "still showing the previous one",
+      );
+
+      await decode.settle(stableUrl(THREE[1]!));
+
+      // After: identity, title, counter and notice all agree again.
+      expectCounter("2 / 3");
+      expect(dialogLabel()).toBe("shot-2.png");
+      expect(canvasSrc()).toBe(stableUrl(THREE[1]!));
+      expect(screen.queryByRole("status")).toBeNull();
+    });
+
+    it("replaces the loading notice with the substitution notice when the target fails", async () => {
+      render(
+        <ImageSequenceProvider items={sequenceOf(THREE)}>
+          <Opener openKey={THREE[0]!.id} />
+        </ImageSequenceProvider>,
+      );
+      act(() => {
+        fireEvent.click(screen.getByText("open"));
+      });
+      act(() => {
+        fireEvent.click(nextButton());
+      });
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "still showing the previous one",
+      );
+
+      // The frame the reader asked for is gone: the viewer skips on, and the
+      // banner must switch from "loading" to "this is not what you clicked"
+      // rather than staying on a promise that will never resolve.
+      await decode.fail(stableUrl(THREE[1]!));
+
+      expectCounter("3 / 3");
+      expect(screen.getByRole("status")).toHaveTextContent(
+        "showing the next available one",
+      );
+      expect(toastErrorMock).toHaveBeenCalledTimes(1);
+    });
+
+    // RUYI-103 C2. A stale signature, a deleted object and a failed re-sign all
+    // arrive here as a rejected decode. Whatever the cause, the canvas must not
+    // end up quietly showing a different image than the header names.
+    it("never leaves a stale frame under a new title when every frame fails", async () => {
+      render(
+        <ImageSequenceProvider items={sequenceOf(THREE)}>
+          <Opener openKey={THREE[0]!.id} />
+        </ImageSequenceProvider>,
+      );
+      act(() => {
+        fireEvent.click(screen.getByText("open"));
+      });
+      act(() => {
+        fireEvent.click(nextButton());
+      });
+
+      await decode.fail(stableUrl(THREE[1]!));
+      expectCounter("3 / 3");
+      await decode.fail(stableUrl(THREE[2]!));
+
+      // Nothing loadable is left. The viewer stays put and says so; it does not
+      // wander back to image 1 while the header claims image 3.
+      expect(screen.getByRole("status")).toHaveTextContent("couldn't be loaded");
+      expect(prevButton()).toBeDisabled();
+      expect(nextButton()).toBeDisabled();
+      // One user action (the click on "next") — one toast, however many frames
+      // died behind it.
+      expect(toastErrorMock).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("reports false for an image the surface does not know", () => {

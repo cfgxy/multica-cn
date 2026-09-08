@@ -587,6 +587,28 @@ function PreviewPanel({
   // (raw -> signed) without a second visible load.
   const mediaUrl = useSettledImageURL(targetUrl, kind === "image", onImageError);
 
+  // The header switches to the target frame the instant the reader pages, but
+  // the canvas keeps the previous one until the target decodes. Holding the old
+  // frame is deliberate (blanking the canvas for the whole network+decode gap
+  // is worse), yet it must never be silent: filename and "x / N" would
+  // otherwise describe an image that is not the one on screen, which is the
+  // same "I asked for A and I'm looking at B" the reader reported (RUYI-103
+  // A2). One banner carries all three cases, because they are the same
+  // question — is the frame below the one the header names?
+  //
+  // A pending substitution outranks a pending decode: "the image you clicked
+  // is gone" stays true once the canvas catches up, whereas "still loading"
+  // would expire and has to be re-explained anyway.
+  const pendingSwap = kind === "image" && !!targetUrl && mediaUrl !== targetUrl;
+  const banner =
+    notice === "skipped"
+      ? t(($) => $.image.skipped_notice)
+      : notice === "dead"
+        ? t(($) => $.image.unavailable_notice)
+        : pendingSwap
+          ? t(($) => $.image.loading_notice)
+          : null;
+
   // Natural size is carried with the URL it was measured from, so a panel
   // reused for a different attachment can never fit the new image against the
   // old one's dimensions.
@@ -714,17 +736,17 @@ function PreviewPanel({
         {kind === "image" ? (
           <>
             {/* Above the canvas, not inside it: the reader has to be able to
-                tell that the frame below is a substitute for the one they
-                clicked (RUYI-103 A3). role=status so assistive tech announces
-                the swap the same way the sighted banner shows it. */}
-            {notice && (
+                tell that the frame below is not the one the header names —
+                either because it is still decoding (A2) or because the one
+                they clicked failed and was substituted (A3). role=status so
+                assistive tech announces it the same way the sighted banner
+                shows it. */}
+            {banner && (
               <div
                 role="status"
                 className="border-b border-border bg-muted/60 px-4 py-2 text-caption text-muted-foreground"
               >
-                {notice === "skipped"
-                  ? t(($) => $.image.skipped_notice)
-                  : t(($) => $.image.unavailable_notice)}
+                {banner}
               </div>
             )}
             <ImagePreview
@@ -973,8 +995,8 @@ function PreviewContent({
 
 // React Query owns server state per the project convention; re-opening the
 // same attachment hits the cache instead of re-fetching. Query is keyed on
-// the attachment id alone — the 30 min TTL on the server-side signed URL
-// is much longer than any plausible preview session.
+// the attachment id alone — text content is fetched through the auth-gated
+// /content proxy, which carries no signature and so has no expiry to track.
 function TextBackedPreview({
   attachmentId,
   onDownload,
