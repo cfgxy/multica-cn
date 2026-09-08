@@ -27,6 +27,8 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 `multica.plugin.json` はパッケージのルートに置きます。厳格に解析され、未知のフィールドは黙って無視されるのではなくエラーになります。マニフェストは管理者が同意する対象であり、タイプミスがその同意を気付かれずに弱められてはならないからです。
 
+同じルールは JSON Schema としても公開されています（`@multica/plugin-sdk` の `manifest.schema.json`）。パッケージ化する前にエディタが誤ったマニフェストを指摘できます。対象は構造のみで、2 つのクロスフィールド規則（フックの transport ホストは `net:` スコープで覆われていること、イベント購読には対応する読み取りスコープが必要なこと）は引き続きホストが検証します。
+
 ```json
 {
   "manifest_version": 1,

@@ -27,6 +27,8 @@ import { Callout } from "fumadocs-ui/components/callout";
 
 `multica.plugin.json` 位于包的根目录。它按严格模式解析：未知字段会直接报错，而不是被悄悄忽略 —— manifest 是管理员授权的对象，一个拼写错误不能有机会悄无声息地削弱这份授权。
 
+同一套规则以 JSON Schema 形式发布 —— `@multica/plugin-sdk` 中的 `manifest.schema.json` —— 编辑器能在你打包之前就报出 manifest 错误。它只覆盖结构；两条跨字段规则仍由服务端校验：hook 的 transport 主机必须被某个 `net:` scope 覆盖，订阅事件则需要读取同类内容所需的 scope。
+
 ```json
 {
   "manifest_version": 1,

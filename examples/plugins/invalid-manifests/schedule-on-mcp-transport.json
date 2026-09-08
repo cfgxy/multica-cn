@@ -1,0 +1,20 @@
+{
+  "manifest_version": 1,
+  "key": "com.example.schedule-on-mcp",
+  "name": "Scheduled MCP hook",
+  "version": "1.0.0",
+  "author": { "name": "Example" },
+  "scopes": ["issues:read", "net:hooks.example.com"],
+  "contributes": {
+    "hooks": [
+      {
+        "key": "pulse",
+        "name": "Pulse",
+        "description": "Runs on a cadence.",
+        "triggers": ["schedule"],
+        "schedule": { "cron": "0 9 * * *", "timezone": "UTC" },
+        "transport": { "type": "mcp", "url": "https://hooks.example.com/mcp" }
+      }
+    ]
+  }
+}
