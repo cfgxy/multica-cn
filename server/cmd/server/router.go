@@ -2242,6 +2242,16 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Route("/api/marketplace", func(r chi.Router) {
 				r.Get("/items", h.ListMarketplaceItems)
 				r.Post("/install", h.InstallMarketplaceItem)
+				// The publishing half (RUYI-99), behind its own
+				// marketplace_publish_v1 flag. A listing is addressed by id,
+				// but every mutation re-checks that the caller's workspace is
+				// the one that published it.
+				r.Route("/listings", func(r chi.Router) {
+					r.Get("/", h.ListMarketplaceListings)
+					r.Post("/", h.PublishMarketplaceListing)
+					r.Patch("/{id}", h.UpdateMarketplaceListing)
+					r.Post("/{id}/withdraw", h.WithdrawMarketplaceListing)
+				})
 			})
 
 			// Dashboard — workspace-wide token + run-time rollups for the
