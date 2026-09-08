@@ -314,7 +314,8 @@
     "plugins_description": "Plugins other workspaces have listed. Installing one shows the same consent screen as publishing your own: the scopes you approve are the whole grant, and the version you approve is the version that runs.",
     "plugins_empty_title": "No plugins are listed yet",
     "plugins_empty_description": "A workspace lists a plugin from Settings → Plugins, after publishing it.",
-    "all_versions_withdrawn": "Every version has been withdrawn"
+    "all_versions_withdrawn": "Every version has been withdrawn",
+    "plugin_config_summary": "Asks for {{count}} configuration field(s): {{keys}}"
   },
   "mcp": {
     "title": "MCP",
@@ -401,7 +402,14 @@
       "confirm_upgrade": "Grant and upgrade",
       "installed": "Plugin installed",
       "upgrade_from": " · upgrading from v{{version}}",
-      "new_scope": "New"
+      "new_scope": "New",
+      "config_title": "Configuration this Plugin needs",
+      "config_description": "Filled in here so it is stored with the install. A secret is write-only: once saved, no screen and no endpoint can read it back.",
+      "config_required": "Fill in the required fields before installing: {{fields}}",
+      "sensitive_write": "Changes workspace data",
+      "sensitive_network": "Sends data off this instance",
+      "upgrade_data_title": "What the upgrade does to your data",
+      "upgrade_data_description": "Configured values and stored data are kept. Fields the new version no longer declares are removed along with their secrets. If the upgrade fails, v{{version}} and its existing grant are restored."
     },
     "schedule": {
       "title": "Automatic schedules",
@@ -421,7 +429,8 @@
       "title": "Configuration",
       "save": "Save",
       "saved": "Configuration saved",
-      "secret_set": "Saved — enter a new value to replace it"
+      "secret_set": "Saved — enter a new value to replace it",
+      "secret_write_only": "Write-only — it cannot be read back after saving."
     },
     "scopes": {
       "issues_read": "Read issues",
@@ -474,6 +483,29 @@
       "withdrawn": "Version withdrawn from the directory",
       "restored": "Version restored to the directory",
       "withdrawn_badge": "Withdrawn"
+    },
+    "uninstall_dialog": {
+      "title": "Uninstall {{name}}?",
+      "description": "The installation and everything it stored are deleted in one step. This cannot be undone.",
+      "deletes_title": "This deletes",
+      "deletes_storage": "All data this Plugin stored, per member and workspace-wide",
+      "deletes_config": "Its entire configuration",
+      "deletes_secrets": "Every stored secret",
+      "deletes_secrets_named": "Stored secrets: {{keys}}",
+      "deletes_skills": "The Skills it contributed to this workspace",
+      "deletes_hooks": "Its schedules and its hook call history",
+      "acknowledge": "I understand all of the above will be deleted and cannot be recovered.",
+      "cancel": "Cancel",
+      "confirm": "Uninstall"
+    },
+    "secret_cleanup": {
+      "title": "Stored secrets",
+      "description": "Plugin management is off, so configuration cannot be edited. A single stored secret can still be removed here — for example after one leaks.",
+      "clear": "Clear this secret",
+      "confirm_hint": "Deletes it permanently.",
+      "confirm": "Confirm deletion",
+      "cancel": "Cancel",
+      "cleared": "Secret {{key}} deleted"
     }
   },
   "properties": {

@@ -306,6 +306,12 @@ export const PluginPackageVersionSchema = z.object({
   published_at: z.string().default(""),
   installed: z.boolean().default(false),
   withdrawn_at: z.string().optional(),
+  // The directory row's summary of what this version declares. Empty defaults
+  // rather than optional: a row that lost its scope list must render as
+  // "nothing to show here", never as "this plugin asks for nothing".
+  description: z.string().optional(),
+  scopes: z.array(z.string()).default([]),
+  config_keys: z.array(z.string()).default([]),
 }).loose();
 
 export const PluginPackageSchema = z.object({

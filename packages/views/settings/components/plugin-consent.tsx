@@ -1,11 +1,13 @@
 "use client";
 
-import { AlertCircle, CalendarClock, Loader2 } from "lucide-react";
+import { useState } from "react";
+import { AlertCircle, CalendarClock, Globe, Loader2, PencilLine, RefreshCw } from "lucide-react";
 import type { PluginPreview } from "@multica/core/types";
 import { Alert, AlertDescription, AlertTitle } from "@multica/ui/components/ui/alert";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
 import { useLocale, useT } from "../../i18n";
+import { ConfigFieldRow, configPayload, missingRequiredFields } from "./plugin-config-field";
 
 /**
  * The install consent screen.
@@ -31,12 +33,24 @@ export function PluginConsent({
   installing: boolean;
   canInstall: boolean;
   onCancel: () => void;
-  onConfirm: () => void;
+  /**
+   * Receives what the administrator filled in, so the caller can send it with
+   * the install rather than in a second request. A plugin whose required
+   * credential was typed here must never be mounted without it.
+   */
+  onConfirm: (config: Record<string, unknown>) => void;
 }) {
   const { t } = useT("settings");
   const scheduledHooks = (preview.manifest.contributes?.hooks ?? []).filter(
     (hook) => hook.schedule !== undefined,
   );
+  const schema = preview.config_schema ?? [];
+  const [values, setValues] = useState<Record<string, unknown>>({});
+  const [secrets, setSecrets] = useState<Record<string, string>>({});
+  // An upgrade keeps what is already stored, so a required field the previous
+  // version already holds is not asked for again. A fresh install holds nothing.
+  const missing = missingRequiredFields(schema, values, secrets);
+  const blockedByConfig = !preview.installed && missing.length > 0;
 
   return (
     <div className="space-y-4">
@@ -75,11 +89,64 @@ export function PluginConsent({
         </Alert>
       ) : null}
 
+      {/*
+        What an upgrade does to state the administrator already has. Said before
+        they press the button rather than in a toast afterwards, because it is
+        the question an upgrade raises and the answer is not guessable: values
+        survive, fields the new manifest dropped do not, and a failure puts the
+        previous version and its grant back.
+      */}
+      {preview.installed ? (
+        <Alert>
+          <RefreshCw />
+          <AlertTitle>{t(($) => $.plugins.consent.upgrade_data_title)}</AlertTitle>
+          <AlertDescription>
+            {t(($) => $.plugins.consent.upgrade_data_description, {
+              version: preview.installed_version ?? "",
+            })}
+          </AlertDescription>
+        </Alert>
+      ) : null}
+
+      {schema.length > 0 ? (
+        <div className="space-y-4 rounded-md border border-surface-border px-4 py-4">
+          <div>
+            <div className="flex items-center gap-1.5 text-caption font-medium">
+              <PencilLine className="size-3.5" />
+              {t(($) => $.plugins.consent.config_title)}
+            </div>
+            <p className="mt-0.5 text-caption text-muted-foreground">
+              {t(($) => $.plugins.consent.config_description)}
+            </p>
+          </div>
+          {schema.map((field) => (
+            <ConfigFieldRow
+              key={field.key}
+              field={field}
+              value={values[field.key]}
+              secretValue={secrets[field.key] ?? ""}
+              secretConfigured={false}
+              disabled={!canInstall || installing}
+              onValueChange={(value) => setValues((current) => ({ ...current, [field.key]: value }))}
+              onSecretChange={(value) => setSecrets((current) => ({ ...current, [field.key]: value }))}
+            />
+          ))}
+          {blockedByConfig ? (
+            <p className="text-caption text-muted-foreground">
+              {t(($) => $.plugins.consent.config_required, { fields: missing.join("、") })}
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+
       <div className="flex justify-end gap-2">
         <Button variant="ghost" onClick={onCancel}>
           {t(($) => $.plugins.consent.cancel)}
         </Button>
-        <Button disabled={!canInstall || installing} onClick={onConfirm}>
+        <Button
+          disabled={!canInstall || installing || blockedByConfig}
+          onClick={() => onConfirm(configPayload(values, secrets))}
+        >
           {installing ? <Loader2 className="animate-spin" /> : null}
           {preview.installed
             ? t(($) => $.plugins.consent.confirm_upgrade)
@@ -88,6 +155,19 @@ export function PluginConsent({
       </div>
     </div>
   );
+}
+
+/**
+ * Scopes whose grant an administrator should not skim past.
+ *
+ * Two kinds, kept separate because the risk is different: a `:write` scope acts
+ * on workspace content under the reader's own session, and a `net:` scope sends
+ * whatever the surface can see to a host outside Multica. Nothing is summarized
+ * away — the badge sits next to the raw scope string, which stays the decision.
+ */
+function sensitiveScope(scope: string): "write" | "network" | null {
+  if (scope.startsWith("net:")) return "network";
+  return scope.endsWith(":write") ? "write" : null;
 }
 
 /**
@@ -105,15 +185,27 @@ export function PluginScopeList({
   const added = new Set(highlighted ?? []);
   return (
     <ul className="space-y-1.5">
-      {scopes.map((scope) => (
-        <li key={scope} className="flex items-baseline gap-2 text-caption">
-          <code className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono">{scope}</code>
-          <span className="text-muted-foreground">{scopeDescription(scope, t)}</span>
-          {added.has(scope) ? (
-            <Badge variant="secondary">{t(($) => $.plugins.consent.new_scope)}</Badge>
-          ) : null}
-        </li>
-      ))}
+      {scopes.map((scope) => {
+        const sensitive = sensitiveScope(scope);
+        return (
+          <li key={scope} className="flex flex-wrap items-baseline gap-2 text-caption">
+            <code className="shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono">{scope}</code>
+            <span className="text-muted-foreground">{scopeDescription(scope, t)}</span>
+            {sensitive === "write" ? (
+              <Badge variant="destructive">{t(($) => $.plugins.consent.sensitive_write)}</Badge>
+            ) : null}
+            {sensitive === "network" ? (
+              <Badge variant="destructive">
+                <Globe className="h-3 w-3" />
+                {t(($) => $.plugins.consent.sensitive_network)}
+              </Badge>
+            ) : null}
+            {added.has(scope) ? (
+              <Badge variant="secondary">{t(($) => $.plugins.consent.new_scope)}</Badge>
+            ) : null}
+          </li>
+        );
+      })}
     </ul>
   );
 }

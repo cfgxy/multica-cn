@@ -49,6 +49,19 @@ type PluginPackageVersionSummary struct {
 	// a withdrawn version needs to see that it is running one, and the publisher
 	// needs to see what they withdrew in order to put it back.
 	WithdrawnAt string `json:"withdrawn_at,omitempty"`
+	// What this version's manifest declares, projected for the directory row.
+	//
+	// A listing that shows only a name and a digest asks a reader to open the
+	// consent screen before they can tell whether the plugin is worth reading
+	// about — and the consent screen is a two-step flow, so browsing costs a
+	// round trip per row. These are the three facts that decide it: what it
+	// says it does, what it would be granted, and what it would ask the
+	// administrator to supply.
+	Description string   `json:"description,omitempty"`
+	Scopes      []string `json:"scopes"`
+	// Names of the configuration fields, not their values — nothing is stored
+	// for an uninstalled plugin, and a secret's value is never returned at all.
+	ConfigKeys []string `json:"config_keys"`
 }
 
 // PluginPackageSummary is one publishable plugin identity with its versions,
@@ -362,7 +375,7 @@ func (s *PluginService) packageSummary(ctx context.Context, workspaceID pgtype.U
 		if version.WithdrawnAt.Valid {
 			withdrawnAt = version.WithdrawnAt.Time.UTC().Format(pluginTimeFormat)
 		}
-		rendered = append(rendered, PluginPackageVersionSummary{
+		summary := PluginPackageVersionSummary{
 			ID:          id,
 			Version:     version.Version,
 			Digest:      version.Digest,
@@ -370,7 +383,20 @@ func (s *PluginService) packageSummary(ctx context.Context, workspaceID pgtype.U
 			PublishedAt: version.CreatedAt.Time.UTC().Format(pluginTimeFormat),
 			Installed:   id != "" && id == installedVersionID,
 			WithdrawnAt: withdrawnAt,
-		})
+			Scopes:      []string{},
+			ConfigKeys:  []string{},
+		}
+		// A stored manifest that no longer parses still lists: the row is how a
+		// publisher finds the version they need to withdraw, and dropping it
+		// would hide exactly the release that went wrong.
+		if manifest, _, parseErr := plugincontract.ParseManifest(version.Manifest); parseErr == nil {
+			summary.Description = manifest.Description
+			summary.Scopes = append(summary.Scopes, manifest.Scopes...)
+			for _, field := range manifest.Config.Fields {
+				summary.ConfigKeys = append(summary.ConfigKeys, field.Key)
+			}
+		}
+		rendered = append(rendered, summary)
 	}
 	return PluginPackageSummary{
 		ID:                   uuidString(pkg.ID),

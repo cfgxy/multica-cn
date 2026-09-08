@@ -8,6 +8,7 @@ import { useCurrentMember } from "@multica/core/permissions";
 import {
   pluginInstallationsOptions,
   pluginPackagesOptions,
+  useClearPluginSecret,
   useConfigurePlugin,
   useDeletePluginPackage,
   useInstallPlugin,
@@ -20,27 +21,29 @@ import {
 } from "@multica/core/plugins";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import type {
-  PluginConfigField,
   PluginInstallation,
   PluginPackage,
   PluginPreview,
 } from "@multica/core/types";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@multica/ui/components/ui/alert-dialog";
 import { Alert, AlertDescription, AlertTitle } from "@multica/ui/components/ui/alert";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
-import { Input } from "@multica/ui/components/ui/input";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@multica/ui/components/ui/select";
+import { Checkbox } from "@multica/ui/components/ui/checkbox";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
-import { Textarea } from "@multica/ui/components/ui/textarea";
 import { Switch } from "@multica/ui/components/ui/switch";
 import { mcpHooks, PluginHookActivity, PluginMCPApproval, PluginScheduleActivity } from "../../plugins";
 import { useT } from "../../i18n";
+import { ConfigFieldRow, configPayload } from "./plugin-config-field";
 import { PluginConsent, PluginScheduleList, PluginScopeList } from "./plugin-consent";
 import { SettingsCard, SettingsSection, SettingsTab } from "./settings-layout";
 
@@ -69,14 +72,11 @@ function ConfigForm({
   const configuredSecrets = new Set(installation.configured_secrets);
 
   const submit = async () => {
-    const payload: Record<string, unknown> = { ...values };
-    // Only send a secret the admin actually typed. Sending "" would clear a
-    // stored secret every time an unrelated field is saved.
-    for (const [key, value] of Object.entries(secrets)) {
-      if (value.length > 0) payload[key] = value;
-    }
     try {
-      await configureMutation.mutateAsync({ installationId: installation.id, values: payload });
+      await configureMutation.mutateAsync({
+        installationId: installation.id,
+        values: configPayload(values, secrets),
+      });
       setSecrets({});
       toast.success(t(($) => $.plugins.config.saved));
     } catch (error) {
@@ -88,7 +88,7 @@ function ConfigForm({
     <div className="space-y-4 border-t border-surface-border px-4 py-4">
       <div className="text-caption font-medium">{t(($) => $.plugins.config.title)}</div>
       {installation.config_schema.map((field) => (
-        <ConfigField
+        <ConfigFieldRow
           key={field.key}
           field={field}
           value={values[field.key]}
@@ -104,105 +104,6 @@ function ConfigForm({
           {configureMutation.isPending ? <Loader2 className="animate-spin" /> : null}
           {t(($) => $.plugins.config.save)}
         </Button>
-      </div>
-    </div>
-  );
-}
-
-function ConfigField({
-  field,
-  value,
-  secretValue,
-  secretConfigured,
-  disabled,
-  onValueChange,
-  onSecretChange,
-}: {
-  field: PluginConfigField;
-  value: unknown;
-  secretValue: string;
-  secretConfigured: boolean;
-  disabled: boolean;
-  onValueChange: (value: unknown) => void;
-  onSecretChange: (value: string) => void;
-}) {
-  const { t } = useT("settings");
-  const label = (
-    <div className="min-w-0">
-      <div className="text-caption font-medium">
-        {field.label}
-        {field.required ? <span className="ml-1 text-destructive">*</span> : null}
-      </div>
-      {field.description ? (
-        <p className="mt-0.5 text-caption text-muted-foreground">{field.description}</p>
-      ) : null}
-    </div>
-  );
-
-  return (
-    <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-      {label}
-      <div className="w-full sm:w-96">
-        {field.type === "secret" ? (
-          <Input
-            type="password"
-            autoComplete="off"
-            disabled={disabled}
-            value={secretValue}
-            placeholder={secretConfigured
-              ? t(($) => $.plugins.config.secret_set)
-              : field.placeholder ?? ""}
-            onChange={(event) => onSecretChange(event.target.value)}
-          />
-        ) : field.type === "bool" ? (
-          <Switch
-            disabled={disabled}
-            checked={value === true}
-            onCheckedChange={(checked) => onValueChange(checked === true)}
-          />
-        ) : field.type === "enum" ? (
-          <Select
-            items={(field.options ?? []).map((option) => ({ value: option, label: option }))}
-            value={typeof value === "string" ? value : ""}
-            onValueChange={(next) => next && onValueChange(next)}
-          >
-            <SelectTrigger disabled={disabled}><SelectValue /></SelectTrigger>
-            <SelectContent>
-              {(field.options ?? []).map((option) => (
-                <SelectItem key={option} value={option}>{option}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        ) : field.type === "number" ? (
-          <Input
-            type="number"
-            disabled={disabled}
-            value={typeof value === "number" ? String(value) : ""}
-            placeholder={field.placeholder ?? ""}
-            onChange={(event) => {
-              const parsed = Number(event.target.value);
-              onValueChange(event.target.value === "" || Number.isNaN(parsed) ? undefined : parsed);
-            }}
-          />
-        ) : field.multiline === true ? (
-          // A field whose value is a list of lines is unreadable in a
-          // single-line input — and the generated form is the one piece of
-          // plugin UI the host owns, so getting it wrong is our bug.
-          <Textarea
-            rows={4}
-            disabled={disabled}
-            value={typeof value === "string" ? value : ""}
-            placeholder={field.placeholder ?? ""}
-            onChange={(event) => onValueChange(event.target.value)}
-          />
-        ) : (
-          <Input
-            disabled={disabled}
-            value={typeof value === "string" ? value : ""}
-            placeholder={field.placeholder ?? ""}
-            onChange={(event) => onValueChange(event.target.value)}
-          />
-        )}
       </div>
     </div>
   );
@@ -258,10 +159,14 @@ function PublishAndInstall({ wsId, canManage }: { wsId: string; canManage: boole
     }
   };
 
-  const confirmInstall = async () => {
+  const confirmInstall = async (config: Record<string, unknown>) => {
     if (!preview) return;
     try {
-      await installMutation.mutateAsync({ version_id: preview.version_id, granted_scopes: preview.scopes });
+      await installMutation.mutateAsync({
+        version_id: preview.version_id,
+        granted_scopes: preview.scopes,
+        config,
+      });
       setPreview(null);
       toast.success(t(($) => $.plugins.consent.installed));
     } catch (error) {
@@ -495,9 +400,21 @@ function InstalledPlugin({
   const enabledMutation = useSetPluginEnabled(wsId);
   const uninstallMutation = useUninstallPlugin(wsId);
   const isMutating = enabledMutation.isPending || uninstallMutation.isPending;
+  const [confirmingUninstall, setConfirmingUninstall] = useState(false);
+  const [acknowledged, setAcknowledged] = useState(false);
 
   const reportError = (error: unknown) => {
     toast.error(error instanceof Error ? error.message : t(($) => $.plugins.action_failed));
+  };
+
+  const uninstall = async () => {
+    try {
+      await uninstallMutation.mutateAsync(installation.id);
+      setConfirmingUninstall(false);
+      toast.success(t(($) => $.plugins.uninstalled));
+    } catch (error) {
+      reportError(error);
+    }
   };
 
   // Only rendered when a hook contributes one: a plugin with no hooks has no
@@ -550,14 +467,75 @@ function InstalledPlugin({
               variant="ghost"
               aria-label={t(($) => $.plugins.uninstall)}
               disabled={!canRemove || isMutating}
-              onClick={() => uninstallMutation.mutateAsync(installation.id)
-                .then(() => toast.success(t(($) => $.plugins.uninstalled)))
-                .catch(reportError)}
+              onClick={() => {
+                setAcknowledged(false);
+                setConfirmingUninstall(true);
+              }}
             >
               {uninstallMutation.isPending ? <Loader2 className="animate-spin" /> : <Trash2 />}
             </Button>
           </div>
         </div>
+
+        {/*
+          Uninstall deletes in one transaction, and none of it comes back. The
+          list is spelled out rather than summarized as "all data" because the
+          reader is being asked to accept a specific loss — contributed skills
+          and stored credentials in particular are things a workspace can be
+          depending on without the person clicking the icon knowing it.
+        */}
+        <AlertDialog open={confirmingUninstall} onOpenChange={setConfirmingUninstall}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {t(($) => $.plugins.uninstall_dialog.title, { name: installation.name })}
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                {t(($) => $.plugins.uninstall_dialog.description)}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <Alert variant="destructive">
+              <AlertCircle />
+              <AlertTitle>{t(($) => $.plugins.uninstall_dialog.deletes_title)}</AlertTitle>
+              <AlertDescription>
+                <ul className="list-disc space-y-1 pl-4">
+                  <li>{t(($) => $.plugins.uninstall_dialog.deletes_storage)}</li>
+                  <li>{t(($) => $.plugins.uninstall_dialog.deletes_config)}</li>
+                  <li>
+                    {installation.configured_secrets.length > 0
+                      ? t(($) => $.plugins.uninstall_dialog.deletes_secrets_named, {
+                          keys: installation.configured_secrets.join("、"),
+                        })
+                      : t(($) => $.plugins.uninstall_dialog.deletes_secrets)}
+                  </li>
+                  <li>{t(($) => $.plugins.uninstall_dialog.deletes_skills)}</li>
+                  <li>{t(($) => $.plugins.uninstall_dialog.deletes_hooks)}</li>
+                </ul>
+              </AlertDescription>
+            </Alert>
+            <label className="flex items-start gap-2 text-caption">
+              <Checkbox
+                className="mt-0.5"
+                checked={acknowledged}
+                onCheckedChange={(checked) => setAcknowledged(checked === true)}
+              />
+              <span>{t(($) => $.plugins.uninstall_dialog.acknowledge)}</span>
+            </label>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={uninstallMutation.isPending}>
+                {t(($) => $.plugins.uninstall_dialog.cancel)}
+              </AlertDialogCancel>
+              <AlertDialogAction
+                variant="destructive"
+                disabled={!acknowledged || uninstallMutation.isPending}
+                onClick={() => void uninstall()}
+              >
+                {uninstallMutation.isPending ? <Loader2 className="animate-spin" /> : <Trash2 />}
+                {t(($) => $.plugins.uninstall_dialog.confirm)}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
 
         <div className="space-y-2">
           <div className="text-caption font-medium">{t(($) => $.plugins.granted_scopes)}</div>
@@ -603,8 +581,106 @@ function InstalledPlugin({
 
       </div>
 
-      <ConfigForm installation={installation} canManage={canManage} wsId={wsId} />
+      {/*
+        Only one of the two: an admin whose flag is off has no configuration
+        form to edit, and per-secret removal is the cleanup lever that replaces
+        it. Everyone else keeps the form, read-only when they cannot manage.
+      */}
+      {canRemove && !canManage ? (
+        <SecretCleanup installation={installation} wsId={wsId} />
+      ) : (
+        <ConfigForm installation={installation} canManage={canManage} wsId={wsId} />
+      )}
     </SettingsCard>
+  );
+}
+
+/**
+ * Removing one stored credential without uninstalling the plugin.
+ *
+ * This is the cleanup surface that has to exist while plugins_v1 is off: the
+ * configuration form is gone with the flag, so without it the only way to get a
+ * leaked credential out of the database would be to remove the whole
+ * installation. Names only — a stored secret's value is never returned by any
+ * endpoint, including this one.
+ */
+function SecretCleanup({
+  installation,
+  wsId,
+}: {
+  installation: PluginInstallation;
+  wsId: string;
+}) {
+  const { t } = useT("settings");
+  const clearMutation = useClearPluginSecret(wsId);
+  const [pendingKey, setPendingKey] = useState<string | null>(null);
+
+  if (installation.configured_secrets.length === 0) return null;
+
+  const clear = async (key: string) => {
+    try {
+      await clearMutation.mutateAsync({ installationId: installation.id, key });
+      setPendingKey(null);
+      toast.success(t(($) => $.plugins.secret_cleanup.cleared, { key }));
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t(($) => $.plugins.action_failed));
+    }
+  };
+
+  return (
+    <div className="space-y-3 border-t border-surface-border px-4 py-4">
+      <div>
+        <div className="flex items-center gap-1.5 text-caption font-medium">
+          <Lock className="size-3 shrink-0 text-muted-foreground" />
+          {t(($) => $.plugins.secret_cleanup.title)}
+        </div>
+        <p className="mt-0.5 text-caption text-muted-foreground">
+          {t(($) => $.plugins.secret_cleanup.description)}
+        </p>
+      </div>
+      <ul className="space-y-1.5">
+        {installation.configured_secrets.map((key) => (
+          <li key={key} className="flex flex-wrap items-center gap-2 text-caption">
+            <code className="rounded bg-muted px-1.5 py-0.5 font-mono">{key}</code>
+            <div className="ml-auto flex items-center gap-2">
+              {pendingKey === key ? (
+                <>
+                  <span className="text-muted-foreground">
+                    {t(($) => $.plugins.secret_cleanup.confirm_hint)}
+                  </span>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    disabled={clearMutation.isPending}
+                    onClick={() => setPendingKey(null)}
+                  >
+                    {t(($) => $.plugins.secret_cleanup.cancel)}
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="destructive"
+                    disabled={clearMutation.isPending}
+                    onClick={() => void clear(key)}
+                  >
+                    {clearMutation.isPending ? <Loader2 className="animate-spin" /> : null}
+                    {t(($) => $.plugins.secret_cleanup.confirm)}
+                  </Button>
+                </>
+              ) : (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  disabled={clearMutation.isPending}
+                  onClick={() => setPendingKey(key)}
+                >
+                  {t(($) => $.plugins.secret_cleanup.clear)}
+                </Button>
+              )}
+            </div>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

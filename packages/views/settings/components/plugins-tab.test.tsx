@@ -15,6 +15,7 @@ const mockPublish = vi.hoisted(() => vi.fn());
 const mockDeletePackage = vi.hoisted(() => vi.fn());
 const mockSetVisibility = vi.hoisted(() => vi.fn());
 const mockSetWithdrawn = vi.hoisted(() => vi.fn());
+const mockClearSecret = vi.hoisted(() => vi.fn());
 
 const data = vi.hoisted(() => ({
   installed: {
@@ -49,6 +50,7 @@ vi.mock("@multica/core/plugins", () => ({
   useDeletePluginPackage: () => ({ mutateAsync: mockDeletePackage, isPending: false }),
   useSetPluginPackageVisibility: () => ({ mutateAsync: mockSetVisibility, isPending: false }),
   useSetPluginVersionWithdrawn: () => ({ mutateAsync: mockSetWithdrawn, isPending: false }),
+  useClearPluginSecret: () => ({ mutateAsync: mockClearSecret, isPending: false }),
 }));
 
 vi.mock("@multica/core/paths", () => ({
@@ -148,6 +150,7 @@ describe("PluginsTab", () => {
     mockConfigure.mockResolvedValue(INSTALLATION);
     mockSetEnabled.mockResolvedValue(INSTALLATION);
     mockUninstall.mockResolvedValue(undefined);
+    mockClearSecret.mockResolvedValue(undefined);
   });
 
   it("shows the scope consent screen before anything is installed", async () => {
@@ -172,7 +175,77 @@ describe("PluginsTab", () => {
     await waitFor(() => expect(mockInstall).toHaveBeenCalledWith({
       version_id: "version-1",
       granted_scopes: ["issues:read", "comments:write", "net:example.com"],
+      config: {},
     }));
+  });
+
+  it("marks the scopes that write workspace data or leave the instance", async () => {
+    data.packages.packages = [{ ...PACKAGE, versions: [{ ...PACKAGE.versions[0] }] }];
+    const user = userEvent.setup();
+    render(<PluginsTab />, { wrapper: Wrapper });
+
+    await user.click(screen.getByRole("button", { name: "Review and install" }));
+    await screen.findByText("This Plugin is asking for the following access");
+
+    // A read scope carries no marker, so the two that do are the ones that
+    // stand out rather than being one line among three identical-looking ones.
+    expect(screen.getByText("Changes workspace data")).toBeInTheDocument();
+    expect(screen.getByText("Sends data off this instance")).toBeInTheDocument();
+  });
+
+  it("asks for required configuration on the consent screen and blocks install until it is filled", async () => {
+    data.packages.packages = [{ ...PACKAGE, versions: [{ ...PACKAGE.versions[0] }] }];
+    mockPreview.mockResolvedValue({ ...PREVIEW, config_schema: INSTALLATION.config_schema });
+    const user = userEvent.setup();
+    render(<PluginsTab />, { wrapper: Wrapper });
+
+    await user.click(screen.getByRole("button", { name: "Review and install" }));
+    await screen.findByText("Configuration this Plugin needs");
+
+    // Mounting a plugin whose required credential is empty produces something
+    // that fails on first use with nothing on screen explaining why.
+    const install = screen.getByRole("button", { name: "Grant and install" });
+    expect(install).toBeDisabled();
+
+    await user.type(screen.getByRole("textbox"), "multica-ai/multica");
+    // A secret field has no textbox role: it renders masked here for the same
+    // reason it does in the installed form, and this is the assertion that the
+    // consent copy of the generated form did not lose that.
+    const secret = document.querySelector<HTMLInputElement>('input[type="password"]');
+    expect(secret).not.toBeNull();
+    expect(screen.getAllByText(/cannot be read back after saving/)).not.toHaveLength(0);
+    await user.type(secret!, "sk-consent");
+
+    await waitFor(() => expect(install).not.toBeDisabled());
+    await user.click(install);
+
+    // The secret travels with the install rather than in a second request, so
+    // there is no window in which the plugin is mounted without it.
+    await waitFor(() => expect(mockInstall).toHaveBeenCalledWith({
+      version_id: "version-1",
+      granted_scopes: ["issues:read", "comments:write", "net:example.com"],
+      config: { repo: "multica-ai/multica", token: "sk-consent" },
+    }));
+  });
+
+  it("explains what an upgrade does to stored data before it is approved", async () => {
+    const user = userEvent.setup();
+    mockPreview.mockResolvedValue({
+      ...PREVIEW,
+      version_id: "version-2",
+      version: "2.0.0",
+      installed: true,
+      installed_version: "1.0.0",
+    });
+    render(<PluginsTab />, { wrapper: Wrapper });
+
+    await user.click(screen.getAllByRole("button", { name: "Review and upgrade" })[0]!);
+
+    await screen.findByText("What the upgrade does to your data");
+    expect(
+      screen.getByText(/Fields the new version no longer declares are removed/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/v1\.0\.0 and its existing grant are restored/)).toBeInTheDocument();
   });
 
   it("marks the running version and offers an upgrade only for the others", async () => {
@@ -244,7 +317,47 @@ describe("PluginsTab", () => {
     }));
 
     await user.click(screen.getByRole("button", { name: "Uninstall" }));
+
+    // The icon opens a confirmation; it does not delete. Uninstall drops
+    // storage, secrets and contributed skills in one irreversible step, so the
+    // list is spelled out and the button waits for an explicit acknowledgement.
+    await screen.findByText("Uninstall Hello Panel?");
+    expect(screen.getByText(/Stored secrets: token/)).toBeInTheDocument();
+    expect(screen.getByText(/The Skills it contributed/)).toBeInTheDocument();
+    expect(mockUninstall).not.toHaveBeenCalled();
+
+    const confirmButton = screen.getAllByRole("button", { name: "Uninstall" }).at(-1)!;
+    expect(confirmButton).toBeDisabled();
+
+    await user.click(screen.getByRole("checkbox"));
+    await waitFor(() => expect(confirmButton).not.toBeDisabled());
+    await user.click(confirmButton);
     await waitFor(() => expect(mockUninstall).toHaveBeenCalledWith("installation-1"));
+  });
+
+  it("lets an operator clear one stored secret while the feature is off", async () => {
+    // With plugins_v1 off the configuration form is gone, so without this the
+    // only way to get a leaked credential out would be removing the whole
+    // installation. Names only — a stored value is never returned by any read.
+    data.installed.plugins = [INSTALLATION];
+    data.installed.plugins_enabled = false;
+    const user = userEvent.setup();
+    render(<PluginsTab />, { wrapper: Wrapper });
+
+    expect(screen.getByText("Stored secrets")).toBeInTheDocument();
+    expect(screen.getByText("token")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Save" })).toBeNull();
+
+    // Two clicks, because a mis-click here deletes a credential the workspace
+    // may still be running on.
+    await user.click(screen.getByRole("button", { name: "Clear this secret" }));
+    expect(mockClearSecret).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Confirm deletion" }));
+    await waitFor(() => expect(mockClearSecret).toHaveBeenCalledWith({
+      installationId: "installation-1",
+      key: "token",
+    }));
   });
 
   it("stays usable for removal after the plugins feature is turned off", () => {

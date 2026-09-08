@@ -77,12 +77,13 @@ export function PluginDirectory({
     }
   };
 
-  const confirmInstall = async () => {
+  const confirmInstall = async (config: Record<string, unknown>) => {
     if (!preview) return;
     try {
       await installMutation.mutateAsync({
         version_id: preview.version_id,
         granted_scopes: preview.scopes,
+        config,
       });
       setPreview(null);
       toast.success(t(($) => $.plugins.consent.installed));
@@ -186,9 +187,35 @@ function DirectoryRow({
         </div>
         <p className="mt-0.5 text-caption text-muted-foreground">{entry.plugin_key}</p>
         {offered ? (
-          <p className="mt-0.5 font-mono text-caption text-muted-foreground">
-            {offered.version} · {offered.digest.slice(0, 12)}
-          </p>
+          <>
+            {offered.description ? (
+              <p className="mt-1 line-clamp-2 text-caption">{offered.description}</p>
+            ) : null}
+            <p className="mt-0.5 font-mono text-caption text-muted-foreground">
+              {offered.version} · {offered.digest.slice(0, 12)}
+            </p>
+            {/*
+              What it would be granted and what it would ask for, before the
+              reader spends a consent round trip to find out. The scope strings
+              are shown raw here for the same reason the consent screen does:
+              summarizing them away is what turns a grant into a formality.
+            */}
+            {(offered.scopes ?? []).length > 0 ? (
+              <p className="mt-1 flex flex-wrap gap-1 text-caption text-muted-foreground">
+                {(offered.scopes ?? []).map((scope) => (
+                  <code key={scope} className="rounded bg-muted px-1.5 py-0.5 font-mono">{scope}</code>
+                ))}
+              </p>
+            ) : null}
+            {(offered.config_keys ?? []).length > 0 ? (
+              <p className="mt-1 text-caption text-muted-foreground">
+                {t(($) => $.marketplace.plugin_config_summary, {
+                  count: (offered.config_keys ?? []).length,
+                  keys: (offered.config_keys ?? []).join("、"),
+                })}
+              </p>
+            ) : null}
+          </>
         ) : (
           <p className="mt-0.5 text-caption text-muted-foreground">
             {t(($) => $.marketplace.all_versions_withdrawn)}
