@@ -203,6 +203,22 @@ export function useUpdatePromptVersion(wsId: string) {
 }
 
 /**
+ * Runs the secret scan on a draft without publishing it.
+ *
+ * Nothing is invalidated on settle because nothing changed: the draft is still
+ * a draft and still editable. That is the whole point of the endpoint — the
+ * wizard used to scan by publishing privately, which froze the draft before the
+ * publisher had chosen anything.
+ *
+ * A hit rejects with the same 422 ApiError publishing rejects with.
+ */
+export function useScanPromptVersion() {
+  return useMutation({
+    mutationFn: (versionId: string) => api.scanPromptVersion(versionId),
+  });
+}
+
+/**
  * Publishes a draft.
  *
  * A secret-scan hit rejects with an ApiError carrying status 422 and the

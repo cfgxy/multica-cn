@@ -180,6 +180,19 @@ export interface PromptTargetState {
 }
 
 /**
+ * The answer to a scan that found nothing.
+ *
+ * "Passed" is narrower than "safe": it means no rule of `scanner_revision`
+ * matched. The revision travels with the result so a publisher can tell which
+ * detector set cleared their prompt, and so a later revision finding something
+ * this one missed is a legible change rather than a contradiction.
+ */
+export interface PromptScanResult {
+  scanner_revision: string;
+  passed: boolean;
+}
+
+/**
  * One secret-scan hit that blocked a publish.
  *
  * There is no override anywhere in the flow, and no field here carries the

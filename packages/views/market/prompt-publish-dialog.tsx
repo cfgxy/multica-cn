@@ -27,6 +27,7 @@ import { ApiError } from "@multica/core/api";
 import {
   useCreatePromptVersion,
   usePublishPromptVersion,
+  useScanPromptVersion,
   useUpdatePromptVersion,
 } from "@multica/core/workspace/mutations";
 import type { PromptSecretScanBlocked, PromptVersion } from "@multica/core/types";
@@ -39,17 +40,25 @@ type Step = "content" | "metadata" | "scan" | "visibility";
 type ScanState =
   | { phase: "idle" }
   | { phase: "running" }
-  | { phase: "passed"; version: PromptVersion }
+  | { phase: "passed"; revision: string }
   | { phase: "blocked"; blocked: PromptSecretScanBlocked };
 
 /**
  * The publish wizard on an agent or squad prompt tab.
  *
- * The security check is not a preflight the user can walk past. There is no
- * scan endpoint separate from publishing: step 3 attempts the real publish,
- * and a hit comes back as a 422 that leaves the draft unpublished. That is why
- * the blocked panel offers no "publish anyway" — the only exits are editing
- * the prompt at the source and re-snapshotting, or cancelling.
+ * Exactly one call in this flow freezes anything, and it is the one behind the
+ * final button. Step 3 scans through a scan-only endpoint that leaves the draft
+ * a draft; step 4's "private" answer writes nothing at all, because a private
+ * draft IS the unpublished row and freezing it would take away the editing the
+ * publisher chose "later" for. Scanning by publishing privately — which is what
+ * this did — froze the draft before the choice was made, and the later "make it
+ * public" call then hit the server's already-published path and changed
+ * nothing: the publisher was told they had published to the world, and had not.
+ *
+ * The security check is not a preflight the user can walk past. A hit comes
+ * back as a 422 with no forward action, and publishing scans again on the text
+ * it is about to freeze, so reaching step 4 with a stale pass cannot smuggle
+ * anything through.
  *
  * Findings are rendered from `category`, `rule`, `line` and the server's
  * fixed-width `mask`. The matched text never leaves the server, so a
@@ -90,6 +99,7 @@ export function PromptPublishDialog({
 
   const createDraft = useCreatePromptVersion(wsId);
   const updateDraft = useUpdatePromptVersion(wsId);
+  const scanDraft = useScanPromptVersion();
   const publish = usePublishPromptVersion(wsId);
 
   useEffect(() => {
@@ -118,11 +128,14 @@ export function PromptPublishDialog({
     .filter(Boolean);
 
   /**
-   * Step 2 → 3. Opens the draft (or updates it on a second pass) and then
-   * attempts the publish that carries the scan.
+   * Step 2 → 3. Opens the draft (or updates it on a second pass) and scans it.
    *
-   * `visibility` is deliberately not consulted here: the private/public choice
-   * is step 4, and the scan must clear before it is even offered.
+   * Nothing here publishes and nothing here freezes: the draft this leaves
+   * behind is still editable, so a publisher who stops at step 3 or picks
+   * "private draft" at step 4 can come back and finish later.
+   *
+   * `visibility` is deliberately not consulted: the private/public choice is
+   * step 4, and the scan must clear before it is even offered.
    */
   const runScan = async () => {
     setFailure(null);
@@ -157,14 +170,8 @@ export function PromptPublishDialog({
       setDraft(version);
       setStep("scan");
 
-      // The private publish is the scan: it is the only call that runs the
-      // scanner, and it leaves the version private, so step 4 still decides
-      // whether the world sees it.
-      const published = await publish.mutateAsync({
-        versionId: version.id,
-        public: false,
-      });
-      setScan({ phase: "passed", version: published });
+      const result = await scanDraft.mutateAsync(version.id);
+      setScan({ phase: "passed", revision: result.scanner_revision });
     } catch (error) {
       const blocked = secretScanBody(error);
       if (blocked) {
@@ -178,26 +185,52 @@ export function PromptPublishDialog({
     }
   };
 
-  /** Step 4. Private is already the stored state; only public needs a write. */
+  /**
+   * Step 4, and the only step that freezes anything.
+   *
+   * "Private draft" saves nothing on purpose: the draft is already stored and
+   * still editable, and publishing it privately would freeze it — which is the
+   * opposite of what someone choosing "publish later" asked for. Only the
+   * public choice publishes, and it publishes once, with the visibility the
+   * publisher picked.
+   */
   const finish = async () => {
-    if (scan.phase !== "passed") return;
+    if (scan.phase !== "passed" || !draft) return;
     setFailure(null);
     try {
-      const version =
-        visibility === "public"
-          ? await publish.mutateAsync({ versionId: scan.version.id, public: true })
-          : scan.version;
+      if (visibility !== "public") {
+        toast.success(t(($) => $.publish.draft_saved_toast));
+        onOpenChange(false);
+        return;
+      }
+      const version = await publish.mutateAsync({
+        versionId: draft.id,
+        public: true,
+      });
       toast.success(
         t(($) => $.publish.published_toast, { version: version.version ?? 1 }),
       );
       onOpenChange(false);
     } catch (error) {
+      // Publishing scans again on the text it is about to freeze, so a prompt
+      // edited between step 3 and here can be blocked at this point too. Send
+      // the publisher back to the panel that explains it rather than reporting
+      // it as a generic failure.
+      const blocked = secretScanBody(error);
+      if (blocked) {
+        setScan({ phase: "blocked", blocked });
+        setStep("scan");
+        return;
+      }
       setFailure(errorMessage(error, t(($) => $.publish.failed_toast)));
     }
   };
 
   const busy =
-    createDraft.isPending || updateDraft.isPending || publish.isPending;
+    createDraft.isPending ||
+    updateDraft.isPending ||
+    scanDraft.isPending ||
+    publish.isPending;
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -413,7 +446,7 @@ function ScanPanel({ state }: { state: ScanState }) {
             the publisher stays responsible for reading their own prompt. */}
         <AlertDescription>
           {t(($) => $.publish.scan_pass_description, {
-            revision: state.version.scanner_revision,
+            revision: state.revision,
           })}
         </AlertDescription>
       </Alert>

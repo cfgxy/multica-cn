@@ -65,6 +65,7 @@ import type {
   PromptInstall,
   PromptMarketItem,
   PromptRestoreResult,
+  PromptScanResult,
   PromptTargetState,
   PromptVersion,
   MemberWithUser,
@@ -482,6 +483,7 @@ import {
   PromptInstallSchema,
   PromptMarketItemListSchema,
   PromptRestoreResultSchema,
+  PromptScanResultSchema,
   PromptTargetStateSchema,
   PromptVersionListSchema,
   PromptVersionSchema,
@@ -489,6 +491,7 @@ import {
   EMPTY_PROMPT_APPLY_RESULT,
   EMPTY_PROMPT_INSTALL,
   EMPTY_PROMPT_RESTORE_RESULT,
+  EMPTY_PROMPT_SCAN_RESULT,
   EMPTY_PROMPT_TARGET_STATE,
   EMPTY_PROMPT_VERSION,
   ShareLinkSchema,
@@ -3018,6 +3021,28 @@ export class ApiClient {
     );
     return parseWithFallback(raw, PromptVersionSchema, EMPTY_PROMPT_VERSION, {
       endpoint: "PUT /api/marketplace/prompt-versions/{id}",
+    });
+  }
+
+  /**
+   * Runs the publish gate's secret scan without publishing.
+   *
+   * The publish wizard shows the scan result before asking whether the version
+   * should be public, and this is what lets it: the draft stays a draft, still
+   * editable, and nothing about it is frozen. A hit throws the same ApiError
+   * with status 422 and a PromptSecretScanBlockedSchema body that publishing
+   * would throw, so one renderer handles both.
+   *
+   * A pass here is an early answer, not a permit — publishing scans again on
+   * the text it is about to freeze.
+   */
+  async scanPromptVersion(versionId: string): Promise<PromptScanResult> {
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/prompt-versions/${encodeURIComponent(versionId)}/scan`,
+      { method: "POST" },
+    );
+    return parseWithFallback(raw, PromptScanResultSchema, EMPTY_PROMPT_SCAN_RESULT, {
+      endpoint: "POST /api/marketplace/prompt-versions/{id}/scan",
     });
   }
 
