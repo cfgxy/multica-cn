@@ -3210,6 +3210,20 @@ export class ApiClient {
     });
   }
 
+  /**
+   * Removes one stored secret by name.
+   *
+   * Outlives plugins_v1 alongside uninstall: writing config is refused once the
+   * flag is off, so this is what lets an operator take a leaked credential out
+   * of the database without removing the whole installation.
+   */
+  async clearPluginSecret(workspaceId: string, installationId: string, key: string): Promise<void> {
+    await this.fetch(
+      `/api/workspaces/${workspaceId}/plugins/${installationId}/secrets/${encodeURIComponent(key)}`,
+      { method: "DELETE" },
+    );
+  }
+
   // Members
   async listMembers(workspaceId: string): Promise<MemberWithUser[]> {
     return this.fetch(`/api/workspaces/${workspaceId}/members`);

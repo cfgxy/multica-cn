@@ -415,8 +415,40 @@ describe("MarketplaceTab", () => {
       expect(mockInstallPlugin).toHaveBeenCalledWith({
         version_id: "version-2",
         granted_scopes: ["issues:read", "net:example.com"],
+        config: {},
       }),
     );
+  });
+
+  // A directory row that says only "Hello Panel 1.1.0" makes the reader open the
+  // consent flow just to learn what the plugin would be granted. The manifest
+  // facts that decide "is this worth reviewing" belong on the row.
+  it("shows what a listed version would be granted and would ask for", () => {
+    data.directory = {
+      packages: [
+        directoryPackage({
+          versions: [
+            {
+              id: "version-2",
+              version: "1.1.0",
+              digest: "b".repeat(64),
+              size_bytes: 2048,
+              published_at: "2026-01-02T00:00:00Z",
+              installed: false,
+              description: "Greets an issue.",
+              scopes: ["issues:read", "net:example.com"],
+              config_keys: ["repo", "token"],
+            },
+          ],
+        }),
+      ],
+    };
+    render(<MarketplaceTab />, { wrapper: Wrapper });
+
+    expect(screen.getByText("Greets an issue.")).toBeInTheDocument();
+    expect(screen.getByText("issues:read")).toBeInTheDocument();
+    expect(screen.getByText("net:example.com")).toBeInTheDocument();
+    expect(screen.getByText(/repo、token/)).toBeInTheDocument();
   });
 
   // A withdrawn version is the publisher saying "do not start on this one".
@@ -447,12 +479,16 @@ describe("MarketplaceTab", () => {
 
   // plugins_v1 off is a server-side refusal; offering the button would only
   // produce a 503 the reader cannot act on.
-  it("browses but does not offer to install when plugins are disabled", () => {
+  // With the flag off there is nothing behind the filter and nothing the
+  // directory could offer, so the shelf and its filter both stay out rather
+  // than leading the reader to an install that cannot happen.
+  it("hides the plugin shelf and its filter when plugins are disabled", () => {
     data.directory = { packages: [directoryPackage()] };
     data.installed = { plugins: [], plugins_enabled: false };
     render(<MarketplaceTab />, { wrapper: Wrapper });
 
-    expect(screen.getByText("Hello Panel")).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: "Plugins" })).toBeNull();
+    expect(screen.queryByText("Hello Panel")).toBeNull();
     expect(screen.queryByRole("button", { name: "Review and install" })).toBeNull();
   });
 

@@ -115,6 +115,22 @@ export function useApprovePluginMCPTools(wsId: string, installationId: string, h
   });
 }
 
+/**
+ * Removes one stored secret, leaving the installation in place.
+ *
+ * The cleanup lever that still works with plugins_v1 off, where configuring is
+ * refused: without it, uninstalling the whole plugin would be the only way to
+ * get a leaked credential out of the database.
+ */
+export function useClearPluginSecret(wsId: string) {
+  const invalidate = useInvalidatePlugins(wsId);
+  return useMutation({
+    mutationFn: ({ installationId, key }: { installationId: string; key: string }) =>
+      api.clearPluginSecret(wsId, installationId, key),
+    onSettled: invalidate,
+  });
+}
+
 export function useUninstallPlugin(wsId: string) {
   const invalidate = useInvalidatePlugins(wsId);
   return useMutation({
