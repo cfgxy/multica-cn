@@ -170,6 +170,17 @@ type PluginPreview struct {
 	Installed        bool     `json:"installed"`
 	InstalledVersion string   `json:"installed_version,omitempty"`
 	AddedScopes      []string `json:"added_scopes,omitempty"`
+	// ConfiguredKeys names the fields of THIS manifest the existing
+	// installation already satisfies — a value on the row, or a stored secret.
+	// Never a value: a secret is answered by its name being here and nothing
+	// else.
+	//
+	// It exists because "which required fields still need an answer" has a
+	// different answer on an upgrade than on a fresh install, and the consent
+	// screen cannot work it out from the manifest alone. Without it the screen
+	// either asks for a credential the workspace already holds, or lets a
+	// newly required one through unfilled.
+	ConfiguredKeys []string `json:"configured_keys"`
 }
 
 // PluginConfigField is one host-rendered configuration input.
@@ -274,12 +285,13 @@ func (s *PluginService) PreviewPlugin(ctx context.Context, workspaceID pgtype.UU
 	}
 
 	preview := &PluginPreview{
-		Manifest:     manifest,
-		Scopes:       manifest.Scopes,
-		ConfigSchema: ConfigFieldsForManifest(manifest),
-		VersionID:    uuidString(version.ID),
-		Version:      version.Version,
-		Digest:       version.Digest,
+		Manifest:       manifest,
+		Scopes:         manifest.Scopes,
+		ConfigSchema:   ConfigFieldsForManifest(manifest),
+		VersionID:      uuidString(version.ID),
+		Version:        version.Version,
+		Digest:         version.Digest,
+		ConfiguredKeys: []string{},
 	}
 	existing, err := s.Queries.GetWorkspacePluginInstallationByKey(ctx, db.GetWorkspacePluginInstallationByKeyParams{
 		WorkspaceID: workspaceID,
@@ -289,10 +301,56 @@ func (s *PluginService) PreviewPlugin(ctx context.Context, workspaceID pgtype.UU
 		preview.Installed = true
 		preview.InstalledVersion = existing.Version
 		preview.AddedScopes = addedScopes(decodeScopes(existing.GrantedScopes), manifest.Scopes)
+		configured, keysErr := s.configuredKeysForManifest(ctx, existing, manifest)
+		if keysErr != nil {
+			return nil, keysErr
+		}
+		preview.ConfiguredKeys = configured
 	} else if !errors.Is(err, pgx.ErrNoRows) {
 		return nil, &PluginError{Kind: PluginErrorUnavailable, Message: "load existing installation", Err: err}
 	}
 	return preview, nil
+}
+
+// configuredKeysForManifest names the fields of the manifest being previewed
+// that the existing installation already answers.
+//
+// Filtered against the NEW manifest on purpose: a stored value whose field the
+// upgrade dropped is about to be pruned, and a field that changed type from
+// string to secret is not answered by the old plain value. Reporting either as
+// configured would let the consent screen wave through an upgrade the server
+// then refuses.
+func (s *PluginService) configuredKeysForManifest(
+	ctx context.Context,
+	installation db.PluginInstallation,
+	manifest plugincontract.Manifest,
+) ([]string, error) {
+	stored := map[string]any{}
+	if len(installation.Config) > 0 {
+		_ = json.Unmarshal(installation.Config, &stored)
+	}
+	secretKeys := map[string]bool{}
+	rows, err := s.Queries.ListPluginSecretKeys(ctx, installation.ID)
+	if err != nil {
+		return nil, &PluginError{Kind: PluginErrorUnavailable, Message: "list plugin secrets", Err: err}
+	}
+	for _, row := range rows {
+		secretKeys[row.Key] = true
+	}
+
+	keys := make([]string, 0, manifest.Config.Len())
+	for _, field := range manifest.Config.Fields {
+		if field.Type == plugincontract.ConfigSecret {
+			if secretKeys[field.Key] {
+				keys = append(keys, field.Key)
+			}
+			continue
+		}
+		if configValuePresent(field, stored[field.Key]) {
+			keys = append(keys, field.Key)
+		}
+	}
+	return keys, nil
 }
 
 func capabilityMessage(err error) string {
@@ -417,6 +475,9 @@ func (s *PluginService) InstallPlugin(ctx context.Context, workspaceID, userID p
 			}
 			installation = configured
 		}
+		if requiredErr := requireConfiguredRequiredFields(ctx, queries, installation, manifest); requiredErr != nil {
+			return db.PluginInstallation{}, requiredErr
+		}
 		if commitErr := tx.Commit(ctx); commitErr != nil {
 			return db.PluginInstallation{}, &PluginError{Kind: PluginErrorUnavailable, Message: "commit install", Err: commitErr}
 		}
@@ -485,10 +546,116 @@ func (s *PluginService) InstallPlugin(ctx context.Context, workspaceID, userID p
 		}
 		updated = configured
 	}
+	// The upgrade is checked against the MERGED state, not against what the
+	// form submitted. A v2 that adds a required field is the case the consent
+	// screen cannot decide on its own — what is already stored counts, what is
+	// newly required and unfilled does not — and an upgrade that commits
+	// without it produces an installation that is enabled and fails on its
+	// first call.
+	if err := requireConfiguredRequiredFields(ctx, queries, updated, manifest); err != nil {
+		return db.PluginInstallation{}, err
+	}
 	if err := tx.Commit(ctx); err != nil {
 		return db.PluginInstallation{}, &PluginError{Kind: PluginErrorUnavailable, Message: "commit upgrade", Err: err}
 	}
 	return updated, nil
+}
+
+// requireConfiguredRequiredFields refuses an install or upgrade whose required
+// configuration is not satisfied by the state the transaction is about to
+// commit.
+//
+// It reads the merged result rather than the submitted form because those are
+// different questions on an upgrade: a required field the previous version
+// already holds is satisfied without being retyped, and a field the NEW
+// manifest introduces is not satisfied by anything. The client makes the same
+// distinction to grey out the button, but the client is not the check — an
+// upgrade posted directly would otherwise land an installation that is enabled
+// and missing the credential its very first call needs.
+//
+// Secrets are answered by presence of a stored row: the value is write-only, so
+// "is it configured" is the only question anything can ask about it.
+func requireConfiguredRequiredFields(
+	ctx context.Context,
+	queries *db.Queries,
+	installation db.PluginInstallation,
+	manifest plugincontract.Manifest,
+) error {
+	required := make([]plugincontract.ConfigField, 0)
+	for _, field := range manifest.Config.Fields {
+		if field.Required {
+			required = append(required, field)
+		}
+	}
+	if len(required) == 0 {
+		return nil
+	}
+
+	stored := map[string]any{}
+	if len(installation.Config) > 0 {
+		if err := json.Unmarshal(installation.Config, &stored); err != nil {
+			return &PluginError{Kind: PluginErrorInvalid, Message: "decode plugin config", Err: err}
+		}
+	}
+	secretKeys := map[string]bool{}
+	if hasRequiredSecret(required) {
+		rows, err := queries.ListPluginSecretKeys(ctx, installation.ID)
+		if err != nil {
+			return &PluginError{Kind: PluginErrorUnavailable, Message: "list plugin secrets", Err: err}
+		}
+		for _, row := range rows {
+			secretKeys[row.Key] = true
+		}
+	}
+
+	missing := make([]string, 0)
+	for _, field := range required {
+		if field.Type == plugincontract.ConfigSecret {
+			if !secretKeys[field.Key] {
+				missing = append(missing, field.Key)
+			}
+			continue
+		}
+		if !configValuePresent(field, stored[field.Key]) {
+			missing = append(missing, field.Key)
+		}
+	}
+	if len(missing) > 0 {
+		return pluginErrf(PluginErrorInvalid,
+			"required config fields are not set: %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+func hasRequiredSecret(fields []plugincontract.ConfigField) bool {
+	for _, field := range fields {
+		if field.Type == plugincontract.ConfigSecret {
+			return true
+		}
+	}
+	return false
+}
+
+// configValuePresent decides whether a stored value counts as filled in.
+//
+// `false` is a filled boolean and 0 is a filled number, so presence is not
+// truthiness. A string that is only whitespace is not an answer — it renders as
+// an empty box and reaches the plugin as nothing.
+func configValuePresent(field plugincontract.ConfigField, value any) bool {
+	if value == nil {
+		return false
+	}
+	switch field.Type {
+	case plugincontract.ConfigBool:
+		_, ok := value.(bool)
+		return ok
+	case plugincontract.ConfigNumber:
+		_, ok := value.(float64)
+		return ok
+	default:
+		text, ok := value.(string)
+		return ok && strings.TrimSpace(text) != ""
+	}
 }
 
 // orphanedSecretKeys returns stored secrets the new manifest no longer declares

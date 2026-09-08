@@ -17,10 +17,10 @@ The file name states the rule being broken.
 | `surface-entry-not-a-script.json` | The host renders the surface document, so `entry` is a `.js`/`.mjs` script. |
 | `unknown-field.json` | Unknown manifest fields are rejected rather than ignored, so a typo is an error and not a silently dropped setting. |
 | `empty-contributes.json` | A plugin that contributes nothing has nothing to install. |
+| `skill-entry-not-under-skills.json` | A skill's `entry` lives at `skills/<key>/SKILL.md`; anything else is not a skill the host will read. |
 
-Two host rules are cross-field and deliberately NOT expressible here — the
-schema cannot see them, so passing it is a statement about shape only:
-
-- A hook's `transport.url` host must be covered by a `net:` scope.
-- Subscribing to an event requires the scope that reading the same content
-  through the Action API would have required.
+Rules the schema cannot express live one directory down, in `host-only/`. Those
+files PASS this schema and are still refused at publish — cross-field equality,
+a summed limit, and a computed cron interval are things a JSON Schema cannot
+state. Passing this schema means the shape is right; `host-only/README.md` is
+the list of what it does not promise.

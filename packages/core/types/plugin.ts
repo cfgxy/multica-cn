@@ -124,6 +124,16 @@ export interface PluginPreview {
   installed_version?: string;
   /** Scopes this install would add on top of what is already granted. */
   added_scopes?: string[];
+  /**
+   * Config fields of THIS manifest the existing installation already answers —
+   * a stored value, or a stored secret named but never returned.
+   *
+   * An upgrade must not re-ask for a credential the workspace already holds,
+   * and must not let a field the new version introduces through unfilled. Those
+   * are the same question with different answers, and only the server knows
+   * which fields fall on which side.
+   */
+  configured_keys?: string[];
 }
 
 export interface PluginPreviewRequest {

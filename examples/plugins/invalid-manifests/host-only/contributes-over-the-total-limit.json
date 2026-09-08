@@ -1,0 +1,376 @@
+{
+  "manifest_version": 1,
+  "key": "com.example.too-many-contributions",
+  "name": "Sixty-five contributions",
+  "version": "1.0.0",
+  "author": {
+    "name": "Example"
+  },
+  "scopes": [
+    "issues:read"
+  ],
+  "contributes": {
+    "surfaces": [
+      {
+        "key": "panel_1",
+        "type": "issue_panel",
+        "name": "Panel 1",
+        "entry": "ui/panel-1.js"
+      },
+      {
+        "key": "panel_2",
+        "type": "issue_panel",
+        "name": "Panel 2",
+        "entry": "ui/panel-2.js"
+      },
+      {
+        "key": "panel_3",
+        "type": "issue_panel",
+        "name": "Panel 3",
+        "entry": "ui/panel-3.js"
+      },
+      {
+        "key": "panel_4",
+        "type": "issue_panel",
+        "name": "Panel 4",
+        "entry": "ui/panel-4.js"
+      },
+      {
+        "key": "panel_5",
+        "type": "issue_panel",
+        "name": "Panel 5",
+        "entry": "ui/panel-5.js"
+      },
+      {
+        "key": "panel_6",
+        "type": "issue_panel",
+        "name": "Panel 6",
+        "entry": "ui/panel-6.js"
+      },
+      {
+        "key": "panel_7",
+        "type": "issue_panel",
+        "name": "Panel 7",
+        "entry": "ui/panel-7.js"
+      },
+      {
+        "key": "panel_8",
+        "type": "issue_panel",
+        "name": "Panel 8",
+        "entry": "ui/panel-8.js"
+      },
+      {
+        "key": "panel_9",
+        "type": "issue_panel",
+        "name": "Panel 9",
+        "entry": "ui/panel-9.js"
+      },
+      {
+        "key": "panel_10",
+        "type": "issue_panel",
+        "name": "Panel 10",
+        "entry": "ui/panel-10.js"
+      },
+      {
+        "key": "panel_11",
+        "type": "issue_panel",
+        "name": "Panel 11",
+        "entry": "ui/panel-11.js"
+      },
+      {
+        "key": "panel_12",
+        "type": "issue_panel",
+        "name": "Panel 12",
+        "entry": "ui/panel-12.js"
+      },
+      {
+        "key": "panel_13",
+        "type": "issue_panel",
+        "name": "Panel 13",
+        "entry": "ui/panel-13.js"
+      },
+      {
+        "key": "panel_14",
+        "type": "issue_panel",
+        "name": "Panel 14",
+        "entry": "ui/panel-14.js"
+      },
+      {
+        "key": "panel_15",
+        "type": "issue_panel",
+        "name": "Panel 15",
+        "entry": "ui/panel-15.js"
+      },
+      {
+        "key": "panel_16",
+        "type": "issue_panel",
+        "name": "Panel 16",
+        "entry": "ui/panel-16.js"
+      },
+      {
+        "key": "panel_17",
+        "type": "issue_panel",
+        "name": "Panel 17",
+        "entry": "ui/panel-17.js"
+      },
+      {
+        "key": "panel_18",
+        "type": "issue_panel",
+        "name": "Panel 18",
+        "entry": "ui/panel-18.js"
+      },
+      {
+        "key": "panel_19",
+        "type": "issue_panel",
+        "name": "Panel 19",
+        "entry": "ui/panel-19.js"
+      },
+      {
+        "key": "panel_20",
+        "type": "issue_panel",
+        "name": "Panel 20",
+        "entry": "ui/panel-20.js"
+      },
+      {
+        "key": "panel_21",
+        "type": "issue_panel",
+        "name": "Panel 21",
+        "entry": "ui/panel-21.js"
+      },
+      {
+        "key": "panel_22",
+        "type": "issue_panel",
+        "name": "Panel 22",
+        "entry": "ui/panel-22.js"
+      },
+      {
+        "key": "panel_23",
+        "type": "issue_panel",
+        "name": "Panel 23",
+        "entry": "ui/panel-23.js"
+      },
+      {
+        "key": "panel_24",
+        "type": "issue_panel",
+        "name": "Panel 24",
+        "entry": "ui/panel-24.js"
+      },
+      {
+        "key": "panel_25",
+        "type": "issue_panel",
+        "name": "Panel 25",
+        "entry": "ui/panel-25.js"
+      },
+      {
+        "key": "panel_26",
+        "type": "issue_panel",
+        "name": "Panel 26",
+        "entry": "ui/panel-26.js"
+      },
+      {
+        "key": "panel_27",
+        "type": "issue_panel",
+        "name": "Panel 27",
+        "entry": "ui/panel-27.js"
+      },
+      {
+        "key": "panel_28",
+        "type": "issue_panel",
+        "name": "Panel 28",
+        "entry": "ui/panel-28.js"
+      },
+      {
+        "key": "panel_29",
+        "type": "issue_panel",
+        "name": "Panel 29",
+        "entry": "ui/panel-29.js"
+      },
+      {
+        "key": "panel_30",
+        "type": "issue_panel",
+        "name": "Panel 30",
+        "entry": "ui/panel-30.js"
+      },
+      {
+        "key": "panel_31",
+        "type": "issue_panel",
+        "name": "Panel 31",
+        "entry": "ui/panel-31.js"
+      },
+      {
+        "key": "panel_32",
+        "type": "issue_panel",
+        "name": "Panel 32",
+        "entry": "ui/panel-32.js"
+      },
+      {
+        "key": "panel_33",
+        "type": "issue_panel",
+        "name": "Panel 33",
+        "entry": "ui/panel-33.js"
+      }
+    ],
+    "resources": [
+      {
+        "type": "skill",
+        "key": "skill_1",
+        "entry": "skills/skill_1/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_2",
+        "entry": "skills/skill_2/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_3",
+        "entry": "skills/skill_3/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_4",
+        "entry": "skills/skill_4/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_5",
+        "entry": "skills/skill_5/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_6",
+        "entry": "skills/skill_6/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_7",
+        "entry": "skills/skill_7/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_8",
+        "entry": "skills/skill_8/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_9",
+        "entry": "skills/skill_9/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_10",
+        "entry": "skills/skill_10/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_11",
+        "entry": "skills/skill_11/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_12",
+        "entry": "skills/skill_12/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_13",
+        "entry": "skills/skill_13/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_14",
+        "entry": "skills/skill_14/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_15",
+        "entry": "skills/skill_15/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_16",
+        "entry": "skills/skill_16/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_17",
+        "entry": "skills/skill_17/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_18",
+        "entry": "skills/skill_18/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_19",
+        "entry": "skills/skill_19/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_20",
+        "entry": "skills/skill_20/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_21",
+        "entry": "skills/skill_21/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_22",
+        "entry": "skills/skill_22/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_23",
+        "entry": "skills/skill_23/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_24",
+        "entry": "skills/skill_24/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_25",
+        "entry": "skills/skill_25/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_26",
+        "entry": "skills/skill_26/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_27",
+        "entry": "skills/skill_27/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_28",
+        "entry": "skills/skill_28/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_29",
+        "entry": "skills/skill_29/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_30",
+        "entry": "skills/skill_30/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_31",
+        "entry": "skills/skill_31/SKILL.md"
+      },
+      {
+        "type": "skill",
+        "key": "skill_32",
+        "entry": "skills/skill_32/SKILL.md"
+      }
+    ]
+  }
+}

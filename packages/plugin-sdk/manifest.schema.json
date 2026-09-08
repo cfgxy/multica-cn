@@ -300,15 +300,21 @@
       }
     },
     "resource": {
-      "description": "A static contribution. No call happens in either direction, which is what makes it not a hook.",
+      "description": "A static contribution. No call happens in either direction, which is what makes it not a hook. A skill's entry is derived from its key — skills/<key>/SKILL.md — so the bundle layout is predictable and two skills cannot claim one file.",
       "type": "object",
       "additionalProperties": false,
       "required": ["type", "key", "entry"],
       "properties": {
         "type": { "enum": ["skill"] },
         "key": { "$ref": "#/$defs/contributionKey" },
-        "entry": { "$ref": "#/$defs/relativePath" }
-      }
+        "entry": {
+          "allOf": [
+            { "$ref": "#/$defs/relativePath" },
+            { "type": "string", "pattern": "^skills/[a-z][a-z0-9]*(?:[_-][a-z0-9]+)*/SKILL\\.md$" }
+          ]
+        }
+      },
+      "$comment": "The pattern fixes the shape. That the directory equals this resource's OWN key is a cross-field rule a JSON Schema cannot state, and the host enforces it."
     }
   }
 }

@@ -28,7 +28,7 @@ export function ConfigFieldRow({
   field,
   value,
   secretValue,
-  secretConfigured,
+  configured,
   disabled,
   onValueChange,
   onSecretChange,
@@ -36,14 +36,22 @@ export function ConfigFieldRow({
   field: PluginConfigField;
   value: unknown;
   secretValue: string;
-  /** A secret already stored under this name. Never its value. */
-  secretConfigured: boolean;
+  /**
+   * The installation already holds a value under this name. For a secret that
+   * is all anyone can know — the value is write-only — and on an upgrade it is
+   * what tells a required field already answered apart from one the new
+   * version just introduced.
+   */
+  configured: boolean;
   disabled: boolean;
   onValueChange: (value: unknown) => void;
   onSecretChange: (value: string) => void;
 }) {
   const { t } = useT("settings");
   const isSecret = field.type === "secret";
+  // Shown only where the form itself cannot say it: an input already holding
+  // the stored text needs no badge, an empty one on an upgrade does.
+  const showConfigured = configured && (isSecret || value === undefined);
 
   return (
     <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -52,6 +60,11 @@ export function ConfigFieldRow({
           {isSecret ? <Lock className="size-3 shrink-0 text-muted-foreground" /> : null}
           <span>{field.label}</span>
           {field.required ? <span className="text-destructive">*</span> : null}
+          {showConfigured ? (
+            <span className="text-caption font-normal text-muted-foreground">
+              {t(($) => $.plugins.config.configured)}
+            </span>
+          ) : null}
         </div>
         {field.description ? (
           <p className="mt-0.5 text-caption text-muted-foreground">{field.description}</p>
@@ -69,7 +82,7 @@ export function ConfigFieldRow({
             autoComplete="off"
             disabled={disabled}
             value={secretValue}
-            placeholder={secretConfigured
+            placeholder={configured
               ? t(($) => $.plugins.config.secret_set)
               : field.placeholder ?? ""}
             onChange={(event) => onSecretChange(event.target.value)}
@@ -131,24 +144,31 @@ export function ConfigFieldRow({
 /**
  * Which required fields still have nothing in them.
  *
- * Secrets count as filled once one is stored, because the value is write-only
- * and the form cannot read it back to check. A field the manifest declares
- * required is what makes the install button wait: mounting a plugin whose
- * required credential is empty produces a plugin that fails on first use with
- * nothing on screen explaining why.
+ * `configuredKeys` is what the server says the installation already holds, and
+ * it satisfies a required field without the form retyping it. Secrets need it
+ * because the value is write-only and the form cannot read it back to check;
+ * plain fields need it on an upgrade, where the previous version's value is on
+ * the row but not in this form's state. Anything NOT named there is unanswered
+ * even on an upgrade — that is the case of a new version adding a required
+ * field, which the server refuses.
+ *
+ * A field the manifest declares required is what makes the install button wait:
+ * mounting a plugin whose required credential is empty produces a plugin that
+ * fails on first use with nothing on screen explaining why.
  */
 export function missingRequiredFields(
   schema: PluginConfigField[],
   values: Record<string, unknown>,
   secrets: Record<string, string>,
-  configuredSecrets: ReadonlySet<string> = new Set<string>(),
+  configuredKeys: ReadonlySet<string> = new Set<string>(),
 ): string[] {
   return schema
     .filter((field) => {
       if (!field.required) return false;
       if (field.type === "secret") {
-        return (secrets[field.key] ?? "").length === 0 && !configuredSecrets.has(field.key);
+        return (secrets[field.key] ?? "").length === 0 && !configuredKeys.has(field.key);
       }
+      if (configuredKeys.has(field.key) && values[field.key] === undefined) return false;
       // `false` is a filled boolean, and 0 is a filled number.
       const value = values[field.key];
       if (field.type === "bool") return value === undefined;
