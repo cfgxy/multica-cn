@@ -46,36 +46,68 @@ var pluginSecretPatterns = []secretPattern{
 }
 
 // scanBundleForSecrets refuses a bundle carrying anything that matches a
-// credential format.
+// credential format, anywhere a reader of the published version could find it.
 //
-// The report gives the file and the 1-based line so the author can go straight
-// to it, and the credential kind so they know what to rotate — and stops there.
-// Echoing the match would copy the secret into a server log and an API response,
-// which is the exact leak this function exists to prevent.
+// The report gives the location and the 1-based line so the author can go
+// straight to it, and the credential kind so they know what to rotate — and
+// stops there. Echoing the match would copy the secret into a server log and an
+// API response, which is the exact leak this function exists to prevent.
 //
-// Only the FILES are scanned. The manifest itself is not: it is re-encoded and
-// stored as the consented snapshot, its shape is closed, and it has no free-text
-// field wide enough to hide a key in — a secret an author put in configuration
-// belongs in a `secret` config field, which is write-only and never leaves the
-// server at all.
+// Everything a published version carries is in scope, not just the files:
+//
+//   - The canonical manifest. It is stored as the consented snapshot and
+//     returned by preview to any administrator who can see the listing, so a
+//     key pasted into a description or a default value is published just as
+//     surely as one in a script. "The shape is closed" bounds where a value can
+//     sit, not whether it can be a credential.
+//   - File PATHS as well as contents. A path is displayed and served verbatim,
+//     and `deploy-AKIA....json` publishes the key in the listing itself.
 func scanBundleForSecrets(bundle plugincontract.Bundle) error {
+	if err := scanTextForSecrets("multica.plugin.json", string(bundle.Canonical)); err != nil {
+		return err
+	}
 	for _, file := range bundle.Files {
-		content := string(file.Content)
-		// A binary asset (an icon, a font) is not source an author edits, and
-		// scanning it produces only false positives against compressed bytes.
-		if strings.IndexByte(content, 0) >= 0 {
-			continue
+		// The path is scanned as its own subject: it is not part of the
+		// content, and reporting a line number for it would be meaningless.
+		if err := scanTextForSecrets("the file name "+file.Path, file.Path); err != nil {
+			return err
 		}
+		if err := scanTextForSecrets(file.Path, string(file.Content)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// scanTextForSecrets reports the first credential shape in one subject.
+//
+// A NUL byte does not stop the scan. Binary assets were skipped wholesale to
+// keep compressed bytes from producing false positives, but "contains a NUL"
+// is something an author controls: appending one zero byte to a script turned
+// the whole file invisible to the scanner, which made the check optional for
+// anyone who knew. So the text is split ON the NUL bytes and every stretch
+// between them is scanned. A genuine binary still matches nothing — the
+// patterns are provider prefixes with fixed alphabets, not entropy heuristics —
+// while a script with a NUL smuggled into it no longer buys immunity.
+func scanTextForSecrets(subject, text string) error {
+	if text == "" {
+		return nil
+	}
+	// Offsets are tracked across the split so the reported line is the line in
+	// the original text, not in the fragment.
+	offset := 0
+	for _, segment := range strings.Split(text, "\x00") {
 		for _, pattern := range pluginSecretPatterns {
-			loc := pattern.Re.FindStringIndex(content)
+			loc := pattern.Re.FindStringIndex(segment)
 			if loc == nil {
 				continue
 			}
-			line := 1 + strings.Count(content[:loc[0]], "\n")
+			line := 1 + strings.Count(text[:offset+loc[0]], "\n")
 			return pluginErrf(PluginErrorInvalid,
 				"%s looks like it contains a %s (line %d). A published version is immutable and is served to every workspace that installs it, so remove the credential and rotate it before publishing. Values a plugin needs at runtime belong in a `secret` configuration field, which the server never returns.",
-				file.Path, pattern.Name, line)
+				subject, pattern.Name, line)
 		}
+		offset += len(segment) + 1
 	}
 	return nil
 }
