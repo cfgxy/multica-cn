@@ -44,7 +44,9 @@
     "previous": "前の画像",
     "next": "次の画像",
     "sequence_position": "{{index}} / {{total}}",
-    "unavailable": "この画像は表示できないためスキップしました。"
+    "unavailable": "この画像は表示できないためスキップしました。",
+    "skipped_notice": "クリックした画像を読み込めなかったため、次に表示できる画像を表示しています。",
+    "unavailable_notice": "この画像を読み込めませんでした。削除されたか、アクセス権限がない可能性があります。"
   },
   "canvas": {
     "zoom_in": "拡大",
