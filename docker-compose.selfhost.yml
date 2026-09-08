@@ -36,6 +36,8 @@ services:
   postgres:
     image: pgvector/pgvector:pg17
     environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      PGTZ: ${TZ:-Asia/Shanghai}
       POSTGRES_DB: ${POSTGRES_DB:-multica}
       POSTGRES_USER: ${POSTGRES_USER:-multica}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-multica}
@@ -62,6 +64,7 @@ services:
     volumes:
       - backend_uploads:/app/data/uploads
     environment:
+      TZ: ${TZ:-Asia/Shanghai}
       DATABASE_URL: postgres://${POSTGRES_USER:-multica}:${POSTGRES_PASSWORD:-multica}@postgres:5432/${POSTGRES_DB:-multica}?sslmode=disable
       PORT: "8080"
       METRICS_ADDR: ${METRICS_ADDR:-}
@@ -201,8 +204,9 @@ services:
     depends_on:
       - backend
     ports:
-      - "127.0.0.1:${FRONTEND_PORT:-3000}:3000"
+      - "${FRONTEND_PORT:-3000}:3000"
     environment:
+      TZ: ${TZ:-Asia/Shanghai}
       HOSTNAME: "0.0.0.0"
       REMOTE_API_URL: ${REMOTE_API_URL:-http://backend:8080}
       DOCS_URL: ${DOCS_URL:-}
