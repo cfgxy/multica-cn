@@ -102,20 +102,51 @@ func TestDecideSessionResume(t *testing.T) {
 			want:          SessionResumeCompactSoft,
 		},
 		{
+			// 700001*75/100 = 525000 exactly; dividing first would give
+			// 700001/100 = 7000 and a threshold 75 tokens low.
 			name:          "threshold is exact for a ceiling that is not a multiple of 100",
-			contextTokens: 74,
+			contextTokens: 524_999,
 			known:         true,
-			maxTokens:     101,
+			maxTokens:     700_001,
 			compactPct:    75,
 			want:          SessionResumeAllowed,
 		},
 		{
 			name:          "threshold is exact for a ceiling that is not a multiple of 100 (boundary)",
-			contextTokens: 75,
+			contextTokens: 525_000,
 			known:         true,
-			maxTokens:     101,
+			maxTokens:     700_001,
 			compactPct:    75,
 			want:          SessionResumeCompactSoft,
+		},
+		{
+			// The frozen spec's interlock. 100_000 at 10% works out to 10_000,
+			// under one turn's prompt; without the floor the agent would start
+			// every single run from a brief.
+			name:          "the smallest legal ceiling at the smallest legal percentage does not compact below 50K",
+			contextTokens: 49_999,
+			known:         true,
+			maxTokens:     MinSessionMaxContextTokens,
+			compactPct:    MinSessionCompactPct,
+			want:          SessionResumeAllowed,
+		},
+		{
+			name:          "the 50K floor is where that configuration actually compacts",
+			contextTokens: MinEffectiveCompactThreshold,
+			known:         true,
+			maxTokens:     MinSessionMaxContextTokens,
+			compactPct:    MinSessionCompactPct,
+			want:          SessionResumeCompactSoft,
+		},
+		{
+			// The floor must not overtake a percentage that is already higher:
+			// 2M at 80% is 1.6M, and flooring must leave it there.
+			name:          "the floor does not lower a threshold that is already above it",
+			contextTokens: 1_599_999,
+			known:         true,
+			maxTokens:     MaxSessionMaxContextTokens,
+			compactPct:    DefaultSessionCompactPct,
+			want:          SessionResumeAllowed,
 		},
 	}
 
@@ -172,6 +203,52 @@ func TestValidateSessionCompactPct(t *testing.T) {
 	for _, v := range []int32{-1, 0, MinSessionCompactPct - 1, MaxSessionCompactPct + 1} {
 		if err := ValidateSessionCompactPct(v); err == nil {
 			t.Errorf("ValidateSessionCompactPct(%d) = nil, want error", v)
+		}
+	}
+}
+
+func TestEffectiveCompactThreshold(t *testing.T) {
+	tests := []struct {
+		name       string
+		maxTokens  int64
+		compactPct int32
+		want       int64
+	}{
+		{"default configuration", DefaultSessionMaxContextTokens, DefaultSessionCompactPct, 320_000},
+		{"floored when the arithmetic lands under 50K", MinSessionMaxContextTokens, MinSessionCompactPct, MinEffectiveCompactThreshold},
+		{"exact for a ceiling that is not a multiple of 100", 700_001, 75, 525_000},
+		{"an invalid percentage uses the default, not a clamp", DefaultSessionMaxContextTokens, 0, 320_000},
+		{
+			// Only reachable from a row written before the range existed. The
+			// floor must not push the soft switch past the hard ceiling, which
+			// would leave that agent with no soft stage at all.
+			name: "the floor never exceeds the ceiling it protects", maxTokens: 20_000, compactPct: 50, want: 20_000,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := EffectiveCompactThreshold(tt.maxTokens, tt.compactPct); got != tt.want {
+				t.Fatalf("EffectiveCompactThreshold(%d, %d) = %d, want %d",
+					tt.maxTokens, tt.compactPct, got, tt.want)
+			}
+		})
+	}
+}
+
+// TestSessionMaxContextTokensMatchesFrozenSpec pins the range to the numbers
+// the product froze (0, or [100_000, 2_000_000]) rather than to whatever the
+// constants happen to say, so widening them is a deliberate edit here too.
+func TestSessionMaxContextTokensMatchesFrozenSpec(t *testing.T) {
+	if MinSessionMaxContextTokens != 100_000 || MaxSessionMaxContextTokens != 2_000_000 {
+		t.Fatalf("frozen range is 0 or [100000, 2000000], got [%d, %d]",
+			MinSessionMaxContextTokens, MaxSessionMaxContextTokens)
+	}
+	if MinEffectiveCompactThreshold != 50_000 {
+		t.Fatalf("frozen effective-trigger floor is 50000, got %d", MinEffectiveCompactThreshold)
+	}
+	for _, v := range []int64{10_000, 99_999, 2_000_001, 10_000_000} {
+		if err := ValidateSessionMaxContextTokens(v); err == nil {
+			t.Errorf("ValidateSessionMaxContextTokens(%d) = nil, want error (outside the frozen range)", v)
 		}
 	}
 }

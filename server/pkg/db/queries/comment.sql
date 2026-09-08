@@ -759,3 +759,85 @@ FROM comment c
 JOIN ancestor_ids path ON path.id = c.id
 ORDER BY c.id
 FOR UPDATE OF c;
+
+-- name: ListRecentCommentsForBrief :many
+-- The @row_limit most recent comments on an issue, newest first, each carrying
+-- the id of the thread it belongs to (RUYI-107).
+--
+-- Deliberately NOT ListRootCommentsForIssue: that query selects the newest
+-- ROOTS and then reports each thread's last_activity_at, which is the wrong
+-- shape for a hand-off in two separate ways. An old root whose thread just
+-- received the decisive reply is dropped by the root cut before its activity is
+-- ever considered; and for the roots that survive, author/body come from the
+-- root while the timestamp comes from the newest descendant, so the brief
+-- attributes a months-old opening post to a reply that someone else just wrote.
+-- Selecting comments directly keeps id, author, timestamp and excerpt on the
+-- same row, which is the only way the anchor can be followed back.
+--
+-- thread_root walks each selected comment up to its root so the brief can say
+-- which conversation an anchor belongs to; the depth guard mirrors
+-- LockCommentAncestorPath and stops a cyclic parent chain from looping.
+WITH RECURSIVE recent AS (
+    SELECT c.id, c.author_type, c.author_id, c.content, c.created_at, c.parent_id
+    FROM comment c
+    WHERE c.issue_id = @issue_id
+      AND c.workspace_id = @workspace_id
+    ORDER BY c.created_at DESC, c.id DESC
+    LIMIT @row_limit
+), thread_root AS (
+    SELECT r.id AS comment_id, r.id AS node_id, r.parent_id, 1::integer AS depth
+    FROM recent r
+    UNION ALL
+    SELECT tr.comment_id, p.id, p.parent_id, tr.depth + 1
+    FROM thread_root tr
+    JOIN comment p ON p.id = tr.parent_id
+    WHERE p.issue_id = @issue_id
+      AND p.workspace_id = @workspace_id
+      AND tr.depth <= 256
+)
+SELECT r.id, r.author_type, r.author_id, r.content, r.created_at,
+       (SELECT tr.node_id
+        FROM thread_root tr
+        WHERE tr.comment_id = r.id AND tr.parent_id IS NULL
+        LIMIT 1) AS root_id
+FROM recent r
+ORDER BY r.created_at DESC, r.id DESC;
+
+-- name: ListUnresolvedThreadsForBrief :many
+-- Unresolved root comments on an issue ordered by their thread's real last
+-- activity, newest first (RUYI-107).
+--
+-- Ordering by activity BEFORE applying @row_limit is the point: a thread that
+-- has been open for weeks and was answered an hour ago is exactly the thread a
+-- fresh session most needs to see, and any cut taken on root creation time
+-- discards it first. The returned author/content/created_at describe the ROOT
+-- deliberately — this section answers "what is still open", so the question as
+-- originally posed is the useful text — while last_activity_at is labelled as
+-- the thread's, not the root's, so the two are never conflated.
+WITH RECURSIVE membership(id, root_id, comment_created_at) AS (
+    SELECT c.id, c.id AS root_id, c.created_at
+    FROM comment c
+    WHERE c.issue_id = @issue_id
+      AND c.workspace_id = @workspace_id
+      AND c.parent_id IS NULL
+      AND c.resolved_at IS NULL
+    UNION ALL
+    SELECT c.id, m.root_id, c.created_at
+    FROM comment c
+    JOIN membership m ON c.parent_id = m.id
+    WHERE c.issue_id = @issue_id
+      AND c.workspace_id = @workspace_id
+), thread_stats AS (
+    SELECT root_id,
+           (COUNT(*) - 1)::int AS reply_count,
+           MAX(comment_created_at)::timestamptz AS last_activity_at
+    FROM membership
+    GROUP BY root_id
+)
+SELECT c.id, c.author_type, c.author_id, c.content, c.created_at,
+       ts.reply_count AS reply_count,
+       ts.last_activity_at AS last_activity_at
+FROM thread_stats ts
+JOIN comment c ON c.id = ts.root_id
+ORDER BY ts.last_activity_at DESC, c.id DESC
+LIMIT @row_limit;

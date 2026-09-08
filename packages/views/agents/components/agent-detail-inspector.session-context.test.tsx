@@ -105,9 +105,11 @@ describe("AgentDetailInspector session context gate", () => {
 
   // Reverting rather than clamping matters: clamping would save a number the
   // operator never typed, and they would leave believing they set something else.
+  // The frozen range is 0 or [100,000, 2,000,000]; 99,999 and 2,000,001 are the
+  // values one step outside each bound, which an off-by-one would let through.
   it.each([
-    ["below the minimum", "9999"],
-    ["above the maximum", "10000001"],
+    ["one below the minimum", "99999"],
+    ["one above the maximum", "2000001"],
     ["not an integer", "12.5"],
     ["empty", ""],
   ])("reverts a ceiling that is %s without saving", async (_name, typed) => {
@@ -133,6 +135,45 @@ describe("AgentDetailInspector session context gate", () => {
 
     expect(onUpdate).not.toHaveBeenCalled();
     await waitFor(() => expect(input).toHaveValue(80));
+  });
+
+  it.each([
+    ["the minimum", "100000", 100_000],
+    ["the maximum", "2000000", 2_000_000],
+  ])("saves a ceiling at %s of the frozen range", async (_name, typed, saved) => {
+    const onUpdate = renderInspector(makeAgent());
+
+    const input = screen.getByLabelText(ceilingLabel);
+    fireEvent.change(input, { target: { value: typed } });
+    fireEvent.blur(input);
+
+    await waitFor(() => {
+      expect(onUpdate).toHaveBeenCalledWith("agent-1", {
+        session_max_context_tokens: saved,
+      });
+    });
+  });
+
+  // The hint has to show the token count the switch actually happens at, not
+  // pct×ceiling: at the smallest legal ceiling and percentage the arithmetic
+  // gives 10,000 while the interlock fires at 50,000, and an operator reading
+  // the raw product would be tuning against a number the server never uses.
+  // The assertions read the interpolated figure, which i18next renders
+  // unformatted — the literal "50,000" in the sentence is the copy, not the
+  // value, and matching it would pass even with the floor removed.
+  it("shows the effective threshold, including the 50,000 floor", () => {
+    renderInspector(
+      makeAgent({ session_max_context_tokens: 100_000, session_compact_pct: 10 }),
+    );
+
+    expect(screen.getByText(/actually at 50000 tokens/)).toBeInTheDocument();
+    expect(screen.queryByText(/actually at 10000 tokens/)).toBeNull();
+  });
+
+  it("shows the plain arithmetic when it is above the floor", () => {
+    renderInspector(makeAgent());
+
+    expect(screen.getByText(/actually at 320000 tokens/)).toBeInTheDocument();
   });
 
   // With no ceiling there is nothing to take a percentage of, so leaving the

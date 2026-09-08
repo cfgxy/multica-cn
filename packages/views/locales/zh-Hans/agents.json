@@ -216,7 +216,7 @@
     "concurrency_tooltip": "并发 · 最多 {{value}} 个并行 task",
     "concurrency_range": "最大并行 task 数（{{min}}–{{max}}）",
     "session_max_context_tokens_range": "上下文上限 token 数（{{min}}–{{max}}），填 0 表示关闭",
-    "session_compact_pct_range": "达到上限的该百分比时开启新会话（{{min}}–{{max}}）",
+    "session_compact_pct_range": "达到上限的该百分比时开启新会话（{{min}}–{{max}}）；切换不会低于 50,000 token，实际阈值为 {{threshold}} token",
     "session_context_disabled": "已关闭 —— 无论会话多大都直接续用",
     "runtime_none": "无运行时",
     "runtime_tooltip": "运行时 · {{name}} · {{status}}",

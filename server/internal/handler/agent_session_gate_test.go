@@ -55,8 +55,31 @@ func TestCreateAgent_SessionGateBoundsAndDefaults(t *testing.T) {
 			wantPct:    60,
 		},
 		{
-			name:        "ceiling below the minimum is rejected",
-			body:        map[string]any{"session_max_context_tokens": 9_999},
+			// The frozen range is 0 or [100_000, 2_000_000]. 99_999 is the
+			// value one below the floor, i.e. the one an off-by-one in the
+			// comparison would let through.
+			name:        "ceiling one below the minimum is rejected",
+			body:        map[string]any{"session_max_context_tokens": 99_999},
+			wantCode:    http.StatusBadRequest,
+			wantErrPart: "session_max_context_tokens",
+		},
+		{
+			name:       "the minimum ceiling itself is accepted",
+			body:       map[string]any{"session_max_context_tokens": 100_000},
+			wantCode:   http.StatusCreated,
+			wantTokens: 100_000,
+			wantPct:    80,
+		},
+		{
+			name:       "the maximum ceiling itself is accepted",
+			body:       map[string]any{"session_max_context_tokens": 2_000_000},
+			wantCode:   http.StatusCreated,
+			wantTokens: 2_000_000,
+			wantPct:    80,
+		},
+		{
+			name:        "ceiling one above the maximum is rejected",
+			body:        map[string]any{"session_max_context_tokens": 2_000_001},
 			wantCode:    http.StatusBadRequest,
 			wantErrPart: "session_max_context_tokens",
 		},
@@ -149,6 +172,8 @@ func TestUpdateAgent_SessionGateBoundsAndOmission(t *testing.T) {
 		body map[string]any
 	}{
 		{name: "ceiling below the minimum", body: map[string]any{"session_max_context_tokens": 1}},
+		{name: "ceiling one below the minimum", body: map[string]any{"session_max_context_tokens": 99_999}},
+		{name: "ceiling above the maximum", body: map[string]any{"session_max_context_tokens": 2_000_001}},
 		{name: "negative ceiling", body: map[string]any{"session_max_context_tokens": -1}},
 		{name: "percentage below the minimum", body: map[string]any{"session_compact_pct": 0}},
 		{name: "percentage above 100", body: map[string]any{"session_compact_pct": 101}},

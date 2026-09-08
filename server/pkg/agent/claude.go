@@ -410,8 +410,14 @@ func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message,
 		// is the one the newest request carried, not the total of every
 		// request. All three input-side numbers count toward it — a cached
 		// prefix still occupies the context window, it is merely cheaper.
-		if size := content.Usage.InputTokens + content.Usage.CacheReadInputTokens + content.Usage.CacheCreationInputTokens; size > 0 {
-			contextTokens[content.Model] = size
+		//
+		// The event's OWN output counts too. The reply this request produced is
+		// appended to the transcript, so what the NEXT resume inherits is input
+		// + output, not the input alone. A run ending at 319,999 input + 10,000
+		// output has already crossed a 320,000 soft threshold by the time the
+		// next turn starts; a snapshot of 319,999 would resume it anyway.
+		if inputSide := content.Usage.InputTokens + content.Usage.CacheReadInputTokens + content.Usage.CacheCreationInputTokens; inputSide > 0 {
+			contextTokens[content.Model] = inputSide + content.Usage.OutputTokens
 		}
 	}
 
