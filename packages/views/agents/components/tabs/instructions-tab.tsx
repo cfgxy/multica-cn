@@ -9,6 +9,7 @@ import { Button } from "@multica/ui/components/ui/button";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { cn } from "@multica/ui/lib/utils";
 import { useT } from "../../../i18n";
+import { PromptMarketStatusStrip } from "../../../market/prompt-status-strip";
 import { useOptionalNavigation } from "../../../navigation";
 
 import { ConversationStartersEditor } from "../conversation-starters-editor";
@@ -20,6 +21,7 @@ export function InstructionsTab({
   agent,
   onSave,
   onDirtyChange,
+  canEdit = false,
 }: {
   agent: Agent;
   onSave: (updates: {
@@ -27,6 +29,12 @@ export function InstructionsTab({
     conversation_starters?: AgentConversationStarter[];
   }) => Promise<void>;
   onDirtyChange?: (dirty: boolean) => void;
+  /**
+   * Whether this viewer may manage the agent. Passed down rather than resolved
+   * here so the tab stays a leaf that mounts without an auth store, matching
+   * how its sibling tabs receive the same decision.
+   */
+  canEdit?: boolean;
 }) {
   const { t } = useT("agents");
   // Optional read: this tab is a leaf that tests mount in isolation, and its
@@ -225,6 +233,17 @@ export function InstructionsTab({
       )}
 
       <div className="space-y-2">
+        {/* Publishing snapshots the prompt the server holds, so the strip has
+            to know about an unsaved edit — otherwise a publisher would ship
+            the previous text believing they shipped what is on screen. */}
+        <PromptMarketStatusStrip
+          wsId={agent.workspace_id}
+          targetType="agent"
+          targetId={agent.id}
+          targetName={agent.name}
+          canManage={canEdit}
+          hasUnsavedEdits={isDirty}
+        />
         <label
           htmlFor={`agent-system-prompt-${agent.id}`}
           className="text-body font-medium"

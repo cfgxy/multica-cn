@@ -45,6 +45,14 @@ vi.mock("@multica/core/permissions", () => ({
 const toastError = vi.hoisted(() => vi.fn());
 vi.mock("sonner", () => ({ toast: { success: vi.fn(), error: toastError } }));
 
+// The prompt section is a separate asset family with its own queries,
+// mutations and test file. Stubbing it here keeps this suite about the
+// skill/MCP catalog instead of making it a second owner of the prompt API
+// surface — see market/prompt-market-panel.test.tsx.
+vi.mock("../../market/prompt-market-panel", () => ({
+  PromptMarketPanel: () => null,
+}));
+
 import { MarketplaceTab } from "./marketplace-tab";
 
 const TEST_RESOURCES = {

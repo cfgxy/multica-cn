@@ -301,6 +301,12 @@ var concurrentIndexCleanups = map[string]string{
 	"453_admin_audit_log_actor_index":                           "idx_admin_audit_log_actor_created",
 	"455_execution_profile_name_index":                          "idx_execution_profile_workspace_name",
 	"456_execution_profile_entry_index":                         "idx_execution_profile_entry_profile_agent",
+	"458_marketplace_prompt_version_series_index":               "idx_marketplace_prompt_version_series_version",
+	"459_marketplace_prompt_version_draft_index":                "idx_marketplace_prompt_version_series_draft",
+	"460_marketplace_prompt_version_idempotency_index":          "idx_marketplace_prompt_version_idempotency",
+	"461_marketplace_prompt_version_discovery_index":            "idx_marketplace_prompt_version_discovery",
+	"462_marketplace_prompt_version_source_index":               "idx_marketplace_prompt_version_source",
+	"463_workspace_prompt_install_index":                        "idx_workspace_prompt_install_workspace_series",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction

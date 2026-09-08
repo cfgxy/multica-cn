@@ -92,6 +92,22 @@ export { RUNTIME_PROFILE_PROTOCOL_FAMILIES } from "./agent";
 export type { Workspace, WorkspaceRepo, WorkspaceMcpServer, Member, MemberRole, User, MemberWithUser, Invitation, ShareLink, ShareLinkInfo } from "./workspace";
 export type { MarketplaceItem, MarketplaceItemKind, MarketplacePlaceholder } from "./marketplace";
 export type {
+  PromptApplyPreview,
+  PromptApplyResult,
+  PromptApplyStrategy,
+  PromptAssetKind,
+  PromptInstall,
+  PromptLicenseCode,
+  PromptMarketItem,
+  PromptRestoreResult,
+  PromptSecretFinding,
+  PromptSecretScanBlocked,
+  PromptTargetState,
+  PromptTargetType,
+  PromptVersion,
+  PromptVersionState,
+} from "./prompt-market";
+export type {
   PluginInstallation,
   PluginConfigField,
   PluginConfigFieldType,
