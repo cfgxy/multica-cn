@@ -521,7 +521,7 @@ func TestAvatarRedirectMaxAge_StaysBelowSignatureTTL(t *testing.T) {
 		ttl  time.Duration
 		want int
 	}{
-		{0, avatarRedirectMaxAgeCap}, // unset -> 30m default
+		{0, avatarRedirectMaxAgeCap}, // unset -> defaultAttachmentDownloadURLTTL
 		{30 * time.Minute, avatarRedirectMaxAgeCap},
 		{2 * time.Minute, avatarRedirectMaxAgeCap},
 		{30 * time.Second, 15},
