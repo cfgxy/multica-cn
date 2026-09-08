@@ -126,7 +126,7 @@ MULTICA_PUBLIC_URL=https://api.multica.example.com
 | `AWS_ENDPOINT_URL` | 空 | MinIO 等 S3 兼容 endpoint |
 | `S3_USE_PATH_STYLE` | 自定义 endpoint 时为 `true` | 是否使用 path-style 地址 |
 | `ATTACHMENT_DOWNLOAD_MODE` | `auto` | `auto`、`cloudfront`、`presign` 或 `proxy` |
-| `ATTACHMENT_DOWNLOAD_URL_TTL` | `30m` | 签名下载地址的有效期 |
+| `ATTACHMENT_DOWNLOAD_URL_TTL` | `24h` | 签名下载地址的有效期 |
 
 内网 MinIO 等 endpoint 无法被浏览器直接访问时，使用 `ATTACHMENT_DOWNLOAD_MODE=proxy`。
 

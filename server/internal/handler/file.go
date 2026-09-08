@@ -35,7 +35,17 @@ var extContentTypes = map[string]string{
 
 const maxUploadSize = 100 << 20 // 100 MB
 
-const defaultAttachmentDownloadURLTTL = 30 * time.Minute
+// defaultAttachmentDownloadURLTTL is how long a minted signed attachment URL
+// stays valid when the deployment does not set ATTACHMENT_DOWNLOAD_URL_TTL.
+//
+// 24h rather than the original 30m (RUYI-103): a reader who opens an issue and
+// comes back to it later in the same working day used to find every image in
+// the already-rendered page dead, because CloudFront-signed bulk responses
+// hand the client a URL that outlives nothing. The preview path now prefers
+// the stable per-attachment endpoint, so this TTL only bounds URLs the client
+// received in a bulk response — a day covers a normal session without turning
+// a leaked URL into a permanent capability.
+const defaultAttachmentDownloadURLTTL = 24 * time.Hour
 
 type attachmentDownloadMode string
 
