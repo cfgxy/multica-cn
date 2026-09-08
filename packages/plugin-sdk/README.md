@@ -2,6 +2,10 @@
 
 What a Multica plugin surface imports.
 
+For the manifest reference, hook handlers, scopes, packaging, and the local
+development loop, see **[Building plugins](https://multica.ai/docs/developers/plugins)**.
+This file covers the surface side only.
+
 ```js
 import { multica } from "@multica/plugin-sdk";
 
