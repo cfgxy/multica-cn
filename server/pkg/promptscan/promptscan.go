@@ -26,7 +26,7 @@ import (
 // with the scan so a future rule addition can tell which snapshots were only
 // ever cleared by an older, weaker detector set. Bump it whenever `detectors`
 // changes.
-const Revision = "promptscan/2026-09-08.3"
+const Revision = "promptscan/2026-09-08.4"
 
 // maxFindings bounds a report. Prompt content is unbounded user text, and a
 // pasted .env would otherwise produce a finding per line — a response large
@@ -140,15 +140,22 @@ const gap = `[ \t]*(?:\\?\r?\n[ \t]*)?`
 // YAML key whose value is simply the following key. See credentialAssignment.
 const credentialSeparator = quoteRun + gap + `(?::=|=>|[=:])` + `(` + gap + `)`
 
-// credentialValue captures the value, in three groups: the opening quote run,
-// the value token, and the single separator character after it.
+// credentialValue captures the value, in four groups: the opening quote run,
+// the value token, the single separator character after it, and the remainder
+// of the value's line.
 //
 // It captures rather than asserts because the decision needs all of them and
-// RE2 has no lookahead: an empty token is a schema, a `null` is a schema, and a
-// bare token on the NEXT line followed by its own `:` is the next key rather
-// than this key's value — the false positive that looking past a line break
-// would otherwise introduce for every YAML document.
-const credentialValue = `(` + quoteRun + `)([^\s"'` + "`" + `,}\]:=]*)([:=]?)`
+// RE2 has no lookahead: an empty token is a schema, an unquoted `null` is a
+// schema, and a bare token on the NEXT line followed by its own `:` is the next
+// key rather than this key's value — the false positive that looking past a
+// line break would otherwise introduce for every YAML document.
+//
+// The rest-of-line group exists because the token stops at `}`, so `${VAR}` and
+// `{{ var }}` reach credentialAssignment already truncated. Deciding whether a
+// placeholder is CLOSED — the difference between the reference a shareable
+// prompt is meant to carry and a secret that merely starts with `$` — needs the
+// characters the token dropped.
+const credentialValue = `(` + quoteRun + `)([^\s"'` + "`" + `,}\]:=]*)([:=]?)([^\r\n]*)`
 
 // notASecretValue are the tokens that occupy a credential field without being
 // a credential: JSON and YAML empties, and the template references that a
@@ -159,23 +166,70 @@ var notASecretValue = map[string]bool{
 	"true": true, "false": true, "undefined": true,
 }
 
+// placeholderForms are the complete template references a shareable prompt is
+// meant to carry, as opening/closing pairs. Only CLOSED syntax counts: `$`, `<`
+// and `{` open a placeholder, but they equally open a real secret, so releasing
+// on the opener alone published `password: $ecret123`.
+var placeholderForms = [][2]string{
+	{"${", "}"},
+	{"{{", "}}"},
+	{"<", ">"},
+}
+
+// placeholderTrailing are the characters allowed to follow a closed placeholder
+// and still leave it the WHOLE value: the closing quote run and the structural
+// punctuation of whatever document the assignment sits in. Anything else means
+// the placeholder is merely a prefix — `${A}realsecret` — and the value is not
+// a template reference at all.
+const placeholderTrailing = " \t\\\"'`,;}])" + "\r\n"
+
+// isCompletePlaceholder reports whether value is exactly one closed template
+// reference, ignoring the punctuation that closes the surrounding document.
+func isCompletePlaceholder(value string) bool {
+	for _, form := range placeholderForms {
+		if !strings.HasPrefix(value, form[0]) {
+			continue
+		}
+		rest := value[len(form[0]):]
+		end := strings.Index(rest, form[1])
+		if end < 0 {
+			continue
+		}
+		tail := rest[end+len(form[1]):]
+		if strings.Trim(tail, placeholderTrailing) == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// isQuoted reports whether the captured quote run actually contains a quote.
+// The run may hold backslashes alone — escaped JSON arrives as `\"` and a lone
+// `\` carries no quoting meaning.
+func isQuoted(quoteRun string) bool {
+	return strings.ContainsAny(quoteRun, "\"'`")
+}
+
 // credentialAssignment decides whether a regex match is a real assignment.
-// groups are the gap captured by credentialSeparator followed by the three
-// from credentialValue.
+// groups are the gap captured by credentialSeparator followed by the four from
+// credentialValue.
 func credentialAssignment(groups []string) bool {
-	gapAfter, quote, token, follow := groups[0], groups[1], groups[2], groups[3]
+	gapAfter, quote, token, follow, rest := groups[0], groups[1], groups[2], groups[3], groups[4]
 
 	// No value: `{"password": ""}`, `password:` at the end of a line, or a key
 	// whose next line closes the object.
 	if token == "" {
 		return false
 	}
-	if notASecretValue[strings.ToLower(token)] {
+	// `null` and friends are the ABSENCE of a value only when they are bare
+	// structured scalars. Quoted, they are ordinary strings that happen to spell
+	// a keyword, and releasing them let any secret publish under that name.
+	if !isQuoted(quote) && notASecretValue[strings.ToLower(token)] {
 		return false
 	}
-	// `${DB_PASSWORD}`, `<your-token-here>`, `{{ secret }}`: a placeholder is
-	// the shape a publishable prompt is meant to use.
-	if strings.ContainsAny(token[:1], `$<{`) {
+	// `${DB_PASSWORD}`, `<your-token-here>`, `{{ secret }}`. The token stops at
+	// `}`, so the closing half lives in rest and the two are rejoined here.
+	if isCompletePlaceholder(token + follow + rest) {
 		return false
 	}
 	// A bare token that both sits on the next line and carries its own

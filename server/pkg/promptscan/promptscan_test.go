@@ -233,6 +233,94 @@ func TestScanDoesNotBlockCredentialProse(t *testing.T) {
 	}
 }
 
+// `$`, `<` and `{` open a placeholder, but they also open plenty of real
+// secrets. Releasing on the first character alone means `password: $ecret123`
+// publishes; only syntax that is actually CLOSED is a template reference.
+func TestScanBlocksIncompletePlaceholders(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+		secret  string
+	}{
+		{"dollar prefix", "password: $ecret123-not-real", "$ecret123-not-real"},
+		{"angle prefix", "token: <s3cr3t-value-not-real", "<s3cr3t-value-not-real"},
+		{"brace prefix", "api_key: {s3cr3t-value-not-real", "{s3cr3t-value-not-real"},
+		{"unclosed dollar brace", `client_secret: "${s3cr3t-value-not-real"`, "s3cr3t-value-not-real"},
+		{"placeholder with trailing secret", "password: ${A}s3cr3t-value-not-real", "s3cr3t-value-not-real"},
+		// A closed placeholder in ONE field must not release the real value in
+		// the next: the rest-of-line the placeholder test reads spans both.
+		{"placeholder beside a real secret", `{"password": "<redacted>", "token": "s3cr3t-value-not-real"}`, "s3cr3t-value-not-real"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := Scan(tc.content)
+			if res.OK() {
+				t.Fatalf("%s must be detected, content %q passed the gate", tc.name, tc.content)
+			}
+			blob, err := json.Marshal(res)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if strings.Contains(string(blob), tc.secret) {
+				t.Fatalf("serialised result leaked the value: %s", blob)
+			}
+		})
+	}
+}
+
+// `null` unquoted is the absence of a value; `"null"` quoted is a five-character
+// string that happens to spell it. Only the first is a schema, and treating both
+// alike lets any secret publish by being named after a keyword.
+func TestScanBlocksQuotedNotASecretKeywords(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{"json quoted null", `{"password":"null"}`},
+		{"json quoted undefined", `{"token":"undefined"}`},
+		{"yaml quoted false", `password: "false"`},
+		{"yaml single quoted none", `client_secret: 'none'`},
+		{"escaped json quoted nil", `{\"api_key\":\"nil\"}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := Scan(tc.content)
+			if res.OK() {
+				t.Fatalf("%s must be detected, content %q passed the gate", tc.name, tc.content)
+			}
+			for _, f := range res.Findings {
+				if f.Mask != Mask {
+					t.Fatalf("finding carried something other than the fixed mask: %+v", f)
+				}
+			}
+		})
+	}
+}
+
+// The counterweight to both tests above: the shapes a publishable prompt is
+// meant to carry must still publish, or the gate becomes something publishers
+// route around rather than through.
+func TestScanReleasesCompletePlaceholdersAndUnquotedKeywords(t *testing.T) {
+	cases := []string{
+		"password: ${DB_PASSWORD}",
+		`{"password": "${DB_PASSWORD}"}`,
+		"api_key: {{ secret }}",
+		"token: <your-token-here>",
+		`{"client_secret": "<replace-me>"}`,
+		`{"password": null}`,
+		"token: undefined",
+		"password: false",
+		"api_key: ~",
+	}
+	for _, content := range cases {
+		if res := Scan(content); !res.OK() {
+			t.Errorf("content %q must not block, got %+v", content, res.Findings)
+		}
+	}
+}
+
 // A short match must not be echoed either — the fixed mask makes match length
 // irrelevant, which is exactly the property being pinned here.
 func TestShortMatchIsNotEchoed(t *testing.T) {
