@@ -256,6 +256,10 @@ func (h *Handler) PreviewPlugin(w http.ResponseWriter, r *http.Request) {
 type installPluginRequest struct {
 	VersionID     string   `json:"version_id"`
 	GrantedScopes []string `json:"granted_scopes"`
+	// Optional. What the administrator filled in on the consent screen, applied
+	// in the same transaction as the install so a plugin whose required
+	// credential was typed there is never installed without it.
+	Config map[string]any `json:"config,omitempty"`
 }
 
 // InstallPlugin — POST /api/workspaces/{id}/plugins
@@ -277,7 +281,7 @@ func (h *Handler) InstallPlugin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	installation, err := h.PluginService.InstallPlugin(r.Context(), workspaceID, member.UserID, req.VersionID, req.GrantedScopes)
+	installation, err := h.PluginService.InstallPlugin(r.Context(), workspaceID, member.UserID, req.VersionID, req.GrantedScopes, req.Config)
 	if err != nil {
 		writePluginError(w, err, "failed to install the Plugin")
 		return
@@ -344,6 +348,30 @@ func (h *Handler) setPluginEnabled(w http.ResponseWriter, r *http.Request, enabl
 		return
 	}
 	writeJSON(w, http.StatusOK, payload)
+}
+
+// ClearPluginSecret — DELETE /api/workspaces/{id}/plugins/{installationId}/secrets/{key}
+//
+// Ungated: see the cleanup note above requirePluginsV1. Taking one stored
+// credential out of the database is the other thing an operator must be able to
+// do after turning the feature off — otherwise disabling plugins after an
+// incident leaves the leaked token encrypted-at-rest and unreachable, with
+// uninstalling the whole plugin as the only lever. It only ever removes.
+func (h *Handler) ClearPluginSecret(w http.ResponseWriter, r *http.Request) {
+	installation, ok := h.pluginInstallationForCleanup(w, r)
+	if !ok {
+		return
+	}
+	key := chi.URLParam(r, "key")
+	if key == "" {
+		writeError(w, http.StatusBadRequest, "secret key is required")
+		return
+	}
+	if err := h.PluginService.ClearSecret(r.Context(), installation, key); err != nil {
+		writePluginError(w, err, "failed to clear the Plugin secret")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // UninstallPlugin — DELETE /api/workspaces/{id}/plugins/{installationId}
