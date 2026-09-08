@@ -314,7 +314,8 @@
     "plugins_description": "다른 워크스페이스가 등록한 플러그인입니다. 설치할 때는 직접 게시할 때와 같은 동의 화면이 표시됩니다. 승인한 범위가 곧 전체 권한이며, 승인한 버전이 그대로 실행됩니다.",
     "plugins_empty_title": "등록된 플러그인이 아직 없습니다",
     "plugins_empty_description": "워크스페이스는 플러그인을 게시한 뒤 '설정 → 플러그인'에서 등록할 수 있습니다.",
-    "all_versions_withdrawn": "모든 버전이 철회되었습니다"
+    "all_versions_withdrawn": "모든 버전이 철회되었습니다",
+    "plugin_config_summary": "{{count}}개의 설정 항목이 필요합니다: {{keys}}"
   },
   "mcp": {
     "title": "MCP",
@@ -401,7 +402,14 @@
       "confirm_upgrade": "허용하고 업그레이드",
       "installed": "Plugin을 설치했습니다",
       "upgrade_from": " · v{{version}}에서 업그레이드",
-      "new_scope": "신규"
+      "new_scope": "신규",
+      "config_title": "이 Plugin에 필요한 설정",
+      "config_description": "여기서 입력한 값은 설치와 함께 저장됩니다. 시크릿은 쓰기 전용이며, 저장한 뒤에는 어떤 화면이나 API에서도 다시 읽을 수 없습니다.",
+      "config_required": "설치하기 전에 필수 항목을 입력하세요: {{fields}}",
+      "sensitive_write": "워크스페이스 데이터를 변경합니다",
+      "sensitive_network": "인스턴스 외부로 데이터를 전송합니다",
+      "upgrade_data_title": "업그레이드가 데이터에 미치는 영향",
+      "upgrade_data_description": "설정값과 저장된 데이터는 유지됩니다. 새 버전이 더 이상 선언하지 않는 항목은 해당 시크릿과 함께 삭제됩니다. 업그레이드가 실패하면 v{{version}}과 기존 권한으로 자동 복구됩니다."
     },
     "schedule": {
       "title": "자동 스케줄",
@@ -420,7 +428,8 @@
       "title": "설정",
       "save": "저장",
       "saved": "설정을 저장했습니다",
-      "secret_set": "저장됨 — 새 값을 입력하면 교체됩니다"
+      "secret_set": "저장됨 — 새 값을 입력하면 교체됩니다",
+      "secret_write_only": "쓰기 전용 — 저장 후에는 다시 읽을 수 없습니다."
     },
     "scopes": {
       "issues_read": "태스크 읽기",
@@ -473,6 +482,29 @@
       "withdrawn": "이 버전을 디렉터리에서 철회했습니다",
       "restored": "이 버전을 디렉터리에 복원했습니다",
       "withdrawn_badge": "철회됨"
+    },
+    "uninstall_dialog": {
+      "title": "{{name}}을(를) 제거할까요?",
+      "description": "이 설치와 저장된 모든 내용이 한 번에 삭제되며 되돌릴 수 없습니다.",
+      "deletes_title": "삭제되는 항목",
+      "deletes_storage": "이 Plugin이 저장한 모든 데이터(멤버별 및 워크스페이스 전체)",
+      "deletes_config": "설정 전체",
+      "deletes_secrets": "저장된 모든 시크릿",
+      "deletes_secrets_named": "저장된 시크릿: {{keys}}",
+      "deletes_skills": "이 워크스페이스에 제공한 Skill",
+      "deletes_hooks": "예약 일정과 Hook 호출 기록",
+      "acknowledge": "위의 모든 항목이 삭제되며 복구할 수 없음을 이해합니다.",
+      "cancel": "취소",
+      "confirm": "제거"
+    },
+    "secret_cleanup": {
+      "title": "저장된 시크릿",
+      "description": "Plugin 관리가 꺼져 있어 설정을 편집할 수 없습니다. 유출 등의 상황에 대비해 저장된 시크릿을 개별적으로 삭제하는 것은 여기서 가능합니다.",
+      "clear": "이 시크릿 삭제",
+      "confirm_hint": "영구적으로 삭제됩니다.",
+      "confirm": "삭제 확인",
+      "cancel": "취소",
+      "cleared": "시크릿 {{key}}을(를) 삭제했습니다"
     }
   },
   "properties": {

@@ -133,6 +133,13 @@ export interface PluginPreviewRequest {
 export interface PluginInstallRequest {
   version_id: string;
   granted_scopes: string[];
+  /**
+   * What the administrator filled in on the consent screen. Applied inside the
+   * install transaction, so a plugin whose required credential was typed there
+   * is never mounted without it. Secret values travel here once and are never
+   * returned by any endpoint afterwards.
+   */
+  config?: Record<string, unknown>;
 }
 
 /** One immutable published version of a plugin package. */
@@ -151,6 +158,15 @@ export interface PluginPackageVersion {
    * running it, and the publisher can put it back with the same control.
    */
   withdrawn_at?: string;
+  /**
+   * What this version's manifest declares, so a directory row can be read
+   * without opening the two-step consent flow first. `config_keys` carries
+   * field NAMES only — nothing is stored for an uninstalled plugin, and a
+   * secret's value is never returned by any endpoint.
+   */
+  description?: string;
+  scopes?: string[];
+  config_keys?: string[];
 }
 
 /**

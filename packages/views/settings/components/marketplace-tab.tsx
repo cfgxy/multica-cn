@@ -10,6 +10,7 @@ import { Input } from "@multica/ui/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@multica/ui/components/ui/tabs";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { useCurrentMember } from "@multica/core/permissions";
+import { pluginInstallationsOptions } from "@multica/core/plugins";
 import { marketplaceItemsOptions } from "@multica/core/workspace/queries";
 import { useInstallMarketplaceItem } from "@multica/core/workspace/mutations";
 import type { MarketplaceItem } from "@multica/core/types";
@@ -43,8 +44,18 @@ export function MarketplaceTab() {
   // listed at runtime. They cannot be merged into one query, so the filter
   // picks which sections render and the catalog query stands down when the
   // reader asked for plugins only.
-  const showCatalog = kind !== "plugin";
-  const showPlugins = kind === "" || kind === "plugin";
+  //
+  // The plugin shelf is behind plugins_v1, and the flag lives on the server.
+  // The installed-plugins response is what reports it — that endpoint answers
+  // with the flag off by design, which is exactly what makes it usable as the
+  // signal here. Until it answers, the shelf stays out rather than rendering a
+  // filter that would disappear a moment later.
+  const installationsQuery = useQuery(pluginInstallationsOptions(wsId));
+  const pluginsEnabled = installationsQuery.data?.plugins_enabled === true;
+  // A reader already filtered to plugins when the flag went off falls back to
+  // the catalog rather than to an empty page.
+  const showCatalog = kind !== "plugin" || !pluginsEnabled;
+  const showPlugins = pluginsEnabled && (kind === "" || kind === "plugin");
   const itemsQuery = useQuery({
     ...marketplaceItemsOptions(wsId, { kind, q: search }),
     enabled: showCatalog && wsId.length > 0,
@@ -102,7 +113,9 @@ export function MarketplaceTab() {
             <TabsTrigger value="">{t(($) => $.marketplace.filter_all)}</TabsTrigger>
             <TabsTrigger value="skill">{t(($) => $.marketplace.filter_skills)}</TabsTrigger>
             <TabsTrigger value="mcp">{t(($) => $.marketplace.filter_mcp)}</TabsTrigger>
-            <TabsTrigger value="plugin">{t(($) => $.marketplace.filter_plugins)}</TabsTrigger>
+            {pluginsEnabled ? (
+              <TabsTrigger value="plugin">{t(($) => $.marketplace.filter_plugins)}</TabsTrigger>
+            ) : null}
           </TabsList>
         </Tabs>
         <div className="relative flex-1">
