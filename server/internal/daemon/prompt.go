@@ -44,6 +44,13 @@ func backendResumeContinuityNotice(task Task) string {
 	if task.PriorSessionResumeUnavailable {
 		return ""
 	}
+	// A run carrying a context brief (RUYI-107) has already been told, in that
+	// brief, that it is on a fresh session and why. Adding the backend's own
+	// notice on top would state the same fact twice in two different voices,
+	// which is exactly the duplication this function exists to prevent.
+	if strings.TrimSpace(task.PriorContextBrief) != "" {
+		return ""
+	}
 	return sessionContinuityNoticeFor(task)
 }
 
@@ -65,7 +72,16 @@ func perTurnContextBlocks(task Task, opts promptOpts) string {
 	b.WriteString(buildActiveSiblingRunsBlock(task.IssueID, task.ActiveSiblingRuns))
 	b.WriteString(buildSharedLocalDirectoryBlock(opts.sharedLocalDirectory))
 	b.WriteString(buildWorktreeReplayConflictBlock(opts.worktreeReplayConflicts))
-	if task.PriorSessionResumeUnavailable {
+	// The brief and the continuity notice are mutually exclusive, and the brief
+	// wins when the server sent both. They make contradictory claims — "here is
+	// what carried over" versus "nothing carried over" — and an agent told both
+	// has no way to decide which to believe. The server already picks one; this
+	// branch is the daemon-side guarantee, so a server bug cannot produce a
+	// self-contradicting prompt.
+	if strings.TrimSpace(task.PriorContextBrief) != "" {
+		b.WriteString(strings.TrimRight(task.PriorContextBrief, "\n"))
+		b.WriteString("\n\n")
+	} else if task.PriorSessionResumeUnavailable {
 		b.WriteString(sessionContinuityNoticeFor(task))
 	}
 	b.WriteString(execenv.BuildTaskInitiatorBlock(task.InitiatorType, task.InitiatorName, task.InitiatorEmail))

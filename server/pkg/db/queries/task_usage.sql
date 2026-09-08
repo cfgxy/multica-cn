@@ -6,8 +6,13 @@
 -- cost_usd_ticks is the provider's own price for this usage (1e-10 USD), NULL
 -- when it reports none. It is overwritten like the token counters so a
 -- corrected report replaces the previous figure rather than accumulating.
-INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, sqlc.narg('cost_usd_ticks'), now())
+-- context_tokens is NOT a billing counter (RUYI-107): it is the input-side size
+-- of the LAST model request this task made, i.e. how big the conversation
+-- currently is. It is COALESCEd rather than overwritten so a later report that
+-- carries no reading (a provider that stopped emitting one, or a different
+-- message shape) does not erase a real measurement this same task already made.
+INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, context_tokens, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, sqlc.narg('cost_usd_ticks'), sqlc.narg('context_tokens'), now())
 ON CONFLICT (task_id, provider, model)
 DO UPDATE SET
     input_tokens = EXCLUDED.input_tokens,
@@ -15,12 +20,33 @@ DO UPDATE SET
     cache_read_tokens = EXCLUDED.cache_read_tokens,
     cache_write_tokens = EXCLUDED.cache_write_tokens,
     cost_usd_ticks = EXCLUDED.cost_usd_ticks,
+    context_tokens = COALESCE(EXCLUDED.context_tokens, task_usage.context_tokens),
     updated_at = now();
 
 -- name: GetTaskUsage :many
 SELECT * FROM task_usage
 WHERE task_id = $1
 ORDER BY model;
+
+-- name: GetTaskContextTokens :one
+-- Largest context-size reading recorded for one task (RUYI-107), used by the
+-- claim-time session gate to decide whether resuming that task's session would
+-- start the next run near the context ceiling.
+--
+-- MAX rather than "the newest row": a task can report usage under several
+-- (provider, model) keys — a sub-agent or a model switch mid-run — and the
+-- conversation the next run would resume is the biggest of them, not whichever
+-- row happens to have been written last.
+--
+-- Rows with no reading are skipped rather than counted as zero, so a provider
+-- that never reports one yields pgx.ErrNoRows. The gate reads that as "unknown"
+-- and resumes (decision D4 A); treating it as 0 would silently mean "empty
+-- conversation" and let a huge session through under a different name.
+SELECT context_tokens
+FROM task_usage
+WHERE task_id = $1 AND context_tokens IS NOT NULL
+ORDER BY context_tokens DESC
+LIMIT 1;
 
 -- name: ListIssueTaskUsage :many
 -- Per-(task, provider, model) usage rows for every task on one issue — the

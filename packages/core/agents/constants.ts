@@ -11,3 +11,19 @@ export const AGENT_CONVERSATION_STARTER_MAX_LENGTH = 4000;
 // duplication, and settings editing cannot silently drift.
 export const AGENT_MAX_CONCURRENT_TASKS_MIN = 1;
 export const AGENT_MAX_CONCURRENT_TASKS_MAX = 50;
+
+// Session context gate (RUYI-107). When a resumable session has grown past
+// `session_compact_pct` of `session_max_context_tokens`, the platform starts a
+// fresh session and re-injects a bounded prior-context brief instead.
+//
+// Zero is a legal ceiling with its own meaning — it turns the gate off — so it
+// sits OUTSIDE the [MIN, MAX] range rather than below it, and a UI that clamps
+// input into the range would make the off switch unreachable.
+export const AGENT_SESSION_MAX_CONTEXT_TOKENS_DISABLED = 0;
+export const AGENT_SESSION_MAX_CONTEXT_TOKENS_MIN = 10_000;
+export const AGENT_SESSION_MAX_CONTEXT_TOKENS_MAX = 10_000_000;
+export const AGENT_SESSION_MAX_CONTEXT_TOKENS_DEFAULT = 400_000;
+
+export const AGENT_SESSION_COMPACT_PCT_MIN = 10;
+export const AGENT_SESSION_COMPACT_PCT_MAX = 100;
+export const AGENT_SESSION_COMPACT_PCT_DEFAULT = 80;

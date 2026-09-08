@@ -103,7 +103,13 @@ type AgentResponse struct {
 	InvocationTargets  []AgentInvocationTargetDTO `json:"invocation_targets"`
 	Status             string                     `json:"status"`
 	MaxConcurrentTasks int32                      `json:"max_concurrent_tasks"`
-	Model              string                     `json:"model"`
+	// SessionMaxContextTokens / SessionCompactPct configure the session context
+	// gate (RUYI-107): once a resumable session reaches SessionCompactPct of
+	// SessionMaxContextTokens, the next run starts fresh with a bounded brief
+	// instead of resuming. SessionMaxContextTokens = 0 disables the gate.
+	SessionMaxContextTokens int64  `json:"session_max_context_tokens"`
+	SessionCompactPct       int32  `json:"session_compact_pct"`
+	Model                   string `json:"model"`
 	// ThinkingLevel is the runtime-native reasoning/effort token persisted
 	// for this agent (empty = use runtime default). The picker is per-runtime
 	// per-model; the API never normalizes across providers. See MUL-2339.
@@ -221,6 +227,8 @@ func (h *Handler) agentToResponse(a db.Agent) AgentResponse {
 		InvocationTargets:        []AgentInvocationTargetDTO{},
 		Status:                   a.Status,
 		MaxConcurrentTasks:       a.MaxConcurrentTasks,
+		SessionMaxContextTokens:  a.SessionMaxContextTokens,
+		SessionCompactPct:        a.SessionCompactPct,
 		Model:                    a.Model.String,
 		ThinkingLevel:            a.ThinkingLevel.String,
 		ServiceTier:              a.ServiceTier.String,
@@ -408,11 +416,11 @@ type AgentTaskResponse struct {
 	Agent                *TaskAgentData         `json:"agent,omitempty"`
 	ConnectedApps        []ConnectedAppData     `json:"connected_apps,omitempty"` // daemon-claim only: per-run app capabilities mounted through runtime MCP overlays
 	Repos                []RepoData             `json:"repos,omitempty"`
-	ProjectID            string                 `json:"project_id,omitempty"`          // issue's project, when present
-	ProjectTitle         string                 `json:"project_title,omitempty"`       // for surfacing in agent context
-	ProjectDescription   string                 `json:"project_description,omitempty"` // durable project-level context injected into the brief
+	ProjectID            string                 `json:"project_id,omitempty"`           // issue's project, when present
+	ProjectTitle         string                 `json:"project_title,omitempty"`        // for surfacing in agent context
+	ProjectDescription   string                 `json:"project_description,omitempty"`  // durable project-level context injected into the brief
 	ProjectInstructions  string                 `json:"project_instructions,omitempty"` // per-project agent instructions injected after Workspace Context (RUYI-46). Mirror field: internal/daemon/types.go, same JSON name
-	ProjectResources     []ProjectResourceData  `json:"project_resources,omitempty"`   // resources attached to the project
+	ProjectResources     []ProjectResourceData  `json:"project_resources,omitempty"`    // resources attached to the project
 	CreatedAt            string                 `json:"created_at"`
 	PriorSessionID       string                 `json:"prior_session_id,omitempty"` // session ID from a previous task on same issue
 	PriorWorkDir         string                 `json:"prior_work_dir,omitempty"`   // work_dir from a previous task on same issue
@@ -421,8 +429,18 @@ type AgentTaskResponse struct {
 	// any) is then an older fallback. The daemon surfaces the continuity gap in
 	// the brief even when that older session resumes cleanly. omitempty keeps it
 	// off the wire for the common (no-gap) case and for old daemons.
-	PriorSessionResumeUnavailable bool   `json:"prior_session_resume_unavailable,omitempty"`
-	WorkDir                       string `json:"work_dir,omitempty"` // local working directory pinned for this task; populated once the daemon reports it
+	PriorSessionResumeUnavailable bool `json:"prior_session_resume_unavailable,omitempty"`
+	// PriorContextBrief is the mechanically assembled hand-off that replaces a
+	// session the context gate declined to resume (RUYI-107): the previous
+	// run's result, the issue's unresolved threads, and its most recent
+	// activity. Set only together with an emptied PriorSessionID, and never
+	// alongside PriorSessionResumeUnavailable — the two say incompatible things
+	// (context was carried over vs. it was lost), so the server picks one.
+	// A daemon that predates this ignores the field, which degrades to a plain
+	// fresh session — worse than the brief, still better than the overflow the
+	// gate is preventing. Mirror field: internal/daemon/types.go, same JSON name
+	PriorContextBrief string `json:"prior_context_brief,omitempty"`
+	WorkDir           string `json:"work_dir,omitempty"` // local working directory pinned for this task; populated once the daemon reports it
 	// RelativeWorkDir is a privacy-safe display form of WorkDir intended for
 	// the UI. For standard tasks it strips the daemon's workspaces root while
 	// preserving either the legacy or readable workspace/task segments; for local_directory
@@ -1157,9 +1175,13 @@ type CreateAgentRequest struct {
 	PermissionMode     *string                    `json:"permission_mode"`
 	InvocationTargets  []AgentInvocationTargetDTO `json:"invocation_targets"`
 	MaxConcurrentTasks int32                      `json:"max_concurrent_tasks"`
-	Model              string                     `json:"model"`
-	ThinkingLevel      string                     `json:"thinking_level"`
-	ServiceTier        string                     `json:"service_tier"`
+	// Session context gate (RUYI-107). Omitted means "use the default", not
+	// zero — see defaultAndValidateAgentSessionGate.
+	SessionMaxContextTokens int64  `json:"session_max_context_tokens"`
+	SessionCompactPct       int32  `json:"session_compact_pct"`
+	Model                   string `json:"model"`
+	ThinkingLevel           string `json:"thinking_level"`
+	ServiceTier             string `json:"service_tier"`
 	// ComposioToolkitAllowlist seeds the per-task overlay gate (MUL-3869). On
 	// create only the calling user can be the owner, so we accept the field
 	// unconditionally here; the cross-owner permission gate lives on PUT.
@@ -1259,6 +1281,10 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		req.Visibility = "private"
 	}
 	if err := defaultAndValidateAgentMaxConcurrentTasks(rawFields, &req.MaxConcurrentTasks); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := defaultAndValidateAgentSessionGate(rawFields, &req.SessionMaxContextTokens, &req.SessionCompactPct); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -1414,6 +1440,8 @@ func (h *Handler) CreateAgent(w http.ResponseWriter, r *http.Request) {
 		Visibility:               perm.legacyVisibility(),
 		PermissionMode:           perm.mode,
 		MaxConcurrentTasks:       req.MaxConcurrentTasks,
+		SessionMaxContextTokens:  pgtype.Int8{Int64: req.SessionMaxContextTokens, Valid: true},
+		SessionCompactPct:        pgtype.Int4{Int32: req.SessionCompactPct, Valid: true},
 		OwnerID:                  parseUUID(ownerID),
 		CustomEnv:                ce,
 		CustomArgs:               ca,
@@ -1518,7 +1546,11 @@ type UpdateAgentRequest struct {
 	InvocationTargets  *[]AgentInvocationTargetDTO `json:"invocation_targets"`
 	Status             *string                     `json:"status"`
 	MaxConcurrentTasks *int32                      `json:"max_concurrent_tasks"`
-	Model              *string                     `json:"model"`
+	// Pointer, so an omitted field preserves the stored value. A non-pointer
+	// would make every partial update reset the gate to zero, i.e. off.
+	SessionMaxContextTokens *int64  `json:"session_max_context_tokens"`
+	SessionCompactPct       *int32  `json:"session_compact_pct"`
+	Model                   *string `json:"model"`
 	// ThinkingLevel is treated as a tri-state per-MUL-2339:
 	//   - field omitted → no change (leave existing value alone)
 	//   - field present with "" → explicit clear (use runtime default)
@@ -1883,6 +1915,20 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		params.MaxConcurrentTasks = pgtype.Int4{Int32: *req.MaxConcurrentTasks, Valid: true}
+	}
+	if req.SessionMaxContextTokens != nil {
+		if err := validateAgentSessionMaxContextTokens(*req.SessionMaxContextTokens); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		params.SessionMaxContextTokens = pgtype.Int8{Int64: *req.SessionMaxContextTokens, Valid: true}
+	}
+	if req.SessionCompactPct != nil {
+		if err := validateAgentSessionCompactPct(*req.SessionCompactPct); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		params.SessionCompactPct = pgtype.Int4{Int32: *req.SessionCompactPct, Valid: true}
 	}
 	if req.Model != nil {
 		params.Model = pgtype.Text{String: *req.Model, Valid: true}

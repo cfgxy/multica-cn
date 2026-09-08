@@ -123,6 +123,7 @@ type Task struct {
 	PriorSessionID                string                 `json:"prior_session_id,omitempty"`                 // Claude session ID from a previous task on this issue
 	PriorWorkDir                  string                 `json:"prior_work_dir,omitempty"`                   // work_dir from a previous task on this issue
 	PriorSessionResumeUnavailable bool                   `json:"prior_session_resume_unavailable,omitempty"` // MUL-5305: server signals a more recent Codex session was withheld (rollout missing) and PriorSessionID (if any) is an older fallback; the run must disclose the continuity gap even if that older session resumes cleanly. Absent/false on old servers.
+	PriorContextBrief             string                 `json:"prior_context_brief,omitempty"`              // RUYI-107: mechanically assembled hand-off (previous result + unresolved threads + recent activity) replacing a session the server's context gate declined to resume. Mutually exclusive with PriorSessionResumeUnavailable — one says context was carried over, the other says it was lost. Empty on old servers.
 	TriggerCommentID              string                 `json:"trigger_comment_id,omitempty"`               // comment that triggered this task
 	CoalescedCommentIDs           []string               `json:"coalesced_comment_ids,omitempty"`            // MUL-4195: earlier comments folded into this run while it was still queued; the agent must address these in addition to the (newest) triggering comment. Empty for old servers / non-merged runs
 	CoalescedComments             []CoalescedCommentData `json:"coalesced_comments,omitempty"`               // MUL-4195: full detail of the folded comments (thread_id/author/created_at/content) so the prompt can address each without assuming a shared thread. Empty for old servers / non-merged runs
@@ -295,6 +296,12 @@ type TaskUsageEntry struct {
 	// server then leaves the column NULL and the client estimates from the
 	// pricing table instead. See agent.TokenUsage.CostUSDTicks.
 	CostUSDTicks int64 `json:"cost_usd_ticks,omitempty"`
+	// ContextTokens is how large the conversation was at the end of this run,
+	// not how many tokens it spent — see agent.TokenUsage.ContextTokens.
+	// Omitted when the backend reports nothing usable, which an older server
+	// also produces naturally: it ignores the unknown field and stores NULL,
+	// and the session gate reads NULL as "unknown" and keeps resuming.
+	ContextTokens int64 `json:"context_tokens,omitempty"`
 }
 
 // TaskResult is the outcome of executing a task.

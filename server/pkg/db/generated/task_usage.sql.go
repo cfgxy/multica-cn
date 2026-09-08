@@ -59,8 +59,36 @@ func (q *Queries) GetIssueUsageSummary(ctx context.Context, issueID pgtype.UUID)
 	return i, err
 }
 
+const getTaskContextTokens = `-- name: GetTaskContextTokens :one
+SELECT context_tokens
+FROM task_usage
+WHERE task_id = $1 AND context_tokens IS NOT NULL
+ORDER BY context_tokens DESC
+LIMIT 1
+`
+
+// Largest context-size reading recorded for one task (RUYI-107), used by the
+// claim-time session gate to decide whether resuming that task's session would
+// start the next run near the context ceiling.
+//
+// MAX rather than "the newest row": a task can report usage under several
+// (provider, model) keys — a sub-agent or a model switch mid-run — and the
+// conversation the next run would resume is the biggest of them, not whichever
+// row happens to have been written last.
+//
+// Rows with no reading are skipped rather than counted as zero, so a provider
+// that never reports one yields pgx.ErrNoRows. The gate reads that as "unknown"
+// and resumes (decision D4 A); treating it as 0 would silently mean "empty
+// conversation" and let a huge session through under a different name.
+func (q *Queries) GetTaskContextTokens(ctx context.Context, taskID pgtype.UUID) (pgtype.Int8, error) {
+	row := q.db.QueryRow(ctx, getTaskContextTokens, taskID)
+	var context_tokens pgtype.Int8
+	err := row.Scan(&context_tokens)
+	return context_tokens, err
+}
+
 const getTaskUsage = `-- name: GetTaskUsage :many
-SELECT id, task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, created_at, updated_at, cost_usd_ticks FROM task_usage
+SELECT id, task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, created_at, updated_at, cost_usd_ticks, context_tokens FROM task_usage
 WHERE task_id = $1
 ORDER BY model
 `
@@ -86,6 +114,7 @@ func (q *Queries) GetTaskUsage(ctx context.Context, taskID pgtype.UUID) ([]TaskU
 			&i.CreatedAt,
 			&i.UpdatedAt,
 			&i.CostUsdTicks,
+			&i.ContextTokens,
 		); err != nil {
 			return nil, err
 		}
@@ -667,8 +696,8 @@ func (q *Queries) ListIssueTaskUsage(ctx context.Context, issueID pgtype.UUID) (
 }
 
 const upsertTaskUsage = `-- name: UpsertTaskUsage :exec
-INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
+INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, context_tokens, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
 ON CONFLICT (task_id, provider, model)
 DO UPDATE SET
     input_tokens = EXCLUDED.input_tokens,
@@ -676,6 +705,7 @@ DO UPDATE SET
     cache_read_tokens = EXCLUDED.cache_read_tokens,
     cache_write_tokens = EXCLUDED.cache_write_tokens,
     cost_usd_ticks = EXCLUDED.cost_usd_ticks,
+    context_tokens = COALESCE(EXCLUDED.context_tokens, task_usage.context_tokens),
     updated_at = now()
 `
 
@@ -688,6 +718,7 @@ type UpsertTaskUsageParams struct {
 	CacheReadTokens  int64       `json:"cache_read_tokens"`
 	CacheWriteTokens int64       `json:"cache_write_tokens"`
 	CostUsdTicks     pgtype.Int8 `json:"cost_usd_ticks"`
+	ContextTokens    pgtype.Int8 `json:"context_tokens"`
 }
 
 // Bumps `updated_at` on INSERT and on conflict so the hourly-rollup worker
@@ -697,6 +728,11 @@ type UpsertTaskUsageParams struct {
 // cost_usd_ticks is the provider's own price for this usage (1e-10 USD), NULL
 // when it reports none. It is overwritten like the token counters so a
 // corrected report replaces the previous figure rather than accumulating.
+// context_tokens is NOT a billing counter (RUYI-107): it is the input-side size
+// of the LAST model request this task made, i.e. how big the conversation
+// currently is. It is COALESCEd rather than overwritten so a later report that
+// carries no reading (a provider that stopped emitting one, or a different
+// message shape) does not erase a real measurement this same task already made.
 func (q *Queries) UpsertTaskUsage(ctx context.Context, arg UpsertTaskUsageParams) error {
 	_, err := q.db.Exec(ctx, upsertTaskUsage,
 		arg.TaskID,
@@ -707,6 +743,7 @@ func (q *Queries) UpsertTaskUsage(ctx context.Context, arg UpsertTaskUsageParams
 		arg.CacheReadTokens,
 		arg.CacheWriteTokens,
 		arg.CostUsdTicks,
+		arg.ContextTokens,
 	)
 	return err
 }

@@ -190,6 +190,17 @@ type TokenUsage struct {
 	// a turn — so the stored token counts cannot say which tier any single
 	// request hit. The provider's own figure already has that priced in.
 	CostUSDTicks int64
+	// ContextTokens is the input side of the LAST request this run made to
+	// this model: how large the conversation currently IS. Zero means the
+	// backend reports nothing usable.
+	//
+	// It is deliberately NOT one of the counters above and must never be
+	// accumulated. Every field above sums across the whole run, so a long run
+	// that resent a 100K-token history forty times reports 4M input tokens —
+	// correct for billing, and off by a factor of forty for "will the next
+	// resume fit in the context window". The session gate (RUYI-107) needs the
+	// latter, so it gets its own field with its own overwrite semantics.
+	ContextTokens int64
 }
 
 // CostUSDTicksPerUSD is the scale of the provider-reported cost unit: xAI
