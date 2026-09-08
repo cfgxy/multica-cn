@@ -109,6 +109,23 @@ export function ImageSequenceProvider({
   // Direction of the last move, so a load failure keeps skipping the way the
   // reader was already going.
   const directionRef = useRef<1 | -1>(1);
+  // Set when the frame on screen is NOT the one the reader asked for, because
+  // that one failed to load (RUYI-103). "skipped" — the viewer moved to a
+  // neighbour; "dead" — nothing loadable was left to move to. The silent
+  // version of the first case is what reads as "I clicked A and got B", so the
+  // state is rendered as a banner on the canvas, not just a toast.
+  const [notice, setNotice] = useState<"skipped" | "dead" | null>(null);
+  // One failure toast per user action. A single click can cascade through a
+  // run of dead frames; before RUYI-103 each one queued its own identical
+  // toast and the corner filled up.
+  const notifiedRef = useRef(false);
+
+  // Every deliberate move re-arms both: the reader is now looking at what they
+  // asked for, and the next failure is a new event worth one toast.
+  const resetFailureFeedback = useCallback(() => {
+    notifiedRef.current = false;
+    setNotice(null);
+  }, []);
 
   const api = useMemo<ImageSequenceApi>(
     () => ({
@@ -119,12 +136,13 @@ export function ImageSequenceProvider({
         directionRef.current = 1;
         brokenRef.current = new Set();
         setBroken(brokenRef.current);
+        resetFailureFeedback();
         setSession({ items: snapshot, index });
         setOpen(true);
         return true;
       },
     }),
-    [],
+    [resetFailureFeedback],
   );
 
   const step = useCallback(
@@ -143,15 +161,23 @@ export function ImageSequenceProvider({
       const next = step(session, session.index, delta, brokenRef.current);
       if (next < 0) return;
       directionRef.current = delta;
+      resetFailureFeedback();
       setSession({ ...session, index: next });
     },
-    [session, step],
+    [session, step, resetFailureFeedback],
   );
 
   // A frame that fails to decode is skipped rather than left on screen: the
   // attachment was deleted, or its signed URL outlived the session. Advance
   // the way the reader was heading, then the other way, and only give up (and
   // leave the broken frame visible) when nothing loadable is left.
+  //
+  // Two things the reader must be told, and exactly once each per action
+  // (RUYI-103): the frame now on screen is not what they clicked, and the
+  // image they clicked is gone. The banner carries the first — a toast alone
+  // scrolls away and never says WHICH frame is substituted. `notifiedRef`
+  // carries the second, so a cascade through five dead frames still costs one
+  // toast rather than five identical ones.
   const handleImageError = useCallback(() => {
     if (!session) return;
     const failed = session.items[session.index];
@@ -159,7 +185,10 @@ export function ImageSequenceProvider({
 
     brokenRef.current = new Set(brokenRef.current).add(failed.key);
     setBroken(brokenRef.current);
-    toast.error(t(($) => $.image.unavailable));
+    if (!notifiedRef.current) {
+      notifiedRef.current = true;
+      toast.error(t(($) => $.image.unavailable));
+    }
 
     const forward = directionRef.current;
     const next = step(session, session.index, forward, brokenRef.current);
@@ -167,7 +196,14 @@ export function ImageSequenceProvider({
       next >= 0
         ? next
         : step(session, session.index, forward === 1 ? -1 : 1, brokenRef.current);
-    if (target >= 0) setSession({ ...session, index: target });
+    if (target >= 0) {
+      setNotice("skipped");
+      setSession({ ...session, index: target });
+    } else {
+      // Nothing loadable left; the broken frame stays put so the reader is not
+      // stranded on a canvas that silently shows some other image.
+      setNotice("dead");
+    }
   }, [session, step, t]);
 
   const current = session ? session.items[session.index] : undefined;
@@ -182,6 +218,7 @@ export function ImageSequenceProvider({
         onClose={() => setOpen(false)}
         onExitComplete={() => setSession(null)}
         onImageError={handleImageError}
+        notice={notice ?? undefined}
         sequence={
           session.items.length > 1
             ? {

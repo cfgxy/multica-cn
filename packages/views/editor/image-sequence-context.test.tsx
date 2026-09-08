@@ -54,6 +54,10 @@ const STRINGS: Record<string, Record<string, string>> = {
     next: "Next image",
     sequence_position: "{{index}} / {{total}}",
     unavailable: "That image is no longer available — skipped it.",
+    skipped_notice:
+      "The image you clicked couldn't be loaded — showing the next available one.",
+    unavailable_notice:
+      "This image couldn't be loaded. It may have been deleted or you may no longer have access.",
   },
   canvas: {
     zoom_in: "Zoom in",
@@ -287,6 +291,127 @@ describe("ImageSequenceProvider", () => {
       fireEvent.click(prevButton());
     });
     expectCounter("1 / 3");
+  });
+
+  // RUYI-103 A3. Swapping the frame without saying so is exactly what reads as
+  // "I clicked image 2 and the viewer opened image 3".
+  it("says on the canvas that the frame shown is not the one clicked", () => {
+    render(
+      <ImageSequenceProvider items={sequenceOf(THREE)}>
+        <Opener openKey={THREE[1]!.id} />
+      </ImageSequenceProvider>,
+    );
+    act(() => {
+      fireEvent.click(screen.getByText("open"));
+    });
+    expect(screen.queryByRole("status")).toBeNull();
+
+    act(() => {
+      fireEvent.error(screen.getByRole("dialog").querySelector("img")!);
+    });
+
+    expectCounter("3 / 3");
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "showing the next available one",
+    );
+
+    // A deliberate move means the reader is looking at what they asked for
+    // again — the banner must not linger over an image that loaded fine.
+    act(() => {
+      fireEvent.click(prevButton());
+    });
+    expectCounter("1 / 3");
+    expect(screen.queryByRole("status")).toBeNull();
+  });
+
+  // RUYI-103 A3 / C2. When nothing loadable is left the viewer stays put
+  // rather than silently substituting some other image, and says why.
+  it("keeps the broken frame and explains when the whole sequence is dead", () => {
+    render(
+      <ImageSequenceProvider items={sequenceOf(THREE)}>
+        <Opener openKey={THREE[0]!.id} />
+      </ImageSequenceProvider>,
+    );
+    act(() => {
+      fireEvent.click(screen.getByText("open"));
+    });
+
+    const img = () => screen.getByRole("dialog").querySelector("img")!;
+    act(() => {
+      fireEvent.error(img());
+    });
+    act(() => {
+      fireEvent.error(img());
+    });
+    act(() => {
+      fireEvent.error(img());
+    });
+
+    expect(screen.getByRole("status")).toHaveTextContent("couldn't be loaded");
+    expect(prevButton()).toBeDisabled();
+    expect(nextButton()).toBeDisabled();
+  });
+
+  // RUYI-103 B1 / B2. One click can cascade through a run of dead frames;
+  // each one used to queue its own identical toast.
+  it("raises one failure toast per user action, not one per dead frame", () => {
+    render(
+      <ImageSequenceProvider items={sequenceOf(THREE)}>
+        <Opener openKey={THREE[0]!.id} />
+      </ImageSequenceProvider>,
+    );
+    act(() => {
+      fireEvent.click(screen.getByText("open"));
+    });
+
+    const img = () => screen.getByRole("dialog").querySelector("img")!;
+    act(() => {
+      fireEvent.error(img());
+    });
+    act(() => {
+      fireEvent.error(img());
+    });
+    act(() => {
+      fireEvent.error(img());
+    });
+
+    expect(toastErrorMock).toHaveBeenCalledTimes(1);
+  });
+
+  // ...but the next deliberate action is a new event and does get its own
+  // toast, otherwise a reader who navigates on would never be told again.
+  it("re-arms the toast after the reader moves deliberately", () => {
+    const FIVE = [
+      imageAttachment(1),
+      imageAttachment(2),
+      imageAttachment(3),
+      imageAttachment(4),
+      imageAttachment(5),
+    ];
+    render(
+      <ImageSequenceProvider items={sequenceOf(FIVE)}>
+        <Opener openKey={FIVE[0]!.id} />
+      </ImageSequenceProvider>,
+    );
+    act(() => {
+      fireEvent.click(screen.getByText("open"));
+    });
+
+    const img = () => screen.getByRole("dialog").querySelector("img")!;
+    act(() => {
+      fireEvent.error(img());
+    });
+    expectCounter("2 / 5");
+    expect(toastErrorMock).toHaveBeenCalledTimes(1);
+
+    act(() => {
+      fireEvent.click(nextButton());
+    });
+    expectCounter("3 / 5");
+    act(() => {
+      fireEvent.error(img());
+    });
+    expect(toastErrorMock).toHaveBeenCalledTimes(2);
   });
 
   it("reports false for an image the surface does not know", () => {
