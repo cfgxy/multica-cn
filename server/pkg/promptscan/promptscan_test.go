@@ -246,3 +246,100 @@ func TestShortMatchIsNotEchoed(t *testing.T) {
 		}
 	}
 }
+
+// A JSON encoder is free to put the value on its own line, and pretty-printers
+// routinely do it for long values. Scanning line by line meant the key line
+// ("password":) had no value and the value line had no key, so neither
+// half matched and a real credential reached the public catalog through the
+// one formatting choice a publisher is least likely to think about.
+func TestScanDetectsCredentialsSplitAcrossLines(t *testing.T) {
+	const secret = "s3cr3t-value-not-real"
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{"json value on next line", "{\n  \"password\":\n    \"" + secret + "\"\n}"},
+		{"json value on next line unquoted key", "{\n  password:\n    \"" + secret + "\"\n}"},
+		{"json separator on next line", "{\n  \"api_key\"\n  : \"" + secret + "\"\n}"},
+		{"yaml value on next line", "database:\n  password:\n    " + secret},
+		{"yaml block scalar", "client_secret: >\n  " + secret},
+		{"env continuation", "ACCESS_TOKEN=\\\n" + secret},
+		{"crlf line ending", "{\r\n  \"db_password\":\r\n    \"" + secret + "\"\r\n}"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := Scan(tc.content)
+			if res.OK() {
+				t.Fatalf("%s must be detected, content %q passed the gate", tc.name, tc.content)
+			}
+			blob, err := json.Marshal(res)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if strings.Contains(string(blob), secret) {
+				t.Fatalf("serialised result leaked the value: %s", blob)
+			}
+		})
+	}
+}
+
+// JSON that has itself been embedded in a JSON string — a webhook body pasted
+// into a prompt, a log line, an escaped example — carries backslashes before
+// every quote. Those backslashes sat between the field name and the separator,
+// so the assignment rule did not match and the credential published.
+func TestScanDetectsCredentialsInEscapedJSON(t *testing.T) {
+	const secret = "s3cr3t-value-not-real"
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{"escaped json", `{\"password\":\"` + secret + `\"}`},
+		{"escaped json spaced", `{\"api_key\": \"` + secret + `\"}`},
+		{"escaped json in prose", `The body was {\"access_token\":\"` + secret + `\"} when it failed.`},
+		{"double escaped", `{\\"client_secret\\":\\"` + secret + `\\"}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := Scan(tc.content)
+			if res.OK() {
+				t.Fatalf("%s must be detected, content %q passed the gate", tc.name, tc.content)
+			}
+			blob, err := json.Marshal(res)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if strings.Contains(string(blob), secret) {
+				t.Fatalf("serialised result leaked the value: %s", blob)
+			}
+		})
+	}
+}
+
+// The counterweight to both cases above. Looking past a line ending for the
+// value is exactly what makes an empty schema field look like an assignment:
+// the next line always has SOMETHING on it. These are the shapes that must
+// still publish, or the gate becomes something publishers route around.
+func TestScanDoesNotBlockMultilineProseOrEmptyValues(t *testing.T) {
+	cases := []string{
+		// A key with no value, with the closing brace on the next line.
+		"{\n  \"password\": \"\"\n}",
+		"{\n  \"password\": null\n}",
+		"{\n  \"api_key\": \"\",\n  \"other\": 1\n}",
+		// A schema or template, not a filled-in config.
+		"{\n  \"password\":\n}",
+		"password:\n",
+		"password:\n\n",
+		// Prose that happens to end a line on the word.
+		"Ask the user for their password\nbefore continuing.",
+		"Never log the API key\nyou were given.",
+		// A YAML key whose next line is another key, not a value.
+		"database:\n  password:\n  host: localhost",
+	}
+	for _, content := range cases {
+		if res := Scan(content); !res.OK() {
+			t.Errorf("content %q must not block, got %+v", content, res.Findings)
+		}
+	}
+}
