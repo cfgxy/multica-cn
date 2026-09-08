@@ -2248,3 +2248,32 @@ func TestEveryBriefThatTeachesJSONOutputAlsoWarnsAgainstMergingStderr(t *testing
 		}
 	}
 }
+
+// TestMentionsSectionTeachesCommentAnchor —— RUYI-108。
+//
+// 评论引用 `mention://comment/<id>` 与 issue / project 链接同属「可点击但无副作用」
+// 一类，且是唯一一个 agent 无法从别处推断的形态：它没有 `MUL-123` 那样的
+// 自动链接文本形式，服务端 `util.MentionRe` 也刻意不解析它。brief 不写，
+// agent 就只会用「评论 ID 前 8 位」的纯文本引用，跳转能力等于不存在。
+//
+// 断言同时钉住「无副作用」措辞：这一行一旦被改成暗示会通知或触发的语气，
+// 就会把一个纯渲染锚点推回到 mention 的副作用心智模型里。
+func TestMentionsSectionTeachesCommentAnchor(t *testing.T) {
+	t.Parallel()
+	out := buildMetaSkillContent("claude", TaskContextForEnv{IssueID: "i-1"})
+
+	const line = "- `[Comment reference](mention://comment/<comment-id>)` — clickable link (no side effect); jumps to the referenced comment within the same issue"
+	if got := strings.Count(out, line); got != 1 {
+		t.Fatalf("brief carries the comment-anchor line %d times, want exactly 1", got)
+	}
+
+	// 顺序约束：必须与其余「无副作用」形态相邻，落在通知 / 触发两行之前。
+	idxComment := strings.Index(out, "mention://comment/<comment-id>")
+	idxNotifies := strings.Index(out, "**notifies a human**")
+	if idxComment < 0 || idxNotifies < 0 {
+		t.Fatalf("premise gone: comment=%d notifies=%d", idxComment, idxNotifies)
+	}
+	if idxComment > idxNotifies {
+		t.Error("the comment anchor is listed after the side-effecting mentions; the no-side-effect forms must stay grouped, or the reader carries the notify/spawn prior into a render-only link")
+	}
+}

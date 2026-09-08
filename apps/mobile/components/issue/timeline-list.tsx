@@ -96,6 +96,7 @@ import {
 } from "react-native";
 import { FlashList, type FlashListRef } from "@shopify/flash-list";
 import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
 import { useQuery } from "@tanstack/react-query";
 import type { Issue, TimelineEntry } from "@multica/core/types";
 import { Text } from "@/components/ui/text";
@@ -124,6 +125,11 @@ import {
   CommentLocateController,
   resolvePublishedRootIds,
 } from "@/lib/comment-locate";
+import { resolveCommentAnchor } from "@/lib/comment-anchor";
+import {
+  CommentAnchorProvider,
+  type CommentAnchorApi,
+} from "@/lib/comment-anchor-context";
 import {
   assignChipStackSlots,
   computeBottomChipVisible,
@@ -169,10 +175,14 @@ export interface TimelineListHandle {
 
 /** How long the flash stays "claimed" before we let a new highlight take
  *  over. The fade-out itself is driven by the Reanimated sequence inside
- *  CommentCard; this is just the upstream gate. 5s gives the user time
- *  to land at the bottom, realise the target is an older comment, and
- *  scroll up to it — the overlay still fires when the row mounts. */
-const HIGHLIGHT_HOLD_MS = 5000;
+ *  CommentCard; this is just the upstream gate.
+ *
+ *  RUYI-108 pulls this from 5s to 2s so all three clients hold the flash
+ *  for the same 2s. The 5s was budget for the reader to *manually* find an
+ *  older target after the deep-link landed at the bottom; the locate
+ *  controller now scrolls to the row itself, so the extra 3s only widened
+ *  the window in which a recycled row could re-play the flash. */
+const HIGHLIGHT_HOLD_MS = 2000;
 
 /** Pixel slack at the bottom edge — inside this band we treat the user as
  *  "already at bottom" so the new-comment chip doesn't fire for entries
@@ -282,9 +292,13 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
     lastStampRef.current = stamp;
 
     setHighlightedId(highlightCommentId);
-
-    const fade = setTimeout(() => setHighlightedId(null), HIGHLIGHT_HOLD_MS);
-    return () => clearTimeout(fade);
+    // The fade-out timer lives in one place (keyed on `highlightedId`, see
+    // the anchor-landing block below) so the two entry points — inbox deep
+    // link and comment anchor — cannot each hold their own. It also fixes a
+    // latent hole here: this effect re-ran on every `data.length` change,
+    // and its cleanup cancelled the pending fade without arming a new one,
+    // leaving a highlight stuck on screen whenever a comment arrived
+    // inside the flash window.
   }, [highlightCommentId, highlightNonce, data.length]);
 
   // Focus-intent consumption lives after `dataWithDivider` is defined
@@ -638,6 +652,53 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
     locateController,
   ]);
 
+  // ── Comment anchor landing (RUYI-108) ─────────────────────────────────
+  // `mention://comment/<id>` tapped anywhere in this timeline's markdown.
+  // Reuses both existing mechanisms rather than adding a third scroll
+  // path: the focus store expands + bounded-locates the owning ROOT, and
+  // `highlightedId` flashes the referenced comment itself (which may be a
+  // reply inside that root — CommentCard already distinguishes the two).
+  //
+  // Resolution reads only `dataRef` (rows already in the client). A miss
+  // — deleted, not permitted, another issue, or simply not fetched — gets
+  // one haptic and nothing else: no request, no author, no excerpt. Any
+  // fetch-to-check would turn a render-only anchor into an
+  // existence-probing endpoint for comments the reader cannot see.
+  const focusCommentAnchor = useCallback(
+    (commentId: string) => {
+      const outcome = resolveCommentAnchor(dataRef.current, commentId);
+      if (outcome.kind === "unavailable") {
+        void Haptics.notificationAsync(
+          Haptics.NotificationFeedbackType.Warning,
+        );
+        return;
+      }
+      // Re-tapping the same anchor must replay: requestFocus mints a fresh
+      // nonce, and clearing the flash first lets the identical id re-enter
+      // `highlightedId` (a same-value setState would otherwise no-op and
+      // the second tap would look dead).
+      setHighlightedId(null);
+      useCommentFocusStore
+        .getState()
+        .requestFocus(issue.id, outcome.rootId);
+      setHighlightedId(outcome.commentId);
+    },
+    [issue.id],
+  );
+  const commentAnchorApi = useMemo<CommentAnchorApi>(
+    () => ({ focus: focusCommentAnchor }),
+    [focusCommentAnchor],
+  );
+
+  // The flash set above has no timer of its own (the inbox path's timer is
+  // keyed on `highlightCommentId`, which an anchor tap never changes), so
+  // clear it on the same 2s budget every other highlight uses.
+  useEffect(() => {
+    if (!highlightedId) return;
+    const fade = setTimeout(() => setHighlightedId(null), HIGHLIGHT_HOLD_MS);
+    return () => clearTimeout(fade);
+  }, [highlightedId]);
+
   // ── Just-published auto-expand (RUYI-28) ──────────────────────────────
   // ONLY local-authoring paths: when THIS user publishes a comment — via
   // the composer OR a failed-comment Retry — the owning root must render
@@ -791,6 +852,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
       : "list";
 
   return (
+    <CommentAnchorProvider value={commentAnchorApi}>
     <ImageSequenceProvider blocks={imageBlocks}>
     <View className="flex-1">
       {/* Outer Pressable owns the "tap anywhere outside the selected
@@ -912,6 +974,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
       })()}
     </View>
     </ImageSequenceProvider>
+    </CommentAnchorProvider>
   );
   },
 );
