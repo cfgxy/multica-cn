@@ -1,0 +1,352 @@
+---
+title: 플러그인 개발
+description: Multica 플러그인의 작성·패키징·게시·업그레이드 — 매니페스트, surface SDK, Action API, 스코프, hook, 로컬 개발 루프.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+플러그인은 fork 없이, 그리고 Multica 자체의 릴리스 주기에 얽매이지 않고 워크스페이스를 확장합니다. 배포 단위는 하나의 아카이브, 즉 매니페스트와 매니페스트가 참조하는 파일들입니다.
+
+<Callout type="info">
+플러그인은 `plugins_v1` 기능 플래그 아래에 있으며 기본값은 꺼짐입니다. 셀프 호스팅 인스턴스에서 켤 수 있습니다. [환경 변수](/environment-variables)를 참고하세요.
+</Callout>
+
+## 플러그인이 Multica와 만나는 세 가지 방식
+
+모든 기능은 정확히 다음 세 가지 중 하나에 속하며, 이 구분이 코드가 어디서 실행되는지를 결정합니다.
+
+| 종류 | 방향 | 내용 |
+|---|---|---|
+| **Action** | 플러그인 → Multica | surface가 호스트를 호출합니다. issue 읽기, 댓글 작성, 값 저장 등. |
+| **Hook** | Multica → 플러그인 | 호스트가 `http` 또는 `mcp`로 여러분이 운영하는 엔드포인트를 호출합니다. |
+| **Resource** | 호출 없음 | 매니페스트가 제공하는 정적 콘텐츠. 현재는 `skill` 텍스트. |
+
+hook을 누가 트리거하는지와 hook이 무엇을 하는지는 별개의 문제입니다. hook은 한 번만 선언하고, 받아들일 트리거를 나열합니다.
+
+## 매니페스트
+
+`multica.plugin.json`은 패키지 루트에 둡니다. 엄격하게 파싱되며 알 수 없는 필드는 조용히 무시되는 대신 오류가 됩니다. 매니페스트는 관리자가 동의하는 대상이므로, 오타가 그 동의를 눈치채지 못하게 약화시킬 수 있어서는 안 되기 때문입니다.
+
+```json
+{
+  "manifest_version": 1,
+  "key": "com.example.release-notes",
+  "name": "Release Notes",
+  "description": "Drafts release notes from the issues in a milestone.",
+  "version": "1.2.0",
+  "author": { "name": "Example Team", "url": "https://example.com" },
+  "scopes": ["issues:read", "comments:write", "net:notes.example.com"],
+  "config": {
+    "milestone_field": { "type": "string", "label": "Milestone field", "required": true }
+  },
+  "contributes": {
+    "surfaces": [
+      { "key": "draft", "type": "issue_panel", "name": "Draft notes", "entry": "ui/main.js" }
+    ],
+    "hooks": [
+      {
+        "key": "generate",
+        "name": "Generate notes",
+        "description": "Turns a milestone's closed issues into release-note prose.",
+        "triggers": ["ui"],
+        "transport": { "type": "http", "url": "https://notes.example.com/hooks/generate" }
+      }
+    ]
+  }
+}
+```
+
+### 최상위 필드
+
+| 필드 | 규칙 |
+|---|---|
+| `manifest_version` | `1`이어야 합니다. |
+| `key` | 역 DNS 형식. 두 개 이상의 세그먼트, 소문자 `a-z0-9`, 단일 하이픈 구분. 버전과 워크스페이스를 가로질러 플러그인을 식별합니다. |
+| `name` | 한 줄, 최대 160바이트. |
+| `description` | 최대 2000바이트. |
+| `version` | 시맨틱 버저닝, 최대 64바이트. |
+| `author.name` | 필수. `author.url`을 제공한다면 순수 HTTPS여야 합니다. |
+| `icon` | 선택. 패키지 내 상대 경로. |
+| `scopes` | 비어 있을 수 없음, 최대 64개, 중복 불가. |
+| `config` | 선택, 최대 32개 필드. |
+| `contributes` | surface·hook·resource를 합쳐 최소 1개, 총 64개 이하. |
+
+1 MB를 넘는 매니페스트는 파싱 전에 거부됩니다.
+
+### 스코프
+
+스코프 목록은 닫혀 있습니다. 목록에 없는 값은 파싱 시점에 실패합니다.
+
+| 스코프 | 부여되는 권한 |
+|---|---|
+| `issues:read` / `issues:write` | issue 읽기 또는 수정. |
+| `comments:read` / `comments:write` | 댓글 읽기 또는 작성. |
+| `tasks:read` / `tasks:write` | task 읽기 또는 쓰기. |
+| `agents:read` | 에이전트 읽기. |
+| `members:read` | 워크스페이스 멤버 읽기. |
+| `storage:user` / `storage:workspace` | 멤버별 또는 워크스페이스별 플러그인 저장소. |
+| `net:<domain>` | 특정 호스트 하나에 접근. |
+
+`net:`은 매개변수를 받는 유일한 형태이며 **정확한 호스트 일치**입니다. `net:example.com`은 `api.example.com`을 포함하지 않으므로 각각 선언해야 합니다. 이 목록은 두 가지 역할을 동시에 합니다. surface iframe의 CSP `connect-src`가 되고, hook transport가 가리킬 수 있는 호스트를 제한합니다. `net:` 스코프로 커버되지 않는 hook URL은 게시 시점에 오류가 되므로, 동의 화면은 언제나 데이터의 실제 목적지를 설명합니다.
+
+### 설정 필드
+
+호스트가 이 블록으로 설정 폼을 생성하므로, 플러그인이 폼 UI를 포함할 필요가 없습니다.
+
+| 타입 | 비고 |
+|---|---|
+| `string` | `"multiline": true`를 주면 textarea가 됩니다. |
+| `number` | |
+| `bool` | |
+| `enum` | `options`(1~64개, 중복 불가)가 필요합니다. |
+| `secret` | 쓰기 전용. [시크릿](#시크릿) 참조. |
+
+각 필드는 `label`(필수), `description`(500바이트 이하), `required`, `placeholder`(160바이트 이하)도 받습니다. 선언 순서가 보존되므로 생성된 폼은 어느 워크스페이스에서나 동일하게 보입니다.
+
+### Surface
+
+surface는 호스트가 고정된 위치에 마운트하는 iframe입니다. 안에 무엇을 그릴지는 여러분이, 어디에 나타날지는 호스트가 정합니다.
+
+| `type` | 표시 위치 |
+|---|---|
+| `issue_panel` | issue 화면에 인라인으로. |
+| `sidebar_panel` | 워크스페이스 사이드바. |
+| `modal` | issue 메뉴에서 여는 다이얼로그. |
+
+`entry`는 패키지 내 `.js` 또는 `.mjs` 경로여야 합니다. 바깥 HTML 문서는 호스트가 직접 생성합니다. 그래야만 `net:` 스코프에서 유도한 CSP를 호스트가 붙일 수 있습니다. 플러그인 작성자가 만든 HTML 문서는 자기 서버가 보낸 정책을 가지므로, 그 경우 `net:`은 통제가 아니라 주장에 그칩니다. `platforms`로 `web`/`desktop`을 한정할 수 있습니다.
+
+### Hook
+
+```json
+{
+  "key": "nightly_digest",
+  "name": "Nightly digest",
+  "description": "Posts yesterday's activity as a comment.",
+  "input_schema": { "type": "object", "properties": { "since": { "type": "string" } } },
+  "triggers": ["schedule"],
+  "schedule": { "cron": "0 9 * * *", "timezone": "Europe/London" },
+  "transport": { "type": "http", "url": "https://notes.example.com/hooks/digest" },
+  "timeout_ms": 15000
+}
+```
+
+`description`은 필수입니다. 에이전트가 이를 MCP 도구 설명으로 읽습니다. `input_schema`를 제공한다면 JSON Schema 객체여야 합니다. `timeout_ms`는 100~30000이며 기본값은 10초입니다.
+
+**트리거**는 누가 그 hook을 호출할 수 있는지를 정합니다. 호스트가 매니페스트에 없는 호출 지점을 임의로 만들지 않습니다.
+
+| 트리거 | 호출 주체 | 블로킹 |
+|---|---|---|
+| `ui` | 자신의 surface가 `multica.hooks.invoke()`로. | 예 |
+| `manual` | 사용자가 issue 메뉴에서. | 예 |
+| `agent` | 에이전트가 MCP 도구로. | 예 |
+| `event` | 제품 이벤트. | 아니오 |
+| `schedule` | 지속형 스케줄러. | 아니오 |
+
+`event`를 쓸 때는 `events`에 이벤트를 나열합니다.
+
+`issue.created` · `issue.updated` · `issue.status_changed` · `comment.created` · `task.started` · `task.completed` · `task.failed`
+
+이벤트는 Action API로 가져오려면 스코프가 필요했을 내용을 **푸시**합니다. 따라서 구독에는 해당 읽기 스코프가 필요합니다. `issue.*`는 `issues:read`, `comment.created`는 `comments:read`, `task.*`는 `tasks:read`. 그렇지 않다면 구독이 곧 읽기 권한 없이 내용을 받는 우회로가 됩니다.
+
+`schedule`을 쓸 때는 `cron`(표준 5필드)과 `timezone`(IANA 이름)을 줍니다. 타임존은 전용 필드에 넣어야 하며 인라인 `TZ=` 접두사는 거부됩니다. 스케줄 hook은 타이머가 아니라 폴링 원시 도구입니다. **5분보다 잦게 실행되는 표현식은 게시 시점에 거부되며**, 스케줄은 `http` transport만 지원합니다. hook 하나당 케이던스 하나입니다. 두 개가 필요하면 hook을 두 개 선언하세요. 그래야 각 지속 실행의 정체성이 모호해지지 않습니다.
+
+**Transport**는 `http`(호스트가 엔드포인트에 POST) 또는 `mcp`(호스트가 서버와 MCP로 통신)입니다. 두 URL 모두 순수 HTTPS여야 하고 `net:` 스코프로 커버되어야 합니다.
+
+### Resource
+
+```json
+{ "type": "skill", "key": "incident-response", "entry": "skills/incident-response/SKILL.md" }
+```
+
+entry 경로는 `skills/<key>/SKILL.md`로 고정되어 있습니다. 설치 시 skill이 워크스페이스에 기록되고, 업그레이드 시 다시 기록되며, 새 버전에서 제거된 skill은 삭제됩니다.
+
+## Surface 작성하기
+
+surface는 샌드박스 iframe 안의 **단일** 스크립트입니다. SDK와 나머지 전부를 한 파일로 번들하세요. 호스트가 생성한 문서 안에서 엔트리를 로드하므로 모듈 그래프가 없고, 맨 `import`는 해석될 대상이 없습니다. 그런 엔트리는 게시 시점에 거부됩니다. 몇 달 뒤 독자의 브라우저에서 실패하게 두지 않기 위해서입니다.
+
+```sh
+npm install @multica/plugin-sdk
+```
+
+```js
+import { multica } from "@multica/plugin-sdk";
+
+const context = await multica.context.get();
+const issue = await multica.issue.get();
+
+await multica.issue.comment({ body: `Drafted for ${issue.identifier}` });
+await multica.storage.user.set("last-draft", issue.id);
+
+const result = await multica.hooks.invoke("generate", { issueId: issue.id });
+
+multica.ui.resize(document.body.scrollHeight);
+```
+
+iframe은 `sandbox="allow-scripts"`로 마운트되며 `allow-same-origin`은 **없습니다**. 따라서 불투명한 오리진을 가집니다. 작성 전에 알아둘 결과가 셋 있습니다.
+
+- **브라우저 저장소가 없습니다.** `localStorage`, `sessionStorage`, 쿠키는 예외를 던지거나 비어 있습니다. 서버 측에 있고 워크스페이스 또는 멤버 단위로 스코프되며 frame보다 오래 남는 `multica.storage`를 쓰세요.
+- **자신의 요청에는 `Origin: null`이 붙습니다.** surface가 자체 백엔드를 직접 호출한다면, 그 백엔드의 CORS가 null 오리진을 받아들여야 합니다.
+- **직접 작성하지 않은 CSP가 적용됩니다.** `connect-src`는 `net:` 스코프에서 나옵니다. 하나도 선언하지 않으면 surface는 네트워크 요청을 전혀 할 수 없습니다. 자신의 오리진으로 돌아가는 요청도 포함됩니다. 이제 코드를 Multica가 서빙하므로 여러분의 오리진은 더 이상 정책 안에 없습니다.
+
+### SDK API
+
+| 호출 | 반환 |
+|---|---|
+| `multica.context.get(force?)` | `PluginContext` — 워크스페이스, 사용자, issue, 비시크릿 `config`, `granted_net_domains`. |
+| `multica.issue.get(id?)` | `Issue`. |
+| `multica.issue.update(patch, id?)` | `Issue`. |
+| `multica.issue.comments(id?)` | `Comment[]`. |
+| `multica.issue.comment({ body, parentId }, id?)` | `Comment`. |
+| `multica.storage.workspace` / `.user` | `list()`, `get(key)`, `set(key, value)`, `delete(key)`. |
+| `multica.hooks.invoke(key, input?)` | `HookResult`. |
+| `multica.ui.resize(px)` | 반환 없음. 값은 호스트가 제한합니다. |
+| `multica.ui.onThemeChange(fn)` | 구독 해제 함수. |
+
+없는 저장소 키에 대한 `get`은 예외 대신 `null`을 반환합니다. 키가 없는 것은 평범한 결과이기 때문입니다. 그 외에는 `MulticaPluginError`를 던지며 `status`는 HTTP에 대응합니다.
+
+frame은 자격 증명을 보유하지 않고 Multica API에 직접 도달할 수 없습니다. 모든 호출은 호스트 페이지로 보내는 메시지가 되고, 호스트가 **로그인한 사용자 본인의 세션으로** 수행합니다. 따라서 두 가지 제한이 동시에 걸립니다. 관리자가 부여한 스코프, 그리고 그 사용자가 원래 할 수 있는 일입니다. 어떤 issue에 접근할 수 없는 멤버는 여러분의 surface를 통해서도 404를 받습니다. 거부된 스코프는 그 이름을 밝히는 403이 됩니다.
+
+이렇게 작성된 댓글의 작성자는 **사용자 본인**이며, 여러분의 플러그인을 통해 작성된 것으로 기록됩니다. `@mention` 트리거 디스패치는 실행되지 않습니다. surface가 텍스트 작성의 부수 효과로 에이전트 실행을 시작할 수는 없습니다.
+
+### 테마와 크기
+
+호스트는 디자인 토큰을 전용 포트로 보내고 테마가 바뀔 때마다 다시 보냅니다. SDK는 이를 `:root`의 커스텀 속성으로 씁니다. `var(--foreground)`, `var(--background)`, `var(--border)`, `var(--radius)` 등을 쓰면 스타일시트를 포함하지 않고도 네이티브한 모습이 됩니다.
+
+frame은 자동으로 크기를 조정하지 않습니다. 콘텐츠가 확정되면 `multica.ui.resize(px)`를 호출하세요.
+
+## Hook 핸들러 작성하기
+
+호스트는 여러분의 `http` 엔드포인트로 다음 JSON을 POST합니다.
+
+```json
+{
+  "version": 1,
+  "invocation_id": "…",
+  "delivery_id": "…",
+  "attempt": 1,
+  "occurred_at": "2026-01-01T09:00:00Z",
+  "hook_key": "nightly_digest",
+  "trigger": "schedule",
+  "workspace_id": "…",
+  "installation_id": "…",
+  "issue_id": "…",
+  "actor": { "type": "user", "id": "…" },
+  "input": {},
+  "config": { "milestone_field": "Milestone" },
+  "callback_token": "…",
+  "callback_url": "https://multica.example.com/v1",
+  "schedule": { "planned_at": "2026-01-01T09:00:00Z" }
+}
+```
+
+`config`는 관리자가 폼에 입력한 비시크릿 값을 담습니다. Action API에는 의도적으로 config 엔드포인트가 없으며, 플러그인이 두 번째 사본을 따로 갖게 하면 매니페스트의 config 블록이 장식이 되어 버립니다. `issue_id`는 호스트가 해석하고 권한을 검사한 값이므로, 핸들러가 클라이언트가 준 `input` 속 issue 참조를 신뢰할 필요가 없습니다.
+
+`callback_token`으로 핸들러는 몇 분 동안 Action API를 되호출할 수 있습니다. 설치 자체의 토큰보다 좁고 이 한 번의 호출에 묶여 있습니다. `delivery_id`는 같은 발생 건의 재시도 사이에서 변하지 않습니다. 멱등성 구현에 사용하세요.
+
+### 서명 검증
+
+호출마다 세 개의 헤더가 도착합니다.
+
+| 헤더 | 의미 |
+|---|---|
+| `X-Multica-Timestamp` | Unix 초. |
+| `X-Multica-Signature` | `v1=<hex>`. `<timestamp>.<원본 본문>`의 HMAC-SHA256. |
+| `X-Multica-Plugin-Installation` | 호출한 설치. |
+
+시크릿은 토큰 발급 시 한 번만 표시되는 `whsec_…` 값입니다. 비교에 시간을 쓰기 전에, 자기 시계에서 **5분** 넘게 벗어난 타임스탬프를 거부하세요. 이것이 재전송을 제한합니다. 서명까지 기억하는 핸들러라면 그 창을 완전히 닫을 수 있습니다. 비교는 상수 시간으로 하세요.
+
+```js
+const expected = createHmac("sha256", SIGNING_SECRET)
+  .update(`${timestamp}.${rawBody}`)
+  .digest("hex");
+```
+
+### 호스트가 엔드포인트 주변에서 하는 일
+
+- **목적지 검사.** 호스트는 매니페스트가 선언한 것이어야 하며, 연결 시점에 공인 주소로 해석되어야 합니다.
+- **속도 제한.** hook마다 분당 120회 시도.
+- **응답 상한.** 1 MB를 넘는 본문은 소비되지 않고 실패합니다.
+- **재시도.** `event` 전달은 백오프와 함께 세 번 시도합니다. `ui`, `manual`, `agent` 호출은 재시도하지 않습니다. 누군가 기다리고 있기 때문입니다.
+- **서킷 브레이커.** 5분 안에 다섯 번 실패하면 해당 hook의 백그라운드 전달이 창이 지날 때까지 멈춥니다.
+
+모든 호출은 invocation으로 기록되어 관리자가 나중에 확인할 수 있습니다.
+
+## 시크릿
+
+`type: "secret"` 설정 필드는 **쓰기 전용**입니다. 관리자가 설정하면 호스트가 암호화하고 다시는 반환하지 않습니다. 설정 폼에도, surface의 `context.config`에도, **http hook 본문의 `config` 객체에도** 반환하지 않습니다.
+
+예외는 정확히 하나입니다. `mcp` transport를 쓰는 hook에서, `<hookKey>_credential`이라는 이름의 시크릿 필드가 호스트가 해당 MCP 서버와 통신할 때 `Authorization` 헤더로 붙습니다. 저장된 시크릿이 엔드포인트에 도달하는 다른 경로는 없습니다.
+
+그렇다면 http 핸들러는 자기 서비스에 어떻게 인증할까요? 자신의 환경 변수에서 읽습니다. 플러그인이 자기 서비스에 쓰는 자격 증명은 작성자가 이미 가지고 있는 것이며, 그것을 네트워크로 돌려보내는 일은 엔드포인트를 쥔 쪽에 모든 값을 넘겨줄 뿐 아무 이득도 없습니다.
+
+<Callout type="warn">
+게시 시 패키지에 자격 증명이 있는지 검사하며, 있으면 게시를 거부합니다. 버전은 불변이고 디렉터리가 이를 인스턴스 전체에 제공할 수 있으므로, 저장소에 도달한 시크릿은 이미 공개된 것과 같습니다. 그 이후에 거부해도 도움이 되지 않습니다.
+</Callout>
+
+## 개발 루프
+
+`MULTICA_PLUGIN_DIR`를 플러그인 소스 디렉터리로 지정하면, 매번 압축하고 업로드하지 않고 디스크에서 바로 게시할 수 있습니다.
+
+```sh
+MULTICA_PLUGIN_DIR=/srv/plugin-sources multica-server
+```
+
+하위 디렉터리 하나가 플러그인 하나입니다. 여기서 게시해도 패널이 렌더링 시점에 다시 읽는 라이브 디렉터리가 아니라 평범한 불변 버전이 생성됩니다. 그렇지 않으면 "이 코드가 고정되어 있는가"가 설치 방식에 따라 달라집니다. 같은 버전 문자열로 다시 게시하는 일은 개발 루프에서 흔하므로, 충돌 오류 대신 `+dev.N` 빌드 접미사가 붙습니다.
+
+자체 서명 인증서를 쓰는 localhost hook 엔드포인트에는 `MULTICA_PLUGIN_DEV_CA`에 인증서 경로를 지정하세요. 이는 Multica가 *어떤* 인증서를 신뢰할지 바꾸는 것이지 검증을 끄는 것이 아닙니다.
+
+```sh
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+  -keyout dev-key.pem -out dev-cert.pem \
+  -subj "/CN=127.0.0.1" -addext "subjectAltName=IP:127.0.0.1"
+```
+
+**설정 → 플러그인**의 invocation 목록에서 호스트가 실제로 무엇을 보냈고 무엇이 돌아왔는지 확인할 수 있습니다.
+
+## 패키징과 게시
+
+매니페스트와 그것이 참조하는 모든 파일을 zip으로 묶어 **설정 → 플러그인**에서 업로드합니다. 아카이브에 다른 파일이 있어도 되지만, 저장되는 것은 매니페스트가 참조하는 것뿐입니다. 나머지는 제공할 경로 자체가 없습니다.
+
+| 제한 | 값 |
+|---|---|
+| 아카이브 | 2 MB |
+| 단일 파일 | 1 MB |
+| 저장 총량 | 4 MB |
+| 아카이브 항목 수 | 512 |
+| `SKILL.md` 하나 | 256 KB |
+
+검증은 몇 달 뒤 독자의 브라우저가 아니라 게시 시점에 이루어집니다. 존재하지 않는 surface 엔트리는 빠진 경로를 명시하며 게시가 거부됩니다.
+
+프런트엔드를 위해 자체 서버가 필요하지는 않습니다. hook 엔드포인트와 MCP 서버는 여전히 여러분이 운영합니다.
+
+## 버전, 등재, 업그레이드
+
+게시된 버전은 **불변**입니다. 다음 셋이 의도적으로 분리되어 있습니다.
+
+- **아티팩트** — 한 버전의 파일들. 절대 바뀌지 않습니다.
+- **등재** — 이 인스턴스의 다른 워크스페이스가 그 플러그인을 발견할 수 있는지. 게시자가 통제합니다.
+- **설치** — 특정 워크스페이스가 실제로 어떤 버전을 실행하는지. 그 워크스페이스의 관리자가 통제합니다.
+
+새 버전을 게시해도 관리자가 업그레이드하기 전까지 설치된 워크스페이스에서는 아무것도 바뀌지 않습니다. 동의 화면에서 승인한 것이 곧 브라우저에서 실행되는 것으로 유지됩니다.
+
+게시자는 패키지를 인스턴스 디렉터리에 등재하거나 내릴 수 있고, 플러그인 전체를 내리지 않은 채 문제가 있는 **한 버전만 철회**할 수도 있습니다. 철회된 버전은 디렉터리에서 사라지고 새로 설치할 수 없습니다. 이미 그 버전을 쓰는 워크스페이스는 옮길 때까지 계속 동작합니다.
+
+업그레이드는 동의를 다시 받고 하나의 트랜잭션으로 수행됩니다.
+
+- 새 매니페스트에서 사라진 필드의 설정 값은 제거됩니다. 시크릿도 마찬가지여서, 이전 버전의 암호문이 붙은 채로 스냅샷이 확정되는 일은 없습니다.
+- skill 리소스는 다시 기록되고, 제거된 것은 삭제됩니다.
+- hook 스케줄은 새 매니페스트에 맞춰 조정됩니다.
+
+어느 한 단계라도 실패하면 전체가 적용되지 않습니다.
+
+## 예제
+
+저장소의 `examples/plugins/` 아래에 실행 가능한 예제가 있습니다.
+
+| 예제 | 보여주는 것 |
+|---|---|
+| `hello-panel` | 가장 작은 `issue_panel` surface. |
+| `triage-notify` | `event` 트리거 hook과 서명 검증. |
+| `schedule-pulse` | 스케줄 hook과 `delivery_id` 기반 멱등성. |
+| `deploy-sentinel` | `mcp` transport와 skill 제공. |
+| `oncall-handoff` | `modal` surface, `manual` 트리거, 쓰기 전용 시크릿. |

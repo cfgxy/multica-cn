@@ -1,0 +1,352 @@
+---
+title: 开发插件
+description: 编写、打包、发布和升级 Multica 插件 —— manifest、surface SDK、Action API、权限、hook 和本地开发流程。
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+插件用于扩展工作区，既不需要 fork，也不占用 Multica 自身的发布节奏。它以一个压缩包发布：一份 manifest，加上 manifest 引用的所有文件。
+
+<Callout type="info">
+插件受 `plugins_v1` 功能开关控制，默认关闭。自托管实例可以自行开启，参见[环境变量](/environment-variables)。
+</Callout>
+
+## 插件与 Multica 的三种关系
+
+每种能力都恰好属于以下三类之一，而这个区分决定了代码在哪里运行：
+
+| 类型 | 方向 | 含义 |
+|---|---|---|
+| **Action** | 插件 → Multica | 你的 surface 调用宿主：读取 issue、发表评论、保存数据。 |
+| **Hook** | Multica → 插件 | 宿主通过 `http` 或 `mcp` 调用你运行的端点。 |
+| **Resource** | 不发生调用 | manifest 贡献的静态内容，目前是 `skill` 文本。 |
+
+"谁触发 hook"和"hook 做什么"是两个独立的问题。hook 只声明一次，并列出它接受的触发器。
+
+## Manifest
+
+`multica.plugin.json` 位于包的根目录。它按严格模式解析：未知字段会直接报错，而不是被悄悄忽略 —— manifest 是管理员授权的对象，一个拼写错误不能有机会悄无声息地削弱这份授权。
+
+```json
+{
+  "manifest_version": 1,
+  "key": "com.example.release-notes",
+  "name": "Release Notes",
+  "description": "Drafts release notes from the issues in a milestone.",
+  "version": "1.2.0",
+  "author": { "name": "Example Team", "url": "https://example.com" },
+  "scopes": ["issues:read", "comments:write", "net:notes.example.com"],
+  "config": {
+    "milestone_field": { "type": "string", "label": "Milestone field", "required": true }
+  },
+  "contributes": {
+    "surfaces": [
+      { "key": "draft", "type": "issue_panel", "name": "Draft notes", "entry": "ui/main.js" }
+    ],
+    "hooks": [
+      {
+        "key": "generate",
+        "name": "Generate notes",
+        "description": "Turns a milestone's closed issues into release-note prose.",
+        "triggers": ["ui"],
+        "transport": { "type": "http", "url": "https://notes.example.com/hooks/generate" }
+      }
+    ]
+  }
+}
+```
+
+### 顶层字段
+
+| 字段 | 规则 |
+|---|---|
+| `manifest_version` | 必须为 `1`。 |
+| `key` | 反向 DNS，至少两段，小写 `a-z0-9`，段内可用单个连字符。跨版本、跨工作区标识同一个插件。 |
+| `name` | 单行，最长 160 字节。 |
+| `description` | 最长 2000 字节。 |
+| `version` | 语义化版本号，最长 64 字节。 |
+| `author.name` | 必填。`author.url` 如果提供，必须是纯 HTTPS 地址。 |
+| `icon` | 可选，包内相对路径。 |
+| `scopes` | 非空，最多 64 项，不得重复。 |
+| `config` | 可选，最多 32 个字段。 |
+| `contributes` | 至少包含一个 surface、hook 或 resource；总数不超过 64。 |
+
+超过 1 MB 的 manifest 在解析前就会被拒绝。
+
+### 权限（scopes）
+
+权限列表是封闭的，不在表内的值会在解析阶段失败。
+
+| 权限 | 授予的能力 |
+|---|---|
+| `issues:read` / `issues:write` | 读取或修改 issue。 |
+| `comments:read` / `comments:write` | 读取或发表评论。 |
+| `tasks:read` / `tasks:write` | 读取或写入 task。 |
+| `agents:read` | 读取智能体。 |
+| `members:read` | 读取工作区成员。 |
+| `storage:user` / `storage:workspace` | 按成员或按工作区隔离的插件存储。 |
+| `net:<domain>` | 访问某一个确切的主机。 |
+
+`net:` 是唯一带参数的形式，并且是**精确主机匹配**：`net:example.com` 不覆盖 `api.example.com`，需要分别声明。这份列表同时承担两项职责 —— 它会成为 surface iframe 的 CSP `connect-src`，也界定了 hook transport 允许指向的主机。未被 `net:` 权限覆盖的 hook URL 会在发布时报错，因此授权界面展示的始终是数据真实的去向。
+
+### 配置字段
+
+宿主根据这一段生成配置表单，所以插件从不需要自带表单 UI。
+
+| 类型 | 说明 |
+|---|---|
+| `string` | 加上 `"multiline": true` 渲染为多行文本框。 |
+| `number` | |
+| `bool` | |
+| `enum` | 必须提供 `options`（1–64 项，不重复）。 |
+| `secret` | 只写，参见[密钥](#密钥)。 |
+
+每个字段还可以带 `label`（必填）、`description`（≤500 字节）、`required` 和 `placeholder`（≤160 字节）。字段的声明顺序会被保留，因此生成的表单在每个工作区里都是一致的。
+
+### Surface
+
+surface 是宿主挂载在固定位置的 iframe。内部渲染什么由你决定，出现在哪里由宿主决定。
+
+| `type` | 出现位置 |
+|---|---|
+| `issue_panel` | 内嵌在 issue 页面。 |
+| `sidebar_panel` | 工作区侧边栏。 |
+| `modal` | 从 issue 菜单打开的对话框。 |
+
+`entry` 必须是包内的 `.js` 或 `.mjs` 路径。外层 HTML 文档由宿主自己生成 —— 正是这一点让宿主能够附加由 `net:` 权限推导出的 CSP。如果 HTML 文档由插件作者提供，它会带上自己服务器发送的策略，`net:` 就只是一句声明而非一道控制。`platforms` 可以进一步限定为 `web` 和/或 `desktop`。
+
+### Hook
+
+```json
+{
+  "key": "nightly_digest",
+  "name": "Nightly digest",
+  "description": "Posts yesterday's activity as a comment.",
+  "input_schema": { "type": "object", "properties": { "since": { "type": "string" } } },
+  "triggers": ["schedule"],
+  "schedule": { "cron": "0 9 * * *", "timezone": "Europe/London" },
+  "transport": { "type": "http", "url": "https://notes.example.com/hooks/digest" },
+  "timeout_ms": 15000
+}
+```
+
+`description` 是必填项 —— 智能体会把它当作 MCP 工具描述来读。`input_schema` 如果提供，必须是 JSON Schema 对象。`timeout_ms` 取值 100–30000，默认 10 秒。
+
+**触发器**规定谁可以调用这个 hook。宿主绝不会凭空创造 manifest 未列出的调用点。
+
+| 触发器 | 调用方 | 是否阻塞 |
+|---|---|---|
+| `ui` | 你自己的 surface，通过 `multica.hooks.invoke()`。 | 是 |
+| `manual` | 使用者从 issue 菜单发起。 | 是 |
+| `agent` | 智能体，作为 MCP 工具调用。 | 是 |
+| `event` | 产品事件。 | 否 |
+| `schedule` | 持久化调度器。 | 否 |
+
+使用 `event` 时，需要在 `events` 中列出事件：
+
+`issue.created` · `issue.updated` · `issue.status_changed` · `comment.created` · `task.started` · `task.completed` · `task.failed`
+
+事件是把内容**推送**过来，而这些内容通过 Action API 拉取时是需要权限的，因此订阅同样要求对应的读权限：`issue.*` 需要 `issues:read`，`comment.created` 需要 `comments:read`，`task.*` 需要 `tasks:read`。否则订阅就成了绕开授权获取数据的通道。
+
+使用 `schedule` 时，提供一个 `cron`（标准五段式）和一个 `timezone`（IANA 名称）。时区必须写在独立字段里，内联的 `TZ=` 前缀会被拒绝。定时 hook 是轮询原语而非高频定时器：**执行频率高于每五分钟一次的表达式会在发布时被拒绝**，且只有 `http` transport 支持定时。一个 hook 只能有一个节奏 —— 需要两个就声明两个 hook，这样每个持久化执行身份都不会有歧义。
+
+**Transport** 可以是 `http`（宿主 POST 你的端点）或 `mcp`（宿主与你的服务器进行 MCP 通信）。两者的 URL 都必须是纯 HTTPS，并被某个 `net:` 权限覆盖。
+
+### Resource
+
+```json
+{ "type": "skill", "key": "incident-response", "entry": "skills/incident-response/SKILL.md" }
+```
+
+entry 路径固定为 `skills/<key>/SKILL.md`。安装时把 skill 写入工作区；升级时重写，新版本中删掉的 skill 会被移除。
+
+## 编写 surface
+
+surface 是沙箱 iframe 中的**单个**脚本。请把 SDK 和其他依赖打包进一个文件：宿主在一个生成的文档中加载你的入口，没有模块图，裸 `import` 无从解析。发布时会直接拒绝带有裸 import 的入口，而不是让它几个月后在使用者的浏览器里失败。
+
+```sh
+npm install @multica/plugin-sdk
+```
+
+```js
+import { multica } from "@multica/plugin-sdk";
+
+const context = await multica.context.get();
+const issue = await multica.issue.get();
+
+await multica.issue.comment({ body: `Drafted for ${issue.identifier}` });
+await multica.storage.user.set("last-draft", issue.id);
+
+const result = await multica.hooks.invoke("generate", { issueId: issue.id });
+
+multica.ui.resize(document.body.scrollHeight);
+```
+
+iframe 以 `sandbox="allow-scripts"` 挂载，且**不带** `allow-same-origin`，因此它的 origin 是不透明的。动手前有三点后果值得了解：
+
+- **没有浏览器存储。** `localStorage`、`sessionStorage` 和 cookie 要么抛错要么为空。请使用 `multica.storage`，它在服务端，按工作区或按成员隔离，且生命周期长于这个 frame。
+- **自身请求带 `Origin: null`。** 如果 surface 直接调用你自己的后端，该后端的 CORS 必须接受 null origin。
+- **一份不是你写的 CSP。** `connect-src` 来自你的 `net:` 权限。一个都不声明，surface 就完全无法发起网络请求 —— 包括访问你自己的 origin，因为代码现在由 Multica 提供，你的 origin 已经不在策略里了。
+
+### SDK 接口
+
+| 调用 | 返回 |
+|---|---|
+| `multica.context.get(force?)` | `PluginContext` —— 工作区、用户、issue、非密钥 `config`、`granted_net_domains`。 |
+| `multica.issue.get(id?)` | `Issue`。 |
+| `multica.issue.update(patch, id?)` | `Issue`。 |
+| `multica.issue.comments(id?)` | `Comment[]`。 |
+| `multica.issue.comment({ body, parentId }, id?)` | `Comment`。 |
+| `multica.storage.workspace` / `.user` | `list()`、`get(key)`、`set(key, value)`、`delete(key)`。 |
+| `multica.hooks.invoke(key, input?)` | `HookResult`。 |
+| `multica.ui.resize(px)` | 无返回；宿主会对数值做钳制。 |
+| `multica.ui.onThemeChange(fn)` | 一个取消订阅函数。 |
+
+读取不存在的存储键时 `get` 返回 `null` 而不是抛错 —— 键不存在是正常结果。其余情况抛出 `MulticaPluginError`，其 `status` 与 HTTP 状态码对应。
+
+frame 内不持有任何凭据，也无法直接访问 Multica 的 API。每次调用都会变成发给宿主页面的消息，由宿主**以当前登录用户自己的会话**执行。因此同时存在两重限制：管理员授予的权限，以及这名用户本身就能做的事。无权访问某个 issue 的成员，通过你的 surface 同样会收到 404；被拒绝的权限会返回一个指明该权限的 403。
+
+以这种方式发表的评论作者是该用户本人，并记录为通过你的插件发出。它不会触发 `@mention` 的调度逻辑 —— surface 不能借发表文本这一副作用启动智能体运行。
+
+### 主题与尺寸
+
+宿主通过私有端口推送设计 token，并在每次主题切换时再次推送，SDK 会把它们写成 `:root` 上的自定义属性。使用 `var(--foreground)`、`var(--background)`、`var(--border)`、`var(--radius)`，无需自带样式表即可获得原生观感。
+
+frame 不会自动调整尺寸。内容稳定后调用 `multica.ui.resize(px)`。
+
+## 编写 hook handler
+
+宿主会向你的 `http` 端点 POST 如下 JSON：
+
+```json
+{
+  "version": 1,
+  "invocation_id": "…",
+  "delivery_id": "…",
+  "attempt": 1,
+  "occurred_at": "2026-01-01T09:00:00Z",
+  "hook_key": "nightly_digest",
+  "trigger": "schedule",
+  "workspace_id": "…",
+  "installation_id": "…",
+  "issue_id": "…",
+  "actor": { "type": "user", "id": "…" },
+  "input": {},
+  "config": { "milestone_field": "Milestone" },
+  "callback_token": "…",
+  "callback_url": "https://multica.example.com/v1",
+  "schedule": { "planned_at": "2026-01-01T09:00:00Z" }
+}
+```
+
+`config` 携带管理员在表单里填写的非密钥值 —— Action API 刻意没有提供 config 端点，而如果强迫插件自己再存一份，manifest 里的 config 区块就形同虚设。`issue_id` 由宿主解析并做过权限校验，因此 handler 不必信任来自客户端 `input` 的 issue 引用。
+
+`callback_token` 允许 handler 在几分钟内回调 Action API，其权限比安装本身的 token 更窄，且只绑定这一次调用。`delivery_id` 在同一次投递的多次重试之间保持不变 —— 用它实现幂等。
+
+### 验证签名
+
+每次调用都会带三个请求头：
+
+| 请求头 | 含义 |
+|---|---|
+| `X-Multica-Timestamp` | Unix 秒。 |
+| `X-Multica-Signature` | `v1=<hex>`，即 `<timestamp>.<原始 body>` 的 HMAC-SHA256。 |
+| `X-Multica-Plugin-Installation` | 发起调用的安装实例。 |
+
+密钥是签发 token 时一次性展示的 `whsec_…` 值。在做比较之前，先拒绝与本机时钟相差超过**五分钟**的时间戳 —— 这是限制重放的关键，而如果 handler 再记住已见过的签名，就能彻底关闭这个窗口。比较必须使用常量时间算法。
+
+```js
+const expected = createHmac("sha256", SIGNING_SECRET)
+  .update(`${timestamp}.${rawBody}`)
+  .digest("hex");
+```
+
+### 宿主在你的端点周围做了什么
+
+- **目标校验。** 主机必须是 manifest 声明过的，且在建立连接时解析到公网地址。
+- **限流。** 每个 hook 每分钟 120 次尝试。
+- **响应上限。** 超过 1 MB 的响应体直接失败，而不是被宿主消费掉。
+- **重试。** `event` 投递共尝试三次并带退避；`ui`、`manual` 和 `agent` 调用不重试，因为有人正在等待结果。
+- **熔断。** 五分钟内失败五次后，该 hook 的后台投递停止，直到窗口滚过。
+
+每次调用都会记录为一条 invocation，管理员事后可以查看。
+
+## 密钥
+
+`type: "secret"` 的配置字段是**只写**的。管理员设置之后，宿主加密保存且从不返回 —— 不返回给设置表单，不进入 surface 的 `context.config`，**也不出现在 http hook body 的 `config` 对象里**。
+
+只有一个例外：对于使用 `mcp` transport 的 hook，命名为 `<hookKey>_credential` 的 secret 字段会在宿主与该 MCP 服务器通信时作为 `Authorization` 头附加。除此之外，不存在任何已存储的密钥抵达端点的路径。
+
+那么 http handler 如何向自己的服务认证？从自己的环境变量读取。插件访问自家服务的凭据本来就在作者手上；把它顺着网络送回去，只会把每一个值交给端点的持有者，而不带来任何收益。
+
+<Callout type="warn">
+发布时会扫描包内是否含有凭据，一旦发现即拒绝发布。版本是不可变的，且公共目录可以把它提供给整个实例，所以密钥一旦入库就等同于已经公开 —— 之后再拒绝已经没有意义。
+</Callout>
+
+## 开发流程
+
+把 `MULTICA_PLUGIN_DIR` 指向一个插件源码目录，即可直接从磁盘发布，不必每改一次就重新打包：
+
+```sh
+MULTICA_PLUGIN_DIR=/srv/plugin-sources multica-server
+```
+
+其中每个子目录是一个插件。从这里发布仍然产生一个普通的不可变版本，而不是面板在渲染时实时读取的活动目录 —— 否则"这份代码是否已冻结"就取决于插件是怎么安装的了。重复发布同一个版本号（这正是开发过程中的常态）会追加 `+dev.N` 构建后缀，而不是因冲突失败。
+
+如果 hook 端点跑在 localhost 且使用自签名证书，把 `MULTICA_PLUGIN_DEV_CA` 设为证书路径。它改变的是 Multica 信任*哪张*证书，而不会关闭校验。
+
+```sh
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+  -keyout dev-key.pem -out dev-cert.pem \
+  -subj "/CN=127.0.0.1" -addext "subjectAltName=IP:127.0.0.1"
+```
+
+在**设置 → 插件**中查看 invocation 列表，可以看到宿主实际发送了什么、返回了什么。
+
+## 打包与发布
+
+把 manifest 和它引用的所有文件打成 zip，在**设置 → 插件**中上传。压缩包里可以包含其他文件，但只有 manifest 引用到的会被存储 —— 其余文件没有任何读取路径。
+
+| 限制项 | 数值 |
+|---|---|
+| 压缩包 | 2 MB |
+| 单个文件 | 1 MB |
+| 存储总量 | 4 MB |
+| 压缩包内条目数 | 512 |
+| 单个 `SKILL.md` | 256 KB |
+
+校验发生在发布时，而不是几个月后使用者的浏览器里：入口文件不存在会导致发布被拒，并指出缺失的具体路径。
+
+前端不需要你自己的服务器。hook 端点和 MCP 服务器仍然由你运行。
+
+## 版本、上架与升级
+
+已发布的版本是**不可变**的。以下三者被刻意分开：
+
+- **产物** —— 某个版本的文件。永不改变。
+- **上架状态** —— 本实例上的其他工作区能否发现这个插件。由发布者控制。
+- **安装** —— 某个工作区实际运行哪个版本。由该工作区的管理员控制。
+
+发布新版本不会改变任何已安装工作区的运行内容，直到管理员执行升级为止 —— 因此他们在授权界面上批准的，始终就是他们的浏览器实际运行的。
+
+发布者可以把包上架到实例公共目录或撤下，也可以在不下架整个插件的前提下**撤回**某一个有问题的版本。被撤回的版本从目录中消失且无法被新安装；已经在使用它的工作区继续运行，直到自行升级。
+
+升级会重新走授权流程，并在一个事务内完成：
+
+- 新 manifest 中已删除字段对应的配置值会被清除 —— 包括密钥，这样快照绝不会带着上一个版本的密文落库。
+- skill 资源会被重写，被删除的会被移除。
+- hook 的定时计划会按新 manifest 重新对齐。
+
+其中任何一步失败，整体都不生效。
+
+## 示例
+
+仓库在 `examples/plugins/` 下提供了可运行的示例：
+
+| 示例 | 演示内容 |
+|---|---|
+| `hello-panel` | 最小的 `issue_panel` surface。 |
+| `triage-notify` | `event` 触发的 hook 与签名校验。 |
+| `schedule-pulse` | 定时 hook 与基于 `delivery_id` 的幂等。 |
+| `deploy-sentinel` | `mcp` transport 以及贡献 skill。 |
+| `oncall-handoff` | `modal` surface、`manual` 触发器与只写密钥。 |

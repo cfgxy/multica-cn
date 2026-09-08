@@ -1,0 +1,352 @@
+---
+title: プラグイン開発
+description: Multica プラグインの作成・パッケージ化・公開・アップグレード — マニフェスト、surface SDK、Action API、スコープ、hook、ローカル開発ループ。
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+プラグインは、fork することなく、また Multica 自身のリリースサイクルに乗ることもなくワークスペースを拡張します。配布形式は 1 つのアーカイブ、すなわちマニフェストとマニフェストが参照するファイル群です。
+
+<Callout type="info">
+プラグインは機能フラグ `plugins_v1` の配下にあり、既定では無効です。セルフホストのインスタンスでは有効化できます。[環境変数](/environment-variables)を参照してください。
+</Callout>
+
+## プラグインと Multica の 3 つの関係
+
+すべての機能はちょうど次の 3 種類のいずれかに属し、この区別によってコードがどこで動くかが決まります。
+
+| 種類 | 方向 | 内容 |
+|---|---|---|
+| **Action** | プラグイン → Multica | surface がホストを呼び出す。issue の読み取り、コメントの投稿、値の保存など。 |
+| **Hook** | Multica → プラグイン | ホストが `http` または `mcp` であなたのエンドポイントを呼び出す。 |
+| **Resource** | 呼び出しなし | マニフェストが提供する静的コンテンツ。現在は `skill` テキスト。 |
+
+「誰が hook を起動するか」と「hook が何をするか」は別の問題です。hook は一度だけ宣言し、受け付けるトリガーを列挙します。
+
+## マニフェスト
+
+`multica.plugin.json` はパッケージのルートに置きます。厳格に解析され、未知のフィールドは黙って無視されるのではなくエラーになります。マニフェストは管理者が同意する対象であり、タイプミスがその同意を気付かれずに弱められてはならないからです。
+
+```json
+{
+  "manifest_version": 1,
+  "key": "com.example.release-notes",
+  "name": "Release Notes",
+  "description": "Drafts release notes from the issues in a milestone.",
+  "version": "1.2.0",
+  "author": { "name": "Example Team", "url": "https://example.com" },
+  "scopes": ["issues:read", "comments:write", "net:notes.example.com"],
+  "config": {
+    "milestone_field": { "type": "string", "label": "Milestone field", "required": true }
+  },
+  "contributes": {
+    "surfaces": [
+      { "key": "draft", "type": "issue_panel", "name": "Draft notes", "entry": "ui/main.js" }
+    ],
+    "hooks": [
+      {
+        "key": "generate",
+        "name": "Generate notes",
+        "description": "Turns a milestone's closed issues into release-note prose.",
+        "triggers": ["ui"],
+        "transport": { "type": "http", "url": "https://notes.example.com/hooks/generate" }
+      }
+    ]
+  }
+}
+```
+
+### トップレベルのフィールド
+
+| フィールド | ルール |
+|---|---|
+| `manifest_version` | `1` であること。 |
+| `key` | 逆 DNS 形式。2 セグメント以上、小文字 `a-z0-9`、単一のハイフン区切り。バージョンとワークスペースをまたいでプラグインを識別します。 |
+| `name` | 単一行、最大 160 バイト。 |
+| `description` | 最大 2000 バイト。 |
+| `version` | セマンティックバージョニング、最大 64 バイト。 |
+| `author.name` | 必須。`author.url` を指定する場合はプレーンな HTTPS であること。 |
+| `icon` | 任意。パッケージ内の相対パス。 |
+| `scopes` | 空不可、最大 64 件、重複不可。 |
+| `config` | 任意、最大 32 フィールド。 |
+| `contributes` | surface・hook・resource を合わせて 1 つ以上、合計 64 件まで。 |
+
+1 MB を超えるマニフェストは解析前に拒否されます。
+
+### スコープ
+
+スコープの一覧は閉じています。ここにない値は解析時に失敗します。
+
+| スコープ | 付与される権限 |
+|---|---|
+| `issues:read` / `issues:write` | issue の読み取り・更新。 |
+| `comments:read` / `comments:write` | コメントの読み取り・投稿。 |
+| `tasks:read` / `tasks:write` | task の読み取り・書き込み。 |
+| `agents:read` | エージェントの読み取り。 |
+| `members:read` | ワークスペースメンバーの読み取り。 |
+| `storage:user` / `storage:workspace` | メンバー単位・ワークスペース単位のプラグインストレージ。 |
+| `net:<domain>` | 特定の 1 ホストへのアクセス。 |
+
+`net:` は唯一パラメータを取る形式で、**ホストの完全一致**です。`net:example.com` は `api.example.com` を含みません。個別に宣言してください。この一覧は 2 つの役割を同時に果たします。surface の iframe の CSP `connect-src` になり、hook transport が指してよいホストを制限します。`net:` スコープでカバーされない hook URL は公開時にエラーになるため、同意画面は常にデータの実際の送信先を説明します。
+
+### 設定フィールド
+
+ホストはこのブロックから設定フォームを生成します。したがってプラグインがフォーム UI を同梱する必要はありません。
+
+| 型 | 備考 |
+|---|---|
+| `string` | `"multiline": true` でテキストエリアになります。 |
+| `number` | |
+| `bool` | |
+| `enum` | `options`（1〜64 件、重複不可）が必要です。 |
+| `secret` | 書き込み専用。[シークレット](#シークレット)を参照。 |
+
+各フィールドは `label`（必須）、`description`（500 バイト以下）、`required`、`placeholder`（160 バイト以下）も取れます。宣言順は保持されるため、生成されるフォームはどのワークスペースでも同じ見た目になります。
+
+### Surface
+
+surface はホストが決まった場所にマウントする iframe です。中に何を描画するかはあなたが、どこに現れるかはホストが決めます。
+
+| `type` | 表示場所 |
+|---|---|
+| `issue_panel` | issue 画面内にインライン表示。 |
+| `sidebar_panel` | ワークスペースのサイドバー。 |
+| `modal` | issue メニューから開くダイアログ。 |
+
+`entry` はパッケージ内の `.js` または `.mjs` パスであること。外側の HTML ドキュメントはホスト自身が生成します。それによって初めて、`net:` スコープから導出した CSP をホストが付与できます。プラグイン作者が用意した HTML ドキュメントは自分のサーバーが送ったポリシーを持つため、`net:` は制御ではなく主張に過ぎなくなります。`platforms` で `web` / `desktop` に限定できます。
+
+### Hook
+
+```json
+{
+  "key": "nightly_digest",
+  "name": "Nightly digest",
+  "description": "Posts yesterday's activity as a comment.",
+  "input_schema": { "type": "object", "properties": { "since": { "type": "string" } } },
+  "triggers": ["schedule"],
+  "schedule": { "cron": "0 9 * * *", "timezone": "Europe/London" },
+  "transport": { "type": "http", "url": "https://notes.example.com/hooks/digest" },
+  "timeout_ms": 15000
+}
+```
+
+`description` は必須です。エージェントはこれを MCP ツールの説明として読みます。`input_schema` を指定する場合は JSON Schema のオブジェクトであること。`timeout_ms` は 100〜30000 で、既定は 10 秒です。
+
+**トリガー**は、誰がその hook を呼び出してよいかを定めます。ホストがマニフェストに無い呼び出し箇所を勝手に作ることはありません。
+
+| トリガー | 呼び出し元 | ブロッキング |
+|---|---|---|
+| `ui` | 自身の surface から `multica.hooks.invoke()` 経由。 | はい |
+| `manual` | 利用者が issue メニューから実行。 | はい |
+| `agent` | エージェントが MCP ツールとして呼び出し。 | はい |
+| `event` | プロダクトイベント。 | いいえ |
+| `schedule` | 永続スケジューラ。 | いいえ |
+
+`event` を使う場合は `events` にイベントを列挙します。
+
+`issue.created` · `issue.updated` · `issue.status_changed` · `comment.created` · `task.started` · `task.completed` · `task.failed`
+
+イベントは、Action API で取得するならスコープが必要な内容を**プッシュ**します。そのため購読には対応する読み取りスコープが必要です。`issue.*` には `issues:read`、`comment.created` には `comments:read`、`task.*` には `tasks:read`。そうでなければ、購読が「読み取りを許可されていないものを受け取る手段」になってしまいます。
+
+`schedule` を使う場合は `cron`（標準の 5 フィールド）と `timezone`（IANA 名）を指定します。タイムゾーンは専用フィールドに書くもので、インラインの `TZ=` 接頭辞は拒否されます。スケジュール hook はタイマーではなくポーリングの原始的手段です。**5 分より高い頻度で実行される式は公開時に拒否されます**。また、スケジュールに対応するのは `http` transport のみです。1 つの hook につき 1 つのケイデンスです。2 つ必要なら hook を 2 つ宣言してください。そうすることで、永続実行の同一性が曖昧になりません。
+
+**Transport** は `http`（ホストがあなたのエンドポイントに POST）または `mcp`（ホストがあなたのサーバーと MCP で通信）です。どちらの URL もプレーンな HTTPS で、かつ `net:` スコープでカバーされている必要があります。
+
+### Resource
+
+```json
+{ "type": "skill", "key": "incident-response", "entry": "skills/incident-response/SKILL.md" }
+```
+
+entry のパスは `skills/<key>/SKILL.md` に固定されています。インストール時に skill がワークスペースへ書き込まれ、アップグレード時には書き換えられ、新バージョンで削除された skill は取り除かれます。
+
+## Surface を書く
+
+surface はサンドボックス化された iframe 内の**単一**スクリプトです。SDK とその他すべてを 1 ファイルにバンドルしてください。ホストは生成したドキュメント内であなたのエントリを読み込むため、モジュールグラフが存在せず、裸の `import` は解決先を持ちません。公開時点でそうしたエントリは拒否されます。数か月後に読者のブラウザで失敗させないためです。
+
+```sh
+npm install @multica/plugin-sdk
+```
+
+```js
+import { multica } from "@multica/plugin-sdk";
+
+const context = await multica.context.get();
+const issue = await multica.issue.get();
+
+await multica.issue.comment({ body: `Drafted for ${issue.identifier}` });
+await multica.storage.user.set("last-draft", issue.id);
+
+const result = await multica.hooks.invoke("generate", { issueId: issue.id });
+
+multica.ui.resize(document.body.scrollHeight);
+```
+
+iframe は `sandbox="allow-scripts"` でマウントされ、`allow-same-origin` は**付きません**。したがって不透明なオリジンを持ちます。書き始める前に押さえておきたい影響が 3 つあります。
+
+- **ブラウザストレージが使えません。** `localStorage`、`sessionStorage`、Cookie は例外を投げるか空です。`multica.storage` を使ってください。サーバー側にあり、ワークスペース単位またはメンバー単位でスコープされ、frame より長く残ります。
+- **自身のリクエストは `Origin: null` になります。** surface が自前のバックエンドを直接呼ぶ場合、そのバックエンドの CORS は null オリジンを受け入れる必要があります。
+- **自分では書いていない CSP があります。** `connect-src` は `net:` スコープから導出されます。1 つも宣言しなければ、surface はネットワークリクエストを一切行えません。自分のオリジンへの通信も含みます。コードを配信しているのは Multica であり、あなたのオリジンはもうポリシーに含まれていないからです。
+
+### SDK の API
+
+| 呼び出し | 戻り値 |
+|---|---|
+| `multica.context.get(force?)` | `PluginContext` — ワークスペース、ユーザー、issue、非シークレットの `config`、`granted_net_domains`。 |
+| `multica.issue.get(id?)` | `Issue`。 |
+| `multica.issue.update(patch, id?)` | `Issue`。 |
+| `multica.issue.comments(id?)` | `Comment[]`。 |
+| `multica.issue.comment({ body, parentId }, id?)` | `Comment`。 |
+| `multica.storage.workspace` / `.user` | `list()`、`get(key)`、`set(key, value)`、`delete(key)`。 |
+| `multica.hooks.invoke(key, input?)` | `HookResult`。 |
+| `multica.ui.resize(px)` | 戻り値なし。値はホストがクランプします。 |
+| `multica.ui.onThemeChange(fn)` | 購読解除用の関数。 |
+
+存在しないストレージキーに対する `get` は例外ではなく `null` を返します。キーが無いことは通常の結果だからです。それ以外は `MulticaPluginError` を投げ、`status` は HTTP に対応します。
+
+frame は資格情報を保持せず、Multica の API に直接到達できません。すべての呼び出しはホストページへのメッセージとなり、ホストが**サインイン中のユーザー自身のセッションで**実行します。したがって 2 つの制限が同時にかかります。管理者が付与したスコープと、そのユーザーが元々できること、です。ある issue にアクセスできないメンバーは、あなたの surface 経由でも 404 を受け取ります。拒否されたスコープは、そのスコープ名を示す 403 になります。
+
+この方法で投稿されたコメントの作者は**ユーザー本人**であり、あなたのプラグイン経由で行われたものとして記録されます。`@mention` によるトリガーディスパッチは実行されません。surface がテキスト投稿の副作用としてエージェントの実行を開始することはできません。
+
+### テーマとサイズ
+
+ホストはデザイントークンをプライベートポート経由で送り、テーマ切り替えのたびに再送します。SDK はそれを `:root` のカスタムプロパティとして書き込みます。`var(--foreground)`、`var(--background)`、`var(--border)`、`var(--radius)` などを使えば、スタイルシートを同梱せずともネイティブな見た目になります。
+
+frame は自動リサイズしません。コンテンツが確定したら `multica.ui.resize(px)` を呼んでください。
+
+## Hook ハンドラを書く
+
+ホストはあなたの `http` エンドポイントへ次の JSON を POST します。
+
+```json
+{
+  "version": 1,
+  "invocation_id": "…",
+  "delivery_id": "…",
+  "attempt": 1,
+  "occurred_at": "2026-01-01T09:00:00Z",
+  "hook_key": "nightly_digest",
+  "trigger": "schedule",
+  "workspace_id": "…",
+  "installation_id": "…",
+  "issue_id": "…",
+  "actor": { "type": "user", "id": "…" },
+  "input": {},
+  "config": { "milestone_field": "Milestone" },
+  "callback_token": "…",
+  "callback_url": "https://multica.example.com/v1",
+  "schedule": { "planned_at": "2026-01-01T09:00:00Z" }
+}
+```
+
+`config` は管理者がフォームに入力した非シークレットの値を運びます。Action API には意図的に config エンドポイントが無く、プラグインに 2 つ目のコピーを持たせるとマニフェストの config ブロックが飾りになってしまうためです。`issue_id` はホストが解決し権限チェック済みなので、ハンドラがクライアント由来の `input` にある issue 参照を信用する必要はありません。
+
+`callback_token` により、ハンドラは数分間だけ Action API を呼び返せます。インストール自身のトークンより狭く、この 1 回の呼び出しに紐づきます。`delivery_id` は同一オカレンスのリトライ間で不変です。冪等性の実現に使ってください。
+
+### 署名の検証
+
+呼び出しごとに 3 つのヘッダーが届きます。
+
+| ヘッダー | 意味 |
+|---|---|
+| `X-Multica-Timestamp` | Unix 秒。 |
+| `X-Multica-Signature` | `v1=<hex>`。`<timestamp>.<生のボディ>` の HMAC-SHA256。 |
+| `X-Multica-Plugin-Installation` | 呼び出し元のインストール。 |
+
+シークレットは、トークン発行時に一度だけ表示される `whsec_…` の値です。比較に時間を使う前に、自分の時計から**5 分**以上離れたタイムスタンプを拒否してください。これがリプレイを封じます。加えて署名を記憶するハンドラなら、その窓を完全に閉じられます。比較は定数時間で行ってください。
+
+```js
+const expected = createHmac("sha256", SIGNING_SECRET)
+  .update(`${timestamp}.${rawBody}`)
+  .digest("hex");
+```
+
+### ホストがエンドポイントの周囲で行うこと
+
+- **宛先チェック。** ホストはマニフェストが宣言したものであり、かつダイヤル時にパブリックアドレスへ解決される必要があります。
+- **レート制限。** hook ごとに毎分 120 回の試行まで。
+- **レスポンス上限。** 1 MB を超えるボディは、消費されるのではなく失敗します。
+- **リトライ。** `event` の配信はバックオフ付きで 3 回試行します。`ui`・`manual`・`agent` はリトライしません。人が待っているからです。
+- **サーキットブレーカー。** 5 分間に 5 回失敗すると、その hook のバックグラウンド配信は窓が過ぎるまで停止します。
+
+すべての呼び出しは invocation として記録され、管理者が後から確認できます。
+
+## シークレット
+
+`type: "secret"` の設定フィールドは**書き込み専用**です。管理者が設定すると、ホストはそれを暗号化し、二度と返しません。設定フォームにも、surface の `context.config` にも、**http hook ボディの `config` オブジェクトにも**返しません。
+
+例外はちょうど 1 つです。`mcp` transport を使う hook では、`<hookKey>_credential` という名前のシークレットフィールドが、ホストがその MCP サーバーと通信する際の `Authorization` ヘッダーとして付与されます。保存されたシークレットがエンドポイントへ届く経路は他にありません。
+
+では http ハンドラは自分のサービスにどう認証するのか。自分自身の環境変数から読みます。プラグインが自分のサービスに使う資格情報は作者が元々持っているものであり、それをネットワーク越しに送り返すのは、エンドポイントを握る者にすべての値を渡すだけで、何の利益もありません。
+
+<Callout type="warn">
+公開時にパッケージ内の資格情報がスキャンされ、含まれていれば公開は拒否されます。バージョンは不変で、ディレクトリはそれをインスタンス全体へ配信し得るため、ストレージに到達したシークレットは公開されたのと同じです。それ以降に拒否しても意味がありません。
+</Callout>
+
+## 開発ループ
+
+`MULTICA_PLUGIN_DIR` をプラグインのソースディレクトリに向ければ、編集のたびに zip して アップロードせずとも、ディスクから直接公開できます。
+
+```sh
+MULTICA_PLUGIN_DIR=/srv/plugin-sources multica-server
+```
+
+各サブディレクトリが 1 つのプラグインです。ここから公開しても、パネルが描画時に読み直すライブディレクトリではなく、通常の不変バージョンが生成されます。そうでなければ「このコードは凍結されているのか」がインストール方法によって変わってしまいます。同じバージョン文字列での再公開は開発ループでは日常茶飯事なので、競合エラーではなく `+dev.N` のビルド接尾辞が付きます。
+
+自己署名証明書を使う localhost の hook エンドポイントには、`MULTICA_PLUGIN_DEV_CA` に証明書のパスを設定してください。これは Multica が*どの*証明書を信頼するかを変えるものであり、検証を無効化するものではありません。
+
+```sh
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+  -keyout dev-key.pem -out dev-cert.pem \
+  -subj "/CN=127.0.0.1" -addext "subjectAltName=IP:127.0.0.1"
+```
+
+**設定 → プラグイン**の invocation 一覧で、ホストが実際に何を送り何が返ってきたかを確認できます。
+
+## パッケージ化と公開
+
+マニフェストと、それが参照するすべてのファイルを zip にまとめ、**設定 → プラグイン**でアップロードします。アーカイブに他のファイルが入っていても構いませんが、保存されるのはマニフェストが参照するものだけです。それ以外は配信する経路が存在しません。
+
+| 制限 | 値 |
+|---|---|
+| アーカイブ | 2 MB |
+| 単一ファイル | 1 MB |
+| 保存合計 | 4 MB |
+| アーカイブ内のエントリ数 | 512 |
+| `SKILL.md` 1 件 | 256 KB |
+
+検証は読者のブラウザで数か月後にではなく、公開時に行われます。存在しない surface エントリは、欠けているパスを明示して公開が拒否されます。
+
+フロントエンドのために自前のサーバーは不要です。hook エンドポイントと MCP サーバーは引き続きあなたが運用します。
+
+## バージョン・掲載・アップグレード
+
+公開されたバージョンは**不変**です。次の 3 つが意図的に分離されています。
+
+- **成果物** — あるバージョンのファイル群。決して変わりません。
+- **掲載** — このインスタンスの他のワークスペースがそのプラグインを見つけられるかどうか。公開者が制御します。
+- **インストール** — あるワークスペースが実際にどのバージョンを動かすか。そのワークスペースの管理者が制御します。
+
+新しいバージョンを公開しても、管理者がアップグレードするまでインストール済みワークスペースの動作は変わりません。同意画面で承認した内容が、そのままブラウザで動くものであり続けます。
+
+公開者はパッケージをインスタンスのディレクトリに掲載したり取り下げたりでき、プラグイン全体を取り下げずに問題のある**1 バージョンだけを撤回**することもできます。撤回されたバージョンはディレクトリから消え、新規インストールはできません。既にそのバージョンを使っているワークスペースは、移行するまで動作を続けます。
+
+アップグレードは同意を再取得し、1 つのトランザクションで行われます。
+
+- 新しいマニフェストで削除されたフィールドの設定値は取り除かれます。シークレットも同様で、前バージョンの暗号文が残ったままスナップショットが確定することはありません。
+- skill リソースは書き換えられ、削除されたものは取り除かれます。
+- hook のスケジュールは新しいマニフェストに合わせて調整されます。
+
+いずれかが失敗した場合、どれも適用されません。
+
+## サンプル
+
+リポジトリの `examples/plugins/` に実行可能なサンプルがあります。
+
+| サンプル | 内容 |
+|---|---|
+| `hello-panel` | 最小の `issue_panel` surface。 |
+| `triage-notify` | `event` トリガーの hook と署名検証。 |
+| `schedule-pulse` | スケジュール hook と `delivery_id` による冪等性。 |
+| `deploy-sentinel` | `mcp` transport と skill の提供。 |
+| `oncall-handoff` | `modal` surface、`manual` トリガー、書き込み専用シークレット。 |
