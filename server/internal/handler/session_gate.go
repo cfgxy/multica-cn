@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"sort"
 	"strings"
 	"unicode/utf8"
 
@@ -39,11 +38,12 @@ const (
 	// with `multica issue comment list`, so a longer excerpt buys nothing but
 	// context it was trying to shed.
 	priorContextBriefCommentBytes = 600
-	// priorContextBriefThreadLimit / priorContextBriefRecentLimit bound how
-	// many threads are listed at all.
-	priorContextBriefThreadLimit = 40
-	priorContextBriefUnresolved  = 8
-	priorContextBriefRecent      = 8
+	// priorContextBriefUnresolved / priorContextBriefRecent bound how many
+	// anchors each section lists. Both queries apply the cut AFTER ordering by
+	// the property the section is about, so these are the count of the most
+	// relevant rows rather than a window over the newest ones.
+	priorContextBriefUnresolved = 8
+	priorContextBriefRecent     = 8
 )
 
 // sessionGateOutcome is what applySessionContextGate decided, for logging.
@@ -99,6 +99,26 @@ func logSessionGate(taskID string, agentID string, outcome sessionGateOutcome, a
 	)
 }
 
+// sessionBriefInputs are the facts about the PREVIOUS turn that a compacting
+// claim hands to the brief.
+//
+// priorResult and continuityGap describe the most recent terminal task, which
+// after a withheld Codex rollout is NOT the task the resumable session came
+// from. Keeping them in one struct sourced from one row is what stops the two
+// from describing different turns — the shape of the MUL-5305 regression this
+// gate reintroduced when it read the result from the fallback session's task
+// and the gap flag from a separate query.
+type sessionBriefInputs struct {
+	// priorResult is the stored result blob of the most recent terminal task.
+	priorResult []byte
+	// continuityGap is true when that task withheld its session (rollout
+	// missing), i.e. its context was never carried into the session being
+	// judged here. The brief must say so: compaction already replaces the
+	// transcript, and silently folding a real gap into "here is your hand-off"
+	// tells the run its memory is intact one turn further back than it is.
+	continuityGap bool
+}
+
 // applySessionContextGate is the single place a claim decides whether to keep
 // resuming. Both resume paths (rerun and follow-up) route through it so they
 // cannot drift apart; they differ only in which task they nominate as the
@@ -113,29 +133,38 @@ func logSessionGate(taskID string, agentID string, outcome sessionGateOutcome, a
 // (the whole point is that it is too big to resume), but the run is told its
 // memory is gone through the existing continuity notice. Cancelling the
 // compaction instead would resume the oversized session and lose the turn.
-func (h *Handler) applySessionContextGate(ctx context.Context, resp *AgentTaskResponse, agent db.Agent, task db.AgentTaskQueue, sourceTaskID pgtype.UUID, priorResult []byte) {
+//
+// Reports whether it compacted, so the caller knows a brief now owns the
+// continuity disclosure and must not also raise the plain notice — the two are
+// mutually exclusive by construction (see prompt.go).
+func (h *Handler) applySessionContextGate(ctx context.Context, resp *AgentTaskResponse, agent db.Agent, task db.AgentTaskQueue, sourceTaskID pgtype.UUID, inputs sessionBriefInputs) bool {
 	if resp.PriorSessionID == "" {
 		// Nothing is being resumed, so there is nothing to gate. Skipping the
 		// usage lookup here also keeps cold starts off the query.
-		return
+		return false
 	}
 	outcome := h.decideSessionResumeForTask(ctx, agent, sourceTaskID)
 	if !outcome.decision.ShouldStartFreshSession() {
 		logSessionGate(uuidToString(task.ID), uuidToString(task.AgentID), outcome, agent, 0)
-		return
+		return false
 	}
 
 	resp.PriorSessionID = ""
 	brief := ""
 	if task.IssueID.Valid {
-		brief = h.buildPriorContextBrief(ctx, task.IssueID, parseUUID(resp.WorkspaceID), priorResult)
+		brief = h.buildPriorContextBrief(ctx, task.IssueID, parseUUID(resp.WorkspaceID), inputs)
 	}
 	if brief == "" {
 		resp.PriorSessionResumeUnavailable = true
 	} else {
 		resp.PriorContextBrief = brief
+		// The brief carries the disclosure now, including the gap paragraph
+		// when there was one. Leaving the flag set as well would hand the
+		// daemon two contradictory claims about the same turn.
+		resp.PriorSessionResumeUnavailable = false
 	}
 	logSessionGate(uuidToString(task.ID), uuidToString(task.AgentID), outcome, agent, len(brief))
+	return true
 }
 
 // priorRunResultText digs the previous run's own answer out of its stored
@@ -172,26 +201,56 @@ func clipForBrief(s string, maxBytes int) string {
 	return strings.TrimSpace(s[:cut]) + "… [truncated]"
 }
 
-// briefCommentLine renders one thread anchor.
-func briefCommentLine(row db.ListRootCommentsForIssueRow, authorName string) string {
-	author := authorName
+// briefAnchor is one line of the brief: a comment the fresh session can look
+// up. Every field describes the SAME comment — that is the invariant the first
+// implementation broke by pairing a root's author and body with its thread's
+// newest timestamp, which pointed the reader at a comment that does not exist.
+// thread is the id of the root it hangs under, empty when it IS the root.
+type briefAnchor struct {
+	id        pgtype.UUID
+	thread    pgtype.UUID
+	author    string
+	at        pgtype.Timestamptz
+	content   string
+	replies   int32
+	hasCount  bool
+	authorKey string
+}
+
+// shortCommentID is the Ctrl-F handle the workspace's comment-citation
+// convention uses.
+func shortCommentID(id pgtype.UUID) string {
+	s := uuidToString(id)
+	if len(s) > 8 {
+		return s[:8]
+	}
+	return s
+}
+
+// render writes one anchor line.
+func (a briefAnchor) render() string {
+	author := a.author
 	if author == "" {
-		author = row.AuthorType
+		author = a.authorKey
 	}
 	if author == "" {
 		author = "unknown"
 	}
-	id := uuidToString(row.ID)
-	short := id
-	if len(short) > 8 {
-		short = short[:8]
+	var extra string
+	switch {
+	case a.hasCount:
+		extra = fmt.Sprintf(", %d replies", a.replies)
+	case a.thread.Valid && uuidToString(a.thread) != uuidToString(a.id):
+		// A reply names its thread so the agent can pull the whole thread with
+		// `--thread`, which takes the ROOT id, not the reply's.
+		extra = fmt.Sprintf(", in thread `%s`", shortCommentID(a.thread))
 	}
-	return fmt.Sprintf("- `%s` (%s, %s, %d replies): %s\n",
-		short,
+	return fmt.Sprintf("- `%s` (%s, %s%s): %s\n",
+		shortCommentID(a.id),
 		author,
-		timestampToString(row.LastActivityAt),
-		row.ReplyCount,
-		clipForBrief(row.Content, priorContextBriefCommentBytes),
+		timestampToString(a.at),
+		extra,
+		clipForBrief(a.content, priorContextBriefCommentBytes),
 	)
 }
 
@@ -217,49 +276,46 @@ func briefCommentLine(row db.ListRootCommentsForIssueRow, authorName string) str
 //
 // Returns "" when there is nothing worth handing over, which the caller treats
 // as a failed assembly and degrades accordingly.
-func (h *Handler) buildPriorContextBrief(ctx context.Context, issueID, workspaceID pgtype.UUID, priorResult []byte) string {
+func (h *Handler) buildPriorContextBrief(ctx context.Context, issueID, workspaceID pgtype.UUID, inputs sessionBriefInputs) string {
 	var b strings.Builder
 	b.WriteString("## Prior Session Context\n\n")
 	b.WriteString("Your earlier session on this issue grew close to its context limit, so this run starts on a fresh one. " +
 		"The issue and its full comment history are unaffected and remain the authoritative record — what follows is a mechanical hand-off, not a summary, and not a substitute for reading the issue. " +
 		"Your own working memory from the earlier turns is gone: re-derive what you need rather than assuming it, and do not open your reply by announcing this.\n\n")
 
-	if result := priorRunResultText(priorResult); result != "" {
+	if inputs.continuityGap {
+		// MUL-5305: the most recent turn's session was withheld, so its context
+		// was never in the conversation this gate is replacing either. Say so
+		// explicitly — a hand-off that lists what DID carry over, without
+		// naming what did not, reads as complete.
+		b.WriteString("The most recent turn before this one could not have its context carried over at all (its session was unavailable), so anything it worked out is only recoverable from the issue record below.\n\n")
+	}
+
+	if result := priorRunResultText(inputs.priorResult); result != "" {
 		b.WriteString("### What your previous run reported\n\n")
 		b.WriteString(clipForBrief(result, priorContextBriefResultBytes))
 		b.WriteString("\n\n")
 	}
 
-	roots, err := h.Queries.ListRootCommentsForIssue(ctx, db.ListRootCommentsForIssueParams{
-		IssueID:     issueID,
-		WorkspaceID: workspaceID,
-		RowLimit:    priorContextBriefThreadLimit,
-	})
-	if err != nil {
-		slog.Warn("session context gate: load issue threads for brief failed",
-			"issue_id", uuidToString(issueID), "error", err)
-		roots = nil
-	}
-
 	// One name lookup per distinct author rather than per row: a busy issue is
 	// mostly a handful of participants, and the claim path is latency-visible.
 	authorNames := make(map[string]string)
-	nameFor := func(row db.ListRootCommentsForIssueRow) string {
-		if !row.AuthorID.Valid {
+	nameFor := func(authorType string, authorID pgtype.UUID) string {
+		if !authorID.Valid {
 			return ""
 		}
-		key := row.AuthorType + ":" + uuidToString(row.AuthorID)
+		key := authorType + ":" + uuidToString(authorID)
 		if name, ok := authorNames[key]; ok {
 			return name
 		}
 		name := ""
-		switch row.AuthorType {
+		switch authorType {
 		case "agent":
-			if a, err := h.Queries.GetAgent(ctx, row.AuthorID); err == nil {
+			if a, err := h.Queries.GetAgent(ctx, authorID); err == nil {
 				name = a.Name
 			}
 		case "member":
-			if u, err := h.Queries.GetUser(ctx, row.AuthorID); err == nil {
+			if u, err := h.Queries.GetUser(ctx, authorID); err == nil {
 				name = u.Name
 			}
 		}
@@ -267,41 +323,65 @@ func (h *Handler) buildPriorContextBrief(ctx context.Context, issueID, workspace
 		return name
 	}
 
-	var unresolved []db.ListRootCommentsForIssueRow
-	for _, row := range roots {
-		if !row.ResolvedAt.Valid {
-			unresolved = append(unresolved, row)
-		}
-	}
-	// Newest-first within each section: on an issue with more open threads than
-	// the budget allows, the ones still being discussed are the ones worth
-	// keeping.
-	sort.SliceStable(unresolved, func(i, j int) bool {
-		return unresolved[i].LastActivityAt.Time.After(unresolved[j].LastActivityAt.Time)
+	unresolvedRows, err := h.Queries.ListUnresolvedThreadsForBrief(ctx, db.ListUnresolvedThreadsForBriefParams{
+		IssueID:     issueID,
+		WorkspaceID: workspaceID,
+		RowLimit:    priorContextBriefUnresolved,
 	})
-	if len(unresolved) > priorContextBriefUnresolved {
-		unresolved = unresolved[:priorContextBriefUnresolved]
+	if err != nil {
+		slog.Warn("session context gate: load unresolved threads for brief failed",
+			"issue_id", uuidToString(issueID), "error", err)
+		unresolvedRows = nil
 	}
+	unresolved := make([]briefAnchor, 0, len(unresolvedRows))
+	for _, row := range unresolvedRows {
+		unresolved = append(unresolved, briefAnchor{
+			id: row.ID,
+			// The root's own author/body answer "what is still open"; the
+			// timestamp is the THREAD's last activity, which is why it carries
+			// the reply count that explains where that time came from.
+			author:    nameFor(row.AuthorType, row.AuthorID),
+			authorKey: row.AuthorType,
+			at:        row.LastActivityAt,
+			content:   row.Content,
+			replies:   row.ReplyCount,
+			hasCount:  true,
+		})
+	}
+
+	recentRows, err := h.Queries.ListRecentCommentsForBrief(ctx, db.ListRecentCommentsForBriefParams{
+		IssueID:     issueID,
+		WorkspaceID: workspaceID,
+		RowLimit:    priorContextBriefRecent,
+	})
+	if err != nil {
+		slog.Warn("session context gate: load recent comments for brief failed",
+			"issue_id", uuidToString(issueID), "error", err)
+		recentRows = nil
+	}
+	recent := make([]briefAnchor, 0, len(recentRows))
+	for _, row := range recentRows {
+		recent = append(recent, briefAnchor{
+			id:        row.ID,
+			thread:    row.RootID,
+			author:    nameFor(row.AuthorType, row.AuthorID),
+			authorKey: row.AuthorType,
+			at:        row.CreatedAt,
+			content:   row.Content,
+		})
+	}
+
 	if len(unresolved) > 0 {
 		b.WriteString("### Unresolved threads\n\n")
-		for _, row := range unresolved {
-			b.WriteString(briefCommentLine(row, nameFor(row)))
+		for _, a := range unresolved {
+			b.WriteString(a.render())
 		}
 		b.WriteString("\n")
 	}
-
-	recent := make([]db.ListRootCommentsForIssueRow, len(roots))
-	copy(recent, roots)
-	sort.SliceStable(recent, func(i, j int) bool {
-		return recent[i].LastActivityAt.Time.After(recent[j].LastActivityAt.Time)
-	})
-	if len(recent) > priorContextBriefRecent {
-		recent = recent[:priorContextBriefRecent]
-	}
 	if len(recent) > 0 {
-		b.WriteString("### Most recent activity\n\n")
-		for _, row := range recent {
-			b.WriteString(briefCommentLine(row, nameFor(row)))
+		b.WriteString("### Most recent comments\n\n")
+		for _, a := range recent {
+			b.WriteString(a.render())
 		}
 		b.WriteString("\n")
 	}
@@ -309,7 +389,7 @@ func (h *Handler) buildPriorContextBrief(ctx context.Context, issueID, workspace
 	// Nothing but the boilerplate header means we have no hand-off to give.
 	// Reporting that honestly lets the caller fall back to the plain continuity
 	// notice, which at least tells the agent its memory is gone.
-	if len(unresolved) == 0 && len(recent) == 0 && priorRunResultText(priorResult) == "" {
+	if len(unresolved) == 0 && len(recent) == 0 && priorRunResultText(inputs.priorResult) == "" {
 		return ""
 	}
 

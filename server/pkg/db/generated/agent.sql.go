@@ -4932,7 +4932,8 @@ type GetLatestChatTaskRolloutMissingParams struct {
 	ChannelContextRevision pgtype.Int8 `json:"channel_context_revision"`
 }
 
-// Chat-session counterpart of GetLatestTaskRolloutMissing (MUL-5305): reports
+// Chat-session counterpart of the issue-side rollout-missing signal now folded
+// into GetLatestTerminalTaskForBrief (MUL-5305): reports
 // whether the most recent terminal task on this chat session withheld its Codex
 // session because the rollout was missing. When true the next chat claim resumed
 // an older session (or none), so it must disclose the continuity gap.
@@ -4971,8 +4972,9 @@ func (q *Queries) GetLatestTaskRoleForIssueAndAgent(ctx context.Context, arg Get
 	return i, err
 }
 
-const getLatestTaskRolloutMissing = `-- name: GetLatestTaskRolloutMissing :one
-SELECT COALESCE(session_rollout_missing, FALSE) FROM agent_task_queue
+const getLatestTerminalTaskForBrief = `-- name: GetLatestTerminalTaskForBrief :one
+SELECT id, result, COALESCE(session_rollout_missing, FALSE) AS session_rollout_missing
+FROM agent_task_queue
 WHERE agent_id = $1 AND issue_id = $2
   AND status IN ('completed', 'failed')
   AND started_at IS NOT NULL
@@ -4980,22 +4982,40 @@ ORDER BY COALESCE(completed_at, started_at, dispatched_at, created_at) DESC
 LIMIT 1
 `
 
-type GetLatestTaskRolloutMissingParams struct {
+type GetLatestTerminalTaskForBriefParams struct {
 	AgentID pgtype.UUID `json:"agent_id"`
 	IssueID pgtype.UUID `json:"issue_id"`
 }
 
-// Reports whether the most recent terminal task for (agent_id, issue_id)
-// withheld its Codex session because the rollout was missing (MUL-5305). When
-// true, GetLastTaskSession fell back to an older session, so the next run must
-// disclose that the most recent turn's context could not be carried over. Any
-// later task that records a real session resets this to FALSE by being the new
-// most-recent row, so the disclosure fires once and then clears.
-func (q *Queries) GetLatestTaskRolloutMissing(ctx context.Context, arg GetLatestTaskRolloutMissingParams) (bool, error) {
-	row := q.db.QueryRow(ctx, getLatestTaskRolloutMissing, arg.AgentID, arg.IssueID)
-	var session_rollout_missing bool
-	err := row.Scan(&session_rollout_missing)
-	return session_rollout_missing, err
+type GetLatestTerminalTaskForBriefRow struct {
+	ID                    pgtype.UUID `json:"id"`
+	Result                []byte      `json:"result"`
+	SessionRolloutMissing bool        `json:"session_rollout_missing"`
+}
+
+// The most recent terminal task for (agent_id, issue_id) together with the two
+// facts a compacting claim needs from it (RUYI-107): the result it reported,
+// and whether it withheld its Codex session because the rollout was missing.
+//
+// The two facts come from ONE row on purpose: they answer questions about the
+// SAME turn — "what did the last turn say" and "was the last turn's context
+// carried over" — and two separate queries could land either side of a
+// concurrent terminal write and describe two different turns as one. This
+// replaces the issue-side GetLatestTaskRolloutMissing, whose row selection
+// (statuses, started_at guard, ordering) it keeps verbatim; the chat-session
+// counterpart GetLatestChatTaskRolloutMissing still exists unchanged.
+//
+// This is deliberately NOT the task GetLastTaskSession names. That query
+// returns the task owning the RESUMABLE session, which after a withheld
+// rollout is an older turn; judging the session by that task's context reading
+// is correct (it is that session's own size), but reporting that task's output
+// as "what your previous run reported" would silently rewind the hand-off to a
+// turn the user already saw superseded.
+func (q *Queries) GetLatestTerminalTaskForBrief(ctx context.Context, arg GetLatestTerminalTaskForBriefParams) (GetLatestTerminalTaskForBriefRow, error) {
+	row := q.db.QueryRow(ctx, getLatestTerminalTaskForBrief, arg.AgentID, arg.IssueID)
+	var i GetLatestTerminalTaskForBriefRow
+	err := row.Scan(&i.ID, &i.Result, &i.SessionRolloutMissing)
+	return i, err
 }
 
 const getWorkspaceAgentActivity30d = `-- name: GetWorkspaceAgentActivity30d :many

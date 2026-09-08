@@ -21,8 +21,16 @@ const (
 	// a single prompt that the gate cannot fire on every turn and reduce the
 	// agent to a permanently amnesiac one. Zero is still accepted separately
 	// as the explicit "off" value.
-	MinSessionMaxContextTokens int64 = 10_000
-	MaxSessionMaxContextTokens int64 = 10_000_000
+	MinSessionMaxContextTokens int64 = 100_000
+	MaxSessionMaxContextTokens int64 = 2_000_000
+
+	// MinEffectiveCompactThreshold is the frozen spec's interlock: the soft
+	// threshold is raised to this floor whenever pct×ceiling lands below it.
+	// Without it, a legal 100_000 ceiling at the legal minimum 10% would
+	// compact at 10_000 tokens — under one turn's worth of prompt — and the
+	// agent would start every run from a brief. The hard ceiling is NOT
+	// floored: it is the value the owner explicitly set as the limit.
+	MinEffectiveCompactThreshold int64 = 50_000
 
 	// DefaultSessionCompactPct is decision D2 A's "switch at 80%".
 	DefaultSessionCompactPct int32 = 80
@@ -84,6 +92,19 @@ func DecideSessionResume(contextTokens int64, known bool, maxContextTokens int64
 	if contextTokens >= maxContextTokens {
 		return SessionResumeCompactHard
 	}
+	if contextTokens >= EffectiveCompactThreshold(maxContextTokens, compactPct) {
+		return SessionResumeCompactSoft
+	}
+	return SessionResumeAllowed
+}
+
+// EffectiveCompactThreshold is the token count the soft switch actually fires
+// at: pct% of the ceiling, but never below MinEffectiveCompactThreshold.
+//
+// Exported because the setting UI and the tests both need to state the same
+// number the gate uses; a second copy of this arithmetic is how the displayed
+// trigger point and the real one drift apart.
+func EffectiveCompactThreshold(maxContextTokens int64, compactPct int32) int64 {
 	// An out-of-range percentage falls back to the default instead of being
 	// clamped to its nearest bound: clamping a stored 1% to 10% would still
 	// compact almost every turn, whereas the default is the behavior the
@@ -93,10 +114,18 @@ func DecideSessionResume(contextTokens int64, known bool, maxContextTokens int64
 	}
 	// Multiply before dividing so the threshold is exact for ceilings that
 	// are not multiples of 100.
-	if contextTokens >= maxContextTokens*int64(compactPct)/100 {
-		return SessionResumeCompactSoft
+	threshold := maxContextTokens * int64(compactPct) / 100
+	if threshold < MinEffectiveCompactThreshold {
+		threshold = MinEffectiveCompactThreshold
 	}
-	return SessionResumeAllowed
+	// The floor must never overtake the ceiling it protects: a ceiling below
+	// the floor (only reachable from legacy rows written before this range
+	// existed) would otherwise have no soft stage at all, and the hard check
+	// above already covers it.
+	if threshold > maxContextTokens {
+		threshold = maxContextTokens
+	}
+	return threshold
 }
 
 func IsValidSessionMaxContextTokens(value int64) bool {
