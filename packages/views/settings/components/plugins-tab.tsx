@@ -93,7 +93,7 @@ function ConfigForm({
           field={field}
           value={values[field.key]}
           secretValue={secrets[field.key] ?? ""}
-          secretConfigured={configuredSecrets.has(field.key)}
+          configured={configuredSecrets.has(field.key)}
           disabled={!canManage || configureMutation.isPending}
           onValueChange={(value) => setValue(field.key, value)}
           onSecretChange={(value) => setSecrets((current) => ({ ...current, [field.key]: value }))}

@@ -1996,6 +1996,29 @@ describe("Plugin schemas", () => {
     expect(parsed.added_scopes).toEqual(["comments:write"]);
   });
 
+  // `configured_keys` is what separates "the upgrade already holds this" from
+  // "the new version added this and nobody has answered it". Both failure
+  // directions have to land on the safe side: an absent or malformed field
+  // reads as nothing configured, so the consent screen ASKS rather than
+  // assuming a credential is already stored.
+  it("reads configured_keys and falls back to nothing being configured", () => {
+    const base = {
+      manifest: { key: "com.example.hello", name: "Hello", version: "2.0.0", author: { name: "example" } },
+      installed: true,
+      installed_version: "1.0.0",
+    };
+    expect(PluginPreviewSchema.parse({ ...base, configured_keys: ["repo", "token"] }).configured_keys)
+      .toEqual(["repo", "token"]);
+    // Field absent: an older backend, or one that dropped it.
+    expect(PluginPreviewSchema.parse(base).configured_keys).toEqual([]);
+    // Field present but the wrong shape — degrade rather than throw the whole
+    // preview away, which would hide the scope list too.
+    const drifted = parseWithFallback({ ...base, configured_keys: "repo" }, PluginPreviewSchema, EMPTY_PLUGIN_PREVIEW, {
+      endpoint: "POST /api/workspaces/{id}/plugins/preview",
+    });
+    expect(drifted.configured_keys).toEqual([]);
+  });
+
   it("preserves automatic schedules on both consent and installed Plugin payloads", () => {
     const schedule = { cron: "*/5 * * * *", timezone: "Asia/Shanghai" };
     const preview = PluginPreviewSchema.parse({

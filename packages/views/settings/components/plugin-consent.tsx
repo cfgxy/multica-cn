@@ -48,9 +48,14 @@ export function PluginConsent({
   const [values, setValues] = useState<Record<string, unknown>>({});
   const [secrets, setSecrets] = useState<Record<string, string>>({});
   // An upgrade keeps what is already stored, so a required field the previous
-  // version already holds is not asked for again. A fresh install holds nothing.
-  const missing = missingRequiredFields(schema, values, secrets);
-  const blockedByConfig = !preview.installed && missing.length > 0;
+  // version already holds is not asked for again — but a field the NEW manifest
+  // introduces is held by nothing, and letting it through produces an install
+  // that is enabled and fails on its first call. The server names which fields
+  // the existing installation actually answers; anything outside that set is
+  // still missing, whether this is an install or an upgrade.
+  const configured = new Set(preview.configured_keys ?? []);
+  const missing = missingRequiredFields(schema, values, secrets, configured);
+  const blockedByConfig = missing.length > 0;
 
   return (
     <div className="space-y-4">
@@ -125,7 +130,11 @@ export function PluginConsent({
               field={field}
               value={values[field.key]}
               secretValue={secrets[field.key] ?? ""}
-              secretConfigured={false}
+              // On an upgrade the field may already hold a value. Saying so is
+              // what separates "leave it alone" from "this one is new and
+              // still needs an answer" — without it every field looks equally
+              // empty and the administrator retypes a credential to be safe.
+              configured={configured.has(field.key)}
               disabled={!canInstall || installing}
               onValueChange={(value) => setValues((current) => ({ ...current, [field.key]: value }))}
               onSecretChange={(value) => setSecrets((current) => ({ ...current, [field.key]: value }))}

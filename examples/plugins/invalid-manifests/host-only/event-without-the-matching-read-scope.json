@@ -1,0 +1,20 @@
+{
+  "manifest_version": 1,
+  "key": "com.example.event-without-read-scope",
+  "name": "Subscribes to content it may not read",
+  "version": "1.0.0",
+  "author": { "name": "Example" },
+  "scopes": ["issues:read", "net:hooks.example.com"],
+  "contributes": {
+    "hooks": [
+      {
+        "key": "on_comment",
+        "name": "On comment",
+        "description": "Receives comment bodies without holding comments:read.",
+        "triggers": ["event"],
+        "events": ["comment.created"],
+        "transport": { "type": "http", "url": "https://hooks.example.com/on-comment" }
+      }
+    ]
+  }
+}

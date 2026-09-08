@@ -429,6 +429,7 @@
       "title": "Configuration",
       "save": "Save",
       "saved": "Configuration saved",
+      "configured": "Already set",
       "secret_set": "Saved — enter a new value to replace it",
       "secret_write_only": "Write-only — it cannot be read back after saving."
     },

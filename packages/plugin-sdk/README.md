@@ -54,12 +54,23 @@ scheduled hook is `http`). Point your editor at it:
 { "$schema": "node_modules/@multica/plugin-sdk/manifest.schema.json" }
 ```
 
-Passing it means the shape is right. It is a projection of the host parser, not a
-second source of truth: two rules are cross-field and stay with the host — a
-hook's transport host must be covered by a `net:` scope, and subscribing to an
-event requires the scope that reading the same content would have required.
+Passing it means the shape is right, and nothing more. It is a projection of the
+host parser, not a second source of truth: five rules are cross-field or computed
+and stay with the host, so a manifest can be green in your editor and still be
+refused at publish.
+
+| Rule the host enforces alone | Why the schema cannot state it |
+| --- | --- |
+| Surfaces, hooks and resources total at most 64 | Three array lengths, added |
+| A skill's `entry` is `skills/<its own key>/SKILL.md` | Equality between two sibling fields |
+| A hook's `transport.url` host is covered by a `net:` scope | The URL is checked against another list |
+| An `event` subscription holds the read scope for the same content | Cross-field, per event |
+| A cron may not fire more often than every five minutes | Requires enumerating occurrences |
+
 `examples/plugins/invalid-manifests/` holds one deliberately broken manifest per
-rule the schema does enforce.
+rule the schema does enforce, and `invalid-manifests/host-only/` holds one per
+row of the table above — those pass the schema by design, which is how both
+halves of this boundary stay tested.
 
 ## Publishing
 
