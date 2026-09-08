@@ -59,6 +59,7 @@ import type { Attachment } from "@multica/core/types";
 import { paths, useWorkspaceSlug } from "@multica/core/paths";
 import { cn } from "@multica/ui/lib/utils";
 import { resolvePublicFileUrl } from "@multica/core/workspace/avatar-url";
+import { attachmentDownloadPath } from "@multica/core/types/attachment-url";
 import {
   UI_EASE_OUT,
   UI_MOTION_DURATION,
@@ -119,6 +120,53 @@ function resolvePreviewMediaUrl(attachment: Attachment): string {
   return resolvePublicFileUrl(raw) ?? raw;
 }
 
+// An image preview NEVER loads from a pre-minted expiring signature
+// (RUYI-103).
+//
+// A signed URL is minted once, when the surface's attachments are fetched, and
+// then sits in a `staleTime: Infinity` query cache for as long as the page
+// stays open. Opening a preview an hour later handed <img> a signature that
+// had already expired: the load failed, the viewer skipped to a neighbour, and
+// the reader saw "I clicked A and got B". The stable per-attachment endpoint
+// re-signs (or proxies) per request behind the same authorization check, so it
+// cannot go stale — and `useResignedInlineMediaURL` keys off exactly this URL
+// shape to upgrade it for clients that cannot load an auth-gated path natively
+// (desktop, split-origin web).
+//
+// Two deliberate limits:
+//
+//   - Only URLs that actually carry an expiring signature are swapped. A
+//     durable URL (public CDN object, local /uploads path, the API endpoint
+//     itself) is left alone so the preview keeps reusing the bytes the inline
+//     <img> already fetched instead of forcing a second download.
+//   - Images only. The other media kinds hand their URL straight to a native
+//     <iframe>/<video> with no re-sign hook behind it, so pointing them at an
+//     auth-gated path would break the desktop shell rather than fix an expiry.
+function stablePreviewImageURL(state: PreviewState): string {
+  if (!state.attachmentId) return state.mediaUrl;
+  if (!hasExpiringSignature(state.mediaUrl)) return state.mediaUrl;
+  const path = attachmentDownloadPath(state.attachmentId);
+  return resolvePublicFileUrl(path) ?? path;
+}
+
+// True when the URL's validity is bounded by a signature the server minted at
+// some earlier point — CloudFront (`Signature` / `Key-Pair-Id` / `Expires`),
+// S3 presign (`X-Amz-*`), and the local-storage HMAC (`exp` / `sig`).
+function hasExpiringSignature(rawURL: string): boolean {
+  const qi = rawURL.indexOf("?");
+  if (qi < 0) return false;
+  const q = new URLSearchParams(rawURL.slice(qi + 1).split("#", 1)[0]);
+  return [
+    "Signature",
+    "X-Amz-Signature",
+    "Key-Pair-Id",
+    "Expires",
+    "X-Amz-Expires",
+    "exp",
+    "sig",
+  ].some((key) => q.has(key));
+}
+
 function normalize(source: PreviewSource): PreviewState {
   // Resolve any server-relative URL (e.g. `/api/attachments/{id}/download`
   // returned by the unified-endpoint metadata path when no CloudFront
@@ -164,6 +212,17 @@ export interface PreviewSequence {
   onNext?: () => void;
 }
 
+/**
+ * Why the frame on screen is not the one the reader clicked (RUYI-103).
+ *
+ *   - `skipped`: the requested image failed to load and the viewer moved to a
+ *     neighbour. Without this banner the substitution is invisible and reads
+ *     as the viewer opening the wrong image.
+ *   - `dead`: the requested image failed and there was nothing loadable left,
+ *     so the canvas is stuck on a broken frame.
+ */
+export type PreviewNotice = "skipped" | "dead";
+
 interface AttachmentPreviewModalProps {
   source: PreviewSource;
   open: boolean;
@@ -171,6 +230,7 @@ interface AttachmentPreviewModalProps {
   sequence?: PreviewSequence;
   /** Fired when the image kind fails to load — lets a gallery skip the frame. */
   onImageError?: () => void;
+  notice?: PreviewNotice;
 }
 
 // ---------------------------------------------------------------------------
@@ -296,7 +356,9 @@ export function PreviewImagePrefetch({ source }: { source: PreviewSource }) {
   const state = normalize(source);
   const url = useResignedInlineMediaURL(
     state.attachmentId ?? undefined,
-    state.mediaUrl,
+    // Same URL the panel will ask for, or the warm-up populates a different
+    // cache entry than the one paging reads back.
+    stablePreviewImageURL(state),
     true,
   );
 
@@ -320,6 +382,7 @@ export function AttachmentPreviewModal({
   onExitComplete,
   sequence,
   onImageError,
+  notice,
 }: AttachmentPreviewModalProps & { onExitComplete?: () => void }) {
   const download = useDownloadAttachment();
   const shouldReduceMotion = useReducedMotion() ?? false;
@@ -470,6 +533,7 @@ export function AttachmentPreviewModal({
               onOpenInNewTab={canOpenInNewTab ? handleOpenInNewTab : undefined}
               sequence={sequence}
               onImageError={onImageError}
+              notice={notice}
             />
           </motion.div>
         </motion.div>
@@ -495,6 +559,7 @@ function PreviewPanel({
   onOpenInNewTab,
   sequence,
   onImageError,
+  notice,
 }: {
   kind: PreviewKind | null;
   source: PreviewSource;
@@ -504,6 +569,7 @@ function PreviewPanel({
   onOpenInNewTab?: () => void;
   sequence?: PreviewSequence;
   onImageError?: () => void;
+  notice?: PreviewNotice;
 }) {
   const { t } = useT("editor");
 
@@ -513,13 +579,35 @@ function PreviewPanel({
   // no-op for URLs that are already loadable (signed CDN, public storage).
   const targetUrl = useResignedInlineMediaURL(
     state.attachmentId ?? undefined,
-    state.mediaUrl,
+    kind === "image" ? stablePreviewImageURL(state) : state.mediaUrl,
     kind === "image",
   );
   // The previous image stays on the canvas until this one has decoded — the
   // swap itself is what used to flash. Also absorbs the re-sign URL upgrade
   // (raw -> signed) without a second visible load.
   const mediaUrl = useSettledImageURL(targetUrl, kind === "image", onImageError);
+
+  // The header switches to the target frame the instant the reader pages, but
+  // the canvas keeps the previous one until the target decodes. Holding the old
+  // frame is deliberate (blanking the canvas for the whole network+decode gap
+  // is worse), yet it must never be silent: filename and "x / N" would
+  // otherwise describe an image that is not the one on screen, which is the
+  // same "I asked for A and I'm looking at B" the reader reported (RUYI-103
+  // A2). One banner carries all three cases, because they are the same
+  // question — is the frame below the one the header names?
+  //
+  // A pending substitution outranks a pending decode: "the image you clicked
+  // is gone" stays true once the canvas catches up, whereas "still loading"
+  // would expire and has to be re-explained anyway.
+  const pendingSwap = kind === "image" && !!targetUrl && mediaUrl !== targetUrl;
+  const banner =
+    notice === "skipped"
+      ? t(($) => $.image.skipped_notice)
+      : notice === "dead"
+        ? t(($) => $.image.unavailable_notice)
+        : pendingSwap
+          ? t(($) => $.image.loading_notice)
+          : null;
 
   // Natural size is carried with the URL it was measured from, so a panel
   // reused for a different attachment can never fit the new image against the
@@ -646,14 +734,30 @@ function PreviewPanel({
         )}
       >
         {kind === "image" ? (
-          <ImagePreview
-            state={state}
-            mediaUrl={mediaUrl}
-            canvas={canvas}
-            natural={natural}
-            onNaturalSize={handleNaturalSize}
-            onError={onImageError}
-          />
+          <>
+            {/* Above the canvas, not inside it: the reader has to be able to
+                tell that the frame below is not the one the header names —
+                either because it is still decoding (A2) or because the one
+                they clicked failed and was substituted (A3). role=status so
+                assistive tech announces it the same way the sighted banner
+                shows it. */}
+            {banner && (
+              <div
+                role="status"
+                className="border-b border-border bg-muted/60 px-4 py-2 text-caption text-muted-foreground"
+              >
+                {banner}
+              </div>
+            )}
+            <ImagePreview
+              state={state}
+              mediaUrl={mediaUrl}
+              canvas={canvas}
+              natural={natural}
+              onNaturalSize={handleNaturalSize}
+              onError={onImageError}
+            />
+          </>
         ) : (
           <PreviewContent
             kind={kind}
@@ -891,8 +995,8 @@ function PreviewContent({
 
 // React Query owns server state per the project convention; re-opening the
 // same attachment hits the cache instead of re-fetching. Query is keyed on
-// the attachment id alone — the 30 min TTL on the server-side signed URL
-// is much longer than any plausible preview session.
+// the attachment id alone — text content is fetched through the auth-gated
+// /content proxy, which carries no signature and so has no expiry to track.
 function TextBackedPreview({
   attachmentId,
   onDownload,
