@@ -2553,6 +2553,15 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					src.SessionID.Valid && src.RuntimeID == task.RuntimeID {
 					resp.PriorSessionID = src.SessionID.String
 				}
+				// RUYI-107: a rerun goes through the same gate as a follow-up.
+				// The candidate session differs (this exact source task rather
+				// than the newest on the issue), but the risk is identical —
+				// resuming a conversation that is already at its ceiling burns
+				// the run. PriorWorkDir above is deliberately left intact: the
+				// gate is about conversation size, not about where the work
+				// lives, and dropping the directory would make the fresh
+				// session re-clone and lose uncommitted work.
+				h.applySessionContextGate(r.Context(), &resp, agent, *task, src.ID, src.Result)
 				// MUL-5305: if the source task withheld its Codex session because
 				// the rollout was missing, this rerun has nothing resumable from it
 				// — disclose the gap rather than silently starting fresh.
@@ -2585,6 +2594,16 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				}
 				if prior.WorkDir.Valid {
 					resp.PriorWorkDir = prior.WorkDir.String
+				}
+				// RUYI-107. GetLastTaskSession returns the id of the task the
+				// session came from precisely so this reads that task's own
+				// context size and result: judging one session by another
+				// task's numbers is how a gate compacts the wrong conversation.
+				if priorTask, err := h.Queries.GetAgentTask(r.Context(), prior.TaskID); err == nil {
+					h.applySessionContextGate(r.Context(), &resp, agent, *task, prior.TaskID, priorTask.Result)
+				} else {
+					slog.Warn("session context gate: load prior task for gate failed; resuming",
+						"task_id", uuidToString(task.ID), "prior_task_id", uuidToString(prior.TaskID), "error", err)
 				}
 			}
 			// MUL-5305: if the most recent terminal task withheld its Codex
@@ -4315,6 +4334,22 @@ type TaskUsagePayload struct {
 	// every provider except Grok today) — stored as NULL so the reader knows
 	// to fall back to rate-table estimation rather than reading a real $0.
 	CostUSDTicks int64 `json:"cost_usd_ticks"`
+	// ContextTokens is the size of the conversation at the end of the run, not
+	// a spend counter (RUYI-107). Absent or 0 from any daemon or backend that
+	// cannot measure it; stored as NULL so the session gate reads it as
+	// "unknown" and keeps resuming instead of guessing.
+	ContextTokens int64 `json:"context_tokens"`
+}
+
+// authoritativeContextTokens converts a reported context size into the nullable
+// column. Same rule as the cost figure and for the same reason: 0 is what a
+// daemon that cannot measure the conversation sends, and storing it as a real
+// reading would tell the gate the session is empty.
+func authoritativeContextTokens(tokens int64) pgtype.Int8 {
+	if tokens <= 0 {
+		return pgtype.Int8{}
+	}
+	return pgtype.Int8{Int64: tokens, Valid: true}
 }
 
 // authoritativeCostTicks converts a reported cost into the nullable column.
@@ -4374,6 +4409,7 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 			CacheReadTokens:  u.CacheReadTokens,
 			CacheWriteTokens: u.CacheWriteTokens,
 			CostUsdTicks:     authoritativeCostTicks(u.CostUSDTicks),
+			ContextTokens:    authoritativeContextTokens(u.ContextTokens),
 		}); err != nil {
 			slog.Warn("upsert task usage failed", "task_id", taskID, "model", u.Model, "error", err)
 			continue

@@ -58,14 +58,20 @@ INSERT INTO agent (
     runtime_config, runtime_id, visibility, max_concurrent_tasks, owner_id,
     instructions, custom_env, custom_args, mcp_config, model, thinking_level,
     service_tier, conversation_starters,
-    composio_toolkit_allowlist, permission_mode
+    composio_toolkit_allowlist, permission_mode,
+    session_max_context_tokens, session_compact_pct
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $9, $10,
     $11, $12, $13, $14, $15, $16,
     $17, COALESCE(sqlc.narg('conversation_starters')::jsonb, '[]'::jsonb),
     sqlc.narg('composio_toolkit_allowlist')::text[],
-    COALESCE(sqlc.narg('permission_mode'), 'private')
+    COALESCE(sqlc.narg('permission_mode'), 'private'),
+    -- RUYI-107: omitted by every caller that does not care, which then gets the
+    -- column default rather than a zero. Zero is a meaningful value here (it
+    -- disables the gate), so it must not be reachable by accident.
+    COALESCE(sqlc.narg('session_max_context_tokens'), 400000),
+    COALESCE(sqlc.narg('session_compact_pct'), 80)
 )
 RETURNING *;
 
@@ -135,6 +141,8 @@ UPDATE agent SET
     permission_mode = COALESCE(sqlc.narg('permission_mode'), permission_mode),
     status = COALESCE(sqlc.narg('status'), status),
     max_concurrent_tasks = COALESCE(sqlc.narg('max_concurrent_tasks'), max_concurrent_tasks),
+    session_max_context_tokens = COALESCE(sqlc.narg('session_max_context_tokens'), session_max_context_tokens),
+    session_compact_pct = COALESCE(sqlc.narg('session_compact_pct'), session_compact_pct),
     instructions = COALESCE(sqlc.narg('instructions'), instructions),
     custom_env = COALESCE(sqlc.narg('custom_env'), custom_env),
     custom_args = COALESCE(sqlc.narg('custom_args'), custom_args),
@@ -1156,7 +1164,7 @@ WITH retired_sessions AS (
       )
 ), latest_per_session AS (
     SELECT DISTINCT ON (t.session_id)
-        t.session_id, t.work_dir, t.runtime_id, t.status, t.failure_reason, t.error,
+        t.id, t.session_id, t.work_dir, t.runtime_id, t.status, t.failure_reason, t.error,
         COALESCE(t.completed_at, t.started_at, t.dispatched_at, t.created_at) AS terminal_at
     FROM agent_task_queue t
     WHERE t.agent_id = $1 AND t.issue_id = $2
@@ -1164,7 +1172,11 @@ WITH retired_sessions AS (
       AND t.status IN ('completed', 'failed', 'cancelled')
     ORDER BY t.session_id, COALESCE(t.completed_at, t.started_at, t.dispatched_at, t.created_at) DESC
 )
-SELECT session_id, work_dir, runtime_id FROM latest_per_session
+-- id is the task the session/work_dir came from. The session gate reads its
+-- context size and its result from that SAME row (RUYI-107): a second "most
+-- recent task" lookup could land on a different row and judge one session by
+-- another's numbers.
+SELECT id AS task_id, session_id, work_dir, runtime_id FROM latest_per_session
 WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
   AND (
     status IN ('completed', 'cancelled')

@@ -3386,6 +3386,15 @@ func (c *codexClient) extractUsageFromMap(data map[string]any) {
 	c.usage.OutputTokens += codexInt64(usageMap, "output_tokens", "output", "completion_tokens")
 	c.usage.CacheReadTokens += cacheReadTokens
 	c.usage.CacheWriteTokens += codexInt64(usageMap, "cache_write_tokens", "cache_creation_input_tokens")
+
+	// Context size is the newest request's whole input side, so it is assigned
+	// rather than accumulated (RUYI-107). input_tokens already includes the
+	// cached prefix here — a cached prefix is cheaper, not absent from the
+	// context window — which is why this uses the raw figure and not the
+	// uncached remainder the billing counter above stores.
+	if inputTokens > 0 {
+		c.usage.ContextTokens = inputTokens
+	}
 }
 
 func codexUncachedInputTokens(inputTokens, cachedInputTokens int64) int64 {
@@ -3690,6 +3699,13 @@ func parseCodexSessionFileSince(path string, startTime time.Time, resumed bool) 
 		return nil
 	}
 	cachedTokens := finalUsage.CachedInputTokens
+	// No ContextTokens here on purpose (RUYI-107). The token_count events in
+	// the JSONL are cumulative thread totals — that is what
+	// subtractCodexRawTokenUsage exists to undo — so this input figure is the
+	// sum over every request in the thread, not the size of the last one.
+	// Publishing it as a context size would overstate the conversation and
+	// compact healthy sessions early. Leaving it zero makes the gate read
+	// "unknown" and resume, which is the direction that loses nothing.
 	result.usage = TokenUsage{
 		InputTokens:     codexUncachedInputTokens(finalUsage.InputTokens, cachedTokens),
 		OutputTokens:    finalUsage.OutputTokens + finalUsage.ReasoningOutputTokens,
