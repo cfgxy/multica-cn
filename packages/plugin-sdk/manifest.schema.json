@@ -1,0 +1,314 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://multica.ai/schemas/plugin-manifest/v1.json",
+  "title": "Multica plugin manifest (manifest_version 1)",
+  "description": "The structural contract for multica.plugin.json. It is a projection of the host parser in server/pkg/plugincontract/manifest.go, not a second source of truth: everything expressible as structure — required fields, closed enums, patterns, bounds, uniqueness — is stated here so an author gets the error in their editor rather than from a rejected publish. The host still validates on publish and enforces the cross-field rules a JSON Schema cannot express (a hook's transport host must be covered by a net: scope, an event subscription implies the matching read scope). Passing this schema means the shape is right; it does not promise the publish will succeed.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["manifest_version", "key", "name", "version", "author", "scopes", "contributes"],
+  "properties": {
+    "manifest_version": {
+      "description": "The only version this host understands.",
+      "const": 1
+    },
+    "key": {
+      "description": "Reverse-DNS identity of the plugin. Stable across versions: this is what an installation is bound to.",
+      "type": "string",
+      "maxLength": 255,
+      "pattern": "^[a-z][a-z0-9]*(?:-[a-z0-9]+)*(?:\\.[a-z][a-z0-9]*(?:-[a-z0-9]+)*)+$"
+    },
+    "name": { "$ref": "#/$defs/displayText160" },
+    "description": { "$ref": "#/$defs/longText2000" },
+    "version": {
+      "description": "Semantic version. Bounded at 64 bytes because the installation column is.",
+      "type": "string",
+      "maxLength": 64,
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "author": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": { "$ref": "#/$defs/displayText160" },
+        "url": { "$ref": "#/$defs/httpsURL" }
+      }
+    },
+    "icon": { "$ref": "#/$defs/relativePath" },
+    "scopes": {
+      "description": "The complete grant. An administrator consents to this list as a whole; there is no partial approval.",
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/scope" }
+    },
+    "config": {
+      "description": "Host-rendered configuration form, keyed by field name. Order is preserved so the generated form is stable.",
+      "type": "object",
+      "maxProperties": 32,
+      "propertyNames": { "$ref": "#/$defs/contributionKey" },
+      "additionalProperties": { "$ref": "#/$defs/configField" }
+    },
+    "contributes": { "$ref": "#/$defs/contributes" }
+  },
+  "$defs": {
+    "displayText160": {
+      "description": "One line of display text. No control characters, and not blank.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 160,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]*[^\\s\\u0000-\\u001f\\u007f][^\\u0000-\\u001f\\u007f]*$"
+    },
+    "longText2000": {
+      "description": "Free prose. Newlines are allowed; carriage returns are not.",
+      "type": "string",
+      "maxLength": 2000,
+      "not": { "pattern": "\\r" }
+    },
+    "httpsURL": {
+      "type": "string",
+      "maxLength": 2048,
+      "pattern": "^https://[^\\s]+$"
+    },
+    "relativePath": {
+      "description": "A path inside the bundle. Never absolute, never traversing.",
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 255,
+      "pattern": "^[A-Za-z0-9._-]+(?:/[A-Za-z0-9._-]+)*$",
+      "not": { "pattern": "(^|/)\\.\\.(/|$)" }
+    },
+    "contributionKey": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*(?:[_-][a-z0-9]+)*$"
+    },
+    "scope": {
+      "description": "One capability. The fixed list is closed; net:<domain> is the only parameterized form, and it is an exact host — a subdomain is its own scope.",
+      "type": "string",
+      "anyOf": [
+        {
+          "enum": [
+            "issues:read",
+            "issues:write",
+            "comments:read",
+            "comments:write",
+            "tasks:read",
+            "tasks:write",
+            "agents:read",
+            "members:read",
+            "storage:user",
+            "storage:workspace"
+          ]
+        },
+        {
+          "pattern": "^net:[a-z0-9]([a-z0-9-]*[a-z0-9])?(\\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$",
+          "maxLength": 257
+        }
+      ]
+    },
+    "configField": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "label"],
+      "properties": {
+        "type": {
+          "description": "A secret is stored write-only: no read endpoint ever returns its value.",
+          "enum": ["string", "number", "bool", "enum", "secret"]
+        },
+        "label": { "$ref": "#/$defs/displayText160" },
+        "description": { "type": "string", "maxLength": 500 },
+        "required": { "type": "boolean" },
+        "options": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/displayText160" }
+        },
+        "placeholder": { "type": "string", "maxLength": 160 },
+        "multiline": {
+          "description": "Render a textarea. String fields only.",
+          "type": "boolean"
+        }
+      },
+      "allOf": [
+        {
+          "description": "options is required for enum and rejected everywhere else.",
+          "if": { "properties": { "type": { "const": "enum" } }, "required": ["type"] },
+          "then": { "properties": { "options": true }, "required": ["options"] },
+          "else": { "not": { "properties": { "options": true }, "required": ["options"] } }
+        },
+        {
+          "description": "multiline is meaningful only for a string field.",
+          "if": { "properties": { "multiline": { "const": true } }, "required": ["multiline"] },
+          "then": { "properties": { "type": { "const": "string" } } }
+        }
+      ]
+    },
+    "contributes": {
+      "description": "What the plugin adds. At least one of the three, because a plugin that contributes nothing has nothing to install.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "surfaces": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/surface" }
+        },
+        "hooks": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/hook" }
+        },
+        "resources": {
+          "type": "array",
+          "maxItems": 64,
+          "items": { "$ref": "#/$defs/resource" }
+        }
+      },
+      "anyOf": [
+        { "properties": { "surfaces": { "type": "array", "minItems": 1 } }, "required": ["surfaces"] },
+        { "properties": { "hooks": { "type": "array", "minItems": 1 } }, "required": ["hooks"] },
+        { "properties": { "resources": { "type": "array", "minItems": 1 } }, "required": ["resources"] }
+      ]
+    },
+    "surface": {
+      "description": "An iframe the host mounts. The host generates the surrounding document, which is what lets it attach the CSP derived from the net: scopes — so the entry is a script, not a page.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "type", "name", "entry"],
+      "properties": {
+        "key": { "$ref": "#/$defs/contributionKey" },
+        "type": { "enum": ["issue_panel", "sidebar_panel", "modal"] },
+        "name": { "$ref": "#/$defs/displayText160" },
+        "entry": {
+          "allOf": [
+            { "$ref": "#/$defs/relativePath" },
+            { "type": "string", "pattern": "\\.m?js$" }
+          ]
+        },
+        "platforms": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": { "enum": ["web", "desktop"] }
+        }
+      }
+    },
+    "hook": {
+      "description": "One plugin-side capability the host may call. Triggers say WHO may invoke it, never what it does.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "name", "description", "triggers", "transport"],
+      "properties": {
+        "key": { "$ref": "#/$defs/contributionKey" },
+        "name": { "$ref": "#/$defs/displayText160" },
+        "description": {
+          "description": "Mandatory: an agent reads this as the MCP tool description.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "input_schema": {
+          "type": "object",
+          "required": ["type"],
+          "properties": { "type": { "const": "object" } }
+        },
+        "triggers": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 5,
+          "uniqueItems": true,
+          "items": { "enum": ["ui", "manual", "agent", "event", "schedule"] }
+        },
+        "events": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "issue.created",
+              "issue.updated",
+              "issue.status_changed",
+              "comment.created",
+              "task.started",
+              "task.completed",
+              "task.failed"
+            ]
+          }
+        },
+        "schedule": { "$ref": "#/$defs/hookSchedule" },
+        "transport": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["type", "url"],
+          "properties": {
+            "type": { "enum": ["http", "mcp"] },
+            "url": { "$ref": "#/$defs/httpsURL" }
+          }
+        },
+        "timeout_ms": { "type": "integer", "minimum": 100, "maximum": 30000 }
+      },
+      "allOf": [
+        {
+          "description": "events and the event trigger imply each other.",
+          "if": {
+            "properties": { "triggers": { "type": "array", "contains": { "const": "event" } } },
+            "required": ["triggers"]
+          },
+          "then": { "properties": { "events": true }, "required": ["events"] },
+          "else": { "not": { "properties": { "events": true }, "required": ["events"] } }
+        },
+        {
+          "description": "schedule and the schedule trigger imply each other, and a scheduled hook is http.",
+          "if": {
+            "properties": { "triggers": { "type": "array", "contains": { "const": "schedule" } } },
+            "required": ["triggers"]
+          },
+          "then": {
+            "required": ["schedule"],
+            "properties": {
+              "schedule": true,
+              "transport": { "type": "object", "properties": { "type": { "const": "http" } } }
+            }
+          },
+          "else": { "not": { "properties": { "schedule": true }, "required": ["schedule"] } }
+        }
+      ]
+    },
+    "hookSchedule": {
+      "description": "The one automatic cadence attached to a hook. Two cadences are two hooks, which keeps the durable execution identity unambiguous. The host additionally rejects any cron that can fire more often than every 5 minutes — an interval this schema cannot compute.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cron", "timezone"],
+      "properties": {
+        "cron": {
+          "description": "Five fields: minute hour day-of-month month day-of-week.",
+          "type": "string",
+          "maxLength": 160,
+          "pattern": "^\\S+(\\s+\\S+){4}$"
+        },
+        "timezone": {
+          "description": "An IANA zone name, e.g. Asia/Shanghai or UTC.",
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 64,
+          "pattern": "^[A-Za-z][A-Za-z0-9+_-]*(?:/[A-Za-z0-9+_-]+)*$"
+        }
+      }
+    },
+    "resource": {
+      "description": "A static contribution. No call happens in either direction, which is what makes it not a hook.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "key", "entry"],
+      "properties": {
+        "type": { "enum": ["skill"] },
+        "key": { "$ref": "#/$defs/contributionKey" },
+        "entry": { "$ref": "#/$defs/relativePath" }
+      }
+    }
+  }
+}

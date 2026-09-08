@@ -43,6 +43,24 @@ before you write one:
   policy now that Multica serves your code. `net:` is an exact host, so declare
   `net:api.example.com` separately from `net:example.com`.
 
+## Validating the manifest before you publish
+
+`manifest.schema.json` ships with this package and is the structural contract for
+`multica.plugin.json` — required fields, the closed scope list, patterns, bounds,
+and the conditionals (`enum` needs `options`, an `event` trigger needs `events`, a
+scheduled hook is `http`). Point your editor at it:
+
+```json
+{ "$schema": "node_modules/@multica/plugin-sdk/manifest.schema.json" }
+```
+
+Passing it means the shape is right. It is a projection of the host parser, not a
+second source of truth: two rules are cross-field and stay with the host — a
+hook's transport host must be covered by a `net:` scope, and subscribing to an
+event requires the scope that reading the same content would have required.
+`examples/plugins/invalid-manifests/` holds one deliberately broken manifest per
+rule the schema does enforce.
+
 ## Publishing
 
 Zip the manifest with every file it names and upload it in **Settings →
