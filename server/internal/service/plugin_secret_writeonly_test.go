@@ -27,6 +27,7 @@ const secretConfigManifest = `{
   "name": "On-call Handoff",
   "version": "1.0.0",
   "author": {"name": "Example"},
+  "scopes": ["issues:read"],
   "config": {
     "rota_name":            {"type": "string", "label": "Rota"},
     "handoff_window_hours": {"type": "number", "label": "Window"},
@@ -122,5 +123,74 @@ func TestUnreadableManifestForwardsNoConfig(t *testing.T) {
 
 	if len(values) != 0 {
 		t.Fatalf("an unreadable manifest must forward nothing, got %v", values)
+	}
+}
+
+// The upgrade case, which is where the write-only contract used to break.
+//
+// A plugin ships a field as `string`, an administrator sets it, and the next
+// version reclassifies it as `secret` — the ordinary way an author fixes having
+// shipped a credential as plain configuration. Pruning on "does the key still
+// exist" kept the plaintext in `installation.Config`, and every read endpoint
+// returns that column, so the upgrade meant to start protecting the value went
+// on serving it in the clear to anyone who could open the settings page.
+func TestUpgradeDropsAValueWhoseFieldBecameSecret(t *testing.T) {
+	const retyped = `{
+	  "manifest_version": 1,
+	  "key": "com.example.retype",
+	  "name": "Retype",
+	  "version": "2.0.0",
+	  "author": {"name": "Example"},
+	  "scopes": ["issues:read"],
+	  "config": {
+	    "rota_name":  {"type": "string", "label": "Rota"},
+	    "rota_token": {"type": "secret", "label": "Rota token"}
+	  }
+	}`
+	// Read the way an upgrade reads it: the stored consented snapshot, not a
+	// fresh strict parse of an author's upload.
+	manifest, err := ParseInstallationManifest(db.PluginInstallation{Manifest: []byte(retyped)})
+	if err != nil {
+		t.Fatalf("parse retyped manifest: %v", err)
+	}
+
+	// v1 stored both as plain values, because at v1 both were plain.
+	pruned := pruneConfig([]byte(`{"rota_name":"platform-primary","rota_token":"rota-live-abcdefghijklmnop"}`), manifest)
+
+	if strings.Contains(string(pruned), "rota-live-") {
+		t.Fatalf("a value retyped to secret survived the upgrade as plaintext: %s", pruned)
+	}
+	var values map[string]any
+	if err := json.Unmarshal(pruned, &values); err != nil {
+		t.Fatalf("decode pruned config: %v", err)
+	}
+	if values["rota_name"] != "platform-primary" {
+		t.Fatalf("pruning dropped a field that is still plain: %s", pruned)
+	}
+}
+
+// The exit gate, asserted separately from the pruning that should make it
+// unnecessary. NonSecretStoredConfig is what both the hook body and the
+// settings API response run stored config through, so a row that predates the
+// pruning fix — or any future write path that forgets — still cannot echo a
+// secret to a browser.
+func TestStoredSecretResidueIsNotReturnedByAReadPath(t *testing.T) {
+	manifest, err := ParseInstallationManifest(db.PluginInstallation{Manifest: []byte(secretConfigManifest)})
+	if err != nil {
+		t.Fatalf("parse manifest: %v", err)
+	}
+	values := NonSecretStoredConfig(installationWithLeakedSecrets(t).Config, manifest)
+
+	encoded, err := json.Marshal(values)
+	if err != nil {
+		t.Fatalf("marshal filtered config: %v", err)
+	}
+	for _, needle := range []string{"rota-live-", "roster-live-"} {
+		if strings.Contains(string(encoded), needle) {
+			t.Fatalf("a read path returned a stored secret: %s", encoded)
+		}
+	}
+	if values["rota_name"] != "platform-primary" {
+		t.Fatalf("filtering dropped a non-secret value: %v", values)
 	}
 }

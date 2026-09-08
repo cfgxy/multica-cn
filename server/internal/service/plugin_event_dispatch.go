@@ -5,7 +5,9 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"log/slog"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -336,15 +338,23 @@ func (d *PluginEventDispatcher) deliver(ctx context.Context, installation db.Plu
 func newEventDeliveryID() string {
 	raw := make([]byte, 16)
 	if _, err := rand.Read(raw); err != nil {
-		// crypto/rand does not fail in practice, and a delivery without an id
-		// is still a delivery: hookRequestBody omits an empty delivery_id, so
-		// the handler sees the field missing rather than a value it could
-		// mistake for a distinct delivery.
-		slog.Warn("plugins: could not mint an event delivery id", "error", err)
-		return ""
+		// crypto/rand does not fail in practice. If it ever does, the delivery
+		// still has to carry an id: returning "" made hookRequestBody omit the
+		// field, and a handler that deduplicates on delivery_id would then see
+		// every retry of every delivery as a fresh one — the exact failure the
+		// id exists to prevent, arriving precisely when the host is already
+		// degraded. Uniqueness is what is needed here, not unpredictability, so
+		// a monotonic counter with the clock is a sound fallback.
+		slog.Warn("plugins: could not mint a random event delivery id; falling back to a counter", "error", err)
+		return "ped_seq_" + strconv.FormatInt(time.Now().UnixNano(), 36) + "_" +
+			strconv.FormatUint(eventDeliveryFallbackSeq.Add(1), 36)
 	}
 	return "ped_" + hex.EncodeToString(raw)
 }
+
+// eventDeliveryFallbackSeq disambiguates fallback ids minted within the same
+// nanosecond tick.
+var eventDeliveryFallbackSeq atomic.Uint64
 
 // Close stops the workers. Safe to call more than once.
 func (d *PluginEventDispatcher) Close() {

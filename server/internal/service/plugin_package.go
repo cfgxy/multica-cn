@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -250,6 +251,32 @@ func lockPluginPackageKey(ctx context.Context, queries *db.Queries, workspaceID 
 	return nil
 }
 
+// lockPluginInstall takes every lock an install has to hold.
+//
+// Publish and delete lock on the PUBLISHER's (workspace, key). An install into
+// another workspace that locked only its own would be mutually exclusive with
+// nothing the publisher does, and the delete race the lock exists to close
+// would reopen for exactly the cross-workspace case the directory creates. So a
+// directory install takes both: the publisher's, which serializes it against
+// that delete, and the installer's, which serializes it against a second
+// install or an uninstall of the same plugin here.
+//
+// Sorted, so two transactions that need the same pair always take them in the
+// same order and cannot deadlock against each other.
+func lockPluginInstall(ctx context.Context, queries *db.Queries, installerWorkspaceID, publisherWorkspaceID pgtype.UUID, pluginKey string) error {
+	keys := []string{uuidString(publisherWorkspaceID) + ":" + pluginKey}
+	if installerWorkspaceID != publisherWorkspaceID {
+		keys = append(keys, uuidString(installerWorkspaceID)+":"+pluginKey)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		if err := queries.LockPluginPackageKey(ctx, key); err != nil {
+			return &PluginError{Kind: PluginErrorUnavailable, Message: "lock plugin package", Err: err}
+		}
+	}
+	return nil
+}
+
 // upsertPackage takes `queries` rather than reading s.Queries so it runs inside
 // its caller's transaction: the display name must move only if the version that
 // carries it is actually stored.
@@ -425,13 +452,29 @@ func (s *PluginService) DeletePackage(ctx context.Context, workspaceID pgtype.UU
 // work that does not need it. So the version is confirmed once more after the
 // lock is held, which is the point at which a concurrent delete can no longer
 // slip in between.
-func requireVersionStillPublished(ctx context.Context, queries *db.Queries, workspaceID, versionID pgtype.UUID) error {
-	_, err := queries.GetWorkspacePluginPackageVersion(ctx, db.GetWorkspacePluginPackageVersionParams{
-		WorkspaceID: workspaceID,
-		ID:          versionID,
-	})
+//
+// The re-check must apply the SAME rule VersionForWorkspace applied, not a
+// workspace-scoped one: a directory install resolves a version published
+// somewhere else, and asking "does the installing workspace own this row?"
+// answers no for every cross-workspace install — turning the guard against a
+// concurrent delete into an unconditional refusal of the feature. So the
+// publisher's own row is re-read when the installer published it, and the
+// directory join otherwise.
+func requireVersionStillPublished(ctx context.Context, queries *db.Queries, workspaceID pgtype.UUID, version db.PluginPackageVersion) error {
+	var err error
+	if version.WorkspaceID == workspaceID {
+		_, err = queries.GetWorkspacePluginPackageVersion(ctx, db.GetWorkspacePluginPackageVersionParams{
+			WorkspaceID: workspaceID,
+			ID:          version.ID,
+		})
+	} else {
+		// Re-reading through the directory join also re-checks the listing: a
+		// publisher who unlisted or withdrew between preview and commit has
+		// said "not this one", and the install must see that too.
+		_, err = queries.GetPublicPluginPackageVersion(ctx, version.ID)
+	}
 	if errors.Is(err, pgx.ErrNoRows) {
-		return pluginErrf(PluginErrorConflict, "this version was deleted while the install was being confirmed; publish or pick another version")
+		return pluginErrf(PluginErrorConflict, "this version was deleted or taken off the directory while the install was being confirmed; publish or pick another version")
 	}
 	if err != nil {
 		return &PluginError{Kind: PluginErrorUnavailable, Message: "re-read published plugin version", Err: err}

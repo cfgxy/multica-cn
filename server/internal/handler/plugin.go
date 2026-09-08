@@ -119,10 +119,13 @@ func (h *Handler) pluginInstallationPayload(ctx context.Context, installation db
 		return pluginInstallationResponse{}, err
 	}
 
-	config := map[string]any{}
-	if len(installation.Config) > 0 {
-		_ = json.Unmarshal(installation.Config, &config)
-	}
+	// Filtered against the manifest rather than trusted, even though SetConfig
+	// splits secrets off before they could land here and pruneConfig drops any
+	// that a retype stranded. This is the last gate before the value reaches a
+	// browser: one stored row that predates either of those, or one future
+	// write path that forgets, would otherwise become a plaintext credential in
+	// an API response. A guard whose cost is a map walk belongs at the exit.
+	config := service.NonSecretStoredConfig(installation.Config, manifest)
 	var granted []string
 	if len(installation.GrantedScopes) > 0 {
 		_ = json.Unmarshal(installation.GrantedScopes, &granted)

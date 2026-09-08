@@ -1644,6 +1644,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// because opening an issue is what asks for it; executable
 					// bytes stay off the authenticated app/API origin.
 					r.Get("/plugins/{installationId}/surfaces/{surfaceKey}/launch", h.GetPluginSurfaceLaunch)
+					// The instance directory is browse-only and
+					// member-visible, for the same reason the installed list
+					// is: a member seeing what this instance offers is how
+					// they ask an admin for it. Membership of the workspace in
+					// the URL is what authorizes the read — the listing spans
+					// workspaces, so it must not be reachable anonymously.
+					// Preview, install and every listing mutation stay
+					// admin-gated in the group below.
+					r.Get("/plugins/directory", h.ListPublicPluginPackages)
 				})
 				// Admin-level access
 				r.Group(func(r chi.Router) {
@@ -1691,7 +1700,6 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// version, so a bad release can be taken off the directory
 					// without taking its predecessor down with it. Neither
 					// touches an existing installation.
-					r.Get("/plugins/directory", h.ListPublicPluginPackages)
 					r.Put("/plugins/packages/{packageId}/visibility", h.SetPluginPackageVisibility)
 					r.Put("/plugins/versions/{versionId}/withdrawn", h.SetPluginVersionWithdrawn)
 					// Installing a Plugin is two steps on purpose: preview
