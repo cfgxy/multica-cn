@@ -1721,6 +1721,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Put("/plugins/{installationId}/config", h.ConfigurePlugin)
 					r.Post("/plugins/{installationId}/enable", h.EnablePlugin)
 					r.Post("/plugins/{installationId}/disable", h.DisablePlugin)
+					// Both outlive plugins_v1: they are the two cleanup levers.
+					r.Delete("/plugins/{installationId}/secrets/{key}", h.ClearPluginSecret)
 					r.Delete("/plugins/{installationId}", h.UninstallPlugin)
 				})
 				// Owner-only access
