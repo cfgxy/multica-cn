@@ -4,7 +4,7 @@
 # an already existing release.
 #
 #   desktop-release-tag.sh push        <ref-name>
-#   desktop-release-tag.sh dispatch    <git-describe-output>
+#   desktop-release-tag.sh dispatch    <git-describe-output> [<git-describe-exact-match>]
 #   desktop-release-tag.sh verify-reuse <event> <tag> <release-commit> <github-sha> <release-is-prerelease>
 #
 # Kept out of the workflow YAML so scripts/desktop-release-tag.test.sh can pin
@@ -24,6 +24,9 @@ SEMVER_RE='^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'
 
 mode=${1:-}
 input=${2:-}
+# dispatch only: `git describe --exact-match` output, empty when HEAD is not a
+# tag. verify-reuse re-reads $2..$6 under its own names and ignores this.
+exact_match=${3:-}
 
 emit() {
   local tag=$1 prerelease=$2
@@ -74,8 +77,21 @@ case "$mode" in
     # means the manual run would land on the release the tag push owns, and
     # package.mjs would stamp the installers with that same version — so the
     # only safe answer is to refuse and let the tag push channel handle it.
-    if [[ "$input" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] \
-      || [[ "$input" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.]+$ ]]; then
+    #
+    # Two independent checks, because neither alone is sufficient:
+    #   1. `git describe --exact-match`'s answer, passed in by the caller. It
+    #      knows whether HEAD carries a tag; string shape does not.
+    #   2. A syntax backstop for when that argument is absent: a describe value
+    #      that is valid release-tag syntax yet carries no `-<distance>-g<hash>`
+    #      suffix can only be a bare tag. This must cover every shape `push`
+    #      accepts — including the hyphenated prerelease suffixes SEMVER_RE
+    #      allows, e.g. `v1.0.0-rc-test` — or the manual channel would publish
+    #      into a release the push channel considers its own.
+    if [[ -n "$exact_match" ]]; then
+      echo "::error::HEAD is exactly at release tag '$exact_match'. A manual run must not publish into a tagged release; push the tag to run the release channel, or dispatch from a commit past the tag." >&2
+      exit 1
+    fi
+    if [[ "$input" =~ $SEMVER_RE ]] && [[ ! "$input" =~ -[0-9]+-g[0-9A-Za-z]+$ ]]; then
       echo "::error::HEAD is exactly at release tag '$input'. A manual run must not publish into a tagged release; push the tag to run the release channel, or dispatch from a commit past the tag." >&2
       exit 1
     fi
