@@ -60,6 +60,13 @@ import type {
   WorkspaceRepo,
   WorkspaceMcpServer,
   MarketplaceItem,
+  PromptApplyPreview,
+  PromptApplyResult,
+  PromptInstall,
+  PromptMarketItem,
+  PromptRestoreResult,
+  PromptTargetState,
+  PromptVersion,
   MemberWithUser,
   User,
   Skill,
@@ -469,6 +476,21 @@ import {
   WorkspaceMcpServerListSchema,
   WorkspaceMcpServerSchema,
   MarketplaceItemListSchema,
+  PromptApplyPreviewSchema,
+  PromptApplyResultSchema,
+  PromptInstallListSchema,
+  PromptInstallSchema,
+  PromptMarketItemListSchema,
+  PromptRestoreResultSchema,
+  PromptTargetStateSchema,
+  PromptVersionListSchema,
+  PromptVersionSchema,
+  EMPTY_PROMPT_APPLY_PREVIEW,
+  EMPTY_PROMPT_APPLY_RESULT,
+  EMPTY_PROMPT_INSTALL,
+  EMPTY_PROMPT_RESTORE_RESULT,
+  EMPTY_PROMPT_TARGET_STATE,
+  EMPTY_PROMPT_VERSION,
   ShareLinkSchema,
   ShareLinkListResponseSchema,
   ShareLinkInfoSchema,
@@ -2895,6 +2917,253 @@ export class ApiClient {
     return this.fetch<unknown>(`/api/marketplace/install`, {
       method: "POST",
       body: JSON.stringify(input),
+    });
+  }
+
+  // ── Prompt marketplace (RUYI-100) ─────────────────────────────────────────
+
+  /**
+   * The prompt catalog: the latest published version of each series, annotated
+   * with what this workspace has installed. The prompt body is omitted here —
+   * a listing shows metadata, and the text arrives with the detail read.
+   */
+  async listPromptVersions(
+    filter: { kind?: string; q?: string } = {},
+  ): Promise<PromptMarketItem[]> {
+    const params = new URLSearchParams();
+    if (filter.kind) params.set("kind", filter.kind);
+    if (filter.q) params.set("q", filter.q);
+    const query = params.toString();
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/prompt-versions${query ? `?${query}` : ""}`,
+    );
+    return parseWithFallback(raw, PromptMarketItemListSchema, [] as PromptMarketItem[], {
+      endpoint: "GET /api/marketplace/prompt-versions",
+    });
+  }
+
+  /** One version, including its prompt body. */
+  async getPromptVersion(versionId: string): Promise<PromptVersion> {
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/prompt-versions/${encodeURIComponent(versionId)}`,
+    );
+    return parseWithFallback(raw, PromptVersionSchema, EMPTY_PROMPT_VERSION, {
+      endpoint: "GET /api/marketplace/prompt-versions/{id}",
+    });
+  }
+
+  /**
+   * The versions published from one agent or squad — the publisher's own
+   * history for that source object, drafts included.
+   */
+  async listPromptVersionsBySource(
+    sourceType: string,
+    sourceId: string,
+  ): Promise<PromptVersion[]> {
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/prompt-sources/${encodeURIComponent(sourceType)}/${encodeURIComponent(sourceId)}/versions`,
+    );
+    return parseWithFallback(raw, PromptVersionListSchema, [] as PromptVersion[], {
+      endpoint: "GET /api/marketplace/prompt-sources/{type}/{id}/versions",
+    });
+  }
+
+  /**
+   * Opens a draft from a source object.
+   *
+   * There is no `content` parameter by design: the server snapshots the source
+   * object's own persisted prompt, so a draft can only describe a prompt the
+   * publisher actually controls.
+   */
+  async createPromptVersion(input: {
+    source_type: string;
+    source_id: string;
+    /** Set to append the next version to an existing line. */
+    series_id?: string;
+    name: string;
+    summary?: string;
+    audience?: string;
+    categories?: string[];
+    license_code: string;
+    usage_notes?: string;
+    companions?: string;
+  }): Promise<PromptVersion> {
+    const raw = await this.fetch<unknown>(`/api/marketplace/prompt-versions`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+    return parseWithFallback(raw, PromptVersionSchema, EMPTY_PROMPT_VERSION, {
+      endpoint: "POST /api/marketplace/prompt-versions",
+    });
+  }
+
+  /** Edits a draft. Published versions are immutable and the server refuses. */
+  async updatePromptVersion(
+    versionId: string,
+    input: {
+      name?: string;
+      summary?: string;
+      audience?: string;
+      categories?: string[];
+      license_code?: string;
+      usage_notes?: string;
+      companions?: string;
+      /** Re-snapshots the source object's current text. */
+      refresh_content?: boolean;
+    },
+  ): Promise<PromptVersion> {
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/prompt-versions/${encodeURIComponent(versionId)}`,
+      { method: "PUT", body: JSON.stringify(input) },
+    );
+    return parseWithFallback(raw, PromptVersionSchema, EMPTY_PROMPT_VERSION, {
+      endpoint: "PUT /api/marketplace/prompt-versions/{id}",
+    });
+  }
+
+  /**
+   * Publishes a draft: freezes the snapshot, assigns a version number, and
+   * makes it discoverable across workspaces.
+   *
+   * A secret-scan hit throws ApiError with status 422 and a body matching
+   * PromptSecretScanBlockedSchema. There is no override parameter — the caller
+   * shows the findings and the publisher edits the prompt.
+   *
+   * `public` is sent explicitly on every call, false included. The server
+   * decodes a required body, and defaulting it here rather than omitting it
+   * keeps "publish privately" from depending on how a JSON decoder treats a
+   * missing field.
+   */
+  async publishPromptVersion(
+    versionId: string,
+    input: { public: boolean } = { public: false },
+  ): Promise<PromptVersion> {
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/prompt-versions/${encodeURIComponent(versionId)}/publish`,
+      { method: "POST", body: JSON.stringify({ public: input.public }) },
+    );
+    return parseWithFallback(raw, PromptVersionSchema, EMPTY_PROMPT_VERSION, {
+      endpoint: "POST /api/marketplace/prompt-versions/{id}/publish",
+    });
+  }
+
+  /**
+   * Withdraws a published version. Not a delete: workspaces that already
+   * applied it keep their text, and only new installs and applies are refused.
+   */
+  async withdrawPromptVersion(versionId: string): Promise<PromptVersion> {
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/prompt-versions/${encodeURIComponent(versionId)}/withdraw`,
+      { method: "POST" },
+    );
+    return parseWithFallback(raw, PromptVersionSchema, EMPTY_PROMPT_VERSION, {
+      endpoint: "POST /api/marketplace/prompt-versions/{id}/withdraw",
+    });
+  }
+
+  /** The workspace's install library. Holding a row changes no prompt. */
+  async listPromptInstalls(): Promise<PromptInstall[]> {
+    const raw = await this.fetch<unknown>(`/api/marketplace/prompt-installations`);
+    return parseWithFallback(raw, PromptInstallListSchema, [] as PromptInstall[], {
+      endpoint: "GET /api/marketplace/prompt-installations",
+    });
+  }
+
+  /**
+   * Adds a version to the workspace library — and does nothing else. Applying
+   * it to an agent or squad is a separate, confirmed step.
+   *
+   * Installing a newer version of an already-installed series IS the update
+   * path: it refreshes the same row rather than creating a second.
+   */
+  async installPrompt(versionId: string): Promise<PromptInstall> {
+    const raw = await this.fetch<unknown>(`/api/marketplace/prompt-installations`, {
+      method: "POST",
+      body: JSON.stringify({ version_id: versionId }),
+    });
+    return parseWithFallback(raw, PromptInstallSchema, EMPTY_PROMPT_INSTALL, {
+      endpoint: "POST /api/marketplace/prompt-installations",
+    });
+  }
+
+  /**
+   * Renders the diff and mints the confirmation token.
+   *
+   * The token must be echoed back on apply. It expires, and it stops matching
+   * if the target's prompt changes in the meantime — which is what forces a
+   * re-preview instead of overwriting an edit the user never saw.
+   */
+  async previewPromptApply(
+    installId: string,
+    target: { target_type: string; target_id: string },
+  ): Promise<PromptApplyPreview> {
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/prompt-installations/${encodeURIComponent(installId)}/preview`,
+      { method: "POST", body: JSON.stringify(target) },
+    );
+    return parseWithFallback(raw, PromptApplyPreviewSchema, EMPTY_PROMPT_APPLY_PREVIEW, {
+      endpoint: "POST /api/marketplace/prompt-installations/{id}/preview",
+    });
+  }
+
+  /**
+   * Writes an installed prompt into a target.
+   *
+   * `strategy` defaults to preserve server-side, so omitting it cannot
+   * overwrite; `replace` is the explicit overwrite. `operation_id` makes a
+   * retry safe — without it a retried apply would capture the just-applied text
+   * as the restore point and destroy the undo. A stale preview answers 409.
+   */
+  async applyPrompt(
+    installId: string,
+    input: {
+      target_type: string;
+      target_id: string;
+      strategy?: string;
+      preview_token: string;
+      expected_sha256?: string;
+      operation_id: string;
+    },
+  ): Promise<PromptApplyResult> {
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/prompt-installations/${encodeURIComponent(installId)}/apply`,
+      { method: "POST", body: JSON.stringify(input) },
+    );
+    return parseWithFallback(raw, PromptApplyResultSchema, EMPTY_PROMPT_APPLY_RESULT, {
+      endpoint: "POST /api/marketplace/prompt-installations/{id}/apply",
+    });
+  }
+
+  /** What the status strip on an agent or squad reads. */
+  async getPromptTargetState(
+    targetType: string,
+    targetId: string,
+  ): Promise<PromptTargetState> {
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/prompt-targets/${encodeURIComponent(targetType)}/${encodeURIComponent(targetId)}`,
+    );
+    return parseWithFallback(raw, PromptTargetStateSchema, EMPTY_PROMPT_TARGET_STATE, {
+      endpoint: "GET /api/marketplace/prompt-targets/{type}/{id}",
+    });
+  }
+
+  /**
+   * Steps the target back to the prompt it had before the apply.
+   *
+   * One step, not a stack. Refused with 409 when the prompt has been
+   * hand-edited since — restoring would silently discard that edit.
+   */
+  async restorePrompt(
+    targetType: string,
+    targetId: string,
+    input: { operation_id: string; expected_sha256?: string },
+  ): Promise<PromptRestoreResult> {
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/prompt-targets/${encodeURIComponent(targetType)}/${encodeURIComponent(targetId)}/restore`,
+      { method: "POST", body: JSON.stringify(input) },
+    );
+    return parseWithFallback(raw, PromptRestoreResultSchema, EMPTY_PROMPT_RESTORE_RESULT, {
+      endpoint: "POST /api/marketplace/prompt-targets/{type}/{id}/restore",
     });
   }
 
