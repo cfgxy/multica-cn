@@ -457,6 +457,145 @@ func TestPluginCleanupSurvivesPluginsV1Off(t *testing.T) {
 	}
 }
 
+// The consent screen collects configuration alongside the grant, so the install
+// has to land both. A plugin whose required credential was typed there must
+// never exist for a moment without it — an operator watching the list would see
+// an enabled plugin that fails on first use and no record of why.
+func TestPluginInstallAppliesConsentScreenConfig(t *testing.T) {
+	withPluginsV1Flag(t, testHandler, true)
+	cleanupPluginInstallations(t)
+	versionID := withLocalPluginSource(t, handlerTestManifest)
+
+	body, _ := json.Marshal(map[string]any{
+		"version_id":     versionID,
+		"granted_scopes": []string{"issues:read", "comments:write", "storage:user"},
+		"config":         map[string]any{"repo": "multica-ai/multica", "token": "sk-consent-secret"},
+	})
+	recorder := httptest.NewRecorder()
+	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID}))
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("install status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "sk-consent-secret") {
+		t.Fatalf("install response echoed the secret: %s", recorder.Body.String())
+	}
+	var installed struct {
+		ID                string         `json:"id"`
+		Config            map[string]any `json:"config"`
+		ConfiguredSecrets []string       `json:"configured_secrets"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &installed); err != nil {
+		t.Fatalf("decode installation: %v", err)
+	}
+	if installed.Config["repo"] != "multica-ai/multica" {
+		t.Fatalf("plain consent value was not applied: %v", installed.Config)
+	}
+	if _, present := installed.Config["token"]; present {
+		t.Fatalf("secret was stored in config: %v", installed.Config)
+	}
+	if len(installed.ConfiguredSecrets) != 1 || installed.ConfiguredSecrets[0] != "token" {
+		t.Fatalf("configured secrets = %v, want [token]", installed.ConfiguredSecrets)
+	}
+
+	// One transaction, not two calls: the row and its ciphertext are both there.
+	var secretRows int
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM plugin_secret WHERE installation_id = $1 AND key = 'token'`, installed.ID).Scan(&secretRows); err != nil {
+		t.Fatalf("count secrets: %v", err)
+	}
+	if secretRows != 1 {
+		t.Fatalf("install stored %d rows for the consent-screen secret, want 1", secretRows)
+	}
+}
+
+// A rejected config must take the whole install with it. Otherwise the failure
+// mode is the one the single transaction exists to prevent: the plugin mounted,
+// its configuration missing, and the administrator told the install failed.
+func TestPluginInstallRollsBackOnInvalidConsentConfig(t *testing.T) {
+	withPluginsV1Flag(t, testHandler, true)
+	cleanupPluginInstallations(t)
+	versionID := withLocalPluginSource(t, handlerTestManifest)
+
+	body, _ := json.Marshal(map[string]any{
+		"version_id":     versionID,
+		"granted_scopes": []string{"issues:read", "comments:write", "storage:user"},
+		"config":         map[string]any{"nope": "x"},
+	})
+	recorder := httptest.NewRecorder()
+	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID}))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("unknown config field status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var installations int
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM plugin_installation WHERE workspace_id = $1`, testWorkspaceID).Scan(&installations); err != nil {
+		t.Fatalf("count installations: %v", err)
+	}
+	if installations != 0 {
+		t.Fatalf("a rejected config left %d installations behind", installations)
+	}
+}
+
+// Clearing one secret is the second cleanup lever, and it has to work with the
+// flag off — writing config is refused there, so without it an operator whose
+// token leaked can only uninstall the whole plugin to get the ciphertext out of
+// the database.
+func TestPluginClearSecretSurvivesPluginsV1Off(t *testing.T) {
+	withPluginsV1Flag(t, testHandler, true)
+	cleanupPluginInstallations(t)
+	versionID := withLocalPluginSource(t, handlerTestManifest)
+
+	install, _ := json.Marshal(map[string]any{
+		"version_id":     versionID,
+		"granted_scopes": []string{"issues:read", "comments:write", "storage:user"},
+		"config":         map[string]any{"token": "sk-leaked-secret"},
+	})
+	recorder := httptest.NewRecorder()
+	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", install, map[string]string{"id": testWorkspaceID}))
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("install status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var installed struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &installed); err != nil {
+		t.Fatalf("decode installation: %v", err)
+	}
+
+	withPluginsV1Flag(t, testHandler, false)
+	params := map[string]string{"id": testWorkspaceID, "installationId": installed.ID, "key": "token"}
+
+	recorder = httptest.NewRecorder()
+	testHandler.ClearPluginSecret(recorder, pluginHandlerRequest(http.MethodDelete, "/plugins/secrets", nil, params))
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("clear with the flag off status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var remaining int
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM plugin_secret WHERE installation_id = $1`, installed.ID).Scan(&remaining); err != nil {
+		t.Fatalf("count secrets: %v", err)
+	}
+	if remaining != 0 {
+		t.Fatalf("clear left %d secret rows behind", remaining)
+	}
+
+	// Declared but no longer stored: the requested end state already holds, so
+	// clicking the row twice is not an error the operator has to interpret.
+	recorder = httptest.NewRecorder()
+	testHandler.ClearPluginSecret(recorder, pluginHandlerRequest(http.MethodDelete, "/plugins/secrets", nil, params))
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("second clear status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	// A name the manifest never declared is a typo, not a no-op.
+	unknown := map[string]string{"id": testWorkspaceID, "installationId": installed.ID, "key": "not-a-field"}
+	recorder = httptest.NewRecorder()
+	testHandler.ClearPluginSecret(recorder, pluginHandlerRequest(http.MethodDelete, "/plugins/secrets", nil, unknown))
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("unknown secret name status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestPluginPreviewShowsScopesWithoutInstalling(t *testing.T) {
 	withPluginsV1Flag(t, testHandler, true)
 	cleanupPluginInstallations(t)
