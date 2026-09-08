@@ -194,3 +194,61 @@ func TestStoredSecretResidueIsNotReturnedByAReadPath(t *testing.T) {
 		t.Fatalf("filtering dropped a non-secret value: %v", values)
 	}
 }
+
+// The third exit, and the one that reaches third-party code.
+//
+// Filtering the hook body and the settings response left the surface bridge
+// reading `installation.Config` straight out of the row. A stored secret — a
+// row written before secrets were split off, or by any write path that forgets
+// — was therefore handed to the iframe verbatim, which is the plugin's own
+// JavaScript. This drives the real BuildPluginContext rather than the helper:
+// the helper being correct was never the thing in doubt.
+func TestSurfaceContextCarriesNoSecret(t *testing.T) {
+	service := &PluginService{}
+	context := service.BuildPluginContext(
+		PluginActionCaller{Installation: installationWithLeakedSecrets(t)},
+		db.Workspace{Name: "Platform", Slug: "platform"},
+		nil,
+		nil,
+	)
+
+	for _, key := range []string{"rota_token", "roster_credential"} {
+		if _, present := context.Config[key]; present {
+			t.Fatalf("secret-typed field %q reached the surface context", key)
+		}
+	}
+	if context.Config["rota_name"] != "platform-primary" {
+		t.Fatalf("non-secret config must still reach the surface: %v", context.Config)
+	}
+
+	// Serialized, because the payload is JSON by the time it crosses into the
+	// iframe and absence from a map is not absence from the wire.
+	encoded, err := json.Marshal(context)
+	if err != nil {
+		t.Fatalf("marshal context: %v", err)
+	}
+	for _, needle := range []string{"rota-live-", "roster-live-"} {
+		if strings.Contains(string(encoded), needle) {
+			t.Fatalf("a secret value survived into the surface context payload: %s", encoded)
+		}
+	}
+}
+
+// Same reasoning as the hook body: without a readable manifest nothing can say
+// which keys are secret, so the surface gets none of them.
+func TestSurfaceContextSendsNoConfigWhenTheManifestIsUnreadable(t *testing.T) {
+	service := &PluginService{}
+	context := service.BuildPluginContext(
+		PluginActionCaller{Installation: db.PluginInstallation{
+			Manifest: []byte("not json"),
+			Config:   []byte(`{"rota_token":"rota-live-abcdefghijklmnop"}`),
+		}},
+		db.Workspace{Name: "Platform", Slug: "platform"},
+		nil,
+		nil,
+	)
+
+	if len(context.Config) != 0 {
+		t.Fatalf("an unreadable manifest must send no config to a surface, got %v", context.Config)
+	}
+}

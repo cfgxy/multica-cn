@@ -428,6 +428,7 @@
       "title": "配置",
       "save": "保存",
       "saved": "配置已保存",
+      "configured": "已配置",
       "secret_set": "已保存 — 输入新值可替换",
       "secret_write_only": "只写 — 保存后无法再读取。"
     },

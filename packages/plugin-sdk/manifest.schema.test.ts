@@ -58,6 +58,10 @@ describe("the deliberately invalid samples", () => {
     { file: "surface-entry-not-a-script.json", instancePath: "/contributes/surfaces/0/entry" },
     { file: "unknown-field.json", instancePath: "" },
     { file: "empty-contributes.json", instancePath: "/contributes" },
+    {
+      file: "skill-entry-not-under-skills.json",
+      instancePath: "/contributes/resources/0/entry",
+    },
   ];
 
   it.each(cases)("$file is rejected", ({ file, instancePath }) => {
@@ -65,5 +69,30 @@ describe("the deliberately invalid samples", () => {
     expect(valid).toBe(false);
     const paths = (validate.errors ?? []).map((error) => error.instancePath);
     expect(paths).toContain(instancePath);
+  });
+});
+
+/**
+ * The other half of the contract, and the one that used to be a lie.
+ *
+ * Every sample here is shape-valid and the host still refuses it, because the
+ * rule it breaks is cross-field and a JSON Schema cannot see it. Asserting they
+ * PASS is what keeps the schema honest about its own reach: an author whose
+ * editor is green has been told the shape is right, not that the publish will
+ * be accepted. `invalid-manifests/host-only/README.md` lists the same rules in
+ * prose, and `server/pkg/plugincontract` asserts the host rejects each file.
+ */
+describe("the samples only the host can reject", () => {
+  const hostOnly = readdirSync(join(examples, "invalid-manifests", "host-only"))
+    .filter((name) => name.endsWith(".json"));
+
+  it("are all present", () => {
+    expect(hostOnly.length).toBe(5);
+  });
+
+  it.each(hostOnly)("%s passes the schema, so the schema does not claim to catch it", (file) => {
+    const valid = validate(manifest("invalid-manifests", "host-only", file));
+    expect(validate.errors ?? []).toEqual([]);
+    expect(valid).toBe(true);
   });
 });

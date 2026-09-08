@@ -1,6 +1,7 @@
 package service
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
 
@@ -66,17 +67,39 @@ func scanBundleForSecrets(bundle plugincontract.Bundle) error {
 	if err := scanTextForSecrets("multica.plugin.json", string(bundle.Canonical)); err != nil {
 		return err
 	}
-	for _, file := range bundle.Files {
+	for index, file := range bundle.Files {
+		// The path names the location, so it travels into the rejection — and a
+		// path can itself be the credential. It is therefore redacted before it
+		// is ever put in a message, on both subjects: naming the file is the
+		// point, quoting the key inside its name is the leak.
+		//
+		// The bundle position is added so a fully redacted name still points at
+		// one entry rather than at "some file".
+		safePath := redactSecrets(file.Path)
+		location := fmt.Sprintf("the name of bundle file %d (%s)", index+1, safePath)
 		// The path is scanned as its own subject: it is not part of the
 		// content, and reporting a line number for it would be meaningless.
-		if err := scanTextForSecrets("the file name "+file.Path, file.Path); err != nil {
+		if err := scanTextForSecrets(location, file.Path); err != nil {
 			return err
 		}
-		if err := scanTextForSecrets(file.Path, string(file.Content)); err != nil {
+		if err := scanTextForSecrets(safePath, string(file.Content)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// redactSecrets replaces every credential shape in a string with a placeholder.
+//
+// Used on text the rejection has to QUOTE — a file path is the location an
+// author needs, and it is also somewhere a key can sit. Replacing rather than
+// dropping keeps the surrounding path readable, so `ui/[redacted].js` still
+// says which directory and which extension.
+func redactSecrets(text string) string {
+	for _, pattern := range pluginSecretPatterns {
+		text = pattern.Re.ReplaceAllString(text, "[redacted]")
+	}
+	return text
 }
 
 // scanTextForSecrets reports the first credential shape in one subject.

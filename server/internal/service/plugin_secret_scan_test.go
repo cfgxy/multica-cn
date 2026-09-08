@@ -158,13 +158,49 @@ func TestTheManifestIsScannedToo(t *testing.T) {
 
 // A path is displayed and served verbatim, so a credential in a FILE NAME is
 // published by the listing itself, before anyone opens the file.
+//
+// The rejection must not repeat it. The path is the one piece of text this
+// scanner has to quote — it is the location the author needs — and quoting it
+// unredacted turned "we refused to publish your key" into an API response, a
+// server log and an issue comment that all contain the key.
 func TestAFileNameIsScannedToo(t *testing.T) {
-	err := scanBundleForSecrets(bundleWithFile("ui/AKIAQQQQQQQQQQQQQQQQ.js", "export default 1;"))
+	const secret = "AKIAQQQQQQQQQQQQQQQQ"
+	err := scanBundleForSecrets(bundleWithFile("ui/"+secret+".js", "export default 1;"))
 	if err == nil {
 		t.Fatal("a credential in a file name was published")
 	}
-	if !strings.Contains(err.Error(), "file name") {
+	if !strings.Contains(err.Error(), "name of bundle file 1") {
 		t.Fatalf("the rejection does not say the file NAME is at fault: %q", err.Error())
+	}
+	if strings.Contains(err.Error(), secret) {
+		t.Fatalf("the rejection quotes the credential it found in the file name: %q", err.Error())
+	}
+	// The location still has to be usable: a fully anonymous rejection sends
+	// the author grepping a bundle they thought was clean.
+	if !strings.Contains(err.Error(), "ui/[redacted].js") {
+		t.Fatalf("the rejection redacted the path into uselessness: %q", err.Error())
+	}
+}
+
+// The same path is also the subject line for the file's CONTENT, so redacting
+// it in one message and not the other would leak the value anyway — this time
+// from a file whose contents were the ordinary reason for rejection.
+func TestAContentRejectionDoesNotQuoteASecretFileName(t *testing.T) {
+	const nameSecret = "AKIAWWWWWWWWWWWWWWWW"
+	const bodySecret = "ghp_" + "cccccccccccccccccccccccccccccccccccc"
+	err := scanBundleForSecrets(plugincontract.Bundle{
+		Files: []plugincontract.BundleFile{{
+			// Clean name, so the loop reaches the content of the second file.
+			Path: "ui/clean.js", Content: []byte("export default 1;"),
+		}, {
+			Path: "ui/" + nameSecret + ".js", Content: []byte("const t = \"" + bodySecret + "\";"),
+		}},
+	})
+	if err == nil {
+		t.Fatal("a credential in a file name was published")
+	}
+	if strings.Contains(err.Error(), nameSecret) {
+		t.Fatalf("the rejection quotes the credential from the path: %q", err.Error())
 	}
 }
 

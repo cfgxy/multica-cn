@@ -428,6 +428,7 @@
       "title": "설정",
       "save": "저장",
       "saved": "설정을 저장했습니다",
+      "configured": "설정됨",
       "secret_set": "저장됨 — 새 값을 입력하면 교체됩니다",
       "secret_write_only": "쓰기 전용 — 저장 후에는 다시 읽을 수 없습니다."
     },
