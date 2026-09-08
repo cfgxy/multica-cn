@@ -1947,3 +1947,91 @@ func TestServeLocalUpload_NonLocalStorage404(t *testing.T) {
 		t.Fatalf("status = %d, want 404", w.Code)
 	}
 }
+
+// TestAttachmentDownloadURLTTL_DefaultsToOneDay — RUYI-103.
+//
+// The signed URL a bulk response hands the client is the only thing keeping an
+// already-rendered image loadable. At the previous 30-minute default a reader
+// who left an issue open over lunch came back to a page of dead images and a
+// run of "image unavailable" toasts. The default now covers a working day.
+func TestAttachmentDownloadURLTTL_DefaultsToOneDay(t *testing.T) {
+	origCfg := testHandler.cfg
+	t.Cleanup(func() { testHandler.cfg = origCfg })
+
+	testHandler.cfg.AttachmentDownloadURLTTL = 0
+	if got := testHandler.attachmentDownloadURLTTL(); got != 24*time.Hour {
+		t.Fatalf("attachmentDownloadURLTTL() = %s, want 24h", got)
+	}
+
+	// An explicit operator value still wins — the change moves the default,
+	// it does not pin the knob.
+	testHandler.cfg.AttachmentDownloadURLTTL = 5 * time.Minute
+	if got := testHandler.attachmentDownloadURLTTL(); got != 5*time.Minute {
+		t.Fatalf("attachmentDownloadURLTTL() = %s, want the configured 5m", got)
+	}
+}
+
+// TestAttachmentToResponse_SignedDownloadURLCarriesTheConfiguredTTL — the TTL
+// constant is only worth anything if it reaches the signature. Decodes the
+// CloudFront policy the signer emits and checks its expiry lands a day out.
+func TestAttachmentToResponse_SignedDownloadURLCarriesTheConfiguredTTL(t *testing.T) {
+	origCfg := testHandler.cfg
+	origSigner := testHandler.CFSigner
+	testHandler.cfg.AttachmentDownloadMode = "cloudfront"
+	testHandler.cfg.AttachmentDownloadURLTTL = 0
+	testHandler.CFSigner = testCloudFrontSigner(t)
+	t.Cleanup(func() {
+		testHandler.cfg = origCfg
+		testHandler.CFSigner = origSigner
+	})
+
+	before := time.Now()
+	resp := testHandler.attachmentToResponse(db.Attachment{
+		Url:      "https://static.example.test/downloads/ttl.png",
+		Filename: "ttl.png",
+	}, attachmentURLModeSigned)
+
+	expiry := cloudFrontPolicyExpiry(t, resp.DownloadURL)
+	lower := before.Add(24 * time.Hour).Add(-time.Minute)
+	upper := time.Now().Add(24 * time.Hour).Add(time.Minute)
+	if expiry.Before(lower) || expiry.After(upper) {
+		t.Fatalf("signed download_url expires at %s, want ~24h out (between %s and %s)", expiry, lower, upper)
+	}
+}
+
+// cloudFrontPolicyExpiry pulls DateLessThan out of the `Policy` query
+// parameter of a CloudFront-signed URL. The encoding is CloudFront's URL-safe
+// base64 variant (see cfBase64Encode in internal/auth).
+func cloudFrontPolicyExpiry(t *testing.T, signedURL string) time.Time {
+	t.Helper()
+	u, err := url.Parse(signedURL)
+	if err != nil {
+		t.Fatalf("parse signed URL: %v", err)
+	}
+	raw := u.Query().Get("Policy")
+	if raw == "" {
+		t.Fatalf("signed URL carries no Policy parameter: %q", signedURL)
+	}
+	decoded, err := base64.StdEncoding.DecodeString(
+		strings.NewReplacer("-", "+", "_", "=", "~", "/").Replace(raw),
+	)
+	if err != nil {
+		t.Fatalf("decode CloudFront policy: %v", err)
+	}
+	var policy struct {
+		Statement []struct {
+			Condition struct {
+				DateLessThan struct {
+					EpochTime int64 `json:"AWS:EpochTime"`
+				} `json:"DateLessThan"`
+			} `json:"Condition"`
+		} `json:"Statement"`
+	}
+	if err := json.Unmarshal(decoded, &policy); err != nil {
+		t.Fatalf("decode CloudFront policy JSON: %v; raw=%s", err, decoded)
+	}
+	if len(policy.Statement) == 0 {
+		t.Fatalf("CloudFront policy has no statement: %s", decoded)
+	}
+	return time.Unix(policy.Statement[0].Condition.DateLessThan.EpochTime, 0)
+}
