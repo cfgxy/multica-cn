@@ -95,7 +95,12 @@ func TestOrdinaryPluginSourcePublishesUntouched(t *testing.T) {
 		{"placeholder", "README.md", "Set `api_key` to your token, e.g. `sk-...`."},
 		{"prose about keys", "README.md", "This plugin needs a private key for signing. Do not commit it."},
 		{"base64 asset", "ui/logo.js", "export const logo = \"" + strings.Repeat("QUJDRA", 40) + "\";"},
-		{"binary", "ui/font.woff", "\x00\x01AKIAQQQQQQQQQQQQQQQQ"},
+		// A real binary asset carries no credential, and the patterns are
+		// provider prefixes over fixed alphabets rather than entropy
+		// heuristics — so compressed bytes match nothing and the file
+		// publishes. It is scanned rather than skipped: see the NUL test below
+		// for why "contains a NUL" cannot be an exemption.
+		{"binary", "ui/font.woff", "\x00\x01wOFF\x00\x01\x00\x00" + strings.Repeat("\x7f\x00\xa3", 60)},
 	}
 	for _, tc := range clean {
 		t.Run(tc.name, func(t *testing.T) {
@@ -103,6 +108,63 @@ func TestOrdinaryPluginSourcePublishesUntouched(t *testing.T) {
 				t.Fatalf("scan refused ordinary source: %v", err)
 			}
 		})
+	}
+}
+
+// A NUL byte is something the author puts there. While one anywhere in a file
+// skipped that file wholesale, appending a single zero byte to a script was a
+// complete, one-character bypass of the whole scanner — and the author who
+// wanted to ship a credential is exactly the author who would find it.
+func TestANulByteDoesNotHideACredential(t *testing.T) {
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{"nul first", "\x00const id = \"AKIAQQQQQQQQQQQQQQQQ\";"},
+		{"nul after", "const id = \"AKIAQQQQQQQQQQQQQQQQ\";\x00"},
+		{"nul between", "const a = 1;\x00\nconst id = \"AKIAQQQQQQQQQQQQQQQQ\";"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := scanBundleForSecrets(bundleWithFile("ui/main.js", tc.content))
+			if err == nil {
+				t.Fatal("a NUL byte let a credential through the scanner")
+			}
+			if strings.Contains(err.Error(), "AKIAQQQQQQQQQQQQQQQQ") {
+				t.Fatalf("the rejection quotes the secret: %q", err.Error())
+			}
+		})
+	}
+}
+
+// The manifest is stored as the consented snapshot and returned by preview to
+// every administrator who can see the listing. A key in a description or a
+// default value is published exactly as surely as one in a script.
+func TestTheManifestIsScannedToo(t *testing.T) {
+	bundle := plugincontract.Bundle{
+		Canonical: []byte(`{"manifest_version":1,"description":"use AKIAQQQQQQQQQQQQQQQQ to authenticate"}`),
+	}
+	err := scanBundleForSecrets(bundle)
+	if err == nil {
+		t.Fatal("a credential in the manifest was published: the manifest is served to every reader of the listing")
+	}
+	if !strings.Contains(err.Error(), "multica.plugin.json") {
+		t.Fatalf("the rejection does not name the manifest: %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "AKIAQQQQQQQQQQQQQQQQ") {
+		t.Fatalf("the rejection quotes the secret: %q", err.Error())
+	}
+}
+
+// A path is displayed and served verbatim, so a credential in a FILE NAME is
+// published by the listing itself, before anyone opens the file.
+func TestAFileNameIsScannedToo(t *testing.T) {
+	err := scanBundleForSecrets(bundleWithFile("ui/AKIAQQQQQQQQQQQQQQQQ.js", "export default 1;"))
+	if err == nil {
+		t.Fatal("a credential in a file name was published")
+	}
+	if !strings.Contains(err.Error(), "file name") {
+		t.Fatalf("the rejection does not say the file NAME is at fault: %q", err.Error())
 	}
 }
 

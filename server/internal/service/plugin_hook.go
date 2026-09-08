@@ -355,27 +355,40 @@ func (s *PluginService) callHookEndpoint(ctx context.Context, invocation HookInv
 // live in their own table and should never appear in the config column at all,
 // so this is the check that would catch it if one ever did.
 func nonSecretConfig(installation db.PluginInstallation) map[string]any {
-	if len(installation.Config) == 0 {
-		return nil
-	}
-	values := map[string]any{}
-	if err := json.Unmarshal(installation.Config, &values); err != nil {
-		return nil
-	}
 	manifest, err := ParseInstallationManifest(installation)
 	if err != nil {
 		// Without a manifest there is no way to tell which keys are secret, so
 		// send none of them.
 		return nil
 	}
+	values := NonSecretStoredConfig(installation.Config, manifest)
+	if len(values) == 0 {
+		return nil
+	}
+	return values
+}
+
+// NonSecretStoredConfig decodes stored config and keeps only what the manifest
+// declares as a non-secret field.
+//
+// Exported because the same filter has to run on both exits a stored value can
+// take — the hook body and the settings API response — and two copies of a
+// write-only rule is one copy that eventually stops matching the other. An
+// undeclared key is dropped as well: nothing can read it by design, so
+// forwarding it is disclosure with no purpose.
+func NonSecretStoredConfig(raw []byte, manifest plugincontract.Manifest) map[string]any {
+	values := map[string]any{}
+	if len(raw) == 0 {
+		return values
+	}
+	if err := json.Unmarshal(raw, &values); err != nil {
+		return map[string]any{}
+	}
 	for key := range values {
 		field, declared := manifest.Config.Field(key)
 		if !declared || field.Type == plugincontract.ConfigSecret {
 			delete(values, key)
 		}
-	}
-	if len(values) == 0 {
-		return nil
 	}
 	return values
 }

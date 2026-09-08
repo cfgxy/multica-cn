@@ -372,10 +372,10 @@ func (s *PluginService) InstallPlugin(ctx context.Context, workspaceID, userID p
 		defer func() { _ = tx.Rollback(ctx) }()
 		queries := s.Queries.WithTx(tx)
 
-		if lockErr := lockPluginPackageKey(ctx, queries, workspaceID, manifest.Key); lockErr != nil {
+		if lockErr := lockPluginInstall(ctx, queries, workspaceID, version.WorkspaceID, manifest.Key); lockErr != nil {
 			return db.PluginInstallation{}, lockErr
 		}
-		if recheckErr := requireVersionStillPublished(ctx, queries, workspaceID, version.ID); recheckErr != nil {
+		if recheckErr := requireVersionStillPublished(ctx, queries, workspaceID, version); recheckErr != nil {
 			return db.PluginInstallation{}, recheckErr
 		}
 
@@ -432,10 +432,10 @@ func (s *PluginService) InstallPlugin(ctx context.Context, workspaceID, userID p
 	defer func() { _ = tx.Rollback(ctx) }()
 	queries := s.Queries.WithTx(tx)
 
-	if err := lockPluginPackageKey(ctx, queries, workspaceID, manifest.Key); err != nil {
+	if err := lockPluginInstall(ctx, queries, workspaceID, version.WorkspaceID, manifest.Key); err != nil {
 		return db.PluginInstallation{}, err
 	}
-	if err := requireVersionStillPublished(ctx, queries, workspaceID, version.ID); err != nil {
+	if err := requireVersionStillPublished(ctx, queries, workspaceID, version); err != nil {
 		return db.PluginInstallation{}, err
 	}
 
@@ -503,13 +503,24 @@ func requireExactScopes(manifestScopes, grantedScopes []string) error {
 	return nil
 }
 
+// pruneConfig drops every plain value the new manifest cannot account for.
+//
+// Two cases, and the second is the one that bites. A field the manifest dropped
+// is unreachable state — easy. A field the manifest kept but RETYPED to
+// `secret` is worse than unreachable: the plaintext stays in
+// `installation.Config`, which every read endpoint returns verbatim, so an
+// upgrade that was meant to start protecting a value would instead keep serving
+// the old one in the clear. The write-only contract is a property of the
+// declared type at the current version, so the check is on the type, not on
+// whether the key still exists.
 func pruneConfig(raw []byte, manifest plugincontract.Manifest) []byte {
 	var values map[string]any
 	if len(raw) == 0 || json.Unmarshal(raw, &values) != nil {
 		return []byte("{}")
 	}
 	for key := range values {
-		if _, ok := manifest.Config.Field(key); !ok {
+		field, ok := manifest.Config.Field(key)
+		if !ok || field.Type == plugincontract.ConfigSecret {
 			delete(values, key)
 		}
 	}
