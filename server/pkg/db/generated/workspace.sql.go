@@ -154,6 +154,15 @@ cleared_agent_mcp_bindings AS (
 cleared_workspace_mcp_servers AS (
     DELETE FROM workspace_mcp_server WHERE workspace_id = $1
 ),
+cleared_prompt_installs AS (
+    -- The workspace's marketplace prompt library (RUYI-100). No FK by house
+    -- rule, so it needs an explicit sweep. Only the install pointers go:
+    -- marketplace_prompt_version is deliberately NOT touched here, because a
+    -- published version outlives the workspace it was published from — other
+    -- workspaces hold installs against it, and the catalog shows the
+    -- publisher, never the source workspace.
+    DELETE FROM workspace_prompt_install WHERE workspace_id = $1
+),
 deleted_pending_check_suites AS (
     DELETE FROM github_pending_check_suite WHERE workspace_id = $1
 ),
