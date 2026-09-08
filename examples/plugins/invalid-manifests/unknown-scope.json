@@ -1,0 +1,13 @@
+{
+  "manifest_version": 1,
+  "key": "com.example.unknown-scope",
+  "name": "Unknown scope",
+  "version": "1.0.0",
+  "author": { "name": "Example" },
+  "scopes": ["issues:read", "storage:admin"],
+  "contributes": {
+    "surfaces": [
+      { "key": "panel", "type": "issue_panel", "name": "Panel", "entry": "ui/main.js" }
+    ]
+  }
+}

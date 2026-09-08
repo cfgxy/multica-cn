@@ -27,6 +27,8 @@ Who triggers a hook and what the hook does are separate questions. A hook is dec
 
 `multica.plugin.json` sits at the root of the package. It is parsed strictly: unknown fields are an error rather than something quietly ignored, because the manifest is what an administrator consents to, and a typo must not be able to weaken that silently.
 
+The same rules are published as a JSON Schema — `manifest.schema.json` in `@multica/plugin-sdk` — so your editor reports a bad manifest before you package one. It covers the structure only; the host still checks the two cross-field rules (a hook's transport host must be covered by a `net:` scope, an event subscription implies the matching read scope).
+
 ```json
 {
   "manifest_version": 1,
