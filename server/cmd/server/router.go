@@ -2230,6 +2230,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Route("/{id}", func(r chi.Router) {
 						r.Get("/", h.GetPromptVersion)
 						r.Put("/", h.UpdatePromptVersion)
+						r.Post("/scan", h.ScanPromptVersion)
 						r.Post("/publish", h.PublishPromptVersion)
 						r.Post("/withdraw", h.WithdrawPromptVersion)
 					})

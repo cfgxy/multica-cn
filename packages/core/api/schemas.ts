@@ -105,6 +105,7 @@ import type {
   PromptApplyResult,
   PromptInstall,
   PromptRestoreResult,
+  PromptScanResult,
   PromptTargetState,
   PromptVersion,
 } from "../types/prompt-market";
@@ -3536,6 +3537,23 @@ export const PromptSecretScanBlockedSchema = z.object({
   findings: z.array(PromptSecretFindingSchema).default([]),
   truncated: z.boolean().default(false),
 });
+
+/**
+ * A clean scan. The blocked case is not this shape — it arrives as a 422
+ * ApiError carrying PromptSecretScanBlockedSchema — so `passed` is only ever
+ * true in practice; it is kept as a field so a future advisory (scanned, not
+ * clean, publish anyway) has somewhere to live without a second endpoint.
+ */
+export const PromptScanResultSchema = z.object({
+  scanner_revision: z.string().default(""),
+  passed: z.boolean().default(false),
+});
+
+// A parse failure must not read as "clean": the fallback says not passed.
+export const EMPTY_PROMPT_SCAN_RESULT: PromptScanResult = {
+  scanner_revision: "",
+  passed: false,
+};
 
 export const EMPTY_PROMPT_VERSION: PromptVersion = {
   id: "",

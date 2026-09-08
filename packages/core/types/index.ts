@@ -100,6 +100,7 @@ export type {
   PromptLicenseCode,
   PromptMarketItem,
   PromptRestoreResult,
+  PromptScanResult,
   PromptSecretFinding,
   PromptSecretScanBlocked,
   PromptTargetState,

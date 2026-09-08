@@ -46,6 +46,7 @@ vi.mock("@multica/core/workspace/mutations", () => ({
   // The publish dialog is a child; its own suite owns these.
   useCreatePromptVersion: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useUpdatePromptVersion: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useScanPromptVersion: () => ({ mutateAsync: vi.fn(), isPending: false }),
   usePublishPromptVersion: () => ({ mutateAsync: vi.fn(), isPending: false }),
 }));
 
