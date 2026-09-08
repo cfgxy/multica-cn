@@ -46,7 +46,8 @@
     "sequence_position": "{{index}} / {{total}}",
     "unavailable": "That image is no longer available — skipped it.",
     "skipped_notice": "The image you clicked couldn't be loaded — showing the next available one.",
-    "unavailable_notice": "This image couldn't be loaded. It may have been deleted or you may no longer have access."
+    "unavailable_notice": "This image couldn't be loaded. It may have been deleted or you may no longer have access.",
+    "loading_notice": "Loading the image you selected — still showing the previous one."
   },
   "canvas": {
     "zoom_in": "Zoom in",
