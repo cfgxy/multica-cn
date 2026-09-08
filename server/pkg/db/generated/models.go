@@ -1154,6 +1154,7 @@ type PluginPackage struct {
 	CreatedBy   pgtype.UUID        `json:"created_by"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	Visibility  string             `json:"visibility"`
 }
 
 type PluginPackageFile struct {
@@ -1176,6 +1177,8 @@ type PluginPackageVersion struct {
 	SizeBytes   int64              `json:"size_bytes"`
 	PublishedBy pgtype.UUID        `json:"published_by"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	WithdrawnAt pgtype.Timestamptz `json:"withdrawn_at"`
+	WithdrawnBy pgtype.UUID        `json:"withdrawn_by"`
 }
 
 type PluginSecret struct {

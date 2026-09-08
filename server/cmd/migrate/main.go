@@ -301,6 +301,7 @@ var concurrentIndexCleanups = map[string]string{
 	"453_admin_audit_log_actor_index":                           "idx_admin_audit_log_actor_created",
 	"455_execution_profile_name_index":                          "idx_execution_profile_workspace_name",
 	"456_execution_profile_entry_index":                         "idx_execution_profile_entry_profile_agent",
+	"458_plugin_package_public_index":                           "idx_plugin_package_public",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction

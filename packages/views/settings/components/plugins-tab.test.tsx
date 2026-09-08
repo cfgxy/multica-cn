@@ -13,9 +13,16 @@ const mockSetEnabled = vi.hoisted(() => vi.fn());
 const mockUninstall = vi.hoisted(() => vi.fn());
 const mockPublish = vi.hoisted(() => vi.fn());
 const mockDeletePackage = vi.hoisted(() => vi.fn());
+const mockSetVisibility = vi.hoisted(() => vi.fn());
+const mockSetWithdrawn = vi.hoisted(() => vi.fn());
 
 const data = vi.hoisted(() => ({
-  installed: { plugins: [] as Array<Record<string, unknown>> },
+  installed: {
+    plugins: [] as Array<Record<string, unknown>>,
+    // The server answers with the mode it served in, and the tab reads that
+    // rather than the flag — see the read-and-remove case below.
+    plugins_enabled: true,
+  },
   packages: { packages: [] as Array<Record<string, unknown>> },
   role: "owner" as "owner" | "admin" | "member",
 }));
@@ -40,6 +47,8 @@ vi.mock("@multica/core/plugins", () => ({
   useUninstallPlugin: () => ({ mutateAsync: mockUninstall, isPending: false }),
   usePublishPluginPackage: () => ({ mutateAsync: mockPublish, isPending: false }),
   useDeletePluginPackage: () => ({ mutateAsync: mockDeletePackage, isPending: false }),
+  useSetPluginPackageVisibility: () => ({ mutateAsync: mockSetVisibility, isPending: false }),
+  useSetPluginVersionWithdrawn: () => ({ mutateAsync: mockSetWithdrawn, isPending: false }),
 }));
 
 vi.mock("@multica/core/paths", () => ({
@@ -132,6 +141,7 @@ describe("PluginsTab", () => {
     vi.clearAllMocks();
     data.role = "owner";
     data.installed.plugins = [];
+    data.installed.plugins_enabled = true;
     data.packages.packages = [PACKAGE];
     mockPreview.mockResolvedValue(PREVIEW);
     mockInstall.mockResolvedValue(INSTALLATION);
@@ -237,6 +247,22 @@ describe("PluginsTab", () => {
     await waitFor(() => expect(mockUninstall).toHaveBeenCalledWith("installation-1"));
   });
 
+  it("stays usable for removal after the plugins feature is turned off", () => {
+    // Off stops plugin code from running, but the operator who turned it off
+    // still has installations to clean up. If this screen went away with the
+    // flag, their only remaining move would be editing the database by hand.
+    data.installed.plugins = [INSTALLATION];
+    data.installed.plugins_enabled = false;
+    render(<PluginsTab />, { wrapper: Wrapper });
+
+    expect(screen.getByText("Plugin management is turned off")).toBeInTheDocument();
+    // Uninstall survives; everything that would start new plugin work does not.
+    expect(screen.getByRole("button", { name: "Uninstall" })).not.toBeDisabled();
+    expect(screen.queryByRole("button", { name: "Upload package" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Review and install" })).not.toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "Enable Plugin" })).toHaveAttribute("aria-disabled", "true");
+  });
+
   it("blocks management for a non-admin member", () => {
     data.role = "member";
     data.installed.plugins = [INSTALLATION];
@@ -250,5 +276,110 @@ describe("PluginsTab", () => {
     // the native attribute, so assert what a screen reader actually sees.
     expect(screen.getByRole("switch", { name: "Enable Plugin" })).toHaveAttribute("aria-disabled", "true");
     expect(screen.getByRole("button", { name: "Uninstall" })).toBeDisabled();
+  });
+
+  // Listing is what puts a package on the instance directory. It is a decision
+  // about discovery only, which is why the copy on screen has to say so — an
+  // author who reads it as "revocable distribution" will unlist a bad release
+  // and be surprised that installed workspaces keep running.
+  it("lists a private package on the instance directory", async () => {
+    const user = userEvent.setup();
+    mockSetVisibility.mockResolvedValue({});
+    render(<PluginsTab />, { wrapper: Wrapper });
+
+    expect(screen.getByText("Private")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Only this workspace can install this plugin/),
+    ).toBeInTheDocument();
+    // Nothing to withdraw while the package is private: a version can only come
+    // off a directory it was never on.
+    expect(screen.queryByRole("button", { name: "Withdraw" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "List on directory" }));
+
+    await waitFor(() =>
+      expect(mockSetVisibility).toHaveBeenCalledWith({
+        packageId: "package-1",
+        isPublic: true,
+      }),
+    );
+  });
+
+  it("takes a listed package back off the directory", async () => {
+    const user = userEvent.setup();
+    data.packages.packages = [{ ...PACKAGE, visibility: "public" }];
+    mockSetVisibility.mockResolvedValue({});
+    render(<PluginsTab />, { wrapper: Wrapper });
+
+    expect(screen.getByText("Listed")).toBeInTheDocument();
+    expect(
+      screen.getByText(/workspaces already running a version keep running it/i),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Unlist" }));
+
+    await waitFor(() =>
+      expect(mockSetVisibility).toHaveBeenCalledWith({
+        packageId: "package-1",
+        isPublic: false,
+      }),
+    );
+  });
+
+  it("withdraws one bad version without unlisting the plugin", async () => {
+    const user = userEvent.setup();
+    data.packages.packages = [{ ...PACKAGE, visibility: "public" }];
+    mockSetWithdrawn.mockResolvedValue({});
+    render(<PluginsTab />, { wrapper: Wrapper });
+
+    // One control per version, newest first.
+    const withdrawButtons = screen.getAllByRole("button", { name: "Withdraw" });
+    expect(withdrawButtons).toHaveLength(2);
+
+    await user.click(withdrawButtons[0]!);
+
+    await waitFor(() =>
+      expect(mockSetWithdrawn).toHaveBeenCalledWith({
+        versionId: "version-2",
+        withdrawn: true,
+      }),
+    );
+    expect(mockSetVisibility).not.toHaveBeenCalled();
+  });
+
+  it("marks a withdrawn version and offers to restore it", async () => {
+    const user = userEvent.setup();
+    data.packages.packages = [
+      {
+        ...PACKAGE,
+        visibility: "public",
+        versions: [
+          { ...PACKAGE.versions[0], withdrawn_at: "2026-08-21T00:00:00Z" },
+          PACKAGE.versions[1],
+        ],
+      },
+    ];
+    mockSetWithdrawn.mockResolvedValue({});
+    render(<PluginsTab />, { wrapper: Wrapper });
+
+    expect(screen.getByText("Withdrawn")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Restore" }));
+
+    await waitFor(() =>
+      expect(mockSetWithdrawn).toHaveBeenCalledWith({
+        versionId: "version-2",
+        withdrawn: false,
+      }),
+    );
+  });
+
+  it("does not let a plain member change what is listed", () => {
+    data.role = "member";
+    data.packages.packages = [{ ...PACKAGE, visibility: "public" }];
+    render(<PluginsTab />, { wrapper: Wrapper });
+
+    expect(screen.queryByRole("button", { name: "Unlist" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Withdraw" })).toBeNull();
   });
 });

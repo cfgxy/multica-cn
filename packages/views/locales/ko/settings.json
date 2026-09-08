@@ -307,7 +307,14 @@
     "cancel": "취소",
     "installed_toast": "{{name}} 설치 완료",
     "install_failed_toast": "설치 실패",
-    "admin_only_note": "마켓플레이스에서 설치할 수 있는 사용자는 워크스페이스 소유자와 관리자뿐입니다."
+    "admin_only_note": "마켓플레이스에서 설치할 수 있는 사용자는 워크스페이스 소유자와 관리자뿐입니다.",
+    "filter_plugins": "플러그인",
+    "plugin_kind": "플러그인",
+    "plugins_title": "이 인스턴스의 플러그인",
+    "plugins_description": "다른 워크스페이스가 등록한 플러그인입니다. 설치할 때는 직접 게시할 때와 같은 동의 화면이 표시됩니다. 승인한 범위가 곧 전체 권한이며, 승인한 버전이 그대로 실행됩니다.",
+    "plugins_empty_title": "등록된 플러그인이 아직 없습니다",
+    "plugins_empty_description": "워크스페이스는 플러그인을 게시한 뒤 '설정 → 플러그인'에서 등록할 수 있습니다.",
+    "all_versions_withdrawn": "모든 버전이 철회되었습니다"
   },
   "mcp": {
     "title": "MCP",
@@ -362,6 +369,8 @@
   "plugins": {
     "title": "Plugins",
     "description": "이 워크스페이스에 플러그인을 게시하고 특정 버전을 설치하며, 무엇에 접근할 수 있는지 확인합니다.",
+    "disabled_title": "플러그인 관리가 꺼져 있습니다",
+    "disabled_description": "플러그인 기능이 꺼져 있는 동안에는 새 설치, 업그레이드, 게시를 할 수 없습니다. 이미 설치된 플러그인은 아래에 표시되며 계속 제거할 수 있습니다.",
     "loading": "Plugins 불러오는 중",
     "load_failed": "Plugins를 불러올 수 없습니다",
     "load_failed_description": "다시 시도하세요. 설치된 Plugin에는 영향이 없습니다.",
@@ -450,7 +459,20 @@
       "deleted": "게시된 플러그인을 삭제했습니다",
       "installed_version": "사용 중",
       "review_install": "확인 후 설치",
-      "review_upgrade": "확인 후 업그레이드"
+      "review_upgrade": "확인 후 업그레이드",
+      "list": "디렉터리에 등록",
+      "unlist": "등록 해제",
+      "listed": "인스턴스 디렉터리에 등록했습니다",
+      "unlisted": "디렉터리에서 내렸습니다",
+      "listed_badge": "등록됨",
+      "private_badge": "비공개",
+      "listed_note": "이 인스턴스의 모든 워크스페이스가 이 플러그인을 찾아 설치할 수 있습니다. 등록을 해제해도 신규 설치만 중단되며, 이미 특정 버전을 실행 중인 워크스페이스는 그대로 유지됩니다.",
+      "private_note": "현재 워크스페이스만 이 플러그인을 설치할 수 있습니다. 등록하면 이 인스턴스의 모든 워크스페이스에서 찾을 수 있습니다.",
+      "withdraw": "철회",
+      "restore": "복원",
+      "withdrawn": "이 버전을 디렉터리에서 철회했습니다",
+      "restored": "이 버전을 디렉터리에 복원했습니다",
+      "withdrawn_badge": "철회됨"
     }
   },
   "properties": {

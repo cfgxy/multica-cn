@@ -40,6 +40,32 @@ export function usePublishLocalPluginPackage(wsId: string) {
   });
 }
 
+/**
+ * Lists a package on the instance directory, or takes it off.
+ *
+ * Unlisting stops discovery and new installs only. Workspaces already running a
+ * version keep running it, which is what makes unlisting a decision a publisher
+ * can actually take.
+ */
+export function useSetPluginPackageVisibility(wsId: string) {
+  const invalidate = useInvalidatePlugins(wsId);
+  return useMutation({
+    mutationFn: ({ packageId, isPublic }: { packageId: string; isPublic: boolean }) =>
+      api.setPluginPackageVisibility(wsId, packageId, isPublic),
+    onSettled: invalidate,
+  });
+}
+
+/** Withdraws one published version from the directory, or restores it. */
+export function useSetPluginVersionWithdrawn(wsId: string) {
+  const invalidate = useInvalidatePlugins(wsId);
+  return useMutation({
+    mutationFn: ({ versionId, withdrawn }: { versionId: string; withdrawn: boolean }) =>
+      api.setPluginVersionWithdrawn(wsId, versionId, withdrawn),
+    onSettled: invalidate,
+  });
+}
+
 export function useDeletePluginPackage(wsId: string) {
   const invalidate = useInvalidatePlugins(wsId);
   return useMutation({

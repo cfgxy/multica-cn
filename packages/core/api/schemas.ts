@@ -305,6 +305,7 @@ export const PluginPackageVersionSchema = z.object({
   size_bytes: z.number().default(0),
   published_at: z.string().default(""),
   installed: z.boolean().default(false),
+  withdrawn_at: z.string().optional(),
 }).loose();
 
 export const PluginPackageSchema = z.object({
@@ -313,6 +314,10 @@ export const PluginPackageSchema = z.object({
   name: z.string().default(""),
   versions: z.array(PluginPackageVersionSchema).default([]),
   created_at: z.string().default(""),
+  // Defaulted to the closed state: a response that lost the field must not read
+  // as "listed to the whole instance".
+  visibility: z.string().default("private"),
+  publisher_workspace_id: z.string().optional(),
 }).loose();
 
 export const PluginPackageListResponseSchema = z.object({
