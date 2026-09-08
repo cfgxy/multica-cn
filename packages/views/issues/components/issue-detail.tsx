@@ -83,11 +83,15 @@ import { CommentCard } from "./comment-card";
 import { SourceContextBadge } from "./source-context-viewer";
 import { RevisionConflictCompare } from "./revision-conflict-compare";
 import { CommentInput } from "./comment-input";
-import { CurrentIssueRenderContextProvider } from "../current-issue-render-context";
+import {
+  CurrentIssueRenderContextProvider,
+  type CurrentIssueRenderContextValue,
+  type ResolvedAnchorComment,
+} from "../current-issue-render-context";
 import { ResolvedThreadBar } from "./resolved-thread-bar";
 import { getShortcut, shortcutMatchesEvent } from "@multica/core/shortcuts";
 import { isImeComposing } from "@multica/core/utils";
-import { ThreadMinimap } from "./thread-minimap";
+import { ThreadMinimap, commentPreview } from "./thread-minimap";
 import { ThreadNavPanel, mentionsUser, type ThreadNavThread } from "./thread-nav-panel";
 import { collectThreadReplies, deriveThreadResolution } from "./thread-utils";
 import { IssueAgentHeaderChip } from "./issue-agent-header-chip";
@@ -1132,11 +1136,29 @@ export function IssueDetailSkeleton({ leading }: { leading?: ReactNode } = {}) {
 // IssueDetail
 // ---------------------------------------------------------------------------
 
-export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId, highlightRequestToken, leadingAction }: IssueDetailProps) {
+export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = true, layoutId = "multica_issue_detail_layout", highlightCommentId: highlightCommentIdProp, highlightRequestToken: highlightRequestTokenProp, leadingAction }: IssueDetailProps) {
   const { t } = useT("issues");
   const locale = useLocale();
   const timeAgo = useTimeAgo();
   const id = issueId;
+
+  // In-page comment anchor (RUYI-108). A `mention://comment/<id>` chip in this
+  // issue's own content asks for the very same landing the inbox deep link
+  // performs, so it feeds the SAME two inputs instead of growing a second
+  // scroll path: the effect below, the flat-render switch and the memento all
+  // stay single-sourced.
+  //
+  // The counter is additive rather than a separate token because the landing
+  // effect only asks "did the token change since last run" — summing the
+  // host's token with ours keeps that signal monotonic no matter which side
+  // moves, and re-clicking one chip still replays (each click bumps).
+  const [anchorFocus, setAnchorFocus] = useState<{
+    commentId: string;
+    bumps: number;
+  } | null>(null);
+  const highlightCommentId = anchorFocus?.commentId ?? highlightCommentIdProp;
+  const highlightRequestToken =
+    (highlightRequestTokenProp ?? 0) + (anchorFocus?.bumps ?? 0);
   const user = useAuthStore((s) => s.user);
   const paths = useWorkspacePaths();
   const openModal = useModalStore((state) => state.open);
@@ -2247,16 +2269,77 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     overrideTop: restoredScrollTop,
   });
 
+  // Comment-anchor resolution (RUYI-108). Answers strictly out of the timeline
+  // this client already holds: a hit renders the chip with author/time/excerpt,
+  // and everything else — deleted, not permitted, another issue's comment, or
+  // simply not fetched yet — returns null and renders identically degraded.
+  // No fetch, not even a HEAD: a probe would leak through timing exactly what
+  // the indistinguishable miss is there to withhold.
+  const resolveAnchorComment = useCallback(
+    (commentId: string): ResolvedAnchorComment | null => {
+      const entry = timeline.find(
+        (e) => e.type === "comment" && e.id === commentId,
+      );
+      if (!entry) return null;
+      const preview = commentPreview(entry.content ?? "");
+      return {
+        id: entry.id,
+        author:
+          entry.actor_name || getActorName(entry.actor_type, entry.actor_id),
+        createdAt: entry.created_at,
+        // First line when there is one; an attachment-only comment has no
+        // text at all, and the author name is a truer label than an empty
+        // chip. Capped short — this rides inside a line of prose.
+        excerpt: (preview.title || preview.body || "").slice(0, 60),
+      };
+    },
+    [timeline, getActorName],
+  );
+
+  const requestCommentFocus = useCallback(
+    (commentId: string) => {
+      // A click is always a fresh landing intent, so drop the "already
+      // landed" memento entry the same way InboxPage.handleSelect does —
+      // otherwise re-anchoring a comment the inbox deep link already
+      // consumed would be swallowed by the repeat-landing guard.
+      writeViewState(issueHighlightMementoKey(id), undefined);
+      setAnchorFocus((prev) => ({
+        commentId,
+        // Bump on every click, including a repeat of the same id: the
+        // landing effect keys its replay off the token, and a same-value
+        // commentId alone would be a no-op state update.
+        bumps: (prev?.bumps ?? 0) + 1,
+      }));
+    },
+    [id, writeViewState],
+  );
+
+  // Clicking an anchor inside issue A, then navigating to issue B, must not
+  // leave B rendering flat and hunting for A's comment.
+  useEffect(() => {
+    setAnchorFocus(null);
+  }, [id]);
+
   // Keep the identity value stable across unrelated issue-detail updates so
   // context consumers only re-render when the owning issue changes identity.
   const resolvedIssueId = issue?.id;
   const resolvedIssueIdentifier = issue?.identifier;
-  const currentIssueRenderContext = useMemo(
+  const currentIssueRenderContext = useMemo<CurrentIssueRenderContextValue | null>(
     () =>
       resolvedIssueId && resolvedIssueIdentifier
-        ? { id: resolvedIssueId, identifier: resolvedIssueIdentifier }
+        ? {
+            id: resolvedIssueId,
+            identifier: resolvedIssueIdentifier,
+            resolveComment: resolveAnchorComment,
+            requestCommentFocus,
+          }
         : null,
-    [resolvedIssueId, resolvedIssueIdentifier],
+    [
+      resolvedIssueId,
+      resolvedIssueIdentifier,
+      resolveAnchorComment,
+      requestCommentFocus,
+    ],
   );
 
   if (loading) {

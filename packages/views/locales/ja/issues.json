@@ -534,7 +534,9 @@
       "bar_authors_more_other": "{{names}} 他 {{count}} 名",
       "resolve_failed": "スレッドを解決できませんでした",
       "unresolve_failed": "スレッドの解決を取り消せませんでした"
-    }
+    },
+    "anchor_unavailable": "引用されたコメントは利用できないか削除されています",
+    "anchor_aria": "{{author}} の {{when}} のコメントへ移動：{{excerpt}}"
   },
   "reply": {
     "placeholder": "返信を残す..."
