@@ -158,12 +158,33 @@ type promptApplyState struct {
 	AppliedAt            string `json:"applied_at"`
 	LastOperationID      string `json:"last_operation_id"`
 
+	// HasRestorePoint says whether PreviousText is a captured previous version
+	// or merely absent. The two are NOT the same and cannot be told apart from
+	// the text: applying onto an empty prompt captures "" as a perfectly
+	// legitimate restore point, and testing PreviousText != "" reported that
+	// user as having nothing to undo — the one case where the undo matters
+	// most, since the alternative to restoring is guessing what was there.
+	HasRestorePoint bool `json:"has_restore_point"`
+
 	// Restored marks that the last operation on this target was a restore, not
 	// an apply. PreviousText is cleared at that point — the text has been put
 	// back, so there is nothing left to step back to — and this flag is what
 	// distinguishes "already restored" from "never applied" when a retry with
 	// the same operation id arrives.
 	Restored bool `json:"restored"`
+}
+
+// canRestore is the single test for "is there a step back from here".
+//
+// The PreviousText fallback covers state written before HasRestorePoint
+// existed: those rows only ever recorded a restore point when the text was
+// non-empty, so the old test is exactly right for them and exactly wrong for
+// everything written since.
+func (s promptApplyState) canRestore() bool {
+	if s.Restored {
+		return false
+	}
+	return s.HasRestorePoint || s.PreviousText != ""
 }
 
 func decodePromptApplyState(raw []byte) promptApplyState {
@@ -237,7 +258,10 @@ func (h *Handler) loadPromptTarget(w http.ResponseWriter, r *http.Request, targe
 			writeError(w, http.StatusNotFound, "squad not found")
 			return promptTarget{}, false
 		}
-		member, ok := h.workspaceMember(w, r, uuidToString(squad.WorkspaceID))
+		// Same reason as loadPromptSourceForPublisher: the caller's authority is
+		// looked up in the TARGET squad's workspace. Using the context member
+		// would let a workspace-A owner apply a prompt into a workspace-B squad.
+		member, ok := h.requireWorkspaceMember(w, r, uuidToString(squad.WorkspaceID), "squad not found")
 		if !ok {
 			return promptTarget{}, false
 		}
@@ -362,6 +386,21 @@ func (h *Handler) InstallPrompt(w http.ResponseWriter, r *http.Request) {
 	// leave a row pointing at a workspace that no longer exists.
 	if _, err := qtx.LockWorkspaceForChatSessionCreate(r.Context(), workspaceUUID); err != nil {
 		writeError(w, http.StatusNotFound, "workspace not found")
+		return
+	}
+
+	// Re-read the version under a row lock and re-check it here. The check
+	// above ran outside this transaction, so on its own it only proves the
+	// version was live at some point BEFORE the write — a withdrawal
+	// committing in between would leave this install to commit anyway, which
+	// is exactly the "no new installs after a withdrawal" promise broken.
+	version, err = qtx.GetPromptVersionForUpdate(r.Context(), versionUUID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "prompt version not found")
+		return
+	}
+	if version.State != promptStatePublished || version.Visibility != promptVisibilityPublic {
+		writeError(w, http.StatusNotFound, "prompt version not found")
 		return
 	}
 
@@ -662,7 +701,7 @@ func (h *Handler) ApplyPrompt(w http.ResponseWriter, r *http.Request) {
 			TargetID:       uuidToString(target.id),
 			AppliedVersion: target.state.AppliedVersion,
 			ContentSha256:  target.state.AppliedContentSha256,
-			CanRestore:     target.state.PreviousText != "",
+			CanRestore:     target.state.canRestore(),
 		})
 		return
 	}
@@ -675,10 +714,30 @@ func (h *Handler) ApplyPrompt(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
 
+	// Re-read the version under a row lock and re-check the withdrawal. The
+	// state check above ran outside this transaction and so only proves the
+	// version was live before the write; a withdrawal committing in between
+	// would otherwise let this apply through. Locked before the target so the
+	// two writers always take version-then-target and cannot deadlock.
+	version, err = qtx.GetPromptVersionForUpdate(r.Context(), version.ID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "prompt version not found")
+		return
+	}
+	if version.State != promptStatePublished {
+		writeErrorCode(w, http.StatusConflict, "prompt_version_withdrawn",
+			"this prompt has been withdrawn by its publisher and can no longer be applied")
+		return
+	}
+
 	// Re-read the target under a row lock. Everything below decides against
 	// THIS text, not the copy read during permission checking.
 	locked, ok := h.lockPromptTarget(r, qtx, target.targetType, target.id)
 	if !ok {
+		writeError(w, http.StatusNotFound, "target not found")
+		return
+	}
+	if !h.stillManageable(r, target.targetType, locked) {
 		writeError(w, http.StatusNotFound, "target not found")
 		return
 	}
@@ -714,6 +773,7 @@ func (h *Handler) ApplyPrompt(w http.ResponseWriter, r *http.Request) {
 		AppliedContentSha256: incomingHash,
 		PreviousText:         locked.content,
 		PreviousUpdatedAt:    timestampToString(locked.updatedAt),
+		HasRestorePoint:      true,
 		AppliedBy:            userID,
 		AppliedAt:            time.Now().UTC().Format(time.RFC3339),
 		LastOperationID:      operationID,
@@ -742,7 +802,7 @@ func (h *Handler) ApplyPrompt(w http.ResponseWriter, r *http.Request) {
 		TargetID:       uuidToString(target.id),
 		AppliedVersion: install.InstalledVersion,
 		ContentSha256:  incomingHash,
-		CanRestore:     state.PreviousText != "",
+		CanRestore:     state.canRestore(),
 	})
 }
 
@@ -763,6 +823,47 @@ type lockedPromptTarget struct {
 	content   string
 	state     promptApplyState
 	updatedAt pgtype.Timestamptz
+
+	// The authority columns, read under the same lock as the content, so the
+	// permission re-check below judges the row this transaction is about to
+	// write rather than a copy read before it.
+	workspaceID pgtype.UUID
+	// ownerID is agent.owner_id or squad.creator_id: the two play the same
+	// role in canManageAgent and canManageSquad respectively.
+	ownerID pgtype.UUID
+}
+
+// stillManageable re-checks, under the row lock, that the caller may still
+// manage the target.
+//
+// loadPromptTarget already checked this, but outside the transaction — it does
+// several reads and holding row locks across them would be worse than the
+// window it leaves. That window is real: a member removed from the workspace,
+// demoted, or an agent transferred to another owner between the check and the
+// write would have their in-flight apply committed on authority they no longer
+// hold. This is the cheap half of the check — one membership lookup — repeated
+// where it is decisive.
+//
+// It writes no response: a failure here renders as the same "not found" the
+// out-of-transaction check produces, and must not distinguish "you lost access"
+// from "it was never there".
+func (h *Handler) stillManageable(r *http.Request, targetType string, locked lockedPromptTarget) bool {
+	member, err := h.getWorkspaceMember(r.Context(), requestUserID(r), uuidToString(locked.workspaceID))
+	if err != nil {
+		return false
+	}
+	if roleAllowed(member.Role, "owner", "admin") {
+		return true
+	}
+	switch targetType {
+	case promptSourceAgent:
+		// canManageAgent: any member may manage the agent they own.
+		return uuidToString(locked.ownerID) == requestUserID(r)
+	case promptSourceSquad:
+		// canManageSquad: a plain member manages only squads they created.
+		return uuidToString(locked.ownerID) == uuidToString(member.UserID)
+	}
+	return false
 }
 
 func (h *Handler) lockPromptTarget(r *http.Request, qtx *db.Queries, targetType string, id pgtype.UUID) (lockedPromptTarget, bool) {
@@ -773,9 +874,11 @@ func (h *Handler) lockPromptTarget(r *http.Request, qtx *db.Queries, targetType 
 			return lockedPromptTarget{}, false
 		}
 		return lockedPromptTarget{
-			content:   row.Instructions,
-			state:     decodePromptApplyState(row.MarketplacePromptState),
-			updatedAt: row.UpdatedAt,
+			content:     row.Instructions,
+			state:       decodePromptApplyState(row.MarketplacePromptState),
+			updatedAt:   row.UpdatedAt,
+			workspaceID: row.WorkspaceID,
+			ownerID:     row.OwnerID,
 		}, true
 	case promptSourceSquad:
 		row, err := qtx.GetSquadPromptStateForUpdate(r.Context(), id)
@@ -783,9 +886,11 @@ func (h *Handler) lockPromptTarget(r *http.Request, qtx *db.Queries, targetType 
 			return lockedPromptTarget{}, false
 		}
 		return lockedPromptTarget{
-			content:   row.Instructions,
-			state:     decodePromptApplyState(row.MarketplacePromptState),
-			updatedAt: row.UpdatedAt,
+			content:     row.Instructions,
+			state:       decodePromptApplyState(row.MarketplacePromptState),
+			updatedAt:   row.UpdatedAt,
+			workspaceID: row.WorkspaceID,
+			ownerID:     row.CreatorID,
 		}, true
 	}
 	return lockedPromptTarget{}, false
@@ -893,8 +998,12 @@ func (h *Handler) RestorePrompt(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "target not found")
 		return
 	}
+	if !h.stillManageable(r, target.targetType, locked) {
+		writeError(w, http.StatusNotFound, "target not found")
+		return
+	}
 	state := locked.state
-	if state.AppliedContentSha256 == "" || state.Restored {
+	if state.AppliedContentSha256 == "" || !state.canRestore() {
 		writeErrorCode(w, http.StatusConflict, "prompt_nothing_to_restore",
 			"there is no applied marketplace prompt to undo on this target")
 		return
@@ -920,6 +1029,7 @@ func (h *Handler) RestorePrompt(w http.ResponseWriter, r *http.Request) {
 		AppliedContentSha256: sha256Hex(state.PreviousText),
 		PreviousText:         "",
 		PreviousUpdatedAt:    "",
+		HasRestorePoint:      false,
 		AppliedBy:            state.AppliedBy,
 		AppliedAt:            state.AppliedAt,
 		LastOperationID:      operationID,
@@ -964,10 +1074,10 @@ func (h *Handler) GetPromptTargetState(w http.ResponseWriter, r *http.Request) {
 	state := target.state
 	currentHash := sha256Hex(target.content)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"target_type":    target.targetType,
-		"target_id":      uuidToString(target.id),
-		"series_id":      state.SeriesID,
-		"version_id":     state.VersionID,
+		"target_type": target.targetType,
+		"target_id":   uuidToString(target.id),
+		"series_id":   state.SeriesID,
+		"version_id":  state.VersionID,
 		"applied_version": func() any {
 			if state.AppliedContentSha256 == "" {
 				return nil
@@ -978,7 +1088,7 @@ func (h *Handler) GetPromptTargetState(w http.ResponseWriter, r *http.Request) {
 		// Whether the applied text is still intact. A false here is why a
 		// restore would be refused, so the UI can explain before the click.
 		"applied_content_intact": state.AppliedContentSha256 != "" && state.AppliedContentSha256 == currentHash,
-		"can_restore":            !state.Restored && state.PreviousText != "" && state.AppliedContentSha256 == currentHash,
+		"can_restore":            state.canRestore() && state.AppliedContentSha256 == currentHash,
 		"current_sha256":         currentHash,
 	})
 }

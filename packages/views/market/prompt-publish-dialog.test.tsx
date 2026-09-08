@@ -13,12 +13,14 @@ import enPromptMarket from "../locales/en/prompt-market.json";
 
 const mockCreate = vi.hoisted(() => vi.fn());
 const mockUpdate = vi.hoisted(() => vi.fn());
+const mockScan = vi.hoisted(() => vi.fn());
 const mockPublish = vi.hoisted(() => vi.fn());
 const mockToastSuccess = vi.hoisted(() => vi.fn());
 
 vi.mock("@multica/core/workspace/mutations", () => ({
   useCreatePromptVersion: () => ({ mutateAsync: mockCreate, isPending: false }),
   useUpdatePromptVersion: () => ({ mutateAsync: mockUpdate, isPending: false }),
+  useScanPromptVersion: () => ({ mutateAsync: mockScan, isPending: false }),
   usePublishPromptVersion: () => ({ mutateAsync: mockPublish, isPending: false }),
 }));
 
@@ -89,6 +91,9 @@ async function reachScan(user: ReturnType<typeof userEvent.setup>) {
 beforeEach(() => {
   mockCreate.mockReset().mockResolvedValue(draft);
   mockUpdate.mockReset().mockResolvedValue(draft);
+  mockScan
+    .mockReset()
+    .mockResolvedValue({ scanner_revision: "2026.09.1", passed: true });
   mockPublish
     .mockReset()
     .mockResolvedValue({ ...draft, state: "published", version: 1 });
@@ -125,7 +130,7 @@ describe("PromptPublishDialog metadata gate", () => {
 
 describe("PromptPublishDialog security check", () => {
   it("offers no way past a blocked scan", async () => {
-    mockPublish.mockRejectedValue(scanBlock());
+    mockScan.mockRejectedValue(scanBlock());
     const user = userEvent.setup();
     renderDialog();
     await reachScan(user);
@@ -146,7 +151,7 @@ describe("PromptPublishDialog security check", () => {
   });
 
   it("renders the mask and never the matched value", async () => {
-    mockPublish.mockRejectedValue(scanBlock());
+    mockScan.mockRejectedValue(scanBlock());
     const user = userEvent.setup();
     const { container } = renderDialog();
     await reachScan(user);
@@ -163,13 +168,13 @@ describe("PromptPublishDialog security check", () => {
   });
 
   it("re-snapshots the source when the publisher retries after a block", async () => {
-    mockPublish.mockRejectedValue(scanBlock());
+    mockScan.mockRejectedValue(scanBlock());
     const user = userEvent.setup();
     renderDialog();
     await reachScan(user);
     await screen.findByText("Security check failed, publish blocked");
 
-    mockPublish.mockResolvedValue({ ...draft, state: "published", version: 1 });
+    mockScan.mockResolvedValue({ scanner_revision: "2026.09.1", passed: true });
     await user.click(screen.getByRole("button", { name: "Back" }));
     await user.click(screen.getByRole("button", { name: "Next" }));
 
@@ -193,17 +198,24 @@ describe("PromptPublishDialog security check", () => {
 });
 
 describe("PromptPublishDialog visibility", () => {
-  it("scans privately first and only goes public on an explicit choice", async () => {
+  it("does not freeze the draft to scan it", async () => {
     const user = userEvent.setup();
     renderDialog();
     await reachScan(user);
     await screen.findByText("No rule matched");
 
-    // The scan itself is a private publish.
-    expect(mockPublish).toHaveBeenCalledWith({
-      versionId: "version-1",
-      public: false,
-    });
+    // The regression this guards: scanning used to BE a private publish, which
+    // froze the draft before the publisher had chosen anything, and left the
+    // later public choice hitting an already-published row that ignored it.
+    expect(mockScan).toHaveBeenCalledWith("version-1");
+    expect(mockPublish).not.toHaveBeenCalled();
+  });
+
+  it("publishes exactly once, with the visibility the publisher chose", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    await reachScan(user);
+    await screen.findByText("No rule matched");
 
     await user.click(screen.getByRole("button", { name: "Next" }));
     await user.click(screen.getByRole("radio", { name: /Publish publicly/ }));
@@ -212,15 +224,14 @@ describe("PromptPublishDialog visibility", () => {
     ).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Publish" }));
-    await waitFor(() =>
-      expect(mockPublish).toHaveBeenLastCalledWith({
-        versionId: "version-1",
-        public: true,
-      }),
-    );
+    await waitFor(() => expect(mockPublish).toHaveBeenCalledTimes(1));
+    expect(mockPublish).toHaveBeenCalledWith({
+      versionId: "version-1",
+      public: true,
+    });
   });
 
-  it("defaults to private and issues no second publish", async () => {
+  it("defaults to private and publishes nothing at all", async () => {
     const user = userEvent.setup();
     renderDialog();
     await reachScan(user);
@@ -234,8 +245,29 @@ describe("PromptPublishDialog visibility", () => {
 
     await user.click(screen.getByRole("button", { name: "Save as private draft" }));
     await waitFor(() => expect(mockToastSuccess).toHaveBeenCalled());
-    // One call only: the scan. Staying private is already the stored state.
-    expect(mockPublish).toHaveBeenCalledTimes(1);
+    // Saving as a private draft must leave the row a DRAFT: publishing it
+    // privately would freeze it, and "publish later" would no longer be
+    // possible for the person who just asked for exactly that.
+    expect(mockPublish).not.toHaveBeenCalled();
+  });
+
+  it("shows the scan panel again when the final publish is blocked", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    await reachScan(user);
+    await screen.findByText("No rule matched");
+    await user.click(screen.getByRole("button", { name: "Next" }));
+    await user.click(screen.getByRole("radio", { name: /Publish publicly/ }));
+
+    // The prompt was edited between the scan and the publish; the server
+    // re-scans what it is about to freeze and blocks.
+    mockPublish.mockRejectedValue(scanBlock());
+    await user.click(screen.getByRole("button", { name: "Publish" }));
+
+    expect(
+      await screen.findByText("Security check failed, publish blocked"),
+    ).toBeInTheDocument();
+    expect(document.body.textContent).not.toContain("sk-live");
   });
 });
 

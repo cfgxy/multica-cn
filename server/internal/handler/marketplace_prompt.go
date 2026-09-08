@@ -60,10 +60,10 @@ const (
 // typo'd or hand-written license in a cross-workspace catalog is worse than no
 // license at all.
 var promptLicenseCodes = map[string]struct{}{
-	"cc0":             {},
-	"cc-by-4.0":       {},
-	"internal-only":   {},
-	"all-rights-held": {},
+	"cc0":                 {},
+	"cc-by-4.0":           {},
+	"internal-only":       {},
+	"all-rights-reserved": {},
 }
 
 // Field caps mirror the column CHECK constraints. They are re-stated here so a
@@ -268,7 +268,12 @@ func (h *Handler) loadPromptSourceForPublisher(w http.ResponseWriter, r *http.Re
 			writeError(w, http.StatusNotFound, "squad not found")
 			return promptSource{}, false
 		}
-		member, ok := h.workspaceMember(w, r, uuidToString(squad.WorkspaceID))
+		// requireWorkspaceMember, not workspaceMember: the latter returns the
+		// member the middleware put on the context without checking which
+		// workspace it belongs to, so an owner of workspace A calling with a
+		// squad id from workspace B would be judged by their A-role. This
+		// looks the caller up in the SQUAD's workspace, every time.
+		member, ok := h.requireWorkspaceMember(w, r, uuidToString(squad.WorkspaceID), "squad not found")
 		if !ok {
 			return promptSource{}, false
 		}
@@ -363,7 +368,7 @@ func (m promptMetadata) validate() error {
 	// whether they may reuse the text based on this field, and silently
 	// defaulting it would manufacture a permission the author never granted.
 	if _, ok := promptLicenseCodes[m.LicenseCode]; !ok {
-		return errors.New("license_code must be one of: cc0, cc-by-4.0, internal-only, all-rights-held")
+		return errors.New("license_code must be one of: cc0, cc-by-4.0, internal-only, all-rights-reserved")
 	}
 	return nil
 }
@@ -604,6 +609,86 @@ func (h *Handler) UpdatePromptVersion(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, promptVersionToResponse(updated, true))
 }
 
+// ScanPromptVersionResponse is the clean-scan answer.
+//
+// A pass is deliberately narrow, and the wording the UI shows says so: it means
+// no rule of this revision matched, never that the text holds no secret. The
+// revision travels with it so a publisher can tell which detector set cleared
+// their prompt.
+type ScanPromptVersionResponse struct {
+	ScannerRevision string `json:"scanner_revision"`
+	Passed          bool   `json:"passed"`
+}
+
+// ScanPromptVersion runs the publish gate WITHOUT publishing —
+// POST /api/marketplace/prompt-versions/{id}/scan.
+//
+// This exists because the wizard has to show the scan result before the
+// publisher chooses public or private, and the only way to run the scanner used
+// to be to publish. The dialog did exactly that: it published privately to
+// scan, which froze the draft, and the later "make it public" call then hit
+// PublishPromptVersion's already-published early return and did nothing. A user
+// who chose public got a private version, and a user who chose "save as draft"
+// got a frozen one they could no longer edit.
+//
+// It reads the same source text and the same metadata through the same
+// promptScanTargets the publish path uses, so a pass here and a block at
+// publish can only mean the prompt changed in between — which is the case
+// PublishPromptVersion's own re-scan is there to catch. This endpoint is an
+// early answer, never the authority: publishing scans again regardless, so
+// skipping this call cannot get unscanned text into the catalog.
+func (h *Handler) ScanPromptVersion(w http.ResponseWriter, r *http.Request) {
+	if !h.requireMarketplaceV1(w, r) {
+		return
+	}
+	if !h.requirePromptHumanActor(w, r, h.resolveWorkspaceID(r)) {
+		return
+	}
+	versionUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "version_id")
+	if !ok {
+		return
+	}
+	draft, err := h.Queries.GetPromptVersion(r.Context(), versionUUID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "prompt version not found")
+		return
+	}
+	// Authority is re-checked against the source object, exactly as publishing
+	// does: this endpoint reads the source's live text, so it must not answer
+	// for anyone who could not publish it.
+	src, ok := h.loadPromptSourceForPublisher(w, r, draft.SourceType, uuidToString(draft.SourceID))
+	if !ok {
+		return
+	}
+	if strings.TrimSpace(src.content) == "" {
+		writeError(w, http.StatusBadRequest, "the source object has no prompt text to publish")
+		return
+	}
+
+	meta := promptMetadata{
+		Name: draft.Name, Summary: draft.Summary, Audience: draft.Audience,
+		Categories: promptCategories(draft.Categories), LicenseCode: draft.LicenseCode,
+		UsageNotes: draft.UsageNotes, Companions: draft.Companions,
+	}
+	if err := meta.validate(); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	scan := promptscan.Scan(promptScanTargets(src.content, meta))
+	if !scan.OK() {
+		slog.Info("prompt scan blocked", append(logger.RequestAttrs(r),
+			"version_id", uuidToString(versionUUID), "findings", len(scan.Findings),
+			"scanner_revision", scan.Revision)...)
+		writePromptScanBlocked(w, scan)
+		return
+	}
+	writeJSON(w, http.StatusOK, ScanPromptVersionResponse{
+		ScannerRevision: scan.Revision,
+		Passed:          true,
+	})
+}
+
 // PublishPromptVersionRequest carries the visibility choice.
 type PublishPromptVersionRequest struct {
 	// Public makes the version discoverable across workspaces. Owner decision
@@ -649,9 +734,25 @@ func (h *Handler) PublishPromptVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if draft.State != promptStateDraft {
-		// Idempotent-friendly: re-publishing an already published version is
-		// the client retrying, not an error worth failing the UI over.
 		if draft.State == promptStatePublished {
+			// A retry asking for the visibility the row already has is the
+			// client repeating itself, and answering 200 is right.
+			//
+			// A retry asking for a DIFFERENT visibility is not a retry, and
+			// this used to answer 200 to that too — the caller was told its
+			// "make it public" succeeded while the row stayed private, which
+			// is how a version nobody could find came to look published. A
+			// published row is frozen, visibility included; changing it means
+			// withdrawing and publishing a new version.
+			want := promptVisibilityPrivate
+			if req.Public {
+				want = promptVisibilityPublic
+			}
+			if draft.Visibility != want {
+				writeErrorCode(w, http.StatusConflict, "prompt_already_published",
+					"this version is already published and its visibility can no longer be changed; publish a new version instead")
+				return
+			}
 			writeJSON(w, http.StatusOK, promptVersionToResponse(draft, true))
 			return
 		}
@@ -837,7 +938,34 @@ func (h *Handler) WithdrawPromptVersion(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	withdrawn, err := h.Queries.WithdrawPromptVersion(r.Context(), db.WithdrawPromptVersionParams{
+	// The withdrawal takes the version's row lock, which is the same lock
+	// InstallPrompt and ApplyPrompt take before their own writes. Without it
+	// the three run concurrently off states each read before the others
+	// started, and an install or apply already past its check would commit
+	// after the withdrawal — a new consumption of a version the author had
+	// already pulled.
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to withdraw")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	qtx := h.Queries.WithTx(tx)
+
+	locked, err := qtx.GetPromptVersionForUpdate(r.Context(), versionUUID)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "prompt version not found")
+		return
+	}
+	// Re-checked under the lock: a concurrent withdrawal of the same version is
+	// the same retry the pre-check answers, and answering it twice is friendlier
+	// than a 409 the client cannot act on.
+	if locked.State == promptStateWithdrawn {
+		writeJSON(w, http.StatusOK, promptVersionToResponse(locked, true))
+		return
+	}
+
+	withdrawn, err := qtx.WithdrawPromptVersion(r.Context(), db.WithdrawPromptVersionParams{
 		ID:          versionUUID,
 		WithdrawnBy: parseUUID(userID),
 	})
@@ -847,6 +975,10 @@ func (h *Handler) WithdrawPromptVersion(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		slog.Error("prompt withdraw failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to withdraw")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to withdraw")
 		return
 	}
@@ -869,7 +1001,10 @@ func (h *Handler) canWithdrawPromptVersion(w http.ResponseWriter, r *http.Reques
 		}
 	case promptSourceSquad:
 		if squad, err := h.Queries.GetSquad(r.Context(), version.SourceID); err == nil {
-			member, ok := h.workspaceMember(w, r, sourceWorkspaceID)
+			// Looked up in the SOURCE workspace, not taken from the request
+			// context: withdrawal authority belongs to the publishing
+			// workspace, and a role held somewhere else is not that authority.
+			member, ok := h.requireWorkspaceMember(w, r, sourceWorkspaceID, "prompt version not found")
 			if !ok {
 				return false
 			}
@@ -881,12 +1016,12 @@ func (h *Handler) canWithdrawPromptVersion(w http.ResponseWriter, r *http.Reques
 		}
 	}
 
-	member, ok := h.workspaceMember(w, r, sourceWorkspaceID)
+	// Not a member of the publishing workspace: requireWorkspaceMember already
+	// says "not found" rather than "forbidden", so probing this endpoint cannot
+	// confirm that a given version was published by a workspace the caller
+	// cannot see.
+	member, ok := h.requireWorkspaceMember(w, r, sourceWorkspaceID, "prompt version not found")
 	if !ok {
-		// Not a member of the publishing workspace: say "not found" rather than
-		// "forbidden", so probing this endpoint cannot confirm that a given
-		// version was published by a workspace the caller cannot see.
-		writeError(w, http.StatusNotFound, "prompt version not found")
 		return false
 	}
 	if !roleAllowed(member.Role, "owner", "admin") {

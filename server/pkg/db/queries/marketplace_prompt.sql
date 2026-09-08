@@ -23,6 +23,12 @@ RETURNING *;
 SELECT * FROM marketplace_prompt_version WHERE id = $1;
 
 -- name: GetPromptVersionForUpdate :one
+-- The serialisation point between a withdrawal and the installs and applies it
+-- has to stop. Both consumers re-read the version through this inside their own
+-- transaction and re-check state there; WithdrawPromptVersion contends for the
+-- same row lock, so the two orders are "withdraw wins, consumer sees withdrawn"
+-- and "consumer wins, withdrawal lands after" — never both committing off a
+-- state each read before the other started.
 SELECT * FROM marketplace_prompt_version WHERE id = $1 FOR UPDATE;
 
 -- name: GetPromptVersionByIdempotencyKey :one

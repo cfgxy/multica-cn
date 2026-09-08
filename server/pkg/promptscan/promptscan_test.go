@@ -167,6 +167,72 @@ func TestScanBoundsFindingCount(t *testing.T) {
 	}
 }
 
+// A credential is a credential whatever punctuation surrounds it. The original
+// rule required `=` or `:` IMMEDIATELY after the field name, so every JSON form
+// — where the key's closing quote sits in between — passed the gate and the
+// value was frozen into the cross-workspace catalog.
+func TestScanDetectsCredentialsInEveryCommonFormat(t *testing.T) {
+	const secret = "s3cr3t-value-not-real"
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{"json", `{"password":"` + secret + `"}`},
+		{"json spaced", `{ "token" : "` + secret + `" }`},
+		{"json api key", `{"api_key": "` + secret + `"}`},
+		{"json nested", `{"db": {"db_password": "` + secret + `"}}`},
+		{"yaml", "database:\n  password: " + secret},
+		{"yaml quoted", `client_secret: "` + secret + `"`},
+		{"yaml hyphenated", "auth-token: " + secret},
+		{"env file", "ACCESS_TOKEN=" + secret},
+		{"shell export", "export DB_PASSWORD=" + secret},
+		{"http header", "Authorization: " + secret},
+		{"custom header", "X-Api-Key: " + secret},
+		{"cookie header json", `{"cookie": "session=` + secret + `"}`},
+		{"go map literal", `"private_key": "` + secret + `",`},
+		{"ruby hashrocket", `"refresh_token" => "` + secret + `"`},
+		{"colon equals", `passphrase := "` + secret + `"`},
+		{"camel case", `{"clientSecret": "` + secret + `"}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := Scan(tc.content)
+			if res.OK() {
+				t.Fatalf("%s form must be detected, content %q passed the gate", tc.name, tc.content)
+			}
+			blob, err := json.Marshal(res)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if strings.Contains(string(blob), secret) {
+				t.Fatalf("serialised result leaked the value: %s", blob)
+			}
+		})
+	}
+}
+
+// The counterweight to the case above: a rule broad enough to catch every
+// format is broad enough to block prose that merely discusses credentials, and
+// a publisher who cannot publish "ask the user for their password" would work
+// around the gate rather than through it.
+func TestScanDoesNotBlockCredentialProse(t *testing.T) {
+	cases := []string{
+		"Ask the user for their password before continuing.",
+		"Never log the API key you were given.",
+		"The token is stored in the vault; do not read it.",
+		`If the request fails with 401, the auth token expired.`,
+		// A key with no value is a schema, not a secret.
+		`{"password": ""}`,
+		"password:",
+	}
+	for _, content := range cases {
+		if res := Scan(content); !res.OK() {
+			t.Errorf("prose %q must not block, got %+v", content, res.Findings)
+		}
+	}
+}
+
 // A short match must not be echoed either — the fixed mask makes match length
 // irrelevant, which is exactly the property being pinned here.
 func TestShortMatchIsNotEchoed(t *testing.T) {

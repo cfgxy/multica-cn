@@ -26,7 +26,7 @@ import (
 // with the scan so a future rule addition can tell which snapshots were only
 // ever cleared by an older, weaker detector set. Bump it whenever `detectors`
 // changes.
-const Revision = "promptscan/2026-09-08"
+const Revision = "promptscan/2026-09-08.2"
 
 // maxFindings bounds a report. Prompt content is unbounded user text, and a
 // pasted .env would otherwise produce a finding per line — a response large
@@ -93,6 +93,28 @@ type detector struct {
 	re       *regexp.Regexp
 }
 
+// credentialFieldName is the set of field names that mean "what follows is a
+// credential", written to tolerate the separators real configs use:
+// `DB_PASSWORD`, `db-password` and `dbPassword` all reduce to the same rule.
+const credentialFieldName = `(?:api[_\- ]?key|api[_\- ]?secret|secret[_\- ]?key|access[_\- ]?token|refresh[_\- ]?token|auth[_\- ]?token|id[_\- ]?token|client[_\- ]?secret|private[_\- ]?key|database[_\- ]?url|db[_\- ]?password|db[_\- ]?url|redis[_\- ]?url|x[_\- ]?api[_\- ]?key|authorization|proxy[_\- ]?authorization|credential|passphrase|password|passwd|secret|token)`
+
+// credentialValueStart is what has to follow the separator for the match to be
+// a real assignment. It steps over one optional quote and then demands a
+// character that is neither whitespace nor a quote, so `"password": ""` and a
+// bare `password:` with the value on another line do not report.
+const credentialValueStart = `["'` + "`" + `]?[^\s"'` + "`" + `,}\]]`
+
+// credentialSeparator spans the punctuation between a field name and its value
+// across the formats a prompt actually carries: `=` for env files and shell,
+// `:` for JSON, YAML and HTTP headers, and `=>`/`:=` for the assignment
+// syntaxes that show up in pasted code.
+//
+// The closing quote of a JSON key is part of this run rather than part of the
+// name, which is the bug this replaces: requiring `=` or `:` IMMEDIATELY after
+// the field name meant `{"password":"real"}` never matched and shipped into the
+// cross-workspace catalog.
+const credentialSeparator = `["'` + "`" + `]?\s*(?::=|=>|[=:])\s*`
+
 // detectors are all applied to every line; unlike redact.patterns there is no
 // first-match-wins, because a line holding both a token and a password should
 // report both.
@@ -103,10 +125,10 @@ var detectors = []detector{
 	// Cookie headers come first only for readability. `session_id=...` would
 	// also trip the generic credential rule; dedupe is per (rule, line), so
 	// both may report, and that is fine — the publisher removes the line once.
-	{"cookie_header", CategoryCookie, regexp.MustCompile(`(?i)\b(?:set-)?cookie\s*:\s*\S+`)},
+	{"cookie_header", CategoryCookie, regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_\-])(?:set[_\- ]?)?cookie` + credentialSeparator + credentialValueStart)},
 
 	{"aws_access_key_id", CategoryAPIKey, regexp.MustCompile(`\bAKIA[0-9A-Z]{16}\b`)},
-	{"aws_secret_access_key", CategoryAPIKey, regexp.MustCompile(`(?i)(?:aws_secret_access_key|secret_?access_?key)\s*[=:]\s*[A-Za-z0-9/+=]{40}`)},
+	{"aws_secret_access_key", CategoryAPIKey, regexp.MustCompile(`(?i)(?:aws[_\- ]?secret[_\- ]?access[_\- ]?key|secret[_\- ]?access[_\- ]?key)` + credentialSeparator + `["'` + "`" + `]?[A-Za-z0-9/+=]{40}`)},
 	{"google_api_key", CategoryAPIKey, regexp.MustCompile(`\bAIza[0-9A-Za-z_-]{35}\b`)},
 	{"openai_anthropic_key", CategoryAPIKey, regexp.MustCompile(`\bsk-[A-Za-z0-9_-]{20,}\b`)},
 	{"stripe_live_key", CategoryAPIKey, regexp.MustCompile(`\b(?:sk|rk)_live_[0-9A-Za-z]{16,}\b`)},
@@ -122,7 +144,12 @@ var detectors = []detector{
 	{"private_key_block", CategoryPrivateKey, regexp.MustCompile(`-----BEGIN[A-Z ]*PRIVATE KEY-----`)},
 
 	{"connection_string_password", CategoryPassword, regexp.MustCompile(`(?i)\b(?:postgres|postgresql|mysql|mongodb|redis|amqp)(?:\+srv)?://[^:\s/]+:[^@\s]+@`)},
-	{"credential_assignment", CategoryPassword, regexp.MustCompile(`(?i)\b(?:API_KEY|API_SECRET|SECRET_KEY|SECRET|ACCESS_TOKEN|AUTH_TOKEN|PRIVATE_KEY|DATABASE_URL|DB_PASSWORD|DB_URL|REDIS_URL|PASSWORD|PASSWD|TOKEN)\s*[=:]\s*\S+`)},
+	// One rule for every shape a credential assignment takes: `PASSWORD=x`,
+	// `{"password":"x"}`, `password: x`, `X-Api-Key: x`, `"token" => "x"`.
+	// Separating them per format would multiply the rules without adding a
+	// detection: what makes this a credential is the field name, not the
+	// punctuation around it.
+	{"credential_assignment", CategoryPassword, regexp.MustCompile(`(?i)(?:^|[^A-Za-z0-9_\-])` + credentialFieldName + credentialSeparator + credentialValueStart)},
 
 	// PII is a weaker signal than the rest: an email address in a prompt is
 	// often a deliberate example. It still blocks, because the alternative is
