@@ -307,7 +307,14 @@
     "cancel": "Cancel",
     "installed_toast": "{{name}} installed",
     "install_failed_toast": "Install failed",
-    "admin_only_note": "Only workspace owners and admins can install from the marketplace."
+    "admin_only_note": "Only workspace owners and admins can install from the marketplace.",
+    "filter_plugins": "Plugins",
+    "plugin_kind": "Plugin",
+    "plugins_title": "Plugins on this instance",
+    "plugins_description": "Plugins other workspaces have listed. Installing one shows the same consent screen as publishing your own: the scopes you approve are the whole grant, and the version you approve is the version that runs.",
+    "plugins_empty_title": "No plugins are listed yet",
+    "plugins_empty_description": "A workspace lists a plugin from Settings → Plugins, after publishing it.",
+    "all_versions_withdrawn": "Every version has been withdrawn"
   },
   "mcp": {
     "title": "MCP",
@@ -362,6 +369,8 @@
   "plugins": {
     "title": "Plugins",
     "description": "Publish plugins into this workspace, then install a specific version and review exactly what it is allowed to reach.",
+    "disabled_title": "Plugin management is turned off",
+    "disabled_description": "New installs, upgrades, and publishing are unavailable while the plugins feature is off. What is already installed is listed below and can still be removed.",
     "loading": "Loading Plugins",
     "load_failed": "Plugins couldn't be loaded",
     "load_failed_description": "Try again. Installed Plugins are unaffected.",
@@ -451,7 +460,20 @@
       "deleted": "Published Plugin deleted",
       "installed_version": "In use",
       "review_install": "Review and install",
-      "review_upgrade": "Review and upgrade"
+      "review_upgrade": "Review and upgrade",
+      "list": "List on directory",
+      "unlist": "Unlist",
+      "listed": "Listed on the instance directory",
+      "unlisted": "Taken off the directory",
+      "listed_badge": "Listed",
+      "private_badge": "Private",
+      "listed_note": "Every workspace on this instance can find and install this plugin. Unlisting stops new installs; workspaces already running a version keep running it.",
+      "private_note": "Only this workspace can install this plugin. Listing it makes it discoverable to every workspace on this instance.",
+      "withdraw": "Withdraw",
+      "restore": "Restore",
+      "withdrawn": "Version withdrawn from the directory",
+      "restored": "Version restored to the directory",
+      "withdrawn_badge": "Withdrawn"
     }
   },
   "properties": {

@@ -82,6 +82,13 @@ export interface PluginInstallation {
 
 export interface PluginInstallationListResponse {
   plugins: PluginInstallation[];
+  /**
+   * Whether plugins_v1 is on. Listing and uninstall stay open when it is off so
+   * an operator can still remove what was installed while it was on, and this
+   * flag is how the settings page knows to render that list read-and-remove
+   * only, rather than offering actions the server will refuse.
+   */
+  plugins_enabled?: boolean;
 }
 
 export interface PluginManifestSummary {
@@ -138,12 +145,23 @@ export interface PluginPackageVersion {
   published_at: string;
   /** True for the version this workspace currently runs, if any. */
   installed: boolean;
+  /**
+   * Set while the publisher has taken this version off the directory. It stops
+   * new installs and nothing else — a workspace already running it keeps
+   * running it, and the publisher can put it back with the same control.
+   */
+  withdrawn_at?: string;
 }
 
 /**
- * A plugin published into this workspace. Publishing is workspace-private: a
- * public directory needs review, reporting and takedown, which is a separate
- * decision from where the artifact lives.
+ * A plugin published into this workspace.
+ *
+ * The artifact always lives in the publishing workspace; `visibility` decides
+ * only whether the rest of the instance can DISCOVER and install it. Those are
+ * three separate layers on purpose: the artifact is immutable, the listing is
+ * the publisher's to revoke, and each installation is its own administrator's
+ * consent — so unlisting can never reach into a workspace and stop a plugin it
+ * already approved.
  */
 export interface PluginPackage {
   id: string;
@@ -152,6 +170,10 @@ export interface PluginPackage {
   /** Newest first. */
   versions: PluginPackageVersion[];
   created_at: string;
+  /** "private" (default) or "public" — listed on the instance directory. */
+  visibility?: string;
+  /** Which workspace publishes it. Present on directory listings. */
+  publisher_workspace_id?: string;
 }
 
 export interface PluginPackageListResponse {

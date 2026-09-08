@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"log/slog"
 	"sync"
 	"time"
@@ -286,6 +288,13 @@ func (d *PluginEventDispatcher) deliver(ctx context.Context, installation db.Plu
 		Actor:   HookActor{Type: "plugin", ID: installation.ID},
 		IssueID: job.issueID,
 		Input:   job.payload,
+		// Minted once, before the retry loop, and reused by every attempt
+		// below. Delivery is best-effort: an event may be dropped under
+		// backpressure and a delivered one may arrive more than once, so the
+		// only guarantee a handler can build on is being able to recognise the
+		// repeat. That recognition is this id, and it is worthless if a retry
+		// carries a different one.
+		DeliveryID: newEventDeliveryID(),
 	}
 
 	for attempt := 1; attempt <= hookEventAttempts; attempt++ {
@@ -309,6 +318,32 @@ func (d *PluginEventDispatcher) deliver(ctx context.Context, installation db.Plu
 		case <-time.After(time.Duration(attempt) * hookEventBackoff):
 		}
 	}
+}
+
+// newEventDeliveryID mints the id one logical event delivery is known by.
+//
+// Random rather than derived from the event, which is the opposite of the
+// scheduled path: a cron occurrence has a canonical identity — installation,
+// hook, generation, planned instant — that any retry can recompute, and
+// recomputing it is what lets a job reclaimed by another worker keep the same
+// id. A bus event has no such identity. It carries no id of its own, and two
+// genuinely distinct events can be byte-identical (the same issue updated the
+// same way twice), so deriving from content would collapse them into one
+// delivery and teach a correctly-written handler to discard the second.
+//
+// Minting per delivery instead means the id is stable exactly where it must be
+// — across the attempts of one delivery — and distinct everywhere else.
+func newEventDeliveryID() string {
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		// crypto/rand does not fail in practice, and a delivery without an id
+		// is still a delivery: hookRequestBody omits an empty delivery_id, so
+		// the handler sees the field missing rather than a value it could
+		// mistake for a distinct delivery.
+		slog.Warn("plugins: could not mint an event delivery id", "error", err)
+		return ""
+	}
+	return "ped_" + hex.EncodeToString(raw)
 }
 
 // Close stops the workers. Safe to call more than once.

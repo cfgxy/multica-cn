@@ -1685,6 +1685,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/plugins/packages", h.PublishPluginPackage)
 					r.Post("/plugins/packages/local", h.PublishLocalPluginPackage)
 					r.Delete("/plugins/packages/{packageId}", h.DeletePluginPackage)
+					// Listing, which is separate from publishing because the
+					// artifact is immutable and the decision about who may find
+					// it is not. Visibility is per package; withdrawal is per
+					// version, so a bad release can be taken off the directory
+					// without taking its predecessor down with it. Neither
+					// touches an existing installation.
+					r.Get("/plugins/directory", h.ListPublicPluginPackages)
+					r.Put("/plugins/packages/{packageId}/visibility", h.SetPluginPackageVisibility)
+					r.Put("/plugins/versions/{versionId}/withdrawn", h.SetPluginVersionWithdrawn)
 					// Installing a Plugin is two steps on purpose: preview
 					// reads the published version's manifest and returns the
 					// scope list without writing anything, so the consent

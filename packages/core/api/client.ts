@@ -2995,6 +2995,48 @@ export class ApiClient {
     });
   }
 
+  /**
+   * The instance directory: what every workspace on this deployment has listed.
+   *
+   * Workspace-scoped in the URL even though the listing spans workspaces —
+   * membership is what authorizes the read, and each version's `installed` flag
+   * answers "do we already run this one" for the workspace asking.
+   */
+  async listPublicPluginPackages(workspaceId: string): Promise<PluginPackageListResponse> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/plugins/directory`);
+    return parseWithFallback(raw, PluginPackageListResponseSchema, EMPTY_PLUGIN_PACKAGE_LIST, {
+      endpoint: "GET /api/workspaces/{id}/plugins/directory",
+    });
+  }
+
+  /** Lists this workspace's package on the directory, or takes it off. */
+  async setPluginPackageVisibility(workspaceId: string, packageId: string, isPublic: boolean): Promise<PluginPackage> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/plugins/packages/${packageId}/visibility`,
+      { method: "PUT", body: JSON.stringify({ public: isPublic }) },
+    );
+    return parseWithFallback(raw, PluginPackageSchema, EMPTY_PLUGIN_PACKAGE, {
+      endpoint: "PUT /api/workspaces/{id}/plugins/packages/{packageId}/visibility",
+    });
+  }
+
+  /**
+   * Withdraws one published version from the directory, or restores it.
+   *
+   * Not a delete: the artifact stays readable so the workspaces that consented
+   * to it keep loading their surfaces, and restoring is this same call rather
+   * than a re-publish, which immutability would refuse.
+   */
+  async setPluginVersionWithdrawn(workspaceId: string, versionId: string, withdrawn: boolean): Promise<PluginPackage> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/plugins/versions/${versionId}/withdrawn`,
+      { method: "PUT", body: JSON.stringify({ withdrawn }) },
+    );
+    return parseWithFallback(raw, PluginPackageSchema, EMPTY_PLUGIN_PACKAGE, {
+      endpoint: "PUT /api/workspaces/{id}/plugins/versions/{versionId}/withdrawn",
+    });
+  }
+
   async deletePluginPackage(workspaceId: string, packageId: string): Promise<void> {
     await this.fetch<void>(`/api/workspaces/${workspaceId}/plugins/packages/${packageId}`, { method: "DELETE" });
   }

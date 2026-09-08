@@ -18,8 +18,12 @@ WHERE package_version_id IN (
 )
 `
 
-// Whether any workspace still runs a version of this package. Publishing is
-// workspace-private, so this is scoped to the same workspace by construction.
+// Whether any workspace still runs a version of this package.
+//
+// Intentionally instance-wide rather than scoped to the publisher: once a
+// package can be listed publicly, the installations at risk from a delete are
+// mostly NOT in the publishing workspace, and a workspace-scoped count would
+// report zero while breaking every one of them.
 func (q *Queries) CountInstallationsOfPackageVersions(ctx context.Context, packageID pgtype.UUID) (int64, error) {
 	row := q.db.QueryRow(ctx, countInstallationsOfPackageVersions, packageID)
 	var count int64
@@ -225,7 +229,7 @@ func (q *Queries) CreatePluginInvocation(ctx context.Context, arg CreatePluginIn
 const createPluginPackage = `-- name: CreatePluginPackage :one
 INSERT INTO plugin_package (workspace_id, plugin_key, name, created_by)
 VALUES ($1, $2, $3, $4)
-RETURNING id, workspace_id, plugin_key, name, created_by, created_at, updated_at
+RETURNING id, workspace_id, plugin_key, name, created_by, created_at, updated_at, visibility
 `
 
 type CreatePluginPackageParams struct {
@@ -251,6 +255,7 @@ func (q *Queries) CreatePluginPackage(ctx context.Context, arg CreatePluginPacka
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Visibility,
 	)
 	return i, err
 }
@@ -283,7 +288,7 @@ const createPluginPackageVersion = `-- name: CreatePluginPackageVersion :one
 INSERT INTO plugin_package_version (
     package_id, workspace_id, version, manifest, digest, size_bytes, published_by
 ) VALUES ($1, $2, $3, $4, $5, $6, $7)
-RETURNING id, package_id, workspace_id, version, manifest, digest, size_bytes, published_by, created_at
+RETURNING id, package_id, workspace_id, version, manifest, digest, size_bytes, published_by, created_at, withdrawn_at, withdrawn_by
 `
 
 type CreatePluginPackageVersionParams struct {
@@ -320,6 +325,8 @@ func (q *Queries) CreatePluginPackageVersion(ctx context.Context, arg CreatePlug
 		&i.SizeBytes,
 		&i.PublishedBy,
 		&i.CreatedAt,
+		&i.WithdrawnAt,
+		&i.WithdrawnBy,
 	)
 	return i, err
 }
@@ -694,6 +701,38 @@ func (q *Queries) GetPluginStorageValue(ctx context.Context, arg GetPluginStorag
 	return i, err
 }
 
+const getPublicPluginPackageVersion = `-- name: GetPublicPluginPackageVersion :one
+SELECT v.id, v.package_id, v.workspace_id, v.version, v.manifest, v.digest, v.size_bytes, v.published_by, v.created_at, v.withdrawn_at, v.withdrawn_by FROM plugin_package_version v
+JOIN plugin_package p ON p.id = v.package_id
+WHERE v.id = $1
+  AND p.visibility = 'public'
+  AND v.withdrawn_at IS NULL
+`
+
+// Resolves a version for an install originating outside the publishing
+// workspace. The joins are the authorization: a version is reachable this way
+// only while its package is listed and the version itself has not been
+// withdrawn, so unlisting or withdrawing takes effect on the next install
+// attempt without touching the artifact.
+func (q *Queries) GetPublicPluginPackageVersion(ctx context.Context, id pgtype.UUID) (PluginPackageVersion, error) {
+	row := q.db.QueryRow(ctx, getPublicPluginPackageVersion, id)
+	var i PluginPackageVersion
+	err := row.Scan(
+		&i.ID,
+		&i.PackageID,
+		&i.WorkspaceID,
+		&i.Version,
+		&i.Manifest,
+		&i.Digest,
+		&i.SizeBytes,
+		&i.PublishedBy,
+		&i.CreatedAt,
+		&i.WithdrawnAt,
+		&i.WithdrawnBy,
+	)
+	return i, err
+}
+
 const getWorkspacePluginInstallation = `-- name: GetWorkspacePluginInstallation :one
 SELECT id, workspace_id, plugin_key, version, manifest, granted_scopes, config, enabled, installed_by, created_at, updated_at, token_hash, token_rotated_at, mcp_approvals, package_version_id FROM plugin_installation
 WHERE workspace_id = $1 AND id = $2
@@ -761,7 +800,7 @@ func (q *Queries) GetWorkspacePluginInstallationByKey(ctx context.Context, arg G
 }
 
 const getWorkspacePluginPackage = `-- name: GetWorkspacePluginPackage :one
-SELECT id, workspace_id, plugin_key, name, created_by, created_at, updated_at FROM plugin_package
+SELECT id, workspace_id, plugin_key, name, created_by, created_at, updated_at, visibility FROM plugin_package
 WHERE workspace_id = $1 AND id = $2
 `
 
@@ -781,12 +820,13 @@ func (q *Queries) GetWorkspacePluginPackage(ctx context.Context, arg GetWorkspac
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Visibility,
 	)
 	return i, err
 }
 
 const getWorkspacePluginPackageByKey = `-- name: GetWorkspacePluginPackageByKey :one
-SELECT id, workspace_id, plugin_key, name, created_by, created_at, updated_at FROM plugin_package
+SELECT id, workspace_id, plugin_key, name, created_by, created_at, updated_at, visibility FROM plugin_package
 WHERE workspace_id = $1 AND plugin_key = $2
 `
 
@@ -806,12 +846,13 @@ func (q *Queries) GetWorkspacePluginPackageByKey(ctx context.Context, arg GetWor
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Visibility,
 	)
 	return i, err
 }
 
 const getWorkspacePluginPackageVersion = `-- name: GetWorkspacePluginPackageVersion :one
-SELECT id, package_id, workspace_id, version, manifest, digest, size_bytes, published_by, created_at FROM plugin_package_version
+SELECT id, package_id, workspace_id, version, manifest, digest, size_bytes, published_by, created_at, withdrawn_at, withdrawn_by FROM plugin_package_version
 WHERE workspace_id = $1 AND id = $2
 `
 
@@ -833,6 +874,8 @@ func (q *Queries) GetWorkspacePluginPackageVersion(ctx context.Context, arg GetW
 		&i.SizeBytes,
 		&i.PublishedBy,
 		&i.CreatedAt,
+		&i.WithdrawnAt,
+		&i.WithdrawnBy,
 	)
 	return i, err
 }
@@ -997,7 +1040,7 @@ func (q *Queries) ListPluginPackageFilePaths(ctx context.Context, versionID pgty
 }
 
 const listPluginPackageVersions = `-- name: ListPluginPackageVersions :many
-SELECT id, package_id, workspace_id, version, manifest, digest, size_bytes, published_by, created_at FROM plugin_package_version
+SELECT id, package_id, workspace_id, version, manifest, digest, size_bytes, published_by, created_at, withdrawn_at, withdrawn_by FROM plugin_package_version
 WHERE package_id = $1
 ORDER BY created_at DESC
 `
@@ -1021,6 +1064,8 @@ func (q *Queries) ListPluginPackageVersions(ctx context.Context, packageID pgtyp
 			&i.SizeBytes,
 			&i.PublishedBy,
 			&i.CreatedAt,
+			&i.WithdrawnAt,
+			&i.WithdrawnBy,
 		); err != nil {
 			return nil, err
 		}
@@ -1139,6 +1184,47 @@ func (q *Queries) ListPluginStorageKeys(ctx context.Context, arg ListPluginStora
 	return items, nil
 }
 
+const listPublicPluginPackages = `-- name: ListPublicPluginPackages :many
+SELECT id, workspace_id, plugin_key, name, created_by, created_at, updated_at, visibility FROM plugin_package
+WHERE visibility = 'public'
+ORDER BY name ASC
+`
+
+// The instance directory.
+//
+// Deliberately not scoped to a workspace — that is what makes it a directory.
+// Withdrawal is not filtered here because it lives on the version: a package
+// whose every version is withdrawn still belongs on the listing, showing no
+// installable version, rather than vanishing and taking its name with it.
+func (q *Queries) ListPublicPluginPackages(ctx context.Context) ([]PluginPackage, error) {
+	rows, err := q.db.Query(ctx, listPublicPluginPackages)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PluginPackage{}
+	for rows.Next() {
+		var i PluginPackage
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.PluginKey,
+			&i.Name,
+			&i.CreatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.Visibility,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listWorkspacePluginInstallations = `-- name: ListWorkspacePluginInstallations :many
 SELECT id, workspace_id, plugin_key, version, manifest, granted_scopes, config, enabled, installed_by, created_at, updated_at, token_hash, token_rotated_at, mcp_approvals, package_version_id FROM plugin_installation
 WHERE workspace_id = $1
@@ -1182,7 +1268,7 @@ func (q *Queries) ListWorkspacePluginInstallations(ctx context.Context, workspac
 }
 
 const listWorkspacePluginPackages = `-- name: ListWorkspacePluginPackages :many
-SELECT id, workspace_id, plugin_key, name, created_by, created_at, updated_at FROM plugin_package
+SELECT id, workspace_id, plugin_key, name, created_by, created_at, updated_at, visibility FROM plugin_package
 WHERE workspace_id = $1
 ORDER BY name ASC
 `
@@ -1204,6 +1290,7 @@ func (q *Queries) ListWorkspacePluginPackages(ctx context.Context, workspaceID p
 			&i.CreatedBy,
 			&i.CreatedAt,
 			&i.UpdatedAt,
+			&i.Visibility,
 		); err != nil {
 			return nil, err
 		}
@@ -1357,6 +1444,85 @@ func (q *Queries) SetPluginMCPApprovals(ctx context.Context, arg SetPluginMCPApp
 		&i.TokenRotatedAt,
 		&i.McpApprovals,
 		&i.PackageVersionID,
+	)
+	return i, err
+}
+
+const setPluginPackageVersionWithdrawn = `-- name: SetPluginPackageVersionWithdrawn :one
+UPDATE plugin_package_version
+SET withdrawn_at = $3,
+    withdrawn_by = $4
+WHERE workspace_id = $1 AND id = $2
+RETURNING id, package_id, workspace_id, version, manifest, digest, size_bytes, published_by, created_at, withdrawn_at, withdrawn_by
+`
+
+type SetPluginPackageVersionWithdrawnParams struct {
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	ID          pgtype.UUID        `json:"id"`
+	WithdrawnAt pgtype.Timestamptz `json:"withdrawn_at"`
+	WithdrawnBy pgtype.UUID        `json:"withdrawn_by"`
+}
+
+// Withdraws a version from the directory, or puts it back.
+//
+// Withdrawal is a listing state, never a delete: the workspaces that already
+// installed this version keep running it, and their files stay readable. Only
+// discovery and new installs stop.
+func (q *Queries) SetPluginPackageVersionWithdrawn(ctx context.Context, arg SetPluginPackageVersionWithdrawnParams) (PluginPackageVersion, error) {
+	row := q.db.QueryRow(ctx, setPluginPackageVersionWithdrawn,
+		arg.WorkspaceID,
+		arg.ID,
+		arg.WithdrawnAt,
+		arg.WithdrawnBy,
+	)
+	var i PluginPackageVersion
+	err := row.Scan(
+		&i.ID,
+		&i.PackageID,
+		&i.WorkspaceID,
+		&i.Version,
+		&i.Manifest,
+		&i.Digest,
+		&i.SizeBytes,
+		&i.PublishedBy,
+		&i.CreatedAt,
+		&i.WithdrawnAt,
+		&i.WithdrawnBy,
+	)
+	return i, err
+}
+
+const setPluginPackageVisibility = `-- name: SetPluginPackageVisibility :one
+UPDATE plugin_package
+SET visibility = $3,
+    updated_at = now()
+WHERE workspace_id = $1 AND id = $2
+RETURNING id, workspace_id, plugin_key, name, created_by, created_at, updated_at, visibility
+`
+
+type SetPluginPackageVisibilityParams struct {
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	ID          pgtype.UUID `json:"id"`
+	Visibility  string      `json:"visibility"`
+}
+
+// Lists or unlists a package on the instance directory.
+//
+// Only the owning workspace may call this: visibility is the publisher's
+// decision, and $1 carries their workspace so an administrator elsewhere on the
+// instance cannot unlist someone else's plugin out from under its users.
+func (q *Queries) SetPluginPackageVisibility(ctx context.Context, arg SetPluginPackageVisibilityParams) (PluginPackage, error) {
+	row := q.db.QueryRow(ctx, setPluginPackageVisibility, arg.WorkspaceID, arg.ID, arg.Visibility)
+	var i PluginPackage
+	err := row.Scan(
+		&i.ID,
+		&i.WorkspaceID,
+		&i.PluginKey,
+		&i.Name,
+		&i.CreatedBy,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Visibility,
 	)
 	return i, err
 }
@@ -1526,7 +1692,7 @@ UPDATE plugin_package
 SET name = $2,
     updated_at = now()
 WHERE id = $1
-RETURNING id, workspace_id, plugin_key, name, created_by, created_at, updated_at
+RETURNING id, workspace_id, plugin_key, name, created_by, created_at, updated_at, visibility
 `
 
 type UpdatePluginPackageNameParams struct {
@@ -1547,6 +1713,7 @@ func (q *Queries) UpdatePluginPackageName(ctx context.Context, arg UpdatePluginP
 		&i.CreatedBy,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Visibility,
 	)
 	return i, err
 }
