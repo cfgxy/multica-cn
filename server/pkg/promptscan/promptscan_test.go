@@ -458,6 +458,77 @@ func TestScanDetectsCredentialsInEscapedJSON(t *testing.T) {
 	}
 }
 
+// A quote INSIDE a value is not the end of that value. Escaped JSON opens its
+// values with `\"`, so a value that itself contains `\\\"` carries a quote at a
+// deeper escape level — reading it as the closing delimiter truncates the value
+// and hands the placeholder test a bare `${VAR}`, releasing the real text that
+// followed it.
+//
+// Each case pins both halves: the placeholder alone must still publish, and the
+// same placeholder with trailing content behind an escaped quote must block.
+// Without the first assertion a test would pass on a gate that simply blocks
+// every escaped value.
+func TestEscapedQuoteInsideValueDoesNotCloseIt(t *testing.T) {
+	const secret = "s3cr3t-value-not-real"
+	cases := []struct {
+		name     string
+		released string // the placeholder on its own must publish
+		full     string // the same value, with real content behind an escaped quote
+	}{
+		{
+			"escaped json placeholder then trailing secret",
+			`{\"password\":\"${DB_PASSWORD}\"}`,
+			`{\"password\":\"${DB_PASSWORD}\\\"` + secret + `\"}`,
+		},
+		{
+			"plain json placeholder then trailing secret",
+			`{"password":"${DB_PASSWORD}"}`,
+			`{"password":"${DB_PASSWORD}\"` + secret + `"}`,
+		},
+		{
+			"double escaped placeholder then trailing secret",
+			`{\\"client_secret\\":\\"${A}\\"}`,
+			`{\\"client_secret\\":\\"${A}\\\"` + secret + `\\"}`,
+		},
+		{
+			"single quoted placeholder then trailing secret",
+			`password: '${A}'`,
+			`password: '${A}\'` + secret + `'`,
+		},
+		{
+			"escaped json angle placeholder then trailing secret",
+			`{\"token\":\"<your-token-here>\"}`,
+			`{\"token\":\"<your-token-here>\\\"` + secret + `\"}`,
+		},
+		{
+			// The value boundary still has to stop at the REAL closing quote, or
+			// the credential in the next field goes unscanned.
+			"escaped json placeholder then later credential",
+			`{\"password\":\"${DB_PASSWORD}\"}`,
+			`{\"password\":\"${DB_PASSWORD}\",\"api_key\":\"` + secret + `\"}`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if res := Scan(tc.released); !res.OK() {
+				t.Fatalf("placeholder %q must still publish, got %+v", tc.released, res.Findings)
+			}
+			res := Scan(tc.full)
+			if res.OK() {
+				t.Fatalf("trailing content behind an escaped quote must block, content %q passed the gate", tc.full)
+			}
+			blob, err := json.Marshal(res)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if strings.Contains(string(blob), secret) {
+				t.Fatalf("serialised result leaked the value: %s", blob)
+			}
+		})
+	}
+}
+
 // The counterweight to both cases above. Looking past a line ending for the
 // value is exactly what makes an empty schema field look like an assignment:
 // the next line always has SOMETHING on it. These are the shapes that must
