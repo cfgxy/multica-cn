@@ -29,7 +29,7 @@
  *   The matching <CommentCard>'s `RootHighlightOverlay` fires when the
  *   target row enters the render window — so for a deep-link pointing
  *   at an old comment, the user scrolls up and the flash plays as the
- *   row mounts. `HIGHLIGHT_HOLD_MS` (5s) is the window for that.
+ *   row mounts. `HIGHLIGHT_HOLD_MS` is the window for that.
  *
  *   Why not `scrollToIndex`: it requires accurate height estimates that
  *   variable-height markdown bubbles can't provide, even with
@@ -99,6 +99,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useQuery } from "@tanstack/react-query";
 import type { Issue, TimelineEntry } from "@multica/core/types";
+import { COMMENT_HIGHLIGHT_TOTAL_MS } from "@multica/core/issues/comment-highlight";
 import { Text } from "@/components/ui/text";
 import { IssueHeaderCard } from "./issue-header-card";
 import { IssueDescription } from "./issue-description";
@@ -175,14 +176,18 @@ export interface TimelineListHandle {
 
 /** How long the flash stays "claimed" before we let a new highlight take
  *  over. The fade-out itself is driven by the Reanimated sequence inside
- *  CommentCard; this is just the upstream gate.
+ *  CommentCard, so this gate must cover the WHOLE visible schedule
+ *  (`COMMENT_HIGHLIGHT_TOTAL_MS`) and not just its hold: clearing at the
+ *  hold point flips the overlay's `active` to false mid-sequence, and its
+ *  cleanup snaps opacity to 0 instead of letting the fade play.
  *
- *  RUYI-108 pulls this from 5s to 2s so all three clients hold the flash
- *  for the same 2s. The 5s was budget for the reader to *manually* find an
- *  older target after the deep-link landed at the bottom; the locate
- *  controller now scrolls to the row itself, so the extra 3s only widened
- *  the window in which a recycled row could re-play the flash. */
-const HIGHLIGHT_HOLD_MS = 2000;
+ *  RUYI-108 pulls this from 5s down to the shared schedule so all three
+ *  clients flash for the same time. The 5s was budget for the reader to
+ *  *manually* find an older target after a deep link landed at the bottom;
+ *  the locate controller now scrolls to the row itself, so the extra
+ *  seconds only widened the window in which a recycled row re-played the
+ *  flash. */
+const HIGHLIGHT_HOLD_MS = COMMENT_HIGHLIGHT_TOTAL_MS;
 
 /** Pixel slack at the bottom edge — inside this band we treat the user as
  *  "already at bottom" so the new-comment chip doesn't fire for entries
@@ -692,7 +697,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
 
   // The flash set above has no timer of its own (the inbox path's timer is
   // keyed on `highlightCommentId`, which an anchor tap never changes), so
-  // clear it on the same 2s budget every other highlight uses.
+  // clear it on the same shared budget every other highlight uses.
   useEffect(() => {
     if (!highlightedId) return;
     const fade = setTimeout(() => setHighlightedId(null), HIGHLIGHT_HOLD_MS);

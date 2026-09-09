@@ -70,6 +70,44 @@ function preprocessFileCards(input: string): string {
 }
 
 /**
+ * Give `mention://comment/<id>` links the chip affordance web and desktop
+ * render as a real component (RUYI-108).
+ *
+ * Web builds `CommentMentionCard`: an icon, the label, a border and a
+ * resolved-vs-degraded split. Mobile cannot — enriched-markdown renders prose
+ * natively and refuses injected React for any leaf node (issues #54 / #232 /
+ * #246), so an inline chip has no place to mount. What enriched DOES expose is
+ * `linkVariants`, which restyles a link by URL pattern; `markdown-style.ts`
+ * uses it to give this scheme the chip's tinted background instead of the
+ * generic underlined-link look. This pass supplies the other half — the
+ * leading 💬 glyph that marks the reference as a comment at a glance, the same
+ * way `!file` cards get 📎 above.
+ *
+ * The resolved / degraded distinction stays a TAP-time answer on mobile
+ * (`resolveCommentAnchor` → focus or a warning haptic). Deciding it at render
+ * time would need the timeline inside the markdown renderer, and a chip that
+ * silently changed shape as older comments paged in would read as a glitch.
+ *
+ * Idempotent: a label already carrying the glyph is left alone.
+ */
+const COMMENT_ANCHOR_GLYPH = "💬";
+// Label allows escaped metacharacters for the same reason the file-card
+// pattern does, and excludes bare backslash so the alternatives cannot
+// backtrack against each other (ReDoS).
+const COMMENT_ANCHOR_RE =
+  /\[((?:\\.|[^\]\\])*)\]\((mention:\/\/comment\/[^)\s]+)\)/g;
+
+function preprocessCommentAnchors(input: string): string {
+  return input.replace(COMMENT_ANCHOR_RE, (match, label: string, url: string) => {
+    const text = label.trim();
+    if (text.startsWith(COMMENT_ANCHOR_GLYPH)) return match;
+    // An empty label would render as an untappable zero-width link; the glyph
+    // alone still gives a target and still says "this points at a comment".
+    return `[${COMMENT_ANCHOR_GLYPH} ${label}](${url})`;
+  });
+}
+
+/**
  * Add GFM strikethrough markers around the content of checked task list items
  * so they render with `~~text~~` styling — matching Linear / Notion / Apple
  * Reminders / Things 3, where a checked item is visually crossed out.
@@ -122,6 +160,8 @@ function stripHtml(input: string): string {
 export function preprocessMobileMarkdown(input: string): string {
   if (!input) return "";
   return preprocessTaskListStrikethrough(
-    preprocessFileCards(preprocessMentionShortcodes(stripHtml(input))),
+    preprocessCommentAnchors(
+      preprocessFileCards(preprocessMentionShortcodes(stripHtml(input))),
+    ),
   );
 }

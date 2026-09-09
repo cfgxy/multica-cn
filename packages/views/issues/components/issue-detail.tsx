@@ -65,6 +65,7 @@ import type { Attachment, Issue, IssueProperty, IssueStatus, IssueStatusCategory
 import { contentReferencesAttachment } from "@multica/core/types";
 import { STATUS_CONFIG } from "@multica/core/issues/config";
 import { formatDateOnly, isPastDateOnly } from "@multica/core/issues/date";
+import { COMMENT_HIGHLIGHT_HOLD_MS } from "@multica/core/issues/comment-highlight";
 import { useUpdateIssue } from "@multica/core/issues/mutations";
 import { sortTimelineEntriesForThreadedDisplay } from "@multica/core/issues/timeline-sort";
 import { toast } from "sonner";
@@ -1761,7 +1762,13 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       // take the highlight prop — the scroll itself is the feedback there.)
       setHighlightedId(threadId);
       if (jumpFlashTimerRef.current !== null) window.clearTimeout(jumpFlashTimerRef.current);
-      jumpFlashTimerRef.current = window.setTimeout(() => setHighlightedId(null), 2000);
+      // Same shared schedule as the deep-link / anchor landing: this paints
+      // the same tint on the same rows, so a second number here would make
+      // the flash's length depend on which affordance triggered it.
+      jumpFlashTimerRef.current = window.setTimeout(
+        () => setHighlightedId(null),
+        COMMENT_HIGHLIGHT_HOLD_MS,
+      );
     },
     [isFlatTimeline, items, scrollContainerEl],
   );
@@ -2020,7 +2027,14 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     rafId = requestAnimationFrame(center);
 
     setHighlightedId(highlightCommentId);
-    const fade = window.setTimeout(() => setHighlightedId(null), 2500);
+    // Clearing the id starts the CSS fade-out, so the tint stays visible for
+    // HOLD + FADE. The previous 2500 here plus a 700ms transition read as a
+    // 3.2s wash — long enough that the reader stops attributing it to their
+    // own click. Both numbers now come from one shared schedule (RUYI-108).
+    const fade = window.setTimeout(
+      () => setHighlightedId(null),
+      COMMENT_HIGHLIGHT_HOLD_MS,
+    );
     return () => {
       cancelAnimationFrame(rafId);
       clearTimeout(fade);

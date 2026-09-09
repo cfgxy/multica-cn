@@ -48,6 +48,11 @@ import { RevisionConflictCompare } from "./revision-conflict-compare";
 const highlightedCommentBackgroundClass =
   "bg-[color-mix(in_srgb,var(--card)_95%,var(--brand)_5%)]";
 
+// The `duration-300` on every highlighted surface below is
+// COMMENT_HIGHLIGHT_FADE_MS spelled as a literal — Tailwind can only emit a
+// class it can see in the source, so the constant cannot be interpolated
+// here. `comment-highlight.test.ts` fails if the two drift apart.
+
 function StickyHeaderShell({
   className,
   sticky = true,
@@ -70,7 +75,7 @@ function StickyHeaderShell({
   return (
     <div
       className={cn(
-        "sticky top-0 z-10 transition-colors duration-700",
+        "sticky top-0 z-10 transition-colors duration-300",
         highlighted ? highlightedCommentBackgroundClass : "bg-card",
         className,
       )}
@@ -931,7 +936,7 @@ function CommentCardImpl({
     // overflow-clip (not -hidden) clips the rounded corners WITHOUT creating a
     // scroll container, so the sticky collapse affordances below resolve to the
     // timeline's scroll parent instead of this card. See PR #3623.
-    <Card className="!py-0 !gap-0 overflow-clip transition-colors duration-700">
+    <Card className="!py-0 !gap-0 overflow-clip transition-colors duration-300">
       {onCollapseResolved && (
         <button
           type="button"
@@ -949,7 +954,7 @@ function CommentCardImpl({
             That is what keeps exactly one header pinned at a time: without this
             wrapper the header's containing block is the whole thread and it
             stays stuck behind every reply. */}
-        <div className={cn("transition-colors duration-700", isHighlighted && highlightedCommentBackgroundClass)}>
+        <div className={cn("transition-colors duration-300", isHighlighted && highlightedCommentBackgroundClass)}>
           {/* Header — always visible, acts as toggle */}
           <StickyHeaderShell
             sticky={stickyHeader}
@@ -1211,7 +1216,7 @@ function CommentCardImpl({
                 <div
                   id={`comment-${resolutionReply.id}`}
                   className={cn(
-                    "border-t border-border/50 transition-colors duration-700",
+                    "border-t border-border/50 transition-colors duration-300",
                     highlightedCommentId === resolutionReply.id && highlightedCommentBackgroundClass,
                   )}
                 >
@@ -1251,7 +1256,7 @@ function CommentCardImpl({
                   key={reply.id}
                   id={`comment-${reply.id}`}
                   className={cn(
-                    "border-t border-border/50 transition-colors duration-700",
+                    "border-t border-border/50 transition-colors duration-300",
                     highlightedCommentId === reply.id && highlightedCommentBackgroundClass,
                   )}
                 >
