@@ -372,7 +372,23 @@
       "submit": "公開",
       "save": "保存",
       "pair_key": "{{label}} キー",
-      "pair_value": "{{label}} 値"
+      "pair_value": "{{label}} 値",
+      "summary_note": "カタログの一覧に表示されます。最大 {{max}} 文字。",
+      "summary_required": "概要は必須です。",
+      "summary_too_long": "概要は {{max}} 文字以内にしてください。",
+      "categories_required": "カテゴリを 1 つ以上選択してください。",
+      "name_from_entity": "公開する項目から取得しています。",
+      "publish_to_marketplace": "マーケットに公開",
+      "edit_listing": "マーケット掲載を編集",
+      "published_badge": "公開中"
+    },
+    "categories": {
+      "data": "データ",
+      "development": "開発",
+      "documents": "ドキュメント",
+      "files": "ファイル",
+      "productivity": "生産性",
+      "web": "ウェブ"
     }
   },
   "mcp": {

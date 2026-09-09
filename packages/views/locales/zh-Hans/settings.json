@@ -372,7 +372,23 @@
       "submit": "发布",
       "save": "保存",
       "pair_key": "{{label}} 键名",
-      "pair_value": "{{label}} 值"
+      "pair_value": "{{label}} 值",
+      "summary_note": "显示在目录条目上，最多 {{max}} 个字符。",
+      "summary_required": "必须填写简介。",
+      "summary_too_long": "简介不能超过 {{max}} 个字符。",
+      "categories_required": "至少选择一个分类。",
+      "name_from_entity": "取自你要发布的条目。",
+      "publish_to_marketplace": "发布到市场",
+      "edit_listing": "编辑市场条目",
+      "published_badge": "已发布"
+    },
+    "categories": {
+      "data": "数据",
+      "development": "开发",
+      "documents": "文档",
+      "files": "文件",
+      "productivity": "效率",
+      "web": "网络"
     }
   },
   "mcp": {

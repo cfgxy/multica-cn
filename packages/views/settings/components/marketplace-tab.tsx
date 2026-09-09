@@ -18,9 +18,6 @@ import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
 import { Input } from "@multica/ui/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@multica/ui/components/ui/tabs";
-import { ApiError } from "@multica/core/api";
-import { useFeatureEnabled } from "@multica/core/config";
-import { MARKETPLACE_PUBLISH_V1_FLAG } from "@multica/core/feature-flags";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { useCurrentMember } from "@multica/core/permissions";
 import { pluginInstallationsOptions } from "@multica/core/plugins";
@@ -30,22 +27,14 @@ import {
 } from "@multica/core/workspace/queries";
 import {
   useInstallMarketplaceItem,
-  usePublishMarketplaceListing,
-  useUpdateMarketplaceListing,
   useWithdrawMarketplaceListing,
 } from "@multica/core/workspace/mutations";
-import type {
-  MarketplaceItem,
-  MarketplaceListing,
-  MarketplaceScanFinding,
-} from "@multica/core/types";
+import type { MarketplaceItem, MarketplaceListing } from "@multica/core/types";
 import { useT } from "../../i18n";
 import { MarketplaceInstallDialog } from "./marketplace-install-dialog";
 import { PluginDirectory } from "./plugin-directory";
-import {
-  MarketplacePublishDialog,
-  type MarketplacePublishSubmit,
-} from "./marketplace-publish-dialog";
+import { MarketplacePublishDialog } from "./marketplace-publish-dialog";
+import { useMarketplacePublishFlow } from "./use-marketplace-publish";
 import { SettingsCard, SettingsSection, SettingsTab } from "./settings-layout";
 
 /**
@@ -65,11 +54,6 @@ export function MarketplaceTab() {
   const currentMember = useCurrentMember(wsId);
   const canManage =
     currentMember.role === "owner" || currentMember.role === "admin";
-
-  // The write path has its own flag: the catalog can stay open while
-  // publishing is still off, and turning publishing off leaves already
-  // published listings exactly where they are.
-  const publishEnabled = useFeatureEnabled(MARKETPLACE_PUBLISH_V1_FLAG, false);
 
   const [kind, setKind] = useState("");
   const [search, setSearch] = useState("");
@@ -111,85 +95,21 @@ export function MarketplaceTab() {
 
   const [installTarget, setInstallTarget] = useState<MarketplaceItem | null>(null);
 
-  // Only fetched when the workspace can actually manage listings — an ordinary
-  // member has no management section to fill, so there is nothing to load.
-  const canPublish = canManage && publishEnabled;
+  // The publish half is shared with the skill and MCP rows, which offer the
+  // same flow for an entity the workspace already has. Only fetched when the
+  // workspace can actually manage listings.
+  const publishFlow = useMarketplacePublishFlow(wsId);
+  const canPublish = publishFlow.canPublish;
   const listingsQuery = useQuery({
     ...marketplaceListingsOptions(wsId),
     enabled: wsId !== "" && canPublish,
   });
   const listings = useMemo(() => listingsQuery.data ?? [], [listingsQuery.data]);
 
-  const publish = usePublishMarketplaceListing(wsId);
-  const update = useUpdateMarketplaceListing(wsId);
   const withdraw = useWithdrawMarketplaceListing(wsId);
+  const openPublishDialog = publishFlow.open;
 
-  // `publishKind` doubles as the open flag: a dialog is open exactly when a
-  // kind has been chosen, and editing carries the listing alongside it.
-  const [publishKind, setPublishKind] = useState("");
-  const [editing, setEditing] = useState<MarketplaceListing | null>(null);
   const [withdrawing, setWithdrawing] = useState<MarketplaceListing | null>(null);
-  const [findings, setFindings] = useState<MarketplaceScanFinding[]>([]);
-  const [scannerRevision, setScannerRevision] = useState("");
-  const [publishError, setPublishError] = useState("");
-
-  const closePublishDialog = () => {
-    setPublishKind("");
-    setEditing(null);
-    setFindings([]);
-    setScannerRevision("");
-    setPublishError("");
-  };
-
-  const openPublishDialog = (nextKind: string, listing: MarketplaceListing | null) => {
-    setFindings([]);
-    setScannerRevision("");
-    setPublishError("");
-    setEditing(listing);
-    setPublishKind(nextKind);
-  };
-
-  const handlePublish = async (input: MarketplacePublishSubmit) => {
-    setFindings([]);
-    setScannerRevision("");
-    setPublishError("");
-    try {
-      // A withdrawn listing cannot be edited — the server refuses a PATCH on a
-      // tombstone and says to publish again instead, which is exactly what the
-      // republish button does: the same name goes back through publish, which
-      // revives the row this workspace still owns.
-      if (editing && editing.state !== "withdrawn") {
-        // `kind` is fixed at publish time and the update route does not accept
-        // it, so it is dropped rather than sent as a field the server ignores.
-        const { kind: _kind, ...editable } = input;
-        await update.mutateAsync({
-          id: editing.id,
-          revision: editing.revision,
-          ...editable,
-        });
-        toast.success(t(($) => $.marketplace.updated_toast, { name: input.name }));
-      } else {
-        await publish.mutateAsync(input);
-        toast.success(t(($) => $.marketplace.published_toast, { name: input.name }));
-      }
-      closePublishDialog();
-    } catch (error) {
-      // A 422 is the secret scan refusing the content. Its body carries the
-      // findings, which are locations only — field, line, rule — so they can be
-      // shown without echoing whatever was pasted.
-      const scan = scanErrorOf(error);
-      if (scan) {
-        setFindings(scan.findings);
-        setScannerRevision(scan.scannerRevision);
-        return;
-      }
-      setPublishError(
-        error instanceof Error && error.message
-          ? error.message
-          : t(($) => $.marketplace.publish_failed_toast),
-      );
-    }
-  };
 
   const handleWithdraw = async () => {
     if (!withdrawing) return;
@@ -362,19 +282,7 @@ export function MarketplaceTab() {
         </p>
       ) : null}
 
-      <MarketplacePublishDialog
-        open={publishKind !== ""}
-        kind={publishKind}
-        listing={editing}
-        submitting={publish.isPending || update.isPending}
-        findings={findings}
-        scannerRevision={scannerRevision}
-        errorMessage={publishError}
-        onOpenChange={(open) => {
-          if (!open) closePublishDialog();
-        }}
-        onSubmit={(input) => void handlePublish(input)}
-      />
+      <MarketplacePublishDialog {...publishFlow.dialogProps} />
 
       <AlertDialog
         open={withdrawing !== null}
@@ -534,43 +442,6 @@ function MarketplaceListingRow({
       </div>
     </li>
   );
-}
-
-/**
- * Pulls the secret-scan report out of a rejected publish.
- *
- * Only a 422 carries one, and only the location fields are read: taking the
- * whole body would risk rendering something the server did not intend to be
- * displayed. Anything else — a 409, a 403, a malformed body — returns null and
- * falls through to the plain error message.
- */
-function scanErrorOf(
-  error: unknown,
-): { findings: MarketplaceScanFinding[]; scannerRevision: string } | null {
-  if (!(error instanceof ApiError) || error.status !== 422) return null;
-  const body = error.body;
-  if (!body || typeof body !== "object") return null;
-  const raw = (body as { findings?: unknown }).findings;
-  if (!Array.isArray(raw)) return null;
-  const findings = raw.flatMap((entry) => {
-    if (!entry || typeof entry !== "object") return [];
-    const finding = entry as Record<string, unknown>;
-    return [
-      {
-        category: typeof finding.category === "string" ? finding.category : "",
-        rule: typeof finding.rule === "string" ? finding.rule : "",
-        field: typeof finding.field === "string" ? finding.field : "",
-        line: typeof finding.line === "number" ? finding.line : 0,
-        mask: typeof finding.mask === "string" ? finding.mask : "",
-      },
-    ];
-  });
-  if (findings.length === 0) return null;
-  const revision = (body as { scanner_revision?: unknown }).scanner_revision;
-  return {
-    findings,
-    scannerRevision: typeof revision === "string" ? revision : "",
-  };
 }
 
 /**

@@ -550,7 +550,7 @@ const listing = (over: Record<string, unknown> = {}) => ({
   summary: "Search Acme.",
   description: "",
   homepage_url: "",
-  categories: [],
+  categories: ["development"],
   config_template: {
     type: "http",
     url: "https://mcp.example.com",
@@ -572,6 +572,18 @@ const listing = (over: Record<string, unknown> = {}) => ({
   updated_at: "2026-09-08T00:00:00Z",
   ...over,
 });
+
+// Summary and at least one category are required of every listing, matching
+// what the server enforces. The canonical matrix for those rules lives in
+// `marketplace-publish-dialog.test.tsx`; here they are just filled in so the
+// flow under test can reach submit.
+async function fillPublicMetadata(
+  user: ReturnType<typeof userEvent.setup>,
+  summary = "Search Acme.",
+) {
+  await user.type(screen.getByLabelText("Summary"), summary);
+  await user.click(screen.getByRole("button", { name: "Development" }));
+}
 
 describe("MarketplaceTab publishing (RUYI-99)", () => {
   beforeEach(() => {
@@ -617,6 +629,7 @@ describe("MarketplaceTab publishing (RUYI-99)", () => {
     await user.click(screen.getByRole("button", { name: "Publish a skill" }));
     await user.type(screen.getByLabelText("Name"), "acme-pdf");
     await user.type(screen.getByLabelText("Summary"), "Fill PDFs.");
+    await user.click(screen.getByRole("button", { name: "Development" }));
     await user.type(
       screen.getByLabelText("Source URL"),
       "https://github.com/acme/skills/pdf",
@@ -651,6 +664,7 @@ describe("MarketplaceTab publishing (RUYI-99)", () => {
 
     await user.click(screen.getByRole("button", { name: "Publish an MCP server" }));
     await user.type(screen.getByLabelText("Name"), "acme-search");
+    await fillPublicMetadata(user);
     await user.click(screen.getByRole("button", { name: label }));
 
     if (expected === "stdio") {
@@ -683,6 +697,7 @@ describe("MarketplaceTab publishing (RUYI-99)", () => {
 
     await user.click(screen.getByRole("button", { name: "Publish an MCP server" }));
     await user.type(screen.getByLabelText("Name"), "acme-search");
+    await fillPublicMetadata(user);
     // The form opens on stdio; headers only exist on a remote transport.
     await user.click(screen.getByRole("button", { name: "HTTP" }));
     await user.type(screen.getByLabelText("URL"), "https://mcp.example.com");
@@ -806,6 +821,7 @@ describe("MarketplaceTab publishing (RUYI-99)", () => {
 
     await user.click(screen.getByRole("button", { name: "Publish an MCP server" }));
     await user.type(screen.getByLabelText("Name"), "acme-search");
+    await fillPublicMetadata(user);
     // The form opens on stdio; headers only exist on a remote transport.
     await user.click(screen.getByRole("button", { name: "HTTP" }));
     await user.type(screen.getByLabelText("URL"), "https://mcp.example.com");
