@@ -10,6 +10,8 @@ import enSettings from "../../locales/en/settings.json";
 import enAgents from "../../locales/en/agents.json";
 
 const mockInstall = vi.hoisted(() => vi.fn());
+const mockPreview = vi.hoisted(() => vi.fn());
+const mockInstallPlugin = vi.hoisted(() => vi.fn());
 
 const data = vi.hoisted(() => ({
   items: [] as Array<Record<string, unknown>>,
@@ -17,10 +19,33 @@ const data = vi.hoisted(() => ({
   role: "owner" as "owner" | "admin" | "member",
   /** Records the filter the tab asked the catalog for. */
   lastFilter: undefined as unknown,
+  /** Whether the catalog query was allowed to run this render. */
+  catalogEnabled: undefined as unknown,
+  directory: { packages: [] as Array<Record<string, unknown>> },
+  installed: { plugins: [], plugins_enabled: true },
 }));
 
+// Two shelves share this tab: the build-time catalog and the instance plugin
+// directory. They are told apart by the query key, so a test can populate one
+// without the other.
 vi.mock("@tanstack/react-query", () => ({
-  useQuery: () => ({ data: data.items, isLoading: data.isLoading }),
+  useQuery: (options: { queryKey?: readonly unknown[]; enabled?: boolean }) => {
+    const key = options?.queryKey ?? [];
+    if (key[0] === "plugins") {
+      return key[1] === "directory"
+        ? { data: data.directory, isLoading: false, isError: false }
+        : { data: data.installed, isLoading: false, isError: false };
+    }
+    data.catalogEnabled = options?.enabled;
+    return { data: data.items, isLoading: data.isLoading };
+  },
+}));
+
+vi.mock("@multica/core/plugins", () => ({
+  pluginDirectoryOptions: () => ({ queryKey: ["plugins", "directory"] }),
+  pluginInstallationsOptions: () => ({ queryKey: ["plugins", "installed"] }),
+  usePreviewPlugin: () => ({ mutateAsync: mockPreview, isPending: false }),
+  useInstallPlugin: () => ({ mutateAsync: mockInstallPlugin, isPending: false }),
 }));
 
 vi.mock("@multica/core/workspace/queries", () => ({
@@ -95,13 +120,36 @@ const mcpItem = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
+const directoryPackage = (over: Record<string, unknown> = {}) => ({
+  id: "package-1",
+  plugin_key: "com.example.hello",
+  name: "Hello Panel",
+  created_at: "2026-01-01T00:00:00Z",
+  visibility: "public",
+  publisher_workspace_id: "workspace-2",
+  versions: [
+    {
+      id: "version-2",
+      version: "1.1.0",
+      digest: "b".repeat(64),
+      size_bytes: 2048,
+      published_at: "2026-01-02T00:00:00Z",
+      installed: false,
+    },
+  ],
+  ...over,
+});
+
 describe("MarketplaceTab", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     data.role = "owner";
     data.isLoading = false;
     data.lastFilter = undefined;
+    data.catalogEnabled = undefined;
     data.items = [skillItem(), mcpItem()];
+    data.directory = { packages: [] };
+    data.installed = { plugins: [], plugins_enabled: true };
     mockInstall.mockResolvedValue({});
   });
 
@@ -303,5 +351,153 @@ describe("MarketplaceTab", () => {
     render(<MarketplaceTab />, { wrapper: Wrapper });
 
     expect(screen.getByText("Nothing matches")).toBeInTheDocument();
+  });
+
+  // The plugin directory is a second shelf on the same tab, not a second query
+  // against the catalog: it lists what workspaces on this instance published.
+  it("lists instance plugins alongside the catalog", () => {
+    data.directory = { packages: [directoryPackage()] };
+    render(<MarketplaceTab />, { wrapper: Wrapper });
+
+    expect(screen.getByText("pdf")).toBeInTheDocument();
+    expect(screen.getByText("Hello Panel")).toBeInTheDocument();
+    expect(screen.getByText("Plugin")).toBeInTheDocument();
+  });
+
+  it("stands the catalog query down when the reader filters to plugins", async () => {
+    const user = userEvent.setup();
+    data.directory = { packages: [directoryPackage()] };
+    render(<MarketplaceTab />, { wrapper: Wrapper });
+
+    await user.click(screen.getByRole("tab", { name: "Plugins" }));
+
+    await waitFor(() => expect(data.catalogEnabled).toBe(false));
+    expect(screen.getByText("Hello Panel")).toBeInTheDocument();
+    expect(screen.queryByText("pdf")).toBeNull();
+  });
+
+  it("hides the plugin shelf behind a catalog-only filter", async () => {
+    const user = userEvent.setup();
+    data.directory = { packages: [directoryPackage()] };
+    render(<MarketplaceTab />, { wrapper: Wrapper });
+
+    await user.click(screen.getByRole("tab", { name: "Skills" }));
+
+    await waitFor(() => expect(screen.queryByText("Hello Panel")).toBeNull());
+  });
+
+  // Installing from the directory must go through preview-then-consent, exactly
+  // as installing from the workspace's own published list does. The scope list
+  // the administrator reads IS the grant.
+  it("previews before installing a plugin from the directory", async () => {
+    const user = userEvent.setup();
+    data.directory = { packages: [directoryPackage()] };
+    mockPreview.mockResolvedValue({
+      manifest: { key: "com.example.hello", name: "Hello Panel", version: "1.1.0", author: { name: "Acme" } },
+      scopes: ["issues:read", "net:example.com"],
+      config_schema: [],
+      version_id: "version-2",
+      version: "1.1.0",
+      digest: "b".repeat(64),
+      installed: false,
+    });
+    render(<MarketplaceTab />, { wrapper: Wrapper });
+
+    await user.click(screen.getByRole("button", { name: "Review and install" }));
+
+    await waitFor(() => expect(mockPreview).toHaveBeenCalledWith({ version_id: "version-2" }));
+    expect(await screen.findByText("issues:read")).toBeInTheDocument();
+    expect(screen.getByText("net:example.com")).toBeInTheDocument();
+    expect(mockInstallPlugin).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "Grant and install" }));
+    await waitFor(() =>
+      expect(mockInstallPlugin).toHaveBeenCalledWith({
+        version_id: "version-2",
+        granted_scopes: ["issues:read", "net:example.com"],
+        config: {},
+      }),
+    );
+  });
+
+  // A directory row that says only "Hello Panel 1.1.0" makes the reader open the
+  // consent flow just to learn what the plugin would be granted. The manifest
+  // facts that decide "is this worth reviewing" belong on the row.
+  it("shows what a listed version would be granted and would ask for", () => {
+    data.directory = {
+      packages: [
+        directoryPackage({
+          versions: [
+            {
+              id: "version-2",
+              version: "1.1.0",
+              digest: "b".repeat(64),
+              size_bytes: 2048,
+              published_at: "2026-01-02T00:00:00Z",
+              installed: false,
+              description: "Greets an issue.",
+              scopes: ["issues:read", "net:example.com"],
+              config_keys: ["repo", "token"],
+            },
+          ],
+        }),
+      ],
+    };
+    render(<MarketplaceTab />, { wrapper: Wrapper });
+
+    expect(screen.getByText("Greets an issue.")).toBeInTheDocument();
+    expect(screen.getByText("issues:read")).toBeInTheDocument();
+    expect(screen.getByText("net:example.com")).toBeInTheDocument();
+    expect(screen.getByText(/repo、token/)).toBeInTheDocument();
+  });
+
+  // A withdrawn version is the publisher saying "do not start on this one".
+  it("does not offer a withdrawn version", () => {
+    data.directory = {
+      packages: [
+        directoryPackage({
+          versions: [
+            {
+              id: "version-2",
+              version: "1.1.0",
+              digest: "b".repeat(64),
+              size_bytes: 2048,
+              published_at: "2026-01-02T00:00:00Z",
+              installed: false,
+              withdrawn_at: "2026-01-03T00:00:00Z",
+            },
+          ],
+        }),
+      ],
+    };
+    render(<MarketplaceTab />, { wrapper: Wrapper });
+
+    expect(screen.getByText("Hello Panel")).toBeInTheDocument();
+    expect(screen.getByText("Every version has been withdrawn")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Review and install" })).toBeNull();
+  });
+
+  // plugins_v1 off is a server-side refusal; offering the button would only
+  // produce a 503 the reader cannot act on.
+  // With the flag off there is nothing behind the filter and nothing the
+  // directory could offer, so the shelf and its filter both stay out rather
+  // than leading the reader to an install that cannot happen.
+  it("hides the plugin shelf and its filter when plugins are disabled", () => {
+    data.directory = { packages: [directoryPackage()] };
+    data.installed = { plugins: [], plugins_enabled: false };
+    render(<MarketplaceTab />, { wrapper: Wrapper });
+
+    expect(screen.queryByRole("tab", { name: "Plugins" })).toBeNull();
+    expect(screen.queryByText("Hello Panel")).toBeNull();
+    expect(screen.queryByRole("button", { name: "Review and install" })).toBeNull();
+  });
+
+  it("hides plugin installs from a plain member", () => {
+    data.role = "member";
+    data.directory = { packages: [directoryPackage()] };
+    render(<MarketplaceTab />, { wrapper: Wrapper });
+
+    expect(screen.getByText("Hello Panel")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Review and install" })).toBeNull();
   });
 });

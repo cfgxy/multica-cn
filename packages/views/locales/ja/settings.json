@@ -307,7 +307,15 @@
     "cancel": "キャンセル",
     "installed_toast": "{{name}} をインストールしました",
     "install_failed_toast": "インストールに失敗しました",
-    "admin_only_note": "マーケットプレイスからインストールできるのはワークスペースのオーナーと管理者のみです。"
+    "admin_only_note": "マーケットプレイスからインストールできるのはワークスペースのオーナーと管理者のみです。",
+    "filter_plugins": "プラグイン",
+    "plugin_kind": "プラグイン",
+    "plugins_title": "このインスタンスのプラグイン",
+    "plugins_description": "他のワークスペースが掲載したプラグインです。インストール時には、自分で公開する場合と同じ同意画面が表示されます。承認したスコープがすべての権限であり、承認したバージョンがそのまま実行されます。",
+    "plugins_empty_title": "掲載されているプラグインはまだありません",
+    "plugins_empty_description": "ワークスペースはプラグインを公開したあと、「設定 → プラグイン」から掲載できます。",
+    "all_versions_withdrawn": "すべてのバージョンが取り下げられています",
+    "plugin_config_summary": "{{count}} 件の設定項目が必要です：{{keys}}"
   },
   "mcp": {
     "title": "MCP",
@@ -362,6 +370,8 @@
   "plugins": {
     "title": "Plugins",
     "description": "このワークスペースにプラグインを公開し、特定のバージョンをインストールして、何にアクセスできるかを確認します。",
+    "disabled_title": "プラグイン管理は無効です",
+    "disabled_description": "プラグイン機能が無効の間は、新規インストール・アップグレード・公開を行えません。インストール済みのプラグインは下に表示され、削除は引き続き可能です。",
     "loading": "Plugins を読み込み中",
     "load_failed": "Plugins を読み込めませんでした",
     "load_failed_description": "再試行してください。インストール済みの Plugin には影響しません。",
@@ -392,7 +402,14 @@
       "confirm_upgrade": "許可してアップグレード",
       "installed": "Plugin をインストールしました",
       "upgrade_from": " · v{{version}} からアップグレード",
-      "new_scope": "新規"
+      "new_scope": "新規",
+      "config_title": "この Plugin に必要な設定",
+      "config_description": "ここで入力した内容はインストールと同時に保存されます。シークレットは書き込み専用で、保存後はどの画面からも API からも読み出せません。",
+      "config_required": "インストール前に必須項目を入力してください：{{fields}}",
+      "sensitive_write": "ワークスペースのデータを変更します",
+      "sensitive_network": "インスタンス外へデータを送信します",
+      "upgrade_data_title": "アップグレードによるデータへの影響",
+      "upgrade_data_description": "設定値と保存データは保持されます。新しいバージョンが宣言しなくなった項目は、そのシークレットとともに削除されます。アップグレードが失敗した場合は v{{version}} と元の権限に自動的に戻ります。"
     },
     "schedule": {
       "title": "自動スケジュール",
@@ -411,7 +428,9 @@
       "title": "設定",
       "save": "保存",
       "saved": "設定を保存しました",
-      "secret_set": "保存済み — 新しい値を入力すると置き換わります"
+      "configured": "設定済み",
+      "secret_set": "保存済み — 新しい値を入力すると置き換わります",
+      "secret_write_only": "書き込み専用 — 保存後は読み出せません。"
     },
     "scopes": {
       "issues_read": "タスクを読み取る",
@@ -450,7 +469,43 @@
       "deleted": "公開したプラグインを削除しました",
       "installed_version": "使用中",
       "review_install": "確認してインストール",
-      "review_upgrade": "確認してアップグレード"
+      "review_upgrade": "確認してアップグレード",
+      "list": "ディレクトリに掲載",
+      "unlist": "掲載を取り下げる",
+      "listed": "インスタンスのディレクトリに掲載しました",
+      "unlisted": "ディレクトリから取り下げました",
+      "listed_badge": "掲載中",
+      "private_badge": "非公開",
+      "listed_note": "このインスタンスのすべてのワークスペースがこのプラグインを見つけてインストールできます。取り下げても新規インストールが止まるだけで、すでにあるバージョンを実行しているワークスペースはそのまま動き続けます。",
+      "private_note": "このプラグインをインストールできるのは現在のワークスペースだけです。掲載すると、このインスタンスのすべてのワークスペースから見つけられるようになります。",
+      "withdraw": "取り下げ",
+      "restore": "復元",
+      "withdrawn": "このバージョンをディレクトリから取り下げました",
+      "restored": "このバージョンをディレクトリに復元しました",
+      "withdrawn_badge": "取り下げ済み"
+    },
+    "uninstall_dialog": {
+      "title": "{{name}} をアンインストールしますか？",
+      "description": "このインストールと保存された内容はすべて一度に削除され、元に戻せません。",
+      "deletes_title": "削除される内容",
+      "deletes_storage": "この Plugin が保存したすべてのデータ（メンバー単位・ワークスペース単位）",
+      "deletes_config": "設定のすべて",
+      "deletes_secrets": "保存されたすべてのシークレット",
+      "deletes_secrets_named": "保存されたシークレット：{{keys}}",
+      "deletes_skills": "このワークスペースに提供した Skill",
+      "deletes_hooks": "スケジュールと Hook の呼び出し履歴",
+      "acknowledge": "上記のすべてが削除され、復元できないことを理解しました。",
+      "cancel": "キャンセル",
+      "confirm": "アンインストール"
+    },
+    "secret_cleanup": {
+      "title": "保存されたシークレット",
+      "description": "Plugin 管理が無効なため設定は編集できません。漏えい時などに備え、保存されたシークレットを個別に削除することはここで可能です。",
+      "clear": "このシークレットを削除",
+      "confirm_hint": "完全に削除されます。",
+      "confirm": "削除を確定",
+      "cancel": "キャンセル",
+      "cleared": "シークレット {{key}} を削除しました"
     }
   },
   "properties": {

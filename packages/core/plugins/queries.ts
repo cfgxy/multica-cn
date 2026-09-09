@@ -5,6 +5,7 @@ export const pluginKeys = {
   all: (wsId: string) => ["workspaces", wsId, "plugins"] as const,
   installed: (wsId: string) => [...pluginKeys.all(wsId), "installed"] as const,
   packages: (wsId: string) => [...pluginKeys.all(wsId), "packages"] as const,
+  directory: (wsId: string) => [...pluginKeys.all(wsId), "directory"] as const,
 };
 
 export function pluginInstallationsOptions(wsId: string) {
@@ -20,6 +21,18 @@ export function pluginPackagesOptions(wsId: string) {
   return queryOptions({
     queryKey: pluginKeys.packages(wsId),
     queryFn: () => api.listPluginPackages(wsId),
+    enabled: wsId.length > 0,
+  });
+}
+
+/**
+ * What every workspace on this instance has listed, with each version's
+ * "installed here" marker resolved for the reading workspace.
+ */
+export function pluginDirectoryOptions(wsId: string) {
+  return queryOptions({
+    queryKey: pluginKeys.directory(wsId),
+    queryFn: () => api.listPublicPluginPackages(wsId),
     enabled: wsId.length > 0,
   });
 }

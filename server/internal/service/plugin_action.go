@@ -2,7 +2,6 @@ package service
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 
 	"github.com/jackc/pgx/v5"
@@ -137,10 +136,18 @@ type PluginContextIssue struct {
 // BuildPluginContext assembles the context payload. Config carries only the
 // non-secret installation values — secrets live in their own table and have no
 // read path, so there is no way for one to reach the iframe.
+//
+// The filter runs against the stored manifest rather than trusting the stored
+// shape, the same way the settings response and the hook body do. This is the
+// third and last exit a stored value can take, and it is the one that reaches
+// third-party code inside an iframe: a row written before secrets were split
+// off, or by any future write path that forgets, would otherwise be handed to
+// the plugin verbatim. A manifest that will not parse yields no config at all,
+// because without it there is no way to tell which keys are secret.
 func (s *PluginService) BuildPluginContext(caller PluginActionCaller, workspace db.Workspace, user *db.User, issue *db.Issue) PluginContext {
 	config := map[string]any{}
-	if len(caller.Installation.Config) > 0 {
-		_ = json.Unmarshal(caller.Installation.Config, &config)
+	if manifest, err := ParseInstallationManifest(caller.Installation); err == nil {
+		config = NonSecretStoredConfig(caller.Installation.Config, manifest)
 	}
 
 	payload := PluginContext{

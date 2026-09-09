@@ -1,0 +1,19 @@
+{
+  "manifest_version": 1,
+  "key": "com.example.event-hook-without-events",
+  "name": "Event hook without events",
+  "version": "1.0.0",
+  "author": { "name": "Example" },
+  "scopes": ["issues:read", "net:hooks.example.com"],
+  "contributes": {
+    "hooks": [
+      {
+        "key": "on_change",
+        "name": "On change",
+        "description": "Reacts to issue changes.",
+        "triggers": ["event"],
+        "transport": { "type": "http", "url": "https://hooks.example.com/on-change" }
+      }
+    ]
+  }
+}

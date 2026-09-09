@@ -1647,6 +1647,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// because opening an issue is what asks for it; executable
 					// bytes stay off the authenticated app/API origin.
 					r.Get("/plugins/{installationId}/surfaces/{surfaceKey}/launch", h.GetPluginSurfaceLaunch)
+					// The instance directory is browse-only and
+					// member-visible, for the same reason the installed list
+					// is: a member seeing what this instance offers is how
+					// they ask an admin for it. Membership of the workspace in
+					// the URL is what authorizes the read — the listing spans
+					// workspaces, so it must not be reachable anonymously.
+					// Preview, install and every listing mutation stay
+					// admin-gated in the group below.
+					r.Get("/plugins/directory", h.ListPublicPluginPackages)
 				})
 				// Admin-level access
 				r.Group(func(r chi.Router) {
@@ -1688,6 +1697,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/plugins/packages", h.PublishPluginPackage)
 					r.Post("/plugins/packages/local", h.PublishLocalPluginPackage)
 					r.Delete("/plugins/packages/{packageId}", h.DeletePluginPackage)
+					// Listing, which is separate from publishing because the
+					// artifact is immutable and the decision about who may find
+					// it is not. Visibility is per package; withdrawal is per
+					// version, so a bad release can be taken off the directory
+					// without taking its predecessor down with it. Neither
+					// touches an existing installation.
+					r.Put("/plugins/packages/{packageId}/visibility", h.SetPluginPackageVisibility)
+					r.Put("/plugins/versions/{versionId}/withdrawn", h.SetPluginVersionWithdrawn)
 					// Installing a Plugin is two steps on purpose: preview
 					// reads the published version's manifest and returns the
 					// scope list without writing anything, so the consent
@@ -1707,6 +1724,8 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Put("/plugins/{installationId}/config", h.ConfigurePlugin)
 					r.Post("/plugins/{installationId}/enable", h.EnablePlugin)
 					r.Post("/plugins/{installationId}/disable", h.DisablePlugin)
+					// Both outlive plugins_v1: they are the two cleanup levers.
+					r.Delete("/plugins/{installationId}/secrets/{key}", h.ClearPluginSecret)
 					r.Delete("/plugins/{installationId}", h.UninstallPlugin)
 				})
 				// Owner-only access

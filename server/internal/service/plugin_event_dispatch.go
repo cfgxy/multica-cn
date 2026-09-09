@@ -2,8 +2,12 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"log/slog"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
@@ -286,6 +290,13 @@ func (d *PluginEventDispatcher) deliver(ctx context.Context, installation db.Plu
 		Actor:   HookActor{Type: "plugin", ID: installation.ID},
 		IssueID: job.issueID,
 		Input:   job.payload,
+		// Minted once, before the retry loop, and reused by every attempt
+		// below. Delivery is best-effort: an event may be dropped under
+		// backpressure and a delivered one may arrive more than once, so the
+		// only guarantee a handler can build on is being able to recognise the
+		// repeat. That recognition is this id, and it is worthless if a retry
+		// carries a different one.
+		DeliveryID: newEventDeliveryID(),
 	}
 
 	for attempt := 1; attempt <= hookEventAttempts; attempt++ {
@@ -310,6 +321,40 @@ func (d *PluginEventDispatcher) deliver(ctx context.Context, installation db.Plu
 		}
 	}
 }
+
+// newEventDeliveryID mints the id one logical event delivery is known by.
+//
+// Random rather than derived from the event, which is the opposite of the
+// scheduled path: a cron occurrence has a canonical identity — installation,
+// hook, generation, planned instant — that any retry can recompute, and
+// recomputing it is what lets a job reclaimed by another worker keep the same
+// id. A bus event has no such identity. It carries no id of its own, and two
+// genuinely distinct events can be byte-identical (the same issue updated the
+// same way twice), so deriving from content would collapse them into one
+// delivery and teach a correctly-written handler to discard the second.
+//
+// Minting per delivery instead means the id is stable exactly where it must be
+// — across the attempts of one delivery — and distinct everywhere else.
+func newEventDeliveryID() string {
+	raw := make([]byte, 16)
+	if _, err := rand.Read(raw); err != nil {
+		// crypto/rand does not fail in practice. If it ever does, the delivery
+		// still has to carry an id: returning "" made hookRequestBody omit the
+		// field, and a handler that deduplicates on delivery_id would then see
+		// every retry of every delivery as a fresh one — the exact failure the
+		// id exists to prevent, arriving precisely when the host is already
+		// degraded. Uniqueness is what is needed here, not unpredictability, so
+		// a monotonic counter with the clock is a sound fallback.
+		slog.Warn("plugins: could not mint a random event delivery id; falling back to a counter", "error", err)
+		return "ped_seq_" + strconv.FormatInt(time.Now().UnixNano(), 36) + "_" +
+			strconv.FormatUint(eventDeliveryFallbackSeq.Add(1), 36)
+	}
+	return "ped_" + hex.EncodeToString(raw)
+}
+
+// eventDeliveryFallbackSeq disambiguates fallback ids minted within the same
+// nanosecond tick.
+var eventDeliveryFallbackSeq atomic.Uint64
 
 // Close stops the workers. Safe to call more than once.
 func (d *PluginEventDispatcher) Close() {
