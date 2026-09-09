@@ -126,6 +126,7 @@ import {
   CommentLocateController,
   resolvePublishedRootIds,
 } from "@/lib/comment-locate";
+import { CommentGeometryRegistry } from "@/lib/comment-geometry";
 import { resolveCommentAnchor } from "@/lib/comment-anchor";
 import {
   CommentAnchorProvider,
@@ -576,6 +577,9 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
   const dataRef = useRef(dataWithDivider);
   dataRef.current = dataWithDivider;
   const viewableIdsRef = useRef<Set<string>>(new Set());
+  // RUYI-108 行内几何：回复与 root 共用一行，行级 viewability 判不出被引用的
+  // 回复是否真的入屏，控制器的行内校正靠卡片上报的这份测量值。
+  const geometryRef = useRef(new CommentGeometryRegistry());
 
   const controllerRef = useRef<CommentLocateController | null>(null);
   if (!controllerRef.current) {
@@ -604,6 +608,25 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
             : Promise.reject(new Error("list not mounted"));
         },
         isViewable: (rootId) => viewableIdsRef.current.has(rootId),
+        // 行内校正的三件套：目标在内容坐标系里的矩形（行顶 + 行内偏移）、
+        // 当前视口、直接按偏移滚动。行没有布局或卡片还没量到时返回 null，
+        // 控制器会按有界重试再来。
+        measureTarget: (targetId) =>
+          geometryRef.current.resolve(targetId, (rootId) => {
+            const idx = dataRef.current.findIndex(
+              (r) => r.entry.type === "comment" && r.entry.id === rootId,
+            );
+            if (idx < 0) return null;
+            const layout = listRef.current?.getLayout(idx);
+            return layout ? layout.y : null;
+          }),
+        getViewport: () => ({
+          offsetY: scrollGeoRef.current.offsetY,
+          height: scrollGeoRef.current.viewportHeight,
+        }),
+        scrollToOffset: (offset) => {
+          listRef.current?.scrollToOffset({ offset, animated: true });
+        },
         schedule: (fn, ms) => {
           const id = setTimeout(fn, ms);
           return { cancel: () => clearTimeout(id) };
@@ -647,6 +670,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
     locateController.start({
       issueId: focusForIssue.issueId,
       rootId: focusForIssue.rootId,
+      targetId: focusForIssue.targetId,
       nonce: focusForIssue.nonce,
     });
   }, [
@@ -663,6 +687,10 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
   // path: the focus store expands + bounded-locates the owning ROOT, and
   // `highlightedId` flashes the referenced comment itself (which may be a
   // reply inside that root — CommentCard already distinguishes the two).
+  //
+  // 引用的目标是回复时，仅把 root 行滚进视口不算到位（root 与全部回复共用
+  // 一行，长线程里目标可能仍在屏外）。`targetId` 一并交给控制器，由它在行
+  // 落位后按行内几何做二次校正，直到目标本身入屏。
   //
   // Resolution reads only `dataRef` (rows already in the client). A miss
   // — deleted, not permitted, another issue, or simply not fetched — gets
@@ -685,14 +713,26 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
       setHighlightedId(null);
       useCommentFocusStore
         .getState()
-        .requestFocus(issue.id, outcome.rootId);
+        .requestFocus(issue.id, outcome.rootId, outcome.commentId);
       setHighlightedId(outcome.commentId);
     },
     [issue.id],
   );
+  const reportGeometry = useCallback<CommentAnchorApi["reportGeometry"]>(
+    (commentId, rect) => geometryRef.current.report(commentId, rect),
+    [],
+  );
+  const forgetGeometry = useCallback<CommentAnchorApi["forgetGeometry"]>(
+    (commentId) => geometryRef.current.forget(commentId),
+    [],
+  );
   const commentAnchorApi = useMemo<CommentAnchorApi>(
-    () => ({ focus: focusCommentAnchor }),
-    [focusCommentAnchor],
+    () => ({
+      focus: focusCommentAnchor,
+      reportGeometry,
+      forgetGeometry,
+    }),
+    [focusCommentAnchor, reportGeometry, forgetGeometry],
   );
 
   // The flash set above has no timer of its own (the inbox path's timer is

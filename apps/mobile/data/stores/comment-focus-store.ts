@@ -36,6 +36,10 @@ export interface CommentFocusIntent {
   issueId: string;
   /** Root comment id the timeline should expand + bring into view. */
   rootId: string;
+  /** 真正要看到的那条评论（RUYI-108）。评论目录/深链按 root 定位时等于
+   *  `rootId`；`mention://comment/<id>` 引用一条回复时是那条回复的 id，此时
+   *  仅把 root 行滚进视口不算到位。 */
+  targetId: string;
   /** Bumped on every requestFocus call, even for the same rootId. */
   nonce: number;
 }
@@ -62,8 +66,9 @@ interface CommentFocusState {
   /** issueId → set of root comment ids explicitly expanded this session. */
   expandedRoots: Record<string, Set<string>>;
   /** Request the timeline to expand + bounded-locate the given root.
-   *  Resets the published status to `pending`. */
-  requestFocus: (issueId: string, rootId: string) => void;
+   *  Resets the published status to `pending`. `targetId` 缺省即定位 root
+   *  本身（评论目录、深链）；引用回复时传那条回复的 id。 */
+  requestFocus: (issueId: string, rootId: string, targetId?: string) => void;
   /** Timeline controller callback — publish a terminal or in-flight
    *  status for the current intent. Stale nonces are ignored. */
   setStatus: (status: CommentFocusStatus) => void;
@@ -87,11 +92,11 @@ export const useCommentFocusStore = create<CommentFocusState>((set) => ({
   focus: null,
   status: null,
   expandedRoots: {},
-  requestFocus: (issueId, rootId) => {
+  requestFocus: (issueId, rootId, targetId) => {
     counter.n += 1;
     const nonce = counter.n;
     set({
-      focus: { issueId, rootId, nonce },
+      focus: { issueId, rootId, targetId: targetId ?? rootId, nonce },
       status: { phase: "pending", nonce },
     });
   },

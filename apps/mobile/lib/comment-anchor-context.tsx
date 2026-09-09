@@ -16,9 +16,22 @@ import { createContext, use, type ReactNode } from "react";
 export interface CommentAnchorApi {
   /** 请求定位到本任务单内的某条评论；目标不可用时由实现方给降级反馈。 */
   focus: (commentId: string) => void;
+  /** 回复卡片测得自己在所属行内的纵向位置后回报（RUYI-108）。回复与 root
+   *  共用一个 FlashList 行，行级 viewability 判不出回复是否真的入屏，定位
+   *  控制器需要这份行内几何做二次校正。 */
+  reportGeometry: (
+    commentId: string,
+    rect: { rootId: string; offsetInRow: number; height: number },
+  ) => void;
+  /** 行被回收/卸载，丢弃其测量值（旧坐标会让二次滚动跳错位置）。 */
+  forgetGeometry: (commentId: string) => void;
 }
 
-const NOOP: CommentAnchorApi = { focus: () => {} };
+const NOOP: CommentAnchorApi = {
+  focus: () => {},
+  reportGeometry: () => {},
+  forgetGeometry: () => {},
+};
 
 const CommentAnchorContext = createContext<CommentAnchorApi>(NOOP);
 
