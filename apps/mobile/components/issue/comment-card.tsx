@@ -34,6 +34,10 @@ import Animated, {
 } from "react-native-reanimated";
 import { Ionicons } from "@expo/vector-icons";
 import type { Reaction, TimelineEntry } from "@multica/core/types";
+import {
+  COMMENT_HIGHLIGHT_FADE_MS,
+  COMMENT_HIGHLIGHT_TOTAL_MS,
+} from "@multica/core/issues/comment-highlight";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { useActorLookup } from "@/data/use-actor-name";
@@ -538,11 +542,15 @@ function RootHighlightOverlay({ active }: { active: boolean }) {
 
   useEffect(() => {
     if (!active) return;
-    // 700ms fade-in → 1800ms hold → 700ms fade-out. Matches web's
-    // `transition-colors duration-700` + `setTimeout(2500)` timing.
+    // FADE in → hold → FADE out, summing to COMMENT_HIGHLIGHT_TOTAL_MS. Same
+    // schedule web runs (RUYI-108): both clients used to spend 3.2s on the
+    // wash, well past the 1-2s the reader can still tie to their own tap.
     progress.value = withSequence(
-      withTiming(1, { duration: 700 }),
-      withDelay(1800, withTiming(0, { duration: 700 })),
+      withTiming(1, { duration: COMMENT_HIGHLIGHT_FADE_MS }),
+      withDelay(
+        COMMENT_HIGHLIGHT_TOTAL_MS - 2 * COMMENT_HIGHLIGHT_FADE_MS,
+        withTiming(0, { duration: COMMENT_HIGHLIGHT_FADE_MS }),
+      ),
     );
     // `active` flipping false mid-sequence must not leave the overlay stuck
     // at an intermediate opacity — a frozen brand frame/wash reads as text
@@ -579,8 +587,11 @@ function ReplyHighlightOverlay({ active }: { active: boolean }) {
   useEffect(() => {
     if (!active) return;
     progress.value = withSequence(
-      withTiming(1, { duration: 700 }),
-      withDelay(1800, withTiming(0, { duration: 700 })),
+      withTiming(1, { duration: COMMENT_HIGHLIGHT_FADE_MS }),
+      withDelay(
+        COMMENT_HIGHLIGHT_TOTAL_MS - 2 * COMMENT_HIGHLIGHT_FADE_MS,
+        withTiming(0, { duration: COMMENT_HIGHLIGHT_FADE_MS }),
+      ),
     );
     // Same mid-sequence reset as RootHighlightOverlay.
     return () => {
