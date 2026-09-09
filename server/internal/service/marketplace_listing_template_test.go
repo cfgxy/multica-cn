@@ -43,6 +43,20 @@ func TestValidateMarketplaceListingDraft_RejectsMalformedTemplateStructure(t *te
 		{"cwd is not a string", `{"type":"stdio","command":"npx","cwd":3}`},
 		{"disabled is not a boolean", `{"type":"stdio","command":"npx","disabled":"yes"}`},
 		{"timeout is not a number", `{"type":"stdio","command":"npx","timeout":"30s"}`},
+		// encoding/json treats a JSON null as a no-op for every destination
+		// type: it nils a map or slice and leaves a bool, number or string
+		// untouched, and it never reports an error. A declared field holding
+		// null therefore has to be rejected on its own, once per type, or the
+		// checks above only cover the wrong-type half of the shape.
+		{"type is null", `{"type":null,"command":"npx"}`},
+		{"args is null", `{"type":"stdio","command":"npx","args":null}`},
+		{"env is null", `{"type":"stdio","command":"npx","env":null}`},
+		{"cwd is null", `{"type":"stdio","command":"npx","cwd":null}`},
+		{"name is null", `{"type":"stdio","command":"npx","name":null}`},
+		{"disabled is null", `{"type":"stdio","command":"npx","disabled":null}`},
+		{"timeout is null", `{"type":"stdio","command":"npx","timeout":null}`},
+		{"headers is null", `{"type":"http","url":"https://example.invalid","headers":null}`},
+		{"url is null", `{"type":"http","url":null}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
