@@ -64,6 +64,7 @@ import { ActionSheetModal } from "@/components/ui/action-sheet";
 import { useCommentSelectStore } from "@/data/comment-select-store";
 import { useCommentFocusStore } from "@/data/stores/comment-focus-store";
 import { commentSummary } from "@/lib/comment-summary";
+import { useCommentAnchor } from "@/lib/comment-anchor-context";
 
 interface Props {
   entry: TimelineEntry;
@@ -177,6 +178,59 @@ export function CommentCard({
     }
   }, [highlightedCommentId, entry.id, replies, issueId, expandStore]);
 
+  // ── RUYI-108 行内几何上报 ─────────────────────────────────────────────
+  // 每条回复登记自己在**所属 FlashList 行**内的纵向偏移，定位控制器据此判断
+  // 被引用的回复是否真的入屏、并在需要时二次滚动。
+  //
+  // `onLayout` 给的 `y` 只相对**直接父节点**（回复 wrapper 的父节点是气泡
+  // View），而控制器要的是相对行顶。所以气泡自身的偏移单独量一次做基准，
+  // 回复偏移 = 基准 + 自身 y。两者的 layout 事件顺序不确定（RN 里子节点通常
+  // 先于父节点），因此原始测量值存在 ref 里，任一侧到齐都重算一次全部登记，
+  // 而不是假设基准先到。
+  const { reportGeometry, forgetGeometry } = useCommentAnchor();
+  const bubbleOffsetRef = useRef(0);
+  const rawRepliesRef = useRef(new Map<string, { y: number; height: number }>());
+  const flushGeometry = useCallback(() => {
+    for (const [replyId, raw] of rawRepliesRef.current) {
+      reportGeometry(replyId, {
+        rootId: entry.id,
+        offsetInRow: bubbleOffsetRef.current + raw.y,
+        height: raw.height,
+      });
+    }
+  }, [reportGeometry, entry.id]);
+  const measureBubble = useCallback(
+    (layout: { y: number }) => {
+      bubbleOffsetRef.current = layout.y;
+      flushGeometry();
+    },
+    [flushGeometry],
+  );
+  const measureReply = useCallback(
+    (replyId: string, layout: { y: number; height: number }) => {
+      rawRepliesRef.current.set(replyId, {
+        y: layout.y,
+        height: layout.height,
+      });
+      flushGeometry();
+    },
+    [flushGeometry],
+  );
+  // 折叠或卸载（FlashList 回收行）时丢弃测量值：wrapper 已经不渲染了，留着
+  // 旧坐标会让二次滚动按一份不再成立的布局跳走。
+  const replyIds = replies.map((r) => r.id).join(",");
+  useEffect(() => {
+    if (!isRootExpanded) return;
+    const raw = rawRepliesRef.current;
+    const ids = replyIds ? replyIds.split(",") : [];
+    return () => {
+      for (const id of ids) {
+        raw.delete(id);
+        forgetGeometry(id);
+      }
+    };
+  }, [isRootExpanded, replyIds, forgetGeometry]);
+
   // ── RUYI-28 collapsed root (normal, unresolved) ────────────────────────
   // Default collapsed; expansion is session-scoped per issue. The bar shows
   // a 120-cp / 2-line summary (see lib/comment-summary.ts). Deep-link /
@@ -228,6 +282,7 @@ export function CommentCard({
          *  "this is settled" signal persists even while reading the
          *  body — mirrors web's muted resolved card visual. */}
         <View
+          onLayout={(e) => measureBubble(e.nativeEvent.layout)}
           className={cn(
             "bg-surface-1 rounded-2xl px-4 py-3 gap-3 border-2 border-transparent transition-colors",
             resolved && "opacity-70",
@@ -267,7 +322,11 @@ export function CommentCard({
             onCommentPublished={onCommentPublished}
           />
           {replies.map((reply) => (
-            <View key={reply.id} className="border-t border-border/60 pt-3">
+            <View
+              key={reply.id}
+              className="border-t border-border/60 pt-3"
+              onLayout={(e) => measureReply(reply.id, e.nativeEvent.layout)}
+            >
               <CommentBody
                 entry={reply}
                 issueId={issueId}
