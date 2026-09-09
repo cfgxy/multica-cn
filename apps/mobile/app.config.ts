@@ -104,6 +104,9 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       // 每次重新注入。凭据从构建机的 Gradle 属性读取,不进仓库。
       "./plugins/with-android-release-signing",
     ],
-    extra: { APP_ENV: env },
+    extra: {
+      APP_ENV: env,
+      eas: { projectId: process.env.EXPO_PROJECT_ID },
+    },
   };
 };
