@@ -53,6 +53,21 @@ Multica-Task: $task")"
   git -C "$dir" update-ref "refs/multica/local-state/$branch" "$commit"
 }
 
+# The record shape written before the task/agent trailers existed: the ref is
+# there, the ids are not. Every branch left behind by a version older than this
+# change looks like this, and those are exactly the branches the script exists
+# to clean up.
+record_without_ids() {
+  local dir=$1 branch=$2 tree state commit
+  tree="$(git -C "$dir" rev-parse "$branch^{tree}")"
+  state="$(git -C "$dir" commit-tree "$tree" -m "multica: user state")"
+  commit="$(git -C "$dir" commit-tree "$tree" -p "$state" -p "$branch" \
+    -m "multica: task branch record
+
+Multica-Workspace: 11112222-3333-4444-5555-000000000001")"
+  git -C "$dir" update-ref "refs/multica/local-state/$branch" "$commit"
+}
+
 # Builds a repo with one branch of each classification the script reports.
 make_repo() {
   local dir
@@ -100,6 +115,23 @@ make_repo() {
   # nothing establishes that it finished.
   git_q "$dir" branch agent/j/goneetaskbr01
   record "$dir" agent/j/goneetaskbr01 task-not-listed
+
+  # UNPROVEN: an old record with no task id at all. Nothing establishes that
+  # its task finished, so it may not be deleted unattended — but it must stay
+  # reachable through a per-branch confirmation, or the pre-upgrade leftovers
+  # this script was written for could never be removed with it.
+  git_q "$dir" branch agent/j/oldrecordbr01
+  record_without_ids "$dir" agent/j/oldrecordbr01
+
+  # HAS-WORK still outranks a missing task id: an old record on a branch that
+  # carries the user's baseline snapshot must never become deletable.
+  git_q "$dir" branch agent/j/oldrecordwork
+  git_q "$dir" worktree add --quiet "$dir/wt-oldwork" agent/j/oldrecordwork
+  echo "older uncommitted work" > "$dir/wt-oldwork/wip-old.txt"
+  git_q "$dir/wt-oldwork" add -A
+  git_q "$dir/wt-oldwork" commit -m "chore(agent): baseline — uncommitted work from the local directory"
+  git_q "$dir" worktree remove --force "$dir/wt-oldwork"
+  record_without_ids "$dir" agent/j/oldrecordwork
 
   echo "$dir"
 }
@@ -151,7 +183,9 @@ for expected in "agent/j/safebranch01 completed SAFE" \
                 "agent/j/busybranch012 completed BUSY" \
                 "agent/j/runningbranch running ACTIVE" \
                 "agent/j/queuedbranch0 queued ACTIVE" \
-                "agent/j/goneetaskbr01 UNKNOWN UNPROVEN"; do
+                "agent/j/goneetaskbr01 UNKNOWN UNPROVEN" \
+                "agent/j/oldrecordbr01 NONE UNPROVEN" \
+                "agent/j/oldrecordwork NONE HAS-WORK"; do
   set -- $expected
   got_status="$(task_status_of "$listing" "$1")"
   got_state="$(state_of "$listing" "$1")"
@@ -163,7 +197,7 @@ for expected in "agent/j/safebranch01 completed SAFE" \
   fi
 done
 
-if [ "$(git -C "$repo" for-each-ref --format='%(refname:short)' 'refs/heads/agent/' | wc -l)" != "7" ]; then
+if [ "$(git -C "$repo" for-each-ref --format='%(refname:short)' 'refs/heads/agent/' | wc -l)" != "9" ]; then
   fail "the read-only listing changed the branch list"
 fi
 
@@ -179,16 +213,17 @@ fi
 # Every other class survives an unattended run: work, a live worktree, a task
 # that has not finished, and a task whose status is unknown.
 for kept in agent/j/hasworkbranch agent/j/busybranch012 agent/j/runningbranch \
-            agent/j/queuedbranch0 agent/j/goneetaskbr01 agent/j/usersbranch01; do
+            agent/j/queuedbranch0 agent/j/goneetaskbr01 agent/j/usersbranch01 \
+            agent/j/oldrecordbr01 agent/j/oldrecordwork; do
   if ! git -C "$repo" rev-parse --verify --quiet "$kept" >/dev/null; then
     fail "--delete --yes removed $kept, which it must never take unattended"
   fi
 done
 
 # Even with --include-unrecorded it asks: answering "n" leaves them in place.
-if printf 'n\nn\n' | bash "$SCRIPT" --repo "$repo" --status-command "$statuses_ok" \
+if printf 'n\nn\nn\n' | bash "$SCRIPT" --repo "$repo" --status-command "$statuses_ok" \
      --delete --yes --include-unrecorded > "$listing" 2>&1; then
-  for kept in agent/j/usersbranch01 agent/j/goneetaskbr01; do
+  for kept in agent/j/usersbranch01 agent/j/goneetaskbr01 agent/j/oldrecordbr01; do
     if ! git -C "$repo" rev-parse --verify --quiet "$kept" >/dev/null; then
       fail "a declined confirmation still deleted $kept"
     fi
@@ -196,16 +231,18 @@ if printf 'n\nn\n' | bash "$SCRIPT" --repo "$repo" --status-command "$statuses_o
 else
   fail "--include-unrecorded run exited non-zero"
 fi
-# ...and answering "y" is what deletes them.
-printf 'y\ny\n' | bash "$SCRIPT" --repo "$repo" --status-command "$statuses_ok" \
+# ...and answering "y" is what deletes them. The old record with no task id is
+# among them: it is the pre-upgrade leftover the script has to be able to clear.
+printf 'y\ny\ny\n' | bash "$SCRIPT" --repo "$repo" --status-command "$statuses_ok" \
   --delete --yes --include-unrecorded > "$listing" 2>&1 || true
-for gone in agent/j/usersbranch01 agent/j/goneetaskbr01; do
+for gone in agent/j/usersbranch01 agent/j/goneetaskbr01 agent/j/oldrecordbr01; do
   if git -C "$repo" rev-parse --verify --quiet "$gone" >/dev/null; then
     fail "a confirmed UNPROVEN branch was not deleted: $gone"
   fi
 done
 # A confirmation covers one branch, not the classes that are never offered.
-for kept in agent/j/runningbranch agent/j/queuedbranch0 agent/j/hasworkbranch agent/j/busybranch012; do
+for kept in agent/j/runningbranch agent/j/queuedbranch0 agent/j/hasworkbranch \
+            agent/j/busybranch012 agent/j/oldrecordwork; do
   if ! git -C "$repo" rev-parse --verify --quiet "$kept" >/dev/null; then
     fail "--include-unrecorded removed $kept, which it must never offer"
   fi
