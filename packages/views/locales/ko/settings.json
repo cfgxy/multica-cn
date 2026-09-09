@@ -372,7 +372,23 @@
       "submit": "게시",
       "save": "저장",
       "pair_key": "{{label}} 키",
-      "pair_value": "{{label}} 값"
+      "pair_value": "{{label}} 값",
+      "summary_note": "카탈로그 목록에 표시됩니다. 최대 {{max}}자.",
+      "summary_required": "요약을 입력해야 합니다.",
+      "summary_too_long": "요약은 {{max}}자 이내로 작성하세요.",
+      "categories_required": "카테고리를 하나 이상 선택하세요.",
+      "name_from_entity": "게시할 항목에서 가져왔습니다.",
+      "publish_to_marketplace": "마켓에 게시",
+      "edit_listing": "마켓 등록 편집",
+      "published_badge": "게시됨"
+    },
+    "categories": {
+      "data": "데이터",
+      "development": "개발",
+      "documents": "문서",
+      "files": "파일",
+      "productivity": "생산성",
+      "web": "웹"
     }
   },
   "mcp": {

@@ -31,7 +31,7 @@ import (
 // with the scan so a future rule addition can tell which listings were only
 // ever cleared by an older, weaker detector set. Bump it whenever `detectors`
 // or the template rules below change.
-const Revision = "listingscan/2026-09-08"
+const Revision = "listingscan/2026-09-10"
 
 // maxFindings bounds a report. A pasted .env in a description would otherwise
 // produce a finding per line. The gate blocks either way, so truncating costs
@@ -64,7 +64,9 @@ const (
 // There is no Value field and no Excerpt field, and adding one would defeat the
 // package: findings are serialised into scan_result, returned in a 422 body and
 // written to logs. Field is a structural path ("description",
-// "config_template.headers.Authorization"), never a value.
+// "config_template.headers[0]"), never a value — and never a publisher-supplied
+// JSON key either, because an object key is as good a place to hide a
+// credential as its value.
 type Finding struct {
 	Category Category `json:"category"`
 	Rule     string   `json:"rule"`
@@ -145,12 +147,35 @@ var placeholderToken = regexp.MustCompile(`\$\{([A-Za-z0-9_.\-]+)\}`)
 // wholePlaceholder matches a leaf that is nothing but one placeholder.
 var wholePlaceholder = regexp.MustCompile(`^\s*\$\{[A-Za-z0-9_.\-]+\}\s*$`)
 
-// credentialFieldName names a template key whose value is credential-bearing by
-// position rather than by shape: `headers.Authorization`, `env.API_KEY`. Such a
-// value must be a whole placeholder — "put your key here" prose would be a
-// broken listing, and a literal key would be a leak the shape detectors might
-// miss (a short internal token matches nothing).
-var credentialFieldName = regexp.MustCompile(`(?i)(authorization|api[_-]?key|api[_-]?secret|secret|token|password|passwd|credential|private[_-]?key|access[_-]?key|auth)`)
+// schemaKeys are the MCP entry keys defined by the config schema rather than by
+// the publisher. Only these may appear verbatim in a Finding.Field: every other
+// object key is publisher-supplied (a header name, an environment variable
+// name) and is reported by sorted position instead, because a key is as good a
+// place to hide a credential as a value.
+var schemaKeys = map[string]struct{}{
+	"args":      {},
+	"command":   {},
+	"cwd":       {},
+	"disabled":  {},
+	"env":       {},
+	"headers":   {},
+	"name":      {},
+	"timeout":   {},
+	"transport": {},
+	"type":      {},
+	"url":       {},
+}
+
+// valueContainers are the template keys whose children are, by schema, values
+// the installer supplies. Every non-empty value inside one must be a whole
+// registered `${placeholder}` — no key-shape heuristic and no detector match is
+// required, because a short internal token looks like nothing in particular and
+// a header named `X-Team` carries a credential just as well as one named
+// `Authorization`.
+var valueContainers = map[string]struct{}{
+	"env":     {},
+	"headers": {},
+}
 
 // collector accumulates findings under the truncation cap, deduplicated by
 // (rule, field, line).
@@ -198,29 +223,43 @@ func (c *collector) scanText(field, content string) {
 	}
 }
 
+// Placeholder is one registered placeholder as the publisher authored it. All
+// three fields are public: the key is echoed by the install dialog and the
+// label and description are shown to every installer, so all three are scanned
+// like any other free-text field.
+type Placeholder struct {
+	Key         string
+	Label       string
+	Description string
+}
+
 // Input is the listing being published, in the shape the handler holds it.
-// ConfigTemplate is the raw MCP entry; DeclaredPlaceholders are the keys the
-// publisher registered, which is what makes a `${key}` reference legitimate.
+// ConfigTemplate is the raw MCP entry; Placeholders are what the publisher
+// registered, whose keys are what makes a `${key}` reference legitimate.
 type Input struct {
-	Name                 string
-	Summary              string
-	Description          string
-	HomepageURL          string
-	Categories           []string
-	SourceURL            string
-	ConfigTemplate       json.RawMessage
-	DeclaredPlaceholders []string
+	Name           string
+	Summary        string
+	Description    string
+	HomepageURL    string
+	Categories     []string
+	SourceURL      string
+	ConfigTemplate json.RawMessage
+	Placeholders   []Placeholder
 }
 
 // Scan reports every credential-shaped match in a listing.
 //
-// Free-text fields are scanned line by line. The MCP template is walked leaf by
-// leaf: a leaf that is exactly a registered `${placeholder}` passes untouched, a
-// leaf referencing an UNREGISTERED placeholder is a finding (the installer
-// would have no way to fill it, and RenderMarketplaceMcpConfig would reject it
-// at install time — far too late), and a leaf under a credential-shaped key
-// that is not a whole placeholder is a finding regardless of what the shape
-// detectors think of it.
+// Free-text fields are scanned line by line, and that includes each
+// placeholder's key, label and description: all three are published verbatim.
+// The MCP template is walked leaf by leaf: a leaf that is exactly a registered
+// `${placeholder}` passes untouched, a leaf referencing an UNREGISTERED
+// placeholder is a finding (the installer would have no way to fill it, and
+// RenderMarketplaceMcpConfig would reject it at install time — far too late),
+// and every non-empty value inside `headers` or `env` must be a whole
+// registered placeholder regardless of what the shape detectors think of it.
+//
+// Object keys inside the template are scanned as content too, since a header
+// name is publisher-supplied text that reaches the catalog.
 func Scan(in Input) Result {
 	c := newCollector()
 
@@ -233,11 +272,17 @@ func Scan(in Input) Result {
 		c.scanText(fmt.Sprintf("categories[%d]", i), category)
 	}
 
+	declared := make(map[string]struct{}, len(in.Placeholders))
+	for i, p := range in.Placeholders {
+		declared[p.Key] = struct{}{}
+		// Positional field names: the placeholder key is publisher text and
+		// must not be echoed back in a finding.
+		c.scanText(fmt.Sprintf("placeholders[%d].key", i), p.Key)
+		c.scanText(fmt.Sprintf("placeholders[%d].label", i), p.Label)
+		c.scanText(fmt.Sprintf("placeholders[%d].description", i), p.Description)
+	}
+
 	if len(in.ConfigTemplate) > 0 {
-		declared := make(map[string]struct{}, len(in.DeclaredPlaceholders))
-		for _, key := range in.DeclaredPlaceholders {
-			declared[key] = struct{}{}
-		}
 		var doc any
 		if err := json.Unmarshal(in.ConfigTemplate, &doc); err != nil {
 			// A template that does not parse is rejected by the handler's own
@@ -254,29 +299,57 @@ func Scan(in Input) Result {
 	return c.res
 }
 
-// walkTemplate descends the parsed template. `credentialKey` records whether
-// the path we arrived by was named like a credential, so a nested value under
-// `headers.Authorization` is held to the placeholder rule too.
-func (c *collector) walkTemplate(path string, node any, declared map[string]struct{}, credentialKey bool) {
+// walkTemplate descends the parsed template. `inValueContainer` records whether
+// we are inside `headers` or `env`, where every non-empty value must be a whole
+// registered placeholder.
+//
+// Map children are visited in sorted key order and addressed by that position,
+// never by the key itself: the ordering is what makes `headers[1]` mean the
+// same thing on two scans of identical content.
+func (c *collector) walkTemplate(path string, node any, declared map[string]struct{}, inValueContainer bool) {
 	switch v := node.(type) {
 	case map[string]any:
-		for key, child := range v {
-			c.walkTemplate(path+"."+key, child, declared, credentialKey || credentialFieldName.MatchString(key))
+		keys := make([]string, 0, len(v))
+		for key := range v {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for i, key := range keys {
+			childPath := fmt.Sprintf("%s[%d]", path, i)
+			if _, schema := schemaKeys[key]; schema {
+				childPath = path + "." + key
+			} else {
+				// A publisher-supplied key is content in its own right.
+				c.scanKey(childPath+".key", key)
+			}
+			_, container := valueContainers[key]
+			c.walkTemplate(childPath, v[key], declared, inValueContainer || container)
 		}
 	case []any:
 		for i, child := range v {
-			c.walkTemplate(fmt.Sprintf("%s[%d]", path, i), child, declared, credentialKey)
+			c.walkTemplate(fmt.Sprintf("%s[%d]", path, i), child, declared, inValueContainer)
 		}
 	case string:
-		c.scanTemplateLeaf(path, v, declared, credentialKey)
+		c.scanTemplateLeaf(path, v, declared, inValueContainer)
 	default:
 		// Numbers, booleans and nulls cannot carry a credential in any form
-		// this package can recognise, and a credential-shaped key holding
-		// `true` is a boolean switch, not a leak.
+		// this package can recognise, and `disabled: true` is a switch, not a
+		// leak. A value container holding a non-string is caught by the
+		// handler's own template shape validation.
 	}
 }
 
-func (c *collector) scanTemplateLeaf(path, value string, declared map[string]struct{}, credentialKey bool) {
+// scanKey applies the shape detectors to an object key. Keys are not
+// line-structured, so findings land on line 0.
+func (c *collector) scanKey(field, key string) {
+	for _, d := range detectors {
+		if d.re.MatchString(key) {
+			c.add(d.category, d.rule, field, 0)
+		}
+	}
+}
+
+func (c *collector) scanTemplateLeaf(path, value string, declared map[string]struct{}, inValueContainer bool) {
 	// Every referenced placeholder must be one the publisher registered.
 	refs := placeholderToken.FindAllStringSubmatch(value, -1)
 	for _, ref := range refs {
@@ -289,11 +362,11 @@ func (c *collector) scanTemplateLeaf(path, value string, declared map[string]str
 		// undeclared the finding above already fired.
 		return
 	}
-	if credentialKey && strings.TrimSpace(value) != "" {
-		// A credential-positioned leaf that is not a whole placeholder. This
-		// fires even when no shape detector matches, which is the point: a
-		// short internal token looks like nothing in particular.
-		c.add(CategoryToken, "credential_field_literal", path, 0)
+	if inValueContainer && strings.TrimSpace(value) != "" {
+		// Inside `headers` or `env`, anything that is not a whole registered
+		// placeholder blocks. No key-shape guess and no detector hit is
+		// required: that is what makes the rule fail-closed.
+		c.add(CategoryToken, "container_literal_value", path, 0)
 	}
 	for _, d := range detectors {
 		if d.re.MatchString(value) {

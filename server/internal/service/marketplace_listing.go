@@ -67,6 +67,33 @@ func StaticMarketplaceNameKeys() (map[string]struct{}, error) {
 	return out, nil
 }
 
+// MarketplaceCategories is the closed set a published listing may claim.
+//
+// It is the same vocabulary the curated catalog uses, kept here rather than
+// derived from the catalog files: deriving it would make the set shrink the
+// moment a curated entry is retired, silently invalidating listings that were
+// already published under that category. The client renders the same list, and
+// ValidateMarketplaceListingDraft is what makes the client's copy advisory.
+var MarketplaceCategories = []string{
+	"data",
+	"development",
+	"documents",
+	"files",
+	"productivity",
+	"web",
+}
+
+// IsMarketplaceCategory reports whether a submitted category is in the set.
+func IsMarketplaceCategory(category string) bool {
+	trimmed := strings.TrimSpace(category)
+	for _, known := range MarketplaceCategories {
+		if trimmed == known {
+			return true
+		}
+	}
+	return false
+}
+
 // PublishedMarketplaceListing is one row of the published half, in the shape
 // the merge needs. It deliberately omits source_workspace_id: that column is
 // withdrawal authority, and the merged catalog is read by every workspace.
@@ -159,21 +186,29 @@ func ValidateMarketplaceListingDraft(item MarketplaceItem) error {
 			return fmt.Errorf("name may only contain letters, digits, hyphens, and underscores")
 		}
 	}
+	// A summary is what the catalog row shows: an entry published without one
+	// is indistinguishable from a broken import to every workspace browsing it.
+	if strings.TrimSpace(item.Summary) == "" {
+		return fmt.Errorf("summary is required")
+	}
 	if len(item.Summary) > 200 {
 		return fmt.Errorf("summary must be at most 200 characters")
 	}
 	if len(item.Description) > 2000 {
 		return fmt.Errorf("description must be at most 2000 characters")
 	}
+	if len(item.Categories) == 0 {
+		return fmt.Errorf("at least one category is required")
+	}
 	if len(item.Categories) > 10 {
 		return fmt.Errorf("a listing may carry at most 10 categories")
 	}
 	for _, category := range item.Categories {
-		if strings.TrimSpace(category) == "" {
-			return fmt.Errorf("categories must not be empty")
-		}
-		if len(category) > 40 {
-			return fmt.Errorf("each category must be at most 40 characters")
+		// Free text would fragment the catalog's only navigation axis, so the
+		// set is closed and shared with the client rather than validated by
+		// length alone.
+		if !IsMarketplaceCategory(category) {
+			return fmt.Errorf("categories must be chosen from the marketplace category list")
 		}
 	}
 	if err := validatePublicHTTPURL("homepage_url", item.HomepageURL, false); err != nil {

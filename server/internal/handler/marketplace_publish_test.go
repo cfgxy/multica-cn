@@ -909,6 +909,26 @@ func TestPublishMarketplaceListing_Validation(t *testing.T) {
 			b.Kind = "plugin"
 			return b
 		}},
+		{"listing without a summary", func() MarketplacePublishRequest {
+			b := skillPublishBody(uniquePublishName(t, "nosummary"))
+			b.Summary = ""
+			return b
+		}},
+		{"listing whose summary is only whitespace", func() MarketplacePublishRequest {
+			b := skillPublishBody(uniquePublishName(t, "wssummary"))
+			b.Summary = "   "
+			return b
+		}},
+		{"listing with no category", func() MarketplacePublishRequest {
+			b := skillPublishBody(uniquePublishName(t, "nocat"))
+			b.Categories = nil
+			return b
+		}},
+		{"listing with a category outside the controlled set", func() MarketplacePublishRequest {
+			b := skillPublishBody(uniquePublishName(t, "freecat"))
+			b.Categories = []string{"whatever-i-want"}
+			return b
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1019,5 +1039,141 @@ func createForeignPublisherWorkspace(t *testing.T) foreignPublisher {
 			req.Header.Set("X-User-ID", userID)
 			req.Header.Set("X-Workspace-ID", workspaceID)
 		},
+	}
+}
+
+// A placeholder's label and description are published verbatim, so they are as
+// good a hiding place for a credential as the description field. The handler
+// used to hand the scanner only the placeholder KEYS, which made this the
+// shortest path from a publish form to a public secret.
+func TestPublishMarketplaceListing_BlocksSecretInPlaceholderMetadata(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	withMarketplacePublishFlags(t, true, true)
+
+	for _, tc := range []struct {
+		name  string
+		apply func(*MarketplacePublishRequest)
+	}{
+		{"label", func(b *MarketplacePublishRequest) { b.Placeholders[0].Label = publishTestToken }},
+		{"description", func(b *MarketplacePublishRequest) {
+			b.Placeholders[0].Description = "paste " + publishTestToken
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := mcpPublishBody(uniquePublishName(t, "phmeta"), "http")
+			tc.apply(&body)
+
+			code, _, raw := publishListingForTest(t, body, nil)
+			if code != http.StatusUnprocessableEntity {
+				t.Fatalf("publish = %d, want 422 (%s)", code, raw)
+			}
+			if strings.Contains(raw, publishTestToken) {
+				t.Fatal("the 422 body echoed the credential")
+			}
+		})
+	}
+}
+
+// The 422 names WHERE the credential is. It must do so without handing back the
+// publisher-supplied JSON key, which is itself submitted content.
+func TestPublishMarketplaceListing_NeverEchoesPublisherSuppliedKeys(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	withMarketplacePublishFlags(t, true, true)
+
+	body := mcpPublishBody(uniquePublishName(t, "keyecho"), "http")
+	body.ConfigTemplate = json.RawMessage(`{"type":"http","url":"https://api.example.invalid/mcp","headers":{"X-` +
+		publishTestToken + `":"${api_token}"}}`)
+
+	code, _, raw := publishListingForTest(t, body, nil)
+	if code != http.StatusUnprocessableEntity {
+		t.Fatalf("publish = %d, want 422 (%s)", code, raw)
+	}
+	if strings.Contains(raw, publishTestToken) {
+		t.Fatalf("the 422 body echoed the submitted header name: %s", raw)
+	}
+}
+
+// Every non-empty value in `headers`/`env` must be a registered placeholder. The
+// old rule only held keys that LOOKED credential-shaped to that standard, so a
+// literal under an innocuous name published freely.
+func TestPublishMarketplaceListing_BlocksLiteralUnderInnocuousContainerKey(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	withMarketplacePublishFlags(t, true, true)
+
+	for _, tc := range []struct {
+		name     string
+		template json.RawMessage
+	}{
+		{"header", json.RawMessage(`{"type":"http","url":"https://api.example.invalid/mcp","headers":{"X-Team":"acme-internal","Authorization":"${api_token}"}}`)},
+		{"env", json.RawMessage(`{"type":"stdio","command":"npx","args":["-y","srv","${api_token}"],"env":{"REGION_SEED":"abc123"}}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := mcpPublishBody(uniquePublishName(t, "container"), "http")
+			body.ConfigTemplate = tc.template
+
+			code, _, raw := publishListingForTest(t, body, nil)
+			if code != http.StatusUnprocessableEntity {
+				t.Fatalf("publish = %d, want 422 (%s)", code, raw)
+			}
+		})
+	}
+}
+
+// The counterpart: a container whose every value is a registered placeholder
+// publishes normally, so the rule above is a gate rather than a wall.
+func TestPublishMarketplaceListing_AcceptsFullyPlaceholderedContainers(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	withMarketplacePublishFlags(t, true, true)
+
+	body := mcpPublishBody(uniquePublishName(t, "allph"), "http")
+	body.ConfigTemplate = json.RawMessage(`{"type":"http","url":"https://api.example.invalid/mcp","headers":{"X-Team":"${team}","Authorization":"${api_token}"}}`)
+	body.Placeholders = append(body.Placeholders, MarketplacePlaceholderInput{Key: "team", Label: "Team"})
+
+	code, _, raw := publishListingForTest(t, body, nil)
+	if code != http.StatusCreated {
+		t.Fatalf("publish = %d, want 201 (%s)", code, raw)
+	}
+}
+
+// An update takes the same metadata rules a publish does: clearing the summary
+// through the edit form would otherwise strip the catalog row of the only text
+// it shows.
+func TestUpdateMarketplaceListing_EnforcesPublicMetadataRules(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	withMarketplacePublishFlags(t, true, true)
+
+	code, created, raw := publishListingForTest(t, skillPublishBody(uniquePublishName(t, "updmeta")), nil)
+	if code != http.StatusCreated {
+		t.Fatalf("publish = %d (%s)", code, raw)
+	}
+
+	for _, tc := range []struct {
+		name  string
+		apply func(*MarketplacePublishRequest)
+	}{
+		{"empty summary", func(b *MarketplacePublishRequest) { b.Summary = "" }},
+		{"no category", func(b *MarketplacePublishRequest) { b.Categories = nil }},
+		{"uncontrolled category", func(b *MarketplacePublishRequest) { b.Categories = []string{"anything"} }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := skillPublishBody(created.Name)
+			body.Revision = created.Revision
+			tc.apply(&body)
+
+			upCode, _, upRaw := updateListingForTest(t, created.ID, body, nil)
+			if upCode != http.StatusBadRequest {
+				t.Fatalf("update = %d, want 400 (%s)", upCode, upRaw)
+			}
+		})
 	}
 }

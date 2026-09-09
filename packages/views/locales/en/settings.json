@@ -372,7 +372,23 @@
       "submit": "Publish",
       "save": "Save",
       "pair_key": "{{label}} key",
-      "pair_value": "{{label}} value"
+      "pair_value": "{{label}} value",
+      "summary_note": "Shown in the catalog listing. Up to {{max}} characters.",
+      "summary_required": "A summary is required.",
+      "summary_too_long": "Keep the summary under {{max}} characters.",
+      "categories_required": "Choose at least one category.",
+      "name_from_entity": "Taken from the entry you are publishing.",
+      "publish_to_marketplace": "Publish to marketplace",
+      "edit_listing": "Edit marketplace listing",
+      "published_badge": "Published"
+    },
+    "categories": {
+      "data": "Data",
+      "development": "Development",
+      "documents": "Documents",
+      "files": "Files",
+      "productivity": "Productivity",
+      "web": "Web"
     }
   },
   "mcp": {
