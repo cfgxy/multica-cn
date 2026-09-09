@@ -1,4 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev
+.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev
 
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
@@ -307,6 +307,9 @@ check-worktree: ## Run the full verification pipeline for this worktree
 
 remove-worktree: ## Preserve multica, clean an optional disposable DB, then remove a worktree
 	@bash scripts/remove-worktree.sh "$(WORKTREE)"
+
+agent-branches: ## List the agent task branches a local_directory repo carries (read-only; add DELETE=1 to prune the safe ones)
+	@bash scripts/agent-branch-cleanup.sh $(if $(REPO),--repo "$(REPO)") $(if $(DELETE),--delete)
 
 # ---------- Individual commands ----------
 ##@ Individual commands
