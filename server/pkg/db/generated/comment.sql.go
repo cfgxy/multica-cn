@@ -1858,15 +1858,15 @@ func (q *Queries) ListThreadCommentsForIssuePaged(ctx context.Context, arg ListT
 }
 
 const listUnresolvedThreadsForBrief = `-- name: ListUnresolvedThreadsForBrief :many
-WITH RECURSIVE membership(id, root_id, comment_created_at) AS (
-    SELECT c.id, c.id AS root_id, c.created_at
+WITH RECURSIVE membership(id, root_id, comment_created_at, resolved_at) AS (
+    SELECT c.id, c.id AS root_id, c.created_at, c.resolved_at
     FROM comment c
     WHERE c.issue_id = $2
       AND c.workspace_id = $3
       AND c.parent_id IS NULL
       AND c.resolved_at IS NULL
     UNION ALL
-    SELECT c.id, m.root_id, c.created_at
+    SELECT c.id, m.root_id, c.created_at, c.resolved_at
     FROM comment c
     JOIN membership m ON c.parent_id = m.id
     WHERE c.issue_id = $2
@@ -1877,6 +1877,7 @@ WITH RECURSIVE membership(id, root_id, comment_created_at) AS (
            MAX(comment_created_at)::timestamptz AS last_activity_at
     FROM membership
     GROUP BY root_id
+    HAVING bool_or(resolved_at IS NOT NULL) IS NOT TRUE
 )
 SELECT c.id, c.author_type, c.author_id, c.content, c.created_at,
        ts.reply_count AS reply_count,
@@ -1913,6 +1914,12 @@ type ListUnresolvedThreadsForBriefRow struct {
 // deliberately — this section answers "what is still open", so the question as
 // originally posed is the useful text — while last_activity_at is labelled as
 // the thread's, not the root's, so the two are never conflated.
+//
+// "Unresolved" is the thread-level property the rest of the repository already
+// uses (deriveThreadResolution / foldResolvedThreads in comment.go): a thread is
+// resolved when its ROOT is resolved OR when ANY reply carries a resolution.
+// Selecting on the root alone would put a thread whose conclusion was recorded
+// on a reply back in front of a fresh session as an open question.
 func (q *Queries) ListUnresolvedThreadsForBrief(ctx context.Context, arg ListUnresolvedThreadsForBriefParams) ([]ListUnresolvedThreadsForBriefRow, error) {
 	rows, err := q.db.Query(ctx, listUnresolvedThreadsForBrief, arg.RowLimit, arg.IssueID, arg.WorkspaceID)
 	if err != nil {

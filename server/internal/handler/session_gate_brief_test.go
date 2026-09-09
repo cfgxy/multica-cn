@@ -112,6 +112,73 @@ func TestClaimBrief_AnchorsRealRecentComments(t *testing.T) {
 	}
 }
 
+// TestClaimBrief_ExcludesReplyResolvedThreads pins the thread-level reading of
+// "unresolved" the rest of the repository already uses (deriveThreadResolution /
+// foldResolvedThreads): a thread is resolved when its root is resolved OR when
+// any reply carries the resolution. Selecting candidates on the root's own
+// resolved_at alone put a thread whose conclusion was recorded on a reply — the
+// normal shape of a settled discussion — back in front of a fresh session as an
+// open question, so the run would reopen decisions that were already made.
+func TestClaimBrief_ExcludesReplyResolvedThreads(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+
+	ctx := context.Background()
+	issueID, _, runtimeID, daemonID, _ := seedGatedFollowUp(t, ctx, "brief excludes reply-resolved threads")
+
+	// Settled thread: the root was never resolved, the reply that concluded it
+	// was. This is the case the first implementation got wrong.
+	settledRoot := dbfx.Comment(t, issueID, "the question that was already answered", testutil.Cols{
+		"created_at": testutil.Raw("now() - interval '3 days'"),
+	})
+	dbfx.Comment(t, issueID, "and here is the decision that closed it", testutil.Cols{
+		"parent_id":        settledRoot,
+		"created_at":       testutil.Raw("now() - interval '2 days'"),
+		"resolved_at":      testutil.Raw("now() - interval '2 days'"),
+		"resolved_by_type": "member",
+		"resolved_by_id":   testUserID,
+	})
+
+	// Control: a thread with a reply but no resolution anywhere must still be
+	// listed, so the fix cannot pass by emptying the section.
+	openRoot := dbfx.Comment(t, issueID, "the question still waiting on an answer", testutil.Cols{
+		"created_at": testutil.Raw("now() - interval '3 days'"),
+	})
+	dbfx.Comment(t, issueID, "still thinking about it", testutil.Cols{
+		"parent_id":  openRoot,
+		"created_at": testutil.Raw("now() - interval '1 day'"),
+	})
+
+	section := unresolvedSectionOf(t, claimBriefForTest(t, runtimeID, daemonID))
+
+	if strings.Contains(section, "the question that was already answered") {
+		t.Errorf("a thread resolved by a reply must not be listed as unresolved.\nUnresolved threads:\n%s", section)
+	}
+	if !strings.Contains(section, "the question still waiting on an answer") {
+		t.Errorf("a thread with no resolution anywhere must stay listed.\nUnresolved threads:\n%s", section)
+	}
+}
+
+// unresolvedSectionOf returns just the brief's "Unresolved threads" section.
+// The assertions have to read that section alone: a root excluded from it is
+// still free to appear under "Most recent comments", which is a different claim
+// about the same comment.
+func unresolvedSectionOf(t *testing.T, brief string) string {
+	t.Helper()
+
+	const header = "### Unresolved threads\n"
+	start := strings.Index(brief, header)
+	if start < 0 {
+		t.Fatalf("the brief has no unresolved-threads section at all.\nbrief:\n%s", brief)
+	}
+	rest := brief[start+len(header):]
+	if end := strings.Index(rest, "###"); end >= 0 {
+		return rest[:end]
+	}
+	return rest
+}
+
 // TestClaimBrief_DisclosesContinuityGapWhenCompacting is the MUL-5305
 // regression the gate reintroduced: a follow-up whose most recent terminal task
 // withheld its session falls back to an OLDER session, and if that older session
