@@ -267,6 +267,12 @@ func validateMarketplaceListingTemplate(item MarketplaceItem) error {
 		return fmt.Errorf("config_template must not be empty")
 	}
 
+	// Runs before anything decodes a field: encoding/json reports no error for
+	// a null, so every typed check below would otherwise pass a null through.
+	if err := rejectNullTemplateSchemaFields(entry); err != nil {
+		return err
+	}
+
 	transport, err := marketplaceTemplateTransport(entry)
 	if err != nil {
 		return err
@@ -336,6 +342,33 @@ func unmarshalTemplateString(raw json.RawMessage, out *string) error {
 		return fmt.Errorf("value must not be null")
 	}
 	return json.Unmarshal(raw, out)
+}
+
+// marketplaceTemplateSchemaFields lists every key this validator gives a
+// declared JSON type. Keys outside the list are publisher extras the runtime
+// tolerates, so they are neither type-checked nor null-checked.
+var marketplaceTemplateSchemaFields = []string{
+	"type", "command", "url", "args", "env", "headers", "cwd", "name", "disabled", "timeout",
+}
+
+// rejectNullTemplateSchemaFields fails a template that declares a schema field
+// as JSON null. encoding/json never errors on a null: it nils a map or slice
+// and leaves a string, bool or number at its zero value, so a per-type decode
+// cannot tell `"env": null` from an absent `env`. Publishing such a template
+// would install an entry the runtime launches with the field silently dropped.
+// Only the field name — fixed by the schema, never publisher content — appears
+// in the message, because draft validation runs before the secret scanner.
+func rejectNullTemplateSchemaFields(entry map[string]json.RawMessage) error {
+	for _, field := range marketplaceTemplateSchemaFields {
+		raw, ok := entry[field]
+		if !ok {
+			continue
+		}
+		if string(bytes.TrimSpace(raw)) == "null" {
+			return fmt.Errorf("config_template %s must not be null", field)
+		}
+	}
+	return nil
 }
 
 // validateTemplateOptionalFields type-checks the schema fields a template may
