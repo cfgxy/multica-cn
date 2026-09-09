@@ -680,11 +680,27 @@ func (w *LocalWorktree) Finalize(logger *slog.Logger) (LocalWorktreeOutcome, err
 		}
 	}
 
+	// Best-effort cleanup only: by this point the delivery point is recorded
+	// and the branch is continuable, so a failed directory removal must never
+	// flip the run to failed. Orphaned tool processes from an earlier daemon
+	// generation can hold cwd or open files inside the tree and repopulate it
+	// mid-removal — untidy, not a delivery failure. Rename aside what cannot
+	// be deleted so the handoff path stays clear for the next task; the
+	// renamed directory is inert and reclaimed by the workspace GC.
 	if removeErr := removeLocalWorktreeDir(w.GitRoot, w.Path, logger); removeErr != nil {
-		outcome.PreservedPath = w.Path
-		return outcome, fmt.Errorf(
-			"could not remove finalized worktree for branch %s: %w; the task worktree remains at %s",
-			w.Branch, removeErr, w.Path)
+		aside := fmt.Sprintf("%s.trash-%d", w.Path, time.Now().Unix())
+		if renameErr := os.Rename(w.Path, aside); renameErr == nil {
+			if logger != nil {
+				logger.Warn("execenv: finalized worktree could not be removed (held files?); renamed aside for GC",
+					"path", w.Path, "aside", aside, "error", removeErr)
+			}
+		} else {
+			outcome.PreservedPath = w.Path
+			if logger != nil {
+				logger.Warn("execenv: finalized worktree cleanup failed; the delivered work is unaffected",
+					"path", w.Path, "remove_error", removeErr, "rename_error", renameErr)
+			}
+		}
 	}
 
 	if dropped {
