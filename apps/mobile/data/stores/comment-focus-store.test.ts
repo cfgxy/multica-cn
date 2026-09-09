@@ -24,10 +24,26 @@ describe("useCommentFocusStore (per-issue, session-only focus intent)", () => {
     expect(useCommentFocusStore.getState().focus).toEqual({
       issueId: "issue-1",
       rootId: "root-a",
+      // 未指定目标即定位 root 自身（评论目录、深链走的就是这条）。
+      targetId: "root-a",
       nonce: 1,
     });
     requestFocus("issue-1", "root-a");
     expect(useCommentFocusStore.getState().focus?.nonce).toBe(2);
+  });
+
+  // RUYI-108：引用一条回复时，root 只是要展开+滚到的容器，真正要看到的是
+  // 那条回复本身。两者必须分别留在意图里——只带 rootId 时时间线无从判断
+  // 「滚到位」的标准该是哪一个。
+  it("requestFocus 保留与 root 不同的目标评论 id", () => {
+    const { requestFocus } = useCommentFocusStore.getState();
+    requestFocus("issue-1", "root-a", "reply-9");
+    expect(useCommentFocusStore.getState().focus).toEqual({
+      issueId: "issue-1",
+      rootId: "root-a",
+      targetId: "reply-9",
+      nonce: 1,
+    });
   });
 
   it("requestFocus resets the published status to pending", () => {
