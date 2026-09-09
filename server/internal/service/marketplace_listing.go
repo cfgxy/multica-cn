@@ -1,6 +1,7 @@
 package service
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/url"
@@ -235,10 +236,13 @@ func ValidateMarketplaceListingDraft(item MarketplaceItem) error {
 	// The shared shape rules the curated catalog is held to, so a published
 	// entry cannot be installable in a way a curated one is not. A draft has no
 	// key yet — it is derived from the row id, which the insert assigns — so the
-	// shared check runs against a copy keyed by the normalised name. That is
-	// only ever read back out in an error message, and the name is public.
+	// shared check runs against a copy carrying a fixed stand-in key. The name
+	// is NOT used: validateMarketplaceItem quotes the key in its errors, draft
+	// validation runs before the secret scanner, and a publisher who typed a
+	// credential into the name field would otherwise have it echoed back in the
+	// 400 body.
 	shaped := item
-	shaped.Key = MarketplaceListingKey(NormalizeMarketplaceName(name))
+	shaped.Key = MarketplaceListingKey("draft")
 	return validateMarketplaceItem(shaped)
 }
 
@@ -269,46 +273,171 @@ func validateMarketplaceListingTemplate(item MarketplaceItem) error {
 	}
 	switch transport {
 	case "stdio":
-		if len(entry["command"]) == 0 {
-			return fmt.Errorf("a stdio MCP listing must declare a command")
+		if err := requireTemplateString(entry, "command"); err != nil {
+			return err
 		}
 	case "http", "sse":
-		if len(entry["url"]) == 0 {
-			return fmt.Errorf("a %s MCP listing must declare a url", transport)
+		if err := requireTemplateURL(entry, "url"); err != nil {
+			return err
 		}
 	default:
 		return fmt.Errorf("transport must be one of stdio, http, or sse")
 	}
+	// The transport's own field is only half the shape. `args`, `env` and
+	// `headers` are what the runtime actually launches or dials with, so a
+	// template whose containers hold the wrong JSON type would publish and
+	// install cleanly and then fail at launch in every workspace that took it.
+	// Rejecting here is what makes "installable in another workspace" a
+	// property of publishing rather than of luck.
+	if err := validateTemplateOptionalFields(entry); err != nil {
+		return err
+	}
 
 	seen := make(map[string]struct{}, len(item.Placeholders))
-	for _, placeholder := range item.Placeholders {
+	for i, placeholder := range item.Placeholders {
+		// Placeholder keys are publisher input and draft validation runs BEFORE
+		// the secret scanner, so every message below addresses the placeholder
+		// by its position in the submitted list and never quotes the key.
 		key := strings.TrimSpace(placeholder.Key)
 		if key == "" {
 			return fmt.Errorf("every placeholder needs a key")
 		}
 		if !marketplacePlaceholderKeyPattern.MatchString(key) {
-			return fmt.Errorf("placeholder key %q may only contain letters, digits, hyphens, underscores, and dots", key)
+			return fmt.Errorf("placeholder #%d has a key that is empty, longer than 64 characters, or carries something other than letters, digits, hyphens, underscores, and dots", i+1)
 		}
 		if _, dup := seen[key]; dup {
-			return fmt.Errorf("placeholder key %q is declared twice", key)
+			return fmt.Errorf("placeholder #%d repeats a key already declared", i+1)
 		}
 		seen[key] = struct{}{}
 		if len(placeholder.Label) > 100 {
-			return fmt.Errorf("placeholder %q has a label longer than 100 characters", key)
+			return fmt.Errorf("placeholder #%d has a label longer than 100 characters", i+1)
 		}
 		if len(placeholder.Description) > 300 {
-			return fmt.Errorf("placeholder %q has a description longer than 300 characters", key)
+			return fmt.Errorf("placeholder #%d has a description longer than 300 characters", i+1)
 		}
 		// A declared placeholder the template never references would show the
 		// installer an input that goes nowhere.
 		if !strings.Contains(string(item.ConfigTemplate), "${"+key+"}") {
-			return fmt.Errorf("placeholder %q is declared but never used in config_template", key)
+			return fmt.Errorf("placeholder #%d is declared but never used in config_template", i+1)
 		}
 	}
 	if len(item.Placeholders) > 20 {
 		return fmt.Errorf("a listing may declare at most 20 placeholders")
 	}
 	return nil
+}
+
+// unmarshalTemplateString decodes one template leaf as a string. `null` is
+// rejected explicitly: encoding/json treats unmarshalling null as a no-op, so
+// without this a `"command": null` would pass a plain string decode and publish
+// as an entry with no command at all.
+func unmarshalTemplateString(raw json.RawMessage, out *string) error {
+	if string(bytes.TrimSpace(raw)) == "null" {
+		return fmt.Errorf("value must not be null")
+	}
+	return json.Unmarshal(raw, out)
+}
+
+// validateTemplateOptionalFields type-checks the schema fields a template may
+// carry beyond its transport marker. Unknown keys are left alone: the runtime
+// tolerates extra keys, and rejecting them would make publishing narrower than
+// the config format a workspace can already write by hand.
+//
+// No message names a publisher-supplied key or value — `env` and `headers` keys
+// are publisher content, and this runs before the secret scanner.
+func validateTemplateOptionalFields(entry map[string]json.RawMessage) error {
+	for _, field := range []string{"cwd", "name"} {
+		if raw, ok := entry[field]; ok {
+			var s string
+			if err := unmarshalTemplateString(raw, &s); err != nil {
+				return fmt.Errorf("config_template %s must be a string", field)
+			}
+		}
+	}
+	if raw, ok := entry["args"]; ok {
+		var args []json.RawMessage
+		if err := json.Unmarshal(raw, &args); err != nil {
+			return fmt.Errorf("config_template args must be an array of strings")
+		}
+		for _, arg := range args {
+			var s string
+			if err := unmarshalTemplateString(arg, &s); err != nil {
+				return fmt.Errorf("config_template args must be an array of strings")
+			}
+		}
+	}
+	for _, field := range []string{"env", "headers"} {
+		raw, ok := entry[field]
+		if !ok {
+			continue
+		}
+		var values map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &values); err != nil {
+			return fmt.Errorf("config_template %s must be an object whose values are strings", field)
+		}
+		for _, value := range values {
+			var s string
+			if err := unmarshalTemplateString(value, &s); err != nil {
+				return fmt.Errorf("config_template %s must be an object whose values are strings", field)
+			}
+		}
+	}
+	if raw, ok := entry["disabled"]; ok {
+		var b bool
+		if err := json.Unmarshal(raw, &b); err != nil {
+			return fmt.Errorf("config_template disabled must be a boolean")
+		}
+	}
+	if raw, ok := entry["timeout"]; ok {
+		var n float64
+		if err := json.Unmarshal(raw, &n); err != nil {
+			return fmt.Errorf("config_template timeout must be a number")
+		}
+	}
+	return nil
+}
+
+// requireTemplateString demands a present, non-blank string. A field holding a
+// number, an object or an empty string parses as JSON but cannot be launched.
+func requireTemplateString(entry map[string]json.RawMessage, field string) error {
+	raw, ok := entry[field]
+	if !ok || len(raw) == 0 {
+		return fmt.Errorf("a stdio MCP listing must declare a %s", field)
+	}
+	var value string
+	if err := unmarshalTemplateString(raw, &value); err != nil {
+		return fmt.Errorf("config_template %s must be a string", field)
+	}
+	if strings.TrimSpace(value) == "" {
+		return fmt.Errorf("config_template %s must not be empty", field)
+	}
+	return nil
+}
+
+// requireTemplateURL demands a non-blank http(s) endpoint. A value that still
+// contains a `${placeholder}` is only checked for emptiness: the installer
+// supplies the rest, and parsing a half-rendered URL would reject templates
+// that are correct by design.
+func requireTemplateURL(entry map[string]json.RawMessage, field string) error {
+	raw, ok := entry[field]
+	if !ok || len(raw) == 0 {
+		return fmt.Errorf("an http or sse MCP listing must declare a %s", field)
+	}
+	var value string
+	if err := unmarshalTemplateString(raw, &value); err != nil {
+		return fmt.Errorf("config_template %s must be a string", field)
+	}
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return fmt.Errorf("config_template %s must not be empty", field)
+	}
+	if strings.Contains(trimmed, "${") {
+		return nil
+	}
+	// Reuses the published-URL rule so a template cannot dial a scheme the
+	// listing's own homepage_url would be refused for. The value is never
+	// echoed.
+	return validatePublicHTTPURL("config_template "+field, trimmed, true)
 }
 
 // marketplaceTemplateTransport classifies a template the way mcpTransportOf
