@@ -28,6 +28,7 @@
 #     ACTIVE    recorded and empty, but its task has NOT finished. Never
 #               deleted: the run that owns it can still deliver into it.
 #     UNPROVEN  empty, but nothing proves it is finished — no ownership record,
+#               a record from before the task id was written (TASK_STATUS NONE),
 #               or a task status that could not be established. Deleted solely
 #               after an explicit per-branch confirmation.
 #
@@ -232,9 +233,18 @@ while IFS= read -r branch; do
     state="UNPROVEN"
     detail="no ownership record; needs an explicit confirmation"
     unproven_list+=("$branch")
-  elif [ "$task_status" = "UNKNOWN" ]; then
+  elif [ "$task_status" = "UNKNOWN" ] || [ "$task_status" = "NONE" ]; then
+    # NONE is a record written before the task/agent trailers existed: it names
+    # no task, so no status can be looked up. That is the pre-upgrade leftover
+    # this script exists to clear, and it belongs with the other unprovable
+    # branches — never deleted unattended, still reachable one confirmation at
+    # a time. Treating it as ACTIVE would make it undeletable forever.
     state="UNPROVEN"
-    detail="$detail; task status could not be established; needs an explicit confirmation"
+    if [ "$task_status" = "NONE" ]; then
+      detail="ownership record names no task; needs an explicit confirmation"
+    else
+      detail="$detail; task status could not be established; needs an explicit confirmation"
+    fi
     unproven_list+=("$branch")
   elif ! is_terminal_status "$task_status"; then
     state="ACTIVE"
