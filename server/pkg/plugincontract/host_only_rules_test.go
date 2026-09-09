@@ -29,7 +29,6 @@ func TestHostRejectsWhatTheSchemaCannotExpress(t *testing.T) {
 		"contributes-over-the-total-limit.json":      "contributes must not exceed 64 entries",
 		"skill-entry-does-not-match-its-key.json":    "entry must be \"skills/triage/SKILL.md\"",
 		"hook-url-outside-the-net-scopes.json":       "is not covered by a net: scope",
-		"event-without-the-matching-read-scope.json": "comments:read",
 		"schedule-more-often-than-five-minutes.json": "must not run more often than every five minutes",
 	}
 
@@ -63,5 +62,28 @@ func TestHostRejectsWhatTheSchemaCannotExpress(t *testing.T) {
 	}
 	if found != len(cases) {
 		t.Fatalf("found %d host-only samples, expected %d", found, len(cases))
+	}
+}
+
+// A rule the schema learned to state is not a rule the host may forget.
+//
+// The event→read-scope sample moved out of `host-only/` because the schema now
+// rejects it: events and scopes are closed enums, so it is expressible. The
+// schema is an editor aid a publisher never sees, though — nothing stops an
+// author uploading a bundle their editor never opened — so the host stays the
+// enforcing side, and this asserts it on the very file that changed hands.
+func TestHostStillRejectsTheEventScopeRuleTheSchemaNowStates(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "examples", "plugins", "invalid-manifests",
+		"event-without-the-matching-read-scope.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	_, _, err = plugincontract.ParseManifest(raw)
+	if err == nil {
+		t.Fatal("the host accepted an event subscription without the read scope it implies")
+	}
+	if !strings.Contains(err.Error(), "comments:read") {
+		t.Fatalf("rejected for the wrong reason: %v", err)
 	}
 }

@@ -39,7 +39,7 @@ func installPluginForAction(t *testing.T, scopes []string) string {
 	}
 	versionID := withLocalPluginSource(t, manifest)
 
-	body, _ := json.Marshal(map[string]any{"version_id": versionID, "granted_scopes": scopes})
+	body, _ := json.Marshal(map[string]any{"version_id": versionID, "granted_scopes": scopes, "config": handlerTestConfig()})
 	recorder := httptest.NewRecorder()
 	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID}))
 	if recorder.Code != http.StatusCreated {

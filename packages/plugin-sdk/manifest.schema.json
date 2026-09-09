@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://multica.ai/schemas/plugin-manifest/v1.json",
   "title": "Multica plugin manifest (manifest_version 1)",
-  "description": "The structural contract for multica.plugin.json. It is a projection of the host parser in server/pkg/plugincontract/manifest.go, not a second source of truth: everything expressible as structure — required fields, closed enums, patterns, bounds, uniqueness — is stated here so an author gets the error in their editor rather than from a rejected publish. The host still validates on publish and enforces the cross-field rules a JSON Schema cannot express (a hook's transport host must be covered by a net: scope, an event subscription implies the matching read scope). Passing this schema means the shape is right; it does not promise the publish will succeed.",
+  "description": "The structural contract for multica.plugin.json. It is a projection of the host parser in server/pkg/plugincontract/manifest.go, not a second source of truth: everything expressible as structure — required fields, closed enums, patterns, bounds, uniqueness — is stated here so an author gets the error in their editor rather than from a rejected publish. The host still validates on publish and enforces the rules a JSON Schema cannot express, which are the ones comparing a value against another value: a hook's transport host against the net: scopes, a skill's entry against its own key, three array lengths against one total, a cron against an interval. Passing this schema means the shape is right; it does not promise the publish will succeed.",
   "type": "object",
   "additionalProperties": false,
   "required": ["manifest_version", "key", "name", "version", "author", "scopes", "contributes"],
@@ -52,7 +52,116 @@
     },
     "contributes": { "$ref": "#/$defs/contributes" }
   },
+  "allOf": [
+    {
+      "description": "An event PUSHES the content the Action API would have required a scope to pull, so subscribing to one requires that same read scope. Both sides of the mapping are closed lists, which is what makes this expressible here rather than only in the host: one conditional per read scope, each asking whether ANY hook subscribes to an event in its group.",
+      "$ref": "#/$defs/eventReadScopes"
+    }
+  ],
   "$defs": {
+    "eventReadScopes": {
+      "allOf": [
+        {
+          "if": { "$ref": "#/$defs/aHookSubscribesToIssueEvents" },
+          "then": { "$ref": "#/$defs/requiresIssuesRead" }
+        },
+        {
+          "if": { "$ref": "#/$defs/aHookSubscribesToCommentEvents" },
+          "then": { "$ref": "#/$defs/requiresCommentsRead" }
+        },
+        {
+          "if": { "$ref": "#/$defs/aHookSubscribesToTaskEvents" },
+          "then": { "$ref": "#/$defs/requiresTasksRead" }
+        }
+      ]
+    },
+    "aHookSubscribesToIssueEvents": {
+      "type": "object",
+      "required": ["contributes"],
+      "properties": {
+        "contributes": {
+          "type": "object",
+          "required": ["hooks"],
+          "properties": {
+            "hooks": {
+              "type": "array",
+              "contains": {
+                "type": "object",
+                "required": ["events"],
+                "properties": {
+                  "events": {
+                    "type": "array",
+                    "contains": { "enum": ["issue.created", "issue.updated", "issue.status_changed"] }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "aHookSubscribesToCommentEvents": {
+      "type": "object",
+      "required": ["contributes"],
+      "properties": {
+        "contributes": {
+          "type": "object",
+          "required": ["hooks"],
+          "properties": {
+            "hooks": {
+              "type": "array",
+              "contains": {
+                "type": "object",
+                "required": ["events"],
+                "properties": {
+                  "events": { "type": "array", "contains": { "const": "comment.created" } }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "aHookSubscribesToTaskEvents": {
+      "type": "object",
+      "required": ["contributes"],
+      "properties": {
+        "contributes": {
+          "type": "object",
+          "required": ["hooks"],
+          "properties": {
+            "hooks": {
+              "type": "array",
+              "contains": {
+                "type": "object",
+                "required": ["events"],
+                "properties": {
+                  "events": {
+                    "type": "array",
+                    "contains": { "enum": ["task.started", "task.completed", "task.failed"] }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "requiresIssuesRead": {
+      "type": "object",
+      "required": ["scopes"],
+      "properties": { "scopes": { "type": "array", "contains": { "const": "issues:read" } } }
+    },
+    "requiresCommentsRead": {
+      "type": "object",
+      "required": ["scopes"],
+      "properties": { "scopes": { "type": "array", "contains": { "const": "comments:read" } } }
+    },
+    "requiresTasksRead": {
+      "type": "object",
+      "required": ["scopes"],
+      "properties": { "scopes": { "type": "array", "contains": { "const": "tasks:read" } } }
+    },
     "displayText160": {
       "description": "One line of display text. No control characters, and not blank.",
       "type": "string",

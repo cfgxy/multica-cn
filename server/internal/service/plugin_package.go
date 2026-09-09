@@ -90,7 +90,14 @@ func (s *PluginService) PublishBundle(ctx context.Context, workspaceID, userID p
 		// The wrapped text names the file or field at fault, and it is written
 		// for the author. A publish failure they cannot act on would send them
 		// back to guessing, which is the failure mode this whole path replaces.
-		return PluginPackageSummary{}, pluginErrf(PluginErrorInvalid, "plugin package is invalid: %v", err)
+		//
+		// It is redacted for the same reason the scanner redacts its own paths:
+		// the parser quotes manifest-supplied entry names, and an entry name can
+		// itself be the credential. This error is reached BEFORE the scanner
+		// runs — a missing, empty or unparseable entry fails here — so without
+		// this the one path the scanner cannot see would publish the key into an
+		// API response and a server log.
+		return PluginPackageSummary{}, pluginErrf(PluginErrorInvalid, "plugin package is invalid: %s", redactSecrets(err.Error()))
 	}
 	return s.publish(ctx, workspaceID, userID, bundle, false)
 }
@@ -124,7 +131,11 @@ func (s *PluginService) PublishLocalBundle(ctx context.Context, workspaceID, use
 		return content, true, nil
 	})
 	if err != nil {
-		return PluginPackageSummary{}, pluginErrf(PluginErrorInvalid, "local plugin package is invalid: %v", err)
+		// Redacted on the same grounds as the upload path: the local channel
+		// parses the same manifest-supplied entry names, and the local
+		// directory itself may sit under a path an author would not want in a
+		// server log.
+		return PluginPackageSummary{}, pluginErrf(PluginErrorInvalid, "local plugin package is invalid: %s", redactSecrets(err.Error()))
 	}
 	return s.publish(ctx, workspaceID, userID, bundle, true)
 }
