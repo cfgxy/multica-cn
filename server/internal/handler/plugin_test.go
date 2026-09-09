@@ -38,6 +38,15 @@ const handlerTestManifest = `{
   }
 }`
 
+// handlerTestManifest declares `repo` as required, and an install that would
+// leave a required field unset is refused — the plugin never exists for a
+// moment in a state where its first use fails. So every install of this
+// manifest has to carry a value for it. Tests whose subject is something else
+// take it from here rather than restating the consent screen each time.
+func handlerTestConfig() map[string]any {
+	return map[string]any{"repo": "multica-ai/multica"}
+}
+
 // hookOnlyTestManifest declares a contribution kind the host does not ship yet.
 // Kept separate from handlerTestManifest so flipping a surface on never silently
 // changes what the capability-gate test is asserting.
@@ -399,6 +408,7 @@ func TestPluginCleanupSurvivesPluginsV1Off(t *testing.T) {
 	body, _ := json.Marshal(map[string]any{
 		"version_id":     versionID,
 		"granted_scopes": []string{"issues:read", "comments:write", "storage:user"},
+		"config":         handlerTestConfig(),
 	})
 	recorder := httptest.NewRecorder()
 	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID}))
@@ -548,7 +558,7 @@ func TestPluginClearSecretSurvivesPluginsV1Off(t *testing.T) {
 	install, _ := json.Marshal(map[string]any{
 		"version_id":     versionID,
 		"granted_scopes": []string{"issues:read", "comments:write", "storage:user"},
-		"config":         map[string]any{"token": "sk-leaked-secret"},
+		"config":         map[string]any{"repo": "multica-ai/multica", "token": "sk-leaked-secret"},
 	})
 	recorder := httptest.NewRecorder()
 	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", install, map[string]string{"id": testWorkspaceID}))
@@ -668,6 +678,7 @@ func TestPluginInstallConfigureAndUninstall(t *testing.T) {
 	install, _ := json.Marshal(map[string]any{
 		"version_id":     versionID,
 		"granted_scopes": []string{"issues:read", "comments:write", "storage:user"},
+		"config":         handlerTestConfig(),
 	})
 	recorder := httptest.NewRecorder()
 	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", install, map[string]string{"id": testWorkspaceID}))
@@ -883,6 +894,7 @@ func TestPluginInstallAcceptsAShippedSurface(t *testing.T) {
 	body, _ := json.Marshal(map[string]any{
 		"version_id":     versionID,
 		"granted_scopes": []string{"issues:read", "comments:write", "storage:user"},
+		"config":         handlerTestConfig(),
 	})
 	recorder := httptest.NewRecorder()
 	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID}))
@@ -912,6 +924,7 @@ func TestPluginUpgradePrunesSecretsTheNewManifestDropped(t *testing.T) {
 	install, _ := json.Marshal(map[string]any{
 		"version_id":     versionID,
 		"granted_scopes": []string{"issues:read", "comments:write", "storage:user"},
+		"config":         handlerTestConfig(),
 	})
 	recorder := httptest.NewRecorder()
 	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", install, map[string]string{"id": testWorkspaceID}))

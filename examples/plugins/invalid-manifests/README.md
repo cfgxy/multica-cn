@@ -18,9 +18,10 @@ The file name states the rule being broken.
 | `unknown-field.json` | Unknown manifest fields are rejected rather than ignored, so a typo is an error and not a silently dropped setting. |
 | `empty-contributes.json` | A plugin that contributes nothing has nothing to install. |
 | `skill-entry-not-under-skills.json` | A skill's `entry` lives at `skills/<key>/SKILL.md`; anything else is not a skill the host will read. |
+| `event-without-the-matching-read-scope.json` | Subscribing to an event requires the read scope for the same content. Events and scopes are both closed enums, so the schema states it as one conditional per read scope. |
 
 Rules the schema cannot express live one directory down, in `host-only/`. Those
 files PASS this schema and are still refused at publish — cross-field equality,
-a summed limit, and a computed cron interval are things a JSON Schema cannot
-state. Passing this schema means the shape is right; `host-only/README.md` is
-the list of what it does not promise.
+a summed limit, a host compared against another list, and a computed cron
+interval are things a JSON Schema cannot state. Passing this schema means the
+shape is right; `host-only/README.md` is the list of what it does not promise.
