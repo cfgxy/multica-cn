@@ -1010,10 +1010,24 @@ type branchOwner struct {
 	WorkspaceID    string
 	AgentID        string
 	ConversationID string
+	// TaskID is set only on a task-scoped branch, and it is what makes such a
+	// branch continuable: a retried task keeps its id, so attempt 2 can prove
+	// the branch attempt 1 left behind is its own instead of failing on the
+	// name collision (RUYI-116). Empty on a conversation branch, which is
+	// shared by every task of that conversation by design.
+	TaskID string
 }
 
 func (o branchOwner) valid() bool {
 	return o.WorkspaceID != "" && o.AgentID != "" && o.ConversationID != ""
+}
+
+// validTask reports whether this owner identifies one task well enough to
+// record a task-scoped branch under it. The conversation id is not required:
+// a task with no issue and no chat session still has a workspace, an agent and
+// an id of its own.
+func (o branchOwner) validTask() bool {
+	return o.WorkspaceID != "" && o.AgentID != "" && o.TaskID != ""
 }
 
 // fingerprint is the stable, collision-resistant form of the same identity,
@@ -1028,6 +1042,7 @@ const (
 	ownerTrailerWorkspace    = "Multica-Workspace"
 	ownerTrailerAgent        = "Multica-Agent"
 	ownerTrailerConversation = "Multica-Conversation"
+	ownerTrailerTask         = "Multica-Task"
 )
 
 // branchRecord is what refs/multica/local-state/<branch> holds: a commit whose
@@ -1084,6 +1099,9 @@ func branchRecordMessage(owner branchOwner) string {
 	fmt.Fprintf(&b, "%s: %s\n", ownerTrailerWorkspace, owner.WorkspaceID)
 	fmt.Fprintf(&b, "%s: %s\n", ownerTrailerAgent, owner.AgentID)
 	fmt.Fprintf(&b, "%s: %s\n", ownerTrailerConversation, owner.ConversationID)
+	if owner.TaskID != "" {
+		fmt.Fprintf(&b, "%s: %s\n", ownerTrailerTask, owner.TaskID)
+	}
 	return b.String()
 }
 
@@ -1109,6 +1127,8 @@ func readBranchRecord(gitRoot, commit string) (branchRecord, error) {
 			record.owner.AgentID = value
 		case ownerTrailerConversation:
 			record.owner.ConversationID = value
+		case ownerTrailerTask:
+			record.owner.TaskID = value
 		}
 	}
 	if checkpoint, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", commit+"^2"); err == nil {
@@ -1183,34 +1203,69 @@ func (p taskBranchPlan) altName(taskID string) string {
 // own follow-ups continue it — and, if that is somehow taken too, onto a
 // task-scoped branch that continues nothing.
 func resolveTaskBranch(gitRoot string, params LocalWorktreeParams, headSHA string, logger *slog.Logger) taskBranchPlan {
-	agentSegment := sanitizeName(params.AgentName)
-	taskScoped := taskBranchPlan{name: fmt.Sprintf("agent/%s/%s", agentSegment, taskKey(params.TaskID)), base: headSHA}
+	agentSegment := agentBranchSegment(params)
 
 	owner := params.owner()
-	if params.ConversationKey == "" || !owner.valid() {
+	if params.ConversationKey != "" && owner.valid() {
+		preferred := fmt.Sprintf("agent/%s/%s", agentSegment, sanitizeName(params.ConversationKey))
+		for _, name := range []string{preferred, preferred + "-" + owner.fingerprint()} {
+			plan, ok := planForExistingBranch(gitRoot, name, headSHA, owner, true, logger)
+			if ok {
+				return plan
+			}
+			if logger != nil {
+				logger.Info("execenv: branch exists but is not this conversation's; not continuing it",
+					"git_root", gitRoot, "branch", name)
+			}
+		}
+	}
+
+	// Task-scoped branch. A retried task keeps its id, so this name is exactly
+	// the one attempt 1 may have left behind — the same ownership proof the
+	// conversation branch uses decides whether attempt 2 may take it over
+	// (RUYI-116). Without an identity to record under, the branch stays
+	// un-continuable and a collision falls through to addLocalWorktree's
+	// suffixed name.
+	taskOwner := branchOwner{WorkspaceID: params.WorkspaceID, AgentID: params.AgentID, TaskID: params.TaskID}
+	taskScoped := taskBranchPlan{name: fmt.Sprintf("agent/%s/%s", agentSegment, taskKey(params.TaskID)), base: headSHA}
+	if !taskOwner.validTask() {
 		return taskScoped
 	}
-	preferred := fmt.Sprintf("agent/%s/%s", agentSegment, sanitizeName(params.ConversationKey))
-	for _, name := range []string{preferred, preferred + "-" + owner.fingerprint()} {
-		plan, ok := planForConversationBranch(gitRoot, name, headSHA, owner, logger)
-		if ok {
-			return plan
-		}
+	plan, ok := planForExistingBranch(gitRoot, taskScoped.name, headSHA, taskOwner, false, logger)
+	if !ok {
 		if logger != nil {
-			logger.Info("execenv: branch exists but is not this conversation's; not continuing it",
-				"git_root", gitRoot, "branch", name)
+			logger.Info("execenv: branch exists but is not this task's; not continuing it",
+				"git_root", gitRoot, "branch", taskScoped.name)
 		}
+		return taskScoped
 	}
-	return taskScoped
+	return plan
 }
 
-// planForConversationBranch reports how this task would use one candidate
-// branch name, and whether it may use it at all.
-func planForConversationBranch(gitRoot, name, headSHA string, owner branchOwner, logger *slog.Logger) (taskBranchPlan, bool) {
+// agentBranchSegment is the agent's segment of a branch name.
+//
+// An agent named entirely in a non-Latin script sanitises to nothing, and the
+// literal "agent" fallback put every such agent's branches under
+// `agent/agent/...` — readable for nobody and identical between agents
+// (RUYI-116). The agent id's short form is stable, distinct per agent, and
+// still a valid branch segment, so it stands in when the name cannot.
+func agentBranchSegment(params LocalWorktreeParams) string {
+	if s := sanitizeSegment(params.AgentName); s != "" {
+		return s
+	}
+	if params.AgentID != "" {
+		return "agent-" + taskKey(params.AgentID)
+	}
+	return "agent"
+}
+
+// planForExistingBranch reports how this task would use one candidate branch
+// name, and whether it may use it at all.
+func planForExistingBranch(gitRoot, name, headSHA string, owner branchOwner, conversational bool, logger *slog.Logger) (taskBranchPlan, bool) {
 	plan := taskBranchPlan{
 		name:           name,
 		base:           headSHA,
-		conversational: true,
+		conversational: conversational,
 		tracksState:    true,
 		owner:          owner,
 	}
@@ -1289,6 +1344,14 @@ func addLocalWorktree(gitRoot, worktreePath string, plan taskBranchPlan, taskID 
 		// once the branch has been proven an ancestor of HEAD.
 		args = []string{"worktree", "add", "-B", plan.name, worktreePath, plan.base}
 	default:
+		// Ask before creating rather than reading the refusal afterwards. The
+		// error text is the fragile half of this decision — it is git's prose,
+		// and until gitMessageEnv pinned the locale a translated one silently
+		// skipped the fallback entirely (RUYI-116). A ref query answers with an
+		// exit code in every language.
+		if branchExists(gitRoot, plan.name) {
+			plan.name = plan.altName(taskID)
+		}
 		args = []string{"worktree", "add", "-b", plan.name, worktreePath, plan.base}
 	}
 	out, err := runGit(gitRoot, args...)
@@ -1303,6 +1366,12 @@ func addLocalWorktree(gitRoot, worktreePath string, plan taskBranchPlan, taskID 
 		return "", false, fmt.Errorf("execenv: git worktree add: %s: %w", strings.TrimSpace(out), err)
 	}
 	return alt, true, nil
+}
+
+// branchExists reports whether a local branch of this name is already there.
+func branchExists(gitRoot, name string) bool {
+	tip, err := runGitTrimmed(gitRoot, "rev-parse", "--verify", "--quiet", "refs/heads/"+name)
+	return err == nil && tip != ""
 }
 
 // branchUnavailable recognises git refusing a branch that another worktree
@@ -1674,12 +1743,35 @@ func runGitEnv(dir string, extraEnv []string, args ...string) (string, error) {
 
 	full := append([]string{"-C", dir}, args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
-	if len(extraEnv) > 0 {
-		cmd.Env = append(os.Environ(), extraEnv...)
-	}
+	cmd.Env = append(gitMessageEnv(), extraEnv...)
 	cmd.WaitDelay = 5 * time.Second
 	out, err := cmd.CombinedOutput()
 	return string(out), err
+}
+
+// gitMessageEnv pins git's own messages to C so the callers that read them
+// keep working on a localised machine.
+//
+// This file decides control flow from git's prose — "already exists" picks the
+// fallback branch, "nothing to commit" distinguishes an empty commit from a
+// failed one. On a zh_CN daemon git answered 「致命错误：一个名为 … 的分支已经
+// 存在」, no branch of those matched, and a task whose branch already existed
+// failed to prepare at all instead of falling back (RUYI-116). LANGUAGE has to
+// go too: gettext lets it override LC_ALL for message catalogues.
+func gitMessageEnv() []string {
+	env := os.Environ()
+	out := env[:0:0]
+	for _, kv := range env {
+		switch {
+		case strings.HasPrefix(kv, "LC_ALL="),
+			strings.HasPrefix(kv, "LC_MESSAGES="),
+			strings.HasPrefix(kv, "LANG="),
+			strings.HasPrefix(kv, "LANGUAGE="):
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, "LC_ALL=C", "LANGUAGE=")
 }
 
 // runGitTrimmed runs git for its stdout value, discarding stderr so a
@@ -1711,6 +1803,7 @@ func runGitStdout(dir string, args ...string) (string, error) {
 
 	full := append([]string{"-C", dir}, args...)
 	cmd := exec.CommandContext(ctx, "git", full...)
+	cmd.Env = gitMessageEnv()
 	cmd.WaitDelay = 5 * time.Second
 	out, err := cmd.Output()
 	if err != nil {

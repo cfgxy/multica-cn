@@ -178,6 +178,37 @@ func taskMulticaEnvironment(task Task, agentName, token, configRoot, workspacesR
 	}
 }
 
+// errIncompleteCredentialInjection marks a task whose assembled agent
+// environment is missing task-scoped credentials. The failure surfaces before
+// any agent process exists, so the server retries the task with a fresh claim
+// instead of launching an agent that cannot post comments or call the API —
+// the "mute agent" failure: a full run of work that can never be delivered.
+var errIncompleteCredentialInjection = errors.New("task credential injection incomplete")
+
+// verifyTaskCredentialInjection re-checks the FINAL per-task environment
+// overlay right before launch. taskScopedAuthToken already gates task.AuthToken
+// at assembly time; this second gate catches anything that drops or stomps a
+// credential between assembly and exec (custom-env layering, future spawn
+// paths), so the task fails fast and retries instead of burning a whole run.
+func verifyTaskCredentialInjection(env map[string]string) error {
+	if !strings.HasPrefix(env["MULTICA_TOKEN"], "mat_") {
+		return fmt.Errorf("%w: MULTICA_TOKEN missing or not task-scoped", errIncompleteCredentialInjection)
+	}
+	for _, key := range []string{
+		"MULTICA_SERVER_URL",
+		"MULTICA_DAEMON_PORT",
+		cli.TaskConfigRootEnv,
+		"MULTICA_WORKSPACE_ID",
+		"MULTICA_AGENT_ID",
+		"MULTICA_TASK_ID",
+	} {
+		if strings.TrimSpace(env[key]) == "" {
+			return fmt.Errorf("%w: %s is empty", errIncompleteCredentialInjection, key)
+		}
+	}
+	return nil
+}
+
 // taskRunner executes a single agent task and returns the result.
 // Extracted as an interface so tests can inject a fake without spawning real
 // agent processes, while keeping test scaffolding out of the production struct.
@@ -7946,6 +7977,13 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		}
 		agentEnv["MULTICA_DSH_SESSION_ROOT"] = dshSessionRoot
 		agentEnv["DSH_TELEMETRY_DISABLED"] = "1"
+	}
+	// Last gate before any process exists: an agent launched without its
+	// task-scoped credentials can neither deliver results nor report — it
+	// just burns the run. Fail here, where the retry is cheap and visible.
+	if err := verifyTaskCredentialInjection(agentEnv); err != nil {
+		taskLog.Error("refusing to start agent", "error", err)
+		return TaskResult{}, err
 	}
 	if err := configureCodexTaskShellEnvironment(provider, env.CodexHome, os.Environ(), agentEnv, agentCustomEnv, d.logger); err != nil {
 		return TaskResult{}, err
