@@ -85,6 +85,25 @@ describe("手机端评论锚点落地接线", () => {
   });
 
   /**
+   * 第四轮 Review 阻断：FlashList v2 回收的是视图——同一个卡片实例会带着另一
+   * 个 root 继续渲染，ref 里的上报器活过身份切换。重绑逻辑本身在
+   * comment-geometry.test.ts 里覆盖，这里钉住卡片真的按当前 `entry.id` 调用
+   * 它，且早于按新集合跑的 `syncReplies`。
+   */
+  it("卡片在行被复用成另一个 root 时重绑上报器", () => {
+    expect(card).toContain("reporter.rebindRoot(entry.id);");
+    const rebindAt = card.indexOf("reporter.rebindRoot(entry.id);");
+    const syncAt = card.indexOf("reporter.syncReplies(");
+    expect(rebindAt).toBeGreaterThan(-1);
+    expect(syncAt).toBeGreaterThan(-1);
+    // 顺序反了，新集合会先按旧 rootId 登记一轮再被清掉。
+    expect(rebindAt).toBeLessThan(syncAt);
+    // 必须在 layout effect 里：普通 effect 晚于原生 onLayout 的可能性存在，
+    // 那样新行的第一批测量会落到旧 root 名下。
+    expect(card).toContain("useLayoutEffect(() => {\n    reporter.rebindRoot(");
+  });
+
+  /**
    * 第三轮 Review 阻断 3：高亮必须从**定位流程结束**起算，而不是点击那一刻。
    * 点击处只 arm，起算发生在控制器的结果回调里。
    */

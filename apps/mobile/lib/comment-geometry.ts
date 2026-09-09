@@ -89,13 +89,40 @@ export class CommentGeometryRegistry {
  */
 export class RowGeometryReporter {
   private bubbleOffset = 0;
+  private rootId: string;
   private readonly raw = new Map<string, { y: number; height: number }>();
 
   constructor(
-    private readonly rootId: string,
+    rootId: string,
     private readonly onReport: (commentId: string, rect: RowLocalRect) => void,
     private readonly onForget: (commentId: string) => void,
-  ) {}
+  ) {
+    this.rootId = rootId;
+  }
+
+  /**
+   * 把上报器绑到当前渲染的 root 行。
+   *
+   * FlashList v2 用的是 **view recycling**：行滚出渲染窗口时组件实例并不卸载，
+   * 而是带着新 item 复用（`RenderStackManager.sync` 把回收的 key 分配给新的
+   * stableId）。上报器存在卡片的 ref 里，构造时定死的 `rootId` 因此会跟着同
+   * 一个实例活过多次身份切换：不重绑，新 root 的回复会登记到旧 root 名下，
+   * `resolve` 拿旧行的行顶去换算，目标滚进错误线程；旧 root 的测量值也没人
+   * 清，行不在渲染窗口时 `getLayout` 返回 null，定位只能空转到重试耗尽。
+   *
+   * 身份真的变了才动手：`release` 掉旧行全部测量并作废基准（新行的气泡偏移
+   * 必须重新量）。身份未变时是空操作——同一行的普通重渲染远多于回收，不能
+   * 顺手把仍然有效的几何删掉。
+   */
+  rebindRoot(rootId: string): void {
+    if (rootId === this.rootId) return;
+    this.release();
+    // 基准属于旧行的气泡，新行会派发自己的 onLayout；留着它会让新 root 的
+    // 第一批回复按旧行的气泡高度偏移。（`release` 不重置基准是刻意的——同一
+    // 行折叠再展开时气泡位置没变，见「release 之后重新测量仍然工作」。）
+    this.bubbleOffset = 0;
+    this.rootId = rootId;
+  }
 
   /** 气泡（回复 wrapper 的父节点）相对行顶的偏移。 */
   setBubbleOffset(y: number): void {
