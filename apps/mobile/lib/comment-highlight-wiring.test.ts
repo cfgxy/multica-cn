@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import {
@@ -18,7 +19,12 @@ import {
  * 依赖 RN 原生模块）。故按源码断言，这是本仓能观察到该失配的唯一层。
  */
 function source(relative: string): string {
-  return readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8");
+  // `new URL(relative, import.meta.url)` 会解析成 DOM 的 URL 类型，和
+  // `node:url` 的签名对不上（tsc 报 TS2345）。走纯字符串路径拼接绕开。
+  return readFileSync(
+    resolve(dirname(fileURLToPath(import.meta.url)), relative),
+    "utf8",
+  );
 }
 
 describe("手机端评论高亮时长", () => {

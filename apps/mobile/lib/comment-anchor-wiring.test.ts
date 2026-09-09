@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -19,7 +20,12 @@ import { describe, expect, it } from "vitest";
  *   3. 卡片把回复的行内偏移上报给几何登记表，并在折叠/卸载时丢弃。
  */
 function source(relative: string): string {
-  return readFileSync(fileURLToPath(new URL(relative, import.meta.url)), "utf8");
+  // `new URL(relative, import.meta.url)` 会解析成 DOM 的 URL 类型，和
+  // `node:url` 的签名对不上（tsc 报 TS2345）。走纯字符串路径拼接绕开。
+  return readFileSync(
+    resolve(dirname(fileURLToPath(import.meta.url)), relative),
+    "utf8",
+  );
 }
 
 const list = source("../components/issue/timeline-list.tsx");
@@ -46,18 +52,50 @@ describe("手机端评论锚点落地接线", () => {
   });
 
   it("控制器的行内校正接到真实的列表几何，而不是占位实现", () => {
-    expect(list).toContain("geometryRef.current.resolve(targetId,");
+    expect(list).toContain("geometryRef.current.resolve(");
     expect(list).toContain("offsetY: scrollGeoRef.current.offsetY,");
     expect(list).toContain("listRef.current?.scrollToOffset({ offset,");
+  });
+
+  /**
+   * 第三轮 Review 阻断 1：`getLayout` 是 item 区坐标，`contentOffset.y` /
+   * `scrollToOffset` 是原生滚动坐标，差一个 `getFirstItemOffset()`。判定逻辑
+   * 本身在 comment-geometry.test.ts 里覆盖；这里钉住组件真的把这个偏移传下去
+   * ——漏掉它，测试全绿而真机上永远滚到 Issue 头部高度那么多的上方。
+   */
+  it("把 FlashList 的 header 偏移传给几何换算，统一两套坐标", () => {
+    expect(list).toContain("listRef.current?.getFirstItemOffset() ?? null");
   });
 
   it("卡片上报回复的行内偏移（气泡基准 + 自身 y）", () => {
     expect(card).toContain("onLayout={(e) => measureReply(reply.id,");
     expect(card).toContain("onLayout={(e) => measureBubble(e.nativeEvent.layout)}");
-    expect(card).toContain("offsetInRow: bubbleOffsetRef.current + raw.y,");
+    expect(card).toContain("new RowGeometryReporter(");
   });
 
-  it("折叠或卸载时丢弃测量值，避免按旧布局二次滚动", () => {
-    expect(card).toContain("forgetGeometry(id)");
+  /**
+   * 第三轮 Review 阻断 2：回复集合变化时旧写法删掉旧集合的全部测量值而不重新
+   * 上报。清理必须走差集（syncReplies），整行释放才走 release。
+   */
+  it("回复集合变化走差集同步，只有折叠/卸载才整行释放", () => {
+    expect(card).toContain("reporter.syncReplies(");
+    expect(card).toContain("reporter.release()");
+    // 旧的「删掉旧集合全部测量值」写法不得复活。
+    expect(card).not.toContain("forgetGeometry(id)");
+  });
+
+  /**
+   * 第三轮 Review 阻断 3：高亮必须从**定位流程结束**起算，而不是点击那一刻。
+   * 点击处只 arm，起算发生在控制器的结果回调里。
+   */
+  it("点击只武装高亮，起算发生在定位结果回调里", () => {
+    expect(list).toContain("highlightGateRef.current.arm(outcome.commentId,");
+    expect(list).toContain("highlightGateRef.current.settle(result.nonce)");
+    const armAt = list.indexOf("highlightGateRef.current.arm(");
+    const settleAt = list.indexOf("highlightGateRef.current.settle(");
+    expect(armAt).toBeGreaterThan(-1);
+    expect(settleAt).toBeGreaterThan(-1);
+    // 点击处不得再直接把目标写进 highlightedId（那就是点击起算）。
+    expect(list).not.toContain("setHighlightedId(outcome.commentId)");
   });
 });
