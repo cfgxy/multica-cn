@@ -26,7 +26,7 @@ import (
 // with the scan so a future rule addition can tell which snapshots were only
 // ever cleared by an older, weaker detector set. Bump it whenever `detectors`
 // changes.
-const Revision = "promptscan/2026-09-09.1"
+const Revision = "promptscan/2026-09-09.2"
 
 // maxFindings bounds a report. Prompt content is unbounded user text, and a
 // pasted .env would otherwise produce a finding per line — a response large
@@ -222,8 +222,8 @@ const valueTerminators = " \t\r\n,;"
 func fullValue(quote, token, follow, lineRest string) string {
 	value := token + follow + lineRest
 	if isQuoted(quote) {
-		if i := strings.IndexAny(value[len(token+follow):], "\"'`"); i >= 0 {
-			return value[:len(token+follow)+i]
+		if end := closingQuote(value, len(token+follow), strings.Count(quote, `\`)); end >= 0 {
+			return value[:end]
 		}
 		return value
 	}
@@ -245,6 +245,34 @@ func fullValue(quote, token, follow, lineRest string) string {
 		return value[:cursor+i]
 	}
 	return value
+}
+
+// closingQuote returns the offset in value where the quoted value ends, or -1
+// when no closing quote is on this line.
+//
+// depth is how many backslashes the OPENING quote carried, which is what makes
+// a quote a delimiter at this nesting level: plain JSON opens with `"` (depth
+// 0), JSON embedded in a JSON string opens with `\"` (depth 1). A quote whose
+// own backslash run is deeper than that is escaped INSIDE the value, so it does
+// not end it — `{\"password\":\"${DB_PASSWORD}\\\"trailing\"}` ends at the
+// final `\"`, not at the value's own `\\\"`, and the trailing text stays part
+// of the value where the placeholder test can reject it. Any other run length
+// is a shape this revision cannot read, and the value is carried to the end of
+// the line so the gate errs towards blocking.
+func closingQuote(value string, from, depth int) int {
+	for i := from; i < len(value); i++ {
+		if !strings.ContainsAny(value[i:i+1], "\"'`") {
+			continue
+		}
+		run := 0
+		for j := i - 1; j >= 0 && value[j] == '\\'; j-- {
+			run++
+		}
+		if run == depth {
+			return i - run
+		}
+	}
+	return -1
 }
 
 // isQuoted reports whether the captured quote run actually contains a quote.
