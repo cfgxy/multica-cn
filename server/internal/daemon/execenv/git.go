@@ -227,8 +227,11 @@ func shortID(uuid string) string {
 
 var nonAlphanumeric = regexp.MustCompile(`[^a-z0-9]+`)
 
-// sanitizeName produces a git-branch-safe name from a human-readable string.
-func sanitizeName(name string) string {
+// sanitizeSegment is sanitizeName without the fallback: it returns "" when the
+// input carries nothing a branch name can keep. A name written entirely in a
+// non-Latin script — every CJK agent name — reduces to exactly that, and the
+// caller is the only party that knows what to put there instead.
+func sanitizeSegment(name string) string {
 	s := strings.ToLower(strings.TrimSpace(name))
 	s = nonAlphanumeric.ReplaceAllString(s, "-")
 	s = strings.Trim(s, "-")
@@ -236,8 +239,13 @@ func sanitizeName(name string) string {
 		s = s[:30]
 		s = strings.TrimRight(s, "-")
 	}
-	if s == "" {
-		s = "agent"
-	}
 	return s
+}
+
+// sanitizeName produces a git-branch-safe name from a human-readable string.
+func sanitizeName(name string) string {
+	if s := sanitizeSegment(name); s != "" {
+		return s
+	}
+	return "agent"
 }
