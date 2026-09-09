@@ -48,7 +48,10 @@ export function CommentMentionCard({
   if (!resolved || !focus) {
     return (
       <span
-        className={`${BASE_CLASS} border-dashed opacity-60 cursor-not-allowed text-muted-foreground`}
+        // Dashed border + muted tone carry the degraded reading on their own.
+        // No `opacity-*`: transparency standing in for a text tone is what
+        // apps/web's text-contrast guard rejects.
+        className={`${BASE_CLASS} border-dashed cursor-not-allowed text-muted-foreground`}
         aria-disabled="true"
         title={t(($) => $.comment.anchor_unavailable)}
         // Still says something on click. A chip that looks like a reference
