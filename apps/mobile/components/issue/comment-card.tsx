@@ -22,7 +22,15 @@
  * when expanded the resolved indicator stays at the top of the body so the
  * user keeps the "this thread is resolved" signal even while reading.
  */
-import { useCallback, useEffect, Fragment, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  Fragment,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Pressable, View } from "react-native";
 import Animated, {
   cancelAnimation,
@@ -194,6 +202,18 @@ export function CommentCard({
     );
   }
   const reporter = reporterRef.current;
+  // FlashList v2 回收的是**视图**：行滚出渲染窗口时这个组件实例不卸载，而是
+  // 带着另一个 root 的数据继续渲染，上面那个 ref 里的上报器会一路活过去。
+  // 不重绑，新 root 的回复就会登记到旧 root 名下，二次滚动按旧行的行顶换算，
+  // 跳进错误的线程。身份未变时 `rebindRoot` 是空操作（同一行的普通重渲染远
+  // 多于回收），身份变了才释放旧行测量并作废旧基准。
+  //
+  // 用 layout effect 而不是渲染期直接调用：登记表的写入是组件外的副作用，且
+  // 这里必须早于两件事——下面按新集合跑的 `syncReplies`（普通 effect，天然
+  // 靠后）和新行的 `onLayout`（原生布局后才派发，晚于 layout effect）。
+  useLayoutEffect(() => {
+    reporter.rebindRoot(entry.id);
+  }, [reporter, entry.id]);
   const measureBubble = useCallback(
     (layout: { y: number }) => reporter.setBubbleOffset(layout.y),
     [reporter],
