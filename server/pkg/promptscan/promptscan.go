@@ -222,7 +222,7 @@ const valueTerminators = " \t\r\n,;"
 func fullValue(quote, token, follow, lineRest string) string {
 	value := token + follow + lineRest
 	if isQuoted(quote) {
-		if end := closingQuote(value, len(token+follow), strings.Count(quote, `\`)); end >= 0 {
+		if end := closingQuote(value, len(token+follow), openingQuote(quote), strings.Count(quote, `\`)); end >= 0 {
 			return value[:end]
 		}
 		return value
@@ -250,18 +250,25 @@ func fullValue(quote, token, follow, lineRest string) string {
 // closingQuote returns the offset in value where the quoted value ends, or -1
 // when no closing quote is on this line.
 //
-// depth is how many backslashes the OPENING quote carried, which is what makes
-// a quote a delimiter at this nesting level: plain JSON opens with `"` (depth
-// 0), JSON embedded in a JSON string opens with `\"` (depth 1). A quote whose
-// own backslash run is deeper than that is escaped INSIDE the value, so it does
-// not end it — `{\"password\":\"${DB_PASSWORD}\\\"trailing\"}` ends at the
-// final `\"`, not at the value's own `\\\"`, and the trailing text stays part
-// of the value where the placeholder test can reject it. Any other run length
-// is a shape this revision cannot read, and the value is carried to the end of
-// the line so the gate errs towards blocking.
-func closingQuote(value string, from, depth int) int {
+// A quote ends the value only when its IDENTITY matches the opening one, and
+// identity is two things:
+//
+//   - the character. `"`, `'` and backtick each quote the other two as ordinary
+//     content — a single quote inside a JSON string is legal JSON, so
+//     `{"password":"${DB_PASSWORD}'trailing"}` ends at the final `"`, not at the
+//     apostrophe, and the trailing text stays inside the value where the
+//     placeholder test rejects it.
+//   - the escape level. depth is how many backslashes the OPENING quote carried:
+//     plain JSON opens with `"` (depth 0), JSON embedded in a JSON string opens
+//     with `\"` (depth 1). A quote whose own backslash run is deeper is escaped
+//     INSIDE the value, so `{\"password\":\"${DB_PASSWORD}\\\"trailing\"}` ends
+//     at the final `\"`.
+//
+// Any other run length is a shape this revision cannot read, and the value is
+// carried to the end of the line so the gate errs towards blocking.
+func closingQuote(value string, from int, quote byte, depth int) int {
 	for i := from; i < len(value); i++ {
-		if !strings.ContainsAny(value[i:i+1], "\"'`") {
+		if value[i] != quote {
 			continue
 		}
 		run := 0
@@ -273,6 +280,15 @@ func closingQuote(value string, from, depth int) int {
 		}
 	}
 	return -1
+}
+
+// openingQuote is the quote character of a captured quote run, which may also
+// hold the backslashes that escaped it.
+func openingQuote(quoteRun string) byte {
+	if i := strings.IndexAny(quoteRun, "\"'`"); i >= 0 {
+		return quoteRun[i]
+	}
+	return 0
 }
 
 // isQuoted reports whether the captured quote run actually contains a quote.
