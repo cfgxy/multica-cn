@@ -182,3 +182,92 @@ describe("RowGeometryReporter", () => {
     });
   });
 });
+
+/**
+ * 反例来源（第四轮 Review 阻断）：FlashList v2 是 **view recycling**——
+ * 行滚出渲染窗口时组件实例不卸载，而是带着新 item 复用（`RenderStackManager`
+ * 把回收的 key 分配给新的 stableId）。卡片侧的上报器存在 ref 里、构造时就把
+ * `rootId` 定死，因此同一个实例会从 `root-a` 被复用成 `root-b`：新 root 的
+ * 回复被登记到**旧 root 名下**，`resolve` 拿旧行的行顶去换算，目标滚到错误
+ * 线程；旧 root 的测量值也没人清，行不在渲染窗口里时 `getLayout` 给 null，
+ * 定位只能空转到重试耗尽。
+ *
+ * 正确语义：行身份变化时先释放旧 root 的全部测量，再把上报器绑到当前 root。
+ */
+describe("RowGeometryReporter 跨 root 回收", () => {
+  it("行被复用成另一个 root 时释放旧测量，新回复登记到新 root", () => {
+    const report = vi.fn();
+    const forget = vi.fn();
+    const reporter = new RowGeometryReporter("root-a", report, forget);
+    reporter.setBubbleOffset(40);
+    reporter.measureReply("r1", { y: 100, height: 50 });
+    report.mockClear();
+    forget.mockClear();
+
+    // FlashList 把这个 cell 复用给了 root-b。
+    reporter.rebindRoot("root-b");
+
+    expect(forget).toHaveBeenCalledTimes(1);
+    expect(forget).toHaveBeenCalledWith("r1");
+    // 旧基准同样作废：新行的气泡偏移要重新量，不能拿旧行的 40 顶上。
+    reporter.measureReply("r2", { y: 100, height: 50 });
+    expect(report).toHaveBeenCalledWith("r2", {
+      rootId: "root-b",
+      offsetInRow: 100,
+      height: 50,
+    });
+    expect(report).not.toHaveBeenCalledWith(
+      "r2",
+      expect.objectContaining({ rootId: "root-a" }),
+    );
+  });
+
+  it("行身份未变时 rebindRoot 是空操作，不误删仍有效的几何", () => {
+    const report = vi.fn();
+    const forget = vi.fn();
+    const reporter = new RowGeometryReporter("root-a", report, forget);
+    reporter.setBubbleOffset(40);
+    reporter.measureReply("r1", { y: 100, height: 50 });
+    report.mockClear();
+    forget.mockClear();
+
+    // 每次渲染都会调用（同一行的普通重渲染远多于回收）。
+    reporter.rebindRoot("root-a");
+    reporter.rebindRoot("root-a");
+
+    expect(forget).not.toHaveBeenCalled();
+    reporter.setBubbleOffset(40);
+    expect(report).toHaveBeenCalledWith("r1", {
+      rootId: "root-a",
+      offsetInRow: 140,
+      height: 50,
+    });
+  });
+
+  it("回收后登记表按新 root 解析，旧回复不再返回坐标", () => {
+    const reg = new CommentGeometryRegistry();
+    const reporter = new RowGeometryReporter(
+      "root-a",
+      (id, rect) => reg.report(id, rect),
+      (id) => reg.forget(id),
+    );
+    reporter.setBubbleOffset(40);
+    reporter.measureReply("r1", { y: 100, height: 50 });
+    expect(reg.resolve("r1", rowsAt({ "root-a": 1200 }), NO_HEADER)).toEqual({
+      top: 1340,
+      height: 50,
+    });
+
+    reporter.rebindRoot("root-b");
+    reporter.setBubbleOffset(20);
+    reporter.measureReply("r2", { y: 60, height: 50 });
+
+    // 旧 root 的回复已被清除：控制器据此走有界重试，而不是拿旧坐标乱滚。
+    expect(reg.resolve("r1", rowsAt({ "root-a": 1200 }), NO_HEADER)).toBeNull();
+    // 新 root 的回复按新行的行顶换算。
+    expect(reg.resolve("r2", rowsAt({ "root-b": 300 }), NO_HEADER)).toEqual({
+      top: 380,
+      height: 50,
+    });
+  });
+});
