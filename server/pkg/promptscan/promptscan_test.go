@@ -269,6 +269,53 @@ func TestScanBlocksIncompletePlaceholders(t *testing.T) {
 	}
 }
 
+// A field the validator RELEASES must not consume the rest of its line. Go's
+// FindAll only resumes after the end of the previous match, so a released match
+// that reached the line ending took every later field on that line with it and
+// the real credential beside a schema field published.
+//
+// Each case pins both halves: the leading field alone must still publish, and
+// the same line with a real credential appended must block. The first assertion
+// is what makes the second meaningful — without it, a finding for the leading
+// field would satisfy the test while the credential still went unscanned.
+func TestReleasedFieldDoesNotSwallowLaterCredentialOnSameLine(t *testing.T) {
+	const secret = "s3cr3t-value-not-real"
+	cases := []struct {
+		name     string
+		released string // must publish on its own
+		full     string // the same line, with a real credential after it
+	}{
+		{"unquoted null then token", `{"password":null}`, `{"password":null,"token":"` + secret + `"}`},
+		{"empty string then token", `{"password":""}`, `{"password":"","token":"` + secret + `"}`},
+		{"placeholder then token", `{"password":"<redacted>"}`, `{"password":"<redacted>","token":"` + secret + `"}`},
+		{"dollar placeholder then api key", `{"password":"${DB_PASSWORD}"}`, `{"password":"${DB_PASSWORD}","api_key":"` + secret + `"}`},
+		{"unquoted false then password", `{"token":false}`, `{"token":false,"db_password":"` + secret + `"}`},
+		{"env placeholder then env secret", `DB_PASSWORD=${DB_PASSWORD}`, `DB_PASSWORD=${DB_PASSWORD} ACCESS_TOKEN=` + secret},
+		{"cookie schema then token", `{"cookie":""}`, `{"cookie":"","token":"` + secret + `"}`},
+		{"placeholder then non-credential then key", `{"password":"<x>","a":1}`, `{"password":"<x>","a":1,"api_key":"` + secret + `"}`},
+		{"unquoted yaml placeholder then token", `password: ${A}`, `password: ${A} token: ` + secret},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if res := Scan(tc.released); !res.OK() {
+				t.Fatalf("leading field %q must still publish, got %+v", tc.released, res.Findings)
+			}
+			res := Scan(tc.full)
+			if res.OK() {
+				t.Fatalf("credential after a released field must block, content %q passed the gate", tc.full)
+			}
+			blob, err := json.Marshal(res)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if strings.Contains(string(blob), secret) {
+				t.Fatalf("serialised result leaked the value: %s", blob)
+			}
+		})
+	}
+}
+
 // `null` unquoted is the absence of a value; `"null"` quoted is a five-character
 // string that happens to spell it. Only the first is a schema, and treating both
 // alike lets any secret publish by being named after a keyword.
@@ -313,6 +360,12 @@ func TestScanReleasesCompletePlaceholdersAndUnquotedKeywords(t *testing.T) {
 		"token: undefined",
 		"password: false",
 		"api_key: ~",
+		// A released value followed by an ordinary field on the same line: the
+		// value boundary, not the line ending, is what the placeholder test reads.
+		`{"password": "${DB_PASSWORD}", "other": 1}`,
+		`{"password": null, "other": 1}`,
+		"api_key: {{ secret }}\nname: demo",
+		"password: ${DB_PASSWORD} # from env",
 	}
 	for _, content := range cases {
 		if res := Scan(content); !res.OK() {
