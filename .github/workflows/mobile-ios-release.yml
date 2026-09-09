@@ -1,0 +1,131 @@
+name: Mobile iOS Release
+
+# EAS owns Apple signing credentials and produces the IPA remotely. Repository
+# secrets only provide the EAS access token and project identity; their values
+# are never printed. Tag pushes create a versioned Release, while manual runs
+# create an isolated prerelease tied to the selected commit.
+
+on:
+  push:
+    tags:
+      - "mobile-ios-v*.*.*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-ios-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      APP_ENV: production
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+      EXPO_PROJECT_ID: ${{ secrets.EXPO_PROJECT_ID }}
+      EXPO_APPLE_TEAM_ID: ${{ secrets.EXPO_APPLE_TEAM_ID }}
+      EXPO_BUNDLE_IDENTIFIER: ${{ secrets.EXPO_BUNDLE_IDENTIFIER }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify required EAS configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in EXPO_TOKEN EXPO_PROJECT_ID; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "::error::Required repository secret $name is not configured"
+              exit 1
+            fi
+          done
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build signed IPA with EAS
+        working-directory: apps/mobile
+        shell: bash
+        run: |
+          set -euo pipefail
+          pnpm dlx eas-cli@23.2.0 build \
+            --platform ios \
+            --profile production \
+            --non-interactive \
+            --wait \
+            --json > eas-build.json
+          build_url="$(jq -r 'if type == "array" then .[0] else . end | .artifacts.buildUrl // empty' eas-build.json)"
+          if [[ -z "$build_url" ]]; then
+            echo "::error::EAS build completed without an IPA download URL"
+            exit 1
+          fi
+          curl --fail --location --output multica-mobile-production.ipa "$build_url"
+          test -s multica-mobile-production.ipa
+          sha256sum multica-mobile-production.ipa > multica-mobile-production.ipa.sha256
+
+      - name: Upload IPA artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: multica-mobile-production-ipa
+          path: |
+            apps/mobile/multica-mobile-production.ipa
+            apps/mobile/multica-mobile-production.ipa.sha256
+          if-no-files-found: error
+
+  publish-release:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download IPA artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: multica-mobile-production-ipa
+          path: ipa
+
+      - name: Resolve Release metadata
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$GITHUB_EVENT_NAME" == "push" ]]; then
+            echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=mobile-ios-build-$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish IPA Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          IS_PRERELEASE: ${{ steps.release.outputs.prerelease }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release delete "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --cleanup-tag --yes || true
+          prerelease=()
+          if [[ "$IS_PRERELEASE" == "true" ]]; then
+            prerelease=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" \
+            ipa/multica-mobile-production.ipa \
+            ipa/multica-mobile-production.ipa.sha256 \
+            --repo "$GITHUB_REPOSITORY" \
+            --target "$GITHUB_SHA" \
+            --title "Multica iOS $RELEASE_TAG" \
+            --notes "EAS production IPA built from commit $GITHUB_SHA." \
+            "${prerelease[@]}"
