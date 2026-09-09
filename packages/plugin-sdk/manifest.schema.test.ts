@@ -62,6 +62,10 @@ describe("the deliberately invalid samples", () => {
       file: "skill-entry-not-under-skills.json",
       instancePath: "/contributes/resources/0/entry",
     },
+    // Events and scopes are both closed enums, so the rejection comes from the
+    // scope list: the manifest subscribes to comment.created without holding
+    // comments:read.
+    { file: "event-without-the-matching-read-scope.json", instancePath: "/scopes" },
   ];
 
   it.each(cases)("$file is rejected", ({ file, instancePath }) => {
@@ -69,6 +73,96 @@ describe("the deliberately invalid samples", () => {
     expect(valid).toBe(false);
     const paths = (validate.errors ?? []).map((error) => error.instancePath);
     expect(paths).toContain(instancePath);
+  });
+});
+
+/**
+ * The event→read-scope rule, per group and in both directions.
+ *
+ * The sample above proves one event is caught. This proves the OTHER half of a
+ * conditional: a rule stated as `if subscribed then required` is equally wrong
+ * when it fires on a manifest that did nothing wrong, and a rule copied for
+ * three groups is somewhere someone forgets one. So each group is checked with
+ * the scope and without it, and a manifest with no hooks at all — the shape most
+ * plugins have — must trip none of the three conditions.
+ */
+describe("the event to read-scope rule", () => {
+  function withHookEvents(events: string[], scopes: string[]): unknown {
+    return {
+      manifest_version: 1,
+      key: "com.example.events",
+      name: "Events",
+      version: "1.0.0",
+      author: { name: "example" },
+      scopes,
+      contributes: {
+        hooks: [
+          {
+            key: "on_event",
+            name: "On event",
+            description: "Receives the event body.",
+            triggers: ["event"],
+            events,
+            transport: { type: "http", url: "https://hooks.example.com/on-event" },
+          },
+        ],
+      },
+    };
+  }
+
+  const groups: Array<{ event: string; scope: string }> = [
+    { event: "issue.created", scope: "issues:read" },
+    { event: "issue.updated", scope: "issues:read" },
+    { event: "issue.status_changed", scope: "issues:read" },
+    { event: "comment.created", scope: "comments:read" },
+    { event: "task.started", scope: "tasks:read" },
+    { event: "task.completed", scope: "tasks:read" },
+    { event: "task.failed", scope: "tasks:read" },
+  ];
+
+  it.each(groups)("$event without $scope is rejected", ({ event, scope }) => {
+    const other = scope === "issues:read" ? "members:read" : "issues:read";
+    expect(validate(withHookEvents([event], [other]))).toBe(false);
+    const paths = (validate.errors ?? []).map((error) => error.instancePath);
+    expect(paths).toContain("/scopes");
+  });
+
+  it.each(groups)("$event with $scope validates", ({ event, scope }) => {
+    const valid = validate(withHookEvents([event], [scope]));
+    expect(validate.errors ?? []).toEqual([]);
+    expect(valid).toBe(true);
+  });
+
+  // A hook subscribing across groups needs every read scope those groups imply,
+  // not just the first one a validator happens to check.
+  it("requires every group's scope when one hook spans groups", () => {
+    expect(validate(withHookEvents(["comment.created", "task.failed"], ["comments:read"]))).toBe(
+      false,
+    );
+    const valid = validate(
+      withHookEvents(["comment.created", "task.failed"], ["comments:read", "tasks:read"]),
+    );
+    expect(validate.errors ?? []).toEqual([]);
+    expect(valid).toBe(true);
+  });
+
+  // The condition is "some hook subscribes", so a manifest that contributes no
+  // hooks must not be asked for a read scope it has no use for.
+  it("does not fire on a manifest with no hooks", () => {
+    const surfaceOnly = {
+      manifest_version: 1,
+      key: "com.example.surface",
+      name: "Surface",
+      version: "1.0.0",
+      author: { name: "example" },
+      scopes: ["members:read"],
+      contributes: {
+        surfaces: [{ key: "panel", type: "issue_panel", name: "Panel", entry: "ui/main.js" }],
+      },
+    };
+    const valid = validate(surfaceOnly);
+    expect(validate.errors ?? []).toEqual([]);
+    expect(valid).toBe(true);
   });
 });
 
@@ -87,7 +181,7 @@ describe("the samples only the host can reject", () => {
     .filter((name) => name.endsWith(".json"));
 
   it("are all present", () => {
-    expect(hostOnly.length).toBe(5);
+    expect(hostOnly.length).toBe(4);
   });
 
   it.each(hostOnly)("%s passes the schema, so the schema does not claim to catch it", (file) => {
