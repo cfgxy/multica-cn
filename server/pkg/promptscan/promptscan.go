@@ -26,7 +26,7 @@ import (
 // with the scan so a future rule addition can tell which snapshots were only
 // ever cleared by an older, weaker detector set. Bump it whenever `detectors`
 // changes.
-const Revision = "promptscan/2026-09-08.4"
+const Revision = "promptscan/2026-09-09.1"
 
 // maxFindings bounds a report. Prompt content is unbounded user text, and a
 // pasted .env would otherwise produce a finding per line — a response large
@@ -92,12 +92,18 @@ type detector struct {
 	category Category
 	re       *regexp.Regexp
 
-	// validate, when set, is handed the match's capture groups and decides
-	// whether the match is really a credential. It exists because RE2 has no
-	// lookahead and the interesting questions here — is the value empty, is it
-	// a placeholder, is that token actually the next key — are all decided by
-	// what comes AFTER the value.
-	validate func(groups []string) bool
+	// validate, when set, is handed the match's capture groups plus the rest of
+	// the line the match ended on, and decides whether the match is really a
+	// credential. It exists because RE2 has no lookahead and the interesting
+	// questions here — is the value empty, is it a placeholder, is that token
+	// actually the next key — are all decided by what comes AFTER the value.
+	//
+	// lineRest is passed in rather than captured by the regex on purpose. A
+	// capture group would widen the MATCH, and Go's FindAll only resumes after
+	// the previous match ends: a match that reached the line ending and was then
+	// released took every later field on that line with it, so a real credential
+	// sitting beside a schema field was never scanned at all.
+	validate func(groups []string, lineRest string) bool
 }
 
 // credentialFieldName is the set of field names that mean "what follows is a
@@ -140,9 +146,8 @@ const gap = `[ \t]*(?:\\?\r?\n[ \t]*)?`
 // YAML key whose value is simply the following key. See credentialAssignment.
 const credentialSeparator = quoteRun + gap + `(?::=|=>|[=:])` + `(` + gap + `)`
 
-// credentialValue captures the value, in four groups: the opening quote run,
-// the value token, the single separator character after it, and the remainder
-// of the value's line.
+// credentialValue captures the value, in three groups: the opening quote run,
+// the value token, and the single separator character after it.
 //
 // It captures rather than asserts because the decision needs all of them and
 // RE2 has no lookahead: an empty token is a schema, an unquoted `null` is a
@@ -150,12 +155,12 @@ const credentialSeparator = quoteRun + gap + `(?::=|=>|[=:])` + `(` + gap + `)`
 // key rather than this key's value — the false positive that looking past a
 // line break would otherwise introduce for every YAML document.
 //
-// The rest-of-line group exists because the token stops at `}`, so `${VAR}` and
-// `{{ var }}` reach credentialAssignment already truncated. Deciding whether a
-// placeholder is CLOSED — the difference between the reference a shareable
-// prompt is meant to carry and a secret that merely starts with `$` — needs the
-// characters the token dropped.
-const credentialValue = `(` + quoteRun + `)([^\s"'` + "`" + `,}\]:=]*)([:=]?)([^\r\n]*)`
+// It deliberately stops at the token. Placeholder closing needs the characters
+// the token dropped (it stops at `}`), but those are read from the line as
+// context in credentialAssignment rather than captured here: matching to the
+// line ending made one released field consume every later field on that line,
+// so `{"password":null,"token":"<real>"}` published.
+const credentialValue = `(` + quoteRun + `)([^\s"'` + "`" + `,}\]:=]*)([:=]?)`
 
 // notASecretValue are the tokens that occupy a credential field without being
 // a credential: JSON and YAML empties, and the template references that a
@@ -203,6 +208,45 @@ func isCompletePlaceholder(value string) bool {
 	return false
 }
 
+// valueTerminators end an unquoted value: the next field, the next word or the
+// end of the statement.
+const valueTerminators = " \t\r\n,;"
+
+// fullValue reassembles the value the match started on, reading past the end of
+// the match but stopping at the end of THIS value.
+//
+// It is needed because the value token stops at `}`, so `${VAR}` and `{{ var }}`
+// reach the placeholder test truncated. Reading only to the end of this value —
+// rather than to the end of the line — is what keeps a released field from
+// speaking for the fields after it on the same line.
+func fullValue(quote, token, follow, lineRest string) string {
+	value := token + follow + lineRest
+	if isQuoted(quote) {
+		if i := strings.IndexAny(value[len(token+follow):], "\"'`"); i >= 0 {
+			return value[:len(token+follow)+i]
+		}
+		return value
+	}
+	// An unquoted placeholder may contain the spaces that otherwise end an
+	// unquoted value (`{{ secret }}`), so its closer is skipped past first. Only
+	// the closer is skipped, never what follows it: `${A}realsecret` has to keep
+	// its tail, which is what makes it a secret rather than a reference.
+	cursor := 0
+	for _, form := range placeholderForms {
+		if !strings.HasPrefix(value, form[0]) {
+			continue
+		}
+		if end := strings.Index(value[len(form[0]):], form[1]); end >= 0 {
+			cursor = len(form[0]) + end + len(form[1])
+		}
+		break
+	}
+	if i := strings.IndexAny(value[cursor:], valueTerminators); i >= 0 {
+		return value[:cursor+i]
+	}
+	return value
+}
+
 // isQuoted reports whether the captured quote run actually contains a quote.
 // The run may hold backslashes alone — escaped JSON arrives as `\"` and a lone
 // `\` carries no quoting meaning.
@@ -211,10 +255,11 @@ func isQuoted(quoteRun string) bool {
 }
 
 // credentialAssignment decides whether a regex match is a real assignment.
-// groups are the gap captured by credentialSeparator followed by the four from
-// credentialValue.
-func credentialAssignment(groups []string) bool {
-	gapAfter, quote, token, follow, rest := groups[0], groups[1], groups[2], groups[3], groups[4]
+// groups are the gap captured by credentialSeparator followed by the three from
+// credentialValue; lineRest is the text between the match end and the line
+// ending, used as read-only context.
+func credentialAssignment(groups []string, lineRest string) bool {
+	gapAfter, quote, token, follow := groups[0], groups[1], groups[2], groups[3]
 
 	// No value: `{"password": ""}`, `password:` at the end of a line, or a key
 	// whose next line closes the object.
@@ -228,8 +273,9 @@ func credentialAssignment(groups []string) bool {
 		return false
 	}
 	// `${DB_PASSWORD}`, `<your-token-here>`, `{{ secret }}`. The token stops at
-	// `}`, so the closing half lives in rest and the two are rejoined here.
-	if isCompletePlaceholder(token + follow + rest) {
+	// `}`, so the closing half lives past the match end and the two are rejoined
+	// here — bounded to this value, not to the line.
+	if isCompletePlaceholder(fullValue(quote, token, follow, lineRest)) {
 		return false
 	}
 	// A bare token that both sits on the next line and carries its own
@@ -304,7 +350,7 @@ func Scan(content string) Result {
 
 	for _, d := range detectors {
 		for _, m := range d.re.FindAllStringSubmatchIndex(content, -1) {
-			if d.validate != nil && !d.validate(captured(content, m)) {
+			if d.validate != nil && !d.validate(captured(content, m), restOfLine(content, m[1])) {
 				continue
 			}
 			lineNo := lineOf(content, m[0])
@@ -343,6 +389,17 @@ func captured(content string, m []int) []string {
 		groups = append(groups, content[m[i]:m[i+1]])
 	}
 	return groups
+}
+
+// restOfLine is the text from offset up to the next line ending. It is context
+// for a validator, never part of the match: widening the match to cover it is
+// what let a released field consume the fields after it.
+func restOfLine(content string, offset int) string {
+	rest := content[offset:]
+	if i := strings.IndexAny(rest, "\r\n"); i >= 0 {
+		return rest[:i]
+	}
+	return rest
 }
 
 // lineOf is the 1-based line holding the byte at offset.
