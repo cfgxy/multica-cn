@@ -2,6 +2,7 @@ package promptscan
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -552,6 +553,69 @@ func TestScanDoesNotBlockMultilineProseOrEmptyValues(t *testing.T) {
 	for _, content := range cases {
 		if res := Scan(content); !res.OK() {
 			t.Errorf("content %q must not block, got %+v", content, res.Findings)
+		}
+	}
+}
+
+// A quote of a DIFFERENT type is not a closing delimiter either. The value's
+// end is the opening quote's identity — its character AND its escape level —
+// so a single quote inside a double-quoted value, or a backtick inside either,
+// is ordinary content. Reading it as the closer truncates the value to a bare
+// `${VAR}`, which the placeholder test then releases together with the real
+// text sitting behind it.
+//
+// The matrix is character x escape level x both sides: every opening delimiter
+// must still publish its bare placeholder, must block that placeholder followed
+// by content behind any other quote character, must block it followed by
+// content behind a deeper escape of its own character, and must still end at
+// its real closer so a later credential on the same line is scanned.
+func TestValueEndsOnlyAtItsOwnQuoteIdentity(t *testing.T) {
+	const secret = "s3cr3t-value-not-real"
+	quotes := []string{`"`, `'`, "`"}
+	escapes := []string{"", `\`, `\\`}
+
+	mustPublish := func(t *testing.T, content string) {
+		t.Helper()
+		if res := Scan(content); !res.OK() {
+			t.Fatalf("content %q must still publish, got %+v", content, res.Findings)
+		}
+	}
+	mustBlock := func(t *testing.T, content string) {
+		t.Helper()
+		res := Scan(content)
+		if res.OK() {
+			t.Fatalf("content %q must block", content)
+		}
+		blob, err := json.Marshal(res)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if strings.Contains(string(blob), secret) {
+			t.Fatalf("serialised result leaked the value: %s", blob)
+		}
+	}
+
+	for _, esc := range escapes {
+		for _, q := range quotes {
+			open := esc + q
+			name := fmt.Sprintf("escape%d_%s", len(esc), map[string]string{`"`: "double", `'`: "single", "`": "backtick"}[q])
+			t.Run(name, func(t *testing.T) {
+				mustPublish(t, `password: `+open+`${A}`+open)
+
+				// Another quote character at the SAME escape level.
+				for _, other := range quotes {
+					if other == q {
+						continue
+					}
+					mustBlock(t, `password: `+open+`${A}`+esc+other+secret+open)
+				}
+				// The same character one escape level deeper.
+				mustBlock(t, `password: `+open+`${A}`+esc+`\`+q+secret+open)
+
+				// The real closer still ends the value, so the next field is
+				// still scanned.
+				mustBlock(t, `password: `+open+`${A}`+open+`, api_key: `+open+secret+open)
+			})
 		}
 	}
 }
