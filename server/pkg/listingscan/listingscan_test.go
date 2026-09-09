@@ -74,7 +74,7 @@ func TestScanAcceptsDeclaredPlaceholderInCredentialField(t *testing.T) {
 			"url": "https://api.example.invalid/mcp",
 			"headers": {"Authorization": "${api_token}"}
 		}`),
-		DeclaredPlaceholders: []string{"api_token"},
+		Placeholders: []Placeholder{{Key: "api_token"}},
 	})
 	if !res.OK() {
 		t.Fatalf("a declared placeholder in a credential header must pass, got %v", res.Findings)
@@ -83,7 +83,7 @@ func TestScanAcceptsDeclaredPlaceholderInCredentialField(t *testing.T) {
 
 func TestScanBlocksLiteralInCredentialField(t *testing.T) {
 	// Deliberately a value no shape detector recognises: a short internal
-	// token. The credential-positioned rule is what has to catch it.
+	// token. The value-container rule is what has to catch it.
 	res := Scan(Input{
 		Name: "remote-api",
 		ConfigTemplate: json.RawMessage(`{
@@ -97,12 +97,12 @@ func TestScanBlocksLiteralInCredentialField(t *testing.T) {
 	}
 	found := false
 	for _, f := range res.Findings {
-		if f.Rule == "credential_field_literal" && f.Field == "config_template.headers.Authorization" {
+		if f.Rule == "container_literal_value" && f.Field == "config_template.headers[0]" {
 			found = true
 		}
 	}
 	if !found {
-		t.Fatalf("expected credential_field_literal on the Authorization header, got %v", res.Findings)
+		t.Fatalf("expected container_literal_value on the Authorization header, got %v", res.Findings)
 	}
 }
 
@@ -112,9 +112,9 @@ func TestScanBlocksUndeclaredPlaceholder(t *testing.T) {
 	// publish time is the difference between the publisher fixing it and every
 	// installer hitting a dead listing.
 	res := Scan(Input{
-		Name:                 "remote-api",
-		ConfigTemplate:       json.RawMessage(`{"type":"http","url":"https://x.invalid/${region}"}`),
-		DeclaredPlaceholders: []string{"api_token"},
+		Name:           "remote-api",
+		ConfigTemplate: json.RawMessage(`{"type":"http","url":"https://x.invalid/${region}"}`),
+		Placeholders:   []Placeholder{{Key: "api_token"}},
 	})
 	if res.OK() {
 		t.Fatal("an undeclared placeholder must block")
@@ -148,7 +148,7 @@ func TestScanIgnoresNonCredentialLiterals(t *testing.T) {
 			"command": "npx",
 			"args": ["-y", "@modelcontextprotocol/server-filesystem", "${root_path}"]
 		}`),
-		DeclaredPlaceholders: []string{"root_path"},
+		Placeholders: []Placeholder{{Key: "root_path"}},
 	})
 	if !res.OK() {
 		t.Fatalf("an ordinary stdio template must pass, got %v", res.Findings)
@@ -197,5 +197,161 @@ func TestScanReportsUnparseableTemplate(t *testing.T) {
 	}
 	if res.Findings[0].Rule != "config_template_unparseable" {
 		t.Fatalf("got %v", res.Findings)
+	}
+}
+
+// A credential parked in a placeholder's label or description reaches the
+// catalog exactly like one in the description field, so it must block. Before
+// RUYI-99's rework the handler only handed the scanner the placeholder KEYS,
+// which made this the shortest path to a public secret.
+func TestScanBlocksCredentialInPlaceholderMetadata(t *testing.T) {
+	const token = "ghp_" + "0123456789012345678901234567890123456"
+	for _, tc := range []struct {
+		name  string
+		in    Placeholder
+		field string
+	}{
+		{"label", Placeholder{Key: "api_token", Label: token}, "placeholders[0].label"},
+		{"description", Placeholder{Key: "api_token", Description: "use " + token}, "placeholders[0].description"},
+		{"key", Placeholder{Key: token}, "placeholders[0].key"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := Scan(Input{Name: "remote-api", Placeholders: []Placeholder{tc.in}})
+			if res.OK() {
+				t.Fatalf("a credential in placeholder %s must block", tc.name)
+			}
+			found := false
+			for _, f := range res.Findings {
+				if f.Field == tc.field {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("expected a finding on %s, got %v", tc.field, res.Findings)
+			}
+			encoded, err := json.Marshal(res)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if strings.Contains(string(encoded), token) {
+				t.Fatal("serialised result echoed the placeholder secret")
+			}
+		})
+	}
+}
+
+// A publisher-supplied JSON key is publisher text: it must be scanned, and it
+// must never be echoed back as the finding's field. The field previously
+// carried `config_template.headers.<key>` verbatim, so a 422 body handed the
+// key straight back.
+func TestFindingFieldNeverEchoesPublisherKey(t *testing.T) {
+	const token = "ghp_" + "0123456789012345678901234567890123456"
+	res := Scan(Input{
+		Name:           "remote-api",
+		ConfigTemplate: json.RawMessage(`{"type":"http","url":"https://x.invalid/mcp","headers":{"X-` + token + `":"${api_token}"}}`),
+		Placeholders:   []Placeholder{{Key: "api_token"}},
+	})
+	if res.OK() {
+		t.Fatal("a credential-shaped header NAME must block")
+	}
+	encoded, err := json.Marshal(res)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), token) {
+		t.Fatalf("finding echoed the publisher-supplied key: %s", encoded)
+	}
+	for _, f := range res.Findings {
+		if strings.Contains(f.Message(), token) {
+			t.Fatal("Finding.Message echoed the publisher-supplied key")
+		}
+	}
+}
+
+// Every non-empty value in `headers`/`env` must be a whole registered
+// placeholder. The old rule only held keys that LOOKED like credentials to that
+// standard, so a literal under an innocuous name published freely.
+func TestScanBlocksLiteralUnderInnocuousContainerKey(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		template string
+		field    string
+	}{
+		{
+			"header",
+			`{"type":"http","url":"https://x.invalid/mcp","headers":{"X-Team":"acme-internal"}}`,
+			"config_template.headers[0]",
+		},
+		{
+			"env",
+			`{"command":"npx","args":["-y","server"],"env":{"REGION_SEED":"abc123"}}`,
+			"config_template.env[0]",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := Scan(Input{Name: "x", ConfigTemplate: json.RawMessage(tc.template)})
+			if res.OK() {
+				t.Fatalf("a literal value in %s must block", tc.name)
+			}
+			found := false
+			for _, f := range res.Findings {
+				if f.Rule == "container_literal_value" && f.Field == tc.field {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("expected container_literal_value on %s, got %v", tc.field, res.Findings)
+			}
+		})
+	}
+}
+
+// The counterpart: registered placeholders everywhere in the containers pass,
+// and an empty value is not a literal.
+func TestScanAcceptsFullyPlaceholderedContainers(t *testing.T) {
+	res := Scan(Input{
+		Name: "x",
+		ConfigTemplate: json.RawMessage(`{
+			"type": "http",
+			"url": "https://x.invalid/mcp",
+			"headers": {"X-Team": "${team}", "Authorization": "${api_token}"},
+			"env": {"OPTIONAL": ""}
+		}`),
+		Placeholders: []Placeholder{{Key: "team"}, {Key: "api_token"}},
+	})
+	if !res.OK() {
+		t.Fatalf("fully placeholdered containers must pass, got %v", res.Findings)
+	}
+}
+
+// Map positions come from a sorted key order, so two scans of the same content
+// address the same leaf the same way.
+func TestContainerPositionsAreStable(t *testing.T) {
+	in := Input{
+		Name:           "x",
+		ConfigTemplate: json.RawMessage(`{"type":"http","url":"https://x.invalid","headers":{"Z-One":"a","A-Two":"b","M-Three":"c"}}`),
+	}
+	first, err := json.Marshal(Scan(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := json.Marshal(Scan(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(first) != string(second) {
+		t.Fatal("map positions differed between two scans of identical content")
+	}
+	res := Scan(in)
+	// Sorted: A-Two, M-Three, Z-One.
+	want := map[string]bool{
+		"config_template.headers[0]": true,
+		"config_template.headers[1]": true,
+		"config_template.headers[2]": true,
+	}
+	for _, f := range res.Findings {
+		if f.Rule == "container_literal_value" && !want[f.Field] {
+			t.Fatalf("unexpected field %q", f.Field)
+		}
 	}
 }

@@ -248,19 +248,26 @@ func marketplaceDraftFromRequest(req MarketplacePublishRequest) service.Marketpl
 // it blocks. Returns the result so the caller can persist the revision that
 // cleared the content.
 func scanMarketplaceDraft(w http.ResponseWriter, r *http.Request, item service.MarketplaceItem) (listingscan.Result, bool) {
-	declared := make([]string, 0, len(item.Placeholders))
+	// The whole placeholder goes to the scanner, not just the key: label and
+	// description are published verbatim and are as good a hiding place for a
+	// credential as the description field.
+	declared := make([]listingscan.Placeholder, 0, len(item.Placeholders))
 	for _, p := range item.Placeholders {
-		declared = append(declared, p.Key)
+		declared = append(declared, listingscan.Placeholder{
+			Key:         p.Key,
+			Label:       p.Label,
+			Description: p.Description,
+		})
 	}
 	res := listingscan.Scan(listingscan.Input{
-		Name:                 item.Name,
-		Summary:              item.Summary,
-		Description:          item.Description,
-		HomepageURL:          item.HomepageURL,
-		Categories:           item.Categories,
-		SourceURL:            item.SourceURL,
-		ConfigTemplate:       item.ConfigTemplate,
-		DeclaredPlaceholders: declared,
+		Name:           item.Name,
+		Summary:        item.Summary,
+		Description:    item.Description,
+		HomepageURL:    item.HomepageURL,
+		Categories:     item.Categories,
+		SourceURL:      item.SourceURL,
+		ConfigTemplate: item.ConfigTemplate,
+		Placeholders:   declared,
 	})
 	if res.OK() {
 		return res, true

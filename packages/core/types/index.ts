@@ -98,6 +98,11 @@ export type {
   MarketplaceListingState,
   MarketplaceScanError,
   MarketplaceScanFinding,
+  MarketplaceCategory,
+} from "./marketplace";
+export {
+  MARKETPLACE_CATEGORIES,
+  MARKETPLACE_SUMMARY_MAX_LENGTH,
 } from "./marketplace";
 export type {
   PluginInstallation,

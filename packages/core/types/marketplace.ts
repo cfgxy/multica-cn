@@ -2,6 +2,28 @@
 export type MarketplaceItemKind = "skill" | "mcp";
 
 /**
+ * The closed set of categories a published listing may claim.
+ *
+ * Mirrors service.MarketplaceCategories on the server, which is the authority:
+ * this copy exists so the publish form can offer the choices rather than
+ * accepting free text, and a client running against a newer backend simply
+ * offers fewer options than that backend accepts.
+ */
+export const MARKETPLACE_CATEGORIES = [
+  "data",
+  "development",
+  "documents",
+  "files",
+  "productivity",
+  "web",
+] as const;
+
+export type MarketplaceCategory = (typeof MARKETPLACE_CATEGORIES)[number];
+
+/** The longest summary the server accepts. */
+export const MARKETPLACE_SUMMARY_MAX_LENGTH = 200;
+
+/**
  * One value an MCP install must collect before the entry will run.
  *
  * `secret: true` means the value is a credential: it is masked on input and,

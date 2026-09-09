@@ -156,6 +156,12 @@ export function useInstallMarketplaceItem(wsId: string) {
  * is the one that is easy to forget — a published listing joins the catalog
  * every workspace reads, and a withdrawal takes it back out, so leaving the
  * catalog cached would show the user a listing that no longer exists.
+ *
+ * The management list belongs to the publishing workspace, so it is dropped by
+ * exact key. The catalog does not: it is global, and keyed per workspace only
+ * because the installed flag is. Any workspace the user has already opened the
+ * marketplace in is holding a copy of the pre-publish catalog, so those are
+ * matched by key shape rather than by this workspace's id.
  */
 function invalidateMarketplaceListingCaches(
   queryClient: ReturnType<typeof useQueryClient>,
@@ -164,7 +170,13 @@ function invalidateMarketplaceListingCaches(
   queryClient.invalidateQueries({
     queryKey: workspaceKeys.marketplaceListings(wsId),
   });
-  queryClient.invalidateQueries({ queryKey: ["workspaces", wsId, "marketplace"] });
+  queryClient.invalidateQueries({ predicate: isMarketplaceCatalogQuery });
+}
+
+/** Matches `workspaceKeys.marketplace(...)` for ANY workspace. */
+function isMarketplaceCatalogQuery(query: { queryKey: readonly unknown[] }): boolean {
+  const key = query.queryKey;
+  return key[0] === "workspaces" && key[2] === "marketplace";
 }
 
 /**

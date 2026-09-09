@@ -19,6 +19,10 @@ import type {
   MarketplacePlaceholder,
   MarketplaceScanFinding,
 } from "@multica/core/types";
+import {
+  MARKETPLACE_CATEGORIES,
+  MARKETPLACE_SUMMARY_MAX_LENGTH,
+} from "@multica/core/types";
 import { useT } from "../../i18n";
 
 /**
@@ -45,6 +49,25 @@ const TRANSPORTS: PublishTransport[] = ["stdio", "http", "sse"];
 type PlaceholderDraft = MarketplacePlaceholder;
 
 type KeyValueDraft = { key: string; value: string };
+
+/**
+ * The workspace entity a publish was started from, when it was started from a
+ * skill or MCP row rather than a blank form.
+ *
+ * Only what the SERVER already reports about that entity appears here: its
+ * name, and for an MCP server the transport it is registered under. The MCP
+ * config column is write-only and no read endpoint returns it, so the template
+ * is not — and cannot be — seeded from the running server. The publisher still
+ * writes it, which is the point: what goes to the catalog is a template with
+ * `${placeholder}` tokens, not one workspace's working configuration.
+ */
+export type MarketplacePublishEntity = {
+  name: string;
+  /** MCP only: the transport the workspace entry is registered under. */
+  transport?: string;
+  /** Skill only: the public source the skill was imported from, if any. */
+  sourceUrl?: string;
+};
 
 export type MarketplacePublishSubmit = {
   kind: string;
@@ -76,6 +99,25 @@ function recordToPairs(value: unknown): KeyValueDraft[] {
   return Object.entries(value as Record<string, unknown>).flatMap(([key, item]) =>
     typeof item === "string" ? [{ key, value: item }] : [],
   );
+}
+
+/**
+ * Maps a server-reported transport onto the ones this form offers. `sse` stays
+ * distinct from `http`: they are different wire protocols and the server keeps
+ * them apart. An unrecognized value falls back to stdio rather than being
+ * published as itself.
+ */
+function normalizeTransport(value: string): PublishTransport {
+  const declared = value.trim().toLowerCase();
+  if (declared === "sse") return "sse";
+  if (
+    declared === "remote" ||
+    declared === "http" ||
+    declared === "streamable-http"
+  ) {
+    return "http";
+  }
+  return "stdio";
 }
 
 /**
@@ -115,10 +157,99 @@ function stringField(value: unknown): string {
   return typeof value === "string" ? value : "";
 }
 
+/** The template fields this form can edit, as the form holds them. */
+type TemplateDraft = {
+  transport: PublishTransport;
+  command: string;
+  args: string;
+  url: string;
+  headers: KeyValueDraft[];
+  env: KeyValueDraft[];
+};
+
+/**
+ * Reads an existing template into the form's fields.
+ *
+ * The result is kept alongside the live fields as the EDIT BASELINE: on submit
+ * a field is only written back when it differs from what was read here. That is
+ * what makes a metadata-only edit leave the published template byte-identical
+ * instead of rebuilding it from whatever this form happens to model.
+ */
+function draftOfTemplate(template: Record<string, unknown>, hasListing: boolean): TemplateDraft {
+  return {
+    transport: hasListing ? transportOfTemplate(template) : "stdio",
+    command: stringField(template.command),
+    args: stringArray(template.args).join("\n"),
+    url: stringField(template.url),
+    headers: recordToPairs(template.headers),
+    env: recordToPairs(template.env),
+  };
+}
+
+function pairsEqual(a: KeyValueDraft[], b: KeyValueDraft[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((pair, i) => pair.key === b[i]?.key && pair.value === b[i]?.value)
+  );
+}
+
+/**
+ * Produces the template to submit: the published one with the publisher's
+ * actual edits applied, not a reconstruction.
+ *
+ * Untouched fields — including ones this form does not model at all, an empty
+ * `args`, and the server's own spelling of `type` — are carried through from
+ * `base` verbatim. Only a field the publisher changed is overwritten, and the
+ * transport-specific keys of the OTHER transport are dropped only when the
+ * transport itself was switched.
+ */
+function buildTemplate(
+  base: Record<string, unknown>,
+  baseline: TemplateDraft,
+  draft: TemplateDraft,
+): Record<string, unknown> {
+  const entry: Record<string, unknown> = { ...base };
+  const transportChanged = draft.transport !== baseline.transport;
+  if (transportChanged || typeof entry.type !== "string") {
+    entry.type = draft.transport;
+  }
+
+  if (draft.command !== baseline.command) entry.command = draft.command.trim();
+  if (draft.args !== baseline.args) {
+    const argList = draft.args
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "");
+    if (argList.length > 0) entry.args = argList;
+    else delete entry.args;
+  }
+  if (draft.url !== baseline.url) entry.url = draft.url.trim();
+  if (!pairsEqual(draft.env, baseline.env)) {
+    const envRecord = pairsToRecord(draft.env);
+    if (Object.keys(envRecord).length > 0) entry.env = envRecord;
+    else delete entry.env;
+  }
+  if (!pairsEqual(draft.headers, baseline.headers)) {
+    const headerRecord = pairsToRecord(draft.headers);
+    if (Object.keys(headerRecord).length > 0) entry.headers = headerRecord;
+    else delete entry.headers;
+  }
+
+  if (transportChanged) {
+    for (const key of draft.transport === "stdio"
+      ? ["url", "headers"]
+      : ["command", "args", "env"]) {
+      delete entry[key];
+    }
+  }
+  return entry;
+}
+
 export function MarketplacePublishDialog({
   open,
   kind,
   listing,
+  entity,
   submitting,
   findings,
   scannerRevision,
@@ -131,6 +262,8 @@ export function MarketplacePublishDialog({
   kind: string;
   /** The listing being edited, or null when publishing something new. */
   listing: MarketplaceListing | null;
+  /** The workspace entity this publish was started from, if any. */
+  entity?: MarketplacePublishEntity | null;
   submitting: boolean;
   /** Secret-scan findings from a rejected submit, location-only. */
   findings: MarketplaceScanFinding[];
@@ -151,7 +284,7 @@ export function MarketplacePublishDialog({
   const [summary, setSummary] = useState("");
   const [description, setDescription] = useState("");
   const [homepageUrl, setHomepageUrl] = useState("");
-  const [categories, setCategories] = useState("");
+  const [categories, setCategories] = useState<string[]>([]);
   const [sourceUrl, setSourceUrl] = useState("");
 
   const [transport, setTransport] = useState<PublishTransport>("stdio");
@@ -161,6 +294,12 @@ export function MarketplacePublishDialog({
   const [headers, setHeaders] = useState<KeyValueDraft[]>([]);
   const [env, setEnv] = useState<KeyValueDraft[]>([]);
   const [placeholders, setPlaceholders] = useState<PlaceholderDraft[]>([]);
+  // The published template and the fields as they were read out of it. Both are
+  // the baseline an edit is diffed against; see buildTemplate.
+  const [baseTemplate, setBaseTemplate] = useState<Record<string, unknown>>({});
+  const [templateBaseline, setTemplateBaseline] = useState<TemplateDraft>(() =>
+    draftOfTemplate({}, false),
+  );
 
   // Reopening on a different listing must not carry the previous one's fields
   // across — publishing one server's template under another's name is exactly
@@ -171,40 +310,57 @@ export function MarketplacePublishDialog({
       listing?.config_template && typeof listing.config_template === "object"
         ? (listing.config_template as Record<string, unknown>)
         : {};
-    setName(listing?.name ?? "");
+    setName(listing?.name ?? entity?.name ?? "");
     setSummary(listing?.summary ?? "");
     setDescription(listing?.description ?? "");
     setHomepageUrl(listing?.homepage_url ?? "");
-    setCategories((listing?.categories ?? []).join(", "));
-    setSourceUrl(listing?.source_url ?? "");
-    setTransport(listing ? transportOfTemplate(listing.config_template) : "stdio");
-    setCommand(stringField(template.command));
-    setArgs(stringArray(template.args).join("\n"));
-    setUrl(stringField(template.url));
-    setHeaders(recordToPairs(template.headers));
-    setEnv(recordToPairs(template.env));
+    setCategories(
+      (listing?.categories ?? []).filter((category) =>
+        (MARKETPLACE_CATEGORIES as readonly string[]).includes(category),
+      ),
+    );
+    setSourceUrl(listing?.source_url ?? entity?.sourceUrl ?? "");
+    const baseline = draftOfTemplate(template, listing !== null);
+    // A publish started from an MCP row knows the transport the workspace entry
+    // is registered under — that much the server does report. Everything else
+    // about that entry stays unread.
+    if (!listing && entity?.transport) {
+      baseline.transport = normalizeTransport(entity.transport);
+    }
+    setTransport(baseline.transport);
+    setCommand(baseline.command);
+    setArgs(baseline.args);
+    setUrl(baseline.url);
+    setHeaders(baseline.headers);
+    setEnv(baseline.env);
+    setBaseTemplate(template);
+    setTemplateBaseline(baseline);
     setPlaceholders(listing?.placeholders ? [...listing.placeholders] : []);
-  }, [open, listing]);
+    // `entity` is depended on field by field: callers build it inline, so a new
+    // object identity each render would otherwise reset the form mid-edit.
+  }, [open, listing, entity?.name, entity?.transport, entity?.sourceUrl]);
 
   const template = useMemo(() => {
     if (!isMcp) return undefined;
-    const entry: Record<string, unknown> = { type: transport };
-    if (transport === "stdio") {
-      entry.command = command.trim();
-      const argList = args
-        .split("\n")
-        .map((line) => line.trim())
-        .filter((line) => line !== "");
-      if (argList.length > 0) entry.args = argList;
-      const envRecord = pairsToRecord(env);
-      if (Object.keys(envRecord).length > 0) entry.env = envRecord;
-    } else {
-      entry.url = url.trim();
-      const headerRecord = pairsToRecord(headers);
-      if (Object.keys(headerRecord).length > 0) entry.headers = headerRecord;
-    }
-    return entry;
-  }, [isMcp, transport, command, args, env, url, headers]);
+    return buildTemplate(baseTemplate, templateBaseline, {
+      transport,
+      command,
+      args,
+      url,
+      headers,
+      env,
+    });
+  }, [
+    isMcp,
+    baseTemplate,
+    templateBaseline,
+    transport,
+    command,
+    args,
+    env,
+    url,
+    headers,
+  ]);
 
   const declaredPlaceholders = useMemo(
     () =>
@@ -227,15 +383,28 @@ export function MarketplacePublishDialog({
 
   const trimmedName = name.trim();
   const nameValid = /^[A-Za-z0-9_-]+$/.test(trimmedName);
+  // Publishing from a skill or MCP row publishes THAT entity: renaming it here
+  // would silently publish something else under a name nobody chose. Editing an
+  // existing listing is likewise fixed — the server reserves the name.
+  const nameLocked = listing !== null || (entity?.name ?? "") !== "";
   const transportComplete = !isMcp
     ? sourceUrl.trim() !== ""
     : transport === "stdio"
       ? command.trim() !== ""
       : url.trim() !== "";
+  // Mirrors ValidateMarketplaceListingDraft: a listing goes into a catalog
+  // every workspace browses, so a summary and at least one category are what
+  // make it findable rather than optional polish.
+  const trimmedSummary = summary.trim();
+  const summaryValid =
+    trimmedSummary !== "" &&
+    trimmedSummary.length <= MARKETPLACE_SUMMARY_MAX_LENGTH;
   const canSubmit =
     !submitting &&
     trimmedName !== "" &&
     nameValid &&
+    summaryValid &&
+    categories.length > 0 &&
     transportComplete &&
     unusedPlaceholders.length === 0;
 
@@ -243,13 +412,10 @@ export function MarketplacePublishDialog({
     onSubmit({
       kind,
       name: trimmedName,
-      summary: summary.trim(),
+      summary: trimmedSummary,
       description: description.trim(),
       homepage_url: homepageUrl.trim(),
-      categories: categories
-        .split(",")
-        .map((entry) => entry.trim())
-        .filter((entry) => entry !== ""),
+      categories,
       ...(isMcp
         ? { config_template: template, placeholders: declaredPlaceholders }
         : { source_url: sourceUrl.trim() }),
@@ -281,9 +447,14 @@ export function MarketplacePublishDialog({
               id="marketplace-publish-name"
               value={name}
               onChange={(event) => setName(event.target.value)}
+              readOnly={nameLocked}
               autoComplete="off"
             />
-            {trimmedName !== "" && !nameValid ? (
+            {nameLocked ? (
+              <p className="text-caption text-muted-foreground">
+                {t(($) => $.marketplace.publish.name_from_entity)}
+              </p>
+            ) : trimmedName !== "" && !nameValid ? (
               <p className="text-caption text-destructive">
                 {t(($) => $.marketplace.publish.name_charset)}
               </p>
@@ -303,6 +474,21 @@ export function MarketplacePublishDialog({
               value={summary}
               onChange={(event) => setSummary(event.target.value)}
             />
+            {summaryValid ? (
+              <p className="text-caption text-muted-foreground">
+                {t(($) => $.marketplace.publish.summary_note, {
+                  max: String(MARKETPLACE_SUMMARY_MAX_LENGTH),
+                })}
+              </p>
+            ) : (
+              <p className="text-caption text-destructive">
+                {trimmedSummary === ""
+                  ? t(($) => $.marketplace.publish.summary_required)
+                  : t(($) => $.marketplace.publish.summary_too_long, {
+                      max: String(MARKETPLACE_SUMMARY_MAX_LENGTH),
+                    })}
+              </p>
+            )}
           </div>
 
           <div className="space-y-1.5">
@@ -330,15 +516,35 @@ export function MarketplacePublishDialog({
           </div>
 
           <div className="space-y-1.5">
-            <Label htmlFor="marketplace-publish-categories">
-              {t(($) => $.marketplace.publish.categories)}
-            </Label>
-            <Input
-              id="marketplace-publish-categories"
-              value={categories}
-              onChange={(event) => setCategories(event.target.value)}
-              autoComplete="off"
-            />
+            <Label>{t(($) => $.marketplace.publish.categories)}</Label>
+            <div className="flex flex-wrap gap-2">
+              {MARKETPLACE_CATEGORIES.map((candidate) => {
+                const selected = categories.includes(candidate);
+                return (
+                  <Button
+                    key={candidate}
+                    type="button"
+                    size="sm"
+                    variant={selected ? "secondary" : "outline"}
+                    aria-pressed={selected}
+                    onClick={() =>
+                      setCategories((prev) =>
+                        prev.includes(candidate)
+                          ? prev.filter((entry) => entry !== candidate)
+                          : [...prev, candidate],
+                      )
+                    }
+                  >
+                    {t(($) => $.marketplace.categories[candidate])}
+                  </Button>
+                );
+              })}
+            </div>
+            {categories.length === 0 ? (
+              <p className="text-caption text-destructive">
+                {t(($) => $.marketplace.publish.categories_required)}
+              </p>
+            ) : null}
           </div>
 
           {!isMcp ? (
