@@ -127,6 +127,7 @@ import {
   resolvePublishedRootIds,
 } from "@/lib/comment-locate";
 import { CommentGeometryRegistry } from "@/lib/comment-geometry";
+import { AnchorHighlightGate } from "@/lib/comment-anchor-highlight";
 import { resolveCommentAnchor } from "@/lib/comment-anchor";
 import {
   CommentAnchorProvider,
@@ -580,6 +581,8 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
   // RUYI-108 行内几何：回复与 root 共用一行，行级 viewability 判不出被引用的
   // 回复是否真的入屏，控制器的行内校正靠卡片上报的这份测量值。
   const geometryRef = useRef(new CommentGeometryRegistry());
+  // RUYI-108 高亮起算闸门：点击只武装，定位流程结束才起算那 1.7s 播放。
+  const highlightGateRef = useRef(new AnchorHighlightGate());
 
   const controllerRef = useRef<CommentLocateController | null>(null);
   if (!controllerRef.current) {
@@ -608,18 +611,30 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
             : Promise.reject(new Error("list not mounted"));
         },
         isViewable: (rootId) => viewableIdsRef.current.has(rootId),
-        // 行内校正的三件套：目标在内容坐标系里的矩形（行顶 + 行内偏移）、
-        // 当前视口、直接按偏移滚动。行没有布局或卡片还没量到时返回 null，
-        // 控制器会按有界重试再来。
+        // 行内校正的三件套：目标在**原生滚动坐标系**里的矩形、当前视口、
+        // 直接按偏移滚动。行没有布局、卡片还没量到、或列表尚未挂载时返回
+        // null，控制器会按有界重试再来。
+        //
+        // 坐标必须统一：`getLayout(i).y` 是 item 区坐标，不含
+        // ListHeaderComponent 与顶部内边距；而 `getViewport()` 读的
+        // `contentOffset.y` 和下面的 `scrollToOffset`（FlashList 默认
+        // `skipFirstItemOffset: true`）都是原生滚动坐标。差值就是
+        // `getFirstItemOffset()`。Issue 头部（标题 + 描述 + 反应行）在真机
+        // 上是几百像素，漏掉这一段会让二次滚动始终停在目标上方，把有界重试
+        // 烧光后判 `layout` 失败。
         measureTarget: (targetId) =>
-          geometryRef.current.resolve(targetId, (rootId) => {
-            const idx = dataRef.current.findIndex(
-              (r) => r.entry.type === "comment" && r.entry.id === rootId,
-            );
-            if (idx < 0) return null;
-            const layout = listRef.current?.getLayout(idx);
-            return layout ? layout.y : null;
-          }),
+          geometryRef.current.resolve(
+            targetId,
+            (rootId) => {
+              const idx = dataRef.current.findIndex(
+                (r) => r.entry.type === "comment" && r.entry.id === rootId,
+              );
+              if (idx < 0) return null;
+              const layout = listRef.current?.getLayout(idx);
+              return layout ? layout.y : null;
+            },
+            listRef.current?.getFirstItemOffset() ?? null,
+          ),
         getViewport: () => ({
           offsetY: scrollGeoRef.current.offsetY,
           height: scrollGeoRef.current.viewportHeight,
@@ -643,13 +658,28 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
             reason: result.reason ?? "timeout",
           });
         }
+        // 锚点高亮在**这一刻**才起算（RUYI-108 第三轮）。点击起算的旧写法
+        // 让 1.7s 的高亮和一条最长 4s 的定位路径赛跑：折叠展开、行布局重试、
+        // 行内校正各自都能吃掉一秒以上，慢路径下目标最终入屏而高亮早已播完。
+        // 失败也放行——目标可能一直就在视口里、只是没拿到 viewability 确认，
+        // 静默会让用户觉得点击没反应。闸门按 nonce 防串扰（连点两个引用时，
+        // 先前那次的迟到回调不得点亮后一次的目标）。
+        const pending = highlightGateRef.current.settle(result.nonce);
+        if (pending) setHighlightedId(pending);
       },
     );
   }
   const locateController = controllerRef.current;
 
-  // Cancel the in-flight run on unmount without emitting a result.
-  useEffect(() => () => locateController.cancel(), [locateController]);
+  // Cancel the in-flight run on unmount without emitting a result — the
+  // armed highlight goes with it (no result callback will ever fire).
+  useEffect(() => {
+    const gate = highlightGateRef.current;
+    return () => {
+      locateController.cancel();
+      gate.disarm();
+    };
+  }, [locateController]);
 
   // Feed the controller every viewability edge — it no-ops unless a run
   // is awaiting on-screen confirmation (see the stable forwarder below
@@ -714,7 +744,13 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
       useCommentFocusStore
         .getState()
         .requestFocus(issue.id, outcome.rootId, outcome.commentId);
-      setHighlightedId(outcome.commentId);
+      // 高亮不在这里起算——只武装。定位可能要展开折叠线程、重试行布局、
+      // 做多轮行内校正，起算点在控制器的结果回调里（见上）。nonce 取
+      // requestFocus 刚刚铸好的那一个，闸门据此拒绝迟到的旧回调。
+      const nonce = useCommentFocusStore.getState().focus?.nonce;
+      if (nonce != null) {
+        highlightGateRef.current.arm(outcome.commentId, nonce);
+      }
     },
     [issue.id],
   );

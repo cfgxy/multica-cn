@@ -65,6 +65,7 @@ import { useCommentSelectStore } from "@/data/comment-select-store";
 import { useCommentFocusStore } from "@/data/stores/comment-focus-store";
 import { commentSummary } from "@/lib/comment-summary";
 import { useCommentAnchor } from "@/lib/comment-anchor-context";
+import { RowGeometryReporter } from "@/lib/comment-geometry";
 
 interface Props {
   entry: TimelineEntry;
@@ -180,56 +181,45 @@ export function CommentCard({
 
   // ── RUYI-108 行内几何上报 ─────────────────────────────────────────────
   // 每条回复登记自己在**所属 FlashList 行**内的纵向偏移，定位控制器据此判断
-  // 被引用的回复是否真的入屏、并在需要时二次滚动。
-  //
-  // `onLayout` 给的 `y` 只相对**直接父节点**（回复 wrapper 的父节点是气泡
-  // View），而控制器要的是相对行顶。所以气泡自身的偏移单独量一次做基准，
-  // 回复偏移 = 基准 + 自身 y。两者的 layout 事件顺序不确定（RN 里子节点通常
-  // 先于父节点），因此原始测量值存在 ref 里，任一侧到齐都重算一次全部登记，
-  // 而不是假设基准先到。
+  // 被引用的回复是否真的入屏、并在需要时二次滚动。测量的合并、基准迟到重算
+  // 和集合差集清理都在 `RowGeometryReporter` 里（lib/comment-geometry.ts，
+  // node lane 有单测）；这里只负责把 `onLayout` 事件喂给它。
   const { reportGeometry, forgetGeometry } = useCommentAnchor();
-  const bubbleOffsetRef = useRef(0);
-  const rawRepliesRef = useRef(new Map<string, { y: number; height: number }>());
-  const flushGeometry = useCallback(() => {
-    for (const [replyId, raw] of rawRepliesRef.current) {
-      reportGeometry(replyId, {
-        rootId: entry.id,
-        offsetInRow: bubbleOffsetRef.current + raw.y,
-        height: raw.height,
-      });
-    }
-  }, [reportGeometry, entry.id]);
+  const reporterRef = useRef<RowGeometryReporter | null>(null);
+  if (!reporterRef.current) {
+    reporterRef.current = new RowGeometryReporter(
+      entry.id,
+      reportGeometry,
+      forgetGeometry,
+    );
+  }
+  const reporter = reporterRef.current;
   const measureBubble = useCallback(
-    (layout: { y: number }) => {
-      bubbleOffsetRef.current = layout.y;
-      flushGeometry();
-    },
-    [flushGeometry],
+    (layout: { y: number }) => reporter.setBubbleOffset(layout.y),
+    [reporter],
   );
   const measureReply = useCallback(
-    (replyId: string, layout: { y: number; height: number }) => {
-      rawRepliesRef.current.set(replyId, {
-        y: layout.y,
-        height: layout.height,
-      });
-      flushGeometry();
-    },
-    [flushGeometry],
+    (replyId: string, layout: { y: number; height: number }) =>
+      reporter.measureReply(replyId, layout),
+    [reporter],
   );
-  // 折叠或卸载（FlashList 回收行）时丢弃测量值：wrapper 已经不渲染了，留着
-  // 旧坐标会让二次滚动按一份不再成立的布局跳走。
+  // 回复集合变化时只丢弃**真正消失**的那些。原实现在这里删掉旧集合的全部
+  // 测量值而不重新上报，导致线程新增一条回复后仍然挂载的老回复永久量不到
+  // （RN 只在布局真的变化时才再派发 onLayout），定位空转到重试耗尽后失败。
   const replyIds = replies.map((r) => r.id).join(",");
   useEffect(() => {
     if (!isRootExpanded) return;
-    const raw = rawRepliesRef.current;
-    const ids = replyIds ? replyIds.split(",") : [];
-    return () => {
-      for (const id of ids) {
-        raw.delete(id);
-        forgetGeometry(id);
-      }
-    };
-  }, [isRootExpanded, replyIds, forgetGeometry]);
+    reporter.syncReplies(replyIds ? replyIds.split(",") : []);
+  }, [isRootExpanded, replyIds, reporter]);
+  // 折叠或整行卸载（FlashList 回收）时才清空：wrapper 已经不渲染了，留着
+  // 旧坐标会让二次滚动按一份不再成立的布局跳走。
+  useEffect(() => {
+    if (!isRootExpanded) {
+      reporter.release();
+      return;
+    }
+    return () => reporter.release();
+  }, [isRootExpanded, reporter]);
 
   // ── RUYI-28 collapsed root (normal, unresolved) ────────────────────────
   // Default collapsed; expansion is session-scoped per issue. The bar shows
