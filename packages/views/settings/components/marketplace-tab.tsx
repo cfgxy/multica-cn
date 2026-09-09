@@ -10,11 +10,13 @@ import { Input } from "@multica/ui/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@multica/ui/components/ui/tabs";
 import { useCurrentWorkspace } from "@multica/core/paths";
 import { useCurrentMember } from "@multica/core/permissions";
+import { pluginInstallationsOptions } from "@multica/core/plugins";
 import { marketplaceItemsOptions } from "@multica/core/workspace/queries";
 import { useInstallMarketplaceItem } from "@multica/core/workspace/mutations";
 import type { MarketplaceItem } from "@multica/core/types";
 import { useT } from "../../i18n";
 import { MarketplaceInstallDialog } from "./marketplace-install-dialog";
+import { PluginDirectory } from "./plugin-directory";
 import { SettingsCard, SettingsSection, SettingsTab } from "./settings-layout";
 
 /**
@@ -37,7 +39,27 @@ export function MarketplaceTab() {
 
   const [kind, setKind] = useState("");
   const [search, setSearch] = useState("");
-  const itemsQuery = useQuery(marketplaceItemsOptions(wsId, { kind, q: search }));
+  // Two shelves, one filter. The catalog is a build-time list the server
+  // filters; the plugin directory is what workspaces on this instance have
+  // listed at runtime. They cannot be merged into one query, so the filter
+  // picks which sections render and the catalog query stands down when the
+  // reader asked for plugins only.
+  //
+  // The plugin shelf is behind plugins_v1, and the flag lives on the server.
+  // The installed-plugins response is what reports it — that endpoint answers
+  // with the flag off by design, which is exactly what makes it usable as the
+  // signal here. Until it answers, the shelf stays out rather than rendering a
+  // filter that would disappear a moment later.
+  const installationsQuery = useQuery(pluginInstallationsOptions(wsId));
+  const pluginsEnabled = installationsQuery.data?.plugins_enabled === true;
+  // A reader already filtered to plugins when the flag went off falls back to
+  // the catalog rather than to an empty page.
+  const showCatalog = kind !== "plugin" || !pluginsEnabled;
+  const showPlugins = pluginsEnabled && (kind === "" || kind === "plugin");
+  const itemsQuery = useQuery({
+    ...marketplaceItemsOptions(wsId, { kind, q: search }),
+    enabled: showCatalog && wsId.length > 0,
+  });
   const install = useInstallMarketplaceItem(wsId);
 
   const items = useMemo(() => itemsQuery.data ?? [], [itemsQuery.data]);
@@ -85,29 +107,33 @@ export function MarketplaceTab() {
       title={t(($) => $.marketplace.title)}
       description={t(($) => $.marketplace.description)}
     >
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+        <Tabs value={kind} onValueChange={setKind}>
+          <TabsList>
+            <TabsTrigger value="">{t(($) => $.marketplace.filter_all)}</TabsTrigger>
+            <TabsTrigger value="skill">{t(($) => $.marketplace.filter_skills)}</TabsTrigger>
+            <TabsTrigger value="mcp">{t(($) => $.marketplace.filter_mcp)}</TabsTrigger>
+            {pluginsEnabled ? (
+              <TabsTrigger value="plugin">{t(($) => $.marketplace.filter_plugins)}</TabsTrigger>
+            ) : null}
+          </TabsList>
+        </Tabs>
+        <div className="relative flex-1">
+          <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+          <Input
+            className="pl-8"
+            value={search}
+            placeholder={t(($) => $.marketplace.search_placeholder)}
+            onChange={(event) => setSearch(event.target.value)}
+          />
+        </div>
+      </div>
+
+      {showCatalog ? (
       <SettingsSection
         title={t(($) => $.marketplace.browse_title)}
         description={t(($) => $.marketplace.binding_note)}
       >
-        <div className="mb-3 flex flex-col gap-2 sm:flex-row sm:items-center">
-          <Tabs value={kind} onValueChange={setKind}>
-            <TabsList>
-              <TabsTrigger value="">{t(($) => $.marketplace.filter_all)}</TabsTrigger>
-              <TabsTrigger value="skill">{t(($) => $.marketplace.filter_skills)}</TabsTrigger>
-              <TabsTrigger value="mcp">{t(($) => $.marketplace.filter_mcp)}</TabsTrigger>
-            </TabsList>
-          </Tabs>
-          <div className="relative flex-1">
-            <Search className="absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
-            <Input
-              className="pl-8"
-              value={search}
-              placeholder={t(($) => $.marketplace.search_placeholder)}
-              onChange={(event) => setSearch(event.target.value)}
-            />
-          </div>
-        </div>
-
         <SettingsCard>
           {itemsQuery.isLoading ? (
             <div className="flex items-center justify-center py-8 text-muted-foreground">
@@ -142,6 +168,11 @@ export function MarketplaceTab() {
           </p>
         ) : null}
       </SettingsSection>
+      ) : null}
+
+      {showPlugins ? (
+        <PluginDirectory wsId={wsId} canManage={canManage} search={search} />
+      ) : null}
 
       <MarketplaceInstallDialog
         open={installTarget !== null}

@@ -39,6 +39,53 @@ SELECT * FROM plugin_package
 WHERE workspace_id = $1
 ORDER BY name ASC;
 
+-- name: SetPluginPackageVisibility :one
+-- Lists or unlists a package on the instance directory.
+--
+-- Only the owning workspace may call this: visibility is the publisher's
+-- decision, and $1 carries their workspace so an administrator elsewhere on the
+-- instance cannot unlist someone else's plugin out from under its users.
+UPDATE plugin_package
+SET visibility = $3,
+    updated_at = now()
+WHERE workspace_id = $1 AND id = $2
+RETURNING *;
+
+-- name: ListPublicPluginPackages :many
+-- The instance directory.
+--
+-- Deliberately not scoped to a workspace — that is what makes it a directory.
+-- Withdrawal is not filtered here because it lives on the version: a package
+-- whose every version is withdrawn still belongs on the listing, showing no
+-- installable version, rather than vanishing and taking its name with it.
+SELECT * FROM plugin_package
+WHERE visibility = 'public'
+ORDER BY name ASC;
+
+-- name: GetPublicPluginPackageVersion :one
+-- Resolves a version for an install originating outside the publishing
+-- workspace. The joins are the authorization: a version is reachable this way
+-- only while its package is listed and the version itself has not been
+-- withdrawn, so unlisting or withdrawing takes effect on the next install
+-- attempt without touching the artifact.
+SELECT v.* FROM plugin_package_version v
+JOIN plugin_package p ON p.id = v.package_id
+WHERE v.id = $1
+  AND p.visibility = 'public'
+  AND v.withdrawn_at IS NULL;
+
+-- name: SetPluginPackageVersionWithdrawn :one
+-- Withdraws a version from the directory, or puts it back.
+--
+-- Withdrawal is a listing state, never a delete: the workspaces that already
+-- installed this version keep running it, and their files stay readable. Only
+-- discovery and new installs stop.
+UPDATE plugin_package_version
+SET withdrawn_at = $3,
+    withdrawn_by = $4
+WHERE workspace_id = $1 AND id = $2
+RETURNING *;
+
 -- name: DeletePluginPackage :exec
 DELETE FROM plugin_package WHERE id = $1;
 
@@ -64,8 +111,12 @@ WHERE workspace_id = $1 AND id = $2;
 DELETE FROM plugin_package_version WHERE package_id = $1;
 
 -- name: CountInstallationsOfPackageVersions :one
--- Whether any workspace still runs a version of this package. Publishing is
--- workspace-private, so this is scoped to the same workspace by construction.
+-- Whether any workspace still runs a version of this package.
+--
+-- Intentionally instance-wide rather than scoped to the publisher: once a
+-- package can be listed publicly, the installations at risk from a delete are
+-- mostly NOT in the publishing workspace, and a workspace-scoped count would
+-- report zero while breaking every one of them.
 SELECT count(*) FROM plugin_installation
 WHERE package_version_id IN (
     SELECT id FROM plugin_package_version WHERE package_id = $1
