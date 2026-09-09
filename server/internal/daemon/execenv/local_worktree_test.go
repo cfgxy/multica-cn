@@ -2092,3 +2092,187 @@ func TestIsolatedPrepareKeepsTheReadOnlyBranchDrop(t *testing.T) {
 		t.Error("a turn that changed nothing left its branch behind")
 	}
 }
+
+// prepareTaskScoped runs a prepare with no conversation behind it: the task
+// gets its own branch, and a retry of the same task id lands on that same name.
+func prepareTaskScoped(localPath, agentName, taskID string, owner branchOwner) (*LocalWorktree, error) {
+	return PrepareLocalWorktree(LocalWorktreeParams{
+		LocalPath:   localPath,
+		EnvRoot:     mustTempDir(),
+		AgentName:   agentName,
+		TaskID:      taskID,
+		WorkspaceID: owner.WorkspaceID,
+		AgentID:     owner.AgentID,
+	}, worktreeTestLogger())
+}
+
+// The bug: a task that died mid-run left its branch behind, and the retry —
+// same task id, therefore same branch name — failed to prepare at all instead
+// of picking the work up (RUYI-116).
+func TestPrepareLocalWorktreeContinuesItsOwnBranchOnRetry(t *testing.T) {
+	repo := newTestRepo(t)
+
+	first, err := prepareTaskScoped(repo, "J", turnOneTask, testBranchOwner)
+	if err != nil {
+		t.Fatalf("attempt 1: %v", err)
+	}
+	want := "agent/j/" + taskKey(turnOneTask)
+	if first.Branch != want {
+		t.Fatalf("attempt 1 branch = %q, want %q", first.Branch, want)
+	}
+	writeFile(t, filepath.Join(first.WorkDir, "attempt-one.txt"), "work from attempt one\n")
+	finalizeOK(t, first)
+
+	second, err := prepareTaskScoped(repo, "J", turnOneTask, testBranchOwner)
+	if err != nil {
+		t.Fatalf("attempt 2: %v", err)
+	}
+	if second.Branch != want {
+		t.Errorf("attempt 2 branch = %q, want the branch attempt 1 left at %q", second.Branch, want)
+	}
+	if !second.Continued {
+		t.Error("attempt 2 did not continue attempt 1's branch")
+	}
+	if _, err := os.Stat(filepath.Join(second.WorkDir, "attempt-one.txt")); err != nil {
+		t.Errorf("attempt 2 does not carry attempt 1's work: %v", err)
+	}
+	finalizeOK(t, second)
+}
+
+// The retry take-over is decided by the recorded owner, never by the name: a
+// branch of the same name belonging to the user, or to another agent, is left
+// exactly where it is.
+func TestPrepareLocalWorktreeRefusesATaskBranchItDoesNotOwn(t *testing.T) {
+	repo := newTestRepo(t)
+
+	// The user made this branch themselves, under the name this task wants.
+	name := "agent/j/" + taskKey(turnOneTask)
+	gitRun(t, repo, "branch", name)
+	userTip := gitRun(t, repo, "rev-parse", name)
+
+	wt, err := prepareTaskScoped(repo, "J", turnOneTask, testBranchOwner)
+	if err != nil {
+		t.Fatalf("PrepareLocalWorktree: %v", err)
+	}
+	if wt.Branch == name {
+		t.Fatalf("took over a branch with no proof it is this task's: %q", wt.Branch)
+	}
+	if !strings.HasPrefix(wt.Branch, name+"-") {
+		t.Errorf("branch = %q, want a suffixed fallback of %q", wt.Branch, name)
+	}
+	if wt.Continued {
+		t.Error("reported Continued on a branch it did not own")
+	}
+	finalizeOK(t, wt)
+	if got := gitRun(t, repo, "rev-parse", name); got != userTip {
+		t.Errorf("the user's branch moved: %s, want %s", got, userTip)
+	}
+}
+
+// A task branch a sibling worktree still holds cannot be checked out twice, so
+// the task delivers onto a suffixed name rather than failing.
+func TestPrepareLocalWorktreeForksWhenItsOwnBranchIsBusy(t *testing.T) {
+	repo := newTestRepo(t)
+
+	first, err := prepareTaskScoped(repo, "J", turnOneTask, testBranchOwner)
+	if err != nil {
+		t.Fatalf("attempt 1: %v", err)
+	}
+	// Attempt 1 never finalized: its worktree still holds the branch.
+	second, err := prepareTaskScoped(repo, "J", turnOneTask, testBranchOwner)
+	if err != nil {
+		t.Fatalf("attempt 2: %v", err)
+	}
+	if second.Branch == first.Branch {
+		t.Fatalf("attempt 2 took the branch still checked out at %s", first.Path)
+	}
+	if !strings.HasPrefix(second.Branch, first.Branch+"-") {
+		t.Errorf("attempt 2 branch = %q, want a suffixed fork of %q", second.Branch, first.Branch)
+	}
+	finalizeOK(t, second)
+	finalizeOK(t, first)
+}
+
+// Every git decision in this file is made from git's own prose. On a localised
+// daemon that prose is not English, and the branch-collision fallback silently
+// stopped matching — the task failed to prepare instead (RUYI-116).
+func TestPrepareLocalWorktreeWorksUnderALocalisedGit(t *testing.T) {
+	repo := newTestRepo(t)
+	t.Setenv("LC_ALL", "zh_CN.UTF-8")
+	t.Setenv("LANGUAGE", "zh_CN")
+
+	// The name this task wants is taken by a branch it cannot prove is its own,
+	// so prepare has to recognise the collision and fall back.
+	name := "agent/j/" + taskKey(turnOneTask)
+	gitRun(t, repo, "branch", name)
+
+	wt, err := prepareTaskScoped(repo, "J", turnOneTask, testBranchOwner)
+	if err != nil {
+		t.Fatalf("PrepareLocalWorktree under a localised git: %v", err)
+	}
+	if wt.Branch == name {
+		t.Fatalf("took over a branch it does not own: %q", wt.Branch)
+	}
+	finalizeOK(t, wt)
+}
+
+// gitMessageEnv is what makes the prose above predictable. Asserted directly so
+// a future refactor cannot drop the pin without a test saying so.
+func TestGitMessageEnvPinsTheMessageLocale(t *testing.T) {
+	t.Setenv("LC_ALL", "zh_CN.UTF-8")
+	t.Setenv("LC_MESSAGES", "zh_CN.UTF-8")
+	t.Setenv("LANG", "zh_CN.UTF-8")
+	t.Setenv("LANGUAGE", "zh_CN")
+
+	var lcAll, language string
+	locale := 0
+	for _, kv := range gitMessageEnv() {
+		switch {
+		case strings.HasPrefix(kv, "LC_ALL="):
+			lcAll = strings.TrimPrefix(kv, "LC_ALL=")
+			locale++
+		case strings.HasPrefix(kv, "LANGUAGE="):
+			language = strings.TrimPrefix(kv, "LANGUAGE=")
+			locale++
+		case strings.HasPrefix(kv, "LC_MESSAGES="), strings.HasPrefix(kv, "LANG="):
+			t.Errorf("%q survives; it would out-rank LC_ALL for some git builds", kv)
+		}
+	}
+	if lcAll != "C" || language != "" {
+		t.Errorf("LC_ALL = %q, LANGUAGE = %q; want \"C\" and empty", lcAll, language)
+	}
+	if locale != 2 {
+		t.Errorf("locale entries = %d, want exactly LC_ALL and LANGUAGE", locale)
+	}
+}
+
+// An agent named entirely in a non-Latin script used to sanitise to the literal
+// "agent", so every such agent's branches read agent/agent/<task> — identical
+// between agents and useless to the user (RUYI-116).
+func TestPrepareLocalWorktreeNamesTheBranchAfterACJKAgent(t *testing.T) {
+	repo := newTestRepo(t)
+
+	wt, err := prepareTaskScoped(repo, "顾小鱼", turnOneTask, testBranchOwner)
+	if err != nil {
+		t.Fatalf("PrepareLocalWorktree: %v", err)
+	}
+	if strings.HasPrefix(wt.Branch, "agent/agent/") {
+		t.Errorf("branch = %q, want a segment identifying this agent", wt.Branch)
+	}
+	if want := "agent/agent-" + taskKey(testBranchOwner.AgentID) + "/" + taskKey(turnOneTask); wt.Branch != want {
+		t.Errorf("branch = %q, want %q", wt.Branch, want)
+	}
+	finalizeOK(t, wt)
+
+	// A different agent, same script: the two must not share a segment.
+	other := testBranchOwner
+	other.AgentID = "11112222-3333-4444-5555-00000000000f"
+	second, err := prepareTaskScoped(repo, "黄小云", turnTwoTask, other)
+	if err != nil {
+		t.Fatalf("PrepareLocalWorktree (second agent): %v", err)
+	}
+	if segment := strings.Split(second.Branch, "/")[1]; segment == strings.Split(wt.Branch, "/")[1] {
+		t.Errorf("two CJK-named agents share the branch segment %q", segment)
+	}
+	finalizeOK(t, second)
+}
