@@ -3841,9 +3841,12 @@ export class ApiClient {
   }
 
   // Fetches a fresh attachment metadata record. The server re-signs
-  // `download_url` on every call (30 min expiry), so the click-time
-  // download flow uses this endpoint to avoid handing the user a stale
-  // signed URL cached in TanStack Query.
+  // `download_url` on every call, with a deployment-configured expiry
+  // (ATTACHMENT_DOWNLOAD_URL_TTL — see defaultAttachmentDownloadURLTTL in
+  // server/internal/handler/file.go), so the click-time download flow uses
+  // this endpoint to avoid handing the user a stale signed URL cached in
+  // TanStack Query. Deliberately not restating the number here: RUYI-103
+  // changed it and this copy went stale unnoticed.
   async getAttachment(id: string): Promise<Attachment> {
     const raw = await this.fetch<unknown>(`/api/attachments/${id}`);
     return parseWithFallback(raw, AttachmentResponseSchema, EMPTY_ATTACHMENT, {

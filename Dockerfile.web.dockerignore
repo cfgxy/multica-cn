@@ -1,0 +1,20 @@
+# Frontend image context whitelist: only the pnpm workspace config plus the
+# web workspace and shared packages are needed (this file replaces the shared
+# .dockerignore for builds using ./Dockerfile.web).
+**
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!turbo.json
+!.npmrc
+!apps/web/**
+apps/web/.next/**
+apps/web/node_modules/**
+apps/web/.turbo/**
+apps/web/tsconfig.tsbuildinfo
+!packages/**
+packages/*/node_modules/**
+packages/*/dist/**
+# runner stage ships the license and attribution notices
+!LICENSE
+!NOTICE

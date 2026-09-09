@@ -14,9 +14,13 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "@multica/core/api";
 import { attachmentIdFromDownloadURL } from "@multica/core/types/attachment-url";
 
-// Keep refetches well inside the server's signed-URL TTL (30 min default,
-// server/internal/handler/file.go) so a re-render never serves an expired
-// signature from the query cache.
+// Keep refetches well inside the server's signed-URL TTL
+// (defaultAttachmentDownloadURLTTL in server/internal/handler/file.go, 24h
+// since RUYI-103) so a re-render never serves an expired signature from the
+// query cache. Deliberately left at 20 minutes rather than scaled with the
+// TTL: an operator is free to set ATTACHMENT_DOWNLOAD_URL_TTL well below the
+// default, and this bound has to stay under the shortest TTL a deployment can
+// reasonably pick, not the longest.
 const RESIGN_STALE_MS = 20 * 60 * 1000;
 
 // How long fetched image bytes stay in the query cache after the last <img>

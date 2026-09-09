@@ -16,6 +16,8 @@ vi.mock("../platform", () => ({
 // declarations.
 const {
   getAttachmentTextContentMock,
+  getAttachmentMock,
+  getAttachmentBlobMock,
   downloadMock,
   getBaseUrlMock,
   FakePreviewTooLargeError,
@@ -35,6 +37,8 @@ const {
   }
   return {
     getAttachmentTextContentMock: vi.fn(),
+    getAttachmentMock: vi.fn(),
+    getAttachmentBlobMock: vi.fn(),
     downloadMock: vi.fn(),
     // Default to the web shape (empty base, same-origin). Tests covering
     // the desktop-renderer / standalone-shell case override per-test.
@@ -47,6 +51,8 @@ const {
 vi.mock("@multica/core/api", () => ({
   api: {
     getAttachmentTextContent: getAttachmentTextContentMock,
+    getAttachment: getAttachmentMock,
+    getAttachmentBlob: getAttachmentBlobMock,
     getBaseUrl: getBaseUrlMock,
   },
   PreviewTooLargeError: FakePreviewTooLargeError,
@@ -130,6 +136,7 @@ import {
   useAttachmentPreview,
 } from "./attachment-preview-modal";
 import { renderHook, act as hookAct } from "@testing-library/react";
+import { __resetInlineMediaBlobCacheForTests } from "./hooks/use-inline-media-url";
 
 // Fresh QueryClient per render — no retries (preview errors are typed,
 // not transient) and no caching across tests so each scenario is hermetic.
@@ -191,17 +198,22 @@ describe("AttachmentPreviewModal — dispatch", () => {
     render(<AttachmentPreviewModal source={{ kind: "full", attachment: att }} open onClose={() => {}} />);
     const img = document.querySelector("img");
     expect(img).toBeTruthy();
-    expect(img?.getAttribute("src")).toBe(att.download_url);
+    expect(img?.getAttribute("src")).toBe("/api/attachments/att-1/download");
     expect(img?.getAttribute("alt")).toBe(att.filename);
   });
 
-  it("falls back to durable media URLs when a full attachment has no download_url", () => {
+  // RUYI-103. The signed download_url in an attachment record was minted when
+  // the surface loaded and expires on the server's clock; a preview opened an
+  // hour later used to load a dead signature, fail, and (in a gallery) skip to
+  // a neighbour — the "I clicked A and got B" report. The image preview asks
+  // for the stable endpoint instead, which re-signs per request.
+  it("previews an image from the stable endpoint, never the pre-minted signature", () => {
     const att = makeAttachment({
       filename: "shot.png",
       content_type: "image/png",
-      download_url: "",
-      markdown_url: "https://api.example.test/api/attachments/att-1/download",
-      url: "https://cdn.example.test/att-1.png?Signature=old",
+      download_url: "https://cdn.example.test/att-1.png?Signature=minted-at-page-load",
+      markdown_url: "https://cdn.example.test/att-1.png",
+      url: "https://cdn.example.test/att-1.png?Signature=older",
     });
     render(
       <AttachmentPreviewModal
@@ -211,8 +223,55 @@ describe("AttachmentPreviewModal — dispatch", () => {
       />,
     );
     const img = document.querySelector("img");
-    expect(img?.getAttribute("src")).toBe(att.markdown_url);
+    expect(img?.getAttribute("src")).toBe("/api/attachments/att-1/download");
     expect(img?.getAttribute("src")).not.toContain("Signature=");
+  });
+
+  // The narrowing that keeps the stable-endpoint swap from costing a second
+  // download: a URL with no expiring signature is already durable, and the
+  // inline <img> on the page has its bytes cached under exactly that URL.
+  it("keeps a durable image URL so the preview reuses the inline bytes", () => {
+    const att = makeAttachment({
+      filename: "shot.png",
+      content_type: "image/png",
+      download_url: "",
+      markdown_url: "https://cdn.example.test/uploads/ws/shot.png",
+      url: "https://cdn.example.test/uploads/ws/shot.png",
+    });
+    render(
+      <AttachmentPreviewModal
+        source={{ kind: "full", attachment: att }}
+        open
+        onClose={() => {}}
+      />,
+    );
+    const img = document.querySelector("img");
+    expect(img?.getAttribute("src")).toBe(
+      "https://cdn.example.test/uploads/ws/shot.png",
+    );
+  });
+
+  it("falls back to durable media URLs when a full attachment has no download_url", () => {
+    // Non-image kinds keep the download_url -> markdown_url -> url chain:
+    // they hand their src straight to a native element with no re-sign hook
+    // behind it, so an auth-gated path would break the desktop shell.
+    const att = makeAttachment({
+      filename: "clip.mp4",
+      content_type: "video/mp4",
+      download_url: "",
+      markdown_url: "https://api.example.test/api/attachments/att-1/download",
+      url: "https://cdn.example.test/att-1.mp4?Signature=old",
+    });
+    render(
+      <AttachmentPreviewModal
+        source={{ kind: "full", attachment: att }}
+        open
+        onClose={() => {}}
+      />,
+    );
+    const video = document.querySelector("video");
+    expect(video?.getAttribute("src")).toBe(att.markdown_url);
+    expect(video?.getAttribute("src")).not.toContain("Signature=");
   });
 
   it("renders an <img> from a URL-only source for image filenames", () => {
@@ -398,12 +457,15 @@ describe("AttachmentPreviewModal — server-relative download_url resolution (MU
     );
   });
 
+  // Uses a PDF: since RUYI-103 the image kind resolves the stable endpoint
+  // rather than whatever download_url the record carried, so it is no longer
+  // the kind that exercises absolute-URL passthrough.
   it("passes an already-absolute CloudFront/presigned download_url through unchanged", () => {
     getBaseUrlMock.mockReturnValue("https://api.example.test");
     const att = makeAttachment({
-      filename: "shot.png",
-      content_type: "image/png",
-      download_url: "https://cdn.example.test/att-1.png?Signature=s",
+      filename: "manual.pdf",
+      content_type: "application/pdf",
+      download_url: "https://cdn.example.test/att-1.pdf?Signature=s",
     });
     render(
       <AttachmentPreviewModal
@@ -412,10 +474,153 @@ describe("AttachmentPreviewModal — server-relative download_url resolution (MU
         onClose={() => {}}
       />,
     );
-    const img = document.querySelector("img");
-    expect(img?.getAttribute("src")).toBe(
-      "https://cdn.example.test/att-1.png?Signature=s",
+    const iframe = document.querySelector("iframe");
+    expect(iframe?.getAttribute("src")).toBe(
+      "https://cdn.example.test/att-1.pdf?Signature=s",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Re-sign / blob fallback (RUYI-103 rework)
+// ---------------------------------------------------------------------------
+//
+// `useResignedInlineMediaURL` only engages for a REAL uuid: it recovers the id
+// from the `/api/attachments/<uuid>/download` shape, and `att-1` never parses
+// as one. Every test above therefore exercises the "no upgrade needed" branch
+// only. These cover the two branches that actually carry the image on desktop
+// and on split-origin / proxy-mode self-host deployments.
+const UUID_A = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+
+function uuidImageAttachment(overrides: Partial<Attachment> = {}): Attachment {
+  return makeAttachment({
+    id: UUID_A,
+    filename: "shot.png",
+    content_type: "image/png",
+    url: `https://cdn.example.test/${UUID_A}.png?Signature=minted`,
+    download_url: `https://cdn.example.test/${UUID_A}.png?Signature=minted`,
+    markdown_url: `/api/attachments/${UUID_A}/download`,
+    ...overrides,
+  });
+}
+
+describe("AttachmentPreviewModal — authenticated re-sign for the image preview", () => {
+  beforeEach(() => {
+    __resetInlineMediaBlobCacheForTests();
+  });
+  afterEach(() => {
+    __resetInlineMediaBlobCacheForTests();
+  });
+
+  // Desktop renderer: non-empty API base, so a bare `/api/...` <img src> would
+  // carry no credentials and 401. The panel must fetch fresh metadata through
+  // the authenticated client and paint the signed URL that call returns —
+  // freshly minted, so C1's long-stay case cannot reproduce here either.
+  it("swaps in a freshly signed URL from the authenticated API (desktop / cross-origin)", async () => {
+    getBaseUrlMock.mockReturnValue("https://api.example.test");
+    getAttachmentMock.mockResolvedValue(
+      uuidImageAttachment({
+        download_url: `https://cdn.example.test/${UUID_A}.png?Signature=fresh`,
+      }),
+    );
+
+    render(
+      <AttachmentPreviewModal
+        source={{ kind: "full", attachment: uuidImageAttachment() }}
+        open
+        onClose={() => {}}
+      />,
+    );
+
+    // Asked the authenticated endpoint for THIS attachment, by id.
+    await waitFor(() => {
+      expect(getAttachmentMock).toHaveBeenCalledWith(UUID_A);
+    });
+    await waitFor(() => {
+      expect(document.querySelector("img")?.getAttribute("src")).toBe(
+        `https://cdn.example.test/${UUID_A}.png?Signature=fresh`,
+      );
+    });
+    // The stale signature the record was carrying never reaches the canvas.
+    expect(document.querySelector("img")?.getAttribute("src")).not.toContain(
+      "Signature=minted",
+    );
+    // No byte download while a signed URL is on offer.
+    expect(getAttachmentBlobMock).not.toHaveBeenCalled();
+  });
+
+  // Proxy download mode (the docker-compose MinIO default): the server has no
+  // signed URL to give and hands the auth-gated path straight back. The only
+  // way to paint the image is to pull the bytes through the authenticated
+  // client.
+  it("falls back to an authenticated blob when the deployment has no signed URL (proxy mode)", async () => {
+    getBaseUrlMock.mockReturnValue("https://api.example.test");
+    getAttachmentMock.mockResolvedValue(
+      uuidImageAttachment({
+        download_url: `/api/attachments/${UUID_A}/download`,
+      }),
+    );
+    getAttachmentBlobMock.mockResolvedValue(
+      new Blob(["png-bytes"], { type: "image/png" }),
+    );
+    const createObjectURL = vi
+      .spyOn(URL, "createObjectURL")
+      .mockReturnValue("blob:multica/preview-1");
+
+    render(
+      <AttachmentPreviewModal
+        source={{ kind: "full", attachment: uuidImageAttachment() }}
+        open
+        onClose={() => {}}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(getAttachmentBlobMock).toHaveBeenCalledWith(UUID_A);
+    });
+    await waitFor(() => {
+      expect(document.querySelector("img")?.getAttribute("src")).toBe(
+        "blob:multica/preview-1",
+      );
+    });
+    expect(createObjectURL).toHaveBeenCalled();
+  });
+
+  // RUYI-103 C2, at the layer that decides what the canvas paints. A rejected
+  // re-sign is what an expired-or-revoked attachment looks like from here: the
+  // panel must not fall through to some other image's bytes, and it must not
+  // paint a URL it knows is unusable without saying so.
+  it("keeps the auth-gated URL and reports the failure when the re-sign is refused", async () => {
+    getBaseUrlMock.mockReturnValue("https://api.example.test");
+    getAttachmentMock.mockRejectedValue(new Error("403 forbidden"));
+    const onImageError = vi.fn();
+
+    render(
+      <AttachmentPreviewModal
+        source={{ kind: "full", attachment: uuidImageAttachment() }}
+        open
+        onClose={() => {}}
+        onImageError={onImageError}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(getAttachmentMock).toHaveBeenCalledWith(UUID_A);
+    });
+    const img = document.querySelector("img")!;
+    // Still the stable endpoint — never a different attachment's URL, and
+    // never the pre-minted signature the failed re-sign was meant to replace.
+    expect(img.getAttribute("src")).toBe(
+      `https://api.example.test/api/attachments/${UUID_A}/download`,
+    );
+    expect(img.getAttribute("alt")).toBe("shot.png");
+    // Without a signed URL there is nothing to fetch bytes from either.
+    expect(getAttachmentBlobMock).not.toHaveBeenCalled();
+
+    // And when the browser then fails to load it, the failure is announced
+    // exactly once rather than swallowed.
+    fireEvent.error(img);
+    expect(onImageError).toHaveBeenCalledTimes(1);
   });
 });
 
