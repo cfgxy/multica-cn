@@ -30,7 +30,6 @@ import { useFeatureEnabled } from "@multica/core/config";
 import {
   BILLING_WORKSPACE_SUBSCRIPTIONS_FLAG,
   MARKETPLACE_V1_FLAG,
-  PLUGINS_V1_FLAG,
 } from "@multica/core/feature-flags";
 import { useNavigation } from "../../navigation";
 import { AccountTab } from "./account-tab";
@@ -148,7 +147,6 @@ export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
   const workspaceName = useCurrentWorkspace()?.name;
   const navigation = useNavigation();
   const isMobile = useIsMobile();
-  const pluginsEnabled = useFeatureEnabled(PLUGINS_V1_FLAG, false);
   // Off closes the front door only: MCP, Skills, and every manual entry point
   // the marketplace merely drives stay exactly where they were.
   const marketplaceEnabled = useFeatureEnabled(MARKETPLACE_V1_FLAG, false);
@@ -157,15 +155,18 @@ export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
     false,
   );
 
+  // Plugins is deliberately absent from this filter. Turning plugins_v1 off
+  // stops plugin code from running, but hiding the tab as well would leave an
+  // operator with installations they can neither see nor remove — the tab stays
+  // and PluginsTab renders itself read-and-remove only.
   const visibleWorkspaceTabKeys = React.useMemo(
     () =>
       WORKSPACE_TAB_KEYS.filter(
         (key) =>
-          (key !== "plugins" || pluginsEnabled) &&
           (key !== "billing" || billingEnabled) &&
           (key !== "marketplace" || marketplaceEnabled),
       ),
-    [billingEnabled, marketplaceEnabled, pluginsEnabled],
+    [billingEnabled, marketplaceEnabled],
   );
 
   // Whitelist of valid tab values; unknown ?tab=… values silently fall back to
@@ -301,7 +302,7 @@ export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
             <TabsContent value="marketplace"><MarketplaceTab /></TabsContent>
           ) : null}
           <TabsContent value="mcp"><McpTab /></TabsContent>
-          {pluginsEnabled ? <TabsContent value="plugins"><PluginsTab /></TabsContent> : null}
+          <TabsContent value="plugins"><PluginsTab /></TabsContent>
           {extraAccountTabs?.map((tab) => (
             <TabsContent key={tab.value} value={tab.value}>{tab.content}</TabsContent>
           ))}

@@ -280,6 +280,10 @@ export const PluginPreviewSchema = z.object({
   installed: z.boolean().default(false),
   installed_version: z.string().optional(),
   added_scopes: z.array(z.string()).default([]),
+  // Defaults to empty, which reads as "nothing is configured yet" — the
+  // direction that makes the consent screen ASK for a required field rather
+  // than assume a backend that omitted the field already holds it.
+  configured_keys: z.array(z.string()).default([]),
 }).loose();
 
 export const EMPTY_PLUGIN_PREVIEW: PluginPreview = {
@@ -291,6 +295,7 @@ export const EMPTY_PLUGIN_PREVIEW: PluginPreview = {
   digest: "",
   installed: false,
   added_scopes: [],
+  configured_keys: [],
 };
 
 /**
@@ -305,6 +310,13 @@ export const PluginPackageVersionSchema = z.object({
   size_bytes: z.number().default(0),
   published_at: z.string().default(""),
   installed: z.boolean().default(false),
+  withdrawn_at: z.string().optional(),
+  // The directory row's summary of what this version declares. Empty defaults
+  // rather than optional: a row that lost its scope list must render as
+  // "nothing to show here", never as "this plugin asks for nothing".
+  description: z.string().optional(),
+  scopes: z.array(z.string()).default([]),
+  config_keys: z.array(z.string()).default([]),
 }).loose();
 
 export const PluginPackageSchema = z.object({
@@ -313,6 +325,10 @@ export const PluginPackageSchema = z.object({
   name: z.string().default(""),
   versions: z.array(PluginPackageVersionSchema).default([]),
   created_at: z.string().default(""),
+  // Defaulted to the closed state: a response that lost the field must not read
+  // as "listed to the whole instance".
+  visibility: z.string().default("private"),
+  publisher_workspace_id: z.string().optional(),
 }).loose();
 
 export const PluginPackageListResponseSchema = z.object({

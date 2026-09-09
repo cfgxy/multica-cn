@@ -38,6 +38,15 @@ const handlerTestManifest = `{
   }
 }`
 
+// handlerTestManifest declares `repo` as required, and an install that would
+// leave a required field unset is refused — the plugin never exists for a
+// moment in a state where its first use fails. So every install of this
+// manifest has to carry a value for it. Tests whose subject is something else
+// take it from here rather than restating the consent screen each time.
+func handlerTestConfig() map[string]any {
+	return map[string]any{"repo": "multica-ai/multica"}
+}
+
 // hookOnlyTestManifest declares a contribution kind the host does not ship yet.
 // Kept separate from handlerTestManifest so flipping a surface on never silently
 // changes what the capability-gate test is asserting.
@@ -362,14 +371,18 @@ func TestPluginScheduleLifecycleReconcilesAtomically(t *testing.T) {
 
 func TestPluginManagementRequiresPluginsV1(t *testing.T) {
 	withPluginsV1Flag(t, testHandler, false)
+	// Everything that could start plugin work. Listing and uninstall are
+	// deliberately absent — see TestPluginCleanupSurvivesPluginsV1Off.
 	for name, handler := range map[string]http.HandlerFunc{
-		"list":      testHandler.ListPlugins,
-		"preview":   testHandler.PreviewPlugin,
-		"install":   testHandler.InstallPlugin,
-		"configure": testHandler.ConfigurePlugin,
-		"enable":    testHandler.EnablePlugin,
-		"disable":   testHandler.DisablePlugin,
-		"uninstall": testHandler.UninstallPlugin,
+		"preview":    testHandler.PreviewPlugin,
+		"install":    testHandler.InstallPlugin,
+		"configure":  testHandler.ConfigurePlugin,
+		"enable":     testHandler.EnablePlugin,
+		"disable":    testHandler.DisablePlugin,
+		"publish":    testHandler.PublishPluginPackage,
+		"directory":  testHandler.ListPublicPluginPackages,
+		"visibility": testHandler.SetPluginPackageVisibility,
+		"withdraw":   testHandler.SetPluginVersionWithdrawn,
 	} {
 		t.Run(name, func(t *testing.T) {
 			recorder := httptest.NewRecorder()
@@ -378,6 +391,218 @@ func TestPluginManagementRequiresPluginsV1(t *testing.T) {
 				t.Fatalf("status=%d body=%s", recorder.Code, recorder.Body.String())
 			}
 		})
+	}
+}
+
+// Turning the flag off must not strand what was installed while it was on.
+//
+// An operator who disables plugins after an incident still has to be able to
+// see what is installed and remove it; if these routes closed with the rest,
+// their only remaining move would be deleting rows by hand. The read also has
+// to say WHY the page is read-only, which is what plugins_enabled carries.
+func TestPluginCleanupSurvivesPluginsV1Off(t *testing.T) {
+	withPluginsV1Flag(t, testHandler, true)
+	cleanupPluginInstallations(t)
+	versionID := withLocalPluginSource(t, handlerTestManifest)
+
+	body, _ := json.Marshal(map[string]any{
+		"version_id":     versionID,
+		"granted_scopes": []string{"issues:read", "comments:write", "storage:user"},
+		"config":         handlerTestConfig(),
+	})
+	recorder := httptest.NewRecorder()
+	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID}))
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("install status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var installed struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &installed); err != nil {
+		t.Fatalf("decode installation: %v", err)
+	}
+
+	withPluginsV1Flag(t, testHandler, false)
+
+	recorder = httptest.NewRecorder()
+	testHandler.ListPlugins(recorder, pluginHandlerRequest(http.MethodGet, "/plugins", nil, map[string]string{"id": testWorkspaceID}))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("list with the flag off status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var listed struct {
+		Plugins []struct {
+			ID string `json:"id"`
+		} `json:"plugins"`
+		PluginsEnabled bool `json:"plugins_enabled"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode list: %v", err)
+	}
+	if listed.PluginsEnabled {
+		t.Fatal("the list claims plugins are enabled while the flag is off — the page would offer actions that cannot work")
+	}
+	found := false
+	for _, plugin := range listed.Plugins {
+		if plugin.ID == installed.ID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("an installation made while the flag was on is invisible with it off — there would be no supported way to remove it")
+	}
+
+	params := map[string]string{"id": testWorkspaceID, "installationId": installed.ID}
+	recorder = httptest.NewRecorder()
+	testHandler.UninstallPlugin(recorder, pluginHandlerRequest(http.MethodDelete, "/plugins", nil, params))
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("uninstall with the flag off status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	// Publishing stays closed throughout: cleanup shrinks what is installed
+	// and must never be a way back in.
+	recorder = httptest.NewRecorder()
+	testHandler.PublishLocalPluginPackage(recorder, pluginHandlerRequest(http.MethodPost, "/plugins/packages/local", []byte(`{"name":"hello"}`), map[string]string{"id": testWorkspaceID}))
+	if recorder.Code != http.StatusServiceUnavailable {
+		t.Fatalf("publish with the flag off status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+}
+
+// The consent screen collects configuration alongside the grant, so the install
+// has to land both. A plugin whose required credential was typed there must
+// never exist for a moment without it — an operator watching the list would see
+// an enabled plugin that fails on first use and no record of why.
+func TestPluginInstallAppliesConsentScreenConfig(t *testing.T) {
+	withPluginsV1Flag(t, testHandler, true)
+	cleanupPluginInstallations(t)
+	versionID := withLocalPluginSource(t, handlerTestManifest)
+
+	body, _ := json.Marshal(map[string]any{
+		"version_id":     versionID,
+		"granted_scopes": []string{"issues:read", "comments:write", "storage:user"},
+		"config":         map[string]any{"repo": "multica-ai/multica", "token": "sk-consent-secret"},
+	})
+	recorder := httptest.NewRecorder()
+	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID}))
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("install status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	if strings.Contains(recorder.Body.String(), "sk-consent-secret") {
+		t.Fatalf("install response echoed the secret: %s", recorder.Body.String())
+	}
+	var installed struct {
+		ID                string         `json:"id"`
+		Config            map[string]any `json:"config"`
+		ConfiguredSecrets []string       `json:"configured_secrets"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &installed); err != nil {
+		t.Fatalf("decode installation: %v", err)
+	}
+	if installed.Config["repo"] != "multica-ai/multica" {
+		t.Fatalf("plain consent value was not applied: %v", installed.Config)
+	}
+	if _, present := installed.Config["token"]; present {
+		t.Fatalf("secret was stored in config: %v", installed.Config)
+	}
+	if len(installed.ConfiguredSecrets) != 1 || installed.ConfiguredSecrets[0] != "token" {
+		t.Fatalf("configured secrets = %v, want [token]", installed.ConfiguredSecrets)
+	}
+
+	// One transaction, not two calls: the row and its ciphertext are both there.
+	var secretRows int
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM plugin_secret WHERE installation_id = $1 AND key = 'token'`, installed.ID).Scan(&secretRows); err != nil {
+		t.Fatalf("count secrets: %v", err)
+	}
+	if secretRows != 1 {
+		t.Fatalf("install stored %d rows for the consent-screen secret, want 1", secretRows)
+	}
+}
+
+// A rejected config must take the whole install with it. Otherwise the failure
+// mode is the one the single transaction exists to prevent: the plugin mounted,
+// its configuration missing, and the administrator told the install failed.
+func TestPluginInstallRollsBackOnInvalidConsentConfig(t *testing.T) {
+	withPluginsV1Flag(t, testHandler, true)
+	cleanupPluginInstallations(t)
+	versionID := withLocalPluginSource(t, handlerTestManifest)
+
+	body, _ := json.Marshal(map[string]any{
+		"version_id":     versionID,
+		"granted_scopes": []string{"issues:read", "comments:write", "storage:user"},
+		"config":         map[string]any{"nope": "x"},
+	})
+	recorder := httptest.NewRecorder()
+	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID}))
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("unknown config field status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var installations int
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM plugin_installation WHERE workspace_id = $1`, testWorkspaceID).Scan(&installations); err != nil {
+		t.Fatalf("count installations: %v", err)
+	}
+	if installations != 0 {
+		t.Fatalf("a rejected config left %d installations behind", installations)
+	}
+}
+
+// Clearing one secret is the second cleanup lever, and it has to work with the
+// flag off — writing config is refused there, so without it an operator whose
+// token leaked can only uninstall the whole plugin to get the ciphertext out of
+// the database.
+func TestPluginClearSecretSurvivesPluginsV1Off(t *testing.T) {
+	withPluginsV1Flag(t, testHandler, true)
+	cleanupPluginInstallations(t)
+	versionID := withLocalPluginSource(t, handlerTestManifest)
+
+	install, _ := json.Marshal(map[string]any{
+		"version_id":     versionID,
+		"granted_scopes": []string{"issues:read", "comments:write", "storage:user"},
+		"config":         map[string]any{"repo": "multica-ai/multica", "token": "sk-leaked-secret"},
+	})
+	recorder := httptest.NewRecorder()
+	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", install, map[string]string{"id": testWorkspaceID}))
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("install status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var installed struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &installed); err != nil {
+		t.Fatalf("decode installation: %v", err)
+	}
+
+	withPluginsV1Flag(t, testHandler, false)
+	params := map[string]string{"id": testWorkspaceID, "installationId": installed.ID, "key": "token"}
+
+	recorder = httptest.NewRecorder()
+	testHandler.ClearPluginSecret(recorder, pluginHandlerRequest(http.MethodDelete, "/plugins/secrets", nil, params))
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("clear with the flag off status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var remaining int
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT COUNT(*) FROM plugin_secret WHERE installation_id = $1`, installed.ID).Scan(&remaining); err != nil {
+		t.Fatalf("count secrets: %v", err)
+	}
+	if remaining != 0 {
+		t.Fatalf("clear left %d secret rows behind", remaining)
+	}
+
+	// Declared but no longer stored: the requested end state already holds, so
+	// clicking the row twice is not an error the operator has to interpret.
+	recorder = httptest.NewRecorder()
+	testHandler.ClearPluginSecret(recorder, pluginHandlerRequest(http.MethodDelete, "/plugins/secrets", nil, params))
+	if recorder.Code != http.StatusNoContent {
+		t.Fatalf("second clear status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+
+	// A name the manifest never declared is a typo, not a no-op.
+	unknown := map[string]string{"id": testWorkspaceID, "installationId": installed.ID, "key": "not-a-field"}
+	recorder = httptest.NewRecorder()
+	testHandler.ClearPluginSecret(recorder, pluginHandlerRequest(http.MethodDelete, "/plugins/secrets", nil, unknown))
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("unknown secret name status=%d body=%s", recorder.Code, recorder.Body.String())
 	}
 }
 
@@ -453,6 +678,7 @@ func TestPluginInstallConfigureAndUninstall(t *testing.T) {
 	install, _ := json.Marshal(map[string]any{
 		"version_id":     versionID,
 		"granted_scopes": []string{"issues:read", "comments:write", "storage:user"},
+		"config":         handlerTestConfig(),
 	})
 	recorder := httptest.NewRecorder()
 	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", install, map[string]string{"id": testWorkspaceID}))
@@ -668,6 +894,7 @@ func TestPluginInstallAcceptsAShippedSurface(t *testing.T) {
 	body, _ := json.Marshal(map[string]any{
 		"version_id":     versionID,
 		"granted_scopes": []string{"issues:read", "comments:write", "storage:user"},
+		"config":         handlerTestConfig(),
 	})
 	recorder := httptest.NewRecorder()
 	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID}))
@@ -697,6 +924,7 @@ func TestPluginUpgradePrunesSecretsTheNewManifestDropped(t *testing.T) {
 	install, _ := json.Marshal(map[string]any{
 		"version_id":     versionID,
 		"granted_scopes": []string{"issues:read", "comments:write", "storage:user"},
+		"config":         handlerTestConfig(),
 	})
 	recorder := httptest.NewRecorder()
 	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", install, map[string]string{"id": testWorkspaceID}))

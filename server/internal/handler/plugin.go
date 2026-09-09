@@ -25,6 +25,20 @@ func (h *Handler) requirePluginsV1(w http.ResponseWriter, r *http.Request) bool 
 	return false
 }
 
+// Cleanup after the flag goes off.
+//
+// Turning plugins_v1 off must stop plugin code from running, and it does: every
+// install, configure, invoke and surface route above goes through
+// requirePluginsV1. What it must not do is strand the installations made while
+// the flag was on. If listing and removal were gated too, an operator who
+// disabled the feature after an incident would be left with rows they can see
+// and no supported way to remove them, and their only remaining move would be
+// editing the database by hand.
+//
+// So four routes deliberately outlive the flag — list installations, uninstall,
+// list packages, delete package — and they are exactly the ones that can only
+// shrink what is installed. None of them starts new work.
+
 // writePluginError maps a service error onto a status. Kinds exist so the
 // handler never has to string-match a message to pick a status code.
 func writePluginError(w http.ResponseWriter, err error, fallback string) {
@@ -105,10 +119,13 @@ func (h *Handler) pluginInstallationPayload(ctx context.Context, installation db
 		return pluginInstallationResponse{}, err
 	}
 
-	config := map[string]any{}
-	if len(installation.Config) > 0 {
-		_ = json.Unmarshal(installation.Config, &config)
-	}
+	// Filtered against the manifest rather than trusted, even though SetConfig
+	// splits secrets off before they could land here and pruneConfig drops any
+	// that a retype stranded. This is the last gate before the value reaches a
+	// browser: one stored row that predates either of those, or one future
+	// write path that forgets, would otherwise become a plaintext credential in
+	// an API response. A guard whose cost is a map walk belongs at the exit.
+	config := service.NonSecretStoredConfig(installation.Config, manifest)
 	var granted []string
 	if len(installation.GrantedScopes) > 0 {
 		_ = json.Unmarshal(installation.GrantedScopes, &granted)
@@ -178,10 +195,11 @@ func (h *Handler) pluginInstallationPayload(ctx context.Context, installation db
 const timeFormatRFC3339 = "2006-01-02T15:04:05Z07:00"
 
 // ListPlugins — GET /api/workspaces/{id}/plugins
+//
+// Ungated: see the cleanup note above requirePluginsV1. The response carries
+// `plugins_enabled` so the settings page can render the same list in read-and-
+// remove mode rather than guessing from an empty result why nothing works.
 func (h *Handler) ListPlugins(w http.ResponseWriter, r *http.Request) {
-	if !h.requirePluginsV1(w, r) {
-		return
-	}
 	workspaceID, ok := parseUUIDOrBadRequest(w, workspaceIDFromURL(r, "id"), "workspace_id")
 	if !ok {
 		return
@@ -200,7 +218,10 @@ func (h *Handler) ListPlugins(w http.ResponseWriter, r *http.Request) {
 		}
 		payloads = append(payloads, payload)
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"plugins": payloads})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"plugins":         payloads,
+		"plugins_enabled": h.pluginsV1Enabled(r.Context()),
+	})
 }
 
 type previewPluginRequest struct {
@@ -235,6 +256,10 @@ func (h *Handler) PreviewPlugin(w http.ResponseWriter, r *http.Request) {
 type installPluginRequest struct {
 	VersionID     string   `json:"version_id"`
 	GrantedScopes []string `json:"granted_scopes"`
+	// Optional. What the administrator filled in on the consent screen, applied
+	// in the same transaction as the install so a plugin whose required
+	// credential was typed there is never installed without it.
+	Config map[string]any `json:"config,omitempty"`
 }
 
 // InstallPlugin — POST /api/workspaces/{id}/plugins
@@ -256,7 +281,7 @@ func (h *Handler) InstallPlugin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	installation, err := h.PluginService.InstallPlugin(r.Context(), workspaceID, member.UserID, req.VersionID, req.GrantedScopes)
+	installation, err := h.PluginService.InstallPlugin(r.Context(), workspaceID, member.UserID, req.VersionID, req.GrantedScopes, req.Config)
 	if err != nil {
 		writePluginError(w, err, "failed to install the Plugin")
 		return
@@ -325,9 +350,37 @@ func (h *Handler) setPluginEnabled(w http.ResponseWriter, r *http.Request, enabl
 	writeJSON(w, http.StatusOK, payload)
 }
 
+// ClearPluginSecret — DELETE /api/workspaces/{id}/plugins/{installationId}/secrets/{key}
+//
+// Ungated: see the cleanup note above requirePluginsV1. Taking one stored
+// credential out of the database is the other thing an operator must be able to
+// do after turning the feature off — otherwise disabling plugins after an
+// incident leaves the leaked token encrypted-at-rest and unreachable, with
+// uninstalling the whole plugin as the only lever. It only ever removes.
+func (h *Handler) ClearPluginSecret(w http.ResponseWriter, r *http.Request) {
+	installation, ok := h.pluginInstallationForCleanup(w, r)
+	if !ok {
+		return
+	}
+	key := chi.URLParam(r, "key")
+	if key == "" {
+		writeError(w, http.StatusBadRequest, "secret key is required")
+		return
+	}
+	if err := h.PluginService.ClearSecret(r.Context(), installation, key); err != nil {
+		writePluginError(w, err, "failed to clear the Plugin secret")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 // UninstallPlugin — DELETE /api/workspaces/{id}/plugins/{installationId}
+//
+// Ungated: see the cleanup note above requirePluginsV1. Uninstall is the one
+// action an operator must keep after disabling the feature, and it only ever
+// removes.
 func (h *Handler) UninstallPlugin(w http.ResponseWriter, r *http.Request) {
-	installation, ok := h.pluginInstallationFromURL(w, r)
+	installation, ok := h.pluginInstallationForCleanup(w, r)
 	if !ok {
 		return
 	}
@@ -342,6 +395,12 @@ func (h *Handler) pluginInstallationFromURL(w http.ResponseWriter, r *http.Reque
 	if !h.requirePluginsV1(w, r) {
 		return db.PluginInstallation{}, false
 	}
+	return h.pluginInstallationForCleanup(w, r)
+}
+
+// pluginInstallationForCleanup resolves the installation without consulting the
+// flag, for the removal routes that outlive it.
+func (h *Handler) pluginInstallationForCleanup(w http.ResponseWriter, r *http.Request) (db.PluginInstallation, bool) {
 	workspaceID, ok := parseUUIDOrBadRequest(w, workspaceIDFromURL(r, "id"), "workspace_id")
 	if !ok {
 		return db.PluginInstallation{}, false

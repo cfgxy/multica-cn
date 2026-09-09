@@ -2,6 +2,10 @@
 
 What a Multica plugin surface imports.
 
+For the manifest reference, hook handlers, scopes, packaging, and the local
+development loop, see **[Building plugins](https://multica.ai/docs/developers/plugins)**.
+This file covers the surface side only.
+
 ```js
 import { multica } from "@multica/plugin-sdk";
 
@@ -38,6 +42,38 @@ before you write one:
   request at all, including back to your own origin, which is no longer in the
   policy now that Multica serves your code. `net:` is an exact host, so declare
   `net:api.example.com` separately from `net:example.com`.
+
+## Validating the manifest before you publish
+
+`manifest.schema.json` ships with this package and is the structural contract for
+`multica.plugin.json` — required fields, the closed scope list, patterns, bounds,
+and the conditionals (`enum` needs `options`, an `event` trigger needs `events`, a
+scheduled hook is `http`). Point your editor at it:
+
+```json
+{ "$schema": "node_modules/@multica/plugin-sdk/manifest.schema.json" }
+```
+
+It also states the event→scope rule: subscribing a hook to `comment.created`
+requires `comments:read` at the top level, and likewise for the `issue.*` and
+`task.*` groups. Both sides are closed lists, so your editor catches it.
+
+Passing it means the shape is right, and nothing more. It is a projection of the
+host parser, not a second source of truth: four rules need a value compared
+against another value and stay with the host, so a manifest can be green in your
+editor and still be refused at publish.
+
+| Rule the host enforces alone | Why the schema cannot state it |
+| --- | --- |
+| Surfaces, hooks and resources total at most 64 | Three array lengths, added |
+| A skill's `entry` is `skills/<its own key>/SKILL.md` | Equality between two sibling fields |
+| A hook's `transport.url` host is covered by a `net:` scope | The URL is checked against another list |
+| A cron may not fire more often than every five minutes | Requires enumerating occurrences |
+
+`examples/plugins/invalid-manifests/` holds one deliberately broken manifest per
+rule the schema does enforce, and `invalid-manifests/host-only/` holds one per
+row of the table above — those pass the schema by design, which is how both
+halves of this boundary stay tested.
 
 ## Publishing
 

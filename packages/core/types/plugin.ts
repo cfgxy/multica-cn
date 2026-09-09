@@ -82,6 +82,13 @@ export interface PluginInstallation {
 
 export interface PluginInstallationListResponse {
   plugins: PluginInstallation[];
+  /**
+   * Whether plugins_v1 is on. Listing and uninstall stay open when it is off so
+   * an operator can still remove what was installed while it was on, and this
+   * flag is how the settings page knows to render that list read-and-remove
+   * only, rather than offering actions the server will refuse.
+   */
+  plugins_enabled?: boolean;
 }
 
 export interface PluginManifestSummary {
@@ -117,6 +124,16 @@ export interface PluginPreview {
   installed_version?: string;
   /** Scopes this install would add on top of what is already granted. */
   added_scopes?: string[];
+  /**
+   * Config fields of THIS manifest the existing installation already answers —
+   * a stored value, or a stored secret named but never returned.
+   *
+   * An upgrade must not re-ask for a credential the workspace already holds,
+   * and must not let a field the new version introduces through unfilled. Those
+   * are the same question with different answers, and only the server knows
+   * which fields fall on which side.
+   */
+  configured_keys?: string[];
 }
 
 export interface PluginPreviewRequest {
@@ -126,6 +143,13 @@ export interface PluginPreviewRequest {
 export interface PluginInstallRequest {
   version_id: string;
   granted_scopes: string[];
+  /**
+   * What the administrator filled in on the consent screen. Applied inside the
+   * install transaction, so a plugin whose required credential was typed there
+   * is never mounted without it. Secret values travel here once and are never
+   * returned by any endpoint afterwards.
+   */
+  config?: Record<string, unknown>;
 }
 
 /** One immutable published version of a plugin package. */
@@ -138,12 +162,32 @@ export interface PluginPackageVersion {
   published_at: string;
   /** True for the version this workspace currently runs, if any. */
   installed: boolean;
+  /**
+   * Set while the publisher has taken this version off the directory. It stops
+   * new installs and nothing else — a workspace already running it keeps
+   * running it, and the publisher can put it back with the same control.
+   */
+  withdrawn_at?: string;
+  /**
+   * What this version's manifest declares, so a directory row can be read
+   * without opening the two-step consent flow first. `config_keys` carries
+   * field NAMES only — nothing is stored for an uninstalled plugin, and a
+   * secret's value is never returned by any endpoint.
+   */
+  description?: string;
+  scopes?: string[];
+  config_keys?: string[];
 }
 
 /**
- * A plugin published into this workspace. Publishing is workspace-private: a
- * public directory needs review, reporting and takedown, which is a separate
- * decision from where the artifact lives.
+ * A plugin published into this workspace.
+ *
+ * The artifact always lives in the publishing workspace; `visibility` decides
+ * only whether the rest of the instance can DISCOVER and install it. Those are
+ * three separate layers on purpose: the artifact is immutable, the listing is
+ * the publisher's to revoke, and each installation is its own administrator's
+ * consent — so unlisting can never reach into a workspace and stop a plugin it
+ * already approved.
  */
 export interface PluginPackage {
   id: string;
@@ -152,6 +196,10 @@ export interface PluginPackage {
   /** Newest first. */
   versions: PluginPackageVersion[];
   created_at: string;
+  /** "private" (default) or "public" — listed on the instance directory. */
+  visibility?: string;
+  /** Which workspace publishes it. Present on directory listings. */
+  publisher_workspace_id?: string;
 }
 
 export interface PluginPackageListResponse {
