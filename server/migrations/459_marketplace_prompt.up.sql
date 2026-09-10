@@ -25,7 +25,7 @@ CREATE TABLE marketplace_prompt_version (
     series_id UUID NOT NULL,
     kind TEXT NOT NULL CHECK (kind IN ('agent_prompt', 'squad_prompt')),
     -- NULL while the row is a draft; assigned at publish time under a series
-    -- lock and backed by the unique index in 458.
+    -- lock and backed by the unique index in 460.
     version INT CHECK (version IS NULL OR version > 0),
 
     -- Publication provenance, snapshotted at publish time. source_workspace_id

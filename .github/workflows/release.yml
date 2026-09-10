@@ -7,6 +7,12 @@ on:
       # tags broadly at the trigger layer, then enforce strict semver below.
       - "v*.*.*"
       - "!v*-dirty*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: "用于镜像标签的版本号（vX.Y.Z 或 vX.Y.Z-suffix）"
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -27,8 +33,10 @@ jobs:
       - name: Validate tag name
         id: release_meta
         shell: bash
+        env:
+          RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
         run: |
-          tag="${GITHUB_REF_NAME}"
+          tag="${RELEASE_TAG}"
           echo "Triggered by tag: $tag"
           if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
             echo "::error::Release tags must look like vX.Y.Z or vX.Y.Z-suffix; got '$tag'."

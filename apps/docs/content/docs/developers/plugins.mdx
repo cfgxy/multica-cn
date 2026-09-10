@@ -1,0 +1,354 @@
+---
+title: Building plugins
+description: Write, package, publish, and upgrade a Multica plugin — the manifest, the surface SDK, the Action API, scopes, hooks, and the local development loop.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+A plugin extends a workspace without a fork and without a place in Multica's own release cycle. It ships as one archive: a manifest plus the files the manifest names.
+
+<Callout type="info">
+Plugins are behind the `plugins_v1` feature flag, off by default. A self-hosted instance turns it on; see [Environment variables](/environment-variables).
+</Callout>
+
+## Three ways a plugin meets Multica
+
+Every capability is one of exactly three kinds, and the distinction decides where your code runs:
+
+| Kind | Direction | What it is |
+|---|---|---|
+| **Action** | plugin → Multica | Your surface calls the host: read an issue, post a comment, keep a value. |
+| **Hook** | Multica → plugin | The host calls an endpoint you run, over `http` or `mcp`. |
+| **Resource** | no call at all | Static content the manifest contributes, currently `skill` text. |
+
+Who triggers a hook and what the hook does are separate questions. A hook is declared once and lists the triggers it accepts.
+
+## The manifest
+
+`multica.plugin.json` sits at the root of the package. It is parsed strictly: unknown fields are an error rather than something quietly ignored, because the manifest is what an administrator consents to, and a typo must not be able to weaken that silently.
+
+The same rules are published as a JSON Schema — `manifest.schema.json` in `@multica/plugin-sdk` — so your editor reports a bad manifest before you package one. It covers the structure only; the host still checks the two cross-field rules (a hook's transport host must be covered by a `net:` scope, an event subscription implies the matching read scope).
+
+```json
+{
+  "manifest_version": 1,
+  "key": "com.example.release-notes",
+  "name": "Release Notes",
+  "description": "Drafts release notes from the issues in a milestone.",
+  "version": "1.2.0",
+  "author": { "name": "Example Team", "url": "https://example.com" },
+  "scopes": ["issues:read", "comments:write", "net:notes.example.com"],
+  "config": {
+    "milestone_field": { "type": "string", "label": "Milestone field", "required": true }
+  },
+  "contributes": {
+    "surfaces": [
+      { "key": "draft", "type": "issue_panel", "name": "Draft notes", "entry": "ui/main.js" }
+    ],
+    "hooks": [
+      {
+        "key": "generate",
+        "name": "Generate notes",
+        "description": "Turns a milestone's closed issues into release-note prose.",
+        "triggers": ["ui"],
+        "transport": { "type": "http", "url": "https://notes.example.com/hooks/generate" }
+      }
+    ]
+  }
+}
+```
+
+### Top-level fields
+
+| Field | Rule |
+|---|---|
+| `manifest_version` | Must be `1`. |
+| `key` | Reverse-DNS, at least two segments, lowercase `a-z0-9` with single hyphens. Identifies the plugin across versions and workspaces. |
+| `name` | Single line, up to 160 bytes. |
+| `description` | Up to 2000 bytes. |
+| `version` | Semantic versioning, up to 64 bytes. |
+| `author.name` | Required. `author.url`, if given, must be plain HTTPS. |
+| `icon` | Optional relative path inside the package. |
+| `scopes` | Non-empty, at most 64, no duplicates. |
+| `config` | Optional, at most 32 fields. |
+| `contributes` | At least one surface, hook, or resource; at most 64 in total. |
+
+A manifest larger than 1 MB is refused before it is parsed.
+
+### Scopes
+
+The scope list is closed. Anything not on it fails at parse time.
+
+| Scope | Grants |
+|---|---|
+| `issues:read` / `issues:write` | Read or update issues. |
+| `comments:read` / `comments:write` | Read or post comments. |
+| `tasks:read` / `tasks:write` | Read or write tasks. |
+| `agents:read` | Read agents. |
+| `members:read` | Read workspace members. |
+| `storage:user` / `storage:workspace` | Per-member or per-workspace plugin storage. |
+| `net:<domain>` | Reach one exact host. |
+
+`net:` is the only parameterized form, and it is an **exact host match**: `net:example.com` does not cover `api.example.com`. Declare each one. The same list does two jobs — it becomes the surface iframe's CSP `connect-src`, and it bounds which host a hook transport may point at. A hook URL not covered by a `net:` scope is a publish-time error, so the consent screen always describes where data actually goes.
+
+### Config fields
+
+The host renders the configuration form from this block, so a plugin never ships form UI.
+
+| Type | Notes |
+|---|---|
+| `string` | Add `"multiline": true` for a textarea. |
+| `number` | |
+| `bool` | |
+| `enum` | Requires `options` (1–64, unique). |
+| `secret` | Write-only. See [Secrets](#secrets). |
+
+Each field also takes `label` (required), `description` (≤500 bytes), `required`, and `placeholder` (≤160 bytes). Declaration order is preserved, so the generated form looks the same in every workspace.
+
+### Surfaces
+
+A surface is an iframe the host mounts at a fixed place. You own what renders inside; the host owns where it appears.
+
+| `type` | Where it appears |
+|---|---|
+| `issue_panel` | Inline on an issue. |
+| `sidebar_panel` | In the workspace sidebar. |
+| `modal` | A dialog opened from the issue menu. |
+
+`entry` must be a `.js` or `.mjs` path inside the package. The host generates the surrounding HTML document itself — that is what lets it attach the CSP derived from your `net:` scopes. A plugin-authored HTML document would carry whatever policy its own server sent, which would make `net:` a claim rather than a control. `platforms` optionally narrows to `web` and/or `desktop`.
+
+### Hooks
+
+```json
+{
+  "key": "nightly_digest",
+  "name": "Nightly digest",
+  "description": "Posts yesterday's activity as a comment.",
+  "input_schema": { "type": "object", "properties": { "since": { "type": "string" } } },
+  "triggers": ["schedule"],
+  "schedule": { "cron": "0 9 * * *", "timezone": "Europe/London" },
+  "transport": { "type": "http", "url": "https://notes.example.com/hooks/digest" },
+  "timeout_ms": 15000
+}
+```
+
+`description` is mandatory — an agent reads it as the MCP tool description. `input_schema`, if present, must be a JSON Schema object. `timeout_ms` is 100–30000, defaulting to 10 seconds.
+
+**Triggers** say who may invoke the hook. The host never invents a call site the manifest did not list.
+
+| Trigger | Invoked by | Blocking |
+|---|---|---|
+| `ui` | Your own surface, through `multica.hooks.invoke()`. | Yes |
+| `manual` | A person, from the issue menu. | Yes |
+| `agent` | An agent, as an MCP tool. | Yes |
+| `event` | A product event. | No |
+| `schedule` | The durable scheduler. | No |
+
+With `event`, list the events in `events`:
+
+`issue.created` · `issue.updated` · `issue.status_changed` · `comment.created` · `task.started` · `task.completed` · `task.failed`
+
+An event **pushes** the same content the Action API would have needed a scope to pull, so subscribing requires that read scope: the `issue.*` events need `issues:read`, `comment.created` needs `comments:read`, and the `task.*` events need `tasks:read`. Otherwise a subscription would be a way to receive what reading was not granted.
+
+With `schedule`, give one `cron` (standard five fields) and a `timezone` (IANA name). The timezone belongs in its own field; an inline `TZ=` prefix is rejected. Scheduled hooks are a polling primitive, not a timer: **an expression that would run more often than every five minutes is refused at publish time**, and only the `http` transport supports scheduling. One cadence per hook — if you need two, declare two hooks, which keeps each durable execution identity unambiguous.
+
+**Transports** are `http` (the host POSTs your endpoint) or `mcp` (the host speaks MCP to your server). Both URLs must be plain HTTPS and covered by a `net:` scope.
+
+### Resources
+
+```json
+{ "type": "skill", "key": "incident-response", "entry": "skills/incident-response/SKILL.md" }
+```
+
+The entry path is fixed as `skills/<key>/SKILL.md`. Installing writes the skill into the workspace; upgrading rewrites it, and a skill the new version dropped is removed.
+
+## Writing a surface
+
+A surface is **one** script in a sandboxed iframe. Bundle the SDK and everything else into a single file: the host serves your entry inside a generated document with no module graph, so a bare `import` has nothing to resolve against. Publishing refuses an entry that has one rather than letting it fail later in a reader's browser.
+
+```sh
+npm install @multica/plugin-sdk
+```
+
+```js
+import { multica } from "@multica/plugin-sdk";
+
+const context = await multica.context.get();
+const issue = await multica.issue.get();
+
+await multica.issue.comment({ body: `Drafted for ${issue.identifier}` });
+await multica.storage.user.set("last-draft", issue.id);
+
+const result = await multica.hooks.invoke("generate", { issueId: issue.id });
+
+multica.ui.resize(document.body.scrollHeight);
+```
+
+The frame is mounted with `sandbox="allow-scripts"` and **not** `allow-same-origin`, so it has an opaque origin. Three consequences worth knowing before you write one:
+
+- **No browser storage.** `localStorage`, `sessionStorage`, and cookies throw or are empty. Use `multica.storage`, which is server-side, scoped per workspace or per member, and outlives the frame.
+- **`Origin: null` on your own requests.** A backend your surface calls directly must accept a null origin in CORS.
+- **A CSP you did not write.** `connect-src` comes from your `net:` scopes. With none, the surface cannot make a network request at all — including back to your own origin, which is no longer in the policy now that Multica serves your code.
+
+### The SDK surface
+
+| Call | Returns |
+|---|---|
+| `multica.context.get(force?)` | `PluginContext` — workspace, user, issue, non-secret `config`, `granted_net_domains`. |
+| `multica.issue.get(id?)` | `Issue`. |
+| `multica.issue.update(patch, id?)` | `Issue`. |
+| `multica.issue.comments(id?)` | `Comment[]`. |
+| `multica.issue.comment({ body, parentId }, id?)` | `Comment`. |
+| `multica.storage.workspace` / `.user` | `list()`, `get(key)`, `set(key, value)`, `delete(key)`. |
+| `multica.hooks.invoke(key, input?)` | `HookResult`. |
+| `multica.ui.resize(px)` | Nothing; the host clamps the value. |
+| `multica.ui.onThemeChange(fn)` | An unsubscribe function. |
+
+`get` on a missing storage key returns `null` rather than throwing — a missing key is an ordinary outcome. Everything else throws `MulticaPluginError` with a `status` mirroring HTTP.
+
+The frame holds no credential and cannot reach Multica's API directly. Every call becomes a message to the host page, which performs it **on the signed-in user's own session**. Two limits therefore apply at once: the scopes the administrator granted, and what that particular person could already do. A member without access to an issue gets a 404 through your surface too; a declined scope is a 403 that names it.
+
+A comment posted this way is authored by the user, recorded as having been made through your plugin. It does not run `@mention` trigger dispatch — a surface cannot start agent runs as a side effect of posting text.
+
+### Theme and sizing
+
+The host pushes design tokens over the private port and again on every theme switch, and the SDK writes them as custom properties on `:root`. Use `var(--foreground)`, `var(--background)`, `var(--border)`, `var(--radius)` and your surface looks native without shipping a stylesheet.
+
+The frame does not auto-size. Call `multica.ui.resize(px)` once your content settles.
+
+## Writing a hook handler
+
+The host POSTs JSON to your `http` endpoint:
+
+```json
+{
+  "version": 1,
+  "invocation_id": "…",
+  "delivery_id": "…",
+  "attempt": 1,
+  "occurred_at": "2026-01-01T09:00:00Z",
+  "hook_key": "nightly_digest",
+  "trigger": "schedule",
+  "workspace_id": "…",
+  "installation_id": "…",
+  "issue_id": "…",
+  "actor": { "type": "user", "id": "…" },
+  "input": {},
+  "config": { "milestone_field": "Milestone" },
+  "callback_token": "…",
+  "callback_url": "https://multica.example.com/v1",
+  "schedule": { "planned_at": "2026-01-01T09:00:00Z" }
+}
+```
+
+`config` carries the non-secret values the administrator typed into the form — the Action API deliberately has no config endpoint, and a plugin forced to keep its own second copy would make the manifest's config block decorative. `issue_id` is resolved and permission-checked by the host, so a handler never has to trust an issue reference out of client-supplied `input`.
+
+`callback_token` lets the handler call the Action API back for a few minutes, narrower than the installation's own token and tied to this one call. `delivery_id` is stable across retries of the same occurrence — use it to make your handler idempotent.
+
+### Verifying the signature
+
+Three headers arrive with every call:
+
+| Header | Meaning |
+|---|---|
+| `X-Multica-Timestamp` | Unix seconds. |
+| `X-Multica-Signature` | `v1=<hex>`, an HMAC-SHA256 of `<timestamp>.<raw body>`. |
+| `X-Multica-Plugin-Installation` | Which installation is calling. |
+
+The secret is the `whsec_…` value shown once when the token was issued. Reject a timestamp more than **five minutes** from your clock before spending time on the comparison — that is what bounds replay, and a handler that also remembers signatures closes the window entirely. Compare in constant time.
+
+```js
+const expected = createHmac("sha256", SIGNING_SECRET)
+  .update(`${timestamp}.${rawBody}`)
+  .digest("hex");
+```
+
+### What the host does around your endpoint
+
+- **Destination checks.** The host must be one your manifest declared, and it must resolve to a public address at dial time.
+- **Rate limit.** 120 attempts per hook per minute.
+- **Response cap.** Bodies over 1 MB fail rather than being consumed.
+- **Retries.** `event` delivery makes three attempts with backoff; `ui`, `manual`, and `agent` calls do not retry, because somebody is waiting.
+- **Circuit breaker.** After five failures in five minutes, background delivery for that hook stops until the window rolls off.
+
+Every call is recorded as an invocation an administrator can read afterwards.
+
+### Secrets
+
+A `type: "secret"` config field is **write-only**. An administrator sets it; the host encrypts it and never returns it — not to the settings form, not to `context.config` in a surface, and **not in the `config` object of an http hook body**.
+
+There is exactly one exception. For a hook using the `mcp` transport, a secret field named `<hookKey>_credential` is attached as the `Authorization` header when the host speaks to that MCP server. No other path exists by which a stored secret reaches an endpoint.
+
+So how does an http handler authenticate to its own service? It reads its own environment. The plugin's credential for the plugin's own service is something the author already has; sending it back over the wire would hand every value to whoever holds the endpoint and buy nothing.
+
+<Callout type="warn">
+Publishing scans the package for credentials and refuses one that contains them. A version is immutable and the directory can serve it to the whole instance, so a secret that reaches storage is published — there is no later point at which refusing still helps.
+</Callout>
+
+## The development loop
+
+Point `MULTICA_PLUGIN_DIR` at a directory of plugin sources and publish straight from disk instead of zipping after every edit:
+
+```sh
+MULTICA_PLUGIN_DIR=/srv/plugin-sources multica-server
+```
+
+Each subdirectory is one plugin. Publishing from there produces an ordinary immutable version rather than a live directory the panel re-reads at render time — otherwise "is this code frozen?" would depend on how the plugin was installed. Re-publishing the same version string, which is what a dev loop does constantly, appends a `+dev.N` build suffix instead of failing on a conflict.
+
+For a hook endpoint on localhost with a self-signed certificate, set `MULTICA_PLUGIN_DEV_CA` to the certificate path. That changes *which* certificate Multica trusts; it never turns verification off.
+
+```sh
+openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+  -keyout dev-key.pem -out dev-cert.pem \
+  -subj "/CN=127.0.0.1" -addext "subjectAltName=IP:127.0.0.1"
+```
+
+Read the invocation list in **Settings → Plugins** to see what the host actually sent and what came back.
+
+## Packaging and publishing
+
+Zip the manifest together with every file it names, and upload it in **Settings → Plugins**. The archive may hold other files; only the ones the manifest references are stored, since nothing could ever serve the rest.
+
+| Limit | Value |
+|---|---|
+| Archive | 2 MB |
+| One file | 1 MB |
+| Stored total | 4 MB |
+| Entries in the archive | 512 |
+| One `SKILL.md` | 256 KB |
+
+Validation happens at publish time, not in a reader's browser months later: a surface entry that does not exist is a refused publish with the missing path named.
+
+You need no server of your own for the frontend. Hook endpoints and MCP servers remain yours to run.
+
+## Versions, listing, and upgrades
+
+A published version is **immutable**. Three things are deliberately separate:
+
+- **The artifact** — the files of one version. Never changes.
+- **The listing** — whether other workspaces on this instance can discover the plugin. Controlled by the publisher.
+- **The installation** — which version a given workspace actually runs. Controlled by that workspace's administrator.
+
+Publishing a new version changes nothing in an installed workspace until an administrator upgrades, so what they approved on the consent screen stays what their browsers run.
+
+A publisher can list a package on the instance directory or take it back off, and can **withdraw** a single bad version without unlisting the plugin. A withdrawn version disappears from the directory and cannot be newly installed; workspaces already on it keep running until they move.
+
+Upgrading re-runs consent, and it happens in one transaction:
+
+- Config values whose fields the new manifest dropped are pruned — including secrets, so a snapshot can never land with the previous version's ciphertext still attached.
+- Skill resources are rewritten, and a dropped one is removed.
+- Hook schedules are reconciled against the new manifest.
+
+If any part fails, none of it is applied.
+
+## Examples
+
+The repository ships runnable examples under `examples/plugins/`:
+
+| Example | Shows |
+|---|---|
+| `hello-panel` | The smallest `issue_panel` surface. |
+| `triage-notify` | An `event`-triggered hook with signature verification. |
+| `schedule-pulse` | A scheduled hook and idempotency by `delivery_id`. |
+| `deploy-sentinel` | An `mcp` transport plus a contributed skill. |
+| `oncall-handoff` | A `modal` surface, a `manual` trigger, and write-only secrets. |

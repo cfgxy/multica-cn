@@ -121,14 +121,18 @@ describe("SettingsPage nav trigger", () => {
 });
 
 describe("SettingsPage Plugin feature flag", () => {
-  it("hides Plugins and falls back from a direct tab URL when disabled", () => {
+  // Unlike Marketplace and Billing, the Plugins tab is not gated here. Turning
+  // plugins_v1 off has to stop plugin code from running, but hiding the tab as
+  // well would leave an operator holding installations they can neither see nor
+  // remove. The tab stays; PluginsTab is what switches to read-and-remove, and
+  // it asks the server rather than the flag.
+  it("keeps Plugins reachable when the flag is off, so installations can still be removed", () => {
     navigationState.search = "tab=plugins";
 
     renderWithI18n(<SettingsPage />);
 
-    expect(screen.queryByRole("tab", { name: "Plugins" })).not.toBeInTheDocument();
-    expect(screen.queryByText("PluginsTab")).not.toBeInTheDocument();
-    expect(screen.getByText("AccountTab")).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Plugins" })).toBeInTheDocument();
+    expect(screen.getByText("PluginsTab")).toBeInTheDocument();
   });
 
   it("shows and mounts Plugins when explicitly enabled", () => {

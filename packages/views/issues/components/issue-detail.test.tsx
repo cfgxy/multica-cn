@@ -4,6 +4,7 @@ import { act, fireEvent, render, screen, waitFor, within } from "@testing-librar
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, IssueStatusEntry, Label, TimelineEntry } from "@multica/core/types";
 import { issueStatusKeys } from "@multica/core/issue-statuses";
+import { COMMENT_HIGHLIGHT_HOLD_MS } from "@multica/core/issues/comment-highlight";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { toast } from "sonner";
 import { useResolvedExpandStore } from "@multica/core/issues/stores/resolved-expand-store";
@@ -165,8 +166,14 @@ vi.mock("../../editor", async () => ({
   ImageSequenceProvider: ({ children }: { children: React.ReactNode }) =>
     children,
   isPreviewable: () => false,
+  // Markdown is not rendered here (Tiptap/react-markdown need a real DOM), but
+  // `mention://comment/<id>` is: the anchor chip is the only affordance that
+  // reaches back INTO this component, so a stub that flattened it to text
+  // would make the click-to-locate path untestable. The chip itself is the
+  // real CommentMentionCard; what the markdown pipeline does with the link is
+  // covered in rich-content/comment-anchor-rendering.test.tsx.
   ReadonlyContent: ({ content }: { content: string }) => (
-    <div data-testid="readonly-content">{content}</div>
+    <div data-testid="readonly-content">{renderWithCommentAnchors(content)}</div>
   ),
   ContentEditor: forwardRef(function MockContentEditor(
     {
@@ -595,10 +602,32 @@ const mockTimeline: TimelineEntry[] = [
 // ---------------------------------------------------------------------------
 
 import { IssueDetail, groupSubIssuesByStage } from "./issue-detail";
+import { CommentMentionCard } from "./comment-mention-card";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+const COMMENT_ANCHOR_RE = /\[([^\]]*)\]\(mention:\/\/comment\/([^)\s]+)\)/g;
+
+/**
+ * Minimal stand-in for the markdown pipeline's link handling: splits a comment
+ * body on `mention://comment/<id>` and mounts the real chip for each hit.
+ * Everything else stays plain text.
+ */
+function renderWithCommentAnchors(content: string): React.ReactNode {
+  const out: React.ReactNode[] = [];
+  let last = 0;
+  for (const m of content.matchAll(COMMENT_ANCHOR_RE)) {
+    if (m.index > last) out.push(content.slice(last, m.index));
+    out.push(
+      <CommentMentionCard key={m.index} commentId={m[2]!} label={m[1]} />,
+    );
+    last = m.index + m[0].length;
+  }
+  out.push(content.slice(last));
+  return out;
+}
 
 function createTestQueryClient() {
   return new QueryClient({
@@ -1938,6 +1967,181 @@ describe("IssueDetail (shared)", () => {
           document.getElementById("comment-reply-1")?.className,
         ).toContain("bg-[color-mix(in_srgb,var(--card)_95%,var(--brand)_5%)]");
       });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Comment anchors (RUYI-108) — the in-page half of the feature. Chip
+  // rendering and its degraded state live in
+  // rich-content/comment-anchor-rendering.test.tsx; what is canonical HERE is
+  // that a click reaches the same landing path the inbox deep link uses, and
+  // that the flash it leaves behind ends on the shared schedule.
+  // -------------------------------------------------------------------------
+  describe("mention://comment anchor click-to-locate", () => {
+    /** comment-1 quotes comment-2; the anchor rides inside comment-1's body. */
+    function seedAnchorTimeline(extra: TimelineEntry[] = []) {
+      mockApiObj.listTimeline.mockResolvedValue([
+        {
+          ...mockTimeline[0],
+          content: "As [Claude said](mention://comment/comment-2) earlier",
+        },
+        mockTimeline[1],
+        ...extra,
+      ]);
+    }
+
+    it("clicking an anchor lands on and highlights the referenced comment", async () => {
+      seedAnchorTimeline();
+      // No highlightCommentId prop: the landing must come from the click
+      // alone, which is the whole point of the in-page anchor.
+      renderIssueDetail();
+
+      const chip = await screen.findByRole("button", { name: /Claude Agent/ });
+      expect(
+        hasHighlightedCommentBackground(document.getElementById("comment-comment-2")),
+      ).toBe(false);
+
+      fireEvent.click(chip);
+
+      await waitFor(() => {
+        expect(
+          hasHighlightedCommentBackground(document.getElementById("comment-comment-2")),
+        ).toBe(true);
+      });
+      // Only the target. A whole-thread wash would leave the reader hunting
+      // for which row was actually referenced.
+      expect(
+        hasHighlightedCommentBackground(document.getElementById("comment-comment-1")),
+      ).toBe(false);
+    });
+
+    it("clicking the same anchor twice re-plays the landing", async () => {
+      seedAnchorTimeline();
+      renderIssueDetail();
+
+      const chip = await screen.findByRole("button", { name: /Claude Agent/ });
+      fireEvent.click(chip);
+      await waitFor(() => {
+        expect(
+          hasHighlightedCommentBackground(document.getElementById("comment-comment-2")),
+        ).toBe(true);
+      });
+
+      // Let the first flash expire, then click again. The commentId does not
+      // change, so without the token bump React would drop the state update
+      // and the second click would look dead.
+      await act(async () => {
+        await new Promise((r) => setTimeout(r, COMMENT_HIGHLIGHT_HOLD_MS + 50));
+      });
+      await waitFor(() => {
+        expect(
+          hasHighlightedCommentBackground(document.getElementById("comment-comment-2")),
+        ).toBe(false);
+      });
+
+      fireEvent.click(
+        screen.getByRole("button", { name: /Claude Agent/ }),
+      );
+      await waitFor(() => {
+        expect(
+          hasHighlightedCommentBackground(document.getElementById("comment-comment-2")),
+        ).toBe(true);
+      });
+    });
+
+    it("clicking an anchor into a folded resolved thread expands it first", async () => {
+      // comment-3 is resolved → renders as a bar; reply-1 lives behind it and
+      // is not in the flat item list at click time.
+      mockApiObj.listTimeline.mockResolvedValue([
+        {
+          ...mockTimeline[0],
+          content: "See [the answer](mention://comment/reply-1)",
+        },
+        mockTimeline[1],
+        {
+          type: "comment",
+          id: "comment-3",
+          actor_type: "member",
+          actor_id: "user-1",
+          content: "Resolved root",
+          parent_id: null,
+          created_at: "2026-01-18T00:00:00Z",
+          updated_at: "2026-01-18T00:00:00Z",
+          comment_type: "comment",
+          resolved_at: "2026-01-19T00:00:00Z",
+        } as TimelineEntry,
+        {
+          type: "comment",
+          id: "reply-1",
+          actor_type: "member",
+          actor_id: "user-1",
+          content: "The actual answer",
+          parent_id: "comment-3",
+          created_at: "2026-01-18T01:00:00Z",
+          updated_at: "2026-01-18T01:00:00Z",
+          comment_type: "comment",
+        } as TimelineEntry,
+      ]);
+
+      renderIssueDetail();
+
+      // Matched on the excerpt, not the author: the folded thread's own bar is
+      // also a button carrying the author name.
+      const chip = await screen.findByRole("button", { name: /The actual answer/ });
+      // Folded: the reply has no DOM node to jump to yet.
+      expect(document.getElementById("comment-reply-1")).toBeNull();
+
+      fireEvent.click(chip);
+
+      await waitFor(() => {
+        expect(document.getElementById("comment-reply-1")).not.toBeNull();
+      });
+      await waitFor(() => {
+        expect(
+          hasHighlightedCommentBackground(document.getElementById("comment-reply-1")),
+        ).toBe(true);
+      });
+    });
+
+    it("the flash clears on the shared schedule, not on a per-surface number", async () => {
+      seedAnchorTimeline();
+      renderIssueDetail();
+      const chip = await screen.findByRole("button", { name: /Claude Agent/ });
+
+      // Fake timers only from here: the click path itself needs the real
+      // microtask queue (query resolution) to have already settled.
+      vi.useFakeTimers({
+        toFake: ["setTimeout", "clearTimeout", "requestAnimationFrame", "cancelAnimationFrame"],
+      });
+      try {
+        fireEvent.click(chip);
+        act(() => {
+          vi.advanceTimersByTime(16);
+        });
+        expect(
+          hasHighlightedCommentBackground(document.getElementById("comment-comment-2")),
+        ).toBe(true);
+
+        // Still lit just before the hold expires — a shorter flash than the
+        // schedule promises would be missed while the scroll is still settling.
+        act(() => {
+          vi.advanceTimersByTime(COMMENT_HIGHLIGHT_HOLD_MS - 100);
+        });
+        expect(
+          hasHighlightedCommentBackground(document.getElementById("comment-comment-2")),
+        ).toBe(true);
+
+        // Clearing the id is what starts the CSS fade; the tint class goes
+        // away here and the remaining FADE_MS is the browser's transition.
+        act(() => {
+          vi.advanceTimersByTime(200);
+        });
+        expect(
+          hasHighlightedCommentBackground(document.getElementById("comment-comment-2")),
+        ).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
     });
   });
 
