@@ -26,7 +26,7 @@ import (
 // with the scan so a future rule addition can tell which snapshots were only
 // ever cleared by an older, weaker detector set. Bump it whenever `detectors`
 // changes.
-const Revision = "promptscan/2026-09-10.1"
+const Revision = "promptscan/2026-09-10.2"
 
 // maxFindings bounds a report. Prompt content is unbounded user text, and a
 // pasted .env would otherwise produce a finding per line — a response large
@@ -115,19 +115,31 @@ type detector struct {
 // combinations someone thought to enumerate (`db_password`) were detected, so
 // `{"db_pass": "<real>"}` published into the cross-workspace catalog.
 //
+// The qualifier is a whole PATH, not one segment. A config names the thing it
+// connects to in as many segments as it takes — `prod_db_pass`,
+// `POSTGRES_ADMIN_PASSWORD`, `readReplicaPassword` — and a rule that allowed a
+// single segment matched none of them, because the field-name boundary equally
+// forbids restarting the match at `_`, `-` or mid-word. Segment count is capped
+// rather than unbounded: a field name is a handful of words, and an open
+// repetition would let an entire sentence of hyphenated prose act as one.
+//
 // The qualifier is separated from the credential word by `_`, `-`, a space, or
 // a capital letter in the case-sensitive camelCase alternative. Letting it run
 // straight into the word would make every word ENDING in one a field name —
 // `bypass`, `surpass`, `compass` — and block the prose those appear in.
 //
-// The abbreviations `pass` and `pwd` REQUIRE a qualifier, and that qualifier
-// must be joined by `_` or `-` rather than a space: a bare `pass` is an
-// ordinary English noun and `second pass:` is a sentence, not an assignment,
-// while `db_pass` is only ever a field name. The full words carry no such
-// ambiguity, so they match qualified or not, spaced or not.
-const passwordFieldName = `(?:[A-Za-z0-9]{1,24}[_\- ])?(?:passphrase|password|passwd)` +
-	`|[A-Za-z0-9]{1,24}[_\-](?:pass|pwd)` +
-	`|(?-i:[a-z0-9]{1,24}(?:Passphrase|Password|Passwd|Pass|Pwd))`
+// The abbreviations `pass` and `pwd` REQUIRE a qualifier, and every segment of
+// that qualifier must be joined by `_` or `-` rather than a space: a bare
+// `pass` is an ordinary English noun and `second pass:` is a sentence, not an
+// assignment, while `db_pass` is only ever a field name. The full words carry
+// no such ambiguity, so they match qualified or not — but only their LAST
+// qualifier segment may be joined by a space, for the same reason: `the admin
+// password:` is a field name preceded by prose, not a four-segment name.
+const qualifierSegment = `[A-Za-z0-9]{1,24}[_\-]`
+
+const passwordFieldName = `(?:` + qualifierSegment + `){0,7}(?:[A-Za-z0-9]{1,24} )?(?:passphrase|password|passwd)` +
+	`|(?:` + qualifierSegment + `){1,8}(?:pass|pwd)` +
+	`|(?-i:[a-z0-9]+(?:[A-Z][a-z0-9]*)*(?:Passphrase|Password|Passwd|Pass|Pwd))`
 
 // credentialFieldName is the set of field names that mean "what follows is a
 // credential", written to tolerate the separators real configs use:
