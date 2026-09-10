@@ -22,6 +22,10 @@
 import { useMemo } from "react";
 import { THEME } from "@/lib/theme";
 import { useColorScheme } from "@/lib/use-color-scheme";
+import {
+  COMMENT_ANCHOR_URL_PATTERN,
+  commentAnchorLinkVariant,
+} from "./comment-anchor-style";
 
 /**
  * Typography scale — Apple HIG-calibrated, one tier below shadcn web.
@@ -177,6 +181,22 @@ export function useMarkdownStyle() {
       link: {
         color: t.brand,
         underline: true,
+      },
+      // Comment anchors read as a chip, not as a link (RUYI-108).
+      //
+      // Web renders `mention://comment/<id>` through `CommentMentionCard` — a
+      // bordered, tinted pill. Enriched cannot host that component (no custom
+      // renderers, by design), but it does style links per URL pattern, and
+      // that is enough for the part that matters: the reference must not look
+      // like an ordinary outbound link, because tapping it never leaves the
+      // screen — it scrolls this timeline. Background + no underline is the
+      // same signal iOS Messages / Slack use for in-app references. The 💬
+      // glyph is added by `preprocess.ts`; enriched has no icon slot.
+      //
+      // Pattern and colours live in `comment-anchor-style.ts` so the URL
+      // pattern can be tested against the router that has to agree with it.
+      linkVariants: {
+        [COMMENT_ANCHOR_URL_PATTERN]: commentAnchorLinkVariant(t),
       },
       // Inline code — monospace + muted-foreground tint, NO background chip.
       //

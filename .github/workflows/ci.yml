@@ -118,6 +118,10 @@ jobs:
               # makefile-build.test.sh asserts how `make build` names its
               # output binaries, so a change to either side must run it.
               - 'scripts/makefile-build.test.sh'
+              # agent-branch-cleanup.sh classifies the branches
+              # internal/daemon/execenv creates, and deletes some of them.
+              - 'scripts/agent-branch-cleanup.sh'
+              - 'scripts/agent-branch-cleanup.test.sh'
               - 'Makefile'
               - '.github/workflows/ci.yml'
             sqlc:
@@ -526,6 +530,10 @@ jobs:
       - name: Test build output naming
         if: ${{ needs.changes.outputs.backend == 'true' }}
         run: bash scripts/makefile-build.test.sh
+
+      - name: Test agent branch cleanup
+        if: ${{ needs.changes.outputs.backend == 'true' }}
+        run: bash scripts/agent-branch-cleanup.test.sh
 
       - name: Build
         if: ${{ needs.changes.outputs.backend == 'true' }}

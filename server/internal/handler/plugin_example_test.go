@@ -177,9 +177,18 @@ func installExamplePlugin(t *testing.T, servers exampleServers) string {
 	// is the file a plugin author copies, so this is the check that keeps it
 	// runnable rather than merely well-formed.
 	versionID := publishLocalPlugin(t, "deploy-sentinel")
+	// The example declares four required config fields, and an install that
+	// would leave one unset is refused — so the consent screen's values are
+	// part of what makes this example installable, not an optional extra.
 	body, _ := json.Marshal(map[string]any{
 		"version_id":     versionID,
 		"granted_scopes": scopes,
+		"config": map[string]any{
+			"service_prefix":          "checkout-",
+			"rollback_window_minutes": 30,
+			"environment":             "staging",
+			"sentinel_token":          "sentinel-test-token",
+		},
 	})
 	recorder := httptest.NewRecorder()
 	testHandler.InstallPlugin(recorder, pluginHandlerRequest(http.MethodPost, "/plugins", body, map[string]string{"id": testWorkspaceID}))

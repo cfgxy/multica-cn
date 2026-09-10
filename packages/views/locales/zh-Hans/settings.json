@@ -307,7 +307,15 @@
     "cancel": "取消",
     "installed_toast": "{{name}} 已安装",
     "install_failed_toast": "安装失败",
-    "admin_only_note": "仅工作空间所有者和管理员可以从应用市场安装。"
+    "admin_only_note": "仅工作空间所有者和管理员可以从应用市场安装。",
+    "filter_plugins": "插件",
+    "plugin_kind": "插件",
+    "plugins_title": "本实例的插件",
+    "plugins_description": "其他工作空间上架的插件。安装时会显示与发布自有插件相同的授权确认页：你批准的权限范围就是全部授权，你批准的版本就是实际运行的版本。",
+    "plugins_empty_title": "还没有上架的插件",
+    "plugins_empty_description": "工作空间在发布插件后，可在「设置 → 插件」中将其上架。",
+    "all_versions_withdrawn": "所有版本均已撤回",
+    "plugin_config_summary": "需要 {{count}} 项配置：{{keys}}"
   },
   "mcp": {
     "title": "MCP",
@@ -362,6 +370,8 @@
   "plugins": {
     "title": "Plugins",
     "description": "在这个工作区里发布插件，然后安装某个具体版本，并逐条确认它能访问什么。",
+    "disabled_title": "插件管理已关闭",
+    "disabled_description": "插件功能关闭期间，无法安装、升级或发布插件。已安装的插件仍会在下方列出，并且可以卸载。",
     "loading": "正在加载 Plugins",
     "load_failed": "无法加载 Plugins",
     "load_failed_description": "请重试。已安装的 Plugin 不受影响。",
@@ -392,7 +402,14 @@
       "confirm_upgrade": "授权并升级",
       "installed": "Plugin 已安装",
       "upgrade_from": " · 从 v{{version}} 升级",
-      "new_scope": "新增"
+      "new_scope": "新增",
+      "config_title": "该 Plugin 需要的配置",
+      "config_description": "在此填写，随安装一并保存。密钥为只写：保存后任何界面和接口都无法再读取。",
+      "config_required": "请先填写必填项再安装：{{fields}}",
+      "sensitive_write": "会修改工作空间数据",
+      "sensitive_network": "会向实例外发送数据",
+      "upgrade_data_title": "升级会如何处理你的数据",
+      "upgrade_data_description": "已配置的配置项与存储数据将保留；新版本不再声明的字段及其密钥会被删除。若升级失败，将自动回退到 v{{version}} 并恢复原有授权。"
     },
     "schedule": {
       "title": "自动运行计划",
@@ -411,7 +428,9 @@
       "title": "配置",
       "save": "保存",
       "saved": "配置已保存",
-      "secret_set": "已保存 — 输入新值可替换"
+      "configured": "已配置",
+      "secret_set": "已保存 — 输入新值可替换",
+      "secret_write_only": "只写 — 保存后无法再读取。"
     },
     "scopes": {
       "issues_read": "读取任务",
@@ -450,7 +469,43 @@
       "deleted": "已删除发布的插件",
       "installed_version": "使用中",
       "review_install": "查看并安装",
-      "review_upgrade": "查看并升级"
+      "review_upgrade": "查看并升级",
+      "list": "上架到目录",
+      "unlist": "撤下",
+      "listed": "已上架到实例目录",
+      "unlisted": "已从目录撤下",
+      "listed_badge": "已上架",
+      "private_badge": "私有",
+      "listed_note": "本实例内的所有工作空间都能发现并安装该插件。撤下只会阻止新的安装，已经在运行某个版本的工作空间不受影响。",
+      "private_note": "只有当前工作空间可以安装该插件。上架后，本实例内的所有工作空间都能发现它。",
+      "withdraw": "撤回",
+      "restore": "恢复",
+      "withdrawn": "该版本已从目录撤回",
+      "restored": "该版本已恢复上架",
+      "withdrawn_badge": "已撤回"
+    },
+    "uninstall_dialog": {
+      "title": "卸载 {{name}}？",
+      "description": "该安装及其存储的全部内容会一次性删除，且不可恢复。",
+      "deletes_title": "将删除以下内容",
+      "deletes_storage": "该 Plugin 存储的全部数据（成员级与工作空间级）",
+      "deletes_config": "它的全部配置",
+      "deletes_secrets": "全部已存储的密钥",
+      "deletes_secrets_named": "已存储的密钥：{{keys}}",
+      "deletes_skills": "它向本工作空间贡献的 Skill",
+      "deletes_hooks": "它的定时计划与 Hook 调用记录",
+      "acknowledge": "我了解将删除以上全部数据且不可恢复。",
+      "cancel": "取消",
+      "confirm": "卸载"
+    },
+    "secret_cleanup": {
+      "title": "已存储的密钥",
+      "description": "Plugin 管理已关闭，无法编辑配置。此处仍可单独删除某条已存储的密钥，例如密钥泄露后的清理。",
+      "clear": "清除该密钥",
+      "confirm_hint": "将永久删除。",
+      "confirm": "确认删除",
+      "cancel": "取消",
+      "cleared": "密钥 {{key}} 已删除"
     }
   },
   "properties": {

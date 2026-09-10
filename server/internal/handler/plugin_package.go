@@ -18,10 +18,11 @@ import (
 // endpoint created.
 
 // ListPluginPackages — GET /api/workspaces/{id}/plugins/packages
+//
+// Ungated: see the cleanup note above requirePluginsV1. A publisher who
+// disabled the feature still has to be able to see and delete what they
+// published.
 func (h *Handler) ListPluginPackages(w http.ResponseWriter, r *http.Request) {
-	if !h.requirePluginsV1(w, r) {
-		return
-	}
 	workspaceID, ok := parseUUIDOrBadRequest(w, workspaceIDFromURL(r, "id"), "workspace_id")
 	if !ok {
 		return
@@ -134,11 +135,101 @@ func (h *Handler) PublishLocalPluginPackage(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusCreated, published)
 }
 
-// DeletePluginPackage — DELETE /api/workspaces/{id}/plugins/packages/{packageId}
-func (h *Handler) DeletePluginPackage(w http.ResponseWriter, r *http.Request) {
+// ListPublicPluginPackages — GET /api/workspaces/{id}/plugins/directory
+//
+// The instance directory. Membership of the workspace in the URL is what
+// authorizes the read — the listing spans workspaces, so anonymous access would
+// publish an inventory of the instance's plugins to anyone who can reach it.
+func (h *Handler) ListPublicPluginPackages(w http.ResponseWriter, r *http.Request) {
 	if !h.requirePluginsV1(w, r) {
 		return
 	}
+	workspaceIDString := workspaceIDFromURL(r, "id")
+	workspaceID, ok := parseUUIDOrBadRequest(w, workspaceIDString, "workspace_id")
+	if !ok {
+		return
+	}
+	if _, ok := h.workspaceMember(w, r, workspaceIDString); !ok {
+		return
+	}
+	packages, err := h.PluginService.ListPublicPackages(r.Context(), workspaceID)
+	if err != nil {
+		writePluginError(w, err, "failed to list Plugins on the directory")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"packages": packages})
+}
+
+type pluginVisibilityRequest struct {
+	// Public rather than a free-text visibility: the column has two states and
+	// a bool cannot carry a third one that the CHECK constraint would then
+	// reject with a database error instead of a validation message.
+	Public bool `json:"public"`
+}
+
+// SetPluginPackageVisibility — PUT /api/workspaces/{id}/plugins/packages/{packageId}/visibility
+func (h *Handler) SetPluginPackageVisibility(w http.ResponseWriter, r *http.Request) {
+	if !h.requirePluginsV1(w, r) {
+		return
+	}
+	workspaceIDString := workspaceIDFromURL(r, "id")
+	workspaceID, ok := parseUUIDOrBadRequest(w, workspaceIDString, "workspace_id")
+	if !ok {
+		return
+	}
+	if _, ok := h.workspaceMember(w, r, workspaceIDString); !ok {
+		return
+	}
+	var req pluginVisibilityRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	updated, err := h.PluginService.SetPackageVisibility(r.Context(), workspaceID, chi.URLParam(r, "packageId"), req.Public)
+	if err != nil {
+		writePluginError(w, err, "failed to update the Plugin listing")
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+type pluginWithdrawalRequest struct {
+	Withdrawn bool `json:"withdrawn"`
+}
+
+// SetPluginVersionWithdrawn — PUT /api/workspaces/{id}/plugins/versions/{versionId}/withdrawn
+func (h *Handler) SetPluginVersionWithdrawn(w http.ResponseWriter, r *http.Request) {
+	if !h.requirePluginsV1(w, r) {
+		return
+	}
+	workspaceIDString := workspaceIDFromURL(r, "id")
+	workspaceID, ok := parseUUIDOrBadRequest(w, workspaceIDString, "workspace_id")
+	if !ok {
+		return
+	}
+	member, ok := h.workspaceMember(w, r, workspaceIDString)
+	if !ok {
+		return
+	}
+	var req pluginWithdrawalRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+	updated, err := h.PluginService.SetVersionWithdrawn(r.Context(), workspaceID, member.UserID, chi.URLParam(r, "versionId"), req.Withdrawn)
+	if err != nil {
+		writePluginError(w, err, "failed to update the Plugin version listing")
+		return
+	}
+	writeJSON(w, http.StatusOK, updated)
+}
+
+// DeletePluginPackage — DELETE /api/workspaces/{id}/plugins/packages/{packageId}
+//
+// Ungated: see the cleanup note above requirePluginsV1. The install-count guard
+// inside DeletePackage still applies, so this cannot break a workspace that is
+// still running one of these versions.
+func (h *Handler) DeletePluginPackage(w http.ResponseWriter, r *http.Request) {
 	workspaceID, ok := parseUUIDOrBadRequest(w, workspaceIDFromURL(r, "id"), "workspace_id")
 	if !ok {
 		return

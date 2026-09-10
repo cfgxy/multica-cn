@@ -1,0 +1,19 @@
+{
+  "manifest_version": 1,
+  "key": "com.example.hook-url-unscoped",
+  "name": "Hook endpoint nothing granted",
+  "version": "1.0.0",
+  "author": { "name": "Example" },
+  "scopes": ["issues:read"],
+  "contributes": {
+    "hooks": [
+      {
+        "key": "notify",
+        "name": "Notify",
+        "description": "Posts to an endpoint the manifest never declared.",
+        "triggers": ["manual"],
+        "transport": { "type": "http", "url": "https://hooks.example.com/notify" }
+      }
+    ]
+  }
+}

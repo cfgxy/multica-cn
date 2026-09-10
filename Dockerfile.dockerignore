@@ -1,0 +1,11 @@
+# Backend image context whitelist: the backend build only needs the Go
+# server plus the files copied in the runtime stage. Everything else stays
+# out of the transfer (this file replaces the shared .dockerignore for
+# builds using ./Dockerfile).
+**
+!server/**
+server/bin/**
+server/tmp/**
+!LICENSE
+!NOTICE
+!docker/entrypoint.sh

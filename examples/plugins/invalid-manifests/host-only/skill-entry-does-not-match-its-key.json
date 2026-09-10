@@ -1,0 +1,13 @@
+{
+  "manifest_version": 1,
+  "key": "com.example.skill-entry-key-mismatch",
+  "name": "Skill entry names another key",
+  "version": "1.0.0",
+  "author": { "name": "Example" },
+  "scopes": ["issues:read"],
+  "contributes": {
+    "resources": [
+      { "type": "skill", "key": "triage", "entry": "skills/handoff/SKILL.md" }
+    ]
+  }
+}

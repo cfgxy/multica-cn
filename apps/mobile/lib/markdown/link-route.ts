@@ -17,6 +17,15 @@ export type LinkAction =
   | { kind: "route"; path: string }
   /** 附件：需按 RUYI-73 重新签发 URL 再打开。 */
   | { kind: "attachment"; id: string; fallbackUrl: string }
+  /**
+   * 同任务单内的评论锚点（RUYI-108）：定位到当前 issue 时间线里的某条评论。
+   *
+   * 刻意不是 `route`——它不换页面，只在当前时间线里展开并高亮目标行，
+   * 所以既不需要 workspace slug，也没有可跳转的 path。跨任务单不解析：
+   * 消费方查不到该 id 时按降级反馈处理，不做网络探测（那会把一个
+   * 无副作用的渲染锚点变成可探测存在性的接口）。
+   */
+  | { kind: "commentAnchor"; commentId: string }
   /** 交给系统打开（http(s) / mailto / tel / app scheme）。 */
   | { kind: "external"; url: string }
   /** 静默忽略。 */
@@ -32,6 +41,7 @@ export function resolveLinkAction(
   //
   //   mention://issue/<uuid>   → 跳转 issue 详情
   //   mention://project/<uuid> → 跳转 project 详情
+  //   mention://comment/<uuid> → 当前任务单内定位评论（不换页）
   //   mention://member|agent|squad/<uuid> → 无对应页面，忽略
   //   mention://all/all        → 纯语义（「所有人」），忽略
   //   畸形                     → 忽略
@@ -41,7 +51,11 @@ export function resolveLinkAction(
     if (slash < 0) return { kind: "noop" };
     const type = rest.slice(0, slash);
     const id = rest.slice(slash + 1);
-    if (!id || !wsSlug) return { kind: "noop" };
+    if (!id) return { kind: "noop" };
+    // 评论锚点在 slug 判断之前返回：定位发生在当前时间线内，不拼路由，
+    // 因此不该被「拿不到 slug」这条针对跳转的前置条件连坐。
+    if (type === "comment") return { kind: "commentAnchor", commentId: id };
+    if (!wsSlug) return { kind: "noop" };
     // 手机端路由段是单数（`/issue/`、`/project/`），与 mention 类型同词但
     // 映射保持显式，新增类型不会静默走空。
     if (type === "issue") return { kind: "route", path: `/${wsSlug}/issue/${id}` };

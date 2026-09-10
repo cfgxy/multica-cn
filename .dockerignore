@@ -1,12 +1,17 @@
-# Dependencies
-node_modules
+# Dependencies — unlike .gitignore, patterns here are anchored at the
+# context root unless prefixed with **/, so nested node_modules/.next need
+# the **/ form.
+**/node_modules
 .pnpm-store
 
 # Build outputs
-.next
-dist
+**/.next
+**/dist
 server/bin
 server/tmp
+**/.turbo
+**/*.tsbuildinfo
+.beads
 
 # Git
 .git

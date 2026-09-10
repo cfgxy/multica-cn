@@ -22,7 +22,15 @@
  * when expanded the resolved indicator stays at the top of the body so the
  * user keeps the "this thread is resolved" signal even while reading.
  */
-import { useCallback, useEffect, Fragment, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  Fragment,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { Pressable, View } from "react-native";
 import Animated, {
   cancelAnimation,
@@ -34,6 +42,10 @@ import Animated, {
 } from "react-native-reanimated";
 import { Ionicons } from "@expo/vector-icons";
 import type { Reaction, TimelineEntry } from "@multica/core/types";
+import {
+  COMMENT_HIGHLIGHT_FADE_MS,
+  COMMENT_HIGHLIGHT_TOTAL_MS,
+} from "@multica/core/issues/comment-highlight";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { useActorLookup } from "@/data/use-actor-name";
@@ -60,6 +72,8 @@ import { ActionSheetModal } from "@/components/ui/action-sheet";
 import { useCommentSelectStore } from "@/data/comment-select-store";
 import { useCommentFocusStore } from "@/data/stores/comment-focus-store";
 import { commentSummary } from "@/lib/comment-summary";
+import { useCommentAnchor } from "@/lib/comment-anchor-context";
+import { RowGeometryReporter } from "@/lib/comment-geometry";
 
 interface Props {
   entry: TimelineEntry;
@@ -173,6 +187,60 @@ export function CommentCard({
     }
   }, [highlightedCommentId, entry.id, replies, issueId, expandStore]);
 
+  // ── RUYI-108 行内几何上报 ─────────────────────────────────────────────
+  // 每条回复登记自己在**所属 FlashList 行**内的纵向偏移，定位控制器据此判断
+  // 被引用的回复是否真的入屏、并在需要时二次滚动。测量的合并、基准迟到重算
+  // 和集合差集清理都在 `RowGeometryReporter` 里（lib/comment-geometry.ts，
+  // node lane 有单测）；这里只负责把 `onLayout` 事件喂给它。
+  const { reportGeometry, forgetGeometry } = useCommentAnchor();
+  const reporterRef = useRef<RowGeometryReporter | null>(null);
+  if (!reporterRef.current) {
+    reporterRef.current = new RowGeometryReporter(
+      entry.id,
+      reportGeometry,
+      forgetGeometry,
+    );
+  }
+  const reporter = reporterRef.current;
+  // FlashList v2 回收的是**视图**：行滚出渲染窗口时这个组件实例不卸载，而是
+  // 带着另一个 root 的数据继续渲染，上面那个 ref 里的上报器会一路活过去。
+  // 不重绑，新 root 的回复就会登记到旧 root 名下，二次滚动按旧行的行顶换算，
+  // 跳进错误的线程。身份未变时 `rebindRoot` 是空操作（同一行的普通重渲染远
+  // 多于回收），身份变了才释放旧行测量并作废旧基准。
+  //
+  // 用 layout effect 而不是渲染期直接调用：登记表的写入是组件外的副作用，且
+  // 这里必须早于两件事——下面按新集合跑的 `syncReplies`（普通 effect，天然
+  // 靠后）和新行的 `onLayout`（原生布局后才派发，晚于 layout effect）。
+  useLayoutEffect(() => {
+    reporter.rebindRoot(entry.id);
+  }, [reporter, entry.id]);
+  const measureBubble = useCallback(
+    (layout: { y: number }) => reporter.setBubbleOffset(layout.y),
+    [reporter],
+  );
+  const measureReply = useCallback(
+    (replyId: string, layout: { y: number; height: number }) =>
+      reporter.measureReply(replyId, layout),
+    [reporter],
+  );
+  // 回复集合变化时只丢弃**真正消失**的那些。原实现在这里删掉旧集合的全部
+  // 测量值而不重新上报，导致线程新增一条回复后仍然挂载的老回复永久量不到
+  // （RN 只在布局真的变化时才再派发 onLayout），定位空转到重试耗尽后失败。
+  const replyIds = replies.map((r) => r.id).join(",");
+  useEffect(() => {
+    if (!isRootExpanded) return;
+    reporter.syncReplies(replyIds ? replyIds.split(",") : []);
+  }, [isRootExpanded, replyIds, reporter]);
+  // 折叠或整行卸载（FlashList 回收）时才清空：wrapper 已经不渲染了，留着
+  // 旧坐标会让二次滚动按一份不再成立的布局跳走。
+  useEffect(() => {
+    if (!isRootExpanded) {
+      reporter.release();
+      return;
+    }
+    return () => reporter.release();
+  }, [isRootExpanded, reporter]);
+
   // ── RUYI-28 collapsed root (normal, unresolved) ────────────────────────
   // Default collapsed; expansion is session-scoped per issue. The bar shows
   // a 120-cp / 2-line summary (see lib/comment-summary.ts). Deep-link /
@@ -224,6 +292,7 @@ export function CommentCard({
          *  "this is settled" signal persists even while reading the
          *  body — mirrors web's muted resolved card visual. */}
         <View
+          onLayout={(e) => measureBubble(e.nativeEvent.layout)}
           className={cn(
             "bg-surface-1 rounded-2xl px-4 py-3 gap-3 border-2 border-transparent transition-colors",
             resolved && "opacity-70",
@@ -263,7 +332,11 @@ export function CommentCard({
             onCommentPublished={onCommentPublished}
           />
           {replies.map((reply) => (
-            <View key={reply.id} className="border-t border-border/60 pt-3">
+            <View
+              key={reply.id}
+              className="border-t border-border/60 pt-3"
+              onLayout={(e) => measureReply(reply.id, e.nativeEvent.layout)}
+            >
               <CommentBody
                 entry={reply}
                 issueId={issueId}
@@ -538,11 +611,15 @@ function RootHighlightOverlay({ active }: { active: boolean }) {
 
   useEffect(() => {
     if (!active) return;
-    // 700ms fade-in → 1800ms hold → 700ms fade-out. Matches web's
-    // `transition-colors duration-700` + `setTimeout(2500)` timing.
+    // FADE in → hold → FADE out, summing to COMMENT_HIGHLIGHT_TOTAL_MS. Same
+    // schedule web runs (RUYI-108): both clients used to spend 3.2s on the
+    // wash, well past the 1-2s the reader can still tie to their own tap.
     progress.value = withSequence(
-      withTiming(1, { duration: 700 }),
-      withDelay(1800, withTiming(0, { duration: 700 })),
+      withTiming(1, { duration: COMMENT_HIGHLIGHT_FADE_MS }),
+      withDelay(
+        COMMENT_HIGHLIGHT_TOTAL_MS - 2 * COMMENT_HIGHLIGHT_FADE_MS,
+        withTiming(0, { duration: COMMENT_HIGHLIGHT_FADE_MS }),
+      ),
     );
     // `active` flipping false mid-sequence must not leave the overlay stuck
     // at an intermediate opacity — a frozen brand frame/wash reads as text
@@ -579,8 +656,11 @@ function ReplyHighlightOverlay({ active }: { active: boolean }) {
   useEffect(() => {
     if (!active) return;
     progress.value = withSequence(
-      withTiming(1, { duration: 700 }),
-      withDelay(1800, withTiming(0, { duration: 700 })),
+      withTiming(1, { duration: COMMENT_HIGHLIGHT_FADE_MS }),
+      withDelay(
+        COMMENT_HIGHLIGHT_TOTAL_MS - 2 * COMMENT_HIGHLIGHT_FADE_MS,
+        withTiming(0, { duration: COMMENT_HIGHLIGHT_FADE_MS }),
+      ),
     );
     // Same mid-sequence reset as RootHighlightOverlay.
     return () => {
