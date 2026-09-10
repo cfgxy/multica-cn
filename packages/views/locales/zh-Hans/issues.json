@@ -534,7 +534,9 @@
       "bar_authors_more_other": "{{names}} 等 {{count}} 人",
       "resolve_failed": "标记已解决失败",
       "unresolve_failed": "重新打开失败"
-    }
+    },
+    "anchor_unavailable": "引用的评论不可用或已删除",
+    "anchor_aria": "跳转到 {{author}} 于{{when}}的评论：{{excerpt}}"
   },
   "reply": {
     "placeholder": "回复..."
