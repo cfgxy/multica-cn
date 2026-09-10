@@ -11,6 +11,12 @@ import {
   AGENT_DESCRIPTION_MAX_LENGTH,
   AGENT_MAX_CONCURRENT_TASKS_MAX,
   AGENT_MAX_CONCURRENT_TASKS_MIN,
+  AGENT_SESSION_COMPACT_PCT_MAX,
+  AGENT_SESSION_COMPACT_PCT_MIN,
+  AGENT_SESSION_MAX_CONTEXT_TOKENS_DISABLED,
+  AGENT_SESSION_MAX_CONTEXT_TOKENS_MAX,
+  AGENT_SESSION_MAX_CONTEXT_TOKENS_MIN,
+  agentSessionEffectiveCompactThreshold,
 } from "@multica/core/agents";
 import {
   isRuntimeUsableForUser,
@@ -315,6 +321,186 @@ export function AgentDetailInspector({
           </SettingsRow>
         </SettingsCard>
       </SettingsSection>
+
+      <SessionContextSection
+        agent={agent}
+        canEdit={canEdit}
+        update={update}
+      />
+    </div>
+  );
+}
+
+/**
+ * Session context gate (RUYI-107). Rendered as its own section because both
+ * fields describe one behaviour — when a long-running session is abandoned in
+ * favour of a fresh one carrying a prior-context brief.
+ *
+ * A server predating RUYI-107 omits both fields. Editing then is not merely
+ * useless but misleading, so the section states the limitation instead of
+ * offering controls whose writes the backend would drop.
+ */
+function SessionContextSection({
+  agent,
+  canEdit,
+  update,
+}: {
+  agent: Agent;
+  canEdit: boolean;
+  update: (data: Record<string, unknown>) => Promise<void>;
+}) {
+  const { t } = useT("agents");
+  const maxContextTokens = agent.session_max_context_tokens;
+  const compactPct = agent.session_compact_pct;
+  const supported =
+    typeof maxContextTokens === "number" && typeof compactPct === "number";
+
+  return (
+    <SettingsSection
+      title={t(($) => $.inspector.section_session_context)}
+      description={t(($) => $.inspector.section_session_context_hint)}
+    >
+      <SettingsCard>
+        {!supported ? (
+          <SettingsRow
+            label={t(($) => $.inspector.prop_session_max_context_tokens)}
+            size="text"
+          >
+            <p className="text-caption text-muted-foreground">
+              {t(($) => $.inspector.session_context_unsupported)}
+            </p>
+          </SettingsRow>
+        ) : (
+          <>
+            <SettingsRow
+              label={t(($) => $.inspector.prop_session_max_context_tokens)}
+              size="select-wide"
+            >
+              <BoundedNumberField
+                id="agent-session-max-context-tokens"
+                value={maxContextTokens}
+                min={AGENT_SESSION_MAX_CONTEXT_TOKENS_MIN}
+                max={AGENT_SESSION_MAX_CONTEXT_TOKENS_MAX}
+                // Zero sits outside the range on purpose: it is the off switch.
+                extraAllowed={AGENT_SESSION_MAX_CONTEXT_TOKENS_DISABLED}
+                canEdit={canEdit}
+                label={t(($) => $.inspector.prop_session_max_context_tokens)}
+                hint={
+                  maxContextTokens === AGENT_SESSION_MAX_CONTEXT_TOKENS_DISABLED
+                    ? t(($) => $.pickers.session_context_disabled)
+                    : t(($) => $.pickers.session_max_context_tokens_range, {
+                        min: AGENT_SESSION_MAX_CONTEXT_TOKENS_MIN,
+                        max: AGENT_SESSION_MAX_CONTEXT_TOKENS_MAX,
+                      })
+                }
+                onSave={(next) => update({ session_max_context_tokens: next })}
+              />
+            </SettingsRow>
+            <SettingsRow
+              label={t(($) => $.inspector.prop_session_compact_pct)}
+              size="select-wide"
+            >
+              <BoundedNumberField
+                id="agent-session-compact-pct"
+                value={compactPct}
+                min={AGENT_SESSION_COMPACT_PCT_MIN}
+                max={AGENT_SESSION_COMPACT_PCT_MAX}
+                canEdit={
+                  canEdit &&
+                  maxContextTokens !==
+                    AGENT_SESSION_MAX_CONTEXT_TOKENS_DISABLED
+                }
+                label={t(($) => $.inspector.prop_session_compact_pct)}
+                // The hint states the token count the switch REALLY happens at,
+                // not the percentage the user typed: the server floors the
+                // trigger at 50K, so a low percentage on a small ceiling fires
+                // later than the arithmetic suggests, and a hint showing only
+                // the range would misdescribe the setting it labels.
+                hint={t(($) => $.pickers.session_compact_pct_range, {
+                  min: AGENT_SESSION_COMPACT_PCT_MIN,
+                  max: AGENT_SESSION_COMPACT_PCT_MAX,
+                  threshold: agentSessionEffectiveCompactThreshold(
+                    maxContextTokens,
+                    compactPct,
+                  ),
+                })}
+                onSave={(next) => update({ session_compact_pct: next })}
+              />
+            </SettingsRow>
+          </>
+        )}
+      </SettingsCard>
+    </SettingsSection>
+  );
+}
+
+/**
+ * Integer field that reverts to the saved value rather than clamping when the
+ * draft falls outside its range — clamping would silently store a number the
+ * operator never typed. `extraAllowed` admits one sentinel outside the range.
+ */
+function BoundedNumberField({
+  id,
+  value,
+  min,
+  max,
+  extraAllowed,
+  canEdit,
+  label,
+  hint,
+  onSave,
+}: {
+  id: string;
+  value: number;
+  min: number;
+  max: number;
+  extraAllowed?: number;
+  canEdit: boolean;
+  label: string;
+  hint: string;
+  onSave: (next: number) => Promise<void>;
+}) {
+  const [draft, setDraft] = useState(String(value));
+
+  useEffect(() => setDraft(String(value)), [value]);
+
+  const commit = () => {
+    const next = Number(draft);
+    const allowed =
+      Number.isInteger(next) &&
+      ((next >= min && next <= max) || next === extraAllowed);
+    if (draft.trim() === "" || !allowed) {
+      setDraft(String(value));
+      return;
+    }
+    if (next !== value) void onSave(next);
+  };
+
+  return (
+    <div>
+      <Input
+        id={id}
+        type="number"
+        name={id}
+        autoComplete="off"
+        inputMode="numeric"
+        min={extraAllowed ?? min}
+        max={max}
+        value={draft}
+        onChange={(event) => setDraft(event.target.value)}
+        onBlur={commit}
+        onKeyDown={(event) => {
+          if (isImeComposing(event)) return;
+          if (event.key === "Enter") {
+            event.preventDefault();
+            commit();
+          }
+        }}
+        disabled={!canEdit}
+        aria-label={label}
+        className="font-mono tabular-nums"
+      />
+      <p className="mt-1 text-caption text-muted-foreground">{hint}</p>
     </div>
   );
 }

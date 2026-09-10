@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -390,16 +391,36 @@ func TestCompletedTaskRolloutMissingWithholdsAndDisclosesGap(t *testing.T) {
 	}
 
 	// (2) The gap is disclosed — the resume is NOT silently claimed as complete.
-	missing, err := queries.GetLatestTaskRolloutMissing(ctx, db.GetLatestTaskRolloutMissingParams{
+	// One row answers both halves: the flag the claim discloses, and the result
+	// the RUYI-107 brief carries when it compacts. Reading them from two queries
+	// is how a claim ends up describing two different turns as one.
+	latest, err := queries.GetLatestTerminalTaskForBrief(ctx, db.GetLatestTerminalTaskForBriefParams{
 		AgentID: pgtype.UUID{Bytes: parseUUIDBytes(agentID), Valid: true},
 		IssueID: pgtype.UUID{Bytes: parseUUIDBytes(issueID), Valid: true},
 	})
 	if err != nil {
-		t.Fatalf("GetLatestTaskRolloutMissing failed: %v", err)
+		t.Fatalf("GetLatestTerminalTaskForBrief failed: %v", err)
 	}
-	if !missing {
+	if !latest.SessionRolloutMissing {
 		t.Fatal("expected the continuity gap to be flagged so the next claim discloses it")
 	}
+	// The row must be the withheld turn itself, not the older good one whose
+	// session the resume fell back to.
+	if uuidToStringForTest(latest.ID) != newerTaskID {
+		t.Fatalf("latest terminal task = %s, want the withheld turn %s", uuidToStringForTest(latest.ID), newerTaskID)
+	}
+	if !strings.Contains(string(latest.Result), `"done"`) {
+		t.Fatalf("the brief's result must come from that same turn, got %s", latest.Result)
+	}
+}
+
+// uuidToStringForTest renders a pgtype.UUID the way the database returns it.
+func uuidToStringForTest(u pgtype.UUID) string {
+	b, err := u.MarshalJSON()
+	if err != nil {
+		return ""
+	}
+	return strings.Trim(string(b), `"`)
 }
 
 // TestFailedTaskRolloutMissingForcesNullOverMidFlightPin covers the failure-path
