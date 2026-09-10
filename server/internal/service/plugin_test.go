@@ -1,6 +1,7 @@
 package service
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -453,5 +454,94 @@ func TestOrphanedSecretFieldsAreDetectedByType(t *testing.T) {
 		if orphaned != tc.want {
 			t.Fatalf("%q orphaned = %v, want %v", tc.key, orphaned, tc.want)
 		}
+	}
+}
+
+// The manifest a v2 upgrade introduces a required field with. `repo` was
+// already required in v1 and is expected to stay satisfied by the stored row;
+// `channel` is new, and nothing in an upgrade that submits no config answers
+// it.
+const upgradeAddsRequiredFieldManifest = `{
+  "manifest_version": 1,
+  "key": "com.example.hello",
+  "name": "Hello Panel",
+  "version": "2.0.0",
+  "author": { "name": "example" },
+  "scopes": ["issues:read", "comments:write", "storage:user"],
+  "config": {
+    "repo": { "type": "string", "label": "Repo", "required": true },
+    "channel": { "type": "string", "label": "Channel", "required": true },
+    "count": { "type": "number", "label": "Count", "required": true },
+    "verbose": { "type": "bool", "label": "Verbose", "required": true }
+  },
+  "contributes": {
+    "surfaces": [{ "key": "hello", "type": "issue_panel", "name": "Hello", "entry": "ui/main.js" }]
+  }
+}`
+
+// An upgrade is checked against the state it is about to commit, not against
+// what the form posted. The consent screen greys out its button on the same
+// facts, but the screen is not the check: an upgrade posted directly would
+// otherwise land an installation that is enabled and missing the value its
+// first call needs.
+//
+// No queries are needed here because none of these required fields is a secret
+// — the gate only reaches the secret table when it has a secret to ask about,
+// and that path is asserted by the DB-backed install tests.
+func TestUpgradeIsRefusedWhenANewlyRequiredFieldIsUnanswered(t *testing.T) {
+	manifest, _, err := plugincontract.ParseManifest([]byte(upgradeAddsRequiredFieldManifest))
+	if err != nil {
+		t.Fatalf("parse upgrade manifest: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name    string
+		config  map[string]any
+		missing []string
+	}{{
+		// The v1 row: `repo` was answered, the v2 fields were not.
+		name:    "the v1 row does not answer what v2 added",
+		config:  map[string]any{"repo": "multica-ai/multica"},
+		missing: []string{"channel", "count", "verbose"},
+	}, {
+		// `false` and 0 are answers. Treating presence as truthiness would
+		// refuse an upgrade whose booleans are legitimately off.
+		name:    "false and zero are filled in",
+		config:  map[string]any{"repo": "r", "channel": "c", "count": float64(0), "verbose": false},
+		missing: nil,
+	}, {
+		// A box of spaces renders empty and reaches the plugin as nothing.
+		name:    "whitespace is not an answer",
+		config:  map[string]any{"repo": "r", "channel": "   ", "count": float64(1), "verbose": true},
+		missing: []string{"channel"},
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(tc.config)
+			if err != nil {
+				t.Fatalf("marshal config: %v", err)
+			}
+			err = requireConfiguredRequiredFields(
+				context.Background(), nil,
+				db.PluginInstallation{Config: raw},
+				manifest,
+			)
+			if len(tc.missing) == 0 {
+				if err != nil {
+					t.Fatalf("a fully answered upgrade was refused: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("an upgrade missing %v was allowed to commit", tc.missing)
+			}
+			if pluginErrKind(t, err) != PluginErrorInvalid {
+				t.Fatalf("wrong error kind for a missing required field: %v", err)
+			}
+			for _, key := range tc.missing {
+				if !strings.Contains(err.Error(), key) {
+					t.Fatalf("the refusal does not name %q: %v", key, err)
+				}
+			}
+		})
 	}
 }

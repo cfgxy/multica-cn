@@ -329,6 +329,97 @@ func TestSurfaceScriptRefusesWhatWasNeverInstalled(t *testing.T) {
 	}
 }
 
+const describedPackageManifest = `{
+  "manifest_version": 1,
+  "key": "com.example.described",
+  "name": "Described Panel",
+  "version": "1.0.0",
+  "description": "Greets an issue.",
+  "author": { "name": "example" },
+  "scopes": ["issues:read", "net:example.com"],
+  "config": {
+    "repo": { "type": "string", "label": "Repository", "required": true },
+    "token": { "type": "secret", "label": "Token" }
+  },
+  "contributes": {
+    "surfaces": [{ "key": "hello", "type": "issue_panel", "name": "Hello", "entry": "ui/main.js" }]
+  }
+}`
+
+// A directory row that carries only a name and a version makes the reader open
+// the consent flow to learn what the version would be granted. These are the
+// manifest facts that decide whether it is worth reviewing at all.
+func TestPackageListingCarriesScopesAndConfigKeys(t *testing.T) {
+	withPluginsV1Flag(t, testHandler, true)
+	cleanupPluginInstallations(t)
+	withHostCapabilities(t)
+
+	publishUploadedBundle(t, describedPackageManifest, "console.log('v1');\n")
+
+	recorder := httptest.NewRecorder()
+	testHandler.ListPluginPackages(recorder, pluginHandlerRequest(http.MethodGet, "/plugins/packages", nil, map[string]string{"id": testWorkspaceID}))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("list packages status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var listed struct {
+		Packages []service.PluginPackageSummary `json:"packages"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode packages: %v", err)
+	}
+	if len(listed.Packages) != 1 || len(listed.Packages[0].Versions) != 1 {
+		t.Fatalf("expected one package with one version, got %+v", listed.Packages)
+	}
+	version := listed.Packages[0].Versions[0]
+	if version.Description != "Greets an issue." {
+		t.Fatalf("description=%q", version.Description)
+	}
+	if strings.Join(version.Scopes, ",") != "issues:read,net:example.com" {
+		t.Fatalf("scopes=%v", version.Scopes)
+	}
+	if strings.Join(version.ConfigKeys, ",") != "repo,token" {
+		t.Fatalf("config keys=%v; declaration order is what makes the row stable", version.ConfigKeys)
+	}
+}
+
+// The row is how a publisher finds the version they need to withdraw, so a
+// stored manifest that no longer parses must still list — dropping it would
+// hide exactly the release that went wrong.
+func TestPackageListingKeepsAVersionWhoseStoredManifestNoLongerParses(t *testing.T) {
+	withPluginsV1Flag(t, testHandler, true)
+	cleanupPluginInstallations(t)
+	withHostCapabilities(t)
+
+	published := publishUploadedBundle(t, describedPackageManifest, "console.log('v1');\n")
+	if _, err := testPool.Exec(context.Background(),
+		`UPDATE plugin_package_version SET manifest = $2 WHERE id = $1`,
+		published.Versions[0].ID, `{"manifest_version": 9999}`); err != nil {
+		t.Fatalf("corrupt stored manifest: %v", err)
+	}
+
+	recorder := httptest.NewRecorder()
+	testHandler.ListPluginPackages(recorder, pluginHandlerRequest(http.MethodGet, "/plugins/packages", nil, map[string]string{"id": testWorkspaceID}))
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("list packages status=%d body=%s", recorder.Code, recorder.Body.String())
+	}
+	var listed struct {
+		Packages []service.PluginPackageSummary `json:"packages"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &listed); err != nil {
+		t.Fatalf("decode packages: %v", err)
+	}
+	if len(listed.Packages) != 1 || len(listed.Packages[0].Versions) != 1 {
+		t.Fatalf("the unparseable version disappeared from the listing: %+v", listed.Packages)
+	}
+	version := listed.Packages[0].Versions[0]
+	if version.Version != "1.0.0" || version.Digest == "" {
+		t.Fatalf("the row lost the identity a withdrawal needs: %+v", version)
+	}
+	if len(version.Scopes) != 0 || len(version.ConfigKeys) != 0 {
+		t.Fatalf("summarised an unreadable manifest: scopes=%v config=%v", version.Scopes, version.ConfigKeys)
+	}
+}
+
 // withHostCapabilities enables every contribution kind for the duration of a
 // test, so these exercise publishing rather than the staged-rollout gate.
 func withHostCapabilities(t *testing.T) {

@@ -15,6 +15,7 @@ import {
 const intent = (issueId: string, nonce: number): CommentFocusIntent => ({
   issueId,
   rootId: "root-a",
+  targetId: "root-a",
   nonce,
 });
 

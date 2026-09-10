@@ -3289,6 +3289,48 @@ export class ApiClient {
     });
   }
 
+  /**
+   * The instance directory: what every workspace on this deployment has listed.
+   *
+   * Workspace-scoped in the URL even though the listing spans workspaces —
+   * membership is what authorizes the read, and each version's `installed` flag
+   * answers "do we already run this one" for the workspace asking.
+   */
+  async listPublicPluginPackages(workspaceId: string): Promise<PluginPackageListResponse> {
+    const raw = await this.fetch<unknown>(`/api/workspaces/${workspaceId}/plugins/directory`);
+    return parseWithFallback(raw, PluginPackageListResponseSchema, EMPTY_PLUGIN_PACKAGE_LIST, {
+      endpoint: "GET /api/workspaces/{id}/plugins/directory",
+    });
+  }
+
+  /** Lists this workspace's package on the directory, or takes it off. */
+  async setPluginPackageVisibility(workspaceId: string, packageId: string, isPublic: boolean): Promise<PluginPackage> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/plugins/packages/${packageId}/visibility`,
+      { method: "PUT", body: JSON.stringify({ public: isPublic }) },
+    );
+    return parseWithFallback(raw, PluginPackageSchema, EMPTY_PLUGIN_PACKAGE, {
+      endpoint: "PUT /api/workspaces/{id}/plugins/packages/{packageId}/visibility",
+    });
+  }
+
+  /**
+   * Withdraws one published version from the directory, or restores it.
+   *
+   * Not a delete: the artifact stays readable so the workspaces that consented
+   * to it keep loading their surfaces, and restoring is this same call rather
+   * than a re-publish, which immutability would refuse.
+   */
+  async setPluginVersionWithdrawn(workspaceId: string, versionId: string, withdrawn: boolean): Promise<PluginPackage> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/plugins/versions/${versionId}/withdrawn`,
+      { method: "PUT", body: JSON.stringify({ withdrawn }) },
+    );
+    return parseWithFallback(raw, PluginPackageSchema, EMPTY_PLUGIN_PACKAGE, {
+      endpoint: "PUT /api/workspaces/{id}/plugins/versions/{versionId}/withdrawn",
+    });
+  }
+
   async deletePluginPackage(workspaceId: string, packageId: string): Promise<void> {
     await this.fetch<void>(`/api/workspaces/${workspaceId}/plugins/packages/${packageId}`, { method: "DELETE" });
   }
@@ -3460,6 +3502,20 @@ export class ApiClient {
     await this.fetch(`/api/workspaces/${workspaceId}/plugins/${installationId}`, {
       method: "DELETE",
     });
+  }
+
+  /**
+   * Removes one stored secret by name.
+   *
+   * Outlives plugins_v1 alongside uninstall: writing config is refused once the
+   * flag is off, so this is what lets an operator take a leaked credential out
+   * of the database without removing the whole installation.
+   */
+  async clearPluginSecret(workspaceId: string, installationId: string, key: string): Promise<void> {
+    await this.fetch(
+      `/api/workspaces/${workspaceId}/plugins/${installationId}/secrets/${encodeURIComponent(key)}`,
+      { method: "DELETE" },
+    );
   }
 
   // Members
@@ -4079,9 +4135,12 @@ export class ApiClient {
   }
 
   // Fetches a fresh attachment metadata record. The server re-signs
-  // `download_url` on every call (30 min expiry), so the click-time
-  // download flow uses this endpoint to avoid handing the user a stale
-  // signed URL cached in TanStack Query.
+  // `download_url` on every call, with a deployment-configured expiry
+  // (ATTACHMENT_DOWNLOAD_URL_TTL — see defaultAttachmentDownloadURLTTL in
+  // server/internal/handler/file.go), so the click-time download flow uses
+  // this endpoint to avoid handing the user a stale signed URL cached in
+  // TanStack Query. Deliberately not restating the number here: RUYI-103
+  // changed it and this copy went stale unnoticed.
   async getAttachment(id: string): Promise<Attachment> {
     const raw = await this.fetch<unknown>(`/api/attachments/${id}`);
     return parseWithFallback(raw, AttachmentResponseSchema, EMPTY_ATTACHMENT, {

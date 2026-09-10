@@ -99,3 +99,22 @@ func TestHasMentionAll(t *testing.T) {
 		})
 	}
 }
+
+// TestCommentMentionIsNotParsed 锁定 RUYI-108 的机制保证：
+// `mention://comment/<id>` 是纯渲染锚点，必须**永远**不进入 MentionRe 的类型组。
+// 一旦被解析，评论引用就会随通知/触发链路生效，把「引用一条评论」变成
+// 「给某人排一个 run」——这正是该特性明确不做的事。
+func TestCommentMentionIsNotParsed(t *testing.T) {
+	content := `See [某条评论](mention://comment/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa) and ` +
+		`[@Bob](mention://agent/bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb)`
+	got := ParseMentions(content)
+	if len(got) != 1 {
+		t.Fatalf("ParseMentions() returned %d mentions, want 1 (comment must not parse)\ngot: %+v", len(got), got)
+	}
+	if got[0].Type != "agent" {
+		t.Errorf("mention[0].Type = %q, want \"agent\"; comment anchors must stay side-effect free", got[0].Type)
+	}
+	if MentionRe.MatchString(`[x](mention://comment/aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa)`) {
+		t.Error("MentionRe matched a comment anchor — adding `comment` to the type group turns a render-only reference into a triggering mention")
+	}
+}

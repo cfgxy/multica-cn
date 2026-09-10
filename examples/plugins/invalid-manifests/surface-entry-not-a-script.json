@@ -1,0 +1,13 @@
+{
+  "manifest_version": 1,
+  "key": "com.example.surface-entry-html",
+  "name": "Surface entry is a page",
+  "version": "1.0.0",
+  "author": { "name": "Example" },
+  "scopes": ["issues:read"],
+  "contributes": {
+    "surfaces": [
+      { "key": "panel", "type": "issue_panel", "name": "Panel", "entry": "ui/index.html" }
+    ]
+  }
+}
