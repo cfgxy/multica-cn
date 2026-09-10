@@ -2553,10 +2553,27 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					src.SessionID.Valid && src.RuntimeID == task.RuntimeID {
 					resp.PriorSessionID = src.SessionID.String
 				}
+				// RUYI-107: a rerun goes through the same gate as a follow-up.
+				// The candidate session differs (this exact source task rather
+				// than the newest on the issue), but the risk is identical —
+				// resuming a conversation that is already at its ceiling burns
+				// the run. PriorWorkDir above is deliberately left intact: the
+				// gate is about conversation size, not about where the work
+				// lives, and dropping the directory would make the fresh
+				// session re-clone and lose uncommitted work.
+				//
+				// A rerun's brief comes from the source task itself, which is
+				// both the session's owner and the turn being rerun — unlike a
+				// follow-up, the two cannot be different rows here.
+				compacted := h.applySessionContextGate(r.Context(), &resp, agent, *task, src.ID, sessionBriefInputs{
+					priorResult:   src.Result,
+					continuityGap: src.SessionRolloutMissing,
+				})
 				// MUL-5305: if the source task withheld its Codex session because
 				// the rollout was missing, this rerun has nothing resumable from it
-				// — disclose the gap rather than silently starting fresh.
-				if src.SessionRolloutMissing {
+				// — disclose the gap rather than silently starting fresh. When the
+				// gate compacted, the brief states the same fact itself.
+				if src.SessionRolloutMissing && !compacted {
 					resp.PriorSessionResumeUnavailable = true
 				}
 			} else if err == nil {
@@ -2576,6 +2593,22 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			// context across turns. The "Focus on THIS comment" guard in
 			// prompt.go defends against inheriting the prior turn's "Done."
 			// marker, and GetLastTaskSession already excludes poisoned sessions.
+			// One read of the most recent terminal task answers both "what did
+			// the last turn report" and "was the last turn's session withheld".
+			// Two queries could land on different rows mid-write and describe
+			// two different turns as if they were one (MUL-5305 / RUYI-107).
+			var latestBrief sessionBriefInputs
+			if latest, err := h.Queries.GetLatestTerminalTaskForBrief(r.Context(), db.GetLatestTerminalTaskForBriefParams{
+				AgentID: task.AgentID,
+				IssueID: task.IssueID,
+			}); err == nil {
+				latestBrief.priorResult = latest.Result
+				latestBrief.continuityGap = latest.SessionRolloutMissing
+			} else if !errors.Is(err, pgx.ErrNoRows) {
+				slog.Warn("session context gate: load latest terminal task failed",
+					"task_id", uuidToString(task.ID), "error", err)
+			}
+			compacted := false
 			if prior, err := h.Queries.GetLastTaskSession(r.Context(), db.GetLastTaskSessionParams{
 				AgentID: task.AgentID,
 				IssueID: task.IssueID,
@@ -2586,6 +2619,14 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				if prior.WorkDir.Valid {
 					resp.PriorWorkDir = prior.WorkDir.String
 				}
+				// RUYI-107. The gate judges the session by the context reading
+				// of the task that OWNS it (prior.TaskID) — judging one session
+				// by another task's numbers is how a gate compacts the wrong
+				// conversation. The brief's payload, in contrast, comes from
+				// the most recent terminal task, which after a withheld rollout
+				// is a newer turn than the one holding the resumable session.
+				// The two roles are separate on purpose.
+				compacted = h.applySessionContextGate(r.Context(), &resp, agent, *task, prior.TaskID, latestBrief)
 			}
 			// MUL-5305: if the most recent terminal task withheld its Codex
 			// session because the rollout was missing, GetLastTaskSession fell
@@ -2593,10 +2634,12 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			// the next run tells the user the most recent turn's context could not
 			// be carried over — even when that older session resumes cleanly,
 			// which the resume-presence gate would otherwise pass silently.
-			if missing, err := h.Queries.GetLatestTaskRolloutMissing(r.Context(), db.GetLatestTaskRolloutMissingParams{
-				AgentID: task.AgentID,
-				IssueID: task.IssueID,
-			}); err == nil && missing {
+			//
+			// When the gate compacted, the brief already carries that disclosure
+			// (sessionBriefInputs.continuityGap) and setting the flag here as
+			// well would send the daemon both "here is your hand-off" and
+			// "nothing carried over" for the same turn.
+			if latestBrief.continuityGap && !compacted {
 				resp.PriorSessionResumeUnavailable = true
 			}
 		}
@@ -4315,6 +4358,22 @@ type TaskUsagePayload struct {
 	// every provider except Grok today) — stored as NULL so the reader knows
 	// to fall back to rate-table estimation rather than reading a real $0.
 	CostUSDTicks int64 `json:"cost_usd_ticks"`
+	// ContextTokens is the size of the conversation at the end of the run, not
+	// a spend counter (RUYI-107). Absent or 0 from any daemon or backend that
+	// cannot measure it; stored as NULL so the session gate reads it as
+	// "unknown" and keeps resuming instead of guessing.
+	ContextTokens int64 `json:"context_tokens"`
+}
+
+// authoritativeContextTokens converts a reported context size into the nullable
+// column. Same rule as the cost figure and for the same reason: 0 is what a
+// daemon that cannot measure the conversation sends, and storing it as a real
+// reading would tell the gate the session is empty.
+func authoritativeContextTokens(tokens int64) pgtype.Int8 {
+	if tokens <= 0 {
+		return pgtype.Int8{}
+	}
+	return pgtype.Int8{Int64: tokens, Valid: true}
 }
 
 // authoritativeCostTicks converts a reported cost into the nullable column.
@@ -4374,6 +4433,7 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 			CacheReadTokens:  u.CacheReadTokens,
 			CacheWriteTokens: u.CacheWriteTokens,
 			CostUsdTicks:     authoritativeCostTicks(u.CostUSDTicks),
+			ContextTokens:    authoritativeContextTokens(u.ContextTokens),
 		}); err != nil {
 			slog.Warn("upsert task usage failed", "task_id", taskID, "model", u.Model, "error", err)
 			continue

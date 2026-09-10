@@ -78,6 +78,12 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"github_pull_request_check_suite":    workspaceDelete,
 	"inbox_item":                         workspaceDelete,
 	"issue":                              workspaceDelete,
+	// Published marketplace listings (RUYI-99) are owned by the workspace that
+	// published them and go with it. Not Settle: the tombstone reserves a name
+	// so its owner can republish, and a deleted workspace has no owner left to
+	// do so. Classified Delete rather than Keep because it carries
+	// source_workspace_id, which the manifest treats as workspace-scoped.
+	"marketplace_listing":                workspaceDelete,
 	"issue_view":                         workspaceDelete,
 	"issue_view_preference":              workspaceDelete,
 	"issue_dependency":                   workspaceDelete,

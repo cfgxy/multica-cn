@@ -3460,6 +3460,42 @@ export const PromptVersionSchema = z.object({
   updated_at: z.string().default(""),
 });
 
+/**
+ * One listing this workspace has published (RUYI-99), as the management view
+ * sees it.
+ *
+ * Not `.loose()`, for the same reason MarketplaceItemSchema is not: this type
+ * sits against the write-only MCP boundary, and a server that regressed to
+ * returning `source_workspace_id` — or a rendered config with real values —
+ * would otherwise have it land in the query cache. Stripping unknown keys means
+ * the client holds only the fields the listing is allowed to show.
+ *
+ * `state` stays a plain string rather than an enum: it is server-driven, and a
+ * state a newer backend adds should still parse, with the views taking their
+ * default branch for one they do not know.
+ */
+export const MarketplaceListingSchema = z.object({
+  id: z.string().default(""),
+  key: z.string().default(""),
+  kind: z.string().default(""),
+  name: z.string().default(""),
+  publisher_display_name: z.string().default(""),
+  summary: z.string().default(""),
+  description: z.string().default(""),
+  homepage_url: z.string().default(""),
+  categories: z.array(z.string()).default([]),
+  source_url: z.string().optional(),
+  config_template: z.unknown().optional(),
+  transport: z.string().optional(),
+  placeholders: z.array(MarketplacePlaceholderSchema).optional(),
+  state: z.string().default("published"),
+  revision: z.number().default(0),
+  published_at: z.string().optional(),
+  withdrawn_at: z.string().optional(),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+});
+
 export const PromptVersionListSchema = z.array(PromptVersionSchema);
 
 export const PromptMarketItemSchema = PromptVersionSchema.extend({
@@ -3542,6 +3578,21 @@ export const PromptTargetStateSchema = z.object({
 export const PromptSecretFindingSchema = z.object({
   category: z.string().default(""),
   rule: z.string().default(""),
+  line: z.number().default(0),
+  mask: z.string().default(""),
+});
+
+export const MarketplaceListingListSchema = z.array(MarketplaceListingSchema);
+
+/**
+ * One secret-scan finding from a rejected publish. Mirrors the server's
+ * listingscan.Finding: category, rule, field, line and a fixed mask — never the
+ * matched text. Nothing here may be widened to carry a value.
+ */
+export const MarketplaceScanFindingSchema = z.object({
+  category: z.string().default(""),
+  rule: z.string().default(""),
+  field: z.string().default(""),
   line: z.number().default(0),
   mask: z.string().default(""),
 });
@@ -3657,6 +3708,13 @@ export const EMPTY_PROMPT_TARGET_STATE: PromptTargetState = {
   can_restore: false,
   current_sha256: "",
 };
+
+export const MarketplaceScanErrorSchema = z.object({
+  error: z.string().default(""),
+  scanner_revision: z.string().default(""),
+  findings: z.array(MarketplaceScanFindingSchema).default([]),
+  truncated: z.boolean().default(false),
+});
 
 export const EMPTY_WORKSPACE_MCP_SERVER: WorkspaceMcpServer = {
   id: "",

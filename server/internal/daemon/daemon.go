@@ -6058,6 +6058,8 @@ var runtimeDisplayNameOverrides = map[string]string{
 	"qwenpaw":    "QwenPaw",
 	"mcode":      "MiniMax Code",
 	"zeroclaw":   "ZeroClaw",
+	"deerflow":   "DeerFlow",
+	"zcode":      "ZCode",
 }
 
 func init() {
@@ -8295,6 +8297,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			CacheReadTokens:  u.CacheReadTokens,
 			CacheWriteTokens: u.CacheWriteTokens,
 			CostUSDTicks:     u.CostUSDTicks,
+			ContextTokens:    u.ContextTokens,
 		})
 	}
 

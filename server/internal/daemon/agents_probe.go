@@ -303,6 +303,27 @@ var probeAgentCLIs = func() map[string]AgentEntry {
 	if e, ok := probe("MULTICA_ZEROCLAW_PATH", "zeroclaw", ""); ok {
 		agents["zeroclaw"] = e
 	}
+	// DeerFlow (`deerflow-acp`) bridges DeerFlow's LangGraph orchestration to
+	// ACP. It takes no model env var: the bridge pins its model from its own
+	// DEERFLOW_ACP_MODEL at process start and answers session/set_model with
+	// -32601, so ExecOptions.Model can never be applied — see
+	// ModelSelectionSupported. Reading one here would only advertise a knob
+	// that silently does nothing.
+	//
+	// The bridge also has to run with its DeerFlow deployment root as the
+	// process working directory, because DeerFlow resolves its own config.yaml
+	// relative to cwd. That is MULTICA_DEERFLOW_HOME, read by the backend
+	// itself rather than being probed here — it selects a cwd, not a binary.
+	if e, ok := probe("MULTICA_DEERFLOW_PATH", "deerflow-acp", ""); ok {
+		agents["deerflow"] = e
+	}
+	// ZCode (`zcode-acp`) is the ZCode CLI's own ACP bridge, driven via
+	// `zcode-acp acp`. MULTICA_ZCODE_MODEL seeds the daemon-wide default: the
+	// bridge registers a snake_case session/set_model for this client, so a
+	// model pick is honoured per session.
+	if e, ok := probe("MULTICA_ZCODE_PATH", "zcode-acp", "MULTICA_ZCODE_MODEL"); ok {
+		agents["zcode"] = e
+	}
 	return agents
 }
 

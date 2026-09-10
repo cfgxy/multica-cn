@@ -1139,6 +1139,92 @@ func (q *Queries) ListCommentsSinceForIssue(ctx context.Context, arg ListComment
 	return items, nil
 }
 
+const listRecentCommentsForBrief = `-- name: ListRecentCommentsForBrief :many
+WITH RECURSIVE recent AS (
+    SELECT c.id, c.author_type, c.author_id, c.content, c.created_at, c.parent_id
+    FROM comment c
+    WHERE c.issue_id = $1
+      AND c.workspace_id = $2
+    ORDER BY c.created_at DESC, c.id DESC
+    LIMIT $3
+), thread_root AS (
+    SELECT r.id AS comment_id, r.id AS node_id, r.parent_id, 1::integer AS depth
+    FROM recent r
+    UNION ALL
+    SELECT tr.comment_id, p.id, p.parent_id, tr.depth + 1
+    FROM thread_root tr
+    JOIN comment p ON p.id = tr.parent_id
+    WHERE p.issue_id = $1
+      AND p.workspace_id = $2
+      AND tr.depth <= 256
+)
+SELECT r.id, r.author_type, r.author_id, r.content, r.created_at,
+       (SELECT tr.node_id
+        FROM thread_root tr
+        WHERE tr.comment_id = r.id AND tr.parent_id IS NULL
+        LIMIT 1) AS root_id
+FROM recent r
+ORDER BY r.created_at DESC, r.id DESC
+`
+
+type ListRecentCommentsForBriefParams struct {
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	RowLimit    int32       `json:"row_limit"`
+}
+
+type ListRecentCommentsForBriefRow struct {
+	ID         pgtype.UUID        `json:"id"`
+	AuthorType string             `json:"author_type"`
+	AuthorID   pgtype.UUID        `json:"author_id"`
+	Content    string             `json:"content"`
+	CreatedAt  pgtype.Timestamptz `json:"created_at"`
+	RootID     pgtype.UUID        `json:"root_id"`
+}
+
+// The @row_limit most recent comments on an issue, newest first, each carrying
+// the id of the thread it belongs to (RUYI-107).
+//
+// Deliberately NOT ListRootCommentsForIssue: that query selects the newest
+// ROOTS and then reports each thread's last_activity_at, which is the wrong
+// shape for a hand-off in two separate ways. An old root whose thread just
+// received the decisive reply is dropped by the root cut before its activity is
+// ever considered; and for the roots that survive, author/body come from the
+// root while the timestamp comes from the newest descendant, so the brief
+// attributes a months-old opening post to a reply that someone else just wrote.
+// Selecting comments directly keeps id, author, timestamp and excerpt on the
+// same row, which is the only way the anchor can be followed back.
+//
+// thread_root walks each selected comment up to its root so the brief can say
+// which conversation an anchor belongs to; the depth guard mirrors
+// LockCommentAncestorPath and stops a cyclic parent chain from looping.
+func (q *Queries) ListRecentCommentsForBrief(ctx context.Context, arg ListRecentCommentsForBriefParams) ([]ListRecentCommentsForBriefRow, error) {
+	rows, err := q.db.Query(ctx, listRecentCommentsForBrief, arg.IssueID, arg.WorkspaceID, arg.RowLimit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListRecentCommentsForBriefRow{}
+	for rows.Next() {
+		var i ListRecentCommentsForBriefRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.AuthorType,
+			&i.AuthorID,
+			&i.Content,
+			&i.CreatedAt,
+			&i.RootID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRecentThreadCommentsForIssue = `-- name: ListRecentThreadCommentsForIssue :many
 WITH RECURSIVE membership(id, root_id, comment_created_at) AS (
     -- Each root maps to itself.
@@ -1760,6 +1846,97 @@ func (q *Queries) ListThreadCommentsForIssuePaged(ctx context.Context, arg ListT
 			&i.SourceTaskID,
 			&i.QuickActionID,
 			&i.Revision,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const listUnresolvedThreadsForBrief = `-- name: ListUnresolvedThreadsForBrief :many
+WITH RECURSIVE membership(id, root_id, comment_created_at, resolved_at) AS (
+    SELECT c.id, c.id AS root_id, c.created_at, c.resolved_at
+    FROM comment c
+    WHERE c.issue_id = $2
+      AND c.workspace_id = $3
+      AND c.parent_id IS NULL
+      AND c.resolved_at IS NULL
+    UNION ALL
+    SELECT c.id, m.root_id, c.created_at, c.resolved_at
+    FROM comment c
+    JOIN membership m ON c.parent_id = m.id
+    WHERE c.issue_id = $2
+      AND c.workspace_id = $3
+), thread_stats AS (
+    SELECT root_id,
+           (COUNT(*) - 1)::int AS reply_count,
+           MAX(comment_created_at)::timestamptz AS last_activity_at
+    FROM membership
+    GROUP BY root_id
+    HAVING bool_or(resolved_at IS NOT NULL) IS NOT TRUE
+)
+SELECT c.id, c.author_type, c.author_id, c.content, c.created_at,
+       ts.reply_count AS reply_count,
+       ts.last_activity_at AS last_activity_at
+FROM thread_stats ts
+JOIN comment c ON c.id = ts.root_id
+ORDER BY ts.last_activity_at DESC, c.id DESC
+LIMIT $1
+`
+
+type ListUnresolvedThreadsForBriefParams struct {
+	RowLimit    int32       `json:"row_limit"`
+	IssueID     pgtype.UUID `json:"issue_id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+}
+
+type ListUnresolvedThreadsForBriefRow struct {
+	ID             pgtype.UUID        `json:"id"`
+	AuthorType     string             `json:"author_type"`
+	AuthorID       pgtype.UUID        `json:"author_id"`
+	Content        string             `json:"content"`
+	CreatedAt      pgtype.Timestamptz `json:"created_at"`
+	ReplyCount     int32              `json:"reply_count"`
+	LastActivityAt pgtype.Timestamptz `json:"last_activity_at"`
+}
+
+// Unresolved root comments on an issue ordered by their thread's real last
+// activity, newest first (RUYI-107).
+//
+// Ordering by activity BEFORE applying @row_limit is the point: a thread that
+// has been open for weeks and was answered an hour ago is exactly the thread a
+// fresh session most needs to see, and any cut taken on root creation time
+// discards it first. The returned author/content/created_at describe the ROOT
+// deliberately — this section answers "what is still open", so the question as
+// originally posed is the useful text — while last_activity_at is labelled as
+// the thread's, not the root's, so the two are never conflated.
+//
+// "Unresolved" is the thread-level property the rest of the repository already
+// uses (deriveThreadResolution / foldResolvedThreads in comment.go): a thread is
+// resolved when its ROOT is resolved OR when ANY reply carries a resolution.
+// Selecting on the root alone would put a thread whose conclusion was recorded
+// on a reply back in front of a fresh session as an open question.
+func (q *Queries) ListUnresolvedThreadsForBrief(ctx context.Context, arg ListUnresolvedThreadsForBriefParams) ([]ListUnresolvedThreadsForBriefRow, error) {
+	rows, err := q.db.Query(ctx, listUnresolvedThreadsForBrief, arg.RowLimit, arg.IssueID, arg.WorkspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListUnresolvedThreadsForBriefRow{}
+	for rows.Next() {
+		var i ListUnresolvedThreadsForBriefRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.AuthorType,
+			&i.AuthorID,
+			&i.Content,
+			&i.CreatedAt,
+			&i.ReplyCount,
+			&i.LastActivityAt,
 		); err != nil {
 			return nil, err
 		}
