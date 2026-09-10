@@ -221,6 +221,18 @@ backends may consume protocol selectors before launch:
   parameter. `zeroclaw acp` has no such CLI flag. Set one of these custom args
   when ZeroClaw has multiple agents and no `[acp].default_agent`; omit it for a
   sole-agent config so ZeroClaw can auto-select that agent.
+- DeerFlow ignores `model` and `thinking_level` entirely: the bridge pins its
+  model from its own `DEERFLOW_ACP_MODEL` at process start and answers
+  `session/set_model` and `session/set_config_option` with -32601. Both fields
+  are logged as ignored rather than failing the task. Its `custom_env` must
+  carry `MULTICA_DEERFLOW_HOME` pointing at the DeerFlow deployment root, or
+  turns fail with backend-unavailable — DeerFlow resolves its own
+  `config.yaml` relative to the bridge process's working directory.
+- DeerFlow also rejects a non-empty `mcp_config` (-32602 rather than ignoring
+  it), so its MCP tab is hidden and a saved value would fail the task. ZCode
+  forwards MCP servers normally and honours both `model` (through the bridge's
+  snake_case `session/set_model`) and `thinking_level` (config option id
+  `thought`).
 
 Never put credentials or other secrets in `custom_args`. Daemon command logs
 redact argument values, but values that a backend does not consume still live
