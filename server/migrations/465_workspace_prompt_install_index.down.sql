@@ -1,1 +1,0 @@
-DROP INDEX CONCURRENTLY IF EXISTS idx_workspace_prompt_install_workspace_series;
