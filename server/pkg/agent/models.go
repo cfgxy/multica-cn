@@ -303,6 +303,21 @@ func ListModels(ctx context.Context, providerType string, runtimeCmd Command) (C
 		// ModelSelectionSupported. Return an empty list rather than spawning
 		// an ACP subprocess that can only ever come back empty.
 		return Catalog{Models: []Model{}}, nil
+	case "deerflow":
+		// The DeerFlow bridge pins its model from DEERFLOW_ACP_MODEL when the
+		// process starts and advertises neither a models block nor a `model`
+		// config option; session/set_model answers -32601. There is nothing to
+		// enumerate and nothing that could consume an enumeration — see
+		// ModelSelectionSupported.
+		return Catalog{Models: []Model{}}, nil
+	case "zcode":
+		// zcode-acp advertises its catalog as the `model` config option on
+		// session/new (not a models block), which discoverACPModels already
+		// falls back to. Enumeration needs a configured ZCode provider; on any
+		// failure fall back to an empty catalog so manual entry stays usable.
+		return cachedDiscovery(discoveryCacheKey(providerType, runtimeCmd), func() (Catalog, error) {
+			return discoverZcodeModels(ctx, runtimeCmd)
+		})
 	default:
 		return Catalog{}, fmt.Errorf("unknown agent type: %q", providerType)
 	}
@@ -406,7 +421,7 @@ func QualifyModelID(catalog Catalog, model string) (string, bool) {
 // dropdown plus a silently-ignored manual-entry field.
 func ModelSelectionSupported(providerType string) bool {
 	switch providerType {
-	case "qwenpaw", "mcode", "zeroclaw":
+	case "qwenpaw", "mcode", "zeroclaw", "deerflow":
 		// QwenPaw's `session/set_model` persists to agent.json at the agent
 		// scope, not the session scope. Calling it would mutate the user's
 		// shared, persistent agent config. Model override is therefore
@@ -418,7 +433,14 @@ func ModelSelectionSupported(providerType string) bool {
 		// its ACP dispatch table at all (0.8.4 answers -32601) and no handler
 		// reads a model param, so the model comes from the ZeroClaw agent
 		// profile (`agents.<alias>.model_provider`) and nothing Multica sends
-		// can change it.
+		// can change it. DeerFlow is the same shape for a different reason: the
+		// bridge reads DEERFLOW_ACP_MODEL once at process start and answers
+		// session/set_model with -32601, so the model is fixed for the whole
+		// process lifetime.
+		//
+		// zcode is deliberately absent: its bridge registers a snake_case
+		// session/set_model specifically for this client, so a per-session pick
+		// is honoured.
 		return false
 	default:
 		return true
@@ -2904,6 +2926,35 @@ func discoverDimModels(ctx context.Context, runtimeCmd Command) (Catalog, error)
 	if err != nil || len(models) == 0 {
 		if err != nil {
 			slog.Debug("dim model discovery failed; falling back to manual entry", "error", err)
+		}
+		return Catalog{Models: []Model{}, Fallback: true}, nil
+	}
+	return Catalog{Models: models}, nil
+}
+
+// discoverZcodeModels enumerates the model catalog from a zcode-acp
+// session/new handshake.
+//
+// zcode-acp carries its catalog in the session's `model` config option rather
+// than a models block, which discoverACPModels' parseACPConfigOptionModels
+// fallback already reads. Enumeration needs a configured ZCode provider; on any
+// failure the caller falls back to the manual-entry field.
+//
+// Note the ids come back ungrouped. Provider inference in acpModelEntry keys on
+// a `provider:model` colon, and zcode formats third-party ids with a backslash
+// (`formatModelValue`) while emitting built-in provider ids bare. Grouping them
+// would mean teaching the shared parser a zcode-only separator, for a label
+// the picker does not need.
+func discoverZcodeModels(ctx context.Context, runtimeCmd Command) (Catalog, error) {
+	models, err := discoverACPModels(ctx, runtimeCmd, acpDiscoveryProvider{
+		defaultBin:   "zcode-acp",
+		clientName:   "multica-model-discovery",
+		tmpdirPrefix: "multica-zcode-discovery-",
+		acpArgs:      []string{"acp"},
+	})
+	if err != nil || len(models) == 0 {
+		if err != nil {
+			slog.Debug("zcode model discovery failed; falling back to manual entry", "error", err)
 		}
 		return Catalog{Models: []Model{}, Fallback: true}, nil
 	}

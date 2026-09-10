@@ -19,6 +19,15 @@ var MinVersions = map[string]string{
 	"dim":      "0.3.10",  // cross-run session/load: per-process lock releases on graceful exit
 	"mcode":    "0.1.2",   // ACP v1 session/new, prompt, MCP capability forwarding
 	"zeroclaw": "0.8.0",   // persistent ACP sessions and session/resume were added in 0.8.0
+	"zcode":    "0.13.0",  // snake_case session/set_model alias this client depends on, plus top-level PromptResponse.usage
+	// deerflow is deliberately absent. `deerflow-acp --version` prints its
+	// version to stdout but exits non-zero, so detection is unreliable enough
+	// that a floor here would reject working installs on a probe artifact
+	// rather than on a real incompatibility. The backend instead gates the one
+	// version-dependent behaviour it has at runtime, on the capability the
+	// bridge itself advertises (agentCapabilities.loadSession, which is only
+	// true when it was started with the unstable protocol that carries
+	// session/resume) — see deerflow.go.
 }
 
 // MinQuickCreateCLIVersion gates the agent-create (quick-create) flow against
