@@ -26,7 +26,7 @@ import (
 // with the scan so a future rule addition can tell which snapshots were only
 // ever cleared by an older, weaker detector set. Bump it whenever `detectors`
 // changes.
-const Revision = "promptscan/2026-09-09.2"
+const Revision = "promptscan/2026-09-10.1"
 
 // maxFindings bounds a report. Prompt content is unbounded user text, and a
 // pasted .env would otherwise produce a finding per line — a response large
@@ -106,10 +106,33 @@ type detector struct {
 	validate func(groups []string, lineRest string) bool
 }
 
+// passwordFieldName is the password half of credentialFieldName, split out
+// because it is the half that carries a QUALIFIER: real configs write
+// `db_pass`, `stage_pwd`, `adminPassword` — a field name whose credential word
+// is preceded by whatever the config calls that connection.
+//
+// Listing the qualified forms one by one is what this replaces: only the
+// combinations someone thought to enumerate (`db_password`) were detected, so
+// `{"db_pass": "<real>"}` published into the cross-workspace catalog.
+//
+// The qualifier is separated from the credential word by `_`, `-`, a space, or
+// a capital letter in the case-sensitive camelCase alternative. Letting it run
+// straight into the word would make every word ENDING in one a field name —
+// `bypass`, `surpass`, `compass` — and block the prose those appear in.
+//
+// The abbreviations `pass` and `pwd` REQUIRE a qualifier, and that qualifier
+// must be joined by `_` or `-` rather than a space: a bare `pass` is an
+// ordinary English noun and `second pass:` is a sentence, not an assignment,
+// while `db_pass` is only ever a field name. The full words carry no such
+// ambiguity, so they match qualified or not, spaced or not.
+const passwordFieldName = `(?:[A-Za-z0-9]{1,24}[_\- ])?(?:passphrase|password|passwd)` +
+	`|[A-Za-z0-9]{1,24}[_\-](?:pass|pwd)` +
+	`|(?-i:[a-z0-9]{1,24}(?:Passphrase|Password|Passwd|Pass|Pwd))`
+
 // credentialFieldName is the set of field names that mean "what follows is a
 // credential", written to tolerate the separators real configs use:
 // `DB_PASSWORD`, `db-password` and `dbPassword` all reduce to the same rule.
-const credentialFieldName = `(?:api[_\- ]?key|api[_\- ]?secret|secret[_\- ]?key|access[_\- ]?token|refresh[_\- ]?token|auth[_\- ]?token|id[_\- ]?token|client[_\- ]?secret|private[_\- ]?key|database[_\- ]?url|db[_\- ]?password|db[_\- ]?url|redis[_\- ]?url|x[_\- ]?api[_\- ]?key|authorization|proxy[_\- ]?authorization|credential|passphrase|password|passwd|secret|token)`
+const credentialFieldName = `(?:` + passwordFieldName + `|api[_\- ]?key|api[_\- ]?secret|secret[_\- ]?key|access[_\- ]?token|refresh[_\- ]?token|auth[_\- ]?token|id[_\- ]?token|client[_\- ]?secret|private[_\- ]?key|database[_\- ]?url|db[_\- ]?password|db[_\- ]?url|redis[_\- ]?url|x[_\- ]?api[_\- ]?key|authorization|proxy[_\- ]?authorization|credential|passphrase|password|passwd|secret|token)`
 
 // quoteRun is one optional quote, preceded by any number of backslashes.
 //
