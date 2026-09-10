@@ -34,7 +34,15 @@ vi.mock("sonner", () => ({
   toast: { error: vi.fn(), success: vi.fn() },
 }));
 
-vi.mock("@multica/core/runtimes", () => ({
+// providerDisplayName comes through unmocked on purpose: the family labels
+// this suite asserts are the real map's output, not a stub's. Its own matrix
+// is pinned in packages/core/runtimes/runtime-identity.test.ts.
+vi.mock("@multica/core/runtimes", async () => ({
+  providerDisplayName: (
+    await vi.importActual<typeof import("@multica/core/runtimes")>(
+      "@multica/core/runtimes",
+    )
+  ).providerDisplayName,
   runtimeProfileListOptions: vi.fn((wsId: string) => ({
     queryKey: ["runtime-profiles", wsId, "list"],
   })),
@@ -134,7 +142,7 @@ describe("RuntimeProfilesDialog", () => {
       name: /Supported base protocols/,
     });
     expect(builtinsToggle).toHaveAttribute("aria-expanded", "false");
-    expect(screen.queryByText("claude")).not.toBeInTheDocument();
+    expect(screen.queryByText("Claude")).not.toBeInTheDocument();
     expect(
       screen.getAllByRole("button", { name: "New custom runtime" }),
     ).toHaveLength(1);
@@ -157,12 +165,34 @@ describe("RuntimeProfilesDialog", () => {
       customTitle.compareDocumentPosition(builtinsToggle) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
-    expect(screen.queryByText("claude")).not.toBeInTheDocument();
+    expect(screen.queryByText("Claude")).not.toBeInTheDocument();
 
     fireEvent.click(builtinsToggle);
 
     expect(builtinsToggle).toHaveAttribute("aria-expanded", "true");
-    expect(screen.getByText("claude")).toBeInTheDocument();
+    expect(screen.getByText("Claude")).toBeInTheDocument();
+  });
+
+  // RUYI-119: the two bridges used to be configured as 'kimi' profiles, so
+  // "the label is not Kimi" is only half the fix — a family rendered through
+  // CSS `capitalize` reads "Deerflow"/"Zcode", which is nobody's product name.
+  it("labels a bridge profile with its real product name, not a capitalized slug", () => {
+    queryState.profiles = [
+      profile({
+        id: "prof-df",
+        display_name: "Research DeerFlow",
+        protocol_family: "deerflow",
+        command_name: "deerflow-acp",
+      }),
+    ];
+
+    renderDialog();
+
+    fireEvent.click(screen.getByRole("option", { name: /Research DeerFlow/ }));
+
+    expect(screen.getAllByText("DeerFlow").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Deerflow")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Kimi/)).not.toBeInTheDocument();
   });
 
   it("clears built-in detail when the built-in reference section collapses", () => {
@@ -177,14 +207,14 @@ describe("RuntimeProfilesDialog", () => {
     fireEvent.click(screen.getByRole("option", { name: /claude/i }));
 
     expect(
-      screen.getByText(/claude is a built-in protocol family/),
+      screen.getByText(/Claude is a built-in protocol family/),
     ).toBeInTheDocument();
 
     fireEvent.click(builtinsToggle);
 
     expect(screen.getByText("Select a runtime")).toBeInTheDocument();
     expect(
-      screen.queryByText(/claude is a built-in protocol family/),
+      screen.queryByText(/Claude is a built-in protocol family/),
     ).not.toBeInTheDocument();
   });
 
