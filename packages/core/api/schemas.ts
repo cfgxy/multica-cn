@@ -100,6 +100,15 @@ import type {
   WebhookDelivery,
   WorkspaceMcpServer,
 } from "../types";
+import type {
+  PromptApplyPreview,
+  PromptApplyResult,
+  PromptInstall,
+  PromptRestoreResult,
+  PromptScanResult,
+  PromptTargetState,
+  PromptVersion,
+} from "../types/prompt-market";
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
 import type { CreateFeedbackResponse } from "../feedback/types";
 
@@ -3409,6 +3418,48 @@ export const MarketplaceItemSchema = z.object({
 
 export const MarketplaceItemListSchema = z.array(MarketplaceItemSchema);
 
+// Prompt marketplace (RUYI-100). Like MarketplaceItemSchema above, none of
+// these are `.loose()`. Two things must not reach the client even if a server
+// regression started sending them: the source workspace of a published version
+// (the catalog identifies the publisher, never the workspace — Owner decision
+// D4), and any raw secret from the publish-time scan. Stripping unknown keys
+// means a regression shows up as a missing field, not as leaked data sitting in
+// the query cache.
+
+export const PromptVersionSchema = z.object({
+  id: z.string().default(""),
+  series_id: z.string().default(""),
+  kind: z.string().default(""),
+  version: z.number().nullable().default(null),
+
+  name: z.string().default(""),
+  summary: z.string().default(""),
+  audience: z.string().default(""),
+  categories: z.array(z.string()).default([]),
+  license_code: z.string().default(""),
+  usage_notes: z.string().default(""),
+  companions: z.string().default(""),
+
+  publisher_display_name: z.string().default(""),
+
+  // Empty in a discovery listing; the catalog omits the prompt body.
+  content: z.string().default(""),
+  content_sha256: z.string().default(""),
+
+  state: z.string().default(""),
+  visibility: z.string().default(""),
+
+  // Only sent to a reader who manages the source object, so both are optional.
+  source_type: z.string().optional(),
+  source_id: z.string().optional(),
+
+  scanner_revision: z.string().default(""),
+  published_at: z.string().nullable().default(null),
+  withdrawn_at: z.string().nullable().default(null),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+});
+
 /**
  * One listing this workspace has published (RUYI-99), as the management view
  * sees it.
@@ -3445,6 +3496,92 @@ export const MarketplaceListingSchema = z.object({
   updated_at: z.string().default(""),
 });
 
+export const PromptVersionListSchema = z.array(PromptVersionSchema);
+
+export const PromptMarketItemSchema = PromptVersionSchema.extend({
+  installed: z.boolean().default(false),
+  install_id: z.string().optional(),
+  installed_version: z.number().optional(),
+  update_available: z.boolean().default(false),
+});
+
+export const PromptMarketItemListSchema = z.array(PromptMarketItemSchema);
+
+export const PromptInstallSchema = z.object({
+  id: z.string().default(""),
+  series_id: z.string().default(""),
+  kind: z.string().default(""),
+  installed_version_id: z.string().default(""),
+  installed_version: z.number().default(0),
+  installed_content_sha256: z.string().default(""),
+  name: z.string().default(""),
+  summary: z.string().default(""),
+  publisher_display_name: z.string().default(""),
+  license_code: z.string().default(""),
+  installed_at: z.string().default(""),
+  updated_at: z.string().default(""),
+});
+
+export const PromptInstallListSchema = z.array(PromptInstallSchema);
+
+export const PromptApplyPreviewSchema = z.object({
+  target_type: z.string().default(""),
+  target_id: z.string().default(""),
+
+  current_content: z.string().default(""),
+  current_sha256: z.string().default(""),
+  incoming_content: z.string().default(""),
+  incoming_sha256: z.string().default(""),
+
+  target_empty: z.boolean().default(false),
+  identical: z.boolean().default(false),
+  // Defaults true: a payload that failed to carry this field must not be read
+  // as permission to overwrite without confirmation.
+  requires_confirmation: z.boolean().default(true),
+
+  preview_token: z.string().default(""),
+  preview_expires_at: z.string().default(""),
+});
+
+export const PromptApplyResultSchema = z.object({
+  target_type: z.string().default(""),
+  target_id: z.string().default(""),
+  applied_version: z.number().default(0),
+  content_sha256: z.string().default(""),
+  can_restore: z.boolean().default(false),
+});
+
+export const PromptRestoreResultSchema = z.object({
+  target_type: z.string().default(""),
+  target_id: z.string().default(""),
+  content_sha256: z.string().default(""),
+  restored: z.boolean().default(false),
+});
+
+export const PromptTargetStateSchema = z.object({
+  target_type: z.string().default(""),
+  target_id: z.string().default(""),
+  series_id: z.string().default(""),
+  version_id: z.string().default(""),
+  applied_version: z.number().nullable().default(null),
+  applied_at: z.string().default(""),
+  applied_content_intact: z.boolean().default(false),
+  can_restore: z.boolean().default(false),
+  current_sha256: z.string().default(""),
+});
+
+/**
+ * One secret-scan hit. `mask` is a fixed-width mask — the scanner never returns
+ * the matched value or a prefix of it, and this schema has no field that could
+ * hold one.
+ */
+export const PromptSecretFindingSchema = z.object({
+  category: z.string().default(""),
+  rule: z.string().default(""),
+  line: z.number().default(0),
+  mask: z.string().default(""),
+});
+
 export const MarketplaceListingListSchema = z.array(MarketplaceListingSchema);
 
 /**
@@ -3459,6 +3596,118 @@ export const MarketplaceScanFindingSchema = z.object({
   line: z.number().default(0),
   mask: z.string().default(""),
 });
+
+export const PromptSecretScanBlockedSchema = z.object({
+  code: z.string().default(""),
+  error: z.string().default(""),
+  scanner_revision: z.string().default(""),
+  findings: z.array(PromptSecretFindingSchema).default([]),
+  truncated: z.boolean().default(false),
+});
+
+/**
+ * A clean scan. The blocked case is not this shape — it arrives as a 422
+ * ApiError carrying PromptSecretScanBlockedSchema — so `passed` is only ever
+ * true in practice; it is kept as a field so a future advisory (scanned, not
+ * clean, publish anyway) has somewhere to live without a second endpoint.
+ */
+export const PromptScanResultSchema = z.object({
+  scanner_revision: z.string().default(""),
+  passed: z.boolean().default(false),
+});
+
+// A parse failure must not read as "clean": the fallback says not passed.
+export const EMPTY_PROMPT_SCAN_RESULT: PromptScanResult = {
+  scanner_revision: "",
+  passed: false,
+};
+
+export const EMPTY_PROMPT_VERSION: PromptVersion = {
+  id: "",
+  series_id: "",
+  kind: "",
+  version: null,
+  name: "",
+  summary: "",
+  audience: "",
+  categories: [],
+  license_code: "",
+  usage_notes: "",
+  companions: "",
+  publisher_display_name: "",
+  content: "",
+  content_sha256: "",
+  state: "",
+  visibility: "",
+  scanner_revision: "",
+  published_at: null,
+  withdrawn_at: null,
+  created_at: "",
+  updated_at: "",
+};
+
+export const EMPTY_PROMPT_INSTALL: PromptInstall = {
+  id: "",
+  series_id: "",
+  kind: "",
+  installed_version_id: "",
+  installed_version: 0,
+  installed_content_sha256: "",
+  name: "",
+  summary: "",
+  publisher_display_name: "",
+  license_code: "",
+  installed_at: "",
+  updated_at: "",
+};
+
+/**
+ * The fallback for an unparseable preview.
+ *
+ * `requires_confirmation: true` and an empty token: a preview the client could
+ * not read must fail towards "ask the user", and the empty token makes the
+ * apply that would follow impossible rather than merely unconfirmed.
+ */
+export const EMPTY_PROMPT_APPLY_PREVIEW: PromptApplyPreview = {
+  target_type: "",
+  target_id: "",
+  current_content: "",
+  current_sha256: "",
+  incoming_content: "",
+  incoming_sha256: "",
+  target_empty: false,
+  identical: false,
+  requires_confirmation: true,
+  preview_token: "",
+  preview_expires_at: "",
+};
+
+export const EMPTY_PROMPT_APPLY_RESULT: PromptApplyResult = {
+  target_type: "",
+  target_id: "",
+  applied_version: 0,
+  content_sha256: "",
+  can_restore: false,
+};
+
+export const EMPTY_PROMPT_RESTORE_RESULT: PromptRestoreResult = {
+  target_type: "",
+  target_id: "",
+  content_sha256: "",
+  restored: false,
+};
+
+export const EMPTY_PROMPT_TARGET_STATE: PromptTargetState = {
+  target_type: "",
+  target_id: "",
+  series_id: "",
+  version_id: "",
+  applied_version: null,
+  applied_at: "",
+  applied_content_intact: false,
+  can_restore: false,
+  current_sha256: "",
+};
 
 export const MarketplaceScanErrorSchema = z.object({
   error: z.string().default(""),

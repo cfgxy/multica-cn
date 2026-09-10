@@ -95,6 +95,15 @@ jobs:
               # mode for everyone with no error anywhere, so a change to the
               # frontend half must run the backend suite.
               - 'packages/core/runtimes/cli-version.ts'
+              # internal/handler/marketplace_prompt_license_contract_test.go
+              # reads these and compares the licence list the publish dialog
+              # offers against the closed set the server validates. A drift
+              # 400s the one licence the user picked, with a correct-looking
+              # dropdown on one side and a correct-looking validator on the
+              # other, so a frontend-only change must run the backend suite.
+              - 'packages/core/types/prompt-market.ts'
+              - 'packages/views/market/prompt-market-labels.ts'
+              - 'packages/views/locales/*/prompt-market.json'
               # internal/daemon/agent_command_names_test.go reads both of
               # these as test inputs; the guard script is additionally the
               # entry point scripts/test-go.sh runs, and the names file is
