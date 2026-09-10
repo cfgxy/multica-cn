@@ -2242,6 +2242,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Route("/api/marketplace", func(r chi.Router) {
 				r.Get("/items", h.ListMarketplaceItems)
 				r.Post("/install", h.InstallMarketplaceItem)
+
 				// The publishing half (RUYI-99), behind its own
 				// marketplace_publish_v1 flag. A listing is addressed by id,
 				// but every mutation re-checks that the caller's workspace is
@@ -2251,6 +2252,41 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/", h.PublishMarketplaceListing)
 					r.Patch("/{id}", h.UpdateMarketplaceListing)
 					r.Post("/{id}/withdraw", h.WithdrawMarketplaceListing)
+				})
+
+				// Prompt assets. Versions are the publisher's side: a draft
+				// is edited until published, and publishing freezes an
+				// immutable snapshot other workspaces discover.
+				r.Route("/prompt-versions", func(r chi.Router) {
+					r.Get("/", h.ListPromptVersions)
+					r.Post("/", h.CreatePromptVersion)
+					r.Route("/{id}", func(r chi.Router) {
+						r.Get("/", h.GetPromptVersion)
+						r.Put("/", h.UpdatePromptVersion)
+						r.Post("/scan", h.ScanPromptVersion)
+						r.Post("/publish", h.PublishPromptVersion)
+						r.Post("/withdraw", h.WithdrawPromptVersion)
+					})
+				})
+				// The publish entry on an agent or squad prompt tab reads
+				// this to show what it has already published.
+				r.Get("/prompt-sources/{type}/{id}/versions", h.ListPromptVersionsBySource)
+
+				// Installations are the consumer's side. Installing only
+				// adds to the workspace library; preview and apply are
+				// separate steps, so nothing here writes into an agent or
+				// squad until a human has confirmed a diff.
+				r.Route("/prompt-installations", func(r chi.Router) {
+					r.Get("/", h.ListPromptInstalls)
+					r.Post("/", h.InstallPrompt)
+					r.Post("/{id}/preview", h.PreviewPromptApply)
+					r.Post("/{id}/apply", h.ApplyPrompt)
+				})
+				// Target-side state: what a given agent or squad currently
+				// runs, and the one-step undo.
+				r.Route("/prompt-targets/{type}/{id}", func(r chi.Router) {
+					r.Get("/", h.GetPromptTargetState)
+					r.Post("/restore", h.RestorePrompt)
 				})
 			})
 

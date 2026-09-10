@@ -105,6 +105,23 @@ export {
   MARKETPLACE_SUMMARY_MAX_LENGTH,
 } from "./marketplace";
 export type {
+  PromptApplyPreview,
+  PromptApplyResult,
+  PromptApplyStrategy,
+  PromptAssetKind,
+  PromptInstall,
+  PromptLicenseCode,
+  PromptMarketItem,
+  PromptRestoreResult,
+  PromptScanResult,
+  PromptSecretFinding,
+  PromptSecretScanBlocked,
+  PromptTargetState,
+  PromptTargetType,
+  PromptVersion,
+  PromptVersionState,
+} from "./prompt-market";
+export type {
   PluginInstallation,
   PluginConfigField,
   PluginConfigFieldType,
