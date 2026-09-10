@@ -58,14 +58,20 @@ INSERT INTO agent (
     runtime_config, runtime_id, visibility, max_concurrent_tasks, owner_id,
     instructions, custom_env, custom_args, mcp_config, model, thinking_level,
     service_tier, conversation_starters,
-    composio_toolkit_allowlist, permission_mode
+    composio_toolkit_allowlist, permission_mode,
+    session_max_context_tokens, session_compact_pct
 ) VALUES (
     $1, $2, $3, $4, $5,
     $6, $7, $8, $9, $10,
     $11, $12, $13, $14, $15, $16,
     $17, COALESCE(sqlc.narg('conversation_starters')::jsonb, '[]'::jsonb),
     sqlc.narg('composio_toolkit_allowlist')::text[],
-    COALESCE(sqlc.narg('permission_mode'), 'private')
+    COALESCE(sqlc.narg('permission_mode'), 'private'),
+    -- RUYI-107: omitted by every caller that does not care, which then gets the
+    -- column default rather than a zero. Zero is a meaningful value here (it
+    -- disables the gate), so it must not be reachable by accident.
+    COALESCE(sqlc.narg('session_max_context_tokens'), 400000),
+    COALESCE(sqlc.narg('session_compact_pct'), 80)
 )
 RETURNING *;
 
@@ -135,6 +141,8 @@ UPDATE agent SET
     permission_mode = COALESCE(sqlc.narg('permission_mode'), permission_mode),
     status = COALESCE(sqlc.narg('status'), status),
     max_concurrent_tasks = COALESCE(sqlc.narg('max_concurrent_tasks'), max_concurrent_tasks),
+    session_max_context_tokens = COALESCE(sqlc.narg('session_max_context_tokens'), session_max_context_tokens),
+    session_compact_pct = COALESCE(sqlc.narg('session_compact_pct'), session_compact_pct),
     instructions = COALESCE(sqlc.narg('instructions'), instructions),
     custom_env = COALESCE(sqlc.narg('custom_env'), custom_env),
     custom_args = COALESCE(sqlc.narg('custom_args'), custom_args),
@@ -1156,7 +1164,7 @@ WITH retired_sessions AS (
       )
 ), latest_per_session AS (
     SELECT DISTINCT ON (t.session_id)
-        t.session_id, t.work_dir, t.runtime_id, t.status, t.failure_reason, t.error,
+        t.id, t.session_id, t.work_dir, t.runtime_id, t.status, t.failure_reason, t.error,
         COALESCE(t.completed_at, t.started_at, t.dispatched_at, t.created_at) AS terminal_at
     FROM agent_task_queue t
     WHERE t.agent_id = $1 AND t.issue_id = $2
@@ -1164,7 +1172,11 @@ WITH retired_sessions AS (
       AND t.status IN ('completed', 'failed', 'cancelled')
     ORDER BY t.session_id, COALESCE(t.completed_at, t.started_at, t.dispatched_at, t.created_at) DESC
 )
-SELECT session_id, work_dir, runtime_id FROM latest_per_session
+-- id is the task the session/work_dir came from. The session gate reads its
+-- context size and its result from that SAME row (RUYI-107): a second "most
+-- recent task" lookup could land on a different row and judge one session by
+-- another's numbers.
+SELECT id AS task_id, session_id, work_dir, runtime_id FROM latest_per_session
 WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
   AND (
     status IN ('completed', 'cancelled')
@@ -1203,22 +1215,9 @@ WHERE session_id NOT IN (SELECT session_id FROM retired_sessions)
 ORDER BY terminal_at DESC
 LIMIT 1;
 
--- name: GetLatestTaskRolloutMissing :one
--- Reports whether the most recent terminal task for (agent_id, issue_id)
--- withheld its Codex session because the rollout was missing (MUL-5305). When
--- true, GetLastTaskSession fell back to an older session, so the next run must
--- disclose that the most recent turn's context could not be carried over. Any
--- later task that records a real session resets this to FALSE by being the new
--- most-recent row, so the disclosure fires once and then clears.
-SELECT COALESCE(session_rollout_missing, FALSE) FROM agent_task_queue
-WHERE agent_id = $1 AND issue_id = $2
-  AND status IN ('completed', 'failed')
-  AND started_at IS NOT NULL
-ORDER BY COALESCE(completed_at, started_at, dispatched_at, created_at) DESC
-LIMIT 1;
-
 -- name: GetLatestChatTaskRolloutMissing :one
--- Chat-session counterpart of GetLatestTaskRolloutMissing (MUL-5305): reports
+-- Chat-session counterpart of the issue-side rollout-missing signal now folded
+-- into GetLatestTerminalTaskForBrief (MUL-5305): reports
 -- whether the most recent terminal task on this chat session withheld its Codex
 -- session because the rollout was missing. When true the next chat claim resumed
 -- an older session (or none), so it must disclose the continuity gap.
@@ -2798,3 +2797,30 @@ INSERT INTO agent (
     @owner_id, '', '{}'::jsonb, '[]'::jsonb, 'user', @system_key
 )
 RETURNING *;
+
+-- name: GetLatestTerminalTaskForBrief :one
+-- The most recent terminal task for (agent_id, issue_id) together with the two
+-- facts a compacting claim needs from it (RUYI-107): the result it reported,
+-- and whether it withheld its Codex session because the rollout was missing.
+--
+-- The two facts come from ONE row on purpose: they answer questions about the
+-- SAME turn — "what did the last turn say" and "was the last turn's context
+-- carried over" — and two separate queries could land either side of a
+-- concurrent terminal write and describe two different turns as one. This
+-- replaces the issue-side GetLatestTaskRolloutMissing, whose row selection
+-- (statuses, started_at guard, ordering) it keeps verbatim; the chat-session
+-- counterpart GetLatestChatTaskRolloutMissing still exists unchanged.
+--
+-- This is deliberately NOT the task GetLastTaskSession names. That query
+-- returns the task owning the RESUMABLE session, which after a withheld
+-- rollout is an older turn; judging the session by that task's context reading
+-- is correct (it is that session's own size), but reporting that task's output
+-- as "what your previous run reported" would silently rewind the hand-off to a
+-- turn the user already saw superseded.
+SELECT id, result, COALESCE(session_rollout_missing, FALSE) AS session_rollout_missing
+FROM agent_task_queue
+WHERE agent_id = $1 AND issue_id = $2
+  AND status IN ('completed', 'failed')
+  AND started_at IS NOT NULL
+ORDER BY COALESCE(completed_at, started_at, dispatched_at, created_at) DESC
+LIMIT 1;
