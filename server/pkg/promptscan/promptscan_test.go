@@ -662,6 +662,47 @@ func TestScanDetectsQualifiedPasswordFieldNames(t *testing.T) {
 	}
 }
 
+// A qualifier is rarely a single segment. Real configuration writes the whole
+// path into the field name — `prod_db_pass`, `POSTGRES_ADMIN_PASSWORD`,
+// `readReplicaPassword` — and a rule that allows exactly ONE segment matches
+// none of them, so a real password published under any of these names
+// (RUYI-100, Review of 135d3bfe). The field name has to be modelled as a whole
+// token: any number of segments, joined the way the surrounding format joins
+// them.
+func TestScanDetectsMultiSegmentQualifiedPasswordFields(t *testing.T) {
+	const secret = "Sup3rLongStageValue-not-real"
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{"snake two segment abbreviation", "prod_db_pass: " + secret},
+		{"screaming snake full word", "POSTGRES_ADMIN_PASSWORD=" + secret},
+		{"camel two word qualifier", `{"readReplicaPassword": "` + secret + `"}`},
+		{"kebab two segment abbreviation", `{"prod-db-pass": "` + secret + `"}`},
+		{"camel two word abbreviation", `{"stagingReplicaPwd": "` + secret + `"}`},
+		{"escaped json multi segment", `{\"prod_db_pass\": \"` + secret + `\"}`},
+		{"three segment snake", "us_east_prod_db_password=" + secret},
+		{"multi segment passphrase", "ssh:\n  prod_deploy_key_passphrase: " + secret},
+		{"mixed case kebab full word", `X-Prod-Db-Password: ` + secret},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := Scan(tc.content)
+			if res.OK() {
+				t.Fatalf("%s must be detected, content %q passed the gate", tc.name, tc.content)
+			}
+			blob, err := json.Marshal(res)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if strings.Contains(string(blob), secret) {
+				t.Fatalf("serialised result leaked the value: %s", blob)
+			}
+		})
+	}
+}
+
 // The counterweight to the case above. Widening a field name to accept a
 // qualifier is exactly the change that starts matching ordinary words ending in
 // one — `bypass`, `compass`, `surpass` — and an abbreviation like `pass` is a
@@ -678,6 +719,17 @@ func TestScanDoesNotBlockQualifierLookalikes(t *testing.T) {
 		`{"db_pass": null}`,
 		`{"db_pass": ""}`,
 		"stage_pwd: <replace-me>",
+		// The same four releases under a MULTI-segment name: widening the
+		// qualifier must not quietly widen what counts as a value.
+		`{"prod_db_pass": "${PROD_DB_PASSWORD}"}`,
+		`{"readReplicaPassword": null}`,
+		"POSTGRES_ADMIN_PASSWORD=",
+		"us_east_prod_db_password: <replace-me>",
+		`{"enableReplicaPasswordRotation": true}`,
+		"prod_db_pass: false",
+		// Prose that names a multi-segment field without assigning to it.
+		"Rotate the read replica password every quarter.",
+		"Do not bypass the admin password prompt during a staging drill.",
 	}
 	for _, content := range cases {
 		if res := Scan(content); !res.OK() {
