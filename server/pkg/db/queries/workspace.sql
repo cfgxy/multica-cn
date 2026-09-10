@@ -206,6 +206,15 @@ cleared_prompt_installs AS (
     -- publisher, never the source workspace.
     DELETE FROM workspace_prompt_install WHERE workspace_id = $1
 ),
+cleared_marketplace_listings AS (
+    -- marketplace_listing carries no FK (house rule) and keys ownership on
+    -- source_workspace_id, so it needs its own sweep. Removed rather than
+    -- tombstoned: the (kind, name_key) reservation exists to stop a different
+    -- publisher impersonating a withdrawn listing while its owner can still
+    -- republish it, and a deleted workspace can never republish. Copies already
+    -- installed elsewhere are rows in their own workspaces and are untouched.
+    DELETE FROM marketplace_listing WHERE source_workspace_id = $1
+),
 deleted_pending_check_suites AS (
     DELETE FROM github_pending_check_suite WHERE workspace_id = $1
 ),

@@ -29,6 +29,17 @@ const (
 	// management, the workspace MCP library, and agent binding are all reached
 	// without the marketplace, and the marketplace only ever drives them.
 	MarketplaceV1 = "marketplace_v1"
+	// MarketplacePublishV1 gates the write half of the marketplace: publishing,
+	// updating and withdrawing a workspace's own skill and MCP listings. It is
+	// deliberately separate from MarketplaceV1, which gates discovery and
+	// install: an operator has to be able to keep the catalog readable and
+	// installable while closing the publish surface, and the two capabilities
+	// have different blast radii — a bad publish is visible to every workspace.
+	//
+	// Turning it off leaves already-published listings discoverable and
+	// installable. Withdrawing content is a moderation action reached through
+	// this flag, so closing it does not retract anything already out there.
+	MarketplacePublishV1 = "marketplace_publish_v1"
 	// agentBuilderCompat is no longer a release flag. Keep publishing the key
 	// as enabled so installed desktop clients that still gate the AI creation
 	// entry on this config decision receive the permanently enabled behavior.
@@ -51,6 +62,7 @@ var frontendPublicFlags = []string{
 	ComposioMCPApps,
 	PluginsV1,
 	MarketplaceV1,
+	MarketplacePublishV1,
 }
 
 func BillingWorkspaceSubscriptionsEnabled(ctx context.Context, flags *featureflag.Service) bool {
@@ -67,6 +79,10 @@ func PluginsV1Enabled(ctx context.Context, flags *featureflag.Service) bool {
 
 func MarketplaceV1Enabled(ctx context.Context, flags *featureflag.Service) bool {
 	return flags.IsEnabled(ctx, MarketplaceV1, false)
+}
+
+func MarketplacePublishV1Enabled(ctx context.Context, flags *featureflag.Service) bool {
+	return flags.IsEnabled(ctx, MarketplacePublishV1, false)
 }
 
 func EvaluateFrontendPublicFlags(ctx context.Context, flags *featureflag.Service) map[string]bool {

@@ -68,6 +68,8 @@ import type {
   PromptScanResult,
   PromptTargetState,
   PromptVersion,
+  MarketplaceListing,
+  MarketplacePlaceholder,
   MemberWithUser,
   User,
   Skill,
@@ -494,6 +496,8 @@ import {
   EMPTY_PROMPT_SCAN_RESULT,
   EMPTY_PROMPT_TARGET_STATE,
   EMPTY_PROMPT_VERSION,
+  MarketplaceListingSchema,
+  MarketplaceListingListSchema,
   ShareLinkSchema,
   ShareLinkListResponseSchema,
   ShareLinkInfoSchema,
@@ -3190,6 +3194,94 @@ export class ApiClient {
     return parseWithFallback(raw, PromptRestoreResultSchema, EMPTY_PROMPT_RESTORE_RESULT, {
       endpoint: "POST /api/marketplace/prompt-targets/{type}/{id}/restore",
     });
+  }
+
+  /**
+   * The listings this workspace has published (RUYI-99), tombstones included:
+   * a withdrawn row still shows here because republishing acts on it.
+   */
+  async listMarketplaceListings(): Promise<MarketplaceListing[]> {
+    const raw = await this.fetch<unknown>(`/api/marketplace/listings`);
+    return parseWithFallback(
+      raw,
+      MarketplaceListingListSchema,
+      [] as MarketplaceListing[],
+      { endpoint: "GET /api/marketplace/listings" },
+    );
+  }
+
+  /**
+   * Publishes a skill or MCP entry to the platform-wide marketplace.
+   *
+   * For an MCP listing `config_template` is authored by the publisher, not read
+   * from an installed server: the workspace MCP config column is write-only and
+   * this path never crosses it. Every credential-bearing field must be a
+   * registered `${placeholder}`; a literal is refused with 422 and a scan
+   * report, which the caller reads off `ApiError.body`.
+   */
+  async publishMarketplaceListing(input: {
+    kind: string;
+    name: string;
+    summary?: string;
+    description?: string;
+    homepage_url?: string;
+    categories?: string[];
+    source_url?: string;
+    config_template?: unknown;
+    placeholders?: MarketplacePlaceholder[];
+  }): Promise<MarketplaceListing> {
+    const raw = await this.fetch<unknown>(`/api/marketplace/listings`, {
+      method: "POST",
+      body: JSON.stringify(input),
+    });
+    return MarketplaceListingSchema.parse(raw);
+  }
+
+  /**
+   * Edits a published listing.
+   *
+   * `revision` is the value the caller last read. The server guards the update
+   * on it, so a concurrent edit surfaces as 409 rather than as one editor's
+   * changes silently disappearing.
+   */
+  async updateMarketplaceListing(
+    id: string,
+    input: {
+      revision: number;
+      name?: string;
+      summary?: string;
+      description?: string;
+      homepage_url?: string;
+      categories?: string[];
+      source_url?: string;
+      config_template?: unknown;
+      placeholders?: MarketplacePlaceholder[];
+    },
+  ): Promise<MarketplaceListing> {
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/listings/${encodeURIComponent(id)}`,
+      { method: "PATCH", body: JSON.stringify(input) },
+    );
+    return MarketplaceListingSchema.parse(raw);
+  }
+
+  /**
+   * Withdraws a listing from the catalog.
+   *
+   * The row is kept as a tombstone: the name stays reserved so no other
+   * publisher can take it, and copies already installed elsewhere keep working
+   * (D4-A). Guarded on `revision` like an update, so a repeat withdrawal or a
+   * stale token answers 409.
+   */
+  async withdrawMarketplaceListing(
+    id: string,
+    revision: number,
+  ): Promise<MarketplaceListing> {
+    const raw = await this.fetch<unknown>(
+      `/api/marketplace/listings/${encodeURIComponent(id)}/withdraw`,
+      { method: "POST", body: JSON.stringify({ revision }) },
+    );
+    return MarketplaceListingSchema.parse(raw);
   }
 
   /** The workspace MCP servers assigned to this agent, with their toggles. */

@@ -2243,6 +2243,17 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/items", h.ListMarketplaceItems)
 				r.Post("/install", h.InstallMarketplaceItem)
 
+				// The publishing half (RUYI-99), behind its own
+				// marketplace_publish_v1 flag. A listing is addressed by id,
+				// but every mutation re-checks that the caller's workspace is
+				// the one that published it.
+				r.Route("/listings", func(r chi.Router) {
+					r.Get("/", h.ListMarketplaceListings)
+					r.Post("/", h.PublishMarketplaceListing)
+					r.Patch("/{id}", h.UpdateMarketplaceListing)
+					r.Post("/{id}/withdraw", h.WithdrawMarketplaceListing)
+				})
+
 				// Prompt assets. Versions are the publisher's side: a draft
 				// is edited until published, and publishing freezes an
 				// immutable snapshot other workspaces discover.

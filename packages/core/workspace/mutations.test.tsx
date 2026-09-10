@@ -9,7 +9,12 @@ import { setApiInstance } from "../api";
 import type { ApiClient } from "../api/client";
 import { defaultStorage } from "../platform/storage";
 import type { Workspace } from "../types";
-import { useCreateWorkspace, useDeleteWorkspace } from "./mutations";
+import {
+  useCreateWorkspace,
+  useDeleteWorkspace,
+  usePublishMarketplaceListing,
+  useWithdrawMarketplaceListing,
+} from "./mutations";
 import { workspaceKeys } from "./queries";
 import {
   isWorkspaceDeletePending,
@@ -233,5 +238,80 @@ describe("useDeleteWorkspace", () => {
       await expect(result.current.mutateAsync("ws-2")).rejects.toThrow("boom");
     });
     expect(isWorkspaceDeletePending("ws-2")).toBe(false);
+  });
+});
+
+describe("marketplace listing cache invalidation", () => {
+  let qc: QueryClient;
+
+  beforeEach(() => {
+    qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  });
+
+  afterEach(() => {
+    qc.clear();
+    vi.restoreAllMocks();
+  });
+
+  // The catalog is global. A workspace the user visited earlier is still
+  // holding the pre-publish copy of it, so publishing from one workspace has
+  // to reach every cached catalog, not just the publisher's.
+  const seedCatalogs = () => {
+    qc.setQueryData(workspaceKeys.marketplace("ws-1", "mcp", ""), []);
+    qc.setQueryData(workspaceKeys.marketplace("ws-2", "mcp", ""), []);
+    qc.setQueryData(workspaceKeys.marketplaceListings("ws-1"), []);
+    qc.setQueryData(workspaceKeys.marketplaceListings("ws-2"), []);
+  };
+
+  const invalidated = (key: readonly unknown[]) =>
+    qc.getQueryState(key)?.isInvalidated === true;
+
+  it("invalidates every workspace's cached catalog on publish", async () => {
+    seedCatalogs();
+    const publishMarketplaceListing = vi.fn().mockResolvedValue({});
+    setApiInstance({ publishMarketplaceListing } as unknown as ApiClient);
+
+    const { result } = renderHook(() => usePublishMarketplaceListing("ws-1"), {
+      wrapper: createWrapper(qc),
+    });
+    await act(async () => {
+      await result.current.mutateAsync({ kind: "mcp", name: "acme" });
+    });
+
+    expect(invalidated(workspaceKeys.marketplace("ws-1", "mcp", ""))).toBe(true);
+    expect(invalidated(workspaceKeys.marketplace("ws-2", "mcp", ""))).toBe(true);
+  });
+
+  it("invalidates every workspace's cached catalog on withdraw", async () => {
+    seedCatalogs();
+    const withdrawMarketplaceListing = vi.fn().mockResolvedValue({});
+    setApiInstance({ withdrawMarketplaceListing } as unknown as ApiClient);
+
+    const { result } = renderHook(() => useWithdrawMarketplaceListing("ws-1"), {
+      wrapper: createWrapper(qc),
+    });
+    await act(async () => {
+      await result.current.mutateAsync({ id: "listing-1", revision: 3 });
+    });
+
+    expect(invalidated(workspaceKeys.marketplace("ws-1", "mcp", ""))).toBe(true);
+    expect(invalidated(workspaceKeys.marketplace("ws-2", "mcp", ""))).toBe(true);
+  });
+
+  it("leaves another workspace's management list alone", async () => {
+    seedCatalogs();
+    const publishMarketplaceListing = vi.fn().mockResolvedValue({});
+    setApiInstance({ publishMarketplaceListing } as unknown as ApiClient);
+
+    const { result } = renderHook(() => usePublishMarketplaceListing("ws-1"), {
+      wrapper: createWrapper(qc),
+    });
+    await act(async () => {
+      await result.current.mutateAsync({ kind: "mcp", name: "acme" });
+    });
+
+    // Only ws-1 published; ws-2's own listings did not change.
+    expect(invalidated(workspaceKeys.marketplaceListings("ws-1"))).toBe(true);
+    expect(invalidated(workspaceKeys.marketplaceListings("ws-2"))).toBe(false);
   });
 });

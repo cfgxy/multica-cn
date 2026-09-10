@@ -90,7 +90,20 @@ export type {
 } from "./agent";
 export { RUNTIME_PROFILE_PROTOCOL_FAMILIES } from "./agent";
 export type { Workspace, WorkspaceRepo, WorkspaceMcpServer, Member, MemberRole, User, MemberWithUser, Invitation, ShareLink, ShareLinkInfo } from "./workspace";
-export type { MarketplaceItem, MarketplaceItemKind, MarketplacePlaceholder } from "./marketplace";
+export type {
+  MarketplaceItem,
+  MarketplaceItemKind,
+  MarketplacePlaceholder,
+  MarketplaceListing,
+  MarketplaceListingState,
+  MarketplaceScanError,
+  MarketplaceScanFinding,
+  MarketplaceCategory,
+} from "./marketplace";
+export {
+  MARKETPLACE_CATEGORIES,
+  MARKETPLACE_SUMMARY_MAX_LENGTH,
+} from "./marketplace";
 export type {
   PromptApplyPreview,
   PromptApplyResult,

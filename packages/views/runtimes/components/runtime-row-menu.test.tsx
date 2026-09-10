@@ -37,7 +37,16 @@ vi.mock("@multica/core/runtimes/mutations", () => ({
   }),
 }));
 
-vi.mock("@multica/core/runtimes", () => ({
+// providerDisplayName comes through unmocked: the profiles dialog this menu
+// opens renders protocol families through it, and a stub would let a wrong
+// label pass. Its own matrix is pinned in
+// packages/core/runtimes/runtime-identity.test.ts.
+vi.mock("@multica/core/runtimes", async () => ({
+  providerDisplayName: (
+    await vi.importActual<typeof import("@multica/core/runtimes")>(
+      "@multica/core/runtimes",
+    )
+  ).providerDisplayName,
   deriveRuntimeHealth: () => "online",
   runtimeUsageOptions: () => ({ kind: "usage" }),
   runtimeProfileListOptions: () => ({ kind: "runtime-profiles" }),
