@@ -1,1 +1,0 @@
-DROP INDEX CONCURRENTLY IF EXISTS idx_marketplace_prompt_version_source;
