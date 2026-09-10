@@ -376,6 +376,41 @@ function ZeroClawLogo({ className }: { className: string }) {
   );
 }
 
+function DeerFlowLogo({ className }: { className: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      className={className}
+    >
+      {/* Branching graph: DeerFlow orchestrates a LangGraph node flow. */}
+      <path d="M12 21V11" />
+      <path d="M12 11L6 5" />
+      <path d="M12 11l6-6" />
+      <path d="M6 5V3" />
+      <path d="M18 5V3" />
+    </svg>
+  );
+}
+
+function ZCodeLogo({ className }: { className: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      className={className}
+    >
+      <path d="M7 6h10l-10 12h10" />
+    </svg>
+  );
+}
+
 export function ProviderLogo({
   provider,
   className = "h-4 w-4",
@@ -435,6 +470,10 @@ export function ProviderLogo({
       return <DimLogo className={className} />;
     case "zeroclaw":
       return <ZeroClawLogo className={className} />;
+    case "deerflow":
+      return <DeerFlowLogo className={className} />;
+    case "zcode":
+      return <ZCodeLogo className={className} />;
     default:
       return <Monitor className={className} />;
   }

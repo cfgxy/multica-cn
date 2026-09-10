@@ -59,12 +59,14 @@ type Agent struct {
 	// Composio toolkit slugs this agent is allowed to mount as MCP. NULL or empty array = no MCP overlay. Mounted for any run that passes the agent invocation-permission gate (MUL-3963); the overlay uses the agent OWNER's active Composio connection, so sharing the agent (public_to) shares these apps with whoever may invoke it. No longer gated on originator == owner. Stored as TEXT[] so the dispatch path can intersect against the owner's active connections with a single SQL ANY() filter.
 	ComposioToolkitAllowlist []string `json:"composio_toolkit_allowlist"`
 	// Agent invocation permission mode (MUL-3963). private = owner only; public_to = allow-list in agent_invocation_target. Replaces visibility as the authorization source for triggering runs; visibility is now a derived legacy field. Default private = deny-by-default.
-	PermissionMode        string      `json:"permission_mode"`
-	Kind                  string      `json:"kind"`
-	SystemKey             pgtype.Text `json:"system_key"`
-	DisabledRuntimeSkills []byte      `json:"disabled_runtime_skills"`
-	ServiceTier           pgtype.Text `json:"service_tier"`
-	ConversationStarters  []byte      `json:"conversation_starters"`
+	PermissionMode          string      `json:"permission_mode"`
+	Kind                    string      `json:"kind"`
+	SystemKey               pgtype.Text `json:"system_key"`
+	DisabledRuntimeSkills   []byte      `json:"disabled_runtime_skills"`
+	ServiceTier             pgtype.Text `json:"service_tier"`
+	ConversationStarters    []byte      `json:"conversation_starters"`
+	SessionMaxContextTokens int64       `json:"session_max_context_tokens"`
+	SessionCompactPct       int32       `json:"session_compact_pct"`
 	// Last marketplace prompt apply on this agent plus the single text it replaced (RUYI-100). Internal: never included in an agent API response.
 	MarketplacePromptState []byte `json:"marketplace_prompt_state"`
 }
@@ -1061,6 +1063,35 @@ type LarkUserBinding struct {
 	BoundAt        pgtype.Timestamptz `json:"bound_at"`
 }
 
+// One workspace-published skill or MCP marketplace listing (RUYI-99). Merged with the embedded static catalog at read time. A withdrawn row is a tombstone that keeps its (kind, name_key) reserved; only source_workspace_id may republish it. source_workspace_id is authority only and must not be returned by any API.
+type MarketplaceListing struct {
+	ID                   pgtype.UUID `json:"id"`
+	Kind                 string      `json:"kind"`
+	Name                 string      `json:"name"`
+	NameKey              string      `json:"name_key"`
+	SourceWorkspaceID    pgtype.UUID `json:"source_workspace_id"`
+	PublisherUserID      pgtype.UUID `json:"publisher_user_id"`
+	PublisherDisplayName string      `json:"publisher_display_name"`
+	Summary              string      `json:"summary"`
+	Description          string      `json:"description"`
+	HomepageUrl          string      `json:"homepage_url"`
+	Categories           []byte      `json:"categories"`
+	SourceUrl            string      `json:"source_url"`
+	// MCP entry template authored in the publish wizard. Credential-bearing fields must be registered ${placeholder} tokens; the local workspace_mcp_server.config is never read to build this.
+	ConfigTemplate  []byte             `json:"config_template"`
+	Placeholders    []byte             `json:"placeholders"`
+	State           string             `json:"state"`
+	Revision        int32              `json:"revision"`
+	ScannerRevision string             `json:"scanner_revision"`
+	ScanResult      []byte             `json:"scan_result"`
+	ScannedAt       pgtype.Timestamptz `json:"scanned_at"`
+	PublishedAt     pgtype.Timestamptz `json:"published_at"`
+	WithdrawnAt     pgtype.Timestamptz `json:"withdrawn_at"`
+	WithdrawnBy     pgtype.UUID        `json:"withdrawn_by"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
 // One draft or immutable published prompt snapshot (RUYI-100). Published rows are never updated in place; a new version is a new row sharing series_id. source_workspace_id is withdrawal authority only and must not be returned by any API.
 type MarketplacePromptVersion struct {
 	ID                   pgtype.UUID        `json:"id"`
@@ -1432,7 +1463,8 @@ type TaskUsage struct {
 	CreatedAt        pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
 	// Provider-reported cost in 1e-10 USD. NULL when the provider reports none; those rows are priced client-side from the static rate table.
-	CostUsdTicks pgtype.Int8 `json:"cost_usd_ticks"`
+	CostUsdTicks  pgtype.Int8 `json:"cost_usd_ticks"`
+	ContextTokens pgtype.Int8 `json:"context_tokens"`
 }
 
 type TaskUsageHourly struct {

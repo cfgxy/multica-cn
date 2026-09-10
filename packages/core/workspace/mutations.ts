@@ -348,6 +348,85 @@ export function useRestorePrompt(wsId: string) {
 }
 
 /**
+ * Invalidates everything a publish, update or withdrawal can move.
+ *
+ * Both caches, always: the management list is the obvious one, and the catalog
+ * is the one that is easy to forget — a published listing joins the catalog
+ * every workspace reads, and a withdrawal takes it back out, so leaving the
+ * catalog cached would show the user a listing that no longer exists.
+ *
+ * The management list belongs to the publishing workspace, so it is dropped by
+ * exact key. The catalog does not: it is global, and keyed per workspace only
+ * because the installed flag is. Any workspace the user has already opened the
+ * marketplace in is holding a copy of the pre-publish catalog, so those are
+ * matched by key shape rather than by this workspace's id.
+ */
+function invalidateMarketplaceListingCaches(
+  queryClient: ReturnType<typeof useQueryClient>,
+  wsId: string,
+): void {
+  queryClient.invalidateQueries({
+    queryKey: workspaceKeys.marketplaceListings(wsId),
+  });
+  queryClient.invalidateQueries({ predicate: isMarketplaceCatalogQuery });
+}
+
+/** Matches `workspaceKeys.marketplace(...)` for ANY workspace. */
+function isMarketplaceCatalogQuery(query: { queryKey: readonly unknown[] }): boolean {
+  const key = query.queryKey;
+  return key[0] === "workspaces" && key[2] === "marketplace";
+}
+
+/**
+ * Publishes a skill or MCP entry to the marketplace.
+ *
+ * A 422 carries the secret-scan report on `ApiError.body`; the caller renders
+ * its findings, which name a field and a line and never the matched text.
+ */
+export function usePublishMarketplaceListing(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: Parameters<typeof api.publishMarketplaceListing>[0]) =>
+      api.publishMarketplaceListing(input),
+    onSettled: () => invalidateMarketplaceListingCaches(queryClient, wsId),
+  });
+}
+
+/**
+ * Edits a published listing.
+ *
+ * `revision` must be the value the form was loaded with. A concurrent edit
+ * answers 409, and refetching on settle is what gives the user the winning
+ * revision to retry from.
+ */
+export function useUpdateMarketplaceListing(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      id,
+      ...input
+    }: { id: string } & Parameters<typeof api.updateMarketplaceListing>[1]) =>
+      api.updateMarketplaceListing(id, input),
+    onSettled: () => invalidateMarketplaceListingCaches(queryClient, wsId),
+  });
+}
+
+/**
+ * Withdraws a listing.
+ *
+ * Installed copies are untouched (D4-A) — nothing in any other workspace's
+ * skill or MCP library changes — so only the marketplace caches are dropped.
+ */
+export function useWithdrawMarketplaceListing(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, revision }: { id: string; revision: number }) =>
+      api.withdrawMarketplaceListing(id, revision),
+    onSettled: () => invalidateMarketplaceListingCaches(queryClient, wsId),
+  });
+}
+
+/**
  * Assignment writes all return the agent's resulting list, so the cache is
  * updated from the server's answer rather than a guess.
  */

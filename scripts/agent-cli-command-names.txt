@@ -5,6 +5,7 @@ codearts
 codex
 copilot
 cursor-agent
+deerflow-acp
 deveco
 dim
 dsh
@@ -23,4 +24,5 @@ qwen
 qwenpaw
 reasonix
 traecli
+zcode-acp
 zeroclaw

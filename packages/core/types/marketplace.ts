@@ -2,6 +2,28 @@
 export type MarketplaceItemKind = "skill" | "mcp";
 
 /**
+ * The closed set of categories a published listing may claim.
+ *
+ * Mirrors service.MarketplaceCategories on the server, which is the authority:
+ * this copy exists so the publish form can offer the choices rather than
+ * accepting free text, and a client running against a newer backend simply
+ * offers fewer options than that backend accepts.
+ */
+export const MARKETPLACE_CATEGORIES = [
+  "data",
+  "development",
+  "documents",
+  "files",
+  "productivity",
+  "web",
+] as const;
+
+export type MarketplaceCategory = (typeof MARKETPLACE_CATEGORIES)[number];
+
+/** The longest summary the server accepts. */
+export const MARKETPLACE_SUMMARY_MAX_LENGTH = 200;
+
+/**
  * One value an MCP install must collect before the entry will run.
  *
  * `secret: true` means the value is a credential: it is masked on input and,
@@ -46,4 +68,75 @@ export interface MarketplaceItem {
   placeholders?: MarketplacePlaceholder[];
   installed: boolean;
   installed_id?: string;
+}
+
+/** Whether a published listing is live or a withdrawn tombstone. */
+export type MarketplaceListingState = "published" | "withdrawn";
+
+/**
+ * One listing this workspace has published (RUYI-99).
+ *
+ * Unlike MarketplaceItem this DOES carry `config_template`, because the
+ * publisher authored it and needs it back to edit. That is not a hole in the
+ * write-only MCP boundary: the template holds `${placeholder}` tokens, never
+ * values, and the publish flow never reads workspace_mcp_server.config to build
+ * one.
+ *
+ * `source_workspace_id` is absent by design — the management view is already
+ * scoped to the caller's workspace, so the field would only be a way to leak
+ * org structure if this type were ever reused on a cross-workspace route.
+ */
+export interface MarketplaceListing {
+  id: string;
+  /** The catalog key this listing appears under once merged into the catalog. */
+  key: string;
+  kind: string;
+  name: string;
+  publisher_display_name: string;
+  summary: string;
+  description: string;
+  homepage_url: string;
+  categories: string[];
+  /** Present on skill listings: the public source an install fetches. */
+  source_url?: string;
+  /** Present on MCP listings: the entry template, placeholders unsubstituted. */
+  config_template?: unknown;
+  /** The template's transport classification, labelled by the server. */
+  transport?: string;
+  placeholders?: MarketplacePlaceholder[];
+  /** A known MarketplaceListingState, or a state a newer backend introduces. */
+  state: string;
+  /**
+   * Optimistic-concurrency token. An update or withdrawal must send back the
+   * revision it read; a stale one is refused with 409 rather than overwriting
+   * whoever edited in between.
+   */
+  revision: number;
+  published_at?: string;
+  withdrawn_at?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/**
+ * One secret-scan finding from a rejected publish.
+ *
+ * Location only — category, rule, field, line and a fixed mask. The matched
+ * text never leaves the server, so a finding can be rendered in the UI and
+ * logged without becoming a way to exfiltrate what was pasted.
+ */
+export interface MarketplaceScanFinding {
+  category: string;
+  rule: string;
+  field: string;
+  line: number;
+  mask: string;
+}
+
+/** The body of a 422 from publish or update: the scan blocked the content. */
+export interface MarketplaceScanError {
+  error: string;
+  scanner_revision: string;
+  findings: MarketplaceScanFinding[];
+  truncated: boolean;
 }

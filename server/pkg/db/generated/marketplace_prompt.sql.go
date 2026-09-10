@@ -403,6 +403,12 @@ const getPromptVersionForUpdate = `-- name: GetPromptVersionForUpdate :one
 SELECT id, series_id, kind, version, source_workspace_id, source_type, source_id, publisher_user_id, publisher_display_name, content, content_sha256, name, summary, audience, categories, license_code, usage_notes, companions, state, visibility, scanner_revision, scan_result, scanned_at, idempotency_key, published_at, withdrawn_at, withdrawn_by, created_at, updated_at FROM marketplace_prompt_version WHERE id = $1 FOR UPDATE
 `
 
+// The serialisation point between a withdrawal and the installs and applies it
+// has to stop. Both consumers re-read the version through this inside their own
+// transaction and re-check state there; WithdrawPromptVersion contends for the
+// same row lock, so the two orders are "withdraw wins, consumer sees withdrawn"
+// and "consumer wins, withdrawal lands after" — never both committing off a
+// state each read before the other started.
 func (q *Queries) GetPromptVersionForUpdate(ctx context.Context, id pgtype.UUID) (MarketplacePromptVersion, error) {
 	row := q.db.QueryRow(ctx, getPromptVersionForUpdate, id)
 	var i MarketplacePromptVersion

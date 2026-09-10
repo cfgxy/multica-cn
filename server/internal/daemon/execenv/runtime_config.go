@@ -215,8 +215,16 @@ func runtimeConfigPath(workDir, provider string) string {
 		return filepath.Join(workDir, "CODEBUDDY.md")
 	case "qwen":
 		return filepath.Join(workDir, "QWEN.md")
-	case "codex", "copilot", "opencode", "codearts", "deveco", "openclaw", "hermes", "pi", "cursor", "kimi", "reasonix", "dsh", "kiro", "antigravity", "qoder", "qoderclicn", "traecli", "grok", "qwenpaw", "mcode", "dim", "zeroclaw":
+	case "codex", "copilot", "opencode", "codearts", "deveco", "openclaw", "hermes", "pi", "cursor", "kimi", "reasonix", "dsh", "kiro", "antigravity", "qoder", "qoderclicn", "traecli", "grok", "qwenpaw", "mcode", "dim", "zeroclaw", "zcode":
 		return filepath.Join(workDir, "AGENTS.md")
+	case "deerflow":
+		// No file-based target. DeerFlow's prompts are owned by its own
+		// deployment (it reads config.yaml and its prompt templates relative to
+		// the bridge process's working directory, which is the deployment root
+		// rather than the task workdir), so it never reads an agent-instruction
+		// file out of the workspace. Writing one would leave a file in every
+		// task workdir that nothing consumes.
+		return ""
 	default:
 		return ""
 	}

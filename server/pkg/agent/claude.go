@@ -171,6 +171,11 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		var sessionID string
 		sawAsyncLaunch := false
 		usage := make(map[string]TokenUsage)
+		// Context size is measured separately from the billing counters in
+		// `usage` because the two answer different questions, and because the
+		// `result` event overwrites `usage` wholesale (see below) with a sum
+		// that no longer describes any single request.
+		contextTokens := make(map[string]int64)
 		eventCount := 0
 		invalidEventCount := 0
 		assistantEventCount := 0
@@ -227,7 +232,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			switch msg.Type {
 			case "assistant":
 				assistantEventCount++
-				turn := b.handleAssistant(msg, msgCh, usage)
+				turn := b.handleAssistant(msg, msgCh, usage, contextTokens)
 				toolUseCount += turn.toolUses
 				if !turn.understood {
 					unreadableAssistantCount++
@@ -349,6 +354,23 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			)
 		}
 
+		// Fold the per-request context sizes into the usage map last, after the
+		// `result` event has had its chance to replace that map entirely. Doing
+		// it earlier would lose the readings on every successful run.
+		//
+		// A model that only appears in the result event's totals gets no
+		// reading rather than borrowing another model's: leaving it at zero
+		// makes the gate treat it as unknown and resume, which is the safe
+		// direction (decision D4 A).
+		for model, size := range contextTokens {
+			u, ok := usage[model]
+			if !ok {
+				continue
+			}
+			u.ContextTokens = size
+			usage[model] = u
+		}
+
 		resCh <- Result{
 			Status:         finalStatus,
 			Output:         finalOutput,
@@ -363,7 +385,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	return &Session{Messages: msgCh, Result: resCh}, nil
 }
 
-func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message, usage map[string]TokenUsage) assistantTurn {
+func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message, usage map[string]TokenUsage, contextTokens map[string]int64) assistantTurn {
 	var content claudeMessageContent
 	if err := json.Unmarshal(msg.Message, &content); err != nil {
 		// Unreadable body: understood stays false so the caller drops any
@@ -382,6 +404,21 @@ func (b *claudeBackend) handleAssistant(msg claudeSDKMessage, ch chan<- Message,
 		u.CacheReadTokens += content.Usage.CacheReadInputTokens
 		u.CacheWriteTokens += content.Usage.CacheCreationInputTokens
 		usage[content.Model] = u
+
+		// Context size, in contrast, is OVERWRITTEN by each assistant event
+		// rather than summed: the conversation the next resume would inherit
+		// is the one the newest request carried, not the total of every
+		// request. All three input-side numbers count toward it — a cached
+		// prefix still occupies the context window, it is merely cheaper.
+		//
+		// The event's OWN output counts too. The reply this request produced is
+		// appended to the transcript, so what the NEXT resume inherits is input
+		// + output, not the input alone. A run ending at 319,999 input + 10,000
+		// output has already crossed a 320,000 soft threshold by the time the
+		// next turn starts; a snapshot of 319,999 would resume it anyway.
+		if inputSide := content.Usage.InputTokens + content.Usage.CacheReadInputTokens + content.Usage.CacheCreationInputTokens; inputSide > 0 {
+			contextTokens[content.Model] = inputSide + content.Usage.OutputTokens
+		}
 	}
 
 	for _, block := range content.Content {

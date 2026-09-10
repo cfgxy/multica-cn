@@ -119,4 +119,37 @@ describe("ProviderLogo", () => {
     expect(logo?.querySelectorAll("path").length).toBe(3);
     expect(logo?.classList.contains("runtime-logo")).toBe(true);
   });
+
+  it("renders the DeerFlow mark instead of the generic fallback", () => {
+    const { container } = render(
+      <ProviderLogo provider="deerflow" className="runtime-logo" />,
+    );
+
+    const logo = container.querySelector("svg");
+
+    // DeerFlow used to be reachable only as a profile over the `kimi` family,
+    // so it rendered the Kimi mark. This pins its own placeholder (a five
+    // stroke branching graph) rather than either Kimi or the generic
+    // <Monitor /> fallback that unknown providers get.
+    expect(logo?.getAttribute("viewBox")).toBe("0 0 24 24");
+    expect(logo?.getAttribute("stroke")).toBe("currentColor");
+    expect(logo?.querySelectorAll("path").length).toBe(5);
+    expect(logo?.classList.contains("runtime-logo")).toBe(true);
+  });
+
+  it("renders the ZCode mark instead of the generic fallback", () => {
+    const { container } = render(
+      <ProviderLogo provider="zcode" className="runtime-logo" />,
+    );
+
+    const logo = container.querySelector("svg");
+    const path = logo?.querySelector("path");
+
+    // Same split as DeerFlow: a single "Z" stroke, not the Kimi mark it used
+    // to inherit from the shelled-on protocol family.
+    expect(logo?.getAttribute("viewBox")).toBe("0 0 24 24");
+    expect(logo?.getAttribute("stroke")).toBe("currentColor");
+    expect(path?.getAttribute("d")).toBe("M7 6h10l-10 12h10");
+    expect(logo?.classList.contains("runtime-logo")).toBe(true);
+  });
 });
