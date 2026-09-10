@@ -464,6 +464,8 @@ var launchPrefixBlockedArgs = map[string]map[string]blockedArgMode{
 	"traecli":     traecliBlockedArgs,
 	"dim":         dimBlockedArgs,
 	"zeroclaw":    zeroclawBlockedArgs,
+	"deerflow":    deerflowBlockedArgs,
+	"zcode":       zcodeBlockedArgs,
 }
 
 // FilterLaunchPrefix is the exported form for callers outside this package —
