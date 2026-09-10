@@ -149,6 +149,204 @@ export function useInstallMarketplaceItem(wsId: string) {
   });
 }
 
+// ── Prompt marketplace (RUYI-100) ───────────────────────────────────────────
+
+/** Every prompt-market cache for this workspace. */
+function promptMarketRoot(wsId: string) {
+  return ["workspaces", wsId, "prompt-market"] as const;
+}
+
+/** Opens a draft from an agent or squad the caller manages. */
+export function useCreatePromptVersion(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: {
+      source_type: string;
+      source_id: string;
+      series_id?: string;
+      name: string;
+      summary?: string;
+      audience?: string;
+      categories?: string[];
+      license_code: string;
+      usage_notes?: string;
+      companions?: string;
+    }) => api.createPromptVersion(input),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: promptMarketRoot(wsId) });
+    },
+  });
+}
+
+/** Edits a draft. Published versions are immutable; the server refuses. */
+export function useUpdatePromptVersion(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      versionId,
+      ...input
+    }: {
+      versionId: string;
+      name?: string;
+      summary?: string;
+      audience?: string;
+      categories?: string[];
+      license_code?: string;
+      usage_notes?: string;
+      companions?: string;
+      refresh_content?: boolean;
+    }) => api.updatePromptVersion(versionId, input),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: promptMarketRoot(wsId) });
+    },
+  });
+}
+
+/**
+ * Runs the secret scan on a draft without publishing it.
+ *
+ * Nothing is invalidated on settle because nothing changed: the draft is still
+ * a draft and still editable. That is the whole point of the endpoint — the
+ * wizard used to scan by publishing privately, which froze the draft before the
+ * publisher had chosen anything.
+ *
+ * A hit rejects with the same 422 ApiError publishing rejects with.
+ */
+export function useScanPromptVersion() {
+  return useMutation({
+    mutationFn: (versionId: string) => api.scanPromptVersion(versionId),
+  });
+}
+
+/**
+ * Publishes a draft.
+ *
+ * A secret-scan hit rejects with an ApiError carrying status 422 and the
+ * findings in its body. There is no override to pass here — the caller renders
+ * the findings and the publisher edits the prompt.
+ */
+export function usePublishPromptVersion(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      versionId,
+      ...input
+    }: {
+      versionId: string;
+      public: boolean;
+    }) => api.publishPromptVersion(versionId, input),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: promptMarketRoot(wsId) });
+    },
+  });
+}
+
+/**
+ * Withdraws a published version: no new installs or applies, while workspaces
+ * that already applied it keep their text.
+ */
+export function useWithdrawPromptVersion(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (versionId: string) => api.withdrawPromptVersion(versionId),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: promptMarketRoot(wsId) });
+    },
+  });
+}
+
+/**
+ * Adds a version to the workspace library.
+ *
+ * This changes no agent and no squad — applying is a separate step. It only
+ * invalidates prompt-market caches for that reason: invalidating agents here
+ * would imply a prompt moved, which is exactly the confusion the two-phase
+ * design exists to avoid.
+ */
+export function useInstallPrompt(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (versionId: string) => api.installPrompt(versionId),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: promptMarketRoot(wsId) });
+    },
+  });
+}
+
+/**
+ * Renders the diff and mints the confirmation token.
+ *
+ * A mutation rather than a query on purpose: the token it returns is bound to
+ * the target's text at this instant, so a cached preview would authorise an
+ * apply against a diff the user is no longer looking at.
+ */
+export function usePreviewPromptApply() {
+  return useMutation({
+    mutationFn: ({
+      installId,
+      ...target
+    }: {
+      installId: string;
+      target_type: string;
+      target_id: string;
+    }) => api.previewPromptApply(installId, target),
+  });
+}
+
+/**
+ * Writes an installed prompt into an agent or squad.
+ *
+ * Invalidates the agent and squad caches as well as the prompt-market ones:
+ * this is the one prompt-market operation that does change a prompt, and the
+ * detail view the user returns to must not show the pre-apply text.
+ */
+export function useApplyPrompt(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      installId,
+      ...input
+    }: {
+      installId: string;
+      target_type: string;
+      target_id: string;
+      strategy?: string;
+      preview_token: string;
+      expected_sha256?: string;
+      operation_id: string;
+    }) => api.applyPrompt(installId, input),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: promptMarketRoot(wsId) });
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.agents(wsId) });
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.squads(wsId) });
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
+    },
+  });
+}
+
+/** Steps a target back to the prompt it had before the apply. One step only. */
+export function useRestorePrompt(wsId: string) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      targetType,
+      targetId,
+      ...input
+    }: {
+      targetType: string;
+      targetId: string;
+      operation_id: string;
+      expected_sha256?: string;
+    }) => api.restorePrompt(targetType, targetId, input),
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: promptMarketRoot(wsId) });
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.agents(wsId) });
+      queryClient.invalidateQueries({ queryKey: workspaceKeys.squads(wsId) });
+      queryClient.invalidateQueries({ queryKey: ["agents"] });
+    },
+  });
+}
+
 /**
  * Invalidates everything a publish, update or withdrawal can move.
  *

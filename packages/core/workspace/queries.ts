@@ -25,6 +25,19 @@ export const workspaceKeys = {
   // workspace even though the catalog itself is global.
   marketplace: (wsId: string, kind: string, q: string) =>
     ["workspaces", wsId, "marketplace", kind, q] as const,
+  // Prompt marketplace (RUYI-100). The catalog is global but its `installed`
+  // and `update_available` annotations are per workspace, so it is keyed by
+  // workspace like the unified marketplace above.
+  promptMarket: (wsId: string, kind: string, q: string) =>
+    ["workspaces", wsId, "prompt-market", "catalog", kind, q] as const,
+  promptVersion: (wsId: string, versionId: string) =>
+    ["workspaces", wsId, "prompt-market", "version", versionId] as const,
+  promptSourceVersions: (wsId: string, sourceType: string, sourceId: string) =>
+    ["workspaces", wsId, "prompt-market", "source", sourceType, sourceId] as const,
+  promptInstalls: (wsId: string) =>
+    ["workspaces", wsId, "prompt-market", "installs"] as const,
+  promptTargetState: (wsId: string, targetType: string, targetId: string) =>
+    ["workspaces", wsId, "prompt-market", "target", targetType, targetId] as const,
   // What this workspace has published. Kept OUTSIDE the `marketplace` key so a
   // catalog invalidation (which is filter-keyed) and a management invalidation
   // stay independent; a publish invalidates both explicitly.
@@ -219,6 +232,25 @@ export function marketplaceItemsOptions(
   });
 }
 
+// ── Prompt marketplace (RUYI-100) ───────────────────────────────────────────
+
+/**
+ * The prompt catalog. Member-visible: the listing is metadata only and omits
+ * the prompt body, and installing is gated server-side on owner/admin.
+ */
+export function promptMarketOptions(
+  wsId: string,
+  filter: { kind?: string; q?: string } = {},
+) {
+  const kind = filter.kind ?? "";
+  const q = filter.q ?? "";
+  return queryOptions({
+    queryKey: workspaceKeys.promptMarket(wsId, kind, q),
+    queryFn: () => api.listPromptVersions({ kind, q }),
+    enabled: wsId !== "",
+  });
+}
+
 /**
  * The listings this workspace has published, tombstones included — a withdrawn
  * row is what a republication acts on, so hiding it would strand the name.
@@ -232,6 +264,56 @@ export function marketplaceListingsOptions(wsId: string) {
     queryKey: workspaceKeys.marketplaceListings(wsId),
     queryFn: () => api.listMarketplaceListings(),
     enabled: wsId !== "",
+  });
+}
+
+/** One version with its prompt body — the detail pane behind a catalog row. */
+export function promptVersionOptions(wsId: string, versionId: string) {
+  return queryOptions({
+    queryKey: workspaceKeys.promptVersion(wsId, versionId),
+    queryFn: () => api.getPromptVersion(versionId),
+    enabled: wsId !== "" && versionId !== "",
+  });
+}
+
+/**
+ * The publisher's own version history for one agent or squad, drafts included.
+ * Drives the publish entry point on the source object.
+ */
+export function promptSourceVersionsOptions(
+  wsId: string,
+  sourceType: string,
+  sourceId: string,
+) {
+  return queryOptions({
+    queryKey: workspaceKeys.promptSourceVersions(wsId, sourceType, sourceId),
+    queryFn: () => api.listPromptVersionsBySource(sourceType, sourceId),
+    enabled: wsId !== "" && sourceType !== "" && sourceId !== "",
+  });
+}
+
+/** The workspace's install library. Holding a row changes no prompt. */
+export function promptInstallsOptions(wsId: string) {
+  return queryOptions({
+    queryKey: workspaceKeys.promptInstalls(wsId),
+    queryFn: () => api.listPromptInstalls(),
+    enabled: wsId !== "",
+  });
+}
+
+/**
+ * What the status strip on an agent or squad reads: which version is applied,
+ * and whether the one-step undo is still available.
+ */
+export function promptTargetStateOptions(
+  wsId: string,
+  targetType: string,
+  targetId: string,
+) {
+  return queryOptions({
+    queryKey: workspaceKeys.promptTargetState(wsId, targetType, targetId),
+    queryFn: () => api.getPromptTargetState(targetType, targetId),
+    enabled: wsId !== "" && targetType !== "" && targetId !== "",
   });
 }
 

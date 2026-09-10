@@ -31,6 +31,7 @@ import {
 } from "@multica/core/workspace/mutations";
 import type { MarketplaceItem, MarketplaceListing } from "@multica/core/types";
 import { useT } from "../../i18n";
+import { PromptMarketPanel } from "../../market/prompt-market-panel";
 import { MarketplaceInstallDialog } from "./marketplace-install-dialog";
 import { PluginDirectory } from "./plugin-directory";
 import { MarketplacePublishDialog } from "./marketplace-publish-dialog";
@@ -228,6 +229,12 @@ export function MarketplaceTab() {
         <PluginDirectory wsId={wsId} canManage={canManage} search={search} />
       ) : null}
 
+      {/* Prompts are a second asset family on the same tab, not a variant of
+          the skill/MCP catalog: they install into a workspace library and
+          reach nothing until they are applied, so they get their own section
+          rather than extra rows in the list above. */}
+      <PromptMarketSection wsId={wsId} />
+
       {canPublish ? (
         <SettingsSection
           title={t(($) => $.marketplace.published_title)}
@@ -332,6 +339,23 @@ export function MarketplaceTab() {
         onInstall={(input) => void handleInstall(input)}
       />
     </SettingsTab>
+  );
+}
+
+/**
+ * Wraps the prompt panel in the tab's own section chrome. Kept here rather
+ * than inside `PromptMarketPanel` so the panel stays reusable outside the
+ * settings page and carries no settings-layout dependency.
+ */
+function PromptMarketSection({ wsId }: { wsId: string }) {
+  const { t } = useT("prompt-market");
+  return (
+    <SettingsSection
+      title={t(($) => $.section.title)}
+      description={t(($) => $.section.description)}
+    >
+      <PromptMarketPanel wsId={wsId} />
+    </SettingsSection>
   );
 }
 

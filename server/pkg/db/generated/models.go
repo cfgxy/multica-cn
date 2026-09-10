@@ -67,6 +67,8 @@ type Agent struct {
 	ConversationStarters    []byte      `json:"conversation_starters"`
 	SessionMaxContextTokens int64       `json:"session_max_context_tokens"`
 	SessionCompactPct       int32       `json:"session_compact_pct"`
+	// Last marketplace prompt apply on this agent plus the single text it replaced (RUYI-100). Internal: never included in an agent API response.
+	MarketplacePromptState []byte `json:"marketplace_prompt_state"`
 }
 
 type AgentBuilderDraft struct {
@@ -1090,6 +1092,39 @@ type MarketplaceListing struct {
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 }
 
+// One draft or immutable published prompt snapshot (RUYI-100). Published rows are never updated in place; a new version is a new row sharing series_id. source_workspace_id is withdrawal authority only and must not be returned by any API.
+type MarketplacePromptVersion struct {
+	ID                   pgtype.UUID        `json:"id"`
+	SeriesID             pgtype.UUID        `json:"series_id"`
+	Kind                 string             `json:"kind"`
+	Version              pgtype.Int4        `json:"version"`
+	SourceWorkspaceID    pgtype.UUID        `json:"source_workspace_id"`
+	SourceType           string             `json:"source_type"`
+	SourceID             pgtype.UUID        `json:"source_id"`
+	PublisherUserID      pgtype.UUID        `json:"publisher_user_id"`
+	PublisherDisplayName string             `json:"publisher_display_name"`
+	Content              string             `json:"content"`
+	ContentSha256        string             `json:"content_sha256"`
+	Name                 string             `json:"name"`
+	Summary              string             `json:"summary"`
+	Audience             string             `json:"audience"`
+	Categories           []byte             `json:"categories"`
+	LicenseCode          string             `json:"license_code"`
+	UsageNotes           string             `json:"usage_notes"`
+	Companions           string             `json:"companions"`
+	State                string             `json:"state"`
+	Visibility           string             `json:"visibility"`
+	ScannerRevision      string             `json:"scanner_revision"`
+	ScanResult           []byte             `json:"scan_result"`
+	ScannedAt            pgtype.Timestamptz `json:"scanned_at"`
+	IdempotencyKey       pgtype.Text        `json:"idempotency_key"`
+	PublishedAt          pgtype.Timestamptz `json:"published_at"`
+	WithdrawnAt          pgtype.Timestamptz `json:"withdrawn_at"`
+	WithdrawnBy          pgtype.UUID        `json:"withdrawn_by"`
+	CreatedAt            pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt            pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Member struct {
 	ID          pgtype.UUID        `json:"id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
@@ -1355,6 +1390,8 @@ type Squad struct {
 	ArchivedBy   pgtype.UUID        `json:"archived_by"`
 	AvatarUrl    pgtype.Text        `json:"avatar_url"`
 	Instructions string             `json:"instructions"`
+	// Last marketplace prompt apply on this squad plus the single text it replaced (RUYI-100). Internal: never included in a squad API response.
+	MarketplacePromptState []byte `json:"marketplace_prompt_state"`
 }
 
 type SquadMember struct {
@@ -1639,6 +1676,24 @@ type WorkspaceMcpServer struct {
 	CreatedBy   pgtype.UUID        `json:"created_by"`
 	CreatedAt   pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+// One workspace's pointer at a prompt series version (RUYI-100). Installing creates the row and changes no agent or squad; applying writes the content into a target and is a separate transaction.
+type WorkspacePromptInstall struct {
+	ID                     pgtype.UUID        `json:"id"`
+	WorkspaceID            pgtype.UUID        `json:"workspace_id"`
+	SeriesID               pgtype.UUID        `json:"series_id"`
+	Kind                   string             `json:"kind"`
+	InstalledVersionID     pgtype.UUID        `json:"installed_version_id"`
+	InstalledVersion       int32              `json:"installed_version"`
+	InstalledContentSha256 string             `json:"installed_content_sha256"`
+	Name                   string             `json:"name"`
+	Summary                string             `json:"summary"`
+	PublisherDisplayName   string             `json:"publisher_display_name"`
+	LicenseCode            string             `json:"license_code"`
+	InstalledBy            pgtype.UUID        `json:"installed_by"`
+	InstalledAt            pgtype.Timestamptz `json:"installed_at"`
+	UpdatedAt              pgtype.Timestamptz `json:"updated_at"`
 }
 
 type WorkspaceShareLink struct {

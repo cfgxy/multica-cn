@@ -22,7 +22,7 @@ SET runtime_id     = $1,
     END,
     updated_at     = now()
 WHERE id = $6 AND workspace_id = $7 AND archived_at IS NULL
-RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct
+RETURNING id, workspace_id, name, avatar_url, runtime_mode, runtime_config, visibility, status, max_concurrent_tasks, owner_id, created_at, updated_at, description, runtime_id, instructions, archived_at, archived_by, custom_env, custom_args, mcp_config, model, thinking_level, composio_toolkit_allowlist, permission_mode, kind, system_key, disabled_runtime_skills, service_tier, conversation_starters, session_max_context_tokens, session_compact_pct, marketplace_prompt_state
 `
 
 type ApplyExecutionProfileEntryToAgentParams struct {
@@ -91,6 +91,7 @@ func (q *Queries) ApplyExecutionProfileEntryToAgent(ctx context.Context, arg App
 		&i.ConversationStarters,
 		&i.SessionMaxContextTokens,
 		&i.SessionCompactPct,
+		&i.MarketplacePromptState,
 	)
 	return i, err
 }

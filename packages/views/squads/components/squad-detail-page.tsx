@@ -52,6 +52,7 @@ import { ActorAvatar as ActorAvatarBase } from "@multica/ui/components/common/ac
 import { ActorAvatar } from "../../common/actor-avatar";
 import { AvatarUploadControl } from "../../common/avatar-upload-control";
 import { ContentEditor } from "../../editor/content-editor";
+import { PromptMarketStatusStrip } from "../../market/prompt-status-strip";
 import {
   PickerItem,
   PickerSection,
@@ -1355,6 +1356,18 @@ function SquadInstructionsTab({
       <p className="text-caption text-muted-foreground">
         {t(($) => $.instructions_tab.description)}
       </p>
+
+      {/* Publishing snapshots the stored instructions, so the strip has to
+          know about an unsaved edit — otherwise a publisher would ship the
+          previous text believing they shipped what is on screen. */}
+      <PromptMarketStatusStrip
+        wsId={squad.workspace_id}
+        targetType="squad"
+        targetId={squad.id}
+        targetName={squad.name}
+        canManage={canManage}
+        hasUnsavedEdits={isDirty}
+      />
 
       {/* When the viewer can't manage the squad, the editor is wrapped in a
           pointer-events-none / aria-disabled shell — ContentEditor reads
