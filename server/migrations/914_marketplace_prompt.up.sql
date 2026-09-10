@@ -16,6 +16,15 @@
 -- No foreign keys by house rule: workspace_id / source_id / publisher_user_id /
 -- installed_version_id integrity is enforced in the application layer, and every
 -- write path re-validates its references inside the transaction that uses them.
+--
+-- Tables, constraints and indexes all live in this one migration. The indexes
+-- are built non-concurrently on purpose: every one of them covers a table this
+-- same file creates, so at build time the relation is empty and unreachable by
+-- any other session. CONCURRENTLY would buy nothing there, and it cannot be
+-- used here anyway — the runner executes a migration file as one multi-command
+-- string, which PostgreSQL wraps in an implicit transaction. The
+-- one-statement-per-file rule applies to indexes added to tables that already
+-- carry live traffic.
 
 -- One row per draft or published snapshot. `series_id` groups the versions of
 -- one asset, so there is no separate asset table: v1 and v2 of the same prompt
@@ -25,7 +34,7 @@ CREATE TABLE marketplace_prompt_version (
     series_id UUID NOT NULL,
     kind TEXT NOT NULL CHECK (kind IN ('agent_prompt', 'squad_prompt')),
     -- NULL while the row is a draft; assigned at publish time under a series
-    -- lock and backed by the unique index in 460.
+    -- lock and backed by idx_marketplace_prompt_version_series_version below.
     version INT CHECK (version IS NULL OR version > 0),
 
     -- Publication provenance, snapshotted at publish time. source_workspace_id
@@ -126,3 +135,45 @@ COMMENT ON COLUMN agent.marketplace_prompt_state IS
     'Last marketplace prompt apply on this agent plus the single text it replaced (RUYI-100). Internal: never included in an agent API response.';
 COMMENT ON COLUMN squad.marketplace_prompt_state IS
     'Last marketplace prompt apply on this squad plus the single text it replaced (RUYI-100). Internal: never included in a squad API response.';
+
+-- A series has at most one row per version number. This is the guard that makes
+-- concurrent publishes safe: version assignment takes a series-level lock, and
+-- if two publishes still raced past it, the second one fails here instead of
+-- creating a duplicate v2.
+CREATE UNIQUE INDEX idx_marketplace_prompt_version_series_version
+    ON marketplace_prompt_version (series_id, version)
+    WHERE version IS NOT NULL;
+
+-- One open draft per series. Publishing a v2 starts from a fresh draft, and two
+-- half-filled drafts for the same asset would make "continue the draft" in the
+-- source object's status bar ambiguous.
+CREATE UNIQUE INDEX idx_marketplace_prompt_version_series_draft
+    ON marketplace_prompt_version (series_id)
+    WHERE state = 'draft';
+
+-- Idempotency-Key is scoped to its publisher: the same key from two users is
+-- two distinct requests, and a global key space would let one user's retry
+-- collide with another's first attempt.
+CREATE UNIQUE INDEX idx_marketplace_prompt_version_idempotency
+    ON marketplace_prompt_version (publisher_user_id, idempotency_key)
+    WHERE idempotency_key IS NOT NULL;
+
+-- Discovery lists published public versions newest first. Partial on the two
+-- state columns because everything else — drafts, withdrawn rows, private
+-- drafts — is only ever read by id or by source object.
+CREATE INDEX idx_marketplace_prompt_version_discovery
+    ON marketplace_prompt_version (published_at DESC, id)
+    WHERE state = 'published' AND visibility = 'public';
+
+-- The status bar on an agent/squad prompt tab asks "what did this object
+-- publish, and is there an open draft" on every render, which is a lookup by
+-- source object rather than by series.
+CREATE INDEX idx_marketplace_prompt_version_source
+    ON marketplace_prompt_version (source_workspace_id, source_type, source_id);
+
+-- One install row per (workspace, series). Reinstalling the same version is
+-- idempotent and updating to a newer version moves this row's pointer, so a
+-- second row for the same asset would fragment "installed" and "update
+-- available" state.
+CREATE UNIQUE INDEX idx_workspace_prompt_install_workspace_series
+    ON workspace_prompt_install (workspace_id, series_id);
