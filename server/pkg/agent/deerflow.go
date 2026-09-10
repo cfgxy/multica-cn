@@ -443,8 +443,17 @@ func (b *deerflowBackend) Execute(ctx context.Context, prompt string, opts ExecO
 			// thread, but load also replays the retained transcript back as
 			// session/update notifications, so a resumed turn would re-emit
 			// the previous answer as its own output.
+			//
+			// The param set mirrors session/new: the bridge binds `cwd` to the
+			// restored session (resume_session(cwd, session_id, mcp_servers)),
+			// so omitting it fails parameter binding before the session is
+			// even looked up. mcpServers stays an empty array for the same
+			// reason it does on session/new — a non-empty list is rejected
+			// with -32602 rather than ignored.
 			result, err := c.request(runCtx, "session/resume", map[string]any{
-				"sessionId": opts.ResumeSessionID,
+				"sessionId":  opts.ResumeSessionID,
+				"cwd":        taskCwd,
+				"mcpServers": []any{},
 			})
 			if err != nil {
 				resumeRejected = deerflowSessionPermanentlyLost(err)

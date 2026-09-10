@@ -136,18 +136,18 @@ func TestRuntimeProfileCheckConstraintMatchesWhitelist(t *testing.T) {
 }
 
 // TestUpdateRuntimeProfile_ProtocolFamilyIsImmutable covers the other write
-// path. Update deliberately exposes no protocol_family field, so an existing
-// profile cannot be edited into a family with no backend — and, just as
-// importantly, a compatibility profile filed under `kimi` is never silently
-// rewritten to `zcode` by an unrelated edit. Moving a profile to its real
-// runtime identity stays an explicit create.
+// path. Update deliberately exposes no protocol_family field: repointing a
+// live profile at a different backend would silently change what every agent
+// bound to it runs. The shim profiles that DID need to change family are moved
+// once, by migration 907, which is a controlled in-place rewrite rather than an
+// API edit.
 func TestUpdateRuntimeProfile_ProtocolFamilyIsImmutable(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
 
-	profileID := insertRuntimeProfileFixture(t, ctx, "Identity Update Profile", "kimi", "zcode-acp")
+	profileID := insertRuntimeProfileFixture(t, ctx, "Identity Update Profile", "kimi", "kimi")
 
 	w := httptest.NewRecorder()
 	req := newRequest("PATCH", "/api/workspaces/"+testWorkspaceID+"/runtime-profiles/"+profileID, map[string]any{
@@ -167,7 +167,7 @@ func TestUpdateRuntimeProfile_ProtocolFamilyIsImmutable(t *testing.T) {
 		t.Fatalf("read stored profile: %v", err)
 	}
 	if stored != "kimi" {
-		t.Fatalf("stored protocol_family = %q, want the shelled-on kimi family left untouched by an edit", stored)
+		t.Fatalf("stored protocol_family = %q, want the family left untouched by an edit", stored)
 	}
 	if storedName != "Identity Update Profile Renamed" {
 		t.Fatalf("stored display_name = %q, want the requested rename to have applied", storedName)

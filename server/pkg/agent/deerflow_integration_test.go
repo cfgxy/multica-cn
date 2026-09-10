@@ -149,3 +149,91 @@ func TestDeerflowRealCancelSmoke(t *testing.T) {
 		t.Fatalf("status = %q, want aborted for a cancelled turn (error=%q)", result.Status, result.Error)
 	}
 }
+
+// TestDeerflowRealResumeSmoke is the one test that can prove the resume
+// contract, because the fake bridge in the unit suite only enforces the params
+// we believed were required. Two turns run against the real bridge: the second
+// one carries the first one's session id and must be answered on that same
+// session, with the model still holding what the first turn established.
+//
+// A wrong param set does not degrade quietly here — resume_session binds
+// (cwd, session_id, mcp_servers) positionally, so a missing argument fails
+// with -32602 before the session is even looked up, and the backend reports
+// that as a failed turn.
+func TestDeerflowRealResumeSmoke(t *testing.T) {
+	requireRealAgentSmoke(t)
+	if testing.Short() {
+		t.Skip("skipping real-binary smoke test in -short mode")
+	}
+	path := deerflowSmokeCommand(t)
+	home := deerflowSmokeHome(t)
+
+	backend, err := New("deerflow", Config{
+		ExecutablePath: path,
+		Logger:         slog.Default(),
+		Env:            map[string]string{deerflowHomeEnv: home},
+	})
+	if err != nil {
+		t.Fatalf("new deerflow backend: %v", err)
+	}
+
+	// Both turns share a workdir: a real task keeps the same Cwd across a
+	// resumed conversation, and the bridge binds cwd into the restored
+	// session.
+	workdir := t.TempDir()
+
+	runTurn := func(t *testing.T, prompt, resumeSessionID string) Result {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 8*time.Minute)
+		defer cancel()
+		session, err := backend.Execute(ctx, prompt, ExecOptions{
+			Timeout:         7 * time.Minute,
+			Cwd:             workdir,
+			ResumeSessionID: resumeSessionID,
+		})
+		if err != nil {
+			t.Fatalf("execute (resume=%q): %v", resumeSessionID, err)
+		}
+		go func() {
+			for range session.Messages {
+			}
+		}()
+		return <-session.Result
+	}
+
+	first := runTurn(t, "Remember this token for the rest of our conversation: RUYI119_TOKEN. Reply with exactly: NOTED", "")
+	t.Logf("turn 1: status=%q error=%q sessionID=%q output=%q",
+		first.Status, first.Error, first.SessionID, first.Output)
+	if first.Status != "completed" {
+		t.Fatalf("turn 1 status = %q, want completed (error=%q)", first.Status, first.Error)
+	}
+	if first.SessionID == "" {
+		t.Fatal("turn 1 returned no session id, so there is nothing to resume")
+	}
+
+	second := runTurn(t, "What token did I ask you to remember? Reply with the token only.", first.SessionID)
+	t.Logf("turn 2: status=%q error=%q sessionID=%q resumeRejected=%v/%v output=%q",
+		second.Status, second.Error, second.SessionID,
+		second.ResumeRejected, second.ResumeRejectedTransient, second.Output)
+	if second.ResumeRejected || second.ResumeRejectedTransient {
+		t.Fatalf("turn 2 resume was rejected (error=%q); the session should still be live", second.Error)
+	}
+	if second.Status != "completed" {
+		t.Fatalf("turn 2 status = %q, want completed (error=%q)", second.Status, second.Error)
+	}
+	// resolveResumedSessionID only reports a different id when the bridge hands
+	// one back, which means the original thread was lost and the turn silently
+	// started over on a new one.
+	if second.SessionID != first.SessionID {
+		t.Fatalf("turn 2 ran on session %q, want the resumed session %q", second.SessionID, first.SessionID)
+	}
+	if !strings.Contains(second.Output, "RUYI119_TOKEN") {
+		t.Errorf("turn 2 output %q does not carry the token from turn 1; the thread was not actually restored", second.Output)
+	}
+	// session/load would replay turn 1's transcript as fresh notifications;
+	// session/resume must not, or every resumed turn re-emits the previous
+	// answer as its own output.
+	if strings.Contains(second.Output, "NOTED") {
+		t.Errorf("turn 2 output %q replays turn 1's answer; resume is behaving like session/load", second.Output)
+	}
+}

@@ -36,7 +36,10 @@ func TestNewReturnsDeerflowBackend(t *testing.T) {
 //     unstable protocol support; DEERFLOW_NO_LOAD_SESSION drops it.
 //   - session/new answers {sessionId} with a df-prefixed thread id and nothing
 //     else — no model catalog, no configOptions.
-//   - session/resume answers a bare {}.
+//   - session/resume answers a bare {}, but only after the same parameter
+//     binding the bridge does: `cwd` is a required positional of
+//     resume_session, so a request without it is answered -32602 the way the
+//     real bridge's JSON-RPC dispatcher does.
 //   - set_model / set_config_option are NOT routed; the default arm answers
 //     -32601 exactly as the bridge does, so any attempt to send them fails the
 //     turn visibly.
@@ -61,6 +64,13 @@ while IFS= read -r line; do
       printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"df-0123456789abcdef"}}\n' "$id"
       ;;
     *'"method":"session/resume"'*)
+      case "$line" in
+        *'"cwd"'*) ;;
+        *)
+          printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32602,"message":"missing required argument: cwd"}}\n' "$id"
+          continue
+          ;;
+      esac
       if [ -n "$DEERFLOW_RESUME_ERROR_CODE" ]; then
         printf '{"jsonrpc":"2.0","id":%s,"error":{"code":%s,"message":"deerflow resume refused"}}\n' "$id" "$DEERFLOW_RESUME_ERROR_CODE"
         exit 0
@@ -262,10 +272,13 @@ func TestDeerflowDoesNotForwardMcpServers(t *testing.T) {
 }
 
 // TestDeerflowResumeUsesSessionResume covers the resume happy path and pins
-// the param set: session/resume carries ONLY the session id. session/load is
-// forbidden — it replays the retained transcript as session/update
-// notifications, which would republish the previous answer as this turn's
-// output.
+// the param set: session/resume carries the session id, the task workdir as
+// `cwd`, and an EMPTY mcpServers array. The bridge binds all three
+// (resume_session(cwd, session_id, mcp_servers)), so a request missing `cwd`
+// fails parameter binding before the session is looked up; a non-empty
+// mcpServers is answered with -32602. session/load is forbidden — it replays
+// the retained transcript as session/update notifications, which would
+// republish the previous answer as this turn's output.
 func TestDeerflowResumeUsesSessionResume(t *testing.T) {
 	t.Parallel()
 	bin := writeFakeDeerflowScript(t, fakeDeerflowACPScript())
@@ -280,8 +293,9 @@ func TestDeerflowResumeUsesSessionResume(t *testing.T) {
 		t.Fatalf("New(deerflow) error: %v", err)
 	}
 
+	workdir := t.TempDir()
 	session, err := b.Execute(context.Background(), "test prompt", ExecOptions{
-		Cwd:             t.TempDir(),
+		Cwd:             workdir,
 		ResumeSessionID: "df-existing",
 	})
 	if err != nil {
@@ -304,8 +318,20 @@ func TestDeerflowResumeUsesSessionResume(t *testing.T) {
 
 	frame := findRecordedFrame(t, reqFile, "session/resume")
 	params, _ := frame["params"].(map[string]any)
-	if len(params) != 1 || params["sessionId"] != "df-existing" {
-		t.Fatalf("session/resume must send only the session id, got %#v", params)
+	if params["sessionId"] != "df-existing" {
+		t.Fatalf("session/resume must carry the requested session id, got %#v", params["sessionId"])
+	}
+	// cwd is a required positional on the bridge's resume_session; without it
+	// the request fails parameter binding, not session lookup.
+	if params["cwd"] != workdir {
+		t.Fatalf("session/resume must carry the task workdir as cwd, got %#v", params["cwd"])
+	}
+	servers, ok := params["mcpServers"].([]any)
+	if !ok || len(servers) != 0 {
+		t.Fatalf("session/resume must carry an empty mcpServers array, got %#v", params["mcpServers"])
+	}
+	if len(params) != 3 {
+		t.Fatalf("session/resume must send exactly sessionId, cwd and mcpServers, got %#v", params)
 	}
 	assertNoRecordedFrame(t, reqFile, "session/load")
 	assertNoRecordedFrame(t, reqFile, "session/new")

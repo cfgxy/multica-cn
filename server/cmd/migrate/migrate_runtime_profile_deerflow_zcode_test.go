@@ -48,6 +48,7 @@ func TestRuntimeProfileDeerflowZcodeMigrationRoundTrip(t *testing.T) {
 			display_name TEXT NOT NULL,
 			protocol_family TEXT NOT NULL,
 			command_name TEXT NOT NULL,
+			updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
 			CONSTRAINT runtime_profile_protocol_family_check
 				CHECK (protocol_family IN ('kimi', 'claude', 'codex'))
 		)
@@ -55,12 +56,27 @@ func TestRuntimeProfileDeerflowZcodeMigrationRoundTrip(t *testing.T) {
 		t.Fatalf("create runtime_profile fixture: %v", err)
 	}
 
-	// A profile in the shape the split has to stay compatible with.
-	if _, err := pool.Exec(ctx, `
-		INSERT INTO runtime_profile (display_name, protocol_family, command_name)
-		VALUES ('Legacy ZCode over Kimi', 'kimi', 'zcode-acp')
-	`); err != nil {
-		t.Fatalf("insert compatibility profile: %v", err)
+	// The three shapes a 'kimi' profile can have on an upgrading deployment:
+	// the two shims the split has to rewrite (one of them through a
+	// per-machine absolute path override) and a genuine Kimi profile that
+	// must be left alone. Their ids are captured so the rewrite can be proven
+	// to be in-place — an agent bound through agent_runtime.profile_id keeps
+	// working only if the id survives.
+	shimIDs := map[string]string{}
+	for _, row := range []struct{ name, command string }{
+		{"Legacy ZCode over Kimi", "zcode-acp"},
+		{"Legacy DeerFlow over Kimi", "/opt/deerflow/venv/bin/deerflow-acp"},
+		{"Real Kimi", "kimi"},
+	} {
+		var id string
+		if err := pool.QueryRow(ctx, `
+			INSERT INTO runtime_profile (display_name, protocol_family, command_name)
+			VALUES ($1, 'kimi', $2)
+			RETURNING id::text
+		`, row.name, row.command).Scan(&id); err != nil {
+			t.Fatalf("insert %q profile: %v", row.name, err)
+		}
+		shimIDs[row.name] = id
 	}
 
 	const version = "907_runtime_profile_add_deerflow_zcode"
@@ -98,36 +114,70 @@ func TestRuntimeProfileDeerflowZcodeMigrationRoundTrip(t *testing.T) {
 	// widening did not degenerate into "anything goes".
 	assertFamilyRejected(t, ctx, pool, "deerflow-acp")
 
+	// The shims now carry their real identity, in place. A profile still
+	// declaring 'kimi' would keep being registered on kimiBackend by the
+	// daemon, which is the defect 907 exists to remove.
+	assertProfileFamily(t, ctx, pool, shimIDs["Legacy ZCode over Kimi"], "zcode")
+	assertProfileFamily(t, ctx, pool, shimIDs["Legacy DeerFlow over Kimi"], "deerflow")
+	// A 'kimi' profile that launches kimi is a real Kimi profile.
+	assertProfileFamily(t, ctx, pool, shimIDs["Real Kimi"], "kimi")
+
 	if err := run("down"); err != nil {
 		t.Fatalf("roll back migration 907: %v", err)
 	}
 	assertMigrationLedger(t, ctx, pool, version, false)
 
-	// The rows inserted while 907 was applied survive the rollback: the
-	// restored constraint is NOT VALID, so it only gates new writes. New
-	// writes in those families are blocked again.
-	var kept int
+	// Nothing is left in a family the restored whitelist cannot express: a
+	// pre-907 daemon refuses to register a profile whose family it cannot map
+	// to a backend, and a pre-907 API cannot edit it back.
+	var stranded int
 	if err := pool.QueryRow(ctx,
 		`SELECT count(*) FROM runtime_profile WHERE protocol_family IN ('deerflow', 'zcode')`,
-	).Scan(&kept); err != nil {
+	).Scan(&stranded); err != nil {
 		t.Fatalf("count rows after rollback: %v", err)
 	}
-	if kept != 2 {
-		t.Errorf("rows in the new families after rollback = %d, want 2 kept by NOT VALID", kept)
+	if stranded != 0 {
+		t.Errorf("rows left in the new families after rollback = %d, want 0 — an old daemon cannot interpret them", stranded)
 	}
 	assertFamilyRejected(t, ctx, pool, "deerflow")
 	assertFamilyRejected(t, ctx, pool, "zcode")
 	assertFamilyAccepted(t, ctx, pool, "kimi")
 
-	// The compatibility row is untouched in both directions.
-	var legacy int
-	if err := pool.QueryRow(ctx,
-		`SELECT count(*) FROM runtime_profile WHERE protocol_family = 'kimi' AND command_name = 'zcode-acp'`,
-	).Scan(&legacy); err != nil {
-		t.Fatalf("count compatibility profile: %v", err)
+	// The round trip returns the shims to the exact state 907 found them in,
+	// same ids: the bindings that point at these profiles survive both
+	// directions.
+	assertProfileFamily(t, ctx, pool, shimIDs["Legacy ZCode over Kimi"], "kimi")
+	assertProfileFamily(t, ctx, pool, shimIDs["Legacy DeerFlow over Kimi"], "kimi")
+	assertProfileFamily(t, ctx, pool, shimIDs["Real Kimi"], "kimi")
+
+	// The profiles created directly in the new families while 907 was applied
+	// are folded into the shim shape rather than orphaned.
+	var folded int
+	if err := pool.QueryRow(ctx, `
+		SELECT count(*) FROM runtime_profile
+		WHERE protocol_family = 'kimi' AND display_name LIKE 'Independent %'
+	`).Scan(&folded); err != nil {
+		t.Fatalf("count folded profiles: %v", err)
 	}
-	if legacy != 1 {
-		t.Errorf("compatibility profile count = %d, want 1", legacy)
+	if folded != 2 {
+		t.Errorf("post-907 profiles folded back onto kimi = %d, want 2", folded)
+	}
+}
+
+// assertProfileFamily reads one profile back by id. Checking the id (rather
+// than counting rows by command_name) is what proves the migration rewrote the
+// row in place instead of recreating it: agent_runtime.profile_id and every
+// agent bound through it only survive if the id does.
+func assertProfileFamily(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id, want string) {
+	t.Helper()
+	var got string
+	if err := pool.QueryRow(ctx,
+		`SELECT protocol_family FROM runtime_profile WHERE id = $1::uuid`, id,
+	).Scan(&got); err != nil {
+		t.Fatalf("read profile %s: %v", id, err)
+	}
+	if got != want {
+		t.Errorf("profile %s protocol_family = %q, want %q", id, got, want)
 	}
 }
 
