@@ -38,6 +38,7 @@ import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { cn } from "@multica/ui/lib/utils";
+import { providerDisplayName } from "@multica/core/runtimes";
 import { ProviderLogo } from "./provider-logo";
 import { DeleteRuntimeProfileDialog } from "./delete-runtime-profile-dialog";
 import {
@@ -413,7 +414,9 @@ function CatalogRow({
 }) {
   const { t } = useT("runtimes");
   const label =
-    entry.kind === "custom" ? entry.profile.display_name : entry.protocolFamily;
+    entry.kind === "custom"
+      ? entry.profile.display_name
+      : providerDisplayName(entry.protocolFamily);
   const disabled = entry.kind === "custom" && !entry.profile.enabled;
   const isBuiltin = entry.kind === "builtin";
   return (
@@ -437,14 +440,7 @@ function CatalogRow({
       </span>
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-1.5">
-          <span
-            className={cn(
-              "truncate text-body font-medium",
-              entry.kind === "builtin" && "capitalize",
-            )}
-          >
-            {label}
-          </span>
+          <span className="truncate text-body font-medium">{label}</span>
           {disabled && (
             <span className="shrink-0 rounded bg-muted px-1 text-micro font-medium text-muted-foreground">
               {t(($) => $.profiles.badge_disabled)}
@@ -452,8 +448,8 @@ function CatalogRow({
           )}
         </span>
         {entry.kind === "custom" && (
-          <span className="block truncate text-caption capitalize text-muted-foreground">
-            {entry.protocolFamily}
+          <span className="block truncate text-caption text-muted-foreground">
+            {providerDisplayName(entry.protocolFamily)}
           </span>
         )}
       </span>
@@ -511,8 +507,8 @@ function DetailPanel({
             <ProviderLogo provider={entry.protocolFamily} className="h-5 w-5" />
           </span>
           <div className="min-w-0">
-            <h3 className="truncate text-title-sm font-semibold capitalize">
-              {entry.protocolFamily}
+            <h3 className="truncate text-title-sm font-semibold">
+              {providerDisplayName(entry.protocolFamily)}
             </h3>
             <span className="text-caption text-muted-foreground">
               {t(($) => $.profiles.builtin_detail.read_only)}
@@ -521,7 +517,7 @@ function DetailPanel({
         </div>
         <p className="mt-4 text-body text-muted-foreground">
           {t(($) => $.profiles.builtin_detail.description, {
-            family: entry.protocolFamily,
+            family: providerDisplayName(entry.protocolFamily),
           })}
         </p>
       </div>
@@ -549,8 +545,8 @@ function DetailPanel({
               <h3 className="truncate text-title-sm font-semibold">
                 {profile.display_name}
               </h3>
-              <span className="text-caption capitalize text-muted-foreground">
-                {profile.protocol_family}
+              <span className="text-caption text-muted-foreground">
+                {providerDisplayName(profile.protocol_family)}
               </span>
             </div>
           </div>
@@ -558,7 +554,7 @@ function DetailPanel({
 
         <dl className="mt-5 space-y-4">
           <DetailRow label={t(($) => $.profiles.detail.base_family)}>
-            <span className="capitalize">{profile.protocol_family}</span>
+            <span>{providerDisplayName(profile.protocol_family)}</span>
           </DetailRow>
           <DetailRow label={t(($) => $.profiles.detail.command)}>
             <span className="font-mono text-caption">{commandLine}</span>
@@ -684,7 +680,7 @@ function ProfileFormView({
                 className="flex items-center gap-2 rounded-md border bg-background px-3 py-2.5 text-left text-body transition-colors hover:bg-accent/50 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
               >
                 <ProviderLogo provider={option} className="h-4 w-4 shrink-0" />
-                <span className="truncate capitalize">{option}</span>
+                <span className="truncate">{providerDisplayName(option)}</span>
               </button>
             ))}
           </div>
@@ -870,7 +866,7 @@ function ProfileDetailsForm({
           </Label>
           <div className="flex items-center gap-2 rounded-md border bg-muted/30 px-3 py-2">
             <ProviderLogo provider={family} className="h-4 w-4 shrink-0" />
-            <span className="text-body capitalize">{family}</span>
+            <span className="text-body">{providerDisplayName(family)}</span>
           </div>
           <p className="text-micro text-muted-foreground">
             {t(($) => $.profiles.form.family_locked_hint)}

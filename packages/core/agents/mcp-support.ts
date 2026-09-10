@@ -27,6 +27,11 @@ const MCP_SUPPORTED_PROVIDERS = new Set([
   "traecli",
   "dim",
   "omp",
+  // zcode forwards mcpServers to its ZCode backend on both session/new and
+  // session/resume. deerflow is deliberately absent: its bridge answers a
+  // non-empty mcpServers array with -32602 rather than ignoring it, so the
+  // tab has to stay hidden — a saved value would fail the task outright.
+  "zcode",
 ]);
 
 export function providerSupportsMcpConfig(provider: string | undefined | null): boolean {
