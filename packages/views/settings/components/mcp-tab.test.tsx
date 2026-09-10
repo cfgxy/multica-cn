@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { I18nProvider } from "@multica/core/i18n/react";
 import enCommon from "../../locales/en/common.json";
@@ -12,6 +12,8 @@ import enAgents from "../../locales/en/agents.json";
 const mockCreate = vi.hoisted(() => vi.fn());
 const mockUpdate = vi.hoisted(() => vi.fn());
 const mockDelete = vi.hoisted(() => vi.fn());
+const mockPublish = vi.hoisted(() => vi.fn());
+const mockUpdateListing = vi.hoisted(() => vi.fn());
 
 const server = (over: Record<string, unknown>) => ({
   id: "srv-1",
@@ -25,22 +27,49 @@ const server = (over: Record<string, unknown>) => ({
 
 const data = vi.hoisted(() => ({
   servers: [] as Array<Record<string, unknown>>,
+  listings: [] as Array<Record<string, unknown>>,
   isLoading: false,
   role: "owner" as "owner" | "admin" | "member",
+  publishEnabled: true,
 }));
 
+// Two queries live on this tab now: the MCP library and, for a member who may
+// publish, this workspace's marketplace listings. They are told apart by key.
 vi.mock("@tanstack/react-query", () => ({
-  useQuery: () => ({ data: data.servers, isLoading: data.isLoading }),
+  useQuery: (options: { queryKey?: readonly unknown[] }) => {
+    const key = options?.queryKey ?? [];
+    if (key[2] === "marketplace-listings") {
+      return { data: data.listings, isLoading: false };
+    }
+    return { data: data.servers, isLoading: data.isLoading };
+  },
 }));
 
 vi.mock("@multica/core/workspace/queries", () => ({
   workspaceMcpServersOptions: () => ({ queryKey: ["workspaces", "workspace-1", "mcp-servers"] }),
+  marketplaceListingsOptions: (wsId: string) => ({
+    queryKey: ["workspaces", wsId, "marketplace-listings"],
+  }),
 }));
 
 vi.mock("@multica/core/workspace/mutations", () => ({
   useCreateWorkspaceMcpServer: () => ({ mutateAsync: mockCreate, isPending: false }),
   useUpdateWorkspaceMcpServer: () => ({ mutateAsync: mockUpdate, isPending: false }),
   useDeleteWorkspaceMcpServer: () => ({ mutateAsync: mockDelete, isPending: false }),
+  usePublishMarketplaceListing: () => ({ mutateAsync: mockPublish, isPending: false }),
+  useUpdateMarketplaceListing: () => ({ mutateAsync: mockUpdateListing, isPending: false }),
+}));
+
+vi.mock("@multica/core/config", () => ({
+  useFeatureEnabled: () => data.publishEnabled,
+}));
+
+vi.mock("@multica/core/api", () => ({
+  ApiError: class extends Error {
+    constructor(message: string, readonly status: number, readonly body?: unknown) {
+      super(message);
+    }
+  },
 }));
 
 vi.mock("@multica/core/paths", () => ({
@@ -72,6 +101,10 @@ describe("McpTab", () => {
     vi.clearAllMocks();
     data.role = "owner";
     data.isLoading = false;
+    data.listings = [];
+    data.publishEnabled = true;
+    mockPublish.mockResolvedValue({});
+    mockUpdateListing.mockResolvedValue({});
     data.servers = [
       server({ id: "srv-1", name: "linear", transport: "http" }),
       server({ id: "srv-2", name: "local-tool", transport: "stdio" }),
@@ -225,5 +258,111 @@ describe("McpTab", () => {
     render(<McpTab />, { wrapper: Wrapper });
 
     expect(screen.getByText("No shared MCP servers")).toBeInTheDocument();
+  });
+});
+
+// RUYI-99: an entry the workspace already has can be published from its own
+// row, rather than by retyping its name into a blank form on another tab.
+describe("McpTab marketplace publishing", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    data.role = "owner";
+    data.isLoading = false;
+    data.publishEnabled = true;
+    data.listings = [];
+    data.servers = [server({ id: "srv-1", name: "linear", transport: "http" })];
+    mockPublish.mockResolvedValue({});
+    mockUpdateListing.mockResolvedValue({});
+  });
+
+  it("carries the entry's name and transport into the publish form", async () => {
+    const user = userEvent.setup();
+    render(<McpTab />, { wrapper: Wrapper });
+
+    await user.click(screen.getByRole("button", { name: "Publish to marketplace" }));
+
+    // The name comes from the entry and is not the publisher's to change: the
+    // listing is what THIS server is published as.
+    const name = screen.getByLabelText("Name") as HTMLInputElement;
+    expect(name.value).toBe("linear");
+    expect(name).toHaveAttribute("readonly");
+    expect(screen.getByRole("button", { name: "HTTP" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    // The config column is write-only, so nothing from it may appear.
+    expect(screen.getByLabelText("URL")).toHaveValue("");
+  });
+
+  it("publishes the entry with a hand-written template", async () => {
+    const user = userEvent.setup();
+    render(<McpTab />, { wrapper: Wrapper });
+
+    await user.click(screen.getByRole("button", { name: "Publish to marketplace" }));
+    await user.type(screen.getByLabelText("Summary"), "Linear issues.");
+    await user.click(screen.getByRole("button", { name: "Development" }));
+    await user.type(screen.getByLabelText("URL"), "https://mcp.linear.app");
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Publish" }),
+    );
+
+    await waitFor(() =>
+      expect(mockPublish).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: "mcp", name: "linear" }),
+      ),
+    );
+    const sent = mockPublish.mock.calls[0]![0] as {
+      config_template: Record<string, unknown>;
+    };
+    expect(sent.config_template).toEqual({
+      type: "http",
+      url: "https://mcp.linear.app",
+    });
+  });
+
+  it("offers editing instead of publishing once the entry has a listing", () => {
+    data.listings = [
+      {
+        id: "listing-1",
+        key: "mcp:acme/linear",
+        kind: "mcp",
+        name: "Linear",
+        publisher_display_name: "Acme",
+        summary: "Linear issues.",
+        description: "",
+        homepage_url: "",
+        categories: ["development"],
+        placeholders: [],
+        state: "published",
+        revision: 2,
+        created_at: "2026-09-01T00:00:00Z",
+        updated_at: "2026-09-01T00:00:00Z",
+      },
+    ];
+    render(<McpTab />, { wrapper: Wrapper });
+
+    // Matched case-insensitively, the way the server reserves the name.
+    expect(screen.getByText("Published")).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "Edit marketplace listing" }),
+    ).toBeInTheDocument();
+  });
+
+  it("keeps the publish affordance out of a plain member's reach", () => {
+    data.role = "member";
+    render(<McpTab />, { wrapper: Wrapper });
+
+    expect(
+      screen.queryByRole("button", { name: "Publish to marketplace" }),
+    ).toBeNull();
+  });
+
+  it("keeps the publish affordance out when the write flag is off", () => {
+    data.publishEnabled = false;
+    render(<McpTab />, { wrapper: Wrapper });
+
+    expect(
+      screen.queryByRole("button", { name: "Publish to marketplace" }),
+    ).toBeNull();
   });
 });
