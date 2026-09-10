@@ -56,17 +56,25 @@ func TestRuntimeProfileDeerflowZcodeMigrationRoundTrip(t *testing.T) {
 		t.Fatalf("create runtime_profile fixture: %v", err)
 	}
 
-	// The three shapes a 'kimi' profile can have on an upgrading deployment:
-	// the two shims the split has to rewrite (one of them through a
-	// per-machine absolute path override) and a genuine Kimi profile that
-	// must be left alone. Their ids are captured so the rewrite can be proven
-	// to be in-place — an agent bound through agent_runtime.profile_id keeps
-	// working only if the id survives.
+	// The shapes a 'kimi' profile can have on an upgrading deployment: the
+	// shims the split has to rewrite (bare command, per-machine absolute path
+	// override, and the Windows forms of both — the daemon is supported on
+	// Windows, where an absolute override uses backslashes and a pip/npm
+	// installed bridge is entered through a .exe/.cmd launcher), plus the rows
+	// that must be left alone: a genuine Kimi profile and a wrapper whose
+	// basename merely starts with a bridge name. Their ids are captured so the
+	// rewrite can be proven to be in-place — an agent bound through
+	// agent_runtime.profile_id keeps working only if the id survives.
 	shimIDs := map[string]string{}
 	for _, row := range []struct{ name, command string }{
 		{"Legacy ZCode over Kimi", "zcode-acp"},
 		{"Legacy DeerFlow over Kimi", "/opt/deerflow/venv/bin/deerflow-acp"},
+		{"Legacy ZCode over Kimi (Windows path)", `C:\tools\zcode-acp`},
+		{"Legacy ZCode over Kimi (Windows npm shim)", `C:\Users\dev\AppData\Roaming\npm\zcode-acp.cmd`},
+		{"Legacy DeerFlow over Kimi (Windows exe)", `C:\Python311\Scripts\deerflow-acp.exe`},
 		{"Real Kimi", "kimi"},
+		{"Real Kimi (Windows exe)", `C:\tools\kimi.exe`},
+		{"Custom wrapper over Kimi", `C:\tools\zcode-acp-wrapper.cmd`},
 	} {
 		var id string
 		if err := pool.QueryRow(ctx, `
@@ -119,8 +127,31 @@ func TestRuntimeProfileDeerflowZcodeMigrationRoundTrip(t *testing.T) {
 	// daemon, which is the defect 907 exists to remove.
 	assertProfileFamily(t, ctx, pool, shimIDs["Legacy ZCode over Kimi"], "zcode")
 	assertProfileFamily(t, ctx, pool, shimIDs["Legacy DeerFlow over Kimi"], "deerflow")
-	// A 'kimi' profile that launches kimi is a real Kimi profile.
+	// The Windows shapes are the same shim: a backslash-separated absolute
+	// override and the .cmd/.exe launchers an npm or pip install produces.
+	// Matching only '/' left these running on kimiBackend after the upgrade.
+	assertProfileFamily(t, ctx, pool, shimIDs["Legacy ZCode over Kimi (Windows path)"], "zcode")
+	assertProfileFamily(t, ctx, pool, shimIDs["Legacy ZCode over Kimi (Windows npm shim)"], "zcode")
+	assertProfileFamily(t, ctx, pool, shimIDs["Legacy DeerFlow over Kimi (Windows exe)"], "deerflow")
+	// A 'kimi' profile that launches kimi is a real Kimi profile, on either
+	// platform — the suffix strip must not turn 'kimi.exe' into a bridge.
 	assertProfileFamily(t, ctx, pool, shimIDs["Real Kimi"], "kimi")
+	assertProfileFamily(t, ctx, pool, shimIDs["Real Kimi (Windows exe)"], "kimi")
+	// A command that merely contains a bridge name is not that bridge: the
+	// match is on the whole basename, not a prefix.
+	assertProfileFamily(t, ctx, pool, shimIDs["Custom wrapper over Kimi"], "kimi")
+
+	// A profile created after 907 in a new family with a non-standard command
+	// has no basename the re-apply could decide from; it is what the down
+	// migration's identity backup exists for.
+	var customWrapperID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO runtime_profile (display_name, protocol_family, command_name)
+		VALUES ('Independent ZCode wrapper', 'zcode', 'company-zcode-wrapper')
+		RETURNING id::text
+	`).Scan(&customWrapperID); err != nil {
+		t.Fatalf("insert custom-command zcode profile: %v", err)
+	}
 
 	if err := run("down"); err != nil {
 		t.Fatalf("roll back migration 907: %v", err)
@@ -146,9 +177,9 @@ func TestRuntimeProfileDeerflowZcodeMigrationRoundTrip(t *testing.T) {
 	// The round trip returns the shims to the exact state 907 found them in,
 	// same ids: the bindings that point at these profiles survive both
 	// directions.
-	assertProfileFamily(t, ctx, pool, shimIDs["Legacy ZCode over Kimi"], "kimi")
-	assertProfileFamily(t, ctx, pool, shimIDs["Legacy DeerFlow over Kimi"], "kimi")
-	assertProfileFamily(t, ctx, pool, shimIDs["Real Kimi"], "kimi")
+	for name := range shimIDs {
+		assertProfileFamily(t, ctx, pool, shimIDs[name], "kimi")
+	}
 
 	// The profiles created directly in the new families while 907 was applied
 	// are folded into the shim shape rather than orphaned.
@@ -159,8 +190,36 @@ func TestRuntimeProfileDeerflowZcodeMigrationRoundTrip(t *testing.T) {
 	`).Scan(&folded); err != nil {
 		t.Fatalf("count folded profiles: %v", err)
 	}
-	if folded != 2 {
-		t.Errorf("post-907 profiles folded back onto kimi = %d, want 2", folded)
+	if folded != 3 {
+		t.Errorf("post-907 profiles folded back onto kimi = %d, want 3", folded)
+	}
+
+	// Re-applying after a rollback must restore every identity, including the
+	// ones no command basename can decide. Without the down migration's
+	// identity backup a custom-command profile stops on 'kimi' permanently,
+	// and the daemon then runs it on kimiBackend.
+	if err := run("up"); err != nil {
+		t.Fatalf("re-apply migration 907: %v", err)
+	}
+	assertMigrationLedger(t, ctx, pool, version, true)
+
+	assertProfileFamily(t, ctx, pool, shimIDs["Legacy ZCode over Kimi"], "zcode")
+	assertProfileFamily(t, ctx, pool, shimIDs["Legacy ZCode over Kimi (Windows path)"], "zcode")
+	assertProfileFamily(t, ctx, pool, shimIDs["Legacy DeerFlow over Kimi (Windows exe)"], "deerflow")
+	assertProfileFamily(t, ctx, pool, shimIDs["Real Kimi"], "kimi")
+	assertProfileFamily(t, ctx, pool, shimIDs["Custom wrapper over Kimi"], "kimi")
+	assertProfileFamily(t, ctx, pool, customWrapperID, "zcode")
+
+	// The backup is consumed, so a later deliberate family change is not
+	// silently reverted by a subsequent re-run of the same migration.
+	var backupExists bool
+	if err := pool.QueryRow(ctx,
+		`SELECT to_regclass('runtime_profile_family_907_backup') IS NOT NULL`,
+	).Scan(&backupExists); err != nil {
+		t.Fatalf("check identity backup table: %v", err)
+	}
+	if backupExists {
+		t.Error("identity backup table survived the re-apply; a later family change would be reverted by re-running 907")
 	}
 }
 

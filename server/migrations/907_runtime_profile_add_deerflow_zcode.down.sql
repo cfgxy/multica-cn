@@ -11,6 +11,25 @@
 -- existed for them) are folded into the same shim shape: it is the only
 -- representation the older schema has, and it keeps them launchable rather
 -- than orphaned.
+--
+-- The pre-fold family is recorded first. Re-applying 907 recovers a folded
+-- row's identity from the command basename, which only works for rows
+-- launching the standard bridge command; the API allows any single-token
+-- command, so ('zcode', 'company-zcode-wrapper') would otherwise be stranded
+-- on 'kimi' by an up -> down -> up cycle with no field left to recover it
+-- from. The table is dropped by the up migration once it has been consumed.
+DROP TABLE IF EXISTS runtime_profile_family_907_backup;
+
+CREATE TABLE runtime_profile_family_907_backup AS
+SELECT id AS profile_id, protocol_family
+FROM runtime_profile
+WHERE protocol_family IN ('deerflow', 'zcode');
+
+-- No index or key is declared on the backup: profile_id inherits uniqueness
+-- from runtime_profile.id, the table is read exactly once by a full scan in
+-- the up migration, and the repository forbids non-concurrent index builds in
+-- a migration.
+
 UPDATE runtime_profile
 SET protocol_family = 'kimi',
     updated_at = now()
