@@ -25,6 +25,11 @@ export const workspaceKeys = {
   // workspace even though the catalog itself is global.
   marketplace: (wsId: string, kind: string, q: string) =>
     ["workspaces", wsId, "marketplace", kind, q] as const,
+  // What this workspace has published. Kept OUTSIDE the `marketplace` key so a
+  // catalog invalidation (which is filter-keyed) and a management invalidation
+  // stay independent; a publish invalidates both explicitly.
+  marketplaceListings: (wsId: string) =>
+    ["workspaces", wsId, "marketplace-listings"] as const,
 };
 
 export function workspaceListOptions() {
@@ -210,6 +215,22 @@ export function marketplaceItemsOptions(
   return queryOptions({
     queryKey: workspaceKeys.marketplace(wsId, kind, q),
     queryFn: () => api.listMarketplaceItems({ kind, q }),
+    enabled: wsId !== "",
+  });
+}
+
+/**
+ * The listings this workspace has published, tombstones included — a withdrawn
+ * row is what a republication acts on, so hiding it would strand the name.
+ *
+ * Admin-visible in practice: the server refuses the read unless the caller is a
+ * human owner/admin, so the views gate the entry point on the same rule rather
+ * than rendering a section that always errors.
+ */
+export function marketplaceListingsOptions(wsId: string) {
+  return queryOptions({
+    queryKey: workspaceKeys.marketplaceListings(wsId),
+    queryFn: () => api.listMarketplaceListings(),
     enabled: wsId !== "",
   });
 }
