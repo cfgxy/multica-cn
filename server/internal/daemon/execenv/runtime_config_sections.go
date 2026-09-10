@@ -789,6 +789,12 @@ func writeMentions(b *strings.Builder) {
 	// agent writes this form (or pastes the project URL, which the reader's
 	// client unfurls into the same chip) a project reference stays dead text.
 	b.WriteString("- `[Project Name](mention://project/<project-id>)` — clickable link (no side effect)\n")
+	// A comment anchor is the one reference form an agent cannot infer: there is
+	// no autolinkable text shape for it (unlike `MUL-123`), and `util.MentionRe`
+	// deliberately does not parse `comment`, so it can never notify or enqueue.
+	// Without this line an agent falls back to quoting an id prefix in prose,
+	// which the reader has to search for by hand.
+	b.WriteString("- `[Comment reference](mention://comment/<comment-id>)` — clickable link (no side effect); jumps to the referenced comment within the same issue\n")
 	b.WriteString("- `[@Name](mention://member/<user-id>)` — **notifies a human**\n")
 	b.WriteString("- `[@Name](mention://agent/<agent-id>)` — **enqueues a new run for that agent**\n\n")
 	// No prescriptive default here (MUL-6417): the mention syntax hides its
