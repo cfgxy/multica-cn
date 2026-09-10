@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { Loader2, Pencil, Plus, Server, Trash2 } from "lucide-react";
+import { Loader2, Pencil, Plus, Server, Store, Trash2 } from "lucide-react";
 import { useQuery } from "@tanstack/react-query";
 import { toast } from "sonner";
 import {
@@ -24,10 +24,12 @@ import {
   useDeleteWorkspaceMcpServer,
   useUpdateWorkspaceMcpServer,
 } from "@multica/core/workspace/mutations";
-import type { WorkspaceMcpServer } from "@multica/core/types";
+import type { MarketplaceListing, WorkspaceMcpServer } from "@multica/core/types";
 import { McpServerDialog } from "../../agents/components/tabs/mcp-server-dialog";
 import type { ManagedMcpServer } from "../../agents/components/tabs/mcp-config-model";
 import { useT } from "../../i18n";
+import { MarketplacePublishDialog } from "./marketplace-publish-dialog";
+import { useMarketplacePublishFlow } from "./use-marketplace-publish";
 import { SettingsCard, SettingsSection, SettingsTab } from "./settings-layout";
 
 /**
@@ -71,6 +73,13 @@ export function McpTab() {
   const [deletingServer, setDeletingServer] = useState<WorkspaceMcpServer | null>(
     null,
   );
+
+  // Publishing an entry the workspace already has. What crosses over is its
+  // name and transport — the two fields the API actually returns. The config
+  // column stays unread, so the publisher writes the public template by hand.
+  const publishFlow = useMarketplacePublishFlow(wsId);
+  const [publishingServer, setPublishingServer] =
+    useState<WorkspaceMcpServer | null>(null);
 
   // The dialog is shared with the agent MCP tab, which hands it the saved
   // entry to prefill. Here there is nothing to prefill — an edit always
@@ -175,6 +184,23 @@ export function McpTab() {
                   key={server.name}
                   server={server}
                   canManage={canManage}
+                  listing={
+                    publishFlow.canPublish
+                      ? publishFlow.listingFor("mcp", server.name)
+                      : null
+                  }
+                  onPublish={
+                    publishFlow.canPublish
+                      ? () => {
+                          const listing = publishFlow.listingFor(
+                            "mcp",
+                            server.name,
+                          );
+                          setPublishingServer(server);
+                          publishFlow.open("mcp", listing);
+                        }
+                      : undefined
+                  }
                   onEdit={() => {
                     setEditingServer(server);
                     setEditorOpen(true);
@@ -191,6 +217,22 @@ export function McpTab() {
           </p>
         ) : null}
       </SettingsSection>
+
+      <MarketplacePublishDialog
+        {...publishFlow.dialogProps}
+        entity={
+          publishingServer
+            ? {
+                name: publishingServer.name,
+                transport: publishingServer.transport,
+              }
+            : null
+        }
+        onOpenChange={(next) => {
+          if (!next) setPublishingServer(null);
+          publishFlow.dialogProps.onOpenChange(next);
+        }}
+      />
 
       <McpServerDialog
         open={editorOpen}
@@ -239,20 +281,32 @@ export function McpTab() {
 function McpServerRow({
   server,
   canManage,
+  listing,
+  onPublish,
   onEdit,
   onDelete,
 }: {
   server: WorkspaceMcpServer;
   canManage: boolean;
+  /** This workspace's listing for the server, when it has published one. */
+  listing: MarketplaceListing | null;
+  /** Absent when the member or the instance cannot publish. */
+  onPublish?: () => void;
   onEdit: () => void;
   onDelete: () => void;
 }) {
   const { t } = useT("settings");
+  const published = listing !== null && listing.state !== "withdrawn";
   return (
     <li className="flex items-center gap-3 px-4 py-3">
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 items-center gap-2">
           <span className="truncate text-body font-medium">{server.name}</span>
+          {published ? (
+            <Badge variant="secondary">
+              {t(($) => $.marketplace.publish.published_badge)}
+            </Badge>
+          ) : null}
           {server.enabled === false ? (
             <Badge variant="secondary">{t(($) => $.mcp.disabled_badge)}</Badge>
           ) : null}
@@ -263,6 +317,20 @@ function McpServerRow({
       </div>
       {canManage ? (
         <div className="flex shrink-0 items-center gap-1">
+          {onPublish ? (
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={onPublish}
+              aria-label={
+                published
+                  ? t(($) => $.marketplace.publish.edit_listing)
+                  : t(($) => $.marketplace.publish.publish_to_marketplace)
+              }
+            >
+              <Store className="h-4 w-4" />
+            </Button>
+          ) : null}
           <Button
             variant="ghost"
             size="icon"

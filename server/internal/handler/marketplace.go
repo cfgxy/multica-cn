@@ -2,14 +2,17 @@ package handler
 
 import (
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/featureflags"
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/service"
+	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
@@ -114,7 +117,7 @@ func (h *Handler) ListMarketplaceItems(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	items, err := service.MarketplaceCatalog()
+	items, err := h.mergedMarketplaceCatalog(r)
 	if err != nil {
 		slog.Error("marketplace catalog failed to load", append(logger.RequestAttrs(r), "error", err)...)
 		writeError(w, http.StatusInternalServerError, "failed to load the marketplace catalog")
@@ -245,8 +248,15 @@ func (h *Handler) InstallMarketplaceItem(w http.ResponseWriter, r *http.Request)
 		writeError(w, http.StatusBadRequest, "invalid request body")
 		return
 	}
-	item, found := service.FindMarketplaceItem(strings.TrimSpace(req.Key))
+	item, found, err := h.findMarketplaceItemForInstall(r, strings.TrimSpace(req.Key))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load the marketplace catalog")
+		return
+	}
 	if !found {
+		// A withdrawn listing lands here too: the tombstone keeps the name
+		// reserved but is no longer installable, and saying so specifically
+		// would confirm the id exists to a caller who only guessed it.
 		writeError(w, http.StatusNotFound, "unknown marketplace item")
 		return
 	}
@@ -342,4 +352,54 @@ func (h *Handler) installMarketplaceMcp(w http.ResponseWriter, r *http.Request, 
 		"workspace_id", workspaceID, "server_id", uuidToString(server.ID),
 		"name", server.Name, "item", item.Key)...)
 	writeJSON(w, http.StatusCreated, workspaceMcpServerToResponse(server))
+}
+
+// mergedMarketplaceCatalog is the D2-A read: the compile-time embedded catalog
+// plus every published listing, in one stable order.
+//
+// A failure to load either half fails the whole listing rather than silently
+// returning the other. Half a catalog looks like "this entry was removed" to a
+// user, which is the one thing a marketplace must not be ambiguous about.
+func (h *Handler) mergedMarketplaceCatalog(r *http.Request) ([]service.MarketplaceItem, error) {
+	static, err := service.MarketplaceCatalog()
+	if err != nil {
+		return nil, err
+	}
+	rows, err := h.Queries.ListPublishedMarketplaceListings(r.Context())
+	if err != nil {
+		return nil, err
+	}
+	published := make([]service.MarketplaceItem, 0, len(rows))
+	for _, row := range rows {
+		published = append(published, marketplaceItemFromListing(row))
+	}
+	return service.MergeMarketplaceItems(static, published), nil
+}
+
+// findMarketplaceItemForInstall resolves an install key against whichever half
+// of the catalog owns it.
+//
+// A published key is resolved by a direct row read guarded on state = published
+// rather than by scanning the merged listing: the install must see the listing's
+// state as of NOW, so a withdrawal that lands between a user's browse and their
+// install is respected (D3-A tombstone) — while what they already installed
+// stays untouched (D4-A).
+func (h *Handler) findMarketplaceItemForInstall(r *http.Request, key string) (service.MarketplaceItem, bool, error) {
+	listingID, isPublished := service.MarketplaceListingIDFromKey(key)
+	if !isPublished {
+		item, found := service.FindMarketplaceItem(key)
+		return item, found, nil
+	}
+	listingUUID, err := util.ParseUUID(listingID)
+	if err != nil {
+		return service.MarketplaceItem{}, false, nil
+	}
+	row, err := h.Queries.GetPublishedMarketplaceListing(r.Context(), listingUUID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return service.MarketplaceItem{}, false, nil
+		}
+		return service.MarketplaceItem{}, false, err
+	}
+	return marketplaceItemFromListing(row), true, nil
 }

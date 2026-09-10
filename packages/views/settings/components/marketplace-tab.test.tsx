@@ -12,11 +12,16 @@ import enAgents from "../../locales/en/agents.json";
 const mockInstall = vi.hoisted(() => vi.fn());
 const mockPreview = vi.hoisted(() => vi.fn());
 const mockInstallPlugin = vi.hoisted(() => vi.fn());
+const mockPublish = vi.hoisted(() => vi.fn());
+const mockUpdate = vi.hoisted(() => vi.fn());
+const mockWithdraw = vi.hoisted(() => vi.fn());
 
 const data = vi.hoisted(() => ({
   items: [] as Array<Record<string, unknown>>,
+  listings: [] as Array<Record<string, unknown>>,
   isLoading: false,
   role: "owner" as "owner" | "admin" | "member",
+  publishEnabled: true,
   /** Records the filter the tab asked the catalog for. */
   lastFilter: undefined as unknown,
   /** Whether the catalog query was allowed to run this render. */
@@ -25,9 +30,9 @@ const data = vi.hoisted(() => ({
   installed: { plugins: [], plugins_enabled: true },
 }));
 
-// Two shelves share this tab: the build-time catalog and the instance plugin
-// directory. They are told apart by the query key, so a test can populate one
-// without the other.
+// Three queries live on this tab — the build-time catalog, the instance plugin
+// directory, and the workspace's own listings. They are told apart by the query
+// key, so a test can populate one without the others.
 vi.mock("@tanstack/react-query", () => ({
   useQuery: (options: { queryKey?: readonly unknown[]; enabled?: boolean }) => {
     const key = options?.queryKey ?? [];
@@ -35,6 +40,9 @@ vi.mock("@tanstack/react-query", () => ({
       return key[1] === "directory"
         ? { data: data.directory, isLoading: false, isError: false }
         : { data: data.installed, isLoading: false, isError: false };
+    }
+    if (key[2] === "marketplace-listings") {
+      return { data: data.listings, isLoading: false };
     }
     data.catalogEnabled = options?.enabled;
     return { data: data.items, isLoading: data.isLoading };
@@ -53,11 +61,37 @@ vi.mock("@multica/core/workspace/queries", () => ({
     data.lastFilter = filter;
     return { queryKey: ["workspaces", wsId, "marketplace", filter] };
   },
+  marketplaceListingsOptions: (wsId: string) => ({
+    queryKey: ["workspaces", wsId, "marketplace-listings"],
+  }),
 }));
 
 vi.mock("@multica/core/workspace/mutations", () => ({
   useInstallMarketplaceItem: () => ({ mutateAsync: mockInstall, isPending: false }),
+  usePublishMarketplaceListing: () => ({ mutateAsync: mockPublish, isPending: false }),
+  useUpdateMarketplaceListing: () => ({ mutateAsync: mockUpdate, isPending: false }),
+  useWithdrawMarketplaceListing: () => ({ mutateAsync: mockWithdraw, isPending: false }),
 }));
+
+vi.mock("@multica/core/config", () => ({
+  useFeatureEnabled: () => data.publishEnabled,
+}));
+
+// Hoisted so the vi.mock factory below (which vitest lifts above this file's
+// statements) can close over it without hitting a temporal dead zone.
+const TestApiError = vi.hoisted(
+  () =>
+    class TestApiError extends Error {
+      constructor(
+        message: string,
+        readonly status: number,
+        readonly body?: unknown,
+      ) {
+        super(message);
+      }
+    },
+);
+vi.mock("@multica/core/api", () => ({ ApiError: TestApiError }));
 
 vi.mock("@multica/core/paths", () => ({
   useCurrentWorkspace: () => ({ id: "workspace-1", name: "Acme", slug: "acme" }),
@@ -150,7 +184,12 @@ describe("MarketplaceTab", () => {
     data.items = [skillItem(), mcpItem()];
     data.directory = { packages: [] };
     data.installed = { plugins: [], plugins_enabled: true };
+    data.listings = [];
+    data.publishEnabled = true;
     mockInstall.mockResolvedValue({});
+    mockPublish.mockResolvedValue({});
+    mockUpdate.mockResolvedValue({});
+    mockWithdraw.mockResolvedValue({});
   });
 
   it("lists skills and MCP servers together in one marketplace", () => {
@@ -499,5 +538,368 @@ describe("MarketplaceTab", () => {
 
     expect(screen.getByText("Hello Panel")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Review and install" })).toBeNull();
+  });
+});
+
+const listing = (over: Record<string, unknown> = {}) => ({
+  id: "listing-1",
+  key: "listing:listing-1",
+  kind: "mcp",
+  name: "acme-search",
+  publisher_display_name: "Acme",
+  summary: "Search Acme.",
+  description: "",
+  homepage_url: "",
+  categories: ["development"],
+  config_template: {
+    type: "http",
+    url: "https://mcp.example.com",
+    headers: { Authorization: "Bearer ${api_key}" },
+  },
+  transport: "http",
+  placeholders: [
+    {
+      key: "api_key",
+      label: "API key",
+      description: "",
+      secret: true,
+      required: true,
+    },
+  ],
+  state: "published",
+  revision: 3,
+  created_at: "2026-09-08T00:00:00Z",
+  updated_at: "2026-09-08T00:00:00Z",
+  ...over,
+});
+
+// Summary and at least one category are required of every listing, matching
+// what the server enforces. The canonical matrix for those rules lives in
+// `marketplace-publish-dialog.test.tsx`; here they are just filled in so the
+// flow under test can reach submit.
+async function fillPublicMetadata(
+  user: ReturnType<typeof userEvent.setup>,
+  summary = "Search Acme.",
+) {
+  await user.type(screen.getByLabelText("Summary"), summary);
+  await user.click(screen.getByRole("button", { name: "Development" }));
+}
+
+describe("MarketplaceTab publishing (RUYI-99)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    data.role = "owner";
+    data.isLoading = false;
+    data.items = [];
+    data.listings = [];
+    data.publishEnabled = true;
+    mockPublish.mockResolvedValue({});
+    mockUpdate.mockResolvedValue({});
+    mockWithdraw.mockResolvedValue({});
+  });
+
+  // The write path has its own flag. Off means no publish surface at all —
+  // not a button that fails at the server.
+  it("hides the publish surface when the flag is off", () => {
+    data.publishEnabled = false;
+    data.listings = [listing()];
+    render(<MarketplaceTab />, { wrapper: Wrapper });
+
+    expect(screen.queryByRole("button", { name: "Publish a skill" })).toBeNull();
+    expect(screen.queryByText("acme-search")).toBeNull();
+    expect(
+      screen.getByText(/Publishing to the marketplace is not enabled/),
+    ).toBeInTheDocument();
+  });
+
+  it("hides the publish surface from a plain member", () => {
+    data.role = "member";
+    render(<MarketplaceTab />, { wrapper: Wrapper });
+
+    expect(screen.queryByRole("button", { name: "Publish a skill" })).toBeNull();
+    expect(
+      screen.queryByText(/Publishing to the marketplace is not enabled/),
+    ).toBeNull();
+  });
+
+  it("publishes a skill by its public source URL", async () => {
+    const user = userEvent.setup();
+    render(<MarketplaceTab />, { wrapper: Wrapper });
+
+    await user.click(screen.getByRole("button", { name: "Publish a skill" }));
+    await user.type(screen.getByLabelText("Name"), "acme-pdf");
+    await user.type(screen.getByLabelText("Summary"), "Fill PDFs.");
+    await user.click(screen.getByRole("button", { name: "Development" }));
+    await user.type(
+      screen.getByLabelText("Source URL"),
+      "https://github.com/acme/skills/pdf",
+    );
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Publish" }),
+    );
+
+    await waitFor(() =>
+      expect(mockPublish).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: "skill",
+          name: "acme-pdf",
+          summary: "Fill PDFs.",
+          source_url: "https://github.com/acme/skills/pdf",
+        }),
+      ),
+    );
+    // A skill listing carries no MCP template at all.
+    expect(mockPublish.mock.calls[0]![0]).not.toHaveProperty("config_template");
+  });
+
+  // Transport fidelity is an acceptance criterion: sse must survive as sse
+  // rather than collapsing into http, since they are different wire protocols.
+  it.each([
+    ["stdio", "stdio"],
+    ["HTTP", "http"],
+    ["SSE", "sse"],
+  ])("publishes an MCP template on the %s transport", async (label, expected) => {
+    const user = userEvent.setup();
+    render(<MarketplaceTab />, { wrapper: Wrapper });
+
+    await user.click(screen.getByRole("button", { name: "Publish an MCP server" }));
+    await user.type(screen.getByLabelText("Name"), "acme-search");
+    await fillPublicMetadata(user);
+    await user.click(screen.getByRole("button", { name: label }));
+
+    if (expected === "stdio") {
+      await user.type(screen.getByLabelText("Command"), "npx");
+      await user.type(screen.getByLabelText("Arguments"), "-y\n@acme/mcp");
+    } else {
+      await user.type(screen.getByLabelText("URL"), "https://mcp.example.com");
+    }
+
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Publish" }),
+    );
+
+    await waitFor(() => expect(mockPublish).toHaveBeenCalled());
+    const sent = mockPublish.mock.calls[0]![0] as { config_template: Record<string, unknown> };
+    expect(sent.config_template.type).toBe(expected);
+    if (expected === "stdio") {
+      expect(sent.config_template.command).toBe("npx");
+      expect(sent.config_template.args).toEqual(["-y", "@acme/mcp"]);
+    } else {
+      expect(sent.config_template.url).toBe("https://mcp.example.com");
+    }
+  });
+
+  // A declared placeholder the template never references would render an input
+  // on the install dialog that goes nowhere.
+  it("refuses to publish a placeholder the template never uses", async () => {
+    const user = userEvent.setup();
+    render(<MarketplaceTab />, { wrapper: Wrapper });
+
+    await user.click(screen.getByRole("button", { name: "Publish an MCP server" }));
+    await user.type(screen.getByLabelText("Name"), "acme-search");
+    await fillPublicMetadata(user);
+    // The form opens on stdio; headers only exist on a remote transport.
+    await user.click(screen.getByRole("button", { name: "HTTP" }));
+    await user.type(screen.getByLabelText("URL"), "https://mcp.example.com");
+    await user.click(screen.getByRole("button", { name: "Add placeholder" }));
+    await user.type(screen.getByLabelText("Key"), "api_key");
+
+    expect(screen.getByText(/never uses: api_key/)).toBeInTheDocument();
+    expect(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Publish" }),
+    ).toBeDisabled();
+
+    // Referencing it in a header clears the objection.
+    await user.click(screen.getByRole("button", { name: "Add header" }));
+    await user.type(screen.getByLabelText("Headers key"), "Authorization");
+    // `{{` is userEvent's escape for a literal brace; the field receives
+    // `Bearer ${api_key}`.
+    await user.type(screen.getByLabelText("Headers value"), "Bearer ${{api_key}");
+
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole("dialog")).getByRole("button", { name: "Publish" }),
+      ).toBeEnabled(),
+    );
+  });
+
+  it("sends the revision it read when updating, so a stale edit is refused", async () => {
+    const user = userEvent.setup();
+    data.listings = [listing()];
+    render(<MarketplaceTab />, { wrapper: Wrapper });
+
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    await user.clear(screen.getByLabelText("Summary"));
+    await user.type(screen.getByLabelText("Summary"), "Search Acme faster.");
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Save" }),
+    );
+
+    await waitFor(() =>
+      expect(mockUpdate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: "listing-1",
+          revision: 3,
+          summary: "Search Acme faster.",
+        }),
+      ),
+    );
+    // kind is fixed at publish time and the PATCH route does not accept it.
+    expect(mockUpdate.mock.calls[0]![0]).not.toHaveProperty("kind");
+  });
+
+  // Reopening an existing MCP listing must land on the transport it was
+  // published under, or a save would silently rewrite it.
+  it("reopens an existing listing on its own transport", async () => {
+    const user = userEvent.setup();
+    data.listings = [
+      listing({ config_template: { type: "sse", url: "https://sse.example.com" }, transport: "sse" }),
+    ];
+    render(<MarketplaceTab />, { wrapper: Wrapper });
+
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    expect(screen.getByRole("button", { name: "SSE" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByLabelText("URL")).toHaveValue("https://sse.example.com");
+  });
+
+  it("withdraws only after a confirmation, sending the revision", async () => {
+    const user = userEvent.setup();
+    data.listings = [listing()];
+    render(<MarketplaceTab />, { wrapper: Wrapper });
+
+    await user.click(screen.getByRole("button", { name: "Withdraw" }));
+    expect(screen.getByText(/keep their copy/)).toBeInTheDocument();
+    expect(mockWithdraw).not.toHaveBeenCalled();
+
+    await user.click(
+      within(screen.getByRole("alertdialog")).getByRole("button", { name: "Withdraw" }),
+    );
+    await waitFor(() =>
+      expect(mockWithdraw).toHaveBeenCalledWith({ id: "listing-1", revision: 3 }),
+    );
+  });
+
+  // A withdrawn row is a tombstone: the name stays reserved for this
+  // workspace, so the only action is publishing it again — the server refuses
+  // a PATCH on a tombstone.
+  it("offers republish rather than edit on a withdrawn listing", async () => {
+    const user = userEvent.setup();
+    data.listings = [listing({ state: "withdrawn", revision: 4 })];
+    render(<MarketplaceTab />, { wrapper: Wrapper });
+
+    expect(screen.getByText("Withdrawn")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Edit" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Withdraw" })).toBeNull();
+
+    await user.click(screen.getByRole("button", { name: "Publish again" }));
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Publish" }),
+    );
+
+    await waitFor(() => expect(mockPublish).toHaveBeenCalled());
+    expect(mockUpdate).not.toHaveBeenCalled();
+  });
+
+  // The 422 scan report is location-only by construction. The dialog must
+  // render it without echoing whatever was pasted.
+  it("shows secret-scan findings by location and never the matched value", async () => {
+    const user = userEvent.setup();
+    mockPublish.mockRejectedValue(
+      new TestApiError("content blocked", 422, {
+        error: "content blocked",
+        scanner_revision: "2026-09-01",
+        findings: [
+          { category: "token", rule: "generic-api-key", field: "headers.Authorization", line: 1, mask: "***" },
+        ],
+        truncated: false,
+      }),
+    );
+    render(<MarketplaceTab />, { wrapper: Wrapper });
+
+    await user.click(screen.getByRole("button", { name: "Publish an MCP server" }));
+    await user.type(screen.getByLabelText("Name"), "acme-search");
+    await fillPublicMetadata(user);
+    // The form opens on stdio; headers only exist on a remote transport.
+    await user.click(screen.getByRole("button", { name: "HTTP" }));
+    await user.type(screen.getByLabelText("URL"), "https://mcp.example.com");
+    await user.click(screen.getByRole("button", { name: "Add header" }));
+    await user.type(screen.getByLabelText("Headers key"), "Authorization");
+    await user.type(screen.getByLabelText("Headers value"), "Bearer sk-live-not-real");
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Publish" }),
+    );
+
+    const dialog = await screen.findByRole("dialog");
+    await waitFor(() =>
+      expect(within(dialog).getByText(/looks like it contains a credential/)).toBeInTheDocument(),
+    );
+    expect(
+      within(dialog).getByText(/headers\.Authorization, line 1 — generic-api-key/),
+    ).toBeInTheDocument();
+    expect(within(dialog).getByText(/Scanner 2026-09-01/)).toBeInTheDocument();
+    // The pasted value must not be echoed back anywhere in the report.
+    expect(within(dialog).queryByText(/sk-live-not-real/)).toBeNull();
+    // The dialog stays open so the publisher can fix the field.
+    expect(within(dialog).getByLabelText("Name")).toHaveValue("acme-search");
+  });
+
+  // A conflict is not a scan report; it must surface as its own message.
+  it("shows a revision conflict inline instead of a scan report", async () => {
+    const user = userEvent.setup();
+    data.listings = [listing()];
+    mockUpdate.mockRejectedValue(
+      new TestApiError("this listing was changed by someone else", 409, {
+        error: "this listing was changed by someone else",
+      }),
+    );
+    render(<MarketplaceTab />, { wrapper: Wrapper });
+
+    await user.click(screen.getByRole("button", { name: "Edit" }));
+    await user.click(
+      within(screen.getByRole("dialog")).getByRole("button", { name: "Save" }),
+    );
+
+    await waitFor(() =>
+      expect(screen.getByText(/changed by someone else/)).toBeInTheDocument(),
+    );
+  });
+
+  // Reopening on a different listing must not carry the previous one's
+  // template across — that publishes one server's config under another name.
+  it("clears the form when reopening on another listing", async () => {
+    const user = userEvent.setup();
+    data.listings = [
+      listing(),
+      listing({ id: "listing-2", name: "other", summary: "Other.", config_template: { type: "stdio", command: "npx" }, transport: "stdio" }),
+    ];
+    render(<MarketplaceTab />, { wrapper: Wrapper });
+
+    await user.click(screen.getAllByRole("button", { name: "Edit" })[0]!);
+    expect(screen.getByLabelText("Name")).toHaveValue("acme-search");
+    await user.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await user.click(screen.getAllByRole("button", { name: "Edit" })[1]!);
+    await waitFor(() => expect(screen.getByLabelText("Name")).toHaveValue("other"));
+    expect(screen.getByLabelText("Command")).toHaveValue("npx");
+  });
+
+  // Forward compatibility: a state a newer backend introduces must not be
+  // mislabelled as published or withdrawn.
+  it("renders an unknown listing state as itself", () => {
+    data.listings = [listing({ state: "under_review" })];
+    render(<MarketplaceTab />, { wrapper: Wrapper });
+
+    expect(screen.getByText("under_review")).toBeInTheDocument();
+  });
+
+  it("renders an empty state when nothing has been published", () => {
+    render(<MarketplaceTab />, { wrapper: Wrapper });
+
+    expect(
+      screen.getByText("This workspace has not published anything yet."),
+    ).toBeInTheDocument();
   });
 });

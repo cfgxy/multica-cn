@@ -10,6 +10,7 @@ import {
   Plus,
   RotateCw,
   Search,
+  Store,
   Trash2,
   X,
 } from "lucide-react";
@@ -50,9 +51,11 @@ import {
 } from "@multica/ui/components/ui/tooltip";
 import { ActorAvatar } from "@multica/ui/components/common/actor-avatar";
 import { cn } from "@multica/ui/lib/utils";
+import { MarketplacePublishDialog } from "../../settings/components/marketplace-publish-dialog";
+import { useMarketplacePublishFlow } from "../../settings/components/use-marketplace-publish";
 import { useT } from "../../i18n";
 import { useIntentNavigate } from "../../navigation";
-import { isRefreshableOrigin, readOrigin } from "../lib/origin";
+import { isRefreshableOrigin, originSourceUrl, readOrigin } from "../lib/origin";
 import { RefreshSkillDialog } from "./refresh-skill-dialog";
 import type { SkillRow } from "./skills-page";
 
@@ -662,6 +665,7 @@ export function SkillRowActions({
 }) {
   const { t } = useT("skills");
   const { t: tCommon } = useT("common");
+  const { t: tSettings } = useT("settings");
   const paths = useWorkspacePaths();
   const intentNavigate = useIntentNavigate();
   const [addOpen, setAddOpen] = useState(false);
@@ -670,6 +674,16 @@ export function SkillRowActions({
 
   const origin = readOrigin(row.skill);
   const canRefresh = row.canEdit && isRefreshableOrigin(origin);
+
+  // A skill listing is published by its public source URL, so a skill that has
+  // one can go to the catalog directly from its row. The source is validated
+  // the same way it is before becoming an href — a hand-written `config.origin`
+  // must not turn into a catalog entry pointing anywhere it likes.
+  const publishFlow = useMarketplacePublishFlow(ctx.wsId);
+  const publishListing = publishFlow.canPublish
+    ? publishFlow.listingFor("skill", row.skill.name)
+    : null;
+  const canPublish = publishFlow.canPublish && row.canEdit;
 
   return (
     <span
@@ -712,6 +726,16 @@ export function SkillRowActions({
               {t(($) => $.actions.refresh)}
             </DropdownMenuItem>
           )}
+          {canPublish && (
+            <DropdownMenuItem
+              onClick={() => publishFlow.open("skill", publishListing)}
+            >
+              <Store className="size-3.5" />
+              {publishListing && publishListing.state !== "withdrawn"
+                ? tSettings(($) => $.marketplace.publish.edit_listing)
+                : tSettings(($) => $.marketplace.publish.publish_to_marketplace)}
+            </DropdownMenuItem>
+          )}
           {row.canEdit && (
             <>
               <DropdownMenuSeparator />
@@ -747,6 +771,15 @@ export function SkillRowActions({
         open={deleteOpen}
         onOpenChange={setDeleteOpen}
       />
+      {canPublish && (
+        <MarketplacePublishDialog
+          {...publishFlow.dialogProps}
+          entity={{
+            name: row.skill.name,
+            sourceUrl: originSourceUrl(origin) ?? undefined,
+          }}
+        />
+      )}
     </span>
   );
 }

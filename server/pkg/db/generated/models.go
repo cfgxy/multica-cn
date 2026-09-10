@@ -1059,6 +1059,35 @@ type LarkUserBinding struct {
 	BoundAt        pgtype.Timestamptz `json:"bound_at"`
 }
 
+// One workspace-published skill or MCP marketplace listing (RUYI-99). Merged with the embedded static catalog at read time. A withdrawn row is a tombstone that keeps its (kind, name_key) reserved; only source_workspace_id may republish it. source_workspace_id is authority only and must not be returned by any API.
+type MarketplaceListing struct {
+	ID                   pgtype.UUID `json:"id"`
+	Kind                 string      `json:"kind"`
+	Name                 string      `json:"name"`
+	NameKey              string      `json:"name_key"`
+	SourceWorkspaceID    pgtype.UUID `json:"source_workspace_id"`
+	PublisherUserID      pgtype.UUID `json:"publisher_user_id"`
+	PublisherDisplayName string      `json:"publisher_display_name"`
+	Summary              string      `json:"summary"`
+	Description          string      `json:"description"`
+	HomepageUrl          string      `json:"homepage_url"`
+	Categories           []byte      `json:"categories"`
+	SourceUrl            string      `json:"source_url"`
+	// MCP entry template authored in the publish wizard. Credential-bearing fields must be registered ${placeholder} tokens; the local workspace_mcp_server.config is never read to build this.
+	ConfigTemplate  []byte             `json:"config_template"`
+	Placeholders    []byte             `json:"placeholders"`
+	State           string             `json:"state"`
+	Revision        int32              `json:"revision"`
+	ScannerRevision string             `json:"scanner_revision"`
+	ScanResult      []byte             `json:"scan_result"`
+	ScannedAt       pgtype.Timestamptz `json:"scanned_at"`
+	PublishedAt     pgtype.Timestamptz `json:"published_at"`
+	WithdrawnAt     pgtype.Timestamptz `json:"withdrawn_at"`
+	WithdrawnBy     pgtype.UUID        `json:"withdrawn_by"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
 type Member struct {
 	ID          pgtype.UUID        `json:"id"`
 	WorkspaceID pgtype.UUID        `json:"workspace_id"`
