@@ -55,6 +55,7 @@ import {
   useOptionalNavigation,
 } from "../navigation";
 import { IssueMentionCard } from "../issues/components/issue-mention-card";
+import { CommentMentionCard } from "../issues/components/comment-mention-card";
 import { useResolveIssueIdentifier } from "../issues/hooks";
 import { ProjectMentionCard } from "../projects/components/project-mention-card";
 import { useLinkHover, LinkHoverCard } from "../editor/link-hover-card";
@@ -217,7 +218,9 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
   }
 
   if (isMentionHref(href)) {
-    const match = href.match(/^mention:\/\/(member|agent|issue|project|all)\/(.+)$/);
+    const match = href.match(
+      /^mention:\/\/(member|agent|issue|project|comment|all)\/(.+)$/,
+    );
     if (match?.[1] === "issue" && match[2]) {
       // A bare identifier (from the autolink preprocessor) is carried as the id
       // segment; a real mention carries a UUID. Dispatch on the id shape.
@@ -233,6 +236,18 @@ function RichLink({ href, children }: { href?: string; children?: ReactNode }) {
     }
     if (match?.[1] === "project" && match[2]) {
       return <ProjectMentionLink projectId={match[2]} label={childrenToLabel(children)} />;
+    }
+    if (match?.[1] === "comment" && match[2]) {
+      // In-page anchor, not navigation (RUYI-108): the chip resolves against
+      // the comments this surface already holds and jumps within it. Outside
+      // an issue that hosts a comment list it renders degraded — see
+      // CommentMentionCard for why every miss must look the same.
+      return (
+        <CommentMentionCard
+          commentId={match[2]}
+          label={childrenToLabel(children)}
+        />
+      );
     }
     // Member / agent / all mentions
     return <span className="mention">{children}</span>;

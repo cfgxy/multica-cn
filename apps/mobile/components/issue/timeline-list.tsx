@@ -29,7 +29,7 @@
  *   The matching <CommentCard>'s `RootHighlightOverlay` fires when the
  *   target row enters the render window — so for a deep-link pointing
  *   at an old comment, the user scrolls up and the flash plays as the
- *   row mounts. `HIGHLIGHT_HOLD_MS` (5s) is the window for that.
+ *   row mounts. `HIGHLIGHT_HOLD_MS` is the window for that.
  *
  *   Why not `scrollToIndex`: it requires accurate height estimates that
  *   variable-height markdown bubbles can't provide, even with
@@ -96,8 +96,10 @@ import {
 } from "react-native";
 import { FlashList, type FlashListRef } from "@shopify/flash-list";
 import { Ionicons } from "@expo/vector-icons";
+import * as Haptics from "expo-haptics";
 import { useQuery } from "@tanstack/react-query";
 import type { Issue, TimelineEntry } from "@multica/core/types";
+import { COMMENT_HIGHLIGHT_TOTAL_MS } from "@multica/core/issues/comment-highlight";
 import { Text } from "@/components/ui/text";
 import { IssueHeaderCard } from "./issue-header-card";
 import { IssueDescription } from "./issue-description";
@@ -124,6 +126,13 @@ import {
   CommentLocateController,
   resolvePublishedRootIds,
 } from "@/lib/comment-locate";
+import { CommentGeometryRegistry } from "@/lib/comment-geometry";
+import { AnchorHighlightGate } from "@/lib/comment-anchor-highlight";
+import { resolveCommentAnchor } from "@/lib/comment-anchor";
+import {
+  CommentAnchorProvider,
+  type CommentAnchorApi,
+} from "@/lib/comment-anchor-context";
 import {
   assignChipStackSlots,
   computeBottomChipVisible,
@@ -169,10 +178,18 @@ export interface TimelineListHandle {
 
 /** How long the flash stays "claimed" before we let a new highlight take
  *  over. The fade-out itself is driven by the Reanimated sequence inside
- *  CommentCard; this is just the upstream gate. 5s gives the user time
- *  to land at the bottom, realise the target is an older comment, and
- *  scroll up to it — the overlay still fires when the row mounts. */
-const HIGHLIGHT_HOLD_MS = 5000;
+ *  CommentCard, so this gate must cover the WHOLE visible schedule
+ *  (`COMMENT_HIGHLIGHT_TOTAL_MS`) and not just its hold: clearing at the
+ *  hold point flips the overlay's `active` to false mid-sequence, and its
+ *  cleanup snaps opacity to 0 instead of letting the fade play.
+ *
+ *  RUYI-108 pulls this from 5s down to the shared schedule so all three
+ *  clients flash for the same time. The 5s was budget for the reader to
+ *  *manually* find an older target after a deep link landed at the bottom;
+ *  the locate controller now scrolls to the row itself, so the extra
+ *  seconds only widened the window in which a recycled row re-played the
+ *  flash. */
+const HIGHLIGHT_HOLD_MS = COMMENT_HIGHLIGHT_TOTAL_MS;
 
 /** Pixel slack at the bottom edge — inside this band we treat the user as
  *  "already at bottom" so the new-comment chip doesn't fire for entries
@@ -282,9 +299,13 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
     lastStampRef.current = stamp;
 
     setHighlightedId(highlightCommentId);
-
-    const fade = setTimeout(() => setHighlightedId(null), HIGHLIGHT_HOLD_MS);
-    return () => clearTimeout(fade);
+    // The fade-out timer lives in one place (keyed on `highlightedId`, see
+    // the anchor-landing block below) so the two entry points — inbox deep
+    // link and comment anchor — cannot each hold their own. It also fixes a
+    // latent hole here: this effect re-ran on every `data.length` change,
+    // and its cleanup cancelled the pending fade without arming a new one,
+    // leaving a highlight stuck on screen whenever a comment arrived
+    // inside the flash window.
   }, [highlightCommentId, highlightNonce, data.length]);
 
   // Focus-intent consumption lives after `dataWithDivider` is defined
@@ -557,6 +578,11 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
   const dataRef = useRef(dataWithDivider);
   dataRef.current = dataWithDivider;
   const viewableIdsRef = useRef<Set<string>>(new Set());
+  // RUYI-108 行内几何：回复与 root 共用一行，行级 viewability 判不出被引用的
+  // 回复是否真的入屏，控制器的行内校正靠卡片上报的这份测量值。
+  const geometryRef = useRef(new CommentGeometryRegistry());
+  // RUYI-108 高亮起算闸门：点击只武装，定位流程结束才起算那 1.7s 播放。
+  const highlightGateRef = useRef(new AnchorHighlightGate());
 
   const controllerRef = useRef<CommentLocateController | null>(null);
   if (!controllerRef.current) {
@@ -585,6 +611,37 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
             : Promise.reject(new Error("list not mounted"));
         },
         isViewable: (rootId) => viewableIdsRef.current.has(rootId),
+        // 行内校正的三件套：目标在**原生滚动坐标系**里的矩形、当前视口、
+        // 直接按偏移滚动。行没有布局、卡片还没量到、或列表尚未挂载时返回
+        // null，控制器会按有界重试再来。
+        //
+        // 坐标必须统一：`getLayout(i).y` 是 item 区坐标，不含
+        // ListHeaderComponent 与顶部内边距；而 `getViewport()` 读的
+        // `contentOffset.y` 和下面的 `scrollToOffset`（FlashList 默认
+        // `skipFirstItemOffset: true`）都是原生滚动坐标。差值就是
+        // `getFirstItemOffset()`。Issue 头部（标题 + 描述 + 反应行）在真机
+        // 上是几百像素，漏掉这一段会让二次滚动始终停在目标上方，把有界重试
+        // 烧光后判 `layout` 失败。
+        measureTarget: (targetId) =>
+          geometryRef.current.resolve(
+            targetId,
+            (rootId) => {
+              const idx = dataRef.current.findIndex(
+                (r) => r.entry.type === "comment" && r.entry.id === rootId,
+              );
+              if (idx < 0) return null;
+              const layout = listRef.current?.getLayout(idx);
+              return layout ? layout.y : null;
+            },
+            listRef.current?.getFirstItemOffset() ?? null,
+          ),
+        getViewport: () => ({
+          offsetY: scrollGeoRef.current.offsetY,
+          height: scrollGeoRef.current.viewportHeight,
+        }),
+        scrollToOffset: (offset) => {
+          listRef.current?.scrollToOffset({ offset, animated: true });
+        },
         schedule: (fn, ms) => {
           const id = setTimeout(fn, ms);
           return { cancel: () => clearTimeout(id) };
@@ -601,13 +658,28 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
             reason: result.reason ?? "timeout",
           });
         }
+        // 锚点高亮在**这一刻**才起算（RUYI-108 第三轮）。点击起算的旧写法
+        // 让 1.7s 的高亮和一条最长 4s 的定位路径赛跑：折叠展开、行布局重试、
+        // 行内校正各自都能吃掉一秒以上，慢路径下目标最终入屏而高亮早已播完。
+        // 失败也放行——目标可能一直就在视口里、只是没拿到 viewability 确认，
+        // 静默会让用户觉得点击没反应。闸门按 nonce 防串扰（连点两个引用时，
+        // 先前那次的迟到回调不得点亮后一次的目标）。
+        const pending = highlightGateRef.current.settle(result.nonce);
+        if (pending) setHighlightedId(pending);
       },
     );
   }
   const locateController = controllerRef.current;
 
-  // Cancel the in-flight run on unmount without emitting a result.
-  useEffect(() => () => locateController.cancel(), [locateController]);
+  // Cancel the in-flight run on unmount without emitting a result — the
+  // armed highlight goes with it (no result callback will ever fire).
+  useEffect(() => {
+    const gate = highlightGateRef.current;
+    return () => {
+      locateController.cancel();
+      gate.disarm();
+    };
+  }, [locateController]);
 
   // Feed the controller every viewability edge — it no-ops unless a run
   // is awaiting on-screen confirmation (see the stable forwarder below
@@ -628,6 +700,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
     locateController.start({
       issueId: focusForIssue.issueId,
       rootId: focusForIssue.rootId,
+      targetId: focusForIssue.targetId,
       nonce: focusForIssue.nonce,
     });
   }, [
@@ -637,6 +710,75 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
     expandRoot,
     locateController,
   ]);
+
+  // ── Comment anchor landing (RUYI-108) ─────────────────────────────────
+  // `mention://comment/<id>` tapped anywhere in this timeline's markdown.
+  // Reuses both existing mechanisms rather than adding a third scroll
+  // path: the focus store expands + bounded-locates the owning ROOT, and
+  // `highlightedId` flashes the referenced comment itself (which may be a
+  // reply inside that root — CommentCard already distinguishes the two).
+  //
+  // 引用的目标是回复时，仅把 root 行滚进视口不算到位（root 与全部回复共用
+  // 一行，长线程里目标可能仍在屏外）。`targetId` 一并交给控制器，由它在行
+  // 落位后按行内几何做二次校正，直到目标本身入屏。
+  //
+  // Resolution reads only `dataRef` (rows already in the client). A miss
+  // — deleted, not permitted, another issue, or simply not fetched — gets
+  // one haptic and nothing else: no request, no author, no excerpt. Any
+  // fetch-to-check would turn a render-only anchor into an
+  // existence-probing endpoint for comments the reader cannot see.
+  const focusCommentAnchor = useCallback(
+    (commentId: string) => {
+      const outcome = resolveCommentAnchor(dataRef.current, commentId);
+      if (outcome.kind === "unavailable") {
+        void Haptics.notificationAsync(
+          Haptics.NotificationFeedbackType.Warning,
+        );
+        return;
+      }
+      // Re-tapping the same anchor must replay: requestFocus mints a fresh
+      // nonce, and clearing the flash first lets the identical id re-enter
+      // `highlightedId` (a same-value setState would otherwise no-op and
+      // the second tap would look dead).
+      setHighlightedId(null);
+      useCommentFocusStore
+        .getState()
+        .requestFocus(issue.id, outcome.rootId, outcome.commentId);
+      // 高亮不在这里起算——只武装。定位可能要展开折叠线程、重试行布局、
+      // 做多轮行内校正，起算点在控制器的结果回调里（见上）。nonce 取
+      // requestFocus 刚刚铸好的那一个，闸门据此拒绝迟到的旧回调。
+      const nonce = useCommentFocusStore.getState().focus?.nonce;
+      if (nonce != null) {
+        highlightGateRef.current.arm(outcome.commentId, nonce);
+      }
+    },
+    [issue.id],
+  );
+  const reportGeometry = useCallback<CommentAnchorApi["reportGeometry"]>(
+    (commentId, rect) => geometryRef.current.report(commentId, rect),
+    [],
+  );
+  const forgetGeometry = useCallback<CommentAnchorApi["forgetGeometry"]>(
+    (commentId) => geometryRef.current.forget(commentId),
+    [],
+  );
+  const commentAnchorApi = useMemo<CommentAnchorApi>(
+    () => ({
+      focus: focusCommentAnchor,
+      reportGeometry,
+      forgetGeometry,
+    }),
+    [focusCommentAnchor, reportGeometry, forgetGeometry],
+  );
+
+  // The flash set above has no timer of its own (the inbox path's timer is
+  // keyed on `highlightCommentId`, which an anchor tap never changes), so
+  // clear it on the same shared budget every other highlight uses.
+  useEffect(() => {
+    if (!highlightedId) return;
+    const fade = setTimeout(() => setHighlightedId(null), HIGHLIGHT_HOLD_MS);
+    return () => clearTimeout(fade);
+  }, [highlightedId]);
 
   // ── Just-published auto-expand (RUYI-28) ──────────────────────────────
   // ONLY local-authoring paths: when THIS user publishes a comment — via
@@ -791,6 +933,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
       : "list";
 
   return (
+    <CommentAnchorProvider value={commentAnchorApi}>
     <ImageSequenceProvider blocks={imageBlocks}>
     <View className="flex-1">
       {/* Outer Pressable owns the "tap anywhere outside the selected
@@ -912,6 +1055,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
       })()}
     </View>
     </ImageSequenceProvider>
+    </CommentAnchorProvider>
   );
   },
 );
