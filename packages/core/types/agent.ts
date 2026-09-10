@@ -563,6 +563,19 @@ export interface Agent {
   invocation_targets: AgentInvocationTarget[];
   status: AgentStatus;
   max_concurrent_tasks: number;
+  /**
+   * Session context gate (RUYI-107). Ceiling, in tokens, for a resumable
+   * session before the platform starts a fresh one; `0` disables the gate.
+   *
+   * Optional because a server predating RUYI-107 omits both fields — the UI
+   * must render "unsupported" rather than a misleading default in that case.
+   */
+  session_max_context_tokens?: number;
+  /**
+   * Percentage of `session_max_context_tokens` at which the platform switches
+   * early rather than waiting for the hard ceiling. See above for optionality.
+   */
+  session_compact_pct?: number;
   model: string;
   /**
    * Runtime-native reasoning/effort token (e.g. Claude's
@@ -653,6 +666,13 @@ export interface CreateAgentRequest {
   /** Invocation grants — see `AgentInvocationTargetInput`. */
   invocation_targets?: AgentInvocationTargetInput[];
   max_concurrent_tasks?: number;
+  /**
+   * Session context gate (RUYI-107). Omitted (or null) takes the platform
+   * default — NOT zero, which would create the agent with the gate disabled.
+   */
+  session_max_context_tokens?: number;
+  /** See `session_max_context_tokens` for the omission semantics. */
+  session_compact_pct?: number;
   model?: string;
   /** Optional runtime-native reasoning/effort token. See `Agent.thinking_level`. */
   thinking_level?: string;
@@ -780,6 +800,13 @@ export interface UpdateAgentRequest {
   invocation_targets?: AgentInvocationTargetInput[];
   status?: AgentStatus;
   max_concurrent_tasks?: number;
+  /**
+   * Session context gate (RUYI-107). Omitting the field leaves the stored
+   * value untouched; sending `0` deliberately disables the gate.
+   */
+  session_max_context_tokens?: number;
+  /** See `session_max_context_tokens` for the omission semantics. */
+  session_compact_pct?: number;
   model?: string;
   /**
    * Runtime-native reasoning/effort token. Tri-state semantics (MUL-2339):
