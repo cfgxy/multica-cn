@@ -261,3 +261,111 @@ func TestWithdrawAndPrivateReadRejectForeignWorkspaceVersion(t *testing.T) {
 func containsForeignPrompt(body string) bool {
 	return strings.Contains(body, "carefully tuned prompt")
 }
+
+// The idempotent early returns on publish and withdraw are the RUYI-100 P1-1
+// finding: both answered 200 with the row — content included — from a branch
+// that stood BEFORE the authority check. Anyone holding a version id could
+// "retry" a request they never made and be handed a private or withdrawn
+// prompt body from a workspace they have no part in.
+//
+// Every case here must be 404 rather than 403, for the reason the rest of this
+// file gives: a rejection that distinguishes "exists but forbidden" from "no
+// such id" is an enumeration oracle.
+func TestIdempotentPublishAndWithdrawRejectForeignWorkspaceVersion(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	foreignWorkspaceID, foreignUserID, foreignSquadID := foreignPromptWorkspace(t, "prompt-xws-idempotent")
+
+	// One frozen version per state the early returns answer for. Each is a row
+	// the caller has no authority over whatsoever.
+	newVersion := func(version int, state, visibility string) string {
+		t.Helper()
+		const content = "the foreign squad's own carefully tuned prompt"
+		cols := testutil.Cols{
+			"series_id":              foreignSquadID,
+			"kind":                   "squad_prompt",
+			"version":                version,
+			"source_workspace_id":    foreignWorkspaceID,
+			"source_type":            "squad",
+			"source_id":              foreignSquadID,
+			"publisher_user_id":      foreignUserID,
+			"publisher_display_name": "Foreign Owner",
+			"content":                content,
+			"content_sha256":         sha256Hex(content),
+			"name":                   "Foreign Asset",
+			"summary":                "published by a workspace the caller has no part in",
+			"license_code":           "cc0",
+			"state":                  state,
+			"visibility":             visibility,
+			"scanner_revision":       "test",
+			"scanned_at":             testutil.Raw("now()"),
+			"published_at":           testutil.Raw("now()"),
+		}
+		if state == "withdrawn" {
+			cols["withdrawn_at"] = testutil.Raw("now()")
+			cols["withdrawn_by"] = foreignUserID
+		}
+		return dbfx.Insert(t, "marketplace_prompt_version", cols)
+	}
+
+	privateID := newVersion(1, promptStatePublished, promptVisibilityPrivate)
+	withdrawnID := newVersion(2, promptStateWithdrawn, promptVisibilityPublic)
+	liveID := newVersion(3, promptStatePublished, promptVisibilityPublic)
+
+	cases := []struct {
+		name      string
+		handler   func(http.ResponseWriter, *http.Request)
+		versionID string
+		route     string
+		body      any
+	}{
+		// A private published version: the visibility the row already has, so
+		// this is the "retry" shape that answered 200 with the body.
+		{"publish private same visibility", testHandler.PublishPromptVersion, privateID, "publish", map[string]any{"public": false}},
+		// A different visibility answers 409 on the owner's own row; a foreign
+		// caller must not even learn which of the two it would have been.
+		{"publish private other visibility", testHandler.PublishPromptVersion, privateID, "publish", map[string]any{"public": true}},
+		{"publish withdrawn", testHandler.PublishPromptVersion, withdrawnID, "publish", map[string]any{"public": true}},
+		// P2-2, same root cause: the body is public here, so the leak is
+		// smaller, but the branch is identical and closes with the rest.
+		{"publish live same visibility", testHandler.PublishPromptVersion, liveID, "publish", map[string]any{"public": true}},
+		{"withdraw already withdrawn", testHandler.WithdrawPromptVersion, withdrawnID, "withdraw", nil},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			code, raw := callPromptAsContextOwner(t, tc.handler, http.MethodPost,
+				"/api/marketplace/prompt-versions/"+tc.versionID+"/"+tc.route, tc.body,
+				map[string]string{"id": tc.versionID})
+			if code != http.StatusNotFound {
+				t.Fatalf("expected 404, got %d: %s", code, raw)
+			}
+			if containsForeignPrompt(raw) {
+				t.Fatalf("the rejection leaked the foreign prompt body: %s", raw)
+			}
+			// Private metadata must not travel either: a 404 that named the
+			// asset would confirm the id and its publisher.
+			if strings.Contains(raw, "Foreign Asset") || strings.Contains(raw, "Foreign Owner") {
+				t.Fatalf("the rejection leaked private metadata: %s", raw)
+			}
+		})
+	}
+
+	// The rows are untouched: no state flip, no visibility change.
+	for _, want := range []struct {
+		id, state, visibility string
+	}{
+		{privateID, promptStatePublished, promptVisibilityPrivate},
+		{withdrawnID, promptStateWithdrawn, promptVisibilityPublic},
+		{liveID, promptStatePublished, promptVisibilityPublic},
+	} {
+		var state, visibility string
+		dbfx.QueryRow(t, `SELECT state, visibility FROM marketplace_prompt_version WHERE id = $1`, want.id).
+			Scan(&state, &visibility)
+		if state != want.state || visibility != want.visibility {
+			t.Fatalf("row %s moved: state=%q visibility=%q, want %q/%q",
+				want.id, state, visibility, want.state, want.visibility)
+		}
+	}
+}

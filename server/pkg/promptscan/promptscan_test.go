@@ -619,3 +619,69 @@ func TestValueEndsOnlyAtItsOwnQuoteIdentity(t *testing.T) {
 		}
 	}
 }
+
+// A credential field name carries a QUALIFIER far more often than not:
+// `db_pass`, `stage_pwd`, `adminPassword`. The rule used to enumerate the
+// qualified forms it happened to think of, so the QA reproduction
+// `{\"db_pass\": \"<real>\"}` matched nothing and published into the
+// cross-workspace catalog (RUYI-100 P1-2). The escaped-JSON variants are the
+// exact shape that reproduction used.
+func TestScanDetectsQualifiedPasswordFieldNames(t *testing.T) {
+	const secret = "Sup3rLongStageValue-not-real"
+	cases := []struct {
+		name    string
+		content string
+	}{
+		{"qa reproduction", `Payload: {\"db_pass\": \"` + secret + `\", \"note\": \"line1\\nline2\"}`},
+		{"json db_pass", `{"db_pass": "` + secret + `"}`},
+		{"json underscore pwd", `{"stage_pwd": "` + secret + `"}`},
+		{"escaped json db_pass", `{\"db_pass\":\"` + secret + `\"}`},
+		{"escaped json admin_pwd", `{\"admin_pwd\": \"` + secret + `\"}`},
+		{"camel case adminPassword", `{"adminPassword": "` + secret + `"}`},
+		{"camel case dbPass", `{"dbPass": "` + secret + `"}`},
+		{"hyphenated", `stage-pass: ` + secret},
+		{"env file", "STAGE_PWD=" + secret},
+		{"yaml qualified passphrase", "ssh:\n  key_passphrase: " + secret},
+		{"bare password still blocks", `{"password": "` + secret + `"}`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := Scan(tc.content)
+			if res.OK() {
+				t.Fatalf("%s must be detected, content %q passed the gate", tc.name, tc.content)
+			}
+			blob, err := json.Marshal(res)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if strings.Contains(string(blob), secret) {
+				t.Fatalf("serialised result leaked the value: %s", blob)
+			}
+		})
+	}
+}
+
+// The counterweight to the case above. Widening a field name to accept a
+// qualifier is exactly the change that starts matching ordinary words ending in
+// one — `bypass`, `compass`, `surpass` — and an abbreviation like `pass` is a
+// common English noun on its own. None of these may block, or a publisher
+// writing about a review pass could not publish at all.
+func TestScanDoesNotBlockQualifierLookalikes(t *testing.T) {
+	cases := []string{
+		"On the second pass: re-read the diff before commenting.",
+		"Do not bypass: the confirmation dialog is there on purpose.",
+		"The compass: north is up.",
+		"Reviewers surpass: the bar is high.",
+		// Released values under a qualified name keep their existing semantics.
+		`{"db_pass": "${DB_PASSWORD}"}`,
+		`{"db_pass": null}`,
+		`{"db_pass": ""}`,
+		"stage_pwd: <replace-me>",
+	}
+	for _, content := range cases {
+		if res := Scan(content); !res.OK() {
+			t.Errorf("content %q must not block, got %+v", content, res.Findings)
+		}
+	}
+}

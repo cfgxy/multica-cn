@@ -734,6 +734,18 @@ func (h *Handler) PublishPromptVersion(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if draft.State != promptStateDraft {
+		// Authority BEFORE the idempotent answers below. Those answers describe a
+		// row — including its content — and they used to be reachable by anyone
+		// who knew the id, so a foreign workspace could read a private or
+		// withdrawn prompt body by "retrying" a publish it never made. The draft
+		// path re-derives authority from the source object further down; a frozen
+		// row has no source authority left to re-derive, so it uses the same
+		// visibility test the read path uses, and fails the same way: 404, never
+		// 403, so probing cannot confirm the id exists.
+		if !h.promptVersionVisibleToPublisher(r, draft) {
+			writeError(w, http.StatusNotFound, "prompt version not found")
+			return
+		}
 		if draft.State == promptStatePublished {
 			// A retry asking for the visibility the row already has is the
 			// client repeating itself, and answering 200 is right.
@@ -930,11 +942,16 @@ func (h *Handler) WithdrawPromptVersion(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusNotFound, "prompt version not found")
 		return
 	}
-	if version.State == promptStateWithdrawn {
-		writeJSON(w, http.StatusOK, promptVersionToResponse(version, true))
+	// Authority first, idempotence second. The already-withdrawn early return
+	// answers 200 with the row's content, and standing before it meant a foreign
+	// workspace could read a withdrawn prompt body by "retrying" a withdrawal it
+	// never made. A retry is only a retry for someone who could have made the
+	// original request.
+	if !h.canWithdrawPromptVersion(w, r, version) {
 		return
 	}
-	if !h.canWithdrawPromptVersion(w, r, version) {
+	if version.State == promptStateWithdrawn {
+		writeJSON(w, http.StatusOK, promptVersionToResponse(version, true))
 		return
 	}
 
