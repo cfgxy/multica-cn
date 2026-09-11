@@ -17,6 +17,7 @@ import { useCallback, useEffect, useRef } from "react";
 import {
   ActivityIndicator,
   Alert,
+  InteractionManager,
   Linking,
   View,
 } from "react-native";
@@ -55,6 +56,10 @@ import { getWebUrl } from "@/data/server-store";
 import { useViewedIssuesStore } from "@/data/viewed-issues-store";
 import { useCommentSelectStore } from "@/data/comment-select-store";
 import { useReplyTargetStore } from "@/data/stores/reply-target-store";
+import {
+  issuePickerHref,
+  type IssuePickerField,
+} from "@/lib/issue-picker-routes";
 import i18n from "i18next";
 import { useT } from "@/lib/use-t";
 
@@ -151,6 +156,29 @@ export default function IssueDetail() {
       router.push(`/${wsSlug}/issue/${issue.id}/pull-requests`);
     }
   }, [wsSlug, issue]);
+  // Quick property setters (RUYI-129). The header menu reuses the very
+  // same formSheet picker routes the attribute chip row opens — one route
+  // table (`lib/issue-picker-routes.ts`), so both entry points can never
+  // drift apart on status catalog, assignee polymorphism, or priority
+  // enum coverage. Mirrors web, where the 3-dot menu and the detail
+  // sidebar drive the same pickers
+  // (packages/views/issues/actions/issue-actions-menu-items.tsx).
+  //
+  // Why deferred: @rn-primitives' DropdownMenuItem calls
+  // `onOpenChange(false)` synchronously before our `onPress`, so the
+  // popover unmount and the formSheet presentation would land in the same
+  // frame — iOS drops the presentation when its presenting hierarchy is
+  // mid-teardown. `runAfterInteractions` pushes once the dismiss finishes,
+  // the same ordering `project/new.tsx` uses after `router.back()`.
+  const openPicker = useCallback(
+    (field: IssuePickerField) => {
+      const href = issuePickerHref(field, wsSlug, issue?.id);
+      if (!href) return;
+      InteractionManager.runAfterInteractions(() => router.push(href));
+    },
+    [wsSlug, issue?.id],
+  );
+
   const onDelete = useCallback(() => {
     if (!issue) return;
     confirmDelete(issue, () =>
@@ -212,6 +240,28 @@ export default function IssueDetail() {
                         />
                       </DropdownMenuTrigger>
                       <DropdownMenuContent align="end" className="w-44">
+                        {/* Quick property setters first — they're the
+                         *  frequent actions, and the group ordering
+                         *  mirrors web's menu (status / priority /
+                         *  assignee ahead of the pin / copy / delete
+                         *  block). */}
+                        <DropdownMenuItem
+                          onPress={() => openPicker("assignee")}
+                        >
+                          <Text>{t("actions.assignee", "Assignee")}</Text>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onPress={() => openPicker("status")}>
+                          <Text>{t("actions.status", "Status")}</Text>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem onPress={() => openPicker("project")}>
+                          <Text>{t("detail.prop_project", "Project")}</Text>
+                        </DropdownMenuItem>
+                        <DropdownMenuItem
+                          onPress={() => openPicker("priority")}
+                        >
+                          <Text>{t("actions.priority", "Priority")}</Text>
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
                         <DropdownMenuItem onPress={onTogglePin}>
                           <Text>{isPinned ? t("detail.unpin_tooltip", "Unpin from sidebar") : t("detail.pin_tooltip", "Pin to sidebar")}</Text>
                         </DropdownMenuItem>
