@@ -24,12 +24,12 @@
  *     shared fields (project/priority/due) but not the prompt text. Web
  *     copies the prompt into the manual description on switch; mobile v1
  *     doesn't.
- *   - No prompt attachments: the quick-create upload pipeline is a web
- *     editor affordance; mobile v1 submits prompt text only.
+ *   - Mentions render as removable chips and serialize before the visible
+ *     prompt because RN TextInput cannot host web's inline mention nodes.
  *   - Success closes the screen without a toast (the manual form does the
  *     same); web shows a "sent" toast in its long-lived dialog.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { Alert, Pressable, ScrollView, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
@@ -46,6 +46,10 @@ import { AutosizeTextArea } from "@/components/ui/autosize-textarea";
 import { Text } from "@/components/ui/text";
 import { SubmitIssueButton } from "@/components/issue/submit-issue-button";
 import { QuickCreateAttributeRow } from "@/components/issue/quick-create-attribute-row";
+import { AttachmentZone } from "@/components/issue/attachment-zone";
+import { MentionSuggestionBar } from "@/components/issue/mention-suggestion-bar";
+import { MarkdownToolbar } from "@/components/editor/markdown-toolbar";
+import { useFileAttach } from "@/components/editor/use-file-attach";
 import { runtimeListOptions } from "@/data/queries/runtimes";
 import { memberListOptions } from "@/data/queries/members";
 import { agentListOptions } from "@/data/queries/agents";
@@ -61,6 +65,8 @@ import {
   visibleQuickCreateActors,
 } from "@/lib/quick-create";
 import { useActorLookup } from "@/data/use-actor-name";
+import { completedAttachmentIds } from "@/lib/attachment-zone";
+import { useMentionInput } from "@/lib/use-mention-input";
 import { useT } from "@/lib/use-t";
 
 export function QuickCreatePanel() {
@@ -117,7 +123,15 @@ export function QuickCreatePanel() {
     [draftActor, visible],
   );
 
-  const [prompt, setPrompt] = useState("");
+  const prompt = useMentionInput({ mentionMode: "chips" });
+  const {
+    attachments,
+    pickAndUploadImages,
+    pickAndUploadFiles,
+    removeAttachment,
+    retryAttachment,
+    uploading,
+  } = useFileAttach();
 
   // Daemon CLI version gate — same pure checks web runs pre-submit (the
   // server re-validates as the trust boundary). The fields gate only
@@ -164,22 +178,24 @@ export function QuickCreatePanel() {
 
   const canSubmit =
     !isSubmitting &&
+    !uploading &&
     !versionBlocked &&
-    prompt.trim().length > 0 &&
+    prompt.text.trim().length > 0 &&
     actor !== null;
 
   const onSubmit = useCallback(async () => {
-    if (!actor || versionBlocked) return;
-    const trimmed = prompt.trim();
-    if (trimmed.length === 0) return;
+    if (!actor || versionBlocked || uploading) return;
+    if (prompt.text.trim().length === 0) return;
+    const serializedPrompt = prompt.serialize().trim();
     try {
       await quickCreate.mutateAsync(
         buildQuickCreateBody({
           actor,
-          prompt: trimmed,
+          prompt: serializedPrompt,
           projectId: project?.id ?? null,
           priority,
           dueDate,
+          attachmentIds: completedAttachmentIds(attachments),
         }),
       );
       setLastActor(actor);
@@ -235,7 +251,9 @@ export function QuickCreatePanel() {
   }, [
     actor,
     versionBlocked,
+    uploading,
     prompt,
+    attachments,
     project,
     priority,
     dueDate,
@@ -326,8 +344,10 @@ export function QuickCreatePanel() {
           )}
 
           <AutosizeTextArea
-            value={prompt}
-            onChangeText={setPrompt}
+            value={prompt.text}
+            onChangeText={prompt.handlers.onChangeText}
+            selection={prompt.selection}
+            onSelectionChange={prompt.handlers.onSelectionChange}
             placeholder={t(
               "create_issue.agent.prompt_placeholder",
               'Tell the agent what to do, e.g. "let Bohan fix the inbox loading slowness"',
@@ -335,8 +355,23 @@ export function QuickCreatePanel() {
             className="text-lg leading-6"
             minHeight={96}
             maxHeight={240}
-            editable={!isSubmitting}
+            editable={!isSubmitting && !uploading}
             autoFocus
+          />
+
+          <AttachmentZone
+            mentions={prompt.markers}
+            attachments={attachments}
+            onRemoveMention={prompt.removeMention}
+            onRemoveAttachment={removeAttachment}
+            onRetryAttachment={retryAttachment}
+          />
+
+          <MarkdownToolbar
+            onAt={prompt.handlers.onAtButtonPress}
+            onImage={pickAndUploadImages}
+            onFile={pickAndUploadFiles}
+            disabled={isSubmitting || uploading}
           />
 
           <QuickCreateAttributeRow />
@@ -345,6 +380,7 @@ export function QuickCreatePanel() {
             {tCommon("mobile.create_issue.smart_hint", "The agent drafts the title and description — you'll get an inbox notification when it's done.")}
           </Text>
         </ScrollView>
+        <MentionSuggestionBar {...prompt.suggestionBar} />
       </KeyboardAvoidingView>
     </>
   );

@@ -95,6 +95,7 @@ export interface QuickCreateBodyInput {
   projectId: string | null;
   priority: IssuePriority;
   dueDate: string | null;
+  attachmentIds: string[];
 }
 
 /**
@@ -109,6 +110,7 @@ export function buildQuickCreateBody({
   projectId,
   priority,
   dueDate,
+  attachmentIds,
 }: QuickCreateBodyInput): {
   agent_id?: string;
   squad_id?: string;
@@ -116,6 +118,7 @@ export function buildQuickCreateBody({
   project_id?: string;
   priority?: IssuePriority;
   due_date?: string;
+  attachment_ids?: string[];
 } {
   return {
     ...(actor.type === "agent" ? { agent_id: actor.id } : { squad_id: actor.id }),
@@ -123,5 +126,6 @@ export function buildQuickCreateBody({
     ...(projectId !== null ? { project_id: projectId } : {}),
     ...(priority !== "none" ? { priority } : {}),
     ...(dueDate !== null ? { due_date: dueDate } : {}),
+    ...(attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : {}),
   };
 }
