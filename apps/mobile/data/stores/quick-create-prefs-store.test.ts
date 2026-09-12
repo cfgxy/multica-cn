@@ -240,6 +240,22 @@ describe("persistence completion semantics", () => {
     await restarted.ensureQuickCreateActorMemoryHydrated();
     expect(restarted.getLastQuickCreateActor("srv-1", "ws-a")).toBeNull();
   });
+
+  it("waits for hydration before recording a successful create", async () => {
+    const seed = await freshStore();
+    await seed.setLastQuickCreateActor("srv-1", "ws-a", SQUAD);
+
+    backend.readDelayTicks = 3;
+    const mod = await coldStart();
+
+    await mod.setLastQuickCreateActor("srv-1", "ws-a", AGENT);
+
+    for (let i = 0; i < 10; i += 1) await tick();
+    expect(mod.getLastQuickCreateActor("srv-1", "ws-a")).toEqual(AGENT);
+    const restarted = await coldStart();
+    await restarted.ensureQuickCreateActorMemoryHydrated();
+    expect(restarted.getLastQuickCreateActor("srv-1", "ws-a")).toEqual(AGENT);
+  });
 });
 
 describe("hydration status", () => {

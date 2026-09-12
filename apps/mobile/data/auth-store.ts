@@ -130,7 +130,11 @@ export const useAuthStore = create<AuthState>((set) => {
     // not resolve while the previous account's pick is still on disk — and
     // after `set({ user: null })`, so a late create callback cannot win the
     // race and write the entry back in.
-    await clearQuickCreateActorMemory(activeServerId);
+    try {
+      await clearQuickCreateActorMemory(activeServerId);
+    } catch {
+      // Preference cleanup must not keep an authenticated session alive.
+    }
     await clearToken(activeServerId);
     api.setToken(null);
   },
