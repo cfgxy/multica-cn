@@ -388,10 +388,39 @@ describe("executeNotificationAction", () => {
     expect(harness.handlers.navigate).toHaveBeenCalledWith("replace", "/login");
   });
 
+  it("keeps the user in place when the confirmed source server is no longer configured", async () => {
+    const harness = createHarness();
+    vi.mocked(harness.handlers.switchServer).mockResolvedValue({
+      kind: "unavailable",
+    });
+
+    await executeNotificationAction(
+      {
+        kind: "confirm-server",
+        route: "/other/issue/issue-1",
+        serverId: "server-b",
+        workspaceSlug: "other",
+        serverLabel: "Server B",
+        workspaceLabel: "Other",
+      },
+      harness.handlers,
+    );
+    await harness.serverConfirmation()?.();
+
+    expect(harness.handlers.showUnavailable).toHaveBeenCalledWith({
+      kind: "unavailable",
+      reason: "server-not-configured",
+    });
+    expect(harness.handlers.navigate).not.toHaveBeenCalled();
+  });
+
   it("keeps unavailable notifications out of navigation", async () => {
     const harness = createHarness();
 
-    await executeNotificationAction({ kind: "unavailable" }, harness.handlers);
+    await executeNotificationAction(
+      { kind: "unavailable", reason: "missing-server-id" },
+      harness.handlers,
+    );
 
     expect(harness.handlers.showUnavailable).toHaveBeenCalledOnce();
     expect(harness.handlers.navigate).not.toHaveBeenCalled();

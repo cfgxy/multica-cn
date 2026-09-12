@@ -146,28 +146,26 @@ describe("resolveNotificationTap", () => {
         { ...payload, server_id: "srv_gone" },
         identity(),
       ),
-    ).toEqual({ kind: "unavailable" });
+    ).toEqual({ kind: "unavailable", reason: "server-not-configured" });
   });
 
-  it("treats a legacy payload without server_id as the active server", () => {
+  it("fails closed for a legacy payload without server_id, even with a matching workspace slug", () => {
     const legacy = {
       inbox_id: "ib_1",
       issue_id: "iss_1",
       workspace_slug: "acme",
     };
-    expect(resolveNotificationTap(legacy, identity())).toEqual({
-      kind: "open",
-      route: "/(app)/acme/issue/iss_1",
-      workspaceSlug: "acme",
-    });
     expect(
       resolveNotificationTap(
         legacy,
-        identity({ currentWorkspaceSlug: "other" }),
+        identity({
+          activeServerId: SERVER_B.id,
+          currentWorkspaceSlug: "acme",
+        }),
       ),
-    ).toMatchObject({
-      kind: "confirm-workspace",
-      workspaceSlug: "acme",
+    ).toEqual({
+      kind: "unavailable",
+      reason: "missing-server-id",
     });
   });
 

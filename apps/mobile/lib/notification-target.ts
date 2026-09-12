@@ -18,8 +18,8 @@
  * session the workspace slug is scoped to.
  *
  * Legacy notifications (posted before this change) carry no `server_id`.
- * They retain the previous behavior and use the active server, so upgrades do
- * not make existing notifications unusable. The workspace check still runs.
+ * Their source server cannot be verified, so they fail closed instead of
+ * risking an issue request against the currently active server.
  */
 
 export interface InboxNotificationData {
@@ -34,7 +34,7 @@ export interface InboxNotificationData {
 export interface NotificationTarget {
   issueId: string;
   workspaceSlug: string;
-  /** null for notifications posted before RUYI-131. */
+  /** null when the notification does not identify its source server. */
   serverId: string | null;
   /** Display snapshot captured at post time; null when unavailable. */
   workspaceName: string | null;
@@ -76,8 +76,11 @@ export type NotificationAction =
       serverLabel: string;
       workspaceLabel: string;
     }
-  /** The source server is no longer configured on this device. */
-  | { kind: "unavailable" };
+  /** Source identity is unavailable, so opening could target the wrong server. */
+  | {
+      kind: "unavailable";
+      reason: "missing-server-id" | "server-not-configured";
+    };
 
 /** Display snapshots ride in the notification payload; cap them so a long
  *  workspace name can't bloat every notification's data bag. */
@@ -141,15 +144,16 @@ export function resolveNotificationAction(
 ): NotificationAction {
   const { activeServerId, currentWorkspaceSlug, servers } = identity;
 
-  // Notifications posted before RUYI-131 lack server_id. Keep their prior
-  // current-server behavior while still confirming a workspace change.
-  const serverId = target.serverId ?? activeServerId;
+  if (!target.serverId) {
+    return { kind: "unavailable", reason: "missing-server-id" };
+  }
+  const serverId = target.serverId;
 
   if (serverId !== activeServerId) {
     const entry = servers.find((s) => s.id === serverId);
     // Source server deleted from the list since the notification was
     // posted — there is no session to restore and no address to reach.
-    if (!entry) return { kind: "unavailable" };
+    if (!entry) return { kind: "unavailable", reason: "server-not-configured" };
     return {
       kind: "confirm-server",
       route: notificationRootRoute(target),
