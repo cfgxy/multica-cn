@@ -13,17 +13,17 @@ export function buildInboxNotificationOrigin({
   workspaceId: string | null | undefined;
   servers: readonly ServerEntry[];
   workspaces: readonly Workspace[] | undefined;
-}): InboxNotificationOrigin {
+}): InboxNotificationOrigin | null {
   const activeServer = servers.find((server) => server.id === serverId);
   const sourceWorkspace = workspaces?.find(
     (workspace) => workspace.id === workspaceId,
   );
+  if (!sourceWorkspace) return null;
+
   return {
     serverId,
-    // An unknown source workspace must not borrow the active slug. A linkless
-    // notification is recoverable; a mismatched issue and workspace can 404.
-    workspaceSlug: sourceWorkspace?.slug ?? "",
-    workspaceName: truncateLabel(sourceWorkspace?.name),
+    workspaceSlug: sourceWorkspace.slug,
+    workspaceName: truncateLabel(sourceWorkspace.name),
     serverName: truncateLabel(activeServer?.name),
   };
 }

@@ -103,7 +103,7 @@ export async function presentInboxNotification(
   bodyText: string,
   origin: InboxNotificationOrigin,
 ): Promise<void> {
-  if (!item.issue_id) return;
+  if (!item.issue_id || !origin.workspaceSlug) return;
   try {
     await Notifications.scheduleNotificationAsync({
       content: {
