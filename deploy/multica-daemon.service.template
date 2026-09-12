@@ -1,0 +1,29 @@
+[Unit]
+Description=Multica local agent runtime daemon
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@HOME@
+# bash -lc 包装：以登录 shell 加载用户 bashrc/profile——环境变量（PATH、
+# nvm、API key、未来新增的 JAVA_HOME 等）的单一来源是用户自己的 shell 配置，
+# systemd 侧不做硬编码，换机器/换用户零修改。
+ExecStart=/bin/bash -lc 'exec @BIN@ daemon start --foreground'
+ExecStop=@BIN@ daemon stop
+# 资源护栏（按部署机规格通过 make 变量覆盖：CPU_QUOTA / MEMORY_HIGH / MEMORY_MAX）：
+# CPU 软上限；内存软顶限流，硬顶触发 cgroup 内 OOM——配合 multica-oom-guard
+# 的「杀子保主」机制（主进程钉 -1000、Agent/MCP 进程 0、命令类子进程 +500），
+# 内存告急时被杀的只有命令类子进程，daemon 与 Agent 会话存活。
+CPUQuota=@CPU_QUOTA@
+MemoryHigh=@MEMORY_HIGH@
+MemoryMax=@MEMORY_MAX@
+# 双保险：oom-guard 服务每秒把 MainPID 钉 -1000（内核 OOM 永不选中 daemon 本体）
+OOMScoreAdjust=-1000
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
