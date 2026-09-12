@@ -1,4 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev daemon-build daemon-install daemon-update
+.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev daemon-build daemon-install daemon-update daemon-preflight
 
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
@@ -174,6 +174,10 @@ daemon-install: daemon-build ## Install daemon binary + systemd units as the INV
 	sudo systemctl enable --now multica-oom-guard.service
 	sudo systemctl restart multica-daemon.service
 	@systemctl --no-pager --lines=0 status multica-daemon.service
+	@bash deploy/oom-preflight.sh || true
+
+daemon-preflight: ## Read-only check of kernel/system prerequisites for the OOM guard
+	@bash deploy/oom-preflight.sh
 
 daemon-update: daemon-build ## Update the daemon binary only, then graceful restart (no unit changes)
 	install -m755 server/bin/multica $(HOME)/.local/bin/multica
