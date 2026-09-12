@@ -10,7 +10,7 @@
  * `MentionSuggestionBar` (it has to sit above the keyboard, outside the
  * scroll view).
  */
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { View } from "react-native";
 import { AutosizeTextArea } from "@/components/ui/autosize-textarea";
 import { MIN_BODY_INPUT_HEIGHT_PX } from "@/components/ui/input-tokens";
@@ -22,10 +22,12 @@ export function DescriptionField({
   description,
   disabled,
   placeholder,
+  leadingContent,
 }: {
   description: UseMentionInputReturn;
   disabled: boolean;
   placeholder?: string;
+  leadingContent?: ReactNode;
 }) {
   const { t } = useT("issues");
   const [focused, setFocused] = useState(false);
@@ -45,6 +47,7 @@ export function DescriptionField({
           : "border-transparent bg-secondary/40",
       )}
     >
+      {leadingContent}
       <AutosizeTextArea
         value={description.text}
         onChangeText={description.handlers.onChangeText}

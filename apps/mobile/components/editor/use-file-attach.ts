@@ -1,40 +1,25 @@
 /**
- * Picker + upload glue for the description editor's image / file buttons
- * (new-issue, RUYI-42). Mirrors web's create-issue upload flow: pick →
- * stream to `/api/upload-file` → the caller inserts the durable markdown
- * link into the body and binds `attachment_ids` at submit time
- * (`referencedAttachmentIds`).
+ * Shared picker and upload state for issue-create and message-composer
+ * attachment zones. Every picked asset is rendered immediately, then moves
+ * through uploading -> completed/failed without changing its join order.
  *
- * Each call:
- *   1. Opens the appropriate picker — MULTI-SELECT on both (image library
- *      `allowsMultipleSelection`, document picker `multiple`).
- *   2. On user-cancel, resolves `[]` (caller should treat as no-op — do
- *      not insert anything into the text).
- *   3. Oversize files are split off via `partitionOversize`, surfaced as
- *      ONE alert naming them, and never uploaded — their siblings proceed
- *      (web parity: a failed file never blocks the rest of a multi-pick).
- *   4. Remaining assets upload CONCURRENTLY and resolve to the successful
- *      `Attachment`s in PICK order; each failure alerts individually and
- *      just drops out of the result. Callers treat "fewer results than
- *      picked" as "some failed", never as cancel.
- *
- * `uploading` is an in-flight COUNT, not a boolean: a boolean flips false
- * as soon as the FIRST upload's finally runs while N-1 are still mid-
- * request, which would unblock submit while uploads are still in flight
- * and strand their attachment ids unbound (MUL-3339, mobile mirror).
+ * `inFlight` remains a count rather than a boolean so concurrent uploads cannot
+ * unblock submit when only the first request settles. Removing an uploading
+ * item abandons that result and removes it from the effective count; a late
+ * response is ignored instead of re-inserting the attachment.
  */
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Alert } from "react-native";
 import * as ImagePicker from "expo-image-picker";
 import * as DocumentPicker from "expo-document-picker";
-import { api, MAX_FILE_SIZE } from "@/data/api";
-import type { Attachment } from "@multica/core/types";
+import { api, MAX_FILE_SIZE, type FileAsset } from "@/data/api";
 import {
   assetFromDocumentPicker,
   assetFromImagePicker,
   partitionOversize,
   type PickedAsset,
 } from "@/lib/picked-asset";
+import type { AttachmentZoneItem } from "@/lib/attachment-zone";
 import { useT } from "@/lib/use-t";
 
 export interface UploadContext {
@@ -42,23 +27,29 @@ export interface UploadContext {
   commentId?: string;
 }
 
+interface UseFileAttachOptions {
+  uploadContext?: UploadContext;
+  alertOnError?: boolean;
+  onAttachmentsEnqueued?: () => void;
+}
+
+function makeLocalId(): string {
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
 /** One alert for the oversize part of a multi-pick. Filenames are user
- *  content — they ride below the translated size-limit sentence without
- *  needing their own keys. Shared by the composer's chip flow, which has
- *  the same "skip, don't block the siblings" rule. */
+ * content and follow the translated size-limit sentence. */
 export function useOversizeAlert() {
   const { t } = useT("common");
   return useCallback(
     (oversized: PickedAsset[]) => {
       if (oversized.length === 0) return;
-      const names = oversized.map((a) => a.name).join("\n");
+      const names = oversized.map((asset) => asset.name).join("\n");
       Alert.alert(
         t("composer.file_too_large_title", "File too large"),
         t(
           "composer.file_too_large_message",
           "Files must be smaller than {{size}} MB.",
-          // 100 是 MAX_FILE_SIZE 的字节数换算，不再写死在文案里——改上限
-          // 时只需改常量，四语文案自动跟随。
           { size: Math.floor(MAX_FILE_SIZE / (1024 * 1024)) },
         ) + (names ? `\n${names}` : ""),
       );
@@ -67,79 +58,192 @@ export function useOversizeAlert() {
   );
 }
 
-export function useFileAttach() {
+export function useFileAttach({
+  uploadContext,
+  alertOnError = true,
+  onAttachmentsEnqueued,
+}: UseFileAttachOptions = {}) {
   const { t } = useT("common");
   const onOversize = useOversizeAlert();
-  // In-flight COUNT (see module docstring for the MUL-3339 rationale).
+  const [attachments, setAttachments] = useState<AttachmentZoneItem[]>([]);
+  const attachmentsRef = useRef(attachments);
+  const activeUploadsRef = useRef(new Set<string>());
   const [inFlight, setInFlight] = useState(0);
 
-  const uploadAll = useCallback(
-    async (assets: PickedAsset[], ctx?: UploadContext): Promise<Attachment[]> => {
-      const results = await Promise.all(
-        assets.map(async (asset) => {
-          setInFlight((n) => n + 1);
-          try {
-            return await api.uploadFile(asset, ctx);
-          } catch (err) {
-            Alert.alert(
-              t("composer.upload_failed_title", "Upload failed"),
-              err instanceof Error
-                ? err.message
-                : t("unknown_error", "Unknown error"),
-            );
-            return null;
-          } finally {
-            setInFlight((n) => n - 1);
-          }
-        }),
+  const updateAttachments = useCallback(
+    (update: (current: AttachmentZoneItem[]) => AttachmentZoneItem[]) => {
+      setAttachments((current) => {
+        const next = update(current);
+        attachmentsRef.current = next;
+        return next;
+      });
+    },
+    [],
+  );
+
+  const finishUpload = useCallback((localId: string) => {
+    if (!activeUploadsRef.current.delete(localId)) return;
+    setInFlight((count) => Math.max(0, count - 1));
+  }, []);
+
+  const startUpload = useCallback(
+    async (localId: string, asset: FileAsset) => {
+      if (activeUploadsRef.current.has(localId)) return;
+      activeUploadsRef.current.add(localId);
+      setInFlight((count) => count + 1);
+      try {
+        const result = await api.uploadFile(asset, uploadContext);
+        if (!activeUploadsRef.current.has(localId)) return;
+        updateAttachments((current) =>
+          current.map((item) =>
+            item.localId === localId
+              ? {
+                  ...item,
+                  filename: result.filename,
+                  mimeType: result.content_type || item.mimeType,
+                  status: "completed",
+                  id: result.id,
+                  url: result.url,
+                  downloadUrl: result.download_url,
+                  error: undefined,
+                }
+              : item,
+          ),
+        );
+      } catch (err) {
+        if (!activeUploadsRef.current.has(localId)) return;
+        const message =
+          err instanceof Error ? err.message : t("unknown_error", "Unknown error");
+        updateAttachments((current) =>
+          current.map((item) =>
+            item.localId === localId
+              ? { ...item, status: "failed", error: message }
+              : item,
+          ),
+        );
+        if (alertOnError) {
+          Alert.alert(
+            t("composer.upload_failed_title", "Upload failed"),
+            message,
+          );
+        }
+      } finally {
+        finishUpload(localId);
+      }
+    },
+    [alertOnError, finishUpload, t, updateAttachments, uploadContext],
+  );
+
+  const enqueueAssets = useCallback(
+    (assets: PickedAsset[]) => {
+      const entries = assets.map((asset) => ({
+        localId: makeLocalId(),
+        asset,
+      }));
+      updateAttachments((current) => [
+        ...current,
+        ...entries.map(({ localId, asset }) => ({
+          localId,
+          localUri: asset.uri,
+          filename: asset.name,
+          mimeType: asset.type,
+          status: "uploading" as const,
+        })),
+      ]);
+      onAttachmentsEnqueued?.();
+      for (const { localId, asset } of entries) {
+        void startUpload(localId, asset);
+      }
+    },
+    [onAttachmentsEnqueued, startUpload, updateAttachments],
+  );
+
+  const pickAndUploadImages = useCallback(async () => {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 1,
+      allowsMultipleSelection: true,
+    });
+    if (result.canceled) return;
+    const assets = (result.assets ?? []).map(assetFromImagePicker);
+    const { ok, oversized } = partitionOversize(assets, MAX_FILE_SIZE);
+    onOversize(oversized);
+    if (ok.length > 0) enqueueAssets(ok);
+  }, [enqueueAssets, onOversize]);
+
+  const pickAndUploadFiles = useCallback(async () => {
+    const result = await DocumentPicker.getDocumentAsync({
+      type: "*/*",
+      copyToCacheDirectory: true,
+      multiple: true,
+    });
+    if (result.canceled) return;
+    const assets = (result.assets ?? []).map(assetFromDocumentPicker);
+    const { ok, oversized } = partitionOversize(assets, MAX_FILE_SIZE);
+    onOversize(oversized);
+    if (ok.length > 0) enqueueAssets(ok);
+  }, [enqueueAssets, onOversize]);
+
+  const removeAttachment = useCallback(
+    (localId: string) => {
+      if (activeUploadsRef.current.delete(localId)) {
+        setInFlight((count) => Math.max(0, count - 1));
+      }
+      updateAttachments((current) =>
+        current.filter((item) => item.localId !== localId),
       );
-      // Promise.all preserves pick order; failed entries drop out as null.
-      return results.filter((u): u is Attachment => u != null);
     },
-    [t],
+    [updateAttachments],
   );
 
-  const pickAndUploadImages = useCallback(
-    async (ctx?: UploadContext): Promise<Attachment[]> => {
-      const result = await ImagePicker.launchImageLibraryAsync({
-        // SDK 55: `MediaTypeOptions.Images` is supported (deprecation only
-        // hits SDK 56+). Stick with it until we upgrade.
-        mediaTypes: ImagePicker.MediaTypeOptions.Images,
-        quality: 1,
-        // RUYI-42: one picker pass, N attachments (Android 13+ photo picker).
-        allowsMultipleSelection: true,
+  const retryAttachment = useCallback(
+    (localId: string) => {
+      const item = attachmentsRef.current.find(
+        (candidate) => candidate.localId === localId,
+      );
+      if (!item || item.status !== "failed") return;
+      updateAttachments((current) =>
+        current.map((candidate) =>
+          candidate.localId === localId
+            ? { ...candidate, status: "uploading", error: undefined }
+            : candidate,
+        ),
+      );
+      void startUpload(localId, {
+        uri: item.localUri,
+        name: item.filename,
+        type: item.mimeType,
       });
-      if (result.canceled) return [];
-      const assets = (result.assets ?? []).map(assetFromImagePicker);
-      const { ok, oversized } = partitionOversize(assets, MAX_FILE_SIZE);
-      onOversize(oversized);
-      if (ok.length === 0) return [];
-      return uploadAll(ok, ctx);
     },
-    [onOversize, uploadAll],
+    [startUpload, updateAttachments],
   );
 
-  const pickAndUploadFiles = useCallback(
-    async (ctx?: UploadContext): Promise<Attachment[]> => {
-      const result = await DocumentPicker.getDocumentAsync({
-        type: "*/*",
-        copyToCacheDirectory: true,
-        // RUYI-42: one picker pass, N attachments.
-        multiple: true,
-      });
-      if (result.canceled) return [];
-      const assets = (result.assets ?? []).map(assetFromDocumentPicker);
-      const { ok, oversized } = partitionOversize(assets, MAX_FILE_SIZE);
-      onOversize(oversized);
-      if (ok.length === 0) return [];
-      return uploadAll(ok, ctx);
+  const clearAttachments = useCallback(() => {
+    const abandonedCount = activeUploadsRef.current.size;
+    activeUploadsRef.current.clear();
+    if (abandonedCount > 0) {
+      setInFlight((count) => Math.max(0, count - abandonedCount));
+    }
+    updateAttachments(() => []);
+  }, [updateAttachments]);
+
+  const restoreAttachments = useCallback(
+    (snapshot: AttachmentZoneItem[]) => {
+      activeUploadsRef.current.clear();
+      setInFlight(0);
+      updateAttachments(() => snapshot);
     },
-    [onOversize, uploadAll],
+    [updateAttachments],
   );
 
   return {
+    attachments,
     pickAndUploadImages,
     pickAndUploadFiles,
+    removeAttachment,
+    retryAttachment,
+    clearAttachments,
+    restoreAttachments,
     uploading: inFlight > 0,
   };
 }

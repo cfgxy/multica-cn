@@ -4,10 +4,10 @@
  *
  *   collapsed → pill button (configurable label / icon). Minimal vertical
  *               footprint so the list above gets the full screen.
- *   expanded  → optional reply chip → chip row (@ + image + file) →
+ *   expanded  → optional reply chip → attachment zone (@ + image + file) →
  *               plain TextInput → toolbar (`@ 📷 📎 ──── [➤ or Stop]`).
  *
- * Mentions / images / files all live in the chip row OUTSIDE the text
+ * Mentions / images / files all live in the attachment zone OUTSIDE the text
  * input. The input itself is a plain RN `<TextInput multiline>` — no
  * controlled selection, no inline overlays. On submit the composer
  * prepends mention markdown links to the typed text and attaches
@@ -50,27 +50,23 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
 import { router, type Href } from "expo-router";
 import * as Haptics from "expo-haptics";
-import * as ImagePicker from "expo-image-picker";
-import * as DocumentPicker from "expo-document-picker";
-import { api, MAX_FILE_SIZE } from "@/data/api";
 import { useMentionDraftStore } from "@/data/stores/mention-draft-store";
 import {
-  assetFromDocumentPicker,
-  assetFromImagePicker,
-  partitionOversize,
-} from "@/lib/picked-asset";
-import { useOversizeAlert } from "@/components/editor/use-file-attach";
+  canSubmitMessageDraft,
+  completedAttachmentIds,
+} from "@/lib/attachment-zone";
+import {
+  serializeMentionChips,
+  type MentionMarker,
+} from "@/lib/mention-serialize";
+import { useFileAttach } from "@/components/editor/use-file-attach";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { stripMarkdown } from "@/lib/strip-markdown";
 import { useT } from "@/lib/use-t";
 import { THEME } from "@/lib/theme";
 import { Text } from "@/components/ui/text";
 import { IconButton } from "@/components/ui/icon-button";
-import {
-  ComposerAttachmentRow,
-  type ComposerAttachmentItem,
-  type MentionChip,
-} from "@/components/issue/composer-attachment-row";
+import { AttachmentZone } from "@/components/issue/attachment-zone";
 
 export interface MessageComposerReplyTarget {
   actorName: string;
@@ -85,7 +81,7 @@ interface Props {
   onSubmit: (args: {
     content: string;
     attachmentIds: string[];
-    mentions: MentionChip[];
+    mentions: MentionMarker[];
   }) => Promise<void>;
 
   /** Push target for the `@` button. The picker route reads /
@@ -132,6 +128,10 @@ interface Props {
   disabled?: boolean;
   disabledReason?: string;
 
+  /** Issue comments require visible body text because the server rejects an
+   * empty comment body. Mentions and completed attachments never bypass it. */
+  requireVisibleText?: boolean;
+
   /** When true the composer renders flush at the bottom of its parent
    *  WITHOUT the KeyboardStickyView keyboard-aware lift + safe-area
    *  inset. Chat's parent owns its own KeyboardAvoidingView and
@@ -139,25 +139,6 @@ interface Props {
    *  apply them. Comment's parent does NOT handle keyboard, so the
    *  composer keeps the default `true`. */
   manageKeyboard?: boolean;
-}
-
-function makeLocalId(): string {
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-}
-
-/** Serialises mention chips into the markdown link form the backend
- *  regex parser recognises. The string lands at the START of the
- *  outgoing content; mobile can't position mentions inline because the
- *  TextInput is plain. Acceptable semantic difference vs web/desktop's
- *  rich editor (web supports anywhere-in-text). */
-function serializeMentions(chips: MentionChip[]): string {
-  return chips
-    .map((m) => {
-      const label =
-        m.type === "issue" ? m.name : m.type === "all" ? "@all" : `@${m.name}`;
-      return `[${label}](mention://${m.type}/${m.id})`;
-    })
-    .join(" ");
 }
 
 export function MessageComposer({
@@ -176,6 +157,7 @@ export function MessageComposer({
   renderStop,
   disabled = false,
   disabledReason,
+  requireVisibleText = false,
   manageKeyboard = true,
 }: Props) {
   const { t } = useT("common");
@@ -185,8 +167,24 @@ export function MessageComposer({
   const inputRef = useRef<TextInput>(null);
   const [expanded, setExpanded] = useState(false);
   const [internalText, setInternalText] = useState("");
-  const [attachments, setAttachments] = useState<ComposerAttachmentItem[]>([]);
   const [submitting, setSubmitting] = useState(false);
+  const focusInputAfterPick = useCallback(() => {
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, []);
+  const {
+    attachments,
+    pickAndUploadImages,
+    pickAndUploadFiles,
+    removeAttachment,
+    retryAttachment,
+    clearAttachments,
+    restoreAttachments,
+    uploading,
+  } = useFileAttach({
+    uploadContext,
+    alertOnError: false,
+    onAttachmentsEnqueued: focusInputAfterPick,
+  });
 
   // Hybrid controlled / uncontrolled pattern (React-canonical). Chat
   // passes `value`/`onChangeText` for cross-session draft persistence;
@@ -212,8 +210,6 @@ export function MessageComposer({
   const mentions = useMentionDraftStore((s) => s.mentions);
   const removeMention = useMentionDraftStore((s) => s.remove);
   const clearMentions = useMentionDraftStore((s) => s.clear);
-  // RUYI-42 multi-select: one shared alert for the oversize part of a pick.
-  const onOversize = useOversizeAlert();
 
   // Drop mention draft on composer unmount so navigating away doesn't
   // leak chips into the next composer's session.
@@ -232,13 +228,16 @@ export function MessageComposer({
     requestAnimationFrame(() => inputRef.current?.focus());
   }
 
-  const hasInFlightUpload = attachments.some((a) => a.status === "uploading");
-  const canSend =
-    !disabled &&
-    !isSending &&
-    !submitting &&
-    !hasInFlightUpload &&
-    (text.trim().length > 0 || mentions.length > 0);
+  const canSend = canSubmitMessageDraft({
+    text,
+    mentions,
+    attachments,
+    disabled,
+    isSending,
+    submitting,
+    requireVisibleText,
+  });
+  const toolsDisabled = disabled || submitting || uploading;
 
   const expand = useCallback(() => {
     if (disabled) return;
@@ -257,23 +256,14 @@ export function MessageComposer({
     const mentionsSnap = mentions;
     const attachmentsSnap = attachments;
 
-    const mentionMd = serializeMentions(mentionsSnap);
     const trimmed = textSnap.trim();
-    const content = mentionMd
-      ? trimmed
-        ? `${mentionMd} ${trimmed}`
-        : mentionMd
-      : trimmed;
-
-    const activeIds = attachmentsSnap
-      .filter((a) => a.status === "completed")
-      .map((a) => a.id)
-      .filter((id): id is string => !!id);
+    const content = serializeMentionChips(trimmed, mentionsSnap);
+    const activeIds = completedAttachmentIds(attachmentsSnap);
 
     // Optimistic clear: text + chips empty out immediately so the next
     // typing tick doesn't double-include them. Restored on rejection.
     setText("");
-    setAttachments([]);
+    clearAttachments();
     clearMentions();
     setSubmitting(true);
     Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light).catch(() => {});
@@ -293,139 +283,22 @@ export function MessageComposer({
       setExpanded(false);
     } catch {
       setText(textSnap);
-      setAttachments(attachmentsSnap);
+      restoreAttachments(attachmentsSnap);
       mentionsSnap.forEach((m) => useMentionDraftStore.getState().toggle(m));
     } finally {
       setSubmitting(false);
     }
-  }, [canSend, text, mentions, attachments, setText, clearMentions, onSubmit]);
-
-  /** Streams a picked asset to /api/upload-file, updating the matching
-   *  thumbnail's status as it goes. Pulled out so retry can call it
-   *  again without re-opening the picker. */
-  const startUpload = useCallback(
-    async (
-      localId: string,
-      asset: { uri: string; name: string; type: string },
-    ) => {
-      try {
-        const result = await api.uploadFile(asset, uploadContext);
-        setAttachments((prev) =>
-          prev.map((it) =>
-            it.localId === localId
-              ? {
-                  ...it,
-                  status: "completed",
-                  id: result.id,
-                  url: result.url,
-                  downloadUrl: result.download_url,
-                }
-              : it,
-          ),
-        );
-      } catch (err) {
-        const message =
-          err instanceof Error
-            ? err.message
-            : t("unknown_error", "Unknown error");
-        setAttachments((prev) =>
-          prev.map((it) =>
-            it.localId === localId
-              ? { ...it, status: "failed", error: message }
-              : it,
-          ),
-        );
-      }
-    },
-    // `t` 进依赖：兜底错误文案现在是译文，切语言后回调必须重建。
-    [uploadContext, t],
-  );
-
-  /** Add one chip per picked asset, then upload all of them concurrently —
-   *  RUYI-42 multi-select: one picker pass, N chips. Each chip carries its
-   *  own uploading → completed/failed status exactly like the single-pick
-   *  flow did. */
-  const enqueueAttachments = useCallback(
-    (picked: { uri: string; name: string; type: string }[]) => {
-      const entries = picked.map((asset) => {
-        const localId = makeLocalId();
-        return { localId, asset };
-      });
-      setAttachments((prev) => [
-        ...prev,
-        ...entries.map(({ localId, asset }) => ({
-          localId,
-          localUri: asset.uri,
-          filename: asset.name,
-          mimeType: asset.type,
-          status: "uploading" as const,
-        })),
-      ]);
-      requestAnimationFrame(() => inputRef.current?.focus());
-      return Promise.all(
-        entries.map(({ localId, asset }) => startUpload(localId, asset)),
-      );
-    },
-    [startUpload],
-  );
-
-  const onImagePress = useCallback(async () => {
-    const picker = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 1,
-      // RUYI-42: one picker pass, N chips (Android 13+ photo picker).
-      allowsMultipleSelection: true,
-    });
-    if (picker.canceled) return;
-    const assets = (picker.assets ?? []).map(assetFromImagePicker);
-    const { ok, oversized } = partitionOversize(assets, MAX_FILE_SIZE);
-    onOversize(oversized);
-    if (ok.length === 0) return;
-    await enqueueAttachments(
-      ok.map(({ uri, name, type }) => ({ uri, name, type })),
-    );
-  }, [enqueueAttachments, onOversize]);
-
-  const onFilePress = useCallback(async () => {
-    const picker = await DocumentPicker.getDocumentAsync({
-      type: "*/*",
-      copyToCacheDirectory: true,
-      // RUYI-42: one picker pass, N chips.
-      multiple: true,
-    });
-    if (picker.canceled) return;
-    const assets = (picker.assets ?? []).map(assetFromDocumentPicker);
-    const { ok, oversized } = partitionOversize(assets, MAX_FILE_SIZE);
-    onOversize(oversized);
-    if (ok.length === 0) return;
-    await enqueueAttachments(
-      ok.map(({ uri, name, type }) => ({ uri, name, type })),
-    );
-  }, [enqueueAttachments, onOversize]);
-
-  const onRemoveAttachment = useCallback((localId: string) => {
-    setAttachments((prev) => prev.filter((it) => it.localId !== localId));
-  }, []);
-
-  const onRetryAttachment = useCallback(
-    (localId: string) => {
-      const item = attachments.find((it) => it.localId === localId);
-      if (!item) return;
-      setAttachments((prev) =>
-        prev.map((it) =>
-          it.localId === localId
-            ? { ...it, status: "uploading", error: undefined }
-            : it,
-        ),
-      );
-      void startUpload(localId, {
-        uri: item.localUri,
-        name: item.filename,
-        type: item.mimeType,
-      });
-    },
-    [attachments, startUpload],
-  );
+  }, [
+    canSend,
+    text,
+    mentions,
+    attachments,
+    setText,
+    clearAttachments,
+    clearMentions,
+    onSubmit,
+    restoreAttachments,
+  ]);
 
   const onAtPress = useCallback(() => {
     Haptics.selectionAsync().catch(() => {});
@@ -521,12 +394,12 @@ export function MessageComposer({
       >
         {mentions.length > 0 || attachments.length > 0 ? (
           <View className="px-2 pt-2 pb-1">
-            <ComposerAttachmentRow
+            <AttachmentZone
               mentions={mentions}
               attachments={attachments}
               onRemoveMention={removeMention}
-              onRemoveAttachment={onRemoveAttachment}
-              onRetryAttachment={onRetryAttachment}
+              onRemoveAttachment={removeAttachment}
+              onRetryAttachment={retryAttachment}
             />
           </View>
         ) : null}
@@ -539,7 +412,7 @@ export function MessageComposer({
           placeholder={resolvedPlaceholder}
           placeholderTextColor={theme.mutedForeground}
           multiline
-          editable={!disabled}
+          editable={!disabled && !submitting && !uploading}
           className="px-4 pt-3 pb-1 text-base text-foreground"
           style={{ minHeight: 28, maxHeight: 140, textAlignVertical: "top" }}
         />
@@ -553,6 +426,7 @@ export function MessageComposer({
             iconSize={20}
             color={mentions.length > 0 ? theme.primary : undefined}
             onPress={onAtPress}
+            disabled={toolsDisabled}
             accessibilityLabel={t(
               "composer.mention_hint",
               "Mention someone or an issue",
@@ -562,14 +436,16 @@ export function MessageComposer({
           <IconButton
             name="image-outline"
             iconSize={20}
-            onPress={onImagePress}
+            onPress={pickAndUploadImages}
+            disabled={toolsDisabled}
             accessibilityLabel={t("composer.upload_image", "Upload image")}
             className="h-8 w-8"
           />
           <IconButton
             name="attach-outline"
             iconSize={20}
-            onPress={onFilePress}
+            onPress={pickAndUploadFiles}
+            disabled={toolsDisabled}
             accessibilityLabel={t("composer.upload_file", "Upload file")}
             className="h-8 w-8"
           />

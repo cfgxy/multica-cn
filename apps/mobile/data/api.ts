@@ -153,8 +153,7 @@ export interface LoginResponse {
 
 /** Smart-mode (agent quick-create) request body. Field-for-field mirror of
  *  the inline body type on web's `ApiClient.quickCreateIssue`
- *  (packages/core/api/client.ts); mobile v1 does not send parent_issue_id /
- *  attachment_ids (no parent-issue entry, no prompt attachments). */
+ *  (packages/core/api/client.ts). */
 export interface QuickCreateIssueRequest {
   agent_id?: string;
   squad_id?: string;
@@ -162,6 +161,7 @@ export interface QuickCreateIssueRequest {
   priority?: IssuePriority;
   due_date?: string;
   project_id?: string | null;
+  attachment_ids?: string[];
 }
 
 /** Mobile file payload for `uploadFile`. RN doesn't have a browser `File`
