@@ -21,6 +21,11 @@
  * Cleanup mirrors the last-assignee memory: logout (auth-store) and server
  * removal (server-store) drop the whole server subtree so the next login on
  * the same entry never inherits the previous account's pick.
+ *
+ * Every mutation and the hydration helper are awaitable on purpose: an
+ * unawaited AsyncStorage write is indistinguishable from a flushed one until
+ * the process dies, which is the exact failure this memory exists to
+ * prevent. See `flushed` for why TypeScript hides that promise.
  */
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
@@ -65,8 +70,23 @@ interface QuickCreateActorMemoryState {
     serverId: string,
     slug: string,
     actor: QuickCreateActorRef,
-  ) => void;
-  clearServer: (serverId: string) => void;
+  ) => Promise<void>;
+  clearServer: (serverId: string) => Promise<void>;
+}
+
+/**
+ * zustand's persist middleware wraps `set` so it returns the storage write's
+ * promise, but `StoreApi.setState` is declared `void`, so TypeScript hides
+ * that promise and an unawaited write looks exactly like a flushed one
+ * (zustand 5.0.12, `esm/middleware.mjs` — `set(...args); return setItem()`).
+ * Recover it so every mutation here is awaitable: a memory that is still
+ * only in RAM when the OS kills the app is precisely the defect this store
+ * exists to fix (RUYI-130).
+ */
+function flushed(setResult: unknown): Promise<void> {
+  return Promise.resolve(setResult as Promise<unknown> | undefined).then(
+    () => undefined,
+  );
 }
 
 export const useQuickCreateActorMemoryStore =
@@ -75,18 +95,22 @@ export const useQuickCreateActorMemoryStore =
       (set) => ({
         byServer: {},
         setLastActor: (serverId, slug, actor) =>
-          set((s) => ({
-            byServer: {
-              ...s.byServer,
-              [serverId]: { ...s.byServer[serverId], [slug]: actor },
-            },
-          })),
+          flushed(
+            set((s) => ({
+              byServer: {
+                ...s.byServer,
+                [serverId]: { ...s.byServer[serverId], [slug]: actor },
+              },
+            })),
+          ),
         clearServer: (serverId) =>
-          set((s) => {
-            if (!(serverId in s.byServer)) return s;
-            const { [serverId]: _removed, ...rest } = s.byServer;
-            return { byServer: rest };
-          }),
+          flushed(
+            set((s) => {
+              if (!(serverId in s.byServer)) return s;
+              const { [serverId]: _removed, ...rest } = s.byServer;
+              return { byServer: rest };
+            }),
+          ),
       }),
       {
         name: "multica_mobile_quick_create_last_actor",
@@ -94,6 +118,32 @@ export const useQuickCreateActorMemoryStore =
       },
     ),
   );
+
+/**
+ * Hydration outcome of the persisted memory, as reactive state.
+ *
+ * `persist.hasHydrated()` is a plain getter — it never notifies React — and
+ * zustand 5.0.12 swallows a storage read error inside `hydrate()`: the
+ * promise `rehydrate()` returns resolves either way and only `hasHydrated()`
+ * separates success from failure. A failed read that is mistaken for
+ * "hydrated, no history" re-seeds the first visible agent, which is the
+ * original RUYI-130 symptom, so the failure is an explicit state that both
+ * the panel and the picker can refuse to seed from.
+ */
+export type QuickCreateActorMemoryHydration = "pending" | "ready" | "failed";
+
+interface QuickCreateActorMemoryHydrationState {
+  status: QuickCreateActorMemoryHydration;
+  setStatus: (next: QuickCreateActorMemoryHydration) => void;
+}
+
+export const useQuickCreateActorMemoryHydrationStore =
+  create<QuickCreateActorMemoryHydrationState>((set) => ({
+    status: useQuickCreateActorMemoryStore.persist.hasHydrated()
+      ? "ready"
+      : "pending",
+    setStatus: (next) => set({ status: next }),
+  }));
 
 /** Last actor submitted from `slug` on `serverId`, or null = no history. */
 export function getLastQuickCreateActor(
@@ -105,20 +155,35 @@ export function getLastQuickCreateActor(
   );
 }
 
-/** Record the actor submitted with a successful quick-create. */
+/**
+ * Record the actor submitted with a successful quick-create. Resolves only
+ * after AsyncStorage accepted the write, so callers can hold the flow open
+ * until the memory would survive the process dying.
+ */
 export function setLastQuickCreateActor(
   serverId: string,
   slug: string,
   actor: QuickCreateActorRef,
-): void {
-  useQuickCreateActorMemoryStore
+): Promise<void> {
+  return useQuickCreateActorMemoryStore
     .getState()
     .setLastActor(serverId, slug, actor);
 }
 
-/** Drop the whole server subtree — logout / server removal. */
-export function clearQuickCreateActorMemory(serverId: string): void {
-  useQuickCreateActorMemoryStore.getState().clearServer(serverId);
+/**
+ * Drop the whole server subtree — logout / server removal. Resolves after
+ * the removal is on disk; an unawaited clear can be outlived by the session
+ * it was meant to erase.
+ *
+ * Hydration is awaited first: zustand's default merge is
+ * persisted-state-wins, so a rehydrate landing after the clear would write
+ * the old subtree straight back over it.
+ */
+export async function clearQuickCreateActorMemory(
+  serverId: string,
+): Promise<void> {
+  await ensureQuickCreateActorMemoryHydrated();
+  await useQuickCreateActorMemoryStore.getState().clearServer(serverId);
 }
 
 /**
@@ -128,11 +193,11 @@ export function clearQuickCreateActorMemory(serverId: string): void {
  * (`rememberLastAssigneeAfterSuccessfulCreate`), sharing its generation
  * counter so one `invalidateNewIssueSubmissionContext()` expires both.
  */
-export function rememberQuickCreateActorAfterSuccess(
+export async function rememberQuickCreateActorAfterSuccess(
   submitted: NewIssueSubmissionContext,
   current: NewIssueSubmissionContext | null,
   actor: QuickCreateActorRef,
-): boolean {
+): Promise<boolean> {
   if (
     !current ||
     submitted.serverId !== current.serverId ||
@@ -142,7 +207,11 @@ export function rememberQuickCreateActorAfterSuccess(
   ) {
     return false;
   }
-  setLastQuickCreateActor(submitted.serverId, submitted.workspaceSlug, actor);
+  await setLastQuickCreateActor(
+    submitted.serverId,
+    submitted.workspaceSlug,
+    actor,
+  );
   return true;
 }
 
@@ -151,9 +220,22 @@ export function rememberQuickCreateActorAfterSuccess(
  * must not run against a pre-hydration empty map: that is the same
  * "looks like no history" fall-through the loading gate in
  * `resolveQuickCreateActor` guards against (RUYI-130).
+ *
+ * Returns the resolved status instead of `void`. zustand 5.0.12 catches a
+ * storage read error inside `hydrate()` and leaves `hasHydrated` false
+ * without rejecting, so awaiting `rehydrate()` alone cannot tell a read
+ * failure from an empty map — and treating the failure as "no history"
+ * re-seeds the first visible agent.
  */
-export async function ensureQuickCreateActorMemoryHydrated(): Promise<void> {
+export async function ensureQuickCreateActorMemoryHydrated(): Promise<
+  Exclude<QuickCreateActorMemoryHydration, "pending">
+> {
   const store = useQuickCreateActorMemoryStore;
-  if (store.persist.hasHydrated()) return;
-  await store.persist.rehydrate();
+  const setStatus = useQuickCreateActorMemoryHydrationStore.getState().setStatus;
+  if (!store.persist.hasHydrated()) {
+    await store.persist.rehydrate();
+  }
+  const status = store.persist.hasHydrated() ? "ready" : "failed";
+  setStatus(status);
+  return status;
 }
