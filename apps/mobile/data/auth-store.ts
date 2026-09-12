@@ -24,6 +24,7 @@ import {
   clearServerMemory,
   invalidateNewIssueSubmissionContext,
 } from "./stores/new-issue-draft-store";
+import { clearQuickCreateActorMemory } from "./stores/quick-create-prefs-store";
 
 interface AuthState {
   user: User | null;
@@ -121,6 +122,9 @@ export const useAuthStore = create<AuthState>((set) => {
     // previous account's pick (web draft-cleanup parity).
     invalidateNewIssueSubmissionContext();
     clearServerMemory(activeServerId);
+    // RUYI-130: the smart-mode actor memory is persisted the same way and
+    // must drop with the session for the same reason.
+    clearQuickCreateActorMemory(activeServerId);
     // Make any late create callback observe a signed-out context before the
     // asynchronous credential cleanup yields control.
     set({ user: null });
