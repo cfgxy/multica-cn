@@ -154,13 +154,16 @@ daemon-build: ## Build the runtime daemon CLI with release version metadata
 CPU_QUOTA ?= 600%
 MEMORY_HIGH ?= 24G
 MEMORY_MAX ?= 28G
+# 运行用户/组：以执行 make 的普通用户为准（make 层展开，避免 shell 单引号吞掉命令替换）
+USER ?= $(shell id -un)
+GROUP ?= $(shell id -gn)
 
 daemon-install: daemon-build ## Install daemon binary + systemd units as the INVOKING user (run WITHOUT sudo; restarts the daemon)
 	@if [ -n "$$SUDO_USER" ]; then echo "ERROR: run 'make daemon-install' as the regular user (sudo is invoked internally)"; exit 1; fi
 	@test -f ~/.bashrc || echo "WARN: ~/.bashrc 不存在，daemon 将缺少登录环境"
 	install -m755 server/bin/multica $(HOME)/.local/bin/multica
 	sed -e 's|@USER@|$(USER)|g' \
-	    -e 's|@GROUP@|$$(id -gn)|g' \
+	    -e 's|@GROUP@|$(GROUP)|g' \
 	    -e 's|@HOME@|$(HOME)|g' \
 	    -e 's|@BIN@|$(HOME)/.local/bin/multica|g' \
 	    -e 's|@CPU_QUOTA@|$(CPU_QUOTA)|g' \
