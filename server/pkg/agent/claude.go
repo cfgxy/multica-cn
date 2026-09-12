@@ -357,19 +357,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		// Fold the per-request context sizes into the usage map last, after the
 		// `result` event has had its chance to replace that map entirely. Doing
 		// it earlier would lose the readings on every successful run.
-		//
-		// A model that only appears in the result event's totals gets no
-		// reading rather than borrowing another model's: leaving it at zero
-		// makes the gate treat it as unknown and resume, which is the safe
-		// direction (decision D4 A).
-		for model, size := range contextTokens {
-			u, ok := usage[model]
-			if !ok {
-				continue
-			}
-			u.ContextTokens = size
-			usage[model] = u
-		}
+		foldContextTokens(usage, contextTokens)
 
 		resCh <- Result{
 			Status:         finalStatus,
@@ -696,6 +684,55 @@ func claudeResultUsage(msg claudeSDKMessage, fallbackModel string) map[string]To
 			CacheReadTokens:  msg.Usage.CacheReadInputTokens,
 			CacheWriteTokens: msg.Usage.CacheCreationInputTokens,
 		},
+	}
+}
+
+// normalizeModelKey folds the spelling drift between the model name an
+// assistant event carries in its body and the one the result event's totals
+// key by: gateways serving long-context variants answer as `gpt-5.6-terra`
+// but total the same traffic under the requested `gpt-5.6-terra[1m]`. Case
+// and surrounding whitespace are folded too, so no cosmetic difference can
+// split one model into two identities.
+func normalizeModelKey(model string) string {
+	if i := strings.IndexByte(model, '['); i >= 0 {
+		model = model[:i]
+	}
+	return strings.ToLower(strings.TrimSpace(model))
+}
+
+// foldContextTokens copies each per-request context reading onto the usage
+// entry it belongs to. It must run after the `result` event has replaced
+// `usage` wholesale — folding earlier would lose every reading on a
+// successful run, because the result totals overwrite the accumulated map.
+//
+// A reading whose model does not appear in the totals at all gets no entry
+// rather than borrowing another model's: leaving it at zero makes the gate
+// treat the session as unknown and resume, which is the safe direction
+// (decision D4 A). A reading whose model appears only under the other
+// spelling of the same name matches through normalizeModelKey — an
+// exact-key-only fold silently dropped every reading whenever the gateway
+// answered and totaled under different spellings, which starved the session
+// gate (RUYI-107) of data and left it permanently size_unknown. When several
+// spellings collapse onto one totals entry (a run that mixed the standard and
+// long-context variants of one model), the later reading wins: both describe
+// the same conversation, and the gate only cares how large it ended up.
+func foldContextTokens(usage map[string]TokenUsage, contextTokens map[string]int64) {
+	byNormalizedName := make(map[string]string, len(usage))
+	for key := range usage {
+		byNormalizedName[normalizeModelKey(key)] = key
+	}
+	for model, size := range contextTokens {
+		key := model
+		if _, exact := usage[key]; !exact {
+			k, ok := byNormalizedName[normalizeModelKey(model)]
+			if !ok {
+				continue
+			}
+			key = k
+		}
+		u := usage[key]
+		u.ContextTokens = size
+		usage[key] = u
 	}
 }
 
