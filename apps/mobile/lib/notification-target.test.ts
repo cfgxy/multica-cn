@@ -84,6 +84,7 @@ describe("resolveNotificationTap", () => {
     expect(resolveNotificationTap(payload, identity())).toEqual({
       kind: "open",
       route: "/(app)/acme/issue/iss_1",
+      workspaceSlug: "acme",
     });
   });
 
@@ -93,6 +94,7 @@ describe("resolveNotificationTap", () => {
     ).toEqual({
       kind: "confirm-workspace",
       route: "/(app)/acme/issue/iss_1",
+      workspaceSlug: "acme",
       workspaceLabel: "Acme",
     });
   });
@@ -123,6 +125,7 @@ describe("resolveNotificationTap", () => {
       kind: "confirm-server",
       route: "/acme/issue/iss_1",
       serverId: SERVER_B.id,
+      workspaceSlug: "acme",
       // The locally configured name wins over the post-time snapshot.
       serverLabel: "Self Hosted",
       workspaceLabel: "Acme",
@@ -155,14 +158,17 @@ describe("resolveNotificationTap", () => {
     expect(resolveNotificationTap(legacy, identity())).toEqual({
       kind: "open",
       route: "/(app)/acme/issue/iss_1",
+      workspaceSlug: "acme",
     });
-    // …and still confirms a cross-workspace hop within that server.
     expect(
       resolveNotificationTap(
         legacy,
         identity({ currentWorkspaceSlug: "other" }),
       ),
-    ).toMatchObject({ kind: "confirm-workspace" });
+    ).toMatchObject({
+      kind: "confirm-workspace",
+      workspaceSlug: "acme",
+    });
   });
 
   it("resolves the server check before the workspace check", () => {

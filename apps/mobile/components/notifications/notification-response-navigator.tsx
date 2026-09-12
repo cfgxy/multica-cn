@@ -51,9 +51,14 @@ import { router, useRootNavigationState } from "expo-router";
 import * as Notifications from "expo-notifications";
 import { useQueryClient } from "@tanstack/react-query";
 import { useAuthStore } from "@/data/auth-store";
+import { freshWorkspaceListOptions } from "@/data/queries/workspaces";
 import { useServerStore } from "@/data/server-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { switchServer } from "@/data/switch-server";
+import {
+  executeNotificationAction,
+  type WorkspaceActivationResult,
+} from "@/lib/notification-action";
 import { useT } from "@/lib/use-t";
 import {
   parseNotificationTarget,
@@ -76,6 +81,8 @@ const POST_READY_PROBE_DELAY_MS = 500;
 
 export function NotificationResponseNavigator() {
   const userId = useAuthStore((s) => s.user?.id ?? null);
+  const isAuthLoading = useAuthStore((s) => s.isLoading);
+  const isServerSwitching = useAuthStore((s) => s.isServerSwitching);
   const qc = useQueryClient();
   const { t } = useT("inbox");
   // Read through a ref inside offer(): the listener is registered once and
@@ -113,95 +120,109 @@ export function NotificationResponseNavigator() {
     }
   };
 
-  /**
-   * Cross-server landing (RUYI-131): restore the target server's session
-   * first, then replace. `replace`, not `push` — `switchServer` clears the
-   * query cache, so every stack entry behind us belongs to a server whose
-   * data is gone and whose identity is no longer active.
-   */
-  const openOnOtherServer = async (
-    action: Extract<NotificationAction, { kind: "confirm-server" }>,
-  ): Promise<void> => {
-    // Shadowing the outer binding on purpose: the listener is registered
-    // once, so it must read the CURRENT translator through the ref rather
-    // than capture the one from first render.
+  const run = (action: NotificationAction, onRetryAvailable: () => void): void => {
     const t = tRef.current;
-    const outcome = await switchServer(action.serverId, qc);
-    if (outcome.kind === "failed") {
-      // Same failure surface the server settings screen uses; the user
-      // stays put and can retry by tapping the notification again.
-      Alert.alert(
-        t("mobile.bridge.switch_failed_title", "Switch failed"),
-        outcome.error instanceof Error
-          ? outcome.error.message
-          : t(
-              "mobile.bridge.switch_failed_message",
-              "Could not switch servers.",
-            ),
-      );
-      return;
-    }
-    // No restorable session on the target server → login; the notification
-    // intent is not preserved across the login flow (same as a manual
-    // server switch).
-    navigate("replace", outcome.kind === "signed-out" ? "/login" : action.route);
-  };
+    const activateWorkspace = async (
+      workspaceSlug: string,
+    ): Promise<WorkspaceActivationResult> => {
+      try {
+        // Membership can change while this confirmation is visible. Recheck
+        // before setting the request header or routing to the target issue.
+        const workspaces = await qc.fetchQuery(freshWorkspaceListOptions());
+        const workspace = workspaces.find((item) => item.slug === workspaceSlug);
+        if (!workspace) return { kind: "not-member" };
+        // setCurrentWorkspace updates the in-memory route mirror before its
+        // persistence promise settles, so the first issue query uses the
+        // target workspace header rather than the page the user came from.
+        void useWorkspaceStore
+          .getState()
+          .setCurrentWorkspace(workspace.id, workspace.slug)
+          .catch((error) =>
+            console.warn("[notifications] workspace persistence failed", error),
+          );
+        return { kind: "ready" };
+      } catch (error) {
+        return { kind: "failed", error };
+      }
+    };
 
-  const run = (action: NotificationAction): void => {
-    // Shadowing the outer binding on purpose: the listener is registered
-    // once, so it must read the CURRENT translator through the ref rather
-    // than capture the one from first render.
-    const t = tRef.current;
-    switch (action.kind) {
-      case "open":
-        navigate("push", action.route);
-        return;
-      case "confirm-workspace":
+    void executeNotificationAction(action, {
+      navigate,
+      activateWorkspace,
+      switchServer: (serverId) => switchServer(serverId, qc),
+      requestWorkspaceConfirmation: (workspaceAction, onConfirm) =>
         Alert.alert(
           t("mobile.bridge.cross_workspace_title", "Switch workspace?"),
           t("mobile.bridge.cross_workspace_message", {
-            name: action.workspaceLabel,
+            name: workspaceAction.workspaceLabel,
           }),
           [
             { text: t("mobile.bridge.cancel", "Cancel"), style: "cancel" },
             {
               text: t("mobile.bridge.confirm_switch", "Switch"),
-              // push, not replace: the workspace layout re-syncs the active
-              // workspace on mount, and a back gesture returns to where the
-              // user was — including the workspace they came from.
-              onPress: () => navigate("push", action.route),
+              onPress: () => void onConfirm(),
             },
           ],
-        );
-        return;
-      case "confirm-server":
+        ),
+      requestServerConfirmation: (serverAction, onConfirm) =>
         Alert.alert(
           t("mobile.bridge.cross_server_title", "Switch server?"),
           t("mobile.bridge.cross_server_message", {
-            server: action.serverLabel,
-            workspace: action.workspaceLabel,
+            server: serverAction.serverLabel,
+            workspace: serverAction.workspaceLabel,
           }),
           [
             { text: t("mobile.bridge.cancel", "Cancel"), style: "cancel" },
             {
               text: t("mobile.bridge.confirm_switch", "Switch"),
-              onPress: () => void openOnOtherServer(action),
+              onPress: () => void onConfirm(),
             },
           ],
-        );
-        return;
-      case "unavailable":
+        ),
+      showUnavailable: () =>
         Alert.alert(
           t("mobile.bridge.unavailable_title", "Can't open notification"),
           t(
             "mobile.bridge.unavailable_message",
             "The server this notification came from is no longer in the server list.",
           ),
-        );
-        return;
-      case "drop":
-        return;
-    }
+        ),
+      showWorkspaceFailed: (error, onRetry) =>
+        Alert.alert(
+          t("mobile.bridge.workspace_failed_title", "Can't open notification"),
+          error instanceof Error
+            ? error.message
+            : t(
+                "mobile.bridge.workspace_failed_message",
+                "Could not switch workspaces.",
+              ),
+          [
+            { text: t("mobile.bridge.cancel", "Cancel"), style: "cancel" },
+            {
+              text: t("mobile.bridge.retry", "Retry"),
+              onPress: () => void onRetry(),
+            },
+          ],
+        ),
+      showServerFailed: (error, onRetry) =>
+        Alert.alert(
+          t("mobile.bridge.switch_failed_title", "Switch failed"),
+          error instanceof Error
+            ? error.message
+            : t(
+                "mobile.bridge.switch_failed_message",
+                "Could not switch servers.",
+              ),
+          [
+            { text: t("mobile.bridge.cancel", "Cancel"), style: "cancel" },
+            {
+              text: t("mobile.bridge.retry", "Retry"),
+              onPress: () => void onRetry(),
+            },
+          ],
+        ),
+      onRetryAvailable,
+    });
   };
 
   const offer = (response: Notifications.NotificationResponse): void => {
@@ -219,8 +240,13 @@ export function NotificationResponseNavigator() {
     }
     // Signed-out taps (or taps during session restore) park; a settled
     // signed-out state drops the parked tap on the next flush.
-    if (!useAuthStore.getState().user?.id) {
-      pendingRef.current = response;
+    const authState = useAuthStore.getState();
+    if (!authState.user?.id || authState.isServerSwitching) {
+      if (authState.isLoading || authState.isServerSwitching) {
+        pendingRef.current = response;
+      } else {
+        markHandled(response.notification.request.identifier);
+      }
       return;
     }
     // Navigation tree not mounted yet (tap raced the cold start): park —
@@ -239,22 +265,31 @@ export function NotificationResponseNavigator() {
       servers: useServerStore.getState().servers,
     });
     markHandled(response.notification.request.identifier);
-    run(action);
+    run(action, () =>
+      handledRef.current.delete(response.notification.request.identifier),
+    );
   };
 
   // Flush condition: a parked response + session restored + tree mounted.
   // Both readiness inputs are deps, so a tap that parked during startup is
   // re-offered as soon as the last of them lands — no polling involved.
-  const canFlush = Boolean(userId && navReady);
+  const canFlush = Boolean(userId && navReady && !isServerSwitching);
   useEffect(() => {
-    if (!canFlush || !pendingRef.current) return;
+    if (!navReady || !pendingRef.current) return;
     const parked = pendingRef.current;
-    pendingRef.current = null;
-    offer(parked);
+    if (canFlush) {
+      pendingRef.current = null;
+      offer(parked);
+      return;
+    }
+    if (!isAuthLoading && !isServerSwitching) {
+      pendingRef.current = null;
+      markHandled(parked.notification.request.identifier);
+    }
     // offer reads auth via getState() and nav via navReadyRef; canFlush is
     // the actual gate.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canFlush]);
+  }, [canFlush, isAuthLoading, isServerSwitching, navReady]);
 
   // Readiness-driven initial probe (cold-start tap path). Idle until the
   // tree is mounted — probing earlier is guaranteed-null by D3 evidence.

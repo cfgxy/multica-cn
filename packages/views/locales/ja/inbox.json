@@ -136,6 +136,9 @@
       "cancel": "キャンセル",
       "switch_failed_title": "切り替えに失敗しました",
       "switch_failed_message": "サーバーを切り替えられませんでした。",
+      "workspace_failed_title": "通知を開けません",
+      "workspace_failed_message": "ワークスペースを切り替えられませんでした。",
+      "retry": "再試行",
       "unavailable_title": "通知を開けません",
       "unavailable_message": "この通知の送信元サーバーはサーバー一覧に存在しません。"
     }
