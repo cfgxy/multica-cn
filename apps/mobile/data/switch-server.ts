@@ -104,11 +104,11 @@ export async function switchServer(
     // show a retryable failure instead of incorrectly navigating to login.
     if (await getToken(serverId)) {
       const error = new Error("Could not restore the selected server session.");
-      return failAfterSwitch(error);
+      return await failAfterSwitch(error);
     }
     return { kind: "signed-out" };
   } catch (error) {
-    return failAfterSwitch(error);
+    return await failAfterSwitch(error);
   } finally {
     useAuthStore.getState().setServerSwitching(false);
   }
