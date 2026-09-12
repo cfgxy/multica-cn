@@ -165,9 +165,9 @@ export function setLastQuickCreateActor(
   slug: string,
   actor: QuickCreateActorRef,
 ): Promise<void> {
-  return useQuickCreateActorMemoryStore
-    .getState()
-    .setLastActor(serverId, slug, actor);
+  return ensureQuickCreateActorMemoryHydrated().then(() =>
+    useQuickCreateActorMemoryStore.getState().setLastActor(serverId, slug, actor),
+  );
 }
 
 /**
