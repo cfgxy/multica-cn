@@ -1,4 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev daemon-build daemon-install daemon-update
+.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev daemon-build daemon-install daemon-update daemon-preflight
 
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
@@ -149,15 +149,35 @@ selfhost-stop: ## Stop the self-hosted Docker Compose stack
 daemon-build: ## Build the runtime daemon CLI with release version metadata
 	cd server && go build -ldflags "-X main.version=$$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1 | sed 's/^v//') -X main.commit=$$(git rev-parse --short HEAD) -X main.date=$$(date -u '+%Y-%m-%dT%H:%M:%SZ')" -o bin/multica ./cmd/multica
 
-daemon-install: daemon-build ## Install daemon binary + systemd units (prompts for sudo; restarts the daemon)
+# 部署参数：以「执行 make 的普通用户」为 daemon 运行用户（内部自动 sudo，勿用 sudo make）。
+# 换机器按规格覆盖：make daemon-install CPU_QUOTA=400% MEMORY_HIGH=8G MEMORY_MAX=12G
+CPU_QUOTA ?= 600%
+MEMORY_HIGH ?= 24G
+MEMORY_MAX ?= 28G
+
+daemon-install: daemon-build ## Install daemon binary + systemd units as the INVOKING user (run WITHOUT sudo; restarts the daemon)
+	@if [ -n "$$SUDO_USER" ]; then echo "ERROR: run 'make daemon-install' as the regular user (sudo is invoked internally)"; exit 1; fi
+	@test -f ~/.bashrc || echo "WARN: ~/.bashrc 不存在，daemon 将缺少登录环境"
 	install -m755 server/bin/multica $(HOME)/.local/bin/multica
-	sudo install -m644 deploy/multica-daemon.service /etc/systemd/system/multica-daemon.service
+	sed -e 's|@USER@|$(USER)|g' \
+	    -e 's|@GROUP@|$$(id -gn)|g' \
+	    -e 's|@HOME@|$(HOME)|g' \
+	    -e 's|@BIN@|$(HOME)/.local/bin/multica|g' \
+	    -e 's|@CPU_QUOTA@|$(CPU_QUOTA)|g' \
+	    -e 's|@MEMORY_HIGH@|$(MEMORY_HIGH)|g' \
+	    -e 's|@MEMORY_MAX@|$(MEMORY_MAX)|g' \
+	    deploy/multica-daemon.service.template > /tmp/multica-daemon.service
+	sudo install -m644 /tmp/multica-daemon.service /etc/systemd/system/multica-daemon.service
 	sudo install -m644 deploy/multica-oom-guard.service /etc/systemd/system/multica-oom-guard.service
 	sudo install -m755 deploy/oom-guard.sh /usr/local/sbin/multica-oom-guard.sh
 	sudo systemctl daemon-reload
 	sudo systemctl enable --now multica-oom-guard.service
 	sudo systemctl restart multica-daemon.service
 	@systemctl --no-pager --lines=0 status multica-daemon.service
+	@bash deploy/oom-preflight.sh || true
+
+daemon-preflight: ## Read-only check of kernel/system prerequisites for the OOM guard
+	@bash deploy/oom-preflight.sh
 
 daemon-update: daemon-build ## Update the daemon binary only, then graceful restart (no unit changes)
 	install -m755 server/bin/multica $(HOME)/.local/bin/multica
