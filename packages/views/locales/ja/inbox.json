@@ -140,7 +140,8 @@
       "workspace_failed_message": "ワークスペースを切り替えられませんでした。",
       "retry": "再試行",
       "unavailable_title": "通知を開けません",
-      "unavailable_message": "この通知の送信元サーバーはサーバー一覧に存在しません。"
+      "unavailable_message": "この通知の送信元サーバーはサーバー一覧に存在しません。",
+      "legacy_unavailable_message": "この古い通知には送信元サーバーが記録されていないため、安全に開けません。受信トレイでタスクを確認してください。"
     }
   }
 }

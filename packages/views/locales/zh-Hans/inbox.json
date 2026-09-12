@@ -140,7 +140,8 @@
       "workspace_failed_message": "无法切换工作区。",
       "retry": "重试",
       "unavailable_title": "无法打开通知",
-      "unavailable_message": "该通知来源的服务器已不在服务器列表中。"
+      "unavailable_message": "该通知来源的服务器已不在服务器列表中。",
+      "legacy_unavailable_message": "这条旧通知未记录来源服务器，无法安全打开。请在收件箱中查找此任务。"
     }
   }
 }
