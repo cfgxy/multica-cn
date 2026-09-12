@@ -18,9 +18,8 @@
  * session the workspace slug is scoped to.
  *
  * Legacy notifications (posted before this change) carry no `server_id`.
- * They are treated as belonging to the active server — identical to the
- * previous behaviour — instead of being dropped: a stale alert that still
- * opens is strictly better than one that silently does nothing.
+ * They retain the previous behavior and use the active server, so upgrades do
+ * not make existing notifications unusable. The workspace check still runs.
  */
 
 export interface InboxNotificationData {
@@ -59,15 +58,21 @@ export interface NotificationIdentity {
 export type NotificationAction =
   /** Nothing actionable in the payload — swallow the tap. */
   | { kind: "drop" }
-  /** Same server, same workspace: navigate with no prompt. */
-  | { kind: "open"; route: string }
+  /** Same server, same workspace: validate membership, then navigate. */
+  | { kind: "open"; route: string; workspaceSlug: string }
   /** Same server, different workspace: confirm, then push. */
-  | { kind: "confirm-workspace"; route: string; workspaceLabel: string }
+  | {
+      kind: "confirm-workspace";
+      route: string;
+      workspaceSlug: string;
+      workspaceLabel: string;
+    }
   /** Different server: confirm, switch the session, then replace. */
   | {
       kind: "confirm-server";
       route: string;
       serverId: string;
+      workspaceSlug: string;
       serverLabel: string;
       workspaceLabel: string;
     }
@@ -136,8 +141,8 @@ export function resolveNotificationAction(
 ): NotificationAction {
   const { activeServerId, currentWorkspaceSlug, servers } = identity;
 
-  // Legacy payload (no server_id) → treat as the active server, which is
-  // exactly what the pre-RUYI-131 navigator did.
+  // Notifications posted before RUYI-131 lack server_id. Keep their prior
+  // current-server behavior while still confirming a workspace change.
   const serverId = target.serverId ?? activeServerId;
 
   if (serverId !== activeServerId) {
@@ -149,6 +154,7 @@ export function resolveNotificationAction(
       kind: "confirm-server",
       route: notificationRootRoute(target),
       serverId,
+      workspaceSlug: target.workspaceSlug,
       serverLabel: serverLabelFor(target, entry),
       workspaceLabel: workspaceLabelFor(target),
     };
@@ -158,11 +164,16 @@ export function resolveNotificationAction(
     return {
       kind: "confirm-workspace",
       route: notificationRoute(target),
+      workspaceSlug: target.workspaceSlug,
       workspaceLabel: workspaceLabelFor(target),
     };
   }
 
-  return { kind: "open", route: notificationRoute(target) };
+  return {
+    kind: "open",
+    route: notificationRoute(target),
+    workspaceSlug: target.workspaceSlug,
+  };
 }
 
 /** One-shot entry point: payload → action. Returns `drop` for payloads with

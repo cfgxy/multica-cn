@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import type { ComponentProps } from "react";
 import { Platform } from "react-native";
 import { Redirect, Stack, useLocalSearchParams } from "expo-router";
+import { useIsFocused } from "@react-navigation/native";
 import { useQuery } from "@tanstack/react-query";
 import i18n from "i18next";
 import { workspaceListOptions } from "@/data/queries/workspaces";
@@ -108,14 +109,15 @@ export default function WorkspaceLayout() {
   const { workspace: slug } = useLocalSearchParams<{ workspace: string }>();
   const { data: workspaces, isLoading } = useQuery(workspaceListOptions());
   const setCurrentWorkspace = useWorkspaceStore((s) => s.setCurrentWorkspace);
+  const isFocused = useIsFocused();
 
   const matched = workspaces?.find((w) => w.slug === slug);
 
   useEffect(() => {
-    if (matched) {
+    if (matched && isFocused) {
       setCurrentWorkspace(matched.id, matched.slug);
     }
-  }, [matched, setCurrentWorkspace]);
+  }, [isFocused, matched, setCurrentWorkspace]);
 
   // Wipe cross-route Zustand draft stores whenever the active workspace
   // changes — a draft picked under workspace A (assignee id, draft

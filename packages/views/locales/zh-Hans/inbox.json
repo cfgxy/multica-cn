@@ -136,6 +136,9 @@
       "cancel": "取消",
       "switch_failed_title": "切换失败",
       "switch_failed_message": "无法切换服务器。",
+      "workspace_failed_title": "无法打开通知",
+      "workspace_failed_message": "无法切换工作空间。",
+      "retry": "重试",
       "unavailable_title": "无法打开通知",
       "unavailable_message": "该通知来源的服务器已不在服务器列表中。"
     }
