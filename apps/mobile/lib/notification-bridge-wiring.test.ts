@@ -31,8 +31,15 @@ describe("notification identity bridge wiring", () => {
   it("publishes the source identity through the realtime notification path", () => {
     expect(realtime).toContain("buildInboxNotificationOrigin({");
     expect(realtime).toContain("serverId,");
+    expect(realtime).toContain("workspaceId: item.workspace_id");
     expect(publisher).toContain("server_id: origin.serverId");
     expect(publisher).toContain("workspace_slug: origin.workspaceSlug");
+  });
+
+  it("uses localized copy instead of raw workspace or server switch errors", () => {
+    expect(navigator).toContain("showWorkspaceFailed: (_error, onRetry) =>");
+    expect(navigator).toContain("showServerFailed: (_error, onRetry) =>");
+    expect(navigator).not.toContain("error instanceof Error");
   });
 
   it("activates every target workspace before navigating to its issue", () => {

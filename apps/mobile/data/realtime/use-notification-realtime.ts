@@ -24,7 +24,6 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { InboxItem, Workspace } from "@multica/core/types";
 import { useAuthStore } from "@/data/auth-store";
 import { useServerStore } from "@/data/server-store";
-import { useWorkspaceStore } from "@/data/workspace-store";
 import { workspaceListOptions } from "@/data/queries/workspaces";
 import { buildInboxNotificationOrigin } from "@/lib/notification-origin";
 import {
@@ -52,7 +51,6 @@ import {
 export function useNotificationRealtime() {
   const serverId = useServerStore((s) => s.activeServerId);
   const userId = useAuthStore((s) => s.user?.id ?? null);
-  const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { t, i18n: instance } = useTranslation("inbox");
   const qc = useQueryClient();
 
@@ -156,7 +154,7 @@ export function useNotificationRealtime() {
             body,
             buildInboxNotificationOrigin({
               serverId,
-              workspaceSlug: wsSlug,
+              workspaceId: item.workspace_id,
               servers: useServerStore.getState().servers,
               workspaces: qc.getQueryData<Workspace[]>(
                 workspaceListOptions().queryKey,
@@ -166,6 +164,6 @@ export function useNotificationRealtime() {
         }),
       ];
     },
-    [serverId, userId, wsSlug, instance.language, qc],
+    [serverId, userId, instance.language, qc],
   );
 }

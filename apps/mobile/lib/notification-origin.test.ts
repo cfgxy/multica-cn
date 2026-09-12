@@ -31,7 +31,7 @@ describe("buildInboxNotificationOrigin", () => {
     expect(
       buildInboxNotificationOrigin({
         serverId: server.id,
-        workspaceSlug: workspace.slug,
+        workspaceId: workspace.id,
         servers: [server],
         workspaces: [workspace],
       }),
@@ -43,11 +43,33 @@ describe("buildInboxNotificationOrigin", () => {
     });
   });
 
+  it("uses the inbox item's source workspace instead of the active workspace", () => {
+    const sourceWorkspace: Workspace = {
+      ...workspace,
+      id: "workspace-a",
+      slug: "source",
+      name: "Source workspace",
+    };
+    const origin = {
+      serverId: server.id,
+      workspaceId: sourceWorkspace.id,
+      servers: [server],
+      workspaces: [workspace, sourceWorkspace],
+    };
+
+    expect(buildInboxNotificationOrigin(origin)).toEqual({
+      serverId: "server-b",
+      workspaceSlug: "source",
+      workspaceName: "Source workspace",
+      serverName: "Self-hosted server",
+    });
+  });
+
   it("keeps routing identity while omitting unknown display snapshots", () => {
     expect(
       buildInboxNotificationOrigin({
         serverId: "server-b",
-        workspaceSlug: null,
+        workspaceId: null,
         servers: [],
         workspaces: undefined,
       }),
