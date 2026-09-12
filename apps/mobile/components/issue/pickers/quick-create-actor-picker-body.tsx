@@ -23,6 +23,7 @@ import { agentListOptions } from "@/data/queries/agents";
 import { memberListOptions } from "@/data/queries/members";
 import { squadListOptions } from "@/data/queries/squads";
 import { useAuthStore } from "@/data/auth-store";
+import { useQuickCreateActorMemoryHydrationStore } from "@/data/stores/quick-create-prefs-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { THEME } from "@/lib/theme";
 import { cn } from "@/lib/utils";
@@ -76,12 +77,19 @@ export function QuickCreateActorPickerBody({ value, query, onChange }: Props) {
   );
   // Seed-chain consistency: an unset value previews the same default the
   // panel would submit with (first visible agent), mirroring web's picker
-  // showing the resolved actor.
+  // showing the resolved actor. The panel's tail also waits for the
+  // persisted last-actor memory to resolve, so this preview honours the same
+  // gate — otherwise the picker would tick an agent the panel refuses to
+  // seed (RUYI-130).
+  const memoryStatus = useQuickCreateActorMemoryHydrationStore(
+    (s) => s.status,
+  );
   const effective = resolveQuickCreateActor(
     [value],
     visible.agents,
     visible.squads,
     agentsLoaded && squadsLoaded,
+    memoryStatus === "ready",
   );
 
   const listRef = useScrollToTopOnChange(query);

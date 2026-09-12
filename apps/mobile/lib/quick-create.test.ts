@@ -242,6 +242,35 @@ describe("resolveQuickCreateActor", () => {
     );
     expect(resolved).toEqual({ type: "squad", id: squad.id });
   });
+
+  // RUYI-130 rework: an AsyncStorage read failure leaves the last-actor
+  // memory empty, which is indistinguishable from "nothing was ever filed
+  // here". Falling through to the tail in that state re-creates the reported
+  // downgrade, so the tail needs its own gate.
+  it("withholds the first-visible-agent tail while the last-actor history is unresolved", () => {
+    const resolved = resolveQuickCreateActor(
+      [],
+      visible.agents,
+      visible.squads,
+      true,
+      false,
+    );
+    expect(resolved).toBeNull();
+  });
+
+  it("still resolves an explicit pick while the history is unresolved", () => {
+    // An unreadable memory must not lock the flow: what the user just picked
+    // needs no history to be trustworthy.
+    const squad = visible.squads[0];
+    const resolved = resolveQuickCreateActor(
+      [{ type: "squad", id: squad.id }],
+      visible.agents,
+      visible.squads,
+      true,
+      false,
+    );
+    expect(resolved).toEqual({ type: "squad", id: squad.id });
+  });
 });
 
 describe("buildQuickCreateBody", () => {

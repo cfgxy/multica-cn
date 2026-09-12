@@ -152,7 +152,8 @@ export const useServerStore = create<ServerState>((set, get) => {
       // 与 logout 的清空范围一致(仅该条目,不影响其他服务器)。
       clearServerMemory(id);
       // RUYI-130: 智能模式的上次创建人记忆同样按服务器持久化,一并清掉。
-      clearQuickCreateActorMemory(id);
+      // 必须 await:未落盘的清除会被进程终止赶上,删掉的条目下次启动又回来。
+      await clearQuickCreateActorMemory(id);
     },
 
     setActiveServer: async (id) => {
