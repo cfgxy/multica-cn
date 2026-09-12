@@ -4,22 +4,24 @@
  * RUYI-132 regression guard for the enriched-markdown native height contract.
  *
  * The direct cause of overlap is not our React Native layout code. Android
- * 0.6.0 parses markdown asynchronously, then writes the final Spannable height
- * to `MeasurementStore` without notifying the Fabric shadow node. When that
- * height differs from the initial shadow measurement, Yoga does not lay out the
- * siblings after `<Markdown>` again, including `CommentAttachmentList`.
+ * parses GitHub-flavored markdown asynchronously, then must write the final
+ * segment height to `MeasurementStore` and notify the Fabric shadow node. When
+ * that height differs from the initial shadow measurement, Yoga does not lay
+ * out the siblings after `<Markdown>` again, including `CommentAttachmentList`.
  *
- * Version 1.0.0 introduced the missing Text path. Versions 0.7.0-0.7.4 keep
- * the 0.6.0 implementation, so any version below 1.0.0 can reproduce the bug.
+ * Version 1.0.2 introduced the Text-path notification, but Multica comments
+ * select the GitHub container. The container must emit the same notification
+ * after ordinary asynchronous segment reconciliation.
  *
  * These assertions read installed native sources and repository configuration;
  * they deliberately use no mocks:
  *
- *   1. The installed package must be >= 1.0.0.
- *   2. Android must persist the state wrapper, update its height counter, and
- *      dirty the shadow-node layout when the counter changes.
- *   3. app.config.ts must not register the removed Expo config plugin.
- *   4. Both workspace installation and app native builds must disable the
+ *   1. The installed package must remain pinned to the reviewed version.
+ *   2. App prose must select the GitHub container, which retains its Fabric
+ *      state wrapper and notifies it after asynchronous segment changes.
+ *   3. The container shadow node must dirty its layout when the counter changes.
+ *   4. app.config.ts must not register the removed Expo config plugin.
+ *   5. Both workspace installation and app native builds must disable the
  *      library highlighter because Multica supplies Shiki code blocks itself.
  */
 
@@ -53,47 +55,67 @@ function readNativeSource(...parts: string[]): string {
   return readFileSync(sourcePath, "utf8");
 }
 
-function parseMajor(version: string): number {
-  const major = Number.parseInt(version.split(".")[0] ?? "", 10);
-  expect(Number.isNaN(major), `无法解析 ${PKG} 版本号：${version}`).toBe(false);
-  return major;
-}
-
 describe("enriched-markdown 原生高度回传契约", () => {
-  it("安装的版本带有 Text 分支的高度回传修复（>= 1.0.0）", () => {
+  it("安装的版本保持为已审查的 1.0.2", () => {
     const installed = JSON.parse(
       readFileSync(enrichedPackageJsonPath(), "utf8"),
     ) as { version: string };
 
-    expect(parseMajor(installed.version)).toBeGreaterThanOrEqual(1);
+    expect(installed.version).toBe("1.0.2");
   });
 
-  it("Android invalidateLayout() 将高度变化依次写回 shadow node", () => {
-    const source = readNativeSource(
-      "android/src/main/java/com/swmansion/enriched/markdown",
-      "EnrichedMarkdownTextLayoutManager.kt",
-    );
+  it("评论 prose 选择 GitHub Fabric 容器", () => {
+    const markdown = readFileSync(path.join(APP_ROOT, "lib/markdown/markdown.tsx"), "utf8");
+    const nativeWrapper = readNativeSource("src/native", "EnrichedMarkdownText.tsx");
 
-    // 0.6.0 discards the store result. The full sequence must increment state
-    // only for a changed height and send that state through the Fabric wrapper.
-    expect(source).toMatch(
-      /val heightChanged = MeasurementStore\.store\([\s\S]*?\)\s*if \(!heightChanged\) return\s*val stateWrapper = view\.stateWrapper \?: return\s*val state = Arguments\.createMap\(\)\s*state\.putInt\("forceHeightRecalculationCounter", \+\+forceHeightRecalculationCounter\)\s*stateWrapper\.updateState\(state\)/,
+    expect(markdown).toMatch(
+      /<EnrichedMarkdownText[\s\S]*?flavor="github"[\s\S]*?markdown=\{seg\.content\}/,
+    );
+    expect(nativeWrapper).toMatch(
+      /if \(flavor === 'github'\) \{\s*return <EnrichedMarkdownNativeComponent \{\.\.\.sharedProps\} \/>;\s*\}/,
     );
   });
 
-  it("Android manager and shadow node complete the height recalculation chain", () => {
+  it("GitHub 容器管理器保留 Fabric state wrapper", () => {
     const manager = readNativeSource(
       "android/src/main/java/com/swmansion/enriched/markdown",
-      "EnrichedMarkdownTextManager.kt",
-    );
-    const shadowNode = readNativeSource(
-      "android/src/main/jni/react/renderer/components/EnrichedMarkdownTextSpec",
-      "MarkdownTextShadowNode.cpp",
+      "EnrichedMarkdownManager.kt",
     );
 
-    expect(manager).toMatch(/view\.stateWrapper\s*=\s*stateWrapper/);
+    expect(manager).toMatch(
+      /override fun updateState\([\s\S]*?view\.stateWrapper = stateWrapper[\s\S]*?return super\.updateState\(view, props, stateWrapper\)/,
+    );
+  });
+
+  it("异步 GitHub 段落应用通过 Fabric state 触发容器重新测量", () => {
+    const container = readNativeSource(
+      "android/src/main/java/com/swmansion/enriched/markdown",
+      "EnrichedMarkdown.kt",
+    );
+    const notification = container.match(
+      /private fun notifyHeightChanged\(\) \{([\s\S]*?)\n    \}/,
+    )?.[1];
+
+    expect(notification).toEqual(expect.any(String));
+    expect(notification ?? "").toMatch(
+      /MeasurementStore\.invalidate\(id\)[\s\S]*?requestLayout\(\)[\s\S]*?val wrapper = stateWrapper \?: return[\s\S]*?state\.putInt\("forceHeightRecalculationCounter", \+\+forceHeightRecalculationCounter\)[\s\S]*?wrapper\.updateState\(state\)/,
+    );
+    expect(container).toMatch(
+      /if \(forceHeight \|\| topologyChanged \|\| heightBefore != heightAfter\) \{\s*notifyHeightChanged\(\)\s*\}/,
+    );
+    expect(container).toMatch(
+      /fun onImageLayoutChanged\(\) \{[\s\S]*?notifyHeightChanged\(\)/,
+    );
+  });
+
+  it("GitHub 容器 shadow node 在状态计数变化时重新布局", () => {
+    const shadowNode = readNativeSource(
+      "android/src/main/jni/react/renderer/components/EnrichedMarkdownTextSpec",
+      "MarkdownContainerShadowNode.cpp",
+    );
+
     expect(shadowNode).toMatch(
-      /void MarkdownTextShadowNode::dirtyLayoutIfNeeded\(\) \{\s*const auto state = this->getStateData\(\);\s*const auto counter = state\.getForceHeightRecalculationCounter\(\);\s*if \(forceHeightRecalculationCounter_ != counter\) \{\s*forceHeightRecalculationCounter_ = counter;\s*dirtyLayout\(\);\s*\}\s*\}/,
+      /void MarkdownContainerShadowNode::dirtyLayoutIfNeeded\(\) \{\s*const auto state = this->getStateData\(\);\s*const auto counter = state\.getForceHeightRecalculationCounter\(\);\s*if \(forceHeightRecalculationCounter_ != counter\) \{\s*forceHeightRecalculationCounter_ = counter;\s*dirtyLayout\(\);\s*\}\s*\}/,
     );
   });
 
