@@ -50,8 +50,12 @@ export function QuickCreateActorPickerBody({ value, query, onChange }: Props) {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const userId = useAuthStore((s) => s.user?.id);
   const { data: members = [] } = useQuery(memberListOptions(wsId));
-  const { data: agents = [] } = useQuery(agentListOptions(wsId));
-  const { data: squads = [] } = useQuery(squadListOptions(wsId));
+  const { data: agents = [], isSuccess: agentsLoaded } = useQuery(
+    agentListOptions(wsId),
+  );
+  const { data: squads = [], isSuccess: squadsLoaded } = useQuery(
+    squadListOptions(wsId),
+  );
   // Same derivation as chat.tsx — members query is the mobile role source
   // (workspace-store carries no role field).
   const memberRole = useMemo(
@@ -77,6 +81,7 @@ export function QuickCreateActorPickerBody({ value, query, onChange }: Props) {
     [value],
     visible.agents,
     visible.squads,
+    agentsLoaded && squadsLoaded,
   );
 
   const listRef = useScrollToTopOnChange(query);

@@ -30,6 +30,7 @@ import {
   clearServerMemory,
   invalidateNewIssueSubmissionContext,
 } from "./stores/new-issue-draft-store";
+import { clearQuickCreateActorMemory } from "./stores/quick-create-prefs-store";
 
 const STORAGE_KEY = "multica_servers";
 
@@ -150,6 +151,8 @@ export const useServerStore = create<ServerState>((set, get) => {
       // RUYI-79: 会话一起删的还有该服务器的创建表单负责人记忆,
       // 与 logout 的清空范围一致(仅该条目,不影响其他服务器)。
       clearServerMemory(id);
+      // RUYI-130: 智能模式的上次创建人记忆同样按服务器持久化,一并清掉。
+      clearQuickCreateActorMemory(id);
     },
 
     setActiveServer: async (id) => {
