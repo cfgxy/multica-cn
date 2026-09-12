@@ -1,0 +1,16 @@
+[Unit]
+Description=multica daemon OOM guard: pin main -1000, bait children +500
+# 与 multica-daemon.service 配套的「杀子保主」守护，独立常驻：
+# daemon 不在时按 MainPID=0 空转，重启后自动恢复跟随。
+# 负载极低：每秒读一次 cgroup.procs、写若干 /proc/*/oom_score_adj。
+
+[Service]
+Type=simple
+ExecStart=/usr/local/sbin/multica-oom-guard.sh
+Restart=always
+RestartSec=5
+CPUQuota=5%
+MemoryMax=50M
+
+[Install]
+WantedBy=multi-user.target
