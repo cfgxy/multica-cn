@@ -20,10 +20,14 @@ import { useEffect, useRef } from "react";
 import { AppState } from "react-native";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { useTranslation } from "react-i18next";
-import type { InboxItem } from "@multica/core/types";
+import { useQueryClient } from "@tanstack/react-query";
+import type { InboxItem, Workspace } from "@multica/core/types";
 import { useAuthStore } from "@/data/auth-store";
 import { useServerStore } from "@/data/server-store";
+import { pickActiveServer } from "@/data/server-config";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { workspaceListOptions } from "@/data/queries/workspaces";
+import { truncateLabel } from "@/lib/notification-target";
 import {
   inboxNotificationBodyKey,
   isInboxTransitionToBlocked,
@@ -51,6 +55,7 @@ export function useNotificationRealtime() {
   const userId = useAuthStore((s) => s.user?.id ?? null);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const { t, i18n: instance } = useTranslation("inbox");
+  const qc = useQueryClient();
 
   const cursorRef = useRef<NotifiedCursor>(emptyNotifiedCursor());
   const loadedRef = useRef(false);
@@ -144,10 +149,27 @@ export function useNotificationRealtime() {
               ? t(bodyKey)
               : item.type;
 
-          void presentInboxNotification(item, body, wsSlug ?? "");
+          // RUYI-131: stamp the posting identity into the payload so a tap
+          // arriving under a different server/workspace can confirm and
+          // switch instead of loading the issue in the wrong context.
+          void presentInboxNotification(item, body, {
+            serverId,
+            workspaceSlug: wsSlug ?? "",
+            workspaceName: truncateLabel(
+              qc
+                .getQueryData<Workspace[]>(workspaceListOptions().queryKey)
+                ?.find((w) => w.slug === wsSlug)?.name,
+            ),
+            serverName: truncateLabel(
+              pickActiveServer(
+                useServerStore.getState().servers,
+                serverId,
+              ).name,
+            ),
+          });
         }),
       ];
     },
-    [serverId, userId, wsSlug, instance.language],
+    [serverId, userId, wsSlug, instance.language, qc],
   );
 }

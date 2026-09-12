@@ -29,12 +29,38 @@
  * navigation. The workspace slug travels in the notification data (captured
  * at post time) so the tap lands in the workspace the event belonged to.
  *
+ * RUYI-131 — identity bridge. The slug alone isn't enough: the notification
+ * was posted under one server + workspace, and the app may sit on another
+ * by tap time. Navigating blind loads the issue under the wrong identity
+ * and lands on the issue screen's error state (the reported "404"). So the
+ * tap now routes through `lib/notification-target.ts`, which compares the
+ * payload identity against the live one and returns one of: navigate
+ * directly, confirm a workspace switch, confirm a server switch, or report
+ * the source server as gone. Confirmation uses RN's `Alert` (system dialog
+ * on both platforms, per `apps/mobile/CLAUDE.md`'s native-first waterfall)
+ * — there is no visible bridge screen: declining simply doesn't navigate,
+ * which leaves the user exactly where they were reading, and on a cold
+ * start "where they were" is the entry redirect's own landing (inbox /
+ * select-workspace / login).
+ *
  * Render-less by design; mounted once in the root layout.
  */
 import { useEffect, useRef } from "react";
+import { Alert } from "react-native";
 import { router, useRootNavigationState } from "expo-router";
 import * as Notifications from "expo-notifications";
+import { useQueryClient } from "@tanstack/react-query";
 import { useAuthStore } from "@/data/auth-store";
+import { useServerStore } from "@/data/server-store";
+import { useWorkspaceStore } from "@/data/workspace-store";
+import { switchServer } from "@/data/switch-server";
+import { useT } from "@/lib/use-t";
+import {
+  parseNotificationTarget,
+  resolveNotificationTap,
+  type InboxNotificationData,
+  type NotificationAction,
+} from "@/lib/notification-target";
 
 /** Bounded so a pathological session can't grow it forever. */
 const HANDLED_CAPACITY = 20;
@@ -48,25 +74,14 @@ const HANDLED_CAPACITY = 20;
 const POST_READY_PROBE_ATTEMPTS = 6;
 const POST_READY_PROBE_DELAY_MS = 500;
 
-interface InboxNotificationData {
-  inbox_id?: unknown;
-  issue_id?: unknown;
-  workspace_slug?: unknown;
-}
-
-function asString(value: unknown): string | null {
-  return typeof value === "string" && value.length > 0 ? value : null;
-}
-
-function routeFor(data: InboxNotificationData): string | null {
-  const issueId = asString(data.issue_id);
-  const workspaceSlug = asString(data.workspace_slug);
-  if (!issueId || !workspaceSlug) return null;
-  return `/(app)/${workspaceSlug}/issue/${issueId}`;
-}
-
 export function NotificationResponseNavigator() {
   const userId = useAuthStore((s) => s.user?.id ?? null);
+  const qc = useQueryClient();
+  const { t } = useT("inbox");
+  // Read through a ref inside offer(): the listener is registered once and
+  // must see the CURRENT translator after a language change.
+  const tRef = useRef(t);
+  tRef.current = t;
   // undefined until expo-router has mounted its navigation container — the
   // D3 readiness signal.
   const rootNavigationState = useRootNavigationState();
@@ -87,15 +102,118 @@ export function NotificationResponseNavigator() {
     }
   };
 
+  /** Best-effort navigation — a router hiccup must never crash the app. */
+  const navigate = (kind: "push" | "replace", route: string): void => {
+    try {
+      if (kind === "replace") router.replace(route);
+      else router.push(route);
+    } catch (err) {
+      // The alert stays reachable via the inbox tab.
+      console.warn("[notifications] tap navigation failed", err);
+    }
+  };
+
+  /**
+   * Cross-server landing (RUYI-131): restore the target server's session
+   * first, then replace. `replace`, not `push` — `switchServer` clears the
+   * query cache, so every stack entry behind us belongs to a server whose
+   * data is gone and whose identity is no longer active.
+   */
+  const openOnOtherServer = async (
+    action: Extract<NotificationAction, { kind: "confirm-server" }>,
+  ): Promise<void> => {
+    // Shadowing the outer binding on purpose: the listener is registered
+    // once, so it must read the CURRENT translator through the ref rather
+    // than capture the one from first render.
+    const t = tRef.current;
+    const outcome = await switchServer(action.serverId, qc);
+    if (outcome.kind === "failed") {
+      // Same failure surface the server settings screen uses; the user
+      // stays put and can retry by tapping the notification again.
+      Alert.alert(
+        t("mobile.bridge.switch_failed_title", "Switch failed"),
+        outcome.error instanceof Error
+          ? outcome.error.message
+          : t(
+              "mobile.bridge.switch_failed_message",
+              "Could not switch servers.",
+            ),
+      );
+      return;
+    }
+    // No restorable session on the target server → login; the notification
+    // intent is not preserved across the login flow (same as a manual
+    // server switch).
+    navigate("replace", outcome.kind === "signed-out" ? "/login" : action.route);
+  };
+
+  const run = (action: NotificationAction): void => {
+    // Shadowing the outer binding on purpose: the listener is registered
+    // once, so it must read the CURRENT translator through the ref rather
+    // than capture the one from first render.
+    const t = tRef.current;
+    switch (action.kind) {
+      case "open":
+        navigate("push", action.route);
+        return;
+      case "confirm-workspace":
+        Alert.alert(
+          t("mobile.bridge.cross_workspace_title", "Switch workspace?"),
+          t("mobile.bridge.cross_workspace_message", {
+            name: action.workspaceLabel,
+          }),
+          [
+            { text: t("mobile.bridge.cancel", "Cancel"), style: "cancel" },
+            {
+              text: t("mobile.bridge.confirm_switch", "Switch"),
+              // push, not replace: the workspace layout re-syncs the active
+              // workspace on mount, and a back gesture returns to where the
+              // user was — including the workspace they came from.
+              onPress: () => navigate("push", action.route),
+            },
+          ],
+        );
+        return;
+      case "confirm-server":
+        Alert.alert(
+          t("mobile.bridge.cross_server_title", "Switch server?"),
+          t("mobile.bridge.cross_server_message", {
+            server: action.serverLabel,
+            workspace: action.workspaceLabel,
+          }),
+          [
+            { text: t("mobile.bridge.cancel", "Cancel"), style: "cancel" },
+            {
+              text: t("mobile.bridge.confirm_switch", "Switch"),
+              onPress: () => void openOnOtherServer(action),
+            },
+          ],
+        );
+        return;
+      case "unavailable":
+        Alert.alert(
+          t("mobile.bridge.unavailable_title", "Can't open notification"),
+          t(
+            "mobile.bridge.unavailable_message",
+            "The server this notification came from is no longer in the server list.",
+          ),
+        );
+        return;
+      case "drop":
+        return;
+    }
+  };
+
   const offer = (response: Notifications.NotificationResponse): void => {
     if (handledRef.current.has(response.notification.request.identifier)) {
       return;
     }
-    const route = routeFor(
-      response.notification.request.content.data as InboxNotificationData,
-    );
-    // Malformed / issue-less notification: nothing to navigate to.
-    if (!route) {
+    const data = response.notification.request.content
+      .data as InboxNotificationData;
+    // Malformed / issue-less notification: nothing to navigate to. Checked
+    // before the park branches so a junk payload can't occupy the single
+    // pending slot ahead of a real tap.
+    if (!parseNotificationTarget(data)) {
       markHandled(response.notification.request.identifier);
       return;
     }
@@ -111,14 +229,17 @@ export function NotificationResponseNavigator() {
       pendingRef.current = response;
       return;
     }
+    // RUYI-131: compare the posting identity against the live one. Resolved
+    // here rather than at park time — the identity can still change while a
+    // response is parked (session restore picks the last-used server).
+    const action = resolveNotificationTap(data, {
+      activeServerId: useServerStore.getState().activeServerId,
+      currentWorkspaceSlug:
+        useWorkspaceStore.getState().currentWorkspaceSlug,
+      servers: useServerStore.getState().servers,
+    });
     markHandled(response.notification.request.identifier);
-    try {
-      router.push(route);
-    } catch (err) {
-      // Navigation is best-effort: the alert stays reachable via the inbox
-      // tab, and a router hiccup must never crash the app.
-      console.warn("[notifications] tap navigation failed", err);
-    }
+    run(action);
   };
 
   // Flush condition: a parked response + session restored + tree mounted.
