@@ -24,6 +24,7 @@ import {
   clearServerMemory,
   invalidateNewIssueSubmissionContext,
 } from "./stores/new-issue-draft-store";
+import { clearQuickCreateActorMemory } from "./stores/quick-create-prefs-store";
 
 interface AuthState {
   user: User | null;
@@ -124,6 +125,16 @@ export const useAuthStore = create<AuthState>((set) => {
     // Make any late create callback observe a signed-out context before the
     // asynchronous credential cleanup yields control.
     set({ user: null });
+    // RUYI-130: the smart-mode actor memory is persisted the same way and
+    // must drop with the session for the same reason. Awaited, so logout does
+    // not resolve while the previous account's pick is still on disk — and
+    // after `set({ user: null })`, so a late create callback cannot win the
+    // race and write the entry back in.
+    try {
+      await clearQuickCreateActorMemory(activeServerId);
+    } catch {
+      // Preference cleanup must not keep an authenticated session alive.
+    }
     await clearToken(activeServerId);
     api.setToken(null);
   },
