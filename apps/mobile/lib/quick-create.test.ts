@@ -156,6 +156,7 @@ describe("resolveQuickCreateActor", () => {
       [{ type: "squad", id: "nope" }, { type: "agent", id: second.id }],
       visible.agents,
       visible.squads,
+      true,
     );
     expect(resolved).toEqual({ type: "agent", id: second.id });
   });
@@ -169,6 +170,7 @@ describe("resolveQuickCreateActor", () => {
       ],
       visible.agents,
       visible.squads,
+      true,
     );
     expect(resolved).toEqual({ type: "agent", id: first.id });
   });
@@ -179,6 +181,7 @@ describe("resolveQuickCreateActor", () => {
       [{ type: "squad", id: squad.id }],
       visible.agents,
       visible.squads,
+      true,
     );
     expect(resolved).toEqual({ type: "squad", id: squad.id });
   });
@@ -188,13 +191,56 @@ describe("resolveQuickCreateActor", () => {
       [{ type: "agent", id: "gone" }],
       visible.agents,
       visible.squads,
+      true,
     );
     expect(resolved).toEqual({ type: "agent", id: visible.agents[0].id });
   });
 
   it("returns null when nothing is visible", () => {
-    const resolved = resolveQuickCreateActor([], [], []);
+    const resolved = resolveQuickCreateActor([], [], [], true);
     expect(resolved).toBeNull();
+  });
+
+  // RUYI-130: the squad list defaults to `[]` while its query is in flight.
+  // Resolving against that empty set made a remembered squad look deleted
+  // and the chain fell through to the first visible agent — which in the
+  // reported workspace IS the squad's leader, so the pick silently became
+  // "the leader" instead of "the squad".
+  it("does not resolve at all until both actor lists have loaded", () => {
+    const squad = visible.squads[0];
+    const resolved = resolveQuickCreateActor(
+      [{ type: "squad", id: squad.id }],
+      visible.agents,
+      [],
+      false,
+    );
+    expect(resolved).toBeNull();
+  });
+
+  it("keeps a remembered squad once the squad list resolves", () => {
+    const squad = visible.squads[0];
+    const resolved = resolveQuickCreateActor(
+      [null, { type: "squad", id: squad.id }],
+      visible.agents,
+      visible.squads,
+      true,
+    );
+    expect(resolved).toEqual({ type: "squad", id: squad.id });
+  });
+
+  it("never downgrades a remembered squad to its leader agent", () => {
+    // This fixture's squad leader IS the first visible agent, i.e. the
+    // seed-chain tail — exactly the RUYI-130 shape. A fall-through would
+    // therefore be indistinguishable from a successful restore in the UI.
+    const squad = visible.squads[0];
+    expect(squad.leader_id).toBe(visible.agents[0].id);
+    const resolved = resolveQuickCreateActor(
+      [{ type: "squad", id: squad.id }],
+      visible.agents,
+      visible.squads,
+      true,
+    );
+    expect(resolved).toEqual({ type: "squad", id: squad.id });
   });
 });
 

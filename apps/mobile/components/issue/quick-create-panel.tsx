@@ -53,8 +53,16 @@ import { squadListOptions } from "@/data/queries/squads";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useQuickCreateIssue } from "@/data/mutations/issues";
-import { useNewIssueDraftStore } from "@/data/stores/new-issue-draft-store";
-import { useQuickCreatePrefsStore } from "@/data/stores/quick-create-prefs-store";
+import {
+  getNewIssueSubmissionContextGeneration,
+  useNewIssueDraftStore,
+} from "@/data/stores/new-issue-draft-store";
+import {
+  ensureQuickCreateActorMemoryHydrated,
+  rememberQuickCreateActorAfterSuccess,
+  useQuickCreateActorMemoryStore,
+} from "@/data/stores/quick-create-prefs-store";
+import { useServerStore } from "@/data/server-store";
 import {
   buildQuickCreateBody,
   resolveQuickCreateActor,
@@ -68,9 +76,36 @@ export function QuickCreatePanel() {
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const userId = useAuthStore((s) => s.user?.id);
   const { data: members = [] } = useQuery(memberListOptions(wsId));
-  const { data: agents = [] } = useQuery(agentListOptions(wsId));
-  const { data: squads = [] } = useQuery(squadListOptions(wsId));
+  const { data: agents = [], isSuccess: agentsLoaded } = useQuery(
+    agentListOptions(wsId),
+  );
+  const { data: squads = [], isSuccess: squadsLoaded } = useQuery(
+    squadListOptions(wsId),
+  );
   const { data: runtimes = [] } = useQuery(runtimeListOptions(wsId));
+
+  // The persisted actor memory hydrates asynchronously from AsyncStorage.
+  // Opening this panel before it lands would read an empty map, i.e. the
+  // same "no history" fall-through the loading gate below prevents for the
+  // query lists (RUYI-130).
+  const [memoryHydrated, setMemoryHydrated] = useState(() =>
+    useQuickCreateActorMemoryStore.persist.hasHydrated(),
+  );
+  useEffect(() => {
+    if (memoryHydrated) return;
+    let active = true;
+    void ensureQuickCreateActorMemoryHydrated().then(() => {
+      if (active) setMemoryHydrated(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, [memoryHydrated]);
+
+  // Both lists AND the persisted memory must have resolved before the seed
+  // chain may fall through to its "first visible agent" tail — see
+  // resolveQuickCreateActor (RUYI-130).
+  const actorsLoaded = agentsLoaded && squadsLoaded && memoryHydrated;
 
   const memberRole = useMemo(
     () => members.find((m) => m.user_id === userId)?.role ?? null,
@@ -84,8 +119,15 @@ export function QuickCreatePanel() {
 
   const draftActor = useNewIssueDraftStore((s) => s.smartActor);
   const setSmartActor = useNewIssueDraftStore((s) => s.setSmartActor);
-  const lastActor = useQuickCreatePrefsStore((s) => s.lastActor);
-  const setLastActor = useQuickCreatePrefsStore((s) => s.setLastActor);
+  // Persisted server × workspace memory (RUYI-130). Subscribing to the map
+  // rather than reading it once is what makes the seed effect re-run when
+  // AsyncStorage hydration lands after this panel mounted.
+  const actorMemory = useQuickCreateActorMemoryStore((s) => s.byServer);
+  const activeServerId = useServerStore((s) => s.activeServerId);
+  const lastActor = useMemo(
+    () => (wsSlug ? actorMemory[activeServerId]?.[wsSlug] ?? null : null),
+    [actorMemory, activeServerId, wsSlug],
+  );
   const priority = useNewIssueDraftStore((s) => s.priority);
   const dueDate = useNewIssueDraftStore((s) => s.dueDate);
   const project = useNewIssueDraftStore((s) => s.project);
@@ -102,6 +144,7 @@ export function QuickCreatePanel() {
       [draftActor, lastActor],
       visible.agents,
       visible.squads,
+      actorsLoaded,
     );
     if (
       resolved &&
@@ -109,12 +152,18 @@ export function QuickCreatePanel() {
     ) {
       setSmartActor(resolved);
     }
-  }, [draftActor, lastActor, visible, setSmartActor]);
+  }, [draftActor, lastActor, visible, actorsLoaded, setSmartActor]);
 
   const actorName = useActorLookup();
   const actor = useMemo(
-    () => resolveQuickCreateActor([draftActor], visible.agents, visible.squads),
-    [draftActor, visible],
+    () =>
+      resolveQuickCreateActor(
+        [draftActor],
+        visible.agents,
+        visible.squads,
+        actorsLoaded,
+      ),
+    [draftActor, visible, actorsLoaded],
   );
 
   const [prompt, setPrompt] = useState("");
@@ -172,6 +221,14 @@ export function QuickCreatePanel() {
     if (!actor || versionBlocked) return;
     const trimmed = prompt.trim();
     if (trimmed.length === 0) return;
+    // Capture the context the request is sent from — the user can dismiss
+    // this screen and switch account or workspace before the response
+    // arrives (manual form parity, see ManualCreatePanel.onSubmit).
+    const submittedServerId = useServerStore.getState().activeServerId;
+    const submittedWorkspaceSlug =
+      useWorkspaceStore.getState().currentWorkspaceSlug;
+    const submittedUserId = useAuthStore.getState().user?.id;
+    const submittedGeneration = getNewIssueSubmissionContextGeneration();
     try {
       await quickCreate.mutateAsync(
         buildQuickCreateBody({
@@ -182,7 +239,35 @@ export function QuickCreatePanel() {
           dueDate,
         }),
       );
-      setLastActor(actor);
+      // RUYI-130: remember the SUBMITTED actor per server × workspace, only
+      // after the server accepted the create and only if that context is
+      // still the active one.
+      const currentServerId = useServerStore.getState().activeServerId;
+      const currentWorkspaceSlug =
+        useWorkspaceStore.getState().currentWorkspaceSlug;
+      const currentUserId = useAuthStore.getState().user?.id;
+      if (
+        submittedWorkspaceSlug &&
+        submittedUserId &&
+        currentWorkspaceSlug &&
+        currentUserId
+      ) {
+        rememberQuickCreateActorAfterSuccess(
+          {
+            serverId: submittedServerId,
+            workspaceSlug: submittedWorkspaceSlug,
+            userId: submittedUserId,
+            generation: submittedGeneration,
+          },
+          {
+            serverId: currentServerId,
+            workspaceSlug: currentWorkspaceSlug,
+            userId: currentUserId,
+            generation: getNewIssueSubmissionContextGeneration(),
+          },
+          actor,
+        );
+      }
       router.back();
     } catch (err) {
       // Structured 4xx bodies mirror web's in-modal error mapping; the
@@ -240,7 +325,6 @@ export function QuickCreatePanel() {
     priority,
     dueDate,
     quickCreate,
-    setLastActor,
     t,
     versionCheck,
   ]);
