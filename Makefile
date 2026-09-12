@@ -1,4 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev
+.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev daemon-build daemon-install daemon-update
 
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
@@ -142,6 +142,27 @@ selfhost-stop: ## Stop the self-hosted Docker Compose stack
 	@echo "==> Stopping Multica services..."
 	$(COMPOSE) -f docker-compose.selfhost.yml down
 	@echo "✓ All services stopped."
+
+# ---------- Daemon (systemd service on this host) ----------
+##@ Daemon (systemd)
+
+daemon-build: ## Build the runtime daemon CLI with release version metadata
+	cd server && go build -ldflags "-X main.version=$$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1 | sed 's/^v//') -X main.commit=$$(git rev-parse --short HEAD) -X main.date=$$(date -u '+%Y-%m-%dT%H:%M:%SZ')" -o bin/multica ./cmd/multica
+
+daemon-install: daemon-build ## Install daemon binary + systemd units (prompts for sudo; restarts the daemon)
+	install -m755 server/bin/multica $(HOME)/.local/bin/multica
+	sudo install -m644 deploy/multica-daemon.service /etc/systemd/system/multica-daemon.service
+	sudo install -m644 deploy/multica-oom-guard.service /etc/systemd/system/multica-oom-guard.service
+	sudo install -m755 deploy/oom-guard.sh /usr/local/sbin/multica-oom-guard.sh
+	sudo systemctl daemon-reload
+	sudo systemctl enable --now multica-oom-guard.service
+	sudo systemctl restart multica-daemon.service
+	@systemctl --no-pager --lines=0 status multica-daemon.service
+
+daemon-update: daemon-build ## Update the daemon binary only, then graceful restart (no unit changes)
+	install -m755 server/bin/multica $(HOME)/.local/bin/multica
+	sudo systemctl restart multica-daemon.service
+	@systemctl --no-pager --lines=0 status multica-daemon.service
 
 # ---------- Environments ----------
 ##@ Environments
