@@ -187,15 +187,13 @@ export function NotificationResponseNavigator() {
             "The server this notification came from is no longer in the server list.",
           ),
         ),
-      showWorkspaceFailed: (error, onRetry) =>
+      showWorkspaceFailed: (_error, onRetry) =>
         Alert.alert(
           t("mobile.bridge.workspace_failed_title", "Can't open notification"),
-          error instanceof Error
-            ? error.message
-            : t(
-                "mobile.bridge.workspace_failed_message",
-                "Could not switch workspaces.",
-              ),
+          t(
+            "mobile.bridge.workspace_failed_message",
+            "Could not switch workspaces.",
+          ),
           [
             { text: t("mobile.bridge.cancel", "Cancel"), style: "cancel" },
             {
@@ -204,15 +202,13 @@ export function NotificationResponseNavigator() {
             },
           ],
         ),
-      showServerFailed: (error, onRetry) =>
+      showServerFailed: (_error, onRetry) =>
         Alert.alert(
           t("mobile.bridge.switch_failed_title", "Switch failed"),
-          error instanceof Error
-            ? error.message
-            : t(
-                "mobile.bridge.switch_failed_message",
-                "Could not switch servers.",
-              ),
+          t(
+            "mobile.bridge.switch_failed_message",
+            "Could not switch servers.",
+          ),
           [
             { text: t("mobile.bridge.cancel", "Cancel"), style: "cancel" },
             {

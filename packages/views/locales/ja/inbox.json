@@ -129,9 +129,9 @@
     },
     "bridge": {
       "cross_workspace_title": "ワークスペースを切り替えますか？",
-      "cross_workspace_message": "この通知はワークスペース「{{name}}」からのものです。そちらでイシューを開きますか？",
+      "cross_workspace_message": "この通知はワークスペース「{{name}}」からのものです。そちらでタスクを開きますか？",
       "cross_server_title": "サーバーを切り替えますか？",
-      "cross_server_message": "この通知はサーバー「{{server}}」・ワークスペース「{{workspace}}」からのものです。切り替えてイシューを開きます。",
+      "cross_server_message": "この通知はサーバー「{{server}}」・ワークスペース「{{workspace}}」からのものです。切り替えてタスクを開きます。",
       "confirm_switch": "切り替える",
       "cancel": "キャンセル",
       "switch_failed_title": "切り替えに失敗しました",
