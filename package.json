@@ -38,10 +38,14 @@
     "node": ">=22"
   },
   "packageManager": "pnpm@10.28.2",
+  "enriched-markdown": {
+    "enableCodeHighlight": false
+  },
   "pnpm": {
     "onlyBuiltDependencies": [
       "esbuild",
-      "electron"
+      "electron",
+      "react-native-enriched-markdown"
     ],
     "overrides": {
       "@types/react": "catalog:",
