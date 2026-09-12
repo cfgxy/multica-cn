@@ -115,13 +115,42 @@ describe("getInboxNavigationTarget", () => {
     });
   });
 
-  it("preserves issue navigation and opens paused notices in the same sheet", () => {
+  // RUYI-134: an issue-less quick-create outcome used to return null because
+  // only autopilot notices were allowed through. Web renders either outcome in
+  // its notification detail pane, so mobile must route both instead of
+  // swallowing the tap.
+  it("opens issue-less quick-create outcomes in the notification sheet", () => {
+    for (const type of [
+      "quick_create_failed",
+      "quick_create_unconfirmed",
+    ] as const) {
+      expect(
+        getInboxNavigationTarget(
+          item({ issue_id: null, type }),
+          "acme",
+          "history-1",
+        ),
+      ).toEqual({
+        pathname: "/[workspace]/inbox/[id]",
+        params: { workspace: "acme", id: "inbox-1" },
+      });
+    }
+  });
+
+  it("preserves canonical issue navigation for an issue-linked failed task", () => {
     expect(
-      getInboxNavigationTarget(item({}), "acme", "history-1"),
+      getInboxNavigationTarget(
+        item({ type: "task_failed" }),
+        "acme",
+        "history-1",
+      ),
     ).toMatchObject({
       pathname: "/[workspace]/issue/[id]",
       params: { workspace: "acme", id: "issue-1", h: "history-1" },
     });
+  });
+
+  it("opens paused notices in the notification sheet", () => {
     expect(
       getInboxNavigationTarget(
         item({ issue_id: null, type: "autopilot_paused" }),
