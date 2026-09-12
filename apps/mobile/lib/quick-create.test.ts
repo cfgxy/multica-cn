@@ -206,6 +206,7 @@ describe("buildQuickCreateBody", () => {
       projectId: null,
       priority: "none",
       dueDate: null,
+      attachmentIds: [],
     });
     expect(body).toEqual({
       agent_id: "a-1",
@@ -220,6 +221,7 @@ describe("buildQuickCreateBody", () => {
       projectId: null,
       priority: "none",
       dueDate: null,
+      attachmentIds: [],
     });
     expect(body).toEqual({ squad_id: "s-1", prompt: "File the release checklist" });
   });
@@ -231,6 +233,7 @@ describe("buildQuickCreateBody", () => {
       projectId: "proj-1",
       priority: "high" as IssuePriority,
       dueDate: "2026-09-10",
+      attachmentIds: ["att-1", "att-2"],
     });
     expect(body).toEqual({
       agent_id: "a-1",
@@ -238,6 +241,7 @@ describe("buildQuickCreateBody", () => {
       project_id: "proj-1",
       priority: "high",
       due_date: "2026-09-10",
+      attachment_ids: ["att-1", "att-2"],
     });
   });
 });

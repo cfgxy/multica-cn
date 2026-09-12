@@ -68,6 +68,7 @@ export function InlineCommentComposer({
         params: { workspace: wsSlug ?? "", mode: "comment" },
       }}
       uploadContext={{ issueId }}
+      requireVisibleText
       placeholder={t("mobile.composer.placeholder", "Add a comment…")}
       pillLabel={t(
         "mobile.composer.pill_label",
