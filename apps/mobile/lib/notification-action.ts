@@ -112,7 +112,10 @@ async function openOnOtherServer(
       return;
     }
     if (outcome.kind === "unavailable") {
-      handlers.showUnavailable({ kind: "unavailable" });
+      handlers.showUnavailable({
+        kind: "unavailable",
+        reason: "server-not-configured",
+      });
       return;
     }
     if (outcome.kind === "signed-out") {

@@ -179,13 +179,18 @@ export function NotificationResponseNavigator() {
             },
           ],
         ),
-      showUnavailable: () =>
+      showUnavailable: (unavailableAction) =>
         Alert.alert(
           t("mobile.bridge.unavailable_title", "Can't open notification"),
-          t(
-            "mobile.bridge.unavailable_message",
-            "The server this notification came from is no longer in the server list.",
-          ),
+          unavailableAction.reason === "missing-server-id"
+            ? t(
+                "mobile.bridge.legacy_unavailable_message",
+                "This older notification doesn't identify its source server. Find the task in Inbox.",
+              )
+            : t(
+                "mobile.bridge.unavailable_message",
+                "The server this notification came from is no longer in the server list.",
+              ),
         ),
       showWorkspaceFailed: (_error, onRetry) =>
         Alert.alert(
