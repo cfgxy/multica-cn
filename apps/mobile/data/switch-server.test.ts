@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { QueryClient } from "@tanstack/react-query";
+import { shouldRenderAuthenticatedStack } from "../lib/auth-route";
 
 const state = vi.hoisted(() => ({
   activeServerId: "server-a",
@@ -142,6 +143,50 @@ describe("switchServer", () => {
     expect(state.setActiveServer).toHaveBeenNthCalledWith(1, "server-b");
     expect(state.setActiveServer).toHaveBeenNthCalledWith(2, "server-a");
     expect(qc.clear).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the authenticated layout protected until an asynchronous rollback finishes", async () => {
+    state.tokens["server-b"] = "token-b";
+    let startRollback!: () => void;
+    let finishRollback!: () => void;
+    const rollbackStarted = new Promise<void>((resolve) => {
+      startRollback = resolve;
+    });
+    const rollbackFinished = new Promise<void>((resolve) => {
+      finishRollback = resolve;
+    });
+    state.initialize.mockImplementation(async () => {
+      if (state.activeServerId === "server-b") {
+        state.user = null;
+        state.workspaceSlug = null;
+        return;
+      }
+      startRollback();
+      await rollbackFinished;
+      state.user = state.users[state.activeServerId] ?? null;
+      state.workspaceSlug = state.workspaceSlugs[state.activeServerId] ?? null;
+    });
+    const qc = queryClient();
+
+    const switching = switchServer("server-b", qc);
+    await rollbackStarted;
+
+    expect(state.activeServerId).toBe("server-a");
+    expect(state.user).toBeNull();
+    expect(state.isServerSwitching).toBe(true);
+    expect(
+      shouldRenderAuthenticatedStack(
+        false,
+        false,
+        state.isServerSwitching,
+        true,
+      ),
+    ).toBe(true);
+
+    finishRollback();
+
+    await expect(switching).resolves.toMatchObject({ kind: "failed" });
+    expect(state.isServerSwitching).toBe(false);
   });
 
   it("treats a malformed successful target response with an empty user id as failed", async () => {
