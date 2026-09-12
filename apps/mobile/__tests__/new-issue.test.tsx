@@ -262,7 +262,9 @@ jest.mock("@/data/stores/quick-create-prefs-store", () => {
 });
 
 const NewIssueModal =
-  jest.requireActual<typeof import("./new-issue")>("./new-issue").default;
+  jest.requireActual<typeof import("../app/(app)/[workspace]/new-issue")>(
+    "../app/(app)/[workspace]/new-issue",
+  ).default;
 const { router } = jest.requireMock<typeof import("expo-router")>("expo-router");
 const { useNewIssueDraftStore } = jest.requireActual<
   typeof import("@/data/stores/new-issue-draft-store")
