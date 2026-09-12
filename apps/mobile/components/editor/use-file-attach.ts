@@ -19,7 +19,11 @@ import {
   partitionOversize,
   type PickedAsset,
 } from "@/lib/picked-asset";
-import type { AttachmentZoneItem } from "@/lib/attachment-zone";
+import {
+  removeAttachmentZoneItem,
+  updateAttachmentZoneItem,
+  type AttachmentZoneItem,
+} from "@/lib/attachment-zone";
 import { useT } from "@/lib/use-t";
 
 export interface UploadContext {
@@ -95,31 +99,27 @@ export function useFileAttach({
         const result = await api.uploadFile(asset, uploadContext);
         if (!activeUploadsRef.current.has(localId)) return;
         updateAttachments((current) =>
-          current.map((item) =>
-            item.localId === localId
-              ? {
-                  ...item,
-                  filename: result.filename,
-                  mimeType: result.content_type || item.mimeType,
-                  status: "completed",
-                  id: result.id,
-                  url: result.url,
-                  downloadUrl: result.download_url,
-                  error: undefined,
-                }
-              : item,
-          ),
+          updateAttachmentZoneItem(current, localId, (item) => ({
+            ...item,
+            filename: result.filename,
+            mimeType: result.content_type || item.mimeType,
+            status: "completed",
+            id: result.id,
+            url: result.url,
+            downloadUrl: result.download_url,
+            error: undefined,
+          })),
         );
       } catch (err) {
         if (!activeUploadsRef.current.has(localId)) return;
         const message =
           err instanceof Error ? err.message : t("unknown_error", "Unknown error");
         updateAttachments((current) =>
-          current.map((item) =>
-            item.localId === localId
-              ? { ...item, status: "failed", error: message }
-              : item,
-          ),
+          updateAttachmentZoneItem(current, localId, (item) => ({
+            ...item,
+            status: "failed",
+            error: message,
+          })),
         );
         if (alertOnError) {
           Alert.alert(
@@ -189,9 +189,7 @@ export function useFileAttach({
       if (activeUploadsRef.current.delete(localId)) {
         setInFlight((count) => Math.max(0, count - 1));
       }
-      updateAttachments((current) =>
-        current.filter((item) => item.localId !== localId),
-      );
+      updateAttachments((current) => removeAttachmentZoneItem(current, localId));
     },
     [updateAttachments],
   );
@@ -203,11 +201,11 @@ export function useFileAttach({
       );
       if (!item || item.status !== "failed") return;
       updateAttachments((current) =>
-        current.map((candidate) =>
-          candidate.localId === localId
-            ? { ...candidate, status: "uploading", error: undefined }
-            : candidate,
-        ),
+        updateAttachmentZoneItem(current, localId, (candidate) => ({
+          ...candidate,
+          status: "uploading",
+          error: undefined,
+        })),
       );
       void startUpload(localId, {
         uri: item.localUri,
