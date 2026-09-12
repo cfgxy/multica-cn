@@ -41,6 +41,21 @@ export function hasUploadingAttachments(
   return items.some((item) => item.status === "uploading");
 }
 
+export function updateAttachmentZoneItem(
+  items: readonly AttachmentZoneItem[],
+  localId: string,
+  update: (item: AttachmentZoneItem) => AttachmentZoneItem,
+): AttachmentZoneItem[] {
+  return items.map((item) => (item.localId === localId ? update(item) : item));
+}
+
+export function removeAttachmentZoneItem(
+  items: readonly AttachmentZoneItem[],
+  localId: string,
+): AttachmentZoneItem[] {
+  return items.filter((item) => item.localId !== localId);
+}
+
 export function buildManualCreateContentFields(
   description: string,
   attachments: readonly AttachmentZoneItem[],

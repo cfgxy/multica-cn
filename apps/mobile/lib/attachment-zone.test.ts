@@ -6,7 +6,9 @@ import {
   completedAttachmentIds,
   groupAttachmentZoneItems,
   hasUploadingAttachments,
+  removeAttachmentZoneItem,
   type AttachmentZoneItem,
+  updateAttachmentZoneItem,
 } from "@/lib/attachment-zone";
 import type { MentionMarker } from "@/lib/mention-serialize";
 
@@ -76,6 +78,48 @@ describe("buildManualCreateContentFields", () => {
     });
     expect(fields.description).not.toContain("![");
     expect(fields.description).not.toContain("/api/attachments/");
+  });
+
+  it("submits completed attachments without adding attachment Markdown to an empty description", () => {
+    const fields = buildManualCreateContentFields("   ", [
+      {
+        ...attachment("image-1", "image/png", "completed", "att-1"),
+        url: "https://example.test/api/attachments/att-1",
+        downloadUrl: "https://example.test/api/attachments/att-1/download",
+      },
+    ]);
+
+    expect(fields).toEqual({ attachment_ids: ["att-1"] });
+    expect(fields).not.toHaveProperty("description");
+  });
+});
+
+describe("attachment zone state transitions", () => {
+  it("removes only the selected attachment", () => {
+    const items = [
+      attachment("image-1", "image/png", "completed", "att-1"),
+      attachment("file-1", "application/pdf", "completed", "att-2"),
+    ];
+
+    expect(removeAttachmentZoneItem(items, "image-1")).toEqual([items[1]]);
+  });
+
+  it("does not restore an attachment when a removed upload settles late", () => {
+    const items: AttachmentZoneItem[] = [
+      {
+        ...attachment("image-1", "image/png", "uploading"),
+        id: undefined,
+      },
+    ];
+    const removed = removeAttachmentZoneItem(items, "image-1");
+
+    const settled = updateAttachmentZoneItem(removed, "image-1", (item) => ({
+      ...item,
+      status: "completed",
+      id: "att-1",
+    }));
+
+    expect(settled).toEqual([]);
   });
 });
 
