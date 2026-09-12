@@ -65,7 +65,7 @@ describe("buildInboxNotificationOrigin", () => {
     });
   });
 
-  it("keeps routing identity while omitting unknown display snapshots", () => {
+  it("drops a notification when its source workspace identity is unavailable", () => {
     expect(
       buildInboxNotificationOrigin({
         serverId: "server-b",
@@ -73,11 +73,6 @@ describe("buildInboxNotificationOrigin", () => {
         servers: [],
         workspaces: undefined,
       }),
-    ).toEqual({
-      serverId: "server-b",
-      workspaceSlug: "",
-      workspaceName: null,
-      serverName: null,
-    });
+    ).toBeNull();
   });
 });

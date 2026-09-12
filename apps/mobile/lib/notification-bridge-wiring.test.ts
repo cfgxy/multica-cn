@@ -32,8 +32,12 @@ describe("notification identity bridge wiring", () => {
     expect(realtime).toContain("buildInboxNotificationOrigin({");
     expect(realtime).toContain("serverId,");
     expect(realtime).toContain("workspaceId: item.workspace_id");
+    expect(realtime).toContain("if (!origin) return;");
     expect(publisher).toContain("server_id: origin.serverId");
     expect(publisher).toContain("workspace_slug: origin.workspaceSlug");
+    expect(publisher).toContain(
+      "if (!item.issue_id || !origin.workspaceSlug) return;",
+    );
   });
 
   it("uses localized copy instead of raw workspace or server switch errors", () => {
@@ -64,5 +68,12 @@ describe("notification identity bridge wiring", () => {
   it("syncs the workspace header only while its route has focus", () => {
     expect(workspaceLayout).toContain("useIsFocused");
     expect(workspaceLayout).toContain("if (matched && isFocused)");
+  });
+
+  it("defers workspace membership resolution while a server switch owns the session", () => {
+    expect(workspaceLayout).toContain("enabled: shouldResolveMembership");
+    expect(workspaceLayout).toContain(
+      "if (!shouldResolveMembership || isLoading) return null;",
+    );
   });
 });

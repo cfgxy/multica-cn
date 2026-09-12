@@ -149,17 +149,20 @@ export function useNotificationRealtime() {
           // RUYI-131: stamp the posting identity into the payload so a tap
           // arriving under a different server/workspace can confirm and
           // switch instead of loading the issue in the wrong context.
+          const origin = buildInboxNotificationOrigin({
+            serverId,
+            workspaceId: item.workspace_id,
+            servers: useServerStore.getState().servers,
+            workspaces: qc.getQueryData<Workspace[]>(
+              workspaceListOptions().queryKey,
+            ),
+          });
+          if (!origin) return;
+
           void presentInboxNotification(
             item,
             body,
-            buildInboxNotificationOrigin({
-              serverId,
-              workspaceId: item.workspace_id,
-              servers: useServerStore.getState().servers,
-              workspaces: qc.getQueryData<Workspace[]>(
-                workspaceListOptions().queryKey,
-              ),
-            }),
+            origin,
           );
         }),
       ];

@@ -5,6 +5,7 @@ import { Redirect, Stack, useLocalSearchParams } from "expo-router";
 import { useIsFocused } from "@react-navigation/native";
 import { useQuery } from "@tanstack/react-query";
 import i18n from "i18next";
+import { useAuthStore } from "@/data/auth-store";
 import { workspaceListOptions } from "@/data/queries/workspaces";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { RealtimeProvider } from "@/data/realtime/realtime-provider";
@@ -17,6 +18,7 @@ import { useProjectsRealtime } from "@/data/realtime/use-projects-realtime";
 import { usePinsRealtime } from "@/data/realtime/use-pins-realtime";
 import { usePresenceRealtime } from "@/data/realtime/use-presence-realtime";
 import { useWorkspacePresencePrefetch } from "@/lib/use-workspace-presence-prefetch";
+import { shouldResolveWorkspaceMembership } from "@/lib/workspace-route";
 import { ModalCloseButton } from "@/components/ui/modal-close-button";
 import { useNewIssueDraftResetOnWorkspaceChange } from "@/data/stores/new-issue-draft-store";
 import { useNewProjectDraftResetOnWorkspaceChange } from "@/data/stores/new-project-draft-store";
@@ -107,7 +109,14 @@ function RealtimeSubscriptions() {
  */
 export default function WorkspaceLayout() {
   const { workspace: slug } = useLocalSearchParams<{ workspace: string }>();
-  const { data: workspaces, isLoading } = useQuery(workspaceListOptions());
+  const isServerSwitching = useAuthStore((s) => s.isServerSwitching);
+  const shouldResolveMembership = shouldResolveWorkspaceMembership(
+    isServerSwitching,
+  );
+  const { data: workspaces, isLoading } = useQuery({
+    ...workspaceListOptions(),
+    enabled: shouldResolveMembership,
+  });
   const setCurrentWorkspace = useWorkspaceStore((s) => s.setCurrentWorkspace);
   const isFocused = useIsFocused();
 
@@ -128,7 +137,7 @@ export default function WorkspaceLayout() {
 
   // Wait for the workspaces list before deciding membership — otherwise a
   // valid deep link would briefly redirect away on cold start.
-  if (isLoading) return null;
+  if (!shouldResolveMembership || isLoading) return null;
 
   if (!matched) return <Redirect href="/select-workspace" />;
 

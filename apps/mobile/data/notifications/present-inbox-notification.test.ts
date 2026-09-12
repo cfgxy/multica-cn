@@ -104,4 +104,15 @@ describe("presentInboxNotification", () => {
 
     expect(notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
   });
+
+  it("does not schedule a notification without a workspace route", async () => {
+    await presentInboxNotification(makeItem(), "You were mentioned", {
+      serverId: "server-b",
+      workspaceSlug: "",
+      workspaceName: null,
+      serverName: null,
+    });
+
+    expect(notifications.scheduleNotificationAsync).not.toHaveBeenCalled();
+  });
 });
