@@ -82,12 +82,21 @@ export function visibleQuickCreateActors(
  * first agent (RUYI → 蔡小星) that reads as a squad being silently
  * downgraded to its leader (RUYI-130). An unloaded set resolves to null:
  * seeding nothing is recoverable, seeding the wrong actor is not.
+ *
+ * `historyResolved` gates only the tail: it is the persisted last-actor
+ * memory having actually been read back (not merely attempted — an
+ * AsyncStorage read failure reads as an empty map). Without history there is
+ * no way to tell "never filed anything here" from "memory unreadable", and
+ * the tail would re-seed the downgrade. It is a separate gate from
+ * `actorsLoaded` so an explicit pick the user just made still resolves while
+ * the memory is missing — otherwise an unreadable memory would lock the flow.
  */
 export function resolveQuickCreateActor(
   candidates: (QuickCreateActorRef | null | undefined)[],
   agents: Agent[],
   squads: Squad[],
   actorsLoaded: boolean,
+  historyResolved: boolean = true,
 ): QuickCreateActorRef | null {
   if (!actorsLoaded) return null;
   for (const candidate of candidates) {
@@ -98,6 +107,7 @@ export function resolveQuickCreateActor(
       return candidate;
     }
   }
+  if (!historyResolved) return null;
   return agents[0] ? { type: "agent", id: agents[0].id } : null;
 }
 

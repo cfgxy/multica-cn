@@ -29,7 +29,7 @@
  *   - Success closes the screen without a toast (the manual form does the
  *     same); web shows a "sent" toast in its long-lived dialog.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Pressable, ScrollView, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
@@ -60,6 +60,7 @@ import {
 import {
   ensureQuickCreateActorMemoryHydrated,
   rememberQuickCreateActorAfterSuccess,
+  useQuickCreateActorMemoryHydrationStore,
   useQuickCreateActorMemoryStore,
 } from "@/data/stores/quick-create-prefs-store";
 import { useServerStore } from "@/data/server-store";
@@ -70,6 +71,14 @@ import {
 } from "@/lib/quick-create";
 import { useActorLookup } from "@/data/use-actor-name";
 import { useT } from "@/lib/use-t";
+
+/**
+ * Bounded retries for the persisted last-actor read. A transient
+ * AsyncStorage failure is worth one more attempt; a persistent one must not
+ * spin the effect, and the flow stays usable either way (the user picks the
+ * actor explicitly).
+ */
+const MEMORY_HYDRATION_ATTEMPTS = 2;
 
 export function QuickCreatePanel() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
@@ -88,24 +97,31 @@ export function QuickCreatePanel() {
   // Opening this panel before it lands would read an empty map, i.e. the
   // same "no history" fall-through the loading gate below prevents for the
   // query lists (RUYI-130).
-  const [memoryHydrated, setMemoryHydrated] = useState(() =>
-    useQuickCreateActorMemoryStore.persist.hasHydrated(),
+  //
+  // A read that FAILS is not "no history": zustand resolves rehydrate()
+  // either way and only reports the difference through hasHydrated(), so the
+  // helper returns an explicit status. A failed read keeps the seed chain's
+  // tail closed — the user picks explicitly instead of silently filing as
+  // the first visible agent — and is retried a bounded number of times.
+  const memoryStatus = useQuickCreateActorMemoryHydrationStore(
+    (s) => s.status,
   );
+  const hydrationAttempts = useRef(0);
   useEffect(() => {
-    if (memoryHydrated) return;
-    let active = true;
-    void ensureQuickCreateActorMemoryHydrated().then(() => {
-      if (active) setMemoryHydrated(true);
-    });
-    return () => {
-      active = false;
-    };
-  }, [memoryHydrated]);
+    if (memoryStatus === "ready") return;
+    if (hydrationAttempts.current >= MEMORY_HYDRATION_ATTEMPTS) return;
+    hydrationAttempts.current += 1;
+    // The helper publishes the outcome to the hydration store itself, so
+    // there is no component state to guard against a late resolution.
+    void ensureQuickCreateActorMemoryHydrated();
+  }, [memoryStatus]);
 
-  // Both lists AND the persisted memory must have resolved before the seed
-  // chain may fall through to its "first visible agent" tail — see
-  // resolveQuickCreateActor (RUYI-130).
-  const actorsLoaded = agentsLoaded && squadsLoaded && memoryHydrated;
+  const actorsLoaded = agentsLoaded && squadsLoaded;
+  // The seed chain's "first visible agent" tail additionally requires the
+  // persisted memory to have actually resolved — otherwise an absent or
+  // unreadable memory is indistinguishable from "no history" and re-seeds
+  // the very downgrade RUYI-130 reported.
+  const historyResolved = memoryStatus === "ready";
 
   const memberRole = useMemo(
     () => members.find((m) => m.user_id === userId)?.role ?? null,
@@ -145,6 +161,7 @@ export function QuickCreatePanel() {
       visible.agents,
       visible.squads,
       actorsLoaded,
+      historyResolved,
     );
     if (
       resolved &&
@@ -152,7 +169,14 @@ export function QuickCreatePanel() {
     ) {
       setSmartActor(resolved);
     }
-  }, [draftActor, lastActor, visible, actorsLoaded, setSmartActor]);
+  }, [
+    draftActor,
+    lastActor,
+    visible,
+    actorsLoaded,
+    historyResolved,
+    setSmartActor,
+  ]);
 
   const actorName = useActorLookup();
   const actor = useMemo(
@@ -162,8 +186,9 @@ export function QuickCreatePanel() {
         visible.agents,
         visible.squads,
         actorsLoaded,
+        historyResolved,
       ),
-    [draftActor, visible, actorsLoaded],
+    [draftActor, visible, actorsLoaded, historyResolved],
   );
 
   const [prompt, setPrompt] = useState("");
@@ -252,21 +277,36 @@ export function QuickCreatePanel() {
         currentWorkspaceSlug &&
         currentUserId
       ) {
-        rememberQuickCreateActorAfterSuccess(
-          {
-            serverId: submittedServerId,
-            workspaceSlug: submittedWorkspaceSlug,
-            userId: submittedUserId,
-            generation: submittedGeneration,
-          },
-          {
-            serverId: currentServerId,
-            workspaceSlug: currentWorkspaceSlug,
-            userId: currentUserId,
-            generation: getNewIssueSubmissionContextGeneration(),
-          },
-          actor,
-        );
+        // Awaited, and awaited BEFORE the screen closes: an unawaited
+        // AsyncStorage write can be outlived by the process (iOS background
+        // reclaim right after a create), and the next cold start would then
+        // restore the older pick — the reported defect.
+        //
+        // Its own try/catch, because the create already succeeded. A storage
+        // failure here must not reach the submit catch below: that one
+        // reports "failed to submit" and would invite the user to file the
+        // same issue twice.
+        try {
+          await rememberQuickCreateActorAfterSuccess(
+            {
+              serverId: submittedServerId,
+              workspaceSlug: submittedWorkspaceSlug,
+              userId: submittedUserId,
+              generation: submittedGeneration,
+            },
+            {
+              serverId: currentServerId,
+              workspaceSlug: currentWorkspaceSlug,
+              userId: currentUserId,
+              generation: getNewIssueSubmissionContextGeneration(),
+            },
+            actor,
+          );
+        } catch {
+          // Losing the preference is strictly less harmful than blocking or
+          // re-reporting a create the server already accepted; the next
+          // successful create overwrites it.
+        }
       }
       router.back();
     } catch (err) {
