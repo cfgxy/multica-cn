@@ -24,10 +24,9 @@ import { useQueryClient } from "@tanstack/react-query";
 import type { InboxItem, Workspace } from "@multica/core/types";
 import { useAuthStore } from "@/data/auth-store";
 import { useServerStore } from "@/data/server-store";
-import { pickActiveServer } from "@/data/server-config";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { workspaceListOptions } from "@/data/queries/workspaces";
-import { truncateLabel } from "@/lib/notification-target";
+import { buildInboxNotificationOrigin } from "@/lib/notification-origin";
 import {
   inboxNotificationBodyKey,
   isInboxTransitionToBlocked,
@@ -152,21 +151,18 @@ export function useNotificationRealtime() {
           // RUYI-131: stamp the posting identity into the payload so a tap
           // arriving under a different server/workspace can confirm and
           // switch instead of loading the issue in the wrong context.
-          void presentInboxNotification(item, body, {
-            serverId,
-            workspaceSlug: wsSlug ?? "",
-            workspaceName: truncateLabel(
-              qc
-                .getQueryData<Workspace[]>(workspaceListOptions().queryKey)
-                ?.find((w) => w.slug === wsSlug)?.name,
-            ),
-            serverName: truncateLabel(
-              pickActiveServer(
-                useServerStore.getState().servers,
-                serverId,
-              ).name,
-            ),
-          });
+          void presentInboxNotification(
+            item,
+            body,
+            buildInboxNotificationOrigin({
+              serverId,
+              workspaceSlug: wsSlug,
+              servers: useServerStore.getState().servers,
+              workspaces: qc.getQueryData<Workspace[]>(
+                workspaceListOptions().queryKey,
+              ),
+            }),
+          );
         }),
       ];
     },

@@ -1,57 +1,115 @@
 /**
- * 服务器切换的会话编排 —— 从 `app/server-settings/index.tsx` 的 doSwitch
- * 提取（RUYI-131）。
- *
- * 提取的唯一原因是本次新增了第二个调用点：跨服务器通知点击后要先恢复目标
- * 服务器会话再落地 Issue（`components/notifications/notification-response-
- * navigator.tsx`）。两个调用点的会话序列必须完全一致，否则「从设置页切」
- * 与「从通知切」会出现两套 token/缓存行为。
- *
- * 落地路由**不在**这里决定：设置页落 inbox，通知落目标 Issue。函数只把
- * 切换后的会话事实（失败 / 无会话 / 有会话+已恢复 slug）交回调用方。
+ * Server-session orchestration shared by the Settings picker and notification
+ * bridge. Callers own their destination route; this module returns only the
+ * resulting session state.
  */
 import type { QueryClient } from "@tanstack/react-query";
 
 import { api } from "./api";
 import { useAuthStore } from "./auth-store";
 import { useServerStore } from "./server-store";
+import { getToken } from "./secure-storage";
 import { useWorkspaceStore } from "./workspace-store";
 
 export type ServerSwitchOutcome =
-  /** 落盘失败 —— 用户仍留在原服务器会话里，未做任何破坏性动作。 */
+  /** Persisting the selected server failed before the active session changed. */
   | { kind: "failed"; error: unknown }
-  /** 切换成功，但目标服务器没有可恢复的会话（或 getMe 失败）。 */
+  /** Restoring the previous server after a failed switch also failed. */
+  | { kind: "rollback-failed"; error: unknown }
+  /** The server was removed after the confirmation dialog opened. */
+  | { kind: "unavailable" }
+  /** The selected server has no valid restorable session. */
   | { kind: "signed-out" }
-  /** 切换成功且会话已恢复；slug 为该服务器持久化的最后使用空间。 */
-  | { kind: "signed-in"; slug: string | null };
+  /** The selected server restored a session and its last workspace slug. */
+  | {
+      kind: "signed-in";
+      slug: string | null;
+      previousServerId: string;
+    };
+
+async function restorePreviousServer(
+  serverId: string,
+  queryClient: QueryClient,
+): Promise<unknown | null> {
+  try {
+    await useServerStore.getState().setActiveServer(serverId);
+    if (useServerStore.getState().activeServerId !== serverId) {
+      throw new Error("The previous server is no longer available.");
+    }
+    api.setToken(null);
+    queryClient.clear();
+    await useAuthStore.getState().initialize();
+    if (!useAuthStore.getState().user?.id) {
+      throw new Error("Could not restore the previous server session.");
+    }
+    return null;
+  } catch (error) {
+    console.warn("[servers] failed to restore the previous server session", error);
+    return error;
+  }
+}
 
 /**
- * 切到目标服务器并恢复其会话。
- *
- * 顺序与原 doSwitch 完全一致：
- *   1. 先落盘（失败即原地返回，不动会话）；
- *   2. 立即丢弃内存中的旧 token —— 地址已指向新服务器，继续带旧 token
- *      发请求会以「B 返回 401」触发全局登出，反过来毁掉 B 的已存快照；
- *   3. 清 React Query 缓存 —— 不同后端数据互不相通，漏清会把 A 的缓存
- *      渲染在 B 的会话里；
- *   4. 重跑 initialize() 按目标服务器恢复 token + slug + user。
+ * Select a server and restore its scoped session. A restorable token that
+ * cannot rebuild a user is a transient restore failure, not a signed-out
+ * state: restore the previous server so the caller can leave the user put.
  */
 export async function switchServer(
   serverId: string,
   queryClient: QueryClient,
 ): Promise<ServerSwitchOutcome> {
+  if (useAuthStore.getState().isServerSwitching) {
+    return {
+      kind: "failed",
+      error: new Error("A server switch is already in progress."),
+    };
+  }
+
+  const previousServerId = useServerStore.getState().activeServerId;
+  let switched = false;
+  useAuthStore.getState().setServerSwitching(true);
+
+  const failAfterSwitch = async (
+    error: unknown,
+  ): Promise<ServerSwitchOutcome> => {
+    if (!switched) return { kind: "failed", error };
+    const rollbackError = await restorePreviousServer(previousServerId, queryClient);
+    return rollbackError
+      ? { kind: "rollback-failed", error: rollbackError }
+      : { kind: "failed", error };
+  };
+
   try {
     await useServerStore.getState().setActiveServer(serverId);
+    if (useServerStore.getState().activeServerId !== serverId) {
+      return { kind: "unavailable" };
+    }
+    switched = previousServerId !== serverId;
+    // The base URL now points to the selected server. Old credentials and
+    // cached data must not survive into that new server identity.
+    api.setToken(null);
+    queryClient.clear();
+    await useAuthStore.getState().initialize();
+    const { user } = useAuthStore.getState();
+    if (user?.id) {
+      return {
+        kind: "signed-in",
+        slug: useWorkspaceStore.getState().currentWorkspaceSlug,
+        previousServerId,
+      };
+    }
+
+    // Auth initialization clears a rejected (401) token, but deliberately
+    // retains it for network and 5xx failures. That distinction lets callers
+    // show a retryable failure instead of incorrectly navigating to login.
+    if (await getToken(serverId)) {
+      const error = new Error("Could not restore the selected server session.");
+      return failAfterSwitch(error);
+    }
+    return { kind: "signed-out" };
   } catch (error) {
-    return { kind: "failed", error };
+    return failAfterSwitch(error);
+  } finally {
+    useAuthStore.getState().setServerSwitching(false);
   }
-  api.setToken(null);
-  queryClient.clear();
-  await useAuthStore.getState().initialize();
-  const { user } = useAuthStore.getState();
-  if (!user) return { kind: "signed-out" };
-  return {
-    kind: "signed-in",
-    slug: useWorkspaceStore.getState().currentWorkspaceSlug,
-  };
 }

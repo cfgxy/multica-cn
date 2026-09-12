@@ -54,20 +54,22 @@ export default function ServerListScreen() {
 
   const active = pickActiveServer(servers, activeServerId);
 
-  /**
-   * 真正执行切换。会话序列由 `data/switch-server.ts` 统一编排(RUYI-131
-   * 起与通知跨服务器落地共用同一实现);本页只负责失败提示与落地路由。
-   *
-   * 目标服务器没有已保存会话(或 getMe 网络失败但 token 已保留——与冷启
-   * 动同行为,重试即恢复)→ 登录页;有 token 无 slug → 选工作区。
-   */
+  /** Session restoration is shared with notification landing; this screen
+   * only owns failure feedback and its final route. */
   const doSwitch = useCallback(
     async (entry: ServerEntry) => {
       const outcome = await switchServer(entry.id, qc);
-      if (outcome.kind === "failed") {
+      if (outcome.kind === "rollback-failed") {
+        router.replace("/login");
+        return;
+      }
+      if (
+        outcome.kind === "failed" ||
+        outcome.kind === "unavailable"
+      ) {
         Alert.alert(
           t("server.switch_failed_title", "Switch failed"),
-          outcome.error instanceof Error
+          outcome.kind === "failed" && outcome.error instanceof Error
             ? outcome.error.message
             : t("server.switch_failed_message", "Could not switch servers."),
         );
