@@ -72,12 +72,33 @@ export function visibleQuickCreateActors(
  * `resolveActor` chain), else default to the first visible agent (web
  * `seedActor` tail), else null. `candidates` is ordered most-authoritative
  * first: [draft pick, last successful pick].
+ *
+ * `actorsLoaded` is the agents AND squads queries having actually resolved
+ * — the same `isSuccess` distinction web makes for its stale-project sweep
+ * (quick-create-issue.tsx `projectsLoaded`). Both queries default to `[]`
+ * while in flight, so without this gate a remembered squad looks deleted
+ * for as long as the squad list is loading and the chain falls through to
+ * the first visible agent. In a workspace whose squad leader is also the
+ * first agent (RUYI → 蔡小星) that reads as a squad being silently
+ * downgraded to its leader (RUYI-130). An unloaded set resolves to null:
+ * seeding nothing is recoverable, seeding the wrong actor is not.
+ *
+ * `historyResolved` gates only the tail: it is the persisted last-actor
+ * memory having actually been read back (not merely attempted — an
+ * AsyncStorage read failure reads as an empty map). Without history there is
+ * no way to tell "never filed anything here" from "memory unreadable", and
+ * the tail would re-seed the downgrade. It is a separate gate from
+ * `actorsLoaded` so an explicit pick the user just made still resolves while
+ * the memory is missing — otherwise an unreadable memory would lock the flow.
  */
 export function resolveQuickCreateActor(
   candidates: (QuickCreateActorRef | null | undefined)[],
   agents: Agent[],
   squads: Squad[],
+  actorsLoaded: boolean,
+  historyResolved: boolean = true,
 ): QuickCreateActorRef | null {
+  if (!actorsLoaded) return null;
   for (const candidate of candidates) {
     if (!candidate) continue;
     if (candidate.type === "squad") {
@@ -86,6 +107,7 @@ export function resolveQuickCreateActor(
       return candidate;
     }
   }
+  if (!historyResolved) return null;
   return agents[0] ? { type: "agent", id: agents[0].id } : null;
 }
 

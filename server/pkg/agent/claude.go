@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -357,19 +358,13 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		// Fold the per-request context sizes into the usage map last, after the
 		// `result` event has had its chance to replace that map entirely. Doing
 		// it earlier would lose the readings on every successful run.
-		//
-		// A model that only appears in the result event's totals gets no
-		// reading rather than borrowing another model's: leaving it at zero
-		// makes the gate treat it as unknown and resume, which is the safe
-		// direction (decision D4 A).
-		for model, size := range contextTokens {
-			u, ok := usage[model]
-			if !ok {
-				continue
-			}
-			u.ContextTokens = size
-			usage[model] = u
-		}
+		foldContextTokens(usage, contextTokens)
+
+		// The CLI zeroes usage in its stream-json assistant events (verified
+		// on CLI 2.1.228), so contextTokens above is usually empty and the
+		// session-size reading has to come from the session transcript — the
+		// last request's real numbers, exactly what the next resume inherits.
+		fillContextTokensFromTranscript(usage, claudeTranscriptRoot(), opts.Cwd, reportedSessionID, b.cfg.Logger)
 
 		resCh <- Result{
 			Status:         finalStatus,
@@ -696,6 +691,240 @@ func claudeResultUsage(msg claudeSDKMessage, fallbackModel string) map[string]To
 			CacheReadTokens:  msg.Usage.CacheReadInputTokens,
 			CacheWriteTokens: msg.Usage.CacheCreationInputTokens,
 		},
+	}
+}
+
+// normalizeModelKey folds the spelling drift between the model name an
+// assistant event carries in its body and the one the result event's totals
+// key by: gateways serving long-context variants answer as `gpt-5.6-terra`
+// but total the same traffic under the requested `gpt-5.6-terra[1m]`. Case
+// and surrounding whitespace are folded too, so no cosmetic difference can
+// split one model into two identities.
+func normalizeModelKey(model string) string {
+	if i := strings.IndexByte(model, '['); i >= 0 {
+		model = model[:i]
+	}
+	return strings.ToLower(strings.TrimSpace(model))
+}
+
+// foldContextTokens copies each per-request context reading onto the usage
+// entry it belongs to. It must run after the `result` event has replaced
+// `usage` wholesale — folding earlier would lose every reading on a
+// successful run, because the result totals overwrite the accumulated map.
+//
+// A reading whose model does not appear in the totals at all gets no entry
+// rather than borrowing another model's: leaving it at zero makes the gate
+// treat the session as unknown and resume, which is the safe direction
+// (decision D4 A). A reading whose model appears only under the other
+// spelling of the same name matches through normalizeModelKey — an
+// exact-key-only fold silently dropped every reading whenever the gateway
+// answered and totaled under different spellings, which starved the session
+// gate (RUYI-107) of data and left it permanently size_unknown. When several
+// spellings collapse onto one totals entry (a run that mixed the standard and
+// long-context variants of one model), the later reading wins: both describe
+// the same conversation, and the gate only cares how large it ended up.
+func foldContextTokens(usage map[string]TokenUsage, contextTokens map[string]int64) {
+	byNormalizedName := make(map[string]string, len(usage))
+	for key := range usage {
+		byNormalizedName[normalizeModelKey(key)] = key
+	}
+	for model, size := range contextTokens {
+		key := model
+		if _, exact := usage[key]; !exact {
+			k, ok := byNormalizedName[normalizeModelKey(model)]
+			if !ok {
+				continue
+			}
+			key = k
+		}
+		u := usage[key]
+		u.ContextTokens = size
+		usage[key] = u
+	}
+}
+
+// claudeProjectSlug reproduces the directory name claude CLI derives from a
+// working directory when storing session transcripts under
+// <config>/projects: every character outside [A-Za-z0-9-] becomes a dash
+// (`/tmp/gh.audit_x` -> `-tmp-gh-audit-x`, verified against the live CLI).
+func claudeProjectSlug(cwd string) string {
+	return strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-':
+			return r
+		}
+		return '-'
+	}, cwd)
+}
+
+// claudeTranscriptRoot is where the CLI writes session transcripts. The child
+// claude inherits the daemon's environment, so the same CLAUDE_CONFIG_DIR the
+// child would honor decides the root here too; $HOME/.claude is the default.
+func claudeTranscriptRoot() string {
+	if v := strings.TrimSpace(os.Getenv("CLAUDE_CONFIG_DIR")); v != "" {
+		return filepath.Join(v, "projects")
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".claude", "projects")
+}
+
+// claudeTranscriptPath locates one session's transcript. The slug directory is
+// exact in practice; the single-level glob is the tolerance for a slug rule
+// that drifts with CLI versions — a session UUID is unique, so at most one
+// project directory can legitimately hold it, and when several do (an
+// identically named directory restored from elsewhere), the newest wins.
+func claudeTranscriptPath(root, cwd, sessionID string) (string, bool) {
+	if root == "" || sessionID == "" {
+		return "", false
+	}
+	p := filepath.Join(root, claudeProjectSlug(cwd), sessionID+".jsonl")
+	if st, err := os.Stat(p); err == nil && !st.IsDir() {
+		return p, true
+	}
+	matches, err := filepath.Glob(filepath.Join(root, "*", sessionID+".jsonl"))
+	if err != nil || len(matches) == 0 {
+		return "", false
+	}
+	best, bestMod := matches[0], time.Time{}
+	for _, m := range matches {
+		if st, err := os.Stat(m); err == nil && st.ModTime().After(bestMod) {
+			best, bestMod = m, st.ModTime()
+		}
+	}
+	return best, true
+}
+
+// claudeTranscriptAssistant is the one transcript line shape this reader cares
+// about. The transcript records the usage the model actually reported for
+// each request — unlike the stream-json assistant events, which the CLI
+// zeroes out (verified on CLI 2.1.228: stream carries input_tokens 0 while
+// the same message's transcript line carries the real numbers), and unlike
+// the result event, whose usage is the run's billing sum rather than any
+// single request's size.
+type claudeTranscriptAssistant struct {
+	Type        string `json:"type"`
+	IsSidechain bool   `json:"isSidechain"`
+	Message     struct {
+		ID    string `json:"id"`
+		Model string `json:"model"`
+		Usage *struct {
+			InputTokens              int64 `json:"input_tokens"`
+			OutputTokens             int64 `json:"output_tokens"`
+			CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+			CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+		} `json:"usage"`
+	} `json:"message"`
+}
+
+// transcriptContextReading returns the conversation size the session's LAST
+// request produced: that request's whole input side plus its own output, the
+// exact statistic the stream-json path accumulates into contextTokens. One
+// API request surfaces as several transcript lines sharing a message id (one
+// per content block), so readings are keyed by id and a repeated id updates
+// in place, keeping its original position; the last position is the last
+// request. Sidechain (subagent) traffic runs in separate transcripts and must
+// not count toward this session's size even when it appears inline.
+func transcriptContextReading(path string) (model string, tokens int64, ok bool) {
+	fh, err := os.Open(path)
+	if err != nil {
+		return "", 0, false
+	}
+	defer fh.Close()
+
+	type reading struct {
+		model  string
+		tokens int64
+	}
+	var order []string
+	byID := make(map[string]reading)
+	sc := bufio.NewScanner(fh)
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if !strings.Contains(string(line), `"assistant"`) {
+			continue
+		}
+		var rec claudeTranscriptAssistant
+		if json.Unmarshal(line, &rec) != nil {
+			continue
+		}
+		if rec.Type != "assistant" || rec.IsSidechain || rec.Message.ID == "" || rec.Message.Model == "" {
+			continue
+		}
+		u := rec.Message.Usage
+		if u == nil {
+			continue
+		}
+		inputSide := u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens
+		if inputSide <= 0 {
+			continue
+		}
+		if _, seen := byID[rec.Message.ID]; !seen {
+			order = append(order, rec.Message.ID)
+		}
+		byID[rec.Message.ID] = reading{model: rec.Message.Model, tokens: inputSide + u.OutputTokens}
+	}
+	if len(order) == 0 {
+		return "", 0, false
+	}
+	r := byID[order[len(order)-1]]
+	return r.model, r.tokens, true
+}
+
+// fillContextTokensFromTranscript recovers the session-size reading from the
+// CLI's own transcript when the stream events carried none — the rule rather
+// than the exception since the CLI zeroes usage in stream-json output, which
+// had left the session gate (RUYI-107) permanently size_unknown.
+//
+// It fills only usage entries still without a reading (a real stream reading
+// is never overridden), only for the transcript model's own entry matched
+// through normalizeModelKey, and never invents one when the transcript is
+// missing or unreadable — every unusable input degrades to size_unknown,
+// which the gate resolves as resume (decision D4 A, the safe direction).
+func fillContextTokensFromTranscript(usage map[string]TokenUsage, root, cwd, sessionID string, logger *slog.Logger) {
+	if len(usage) == 0 || sessionID == "" {
+		return
+	}
+	missing := false
+	for _, u := range usage {
+		if u.ContextTokens == 0 {
+			missing = true
+			break
+		}
+	}
+	if !missing {
+		return
+	}
+	path, found := claudeTranscriptPath(root, cwd, sessionID)
+	if !found {
+		return
+	}
+	model, tokens, ok := transcriptContextReading(path)
+	if !ok || tokens <= 0 {
+		return
+	}
+	var key string
+	for k := range usage {
+		if k == model || normalizeModelKey(k) == normalizeModelKey(model) {
+			key = k
+			break
+		}
+	}
+	if key == "" {
+		return
+	}
+	u := usage[key]
+	if u.ContextTokens != 0 {
+		return
+	}
+	u.ContextTokens = tokens
+	usage[key] = u
+	if logger != nil {
+		logger.Debug("context reading recovered from session transcript",
+			"model", model, "context_tokens", tokens, "transcript", path)
 	}
 }
 

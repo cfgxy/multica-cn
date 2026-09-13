@@ -110,16 +110,15 @@ export function getInboxNavigationTarget(
       },
     };
   }
-  if (
-    item.type === "autopilot_quota_exceeded" ||
-    item.type === "autopilot_paused"
-  ) {
-    return {
-      pathname: "/[workspace]/inbox/[id]" as const,
-      params: { workspace, id: item.id },
-    };
-  }
-  return null;
+  // Every issue-less notification opens the notification sheet. Web's detail
+  // pane renders any non-issue item (packages/views/inbox/components/
+  // inbox-page.tsx `detailItem` branch), so restricting this to the two
+  // autopilot types made quick-create outcomes — and any future issue-less
+  // type — silently unclickable on mobile (RUYI-134).
+  return {
+    pathname: "/[workspace]/inbox/[id]" as const,
+    params: { workspace, id: item.id },
+  };
 }
 
 /**

@@ -126,6 +126,22 @@
     },
     "label": {
       "reacted_with": "{{emoji}} でリアクション"
+    },
+    "bridge": {
+      "cross_workspace_title": "ワークスペースを切り替えますか？",
+      "cross_workspace_message": "この通知はワークスペース「{{name}}」からのものです。そちらでタスクを開きますか？",
+      "cross_server_title": "サーバーを切り替えますか？",
+      "cross_server_message": "この通知はサーバー「{{server}}」・ワークスペース「{{workspace}}」からのものです。切り替えてタスクを開きます。",
+      "confirm_switch": "切り替える",
+      "cancel": "キャンセル",
+      "switch_failed_title": "切り替えに失敗しました",
+      "switch_failed_message": "サーバーを切り替えられませんでした。",
+      "workspace_failed_title": "通知を開けません",
+      "workspace_failed_message": "ワークスペースを切り替えられませんでした。",
+      "retry": "再試行",
+      "unavailable_title": "通知を開けません",
+      "unavailable_message": "この通知の送信元サーバーはサーバー一覧に存在しません。",
+      "legacy_unavailable_message": "この古い通知には送信元サーバーが記録されていないため、安全に開けません。受信トレイでタスクを確認してください。"
     }
   }
 }

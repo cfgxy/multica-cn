@@ -13,9 +13,9 @@ name: Mobile Verify
 # - pnpm-workspace.yaml           — catalog versions
 # - turbo.json                    — turbo task pipeline
 #
-# Mobile's vitest suite is intentionally narrow (Node env, pure-function
-# tests under apps/mobile/lib/*.test.ts — see apps/mobile/vitest.config.ts).
-# RN component-level rendering is not exercised here.
+# Mobile's Vitest suite stays narrow (Node env, pure-function tests under
+# apps/mobile/lib/*.test.ts — see apps/mobile/vitest.config.ts). The package
+# test script additionally runs the isolated jest-expo/RNTL component suite.
 
 on:
   push:
