@@ -57,6 +57,7 @@ import { getWebUrl } from "@/data/server-store";
 import { useViewedIssuesStore } from "@/data/viewed-issues-store";
 import { useCommentSelectStore } from "@/data/comment-select-store";
 import { useReplyTargetStore } from "@/data/stores/reply-target-store";
+import { useTimelineSortStore } from "@/data/stores/timeline-sort-store";
 import {
   issuePickerHref,
   type IssuePickerField,
@@ -82,6 +83,8 @@ export default function IssueDetail() {
   const detail = useQuery(issueDetailOptions(wsId, id));
   const timeline = useQuery(issueTimelineOptions(wsId, id));
   const truncatedKinds = effectiveTruncatedKinds(timeline.data);
+  const timelineSortMode = useTimelineSortStore((state) => state.mode);
+  const setTimelineSortMode = useTimelineSortStore((state) => state.setMode);
 
   // Subscribe to per-issue WS events: status/priority/assignee/label
   // changes, comments, activity, reactions, agent task progress.
@@ -324,6 +327,8 @@ export default function IssueDetail() {
             ref={timelineRef}
             issue={issue}
             entries={timeline.data?.entries}
+            mode={timelineSortMode}
+            onModeChange={setTimelineSortMode}
             truncatedKinds={truncatedKinds}
             timelineLoading={timeline.isLoading}
             refreshing={detail.isRefetching || timeline.isRefetching}

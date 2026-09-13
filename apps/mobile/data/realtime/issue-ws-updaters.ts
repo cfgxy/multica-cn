@@ -40,6 +40,7 @@ import {
   type TimelineQueryData,
   type TimelineTruncationKind,
 } from "@multica/core/issues/timeline-query";
+import { sortTimelineEntriesAsc } from "@multica/core/issues/timeline-sort";
 import { issueKeys } from "@/data/queries/issue-keys";
 
 type TimelinePredicate = (entry: TimelineEntry) => boolean;
@@ -229,11 +230,7 @@ export function appendTimelineEntry(
       if (old.entries.some((existing) => existing.id === entry.id && existing.type === entry.type)) {
         return old;
       }
-      const next = [...old.entries, entry];
-      next.sort((a, b) => {
-        if (a.created_at !== b.created_at) return a.created_at < b.created_at ? -1 : 1;
-        return a.id < b.id ? -1 : 1;
-      });
+      const next = sortTimelineEntriesAsc([...old.entries, entry]);
       const kind = entry.type === "comment" || entry.type === "activity" ? entry.type : null;
       if (
         kind &&
@@ -242,7 +239,7 @@ export function appendTimelineEntry(
       ) {
         crossedKind = kind;
       }
-      return { ...old, entries: next };
+      return updateTimelineEntries(old, () => next);
     },
   );
   if (crossedKind) {

@@ -137,7 +137,7 @@ function appendTimelineEntry(
     ) {
       crossedKind = kind;
     }
-    return { ...old, entries: nextEntries };
+    return updateTimelineEntries(old, () => nextEntries);
   });
   if (crossedKind) {
     qc.invalidateQueries({ queryKey: issueKeys.timeline(issueId) });
