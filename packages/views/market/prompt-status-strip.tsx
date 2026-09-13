@@ -46,7 +46,7 @@ export function PromptMarketStatusStrip(props: {
    */
   hasUnsavedEdits?: boolean;
 }) {
-  const enabled = useFeatureEnabled(MARKETPLACE_V1_FLAG, false);
+  const enabled = useFeatureEnabled(MARKETPLACE_V1_FLAG, true);
   // The gate is a separate component so the inactive path calls no query hook
   // at all. `enabled: false` would still require a QueryClient in context, and
   // the prompt editors this mounts into are leaves that render without one.
