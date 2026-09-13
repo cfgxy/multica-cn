@@ -56,7 +56,12 @@ type streamTerminalState struct {
 	finalResultText   string
 	sawResult         bool
 	resultIsError     bool
-	scanErr           error
+	// maxTurnsReached: the terminal result event positively identified
+	// subtype "error_max_turns" — the CLI's own --max-turns budget stop, not
+	// a provider fault. Routed to its own status so the daemon can retry it
+	// as a continuation instead of parking it in the agent_error bucket.
+	maxTurnsReached bool
+	scanErr         error
 	// terminalReasonError, when non-empty, is a failure the backend read out of
 	// a STRUCTURED field on the terminal result event.
 	//
@@ -118,6 +123,15 @@ func finalizeStreamResult(
 		// diagnosis.
 		status = "failed"
 		errMsg = state.terminalReasonError
+	case state.maxTurnsReached:
+		// Budget stop, not a fault: the CLI hit its configured --max-turns.
+		// Own status so the daemon routes it to the retryable timeout path
+		// (auto-continuation via resume) instead of agent_error.unknown.
+		status = "max_turns"
+		errMsg = state.finalResultText
+		if errMsg == "" {
+			errMsg = provider + " reached the configured turn budget (--max-turns); in-progress work is preserved in the session and worktree, the retry attempt resumes it"
+		}
 	case state.resultIsError:
 		status = "failed"
 		errMsg = state.finalResultText
