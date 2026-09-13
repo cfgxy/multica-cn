@@ -33,7 +33,7 @@ import { cn } from "@/lib/utils";
 // — same ns, same keys, so the two surfaces can't drift apart in translation.
 // English fallbacks are web's en copy verbatim (a few differed from mobile's
 // old hand-written strings; web's wording wins, it's the mirrored source).
-function useTypeLabels(): Record<InboxItemType, string> {
+export function useTypeLabels(): Record<InboxItemType, string> {
   const { t } = useT("inbox");
   return {
     issue_assigned: t("types.issue_assigned", "Assigned"),
