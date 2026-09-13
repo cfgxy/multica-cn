@@ -149,7 +149,7 @@ export function SettingsPage({ extraAccountTabs }: SettingsPageProps = {}) {
   const isMobile = useIsMobile();
   // Off closes the front door only: MCP, Skills, and every manual entry point
   // the marketplace merely drives stay exactly where they were.
-  const marketplaceEnabled = useFeatureEnabled(MARKETPLACE_V1_FLAG, false);
+  const marketplaceEnabled = useFeatureEnabled(MARKETPLACE_V1_FLAG, true);
   const billingEnabled = useFeatureEnabled(
     BILLING_WORKSPACE_SUBSCRIPTIONS_FLAG,
     false,
