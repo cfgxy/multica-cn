@@ -6,6 +6,24 @@ function timelineData(entries: TimelineEntry[] = []) {
   return { entries, truncatedKinds: [] as ("activity" | "comment")[] };
 }
 
+function commentEvent(id: string, createdAt: string) {
+  return {
+    comment: {
+      id,
+      issue_id: "issue-1",
+      author_type: "member",
+      author_id: "u",
+      content: "",
+      parent_id: null,
+      created_at: createdAt,
+      updated_at: createdAt,
+      type: "comment",
+      reactions: [],
+      attachments: [],
+    },
+  };
+}
+
 // Mock @multica/core/issues/mutations to mimic TanStack Query v5's contract:
 // useMutation returns a fresh result wrapper on every render, but the
 // `mutate` / `mutateAsync` functions inside it are stable across renders.
@@ -227,6 +245,163 @@ describe("useIssueTimeline", () => {
     const updated = (cacheUpdates.last as { entries: Array<{ id: string }> }).entries;
     expect(updated.map((e) => e.id)).toEqual(["new-c"]);
   });
+
+  it("invalidates once when activity events cross the timeline hard cap", () => {
+    queryState.data = timelineData(Array.from({ length: 2000 }, (_, index) => ({
+      type: "activity" as const,
+      id: `activity-${index}`,
+      actor_type: "member",
+      actor_id: "u",
+      created_at: `2026-05-06T01:${String(index % 60).padStart(2, "0")}:00Z`,
+    })));
+    const { result, rerender } = renderHook(() =>
+      useIssueTimeline("issue-1", "user-1"),
+    );
+    const handler = wsHandlers.get("activity:created");
+
+    act(() => {
+      handler!({
+        issue_id: "issue-1",
+        entry: {
+          type: "activity",
+          id: "activity-2000",
+          actor_type: "member",
+          actor_id: "u",
+          created_at: "2026-05-07T00:00:00Z",
+        },
+      });
+    });
+
+    const crossed = cacheUpdates.last as { entries: TimelineEntry[]; truncatedKinds: string[] };
+    expect(crossed.entries).toHaveLength(2001);
+    expect(crossed.truncatedKinds).toEqual([]);
+    expect(cacheUpdates.invalidations).toBe(1);
+
+    queryState.data = crossed;
+    rerender();
+    expect(result.current.truncatedKinds).toEqual(["activity"]);
+    act(() => {
+      handler!({
+        issue_id: "issue-1",
+        entry: {
+          type: "activity",
+          id: "activity-2001",
+          actor_type: "member",
+          actor_id: "u",
+          created_at: "2026-05-07T00:01:00Z",
+        },
+      });
+    });
+
+    expect(cacheUpdates.invalidations).toBe(1);
+    queryState.data = cacheUpdates.last;
+    rerender();
+    expect(result.current.truncatedKinds).toEqual(["activity"]);
+  });
+
+  it("invalidates once when comment events cross the timeline hard cap", () => {
+    queryState.data = timelineData(Array.from({ length: 2000 }, (_, index) => ({
+      type: "comment" as const,
+      id: `comment-${index}`,
+      actor_type: "member",
+      actor_id: "u",
+      created_at: `2026-05-06T01:${String(index % 60).padStart(2, "0")}:00Z`,
+    })));
+    const { result, rerender } = renderHook(() =>
+      useIssueTimeline("issue-1", "user-1"),
+    );
+    const handler = wsHandlers.get("comment:created");
+
+    act(() => {
+      handler!(commentEvent("comment-2000", "2026-05-07T00:00:00Z"));
+    });
+
+    const crossed = cacheUpdates.last as { entries: TimelineEntry[]; truncatedKinds: string[] };
+    expect(crossed.entries).toHaveLength(2001);
+    expect(crossed.truncatedKinds).toEqual([]);
+    expect(cacheUpdates.invalidations).toBe(1);
+
+    queryState.data = crossed;
+    rerender();
+    expect(result.current.truncatedKinds).toEqual(["comment"]);
+    act(() => {
+      handler!(commentEvent("comment-2000", "2026-05-07T00:00:00Z"));
+      handler!(commentEvent("comment-2001", "2026-05-07T00:01:00Z"));
+    });
+
+    expect(cacheUpdates.invalidations).toBe(1);
+    queryState.data = cacheUpdates.last;
+    rerender();
+    expect(result.current.truncatedKinds).toEqual(["comment"]);
+  });
+
+  it.each(["activity", "comment"] as const)(
+    "preserves an existing %s truncation header without another invalidate",
+    (type) => {
+      queryState.data = {
+        entries: Array.from({ length: 2000 }, (_, index) => ({
+          type,
+          id: `${type}-${index}`,
+          actor_type: "member",
+          actor_id: "u",
+          created_at: "2026-05-06T01:00:00Z",
+        })),
+        truncatedKinds: [type],
+      };
+      const { result } = renderHook(() =>
+        useIssueTimeline("issue-1", "user-1"),
+      );
+
+      act(() => {
+        if (type === "activity") {
+          wsHandlers.get("activity:created")!({
+            issue_id: "issue-1",
+            entry: {
+              type,
+              id: "activity-2000",
+              actor_type: "member",
+              actor_id: "u",
+              created_at: "2026-05-07T00:00:00Z",
+            },
+          });
+        } else {
+          wsHandlers.get("comment:created")!(
+            commentEvent("comment-2000", "2026-05-07T00:00:00Z"),
+          );
+        }
+      });
+
+      expect(result.current.truncatedKinds).toEqual([type]);
+      expect(cacheUpdates.invalidations).toBe(0);
+    },
+  );
+
+  it.each(["activity:created", "comment:created"] as const)(
+    "does not materialize an empty cache for %s",
+    (event) => {
+      queryState.data = undefined;
+      renderHook(() => useIssueTimeline("issue-1", "user-1"));
+
+      act(() => {
+        if (event === "activity:created") {
+          wsHandlers.get(event)!({
+            issue_id: "issue-1",
+            entry: {
+              type: "activity",
+              id: "activity-1",
+              actor_type: "member",
+              actor_id: "u",
+              created_at: "2026-05-07T00:00:00Z",
+            },
+          });
+        } else {
+          wsHandlers.get(event)!(commentEvent("comment-1", "2026-05-07T00:00:00Z"));
+        }
+      });
+
+      expect(cacheUpdates.last).toBeUndefined();
+    },
+  );
 
   it("comment:created inserts at the correct sorted position by created_at", () => {
     queryState.data = timelineData([

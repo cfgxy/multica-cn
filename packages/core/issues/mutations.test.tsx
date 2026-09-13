@@ -1086,6 +1086,19 @@ describe("useCreateComment — sibling caches under a shared key prefix", () => 
     ).toEqual(["activity"]);
   });
 
+  it("does not materialize a timeline cache when create succeeds before the timeline loads", async () => {
+    const timelineKey = issueKeys.timeline(ISSUE_ID);
+    const { result } = renderHook(() => useCreateComment(ISSUE_ID), {
+      wrapper: createWrapper(qc),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync({ content: "hello" });
+    });
+
+    expect(qc.getQueryData<TimelineQueryData>(timelineKey)).toBeUndefined();
+  });
+
   it("invalidates when REST success crosses the comment hard cap before its WS echo", async () => {
     const timelineKey = issueKeys.timeline(ISSUE_ID);
     const entries: TimelineEntry[] = Array.from({ length: 2000 }, (_, index) => ({

@@ -55,6 +55,13 @@ describe("buildCommentDirectory", () => {
     expect(dir.map((d) => d.rootId)).toEqual(["root-2", "root-1"]);
   });
 
+  it("uses the current creation-time mode for the directory order", () => {
+    const rows = buildTimelineRows(entries, "created");
+    const dir = buildCommentDirectory(rows);
+
+    expect(dir.map((d) => d.rootId)).toEqual(["root-1", "root-2"]);
+  });
+
   it("carries reply count, author ref and summary from the root row", () => {
     const rows = buildTimelineRows(entries);
     const dir = buildCommentDirectory(rows);
