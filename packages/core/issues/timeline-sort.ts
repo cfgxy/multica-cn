@@ -1,6 +1,6 @@
 import type { TimelineEntry } from "@multica/core/types";
 
-function compareTimelineEntriesAsc(a: TimelineEntry, b: TimelineEntry): number {
+export function compareTimelineEntriesAsc(a: TimelineEntry, b: TimelineEntry): number {
   if (a.created_at !== b.created_at) {
     return a.created_at < b.created_at ? -1 : 1;
   }
@@ -24,18 +24,34 @@ export function sortTimelineEntriesAsc(entries: TimelineEntry[]): TimelineEntry[
   return entries;
 }
 
-/**
- * Order a threaded timeline by each thread's latest comment.
- *
- * Replies render inside their root card, so ordering root cards by the root's
- * own timestamp can put a stale thread after a thread that stayed active much
- * later. Treat each comment thread as one display block, rank that block by its
- * newest comment, and keep comments inside the block chronological. Activities
- * remain single-entry blocks ranked by their own timestamp.
- */
-export function sortTimelineEntriesForThreadedDisplay(
+export type TimelineSortMode = "recent-comment" | "created";
+
+export interface TimelineModelStats {
+  threadBlockCount: number;
+  activityEntryCount: number;
+  activityVisualGroupCount: number;
+  sortableBlockCount: number;
+}
+
+export interface TimelineModel {
+  entries: TimelineEntry[];
+  stats: TimelineModelStats;
+}
+
+type TimelineBlock = {
+  key: string;
+  entries: TimelineEntry[];
+  sortEntry: TimelineEntry;
+};
+
+const COALESCE_MS = 2 * 60 * 1000;
+const NO_TIME_LIMIT_ACTIONS = new Set(["task_completed", "task_failed"]);
+const NEVER_COALESCE_ACTIONS = new Set(["squad_leader_evaluated"]);
+
+function resolveTimelineBlocks(
   entries: readonly TimelineEntry[],
-): TimelineEntry[] {
+  mode: TimelineSortMode,
+): { blocks: TimelineBlock[]; threadBlockCount: number; activityEntryCount: number } {
   const commentsById = new Map(
     entries.filter((entry) => entry.type === "comment").map((entry) => [entry.id, entry]),
   );
@@ -60,34 +76,120 @@ export function sortTimelineEntriesForThreadedDisplay(
     return rootId;
   };
 
-  type DisplayBlock = {
-    key: string;
-    entries: TimelineEntry[];
-    latest: TimelineEntry;
-  };
-  const blocks = new Map<string, DisplayBlock>();
+  const threadEntries = new Map<string, TimelineEntry[]>();
+  const activityBlocks: TimelineBlock[] = [];
 
   for (const entry of entries) {
-    const key =
-      entry.type === "comment"
-        ? `comment:${resolveRootId(entry.id)}`
-        : `activity:${entry.id}`;
-    const block = blocks.get(key);
-    if (!block) {
-      blocks.set(key, { key, entries: [entry], latest: entry });
+    if (entry.type !== "comment") {
+      activityBlocks.push({
+        key: `activity:${entry.id}`,
+        entries: [entry],
+        sortEntry: entry,
+      });
       continue;
     }
-    block.entries.push(entry);
-    if (compareTimelineEntriesAsc(block.latest, entry) < 0) {
-      block.latest = entry;
-    }
+
+    const rootId = resolveRootId(entry.id);
+    const block = threadEntries.get(rootId) ?? [];
+    block.push(entry);
+    threadEntries.set(rootId, block);
   }
 
-  return [...blocks.values()]
+  const threadBlocks = [...threadEntries.entries()].map(([rootId, blockEntries]) => {
+    const orderedEntries = sortTimelineEntriesAsc([...blockEntries]);
+    const root = commentsById.get(rootId) ?? orderedEntries[0]!;
+    const latest = orderedEntries[orderedEntries.length - 1]!;
+    return {
+      key: `comment:${rootId}`,
+      entries: orderedEntries,
+      sortEntry: mode === "created" ? root : latest,
+    };
+  });
+
+  return {
+    blocks: [...threadBlocks, ...activityBlocks],
+    threadBlockCount: threadBlocks.length,
+    activityEntryCount: activityBlocks.filter((block) => block.entries[0]?.type === "activity").length,
+  };
+}
+
+function coalesceActivities(entries: readonly TimelineEntry[]): TimelineEntry[] {
+  const coalesced: TimelineEntry[] = [];
+  for (const entry of entries) {
+    if (entry.type === "activity") {
+      const previous = coalesced[coalesced.length - 1];
+      if (
+        !NEVER_COALESCE_ACTIONS.has(entry.action ?? "") &&
+        previous?.type === "activity" &&
+        previous.action === entry.action &&
+        previous.actor_type === entry.actor_type &&
+        previous.actor_id === entry.actor_id &&
+        (NO_TIME_LIMIT_ACTIONS.has(entry.action ?? "") ||
+          Math.abs(
+            new Date(entry.created_at).getTime() - new Date(previous.created_at).getTime(),
+          ) <= COALESCE_MS)
+      ) {
+        coalesced[coalesced.length - 1] = {
+          ...entry,
+          coalesced_count: (previous.coalesced_count ?? 1) + 1,
+        };
+        continue;
+      }
+    }
+    coalesced.push(entry);
+  }
+  return coalesced;
+}
+
+function countActivityVisualGroups(entries: readonly TimelineEntry[]): number {
+  let groups = 0;
+  let previousWasActivity = false;
+  for (const entry of entries) {
+    const isActivity = entry.type === "activity";
+    if (isActivity && !previousWasActivity) groups += 1;
+    previousWasActivity = isActivity;
+  }
+  return groups;
+}
+
+/**
+ * Produces the one display model shared by every client. The input is the raw
+ * query cache only: threading, sorting, activity coalescing, and statistics
+ * happen here in a fixed order so renderers cannot drift independently.
+ */
+export function buildTimelineModel(
+  entries: readonly TimelineEntry[],
+  mode: TimelineSortMode,
+): TimelineModel {
+  const { blocks, threadBlockCount, activityEntryCount } = resolveTimelineBlocks(entries, mode);
+  const ordered = blocks
     .sort(
       (a, b) =>
-        compareTimelineEntriesAsc(a.latest, b.latest) ||
+        compareTimelineEntriesAsc(a.sortEntry, b.sortEntry) ||
         (a.key === b.key ? 0 : a.key < b.key ? -1 : 1),
     )
-    .flatMap((block) => sortTimelineEntriesAsc(block.entries));
+    .flatMap((block) => block.entries);
+  const displayEntries = coalesceActivities(ordered);
+
+  return {
+    entries: displayEntries,
+    stats: {
+      threadBlockCount,
+      activityEntryCount,
+      activityVisualGroupCount: countActivityVisualGroups(displayEntries),
+      sortableBlockCount: threadBlockCount + activityEntryCount,
+    },
+  };
+}
+
+export function latestThreadComment(
+  entries: readonly TimelineEntry[],
+): TimelineEntry | undefined {
+  return entries
+    .filter((entry) => entry.type === "comment")
+    .reduce<TimelineEntry | undefined>(
+      (latest, entry) =>
+        !latest || compareTimelineEntriesAsc(latest, entry) < 0 ? entry : latest,
+      undefined,
+    );
 }

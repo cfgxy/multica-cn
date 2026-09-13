@@ -36,6 +36,7 @@ import {
 import { BreadcrumbHeader, type BreadcrumbSegment } from "../../layout/breadcrumb-header";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Button } from "@multica/ui/components/ui/button";
+import { Tabs, TabsList, TabsTrigger } from "@multica/ui/components/ui/tabs";
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@multica/ui/components/ui/resizable";
 import { Sheet, SheetContent } from "@multica/ui/components/ui/sheet";
 import { useIsMobile } from "@multica/ui/hooks/use-mobile";
@@ -67,7 +68,10 @@ import { STATUS_CONFIG } from "@multica/core/issues/config";
 import { formatDateOnly, isPastDateOnly } from "@multica/core/issues/date";
 import { COMMENT_HIGHLIGHT_HOLD_MS } from "@multica/core/issues/comment-highlight";
 import { useUpdateIssue } from "@multica/core/issues/mutations";
-import { sortTimelineEntriesForThreadedDisplay } from "@multica/core/issues/timeline-sort";
+import {
+  buildTimelineModel,
+  type TimelineSortMode,
+} from "@multica/core/issues/timeline-sort";
 import { toast } from "sonner";
 import { errorCode } from "@multica/core/api";
 import { StatusIcon, PriorityIcon, StatusPicker, PriorityPicker, StagePicker, StartDatePicker, DueDatePicker, AssigneePicker, LabelPicker } from ".";
@@ -124,6 +128,7 @@ import {
   type SubIssueRowProperties,
   type SubIssueRowPropertyKey,
 } from "@multica/core/issues/stores";
+import { useTimelineSortStore } from "@multica/core/issues/stores/timeline-sort-store";
 import { useIssueSelectionStore } from "@multica/core/issues/stores/selection-store";
 import { BatchActionToolbar } from "./batch-action-toolbar";
 import { useIssueTimeline } from "../hooks/use-issue-timeline";
@@ -1446,10 +1451,20 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
 
   // Custom hooks — encapsulate timeline, reactions, subscribers
   const {
-    timeline, loading: timelineLoading,
-    submitComment, submitReply,
-    editComment, deleteComment, toggleResolveComment, toggleReaction: handleToggleReaction,
+    timeline,
+    truncatedKinds,
+    loading: timelineLoading,
+    submitComment,
+    submitReply,
+    editComment,
+    deleteComment,
+    toggleResolveComment,
+    toggleReaction: handleToggleReaction,
   } = useIssueTimeline(id, user?.id);
+  const timelineSortMode = useTimelineSortStore((state) => state.mode);
+  const setTimelineSortMode = useTimelineSortStore((state) => state.setMode);
+  const timelineSortHintSeen = useTimelineSortStore((state) => state.hintSeen);
+  const setTimelineSortHintSeen = useTimelineSortStore((state) => state.setHintSeen);
 
   // Resolve / unresolve must always clear the per-session expand entry so
   // re-resolving an already-expanded thread folds it back to the bar (the
@@ -1481,9 +1496,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   // every thread subtree to re-render in lockstep.
   const prevThreadRepliesRef = useRef<Map<string, TimelineEntry[]>>(new Map());
   const timelineView = useMemo(() => {
-    // Replies render inside their root card, so rank each thread block by its
-    // latest reply instead of leaving an old root below newer completed threads.
-    const displayTimeline = sortTimelineEntriesForThreadedDisplay(timeline);
+    const timelineModel = buildTimelineModel(timeline, timelineSortMode);
+    const displayTimeline = timelineModel.entries;
     // Group entries: top-level = activities + root comments; replies are
     // bucketed under their parent's id and rendered nested inside CommentCard.
     // No orphan rescue needed: the timeline is fetched in full, so every
@@ -1516,36 +1530,9 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
     }
     prevThreadRepliesRef.current = threadReplies;
 
-    // Coalesce consecutive activities from the same actor + action.
-    // - task_completed / task_failed: no time limit (these repeat across runs)
-    // - all other actions: within a 2-minute window
-    // - squad_leader_evaluated: never coalesce; outcome/reason are audit data
-    const COALESCE_MS = 2 * 60 * 1000;
-    const NO_TIME_LIMIT_ACTIONS = new Set(["task_completed", "task_failed"]);
-    const NEVER_COALESCE_ACTIONS = new Set(["squad_leader_evaluated"]);
-    const coalesced: TimelineEntry[] = [];
-    for (const entry of topLevel) {
-      if (entry.type === "activity") {
-        const prev = coalesced[coalesced.length - 1];
-        if (
-          !NEVER_COALESCE_ACTIONS.has(entry.action!) &&
-          prev?.type === "activity" &&
-          prev.action === entry.action &&
-          prev.actor_type === entry.actor_type &&
-          prev.actor_id === entry.actor_id &&
-          (NO_TIME_LIMIT_ACTIONS.has(entry.action!) ||
-            Math.abs(new Date(entry.created_at).getTime() - new Date(prev.created_at).getTime()) <= COALESCE_MS)
-        ) {
-          coalesced[coalesced.length - 1] = { ...entry, coalesced_count: (prev.coalesced_count ?? 1) + 1 };
-          continue;
-        }
-      }
-      coalesced.push(entry);
-    }
-
-    // Group consecutive activities together so the connector line works
+    // Group consecutive activities together so the connector line works.
     const groups: { type: "activities" | "comment"; entries: TimelineEntry[] }[] = [];
-    for (const entry of coalesced) {
+    for (const entry of topLevel) {
       if (entry.type === "activity") {
         const last = groups[groups.length - 1];
         if (last?.type === "activities") {
@@ -1558,8 +1545,23 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
       }
     }
 
-    return { threadReplies, groups };
-  }, [timeline]);
+    return { threadReplies, groups, stats: timelineModel.stats };
+  }, [timeline, timelineSortMode]);
+
+  const canChangeTimelineSort =
+    timelineView.stats.threadBlockCount >= 1 &&
+    timelineView.stats.sortableBlockCount >= 2;
+
+  useEffect(() => {
+    if (!canChangeTimelineSort || timelineSortHintSeen) return;
+    toast.message(t(($) => $.timeline.sort.hint));
+    setTimelineSortHintSeen();
+  }, [
+    canChangeTimelineSort,
+    setTimelineSortHintSeen,
+    t,
+    timelineSortHintSeen,
+  ]);
 
   // Flat array consumed by <Virtuoso>. Recomputed when timelineView.groups
   // changes (timeline events) or expandedResolved flips (user toggles a
@@ -3454,6 +3456,37 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             </div>
 
             <LocalDirectoryHint projectId={issue?.project_id} />
+
+            {canChangeTimelineSort && (
+              <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+                <span className="text-caption text-muted-foreground">
+                  {t(($) => $.timeline.sort.label)}
+                </span>
+                <Tabs
+                  value={timelineSortMode}
+                  onValueChange={(mode) => {
+                    if (mode === "recent-comment" || mode === "created") {
+                      setTimelineSortMode(mode as TimelineSortMode);
+                    }
+                  }}
+                >
+                  <TabsList aria-label={t(($) => $.timeline.sort.label)}>
+                    <TabsTrigger value="recent-comment">
+                      {t(($) => $.timeline.sort.recent_comment)}
+                    </TabsTrigger>
+                    <TabsTrigger value="created">
+                      {t(($) => $.timeline.sort.created)}
+                    </TabsTrigger>
+                  </TabsList>
+                </Tabs>
+              </div>
+            )}
+
+            {truncatedKinds.length > 0 && (
+              <p role="status" className="mt-3 text-caption text-muted-foreground">
+                {t(($) => $.timeline.truncation.hint)}
+              </p>
+            )}
 
             {/* The "agent is working" live signal now lives in the header
                 (IssueAgentHeaderChip) so it stays in one fixed place and

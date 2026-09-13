@@ -41,10 +41,10 @@ export default function CommentEmojiPickerRoute() {
   const toggle = useToggleCommentReaction(id);
   const { colorScheme } = useColorScheme();
 
-  const { data: timeline = [] } = useQuery(issueTimelineOptions(wsId, id));
+  const { data: timelineData } = useQuery(issueTimelineOptions(wsId, id));
   const entry = useMemo(
-    () => timeline.find((e) => e.id === commentId) ?? null,
-    [timeline, commentId],
+    () => timelineData?.entries.find((entry) => entry.id === commentId) ?? null,
+    [timelineData, commentId],
   );
 
   const reactions = useMemo<Reaction[]>(
