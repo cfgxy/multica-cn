@@ -100,7 +100,6 @@ import type {
   RuntimeLocalSkillListRequest,
   CreateRuntimeLocalSkillImportRequest,
   RuntimeLocalSkillImportRequest,
-  TimelineEntry,
   AssigneeFrequencyEntry,
   TaskMessagePayload,
   Attachment,
@@ -262,6 +261,10 @@ import type {
 import { type Logger, noopLogger } from "../logger";
 import { createRequestId, createSafeId } from "../utils";
 import { getCurrentSlug } from "../platform/workspace-storage";
+import {
+  parseTimelineTruncatedKinds,
+  type TimelineQueryData,
+} from "../issues/timeline-query";
 import { parseWithFallback } from "./schema";
 import {
   AgentTaskListSchema,
@@ -1468,13 +1471,23 @@ export class ApiClient {
     });
   }
 
-  async listTimeline(issueId: string): Promise<TimelineEntry[]> {
-    const raw = await this.fetch<unknown>(
-      `/api/issues/${issueId}/timeline`,
-    );
-    return parseWithFallback(raw, TimelineEntriesSchema, EMPTY_TIMELINE_ENTRIES, {
-      endpoint: "GET /api/issues/:id/timeline",
+  async listTimeline(
+    issueId: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<TimelineQueryData> {
+    const response = await this.fetchRaw(`/api/issues/${issueId}/timeline`, {
+      signal: options?.signal,
+      extraHeaders: { "Content-Type": "application/json" },
     });
+    const raw = await response.json() as unknown;
+    return {
+      entries: parseWithFallback(raw, TimelineEntriesSchema, EMPTY_TIMELINE_ENTRIES, {
+        endpoint: "GET /api/issues/:id/timeline",
+      }),
+      truncatedKinds: parseTimelineTruncatedKinds(
+        response.headers.get("X-Timeline-Truncated"),
+      ),
+    };
   }
 
   async getAssigneeFrequency(): Promise<AssigneeFrequencyEntry[]> {

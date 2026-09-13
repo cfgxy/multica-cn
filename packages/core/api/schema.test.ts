@@ -4,13 +4,17 @@ import { ApiClient, ApiError } from "./client";
 import { parseWithFallback } from "./schema";
 
 // Helper: stub fetch with a single JSON response. Status defaults to 200.
-function stubFetchJson(body: unknown, status = 200) {
+function stubFetchJson(
+  body: unknown,
+  status = 200,
+  headers: HeadersInit = {},
+) {
   vi.stubGlobal(
     "fetch",
     vi.fn().mockResolvedValue(
       new Response(typeof body === "string" ? body : JSON.stringify(body), {
         status,
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...headers },
       }),
     ),
   );
@@ -63,18 +67,30 @@ describe("ApiClient schema fallback", () => {
   });
 
   describe("listTimeline", () => {
-    it("falls back to an empty array when the body is null", async () => {
+    it("falls back to an empty cache object when the body is null", async () => {
       stubFetchJson(null);
       const client = new ApiClient("https://api.example.test");
-      const entries = await client.listTimeline("issue-1");
-      expect(entries).toEqual([]);
+      const timeline = await client.listTimeline("issue-1");
+      expect(timeline).toEqual({ entries: [], truncatedKinds: [] });
     });
 
     it("falls back when the body is not an array", async () => {
       stubFetchJson({ wrong: "shape" });
       const client = new ApiClient("https://api.example.test");
-      const entries = await client.listTimeline("issue-1");
-      expect(entries).toEqual([]);
+      const timeline = await client.listTimeline("issue-1");
+      expect(timeline).toEqual({ entries: [], truncatedKinds: [] });
+    });
+
+    it("parses known truncation kinds while ignoring header drift", async () => {
+      stubFetchJson([], 200, {
+        "X-Timeline-Truncated": " activity, future, comment, activity ",
+      });
+      const client = new ApiClient("https://api.example.test");
+
+      await expect(client.listTimeline("issue-1")).resolves.toEqual({
+        entries: [],
+        truncatedKinds: ["activity", "comment"],
+      });
     });
 
     it("accepts a new entry type rather than crashing on enum drift", async () => {
@@ -88,9 +104,9 @@ describe("ApiClient schema fallback", () => {
         },
       ]);
       const client = new ApiClient("https://api.example.test");
-      const entries = await client.listTimeline("issue-1");
-      expect(entries).toHaveLength(1);
-      expect(entries[0]?.type).toBe("future_kind");
+      const timeline = await client.listTimeline("issue-1");
+      expect(timeline.entries).toHaveLength(1);
+      expect(timeline.entries[0]?.type).toBe("future_kind");
     });
 
     // Forward-compat: when the server adds a new field to an existing
@@ -110,8 +126,8 @@ describe("ApiClient schema fallback", () => {
         },
       ]);
       const client = new ApiClient("https://api.example.test");
-      const entries = await client.listTimeline("issue-1");
-      const entry = entries[0] as unknown as Record<string, unknown>;
+      const timeline = await client.listTimeline("issue-1");
+      const entry = timeline.entries[0] as unknown as Record<string, unknown>;
       expect(entry.future_field).toEqual({ nested: "value" });
     });
   });

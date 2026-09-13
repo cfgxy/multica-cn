@@ -39,6 +39,7 @@ import {
 import { router, useLocalSearchParams } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
+import { effectiveTruncatedKinds } from "@multica/core/issues/timeline-query";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { issueTimelineOptions } from "@/data/queries/issues";
@@ -46,10 +47,10 @@ import {
   useCommentFocusStore,
   type CommentFocusStatus,
 } from "@/data/stores/comment-focus-store";
+import { useTimelineSortStore } from "@/data/stores/timeline-sort-store";
 import { useActorLookup } from "@/data/use-actor-name";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { buildTimelineRows } from "@/lib/timeline-thread";
-import { coalesceTimeline } from "@/lib/timeline-coalesce";
 import {
   buildCommentDirectory,
   filterCommentDirectory,
@@ -66,7 +67,7 @@ export default function IssueCommentsDirectoryRoute() {
   const { t } = useT("issues");
   const { id } = useLocalSearchParams<{ id: string }>();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
-  const { data: entries, isLoading } = useQuery(
+  const { data: timelineData, isLoading } = useQuery(
     issueTimelineOptions(wsId, id),
   );
   const { getName } = useActorLookup();
@@ -77,11 +78,15 @@ export default function IssueCommentsDirectoryRoute() {
   const mutedFg = THEME[colorScheme].mutedForeground;
   const destructive = THEME[colorScheme].destructive;
   const [query, setQuery] = useState("");
+  const timelineSortMode = useTimelineSortStore((state) => state.mode);
+  const truncatedKinds = effectiveTruncatedKinds(timelineData);
 
   const items = useMemo(() => {
-    if (!entries) return [];
-    return buildCommentDirectory(buildTimelineRows(coalesceTimeline(entries)));
-  }, [entries]);
+    if (!timelineData) return [];
+    return buildCommentDirectory(
+      buildTimelineRows(timelineData.entries, timelineSortMode),
+    );
+  }, [timelineData, timelineSortMode]);
 
   // Resolve author display names once; the filter matches on them too.
   const authorNames = useMemo(() => {
@@ -196,6 +201,14 @@ export default function IssueCommentsDirectoryRoute() {
               </Text>
             </Pressable>
           </View>
+        ) : null}
+        {truncatedKinds.length > 0 ? (
+          <Text className="text-xs text-muted-foreground">
+            {t(
+              "timeline.truncation.hint",
+              "Earlier timeline content has not been loaded.",
+            )}
+          </Text>
         ) : null}
       </View>
       {isLoading ? (
