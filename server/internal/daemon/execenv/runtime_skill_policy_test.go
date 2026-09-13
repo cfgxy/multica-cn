@@ -15,7 +15,7 @@ func TestPrepareClaudeSkillSettings(t *testing.T) {
 	path, err := prepareClaudeSkillSettings(root, []RuntimeSkillRefForEnv{
 		{Root: "provider", Key: "review-dir", Name: "review"},
 		{Root: "plugin", Key: "paper:design-to-code", Plugin: "paper@market"},
-	}, nil)
+	}, nil, false)
 	if err != nil {
 		t.Fatalf("prepareClaudeSkillSettings: %v", err)
 	}
@@ -56,7 +56,7 @@ func TestPrepareClaudeSkillSettings(t *testing.T) {
 		}
 	}
 
-	cleared, err := prepareClaudeSkillSettings(root, nil, nil)
+	cleared, err := prepareClaudeSkillSettings(root, nil, nil, true)
 	if err != nil {
 		t.Fatalf("clear settings: %v", err)
 	}
@@ -65,6 +65,90 @@ func TestPrepareClaudeSkillSettings(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("stale settings file still exists: %v", err)
+	}
+}
+
+func TestPrepareClaudeSkillSettingsDeniesSubagentToolsByDefault(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	// No disabled skills at all — the tool deny alone must still produce the
+	// settings file, otherwise a skill-less agent would silently regain the
+	// task-delegation tools.
+	path, err := prepareClaudeSkillSettings(root, nil, nil, false)
+	if err != nil {
+		t.Fatalf("prepareClaudeSkillSettings: %v", err)
+	}
+	if path == "" {
+		t.Fatal("expected settings file with subagent tool deny")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	var got struct {
+		Permissions struct {
+			Deny []string `json:"deny"`
+		} `json:"permissions"`
+	}
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("decode settings: %v", err)
+	}
+	if len(got.Permissions.Deny) != 2 {
+		t.Fatalf("deny rules = %v, want exactly Agent+Task", got.Permissions.Deny)
+	}
+	if got.Permissions.Deny[0] != "Agent" || got.Permissions.Deny[1] != "Task" {
+		t.Fatalf("deny rules = %v, want [Agent Task]", got.Permissions.Deny)
+	}
+}
+
+func TestPrepareClaudeSkillSettingsAllowsSubagentToolsWhenOptedIn(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	path, err := prepareClaudeSkillSettings(root, nil, nil, true)
+	if err != nil {
+		t.Fatalf("prepareClaudeSkillSettings: %v", err)
+	}
+	if path != "" {
+		t.Fatalf("allow-listed agent should have no settings file, got %q", path)
+	}
+
+	// Skill filtering must keep working alongside the opt-in.
+	path, err = prepareClaudeSkillSettings(root, []RuntimeSkillRefForEnv{
+		{Root: "provider", Key: "review-dir", Name: "review"},
+	}, nil, true)
+	if err != nil {
+		t.Fatalf("prepareClaudeSkillSettings: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	if strings.Contains(string(data), `"Agent"`) {
+		t.Fatalf("opted-in agent must not deny subagent tools:\n%s", data)
+	}
+}
+
+func TestSubagentToolsAllowed(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		raw  json.RawMessage
+		want bool
+	}{
+		{"empty config", nil, false},
+		{"empty object", json.RawMessage("{}"), false},
+		{"explicit false", json.RawMessage(`{"allow_subagents": false}`), false},
+		{"explicit true", json.RawMessage(`{"allow_subagents": true}`), true},
+		{"malformed", json.RawMessage(`{invalid`), false},
+		{"provider fields ignored", json.RawMessage(`{"mode":"gateway","allow_subagents":true}`), true},
+	}
+	for _, tc := range cases {
+		if got := SubagentToolsAllowed(tc.raw); got != tc.want {
+			t.Errorf("%s: SubagentToolsAllowed = %v, want %v", tc.name, got, tc.want)
+		}
 	}
 }
 
@@ -107,7 +191,7 @@ func TestRuntimeSkillPoliciesYieldToWorkspaceSkills(t *testing.T) {
 	workspaceSkills := []SkillContextForEnv{{Name: "Review"}}
 	settingsPath, err := prepareClaudeSkillSettings(root, []RuntimeSkillRefForEnv{
 		{Root: "provider", Key: "review-dir", Name: "review"},
-	}, workspaceSkills)
+	}, workspaceSkills, true)
 	if err != nil {
 		t.Fatalf("prepareClaudeSkillSettings: %v", err)
 	}
