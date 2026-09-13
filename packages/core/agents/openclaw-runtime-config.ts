@@ -17,6 +17,10 @@ export interface OpenclawGatewayPin {
 export interface OpenclawRuntimeConfig {
   mode?: OpenclawRoutingMode;
   gateway?: OpenclawGatewayPin;
+  // Cross-provider toggle (see ./subagent-tools). Carried through parse and
+  // serialize so saving gateway settings from the runtime-config tab never
+  // wipes an owner-granted subagent allowance.
+  allow_subagents?: boolean;
 }
 
 // Sentinel the API substitutes for a non-empty `gateway.token` on every read.
@@ -37,6 +41,9 @@ export function parseOpenclawRuntimeConfig(
   const out: OpenclawRuntimeConfig = {};
   if (root.mode === "local" || root.mode === "gateway") {
     out.mode = root.mode;
+  }
+  if (root.allow_subagents === true) {
+    out.allow_subagents = true;
   }
   if (root.gateway && typeof root.gateway === "object" && !Array.isArray(root.gateway)) {
     const gw = root.gateway as Record<string, unknown>;
@@ -59,6 +66,7 @@ export function serializeOpenclawRuntimeConfig(
 ): Record<string, unknown> {
   const out: Record<string, unknown> = {};
   if (cfg.mode) out.mode = cfg.mode;
+  if (cfg.allow_subagents) out.allow_subagents = true;
   if (cfg.gateway) {
     const gw: Record<string, unknown> = {};
     if (cfg.gateway.host) gw.host = cfg.gateway.host;

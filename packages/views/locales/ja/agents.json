@@ -584,7 +584,11 @@
       "add_dialog_confirm_default": "追加",
       "add_dialog_confirm_other": "スキル {{count}} 件を追加",
       "add_dialog_cancel": "キャンセル",
-      "add_failed_toast": "スキルを追加できませんでした"
+      "add_failed_toast": "スキルを追加できませんでした",
+      "subagents_title": "サブエージェントツール",
+      "subagents_hint": "オフ（既定）の場合、ランタイムは Agent/Task ツールを強制的に拒否し、このエージェントはサブエージェントに作業を委譲できません。必要なエージェントのみオンにしてください。",
+      "subagents_toggle_aria": "サブエージェントツールを許可",
+      "subagents_toggle_failed_toast": "サブエージェントツール設定の保存に失敗しました"
     },
     "integrations": {
       "intro": "このエージェントを外部のチャットプラットフォームに接続し、普段使っているツールから直接やり取りできるようにします。",
