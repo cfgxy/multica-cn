@@ -3,6 +3,7 @@ package execenv
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -49,6 +50,51 @@ func cleanRuntimeSkillKey(key string) (string, bool) {
 		return "", false
 	}
 	return filepath.ToSlash(cleaned), true
+}
+
+// runtimePolicyEnforcement reports which policy layers this daemon can enforce
+// inside the provider's task process. Providers missing from the switch have
+// no per-task injection hook today: their disabled-skill lists and the
+// subagent deny are then covered only by the agent's prompt-layer rules, and
+// warnRuntimePolicyGaps says so at dispatch time instead of failing silently.
+//
+//   - claude: --settings carries skillOverrides, Skill(...) denies, and the
+//     Agent/Task tool deny.
+//   - codex: config.toml [[skills.config]] filters skills. There is no
+//     task-delegation tool to deny — treat the tool layer as covered.
+//   - reasonix: per-task reasonix.toml [permissions] deny covers tools; the
+//     CLI has no skill-catalog hook, so skills stay prompt-enforced.
+func runtimePolicyEnforcement(provider string) (skillsEnforced, toolsEnforced bool) {
+	switch provider {
+	case "claude", "codex":
+		return true, true
+	case "reasonix":
+		return false, true
+	default:
+		return false, false
+	}
+}
+
+// warnRuntimePolicyGaps surfaces unenforceable policy at dispatch time. Every
+// task on an unsupported provider would otherwise run with the owner's skill
+// and subagent decisions silently ignored; one bounded warning per dispatch
+// keeps that visible without blocking the run.
+func warnRuntimePolicyGaps(provider string, task TaskContextForEnv, logger *slog.Logger) {
+	skillsEnforced, toolsEnforced := runtimePolicyEnforcement(provider)
+	if skillsEnforced && toolsEnforced {
+		return
+	}
+	if !skillsEnforced && len(task.DisabledRuntimeSkills) > 0 && logger != nil {
+		logger.Warn("execenv: disabled runtime skills cannot be hidden for this provider; the agent still sees them and only the prompt-layer rules restrict them",
+			"provider", provider,
+			"disabled_runtime_skills", len(task.DisabledRuntimeSkills),
+		)
+	}
+	if !toolsEnforced && !task.AllowSubagents && logger != nil {
+		logger.Warn("execenv: the subagent tool deny cannot be enforced for this provider; prompt-layer rules are the only control",
+			"provider", provider,
+		)
+	}
 }
 
 func prepareClaudeSkillSettings(envRoot string, disabled []RuntimeSkillRefForEnv, workspaceSkills []SkillContextForEnv, allowSubagents bool) (string, error) {
