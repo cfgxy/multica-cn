@@ -11,6 +11,12 @@ import (
 
 const claudeRuntimeSkillSettingsFile = "claude-runtime-skill-settings.json"
 
+// subagentDenyTools lists the provider-native task-delegation tool names that
+// are denied unless the agent's runtime_config explicitly allows subagents
+// (runtime_config.allow_subagents). Both spellings are emitted because the
+// same deny list serves every CLI flavor backed by this settings file.
+var subagentDenyTools = []string{"Agent", "Task"}
+
 // RuntimeSkillRefForEnv identifies a runtime-local skill for provider-specific
 // task environment filtering. Provider and runtime are already selected by the
 // task, so only the discovery root and provider-native key are needed here.
@@ -21,6 +27,22 @@ type RuntimeSkillRefForEnv struct {
 	Plugin string
 }
 
+// SubagentToolsAllowed reports whether an agent's runtime_config explicitly
+// allows subagent tools. Absent or malformed config denies — the default
+// posture is fail-closed: an agent must opt in to task delegation.
+func SubagentToolsAllowed(runtimeConfig json.RawMessage) bool {
+	if len(runtimeConfig) == 0 {
+		return false
+	}
+	var cfg struct {
+		AllowSubagents bool `json:"allow_subagents"`
+	}
+	if err := json.Unmarshal(runtimeConfig, &cfg); err != nil {
+		return false
+	}
+	return cfg.AllowSubagents
+}
+
 func cleanRuntimeSkillKey(key string) (string, bool) {
 	cleaned := filepath.Clean(filepath.FromSlash(strings.TrimSpace(key)))
 	if cleaned == "." || filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
@@ -29,24 +51,23 @@ func cleanRuntimeSkillKey(key string) (string, bool) {
 	return filepath.ToSlash(cleaned), true
 }
 
-func prepareClaudeSkillSettings(envRoot string, disabled []RuntimeSkillRefForEnv, workspaceSkills []SkillContextForEnv) (string, error) {
+func prepareClaudeSkillSettings(envRoot string, disabled []RuntimeSkillRefForEnv, workspaceSkills []SkillContextForEnv, allowSubagents bool) (string, error) {
 	path := filepath.Join(envRoot, claudeRuntimeSkillSettingsFile)
-	if len(disabled) == 0 {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return "", err
-		}
-		return "", nil
-	}
 
 	overrides := make(map[string]string)
-	deny := make([]string, 0, len(disabled)*2)
-	seenDeny := make(map[string]struct{}, len(disabled)*2)
+	deny := make([]string, 0, len(disabled)*2+len(subagentDenyTools))
+	seenDeny := make(map[string]struct{}, len(disabled)*2+len(subagentDenyTools))
 	addDeny := func(rule string) {
 		if _, exists := seenDeny[rule]; exists {
 			return
 		}
 		seenDeny[rule] = struct{}{}
 		deny = append(deny, rule)
+	}
+	if !allowSubagents {
+		for _, tool := range subagentDenyTools {
+			addDeny(tool)
+		}
 	}
 	for _, skill := range disabled {
 		key, ok := cleanRuntimeSkillKey(skill.Key)

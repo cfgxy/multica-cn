@@ -156,6 +156,10 @@ type TaskContextForEnv struct {
 	AgentInstructions             string // agent identity/persona instructions, injected into CLAUDE.md
 	AgentSkills                   []SkillContextForEnv
 	DisabledRuntimeSkills         []RuntimeSkillRefForEnv
+	// AllowSubagents mirrors runtime_config.allow_subagents on the agent row:
+	// false (absent or malformed config included) makes prepareClaudeSkillSettings
+	// deny the provider's task-delegation tools for this task's process.
+	AllowSubagents bool
 	Repos                         []RepoContextForEnv     // workspace repos available for checkout
 	ProjectID                     string                  // active project for this task, when present
 	ProjectTitle                  string                  // human-readable project title
@@ -644,7 +648,7 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	}
 
 	if params.Provider == "claude" {
-		settingsPath, err := prepareClaudeSkillSettings(envRoot, params.Task.DisabledRuntimeSkills, params.Task.AgentSkills)
+		settingsPath, err := prepareClaudeSkillSettings(envRoot, params.Task.DisabledRuntimeSkills, params.Task.AgentSkills, params.Task.AllowSubagents)
 		if err != nil {
 			return nil, fmt.Errorf("execenv: prepare claude skill settings: %w", err)
 		}
@@ -923,7 +927,7 @@ func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
 	}
 
 	if params.Provider == "claude" && env.RootDir != "" {
-		settingsPath, err := prepareClaudeSkillSettings(env.RootDir, params.Task.DisabledRuntimeSkills, params.Task.AgentSkills)
+		settingsPath, err := prepareClaudeSkillSettings(env.RootDir, params.Task.DisabledRuntimeSkills, params.Task.AgentSkills, params.Task.AllowSubagents)
 		if err != nil {
 			logger.Warn("execenv: refresh claude skill settings failed", "error", err)
 		} else {
