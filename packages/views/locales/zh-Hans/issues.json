@@ -439,7 +439,17 @@
     "subscription_update_failed": "无法更新订阅状态，请重试。"
   },
   "timeline": {
-    "loading": "加载中…"
+    "loading": "加载中…",
+    "sort": {
+      "label": "评论排序",
+      "recent_comment": "最近评论",
+      "created": "创建时间",
+      "hint": "讨论按最后一条评论排序。切换到创建时间可按讨论开始时间阅读。",
+      "dismiss": "关闭排序提示"
+    },
+    "truncation": {
+      "hint": "较早的时间线内容尚未加载。"
+    }
   },
   "activity": {
     "created": "创建了这个任务",
@@ -501,6 +511,9 @@
     "send_reply_failed": "发送回复失败",
     "delete_failed": "删除评论失败",
     "reply_count_other": "{{count}} 条回复",
+    "thread": {
+      "last_comment": "最后一条评论：{{name}} · {{time}}"
+    },
     "leave_comment_placeholder": "留下评论...",
     "send_tooltip": "发送",
     "trigger_source_issue_assignee": "assignee",

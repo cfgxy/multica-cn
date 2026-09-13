@@ -90,7 +90,10 @@ describe("useRealtimeSync — comment activity cache coherence", () => {
     qc.setQueryData<ListIssuesCache>(updatedBoardKey, bucketed());
     qc.setQueryData<ListIssuesCache>(positionBoardKey, bucketed());
     qc.setQueryData<ListIssuesCache>(lastActivityBoardKey, bucketed());
-    qc.setQueryData(issueKeys.timeline("issue-1"), []);
+    qc.setQueryData(issueKeys.timeline("issue-1"), {
+      entries: [],
+      truncatedKinds: [],
+    });
 
     const { ws, handlers } = createRecordingWs();
     renderHook(() => useRealtimeSync(ws, createStores()), {
@@ -120,7 +123,10 @@ describe("useRealtimeSync — comment activity cache coherence", () => {
     qc.setQueryData<ListIssuesCache>(updatedBoardKey, bucketed());
     qc.setQueryData<ListIssuesCache>(positionBoardKey, bucketed());
     qc.setQueryData<ListIssuesCache>(lastActivityBoardKey, bucketed());
-    qc.setQueryData(issueKeys.timeline("issue-1"), []);
+    qc.setQueryData(issueKeys.timeline("issue-1"), {
+      entries: [],
+      truncatedKinds: [],
+    });
 
     const { ws, handlers } = createRecordingWs();
     renderHook(() => useRealtimeSync(ws, createStores()), {

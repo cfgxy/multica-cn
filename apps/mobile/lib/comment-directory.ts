@@ -6,9 +6,8 @@
  * derives its list locally; no server state is copied or refetched
  * (approved architecture: read the existing TanStack timeline cache).
  *
- * `buildCommentDirectory` keeps the timeline's ASC (oldest-first) order —
- * the spec asks for a root-ASC list, i.e. the same order the user scrolls
- * through, not newest-first.
+ * `buildCommentDirectory` keeps the Core timeline model's order so the modal
+ * cannot silently disagree with the surrounding issue timeline.
  */
 import type { TimelineEntry } from "@multica/core/types";
 import { commentSummary } from "./comment-summary";
@@ -32,28 +31,15 @@ export interface CommentDirectoryItem {
 export function buildCommentDirectory(
   rows: TimelineRow[],
 ): CommentDirectoryItem[] {
-  // Defensive ASC sort by created_at. Server returns ASC and
-  // buildTimelineRows preserves input order, but WS patches / optimistic
-  // inserts append at the end — an out-of-order row must not shuffle the
-  // directory. Stable: equal timestamps keep the input (timeline) order.
-  //
   // Row-level filter only: every TimelineRow is a TOP-LEVEL row by
   // construction (buildTimelineRows folds nested replies into
   // `row.replies`), INCLUDING orphan replies promoted to top-level when
   // their parent is missing from the batch (web #1857 rescue). The old
   // `!parent_id` check dropped those promoted rows — a comment the
   // timeline renders but the directory hid (Counts-agree violation).
-  const ordered = [...rows]
-    .filter((r) => r.entry.type === "comment")
-    .sort((a, b) =>
-      a.entry.created_at < b.entry.created_at
-        ? -1
-        : a.entry.created_at > b.entry.created_at
-          ? 1
-          : 0,
-    );
   const out: CommentDirectoryItem[] = [];
-  for (const row of ordered) {
+  for (const row of rows) {
+    if (row.entry.type !== "comment") continue;
     const e: TimelineEntry = row.entry;
     out.push({
       rootId: e.id,
