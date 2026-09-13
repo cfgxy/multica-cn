@@ -59,7 +59,7 @@ export interface MarketplacePublishFlow {
 export function useMarketplacePublishFlow(wsId: string): MarketplacePublishFlow {
   const { t } = useT("settings");
   const currentMember = useCurrentMember(wsId);
-  const publishEnabled = useFeatureEnabled(MARKETPLACE_PUBLISH_V1_FLAG, false);
+  const publishEnabled = useFeatureEnabled(MARKETPLACE_PUBLISH_V1_FLAG, true);
   const canPublish =
     (currentMember.role === "owner" || currentMember.role === "admin") &&
     publishEnabled;
