@@ -25,6 +25,7 @@ import { Stack, router, useLocalSearchParams } from "expo-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import * as Clipboard from "expo-clipboard";
 import type { Issue } from "@multica/core/types";
+import { effectiveTruncatedKinds } from "@multica/core/issues/timeline-query";
 import { Text } from "@/components/ui/text";
 import { Button } from "@/components/ui/button";
 import { IconButton } from "@/components/ui/icon-button";
@@ -80,6 +81,7 @@ export default function IssueDetail() {
 
   const detail = useQuery(issueDetailOptions(wsId, id));
   const timeline = useQuery(issueTimelineOptions(wsId, id));
+  const truncatedKinds = effectiveTruncatedKinds(timeline.data);
 
   // Subscribe to per-issue WS events: status/priority/assignee/label
   // changes, comments, activity, reactions, agent task progress.
@@ -321,7 +323,8 @@ export default function IssueDetail() {
           <TimelineList
             ref={timelineRef}
             issue={issue}
-            entries={timeline.data}
+            entries={timeline.data?.entries}
+            truncatedKinds={truncatedKinds}
             timelineLoading={timeline.isLoading}
             refreshing={detail.isRefetching || timeline.isRefetching}
             onRefresh={onRefresh}

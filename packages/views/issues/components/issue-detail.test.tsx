@@ -8,6 +8,7 @@ import { COMMENT_HIGHLIGHT_HOLD_MS } from "@multica/core/issues/comment-highligh
 import { I18nProvider } from "@multica/core/i18n/react";
 import { toast } from "sonner";
 import { useResolvedExpandStore } from "@multica/core/issues/stores/resolved-expand-store";
+import { useTimelineSortStore } from "@multica/core/issues/stores/timeline-sort-store";
 import {
   DEFAULT_SUB_ISSUE_ROW_PROPERTIES,
   useSubIssueDisplayStore,
@@ -330,15 +331,27 @@ const mockApiObj = vi.hoisted(() => ({
   listProjects: vi.fn().mockResolvedValue({ projects: [] }),
 }));
 
-vi.mock("@multica/core/api", () => ({
-  api: mockApiObj,
-  getApi: () => mockApiObj,
-  setApiInstance: vi.fn(),
-  errorCode: (error: unknown) =>
-    typeof error === "object" && error !== null && "body" in error
-      ? (error as { body?: { code?: string } }).body?.code
-      : undefined,
-}));
+vi.mock("@multica/core/api", () => {
+  const api = {
+    ...mockApiObj,
+    listTimeline: async (...args: unknown[]) => {
+      const result = await mockApiObj.listTimeline(...args);
+      return Array.isArray(result)
+        ? { entries: result, truncatedKinds: [] }
+        : result;
+    },
+  };
+
+  return {
+    api,
+    getApi: () => api,
+    setApiInstance: vi.fn(),
+    errorCode: (error: unknown) =>
+      typeof error === "object" && error !== null && "body" in error
+        ? (error as { body?: { code?: string } }).body?.code
+        : undefined,
+  };
+});
 
 // Mock issue config
 vi.mock("@multica/core/issues/config", () => ({
@@ -530,7 +543,7 @@ vi.mock("@multica/core/realtime", () => ({
 
 // Mock sonner
 vi.mock("sonner", () => ({
-  toast: { error: vi.fn(), success: vi.fn() },
+  toast: { error: vi.fn(), success: vi.fn(), message: vi.fn() },
 }));
 
 // Mock react-resizable-panels (used by @multica/ui/components/ui/resizable)
@@ -678,12 +691,15 @@ function renderIssueDetailWithHighlight(
 ) {
   const queryClient = createTestQueryClient();
   if (options.seedTimeline) {
-    // Pre-populate the timeline cache so the first render sees timeline.length>0.
+    // Pre-populate the timeline cache so the first render sees timeline entries.
     // This reproduces the inbox-click race: timeline data is available before
     // the issue itself has finished loading, so the effect that scrolls to
     // the comment fires once with `loading=true` (skeleton still rendered,
     // no comment DOM) and must re-fire when `loading` flips to false.
-    queryClient.setQueryData(["issues", "timeline", issueId], mockTimeline);
+    queryClient.setQueryData(["issues", "timeline", issueId], {
+      entries: mockTimeline,
+      truncatedKinds: [],
+    });
   }
   const result = render(
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
@@ -719,6 +735,7 @@ describe("IssueDetail (shared)", () => {
     vi.clearAllMocks();
     contentEditorMounts.count = 0;
     mockViewport.isMobile = false;
+    useTimelineSortStore.setState({ mode: "recent-comment", hintSeen: false });
     // Default: issue loads successfully
     mockApiObj.getIssue.mockResolvedValue(mockIssue);
     // /timeline returns the entries flat in chronological order (oldest first).
@@ -1337,6 +1354,18 @@ describe("IssueDetail (shared)", () => {
     expect(screen.getByText("I can help with this")).toBeInTheDocument();
   });
 
+  it("shows truncation and latest-comment context from the timeline cache", async () => {
+    mockApiObj.listTimeline.mockResolvedValue({
+      entries: mockTimeline,
+      truncatedKinds: ["comment"],
+    });
+
+    renderIssueDetail();
+
+    await screen.findByText("Earlier timeline content has not been loaded.");
+    expect(screen.getAllByText(/Last comment:/).length).toBeGreaterThanOrEqual(2);
+  });
+
   it("orders thread cards by their latest reply", async () => {
     mockApiObj.listTimeline.mockResolvedValue([
       {
@@ -1381,6 +1410,61 @@ describe("IssueDetail (shared)", () => {
       shortThread!.compareDocumentPosition(longThread!) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
+  });
+
+  it("switches top-level thread order between recent comments and creation time", async () => {
+    mockApiObj.listTimeline.mockResolvedValue([
+      {
+        ...mockTimeline[0],
+        id: "sort-root-a",
+        content: "Earlier thread",
+        created_at: "2026-01-16T00:00:00Z",
+      },
+      {
+        ...mockTimeline[1],
+        id: "sort-root-b",
+        content: "Later thread",
+        created_at: "2026-01-17T00:00:00Z",
+      },
+      {
+        ...mockTimeline[1],
+        id: "sort-reply-a",
+        content: "Latest reply in earlier thread",
+        parent_id: "sort-root-a",
+        created_at: "2026-01-18T00:00:00Z",
+      },
+    ]);
+
+    renderIssueDetail();
+
+    const earlierThread = (await screen.findByText("Earlier thread")).closest(
+      "[id='comment-sort-root-a']",
+    );
+    const laterThread = screen.getByText("Later thread").closest(
+      "[id='comment-sort-root-b']",
+    );
+    expect(screen.getByText("Comment order")).toBeInTheDocument();
+    expect(
+      laterThread!.compareDocumentPosition(earlierThread!) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    fireEvent.click(screen.getByText("Created time"));
+
+    await waitFor(() => {
+      const createdEarlierThread = screen.getByText("Earlier thread").closest(
+        "[id='comment-sort-root-a']",
+      );
+      const createdLaterThread = screen.getByText("Later thread").closest(
+        "[id='comment-sort-root-b']",
+      );
+      expect(createdEarlierThread).not.toBeNull();
+      expect(createdLaterThread).not.toBeNull();
+      expect(
+        createdEarlierThread!.compareDocumentPosition(createdLaterThread!) &
+          Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
+    });
   });
 
   it("prefers timeline identity when the actor is absent from the member directory", async () => {

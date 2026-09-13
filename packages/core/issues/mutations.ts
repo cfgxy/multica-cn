@@ -38,6 +38,11 @@ import type {
 import type { TimelineEntry, IssueSubscriber, Reaction } from "../types";
 import { sortTimelineEntriesAsc } from "./timeline-sort";
 import {
+  crossedTimelineHardCap,
+  updateTimelineEntries,
+  type TimelineQueryData,
+} from "./timeline-query";
+import {
   onIssueAuxiliaryRevision,
   invalidateIssueOwnerProjections,
   reconcileIssueFullSnapshotRevision,
@@ -744,7 +749,7 @@ export function useBatchDeleteIssues() {
 // Comments / Timeline
 // ---------------------------------------------------------------------------
 
-type TimelineCache = TimelineEntry[];
+type TimelineCache = TimelineQueryData;
 
 export function useCreateComment(issueId: string) {
   const qc = useQueryClient();
@@ -786,11 +791,24 @@ export function useCreateComment(issueId: string) {
       // Dedupe by id: the `comment:created` WS event may have already added
       // this entry from the broadcast path before this onSuccess fires. Skip
       // the append if the entry is already in the cache.
+      let crossedCommentHardCap = false;
       qc.setQueryData<TimelineCache>(issueKeys.timeline(issueId), (old) => {
-        if (!old) return [entry];
-        if (old.some((e) => e.id === entry.id)) return old;
-        return sortTimelineEntriesAsc([...old, entry]);
+        if (!old) return old;
+        return updateTimelineEntries(old, (entries) => {
+          if (entries.some((existing) => existing.id === entry.id)) return entries;
+          const nextEntries = sortTimelineEntriesAsc([...entries, entry]);
+          if (
+            !old.truncatedKinds.includes("comment") &&
+            crossedTimelineHardCap(entries, nextEntries, "comment")
+          ) {
+            crossedCommentHardCap = true;
+          }
+          return nextEntries;
+        });
       });
+      if (crossedCommentHardCap) {
+        qc.invalidateQueries({ queryKey: issueKeys.timeline(issueId) });
+      }
       // Posting a comment changes the trigger answer itself (the enqueued
       // task now dedupes follow-up triggers), so cached previews for this
       // issue are stale the moment the create lands.
@@ -830,10 +848,12 @@ export function useUpdateComment(issueId: string) {
       const prev = qc.getQueryData<TimelineCache>(issueKeys.timeline(issueId));
       const kept = new Set(attachmentIds);
       qc.setQueryData<TimelineCache>(issueKeys.timeline(issueId), (old) =>
-        old?.map((e) =>
-          e.id === commentId
-            ? { ...e, content, attachments: e.attachments?.filter((a) => kept.has(a.id)) }
-            : e,
+        updateTimelineEntries(old, (entries) =>
+          entries.map((entry) =>
+            entry.id === commentId
+              ? { ...entry, content, attachments: entry.attachments?.filter((a) => kept.has(a.id)) }
+              : entry,
+          ),
         ),
       );
       return { prev };
@@ -874,7 +894,7 @@ export function useDeleteComment(issueId: string) {
         let changed = true;
         while (changed) {
           changed = false;
-          for (const e of prev) {
+          for (const e of prev.entries) {
             if (
               e.parent_id &&
               toRemove.has(e.parent_id) &&
@@ -888,7 +908,7 @@ export function useDeleteComment(issueId: string) {
       }
 
       qc.setQueryData<TimelineCache>(issueKeys.timeline(issueId), (old) =>
-        old?.filter((e) => !toRemove.has(e.id)),
+        updateTimelineEntries(old, (entries) => entries.filter((entry) => !toRemove.has(entry.id))),
       );
       return { prev };
     },
@@ -916,7 +936,7 @@ export function useDeleteComment(issueId: string) {
 // resolutions exactly as the backend will, instead of briefly showing two
 // resolutions until the refetch settles.
 function collectThreadCommentIds(
-  entries: TimelineCache,
+  entries: TimelineEntry[],
   commentId: string,
 ): Set<string> {
   const byId = new Map<string, TimelineEntry>();
@@ -970,21 +990,23 @@ export function useResolveComment(issueId: string) {
         // resolution in the same thread. Without this the cache shows two
         // resolutions until the settle refetch, which is exactly the flash the
         // single-resolution fix removes. Unresolve only clears its own row.
-        const threadIds = resolved ? collectThreadCommentIds(old, commentId) : null;
-        return old.map((e) => {
-          if (e.id === commentId) {
-            return {
-              ...e,
-              resolved_at: resolved ? new Date().toISOString() : null,
-              resolved_by_type: resolved ? e.resolved_by_type ?? null : null,
-              resolved_by_id: resolved ? e.resolved_by_id ?? null : null,
-            };
-          }
-          if (resolved && e.resolved_at && threadIds?.has(e.id)) {
-            return { ...e, resolved_at: null, resolved_by_type: null, resolved_by_id: null };
-          }
-          return e;
-        });
+        const threadIds = resolved ? collectThreadCommentIds(old.entries, commentId) : null;
+        return updateTimelineEntries(old, (entries) =>
+          entries.map((entry) => {
+            if (entry.id === commentId) {
+              return {
+                ...entry,
+                resolved_at: resolved ? new Date().toISOString() : null,
+                resolved_by_type: resolved ? entry.resolved_by_type ?? null : null,
+                resolved_by_id: resolved ? entry.resolved_by_id ?? null : null,
+              };
+            }
+            if (resolved && entry.resolved_at && threadIds?.has(entry.id)) {
+              return { ...entry, resolved_at: null, resolved_by_type: null, resolved_by_id: null };
+            }
+            return entry;
+          }),
+        );
       });
       return { prev };
     },

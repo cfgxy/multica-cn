@@ -49,16 +49,16 @@ const entries: TimelineEntry[] = [
 ];
 
 describe("buildCommentDirectory", () => {
-  it("lists only root comments, in ASC (oldest-first) order", () => {
+  it("lists only root comments in the default latest-comment order", () => {
     const rows = buildTimelineRows(entries);
     const dir = buildCommentDirectory(rows);
-    expect(dir.map((d) => d.rootId)).toEqual(["root-1", "root-2"]);
+    expect(dir.map((d) => d.rootId)).toEqual(["root-2", "root-1"]);
   });
 
   it("carries reply count, author ref and summary from the root row", () => {
     const rows = buildTimelineRows(entries);
     const dir = buildCommentDirectory(rows);
-    expect(dir[0]).toMatchObject({
+    expect(dir[1]).toMatchObject({
       rootId: "root-1",
       replyCount: 1,
       authorType: "member",
