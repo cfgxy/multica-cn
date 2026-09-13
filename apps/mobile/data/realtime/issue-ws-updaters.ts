@@ -16,8 +16,8 @@
  *
  * Cache shapes (the design contract here):
  *   - Issue detail:    Issue                                  (keyed by detail(wsId, id))
- *   - Issue timeline:  TimelineEntry[]                        (keyed by timeline(wsId, id))
- *                      ASC oldest-first; new entries inserted at sorted position.
+ *   - Issue timeline:  TimelineQueryData                      (keyed by timeline(wsId, id))
+ *                      Raw entries stay ASC oldest-first; header state is fetch-owned.
  *   - My Issues list:  Issue[]                                (keyed by myList(wsId, scope, filter))
  *                      Multiple list caches per wsId (one per scope/filter combo).
  *                      Patch ALL of them via setQueriesData on myAll(wsId).
@@ -34,6 +34,13 @@ import type {
   Reaction,
   TimelineEntry,
 } from "@multica/core/types";
+import {
+  crossedTimelineHardCap,
+  updateTimelineEntries,
+  type TimelineQueryData,
+  type TimelineTruncationKind,
+} from "@multica/core/issues/timeline-query";
+import { sortTimelineEntriesAsc } from "@multica/core/issues/timeline-sort";
 import { issueKeys } from "@/data/queries/issue-keys";
 
 type TimelinePredicate = (entry: TimelineEntry) => boolean;
@@ -213,23 +220,31 @@ export function appendTimelineEntry(
   issueId: string,
   entry: TimelineEntry,
 ) {
-  qc.setQueryData<TimelineEntry[]>(
+  let crossedKind: TimelineTruncationKind | null = null;
+  qc.setQueryData<TimelineQueryData>(
     issueKeys.timeline(wsId, issueId),
     (old) => {
       if (!old) return old;
       // Skip if the entry is already present — backend can re-emit on
       // reconnect or two clients can echo the same comment.
-      if (old.some((e) => e.id === entry.id && e.type === entry.type)) {
+      if (old.entries.some((existing) => existing.id === entry.id && existing.type === entry.type)) {
         return old;
       }
-      const next = [...old, entry];
-      next.sort((a, b) => {
-        if (a.created_at !== b.created_at) return a.created_at < b.created_at ? -1 : 1;
-        return a.id < b.id ? -1 : 1;
-      });
-      return next;
+      const next = sortTimelineEntriesAsc([...old.entries, entry]);
+      const kind = entry.type === "comment" || entry.type === "activity" ? entry.type : null;
+      if (
+        kind &&
+        !old.truncatedKinds.includes(kind) &&
+        crossedTimelineHardCap(old.entries, next, kind)
+      ) {
+        crossedKind = kind;
+      }
+      return updateTimelineEntries(old, () => next);
     },
   );
+  if (crossedKind) {
+    qc.invalidateQueries({ queryKey: issueKeys.timeline(wsId, issueId) });
+  }
 }
 
 export function patchTimelineEntry(
@@ -239,9 +254,12 @@ export function patchTimelineEntry(
   predicate: TimelinePredicate,
   mutate: TimelineMutate,
 ) {
-  qc.setQueryData<TimelineEntry[]>(
+  qc.setQueryData<TimelineQueryData>(
     issueKeys.timeline(wsId, issueId),
-    (old) => (old ? old.map((e) => (predicate(e) ? mutate(e) : e)) : old),
+    (old) => updateTimelineEntries(
+      old,
+      (entries) => entries.map((entry) => (predicate(entry) ? mutate(entry) : entry)),
+    ),
   );
 }
 
@@ -296,9 +314,12 @@ export function removeTimelineEntry(
   issueId: string,
   predicate: TimelinePredicate,
 ) {
-  qc.setQueryData<TimelineEntry[]>(
+  qc.setQueryData<TimelineQueryData>(
     issueKeys.timeline(wsId, issueId),
-    (old) => (old ? old.filter((e) => !predicate(e)) : old),
+    (old) => updateTimelineEntries(
+      old,
+      (entries) => entries.filter((entry) => !predicate(entry)),
+    ),
   );
 }
 
@@ -322,7 +343,7 @@ export function removeCommentCascade(
   issueId: string,
   commentId: string,
 ) {
-  qc.setQueryData<TimelineEntry[]>(
+  qc.setQueryData<TimelineQueryData>(
     issueKeys.timeline(wsId, issueId),
     (old) => {
       if (!old) return old;
@@ -334,20 +355,23 @@ export function removeCommentCascade(
       let changed = true;
       while (changed) {
         changed = false;
-        for (const e of old) {
+        for (const entry of old.entries) {
           if (
-            e.type === "comment" &&
-            e.parent_id &&
-            removed.has(e.parent_id) &&
-            !removed.has(e.id)
+            entry.type === "comment" &&
+            entry.parent_id &&
+            removed.has(entry.parent_id) &&
+            !removed.has(entry.id)
           ) {
-            removed.add(e.id);
+            removed.add(entry.id);
             changed = true;
           }
         }
       }
-      return old.filter(
-        (e) => !(e.type === "comment" && removed.has(e.id)),
+      return updateTimelineEntries(
+        old,
+        (entries) => entries.filter(
+          (entry) => !(entry.type === "comment" && removed.has(entry.id)),
+        ),
       );
     },
   );

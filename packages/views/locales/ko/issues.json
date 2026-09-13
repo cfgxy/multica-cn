@@ -439,7 +439,17 @@
     "workdir_path_unavailable": "아직 로컬 작업 디렉터리가 없습니다. 로컬 에이전트가 이 태스크를 실행하지 않았습니다"
   },
   "timeline": {
-    "loading": "불러오는 중..."
+    "loading": "불러오는 중...",
+    "sort": {
+      "label": "댓글 정렬",
+      "recent_comment": "최근 댓글",
+      "created": "작성 시간",
+      "hint": "스레드는 마지막 댓글 순으로 정렬됩니다. 작성 시간으로 전환하면 스레드 시작 순서로 읽을 수 있습니다.",
+      "dismiss": "정렬 안내 닫기"
+    },
+    "truncation": {
+      "hint": "이전 타임라인 내용은 아직 불러오지 않았습니다."
+    }
   },
   "activity": {
     "created": "이 태스크를 만들었습니다",
@@ -501,6 +511,9 @@
     "send_reply_failed": "답글을 보내지 못했습니다",
     "delete_failed": "댓글을 삭제하지 못했습니다",
     "reply_count_other": "답글 {{count}}개",
+    "thread": {
+      "last_comment": "마지막 댓글: {{name}} · {{time}}"
+    },
     "leave_comment_placeholder": "댓글 남기기...",
     "send_tooltip": "보내기",
     "trigger_source_issue_assignee": "담당자",

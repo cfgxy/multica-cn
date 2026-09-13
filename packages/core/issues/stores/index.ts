@@ -22,6 +22,7 @@ export {
   type IssuesScopePageKey,
 } from "./issues-scope-store";
 export { useCommentCollapseStore } from "./comment-collapse-store";
+export { useTimelineSortStore } from "./timeline-sort-store";
 export {
   useResolvedExpandStore,
   selectExpandedResolved,
