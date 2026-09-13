@@ -168,6 +168,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		var finalResultText string
 		sawResult := false
 		resultIsError := false
+		maxTurnsReached := false
 		terminalReasonError := ""
 		var sessionID string
 		sawAsyncLaunch := false
@@ -252,6 +253,9 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				sawResult = true
 				finalResultText = msg.ResultText
 				resultIsError = msg.IsError
+				if msg.Subtype == "error_max_turns" {
+					maxTurnsReached = true
+				}
 				terminalReasonError = claudeTerminalReasonFailure(msg.TerminalReason, msg.ResultText)
 				sessionID = msg.SessionID
 				if resultUsage := claudeResultUsage(msg, opts.Model); len(resultUsage) > 0 {
@@ -309,6 +313,7 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				finalResultText:     finalResultText,
 				sawResult:           sawResult,
 				resultIsError:       resultIsError,
+				maxTurnsReached:     maxTurnsReached,
 				scanErr:             scanErr,
 				terminalReasonError: terminalReasonError,
 			},

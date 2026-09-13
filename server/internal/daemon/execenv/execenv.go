@@ -156,6 +156,10 @@ type TaskContextForEnv struct {
 	AgentInstructions             string // agent identity/persona instructions, injected into CLAUDE.md
 	AgentSkills                   []SkillContextForEnv
 	DisabledRuntimeSkills         []RuntimeSkillRefForEnv
+	// AllowSubagents mirrors runtime_config.allow_subagents on the agent row:
+	// false (absent or malformed config included) makes prepareClaudeSkillSettings
+	// deny the provider's task-delegation tools for this task's process.
+	AllowSubagents bool
 	Repos                         []RepoContextForEnv     // workspace repos available for checkout
 	ProjectID                     string                  // active project for this task, when present
 	ProjectTitle                  string                  // human-readable project title
@@ -644,7 +648,7 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 	}
 
 	if params.Provider == "claude" {
-		settingsPath, err := prepareClaudeSkillSettings(envRoot, params.Task.DisabledRuntimeSkills, params.Task.AgentSkills)
+		settingsPath, err := prepareClaudeSkillSettings(envRoot, params.Task.DisabledRuntimeSkills, params.Task.AgentSkills, params.Task.AllowSubagents)
 		if err != nil {
 			return nil, fmt.Errorf("execenv: prepare claude skill settings: %w", err)
 		}
@@ -683,14 +687,20 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 		env.QwenpawWorkspace = qwenpawWorkspace
 	}
 
-	// For Reasonix, deny the `ask` tool for this task through a project-scoped
-	// reasonix.toml. Degraded, not fatal: without it the task still runs under
-	// the backend's fail-closed question handling.
+	// For Reasonix, deny the `ask` tool — and, unless the agent allowed
+	// subagents, the task-delegation tools — for this task through a
+	// project-scoped reasonix.toml. Degraded, not fatal: without it the task
+	// still runs under the backend's fail-closed question handling.
 	if params.Provider == "reasonix" {
-		if err := writeReasonixProjectConfig(workDir, params.ReasonixEnv, manifest, logger); err != nil {
+		if err := writeReasonixProjectConfig(workDir, params.ReasonixEnv, manifest, params.Task.AllowSubagents, logger); err != nil {
 			logger.Warn("execenv: write reasonix project config failed", "error", err)
 		}
 	}
+
+	// Make unenforceable policy visible instead of silently ignored: providers
+	// without a per-task hook still see disabled skills and the subagent deny
+	// only through the prompt-layer rules.
+	warnRuntimePolicyGaps(params.Provider, params.Task, logger)
 
 	// For Cursor, materialize managed MCP into project-local config and use
 	// an isolated CURSOR_DATA_DIR for the per-workdir approval sidecar. Cursor
@@ -923,7 +933,7 @@ func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
 	}
 
 	if params.Provider == "claude" && env.RootDir != "" {
-		settingsPath, err := prepareClaudeSkillSettings(env.RootDir, params.Task.DisabledRuntimeSkills, params.Task.AgentSkills)
+		settingsPath, err := prepareClaudeSkillSettings(env.RootDir, params.Task.DisabledRuntimeSkills, params.Task.AgentSkills, params.Task.AllowSubagents)
 		if err != nil {
 			logger.Warn("execenv: refresh claude skill settings failed", "error", err)
 		} else {
@@ -935,10 +945,12 @@ func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
 	// prior run's reasonix.toml, so without this the next turn would run with
 	// the tool available again.
 	if params.Provider == "reasonix" {
-		if err := writeReasonixProjectConfig(params.WorkDir, params.ReasonixEnv, manifest, logger); err != nil {
+		if err := writeReasonixProjectConfig(params.WorkDir, params.ReasonixEnv, manifest, params.Task.AllowSubagents, logger); err != nil {
 			logger.Warn("execenv: refresh reasonix project config failed", "error", err)
 		}
 	}
+
+	warnRuntimePolicyGaps(params.Provider, params.Task, logger)
 
 	// Refresh (or tear down) the per-task QwenPaw workspace on reuse.
 	// Rebuild the workspace so an added/removed/edited skill is reflected.
