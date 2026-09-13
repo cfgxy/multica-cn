@@ -147,8 +147,22 @@ describe("SettingsPage Plugin feature flag", () => {
 });
 
 describe("SettingsPage marketplace feature flag", () => {
-  it("hides Marketplace and falls back from a direct tab URL when disabled", () => {
+  // Owner decision (RUYI-140): marketplace_v1 defaults to enabled, so an
+  // unconfigured environment must show the tab without any flag set.
+  it("shows and mounts Marketplace by default with no flag configured", () => {
     navigationState.search = "tab=marketplace";
+
+    renderWithI18n(<SettingsPage />);
+
+    expect(
+      screen.getByRole("tab", { name: "Marketplace" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("MarketplaceTab")).toBeInTheDocument();
+  });
+
+  it("hides Marketplace and falls back from a direct tab URL when explicitly disabled", () => {
+    navigationState.search = "tab=marketplace";
+    configStore.getState().setFeatureFlags({ [MARKETPLACE_V1_FLAG]: false });
 
     renderWithI18n(<SettingsPage />);
 
@@ -163,23 +177,12 @@ describe("SettingsPage marketplace feature flag", () => {
   // not take the manual entry points down with it.
   it("leaves the manual MCP entry point reachable when disabled", () => {
     navigationState.search = "tab=mcp";
+    configStore.getState().setFeatureFlags({ [MARKETPLACE_V1_FLAG]: false });
 
     renderWithI18n(<SettingsPage />);
 
     expect(screen.getByRole("tab", { name: "MCP" })).toBeInTheDocument();
     expect(screen.getByText("McpTab")).toBeInTheDocument();
-  });
-
-  it("shows and mounts Marketplace only when explicitly enabled", () => {
-    navigationState.search = "tab=marketplace";
-    configStore.getState().setFeatureFlags({ [MARKETPLACE_V1_FLAG]: true });
-
-    renderWithI18n(<SettingsPage />);
-
-    expect(
-      screen.getByRole("tab", { name: "Marketplace" }),
-    ).toBeInTheDocument();
-    expect(screen.getByText("MarketplaceTab")).toBeInTheDocument();
   });
 });
 
