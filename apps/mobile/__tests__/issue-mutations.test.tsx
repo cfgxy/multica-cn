@@ -78,6 +78,7 @@ describe("useCreateComment timeline cache", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     await unmount();
     queryClient.clear();
+    queryClient.unmount();
   });
 
   it("preserves truncation metadata while adding an optimistic comment", async () => {
@@ -128,5 +129,6 @@ describe("useCreateComment timeline cache", () => {
     await waitFor(() => expect(result.current.isSuccess).toBe(true));
     await unmount();
     queryClient.clear();
+    queryClient.unmount();
   });
 });
