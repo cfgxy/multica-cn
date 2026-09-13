@@ -7226,6 +7226,7 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		AgentInstructions:                instructions,
 		AgentSkills:                      convertSkillsForEnv(skills),
 		DisabledRuntimeSkills:            convertDisabledRuntimeSkillsForEnv(task.Agent, task.RuntimeID, provider),
+		AllowSubagents:                   execenv.SubagentToolsAllowed(task.Agent.RuntimeConfig),
 		Repos:                            convertReposForEnv(task.Repos),
 		ProjectID:                        task.ProjectID,
 		ProjectTitle:                     task.ProjectTitle,
@@ -8102,6 +8103,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		HandshakeTimeout:           d.cfg.CodexHandshakeTimeout,
 		ThreadHandshakeTimeout:     d.cfg.CodexThreadHandshakeTimeout,
 		ResumeSessionID:            task.PriorSessionID,
+		// runtime_config.max_turns: hard agentic-turn budget for one Execute.
+		// Zero (absent/malformed) keeps the CLI's unlimited default. Backends
+		// without native turn limits ignore it (and log), so this is safe to
+		// set per agent regardless of provider.
+		MaxTurns: execenv.MaxTurnsFromRuntimeConfig(task.Agent.RuntimeConfig),
 		// Post-gate intent: PriorSessionID here already reflects the pre-flight
 		// resume gates (a dropped resume is surfaced via the prompt instead). If it
 		// survived to here, the backend must disclose the loss when the live
@@ -8393,6 +8399,27 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			WorkDir:       env.WorkDir,
 			EnvRoot:       env.RootDir,
 			FailureReason: failureReason,
+			Usage:         usageEntries,
+		}, nil
+	case "max_turns":
+		// runtime_config.max_turns budget stop (claude error_max_turns):
+		// intentional force-stop, not a provider fault. Route as blocked with
+		// failure_reason "timeout" so the server's retryable classification
+		// auto-dispatches a continuation attempt that resumes this session;
+		// the resumed run's interruption-recovery discipline picks up the
+		// preserved worktree state. A task that exhausts every attempt's
+		// budget still fails visibly (max_attempts), never silently.
+		comment := result.Error
+		if comment == "" {
+			comment = fmt.Sprintf("%s reached the runtime_config.max_turns turn budget", provider)
+		}
+		return TaskResult{
+			Status:        "blocked",
+			Comment:       comment,
+			SessionID:     result.SessionID,
+			WorkDir:       env.WorkDir,
+			EnvRoot:       env.RootDir,
+			FailureReason: "timeout",
 			Usage:         usageEntries,
 		}, nil
 	case "idle_watchdog":
