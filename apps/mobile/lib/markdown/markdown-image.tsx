@@ -14,11 +14,11 @@
  * references using the internal `mc://file/<id>` scheme rather than
  * baking signed HTTPS URLs into the content (signed URLs expire). iOS
  * doesn't understand `mc://`, so we look the URI up in the supplied
- * `attachments` list and swap it for the matching `download_url` before
- * passing to any image API. Unmatched URIs fall through unchanged —
- * external https links and well-known schemes load directly; an
- * unknown reference fails the getSize callback and we fall back to a
- * 16:9 placeholder slot.
+ * `attachments` list and swap it for a credential-free URL (picked by
+ * `pickAttachmentImageUrl` — RUYI-141) before passing to any image API.
+ * Unmatched URIs fall through unchanged — external https links and
+ * well-known schemes load directly; an unknown reference fails the
+ * getSize callback and we fall back to a 16:9 placeholder slot.
  *
  * Cancellation: a content re-render that swaps the URI must not let the
  * previous getSize callback overwrite state — guard with a `cancelled`
@@ -29,7 +29,7 @@ import { Image as RNImage, Pressable, View } from "react-native";
 import { Image as ExpoImage } from "expo-image";
 import type { Attachment } from "@multica/core/types";
 import { matchAttachmentByURL } from "@multica/core/attachments/image-sequence";
-import { resolveAttachmentUrl } from "@/lib/attachment-url";
+import { pickAttachmentImageUrl, resolveAttachmentUrl } from "@/lib/attachment-url";
 import { useLightbox } from "./lightbox-provider";
 import { useImageSequence } from "./image-sequence";
 
@@ -54,8 +54,13 @@ export function MarkdownImage({ uri, attachments }: Props) {
     // `ImageSequenceProvider` put in the array — otherwise the lightbox could
     // not find its position and would silently drop back to a single image.
     const match = matchAttachmentByURL(uri, attachments);
+    // Priority is NOT a flat `download_url || markdown_url || url`: on a
+    // deployment without a CloudFront/S3 signer, `download_url` (and
+    // `markdown_url` without a CDN domain) is the auth-gated stable
+    // download path, which RN's image loader can't authenticate against
+    // (RUYI-141). See `pickAttachmentImageUrl` for the full rationale.
     const candidate: string | null | undefined = match
-      ? match.download_url || match.markdown_url || match.url
+      ? pickAttachmentImageUrl(match)
       : uri;
     // The backend may return a server-relative `download_url` (e.g.
     // `/api/attachments/{id}/download`) when no CloudFront signer is
