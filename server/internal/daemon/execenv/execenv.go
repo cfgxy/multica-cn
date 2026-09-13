@@ -687,14 +687,20 @@ func Prepare(params PrepareParams, logger *slog.Logger) (*Environment, error) {
 		env.QwenpawWorkspace = qwenpawWorkspace
 	}
 
-	// For Reasonix, deny the `ask` tool for this task through a project-scoped
-	// reasonix.toml. Degraded, not fatal: without it the task still runs under
-	// the backend's fail-closed question handling.
+	// For Reasonix, deny the `ask` tool — and, unless the agent allowed
+	// subagents, the task-delegation tools — for this task through a
+	// project-scoped reasonix.toml. Degraded, not fatal: without it the task
+	// still runs under the backend's fail-closed question handling.
 	if params.Provider == "reasonix" {
-		if err := writeReasonixProjectConfig(workDir, params.ReasonixEnv, manifest, logger); err != nil {
+		if err := writeReasonixProjectConfig(workDir, params.ReasonixEnv, manifest, params.Task.AllowSubagents, logger); err != nil {
 			logger.Warn("execenv: write reasonix project config failed", "error", err)
 		}
 	}
+
+	// Make unenforceable policy visible instead of silently ignored: providers
+	// without a per-task hook still see disabled skills and the subagent deny
+	// only through the prompt-layer rules.
+	warnRuntimePolicyGaps(params.Provider, params.Task, logger)
 
 	// For Cursor, materialize managed MCP into project-local config and use
 	// an isolated CURSOR_DATA_DIR for the per-workdir approval sidecar. Cursor
@@ -939,10 +945,12 @@ func Reuse(params ReuseParams, logger *slog.Logger) *Environment {
 	// prior run's reasonix.toml, so without this the next turn would run with
 	// the tool available again.
 	if params.Provider == "reasonix" {
-		if err := writeReasonixProjectConfig(params.WorkDir, params.ReasonixEnv, manifest, logger); err != nil {
+		if err := writeReasonixProjectConfig(params.WorkDir, params.ReasonixEnv, manifest, params.Task.AllowSubagents, logger); err != nil {
 			logger.Warn("execenv: refresh reasonix project config failed", "error", err)
 		}
 	}
+
+	warnRuntimePolicyGaps(params.Provider, params.Task, logger)
 
 	// Refresh (or tear down) the per-task QwenPaw workspace on reuse.
 	// Rebuild the workspace so an added/removed/edited skill is reflected.
