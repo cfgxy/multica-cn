@@ -14,7 +14,6 @@ set -u
 MAIN_ADJ=-1000
 PROTECTED_ADJ=0
 BAIT=500
-CG=/sys/fs/cgroup/system.slice/multica-daemon.service
 
 # Agent 运行时与 MCP 识别。误判方向刻意偏保护：误保一条命令无害
 # （OOM 转杀次高 badness），误杀 Agent 则中断对话。
@@ -37,19 +36,25 @@ is_protected() {
 	return 1
 }
 
+# 覆盖默认实例与全部模板实例（multica-daemon.service + multica-daemon@<profile>.service）。
+# 单元未安装或未运行时 cgroup 目录不存在，按实例跳过即可，不影响其余实例。
 while sleep 1; do
-	mainpid=$(systemctl show -p MainPID --value multica-daemon.service 2>/dev/null)
-	[ -n "${mainpid:-}" ] && [ "$mainpid" != "0" ] || continue
-	cur=$(cat "/proc/$mainpid/oom_score_adj" 2>/dev/null) || continue
-	if [ "$cur" != "$MAIN_ADJ" ]; then
-		echo "$MAIN_ADJ" > "/proc/$mainpid/oom_score_adj" 2>/dev/null
-	fi
-	while IFS= read -r pid; do
-		[ "$pid" = "$mainpid" ] && continue
-		if is_protected "$pid"; then target=$PROTECTED_ADJ; else target=$BAIT; fi
-		adj=$(cat "/proc/$pid/oom_score_adj" 2>/dev/null) || continue
-		if [ "$adj" != "$target" ]; then
-			echo "$target" > "/proc/$pid/oom_score_adj" 2>/dev/null
+	for CG in /sys/fs/cgroup/system.slice/multica-daemon*.service; do
+		[ -d "$CG" ] || continue
+		unit=${CG##*/}
+		mainpid=$(systemctl show -p MainPID --value "$unit" 2>/dev/null)
+		[ -n "${mainpid:-}" ] && [ "$mainpid" != "0" ] || continue
+		cur=$(cat "/proc/$mainpid/oom_score_adj" 2>/dev/null) || continue
+		if [ "$cur" != "$MAIN_ADJ" ]; then
+			echo "$MAIN_ADJ" > "/proc/$mainpid/oom_score_adj" 2>/dev/null
 		fi
-	done < "$CG/cgroup.procs"
+		while IFS= read -r pid; do
+			[ "$pid" = "$mainpid" ] && continue
+			if is_protected "$pid"; then target=$PROTECTED_ADJ; else target=$BAIT; fi
+			adj=$(cat "/proc/$pid/oom_score_adj" 2>/dev/null) || continue
+			if [ "$adj" != "$target" ]; then
+				echo "$target" > "/proc/$pid/oom_score_adj" 2>/dev/null
+			fi
+		done < "$CG/cgroup.procs"
+	done
 done
