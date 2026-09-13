@@ -19,6 +19,8 @@ import {
   getAutopilotQuotaBody,
   getInboxDisplayTitle,
 } from "@/lib/inbox-display";
+import { useTypeLabels } from "@/components/inbox/detail-label";
+import { timeAgo } from "@/lib/time-ago";
 import { useT } from "@/lib/use-t";
 
 function BillingRecovery({
@@ -115,7 +117,13 @@ export default function InboxNoticeDetail() {
   const webUrl = process.env.EXPO_PUBLIC_WEB_URL?.replace(/\/+$/, "");
   const billingUrl =
     webUrl && wsSlug ? `${webUrl}/${wsSlug}/settings?tab=billing` : null;
+  const typeLabels = useTypeLabels();
   const body = item ? getAutopilotQuotaBody(item) : null;
+  const originalPrompt =
+    item?.type === "quick_create_failed" ||
+    item?.type === "quick_create_unconfirmed"
+      ? (item.details?.original_prompt ?? null)
+      : null;
 
   return (
     <View className="flex-1 bg-background">
@@ -138,9 +146,7 @@ export default function InboxNoticeDetail() {
         <View className="flex-1 items-center justify-center">
           <ActivityIndicator />
         </View>
-      ) : !item ||
-        (item.type !== "autopilot_quota_exceeded" &&
-          item.type !== "autopilot_paused") ? (
+      ) : !item ? (
         <View className="px-4 py-8">
           <Text className="text-sm text-muted-foreground text-center">
             {t("detail.unavailable", "This notification is no longer available.")}
@@ -152,10 +158,29 @@ export default function InboxNoticeDetail() {
           contentContainerClassName="gap-5 px-4 py-5"
           showsVerticalScrollIndicator={false}
         >
+          {/* Type label + relative time, mirroring web's detail pane header
+              (packages/views/inbox/components/inbox-page.tsx). */}
+          <Text className="text-xs text-muted-foreground">
+            {typeLabels[item.type] ?? item.type} · {timeAgo(item.created_at)}
+          </Text>
+
           {body ? (
             <Text className="text-base leading-6 text-foreground">
               {body}
             </Text>
+          ) : null}
+
+          {/* Quick-create outcomes carry the user's original prompt so they can
+              read back what they asked for — same block web renders. */}
+          {originalPrompt ? (
+            <View className="rounded-md border border-border bg-muted/40 p-3 gap-1">
+              <Text className="text-xs font-medium text-muted-foreground">
+                {t("detail.original_input", "Original input")}
+              </Text>
+              <Text className="text-sm leading-5 text-foreground">
+                {originalPrompt}
+              </Text>
+            </View>
           ) : null}
 
           {isQuotaNotice ? (
