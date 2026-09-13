@@ -29,7 +29,7 @@
  *   - Success closes the screen without a toast (the manual form does the
  *     same); web shows a "sent" toast in its long-lived dialog.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, Pressable, ScrollView, View } from "react-native";
 import { Ionicons } from "@expo/vector-icons";
 import { useQuery } from "@tanstack/react-query";
@@ -53,8 +53,17 @@ import { squadListOptions } from "@/data/queries/squads";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useQuickCreateIssue } from "@/data/mutations/issues";
-import { useNewIssueDraftStore } from "@/data/stores/new-issue-draft-store";
-import { useQuickCreatePrefsStore } from "@/data/stores/quick-create-prefs-store";
+import {
+  getNewIssueSubmissionContextGeneration,
+  useNewIssueDraftStore,
+} from "@/data/stores/new-issue-draft-store";
+import {
+  ensureQuickCreateActorMemoryHydrated,
+  rememberQuickCreateActorAfterSuccess,
+  useQuickCreateActorMemoryHydrationStore,
+  useQuickCreateActorMemoryStore,
+} from "@/data/stores/quick-create-prefs-store";
+import { useServerStore } from "@/data/server-store";
 import {
   buildQuickCreateBody,
   resolveQuickCreateActor,
@@ -63,14 +72,56 @@ import {
 import { useActorLookup } from "@/data/use-actor-name";
 import { useT } from "@/lib/use-t";
 
+/**
+ * Bounded retries for the persisted last-actor read. A transient
+ * AsyncStorage failure is worth one more attempt; a persistent one must not
+ * spin the effect, and the flow stays usable either way (the user picks the
+ * actor explicitly).
+ */
+const MEMORY_HYDRATION_ATTEMPTS = 2;
+
 export function QuickCreatePanel() {
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
   const wsSlug = useWorkspaceStore((s) => s.currentWorkspaceSlug);
   const userId = useAuthStore((s) => s.user?.id);
   const { data: members = [] } = useQuery(memberListOptions(wsId));
-  const { data: agents = [] } = useQuery(agentListOptions(wsId));
-  const { data: squads = [] } = useQuery(squadListOptions(wsId));
+  const { data: agents = [], isSuccess: agentsLoaded } = useQuery(
+    agentListOptions(wsId),
+  );
+  const { data: squads = [], isSuccess: squadsLoaded } = useQuery(
+    squadListOptions(wsId),
+  );
   const { data: runtimes = [] } = useQuery(runtimeListOptions(wsId));
+
+  // The persisted actor memory hydrates asynchronously from AsyncStorage.
+  // Opening this panel before it lands would read an empty map, i.e. the
+  // same "no history" fall-through the loading gate below prevents for the
+  // query lists (RUYI-130).
+  //
+  // A read that FAILS is not "no history": zustand resolves rehydrate()
+  // either way and only reports the difference through hasHydrated(), so the
+  // helper returns an explicit status. A failed read keeps the seed chain's
+  // tail closed — the user picks explicitly instead of silently filing as
+  // the first visible agent — and is retried a bounded number of times.
+  const memoryStatus = useQuickCreateActorMemoryHydrationStore(
+    (s) => s.status,
+  );
+  const hydrationAttempts = useRef(0);
+  useEffect(() => {
+    if (memoryStatus === "ready") return;
+    if (hydrationAttempts.current >= MEMORY_HYDRATION_ATTEMPTS) return;
+    hydrationAttempts.current += 1;
+    // The helper publishes the outcome to the hydration store itself, so
+    // there is no component state to guard against a late resolution.
+    void ensureQuickCreateActorMemoryHydrated();
+  }, [memoryStatus]);
+
+  const actorsLoaded = agentsLoaded && squadsLoaded;
+  // The seed chain's "first visible agent" tail additionally requires the
+  // persisted memory to have actually resolved — otherwise an absent or
+  // unreadable memory is indistinguishable from "no history" and re-seeds
+  // the very downgrade RUYI-130 reported.
+  const historyResolved = memoryStatus === "ready";
 
   const memberRole = useMemo(
     () => members.find((m) => m.user_id === userId)?.role ?? null,
@@ -84,8 +135,15 @@ export function QuickCreatePanel() {
 
   const draftActor = useNewIssueDraftStore((s) => s.smartActor);
   const setSmartActor = useNewIssueDraftStore((s) => s.setSmartActor);
-  const lastActor = useQuickCreatePrefsStore((s) => s.lastActor);
-  const setLastActor = useQuickCreatePrefsStore((s) => s.setLastActor);
+  // Persisted server × workspace memory (RUYI-130). Subscribing to the map
+  // rather than reading it once is what makes the seed effect re-run when
+  // AsyncStorage hydration lands after this panel mounted.
+  const actorMemory = useQuickCreateActorMemoryStore((s) => s.byServer);
+  const activeServerId = useServerStore((s) => s.activeServerId);
+  const lastActor = useMemo(
+    () => (wsSlug ? actorMemory[activeServerId]?.[wsSlug] ?? null : null),
+    [actorMemory, activeServerId, wsSlug],
+  );
   const priority = useNewIssueDraftStore((s) => s.priority);
   const dueDate = useNewIssueDraftStore((s) => s.dueDate);
   const project = useNewIssueDraftStore((s) => s.project);
@@ -102,6 +160,8 @@ export function QuickCreatePanel() {
       [draftActor, lastActor],
       visible.agents,
       visible.squads,
+      actorsLoaded,
+      historyResolved,
     );
     if (
       resolved &&
@@ -109,12 +169,26 @@ export function QuickCreatePanel() {
     ) {
       setSmartActor(resolved);
     }
-  }, [draftActor, lastActor, visible, setSmartActor]);
+  }, [
+    draftActor,
+    lastActor,
+    visible,
+    actorsLoaded,
+    historyResolved,
+    setSmartActor,
+  ]);
 
   const actorName = useActorLookup();
   const actor = useMemo(
-    () => resolveQuickCreateActor([draftActor], visible.agents, visible.squads),
-    [draftActor, visible],
+    () =>
+      resolveQuickCreateActor(
+        [draftActor],
+        visible.agents,
+        visible.squads,
+        actorsLoaded,
+        historyResolved,
+      ),
+    [draftActor, visible, actorsLoaded, historyResolved],
   );
 
   const [prompt, setPrompt] = useState("");
@@ -172,6 +246,14 @@ export function QuickCreatePanel() {
     if (!actor || versionBlocked) return;
     const trimmed = prompt.trim();
     if (trimmed.length === 0) return;
+    // Capture the context the request is sent from — the user can dismiss
+    // this screen and switch account or workspace before the response
+    // arrives (manual form parity, see ManualCreatePanel.onSubmit).
+    const submittedServerId = useServerStore.getState().activeServerId;
+    const submittedWorkspaceSlug =
+      useWorkspaceStore.getState().currentWorkspaceSlug;
+    const submittedUserId = useAuthStore.getState().user?.id;
+    const submittedGeneration = getNewIssueSubmissionContextGeneration();
     try {
       await quickCreate.mutateAsync(
         buildQuickCreateBody({
@@ -182,7 +264,50 @@ export function QuickCreatePanel() {
           dueDate,
         }),
       );
-      setLastActor(actor);
+      // RUYI-130: remember the SUBMITTED actor per server × workspace, only
+      // after the server accepted the create and only if that context is
+      // still the active one.
+      const currentServerId = useServerStore.getState().activeServerId;
+      const currentWorkspaceSlug =
+        useWorkspaceStore.getState().currentWorkspaceSlug;
+      const currentUserId = useAuthStore.getState().user?.id;
+      if (
+        submittedWorkspaceSlug &&
+        submittedUserId &&
+        currentWorkspaceSlug &&
+        currentUserId
+      ) {
+        // Awaited, and awaited BEFORE the screen closes: an unawaited
+        // AsyncStorage write can be outlived by the process (iOS background
+        // reclaim right after a create), and the next cold start would then
+        // restore the older pick — the reported defect.
+        //
+        // Its own try/catch, because the create already succeeded. A storage
+        // failure here must not reach the submit catch below: that one
+        // reports "failed to submit" and would invite the user to file the
+        // same issue twice.
+        try {
+          await rememberQuickCreateActorAfterSuccess(
+            {
+              serverId: submittedServerId,
+              workspaceSlug: submittedWorkspaceSlug,
+              userId: submittedUserId,
+              generation: submittedGeneration,
+            },
+            {
+              serverId: currentServerId,
+              workspaceSlug: currentWorkspaceSlug,
+              userId: currentUserId,
+              generation: getNewIssueSubmissionContextGeneration(),
+            },
+            actor,
+          );
+        } catch {
+          // Losing the preference is strictly less harmful than blocking or
+          // re-reporting a create the server already accepted; the next
+          // successful create overwrites it.
+        }
+      }
       router.back();
     } catch (err) {
       // Structured 4xx bodies mirror web's in-modal error mapping; the
@@ -240,7 +365,6 @@ export function QuickCreatePanel() {
     priority,
     dueDate,
     quickCreate,
-    setLastActor,
     t,
     versionCheck,
   ]);

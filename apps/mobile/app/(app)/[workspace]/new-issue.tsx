@@ -17,7 +17,7 @@
  * Manual mode: `ManualCreatePanel` (the original form, extracted verbatim).
  * Smart mode: `QuickCreatePanel` (web AgentCreatePanel counterpart).
  */
-import { useEffect } from "react";
+import { useEffect, useLayoutEffect } from "react";
 import { View } from "react-native";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Text } from "@/components/ui/text";
@@ -38,12 +38,13 @@ export default function NewIssueModal() {
   const resetDraft = useNewIssueDraftStore((s) => s.reset);
   const { t } = useT("common");
 
-  // Draft lifecycle is owned here — once per visit, not per mode panel.
-  // Both panels read the same draft store, so a smart↔manual flip inside
-  // one visit keeps in-progress picks (web's unified-draft semantics);
-  // closing the screen still starts the next visit clean.
-  useEffect(() => {
+  // Reset before child passive effects seed Smart actor memory. Both panels
+  // still share one draft for the rest of this visit.
+  useLayoutEffect(() => {
     resetDraft();
+  }, [resetDraft]);
+
+  useEffect(() => {
     // RUYI-79 web parity: prefill the assignee with the last one submitted
     // from this server × workspace. The version guard prevents a delayed
     // AsyncStorage read from replacing a picker choice made after this reset.
