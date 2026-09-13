@@ -24,11 +24,15 @@ import {
   clearServerMemory,
   invalidateNewIssueSubmissionContext,
 } from "./stores/new-issue-draft-store";
+import { clearQuickCreateActorMemory } from "./stores/quick-create-prefs-store";
 
 interface AuthState {
   user: User | null;
   isLoading: boolean;
+  /** True while a cross-server session restoration owns the auth boundary. */
+  isServerSwitching: boolean;
   initialize: () => Promise<void>;
+  setServerSwitching: (isSwitching: boolean) => void;
   sendCode: (email: string) => Promise<void>;
   verifyCode: (email: string, code: string) => Promise<User>;
   logout: () => Promise<void>;
@@ -79,6 +83,7 @@ export const useAuthStore = create<AuthState>((set) => {
   return {
     user: null,
     isLoading: true,
+    isServerSwitching: false,
 
     initialize: async () => {
       // Reset in-memory state first: initialize() runs both on cold start and
@@ -97,6 +102,8 @@ export const useAuthStore = create<AuthState>((set) => {
         set({ user: null, isLoading: false });
       }
     },
+
+    setServerSwitching: (isSwitching) => set({ isServerSwitching: isSwitching }),
 
   sendCode: async (email) => {
     await api.sendCode(email);
@@ -124,6 +131,16 @@ export const useAuthStore = create<AuthState>((set) => {
     // Make any late create callback observe a signed-out context before the
     // asynchronous credential cleanup yields control.
     set({ user: null });
+    // RUYI-130: the smart-mode actor memory is persisted the same way and
+    // must drop with the session for the same reason. Awaited, so logout does
+    // not resolve while the previous account's pick is still on disk — and
+    // after `set({ user: null })`, so a late create callback cannot win the
+    // race and write the entry back in.
+    try {
+      await clearQuickCreateActorMemory(activeServerId);
+    } catch {
+      // Preference cleanup must not keep an authenticated session alive.
+    }
     await clearToken(activeServerId);
     api.setToken(null);
   },
