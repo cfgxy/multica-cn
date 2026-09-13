@@ -44,6 +44,27 @@ func SubagentToolsAllowed(runtimeConfig json.RawMessage) bool {
 	return cfg.AllowSubagents
 }
 
+// MaxTurnsFromRuntimeConfig reads runtime_config.max_turns: the hard agentic
+// turn budget for one backend Execute. Backends with native turn limits pass
+// it to the CLI (claude --max-turns, codebuddy); the rest ignore it and log.
+// Zero — absent, malformed, or non-positive — keeps the unlimited default so
+// an agent owner cannot accidentally freeze an agent with a bad value.
+func MaxTurnsFromRuntimeConfig(runtimeConfig json.RawMessage) int {
+	if len(runtimeConfig) == 0 {
+		return 0
+	}
+	var cfg struct {
+		MaxTurns int `json:"max_turns"`
+	}
+	if err := json.Unmarshal(runtimeConfig, &cfg); err != nil {
+		return 0
+	}
+	if cfg.MaxTurns < 0 {
+		return 0
+	}
+	return cfg.MaxTurns
+}
+
 func cleanRuntimeSkillKey(key string) (string, bool) {
 	cleaned := filepath.Clean(filepath.FromSlash(strings.TrimSpace(key)))
 	if cleaned == "." || filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {

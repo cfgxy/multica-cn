@@ -8103,6 +8103,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		HandshakeTimeout:           d.cfg.CodexHandshakeTimeout,
 		ThreadHandshakeTimeout:     d.cfg.CodexThreadHandshakeTimeout,
 		ResumeSessionID:            task.PriorSessionID,
+		// runtime_config.max_turns: hard agentic-turn budget for one Execute.
+		// Zero (absent/malformed) keeps the CLI's unlimited default. Backends
+		// without native turn limits ignore it (and log), so this is safe to
+		// set per agent regardless of provider.
+		MaxTurns:                   execenv.MaxTurnsFromRuntimeConfig(task.Agent.RuntimeConfig),
 		// Post-gate intent: PriorSessionID here already reflects the pre-flight
 		// resume gates (a dropped resume is surfaced via the prompt instead). If it
 		// survived to here, the backend must disclose the loss when the live
