@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import type { Agent, IssuePriority, Squad } from "@multica/core/types";
+import { completedAttachmentIds, type AttachmentZoneItem } from "@/lib/attachment-zone";
 import {
   buildQuickCreateBody,
   resolveQuickCreateActor,
@@ -15,7 +16,8 @@ import {
  *   - seed chain: draft → last-actor → first visible agent
  *   - payload: agent_id|squad_id + prompt + optional project/priority/due
  * Mobile skips web's data-seeds (agent_id / squad_id modal carries) and the
- * parent-issue / attachment channels — not part of the mobile v1 flow.
+ * parent-issue channel. Completed attachment IDs are passed separately from
+ * the visible prompt text.
  */
 
 let seq = 0;
@@ -281,6 +283,7 @@ describe("buildQuickCreateBody", () => {
       projectId: null,
       priority: "none",
       dueDate: null,
+      attachmentIds: [],
     });
     expect(body).toEqual({
       agent_id: "a-1",
@@ -295,6 +298,7 @@ describe("buildQuickCreateBody", () => {
       projectId: null,
       priority: "none",
       dueDate: null,
+      attachmentIds: [],
     });
     expect(body).toEqual({ squad_id: "s-1", prompt: "File the release checklist" });
   });
@@ -306,6 +310,7 @@ describe("buildQuickCreateBody", () => {
       projectId: "proj-1",
       priority: "high" as IssuePriority,
       dueDate: "2026-09-10",
+      attachmentIds: ["att-1", "att-2"],
     });
     expect(body).toEqual({
       agent_id: "a-1",
@@ -313,6 +318,49 @@ describe("buildQuickCreateBody", () => {
       project_id: "proj-1",
       priority: "high",
       due_date: "2026-09-10",
+      attachment_ids: ["att-1", "att-2"],
+    });
+  });
+
+  it("includes only completed attachment IDs", () => {
+    const attachments: AttachmentZoneItem[] = [
+      {
+        localId: "image-complete",
+        localUri: "file:///image-complete.png",
+        filename: "image-complete.png",
+        mimeType: "image/png",
+        status: "completed",
+        id: "att-image",
+      },
+      {
+        localId: "file-uploading",
+        localUri: "file:///file-uploading.pdf",
+        filename: "file-uploading.pdf",
+        mimeType: "application/pdf",
+        status: "uploading",
+      },
+      {
+        localId: "image-failed",
+        localUri: "file:///image-failed.jpg",
+        filename: "image-failed.jpg",
+        mimeType: "image/jpeg",
+        status: "failed",
+      },
+    ];
+
+    const body = buildQuickCreateBody({
+      actor: { type: "agent", id: "a-1" },
+      prompt: "Review the attachments",
+      projectId: null,
+      priority: "none",
+      dueDate: null,
+      attachmentIds: completedAttachmentIds(attachments),
+    });
+
+    expect(body).toEqual({
+      agent_id: "a-1",
+      prompt: "Review the attachments",
+      attachment_ids: ["att-image"],
     });
   });
 });
