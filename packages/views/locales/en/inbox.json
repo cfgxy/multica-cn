@@ -128,6 +128,22 @@
     },
     "label": {
       "reacted_with": "Reacted with {{emoji}}"
+    },
+    "bridge": {
+      "cross_workspace_title": "Switch workspace?",
+      "cross_workspace_message": "This notification is from workspace “{{name}}”. Open the issue there?",
+      "cross_server_title": "Switch server?",
+      "cross_server_message": "This notification is from server “{{server}}”, workspace “{{workspace}}”. Switch to open the issue there.",
+      "confirm_switch": "Switch",
+      "cancel": "Cancel",
+      "switch_failed_title": "Switch failed",
+      "switch_failed_message": "Could not switch servers.",
+      "workspace_failed_title": "Can't open notification",
+      "workspace_failed_message": "Could not switch workspaces.",
+      "retry": "Retry",
+      "unavailable_title": "Can't open notification",
+      "unavailable_message": "The server this notification came from is no longer in the server list.",
+      "legacy_unavailable_message": "This older notification doesn't identify its source server. Find the task in Inbox."
     }
   }
 }
