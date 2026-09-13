@@ -99,16 +99,20 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useQuery } from "@tanstack/react-query";
 import type { Issue, TimelineEntry } from "@multica/core/types";
+import type { TimelineTruncationKind } from "@multica/core/issues/timeline-query";
 import { COMMENT_HIGHLIGHT_TOTAL_MS } from "@multica/core/issues/comment-highlight";
 import { Text } from "@/components/ui/text";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { IssueHeaderCard } from "./issue-header-card";
 import { IssueDescription } from "./issue-description";
 import { IssueReactionRow } from "./issue-reaction-row";
 import { ActivityRow } from "./activity-row";
 import { CommentCard } from "./comment-card";
 import { useLastViewedStore } from "@/data/stores/last-viewed-store";
-import { coalesceTimeline } from "@/lib/timeline-coalesce";
-import { buildTimelineRows, type TimelineRow } from "@/lib/timeline-thread";
+import {
+  buildTimelineRowsModel,
+  type TimelineRow,
+} from "@/lib/timeline-thread";
 import { ImageSequenceProvider } from "@/lib/markdown/image-sequence";
 import { issueAttachmentsOptions } from "@/data/queries/issues";
 import { useWorkspaceStore } from "@/data/workspace-store";
@@ -116,6 +120,7 @@ import type { ImageSequenceBlock } from "@multica/core/attachments/image-sequenc
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { THEME } from "@/lib/theme";
 import { useCommentSelectStore } from "@/data/comment-select-store";
+import { useTimelineSortStore } from "@/data/stores/timeline-sort-store";
 import {
   useCommentFocusStore,
   type CommentFocusIntent,
@@ -150,6 +155,7 @@ import { useT } from "@/lib/use-t";
 interface Props {
   issue: Issue;
   entries: TimelineEntry[] | undefined;
+  truncatedKinds?: readonly TimelineTruncationKind[];
   timelineLoading: boolean;
   refreshing: boolean;
   onRefresh: () => void;
@@ -207,12 +213,14 @@ const DIVIDER_ID = "__divider__";
  *  Overflow drops the OLDEST id — the earliest thread is the one the user
  *  has had the most time to expand by hand anyway. */
 const PUBLISHED_QUEUE_MAX = 16;
+const EMPTY_ROWS: TimelineRow[] = [];
 
 export const TimelineList = forwardRef<TimelineListHandle, Props>(
   function TimelineList(
     {
       issue,
       entries,
+      truncatedKinds = [],
       timelineLoading,
       refreshing,
       onRefresh,
@@ -223,21 +231,27 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
     ref,
   ) {
   const { t } = useT("issues");
+  const { colorScheme } = useColorScheme();
   // Top-level selection subscription gates the outer "tap-outside-to-dismiss"
   // Pressable below. When null, the Pressable stays disabled and every tap
   // passes through to comment cards / chip rows / reactions normally.
   const selectingId = useCommentSelectStore((s) => s.selectingId);
 
-  // Server already returns ASC oldest-first. Pipeline:
-  //   1. coalesceTimeline → merge consecutive identical activities
-  //   2. buildTimelineRows → reorder so replies sit adjacent to their parent
-  //      and tag each reply with `replyTo` for the card to render the
-  //      "↪ Replying to" header + thread-line border. This is the mobile
-  //      flat-list interpretation of web's recursive reply tree.
-  const data = useMemo<TimelineRow[]>(() => {
-    if (!entries) return [];
-    return buildTimelineRows(coalesceTimeline(entries));
-  }, [entries]);
+  const timelineSortMode = useTimelineSortStore((state) => state.mode);
+  const setTimelineSortMode = useTimelineSortStore((state) => state.setMode);
+  const timelineSortHintSeen = useTimelineSortStore((state) => state.hintSeen);
+  const setTimelineSortHintSeen = useTimelineSortStore((state) => state.setHintSeen);
+
+  // Core owns threading, sorting, and activity coalescing. This layer only
+  // bundles Core's ordered output for the mobile flat-list presentation.
+  const timelineRowsModel = useMemo(
+    () => (entries ? buildTimelineRowsModel(entries, timelineSortMode) : null),
+    [entries, timelineSortMode],
+  );
+  const data = timelineRowsModel?.rows ?? EMPTY_ROWS;
+  const canChangeTimelineSort =
+    (timelineRowsModel?.stats.threadBlockCount ?? 0) >= 1 &&
+    (timelineRowsModel?.stats.sortableBlockCount ?? 0) >= 2;
 
   // Every image on this screen, in render order: the description first, then
   // each comment row with its replies (MUL-5752). Tapping any of them opens
@@ -905,6 +919,55 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
       <IssueHeaderCard issue={issue} />
       <IssueDescription issueId={issue.id} description={issue.description} />
       <IssueReactionRow issue={issue} />
+      {canChangeTimelineSort ? (
+        <View className="px-4 pt-3 gap-2 border-t border-border">
+          <Text className="text-xs font-medium text-muted-foreground">
+            {t("timeline.sort.label", "Comment order")}
+          </Text>
+          <Tabs
+            value={timelineSortMode}
+            onValueChange={(mode) => {
+              if (mode === "recent-comment" || mode === "created") {
+                setTimelineSortMode(mode);
+              }
+            }}
+          >
+            <TabsList accessibilityLabel={t("timeline.sort.label", "Comment order")}>
+              <TabsTrigger value="recent-comment">
+                <Text>{t("timeline.sort.recent_comment", "Recent comment")}</Text>
+              </TabsTrigger>
+              <TabsTrigger value="created">
+                <Text>{t("timeline.sort.created", "Created time")}</Text>
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+          {!timelineSortHintSeen ? (
+            <View className="flex-row items-start gap-2">
+              <Text className="flex-1 text-xs text-muted-foreground">
+                {t(
+                  "timeline.sort.hint",
+                  "Threads are ordered by their latest comment. Switch to Created time to read by thread start.",
+                )}
+              </Text>
+              <Pressable
+                accessibilityRole="button"
+                accessibilityLabel={t("timeline.sort.dismiss", "Dismiss sorting hint")}
+                hitSlop={8}
+                onPress={setTimelineSortHintSeen}
+              >
+                <Ionicons name="close" size={16} color={THEME[colorScheme].mutedForeground} />
+              </Pressable>
+            </View>
+          ) : null}
+        </View>
+      ) : null}
+      {truncatedKinds.length > 0 ? (
+        <View className="px-4 pt-3">
+          <Text className="text-xs text-muted-foreground">
+            {t("timeline.truncation.hint", "Earlier timeline content has not been loaded.")}
+          </Text>
+        </View>
+      ) : null}
       <View className="px-4 pt-4 pb-2 border-t border-border">
         <Text className="text-xs uppercase tracking-wider text-muted-foreground font-medium">
           {t("detail.activity_section", "Activity")}

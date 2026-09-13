@@ -464,10 +464,10 @@ export function SearchCommand() {
             // action matches the visible state.
             void queryClient
               .ensureQueryData(issueTimelineOptions(currentIssueId))
-              .then((entries) => {
+              .then((data) => {
                 useCommentCollapseStore
                   .getState()
-                  .collapseAll(currentIssueId, rootCommentIds(entries));
+                  .collapseAll(currentIssueId, rootCommentIds(data.entries));
                 useResolvedExpandStore.getState().collapseAll(currentIssueId);
               })
               .catch(() => {});
@@ -482,11 +482,11 @@ export function SearchCommand() {
           onSelect: () => {
             void queryClient
               .ensureQueryData(issueTimelineOptions(currentIssueId))
-              .then((entries) => {
+              .then((data) => {
                 useCommentCollapseStore.getState().expandAll(currentIssueId);
                 useResolvedExpandStore
                   .getState()
-                  .expandAll(currentIssueId, resolvedThreadRootIds(entries));
+                  .expandAll(currentIssueId, resolvedThreadRootIds(data.entries));
               })
               .catch(() => {});
             setOpen(false);

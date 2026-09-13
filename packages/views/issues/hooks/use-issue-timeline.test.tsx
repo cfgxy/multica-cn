@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
+import type { TimelineEntry } from "@multica/core/types";
+
+function timelineData(entries: TimelineEntry[] = []) {
+  return { entries, truncatedKinds: [] as ("activity" | "comment")[] };
+}
 
 // Mock @multica/core/issues/mutations to mimic TanStack Query v5's contract:
 // useMutation returns a fresh result wrapper on every render, but the
@@ -50,7 +55,7 @@ vi.mock("@multica/core/issues/mutations", () => ({
 vi.mock("@multica/core/issues/queries", () => ({
   issueTimelineOptions: (id: string) => ({
     queryKey: ["issues", "timeline", id],
-    queryFn: () => Promise.resolve([]),
+    queryFn: () => Promise.resolve(timelineData()),
   }),
   issueKeys: {
     timeline: (id: string) => ["issues", "timeline", id],
@@ -118,7 +123,7 @@ describe("useIssueTimeline", () => {
     stableHandles.deleteMutateAsync.mockClear();
     stableHandles.resolveMutateAsync.mockClear();
     stableHandles.toggleMutate.mockClear();
-    queryState.data = [];
+    queryState.data = timelineData();
     queryState.isLoading = false;
     cacheUpdates.last = null;
     cacheUpdates.invalidations = 0;
@@ -152,11 +157,11 @@ describe("useIssueTimeline", () => {
   });
 
   it("returns the timeline as a flat array directly from the query cache", () => {
-    queryState.data = [
+    queryState.data = timelineData([
       { type: "comment", id: "c1", actor_type: "member", actor_id: "u", created_at: "2026-05-06T01:00:00Z" },
       { type: "comment", id: "c2", actor_type: "member", actor_id: "u", created_at: "2026-05-06T02:00:00Z" },
       { type: "comment", id: "c3", actor_type: "member", actor_id: "u", created_at: "2026-05-06T03:00:00Z" },
-    ];
+    ]);
     const { result } = renderHook(() => useIssueTimeline("issue-1", "user-1"));
     expect(result.current.timeline.map((e) => e.id)).toEqual(["c1", "c2", "c3"]);
   });
@@ -199,7 +204,7 @@ describe("useIssueTimeline", () => {
   });
 
   it("comment:created appends the new entry to the cache", () => {
-    queryState.data = [];
+    queryState.data = timelineData();
     renderHook(() => useIssueTimeline("issue-1", "user-1"));
     const handler = wsHandlers.get("comment:created");
     act(() => {
@@ -219,15 +224,15 @@ describe("useIssueTimeline", () => {
         },
       });
     });
-    const updated = cacheUpdates.last as Array<{ id: string }>;
+    const updated = (cacheUpdates.last as { entries: Array<{ id: string }> }).entries;
     expect(updated.map((e) => e.id)).toEqual(["new-c"]);
   });
 
   it("comment:created inserts at the correct sorted position by created_at", () => {
-    queryState.data = [
+    queryState.data = timelineData([
       { type: "comment", id: "c1", actor_type: "member", actor_id: "u", created_at: "2026-05-06T01:00:00Z" },
       { type: "comment", id: "c3", actor_type: "member", actor_id: "u", created_at: "2026-05-06T03:00:00Z" },
-    ];
+    ]);
     renderHook(() => useIssueTimeline("issue-1", "user-1"));
     const handler = wsHandlers.get("comment:created");
     act(() => {
@@ -247,15 +252,15 @@ describe("useIssueTimeline", () => {
         },
       });
     });
-    const updated = cacheUpdates.last as Array<{ id: string }>;
+    const updated = (cacheUpdates.last as { entries: Array<{ id: string }> }).entries;
     expect(updated.map((e) => e.id)).toEqual(["c1", "c2", "c3"]);
   });
 
   it("comment:created re-sorts when the new entry is oldest", () => {
-    queryState.data = [
+    queryState.data = timelineData([
       { type: "comment", id: "c2", actor_type: "member", actor_id: "u", created_at: "2026-05-06T02:00:00Z" },
       { type: "comment", id: "c3", actor_type: "member", actor_id: "u", created_at: "2026-05-06T03:00:00Z" },
-    ];
+    ]);
     renderHook(() => useIssueTimeline("issue-1", "user-1"));
     const handler = wsHandlers.get("comment:created");
     act(() => {
@@ -275,12 +280,12 @@ describe("useIssueTimeline", () => {
         },
       });
     });
-    const updated = cacheUpdates.last as Array<{ id: string }>;
+    const updated = (cacheUpdates.last as { entries: Array<{ id: string }> }).entries;
     expect(updated.map((e) => e.id)).toEqual(["c1", "c2", "c3"]);
   });
 
   it("ignores WS events for other issues", () => {
-    queryState.data = [];
+    queryState.data = timelineData();
     renderHook(() => useIssueTimeline("issue-1", "user-1"));
     const handler = wsHandlers.get("comment:created");
     act(() => {
@@ -305,7 +310,7 @@ describe("useIssueTimeline", () => {
   });
 
   it("rejects a delayed comment update older than the cached revision", () => {
-    queryState.data = [{
+    queryState.data = timelineData([{
       type: "comment",
       id: "c1",
       actor_type: "member",
@@ -317,7 +322,7 @@ describe("useIssueTimeline", () => {
       revision: 3,
       reactions: [],
       attachments: [],
-    }];
+    }]);
     renderHook(() => useIssueTimeline("issue-1", "user-1"));
 
     act(() => {
@@ -343,7 +348,7 @@ describe("useIssueTimeline", () => {
   });
 
   it("preserves hydrated actor identity when applying a comment update", () => {
-    queryState.data = [
+    queryState.data = timelineData([
       {
         type: "comment",
         id: "c1",
@@ -359,7 +364,7 @@ describe("useIssueTimeline", () => {
         reactions: [],
         attachments: [],
       },
-    ];
+    ]);
     renderHook(() => useIssueTimeline("issue-1", "user-1"));
 
     act(() => {
@@ -381,17 +386,19 @@ describe("useIssueTimeline", () => {
       });
     });
 
-    expect(cacheUpdates.last).toMatchObject([
-      {
-        content: "after",
-        actor_name: "Former Member",
-        actor_avatar_url: "https://profiles.example.com/former.png",
-      },
-    ]);
+    expect(cacheUpdates.last).toMatchObject({
+      entries: [
+        {
+          content: "after",
+          actor_name: "Former Member",
+          actor_avatar_url: "https://profiles.example.com/former.png",
+        },
+      ],
+    });
   });
 
   it("refetches instead of applying an unversioned event over versioned cache state", () => {
-    queryState.data = [{
+    queryState.data = timelineData([{
       type: "comment",
       id: "c1",
       actor_type: "member",
@@ -403,7 +410,7 @@ describe("useIssueTimeline", () => {
       revision: 3,
       reactions: [],
       attachments: [],
-    }];
+    }]);
     renderHook(() => useIssueTimeline("issue-1", "user-1"));
 
     act(() => {
@@ -436,7 +443,7 @@ describe("useIssueTimeline", () => {
   // user remounts IssueDetail (the stale flag triggers a refetch), so the
   // bar/expanded view would lag the click by a navigation cycle.
   it("comment:resolved updates the matching entry in place with the new resolved fields", () => {
-    queryState.data = [
+    queryState.data = timelineData([
       {
         type: "comment",
         id: "c1",
@@ -469,7 +476,7 @@ describe("useIssueTimeline", () => {
         resolved_by_type: null,
         resolved_by_id: null,
       },
-    ];
+    ]);
     renderHook(() => useIssueTimeline("issue-1", "user-1"));
     const handler = wsHandlers.get("comment:resolved");
     expect(handler).toBeDefined();
@@ -493,14 +500,14 @@ describe("useIssueTimeline", () => {
         },
       });
     });
-    const updated = cacheUpdates.last as Array<{
+    const updated = (cacheUpdates.last as { entries: Array<{
       id: string;
       resolved_at: string | null;
       resolved_by_type: string | null;
       resolved_by_id: string | null;
       actor_name?: string;
       actor_avatar_url?: string;
-    }>;
+    }> }).entries;
     expect(updated.map((e) => e.id)).toEqual(["c1", "c2"]);
     expect(updated[0]!.resolved_at).toBe("2026-05-06T03:00:00Z");
     expect(updated[0]!.resolved_by_type).toBe("member");
@@ -514,7 +521,7 @@ describe("useIssueTimeline", () => {
   });
 
   it("comment:unresolved clears the resolved fields on the matching entry", () => {
-    queryState.data = [
+    queryState.data = timelineData([
       {
         type: "comment",
         id: "c1",
@@ -530,7 +537,7 @@ describe("useIssueTimeline", () => {
         resolved_by_type: "member",
         resolved_by_id: "u",
       },
-    ];
+    ]);
     renderHook(() => useIssueTimeline("issue-1", "user-1"));
     const handler = wsHandlers.get("comment:unresolved");
     expect(handler).toBeDefined();
@@ -554,15 +561,15 @@ describe("useIssueTimeline", () => {
         },
       });
     });
-    const updated = cacheUpdates.last as Array<{
+    const updated = (cacheUpdates.last as { entries: Array<{
       id: string;
       resolved_at: string | null;
-    }>;
+    }> }).entries;
     expect(updated[0]!.resolved_at).toBeNull();
   });
 
   it("comment:resolved ignores events from other issues", () => {
-    queryState.data = [
+    queryState.data = timelineData([
       {
         type: "comment",
         id: "c1",
@@ -578,7 +585,7 @@ describe("useIssueTimeline", () => {
         resolved_by_type: null,
         resolved_by_id: null,
       },
-    ];
+    ]);
     renderHook(() => useIssueTimeline("issue-1", "user-1"));
     const handler = wsHandlers.get("comment:resolved");
     act(() => {

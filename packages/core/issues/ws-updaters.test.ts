@@ -17,6 +17,7 @@ import {
   patchIssueProperties,
 } from "./ws-updaters";
 import { issueKeys } from "./queries";
+import type { TimelineQueryData } from "./timeline-query";
 import { labelKeys } from "../labels/queries";
 import { projectKeys } from "../projects/queries";
 import type {
@@ -32,7 +33,6 @@ import type {
   IssueUsageSummary,
   Label,
   ListIssuesCache,
-  TimelineEntry,
 } from "../types";
 
 const WS_ID = "ws-1";
@@ -859,16 +859,19 @@ describe("onIssueDeleted", () => {
 
   it("removes every cache entry scoped directly to the deleted issue", () => {
     qc.setQueryData<Issue>(issueKeys.detail(WS_ID, ISSUE_ID), baseIssue);
-    qc.setQueryData<TimelineEntry[]>(issueKeys.timeline(ISSUE_ID), [
-      {
-        type: "activity",
-        id: "activity-1",
-        actor_type: "member",
-        actor_id: "user-1",
-        action: "created",
-        created_at: "2025-01-01T00:00:00Z",
-      },
-    ]);
+    qc.setQueryData<TimelineQueryData>(issueKeys.timeline(ISSUE_ID), {
+      entries: [
+        {
+          type: "activity",
+          id: "activity-1",
+          actor_type: "member",
+          actor_id: "user-1",
+          action: "created",
+          created_at: "2025-01-01T00:00:00Z",
+        },
+      ],
+      truncatedKinds: [],
+    });
     qc.setQueryData<IssueReaction[]>(issueKeys.reactions(ISSUE_ID), [
       {
         id: "reaction-1",
@@ -921,7 +924,10 @@ describe("onIssueDeleted", () => {
     });
 
     qc.setQueryData<Issue>(issueKeys.detail(WS_ID, OTHER_ISSUE_ID), otherIssue);
-    qc.setQueryData<TimelineEntry[]>(issueKeys.timeline(OTHER_ISSUE_ID), []);
+    qc.setQueryData<TimelineQueryData>(issueKeys.timeline(OTHER_ISSUE_ID), {
+      entries: [],
+      truncatedKinds: [],
+    });
     qc.setQueryData<IssueLabelsResponse>(
       labelKeys.byIssue(WS_ID, OTHER_ISSUE_ID),
       { labels: [labelB] },
@@ -942,7 +948,10 @@ describe("onIssueDeleted", () => {
     expect(qc.getQueryData(issueKeys.detail(WS_ID, OTHER_ISSUE_ID))).toEqual(
       otherIssue,
     );
-    expect(qc.getQueryData(issueKeys.timeline(OTHER_ISSUE_ID))).toEqual([]);
+    expect(qc.getQueryData(issueKeys.timeline(OTHER_ISSUE_ID))).toEqual({
+      entries: [],
+      truncatedKinds: [],
+    });
     expect(qc.getQueryData(labelKeys.byIssue(WS_ID, OTHER_ISSUE_ID))).toEqual({
       labels: [labelB],
     });
