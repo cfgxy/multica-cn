@@ -161,3 +161,74 @@ func TestClaudeContextTokensAbsentWhenNothingReported(t *testing.T) {
 		t.Errorf("an all-zero usage report must record no context reading, got %d", contextTokens["claude-opus-5"])
 	}
 }
+
+// The gateway spelling incident (field finding 2026-09-12): assistant events
+// carry the model the gateway put in the response body (`gpt-5.6-terra`),
+// while the result event totals the same traffic under the requested variant
+// (`gpt-5.6-terra[1m]`). An exact-key fold matched nothing, so every run
+// reported zero context size, the gate read it as unknown and resumed —
+// 6510 usage rows with not one reading, the session gate (RUYI-107) starved
+// of data for its entire deployment.
+func TestClaudeContextTokensFoldAcrossModelSpellingDrift(t *testing.T) {
+	t.Parallel()
+
+	usage := map[string]TokenUsage{
+		"gpt-5.6-terra[1m]": {InputTokens: 100, OutputTokens: 10},
+		"gpt-5.6-sol":       {InputTokens: 200, OutputTokens: 20},
+	}
+	contextTokens := map[string]int64{
+		"gpt-5.6-terra": 123_456, // body spelling; totals key the [1m] variant
+		"gpt-5.6-sol":   234_567, // spelled identically in both events
+	}
+
+	foldContextTokens(usage, contextTokens)
+
+	if got := usage["gpt-5.6-terra[1m]"].ContextTokens; got != 123_456 {
+		t.Errorf("reading on the drifted spelling = %d, want 123456 folded onto the [1m] totals entry", got)
+	}
+	if got := usage["gpt-5.6-sol"].ContextTokens; got != 234_567 {
+		t.Errorf("reading on the matching spelling = %d, want 234567", got)
+	}
+}
+
+// The drift can point either way (the body may name the variant the totals
+// omit), and a model that appears in neither map must stay at zero rather
+// than lend its reading to a neighbor.
+func TestClaudeContextTokensFoldIsDirectionAgnosticAndNeverBorrows(t *testing.T) {
+	t.Parallel()
+
+	usage := map[string]TokenUsage{
+		"gpt-5.6-terra": {InputTokens: 100, OutputTokens: 10},
+		"gpt-5.6-sol":   {InputTokens: 200, OutputTokens: 20},
+	}
+	contextTokens := map[string]int64{
+		"gpt-5.6-terra[1m]":  345_678, // totals spell it without the suffix
+		"model-nowhere-else": 456_789, // matches nothing, must be dropped
+	}
+
+	foldContextTokens(usage, contextTokens)
+
+	if got := usage["gpt-5.6-terra"].ContextTokens; got != 345_678 {
+		t.Errorf("reverse-drift reading = %d, want 345678 on the plain totals entry", got)
+	}
+	if got := usage["gpt-5.6-sol"].ContextTokens; got != 0 {
+		t.Errorf("unrelated model picked up a reading: %d, want 0", got)
+	}
+}
+
+func TestNormalizeModelKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct{ in, want string }{
+		{"gpt-5.6-terra[1m]", "gpt-5.6-terra"},
+		{"GPT-5.6-Terra", "gpt-5.6-terra"},
+		{"  claude-opus-5  ", "claude-opus-5"},
+		{"claude-opus-5", "claude-opus-5"},
+		{"[1m]", ""},
+	}
+	for _, tt := range tests {
+		if got := normalizeModelKey(tt.in); got != tt.want {
+			t.Errorf("normalizeModelKey(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
