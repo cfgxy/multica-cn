@@ -9,6 +9,7 @@ import { setApiInstance } from "@multica/core/api";
 import { agentTaskSnapshotKeys, agentTasksKeys } from "@multica/core/agents/queries";
 import { useBatchDeleteIssues, useDeleteIssue } from "@multica/core/issues/mutations";
 import { issueKeys } from "@multica/core/issues/queries";
+import type { TimelineQueryData } from "@multica/core/issues/timeline-query";
 import { labelKeys } from "@multica/core/labels/queries";
 import { WorkspaceSlugProvider } from "@multica/core/paths";
 import { workspaceKeys } from "@multica/core/workspace/queries";
@@ -495,7 +496,10 @@ describe("useBatchDeleteIssues", () => {
     qc.setQueryData<Attachment[]>(issueKeys.attachments(ISSUE_ID), [
       attachment,
     ]);
-    qc.setQueryData<TimelineEntry[]>(issueKeys.timeline(ISSUE_ID), timeline);
+    qc.setQueryData<TimelineQueryData>(issueKeys.timeline(ISSUE_ID), {
+      entries: timeline,
+      truncatedKinds: [],
+    });
     qc.setQueryData<IssueLabelsResponse>(
       labelKeys.byIssue(WS_ID, ISSUE_ID),
       issueLabels,
@@ -507,9 +511,10 @@ describe("useBatchDeleteIssues", () => {
     qc.setQueryData<Attachment[]>(issueKeys.attachments(OTHER_ISSUE_ID), [
       { ...attachment, id: "attachment-2", issue_id: OTHER_ISSUE_ID },
     ]);
-    qc.setQueryData<TimelineEntry[]>(issueKeys.timeline(OTHER_ISSUE_ID), [
-      { ...timeline[0]!, id: "activity-2" },
-    ]);
+    qc.setQueryData<TimelineQueryData>(issueKeys.timeline(OTHER_ISSUE_ID), {
+      entries: [{ ...timeline[0]!, id: "activity-2" }],
+      truncatedKinds: [],
+    });
     qc.setQueryData<IssueLabelsResponse>(
       labelKeys.byIssue(WS_ID, OTHER_ISSUE_ID),
       issueLabels,
@@ -557,7 +562,10 @@ describe("useBatchDeleteIssues", () => {
       expect(qc.getQueryData(issueKeys.attachments(ISSUE_ID))).toEqual([
         attachment,
       ]);
-      expect(qc.getQueryData(issueKeys.timeline(ISSUE_ID))).toEqual(timeline);
+      expect(qc.getQueryData(issueKeys.timeline(ISSUE_ID))).toEqual({
+        entries: timeline,
+        truncatedKinds: [],
+      });
       expect(qc.getQueryData(labelKeys.byIssue(WS_ID, ISSUE_ID))).toEqual(
         issueLabels,
       );
@@ -565,9 +573,10 @@ describe("useBatchDeleteIssues", () => {
       expect(qc.getQueryData(issueKeys.attachments(OTHER_ISSUE_ID))).toEqual([
         { ...attachment, id: "attachment-2", issue_id: OTHER_ISSUE_ID },
       ]);
-      expect(qc.getQueryData(issueKeys.timeline(OTHER_ISSUE_ID))).toEqual([
-        { ...timeline[0]!, id: "activity-2" },
-      ]);
+      expect(qc.getQueryData(issueKeys.timeline(OTHER_ISSUE_ID))).toEqual({
+        entries: [{ ...timeline[0]!, id: "activity-2" }],
+        truncatedKinds: [],
+      });
       expect(qc.getQueryData(labelKeys.byIssue(WS_ID, OTHER_ISSUE_ID))).toEqual(
         issueLabels,
       );

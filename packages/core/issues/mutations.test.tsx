@@ -22,6 +22,7 @@ import {
   type IssueSortParam,
 } from "./queries";
 import { onIssueUpdated, onIssueAuxiliaryRevision } from "./ws-updaters";
+import type { TimelineQueryData } from "./timeline-query";
 import { inboxKeys } from "../inbox/queries";
 import type {
   InboxItem,
@@ -809,21 +810,24 @@ describe("comment mutations — owner revision and last activity", () => {
     qc.setQueryData<Issue>(detailKey, issue);
     qc.setQueryData<ListIssuesCache>(lastActivityKey, board);
     qc.setQueryData<ListIssuesCache>(positionKey, board);
-    qc.setQueryData<TimelineEntry[]>(issueKeys.timeline(issueId), [
-      {
-        type: "comment",
-        id: "comment-1",
-        actor_type: "member",
-        actor_id: "user-1",
-        content: "before",
-        parent_id: null,
-        comment_type: "comment",
-        reactions: [],
-        attachments: [],
-        created_at: "2026-01-01T00:00:00Z",
-        updated_at: "2026-01-01T00:00:00Z",
-      },
-    ]);
+    qc.setQueryData<TimelineQueryData>(issueKeys.timeline(issueId), {
+      entries: [
+        {
+          type: "comment",
+          id: "comment-1",
+          actor_type: "member",
+          actor_id: "user-1",
+          content: "before",
+          parent_id: null,
+          comment_type: "comment",
+          reactions: [],
+          attachments: [],
+          created_at: "2026-01-01T00:00:00Z",
+          updated_at: "2026-01-01T00:00:00Z",
+        },
+      ],
+      truncatedKinds: [],
+    });
   }
 
   it("consumes an update response's issue revision and re-sorts activity", async () => {
@@ -915,12 +919,17 @@ describe("useResolveComment", () => {
       makeComment("root2", null, null),
       makeComment("a2", "root2", "2026-01-01T00:05:00Z"),
     ];
-    qc.setQueryData<TimelineEntry[]>(issueKeys.timeline(ISSUE_ID), entries);
+    qc.setQueryData<TimelineQueryData>(issueKeys.timeline(ISSUE_ID), {
+      entries,
+      truncatedKinds: ["activity"],
+    });
   }
 
   function resolvedIds(qc: QueryClient): string[] {
-    const cache = qc.getQueryData<TimelineEntry[]>(issueKeys.timeline(ISSUE_ID)) ?? [];
-    return cache.filter((e) => e.resolved_at).map((e) => e.id).sort();
+    const entries = qc.getQueryData<TimelineQueryData>(
+      issueKeys.timeline(ISSUE_ID),
+    )?.entries ?? [];
+    return entries.filter((entry) => entry.resolved_at).map((entry) => entry.id).sort();
   }
 
   let qc: QueryClient;
@@ -951,6 +960,10 @@ describe("useResolveComment", () => {
 
     // b1 replaces a1 inside thread 1; a2 (thread 2) is untouched.
     expect(resolvedIds(qc)).toEqual(["a2", "b1"]);
+    expect(
+      qc.getQueryData<TimelineQueryData>(issueKeys.timeline(ISSUE_ID))
+        ?.truncatedKinds,
+    ).toEqual(["activity"]);
   });
 
   it("does not clear resolutions in other threads", async () => {
@@ -970,11 +983,14 @@ describe("useResolveComment", () => {
 
   it("unresolve only clears its own row, never siblings", async () => {
     // Legacy state: two resolved comments coexist in one thread.
-    qc.setQueryData<TimelineEntry[]>(issueKeys.timeline(ISSUE_ID), [
-      makeComment("root1", null, null),
-      makeComment("a1", "root1", "2026-01-01T00:01:00Z"),
-      makeComment("b1", "root1", "2026-01-01T00:02:00Z"),
-    ]);
+    qc.setQueryData<TimelineQueryData>(issueKeys.timeline(ISSUE_ID), {
+      entries: [
+        makeComment("root1", null, null),
+        makeComment("a1", "root1", "2026-01-01T00:01:00Z"),
+        makeComment("b1", "root1", "2026-01-01T00:02:00Z"),
+      ],
+      truncatedKinds: [],
+    });
 
     const { result } = renderHook(() => useResolveComment(ISSUE_ID), {
       wrapper: createWrapper(qc),
@@ -1033,7 +1049,10 @@ describe("useCreateComment — sibling caches under a shared key prefix", () => 
   });
 
   it("appends the created comment even when non-row table caches are loaded", async () => {
-    qc.setQueryData<TimelineEntry[]>(issueKeys.timeline(ISSUE_ID), []);
+    qc.setQueryData<TimelineQueryData>(issueKeys.timeline(ISSUE_ID), {
+      entries: [],
+      truncatedKinds: ["activity"],
+    });
     // Grouped rows are an infinite cache and facets a plain object — both live
     // under the `table-query` prefix next to the row pages, and neither has a
     // `rows` array.
@@ -1057,7 +1076,54 @@ describe("useCreateComment — sibling caches under a shared key prefix", () => 
     });
 
     expect(
-      qc.getQueryData<TimelineEntry[]>(issueKeys.timeline(ISSUE_ID))?.map((e) => e.id),
+      qc.getQueryData<TimelineQueryData>(issueKeys.timeline(ISSUE_ID))?.entries.map(
+        (entry) => entry.id,
+      ),
     ).toEqual(["comment-1"]);
+    expect(
+      qc.getQueryData<TimelineQueryData>(issueKeys.timeline(ISSUE_ID))
+        ?.truncatedKinds,
+    ).toEqual(["activity"]);
+  });
+
+  it("does not materialize a timeline cache when create succeeds before the timeline loads", async () => {
+    const timelineKey = issueKeys.timeline(ISSUE_ID);
+    const { result } = renderHook(() => useCreateComment(ISSUE_ID), {
+      wrapper: createWrapper(qc),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync({ content: "hello" });
+    });
+
+    expect(qc.getQueryData<TimelineQueryData>(timelineKey)).toBeUndefined();
+  });
+
+  it("invalidates when REST success crosses the comment hard cap before its WS echo", async () => {
+    const timelineKey = issueKeys.timeline(ISSUE_ID);
+    const entries: TimelineEntry[] = Array.from({ length: 2000 }, (_, index) => ({
+      type: "comment",
+      id: `existing-${index}`,
+      actor_type: "member",
+      actor_id: "member-1",
+      created_at: "2026-08-18T00:00:00Z",
+    }));
+    qc.setQueryData<TimelineQueryData>(timelineKey, {
+      entries,
+      truncatedKinds: [],
+    });
+    const invalidateSpy = vi.spyOn(qc, "invalidateQueries");
+    const { result } = renderHook(() => useCreateComment(ISSUE_ID), {
+      wrapper: createWrapper(qc),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync({ content: "hello" });
+    });
+
+    expect(
+      qc.getQueryData<TimelineQueryData>(timelineKey)?.entries,
+    ).toHaveLength(2001);
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: timelineKey });
   });
 });

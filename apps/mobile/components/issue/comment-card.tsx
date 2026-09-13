@@ -46,6 +46,7 @@ import {
   COMMENT_HIGHLIGHT_FADE_MS,
   COMMENT_HIGHLIGHT_TOTAL_MS,
 } from "@multica/core/issues/comment-highlight";
+import { latestThreadComment } from "@multica/core/issues/timeline-sort";
 import { Text } from "@/components/ui/text";
 import { ActorAvatar } from "@/components/ui/actor-avatar";
 import { useActorLookup } from "@/data/use-actor-name";
@@ -151,6 +152,10 @@ export function CommentCard({
   const isHighlighted =
     pressedEntryId === entry.id ||
     replies.some((r) => r.id === pressedEntryId);
+  const lastComment = useMemo(
+    () => latestThreadComment([entry, ...replies]) ?? entry,
+    [entry, replies],
+  );
   // Translucent primary-tinted background while ANY body inside this card
   // is in text-selection mode. Subtle visual cue that replaces the prior
   // Done pill — exit is via scroll / tab switch / selecting another body.
@@ -326,6 +331,7 @@ export function CommentCard({
           )}
           <CommentBody
             entry={entry}
+            threadLastComment={lastComment}
             issueId={issueId}
             issueIdentifier={issueIdentifier}
             onPressChange={handlePressChange}
@@ -406,6 +412,13 @@ function ResolvedThreadBar({
   }, [entry, replies, getName]);
 
   const total = 1 + replies.length;
+  const lastComment = latestThreadComment([entry, ...replies]) ?? entry;
+  const lastCommentName =
+    lastComment.actor_name ||
+    getName(
+      lastComment.actor_type as "member" | "agent" | null | undefined,
+      lastComment.actor_id,
+    );
 
   return (
     <View className="px-4">
@@ -420,18 +433,22 @@ function ResolvedThreadBar({
         )}
       >
         <Ionicons name="checkmark-circle" size={18} color={mutedFg} />
-        <Text
-          className="flex-1 text-sm text-muted-foreground"
-          numberOfLines={1}
-        >
-          {/* 单复数交给 i18next 的 count 规则，不再手写三元：中日韩没有
-              语法数，硬拼 `1 message` / `2 messages` 翻不出来。 */}
-          {t(
-            "mobile.comment.resolved_bar",
-            "Resolved · {{count}} messages by {{authors}}",
-            { count: total, authors: authorsLabel },
-          )}
-        </Text>
+        <View className="flex-1 gap-0.5">
+          <Text className="text-sm text-muted-foreground" numberOfLines={1}>
+            {/* Plurals use the i18next count rules instead of manual branching. */}
+            {t(
+              "mobile.comment.resolved_bar",
+              "Resolved · {{count}} messages by {{authors}}",
+              { count: total, authors: authorsLabel },
+            )}
+          </Text>
+          <Text className="text-xs text-muted-foreground" numberOfLines={1}>
+            {t("comment.thread.last_comment", "Last comment: {{name}} · {{time}}", {
+              name: lastCommentName,
+              time: timeAgo(lastComment.created_at),
+            })}
+          </Text>
+        </View>
         <Ionicons name="chevron-down" size={14} color={mutedFg} />
       </Pressable>
     </View>
@@ -467,6 +484,13 @@ function CollapsedRootBar({
   );
   const summary = commentSummary(entry.content);
   const total = 1 + replies.length;
+  const lastComment = latestThreadComment([entry, ...replies]) ?? entry;
+  const lastCommentName =
+    lastComment.actor_name ||
+    getName(
+      lastComment.actor_type as "member" | "agent" | null | undefined,
+      lastComment.actor_id,
+    );
 
   return (
     <View className="px-4">
@@ -511,6 +535,12 @@ function CollapsedRootBar({
             })}
           </Text>
         ) : null}
+        <Text className="text-xs text-muted-foreground">
+          {t("comment.thread.last_comment", "Last comment: {{name}} · {{time}}", {
+            name: lastCommentName,
+            time: timeAgo(lastComment.created_at),
+          })}
+        </Text>
       </Pressable>
     </View>
   );
@@ -682,12 +712,14 @@ function ReplyHighlightOverlay({ active }: { active: boolean }) {
 
 function CommentBody({
   entry,
+  threadLastComment,
   issueId,
   issueIdentifier,
   onPressChange,
   onCommentPublished,
 }: {
   entry: TimelineEntry;
+  threadLastComment?: TimelineEntry;
   issueId: string;
   issueIdentifier: string | undefined;
   onPressChange?: (entryId: string, pressed: boolean) => void;
@@ -725,6 +757,13 @@ function CommentBody({
       entry.actor_type as "member" | "agent" | null | undefined,
       entry.actor_id,
     );
+  const threadLastCommentName = threadLastComment
+    ? threadLastComment.actor_name ||
+      getName(
+        threadLastComment.actor_type as "member" | "agent" | null | undefined,
+        threadLastComment.actor_id,
+      )
+    : null;
   const edited =
     entry.updated_at &&
     entry.created_at &&
@@ -824,6 +863,14 @@ function CommentBody({
           {edited ? t("mobile.comment.edited_suffix", " · (edited)") : ""}
         </Text>
       </View>
+      {threadLastComment && threadLastCommentName ? (
+        <Text className="text-xs text-muted-foreground">
+          {t("comment.thread.last_comment", "Last comment: {{name}} · {{time}}", {
+            name: threadLastCommentName,
+            time: timeAgo(threadLastComment.created_at),
+          })}
+        </Text>
+      ) : null}
       {entry.content ? (
         <Markdown
           content={entry.content}

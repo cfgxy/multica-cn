@@ -64,6 +64,10 @@ import type {
   WorkspaceSubscriptionSummary,
 } from "@multica/core/types";
 import {
+  parseTimelineTruncatedKinds,
+  type TimelineQueryData,
+} from "@multica/core/issues/timeline-query";
+import {
   AppConfigSchema,
   AttachmentResponseSchema,
   EMPTY_APP_CONFIG,
@@ -217,10 +221,10 @@ class ApiClient {
     this.options = { ...this.options, ...options };
   }
 
-  private async fetch<T>(
+  private async fetchRaw(
     path: string,
     init: RequestInit & { signal?: AbortSignal } = {},
-  ): Promise<T> {
+  ): Promise<Response> {
     const rid = createRequestId();
     const start = Date.now();
     const method = init.method ?? "GET";
@@ -345,8 +349,16 @@ class ApiClient {
       duration: `${duration}ms`,
     });
 
-    if (res.status === 204) return undefined as T;
-    return (await res.json()) as T;
+    return res;
+  }
+
+  private async fetch<T>(
+    path: string,
+    init: RequestInit & { signal?: AbortSignal } = {},
+  ): Promise<T> {
+    const response = await this.fetchRaw(path, init);
+    if (response.status === 204) return undefined as T;
+    return (await response.json()) as T;
   }
 
   /**
@@ -723,13 +735,19 @@ class ApiClient {
   async listTimeline(
     issueId: string,
     opts?: { signal?: AbortSignal },
-  ): Promise<TimelineEntry[]> {
-    return this.fetchValidated(
-      `/api/issues/${issueId}/timeline`,
-      TimelineEntriesSchema,
-      EMPTY_TIMELINE_ENTRIES,
-      { ...opts, endpoint: "GET /api/issues/:id/timeline" },
-    );
+  ): Promise<TimelineQueryData> {
+    const response = await this.fetchRaw(`/api/issues/${issueId}/timeline`, {
+      signal: opts?.signal,
+    });
+    const raw = await response.json() as unknown;
+    return {
+      entries: parseWithFallback(raw, TimelineEntriesSchema, EMPTY_TIMELINE_ENTRIES, {
+        endpoint: "GET /api/issues/:id/timeline",
+      }),
+      truncatedKinds: parseTimelineTruncatedKinds(
+        response.headers.get("X-Timeline-Truncated"),
+      ),
+    };
   }
 
   // GET /api/issues/:id/attachments — list of file attachments hooked to
