@@ -30,7 +30,7 @@ not a Multica problem.
 
 | Library | Path | Last release | Verdict for Multica |
 |---|---|---|---|
-| [`react-native-enriched-markdown`](https://github.com/software-mansion/enriched-markdown) | A | v0.6.0 (May 2026) | **Selected for prose.** Expo officially recommends it in [Edit rich text](https://docs.expo.dev/guides/editing-richtext/) — A-tier endorsement. Software Mansion (same team as Reanimated / Gesture Handler) |
+| [`react-native-enriched-markdown`](https://github.com/software-mansion/enriched-markdown) | A | v1.0.2 (Sep 2026) | **Selected for prose.** Expo officially recommends it in [Edit rich text](https://docs.expo.dev/guides/editing-richtext/) — A-tier endorsement. The Android GitHub container has a local Fabric height-notification patch until upstream ships the equivalent fix. Software Mansion (same team as Reanimated / Gesture Handler) |
 | [`react-native-streamdown`](https://github.com/software-mansion-labs/react-native-streamdown) | A + worklets | active 2026 | Not adopted. Built on enriched-markdown, optimised for AI streaming. Web/desktop don't use a streaming-specific renderer either, mobile streaming isn't currently a top product pain |
 | [`react-native-marked`](https://github.com/gmsgowtham/react-native-marked) | B | v8.1.0 (2026-05-14) | Not adopted. v7 removed `CustomToken`, v8 added "React component embedding" but no token-level customisation. Pure `<Text>` tree → would trigger nested-text bugs |
 | [`amilmohd155/react-native-markdown`](https://github.com/amilmohd155/react-native-markdown) | B | v0.8.5 (Jan 2026) | Not adopted. Same nested-`<Text>` constraint as `react-native-marked`. 14 ⭐, single maintainer, not production-validated |
@@ -59,7 +59,7 @@ content (string)
      paragraph w/ image  → image promoted to block, text rejoins prose
      everything else     → { type:'prose', content: token.raw }
   ↓ render per-segment
-     prose  → <EnrichedMarkdownText>   path A
+     prose  → <EnrichedMarkdownText flavor="github"> → GitHub native container   path A
      code   → <CodeBlock>              path B (controlled — no CJK mixing)
      image  → <MarkdownImage>          path B (controlled — single element)
 ```
@@ -142,6 +142,25 @@ upgrade because newly-added color fields may ship light-mode defaults.
 - LaTeX not currently supported (Mermaid now is — see the segment table)
 
 ### Known limitations and mitigations
+
+**Android Fabric async-height notification (RUYI-132, 2026-09)** — comments
+select enriched-markdown's GitHub container. In v1.0.2, normal asynchronous
+`applyRenderedSegments()` invalidates the measurement cache and requests a
+layout, but only the image callback updates Fabric state. A stale container
+height can leave a following attachment list or comment at its old Y position.
+
+- **Mitigation**: `patches/react-native-enriched-markdown@1.0.2.patch` routes
+  ordinary segment, topology, and image height changes through one native
+  notification: `MeasurementStore.invalidate()` → `requestLayout()` →
+  `forceHeightRecalculationCounter` state update. `MarkdownContainerShadowNode`
+  observes that counter and marks itself dirty for a new Fabric measurement.
+- **Regression boundary**: `lib/markdown/enriched-native-contract.test.ts`
+  reads the installed native sources and verifies the actual `flavor="github"`
+  path, manager state wrapper, notification, and shadow node. It is a static
+  contract, not a visual proof; Android QA must still cover ordinary text,
+  attachments, images, code blocks, long rich text, and off-screen return.
+- **Revisit when**: upstream ships the equivalent container notification. Drop
+  the patch only after re-running the contract and Android visual regression.
 
 **Inline code chip top-heavy padding** — visible as `~13pt empty space
 above` vs `~3pt below` glyphs in chips inside CJK paragraphs (seen in
@@ -266,6 +285,7 @@ React-tree renderer:
 - `apps/mobile/lib/markdown/markdown-style.ts` — `useMarkdownStyle()` theme bridge
 - `apps/mobile/lib/markdown/code-block.tsx` — Shiki-powered code segment
 - `apps/mobile/lib/markdown/markdown-image.tsx` — lightbox-aware image segment
+- `apps/mobile/lib/markdown/enriched-native-contract.test.ts` — Android Fabric height contract for the GitHub container (RUYI-132)
 - `apps/mobile/lib/markdown/mermaid-diagram.tsx` — RN host for the mermaid segment (RUYI-80)
 - `apps/mobile/lib/markdown/mermaid-diagram.dom.tsx` — DOM component that renders mermaid (RUYI-80)
 - `apps/mobile/lib/markdown/mermaid-config.ts` — shared mermaid config + security contract (RUYI-80)
