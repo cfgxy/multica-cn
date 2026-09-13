@@ -3,6 +3,8 @@ package featureflags
 import (
 	"context"
 	"testing"
+
+	"github.com/multica-ai/multica/server/pkg/featureflag"
 )
 
 func TestResourceLabelsCompatDecisionStaysEnabled(t *testing.T) {
@@ -63,17 +65,67 @@ func TestPluginsV1DefaultsOff(t *testing.T) {
 	}
 }
 
-// The marketplace has to be published (the client fails closed on absence) and
-// off (a workspace that has not opted in must not see the tab or reach the
-// install API).
-func TestMarketplaceV1IsPublishedAndDefaultsOff(t *testing.T) {
+// The marketplace has to be published (the client fails closed on absence)
+// and on by default (Owner decision: no configuration should be required to
+// see the marketplace entry point).
+func TestMarketplaceV1IsPublishedAndDefaultsOn(t *testing.T) {
 	flags := EvaluateFrontendPublicFlags(context.Background(), nil)
 	enabled, published := flags[MarketplaceV1]
 	if !published {
 		t.Fatal("marketplace_v1 must be published so the client can read it")
 	}
-	if enabled {
-		t.Fatal("marketplace_v1 must stay disabled unless explicitly enabled")
+	if !enabled {
+		t.Fatal("marketplace_v1 must default to enabled in an empty configuration")
+	}
+}
+
+func TestMarketplacePublishV1IsPublishedAndDefaultsOn(t *testing.T) {
+	flags := EvaluateFrontendPublicFlags(context.Background(), nil)
+	enabled, published := flags[MarketplacePublishV1]
+	if !published {
+		t.Fatal("marketplace_publish_v1 must be published so the client can read it")
+	}
+	if !enabled {
+		t.Fatal("marketplace_publish_v1 must default to enabled in an empty configuration")
+	}
+}
+
+// MarketplaceV1Enabled and MarketplacePublishV1Enabled are the server-side
+// gates consulted by handlers; they must agree with the value shipped to the
+// frontend via EvaluateFrontendPublicFlags in an empty configuration.
+func TestMarketplaceGatesDefaultOnMatchFrontendFlags(t *testing.T) {
+	ctx := context.Background()
+	if !MarketplaceV1Enabled(ctx, nil) {
+		t.Fatal("MarketplaceV1Enabled must default to true in an empty configuration")
+	}
+	if !MarketplacePublishV1Enabled(ctx, nil) {
+		t.Fatal("MarketplacePublishV1Enabled must default to true in an empty configuration")
+	}
+}
+
+// An explicit override (e.g. FF_MARKETPLACE_V1=false / FF_MARKETPLACE_PUBLISH_V1=false)
+// must still be able to close the marketplace despite the new enabled-by-default
+// baseline; override priority must not change.
+func TestMarketplaceGatesExplicitOverrideStillDisables(t *testing.T) {
+	sp := featureflag.NewStaticProvider()
+	sp.Set(MarketplaceV1, featureflag.Rule{Default: false})
+	sp.Set(MarketplacePublishV1, featureflag.Rule{Default: false})
+	flags := featureflag.NewService(sp)
+	ctx := context.Background()
+
+	if MarketplaceV1Enabled(ctx, flags) {
+		t.Fatal("explicit MarketplaceV1 override to false must still disable the flag")
+	}
+	if MarketplacePublishV1Enabled(ctx, flags) {
+		t.Fatal("explicit MarketplacePublishV1 override to false must still disable the flag")
+	}
+
+	frontendFlags := EvaluateFrontendPublicFlags(ctx, flags)
+	if frontendFlags[MarketplaceV1] {
+		t.Fatal("explicit MarketplaceV1 override must also be reflected in EvaluateFrontendPublicFlags")
+	}
+	if frontendFlags[MarketplacePublishV1] {
+		t.Fatal("explicit MarketplacePublishV1 override must also be reflected in EvaluateFrontendPublicFlags")
 	}
 }
 
