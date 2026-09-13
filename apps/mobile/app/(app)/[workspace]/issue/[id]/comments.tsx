@@ -49,7 +49,6 @@ import {
 import { useActorLookup } from "@/data/use-actor-name";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { buildTimelineRows } from "@/lib/timeline-thread";
-import { coalesceTimeline } from "@/lib/timeline-coalesce";
 import {
   buildCommentDirectory,
   filterCommentDirectory,
@@ -66,7 +65,7 @@ export default function IssueCommentsDirectoryRoute() {
   const { t } = useT("issues");
   const { id } = useLocalSearchParams<{ id: string }>();
   const wsId = useWorkspaceStore((s) => s.currentWorkspaceId);
-  const { data: entries, isLoading } = useQuery(
+  const { data: timelineData, isLoading } = useQuery(
     issueTimelineOptions(wsId, id),
   );
   const { getName } = useActorLookup();
@@ -79,9 +78,9 @@ export default function IssueCommentsDirectoryRoute() {
   const [query, setQuery] = useState("");
 
   const items = useMemo(() => {
-    if (!entries) return [];
-    return buildCommentDirectory(buildTimelineRows(coalesceTimeline(entries)));
-  }, [entries]);
+    if (!timelineData) return [];
+    return buildCommentDirectory(buildTimelineRows(timelineData.entries));
+  }, [timelineData]);
 
   // Resolve author display names once; the filter matches on them too.
   const authorNames = useMemo(() => {

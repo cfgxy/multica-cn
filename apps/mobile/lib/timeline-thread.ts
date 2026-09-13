@@ -27,7 +27,12 @@
  * latest-reply ordering as web/desktop so all clients place stale threads at
  * the same point in the timeline.
  */
-import { sortTimelineEntriesForThreadedDisplay } from "@multica/core/issues/timeline-sort";
+import {
+  buildTimelineModel,
+  sortTimelineEntriesAsc,
+  type TimelineModelStats,
+  type TimelineSortMode,
+} from "@multica/core/issues/timeline-sort";
 import type { TimelineEntry } from "@multica/core/types";
 
 export interface TimelineRow {
@@ -37,10 +42,17 @@ export interface TimelineRow {
   replies: TimelineEntry[];
 }
 
-export function buildTimelineRows(
+export interface TimelineRowsModel {
+  rows: TimelineRow[];
+  stats: TimelineModelStats;
+}
+
+export function buildTimelineRowsModel(
   entries: TimelineEntry[],
-): TimelineRow[] {
-  const displayEntries = sortTimelineEntriesForThreadedDisplay(entries);
+  mode: TimelineSortMode = "recent-comment",
+): TimelineRowsModel {
+  const timelineModel = buildTimelineModel(entries, mode);
+  const displayEntries = timelineModel.entries;
   const commentIds = new Set<string>();
   for (const e of displayEntries) {
     if (e.type === "comment") commentIds.add(e.id);
@@ -80,12 +92,22 @@ export function buildTimelineRows(
         queue.push(child.id);
       }
     }
-    return out;
+    return sortTimelineEntriesAsc(out);
   }
 
-  return topLevel.map((entry) => ({
-    entry,
-    replies:
-      entry.type === "comment" ? collectDescendants(entry.id) : [],
-  }));
+  return {
+    rows: topLevel.map((entry) => ({
+      entry,
+      replies:
+        entry.type === "comment" ? collectDescendants(entry.id) : [],
+    })),
+    stats: timelineModel.stats,
+  };
+}
+
+export function buildTimelineRows(
+  entries: TimelineEntry[],
+  mode: TimelineSortMode = "recent-comment",
+): TimelineRow[] {
+  return buildTimelineRowsModel(entries, mode).rows;
 }

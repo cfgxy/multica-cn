@@ -1,5 +1,6 @@
 import { QueryClient } from "@tanstack/react-query";
 import type { Issue, IssueReaction, TimelineEntry } from "@multica/core/types";
+import type { TimelineQueryData } from "@multica/core/issues/timeline-query";
 import { describe, expect, it, vi } from "vitest";
 
 import { issueKeys } from "@/data/queries/issue-keys";
@@ -13,6 +14,10 @@ import {
   removeIssueReaction,
   replaceCommentTimelineEntry,
 } from "./issue-ws-updaters";
+
+function timelineData(entries: TimelineEntry[]): TimelineQueryData {
+  return { entries, truncatedKinds: [] };
+}
 
 describe("invalidateIssueAfterReconnect", () => {
   it("invalidates attachments together with the issue and task caches", () => {
@@ -83,7 +88,7 @@ describe("mobile issue revision gates", () => {
       revision: 5,
       reactions: [],
     } as TimelineEntry;
-    qc.setQueryData<TimelineEntry[]>(key, [current]);
+    qc.setQueryData<TimelineQueryData>(key, timelineData([current]));
 
     replaceCommentTimelineEntry(qc, wsId, issueId, {
       ...current,
@@ -98,7 +103,7 @@ describe("mobile issue revision gates", () => {
       emoji: "👍",
       created_at: "2026-01-01T00:00:00Z",
     }, 4);
-    expect(qc.getQueryData<TimelineEntry[]>(key)?.[0]).toMatchObject({
+    expect(qc.getQueryData<TimelineQueryData>(key)?.entries[0]).toMatchObject({
       content: "revision 5",
       revision: 5,
       reactions: [],
@@ -109,7 +114,7 @@ describe("mobile issue revision gates", () => {
       content: "revision 6",
       revision: 6,
     });
-    expect(qc.getQueryData<TimelineEntry[]>(key)?.[0]).toMatchObject({
+    expect(qc.getQueryData<TimelineQueryData>(key)?.entries[0]).toMatchObject({
       content: "revision 6",
       revision: 6,
     });
@@ -118,7 +123,7 @@ describe("mobile issue revision gates", () => {
   it("preserves hydrated actor identity when replacing a comment snapshot", () => {
     const qc = new QueryClient();
     const key = issueKeys.timeline(wsId, issueId);
-    qc.setQueryData<TimelineEntry[]>(key, [
+    qc.setQueryData<TimelineQueryData>(key, timelineData([
       {
         type: "comment",
         id: "comment-1",
@@ -130,7 +135,7 @@ describe("mobile issue revision gates", () => {
         content: "before",
         revision: 1,
       },
-    ]);
+    ]));
 
     replaceCommentTimelineEntry(qc, wsId, issueId, {
       type: "comment",
@@ -142,7 +147,7 @@ describe("mobile issue revision gates", () => {
       revision: 2,
     });
 
-    expect(qc.getQueryData<TimelineEntry[]>(key)?.[0]).toMatchObject({
+    expect(qc.getQueryData<TimelineQueryData>(key)?.entries[0]).toMatchObject({
       content: "after",
       actor_name: "Former Member",
       actor_avatar_url: "https://profiles.example.com/former.png",

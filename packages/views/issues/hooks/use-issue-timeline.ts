@@ -36,6 +36,13 @@ import {
 } from "@multica/core/issues/mutations";
 import { sortTimelineEntriesAsc } from "@multica/core/issues/timeline-sort";
 import {
+  crossedTimelineHardCap,
+  effectiveTruncatedKinds,
+  updateTimelineEntries,
+  type TimelineQueryData,
+  type TimelineTruncationKind,
+} from "@multica/core/issues/timeline-query";
+import {
   unhandledCommentTriggerOutcomes,
   mentionLabelsByTarget,
 } from "@multica/core/issues/comment-trigger-outcomes";
@@ -44,7 +51,7 @@ import { toast } from "sonner";
 import { useT } from "../../i18n";
 import { blockedShortReasonLabel } from "../blocked-trigger-copy";
 
-type TLCache = TimelineEntry[];
+type TLCache = TimelineQueryData;
 
 function commentToTimelineEntry(c: Comment): TimelineEntry {
   return {
@@ -84,25 +91,55 @@ function applyCommentSnapshot(
 ) {
   let missingRevision = false;
   qc.setQueryData<TLCache>(issueKeys.timeline(issueId), (old) =>
-    old?.map((entry) => {
-      if (entry.id !== comment.id) return entry;
-      if (entry.revision !== undefined && comment.revision === undefined) {
-        missingRevision = true;
-        return entry;
-      }
-      return acceptsCommentRevision(entry, comment)
-        ? {
-            ...commentToTimelineEntry(comment),
-            actor_name: entry.actor_name,
-            actor_avatar_url: entry.actor_avatar_url,
-          }
-        : entry;
-    }),
+    updateTimelineEntries(old, (entries) =>
+      entries.map((entry) => {
+        if (entry.id !== comment.id) return entry;
+        if (entry.revision !== undefined && comment.revision === undefined) {
+          missingRevision = true;
+          return entry;
+        }
+        return acceptsCommentRevision(entry, comment)
+          ? {
+              ...commentToTimelineEntry(comment),
+              actor_name: entry.actor_name,
+              actor_avatar_url: entry.actor_avatar_url,
+            }
+          : entry;
+      }),
+    ),
   );
   if (missingRevision) {
     // During a rolling deployment, an old server may emit an unversioned
     // snapshot after this cache has already observed a versioned one. Never
     // overwrite the ordered value; refetch from the authoritative API instead.
+    qc.invalidateQueries({ queryKey: issueKeys.timeline(issueId) });
+  }
+}
+
+function timelineTruncationKind(entry: TimelineEntry): TimelineTruncationKind | null {
+  return entry.type === "comment" || entry.type === "activity" ? entry.type : null;
+}
+
+function appendTimelineEntry(
+  qc: QueryClient,
+  issueId: string,
+  entry: TimelineEntry,
+) {
+  let crossedKind: TimelineTruncationKind | null = null;
+  qc.setQueryData<TLCache>(issueKeys.timeline(issueId), (old) => {
+    if (!old || old.entries.some((existing) => existing.id === entry.id)) return old;
+    const nextEntries = sortTimelineEntriesAsc([...old.entries, entry]);
+    const kind = timelineTruncationKind(entry);
+    if (
+      kind &&
+      !old.truncatedKinds.includes(kind) &&
+      crossedTimelineHardCap(old.entries, nextEntries, kind)
+    ) {
+      crossedKind = kind;
+    }
+    return { ...old, entries: nextEntries };
+  });
+  if (crossedKind) {
     qc.invalidateQueries({ queryKey: issueKeys.timeline(issueId) });
   }
 }
@@ -114,7 +151,8 @@ export function useIssueTimeline(issueId: string, userId?: string) {
   const query = useQuery(issueTimelineOptions(issueId));
   const { data, isLoading: loading } = query;
 
-  const timeline = useMemo<TimelineEntry[]>(() => data ?? [], [data]);
+  const timeline = useMemo<TimelineEntry[]>(() => data?.entries ?? [], [data]);
+  const truncatedKinds = useMemo(() => effectiveTruncatedKinds(data), [data]);
 
   // Stable mutation handles. TanStack v5 returns a fresh result wrapper from
   // useMutation per render, but the inner mutateAsync / mutate functions are
@@ -143,12 +181,7 @@ export function useIssueTimeline(issueId: string, userId?: string) {
       (payload: unknown) => {
         const { comment } = payload as CommentCreatedPayload;
         if (comment.issue_id !== issueId) return;
-        qc.setQueryData<TLCache>(issueKeys.timeline(issueId), (old) => {
-          const entry = commentToTimelineEntry(comment);
-          if (!old) return [entry];
-          if (old.some((e) => e.id === comment.id)) return old;
-          return sortTimelineEntriesAsc([...old, entry]);
-        });
+        appendTimelineEntry(qc, issueId, commentToTimelineEntry(comment));
       },
       [qc, issueId],
     ),
@@ -210,18 +243,20 @@ export function useIssueTimeline(issueId: string, userId?: string) {
           let changed = true;
           while (changed) {
             changed = false;
-            for (const e of old) {
-              if (
-                e.parent_id &&
-                idsToRemove.has(e.parent_id) &&
-                !idsToRemove.has(e.id)
-              ) {
-                idsToRemove.add(e.id);
-                changed = true;
-              }
+          for (const entry of old.entries) {
+            if (
+              entry.parent_id &&
+              idsToRemove.has(entry.parent_id) &&
+              !idsToRemove.has(entry.id)
+            ) {
+              idsToRemove.add(entry.id);
+              changed = true;
             }
           }
-          return old.filter((e) => !idsToRemove.has(e.id));
+        }
+          return updateTimelineEntries(old, (entries) =>
+            entries.filter((entry) => !idsToRemove.has(entry.id)),
+          );
         });
       },
       [qc, issueId],
@@ -236,11 +271,7 @@ export function useIssueTimeline(issueId: string, userId?: string) {
         if (p.issue_id !== issueId) return;
         const entry = p.entry;
         if (!entry || !entry.id) return;
-        qc.setQueryData<TLCache>(issueKeys.timeline(issueId), (old) => {
-          if (!old) return [entry];
-          if (old.some((e) => e.id === entry.id)) return old;
-          return sortTimelineEntriesAsc([...old, entry]);
-        });
+        appendTimelineEntry(qc, issueId, entry);
       },
       [qc, issueId],
     ),
@@ -254,25 +285,27 @@ export function useIssueTimeline(issueId: string, userId?: string) {
         if (issue_id !== issueId) return;
         let missingRevision = false;
         qc.setQueryData<TLCache>(issueKeys.timeline(issueId), (old) =>
-          old?.map((e) => {
-            if (e.id !== reaction.comment_id) return e;
-            if (comment_revision === undefined && e.revision !== undefined) {
-              missingRevision = true;
-              return e;
-            }
-            if (
-              comment_revision !== undefined &&
-              e.revision !== undefined &&
-              comment_revision < e.revision
-            ) return e;
-            const existing = e.reactions ?? [];
-            if (existing.some((r) => r.id === reaction.id)) return e;
-            return {
-              ...e,
-              revision: comment_revision ?? e.revision,
-              reactions: [...existing, reaction],
-            };
-          }),
+          updateTimelineEntries(old, (entries) =>
+            entries.map((entry) => {
+              if (entry.id !== reaction.comment_id) return entry;
+              if (comment_revision === undefined && entry.revision !== undefined) {
+                missingRevision = true;
+                return entry;
+              }
+              if (
+                comment_revision !== undefined &&
+                entry.revision !== undefined &&
+                comment_revision < entry.revision
+              ) return entry;
+              const existing = entry.reactions ?? [];
+              if (existing.some((reactionEntry) => reactionEntry.id === reaction.id)) return entry;
+              return {
+                ...entry,
+                revision: comment_revision ?? entry.revision,
+                reactions: [...existing, reaction],
+              };
+            }),
+          ),
         );
         if (missingRevision) {
           qc.invalidateQueries({ queryKey: issueKeys.timeline(issueId) });
@@ -290,30 +323,32 @@ export function useIssueTimeline(issueId: string, userId?: string) {
         if (p.issue_id !== issueId) return;
         let missingRevision = false;
         qc.setQueryData<TLCache>(issueKeys.timeline(issueId), (old) =>
-          old?.map((e) => {
-            if (e.id !== p.comment_id) return e;
-            if (p.comment_revision === undefined && e.revision !== undefined) {
-              missingRevision = true;
-              return e;
-            }
-            if (
-              p.comment_revision !== undefined &&
-              e.revision !== undefined &&
-              p.comment_revision < e.revision
-            ) return e;
-            return {
-              ...e,
-              revision: p.comment_revision ?? e.revision,
-              reactions: (e.reactions ?? []).filter(
-                (r) =>
-                  !(
-                    r.emoji === p.emoji &&
-                    r.actor_type === p.actor_type &&
-                    r.actor_id === p.actor_id
-                  ),
-              ),
-            };
-          }),
+          updateTimelineEntries(old, (entries) =>
+            entries.map((entry) => {
+              if (entry.id !== p.comment_id) return entry;
+              if (p.comment_revision === undefined && entry.revision !== undefined) {
+                missingRevision = true;
+                return entry;
+              }
+              if (
+                p.comment_revision !== undefined &&
+                entry.revision !== undefined &&
+                p.comment_revision < entry.revision
+              ) return entry;
+              return {
+                ...entry,
+                revision: p.comment_revision ?? entry.revision,
+                reactions: (entry.reactions ?? []).filter(
+                  (reaction) =>
+                    !(
+                      reaction.emoji === p.emoji &&
+                      reaction.actor_type === p.actor_type &&
+                      reaction.actor_id === p.actor_id
+                    ),
+                ),
+              };
+            }),
+          ),
         );
         if (missingRevision) {
           qc.invalidateQueries({ queryKey: issueKeys.timeline(issueId) });
@@ -531,6 +566,7 @@ export function useIssueTimeline(issueId: string, userId?: string) {
 
   return {
     timeline: optimisticTimeline,
+    truncatedKinds,
     loading,
     submitComment,
     submitReply,

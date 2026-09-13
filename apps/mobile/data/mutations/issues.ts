@@ -1,8 +1,7 @@
 /**
  * Comment creation mutation. Mirrors the optimistic + invalidate pattern of
  * apps/mobile/data/mutations/inbox.ts:17 — operates on the flat
- * `TimelineEntry[]` timeline cache (ASC, oldest first; server-side
- * pagination was dropped in #2322).
+ * `TimelineQueryData` cache whose raw entries remain ASC oldest-first.
  *
  * Optimistic strategy:
  *   - Cancel timeline refetches.
@@ -25,6 +24,11 @@ import type {
   TimelineEntry,
   UpdateIssueRequest,
 } from "@multica/core/types";
+import { sortTimelineEntriesAsc } from "@multica/core/issues/timeline-sort";
+import {
+  updateTimelineEntries,
+  type TimelineQueryData,
+} from "@multica/core/issues/timeline-query";
 import i18n from "i18next";
 import { api } from "@/data/api";
 import type { QuickCreateIssueRequest } from "@/data/api";
@@ -86,7 +90,7 @@ export function useCreateComment(issueId: string) {
     onMutate: async ({ content, parentId }) => {
       const key = issueKeys.timeline(wsId, issueId);
       await qc.cancelQueries({ queryKey: key });
-      const prev = qc.getQueryData<TimelineEntry[]>(key);
+      const prev = qc.getQueryData<TimelineQueryData>(key);
       if (!userId) return { prev, key, optimisticId: null };
 
       const optimisticId = `optimistic-${Date.now()}`;
@@ -104,9 +108,10 @@ export function useCreateComment(issueId: string) {
         attachments: [],
       };
 
-      // ASC list: new comment goes to the end (newest position on screen).
-      qc.setQueryData<TimelineEntry[]>(key, (old) =>
-        old ? [...old, optimistic] : [optimistic],
+      qc.setQueryData<TimelineQueryData>(key, (old) =>
+        updateTimelineEntries(old, (entries) =>
+          sortTimelineEntriesAsc([...entries, optimistic]),
+        ),
       );
 
       return { prev, key, optimisticId };
@@ -157,9 +162,12 @@ export function discardFailedComment(
   issueId: string,
   optimisticId: string,
 ) {
-  qc.setQueryData<TimelineEntry[]>(
+  qc.setQueryData<TimelineQueryData>(
     issueKeys.timeline(wsId, issueId),
-    (old) => (old ? old.filter((e) => e.id !== optimisticId) : old),
+    (old) => updateTimelineEntries(
+      old,
+      (entries) => entries.filter((entry) => entry.id !== optimisticId),
+    ),
   );
   useFailedCommentsStore.getState().clear(optimisticId);
 }
@@ -198,31 +206,32 @@ export function useToggleCommentReaction(issueId: string) {
     onMutate: async ({ commentId, emoji, existing }) => {
       const key = issueKeys.timeline(wsId, issueId);
       await qc.cancelQueries({ queryKey: key });
-      const prev = qc.getQueryData<TimelineEntry[]>(key);
+      const prev = qc.getQueryData<TimelineQueryData>(key);
       if (!userId) return { prev, key };
 
-      qc.setQueryData<TimelineEntry[]>(key, (old) => {
-        if (!old) return old;
-        return old.map((entry) => {
-          if (entry.id !== commentId) return entry;
-          const reactions = entry.reactions ?? [];
-          if (existing) {
-            return {
-              ...entry,
-              reactions: reactions.filter((r) => r.id !== existing.id),
+      qc.setQueryData<TimelineQueryData>(key, (old) =>
+        updateTimelineEntries(old, (entries) =>
+          entries.map((entry) => {
+            if (entry.id !== commentId) return entry;
+            const reactions = entry.reactions ?? [];
+            if (existing) {
+              return {
+                ...entry,
+                reactions: reactions.filter((reaction) => reaction.id !== existing.id),
+              };
+            }
+            const optimistic: Reaction = {
+              id: `optimistic-${emoji}-${Date.now()}`,
+              comment_id: commentId,
+              actor_type: "member",
+              actor_id: userId,
+              emoji,
+              created_at: new Date().toISOString(),
             };
-          }
-          const optimistic: Reaction = {
-            id: `optimistic-${emoji}-${Date.now()}`,
-            comment_id: commentId,
-            actor_type: "member",
-            actor_id: userId,
-            emoji,
-            created_at: new Date().toISOString(),
-          };
-          return { ...entry, reactions: [...reactions, optimistic] };
-        });
-      });
+            return { ...entry, reactions: [...reactions, optimistic] };
+          }),
+        ),
+      );
       return { prev, key };
     },
     onError: (_err, _vars, ctx) => {
@@ -269,29 +278,31 @@ export function useEditComment(issueId: string) {
       content: string;
       attachmentIds?: string[];
     }) => {
-      const timeline = qc.getQueryData<TimelineEntry[]>(
+      const timeline = qc.getQueryData<TimelineQueryData>(
         issueKeys.timeline(wsId, issueId),
       );
       return api.updateComment(
         commentId,
         content,
         attachmentIds,
-        commentContentFromTimeline(timeline, commentId),
+        commentContentFromTimeline(timeline?.entries, commentId),
       );
     },
     onMutate: async ({ commentId, content }) => {
       const key = issueKeys.timeline(wsId, issueId);
       await qc.cancelQueries({ queryKey: key });
-      const prev = qc.getQueryData<TimelineEntry[]>(key);
-      qc.setQueryData<TimelineEntry[]>(key, (old) =>
-        old?.map((entry) =>
-          entry.type === "comment" && entry.id === commentId
-            ? {
-                ...entry,
-                content,
-                updated_at: new Date().toISOString(),
-              }
-            : entry,
+      const prev = qc.getQueryData<TimelineQueryData>(key);
+      qc.setQueryData<TimelineQueryData>(key, (old) =>
+        updateTimelineEntries(old, (entries) =>
+          entries.map((entry) =>
+            entry.type === "comment" && entry.id === commentId
+              ? {
+                  ...entry,
+                  content,
+                  updated_at: new Date().toISOString(),
+                }
+              : entry,
+          ),
         ),
       );
       return { prev, key };
@@ -332,14 +343,16 @@ export function useDeleteComment(issueId: string) {
     onMutate: async (commentId) => {
       const key = issueKeys.timeline(wsId, issueId);
       await qc.cancelQueries({ queryKey: key });
-      const prev = qc.getQueryData<TimelineEntry[]>(key);
-      qc.setQueryData<TimelineEntry[]>(key, (old) =>
-        old?.filter(
-          (entry) =>
-            !(
-              entry.type === "comment" &&
-              (entry.id === commentId || entry.parent_id === commentId)
-            ),
+      const prev = qc.getQueryData<TimelineQueryData>(key);
+      qc.setQueryData<TimelineQueryData>(key, (old) =>
+        updateTimelineEntries(old, (entries) =>
+          entries.filter(
+            (entry) =>
+              !(
+                entry.type === "comment" &&
+                (entry.id === commentId || entry.parent_id === commentId)
+              ),
+          ),
         ),
       );
       return { prev, key };
@@ -382,13 +395,15 @@ export function useResolveComment(issueId: string) {
     onMutate: async ({ commentId, resolved }) => {
       const key = issueKeys.timeline(wsId, issueId);
       await qc.cancelQueries({ queryKey: key });
-      const prev = qc.getQueryData<TimelineEntry[]>(key);
+      const prev = qc.getQueryData<TimelineQueryData>(key);
       const now = resolved ? new Date().toISOString() : null;
-      qc.setQueryData<TimelineEntry[]>(key, (old) =>
-        old?.map((entry) =>
-          entry.type === "comment" && entry.id === commentId
-            ? { ...entry, resolved_at: now }
-            : entry,
+      qc.setQueryData<TimelineQueryData>(key, (old) =>
+        updateTimelineEntries(old, (entries) =>
+          entries.map((entry) =>
+            entry.type === "comment" && entry.id === commentId
+              ? { ...entry, resolved_at: now }
+              : entry,
+          ),
         ),
       );
       return { prev, key };

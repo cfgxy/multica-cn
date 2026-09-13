@@ -43,6 +43,7 @@ import { useCommentCollapseStore, useCommentDraftStore } from "@multica/core/iss
 import { useT } from "../../i18n";
 import { CommentsFoldBar } from "./resolved-thread-bar";
 import { deriveThreadResolution } from "./thread-utils";
+import { latestThreadComment } from "@multica/core/issues/timeline-sort";
 import { RevisionConflictCompare } from "./revision-conflict-compare";
 
 const highlightedCommentBackgroundClass =
@@ -901,6 +902,10 @@ function CommentCardImpl({
   const replyCount = allNestedReplies.length;
   const contentPreview = (entry.content ?? "").replace(/\n/g, " ").slice(0, 80);
   const reactions = entry.reactions ?? [];
+  const lastComment = latestThreadComment([entry, ...allNestedReplies]) ?? entry;
+  const lastCommentName =
+    lastComment.actor_name ||
+    getActorName(lastComment.actor_type, lastComment.actor_id);
 
   const isHighlighted = highlightedCommentId === entry.id;
 
@@ -1084,6 +1089,12 @@ function CommentCardImpl({
                   />
                 </div>
               )}
+            </div>
+            <div className="mt-1 pl-10 max-md:pl-0 text-caption text-muted-foreground">
+              {t(($) => $.comment.thread.last_comment, {
+                name: lastCommentName,
+                time: timeAgo(lastComment.created_at),
+              })}
             </div>
           </StickyHeaderShell>
 

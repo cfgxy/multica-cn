@@ -439,7 +439,17 @@
     "workdir_path_unavailable": "まだローカルの作業ディレクトリがありません。ローカルエージェントがこのタスクを実行していません"
   },
   "timeline": {
-    "loading": "読み込み中..."
+    "loading": "読み込み中...",
+    "sort": {
+      "label": "コメントの並び順",
+      "recent_comment": "最新コメント",
+      "created": "作成日時",
+      "hint": "スレッドは最後のコメント順に並びます。作成日時に切り替えると、スレッドの開始順に読めます。",
+      "dismiss": "並び順のヒントを閉じる"
+    },
+    "truncation": {
+      "hint": "古いタイムラインの内容はまだ読み込まれていません。"
+    }
   },
   "activity": {
     "created": "このタスクを作成しました",
@@ -501,6 +511,9 @@
     "send_reply_failed": "返信を送信できませんでした",
     "delete_failed": "コメントを削除できませんでした",
     "reply_count_other": "返信 {{count}} 件",
+    "thread": {
+      "last_comment": "最後のコメント：{{name}} · {{time}}"
+    },
     "leave_comment_placeholder": "コメントを残す...",
     "send_tooltip": "送信",
     "trigger_source_issue_assignee": "担当",
