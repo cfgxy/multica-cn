@@ -15,15 +15,23 @@
  * shared logic, own the UI).
  *
  * The URIs are resolved the same way `MarkdownImage` resolves the one it
- * renders — same attachment match, same `resolveAttachmentUrl` pass — so the
- * URI a tap reports is the one the sequence holds.
+ * renders — same attachment match, same `pickAttachmentImageUrl` +
+ * `resolveAttachmentUrl` pass — so the URI a tap reports is the one the
+ * sequence holds. `collectImageSequence`'s own `item.url` (shared with
+ * web/desktop) still prefers `download_url` unconditionally, which is the
+ * auth-gated stable path on a signer-less deployment (RUYI-141); re-picking
+ * from `item.attachment` here keeps mobile's sequence URIs loadable without
+ * touching that shared web/desktop priority.
  */
 import { createContext, use, useMemo, type ReactNode } from "react";
 import {
   collectImageSequence,
   type ImageSequenceBlock,
 } from "@multica/core/attachments/image-sequence";
-import { resolveAttachmentUrl } from "@/lib/attachment-url";
+import {
+  pickAttachmentImageUrl,
+  resolveAttachmentUrl,
+} from "@/lib/attachment-url";
 
 const ImageSequenceContext = createContext<readonly string[]>([]);
 
@@ -44,9 +52,12 @@ export function ImageSequenceProvider({
 }) {
   const uris = useMemo(
     () =>
-      collectImageSequence(blocks).map(
-        (item) => resolveAttachmentUrl(item.url) ?? item.url,
-      ),
+      collectImageSequence(blocks).map((item) => {
+        const url = item.attachment
+          ? pickAttachmentImageUrl(item.attachment)
+          : item.url;
+        return resolveAttachmentUrl(url) ?? url;
+      }),
     [blocks],
   );
   return (
