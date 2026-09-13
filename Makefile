@@ -1,4 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev daemon-build daemon-install daemon-update daemon-preflight
+.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev daemon-build daemon-install daemon-update daemon-preflight mcp-install
 
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
@@ -186,6 +186,13 @@ daemon-update: daemon-build ## Update the daemon binary only, then graceful rest
 	install -m755 server/bin/multica $(HOME)/.local/bin/multica
 	sudo systemctl restart multica-daemon.service
 	@systemctl --no-pager --lines=0 status multica-daemon.service
+
+# ---------- MCP (local stdio server, client installers) ----------
+##@ MCP
+
+mcp-install: ## Build @multica/mcp from this checkout and register it with every detected client (Claude Code/Codex/Kimi/ZCode/Cursor/OpenCode). Uses this checkout's absolute dist path, so re-run after moving/removing the checkout.
+	pnpm --filter @multica/mcp build
+	node "$(CURDIR)/apps/mcp/dist/install-cli.js" "$(CURDIR)/apps/mcp/dist/index.js"
 
 # ---------- Environments ----------
 ##@ Environments
