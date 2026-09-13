@@ -50,8 +50,8 @@
  *     误采。仓库现无此写法，代价小于为它改造 stripComments 的 JSX 感知。
  *   - **写进内部状态字段、但没有渲染消费点的英文串**：如
  *     `message-composer.tsx` 上传失败分支的 `"Unknown error"` —— 它落进
- *     `ComposerAttachmentItem.error`（定义见
- *     `components/issue/composer-attachment-row.tsx`），而该字段全仓无任何
+ *     `AttachmentZoneItem.error`（定义见 `lib/attachment-zone.ts`），而该字段
+ *     全仓无任何
  *     读取点，失败态 UI 只渲染重试图标 + destructive 色 + 文件名。这类既
  *     不在 JSX / props / Alert 三个检测面内（采不到），**采到了也不该报**
  *     （不进 UI，翻译它是无效工作）。判据是「有没有渲染消费点」，不是
