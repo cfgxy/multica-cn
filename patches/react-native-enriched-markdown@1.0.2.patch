@@ -1,0 +1,31 @@
+diff --git a/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdown.kt b/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdown.kt
+index c67dd9ddbfbc364ff9d54125b07722ea21375e6c..5b756c869b4a0f3ade4b0f5e3ba65c1918e2bf52 100644
+--- a/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdown.kt
++++ b/android/src/main/java/com/swmansion/enriched/markdown/EnrichedMarkdown.kt
+@@ -447,10 +447,8 @@ class EnrichedMarkdown
+         val heightBefore = computeSegmentsTotalHeight()
+         layoutSegments()
+         val heightAfter = computeSegmentsTotalHeight()
+-
+         if (forceHeight || topologyChanged || heightBefore != heightAfter) {
+-          MeasurementStore.invalidate(id)
+-          requestLayout()
++          notifyHeightChanged()
+         }
+       }
+     }
+@@ -657,9 +655,13 @@ class EnrichedMarkdown
+     fun onImageLayoutChanged() {
+       if (width > 0) {
+         layoutSegments()
+-        requestLayout()
+       }
++      notifyHeightChanged()
++    }
++
++    private fun notifyHeightChanged() {
+       MeasurementStore.invalidate(id)
++      requestLayout()
+       val wrapper = stateWrapper ?: return
+       val state = Arguments.createMap()
+       state.putInt("forceHeightRecalculationCounter", ++forceHeightRecalculationCounter)
