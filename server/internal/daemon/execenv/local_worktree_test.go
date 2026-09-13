@@ -229,6 +229,56 @@ func TestFinalizeDropsBranchWhenOnlyBaseWasDirty(t *testing.T) {
 	}
 }
 
+// Agent runtimes write state directories (.omc/, .zcode/, ...) into the
+// worktree right up to the moment they exit, and delete files inside them
+// without warning — the churn that used to kill the finalize `git add -A`
+// with "unable to stat" and strand the task's work uncommitted. The delivered
+// branch must carry the agent's work without that state.
+func TestFinalizeSkipsAgentRuntimeState(t *testing.T) {
+	repo := newTestRepo(t)
+	wt := prepareForTest(t, repo)
+
+	writeFile(t, filepath.Join(wt.Path, "agent-output.txt"), "work product\n")
+	writeFile(t, filepath.Join(wt.Path, ".omc", "state", "cooldown.json"), "{}\n")
+	writeFile(t, filepath.Join(wt.Path, "sub", ".zcode", "session.json"), "{}\n")
+
+	outcome := finalizeOK(t, wt)
+
+	if !outcome.AutoCommitted {
+		t.Error("AutoCommitted = false, want true")
+	}
+	if got := gitRun(t, repo, "show", wt.Branch+":agent-output.txt"); got != "work product" {
+		t.Errorf("branch does not carry agent output, got %q", got)
+	}
+	for _, unwanted := range []string{
+		wt.Branch + ":.omc/state/cooldown.json",
+		wt.Branch + ":sub/.zcode/session.json",
+	} {
+		if _, err := gitTry(t, repo, "show", unwanted); err == nil {
+			t.Errorf("branch carries runtime state %s", unwanted)
+		}
+	}
+}
+
+// Churn confined to the runtime state directories is not work. A read-only
+// turn that only leaked such files must still count as a no-op and leave no
+// branch behind.
+func TestFinalizeDropsBranchWhenOnlyRuntimeStateChanged(t *testing.T) {
+	repo := newTestRepo(t)
+	wt := prepareForTest(t, repo)
+
+	writeFile(t, filepath.Join(wt.Path, ".omc", "state", "cooldown.json"), "{}\n")
+
+	outcome := finalizeOK(t, wt)
+
+	if outcome.Branch != "" {
+		t.Errorf("Branch = %q, want empty: runtime state is not work", outcome.Branch)
+	}
+	if outcome.AutoCommitted {
+		t.Error("AutoCommitted = true, but there was nothing of the agent's to commit")
+	}
+}
+
 // With a dirty base, the delivered branch separates the two authorships: the
 // user's WIP is the baseline commit, the agent's work sits on top. That is what
 // makes `git diff <baseline>..<branch>` a readable review of the agent alone.
@@ -1387,6 +1437,40 @@ func TestCaptureUserSnapshotExcludesMulticaSidecars(t *testing.T) {
 		if strings.Contains(listed, unwanted) {
 			t.Errorf("snapshot carries the sidecar %s:\n%s", unwanted, listed)
 		}
+	}
+	if !strings.Contains(listed, "real.txt") {
+		t.Errorf("snapshot dropped the user's own file:\n%s", listed)
+	}
+}
+
+// Agent runtimes write state directories (.omc/, .zcode/, ...) into the user's
+// checkout too, and delete files inside them while they run. The snapshot must
+// carry neither the churn nor its race — but a tracked file under one of them
+// is repo content, and its uncommitted edit must survive the excludes.
+func TestCaptureUserSnapshotExcludesAgentRuntimeState(t *testing.T) {
+	repo := newTestRepo(t)
+	writeFile(t, filepath.Join(repo, ".vscode", "settings.json"), "{}\n")
+	gitRun(t, repo, "add", ".vscode/settings.json")
+	gitRun(t, repo, "commit", "-m", "track .vscode")
+	writeFile(t, filepath.Join(repo, ".vscode", "settings.json"), "{\"editor.rulers\":[]}\n")
+
+	writeFile(t, filepath.Join(repo, ".omc", "state", "idle-notif-cooldown.json"), "{}\n")
+	writeFile(t, filepath.Join(repo, "sub", ".zcode", "sessions", "s.json"), "{}\n")
+	writeFile(t, filepath.Join(repo, "real.txt"), "the user's file\n")
+
+	head := gitRun(t, repo, "rev-parse", "HEAD")
+	snapshot, err := captureUserSnapshot(repo, t.TempDir(), head, worktreeTestLogger())
+	if err != nil {
+		t.Fatalf("captureUserSnapshot: %v", err)
+	}
+	listed := gitRun(t, repo, "ls-tree", "-r", "--name-only", snapshot)
+	for _, unwanted := range []string{".omc/state/idle-notif-cooldown.json", "sub/.zcode/sessions/s.json"} {
+		if strings.Contains(listed, unwanted) {
+			t.Errorf("snapshot carries runtime state %s:\n%s", unwanted, listed)
+		}
+	}
+	if got := gitRun(t, repo, "show", snapshot+":.vscode/settings.json"); got != "{\"editor.rulers\":[]}" {
+		t.Errorf("snapshot lost the tracked .vscode edit, got %q", got)
 	}
 	if !strings.Contains(listed, "real.txt") {
 		t.Errorf("snapshot dropped the user's own file:\n%s", listed)
