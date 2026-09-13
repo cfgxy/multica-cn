@@ -124,7 +124,12 @@ const {
   mockOpenModal: vi.fn(),
   mockToastSuccess: vi.fn(),
   mockClipboardWrite: vi.fn(() => Promise.resolve()),
-  mockTimeline: { current: [] as Array<Record<string, unknown>> },
+  mockTimeline: {
+    current: {
+      entries: [] as Array<Record<string, unknown>>,
+      truncatedKinds: [] as Array<"activity" | "comment">,
+    },
+  },
   mockCommentCollapseAll: vi.fn(),
   mockCommentExpandAll: vi.fn(),
   mockResolvedCollapseAll: vi.fn(),
@@ -321,7 +326,7 @@ describe("SearchCommand", () => {
     mockOpenModal.mockReset();
     mockToastSuccess.mockReset();
     mockClipboardWrite.mockReset().mockResolvedValue(undefined);
-    mockTimeline.current = [];
+    mockTimeline.current = { entries: [], truncatedKinds: [] };
     mockCommentCollapseAll.mockReset();
     mockCommentExpandAll.mockReset();
     mockResolvedCollapseAll.mockReset();
@@ -676,12 +681,15 @@ describe("SearchCommand", () => {
     mockAllIssues.current = [
       { id: "issue-1", identifier: "MUL-42", title: "Demo", status: "todo" },
     ];
-    mockTimeline.current = [
-      { type: "activity", id: "act-1", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T00:00:00Z", action: "status_changed" },
-      { type: "comment", id: "root-1", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T01:00:00Z", parent_id: null },
-      { type: "comment", id: "reply-1", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T02:00:00Z", parent_id: "root-1" },
-      { type: "comment", id: "root-2", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T03:00:00Z", parent_id: null, resolved_at: "2026-01-02T00:00:00Z" },
-    ];
+    mockTimeline.current = {
+      entries: [
+        { type: "activity", id: "act-1", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T00:00:00Z", action: "status_changed" },
+        { type: "comment", id: "root-1", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T01:00:00Z", parent_id: null },
+        { type: "comment", id: "reply-1", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T02:00:00Z", parent_id: "root-1" },
+        { type: "comment", id: "root-2", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T03:00:00Z", parent_id: null, resolved_at: "2026-01-02T00:00:00Z" },
+      ],
+      truncatedKinds: [],
+    };
     renderSearch();
 
     const input = screen.getByPlaceholderText("Type a command or search...");
@@ -707,13 +715,16 @@ describe("SearchCommand", () => {
     mockAllIssues.current = [
       { id: "issue-1", identifier: "MUL-42", title: "Demo", status: "todo" },
     ];
-    mockTimeline.current = [
-      { type: "comment", id: "root-1", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T01:00:00Z", parent_id: null },
-      { type: "comment", id: "root-2", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T03:00:00Z", parent_id: null, resolved_at: "2026-01-02T00:00:00Z" },
-      // root-3 is reply-resolved: the resolution lives on the reply.
-      { type: "comment", id: "root-3", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T04:00:00Z", parent_id: null },
-      { type: "comment", id: "reply-3", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T05:00:00Z", parent_id: "root-3", resolved_at: "2026-01-02T01:00:00Z" },
-    ];
+    mockTimeline.current = {
+      entries: [
+        { type: "comment", id: "root-1", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T01:00:00Z", parent_id: null },
+        { type: "comment", id: "root-2", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T03:00:00Z", parent_id: null, resolved_at: "2026-01-02T00:00:00Z" },
+        // root-3 is reply-resolved: the resolution lives on the reply.
+        { type: "comment", id: "root-3", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T04:00:00Z", parent_id: null },
+        { type: "comment", id: "reply-3", actor_type: "member", actor_id: "u1", created_at: "2026-01-01T05:00:00Z", parent_id: "root-3", resolved_at: "2026-01-02T01:00:00Z" },
+      ],
+      truncatedKinds: [],
+    };
     renderSearch();
 
     const input = screen.getByPlaceholderText("Type a command or search...");

@@ -1,11 +1,17 @@
 import { QueryClient } from "@tanstack/react-query";
 import type { Issue, IssueReaction, TimelineEntry } from "@multica/core/types";
+import {
+  effectiveTruncatedKinds,
+  type TimelineQueryData,
+  type TimelineTruncationKind,
+} from "@multica/core/issues/timeline-query";
 import { describe, expect, it, vi } from "vitest";
 
 import { issueKeys } from "@/data/queries/issue-keys";
 import {
   addCommentReaction,
   addIssueReaction,
+  appendTimelineEntry,
   onIssueAuxiliaryRevision,
   invalidateIssueAfterReconnect,
   patchIssueDetail,
@@ -13,6 +19,13 @@ import {
   removeIssueReaction,
   replaceCommentTimelineEntry,
 } from "./issue-ws-updaters";
+
+function timelineData(
+  entries: TimelineEntry[],
+  truncatedKinds: TimelineTruncationKind[] = [],
+): TimelineQueryData {
+  return { entries, truncatedKinds };
+}
 
 describe("invalidateIssueAfterReconnect", () => {
   it("invalidates attachments together with the issue and task caches", () => {
@@ -30,6 +43,112 @@ describe("invalidateIssueAfterReconnect", () => {
       issueKeys.activeTasks(wsId, issueId),
       issueKeys.tasks(wsId, issueId),
     ]);
+  });
+});
+
+describe("appendTimelineEntry", () => {
+  const wsId = "workspace-1";
+  const issueId = "issue-1";
+
+  function timelineEntry(id: string, type: "activity" | "comment" = "activity"): TimelineEntry {
+    return {
+      type,
+      id,
+      actor_type: "member",
+      actor_id: "member-1",
+      created_at: "2026-09-05T09:00:00Z",
+    };
+  }
+
+  it.each(["activity", "comment"] as const)(
+    "keeps the fetch snapshot and invalidates once after a %s cap crossing",
+    (type) => {
+      const qc = new QueryClient();
+      const key = issueKeys.timeline(wsId, issueId);
+      const invalidate = vi.spyOn(qc, "invalidateQueries");
+      qc.setQueryData<TimelineQueryData>(key, {
+        entries: Array.from({ length: 2000 }, (_, index) => timelineEntry(`${type}-${index}`, type)),
+        truncatedKinds: [],
+      });
+
+      appendTimelineEntry(qc, wsId, issueId, timelineEntry(`${type}-2000`, type));
+
+      expect(qc.getQueryData<TimelineQueryData>(key)).toMatchObject({
+        truncatedKinds: [],
+      });
+      expect(qc.getQueryData<TimelineQueryData>(key)?.entries).toHaveLength(2001);
+      expect(
+        effectiveTruncatedKinds(qc.getQueryData<TimelineQueryData>(key)),
+      ).toEqual([type]);
+      expect(invalidate).toHaveBeenCalledTimes(1);
+
+      appendTimelineEntry(qc, wsId, issueId, timelineEntry(`${type}-2000`, type));
+      appendTimelineEntry(qc, wsId, issueId, timelineEntry(`${type}-2001`, type));
+
+      expect(invalidate).toHaveBeenCalledTimes(1);
+      expect(
+        effectiveTruncatedKinds(qc.getQueryData<TimelineQueryData>(key)),
+      ).toEqual([type]);
+    },
+  );
+
+  it.each(["activity", "comment"] as const)(
+    "does not invalidate when a %s append reaches exactly 2000 entries",
+    (type) => {
+      const qc = new QueryClient();
+      const key = issueKeys.timeline(wsId, issueId);
+      const invalidate = vi.spyOn(qc, "invalidateQueries");
+      qc.setQueryData<TimelineQueryData>(
+        key,
+        timelineData(
+          Array.from({ length: 1999 }, (_, index) =>
+            timelineEntry(`${type}-${index}`, type),
+          ),
+        ),
+      );
+
+      appendTimelineEntry(qc, wsId, issueId, timelineEntry(`${type}-1999`, type));
+
+      expect(invalidate).not.toHaveBeenCalled();
+      expect(
+        effectiveTruncatedKinds(qc.getQueryData<TimelineQueryData>(key)),
+      ).toEqual([]);
+    },
+  );
+
+  it.each(["activity", "comment"] as const)(
+    "preserves an existing %s truncation header without another invalidate",
+    (type) => {
+      const qc = new QueryClient();
+      const key = issueKeys.timeline(wsId, issueId);
+      const invalidate = vi.spyOn(qc, "invalidateQueries");
+      qc.setQueryData<TimelineQueryData>(
+        key,
+        timelineData(
+          Array.from({ length: 2000 }, (_, index) =>
+            timelineEntry(`${type}-${index}`, type),
+          ),
+          [type],
+        ),
+      );
+
+      appendTimelineEntry(qc, wsId, issueId, timelineEntry(`${type}-2000`, type));
+
+      expect(invalidate).not.toHaveBeenCalled();
+      expect(qc.getQueryData<TimelineQueryData>(key)?.truncatedKinds).toEqual([type]);
+      expect(
+        effectiveTruncatedKinds(qc.getQueryData<TimelineQueryData>(key)),
+      ).toEqual([type]);
+    },
+  );
+
+  it("does not materialize a timeline cache from a realtime entry", () => {
+    const qc = new QueryClient();
+    const key = issueKeys.timeline(wsId, issueId);
+
+    appendTimelineEntry(qc, wsId, issueId, timelineEntry("activity-1"));
+
+    expect(qc.getQueryData<TimelineQueryData>(key)).toBeUndefined();
   });
 });
 
@@ -83,7 +202,7 @@ describe("mobile issue revision gates", () => {
       revision: 5,
       reactions: [],
     } as TimelineEntry;
-    qc.setQueryData<TimelineEntry[]>(key, [current]);
+    qc.setQueryData<TimelineQueryData>(key, timelineData([current]));
 
     replaceCommentTimelineEntry(qc, wsId, issueId, {
       ...current,
@@ -98,7 +217,7 @@ describe("mobile issue revision gates", () => {
       emoji: "👍",
       created_at: "2026-01-01T00:00:00Z",
     }, 4);
-    expect(qc.getQueryData<TimelineEntry[]>(key)?.[0]).toMatchObject({
+    expect(qc.getQueryData<TimelineQueryData>(key)?.entries[0]).toMatchObject({
       content: "revision 5",
       revision: 5,
       reactions: [],
@@ -109,7 +228,7 @@ describe("mobile issue revision gates", () => {
       content: "revision 6",
       revision: 6,
     });
-    expect(qc.getQueryData<TimelineEntry[]>(key)?.[0]).toMatchObject({
+    expect(qc.getQueryData<TimelineQueryData>(key)?.entries[0]).toMatchObject({
       content: "revision 6",
       revision: 6,
     });
@@ -118,7 +237,7 @@ describe("mobile issue revision gates", () => {
   it("preserves hydrated actor identity when replacing a comment snapshot", () => {
     const qc = new QueryClient();
     const key = issueKeys.timeline(wsId, issueId);
-    qc.setQueryData<TimelineEntry[]>(key, [
+    qc.setQueryData<TimelineQueryData>(key, timelineData([
       {
         type: "comment",
         id: "comment-1",
@@ -130,7 +249,7 @@ describe("mobile issue revision gates", () => {
         content: "before",
         revision: 1,
       },
-    ]);
+    ]));
 
     replaceCommentTimelineEntry(qc, wsId, issueId, {
       type: "comment",
@@ -142,7 +261,7 @@ describe("mobile issue revision gates", () => {
       revision: 2,
     });
 
-    expect(qc.getQueryData<TimelineEntry[]>(key)?.[0]).toMatchObject({
+    expect(qc.getQueryData<TimelineQueryData>(key)?.entries[0]).toMatchObject({
       content: "after",
       actor_name: "Former Member",
       actor_avatar_url: "https://profiles.example.com/former.png",

@@ -26,8 +26,8 @@
     "android:verify-signing": "./scripts/verify-signing-config.sh",
     "lint": "expo lint",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run && jest --config jest.config.cjs --runInBand && bash scripts/ios-run.test.sh",
-    "test:components": "jest --config jest.config.cjs --runInBand"
+    "test": "vitest run && jest --config jest.config.cjs --runInBand --forceExit && bash scripts/ios-run.test.sh",
+    "test:components": "jest --config jest.config.cjs --runInBand --forceExit"
   },
   "dependencies": {
     "@expo/vector-icons": "^14.1.0",

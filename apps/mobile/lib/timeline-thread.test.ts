@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import type { TimelineEntry } from "@multica/core/types";
 
-import { buildTimelineRows } from "./timeline-thread";
+import { buildTimelineRows, buildTimelineRowsModel } from "./timeline-thread";
 
 function comment(id: string, createdAt: string, parentId?: string): TimelineEntry {
   return {
@@ -29,5 +29,18 @@ describe("buildTimelineRows", () => {
     expect(rows.map((row) => row.entry.id)).toEqual(["root-b", "root-a"]);
     expect(rows[0]?.replies.map((reply) => reply.id)).toEqual(["reply-b"]);
     expect(rows[1]?.replies.map((reply) => reply.id)).toEqual(["reply-a"]);
+  });
+
+  it("returns the Core model statistics used to decide whether sorting can change", () => {
+    const root = comment("root", "2026-09-05T04:15:24Z");
+    const reply = comment("reply", "2026-09-05T04:20:11Z", root.id);
+
+    const model = buildTimelineRowsModel([root, reply], "created");
+
+    expect(model.rows.map((row) => row.entry.id)).toEqual(["root"]);
+    expect(model.stats).toMatchObject({
+      threadBlockCount: 1,
+      sortableBlockCount: 1,
+    });
   });
 });
