@@ -202,7 +202,7 @@ func TestClaudeContextTokensFoldIsDirectionAgnosticAndNeverBorrows(t *testing.T)
 		"gpt-5.6-sol":   {InputTokens: 200, OutputTokens: 20},
 	}
 	contextTokens := map[string]int64{
-		"gpt-5.6-terra[1m]": 345_678, // totals spell it without the suffix
+		"gpt-5.6-terra[1m]":  345_678, // totals spell it without the suffix
 		"model-nowhere-else": 456_789, // matches nothing, must be dropped
 	}
 
