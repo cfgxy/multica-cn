@@ -70,7 +70,10 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       // 本地通知所需 manifest 条目；无 FCM/远程推送（后续单）。
       "expo-notifications",
       "@react-native-community/datetimepicker",
-      "react-native-enriched-markdown",
+      // RUYI-132: react-native-enriched-markdown 1.0 removed its Expo config
+      // plugin. Native builds read feature switches from apps/mobile/package.json
+      // instead. Keeping the plugin entry makes prebuild fail because app.plugin.js
+      // no longer exists.
       [
         "expo-image-picker",
         {
