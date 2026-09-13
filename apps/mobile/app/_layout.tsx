@@ -15,6 +15,7 @@ import { api } from "@/data/api";
 import { queryClient } from "@/data/query-client";
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
+import { shouldHandleUnauthorized } from "@/lib/auth-route";
 import { LightboxProvider, prewarmHighlighter } from "@/lib/markdown";
 import { NotificationResponseNavigator } from "@/components/notifications/notification-response-navigator";
 import { NAV_THEME } from "@/lib/theme";
@@ -44,6 +45,17 @@ function AuthInitializer({ children }: { children: React.ReactNode }) {
     // getMe() call, so do this synchronously first.
     api.setOptions({
       onUnauthorized: () => {
+        // A target server may reject its own stale token while a notification
+        // switch is deciding whether to restore the previous session. That
+        // scoped transition owns the eventual route; a global login here
+        // would bypass its rollback path.
+        if (
+          !shouldHandleUnauthorized(
+            useAuthStore.getState().isServerSwitching,
+          )
+        ) {
+          return;
+        }
         if (signingOutRef.current) return;
         signingOutRef.current = true;
         void (async () => {
