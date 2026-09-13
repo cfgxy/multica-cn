@@ -691,7 +691,11 @@
       "add_dialog_confirm_default": "添加",
       "add_dialog_confirm_other": "添加 {{count}} 个 skill",
       "add_dialog_cancel": "取消",
-      "add_failed_toast": "添加 skill 失败"
+      "add_failed_toast": "添加 skill 失败",
+      "subagents_title": "子代理工具",
+      "subagents_hint": "关闭（默认）时运行时硬禁 Agent/Task 工具，该智能体不能派生子代理，任务必须在自身会话内完成；仅对确有需要的智能体开启。",
+      "subagents_toggle_aria": "允许子代理工具",
+      "subagents_toggle_failed_toast": "子代理工具设置保存失败"
     },
     "integrations": {
       "intro": "把这个智能体连接到外部聊天平台，让大家在自己熟悉的工具里直接与它协作。",
