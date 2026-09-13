@@ -58,15 +58,47 @@ describe("updateTimelineEntries", () => {
 
 describe("crossedTimelineHardCap", () => {
   it("fires only when the same entry kind crosses from 2000 to 2001", () => {
-    const atCap = Array.from({ length: 2000 }, (_, index) =>
+    const commentsAtCap = Array.from({ length: 2000 }, (_, index) =>
       entry(`comment-${index}`, "comment"),
     );
-    const overCap = [...atCap, entry("comment-2000", "comment")];
+    const activitiesAtCap = Array.from({ length: 2000 }, (_, index) =>
+      entry(`activity-${index}`, "activity"),
+    );
 
-    expect(crossedTimelineHardCap(atCap, overCap, "comment")).toBe(true);
-    expect(crossedTimelineHardCap(atCap.slice(1), atCap, "comment")).toBe(false);
-    expect(crossedTimelineHardCap(atCap, [...atCap, entry("activity-1", "activity")], "activity")).toBe(false);
+    expect(crossedTimelineHardCap(
+      commentsAtCap,
+      [...commentsAtCap, entry("comment-2000", "comment")],
+      "comment",
+    )).toBe(true);
+    expect(crossedTimelineHardCap(
+      activitiesAtCap,
+      [...activitiesAtCap, entry("activity-2000", "activity")],
+      "activity",
+    )).toBe(true);
+    expect(crossedTimelineHardCap(
+      commentsAtCap.slice(1),
+      commentsAtCap,
+      "comment",
+    )).toBe(false);
+    expect(crossedTimelineHardCap(
+      commentsAtCap,
+      [...commentsAtCap, entry("activity-1", "activity")],
+      "activity",
+    )).toBe(false);
   });
+
+  it.each(["activity", "comment"] as const)(
+    "does not report a %s truncation at the exact 2000-entry cap",
+    (kind) => {
+      const belowCap = Array.from({ length: 1999 }, (_, index) =>
+        entry(`${kind}-${index}`, kind),
+      );
+      const atCap = [...belowCap, entry(`${kind}-1999`, kind)];
+
+      expect(crossedTimelineHardCap(belowCap, atCap, kind)).toBe(false);
+      expect(effectiveTruncatedKinds({ entries: atCap, truncatedKinds: [] })).toEqual([]);
+    },
+  );
 });
 
 describe("effectiveTruncatedKinds", () => {
@@ -77,5 +109,16 @@ describe("effectiveTruncatedKinds", () => {
     };
 
     expect(effectiveTruncatedKinds(data)).toEqual(["comment"]);
+  });
+
+  it("keeps the authoritative header snapshot alongside a local cross-cap kind", () => {
+    const data: TimelineQueryData = {
+      entries: Array.from({ length: 2001 }, (_, index) =>
+        entry(`comment-${index}`, "comment"),
+      ),
+      truncatedKinds: ["activity"],
+    };
+
+    expect(effectiveTruncatedKinds(data)).toEqual(["activity", "comment"]);
   });
 });

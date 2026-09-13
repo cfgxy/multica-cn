@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import type { TimelineEntry } from "@multica/core/types";
 
-import { buildTimelineModel } from "./timeline-sort";
+import { buildTimelineModel, latestThreadComment } from "./timeline-sort";
 
 function entry(
   id: string,
@@ -146,6 +146,105 @@ describe("buildTimelineModel", () => {
     expect(created.entries.map((item) => item.id)).toEqual(["root-a", "reply-a", "root-b"]);
   });
 
+  it("changes only top-level thread placement while preserving activity and reply order", () => {
+    const rootA = entry("root-a", "2026-09-05T09:00:00Z");
+    const activityA = entry(
+      "activity-a",
+      "2026-09-05T09:30:00Z",
+      undefined,
+      "activity",
+      "status_changed",
+    );
+    const rootB = entry("root-b", "2026-09-05T10:00:00Z");
+    const replyB = entry("reply-b", "2026-09-05T10:30:00Z", rootB.id);
+    const activityB = entry(
+      "activity-b",
+      "2026-09-05T11:00:00Z",
+      undefined,
+      "activity",
+      "priority_changed",
+    );
+    const replyA = entry("reply-a", "2026-09-05T12:00:00Z", rootA.id);
+    const raw = [activityB, replyA, rootB, activityA, rootA, replyB];
+
+    expect(buildTimelineModel(raw, "recent-comment").entries.map((item) => item.id)).toEqual([
+      "activity-a",
+      "root-b",
+      "reply-b",
+      "activity-b",
+      "root-a",
+      "reply-a",
+    ]);
+    expect(buildTimelineModel(raw, "created").entries.map((item) => item.id)).toEqual([
+      "root-a",
+      "reply-a",
+      "activity-a",
+      "root-b",
+      "reply-b",
+      "activity-b",
+    ]);
+  });
+
+  it("uses ids to break equal timestamps for blocks and replies", () => {
+    const rootB = entry("root-b", "2026-09-05T09:00:00Z");
+    const rootA = entry("root-a", "2026-09-05T09:00:00Z");
+    const replyZ = entry("reply-z", "2026-09-05T10:00:00Z", rootA.id);
+    const replyA = entry("reply-a", "2026-09-05T10:00:00Z", rootA.id);
+
+    expect(
+      buildTimelineModel([replyZ, rootB, replyA, rootA], "created").entries.map(
+        (item) => item.id,
+      ),
+    ).toEqual(["root-a", "reply-a", "reply-z", "root-b"]);
+  });
+
+  it.each(["task_completed", "task_failed"])(
+    "coalesces %s activity regardless of elapsed time",
+    (action) => {
+      const first = entry(
+        `${action}-1`,
+        "2026-09-05T09:00:00Z",
+        undefined,
+        "activity",
+        action,
+      );
+      const second = entry(
+        `${action}-2`,
+        "2026-09-06T09:00:00Z",
+        undefined,
+        "activity",
+        action,
+      );
+
+      expect(buildTimelineModel([first, second], "created").entries).toEqual([
+        expect.objectContaining({ id: `${action}-2`, coalesced_count: 2 }),
+      ]);
+    },
+  );
+
+  it("never coalesces squad leader evaluations", () => {
+    const first = entry(
+      "evaluation-1",
+      "2026-09-05T09:00:00Z",
+      undefined,
+      "activity",
+      "squad_leader_evaluated",
+    );
+    const second = entry(
+      "evaluation-2",
+      "2026-09-05T09:01:00Z",
+      undefined,
+      "activity",
+      "squad_leader_evaluated",
+    );
+
+    expect(
+      buildTimelineModel([second, first], "recent-comment").entries.map(
+        (item) => item.id,
+      ),
+    ).toEqual(["evaluation-1", "evaluation-2"]);
+  });
+
   it("coalesces activities only after sorting display blocks and reports stable stats", () => {
     const root = entry("root", "2026-09-05T09:00:00Z");
     const reply = entry("reply", "2026-09-05T10:00:00Z", root.id);
@@ -162,5 +261,17 @@ describe("buildTimelineModel", () => {
       activityVisualGroupCount: 1,
       sortableBlockCount: 3,
     });
+  });
+});
+
+describe("latestThreadComment", () => {
+  it("selects the last reply with the stable timestamp and id tie-breaker", () => {
+    const root = entry("root", "2026-09-05T09:00:00Z");
+    const earlierReply = entry("reply-a", "2026-09-05T10:00:00Z", root.id);
+    const laterSameTimeReply = entry("reply-z", "2026-09-05T10:00:00Z", root.id);
+
+    expect(latestThreadComment([laterSameTimeReply, root, earlierReply])).toBe(
+      laterSameTimeReply,
+    );
   });
 });

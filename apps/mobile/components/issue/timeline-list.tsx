@@ -99,6 +99,7 @@ import { Ionicons } from "@expo/vector-icons";
 import * as Haptics from "expo-haptics";
 import { useQuery } from "@tanstack/react-query";
 import type { Issue, TimelineEntry } from "@multica/core/types";
+import type { TimelineSortMode } from "@multica/core/issues/timeline-sort";
 import type { TimelineTruncationKind } from "@multica/core/issues/timeline-query";
 import { COMMENT_HIGHLIGHT_TOTAL_MS } from "@multica/core/issues/comment-highlight";
 import { Text } from "@/components/ui/text";
@@ -155,6 +156,8 @@ import { useT } from "@/lib/use-t";
 interface Props {
   issue: Issue;
   entries: TimelineEntry[] | undefined;
+  mode: TimelineSortMode;
+  onModeChange: (mode: TimelineSortMode) => void;
   truncatedKinds?: readonly TimelineTruncationKind[];
   timelineLoading: boolean;
   refreshing: boolean;
@@ -220,6 +223,8 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
     {
       issue,
       entries,
+      mode,
+      onModeChange,
       truncatedKinds = [],
       timelineLoading,
       refreshing,
@@ -237,16 +242,14 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
   // passes through to comment cards / chip rows / reactions normally.
   const selectingId = useCommentSelectStore((s) => s.selectingId);
 
-  const timelineSortMode = useTimelineSortStore((state) => state.mode);
-  const setTimelineSortMode = useTimelineSortStore((state) => state.setMode);
   const timelineSortHintSeen = useTimelineSortStore((state) => state.hintSeen);
   const setTimelineSortHintSeen = useTimelineSortStore((state) => state.setHintSeen);
 
   // Core owns threading, sorting, and activity coalescing. This layer only
   // bundles Core's ordered output for the mobile flat-list presentation.
   const timelineRowsModel = useMemo(
-    () => (entries ? buildTimelineRowsModel(entries, timelineSortMode) : null),
-    [entries, timelineSortMode],
+    () => (entries ? buildTimelineRowsModel(entries, mode) : null),
+    [entries, mode],
   );
   const data = timelineRowsModel?.rows ?? EMPTY_ROWS;
   const canChangeTimelineSort =
@@ -925,10 +928,10 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
             {t("timeline.sort.label", "Comment order")}
           </Text>
           <Tabs
-            value={timelineSortMode}
-            onValueChange={(mode) => {
-              if (mode === "recent-comment" || mode === "created") {
-                setTimelineSortMode(mode);
+            value={mode}
+            onValueChange={(nextMode) => {
+              if (nextMode === "recent-comment" || nextMode === "created") {
+                onModeChange(nextMode);
               }
             }}
           >
