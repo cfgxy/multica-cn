@@ -24,10 +24,13 @@ const (
 	// mutate an immutable execution manifest that is already in flight.
 	PluginsV1 = "plugins_v1"
 	// MarketplaceV1 gates the unified application marketplace: catalog listing
-	// and install orchestration for skills and MCP servers. Turning it off must
-	// leave every underlying entry point intact — skill import, skill
-	// management, the workspace MCP library, and agent binding are all reached
-	// without the marketplace, and the marketplace only ever drives them.
+	// and install orchestration for skills and MCP servers. It defaults to
+	// enabled so the marketplace entry point is visible without any
+	// configuration; set FF_MARKETPLACE_V1=false to close it explicitly.
+	// Turning it off must leave every underlying entry point intact — skill
+	// import, skill management, the workspace MCP library, and agent binding
+	// are all reached without the marketplace, and the marketplace only ever
+	// drives them.
 	MarketplaceV1 = "marketplace_v1"
 	// MarketplacePublishV1 gates the write half of the marketplace: publishing,
 	// updating and withdrawing a workspace's own skill and MCP listings. It is
@@ -35,6 +38,8 @@ const (
 	// install: an operator has to be able to keep the catalog readable and
 	// installable while closing the publish surface, and the two capabilities
 	// have different blast radii — a bad publish is visible to every workspace.
+	// It defaults to enabled; set FF_MARKETPLACE_PUBLISH_V1=false to close the
+	// publish surface explicitly.
 	//
 	// Turning it off leaves already-published listings discoverable and
 	// installable. Withdrawing content is a moderation action reached through
@@ -78,17 +83,25 @@ func PluginsV1Enabled(ctx context.Context, flags *featureflag.Service) bool {
 }
 
 func MarketplaceV1Enabled(ctx context.Context, flags *featureflag.Service) bool {
-	return flags.IsEnabled(ctx, MarketplaceV1, false)
+	return flags.IsEnabled(ctx, MarketplaceV1, true)
 }
 
 func MarketplacePublishV1Enabled(ctx context.Context, flags *featureflag.Service) bool {
-	return flags.IsEnabled(ctx, MarketplacePublishV1, false)
+	return flags.IsEnabled(ctx, MarketplacePublishV1, true)
+}
+
+// frontendPublicFlagDefaults holds the per-key default passed to IsEnabled
+// when the provider has no decision for that key. Keys absent from this map
+// default to false, matching the framework-wide Service default.
+var frontendPublicFlagDefaults = map[string]bool{
+	MarketplaceV1:        true,
+	MarketplacePublishV1: true,
 }
 
 func EvaluateFrontendPublicFlags(ctx context.Context, flags *featureflag.Service) map[string]bool {
 	out := make(map[string]bool, len(frontendPublicFlags)+3)
 	for _, key := range frontendPublicFlags {
-		out[key] = flags.IsEnabled(ctx, key, false)
+		out[key] = flags.IsEnabled(ctx, key, frontendPublicFlagDefaults[key])
 	}
 	out[agentBuilderCompat] = true
 	out[agentSkillTogglesCompat] = true
