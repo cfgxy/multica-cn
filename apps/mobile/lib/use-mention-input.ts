@@ -24,6 +24,8 @@ import type {
 } from "react-native";
 import {
   insertMention,
+  removeMentionChip,
+  serializeMentionChips,
   serializeMentions,
   tokenAtCursor,
   type MentionMarker,
@@ -81,7 +83,22 @@ export interface UseMentionInputReturn {
   reset: () => void;
 }
 
-export function useMentionInput(): UseMentionInputReturn {
+export interface UseMentionChipInputReturn extends UseMentionInputReturn {
+  removeMention: (type: MentionMarker["type"], id: string) => void;
+}
+
+export function useMentionInput(): UseMentionInputReturn;
+export function useMentionInput(options: {
+  mentionMode?: "inline";
+}): UseMentionInputReturn;
+export function useMentionInput(options: {
+  mentionMode: "chips";
+}): UseMentionChipInputReturn;
+export function useMentionInput({
+  mentionMode = "inline",
+}: {
+  mentionMode?: "inline" | "chips";
+} = {}): UseMentionInputReturn | UseMentionChipInputReturn {
   const [text, setText] = useState("");
   const [selection, setSelection] = useState<{ start: number; end: number }>({
     start: 0,
@@ -156,6 +173,27 @@ export function useMentionInput(): UseMentionInputReturn {
   const onSelectMention = useCallback(
     (mention: MentionMarker) => {
       if (!mentioning) return;
+      if (mentionMode === "chips") {
+        const before = textRef.current.slice(0, mentioning.start);
+        let after = textRef.current.slice(
+          mentioning.start + 1 + mentioning.query.length,
+        );
+        if (/\s$/.test(before) && /^\s/.test(after)) after = after.slice(1);
+        const next = before + after;
+        const cursor = before.length;
+        textRef.current = next;
+        selectionRef.current = { start: cursor, end: cursor };
+        setText(next);
+        setSelection({ start: cursor, end: cursor });
+        setMarkers((prev) =>
+          prev.some((item) => item.type === mention.type && item.id === mention.id)
+            ? prev
+            : [...prev, mention],
+        );
+        setMentioning(null);
+        return;
+      }
+
       const { newText, newSelection, marker } = insertMention(
         textRef.current,
         { start: mentioning.start, queryLength: mentioning.query.length },
@@ -168,7 +206,7 @@ export function useMentionInput(): UseMentionInputReturn {
       setMarkers((prev) => [...prev, marker]);
       setMentioning(null);
     },
-    [mentioning],
+    [mentionMode, mentioning],
   );
 
   const insertAtCursor = useCallback(
@@ -213,8 +251,18 @@ export function useMentionInput(): UseMentionInputReturn {
   );
 
   const serialize = useCallback(
-    () => serializeMentions(text, markers),
-    [text, markers],
+    () =>
+      mentionMode === "chips"
+        ? serializeMentionChips(text, markers)
+        : serializeMentions(text, markers),
+    [mentionMode, text, markers],
+  );
+
+  const removeMention = useCallback(
+    (type: MentionMarker["type"], id: string) => {
+      setMarkers((current) => removeMentionChip(current, type, id));
+    },
+    [],
   );
 
   const snapshot = useCallback(
@@ -254,7 +302,7 @@ export function useMentionInput(): UseMentionInputReturn {
     [mentioning, onSelectMention],
   );
 
-  return {
+  const result: UseMentionInputReturn = {
     text,
     setText,
     selection,
@@ -270,4 +318,5 @@ export function useMentionInput(): UseMentionInputReturn {
     restore,
     reset,
   };
+  return mentionMode === "chips" ? { ...result, removeMention } : result;
 }

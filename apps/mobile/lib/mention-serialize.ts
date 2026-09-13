@@ -173,3 +173,25 @@ export function serializeMentions(
   }
   return out.join("");
 }
+
+function mentionMarkdown(marker: MentionMarker): string {
+  const label = marker.type === "issue" ? marker.name : `@${marker.name}`;
+  return `[${label}](mention://${marker.type}/${marker.id})`;
+}
+
+export function serializeMentionChips(
+  text: string,
+  markers: readonly MentionMarker[],
+): string {
+  if (markers.length === 0) return text;
+  const prefix = markers.map(mentionMarkdown).join(" ");
+  return text.length > 0 ? `${prefix} ${text}` : prefix;
+}
+
+export function removeMentionChip(
+  markers: readonly MentionMarker[],
+  type: MentionMarker["type"],
+  id: string,
+): MentionMarker[] {
+  return markers.filter((marker) => marker.type !== type || marker.id !== id);
+}

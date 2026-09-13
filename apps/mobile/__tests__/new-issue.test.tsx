@@ -150,6 +150,13 @@ jest.mock("@/components/issue/quick-create-attribute-row", () => ({
   QuickCreateAttributeRow: () => null,
 }));
 
+// Renders behind a live `useIssueStatuses` (`queryOptions`) query the rest of
+// this file's `@tanstack/react-query` mock doesn't provide — out of scope for
+// this actor-lifecycle suite, so it's stubbed like the other subcomponents.
+jest.mock("@/components/issue/mention-suggestion-bar", () => ({
+  MentionSuggestionBar: () => null,
+}));
+
 jest.mock("@/components/issue/manual-create-panel", () => {
   const React = jest.requireActual<typeof import("react")>("react");
   const { Text } = jest.requireActual<typeof import("react-native")>(

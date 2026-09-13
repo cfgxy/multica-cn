@@ -10,7 +10,7 @@
  * Coverage target: every branch the call sites in the app rely on —
  *   - `comment-attachment-list.tsx`         → file chip Linking.openURL
  *   - `markdown-image.tsx`                  → mc:// + RN image loader
- *   - `composer-attachment-row.tsx`         → completed non-image chip
+ *   - `attachment-zone.tsx`                 → completed non-image chip
  *                                             tap → Linking.openURL
  */
 import { describe, expect, it, vi } from "vitest";
@@ -77,12 +77,12 @@ describe("resolveAttachmentUrlWithBase", () => {
 describe("composer file chip — completed non-image attachment", () => {
   // MUL-2976 (PR #3747 follow-up): when `api.uploadFile(...)` finishes on
   // a non-CloudFront deployment the returned `attachment.download_url` is
-  // a server-relative path. `composer-attachment-row.tsx` taps that value
+  // a server-relative path. `attachment-zone.tsx` taps that value
   // straight into `Linking.openURL` — and iOS rejects relative URLs with
   // "Cannot open URL". The fix wraps the value with `resolveAttachmentUrl`
   // before handing it to Linking; this test pins the behaviour we rely on.
   const BASE = "https://api.example.test";
-  // Mirrors `ComposerAttachmentItem` after a successful non-image upload.
+  // Mirrors `AttachmentZoneItem` after a successful non-image upload.
   const completedFileChip = {
     localId: "local-1",
     localUri: "file:///private/var/.../IMG_0001.pdf",

@@ -4,14 +4,9 @@
  * follows Apple Reminders / Linear iOS / Things 3: one vertical scrolling
  * form (title → description → property chips), no sticky bottom toolbar.
  *
- * Attachments (RUYI-42): the description field carries the shared
- * MarkdownToolbar with @ / image / file buttons. Picked files upload
- * immediately (multi-select) and their durable markdown link is appended
- * to the description text — the same "the body references it, therefore
- * it's bound" model as web's create-issue dialog. Submit gates on
- * in-flight uploads (MUL-3339 mobile mirror) and derives
- * `attachment_ids` via `referencedAttachmentIds`, so deleting the
- * reference line really unbinds the file, exactly like web.
+ * Attachments live in the shared AttachmentZone above the description text.
+ * Uploads never write Markdown into the description; submit binds completed
+ * server ids directly and blocks while any upload is in flight.
  *
  * Mention pipeline shares `useMentionInput` with `issue/[id]/new-comment.tsx`
  * — both surfaces produce canonical `[@name](mention://type/id)` markdown
@@ -20,18 +15,13 @@
 import { useCallback, useState } from "react";
 import { Alert, ScrollView, TextInput } from "react-native";
 import { Stack, router } from "expo-router";
-import type { Attachment } from "@multica/core/types";
 import { SubmitIssueButton } from "@/components/issue/submit-issue-button";
 import { CreateFormAttributeRow } from "@/components/issue/create-form-attribute-row";
+import { AttachmentZone } from "@/components/issue/attachment-zone";
 import { MentionSuggestionBar } from "@/components/issue/mention-suggestion-bar";
 import { DescriptionField } from "@/components/issue/description-field";
 import { MarkdownToolbar } from "@/components/editor/markdown-toolbar";
 import { useFileAttach } from "@/components/editor/use-file-attach";
-import {
-  appendBodyMarkdown,
-  attachmentMarkdown,
-  referencedAttachmentIds,
-} from "@/lib/attachment-markdown";
 import { MOBILE_PLACEHOLDER_COLOR } from "@/components/ui/input-tokens";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useCreateIssue } from "@/data/mutations/issues";
@@ -43,18 +33,13 @@ import {
 import { useAuthStore } from "@/data/auth-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { useServerStore } from "@/data/server-store";
+import { buildManualCreateContentFields } from "@/lib/attachment-zone";
 import { useMentionInput } from "@/lib/use-mention-input";
 import { useT } from "@/lib/use-t";
 
 export function ManualCreatePanel() {
   const [title, setTitle] = useState("");
-  const description = useMentionInput();
-  // Completed uploads from this draft session. The markdown link in the
-  // description text is the user-visible half; this array is the id half
-  // that `referencedAttachmentIds` filters against at submit time.
-  const [uploadedAttachments, setUploadedAttachments] = useState<Attachment[]>(
-    [],
-  );
+  const description = useMentionInput({ mentionMode: "chips" });
   // Attribute chips (status / priority / assignee / due date / project)
   // live in `useNewIssueDraftStore` so the new-issue-picker/* formSheet
   // routes can read and write the same values without a parent-child
@@ -71,33 +56,14 @@ export function ManualCreatePanel() {
   // Uploads run with no issue/comment context — the issue doesn't exist
   // yet; `attachment_ids` on the create request is what binds them
   // (api.uploadFile docstring, same flow as web).
-  const { pickAndUploadImages, pickAndUploadFiles, uploading } = useFileAttach();
-
-  const onPickImages = useCallback(async () => {
-    const uploaded = await pickAndUploadImages();
-    if (uploaded.length === 0) return;
-    setUploadedAttachments((prev) => [...prev, ...uploaded]);
-    // Insert at END (not the caret): uploads complete async, and web's
-    // coordinated uploads deliver finished links the same way
-    // (insertMarkdownAtEnd). The functional updater keeps any typing the
-    // user did during the await.
-    uploaded.forEach((att) => {
-      description.setText((prev) =>
-        appendBodyMarkdown(prev, attachmentMarkdown(att)),
-      );
-    });
-  }, [pickAndUploadImages, description]);
-
-  const onPickFiles = useCallback(async () => {
-    const uploaded = await pickAndUploadFiles();
-    if (uploaded.length === 0) return;
-    setUploadedAttachments((prev) => [...prev, ...uploaded]);
-    uploaded.forEach((att) => {
-      description.setText((prev) =>
-        appendBodyMarkdown(prev, attachmentMarkdown(att)),
-      );
-    });
-  }, [pickAndUploadFiles, description]);
+  const {
+    attachments,
+    pickAndUploadImages,
+    pickAndUploadFiles,
+    removeAttachment,
+    retryAttachment,
+    uploading,
+  } = useFileAttach();
 
   const createIssue = useCreateIssue();
   const isSubmitting = createIssue.isPending;
@@ -115,24 +81,21 @@ export function ManualCreatePanel() {
 
   const onSubmit = useCallback(async () => {
     const trimmedTitle = title.trim();
-    if (trimmedTitle.length === 0) return;
-    const finalDescription = description.serialize().trim();
+    if (trimmedTitle.length === 0 || uploading) return;
+    const contentFields = buildManualCreateContentFields(
+      description.serialize(),
+      attachments,
+    );
     // Capture the context that the request is sent from. The user can dismiss
     // this modal and switch account or workspace before its response arrives.
     const submittedServerId = useServerStore.getState().activeServerId;
     const submittedWorkspaceSlug = useWorkspaceStore.getState().currentWorkspaceSlug;
     const submittedUserId = useAuthStore.getState().user?.id;
     const submittedGeneration = getNewIssueSubmissionContextGeneration();
-    // Web create-issue parity: bind ONLY uploads the final body still
-    // references — deleting the reference line really unbinds the file.
-    const attachmentIds = referencedAttachmentIds(
-      uploadedAttachments,
-      finalDescription,
-    );
     try {
       await createIssue.mutateAsync({
         title: trimmedTitle,
-        description: finalDescription || undefined,
+        ...contentFields,
         status,
         priority,
         ...(assignee
@@ -140,7 +103,6 @@ export function ManualCreatePanel() {
           : {}),
         ...(dueDate ? { due_date: dueDate } : {}),
         ...(project ? { project_id: project.id } : {}),
-        ...(attachmentIds.length > 0 ? { attachment_ids: attachmentIds } : {}),
       });
       // RUYI-79 web parity (create-issue onAccepted): remember the SUBMITTED
       // assignee — not the live draft — only after the server accepted the
@@ -177,7 +139,8 @@ export function ManualCreatePanel() {
   }, [
     title,
     description,
-    uploadedAttachments,
+    attachments,
+    uploading,
     status,
     priority,
     assignee,
@@ -226,11 +189,24 @@ export function ManualCreatePanel() {
             returnKeyType="next"
             editable={!isSubmitting}
           />
-          <DescriptionField description={description} disabled={isSubmitting} />
+          <DescriptionField
+            description={description}
+            disabled={isSubmitting}
+            leadingContent={
+              <AttachmentZone
+                mentions={description.markers}
+                attachments={attachments}
+                onRemoveMention={description.removeMention}
+                onRemoveAttachment={removeAttachment}
+                onRetryAttachment={retryAttachment}
+                className="pt-2"
+              />
+            }
+          />
           <MarkdownToolbar
             onAt={description.handlers.onAtButtonPress}
-            onImage={onPickImages}
-            onFile={onPickFiles}
+            onImage={pickAndUploadImages}
+            onFile={pickAndUploadFiles}
             disabled={isSubmitting || uploading}
           />
           <CreateFormAttributeRow />
