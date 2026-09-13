@@ -29,7 +29,10 @@ import { clearQuickCreateActorMemory } from "./stores/quick-create-prefs-store";
 interface AuthState {
   user: User | null;
   isLoading: boolean;
+  /** True while a cross-server session restoration owns the auth boundary. */
+  isServerSwitching: boolean;
   initialize: () => Promise<void>;
+  setServerSwitching: (isSwitching: boolean) => void;
   sendCode: (email: string) => Promise<void>;
   verifyCode: (email: string, code: string) => Promise<User>;
   logout: () => Promise<void>;
@@ -80,6 +83,7 @@ export const useAuthStore = create<AuthState>((set) => {
   return {
     user: null,
     isLoading: true,
+    isServerSwitching: false,
 
     initialize: async () => {
       // Reset in-memory state first: initialize() runs both on cold start and
@@ -98,6 +102,8 @@ export const useAuthStore = create<AuthState>((set) => {
         set({ user: null, isLoading: false });
       }
     },
+
+    setServerSwitching: (isSwitching) => set({ isServerSwitching: isSwitching }),
 
   sendCode: async (email) => {
     await api.sendCode(email);

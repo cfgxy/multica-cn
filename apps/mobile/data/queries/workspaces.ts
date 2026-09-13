@@ -6,3 +6,9 @@ export const workspaceListOptions = () =>
     queryKey: ["workspaces"] as const,
     queryFn: ({ signal }) => api.listWorkspaces({ signal }),
   });
+
+/** Use after an explicit navigation confirmation to re-check live membership. */
+export const freshWorkspaceListOptions = () => ({
+  ...workspaceListOptions(),
+  staleTime: 0,
+});

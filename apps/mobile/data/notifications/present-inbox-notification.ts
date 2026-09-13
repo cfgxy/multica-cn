@@ -85,14 +85,25 @@ export async function refreshInboxNotificationPermission(): Promise<boolean> {
   }
 }
 
+/** Identity the notification was posted under (RUYI-131). Carried in the
+ *  payload so a tap can be compared against whatever server/workspace is
+ *  active at tap time instead of navigating blind. */
+export interface InboxNotificationOrigin {
+  serverId: string;
+  workspaceSlug: string;
+  /** Display snapshots, already truncated by the caller; null when unknown. */
+  workspaceName: string | null;
+  serverName: string | null;
+}
+
 /** Post a status-bar notification for one inbox item. Fire-and-forget:
  *  failures are logged, never thrown into the WS dispatch loop. */
 export async function presentInboxNotification(
   item: InboxItem,
   bodyText: string,
-  workspaceSlug: string,
+  origin: InboxNotificationOrigin,
 ): Promise<void> {
-  if (!item.issue_id) return;
+  if (!item.issue_id || !origin.workspaceSlug) return;
   try {
     await Notifications.scheduleNotificationAsync({
       content: {
@@ -105,7 +116,15 @@ export async function presentInboxNotification(
         data: {
           inbox_id: item.id,
           issue_id: item.issue_id,
-          workspace_slug: workspaceSlug,
+          workspace_slug: origin.workspaceSlug,
+          // RUYI-131: routing identity. Names are display-only snapshots —
+          // a later rename shows the old name, which is correct for what is
+          // by definition a historical event.
+          server_id: origin.serverId,
+          ...(origin.workspaceName
+            ? { workspace_name: origin.workspaceName }
+            : {}),
+          ...(origin.serverName ? { server_name: origin.serverName } : {}),
         },
       },
       // Deliver now, through the inbox channel (ChannelAwareTriggerInput —

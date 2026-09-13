@@ -126,6 +126,22 @@
     },
     "label": {
       "reacted_with": "{{emoji}} 로 반응함"
+    },
+    "bridge": {
+      "cross_workspace_title": "워크스페이스를 전환할까요?",
+      "cross_workspace_message": "이 알림은 워크스페이스 “{{name}}”에서 왔습니다. 해당 워크스페이스에서 태스크를 열까요?",
+      "cross_server_title": "서버를 전환할까요?",
+      "cross_server_message": "이 알림은 서버 “{{server}}” · 워크스페이스 “{{workspace}}”에서 왔습니다. 전환한 뒤 태스크를 엽니다.",
+      "confirm_switch": "전환",
+      "cancel": "취소",
+      "switch_failed_title": "전환 실패",
+      "switch_failed_message": "서버를 전환하지 못했습니다.",
+      "workspace_failed_title": "알림을 열 수 없음",
+      "workspace_failed_message": "워크스페이스를 전환하지 못했습니다.",
+      "retry": "다시 시도",
+      "unavailable_title": "알림을 열 수 없음",
+      "unavailable_message": "이 알림이 발생한 서버가 서버 목록에 더 이상 없습니다.",
+      "legacy_unavailable_message": "이 오래된 알림에는 원본 서버 정보가 없어 안전하게 열 수 없습니다. 받은편지함에서 태스크를 확인하세요."
     }
   }
 }
