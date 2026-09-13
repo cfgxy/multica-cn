@@ -1,4 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev daemon-build daemon-install daemon-update daemon-preflight mcp-install
+.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev daemon-build daemon-install daemon-update daemon-preflight daemon-uninstall mcp-install
 
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
@@ -151,6 +151,10 @@ daemon-build: ## Build the runtime daemon CLI with release version metadata
 
 # 部署参数：以「执行 make 的普通用户」为 daemon 运行用户（内部自动 sudo，勿用 sudo make）。
 # 换机器按规格覆盖：make daemon-install CPU_QUOTA=400% MEMORY_HIGH=8G MEMORY_MAX=12G
+# PROFILE 决定 daemon 读取的 multica 配置（systemd 实例名即 profile 名）：
+#   make daemon-install                → multica-daemon@default，读 ~/.multica/
+#   make daemon-install PROFILE=idata  → multica-daemon@idata，读 ~/.multica/profiles/idata/
+PROFILE ?= default
 CPU_QUOTA ?= 600%
 MEMORY_HIGH ?= 24G
 MEMORY_MAX ?= 28G
@@ -158,10 +162,27 @@ MEMORY_MAX ?= 28G
 USER ?= $(shell id -un)
 GROUP ?= $(shell id -gn)
 
-daemon-install: daemon-build ## Install daemon binary + systemd units as the INVOKING user (run WITHOUT sudo; restarts the daemon)
+# Daemon 统一纳管为 systemd 模板实例 multica-daemon@<profile>，实例名即 profile 名。
+# 实例名 default 是保留字（模板内特判为不带 --profile 的默认 profile），因此旧机器上
+# 的非模板 multica-daemon.service 由 PROFILE=default 安装自动迁移：disable 并删除旧
+# 单元 → enable multica-daemon@default；状态目录与 daemon.id 不变，服务端视角是
+# 同一个 daemon。多个连接 = 逐个 profile 各跑一次。
+daemon-install: daemon-build ## Install daemon as systemd instance: make daemon-install [PROFILE=idata] (default profile when PROFILE omitted)
 	@if [ -n "$$SUDO_USER" ]; then echo "ERROR: run 'make daemon-install' as the regular user (sudo is invoked internally)"; exit 1; fi
 	@test -f ~/.bashrc || echo "WARN: ~/.bashrc 不存在，daemon 将缺少登录环境"
+	@if [ "$(PROFILE)" = default ]; then \
+		test -f $(HOME)/.multica/config.json || { echo "ERROR: default profile is not authenticated — run 'multica login' first"; exit 1; }; \
+	else \
+		test -f $(HOME)/.multica/profiles/$(PROFILE)/config.json || { echo "ERROR: profile '$(PROFILE)' is not authenticated — run 'multica --profile $(PROFILE) login' first"; exit 1; }; \
+	fi
 	install -m755 server/bin/multica $(HOME)/.local/bin/multica
+	@if [ "$(PROFILE)" = default ]; then \
+		sudo systemctl disable --now multica-daemon.service >/dev/null 2>&1 || true; \
+		sudo rm -f /etc/systemd/system/multica-daemon.service; \
+		$(HOME)/.local/bin/multica daemon stop >/dev/null 2>&1 || true; \
+	else \
+		$(HOME)/.local/bin/multica daemon stop --profile $(PROFILE) >/dev/null 2>&1 || true; \
+	fi
 	sed -e 's|@USER@|$(USER)|g' \
 	    -e 's|@GROUP@|$(GROUP)|g' \
 	    -e 's|@HOME@|$(HOME)|g' \
@@ -169,23 +190,58 @@ daemon-install: daemon-build ## Install daemon binary + systemd units as the INV
 	    -e 's|@CPU_QUOTA@|$(CPU_QUOTA)|g' \
 	    -e 's|@MEMORY_HIGH@|$(MEMORY_HIGH)|g' \
 	    -e 's|@MEMORY_MAX@|$(MEMORY_MAX)|g' \
-	    deploy/multica-daemon.service.template > /tmp/multica-daemon.service
-	sudo install -m644 /tmp/multica-daemon.service /etc/systemd/system/multica-daemon.service
+	    deploy/multica-daemon@.service.template > /tmp/multica-daemon@.service
+	sudo install -m644 /tmp/multica-daemon@.service /etc/systemd/system/multica-daemon@.service
 	sudo install -m644 deploy/multica-oom-guard.service /etc/systemd/system/multica-oom-guard.service
 	sudo install -m755 deploy/oom-guard.sh /usr/local/sbin/multica-oom-guard.sh
 	sudo systemctl daemon-reload
 	sudo systemctl enable --now multica-oom-guard.service
-	sudo systemctl restart multica-daemon.service
-	@systemctl --no-pager --lines=0 status multica-daemon.service
+	sudo systemctl enable --now multica-daemon@$(PROFILE).service
+	sudo systemctl restart multica-oom-guard.service
+	@systemctl --no-pager --lines=0 status multica-daemon@$(PROFILE).service
 	@bash deploy/oom-preflight.sh || true
+	@echo "daemon profile $(PROFILE) → multica-daemon@$(PROFILE)；日志: multica daemon logs$(if $(filter default,$(PROFILE)),, --profile $(PROFILE))"
 
 daemon-preflight: ## Read-only check of kernel/system prerequisites for the OOM guard
 	@bash deploy/oom-preflight.sh
 
-daemon-update: daemon-build ## Update the daemon binary only, then graceful restart (no unit changes)
+daemon-update: daemon-build ## Update the daemon binary only, then graceful restart of multica-daemon@<PROFILE> (run once per installed profile)
 	install -m755 server/bin/multica $(HOME)/.local/bin/multica
-	sudo systemctl restart multica-daemon.service
-	@systemctl --no-pager --lines=0 status multica-daemon.service
+	sudo systemctl restart multica-daemon@$(PROFILE).service
+	@systemctl --no-pager --lines=0 status multica-daemon@$(PROFILE).service
+
+# 卸载 = 只清 systemd 启动项与 oom-guard：默认 multica-daemon.service、模板
+# multica-daemon@.service 及全部已启用实例、guard 脚本/单元，并顺带停掉手动
+# 后台启动的 daemon。保留 ~/.multica（各 profile 的连接配置/token）、
+# ~/multica_workspaces* 和 CLI 二进制；PURGE=1 额外删除 ~/.local/bin/multica。
+daemon-uninstall: ## Remove daemon systemd units (default + all @profile instances) + OOM guard; keeps profiles/tokens; PURGE=1 also removes the CLI binary
+	@if [ -n "$$SUDO_USER" ]; then echo "ERROR: run 'make daemon-uninstall' as the regular user (sudo is invoked internally)"; exit 1; fi
+	@echo "== 停止并禁用 multica-oom-guard =="
+	@sudo systemctl disable --now multica-oom-guard.service >/dev/null 2>&1 || true
+	@echo "== 停止并禁用默认实例 multica-daemon.service（如已安装）=="
+	@sudo systemctl disable --now multica-daemon.service >/dev/null 2>&1 || true
+	@echo "== 停止并禁用全部 multica-daemon@<profile> 实例 =="
+	@units="$$(systemctl list-unit-files 'multica-daemon@*.service' --no-legend 2>/dev/null | awk '{print $$1}'; \
+	        ls /etc/systemd/system/multi-user.target.wants/ 2>/dev/null | grep '^multica-daemon@' || true)"; \
+	for u in $$units; do sudo systemctl disable --now "$$u" >/dev/null 2>&1 || true; done
+	@echo "== 停掉手动后台启动的 daemon（如有）=="
+	@$(HOME)/.local/bin/multica daemon stop >/dev/null 2>&1 || true; \
+	for cfg in $(HOME)/.multica/profiles/*/config.json; do \
+		[ -f "$$cfg" ] || continue; \
+		p=$${cfg#*/profiles/}; p=$${p%/config.json}; \
+		$(HOME)/.local/bin/multica daemon stop --profile "$$p" >/dev/null 2>&1 || true; \
+	done
+	@echo "== 删除单元文件与 guard 脚本 =="
+	@sudo rm -f /etc/systemd/system/multica-daemon.service \
+	            /etc/systemd/system/multica-daemon@.service \
+	            /etc/systemd/system/multica-oom-guard.service \
+	            /usr/local/sbin/multica-oom-guard.sh
+	@sudo systemctl daemon-reload
+	@sudo systemctl reset-failed 2>/dev/null || true
+	@if [ "$(PURGE)" = 1 ]; then rm -f $(HOME)/.local/bin/multica && echo "== 已删除 $(HOME)/.local/bin/multica（PURGE=1）=="; fi
+	@echo "== 卸载完成 =="
+	@echo "   已移除: multica-daemon.service / multica-daemon@.service 及全部实例 / multica-oom-guard / guard 脚本"
+	@echo "   已保留: ~/.multica/（各 profile 连接配置与 token）、~/multica_workspaces*/$(if $(PURGE),,、CLI 二进制 ~/.local/bin/multica)"
 
 # ---------- MCP (local stdio server, client installers) ----------
 ##@ MCP
