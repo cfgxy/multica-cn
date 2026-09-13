@@ -34,6 +34,10 @@ import { useActorLookup } from "@/data/use-actor-name";
 import { findProject, projectListOptions } from "@/data/queries/projects";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { displayLocale } from "@/lib/display-locale";
+import {
+  issuePickerHref,
+  type IssuePickerField,
+} from "@/lib/issue-picker-routes";
 import { localizedStatusLabel, priorityLabel } from "@/lib/issue-status";
 import { useIssueStatuses } from "@/lib/use-issue-statuses";
 import { useT } from "@/lib/use-t";
@@ -49,29 +53,6 @@ function priorityChipLabel(priority: IssuePriority, t: TFn): string {
     ? t("issues:detail.prop_priority", "Priority")
     : priorityLabel(priority);
 }
-
-/**
- * The picker fields the issue-detail attribute row can open. Bound to a
- * map of typed Expo Router pathnames so typos become compile errors
- * (previously the call site used `as never` on a template string, which
- * silently accepted anything).
- */
-type IssuePickerField =
-  | "status"
-  | "priority"
-  | "assignee"
-  | "label"
-  | "project"
-  | "due-date";
-
-const ISSUE_PICKER_PATHNAMES = {
-  status: "/[workspace]/issue/[id]/picker/status",
-  priority: "/[workspace]/issue/[id]/picker/priority",
-  assignee: "/[workspace]/issue/[id]/picker/assignee",
-  label: "/[workspace]/issue/[id]/picker/label",
-  project: "/[workspace]/issue/[id]/picker/project",
-  "due-date": "/[workspace]/issue/[id]/picker/due-date",
-} as const satisfies Record<IssuePickerField, string>;
 
 // due_date is a calendar day — format timezone-safely so the day never shifts
 // with the viewer's offset. Mirrors web's formatDate in list-row/board-card.
@@ -117,11 +98,8 @@ export function AttributeRow({ issue }: { issue: Issue }) {
   const dueLabel = formatDueDate(issue.due_date);
 
   const openPicker = (field: IssuePickerField) => {
-    if (!wsSlug) return;
-    router.push({
-      pathname: ISSUE_PICKER_PATHNAMES[field],
-      params: { workspace: wsSlug, id: issue.id },
-    });
+    const href = issuePickerHref(field, wsSlug, issue.id);
+    if (href) router.push(href);
   };
 
   return (

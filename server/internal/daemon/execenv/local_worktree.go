@@ -490,6 +490,12 @@ func PrepareLocalWorktree(params LocalWorktreeParams, logger *slog.Logger) (*Loc
 	// over the worktree before Finalize, so the sidecars are simply gone by the
 	// time anything is committed. That also preserves a genuine agent edit to a
 	// tracked CLAUDE.md, which a blanket exclude would have swallowed.
+	//
+	// The state directories the runtimes write themselves (.omc/, .zcode/, and
+	// the rest of runtimeStateDirNames) get no cleanup pass — nothing the
+	// daemon owns — so the staging pathspecs (stagingExcludes) prune them from
+	// the snapshot and the delivered branch instead. Tracked files under them
+	// are repo content, not noise, and `add -u` still commits those.
 
 	if logger != nil {
 		logger.Info("execenv: local worktree ready",
@@ -808,8 +814,38 @@ func (w *LocalWorktree) commitAll(logger *slog.Logger) (bool, error) {
 // commit" case and (false, err) for a real failure — the distinction callers
 // need to decide whether the tree is safe to discard.
 func commitEverything(worktreePath, message string, allowEmpty bool) (bool, error) {
-	if out, err := runGit(worktreePath, "add", "-A"); err != nil {
+	// Two steps rather than one `add -A`. Agent runtimes create and delete
+	// state files (.omc/, .zcode/, ...) in the worktree right up to the moment
+	// the agent exits, and a plain `add -A` walks those untracked directories:
+	// a file removed between the walk and the stat made the whole add die with
+	// "unable to stat ... No such file or directory" (exit 128), failing the
+	// task with its work stranded uncommitted. `add -u` touches only tracked
+	// index entries, so it neither scans the churning directories nor races on
+	// them; the second step then stages untracked work with those directories
+	// pruned by pathspec. A genuinely tracked file under one of them is repo
+	// content, not noise, and the first step still commits it.
+	if out, err := runGit(worktreePath, "add", "-u"); err != nil {
+		return false, fmt.Errorf("git add -u: %s: %w", strings.TrimSpace(out), err)
+	}
+	addArgs := append([]string{"add", "-A", "--"}, stagingExcludes()...)
+	if out, err := runGit(worktreePath, addArgs...); err != nil {
 		return false, fmt.Errorf("git add: %s: %w", strings.TrimSpace(out), err)
+	}
+	// Nothing staged means nothing to record. Asking the index directly rather
+	// than parsing git's wording: with the runtime directories excluded, the
+	// leftover untracked files make commit phrase it as "nothing added to
+	// commit but untracked files present" — a shape the old "nothing to
+	// commit" match never saw, and one that read like a real failure. The
+	// allowEmpty case must still run: a clean base's baseline is an
+	// intentional empty commit.
+	if !allowEmpty {
+		staged, err := runGit(worktreePath, "diff", "--cached", "--name-only")
+		if err != nil {
+			return false, fmt.Errorf("git diff --cached: %s: %w", strings.TrimSpace(staged), err)
+		}
+		if strings.TrimSpace(staged) == "" {
+			return false, nil
+		}
 	}
 	// --no-verify: the user's commit hooks are written for the user's own
 	// workflow (interactive linters, test suites, signing prompts) and a hook
@@ -956,20 +992,34 @@ func captureUserSnapshot(gitRoot, envRoot, headSHA string, logger *slog.Logger) 
 	// not a failure — read-tree rebuilds a correct index, merely a colder one —
 	// so the fallback runs on any error from the add, not just from the copy.
 	seeded := seedSnapshotIndex(gitRoot, indexPath)
-	addArgs := append([]string{"add", "-A", "--"}, snapshotExcludes()...)
-	if out, err := runGitEnv(gitRoot, env, addArgs...); err != nil {
+	// Tracked content everywhere first, then everything the pathspecs leave.
+	// `-u` walks only the index, so it neither reads nor races on the untracked
+	// runtime state the second step excludes — while a genuinely tracked file
+	// under an excluded directory (a user-committed .vscode/settings.json, say)
+	// still reaches the snapshot with its working-tree content.
+	stage := func() error {
+		if out, err := runGitEnv(gitRoot, env, "add", "-u"); err != nil {
+			return fmt.Errorf("git add -u: %s: %w", strings.TrimSpace(out), err)
+		}
+		addArgs := append([]string{"add", "-A", "--"}, stagingExcludes()...)
+		if out, err := runGitEnv(gitRoot, env, addArgs...); err != nil {
+			return fmt.Errorf("git add: %s: %w", strings.TrimSpace(out), err)
+		}
+		return nil
+	}
+	if err := stage(); err != nil {
 		if !seeded {
-			return "", fmt.Errorf("git add: %s: %w", strings.TrimSpace(out), err)
+			return "", err
 		}
 		if logger != nil {
 			logger.Debug("execenv: snapshot index seeded from the repository index was unusable; rebuilding it",
-				"git_root", gitRoot, "output", strings.TrimSpace(out), "error", err)
+				"git_root", gitRoot, "error", err)
 		}
 		if out, resetErr := runGitEnv(gitRoot, env, "read-tree", headSHA); resetErr != nil {
 			return "", fmt.Errorf("git read-tree: %s: %w", strings.TrimSpace(out), resetErr)
 		}
-		if out, retryErr := runGitEnv(gitRoot, env, addArgs...); retryErr != nil {
-			return "", fmt.Errorf("git add: %s: %w", strings.TrimSpace(out), retryErr)
+		if err := stage(); err != nil {
+			return "", err
 		}
 	}
 	tree, err := runGitTrimmedEnv(gitRoot, env, "write-tree")
@@ -1002,16 +1052,22 @@ func seedSnapshotIndex(gitRoot, path string) bool {
 	return copyFile(src, path) == nil
 }
 
-// snapshotExcludes keeps the daemon's own sidecars out of the user's snapshot.
-// They are untracked files in the user's directory whenever an in_place task is
-// mid-flight on the same path, or was killed before its cleanup ran; carrying
-// them would put another issue's brief inside this task's worktree — where the
-// agent would read it as its own context — and commit it to the branch.
-// Matched at any depth, because an in_place resource may point at a
-// subdirectory of this repo.
-func snapshotExcludes() []string {
-	specs := make([]string, 0, len(multicaSidecarDirNames))
-	for _, name := range multicaSidecarDirNames {
+// stagingExcludes are the pathspecs every daemon-driven `git add -A` carries —
+// the user's snapshot and a task worktree's finalize alike. They keep out the
+// daemon's own sidecars, which an in_place task leaves untracked in the user's
+// directory whenever it is mid-flight on the same path or was killed before its
+// cleanup ran: carrying them would put another issue's brief inside this
+// task's worktree — where the agent would read it as its own context — and
+// commit it to the branch. They also prune the state directories agent CLIs
+// and editors churn while a task runs (runtimeStateDirNames), whose vanishing
+// files used to kill the finalize add outright. Matched at any depth, because
+// a resource may point at a subdirectory of this repo.
+func stagingExcludes() []string {
+	names := make([]string, 0, len(multicaSidecarDirNames)+len(runtimeStateDirNames))
+	names = append(names, multicaSidecarDirNames...)
+	names = append(names, runtimeStateDirNames...)
+	specs := make([]string, 0, len(names))
+	for _, name := range names {
 		specs = append(specs, ":(exclude,glob)**/"+name+"/**")
 	}
 	return specs
@@ -1682,7 +1738,11 @@ func checkUntrackedReplayable(gitRoot string, logger *slog.Logger) error {
 		skipped int
 	)
 	for _, rel := range strings.Split(out, "\x00") {
-		if rel == "" || isMulticaSidecarPath(rel) {
+		// Sidecars and runtime state are pruned from the snapshot itself, so
+		// they never reach a worktree; counting them here would refuse a whole
+		// directory because its runtime wrote a large session tree, for content
+		// that will never be replayed anyway.
+		if rel == "" || isMulticaSidecarPath(rel) || isRuntimeStatePath(rel) {
 			continue
 		}
 		info, statErr := os.Lstat(filepath.Join(gitRoot, rel))
@@ -1737,6 +1797,42 @@ var multicaSidecarDirNames = []string{
 func isMulticaSidecarPath(rel string) bool {
 	for _, seg := range strings.Split(filepath.ToSlash(rel), "/") {
 		for _, name := range multicaSidecarDirNames {
+			if seg == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// runtimeStateDirNames are the state directories agent CLIs and editors write
+// wherever they happen to run — in the task worktree while the task runs, and
+// in the user's own checkout between tasks. Session logs, cooldown files,
+// discovery state: they churn and vanish for the runtime's own bookkeeping
+// with no daemon in the loop, which is exactly the shape that made a
+// finalizing `git add -A` die on "unable to stat" (exit 128) and strand
+// finished tasks with their work uncommitted. None of it belongs on a
+// delivered branch or in a replayed snapshot, so every staging path prunes
+// them. Unlike multicaSidecarDirNames nothing here is written or cleaned by
+// the daemon itself, so a cleanup pass cannot cover them.
+var runtimeStateDirNames = []string{
+	".agent",
+	".claude",
+	".codex",
+	".kimi",
+	".omc",
+	".omx",
+	".vscode",
+	".zcode",
+}
+
+// isRuntimeStatePath reports whether a repo-relative path lives under one of
+// the runtime state directories. Matched as a whole path segment at ANY depth,
+// like isMulticaSidecarPath: a resource may point at a subdirectory, and the
+// runtimes write their state below wherever they are rooted.
+func isRuntimeStatePath(rel string) bool {
+	for _, seg := range strings.Split(filepath.ToSlash(rel), "/") {
+		for _, name := range runtimeStateDirNames {
 			if seg == name {
 				return true
 			}
