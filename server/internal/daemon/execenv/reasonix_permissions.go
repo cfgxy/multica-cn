@@ -87,7 +87,13 @@ func reasonixOwnerPermissions(path string) (map[string]any, error) {
 // file overrides what it declares, so restating every key the owner set is what
 // keeps their policy intact whether Reasonix merges these layers per key or per
 // table.
-func withReasonixAskDenied(ownerPermissions map[string]any) (map[string]any, error) {
+//
+// denySubagentTools additionally appends the task-delegation tool names
+// (subagentDenyTools) unless the agent's runtime_config allowed subagents —
+// same fail-closed posture as the claude --settings deny. Rule names that
+// don't match a Reasonix tool are inert, so reusing the claude-family
+// spellings costs nothing if Reasonix grows its own names later.
+func withReasonixAskDenied(ownerPermissions map[string]any, denySubagentTools bool) (map[string]any, error) {
 	deny, err := reasonixDenyList(ownerPermissions["deny"])
 	if err != nil {
 		return nil, err
@@ -95,6 +101,20 @@ func withReasonixAskDenied(ownerPermissions map[string]any) (map[string]any, err
 	merged := make(map[string]any, len(ownerPermissions)+1)
 	for k, v := range ownerPermissions {
 		merged[k] = v
+	}
+	if denySubagentTools {
+		for _, tool := range subagentDenyTools {
+			known := false
+			for _, rule := range deny {
+				if rule == tool {
+					known = true
+					break
+				}
+			}
+			if !known {
+				deny = append(deny, tool)
+			}
+		}
 	}
 	for _, rule := range deny {
 		if rule == reasonixAskTool {
@@ -129,13 +149,14 @@ func reasonixDenyList(raw any) ([]string, error) {
 }
 
 // reasonixProjectConfig renders the task's reasonix.toml from the owner's config
-// at userConfigPath (which need not exist).
-func reasonixProjectConfig(userConfigPath string) ([]byte, error) {
+// at userConfigPath (which need not exist). denySubagentTools mirrors the
+// agent's runtime_config.allow_subagents=false posture.
+func reasonixProjectConfig(userConfigPath string, denySubagentTools bool) ([]byte, error) {
 	ownerPermissions, err := reasonixOwnerPermissions(userConfigPath)
 	if err != nil {
 		return nil, err
 	}
-	permissions, err := withReasonixAskDenied(ownerPermissions)
+	permissions, err := withReasonixAskDenied(ownerPermissions, denySubagentTools)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +168,8 @@ func reasonixProjectConfig(userConfigPath string) ([]byte, error) {
 }
 
 // writeReasonixProjectConfig lays down the per-task reasonix.toml in workDir,
-// denying the `ask` tool on top of the runtime owner's own permissions.
+// denying the `ask` tool — and, unless allowSubagents, the task-delegation
+// tools — on top of the runtime owner's own permissions.
 // taskEnv is the agent's sanitized custom_env, which decides — together with the
 // daemon's own environment — which user config the Reasonix child will load
 // (reasonix_user_config.go).
@@ -160,12 +182,12 @@ func reasonixProjectConfig(userConfigPath string) ([]byte, error) {
 //
 // The same holds when the owner's config cannot be read or restated: the daemon
 // writes nothing rather than a table that silently drops their deny rules.
-func writeReasonixProjectConfig(workDir string, taskEnv map[string]string, manifest *sidecarManifest, logger *slog.Logger) error {
+func writeReasonixProjectConfig(workDir string, taskEnv map[string]string, manifest *sidecarManifest, allowSubagents bool, logger *slog.Logger) error {
 	if workDir == "" {
 		return nil
 	}
 	userConfig := reasonixEnv(taskEnv).userConfigLoadPath()
-	content, err := reasonixProjectConfig(userConfig)
+	content, err := reasonixProjectConfig(userConfig, !allowSubagents)
 	if err != nil {
 		if logger != nil {
 			logger.Warn("execenv: cannot restate the reasonix user permissions; leaving the task without a project config — the reasonix ask tool stays enabled for this task",
