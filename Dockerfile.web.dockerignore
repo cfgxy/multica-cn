@@ -7,6 +7,7 @@
 !pnpm-workspace.yaml
 !turbo.json
 !.npmrc
+!patches/**
 !apps/web/**
 apps/web/.next/**
 apps/web/node_modules/**
