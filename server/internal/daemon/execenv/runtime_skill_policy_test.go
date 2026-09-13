@@ -152,6 +152,29 @@ func TestSubagentToolsAllowed(t *testing.T) {
 	}
 }
 
+func TestMaxTurnsFromRuntimeConfig(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		raw  json.RawMessage
+		want int
+	}{
+		{"empty config", nil, 0},
+		{"empty object", json.RawMessage("{}"), 0},
+		{"positive", json.RawMessage(`{"max_turns": 400}`), 400},
+		{"negative treated as off", json.RawMessage(`{"max_turns": -5}`), 0},
+		{"malformed", json.RawMessage(`{invalid`), 0},
+		{"non-integer", json.RawMessage(`{"max_turns": "400"}`), 0},
+		{"other keys ignored", json.RawMessage(`{"allow_subagents":true,"max_turns":250}`), 250},
+	}
+	for _, tc := range cases {
+		if got := MaxTurnsFromRuntimeConfig(tc.raw); got != tc.want {
+			t.Errorf("%s: MaxTurnsFromRuntimeConfig = %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestEnsureCodexDisabledSkillsConfig(t *testing.T) {
 	t.Parallel()
 
