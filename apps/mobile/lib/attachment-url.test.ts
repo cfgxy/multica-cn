@@ -23,6 +23,7 @@ vi.mock("@/data/server-store", () => ({
 }));
 
 import {
+  pickAttachmentImageUrl,
   resolveAttachmentUrl,
   resolveAttachmentUrlWithBase,
 } from "./attachment-url";
@@ -32,22 +33,22 @@ describe("resolveAttachmentUrlWithBase", () => {
 
   it("prepends the API base for a server-relative path", () => {
     expect(
-      resolveAttachmentUrlWithBase("/api/attachments/att-1/download", BASE),
-    ).toBe("https://api.example.test/api/attachments/att-1/download");
+      resolveAttachmentUrlWithBase("/api/attachments/3fa85f64-5717-4562-b3fc-2c963f66afa6/download", BASE),
+    ).toBe("https://api.example.test/api/attachments/3fa85f64-5717-4562-b3fc-2c963f66afa6/download");
   });
 
   it("trims a trailing slash on the API base before joining", () => {
     expect(
       resolveAttachmentUrlWithBase(
-        "/api/attachments/att-1/download",
+        "/api/attachments/3fa85f64-5717-4562-b3fc-2c963f66afa6/download",
         "https://api.example.test/",
       ),
-    ).toBe("https://api.example.test/api/attachments/att-1/download");
+    ).toBe("https://api.example.test/api/attachments/3fa85f64-5717-4562-b3fc-2c963f66afa6/download");
   });
 
   it("passes an absolute https URL through unchanged (CloudFront / presigned)", () => {
     const signed =
-      "https://cdn.example.test/att-1.bin?Policy=p&Signature=s&Key-Pair-Id=k";
+      "https://cdn.example.test/3fa85f64-5717-4562-b3fc-2c963f66afa6.bin?Policy=p&Signature=s&Key-Pair-Id=k";
     expect(resolveAttachmentUrlWithBase(signed, BASE)).toBe(signed);
   });
 
@@ -69,8 +70,8 @@ describe("resolveAttachmentUrlWithBase", () => {
     // own document/page origin. RN doesn't have one, but exercising this
     // branch keeps the contract explicit.
     expect(
-      resolveAttachmentUrlWithBase("/api/attachments/att-1/download", ""),
-    ).toBe("/api/attachments/att-1/download");
+      resolveAttachmentUrlWithBase("/api/attachments/3fa85f64-5717-4562-b3fc-2c963f66afa6/download", ""),
+    ).toBe("/api/attachments/3fa85f64-5717-4562-b3fc-2c963f66afa6/download");
   });
 });
 
@@ -119,6 +120,53 @@ describe("composer file chip — completed non-image attachment", () => {
   });
 });
 
+describe("pickAttachmentImageUrl (RUYI-141)", () => {
+  // 未配置签名器的部署：download_url 与 markdown_url 都渲染为鉴权相对路径
+  // `/api/attachments/{id}/download`（见 server/internal/handler/file.go
+  // attachmentToResponse / buildMarkdownURL），RN 的 Image.getSize 无法带
+  // Authorization 头访问，会 401 落回灰框占位。`url` 是同一部署下匿名可达
+  // 的静态存储路径（RUYI-133 QA 实测证据）。
+  const unsigned = {
+    url: "/uploads/3fa85f64-5717-4562-b3fc-2c963f66afa6/photo.png",
+    download_url: "/api/attachments/3fa85f64-5717-4562-b3fc-2c963f66afa6/download",
+    markdown_url: "/api/attachments/3fa85f64-5717-4562-b3fc-2c963f66afa6/download",
+  };
+
+  it("falls back to the anonymous static `url` when download_url/markdown_url are the auth-gated stable path", () => {
+    expect(pickAttachmentImageUrl(unsigned)).toBe(unsigned.url);
+  });
+
+  it("falls back to `url` even when markdown_url is absolute but still points at the auth-gated path (PublicURL configured, no CDN)", () => {
+    const withPublicUrl = {
+      ...unsigned,
+      markdown_url: "https://app.example.test/api/attachments/3fa85f64-5717-4562-b3fc-2c963f66afa6/download",
+    };
+    expect(pickAttachmentImageUrl(withPublicUrl)).toBe(withPublicUrl.url);
+  });
+
+  it("prefers a CloudFront/S3-signed absolute download_url — signer deployments must not regress", () => {
+    const signed = {
+      url: "s3://private-bucket/3fa85f64-5717-4562-b3fc-2c963f66afa6/photo.png",
+      download_url:
+        "https://cdn.example.test/3fa85f64-5717-4562-b3fc-2c963f66afa6/photo.png?Policy=p&Signature=s&Key-Pair-Id=k",
+      markdown_url: "https://app.example.test/api/attachments/3fa85f64-5717-4562-b3fc-2c963f66afa6/download",
+    };
+    expect(pickAttachmentImageUrl(signed)).toBe(signed.download_url);
+  });
+
+  it("falls back to the auth-gated download_url when no candidate is credential-free", () => {
+    // Degenerate case (should not occur from a real server response, but
+    // pinning it keeps the function total rather than throwing): every
+    // candidate matches the stable-path shape.
+    const allGated = {
+      url: "/api/attachments/3fa85f64-5717-4562-b3fc-2c963f66afa6/download",
+      download_url: "/api/attachments/3fa85f64-5717-4562-b3fc-2c963f66afa6/download",
+      markdown_url: "/api/attachments/3fa85f64-5717-4562-b3fc-2c963f66afa6/download",
+    };
+    expect(pickAttachmentImageUrl(allGated)).toBe(allGated.download_url);
+  });
+});
+
 describe("resolveAttachmentUrl (store-bound)", () => {
   it("matches the with-base form for an absolute URL regardless of the active server", () => {
     // For absolute URLs the base is irrelevant — guarantees pass-through
@@ -130,8 +178,8 @@ describe("resolveAttachmentUrl (store-bound)", () => {
   it("resolves a server-relative path against the ACTIVE server's API base", () => {
     // RUYI-4: 这是应用内切换服务器后附件必须跟着走的那条路径 —— 地址在
     // 调用时从 store 现取,不是模块加载期绑死的。
-    expect(resolveAttachmentUrl("/api/attachments/att-1/download")).toBe(
-      "https://api.example.test/api/attachments/att-1/download",
+    expect(resolveAttachmentUrl("/api/attachments/3fa85f64-5717-4562-b3fc-2c963f66afa6/download")).toBe(
+      "https://api.example.test/api/attachments/3fa85f64-5717-4562-b3fc-2c963f66afa6/download",
     );
   });
 
