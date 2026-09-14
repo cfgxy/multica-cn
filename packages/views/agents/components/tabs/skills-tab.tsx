@@ -20,10 +20,6 @@ import type {
 import { api, ApiError } from "@multica/core/api";
 import { useWorkspaceId } from "@multica/core/hooks";
 import {
-  allowsSubagents,
-  mergeSubagentAllowance,
-} from "@multica/core/agents";
-import {
   isRuntimeUsableForUser,
   runtimeCapabilitiesOptions,
   runtimeDisplayLabel,
@@ -35,7 +31,6 @@ import {
 } from "@multica/core/workspace/queries";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
-import { Label } from "@multica/ui/components/ui/label";
 import {
   Dialog,
   DialogContent,
@@ -147,26 +142,6 @@ export function SkillsTab({
     }
   };
 
-  const subagentsAllowed = allowsSubagents(agent.runtime_config);
-  const [subagentBusy, setSubagentBusy] = useState(false);
-  const handleSubagentsToggle = async (allow: boolean) => {
-    setSubagentBusy(true);
-    try {
-      await api.updateAgent(agent.id, {
-        runtime_config: mergeSubagentAllowance(agent.runtime_config, allow),
-      });
-      await refreshAgent();
-    } catch (error) {
-      toast.error(
-        error instanceof Error
-          ? error.message
-          : t(($) => $.tab_body.skills.subagents_toggle_failed_toast),
-      );
-    } finally {
-      setSubagentBusy(false);
-    }
-  };
-
   const runtimeSkills = runtimeQuery.data?.skills ?? [];
 
   return (
@@ -174,26 +149,6 @@ export function SkillsTab({
       <p className="text-body leading-6 text-muted-foreground">
         {t(($) => $.tab_body.skills.intro)}
       </p>
-
-      <div className="flex items-center justify-between gap-3 rounded-lg border bg-surface-raised/40 p-3">
-        <div className="min-w-0">
-          <Label htmlFor="allow-subagents" className="text-caption font-medium">
-            {t(($) => $.tab_body.skills.subagents_title)}
-          </Label>
-          <p className="text-caption text-muted-foreground">
-            {t(($) => $.tab_body.skills.subagents_hint)}
-          </p>
-        </div>
-        {canEdit && (
-          <Switch
-            id="allow-subagents"
-            checked={subagentsAllowed}
-            disabled={subagentBusy}
-            onCheckedChange={(checked: boolean) => handleSubagentsToggle(checked)}
-            aria-label={t(($) => $.tab_body.skills.subagents_toggle_aria)}
-          />
-        )}
-      </div>
 
       <CapabilitySection
         title={t(($) => $.tab_body.skills.assigned_title)}
