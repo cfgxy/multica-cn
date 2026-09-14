@@ -170,6 +170,10 @@
     "prop_speed": "速度",
     "prop_visibility": "公開範囲",
     "prop_concurrency": "同時実行数",
+    "prop_subagents": "サブエージェントツール",
+    "prop_subagents_hint": "オフ（既定）の場合、ランタイムは Agent/Task ツールを強制的に拒否し、このエージェントはサブエージェントに作業を委譲できません。必要なエージェントのみオンにしてください。",
+    "prop_subagents_toggle_aria": "サブエージェントツールを許可",
+    "subagents_toggle_failed_toast": "サブエージェントツール設定の保存に失敗しました",
     "section_session_context": "セッションコンテキスト",
     "section_session_context_hint": "長くなった会話を、前回の要約を引き継いだ新しいセッションに切り替える条件を設定します。",
     "prop_session_max_context_tokens": "コンテキスト上限",
@@ -584,11 +588,7 @@
       "add_dialog_confirm_default": "追加",
       "add_dialog_confirm_other": "スキル {{count}} 件を追加",
       "add_dialog_cancel": "キャンセル",
-      "add_failed_toast": "スキルを追加できませんでした",
-      "subagents_title": "サブエージェントツール",
-      "subagents_hint": "オフ（既定）の場合、ランタイムは Agent/Task ツールを強制的に拒否し、このエージェントはサブエージェントに作業を委譲できません。必要なエージェントのみオンにしてください。",
-      "subagents_toggle_aria": "サブエージェントツールを許可",
-      "subagents_toggle_failed_toast": "サブエージェントツール設定の保存に失敗しました"
+      "add_failed_toast": "スキルを追加できませんでした"
     },
     "integrations": {
       "intro": "このエージェントを外部のチャットプラットフォームに接続し、普段使っているツールから直接やり取りできるようにします。",
