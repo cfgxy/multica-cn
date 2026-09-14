@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
+import { toast } from "sonner";
 import type {
   Agent,
   AgentRuntime,
@@ -17,6 +18,8 @@ import {
   AGENT_SESSION_MAX_CONTEXT_TOKENS_MAX,
   AGENT_SESSION_MAX_CONTEXT_TOKENS_MIN,
   agentSessionEffectiveCompactThreshold,
+  allowsSubagents,
+  mergeSubagentAllowance,
 } from "@multica/core/agents";
 import {
   isRuntimeUsableForUser,
@@ -24,6 +27,7 @@ import {
 } from "@multica/core/runtimes";
 import { isImeComposing } from "@multica/core/utils";
 import { Input } from "@multica/ui/components/ui/input";
+import { Switch } from "@multica/ui/components/ui/switch";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { AvatarUploadControl } from "../../common/avatar-upload-control";
 import {
@@ -319,6 +323,7 @@ export function AgentDetailInspector({
               onSave={(next) => update({ max_concurrent_tasks: next })}
             />
           </SettingsRow>
+          <SubagentSettingRow agent={agent} canEdit={canEdit} update={update} />
         </SettingsCard>
       </SettingsSection>
 
@@ -328,6 +333,59 @@ export function AgentDetailInspector({
         update={update}
       />
     </div>
+  );
+}
+
+/**
+ * Subagent tool allowance (runtime_config.allow_subagents). Lives in the
+ * execution section because it gates what the agent's task process may do —
+ * same family as concurrency — and defaults to denied (fail-closed) on the
+ * daemon side. Saves immediately like the other single-purpose toggles.
+ */
+function SubagentSettingRow({
+  agent,
+  canEdit,
+  update,
+}: {
+  agent: Agent;
+  canEdit: boolean;
+  update: (data: Record<string, unknown>) => Promise<void>;
+}) {
+  const { t } = useT("agents");
+  const [busy, setBusy] = useState(false);
+  const allowed = allowsSubagents(agent.runtime_config);
+  const handleToggle = async (allow: boolean) => {
+    setBusy(true);
+    try {
+      await update({
+        runtime_config: mergeSubagentAllowance(agent.runtime_config, allow),
+      });
+    } catch (error) {
+      toast.error(
+        error instanceof Error && error.message
+          ? error.message
+          : t(($) => $.inspector.subagents_toggle_failed_toast),
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <SettingsRow
+      label={t(($) => $.inspector.prop_subagents)}
+      description={t(($) => $.inspector.prop_subagents_hint)}
+      align="start"
+    >
+      {canEdit && (
+        <Switch
+          checked={allowed}
+          disabled={busy}
+          onCheckedChange={(checked: boolean) => handleToggle(checked)}
+          aria-label={t(($) => $.inspector.prop_subagents_toggle_aria)}
+        />
+      )}
+    </SettingsRow>
   );
 }
 
