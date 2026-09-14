@@ -178,6 +178,10 @@
     "prop_speed": "속도",
     "prop_visibility": "공개 범위",
     "prop_concurrency": "동시 실행",
+    "prop_subagents": "하위 에이전트 도구",
+    "prop_subagents_hint": "끔(기본값) 상태에서는 런타임이 Agent/Task 도구를 강제로 거부하여 이 에이전트가 하위 에이전트에 작업을 위임할 수 없습니다. 필요한 에이전트만 켜세요.",
+    "prop_subagents_toggle_aria": "하위 에이전트 도구 허용",
+    "subagents_toggle_failed_toast": "하위 에이전트 도구 설정 저장 실패",
     "section_session_context": "세션 컨텍스트",
     "section_session_context_hint": "길어진 대화를 이전 내용 요약을 넘겨받은 새 세션으로 전환하는 조건을 설정합니다.",
     "prop_session_max_context_tokens": "컨텍스트 상한",
@@ -592,11 +596,7 @@
       "add_dialog_confirm_default": "추가",
       "add_dialog_confirm_other": "스킬 {{count}}개 추가",
       "add_dialog_cancel": "취소",
-      "add_failed_toast": "스킬을 추가하지 못했습니다",
-      "subagents_title": "하위 에이전트 도구",
-      "subagents_hint": "끔(기본값) 상태에서는 런타임이 Agent/Task 도구를 강제로 거부하여 이 에이전트가 하위 에이전트에 작업을 위임할 수 없습니다. 필요한 에이전트만 켜세요.",
-      "subagents_toggle_aria": "하위 에이전트 도구 허용",
-      "subagents_toggle_failed_toast": "하위 에이전트 도구 설정 저장 실패"
+      "add_failed_toast": "스킬을 추가하지 못했습니다"
     },
     "integrations": {
       "intro": "이 에이전트를 외부 채팅 플랫폼에 연결해 팀원이 평소 사용하는 도구에서 바로 함께 작업할 수 있도록 합니다.",

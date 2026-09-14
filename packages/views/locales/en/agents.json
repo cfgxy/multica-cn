@@ -187,6 +187,10 @@
     "prop_speed": "Speed",
     "prop_visibility": "Visibility",
     "prop_concurrency": "Concurrency",
+    "prop_subagents": "Subagent tools",
+    "prop_subagents_hint": "Off (default) hard-denies the Agent/Task tools at runtime, so this agent cannot delegate work to subagents. Turn on only for agents that need it.",
+    "prop_subagents_toggle_aria": "Allow subagent tools",
+    "subagents_toggle_failed_toast": "Failed to update the subagent tools setting",
     "section_session_context": "Session context",
     "section_session_context_hint": "Control when a long conversation is replaced by a fresh session carrying a summary of the prior one.",
     "prop_session_max_context_tokens": "Context limit",
@@ -704,11 +708,7 @@
       "add_dialog_confirm_one": "Add {{count}} skill",
       "add_dialog_confirm_other": "Add {{count}} skills",
       "add_dialog_cancel": "Cancel",
-      "add_failed_toast": "Failed to add skill",
-      "subagents_title": "Subagent tools",
-      "subagents_hint": "Off (default) hard-denies the Agent/Task tools at runtime, so this agent cannot delegate work to subagents. Turn on only for agents that need it.",
-      "subagents_toggle_aria": "Allow subagent tools",
-      "subagents_toggle_failed_toast": "Failed to update the subagent tools setting"
+      "add_failed_toast": "Failed to add skill"
     },
     "integrations": {
       "intro": "Connect this agent to external chat platforms so people can work with it where they already are.",
