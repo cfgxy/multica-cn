@@ -949,7 +949,7 @@ export const TimelineList = forwardRef<TimelineListHandle, Props>(
               <Text className="flex-1 text-xs text-muted-foreground">
                 {t(
                   "timeline.sort.hint",
-                  "Threads are ordered by their latest comment. Switch to Created time to read by thread start.",
+                  "Threads are ordered by created time by default. Switch to Recent comment to read by latest activity.",
                 )}
               </Text>
               <Pressable
