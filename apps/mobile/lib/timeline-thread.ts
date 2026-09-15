@@ -49,7 +49,7 @@ export interface TimelineRowsModel {
 
 export function buildTimelineRowsModel(
   entries: TimelineEntry[],
-  mode: TimelineSortMode = "recent-comment",
+  mode: TimelineSortMode = "created",
 ): TimelineRowsModel {
   const timelineModel = buildTimelineModel(entries, mode);
   const displayEntries = timelineModel.entries;
@@ -107,7 +107,7 @@ export function buildTimelineRowsModel(
 
 export function buildTimelineRows(
   entries: TimelineEntry[],
-  mode: TimelineSortMode = "recent-comment",
+  mode: TimelineSortMode = "created",
 ): TimelineRow[] {
   return buildTimelineRowsModel(entries, mode).rows;
 }

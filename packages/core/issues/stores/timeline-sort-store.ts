@@ -14,7 +14,7 @@ interface TimelineSortStore {
  * default while web and desktop retain the user's choice during navigation.
  */
 export const useTimelineSortStore = create<TimelineSortStore>()((set) => ({
-  mode: "recent-comment",
+  mode: "created",
   hintSeen: false,
   setMode: (mode) =>
     set((state) => (state.mode === mode ? state : { mode })),
