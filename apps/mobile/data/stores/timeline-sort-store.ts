@@ -10,7 +10,7 @@ interface TimelineSortStore {
 
 /** Session-only mobile counterpart of the shared web/desktop preference. */
 export const useTimelineSortStore = create<TimelineSortStore>()((set) => ({
-  mode: "recent-comment",
+  mode: "created",
   hintSeen: false,
   setMode: (mode) =>
     set((state) => (state.mode === mode ? state : { mode })),

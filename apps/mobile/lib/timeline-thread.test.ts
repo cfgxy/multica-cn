@@ -24,7 +24,10 @@ describe("buildTimelineRows", () => {
     const replyB = comment("reply-b", "2026-09-05T04:20:11Z", rootB.id);
     const replyA = comment("reply-a", "2026-09-05T20:42:08Z", rootA.id);
 
-    const rows = buildTimelineRows([rootA, rootB, replyB, replyA]);
+    const rows = buildTimelineRows(
+      [rootA, rootB, replyB, replyA],
+      "recent-comment",
+    );
 
     expect(rows.map((row) => row.entry.id)).toEqual(["root-b", "root-a"]);
     expect(rows[0]?.replies.map((reply) => reply.id)).toEqual(["reply-b"]);
