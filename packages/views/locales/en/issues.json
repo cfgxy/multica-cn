@@ -450,7 +450,7 @@
       "label": "Comment order",
       "recent_comment": "Recent comment",
       "created": "Created time",
-      "hint": "Threads are ordered by their latest comment. Switch to Created time to read by thread start.",
+      "hint": "Threads are ordered by created time by default. Switch to Recent comment to read by latest activity.",
       "dismiss": "Dismiss sorting hint"
     },
     "truncation": {
