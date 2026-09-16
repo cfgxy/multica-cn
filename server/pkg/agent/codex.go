@@ -1549,8 +1549,72 @@ func (b *codexBackend) executeOnce(ctx context.Context, prompt string, opts Exec
 				finalError = "execution cancelled"
 			}
 		}
+		// Read-driven active-compact trigger (RUYI-150). Codex's own
+		// model_auto_compact_token_limit config field (applyCodexContextBudgetConfig
+		// above) may or may not fire mid-turn on its own — that could not be
+		// verified end-to-end without outbound network access. This poller is
+		// the verified backstop: every 15s (matching the Claude backend's
+		// cadence) it reads the thread's rollout file for the latest
+		// single-request context size and, at the hard ceiling, actively asks
+		// the app-server to compact via `thread/compact/start` — confirmed
+		// callable against a real local app-server session without any
+		// network call. Unlike the Claude backend's hard-kill backstop, this
+		// does not cancel the run: an active compact request lets the current
+		// turn continue once compaction completes, satisfying the "run must
+		// not be interrupted" requirement for the triggering-sample evidence.
+		var contextBudgetTickerC <-chan time.Time
+		if opts.MaxContextHardTokens > 0 {
+			contextBudgetTicker := time.NewTicker(15 * time.Second)
+			defer contextBudgetTicker.Stop()
+			contextBudgetTickerC = contextBudgetTicker.C
+		}
+		var contextSoftWarned atomic.Bool
+		var contextCompactRequested atomic.Bool
 		for waitingForTurn {
 			select {
+			case <-contextBudgetTickerC:
+				taskCodexHome := strings.TrimSpace(b.cfg.Env["CODEX_HOME"])
+				root := codexSessionRoot(taskCodexHome)
+				var latestPath string
+				var latestMod time.Time
+				for _, p := range findCodexSessionRollouts(root, threadID) {
+					info, err := os.Stat(p)
+					if err != nil {
+						continue
+					}
+					if latestPath == "" || info.ModTime().After(latestMod) {
+						latestPath = p
+						latestMod = info.ModTime()
+					}
+				}
+				if latestPath == "" {
+					continue
+				}
+				reading, ok := latestCodexContextReading(latestPath)
+				if !ok {
+					continue
+				}
+				soft := opts.MaxContextHardTokens * 85 / 100
+				switch {
+				case reading >= opts.MaxContextHardTokens:
+					if contextCompactRequested.CompareAndSwap(false, true) {
+						b.cfg.Logger.Warn("codex: context hard budget reached; requesting in-place compact",
+							"context_tokens", reading, "ceiling", opts.MaxContextHardTokens, "thread_id", threadID)
+						compactThreadID := threadID
+						go func() {
+							compactCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+							defer cancel()
+							if _, err := c.request(compactCtx, "thread/compact/start", map[string]any{"threadId": compactThreadID}); err != nil {
+								b.cfg.Logger.Warn("codex: thread/compact/start failed", "thread_id", compactThreadID, "error", err)
+							}
+						}()
+					}
+				case reading >= soft:
+					if contextSoftWarned.CompareAndSwap(false, true) {
+						b.cfg.Logger.Warn("codex: context soft threshold reached (85%)",
+							"context_tokens", reading, "ceiling", opts.MaxContextHardTokens, "thread_id", threadID)
+					}
+				}
 			case aborted := <-turnDone:
 				finishTurn(aborted)
 			case activity := <-semanticActivityCh:
@@ -1834,6 +1898,7 @@ func (c *codexClient) startOrResumeThread(ctx context.Context, opts ExecOptions,
 		// resume must honour the live config, not the stored one.
 		applyCodexReasoningEffort(resumeParams, opts.ThinkingLevel)
 		applyCodexServiceTier(resumeParams, opts.ServiceTier)
+		applyCodexContextBudgetConfig(resumeParams, opts)
 		c.threadSetupMethod = "thread/resume"
 		c.threadSetupStarted = time.Now()
 		logger.Info("codex lifecycle",
@@ -1877,6 +1942,12 @@ func (c *codexClient) startOrResumeThread(ctx context.Context, opts ExecOptions,
 	// Confirmed end-to-end against codex-cli 0.144.6 driving the real
 	// app-server (thread/start -> turn/start) with developerInstructions unset
 	// (MUL-5392).
+	// compactPrompt is deliberately absent: confirmed via
+	// `codex app-server generate-json-schema` (codex-cli 0.142.2) that it is
+	// not a field of ThreadStartParams at all, so the value codex.go used to
+	// send here was a silent no-op with no trigger effect (RUYI-150). The
+	// real native compaction knob is Config.model_auto_compact_token_limit,
+	// applied below via applyCodexContextBudgetConfig.
 	startParams := map[string]any{
 		"model":                  nilIfEmpty(opts.Model),
 		"modelProvider":          nil,
@@ -1887,13 +1958,13 @@ func (c *codexClient) startOrResumeThread(ctx context.Context, opts ExecOptions,
 		"config":                 nil,
 		"baseInstructions":       nil,
 		"developerInstructions":  nil,
-		"compactPrompt":          nil,
 		"includeApplyPatchTool":  nil,
 		"experimentalRawEvents":  false,
 		"persistExtendedHistory": true,
 	}
 	applyCodexReasoningEffort(startParams, opts.ThinkingLevel)
 	applyCodexServiceTier(startParams, opts.ServiceTier)
+	applyCodexContextBudgetConfig(startParams, opts)
 	c.threadSetupMethod = "thread/start"
 	c.threadSetupStarted = time.Now()
 	logger.Info("codex lifecycle",
@@ -1988,6 +2059,88 @@ func applyCodexServiceTier(params map[string]any, tier string) {
 		return
 	}
 	params["serviceTier"] = tier
+}
+
+// codexContextBudgetConfigKeyRe matches an explicit
+// `model_auto_compact_token_limit` override (root or profile-scoped) in a
+// Codex `-c`/`--config` flag value. Used by codexArgsSetContextBudgetConfig
+// to detect that the agent has already made an explicit choice for this key.
+var codexContextBudgetConfigKeyRe = regexp.MustCompile(
+	`^\s*(?:model_auto_compact_token_limit\s*(?:=|$)|profiles\s*\.\s*` + codexProfileNameKeyPattern + `\s*\.\s*model_auto_compact_token_limit\s*(?:=|$))`)
+
+// codexArgsSetContextBudgetConfig reports whether args already carry an
+// explicit `-c model_auto_compact_token_limit=…` (or `--config` / a
+// profile-scoped key). Unlike the managed-namespace filters above — which
+// make the daemon win over the agent — this check exists so the AGENT's own
+// choice wins: applyCodexContextBudgetConfig must not inject a competing
+// per-thread config value when this returns true.
+func codexArgsSetContextBudgetConfig(args []string) bool {
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		flag := arg
+		inlineValue := ""
+		hasInlineValue := false
+		if idx := strings.Index(arg, "="); idx > 0 {
+			flag = arg[:idx]
+			inlineValue = arg[idx+1:]
+			hasInlineValue = true
+		}
+		if flag != "-c" && flag != "--config" {
+			continue
+		}
+		value := inlineValue
+		if !hasInlineValue && i+1 < len(args) {
+			value = args[i+1]
+		}
+		if codexContextBudgetConfigKeyRe.MatchString(value) {
+			return true
+		}
+	}
+	return false
+}
+
+// applyCodexContextBudgetConfig maps ExecOptions.MaxContextHardTokens onto
+// Codex's own native auto-compact config field. `codex app-server
+// generate-json-schema` (codex-cli 0.142.2, offline dump — no network
+// required) confirms Config.model_auto_compact_token_limit is a real field
+// accepted through thread/start's and thread/resume's `config` object; the
+// previous "compactPrompt" thread/start param this code sent is not part of
+// ThreadStartParams at all and was a silent no-op (RUYI-150 trigger-face
+// finding).
+//
+// This injection alone is not the run's compaction guarantee — Codex's own
+// heuristic for when model_auto_compact_token_limit actually fires
+// mid-turn could not be verified end-to-end in this sandbox (no outbound
+// network at all; every attempted live `codex exec` run and every
+// api.openai.com/proxy reachability probe timed out). The read-driven
+// active-compact poller further down (see the turn-wait select loop) is the
+// verified trigger face: it watches the same ceiling via the rollout
+// file's `last_token_usage` reading and actively calls
+// `thread/compact/start` — confirmed callable over a real (network-free)
+// local JSON-RPC session — when the reading crosses it. This config field is
+// sent in addition, in case Codex's native path fires first and makes the
+// active call moot.
+//
+// Skipped entirely when the agent already set this key itself via
+// custom_args/extra_args: that is an explicit choice and must not be
+// fought by a competing per-thread config value. (Codex's own precedence
+// between a CLI `-c` override and a thread/start `config` field was not
+// itself verified end-to-end for the same network reason — this check
+// sidesteps needing that answer by never sending a competing value.)
+func applyCodexContextBudgetConfig(params map[string]any, opts ExecOptions) {
+	if params == nil || opts.MaxContextHardTokens <= 0 {
+		return
+	}
+	if codexArgsSetContextBudgetConfig(opts.ExtraArgs) || codexArgsSetContextBudgetConfig(opts.CustomArgs) {
+		return
+	}
+	cfg, _ := params["config"].(map[string]any)
+	if cfg == nil {
+		cfg = map[string]any{}
+	}
+	cfg["model_auto_compact_token_limit"] = opts.MaxContextHardTokens
+	cfg["model_auto_compact_token_limit_scope"] = "total"
+	params["config"] = cfg
 }
 
 func resetTimer(timer *time.Timer, d time.Duration) {
@@ -3704,19 +3857,89 @@ func parseCodexSessionFileSince(path string, startTime time.Time, resumed bool) 
 		return nil
 	}
 	cachedTokens := finalUsage.CachedInputTokens
-	// No ContextTokens here on purpose (RUYI-107). The token_count events in
-	// the JSONL are cumulative thread totals — that is what
-	// subtractCodexRawTokenUsage exists to undo — so this input figure is the
-	// sum over every request in the thread, not the size of the last one.
-	// Publishing it as a context size would overstate the conversation and
-	// compact healthy sessions early. Leaving it zero makes the gate read
-	// "unknown" and resume, which is the direction that loses nothing.
+	// No ContextTokens here on purpose — this is narrower than the historical
+	// RUYI-107 framing suggested, so spell out the current, complete picture
+	// (re-examined for RUYI-150).
+	//
+	// codex's live ContextTokens IS already published today: extractUsageFromMap
+	// (see its "assigned rather than accumulated" comment) is fed from the
+	// task_complete/turn/completed JSON-RPC notifications and assigns a fresh
+	// per-turn reading each time — that value flows straight into
+	// agentconfig.DecideSessionResume via c.usage, unaffected by anything in
+	// this file. This function (parseCodexSessionFileSince) is a different,
+	// narrower path: a JSONL-rescan FALLBACK used only when that live usage is
+	// unavailable (see the caller's `if u.InputTokens == 0 && u.OutputTokens
+	// == 0` guard). Its finalUsage above is this fallback's own
+	// accumulated-since-start figure (total_token_usage deltas summed via
+	// subtractCodexRawTokenUsage, or the bare last_token_usage fallback when
+	// total_token_usage is absent) — the sum over every request since the
+	// session/resume boundary, not the size of the single most recent one.
+	// Publishing that sum as a context size would overstate the conversation
+	// and compact healthy sessions early, so this fallback path leaves
+	// ContextTokens at zero, which makes the gate read "unknown" and resume —
+	// the direction that loses nothing. That original RUYI-107 reasoning still
+	// holds, but only for this fallback path, not for codex's ContextTokens
+	// as a whole.
+	//
+	// RUYI-150 re-examined this with real evidence (historical rollout JSONL
+	// samples) and confirmed a single-request reading DOES exist in the same
+	// event stream: a token_count event's last_token_usage field alone
+	// (independent of total_token_usage) is per-turn, not cumulative. That
+	// reading is real and is now used — see latestCodexContextReading below —
+	// but only as an internal signal for the in-run compaction poller, which
+	// needs "how big is the context right now" on a 15s cadence between turn
+	// boundaries (extractUsageFromMap only updates once a turn finishes, so it
+	// cannot see a long single turn approaching the limit while still
+	// in-flight). Wiring last_token_usage into this fallback's TokenUsage
+	// aggregate is a separate, broader decision than RUYI-150's in-run
+	// compaction scope and is intentionally left untouched here.
 	result.usage = TokenUsage{
 		InputTokens:     codexUncachedInputTokens(finalUsage.InputTokens, cachedTokens),
 		OutputTokens:    finalUsage.OutputTokens + finalUsage.ReasoningOutputTokens,
 		CacheReadTokens: cachedTokens,
 	}
 	return &result
+}
+
+// latestCodexContextReading returns the most recent single-request context
+// size read from a rollout JSONL, taken from the last token_count event's
+// last_token_usage field (input_tokens + output_tokens — matches the raw
+// JSON's own total_tokens field exactly, confirmed against real historical
+// rollout samples). This intentionally reads only last_token_usage and never
+// total_token_usage: the latter accumulates across the whole thread (see the
+// RUYI-107/RUYI-150 comment on parseCodexSessionFileSince), and mixing the
+// two here would let a cumulative value be mistaken for the current
+// single-request size. Used only by the in-run compaction poller in the
+// turn-wait loop above, to see the context size between turn boundaries;
+// distinct from (and not a replacement for) c.usage.ContextTokens, which
+// extractUsageFromMap already assigns once per completed turn.
+func latestCodexContextReading(path string) (int64, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return 0, false
+	}
+	defer f.Close()
+
+	var reading int64
+	found := false
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 0, 256*1024), 1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if !bytesContainsStr(line, "token_count") {
+			continue
+		}
+		var evt codexSessionTokenCount
+		if err := json.Unmarshal(line, &evt); err != nil || evt.Payload == nil || evt.Payload.Info == nil {
+			continue
+		}
+		if usage := evt.Payload.Info.LastTokenUsage; usage != nil {
+			u := normalizeCodexRawTokenUsage(*usage)
+			reading = u.InputTokens + u.OutputTokens
+			found = true
+		}
+	}
+	return reading, found
 }
 
 func subtractCodexRawTokenUsage(total, baseline codexRawTokenUsage) codexRawTokenUsage {
