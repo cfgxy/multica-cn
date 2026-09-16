@@ -8110,7 +8110,8 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		MaxTurns:             execenv.MaxTurnsFromRuntimeConfig(task.Agent.RuntimeConfig),
 		MaxContextHardTokens: execenv.MaxContextTokensFromRuntimeConfig(task.Agent.RuntimeConfig),
 		CompactWindowTokens:  task.Agent.SessionMaxContextTokens,
-		CompactWindowPct:     task.Agent.SessionCompactPct, // Post-gate intent: PriorSessionID here already reflects the pre-flight
+		CompactWindowPct:     task.Agent.SessionCompactPct,
+		// Post-gate intent: PriorSessionID here already reflects the pre-flight
 		// resume gates (a dropped resume is surfaced via the prompt instead). If it
 		// survived to here, the backend must disclose the loss when the live
 		// resume still fails — even across the fresh-session retry below, which
