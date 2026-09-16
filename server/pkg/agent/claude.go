@@ -89,18 +89,15 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	if opts.Cwd != "" {
 		cmd.Dir = opts.Cwd
 	}
-	// In-run context budget (RUYI-148): the native auto-compact window is
-	// driven by this env (takes precedence over model-inferred windows, so
-	// [1m] models compact in-place too). The transcript poller below stays
-	// as the backstop in case auto-compact fails to shrink in time.
-	execEnv := b.cfg.Env
-	if opts.MaxContextHardTokens > 0 {
-		execEnv = make(map[string]string, len(b.cfg.Env)+1)
-		for k, v := range b.cfg.Env {
-			execEnv[k] = v
-		}
-		execEnv["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = strconv.FormatInt(opts.MaxContextHardTokens, 10)
-	}
+	// In-run context budget (RUYI-148): the native auto-compact window and its
+	// trigger percentage are driven by these envs (takes precedence over
+	// model-inferred windows, so [1m] models compact in-place too), mirrored
+	// from the agent's session-gate settings so the in-run compact line and
+	// the claim-time session-swap line collapse onto the same threshold. The
+	// transcript poller below (keyed off MaxContextHardTokens, a separate and
+	// always-higher ceiling) stays as the backstop in case auto-compact fails
+	// to shrink in time.
+	execEnv := claudeCompactEnv(b.cfg.Env, opts)
 	cmd.Env = buildEnv(execEnv)
 	if err := claudeRootSudoPreflight(args, cmd.Env); err != nil {
 		cancel()
@@ -1285,6 +1282,35 @@ func resolveSessionID(requestedResume, emitted string, failed bool, texts ...str
 
 func buildEnv(extra map[string]string) []string {
 	return mergeEnv(os.Environ(), extra)
+}
+
+// claudeCompactEnv returns baseEnv with CLAUDE_CODE_AUTO_COMPACT_WINDOW /
+// CLAUDE_AUTOCOMPACT_PCT_OVERRIDE injected from opts.CompactWindowTokens /
+// opts.CompactWindowPct (RUYI-148). A value already set explicitly in
+// baseEnv (an operator override on the agent config) always wins and is
+// never overwritten; a zero option value is not injected at all, leaving
+// the CLI's own default in place. baseEnv is never mutated.
+func claudeCompactEnv(baseEnv map[string]string, opts ExecOptions) map[string]string {
+	compactEnv := make(map[string]string, 2)
+	if opts.CompactWindowTokens > 0 {
+		compactEnv["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = strconv.FormatInt(opts.CompactWindowTokens, 10)
+	}
+	if opts.CompactWindowPct > 0 {
+		compactEnv["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = strconv.FormatInt(int64(opts.CompactWindowPct), 10)
+	}
+	if len(compactEnv) == 0 {
+		return baseEnv
+	}
+	execEnv := make(map[string]string, len(baseEnv)+len(compactEnv))
+	for k, v := range baseEnv {
+		execEnv[k] = v
+	}
+	for k, v := range compactEnv {
+		if _, exists := execEnv[k]; !exists {
+			execEnv[k] = v
+		}
+	}
+	return execEnv
 }
 
 func claudeRootSudoPreflight(args, env []string) error {
