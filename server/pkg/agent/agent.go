@@ -40,8 +40,8 @@ type ExecOptions struct {
 	// MaxContextHardTokens is the in-run context ceiling: the transcript
 	// poller force-stops the run when the live reading crosses it (status
 	// "context_budget"); the same value drives the CLI's native
-	// auto-compact window via CLAUDE_CODE_AUTO_COMPACT_WINDOW. 0 uses the
-	// platform default (200K); the poller floor is 100K.
+	// auto-compact window via CLAUDE_CODE_AUTO_COMPACT_WINDOW. Model-
+	// dependent: 0 (unset) disables the gate; the poller floor is 100K.
 	MaxContextHardTokens int64
 	// CompactWindowTokens / CompactWindowPct mirror the agent's session-gate
 	// settings (session_max_context_tokens / session_compact_pct) into the
