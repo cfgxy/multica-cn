@@ -8306,6 +8306,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			CacheWriteTokens: u.CacheWriteTokens,
 			CostUSDTicks:     u.CostUSDTicks,
 			ContextTokens:    u.ContextTokens,
+			// Run-scoped (RUYI-154), not per-model — same values on every
+			// entry of this run; see TaskUsageEntry.Turns.
+			Turns:            result.Turns,
+			Compactions:      result.Compactions,
+			MaxContextTokens: result.MaxContextTokens,
 		})
 	}
 

@@ -1819,6 +1819,13 @@ export const AgentTaskSchema = z.object({
   // `.catch(undefined)` collapses a bad array to "no usage recorded", which
   // the UI already renders as an em dash.
   usage: z.array(TaskUsageSchema).optional().catch(undefined),
+  // Run-scoped observability (RUYI-154, RUYI-107): each is one number for the
+  // whole run, not per model, so a malformed value degrades independently to
+  // "no reading" rather than costing the row its usage array too.
+  turns: z.number().optional().catch(undefined),
+  compactions: z.number().optional().catch(undefined),
+  max_context_tokens: z.number().optional().catch(undefined),
+  context_tokens: z.number().optional().catch(undefined),
 }).loose();
 
 export const AgentTaskListSchema = z.array(AgentTaskSchema);

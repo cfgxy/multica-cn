@@ -88,7 +88,7 @@ func (q *Queries) GetTaskContextTokens(ctx context.Context, taskID pgtype.UUID) 
 }
 
 const getTaskUsage = `-- name: GetTaskUsage :many
-SELECT id, task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, created_at, updated_at, cost_usd_ticks, context_tokens FROM task_usage
+SELECT id, task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, created_at, updated_at, cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens FROM task_usage
 WHERE task_id = $1
 ORDER BY model
 `
@@ -115,6 +115,9 @@ func (q *Queries) GetTaskUsage(ctx context.Context, taskID pgtype.UUID) ([]TaskU
 			&i.UpdatedAt,
 			&i.CostUsdTicks,
 			&i.ContextTokens,
+			&i.Turns,
+			&i.Compactions,
+			&i.MaxContextTokens,
 		); err != nil {
 			return nil, err
 		}
@@ -636,7 +639,11 @@ SELECT
     tu.output_tokens,
     tu.cache_read_tokens,
     tu.cache_write_tokens,
-    tu.cost_usd_ticks
+    tu.cost_usd_ticks,
+    tu.context_tokens,
+    tu.turns,
+    tu.compactions,
+    tu.max_context_tokens
 FROM task_usage tu
 JOIN agent_task_queue atq ON atq.id = tu.task_id
 WHERE atq.issue_id = $1
@@ -652,6 +659,10 @@ type ListIssueTaskUsageRow struct {
 	CacheReadTokens  int64       `json:"cache_read_tokens"`
 	CacheWriteTokens int64       `json:"cache_write_tokens"`
 	CostUsdTicks     pgtype.Int8 `json:"cost_usd_ticks"`
+	ContextTokens    pgtype.Int8 `json:"context_tokens"`
+	Turns            pgtype.Int4 `json:"turns"`
+	Compactions      pgtype.Int4 `json:"compactions"`
+	MaxContextTokens pgtype.Int8 `json:"max_context_tokens"`
 }
 
 // Per-(task, provider, model) usage rows for every task on one issue — the
@@ -662,6 +673,11 @@ type ListIssueTaskUsageRow struct {
 // rate table, and a row that has collapsed two models into one sum can no
 // longer be priced at all. The execution log sums the rows per task; the usage
 // panel shows them split.
+//
+// context_tokens / turns / compactions / max_context_tokens (RUYI-107,
+// RUYI-154) are run-scoped, not per-model: a run that reports more than one
+// (provider, model) row carries the same run-level reading on each of its
+// rows. The handler layer collapses them back to one figure per task.
 //
 // Ordering is by task then model so the client can group by task_id in one
 // pass. Uses idx_agent_task_queue_issue_id (migration 035) + the task_usage
@@ -684,6 +700,10 @@ func (q *Queries) ListIssueTaskUsage(ctx context.Context, issueID pgtype.UUID) (
 			&i.CacheReadTokens,
 			&i.CacheWriteTokens,
 			&i.CostUsdTicks,
+			&i.ContextTokens,
+			&i.Turns,
+			&i.Compactions,
+			&i.MaxContextTokens,
 		); err != nil {
 			return nil, err
 		}
@@ -696,8 +716,8 @@ func (q *Queries) ListIssueTaskUsage(ctx context.Context, issueID pgtype.UUID) (
 }
 
 const upsertTaskUsage = `-- name: UpsertTaskUsage :exec
-INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, context_tokens, updated_at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens, cost_usd_ticks, context_tokens, turns, compactions, max_context_tokens, updated_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
 ON CONFLICT (task_id, provider, model)
 DO UPDATE SET
     input_tokens = EXCLUDED.input_tokens,
@@ -706,6 +726,9 @@ DO UPDATE SET
     cache_write_tokens = EXCLUDED.cache_write_tokens,
     cost_usd_ticks = EXCLUDED.cost_usd_ticks,
     context_tokens = COALESCE(EXCLUDED.context_tokens, task_usage.context_tokens),
+    turns = EXCLUDED.turns,
+    compactions = EXCLUDED.compactions,
+    max_context_tokens = EXCLUDED.max_context_tokens,
     updated_at = now()
 `
 
@@ -719,6 +742,9 @@ type UpsertTaskUsageParams struct {
 	CacheWriteTokens int64       `json:"cache_write_tokens"`
 	CostUsdTicks     pgtype.Int8 `json:"cost_usd_ticks"`
 	ContextTokens    pgtype.Int8 `json:"context_tokens"`
+	Turns            pgtype.Int4 `json:"turns"`
+	Compactions      pgtype.Int4 `json:"compactions"`
+	MaxContextTokens pgtype.Int8 `json:"max_context_tokens"`
 }
 
 // Bumps `updated_at` on INSERT and on conflict so the hourly-rollup worker
@@ -733,6 +759,9 @@ type UpsertTaskUsageParams struct {
 // currently is. It is COALESCEd rather than overwritten so a later report that
 // carries no reading (a provider that stopped emitting one, or a different
 // message shape) does not erase a real measurement this same task already made.
+// turns / compactions / max_context_tokens (RUYI-154) are run-scoped stats
+// reported exactly once, at task completion, so they are overwritten like the
+// token counters rather than COALESCEd like context_tokens.
 func (q *Queries) UpsertTaskUsage(ctx context.Context, arg UpsertTaskUsageParams) error {
 	_, err := q.db.Exec(ctx, upsertTaskUsage,
 		arg.TaskID,
@@ -744,6 +773,9 @@ func (q *Queries) UpsertTaskUsage(ctx context.Context, arg UpsertTaskUsageParams
 		arg.CacheWriteTokens,
 		arg.CostUsdTicks,
 		arg.ContextTokens,
+		arg.Turns,
+		arg.Compactions,
+		arg.MaxContextTokens,
 	)
 	return err
 }
