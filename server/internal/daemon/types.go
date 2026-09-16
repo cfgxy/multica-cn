@@ -233,6 +233,11 @@ type AgentData struct {
 	// daemon decodes provider-specific fields (e.g. openclaw mode +
 	// gateway endpoint, see issue #3260); other backends ignore it.
 	RuntimeConfig json.RawMessage `json:"runtime_config,omitempty"`
+	// Session-gate settings mirrored from the claim payload so the claude
+	// backend can drive the CLI's native auto-compact from the same knobs
+	// the UI edits (see ExecOptions.CompactWindow*).
+	SessionMaxContextTokens int64 `json:"session_max_context_tokens,omitempty"`
+	SessionCompactPct       int32 `json:"session_compact_pct,omitempty"`
 }
 
 // DisabledRuntimeSkillData is the task-wire identity of one runtime-local
