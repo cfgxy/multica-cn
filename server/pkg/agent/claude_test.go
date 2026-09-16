@@ -668,6 +668,63 @@ func TestMergeEnvFiltersClaudeCodeVars(t *testing.T) {
 	}
 }
 
+func TestClaudeCompactEnvInjectsFromOpts(t *testing.T) {
+	t.Parallel()
+
+	env := claudeCompactEnv(map[string]string{"FOO": "bar"}, ExecOptions{
+		CompactWindowTokens: 200_000,
+		CompactWindowPct:    85,
+	})
+
+	if env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] != "200000" {
+		t.Fatalf("expected CLAUDE_CODE_AUTO_COMPACT_WINDOW=200000, got %v", env)
+	}
+	if env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] != "85" {
+		t.Fatalf("expected CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=85, got %v", env)
+	}
+	if env["FOO"] != "bar" {
+		t.Fatalf("expected unrelated base env to be preserved, got %v", env)
+	}
+}
+
+func TestClaudeCompactEnvZeroValuesNotInjected(t *testing.T) {
+	t.Parallel()
+
+	env := claudeCompactEnv(map[string]string{"FOO": "bar"}, ExecOptions{
+		CompactWindowTokens: 0,
+		CompactWindowPct:    0,
+	})
+
+	if _, ok := env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"]; ok {
+		t.Fatalf("expected CLAUDE_CODE_AUTO_COMPACT_WINDOW to be absent for a zero option, got %v", env)
+	}
+	if _, ok := env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"]; ok {
+		t.Fatalf("expected CLAUDE_AUTOCOMPACT_PCT_OVERRIDE to be absent for a zero option, got %v", env)
+	}
+	if len(env) != 1 || env["FOO"] != "bar" {
+		t.Fatalf("expected base env to pass through unchanged, got %v", env)
+	}
+}
+
+func TestClaudeCompactEnvExplicitAgentEnvNotOverwritten(t *testing.T) {
+	t.Parallel()
+
+	env := claudeCompactEnv(map[string]string{
+		"CLAUDE_CODE_AUTO_COMPACT_WINDOW": "999999",
+		"CLAUDE_AUTOCOMPACT_PCT_OVERRIDE": "50",
+	}, ExecOptions{
+		CompactWindowTokens: 200_000,
+		CompactWindowPct:    85,
+	})
+
+	if env["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] != "999999" {
+		t.Fatalf("expected operator-set CLAUDE_CODE_AUTO_COMPACT_WINDOW to win, got %v", env)
+	}
+	if env["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] != "50" {
+		t.Fatalf("expected operator-set CLAUDE_AUTOCOMPACT_PCT_OVERRIDE to win, got %v", env)
+	}
+}
+
 func TestBuildEnvAppendsExtras(t *testing.T) {
 	t.Parallel()
 
