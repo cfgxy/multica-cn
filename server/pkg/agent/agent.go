@@ -229,6 +229,13 @@ type Result struct {
 	DurationMs int64
 	SessionID  string
 	Usage      map[string]TokenUsage // keyed by model name
+	// Run-scoped observability (RUYI-154): turns = agentic turns executed;
+	// compactions = in-place auto-compacts performed; maxContextTokens =
+	// largest live context reading of any single request. Zero means the
+	// backend cannot measure it (older CLIs, providers without readings).
+	Turns            int
+	Compactions      int
+	MaxContextTokens int64
 	// ResumeRejected is positive evidence that this run's requested resume
 	// was permanently refused — the transcript is gone, the session belongs to
 	// another provider account, OR the session still exists but its history
