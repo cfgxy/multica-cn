@@ -34,9 +34,16 @@ type ExecOptions struct {
 	//
 	// A backend must therefore NOT assume this is populated, and adding a new
 	// backend that only reads SystemPrompt will silently receive nothing.
-	SystemPrompt              string
-	ThreadName                string
-	MaxTurns                  int
+	SystemPrompt string
+	ThreadName   string
+	MaxTurns     int
+	// MaxContextHardTokens is the in-run context ceiling (live per-turn
+	// usage reading). 0 disables the gate: the backend injects a wrap-up
+	// nudge at 85% and force-stops at 100% (status "context_budget").
+	MaxContextHardTokens int64
+	// MaxContextHardTokens is the in-run context ceiling (live reading from
+	// per-turn usage). 0 disables the gate. The backend injects a wrap-up
+	// nudge at 85% and force-stops at 100% (status "context_budget").
 	Timeout                   time.Duration
 	SemanticInactivityTimeout time.Duration
 	// FirstTurnNoProgressTimeout optionally overrides the Codex first-turn
