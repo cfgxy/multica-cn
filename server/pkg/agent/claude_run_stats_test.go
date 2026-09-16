@@ -39,7 +39,7 @@ func TestTranscriptRunStatsMaxContextAndCompactionCount(t *testing.T) {
 		`{"type":"assistant","message":{"id":"m3","model":"claude-opus-5","usage":{"input_tokens":300,"output_tokens":30,"cache_read_input_tokens":9000,"cache_creation_input_tokens":0}}}`,
 	)
 
-	maxCtx, compactions, ok := transcriptRunStats(path)
+	maxCtx, compactions, ok := transcriptRunStats(path, 0)
 	if !ok {
 		t.Fatal("transcriptRunStats reported no usable reading")
 	}
@@ -62,7 +62,7 @@ func TestTranscriptRunStatsZeroCompactionsWhenNoneOccurred(t *testing.T) {
 		`{"type":"assistant","message":{"id":"m1","model":"claude-opus-5","usage":{"input_tokens":100,"output_tokens":10,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}`,
 	)
 
-	maxCtx, compactions, ok := transcriptRunStats(path)
+	maxCtx, compactions, ok := transcriptRunStats(path, 0)
 	if !ok {
 		t.Fatal("transcriptRunStats reported no usable reading")
 	}
@@ -84,7 +84,7 @@ func TestTranscriptRunStatsSkipsSidechainLines(t *testing.T) {
 		`{"type":"assistant","message":{"id":"m1","model":"claude-opus-5","usage":{"input_tokens":100,"output_tokens":10,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}`,
 	)
 
-	maxCtx, _, ok := transcriptRunStats(path)
+	maxCtx, _, ok := transcriptRunStats(path, 0)
 	if !ok {
 		t.Fatal("transcriptRunStats reported no usable reading")
 	}
@@ -99,8 +99,82 @@ func TestTranscriptRunStatsSkipsSidechainLines(t *testing.T) {
 func TestTranscriptRunStatsMissingFile(t *testing.T) {
 	t.Parallel()
 
-	_, _, ok := transcriptRunStats(filepath.Join(t.TempDir(), "does-not-exist.jsonl"))
+	_, _, ok := transcriptRunStats(filepath.Join(t.TempDir(), "does-not-exist.jsonl"), 0)
 	if ok {
 		t.Error("expected ok=false for a missing transcript file")
+	}
+}
+
+// Regression for the cross-run pollution the Leader review flagged: claude's
+// session transcript is keyed by session, not by run, so a `--resume` appends
+// the new run's lines to the SAME file earlier runs already wrote into. A
+// second run's reading must reflect only the bytes it appended — not the
+// first run's compactions or peak context — once the caller passes the
+// pre-run file size as startOffset.
+func TestTranscriptRunStatsScopesToBytesAfterOffset(t *testing.T) {
+	t.Parallel()
+
+	firstRunLines := []string{
+		`{"type":"assistant","message":{"id":"m1","model":"claude-opus-5","usage":{"input_tokens":100,"output_tokens":10,"cache_read_input_tokens":1000,"cache_creation_input_tokens":50}}}`,
+		`{"isCompactSummary":true,"type":"user"}`,
+		`{"type":"assistant","message":{"id":"m2","model":"claude-opus-5","usage":{"input_tokens":200,"output_tokens":20,"cache_read_input_tokens":2000,"cache_creation_input_tokens":0}}}`,
+	}
+	path := runStatsFixture(t, firstRunLines...)
+
+	// The daemon stats the file right before starting the second (resumed)
+	// run — capture that same offset here.
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat after first run: %v", err)
+	}
+	offsetAfterFirstRun := st.Size()
+
+	// Second run appends smaller readings and no compactions of its own.
+	secondRunLines := `{"type":"assistant","message":{"id":"m3","model":"claude-opus-5","usage":{"input_tokens":50,"output_tokens":5,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}` + "\n"
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("open for append: %v", err)
+	}
+	if _, err := f.WriteString(secondRunLines); err != nil {
+		t.Fatalf("append second run: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	// Reading the whole file (offset 0) would report the first run's
+	// pollution — assert that baseline before proving the fix.
+	if maxCtx, compactions, ok := transcriptRunStats(path, 0); !ok || maxCtx != 2_220 || compactions != 1 {
+		t.Fatalf("whole-file baseline changed unexpectedly: maxCtx=%d compactions=%d ok=%v", maxCtx, compactions, ok)
+	}
+
+	maxCtx, compactions, ok := transcriptRunStats(path, offsetAfterFirstRun)
+	if !ok {
+		t.Fatal("transcriptRunStats reported no usable reading")
+	}
+	if want := int64(55); maxCtx != want {
+		t.Errorf("maxCtx = %d, want %d (only the second run's request, not the first run's larger ones)", maxCtx, want)
+	}
+	if compactions != 0 {
+		t.Errorf("compactions = %d, want 0 (the first run's compaction must not be recounted)", compactions)
+	}
+}
+
+// A stale offset that lands beyond the current file size (e.g. the file was
+// rotated or truncated between the pre-run stat and this scan) must fall
+// back to a full scan rather than seeking past EOF and reporting ok=false.
+func TestTranscriptRunStatsFallsBackWhenOffsetPastEOF(t *testing.T) {
+	t.Parallel()
+
+	path := runStatsFixture(t,
+		`{"type":"assistant","message":{"id":"m1","model":"claude-opus-5","usage":{"input_tokens":100,"output_tokens":10,"cache_read_input_tokens":0,"cache_creation_input_tokens":0}}}`,
+	)
+
+	maxCtx, _, ok := transcriptRunStats(path, 1_000_000)
+	if !ok {
+		t.Fatal("transcriptRunStats reported no usable reading")
+	}
+	if maxCtx != 110 {
+		t.Errorf("maxCtx = %d, want 110 (fallback to a full scan)", maxCtx)
 	}
 }

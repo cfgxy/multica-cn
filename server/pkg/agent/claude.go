@@ -76,6 +76,24 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		}
 	}()
 
+	// Run-scoped observability (RUYI-154): claude's session transcript is
+	// keyed by session, not by run — a `--resume` appends this run's lines to
+	// the SAME file earlier runs already wrote into. Stat the transcript at
+	// its pre-run size here, before the process can write a single byte, so
+	// transcriptRunStats below can skip everything earlier runs left behind
+	// instead of re-counting their compactions and context peaks into this
+	// run's numbers.
+	resumeTranscriptPath, resumeTranscriptFound := "", false
+	var runStatsStartOffset int64
+	if opts.ResumeSessionID != "" {
+		if p, ok := claudeTranscriptPath(claudeTranscriptRoot(), opts.Cwd, opts.ResumeSessionID); ok {
+			resumeTranscriptPath, resumeTranscriptFound = p, true
+			if st, err := os.Stat(p); err == nil {
+				runStatsStartOffset = st.Size()
+			}
+		}
+	}
+
 	cmd := b.cfg.commandAt(execPath).exec(runCtx, args...)
 	hideAgentWindow(cmd)
 	// Take over context cancellation: the default kills the whole group the
@@ -460,7 +478,15 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		// yields the largest single-request context and the number of native
 		// auto-compacts; turns come from the result event's num_turns.
 		if path, ok := claudeTranscriptPath(claudeTranscriptRoot(), opts.Cwd, reportedSessionID); ok {
-			if maxCtx, compactions, has := transcriptRunStats(path); has {
+			// Only honor the pre-run offset when this run's transcript is
+			// provably the same file we stat'd before starting the process.
+			// A rejected resume or a fresh session writes a brand-new
+			// session file, which must be read from byte zero.
+			offset := int64(0)
+			if resumeTranscriptFound && path == resumeTranscriptPath {
+				offset = runStatsStartOffset
+			}
+			if maxCtx, compactions, has := transcriptRunStats(path, offset); has {
 				transcriptMaxCtx, transcriptCompactions = maxCtx, compactions
 			}
 		}
@@ -904,12 +930,31 @@ func claudeTranscriptPath(root, cwd, sessionID string) (string, bool) {
 // the number of native auto-compacts (isCompactSummary boundary entries).
 // One pass, same line shapes transcriptContextReading trusts; ok is false
 // when the file is missing or holds no usable assistant lines.
-func transcriptRunStats(path string) (maxCtx, compactions int64, ok bool) {
+//
+// startOffset skips the bytes earlier runs already wrote into this same
+// session transcript on `--resume` (the file is keyed by session, not by
+// run — see the caller). It must land exactly on a line boundary, which
+// holds because the caller stats the file only between runs, never mid-line;
+// a stale offset (file rotated/truncated beneath it) falls back to a full
+// scan rather than seeking past EOF or into the middle of a line.
+func transcriptRunStats(path string, startOffset int64) (maxCtx, compactions int64, ok bool) {
 	fh, err := os.Open(path)
 	if err != nil {
 		return 0, 0, false
 	}
 	defer fh.Close()
+	if startOffset > 0 {
+		if st, err := fh.Stat(); err != nil || startOffset > st.Size() {
+			startOffset = 0
+		}
+	}
+	if startOffset > 0 {
+		if _, err := fh.Seek(startOffset, io.SeekStart); err != nil {
+			if _, err := fh.Seek(0, io.SeekStart); err != nil {
+				return 0, 0, false
+			}
+		}
+	}
 	sc := bufio.NewScanner(fh)
 	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
 	saw := false
