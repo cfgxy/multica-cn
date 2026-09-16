@@ -37,13 +37,19 @@ type ExecOptions struct {
 	SystemPrompt string
 	ThreadName   string
 	MaxTurns     int
-	// MaxContextHardTokens is the in-run context ceiling (live per-turn
-	// usage reading). 0 disables the gate: the backend injects a wrap-up
-	// nudge at 85% and force-stops at 100% (status "context_budget").
+	// MaxContextHardTokens is the in-run context ceiling: the transcript
+	// poller force-stops the run when the live reading crosses it (status
+	// "context_budget"); the same value drives the CLI's native
+	// auto-compact window via CLAUDE_CODE_AUTO_COMPACT_WINDOW. 0 uses the
+	// platform default (200K); the poller floor is 100K.
 	MaxContextHardTokens int64
-	// MaxContextHardTokens is the in-run context ceiling (live reading from
-	// per-turn usage). 0 disables the gate. The backend injects a wrap-up
-	// nudge at 85% and force-stops at 100% (status "context_budget").
+	// CompactWindowTokens / CompactWindowPct mirror the agent's session-gate
+	// settings (session_max_context_tokens / session_compact_pct) into the
+	// CLI's native auto-compact (CLAUDE_CODE_AUTO_COMPACT_WINDOW /
+	// CLAUDE_AUTOCOMPACT_PCT_OVERRIDE), so the in-run compact line and the
+	// claim-time swap line are the same 170K. 0 = leave the CLI default.
+	CompactWindowTokens       int64
+	CompactWindowPct          int32
 	Timeout                   time.Duration
 	SemanticInactivityTimeout time.Duration
 	// FirstTurnNoProgressTimeout optionally overrides the Codex first-turn
