@@ -169,6 +169,9 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		sawResult := false
 		resultIsError := false
 		maxTurnsReached := false
+		budgetStop := false
+		softNudged := false
+		contextAtStop := int64(0)
 		terminalReasonError := ""
 		var sessionID string
 		sawAsyncLaunch := false
@@ -240,6 +243,30 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 					unreadableAssistantCount++
 				}
 				lastAssistantText = turn.resolveFallback(lastAssistantText)
+				if opts.MaxContextHardTokens > 0 {
+					live := int64(0)
+					for _, sz := range contextTokens {
+						if sz > live {
+							live = sz
+						}
+					}
+					soft := opts.MaxContextHardTokens * 85 / 100
+					if !softNudged && live >= soft && live < opts.MaxContextHardTokens {
+						softNudged = true
+						b.cfg.Logger.Warn("claude: context soft threshold reached; injecting wrap-up nudge",
+							"context_tokens", live, "ceiling", opts.MaxContextHardTokens)
+						if err := writeClaudeInput(stdin, contextWrapUpPrompt); err != nil {
+							b.cfg.Logger.Warn("claude: wrap-up nudge write failed", "error", err)
+						}
+					} else if live >= opts.MaxContextHardTokens && !budgetStop {
+						budgetStop = true
+						contextAtStop = live
+						b.cfg.Logger.Warn("claude: context hard budget reached; force-stopping run for segmented continuation",
+							"context_tokens", live, "ceiling", opts.MaxContextHardTokens)
+						closeStdin()
+						cancel()
+					}
+				}
 			case "user":
 				if b.handleUser(msg, msgCh) {
 					sawAsyncLaunch = true
@@ -314,6 +341,8 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				sawResult:           sawResult,
 				resultIsError:       resultIsError,
 				maxTurnsReached:     maxTurnsReached,
+				budgetStop:          budgetStop,
+				contextAtStop:       contextAtStop,
 				scanErr:             scanErr,
 				terminalReasonError: terminalReasonError,
 			},
@@ -981,6 +1010,12 @@ var claudeBlockedArgs = map[string]blockedArgMode{
 	// --effort values.
 	"--effort": blockedWithValue,
 }
+
+// contextWrapUpPrompt is injected once when the live context reading crosses
+// the soft threshold (85% of the in-run budget): the next turn wraps up instead
+// of opening new exploration, letting the run finish gracefully before the
+// hard force-stop.
+const contextWrapUpPrompt = "上下文预算已接近本轮上限：请立即收敛——不要再开启新的大块读取或探查；整理已完成/未完成事项与交接要点，输出阶段性结论后尽快结束本轮。"
 
 func buildClaudeArgs(opts ExecOptions, logger *slog.Logger) []string {
 	args := []string{

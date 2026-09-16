@@ -65,6 +65,44 @@ func MaxTurnsFromRuntimeConfig(runtimeConfig json.RawMessage) int {
 	return cfg.MaxTurns
 }
 
+// DefaultMaxContextTokens is the in-run context budget applied when an agent
+// has no explicit runtime_config.max_context_tokens: one run must not grow its
+// context past the session-gate ceiling (RUYI-148). Matches the workspace
+// session_max_context_tokens default posture (200K, soft at 85%).
+const DefaultMaxContextTokens = 200_000
+
+// MinMaxContextTokens floors an explicit ceiling so the budget cannot degrade
+// an agent into amnesiac restart loops (aligns with the session gate floor).
+const MinMaxContextTokens = 100_000
+
+// MaxContextTokensFromRuntimeConfig reads runtime_config.max_context_tokens:
+// the hard in-run context ceiling for one backend Execute. Absent → platform
+// default (on); explicit 0 → off; positive → floored at MinMaxContextTokens;
+// malformed → default. Fail-open by design: the budget protects against runaway
+// context, it must not be able to silently disable itself through bad config.
+func MaxContextTokensFromRuntimeConfig(runtimeConfig json.RawMessage) int64 {
+	if len(runtimeConfig) == 0 {
+		return DefaultMaxContextTokens
+	}
+	var cfg struct {
+		MaxContextTokens *int64 `json:"max_context_tokens"`
+	}
+	if err := json.Unmarshal(runtimeConfig, &cfg); err != nil {
+		return DefaultMaxContextTokens
+	}
+	if cfg.MaxContextTokens == nil {
+		return DefaultMaxContextTokens
+	}
+	switch {
+	case *cfg.MaxContextTokens == 0:
+		return 0 // explicit off
+	case *cfg.MaxContextTokens < MinMaxContextTokens:
+		return MinMaxContextTokens
+	default:
+		return *cfg.MaxContextTokens
+	}
+}
+
 func cleanRuntimeSkillKey(key string) (string, bool) {
 	cleaned := filepath.Clean(filepath.FromSlash(strings.TrimSpace(key)))
 	if cleaned == "." || filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
