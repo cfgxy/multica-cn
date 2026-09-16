@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -88,7 +89,19 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	if opts.Cwd != "" {
 		cmd.Dir = opts.Cwd
 	}
-	cmd.Env = buildEnv(b.cfg.Env)
+	// In-run context budget (RUYI-148): the native auto-compact window is
+	// driven by this env (takes precedence over model-inferred windows, so
+	// [1m] models compact in-place too). The transcript poller below stays
+	// as the backstop in case auto-compact fails to shrink in time.
+	execEnv := b.cfg.Env
+	if opts.MaxContextHardTokens > 0 {
+		execEnv = make(map[string]string, len(b.cfg.Env)+1)
+		for k, v := range b.cfg.Env {
+			execEnv[k] = v
+		}
+		execEnv["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = strconv.FormatInt(opts.MaxContextHardTokens, 10)
+	}
+	cmd.Env = buildEnv(execEnv)
 	if err := claudeRootSudoPreflight(args, cmd.Env); err != nil {
 		cancel()
 		return nil, err
