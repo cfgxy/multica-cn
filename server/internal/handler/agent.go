@@ -756,6 +756,11 @@ type TaskAgentData struct {
 	ThinkingLevel         string                      `json:"thinking_level,omitempty"`
 	ServiceTier           string                      `json:"service_tier,omitempty"`
 	DisabledRuntimeSkills []DisabledRuntimeSkill      `json:"disabled_runtime_skills,omitempty"`
+	// Session-gate settings mirrored into the daemon so it can drive the
+	// CLI's native auto-compact (CLAUDE_CODE_AUTO_COMPACT_WINDOW /
+	// CLAUDE_AUTOCOMPACT_PCT_OVERRIDE) from the same knobs the UI edits.
+	SessionMaxContextTokens int64 `json:"session_max_context_tokens"`
+	SessionCompactPct       int32 `json:"session_compact_pct"`
 	// RuntimeConfig is the agent's saved runtime_config JSON as-is. The
 	// daemon decodes it per-provider — e.g. the openclaw backend reads
 	// `mode` + `gateway.*` to choose between embedded and gateway routing
