@@ -233,6 +233,8 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		startTime := time.Now()
 		var lastAssistantText string
 		var finalResultText string
+		resultTurns := 0
+		var transcriptMaxCtx, transcriptCompactions int64
 		sawResult := false
 		resultIsError := false
 		maxTurnsReached := false
@@ -331,6 +333,9 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				sawResult = true
 				finalResultText = msg.ResultText
 				resultIsError = msg.IsError
+				if msg.NumTurns > 0 {
+					resultTurns = msg.NumTurns
+				}
 				if msg.Subtype == "error_max_turns" {
 					maxTurnsReached = true
 				}
@@ -451,14 +456,26 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		// last request's real numbers, exactly what the next resume inherits.
 		fillContextTokensFromTranscript(usage, claudeTranscriptRoot(), opts.Cwd, reportedSessionID, b.cfg.Logger)
 
+		// Run-scoped observability (RUYI-154): one extra transcript pass
+		// yields the largest single-request context and the number of native
+		// auto-compacts; turns come from the result event's num_turns.
+		if path, ok := claudeTranscriptPath(claudeTranscriptRoot(), opts.Cwd, reportedSessionID); ok {
+			if maxCtx, compactions, has := transcriptRunStats(path); has {
+				transcriptMaxCtx, transcriptCompactions = maxCtx, compactions
+			}
+		}
+
 		resCh <- Result{
-			Status:         finalStatus,
-			Output:         finalOutput,
-			Error:          finalError,
-			DurationMs:     duration.Milliseconds(),
-			SessionID:      reportedSessionID,
-			Usage:          usage,
-			ResumeRejected: resumeRejected,
+			Status:           finalStatus,
+			Output:           finalOutput,
+			Error:            finalError,
+			DurationMs:       duration.Milliseconds(),
+			SessionID:        reportedSessionID,
+			Usage:            usage,
+			ResumeRejected:   resumeRejected,
+			Turns:            resultTurns,
+			Compactions:      int(transcriptCompactions),
+			MaxContextTokens: transcriptMaxCtx,
 		}
 	}()
 
@@ -880,6 +897,47 @@ func claudeTranscriptPath(root, cwd, sessionID string) (string, bool) {
 		}
 	}
 	return best, true
+}
+
+// transcriptRunStats scans one session transcript for run-scoped
+// observability (RUYI-154): the largest single-request context reading and
+// the number of native auto-compacts (isCompactSummary boundary entries).
+// One pass, same line shapes transcriptContextReading trusts; ok is false
+// when the file is missing or holds no usable assistant lines.
+func transcriptRunStats(path string) (maxCtx, compactions int64, ok bool) {
+	fh, err := os.Open(path)
+	if err != nil {
+		return 0, 0, false
+	}
+	defer fh.Close()
+	sc := bufio.NewScanner(fh)
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	saw := false
+	for sc.Scan() {
+		line := sc.Bytes()
+		if !strings.Contains(string(line), `"assistant"`) {
+			if strings.Contains(string(line), `"isCompactSummary":true`) {
+				compactions++
+			}
+			continue
+		}
+		var rec claudeTranscriptAssistant
+		if json.Unmarshal(line, &rec) != nil || rec.IsSidechain {
+			continue
+		}
+		u := rec.Message.Usage
+		if u == nil {
+			continue
+		}
+		total := u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens + u.OutputTokens
+		if total > 0 {
+			if total > maxCtx {
+				maxCtx = total
+			}
+			saw = true
+		}
+	}
+	return maxCtx, compactions, saw
 }
 
 // claudeTranscriptAssistant is the one transcript line shape this reader cares
