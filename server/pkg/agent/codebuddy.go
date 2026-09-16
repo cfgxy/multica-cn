@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os/exec"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -93,6 +94,42 @@ func buildCodebuddyArgs(opts ExecOptions, logger *slog.Logger) []string {
 	return args
 }
 
+// codebuddyExecEnv mirrors the in-run context budget (RUYI-148) onto
+// CodeBuddy's own native auto-compact env vars. CODEBUDDY_AUTO_COMPACT_WINDOW
+// and CODEBUDDY_AUTOCOMPACT_PCT_OVERRIDE are CodeBuddy's own env vars
+// (verified against @tencent-ai/codebuddy-code — read via process.env in
+// dist-server/codebuddy.js, documented in its bundled dist/web-ui/docs/*/cli/
+// env-vars.md), not a same-name passthrough of Claude Code's
+// CLAUDE_CODE_AUTO_COMPACT_WINDOW / CLAUDE_AUTOCOMPACT_PCT_OVERRIDE — the
+// brand rename changed the prefix. Unlike claude.go's unconditional
+// overwrite (which has no test coverage either), an agent-configured value
+// already present in baseEnv wins here and is left untouched, since RUYI-152
+// requires that explicit env priority.
+func codebuddyExecEnv(baseEnv map[string]string, opts ExecOptions) map[string]string {
+	extra := make(map[string]string, 2)
+	if opts.MaxContextHardTokens > 0 {
+		if _, exists := baseEnv["CODEBUDDY_AUTO_COMPACT_WINDOW"]; !exists {
+			extra["CODEBUDDY_AUTO_COMPACT_WINDOW"] = strconv.FormatInt(opts.MaxContextHardTokens, 10)
+		}
+	}
+	if opts.CompactWindowPct > 0 {
+		if _, exists := baseEnv["CODEBUDDY_AUTOCOMPACT_PCT_OVERRIDE"]; !exists {
+			extra["CODEBUDDY_AUTOCOMPACT_PCT_OVERRIDE"] = strconv.FormatInt(int64(opts.CompactWindowPct), 10)
+		}
+	}
+	if len(extra) == 0 {
+		return baseEnv
+	}
+	execEnv := make(map[string]string, len(baseEnv)+len(extra))
+	for k, v := range baseEnv {
+		execEnv[k] = v
+	}
+	for k, v := range extra {
+		execEnv[k] = v
+	}
+	return execEnv
+}
+
 func (b *codebuddyBackend) Execute(ctx context.Context, prompt string, opts ExecOptions) (*Session, error) {
 	execPath := b.cfg.ExecutablePath
 	if execPath == "" {
@@ -142,7 +179,7 @@ func (b *codebuddyBackend) Execute(ctx context.Context, prompt string, opts Exec
 	if opts.Cwd != "" {
 		cmd.Dir = opts.Cwd
 	}
-	cmd.Env = buildEnv(b.cfg.Env)
+	cmd.Env = buildEnv(codebuddyExecEnv(b.cfg.Env, opts))
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -518,5 +519,120 @@ func TestCodebuddyHandleControlRequestApprovesInCodebuddyShape(t *testing.T) {
 	}
 	if updatedInput["command"] != "ls" {
 		t.Fatalf("expected the original tool input to be preserved, got %v", updatedInput["command"])
+	}
+}
+
+func TestCodebuddyExecEnv_InjectsAutoCompactWindow(t *testing.T) {
+	t.Parallel()
+
+	got := codebuddyExecEnv(map[string]string{"FOO": "bar"}, ExecOptions{MaxContextHardTokens: 170000})
+
+	if got["CODEBUDDY_AUTO_COMPACT_WINDOW"] != "170000" {
+		t.Fatalf("expected CODEBUDDY_AUTO_COMPACT_WINDOW=170000, got %q", got["CODEBUDDY_AUTO_COMPACT_WINDOW"])
+	}
+	if got["FOO"] != "bar" {
+		t.Fatalf("expected base env FOO=bar to survive, got %q", got["FOO"])
+	}
+}
+
+func TestCodebuddyExecEnv_InjectsAutocompactPctOverride(t *testing.T) {
+	t.Parallel()
+
+	got := codebuddyExecEnv(map[string]string{}, ExecOptions{CompactWindowPct: 70})
+
+	if got["CODEBUDDY_AUTOCOMPACT_PCT_OVERRIDE"] != "70" {
+		t.Fatalf("expected CODEBUDDY_AUTOCOMPACT_PCT_OVERRIDE=70, got %q", got["CODEBUDDY_AUTOCOMPACT_PCT_OVERRIDE"])
+	}
+}
+
+func TestCodebuddyExecEnv_ExplicitAgentEnvWins(t *testing.T) {
+	t.Parallel()
+
+	base := map[string]string{
+		"CODEBUDDY_AUTO_COMPACT_WINDOW":      "999999",
+		"CODEBUDDY_AUTOCOMPACT_PCT_OVERRIDE": "55",
+	}
+	got := codebuddyExecEnv(base, ExecOptions{MaxContextHardTokens: 170000, CompactWindowPct: 70})
+
+	if got["CODEBUDDY_AUTO_COMPACT_WINDOW"] != "999999" {
+		t.Fatalf("expected agent-set CODEBUDDY_AUTO_COMPACT_WINDOW=999999 to survive, got %q", got["CODEBUDDY_AUTO_COMPACT_WINDOW"])
+	}
+	if got["CODEBUDDY_AUTOCOMPACT_PCT_OVERRIDE"] != "55" {
+		t.Fatalf("expected agent-set CODEBUDDY_AUTOCOMPACT_PCT_OVERRIDE=55 to survive, got %q", got["CODEBUDDY_AUTOCOMPACT_PCT_OVERRIDE"])
+	}
+}
+
+func TestCodebuddyExecEnv_NoInjectionWhenUnset(t *testing.T) {
+	t.Parallel()
+
+	base := map[string]string{"FOO": "bar"}
+	got := codebuddyExecEnv(base, ExecOptions{})
+
+	if _, exists := got["CODEBUDDY_AUTO_COMPACT_WINDOW"]; exists {
+		t.Fatalf("expected no CODEBUDDY_AUTO_COMPACT_WINDOW injection, got %q", got["CODEBUDDY_AUTO_COMPACT_WINDOW"])
+	}
+	if _, exists := got["CODEBUDDY_AUTOCOMPACT_PCT_OVERRIDE"]; exists {
+		t.Fatalf("expected no CODEBUDDY_AUTOCOMPACT_PCT_OVERRIDE injection, got %q", got["CODEBUDDY_AUTOCOMPACT_PCT_OVERRIDE"])
+	}
+	// No injection means the base map is returned untouched (no needless copy).
+	if len(got) != len(base) {
+		t.Fatalf("expected untouched base env, got %#v", got)
+	}
+}
+
+// TestCodebuddyExecute_AutoCompactWindowReachesProcessEnv is the trigger
+// sample for deliverable #4: it proves the configured budget value actually
+// lands in the spawned codebuddy process's real environment (not just in the
+// codebuddyExecEnv map), by having the fake CLI dump `env` to a file before
+// reading stdin. It does NOT prove CodeBuddy's own auto-compact logic reacts
+// to the value at runtime — that would require the real, licensed CodeBuddy
+// binary and a long-running conversation; this test only proves delivery of
+// the env var to the CLI process, which is the daemon's actual contract
+// with the CLI.
+func TestCodebuddyExecute_AutoCompactWindowReachesProcessEnv(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	dir := t.TempDir()
+	fakePath := filepath.Join(dir, "codebuddy")
+	envDumpPath := filepath.Join(dir, "env.dump")
+	script := "#!/bin/sh\n" +
+		"env > " + envDumpPath + "\n" +
+		"IFS= read -r _\n" +
+		`printf '%s\n' '{"type":"result","subtype":"success","is_error":false,"session_id":"sess-cb-env","result":"ok"}'` + "\n"
+	writeTestExecutable(t, fakePath, []byte(script))
+
+	b := &codebuddyBackend{cfg: Config{ExecutablePath: fakePath, Logger: slog.Default()}}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	session, err := b.Execute(ctx, "say hello", ExecOptions{
+		Timeout:              5 * time.Second,
+		MaxContextHardTokens: 170000,
+		CompactWindowPct:     70,
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	for range session.Messages {
+	}
+	select {
+	case <-session.Result:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for result")
+	}
+
+	dump, err := os.ReadFile(envDumpPath)
+	if err != nil {
+		t.Fatalf("read env dump: %v", err)
+	}
+	if !strings.Contains(string(dump), "CODEBUDDY_AUTO_COMPACT_WINDOW=170000") {
+		t.Fatalf("expected CODEBUDDY_AUTO_COMPACT_WINDOW=170000 in child env, got:\n%s", dump)
+	}
+	if !strings.Contains(string(dump), "CODEBUDDY_AUTOCOMPACT_PCT_OVERRIDE=70") {
+		t.Fatalf("expected CODEBUDDY_AUTOCOMPACT_PCT_OVERRIDE=70 in child env, got:\n%s", dump)
 	}
 }
