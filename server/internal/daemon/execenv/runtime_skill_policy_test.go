@@ -175,6 +175,28 @@ func TestMaxTurnsFromRuntimeConfig(t *testing.T) {
 	}
 }
 
+func TestMaxContextTokensFromRuntimeConfig(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		raw  json.RawMessage
+		want int64
+	}{
+		{"empty config defaults on", nil, 200_000},
+		{"absent field defaults on", json.RawMessage(`{"max_turns":400}`), 200_000},
+		{"explicit zero disables", json.RawMessage(`{"max_context_tokens":0}`), 0},
+		{"custom ceiling", json.RawMessage(`{"max_context_tokens":300000}`), 300_000},
+		{"below floor floors", json.RawMessage(`{"max_context_tokens":50000}`), 100_000},
+		{"malformed defaults", json.RawMessage(`{invalid`), 200_000},
+	}
+	for _, tc := range cases {
+		if got := MaxContextTokensFromRuntimeConfig(tc.raw); got != tc.want {
+			t.Errorf("%s: got %d, want %d", tc.name, got, tc.want)
+		}
+	}
+}
+
 func TestEnsureCodexDisabledSkillsConfig(t *testing.T) {
 	t.Parallel()
 
