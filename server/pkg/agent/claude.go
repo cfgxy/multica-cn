@@ -158,12 +158,12 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	// Context-budget poller (RUYI-148): the stream frames on current CLIs
 	// carry zero usage, so the live reading comes from the on-disk session
 	// transcript the CLI appends to as the run progresses. Soft line (85%)
-	// asks the scanner to inject a wrap-up nudge; hard line (100%) tears the
+	// logs an early warning; hard line (100%) tears the
 	// process down — the run then resumes via the retry chain and the
 	// claim-time session gate swaps in a fresh session + brief.
 	var sessionIDLive atomic.Value
+	var softWarned atomic.Bool
 	var sessionPublished atomic.Bool
-	var softNudgePending atomic.Bool
 	var budgetStop atomic.Bool
 	var contextAtStop atomic.Int64
 	if opts.MaxContextHardTokens > 0 {
@@ -200,8 +200,8 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 					}
 					return
 				case reading >= soft:
-					if softNudgePending.CompareAndSwap(false, true) {
-						b.cfg.Logger.Warn("claude: context soft threshold reached; wrap-up nudge requested",
+					if softWarned.CompareAndSwap(false, true) {
+						b.cfg.Logger.Warn("claude: context soft threshold reached (85%); hard stop at ceiling",
 							"context_tokens", reading, "ceiling", opts.MaxContextHardTokens)
 					}
 				}
@@ -294,16 +294,13 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 					unreadableAssistantCount++
 				}
 				lastAssistantText = turn.resolveFallback(lastAssistantText)
-				// context-budget soft line: the transcript poller requests a
-				// one-shot wrap-up nudge; the scanner goroutine performs the
-				// stdin write (single-writer, same as control responses).
-				if opts.MaxContextHardTokens > 0 && softNudgePending.CompareAndSwap(true, false) && !budgetStop.Load() {
-					b.cfg.Logger.Warn("claude: context soft threshold reached; injecting wrap-up nudge",
-						"ceiling", opts.MaxContextHardTokens)
-					if err := writeClaudeInput(stdin, contextWrapUpPrompt); err != nil {
-						b.cfg.Logger.Warn("claude: wrap-up nudge write failed", "error", err)
-					}
-				}
+				// context-budget soft line: the poller logs an early warning at
+				// 85% (see the transcript poller below). No stdin injection is
+				// possible here — empirically, -p stream-json mode ignores
+				// every queued user frame after the initial prompt (verified
+				// on CLI 2.1.270: a 3-frame batch executes only frame 1), so
+				// both wrap-up nudges and /compact cannot be delivered
+				// mid-run; the poller's hard line is the enforcement.
 			case "user":
 				if b.handleUser(msg, msgCh) {
 					sawAsyncLaunch = true
@@ -1051,12 +1048,6 @@ var claudeBlockedArgs = map[string]blockedArgMode{
 	// --effort values.
 	"--effort": blockedWithValue,
 }
-
-// contextWrapUpPrompt is injected once when the live context reading crosses
-// the soft threshold (85% of the in-run budget): the next turn wraps up instead
-// of opening new exploration, letting the run finish gracefully before the
-// hard force-stop.
-const contextWrapUpPrompt = "上下文预算已接近本轮上限：请立即收敛——不要再开启新的大块读取或探查；整理已完成/未完成事项与交接要点，输出阶段性结论后尽快结束本轮。"
 
 func buildClaudeArgs(opts ExecOptions, logger *slog.Logger) []string {
 	args := []string{
