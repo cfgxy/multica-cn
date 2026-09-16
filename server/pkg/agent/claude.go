@@ -155,6 +155,60 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		writeDone <- err
 	}()
 
+	// Context-budget poller (RUYI-148): the stream frames on current CLIs
+	// carry zero usage, so the live reading comes from the on-disk session
+	// transcript the CLI appends to as the run progresses. Soft line (85%)
+	// asks the scanner to inject a wrap-up nudge; hard line (100%) tears the
+	// process down — the run then resumes via the retry chain and the
+	// claim-time session gate swaps in a fresh session + brief.
+	var sessionIDLive atomic.Value
+	var sessionPublished atomic.Bool
+	var softNudgePending atomic.Bool
+	var budgetStop atomic.Bool
+	var contextAtStop atomic.Int64
+	if opts.MaxContextHardTokens > 0 {
+		go func() {
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
+			soft := opts.MaxContextHardTokens * 85 / 100
+			for {
+				select {
+				case <-runCtx.Done():
+					return
+				case <-ticker.C:
+				}
+				sid, _ := sessionIDLive.Load().(string)
+				if sid == "" {
+					continue
+				}
+				path, ok := claudeTranscriptPath(claudeTranscriptRoot(), opts.Cwd, sid)
+				if !ok {
+					continue
+				}
+				_, reading, has := transcriptContextReading(path)
+				if !has {
+					continue
+				}
+				switch {
+				case reading >= opts.MaxContextHardTokens:
+					if budgetStop.CompareAndSwap(false, true) {
+						contextAtStop.Store(reading)
+						b.cfg.Logger.Warn("claude: context hard budget reached; force-stopping run for segmented continuation",
+							"context_tokens", reading, "ceiling", opts.MaxContextHardTokens)
+						closeStdin()
+						cancel()
+					}
+					return
+				case reading >= soft:
+					if softNudgePending.CompareAndSwap(false, true) {
+						b.cfg.Logger.Warn("claude: context soft threshold reached; wrap-up nudge requested",
+							"context_tokens", reading, "ceiling", opts.MaxContextHardTokens)
+					}
+				}
+			}
+		}()
+	}
+
 	go func() {
 		defer cancel()
 		defer close(msgCh)
@@ -169,9 +223,6 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		sawResult := false
 		resultIsError := false
 		maxTurnsReached := false
-		budgetStop := false
-		softNudged := false
-		contextAtStop := int64(0)
 		terminalReasonError := ""
 		var sessionID string
 		sawAsyncLaunch := false
@@ -243,28 +294,14 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 					unreadableAssistantCount++
 				}
 				lastAssistantText = turn.resolveFallback(lastAssistantText)
-				if opts.MaxContextHardTokens > 0 {
-					live := int64(0)
-					for _, sz := range contextTokens {
-						if sz > live {
-							live = sz
-						}
-					}
-					soft := opts.MaxContextHardTokens * 85 / 100
-					if !softNudged && live >= soft && live < opts.MaxContextHardTokens {
-						softNudged = true
-						b.cfg.Logger.Warn("claude: context soft threshold reached; injecting wrap-up nudge",
-							"context_tokens", live, "ceiling", opts.MaxContextHardTokens)
-						if err := writeClaudeInput(stdin, contextWrapUpPrompt); err != nil {
-							b.cfg.Logger.Warn("claude: wrap-up nudge write failed", "error", err)
-						}
-					} else if live >= opts.MaxContextHardTokens && !budgetStop {
-						budgetStop = true
-						contextAtStop = live
-						b.cfg.Logger.Warn("claude: context hard budget reached; force-stopping run for segmented continuation",
-							"context_tokens", live, "ceiling", opts.MaxContextHardTokens)
-						closeStdin()
-						cancel()
+				// context-budget soft line: the transcript poller requests a
+				// one-shot wrap-up nudge; the scanner goroutine performs the
+				// stdin write (single-writer, same as control responses).
+				if opts.MaxContextHardTokens > 0 && softNudgePending.CompareAndSwap(true, false) && !budgetStop.Load() {
+					b.cfg.Logger.Warn("claude: context soft threshold reached; injecting wrap-up nudge",
+						"ceiling", opts.MaxContextHardTokens)
+					if err := writeClaudeInput(stdin, contextWrapUpPrompt); err != nil {
+						b.cfg.Logger.Warn("claude: wrap-up nudge write failed", "error", err)
 					}
 				}
 			case "user":
@@ -274,6 +311,10 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			case "system":
 				if msg.SessionID != "" {
 					sessionID = msg.SessionID
+					if !sessionPublished.Load() {
+						sessionPublished.Store(true)
+						sessionIDLive.Store(msg.SessionID)
+					}
 				}
 				trySend(msgCh, Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
 			case "result":
@@ -341,8 +382,8 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				sawResult:           sawResult,
 				resultIsError:       resultIsError,
 				maxTurnsReached:     maxTurnsReached,
-				budgetStop:          budgetStop,
-				contextAtStop:       contextAtStop,
+				budgetStop:          budgetStop.Load(),
+				contextAtStop:       contextAtStop.Load(),
 				scanErr:             scanErr,
 				terminalReasonError: terminalReasonError,
 			},
