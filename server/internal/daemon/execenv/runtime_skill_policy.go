@@ -65,42 +65,32 @@ func MaxTurnsFromRuntimeConfig(runtimeConfig json.RawMessage) int {
 	return cfg.MaxTurns
 }
 
-// DefaultMaxContextTokens is the in-run context budget applied when an agent
-// has no explicit runtime_config.max_context_tokens: one run must not grow its
-// context past the session-gate ceiling (RUYI-148). Matches the workspace
-// session_max_context_tokens default posture (200K, soft at 85%).
-const DefaultMaxContextTokens = 200_000
-
 // MinMaxContextTokens floors an explicit ceiling so the budget cannot degrade
 // an agent into amnesiac restart loops (aligns with the session gate floor).
 const MinMaxContextTokens = 100_000
 
 // MaxContextTokensFromRuntimeConfig reads runtime_config.max_context_tokens:
-// the hard in-run context ceiling for one backend Execute. Absent → platform
-// default (on); explicit 0 → off; positive → floored at MinMaxContextTokens;
-// malformed → default. Fail-open by design: the budget protects against runaway
-// context, it must not be able to silently disable itself through bad config.
+// the hard in-run context ceiling for one backend Execute. Model-dependent by
+// design — the value is set by the agent owner after choosing a model, never
+// defaulted: absent field or malformed config → 0 (gate off); explicit 0 →
+// off; positive → floored at MinMaxContextTokens.
 func MaxContextTokensFromRuntimeConfig(runtimeConfig json.RawMessage) int64 {
 	if len(runtimeConfig) == 0 {
-		return DefaultMaxContextTokens
+		return 0
 	}
 	var cfg struct {
 		MaxContextTokens *int64 `json:"max_context_tokens"`
 	}
 	if err := json.Unmarshal(runtimeConfig, &cfg); err != nil {
-		return DefaultMaxContextTokens
+		return 0
 	}
-	if cfg.MaxContextTokens == nil {
-		return DefaultMaxContextTokens
+	if cfg.MaxContextTokens == nil || *cfg.MaxContextTokens == 0 {
+		return 0
 	}
-	switch {
-	case *cfg.MaxContextTokens == 0:
-		return 0 // explicit off
-	case *cfg.MaxContextTokens < MinMaxContextTokens:
+	if *cfg.MaxContextTokens < MinMaxContextTokens {
 		return MinMaxContextTokens
-	default:
-		return *cfg.MaxContextTokens
 	}
+	return *cfg.MaxContextTokens
 }
 
 func cleanRuntimeSkillKey(key string) (string, bool) {
