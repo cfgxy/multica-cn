@@ -1593,3 +1593,213 @@ func TestKimiSessionWireLogsRejectsTraversal(t *testing.T) {
 		}
 	}
 }
+
+// fakeKimiACPContextOccupancyScript reports a live {used,size} context-window
+// reading on session/prompt via a usage_update notification (the shape kimi
+// actually uses — RUYI-151), driven entirely by env vars so one script covers
+// all three ExecOptions.MaxContextHardTokens scenarios:
+//   - below/without a ceiling: responds normally right after the notification.
+//   - KIMI_TEST_HANG=1 (ceiling crossed): never responds to session/prompt,
+//     so the only way the turn ends is the client cancelling runCtx — proving
+//     the hard-stop actually tears down an in-flight call rather than just
+//     flagging state that a later response happens to match.
+func fakeKimiACPContextOccupancyScript() string {
+	return `#!/bin/sh
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentCapabilities":{}}}\n' "$id"
+      ;;
+    *'"method":"session/new"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"ses_budget"}}\n' "$id"
+      ;;
+    *'"method":"session/prompt"'*)
+      printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"ses_budget","update":{"sessionUpdate":"usage_update","used":'"$KIMI_TEST_USED"',"size":'"$KIMI_TEST_SIZE"'}}}\n'
+      if [ -n "$KIMI_TEST_HANG" ]; then
+        sleep 10
+      else
+        printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}\n' "$id"
+      fi
+      exit 0
+      ;;
+  esac
+done
+`
+}
+
+// TestKimiBackendContextBudgetNoopWithoutCeiling pins the zero/default-value
+// no-op requirement (RUYI-151 acceptance criterion): with
+// ExecOptions.MaxContextHardTokens unset, a usage_update reporting a used
+// count far past any plausible ceiling must not affect the run at all — the
+// existing (pre-RUYI-151) behaviour of simply discarding the {used,size}
+// reading is preserved.
+func TestKimiBackendContextBudgetNoopWithoutCeiling(t *testing.T) {
+	t.Parallel()
+
+	fakePath := filepath.Join(t.TempDir(), "kimi")
+	writeTestExecutable(t, fakePath, []byte(fakeKimiACPContextOccupancyScript()))
+
+	backend, err := New("kimi", Config{
+		ExecutablePath: fakePath,
+		Logger:         slog.Default(),
+		Env: map[string]string{
+			"KIMI_TEST_USED": "999999999",
+			"KIMI_TEST_SIZE": "1000000000",
+		},
+	})
+	if err != nil {
+		t.Fatalf("new kimi backend: %v", err)
+	}
+
+	session, err := backend.Execute(context.Background(), "task", ExecOptions{Timeout: 5 * time.Second})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	go func() {
+		for range session.Messages {
+		}
+	}()
+
+	result := <-session.Result
+	if result.Status != "completed" {
+		t.Fatalf("MaxContextHardTokens=0 must be a no-op: status=%q error=%q", result.Status, result.Error)
+	}
+}
+
+// TestKimiBackendContextBudgetSoftWarningOnly checks the 85% soft threshold:
+// crossing it logs a warning but must not stop the run.
+func TestKimiBackendContextBudgetSoftWarningOnly(t *testing.T) {
+	t.Parallel()
+
+	fakePath := filepath.Join(t.TempDir(), "kimi")
+	writeTestExecutable(t, fakePath, []byte(fakeKimiACPContextOccupancyScript()))
+
+	var logs strings.Builder
+	backend, err := New("kimi", Config{
+		ExecutablePath: fakePath,
+		Logger:         slog.New(slog.NewJSONHandler(&logs, nil)),
+		Env: map[string]string{
+			"KIMI_TEST_USED": "90000", // 90% of a 100000 ceiling: past soft, below hard.
+			"KIMI_TEST_SIZE": "128000",
+		},
+	})
+	if err != nil {
+		t.Fatalf("new kimi backend: %v", err)
+	}
+
+	session, err := backend.Execute(context.Background(), "task", ExecOptions{
+		Timeout:              5 * time.Second,
+		MaxContextHardTokens: 100000,
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	go func() {
+		for range session.Messages {
+		}
+	}()
+
+	result := <-session.Result
+	if result.Status != "completed" {
+		t.Fatalf("soft threshold alone must not stop the run: status=%q error=%q", result.Status, result.Error)
+	}
+	if !strings.Contains(logs.String(), "context soft threshold reached") {
+		t.Fatalf("expected a soft-threshold warning log, got: %s", logs.String())
+	}
+}
+
+// TestKimiBackendContextBudgetHardStop is the trigger-sample evidence
+// required by RUYI-151: with the live {used,size} reading at/above
+// ExecOptions.MaxContextHardTokens, the client must cancel the in-flight
+// session/prompt call (the fake peer never responds — see
+// fakeKimiACPContextOccupancyScript) and the run must land as
+// Result.Status=="context_budget" with the token count that triggered it,
+// exactly mirroring the claude backend's RUYI-148 contract so the daemon's
+// existing "case \"context_budget\":" handling covers both backends.
+func TestKimiBackendContextBudgetHardStop(t *testing.T) {
+	t.Parallel()
+
+	fakePath := filepath.Join(t.TempDir(), "kimi")
+	writeTestExecutable(t, fakePath, []byte(fakeKimiACPContextOccupancyScript()))
+
+	var logs strings.Builder
+	backend, err := New("kimi", Config{
+		ExecutablePath: fakePath,
+		Logger:         slog.New(slog.NewJSONHandler(&logs, nil)),
+		Env: map[string]string{
+			"KIMI_TEST_USED": "100000",
+			"KIMI_TEST_SIZE": "128000",
+			"KIMI_TEST_HANG": "1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("new kimi backend: %v", err)
+	}
+
+	session, err := backend.Execute(context.Background(), "task", ExecOptions{
+		Timeout:              5 * time.Second,
+		MaxContextHardTokens: 100000,
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	go func() {
+		for range session.Messages {
+		}
+	}()
+
+	result := <-session.Result
+	if result.Status != "context_budget" {
+		t.Fatalf("status = %q, want %q (error=%q)", result.Status, "context_budget", result.Error)
+	}
+	if !strings.Contains(result.Error, "100000 tokens of live context") {
+		t.Fatalf("error should name the triggering token count: %q", result.Error)
+	}
+	if !strings.Contains(logs.String(), "context hard budget reached") {
+		t.Fatalf("expected a hard-budget warning log, got: %s", logs.String())
+	}
+}
+
+// TestKimiBackendContextBudgetIgnoresLowUsage is the "far below threshold"
+// counterpart: a live reading nowhere near either the soft or hard threshold
+// must complete normally with no budget-related log line at all.
+func TestKimiBackendContextBudgetIgnoresLowUsage(t *testing.T) {
+	t.Parallel()
+
+	fakePath := filepath.Join(t.TempDir(), "kimi")
+	writeTestExecutable(t, fakePath, []byte(fakeKimiACPContextOccupancyScript()))
+
+	var logs strings.Builder
+	backend, err := New("kimi", Config{
+		ExecutablePath: fakePath,
+		Logger:         slog.New(slog.NewJSONHandler(&logs, nil)),
+		Env: map[string]string{
+			"KIMI_TEST_USED": "1000",
+			"KIMI_TEST_SIZE": "128000",
+		},
+	})
+	if err != nil {
+		t.Fatalf("new kimi backend: %v", err)
+	}
+
+	session, err := backend.Execute(context.Background(), "task", ExecOptions{
+		Timeout:              5 * time.Second,
+		MaxContextHardTokens: 100000,
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	go func() {
+		for range session.Messages {
+		}
+	}()
+
+	result := <-session.Result
+	if result.Status != "completed" {
+		t.Fatalf("status=%q error=%q", result.Status, result.Error)
+	}
+	if strings.Contains(logs.String(), "context soft threshold reached") || strings.Contains(logs.String(), "context hard budget reached") {
+		t.Fatalf("no budget log expected far below threshold, got: %s", logs.String())
+	}
+}
