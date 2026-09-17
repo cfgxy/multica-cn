@@ -725,6 +725,72 @@ func TestClaudeCompactEnvExplicitAgentEnvNotOverwritten(t *testing.T) {
 	}
 }
 
+// TestClaudeExecute_AutoCompactWindowReachesProcessEnv is the claude-side
+// counterpart of codebuddy_test.go's
+// TestCodebuddyExecute_AutoCompactWindowReachesProcessEnv (RUYI-155): the
+// three tests above only prove claudeCompactEnv's return value is correct in
+// isolation, never that CLAUDE_CODE_AUTO_COMPACT_WINDOW /
+// CLAUDE_AUTOCOMPACT_PCT_OVERRIDE actually reach the spawned claude
+// process's real environment through buildEnv -> mergeEnv. This test drives
+// the real Execute path and has the fake CLI dump `env` to a file before
+// reading stdin, so it observes the process-level environment rather than
+// any intermediate map. It does not prove Claude Code's own auto-compact
+// logic reacts to the value at runtime — only that the daemon delivers it.
+func TestClaudeExecute_AutoCompactWindowReachesProcessEnv(t *testing.T) {
+	t.Parallel()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	dir := t.TempDir()
+	fakePath := filepath.Join(dir, "claude")
+	envDumpPath := filepath.Join(dir, "env.dump")
+	script := "#!/bin/sh\n" +
+		"env > " + envDumpPath + "\n" +
+		"IFS= read -r _\n" +
+		"printf '%s\\n' '{\"type\":\"system\",\"session_id\":\"sess-claude-env\"}'\n" +
+		"printf '%s\\n' '{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"session_id\":\"sess-claude-env\",\"result\":\"ok\"}'\n"
+	writeTestExecutable(t, fakePath, []byte(script))
+
+	backend, err := New("claude", Config{
+		ExecutablePath: fakePath,
+		Env:            map[string]string{"IS_SANDBOX": "1"},
+		Logger:         slog.Default(),
+	})
+	if err != nil {
+		t.Fatalf("new claude backend: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	session, err := backend.Execute(ctx, "say hello", ExecOptions{
+		Timeout:             5 * time.Second,
+		CompactWindowTokens: 170000,
+		CompactWindowPct:    70,
+	})
+	if err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	for range session.Messages {
+	}
+	select {
+	case <-session.Result:
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for result")
+	}
+
+	dump, err := os.ReadFile(envDumpPath)
+	if err != nil {
+		t.Fatalf("read env dump: %v", err)
+	}
+	if !strings.Contains(string(dump), "CLAUDE_CODE_AUTO_COMPACT_WINDOW=170000") {
+		t.Fatalf("expected CLAUDE_CODE_AUTO_COMPACT_WINDOW=170000 in child env, got:\n%s", dump)
+	}
+	if !strings.Contains(string(dump), "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=70") {
+		t.Fatalf("expected CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=70 in child env, got:\n%s", dump)
+	}
+}
+
 func TestBuildEnvAppendsExtras(t *testing.T) {
 	t.Parallel()
 
