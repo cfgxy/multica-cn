@@ -488,6 +488,23 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			}
 		}
 
+		// A budget-stopped run must publish its final context reading, or the
+		// claim-time session gate reads "unknown" and the retry resumes the
+		// oversized session instead of swapping in a fresh one (RUYI-148 first
+		// production trigger, 2026-09-18: attempt 2 re-grew to 204K because
+		// the reading was absent). contextAtStop is the poller's last live
+		// reading — authoritative for this purpose.
+		if budgetStop.Load() {
+			if at := contextAtStop.Load(); at > 0 {
+				for m, u := range usage {
+					if u.ContextTokens < at {
+						u.ContextTokens = at
+						usage[m] = u
+					}
+				}
+			}
+		}
+
 		resCh <- Result{
 			Status:           finalStatus,
 			Output:           finalOutput,
