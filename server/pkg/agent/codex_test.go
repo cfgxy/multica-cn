@@ -5882,3 +5882,237 @@ func TestCodexResumeOverflowErrorMatchesLiveFailureText(t *testing.T) {
 		t.Fatalf("predicate missed the error the backend actually produced: %q", result.Error)
 	}
 }
+
+// RUYI-150: zero/absent MaxContextHardTokens must behave identically to
+// current (pre-RUYI-150) behavior — no config injection at all.
+func TestApplyCodexContextBudgetConfigZeroIsNoop(t *testing.T) {
+	t.Parallel()
+
+	params := map[string]any{"config": nil}
+	applyCodexContextBudgetConfig(params, ExecOptions{MaxContextHardTokens: 0})
+	if params["config"] != nil {
+		t.Fatalf("config should stay nil when MaxContextHardTokens is 0/absent, got %#v", params["config"])
+	}
+}
+
+func TestApplyCodexContextBudgetConfigInjectsLimit(t *testing.T) {
+	t.Parallel()
+
+	params := map[string]any{"config": nil}
+	applyCodexContextBudgetConfig(params, ExecOptions{MaxContextHardTokens: 150000})
+
+	cfg, ok := params["config"].(map[string]any)
+	if !ok {
+		t.Fatalf("config = %#v, want map[string]any", params["config"])
+	}
+	if got, want := cfg["model_auto_compact_token_limit"], int64(150000); got != want {
+		t.Errorf("model_auto_compact_token_limit = %v, want %v", got, want)
+	}
+	if got, want := cfg["model_auto_compact_token_limit_scope"], "total"; got != want {
+		t.Errorf("model_auto_compact_token_limit_scope = %v, want %v", got, want)
+	}
+}
+
+// Mirrors applyCodexReasoningEffort/applyCodexServiceTier's merge-not-clobber
+// behavior on the shared "config" map — reasoning effort injection runs
+// alongside this one on the same params and must not lose either key.
+func TestApplyCodexContextBudgetConfigPreservesExistingConfigKeys(t *testing.T) {
+	t.Parallel()
+
+	params := map[string]any{}
+	applyCodexReasoningEffort(params, "high")
+	applyCodexContextBudgetConfig(params, ExecOptions{MaxContextHardTokens: 200000})
+
+	cfg, ok := params["config"].(map[string]any)
+	if !ok {
+		t.Fatalf("config = %#v, want map[string]any", params["config"])
+	}
+	if got, want := cfg["model_reasoning_effort"], "high"; got != want {
+		t.Errorf("model_reasoning_effort = %v, want %v (overwritten)", got, want)
+	}
+	if got, want := cfg["model_auto_compact_token_limit"], int64(200000); got != want {
+		t.Errorf("model_auto_compact_token_limit = %v, want %v", got, want)
+	}
+}
+
+// RUYI-150 deliverable: an agent's own explicit custom_args config for this
+// key must win over the daemon's derived default — the daemon injection must
+// not compete with it.
+func TestApplyCodexContextBudgetConfigSkipsWhenCustomArgsSetIt(t *testing.T) {
+	t.Parallel()
+
+	params := map[string]any{"config": nil}
+	opts := ExecOptions{
+		MaxContextHardTokens: 150000,
+		CustomArgs:           []string{"-c", "model_auto_compact_token_limit=999"},
+	}
+	applyCodexContextBudgetConfig(params, opts)
+	if params["config"] != nil {
+		t.Fatalf("config should stay untouched when custom_args already set the key, got %#v", params["config"])
+	}
+}
+
+func TestApplyCodexContextBudgetConfigSkipsWhenExtraArgsSetItInlineForm(t *testing.T) {
+	t.Parallel()
+
+	params := map[string]any{"config": nil}
+	opts := ExecOptions{
+		MaxContextHardTokens: 150000,
+		ExtraArgs:            []string{"-c", "model_auto_compact_token_limit=999"},
+	}
+	applyCodexContextBudgetConfig(params, opts)
+	if params["config"] != nil {
+		t.Fatalf("config should stay untouched when extra_args already set the key, got %#v", params["config"])
+	}
+}
+
+func TestCodexArgsSetContextBudgetConfigDetectsInlineValue(t *testing.T) {
+	t.Parallel()
+
+	if !codexArgsSetContextBudgetConfig([]string{"--config", "model_auto_compact_token_limit=1234"}) {
+		t.Fatal("expected inline --config=value form to be detected")
+	}
+}
+
+func TestCodexArgsSetContextBudgetConfigDetectsProfileScoped(t *testing.T) {
+	t.Parallel()
+
+	if !codexArgsSetContextBudgetConfig([]string{"-c", "profiles.myprofile.model_auto_compact_token_limit=1234"}) {
+		t.Fatal("expected profile-scoped key to be detected")
+	}
+}
+
+func TestCodexArgsSetContextBudgetConfigIgnoresUnrelatedKeys(t *testing.T) {
+	t.Parallel()
+
+	if codexArgsSetContextBudgetConfig([]string{"-c", "model=o3", "--enable", "fast_mode"}) {
+		t.Fatal("unrelated -c keys must not be mistaken for the context budget override")
+	}
+}
+
+// RUYI-150 deliverable: latestCodexContextReading must read the per-request
+// last_token_usage figure and never mistake the cumulative total_token_usage
+// for it.
+func TestLatestCodexContextReadingUsesLastTokenUsageNotCumulative(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	content := strings.Join([]string{
+		`{"timestamp":"2026-06-12T17:29:27.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":900000,"output_tokens":50000,"total_tokens":950000},"last_token_usage":{"input_tokens":1000,"output_tokens":200,"total_tokens":1200},"model":"gpt-5.5"}}}`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	got, ok := latestCodexContextReading(path)
+	if !ok {
+		t.Fatal("expected a reading")
+	}
+	if got != 1200 {
+		t.Fatalf("reading = %d, want 1200 (last_token_usage only, never the 950000 cumulative total)", got)
+	}
+}
+
+func TestLatestCodexContextReadingTakesLatestEvent(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	content := strings.Join([]string{
+		`{"timestamp":"2026-06-12T17:29:27.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":1000,"output_tokens":200,"total_tokens":1200},"model":"gpt-5.5"}}}`,
+		`{"timestamp":"2026-06-12T17:30:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"last_token_usage":{"input_tokens":3000,"output_tokens":500,"total_tokens":3500},"model":"gpt-5.5"}}}`,
+		"",
+	}, "\n")
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	got, ok := latestCodexContextReading(path)
+	if !ok {
+		t.Fatal("expected a reading")
+	}
+	if got != 3500 {
+		t.Fatalf("reading = %d, want 3500 (the latest event, not the first)", got)
+	}
+}
+
+func TestLatestCodexContextReadingNoUsageFound(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	content := `{"timestamp":"2026-06-12T17:29:27.000Z","type":"turn_context","payload":{"model":"gpt-5.5"}}` + "\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+
+	if _, ok := latestCodexContextReading(path); ok {
+		t.Fatal("expected no reading when the file has no token_count events")
+	}
+}
+
+func TestLatestCodexContextReadingMissingFile(t *testing.T) {
+	t.Parallel()
+
+	if _, ok := latestCodexContextReading(filepath.Join(t.TempDir(), "missing.jsonl")); ok {
+		t.Fatal("expected no reading for a missing file")
+	}
+}
+
+// TestCodexContextBudgetPollerReadPathCrossesHardCeiling simulates the exact
+// read path the in-run poller (codex.go turn-wait select loop) exercises on
+// each 15s tick: codexSessionRoot -> findCodexSessionRollouts ->
+// latestCodexContextReading, against a rollout file whose latest
+// last_token_usage has grown past MaxContextHardTokens.
+//
+// RUYI-150 deliverable 5 (triggering-sample verification) required the
+// sample run not be interrupted. Live network-backed verification could not
+// be produced in this sandbox — every codex exec attempt and every
+// api.openai.com/proxy reachability probe timed out (no outbound network at
+// all here). This test is the documented substitute: it proves the poller's
+// read-and-decide logic actually fires past the ceiling using a real rollout
+// shape (mirrors historical ~/.codex/sessions data), without asserting
+// anything about a live thread/compact/start round trip, which is covered
+// separately by the offline JSON-RPC protocol probe cited in the delivery
+// comment.
+func TestCodexContextBudgetPollerReadPathCrossesHardCeiling(t *testing.T) {
+	t.Parallel()
+
+	taskHome := t.TempDir()
+	threadID := "budget-thread"
+	dateDir := filepath.Join(taskHome, "sessions", "2026", "07", "13")
+	if err := os.MkdirAll(dateDir, 0o755); err != nil {
+		t.Fatalf("mkdir date dir: %v", err)
+	}
+	content := strings.Join([]string{
+		// Cumulative total is enormous (never used by the poller); the
+		// per-request last_token_usage is what crosses the ceiling.
+		`{"timestamp":"2026-07-13T00:00:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":900000,"output_tokens":40000},"last_token_usage":{"input_tokens":80000,"output_tokens":5000},"model":"gpt-5.5"}}}`,
+		`{"timestamp":"2026-07-13T00:05:00.000Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1200000,"output_tokens":60000},"last_token_usage":{"input_tokens":118000,"output_tokens":6000},"model":"gpt-5.5"}}}`,
+		"",
+	}, "\n")
+	path := filepath.Join(dateDir, "rollout-2026-07-13T00-00-00-"+threadID+".jsonl")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write session file: %v", err)
+	}
+
+	const hardCeiling int64 = 120000
+	root := codexSessionRoot(taskHome)
+	paths := findCodexSessionRollouts(root, threadID)
+	if len(paths) != 1 {
+		t.Fatalf("findCodexSessionRollouts = %v, want exactly one match", paths)
+	}
+	reading, ok := latestCodexContextReading(paths[0])
+	if !ok {
+		t.Fatal("expected a reading")
+	}
+	if reading != 124000 {
+		t.Fatalf("reading = %d, want 124000 (latest last_token_usage, not the ~1.26M cumulative total)", reading)
+	}
+	if reading < hardCeiling {
+		t.Fatalf("reading %d did not cross hard ceiling %d — poller would not have triggered compact", reading, hardCeiling)
+	}
+	soft := hardCeiling * 85 / 100
+	if reading < soft {
+		t.Fatalf("reading %d did not even cross the soft threshold %d", reading, soft)
+	}
+}
