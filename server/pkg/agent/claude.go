@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -75,6 +76,24 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		}
 	}()
 
+	// Run-scoped observability (RUYI-154): claude's session transcript is
+	// keyed by session, not by run — a `--resume` appends this run's lines to
+	// the SAME file earlier runs already wrote into. Stat the transcript at
+	// its pre-run size here, before the process can write a single byte, so
+	// transcriptRunStats below can skip everything earlier runs left behind
+	// instead of re-counting their compactions and context peaks into this
+	// run's numbers.
+	resumeTranscriptPath, resumeTranscriptFound := "", false
+	var runStatsStartOffset int64
+	if opts.ResumeSessionID != "" {
+		if p, ok := claudeTranscriptPath(claudeTranscriptRoot(), opts.Cwd, opts.ResumeSessionID); ok {
+			resumeTranscriptPath, resumeTranscriptFound = p, true
+			if st, err := os.Stat(p); err == nil {
+				runStatsStartOffset = st.Size()
+			}
+		}
+	}
+
 	cmd := b.cfg.commandAt(execPath).exec(runCtx, args...)
 	hideAgentWindow(cmd)
 	// Take over context cancellation: the default kills the whole group the
@@ -88,7 +107,16 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 	if opts.Cwd != "" {
 		cmd.Dir = opts.Cwd
 	}
-	cmd.Env = buildEnv(b.cfg.Env)
+	// In-run context budget (RUYI-148): the native auto-compact window and its
+	// trigger percentage are driven by these envs (takes precedence over
+	// model-inferred windows, so [1m] models compact in-place too), mirrored
+	// from the agent's session-gate settings so the in-run compact line and
+	// the claim-time session-swap line collapse onto the same threshold. The
+	// transcript poller below (keyed off MaxContextHardTokens, a separate and
+	// always-higher ceiling) stays as the backstop in case auto-compact fails
+	// to shrink in time.
+	execEnv := claudeCompactEnv(b.cfg.Env, opts)
+	cmd.Env = buildEnv(execEnv)
 	if err := claudeRootSudoPreflight(args, cmd.Env); err != nil {
 		cancel()
 		return nil, err
@@ -155,6 +183,60 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		writeDone <- err
 	}()
 
+	// Context-budget poller (RUYI-148): the stream frames on current CLIs
+	// carry zero usage, so the live reading comes from the on-disk session
+	// transcript the CLI appends to as the run progresses. Soft line (85%)
+	// logs an early warning; hard line (100%) tears the
+	// process down — the run then resumes via the retry chain and the
+	// claim-time session gate swaps in a fresh session + brief.
+	var sessionIDLive atomic.Value
+	var softWarned atomic.Bool
+	var sessionPublished atomic.Bool
+	var budgetStop atomic.Bool
+	var contextAtStop atomic.Int64
+	if opts.MaxContextHardTokens > 0 {
+		go func() {
+			ticker := time.NewTicker(15 * time.Second)
+			defer ticker.Stop()
+			soft := opts.MaxContextHardTokens * 85 / 100
+			for {
+				select {
+				case <-runCtx.Done():
+					return
+				case <-ticker.C:
+				}
+				sid, _ := sessionIDLive.Load().(string)
+				if sid == "" {
+					continue
+				}
+				path, ok := claudeTranscriptPath(claudeTranscriptRoot(), opts.Cwd, sid)
+				if !ok {
+					continue
+				}
+				_, reading, has := transcriptContextReading(path)
+				if !has {
+					continue
+				}
+				switch {
+				case reading >= opts.MaxContextHardTokens:
+					if budgetStop.CompareAndSwap(false, true) {
+						contextAtStop.Store(reading)
+						b.cfg.Logger.Warn("claude: context hard budget reached; force-stopping run for segmented continuation",
+							"context_tokens", reading, "ceiling", opts.MaxContextHardTokens)
+						closeStdin()
+						cancel()
+					}
+					return
+				case reading >= soft:
+					if softWarned.CompareAndSwap(false, true) {
+						b.cfg.Logger.Warn("claude: context soft threshold reached (85%); hard stop at ceiling",
+							"context_tokens", reading, "ceiling", opts.MaxContextHardTokens)
+					}
+				}
+			}
+		}()
+	}
+
 	go func() {
 		defer cancel()
 		defer close(msgCh)
@@ -166,6 +248,8 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		startTime := time.Now()
 		var lastAssistantText string
 		var finalResultText string
+		resultTurns := 0
+		var transcriptMaxCtx, transcriptCompactions int64
 		sawResult := false
 		resultIsError := false
 		maxTurnsReached := false
@@ -240,6 +324,13 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 					unreadableAssistantCount++
 				}
 				lastAssistantText = turn.resolveFallback(lastAssistantText)
+				// context-budget soft line: the poller logs an early warning at
+				// 85% (see the transcript poller below). No stdin injection is
+				// possible here — empirically, -p stream-json mode ignores
+				// every queued user frame after the initial prompt (verified
+				// on CLI 2.1.270: a 3-frame batch executes only frame 1), so
+				// both wrap-up nudges and /compact cannot be delivered
+				// mid-run; the poller's hard line is the enforcement.
 			case "user":
 				if b.handleUser(msg, msgCh) {
 					sawAsyncLaunch = true
@@ -247,12 +338,19 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 			case "system":
 				if msg.SessionID != "" {
 					sessionID = msg.SessionID
+					if !sessionPublished.Load() {
+						sessionPublished.Store(true)
+						sessionIDLive.Store(msg.SessionID)
+					}
 				}
 				trySend(msgCh, Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
 			case "result":
 				sawResult = true
 				finalResultText = msg.ResultText
 				resultIsError = msg.IsError
+				if msg.NumTurns > 0 {
+					resultTurns = msg.NumTurns
+				}
 				if msg.Subtype == "error_max_turns" {
 					maxTurnsReached = true
 				}
@@ -314,6 +412,8 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 				sawResult:           sawResult,
 				resultIsError:       resultIsError,
 				maxTurnsReached:     maxTurnsReached,
+				budgetStop:          budgetStop.Load(),
+				contextAtStop:       contextAtStop.Load(),
 				scanErr:             scanErr,
 				terminalReasonError: terminalReasonError,
 			},
@@ -371,14 +471,34 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		// last request's real numbers, exactly what the next resume inherits.
 		fillContextTokensFromTranscript(usage, claudeTranscriptRoot(), opts.Cwd, reportedSessionID, b.cfg.Logger)
 
+		// Run-scoped observability (RUYI-154): one extra transcript pass
+		// yields the largest single-request context and the number of native
+		// auto-compacts; turns come from the result event's num_turns.
+		if path, ok := claudeTranscriptPath(claudeTranscriptRoot(), opts.Cwd, reportedSessionID); ok {
+			// Only honor the pre-run offset when this run's transcript is
+			// provably the same file we stat'd before starting the process.
+			// A rejected resume or a fresh session writes a brand-new
+			// session file, which must be read from byte zero.
+			offset := int64(0)
+			if resumeTranscriptFound && path == resumeTranscriptPath {
+				offset = runStatsStartOffset
+			}
+			if maxCtx, compactions, has := transcriptRunStats(path, offset); has {
+				transcriptMaxCtx, transcriptCompactions = maxCtx, compactions
+			}
+		}
+
 		resCh <- Result{
-			Status:         finalStatus,
-			Output:         finalOutput,
-			Error:          finalError,
-			DurationMs:     duration.Milliseconds(),
-			SessionID:      reportedSessionID,
-			Usage:          usage,
-			ResumeRejected: resumeRejected,
+			Status:           finalStatus,
+			Output:           finalOutput,
+			Error:            finalError,
+			DurationMs:       duration.Milliseconds(),
+			SessionID:        reportedSessionID,
+			Usage:            usage,
+			ResumeRejected:   resumeRejected,
+			Turns:            resultTurns,
+			Compactions:      int(transcriptCompactions),
+			MaxContextTokens: transcriptMaxCtx,
 		}
 	}()
 
@@ -802,6 +922,66 @@ func claudeTranscriptPath(root, cwd, sessionID string) (string, bool) {
 	return best, true
 }
 
+// transcriptRunStats scans one session transcript for run-scoped
+// observability (RUYI-154): the largest single-request context reading and
+// the number of native auto-compacts (isCompactSummary boundary entries).
+// One pass, same line shapes transcriptContextReading trusts; ok is false
+// when the file is missing or holds no usable assistant lines.
+//
+// startOffset skips the bytes earlier runs already wrote into this same
+// session transcript on `--resume` (the file is keyed by session, not by
+// run — see the caller). It must land exactly on a line boundary, which
+// holds because the caller stats the file only between runs, never mid-line;
+// a stale offset (file rotated/truncated beneath it) falls back to a full
+// scan rather than seeking past EOF or into the middle of a line.
+func transcriptRunStats(path string, startOffset int64) (maxCtx, compactions int64, ok bool) {
+	fh, err := os.Open(path)
+	if err != nil {
+		return 0, 0, false
+	}
+	defer fh.Close()
+	if startOffset > 0 {
+		if st, err := fh.Stat(); err != nil || startOffset > st.Size() {
+			startOffset = 0
+		}
+	}
+	if startOffset > 0 {
+		if _, err := fh.Seek(startOffset, io.SeekStart); err != nil {
+			if _, err := fh.Seek(0, io.SeekStart); err != nil {
+				return 0, 0, false
+			}
+		}
+	}
+	sc := bufio.NewScanner(fh)
+	sc.Buffer(make([]byte, 0, 64*1024), 16*1024*1024)
+	saw := false
+	for sc.Scan() {
+		line := sc.Bytes()
+		if !strings.Contains(string(line), `"assistant"`) {
+			if strings.Contains(string(line), `"isCompactSummary":true`) {
+				compactions++
+			}
+			continue
+		}
+		var rec claudeTranscriptAssistant
+		if json.Unmarshal(line, &rec) != nil || rec.IsSidechain {
+			continue
+		}
+		u := rec.Message.Usage
+		if u == nil {
+			continue
+		}
+		total := u.InputTokens + u.CacheReadInputTokens + u.CacheCreationInputTokens + u.OutputTokens
+		if total > 0 {
+			if total > maxCtx {
+				maxCtx = total
+			}
+			saw = true
+		}
+	}
+	return maxCtx, compactions, saw
+}
+
 // claudeTranscriptAssistant is the one transcript line shape this reader cares
 // about. The transcript records the usage the model actually reported for
 // each request — unlike the stream-json assistant events, which the CLI
@@ -1147,6 +1327,35 @@ func resolveSessionID(requestedResume, emitted string, failed bool, texts ...str
 
 func buildEnv(extra map[string]string) []string {
 	return mergeEnv(os.Environ(), extra)
+}
+
+// claudeCompactEnv returns baseEnv with CLAUDE_CODE_AUTO_COMPACT_WINDOW /
+// CLAUDE_AUTOCOMPACT_PCT_OVERRIDE injected from opts.CompactWindowTokens /
+// opts.CompactWindowPct (RUYI-148). A value already set explicitly in
+// baseEnv (an operator override on the agent config) always wins and is
+// never overwritten; a zero option value is not injected at all, leaving
+// the CLI's own default in place. baseEnv is never mutated.
+func claudeCompactEnv(baseEnv map[string]string, opts ExecOptions) map[string]string {
+	compactEnv := make(map[string]string, 2)
+	if opts.CompactWindowTokens > 0 {
+		compactEnv["CLAUDE_CODE_AUTO_COMPACT_WINDOW"] = strconv.FormatInt(opts.CompactWindowTokens, 10)
+	}
+	if opts.CompactWindowPct > 0 {
+		compactEnv["CLAUDE_AUTOCOMPACT_PCT_OVERRIDE"] = strconv.FormatInt(int64(opts.CompactWindowPct), 10)
+	}
+	if len(compactEnv) == 0 {
+		return baseEnv
+	}
+	execEnv := make(map[string]string, len(baseEnv)+len(compactEnv))
+	for k, v := range baseEnv {
+		execEnv[k] = v
+	}
+	for k, v := range compactEnv {
+		if _, exists := execEnv[k]; !exists {
+			execEnv[k] = v
+		}
+	}
+	return execEnv
 }
 
 func claudeRootSudoPreflight(args, env []string) error {

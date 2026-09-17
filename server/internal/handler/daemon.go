@@ -2162,17 +2162,19 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		runtimeConfig = json.RawMessage(agent.RuntimeConfig)
 	}
 	resp.Agent = &TaskAgentData{
-		ID:                    uuidToString(agent.ID),
-		Name:                  agent.Name,
-		Instructions:          agent.Instructions,
-		CustomEnv:             customEnv,
-		CustomArgs:            customArgs,
-		McpConfig:             mcpConfig,
-		Model:                 agent.Model.String,
-		ThinkingLevel:         agent.ThinkingLevel.String,
-		ServiceTier:           agent.ServiceTier.String,
-		RuntimeConfig:         runtimeConfig,
-		DisabledRuntimeSkills: disabledRuntimeSkillsFor(agent.DisabledRuntimeSkills, runtimeID, runtime.Provider),
+		ID:                      uuidToString(agent.ID),
+		Name:                    agent.Name,
+		Instructions:            agent.Instructions,
+		CustomEnv:               customEnv,
+		CustomArgs:              customArgs,
+		McpConfig:               mcpConfig,
+		Model:                   agent.Model.String,
+		ThinkingLevel:           agent.ThinkingLevel.String,
+		ServiceTier:             agent.ServiceTier.String,
+		RuntimeConfig:           runtimeConfig,
+		SessionMaxContextTokens: agent.SessionMaxContextTokens,
+		SessionCompactPct:       agent.SessionCompactPct,
+		DisabledRuntimeSkills:   disabledRuntimeSkillsFor(agent.DisabledRuntimeSkills, runtimeID, runtime.Provider),
 	}
 	// System agents carry a product-owned instruction layer that ships with
 	// this binary instead of being copied into their row at creation. That
@@ -4363,6 +4365,16 @@ type TaskUsagePayload struct {
 	// cannot measure it; stored as NULL so the session gate reads it as
 	// "unknown" and keeps resuming instead of guessing.
 	ContextTokens int64 `json:"context_tokens"`
+	// Turns / Compactions / MaxContextTokens (RUYI-154) are run-scoped
+	// observability, reported once at task completion: agentic turns executed,
+	// native auto-compacts performed, and the largest single-request context
+	// reading of the whole run. An older daemon build omits these fields
+	// entirely; the JSON decoder leaves them at the zero value, which
+	// authoritativeRunStat treats identically to an explicit "unmeasurable"
+	// report — stored as NULL, never a real 0.
+	Turns            int   `json:"turns,omitempty"`
+	Compactions      int   `json:"compactions,omitempty"`
+	MaxContextTokens int64 `json:"max_context_tokens,omitempty"`
 }
 
 // authoritativeContextTokens converts a reported context size into the nullable
@@ -4370,6 +4382,34 @@ type TaskUsagePayload struct {
 // daemon that cannot measure the conversation sends, and storing it as a real
 // reading would tell the gate the session is empty.
 func authoritativeContextTokens(tokens int64) pgtype.Int8 {
+	if tokens <= 0 {
+		return pgtype.Int8{}
+	}
+	return pgtype.Int8{Int64: tokens, Valid: true}
+}
+
+// authoritativeTurns / authoritativeCompactions / authoritativeMaxContextTokens
+// convert a reported run-scoped stat (RUYI-154) into its nullable column.
+// Same rule as authoritativeContextTokens and for the same reason: 0 is what
+// a daemon that cannot measure the stat sends (including an older build that
+// omits the field entirely, which the JSON decoder also zeroes), and storing
+// it as a real reading would claim a run that made zero turns or never
+// compacted rather than "unknown".
+func authoritativeTurns(turns int) pgtype.Int4 {
+	if turns <= 0 {
+		return pgtype.Int4{}
+	}
+	return pgtype.Int4{Int32: int32(turns), Valid: true}
+}
+
+func authoritativeCompactions(compactions int) pgtype.Int4 {
+	if compactions <= 0 {
+		return pgtype.Int4{}
+	}
+	return pgtype.Int4{Int32: int32(compactions), Valid: true}
+}
+
+func authoritativeMaxContextTokens(tokens int64) pgtype.Int8 {
 	if tokens <= 0 {
 		return pgtype.Int8{}
 	}
@@ -4434,6 +4474,9 @@ func (h *Handler) ReportTaskUsage(w http.ResponseWriter, r *http.Request) {
 			CacheWriteTokens: u.CacheWriteTokens,
 			CostUsdTicks:     authoritativeCostTicks(u.CostUSDTicks),
 			ContextTokens:    authoritativeContextTokens(u.ContextTokens),
+			Turns:            authoritativeTurns(u.Turns),
+			Compactions:      authoritativeCompactions(u.Compactions),
+			MaxContextTokens: authoritativeMaxContextTokens(u.MaxContextTokens),
 		}); err != nil {
 			slog.Warn("upsert task usage failed", "task_id", taskID, "model", u.Model, "error", err)
 			continue
@@ -5128,6 +5171,7 @@ func (h *Handler) hydrateTaskUsage(ctx context.Context, issueID pgtype.UUID, res
 	}
 
 	byTask := make(map[string][]TaskUsageData, len(resp))
+	runStatsByTask := make(map[string]taskRunStats, len(resp))
 	for _, row := range rows {
 		var cost *int64
 		if row.CostUsdTicks.Valid {
@@ -5144,13 +5188,65 @@ func (h *Handler) hydrateTaskUsage(ctx context.Context, issueID pgtype.UUID, res
 			CacheWriteTokens: row.CacheWriteTokens,
 			CostUsdTicks:     cost,
 		})
+		stats := runStatsByTask[taskID]
+		stats.mergeRow(row.Turns, row.Compactions, row.MaxContextTokens, row.ContextTokens)
+		runStatsByTask[taskID] = stats
 	}
 
 	for i := range resp {
 		if usage, ok := byTask[resp[i].ID]; ok {
 			resp[i].Usage = usage
 		}
+		if stats, ok := runStatsByTask[resp[i].ID]; ok {
+			resp[i].Turns, resp[i].Compactions, resp[i].MaxContextTokens, resp[i].ContextTokens = stats.pointers()
+		}
 	}
+}
+
+// taskRunStats collapses a run's per-(provider,model) task_usage rows back
+// into one figure per task. Turns / compactions / max_context_tokens /
+// context_tokens (RUYI-154, RUYI-107) are run-scoped, not per-model, so a run
+// that reported more than one row carries the same run-level reading
+// duplicated on each — MAX across the rows recovers the single true value
+// instead of a caller accidentally summing a reading against itself.
+type taskRunStats struct {
+	turns, compactions              pgtype.Int4
+	maxContextTokens, contextTokens pgtype.Int8
+}
+
+func (s *taskRunStats) mergeRow(turns, compactions pgtype.Int4, maxContextTokens, contextTokens pgtype.Int8) {
+	if turns.Valid && (!s.turns.Valid || turns.Int32 > s.turns.Int32) {
+		s.turns = turns
+	}
+	if compactions.Valid && (!s.compactions.Valid || compactions.Int32 > s.compactions.Int32) {
+		s.compactions = compactions
+	}
+	if maxContextTokens.Valid && (!s.maxContextTokens.Valid || maxContextTokens.Int64 > s.maxContextTokens.Int64) {
+		s.maxContextTokens = maxContextTokens
+	}
+	if contextTokens.Valid && (!s.contextTokens.Valid || contextTokens.Int64 > s.contextTokens.Int64) {
+		s.contextTokens = contextTokens
+	}
+}
+
+func (s taskRunStats) pointers() (turns, compactions *int, maxContextTokens, contextTokens *int64) {
+	if s.turns.Valid {
+		v := int(s.turns.Int32)
+		turns = &v
+	}
+	if s.compactions.Valid {
+		v := int(s.compactions.Int32)
+		compactions = &v
+	}
+	if s.maxContextTokens.Valid {
+		v := s.maxContextTokens.Int64
+		maxContextTokens = &v
+	}
+	if s.contextTokens.Valid {
+		v := s.contextTokens.Int64
+		contextTokens = &v
+	}
+	return
 }
 
 // ListTaskMessagesByUser returns task messages for a task.

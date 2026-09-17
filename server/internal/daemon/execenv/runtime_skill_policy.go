@@ -65,6 +65,34 @@ func MaxTurnsFromRuntimeConfig(runtimeConfig json.RawMessage) int {
 	return cfg.MaxTurns
 }
 
+// MinMaxContextTokens floors an explicit ceiling so the budget cannot degrade
+// an agent into amnesiac restart loops (aligns with the session gate floor).
+const MinMaxContextTokens = 100_000
+
+// MaxContextTokensFromRuntimeConfig reads runtime_config.max_context_tokens:
+// the hard in-run context ceiling for one backend Execute. Model-dependent by
+// design — the value is set by the agent owner after choosing a model, never
+// defaulted: absent field or malformed config → 0 (gate off); explicit 0 →
+// off; positive → floored at MinMaxContextTokens.
+func MaxContextTokensFromRuntimeConfig(runtimeConfig json.RawMessage) int64 {
+	if len(runtimeConfig) == 0 {
+		return 0
+	}
+	var cfg struct {
+		MaxContextTokens *int64 `json:"max_context_tokens"`
+	}
+	if err := json.Unmarshal(runtimeConfig, &cfg); err != nil {
+		return 0
+	}
+	if cfg.MaxContextTokens == nil || *cfg.MaxContextTokens == 0 {
+		return 0
+	}
+	if *cfg.MaxContextTokens < MinMaxContextTokens {
+		return MinMaxContextTokens
+	}
+	return *cfg.MaxContextTokens
+}
+
 func cleanRuntimeSkillKey(key string) (string, bool) {
 	cleaned := filepath.Clean(filepath.FromSlash(strings.TrimSpace(key)))
 	if cleaned == "." || filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {

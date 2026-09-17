@@ -287,7 +287,7 @@ function RunTable({ tasks, total }: { tasks: AgentTask[]; total: TaskUsageSummar
     // min-content width and never scrolls. Removing it puts the table back
     // outside the dialog.
     <div className="max-h-[45vh] min-w-0 overflow-auto">
-      <table className="w-full min-w-[46rem]">
+      <table className="w-full min-w-[62rem]">
         <thead className="sticky top-0 bg-popover">
           <tr className="text-micro text-muted-foreground [&>th]:whitespace-nowrap [&>th]:px-2 [&>th]:pb-1.5 [&>th]:text-right [&>th]:font-normal">
             <th className="!pl-0 !text-left">{t(($) => $.usage_detail.col_run)}</th>
@@ -297,6 +297,15 @@ function RunTable({ tasks, total }: { tasks: AgentTask[]; total: TaskUsageSummar
             <th>{t(($) => $.usage_detail.col_output)}</th>
             <th>{t(($) => $.usage_detail.col_cache_read)}</th>
             <th>{t(($) => $.usage_detail.col_cache_write)}</th>
+            {/* Run-scoped observability (RUYI-154, RUYI-107): turns and
+                compactions are counts, not spend; max/end context are peak
+                and final conversation sizes, not token totals — none of the
+                four is additive across runs, so the footer below leaves this
+                group blank rather than printing a meaningless sum. */}
+            <th>{t(($) => $.usage_detail.col_turns)}</th>
+            <th>{t(($) => $.usage_detail.col_compactions)}</th>
+            <th>{t(($) => $.usage_detail.col_max_context)}</th>
+            <th>{t(($) => $.usage_detail.col_context)}</th>
             <th className="!pr-16">{t(($) => $.usage_detail.col_tokens)}</th>
             <th className="!pr-0">{t(($) => $.usage_detail.col_cost)}</th>
           </tr>
@@ -314,6 +323,7 @@ function RunTable({ tasks, total }: { tasks: AgentTask[]; total: TaskUsageSummar
             <td>{formatTokens(total.output)}</td>
             <td>{formatTokens(total.cacheRead)}</td>
             <td>{formatTokens(total.cacheWrite)}</td>
+            <td colSpan={4} />
             <td className="!pr-16">{formatTokens(total.tokens)}</td>
             <td className="!pr-0">{formatUsd(total.cost)}</td>
           </tr>
@@ -375,6 +385,14 @@ function RunRow({ task, maxTokens }: { task: AgentTask; maxTokens: number }) {
       <td>{formatTokens(summary.output)}</td>
       <td>{formatTokens(summary.cacheRead)}</td>
       <td>{formatTokens(summary.cacheWrite)}</td>
+      <td className="text-muted-foreground">{task.turns ?? "—"}</td>
+      <td className="text-muted-foreground">{task.compactions ?? "—"}</td>
+      <td className="text-muted-foreground">
+        {task.max_context_tokens != null ? formatTokens(task.max_context_tokens) : "—"}
+      </td>
+      <td className="text-muted-foreground">
+        {task.context_tokens != null ? formatTokens(task.context_tokens) : "—"}
+      </td>
       <td className="!pr-2">
         <div className="flex items-center justify-end gap-2">
           <span>{formatTokens(summary.tokens)}</span>
