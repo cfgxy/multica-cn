@@ -34,9 +34,22 @@ type ExecOptions struct {
 	//
 	// A backend must therefore NOT assume this is populated, and adding a new
 	// backend that only reads SystemPrompt will silently receive nothing.
-	SystemPrompt              string
-	ThreadName                string
-	MaxTurns                  int
+	SystemPrompt string
+	ThreadName   string
+	MaxTurns     int
+	// MaxContextHardTokens is the in-run context ceiling: the transcript
+	// poller force-stops the run when the live reading crosses it (status
+	// "context_budget"); the same value drives the CLI's native
+	// auto-compact window via CLAUDE_CODE_AUTO_COMPACT_WINDOW. Model-
+	// dependent: 0 (unset) disables the gate; the poller floor is 100K.
+	MaxContextHardTokens int64
+	// CompactWindowTokens / CompactWindowPct mirror the agent's session-gate
+	// settings (session_max_context_tokens / session_compact_pct) into the
+	// CLI's native auto-compact (CLAUDE_CODE_AUTO_COMPACT_WINDOW /
+	// CLAUDE_AUTOCOMPACT_PCT_OVERRIDE), so the in-run compact line and the
+	// claim-time swap line are the same 170K. 0 = leave the CLI default.
+	CompactWindowTokens       int64
+	CompactWindowPct          int32
 	Timeout                   time.Duration
 	SemanticInactivityTimeout time.Duration
 	// FirstTurnNoProgressTimeout optionally overrides the Codex first-turn
@@ -216,6 +229,13 @@ type Result struct {
 	DurationMs int64
 	SessionID  string
 	Usage      map[string]TokenUsage // keyed by model name
+	// Run-scoped observability (RUYI-154): turns = agentic turns executed;
+	// compactions = in-place auto-compacts performed; maxContextTokens =
+	// largest live context reading of any single request. Zero means the
+	// backend cannot measure it (older CLIs, providers without readings).
+	Turns            int
+	Compactions      int
+	MaxContextTokens int64
 	// ResumeRejected is positive evidence that this run's requested resume
 	// was permanently refused — the transcript is gone, the session belongs to
 	// another provider account, OR the session still exists but its history

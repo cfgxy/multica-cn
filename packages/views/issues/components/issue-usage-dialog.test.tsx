@@ -106,6 +106,38 @@ describe("IssueUsageDialog", () => {
     expect(screen.getByText("Failed")).toBeInTheDocument();
   });
 
+  it("renders the RUYI-154 run-stat columns when the run reported them", () => {
+    open([
+      makeTask({
+        usage: [usage()],
+        turns: 12,
+        compactions: 2,
+        max_context_tokens: 150_000,
+        context_tokens: 80_000,
+      }),
+    ]);
+
+    const row = screen.getByRole("table").querySelector("tbody tr");
+    expect(row?.textContent).toContain("12");
+    expect(row?.textContent).toContain("2");
+    // formatTokens renders large counts abbreviated (e.g. "150.0K"), so assert
+    // the raw values are not what's shown as an em dash rather than pinning
+    // formatTokens' own formatting, which has its own test coverage.
+    expect(screen.queryAllByText("—")).toHaveLength(0);
+  });
+
+  it("renders an em dash, not 0, for a run with no recorded run stats", () => {
+    // Same "absent must not read as zero" contract TestListTasksByIssueHydratesUsage
+    // pins server-side: a run predating RUYI-154 has undefined turns/compactions/
+    // max_context_tokens/context_tokens, which must not collapse to "0 turns".
+    open([makeTask({ usage: [usage()] })]);
+
+    const row = screen.getByRole("table").querySelector("tbody tr");
+    const dashCount = (row?.textContent?.match(/—/g) ?? []).length;
+    expect(dashCount).toBe(4);
+    expect(row?.textContent).not.toContain("0 turns");
+  });
+
   it("lets the run table scroll rather than widening the dialog", () => {
     // jsdom has no layout engine, so the overflow itself is verified in a
     // browser. What is pinned here is the contract that produced the bug: the
