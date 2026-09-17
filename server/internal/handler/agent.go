@@ -543,6 +543,20 @@ type AgentTaskResponse struct {
 	// model call, genuinely has no number, and showing 0 would assert it was
 	// free. omitempty keeps both off the wire.
 	Usage []TaskUsageData `json:"usage,omitempty"`
+	// Turns / Compactions / MaxContextTokens / ContextTokens (RUYI-154,
+	// RUYI-107) are run-scoped observability, not per-model like Usage: turns
+	// executed, native auto-compacts performed, and the largest / final
+	// context-size readings of this run. Collapsed from `task_usage`'s
+	// per-(provider,model) rows by hydrateTaskUsage (MAX across a run's own
+	// rows, since a run that reports more than one row carries the same
+	// run-level reading on each). nil means no usage row for this task carried
+	// a reading — an older daemon build, a run that died before any usage
+	// report, or a provider that cannot measure it — and the UI renders an em
+	// dash rather than asserting a real 0.
+	Turns            *int   `json:"turns,omitempty"`
+	Compactions      *int   `json:"compactions,omitempty"`
+	MaxContextTokens *int64 `json:"max_context_tokens,omitempty"`
+	ContextTokens    *int64 `json:"context_tokens,omitempty"`
 	// AuthToken is the task-scoped `mat_` token the daemon must inject as
 	// MULTICA_TOKEN in the agent process environment. The server binds it to
 	// this (agent_id, task_id) pair at claim time and treats any request
