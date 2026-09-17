@@ -133,17 +133,57 @@ func (b *kimiBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 	promptDone := make(chan hermesPromptResult, 1)
 	activity := make(chan struct{}, 1)
 
+	// In-run context budget (RUYI-151, mirrors the claude backend's RUYI-148
+	// transcript poller): kimi-code 0.33.0 has no documented env/CLI knob
+	// for its auto-compaction trigger — that lives only in config.toml's
+	// [loop_control] table (reserved_context_size / compaction_trigger_ratio,
+	// https://github.com/MoonshotAI/kimi-cli/blob/main/docs/en/configuration/config-files.md),
+	// which `--config` would have to replace wholesale rather than patch, so
+	// there is no safe way to inject it per-task without clobbering the
+	// user's providers/models. Instead we drive the same hard-stop off the
+	// ACP `usage_update` notification's live {used,size} context-window
+	// reading (see the wire-log usage fallback below for why {used,size}
+	// cannot be billed but is still a valid occupancy signal): 85% logs a
+	// warning, the ceiling force-stops the run for segmented continuation via
+	// the same "context_budget" status claude.go uses, so the daemon's retry
+	// chain and claim-time session gate handle both backends identically.
+	var budgetStop atomic.Bool
+	var contextAtStop atomic.Int64
+	var onContextOccupancy func(used, size int64)
+	if opts.MaxContextHardTokens > 0 {
+		ceiling := opts.MaxContextHardTokens
+		soft := ceiling * 85 / 100
+		var softWarned atomic.Bool
+		onContextOccupancy = func(used, size int64) {
+			switch {
+			case used >= ceiling:
+				if budgetStop.CompareAndSwap(false, true) {
+					contextAtStop.Store(used)
+					b.cfg.Logger.Warn("kimi: context hard budget reached; force-stopping run for segmented continuation",
+						"context_tokens", used, "ceiling", ceiling, "window_size", size)
+					cancel()
+				}
+			case used >= soft:
+				if softWarned.CompareAndSwap(false, true) {
+					b.cfg.Logger.Warn("kimi: context soft threshold reached (85%); hard stop at ceiling",
+						"context_tokens", used, "ceiling", ceiling)
+				}
+			}
+		}
+	}
+
 	// Reuse the hermesClient ACP transport — Kimi speaks the same protocol.
 	c := &hermesClient{
-		cfg:             b.cfg,
-		stdin:           stdin,
-		pending:         make(map[int]*pendingRPC),
-		pendingTools:    make(map[string]*pendingToolCall),
-		terminalEnabled: true,
-		terminalCtx:     runCtx,
-		terminalCwd:     opts.Cwd,
-		terminalEnv:     buildEnv(b.cfg.Env),
-		terminals:       make(map[string]*acpTerminal),
+		cfg:                b.cfg,
+		stdin:              stdin,
+		pending:            make(map[int]*pendingRPC),
+		pendingTools:       make(map[string]*pendingToolCall),
+		terminalEnabled:    true,
+		terminalCtx:        runCtx,
+		terminalCwd:        opts.Cwd,
+		terminalEnv:        buildEnv(b.cfg.Env),
+		terminals:          make(map[string]*acpTerminal),
+		onContextOccupancy: onContextOccupancy,
 		acceptNotification: func(string) bool {
 			return streamingCurrentTurn.Load()
 		},
@@ -390,7 +430,10 @@ func (b *kimiBackend) Execute(ctx context.Context, prompt string, opts ExecOptio
 			},
 		})
 		if err != nil {
-			if runCtx.Err() == context.DeadlineExceeded {
+			if budgetStop.Load() {
+				finalStatus = "context_budget"
+				finalError = fmt.Sprintf("kimi context budget reached (%d tokens of live context); run force-stopped for segmented continuation", contextAtStop.Load())
+			} else if runCtx.Err() == context.DeadlineExceeded {
 				finalStatus = "timeout"
 				finalError = fmt.Sprintf("kimi timed out after %s", timeout)
 			} else if runCtx.Err() == context.Canceled {
