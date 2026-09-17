@@ -212,3 +212,73 @@ func TestACPUsagePresentWithProviderCostOnly(t *testing.T) {
 		t.Fatal("provider-reported cost must produce a Result.Usage entry even without token buckets")
 	}
 }
+
+func TestParseACPContextOccupancy(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		raw      string
+		wantUsed int64
+		wantSize int64
+		wantOK   bool
+	}{
+		{
+			name:     "top-level used/size (kimi's own shape)",
+			raw:      `{"sessionUpdate":"usage_update","used":123000,"size":200000}`,
+			wantUsed: 123000,
+			wantSize: 200000,
+			wantOK:   true,
+		},
+		{
+			name:     "nested under usage object",
+			raw:      `{"sessionUpdate":"usage_update","usage":{"used":50,"size":100}}`,
+			wantUsed: 50,
+			wantSize: 100,
+			wantOK:   true,
+		},
+		{
+			name:   "missing size — not ok",
+			raw:    `{"sessionUpdate":"usage_update","used":123}`,
+			wantOK: false,
+		},
+		{
+			name:   "billing-shaped usage without used/size — not ok",
+			raw:    `{"sessionUpdate":"usage_update","usage":{"inputTokens":10,"outputTokens":5}}`,
+			wantOK: false,
+		},
+		{
+			name:   "empty payload — not ok",
+			raw:    ``,
+			wantOK: false,
+		},
+		{
+			name:   "null payload — not ok",
+			raw:    `null`,
+			wantOK: false,
+		},
+		{
+			name:   "malformed JSON — not ok",
+			raw:    `{"used":`,
+			wantOK: false,
+		},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			used, size, ok := parseACPContextOccupancy(json.RawMessage(test.raw))
+			if ok != test.wantOK {
+				t.Fatalf("ok = %v, want %v (used=%d size=%d)", ok, test.wantOK, used, size)
+			}
+			if !test.wantOK {
+				return
+			}
+			if used != test.wantUsed || size != test.wantSize {
+				t.Fatalf("used/size = %d/%d, want %d/%d", used, size, test.wantUsed, test.wantSize)
+			}
+		})
+	}
+}
