@@ -307,6 +307,15 @@ type TaskUsageEntry struct {
 	// also produces naturally: it ignores the unknown field and stores NULL,
 	// and the session gate reads NULL as "unknown" and keeps resuming.
 	ContextTokens int64 `json:"context_tokens,omitempty"`
+	// Turns / Compactions / MaxContextTokens (RUYI-154) are the whole run's
+	// stats — see agent.Result — copied onto every (provider, model) entry of
+	// that same run rather than split per model, since none of them is a
+	// per-model quantity. Omitted when zero, which both "backend can't
+	// measure it" and "an older server that doesn't know this field" treat
+	// identically: the field is simply absent from the wire.
+	Turns            int   `json:"turns,omitempty"`
+	Compactions      int   `json:"compactions,omitempty"`
+	MaxContextTokens int64 `json:"max_context_tokens,omitempty"`
 }
 
 // TaskResult is the outcome of executing a task.
