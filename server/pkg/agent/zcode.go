@@ -302,8 +302,10 @@ func (b *zcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 	var contextBudgetStop atomic.Bool
 	var contextAtStop atomic.Int64
 	var softWarned atomic.Bool
-	onContextWindow := func(used, _ int64) {
-		if opts.MaxContextHardTokens <= 0 {
+	onContextWindow := func(used, size int64) {
+		// size 0 means the runtime reported no window at all — not actionable,
+		// so it is dropped rather than acted on as a spurious reading.
+		if size <= 0 || opts.MaxContextHardTokens <= 0 {
 			return
 		}
 		soft := opts.MaxContextHardTokens * 85 / 100
@@ -361,7 +363,7 @@ func (b *zcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 			default:
 			}
 		},
-		onContextWindow: func(used, size int64) {
+		onContextOccupancy: func(used, size int64) {
 			if !streamingCurrentTurn.Load() {
 				return
 			}
