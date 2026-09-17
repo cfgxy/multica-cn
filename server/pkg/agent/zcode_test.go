@@ -45,6 +45,9 @@ func TestNewReturnsZcodeBackend(t *testing.T) {
 //     not by a private JSON-RPC code.
 func fakeZcodeACPScript() string {
 	return `#!/bin/sh
+if [ -n "$ZCODE_ENV_DUMP_FILE" ]; then
+  env > "$ZCODE_ENV_DUMP_FILE"
+fi
 while IFS= read -r line; do
   if [ -n "$ZCODE_REQUESTS_FILE" ]; then
     printf '%s\n' "$line" >> "$ZCODE_REQUESTS_FILE"
@@ -82,6 +85,13 @@ while IFS= read -r line; do
       if [ -n "$ZCODE_PROMPT_ERROR" ]; then
         printf '{"jsonrpc":"2.0","id":%s,"error":{"code":-32603,"message":"%s"}}\n' "$id" "$ZCODE_PROMPT_ERROR"
         exit 0
+      fi
+      if [ -n "$ZCODE_USAGE_UPDATE_USED" ]; then
+        printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"zc-placeholder-1","update":{"sessionUpdate":"usage_update","used":%s,"size":%s}}}\n' \
+          "$ZCODE_USAGE_UPDATE_USED" "${ZCODE_USAGE_UPDATE_SIZE:-100000}"
+      fi
+      if [ -n "$ZCODE_PROMPT_NO_RESPONSE" ]; then
+        continue
       fi
       printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"zc-placeholder-1","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"CURRENT ANSWER"}}}}\n'
       printf '{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"%s","usage":{"inputTokens":31,"outputTokens":42}}}\n' "$id" "${ZCODE_STOP_REASON:-end_turn}"
@@ -887,5 +897,95 @@ done
 	}
 	if result := <-session.Result; result.Status != "timeout" {
 		t.Fatalf("expected timeout, got status=%q error=%q", result.Status, result.Error)
+	}
+}
+
+// TestZcodeMapsMaxContextHardTokensToAutoCompactEnv pins the RUYI-153 mapping:
+// the daemon-computed in-run ceiling must reach zcode-acp's own auto-compact
+// knob (ZCODE_ACP_AUTO_COMPACT_THRESHOLD, src/config/auto-compact.ts) so the
+// bridge can compact itself before a turn completes, mirroring how
+// MaxContextHardTokens reaches CLAUDE_CODE_AUTO_COMPACT_WINDOW for claude
+// (RUYI-148).
+func TestZcodeMapsMaxContextHardTokensToAutoCompactEnv(t *testing.T) {
+	t.Parallel()
+	bin := writeFakeZcodeScript(t, fakeZcodeACPScript())
+	envDumpFile := filepath.Join(t.TempDir(), "env.txt")
+
+	b, err := New("zcode", Config{
+		ExecutablePath: bin,
+		Logger:         zcodeTestLogger(),
+		Env:            map[string]string{"ZCODE_ENV_DUMP_FILE": envDumpFile},
+	})
+	if err != nil {
+		t.Fatalf("New(zcode) error: %v", err)
+	}
+
+	session, err := b.Execute(context.Background(), "test prompt", ExecOptions{
+		Cwd:                  t.TempDir(),
+		MaxContextHardTokens: 120000,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	for range session.Messages {
+	}
+	if result := <-session.Result; result.Status != "completed" {
+		t.Fatalf("expected completed, got status=%q error=%q", result.Status, result.Error)
+	}
+
+	dump, err := os.ReadFile(envDumpFile)
+	if err != nil {
+		t.Fatalf("read env dump: %v", err)
+	}
+	if !strings.Contains(string(dump), "ZCODE_ACP_AUTO_COMPACT_THRESHOLD=120000") {
+		t.Fatalf("expected MaxContextHardTokens forwarded as ZCODE_ACP_AUTO_COMPACT_THRESHOLD=120000, env was:\n%s", dump)
+	}
+}
+
+// TestZcodeContextBudgetBackstopForceStops pins the RUYI-153 hard-stop
+// backstop: zcode-acp's own auto-compact only fires after a turn's end_turn
+// (src/config/auto-compact.ts), so a turn whose live context occupancy
+// (usage_update `used`/`size`, dispatch.ts dispatchUsageDelta) crosses the
+// ceiling before finishing must be force-stopped rather than left to balloon
+// past budget. The fake bridge never answers session/prompt here, so the run
+// can only end via this backstop closing stdin/cancelling the context.
+func TestZcodeContextBudgetBackstopForceStops(t *testing.T) {
+	t.Parallel()
+	bin := writeFakeZcodeScript(t, fakeZcodeACPScript())
+
+	b, err := New("zcode", Config{
+		ExecutablePath: bin,
+		Logger:         zcodeTestLogger(),
+		Env: map[string]string{
+			"ZCODE_USAGE_UPDATE_USED":  "100000",
+			"ZCODE_USAGE_UPDATE_SIZE":  "100000",
+			"ZCODE_PROMPT_NO_RESPONSE": "1",
+		},
+	})
+	if err != nil {
+		t.Fatalf("New(zcode) error: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	session, err := b.Execute(ctx, "test prompt", ExecOptions{
+		Cwd:                  t.TempDir(),
+		MaxContextHardTokens: 100000,
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	for range session.Messages {
+	}
+	result := <-session.Result
+	if result.Status != "context_budget" {
+		t.Fatalf("expected context_budget, got status=%q error=%q", result.Status, result.Error)
+	}
+	if !strings.Contains(result.Error, "context budget") {
+		t.Fatalf("expected the error to mention the context budget, got %q", result.Error)
+	}
+	if result.SessionID != "zc-placeholder-1" {
+		t.Fatalf("expected the placeholder session id preserved on force-stop, got %q", result.SessionID)
 	}
 }
