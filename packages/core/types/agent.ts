@@ -425,6 +425,20 @@ export interface AgentTask {
    * reporting was not free, we just don't know what it cost.
    */
   usage?: TaskUsage[];
+  /**
+   * Run-scoped observability (RUYI-154, RUYI-107) — NOT per (provider, model)
+   * like {@link usage}: agentic turns executed, native auto-compacts
+   * performed, and the largest / final context-size readings of this run.
+   * Present on the issue execution-log endpoint only, same as `usage`.
+   *
+   * `undefined` means no usage row for this run carried a reading — an older
+   * daemon build, a run that died before any usage report, or a provider that
+   * cannot measure it — and must render as an em dash, never as 0.
+   */
+  turns?: number;
+  compactions?: number;
+  max_context_tokens?: number;
+  context_tokens?: number;
 }
 
 /**

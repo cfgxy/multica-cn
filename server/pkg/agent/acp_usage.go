@@ -289,3 +289,38 @@ func acpUsageInt64(fields map[string]json.RawMessage, names ...string) (int64, b
 	}
 	return 0, false
 }
+
+// parseACPContextOccupancy extracts a live context-window reading from an ACP
+// usage_update notification. Some ACP dialects (Kimi Code CLI 0.33.0, per the
+// wire-log usage fallback in kimi.go) report only the window's live occupancy
+// as {used,size} instead of, or in addition to, the granular per-bucket
+// counters parseACPTokenUsageSnapshot targets. Checked both nested under a
+// "usage" object (mirroring that parser's input shape) and at the top level
+// (the shape Kimi's own notification uses), so a dialect populating neither
+// leaves both parsers reporting "no data" rather than one misreading the
+// other's shape.
+func parseACPContextOccupancy(data json.RawMessage) (used int64, size int64, ok bool) {
+	if len(data) == 0 || string(data) == "null" {
+		return 0, 0, false
+	}
+	var rawFields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &rawFields); err != nil {
+		return 0, 0, false
+	}
+	if usageRaw, exists := rawFields["usage"]; exists {
+		var nested map[string]json.RawMessage
+		if err := json.Unmarshal(usageRaw, &nested); err == nil {
+			if u, uOK := acpUsageInt64(nested, "used"); uOK {
+				if s, sOK := acpUsageInt64(nested, "size"); sOK {
+					return u, s, true
+				}
+			}
+		}
+	}
+	u, uOK := acpUsageInt64(rawFields, "used")
+	s, sOK := acpUsageInt64(rawFields, "size")
+	if uOK && sOK {
+		return u, s, true
+	}
+	return 0, 0, false
+}

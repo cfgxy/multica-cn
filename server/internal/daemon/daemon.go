@@ -8107,7 +8107,10 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 		// Zero (absent/malformed) keeps the CLI's unlimited default. Backends
 		// without native turn limits ignore it (and log), so this is safe to
 		// set per agent regardless of provider.
-		MaxTurns: execenv.MaxTurnsFromRuntimeConfig(task.Agent.RuntimeConfig),
+		MaxTurns:             execenv.MaxTurnsFromRuntimeConfig(task.Agent.RuntimeConfig),
+		MaxContextHardTokens: execenv.MaxContextTokensFromRuntimeConfig(task.Agent.RuntimeConfig),
+		CompactWindowTokens:  task.Agent.SessionMaxContextTokens,
+		CompactWindowPct:     task.Agent.SessionCompactPct,
 		// Post-gate intent: PriorSessionID here already reflects the pre-flight
 		// resume gates (a dropped resume is surfaced via the prompt instead). If it
 		// survived to here, the backend must disclose the loss when the live
@@ -8304,6 +8307,11 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			CacheWriteTokens: u.CacheWriteTokens,
 			CostUSDTicks:     u.CostUSDTicks,
 			ContextTokens:    u.ContextTokens,
+			// Run-scoped (RUYI-154), not per-model — same values on every
+			// entry of this run; see TaskUsageEntry.Turns.
+			Turns:            result.Turns,
+			Compactions:      result.Compactions,
+			MaxContextTokens: result.MaxContextTokens,
 		})
 	}
 
@@ -8399,6 +8407,26 @@ func (d *Daemon) runTask(ctx context.Context, task Task, provider string, slot i
 			WorkDir:       env.WorkDir,
 			EnvRoot:       env.RootDir,
 			FailureReason: failureReason,
+			Usage:         usageEntries,
+		}, nil
+	case "context_budget":
+		// In-run context ceiling crossed (runtime_config.max_context_tokens,
+		// RUYI-148): force-stopped by the backend, not a provider fault.
+		// Route identically to max_turns — blocked + failure_reason=timeout
+		// so the retryable classification auto-dispatches a continuation
+		// attempt; the claim-time session gate then swaps the oversized
+		// session for a fresh one carrying the brief.
+		comment := result.Error
+		if comment == "" {
+			comment = fmt.Sprintf("%s reached the in-run context budget", provider)
+		}
+		return TaskResult{
+			Status:        "blocked",
+			Comment:       comment,
+			SessionID:     result.SessionID,
+			WorkDir:       env.WorkDir,
+			EnvRoot:       env.RootDir,
+			FailureReason: "timeout",
 			Usage:         usageEntries,
 		}, nil
 	case "max_turns":

@@ -61,7 +61,13 @@ type streamTerminalState struct {
 	// a provider fault. Routed to its own status so the daemon can retry it
 	// as a continuation instead of parking it in the agent_error bucket.
 	maxTurnsReached bool
-	scanErr         error
+	// budgetStop: the backend force-stopped the run itself because the live
+	// context reading crossed the in-run ceiling (runtime_config
+	// .max_context_tokens, RUYI-148). Same retry-as-continuation routing as
+	// maxTurns; contextAtStop records the reading that tripped it.
+	budgetStop    bool
+	contextAtStop int64
+	scanErr       error
 	// terminalReasonError, when non-empty, is a failure the backend read out of
 	// a STRUCTURED field on the terminal result event.
 	//
@@ -132,6 +138,12 @@ func finalizeStreamResult(
 		if errMsg == "" {
 			errMsg = provider + " reached the configured turn budget (--max-turns); in-progress work is preserved in the session and worktree, the retry attempt resumes it"
 		}
+	case state.budgetStop:
+		// In-run context ceiling crossed: the backend force-stopped the CLI
+		// itself. The session stays resume-safe; the retry attempt resumes it
+		// and the claim-time session gate swaps in a fresh session + brief.
+		status = "context_budget"
+		errMsg = fmt.Sprintf("%s context budget reached (%d tokens of live context); run force-stopped for segmented continuation", provider, state.contextAtStop)
 	case state.resultIsError:
 		status = "failed"
 		errMsg = state.finalResultText

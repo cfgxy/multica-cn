@@ -910,6 +910,16 @@ type hermesClient struct {
 	// acceptNotification can drop ACP session updates before dispatching to
 	// handlers that mutate client state such as usage or pending tool calls.
 	acceptNotification func(updateType string) bool
+	// onContextOccupancy observes the live {used,size} context-window reading
+	// some ACP dialects report on usage_update instead of (or alongside) the
+	// billing-oriented per-bucket counters parseACPTokenUsageSnapshot reads.
+	// This is window occupancy against the model's context size, not a
+	// token-usage bucket, so it is deliberately kept out of
+	// acpUsageSnapshot/mergeUsage. Kimi (RUYI-151) and zcode (RUYI-153) both
+	// use it to drive an in-run hard-stop; other backends leave it nil.
+	// Callers that require a reported window must check size themselves —
+	// a dialect that omits it reports size 0.
+	onContextOccupancy func(used, size int64)
 	// toolStartCarriesFinalInput marks a dialect whose tool_call start frame is
 	// the only place a call's input ever appears, so MessageToolUse can be
 	// emitted as soon as the call starts instead of being held until it
@@ -2075,6 +2085,11 @@ func (c *hermesClient) handleUsageUpdate(data json.RawMessage) {
 		return
 	}
 	c.mergeUsage(parseACPTokenUsageSnapshot(msg.Usage))
+	if c.onContextOccupancy != nil {
+		if used, size, ok := parseACPContextOccupancy(data); ok {
+			c.onContextOccupancy(used, size)
+		}
+	}
 }
 
 func (c *hermesClient) mergeUsage(usage acpUsageSnapshot) {

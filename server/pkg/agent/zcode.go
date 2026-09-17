@@ -8,6 +8,7 @@ import (
 	"io"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -31,6 +32,18 @@ var zcodeBlockedArgs = map[string]blockedArgMode{
 	"-h":        blockedStandalone,
 	"--version": blockedStandalone,
 }
+
+// zcodeAutoCompactThresholdEnv is zcode-acp's own in-run compaction knob
+// (src/config/auto-compact.ts, ZCODE_ACP_AUTO_COMPACT_THRESHOLD): an absolute
+// token count above which the bridge calls `session/compact` itself, after a
+// turn's end_turn and before the session/prompt response returns. This is the
+// zcode analogue of CLAUDE_CODE_AUTO_COMPACT_WINDOW (RUYI-148) — mapped here
+// from the same MaxContextHardTokens the daemon already computes and sends to
+// every backend (daemon.go ExecOptions construction), so the two CLIs share
+// one in-run ceiling despite triggering compaction through different
+// mechanisms (claude's own auto-compact vs. an explicit bridge-issued
+// session/compact call).
+const zcodeAutoCompactThresholdEnv = "ZCODE_ACP_AUTO_COMPACT_THRESHOLD"
 
 // zcodeReaderDrainGrace bounds how long the turn waits for trailing ACP
 // notifications after the session/prompt response. A var, not a const, so
@@ -213,7 +226,19 @@ func (b *zcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 	if opts.Cwd != "" {
 		cmd.Dir = opts.Cwd
 	}
-	cmd.Env = buildEnv(b.cfg.Env)
+	// In-run context budget (RUYI-148, RUYI-153): auto-compact is native to the
+	// bridge, driven by this env var (see zcodeAutoCompactThresholdEnv). The
+	// context-window poller below stays as the backstop in case the bridge's
+	// own compaction fails to shrink in time.
+	execEnv := b.cfg.Env
+	if opts.MaxContextHardTokens > 0 {
+		execEnv = make(map[string]string, len(b.cfg.Env)+1)
+		for k, v := range b.cfg.Env {
+			execEnv[k] = v
+		}
+		execEnv[zcodeAutoCompactThresholdEnv] = strconv.FormatInt(opts.MaxContextHardTokens, 10)
+	}
+	cmd.Env = buildEnv(execEnv)
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -266,6 +291,41 @@ func (b *zcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 	promptDone := make(chan hermesPromptResult, 1)
 	activity := make(chan struct{}, 1)
 
+	// Context-budget backstop (RUYI-148, RUYI-153): the bridge's own
+	// auto-compact (zcodeAutoCompactThresholdEnv) is best-effort — it only
+	// triggers after a turn's end_turn, so a single turn that balloons past
+	// the ceiling before finishing, or a compact that itself fails, needs a
+	// hard stop. usage_update already pushes live context occupancy
+	// (`used`/`size` against the model's context window) throughout the turn,
+	// so unlike claude's disk-transcript poller this reads the protocol's own
+	// push notifications instead of polling a file.
+	var contextBudgetStop atomic.Bool
+	var contextAtStop atomic.Int64
+	var softWarned atomic.Bool
+	onContextWindow := func(used, size int64) {
+		// size 0 means the runtime reported no window at all — not actionable,
+		// so it is dropped rather than acted on as a spurious reading.
+		if size <= 0 || opts.MaxContextHardTokens <= 0 {
+			return
+		}
+		soft := opts.MaxContextHardTokens * 85 / 100
+		switch {
+		case used >= opts.MaxContextHardTokens:
+			if contextBudgetStop.CompareAndSwap(false, true) {
+				contextAtStop.Store(used)
+				b.cfg.Logger.Warn("zcode: context hard budget reached; force-stopping run for segmented continuation",
+					"context_tokens", used, "ceiling", opts.MaxContextHardTokens)
+				_ = stdin.Close()
+				cancel()
+			}
+		case used >= soft:
+			if softWarned.CompareAndSwap(false, true) {
+				b.cfg.Logger.Warn("zcode: context soft threshold reached (85%); hard stop at ceiling",
+					"context_tokens", used, "ceiling", opts.MaxContextHardTokens)
+			}
+		}
+	}
+
 	c := &hermesClient{
 		cfg:          b.cfg,
 		stdin:        stdin,
@@ -302,6 +362,12 @@ func (b *zcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 			case promptDone <- result:
 			default:
 			}
+		},
+		onContextOccupancy: func(used, size int64) {
+			if !streamingCurrentTurn.Load() {
+				return
+			}
+			onContextWindow(used, size)
 		},
 	}
 
@@ -521,6 +587,13 @@ func (b *zcodeBackend) Execute(ctx context.Context, prompt string, opts ExecOpti
 			case runCtx.Err() == context.DeadlineExceeded:
 				finalStatus = "timeout"
 				finalError = fmt.Sprintf("zcode timed out after %s", timeout)
+			case runCtx.Err() == context.Canceled && contextBudgetStop.Load():
+				// Our own context-window backstop fired, not a caller
+				// cancellation: same status/wording contract as the claude
+				// stream-json poller (RUYI-148) so the daemon retries this as
+				// a continuation and swaps in a fresh session at claim time.
+				finalStatus = "context_budget"
+				finalError = fmt.Sprintf("zcode context budget reached (%d tokens of live context); run force-stopped for segmented continuation", contextAtStop.Load())
 			case runCtx.Err() == context.Canceled:
 				finalStatus = "aborted"
 				finalError = "execution cancelled"
