@@ -949,6 +949,14 @@ type hermesClient struct {
 	usageMu sync.Mutex
 	usage   acpUsageAccumulator
 
+	// onContextWindow observes live context-window occupancy carried directly
+	// on a usage_update notification as top-level `used`/`size` fields
+	// (zcode-acp's shape: {sessionUpdate:"usage_update", used, size} — window
+	// occupancy against the model's context size, not a token-usage bucket, so
+	// it is kept out of acpUsageSnapshot/mergeUsage). Nil for every backend
+	// that does not send this shape.
+	onContextWindow func(used, size int64)
+
 	// terminalEnabled is only set for ACP runtimes whose client-side terminal
 	// calls are implemented below. Keeping it opt-in avoids advertising a
 	// capability to Hermes-family runtimes that do not need it.
@@ -1595,6 +1603,7 @@ func (c *hermesClient) handleNotification(raw map[string]json.RawMessage) {
 		c.handleToolCallUpdate(updateData)
 	case "usage_update":
 		c.handleUsageUpdate(updateData)
+		c.handleContextWindowUpdate(updateData)
 	case "turn_end":
 		c.extractPromptResult(updateData)
 	}
@@ -2086,6 +2095,25 @@ func (c *hermesClient) handleUsageUpdate(data json.RawMessage) {
 			c.onContextOccupancy(used, size)
 		}
 	}
+}
+
+// handleContextWindowUpdate reports live context-window occupancy when a
+// usage_update notification carries it as top-level `used`/`size` fields
+// (see onContextWindow). A `size` of 0 means the runtime did not report a
+// window and is not actionable, so it is dropped rather than forwarded as a
+// spurious zero.
+func (c *hermesClient) handleContextWindowUpdate(data json.RawMessage) {
+	if c.onContextWindow == nil {
+		return
+	}
+	var msg struct {
+		Used int64 `json:"used"`
+		Size int64 `json:"size"`
+	}
+	if err := json.Unmarshal(data, &msg); err != nil || msg.Size <= 0 {
+		return
+	}
+	c.onContextWindow(msg.Used, msg.Size)
 }
 
 func (c *hermesClient) mergeUsage(usage acpUsageSnapshot) {
