@@ -2,6 +2,7 @@ package execenv
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -70,6 +71,19 @@ const (
 	// `git branch`, and a ref rather than a loose object so `git gc` in their
 	// repo cannot reclaim a snapshot between two turns.
 	localStateRefPrefix = "refs/multica/local-state/"
+
+	// gitlinkEmbedRefPrefix namespaces the momentary ref a gitlink child's
+	// snapshot is fetched through (see embedGitlinkChild). Created and deleted
+	// inside one embed; the name carries the creation time so a crashed embed's
+	// leftovers can be pruned by age without touching a concurrent embed from
+	// a different parent repo.
+	gitlinkEmbedRefPrefix = "refs/multica/tmp-embed-"
+
+	// maxGitlinkEmbedDepth is how deep gitlink children are embedded as real
+	// trees in a snapshot. Depth 0 is the resource's own repository; its direct
+	// gitlink children (depth 1) are embedded, anything deeper stays a gitlink
+	// and materialises as an empty directory — the documented limitation.
+	maxGitlinkEmbedDepth = 1
 )
 
 // LocalWorktreeParams describes the worktree Prepare should build for a
@@ -362,6 +376,23 @@ func PrepareLocalWorktree(params LocalWorktreeParams, logger *slog.Logger) (*Loc
 	// un-ignored build output.
 	if err := checkUntrackedReplayable(gitRoot, logger); err != nil {
 		return nil, err
+	}
+	// Gitlink children are embedded as real trees (embedGitlinkChildren), so
+	// their untracked payload lands in the parent's object database just like
+	// the parent's own untracked files — it must fit the same budget, judged by
+	// the child's ignore rules. A child past the budget fails the task before
+	// anything is written, same fail-closed contract as the check above.
+	// Stale transfer refs from a crashed embed are swept here too, while we
+	// already hold the parent's lock.
+	for _, childDir := range trackedGitlinkDirs(gitRoot) {
+		childRoot, ok := childRepoRoot(childDir)
+		if !ok {
+			continue
+		}
+		pruneGitlinkEmbedRefs(childRoot, logger)
+		if err := checkUntrackedReplayable(childRoot, logger); err != nil {
+			return nil, err
+		}
 	}
 
 	// The commit describing the user's directory as this task sees it — their
@@ -976,10 +1007,18 @@ func resolveGitRoot(dir string) (string, error) {
 // the .git/index.lock races that used to be able to end the task (#7434): the
 // only lock taken is on our own temporary file.
 func captureUserSnapshot(gitRoot, envRoot, headSHA string, logger *slog.Logger) (string, error) {
+	return captureUserSnapshotAt(gitRoot, envRoot, headSHA, logger, 0)
+}
+
+// captureUserSnapshotAt is captureUserSnapshot for one level of the gitlink
+// tree. depth separates the private index files of parent and child so an
+// embed never clobbers the staging its parent already did, and gates the
+// embedding itself (see maxGitlinkEmbedDepth).
+func captureUserSnapshotAt(gitRoot, envRoot, headSHA string, logger *slog.Logger, depth int) (string, error) {
 	if envRoot == "" {
 		return "", errors.New("execenv: user snapshot requires an env root to build its index in")
 	}
-	indexPath := filepath.Join(envRoot, snapshotIndexFileName)
+	indexPath := filepath.Join(envRoot, fmt.Sprintf("%s-d%d", snapshotIndexFileName, depth))
 	if err := os.Remove(indexPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return "", fmt.Errorf("clear snapshot index: %w", err)
 	}
@@ -1022,6 +1061,17 @@ func captureUserSnapshot(gitRoot, envRoot, headSHA string, logger *slog.Logger) 
 			return "", err
 		}
 	}
+	// Gitlink children are opaque to every step above: `git add` does not
+	// descend into a nested repository, so a checkout of this tree would
+	// materialise each child as an empty directory and the agent would review
+	// a project with no code in it. Replace the staged gitlink entries with
+	// the child repositories' own snapshots (real trees) before writing the
+	// parent tree; everything downstream — replay, finalize, the delivery
+	// branch — is tree-level and treats the embedded content as ordinary
+	// files with no further changes.
+	if err := embedGitlinkChildren(gitRoot, env, envRoot, depth, logger); err != nil {
+		return "", err
+	}
 	tree, err := runGitTrimmedEnv(gitRoot, env, "write-tree")
 	if err != nil {
 		return "", fmt.Errorf("git write-tree: %w", err)
@@ -1050,6 +1100,228 @@ func seedSnapshotIndex(gitRoot, path string) bool {
 		src = filepath.Join(gitRoot, src)
 	}
 	return copyFile(src, path) == nil
+}
+
+// stagedGitlink is one mode-160000 index entry: a path the parent repo tracks
+// as a pointer to a nested repository, with the commit it points at.
+type stagedGitlink struct {
+	commit string
+	path   string
+}
+
+// trackedGitlinkDirs lists the repository-root directories of the gitlinks
+// the user's index currently tracks. Read from the user's index (a lock-free
+// read) rather than a staged one because this runs before any staging exists;
+// for the budget check, what the user tracks is the honest set.
+func trackedGitlinkDirs(gitRoot string) []string {
+	links, err := stagedGitlinks(gitRoot, nil)
+	if err != nil {
+		return nil
+	}
+	dirs := make([]string, 0, len(links))
+	for _, link := range links {
+		dirs = append(dirs, filepath.Join(gitRoot, filepath.FromSlash(link.path)))
+	}
+	return dirs
+}
+
+// stagedGitlinks lists the gitlink entries in the snapshot index being built.
+// Parsed with -z: core.quotepath (on by default) would otherwise deliver a
+// non-ASCII path as a quoted octal-escape string, and every consumer below —
+// childRepoRoot, update-index, read-tree --prefix — needs the literal bytes.
+func stagedGitlinks(gitRoot string, env []string) ([]stagedGitlink, error) {
+	out, err := runGitEnv(gitRoot, env, "ls-files", "-s", "-z")
+	if err != nil {
+		return nil, fmt.Errorf("git ls-files -s: %s: %w", strings.TrimSpace(out), err)
+	}
+	var links []stagedGitlink
+	for _, record := range strings.Split(out, "\x00") {
+		parts := strings.SplitN(record, "\t", 2)
+		if len(parts) != 2 {
+			continue
+		}
+		meta := strings.Fields(parts[0])
+		if len(meta) != 3 || meta[0] != "160000" {
+			continue
+		}
+		links = append(links, stagedGitlink{commit: meta[1], path: parts[1]})
+	}
+	return links, nil
+}
+
+// embedGitlinkChildren replaces every gitlink entry staged in the snapshot
+// index with the embedded tree of the repository that entry points at.
+//
+// The child's tree is its own snapshot — HEAD plus its uncommitted and
+// untracked-not-ignored files, under the child's OWN ignore rules — so the
+// agent sees exactly the code the user has, not the remote's idea of it.
+// Objects cross into the parent's database through a local `git fetch`, which
+// is what keeps the whole manoeuvre cheap: content-addressed blobs that are
+// already there (every file the parent ever embedded and that has not changed)
+// transfer as zero bytes.
+//
+// A gitlink whose directory is missing, not a repository, or has no commits is
+// skipped with a warning: it stays a gitlink and the worktree keeps an empty
+// directory there, which is what worktree mode did before embedding existed.
+func embedGitlinkChildren(gitRoot string, env []string, envRoot string, depth int, logger *slog.Logger) error {
+	if depth >= maxGitlinkEmbedDepth {
+		return nil
+	}
+	children, err := stagedGitlinks(gitRoot, env)
+	if err != nil {
+		return err
+	}
+	for _, link := range children {
+		if err := embedGitlinkChild(gitRoot, env, envRoot, depth, link, logger); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// embedGitlinkChild embeds one gitlink child into the parent's staged index.
+func embedGitlinkChild(gitRoot string, env []string, envRoot string, depth int, link stagedGitlink, logger *slog.Logger) error {
+	childDir := filepath.Join(gitRoot, filepath.FromSlash(link.path))
+	childRoot, ok := childRepoRoot(childDir)
+	if !ok {
+		if logger != nil {
+			logger.Warn("execenv: gitlink child is not a usable repository; leaving it as an empty directory in the worktree",
+				"parent", gitRoot, "path", link.path)
+		}
+		return nil
+	}
+
+	// The child is the user's repository: everything we do inside it — reading
+	// its state, writing blobs, a momentary ref — runs under its own cross-
+	// process lock, the same contract the parent enjoys. Lock order is always
+	// parent → child, the only direction embedding goes, so this cannot
+	// deadlock against another embed.
+	unlock, err := lockGitRoot(childRoot, logger)
+	if err != nil {
+		return fmt.Errorf("could not lock the gitlink child %q to snapshot it: %w", link.path, err)
+	}
+	defer unlock()
+
+	childHead, err := runGitTrimmed(childRoot, "rev-parse", "--verify", "HEAD")
+	if err != nil {
+		if logger != nil {
+			logger.Warn("execenv: gitlink child has no commits; leaving it as an empty directory in the worktree",
+				"parent", gitRoot, "path", link.path)
+		}
+		return nil
+	}
+	snapshot, err := captureUserSnapshotAt(childRoot, envRoot, childHead, logger, depth+1)
+	if err != nil {
+		return fmt.Errorf("snapshot the gitlink child %q: %w", link.path, err)
+	}
+	if err := fetchSnapshotObjects(gitRoot, childRoot, snapshot, logger); err != nil {
+		return err
+	}
+	tree, err := runGitTrimmed(childRoot, "rev-parse", snapshot+"^{tree}")
+	if err != nil || tree == "" {
+		return fmt.Errorf("resolve the snapshot tree of the gitlink child %q: %w", link.path, err)
+	}
+	// A git index holds blobs and gitlinks, never directories: --cacheinfo
+	// cannot insert the child tree (mode 040000 is the sparse-index's, and git
+	// rejects it here). The classic subtree-merge pair does it instead — drop
+	// the gitlink entry, then read the child's tree in under the same prefix,
+	// where write-tree folds it back into the parent tree.
+	if out, err := runGitEnv(gitRoot, env, "update-index", "--force-remove", link.path); err != nil {
+		return fmt.Errorf("drop the gitlink entry %q from the snapshot index: %s: %w", link.path, strings.TrimSpace(out), err)
+	}
+	prefix := strings.TrimSuffix(link.path, "/") + "/"
+	if out, err := runGitEnv(gitRoot, env, "read-tree", "--prefix="+prefix, tree); err != nil {
+		return fmt.Errorf("embed the gitlink child %q into the snapshot index: %s: %w", link.path, strings.TrimSpace(out), err)
+	}
+	if logger != nil {
+		logger.Info("execenv: embedded gitlink child into the task worktree snapshot",
+			"parent", gitRoot, "path", link.path, "child_root", childRoot)
+	}
+	return nil
+}
+
+// childRepoRoot reports the repository root when dir is itself the top of a
+// git working tree — a gitlink points at exactly that. A dir nested deeper
+// inside some other repository (tolerated by git, meaningless to embed) and a
+// plain non-repository directory both report false.
+func childRepoRoot(dir string) (string, bool) {
+	root, err := resolveGitRoot(dir)
+	if err != nil {
+		return "", false
+	}
+	canonical := dir
+	if resolved, evalErr := filepath.EvalSymlinks(dir); evalErr == nil {
+		canonical = resolved
+	}
+	return root, root == filepath.Clean(canonical)
+}
+
+// fetchSnapshotObjects copies the objects the child snapshot needs from the
+// child's object database into the parent's, by fetching a momentary ref.
+// Git's local fetch moves exactly the missing objects in one pack, so an
+// unchanged child costs nothing on every later turn.
+//
+// The ref name embeds its creation time: a crash between update-ref and delete
+// leaves it behind in the CHILD's repo, and pruneGitlinkEmbedRefs can then age
+// it out without ever racing a live embed from another parent (whose ref, by
+// construction, is younger).
+func fetchSnapshotObjects(parentRoot, childRoot, snapshot string, logger *slog.Logger) error {
+	childGitDir, err := runGitTrimmed(childRoot, "rev-parse", "--absolute-git-dir")
+	if err != nil || childGitDir == "" {
+		return fmt.Errorf("locate the object database of the gitlink child %q: %w", childRoot, err)
+	}
+	ref := fmt.Sprintf("%s%d-%s", gitlinkEmbedRefPrefix, time.Now().UnixNano(), randomHex(6))
+	if out, err := runGit(childRoot, "update-ref", ref, snapshot); err != nil {
+		return fmt.Errorf("stage the gitlink child snapshot for transfer: %s: %w", strings.TrimSpace(out), err)
+	}
+	defer func() {
+		if out, delErr := runGit(childRoot, "update-ref", "-d", ref); delErr != nil && logger != nil {
+			logger.Warn("execenv: could not drop the momentary gitlink transfer ref (non-fatal)",
+				"child_root", childRoot, "ref", ref, "output", strings.TrimSpace(out), "error", delErr)
+		}
+	}()
+	if out, err := runGit(parentRoot, "fetch", "--quiet", "--no-tags", childGitDir, ref); err != nil {
+		return fmt.Errorf("copy the gitlink child's objects into %q: %s: %w", parentRoot, strings.TrimSpace(out), err)
+	}
+	return nil
+}
+
+// pruneGitlinkEmbedRefs drops momentary transfer refs a crashed embed left in
+// a child repository. Anything older than an hour cannot belong to a live
+// embed — an embed holds the PARENT's lock for its whole duration, and this
+// prune only runs while preparing the same parent, so the only refs it can
+// see are leftovers or a concurrent embed through a different parent, whose
+// ref is minutes old at most.
+func pruneGitlinkEmbedRefs(childRoot string, logger *slog.Logger) {
+	out, err := runGitTrimmed(childRoot, "for-each-ref", "--format=%(refname)", gitlinkEmbedRefPrefix)
+	if err != nil {
+		return
+	}
+	cutoff := time.Now().Add(-time.Hour).Unix()
+	for _, ref := range strings.Split(out, "\n") {
+		ref = strings.TrimSpace(ref)
+		name := strings.TrimPrefix(ref, gitlinkEmbedRefPrefix)
+		stampStr, _, _ := strings.Cut(name, "-")
+		stamp, parseErr := strconv.ParseInt(stampStr, 10, 64)
+		if parseErr != nil || stamp >= cutoff {
+			continue
+		}
+		if _, delErr := runGit(childRoot, "update-ref", "-d", ref); delErr != nil && logger != nil {
+			logger.Warn("execenv: could not drop a stale gitlink transfer ref (non-fatal)",
+				"child_root", childRoot, "ref", ref)
+		}
+	}
+}
+
+// randomHex returns n random bytes hex-encoded, for ref-name uniqueness.
+func randomHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		// Degenerate fallback: the nanosecond stamp already makes the name
+		// unique for any practical purpose.
+		return "000000000000"
+	}
+	return hex.EncodeToString(b)
 }
 
 // stagingExcludes are the pathspecs every daemon-driven `git add -A` carries —
