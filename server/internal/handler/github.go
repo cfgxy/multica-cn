@@ -27,6 +27,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/envpem"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -674,7 +675,7 @@ func fetchInstallationAccount(ctx context.Context, installationID int64) (login,
 // time.Now().
 func signGitHubAppJWT(now time.Time) (string, error) {
 	appID := strings.TrimSpace(os.Getenv("GITHUB_APP_ID"))
-	pemKey := strings.TrimSpace(os.Getenv("GITHUB_APP_PRIVATE_KEY"))
+	pemKey := envpem.NormalizePrivateKey(os.Getenv("GITHUB_APP_PRIVATE_KEY"))
 	if appID == "" || pemKey == "" {
 		return "", nil
 	}
