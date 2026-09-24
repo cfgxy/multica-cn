@@ -279,41 +279,47 @@ MCP_CPU_QUOTA ?= 100%
 MCP_MEMORY_HIGH ?= 512M
 MCP_MEMORY_MAX ?= 768M
 
-mcp-http-install: mcp-build ## Install MCP streamable-HTTP transport as a systemd service: make mcp-http-install [MCP_HTTP_PORT=8080] [MCP_HTTP_HOST=127.0.0.1]
-	@if [ -n "$$SUDO_USER" ]; then echo "ERROR: run 'make mcp-http-install' as the regular user (sudo is invoked internally)"; exit 1; fi
-	@case "$(MCP_HTTP_HOST)" in \
+MCP_HTTP_UNIT_DIR := $(HOME)/.config/systemd/user
+MCP_HTTP_UNIT := $(MCP_HTTP_UNIT_DIR)/multica-mcp-http.service
+
+mcp-http-install: mcp-build ## Install MCP streamable-HTTP transport as a systemd --user service (zero sudo): make mcp-http-install [MCP_HTTP_PORT=8080] [MCP_HTTP_HOST=127.0.0.1]
+	@export XDG_RUNTIME_DIR=$${XDG_RUNTIME_DIR:-/run/user/$$(id -u)}; \
+	case "$(MCP_HTTP_HOST)" in \
 		127.0.0.1|localhost|::1) ;; \
 		*) echo "WARN: MCP_HTTP_HOST=$(MCP_HTTP_HOST) 非 loopback——对外暴露前请确认已置于 TLS 反代之后" ;; \
-	esac
-	sed -e 's|@USER@|$(USER)|g' \
-	    -e 's|@GROUP@|$(GROUP)|g' \
-	    -e 's|@MCP_DIR@|$(CURDIR)/apps/mcp|g' \
+	esac; \
+	mkdir -p "$(MCP_HTTP_UNIT_DIR)"; \
+	sed -e 's|@MCP_DIR@|$(CURDIR)/apps/mcp|g' \
 	    -e 's|@PORT@|$(MCP_HTTP_PORT)|g' \
 	    -e 's|@HOST@|$(MCP_HTTP_HOST)|g' \
 	    -e 's|@CPU_QUOTA@|$(MCP_CPU_QUOTA)|g' \
 	    -e 's|@MEMORY_HIGH@|$(MCP_MEMORY_HIGH)|g' \
 	    -e 's|@MEMORY_MAX@|$(MCP_MEMORY_MAX)|g' \
-	    deploy/multica-mcp-http.service.template > /tmp/multica-mcp-http.service
-	sudo install -m644 /tmp/multica-mcp-http.service /etc/systemd/system/multica-mcp-http.service
-	sudo systemctl daemon-reload
-	sudo systemctl enable --now multica-mcp-http.service
-	@systemctl --no-pager --lines=0 status multica-mcp-http.service
-	@echo "multica-mcp-http → http://$(MCP_HTTP_HOST):$(MCP_HTTP_PORT)/mcp（探活: /healthz，鉴权: Authorization: Bearer <PAT>，逐请求携带，服务端不落盘）"
+	    deploy/multica-mcp-http.service.template > "$(MCP_HTTP_UNIT)"; \
+	systemctl --user daemon-reload; \
+	systemctl --user enable --now multica-mcp-http.service; \
+	if [ "$$(loginctl show-user $$(id -un) -p Linger --value 2>/dev/null)" != "yes" ]; then \
+		echo "WARN: 当前用户未开启 Linger，注销后该服务会随会话结束停止；如需注销/重启后仍常驻，请让有权限者执行: loginctl enable-linger $$(id -un)"; \
+	fi; \
+	systemctl --user --no-pager --lines=0 status multica-mcp-http.service; \
+	echo "multica-mcp-http → http://$(MCP_HTTP_HOST):$(MCP_HTTP_PORT)/mcp（探活: /healthz，鉴权: Authorization: Bearer <PAT>，逐请求携带，服务端不落盘）"
 
 mcp-http-update: mcp-build ## Rebuild dist/ only, then restart the running service (unit file / port / host untouched)
-	sudo systemctl restart multica-mcp-http.service
-	@systemctl --no-pager --lines=0 status multica-mcp-http.service
+	@export XDG_RUNTIME_DIR=$${XDG_RUNTIME_DIR:-/run/user/$$(id -u)}; \
+	systemctl --user restart multica-mcp-http.service; \
+	systemctl --user --no-pager --lines=0 status multica-mcp-http.service
 
-mcp-http-status: ## Read-only: systemd unit status for the MCP HTTP service
-	@systemctl --no-pager status multica-mcp-http.service 2>/dev/null || echo "multica-mcp-http.service 未安装（make mcp-http-install）"
+mcp-http-status: ## Read-only: systemd --user unit status for the MCP HTTP service
+	@export XDG_RUNTIME_DIR=$${XDG_RUNTIME_DIR:-/run/user/$$(id -u)}; \
+	systemctl --user --no-pager status multica-mcp-http.service 2>/dev/null || echo "multica-mcp-http.service 未安装（make mcp-http-install）"
 
-mcp-http-uninstall: ## Remove the MCP HTTP systemd service only; never touches multica-daemon* or multica-oom-guard units
-	@if [ -n "$$SUDO_USER" ]; then echo "ERROR: run 'make mcp-http-uninstall' as the regular user (sudo is invoked internally)"; exit 1; fi
-	@sudo systemctl disable --now multica-mcp-http.service >/dev/null 2>&1 || true
-	@sudo rm -f /etc/systemd/system/multica-mcp-http.service
-	@sudo systemctl daemon-reload
-	@sudo systemctl reset-failed 2>/dev/null || true
-	@echo "multica-mcp-http.service 已移除（multica-daemon* 与 multica-oom-guard 未受影响）"
+mcp-http-uninstall: ## Remove the MCP HTTP systemd --user service only; never touches multica-daemon*, multica-oom-guard, or other systemd --user units
+	@export XDG_RUNTIME_DIR=$${XDG_RUNTIME_DIR:-/run/user/$$(id -u)}; \
+	systemctl --user disable --now multica-mcp-http.service >/dev/null 2>&1 || true; \
+	rm -f "$(MCP_HTTP_UNIT)"; \
+	systemctl --user daemon-reload; \
+	systemctl --user reset-failed 2>/dev/null || true; \
+	echo "multica-mcp-http.service 已移除（multica-daemon*、multica-oom-guard 与其他 systemd --user 单元未受影响）"
 
 # ---------- Environments ----------
 ##@ Environments
