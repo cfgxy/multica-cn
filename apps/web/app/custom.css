@@ -64,13 +64,14 @@
 /* -----------------------------------------------------------------------------
  * Landing editorial serif
  *
- * The landing tree swaps the app's `--font-serif` (Source Serif 4, set on <html>
- * by app/layout.tsx) for Instrument Serif, loaded by app/(landing)/layout.tsx as
- * `--font-instrument-serif`. The stack is composed here in static CSS rather
- * than in next/font's `fallback` for the same reasons `--font-sans` is composed
- * in app/globals.css: it has to be overridable per `<html lang>`, and it stays
- * CSP-safe (no inline <style>). Keep the CJK ordering here in sync with the
- * `--font-sans` chain in app/globals.css.
+ * The landing tree swaps the app's `--font-serif` (Source Serif 4, declared on
+ * :root in app/globals.css) for Instrument Serif, whose face is imported from a
+ * fontsource package in app/(landing)/layout.tsx (static family name, no
+ * next/font variable). The stack is composed here in static CSS for the same
+ * reasons `--font-sans` is composed in app/globals.css: it has to be
+ * overridable per `<html lang>`, and it stays CSP-safe (no inline <style>).
+ * Keep the CJK ordering here in sync with the `--font-sans` chain in
+ * app/globals.css.
  *
  * Instrument Serif ships Latin only, so CJK headlines used to fall out of the
  * stack entirely and land on the browser's default face — a sans, next to Latin
@@ -84,7 +85,7 @@
  * before Korean so zh users never get Korean Hanja glyph shapes (Hangul is a
  * separate Unicode block, so ko users still get Korean fonts for Hangul). */
 .landing-light {
-    --font-serif: var(--font-instrument-serif), "Songti SC", "SimSun",
+    --font-serif: "Instrument Serif", "Songti SC", "SimSun",
         "Noto Serif CJK SC", "Nanum Myeongjo", "AppleMyungjo", "Batang",
         "Noto Serif CJK KR", ui-serif, serif;
 }
@@ -95,7 +96,7 @@
    shared ideographs. Promote a Mincho-first chain only for Japanese. Instrument
    Serif still leads for Latin; zh/ko remain as a deep fallback. */
 html[lang|="ja"] .landing-light {
-    --font-serif: var(--font-instrument-serif), "Hiragino Mincho ProN",
+    --font-serif: "Instrument Serif", "Hiragino Mincho ProN",
         "Yu Mincho", "MS Mincho", "Noto Serif CJK JP", "Songti SC", "SimSun",
         "Noto Serif CJK SC", "Nanum Myeongjo", "AppleMyungjo", "Batang",
         "Noto Serif CJK KR", ui-serif, serif;

@@ -21,11 +21,9 @@
 }
 
 /* Font stack: Inter for Latin UI text + system CJK fonts for localized content.
-   Web app uses the same stack via next/font/google in apps/web/app/layout.tsx —
-   keep the CJK fallback tail in sync across both files. The Inter primary family
-   differs by design: next/font produces `__Inter_xxx` (with a synthetic size-adjusted
-   fallback face to prevent FOUT layout shift); desktop uses fontsource's "Inter Variable".
-   Both resolve to Inter glyphs, so rendering is identical in practice.
+   Web app composes the same stacks from the same fontsource packages in
+   apps/web/app/globals.css — keep the CJK fallback tail in sync across both
+   files (identical family names on both platforms now).
    Per-character fallback: Latin chars render with Inter, CJK chars render with
    the platform-native Chinese/Korean fallback when needed. Chinese fonts must stay
    before Korean fonts so zh users do not receive Korean Hanja glyph shapes.
