@@ -1,0 +1,28 @@
+[Unit]
+Description=Multica MCP server (streamable HTTP transport)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+User=@USER@
+Group=@GROUP@
+WorkingDirectory=@MCP_DIR@
+# bash -lc 包装：以登录 shell 加载用户 bashrc/profile，解析 node（nvm 等）——
+# 与 deploy/multica-daemon@.service.template 同一手法，换机器/换 Node 管理器零修改。
+#
+# 无状态设计：每个 POST /mcp 请求自带 Authorization: Bearer <PAT>，服务端不
+# 持久化任何凭据，因此本单元不设置、不引用任何 MULTICA_TOKEN 之类的变量——
+# 凭据只应出现在调用方的请求头里，绝不应出现在单元文件或日志中。
+ExecStart=/bin/bash -lc 'exec node "@MCP_DIR@/dist/index.js" --transport http --port @PORT@ --host @HOST@'
+# 资源护栏：MCP 只是把请求转发到后端 REST API 的无状态代理，没有 daemon 那种
+# 长驻 Agent 会话/子进程，画像远小于 daemon；按部署机规格可通过 make 变量覆盖
+# （MCP_CPU_QUOTA / MCP_MEMORY_HIGH / MCP_MEMORY_MAX）。
+CPUQuota=@CPU_QUOTA@
+MemoryHigh=@MEMORY_HIGH@
+MemoryMax=@MEMORY_MAX@
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

@@ -1,4 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev daemon-build daemon-install daemon-update daemon-preflight daemon-uninstall mcp-build mcp-install mcp-update mcp-status mcp-uninstall
+.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev daemon-build daemon-install daemon-update daemon-preflight daemon-uninstall mcp-build mcp-install mcp-update mcp-status mcp-uninstall mcp-http-install mcp-http-update mcp-http-status mcp-http-uninstall
 
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
@@ -260,6 +260,60 @@ mcp-status: mcp-build ## Read-only: show which clients are registered, the dist 
 
 mcp-uninstall: mcp-build ## Remove the multica entry from every detected client's config; other entries and file formatting are preserved
 	node "$(CURDIR)/apps/mcp/dist/uninstall-cli.js"
+
+# ---------- MCP HTTP (systemd service, streamable HTTP transport) ----------
+# 与上面 mcp-* 的形态不同：mcp-* 把 stdio server 注册进本机 MCP 客户端配置；
+# 这里是把 http transport 常驻托管为 systemd 服务，供远程 connector（ChatGPT
+# 等）连接。两者互不影响，可同时存在。
+#
+# 无状态设计：每个 POST /mcp 自带 Authorization: Bearer <PAT>，服务端不持久化
+# 任何凭据；因此本组 target 不做「profile 未认证」前置检查（对照 daemon-install），
+# 单元文件与日志也绝不写入 token——凭据只走调用方的请求头。
+#
+# 单实例，非 @ 模板：一台机器一般只需要一个 MCP http 端点（多端口场景可用
+# MCP_HTTP_PORT/MCP_HTTP_HOST 覆盖后重装），跟 daemon 的多 profile 并存不是
+# 同一类需求，模板化只会徒增管理面，故按简单单元处理。
+MCP_HTTP_PORT ?= 8080
+MCP_HTTP_HOST ?= 127.0.0.1
+MCP_CPU_QUOTA ?= 100%
+MCP_MEMORY_HIGH ?= 512M
+MCP_MEMORY_MAX ?= 768M
+
+mcp-http-install: mcp-build ## Install MCP streamable-HTTP transport as a systemd service: make mcp-http-install [MCP_HTTP_PORT=8080] [MCP_HTTP_HOST=127.0.0.1]
+	@if [ -n "$$SUDO_USER" ]; then echo "ERROR: run 'make mcp-http-install' as the regular user (sudo is invoked internally)"; exit 1; fi
+	@case "$(MCP_HTTP_HOST)" in \
+		127.0.0.1|localhost|::1) ;; \
+		*) echo "WARN: MCP_HTTP_HOST=$(MCP_HTTP_HOST) 非 loopback——对外暴露前请确认已置于 TLS 反代之后" ;; \
+	esac
+	sed -e 's|@USER@|$(USER)|g' \
+	    -e 's|@GROUP@|$(GROUP)|g' \
+	    -e 's|@MCP_DIR@|$(CURDIR)/apps/mcp|g' \
+	    -e 's|@PORT@|$(MCP_HTTP_PORT)|g' \
+	    -e 's|@HOST@|$(MCP_HTTP_HOST)|g' \
+	    -e 's|@CPU_QUOTA@|$(MCP_CPU_QUOTA)|g' \
+	    -e 's|@MEMORY_HIGH@|$(MCP_MEMORY_HIGH)|g' \
+	    -e 's|@MEMORY_MAX@|$(MCP_MEMORY_MAX)|g' \
+	    deploy/multica-mcp-http.service.template > /tmp/multica-mcp-http.service
+	sudo install -m644 /tmp/multica-mcp-http.service /etc/systemd/system/multica-mcp-http.service
+	sudo systemctl daemon-reload
+	sudo systemctl enable --now multica-mcp-http.service
+	@systemctl --no-pager --lines=0 status multica-mcp-http.service
+	@echo "multica-mcp-http → http://$(MCP_HTTP_HOST):$(MCP_HTTP_PORT)/mcp（探活: /healthz，鉴权: Authorization: Bearer <PAT>，逐请求携带，服务端不落盘）"
+
+mcp-http-update: mcp-build ## Rebuild dist/ only, then restart the running service (unit file / port / host untouched)
+	sudo systemctl restart multica-mcp-http.service
+	@systemctl --no-pager --lines=0 status multica-mcp-http.service
+
+mcp-http-status: ## Read-only: systemd unit status for the MCP HTTP service
+	@systemctl --no-pager status multica-mcp-http.service 2>/dev/null || echo "multica-mcp-http.service 未安装（make mcp-http-install）"
+
+mcp-http-uninstall: ## Remove the MCP HTTP systemd service only; never touches multica-daemon* or multica-oom-guard units
+	@if [ -n "$$SUDO_USER" ]; then echo "ERROR: run 'make mcp-http-uninstall' as the regular user (sudo is invoked internally)"; exit 1; fi
+	@sudo systemctl disable --now multica-mcp-http.service >/dev/null 2>&1 || true
+	@sudo rm -f /etc/systemd/system/multica-mcp-http.service
+	@sudo systemctl daemon-reload
+	@sudo systemctl reset-failed 2>/dev/null || true
+	@echo "multica-mcp-http.service 已移除（multica-daemon* 与 multica-oom-guard 未受影响）"
 
 # ---------- Environments ----------
 ##@ Environments
