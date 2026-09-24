@@ -6,6 +6,7 @@ import {
   MissingCredentialsError,
   normalizeServerUrl,
   resolveCredentials,
+  resolveServerUrl,
   type ConfigEnv,
 } from "../src/config.js";
 
@@ -144,6 +145,60 @@ describe("resolveCredentials", () => {
         readerFor({ "/home/tester/.multica/config.json": "{not json" }),
       ),
     ).toThrow(MissingCredentialsError);
+  });
+});
+
+describe("resolveServerUrl", () => {
+  it("never requires a token: resolves even with no config file and no env token", () => {
+    expect(
+      resolveServerUrl(envWith({}), () => {
+        throw new Error("no file");
+      }),
+    ).toBe(DEFAULT_SERVER_URL);
+  });
+
+  it("reads server URL from the CLI config file without needing its token field", () => {
+    const url = resolveServerUrl(
+      envWith({}),
+      readerFor({
+        "/home/tester/.multica/config.json": JSON.stringify({
+          server_url: "https://multica.example.com",
+        }),
+      }),
+    );
+    expect(url).toBe("https://multica.example.com");
+  });
+
+  it("flag overrides beat env, env beats the config file", () => {
+    expect(
+      resolveServerUrl(envWith({ MULTICA_SERVER_URL: "https://env.example.com" }), () => "", {
+        serverUrl: "https://flag.example.com",
+      }),
+    ).toBe("https://flag.example.com");
+    expect(
+      resolveServerUrl(
+        envWith({ MULTICA_SERVER_URL: "https://env.example.com" }),
+        readerFor({
+          "/home/tester/.multica/config.json": JSON.stringify({
+            server_url: "https://from-file.example.com",
+          }),
+        }),
+      ),
+    ).toBe("https://env.example.com");
+  });
+
+  it("honors a named profile's config path", () => {
+    expect(
+      resolveServerUrl(
+        envWith({}),
+        readerFor({
+          "/home/tester/.multica/profiles/staging/config.json": JSON.stringify({
+            server_url: "https://staging.example.com",
+          }),
+        }),
+        { profile: "staging" },
+      ),
+    ).toBe("https://staging.example.com");
   });
 });
 
