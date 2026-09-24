@@ -8,6 +8,20 @@ export interface McpEntry {
 export type InstallOutcome =
   | { status: "installed"; path: string }
   | { status: "skipped-not-detected" }
+  | { status: "skipped-not-registered" }
+  | { status: "skipped-parse-error"; path: string; reason: string };
+
+/** Result of a read-only scan of a client's current registration state. */
+export type StatusOutcome =
+  | { status: "not-detected" }
+  | { status: "not-installed" }
+  | { status: "registered"; path: string; distPath: string; stale: boolean }
+  | { status: "parse-error"; path: string; reason: string };
+
+export type UninstallOutcome =
+  | { status: "removed"; path: string }
+  | { status: "not-installed" }
+  | { status: "skipped-not-detected" }
   | { status: "skipped-parse-error"; path: string; reason: string };
 
 export interface ClientTarget {
@@ -23,4 +37,16 @@ export interface ClientTarget {
    * when the existing file fails to parse.
    */
   apply(entry: McpEntry): InstallOutcome;
+  /**
+   * Read-only: reports whether this client currently has a `multica` entry,
+   * and the `distPath` it points at. Never writes to the config file.
+   */
+  read(): StatusOutcome;
+  /**
+   * Removes the `multica` entry from the config, leaving every other entry
+   * and the file's formatting untouched. Must never touch the file when
+   * detect() is false, no `multica` entry exists, or the file fails to
+   * parse.
+   */
+  remove(): UninstallOutcome;
 }
