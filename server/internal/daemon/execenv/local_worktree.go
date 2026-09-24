@@ -1120,9 +1120,31 @@ func trackedGitlinkDirs(gitRoot string) []string {
 	}
 	dirs := make([]string, 0, len(links))
 	for _, link := range links {
-		dirs = append(dirs, filepath.Join(gitRoot, filepath.FromSlash(link.path)))
+		dir, ok := gitlinkPathWithinRoot(gitRoot, link.path)
+		if !ok {
+			continue
+		}
+		dirs = append(dirs, dir)
 	}
 	return dirs
+}
+
+// gitlinkPathWithinRoot resolves a gitlink's index path against gitRoot and
+// reports whether the result stays inside it. Git's own tree format already
+// rejects "." and ".." path components, so a well-formed index cannot produce
+// an escaping entry — but embedGitlinkChild goes on to lock, read HEAD from,
+// and fetch objects out of whatever this resolves to, so the boundary is
+// checked explicitly here rather than trusted as an upstream invariant.
+func gitlinkPathWithinRoot(gitRoot, relPath string) (string, bool) {
+	if relPath == "" || filepath.IsAbs(relPath) {
+		return "", false
+	}
+	joined := filepath.Join(gitRoot, filepath.FromSlash(relPath))
+	rel, err := filepath.Rel(gitRoot, joined)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return joined, true
 }
 
 // stagedGitlinks lists the gitlink entries in the snapshot index being built.
@@ -1181,7 +1203,10 @@ func embedGitlinkChildren(gitRoot string, env []string, envRoot string, depth in
 
 // embedGitlinkChild embeds one gitlink child into the parent's staged index.
 func embedGitlinkChild(gitRoot string, env []string, envRoot string, depth int, link stagedGitlink, logger *slog.Logger) error {
-	childDir := filepath.Join(gitRoot, filepath.FromSlash(link.path))
+	childDir, ok := gitlinkPathWithinRoot(gitRoot, link.path)
+	if !ok {
+		return fmt.Errorf("execenv: gitlink entry %q escapes its repository root %q", link.path, gitRoot)
+	}
 	childRoot, ok := childRepoRoot(childDir)
 	if !ok {
 		if logger != nil {
