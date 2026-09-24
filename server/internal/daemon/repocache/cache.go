@@ -49,6 +49,13 @@ func gitEnv() []string {
 	idx := strconv.Itoa(existing)
 	return append(base,
 		"GIT_TERMINAL_PROMPT=0",
+		// Force C locale: isBranchCollisionError and friends classify git
+		// failures by matching English message text. On a host whose locale
+		// makes git emit localized messages (zh_CN, de_DE, …) the match
+		// silently fails and a recoverable branch collision is reported as a
+		// hard error instead of triggering the retry-with-timestamp path.
+		"LC_ALL=C",
+		"LANG=C",
 		"GIT_CONFIG_COUNT="+strconv.Itoa(existing+1),
 		"GIT_CONFIG_KEY_"+idx+"=safe.directory",
 		"GIT_CONFIG_VALUE_"+idx+"=*",

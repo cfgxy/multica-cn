@@ -65,6 +65,86 @@ func TestGitEnv(t *testing.T) {
 	if !envHas(env, "GIT_CONFIG_VALUE_0=*") {
 		t.Error("gitEnv() must include GIT_CONFIG_VALUE_0=*")
 	}
+
+	// Error classification matches English git message text, so the locale
+	// must be pinned regardless of what the host uses.
+	if !envHas(env, "LC_ALL=C") {
+		t.Error("gitEnv() must include LC_ALL=C")
+	}
+	if !envHas(env, "LANG=C") {
+		t.Error("gitEnv() must include LANG=C")
+	}
+}
+
+// TestGitEnvOverridesHostLocale pins the ordering guarantee behind the fix:
+// gitEnv appends its entries after os.Environ(), and git (like execve) honors
+// the LAST value for a duplicated key — so a localized host locale cannot make
+// git emit non-English messages.
+func TestGitEnvOverridesHostLocale(t *testing.T) {
+	t.Setenv("LC_ALL", "zh_CN.UTF-8")
+	t.Setenv("LANG", "zh_CN.UTF-8")
+
+	env := gitEnv()
+
+	lastValue := func(key string) string {
+		val := ""
+		for _, e := range env {
+			if strings.HasPrefix(e, key+"=") {
+				val = strings.TrimPrefix(e, key+"=")
+			}
+		}
+		return val
+	}
+	if got := lastValue("LC_ALL"); got != "C" {
+		t.Errorf("effective LC_ALL = %q, want \"C\"", got)
+	}
+	if got := lastValue("LANG"); got != "C" {
+		t.Errorf("effective LANG = %q, want \"C\"", got)
+	}
+}
+
+// TestCreateWorktreeRetriesBranchCollisionUnderLocalizedHost is the regression
+// test for the actual failure: with a zh_CN host locale, git reported the
+// branch collision in Chinese, isBranchCollisionError did not recognize it,
+// and the retry-with-timestamp path never ran — turning a recoverable
+// collision into a hard error.
+func TestCreateWorktreeRetriesBranchCollisionUnderLocalizedHost(t *testing.T) {
+	t.Setenv("LC_ALL", "zh_CN.UTF-8")
+	t.Setenv("LANG", "zh_CN.UTF-8")
+
+	sourceRepo := createTestRepo(t)
+
+	cache := New(t.TempDir(), testLogger())
+	if err := cache.Sync("ws-1", []RepoInfo{{URL: sourceRepo}}); err != nil {
+		t.Fatalf("sync failed: %v", err)
+	}
+
+	params := WorktreeParams{
+		WorkspaceID: "ws-1",
+		RepoURL:     sourceRepo,
+		AgentName:   "agent",
+		TaskID:      "t1111111-0000-0000-0000-000000000000",
+	}
+
+	params.WorkDir = t.TempDir()
+	first, err := cache.CreateWorktree(params)
+	if err != nil {
+		t.Fatalf("first CreateWorktree failed: %v", err)
+	}
+
+	// Same agent + same task id ⇒ same branch name ⇒ collision on the second
+	// call, which must be absorbed by the retry rather than surfacing.
+	params.WorkDir = t.TempDir()
+	second, err := cache.CreateWorktree(params)
+	if err != nil {
+		t.Fatalf("second CreateWorktree failed on branch collision: %v", err)
+	}
+	if second.BranchName == first.BranchName {
+		t.Fatalf("second worktree reused branch %q; expected a disambiguated name", first.BranchName)
+	}
+	if !strings.HasPrefix(second.BranchName, first.BranchName+"-") {
+		t.Errorf("second branch %q is not the timestamp-suffixed form of %q", second.BranchName, first.BranchName)
+	}
 }
 
 func TestGitEnvPreservesExistingConfig(t *testing.T) {
