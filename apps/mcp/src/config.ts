@@ -76,6 +76,36 @@ export class MissingCredentialsError extends Error {
   }
 }
 
+export interface ServerUrlOverrides {
+  serverUrl?: string | undefined;
+  profile?: string | undefined;
+}
+
+/**
+ * Resolves only the backend base URL, never a token. Used by the stateless
+ * HTTP transport: it needs to know which backend to proxy requests to, but
+ * every caller brings its own PAT per-request (see src/http.ts), so startup
+ * must not require this host to already be authenticated.
+ */
+export function resolveServerUrl(
+  env: ConfigEnv,
+  readFile: (path: string) => string,
+  overrides: ServerUrlOverrides = {},
+): string {
+  const path = cliConfigPath(env, overrides.profile);
+  let fileConfig: CliConfigFile | undefined;
+  try {
+    fileConfig = parseCliConfig(readFile(path), path);
+  } catch {
+    fileConfig = undefined;
+  }
+  const envUrl = env.MULTICA_SERVER_URL?.trim();
+  const flagUrl = overrides.serverUrl?.trim();
+  const fileUrl = fileConfig?.server_url?.trim();
+  const rawUrl = flagUrl || envUrl || fileUrl || DEFAULT_SERVER_URL;
+  return normalizeServerUrl(rawUrl);
+}
+
 export function resolveCredentials(
   env: ConfigEnv,
   readFile: (path: string) => string,
@@ -108,11 +138,7 @@ export function resolveCredentials(
         ? "env"
         : "cli-config";
 
-  const envUrl = env.MULTICA_SERVER_URL?.trim();
-  const flagUrl = overrides.serverUrl?.trim();
-  const fileUrl = fileConfig?.server_url?.trim();
-  const rawUrl = flagUrl || envUrl || fileUrl || DEFAULT_SERVER_URL;
-  const serverUrl = normalizeServerUrl(rawUrl);
+  const serverUrl = resolveServerUrl(env, readFile, overrides);
 
   return { token, serverUrl, tokenSource };
 }

@@ -87,6 +87,30 @@ make mcp-uninstall   # 从每个检测到的客户端配置中移除 multica 条
 - 以上流程全程不读取、不打印、不持久化任何 Multica PAT。
 - 全部命令均为用户级配置写入，不需要 `sudo`。
 
+## HTTP 常驻服务（`make mcp-http-*`）
+
+把 `streamable HTTP` transport 托管为 systemd 服务，供远程 connector（如
+ChatGPT）长期连接；与上面 `mcp-*`（stdio，注册进本机客户端）是两类互不影响
+的形态，可同时存在：
+
+```bash
+make mcp-http-install    # 构建 + 安装并启用 systemd 服务（可选 MCP_HTTP_PORT=、MCP_HTTP_HOST=，默认 127.0.0.1:8080）
+make mcp-http-status     # 只读：systemd 单元状态
+make mcp-http-update     # 只重建 dist/，重启服务；不改端口/host/单元文件
+make mcp-http-uninstall  # 只移除本服务单元，绝不触碰 multica-daemon*/multica-oom-guard
+```
+
+- **无状态、零前置凭据**：与 `daemon-install` 不同，本服务启动不需要任何已认证的
+  `~/.multica/` profile——每个 `POST /mcp` 自带 `Authorization: Bearer <PAT>`，
+  服务端逐请求转发、不持久化任何凭据。单元文件、日志均不写入 token。
+- 默认绑定 `127.0.0.1`；`MCP_HTTP_HOST` 传入非 loopback 值时 `mcp-http-install`
+  会打印警告——对外暴露前必须置于 TLS 反代之后，不建议直接暴露明文 HTTP。
+- 服务以执行 `make` 的普通用户身份运行（`SUDO_USER` 存在时拒绝安装/卸载，语义
+  同 `daemon-install`/`daemon-uninstall`）。
+- 单实例（非 `@` 模板）：一台机器通常只需一个 HTTP 端点；需要多端口并存时用不同
+  `MCP_HTTP_PORT` 重复 `install` 会覆盖同一个单元，如确有多端口共存需求需手工
+  改造为模板实例。
+
 ## 开发
 
 ```bash
