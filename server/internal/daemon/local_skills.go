@@ -241,6 +241,21 @@ func localSkillRootsForProvider(provider string) ([]localSkillRoot, bool, error)
 			// directly below it. Project skills are injected separately under
 			// <workDir>/.minimax/skills.
 			providerRoot = filepath.Join(home, ".minimax", "skills")
+		case "zcode":
+			// zcode-acp's own skill-discovery source lists ~/.zcode/skills as
+			// its first (user-scope, ZCode native) discovery root; see
+			// zcode-acp/src/config/skill-discovery.ts.
+			providerRoot = filepath.Join(home, ".zcode", "skills")
+		case "deerflow":
+			// DeerFlow's custom-skill tooling (deerflow.tools.skill_manage_tool)
+			// stores skills through a user_id-keyed SkillStorage backend rather
+			// than a documented local filesystem convention under the user's
+			// home directory; no such convention could be confirmed. We keep
+			// ~/.deerflow/skills for naming consistency with the other
+			// providers above — it is expected to be absent on most machines,
+			// which the common "missing root" handling below already treats
+			// as an empty, error-free result.
+			providerRoot = filepath.Join(home, ".deerflow", "skills")
 		default:
 			return nil, false, nil
 		}

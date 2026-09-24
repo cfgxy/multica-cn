@@ -120,6 +120,55 @@ func TestListRuntimeLocalSkills_Mcode(t *testing.T) {
 	}
 }
 
+// TestListRuntimeLocalSkills_Deerflow covers the deerflow user-level skill
+// root (~/.deerflow/skills). DeerFlow's own custom-skill tooling stores
+// skills through a user_id-keyed backend rather than a documented local
+// filesystem convention, so ~/.deerflow/skills is expected to be absent on
+// most machines; this test asserts that "supported" is still reported and
+// that a missing root does not error, mirroring the other providers'
+// established missing-root semantics (see also
+// TestLocalSkills_MissingProviderRootIsNotAnError below).
+func TestListRuntimeLocalSkills_Deerflow(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	writeTestLocalSkill(t, filepath.Join(home, ".deerflow", "skills"), "deerflow-review", map[string]string{
+		"SKILL.md": "---\nname: DeerFlow Review\ndescription: Review code with DeerFlow\n---\n",
+	})
+
+	skills, supported, err := listRuntimeLocalSkills("deerflow")
+	if err != nil {
+		t.Fatalf("listRuntimeLocalSkills: %v", err)
+	}
+	if !supported || len(skills) != 1 {
+		t.Fatalf("supported=%v skills=%#v", supported, skills)
+	}
+	if skills[0].SourcePath != "~/.deerflow/skills/deerflow-review" {
+		t.Fatalf("source_path = %q", skills[0].SourcePath)
+	}
+}
+
+// TestListRuntimeLocalSkills_DeerflowMissingRootIsNotAnError guards the
+// common case for deerflow: no confirmed ~/.deerflow/skills convention means
+// most machines will not have the directory at all, and that must behave
+// like every other provider's missing root — supported=true, zero skills,
+// no error — rather than surfacing an error to the Skills tab.
+func TestListRuntimeLocalSkills_DeerflowMissingRootIsNotAnError(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+
+	skills, supported, err := listRuntimeLocalSkills("deerflow")
+	if err != nil {
+		t.Fatalf("listRuntimeLocalSkills: %v", err)
+	}
+	if !supported {
+		t.Fatalf("deerflow should be supported")
+	}
+	if len(skills) != 0 {
+		t.Fatalf("expected 0 skills for missing root, got %d (%v)", len(skills), skills)
+	}
+}
+
 // TestListRuntimeLocalSkills_Codebuddy is the regression guard for a bug
 // where CodeBuddy was treated as a drop-in alias for Claude and local
 // (user-level) skills were discovered from ~/.claude/skills. CodeBuddy Code
@@ -333,6 +382,12 @@ func TestLocalSkills_DiscoversACPProviderRoots(t *testing.T) {
 			root:     filepath.Join(".grok", "skills"),
 			wantPath: "~/.grok/skills/review-helper",
 			wantName: "Grok Review",
+		},
+		{
+			provider: "zcode",
+			root:     filepath.Join(".zcode", "skills"),
+			wantPath: "~/.zcode/skills/review-helper",
+			wantName: "ZCode Review",
 		},
 	}
 
