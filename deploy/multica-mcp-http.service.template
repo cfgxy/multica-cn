@@ -4,8 +4,7 @@ Wants=network-online.target
 After=network-online.target
 
 [Service]
-User=@USER@
-Group=@GROUP@
+# systemd --user 单元：进程天然以当前登录用户运行，无需（也不允许）设置 User=/Group=。
 WorkingDirectory=@MCP_DIR@
 # bash -lc 包装：以登录 shell 加载用户 bashrc/profile，解析 node（nvm 等）——
 # 与 deploy/multica-daemon@.service.template 同一手法，换机器/换 Node 管理器零修改。
@@ -25,4 +24,4 @@ RestartSec=5
 TimeoutStopSec=30
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
