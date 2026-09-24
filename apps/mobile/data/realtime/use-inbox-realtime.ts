@@ -7,9 +7,9 @@
  *    small and (apart from inbox:new) rare, so refetching is cheaper than
  *    maintaining per-event patchers. Multi-device parity: subscribing to
  *    inbox:read / inbox:archived means a read/archive on web reaches
- *    mobile within the next WS frame (web's use-realtime-sync deliberately
- *    DOESN'T subscribe to those, but mobile's stricter freshness wins for
- *    multi-device users).
+ *    mobile within the next WS frame (web's use-realtime-sync also
+ *    subscribes to these via refreshMap["inbox"] → onInboxInvalidate, see
+ *    packages/core/inbox/ws-updaters.ts — mirrored here, not skipped).
  *
  * 2. `issue:*` events → patch the inbox cache directly via the dedicated
  *    updaters (inbox-ws-updaters.ts). Required because:
@@ -35,8 +35,16 @@ export function useInboxRealtime() {
 
   useWSSubscriptions(
     (ws, wsId) => {
-      const invalidate = () =>
+      // Every inbox-domain event that changes list membership/read state
+      // also invalidates the cross-workspace unread summary
+      // (inboxKeys.unreadSummary()) — it backs the switch-workspace sheet's
+      // per-workspace blue dot (useWorkspaceUnreadIds), which has its own
+      // 60s staleTime and would otherwise show a stale dot after a
+      // cross-device archive/read until it happens to refetch on its own.
+      const invalidate = () => {
         qc.invalidateQueries({ queryKey: inboxKeys.list(wsId) });
+        qc.invalidateQueries({ queryKey: inboxKeys.unreadSummary() });
+      };
 
       return [
         // Inbox-domain events: refetch the small inbox list.
