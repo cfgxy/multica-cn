@@ -1,4 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev daemon-build daemon-install daemon-update daemon-preflight daemon-uninstall mcp-install
+.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev daemon-build daemon-install daemon-update daemon-preflight daemon-uninstall mcp-build mcp-install mcp-update mcp-status mcp-uninstall
 
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
@@ -246,9 +246,20 @@ daemon-uninstall: ## Remove daemon systemd units (default + all @profile instanc
 # ---------- MCP (local stdio server, client installers) ----------
 ##@ MCP
 
-mcp-install: ## Build @multica/mcp from this checkout and register it with every detected client (Claude Code/Codex/Kimi/ZCode/Cursor/OpenCode). Uses this checkout's absolute dist path, so re-run after moving/removing the checkout.
+mcp-build: ## Build @multica/mcp from this checkout only (tsc -> dist/), without touching any client config
 	pnpm --filter @multica/mcp build
+
+mcp-install: mcp-build ## Register @multica/mcp with every detected client (Claude Code/Codex/Kimi/ZCode/Cursor/OpenCode). Uses this checkout's absolute dist path, so re-run after moving/removing the checkout.
 	node "$(CURDIR)/apps/mcp/dist/install-cli.js" "$(CURDIR)/apps/mcp/dist/index.js"
+
+mcp-update: mcp-build ## Rebuild and refresh only clients already registered with multica (fixes a stale dist path after moving/rebuilding the checkout); never registers a newly-detected client
+	node "$(CURDIR)/apps/mcp/dist/update-cli.js" "$(CURDIR)/apps/mcp/dist/index.js"
+
+mcp-status: mcp-build ## Read-only: show which clients are registered, the dist path each points at, and whether that path is stale
+	node "$(CURDIR)/apps/mcp/dist/status-cli.js"
+
+mcp-uninstall: mcp-build ## Remove the multica entry from every detected client's config; other entries and file formatting are preserved
+	node "$(CURDIR)/apps/mcp/dist/uninstall-cli.js"
 
 # ---------- Environments ----------
 ##@ Environments

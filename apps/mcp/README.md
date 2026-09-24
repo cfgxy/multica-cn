@@ -67,6 +67,26 @@ node apps/mcp/dist/index.js --transport http --port 8080 --host 127.0.0.1
 HTTP 模式无状态：每个请求自带 PAT，服务端不保存会话。默认只绑定
 loopback；对外暴露请置于 TLS 反代之后。
 
+## 客户端注册（`make mcp-*`）
+
+在仓库根目录用 Makefile 把这份 checkout 构建的 `dist/index.js` 注册进本机已安装的
+MCP 客户端（Claude Code / Codex / Kimi / ZCode / Cursor / OpenCode），语义对齐
+`daemon-*` 六件套：
+
+```bash
+make mcp-build      # 只构建 dist/，不碰任何客户端配置
+make mcp-install     # 构建 + 向每个检测到的客户端写入/更新 multica 条目
+make mcp-update      # 构建 + 仅刷新已注册客户端指向的 dist 路径（checkout 挪动/重建后用它修复，不会新注册未装过的客户端）
+make mcp-status      # 只读：哪些客户端已注册、指向哪个 dist 路径、路径是否已失效
+make mcp-uninstall   # 从每个检测到的客户端配置中移除 multica 条目，不影响其他 server 条目和文件原有格式
+```
+
+- 未检测到的客户端自动跳过；`mcp-uninstall` 对未安装 multica 的客户端同样跳过，不改动其文件。
+- 配置文件解析失败（如手工改坏的 JSON/TOML）时，`mcp-update` / `mcp-uninstall` 都会跳过并保留原文件不动，不会覆盖或删除。
+- `mcp-status` 的“失效”指该客户端记录的 dist 路径在磁盘上已不存在（通常是 checkout 被移动或删除），此时应 `make mcp-update`（已注册）或 `make mcp-install`（重新登记）。
+- 以上流程全程不读取、不打印、不持久化任何 Multica PAT。
+- 全部命令均为用户级配置写入，不需要 `sudo`。
+
 ## 开发
 
 ```bash
