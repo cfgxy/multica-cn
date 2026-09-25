@@ -1,0 +1,548 @@
+EmailService: Resend API from=onboarding@mail.huayuebridge.com
+2026/09/25 16:56:04 INFO llm retry policy max_retries=2 source=default request_timeout=1m0s enabled=false
+2026/09/25 16:56:04 WARN github: PR snapshot pipeline disabled (invalid App private key) err="parse GITHUB_APP_PRIVATE_KEY: invalid key: Key must be a PEM encoded PKCS1 or PKCS8 key"
+2026/09/25 16:56:04 INFO issue created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c issue_id=01a0d7c7-67b6-7ee2-b14a-e9ccba0ffaeb title="All entries test" status=todo workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:04 INFO issue created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c issue_id=01a0d7c7-67d1-70a5-9fcb-a6b30e17ca89 title="Comment revision projection" status=todo workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:04 INFO issue created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c issue_id=01a0d7c7-67da-7a67-a78e-af0e4251450f title="Merged entries test" status=todo workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:04 INFO issue created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c issue_id=01a0d7c7-67f9-741f-ab96-ad73b89428ac title="Legacy wrapped shape test" status=todo workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:04 INFO issue created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c issue_id=01a0d7c7-6803-7383-b466-e76bb6d4df27 title="Around target index test" status=todo workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:04 INFO issue created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c issue_id=01a0d7c7-680f-7b67-832e-2af838ff36b0 title="Empty timeline test" status=todo workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:04 INFO impersonation session started user_id=eed41a17-1a47-4c2d-b6aa-dc0378b5227c actor_id=eed41a17-1a47-4c2d-b6aa-dc0378b5227c target_id=1187eba9-9ba2-44a2-b473-dcd1e606164d ttl_seconds=1800
+2026/09/25 16:56:04 INFO impersonation session started user_id=df5ac4d0-cf9e-4737-87f5-52cb7091f99d actor_id=df5ac4d0-cf9e-4737-87f5-52cb7091f99d target_id=d5775f4c-907a-457e-8373-080c962a231b ttl_seconds=1800
+2026/09/25 16:56:04 INFO super admin granted via SUPER_ADMIN_EMAILS bootstrap user_id=c340ba82-c673-45a7-8eab-ec598d2a0d1f
+2026/09/25 16:56:04 INFO impersonation session started user_id=a82be2e4-426c-4c4b-a46d-d26b361f496e actor_id=a82be2e4-426c-4c4b-a46d-d26b361f496e target_id=7e89d375-1441-42eb-b6fa-f083302dab35 ttl_seconds=1800
+2026/09/25 16:56:05 INFO admin disable terminated open impersonation sessions user_id=9dea2288-84f7-4fea-a2a2-b91fa3cdf7fa admin_id=a82be2e4-426c-4c4b-a46d-d26b361f496e sessions=1
+2026/09/25 16:56:05 INFO impersonation session started user_id=1f5000b7-1368-47ce-8878-5e5e3d8f5202 actor_id=1f5000b7-1368-47ce-8878-5e5e3d8f5202 target_id=0ef64f2e-2500-4fcf-8218-025d63900eb7 ttl_seconds=1800
+2026/09/25 16:56:05 INFO impersonation session started user_id=1f5000b7-1368-47ce-8878-5e5e3d8f5202 actor_id=1f5000b7-1368-47ce-8878-5e5e3d8f5202 target_id=393a2398-a373-4f75-9e23-b2df129dac09 ttl_seconds=1800
+2026/09/25 16:56:05 INFO impersonation session started user_id=1f5000b7-1368-47ce-8878-5e5e3d8f5202 actor_id=1f5000b7-1368-47ce-8878-5e5e3d8f5202 target_id=c697acf1-68ad-4c7d-a8f2-3a07b7f3a0ea ttl_seconds=1800
+2026/09/25 16:56:05 INFO admin disable terminated open impersonation sessions user_id=0431dcaf-249b-46f3-9429-5816cef287c5 admin_id=1f5000b7-1368-47ce-8878-5e5e3d8f5202 sessions=1
+2026/09/25 16:56:05 INFO task enqueued task_id=01a0d7c7-68cd-73b8-a093-e7c271e2d8fa issue_id=467c2186-fa12-42d1-9a9a-1a1f1780575e agent_id=344b7960-fe1c-45f8-89e7-27ea83c5f9cb force_fresh_session=false
+2026/09/25 16:56:05 INFO mention task enqueued task_id=01a0d7c7-68df-7308-a091-6763312f6320 issue_id=467c2186-fa12-42d1-9a9a-1a1f1780575e agent_id=344b7960-fe1c-45f8-89e7-27ea83c5f9cb is_leader_task=false
+2026/09/25 16:56:05 INFO issue rerun enqueued task_id=01a0d7c7-68df-7308-a091-6763312f6320 issue_id=467c2186-fa12-42d1-9a9a-1a1f1780575e agent_id=344b7960-fe1c-45f8-89e7-27ea83c5f9cb source_task_id=01a0d7c7-68cd-73b8-a093-e7c271e2d8fa is_leader=false cancelled_pending=1
+2026/09/25 16:56:05 INFO task enqueued task_id=01a0d7c7-690d-7a4b-b579-9139a93f2ba6 issue_id=01a0d7c7-690b-7f28-8dc8-b9d22319b5c7 agent_id=3e6c7e82-562a-4d13-8aaf-2c7c500b8d1c force_fresh_session=false
+2026/09/25 16:56:05 INFO issue created user_id=999f9292-3707-4b13-9b5c-29e8ebd21f93 issue_id=01a0d7c7-690b-7f28-8dc8-b9d22319b5c7 title="assign-to-private-agent test 999f9292-3707-4b13-9b5c-29e8ebd21f93" status=todo workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:05 WARN agent invoke denied: delegation chain carries no human originator agent_id=63d99ea9-8000-4868-94e5-f77e2116d0e9 agent_permission_mode=private actor_type=agent actor_id=63d99ea9-8000-4868-94e5-f77e2116d0e9 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:05 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=78de2528-6281-4471-be78-1a90e7ab548a name="Atomic Skill Agent" workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:06 INFO direct chat task enqueued task_id=01a0d7c7-6e2e-7938-b62c-5bbf133e0132 chat_session_id=01a0d7c7-6e25-7bd3-b1fd-d40417b8ca9d agent_id=eae8d773-55ca-4d05-9d30-b2a0f71f55ec
+2026/09/25 16:56:06 INFO direct chat task enqueued task_id=01a0d7c7-6e65-716c-927c-ed54cf3bb6ac chat_session_id=01a0d7c7-6e41-7a57-839b-1b227b41da84 agent_id=294b8b98-ef7c-4b85-82ab-5ebea20b7227
+2026/09/25 16:56:06 ERROR direct chat send failed chat_session_id=c8748c53-53c4-4882-ac23-e8810abc1c88 agent_id=78c31dd8-6476-498c-9039-25858b836339 error="chat task: session archived"
+2026/09/25 16:56:07 INFO agent updated user_id=29cd8a73-2afe-4633-b1ed-d56efbbbb981 agent_id=c6ca0084-549e-4d15-b0c0-3b120384a653 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=29cd8a73-2afe-4633-b1ed-d56efbbbb981 agent_id=c6ca0084-549e-4d15-b0c0-3b120384a653 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=29cd8a73-2afe-4633-b1ed-d56efbbbb981 agent_id=c6ca0084-549e-4d15-b0c0-3b120384a653 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=bbc6c351-25c3-47cb-b5db-0c6f19dc3df6 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=fa9d70a3-68d3-4f6f-a604-f85582ab64e8 agent_id=0070f2f1-703e-4c22-8b4a-e8f2733048df workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=2f9ce8fd-2f96-45e0-a180-436be6f538e4 name=concurrency-create-0 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=e73c3da1-f71f-4c0b-9c6b-70b19ac28c85 name=concurrency-create-1 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=4c7334ca-ddd8-4839-8753-57c60e602de9 name=concurrency-create-2 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=0a67c86d-31ff-4208-ac34-46b24ad6b2ff name=concurrency-create-3 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=6b9d87c5-fa41-47bd-9a49-2f850cac2b56 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=6b9d87c5-fa41-47bd-9a49-2f850cac2b56 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=6b9d87c5-fa41-47bd-9a49-2f850cac2b56 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=6b9d87c5-fa41-47bd-9a49-2f850cac2b56 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=8a086dc6-8d1b-4586-b5c2-ebd6f39cf115 name=conversation-starters-1790326567264534090 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=8a086dc6-8d1b-4586-b5c2-ebd6f39cf115 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=8a086dc6-8d1b-4586-b5c2-ebd6f39cf115 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=36c35ab4-1744-41e0-8a90-8b5a9a3b7a5c name=legacy-visibility-workspace workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=7c753354-d43f-4ba2-95bb-21ab5e626df7 name=legacy-visibility-private workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=be75e68c-0798-48de-8c0f-40eb3bd4cee7 name=public-to-specific-member-agent workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO task enqueued task_id=01a0d7c7-71b1-7bbc-8615-71ad34b0f7f2 issue_id=01a0d7c7-71ae-7e99-b3d4-46ffadc8aa54 agent_id=be75e68c-0798-48de-8c0f-40eb3bd4cee7 force_fresh_session=false
+2026/09/25 16:56:07 INFO issue created user_id=db881669-3130-4918-8c40-8bd2a2e478ad issue_id=01a0d7c7-71ae-7e99-b3d4-46ffadc8aa54 title="assign to member-scoped agent" status=todo workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=c885f01c-cfd4-4c43-a2df-c8248b232a05 name=mixed-member-team-agent workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=5eb076cc-f08e-4c0a-9985-dc44457517a0 name=batch-replace-agent workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=5eb076cc-f08e-4c0a-9985-dc44457517a0 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=9ca6f1ca-7d9b-4749-94c0-d2d60ea38b68 name=workspace-plus-member-agent workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=9ca6f1ca-7d9b-4749-94c0-d2d60ea38b68 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=167dca73-f02e-4931-8202-01978f235214 name=empty-public-to-agent workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=d089ebce-f2e8-435d-b275-c52770ca01f2 name=sys-exception-workspace-agent workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=5e9a5b79-aa40-495e-8ddf-a5badf518f56 name=sys-exception-member-agent workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 WARN agent invoke denied: delegation chain carries no human originator agent_id=5e9a5b79-aa40-495e-8ddf-a5badf518f56 agent_permission_mode=public_to actor_type=system actor_id="" workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 WARN agent invoke denied: delegation chain carries no human originator agent_id=5e9a5b79-aa40-495e-8ddf-a5badf518f56 agent_permission_mode=public_to actor_type=agent actor_id="" workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=d8dcff9b-a48f-4f69-a1df-8fb54b699edc name=revoke-member-target-agent workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=8742157b-1cfd-44ea-b92e-40958884e0ef name=xws-agent-a workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=9566cd86-547d-4042-ba7a-8612819e2282 agent_id=f6356582-449d-4dca-b42d-e72f334ca71a workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=9566cd86-547d-4042-ba7a-8612819e2282 agent_id=f6356582-449d-4dca-b42d-e72f334ca71a workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=f6356582-449d-4dca-b42d-e72f334ca71a workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=a58669db-5fd0-4842-8148-f056b09786dc name=legacy-vis-member-only-agent workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=c35ba5d2-2a53-4a82-ab13-14fb5f9a1b3c agent_id=a58669db-5fd0-4842-8148-f056b09786dc workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO comment created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c comment_id=01a0d7c7-7239-73ef-a85e-e040609bb21a issue_id=5fff17b2-84e6-414d-93c7-adf09c2b0ad9
+2026/09/25 16:56:07 INFO mention task enqueued task_id=01a0d7c7-723e-751e-8438-923ab68a6c8f issue_id=5fff17b2-84e6-414d-93c7-adf09c2b0ad9 agent_id=5fc87b68-aae5-48d6-ad04-a5ca77f178ef is_leader_task=false
+2026/09/25 16:56:07 INFO runtime deleted, agents unbound runtime_id=8462b00d-c035-4987-bf88-5d2f0b1c90dc deleted_by=8bb977a9-051c-4281-8bf8-3da5efe72c0c agents_unbound=1 tasks_cancelled=1 autopilots_paused=0
+2026/09/25 16:56:07 INFO comment created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c comment_id=01a0d7c7-7256-77fc-b7ba-2669838cb31e issue_id=5fff17b2-84e6-414d-93c7-adf09c2b0ad9
+2026/09/25 16:56:07 INFO runtime deleted, agents unbound runtime_id=e632776c-4b38-4afc-9301-c3b877ef18b9 deleted_by=8bb977a9-051c-4281-8bf8-3da5efe72c0c agents_unbound=1 tasks_cancelled=0 autopilots_paused=0
+2026/09/25 16:56:07 INFO runtime deleted, agents unbound runtime_id=3a0dbc3d-5981-459a-afd8-ac40d43a3f00 deleted_by=8bb977a9-051c-4281-8bf8-3da5efe72c0c agents_unbound=1 tasks_cancelled=0 autopilots_paused=0
+2026/09/25 16:56:07 INFO runtime deleted, agents unbound runtime_id=8a61cb6f-c15d-4c2a-a696-3e8486db508a deleted_by=8bb977a9-051c-4281-8bf8-3da5efe72c0c agents_unbound=1 tasks_cancelled=0 autopilots_paused=1
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=860f552a-cded-4d08-aa05-5c21fb124702 name=session-gate-create-0 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=dcdf13bc-dc7e-414c-9424-381a4e65483b name=session-gate-create-1 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=6ce11d33-5e99-4b6a-b0ef-b4921ba058f2 name=session-gate-create-2 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=37a779f3-5118-4e91-be98-ffa303d8a230 name=session-gate-create-3 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=88862f2c-5d95-4f0a-9851-d40f7e86099e name=session-gate-create-5 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=03848d85-e0f5-453d-9194-3ba9fe863894 name=session-gate-create-6 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=9745cc42-3bcf-4765-a031-437af50f83db workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=9745cc42-3bcf-4765-a031-437af50f83db workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=9745cc42-3bcf-4765-a031-437af50f83db workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=f0fa6990-f898-49ae-87e2-df912994c743 name=duplicate-name-test-agent workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent archived user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=474c187b-d6be-4482-a93a-f73dfa45cb45 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=27bbdab7-ecb5-42a2-8fe6-e97f40bc31da name=avatar-default-test-omitted workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=2b52d34d-c666-45a7-b409-ec781cf93ace name=avatar-default-test-empty workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=1c89a43e-1fb7-46ac-b200-fb60792fb5ae name=avatar-default-test-explicit workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=23fe2f43-30b9-48c0-8cf9-8de4cd9fc9a5 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=c0e9c83f-303e-4d68-8e09-48256e4c29b5 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=6f6b9e7c-3393-4208-8052-9c9fe617fa0c workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent archived user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=0dd8b44c-05dd-4129-ba14-7a3e6e36d832 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent restored user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=0dd8b44c-05dd-4129-ba14-7a3e6e36d832 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=d8a0c094-31e9-4647-912d-3b47cec76b3d name=thinking-test-empty workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=f65f92c5-7c98-4587-ad5f-ecc0da4d9d24 name=thinking-test-known workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=3c7e61ba-3724-409e-9e45-ad585e736301 name=pi-thinking-max workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=a102b8c1-b3c0-46a8-868b-fc6b0b1c750a name=service-tier-create workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=a102b8c1-b3c0-46a8-868b-fc6b0b1c750a workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=49e59a53-2fca-4096-ba84-93f9acb441bb workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=49e59a53-2fca-4096-ba84-93f9acb441bb workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=c6b5b17e-f8dd-4a8d-92d3-5ea44751574f workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=057415ed-d173-45d3-937f-6d45adcebc31 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=5aaa0945-038e-44d3-a4c9-4ca72a45bbed workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=1f890a82-e865-4ead-b303-ce50ff5e3c45 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=f9280a29-de7d-41e3-8dc8-6bcce7de5379 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=a67d998a-88b9-4e7f-8d7e-a057960133df workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=1afa67df-7ff0-4e78-9860-27ac5a8a3885 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=33ec9326-3094-41e7-ae69-31a66748c567 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=cc6e3f95-0aa8-47b3-bb0d-f973692417c6 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=d48f0797-7e58-4b75-96e3-8ccd6c88c0f4 name=copilot-thinking-empty workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=2288b211-7a43-49da-bc47-0d7e49a90c3c name=hermes-thinking-empty workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO agent created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c agent_id=eee46305-d0bd-45d9-b834-b0eadb8c5886 name=carryover-thinking-agent workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:07 INFO direct chat task enqueued task_id=01a0d7c7-73f6-70b8-801f-951d52b26597 chat_session_id=01a0d7c7-73f4-706c-a5e7-6accb4f92464 agent_id=8ab982eb-2a9f-4c40-af0e-a5e2123eb385
+2026/09/25 16:56:07 INFO agent webhook: triggered webhook_id=6646bdd5-1c2f-4c7d-9e31-d32242b82476 session_id=01a0d7c7-73f4-706c-a5e7-6accb4f92464 queued=false
+2026/09/25 16:56:07 INFO direct chat task enqueued task_id=01a0d7c7-7405-786c-afc8-0005dfded76f chat_session_id=01a0d7c7-7403-74ba-8880-fe042d89202a agent_id=4b045ae5-9e4f-4d42-8a34-849ba7d72c95
+2026/09/25 16:56:07 INFO agent webhook: triggered webhook_id=5efb343a-4689-41b1-986b-dd42607231c9 session_id=01a0d7c7-7403-74ba-8880-fe042d89202a queued=false
+2026/09/25 16:56:07 INFO direct chat task enqueued task_id=01a0d7c7-7413-7aa8-ac94-052fcef6ee72 chat_session_id=01a0d7c7-7411-7865-8efe-a44b4613d9f9 agent_id=e7023cb0-b9c6-422c-a3c2-66364cb245ce
+2026/09/25 16:56:07 INFO agent webhook: triggered webhook_id=9134e228-b4ed-4ab6-8c8e-46c9be590573 session_id=01a0d7c7-7411-7865-8efe-a44b4613d9f9 queued=false
+2026/09/25 16:56:07 INFO agent webhook: ignored webhook_id=a08d91cf-0001-465d-8d51-4ce5e30b6110 reason=webhook_disabled
+2026/09/25 16:56:07 INFO agent webhook: ignored webhook_id=a08d91cf-0001-465d-8d51-4ce5e30b6110 reason=webhook_disabled
+2026/09/25 16:56:07 INFO direct chat task enqueued task_id=01a0d7c7-7428-764b-93b7-e6bcc29921f0 chat_session_id=01a0d7c7-7426-78a3-946c-f8a2070c238b agent_id=ec39a470-8c58-468e-b898-71cf3820e24c
+2026/09/25 16:56:07 INFO agent webhook: triggered webhook_id=91fa31fd-2d78-42c7-8536-80c50a454e8d session_id=01a0d7c7-7426-78a3-946c-f8a2070c238b queued=false
+2026/09/25 16:56:07 INFO agent webhook: ignored webhook_id=01a0d7c7-7431-7f37-964e-75f2233ae819 reason=webhook_disabled
+2026/09/25 16:56:08 INFO loading CloudFront private key from environment variable (local dev)
+2026/09/25 16:56:08 INFO CloudFront cookie signer initialized key_pair_id=KTEST domain=static.example.test
+2026/09/25 16:56:08 INFO loading CloudFront private key from environment variable (local dev)
+2026/09/25 16:56:08 INFO CloudFront cookie signer initialized key_pair_id=KTEST domain=static.example.test
+2026/09/25 16:56:08 INFO loading CloudFront private key from environment variable (local dev)
+2026/09/25 16:56:08 INFO CloudFront cookie signer initialized key_pair_id=KTEST domain=static.example.test
+2026/09/25 16:56:08 WARN agent invoke denied: delegation chain carries no human originator agent_id=cad48bbd-e1b6-472c-a1e8-66d1a1a7c489 agent_permission_mode=private actor_type=agent actor_id=fc901b9f-22d5-496e-a3af-0b4d7b4bbf56 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:08 INFO comment created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c comment_id=01a0d7c7-7627-7291-ae77-737f55d0656a issue_id=3b036dc0-4df4-4394-8d93-f5eab38e7632
+2026/09/25 16:56:08 INFO mention task enqueued task_id=01a0d7c7-762c-79a8-afe3-842c52293a1b issue_id=3b036dc0-4df4-4394-8d93-f5eab38e7632 agent_id=2d1cd211-f689-4456-ab75-3b4c53536f23 is_leader_task=false
+2026/09/25 16:56:08 INFO mention task enqueued task_id=01a0d7c7-7644-76cb-b482-d4e67ee15f3a issue_id=1b7f87b5-3bd7-47e2-9b5c-78be883d4944 agent_id=8d3d6088-0b67-4009-a6b1-bb0a5fe75929 is_leader_task=false
+2026/09/25 16:56:08 INFO reconcile comments on completion: scheduled follow-up issue_id=1b7f87b5-3bd7-47e2-9b5c-78be883d4944 completed_task_id=f95ce7ec-28e0-48e4-8cf4-afa33234112d agent_id=8d3d6088-0b67-4009-a6b1-bb0a5fe75929 undelivered_comments=1
+2026/09/25 16:56:08 INFO comment updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c comment_id=f325d653-6ff7-4043-ab3b-b78baa956601
+2026/09/25 16:56:08 INFO mention task enqueued task_id=01a0d7c7-766b-798d-b6b3-6a97b67b53bb issue_id=2058ac3c-fa0b-4566-9100-59d09cbd6c2d agent_id=f1a31eef-d907-466a-b5e1-7c22978c8fe2 is_leader_task=false
+2026/09/25 16:56:08 INFO comment updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c comment_id=789953bc-4222-48cb-8b76-fded6318566d
+2026/09/25 16:56:08 WARN agent invoke denied: delegation chain carries no human originator agent_id=f1a31eef-d907-466a-b5e1-7c22978c8fe2 agent_permission_mode=private actor_type=agent actor_id=fc901b9f-22d5-496e-a3af-0b4d7b4bbf56 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:08 INFO comment created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c comment_id=01a0d7c7-7692-7695-9f5d-0133370b260b issue_id=db73fd43-02af-42d0-979a-2d1085b5564e
+2026/09/25 16:56:08 INFO mention task enqueued task_id=01a0d7c7-7696-7cb5-af3e-3fa2d10720ff issue_id=db73fd43-02af-42d0-979a-2d1085b5564e agent_id=5df92d6f-21d6-41b1-98ff-3bb2457ad2fd is_leader_task=true
+2026/09/25 16:56:08 INFO comment updated user_id=20e93d96-8790-4fcf-9636-8ff1ca6b62af comment_id=5dc9ab9c-1486-4d7e-97d0-c1744452d794
+2026/09/25 16:56:08 WARN agent invoke denied: delegation chain carries no human originator agent_id=ce43da69-3694-4fe9-975a-dd7e104ca4a7 agent_permission_mode=private actor_type=agent actor_id=fc901b9f-22d5-496e-a3af-0b4d7b4bbf56 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:08 WARN agent invoke denied: delegation chain carries no human originator agent_id=ce43da69-3694-4fe9-975a-dd7e104ca4a7 agent_permission_mode=private actor_type=agent actor_id=fc901b9f-22d5-496e-a3af-0b4d7b4bbf56 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:08 INFO mention task enqueued task_id=01a0d7c7-773f-7c7d-82fa-8556fff45d4a issue_id=01a0d7c7-773d-7084-b93f-88a8ae7bd3c2 agent_id=c9f0a707-fccd-4dfd-9d90-30316c37019a is_leader_task=true
+2026/09/25 16:56:08 INFO autopilot dispatched (create_issue) autopilot_id=b3131d13-a503-4475-922a-9503cdad5399 assignee_type=squad issue_id=01a0d7c7-773d-7084-b93f-88a8ae7bd3c2 leader_id=c9f0a707-fccd-4dfd-9d90-30316c37019a run_id=01a0d7c7-7738-78ce-9c66-3b330ddbd4ab
+2026/09/25 16:56:08 INFO autopilot dispatch skipped autopilot_id=98a28951-ec52-4e56-a006-c8a72c510b2a run_id=01a0d7c7-7753-7277-9d3f-c386169bf69b source=manual reason="you are not allowed to trigger this autopilot's assignee agent"
+2026/09/25 16:56:08 INFO autopilot dispatch skipped autopilot_id=7a0b4a4d-e8dc-40cd-bfe2-c68a0c2a6291 run_id=01a0d7c7-7763-755c-bd24-554e90724550 source=manual reason="you are not allowed to trigger this autopilot's assignee agent"
+2026/09/25 16:56:08 INFO autopilot dispatch skipped autopilot_id=f1f5f3d5-2d23-4947-9d34-8340afea3c64 run_id=01a0d7c7-7772-781c-9a74-b7de328a7216 source=manual reason="you are not allowed to trigger this autopilot's assignee agent"
+2026/09/25 16:56:09 INFO task enqueued task_id=01a0d7c7-7b3f-7672-9ad7-27ec7de53e93 issue_id=01a0d7c7-7b3a-7f11-b841-f3ca0d511057 agent_id=fc901b9f-22d5-496e-a3af-0b4d7b4bbf56 force_fresh_session=false
+2026/09/25 16:56:09 INFO autopilot dispatched (create_issue) autopilot_id=d7c0e43f-fd0f-46c7-ae78-f5b3e961bfc1 assignee_type=agent issue_id=01a0d7c7-7b3a-7f11-b841-f3ca0d511057 leader_id=fc901b9f-22d5-496e-a3af-0b4d7b4bbf56 run_id=01a0d7c7-7b38-70da-8a76-a3fe2fd2aa0f
+2026/09/25 16:56:09 INFO task enqueued task_id=01a0d7c7-7b51-7b49-a9a9-22c56bcdc2b0 issue_id=01a0d7c7-7b4d-77b7-8f35-903290e2880e agent_id=fc901b9f-22d5-496e-a3af-0b4d7b4bbf56 force_fresh_session=false
+2026/09/25 16:56:09 INFO autopilot dispatched (create_issue) autopilot_id=6c3a7afe-9533-49e6-a36d-353a001d1001 assignee_type=agent issue_id=01a0d7c7-7b4d-77b7-8f35-903290e2880e leader_id=fc901b9f-22d5-496e-a3af-0b4d7b4bbf56 run_id=01a0d7c7-7b4a-7597-96d3-4510eee2f3ee
+2026/09/25 16:56:09 INFO task enqueued task_id=01a0d7c7-7b62-7b22-a640-1595444115b1 issue_id=01a0d7c7-7b60-7839-b1a9-e811c8d3f281 agent_id=fc901b9f-22d5-496e-a3af-0b4d7b4bbf56 force_fresh_session=false
+2026/09/25 16:56:09 INFO autopilot dispatched (create_issue) autopilot_id=a9a43e76-7aec-40fa-847b-737e746b78e1 assignee_type=agent issue_id=01a0d7c7-7b60-7839-b1a9-e811c8d3f281 leader_id=fc901b9f-22d5-496e-a3af-0b4d7b4bbf56 run_id=01a0d7c7-7b5d-7c96-89df-3e70ec3260fc
+2026/09/25 16:56:09 ERROR trigger autopilot failed error="create run: load idempotent quota run: no rows in result set" autopilot_id=6e830182-52e5-47df-8e59-800e9be6ca92
+2026/09/25 16:56:09 INFO autopilot dispatched (run_only) autopilot_id=bbe91f6e-6323-4410-9b2b-eaac39274f21 task_id=01a0d7c7-7b9a-7e16-97cf-d7674a7d76e4 run_id=01a0d7c7-7b91-7738-9d76-179c97b33d32
+2026/09/25 16:56:09 INFO autopilot dispatched (run_only) autopilot_id=293ff9bd-c185-410c-a8c3-bf8db981f120 task_id=01a0d7c7-7bb3-7704-b457-111e9520867d run_id=01a0d7c7-7bab-7b9a-a464-50ef40d716a6
+2026/09/25 16:56:10 INFO autopilot dispatched (run_only) autopilot_id=9fa5301c-7a19-43f9-91ca-71f5bab31445 task_id=01a0d7c7-7c0f-7a35-8f79-1a45e955df98 run_id=01a0d7c7-7c08-7cbb-84b7-3b68f8a2193c
+2026/09/25 16:56:10 INFO autopilot dispatch skipped autopilot_id=22956f77-bac6-4b4f-9e6c-33322143c5c2 run_id=01a0d7c7-7c1e-7534-b09e-504440e0a4bc source=webhook reason="agent runtime is offline at dispatch time"
+2026/09/25 16:56:10 INFO autopilot dispatched (run_only) autopilot_id=f52d3a82-c3a9-42b8-b38c-e3efa2f5d67a task_id=01a0d7c7-7c33-7c9a-8006-0e49e0c3785c run_id=01a0d7c7-7c2c-7c46-b251-43b8ffb33831
+2026/09/25 16:56:10 INFO autopilot dispatched (run_only) autopilot_id=a69a2330-c32e-4312-9c44-6d7fa672f82c task_id=01a0d7c7-7c98-7c7e-ada4-cf12ef860650 run_id=01a0d7c7-7c92-703d-84a4-b0733414b5e4
+2026/09/25 16:56:10 WARN webhook: malformed event_filters, denying error="invalid character 'n' looking for beginning of object key string"
+2026/09/25 16:56:10 INFO loading CloudFront private key from environment variable (local dev)
+2026/09/25 16:56:10 INFO CloudFront cookie signer initialized key_pair_id=KTEST domain=static.example.test
+2026/09/25 16:56:10 INFO local storage initialized dir=./data/uploads baseURL=""
+2026/09/25 16:56:10 INFO task cancelled task_id=4dfba3b0-0349-40cd-87a8-dd39259ebb46 issue_id=""
+2026/09/25 16:56:10 INFO task cancelled task_id=88d7d40a-9052-44f0-95d9-774cbd9a1489 issue_id=""
+2026/09/25 16:56:10 INFO task cancelled task_id=82e4522a-46fe-4c20-b1ff-c005aaf78218 issue_id=""
+2026/09/25 16:56:10 INFO task cancelled task_id=813972aa-04c0-4362-906b-8b61a2417031 issue_id=""
+2026/09/25 16:56:10 INFO task cancelled task_id=2057e6a2-2acc-4707-945d-0a2c8968e6a5 issue_id=""
+2026/09/25 16:56:10 INFO task cancelled task_id=0006466c-8218-46bb-a433-90d14d29f7df issue_id=""
+2026/09/25 16:56:10 INFO task cancelled task_id=eed47119-da75-4b88-9b60-ccc0926eae2d issue_id=""
+2026/09/25 16:56:10 INFO task cancelled task_id=c821cebe-c826-4763-acdc-b44353331919 issue_id=893952b6-79d0-4ed1-b213-4e9d0b47753e
+2026/09/25 16:56:10 INFO task cancelled task_id=92ab0af4-f922-412a-a4e8-3b5d50130f82 issue_id=0b30b4ee-b759-4167-95ae-f37dca751c72
+2026/09/25 16:56:10 INFO task cancelled task_id=6dd3b738-0684-4023-a547-3083ddc56199 issue_id=""
+2026/09/25 16:56:10 INFO task cancelled task_id=b771e524-87d5-4a69-81b5-cf3538fd25f1 issue_id=""
+2026/09/25 16:56:10 INFO task cancelled task_id=dbffb4a6-638d-47ea-8498-7699170838f5 issue_id=""
+2026/09/25 16:56:10 INFO task cancelled task_id=51645ff0-2efd-4058-8e58-404aa99bfda5 issue_id=""
+2026/09/25 16:56:10 INFO direct chat task enqueued task_id=01a0d7c7-7e2b-72a3-8558-1beb37b16c00 chat_session_id=91f41ef2-54bc-4bb3-9515-268af8a5fdfe agent_id=93c99081-04b0-491a-b68a-f4c433bf039a
+2026/09/25 16:56:10 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testchannelcontextlockorder runtimes_count=1
+2026/09/25 16:56:10 INFO chat task enqueued task_id=01a0d7c7-7e58-7cb0-8a5c-bdcf0540078f chat_session_id=01a0d7c7-7e4a-7e0d-b800-351a2fa7d0a2 agent_id=5e3ea39b-e59c-48a3-83a7-ab00f0ad563b
+2026/09/25 16:56:10 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testchannelclearcommande2estartsfreshprovidersession-normal_message_resumes_existing_provider_context runtimes_count=1
+2026/09/25 16:56:10 INFO chat task enqueued task_id=01a0d7c7-7e8c-7ed1-8281-e355ceab7ba1 chat_session_id=01a0d7c7-7e7e-788e-858d-accc0041fe8f agent_id=6c139506-3e48-4749-a51c-14fb9c76ee7a
+2026/09/25 16:56:10 INFO task claimed task_id=01a0d7c7-7e8c-7ed1-8281-e355ceab7ba1 agent_id=6c139506-3e48-4749-a51c-14fb9c76ee7a
+2026/09/25 16:56:10 INFO task claimed by runtime task_id=01a0d7c7-7e8c-7ed1-8281-e355ceab7ba1 runtime_id=b1d97fdc-c54a-4972-b8bd-33c6c9c41415 agent_id=6c139506-3e48-4749-a51c-14fb9c76ee7a prior_session=old-provider-session
+2026/09/25 16:56:10 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testchannelclearcommande2estartsfreshprovidersession-bare_-clear_applies_to_the_next_real_message runtimes_count=1
+2026/09/25 16:56:10 INFO chat task enqueued task_id=01a0d7c7-7edc-7753-a664-628f7d32f0d5 chat_session_id=01a0d7c7-7ec9-7c10-bd10-7c0b4ecefbe2 agent_id=9d267025-f266-4007-8a7c-d4fbba998ee1
+2026/09/25 16:56:10 INFO task claimed task_id=01a0d7c7-7edc-7753-a664-628f7d32f0d5 agent_id=9d267025-f266-4007-8a7c-d4fbba998ee1
+2026/09/25 16:56:10 INFO task claimed by runtime task_id=01a0d7c7-7edc-7753-a664-628f7d32f0d5 runtime_id=b3356bc8-80f3-438a-862a-80fb6660ef12 agent_id=9d267025-f266-4007-8a7c-d4fbba998ee1 prior_session=""
+2026/09/25 16:56:10 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testchannelclearcommande2estartsfreshprovidersession-slack_-clear_message_starts_without_provider_context runtimes_count=1
+2026/09/25 16:56:10 INFO chat task enqueued task_id=01a0d7c7-7f15-7d1b-8b73-bbd1415548ea chat_session_id=01a0d7c7-7f0a-7b6b-a768-b05080034ed1 agent_id=5ae2dc45-11c4-4c81-b15d-76a5ec194a89
+2026/09/25 16:56:10 INFO task claimed task_id=01a0d7c7-7f15-7d1b-8b73-bbd1415548ea agent_id=5ae2dc45-11c4-4c81-b15d-76a5ec194a89
+2026/09/25 16:56:10 INFO task claimed by runtime task_id=01a0d7c7-7f15-7d1b-8b73-bbd1415548ea runtime_id=08a23a3e-3ad0-487d-91d6-d41e2fbbce02 agent_id=5ae2dc45-11c4-4c81-b15d-76a5ec194a89 prior_session=""
+2026/09/25 16:56:10 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testchannelclearcommande2estartsfreshprovidersession-slack_same-line_-issue_remains_fresh-only runtimes_count=1
+2026/09/25 16:56:10 INFO chat task enqueued task_id=01a0d7c7-7f4c-787d-ab9e-a2aef12adcd3 chat_session_id=01a0d7c7-7f43-7014-a27d-43ae7a4dded5 agent_id=64b807f7-a6b9-49ee-ae24-9649c297a0a9
+2026/09/25 16:56:10 INFO task claimed task_id=01a0d7c7-7f4c-787d-ab9e-a2aef12adcd3 agent_id=64b807f7-a6b9-49ee-ae24-9649c297a0a9
+2026/09/25 16:56:10 INFO task claimed by runtime task_id=01a0d7c7-7f4c-787d-ab9e-a2aef12adcd3 runtime_id=43fa7487-bb56-44c1-96c7-2a34918cb316 agent_id=64b807f7-a6b9-49ee-ae24-9649c297a0a9 prior_session=""
+2026/09/25 16:56:10 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testchannelclearcommande2estartsfreshprovidersession-slack_next-line_-issue_remains_fresh-only runtimes_count=1
+2026/09/25 16:56:10 INFO chat task enqueued task_id=01a0d7c7-7f80-7e6b-bcc9-63dbd872564b chat_session_id=01a0d7c7-7f77-7bff-9a5c-9855aabac414 agent_id=c0d9c051-e9dd-4a41-adb7-eacafa266796
+2026/09/25 16:56:10 INFO task claimed task_id=01a0d7c7-7f80-7e6b-bcc9-63dbd872564b agent_id=c0d9c051-e9dd-4a41-adb7-eacafa266796
+2026/09/25 16:56:10 INFO task claimed by runtime task_id=01a0d7c7-7f80-7e6b-bcc9-63dbd872564b runtime_id=fd33e413-5477-465b-bb05-d088e5e861bc agent_id=c0d9c051-e9dd-4a41-adb7-eacafa266796 prior_session=""
+2026/09/25 16:56:10 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testchannelclearcommande2estartsfreshprovidersession-feishu_same-line_-issue_remains_fresh-only runtimes_count=1
+2026/09/25 16:56:10 INFO chat task enqueued task_id=01a0d7c7-7fc0-730c-9d52-1b38bdd39699 chat_session_id=01a0d7c7-7fb5-7ab7-bd61-cbab64124f23 agent_id=b6c64896-545f-4aaa-b9a2-1f1099e46478
+2026/09/25 16:56:10 INFO task claimed task_id=01a0d7c7-7fc0-730c-9d52-1b38bdd39699 agent_id=b6c64896-545f-4aaa-b9a2-1f1099e46478
+2026/09/25 16:56:10 INFO task claimed by runtime task_id=01a0d7c7-7fc0-730c-9d52-1b38bdd39699 runtime_id=1c03b839-fc59-43c1-9814-0b8ba0564d6a agent_id=b6c64896-545f-4aaa-b9a2-1f1099e46478 prior_session=""
+2026/09/25 16:56:10 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testchannelclearcommande2estartsfreshprovidersession-feishu_next-line_-issue_remains_fresh-only runtimes_count=1
+2026/09/25 16:56:10 INFO chat task enqueued task_id=01a0d7c7-7ff3-706b-be0e-162fd58ad983 chat_session_id=01a0d7c7-7feb-7577-89d1-8383abc1ecb3 agent_id=44010d85-6ecf-4a5f-b5b5-5b09103b854b
+2026/09/25 16:56:11 INFO task claimed task_id=01a0d7c7-7ff3-706b-be0e-162fd58ad983 agent_id=44010d85-6ecf-4a5f-b5b5-5b09103b854b
+2026/09/25 16:56:11 INFO task claimed by runtime task_id=01a0d7c7-7ff3-706b-be0e-162fd58ad983 runtime_id=fbcc157d-261b-4c06-9ca0-80344c372a37 agent_id=44010d85-6ecf-4a5f-b5b5-5b09103b854b prior_session=""
+2026/09/25 16:56:11 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testchannelchatcommande2erotatesrouteandfreezestaskdelivery runtimes_count=1
+2026/09/25 16:56:11 INFO channel chat route started outcome=chat_started_with_message channel_type=slack source_chat_session_id=01a0d7c7-800f-7622-8dd0-50c4eab5c26e new_chat_session_id=01a0d7c7-8017-754b-b16a-78fc9efbcc0f chat_route_generation=2
+2026/09/25 16:56:11 INFO chat task enqueued task_id=01a0d7c7-801b-7ad9-8e02-931fa33111e5 chat_session_id=01a0d7c7-8017-754b-b16a-78fc9efbcc0f agent_id=4f9c2ba8-53ad-4194-a6f3-d125b6c6f9eb
+2026/09/25 16:56:11 INFO chat task enqueued task_id=01a0d7c7-8020-7bed-8d2b-24d4ea5f6fe5 chat_session_id=01a0d7c7-800f-7622-8dd0-50c4eab5c26e agent_id=4f9c2ba8-53ad-4194-a6f3-d125b6c6f9eb
+2026/09/25 16:56:11 INFO channel chat route started outcome=chat_started channel_type=slack source_chat_session_id=01a0d7c7-8017-754b-b16a-78fc9efbcc0f new_chat_session_id=01a0d7c7-8027-7e2f-a808-52b17857c88f chat_route_generation=3
+2026/09/25 16:56:11 INFO direct chat task enqueued task_id=01a0d7c7-8031-750a-97c0-d690b22d679e chat_session_id=01a0d7c7-8027-7e2f-a808-52b17857c88f agent_id=4f9c2ba8-53ad-4194-a6f3-d125b6c6f9eb
+2026/09/25 16:56:11 INFO channel chat route started outcome=chat_started channel_type=slack source_chat_session_id=01a0d7c7-8027-7e2f-a808-52b17857c88f new_chat_session_id=01a0d7c7-8036-77d8-be9d-2b944177d159 chat_route_generation=4
+2026/09/25 16:56:11 INFO direct chat task enqueued task_id=01a0d7c7-803b-7234-9d6e-0aa1643fa125 chat_session_id=01a0d7c7-8036-77d8-be9d-2b944177d159 agent_id=4f9c2ba8-53ad-4194-a6f3-d125b6c6f9eb
+2026/09/25 16:56:11 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testchannelchatstaletaskpreparationleavesrouteandchatuntouched runtimes_count=1
+2026/09/25 16:56:11 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testslacknativenewcommandcreatesmessagetaskanddeliveryatomically runtimes_count=1
+2026/09/25 16:56:11 INFO channel chat route started outcome=chat_started_with_message channel_type=slack source_chat_session_id="" new_chat_session_id=01a0d7c7-8065-7389-a430-c208cb6e0454 chat_route_generation=1
+2026/09/25 16:56:11 INFO chat task enqueued task_id=01a0d7c7-8068-72db-92c8-ca45553dc488 chat_session_id=01a0d7c7-8065-7389-a430-c208cb6e0454 agent_id=ba2a8bcc-4980-4159-bbd5-f09e159633c5
+2026/09/25 16:56:11 INFO channel chat route started outcome=chat_started channel_type=slack source_chat_session_id=01a0d7c7-8065-7389-a430-c208cb6e0454 new_chat_session_id=01a0d7c7-8071-7cbe-b920-aee44e59aa4d chat_route_generation=2
+2026/09/25 16:56:11 INFO slack /new route changed; retrying outcome=chat_route_retry channel_type=slack installation_id=69df91dd-eec1-4752-9475-f31d71d81fe9 attempt=1
+2026/09/25 16:56:11 INFO channel chat route started outcome=chat_started channel_type=slack source_chat_session_id=01a0d7c7-8071-7cbe-b920-aee44e59aa4d new_chat_session_id=01a0d7c7-8075-75c4-808f-2261672f3699 chat_route_generation=3
+2026/09/25 16:56:11 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testslacknativeclearcommandkeepschatandadvancescontextatomically runtimes_count=1
+2026/09/25 16:56:11 INFO chat task enqueued task_id=01a0d7c7-8095-769c-9ef0-02463bc82706 chat_session_id=01a0d7c7-808e-7eb5-a410-e5405a2df8b1 agent_id=196db449-ef37-4e10-97cf-aec84323fb74
+2026/09/25 16:56:11 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testarchivinginsidethedebouncewindowrefusesthelateenqueue runtimes_count=1
+2026/09/25 16:56:11 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testenqueueonanactivesessionstillworks runtimes_count=1
+2026/09/25 16:56:11 INFO chat task enqueued task_id=01a0d7c7-80f6-71c3-8676-6425fa8a9e18 chat_session_id=dd2c03f5-2692-4731-a1a2-9e30690d39d3 agent_id=286af820-9874-4664-9052-2ea3240499c7
+2026/09/25 16:56:11 ERROR chat session channel binding read failed user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c error="context canceled" chat_session_id=0dff7e32-6fe1-4474-95a1-cc3ccd1ca924
+2026/09/25 16:56:11 INFO bound chat attachments to assistant reply task_id=428c70d2-604d-4223-8dd6-08681e387ca4 message_id=01a0d7c7-8136-73f8-b52b-2000313fa231 count=1
+2026/09/25 16:56:11 INFO task completed task_id=428c70d2-604d-4223-8dd6-08681e387ca4 issue_id=""
+2026/09/25 16:56:11 INFO bound chat attachments to assistant reply task_id=829a8606-563b-4184-a41f-94d0b16fdc32 message_id=01a0d7c7-8140-7363-bb61-73254d4abddb count=1
+2026/09/25 16:56:11 INFO task completed task_id=829a8606-563b-4184-a41f-94d0b16fdc32 issue_id=""
+2026/09/25 16:56:11 INFO task completed task_id=b183131b-6b71-4567-907a-0a6c0006dd63 issue_id=""
+2026/09/25 16:56:11 INFO task completed task_id=45f61660-73c1-4037-95c4-7def1a4aa38f issue_id=""
+2026/09/25 16:56:11 INFO task completed task_id=136bca1c-45c4-4675-bffd-b175ba2366ee issue_id=""
+2026/09/25 16:56:11 WARN task failed task_id=66c2be74-e7c5-4e7a-bda7-73ba3dcc1703 issue_id="" error="agent crashed" failure_reason=agent_error.unknown
+2026/09/25 16:56:11 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testchannelchat_replylandinginsidedebouncewindowstillanswersthenextmessage runtimes_count=1
+2026/09/25 16:56:11 INFO chat task enqueued task_id=01a0d7c7-81bc-70de-b02f-bd1a0b6a341c chat_session_id=12b1c1c6-0c70-4fe0-8cc1-570b055492a6 agent_id=0dabc08e-6f05-4c70-bdce-0973ec1e564b
+2026/09/25 16:56:11 INFO task claimed task_id=01a0d7c7-81bc-70de-b02f-bd1a0b6a341c agent_id=0dabc08e-6f05-4c70-bdce-0973ec1e564b
+2026/09/25 16:56:11 INFO task claimed by runtime task_id=01a0d7c7-81bc-70de-b02f-bd1a0b6a341c runtime_id=53b5a9c1-4fcd-49ed-81e1-d79807dac83a agent_id=0dabc08e-6f05-4c70-bdce-0973ec1e564b prior_session=""
+2026/09/25 16:56:11 INFO task completed task_id=01a0d7c7-81bc-70de-b02f-bd1a0b6a341c issue_id=""
+2026/09/25 16:56:11 INFO chat task enqueued task_id=01a0d7c7-81f3-7a66-b829-e64cd25f816e chat_session_id=12b1c1c6-0c70-4fe0-8cc1-570b055492a6 agent_id=0dabc08e-6f05-4c70-bdce-0973ec1e564b
+2026/09/25 16:56:11 INFO task claimed task_id=01a0d7c7-81f3-7a66-b829-e64cd25f816e agent_id=0dabc08e-6f05-4c70-bdce-0973ec1e564b
+2026/09/25 16:56:11 INFO task claimed by runtime task_id=01a0d7c7-81f3-7a66-b829-e64cd25f816e runtime_id=53b5a9c1-4fcd-49ed-81e1-d79807dac83a agent_id=0dabc08e-6f05-4c70-bdce-0973ec1e564b prior_session=""
+2026/09/25 16:56:11 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testdeletechatsession_broadcaststaskcancelled runtimes_count=1
+2026/09/25 16:56:11 INFO workspace deleted user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c workspace_id=14c97220-25ed-4b81-9796-72d322e6f8e6
+2026/09/25 16:56:11 INFO workspace deleted user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c workspace_id=b38ac3a9-1481-40c7-82a8-c84b8f16e1fd
+2026/09/25 16:56:11 INFO runtime deleted runtime_id=f22e5a10-1ea7-47ad-a860-5b0431d60063 deleted_by=8bb977a9-051c-4281-8bf8-3da5efe72c0c agents_unbound=0 tasks_cancelled=0 autopilots_paused=0
+2026/09/25 16:56:11 INFO runtime deleted runtime_id=c8caaf38-1ff0-49bc-99de-0f80270b7545 deleted_by=8bb977a9-051c-4281-8bf8-3da5efe72c0c agents_unbound=1 tasks_cancelled=0 autopilots_paused=0
+2026/09/25 16:56:11 INFO workspace deleted user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c workspace_id=26890009-4e2c-481f-b5a2-6dec8ab9edbc
+2026/09/25 16:56:12 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testdirectchat_taskownsitsowninputbatch runtimes_count=1
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-8416-7afe-ae19-947c8a9c1274 chat_session_id=ee2fc61c-786a-441d-a2ba-b4b8874c82ff agent_id=34af4c6b-69ac-432c-80ad-7216971c39c7
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-841a-7560-88dc-af6ba785a729 chat_session_id=ee2fc61c-786a-441d-a2ba-b4b8874c82ff agent_id=34af4c6b-69ac-432c-80ad-7216971c39c7
+2026/09/25 16:56:12 INFO task claimed task_id=01a0d7c7-8416-7afe-ae19-947c8a9c1274 agent_id=34af4c6b-69ac-432c-80ad-7216971c39c7
+2026/09/25 16:56:12 INFO task claimed by runtime task_id=01a0d7c7-8416-7afe-ae19-947c8a9c1274 runtime_id=f324c35e-8506-4a4d-93ac-2b8a6815b89e agent_id=34af4c6b-69ac-432c-80ad-7216971c39c7 prior_session=""
+2026/09/25 16:56:12 INFO task completed task_id=01a0d7c7-8416-7afe-ae19-947c8a9c1274 issue_id=""
+2026/09/25 16:56:12 INFO task claimed task_id=01a0d7c7-841a-7560-88dc-af6ba785a729 agent_id=34af4c6b-69ac-432c-80ad-7216971c39c7
+2026/09/25 16:56:12 INFO task claimed by runtime task_id=01a0d7c7-841a-7560-88dc-af6ba785a729 runtime_id=f324c35e-8506-4a4d-93ac-2b8a6815b89e agent_id=34af4c6b-69ac-432c-80ad-7216971c39c7 prior_session=""
+2026/09/25 16:56:12 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testdirectchat_claimkeepsqueuedturnspairedwithreplies runtimes_count=1
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-8455-7954-a3ad-fe9911701bef chat_session_id=f048d340-c7c6-4ea1-885f-5b02e2713fa6 agent_id=00a13335-46b7-47ff-9fb8-f5efdb12044c
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-845a-7d1f-b2f5-d3661c5131c4 chat_session_id=f048d340-c7c6-4ea1-885f-5b02e2713fa6 agent_id=00a13335-46b7-47ff-9fb8-f5efdb12044c
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-845e-79be-a836-372c77d36fdb chat_session_id=f048d340-c7c6-4ea1-885f-5b02e2713fa6 agent_id=00a13335-46b7-47ff-9fb8-f5efdb12044c
+2026/09/25 16:56:12 INFO task claimed task_id=01a0d7c7-8455-7954-a3ad-fe9911701bef agent_id=00a13335-46b7-47ff-9fb8-f5efdb12044c
+2026/09/25 16:56:12 INFO task claimed by runtime task_id=01a0d7c7-8455-7954-a3ad-fe9911701bef runtime_id=74389637-337e-4b77-92ff-bc3686ada559 agent_id=00a13335-46b7-47ff-9fb8-f5efdb12044c prior_session=""
+2026/09/25 16:56:12 INFO task completed task_id=01a0d7c7-8455-7954-a3ad-fe9911701bef issue_id=""
+2026/09/25 16:56:12 INFO task claimed task_id=01a0d7c7-845a-7d1f-b2f5-d3661c5131c4 agent_id=00a13335-46b7-47ff-9fb8-f5efdb12044c
+2026/09/25 16:56:12 INFO task claimed by runtime task_id=01a0d7c7-845a-7d1f-b2f5-d3661c5131c4 runtime_id=74389637-337e-4b77-92ff-bc3686ada559 agent_id=00a13335-46b7-47ff-9fb8-f5efdb12044c prior_session=""
+2026/09/25 16:56:12 INFO task completed task_id=01a0d7c7-845a-7d1f-b2f5-d3661c5131c4 issue_id=""
+2026/09/25 16:56:12 INFO task claimed task_id=01a0d7c7-845e-79be-a836-372c77d36fdb agent_id=00a13335-46b7-47ff-9fb8-f5efdb12044c
+2026/09/25 16:56:12 INFO task claimed by runtime task_id=01a0d7c7-845e-79be-a836-372c77d36fdb runtime_id=74389637-337e-4b77-92ff-bc3686ada559 agent_id=00a13335-46b7-47ff-9fb8-f5efdb12044c prior_session=""
+2026/09/25 16:56:12 INFO task completed task_id=01a0d7c7-845e-79be-a836-372c77d36fdb issue_id=""
+2026/09/25 16:56:12 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testdirectchat_retryclaimdoesnotmoveoriginalinput runtimes_count=1
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-84c4-7bd2-9616-15dfcb64db0b chat_session_id=a9719dac-af39-4a2a-86fe-cf4d92f5e233 agent_id=56a7d11e-8738-4d20-9978-1255ca15ca8d
+2026/09/25 16:56:12 INFO task claimed task_id=bb40f4f9-6eb9-4eaf-aca8-1951cdf48d04 agent_id=56a7d11e-8738-4d20-9978-1255ca15ca8d
+2026/09/25 16:56:12 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testdirectchat_runningtaskdoesnotabsorbnewmessage runtimes_count=1
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-84d6-7123-8724-e72f32d7439d chat_session_id=afe8ecfb-5652-439c-946c-3550d5db82d4 agent_id=db76a260-bc54-44f6-a34d-c691c41a8ae3
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-84da-7666-8f78-03a234ae2f5b chat_session_id=afe8ecfb-5652-439c-946c-3550d5db82d4 agent_id=db76a260-bc54-44f6-a34d-c691c41a8ae3
+2026/09/25 16:56:12 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testcompletetask_chatemptyoutputwritesnoresponse runtimes_count=1
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-84e8-72f9-9b06-ffda33857a22 chat_session_id=d5fe80bb-4341-4256-9a7a-86723923388b agent_id=1a057e3e-7959-419b-82fe-219c77b3230a
+2026/09/25 16:56:12 INFO task completed task_id=01a0d7c7-84e8-72f9-9b06-ffda33857a22 issue_id=""
+2026/09/25 16:56:12 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testcompletetask_chatnonemptyoutputwritesmessage runtimes_count=1
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-84fb-7a21-b9b2-f75d7b72b363 chat_session_id=65595c16-0a80-4f87-be51-3a1e1973cb0f agent_id=e97f7216-8f8f-44e3-9b04-74c228e82d0f
+2026/09/25 16:56:12 INFO task completed task_id=01a0d7c7-84fb-7a21-b9b2-f75d7b72b363 issue_id=""
+2026/09/25 16:56:12 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testcompletetask_chatcallbackidempotent runtimes_count=1
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-850e-710c-aeeb-36bf05a7433f chat_session_id=2a96afcb-f352-446e-ab0c-55127296bcba agent_id=50a5c3ae-1e26-4ecd-b7c4-72949ff0c0b2
+2026/09/25 16:56:12 INFO task completed task_id=01a0d7c7-850e-710c-aeeb-36bf05a7433f issue_id=""
+2026/09/25 16:56:12 INFO complete task: already finalized task_id=01a0d7c7-850e-710c-aeeb-36bf05a7433f current_status=completed agent_id=50a5c3ae-1e26-4ecd-b7c4-72949ff0c0b2
+2026/09/25 16:56:12 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testfailtask_chatretryinheritsinputownerandpriority runtimes_count=1
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-8520-7afe-8654-b735c4583c6e chat_session_id=98208bde-f608-40de-b41b-e5621b8b4f61 agent_id=ee7fa46b-a282-407a-8850-60b7999f2ebc
+2026/09/25 16:56:12 WARN task failed task_id=01a0d7c7-8520-7afe-8654-b735c4583c6e issue_id="" error="runtime went away" failure_reason=runtime_offline
+2026/09/25 16:56:12 INFO task auto-retry enqueued parent_task_id=01a0d7c7-8520-7afe-8654-b735c4583c6e child_task_id=01a0d7c7-8525-7e17-85c2-565a25686dd1 reason=runtime_offline attempt=2 max_attempts=2 status=deferred
+2026/09/25 16:56:12 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testfailtask_chatfailurekeepsnextturnafteroutcome runtimes_count=1
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-8539-79f7-83d7-5ee5381517c7 chat_session_id=3efd0877-37f6-4828-a628-5defa8912208 agent_id=3e7bf638-1a88-40db-8524-93aaf6747395
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-853e-765d-b631-fdd671d065b9 chat_session_id=3efd0877-37f6-4828-a628-5defa8912208 agent_id=3e7bf638-1a88-40db-8524-93aaf6747395
+2026/09/25 16:56:12 WARN task failed task_id=01a0d7c7-8539-79f7-83d7-5ee5381517c7 issue_id="" error="assistant failure" failure_reason=agent_error.unknown
+2026/09/25 16:56:12 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testcanceltask_chatstoppedkeepsnextturnafteroutcome runtimes_count=1
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-8552-745e-be42-cb1489d9ece2 chat_session_id=fdb08e80-de3b-408b-9bcf-6cbf7eaa0c75 agent_id=56afef51-2aa6-4d30-83e7-45d4e7570478
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-8556-7252-a2c9-df6ceab84768 chat_session_id=fdb08e80-de3b-408b-9bcf-6cbf7eaa0c75 agent_id=56afef51-2aa6-4d30-83e7-45d4e7570478
+2026/09/25 16:56:12 INFO task cancelled task_id=01a0d7c7-8552-745e-be42-cb1489d9ece2 issue_id=""
+2026/09/25 16:56:12 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testcanceltask_deferredstoppedkeepsnextturnafteroutcome runtimes_count=1
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-856d-7b21-80be-0227a5b137f5 chat_session_id=f37764af-47d0-4892-a52f-f115371c9966 agent_id=f58d99a9-8594-4c24-b963-ba1d7a079792
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-8572-79a1-9011-11811003cbab chat_session_id=f37764af-47d0-4892-a52f-f115371c9966 agent_id=f58d99a9-8594-4c24-b963-ba1d7a079792
+2026/09/25 16:56:12 INFO task cancelled task_id=01a0d7c7-856d-7b21-80be-0227a5b137f5 issue_id=""
+2026/09/25 16:56:12 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testcompletetask_channelemptyoutputwritesnorow runtimes_count=1
+2026/09/25 16:56:12 INFO task completed task_id=d8ed6352-a05a-4da9-8b91-18a8c470e61d issue_id=""
+2026/09/25 16:56:12 INFO task completed task_id=ed3d50b6-4df9-4d43-8ce4-b4eaea485838 issue_id=""
+2026/09/25 16:56:12 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testcompletetask_sealedchannelemptyoutputwritesnorow runtimes_count=1
+2026/09/25 16:56:12 INFO task completed task_id=4cbe451b-c056-41cb-8db4-170f9b455861 issue_id=""
+2026/09/25 16:56:12 INFO task completed task_id=54691b59-f031-4d04-aedb-8020636ce7e6 issue_id=""
+2026/09/25 16:56:12 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testcompletetask_sealedchannelretryemptyoutputwritesnorow runtimes_count=1
+2026/09/25 16:56:12 INFO task completed task_id=9247cd52-255c-4886-b413-bc2e1c488ea3 issue_id=""
+2026/09/25 16:56:12 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testcompletetask_chatquickactions runtimes_count=1
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-85d5-7ec9-ade2-3f9fb6e5294c chat_session_id=9b36e0ca-75cc-4911-a376-f06520e1d846 agent_id=031f766a-ea50-4c44-a942-5227efbc103c
+2026/09/25 16:56:12 INFO task completed task_id=01a0d7c7-85d5-7ec9-ade2-3f9fb6e5294c issue_id=""
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-85e1-7607-a0af-243c3905634e chat_session_id=9b36e0ca-75cc-4911-a376-f06520e1d846 agent_id=031f766a-ea50-4c44-a942-5227efbc103c
+2026/09/25 16:56:12 INFO task completed task_id=01a0d7c7-85e1-7607-a0af-243c3905634e issue_id=""
+2026/09/25 16:56:12 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testcompletetask_chatquickactionssupplement runtimes_count=1
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-85f4-719d-bc5b-fe814123cf3a chat_session_id=a3759e87-042b-4db9-8bb2-1924cf53bbb4 agent_id=f9a70a66-1819-49fb-9600-b52c2cd1422a
+2026/09/25 16:56:12 INFO task completed task_id=01a0d7c7-85f4-719d-bc5b-fe814123cf3a issue_id=""
+2026/09/25 16:56:12 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testchatquickactions_contextanchorsontargetturn runtimes_count=1
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-8618-7522-adf5-44e8e6c8a437 chat_session_id=53cfa7f2-3b9c-4e21-a4c7-4673a8d99514 agent_id=882e1560-afdb-4901-a897-27f11fdb2ddc
+2026/09/25 16:56:12 INFO task completed task_id=01a0d7c7-8618-7522-adf5-44e8e6c8a437 issue_id=""
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-8621-7bae-9cb5-5ab0c7a3cbf5 chat_session_id=53cfa7f2-3b9c-4e21-a4c7-4673a8d99514 agent_id=882e1560-afdb-4901-a897-27f11fdb2ddc
+2026/09/25 16:56:12 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testregeneratechatquickactions_staletargetrejected runtimes_count=1
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-8635-7cc2-9419-add3b112322a chat_session_id=8d00633d-d746-4d36-a119-c1a67e444602 agent_id=b7d2338a-f6a4-4b50-8558-e2c9ff3c4ef4
+2026/09/25 16:56:12 INFO task completed task_id=01a0d7c7-8635-7cc2-9419-add3b112322a issue_id=""
+2026/09/25 16:56:12 INFO chat quick-actions regenerate accepted chat_session_id=8d00633d-d746-4d36-a119-c1a67e444602 target_task_id=01a0d7c7-8635-7cc2-9419-add3b112322a target_message_id=01a0d7c7-863c-7426-a783-d63c9e6d85f9
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-8645-741b-a55c-91bb8d2f4037 chat_session_id=8d00633d-d746-4d36-a119-c1a67e444602 agent_id=b7d2338a-f6a4-4b50-8558-e2c9ff3c4ef4
+2026/09/25 16:56:12 INFO task completed task_id=01a0d7c7-8645-741b-a55c-91bb8d2f4037 issue_id=""
+2026/09/25 16:56:12 INFO chat quick-actions regenerate accepted chat_session_id=8d00633d-d746-4d36-a119-c1a67e444602 target_task_id=01a0d7c7-8645-741b-a55c-91bb8d2f4037 target_message_id=01a0d7c7-864c-745c-bc85-f540d00d3357
+2026/09/25 16:56:12 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testregeneratechatquickactions_activeturnrejected runtimes_count=1
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-865e-7030-b492-510bb95c0347 chat_session_id=0d6e9612-5d45-4a83-97d5-c6eb580e787b agent_id=7522418b-596d-4c39-bf59-47a6288e23b0
+2026/09/25 16:56:12 INFO task completed task_id=01a0d7c7-865e-7030-b492-510bb95c0347 issue_id=""
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-8669-746b-afb2-17f8a0c522b9 chat_session_id=0d6e9612-5d45-4a83-97d5-c6eb580e787b agent_id=7522418b-596d-4c39-bf59-47a6288e23b0
+2026/09/25 16:56:12 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testregeneratechatquickactions_deferredactiveturnrejected runtimes_count=1
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-867a-7a48-9d52-c0cd6f436e36 chat_session_id=204d7c8e-6bb3-4ec4-a168-cc69d94fd1f8 agent_id=0dbb9f0e-a54b-472e-9fa2-07f2157867b5
+2026/09/25 16:56:12 INFO task completed task_id=01a0d7c7-867a-7a48-9d52-c0cd6f436e36 issue_id=""
+2026/09/25 16:56:12 INFO direct chat task enqueued task_id=01a0d7c7-8687-79a9-b570-4573f321a346 chat_session_id=204d7c8e-6bb3-4ec4-a168-cc69d94fd1f8 agent_id=0dbb9f0e-a54b-472e-9fa2-07f2157867b5
+2026/09/25 16:56:12 INFO task claimed task_id=113a25ef-345f-4512-b21c-085da2b45600 agent_id=a469f4cd-bcb8-4264-a396-9092193b9556
+2026/09/25 16:56:12 INFO task cancelled task_id=c189b412-f3d6-4967-81ec-a73faf907693 issue_id=""
+2026/09/25 16:56:13 INFO task claimed task_id=fcf89333-938a-489f-b9b9-a4ed8330fb81 agent_id=eaf5b16b-7867-4342-9719-253cd6dde51e
+2026/09/25 16:56:13 INFO task claimed by runtime task_id=fcf89333-938a-489f-b9b9-a4ed8330fb81 runtime_id=12100f79-cc98-4010-bf41-3a995e89a4f5 agent_id=eaf5b16b-7867-4342-9719-253cd6dde51e prior_session=""
+2026/09/25 16:56:13 INFO direct chat task enqueued task_id=01a0d7c7-8814-7907-946a-b6ea432e0c0b chat_session_id=03bd968f-ab38-4665-b9dc-cfeea8256583 agent_id=156b5e98-99cc-4c02-9276-4c727300d150
+2026/09/25 16:56:13 INFO direct chat task enqueued task_id=01a0d7c7-8819-7708-95ca-96663573dd43 chat_session_id=03bd968f-ab38-4665-b9dc-cfeea8256583 agent_id=156b5e98-99cc-4c02-9276-4c727300d150
+2026/09/25 16:56:13 INFO direct chat task enqueued task_id=01a0d7c7-8828-79c5-85a8-ac19579e3cab chat_session_id=8f6c4147-c077-4a40-8020-4795a98481da agent_id=bc2c901f-f2e3-4bdf-97a7-8537dd4738a6
+2026/09/25 16:56:13 INFO direct chat task enqueued task_id=01a0d7c7-882f-7999-8944-92a295e45f1f chat_session_id=8f6c4147-c077-4a40-8020-4795a98481da agent_id=bc2c901f-f2e3-4bdf-97a7-8537dd4738a6
+2026/09/25 16:56:13 INFO direct chat task enqueued task_id=01a0d7c7-8844-7721-a47c-47af2414486f chat_session_id=091abf67-46e6-4e4d-b609-d7ae600d7a2f agent_id=2dd8de3e-4168-489f-9885-7826c3503f06
+2026/09/25 16:56:13 INFO direct chat task enqueued task_id=01a0d7c7-8860-7c3a-972a-1021e92fb299 chat_session_id=029bb16a-c05e-457b-8047-ab78e90bab63 agent_id=74a3f478-63d0-4ee3-920c-b99a8e647f19
+2026/09/25 16:56:14 INFO task claimed task_id=580b72c0-fa2f-4143-ac62-75ace8fe37a9 agent_id=fc901b9f-22d5-496e-a3af-0b4d7b4bbf56
+2026/09/25 16:56:14 INFO task claimed by runtime task_id=580b72c0-fa2f-4143-ac62-75ace8fe37a9 runtime_id=12100f79-cc98-4010-bf41-3a995e89a4f5 agent_id=fc901b9f-22d5-496e-a3af-0b4d7b4bbf56 prior_session=""
+2026/09/25 16:56:14 INFO daemon registered workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 daemon_id=runtime-guard-testclaimtask_quickcreateprojectinforeignworkspace_degradestoworkspacerepos runtimes_count=1
+2026/09/25 16:56:14 INFO task claimed task_id=8d4613db-e345-4530-994f-ef35cae28441 agent_id=6313a031-d31f-49d3-b170-a8e0a617b9ce
+2026/09/25 16:56:14 INFO task claimed by runtime task_id=8d4613db-e345-4530-994f-ef35cae28441 runtime_id=de0b4d3f-435c-4071-a2c2-17a4cf413346 agent_id=6313a031-d31f-49d3-b170-a8e0a617b9ce prior_session=""
+2026/09/25 16:56:14 INFO task claimed task_id=cca004b6-4f9d-45df-aa3b-87e07fb8f175 agent_id=fc901b9f-22d5-496e-a3af-0b4d7b4bbf56
+2026/09/25 16:56:14 INFO task claimed by runtime task_id=cca004b6-4f9d-45df-aa3b-87e07fb8f175 runtime_id=12100f79-cc98-4010-bf41-3a995e89a4f5 agent_id=fc901b9f-22d5-496e-a3af-0b4d7b4bbf56 prior_session=""
+2026/09/25 16:56:14 INFO task claimed task_id=0bb79bed-bbf5-4761-89bd-7d0b2705d488 agent_id=fc901b9f-22d5-496e-a3af-0b4d7b4bbf56
+2026/09/25 16:56:14 ERROR task claim: workspace isolation check failed, cancelling task task_id=0bb79bed-bbf5-4761-89bd-7d0b2705d488 runtime_id=12100f79-cc98-4010-bf41-3a995e89a4f5 runtime_workspace=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467 resolved_workspace=d9395d36-d043-446a-acde-264df47c5615 has_issue=false has_chat=false has_autopilot_run=true has_quick_create=false
+2026/09/25 16:56:14 INFO task cancelled task_id=0bb79bed-bbf5-4761-89bd-7d0b2705d488 issue_id=""
+2026/09/25 16:56:14 ERROR task claim: source load failed; preserving task for redelivery task_id=7b15ca9c-5489-48e9-8b9c-f74777fa3bff source=issue source_id=34f10b4c-a8ca-4a2f-ab26-4f9ec72f6ebc error="simulated transient read failure"
+2026/09/25 16:56:14 ERROR task claim: source load failed; preserving task for redelivery task_id=5d515ffe-ffad-404b-a0a8-c9d60facfd4f source="chat session" source_id=bc115d05-d2cf-49ae-b9db-fceb949d85ae error="simulated transient read failure"
+2026/09/25 16:56:14 ERROR task claim: source row is missing; cancelling task task_id=73b5620e-a535-494f-8e1c-a773e25e21e5 source=issue source_id=""
+2026/09/25 16:56:14 INFO task cancelled task_id=73b5620e-a535-494f-8e1c-a773e25e21e5 issue_id=""
+2026/09/25 16:56:14 INFO task claimed task_id=00a687da-e535-491d-8d6c-20a5c7d4de2e agent_id=fc901b9f-22d5-496e-a3af-0b4d7b4bbf56
+2026/09/25 16:56:14 INFO task claimed by runtime task_id=00a687da-e535-491d-8d6c-20a5c7d4de2e runtime_id=12100f79-cc98-4010-bf41-3a995e89a4f5 agent_id=fc901b9f-22d5-496e-a3af-0b4d7b4bbf56 prior_session=""
+2026/09/25 16:56:15 INFO issue created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c issue_id=01a0d7c7-8fa1-7409-afff-12461cf09806 title="exactly at cap still folds" status=todo workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:15 INFO issue created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c issue_id=01a0d7c7-903f-7302-9a95-3e2ef3bb2926 title="truncated complete thread still folds" status=todo workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:15 INFO issue created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c issue_id=01a0d7c7-90e2-7a0f-9025-1d7d94f1ff6c title="root resolved truncated" status=todo workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:15 INFO issue created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c issue_id=01a0d7c7-9195-73aa-a529-7bcaec18523e title="roots only keeps newest" status=todo workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:15 INFO issue created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c issue_id=01a0d7c7-932f-7468-9878-ae16b92895ee title="roots only exact cap" status=todo workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:16 INFO issue created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c issue_id=01a0d7c7-94d3-7787-8495-be9690fd0ff3 title="thread keeps newest replies" status=todo workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:16 INFO issue created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c issue_id=01a0d7c7-9649-7103-abf4-8de0c89972b9 title="thread exact cap still folds" status=todo workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:17 INFO issue created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c issue_id=01a0d7c7-9820-7d20-b1ca-e0a7781484b3 title="deep chain beyond budget" status=todo workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:17 INFO issue created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c issue_id=01a0d7c7-991f-700e-8182-b5807427feca title="shared ancestor" status=todo workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:17 INFO issue created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c issue_id=01a0d7c7-99cb-7bb9-8614-858af7029f77 title="other issue" status=todo workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:17 INFO issue created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c issue_id=01a0d7c7-99ce-719f-ae67-04e531c076c3 title="cross issue parent" status=todo workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:17 INFO issue created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c issue_id=01a0d7c7-9aa0-77eb-8589-917af2b4d97f title="cross workspace parent" status=todo workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:18 INFO issue created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c issue_id=01a0d7c7-9b5c-79cf-872c-3ce6d03859be title="cross workspace descendant" status=todo workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:18 INFO issue created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c issue_id=01a0d7c7-9c48-7024-92dc-4873d8c83da7 title="null-byte comment fixture (GH #5388)" status=todo workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:18 INFO comment created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c comment_id=01a0d7c7-9c49-71c2-a8f4-06090bb3cc10 issue_id=01a0d7c7-9c48-7024-92dc-4873d8c83da7
+2026/09/25 16:56:18 INFO issue deleted user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c issue_id=01a0d7c7-9c48-7024-92dc-4873d8c83da7 workspace_id=86fa3cc5-d90f-4b7c-b350-3a7b15b3c467
+2026/09/25 16:56:18 INFO comment created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c comment_id=01a0d7c7-9c5f-7a29-8ffa-bac021d5b2b3 issue_id=7a6c2aff-f801-4aaf-9f21-ed445ef6b025
+2026/09/25 16:56:18 INFO mention task enqueued task_id=01a0d7c7-9c63-7cc3-a81a-a6db8ddbc5fc issue_id=7a6c2aff-f801-4aaf-9f21-ed445ef6b025 agent_id=7670893a-7c22-4481-a87f-12056a7a36f6 is_leader_task=false
+2026/09/25 16:56:18 INFO comment created user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c comment_id=01a0d7c7-9c68-7186-8222-018862160318 issue_id=7a6c2aff-f801-4aaf-9f21-ed445ef6b025
+2026/09/25 16:56:18 INFO comment updated user_id=8bb977a9-051c-4281-8bf8-3da5efe72c0c comment_id=01a0d7c7-9c68-7186-8222-018862160318
+2026/09/25 16:56:18 INFO mention task enqueued task_id=01a0d7c7-9c73-71ab-a02f-d48387115642 issue_id=7a6c2aff-f801-4aaf-9f21-ed445ef6b025 agent_id=1d2be649-77ce-4599-8f27-99f54663acee is_leader_task=false
+2026/09/25 16:56:18 INFO mention task enqueued task_id=01a0d7c7-9c81-7188-9586-5b462d2d526e issue_id=524e874d-058d-45fa-a7ed-9c45d13859ac agent_id=84b0af47-136e-4bd2-be40-d4d80eaeff38 is_leader_task=false
+--- FAIL: TestBacklogToTodoByAgentTriggersSquadLeader (0.02s)
+    handler_test.go:3097: expected exactly 1 squad-leader task after agent-driven backlog→todo on squad issue, got 0
+--- FAIL: TestAgentCreateOriginator_E2E_CreateAssignSquad_PrivateWorkerTriggered (0.02s)
+    issue_agent_create_e2e_test.go:133: load squad-leader task (expected one enqueued on create): no rows in result set
+--- FAIL: TestAgentCreateOriginator_E2E_UpdateAssignSquad_HandlerGateAdmitsPrivateLeader (0.02s)
+    issue_agent_create_e2e_test.go:256: private squad leader got 0 tasks attributed to H after agent-triggered assign; the enqueue gate denied it (MUL-4305 gate regression)
+--- FAIL: TestStageLeaderPrepareTimeoutRetryCanAdvanceNextStage (0.04s)
+    issue_child_done_test.go:675: promoted Stage 2 queued 0 leader tasks, want 1
+--- FAIL: TestPluginInstallTokenRunsIssueCommentWorkflow (0.01s)
+    plugin_action_test.go:83: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginInstallTokenEnforcesGrantedScope (0.01s)
+    plugin_action_test.go:129: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginActionRequiresAGrantedScope (0.01s)
+    plugin_action_test.go:155: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginIssueUsesStableDTOAndRevisionETag (0.01s)
+    plugin_action_test.go:184: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginIssueConditionalPatchHasSingleWinner (0.01s)
+    plugin_action_test.go:251: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginActionRefusedWithoutAnInstallation (0.01s)
+    plugin_action_test.go:292: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginActionStopsWhenTheInstallationIsDisabled (0.01s)
+    plugin_action_test.go:314: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginCommentIsAuthoredByTheUserAndMarkedWithThePlugin (0.01s)
+    plugin_action_test.go:335: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginActionCannotReachAnotherWorkspacesIssue (0.01s)
+    plugin_action_test.go:368: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestCallbackFromAUserTriggeredHookWritesAsTheUser (0.01s)
+    plugin_callback_test.go:74: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestCallbackFromAnEventHookWritesAsThePlugin (0.00s)
+    plugin_callback_test.go:105: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestCallbackTokenServesTheWholeInvocation (0.01s)
+    plugin_callback_test.go:134: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginActorCannotReachUserStorage (0.01s)
+    plugin_callback_test.go:172: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginContextOmitsTheUserForAPluginActor (0.01s)
+    plugin_callback_test.go:192: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestCallbackTokenCannotReachAnotherIssue (0.01s)
+    plugin_callback_test.go:239: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestCallbackTokenWithoutAnIssueIsNotNarrowed (0.00s)
+    plugin_callback_test.go:292: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestExamplePluginContributesItsSkill (0.01s)
+    plugin_example_test.go:266: publish deploy-sentinel: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestExamplePluginHooksReachAnAgentAsTools (0.01s)
+    plugin_example_test.go:291: publish deploy-sentinel: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestExamplePluginAgentHookRoundTripIsSigned (0.01s)
+    plugin_example_test.go:350: publish deploy-sentinel: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestExamplePluginMCPToolsNeedApproval (0.01s)
+    plugin_example_test.go:393: publish deploy-sentinel: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestInvokePluginHookRefusesHostDrivenTriggers (0.01s)
+    plugin_hook_test.go:86: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestInvokePluginHookRefusesTriggerTheManifestDidNotDeclare (0.01s)
+    plugin_hook_test.go:102: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestInvokePluginHookRefusesUnknownHook (0.01s)
+    plugin_hook_test.go:118: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestInvokePluginHookRequiresTheFeatureFlag (0.01s)
+    plugin_hook_test.go:132: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestInvokePluginHookRefusesDisabledInstallation (0.00s)
+    plugin_hook_test.go:147: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestRotatePluginTokenIssuesOnceAndInvalidatesThePrevious (0.01s)
+    plugin_hook_test.go:170: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestRotatePluginTokenDoesNotRequireHookSigning (0.00s)
+    plugin_hook_test.go:205: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestRotatePluginTokenPreservesPreviousTokenWhenPreparationFails (0.00s)
+    plugin_hook_test.go:229: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestRevokePluginTokenStopsAuthentication (0.01s)
+    plugin_hook_test.go:252: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestEventDispatchRespectsTheFeatureFlagEndToEnd (0.01s)
+    plugin_hook_test.go:326: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginInstallRollsBackWhenARequiredFieldIsMissing (0.31s)
+    plugin_install_rollback_test.go:87: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestMCPToolListRejectsAnHTTPTransportHook (0.00s)
+    plugin_mcp_test.go:93: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestMCPToolListRejectsAnUnknownHook (0.00s)
+    plugin_mcp_test.go:102: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestDeleteAndInstallRaceLeavesNoDanglingInstallation (0.01s)
+    plugin_package_concurrency_test.go:39: publish: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPublishAndDeleteRaceLeavesNoOrphanVersion (0.01s)
+    plugin_package_concurrency_test.go:84: publish: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestFailedPublishDoesNotMovePackageState (0.00s)
+    plugin_package_concurrency_test.go:125: publish: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestUploadedBundleInstallsAndServesItsOwnCode (0.00s)
+    plugin_package_test.go:175: publish: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPublishingANewVersionDoesNotChangeAnInstalledWorkspace (0.00s)
+    plugin_package_test.go:203: publish: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPublishRefusesToOverwriteAnExistingVersion (0.01s)
+    plugin_package_test.go:251: publish: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestDeletePublishedPackageRefusesWhileInstalled (0.01s)
+    plugin_package_test.go:266: publish: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestSurfaceScriptRefusesWhatWasNeverInstalled (0.01s)
+    plugin_package_test.go:308: publish: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPackageListingCarriesScopesAndConfigKeys (0.01s)
+    plugin_package_test.go:357: publish: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPackageListingKeepsAVersionWhoseStoredManifestNoLongerParses (0.01s)
+    plugin_package_test.go:393: publish: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginSkillInstallsAndIsRemovedOnUninstall (0.01s)
+    plugin_skill_test.go:98: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginSkillUpgradePrunesWhatTheManifestDropped (0.01s)
+    plugin_skill_test.go:140: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginSkillWillNotOverwriteAHumanAuthoredSkill (0.01s)
+    plugin_skill_test.go:185: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginScheduleLifecycleReconcilesAtomically (0.31s)
+    plugin_test.go:230: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginCleanupSurvivesPluginsV1Off (0.01s)
+    plugin_test.go:406: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginInstallAppliesConsentScreenConfig (0.01s)
+    plugin_test.go:477: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginInstallRollsBackOnInvalidConsentConfig (0.01s)
+    plugin_test.go:527: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginClearSecretSurvivesPluginsV1Off (0.01s)
+    plugin_test.go:556: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginPreviewShowsScopesWithoutInstalling (0.01s)
+    plugin_test.go:612: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginInstallRequiresExactConsent (0.01s)
+    plugin_test.go:653: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginInstallConfigureAndUninstall (0.01s)
+    plugin_test.go:676: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginInstallRejectsUnshippedCapabilities (0.00s)
+    plugin_test.go:838: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginInstallAcceptsEveryCapabilityThisHostShips (0.00s)
+    plugin_test.go:869: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginInstallAcceptsAShippedSurface (0.01s)
+    plugin_test.go:891: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginInstallationFromAnotherWorkspaceIsNotFound (0.00s)
+    plugin_test.go:914: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginUpgradePrunesSecretsTheNewManifestDropped (0.01s)
+    plugin_test.go:922: publish hello: status=502 body={"error":"load plugin installation"}
+--- FAIL: TestPluginRoutesRequireWorkspaceAdmin (0.01s)
+    plugin_test.go:1036: plain member could not list Plugins: status=500 body={"error":"failed to list Plugins"}
+--- FAIL: TestQuickCreateIssueParentTrustBoundary (0.03s)
+    --- FAIL: TestQuickCreateIssueParentTrustBoundary/same_workspace_parent_enqueues_with_context (0.00s)
+        quick_create_parent_test.go:147: expected 202, got 422: {"code":"agent_unavailable","reason":"agent runtime is offline","reason_code":"runtime_offline"}
+    --- FAIL: TestQuickCreateIssueParentTrustBoundary/full_workspace_is_rejected_before_enqueue (0.00s)
+        quick_create_parent_test.go:217: expected 402, got 422: {"code":"agent_unavailable","reason":"agent runtime is offline","reason_code":"runtime_offline"}
+    --- FAIL: TestQuickCreateIssueParentTrustBoundary/foreign_workspace_parent_is_rejected (0.00s)
+        quick_create_parent_test.go:245: expected 400 for foreign parent, got 422: {"code":"agent_unavailable","reason":"agent runtime is offline","reason_code":"runtime_offline"}
+    --- FAIL: TestQuickCreateIssueParentTrustBoundary/bogus_uuid_parent_is_rejected (0.00s)
+        quick_create_parent_test.go:264: expected 400 for bogus parent, got 422: {"code":"agent_unavailable","reason":"agent runtime is offline","reason_code":"runtime_offline"}
+    --- FAIL: TestQuickCreateIssueParentTrustBoundary/bogus_uuid_attachment_id_is_rejected (0.00s)
+        quick_create_parent_test.go:281: expected 400 for bogus attachment id, got 422: {"code":"agent_unavailable","reason":"agent runtime is offline","reason_code":"runtime_offline"}
+    --- FAIL: TestQuickCreateIssueParentTrustBoundary/legacy_daemon_only_rejects_requests_using_explicit_fields (0.00s)
+        quick_create_parent_test.go:349: basic quick create on 0.4.2: expected 202, got 422: {"code":"agent_unavailable","reason":"agent runtime is offline","reason_code":"runtime_offline"}
+--- FAIL: TestCommentSourceContextLifecycle (0.09s)
+    --- FAIL: TestCommentSourceContextLifecycle/full_workspace_skips_source_attachment_copies_and_enqueue (0.01s)
+        source_context_integration_test.go:388: full source-context create = 422: {"code":"agent_unavailable","reason":"agent runtime is offline","reason_code":"runtime_offline"}
+--- FAIL: TestCreateIssueAssignedToSquadEnqueuesLeader (0.01s)
+    squad_assign_trigger_test.go:67: expected squad-leader task to be enqueued after squad-assigned create, got 0
+--- FAIL: TestClaimTask_LeaderGetsBriefing (0.02s)
+    squad_briefing_test.go:467: expected task.agent in response, got: 
+--- FAIL: TestClaimTask_NonLeaderGetsNoBriefing (0.01s)
+    squad_briefing_test.go:513: expected task.agent in response, got: 
+--- FAIL: TestWebhookDeliveryWorker_PerTriggerLimitDefersWithoutDropping (0.02s)
+    webhook_delivery_test.go:691: pacing should admit both runs but dispatch only one: runs=2 dispatched=0
+--- FAIL: TestWebhookDeliveryWorker_DispatchesRunAdmittedBeforePause (0.02s)
+    webhook_delivery_test.go:715: accepted run was not dispatched after pause: db.AutopilotRun{ID:pgtype.UUID{Bytes:[16]uint8{0x1, 0xa0, 0xd7, 0xcd, 0xf0, 0x52, 0x73, 0xb, 0xb0, 0x7a, 0xa2, 0x78, 0x17, 0xe1, 0x23, 0x3f}, Valid:true}, AutopilotID:pgtype.UUID{Bytes:[16]uint8{0x20, 0x55, 0xd6, 0x53, 0xe2, 0xc0, 0x48, 0x16, 0x89, 0x48, 0x35, 0x82, 0xe9, 0xfb, 0x62, 0xeb}, Valid:true}, TriggerID:pgtype.UUID{Bytes:[16]uint8{0x84, 0xa0, 0xcb, 0x7a, 0x3c, 0x70, 0x46, 0x13, 0x94, 0xe1, 0x97, 0x95, 0x2d, 0x66, 0x3d, 0xc1}, Valid:true}, Source:"webhook", Status:"skipped", IssueID:pgtype.UUID{Bytes:[16]uint8{0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0}, Valid:false}, TaskID:pgtype.UUID{Bytes:[16]uint8{0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0}, Valid:false}, TriggeredAt:pgtype.Timestamptz{Time:time.Date(2026, time.September, 25, 17, 3, 12, 978252000, time.Local), InfinityModifier:0, Valid:true}, CompletedAt:pgtype.Timestamptz{Time:time.Date(2026, time.September, 25, 17, 3, 12, 978813000, time.Local), InfinityModifier:0, Valid:true}, FailureReason:pgtype.Text{String:"agent runtime is offline at dispatch time", Valid:true}, TriggerPayload:[]uint8{0x7b, 0x22, 0x65, 0x76, 0x65, 0x6e, 0x74, 0x22, 0x3a, 0x20, 0x22, 0x61, 0x63, 0x63, 0x65, 0x70, 0x74, 0x65, 0x64, 0x2e, 0x62, 0x65, 0x66, 0x6f, 0x72, 0x65, 0x5f, 0x70, 0x61, 0x75, 0x73, 0x65, 0x22, 0x2c, 0x20, 0x22, 0x72, 0x65, 0x71, 0x75, 0x65, 0x73, 0x74, 0x22, 0x3a, 0x20, 0x7b, 0x22, 0x72, 0x65, 0x63, 0x65, 0x69, 0x76, 0x65, 0x64, 0x41, 0x74, 0x22, 0x3a, 0x20, 0x22, 0x32, 0x30, 0x32, 0x36, 0x2d, 0x30, 0x39, 0x2d, 0x32, 0x35, 0x54, 0x30, 0x39, 0x3a, 0x30, 0x33, 0x3a, 0x31, 0x32, 0x5a, 0x22, 0x2c, 0x20, 0x22, 0x63, 0x6f, 0x6e, 0x74, 0x65, 0x6e, 0x74, 0x54, 0x79, 0x70, 0x65, 0x22, 0x3a, 0x20, 0x22, 0x61, 0x70, 0x70, 0x6c, 0x69, 0x63, 0x61, 0x74, 0x69, 0x6f, 0x6e, 0x2f, 0x6a, 0x73, 0x6f, 0x6e, 0x22, 0x7d, 0x2c, 0x20, 0x22, 0x65, 0x76, 0x65, 0x6e, 0x74, 0x50, 0x61, 0x79, 0x6c, 0x6f, 0x61, 0x64, 0x22, 0x3a, 0x20, 0x7b, 0x22, 0x65, 0x76, 0x65, 0x6e, 0x74, 0x22, 0x3a, 0x20, 0x22, 0x61, 0x63, 0x63, 0x65, 0x70, 0x74, 0x65, 0x64, 0x2e, 0x62, 0x65, 0x66, 0x6f, 0x72, 0x65, 0x5f, 0x70, 0x61, 0x75, 0x73, 0x65, 0x22, 0x7d, 0x7d}, Result:[]uint8(nil), CreatedAt:pgtype.Timestamptz{Time:time.Date(2026, time.September, 25, 17, 3, 12, 978252000, time.Local), InfinityModifier:0, Valid:true}, SquadID:pgtype.UUID{Bytes:[16]uint8{0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0}, Valid:false}, PlannedAt:pgtype.Timestamptz{Time:time.Date(1, time.January, 1, 0, 0, 0, 0, time.UTC), InfinityModifier:0, Valid:false}, WebhookDeliveryID:pgtype.UUID{Bytes:[16]uint8{0x1, 0xa0, 0xd7, 0xcd, 0xf0, 0x51, 0x70, 0xab, 0xb0, 0xc1, 0x8c, 0xf3, 0x8, 0x54, 0xfa, 0x42}, Valid:true}, QuotaReservationID:pgtype.UUID{Bytes:[16]uint8{0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0, 0x0}, Valid:false}, ReasonCode:pgtype.Text{String:"", Valid:false}}
+--- FAIL: TestWebhookDeliveryWorker_RecoversExpiredLeaseAndReusesRun (0.02s)
+    webhook_delivery_test.go:770: recovery duplicated side effects: runs=1 tasks=0
+--- FAIL: TestWorkspaceDeletionManifestCoversPublicSchema (0.00s)
+    workspace_delete_manifest_test.go:211: workspace deletion manifest drift: unclassified=[marketplace_plugin_listing] missing=[]
+FAIL
+FAIL	github.com/multica-ai/multica/server/internal/handler	437.859s
+FAIL
