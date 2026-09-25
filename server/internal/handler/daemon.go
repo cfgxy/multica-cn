@@ -2001,6 +2001,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 	// Build response with fresh agent data (name + skills + custom_env + custom_args).
 	resp = taskToResponse(*task, runtimeWorkspaceID)
 	var issueNumber int32
+	// promptVersionScopeIDs accumulates (scope -> scope_id) for every prompt
+	// tier this claim actually injects non-empty content for, populated at
+	// each injection site below. Written to agent_task_queue.prompt_versions
+	// once at the end (RUYI-183 T2) so a run's attribution reflects only what
+	// it really saw — a tier the agent/project/squad left blank, or a claim
+	// path that never reaches a given tier, must not appear as version 0.
+	promptVersionScopeIDs := map[string]string{}
 	// Claim-only capability: this server resolves the squad-leader role on the
 	// wire (is_leader_task / squad_id), so the daemon must not re-derive it
 	// from the briefing text. Set unconditionally — on every claim, leader or
@@ -2176,6 +2183,13 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		SessionCompactPct:       agent.SessionCompactPct,
 		DisabledRuntimeSkills:   disabledRuntimeSkillsFor(agent.DisabledRuntimeSkills, runtimeID, runtime.Provider),
 	}
+	// Attribute the agent tier off the raw workspace-owned column, not the
+	// Mika-composed text below: the system layer ships with the binary and is
+	// never written through prompt-governance, so it has no prompt_version to
+	// attribute to.
+	if strings.TrimSpace(agent.Instructions) != "" {
+		promptVersionScopeIDs["agent"] = uuidToString(agent.ID)
+	}
 	// System agents carry a product-owned instruction layer that ships with
 	// this binary instead of being copied into their row at creation. That
 	// is what makes it hot-updatable: editing the embedded file and
@@ -2332,6 +2346,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 					} else {
 						resp.Agent.Instructions = resp.Agent.Instructions + "\n\n" + briefing
 					}
+					if strings.TrimSpace(squad.Instructions) != "" {
+						promptVersionScopeIDs["squad"] = uuidToString(squad.ID)
+					}
 					injected = true
 					slog.Debug("injected squad leader briefing",
 						"squad_id", uuidToString(squad.ID),
@@ -2372,6 +2389,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}
 		}
 		projectCtx.applyTo(&resp)
+		if strings.TrimSpace(projectCtx.Instructions) != "" {
+			promptVersionScopeIDs["project"] = projectCtx.ProjectID
+		}
 
 		// Load every planned input as one chronological, de-duplicated set.
 		// The trigger is included here so the delivery receipt can only contain
@@ -2709,6 +2729,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}
 		}
 		projectCtx.applyTo(&resp)
+		if strings.TrimSpace(projectCtx.Instructions) != "" {
+			promptVersionScopeIDs["project"] = projectCtx.ProjectID
+		}
 		if !task.ForceFreshSession && !task.ChannelContextRevision.Valid {
 			// Resume chat sessions only when the stored pointer was produced
 			// by the same runtime as the claiming task. When the chat_session
@@ -2923,6 +2946,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 			}
 		}
 		projectCtx.applyTo(&resp)
+		if strings.TrimSpace(projectCtx.Instructions) != "" {
+			promptVersionScopeIDs["project"] = projectCtx.ProjectID
+		}
 	}
 
 	// Handoff note (MUL-3375) is populated by taskToResponse (the shared mapper
@@ -2999,6 +3025,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 				}
 			}
 			projectCtx.applyTo(&resp)
+			if strings.TrimSpace(projectCtx.Instructions) != "" {
+				promptVersionScopeIDs["project"] = projectCtx.ProjectID
+			}
 
 			// Parent-issue resolution for quick-create tasks opened from
 			// "Add sub issue". The handler already verified workspace
@@ -3061,6 +3090,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 							resp.Agent.Instructions = briefing
 						} else {
 							resp.Agent.Instructions = resp.Agent.Instructions + "\n\n" + briefing
+						}
+						if strings.TrimSpace(squad.Instructions) != "" {
+							promptVersionScopeIDs["squad"] = uuidToString(squad.ID)
 						}
 						// Surface the squad identity to the daemon so the
 						// quick-create prompt defaults the new issue's
@@ -3131,6 +3163,9 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		}
 		if ws.Context.Valid {
 			resp.WorkspaceContext = ws.Context.String
+			if strings.TrimSpace(ws.Context.String) != "" {
+				promptVersionScopeIDs["workspace"] = uuidToString(ws.ID)
+			}
 		}
 	} else {
 		slog.Warn("task claim: failed to load workspace for context injection",
@@ -3233,7 +3268,55 @@ func (h *Handler) buildClaimedTaskResponse(r *http.Request, task *db.AgentTaskQu
 		}
 	}
 
+	h.recordClaimedPromptVersions(r.Context(), task.ID, promptVersionScopeIDs)
+
 	return resp, deliveredCommentIDs, agentSkillCount, builtinSkillCount, nil
+}
+
+// recordClaimedPromptVersions resolves the current prompt_version.version
+// number for every tier this claim actually injected non-empty content for
+// (see promptVersionScopeIDs above) and persists it onto the claimed task row
+// (RUYI-183 T2), so a run's prompt-governance attribution can be read back
+// later without recomputing "what did this run actually see".
+//
+// A tier with no prompt_version row yet (never saved/edited since the
+// governance table shipped) is skipped rather than recorded as version 0 —
+// absent means "not attributable", never "version zero". Failure here is
+// logged and swallowed: attribution is observability, not a claim
+// precondition, so it must never turn a successful claim into a retry.
+func (h *Handler) recordClaimedPromptVersions(ctx context.Context, taskID pgtype.UUID, scopeIDs map[string]string) {
+	if len(scopeIDs) == 0 {
+		return
+	}
+	versions := make(map[string]int32, len(scopeIDs))
+	for scope, scopeID := range scopeIDs {
+		parsedScopeID, err := util.ParseUUID(scopeID)
+		if err != nil {
+			continue
+		}
+		v, err := h.Queries.GetLatestPromptVersion(ctx, db.GetLatestPromptVersionParams{
+			Scope:   scope,
+			ScopeID: parsedScopeID,
+		})
+		if err != nil {
+			continue
+		}
+		versions[scope] = v.Version
+	}
+	if len(versions) == 0 {
+		return
+	}
+	payload, err := json.Marshal(versions)
+	if err != nil {
+		slog.Warn("task claim: failed to marshal prompt version attribution", "task_id", uuidToString(taskID), "error", err)
+		return
+	}
+	if err := h.Queries.SetAgentTaskQueuePromptVersions(ctx, db.SetAgentTaskQueuePromptVersionsParams{
+		ID:             taskID,
+		PromptVersions: payload,
+	}); err != nil {
+		slog.Warn("task claim: failed to persist prompt version attribution", "task_id", uuidToString(taskID), "error", err)
+	}
 }
 
 // worktreeClaimBlockReason returns a user-facing reason when this runtime must
