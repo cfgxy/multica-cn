@@ -486,6 +486,11 @@ deleted_lark_user_bindings AS (
 ),
 deleted_lark_binding_tokens AS (
     DELETE FROM lark_binding_token WHERE workspace_id = $1
+),
+-- Prompt version history (RUYI-183) goes with the workspace: it has no FK
+-- and no dependents, so a plain workspace_id delete is enough.
+deleted_prompt_versions AS (
+    DELETE FROM prompt_version WHERE workspace_id = $1
 )
 -- Keep the two-system cleanup ledger until object storage has been settled.
 -- Moving every row out of pending also prevents a concurrent media bind from
