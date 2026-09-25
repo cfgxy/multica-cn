@@ -1,0 +1,8 @@
+{
+  "title": "Self-Evolution",
+  "description": "How agent and squad prompts change over time, and what changed them.",
+  "empty": {
+    "title": "Not wired up yet",
+    "description": "This is a navigation skeleton for the prompt-governance overview (RUYI-183 phase 1). Version history, diff and adoption views land in a later stage."
+  }
+}
