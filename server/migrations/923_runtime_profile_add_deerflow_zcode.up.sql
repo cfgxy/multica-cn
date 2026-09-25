@@ -48,20 +48,20 @@ ALTER TABLE runtime_profile ADD CONSTRAINT runtime_profile_protocol_family_check
 -- basename rewrite below cannot reconstruct. Without this step an
 -- up -> down -> up cycle would strand exactly those rows on 'kimi' forever.
 --
--- The table only exists on a deployment that has rolled 907 back at least
+-- The table only exists on a deployment that has rolled 923 back at least
 -- once, hence the to_regclass guard; it is dropped once consumed, so the
 -- restore never replays against a later, deliberate family change.
 DO $$
 BEGIN
-    IF to_regclass('runtime_profile_family_907_backup') IS NOT NULL THEN
+    IF to_regclass('runtime_profile_family_923_backup') IS NOT NULL THEN
         UPDATE runtime_profile p
         SET protocol_family = b.protocol_family,
             updated_at = now()
-        FROM runtime_profile_family_907_backup b
+        FROM runtime_profile_family_923_backup b
         WHERE p.id = b.profile_id
           AND p.protocol_family = 'kimi';
 
-        DROP TABLE runtime_profile_family_907_backup;
+        DROP TABLE runtime_profile_family_923_backup;
     END IF;
 END $$;
 
