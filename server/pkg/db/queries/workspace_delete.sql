@@ -491,6 +491,16 @@ deleted_lark_binding_tokens AS (
 -- and no dependents, so a plain workspace_id delete is enough.
 deleted_prompt_versions AS (
     DELETE FROM prompt_version WHERE workspace_id = $1
+),
+-- The quality rollup and the D3 scores derived from those versions (RUYI-184)
+-- follow them out. Both are pure derivations of rows this statement is
+-- already deleting, so leaving them behind would strand aggregates whose
+-- scope ids can never be resolved again.
+deleted_prompt_quality_daily AS (
+    DELETE FROM prompt_quality_daily WHERE workspace_id = $1
+),
+deleted_prompt_perplexity_scores AS (
+    DELETE FROM prompt_perplexity_score WHERE workspace_id = $1
 )
 -- Keep the two-system cleanup ledger until object storage has been settled.
 -- Moving every row out of pending also prevents a concurrent media bind from
