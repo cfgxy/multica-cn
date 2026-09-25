@@ -1926,6 +1926,28 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			})
 		})
 
+		// Prompt tier version history/diff/switch (RUYI-183, self-evolution
+		// phase 1) for the four prompt tiers: workspace context, project
+		// instructions, squad instructions, agent instructions. Reads are
+		// member-visible; writes (save/switch/rollback) are Owner-only per
+		// PM spec §3.6 — deliberately not "owner or admin" like the
+		// subscription writes above, because prompt content can carry
+		// credentials and this is a stricter write surface.
+		r.Route("/api/prompt-governance/{scope}/{scopeId}", func(r chi.Router) {
+			r.Use(handler.RequireHumanActor)
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireWorkspaceMember(queries))
+				r.Get("/versions", h.ListPromptGovernanceVersions)
+				r.Get("/versions/{version}", h.GetPromptGovernanceVersion)
+				r.Get("/diff", h.GetPromptGovernanceVersionDiff)
+			})
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
+				r.Post("/versions", h.SavePromptGovernanceVersion)
+				r.Post("/versions/{version}/switch", h.SwitchPromptGovernanceVersion)
+			})
+		})
+
 		// --- Workspace-scoped routes (all require workspace membership) ---
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RequireWorkspaceMember(queries))

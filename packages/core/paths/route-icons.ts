@@ -27,6 +27,7 @@ export type RouteIconName =
   | "FolderKanban"
   | "Zap"
   | "Bot"
+  | "Sprout"
   | "Users"
   | "BarChart3"
   | "Monitor"
@@ -54,6 +55,7 @@ export type NavLabelKey =
   | "agents"
   | "squads"
   | "usage"
+  | "self_evolution"
   | "runtimes"
   | "skills"
   | "settings"
@@ -70,6 +72,7 @@ export type WorkspacePageKey =
   | "agents"
   | "squads"
   | "usage"
+  | "selfEvolution"
   | "runtimes"
   | "skills"
   | "settings"
@@ -98,6 +101,12 @@ export const WORKSPACE_PAGES: Record<WorkspacePageKey, WorkspacePage> = {
   agents: { segment: "agents", icon: "Bot", navKey: "agents" },
   squads: { segment: "squads", icon: "Users", navKey: "squads" },
   usage: { segment: "usage", icon: "BarChart3", navKey: "usage" },
+  // RUYI-183 phase 1: prompt-governance/self-evolution overview (skeleton).
+  selfEvolution: {
+    segment: "self-evolution",
+    icon: "Sprout",
+    navKey: "self_evolution",
+  },
   runtimes: { segment: "runtimes", icon: "Monitor", navKey: "runtimes" },
   skills: { segment: "skills", icon: "BookOpenText", navKey: "skills" },
   settings: { segment: "settings", icon: "Settings", navKey: "settings" },
