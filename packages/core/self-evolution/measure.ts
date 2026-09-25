@@ -19,8 +19,12 @@ import type {
 export type MeasureView =
   | {
       state: "ok";
+      /** How `value` must be read. See UNKNOWN_UNIT for the absent case. */
+      unit: string;
       /** Non-null exactly when the state is "ok". */
       value: number;
+      /** Top of the scale for unit "score". 0 for every other unit. */
+      scoreMax: number;
       numerator: number | null;
       denominator: number | null;
       sample: number;
@@ -29,6 +33,7 @@ export type MeasureView =
     }
   | {
       state: "no_data";
+      unit: string;
       /** Why nothing was measured. A key the views translate, never a sentence. */
       reason: string;
       sample: number;
@@ -36,6 +41,7 @@ export type MeasureView =
     }
   | {
       state: "insufficient_sample";
+      unit: string;
       reason: string;
       /** How many runs the dimension actually had. */
       sample: number;
@@ -45,6 +51,16 @@ export type MeasureView =
 
 /** The reason key used when the server named none. */
 export const UNKNOWN_REASON = "unknown";
+
+/**
+ * The unit assumed when the server named none.
+ *
+ * "count" rather than "ratio" on purpose: a plain number is at worst mislabelled,
+ * while a count read as a ratio is multiplied by a hundred — the failure that a
+ * hand-kept set of "these dimensions are rates" dimension names produced for D2
+ * and D6 before the unit travelled with the value.
+ */
+export const UNKNOWN_UNIT = "count";
 
 /**
  * Narrows one measure.
@@ -57,15 +73,20 @@ export const UNKNOWN_REASON = "unknown";
 export function toMeasureView(measure: PromptQualityMeasure): MeasureView {
   const sample = Number.isFinite(measure.sample) ? measure.sample : 0;
   const threshold = Number.isFinite(measure.threshold) ? measure.threshold : 0;
+  const unit = measure.unit ?? UNKNOWN_UNIT;
+  const scoreMax =
+    measure.score_max !== undefined && Number.isFinite(measure.score_max) ? measure.score_max : 0;
 
   switch (measure.state) {
     case "ok":
       if (measure.value === null || !Number.isFinite(measure.value)) {
-        return { state: "no_data", reason: UNKNOWN_REASON, sample, threshold };
+        return { state: "no_data", unit, reason: UNKNOWN_REASON, sample, threshold };
       }
       return {
         state: "ok",
+        unit,
         value: measure.value,
+        scoreMax,
         numerator: measure.numerator,
         denominator: measure.denominator,
         sample,
@@ -75,14 +96,21 @@ export function toMeasureView(measure: PromptQualityMeasure): MeasureView {
     case "insufficient_sample":
       return {
         state: "insufficient_sample",
+        unit,
         reason: measure.reason ?? UNKNOWN_REASON,
         sample,
         threshold,
       };
     case "no_data":
-      return { state: "no_data", reason: measure.reason ?? UNKNOWN_REASON, sample, threshold };
+      return {
+        state: "no_data",
+        unit,
+        reason: measure.reason ?? UNKNOWN_REASON,
+        sample,
+        threshold,
+      };
     default:
-      return { state: "no_data", reason: UNKNOWN_REASON, sample, threshold };
+      return { state: "no_data", unit, reason: UNKNOWN_REASON, sample, threshold };
   }
 }
 

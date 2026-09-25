@@ -85,6 +85,31 @@ describe("toMeasureView", () => {
     if (view.state !== "no_data") throw new Error("unreachable");
     expect(view.reason).toBe("unknown");
   });
+
+  // The unit decides whether 90 prints as "90 / 100" or as "9,000%", so it has
+  // to survive narrowing on every state — a card renders unit-dependent wording
+  // before it knows whether a number arrived.
+  it("carries the server's unit and score maximum through", () => {
+    const view = toMeasureView(measure({ unit: "score", value: 90, score_max: 100 }));
+    if (view.state !== "ok") throw new Error("unreachable");
+    expect(view.unit).toBe("score");
+    expect(view.scoreMax).toBe(100);
+  });
+
+  it("carries the unit on no_data and insufficient_sample too", () => {
+    const missing = toMeasureView(measure({ state: "no_data", unit: "score", value: null }));
+    expect(missing.unit).toBe("score");
+    const thin = toMeasureView(measure({ state: "insufficient_sample", unit: "ratio", value: null }));
+    expect(thin.unit).toBe("ratio");
+  });
+
+  // A backend that predates the field, or one whose field was dropped in
+  // transit, must not have its value read as a ratio: multiplying an unknown
+  // unit by a hundred is the exact failure this contract replaced.
+  it("falls back to count when the server named no unit", () => {
+    const view = toMeasureView(measure({ unit: undefined }));
+    expect(view.unit).toBe("count");
+  });
 });
 
 describe("toDimensionCards", () => {

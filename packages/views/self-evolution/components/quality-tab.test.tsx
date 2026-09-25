@@ -53,6 +53,7 @@ vi.mock("@multica/core/self-evolution", async () => {
 function measure(over: Record<string, unknown> = {}) {
   return {
     state: "ok",
+    unit: "ratio",
     value: 0.5,
     numerator: 5,
     denominator: 10,
@@ -72,11 +73,26 @@ function dashboard(over: Partial<PromptQualityDashboard> = {}): PromptQualityDas
       days: 30,
       runs: 40,
       measures: {
-        injected_tokens: measure({ value: 12000, numerator: null, denominator: null }),
-        run_tokens_median: measure({ value: 80000, numerator: null, denominator: null }),
+        // D1's two cards are counts with no run sample: a static token estimate
+        // and a weighted median of medians (server: count(v, 0, ...)).
+        injected_tokens: measure({
+          unit: "count",
+          value: 12000,
+          numerator: null,
+          denominator: null,
+          sample: 0,
+        }),
+        run_tokens_median: measure({
+          unit: "count",
+          value: 80000,
+          numerator: null,
+          denominator: null,
+          sample: 0,
+        }),
         // T5: instrumented only from migration 924 onward — NULL is not 0%.
         discipline: measure({
           state: "no_data",
+          unit: "score",
           value: null,
           numerator: null,
           denominator: null,
@@ -92,9 +108,18 @@ function dashboard(over: Partial<PromptQualityDashboard> = {}): PromptQualityDas
           threshold: 10,
           reason: "below_sample_floor",
         }),
-        retry_rate: measure({ value: 0.2, numerator: 8, denominator: 40 }),
-        failure_attribution: measure({ value: 0.25, numerator: 1, denominator: 4, excluded: 2 }),
-        first_pass_rate: measure({ value: 0.75, numerator: 3, denominator: 4 }),
+        retry_rate: measure({ value: 0.2, numerator: 8, denominator: 40, sample: 40 }),
+        // D6 is a count of attributable failures over the finished runs, not a
+        // ratio: no numerator/denominator pair, so no "1 / 1" line.
+        failure_attribution: measure({
+          unit: "count",
+          value: 2,
+          numerator: null,
+          denominator: null,
+          sample: 40,
+          excluded: 2,
+        }),
+        first_pass_rate: measure({ value: 0.75, numerator: 3, denominator: 4, sample: 4 }),
       },
       failure_reasons: { prompt_ambiguity: 1 },
       excluded_failed_runs: 2,
@@ -160,6 +185,55 @@ describe("QualityTab with a subject", () => {
       expect(screen.getByTestId(`quality-card-${key}`)).toBeInTheDocument();
     }
     expect(screen.getByTestId("quality-card-retry_rate")).toHaveTextContent("20%");
+  });
+
+  // The named regression (RUYI-184 返工, QA P1): the discipline score is a
+  // 0..100 point median, and the frontend used to decide the unit from a set of
+  // dimension names that had D2 in the ratio group — so 90 rendered as "9,000%".
+  // The unit matrix itself is in `quality-format.test.ts`.
+  it("renders a 90-point discipline score as points, never as 9,000%", async () => {
+    dashboardRef.current = dashboard({
+      window: {
+        ...dashboard().window,
+        measures: {
+          ...dashboard().window.measures,
+          discipline: measure({
+            unit: "score",
+            value: 90,
+            score_max: 100,
+            numerator: null,
+            denominator: null,
+            sample: 36,
+          }),
+        },
+      },
+    });
+    renderWithAgent();
+    const card = await screen.findByTestId("quality-card-discipline");
+    expect(card).toHaveTextContent("90 / 100");
+    expect(card.textContent).not.toMatch(/9,000%/);
+    expect(card).toHaveTextContent("over 36 runs");
+  });
+
+  // QA P1b: D6 is a count of attributable failures. It used to be formatted as a
+  // ratio (2 → "200%") and its numerator and denominator both pointed at that
+  // same count, so the ratio line read "2 / 2".
+  it("renders D6's attributable failures as a count with no self-referential ratio", async () => {
+    renderWithAgent();
+    const card = await screen.findByTestId("quality-card-failure_attribution");
+    expect(card).toHaveTextContent("2");
+    expect(card.textContent).not.toMatch(/200%/);
+    expect(card.textContent).not.toMatch(/2 \/ 2/);
+    expect(card).toHaveTextContent("over 40 runs");
+  });
+
+  // QA P2: `absolute()` set no denominator and no sample, so the card fell
+  // through to the "over N runs" line with N = 0 under a real token figure.
+  it("omits the run-count line on a value that was not counted over runs", async () => {
+    renderWithAgent();
+    const card = await screen.findByTestId("quality-card-injected_tokens");
+    expect(card).toHaveTextContent("12,000");
+    expect(card.textContent).not.toMatch(/over 0 runs/);
   });
 
   it("renders an uninstrumented dimension as no data, never as 0%", async () => {
