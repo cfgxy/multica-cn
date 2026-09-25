@@ -4695,6 +4695,12 @@ type TaskMessageRequest struct {
 	Content string         `json:"content,omitempty"`
 	Input   map[string]any `json:"input,omitempty"`
 	Output  string         `json:"output,omitempty"`
+	// IsError carries the runtime's own verdict on a tool result and is three-
+	// valued: a pointer so "the daemon did not report it" stays distinct from
+	// "the tool succeeded". Older daemons omit the field entirely, and the
+	// column they write must stay NULL for those runs rather than claim every
+	// one of their tool calls passed.
+	IsError *bool `json:"is_error,omitempty"`
 }
 
 type TaskMessageBatchRequest struct {
@@ -4806,6 +4812,14 @@ func (h *Handler) ReportTaskMessages(w http.ResponseWriter, r *http.Request) {
 		params.Contents = append(params.Contents, msg.Content)
 		params.Inputs = append(params.Inputs, inputJSON)
 		params.Outputs = append(params.Outputs, msg.Output)
+		// "" is how this statement spells NULL for every nullable column it
+		// writes (see the NULLIF comments on the query); for is_error that is
+		// the unreported case, which must not collapse into false.
+		isError := ""
+		if msg.IsError != nil {
+			isError = strconv.FormatBool(*msg.IsError)
+		}
+		params.IsErrors = append(params.IsErrors, isError)
 	}
 
 	created, err := h.Queries.CreateTaskMessages(r.Context(), params)
@@ -4944,6 +4958,13 @@ func taskMessageToPayload(m db.TaskMessage, taskID, issueID string) protocol.Tas
 	if m.CreatedAt.Valid {
 		createdAt = m.CreatedAt.Time.UTC().Format(time.RFC3339Nano)
 	}
+	// An invalid (NULL) column stays nil in the payload rather than becoming
+	// false: the live event and the same row read back later have to agree that
+	// nothing was measured.
+	var isError *bool
+	if m.IsError.Valid {
+		isError = &m.IsError.Bool
+	}
 	return protocol.TaskMessagePayload{
 		TaskID:    taskID,
 		IssueID:   issueID,
@@ -4954,6 +4975,7 @@ func taskMessageToPayload(m db.TaskMessage, taskID, issueID string) protocol.Tas
 		Input:     input,
 		Output:    m.Output.String,
 		CreatedAt: createdAt,
+		IsError:   isError,
 	}
 }
 

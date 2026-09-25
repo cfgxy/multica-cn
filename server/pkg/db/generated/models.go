@@ -1459,6 +1459,8 @@ type TaskMessage struct {
 	Input     []byte             `json:"input"`
 	Output    pgtype.Text        `json:"output"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	// Whether this tool result reported an error (RUYI-184, D4). NULL = the runtime or message type cannot report it, never a real false; history before this column is permanently NULL.
+	IsError pgtype.Bool `json:"is_error"`
 }
 
 type TaskToken struct {

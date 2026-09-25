@@ -177,6 +177,11 @@ type TaskMessagePayload struct {
 	Input     map[string]any `json:"input,omitempty"`   // tool input (tool_use only)
 	Output    string         `json:"output,omitempty"`  // tool output (tool_result only)
 	CreatedAt string         `json:"created_at,omitempty"`
+	// IsError is three-valued: true/false is what the runtime reported for this
+	// tool result, nil means it reported nothing. A pointer rather than a bool
+	// so the absent case stays absent from the JSON instead of arriving as
+	// false, which a consumer would read as "the tool succeeded".
+	IsError *bool `json:"is_error,omitempty"`
 }
 
 // DaemonRegisterPayload is sent from daemon to server on connection.
