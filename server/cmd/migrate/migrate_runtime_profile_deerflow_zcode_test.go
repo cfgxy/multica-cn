@@ -12,10 +12,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// TestRuntimeProfileDeerflowZcodeMigrationRoundTrip exercises migration 907 in
+// TestRuntimeProfileDeerflowZcodeMigrationRoundTrip exercises migration 923 in
 // both directions inside a private schema: up must widen the protocol_family
 // whitelist to the two new independent families, down must restore the
-// pre-907 whitelist, and neither direction may invalidate a compatibility row
+// pre-923 whitelist, and neither direction may invalidate a compatibility row
 // that still declares 'kimi' while launching one of the bridges — that is the
 // shape every existing profile has, and losing it would break them.
 func TestRuntimeProfileDeerflowZcodeMigrationRoundTrip(t *testing.T) {
@@ -87,7 +87,7 @@ func TestRuntimeProfileDeerflowZcodeMigrationRoundTrip(t *testing.T) {
 		shimIDs[row.name] = id
 	}
 
-	const version = "907_runtime_profile_add_deerflow_zcode"
+	const version = "923_runtime_profile_add_deerflow_zcode"
 	lockKey := int64(rand.Uint64()&0x7fffffffffffffff) | 1
 	run := func(direction string) error {
 		return runMigrations(ctx, pool, runOptions{
@@ -99,12 +99,12 @@ func TestRuntimeProfileDeerflowZcodeMigrationRoundTrip(t *testing.T) {
 		})
 	}
 
-	// Before 907 the two families have no place to be stored.
+	// Before 923 the two families have no place to be stored.
 	assertFamilyRejected(t, ctx, pool, "deerflow")
 	assertFamilyRejected(t, ctx, pool, "zcode")
 
 	if err := run("up"); err != nil {
-		t.Fatalf("apply migration 907: %v", err)
+		t.Fatalf("apply migration 923: %v", err)
 	}
 	assertMigrationLedger(t, ctx, pool, version, true)
 
@@ -113,7 +113,7 @@ func TestRuntimeProfileDeerflowZcodeMigrationRoundTrip(t *testing.T) {
 			INSERT INTO runtime_profile (display_name, protocol_family, command_name)
 			VALUES ($1, $2, $3)
 		`, "Independent "+family, family, family+"-acp"); err != nil {
-			t.Fatalf("after 907 up, protocol_family %q was still rejected: %v", family, err)
+			t.Fatalf("after 923 up, protocol_family %q was still rejected: %v", family, err)
 		}
 	}
 	// The pre-existing families must not have been dropped on the way.
@@ -124,7 +124,7 @@ func TestRuntimeProfileDeerflowZcodeMigrationRoundTrip(t *testing.T) {
 
 	// The shims now carry their real identity, in place. A profile still
 	// declaring 'kimi' would keep being registered on kimiBackend by the
-	// daemon, which is the defect 907 exists to remove.
+	// daemon, which is the defect 923 exists to remove.
 	assertProfileFamily(t, ctx, pool, shimIDs["Legacy ZCode over Kimi"], "zcode")
 	assertProfileFamily(t, ctx, pool, shimIDs["Legacy DeerFlow over Kimi"], "deerflow")
 	// The Windows shapes are the same shim: a backslash-separated absolute
@@ -141,7 +141,7 @@ func TestRuntimeProfileDeerflowZcodeMigrationRoundTrip(t *testing.T) {
 	// match is on the whole basename, not a prefix.
 	assertProfileFamily(t, ctx, pool, shimIDs["Custom wrapper over Kimi"], "kimi")
 
-	// A profile created after 907 in a new family with a non-standard command
+	// A profile created after 923 in a new family with a non-standard command
 	// has no basename the re-apply could decide from; it is what the down
 	// migration's identity backup exists for.
 	var customWrapperID string
@@ -154,13 +154,13 @@ func TestRuntimeProfileDeerflowZcodeMigrationRoundTrip(t *testing.T) {
 	}
 
 	if err := run("down"); err != nil {
-		t.Fatalf("roll back migration 907: %v", err)
+		t.Fatalf("roll back migration 923: %v", err)
 	}
 	assertMigrationLedger(t, ctx, pool, version, false)
 
 	// Nothing is left in a family the restored whitelist cannot express: a
-	// pre-907 daemon refuses to register a profile whose family it cannot map
-	// to a backend, and a pre-907 API cannot edit it back.
+	// pre-923 daemon refuses to register a profile whose family it cannot map
+	// to a backend, and a pre-923 API cannot edit it back.
 	var stranded int
 	if err := pool.QueryRow(ctx,
 		`SELECT count(*) FROM runtime_profile WHERE protocol_family IN ('deerflow', 'zcode')`,
@@ -174,14 +174,14 @@ func TestRuntimeProfileDeerflowZcodeMigrationRoundTrip(t *testing.T) {
 	assertFamilyRejected(t, ctx, pool, "zcode")
 	assertFamilyAccepted(t, ctx, pool, "kimi")
 
-	// The round trip returns the shims to the exact state 907 found them in,
+	// The round trip returns the shims to the exact state 923 found them in,
 	// same ids: the bindings that point at these profiles survive both
 	// directions.
 	for name := range shimIDs {
 		assertProfileFamily(t, ctx, pool, shimIDs[name], "kimi")
 	}
 
-	// The profiles created directly in the new families while 907 was applied
+	// The profiles created directly in the new families while 923 was applied
 	// are folded into the shim shape rather than orphaned.
 	var folded int
 	if err := pool.QueryRow(ctx, `
@@ -191,7 +191,7 @@ func TestRuntimeProfileDeerflowZcodeMigrationRoundTrip(t *testing.T) {
 		t.Fatalf("count folded profiles: %v", err)
 	}
 	if folded != 3 {
-		t.Errorf("post-907 profiles folded back onto kimi = %d, want 3", folded)
+		t.Errorf("post-923 profiles folded back onto kimi = %d, want 3", folded)
 	}
 
 	// Re-applying after a rollback must restore every identity, including the
@@ -199,7 +199,7 @@ func TestRuntimeProfileDeerflowZcodeMigrationRoundTrip(t *testing.T) {
 	// identity backup a custom-command profile stops on 'kimi' permanently,
 	// and the daemon then runs it on kimiBackend.
 	if err := run("up"); err != nil {
-		t.Fatalf("re-apply migration 907: %v", err)
+		t.Fatalf("re-apply migration 923: %v", err)
 	}
 	assertMigrationLedger(t, ctx, pool, version, true)
 
@@ -214,12 +214,12 @@ func TestRuntimeProfileDeerflowZcodeMigrationRoundTrip(t *testing.T) {
 	// silently reverted by a subsequent re-run of the same migration.
 	var backupExists bool
 	if err := pool.QueryRow(ctx,
-		`SELECT to_regclass('runtime_profile_family_907_backup') IS NOT NULL`,
+		`SELECT to_regclass('runtime_profile_family_923_backup') IS NOT NULL`,
 	).Scan(&backupExists); err != nil {
 		t.Fatalf("check identity backup table: %v", err)
 	}
 	if backupExists {
-		t.Error("identity backup table survived the re-apply; a later family change would be reverted by re-running 907")
+		t.Error("identity backup table survived the re-apply; a later family change would be reverted by re-running 923")
 	}
 }
 
