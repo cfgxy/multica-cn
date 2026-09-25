@@ -110,7 +110,7 @@ function renderTab() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <I18nProvider resources={TEST_RESOURCES} language="en">
+      <I18nProvider locale="en" resources={TEST_RESOURCES}>
         <QualityTab wsId="ws-1" />
       </I18nProvider>
     </QueryClientProvider>,
@@ -136,7 +136,7 @@ describe("QualityTab with a subject", () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     return render(
       <QueryClientProvider client={client}>
-        <I18nProvider resources={TEST_RESOURCES} language="en">
+        <I18nProvider locale="en" resources={TEST_RESOURCES}>
           <QualityTab wsId="ws-1" initialAgentId="agent-1" />
         </I18nProvider>
       </QueryClientProvider>,
