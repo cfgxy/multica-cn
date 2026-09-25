@@ -109,6 +109,7 @@ import type {
   PromptTargetState,
   PromptVersion,
 } from "../types/prompt-market";
+import type { PromptQualityDashboard } from "../types/prompt-quality";
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
 import type { CreateFeedbackResponse } from "../feedback/types";
 
@@ -3890,4 +3891,154 @@ export const EMPTY_EXECUTION_PROFILE_ACTIVATION: ExecutionProfileActivationRespo
   skipped: 0,
   failed: 0,
   results: [],
+};
+
+// ---------------------------------------------------------------------------
+// Prompt quality dashboard (RUYI-184)
+//
+// Every default here is chosen so a drifted or malformed response reads as
+// "nothing was measured", never as a measured zero. `state` defaults to
+// "no_data" and `value` to null for the same reason the server keeps the
+// columns nullable: a 0 on these cards is a claim about the prompt, and the
+// client must not be able to make it on the server's behalf.
+//
+// `state`, `band`, `runtime_profile` and `kind` stay plain strings: they are
+// server-driven, and a value a newer backend adds should still parse, with the
+// views taking their default branch for one they do not know.
+
+export const PromptQualityMeasureSchema = z.object({
+  state: z.string().default("no_data"),
+  value: z.number().nullable().default(null),
+  numerator: z.number().nullable().default(null),
+  denominator: z.number().nullable().default(null),
+  sample: z.number().default(0),
+  threshold: z.number().default(0),
+  reason: z.string().optional(),
+  excluded: z.number().optional(),
+});
+
+const NO_DATA_MEASURE = {
+  state: "no_data",
+  value: null,
+  numerator: null,
+  denominator: null,
+  sample: 0,
+  threshold: 0,
+} as const;
+
+const NO_DATA_MEASURES = {
+  injected_tokens: NO_DATA_MEASURE,
+  run_tokens_median: NO_DATA_MEASURE,
+  discipline: NO_DATA_MEASURE,
+  tool_failure_rate: NO_DATA_MEASURE,
+  retry_rate: NO_DATA_MEASURE,
+  failure_attribution: NO_DATA_MEASURE,
+  first_pass_rate: NO_DATA_MEASURE,
+} as const;
+
+export const PromptQualityMeasuresSchema = z.object({
+  injected_tokens: PromptQualityMeasureSchema.default(NO_DATA_MEASURE),
+  run_tokens_median: PromptQualityMeasureSchema.default(NO_DATA_MEASURE),
+  discipline: PromptQualityMeasureSchema.default(NO_DATA_MEASURE),
+  tool_failure_rate: PromptQualityMeasureSchema.default(NO_DATA_MEASURE),
+  retry_rate: PromptQualityMeasureSchema.default(NO_DATA_MEASURE),
+  failure_attribution: PromptQualityMeasureSchema.default(NO_DATA_MEASURE),
+  first_pass_rate: PromptQualityMeasureSchema.default(NO_DATA_MEASURE),
+});
+
+export const PromptQualityVersionMeasuresSchema = z.object({
+  version: z.number().default(0),
+  days: z.number().default(0),
+  first_day: z.string().optional(),
+  last_day: z.string().optional(),
+  runs: z.number().default(0),
+  measures: PromptQualityMeasuresSchema.default(NO_DATA_MEASURES),
+  failure_reasons: z.record(z.string(), z.number()).default({}),
+  excluded_failed_runs: z.number().default(0),
+});
+
+// Evidence carries locations and notes only — which tier and section a rule
+// sits in, and what it conflicts with. The scorer's prompt forbids quotation
+// and the server truncates every free-text field, so there is no field here
+// for prompt text to arrive in.
+export const PromptPerplexityEvidenceSchema = z.object({
+  tier: z.string().default(""),
+  section: z.string().default(""),
+  conflicts_with: z.string().optional(),
+  note: z.string().optional(),
+});
+
+export const PromptPerplexityItemSchema = z.object({
+  key: z.string().default(""),
+  score: z.number().default(0),
+  justification: z.string().default(""),
+  evidence: z.array(PromptPerplexityEvidenceSchema).optional(),
+});
+
+export const PromptQualityPerplexitySchema = z.object({
+  version: z.number().default(0),
+  runtime_profile: z.string().default(""),
+  band: z.string().default(""),
+  percent_low: z.number().nullable().default(null),
+  percent_high: z.number().nullable().default(null),
+  evidence: z.array(PromptPerplexityItemSchema).default([]),
+  model: z.string().default(""),
+  scored_at: z.string().default(""),
+});
+
+export const PromptQualitySourceSchema = z.object({
+  kind: z.string().default(""),
+  available: z.boolean().default(false),
+  required: z.boolean().default(false),
+  degraded: z.boolean().default(false),
+});
+
+export const PromptQualitySourcesSchema = z.object({
+  degraded: z.boolean().default(false),
+  items: z.array(PromptQualitySourceSchema).default([]),
+});
+
+const EMPTY_VERSION_MEASURES = {
+  version: 0,
+  days: 0,
+  runs: 0,
+  measures: NO_DATA_MEASURES,
+  failure_reasons: {},
+  excluded_failed_runs: 0,
+} as const;
+
+export const PromptQualityDashboardSchema = z.object({
+  scope: z.string().default(""),
+  scope_id: z.string().default(""),
+  since: z.string().default(""),
+  window: PromptQualityVersionMeasuresSchema.default(EMPTY_VERSION_MEASURES),
+  versions: z.array(PromptQualityVersionMeasuresSchema).default([]),
+  perplexity: z.array(PromptQualityPerplexitySchema).default([]),
+  data_sources: PromptQualitySourcesSchema.default({ degraded: false, items: [] }),
+});
+
+/**
+ * The fallback for a response that did not parse: seven cards that say nothing
+ * was measured, no versions, no D3 scores, and an empty source list.
+ *
+ * The source list is empty rather than "all available" on purpose. A client
+ * that could not read the response does not know whether the optional exports
+ * are on, and rendering the footer as if they were would be a claim it cannot
+ * back.
+ */
+export const EMPTY_PROMPT_QUALITY_DASHBOARD: PromptQualityDashboard = {
+  scope: "",
+  scope_id: "",
+  since: "",
+  window: {
+    version: 0,
+    days: 0,
+    runs: 0,
+    measures: NO_DATA_MEASURES,
+    failure_reasons: {},
+    excluded_failed_runs: 0,
+  },
+  versions: [],
+  perplexity: [],
+  data_sources: { degraded: false, items: [] },
 };
