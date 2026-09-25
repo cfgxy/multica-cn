@@ -12,6 +12,32 @@ function stdioEntry(entry: McpEntry): unknown {
   return { type: "stdio", command: "node", args: [entry.distPath] };
 }
 
+/** Inverse of `stdioEntry`: pulls `distPath` back out of a previously
+ * written `{ type: "stdio", command: "node", args: [distPath] }` entry. */
+function extractStdioDistPath(rawEntry: unknown): string | undefined {
+  if (rawEntry === null || typeof rawEntry !== "object") {
+    return undefined;
+  }
+  const args = (rawEntry as Record<string, unknown>).args;
+  if (!Array.isArray(args) || typeof args[0] !== "string") {
+    return undefined;
+  }
+  return args[0];
+}
+
+/** Inverse of the OpenCode `{ type: "local", command: ["node", distPath],
+ * enabled: true }` entry shape. */
+function extractOpencodeDistPath(rawEntry: unknown): string | undefined {
+  if (rawEntry === null || typeof rawEntry !== "object") {
+    return undefined;
+  }
+  const command = (rawEntry as Record<string, unknown>).command;
+  if (!Array.isArray(command) || typeof command[1] !== "string") {
+    return undefined;
+  }
+  return command[1];
+}
+
 /**
  * Builds the six client targets against a given home directory. Accepting
  * `homeDir` as a parameter (instead of reading `os.homedir()` internally)
@@ -35,6 +61,7 @@ export function createClientTargets(homeDir: string): ClientTarget[] {
       detect: claudeCodeDetected,
       serversPath: ["mcpServers"],
       buildEntry: stdioEntry,
+      extractDistPath: extractStdioDistPath,
     }),
     createCodexClientTarget({
       configPath: join(homeDir, ".codex", "config.toml"),
@@ -47,6 +74,7 @@ export function createClientTargets(homeDir: string): ClientTarget[] {
       detect: kimiDetected,
       serversPath: ["mcpServers"],
       buildEntry: stdioEntry,
+      extractDistPath: extractStdioDistPath,
     }),
     createJsonClientTarget({
       id: "zcode",
@@ -55,6 +83,7 @@ export function createClientTargets(homeDir: string): ClientTarget[] {
       detect: zcodeDetected,
       serversPath: ["mcp", "servers"],
       buildEntry: stdioEntry,
+      extractDistPath: extractStdioDistPath,
     }),
     createJsonClientTarget({
       id: "cursor",
@@ -63,6 +92,7 @@ export function createClientTargets(homeDir: string): ClientTarget[] {
       detect: cursorDetected,
       serversPath: ["mcpServers"],
       buildEntry: stdioEntry,
+      extractDistPath: extractStdioDistPath,
     }),
     createJsonClientTarget({
       id: "opencode",
@@ -71,6 +101,7 @@ export function createClientTargets(homeDir: string): ClientTarget[] {
       detect: opencodeDetected,
       serversPath: ["mcp"],
       buildEntry: (entry) => ({ type: "local", command: ["node", entry.distPath], enabled: true }),
+      extractDistPath: extractOpencodeDistPath,
     }),
   ];
 }

@@ -1,4 +1,4 @@
-.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev daemon-build daemon-install daemon-update daemon-preflight daemon-uninstall mcp-install
+.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev daemon-build daemon-install daemon-update daemon-preflight daemon-uninstall mcp-build mcp-install mcp-update mcp-status mcp-uninstall mcp-http-install mcp-http-update mcp-http-status mcp-http-uninstall
 
 MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
@@ -246,9 +246,80 @@ daemon-uninstall: ## Remove daemon systemd units (default + all @profile instanc
 # ---------- MCP (local stdio server, client installers) ----------
 ##@ MCP
 
-mcp-install: ## Build @multica/mcp from this checkout and register it with every detected client (Claude Code/Codex/Kimi/ZCode/Cursor/OpenCode). Uses this checkout's absolute dist path, so re-run after moving/removing the checkout.
+mcp-build: ## Build @multica/mcp from this checkout only (tsc -> dist/), without touching any client config
 	pnpm --filter @multica/mcp build
+
+mcp-install: mcp-build ## Register @multica/mcp with every detected client (Claude Code/Codex/Kimi/ZCode/Cursor/OpenCode). Uses this checkout's absolute dist path, so re-run after moving/removing the checkout.
 	node "$(CURDIR)/apps/mcp/dist/install-cli.js" "$(CURDIR)/apps/mcp/dist/index.js"
+
+mcp-update: mcp-build ## Rebuild and refresh only clients already registered with multica (fixes a stale dist path after moving/rebuilding the checkout); never registers a newly-detected client
+	node "$(CURDIR)/apps/mcp/dist/update-cli.js" "$(CURDIR)/apps/mcp/dist/index.js"
+
+mcp-status: mcp-build ## Read-only: show which clients are registered, the dist path each points at, and whether that path is stale
+	node "$(CURDIR)/apps/mcp/dist/status-cli.js"
+
+mcp-uninstall: mcp-build ## Remove the multica entry from every detected client's config; other entries and file formatting are preserved
+	node "$(CURDIR)/apps/mcp/dist/uninstall-cli.js"
+
+# ---------- MCP HTTP (systemd service, streamable HTTP transport) ----------
+# 与上面 mcp-* 的形态不同：mcp-* 把 stdio server 注册进本机 MCP 客户端配置；
+# 这里是把 http transport 常驻托管为 systemd 服务，供远程 connector（ChatGPT
+# 等）连接。两者互不影响，可同时存在。
+#
+# 无状态设计：每个 POST /mcp 自带 Authorization: Bearer <PAT>，服务端不持久化
+# 任何凭据；因此本组 target 不做「profile 未认证」前置检查（对照 daemon-install），
+# 单元文件与日志也绝不写入 token——凭据只走调用方的请求头。
+#
+# 单实例，非 @ 模板：一台机器一般只需要一个 MCP http 端点（多端口场景可用
+# MCP_HTTP_PORT/MCP_HTTP_HOST 覆盖后重装），跟 daemon 的多 profile 并存不是
+# 同一类需求，模板化只会徒增管理面，故按简单单元处理。
+MCP_HTTP_PORT ?= 8080
+MCP_HTTP_HOST ?= 127.0.0.1
+MCP_CPU_QUOTA ?= 100%
+MCP_MEMORY_HIGH ?= 512M
+MCP_MEMORY_MAX ?= 768M
+
+MCP_HTTP_UNIT_DIR := $(HOME)/.config/systemd/user
+MCP_HTTP_UNIT := $(MCP_HTTP_UNIT_DIR)/multica-mcp-http.service
+
+mcp-http-install: mcp-build ## Install MCP streamable-HTTP transport as a systemd --user service (zero sudo): make mcp-http-install [MCP_HTTP_PORT=8080] [MCP_HTTP_HOST=127.0.0.1]
+	@export XDG_RUNTIME_DIR=$${XDG_RUNTIME_DIR:-/run/user/$$(id -u)}; \
+	case "$(MCP_HTTP_HOST)" in \
+		127.0.0.1|localhost|::1) ;; \
+		*) echo "WARN: MCP_HTTP_HOST=$(MCP_HTTP_HOST) 非 loopback——对外暴露前请确认已置于 TLS 反代之后" ;; \
+	esac; \
+	mkdir -p "$(MCP_HTTP_UNIT_DIR)"; \
+	sed -e 's|@MCP_DIR@|$(CURDIR)/apps/mcp|g' \
+	    -e 's|@PORT@|$(MCP_HTTP_PORT)|g' \
+	    -e 's|@HOST@|$(MCP_HTTP_HOST)|g' \
+	    -e 's|@CPU_QUOTA@|$(MCP_CPU_QUOTA)|g' \
+	    -e 's|@MEMORY_HIGH@|$(MCP_MEMORY_HIGH)|g' \
+	    -e 's|@MEMORY_MAX@|$(MCP_MEMORY_MAX)|g' \
+	    deploy/multica-mcp-http.service.template > "$(MCP_HTTP_UNIT)"; \
+	systemctl --user daemon-reload; \
+	systemctl --user enable --now multica-mcp-http.service; \
+	if [ "$$(loginctl show-user $$(id -un) -p Linger --value 2>/dev/null)" != "yes" ]; then \
+		echo "WARN: 当前用户未开启 Linger，注销后该服务会随会话结束停止；如需注销/重启后仍常驻，请让有权限者执行: loginctl enable-linger $$(id -un)"; \
+	fi; \
+	systemctl --user --no-pager --lines=0 status multica-mcp-http.service; \
+	echo "multica-mcp-http → http://$(MCP_HTTP_HOST):$(MCP_HTTP_PORT)/mcp（探活: /healthz，鉴权: Authorization: Bearer <PAT>，逐请求携带，服务端不落盘）"
+
+mcp-http-update: mcp-build ## Rebuild dist/ only, then restart the running service (unit file / port / host untouched)
+	@export XDG_RUNTIME_DIR=$${XDG_RUNTIME_DIR:-/run/user/$$(id -u)}; \
+	systemctl --user restart multica-mcp-http.service; \
+	systemctl --user --no-pager --lines=0 status multica-mcp-http.service
+
+mcp-http-status: ## Read-only: systemd --user unit status for the MCP HTTP service
+	@export XDG_RUNTIME_DIR=$${XDG_RUNTIME_DIR:-/run/user/$$(id -u)}; \
+	systemctl --user --no-pager status multica-mcp-http.service 2>/dev/null || echo "multica-mcp-http.service 未安装（make mcp-http-install）"
+
+mcp-http-uninstall: ## Remove the MCP HTTP systemd --user service only; never touches multica-daemon*, multica-oom-guard, or other systemd --user units
+	@export XDG_RUNTIME_DIR=$${XDG_RUNTIME_DIR:-/run/user/$$(id -u)}; \
+	systemctl --user disable --now multica-mcp-http.service >/dev/null 2>&1 || true; \
+	rm -f "$(MCP_HTTP_UNIT)"; \
+	systemctl --user daemon-reload; \
+	systemctl --user reset-failed 2>/dev/null || true; \
+	echo "multica-mcp-http.service 已移除（multica-daemon*、multica-oom-guard 与其他 systemd --user 单元未受影响）"
 
 # ---------- Environments ----------
 ##@ Environments
