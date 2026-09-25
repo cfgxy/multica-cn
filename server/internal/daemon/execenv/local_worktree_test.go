@@ -2360,3 +2360,271 @@ func TestPrepareLocalWorktreeNamesTheBranchAfterACJKAgent(t *testing.T) {
 	}
 	finalizeOK(t, second)
 }
+
+// newTestRepoWithGitlinkChild builds a parent repo whose index tracks one
+// gitlink: src/app is a full repository of its own, the layout the shanghui
+// project uses (a local-only root repo with delivery repos as gitlink
+// children). The child carries a tracked file, an untracked file, and an
+// ignored file so tests can assert all three behaviours of the embed.
+func newTestRepoWithGitlinkChild(t *testing.T) (parent, child string) {
+	t.Helper()
+	parent = newTestRepo(t)
+	child = filepath.Join(parent, "src", "app")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatalf("mkdir child repo: %v", err)
+	}
+	gitRun(t, child, "init", "-b", "main")
+	gitRun(t, child, "config", "user.name", "Child User")
+	gitRun(t, child, "config", "user.email", "child@test.com")
+	writeFile(t, filepath.Join(child, "app.txt"), "child tracked\n")
+	writeFile(t, filepath.Join(child, ".gitignore"), "ignored-out.txt\n")
+	gitRun(t, child, "add", ".")
+	gitRun(t, child, "commit", "-m", "child initial")
+	writeFile(t, filepath.Join(child, "untracked.txt"), "child untracked\n")
+	writeFile(t, filepath.Join(child, "ignored-out.txt"), "child ignored\n")
+	// Registering the gitlink: `git add` on a nested repo records mode 160000.
+	gitRun(t, parent, "add", "src/app")
+	gitRun(t, parent, "commit", "-m", "link child repo")
+	return parent, child
+}
+
+// The agent must see the gitlink child's code — tracked AND untracked, under
+// the child's own ignore rules — instead of an empty directory. Without the
+// embed, a root+gitlink project reviews a worktree with no business code in
+// it and every conclusion past the first is a hallucination about files it
+// never opened.
+func TestPrepareLocalWorktreeEmbedsGitlinkChildren(t *testing.T) {
+	parent, child := newTestRepoWithGitlinkChild(t)
+
+	// User edits inside the child between commits: the embed must carry them
+	// too, same promise as the parent's uncommitted work.
+	writeFile(t, filepath.Join(child, "app.txt"), "child tracked with local edit\n")
+
+	wt := prepareForTest(t, parent)
+	if got := readFile(t, filepath.Join(wt.WorkDir, "src", "app", "app.txt")); got != "child tracked with local edit\n" {
+		t.Errorf("embedded child tracked file = %q, want the locally edited content", got)
+	}
+	if got := readFile(t, filepath.Join(wt.WorkDir, "src", "app", "untracked.txt")); got != "child untracked\n" {
+		t.Errorf("embedded child untracked file = %q, want its content", got)
+	}
+	if _, err := os.Stat(filepath.Join(wt.WorkDir, "src", "app", "ignored-out.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("child-ignored file reached the worktree; the child's own .gitignore must govern it")
+	}
+}
+
+// Edits the agent makes inside an embedded child are ordinary files from
+// git's point of view, so finalize delivers them on the task branch like any
+// other change — nothing about the delivery contract needs to know the embed
+// happened.
+func TestFinalizeDeliversEditsInsideEmbeddedChild(t *testing.T) {
+	parent, _ := newTestRepoWithGitlinkChild(t)
+	wt := prepareForTest(t, parent)
+
+	writeFile(t, filepath.Join(wt.WorkDir, "src", "app", "app.txt"), "agent edit inside child\n")
+	outcome := finalizeOK(t, wt)
+	if outcome.Branch == "" {
+		t.Fatalf("finalize delivered no branch for an edit inside the embedded child")
+	}
+	out := gitRun(t, parent, "show", outcome.Branch+":src/app/app.txt")
+	if out != "agent edit inside child" {
+		t.Errorf("branch carries %q at src/app/app.txt, want the agent's edit", out)
+	}
+}
+
+// The transfer ref is momentary: after prepare, the child's ref namespace
+// holds nothing of ours. A leftover would pin snapshot objects against gc in
+// the user's repository.
+func TestGitlinkEmbedLeavesNoTransferRefs(t *testing.T) {
+	parent, child := newTestRepoWithGitlinkChild(t)
+	prepareForTest(t, parent)
+
+	out := gitRun(t, child, "for-each-ref", "--format=%(refname)", gitlinkEmbedRefPrefix)
+	if strings.TrimSpace(out) != "" {
+		t.Errorf("gitlink transfer refs left behind in the child repo: %s", out)
+	}
+}
+
+// A gitlink path outside ASCII exercises the -z parsing: core.quotepath would
+// deliver it octal-escaped, and every consumer of the parsed path (repo
+// resolution, update-index, read-tree --prefix) needs the literal bytes.
+func TestPrepareLocalWorktreeEmbedsGitlinkChildWithNonASCIIPath(t *testing.T) {
+	parent := newTestRepo(t)
+	child := filepath.Join(parent, "src", "前端仓")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatalf("mkdir child repo: %v", err)
+	}
+	gitRun(t, child, "init", "-b", "main")
+	gitRun(t, child, "config", "user.name", "Child User")
+	gitRun(t, child, "config", "user.email", "child@test.com")
+	writeFile(t, filepath.Join(child, "页面.txt"), "内容\n")
+	gitRun(t, child, "add", ".")
+	gitRun(t, child, "commit", "-m", "child initial")
+	gitRun(t, parent, "add", "src/前端仓")
+	gitRun(t, parent, "commit", "-m", "link child repo")
+
+	wt := prepareForTest(t, parent)
+	if got := readFile(t, filepath.Join(wt.WorkDir, "src", "前端仓", "页面.txt")); got != "内容\n" {
+		t.Errorf("embedded child at non-ASCII path = %q, want its content", got)
+	}
+}
+
+// A plain repository with no gitlinks must behave exactly as it did before
+// embedding existed: stagedGitlinks finds nothing, embedGitlinkChildren is a
+// no-op, and the ordinary uncommitted-work replay is untouched.
+func TestPrepareLocalWorktreeWithoutGitlinksIsUnaffected(t *testing.T) {
+	repo := newTestRepo(t)
+	writeFile(t, filepath.Join(repo, "tracked.txt"), "edited by user\n")
+	writeFile(t, filepath.Join(repo, "brand-new.txt"), "untracked\n")
+
+	wt := prepareForTest(t, repo)
+	if got := readFile(t, filepath.Join(wt.WorkDir, "tracked.txt")); got != "edited by user\n" {
+		t.Errorf("tracked.txt = %q, want the uncommitted edit", got)
+	}
+	if got := readFile(t, filepath.Join(wt.WorkDir, "brand-new.txt")); got != "untracked\n" {
+		t.Errorf("brand-new.txt = %q, want the untracked content", got)
+	}
+}
+
+// registerGitlink stages a mode-160000 gitlink entry directly via
+// update-index --cacheinfo and commits it, bypassing `git add`'s own refusal
+// to link a nested repository that has no commits (see childHasNoCommits
+// below). This is how a gitlink recorded against a healthy child ends up
+// pointing at one that can no longer be resolved — the child's branch was
+// later reset to an unborn state, or the directory was removed outright.
+func registerGitlink(t *testing.T, parent, relPath, sha string) {
+	t.Helper()
+	gitRun(t, parent, "update-index", "--add", "--cacheinfo", "160000,"+sha+","+relPath)
+	gitRun(t, parent, "commit", "-m", "link "+relPath)
+}
+
+const fakeGitlinkSHA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+
+// 子仓库缺失: a gitlink entry can outlive the directory it points at — the
+// child was deleted from disk without the parent's index being updated to
+// match. embedGitlinkChild must not fail the whole task over it, and it does
+// not fabricate content for a path that no longer exists: the same `git add
+// -u` step that captures every other user deletion into the snapshot also
+// stages this one, so the task worktree reflects that the child directory is
+// genuinely gone, exactly as a plain tracked-file deletion would.
+func TestPrepareLocalWorktreeSkipsGitlinkWithMissingChildDirectory(t *testing.T) {
+	parent := newTestRepo(t)
+	registerGitlink(t, parent, "src/missing", fakeGitlinkSHA)
+
+	wt := prepareForTest(t, parent)
+
+	if _, err := os.Stat(filepath.Join(wt.WorkDir, "src", "missing")); !os.IsNotExist(err) {
+		t.Fatalf("stat src/missing: got err=%v, want the path to not exist (the child was deleted from disk)", err)
+	}
+	if list := gitRun(t, parent, "worktree", "list"); strings.Count(list, "\n") != 1 {
+		t.Errorf("prepare left an unexpected number of worktrees registered:\n%s", list)
+	}
+}
+
+// gitlink 指向的 commit 在子仓库中不存在: the child directory exists and is a
+// repository root, but its HEAD cannot be resolved — the branch the gitlink
+// was recorded against has since been reset to an unborn state, or the
+// repository was newly initialised and never committed to. rev-parse --verify
+// HEAD fails, so this must skip the same way a missing child does, not error
+// the whole task out.
+func TestPrepareLocalWorktreeSkipsGitlinkWhoseChildHasNoCommits(t *testing.T) {
+	parent := newTestRepo(t)
+	child := filepath.Join(parent, "src", "unborn")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatalf("mkdir child repo: %v", err)
+	}
+	gitRun(t, child, "init", "-b", "main")
+	registerGitlink(t, parent, "src/unborn", fakeGitlinkSHA)
+
+	wt := prepareForTest(t, parent)
+
+	info, err := os.Stat(filepath.Join(wt.WorkDir, "src", "unborn"))
+	if err != nil {
+		t.Fatalf("stat src/unborn: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("src/unborn = %v, want an (empty) directory left by the untouched gitlink", info.Mode())
+	}
+}
+
+// 子仓库为脏: the child's untracked payload is put through the same
+// replay-budget check as the parent's own (checkUntrackedReplayable), and an
+// untracked symlink fails that check unconditionally. The whole task must
+// fail closed before anything is written — an in-place worktree registration
+// or branch left behind would be a half-built task the caller cannot retry
+// cleanly.
+func TestPrepareLocalWorktreeFailsWhenGitlinkChildHasUnreplayableUntracked(t *testing.T) {
+	parent, child := newTestRepoWithGitlinkChild(t)
+	if err := os.Symlink(filepath.Join(child, "app.txt"), filepath.Join(child, "shortcut.txt")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	_, err := PrepareLocalWorktree(LocalWorktreeParams{
+		LocalPath: parent,
+		EnvRoot:   t.TempDir(),
+		AgentName: "J",
+		TaskID:    "task-gitlink-child-symlink",
+	}, worktreeTestLogger())
+
+	if err == nil {
+		t.Fatal("expected prepare to fail rather than silently drop the child's untracked symlink")
+	}
+	if !strings.Contains(err.Error(), "untracked") {
+		t.Errorf("error should name the untracked replay, got: %v", err)
+	}
+	if list := gitRun(t, parent, "worktree", "list"); strings.Count(list, "\n") != 0 {
+		t.Errorf("aborted prepare left a worktree registered:\n%s", list)
+	}
+	if branches := gitRun(t, parent, "branch", "--list", "agent/*"); branches != "" {
+		t.Errorf("aborted prepare left a branch behind: %q", branches)
+	}
+}
+
+// gitlinkPathWithinRoot is the boundary check embedGitlinkChild relies on
+// before it locks, reads HEAD from, and fetches objects out of whatever a
+// gitlink's index path resolves to. Git's own tree format already rejects a
+// literal ".." path component (verified separately against the real git
+// binary), so this unit test is what actually exercises the escaping case —
+// removing the check turns want=false cases into want=true and this test
+// catches it directly, independent of git's own refusal.
+func TestGitlinkPathWithinRoot(t *testing.T) {
+	root := filepath.FromSlash("/repo/root")
+	cases := []struct {
+		name string
+		path string
+		want bool
+	}{
+		{"plain child", "src/app", true},
+		{"nested child", "vendor/pkg/child", true},
+		{"empty path", "", false},
+		{"absolute path", "/etc/passwd", false},
+		{"parent escape", "../escape", false},
+		{"deep parent escape", "src/../../escape", false},
+		{"dotdot as a real prefix but still escaping", "..evil/child", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ok := gitlinkPathWithinRoot(root, tc.path)
+			if ok != tc.want {
+				t.Errorf("gitlinkPathWithinRoot(%q, %q) ok = %v, want %v", root, tc.path, ok, tc.want)
+			}
+		})
+	}
+}
+
+// embedGitlinkChild is the actual call site of the boundary check: this
+// proves a crafted stagedGitlink whose path escapes gitRoot is rejected with
+// an error rather than proceeding to lock and snapshot whatever it resolves
+// to on disk.
+func TestEmbedGitlinkChildRejectsPathEscapingRoot(t *testing.T) {
+	parent := newTestRepo(t)
+	escapee := filepath.Dir(parent) // a real, existing directory outside parent
+	link := stagedGitlink{commit: fakeGitlinkSHA, path: "../" + filepath.Base(escapee)}
+
+	err := embedGitlinkChild(parent, nil, t.TempDir(), 0, link, worktreeTestLogger())
+	if err == nil {
+		t.Fatal("expected embedGitlinkChild to reject a path escaping its repository root")
+	}
+	if !strings.Contains(err.Error(), "escapes its repository root") {
+		t.Errorf("error should name the boundary violation, got: %v", err)
+	}
+}
