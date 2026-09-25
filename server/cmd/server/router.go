@@ -1940,6 +1940,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Get("/versions", h.ListPromptGovernanceVersions)
 				r.Get("/versions/{version}", h.GetPromptGovernanceVersion)
 				r.Get("/diff", h.GetPromptGovernanceVersionDiff)
+				// Quality dashboard (RUYI-184): read-only rollups over the
+				// same scope, member-visible for the same reason history is.
+				r.Get("/quality", h.GetPromptQualityDashboard)
 			})
 			r.Group(func(r chi.Router) {
 				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
