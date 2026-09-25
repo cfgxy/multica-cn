@@ -1298,6 +1298,57 @@ type ProjectResource struct {
 	CreatedBy    pgtype.UUID        `json:"created_by"`
 }
 
+// D3 rule-perplexity / ambiguity-risk score per (prompt scope, version, runtime profile) (RUYI-184, Owner Q17). Scored per runtime profile and never averaged across profiles. Stores band + declared interval + per-item findings; never the prompt body.
+type PromptPerplexityScore struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	Scope          string             `json:"scope"`
+	ScopeID        pgtype.UUID        `json:"scope_id"`
+	Version        int32              `json:"version"`
+	RuntimeProfile string             `json:"runtime_profile"`
+	Band           string             `json:"band"`
+	PercentLow     pgtype.Numeric     `json:"percent_low"`
+	PercentHigh    pgtype.Numeric     `json:"percent_high"`
+	Evidence       []byte             `json:"evidence"`
+	Model          string             `json:"model"`
+	ScoredAt       pgtype.Timestamptz `json:"scored_at"`
+}
+
+// Per (prompt scope, version, UTC day) quality rollup for RUYI-184 dimensions D1/D2/D4/D5/D6/D7. Aggregates and pointers only — no prompt text, no transcript text. Every dimension stores counts rather than rates so "not measured" stays distinguishable from zero.
+type PromptQualityDaily struct {
+	ID                     pgtype.UUID        `json:"id"`
+	WorkspaceID            pgtype.UUID        `json:"workspace_id"`
+	Scope                  string             `json:"scope"`
+	ScopeID                pgtype.UUID        `json:"scope_id"`
+	Version                int32              `json:"version"`
+	Day                    pgtype.Date        `json:"day"`
+	FinishedRuns           int32              `json:"finished_runs"`
+	InjectedTokens         pgtype.Int8        `json:"injected_tokens"`
+	RunTokensMedian        pgtype.Int8        `json:"run_tokens_median"`
+	DisciplineScoreMedian  pgtype.Numeric     `json:"discipline_score_median"`
+	DisciplineCoveredRuns  int32              `json:"discipline_covered_runs"`
+	DisciplineDeductions   []byte             `json:"discipline_deductions"`
+	ToolResultsMeasured    int64              `json:"tool_results_measured"`
+	ToolResultsError       int64              `json:"tool_results_error"`
+	AttemptTotal           int32              `json:"attempt_total"`
+	RetriedRuns            int32              `json:"retried_runs"`
+	AttributableFailedRuns int32              `json:"attributable_failed_runs"`
+	ExcludedFailedRuns     int32              `json:"excluded_failed_runs"`
+	FailureReasonCounts    []byte             `json:"failure_reason_counts"`
+	FirstPassIssues        int32              `json:"first_pass_issues"`
+	ReviewedIssues         int32              `json:"reviewed_issues"`
+	UpdatedAt              pgtype.Timestamptz `json:"updated_at"`
+}
+
+type PromptQualityRollupState struct {
+	ID                int16              `json:"id"`
+	WatermarkAt       pgtype.Timestamptz `json:"watermark_at"`
+	LastRunStartedAt  pgtype.Timestamptz `json:"last_run_started_at"`
+	LastRunFinishedAt pgtype.Timestamptz `json:"last_run_finished_at"`
+	LastRunRows       int64              `json:"last_run_rows"`
+	LastError         pgtype.Text        `json:"last_error"`
+}
+
 // Version history for the four prompt tiers (RUYI-183). History/audit only — the business column on workspace/project/squad/agent stays the single read source for currently effective content. Append-only: switching or rolling back writes a new row, never mutates or deletes an existing one.
 type PromptVersion struct {
 	ID                pgtype.UUID        `json:"id"`
