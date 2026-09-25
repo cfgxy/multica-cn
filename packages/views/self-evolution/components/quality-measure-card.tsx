@@ -45,16 +45,26 @@ export function QualityMeasureCard({
         {view.state === "ok" ? (
           <>
             <div className="text-title font-semibold tabular-nums">
-              {formatMeasureValue(dimension, view.value, locale)}
+              {formatMeasureValue(view.unit, view.value, locale, view.scoreMax)}
             </div>
-            <div className="text-caption text-muted-foreground">
-              {view.numerator !== null && view.denominator !== null
-                ? t(($) => $.quality.measure.ratio, {
-                    numerator: view.numerator,
-                    denominator: view.denominator,
-                  })
-                : t(($) => $.quality.measure.ofRuns, { count: view.sample })}
-            </div>
+            {/* Three cases, and the third renders nothing. A ratio prints its
+                two sides; a value counted over a named run set prints that
+                count; a value counted over nothing — D1's static token estimate
+                and its median of medians — prints neither, because "over 0
+                runs" under a real number reads as a sample size rather than as
+                the absence of one. */}
+            {view.numerator !== null && view.denominator !== null ? (
+              <div className="text-caption text-muted-foreground">
+                {t(($) => $.quality.measure.ratio, {
+                  numerator: view.numerator,
+                  denominator: view.denominator,
+                })}
+              </div>
+            ) : view.sample > 0 ? (
+              <div className="text-caption text-muted-foreground">
+                {t(($) => $.quality.measure.ofRuns, { count: view.sample })}
+              </div>
+            ) : null}
             {view.excluded > 0 ? (
               <div className="text-caption text-muted-foreground">
                 {t(($) => $.quality.measure.excluded, { count: view.excluded })}

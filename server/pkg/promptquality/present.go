@@ -15,6 +15,8 @@ package promptquality
 // pipeline (pkg/promptperplexity), because it is a model judgement about the
 // prompt text rather than a fold of the run stream.
 
+import "github.com/multica-ai/multica/server/pkg/promptdiscipline"
+
 // State is what the card renders.
 type State string
 
@@ -28,6 +30,36 @@ const (
 	// state a rate. The card shows a badge and no directional wording.
 	StateInsufficientSample State = "insufficient_sample"
 )
+
+// Unit says how a measured value must be read, and it is the whole contract
+// between this package and the cards.
+//
+// It exists because the unit used to be inferred on the far side: the frontend
+// kept a set of dimension names it considered ratios, and D2 — a 0..100
+// deduction score — was in it, so a median of 90 was formatted as 9,000%. A set
+// of names cannot be checked against the numbers this file emits, and nothing
+// fails when the two drift. Travelling with the value, the unit is decided once
+// here, next to the arithmetic that produced it.
+type Unit string
+
+const (
+	// UnitRatio: a fraction in 0..1 produced by rate(). Rendered as a
+	// percentage.
+	UnitRatio Unit = "ratio"
+	// UnitCount: an absolute tally or a token figure. Rendered as a plain
+	// number.
+	UnitCount Unit = "count"
+	// UnitScore: a 0..100 point score (promptdiscipline's deduction scale).
+	// Rendered as points out of the maximum, never as a percentage of one.
+	UnitScore Unit = "score"
+)
+
+// ScoreMax is the top of the UnitScore scale. It is promptdiscipline's own
+// starting score, referenced rather than restated: D2 is that package's number,
+// and a literal 100 here would be a second definition of the same scale — the
+// class of drift this Unit contract exists to remove. Published with the
+// measure so the card need not hold a third copy.
+const ScoreMax = promptdiscipline.MaxScore
 
 // MinSampleRuns is the declared threshold below which a rate is not published.
 //
@@ -64,16 +96,32 @@ const (
 type Measure struct {
 	State State `json:"state"`
 
-	// Value is the rate or the absolute figure. Nil unless State is ok.
+	// Unit is how Value must be read. Always set, including on the two states
+	// that carry no value: a card renders its unit-dependent wording before it
+	// knows whether a number arrived.
+	Unit Unit `json:"unit"`
+
+	// Value is the rate, the count or the score. Nil unless State is ok.
 	Value *float64 `json:"value"`
 
+	// ScoreMax is the top of the scale for UnitScore, so the card can print
+	// "90 / 100". Zero for every other unit.
+	ScoreMax int `json:"score_max,omitempty"`
+
 	// Numerator and Denominator back the value so the UI can show "4 / 40"
-	// rather than only a percentage. Nil when nothing was measured.
+	// rather than only a percentage. Both nil unless the value is a ratio of
+	// the two — a count has no denominator, and pointing one at the numerator
+	// made the D6 card print "2 / 2".
 	Numerator   *int64 `json:"numerator"`
 	Denominator *int64 `json:"denominator"`
 
-	// Sample and Threshold explain an insufficient_sample badge. Sample is the
-	// dimension's own denominator, which is not always the bucket's run count.
+	// Sample and Threshold explain an insufficient_sample badge, and Sample is
+	// also what an ok card's "over N runs" line reads. Sample is the
+	// dimension's own denominator, which is not always the bucket's run count,
+	// and it is 0 when the value was not counted over a run set the card could
+	// name — D1's static token estimate and its median of medians. The card
+	// omits the line at 0 rather than claiming a measured value rests on zero
+	// runs.
 	Sample    int64 `json:"sample"`
 	Threshold int   `json:"threshold"`
 
@@ -114,13 +162,12 @@ func (p Presentation) ByKey() map[string]Measure {
 // Present turns one aggregated bucket into the seven cards.
 func Present(r Result) Presentation {
 	return Presentation{
-		InjectedTokens:  absolute(r.InjectedTokens, ReasonNoVersionContent),
-		RunTokensMedian: absolute(r.RunTokensMedian, ReasonNoFinishedRuns),
-		Discipline: func() Measure {
-			m := absolute(int64PtrFromInt(r.DisciplineScoreMedian), ReasonNoCoveredRuns)
-			m.Sample = int64(r.DisciplineCoveredRuns)
-			return m
-		}(),
+		InjectedTokens:  count(r.InjectedTokens, 0, ReasonNoVersionContent),
+		RunTokensMedian: count(r.RunTokensMedian, 0, ReasonNoFinishedRuns),
+		// D2 is the median of promptdiscipline's 0..100 deduction score, not a
+		// share of compliant runs. It declares UnitScore so the card prints
+		// "90 / 100" instead of dividing it by nothing and calling it 9,000%.
+		Discipline: score(int64PtrFromInt(r.DisciplineScoreMedian), int64(r.DisciplineCoveredRuns), ReasonNoCoveredRuns),
 		// D4's denominator is measured tool results, not runs: the whole point
 		// of the is_error column is that a run before it was added contributes
 		// nothing here instead of contributing a success.
@@ -144,19 +191,11 @@ func Present(r Result) Presentation {
 // failures than the run list shows.
 func failureAttribution(r Result) Measure {
 	if r.FinishedRuns == 0 {
-		return Measure{State: StateNoData, Threshold: MinSampleRuns, Reason: ReasonNoFinishedRuns}
+		return Measure{State: StateNoData, Unit: UnitCount, Threshold: MinSampleRuns, Reason: ReasonNoFinishedRuns}
 	}
-	n := int64(r.AttributableFailedRuns)
-	v := float64(n)
-	return Measure{
-		State:       StateOK,
-		Value:       &v,
-		Numerator:   &n,
-		Denominator: &n,
-		Sample:      int64(r.FinishedRuns),
-		Threshold:   MinSampleRuns,
-		Excluded:    r.ExcludedFailedRuns,
-	}
+	m := count(int64Ptr(int64(r.AttributableFailedRuns)), int64(r.FinishedRuns), ReasonNoFinishedRuns)
+	m.Excluded = r.ExcludedFailedRuns
+	return m
 }
 
 // rate is the only division in the package, and it refuses twice before doing
@@ -167,11 +206,12 @@ func failureAttribution(r Result) Measure {
 // dimensions do not all count the same unit; see MinSampleIssues.
 func rate(num, den int64, floor int, emptyReason string) Measure {
 	if den == 0 {
-		return Measure{State: StateNoData, Threshold: floor, Reason: emptyReason}
+		return Measure{State: StateNoData, Unit: UnitRatio, Threshold: floor, Reason: emptyReason}
 	}
 	if den < int64(floor) {
 		return Measure{
 			State:     StateInsufficientSample,
+			Unit:      UnitRatio,
 			Sample:    den,
 			Threshold: floor,
 			Reason:    ReasonBelowSampleFloor,
@@ -181,6 +221,7 @@ func rate(num, den int64, floor int, emptyReason string) Measure {
 	n, d := num, den
 	return Measure{
 		State:       StateOK,
+		Unit:        UnitRatio,
 		Value:       &v,
 		Numerator:   &n,
 		Denominator: &d,
@@ -189,17 +230,33 @@ func rate(num, den int64, floor int, emptyReason string) Measure {
 	}
 }
 
-// absolute carries a measurement that is a figure rather than a ratio. There is
-// no sample floor: a median of nine runs is still that median, and hiding it
-// would be a different lie than publishing a rate off four.
-func absolute(v *int64, emptyReason string) Measure {
+// count carries a measurement that is a tally or a figure rather than a ratio.
+// There is no sample floor: a median of nine runs is still that median, and
+// hiding it would be a different lie than publishing a rate off four.
+//
+// sample is the run set the figure was counted over, or 0 when there is none
+// the card could name — see Measure.Sample. Numerator and Denominator stay nil
+// either way: a count is not a ratio, and filling them made the D6 card print
+// its value over itself.
+func count(v *int64, sample int64, emptyReason string) Measure {
 	if v == nil {
-		return Measure{State: StateNoData, Threshold: MinSampleRuns, Reason: emptyReason}
+		return Measure{State: StateNoData, Unit: UnitCount, Threshold: MinSampleRuns, Reason: emptyReason}
 	}
 	f := float64(*v)
-	n := *v
-	return Measure{State: StateOK, Value: &f, Numerator: &n, Threshold: MinSampleRuns}
+	return Measure{State: StateOK, Unit: UnitCount, Value: &f, Sample: sample, Threshold: MinSampleRuns}
 }
+
+// score carries a 0..100 point score. Same no-floor reasoning as count; the
+// separate constructor exists so ScoreMax travels with it and the card never
+// has to guess the top of the scale.
+func score(v *int64, sample int64, emptyReason string) Measure {
+	m := count(v, sample, emptyReason)
+	m.Unit = UnitScore
+	m.ScoreMax = ScoreMax
+	return m
+}
+
+func int64Ptr(v int64) *int64 { return &v }
 
 func int64PtrFromInt(v *int) *int64 {
 	if v == nil {

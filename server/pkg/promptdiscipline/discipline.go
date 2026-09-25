@@ -129,7 +129,11 @@ type Result struct {
 	Deductions []Deduction
 }
 
-const maxScore = 100
+// MaxScore is the score a run starts at, before any deduction. Exported
+// because it is the top of the scale the dashboard prints D2 against ("90 /
+// 100"), and that scale must not be re-stated anywhere: a second copy of 100
+// cannot be checked against this one, and nothing fails when they drift.
+const MaxScore = 100
 
 // Score evaluates one run's messages.
 func Score(messages []Message) Result {
@@ -179,7 +183,7 @@ func Score(messages []Message) Result {
 		return Result{Covered: false}
 	}
 
-	score := maxScore
+	score := MaxScore
 	for _, d := range deductions {
 		score -= d.Points
 	}
