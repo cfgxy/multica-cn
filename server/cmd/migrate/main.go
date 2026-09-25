@@ -305,6 +305,9 @@ var concurrentIndexCleanups = map[string]string{
 	"911_marketplace_listing_name_index":                        "idx_marketplace_listing_kind_name_key",
 	"912_marketplace_listing_discovery_index":                   "idx_marketplace_listing_discovery",
 	"913_marketplace_listing_source_index":                      "idx_marketplace_listing_source_workspace",
+	"919_prompt_version_scope_version_index":                    "idx_prompt_version_scope_version",
+	"920_prompt_version_scope_created_index":                    "idx_prompt_version_scope_created",
+	"921_prompt_version_workspace_index":                        "idx_prompt_version_workspace",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
