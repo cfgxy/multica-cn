@@ -4,5 +4,158 @@
   "empty": {
     "title": "まだ接続されていません",
     "description": "これはプロンプトガバナンス概要のナビゲーション骨組みです（RUYI-183 フェーズ1）。バージョン履歴、差分、採用状況のビューは今後のステージで提供されます。"
+  },
+  "tabs": {
+    "overview": "概要",
+    "quality": "品質"
+  },
+  "quality": {
+    "scopePicker": {
+      "label": "プロンプト階層",
+      "agent": "エージェント",
+      "squad": "スクワッド",
+      "project": "プロジェクト",
+      "workspace": "ワークスペース",
+      "subjectLabel": "対象",
+      "subjectPlaceholder": "エージェントを選択"
+    },
+    "range": {
+      "label": "期間",
+      "days": "直近 {{count}} 日"
+    },
+    "since": "{{date}} 以降を集計しています。それ以前の実行には計測が入っておらず、分母に含まれません。",
+    "noSubject": {
+      "title": "対象を選択してください",
+      "description": "7 つの次元はプロンプト階層ごとに集計されます。エージェントを選ぶとダッシュボードを読み込みます。"
+    },
+    "loading": "計測値を読み込んでいます",
+    "error": {
+      "title": "ダッシュボードを読み込めませんでした",
+      "retry": "再試行"
+    },
+    "window": {
+      "title": "期間内の全バージョン",
+      "runs": "{{count}} 回の実行",
+      "days": "{{count}} 日"
+    },
+    "timeline": {
+      "title": "バージョン",
+      "version": "v{{version}}",
+      "span": "{{first}} — {{last}}",
+      "compare": "比較",
+      "compareHint": "2 つのバージョンを選択して比較します",
+      "clear": "選択を解除",
+      "empty": "この期間に計測済みの実行を持つバージョンはありません。"
+    },
+    "compare": {
+      "title": "バージョン比較",
+      "description": "7 つの次元を並べて表示します。どちらか一方でもデータがない次元は差分を算出しません。",
+      "dimension": "次元",
+      "delta": "Δ",
+      "noDelta": "—",
+      "close": "閉じる"
+    },
+    "dimensions": {
+      "injected_tokens": {
+        "label": "D1 注入コスト",
+        "hint": "1 回の実行で注入された合成プロンプトのトークン中央値。"
+      },
+      "run_tokens_median": {
+        "label": "D1 実行コスト",
+        "hint": "1 回の実行が消費した総トークンの中央値。"
+      },
+      "discipline": {
+        "label": "D2 規律性",
+        "hint": "宣言された報告形式に従った実行の割合。"
+      },
+      "tool_failure_rate": {
+        "label": "D4 ターン失敗率",
+        "hint": "エージェントがエラーとして受け取ったツール結果の割合。"
+      },
+      "retry_rate": {
+        "label": "D5 リトライ",
+        "hint": "2 回以上の試行を要した実行の割合。"
+      },
+      "failure_attribution": {
+        "label": "D6 プロンプト起因の失敗",
+        "hint": "原因がプロンプトを指す失敗の割合。環境・プロバイダー起因の失敗は分母から除外されます。"
+      },
+      "first_pass_rate": {
+        "label": "D7 一発通過率",
+        "hint": "レビューで手戻りなく受け入れられた Issue の割合。"
+      }
+    },
+    "measure": {
+      "ofRuns": "{{count}} 回の実行に基づく",
+      "ratio": "{{numerator}} / {{denominator}}",
+      "excluded": "環境・プロバイダー起因として {{count}} 件を除外",
+      "noData": "データなし",
+      "insufficient": "サンプル不足",
+      "insufficientDetail": "{{sample}} / 必要 {{threshold}}",
+      "reason": {
+        "no_finished_runs": "この期間に完了した実行がありません。",
+        "not_instrumented": "この期間の実行は計測の導入より前のものです。",
+        "no_covered_runs": "この期間にこの計測を持つ実行がありません。",
+        "no_version_content": "このバージョンにはプロンプト本文の記録がありません。",
+        "no_reviewed_issues": "この期間にレビューへ進んだ Issue がありません。",
+        "below_sample_floor": "実行数が宣言された下限を下回っています。",
+        "unknown": "サーバーは理由を示しませんでした。"
+      }
+    },
+    "perplexity": {
+      "title": "D3 ルール困惑度",
+      "description": "合成後のプロンプトの曖昧性リスクを、ランタイム形態ごとに評価します。",
+      "open": "根拠を表示",
+      "profile": {
+        "label": "ランタイム形態",
+        "member": "一般メンバー実行",
+        "leader_task": "リーダータスク実行",
+        "unknown": "{{key}}"
+      },
+      "profileNote": "各形態は異なる合成ドキュメントに対して評価されるため、統合も平均もしません。",
+      "band": {
+        "low": "低",
+        "medium": "中",
+        "high": "高",
+        "unknown": "未評価"
+      },
+      "range": "{{low}}% — {{high}}%",
+      "scoredAt": "{{date}} に {{model}} が評価",
+      "empty": {
+        "title": "未評価",
+        "description": "このプロンプトはまだどのバージョンも評価されていません。評価がないことは中立の評価ではありません。"
+      },
+      "sheet": {
+        "title": "D3 の根拠",
+        "description": "7 つのサブ次元。それぞれに重みと引用箇所があります。",
+        "score": "スコア",
+        "weight": "重み {{percent}}%",
+        "evidence": "根拠",
+        "evidenceCount": "{{count}} 件",
+        "conflictsWith": "{{target}} と矛盾",
+        "noEvidence": "この項目には jsonl の根拠がありません（ランタイムがオフライン）。",
+        "subDimensions": {
+          "tier_placement": "注入階層の妥当性",
+          "cross_tier_conflict": "階層間のルール衝突",
+          "literal_actionability": "字義どおりの実行可能性",
+          "internal_consistency": "前後の論理整合性",
+          "precedence_clarity": "優先順位の明確さ",
+          "scope_boundary": "責務境界の明確さ",
+          "role_rule_completeness": "役割ルールの網羅性",
+          "unknown": "{{key}}"
+        }
+      }
+    },
+    "reasons": {
+      "title": "D6 失敗理由の内訳",
+      "excluded": "環境・プロバイダー起因の {{count}} 件を除外済み",
+      "empty": "この期間に失敗した実行はありません。"
+    },
+    "sources": {
+      "langfuse": "Langfuse エクスポートは無効です",
+      "scoring_model": "評価モデルを利用できません",
+      "unknown": "{{kind}} を利用できません",
+      "note": "ダッシュボードのデータに影響はありません。"
+    }
   }
 }
