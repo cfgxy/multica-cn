@@ -14,8 +14,10 @@ import type { ListIssuesParams } from "@multica/core/types";
  * the three server relations restricted to the four action categories
  * (backlog/todo/in_progress/in_review). It has NO single server filter —
  * `buildMyIssuesFilter` deliberately doesn't accept it; the screen mounts the
- * three per-relation queries (whose keys match the single scopes' exactly, so
- * cache entries are shared) and merges via `buildActionableIssues`.
+ * three per-relation queries from `myScopeFilters` and merges via
+ * `buildActionableIssues`. Those filters carry `status_categories`, so their
+ * keys are distinct from the single scopes' — see `myScopeFilters` for why the
+ * caches must not be shared (RUYI-199).
  */
 export type MyIssuesScope = "assigned" | "created" | "agents" | "actionable";
 
@@ -24,7 +26,15 @@ export type SingleRelationScope = Exclude<MyIssuesScope, "actionable">;
 
 export type MyIssuesFilter = Pick<
   ListIssuesParams,
-  "assignee_id" | "assignee_ids" | "creator_id" | "involves_user_id"
+  | "assignee_id"
+  | "assignee_ids"
+  | "creator_id"
+  | "involves_user_id"
+  // `actionable` narrows its three relation queries to the four action
+  // categories server-side. Without it the server's 100-row window is filled
+  // by done/cancelled rows the merge would have dropped anyway, and the view
+  // renders empty while matching issues sit on page 2 (RUYI-199).
+  | "status_categories"
 >;
 
 export const issueKeys = {
