@@ -1,26 +1,26 @@
--- Reverse the identity split before restoring the pre-907 whitelist.
+-- Reverse the identity split before restoring the pre-923 whitelist.
 --
 -- Order matters: the rows have to leave the two new families first, otherwise
--- a rolled-back deployment is left with profiles a pre-907 daemon cannot map
--- to any backend (it would refuse to register them) and a pre-907 API cannot
--- edit. Sending them back to 'kimi' restores exactly the shim state 907 up
+-- a rolled-back deployment is left with profiles a pre-923 daemon cannot map
+-- to any backend (it would refuse to register them) and a pre-923 API cannot
+-- edit. Sending them back to 'kimi' restores exactly the shim state 923 up
 -- migrated away from — the same profile ids, so agent bindings survive the
 -- round trip in both directions.
 --
--- Profiles created directly in the new families after 907 (no kimi shim ever
+-- Profiles created directly in the new families after 923 (no kimi shim ever
 -- existed for them) are folded into the same shim shape: it is the only
 -- representation the older schema has, and it keeps them launchable rather
 -- than orphaned.
 --
--- The pre-fold family is recorded first. Re-applying 907 recovers a folded
+-- The pre-fold family is recorded first. Re-applying 923 recovers a folded
 -- row's identity from the command basename, which only works for rows
 -- launching the standard bridge command; the API allows any single-token
 -- command, so ('zcode', 'company-zcode-wrapper') would otherwise be stranded
 -- on 'kimi' by an up -> down -> up cycle with no field left to recover it
 -- from. The table is dropped by the up migration once it has been consumed.
-DROP TABLE IF EXISTS runtime_profile_family_907_backup;
+DROP TABLE IF EXISTS runtime_profile_family_923_backup;
 
-CREATE TABLE runtime_profile_family_907_backup AS
+CREATE TABLE runtime_profile_family_923_backup AS
 SELECT id AS profile_id, protocol_family
 FROM runtime_profile
 WHERE protocol_family IN ('deerflow', 'zcode');
