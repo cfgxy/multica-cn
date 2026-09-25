@@ -120,7 +120,7 @@ func TestRuntimeProfileCheckConstraintMatchesWhitelist(t *testing.T) {
 
 	for _, family := range agent.SupportedTypes {
 		if err := probe(family); err != nil {
-			t.Errorf("protocol_family %q is in agent.SupportedTypes but the runtime_profile CHECK rejects it; migration 907 and the whitelist have drifted: %v", family, err)
+			t.Errorf("protocol_family %q is in agent.SupportedTypes but the runtime_profile CHECK rejects it; migration 923 and the whitelist have drifted: %v", family, err)
 		}
 	}
 
@@ -139,7 +139,7 @@ func TestRuntimeProfileCheckConstraintMatchesWhitelist(t *testing.T) {
 // path. Update deliberately exposes no protocol_family field: repointing a
 // live profile at a different backend would silently change what every agent
 // bound to it runs. The shim profiles that DID need to change family are moved
-// once, by migration 907, which is a controlled in-place rewrite rather than an
+// once, by migration 923, which is a controlled in-place rewrite rather than an
 // API edit.
 func TestUpdateRuntimeProfile_ProtocolFamilyIsImmutable(t *testing.T) {
 	if testHandler == nil {

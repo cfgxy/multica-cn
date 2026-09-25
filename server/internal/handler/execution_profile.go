@@ -17,6 +17,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 // ---------------------------------------------------------------------------
@@ -834,6 +835,7 @@ func (h *Handler) applyExecutionProfileEntry(
 		"to_thinking_level":   updated.ThinkingLevel.String,
 	})
 	if _, err := qtx.CreateActivity(r.Context(), db.CreateActivityParams{
+		ID:          dbid.NewV7(),
 		WorkspaceID: workspaceID,
 		ActorType:   pgtype.Text{String: "member", Valid: true},
 		ActorID:     parseUUID(requestUserID(r)),
