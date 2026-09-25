@@ -14,7 +14,7 @@
 import { readFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 
-import { resolveCredentials, type CredentialOverrides } from "./config.js";
+import { resolveCredentials, resolveServerUrl, type CredentialOverrides } from "./config.js";
 import { stderrLogger } from "./log.js";
 import { MulticaClient } from "./rest.js";
 import { runStdio } from "./stdio.js";
@@ -61,27 +61,33 @@ function parseFlags(): ParsedFlags {
 
 async function main(): Promise<void> {
   const flags = parseFlags();
-  const overrides: CredentialOverrides = {
-    token: flags.token,
-    serverUrl: flags.serverUrl,
-    profile: flags.profile,
-  };
-
-  const credentials = resolveCredentials(
-    process.env,
-    (path) => readFileSync(path, "utf8"),
-    overrides,
-  );
-  const client = new MulticaClient({
-    serverUrl: credentials.serverUrl,
-    token: credentials.token,
-  });
 
   if (flags.transport === "stdio") {
+    const overrides: CredentialOverrides = {
+      token: flags.token,
+      serverUrl: flags.serverUrl,
+      profile: flags.profile,
+    };
+    const credentials = resolveCredentials(
+      process.env,
+      (path) => readFileSync(path, "utf8"),
+      overrides,
+    );
+    const client = new MulticaClient({
+      serverUrl: credentials.serverUrl,
+      token: credentials.token,
+    });
     await runStdio(client, stderrLogger);
     return;
   }
   if (flags.transport === "http") {
+    // Stateless server: every request carries its own PAT (src/http.ts), so
+    // startup only needs to know which backend to reach — never a token —
+    // and must not require this host to already be authenticated.
+    const serverUrl = resolveServerUrl(process.env, (path) => readFileSync(path, "utf8"), {
+      serverUrl: flags.serverUrl,
+      profile: flags.profile,
+    });
     const port = flags.port ?? process.env["MULTICA_MCP_PORT"] ?? "8080";
     const portNumber = Number.parseInt(port, 10);
     if (!Number.isInteger(portNumber) || portNumber < 1 || portNumber > 65535) {
@@ -91,7 +97,7 @@ async function main(): Promise<void> {
     const httpServer = await startHttpServer({
       port: portNumber,
       host,
-      serverUrl: credentials.serverUrl,
+      serverUrl,
     });
     const shutdown = (): void => {
       httpServer.close(() => process.exit(0));
