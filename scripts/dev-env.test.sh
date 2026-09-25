@@ -450,4 +450,71 @@ fi
 [ -f "$MULTICA_DEV_HOME/envs/no-envfile-909/manifest.env" ] \
   || fail "unconfirmed destroy discarded the manifest"
 
+# ---------------------------------------------------------------------------
+# RUYI-204: `up` refuses to run in the main checkout. Its .env is hand-written
+# with PORT=8080, which can never match a slot, so every run there reallocated
+# a slot and rewrote the ports out from under the person who wrote them.
+# The checkout kind is read off .git: a directory in the main checkout, a file
+# in a worktree.
+# ---------------------------------------------------------------------------
+# Builds a fake checkout that runs the real script: dev-env.sh is symlinked, so
+# REPO_ROOT resolves to the fake root and the gate sees its .git.
+make_fake_checkout() {
+  local dir=$1 kind=$2
+  mkdir -p "$dir/scripts"
+  ln -sf "$root_dir/scripts/dev-env.sh" "$dir/scripts/dev-env.sh"
+  case "$kind" in
+    main) mkdir -p "$dir/.git" ;;
+    worktree) printf 'gitdir: %s/.git/worktrees/fake\n' "$root_dir" > "$dir/.git" ;;
+  esac
+  cat > "$dir/.env" <<'EOF'
+PORT=8080
+FRONTEND_PORT=3000
+FRONTEND_ORIGIN=http://localhost:3000
+EOF
+}
+
+# The gate has to fire before anything else `up` does, so `--components nope`
+# — whose rejection is the earliest observable point past the gate — proves
+# both directions without starting a slot allocation or touching Docker.
+main_checkout="$tmp_dir/main-checkout"
+make_fake_checkout "$main_checkout" main
+env_before="$(sha256sum < "$main_checkout/.env")"
+mtime_before="$(stat -c %Y "$main_checkout/.env")"
+status=0
+bash "$main_checkout/scripts/dev-env.sh" up > "$out" 2>&1 || status=$?
+[ "$status" -ne 0 ] || fail "up in the main checkout must fail"
+require_contains "$out" "main checkout"
+require_contains "$out" "MULTICA_DEV_ALLOW_MAIN_CHECKOUT=1"
+[ "$(sha256sum < "$main_checkout/.env")" = "$env_before" ] \
+  || fail "the refused up rewrote the main checkout's .env"
+[ "$(stat -c %Y "$main_checkout/.env")" = "$mtime_before" ] \
+  || fail "the refused up touched the main checkout's .env"
+
+# The gate outranks argument validation, so a refused main-checkout run cannot
+# be talked past by any flag.
+status=0
+bash "$main_checkout/scripts/dev-env.sh" up --components nope > "$out" 2>&1 || status=$?
+[ "$status" -ne 0 ] || fail "up --components nope in the main checkout must fail"
+require_contains "$out" "main checkout"
+
+# The escape hatch restores the previous behaviour: the run proceeds into the
+# ordinary argument handling instead of being refused.
+status=0
+MULTICA_DEV_ALLOW_MAIN_CHECKOUT=1 bash "$main_checkout/scripts/dev-env.sh" up --components nope > "$out" 2>&1 || status=$?
+if grep -Fq "main checkout" "$out"; then
+  fail "MULTICA_DEV_ALLOW_MAIN_CHECKOUT=1 did not open the gate: $(cat "$out")"
+fi
+require_contains "$out" "Unknown component"
+
+# A worktree is unaffected: the gate never fires there.
+wt_checkout="$tmp_dir/wt-checkout"
+make_fake_checkout "$wt_checkout" worktree
+status=0
+bash "$wt_checkout/scripts/dev-env.sh" up --components nope > "$out" 2>&1 || status=$?
+if grep -Fq "main checkout" "$out"; then
+  fail "the gate fired in a worktree: $(cat "$out")"
+fi
+require_contains "$out" "Unknown component"
+
 echo "✓ dev-env.sh registry behaviour verified"

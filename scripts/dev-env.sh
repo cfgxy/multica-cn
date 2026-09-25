@@ -1088,7 +1088,25 @@ save_manifest() {
   } > "$(manifest_of "$NAME")"
 }
 
+# The main checkout is not an environment host. Its .env is hand-written with
+# PORT=8080, which can never equal a slot port, so the slot allocation below
+# rewrote those ports on every single run — the person who wrote 8080 got it
+# taken away by the next `up`. Refusing here, before allocation and before
+# rewrite_env_ports, is what keeps that file exactly as written.
+refuse_main_checkout() {
+  [ "${MULTICA_DEV_ALLOW_MAIN_CHECKOUT:-0}" != 1 ] || return 0
+  # A worktree's .git is a file pointing at the real one; only the main
+  # checkout has it as a directory.
+  [ -d "$REPO_ROOT/.git" ] || return 0
+  die "Refusing to start an environment in the main checkout ($REPO_ROOT).
+Allocating a slot here rewrites this checkout's .env ports on every run.
+Start environments in a worktree instead, or set MULTICA_DEV_ALLOW_MAIN_CHECKOUT=1
+to override — which will rewrite this .env."
+}
+
 cmd_up() {
+  refuse_main_checkout
+
   local requested="$DEFAULT_COMPONENTS" name="" owner=human ttl=0 lifecycle_requested=0 comp
 
   while [ $# -gt 0 ]; do
