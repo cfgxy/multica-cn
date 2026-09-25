@@ -66,7 +66,7 @@
       },
       "discipline": {
         "label": "D2 Discipline",
-        "hint": "Share of runs whose output followed the declared reporting format."
+        "hint": "Median discipline score out of 100. A run starts at 100 and loses points for each mechanically checkable clause it broke."
       },
       "tool_failure_rate": {
         "label": "D4 Turn failure rate",
@@ -78,7 +78,7 @@
       },
       "failure_attribution": {
         "label": "D6 Prompt-attributed failures",
-        "hint": "Share of failures whose cause points at the prompt. Environment and provider failures are excluded from the denominator."
+        "hint": "How many failures had a cause pointing at the prompt. Environment and provider failures are not counted."
       },
       "first_pass_rate": {
         "label": "D7 First-pass rate",

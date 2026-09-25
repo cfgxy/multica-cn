@@ -66,7 +66,7 @@
       },
       "discipline": {
         "label": "D2 纪律性",
-        "hint": "输出符合声明回报格式的运行占比。"
+        "hint": "纪律性中位分，满分 100。每次运行从 100 分起算，违反一条可机械判定的条款扣一次分。"
       },
       "tool_failure_rate": {
         "label": "D4 轮次失败率",
@@ -78,7 +78,7 @@
       },
       "failure_attribution": {
         "label": "D6 错误根因（Prompt 归因）",
-        "hint": "归因于 prompt 的失败占比。环境与供应商类失败不进入分母。"
+        "hint": "原因指向 prompt 的失败次数。环境与供应商类失败不计入。"
       },
       "first_pass_rate": {
         "label": "D7 一次过率",

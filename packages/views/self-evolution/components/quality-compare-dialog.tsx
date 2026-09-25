@@ -70,19 +70,22 @@ export function QualityCompareDialog({
                 const b = toMeasureView(right.measures[key]);
                 const aValue = a.state === "ok" ? a.value : null;
                 const bValue = b.state === "ok" ? b.value : null;
-                const delta = formatMeasureDelta(key, aValue, bValue, locale);
+                // Both sides are the same dimension, so they carry the same
+                // unit, and every state carries it — including the two with no
+                // value, so the delta can be read off either side.
+                const delta = formatMeasureDelta(a.unit, aValue, bValue, locale);
                 return (
                   <TableRow key={key}>
                     <TableCell>{t(($) => $.quality.dimensions[key].label)}</TableCell>
                     <TableCell className="text-right tabular-nums">
-                      {aValue === null
+                      {aValue === null || a.state !== "ok"
                         ? stateWord(t, a)
-                        : formatMeasureValue(key, aValue, locale)}
+                        : formatMeasureValue(a.unit, aValue, locale, a.scoreMax)}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
-                      {bValue === null
+                      {bValue === null || b.state !== "ok"
                         ? stateWord(t, b)
-                        : formatMeasureValue(key, bValue, locale)}
+                        : formatMeasureValue(b.unit, bValue, locale, b.scoreMax)}
                     </TableCell>
                     <TableCell className="text-right tabular-nums">
                       {delta ?? t(($) => $.quality.compare.noDelta)}

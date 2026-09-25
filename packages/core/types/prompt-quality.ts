@@ -31,8 +31,22 @@ export type PromptQualityDimension =
 export interface PromptQualityMeasure {
   /** "ok" | "no_data" | "insufficient_sample", server-driven. */
   state: string;
-  /** The rate or absolute figure. Null unless state is "ok". */
+  /**
+   * How `value` must be read: "ratio" (0..1), "count" or "score" (0..score_max),
+   * server-driven.
+   *
+   * The server decides this next to the arithmetic that produced the value. It
+   * used to be inferred here from a set of dimension names, and D2 — a 0..100
+   * deduction score — sat in the set meant for ratios, so a median of 90 printed
+   * as 9,000%. Optional on the wire so a backend without the field still parses;
+   * `measure.ts` defaults it to "count", never to "ratio".
+   */
+  unit?: string;
+  /** The rate, count or score. Null unless state is "ok". */
   value: number | null;
+  /** Top of the scale for unit "score", so the card can print "90 / 100". */
+  score_max?: number;
+  /** Both null unless the value is a ratio of the two. A count has neither. */
   numerator: number | null;
   denominator: number | null;
   /** The dimension's own denominator, which is not always the run count. */

@@ -3908,7 +3908,12 @@ export const EMPTY_EXECUTION_PROFILE_ACTIVATION: ExecutionProfileActivationRespo
 
 export const PromptQualityMeasureSchema = z.object({
   state: z.string().default("no_data"),
+  // Server-driven like `state`: a unit a newer backend adds must still parse.
+  // The narrowing, and the default for an absent one, live in
+  // core/self-evolution/measure.ts.
+  unit: z.string().optional(),
   value: z.number().nullable().default(null),
+  score_max: z.number().optional(),
   numerator: z.number().nullable().default(null),
   denominator: z.number().nullable().default(null),
   sample: z.number().default(0),
