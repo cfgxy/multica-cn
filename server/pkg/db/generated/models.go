@@ -188,6 +188,8 @@ type AgentTaskQueue struct {
 	BranchName                pgtype.Text `json:"branch_name"`
 	DurableWorkDir            pgtype.Text `json:"durable_work_dir"`
 	ChannelContextRevision    pgtype.Int8 `json:"channel_context_revision"`
+	// Prompt tier version numbers this run was claimed with (RUYI-183). Keys present only for tiers actually injected; absent, not zero, for tiers that were not.
+	PromptVersions []byte `json:"prompt_versions"`
 }
 
 type AgentToLabel struct {
@@ -1294,6 +1296,25 @@ type ProjectResource struct {
 	Position     int32              `json:"position"`
 	CreatedAt    pgtype.Timestamptz `json:"created_at"`
 	CreatedBy    pgtype.UUID        `json:"created_by"`
+}
+
+// Version history for the four prompt tiers (RUYI-183). History/audit only — the business column on workspace/project/squad/agent stays the single read source for currently effective content. Append-only: switching or rolling back writes a new row, never mutates or deletes an existing one.
+type PromptVersion struct {
+	ID                pgtype.UUID        `json:"id"`
+	WorkspaceID       pgtype.UUID        `json:"workspace_id"`
+	Scope             string             `json:"scope"`
+	ScopeID           pgtype.UUID        `json:"scope_id"`
+	Version           int32              `json:"version"`
+	Content           string             `json:"content"`
+	ContentSha256     string             `json:"content_sha256"`
+	Source            string             `json:"source"`
+	SourceVersion     pgtype.Int4        `json:"source_version"`
+	ChangeNote        string             `json:"change_note"`
+	ScannerRevision   string             `json:"scanner_revision"`
+	GateResult        []byte             `json:"gate_result"`
+	AuthorUserID      pgtype.UUID        `json:"author_user_id"`
+	AuthorNoteIssueID pgtype.UUID        `json:"author_note_issue_id"`
+	CreatedAt         pgtype.Timestamptz `json:"created_at"`
 }
 
 type QuickAction struct {

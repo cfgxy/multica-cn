@@ -466,6 +466,9 @@ deleted_lark_user_bindings AS (
 ),
 deleted_lark_binding_tokens AS (
     DELETE FROM lark_binding_token WHERE workspace_id = $1
+),
+deleted_prompt_versions AS (
+    DELETE FROM prompt_version WHERE workspace_id = $1
 )
 UPDATE channel_media_pending_object
 SET state = CASE
@@ -491,6 +494,8 @@ WHERE channel_media_pending_object.workspace_id = $1
 // Same no-FK chore as chat_draft_restore above. Matched on workspace_id rather
 // than the session set because that column exists precisely so this statement
 // does not have to join through chat_session, which it deletes in this same CTE.
+// Prompt version history (RUYI-183) goes with the workspace: it has no FK
+// and no dependents, so a plain workspace_id delete is enough.
 // Keep the two-system cleanup ledger until object storage has been settled.
 // Moving every row out of pending also prevents a concurrent media bind from
 // attaching an object after the workspace teardown commits. The reconciler
