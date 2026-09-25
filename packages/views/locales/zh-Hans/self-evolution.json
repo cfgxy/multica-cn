@@ -1,0 +1,8 @@
+{
+  "title": "自进化",
+  "description": "查看智能体与小队 prompt 随时间的变化，以及变化的来源。",
+  "empty": {
+    "title": "尚未接入数据",
+    "description": "这是 prompt 治理总览的导航骨架（RUYI-183 阶段一）。版本历史、diff 与采用情况视图将在后续阶段交付。"
+  }
+}
