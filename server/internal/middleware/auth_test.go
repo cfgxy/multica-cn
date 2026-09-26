@@ -64,7 +64,7 @@ func validClaims() jwt.MapClaims {
 // disabled gate (JWT-only tests). Tests that exercise the account-disable
 // path build Auth directly with a stub auth.DisabledLookup.
 func authMiddleware(next http.Handler) http.Handler {
-	return Auth(nil, nil, nil, nil)(next)
+	return Auth(nil, nil, nil, nil, nil)(next)
 }
 
 // stubDisabledLookup is a configurable auth.DisabledLookup for middleware
@@ -212,7 +212,7 @@ func TestAuth_ValidToken(t *testing.T) {
 // with 403 and the stable "account disabled" reason.
 func TestAuth_DisabledJWTByUserID(t *testing.T) {
 	const disabledID = "514492f7-b30f-4147-bd33-c0e8ce5d6d4f"
-	mw := Auth(nil, nil, nil, stubDisabledLookup{disabledID: true})
+	mw := Auth(nil, nil, nil, stubDisabledLookup{disabledID: true}, nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("next handler should not be called")
 	}))
@@ -239,7 +239,7 @@ func TestAuth_DisabledJWTByUserID(t *testing.T) {
 // user ID only, so an unrelated account sharing nothing with a disabled
 // user passes.
 func TestAuth_EnabledUserPassesDisabledGate(t *testing.T) {
-	mw := Auth(nil, nil, nil, stubDisabledLookup{"514492f7-b30f-4147-bd33-c0e8ce5d6d4f": true})
+	mw := Auth(nil, nil, nil, stubDisabledLookup{"514492f7-b30f-4147-bd33-c0e8ce5d6d4f": true}, nil)
 	var gotUserID string
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotUserID = r.Header.Get("X-User-ID")
@@ -265,7 +265,7 @@ func TestAuth_EnabledUserPassesDisabledGate(t *testing.T) {
 // never survives, and the middleware also consults the impersonator's
 // account state.
 func TestAuth_ImpersonationTokenStampsImpersonator(t *testing.T) {
-	mw := Auth(nil, nil, nil, stubDisabledLookup{"disabled-admin-id": true})
+	mw := Auth(nil, nil, nil, stubDisabledLookup{"disabled-admin-id": true}, nil)
 	var gotUserID, gotImp string
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotUserID = r.Header.Get("X-User-ID")
@@ -364,7 +364,7 @@ func TestAuth_InvalidPAT(t *testing.T) {
 // boundary MUL-2600 introduces.
 func TestAuth_StripsClientSuppliedActorSource(t *testing.T) {
 	var gotActorSource string
-	mw := Auth(nil, nil, nil, nil)
+	mw := Auth(nil, nil, nil, nil, nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotActorSource = r.Header.Get("X-Actor-Source")
 		w.WriteHeader(http.StatusOK)
@@ -407,7 +407,7 @@ func TestAuth_PATCacheHit(t *testing.T) {
 	cache.Set(context.Background(), hash, "cached-user-id", auth.AuthCacheTTL)
 
 	var gotUserID string
-	mw := Auth(nil, cache, nil, nil) // nil queries — only safe on cache hit
+	mw := Auth(nil, cache, nil, nil, nil) // nil queries — only safe on cache hit
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotUserID = r.Header.Get("X-User-ID")
 		w.WriteHeader(http.StatusOK)
@@ -432,7 +432,7 @@ func TestAuth_PATCacheHit(t *testing.T) {
 // We don't fall through — an mcn_ string can't be a valid mul_ PAT or
 // JWT, so any fall-through would be wasted work.
 func TestAuth_MCN_NoVerifierConfigured(t *testing.T) {
-	mw := Auth(nil, nil, nil, nil)
+	mw := Auth(nil, nil, nil, nil, nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("next must not be called when verifier is unconfigured")
 	}))
@@ -461,7 +461,7 @@ func TestAuth_MCN_ValidTokenSetsUserID(t *testing.T) {
 	verifier := auth.NewCloudPATVerifier(auth.CloudPATVerifierConfig{FleetBaseURL: srv.URL})
 
 	var gotUser, gotActorSource string
-	mw := Auth(nil, nil, verifier, nil)
+	mw := Auth(nil, nil, verifier, nil, nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotUser = r.Header.Get("X-User-ID")
 		gotActorSource = r.Header.Get("X-Actor-Source")
@@ -499,7 +499,7 @@ func TestAuth_MCN_InvalidReturns401(t *testing.T) {
 	defer srv.Close()
 
 	verifier := auth.NewCloudPATVerifier(auth.CloudPATVerifierConfig{FleetBaseURL: srv.URL})
-	mw := Auth(nil, nil, verifier, nil)
+	mw := Auth(nil, nil, verifier, nil, nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("next must not be called when token is invalid")
 	}))
@@ -523,7 +523,7 @@ func TestAuth_MCN_FleetUnreachableReturns503(t *testing.T) {
 	defer srv.Close()
 
 	verifier := auth.NewCloudPATVerifier(auth.CloudPATVerifierConfig{FleetBaseURL: srv.URL})
-	mw := Auth(nil, nil, verifier, nil)
+	mw := Auth(nil, nil, verifier, nil, nil)
 	handler := mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		t.Fatal("next must not be called when fleet is unavailable")
 	}))
