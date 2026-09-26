@@ -34,6 +34,12 @@ type fakePatcherQueries struct {
 	created             []CreateOutboundCardMessageParams
 	createReturn        OutboundCardMessage
 	statusUpdates       []UpdateOutboundCardStatusParams
+	// Attachment lookup, exercised by outbound_media_test.go.
+	// attachmentLookups counts the calls so the "no object storage
+	// configured" case can assert the query never ran at all.
+	attachments       []db.Attachment
+	attachmentsErr    error
+	attachmentLookups int
 }
 
 func (f *fakePatcherQueries) GetAgentTask(ctx context.Context, id pgtype.UUID) (db.AgentTaskQueue, error) {
@@ -105,6 +111,20 @@ type fakeAPIClient struct {
 	mdCardErr      error
 	mdCardReturn   string
 	bindingSent    []BindingPromptParams
+	// File-delivery surface, exercised by outbound_media_test.go.
+	imageUploads   []UploadImageParams
+	fileUploads    []UploadFileParams
+	imageSent      []SendImageParams
+	fileSent       []SendFileParams
+	imageKeyReturn string
+	fileKeyReturn  string
+	uploadImageErr error
+	uploadFileErr  error
+	sendImageErr   error
+	sendFileErr    error
+	// sendFileHook takes precedence over sendFileErr when set, so a test can
+	// hand consecutive file sends different outcomes.
+	sendFileHook func() error
 	// threadReplyErr, when non-nil, is returned by the three send
 	// methods whenever the call carries a thread ReplyTarget, while the
 	// attempt is still recorded. Tests inject either a classified
@@ -187,6 +207,13 @@ func (f *fakeAPIClient) DeleteMessageReaction(ctx context.Context, p DeleteReact
 
 func newTestPatcher(t *testing.T) (*Patcher, *fakePatcherQueries, *fakeAPIClient) {
 	t.Helper()
+	return newTestPatcherWith(t)
+}
+
+// newTestPatcherWith is newTestPatcher with construction options, so the
+// file-delivery tests get the same fixture rather than a parallel one.
+func newTestPatcherWith(t *testing.T, opts ...PatcherOption) (*Patcher, *fakePatcherQueries, *fakeAPIClient) {
+	t.Helper()
 	q := &fakePatcherQueries{
 		binding: ChatSessionBinding{
 			ChatSessionID:  uuidFromString(t, "cccccccc-cccc-cccc-cccc-cccccccccccc"),
@@ -208,7 +235,7 @@ func newTestPatcher(t *testing.T) (*Patcher, *fakePatcherQueries, *fakeAPIClient
 	p := NewPatcher(q, fakeCredentials{secret: "shh"}, api, PatcherConfig{
 		Logger: newDiscardLogger(),
 		Now:    time.Now,
-	})
+	}, opts...)
 	return p, q, api
 }
 

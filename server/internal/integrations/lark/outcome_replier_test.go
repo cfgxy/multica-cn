@@ -102,6 +102,18 @@ func (s *stubAPIClientWithRecorder) AddMessageReaction(ctx context.Context, p Ad
 func (s *stubAPIClientWithRecorder) DeleteMessageReaction(ctx context.Context, p DeleteReactionParams) error {
 	return nil
 }
+func (s *stubAPIClientWithRecorder) UploadImage(ctx context.Context, p UploadImageParams) (string, error) {
+	return "", nil
+}
+func (s *stubAPIClientWithRecorder) UploadFile(ctx context.Context, p UploadFileParams) (string, error) {
+	return "", nil
+}
+func (s *stubAPIClientWithRecorder) SendImageMessage(ctx context.Context, p SendImageParams) (string, error) {
+	return "", nil
+}
+func (s *stubAPIClientWithRecorder) SendFileMessage(ctx context.Context, p SendFileParams) (string, error) {
+	return "", nil
+}
 
 // stubCredentialsResolver returns a fixed plaintext secret.
 type stubCredentialsResolver struct{ secret string }

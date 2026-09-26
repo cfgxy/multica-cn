@@ -129,6 +129,27 @@ type APIClient interface {
 	// DeleteMessageReaction removes a previously-added reaction from a
 	// message. This is the cleanup half of the typing-indicator lifecycle.
 	DeleteMessageReaction(ctx context.Context, p DeleteReactionParams) error
+
+	// UploadImage uploads image bytes via POST /open-apis/im/v1/images and
+	// returns the image_key an image message is then addressed by. Lark
+	// splits outbound media into two endpoints with two key namespaces, and
+	// an image_key is not interchangeable with a file_key — hence two
+	// methods rather than one with a discriminator.
+	UploadImage(ctx context.Context, p UploadImageParams) (string, error)
+
+	// UploadFile uploads arbitrary bytes via POST /open-apis/im/v1/files and
+	// returns the file_key a file message is addressed by.
+	UploadFile(ctx context.Context, p UploadFileParams) (string, error)
+
+	// SendImageMessage posts a previously-uploaded image into a chat
+	// (msg_type=image). Split from the upload so a caller that already holds
+	// a key — a resend, a key reused across chats — does not re-upload the
+	// bytes.
+	SendImageMessage(ctx context.Context, p SendImageParams) (string, error)
+
+	// SendFileMessage posts a previously-uploaded file into a chat
+	// (msg_type=file).
+	SendFileMessage(ctx context.Context, p SendFileParams) (string, error)
 }
 
 // TokenCacheInvalidator is implemented by an APIClient that caches
@@ -344,6 +365,54 @@ type DeleteReactionParams struct {
 	ReactionID     string
 }
 
+// UploadImageParams is the input shape for POST /open-apis/im/v1/images.
+//
+// Data is the whole image in memory. Lark's image endpoint caps a message
+// image at 10 MiB and the multipart body has to be replayable — the transport
+// retries once after a token rejection — so streaming would buy nothing here
+// beyond a body that cannot be sent twice.
+type UploadImageParams struct {
+	InstallationID InstallationCredentials
+	// Filename is the multipart part filename. Lark does not surface it to
+	// the recipient for images, but it must be present and single-segment.
+	Filename string
+	Data     []byte
+}
+
+// UploadFileParams is the input shape for POST /open-apis/im/v1/files.
+//
+// Unlike an image, the filename IS what the recipient sees and downloads, so
+// it is sent as the file_name form field as well as the part filename.
+type UploadFileParams struct {
+	InstallationID InstallationCredentials
+	// FileType is Lark's file_type enum: opus, mp4, pdf, doc, xls, ppt, or
+	// stream for everything else. Callers derive it from the filename; see
+	// feishuFileType.
+	FileType string
+	Filename string
+	Data     []byte
+}
+
+// SendImageParams posts an already-uploaded image (msg_type=image).
+type SendImageParams struct {
+	InstallationID InstallationCredentials
+	ChatID         ChatID
+	ImageKey       string
+	// ReplyTarget threads the image into a Lark topic; see ReplyTarget.
+	// Empty keeps the chat-level send.
+	ReplyTarget ReplyTarget
+}
+
+// SendFileParams posts an already-uploaded file (msg_type=file).
+type SendFileParams struct {
+	InstallationID InstallationCredentials
+	ChatID         ChatID
+	FileKey        string
+	// ReplyTarget threads the file into a Lark topic; see ReplyTarget.
+	// Empty keeps the chat-level send.
+	ReplyTarget ReplyTarget
+}
+
 // InstallationCredentials is the per-installation transport context the
 // client needs to authenticate against Lark on behalf of a workspace's
 // bot. Passing these explicitly to each call (rather than constructing
@@ -458,4 +527,24 @@ func (s *stubAPIClient) AddMessageReaction(ctx context.Context, p AddReactionPar
 func (s *stubAPIClient) DeleteMessageReaction(ctx context.Context, p DeleteReactionParams) error {
 	s.log.Warn("lark stub client: DeleteMessageReaction called", "message_id", p.MessageID, "reaction_id", p.ReactionID)
 	return ErrAPIClientNotConfigured
+}
+
+func (s *stubAPIClient) UploadImage(ctx context.Context, p UploadImageParams) (string, error) {
+	s.log.Warn("lark stub client: UploadImage called", "filename", p.Filename, "bytes", len(p.Data))
+	return "", ErrAPIClientNotConfigured
+}
+
+func (s *stubAPIClient) UploadFile(ctx context.Context, p UploadFileParams) (string, error) {
+	s.log.Warn("lark stub client: UploadFile called", "filename", p.Filename, "file_type", p.FileType, "bytes", len(p.Data))
+	return "", ErrAPIClientNotConfigured
+}
+
+func (s *stubAPIClient) SendImageMessage(ctx context.Context, p SendImageParams) (string, error) {
+	s.log.Warn("lark stub client: SendImageMessage called", "chat_id", string(p.ChatID))
+	return "", ErrAPIClientNotConfigured
+}
+
+func (s *stubAPIClient) SendFileMessage(ctx context.Context, p SendFileParams) (string, error) {
+	s.log.Warn("lark stub client: SendFileMessage called", "chat_id", string(p.ChatID))
+	return "", ErrAPIClientNotConfigured
 }
