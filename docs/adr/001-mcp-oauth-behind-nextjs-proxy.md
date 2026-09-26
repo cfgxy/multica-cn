@@ -100,14 +100,14 @@ MCP 侧仍须承担一件事：backend 返回 401 时，映射为带指针的 40
 
 ### 3.6 客户端与 scope
 
-- 预置客户端：新增一张 `oauth_clients` 表（client_id、client_secret_hash、name、redirect_uris、created_by、时间戳），
+- 预置客户端：新增一张 `oauth_client` 表（client_id、client_secret_hash、name、redirect_uris、created_by、时间戳），
   由管理入口手动创建；Owner 把 client_id/secret 填进 ChatGPT 的高级 OAuth 设置。不做 DCR。
 - 授权码存 Redis（已有 `rdb`），TTL 60s，一次性消费。不建表。
 - scope 首版只有 `mcp` 一个值；per-tool `securitySchemes` 全部标同一 scope。
 
 ### 3.7 过度设计预警的处置
 
-初稿命中"新增超过 2 个新实体"（oauth_clients / authorization_codes / refresh_tokens / signing_keys）。
+初稿命中"新增超过 2 个新实体"（oauth_client / authorization_codes / refresh_tokens / signing_keys）。
 已简化为**新增 1 个实体**：授权码入 Redis、首版无 refresh token、签名密钥走环境变量。
 
 ## 4 备选方案
@@ -127,7 +127,7 @@ MCP 侧仍须承担一件事：backend 返回 401 时，映射为带指针的 40
 **负面 / 需承担**：
 
 1. **90 天长寿命 bearer token 存在 ChatGPT 侧，且首版无 refresh、无撤销 UI。** 泄露窗口与现有 PAT 同量级，
-   但持有方是外部服务。缓解：token 记录在 `oauth_clients` 关联的审计路径上，撤销首版靠"删除 client"这一粗粒度动作。
+   但持有方是外部服务。缓解：token 记录在 `oauth_client` 关联的审计路径上，撤销首版靠"删除 client"这一粗粒度动作。
    **这是本 ADR 最需要 Owner 知晓的一条**；Owner 可在任一轮要求改为短寿命 + refresh 轮换。
 2. `.well-known` 的 matcher 放宽会让所有含点的 `.well-known` 路径进入 `proxy()` 一次函数调用，
    规则未命中即落回原行为；开销可忽略，但这是 proxy 覆盖面的一次实质扩大，需在实现单的 Review 中核对未命中路径行为不变。
@@ -155,7 +155,7 @@ MCP 侧仍须承担一件事：backend 返回 401 时，映射为带指针的 40
 1. **代码层**：OAuth 面完全由 `OAUTH_SIGNING_KEY` 开关控制。清空该环境变量即回到纯 PAT 行为，无需回滚代码。
 2. **路由层**：`runtimeRewriteDestination()` 的 `/api/mcp` 规则与 matcher 的 `/.well-known/:path*` 两处改动可单独 revert，
    MCP 退回独立端口对外（frpc 恢复 3002 映射）。
-3. **数据层**：`oauth_clients` 表为纯新增，无外键、无数据迁移，drop 即回退（遵守项目"不加数据库外键"硬约束）。
+3. **数据层**：`oauth_client` 表为纯新增，无外键、无数据迁移，drop 即回退（遵守项目"不加数据库外键"硬约束）。
 
 ## 8 未覆盖范围
 
