@@ -4,18 +4,18 @@
 -- created by an operator, and created_by carries no DB foreign key.
 
 -- name: CreateOAuthClient :one
-INSERT INTO oauth_clients (client_id, client_secret_hash, name, redirect_uris, created_by)
+INSERT INTO oauth_client (client_id, client_secret_hash, name, redirect_uris, created_by)
 VALUES ($1, $2, $3, $4, $5)
 RETURNING *;
 
 -- name: GetOAuthClientByClientID :one
-SELECT * FROM oauth_clients
+SELECT * FROM oauth_client
 WHERE client_id = $1;
 
 -- name: ListOAuthClients :many
-SELECT * FROM oauth_clients
+SELECT * FROM oauth_client
 ORDER BY created_at ASC;
 
 -- name: DeleteOAuthClient :exec
-DELETE FROM oauth_clients
+DELETE FROM oauth_client
 WHERE client_id = $1;

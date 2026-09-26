@@ -257,6 +257,13 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 					return
 				}
 				r.Header.Set("X-User-ID", claims.Subject)
+				// Same rationale as task_token / cloud_pat above: this
+				// credential is handed to an external MCP client (ChatGPT)
+				// at authorization time, so it must never stand in for the
+				// human owner approving an account-level action — minting a
+				// PAT above all, which would escape the 90-day window that is
+				// this design's only revocation boundary.
+				r.Header.Set("X-Actor-Source", "oauth")
 				next.ServeHTTP(w, r)
 				return
 			}

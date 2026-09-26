@@ -1650,6 +1650,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// request — role authorization never rides the user-state
 		// cache — and rejects impersonation sessions outright.
 		r.Route("/api/admin", func(r chi.Router) {
+			// Machine credentials are excluded on top of the super-admin
+			// check: an MCP OAuth token minted for a super admin would
+			// otherwise carry instance-wide administration into an external
+			// client's storage. See actor_guards.go.
+			r.Use(handler.RequireHumanActor)
 			r.Use(middleware.RequireSuperAdmin(queries))
 			r.Get("/users", h.AdminListUsers)
 			r.Patch("/users/{id}/disabled", h.AdminSetUserDisabled)
@@ -1915,7 +1920,14 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/api/invitations/{id}/decline", h.DeclineInvitation)
 		r.Post("/api/share-links/join", h.JoinByShareLink)
 
+		// PAT management is account-level: a credential minted here outlives
+		// whatever minted it. An MCP OAuth access token is handed to an
+		// external client and its only revocation boundary is the 90-day
+		// expiry, so letting it create a PAT would let it escape that window
+		// in one call. mul_ PATs and session JWTs carry no X-Actor-Source and
+		// are unaffected — the daemon's renewal loop included.
 		r.Route("/api/tokens", func(r chi.Router) {
+			r.Use(handler.RequireHumanActor)
 			r.Get("/", h.ListPersonalAccessTokens)
 			r.Post("/", h.CreatePersonalAccessToken)
 			r.Post("/current/renew", h.RenewCurrentPersonalAccessToken)

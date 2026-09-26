@@ -1,1 +1,1 @@
-DROP INDEX CONCURRENTLY IF EXISTS idx_oauth_clients_client_id;
+DROP INDEX CONCURRENTLY IF EXISTS idx_oauth_client_client_id;

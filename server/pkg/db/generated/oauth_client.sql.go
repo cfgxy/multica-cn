@@ -13,7 +13,7 @@ import (
 
 const createOAuthClient = `-- name: CreateOAuthClient :one
 
-INSERT INTO oauth_clients (client_id, client_secret_hash, name, redirect_uris, created_by)
+INSERT INTO oauth_client (client_id, client_secret_hash, name, redirect_uris, created_by)
 VALUES ($1, $2, $3, $4, $5)
 RETURNING id, client_id, client_secret_hash, name, redirect_uris, created_by, created_at, updated_at
 `
@@ -53,7 +53,7 @@ func (q *Queries) CreateOAuthClient(ctx context.Context, arg CreateOAuthClientPa
 }
 
 const deleteOAuthClient = `-- name: DeleteOAuthClient :exec
-DELETE FROM oauth_clients
+DELETE FROM oauth_client
 WHERE client_id = $1
 `
 
@@ -63,7 +63,7 @@ func (q *Queries) DeleteOAuthClient(ctx context.Context, clientID string) error 
 }
 
 const getOAuthClientByClientID = `-- name: GetOAuthClientByClientID :one
-SELECT id, client_id, client_secret_hash, name, redirect_uris, created_by, created_at, updated_at FROM oauth_clients
+SELECT id, client_id, client_secret_hash, name, redirect_uris, created_by, created_at, updated_at FROM oauth_client
 WHERE client_id = $1
 `
 
@@ -84,7 +84,7 @@ func (q *Queries) GetOAuthClientByClientID(ctx context.Context, clientID string)
 }
 
 const listOAuthClients = `-- name: ListOAuthClients :many
-SELECT id, client_id, client_secret_hash, name, redirect_uris, created_by, created_at, updated_at FROM oauth_clients
+SELECT id, client_id, client_secret_hash, name, redirect_uris, created_by, created_at, updated_at FROM oauth_client
 ORDER BY created_at ASC
 `
 
