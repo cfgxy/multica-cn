@@ -1,0 +1,21 @@
+# MCP image context whitelist: this file replaces the shared .dockerignore
+# for builds using ./Dockerfile.mcp (BuildKit per-Dockerfile ignore). Same
+# pattern as Dockerfile.web.dockerignore — see the note there. The shared
+# .dockerignore default-excludes /apps/*, so apps/mcp must be whitelisted
+# both here and there for COPY apps/mcp to work (RUYI-209).
+**
+!package.json
+!pnpm-lock.yaml
+!pnpm-workspace.yaml
+!turbo.json
+!.npmrc
+!patches/**
+!apps/mcp/**
+apps/mcp/node_modules/**
+apps/mcp/dist/**
+apps/mcp/.turbo/**
+apps/mcp/*.tsbuildinfo
+!packages/tsconfig/**
+packages/tsconfig/node_modules/**
+!packages/eslint-config/**
+packages/eslint-config/node_modules/**
