@@ -1362,6 +1362,48 @@ type PromptQualityRollupState struct {
 	LastError         pgtype.Text        `json:"last_error"`
 }
 
+// RUYI-185 quiz bank: the fixed question set replayed against every prompt version. Bodies may not name production entities (enforced in pkg/promptquiz, not in DDL). Item history is carried by prompt_quiz_result.item_revision rather than by a version table.
+type PromptQuizItem struct {
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	Slug            string             `json:"slug"`
+	Title           string             `json:"title"`
+	Body            string             `json:"body"`
+	Revision        int32              `json:"revision"`
+	RuntimeProfile  string             `json:"runtime_profile"`
+	Active          bool               `json:"active"`
+	CreatedByUserID pgtype.UUID        `json:"created_by_user_id"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
+// RUYI-185 quiz measurements at one-row-per-repeat grain — the grain the distribution baseline needs and prompt_quality_daily cannot express. batch_id is a column because a batch has no fact of its own; task_id joins back to the quiz run in agent_task_queue (originator_source=quiz, issue_id IS NULL).
+type PromptQuizResult struct {
+	ID             pgtype.UUID        `json:"id"`
+	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
+	Scope          string             `json:"scope"`
+	ScopeID        pgtype.UUID        `json:"scope_id"`
+	Version        int32              `json:"version"`
+	ItemID         pgtype.UUID        `json:"item_id"`
+	ItemRevision   int32              `json:"item_revision"`
+	ItemBodySha256 string             `json:"item_body_sha256"`
+	BatchID        pgtype.UUID        `json:"batch_id"`
+	TaskID         pgtype.UUID        `json:"task_id"`
+	Outcome        string             `json:"outcome"`
+	RunTokens      pgtype.Int8        `json:"run_tokens"`
+	DurationMs     pgtype.Int8        `json:"duration_ms"`
+	MeasuredAt     pgtype.Timestamptz `json:"measured_at"`
+}
+
+type PromptQuizSweepState struct {
+	ID                int16              `json:"id"`
+	LastRunStartedAt  pgtype.Timestamptz `json:"last_run_started_at"`
+	LastRunFinishedAt pgtype.Timestamptz `json:"last_run_finished_at"`
+	LastEnqueued      int32              `json:"last_enqueued"`
+	LastCollected     int32              `json:"last_collected"`
+	LastError         pgtype.Text        `json:"last_error"`
+}
+
 // Version history for the four prompt tiers (RUYI-183). History/audit only — the business column on workspace/project/squad/agent stays the single read source for currently effective content. Append-only: switching or rolling back writes a new row, never mutates or deletes an existing one.
 type PromptVersion struct {
 	ID                pgtype.UUID        `json:"id"`

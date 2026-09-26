@@ -7,7 +7,8 @@
   },
   "tabs": {
     "overview": "Overview",
-    "quality": "Quality"
+    "quality": "Quality",
+    "quiz": "Quiz"
   },
   "quality": {
     "scopePicker": {
@@ -157,6 +158,62 @@
       "scoring_model": "Scoring model is unavailable",
       "unknown": "{{kind}} is unavailable",
       "note": "Dashboard data is unaffected."
+    }
+  },
+  "quiz": {
+    "noSubject": "The reading is per prompt tier. Choose an agent to load its quiz history.",
+    "reading": {
+      "title": "Regression reading",
+      "description": "One fixed question bank replayed against every prompt version. The reading is a distribution, not a single score.",
+      "error": "Could not load the reading",
+      "noVersion": "This prompt has no recorded version, so nothing has been measured.",
+      "accumulating": "v{{version}} has {{have}} of {{need}} graded runs. No reading until the group is complete.",
+      "noBaseline": "v{{version}} is measured over {{count}} runs (median {{median}}, IQR {{iqr}}), and is the first version of this prompt — there is no earlier version to compare against. It becomes the baseline for the next one.",
+      "versions": "v{{baseline}} as baseline, v{{current}} as the version under reading.",
+      "errored": "{{count}} runs errored and are excluded from the sample.",
+      "notAGate": "A quiz never blocks a prompt version from being published. It records how the quality changed.",
+      "verdict": {
+        "insufficient": "No reading",
+        "steady": "Steady",
+        "improved": "Improved",
+        "regressed": "Regressed"
+      },
+      "stats": {
+        "baseline": "Baseline",
+        "current": "Current",
+        "statistic": "Mann-Whitney z",
+        "threshold": "Noise line",
+        "group": "median {{median}}, IQR {{iqr}}, n={{n}}"
+      }
+    },
+    "bank": {
+      "title": "Question bank",
+      "description": "The same questions for every version. Editing a body starts a new revision.",
+      "add": "Add question",
+      "revision": "rev {{revision}}",
+      "active": "Active",
+      "retired": "Retired",
+      "edit": "Edit",
+      "delete": "Delete",
+      "error": {
+        "title": "Could not load the bank",
+        "write": "The bank was not changed."
+      },
+      "empty": {
+        "title": "No questions yet",
+        "description": "Without questions no version can be measured. Add one to start the first reading."
+      },
+      "dialog": {
+        "addTitle": "Add question",
+        "editTitle": "Edit question",
+        "description": "A question must not name any production entity — no issue key, no id, no link. The server refuses a body that does and says which reference to remove.",
+        "slug": "Slug",
+        "questionTitle": "Title",
+        "body": "Question",
+        "bodyHint": "Up to 4000 characters. Keep it self-contained: a quiz run has no issue behind it.",
+        "cancel": "Cancel",
+        "save": "Save"
+      }
     }
   }
 }
