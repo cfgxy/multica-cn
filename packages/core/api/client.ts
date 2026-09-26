@@ -68,6 +68,7 @@ import type {
   PromptScanResult,
   PromptTargetState,
   PromptVersion,
+  PromptQualityDashboard,
   MarketplaceListing,
   MarketplacePlaceholder,
   MemberWithUser,
@@ -499,6 +500,8 @@ import {
   EMPTY_PROMPT_SCAN_RESULT,
   EMPTY_PROMPT_TARGET_STATE,
   EMPTY_PROMPT_VERSION,
+  PromptQualityDashboardSchema,
+  EMPTY_PROMPT_QUALITY_DASHBOARD,
   MarketplaceListingSchema,
   MarketplaceListingListSchema,
   ShareLinkSchema,
@@ -3100,6 +3103,29 @@ export class ApiClient {
     );
     return parseWithFallback(raw, PromptVersionSchema, EMPTY_PROMPT_VERSION, {
       endpoint: "POST /api/marketplace/prompt-versions/{id}/withdraw",
+    });
+  }
+
+  /**
+   * The seven prompt quality dimensions for one prompt tier, split per version.
+   *
+   * `days` is a window length in calendar days; the server clamps it and
+   * decides the range, so an out-of-range value here degrades to the server
+   * default rather than erroring.
+   */
+  async getPromptQualityDashboard(
+    scope: string,
+    scopeId: string,
+    params?: { days?: number },
+  ): Promise<PromptQualityDashboard> {
+    const query = new URLSearchParams();
+    if (params?.days !== undefined) query.set("days", String(params.days));
+    const suffix = query.toString() === "" ? "" : `?${query.toString()}`;
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-governance/${encodeURIComponent(scope)}/${encodeURIComponent(scopeId)}/quality${suffix}`,
+    );
+    return parseWithFallback(raw, PromptQualityDashboardSchema, EMPTY_PROMPT_QUALITY_DASHBOARD, {
+      endpoint: "GET /api/prompt-governance/{scope}/{id}/quality",
     });
   }
 

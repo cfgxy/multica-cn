@@ -113,6 +113,102 @@ func TestReportTaskMessagesPersistsWholeBatch(t *testing.T) {
 	}
 }
 
+// TestReportTaskMessagesPersistsIsErrorTriState covers the D4 turn-failure
+// signal (RUYI-184). The column is three-valued on purpose: TRUE and FALSE are
+// both measurements the runtime made, and NULL means it made none. Collapsing
+// the third state into FALSE would make every message type that cannot carry an
+// error flag, and every run recorded before this column existed, look like a
+// successful tool call — and the failure rate computed from that is silently
+// wrong rather than visibly absent.
+func TestReportTaskMessagesPersistsIsErrorTriState(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	taskID := seedBatchTask(t, "batch-is-error")
+
+	testutil.Call(t, testHandler.ReportTaskMessages, batchMessagesRequest(t, taskID, []any{
+		map[string]any{"seq": 1, "type": "tool_result", "tool": "fs_read",
+			"output": "boom", "is_error": true},
+		map[string]any{"seq": 2, "type": "tool_result", "tool": "fs_read",
+			"output": "ok", "is_error": false},
+		// No is_error key at all: the runtime could not report it.
+		map[string]any{"seq": 3, "type": "text", "content": "done"},
+	})).Want(http.StatusOK)
+
+	stored, err := testHandler.Queries.ListTaskMessages(ctx, util.MustParseUUID(taskID))
+	if err != nil {
+		t.Fatalf("list persisted task messages: %v", err)
+	}
+	if len(stored) != 3 {
+		t.Fatalf("persisted %d task messages, want 3", len(stored))
+	}
+	if !stored[0].IsError.Valid || !stored[0].IsError.Bool {
+		t.Fatalf("seq 1 is_error = %+v, want TRUE", stored[0].IsError)
+	}
+	if !stored[1].IsError.Valid || stored[1].IsError.Bool {
+		t.Fatalf("seq 2 is_error = %+v, want FALSE — a reported success must not "+
+			"be indistinguishable from an unreported one", stored[1].IsError)
+	}
+	if stored[2].IsError.Valid {
+		t.Fatalf("seq 3 is_error = %+v, want SQL NULL — an omitted flag is "+
+			"\"not measured\", never a real false", stored[2].IsError)
+	}
+
+	// Read the column directly too: pgtype could report Valid=false for a FALSE
+	// row if the parameter shape lost the distinction before it reached Postgres.
+	var nullCount int
+	dbfx.QueryRow(t,
+		`SELECT COUNT(*) FROM task_message WHERE task_id = $1 AND is_error IS NULL`,
+		taskID).Scan(&nullCount)
+	if nullCount != 1 {
+		t.Fatalf("rows with is_error IS NULL = %d, want 1", nullCount)
+	}
+}
+
+// TestReportTaskMessagesPublishesIsError pins the realtime side of the same
+// signal: the payload has to carry the three states too, or a subscriber that
+// renders the live transcript disagrees with the same batch read back from the
+// database.
+func TestReportTaskMessagesPublishesIsError(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	taskID := seedBatchTask(t, "batch-is-error-event")
+
+	sharedBus := testHandler.Bus
+	testHandler.Bus = events.New()
+	t.Cleanup(func() { testHandler.Bus = sharedBus })
+
+	var mu sync.Mutex
+	got := map[int]*bool{}
+	testHandler.Bus.Subscribe(protocol.EventTaskMessage, func(e events.Event) {
+		mu.Lock()
+		defer mu.Unlock()
+		if e.TaskID != taskID {
+			return
+		}
+		if payload, ok := e.Payload.(protocol.TaskMessagePayload); ok {
+			got[payload.Seq] = payload.IsError
+		}
+	})
+
+	testutil.Call(t, testHandler.ReportTaskMessages, batchMessagesRequest(t, taskID, []any{
+		map[string]any{"seq": 1, "type": "tool_result", "tool": "fs_read",
+			"output": "boom", "is_error": true},
+		map[string]any{"seq": 2, "type": "text", "content": "done"},
+	})).Want(http.StatusOK)
+
+	mu.Lock()
+	defer mu.Unlock()
+	if got[1] == nil || !*got[1] {
+		t.Fatalf("seq 1 payload is_error = %v, want true", got[1])
+	}
+	if got[2] != nil {
+		t.Fatalf("seq 2 payload is_error = %v, want nil (absent from the JSON)", *got[2])
+	}
+}
+
 // TestReportTaskMessagesPublishesInSeqOrder pins the realtime ordering the batch
 // insert has to preserve. The per-message loop it replaced published in request
 // order; `INSERT ... RETURNING` has no row-order guarantee, so the order now
@@ -207,6 +303,7 @@ func TestCreateTaskMessagesBatchIsAtomic(t *testing.T) {
 		Contents: []string{"ok", "collides"},
 		Inputs:   []string{"", ""},
 		Outputs:  []string{"", ""},
+		IsErrors: []string{"", ""},
 	})
 	if err == nil {
 		t.Fatal("CreateTaskMessages accepted a batch with a duplicate primary key")

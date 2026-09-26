@@ -469,6 +469,12 @@ deleted_lark_binding_tokens AS (
 ),
 deleted_prompt_versions AS (
     DELETE FROM prompt_version WHERE workspace_id = $1
+),
+deleted_prompt_quality_daily AS (
+    DELETE FROM prompt_quality_daily WHERE workspace_id = $1
+),
+deleted_prompt_perplexity_scores AS (
+    DELETE FROM prompt_perplexity_score WHERE workspace_id = $1
 )
 UPDATE channel_media_pending_object
 SET state = CASE
@@ -496,6 +502,10 @@ WHERE channel_media_pending_object.workspace_id = $1
 // does not have to join through chat_session, which it deletes in this same CTE.
 // Prompt version history (RUYI-183) goes with the workspace: it has no FK
 // and no dependents, so a plain workspace_id delete is enough.
+// The quality rollup and the D3 scores derived from those versions (RUYI-184)
+// follow them out. Both are pure derivations of rows this statement is
+// already deleting, so leaving them behind would strand aggregates whose
+// scope ids can never be resolved again.
 // Keep the two-system cleanup ledger until object storage has been settled.
 // Moving every row out of pending also prevents a concurrent media bind from
 // attaching an object after the workspace teardown commits. The reconciler

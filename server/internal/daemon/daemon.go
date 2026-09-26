@@ -9000,10 +9000,15 @@ func (d *Daemon) executeAndDrain(ctx context.Context, backend agent.Backend, pro
 					taskLog.Info("tool_result observed", "seq", s, "tool", toolName, "call_id", msg.CallID)
 					mu.Lock()
 					batch = append(batch, TaskMessageData{
-						Seq:    int(s),
-						Type:   "tool_result",
-						Tool:   toolName,
-						Output: output,
+						Seq:  int(s),
+						Type: "tool_result",
+						Tool: toolName,
+						// Forwarded as-is, nil included: the backend's silence
+						// is the measurement, and substituting false here is
+						// what would make a run with no error reporting look
+						// like a run where every tool succeeded.
+						IsError: msg.IsError,
+						Output:  output,
 					})
 					mu.Unlock()
 				case agent.MessageThinking:

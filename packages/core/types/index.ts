@@ -122,6 +122,19 @@ export type {
   PromptVersionState,
 } from "./prompt-market";
 export type {
+  PromptQualityScope,
+  PromptQualityDimension,
+  PromptQualityMeasure,
+  PromptQualityMeasures,
+  PromptQualityVersionMeasures,
+  PromptPerplexityEvidence,
+  PromptPerplexityItem,
+  PromptQualityPerplexity,
+  PromptQualitySource,
+  PromptQualitySources,
+  PromptQualityDashboard,
+} from "./prompt-quality";
+export type {
   PluginInstallation,
   PluginConfigField,
   PluginConfigFieldType,
