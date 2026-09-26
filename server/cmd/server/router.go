@@ -267,6 +267,12 @@ type RouterOptions struct {
 	// WecomMetrics is the WeCom adapter's health sink. Nil discards every
 	// counter, which is what a deployment with /metrics turned off gets.
 	WecomMetrics *obsmetrics.WecomMetrics
+
+	// LarkMetrics is the Feishu adapter's outbound file-delivery sink. Nil
+	// discards every counter, which is what a deployment with /metrics turned
+	// off gets.
+	LarkMetrics *obsmetrics.LarkMetrics
+
 	DaemonHub    *daemonws.Hub
 	DaemonWakeup service.TaskWakeupNotifier
 	FeatureFlags *featureflag.Service
@@ -630,7 +636,33 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// backfills) take it directly; the constructor-based services
 				// wrap *db.Queries internally, so they keep taking queries.
 				cs := lark.NewChannelStore(queries)
-				patcher := lark.NewPatcher(cs, installSvc, larkClient, lark.PatcherConfig{})
+				// WithAttachments adds the second hop behind a reply: the
+				// files the agent bound to it are read back out of object
+				// storage, uploaded to Feishu and sent into the chat. Passed
+				// only when this deployment configured storage — with none
+				// there is nothing to read an attachment out of, and the
+				// option is what the delivery path checks for.
+				//
+				// DeclareChannelFileDelivery is the same condition said to the
+				// agent: a run only gets told it can send a file where this
+				// branch actually built the hop that sends it. The two lines
+				// sit together on purpose — a deployment that has the storage
+				// and a deployment whose agents are promised delivery must be
+				// the same deployment, and the only way to keep that true is
+				// for one `if` to decide both. Declaring from the channel type
+				// instead would promise delivery on every Feishu deployment,
+				// storage or not.
+				larkPatcherOpts := []lark.PatcherOption{}
+				if store != nil {
+					larkPatcherOpts = append(larkPatcherOpts, lark.WithAttachments(store))
+					h.DeclareChannelFileDelivery(string(channel.TypeFeishu))
+				}
+				// File delivery is built to fail quietly in the chat, so the
+				// counters are the only place an operator sees storage that
+				// stopped being readable.
+				larkPatcherOpts = append(larkPatcherOpts,
+					lark.WithOutboundMetrics(larkMetricsOrNil(opts.LarkMetrics)))
+				patcher := lark.NewPatcher(cs, installSvc, larkClient, lark.PatcherConfig{}, larkPatcherOpts...)
 				patcher.Register(bus)
 
 				// Typing indicator: shows a "processing" reaction on the user's
@@ -2734,6 +2766,17 @@ type WecomRelay interface {
 // directly would give the adapter a non-nil interface holding a nil pointer —
 // and the first counter call would panic on a deployment with /metrics off.
 func wecomMetricsOrNil(m *obsmetrics.WecomMetrics) wecom.Metrics {
+	if m == nil {
+		return nil
+	}
+	return m
+}
+
+// larkMetricsOrNil is wecomMetricsOrNil for the Feishu adapter, and exists for
+// the same reason: a nil *LarkMetrics still satisfies lark.Metrics, so
+// assigning it directly would hand the adapter a non-nil interface wrapping a
+// nil pointer and the first counter call would panic.
+func larkMetricsOrNil(m *obsmetrics.LarkMetrics) lark.Metrics {
 	if m == nil {
 		return nil
 	}
