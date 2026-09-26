@@ -94,10 +94,17 @@ async function main(): Promise<void> {
       fail(`invalid port: '${port}'`);
     }
     const host = flags.host ?? process.env["MULTICA_MCP_HOST"] ?? "127.0.0.1";
+    // Public origin, for the `resource_metadata` pointer in 401 challenges.
+    // It is the front door the client reached us through, which behind the
+    // Next.js proxy is neither `serverUrl` (the backend) nor this listener —
+    // hence its own variable. `MULTICA_APP_URL` is the same name the Go server
+    // reads for the site root, so one value configures both sides.
+    const siteRoot = process.env["MULTICA_APP_URL"] ?? process.env["FRONTEND_ORIGIN"];
     const httpServer = await startHttpServer({
       port: portNumber,
       host,
       serverUrl,
+      siteRoot,
     });
     const shutdown = (): void => {
       httpServer.close(() => process.exit(0));

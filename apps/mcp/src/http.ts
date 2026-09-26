@@ -23,7 +23,17 @@ import { createMcpServer } from "./server.js";
 
 const MAX_BODY_BYTES = 5 * 1024 * 1024;
 
-const BEARER_PATTERN = /^Bearer (mul_[0-9a-f]{40})$/i;
+// Two credential shapes, one transport. `mul_…` is the Multica PAT this
+// server has always taken. The second branch is a compact JWS — the OAuth
+// access token the Go authorization server mints for ChatGPT (RUYI-209).
+//
+// Neither is verified here. The token is forwarded verbatim to the backend
+// (src/rest.ts), whose auth middleware already dispatches on the same two
+// shapes, so signature checking exists in exactly one place. Widening this
+// pattern is therefore a routing decision, not an authentication one: a
+// forged JWT gets past this line and is rejected by the backend, the same way
+// a well-formed but unknown PAT always has been.
+const BEARER_PATTERN = /^Bearer (mul_[0-9a-f]{40}|[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)$/i;
 
 export function extractBearerToken(header: string | undefined): string | null {
   if (header === undefined) {
@@ -33,18 +43,44 @@ export function extractBearerToken(header: string | undefined): string | null {
   return match?.[1] ?? null;
 }
 
+/**
+ * Builds the `WWW-Authenticate` value for an unauthenticated MCP request.
+ *
+ * The `resource_metadata` pointer is the first hop of the OAuth discovery
+ * chain (RFC 9728 §5.1): a client that gets a bare `Bearer` challenge has
+ * nowhere to go and gives up, which is what stopped ChatGPT from connecting.
+ * The URL must be absolute — the challenge is consumed by a client that has
+ * no base to resolve against — so it is omitted entirely when no site root is
+ * configured rather than emitted as a relative path a client would misread.
+ */
+export function wwwAuthenticateChallenge(siteRoot: string | undefined): string {
+  const root = siteRoot?.trim().replace(/\/+$/, "");
+  if (!root) {
+    return "Bearer";
+  }
+  return `Bearer resource_metadata="${root}/.well-known/oauth-protected-resource"`;
+}
+
 export interface HttpServerOptions {
   port: number;
   host: string;
   /** Base URL of the Multica backend API. */
   serverUrl: string;
+  /**
+   * Public origin this MCP endpoint is reached at — the Next.js front door,
+   * not this process's own listener. Used only to build the absolute
+   * `resource_metadata` pointer in 401 challenges. Undefined degrades the
+   * challenge to a bare `Bearer`, which is the pre-OAuth behaviour.
+   */
+  siteRoot?: string | undefined;
   logger?: Logger;
 }
 
 export async function startHttpServer(options: HttpServerOptions): Promise<HttpServer> {
   const logger = options.logger ?? stderrLogger;
+  const challenge = wwwAuthenticateChallenge(options.siteRoot);
   const httpServer = createServer((request, response) => {
-    void handleRequest(request, response, options.serverUrl, logger);
+    void handleRequest(request, response, options.serverUrl, challenge, logger);
   });
 
   await new Promise<void>((resolve, reject) => {
@@ -52,7 +88,7 @@ export async function startHttpServer(options: HttpServerOptions): Promise<HttpS
     httpServer.listen(options.port, options.host, () => resolve());
   });
   logger.info(
-    `multica-mcp streamable HTTP listening on http://${options.host}:${options.port}/mcp (auth: Multica PAT bearer)`,
+    `multica-mcp streamable HTTP listening on http://${options.host}:${options.port}/mcp (auth: Multica PAT or OAuth bearer)`,
   );
   return httpServer;
 }
@@ -61,6 +97,7 @@ async function handleRequest(
   request: IncomingMessage,
   response: ServerResponse,
   backendUrl: string,
+  challenge: string,
   logger: Logger,
 ): Promise<void> {
   const url = request.url ?? "/";
@@ -69,6 +106,19 @@ async function handleRequest(
       // Liveness only — deliberately unauthenticated, carries no data.
       response.writeHead(200, { "Content-Type": "text/plain" });
       response.end("ok");
+      return;
+    }
+    if (url.startsWith("/.well-known/")) {
+      // The discovery documents are served by the Go backend at the public
+      // origin, not here (ADR §3.3). Answering 404 with that wording keeps a
+      // direct probe of this process from reading as "this deployment has no
+      // authorization server" — the one misreading that would send an
+      // operator looking for a missing route instead of a missing proxy rule.
+      sendJsonError(
+        response,
+        404,
+        "Not served here. OAuth discovery documents are published by the Multica backend at the public site origin, not by the MCP process.",
+      );
       return;
     }
     if (url !== "/mcp" && !url.startsWith("/mcp?")) {
@@ -84,11 +134,11 @@ async function handleRequest(
 
     const token = extractBearerToken(request.headers.authorization);
     if (token === null) {
-      response.setHeader("WWW-Authenticate", "Bearer");
+      response.setHeader("WWW-Authenticate", challenge);
       sendJsonError(
         response,
         401,
-        "Unauthorized: provide a Multica personal access token as 'Authorization: Bearer mul_…'.",
+        "Unauthorized: provide a Multica personal access token ('Authorization: Bearer mul_…') or an OAuth access token.",
       );
       logger.info(`http ${request.method} ${url} -> 401`);
       return;
