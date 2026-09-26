@@ -126,6 +126,59 @@ func TestClaudeHandleUserToolResult(t *testing.T) {
 	}
 }
 
+// TestClaudeHandleUserToolResultIsError covers the per-tool_result error flag
+// that feeds the turn-failure metric. The message is built from raw SDK JSON
+// rather than from claudeContentBlock, because what is under test is that the
+// field is read off the wire at all — a struct literal would pass even if the
+// json tag were wrong or the field unread.
+//
+// The three cases are three distinct states, not two plus a default: a result
+// with no is_error key means this SDK build told us nothing, and reporting that
+// as a success would inflate the pass rate of every tool call it ever omitted.
+func TestClaudeHandleUserToolResultIsError(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name string
+		raw  string
+		want *bool
+	}{
+		{"error reported", `{"type":"tool_result","tool_use_id":"c1","content":"boom","is_error":true}`, boolPtr(true)},
+		{"success reported", `{"type":"tool_result","tool_use_id":"c1","content":"ok","is_error":false}`, boolPtr(false)},
+		{"not reported", `{"type":"tool_result","tool_use_id":"c1","content":"ok"}`, nil},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			b := &claudeBackend{cfg: Config{Logger: slog.Default()}}
+			ch := make(chan Message, 10)
+			msg := claudeSDKMessage{
+				Type:    "user",
+				Message: json.RawMessage(`{"role":"user","content":[` + tc.raw + `]}`),
+			}
+
+			b.handleUser(msg, ch)
+
+			select {
+			case m := <-ch:
+				switch {
+				case tc.want == nil && m.IsError != nil:
+					t.Fatalf("is_error = %v, want nil — an absent flag is "+
+						"\"the runtime did not say\", not a success", *m.IsError)
+				case tc.want != nil && m.IsError == nil:
+					t.Fatalf("is_error = nil, want %v — the flag was on the wire", *tc.want)
+				case tc.want != nil && *m.IsError != *tc.want:
+					t.Fatalf("is_error = %v, want %v", *m.IsError, *tc.want)
+				}
+			default:
+				t.Fatal("expected message on channel")
+			}
+		})
+	}
+}
+
 func TestClaudeHandleControlRequestAutoApproves(t *testing.T) {
 	t.Parallel()
 
@@ -1394,6 +1447,10 @@ func TestClaudeExecuteRecordsResultModelUsage(t *testing.T) {
 		t.Fatal("timeout waiting for result")
 	}
 }
+
+// boolPtr names an expected value in a three-valued assertion, where nil and
+// &false mean different things and a bare literal cannot be addressed.
+func boolPtr(v bool) *bool { return &v }
 
 func mustMarshal(t *testing.T, v any) json.RawMessage {
 	t.Helper()

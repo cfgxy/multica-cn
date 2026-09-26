@@ -4,5 +4,159 @@
   "empty": {
     "title": "Not wired up yet",
     "description": "This is a navigation skeleton for the prompt-governance overview (RUYI-183 phase 1). Version history, diff and adoption views land in a later stage."
+  },
+  "tabs": {
+    "overview": "Overview",
+    "quality": "Quality"
+  },
+  "quality": {
+    "scopePicker": {
+      "label": "Prompt tier",
+      "agent": "Agent",
+      "squad": "Squad",
+      "project": "Project",
+      "workspace": "Workspace",
+      "subjectLabel": "Subject",
+      "subjectPlaceholder": "Pick an agent"
+    },
+    "range": {
+      "label": "Window",
+      "days": "Last {{count}} days"
+    },
+    "since": "Measured from {{date}}. Runs before that date carry no instrumentation and are not counted.",
+    "noSubject": {
+      "title": "Pick a subject",
+      "description": "The seven dimensions are read per prompt tier. Choose an agent to load its dashboard."
+    },
+    "loading": "Loading measurements",
+    "error": {
+      "title": "Could not load the dashboard",
+      "retry": "Retry"
+    },
+    "window": {
+      "title": "All versions in window",
+      "runs": "{{count}} runs",
+      "days": "{{count}} days"
+    },
+    "timeline": {
+      "title": "Versions",
+      "version": "v{{version}}",
+      "span": "{{first}} — {{last}}",
+      "compare": "Compare",
+      "compareHint": "Select two versions to compare",
+      "clear": "Clear selection",
+      "empty": "No version carries measured runs in this window."
+    },
+    "compare": {
+      "title": "Version comparison",
+      "description": "Seven dimensions, side by side. A dimension with no data on either side shows no delta.",
+      "dimension": "Dimension",
+      "delta": "Δ",
+      "noDelta": "—",
+      "close": "Close"
+    },
+    "dimensions": {
+      "injected_tokens": {
+        "label": "D1 Injected cost",
+        "hint": "Median tokens of assembled prompt injected per run."
+      },
+      "run_tokens_median": {
+        "label": "D1 Run cost",
+        "hint": "Median total tokens a run consumed."
+      },
+      "discipline": {
+        "label": "D2 Discipline",
+        "hint": "Median discipline score out of 100. A run starts at 100 and loses points for each mechanically checkable clause it broke."
+      },
+      "tool_failure_rate": {
+        "label": "D4 Turn failure rate",
+        "hint": "Share of tool results the agent received as errors."
+      },
+      "retry_rate": {
+        "label": "D5 Retries",
+        "hint": "Share of runs that needed more than one attempt."
+      },
+      "failure_attribution": {
+        "label": "D6 Prompt-attributed failures",
+        "hint": "How many failures had a cause pointing at the prompt. Environment and provider failures are not counted."
+      },
+      "first_pass_rate": {
+        "label": "D7 First-pass rate",
+        "hint": "Share of reviewed issues accepted without rework."
+      }
+    },
+    "measure": {
+      "ofRuns": "over {{count}} runs",
+      "ratio": "{{numerator}} / {{denominator}}",
+      "excluded": "{{count}} excluded as environment or provider failures",
+      "noData": "No data",
+      "insufficient": "Sample too small",
+      "insufficientDetail": "{{sample}} of {{threshold}} needed",
+      "reason": {
+        "no_finished_runs": "No run finished in this window.",
+        "not_instrumented": "Runs in this window predate the instrumentation.",
+        "no_covered_runs": "No run in this window carried this measurement.",
+        "no_version_content": "This version has no recorded prompt body.",
+        "no_reviewed_issues": "No issue reached review in this window.",
+        "below_sample_floor": "Fewer runs than the declared floor.",
+        "unknown": "The server did not say why."
+      }
+    },
+    "perplexity": {
+      "title": "D3 Rule perplexity",
+      "description": "An ambiguity score for the assembled prompt, judged per runtime profile.",
+      "open": "View evidence",
+      "profile": {
+        "label": "Runtime profile",
+        "member": "Member run",
+        "leader_task": "Leader task run",
+        "unknown": "{{key}}"
+      },
+      "profileNote": "Profiles are scored against different assembled documents and are never merged or averaged.",
+      "band": {
+        "low": "Low",
+        "medium": "Medium",
+        "high": "High",
+        "unknown": "Unrated"
+      },
+      "range": "{{low}}% — {{high}}%",
+      "scoredAt": "Scored {{date}} by {{model}}",
+      "reproducibility": "Re-scoring the same version keeps the band stable; the interval endpoints were measured to move by no more than 10 percentage points (gpt-6-luna, temperature 0.2, 5 runs per runtime profile).",
+      "empty": {
+        "title": "Not scored",
+        "description": "No version of this prompt has been scored yet. A missing score is not a neutral score."
+      },
+      "sheet": {
+        "title": "D3 evidence",
+        "description": "Seven sub-dimensions, each with its own weight and the locations it cites.",
+        "score": "Score",
+        "weight": "Weight {{percent}}%",
+        "evidence": "Evidence",
+        "evidenceCount": "{{count}} entries",
+        "conflictsWith": "conflicts with {{target}}",
+        "noEvidence": "No session-log evidence for this entry (runtime offline).",
+        "subDimensions": {
+          "tier_placement": "Tier placement",
+          "cross_tier_conflict": "Cross-tier conflict",
+          "literal_actionability": "Literal actionability",
+          "internal_consistency": "Internal consistency",
+          "precedence_clarity": "Precedence clarity",
+          "scope_boundary": "Scope boundary",
+          "role_rule_completeness": "Role rule completeness",
+          "unknown": "{{key}}"
+        }
+      }
+    },
+    "reasons": {
+      "title": "D6 Failure reasons",
+      "excluded": "{{count}} environment or provider failures excluded",
+      "empty": "No failed run in this window."
+    },
+    "sources": {
+      "langfuse": "Langfuse export is off",
+      "scoring_model": "Scoring model is unavailable",
+      "unknown": "{{kind}} is unavailable",
+      "note": "Dashboard data is unaffected."
+    }
   }
 }

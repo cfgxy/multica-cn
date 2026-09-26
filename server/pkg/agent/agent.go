@@ -185,6 +185,12 @@ type Message struct {
 	Status    string         // agent status string (Status)
 	Level     string         // log level (Log)
 	SessionID string         // backend session id (Status), for early resume-pointer pinning
+	// IsError is the backend's own verdict on a tool result (ToolResult), and is
+	// three-valued: nil means this backend did not say. Not every runtime
+	// reports it, and a backend that stays silent must not be read as reporting
+	// success — the failure rate computed from that would be wrong rather than
+	// visibly missing.
+	IsError *bool
 }
 
 // TokenUsage tracks token consumption for a single model.

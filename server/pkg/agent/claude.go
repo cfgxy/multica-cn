@@ -594,9 +594,10 @@ func (b *claudeBackend) handleUser(msg claudeSDKMessage, ch chan<- Message) bool
 				}
 			}
 			trySend(ch, Message{
-				Type:   MessageToolResult,
-				CallID: block.ToolUseID,
-				Output: resultStr,
+				Type:    MessageToolResult,
+				CallID:  block.ToolUseID,
+				Output:  resultStr,
+				IsError: block.IsError,
 			})
 		}
 	}
@@ -1125,6 +1126,12 @@ type claudeContentBlock struct {
 	Input     json.RawMessage `json:"input,omitempty"`
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   json.RawMessage `json:"content,omitempty"`
+	// IsError is the per-tool_result error flag from the Anthropic message
+	// format, distinct from claudeSDKMessage.IsError, which is the whole run's
+	// outcome. A pointer because the SDK omits it on successful results in some
+	// versions and sends `false` in others, and the two have to stay
+	// distinguishable from "a block that never carried the field".
+	IsError *bool `json:"is_error,omitempty"`
 }
 
 type claudeControlRequestPayload struct {
