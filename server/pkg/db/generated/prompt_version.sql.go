@@ -162,6 +162,44 @@ func (q *Queries) GetPromptVersionByScopeVersion(ctx context.Context, arg GetPro
 	return i, err
 }
 
+const insertPromptVersionBaselineIfAbsent = `-- name: InsertPromptVersionBaselineIfAbsent :exec
+INSERT INTO prompt_version (
+    workspace_id, scope, scope_id, version, content, content_sha256,
+    source, change_note
+)
+SELECT $1, $2, $3, 1, $4, $5,
+       'import', $6
+WHERE NOT EXISTS (
+    SELECT 1 FROM prompt_version
+    WHERE scope = $2 AND scope_id = $3 AND version = 1
+)
+`
+
+type InsertPromptVersionBaselineIfAbsentParams struct {
+	WorkspaceID   pgtype.UUID `json:"workspace_id"`
+	Scope         string      `json:"scope"`
+	ScopeID       pgtype.UUID `json:"scope_id"`
+	Content       string      `json:"content"`
+	ContentSha256 string      `json:"content_sha256"`
+	ChangeNote    string      `json:"change_note"`
+}
+
+// v1 baseline for a scope created after the 922 backfill (RUYI-213). The
+// WHERE NOT EXISTS mirrors that migration's guard: re-running against a scope
+// that already has a v1 is a no-op, not a unique-violation, so a retried
+// create cannot produce a second baseline.
+func (q *Queries) InsertPromptVersionBaselineIfAbsent(ctx context.Context, arg InsertPromptVersionBaselineIfAbsentParams) error {
+	_, err := q.db.Exec(ctx, insertPromptVersionBaselineIfAbsent,
+		arg.WorkspaceID,
+		arg.Scope,
+		arg.ScopeID,
+		arg.Content,
+		arg.ContentSha256,
+		arg.ChangeNote,
+	)
+	return err
+}
+
 const listPromptVersions = `-- name: ListPromptVersions :many
 SELECT id, workspace_id, scope, scope_id, version, content, content_sha256, source, source_version, change_note, scanner_revision, gate_result, author_user_id, author_note_issue_id, created_at FROM prompt_version
 WHERE scope = $1 AND scope_id = $2
@@ -218,7 +256,7 @@ func (q *Queries) ListPromptVersions(ctx context.Context, arg ListPromptVersions
 }
 
 const lockAgentForPromptVersion = `-- name: LockAgentForPromptVersion :one
-SELECT id FROM agent WHERE id = $1 AND workspace_id = $2 FOR UPDATE
+SELECT id, COALESCE(instructions, '')::text AS effective_content FROM agent WHERE id = $1 AND workspace_id = $2 FOR UPDATE
 `
 
 type LockAgentForPromptVersionParams struct {
@@ -226,15 +264,20 @@ type LockAgentForPromptVersionParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
-func (q *Queries) LockAgentForPromptVersion(ctx context.Context, arg LockAgentForPromptVersionParams) (pgtype.UUID, error) {
+type LockAgentForPromptVersionRow struct {
+	ID               pgtype.UUID `json:"id"`
+	EffectiveContent string      `json:"effective_content"`
+}
+
+func (q *Queries) LockAgentForPromptVersion(ctx context.Context, arg LockAgentForPromptVersionParams) (LockAgentForPromptVersionRow, error) {
 	row := q.db.QueryRow(ctx, lockAgentForPromptVersion, arg.ID, arg.WorkspaceID)
-	var id pgtype.UUID
-	err := row.Scan(&id)
-	return id, err
+	var i LockAgentForPromptVersionRow
+	err := row.Scan(&i.ID, &i.EffectiveContent)
+	return i, err
 }
 
 const lockProjectForPromptVersion = `-- name: LockProjectForPromptVersion :one
-SELECT id FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE
+SELECT id, COALESCE(instructions, '')::text AS effective_content FROM project WHERE id = $1 AND workspace_id = $2 FOR UPDATE
 `
 
 type LockProjectForPromptVersionParams struct {
@@ -242,15 +285,20 @@ type LockProjectForPromptVersionParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
-func (q *Queries) LockProjectForPromptVersion(ctx context.Context, arg LockProjectForPromptVersionParams) (pgtype.UUID, error) {
+type LockProjectForPromptVersionRow struct {
+	ID               pgtype.UUID `json:"id"`
+	EffectiveContent string      `json:"effective_content"`
+}
+
+func (q *Queries) LockProjectForPromptVersion(ctx context.Context, arg LockProjectForPromptVersionParams) (LockProjectForPromptVersionRow, error) {
 	row := q.db.QueryRow(ctx, lockProjectForPromptVersion, arg.ID, arg.WorkspaceID)
-	var id pgtype.UUID
-	err := row.Scan(&id)
-	return id, err
+	var i LockProjectForPromptVersionRow
+	err := row.Scan(&i.ID, &i.EffectiveContent)
+	return i, err
 }
 
 const lockSquadForPromptVersion = `-- name: LockSquadForPromptVersion :one
-SELECT id FROM squad WHERE id = $1 AND workspace_id = $2 FOR UPDATE
+SELECT id, COALESCE(instructions, '')::text AS effective_content FROM squad WHERE id = $1 AND workspace_id = $2 FOR UPDATE
 `
 
 type LockSquadForPromptVersionParams struct {
@@ -258,17 +306,28 @@ type LockSquadForPromptVersionParams struct {
 	WorkspaceID pgtype.UUID `json:"workspace_id"`
 }
 
-func (q *Queries) LockSquadForPromptVersion(ctx context.Context, arg LockSquadForPromptVersionParams) (pgtype.UUID, error) {
+type LockSquadForPromptVersionRow struct {
+	ID               pgtype.UUID `json:"id"`
+	EffectiveContent string      `json:"effective_content"`
+}
+
+func (q *Queries) LockSquadForPromptVersion(ctx context.Context, arg LockSquadForPromptVersionParams) (LockSquadForPromptVersionRow, error) {
 	row := q.db.QueryRow(ctx, lockSquadForPromptVersion, arg.ID, arg.WorkspaceID)
-	var id pgtype.UUID
-	err := row.Scan(&id)
-	return id, err
+	var i LockSquadForPromptVersionRow
+	err := row.Scan(&i.ID, &i.EffectiveContent)
+	return i, err
 }
 
 const lockWorkspaceForPromptVersion = `-- name: LockWorkspaceForPromptVersion :one
 
-SELECT id FROM workspace WHERE id = $1 FOR UPDATE
+
+SELECT id, COALESCE(context, '')::text AS effective_content FROM workspace WHERE id = $1 FOR UPDATE
 `
+
+type LockWorkspaceForPromptVersionRow struct {
+	ID               pgtype.UUID `json:"id"`
+	EffectiveContent string      `json:"effective_content"`
+}
 
 // Prompt version history (RUYI-183, self-evolution phase 1).
 //
@@ -280,11 +339,16 @@ SELECT id FROM workspace WHERE id = $1 FOR UPDATE
 // though a scope can start with zero prior versions — there is no row to
 // lock in prompt_version yet, but the workspace/project/squad/agent row
 // always exists.
-func (q *Queries) LockWorkspaceForPromptVersion(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+// Each lock query also returns the tier's current effective content under the
+// same row lock. The empty-content guard needs "what is live right now" to
+// decide whether an incoming blank write would wipe live text, and reading it
+// from the locked row is what keeps that decision from racing a concurrent
+// write between the check and the UPDATE.
+func (q *Queries) LockWorkspaceForPromptVersion(ctx context.Context, id pgtype.UUID) (LockWorkspaceForPromptVersionRow, error) {
 	row := q.db.QueryRow(ctx, lockWorkspaceForPromptVersion, id)
-	var id_2 pgtype.UUID
-	err := row.Scan(&id_2)
-	return id_2, err
+	var i LockWorkspaceForPromptVersionRow
+	err := row.Scan(&i.ID, &i.EffectiveContent)
+	return i, err
 }
 
 const nextPromptVersion = `-- name: NextPromptVersion :one

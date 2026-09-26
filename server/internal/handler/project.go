@@ -280,6 +280,25 @@ func (h *Handler) writeProjectWriteError(w http.ResponseWriter, r *http.Request,
 	writeError(w, http.StatusInternalServerError, "failed to "+action+" project")
 }
 
+// seedProjectPromptBaseline writes the project's v1 prompt_version row inside
+// the create transaction (RUYI-213). Migration 922 only backfilled projects
+// that existed when self-evolution shipped; every project created afterwards
+// started with an empty version history, leaving history and diff with nothing
+// to show and no way back to the instructions the project launched with.
+//
+// A failure here aborts the create rather than leaving a project without its
+// baseline: the deferred rollback discards the project row too, so the caller
+// can retry cleanly.
+func (h *Handler) seedProjectPromptBaseline(w http.ResponseWriter, r *http.Request, qtx *db.Queries, project db.Project) bool {
+	if err := seedPromptVersionV1(r.Context(), qtx, promptVersionScopeProject,
+		project.WorkspaceID, project.ID, project.Instructions.String); err != nil {
+		slog.Error("project prompt v1 baseline failed", append(logger.RequestAttrs(r), "error", err)...)
+		writeError(w, http.StatusInternalServerError, "failed to create project")
+		return false
+	}
+	return true
+}
+
 func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	var req CreateProjectRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -409,13 +428,31 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 		DueDate:      dueDate,
 	}
 
-	// Without resources, keep the simple non-tx path.
+	// Without resources, the project row and its v1 prompt baseline are the
+	// only writes — but they still share a transaction, so a project can never
+	// exist without the baseline that anchors its version history.
 	if len(req.Resources) == 0 {
-		project, err := h.Queries.CreateProject(r.Context(), createParams)
+		tx, err := h.TxStarter.Begin(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to start transaction")
+			return
+		}
+		defer tx.Rollback(r.Context())
+		qtx := h.Queries.WithTx(tx)
+
+		project, err := qtx.CreateProject(r.Context(), createParams)
 		if err != nil {
 			h.writeProjectWriteError(w, r, err, "create")
 			return
 		}
+		if !h.seedProjectPromptBaseline(w, r, qtx, project) {
+			return
+		}
+		if err := tx.Commit(r.Context()); err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to commit project create")
+			return
+		}
+
 		resp := projectToResponse(project)
 		h.publish(protocol.EventProjectCreated, workspaceID, "member", userID, map[string]any{"project": resp})
 		writeJSON(w, http.StatusCreated, resp)
@@ -434,6 +471,9 @@ func (h *Handler) CreateProject(w http.ResponseWriter, r *http.Request) {
 	project, err := qtx.CreateProject(r.Context(), createParams)
 	if err != nil {
 		h.writeProjectWriteError(w, r, err, "create")
+		return
+	}
+	if !h.seedProjectPromptBaseline(w, r, qtx, project) {
 		return
 	}
 
