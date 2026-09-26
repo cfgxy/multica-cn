@@ -1,0 +1,78 @@
+# MCP HTTP server image (apps/mcp, streamable HTTP transport).
+# Build layout mirrors Dockerfile.web; used by docker-compose.selfhost.local.yml.
+# The process binds 0.0.0.0:3002 inside the container (the usual Docker shape);
+# what the host and the outside world can reach is decided by the compose
+# override, which publishes the port as 127.0.0.1:3002 only.
+
+# --- Dependencies ---
+FROM node:22-alpine AS deps
+
+# CN mirror (override via build args when building outside China): covers
+# both package tarballs and the pnpm binary corepack downloads.
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+ENV npm_config_registry=${NPM_REGISTRY} \
+    COREPACK_NPM_REGISTRY=${NPM_REGISTRY}
+
+WORKDIR /app
+
+# Copy workspace config and all package.json files needed to resolve the
+# @multica/mcp dependency closure.
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json turbo.json .npmrc ./
+# patchedDependencies are referenced from package.json and hash-verified by
+# pnpm install --frozen-lockfile; the patch files must exist in the context
+COPY patches ./patches
+COPY apps/mcp/package.json apps/mcp/
+COPY packages/tsconfig/package.json packages/tsconfig/
+COPY packages/eslint-config/package.json packages/eslint-config/
+
+RUN corepack enable && \
+    PNPM_VERSION="$(node -p 'require("./package.json").packageManager')" && \
+    corepack prepare "$PNPM_VERSION" --activate && \
+    pnpm config set store-dir /pnpm-store --global
+
+# Cache mount keeps the pnpm store across builds; only the @multica/mcp
+# closure is fetched from the registry.
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm-store \
+    pnpm install --frozen-lockfile --filter @multica/mcp...
+
+# --- Build ---
+FROM node:22-alpine AS builder
+
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+ENV npm_config_registry=${NPM_REGISTRY} \
+    COREPACK_NPM_REGISTRY=${NPM_REGISTRY}
+
+WORKDIR /app
+COPY --from=deps /app ./
+COPY packages/tsconfig packages/tsconfig/
+COPY apps/mcp apps/mcp/
+
+# builder is a separate stage: pnpm does not carry over from deps, so corepack
+# has to be enabled again here (version read from package.json packageManager,
+# downloaded through the CN mirror).
+RUN corepack enable && \
+    COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
+    corepack prepare "$(node -p 'require("./package.json").packageManager')" --activate && \
+    pnpm --filter @multica/mcp build
+
+# --- Runtime ---
+FROM node:22-alpine AS runner
+
+ENV NODE_ENV=production
+
+RUN addgroup --system --gid 1001 nodejs && \
+    adduser --system --uid 1001 mcp
+
+WORKDIR /app
+# Keep the pnpm workspace layout: symlinks under apps/mcp/node_modules point at
+# the root node_modules/.pnpm, so both trees must land at their original
+# relative paths or module resolution fails at runtime.
+COPY --from=builder --chown=mcp:nodejs /app/node_modules ./node_modules
+COPY --from=builder --chown=mcp:nodejs /app/apps/mcp ./apps/mcp
+
+USER mcp
+WORKDIR /app/apps/mcp
+
+EXPOSE 3002
+
+CMD ["node", "dist/index.js", "--transport", "http", "--port", "3002", "--host", "0.0.0.0"]
