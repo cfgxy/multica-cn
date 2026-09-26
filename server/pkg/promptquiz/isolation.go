@@ -120,20 +120,43 @@ func (v Validation) OK() bool {
 
 // Reason is a human-readable refusal that names what was found and where, and
 // never echoes the matched text.
-func (v Validation) Reason() string {
+func (v Validation) Reason() string { return v.reasonFor("question body") }
+
+// RubricReason is the same refusal, worded for the item's private half so an
+// author is not told to fix a question they did not touch.
+func (v Validation) RubricReason() string { return v.reasonFor("rubric") }
+
+func (v Validation) reasonFor(subject string) string {
 	switch {
 	case v.OK():
 		return ""
 	case v.Empty:
-		return "question body must not be empty"
+		return subject + " must not be empty"
 	case v.TooLong:
-		return fmt.Sprintf("question body exceeds %d bytes", MaxBodyBytes)
+		return fmt.Sprintf("%s exceeds %d bytes", subject, MaxBodyBytes)
 	}
 	parts := make([]string, 0, len(v.Refs))
 	for _, r := range v.Refs {
 		parts = append(parts, fmt.Sprintf("%s at offset %d", r.Kind, r.Offset))
 	}
-	return "question body must not reference production entities: " + strings.Join(parts, ", ")
+	return subject + " must not reference production entities: " + strings.Join(parts, ", ")
+}
+
+// ValidateRubric applies the same gate to an item's private half.
+//
+// The private half never reaches a measuring run, so it cannot contaminate a
+// measurement the way a question body can. It goes through the gate anyway: a
+// rubric that names a production row would make the grading side depend on that
+// row's current contents, which is the same drift the question side is protected
+// from, arriving one step later.
+//
+// Unlike a body, an empty rubric is legal — an item with no answer key yet is a
+// normal state, not a refusal.
+func ValidateRubric(rubric string) Validation {
+	if strings.TrimSpace(rubric) == "" {
+		return Validation{}
+	}
+	return Validate(rubric)
 }
 
 // Validate applies the isolation gate to one question body.

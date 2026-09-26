@@ -170,7 +170,9 @@
       "accumulating": "v{{version}} 已有 {{have}} 次计分运行，需要 {{need}} 次。样本未满不给读数。",
       "noBaseline": "v{{version}} 已在 {{count}} 次运行上测量（中位数 {{median}}，四分位距 {{iqr}}），且是该 Prompt 的首个版本——没有更早的版本可比。它将成为下一个版本的基线。",
       "versions": "基线 v{{baseline}}，被读版本 v{{current}}。",
-      "errored": "{{count}} 次运行出错，已排除在样本之外。",
+      "outcomes": "{{answered}} 次运行给出了回答，{{errored}} 次出错。两个计数都不是评分：系统不判定回答内容的对错。",
+      "incomparable": "{{count}} 条读数被排除在本组之外：它们取自另一版题面，或另一套运行时、模型。",
+      "baselineIncomparable": "基线组同样因此排除了 {{count}} 条读数。",
       "notAGate": "测验从不阻断 Prompt 版本发布，只记录质量如何变化。",
       "verdict": {
         "insufficient": "无读数",
@@ -193,6 +195,12 @@
       "revision": "修订 {{revision}}",
       "active": "启用",
       "retired": "已停用",
+      "discrimination": {
+        "pending": "未判定",
+        "no_signal": "无读数",
+        "flat": "当前无区分度",
+        "ok": "有区分度"
+      },
       "edit": "编辑",
       "delete": "删除",
       "error": {
@@ -211,6 +219,8 @@
         "questionTitle": "标题",
         "body": "题面",
         "bodyHint": "不超过 4000 字符。题面须自足：测验 run 背后没有任何 Issue。",
+        "rubric": "标准答案与评分项",
+        "rubricHint": "仅所有者可见，绝不随题面发送给被测 run。保存时会用本字段的内容整体替换已存的标准答案。",
         "cancel": "取消",
         "save": "保存"
       }

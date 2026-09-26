@@ -22,6 +22,7 @@ export const promptQuizKeys = {
   all: (wsId: string) => ["prompt-quiz", wsId] as const,
   items: (wsId: string, activeOnly: boolean) =>
     [...promptQuizKeys.all(wsId), "items", activeOnly] as const,
+  item: (wsId: string, itemId: string) => [...promptQuizKeys.all(wsId), "item", itemId] as const,
   baseline: (wsId: string, scope: string, scopeId: string) =>
     [...promptQuizKeys.all(wsId), "baseline", scope, scopeId] as const,
 };
@@ -31,6 +32,22 @@ export function promptQuizItemsOptions(wsId: string, activeOnly = false) {
     queryKey: promptQuizKeys.items(wsId, activeOnly),
     queryFn: () => api.listPromptQuizItems({ activeOnly }),
     enabled: wsId !== "",
+  });
+}
+
+/**
+ * One bank entry including its rubric, for the editor.
+ *
+ * Separate from the list because the list has no rubric and an update replaces
+ * it wholesale: a form seeded from a list row would save an empty answer key
+ * over the stored one. Owner-only server-side, so this must only be enabled
+ * where the caller already gates on that role.
+ */
+export function promptQuizItemOptions(wsId: string, itemId: string) {
+  return queryOptions({
+    queryKey: promptQuizKeys.item(wsId, itemId),
+    queryFn: () => api.getPromptQuizItem(itemId),
+    enabled: wsId !== "" && itemId !== "",
   });
 }
 

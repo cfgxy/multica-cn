@@ -2,8 +2,12 @@ package promptquizsweep
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
+	"reflect"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -241,8 +245,8 @@ func TestSweepCollectsEachRunExactlyOnce(t *testing.T) {
 	if version != b.version {
 		t.Errorf("measurement recorded version %d, want %d", version, b.version)
 	}
-	if outcome != promptquiz.OutcomePassed {
-		t.Errorf("measurement outcome %q, want %q", outcome, promptquiz.OutcomePassed)
+	if outcome != promptquiz.OutcomeAnswered {
+		t.Errorf("measurement outcome %q, want %q", outcome, promptquiz.OutcomeAnswered)
 	}
 	if revision != 1 {
 		t.Errorf("measurement item_revision %d, want 1", revision)
@@ -297,6 +301,147 @@ func TestSweepDistinguishesUnmeasuredCostFromZeroCost(t *testing.T) {
 	if zeroTokens != 0 {
 		t.Errorf("zero-cost run stored %d tokens, want 0", zeroTokens)
 	}
+}
+
+// TestSweepRecordsTheRuntimeAndModelThatRan is the A1 attribution at the sweep
+// layer: a measurement is only comparable against another one taken by the same
+// instrument, so the instrument has to be stored with the reading. The runtime
+// comes from the QUEUE row rather than from the agent — re-pointing an agent at
+// another runtime must not re-attribute measurements already taken.
+func TestSweepRecordsTheRuntimeAndModelThatRan(t *testing.T) {
+	b := newBank(t)
+	taskID := b.finishedRun(t, `{"agent": 3}`)
+	// Two usage rows on one run, which is what a run that switched models looks
+	// like. Both must survive into the label: a reading taken half on one model
+	// is not a reading on either.
+	for _, model := range []string{"sonnet-test", "opus-test"} {
+		b.f.Insert(t, "task_usage", testutil.Cols{
+			"task_id":       taskID,
+			"provider":      "quiz-sweep-test",
+			"model":         model,
+			"input_tokens":  10,
+			"output_tokens": 5,
+		})
+	}
+
+	b.run(t)
+
+	var runtimeID, runModel string
+	b.f.QueryRow(t, `SELECT runtime_id::text, run_model FROM prompt_quiz_result WHERE task_id = $1`, taskID).
+		Scan(&runtimeID, &runModel)
+	if runtimeID != b.runtimeID {
+		t.Errorf("measurement runtime_id = %q, want the queue row's %q", runtimeID, b.runtimeID)
+	}
+	if runModel != "opus-test,sonnet-test" {
+		t.Errorf("measurement run_model = %q, want %q — every model the run used, ordered so the label is stable",
+			runModel, "opus-test,sonnet-test")
+	}
+}
+
+// TestSweepSkipsRunsWithNoRuntime covers migration 251: a terminal queue row may
+// have no runtime at all. Storing such a run would put a reading on the curve
+// without saying what measured it, and every later reading would then be compared
+// against an unknown instrument.
+//
+// The control run in the same tick is the reverse verification: it proves the
+// skip is selective rather than the collector having failed outright.
+func TestSweepSkipsRunsWithNoRuntime(t *testing.T) {
+	b := newBank(t)
+	orphan := b.finishedRun(t, `{"agent": 3}`)
+	control := b.finishedRun(t, `{"agent": 3}`)
+	// Allowed by agent_task_queue_active_requires_runtime only because the row
+	// is already finished, which is exactly the state the collector reads.
+	b.f.Exec(t, `UPDATE agent_task_queue SET runtime_id = NULL WHERE id = $1`, orphan)
+
+	b.run(t)
+
+	if n := b.f.Count(t, `SELECT count(*) FROM prompt_quiz_result WHERE task_id = $1`, orphan); n != 0 {
+		t.Errorf("a run with no runtime produced %d measurements, want 0 — an unattributed reading cannot be compared with anything", n)
+	}
+	if n := b.f.Count(t, `SELECT count(*) FROM prompt_quiz_result WHERE task_id = $1`, control); n != 1 {
+		t.Errorf("the control run produced %d measurements, want 1; the skip above is not evidence if the collector stored nothing at all", n)
+	}
+}
+
+// TestQuizPayloadCarriesNoRubric is the A2 assertion: the public half of an item
+// goes to the measured run, the private half (expected answer, grading points)
+// never leaves the grading side.
+//
+// The payload's field set is asserted exactly rather than "does not contain the
+// rubric string", so a future field added next to the question has to be declared
+// here before it can ship.
+func TestQuizPayloadCarriesNoRubric(t *testing.T) {
+	b := newBank(t)
+	const secret = "EXPECTED ANSWER: the three constraints, verbatim"
+	b.f.Exec(t, `UPDATE prompt_quiz_item SET rubric = $1 WHERE id = $2`, secret, b.itemID)
+
+	// EnqueueLimit is a per-tick budget shared with every other scope in the
+	// deployment, so tick until this bank gets at least one run.
+	for tick := 0; tick < 5 && b.quizTasks(t) == 0; tick++ {
+		b.run(t)
+	}
+	if b.quizTasks(t) == 0 {
+		t.Fatal("the sweep ordered no runs, so there is no payload to inspect")
+	}
+
+	var payload string
+	b.f.QueryRow(t, `SELECT context::text FROM agent_task_queue
+		WHERE agent_id = $1 AND originator_source = $2 ORDER BY created_at DESC LIMIT 1`,
+		b.agentID, promptquiz.OriginatorSource).Scan(&payload)
+
+	var fields map[string]any
+	if err := json.Unmarshal([]byte(payload), &fields); err != nil {
+		t.Fatalf("payload is not an object: %v", err)
+	}
+	want := []string{"kind", "quiz_batch_id", "quiz_item_id", "quiz_prompt"}
+	if len(fields) != len(want) {
+		t.Errorf("payload has fields %v, want exactly %v", keysOf(fields), want)
+	}
+	for _, k := range want {
+		if _, ok := fields[k]; !ok {
+			t.Errorf("payload is missing %q", k)
+		}
+	}
+	if strings.Contains(payload, secret) {
+		t.Error("the payload sent to the measured run contains the item's rubric")
+	}
+
+	// Reverse verification 1: the leak detector is not vacuous. A payload built
+	// the wrong way is caught by the same two checks.
+	leaky, err := json.Marshal(map[string]any{
+		"kind": promptquiz.TaskKind, "quiz_batch_id": "b", "quiz_item_id": b.itemID,
+		"quiz_prompt": "x", "quiz_rubric": secret,
+	})
+	if err != nil {
+		t.Fatalf("encode leaky payload: %v", err)
+	}
+	var leakyFields map[string]any
+	if err := json.Unmarshal(leaky, &leakyFields); err != nil {
+		t.Fatalf("decode leaky payload: %v", err)
+	}
+	if len(leakyFields) == len(want) || !strings.Contains(string(leaky), secret) {
+		t.Error("a payload carrying the rubric passed the checks above, so those checks prove nothing")
+	}
+
+	// Reverse verification 2: the guarantee is structural, not a matter of care in
+	// taskContext. The row type that function receives has no rubric field, so
+	// adding rubric to ListActivePromptQuizItemsForProfile — the isolation
+	// condition, expressed as a column list in the query — fails here first.
+	rowType := reflect.TypeOf(db.ListActivePromptQuizItemsForProfileRow{})
+	for i := 0; i < rowType.NumField(); i++ {
+		if strings.EqualFold(rowType.Field(i).Name, "Rubric") {
+			t.Error("ListActivePromptQuizItemsForProfileRow now carries Rubric: the sweep can reach the answer key, and only this test's payload check stands between it and the run")
+		}
+	}
+}
+
+func keysOf(m map[string]any) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // finishedRun inserts a terminal quiz run the collector should pick up, with

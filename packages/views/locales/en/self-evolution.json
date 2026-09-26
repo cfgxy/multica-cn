@@ -170,7 +170,9 @@
       "accumulating": "v{{version}} has {{have}} of {{need}} graded runs. No reading until the group is complete.",
       "noBaseline": "v{{version}} is measured over {{count}} runs (median {{median}}, IQR {{iqr}}), and is the first version of this prompt — there is no earlier version to compare against. It becomes the baseline for the next one.",
       "versions": "v{{baseline}} as baseline, v{{current}} as the version under reading.",
-      "errored": "{{count}} runs errored and are excluded from the sample.",
+      "outcomes": "{{answered}} runs produced an answer, {{errored}} errored. Neither count is a score: nothing grades what an answer said.",
+      "incomparable": "{{count}} readings are excluded from this group: they were taken at another question wording, or on another runtime or model.",
+      "baselineIncomparable": "{{count}} readings are excluded from the baseline group for the same reason.",
       "notAGate": "A quiz never blocks a prompt version from being published. It records how the quality changed.",
       "verdict": {
         "insufficient": "No reading",
@@ -193,6 +195,12 @@
       "revision": "rev {{revision}}",
       "active": "Active",
       "retired": "Retired",
+      "discrimination": {
+        "pending": "Not judged",
+        "no_signal": "No readings",
+        "flat": "No discrimination",
+        "ok": "Discriminating"
+      },
       "edit": "Edit",
       "delete": "Delete",
       "error": {
@@ -211,6 +219,8 @@
         "questionTitle": "Title",
         "body": "Question",
         "bodyHint": "Up to 4000 characters. Keep it self-contained: a quiz run has no issue behind it.",
+        "rubric": "Answer key and grading points",
+        "rubricHint": "Owner-only, and never sent to the run being measured. Saving replaces the stored answer key with whatever this field holds.",
         "cancel": "Cancel",
         "save": "Save"
       }

@@ -315,6 +315,7 @@ var concurrentIndexCleanups = map[string]string{
 	"930_prompt_quiz_result_baseline_index":                     "idx_prompt_quiz_result_baseline",
 	"931_prompt_quiz_result_batch_index":                        "idx_prompt_quiz_result_batch",
 	"932_prompt_quiz_item_workspace_index":                      "idx_prompt_quiz_item_workspace",
+	"936_prompt_quiz_result_item_index":                         "idx_prompt_quiz_result_item",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction

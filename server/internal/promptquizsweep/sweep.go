@@ -108,11 +108,11 @@ func (r Runner) sweep(ctx context.Context) (Outcome, error) {
 
 // collect folds finished quiz runs into measurements.
 //
-// A run whose item is gone, or whose claim recorded no agent-tier version, is
-// SKIPPED rather than failing the tick: it measured something that can no
-// longer be placed on a version axis, and one such run must not stop the rest
-// of the sweep. Skipping leaves the row unmatched, so it is retried next tick
-// and drops out naturally once the cause is permanent.
+// A run whose item is gone, whose claim recorded no agent-tier version, or whose
+// runtime is unknown is SKIPPED rather than failing the tick: it measured
+// something that cannot be placed on an axis the comparison uses, and one such
+// run must not stop the rest of the sweep. Skipping leaves the row unmatched, so
+// it is retried next tick and drops out naturally once the cause is permanent.
 func (r Runner) collect(ctx context.Context) (int, error) {
 	runs, err := r.Queries.ListFinishedPromptQuizTasks(ctx, CollectLimit)
 	if err != nil {
@@ -123,6 +123,13 @@ func (r Runner) collect(ctx context.Context) (int, error) {
 	for _, run := range runs {
 		version, ok := agentTierVersion(run.PromptVersions)
 		if !ok {
+			continue
+		}
+		// Migration 251 allows a terminal queue row to have no runtime. Storing
+		// such a run would put a reading on the curve without saying what
+		// measured it, and every later reading would then have to be compared
+		// against an unknown instrument (A1).
+		if !run.RuntimeID.Valid {
 			continue
 		}
 		item, err := r.Queries.GetPromptQuizItem(ctx, db.GetPromptQuizItemParams{
@@ -149,9 +156,17 @@ func (r Runner) collect(ctx context.Context) (int, error) {
 			ItemID:         run.ItemID,
 			ItemRevision:   item.Revision,
 			ItemBodySha256: promptquiz.BodyDigest(item.Body),
+			RuntimeID:      run.RuntimeID,
 			BatchID:        batch,
 			TaskID:         run.TaskID,
 			Outcome:        promptquiz.OutcomeForStatus(run.Status),
+		}
+		// Absent when the daemon reported no usage. Left NULL rather than
+		// defaulted to the agent's configured model: the configured value is not
+		// evidence of what ran, and a wrong instrument label is worse than a
+		// missing one — it would merge two cohorts instead of separating them.
+		if len(run.RunModel) > 0 {
+			params.RunModel = pgtype.Text{String: string(run.RunModel), Valid: true}
 		}
 		// UsageMeasured, not RunTokens > 0: a run that really reported zero
 		// cost is a measurement, while a run whose usage rows never arrived is
@@ -223,7 +238,7 @@ func (r Runner) enqueue(ctx context.Context, budget int) (int, error) {
 			if err != nil {
 				return n, err
 			}
-			if _, err := r.Queries.CreatePromptQuizTask(ctx, db.CreatePromptQuizTaskParams{
+			_, err = r.Queries.CreatePromptQuizTask(ctx, db.CreatePromptQuizTaskParams{
 				AgentID: s.AgentID,
 				// Quiz runs sit below everything a human is waiting on. A
 				// measurement that lands a cadence later is still a valid
@@ -232,7 +247,15 @@ func (r Runner) enqueue(ctx context.Context, budget int) (int, error) {
 				Priority:  0,
 				Context:   payload,
 				ItemID:    item.ID,
-			}); err != nil {
+			})
+			// No row means the fence refused: the agent or the runtime behind this
+			// scope is being deleted, or its workspace is. There is nothing left to
+			// measure for the scope, so stop ordering runs against it rather than
+			// failing the whole tick — the other scopes' samples are still valid.
+			if errors.Is(err, pgx.ErrNoRows) {
+				break
+			}
+			if err != nil {
 				return n, fmt.Errorf("enqueue quiz run: %w", err)
 			}
 			n++
@@ -242,10 +265,16 @@ func (r Runner) enqueue(ctx context.Context, budget int) (int, error) {
 }
 
 // taskContext is the payload the daemon receives. It carries the question and
-// nothing else: no issue, no workspace entity, no prior measurement. That is
-// what makes two measurements of the same item comparable — the run's whole
-// input is the prompt under test plus a fixed string.
-func taskContext(item db.PromptQuizItem, batch pgtype.UUID) ([]byte, error) {
+// nothing else: no issue, no workspace entity, no prior measurement, and not the
+// item's private half. That is what makes two measurements of the same item
+// comparable — the run's whole input is the prompt under test plus a fixed
+// string.
+//
+// The A2 guarantee is structural, not a matter of care here: the parameter type
+// is the row ListActivePromptQuizItemsForProfile returns, which has no rubric
+// field, so this function could not send the answer key even by mistake.
+// sweep_test.go asserts the payload's field set rather than trusting that.
+func taskContext(item db.ListActivePromptQuizItemsForProfileRow, batch pgtype.UUID) ([]byte, error) {
 	payload, err := json.Marshal(map[string]any{
 		"kind":          promptquiz.TaskKind,
 		"quiz_batch_id": uuid.UUID(batch.Bytes).String(),

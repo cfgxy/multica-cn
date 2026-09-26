@@ -4,7 +4,11 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
-import type { PromptQuizBaseline, PromptQuizItem } from "@multica/core/types";
+import type {
+  PromptQuizBaseline,
+  PromptQuizItem,
+  PromptQuizItemDetail,
+} from "@multica/core/types";
 import enCommon from "../../locales/en/common.json";
 import enSelfEvolution from "../../locales/en/self-evolution.json";
 import { QuizTab } from "./quiz-tab";
@@ -24,8 +28,10 @@ const TEST_RESOURCES = { en: { common: enCommon, "self-evolution": enSelfEvoluti
 const state = vi.hoisted(() => ({
   baseline: null as PromptQuizBaseline | null,
   items: [] as PromptQuizItem[],
+  detail: null as PromptQuizItemDetail | null,
   role: "owner" as string | null,
   created: [] as unknown[],
+  updated: [] as unknown[],
 }));
 
 vi.mock("@multica/core/workspace/queries", () => ({
@@ -60,11 +66,19 @@ vi.mock("@multica/core/self-evolution", async () => {
       queryKey: ["prompt-quiz", wsId, "items"],
       queryFn: () => Promise.resolve(state.items),
     }),
+    promptQuizItemOptions: (wsId: string, itemId: string) => ({
+      queryKey: ["prompt-quiz", wsId, "item", itemId],
+      queryFn: () => Promise.resolve(state.detail),
+      enabled: itemId !== "",
+    }),
     useCreatePromptQuizItem: () => ({
       isPending: false,
       mutate: (body: unknown) => state.created.push(body),
     }),
-    useUpdatePromptQuizItem: () => ({ isPending: false, mutate: () => {} }),
+    useUpdatePromptQuizItem: () => ({
+      isPending: false,
+      mutate: (body: unknown) => state.updated.push(body),
+    }),
     useDeletePromptQuizItem: () => ({ isPending: false, mutate: () => {} }),
   };
 });
@@ -83,7 +97,9 @@ function baseline(over: Partial<PromptQuizBaseline> = {}): PromptQuizBaseline {
     required_baseline: 30,
     measured: true,
     current: summary(),
-    outcomes: { passed: 10, failed: 2 },
+    outcomes: { answered: 12, errored: 0 },
+    incomparable: 0,
+    baseline_incomparable: 0,
     comparison: {
       baseline: summary({ n: 30, median: 140, iqr: 25 }),
       current: summary(),
@@ -110,6 +126,10 @@ function item(over: Partial<PromptQuizItem> = {}): PromptQuizItem {
   };
 }
 
+function detail(over: Partial<PromptQuizItemDetail> = {}): PromptQuizItemDetail {
+  return { ...item(), rubric: "Names all three constraints.", ...over };
+}
+
 function renderTab(agentId = "agent-1") {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
@@ -124,8 +144,10 @@ function renderTab(agentId = "agent-1") {
 beforeEach(() => {
   state.baseline = baseline();
   state.items = [item()];
+  state.detail = detail();
   state.role = "owner";
   state.created = [];
+  state.updated = [];
 });
 
 describe("QuizTab reading", () => {
@@ -193,21 +215,44 @@ describe("QuizTab reading", () => {
     }
   });
 
-  it("reports errored runs separately from the reading", async () => {
-    state.baseline = baseline({ outcomes: { passed: 8, failed: 1, errored: 3 } });
+  it("accounts for answered and errored runs without claiming either is a score", async () => {
+    // Migration 933 narrowed the outcome vocabulary: "answered" says a run
+    // produced an answer, not that the answer was right. The card prints both
+    // counts and, in the same sentence, that neither is a grade — a bare
+    // "8 passed" would be read as a pass rate the data cannot support.
+    state.baseline = baseline({ outcomes: { answered: 8, errored: 3 } });
     renderTab();
     await waitFor(() => {
-      expect(screen.getByTestId("quiz-errored")).toBeInTheDocument();
+      expect(screen.getByTestId("quiz-outcomes")).toBeInTheDocument();
     });
-    expect(screen.getByTestId("quiz-errored")).toHaveTextContent("3");
+    const line = screen.getByTestId("quiz-outcomes");
+    expect(line).toHaveTextContent("8");
+    expect(line).toHaveTextContent("3");
+    expect(line.textContent ?? "").toContain("Neither count is a score");
+    // The word the old vocabulary used, and the reason blocker 2 was raised:
+    // nothing on this card may suggest an answer was judged correct.
+    expect(screen.queryByText(/pass rate|passed/i)).not.toBeInTheDocument();
   });
 
-  it("hides the errored line when nothing errored", async () => {
+  it("says how many readings were excluded, and why, on both sides", async () => {
+    // Without this line a bank edit and a collection outage look identical: the
+    // group is simply smaller than the number of runs that were made.
+    state.baseline = baseline({ incomparable: 4, baseline_incomparable: 7 });
+    renderTab();
+    await waitFor(() => {
+      expect(screen.getByTestId("quiz-incomparable")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("quiz-incomparable")).toHaveTextContent("4");
+    expect(screen.getByTestId("quiz-incomparable-baseline")).toHaveTextContent("7");
+  });
+
+  it("hides the exclusion lines when every reading is comparable", async () => {
     renderTab();
     await waitFor(() => {
       expect(screen.getByTestId("quiz-reading-card")).toBeInTheDocument();
     });
-    expect(screen.queryByTestId("quiz-errored")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("quiz-incomparable")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("quiz-incomparable-baseline")).not.toBeInTheDocument();
   });
 
   it("asks for a subject before reading anything", () => {
@@ -226,6 +271,29 @@ describe("QuizTab bank", () => {
     const row = screen.getByTestId("quiz-item-summarize-a-thread");
     expect(row).toHaveTextContent("rev 2");
     expect(row).toHaveTextContent(enSelfEvolution.quiz.bank.active);
+  });
+
+  it("marks a question that no longer separates two versions", async () => {
+    // A4: the mark is shown where the decision to reword or retire is made.
+    state.items = [item({ discrimination: "flat" })];
+    renderTab();
+    await waitFor(() => {
+      expect(screen.getByTestId("quiz-item-discrimination-summarize-a-thread")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("quiz-item-discrimination-summarize-a-thread")).toHaveTextContent(
+      enSelfEvolution.quiz.bank.discrimination.flat,
+    );
+  });
+
+  it("shows a mark it cannot read as unjudged rather than as fine", async () => {
+    state.items = [item({ discrimination: "excellent" })];
+    renderTab();
+    await waitFor(() => {
+      expect(screen.getByTestId("quiz-item-discrimination-summarize-a-thread")).toBeInTheDocument();
+    });
+    expect(screen.getByTestId("quiz-item-discrimination-summarize-a-thread")).toHaveTextContent(
+      enSelfEvolution.quiz.bank.discrimination.pending,
+    );
   });
 
   it("offers no write controls to a non-owner", async () => {
@@ -265,7 +333,50 @@ describe("QuizTab bank", () => {
         slug: "explain-a-tradeoff",
         title: "Explain a tradeoff",
         body: "Compare two approaches.",
+        rubric: "",
       },
     ]);
+  });
+
+  it("edits a question through the owner-only read so the answer key survives", async () => {
+    // The list has no rubric, and an update replaces the rubric whole. Seeding
+    // the form from a list row would silently save an empty answer key over the
+    // stored one, so the editor loads the question through the single read.
+    renderTab();
+    fireEvent.click(await screen.findByText(enSelfEvolution.quiz.bank.edit));
+    const dialog = await screen.findByRole("dialog");
+    await waitFor(() => {
+      expect(dialog.querySelectorAll("textarea").length).toBe(2);
+    });
+    const areas = dialog.querySelectorAll("textarea");
+    await waitFor(() => {
+      expect((areas[1] as HTMLTextAreaElement).value).toBe("Names all three constraints.");
+    });
+    fireEvent.change(areas[0]!, { target: { value: "Summarize it in two bullets." } });
+    fireEvent.click(screen.getByText(enSelfEvolution.quiz.bank.dialog.save));
+    expect(state.updated).toEqual([
+      {
+        itemId: "item-1",
+        patch: {
+          title: "Summarize a thread",
+          body: "Summarize it in two bullets.",
+          rubric: "Names all three constraints.",
+          runtime_profile: "member",
+          active: true,
+        },
+      },
+    ]);
+  });
+
+  it("cannot save an edit whose question has not loaded yet", async () => {
+    // The reverse verification for the read above: with the detail unavailable
+    // the draft is empty, and saving it would overwrite the stored body and
+    // answer key with blanks.
+    state.detail = null;
+    renderTab();
+    fireEvent.click(await screen.findByText(enSelfEvolution.quiz.bank.edit));
+    await screen.findByRole("dialog");
+    fireEvent.click(screen.getByText(enSelfEvolution.quiz.bank.dialog.save));
+    expect(state.updated).toEqual([]);
   });
 });

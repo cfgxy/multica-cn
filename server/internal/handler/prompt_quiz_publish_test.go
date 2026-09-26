@@ -135,11 +135,11 @@ func seedQuizItem(t *testing.T, slug string) string {
 	})
 }
 
-// seedFailedMeasurements records `count` graded failures against the scope, the
+// seedErroredMeasurements records `count` errored runs against the scope, the
 // worst possible reading a version can have while still having been measured:
 // the sample is full, so nothing can be dismissed as "not measured yet", and
-// every entry is a failure at a runaway cost.
-func seedFailedMeasurements(t *testing.T, scopeID, itemID string, version int32, count int) {
+// every entry is a run that burned a runaway cost and produced no answer.
+func seedErroredMeasurements(t *testing.T, scopeID, itemID string, version int32, count int) {
 	t.Helper()
 	runOwner := dbfx.Agent(t, "quiz-publish-run-owner-"+scopeID[:8], handlerTestRuntimeID(t))
 	batchID := newQuizUUID(t)
@@ -161,7 +161,7 @@ func seedFailedMeasurements(t *testing.T, scopeID, itemID string, version int32,
 			"item_body_sha256": promptquiz.BodyDigest("anchor"),
 			"batch_id":         batchID,
 			"task_id":          taskID,
-			"outcome":          promptquiz.OutcomeFailed,
+			"outcome":          promptquiz.OutcomeErrored,
 			"run_tokens":       9_000_000,
 		})
 	}
@@ -197,22 +197,22 @@ func publishThroughWatchedPath(t *testing.T, tw *quizTripwire, agentID, content 
 	}
 }
 
-// ── worst state 1: every measurement failed ────────────────────────────────
+// ── worst state 1: every measurement errored ───────────────────────────────
 
-func TestPublishSucceedsWhenEveryQuizMeasurementFailed(t *testing.T) {
+func TestPublishSucceedsWhenEveryQuizMeasurementErrored(t *testing.T) {
 	if testHandler == nil {
 		t.Skip("database not available")
 	}
-	agentID := dbfx.Agent(t, "quiz-publish-all-failed", handlerTestRuntimeID(t),
+	agentID := dbfx.Agent(t, "quiz-publish-all-errored", handlerTestRuntimeID(t),
 		map[string]any{"instructions": "before"})
 	t.Cleanup(func() {
 		testPool.Exec(context.Background(), `DELETE FROM prompt_version WHERE scope = 'agent' AND scope_id = $1`, agentID)
 		testPool.Exec(context.Background(), `DELETE FROM prompt_quiz_result WHERE scope_id = $1`, agentID)
 	})
-	itemID := seedQuizItem(t, "all-failed-probe")
-	seedFailedMeasurements(t, agentID, itemID, 1, promptquiz.NewVersionSampleSize)
+	itemID := seedQuizItem(t, "all-errored-probe")
+	seedErroredMeasurements(t, agentID, itemID, 1, promptquiz.NewVersionSampleSize)
 
-	publishThroughWatchedPath(t, &quizTripwire{}, agentID, "after an all-failed quiz")
+	publishThroughWatchedPath(t, &quizTripwire{}, agentID, "after an all-errored quiz")
 }
 
 // ── worst state 2: no measurements at all ──────────────────────────────────
