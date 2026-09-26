@@ -308,6 +308,7 @@ var concurrentIndexCleanups = map[string]string{
 	"919_prompt_version_scope_version_index":                    "idx_prompt_version_scope_version",
 	"920_prompt_version_scope_created_index":                    "idx_prompt_version_scope_created",
 	"921_prompt_version_workspace_index":                        "idx_prompt_version_workspace",
+	"925_oauth_clients_client_id_index":                         "idx_oauth_clients_client_id",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
