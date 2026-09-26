@@ -141,7 +141,7 @@ func TestMigrationNamePartsAreGloballyUnique(t *testing.T) {
 	stemsByName := make(map[string][]string)
 	for _, file := range files {
 		stem := strings.TrimSuffix(filepath.Base(file), ".up.sql")
-		_, name, ok := splitMigrationStem(stem)
+		_, name, ok := SplitStem(stem)
 		if !ok {
 			t.Fatalf("migration %s does not start with a numeric prefix followed by underscore", stem)
 		}
