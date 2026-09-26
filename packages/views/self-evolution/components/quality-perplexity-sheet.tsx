@@ -95,6 +95,13 @@ export function QualityPerplexitySheet({
                 model: score.model,
               })}
             </p>
+            {/* The declared fluctuation range. A band and an interval produced
+                by a model are only readable next to how much they move when
+                the same document is scored again; the number comes from
+                `server/pkg/promptperplexity/repeatability_integration_test.go`. */}
+            <p className="text-caption text-muted-foreground">
+              {t(($) => $.quality.perplexity.reproducibility)}
+            </p>
 
             <div className="flex flex-col gap-3">
               {score.evidence.map((item) => (

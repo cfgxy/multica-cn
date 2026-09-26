@@ -121,6 +121,7 @@
       },
       "range": "{{low}}% — {{high}}%",
       "scoredAt": "{{date}} に {{model}} が評価",
+      "reproducibility": "同じバージョンを繰り返し採点しても band は安定し、区間の端点の変動は実測で 10 パーセントポイント以内でした（gpt-6-luna、temperature 0.2、ランタイムごとに 5 回）。",
       "empty": {
         "title": "未評価",
         "description": "このプロンプトはまだどのバージョンも評価されていません。評価がないことは中立の評価ではありません。"

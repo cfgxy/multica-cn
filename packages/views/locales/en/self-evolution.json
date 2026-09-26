@@ -121,6 +121,7 @@
       },
       "range": "{{low}}% — {{high}}%",
       "scoredAt": "Scored {{date}} by {{model}}",
+      "reproducibility": "Re-scoring the same version keeps the band stable; the interval endpoints were measured to move by no more than 10 percentage points (gpt-6-luna, temperature 0.2, 5 runs per runtime profile).",
       "empty": {
         "title": "Not scored",
         "description": "No version of this prompt has been scored yet. A missing score is not a neutral score."
