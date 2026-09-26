@@ -25,6 +25,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/promptquiz"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
 )
@@ -994,7 +995,7 @@ func basename(p string) string {
 
 // computeTaskKind picks the source-discriminator string the activity UI uses
 // to choose how to render a task row. Computed from the existing FK shape so
-// no extra DB lookup is needed: chat / autopilot / comment-on-issue (any
+// no extra DB lookup is needed: chat / autopilot / quiz / comment-on-issue (any
 // triggered task with both an issue_id and trigger_comment_id) / quick_create
 // (no linked source — the agent is creating the issue itself) / direct
 // (assignee-driven task on an existing issue).
@@ -1004,6 +1005,13 @@ func computeTaskKind(t db.AgentTaskQueue) string {
 	}
 	if uuidToString(t.AutopilotRunID) != "" {
 		return "autopilot"
+	}
+	// A quiz run (RUYI-185) also has no issue, so it has to be recognised
+	// BEFORE the quick_create fallthrough — otherwise every measurement would
+	// be counted as a member creating an issue, which is exactly the
+	// production statistic quiz runs must stay out of.
+	if t.OriginatorSource.Valid && t.OriginatorSource.String == promptquiz.OriginatorSource {
+		return promptquiz.TaskKind
 	}
 	if uuidToString(t.IssueID) == "" {
 		return "quick_create"

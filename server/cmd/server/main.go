@@ -721,6 +721,14 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.PromptQualityJob(pool, h.LLM)); err != nil {
 		slog.Warn("scheduler: failed to register prompt_quality rollup job", "error", err)
 	}
+	// RUYI-185: the periodic quiz replays a fixed question set against each
+	// agent's current prompt version so two versions are comparable, and
+	// re-runs it to surface regressions. It only ever writes measurements —
+	// the prompt publish path does not read them, so a failing or stuck sweep
+	// cannot hold a release (Owner Q10).
+	if err := schedulerMgr.Register(scheduler.PromptQuizJob(pool)); err != nil {
+		slog.Warn("scheduler: failed to register prompt_quiz_sweep job", "error", err)
+	}
 	// MUL-3551: scheduled-Autopilot dispatch runs on the same DB-backed
 	// scheduler. The job owns its plan_times via PlansForScope (each
 	// trigger has its own cron expression, so the Cadence planner does
