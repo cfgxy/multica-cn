@@ -2038,6 +2038,10 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			})
 			r.Group(func(r chi.Router) {
 				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
+				// The single-item read sits here, not in the member group above:
+				// it is the only endpoint returning an item's rubric (the private
+				// half, migration 935), so it is gated like a write.
+				r.Get("/{itemId}", h.GetPromptQuizItem)
 				r.Post("/", h.CreatePromptQuizItem)
 				r.Patch("/{itemId}", h.UpdatePromptQuizItem)
 				r.Delete("/{itemId}", h.DeletePromptQuizItem)

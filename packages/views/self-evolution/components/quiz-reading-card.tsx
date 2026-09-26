@@ -116,9 +116,32 @@ export function QuizReadingCard({ view }: { view: QuizView }) {
           </>
         )}
 
-        {view.state !== "no_version" && (view.outcomes.errored ?? 0) > 0 ? (
-          <p className="text-caption text-muted-foreground" data-testid="quiz-errored">
-            {t(($) => $.quiz.reading.errored, { count: view.outcomes.errored ?? 0 })}
+        {/* The outcome account, worded so it cannot be read as a score. The
+            vocabulary is answered/errored — whether the run produced an answer
+            at all — and the ratio of the two is NOT a pass rate: nothing in this
+            system grades an answer's content. The cost distribution above is the
+            reading. */}
+        {view.state !== "no_version" ? (
+          <p className="text-caption text-muted-foreground" data-testid="quiz-outcomes">
+            {t(($) => $.quiz.reading.outcomes, {
+              answered: view.outcomes.answered ?? 0,
+              errored: view.outcomes.errored ?? 0,
+            })}
+          </p>
+        ) : null}
+        {/* A group smaller than the number of runs made needs a reason on the
+            same screen, or a bank edit reads as a collection failure. */}
+        {view.state !== "no_version" && view.incomparable.current > 0 ? (
+          <p className="text-caption text-muted-foreground" data-testid="quiz-incomparable">
+            {t(($) => $.quiz.reading.incomparable, { count: view.incomparable.current })}
+          </p>
+        ) : null}
+        {view.state !== "no_version" && view.incomparable.baseline > 0 ? (
+          <p
+            className="text-caption text-muted-foreground"
+            data-testid="quiz-incomparable-baseline"
+          >
+            {t(($) => $.quiz.reading.baselineIncomparable, { count: view.incomparable.baseline })}
           </p>
         ) : null}
         <p className="text-caption text-muted-foreground">{t(($) => $.quiz.reading.notAGate)}</p>

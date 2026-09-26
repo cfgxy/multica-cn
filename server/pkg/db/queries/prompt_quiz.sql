@@ -7,20 +7,23 @@
 
 -- name: CreatePromptQuizItem :one
 INSERT INTO prompt_quiz_item (
-    workspace_id, slug, title, body, runtime_profile, created_by_user_id
+    workspace_id, slug, title, body, rubric, runtime_profile, created_by_user_id
 ) VALUES (
     sqlc.arg('workspace_id'), sqlc.arg('slug'), sqlc.arg('title'), sqlc.arg('body'),
-    sqlc.arg('runtime_profile'), sqlc.narg('created_by_user_id')
+    sqlc.arg('rubric'), sqlc.arg('runtime_profile'), sqlc.narg('created_by_user_id')
 )
 RETURNING *;
 
 -- name: UpdatePromptQuizItem :one
--- revision advances only when the body actually changed: re-titling an item
--- must not orphan the measurements already taken against its wording, and
--- bumping on every save would do exactly that.
+-- revision advances only when the BODY actually changed: re-titling an item, or
+-- rewriting its rubric, must not orphan the measurements already taken against
+-- its wording, and bumping on every save would do exactly that. The rubric is
+-- deliberately not part of the test: it never reached the run being measured, so
+-- editing it changes nothing about what was measured.
 UPDATE prompt_quiz_item
 SET title = sqlc.arg('title'),
     body = sqlc.arg('body'),
+    rubric = sqlc.arg('rubric'),
     runtime_profile = sqlc.arg('runtime_profile'),
     active = sqlc.arg('active'),
     revision = CASE WHEN body = sqlc.arg('body') THEN revision ELSE revision + 1 END,
@@ -41,7 +44,23 @@ WHERE id = sqlc.arg('id')::uuid
   AND workspace_id = sqlc.arg('workspace_id')::uuid;
 
 -- name: ListPromptQuizItems :many
-SELECT *
+-- The member-visible bank. Columns are named rather than selected with * so that
+-- rubric — the private half (migration 935) — cannot reach this response by
+-- being added to the table: the Go type this generates simply has no field for
+-- it. Reading a rubric goes through GetPromptQuizItem, which the router puts
+-- behind the owner role.
+SELECT
+    id,
+    workspace_id,
+    slug,
+    title,
+    body,
+    revision,
+    runtime_profile,
+    active,
+    created_by_user_id,
+    created_at,
+    updated_at
 FROM prompt_quiz_item
 WHERE workspace_id = sqlc.arg('workspace_id')::uuid
   AND (NOT sqlc.arg('active_only')::boolean OR active)
@@ -51,7 +70,22 @@ ORDER BY created_at DESC;
 -- What one sweep asks. Ordered by id so two sweeps over an unchanged bank
 -- enumerate in the same order, which is what makes the job's enqueue step
 -- replayable.
-SELECT *
+--
+-- rubric is omitted for the same reason as above, and here it is the load-bearing
+-- half of the A2 guarantee: this is the only query the enqueue path reads items
+-- through, so the task payload it builds CANNOT carry the private half — there is
+-- no field on the row to read it from.
+SELECT
+    id,
+    workspace_id,
+    slug,
+    title,
+    body,
+    revision,
+    runtime_profile,
+    active,
+    created_at,
+    updated_at
 FROM prompt_quiz_item
 WHERE workspace_id = sqlc.arg('workspace_id')::uuid
   AND active
@@ -66,16 +100,19 @@ ORDER BY id;
 INSERT INTO prompt_quiz_result (
     workspace_id, scope, scope_id, version,
     item_id, item_revision, item_body_sha256,
+    runtime_id, run_model,
     batch_id, task_id, outcome, run_tokens, duration_ms, measured_at
 ) VALUES (
     sqlc.arg('workspace_id'), sqlc.arg('scope'), sqlc.arg('scope_id'), sqlc.arg('version'),
     sqlc.arg('item_id'), sqlc.arg('item_revision'), sqlc.arg('item_body_sha256'),
+    sqlc.arg('runtime_id'), sqlc.narg('run_model'),
     sqlc.arg('batch_id'), sqlc.arg('task_id'), sqlc.arg('outcome'),
     sqlc.narg('run_tokens'), sqlc.narg('duration_ms'), now()
 )
 ON CONFLICT (task_id) DO UPDATE SET
     outcome = EXCLUDED.outcome,
     run_tokens = EXCLUDED.run_tokens,
+    run_model = EXCLUDED.run_model,
     duration_ms = EXCLUDED.duration_ms,
     measured_at = now()
 RETURNING *;
@@ -90,10 +127,20 @@ RETURNING *;
 -- filtered in SQL: whether a runaway belongs in the sample is a decision the
 -- Go layer makes and documents, and hiding it here would make that decision
 -- invisible.
+--
+-- The cohort key travels with every row — which question in which wording
+-- (item_id / item_revision / item_body_sha256) and which runtime executed it
+-- (runtime_id / run_model). Grouping happens in promptquiz.Cohort rather than
+-- here: the rule is that the CURRENT version's newest reading defines the
+-- measuring stick and the baseline version is re-read through the same one, which
+-- is a decision about two result sets and cannot be expressed inside either
+-- query. Newest first is load-bearing for that — CohortOf reads the order.
 SELECT
     r.item_id,
     r.item_revision,
     r.item_body_sha256,
+    r.runtime_id,
+    r.run_model,
     r.outcome,
     r.run_tokens,
     r.duration_ms,
@@ -119,14 +166,52 @@ LIMIT sqlc.arg('row_limit')::int;
 -- it measures is decided when the daemon claims it, not when it is ordered; the
 -- scope guard is what makes that identification valid, so a non-agent scope
 -- reads zero rather than another scope's runs.
+--
+-- graded counts THE COHORT, not the table. It has to answer the same question
+-- the reader answers — how many comparable readings does this version have — or
+-- the sweep stops topping up a sample the baseline endpoint will then refuse as
+-- too small: 30 readings spread over three bank edits and two models are not 30
+-- readings. The three CTEs below are promptquiz.CohortOf and Cohort.Select
+-- expressed in SQL, in the same order: pick the stick from the newest reading,
+-- keep the readings taken with it, then keep each question's newest wording
+-- within those. IS NOT DISTINCT FROM, not =, because an unattributed row's NULL
+-- is a cohort key of its own and must match only itself.
+WITH stick AS (
+    SELECT r.runtime_id, r.run_model
+    FROM prompt_quiz_result r
+    WHERE r.scope = sqlc.arg('scope')::text
+      AND r.scope_id = sqlc.arg('scope_id')::uuid
+      AND r.version = sqlc.arg('version')::int
+      AND r.outcome <> 'errored'
+      AND r.run_tokens IS NOT NULL
+    ORDER BY r.measured_at DESC
+    LIMIT 1
+),
+on_stick AS (
+    SELECT r.item_id, r.item_revision, r.item_body_sha256, r.measured_at
+    FROM prompt_quiz_result r, stick s
+    WHERE r.scope = sqlc.arg('scope')::text
+      AND r.scope_id = sqlc.arg('scope_id')::uuid
+      AND r.version = sqlc.arg('version')::int
+      AND r.outcome <> 'errored'
+      AND r.run_tokens IS NOT NULL
+      AND r.runtime_id IS NOT DISTINCT FROM s.runtime_id
+      AND r.run_model IS NOT DISTINCT FROM s.run_model
+),
+in_cohort AS (
+    SELECT
+        item_revision,
+        item_body_sha256,
+        first_value(item_revision) OVER (PARTITION BY item_id ORDER BY measured_at DESC) AS cohort_revision,
+        first_value(item_body_sha256) OVER (PARTITION BY item_id ORDER BY measured_at DESC) AS cohort_sha
+    FROM on_stick
+)
 SELECT
     (
         SELECT count(*)::int
-        FROM prompt_quiz_result r
-        WHERE r.scope = sqlc.arg('scope')::text
-          AND r.scope_id = sqlc.arg('scope_id')::uuid
-          AND r.version = sqlc.arg('version')::int
-          AND r.outcome <> 'errored'
+        FROM in_cohort
+        WHERE item_revision = cohort_revision
+          AND item_body_sha256 = cohort_sha
     ) AS graded,
     (
         SELECT count(*)::int
@@ -137,6 +222,54 @@ SELECT
           AND atq.issue_id IS NULL
           AND atq.status IN ('queued', 'dispatched', 'running')
     ) AS in_flight;
+
+-- name: ListPromptQuizItemDiscrimination :many
+-- Per-question spread, for the "no discrimination" mark shown where the bank is
+-- maintained (A4).
+--
+-- Only the question's CURRENT wording counts: readings taken before an edit
+-- describe a question that no longer exists, and pooling them would report
+-- spread the current wording never produced. Runtime is deliberately NOT part of
+-- the grouping here, unlike in the baseline read — mixing runtimes can only
+-- widen a question's spread, so the error it can cause is failing to mark a flat
+-- question, never marking a working one. The mark invites an author to delete a
+-- question, so that is the direction the bias has to point.
+--
+-- attempts counts every reading of the current wording and graded counts the ones
+-- that produced a value; a question that errors on every run therefore shows
+-- attempts without graded, which is the floor case the Go judgement reports as
+-- "no signal". percentile_cont is the same inclusive linear interpolation
+-- promptquiz.quantile implements, so the mark and the baseline summary describe
+-- the same statistic.
+WITH current_wording AS (
+    SELECT DISTINCT ON (r.item_id)
+        r.item_id, r.item_revision, r.item_body_sha256
+    FROM prompt_quiz_result r
+    WHERE r.workspace_id = sqlc.arg('workspace_id')::uuid
+    ORDER BY r.item_id, r.measured_at DESC
+)
+SELECT
+    w.item_id,
+    count(*)::int AS attempts,
+    count(*) FILTER (
+        WHERE r.outcome <> 'errored' AND r.run_tokens IS NOT NULL
+    )::int AS graded,
+    COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY r.run_tokens) FILTER (
+        WHERE r.outcome <> 'errored'
+    ), 0)::float8 AS median,
+    COALESCE(
+        percentile_cont(0.75) WITHIN GROUP (ORDER BY r.run_tokens) FILTER (
+            WHERE r.outcome <> 'errored'
+        ) - percentile_cont(0.25) WITHIN GROUP (ORDER BY r.run_tokens) FILTER (
+            WHERE r.outcome <> 'errored'
+        ), 0)::float8 AS iqr
+FROM current_wording w
+JOIN prompt_quiz_result r
+  ON r.item_id = w.item_id
+ AND r.item_revision = w.item_revision
+ AND r.item_body_sha256 = w.item_body_sha256
+WHERE r.workspace_id = sqlc.arg('workspace_id')::uuid
+GROUP BY w.item_id;
 
 -- name: ListPromptQuizBatchOutcomes :many
 SELECT outcome, count(*)::int AS total
@@ -150,9 +283,14 @@ GROUP BY outcome;
 -- (those all JOIN issue), and originator_source='quiz' is what keeps it out of
 -- production run statistics.
 --
--- Deliberately NOT going through lock_task_owner_rows like CreateQuickCreateTask
--- does: that lock serialises a human's concurrent creates against the same
--- owner rows, and a sweep is already serialised by the scheduler advisory lock.
+-- Fenced against workspace teardown: lock_task_owner_rows (migration 284) locks
+-- the owners' workspace rows in this statement's own transaction and returns
+-- false once they are gone, so a run enqueued while its agent's workspace is
+-- being deleted writes no row instead of being stranded. The scheduler advisory
+-- lock serialises sweep ticks against each other; it says nothing about a
+-- teardown or a legacy runtime merge running concurrently, which is the race
+-- this fence closes. Returning no row is the expected outcome then, and the
+-- sweep stops ordering runs for that scope.
 INSERT INTO agent_task_queue (
     agent_id,
     runtime_id,
@@ -163,10 +301,11 @@ INSERT INTO agent_task_queue (
     originator_source,
     trigger_evidence_kind,
     trigger_evidence_ref_id
-) VALUES (
-    sqlc.arg('agent_id'), sqlc.arg('runtime_id'), NULL, 'queued', sqlc.arg('priority'),
-    sqlc.arg('context'), 'quiz', 'quiz_item', sqlc.arg('item_id')
 )
+SELECT
+    sqlc.arg('agent_id'), sqlc.arg('runtime_id'), NULL::uuid, 'queued', sqlc.arg('priority'),
+    sqlc.arg('context'), 'quiz', 'quiz_item', sqlc.arg('item_id')
+WHERE lock_task_owner_rows(sqlc.arg('agent_id'), NULL::uuid, sqlc.arg('runtime_id'))
 RETURNING *;
 
 -- name: ListFinishedPromptQuizTasks :many
@@ -183,6 +322,18 @@ SELECT
     atq.started_at,
     atq.completed_at,
     a.workspace_id,
+    -- The runtime this measurement was taken on (A1). Read from the QUEUE row,
+    -- not from agent: agent.runtime_id is the current binding and would
+    -- re-attribute every past measurement the moment an agent is re-pointed.
+    -- Migration 251 made this column nullable on terminal rows, so it can be
+    -- absent; the collector skips such a run rather than storing a reading whose
+    -- instrument is unknown.
+    atq.runtime_id,
+    -- The model the daemon actually billed the run under, comma-joined and
+    -- deduplicated when a run spanned more than one. Taken from task_usage
+    -- rather than from agent.model for the same reason as runtime_id, and
+    -- because agent.model is what is configured while this is what ran.
+    tu.models AS run_model,
     -- Measured-vs-zero as a pair, the same way ListPromptQualityRunsForDay
     -- reports it: a terminal run whose usage rows never arrived measured no
     -- cost, and collapsing that into 0 would let a reporting outage read as a
@@ -192,7 +343,9 @@ SELECT
 FROM agent_task_queue atq
 JOIN agent a ON a.id = atq.agent_id
 LEFT JOIN LATERAL (
-    SELECT SUM(u.input_tokens + u.output_tokens)::bigint AS total_tokens
+    SELECT
+        SUM(u.input_tokens + u.output_tokens)::bigint AS total_tokens,
+        string_agg(DISTINCT u.model, ',' ORDER BY u.model) AS models
     FROM task_usage u
     WHERE u.task_id = atq.id
 ) tu ON TRUE

@@ -24,12 +24,14 @@ import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { Textarea } from "@multica/ui/components/ui/textarea";
 import { clientErrorMessage } from "@multica/core/api";
 import {
+  promptQuizItemOptions,
   promptQuizItemsOptions,
+  quizDiscrimination,
   useCreatePromptQuizItem,
   useDeletePromptQuizItem,
   useUpdatePromptQuizItem,
 } from "@multica/core/self-evolution";
-import type { PromptQuizItem } from "@multica/core/types";
+import type { PromptQuizItem, PromptQuizItemDetail } from "@multica/core/types";
 import { useT } from "../../i18n";
 
 /**
@@ -38,6 +40,16 @@ import { useT } from "../../i18n";
  * The bank is one fixed set of questions replayed against every prompt version;
  * editing a body is what makes two versions comparable or not, so the panel
  * shows each question's revision and offers retiring before deleting.
+ *
+ * Each row also carries the question's discrimination mark (A4): a question whose
+ * readings no longer spread cannot tell two prompt versions apart, and this list
+ * is where the decision to reword or retire it is made.
+ *
+ * The editor loads the question through the owner-only single read rather than
+ * from a list row. The list has no `rubric` field at all — the answer key never
+ * travels to a member-visible surface — and an update replaces `rubric` whole, so
+ * a form seeded from a list row would save an empty answer key over the stored
+ * one.
  *
  * The server refuses a body that names a production entity — an issue key, a
  * bare UUID, a mention link, a URL — and its refusal names the kind and offset
@@ -62,6 +74,9 @@ export function QuizBankPanel({
 
   const [editing, setEditing] = useState<PromptQuizItem | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
+  // The private half lives only behind this read; the query is disabled until a
+  // question is being edited.
+  const editingDetail = useQuery(promptQuizItemOptions(wsId, editing?.id ?? ""));
 
   return (
     <section className="flex flex-col gap-3">
@@ -119,6 +134,9 @@ export function QuizBankPanel({
                   ? t(($) => $.quiz.bank.active)
                   : t(($) => $.quiz.bank.retired)}
               </Badge>
+              <Badge variant="outline" data-testid={`quiz-item-discrimination-${item.slug}`}>
+                {t(($) => $.quiz.bank.discrimination[quizDiscrimination(item.discrimination)])}
+              </Badge>
               {canManage ? (
                 <div className="ml-auto flex gap-1">
                   <Button size="sm" variant="ghost" onClick={() => setEditing(item)}>
@@ -149,11 +167,12 @@ export function QuizBankPanel({
       <QuizItemDialog
         open={createOpen}
         item={null}
+        ready
         pending={create.isPending}
         onOpenChange={setCreateOpen}
         onSubmit={(draft) => {
           create.mutate(
-            { slug: draft.slug, title: draft.title, body: draft.body },
+            { slug: draft.slug, title: draft.title, body: draft.body, rubric: draft.rubric },
             {
               onSuccess: () => setCreateOpen(false),
               onError: (e) =>
@@ -164,7 +183,8 @@ export function QuizBankPanel({
       />
       <QuizItemDialog
         open={editing !== null}
-        item={editing}
+        item={editingDetail.data ?? null}
+        ready={editing !== null && editingDetail.isSuccess}
         pending={update.isPending}
         onOpenChange={(next) => {
           if (!next) setEditing(null);
@@ -177,6 +197,10 @@ export function QuizBankPanel({
               patch: {
                 title: draft.title,
                 body: draft.body,
+                // Sent back explicitly: the server replaces the stored rubric
+                // with what this field holds, so omitting it clears the answer
+                // key of a question that was only being retitled.
+                rubric: draft.rubric,
                 runtime_profile: editing.runtime_profile,
                 active: draft.active,
               },
@@ -197,25 +221,32 @@ interface QuizItemDraft {
   slug: string;
   title: string;
   body: string;
+  /** The expected answer and grading points. Never leaves the grading side. */
+  rubric: string;
   active: boolean;
 }
 
 /**
  * One question's editor.
  *
- * `key` on the dialog content resets the local draft when the subject changes,
- * so reopening on another question never shows the previous one's body.
+ * The draft resets when the subject changes, so reopening on another question
+ * never shows the previous one's body — and an edit whose single read has not
+ * arrived yet cannot be saved, because saving an empty draft would overwrite the
+ * stored body and answer key with blanks.
  */
 function QuizItemDialog({
   open,
   item,
+  ready,
   pending,
   onOpenChange,
   onSubmit,
 }: {
   open: boolean;
-  /** Null for a create. */
-  item: PromptQuizItem | null;
+  /** Null for a create, and for an edit whose single read has not arrived. */
+  item: PromptQuizItemDetail | null;
+  /** False while the question being edited is still loading. */
+  ready: boolean;
   pending: boolean;
   onOpenChange: (open: boolean) => void;
   onSubmit: (draft: QuizItemDraft) => void;
@@ -231,6 +262,7 @@ function QuizItemDialog({
 
   const editing = item !== null;
   const canSubmit =
+    ready &&
     draft.title.trim() !== "" &&
     draft.body.trim() !== "" &&
     (editing || draft.slug.trim() !== "");
@@ -278,6 +310,19 @@ function QuizItemDialog({
               {t(($) => $.quiz.bank.dialog.bodyHint)}
             </span>
           </label>
+          <label className="flex flex-col gap-1.5">
+            <span className="text-caption text-muted-foreground">
+              {t(($) => $.quiz.bank.dialog.rubric)}
+            </span>
+            <Textarea
+              rows={4}
+              value={draft.rubric}
+              onChange={(e) => setDraft((d) => ({ ...d, rubric: e.target.value }))}
+            />
+            <span className="text-caption text-muted-foreground">
+              {t(($) => $.quiz.bank.dialog.rubricHint)}
+            </span>
+          </label>
           {editing ? (
             <Button
               size="sm"
@@ -302,11 +347,12 @@ function QuizItemDialog({
   );
 }
 
-function toDraft(item: PromptQuizItem | null): QuizItemDraft {
+function toDraft(item: PromptQuizItemDetail | null): QuizItemDraft {
   return {
     slug: item?.slug ?? "",
     title: item?.title ?? "",
     body: item?.body ?? "",
+    rubric: item?.rubric ?? "",
     active: item?.active ?? true,
   };
 }

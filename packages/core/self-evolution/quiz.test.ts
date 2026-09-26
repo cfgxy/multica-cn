@@ -1,7 +1,7 @@
 // @vitest-environment node
 
 import { describe, it, expect } from "vitest";
-import { quizOutcomeCount, quizVerdict, toQuizView } from "./quiz";
+import { quizDiscrimination, quizOutcomeCount, quizVerdict, toQuizView } from "./quiz";
 import type { PromptQuizBaseline, PromptQuizComparison } from "../types/prompt-quiz";
 
 /**
@@ -30,7 +30,9 @@ function baseline(over: Partial<PromptQuizBaseline> = {}): PromptQuizBaseline {
     required_baseline: 30,
     measured: true,
     current: summary(),
-    outcomes: { passed: 10, failed: 2 },
+    outcomes: { answered: 10, errored: 2 },
+    incomparable: 0,
+    baseline_incomparable: 0,
     comparison: {
       baseline: summary({ n: 30 }),
       current: summary(),
@@ -163,8 +165,40 @@ describe("toQuizView", () => {
     ]) {
       const view = toQuizView(b);
       if (view.state === "no_version") throw new Error("unexpected state");
-      expect(view.outcomes.passed).toBe(10);
+      expect(view.outcomes.answered).toBe(10);
     }
+  });
+
+  it("carries the incomparable counts into every measured state", () => {
+    // A group that shrank because the bank was edited or the runtime changed
+    // must be distinguishable from one that shrank because collection broke, so
+    // both exclusion counts travel with the reading rather than being dropped.
+    for (const b of [
+      baseline({ incomparable: 4, baseline_incomparable: 7 }),
+      baseline({
+        measured: false,
+        current: summary({ n: 0 }),
+        comparison: undefined,
+        incomparable: 4,
+        baseline_incomparable: 7,
+      }),
+      baseline({ baseline_version: 0, comparison: undefined, incomparable: 4, baseline_incomparable: 7 }),
+    ]) {
+      const view = toQuizView(b);
+      if (view.state === "no_version") throw new Error("unexpected state");
+      expect(view.incomparable).toEqual({ current: 4, baseline: 7 });
+    }
+  });
+
+  it("treats missing incomparable counts as zero rather than undefined", () => {
+    const view = toQuizView(
+      baseline({
+        incomparable: undefined as unknown as number,
+        baseline_incomparable: undefined as unknown as number,
+      }),
+    );
+    if (view.state === "no_version") throw new Error("unexpected state");
+    expect(view.incomparable).toEqual({ current: 0, baseline: 0 });
   });
 
   it("treats a missing outcome map as empty rather than throwing", () => {
@@ -174,9 +208,26 @@ describe("toQuizView", () => {
   });
 });
 
+describe("quizDiscrimination", () => {
+  it("keeps the four marks this build renders", () => {
+    for (const m of ["pending", "no_signal", "flat", "ok"] as const) {
+      expect(quizDiscrimination(m)).toBe(m);
+    }
+  });
+
+  it("narrows an absent or unknown mark to pending, never to ok", () => {
+    // "ok" is the claim that the question still separates two versions. A build
+    // that cannot read the mark has not established that claim, so a mark it
+    // does not know must read as unjudged.
+    for (const m of [undefined, "", "OK", "discriminating", "degenerate"]) {
+      expect(quizDiscrimination(m)).toBe("pending");
+    }
+  });
+});
+
 describe("quizOutcomeCount", () => {
   it("returns 0 for an outcome the server did not report", () => {
-    expect(quizOutcomeCount({ passed: 4 }, "errored")).toBe(0);
+    expect(quizOutcomeCount({ answered: 4 }, "errored")).toBe(0);
     expect(quizOutcomeCount({ errored: 3 }, "errored")).toBe(3);
   });
 });
