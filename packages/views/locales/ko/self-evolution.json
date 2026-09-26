@@ -121,6 +121,7 @@
       },
       "range": "{{low}}% — {{high}}%",
       "scoredAt": "{{date}}에 {{model}}이(가) 평가",
+      "reproducibility": "같은 버전을 반복 채점해도 band는 안정적이며, 구간 양 끝값의 변동은 실측 기준 10퍼센트포인트 이내였습니다(gpt-6-luna, temperature 0.2, 런타임별 5회).",
       "empty": {
         "title": "평가되지 않음",
         "description": "이 프롬프트는 아직 어떤 버전도 평가되지 않았습니다. 평가 없음은 중립 평가가 아닙니다."
