@@ -133,6 +133,11 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// that marketplace_prompt_version serves — it goes with the workspace,
 	// not Keep.
 	"prompt_version":                 workspaceDelete,
+	// Derived from prompt_version and agent_task_queue (RUYI-184); both are
+	// workspace-owned, so the derivations are too.
+	"prompt_quality_daily":           workspaceDelete,
+	"prompt_perplexity_score":        workspaceDelete,
+	"prompt_quality_rollup_state":    workspaceDeleteKeep,
 	"quick_action":                   workspaceDelete,
 	"runtime_profile":                workspaceDelete,
 	"schema_migrations":              workspaceDeleteKeep,

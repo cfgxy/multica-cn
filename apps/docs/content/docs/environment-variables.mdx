@@ -193,6 +193,8 @@ For setup steps, see [GitHub integration](/github-integration#self-hosting-setup
 
 This group configures server-side assist generation, such as conversation titles; it is not the AI coding tool credentials agents use to execute tasks.
 
+Once configured, this layer has exactly three consumers: chat auto-titling (the first user message of a new chat session), chat follow-up questions (the tail of the conversation), and dimension D3 of the prompt quality dashboard (the workspace's own assembled system prompt, with email addresses masked and the call refused outright on any credential finding). Leaving both the API key and the base URL empty disables the layer — it makes zero upstream requests, chats keep the client-derived title, the follow-up buttons never appear, and D3 reads "not scored" while the other six dimensions are still computed from platform data.
+
 | Variable | Default | Description |
 |---|---|---|
 | `MULTICA_LLM_API_KEY` | empty | OpenAI-compatible API key |
