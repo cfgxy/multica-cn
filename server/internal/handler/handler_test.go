@@ -90,7 +90,10 @@ func TestMain(m *testing.M) {
 	}
 	dbfx = testutil.New(pool, testWorkspaceID, testUserID)
 
+	stopHeartbeat := keepFixtureRuntimeOnline(pool, testRuntimeID)
+
 	code := m.Run()
+	stopHeartbeat()
 	if err := cleanupHandlerTestFixture(context.Background(), pool); err != nil {
 		fmt.Printf("Failed to clean up handler test fixture: %v\n", err)
 		if code == 0 {
@@ -99,6 +102,72 @@ func TestMain(m *testing.M) {
 	}
 	pool.Close()
 	os.Exit(code)
+}
+
+// fixtureRuntimeHeartbeatInterval is how often the suite re-asserts that its
+// seeded runtime is online. It must stay well under
+// service.RuntimeClaimFreshnessSeconds (150s), the staleness threshold the
+// production runtime sweeper in cmd/server uses.
+const fixtureRuntimeHeartbeatInterval = 20 * time.Second
+
+// keepFixtureRuntimeOnline re-asserts status='online' on the suite's seeded
+// runtime for as long as the suite runs, and returns the function that stops
+// it.
+//
+// The suite's runtime is seeded once in TestMain and then never heartbeats,
+// while the full suite takes several minutes to run. Any live process pointed
+// at the same database — a `make up` backend on a shared dev database is the
+// normal case — runs the sweeper in cmd/server/runtime_sweeper.go, which
+// flips every runtime whose last_seen_at is older than
+// service.RuntimeClaimFreshnessSeconds to 'offline'. Once that happens
+// mid-suite, service.AgentReadiness reports the fixture agents as
+// runtime_offline and every later test that expects an enqueue, a briefing or
+// a 202 instead sees zero tasks or a 422. The failures are real assertions
+// against a real row, so they reproduce deterministically on a shared
+// database and vanish on a private one — which is exactly how they were first
+// misread as a product regression (RUYI-200).
+//
+// Keeping the row fresh is what a running daemon would do for its own
+// runtime, so this restores the precondition the tests were written against
+// rather than weakening any of them. It also removes the need for individual
+// tests to re-assert 'online' by hand before they act.
+func keepFixtureRuntimeOnline(pool *pgxpool.Pool, runtimeID string) func() {
+	if runtimeID == "" {
+		return func() {}
+	}
+
+	done := make(chan struct{})
+	stopped := make(chan struct{})
+
+	beat := func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		// Only the fixture row is touched, and only back to the state
+		// setupHandlerTestFixture seeded it in.
+		_, _ = pool.Exec(ctx,
+			`UPDATE agent_runtime SET status = 'online', last_seen_at = now() WHERE id = $1`,
+			runtimeID,
+		)
+	}
+
+	go func() {
+		defer close(stopped)
+		ticker := time.NewTicker(fixtureRuntimeHeartbeatInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				beat()
+			}
+		}
+	}()
+
+	return func() {
+		close(done)
+		<-stopped
+	}
 }
 
 func setupHandlerTestFixture(ctx context.Context, pool *pgxpool.Pool) (string, string, error) {
