@@ -110,6 +110,7 @@ import type {
   PromptVersion,
 } from "../types/prompt-market";
 import type { PromptQualityDashboard } from "../types/prompt-quality";
+import type { PromptQuizBaseline, PromptQuizItem } from "../types/prompt-quiz";
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
 import type { CreateFeedbackResponse } from "../feedback/types";
 
@@ -4046,4 +4047,109 @@ export const EMPTY_PROMPT_QUALITY_DASHBOARD: PromptQualityDashboard = {
   versions: [],
   perplexity: [],
   data_sources: { degraded: false, items: [] },
+};
+
+// --- Prompt quiz (RUYI-185) ---
+//
+// The reading is a distribution per side, and every field that fed the verdict
+// travels with it so a reader can recompute the call. `n` defaults to 0 and
+// `verdict` to "insufficient" for the same reason the quality measures default
+// to "no_data": an unread response must not be able to report a clean bill of
+// health for a version nothing measured.
+
+export const PromptQuizItemSchema = z.object({
+  id: z.string().default(""),
+  slug: z.string().default(""),
+  title: z.string().default(""),
+  body: z.string().default(""),
+  revision: z.number().default(0),
+  runtime_profile: z.string().default("member"),
+  active: z.boolean().default(false),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+});
+
+/**
+ * The fallback for a bank write whose response did not parse. `active: false`
+ * and `revision: 0` so a row the client cannot read is never shown as a live
+ * question — the list refetch that follows every write is what puts the real
+ * row on screen.
+ */
+export const EMPTY_PROMPT_QUIZ_ITEM: PromptQuizItem = {
+  id: "",
+  slug: "",
+  title: "",
+  body: "",
+  revision: 0,
+  runtime_profile: "member",
+  active: false,
+  created_at: "",
+  updated_at: "",
+};
+
+export const PromptQuizItemListSchema = z
+  .object({ items: z.array(PromptQuizItemSchema).default([]) })
+  .transform((v) => v.items);
+
+const EMPTY_QUIZ_SUMMARY = {
+  n: 0,
+  mean: 0,
+  median: 0,
+  iqr: 0,
+  std_dev: 0,
+  min: 0,
+  max: 0,
+} as const;
+
+export const PromptQuizSummarySchema = z.object({
+  n: z.number().default(0),
+  mean: z.number().default(0),
+  median: z.number().default(0),
+  iqr: z.number().default(0),
+  std_dev: z.number().default(0),
+  min: z.number().default(0),
+  max: z.number().default(0),
+});
+
+export const PromptQuizComparisonSchema = z.object({
+  baseline: PromptQuizSummarySchema.default(EMPTY_QUIZ_SUMMARY),
+  current: PromptQuizSummarySchema.default(EMPTY_QUIZ_SUMMARY),
+  z: z.number().default(0),
+  threshold: z.number().default(0),
+  // Server-driven, and the default is the verdict that claims nothing.
+  verdict: z.string().default("insufficient"),
+});
+
+export const PromptQuizBaselineSchema = z.object({
+  scope: z.string().default(""),
+  scope_id: z.string().default(""),
+  current_version: z.number().default(0),
+  baseline_version: z.number().default(0),
+  required_sample: z.number().default(0),
+  required_baseline: z.number().default(0),
+  comparison: PromptQuizComparisonSchema.optional(),
+  current: PromptQuizSummarySchema.default(EMPTY_QUIZ_SUMMARY),
+  measured: z.boolean().default(false),
+  outcomes: z.record(z.string(), z.number()).default({}),
+});
+
+/**
+ * The fallback for a quiz reading that did not parse.
+ *
+ * `measured: false` with no comparison and an empty outcome map: a client that
+ * could not read the response knows nothing about this version's quality, and
+ * "steady" would be a claim it cannot back. `required_*` stay 0 rather than
+ * carrying the server's real N, since a hardcoded copy here would drift from
+ * the calibrated constants it mirrors.
+ */
+export const EMPTY_PROMPT_QUIZ_BASELINE: PromptQuizBaseline = {
+  scope: "",
+  scope_id: "",
+  current_version: 0,
+  baseline_version: 0,
+  required_sample: 0,
+  required_baseline: 0,
+  current: EMPTY_QUIZ_SUMMARY,
+  measured: false,
+  outcomes: {},
 };
