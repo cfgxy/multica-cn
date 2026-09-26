@@ -311,6 +311,7 @@ var concurrentIndexCleanups = map[string]string{
 	"926_prompt_quality_daily_scope_day_index":                  "idx_prompt_quality_daily_scope_day",
 	"927_prompt_quality_daily_workspace_index":                  "idx_prompt_quality_daily_workspace",
 	"928_prompt_perplexity_score_workspace_index":               "idx_prompt_perplexity_score_workspace",
+	"930_oauth_client_client_id_index":                          "idx_oauth_client_client_id",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction

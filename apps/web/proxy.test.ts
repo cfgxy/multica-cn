@@ -246,6 +246,61 @@ describe("proxy runtime upstream rewrites", () => {
     }
   });
 
+  // The rewrite rule for these paths is useless without the matcher entry:
+  // the catch-all pattern excludes every path containing a dot, so proxy()
+  // would never run and the request would 404 in the Next.js router.
+  it("matches OAuth discovery paths, which the dotted catch-all excludes", () => {
+    expect(config.matcher).toContain("/.well-known/:path*");
+  });
+
+  it("rewrites OAuth discovery requests to the runtime API origin", () => {
+    const previous = process.env.REMOTE_API_URL;
+    process.env.REMOTE_API_URL = "http://backend:8080";
+    try {
+      const res = proxy(
+        makeRequest("/.well-known/oauth-protected-resource/api/mcp"),
+      );
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("x-middleware-rewrite")).toBe(
+        "http://backend:8080/.well-known/oauth-protected-resource/api/mcp",
+      );
+    } finally {
+      restoreEnv("REMOTE_API_URL", previous);
+    }
+  });
+
+  it("rewrites MCP requests to the MCP process", () => {
+    const previousApi = process.env.REMOTE_API_URL;
+    const previousMcp = process.env.MCP_URL;
+    process.env.REMOTE_API_URL = "http://backend:8080";
+    process.env.MCP_URL = "http://mcp:3002";
+    try {
+      const res = proxy(makeRequest("/api/mcp"));
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("x-middleware-rewrite")).toBe(
+        "http://mcp:3002/mcp",
+      );
+    } finally {
+      restoreEnv("REMOTE_API_URL", previousApi);
+      restoreEnv("MCP_URL", previousMcp);
+    }
+  });
+
+  it("leaves unclaimed .well-known paths on the Next.js router", () => {
+    const previous = process.env.REMOTE_API_URL;
+    process.env.REMOTE_API_URL = "http://backend:8080";
+    try {
+      const res = proxy(makeRequest("/.well-known/security.txt"));
+
+      expect(res.status).toBe(200);
+      expect(res.headers.get("x-middleware-rewrite")).toBeNull();
+    } finally {
+      restoreEnv("REMOTE_API_URL", previous);
+    }
+  });
+
   it("does not rewrite frontend auth callback pages", () => {
     const previous = process.env.REMOTE_API_URL;
     process.env.REMOTE_API_URL = "http://backend:8080";

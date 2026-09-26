@@ -122,6 +122,13 @@ export const config = {
     "/auth/:path*",
     "/uploads/:path*",
     "/docs/:path*",
+    // OAuth discovery lives under a dotted path, which the catch-all pattern
+    // below excludes (`.*\.` at its end). Without this entry `proxy()` is
+    // never invoked for /.well-known/*, so the rewrite rules in
+    // runtime-urls.ts would silently lose to a Next.js HTML 404 — measured,
+    // not theorised (docs/adr/001-mcp-oauth-behind-nextjs-proxy.md §3.3).
+    // Paths no rule claims still fall through to the file-system router.
+    "/.well-known/:path*",
     "/ws",
     "/((?!api|v1|_next/static|_next/image|favicon.ico|.*\\.).*)",
   ],
