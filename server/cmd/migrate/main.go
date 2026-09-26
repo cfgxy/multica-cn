@@ -662,6 +662,10 @@ const migrationAdvisoryLockKey int64 = 7244554146635925501
 // Postgres without colliding with the production table.
 const defaultSchemaMigrationsTable = "schema_migrations"
 
+// migrateUsage is printed when the command is invoked without a direction or
+// with one it does not support.
+const migrateUsage = "Usage: go run ./cmd/migrate <up|down>"
+
 // runOptions carries everything runMigrations needs that is not the
 // pool itself. Tests use it to inject a hermetic migrations directory,
 // a unique per-test bookkeeping table, and a unique advisory-lock key
@@ -706,7 +710,7 @@ func main() {
 	}
 
 	direction := os.Args[1]
-	if direction != "up" && direction != "down" && direction != "check-ledger" {
+	if direction != "up" && direction != "down" {
 		fmt.Println(migrateUsage)
 		os.Exit(1)
 	}
@@ -723,19 +727,6 @@ func main() {
 		os.Exit(1)
 	}
 	defer pool.Close()
-
-	if direction == "check-ledger" {
-		report, err := reconcileLedgerAgainstDatabase(context.Background(), pool, defaultSchemaMigrationsTable)
-		if err != nil {
-			slog.Error("ledger reconciliation failed", "error", err)
-			os.Exit(1)
-		}
-		fmt.Print(formatLedgerReport(report))
-		if report.HasMismatch() {
-			os.Exit(1)
-		}
-		return
-	}
 
 	files, err := migrations.Files(direction)
 	if err != nil {
