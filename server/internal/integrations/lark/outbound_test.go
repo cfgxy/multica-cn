@@ -125,6 +125,9 @@ type fakeAPIClient struct {
 	// sendFileHook takes precedence over sendFileErr when set, so a test can
 	// hand consecutive file sends different outcomes.
 	sendFileHook func() error
+	// deletedReactions records typing-badge removals so a test can prove the
+	// badge came off at a specific point in the outbound sequence.
+	deletedReactions []DeleteReactionParams
 	// threadReplyErr, when non-nil, is returned by the three send
 	// methods whenever the call carries a thread ReplyTarget, while the
 	// attempt is still recorded. Tests inject either a classified
@@ -202,6 +205,9 @@ func (f *fakeAPIClient) AddMessageReaction(ctx context.Context, p AddReactionPar
 	return "fake-reaction-id", nil
 }
 func (f *fakeAPIClient) DeleteMessageReaction(ctx context.Context, p DeleteReactionParams) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deletedReactions = append(f.deletedReactions, p)
 	return nil
 }
 
