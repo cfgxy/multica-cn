@@ -2,6 +2,8 @@ package middleware
 
 import (
 	"context"
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -11,6 +13,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/multica-ai/multica/server/internal/auth"
+	"github.com/multica-ai/multica/server/internal/oauth"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
@@ -38,12 +41,20 @@ func uuidToString(u pgtype.UUID) string { return util.UUIDToString(u) }
 // SELECT and the last_used_at UPDATE — last_used_at is therefore refreshed
 // at most once per TTL window per token, not per request.
 //
+// oauthSigner is optional; when non-nil, an RS256 bearer token is verified as
+// an MCP OAuth access token (RUYI-209). Nil — the shape a deployment without
+// OAUTH_SIGNING_KEY has — leaves an RS256 token to fall through to the HMAC JWT
+// branch, which rejects it, so the OAuth surface is simply absent rather than
+// half-open. The prefixed branches above are reached first and are untouched:
+// an OAuth token carries no mat_/mcn_/mul_ prefix, and a Multica session JWT is
+// HS256, so no existing credential changes paths because of this branch.
+//
 // cloudPAT is optional; when non-nil, tokens with the mcn_ prefix are
 // validated by calling the Multica Cloud Fleet service rather than the
 // local DB. When nil (Fleet URL unset) mcn_ tokens are rejected at the
 // prefix branch — we don't fall through to the mul_ / JWT paths, since
 // an mcn_ string is by construction not a valid mul_ PAT or JWT.
-func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATVerifier, disabled auth.DisabledLookup) func(http.Handler) http.Handler {
+func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATVerifier, disabled auth.DisabledLookup, oauthSigner *oauth.Signer) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			// X-Actor-Source and X-Impersonator-ID are server-set only —
@@ -225,6 +236,31 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 				return
 			}
 
+			// MCP OAuth access token (RUYI-209): an RS256 JWT minted by
+			// this deployment's authorization server. Selected by the
+			// token's own `alg`, which is safe here only because the
+			// verifier below pins RS256 and the key — the header chooses
+			// which BRANCH runs, never which key or algorithm verifies.
+			// Multica session JWTs are HS256 and therefore never enter
+			// here; an RS256 token with the signer unconfigured falls
+			// through to the HMAC branch and is rejected there.
+			if oauthSigner != nil && isRS256Token(tokenString) {
+				claims, err := oauthSigner.VerifyAccessToken(tokenString)
+				if err != nil {
+					// Error type only — never the token, and the path is
+					// already free of credential material.
+					slog.Warn("auth: invalid oauth access token", "path", r.URL.Path, "reason", oauthFailureReason(err))
+					http.Error(w, `{"error":"invalid token"}`, http.StatusUnauthorized)
+					return
+				}
+				if rejectDisabledUser(w, r, disabled, claims.Subject, "oauth") {
+					return
+				}
+				r.Header.Set("X-User-ID", claims.Subject)
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			// JWT
 			token, err := jwt.Parse(tokenString, func(token *jwt.Token) (any, error) {
 				if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
@@ -281,6 +317,41 @@ func Auth(queries *db.Queries, patCache *auth.PATCache, cloudPAT *auth.CloudPATV
 
 			next.ServeHTTP(w, r)
 		})
+	}
+}
+
+// isRS256Token reports whether tokenString is a JWS whose header declares
+// RS256. It reads the header only to CHOOSE a branch — the branch it selects
+// then pins the algorithm and the key itself, so a forged header can at most
+// route a token to a verifier that rejects it.
+func isRS256Token(tokenString string) bool {
+	parts := strings.Split(tokenString, ".")
+	if len(parts) != 3 {
+		return false
+	}
+	header, err := base64.RawURLEncoding.DecodeString(parts[0])
+	if err != nil {
+		return false
+	}
+	var parsed struct {
+		Alg string `json:"alg"`
+	}
+	if err := json.Unmarshal(header, &parsed); err != nil {
+		return false
+	}
+	return parsed.Alg == "RS256"
+}
+
+// oauthFailureReason maps a verification error to a short, non-revealing label
+// for the log. The token, its claims and the Authorization header never appear.
+func oauthFailureReason(err error) string {
+	switch {
+	case errors.Is(err, oauth.ErrAudienceMismatch):
+		return "audience_mismatch"
+	case errors.Is(err, oauth.ErrNoSigningKey):
+		return "signing_key_unavailable"
+	default:
+		return "invalid_token"
 	}
 }
 
