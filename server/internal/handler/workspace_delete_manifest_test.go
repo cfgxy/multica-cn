@@ -116,23 +116,29 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"agent_mcp_server":         workspaceDelete,
 	"workspace_mcp_server":     workspaceDelete,
 	"notification_preference":  workspaceDelete,
-	"personal_access_token":    workspaceDeleteKeep,
-	"pinned_item":              workspaceDelete,
-	"plugin_installation":      workspaceDelete,
-	"plugin_hook_schedule":     workspaceDelete,
-	"plugin_invocation":        workspaceDelete,
-	"plugin_storage":           workspaceDelete,
-	"plugin_secret":            workspaceDelete,
-	"plugin_package":           workspaceDelete,
-	"plugin_package_version":   workspaceDelete,
-	"plugin_package_file":      workspaceDelete,
-	"project":                  workspaceDelete,
-	"project_resource":         workspaceDelete,
+	// Pre-registered OAuth clients for the MCP authorization server
+	// (RUYI-209). Deployment-level, like personal_access_token: a client is
+	// registered by an operator against the whole installation and carries no
+	// workspace_id, so deleting a workspace must not remove it — the access
+	// tokens it mints are scoped by the user behind them, not by workspace.
+	"oauth_client":           workspaceDeleteKeep,
+	"personal_access_token":  workspaceDeleteKeep,
+	"pinned_item":            workspaceDelete,
+	"plugin_installation":    workspaceDelete,
+	"plugin_hook_schedule":   workspaceDelete,
+	"plugin_invocation":      workspaceDelete,
+	"plugin_storage":         workspaceDelete,
+	"plugin_secret":          workspaceDelete,
+	"plugin_package":         workspaceDelete,
+	"plugin_package_version": workspaceDelete,
+	"plugin_package_file":    workspaceDelete,
+	"project":                workspaceDelete,
+	"project_resource":       workspaceDelete,
 	// Version history for the four prompt tiers (RUYI-183) is audit data
 	// owned by the workspace it was written in, not by the publishing flow
 	// that marketplace_prompt_version serves — it goes with the workspace,
 	// not Keep.
-	"prompt_version":                 workspaceDelete,
+	"prompt_version": workspaceDelete,
 	// Derived from prompt_version and agent_task_queue (RUYI-184); both are
 	// workspace-owned, so the derivations are too.
 	"prompt_quality_daily":           workspaceDelete,

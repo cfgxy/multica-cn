@@ -1143,6 +1143,19 @@ type NotificationPreference struct {
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 }
 
+// Pre-registered OAuth clients for the MCP authorization server (RUYI-209). No DCR; rows are created by an operator.
+type OauthClient struct {
+	ID       pgtype.UUID `json:"id"`
+	ClientID string      `json:"client_id"`
+	// SHA-256 hash of the client secret. The plaintext is shown once at creation and never stored.
+	ClientSecretHash string             `json:"client_secret_hash"`
+	Name             string             `json:"name"`
+	RedirectUris     []string           `json:"redirect_uris"`
+	CreatedBy        pgtype.UUID        `json:"created_by"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt        pgtype.Timestamptz `json:"updated_at"`
+}
+
 type PersonalAccessToken struct {
 	ID          pgtype.UUID        `json:"id"`
 	UserID      pgtype.UUID        `json:"user_id"`

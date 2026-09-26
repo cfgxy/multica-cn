@@ -40,7 +40,7 @@ func TestRequireHumanActor_AllowsHumanRequest(t *testing.T) {
 
 // TestRequireHumanActor_BlocksMachineCredentials walks every machine-
 // credential X-Actor-Source value the auth middlewares stamp today
-// and confirms each is rejected with 403. The two values must stay
+// and confirms each is rejected with 403. The values must stay
 // in lockstep with auth.go and daemon_auth.go: a new machine
 // credential added there without a corresponding case here would
 // silently grant agents/nodes account-level access.
@@ -59,6 +59,11 @@ func TestRequireHumanActor_BlocksMachineCredentials(t *testing.T) {
 		// of machine credential as mat_ for billing-authorization
 		// purposes.
 		{name: "cloud_pat", actorSource: "cloud_pat"},
+		// MCP OAuth access token (RUYI-209) — set in middleware/auth.go's
+		// RS256 branch. The token lives in an external MCP client's storage
+		// rather than with the human who authorized it once, so account-level
+		// routes (PAT management, instance admin) must refuse it.
+		{name: "oauth", actorSource: "oauth"},
 	}
 
 	for _, tc := range cases {
