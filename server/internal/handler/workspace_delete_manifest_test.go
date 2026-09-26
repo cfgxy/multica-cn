@@ -121,7 +121,7 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// registered by an operator against the whole installation and carries no
 	// workspace_id, so deleting a workspace must not remove it — the access
 	// tokens it mints are scoped by the user behind them, not by workspace.
-	"oauth_clients":          workspaceDeleteKeep,
+	"oauth_client":           workspaceDeleteKeep,
 	"personal_access_token":  workspaceDeleteKeep,
 	"pinned_item":            workspaceDelete,
 	"plugin_installation":    workspaceDelete,
@@ -138,7 +138,12 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	// owned by the workspace it was written in, not by the publishing flow
 	// that marketplace_prompt_version serves — it goes with the workspace,
 	// not Keep.
-	"prompt_version":                 workspaceDelete,
+	"prompt_version": workspaceDelete,
+	// Derived from prompt_version and agent_task_queue (RUYI-184); both are
+	// workspace-owned, so the derivations are too.
+	"prompt_quality_daily":           workspaceDelete,
+	"prompt_perplexity_score":        workspaceDelete,
+	"prompt_quality_rollup_state":    workspaceDeleteKeep,
 	"quick_action":                   workspaceDelete,
 	"runtime_profile":                workspaceDelete,
 	"schema_migrations":              workspaceDeleteKeep,

@@ -3141,6 +3141,28 @@ func codexNormalizePatchStatus(status string) string {
 	}
 }
 
+// codexToolResultIsError maps a normalized codex item status onto the
+// three-valued tool-result error flag. Codex has no is_error field; the status
+// enum is the only outcome it reports, and it only reports it for patches and
+// MCP calls — commandExecution carries just its aggregated output, so those
+// results stay unmeasured rather than being guessed from an empty status.
+//
+// in_progress is deliberately nil too: the item has not finished, so there is no
+// outcome yet, and recording it as a success would make a still-running tool
+// count toward the pass rate. An unrecognized status is nil for the same reason
+// a missing one is — a vocabulary this function has not seen is not evidence.
+func codexToolResultIsError(status string) *bool {
+	yes, no := true, false
+	switch status {
+	case "completed", "success":
+		return &no
+	case "failed", "declined", "aborted", "error":
+		return &yes
+	default:
+		return nil
+	}
+}
+
 // codexPatchResultOutput renders the tool_result line for a finished patch.
 // It always produces a non-empty string when anything is known, because an
 // empty output renders as an unexpandable blank row in the transcript.
@@ -3287,10 +3309,11 @@ func (c *codexClient) handleEvent(msg map[string]any) {
 		changes := codexNormalizeLegacyChanges(msg["changes"])
 		if c.onMessage != nil {
 			c.onMessage(Message{
-				Type:   MessageToolResult,
-				Tool:   "patch_apply",
-				CallID: callID,
-				Output: codexPatchResultOutput(codexNormalizePatchStatus(status), changes, stdout, stderr),
+				Type:    MessageToolResult,
+				Tool:    "patch_apply",
+				CallID:  callID,
+				Output:  codexPatchResultOutput(codexNormalizePatchStatus(status), changes, stdout, stderr),
+				IsError: codexToolResultIsError(codexNormalizePatchStatus(status)),
 			})
 		}
 	case "task_complete":
@@ -3448,10 +3471,11 @@ func (c *codexClient) handleItemNotification(method string, params map[string]an
 		changes := codexNormalizeRawChanges(item["changes"])
 		if c.onMessage != nil {
 			c.onMessage(Message{
-				Type:   MessageToolResult,
-				Tool:   "patch_apply",
-				CallID: itemID,
-				Output: codexPatchResultOutput(codexNormalizePatchStatus(status), changes, "", ""),
+				Type:    MessageToolResult,
+				Tool:    "patch_apply",
+				CallID:  itemID,
+				Output:  codexPatchResultOutput(codexNormalizePatchStatus(status), changes, "", ""),
+				IsError: codexToolResultIsError(codexNormalizePatchStatus(status)),
 			})
 		}
 
@@ -3469,11 +3493,12 @@ func (c *codexClient) handleItemNotification(method string, params map[string]an
 		status, _ := item["status"].(string)
 		if c.onMessage != nil {
 			c.onMessage(Message{
-				Type:   MessageToolResult,
-				Tool:   codexMCPToolName(item),
-				CallID: itemID,
-				Output: codexMCPToolResultOutput(item),
-				Status: codexNormalizePatchStatus(status),
+				Type:    MessageToolResult,
+				Tool:    codexMCPToolName(item),
+				CallID:  itemID,
+				Output:  codexMCPToolResultOutput(item),
+				Status:  codexNormalizePatchStatus(status),
+				IsError: codexToolResultIsError(codexNormalizePatchStatus(status)),
 			})
 		}
 
