@@ -1,7 +1,7 @@
 # OAuth client registration runbook
 
 The MCP authorization server (RUYI-209) does not implement Dynamic Client
-Registration. Clients are pre-registered rows in `oauth_clients`, and this
+Registration. Clients are pre-registered rows in `oauth_client`, and this
 command is their only writer. See
 `docs/adr/001-mcp-oauth-behind-nextjs-proxy.md` §3.6.
 

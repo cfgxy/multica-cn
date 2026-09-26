@@ -368,7 +368,10 @@ func (h *Handler) oauthSessionUser(r *http.Request) (string, bool) {
 	if subject == "" {
 		return "", false
 	}
-	// A deleted or disabled account must not be able to mint a 90-day token.
+	// Shape check only: the subject must be a UUID before it is written into
+	// an authorization code. Account state (deleted / disabled) is NOT checked
+	// here — the disabled gate lives in middleware.Auth's rejectDisabledUser,
+	// which every request carrying the resulting access token passes through.
 	if _, err := util.ParseUUID(subject); err != nil {
 		return "", false
 	}

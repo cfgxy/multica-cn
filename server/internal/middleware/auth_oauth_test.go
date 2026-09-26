@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/oauth"
 )
 
@@ -37,13 +38,15 @@ func testOAuthSigner(t *testing.T) *oauth.Signer {
 // capturingHandler records the identity headers Auth set, so a test can assert
 // what the downstream handler would see.
 type capturingHandler struct {
-	called bool
-	userID string
+	called      bool
+	userID      string
+	actorSource string
 }
 
 func (c *capturingHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	c.called = true
 	c.userID = r.Header.Get("X-User-ID")
+	c.actorSource = r.Header.Get("X-Actor-Source")
 }
 
 func TestAuthAcceptsOAuthAccessToken(t *testing.T) {
@@ -67,6 +70,47 @@ func TestAuthAcceptsOAuthAccessToken(t *testing.T) {
 	}
 	if next.userID != "user-42" {
 		t.Fatalf("X-User-ID = %q, want the token subject", next.userID)
+	}
+}
+
+// The OAuth branch must classify its credential as machine-held. The token is
+// minted for an external MCP client and stored there, so handler.RequireHumanActor
+// has to be able to tell it apart from the human's own session — without that
+// stamp the token reaches /api/tokens and can mint a PAT that outlives its own
+// 90-day window.
+func TestAuthStampsOAuthActorSource(t *testing.T) {
+	signer := testOAuthSigner(t)
+	token, _, err := signer.MintAccessToken("user-42", oauthTestIssuer+oauth.MCPResourcePath, oauth.ScopeMCP, time.Now())
+	if err != nil {
+		t.Fatalf("MintAccessToken: %v", err)
+	}
+
+	next := &capturingHandler{}
+	req := httptest.NewRequest(http.MethodPost, "/api/mcp", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	Auth(nil, nil, nil, nil, signer)(next).ServeHTTP(rec, req)
+
+	if next.actorSource != "oauth" {
+		t.Fatalf("X-Actor-Source = %q, want %q", next.actorSource, "oauth")
+	}
+}
+
+// The session JWT is the credential the OAuth stamp must not spread to: a
+// human browsing the app keeps an empty actor source and therefore keeps
+// access to the account-level routes.
+func TestAuthLeavesSessionJWTActorSourceEmptyWithSignerPresent(t *testing.T) {
+	// Same memoization caveat as TestAuthSessionJWTUnaffectedByTheOAuthBranch.
+	token := generateToken(validClaims(), auth.JWTSecret())
+
+	next := &capturingHandler{}
+	req := httptest.NewRequest(http.MethodGet, "/api/tokens", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	rec := httptest.NewRecorder()
+	Auth(nil, nil, nil, nil, testOAuthSigner(t))(next).ServeHTTP(rec, req)
+
+	if next.actorSource != "" {
+		t.Fatalf("X-Actor-Source = %q, want empty for a session JWT", next.actorSource)
 	}
 }
 
@@ -166,8 +210,10 @@ func TestAuthWithoutSignerRejectsOAuthAccessToken(t *testing.T) {
 // HS256, so it must still be verified by the HMAC branch even when a signer is
 // present. Same assertions as TestAuth_ValidToken, with a signer wired in.
 func TestAuthSessionJWTUnaffectedByTheOAuthBranch(t *testing.T) {
-	t.Setenv("JWT_SECRET", "test-secret-value-for-oauth-branch-regression")
-	token := generateToken(validClaims(), []byte("test-secret-value-for-oauth-branch-regression"))
+	// auth.JWTSecret() memoizes via sync.Once, so a per-test t.Setenv would
+	// only take effect for whichever test ran first in the package. Sign with
+	// the resolved secret, as TestAuth_ValidToken does.
+	token := generateToken(validClaims(), auth.JWTSecret())
 
 	next := &capturingHandler{}
 	req := httptest.NewRequest(http.MethodGet, "/api/issues", nil)

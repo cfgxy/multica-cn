@@ -3,7 +3,7 @@
 //
 // The flow deliberately has no Dynamic Client Registration (RFC 7591) — see
 // docs/adr/001-mcp-oauth-behind-nextjs-proxy.md §3.6 — so without this command
-// the oauth_clients table has no writer and no client can ever be issued a
+// the oauth_client table has no writer and no client can ever be issued a
 // code. An operator creates a row here and pastes the printed client_id and
 // client_secret into the consumer's advanced OAuth settings.
 //
