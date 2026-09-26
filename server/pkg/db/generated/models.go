@@ -1364,10 +1364,11 @@ type PromptQualityRollupState struct {
 
 // RUYI-185 quiz bank: the fixed question set replayed against every prompt version. Bodies may not name production entities (enforced in pkg/promptquiz, not in DDL). Item history is carried by prompt_quiz_result.item_revision rather than by a version table.
 type PromptQuizItem struct {
-	ID              pgtype.UUID        `json:"id"`
-	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
-	Slug            string             `json:"slug"`
-	Title           string             `json:"title"`
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Slug        string      `json:"slug"`
+	Title       string      `json:"title"`
+	// Public half of the item: the question text, and the only free text a measuring run receives. Revision advances when this changes, because a reading taken against different wording is not comparable to one taken against the old wording. Editing the rubric does NOT advance revision: the private half is not part of what was measured.
 	Body            string             `json:"body"`
 	Revision        int32              `json:"revision"`
 	RuntimeProfile  string             `json:"runtime_profile"`
@@ -1375,24 +1376,31 @@ type PromptQuizItem struct {
 	CreatedByUserID pgtype.UUID        `json:"created_by_user_id"`
 	CreatedAt       pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+	// Private half of the item: expected answer and grading points. Never sent to a measuring run and never returned by the member-visible bank list. Empty string means no rubric has been written yet, which is why it is not NULL-able.
+	Rubric string `json:"rubric"`
 }
 
 // RUYI-185 quiz measurements at one-row-per-repeat grain — the grain the distribution baseline needs and prompt_quality_daily cannot express. batch_id is a column because a batch has no fact of its own; task_id joins back to the quiz run in agent_task_queue (originator_source=quiz, issue_id IS NULL).
 type PromptQuizResult struct {
-	ID             pgtype.UUID        `json:"id"`
-	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
-	Scope          string             `json:"scope"`
-	ScopeID        pgtype.UUID        `json:"scope_id"`
-	Version        int32              `json:"version"`
-	ItemID         pgtype.UUID        `json:"item_id"`
-	ItemRevision   int32              `json:"item_revision"`
-	ItemBodySha256 string             `json:"item_body_sha256"`
-	BatchID        pgtype.UUID        `json:"batch_id"`
-	TaskID         pgtype.UUID        `json:"task_id"`
-	Outcome        string             `json:"outcome"`
-	RunTokens      pgtype.Int8        `json:"run_tokens"`
-	DurationMs     pgtype.Int8        `json:"duration_ms"`
-	MeasuredAt     pgtype.Timestamptz `json:"measured_at"`
+	ID             pgtype.UUID `json:"id"`
+	WorkspaceID    pgtype.UUID `json:"workspace_id"`
+	Scope          string      `json:"scope"`
+	ScopeID        pgtype.UUID `json:"scope_id"`
+	Version        int32       `json:"version"`
+	ItemID         pgtype.UUID `json:"item_id"`
+	ItemRevision   int32       `json:"item_revision"`
+	ItemBodySha256 string      `json:"item_body_sha256"`
+	BatchID        pgtype.UUID `json:"batch_id"`
+	TaskID         pgtype.UUID `json:"task_id"`
+	// answered = the run produced an answer to the question; errored = it produced none (timeout, provider outage, cancellation). This is NOT a grade: no correctness judgement is made anywhere in RUYI-185, so neither value may be presented as a pass rate. Only answered rows with a measured run_tokens enter the distribution sample.
+	Outcome    string             `json:"outcome"`
+	RunTokens  pgtype.Int8        `json:"run_tokens"`
+	DurationMs pgtype.Int8        `json:"duration_ms"`
+	MeasuredAt pgtype.Timestamptz `json:"measured_at"`
+	// The agent_runtime row the measuring run was claimed with. Part of the cohort key: readings from two runtimes are never merged into one sample group. NULL means unattributed and therefore not comparable.
+	RuntimeID pgtype.UUID `json:"runtime_id"`
+	// The model(s) the daemon reported usage under for the measuring run, comma-joined when a run spanned more than one. Part of the cohort key for the same reason as runtime_id. NULL means the daemon reported no usage, which also leaves run_tokens NULL.
+	RunModel pgtype.Text `json:"run_model"`
 }
 
 type PromptQuizSweepState struct {

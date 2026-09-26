@@ -127,10 +127,11 @@ CREATE TABLE prompt_quiz_result (
     -- idempotent under scheduler re-entry: the collector upserts on it.
     task_id UUID NOT NULL,
 
-    -- passed / failed are the graded outcomes. errored is the run that never
-    -- produced an answer (timeout, provider outage, cancellation) and is NOT a
-    -- failure of the prompt: it is excluded from the graded rate and reported
-    -- separately, the same split prompt_quality_daily makes for D6.
+    -- Whether the run produced an answer at all; errored is the run that did
+    -- not (timeout, provider outage, cancellation) and is NOT a failure of the
+    -- prompt, the same split prompt_quality_daily makes for D6. No correctness
+    -- judgement is made anywhere, so neither value is a grade — migration 933
+    -- narrows the vocabulary to say so, and is the authority on it.
     outcome TEXT NOT NULL CHECK (outcome IN ('passed', 'failed', 'errored')),
 
     -- Per-measurement cost, the dimension the distribution comparison runs on.

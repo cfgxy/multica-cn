@@ -136,6 +136,7 @@ export type {
 } from "./prompt-quality";
 export type {
   PromptQuizItem,
+  PromptQuizItemDetail,
   PromptQuizSummary,
   PromptQuizComparison,
   PromptQuizBaseline,

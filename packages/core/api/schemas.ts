@@ -110,7 +110,7 @@ import type {
   PromptVersion,
 } from "../types/prompt-market";
 import type { PromptQualityDashboard } from "../types/prompt-quality";
-import type { PromptQuizBaseline, PromptQuizItem } from "../types/prompt-quiz";
+import type { PromptQuizBaseline, PromptQuizItemDetail } from "../types/prompt-quiz";
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
 import type { CreateFeedbackResponse } from "../feedback/types";
 
@@ -4065,8 +4065,23 @@ export const PromptQuizItemSchema = z.object({
   revision: z.number().default(0),
   runtime_profile: z.string().default("member"),
   active: z.boolean().default(false),
+  // Server-driven and absent on a build that predates it; "" narrows to
+  // "pending" in core/self-evolution/quiz.ts rather than to a verdict.
+  discrimination: z.string().default(""),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
+});
+
+/**
+ * The owner-only single-item read and the write responses, which carry the
+ * private half.
+ *
+ * The list schema above is deliberately NOT this one: a rubric parsed into a
+ * list row could be rendered anywhere the list is, and the field is only ever
+ * needed by the editor that is about to send it back.
+ */
+export const PromptQuizItemDetailSchema = PromptQuizItemSchema.extend({
+  rubric: z.string().default(""),
 });
 
 /**
@@ -4075,7 +4090,7 @@ export const PromptQuizItemSchema = z.object({
  * question — the list refetch that follows every write is what puts the real
  * row on screen.
  */
-export const EMPTY_PROMPT_QUIZ_ITEM: PromptQuizItem = {
+export const EMPTY_PROMPT_QUIZ_ITEM: PromptQuizItemDetail = {
   id: "",
   slug: "",
   title: "",
@@ -4083,6 +4098,8 @@ export const EMPTY_PROMPT_QUIZ_ITEM: PromptQuizItem = {
   revision: 0,
   runtime_profile: "member",
   active: false,
+  discrimination: "",
+  rubric: "",
   created_at: "",
   updated_at: "",
 };
@@ -4131,6 +4148,10 @@ export const PromptQuizBaselineSchema = z.object({
   current: PromptQuizSummarySchema.default(EMPTY_QUIZ_SUMMARY),
   measured: z.boolean().default(false),
   outcomes: z.record(z.string(), z.number()).default({}),
+  // Absent on a backend predating the cohort rule. 0 then reads as "nothing was
+  // excluded", which is what such a backend actually did.
+  incomparable: z.number().default(0),
+  baseline_incomparable: z.number().default(0),
 });
 
 /**
@@ -4152,4 +4173,6 @@ export const EMPTY_PROMPT_QUIZ_BASELINE: PromptQuizBaseline = {
   current: EMPTY_QUIZ_SUMMARY,
   measured: false,
   outcomes: {},
+  incomparable: 0,
+  baseline_incomparable: 0,
 };

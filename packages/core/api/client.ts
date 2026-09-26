@@ -70,6 +70,7 @@ import type {
   PromptVersion,
   PromptQualityDashboard,
   PromptQuizItem,
+  PromptQuizItemDetail,
   PromptQuizBaseline,
   CreatePromptQuizItemRequest,
   UpdatePromptQuizItemRequest,
@@ -506,7 +507,7 @@ import {
   EMPTY_PROMPT_VERSION,
   PromptQualityDashboardSchema,
   EMPTY_PROMPT_QUALITY_DASHBOARD,
-  PromptQuizItemSchema,
+  PromptQuizItemDetailSchema,
   PromptQuizItemListSchema,
   PromptQuizBaselineSchema,
   EMPTY_PROMPT_QUIZ_ITEM,
@@ -3153,12 +3154,29 @@ export class ApiClient {
     });
   }
 
-  async createPromptQuizItem(body: CreatePromptQuizItemRequest): Promise<PromptQuizItem> {
+  /**
+   * One bank entry including its rubric — the only read that returns it, and
+   * owner-only server-side for that reason.
+   *
+   * The editor needs it because an update replaces the rubric wholesale: saving
+   * a form seeded from a list row, which has no rubric, would clear the stored
+   * answer key.
+   */
+  async getPromptQuizItem(itemId: string): Promise<PromptQuizItemDetail> {
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-quiz/items/${encodeURIComponent(itemId)}`,
+    );
+    return parseWithFallback(raw, PromptQuizItemDetailSchema, EMPTY_PROMPT_QUIZ_ITEM, {
+      endpoint: "GET /api/prompt-quiz/items/{id}",
+    });
+  }
+
+  async createPromptQuizItem(body: CreatePromptQuizItemRequest): Promise<PromptQuizItemDetail> {
     const raw = await this.fetch<unknown>(`/api/prompt-quiz/items`, {
       method: "POST",
       body: JSON.stringify(body),
     });
-    return parseWithFallback(raw, PromptQuizItemSchema, EMPTY_PROMPT_QUIZ_ITEM, {
+    return parseWithFallback(raw, PromptQuizItemDetailSchema, EMPTY_PROMPT_QUIZ_ITEM, {
       endpoint: "POST /api/prompt-quiz/items",
     });
   }
@@ -3166,12 +3184,12 @@ export class ApiClient {
   async updatePromptQuizItem(
     itemId: string,
     body: UpdatePromptQuizItemRequest,
-  ): Promise<PromptQuizItem> {
+  ): Promise<PromptQuizItemDetail> {
     const raw = await this.fetch<unknown>(
       `/api/prompt-quiz/items/${encodeURIComponent(itemId)}`,
       { method: "PATCH", body: JSON.stringify(body) },
     );
-    return parseWithFallback(raw, PromptQuizItemSchema, EMPTY_PROMPT_QUIZ_ITEM, {
+    return parseWithFallback(raw, PromptQuizItemDetailSchema, EMPTY_PROMPT_QUIZ_ITEM, {
       endpoint: "PATCH /api/prompt-quiz/items/{id}",
     });
   }

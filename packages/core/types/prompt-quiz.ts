@@ -25,8 +25,30 @@ export interface PromptQuizItem {
   /** "member" | "leader_task", server-driven. */
   runtime_profile: string;
   active: boolean;
+  /**
+   * Whether this question's readings still spread enough to tell two prompt
+   * versions apart: "pending" | "no_signal" | "flat" | "ok", server-driven.
+   *
+   * Empty on a response that did not compute it, which a reader must treat as
+   * "not judged" rather than as "fine" — the narrowing in
+   * `core/self-evolution/quiz.ts` maps both empty and unknown to "pending".
+   */
+  discrimination?: string;
   created_at: string;
   updated_at: string;
+}
+
+/**
+ * One bank entry including its private half.
+ *
+ * Only the owner-only single-item read and the writes return this. The list is
+ * `PromptQuizItem`, with no `rubric` field at all: the expected answer never
+ * travels to the run being measured, and a type without the field cannot carry
+ * it to a surface that would.
+ */
+export interface PromptQuizItemDetail extends PromptQuizItem {
+  /** The expected answer and grading points. Empty when none is written yet. */
+  rubric: string;
 }
 
 /** One side of a comparison: the group's shape, not a score. */
@@ -78,8 +100,21 @@ export interface PromptQuizBaseline {
   current: PromptQuizSummary;
   /** False when the current version has no graded measurement yet. */
   measured: boolean;
-  /** Per-outcome counts for the current version, including errored runs. */
+  /**
+   * Per-outcome counts for the current version: "answered" and "errored", which
+   * say whether the run produced an answer at all. NEITHER is a grade, so this
+   * map must never be rendered as a pass rate.
+   */
   outcomes: Record<string, number>;
+  /**
+   * Readings excluded from `current` because they were taken with a different
+   * instrument — another question wording, or another runtime/model pair.
+   * Reported so a group that shrank after a bank edit is distinguishable from a
+   * collection failure.
+   */
+  incomparable: number;
+  /** The same count for the baseline group. */
+  baseline_incomparable: number;
 }
 
 /** Body of a bank create. */
@@ -87,13 +122,22 @@ export interface CreatePromptQuizItemRequest {
   slug: string;
   title: string;
   body: string;
+  /** The private half. Optional: a question with no answer key yet is normal. */
+  rubric?: string;
   runtime_profile?: string;
 }
 
-/** Body of a bank update. Retiring a question is `active: false`. */
+/**
+ * Body of a bank update. Retiring a question is `active: false`.
+ *
+ * `rubric` is a full replacement like `body` is, so an editor that omits it
+ * clears the stored answer key. Load the item through the single-item read
+ * before editing rather than patching from a list row, which has no rubric.
+ */
 export interface UpdatePromptQuizItemRequest {
   title: string;
   body: string;
+  rubric?: string;
   runtime_profile?: string;
   active?: boolean;
 }
