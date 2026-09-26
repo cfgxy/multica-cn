@@ -663,6 +663,10 @@ const migrationAdvisoryLockKey int64 = 7244554146635925501
 // Postgres without colliding with the production table.
 const defaultSchemaMigrationsTable = "schema_migrations"
 
+// migrateUsage is printed when the command is invoked without a direction or
+// with one it does not support.
+const migrateUsage = "Usage: go run ./cmd/migrate <up|down>"
+
 // runOptions carries everything runMigrations needs that is not the
 // pool itself. Tests use it to inject a hermetic migrations directory,
 // a unique per-test bookkeeping table, and a unique advisory-lock key
@@ -702,13 +706,13 @@ func main() {
 	logger.Init()
 
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: go run ./cmd/migrate <up|down>")
+		fmt.Println(migrateUsage)
 		os.Exit(1)
 	}
 
 	direction := os.Args[1]
 	if direction != "up" && direction != "down" {
-		fmt.Println("Usage: go run ./cmd/migrate <up|down>")
+		fmt.Println(migrateUsage)
 		os.Exit(1)
 	}
 
