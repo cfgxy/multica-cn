@@ -40,10 +40,14 @@ coverage
 /docs/
 *.md
 
-# Only the web workspace is used by Dockerfile.web. Default-exclude future
-# app workspaces so they do not silently enter the build context.
+# Default-exclude app workspaces so a new one does not silently enter the
+# build context. Dockerfile.web / Dockerfile.mcp each ship their own
+# <Dockerfile>.dockerignore whitelist, which BuildKit uses INSTEAD of this
+# file; the two entries below keep the same workspaces reachable for any
+# build that falls back to this shared file.
 /apps/*
 !/apps/web/
+!/apps/mcp/
 
 # Repository-only tooling
 /.github/
