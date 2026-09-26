@@ -36,6 +36,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/integrations/wecom"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
+	"github.com/multica-ai/multica/server/internal/oauth"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -143,6 +144,33 @@ func appURLFromEnv() string {
 		return v
 	}
 	return strings.TrimRight(strings.TrimSpace(os.Getenv("FRONTEND_ORIGIN")), "/")
+}
+
+// newOAuthSigner builds the MCP access-token signer from OAUTH_SIGNING_KEY
+// (RUYI-209). It returns nil — the "OAuth disabled" shape — when the key is
+// absent, unreadable, or the site root is unknown, because every token this
+// signer would mint names that root as `iss` and `aud`.
+//
+// The warning says which precondition failed and nothing else: the key material
+// must never reach a log line, so a parse failure is reported as a parse
+// failure, without the value that failed.
+func newOAuthSigner(siteRoot string) *oauth.Signer {
+	pem := strings.TrimSpace(os.Getenv("OAUTH_SIGNING_KEY"))
+	if pem == "" {
+		slog.Warn("mcp oauth disabled: OAUTH_SIGNING_KEY not configured")
+		return nil
+	}
+	if siteRoot == "" {
+		slog.Warn("mcp oauth disabled: MULTICA_APP_URL / FRONTEND_ORIGIN not configured")
+		return nil
+	}
+	signer, err := oauth.NewSigner(pem, siteRoot)
+	if err != nil {
+		slog.Warn("mcp oauth disabled: OAUTH_SIGNING_KEY could not be parsed as an RSA private key")
+		return nil
+	}
+	slog.Info("mcp oauth enabled", "issuer", signer.Issuer(), "key_id", signer.KeyID())
+	return signer
 }
 
 // pluginActionBaseURL resolves the versioned public base a hook handler calls
@@ -1270,6 +1298,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		Redis:        rdb,
 	})
 
+	// MCP OAuth authorization server (RUYI-209). The signing key is the switch:
+	// without OAUTH_SIGNING_KEY there is no signer, so the discovery documents
+	// stay unpublished, /auth/oauth/* answers 501, and middleware.Auth leaves an
+	// RS256 token to the HMAC branch that rejects it. The PAT (mul_) path is
+	// reached before this branch and does not change either way.
+	oauthSigner := newOAuthSigner(appURLFromEnv())
+	h.OAuthSigner = oauthSigner
+	h.OAuthCodes = oauth.NewCodeStore(rdb)
+
 	// Empty-claim cache: lets the daemon poll path skip a Postgres
 	// scan when a recent check confirmed the runtime had no queued
 	// task. Returns nil when rdb is nil — TaskService treats that
@@ -1397,6 +1434,26 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	r.With(authRL).Post("/auth/google", h.GoogleLogin)
 	r.Post("/auth/logout", h.Logout)
 
+	// MCP OAuth (RUYI-209). Public by necessity: the authorize endpoint
+	// identifies the user from the session cookie and redirects to /login when
+	// there is none, and the token endpoint authenticates the client by secret,
+	// not by session. Both answer 501 while the signer is nil.
+	//
+	// The discovery documents are only registered when OAuth is on. An absent
+	// document is what tells a client this deployment has no authorization
+	// server; publishing one that points at 501 endpoints would send ChatGPT
+	// down a chain that cannot complete.
+	r.With(authRL).Get("/auth/oauth/authorize", h.AuthorizeOAuth)
+	r.With(authVerifyRL).Post("/auth/oauth/token", h.TokenOAuth)
+	if oauthSigner != nil {
+		// Wildcard: RFC 9728 lets a client probe either the bare path or the
+		// path-insertion form (.../oauth-protected-resource/api/mcp).
+		r.Get("/.well-known/oauth-protected-resource", h.GetOAuthProtectedResourceMetadata)
+		r.Get("/.well-known/oauth-protected-resource/*", h.GetOAuthProtectedResourceMetadata)
+		r.Get("/.well-known/oauth-authorization-server", h.GetOAuthAuthorizationServerMetadata)
+		r.Get("/.well-known/jwks.json", h.GetOAuthJWKS)
+	}
+
 	// Public API
 	r.Get("/api/config", h.GetConfig)
 	r.With(contactSalesRL).Post("/api/contact-sales", h.CreateContactSales)
@@ -1521,7 +1578,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		// userDisabledLookup (RUYI-47) keeps a disabled account's session from
 		// reaching the plugin bridge the same way it is excluded from every
 		// other session-authenticated route below.
-		r.Use(middleware.Auth(queries, patCache, cloudPATVerifier, userDisabledLookup))
+		r.Use(middleware.Auth(queries, patCache, cloudPATVerifier, userDisabledLookup, oauthSigner))
 		r.Route(pluginBridgePrefix, func(r chi.Router) {
 			registerPluginActionRoutes(r, h)
 			// ui / manual only. `event` is dispatched by the host off the event
@@ -1531,7 +1588,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 	})
 
 	r.Group(func(r chi.Router) {
-		r.Use(middleware.Auth(queries, patCache, cloudPATVerifier, userDisabledLookup))
+		r.Use(middleware.Auth(queries, patCache, cloudPATVerifier, userDisabledLookup, oauthSigner))
 		r.Use(middleware.RefreshCloudFrontCookies(cfSigner))
 
 		// Plugin Action API. Called by the HOST PAGE on the signed-in user's
