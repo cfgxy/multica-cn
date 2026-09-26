@@ -4,5 +4,159 @@
   "empty": {
     "title": "아직 연결되지 않음",
     "description": "이 화면은 프롬프트 거버넌스 개요를 위한 내비게이션 뼈대입니다(RUYI-183 1단계). 버전 이력, diff, 적용 현황 화면은 이후 단계에서 제공됩니다."
+  },
+  "tabs": {
+    "overview": "개요",
+    "quality": "품질"
+  },
+  "quality": {
+    "scopePicker": {
+      "label": "프롬프트 계층",
+      "agent": "에이전트",
+      "squad": "스쿼드",
+      "project": "프로젝트",
+      "workspace": "워크스페이스",
+      "subjectLabel": "대상",
+      "subjectPlaceholder": "에이전트를 선택하세요"
+    },
+    "range": {
+      "label": "기간",
+      "days": "최근 {{count}}일"
+    },
+    "since": "{{date}}부터 집계합니다. 그 이전 실행에는 계측이 없어 분모에 포함되지 않습니다.",
+    "noSubject": {
+      "title": "대상을 선택하세요",
+      "description": "일곱 개 차원은 프롬프트 계층별로 집계됩니다. 에이전트를 고르면 대시보드를 불러옵니다."
+    },
+    "loading": "측정값을 불러오는 중",
+    "error": {
+      "title": "대시보드를 불러오지 못했습니다",
+      "retry": "다시 시도"
+    },
+    "window": {
+      "title": "기간 내 전체 버전",
+      "runs": "실행 {{count}}회",
+      "days": "{{count}}일"
+    },
+    "timeline": {
+      "title": "버전",
+      "version": "v{{version}}",
+      "span": "{{first}} — {{last}}",
+      "compare": "비교",
+      "compareHint": "비교할 버전 두 개를 선택하세요",
+      "clear": "선택 해제",
+      "empty": "이 기간에 측정된 실행을 가진 버전이 없습니다."
+    },
+    "compare": {
+      "title": "버전 비교",
+      "description": "일곱 개 차원을 나란히 보여줍니다. 한쪽이라도 데이터가 없는 차원은 차이를 계산하지 않습니다.",
+      "dimension": "차원",
+      "delta": "Δ",
+      "noDelta": "—",
+      "close": "닫기"
+    },
+    "dimensions": {
+      "injected_tokens": {
+        "label": "D1 주입 비용",
+        "hint": "실행 한 번에 주입된 조합 프롬프트 토큰의 중앙값."
+      },
+      "run_tokens_median": {
+        "label": "D1 실행 비용",
+        "hint": "실행 한 번이 소비한 총 토큰의 중앙값."
+      },
+      "discipline": {
+        "label": "D2 규율성",
+        "hint": "규율성 점수 중앙값(100점 만점). 각 실행은 100점에서 시작하며, 기계적으로 판정 가능한 조항을 위반할 때마다 감점됩니다."
+      },
+      "tool_failure_rate": {
+        "label": "D4 턴 실패율",
+        "hint": "에이전트가 오류로 받은 도구 결과의 비율."
+      },
+      "retry_rate": {
+        "label": "D5 재시도",
+        "hint": "두 번 이상 시도해야 했던 실행의 비율."
+      },
+      "failure_attribution": {
+        "label": "D6 프롬프트 귀인 실패",
+        "hint": "원인이 프롬프트를 가리키는 실패 건수. 환경·공급자 실패는 세지 않습니다."
+      },
+      "first_pass_rate": {
+        "label": "D7 일회 통과율",
+        "hint": "리뷰에서 재작업 없이 승인된 이슈의 비율."
+      }
+    },
+    "measure": {
+      "ofRuns": "실행 {{count}}회 기준",
+      "ratio": "{{numerator}} / {{denominator}}",
+      "excluded": "환경·공급자 실패 {{count}}건 제외",
+      "noData": "데이터 없음",
+      "insufficient": "표본 부족",
+      "insufficientDetail": "{{sample}} / 필요 {{threshold}}",
+      "reason": {
+        "no_finished_runs": "이 기간에 끝난 실행이 없습니다.",
+        "not_instrumented": "이 기간의 실행은 계측 도입 이전입니다.",
+        "no_covered_runs": "이 기간에 이 측정을 가진 실행이 없습니다.",
+        "no_version_content": "이 버전에는 프롬프트 본문 기록이 없습니다.",
+        "no_reviewed_issues": "이 기간에 리뷰로 넘어간 이슈가 없습니다.",
+        "below_sample_floor": "실행 수가 선언된 하한보다 적습니다.",
+        "unknown": "서버가 이유를 알리지 않았습니다."
+      }
+    },
+    "perplexity": {
+      "title": "D3 규칙 난해도",
+      "description": "조합된 프롬프트의 모호성 위험을 런타임 형태별로 평가합니다.",
+      "open": "근거 보기",
+      "profile": {
+        "label": "런타임 형태",
+        "member": "일반 멤버 실행",
+        "leader_task": "리더 태스크 실행",
+        "unknown": "{{key}}"
+      },
+      "profileNote": "각 형태는 서로 다른 조합 문서를 대상으로 평가하므로 합치거나 평균내지 않습니다.",
+      "band": {
+        "low": "낮음",
+        "medium": "보통",
+        "high": "높음",
+        "unknown": "미평가"
+      },
+      "range": "{{low}}% — {{high}}%",
+      "scoredAt": "{{date}}에 {{model}}이(가) 평가",
+      "reproducibility": "같은 버전을 반복 채점해도 band는 안정적이며, 구간 양 끝값의 변동은 실측 기준 10퍼센트포인트 이내였습니다(gpt-6-luna, temperature 0.2, 런타임별 5회).",
+      "empty": {
+        "title": "평가되지 않음",
+        "description": "이 프롬프트는 아직 어떤 버전도 평가되지 않았습니다. 평가 없음은 중립 평가가 아닙니다."
+      },
+      "sheet": {
+        "title": "D3 근거",
+        "description": "일곱 개 하위 차원. 각각 가중치와 인용 위치를 가집니다.",
+        "score": "점수",
+        "weight": "가중치 {{percent}}%",
+        "evidence": "근거",
+        "evidenceCount": "{{count}}건",
+        "conflictsWith": "{{target}}와(과) 충돌",
+        "noEvidence": "이 항목에는 jsonl 근거가 없습니다(런타임 오프라인).",
+        "subDimensions": {
+          "tier_placement": "주입 계층 적절성",
+          "cross_tier_conflict": "계층 간 규칙 충돌",
+          "literal_actionability": "문자 그대로의 실행 가능성",
+          "internal_consistency": "전후 논리 일관성",
+          "precedence_clarity": "우선순위 판정 명확성",
+          "scope_boundary": "책임 경계 명확성",
+          "role_rule_completeness": "역할 규칙 완결성",
+          "unknown": "{{key}}"
+        }
+      }
+    },
+    "reasons": {
+      "title": "D6 실패 원인 분포",
+      "excluded": "환경·공급자 실패 {{count}}건 제외됨",
+      "empty": "이 기간에 실패한 실행이 없습니다."
+    },
+    "sources": {
+      "langfuse": "Langfuse 내보내기가 꺼져 있습니다",
+      "scoring_model": "평가 모델을 사용할 수 없습니다",
+      "unknown": "{{kind}}을(를) 사용할 수 없습니다",
+      "note": "대시보드 데이터에는 영향이 없습니다."
+    }
   }
 }

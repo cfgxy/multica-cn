@@ -4,5 +4,159 @@
   "empty": {
     "title": "尚未接入数据",
     "description": "这是 prompt 治理总览的导航骨架（RUYI-183 阶段一）。版本历史、diff 与采用情况视图将在后续阶段交付。"
+  },
+  "tabs": {
+    "overview": "总览",
+    "quality": "质量"
+  },
+  "quality": {
+    "scopePicker": {
+      "label": "Prompt 层级",
+      "agent": "智能体",
+      "squad": "小队",
+      "project": "项目",
+      "workspace": "工作空间",
+      "subjectLabel": "对象",
+      "subjectPlaceholder": "选择一个智能体"
+    },
+    "range": {
+      "label": "时间窗",
+      "days": "最近 {{count}} 天"
+    },
+    "since": "统计自 {{date}}。该日期之前的运行没有埋点，不计入分母。",
+    "noSubject": {
+      "title": "请选择统计对象",
+      "description": "七个维度按 prompt 层级分别取数。选择一个智能体以加载其看板。"
+    },
+    "loading": "正在加载度量数据",
+    "error": {
+      "title": "看板加载失败",
+      "retry": "重试"
+    },
+    "window": {
+      "title": "窗口内全部版本",
+      "runs": "{{count}} 次运行",
+      "days": "{{count}} 天"
+    },
+    "timeline": {
+      "title": "版本",
+      "version": "v{{version}}",
+      "span": "{{first}} — {{last}}",
+      "compare": "对比",
+      "compareHint": "选择两个版本进行对比",
+      "clear": "清除选择",
+      "empty": "该窗口内没有任何版本存在已度量的运行。"
+    },
+    "compare": {
+      "title": "版本对比",
+      "description": "七个维度逐项对照。任一侧无数据的维度不计算差值。",
+      "dimension": "维度",
+      "delta": "Δ",
+      "noDelta": "—",
+      "close": "关闭"
+    },
+    "dimensions": {
+      "injected_tokens": {
+        "label": "D1 注入成本",
+        "hint": "每次运行注入的拼接提示词 token 中位数。"
+      },
+      "run_tokens_median": {
+        "label": "D1 运行成本",
+        "hint": "单次运行消耗的总 token 中位数。"
+      },
+      "discipline": {
+        "label": "D2 纪律性",
+        "hint": "纪律性中位分，满分 100。每次运行从 100 分起算，违反一条可机械判定的条款扣一次分。"
+      },
+      "tool_failure_rate": {
+        "label": "D4 轮次失败率",
+        "hint": "智能体收到的工具结果中判定为错误的占比。"
+      },
+      "retry_rate": {
+        "label": "D5 重试次数",
+        "hint": "需要一次以上尝试才完成的运行占比。"
+      },
+      "failure_attribution": {
+        "label": "D6 错误根因（Prompt 归因）",
+        "hint": "原因指向 prompt 的失败次数。环境与供应商类失败不计入。"
+      },
+      "first_pass_rate": {
+        "label": "D7 一次过率",
+        "hint": "进入评审后无返工即通过的 Issue 占比。"
+      }
+    },
+    "measure": {
+      "ofRuns": "基于 {{count}} 次运行",
+      "ratio": "{{numerator}} / {{denominator}}",
+      "excluded": "{{count}} 次因环境或供应商故障被剔除",
+      "noData": "无数据",
+      "insufficient": "样本不足",
+      "insufficientDetail": "{{sample}} / 需 {{threshold}}",
+      "reason": {
+        "no_finished_runs": "该窗口内没有运行结束。",
+        "not_instrumented": "该窗口内的运行早于埋点上线。",
+        "no_covered_runs": "该窗口内没有运行携带此项度量。",
+        "no_version_content": "该版本没有记录 prompt 正文。",
+        "no_reviewed_issues": "该窗口内没有 Issue 进入评审。",
+        "below_sample_floor": "运行数低于声明阈值。",
+        "unknown": "服务端未说明原因。"
+      }
+    },
+    "perplexity": {
+      "title": "D3 规则困惑度",
+      "description": "对拼接后提示词的歧义风险评分，按运行态分别评定。",
+      "open": "查看证据",
+      "profile": {
+        "label": "运行态",
+        "member": "普通成员态",
+        "leader_task": "Leader task 态",
+        "unknown": "{{key}}"
+      },
+      "profileNote": "各运行态针对不同的拼接文档评分，不合并、不平均。",
+      "band": {
+        "low": "低",
+        "medium": "中",
+        "high": "高",
+        "unknown": "未评定"
+      },
+      "range": "{{low}}% — {{high}}%",
+      "scoredAt": "{{date}} 由 {{model}} 评分",
+      "reproducibility": "同一版本重复评分时，band 保持稳定，区间端点实测波动不超过 10 个百分点（gpt-6-luna，temperature 0.2，每个运行态 5 次）。",
+      "empty": {
+        "title": "尚未评分",
+        "description": "该 prompt 还没有任何版本被评分。缺少评分不等于中性评分。"
+      },
+      "sheet": {
+        "title": "D3 证据",
+        "description": "七个子维度，各自带权重与引用位置。",
+        "score": "得分",
+        "weight": "权重 {{percent}}%",
+        "evidence": "证据",
+        "evidenceCount": "{{count}} 条",
+        "conflictsWith": "与 {{target}} 冲突",
+        "noEvidence": "本条无 jsonl 证据（runtime 离线）。",
+        "subDimensions": {
+          "tier_placement": "注入层级正确性",
+          "cross_tier_conflict": "跨层规则冲突",
+          "literal_actionability": "字面可执行性",
+          "internal_consistency": "前后逻辑一致性",
+          "precedence_clarity": "优先级裁决明确性",
+          "scope_boundary": "职责边界清晰度",
+          "role_rule_completeness": "角色规则完整性",
+          "unknown": "{{key}}"
+        }
+      }
+    },
+    "reasons": {
+      "title": "D6 失败原因分布",
+      "excluded": "已剔除 {{count}} 次环境或供应商故障",
+      "empty": "该窗口内没有失败的运行。"
+    },
+    "sources": {
+      "langfuse": "Langfuse 导出已关闭",
+      "scoring_model": "评分模型不可用",
+      "unknown": "{{kind}} 不可用",
+      "note": "看板数据不受影响。"
+    }
   }
 }

@@ -1309,6 +1309,79 @@ func TestCodexRawItemCommandExecution(t *testing.T) {
 	}
 }
 
+// TestCodexToolResultIsErrorFromStatus pins the status-to-error-flag mapping
+// codex needs because it has no is_error field of its own: the item status is
+// the only outcome it reports.
+//
+// The unmeasured cases are the point. commandExecution reports no status at all,
+// an unfinished item reports inProgress, and a future codex build may report a
+// word this mapping has not seen — none of those are successes, and recording
+// them as such would mean a failure rate computed over tool calls whose outcome
+// was never known.
+func TestCodexToolResultIsErrorFromStatus(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		status string
+		want   *bool
+	}{
+		{"completed", boolPtr(false)},
+		{"success", boolPtr(false)},
+		{"failed", boolPtr(true)},
+		{"declined", boolPtr(true)},
+		{"aborted", boolPtr(true)},
+		{"error", boolPtr(true)},
+		{"", nil},
+		{"in_progress", nil},
+		{"someFutureStatus", nil},
+	}
+
+	for _, tc := range cases {
+		got := codexToolResultIsError(tc.status)
+		switch {
+		case tc.want == nil && got != nil:
+			t.Fatalf("status %q: is_error = %v, want nil (outcome unknown)", tc.status, *got)
+		case tc.want != nil && got == nil:
+			t.Fatalf("status %q: is_error = nil, want %v", tc.status, *tc.want)
+		case tc.want != nil && *got != *tc.want:
+			t.Fatalf("status %q: is_error = %v, want %v", tc.status, *got, *tc.want)
+		}
+	}
+}
+
+// TestCodexRawItemFileChangeCarriesIsError checks the mapping is actually wired
+// into the message the daemon receives, not only available as a function.
+func TestCodexRawItemFileChangeCarriesIsError(t *testing.T) {
+	t.Parallel()
+
+	c, _, _ := newTestCodexClient(t)
+	c.notificationProtocol = "raw"
+
+	var messages []Message
+	c.onMessage = func(msg Message) {
+		messages = append(messages, msg)
+	}
+
+	c.handleLine(`{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"type":"fileChange","id":"item-1","status":"failed","changes":{}}}}`)
+	c.handleLine(`{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"type":"fileChange","id":"item-2","status":"completed","changes":{}}}}`)
+	// No status: the outcome was never reported.
+	c.handleLine(`{"jsonrpc":"2.0","method":"item/completed","params":{"item":{"type":"commandExecution","id":"item-3","aggregatedOutput":"ok"}}}`)
+
+	if len(messages) != 3 {
+		t.Fatalf("expected 3 messages, got %d: %+v", len(messages), messages)
+	}
+	if messages[0].IsError == nil || !*messages[0].IsError {
+		t.Fatalf("failed patch is_error = %v, want true", messages[0].IsError)
+	}
+	if messages[1].IsError == nil || *messages[1].IsError {
+		t.Fatalf("completed patch is_error = %v, want false", messages[1].IsError)
+	}
+	if messages[2].IsError != nil {
+		t.Fatalf("statusless exec_command is_error = %v, want nil — codex reports "+
+			"no outcome for these, so the metric must see \"unmeasured\"", *messages[2].IsError)
+	}
+}
+
 func TestCodexRawItemMCPToolCall(t *testing.T) {
 	t.Parallel()
 

@@ -44,16 +44,23 @@
 //     Sends the tail of the conversation: up to 6 messages, the reply being
 //     answered capped at 3000 runes (2000 head + 1000 tail) and each older
 //     message at 800.
+//   - Prompt rule-perplexity scoring, D3 of the prompt quality dashboard —
+//     server/pkg/promptperplexity/scorer.go. Sends the workspace's own
+//     assembled system prompt (agent + workspace + project + squad tiers, the
+//     document a run of one runtime profile receives). Unlike the two above it
+//     sends no end-user chat content; it does send instruction text the
+//     workspace authored, after email addresses are masked and a credential
+//     scan has refused the whole call on any finding.
 //
-// Both consumers send private chat content, which is why an unconfigured
-// deployment making zero upstream requests is a contract rather than a side
-// effect: New with no API key and no base URL returns a disabled client whose
-// every call fails with ErrNotConfigured before an HTTP request is ever built,
-// and both consumers check Enabled() before doing any work
+// The first two consumers send private chat content, which is why an
+// unconfigured deployment making zero upstream requests is a contract rather
+// than a side effect: New with no API key and no base URL returns a disabled
+// client whose every call fails with ErrNotConfigured before an HTTP request is
+// ever built, and every consumer checks Enabled() before doing any work
 // (TestUnconfiguredClientMakesZeroUpstreamRequests). An operator who must not
 // let THIS layer send chat content leaves MULTICA_LLM_API_KEY and
 // MULTICA_LLM_BASE_URL empty; the product stays whole (client-derived chat
-// titles, no follow-up question buttons).
+// titles, no follow-up question buttons, D3 shown as "not scored").
 //
 // The wrapper is intentionally small:
 //
