@@ -711,6 +711,16 @@ func main() {
 	if err := schedulerMgr.Register(scheduler.TaskUsageHourlyJob(pool)); err != nil {
 		slog.Warn("scheduler: failed to register task_usage_hourly rollup job", "error", err)
 	}
+	// RUYI-184: the prompt quality dashboard reads a rollup of the same run
+	// stream. It recomputes each touched bucket rather than incrementing it,
+	// so a failed tick costs nothing but the delay.
+	// D3 rides the same job and needs the internal LLM layer; h.LLM is the
+	// same client the handlers use, and it reports Enabled() == false when no
+	// MULTICA_LLM_* configuration exists, which turns scoring off instead of
+	// failing the tick.
+	if err := schedulerMgr.Register(scheduler.PromptQualityJob(pool, h.LLM)); err != nil {
+		slog.Warn("scheduler: failed to register prompt_quality rollup job", "error", err)
+	}
 	// MUL-3551: scheduled-Autopilot dispatch runs on the same DB-backed
 	// scheduler. The job owns its plan_times via PlansForScope (each
 	// trigger has its own cron expression, so the Cadence planner does

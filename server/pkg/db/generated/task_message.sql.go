@@ -12,9 +12,9 @@ import (
 )
 
 const createTaskMessage = `-- name: CreateTaskMessage :one
-INSERT INTO task_message (id, task_id, seq, type, tool, content, input, output)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-RETURNING id, task_id, seq, type, tool, content, input, output, created_at
+INSERT INTO task_message (id, task_id, seq, type, tool, content, input, output, is_error)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+RETURNING id, task_id, seq, type, tool, content, input, output, created_at, is_error
 `
 
 type CreateTaskMessageParams struct {
@@ -26,6 +26,7 @@ type CreateTaskMessageParams struct {
 	Content pgtype.Text `json:"content"`
 	Input   []byte      `json:"input"`
 	Output  pgtype.Text `json:"output"`
+	IsError pgtype.Bool `json:"is_error"`
 }
 
 func (q *Queries) CreateTaskMessage(ctx context.Context, arg CreateTaskMessageParams) (TaskMessage, error) {
@@ -38,6 +39,7 @@ func (q *Queries) CreateTaskMessage(ctx context.Context, arg CreateTaskMessagePa
 		arg.Content,
 		arg.Input,
 		arg.Output,
+		arg.IsError,
 	)
 	var i TaskMessage
 	err := row.Scan(
@@ -50,6 +52,7 @@ func (q *Queries) CreateTaskMessage(ctx context.Context, arg CreateTaskMessagePa
 		&i.Input,
 		&i.Output,
 		&i.CreatedAt,
+		&i.IsError,
 	)
 	return i, err
 }
@@ -68,22 +71,24 @@ WITH incoming AS (
         unnest($4::text[]) AS tool,
         unnest($5::text[]) AS content,
         unnest($6::text[]) AS input,
-        unnest($7::text[]) AS output
+        unnest($7::text[]) AS output,
+        unnest($8::text[]) AS is_error
 ), inserted AS (
-    INSERT INTO task_message (id, task_id, seq, type, tool, content, input, output)
+    INSERT INTO task_message (id, task_id, seq, type, tool, content, input, output, is_error)
     SELECT
         m.id,
-        $8::uuid,
+        $9::uuid,
         m.seq,
         m.type,
         NULLIF(m.tool, ''),
         NULLIF(m.content, ''),
         NULLIF(m.input, '')::jsonb,
-        NULLIF(m.output, '')
+        NULLIF(m.output, ''),
+        NULLIF(m.is_error, '')::boolean
     FROM incoming AS m
-    RETURNING id, task_id, seq, type, tool, content, input, output, created_at
+    RETURNING id, task_id, seq, type, tool, content, input, output, created_at, is_error
 )
-SELECT id, task_id, seq, type, tool, content, input, output, created_at FROM inserted ORDER BY seq ASC
+SELECT id, task_id, seq, type, tool, content, input, output, created_at, is_error FROM inserted ORDER BY seq ASC
 `
 
 type CreateTaskMessagesParams struct {
@@ -94,6 +99,7 @@ type CreateTaskMessagesParams struct {
 	Contents []string      `json:"contents"`
 	Inputs   []string      `json:"inputs"`
 	Outputs  []string      `json:"outputs"`
+	IsErrors []string      `json:"is_errors"`
 	TaskID   pgtype.UUID   `json:"task_id"`
 }
 
@@ -107,6 +113,7 @@ type CreateTaskMessagesRow struct {
 	Input     []byte             `json:"input"`
 	Output    pgtype.Text        `json:"output"`
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
+	IsError   pgtype.Bool        `json:"is_error"`
 }
 
 // Batch variant of CreateTaskMessage: persists a whole daemon-reported batch in
@@ -130,6 +137,13 @@ type CreateTaskMessagesRow struct {
 // string means SQL NULL. input is passed as text and cast here for the same
 // reason; it is the one column that genuinely has to be parsed as JSON, because
 // it is a jsonb column.
+//
+// is_error rides the same trick for a different reason. It is a three-valued
+// column — TRUE and FALSE are measurements, NULL means the runtime made none —
+// and a Go []bool cannot express the third state at all. Passing it as text[]
+// with ”/'true'/'false' keeps NULLIF as the single mechanism for "absent" on
+// every nullable column in this statement, so there is one rule to remember
+// rather than a bool[] plus a parallel validity mask.
 //
 // Callers MUST still run the Postgres text sanitizer first. A NUL anywhere in
 // the batch fails the whole statement (GH #7098) — that is inherent to batching
@@ -157,6 +171,7 @@ func (q *Queries) CreateTaskMessages(ctx context.Context, arg CreateTaskMessages
 		arg.Contents,
 		arg.Inputs,
 		arg.Outputs,
+		arg.IsErrors,
 		arg.TaskID,
 	)
 	if err != nil {
@@ -176,6 +191,7 @@ func (q *Queries) CreateTaskMessages(ctx context.Context, arg CreateTaskMessages
 			&i.Input,
 			&i.Output,
 			&i.CreatedAt,
+			&i.IsError,
 		); err != nil {
 			return nil, err
 		}
@@ -198,7 +214,7 @@ func (q *Queries) DeleteTaskMessages(ctx context.Context, taskID pgtype.UUID) er
 }
 
 const listTaskMessages = `-- name: ListTaskMessages :many
-SELECT id, task_id, seq, type, tool, content, input, output, created_at FROM task_message
+SELECT id, task_id, seq, type, tool, content, input, output, created_at, is_error FROM task_message
 WHERE task_id = $1
 ORDER BY seq ASC
 `
@@ -222,6 +238,7 @@ func (q *Queries) ListTaskMessages(ctx context.Context, taskID pgtype.UUID) ([]T
 			&i.Input,
 			&i.Output,
 			&i.CreatedAt,
+			&i.IsError,
 		); err != nil {
 			return nil, err
 		}
@@ -234,7 +251,7 @@ func (q *Queries) ListTaskMessages(ctx context.Context, taskID pgtype.UUID) ([]T
 }
 
 const listTaskMessagesSince = `-- name: ListTaskMessagesSince :many
-SELECT id, task_id, seq, type, tool, content, input, output, created_at FROM task_message
+SELECT id, task_id, seq, type, tool, content, input, output, created_at, is_error FROM task_message
 WHERE task_id = $1 AND seq > $2
 ORDER BY seq ASC
 `
@@ -263,6 +280,7 @@ func (q *Queries) ListTaskMessagesSince(ctx context.Context, arg ListTaskMessage
 			&i.Input,
 			&i.Output,
 			&i.CreatedAt,
+			&i.IsError,
 		); err != nil {
 			return nil, err
 		}

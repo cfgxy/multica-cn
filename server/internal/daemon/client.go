@@ -486,6 +486,10 @@ type TaskMessageData struct {
 	Content string         `json:"content,omitempty"`
 	Input   map[string]any `json:"input,omitempty"`
 	Output  string         `json:"output,omitempty"`
+	// IsError is the backend's verdict on a tool result, three-valued: omitted
+	// from the JSON when the backend did not report one, so the server stores
+	// NULL rather than a false the runtime never claimed.
+	IsError *bool `json:"is_error,omitempty"`
 }
 
 func (c *Client) ReportTaskMessages(ctx context.Context, taskID string, messages []TaskMessageData) error {
