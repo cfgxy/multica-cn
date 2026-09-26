@@ -167,7 +167,7 @@
       "description": "One fixed question bank replayed against every prompt version. The reading is a distribution, not a single score.",
       "error": "Could not load the reading",
       "noVersion": "This prompt has no recorded version, so nothing has been measured.",
-      "accumulating": "v{{version}} has {{have}} of {{need}} graded runs. No reading until the group is complete.",
+      "accumulating": "v{{version}} has {{have}} of {{need}} usable readings. No comparison until the group is complete.",
       "noBaseline": "v{{version}} is measured over {{count}} runs (median {{median}}, IQR {{iqr}}), and is the first version of this prompt — there is no earlier version to compare against. It becomes the baseline for the next one.",
       "versions": "v{{baseline}} as baseline, v{{current}} as the version under reading.",
       "outcomes": "{{answered}} runs produced an answer, {{errored}} errored. Neither count is a score: nothing grades what an answer said.",
