@@ -1,10 +1,16 @@
 import { afterAll, describe, expect, it } from "vitest";
 
 import type { Logger } from "../src/log.js";
-import { extractBearerToken, startHttpServer } from "../src/http.js";
+import {
+  extractBearerToken,
+  startHttpServer,
+  wwwAuthenticateChallenge,
+} from "../src/http.js";
 import type { Server as HttpServer } from "node:http";
 
 const TOKEN = `mul_${"a1b2c3d4e5".repeat(4)}`;
+// Shape only — never verified here, so the segments need no real signature.
+const OAUTH_TOKEN = "eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ1c2VyIn0.c2lnbmF0dXJl";
 
 function silentLogger(): Logger {
   return { info: () => undefined, error: () => undefined };
@@ -22,11 +28,12 @@ afterAll(async () => {
   );
 });
 
-async function listen(): Promise<string> {
+async function listen(siteRoot?: string): Promise<string> {
   const server = await startHttpServer({
     port: 0,
     host: "127.0.0.1",
     serverUrl: "https://backend.example.com",
+    siteRoot,
     logger: silentLogger(),
   });
   servers.push(server);
@@ -56,6 +63,40 @@ describe("extractBearerToken", () => {
     expect(extractBearerToken("Bearer sk-abcdefghijklmnopqrstuvwxyz")).toBeNull();
     expect(extractBearerToken(TOKEN)).toBeNull();
   });
+
+  // Second branch: the OAuth access token. Accepted on shape alone and
+  // forwarded verbatim — the signature is checked by the backend, which is
+  // the only place a verifying key exists.
+  it("accepts a compact JWS as an OAuth access token", () => {
+    expect(extractBearerToken(`Bearer ${OAUTH_TOKEN}`)).toBe(OAUTH_TOKEN);
+  });
+
+  it("rejects JWT-like strings that are not three base64url segments", () => {
+    expect(extractBearerToken("Bearer header.payload")).toBeNull();
+    expect(extractBearerToken("Bearer a.b.c.d")).toBeNull();
+    expect(extractBearerToken("Bearer head er.pay.load")).toBeNull();
+  });
+});
+
+describe("wwwAuthenticateChallenge", () => {
+  it("points at the absolute protected-resource document", () => {
+    expect(wwwAuthenticateChallenge("https://multica.example.com")).toBe(
+      'Bearer resource_metadata="https://multica.example.com/.well-known/oauth-protected-resource"',
+    );
+  });
+
+  it("normalizes a trailing slash rather than emitting a doubled path", () => {
+    expect(wwwAuthenticateChallenge("https://multica.example.com/")).toBe(
+      'Bearer resource_metadata="https://multica.example.com/.well-known/oauth-protected-resource"',
+    );
+  });
+
+  // A relative pointer is worse than none: the client has no base to resolve
+  // it against, so the discovery chain would break in a harder-to-read way.
+  it("degrades to a bare challenge when no site root is configured", () => {
+    expect(wwwAuthenticateChallenge(undefined)).toBe("Bearer");
+    expect(wwwAuthenticateChallenge("   ")).toBe("Bearer");
+  });
 });
 
 describe("http transport gate", () => {
@@ -76,6 +117,30 @@ describe("http transport gate", () => {
     expect(response.status).toBe(401);
     expect(response.headers.get("WWW-Authenticate")).toBe("Bearer");
     expect(await response.text()).toContain("Unauthorized");
+  });
+
+  // The pointer ChatGPT follows. Without it the discovery chain ends at the
+  // first 401 and the connector reports the server as unsupported.
+  it("points an unauthenticated caller at the protected-resource document", async () => {
+    const base = await listen("https://multica.example.com");
+    const response = await fetch(`${base}/mcp`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: rpcBody("tools/list"),
+    });
+    expect(response.status).toBe(401);
+    expect(response.headers.get("WWW-Authenticate")).toBe(
+      'Bearer resource_metadata="https://multica.example.com/.well-known/oauth-protected-resource"',
+    );
+  });
+
+  it("does not claim to serve the discovery documents itself", async () => {
+    const base = await listen("https://multica.example.com");
+    const response = await fetch(
+      `${base}/.well-known/oauth-protected-resource`,
+    );
+    expect(response.status).toBe(404);
+    expect(await response.text()).toContain("Multica backend");
   });
 
   it("answers 401 on a malformed token before touching the backend", async () => {

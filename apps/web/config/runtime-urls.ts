@@ -67,6 +67,16 @@ export function resolveDocsUrl(env: RuntimeEnv): string | undefined {
   return cleanHttpUrl(env.DOCS_URL);
 }
 
+// Origin of the Node MCP process (apps/mcp, `--transport http`). Unset is the
+// normal shape for a deployment that does not expose MCP: the rewrite rule
+// then returns undefined and /api/mcp falls through to the backend rule, which
+// 404s there exactly as it does today. Configuring it is what moves MCP behind
+// the single public port instead of its own listener
+// (docs/adr/001-mcp-oauth-behind-nextjs-proxy.md §3.1).
+export function resolveMcpUrl(env: RuntimeEnv): string | undefined {
+  return cleanHttpUrl(env.MCP_URL);
+}
+
 // Dev-only fallbacks: `next dev` runs on a developer machine, where the
 // conventional localhost backend/docs ports are safe to assume when nothing
 // is configured. Builds and the runtime proxy keep the strict resolvers so a
@@ -119,8 +129,31 @@ export function runtimeRewriteDestination(
     return docsUrl ? appendPath(docsUrl, pathname) : undefined;
   }
 
+  // MCP must be matched BEFORE the `/api/` catch-all below, which would
+  // otherwise swallow it and send the MCP call to the Go backend. The Node
+  // process serves the endpoint at `/mcp`; `/api/mcp` is the public path only
+  // because `proxy.ts` already matches `/api/:path*`, so this placement is
+  // what buys the whole feature without touching the matcher (ADR §3.3).
+  if (pathname === "/api/mcp") {
+    const mcpUrl = resolveMcpUrl(env);
+    return mcpUrl ? appendPath(mcpUrl, "/mcp") : undefined;
+  }
+
   const remoteApiUrl = resolveRemoteApiUrl(env);
   if (!remoteApiUrl) return undefined;
+
+  // OAuth discovery documents (RFC 9728 / RFC 8414) and the signing JWKS are
+  // served by the Go backend. The wildcard on oauth-protected-resource covers
+  // the RFC 9728 path-insertion form (.../oauth-protected-resource/api/mcp) as
+  // well as the bare path; which one a client probes is not specified.
+  //
+  // This rule is only half the change: `proxy.ts` must also list
+  // "/.well-known/:path*" in its matcher, because the catch-all matcher
+  // excludes every path containing a dot — without it `proxy()` never runs for
+  // these paths and the rule below is dead code behind a Next.js HTML 404.
+  if (isBackendWellKnownPath(pathname)) {
+    return appendPath(remoteApiUrl, pathname);
+  }
 
   if (pathname === "/v1" || pathname.startsWith("/v1/")) {
     return appendPath(remoteApiUrl, pathname);
@@ -147,6 +180,18 @@ export function runtimeRewriteDestination(
   }
 
   return undefined;
+}
+
+// The `.well-known` paths the backend owns. Listed explicitly rather than
+// forwarding the whole namespace: the matcher change that makes this reachable
+// widens `proxy()` to every dotted `.well-known` path, and anything not named
+// here must keep falling through to the Next.js file-system router unchanged.
+function isBackendWellKnownPath(pathname: string): boolean {
+  if (pathname === "/.well-known/oauth-protected-resource") return true;
+  if (pathname.startsWith("/.well-known/oauth-protected-resource/")) return true;
+  if (pathname === "/.well-known/oauth-authorization-server") return true;
+  if (pathname === "/.well-known/jwks.json") return true;
+  return false;
 }
 
 function isBackendAuthPath(pathname: string): boolean {
