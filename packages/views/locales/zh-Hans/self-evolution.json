@@ -167,7 +167,7 @@
       "description": "同一套固定题库对每个 Prompt 版本重复跑。读数是分布，不是单一分数。",
       "error": "读数加载失败",
       "noVersion": "该 Prompt 没有已记录的版本，尚未产生任何测量。",
-      "accumulating": "v{{version}} 已有 {{have}} 次计分运行，需要 {{need}} 次。样本未满不给读数。",
+      "accumulating": "v{{version}} 已有 {{have}} 次可用读数，需要 {{need}} 次。样本未满不给对比。",
       "noBaseline": "v{{version}} 已在 {{count}} 次运行上测量（中位数 {{median}}，四分位距 {{iqr}}），且是该 Prompt 的首个版本——没有更早的版本可比。它将成为下一个版本的基线。",
       "versions": "基线 v{{baseline}}，被读版本 v{{current}}。",
       "outcomes": "{{answered}} 次运行给出了回答，{{errored}} 次出错。两个计数都不是评分：系统不判定回答内容的对错。",
