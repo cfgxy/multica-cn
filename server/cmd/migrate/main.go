@@ -701,13 +701,13 @@ func main() {
 	logger.Init()
 
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: go run ./cmd/migrate <up|down>")
+		fmt.Println(migrateUsage)
 		os.Exit(1)
 	}
 
 	direction := os.Args[1]
-	if direction != "up" && direction != "down" {
-		fmt.Println("Usage: go run ./cmd/migrate <up|down>")
+	if direction != "up" && direction != "down" && direction != "check-ledger" {
+		fmt.Println(migrateUsage)
 		os.Exit(1)
 	}
 
@@ -723,6 +723,19 @@ func main() {
 		os.Exit(1)
 	}
 	defer pool.Close()
+
+	if direction == "check-ledger" {
+		report, err := reconcileLedgerAgainstDatabase(context.Background(), pool, defaultSchemaMigrationsTable)
+		if err != nil {
+			slog.Error("ledger reconciliation failed", "error", err)
+			os.Exit(1)
+		}
+		fmt.Print(formatLedgerReport(report))
+		if report.HasMismatch() {
+			os.Exit(1)
+		}
+		return
+	}
 
 	files, err := migrations.Files(direction)
 	if err != nil {

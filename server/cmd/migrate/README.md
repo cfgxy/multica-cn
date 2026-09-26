@@ -83,3 +83,104 @@ Confirm the statistics landed:
 ```sql
 SELECT count(*) FROM pg_statistic WHERE starelid = 'idx_issue_properties_bigm'::regclass;
 ```
+
+## Renumber a migration
+
+Renumbering a migration file is allowed. This fork and upstream advance in
+parallel, so a migration that was written against one numbering lands on top of
+numbers that upstream has since taken, and renumbering is the normal way to
+reconcile the two.
+
+What is not allowed is rolling the migration back and reapplying it under the
+new number. `schema_migrations` records a migration by its file stem, and the
+runner's per-file `EXISTS` check in `runMigrations` uses that stem verbatim
+(`server/cmd/migrate/main.go`). After a rename the stale row no longer matches
+any file, so a `down` run skips the migration it should remove and an `up` run
+replays DDL that has already been applied. `901_project_instructions` is the
+worked example: its `down` dropped `project.instructions`, and the replay under
+the new number recreated the column empty, losing the prompt content of 17
+projects (RUYI-212).
+
+The correct procedure is to renumber the file and rewrite the run record to
+match it. Nothing is rolled back and nothing is replayed.
+
+### 1. Rename both directions
+
+```bash
+git mv server/migrations/441_project_instructions.up.sql   server/migrations/901_project_instructions.up.sql
+git mv server/migrations/441_project_instructions.down.sql server/migrations/901_project_instructions.down.sql
+```
+
+Keep the name part — everything after the numeric prefix — byte-identical. The
+name part is the only thing that survives a renumber, so it is what identifies
+the stale ledger row. `TestMigrationNamePartsAreGloballyUnique` fails the build
+if two migrations ever share one, because a duplicate makes that lookup
+ambiguous.
+
+### 2. Ask the runner what the ledger needs
+
+```bash
+cd server && DATABASE_URL=... go run ./cmd/migrate check-ledger
+```
+
+`check-ledger` is read-only. It reads `schema_migrations`, compares it with the
+files on disk, and exits non-zero with the exact statements to run when it finds
+a row recorded under a version that no longer exists. Rows from other branches
+and not-yet-applied files are listed for context and do not fail the check — on
+a shared development database both are normal.
+
+### 3. Run the statements it printed
+
+The statements are parameter-free and can be pasted as-is:
+
+```sql
+-- the usual case: re-point the surviving row at the new number
+UPDATE schema_migrations SET version = '901_project_instructions' WHERE version = '441_project_instructions';
+
+-- when the migration was already replayed under its new number, the stale row
+-- is redundant and is removed instead
+DELETE FROM schema_migrations WHERE version = '441_project_instructions';
+```
+
+`UPDATE` is the default. Never `DELETE` a row whose new version is absent: that
+is exactly the state in which the next `up` run replays the migration.
+
+### 4. Confirm
+
+```bash
+cd server && DATABASE_URL=... go run ./cmd/migrate check-ledger
+```
+
+Expect `schema_migrations matches the migration files on disk.` and exit 0.
+
+Every environment that already applied the old number needs steps 2–4 run
+against it — the ledger lives in each database, not in the repository.
+
+### Choose the number for a new migration
+
+The prefix gate only sees the files in this checkout, so the next free number on
+disk can still be taken by a branch that has already merged elsewhere and
+applied its migration to the shared development database. Run `check-ledger`
+before picking a number and read its "match no file in this checkout" list: it
+shows the versions other branches have already recorded. Start above all of
+them. `937_prompt_version_v1_gap_backfill` was written as `933_...` and
+renumbered for exactly this reason — the shared ledger already carried
+`933_prompt_quiz_outcome_answered` through `936_prompt_quiz_result_item_index`.
+Renumbering a file that no environment has applied yet costs nothing; leaving
+the collision in would break the prefix gate on merge.
+
+### Existing collisions
+
+Two invariants are gated in `server/internal/migrations/migrations_lint_test.go`
+and hold for anything new:
+
+- numeric prefixes are unique, except for the frozen historical set in
+  `legacyDuplicateMigrationStems`, which a new collision must not be added to;
+- name parts are globally unique, with no exemption list.
+
+The duplicate prefixes below 148 are the frozen legacy set and are left as they
+are: they are all long applied everywhere, renumbering them would require the
+procedure above on every environment including production, and the prefix
+collision alone causes no replay — only a name-part collision does, and there
+are none. New migrations start at 149 and the prefix gate keeps them unique, so
+the set does not grow.
