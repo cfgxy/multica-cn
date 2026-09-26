@@ -35,6 +35,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/issuestatus"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
 	"github.com/multica-ai/multica/server/internal/middleware"
+	"github.com/multica-ai/multica/server/internal/oauth"
 	"github.com/multica-ai/multica/server/internal/realtime"
 	"github.com/multica-ai/multica/server/internal/seatcapacity"
 	"github.com/multica-ai/multica/server/internal/service"
@@ -240,7 +241,16 @@ type Handler struct {
 	// right after flipping disabled/super-admin state so the change is
 	// visible to this node immediately and to other nodes within one
 	// Redis write. Nil-safe: invalidation then waits out the TTL.
-	UserStateCache               *auth.UserStateCache
+	UserStateCache *auth.UserStateCache
+	// OAuthSigner mints and verifies MCP access tokens (RUYI-209). Nil when
+	// OAUTH_SIGNING_KEY is unset, which is how a deployment turns the whole
+	// OAuth surface off: every handler in oauth.go answers 501, and the router
+	// does not publish the discovery documents. The PAT path is unaffected.
+	OAuthSigner *oauth.Signer
+	// OAuthCodes holds authorization codes in Redis for 60s, single-use. Nil
+	// Redis fails the grant closed rather than issuing codes that can never be
+	// redeemed.
+	OAuthCodes                   *oauth.CodeStore
 	WebhookRateLimiter           WebhookRateLimiter
 	WebhookIPRateLimiter         WebhookRateLimiter
 	WebhookAbsoluteIPRateLimiter WebhookRateLimiter

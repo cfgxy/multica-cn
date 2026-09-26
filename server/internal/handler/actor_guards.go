@@ -30,6 +30,12 @@ import (
 //     behalf — same conceptual category as
 //     mat_ (machine running owner-scoped
 //     code) for authorization purposes.
+//   - MCP OAuth access token → X-User-ID = the AUTHORIZING human's user
+//     id, plus `X-Actor-Source: oauth`. The
+//     token is minted for an external MCP
+//     client and lives in that client's
+//     storage, so it is a machine credential
+//     even though a human approved it once.
 //
 // The mat_ and mcn_ designs (MUL-2600 and the cloud-node PAT story
 // respectively) were both deliberately built this way: every request
@@ -112,7 +118,7 @@ func isMachineCredentialActor(r *http.Request) bool {
 	// client-supplied value before stamping its own, so a recognized value here
 	// is authoritative.
 	switch r.Header.Get("X-Actor-Source") {
-	case "task_token", "cloud_pat":
+	case "task_token", "cloud_pat", "oauth":
 		return true
 	default:
 		return false

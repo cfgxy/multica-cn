@@ -304,6 +304,84 @@ describe("runtimeRewriteDestination", () => {
       }),
     ).toBe("http://backend:8080/ws");
   });
+
+  // The MCP rule has to win against the `/api/` catch-all that follows it;
+  // if the order ever flips, this asserts the symptom — an MCP call routed to
+  // the Go backend, which does not serve it.
+  it("maps /api/mcp to the MCP process, not the backend API origin", () => {
+    expect(
+      runtimeRewriteDestination("/api/mcp", {
+        REMOTE_API_URL: "http://backend:8080",
+        MCP_URL: "http://mcp:3002",
+      }),
+    ).toBe("http://mcp:3002/mcp");
+  });
+
+  it("leaves /api/mcp unrewritten when no MCP origin is configured", () => {
+    expect(
+      runtimeRewriteDestination("/api/mcp", {
+        REMOTE_API_URL: "http://backend:8080",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("keeps other /api paths on the backend when MCP is configured", () => {
+    expect(
+      runtimeRewriteDestination("/api/config", {
+        REMOTE_API_URL: "http://backend:8080",
+        MCP_URL: "http://mcp:3002",
+      }),
+    ).toBe("http://backend:8080/api/config");
+  });
+
+  it("maps the OAuth discovery documents to the backend", () => {
+    const env = { REMOTE_API_URL: "http://backend:8080" };
+    expect(
+      runtimeRewriteDestination(
+        "/.well-known/oauth-protected-resource",
+        env,
+      ),
+    ).toBe("http://backend:8080/.well-known/oauth-protected-resource");
+    // RFC 9728 path-insertion form: which of the two a client probes is not
+    // specified, so both must resolve.
+    expect(
+      runtimeRewriteDestination(
+        "/.well-known/oauth-protected-resource/api/mcp",
+        env,
+      ),
+    ).toBe("http://backend:8080/.well-known/oauth-protected-resource/api/mcp");
+    expect(
+      runtimeRewriteDestination(
+        "/.well-known/oauth-authorization-server",
+        env,
+      ),
+    ).toBe("http://backend:8080/.well-known/oauth-authorization-server");
+    expect(runtimeRewriteDestination("/.well-known/jwks.json", env)).toBe(
+      "http://backend:8080/.well-known/jwks.json",
+    );
+  });
+
+  // The matcher change routes every dotted `.well-known` path through
+  // proxy(); anything the rules do not claim must still reach the Next.js
+  // file-system router untouched.
+  it("leaves unclaimed .well-known paths to the Next.js router", () => {
+    const env = { REMOTE_API_URL: "http://backend:8080" };
+    expect(
+      runtimeRewriteDestination("/.well-known/security.txt", env),
+    ).toBeUndefined();
+    expect(
+      runtimeRewriteDestination(
+        "/.well-known/apple-app-site-association",
+        env,
+      ),
+    ).toBeUndefined();
+    expect(
+      runtimeRewriteDestination(
+        "/.well-known/oauth-authorization-server/api/mcp",
+        env,
+      ),
+    ).toBeUndefined();
+  });
 });
 
 describe("dev-only fallbacks", () => {
