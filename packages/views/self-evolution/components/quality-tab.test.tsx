@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, fireEvent } from "@testing-library/react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
 import type { PromptQualityDashboard } from "@multica/core/types";
@@ -328,6 +328,32 @@ describe("QualityTab with a subject", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("5% — 15%")).toBeInTheDocument();
     expect(screen.queryByText("60% — 75%")).not.toBeInTheDocument();
+  });
+
+  it("states the reproducibility range next to the score in the D3 drill-down", async () => {
+    dashboardRef.current = dashboard({
+      perplexity: [
+        {
+          version: 4,
+          runtime_profile: "member",
+          band: "low",
+          percent_low: 5,
+          percent_high: 15,
+          evidence: [],
+          model: "gpt-6-luna",
+          scored_at: "2026-09-26T10:00:00.000Z",
+        },
+      ],
+    });
+    renderWithAgent();
+    const open = await screen.findByText("5% — 15%");
+    // A band and an interval from a model are unreadable without how much they
+    // move on a repeat, so the sheet that shows them must state the measured
+    // fluctuation range (RUYI-184 acceptance criterion 6).
+    fireEvent.click(open);
+    expect(
+      await screen.findByText(enSelfEvolution.quality.perplexity.reproducibility),
+    ).toBeInTheDocument();
   });
 
   it("says the window has no failed run rather than printing an empty list", async () => {

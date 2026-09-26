@@ -121,6 +121,7 @@
       },
       "range": "{{low}}% — {{high}}%",
       "scoredAt": "{{date}} 由 {{model}} 评分",
+      "reproducibility": "同一版本重复评分时，band 保持稳定，区间端点实测波动不超过 10 个百分点（gpt-6-luna，temperature 0.2，每个运行态 5 次）。",
       "empty": {
         "title": "尚未评分",
         "description": "该 prompt 还没有任何版本被评分。缺少评分不等于中性评分。"
