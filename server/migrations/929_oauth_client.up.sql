@@ -14,10 +14,10 @@
 -- client_secret_hash stores only the hash. The plaintext secret is returned
 -- once at creation time and never persisted or logged.
 --
--- client_id uniqueness is enforced by 925, not by an inline UNIQUE: the house
+-- client_id uniqueness is enforced by 930, not by an inline UNIQUE: the house
 -- rule requires every index a migration creates to be built CONCURRENTLY, and
 -- an inline constraint would build its index inside this statement.
-CREATE TABLE IF NOT EXISTS oauth_clients (
+CREATE TABLE IF NOT EXISTS oauth_client (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     client_id TEXT NOT NULL,
     client_secret_hash TEXT NOT NULL,
@@ -28,7 +28,7 @@ CREATE TABLE IF NOT EXISTS oauth_clients (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-COMMENT ON TABLE oauth_clients IS
+COMMENT ON TABLE oauth_client IS
     'Pre-registered OAuth clients for the MCP authorization server (RUYI-209). No DCR; rows are created by an operator.';
-COMMENT ON COLUMN oauth_clients.client_secret_hash IS
+COMMENT ON COLUMN oauth_client.client_secret_hash IS
     'SHA-256 hash of the client secret. The plaintext is shown once at creation and never stored.';
