@@ -84,6 +84,18 @@ backend:
   # leader-elected workload split — increase this only if you actually
   # need horizontal scale of the API/WS server.
   replicas: 1
+  backups:
+    enabled: true
+    path: /app/backups
+    interval: 24h
+    retentionDays: 7
+    pgDump: pg_dump
+    timeout: 2h
+    persistence:
+      size: 10Gi
+      storageClass: ""
+      accessModes:
+        - ReadWriteOnce
   uploads:
     persistence:
       # When true (default) the chart provisions a PersistentVolumeClaim for
