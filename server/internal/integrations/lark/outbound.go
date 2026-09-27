@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -152,6 +153,10 @@ type PatcherQueries interface {
 	GetLarkOutboundCardByTask(ctx context.Context, taskID pgtype.UUID) (OutboundCardMessage, error)
 	CreateLarkOutboundCardMessage(ctx context.Context, arg CreateOutboundCardMessageParams) (OutboundCardMessage, error)
 	UpdateLarkOutboundCardStatus(ctx context.Context, arg UpdateOutboundCardStatusParams) error
+	// ListAttachmentsByChatMessage reads the files the agent bound to one
+	// assistant message. Only reached on a deployment that wired object
+	// storage; see outbound_media.go.
+	ListAttachmentsByChatMessage(ctx context.Context, arg db.ListAttachmentsByChatMessageParams) ([]db.Attachment, error)
 }
 
 // CredentialsResolver decrypts an installation's app_secret for the
@@ -213,18 +218,41 @@ type Patcher struct {
 	client          APIClient
 	typingIndicator *TypingIndicatorManager
 	cfg             PatcherConfig
+
+	// objects is nil unless WithAttachments wired object storage, and nil is
+	// what turns file delivery off — the same condition the router uses to
+	// decide whether to declare the capability to the agent.
+	objects mediaObjectStore
+	metrics Metrics
+
+	// spawn starts the attachment delivery goroutine. A seam, not a strategy:
+	// tests substitute a synchronous run so a delivery's outcome is observable
+	// without sleeping.
+	spawn func(func())
+
+	// Attachment-delivery admission counters. See outbound_media.go for why
+	// there are two of them and what each one bounds.
+	pendingMu           sync.Mutex
+	pendingAttachments  int
+	admittedAttachments int
 }
 
 // NewPatcher constructs a Patcher bound to its dependencies. The
 // patcher does not subscribe to the bus until Register is called.
-func NewPatcher(queries PatcherQueries, credentials CredentialsResolver, client APIClient, cfg PatcherConfig) *Patcher {
+func NewPatcher(queries PatcherQueries, credentials CredentialsResolver, client APIClient, cfg PatcherConfig, opts ...PatcherOption) *Patcher {
 	cfg = cfg.withDefaults()
-	return &Patcher{
+	p := &Patcher{
 		queries:     queries,
 		credentials: credentials,
 		client:      client,
 		cfg:         cfg,
+		metrics:     nopMetrics{},
+		spawn:       func(f func()) { go f() },
 	}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
 }
 
 // SetTypingIndicatorManager wires the typing-indicator manager into the
@@ -403,7 +431,17 @@ func (p *Patcher) processEvent(ctx context.Context, e events.Event) error {
 
 	switch e.Type {
 	case protocol.EventChatDone:
-		return p.sendChatReply(ctx, creds, binding, e.Payload)
+		replyErr := p.sendChatReply(ctx, creds, binding, e.Payload)
+		// The files leave on a goroutine of their own, and deliberately
+		// regardless of what the words did. A turn with no text at all is the
+		// ordinary shape of "here is the file you asked for" — sendChatReply
+		// drops empty content and returns nil — so gating the attachment on a
+		// non-empty reply would silently lose exactly those turns. A text send
+		// that failed is no reason to withhold the file either.
+		if p.mayCarryAttachments(e) {
+			p.deliverAttachments(e, attachmentTarget{Creds: creds, Binding: binding})
+		}
+		return replyErr
 	case protocol.EventTaskFailed:
 		return p.fail(ctx, creds, binding, taskID, agentName, e.Payload)
 	}
