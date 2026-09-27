@@ -155,7 +155,7 @@ func appURLFromEnv() string {
 // must never reach a log line, so a parse failure is reported as a parse
 // failure, without the value that failed.
 func newOAuthSigner(siteRoot string) *oauth.Signer {
-	pem := strings.TrimSpace(os.Getenv("OAUTH_SIGNING_KEY"))
+	pem := util.NormalizePEMKey(os.Getenv("OAUTH_SIGNING_KEY"))
 	if pem == "" {
 		slog.Warn("mcp oauth disabled: OAUTH_SIGNING_KEY not configured")
 		return nil
