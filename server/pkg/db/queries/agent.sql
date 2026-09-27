@@ -1362,12 +1362,18 @@ WHERE id = $1
   );
 
 -- name: RecoverOrphanedTasksForRuntime :many
--- Called by the daemon at startup. Atomically fails any dispatched/running/
--- waiting_local_directory task that the prior incarnation of this runtime
+-- Called by the daemon at startup. Atomically fails dispatched/running/
+-- waiting_local_directory tasks that the prior incarnation of this runtime
 -- owned but did not finalize. Returns the failed rows so callers can hand
 -- them to the auto-retry path. waiting_local_directory rows are included
 -- because the daemon holding the path lock is the same process that just
 -- died — without us, the row would sit waiting forever.
+--
+-- only_unprobeable scopes the fail to rows without a pinned work_dir: the
+-- ones the daemon's RUYI-225 lock probe cannot judge, so the blind fallback
+-- stays correct for them alone. With only_unprobeable=false the historical
+-- blanket semantics apply — the runtime_gone re-register path, where the
+-- runtime rows were truly deleted server-side, relies on that.
 UPDATE agent_task_queue
 SET status = 'failed',
     completed_at = now(),
@@ -1375,7 +1381,13 @@ SET status = 'failed',
     failure_reason = 'runtime_recovery',
     wait_reason = NULL,
     prepare_lease_expires_at = NULL
-WHERE runtime_id = $1 AND status IN ('dispatched', 'running', 'waiting_local_directory')
+WHERE runtime_id = $1
+  AND status IN ('dispatched', 'running', 'waiting_local_directory')
+  AND (
+    NOT @only_unprobeable::bool
+    OR work_dir IS NULL
+    OR work_dir = ''
+  )
 RETURNING *;
 
 -- name: FailStaleTasks :many

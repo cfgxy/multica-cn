@@ -24,13 +24,20 @@ type recoveryFixture struct {
 	server *httptest.Server
 	root   string // workspaces root with real env-root directories
 
-	mu          sync.Mutex
-	inFlight    []InFlightTask   // served for any runtime's in-flight list
-	inFlightAsk []string         // runtime IDs the daemon asked about
-	failed      []failedTaskCall // /tasks/<id>/fail bodies, in order
-	orphans     []string         // runtime IDs that got recover-orphans
-	workspaces  []WorkspaceInfo  // served from /api/daemon/workspaces
-	registered  [][]string       // providers per register call, in order
+	mu           sync.Mutex
+	inFlight     []InFlightTask   // served for any runtime's in-flight list
+	inFlightAsk  []string         // runtime IDs the daemon asked about
+	failed       []failedTaskCall // /tasks/<id>/fail bodies, in order
+	orphans      []string         // runtime IDs that got recover-orphans
+	orphanBodies []orphanCall     // recover-orphans request bodies, in order
+	workspaces   []WorkspaceInfo  // served from /api/daemon/workspaces
+	registered   [][]string       // providers per register call, in order
+}
+
+// orphanCall is one blind recover-orphans request the fake server received.
+type orphanCall struct {
+	RuntimeID       string `json:"-"`
+	OnlyUnprobeable bool   `json:"only_unprobeable"`
 }
 
 type failedTaskCall struct {
@@ -73,8 +80,12 @@ func newRecoveryFixture(t *testing.T) *recoveryFixture {
 			_, _ = w.Write([]byte(`{}`))
 		case strings.HasSuffix(r.URL.Path, "/recover-orphans"):
 			parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/daemon/runtimes/"), "/")
+			var body orphanCall
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			body.RuntimeID = parts[0]
 			fx.mu.Lock()
 			fx.orphans = append(fx.orphans, parts[0])
+			fx.orphanBodies = append(fx.orphanBodies, body)
 			fx.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte(`{"orphaned":0,"retried":0}`))
@@ -138,6 +149,12 @@ func (fx *recoveryFixture) recordedOrphans() []string {
 	fx.mu.Lock()
 	defer fx.mu.Unlock()
 	return append([]string(nil), fx.orphans...)
+}
+
+func (fx *recoveryFixture) recordedOrphanBodies() []orphanCall {
+	fx.mu.Lock()
+	defer fx.mu.Unlock()
+	return append([]orphanCall(nil), fx.orphanBodies...)
 }
 
 // buildEnvRoot creates the on-disk shape a running task leaves behind: the
@@ -318,7 +335,8 @@ func TestConvergeRegistrationRecoversInFlight(t *testing.T) {
 
 // TestFirstRegistrationProbesThenKeepsBlindFallback: on the startup path the
 // probe runs first (dead workers failed per task) and the historical blind
-// recover-orphans still fires as the fallback for tasks without work_dir.
+// recover-orphans still fires as the fallback for tasks without work_dir —
+// requested in its narrowed, unprobeable-only scope.
 func TestFirstRegistrationProbesThenKeepsBlindFallback(t *testing.T) {
 	fx := newRecoveryFixture(t)
 	fx.daemon.cfg.Agents = map[string]AgentEntry{"codex": {Path: "/fake/codex"}}
@@ -339,5 +357,47 @@ func TestFirstRegistrationProbesThenKeepsBlindFallback(t *testing.T) {
 	}
 	if orphans := fx.recordedOrphans(); len(orphans) == 0 {
 		t.Fatalf("blind recover-orphans fallback did not fire on first registration")
+	}
+	for _, call := range fx.recordedOrphanBodies() {
+		if !call.OnlyUnprobeable {
+			t.Fatalf("first-registration blind recover-orphans for %s ran unscoped; probe-visible tasks would be blanket-failed server-side", call.RuntimeID)
+		}
+	}
+}
+
+// TestFirstRegistrationBlindFallbackSkipsProbeVisibleTasks pins the QA
+// scenario ③ fix at the daemon boundary: a held execution lock means the
+// probe leaves that task alone, and the blind fallback request must be
+// scoped to unprobeable (work_dir-less) rows so the server-side UPDATE
+// cannot reach the held-lock task either.
+func TestFirstRegistrationBlindFallbackSkipsProbeVisibleTasks(t *testing.T) {
+	fx := newRecoveryFixture(t)
+	fx.daemon.cfg.Agents = map[string]AgentEntry{"codex": {Path: "/fake/codex"}}
+	stubAgentProbe(t, map[string]AgentEntry{"codex": {Path: "/fake/codex"}})
+	fx.mu.Lock()
+	fx.workspaces = []WorkspaceInfo{{ID: "ws1", Name: "one"}}
+	fx.mu.Unlock()
+	envRoot := buildEnvRoot(t, fx.root, "ws1", "taskheld")
+	holdEnvRootLock(t, fx.root, envRoot)
+	fx.setInFlight(
+		InFlightTask{ID: "taskheld", WorkspaceID: "ws1", Status: "running", WorkDir: filepath.Join(envRoot, "repo")},
+		InFlightTask{ID: "taskwaiting", WorkspaceID: "ws1", Status: "waiting_local_directory"},
+	)
+
+	if err := fx.daemon.syncWorkspacesFromAPI(context.Background(), false); err != nil {
+		t.Fatalf("syncWorkspacesFromAPI: %v", err)
+	}
+
+	if fails := fx.recordedFails(); len(fails) != 0 {
+		t.Fatalf("held-lock task was failed by the probe: %+v", fails)
+	}
+	bodies := fx.recordedOrphanBodies()
+	if len(bodies) == 0 {
+		t.Fatalf("blind recover-orphans fallback did not fire for the unprobeable waiting task")
+	}
+	for _, call := range bodies {
+		if !call.OnlyUnprobeable {
+			t.Fatalf("blind recover-orphans for %s not scoped to unprobeable tasks; the held-lock task would be blanket-failed server-side", call.RuntimeID)
+		}
 	}
 }
