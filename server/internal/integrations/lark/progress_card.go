@@ -462,13 +462,25 @@ func (p *Patcher) handleTaskMessage(e events.Event) {
 }
 
 func (pc *progressCards) push(ctx context.Context, e events.Event, entry ProgressEntry) error {
-	taskID, chatSessionID, ok := taskAndSessionFromEvent(e)
-	if !ok || !chatSessionID.Valid {
+	// Production TaskMessage events carry no session identity (publishTask
+	// stamps only the TaskID hint; TaskMessagePayload has no chat_session_id),
+	// so the session comes from the task's delivery path below, not from the
+	// event. taskAndSessionFromEvent still supplies the fallbacks it always
+	// did; only the identity SOURCE changes here.
+	taskID, _, ok := taskAndSessionFromEvent(e)
+	if !ok {
 		return nil
 	}
 	target, err := pc.p.resolveOutboundTarget(ctx, taskID)
 	if err != nil || target == nil {
 		return err
+	}
+	chatSessionID := target.chatSessionID
+	if !chatSessionID.Valid {
+		// A delivery snapshot only exists for tasks a channel conversation
+		// started, and those tasks own a session; an invalid one means the
+		// data invariant is broken. Refuse to guess a target for the card.
+		return nil
 	}
 
 	taskKey := uuidString(taskID)
