@@ -146,6 +146,7 @@
     "replying_to": "回复 {{name}}",
     "cancel_reply": "取消回复",
     "mention_hint": "提及成员或议题",
+    "skill_hint": "选择技能",
     "upload_image": "上传图片",
     "upload_file": "上传文件",
     "file_too_large_title": "文件过大",

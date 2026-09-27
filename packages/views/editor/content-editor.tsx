@@ -57,6 +57,7 @@ import {
 import type { MentionItem } from "./extensions/mention-suggestion";
 import type { IssueIdentifierResolver } from "./extensions/issue-identifier-autolink";
 import type { BuiltinCommandSuggestionOptions } from "./extensions/slash-command-suggestion";
+import { armSuggestionTrigger } from "./extensions/suggestion-trigger-arming";
 import { createEditorExtensions } from "./extensions";
 import {
   uploadAndInsertFile,
@@ -253,6 +254,7 @@ interface ContentEditorRef {
   getMarkdown: () => string;
   clearContent: () => void;
   focus: () => void;
+  insertSlashTrigger: () => boolean;
   /**
    * Focus and place the caret at the document position under the given
    * viewport coordinates. Used by readonly-first hosts so the click that
@@ -907,6 +909,12 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         if (editor) editor.commands.focus();
         // Editor not mounted yet — defer the focus to `onCreate`.
         else focusOnReadyRef.current = true;
+      },
+      insertSlashTrigger: () => {
+        if (!editor || editor.isDestroyed || !enableSlashCommands) return false;
+        editor.commands.focus();
+        armSuggestionTrigger(editor, editor.state.selection.from);
+        return editor.commands.insertContent("/");
       },
       focusAtCoords: (coords: { x: number; y: number }) => {
         if (!editor) {
