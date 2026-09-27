@@ -84,6 +84,10 @@ vi.mock("@multica/core/workspace/queries", () => ({
     queryKey: ["workspaces", "ws-1", "agents"],
     queryFn: () => Promise.resolve([]),
   }),
+  skillListOptions: () => ({
+    queryKey: ["workspaces", "ws-1", "skills"],
+    queryFn: () => Promise.resolve([]),
+  }),
   squadListOptions: () => ({
     queryKey: ["workspaces", "ws-1", "squads"],
     queryFn: () => Promise.resolve([]),

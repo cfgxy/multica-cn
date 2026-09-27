@@ -91,7 +91,7 @@ import { SkillListSchema } from "./schemas";
 
 describe("skill list response", () => {
   it("normalizes optional fields and fails closed on malformed records", () => {
-    const valid = parseWithFallback([{ id: "s1", workspace_id: "ws", name: "Review" }], SkillListSchema, [], { endpoint: "listSkills" });
+    const valid = parseWithFallback([{ id: "s1", workspace_id: "ws", name: "Review" }], SkillListSchema, SkillListSchema.parse([]), { endpoint: "listSkills" });
     expect(valid[0]?.description).toBe("");
     expect(parseWithFallback([{ id: 8, name: "bad" }], SkillListSchema, [], { endpoint: "listSkills" })).toEqual([]);
   });
