@@ -97,3 +97,21 @@ func skillDisablesModelInvocation(content string) bool {
 		return false
 	}
 }
+
+// ResolveSkillSlugs is the exported form of resolveSkillSlugs for the
+// prompt layer: the "Explicitly selected skills" invocation hints must name
+// skills by the same on-disk slug writeSkillFiles lays down, or the model is
+// handed an identifier that does not resolve (same rationale as MUL-5529).
+// It must stay a thin wrapper — the authoritative algorithm lives in
+// resolveSkillSlugs and must not fork.
+func ResolveSkillSlugs(skills []SkillContextForEnv) []string {
+	return resolveSkillSlugs(skills)
+}
+
+// SkillModelVisible is the exported single-skill form of the
+// modelVisibleSkills visibility filter (frontmatter
+// `disable-model-invocation`), for prompt-layer callers that build per-ID
+// maps and need to skip the same skills the brief's Skills index skips.
+func SkillModelVisible(skill SkillContextForEnv) bool {
+	return skillModelInvocationVisible(skill)
+}
