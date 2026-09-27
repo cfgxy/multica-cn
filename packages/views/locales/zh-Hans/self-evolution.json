@@ -7,7 +7,8 @@
   },
   "tabs": {
     "overview": "总览",
-    "quality": "质量"
+    "quality": "质量",
+    "quiz": "题库测验"
   },
   "quality": {
     "scopePicker": {
@@ -157,6 +158,72 @@
       "scoring_model": "评分模型不可用",
       "unknown": "{{kind}} 不可用",
       "note": "看板数据不受影响。"
+    }
+  },
+  "quiz": {
+    "noSubject": "读数按 Prompt 层级给出。选择一个 Agent 以载入其测验历史。",
+    "reading": {
+      "title": "防回归读数",
+      "description": "同一套固定题库对每个 Prompt 版本重复跑。读数是分布，不是单一分数。",
+      "error": "读数加载失败",
+      "noVersion": "该 Prompt 没有已记录的版本，尚未产生任何测量。",
+      "accumulating": "v{{version}} 已有 {{have}} 次可用读数，需要 {{need}} 次。样本未满不给对比。",
+      "noBaseline": "v{{version}} 已在 {{count}} 次运行上测量（中位数 {{median}}，四分位距 {{iqr}}），且是该 Prompt 的首个版本——没有更早的版本可比。它将成为下一个版本的基线。",
+      "versions": "基线 v{{baseline}}，被读版本 v{{current}}。",
+      "outcomes": "{{answered}} 次运行给出了回答，{{errored}} 次出错。两个计数都不是评分：系统不判定回答内容的对错。",
+      "incomparable": "{{count}} 条读数被排除在本组之外：它们取自另一版题面，或另一套运行时、模型。",
+      "baselineIncomparable": "基线组同样因此排除了 {{count}} 条读数。",
+      "notAGate": "测验从不阻断 Prompt 版本发布，只记录质量如何变化。",
+      "verdict": {
+        "insufficient": "无读数",
+        "steady": "持平",
+        "improved": "改善",
+        "regressed": "回归"
+      },
+      "stats": {
+        "baseline": "基线组",
+        "current": "当前组",
+        "statistic": "Mann-Whitney z",
+        "threshold": "噪声线",
+        "group": "中位数 {{median}}，四分位距 {{iqr}}，n={{n}}"
+      }
+    },
+    "bank": {
+      "title": "题库",
+      "description": "每个版本用同一组题目。修改题面会开启新的修订号。",
+      "add": "新增题目",
+      "revision": "修订 {{revision}}",
+      "active": "启用",
+      "retired": "已停用",
+      "discrimination": {
+        "pending": "未判定",
+        "no_signal": "无读数",
+        "flat": "当前无区分度",
+        "ok": "有区分度"
+      },
+      "edit": "编辑",
+      "delete": "删除",
+      "error": {
+        "title": "题库加载失败",
+        "write": "题库未被修改。"
+      },
+      "empty": {
+        "title": "暂无题目",
+        "description": "没有题目就无法测量任何版本。新增一题以产生首个读数。"
+      },
+      "dialog": {
+        "addTitle": "新增题目",
+        "editTitle": "编辑题目",
+        "description": "题面不得引用任何生产实体——不含 Issue 编号、ID 或链接。服务端会拒绝违规题面，并指出需要移除的引用类型。",
+        "slug": "标识",
+        "questionTitle": "标题",
+        "body": "题面",
+        "bodyHint": "不超过 4000 字符。题面须自足：测验 run 背后没有任何 Issue。",
+        "rubric": "标准答案与评分项",
+        "rubricHint": "仅所有者可见，绝不随题面发送给被测 run。保存时会用本字段的内容整体替换已存的标准答案。",
+        "cancel": "取消",
+        "save": "保存"
+      }
     }
   }
 }

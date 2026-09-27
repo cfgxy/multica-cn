@@ -135,6 +135,15 @@ export type {
   PromptQualityDashboard,
 } from "./prompt-quality";
 export type {
+  PromptQuizItem,
+  PromptQuizItemDetail,
+  PromptQuizSummary,
+  PromptQuizComparison,
+  PromptQuizBaseline,
+  CreatePromptQuizItemRequest,
+  UpdatePromptQuizItemRequest,
+} from "./prompt-quiz";
+export type {
   PluginInstallation,
   PluginConfigField,
   PluginConfigFieldType,
