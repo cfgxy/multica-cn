@@ -6165,6 +6165,54 @@ func (q *Queries) ListChatFinalizeDeferredExpired(ctx context.Context, arg ListC
 	return items, nil
 }
 
+const listInFlightTasksByRuntime = `-- name: ListInFlightTasksByRuntime :many
+SELECT t.id, r.workspace_id, t.status, t.work_dir
+FROM agent_task_queue t
+JOIN agent_runtime r ON r.id = t.runtime_id
+WHERE t.runtime_id = $1 AND t.status IN ('running', 'waiting_local_directory')
+`
+
+type ListInFlightTasksByRuntimeRow struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Status      string      `json:"status"`
+	WorkDir     pgtype.Text `json:"work_dir"`
+}
+
+// Returns the in-flight tasks (running / waiting_local_directory) a runtime
+// owns, with the workspace identity and pinned work_dir the daemon's
+// probe-based orphan recovery needs (RUYI-225). The daemon probes each
+// task's env-root execution lock: the kernel releases that advisory flock
+// when the holding worker dies, so "lock acquirable" proves the worker is
+// gone while "lock held" proves live work — the distinction
+// RecoverOrphanedTasksForRuntime cannot make. dispatched rows are excluded
+// on purpose: they already have the prepare-lease expiry path. The workspace
+// identity comes from the runtime row: agent_task_queue has no workspace_id.
+func (q *Queries) ListInFlightTasksByRuntime(ctx context.Context, runtimeID pgtype.UUID) ([]ListInFlightTasksByRuntimeRow, error) {
+	rows, err := q.db.Query(ctx, listInFlightTasksByRuntime, runtimeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListInFlightTasksByRuntimeRow{}
+	for rows.Next() {
+		var i ListInFlightTasksByRuntimeRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Status,
+			&i.WorkDir,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPendingDelegatedFailureRecoveries = `-- name: ListPendingDelegatedFailureRecoveries :many
 SELECT recovery.id, recovery.issue_id, recovery.author_type, recovery.author_id, recovery.content, recovery.type, recovery.created_at, recovery.updated_at, recovery.parent_id, recovery.workspace_id, recovery.resolved_at, recovery.resolved_by_type, recovery.resolved_by_id, recovery.source_task_id, recovery.quick_action_id, recovery.via_plugin_id, recovery.revision, recovery.recovery_settled_at
 FROM comment recovery
