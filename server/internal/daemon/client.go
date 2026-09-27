@@ -575,11 +575,14 @@ func (c *Client) PinTaskSession(ctx context.Context, taskID, sessionID, workDir 
 	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/session", taskID), body, nil)
 }
 
-// RecoverOrphans tells the server to fail any dispatched/running tasks the
-// previous daemon process for this runtime left behind. The server will
-// auto-retry eligible tasks.
-func (c *Client) RecoverOrphans(ctx context.Context, runtimeID string) error {
-	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/recover-orphans", runtimeID), map[string]any{}, nil)
+// RecoverOrphans tells the server to fail in-flight tasks the previous daemon
+// process for this runtime left behind. The server will auto-retry eligible
+// tasks. onlyUnprobeable scopes the fail to rows without a pinned work_dir —
+// the ones the RUYI-225 lock probe cannot judge — so the call can never
+// override a probe verdict; the blanket scope stays for the runtime_gone
+// re-register path, where the runtime rows were truly deleted server-side.
+func (c *Client) RecoverOrphans(ctx context.Context, runtimeID string, onlyUnprobeable bool) error {
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/recover-orphans", runtimeID), map[string]any{"only_unprobeable": onlyUnprobeable}, nil)
 }
 
 // InFlightTask is one running/waiting_local_directory row the server still

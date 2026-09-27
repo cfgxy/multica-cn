@@ -1890,12 +1890,14 @@ func (d *Daemon) reregisterWorkspaceAfterRuntimeGone(ctx context.Context, worksp
 	// This is intentionally scoped to the runtime_gone recovery: the
 	// runtimes were truly gone server-side, so anything still in
 	// dispatched/running/waiting_local_directory on those rows is an orphan
-	// that needs to be failed-and-retried. The drift-refresh path (which
-	// also feeds applyRegisterResponseInPlace) deliberately skips this step
-	// because its surviving runtime IDs may still be actively executing
-	// tasks for the user (MUL-3332).
+	// that needs to be failed-and-retried — the blanket scope (onlyUnprobeable
+	// false) on purpose, unlike the registration path's probe-consistent
+	// narrowed call. The drift-refresh path (which also feeds
+	// applyRegisterResponseInPlace) deliberately skips this step because its
+	// surviving runtime IDs may still be actively executing tasks for the
+	// user (MUL-3332).
 	for _, rid := range newIDs {
-		if err := d.client.RecoverOrphans(ctx, rid); err != nil {
+		if err := d.client.RecoverOrphans(ctx, rid, false); err != nil {
 			d.logger.Warn("recover-orphans after re-register failed",
 				"runtime_id", rid, "error", err)
 		}
@@ -3501,7 +3503,9 @@ func (d *Daemon) refreshTrackedWorkspaceSettings(ctx context.Context) {
 //
 //  1. It does NOT call RecoverOrphans for the returned runtime IDs. The
 //     server's RecoverOrphanedTasksForRuntime hard-fails every
-//     dispatched/running/waiting_local_directory task on a runtime, which is
+//     dispatched/running/waiting_local_directory task on a runtime (its
+//     only_unprobeable scoping helps only the registration path, where the
+//     probe has already judged every work_dir-pinned task), which is
 //     the correct response when a runtime row was actually deleted server-
 //     side, but a catastrophic false positive on profile drift: a built-in
 //     runtime still actively executing tasks would have its work killed
@@ -4080,13 +4084,16 @@ func (d *Daemon) syncWorkspacesFromAPI(ctx context.Context, reconcileProfiles bo
 		// env-root execution lock distinguishes a worker that died with the
 		// previous daemon process from one still running under another
 		// daemon process sharing this workspaces root — the latter must not
-		// be failed. The blind RecoverOrphans below remains as the fallback
+		// be failed. The blind RecoverOrphans below stays as the fallback
 		// for tasks the probe cannot see (waiting_local_directory rows never
 		// pin a work_dir): a fresh process cannot be the one executing them,
-		// so the historical blanket semantics stay correct for those.
+		// so failing them is correct. It must carry only_unprobeable — the
+		// probe has already decided every task with a work_dir, and a
+		// blanket call would override a held-lock "still alive" verdict the
+		// moment after it was reached.
 		for _, rid := range runtimeIDs {
 			d.recoverInFlightTasksForRuntime(ctx, rid)
-			if err := d.client.RecoverOrphans(ctx, rid); err != nil {
+			if err := d.client.RecoverOrphans(ctx, rid, true); err != nil {
 				d.logger.Warn("recover-orphans failed", "runtime_id", rid, "error", err)
 			}
 		}
