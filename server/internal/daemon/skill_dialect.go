@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"server/internal/daemon/execenv"
+	"github.com/multica-ai/multica/server/internal/daemon/execenv"
 )
 
 // skillDialectHint renders the provider-specific invocation hint for one
@@ -29,7 +29,7 @@ func skillDialectHint(provider, slug string) string {
 	case "claude", "codebuddy":
 		return fmt.Sprintf("invoke it with the Skill tool: `Skill(%s)`", slug)
 	case "codex":
-		return fmt.Sprintf("mention it as `%s` (Codex skill mention)", slug)
+		return fmt.Sprintf("mention it as `$%s` (Codex skill mention)", slug)
 	default:
 		return fmt.Sprintf("load and follow the skill `%s` from your skills directory", slug)
 	}

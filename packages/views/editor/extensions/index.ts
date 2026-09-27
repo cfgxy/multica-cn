@@ -44,7 +44,7 @@ import {
   type IssueIdentifierResolver,
 } from "./issue-identifier-autolink";
 import { SlashCommandExtension } from "./slash-command-extension";
-import { createSlashCommandSuggestion, createBuiltinCommandSuggestion } from "./slash-command-suggestion";
+import { createSlashCommandSuggestion, createIssueCommandSuggestion } from "./slash-command-suggestion";
 import type { BuiltinCommandSuggestionOptions } from "./slash-command-suggestion";
 import { SuggestionTriggerArmingExtension } from "./suggestion-trigger-arming";
 import { CodeBlockView } from "./code-block-view";
@@ -283,7 +283,9 @@ export function createEditorExtensions(
       suggestion: !options.enableSlashCommands
         ? { char: "/", allow: () => false }
         : options.slashCommandMode === "command"
-          ? createBuiltinCommandSuggestion(options.quickActionMenu)
+          ? options.queryClient
+            ? createIssueCommandSuggestion(options.queryClient, options.quickActionMenu)
+            : { char: "/", allow: () => false }
           : options.queryClient
             ? createSlashCommandSuggestion(options.queryClient)
             : { char: "/", allow: () => false },

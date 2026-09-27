@@ -87,6 +87,15 @@ import {
   EMPTY_ISSUE_STATUS_ENTRY,
 } from "./schemas";
 import { parseWithFallback } from "./schema";
+import { SkillListSchema } from "./schemas";
+
+describe("skill list response", () => {
+  it("normalizes optional fields and fails closed on malformed records", () => {
+    const valid = parseWithFallback([{ id: "s1", workspace_id: "ws", name: "Review" }], SkillListSchema, [], { endpoint: "listSkills" });
+    expect(valid[0]?.description).toBe("");
+    expect(parseWithFallback([{ id: 8, name: "bad" }], SkillListSchema, [], { endpoint: "listSkills" })).toEqual([]);
+  });
+});
 
 const baseIssue = {
   id: "11111111-1111-1111-1111-111111111111",

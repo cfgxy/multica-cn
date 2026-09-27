@@ -67,6 +67,7 @@ export function InlineCommentComposer({
         pathname: "/[workspace]/mention-picker",
         params: { workspace: wsSlug ?? "", mode: "comment" },
       }}
+      skillPickerPath={{ pathname: "/[workspace]/skill-picker", params: { workspace: wsSlug ?? "" } }}
       uploadContext={{ issueId }}
       requireVisibleText
       placeholder={t("mobile.composer.placeholder", "Add a comment…")}

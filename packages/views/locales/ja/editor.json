@@ -123,6 +123,10 @@
     "export_source": ".mmd をダウンロード"
   },
   "slash_command": {
+    "skills_group": "スキル",
+    "commands_group": "コマンド",
+    "all_agents": "全員",
+    "no_agents": "エージェントなし",
     "no_skills_configured": "設定済みスキルなし",
     "no_results": "一致するスキルなし",
     "commands": {

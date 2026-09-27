@@ -17,8 +17,9 @@ import { getCurrentWsId } from "@multica/core/platform";
 import { canAssignAgentToIssue } from "@multica/core/permissions";
 import { isImeComposing } from "@multica/core/utils";
 import { workspaceKeys } from "@multica/core/workspace/queries";
-import type { Agent, MemberWithUser } from "@multica/core/types";
+import type { Agent, MemberWithUser, SkillSummary } from "@multica/core/types";
 import { useT } from "../../i18n";
+import { ActorAvatar } from "../../common/actor-avatar";
 import {
   createSuggestionPopupRender,
 } from "./suggestion-popup";
@@ -44,6 +45,10 @@ export interface SlashCommandItem {
    * so the visible string stays localized (the typed `/label` does not).
    */
   descriptionKey?: BuiltinCommandKey;
+  kind?: "skill";
+  supportingAgents?: Agent[];
+  assignedAgentId?: string | null;
+  allAgentsSupport?: boolean;
 }
 
 interface SlashCommandListProps {
@@ -137,12 +142,19 @@ export const SlashCommandList = forwardRef<
     // `--suggestion-available-height` from suggestion-popup.tsx's size
     // middleware), falling back to the design max when rendered standalone.
     // Single height authority — mirrors MentionList.
-    <div className="rounded-md border bg-popover py-1 shadow-md w-72 max-h-[min(300px,var(--suggestion-available-height,300px))] overflow-y-auto">
+    <div className="rounded-md border bg-popover py-1 shadow-md w-80 max-h-[min(300px,var(--suggestion-available-height,300px))] overflow-y-auto">
       {items.map((item, index) => {
         const description = describe(item);
+        const groupStart = index === 0 || (items[index - 1]?.kind === "skill" && item.kind !== "skill");
         return (
+          <div key={item.id}>
+          {groupStart && item.kind === "skill" && (
+            <div className="px-3 py-1 text-caption text-muted-foreground">{t(($) => $.slash_command.skills_group)}</div>
+          )}
+          {groupStart && item.kind !== "skill" && items.some((entry) => entry.kind === "skill") && (
+            <div className="px-3 pt-2 pb-1 text-caption text-muted-foreground">{t(($) => $.slash_command.commands_group)}</div>
+          )}
           <button
-            key={item.id}
             ref={(el) => {
               itemRefs.current[index] = el;
             }}
@@ -157,7 +169,27 @@ export const SlashCommandList = forwardRef<
                 {description}
               </span>
             )}
+            {item.kind === "skill" && (
+              <span className="flex items-center gap-1 text-muted-foreground">
+                {item.allAgentsSupport ? (
+                  <span className={item.assignedAgentId && item.supportingAgents?.some((agent) => agent.id === item.assignedAgentId) ? "rounded border px-1 ring-2 ring-primary" : "rounded border px-1"}>{t(($) => $.slash_command.all_agents)}</span>
+                ) : (
+                  <>
+                    {(item.supportingAgents?.length ?? 0) === 0 && (
+                      <span>{t(($) => $.slash_command.no_agents)}</span>
+                    )}
+                    {item.supportingAgents?.slice(0, 3).map((agent) => (
+                      <span key={agent.id} title={agent.name} className={agent.id === item.assignedAgentId ? "rounded-full ring-2 ring-primary" : ""}>
+                        <ActorAvatar actorType="agent" actorId={agent.id} name={agent.name} avatarUrl={agent.avatar_url} size="xs" profileLink={false} />
+                      </span>
+                    ))}
+                    {(item.supportingAgents?.length ?? 0) > 3 && <span>+{(item.supportingAgents?.length ?? 0) - 3}</span>}
+                  </>
+                )}
+              </span>
+            )}
           </button>
+          </div>
         );
       })}
     </div>
@@ -190,6 +222,41 @@ function rankSkillMatches<T extends { name: string; description?: string }>(
     .filter((entry) => entry.rank !== NO_MATCH)
     .sort((a, b) => a.rank - b.rank)
     .map((entry) => entry.skill);
+}
+
+export function buildIssueCommandItems(
+  qc: QueryClient,
+  query: string,
+  skills: Pick<SkillSummary, "id" | "name" | "description">[],
+  assignedAgentId: string | null,
+  quickActions: { id: string; name: string; description?: string }[] = [],
+): SlashCommandItem[] {
+  const wsId = getCurrentWsId();
+  const agents: Agent[] = wsId ? (qc.getQueryData(workspaceKeys.agents(wsId)) ?? []) : [];
+  const activeAgents = agents.filter((agent) => !agent.archived_at);
+  const rankedSkills = rankSkillMatches(skills, query.toLowerCase());
+  const commandMatches = buildBuiltinCommandItems(query, quickActions);
+  const builtin = commandMatches.filter((item) => item.descriptionKey);
+  const commands = rankedSkills.length > 0 && commandMatches.length > MAX_ITEMS / 2
+    ? [...commandMatches.filter((item) => !item.descriptionKey).slice(0, MAX_ITEMS / 2 - builtin.length), ...builtin]
+    : commandMatches;
+  const skillItems = rankedSkills
+    .slice(0, MAX_ITEMS - commands.length)
+    .map((skill): SlashCommandItem => {
+      const supportingAgents = activeAgents.filter((agent) =>
+        agent.skills?.some((assigned) => assigned.id === skill.id && assigned.enabled !== false),
+      );
+      return {
+        id: skill.id,
+        label: skill.name,
+        description: skill.description,
+        kind: "skill",
+        supportingAgents,
+        assignedAgentId,
+        allAgentsSupport: activeAgents.length > 0 && supportingAgents.length === activeAgents.length,
+      };
+    });
+  return [...skillItems, ...commands];
 }
 
 function buildItems(qc: QueryClient, query: string): SlashCommandItem[] {
@@ -313,12 +380,15 @@ export function buildBuiltinCommandItems(
     label: a.name,
     description: a.description || undefined,
   }));
-  return [...actionItems, ...BUILTIN_COMMANDS]
-    .filter((c) => c.label.toLowerCase().startsWith(q))
-    .slice(0, MAX_ITEMS);
+  const builtin = BUILTIN_COMMANDS.filter((c) => c.label.toLowerCase().startsWith(q));
+  return [
+    ...actionItems.filter((c) => c.label.toLowerCase().startsWith(q)).slice(0, MAX_ITEMS - builtin.length),
+    ...builtin,
+  ];
 }
 
 export interface BuiltinCommandSuggestionOptions {
+  getAssignedAgentId?: () => string | null;
   /**
    * Configured quick actions offered alongside the built-ins. Read lazily on
    * every keystroke so a newly created action shows up without remounting the
@@ -342,6 +412,7 @@ export interface BuiltinCommandSuggestionOptions {
 
 export function createBuiltinCommandSuggestion(
   options: BuiltinCommandSuggestionOptions = {},
+  getItems = (query: string) => buildBuiltinCommandItems(query, options.getQuickActions?.() ?? []),
 ): Omit<SuggestionOptions<SlashCommandItem>, "editor"> {
   const pluginKey = new PluginKey("builtinCommandSuggestion");
 
@@ -351,8 +422,18 @@ export function createBuiltinCommandSuggestion(
     // Only open over a `/` the user actually typed, so a pasted path
     // (`/usr/local/bin`) never opens the command menu (MUL-5429).
     shouldShow: ({ editor, range }) => isTriggerArmedAt(editor, range.from),
-    items: ({ query }) => buildBuiltinCommandItems(query, options.getQuickActions?.() ?? []),
+    items: ({ query }) => getItems(query),
     command: ({ editor, range, props }) => {
+      if (props.kind === "skill") {
+        const nodeAfter = editor.view.state.selection.$to.nodeAfter;
+        if (nodeAfter?.text?.startsWith(" ")) range.to += 1;
+        editor.chain().focus().insertContentAt(range, [
+          { type: "slashCommand", attrs: { id: props.id, label: props.label, mentionSuggestionChar: "/" } },
+          { type: "text", text: " " },
+        ]).run();
+        window.getSelection()?.collapseToEnd();
+        return;
+      }
       if (isQuickActionItem(props)) {
         const render = options.renderQuickAction;
         if (!render) return;
@@ -428,4 +509,15 @@ export function createBuiltinCommandSuggestion(
       onKeyDown: (ref, props) => ref?.onKeyDown(props) ?? false,
     }),
   };
+}
+
+export function createIssueCommandSuggestion(
+  qc: QueryClient,
+  options: BuiltinCommandSuggestionOptions = {},
+): Omit<SuggestionOptions<SlashCommandItem>, "editor"> {
+  return createBuiltinCommandSuggestion(options, (query) => {
+    const wsId = getCurrentWsId();
+    const skills: SkillSummary[] = wsId ? (qc.getQueryData(workspaceKeys.skills(wsId)) ?? []) : [];
+    return buildIssueCommandItems(qc, query, skills, options.getAssignedAgentId?.() ?? null, options.getQuickActions?.() ?? []);
+  });
 }

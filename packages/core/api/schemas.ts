@@ -3323,6 +3323,17 @@ export const SkillSchema = z.object({
   files: z.array(SkillFileSchema).optional().default([]),
 }).loose();
 
+export const SkillListSchema = z.array(SkillSchema.pick({
+  id: true,
+  workspace_id: true,
+  name: true,
+  description: true,
+  config: true,
+  created_by: true,
+  created_at: true,
+  updated_at: true,
+}));
+
 export const EMPTY_SKILL: Skill = {
   id: "",
   workspace_id: "",
