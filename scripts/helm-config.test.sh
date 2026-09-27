@@ -36,12 +36,19 @@ require_rendered_value "$default_config" 'MULTICA_VCS_INTEGRATION_ENABLED: "true
 require_rendered_value "$default_config" 'MULTICA_CLOUD_URL: ""'
 require_rendered_value "$default_config" 'MULTICA_DATABASE_STARTUP_TIMEOUT: "3m"'
 require_rendered_value "$default_config" 'MULTICA_DATABASE_CONNECT_TIMEOUT: "5s"'
+require_rendered_value "$default_config" 'MULTICA_BACKUP_ENABLED: "true"'
+require_rendered_value "$default_config" 'MULTICA_BACKUP_DIR: "/app/backups"'
+require_rendered_value "$default_config" 'MULTICA_BACKUP_RETENTION_DAYS: "7"'
 
 default_backend="$(
   helm template multica "$CHART_DIR" \
     --show-only templates/backend.yaml
 )"
 require_rendered_value "$default_backend" 'failureThreshold: 60'
+require_rendered_value "$default_backend" 'name: multica-backend-backups'
+require_rendered_value "$default_backend" 'helm.sh/resource-policy: keep'
+require_rendered_value "$default_backend" 'mountPath: "/app/backups"'
+require_rendered_value "$default_backend" 'claimName: multica-backend-backups'
 liveness_block="$(sed -n '/livenessProbe:/,/resources:/p' <<<"$default_backend")"
 require_rendered_value "$liveness_block" 'path: /health'
 reject_rendered_value "$liveness_block" 'path: /healthz'
@@ -52,6 +59,42 @@ disabled_config="$(
     --set backend.config.vcsIntegrationEnabled=false
 )"
 require_rendered_value "$disabled_config" 'MULTICA_VCS_INTEGRATION_ENABLED: "false"'
+
+backup_config="$(
+  helm template multica "$CHART_DIR" \
+    --show-only templates/configmap.yaml \
+    --set backend.backups.retentionDays=14 \
+    --set backend.backups.path=/var/backups/multica
+)"
+require_rendered_value "$backup_config" 'MULTICA_BACKUP_RETENTION_DAYS: "14"'
+require_rendered_value "$backup_config" 'MULTICA_BACKUP_DIR: "/var/backups/multica"'
+backup_backend="$(
+  helm template multica "$CHART_DIR" \
+    --show-only templates/backend.yaml \
+    --set backend.backups.path=/var/backups/multica
+)"
+require_rendered_value "$backup_backend" 'mountPath: "/var/backups/multica"'
+
+disabled_backup_config="$(
+  helm template multica "$CHART_DIR" \
+    --show-only templates/configmap.yaml \
+    --set backend.backups.enabled=false
+)"
+require_rendered_value "$disabled_backup_config" 'MULTICA_BACKUP_ENABLED: "false"'
+disabled_backup_backend="$(
+  helm template multica "$CHART_DIR" \
+    --show-only templates/backend.yaml \
+    --set backend.backups.enabled=false
+)"
+reject_rendered_value "$disabled_backup_backend" 'claimName: multica-backend-backups'
+
+no_upload_backend="$(
+  helm template multica "$CHART_DIR" \
+    --show-only templates/backend.yaml \
+    --set backend.uploads.persistence.enabled=false
+)"
+require_rendered_value "$no_upload_backend" 'claimName: multica-backend-backups'
+reject_rendered_value "$no_upload_backend" 'claimName: multica-backend-uploads'
 
 capacity_config="$(
   helm template multica "$CHART_DIR" \
