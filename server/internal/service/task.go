@@ -5777,9 +5777,16 @@ func (s *TaskService) ExpireStaleQueuedTasks(ctx context.Context, arg db.ExpireS
 }
 
 // RecoverOrphanedTasksForRuntime fails work a restarted daemon reports it lost.
-func (s *TaskService) RecoverOrphanedTasksForRuntime(ctx context.Context, runtimeID pgtype.UUID) ([]db.AgentTaskQueue, error) {
+// onlyUnprobeable scopes the fail to rows without a pinned work_dir — the
+// daemon's lock probe cannot judge those, so the blind fallback covers them
+// alone; probe-visible tasks keep whatever verdict the probe reached. The
+// runtime_gone re-register path passes false for the historical blanket fail.
+func (s *TaskService) RecoverOrphanedTasksForRuntime(ctx context.Context, runtimeID pgtype.UUID, onlyUnprobeable bool) ([]db.AgentTaskQueue, error) {
 	return s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
-		return qtx.RecoverOrphanedTasksForRuntime(ctx, runtimeID)
+		return qtx.RecoverOrphanedTasksForRuntime(ctx, db.RecoverOrphanedTasksForRuntimeParams{
+			RuntimeID:       runtimeID,
+			OnlyUnprobeable: onlyUnprobeable,
+		})
 	})
 }
 

@@ -610,6 +610,13 @@ type Daemon struct {
 	activeEnvRoots     map[string]int  // env root path -> reference count (handles reuse paths marked twice)
 	deletingEnvRoots   map[string]bool // env roots reserved by GC; new tasks wait until the mutation finishes
 
+	// activeTaskIDs records the task IDs currently inside a dispatch slot —
+	// the same scope as activeTasks (preparation and local-directory waiters
+	// included). The probe-based orphan recovery (RUYI-225) consults it so it
+	// never touches work this very process is executing.
+	activeTaskIDsMu sync.Mutex
+	activeTaskIDs   map[string]struct{}
+
 	activeStoresMu   sync.Mutex
 	activeStoresCond *sync.Cond      // signalled when an in-flight store deletion finishes, so a blocked markActive can proceed
 	activeStores     map[string]int  // persistent store path (per-conversation Codex sessions, per-agent Hermes memories) -> live-task refcount; guards the store from GC mid-task (MUL-4424)
@@ -686,6 +693,7 @@ func New(cfg Config, logger *slog.Logger) *Daemon {
 		wsHBLastAck:               make(map[string]time.Time),
 		activeEnvRoots:            make(map[string]int),
 		deletingEnvRoots:          make(map[string]bool),
+		activeTaskIDs:             make(map[string]struct{}),
 		activeStores:              make(map[string]int),
 		deletingStores:            make(map[string]bool),
 		localPathLocks:            NewLocalPathLocker(),
@@ -1882,12 +1890,14 @@ func (d *Daemon) reregisterWorkspaceAfterRuntimeGone(ctx context.Context, worksp
 	// This is intentionally scoped to the runtime_gone recovery: the
 	// runtimes were truly gone server-side, so anything still in
 	// dispatched/running/waiting_local_directory on those rows is an orphan
-	// that needs to be failed-and-retried. The drift-refresh path (which
-	// also feeds applyRegisterResponseInPlace) deliberately skips this step
-	// because its surviving runtime IDs may still be actively executing
-	// tasks for the user (MUL-3332).
+	// that needs to be failed-and-retried — the blanket scope (onlyUnprobeable
+	// false) on purpose, unlike the registration path's probe-consistent
+	// narrowed call. The drift-refresh path (which also feeds
+	// applyRegisterResponseInPlace) deliberately skips this step because its
+	// surviving runtime IDs may still be actively executing tasks for the
+	// user (MUL-3332).
 	for _, rid := range newIDs {
-		if err := d.client.RecoverOrphans(ctx, rid); err != nil {
+		if err := d.client.RecoverOrphans(ctx, rid, false); err != nil {
 			d.logger.Warn("recover-orphans after re-register failed",
 				"runtime_id", rid, "error", err)
 		}
@@ -3493,11 +3503,18 @@ func (d *Daemon) refreshTrackedWorkspaceSettings(ctx context.Context) {
 //
 //  1. It does NOT call RecoverOrphans for the returned runtime IDs. The
 //     server's RecoverOrphanedTasksForRuntime hard-fails every
-//     dispatched/running/waiting_local_directory task on a runtime, which is
+//     dispatched/running/waiting_local_directory task on a runtime (its
+//     only_unprobeable scoping helps only the registration path, where the
+//     probe has already judged every work_dir-pinned task), which is
 //     the correct response when a runtime row was actually deleted server-
 //     side, but a catastrophic false positive on profile drift: a built-in
 //     runtime still actively executing tasks would have its work killed
-//     just because the user added a sibling custom profile.
+//     just because the user added a sibling custom profile. The converge
+//     path can afford probe-based recovery for its newly-registered IDs
+//     (RUYI-225) because the env-root lock probe tells a dead worker from a
+//     live one; the drift refresh keeps the blanket hands-off stance since
+//     its runtime IDs are already tracked and any work on them is this
+//     process's own.
 //
 //  2. It tolerates ErrNoRuntimesToRegister (custom-only daemon disables its
 //     only profile) by Deregistering the now-stale local runtime IDs and
@@ -4062,8 +4079,21 @@ func (d *Daemon) syncWorkspacesFromAPI(ctx context.Context, reconcileProfiles bo
 		// running on these runtimes. Without this, an issue can stay stuck
 		// at in_progress until the slow heartbeat sweeper or the in-flight
 		// task timeout (2.5h) kicks in.
+		//
+		// The probe-based recovery runs first (RUYI-225): each task's
+		// env-root execution lock distinguishes a worker that died with the
+		// previous daemon process from one still running under another
+		// daemon process sharing this workspaces root — the latter must not
+		// be failed. The blind RecoverOrphans below stays as the fallback
+		// for tasks the probe cannot see (waiting_local_directory rows never
+		// pin a work_dir): a fresh process cannot be the one executing them,
+		// so failing them is correct. It must carry only_unprobeable — the
+		// probe has already decided every task with a work_dir, and a
+		// blanket call would override a held-lock "still alive" verdict the
+		// moment after it was reached.
 		for _, rid := range runtimeIDs {
-			if err := d.client.RecoverOrphans(ctx, rid); err != nil {
+			d.recoverInFlightTasksForRuntime(ctx, rid)
+			if err := d.client.RecoverOrphans(ctx, rid, true); err != nil {
 				d.logger.Warn("recover-orphans failed", "runtime_id", rid, "error", err)
 			}
 		}
@@ -5161,6 +5191,7 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 			d.logger.Info("task received", "task", t.ID, "target", taskTarget)
 			taskWG.Add(1)
 			d.activeTasks.Add(1)
+			d.markTaskActiveInProcess(t.ID)
 			if cache, ok := d.repoCache.(interface{ CancelMaintenance() }); ok {
 				// A task can reuse an existing worktree and never enter the
 				// checkout path that normally preempts repository maintenance.
@@ -5171,6 +5202,7 @@ func (d *Daemon) runBatchPoller(pollerCtx, parentCtx context.Context, sem chan i
 			go func(t Task, slot int) {
 				defer taskWG.Done()
 				defer d.activeTasks.Add(-1)
+				defer d.unmarkTaskActiveInProcess(t.ID)
 				defer func() {
 					// Release local capacity before waking the poller. The task's
 					// terminal callback and local cleanup have both finished at this
