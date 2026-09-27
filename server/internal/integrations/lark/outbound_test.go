@@ -111,6 +111,14 @@ type fakeAPIClient struct {
 	// mutation — which a finalize running outside the event's goroutine
 	// makes impossible to interleave with.
 	patchRateLimitFailures int
+	// patchTransportFailures, when > 0, makes the next N patch attempts
+	// answer with an ambiguous transport failure (errProgressPatchBoom: no
+	// Lark code, not a rate limit). Same no-mid-run-mutation contract as
+	// patchRateLimitFailures.
+	patchTransportFailures int
+	// patchOutcomes records the error each patch attempt returned, so a test
+	// can tell a landed retry from a recorded-but-failed attempt.
+	patchOutcomes []error
 	textSendErr    error
 	textSendReturn string
 	mdCardErr      error
@@ -165,11 +173,18 @@ func (f *fakeAPIClient) PatchInteractiveCard(ctx context.Context, p PatchCardPar
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.patched = append(f.patched, p)
+	var err error
 	if f.patchRateLimitFailures > 0 {
 		f.patchRateLimitFailures--
-		return &APIError{Op: "patch interactive card", Code: larkRateLimitCode, Msg: "rate limited (scripted)"}
+		err = &APIError{Op: "patch interactive card", Code: larkRateLimitCode, Msg: "rate limited (scripted)"}
+	} else if f.patchTransportFailures > 0 {
+		f.patchTransportFailures--
+		err = errProgressPatchBoom
+	} else {
+		err = f.patchErr
 	}
-	return f.patchErr
+	f.patchOutcomes = append(f.patchOutcomes, err)
+	return err
 }
 func (f *fakeAPIClient) SendTextMessage(ctx context.Context, p SendTextParams) (string, error) {
 	f.mu.Lock()
