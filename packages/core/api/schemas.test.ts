@@ -3,6 +3,12 @@ import {
   AppConfigSchema,
   MarketplaceItemSchema,
   MarketplaceItemListSchema,
+  PromptQuizItemSchema,
+  PromptQuizItemDetailSchema,
+  PromptQuizItemListSchema,
+  PromptQuizBaselineSchema,
+  EMPTY_PROMPT_QUIZ_ITEM,
+  EMPTY_PROMPT_QUIZ_BASELINE,
   WecomInstallationSchema,
   ListWecomInstallationsResponseSchema,
   RedeemWecomBindingTokenResponseSchema,
@@ -2288,5 +2294,93 @@ describe("MarketplaceItemSchema", () => {
       { endpoint: "GET /api/marketplace/items" },
     );
     expect(parsed).toEqual([]);
+  });
+});
+
+describe("prompt quiz schemas (RUYI-185)", () => {
+  it("keeps the bank list free of a rubric even when the server sends one", () => {
+    // The list is member-visible. A response that carried the answer key must
+    // not put it into a parsed row, because every surface that renders a row
+    // could then render it.
+    const parsed = PromptQuizItemSchema.parse({
+      id: "i-1",
+      slug: "summarize",
+      title: "Summarize",
+      body: "Summarize the thread.",
+      revision: 2,
+      runtime_profile: "member",
+      active: true,
+      discrimination: "flat",
+      rubric: "EXPECTED ANSWER: three constraints",
+      created_at: "2026-09-01T00:00:00Z",
+      updated_at: "2026-09-01T00:00:00Z",
+    });
+    expect("rubric" in parsed).toBe(false);
+    expect(parsed.discrimination).toBe("flat");
+  });
+
+  it("defaults a missing discrimination mark to empty, which narrows to pending", () => {
+    const parsed = PromptQuizItemSchema.parse({ id: "i-1", slug: "s", title: "t", body: "b" });
+    expect(parsed.discrimination).toBe("");
+    expect(parsed.active).toBe(false);
+  });
+
+  it("carries the rubric on the owner-only detail read", () => {
+    const parsed = PromptQuizItemDetailSchema.parse({
+      id: "i-1",
+      slug: "s",
+      title: "t",
+      body: "b",
+      rubric: "EXPECTED ANSWER: three constraints",
+    });
+    expect(parsed.rubric).toBe("EXPECTED ANSWER: three constraints");
+  });
+
+  it("falls back to an unreadable question rather than a blank live one", () => {
+    // The fallback is what an editor would be seeded with, so it must not look
+    // like a valid question: revision 0 and active false.
+    const parsed = parseWithFallback(
+      { id: 17, slug: null },
+      PromptQuizItemDetailSchema,
+      EMPTY_PROMPT_QUIZ_ITEM,
+      { endpoint: "GET /api/prompt-quiz/items/{id}" },
+    );
+    expect(parsed).toEqual(EMPTY_PROMPT_QUIZ_ITEM);
+    expect(parsed.rubric).toBe("");
+    expect(parsed.active).toBe(false);
+  });
+
+  it("falls back to an empty bank on a malformed listing", () => {
+    const parsed = parseWithFallback(
+      { items: "all-of-them" },
+      PromptQuizItemListSchema,
+      [],
+      { endpoint: "GET /api/prompt-quiz/items" },
+    );
+    expect(parsed).toEqual([]);
+  });
+
+  it("reads a backend with no cohort accounting as having excluded nothing", () => {
+    const parsed = PromptQuizBaselineSchema.parse({
+      scope: "agent",
+      scope_id: "a-1",
+      current_version: 3,
+      measured: true,
+    });
+    expect(parsed.incomparable).toBe(0);
+    expect(parsed.baseline_incomparable).toBe(0);
+    expect(parsed.outcomes).toEqual({});
+  });
+
+  it("falls back to an unmeasured reading, never to a clean one", () => {
+    const parsed = parseWithFallback(
+      { current_version: "three", comparison: { verdict: 9 } },
+      PromptQuizBaselineSchema,
+      EMPTY_PROMPT_QUIZ_BASELINE,
+      { endpoint: "GET /api/prompt-governance/{scope}/{scopeId}/quiz" },
+    );
+    expect(parsed).toEqual(EMPTY_PROMPT_QUIZ_BASELINE);
+    expect(parsed.measured).toBe(false);
+    expect(parsed.comparison).toBeUndefined();
   });
 });

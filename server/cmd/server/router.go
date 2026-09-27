@@ -2045,11 +2045,39 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// Quality dashboard (RUYI-184): read-only rollups over the
 				// same scope, member-visible for the same reason history is.
 				r.Get("/quality", h.GetPromptQualityDashboard)
+				// Quiz baseline reading (RUYI-185): the distribution
+				// comparison between this scope's two newest measured
+				// versions. A reading, never a gate — no write route below
+				// consults it.
+				r.Get("/quiz", h.GetPromptQuizBaseline)
 			})
 			r.Group(func(r chi.Router) {
 				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
 				r.Post("/versions", h.SavePromptGovernanceVersion)
 				r.Post("/versions/{version}/switch", h.SwitchPromptGovernanceVersion)
+			})
+		})
+
+		// Quiz bank maintenance (RUYI-185). Workspace-scoped rather than
+		// prompt-scope-scoped: one bank is replayed against every scope, so
+		// hanging it off /{scope}/{scopeId} would imply a per-scope bank that
+		// does not exist. Writes are Owner-only for the same reason prompt
+		// writes are — a question body enters an agent's context.
+		r.Route("/api/prompt-quiz/items", func(r chi.Router) {
+			r.Use(handler.RequireHumanActor)
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireWorkspaceMember(queries))
+				r.Get("/", h.ListPromptQuizItems)
+			})
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
+				// The single-item read sits here, not in the member group above:
+				// it is the only endpoint returning an item's rubric (the private
+				// half, migration 935), so it is gated like a write.
+				r.Get("/{itemId}", h.GetPromptQuizItem)
+				r.Post("/", h.CreatePromptQuizItem)
+				r.Patch("/{itemId}", h.UpdatePromptQuizItem)
+				r.Delete("/{itemId}", h.DeletePromptQuizItem)
 			})
 		})
 
