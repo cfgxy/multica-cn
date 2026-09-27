@@ -21,7 +21,11 @@ Multica 服务端内置每日定时备份：对 `DATABASE_URL` 指向的 Postgre
 | `MULTICA_BACKUP_PG_DUMP` | `pg_dump`（从 PATH 解析） | pg_dump 可执行文件路径 |
 | `MULTICA_BACKUP_TIMEOUT` | `2h` | 单轮备份超时预算 |
 
-备份使用的连接串即服务端自身 `DATABASE_URL`（含回退默认值），无需单独配置。运行服务端的机器或容器内需装有 `pg_dump`，且大版本不得低于数据库服务端大版本（PostgreSQL 官方约束：pg_dump 可向后兼容更低版本服务端，反之不行）。
+备份使用的连接串即服务端自身 `DATABASE_URL`（含回退默认值），无需单独配置。运行服务端的机器或容器内需装有 `pg_dump`，且大版本不得低于数据库服务端大版本（PostgreSQL 官方约束：pg_dump 可向后兼容更低版本服务端，反之不行）。官方运行镜像预装 PostgreSQL 17 客户端，与自托管默认的 PostgreSQL 17 数据库匹配；连接外部 PostgreSQL 18 或更高版本时须更新镜像内的客户端版本。
+
+自托管 Compose 默认将 `/app/backups` 挂载到独立的 `backend_backups` 命名卷；`.env` 中将 `MULTICA_BACKUP_DIR` 设为其他容器内绝对路径时，卷挂载点同步改变。不要执行 `docker compose down -v` 删除备份卷。Helm 默认将同一路径挂载到独立 PVC；通过 `backend.backups.path` 修改路径时挂载点同步改变，`backend.backups.retentionDays` 控制保留天数。备份 PVC 标记 `helm.sh/resource-policy: keep`，关闭备份或卸载 Chart 不会自动删除已有归档，后续清理须由运维显式处理。
+
+两个部署入口均可关闭备份：Compose 设置 `MULTICA_BACKUP_ENABLED=false`，Helm 设置 `backend.backups.enabled=false`。宿主机直接运行服务时默认目录仍为工作目录下的 `backups`，需自行将该目录纳入持久存储或定期转存；备份卷与数据库卷应独立保存，灾难恢复时先从备份卷取出归档再按下述步骤操作。
 
 ## 恢复操作手册（从备份包恢复）
 
