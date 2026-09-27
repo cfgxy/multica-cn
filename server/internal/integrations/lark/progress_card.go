@@ -55,8 +55,10 @@ const (
 	// (already spent on the reply) can never cover.
 	progressFinalBudget = progressFinalAttempts * (progressRateLimitBackoff + progressFinalSendTimeout)
 
-	// progressFinalAttempts is how many times the terminal frame is retried
-	// when Lark keeps answering with a rate limit.
+	// progressFinalAttempts bounds how many times the terminal frame is
+	// attempted: every failure class consumes the budget (the write is an
+	// idempotent full-card PATCH), while the waits between attempts come
+	// only from the rate-limit backoff write() arms.
 	progressFinalAttempts = 3
 
 	// progressScheduleIdleTTL / progressMaxSchedules bound the per-chat
@@ -525,6 +527,13 @@ func (pc *progressCards) push(ctx context.Context, e events.Event, entry Progres
 // pending interval or backoff in full rather than dropping, because this is
 // the frame that tells the reader the card has stopped. A task with no card —
 // a short run that produced no progress frame, or a non-Lark task — is a no-op.
+// progressFinalizeAfterCardRead, when non-nil, fires once finalize has judged
+// hasCard under card.mu. Test-only seam: that judgment is deliberately not
+// ordered against the chat's write slot (the slot is what a first-frame send
+// holds for its whole POST), so no lock-ordered test double can pin when it
+// happened — the seam is what makes the send-vs-finalize race observable.
+var progressFinalizeAfterCardRead func()
+
 func (pc *progressCards) finalize(ctx context.Context, taskID, chatSessionID pgtype.UUID, state ProgressState) error {
 	taskKey := uuidString(taskID)
 	card := pc.lookup(taskKey)
@@ -544,6 +553,20 @@ func (pc *progressCards) finalize(ctx context.Context, taskID, chatSessionID pgt
 		return nil
 	}
 	card.finalized = true
+	card.mu.Unlock()
+	if progressFinalizeAfterCardRead != nil {
+		progressFinalizeAfterCardRead()
+	}
+
+	card.schedule.mu.Lock()
+	defer card.schedule.mu.Unlock()
+	// The pre-lock finalized flag was set without the chat's write slot, and
+	// a first-frame send holds that slot for its whole POST — writing
+	// cardMessageID only after it returns. Judging hasCard back there could
+	// read the intermediate empty state and drop the terminal frame behind a
+	// card that is about to appear, so the judgment is repeated here, where
+	// holding the slot guarantees every in-flight send has finished.
+	card.mu.Lock()
 	hasCard := card.cardMessageID != ""
 	card.mu.Unlock()
 	if !hasCard {
@@ -553,16 +576,18 @@ func (pc *progressCards) finalize(ctx context.Context, taskID, chatSessionID pgt
 		return nil
 	}
 
-	card.schedule.mu.Lock()
-	defer card.schedule.mu.Unlock()
 	for attempt := 0; attempt < progressFinalAttempts; attempt++ {
 		if wait := card.schedule.waitFor(pc.p.cfg.Now()); wait > 0 {
 			if werr := pc.p.cfg.Wait(ctx, wait); werr != nil {
 				break
 			}
 		}
-		err = pc.write(ctx, card, target, chatSessionID, state)
-		if err == nil || !isLarkRateLimited(err) {
+		// The final write is a full-card PATCH replacement keyed by the
+		// message id, so retrying after any failure is idempotent — the
+		// attempt budget belongs to the frame landing, not to one error
+		// class. The waits between attempts still come only from rate
+		// limits: write() arms that backoff, and waitFor surfaces it in full.
+		if err = pc.write(ctx, card, target, chatSessionID, state); err == nil {
 			break
 		}
 	}
