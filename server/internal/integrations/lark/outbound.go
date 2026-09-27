@@ -349,7 +349,10 @@ func (p *Patcher) Register(bus *events.Bus) {
 func (p *Patcher) handleEvent(e events.Event) {
 	// Use a fresh background ctx with a tight timeout: bus delivery is
 	// synchronous so a stuck Lark HTTP call would otherwise wedge the
-	// whole publish call site.
+	// whole publish call site. The terminal progress-card frame is the one
+	// deliberate exception: it finalizes on its own bounded budget
+	// (finalizeLater) because its retry schedule must outlive rate-limit
+	// backoffs this event budget cannot cover.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := p.processEvent(ctx, e); err != nil {
@@ -398,7 +401,8 @@ func (p *Patcher) processEvent(ctx context.Context, e events.Event) error {
 		// A cancelled run leaves a running progress card on screen with nothing
 		// behind it, so its last frame is the one that says so. No-op when the
 		// run never produced a card.
-		return p.progress.finalize(ctx, taskID, chatSessionID, ProgressStateCancelled)
+		p.progress.finalizeLater(taskID, chatSessionID, ProgressStateCancelled)
+		return nil
 	}
 
 	target, err := p.resolveOutboundTarget(ctx, taskID)
@@ -416,8 +420,9 @@ func (p *Patcher) processEvent(ctx context.Context, e events.Event) error {
 	}
 
 	// The answer goes out FIRST, then the card is stopped: the terminal card
-	// frame may have to wait out a rate-limit backoff, and the reply must not
-	// inherit that latency.
+	// frame may have to wait out a rate-limit backoff, and neither the reply
+	// nor this synchronous publish call site must inherit that latency — so
+	// the stop runs on finalizeLater's own budget.
 	switch e.Type {
 	case protocol.EventChatDone:
 		replyErr := p.sendChatReply(ctx, target.creds, target.binding, e.Payload)
@@ -430,12 +435,12 @@ func (p *Patcher) processEvent(ctx context.Context, e events.Event) error {
 		if p.mayCarryAttachments(e) {
 			p.deliverAttachments(e, attachmentTarget{Creds: target.creds, Binding: target.binding})
 		}
-		finalErr := p.progress.finalize(ctx, taskID, chatSessionID, ProgressStateCompleted)
-		return errors.Join(replyErr, finalErr)
+		p.progress.finalizeLater(taskID, chatSessionID, ProgressStateCompleted)
+		return replyErr
 	case protocol.EventTaskFailed:
 		failErr := p.fail(ctx, target.creds, target.binding, taskID, target.agentName, e.Payload)
-		finalErr := p.progress.finalize(ctx, taskID, chatSessionID, ProgressStateFailed)
-		return errors.Join(failErr, finalErr)
+		p.progress.finalizeLater(taskID, chatSessionID, ProgressStateFailed)
+		return failErr
 	}
 	return nil
 }

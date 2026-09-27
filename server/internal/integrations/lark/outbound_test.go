@@ -106,6 +106,11 @@ type fakeAPIClient struct {
 	sendReturn     string
 	sendErr        error
 	patchErr       error
+	// patchRateLimitFailures, when > 0, makes the next N patch attempts
+	// answer with a 230020 rate limit. Unlike patchErr it needs no mid-run
+	// mutation — which a finalize running outside the event's goroutine
+	// makes impossible to interleave with.
+	patchRateLimitFailures int
 	textSendErr    error
 	textSendReturn string
 	mdCardErr      error
@@ -160,6 +165,10 @@ func (f *fakeAPIClient) PatchInteractiveCard(ctx context.Context, p PatchCardPar
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.patched = append(f.patched, p)
+	if f.patchRateLimitFailures > 0 {
+		f.patchRateLimitFailures--
+		return &APIError{Op: "patch interactive card", Code: larkRateLimitCode, Msg: "rate limited (scripted)"}
+	}
 	return f.patchErr
 }
 func (f *fakeAPIClient) SendTextMessage(ctx context.Context, p SendTextParams) (string, error) {

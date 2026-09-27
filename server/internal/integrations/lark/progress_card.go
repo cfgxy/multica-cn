@@ -39,13 +39,21 @@ const (
 
 	// progressRateLimitBackoff is how long a chat stays silent after Lark
 	// answered a write with a rate-limit code. Intermediate frames inside the
-	// window are dropped; a terminal frame waits instead (bounded below).
+	// window are dropped; a terminal frame waits instead.
 	progressRateLimitBackoff = 10 * time.Second
 
-	// progressFinalMaxWait bounds how long the terminal frame may wait for the
-	// interval or a backoff to elapse. The final frame must LAND, so after the
-	// bounded wait it is attempted regardless.
-	progressFinalMaxWait = 5 * time.Second
+	// progressFinalSendTimeout bounds one terminal-frame Lark call inside the
+	// dedicated finalization budget below.
+	progressFinalSendTimeout = 5 * time.Second
+
+	// progressFinalBudget is the terminal frame's own context budget, derived
+	// from its retry schedule instead of the event's: up to
+	// progressFinalAttempts attempts, each behind a wait as long as the full
+	// rate-limit backoff, plus the call. The final frame must LAND, and a
+	// retry fired inside a re-armed penalty window can never succeed, so the
+	// waits run in full — which is exactly the time the shared event budget
+	// (already spent on the reply) can never cover.
+	progressFinalBudget = progressFinalAttempts * (progressRateLimitBackoff + progressFinalSendTimeout)
 
 	// progressFinalAttempts is how many times the terminal frame is retried
 	// when Lark keeps answering with a rate limit.
@@ -260,9 +268,10 @@ type progressSchedule struct {
 	idleSince time.Time
 }
 
-// waitFor is how long the caller must wait before writing, bounded by
-// progressFinalMaxWait. Intermediate frames treat a non-zero result as "drop";
-// the terminal frame waits it out.
+// waitFor is how long the caller must wait before writing. Intermediate
+// frames treat a non-zero result as "drop"; the terminal frame waits it out
+// in full — every failed attempt re-arms the backoff, so a wait clamped below
+// the debt would keep probing inside the penalty window and never land.
 func (s *progressSchedule) waitFor(now time.Time) time.Duration {
 	wait := time.Duration(0)
 	if d := s.lastWrite.Add(progressPatchInterval).Sub(now); d > wait {
@@ -270,9 +279,6 @@ func (s *progressSchedule) waitFor(now time.Time) time.Duration {
 	}
 	if d := s.backoffTill.Sub(now); d > wait {
 		wait = d
-	}
-	if wait > progressFinalMaxWait {
-		wait = progressFinalMaxWait
 	}
 	if wait < 0 {
 		wait = 0
@@ -343,6 +349,9 @@ type progressCards struct {
 	mu        sync.Mutex
 	cards     map[string]*progressCard     // key: task id string
 	schedules map[string]*progressSchedule // key: real Lark chat id
+
+	// wg tracks in-flight finalizeLater goroutines so tests can join them.
+	wg sync.WaitGroup
 }
 
 func newProgressCards(p *Patcher) *progressCards {
@@ -513,7 +522,7 @@ func (pc *progressCards) push(ctx context.Context, e events.Event, entry Progres
 }
 
 // finalize writes the card's last frame and drops its state. It waits out a
-// pending interval or backoff (bounded) rather than dropping, because this is
+// pending interval or backoff in full rather than dropping, because this is
 // the frame that tells the reader the card has stopped. A task with no card —
 // a short run that produced no progress frame, or a non-Lark task — is a no-op.
 func (pc *progressCards) finalize(ctx context.Context, taskID, chatSessionID pgtype.UUID, state ProgressState) error {
@@ -559,6 +568,37 @@ func (pc *progressCards) finalize(ctx context.Context, taskID, chatSessionID pgt
 	}
 	return err
 }
+
+// finalizeLater runs finalize on a dedicated context of progressFinalBudget,
+// off the event ctx. Bus delivery is synchronous, so charging the terminal
+// retry schedule (up to progressFinalAttempts full rate-limit backoffs) to
+// the event ctx either starves the schedule — the ctx dies mid-wait and the
+// terminal frame never lands — or extends the synchronous publish call site
+// by the whole budget. The answer goes out first on the event ctx and stays
+// latency-free; the card converges right behind it, bounded by
+// progressFinalBudget. Process exit can drop an in-flight finalization — a
+// narrower window than the backoff debt the event-ctx version already could
+// not cover.
+func (pc *progressCards) finalizeLater(taskID, chatSessionID pgtype.UUID, state ProgressState) {
+	pc.wg.Add(1)
+	go func() {
+		defer pc.wg.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), progressFinalBudget)
+		defer cancel()
+		if err := pc.finalize(ctx, taskID, chatSessionID, state); err != nil {
+			pc.p.cfg.Logger.Warn("lark progress card: final frame failed",
+				"task_id", uuidString(taskID),
+				"chat_session_id", uuidString(chatSessionID),
+				"error", err,
+			)
+		}
+	}()
+}
+
+// waitIdle blocks until every finalizeLater goroutine has settled. Test-only:
+// assertions on terminal frames must observe the goroutine, not just the
+// event delivery.
+func (pc *progressCards) waitIdle() { pc.wg.Wait() }
 
 // write renders the current snapshot and pushes it to Lark. The caller holds
 // the chat schedule lock, so exactly one write per chat is in flight.

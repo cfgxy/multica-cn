@@ -32,11 +32,21 @@ type progressClock struct {
 	// waited records every scheduler wait, so the rate-limit test can prove the
 	// final frame waited out the backoff instead of being dropped.
 	waited []time.Duration
+	// deadlines models per-context budgets: a Wait that would outlive the
+	// registered deadline fails with context.DeadlineExceeded, the way the
+	// production progressWait fails when the event ctx dies mid-sleep. Nil
+	// for tests that do not model budget exhaustion — the default Wait this
+	// type shipped with never fails, which is exactly how the ctx-death path
+	// stayed untested.
+	deadlines map[context.Context]time.Time
 }
 
 func (c *progressClock) Now() time.Time { return c.now }
 
-func (c *progressClock) Wait(_ context.Context, d time.Duration) error {
+func (c *progressClock) Wait(ctx context.Context, d time.Duration) error {
+	if dl, ok := c.deadlines[ctx]; ok && c.now.Add(d).After(dl) {
+		return context.DeadlineExceeded
+	}
 	c.waited = append(c.waited, d)
 	c.now = c.now.Add(d)
 	return nil
@@ -194,6 +204,7 @@ func TestProgressCardSendsFirstFrameThenPatches(t *testing.T) {
 			TaskID: taskID, ChatSessionID: sessionID, Content: "here is the answer",
 		},
 	})
+	p.progress.waitIdle()
 
 	api.mu.Lock()
 	defer api.mu.Unlock()
@@ -296,6 +307,7 @@ func TestProgressCardFinalFrameLandsAfterPatchFailure(t *testing.T) {
 			TaskID: taskID, ChatSessionID: sessionID, Content: "answer after failure",
 		},
 	})
+	p.progress.waitIdle()
 
 	api.mu.Lock()
 	defer api.mu.Unlock()
@@ -351,6 +363,7 @@ func TestProgressCardFinalFrameSurvivesRateLimit(t *testing.T) {
 			TaskID: taskID, ChatSessionID: sessionID, Content: "answer under rate limit",
 		},
 	})
+	p.progress.waitIdle()
 
 	if len(clock.waited) == 0 {
 		t.Fatalf("terminal frame must wait out the backoff instead of dropping")
@@ -363,6 +376,68 @@ func TestProgressCardFinalFrameSurvivesRateLimit(t *testing.T) {
 	last := api.patched[len(api.patched)-1].CardJSON
 	if !strings.Contains(last, "已完成") {
 		t.Fatalf("terminal frame must land after backoff; got %s", last)
+	}
+}
+
+// TestProgressCardFinalFrameLandsUnderBackoffDebtAndSharedBudget reproduces
+// the injected-QA shape neither final-frame test above covers: a process
+// frame armed the 10s rate-limit backoff, and by the time chat:done arrives
+// the shared event budget is nearly spent — the reply send consumed it, which
+// is why QA measured POST /complete at 10.0s. The clock here honors a ctx
+// deadline the way production progressWait does, so a wait that outlives the
+// shared budget fails instead of silently succeeding. The terminal frame must
+// still land: its retries wait out the full re-armed backoff (a probe fired
+// early always lands inside the penalty window) on a budget that is not the
+// event's.
+func TestProgressCardFinalFrameLandsUnderBackoffDebtAndSharedBudget(t *testing.T) {
+	p, q, api, clock := newProgressTestPatcher(t)
+	taskID := "ee777777-ee77-ee77-ee77-eeeeeeeeeeee"
+	sessionID := uuidString(q.binding.ChatSessionID)
+
+	p.handleTaskMessage(progressFrame(taskID, sessionID, 1, protocol.TaskMessagePayload{
+		Type: "text", Content: "first",
+	}))
+	// The second frame trips the rate limit and arms the backoff debt, and
+	// the terminal frame's first attempt trips again (re-arming it) — the
+	// state the QA injection left behind on the card's schedule.
+	api.mu.Lock()
+	api.patchRateLimitFailures = 2
+	api.mu.Unlock()
+	clock.now = clock.now.Add(2 * time.Second)
+	p.handleTaskMessage(progressFrame(taskID, sessionID, 2, protocol.TaskMessagePayload{
+		Type: "text", Content: "second",
+	}))
+
+	// chat:done arrives 2s later, with 4s of event budget left and 8s of
+	// backoff debt outstanding.
+	clock.now = clock.now.Add(2 * time.Second)
+	shared, done := context.WithCancel(context.Background())
+	defer done()
+	clock.deadlines = map[context.Context]time.Time{shared: clock.now.Add(4 * time.Second)}
+	_ = p.processEvent(shared, events.Event{
+		Type:          protocol.EventChatDone,
+		TaskID:        taskID,
+		ChatSessionID: sessionID,
+		Payload: protocol.ChatDonePayload{
+			TaskID: taskID, ChatSessionID: sessionID, Content: "answer under debt",
+		},
+	})
+	p.progress.waitIdle()
+
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.textSent) != 1 || api.textSent[0].Text != "answer under debt" {
+		t.Fatalf("answer must land regardless of the card's backoff debt; textSent=%+v", api.textSent)
+	}
+	if len(api.patched) < 2 {
+		t.Fatalf("terminal frame must be attempted after the debt wait; patched=%d", len(api.patched))
+	}
+	last := api.patched[len(api.patched)-1].CardJSON
+	if !strings.Contains(last, "已完成") {
+		t.Fatalf("terminal frame must land despite backoff debt plus a spent shared budget; got %s", last)
+	}
+	if len(clock.waited) != 2 || clock.waited[0] != 8*time.Second || clock.waited[1] != progressRateLimitBackoff {
+		t.Fatalf("terminal retries must wait out the full re-armed backoff; got waits %v", clock.waited)
 	}
 }
 
