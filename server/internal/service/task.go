@@ -3965,6 +3965,15 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 
 	// 6. Claim per distinct agent through the runtime-scoped helper, preserving
 	// per-(issue, agent) serialization, capacity caps, and dispatch side effects.
+	// RUYI-224: pass an empty runtimeID so claimTask resolves the agent's
+	// CURRENT binding as the claim runtime. The step-4 candidate fence already
+	// guarantees that binding is in the polled set; the row's persisted
+	// runtime_id may still point at an older runtime (a rebind between the
+	// candidate SELECT and this claim, or a row stranded by a torn rebind),
+	// and claiming by that stale value would bounce off the service-side
+	// runtime_mismatch fence and strand the row forever. The SQL claim
+	// rewrites the row onto the resolved runtime; the runtimeInSet guard below
+	// keeps the routing contract.
 	triedAgents := make(map[string]struct{}, len(candidates))
 	for i := range candidates {
 		if len(claimed) >= maxTasks {
@@ -3976,7 +3985,7 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 		}
 		triedAgents[agentKey] = struct{}{}
 
-		task, err := s.claimTask(ctx, candidates[i].AgentID, candidates[i].RuntimeID)
+		task, err := s.claimTask(ctx, candidates[i].AgentID, pgtype.UUID{})
 		if err != nil {
 			// Each scoped claim commits in its own transaction, so earlier
 			// iterations (and step-2 reclaims) are already dispatched
@@ -6876,6 +6885,15 @@ func priorityToInt(p string) int32 {
 func (s *TaskService) NotifyTaskEnqueued(ctx context.Context, task db.AgentTaskQueue) {
 	s.captureTaskQueued(ctx, task)
 	s.notifyTaskAvailable(task)
+}
+
+// NotifyRuntimeMayHaveWork invalidates a runtime's empty-claim verdict and
+// kicks its daemon WS without a task row. RUYI-224: called after an agent
+// rebind commits its queued/deferred queue migration, so the NEW runtime's
+// daemon wakes (and any cached "no queued task" verdict for it dies) instead
+// of idling until the empty-claim TTL expires with stranded work waiting.
+func (s *TaskService) NotifyRuntimeMayHaveWork(runtimeID pgtype.UUID) {
+	s.notifyRuntimeMayHaveWork(runtimeID, "")
 }
 
 // NotifyTaskFinished invalidates a runtime's empty-claim verdict and emits a
