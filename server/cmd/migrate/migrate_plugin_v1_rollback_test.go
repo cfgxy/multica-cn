@@ -44,17 +44,6 @@ var pluginV1UpVersions = []string{
 	"326_plugin_remote_mcp_oauth_state_expiry_index",
 }
 
-// pluginV1RollbackExclusions lists batch members whose down direction cannot
-// be made safe in SQL. 312 rebuilds idx_plugin_identity_key with CREATE UNIQUE
-// INDEX CONCURRENTLY, which the repository requires to stay a single-statement
-// migration, so it cannot carry a relation guard and still fails once 344 has
-// removed plugin_identity. Skipping the deleted table there needs a
-// down-direction condition in the runner, which is a runner change rather than
-// a migration change.
-var pluginV1RollbackExclusions = map[string]bool{
-	"312_drop_global_plugin_identity_key_index": true,
-}
-
 // TestPluginV1RollbackAfterPluginV2Reset covers the database shape where
 // migration 344 has already dropped the V1 plugin schema: the batch keeps its
 // schema_migrations rows while every object it created is gone. Rolling back
@@ -91,13 +80,11 @@ func TestPluginV1RollbackAfterPluginV2Reset(t *testing.T) {
 
 	downVersions := []string{"344_plugin_v2_reset"}
 	for i := len(pluginV1UpVersions) - 1; i >= 0; i-- {
-		if pluginV1RollbackExclusions[pluginV1UpVersions[i]] {
-			continue
-		}
 		downVersions = append(downVersions, pluginV1UpVersions[i])
 	}
 	options.Direction = "down"
 	options.Hooks = hooksForDirection("down")
+	options.Conditions = conditionsForDirection("down")
 	options.Files = realMigrationFiles(t, downVersions, "down")
 	if err := runMigrations(ctx, pool, options); err != nil {
 		t.Fatalf("roll back plugin batch on a database already reset by 344: %v", err)
@@ -106,7 +93,59 @@ func TestPluginV1RollbackAfterPluginV2Reset(t *testing.T) {
 	for _, version := range downVersions {
 		assertMigrationVersionRecorded(t, ctx, pool, schema, version, false)
 	}
+	assertRelationExists(t, ctx, pool, "idx_plugin_identity_key", false)
 	assertColumnExists(t, ctx, pool, "agent_task_queue", "plugin_execution_manifest_id", false)
+}
+
+func TestPluginIdentityIndexRollbackWithV1Table(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	defer cancel()
+
+	schema, pool := createPluginV1Fixture(t, ctx)
+	options := runOptions{
+		Direction:             "up",
+		SchemaMigrationsTable: schema + ".schema_migrations",
+		AdvisoryLockKey:       int64(rand.Uint64()&0x7fffffffffffffff) | 1,
+		Hooks:                 hooksForDirection("up"),
+		Conditions:            conditionsForDirection("up"),
+		Files:                 realMigrationFiles(t, pluginV1UpVersions, "up"),
+	}
+	if err := runMigrations(ctx, pool, options); err != nil {
+		t.Fatalf("apply plugin V1 index migrations: %v", err)
+	}
+	assertRelationExists(t, ctx, pool, "plugin_identity", true)
+	assertRelationExists(t, ctx, pool, "idx_plugin_identity_key", false)
+
+	options.Direction = "down"
+	options.Hooks = hooksForDirection("down")
+	options.Conditions = conditionsForDirection("down")
+	options.Files = realMigrationFiles(t, []string{"312_drop_global_plugin_identity_key_index"}, "down")
+	if err := runMigrations(ctx, pool, options); err != nil {
+		t.Fatalf("roll back 312 with V1 table: %v", err)
+	}
+	assertMigrationVersionRecorded(t, ctx, pool, schema, "312_drop_global_plugin_identity_key_index", false)
+
+	var valid, unique bool
+	if err := pool.QueryRow(ctx, `
+		SELECT i.indisvalid, i.indisunique
+		FROM pg_index i
+		WHERE i.indexrelid = to_regclass('idx_plugin_identity_key')
+	`).Scan(&valid, &unique); err != nil {
+		t.Fatalf("inspect restored plugin identity index: %v", err)
+	}
+	if !valid || !unique {
+		t.Fatalf("restored plugin identity index: valid=%v unique=%v, want both true", valid, unique)
+	}
+
+	options.Direction = "up"
+	options.Hooks = hooksForDirection("up")
+	options.Conditions = conditionsForDirection("up")
+	options.Files = realMigrationFiles(t, []string{"312_drop_global_plugin_identity_key_index"}, "up")
+	if err := runMigrations(ctx, pool, options); err != nil {
+		t.Fatalf("reapply 312 after rollback: %v", err)
+	}
+	assertMigrationVersionRecorded(t, ctx, pool, schema, "312_drop_global_plugin_identity_key_index", true)
+	assertRelationExists(t, ctx, pool, "idx_plugin_identity_key", false)
 }
 
 // TestPluginRemoteMCPOAuthRollbackRemovesOAuthState covers the other database

@@ -426,6 +426,12 @@ var upMigrationConditions = map[string]migrationCondition{
 	"446_issue_properties_bigm_index": whenOperatorClassAvailable(issuePropertiesBigramOperatorClass),
 }
 
+var downMigrationConditions = map[string]migrationCondition{
+	// 344 removes the V1 table without restoring it on rollback. Rebuild the
+	// global index concurrently only if the table still exists at 312.
+	"312_drop_global_plugin_identity_key_index": whenTableExists("plugin_identity"),
+}
+
 func hooksForDirection(direction string) map[string]preMigrationHook {
 	switch direction {
 	case "up":
@@ -453,12 +459,32 @@ func ensureSourceContextRollbackSafe(ctx context.Context, pool *pgxpool.Pool) er
 }
 
 func conditionsForDirection(direction string) map[string]migrationCondition {
-	if direction == "up" {
+	switch direction {
+	case "up":
 		return upMigrationConditions
+	case "down":
+		return downMigrationConditions
+	default:
+		return nil
 	}
-	// Rollbacks intentionally ignore environment gates: they restore the
-	// portable pre-migration schema regardless of which up SQL actually ran.
-	return nil
+}
+
+func whenTableExists(table string) migrationCondition {
+	return func(ctx context.Context, conn *pgxpool.Conn) (bool, string, error) {
+		var exists bool
+		if err := conn.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM pg_class
+				WHERE oid = to_regclass($1) AND relkind IN ('r', 'p')
+			)
+		`, table).Scan(&exists); err != nil {
+			return false, "", fmt.Errorf("inspect table %q: %w", table, err)
+		}
+		if !exists {
+			return false, fmt.Sprintf("table %s does not exist", table), nil
+		}
+		return true, "", nil
+	}
 }
 
 func whenIndexUsable(requirement usableIndexRequirement) migrationCondition {
