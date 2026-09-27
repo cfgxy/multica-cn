@@ -1622,19 +1622,20 @@ const claimAgentTask = `-- name: ClaimAgentTask :one
 UPDATE agent_task_queue
 SET status = 'dispatched',
     dispatched_at = now(),
-    prepare_lease_expires_at = now() + make_interval(secs => $1::double precision)
+    prepare_lease_expires_at = now() + make_interval(secs => $1::double precision),
+    runtime_id = $2
 WHERE id = (
     SELECT atq.id FROM agent_task_queue atq
-    WHERE atq.agent_id = $2
-      AND atq.runtime_id = $3
+    WHERE atq.agent_id = $3
       AND atq.status = 'queued'
       AND EXISTS (
           SELECT 1
           FROM agent a
-          JOIN agent_runtime r ON r.id = atq.runtime_id
+          JOIN agent_runtime r ON r.id = $2
           WHERE a.id = atq.agent_id
-            -- A task's persisted runtime is not authority after an agent rebind.
-            AND a.runtime_id = atq.runtime_id
+            -- The claiming runtime must be the agent's current binding; an
+            -- unbound agent (NULL runtime) never matches.
+            AND a.runtime_id = $2
             -- Private runtimes only execute their owner's agents. Ownerless
             -- runtime/agent rows remain claimable only so the handler can
             -- settle them explicitly before daemon delivery; filtering them
@@ -1676,13 +1677,14 @@ WHERE id = (
     LIMIT 1
     FOR UPDATE SKIP LOCKED
 )
+AND lock_task_owner_rows($3, NULL, $2)
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, prompt_versions
 `
 
 type ClaimAgentTaskParams struct {
 	PrepareLeaseSecs float64     `json:"prepare_lease_secs"`
-	AgentID          pgtype.UUID `json:"agent_id"`
 	RuntimeID        pgtype.UUID `json:"runtime_id"`
+	AgentID          pgtype.UUID `json:"agent_id"`
 	RuntimeStaleSecs float64     `json:"runtime_stale_secs"`
 }
 
@@ -1696,11 +1698,24 @@ type ClaimAgentTaskParams struct {
 // "any other quick-create-shaped task" (all four FKs NULL) for the same agent —
 // otherwise a user mashing the create button could fire concurrent quick-creates
 // whose completion lookup would race over "most recent issue by this agent".
+//
+// The agent's CURRENT runtime binding is the claim authority (RUYI-224): the
+// eligibility fence and every runtime check below evaluate the runtime the
+// daemon is polling, which the service layer has already matched against
+// agent.runtime_id. A task's persisted runtime_id is NOT part of the fence —
+// a row stranded on the old runtime by a rebind (or a torn rebind
+// transaction) is claimed here and REWRITTEN to the claiming runtime, so the
+// column converges on "runtime that actually took the task".
+// Fenced against workspace teardown / legacy runtime merge (migration 284):
+// the writeback pins the row onto the claiming runtime, so this is an
+// ownership write and must re-verify the agent + runtime owner rows like
+// every other one. A lost race (an owner row already deleted) yields no
+// row — the same "nothing to claim" outcome as an empty candidate scan.
 func (q *Queries) ClaimAgentTask(ctx context.Context, arg ClaimAgentTaskParams) (AgentTaskQueue, error) {
 	row := q.db.QueryRow(ctx, claimAgentTask,
 		arg.PrepareLeaseSecs,
-		arg.AgentID,
 		arg.RuntimeID,
+		arg.AgentID,
 		arg.RuntimeStaleSecs,
 	)
 	var i AgentTaskQueue
@@ -6346,15 +6361,13 @@ func (q *Queries) ListPendingTasksByRuntime(ctx context.Context, runtimeID pgtyp
 
 const listQueuedClaimCandidatesByRuntime = `-- name: ListQueuedClaimCandidatesByRuntime :many
 SELECT atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority, atq.dispatched_at, atq.started_at, atq.completed_at, atq.result, atq.error, atq.created_at, atq.context, atq.runtime_id, atq.session_id, atq.work_dir, atq.trigger_comment_id, atq.chat_session_id, atq.autopilot_run_id, atq.attempt, atq.max_attempts, atq.parent_task_id, atq.failure_reason, atq.trigger_summary, atq.force_fresh_session, atq.is_leader_task, atq.wait_reason, atq.initiator_user_id, atq.handoff_note, atq.prepare_lease_expires_at, atq.squad_id, atq.runtime_mcp_overlay, atq.escalation_for_task_id, atq.fire_at, atq.originator_user_id, atq.runtime_connected_apps, atq.coalesced_comment_ids, atq.delivered_comment_ids, atq.chat_input_task_id, atq.chat_finalize_deferred_at, atq.originator_source, atq.delegated_from_task_id, atq.retry_of_task_id, atq.rerun_of_task_id, atq.rule_version_id, atq.trigger_evidence_kind, atq.trigger_evidence_ref_id, atq.accountable_user_id, atq.session_rollout_missing, atq.retired_session_id, atq.quick_actions_disabled, atq.regenerate_quick_actions_for, atq.branch_name, atq.durable_work_dir, atq.channel_context_revision, atq.prompt_versions FROM agent_task_queue atq
-WHERE atq.runtime_id = $1
-  AND atq.status = 'queued'
+WHERE atq.status = 'queued'
   AND EXISTS (
-      -- Keep this authorization fence in sync with ClaimAgentTask.
       SELECT 1
       FROM agent a
-      JOIN agent_runtime r ON r.id = atq.runtime_id
+      JOIN agent_runtime r ON r.id = $1
       WHERE a.id = atq.agent_id
-        AND a.runtime_id = atq.runtime_id
+        AND a.runtime_id = $1
         AND (
             r.visibility = 'public'
             OR (
@@ -6376,10 +6389,18 @@ ORDER BY atq.priority DESC, atq.created_at ASC
 // and cannot be re-claimed — including them in the candidate list pads
 // the result with rows that always lose the per-(issue, agent) race in
 // ClaimAgentTask, wasting CPU and a SELECT every poll cycle when the
-// runtime is busy on a long-running task. Backed by the partial index
-// idx_agent_task_queue_claim_candidates so the warm path is cheap.
-func (q *Queries) ListQueuedClaimCandidatesByRuntime(ctx context.Context, runtimeID pgtype.UUID) ([]AgentTaskQueue, error) {
-	rows, err := q.db.Query(ctx, listQueuedClaimCandidatesByRuntime, runtimeID)
+// runtime is busy on a long-running task.
+//
+// RUYI-224: discovery follows the same authority as ClaimAgentTask — the
+// agent's CURRENT runtime binding, not the row's persisted runtime_id. A row
+// stranded on an old runtime by a rebind (or a torn rebind transaction)
+// surfaces here for the runtime the agent actually uses now; the claim then
+// rewrites the row onto the claiming runtime. Unlike the old runtime_id = $1
+// filter this cannot use idx_agent_task_queue_claim_candidates for narrowing,
+// but the 'queued' partial index keeps the scanned set bounded by current
+// queue depth, which is small by construction.
+func (q *Queries) ListQueuedClaimCandidatesByRuntime(ctx context.Context, id pgtype.UUID) ([]AgentTaskQueue, error) {
+	rows, err := q.db.Query(ctx, listQueuedClaimCandidatesByRuntime, id)
 	if err != nil {
 		return nil, err
 	}
@@ -6456,15 +6477,13 @@ func (q *Queries) ListQueuedClaimCandidatesByRuntime(ctx context.Context, runtim
 
 const listQueuedClaimCandidatesByRuntimes = `-- name: ListQueuedClaimCandidatesByRuntimes :many
 SELECT atq.id, atq.agent_id, atq.issue_id, atq.status, atq.priority, atq.dispatched_at, atq.started_at, atq.completed_at, atq.result, atq.error, atq.created_at, atq.context, atq.runtime_id, atq.session_id, atq.work_dir, atq.trigger_comment_id, atq.chat_session_id, atq.autopilot_run_id, atq.attempt, atq.max_attempts, atq.parent_task_id, atq.failure_reason, atq.trigger_summary, atq.force_fresh_session, atq.is_leader_task, atq.wait_reason, atq.initiator_user_id, atq.handoff_note, atq.prepare_lease_expires_at, atq.squad_id, atq.runtime_mcp_overlay, atq.escalation_for_task_id, atq.fire_at, atq.originator_user_id, atq.runtime_connected_apps, atq.coalesced_comment_ids, atq.delivered_comment_ids, atq.chat_input_task_id, atq.chat_finalize_deferred_at, atq.originator_source, atq.delegated_from_task_id, atq.retry_of_task_id, atq.rerun_of_task_id, atq.rule_version_id, atq.trigger_evidence_kind, atq.trigger_evidence_ref_id, atq.accountable_user_id, atq.session_rollout_missing, atq.retired_session_id, atq.quick_actions_disabled, atq.regenerate_quick_actions_for, atq.branch_name, atq.durable_work_dir, atq.channel_context_revision, atq.prompt_versions FROM agent_task_queue atq
-WHERE atq.runtime_id = ANY($1::uuid[])
-  AND atq.status = 'queued'
+WHERE atq.status = 'queued'
   AND EXISTS (
-      -- Keep this authorization fence in sync with ClaimAgentTask.
       SELECT 1
       FROM agent a
-      JOIN agent_runtime r ON r.id = atq.runtime_id
+      JOIN agent_runtime r ON r.id = a.runtime_id
       WHERE a.id = atq.agent_id
-        AND a.runtime_id = atq.runtime_id
+        AND a.runtime_id = ANY($1::uuid[])
         AND (
             r.visibility = 'public'
             OR (
@@ -6484,11 +6503,11 @@ ORDER BY atq.priority DESC, atq.created_at ASC
 // queued claim candidates across every runtime_id in the input set in ONE round
 // trip, so a daemon can list candidates for all of its runtimes with a single
 // query instead of one per runtime. Ordering matches the singular query
-// (priority, then FIFO) so the batch claim loop keeps the same fairness. The
-// runtime_id filter is served by the partial index
-// idx_agent_task_queue_claim_candidates; the cross-runtime ORDER BY still needs
-// a sort step (each runtime's slice is index-ordered, but merging several
-// runtimes' rows into one priority/FIFO order is not). The per-machine
+// (priority, then FIFO) so the batch claim loop keeps the same fairness.
+// RUYI-224: like the singular query, discovery keys on the agent's CURRENT
+// runtime binding (r = the runtime in the set the agent is bound to), so rows
+// stranded on an old runtime are surfaced for the runtime the agent uses now.
+// The cross-runtime ORDER BY still needs a sort step; the per-machine
 // candidate set is small, so this is cheap in practice.
 func (q *Queries) ListQueuedClaimCandidatesByRuntimes(ctx context.Context, runtimeIds []pgtype.UUID) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, listQueuedClaimCandidatesByRuntimes, runtimeIds)
@@ -7469,6 +7488,53 @@ func (q *Queries) MergeDelegatedFailureCommentIntoPendingTask(ctx context.Contex
 	return i, err
 }
 
+const migrateAgentTaskQueueOnRuntimeRebind = `-- name: MigrateAgentTaskQueueOnRuntimeRebind :execrows
+UPDATE agent_task_queue
+SET runtime_id = $1
+WHERE agent_id = $2
+  AND status IN ('queued', 'deferred')
+  AND runtime_id <> $1
+  -- Fenced against workspace teardown / legacy runtime merge (migration 284):
+  -- this is a runtime_id ownership write. Key-share locks on the agent and
+  -- the NEW runtime serialize against a teardown or a merge deleting either;
+  -- a lost race migrates 0 rows and the rebind transaction commits an agent
+  -- row the fence has proven still resolvable.
+  AND lock_task_owner_rows($2, NULL, $1)
+`
+
+type MigrateAgentTaskQueueOnRuntimeRebindParams struct {
+	NewRuntimeID pgtype.UUID `json:"new_runtime_id"`
+	AgentID      pgtype.UUID `json:"agent_id"`
+}
+
+// RUYI-224: runs in the SAME transaction as UpdateAgent when the update
+// rebinds the agent onto a different runtime. Claim eligibility follows the
+// agent's current runtime (ClaimAgentTask fences on it and rewrites the row
+// to the actual claimer), so a queued row left on the old runtime by a torn
+// rebind would be invisible to the new runtime's claim candidates and stuck
+// forever with no error and no log. Pre-execution rows therefore move with
+// the agent:
+//   - 'queued' — never handed to a daemon; safe to re-point.
+//   - 'deferred' — inert until the fire_at sweeper promotes it back to
+//     'queued' (PromoteDueDeferredTasksForRuntime), and that sweeper health-
+//     checks the ROW's runtime; migrating keeps promotion and the subsequent
+//     claim attached to the runtime the agent actually uses now.
+//
+// Everything else stays put: 'dispatched' / 'waiting_local_directory' /
+// 'running' rows are owned by the old runtime's daemon (it holds the task
+// token, the prepare lease and the delivered-comment CAS, all keyed on
+// runtime_id), and terminal rows are history. A dispatched-not-started row
+// stranded this way stops being re-deliverable once the fence notices the
+// agent moved — the same wedged-dispatch behavior as before this fix; the
+// stale-dispatch recovery machinery (MUL-4257) owns that path.
+func (q *Queries) MigrateAgentTaskQueueOnRuntimeRebind(ctx context.Context, arg MigrateAgentTaskQueueOnRuntimeRebindParams) (int64, error) {
+	result, err := q.db.Exec(ctx, migrateAgentTaskQueueOnRuntimeRebind, arg.NewRuntimeID, arg.AgentID)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const promoteDeferredChannelIssueTask = `-- name: PromoteDeferredChannelIssueTask :one
 UPDATE agent_task_queue
 SET status = 'queued', fire_at = NULL
@@ -7883,7 +7949,15 @@ WHERE id = (
       AND atq.dispatched_at < now() - make_interval(secs => $3::double precision)
       AND (atq.prepare_lease_expires_at IS NULL OR atq.prepare_lease_expires_at < now())
       AND EXISTS (
-          -- Keep this authorization fence in sync with ClaimAgentTask.
+          -- Authorization fence, kept in sync with ClaimAgentTask's RUYI-224
+          -- authority model: a dispatched row is owned by the runtime it was
+          -- claimed on (the claim rewrote runtime_id), so re-delivery stays
+          -- authorized only while that runtime is still the agent's CURRENT
+          -- binding — the outer runtime_id filter pins atq.runtime_id to the
+          -- polling runtime, making this fence "agent still bound here".
+          -- A row whose agent moved away is never re-delivered by the old
+          -- runtime; recovering that wedged dispatch is the stale-dispatch
+          -- machinery's job, not this fence's.
           SELECT 1
           FROM agent a
           JOIN agent_runtime r ON r.id = atq.runtime_id
@@ -8003,7 +8077,15 @@ WHERE id IN (
       AND atq.dispatched_at < now() - make_interval(secs => $3::double precision)
       AND (atq.prepare_lease_expires_at IS NULL OR atq.prepare_lease_expires_at < now())
       AND EXISTS (
-          -- Keep this authorization fence in sync with ClaimAgentTask.
+          -- Authorization fence, kept in sync with ClaimAgentTask's RUYI-224
+          -- authority model: a dispatched row is owned by the runtime it was
+          -- claimed on (the claim rewrote runtime_id), so re-delivery stays
+          -- authorized only while that runtime is still the agent's CURRENT
+          -- binding — the outer runtime_id filter pins atq.runtime_id to the
+          -- polling runtime, making this fence "agent still bound here".
+          -- A row whose agent moved away is never re-delivered by the old
+          -- runtime; recovering that wedged dispatch is the stale-dispatch
+          -- machinery's job, not this fence's.
           SELECT 1
           FROM agent a
           JOIN agent_runtime r ON r.id = atq.runtime_id
