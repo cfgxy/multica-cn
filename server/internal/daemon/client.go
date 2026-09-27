@@ -582,6 +582,29 @@ func (c *Client) RecoverOrphans(ctx context.Context, runtimeID string) error {
 	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/recover-orphans", runtimeID), map[string]any{}, nil)
 }
 
+// InFlightTask is one running/waiting_local_directory row the server still
+// attributes to a runtime, as returned by the in-flight list. WorkDir is the
+// session work_dir pinned by PinTaskSession — empty when the task never got
+// far enough to pin one (waiting_local_directory rows have no session yet).
+type InFlightTask struct {
+	ID          string `json:"id"`
+	WorkspaceID string `json:"workspace_id"`
+	Status      string `json:"status"`
+	WorkDir     string `json:"work_dir,omitempty"`
+}
+
+// ListInFlightTasks fetches the in-flight tasks the server still attributes
+// to runtimeID. The probe-based orphan recovery (RUYI-225) lists these before
+// deciding per task whether its worker provably died with the previous daemon
+// process — the per-task judgement RecoverOrphans' blanket fail cannot make.
+func (c *Client) ListInFlightTasks(ctx context.Context, runtimeID string) ([]InFlightTask, error) {
+	var tasks []InFlightTask
+	if err := c.getJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/tasks/in-flight", runtimeID), &tasks); err != nil {
+		return nil, err
+	}
+	return tasks, nil
+}
+
 // GetTaskStatus returns the current status of a task. Used by the daemon to
 // detect terminal/interruption signals (cancelled, failed, completed, or a
 // 404 task-not-found) while a task is executing.
