@@ -146,6 +146,7 @@
     "replying_to": "Replying to {{name}}",
     "cancel_reply": "Cancel reply",
     "mention_hint": "Mention someone or an issue",
+    "skill_hint": "Choose a skill",
     "upload_image": "Upload image",
     "upload_file": "Upload file",
     "file_too_large_title": "File too large",

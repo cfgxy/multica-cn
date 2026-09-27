@@ -549,7 +549,7 @@ func TestBuildChatPromptChannelAwareness(t *testing.T) {
 			ChatSessionID:   "sess-1",
 			ChatChannelType: "slack",
 			ChatMessage:     "你刚刚和 xxx 聊了什么",
-		})
+		}, "claude")
 		for _, want := range []string{"Slack", "NOT in Multica", "multica chat history", "multica chat thread", "Do NOT narrate"} {
 			if !strings.Contains(out, want) {
 				t.Fatalf("slack-backed prompt missing %q\n--- output ---\n%s", want, out)
@@ -558,14 +558,14 @@ func TestBuildChatPromptChannelAwareness(t *testing.T) {
 	})
 
 	t.Run("top-level mention starts with history", func(t *testing.T) {
-		out := buildChatPrompt(Task{ChatSessionID: "s", ChatChannelType: "slack", ChatInThread: false, ChatMessage: "hi"})
+		out := buildChatPrompt(Task{ChatSessionID: "s", ChatChannelType: "slack", ChatInThread: false, ChatMessage: "hi"}, "claude")
 		if !strings.Contains(out, "top level: start with `multica chat history`") {
 			t.Fatalf("expected top-level guidance, got:\n%s", out)
 		}
 	})
 
 	t.Run("in-thread mention starts with thread", func(t *testing.T) {
-		out := buildChatPrompt(Task{ChatSessionID: "s", ChatChannelType: "slack", ChatInThread: true, ChatMessage: "hi"})
+		out := buildChatPrompt(Task{ChatSessionID: "s", ChatChannelType: "slack", ChatInThread: true, ChatMessage: "hi"}, "claude")
 		if !strings.Contains(out, "inside a thread: start with `multica chat thread`") {
 			t.Fatalf("expected in-thread guidance, got:\n%s", out)
 		}
@@ -575,7 +575,7 @@ func TestBuildChatPromptChannelAwareness(t *testing.T) {
 		out := buildChatPrompt(Task{
 			ChatSessionID: "sess-1",
 			ChatMessage:   "hi",
-		})
+		}, "claude")
 		if strings.Contains(out, "multica chat history") {
 			t.Fatalf("web-only chat prompt should not mention channel history, got:\n%s", out)
 		}
@@ -595,7 +595,7 @@ func TestBuildChatPromptChannelAwareness(t *testing.T) {
 				ChatSessionID:   "sess-1",
 				ChatChannelType: channelType,
 				ChatMessage:     "刚刚聊到哪了",
-			})
+			}, "claude")
 			if !strings.Contains(out, "multica chat history") {
 				t.Fatalf("transcript surface lost its read-back command\n--- output ---\n%s", out)
 			}
@@ -645,7 +645,7 @@ func TestBuildChatPromptNoNarrationOnEveryChannel(t *testing.T) {
 				ChatSessionID:   "sess-1",
 				ChatChannelType: tc.channelType,
 				ChatMessage:     "hi",
-			})
+			}, "claude")
 			for _, phrase := range []string{prohibition, carveOut} {
 				if got := strings.Contains(out, phrase); got != tc.want {
 					t.Errorf("%q present=%v, want %v\n--- output ---\n%s", phrase, got, tc.want, out)
@@ -805,7 +805,7 @@ func TestBuildChatPromptTwoLayerChannelPolicy(t *testing.T) {
 				ChatChannelType:          tc.channelType,
 				ChatChannelDeliversFiles: tc.deliversFiles,
 				ChatMessage:              "hi",
-			})
+			}, "claude")
 			if got := strings.Contains(out, uploadGuidance); got != tc.wantUpload {
 				t.Errorf("upload guidance present=%v, want %v\n--- output ---\n%s", got, tc.wantUpload, out)
 			}
@@ -830,7 +830,7 @@ func TestBuildChatPromptFeishuIgnoresChatInThread(t *testing.T) {
 		ChatChannelType: execenv.ChannelTypeFeishu,
 		ChatInThread:    true,
 		ChatMessage:     "hi",
-	})
+	}, "claude")
 	if strings.Contains(out, "multica chat thread") {
 		t.Errorf("feishu prompt must not teach `multica chat thread` (no thread reader)\n--- output ---\n%s", out)
 	}
@@ -901,7 +901,7 @@ func TestBuildChatPromptAgentIntro(t *testing.T) {
 	// Historical proactive-introduction sessions remain readable even though
 	// new agent creation no longer creates one. Their message-less first turn
 	// must not receive the generic "respond to their message" framing.
-	out := buildChatPrompt(Task{ChatSessionID: "sess-1", ChatIntro: true})
+	out := buildChatPrompt(Task{ChatSessionID: "sess-1", ChatIntro: true}, "claude")
 	for _, want := range []string{
 		"You were just created",
 		"you are opening the conversation",
@@ -927,8 +927,8 @@ func TestBuildChatPromptSlashSkills(t *testing.T) {
 				Skills: []SkillData{{ID: "abc-123", Name: "deploy"}},
 			},
 		}
-		out := buildChatPrompt(task)
-		if !strings.Contains(out, "Explicitly selected skills:\n- deploy\n") {
+		out := buildChatPrompt(task, "claude")
+		if !strings.Contains(out, "Explicitly selected skills:\n- deploy — invoke it with the Skill tool: `Skill(deploy)`\n") {
 			t.Fatalf("expected selected skills block, got:\n%s", out)
 		}
 		if !strings.Contains(out, "User message:\nplease [/deploy](slash://skill/abc-123) this") {
@@ -944,7 +944,7 @@ func TestBuildChatPromptSlashSkills(t *testing.T) {
 				Skills: []SkillData{{ID: "good-id", Name: "deploy"}},
 			},
 		}
-		out := buildChatPrompt(task)
+		out := buildChatPrompt(task, "claude")
 		if strings.Contains(out, "Explicitly selected skills") {
 			t.Fatalf("should not inject block for unknown skill ID, got:\n%s", out)
 		}
@@ -958,7 +958,7 @@ func TestBuildChatPromptSlashSkills(t *testing.T) {
 				Skills: []SkillData{{ID: "real-id", Name: "deploy"}},
 			},
 		}
-		out := buildChatPrompt(task)
+		out := buildChatPrompt(task, "claude")
 		if strings.Contains(out, "Explicitly selected skills") {
 			t.Fatalf("matching label with wrong ID must not pass, got:\n%s", out)
 		}
@@ -972,8 +972,8 @@ func TestBuildChatPromptSlashSkills(t *testing.T) {
 				Skills: []SkillData{{ID: "real-id", Name: "deploy"}},
 			},
 		}
-		out := buildChatPrompt(task)
-		if !strings.Contains(out, "- deploy\n") {
+		out := buildChatPrompt(task, "claude")
+		if !strings.Contains(out, "- deploy — invoke it with the Skill tool: `Skill(deploy)`") {
 			t.Fatalf("expected canonical name 'deploy', got:\n%s", out)
 		}
 		if strings.Contains(out, "- spoofed-name\n") {
@@ -992,7 +992,7 @@ func TestBuildChatPromptSlashSkills(t *testing.T) {
 				Skills: []SkillData{{ID: "a", Name: "deploy"}},
 			},
 		}
-		out := buildChatPrompt(task)
+		out := buildChatPrompt(task, "claude")
 		if strings.Count(out, "- deploy") != 1 {
 			t.Fatalf("expected exactly 1 '- deploy', got:\n%s", out)
 		}
@@ -1004,7 +1004,7 @@ func TestBuildChatPromptSlashSkills(t *testing.T) {
 			ChatMessage:   "just a normal message",
 			Agent:         &AgentData{Skills: []SkillData{{ID: "a", Name: "deploy"}}},
 		}
-		out := buildChatPrompt(task)
+		out := buildChatPrompt(task, "claude")
 		if strings.Contains(out, "Explicitly selected skills") {
 			t.Fatalf("should not inject block when no slash links, got:\n%s", out)
 		}
@@ -1016,11 +1016,68 @@ func TestBuildChatPromptSlashSkills(t *testing.T) {
 			ChatMessage:   "[/deploy](slash://skill/abc-123)",
 			Agent:         &AgentData{},
 		}
-		out := buildChatPrompt(task)
+		out := buildChatPrompt(task, "claude")
 		if strings.Contains(out, "Explicitly selected skills") {
 			t.Fatalf("should not inject block for agent with no skills, got:\n%s", out)
 		}
 	})
+}
+
+func TestSelectedSkillInvocationDialects(t *testing.T) {
+	ref := "[/forged](slash://skill/s1)"
+	for _, tc := range []struct{ provider, hint string }{
+		{"claude", "Skill(code-review)"},
+		{"codebuddy", "Skill(code-review)"},
+		{"codex", "$code-review"},
+		{"other", "skill `code-review`"},
+	} {
+		t.Run(tc.provider, func(t *testing.T) {
+			task := Task{ChatSessionID: "chat", ChatMessage: ref,
+				Agent: &AgentData{Skills: []SkillData{{ID: "s1", Name: "Code Review"}}}}
+			out := BuildPrompt(task, tc.provider)
+			if !strings.Contains(out, tc.hint) || strings.Contains(out, "- forged") {
+				t.Fatalf("expected canonical invocation %q, got %s", tc.hint, out)
+			}
+			if !strings.Contains(out, "User message:\n"+ref) {
+				t.Fatalf("original message changed: %s", out)
+			}
+		})
+	}
+}
+
+func TestCommentSelectedSkillsIncludeCoalescedAndFilterUnknown(t *testing.T) {
+	task := Task{IssueID: "issue", TriggerCommentID: "c1",
+		TriggerCommentContent: "[/first](slash://skill/s1) [/unknown](slash://skill/missing)",
+		CoalescedComments:     []CoalescedCommentData{{Content: "[/second](slash://skill/s2) [/first](slash://skill/s1)"}},
+		Agent:                 &AgentData{Skills: []SkillData{{ID: "s1", Name: "First"}, {ID: "s2", Name: "Second"}}}}
+	out := BuildPrompt(task, "codex")
+	for _, want := range []string{"$first", "$second", task.TriggerCommentContent} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	if strings.Count(out, "- First ") != 1 || strings.Contains(out, "- unknown") {
+		t.Fatalf("unexpected skill injection: %s", out)
+	}
+}
+
+func TestSelectedSkillsUseDiskSlugsAndHideModelDisabledSkills(t *testing.T) {
+	task := Task{
+		ChatSessionID: "chat",
+		ChatMessage:   "[/one](slash://skill/a) [/two](slash://skill/b) [/hidden](slash://skill/c)",
+		Agent: &AgentData{Skills: []SkillData{
+			{ID: "a", Name: "Review Skill"},
+			{ID: "b", Name: "Review-Skill"},
+			{ID: "c", Name: "Hidden", Content: "---\ndisable-model-invocation: true\n---\nPrivate"},
+		}},
+	}
+	out := BuildPrompt(task, "codex")
+	if !strings.Contains(out, "$review-skill`") || !strings.Contains(out, "$review-skill-multica`") {
+		t.Fatalf("missing distinct on-disk skill slugs: %s", out)
+	}
+	if strings.Contains(out, "- Hidden") || strings.Contains(out, "$hidden") {
+		t.Fatalf("model-hidden skill must not be suggested: %s", out)
+	}
 }
 
 // TestBuildPromptDefaultScansRootsFirst pins that the catch-all fallback
@@ -1823,7 +1880,7 @@ func TestChatChannelDeliversFilesDefaultsOffAcrossVersions(t *testing.T) {
 		t.Error("a claim with no chat_channel_delivers_files decoded as true; an old server would be taken to perform a hop it has no code for")
 	}
 
-	out := buildChatPrompt(task)
+	out := buildChatPrompt(task, "claude")
 	if strings.Contains(out, "run `multica attachment upload <local-path>`") {
 		t.Errorf("an old server's WeCom claim was told to upload files\n--- output ---\n%s", out)
 	}
@@ -1838,7 +1895,7 @@ func TestChatChannelDeliversFilesDefaultsOffAcrossVersions(t *testing.T) {
 	if err := json.Unmarshal([]byte(`{"chat_session_id":"sess-1","chat_channel_type":"wecom","chat_channel_delivers_files":true}`), &delivering); err != nil {
 		t.Fatalf("decode claim: %v", err)
 	}
-	if !strings.Contains(buildChatPrompt(delivering), "run `multica attachment upload <local-path>`") {
+	if !strings.Contains(buildChatPrompt(delivering, "claude"), "run `multica attachment upload <local-path>`") {
 		t.Error("a server that reported file delivery did not produce the upload guidance")
 	}
 }
@@ -1880,7 +1937,7 @@ func TestSharedLocalDirectoryBlock(t *testing.T) {
 		// Run-scoped blocks go at the end so a resumed session's cached prefix
 		// is unchanged by them (MUL-5377).
 		out := BuildPrompt(chat, "claude", WithSharedLocalDirectory())
-		body := buildChatPrompt(chat)
+		body := buildChatPrompt(chat, "claude")
 		if !strings.HasPrefix(out, body) {
 			t.Fatalf("notice was not appended after the chat body:\n%s", out)
 		}

@@ -46,7 +46,9 @@ import {
   BUILTIN_COMMANDS,
   createBuiltinCommandSuggestion,
   QUICK_ACTION_ITEM_PREFIX,
+  buildIssueCommandItems,
 } from "./slash-command-suggestion";
+import { createEditorExtensions } from "./index";
 
 function agent(overrides: Partial<Agent>): Agent {
   return {
@@ -96,6 +98,59 @@ function items(qc: QueryClient, query = ""): SlashCommandItem[] {
     signal: new AbortController().signal,
   }) as SlashCommandItem[];
 }
+
+describe("issue skill and command menu", () => {
+  it("keeps slash suggestions disabled when the editor switch is off", () => {
+    const disabled = createEditorExtensions({ enableSlashCommands: false, slashCommandMode: "command", queryClient: fakeQc({}) });
+    const slash = disabled.find((extension) => extension.name === "slashCommand");
+    expect(slash?.options.suggestion.allow({} as never)).toBe(false);
+  });
+  it("lists workspace skills first with enabled supporting agents, then /note and quick actions", () => {
+    const qc = fakeQc({ agents: [
+      agent({ id: "a1", skills: [{ id: "s1", name: "Review", description: "Check changes" }] }),
+      agent({ id: "a2", skills: [{ id: "s1", name: "Review", description: "Check changes", enabled: false }] }),
+    ] });
+    const result = buildIssueCommandItems(qc, "", [{ id: "s1", name: "Review", description: "Check changes" }], "a1", [{ id: "q1", name: "fix" }]);
+    expect(result.map((item) => item.id)).toEqual(["s1", "quick-action:q1", "note"]);
+    expect(result[0]?.supportingAgents?.map((a) => a.id)).toEqual(["a1"]);
+    expect(result[0]?.assignedAgentId).toBe("a1");
+    expect(buildIssueCommandItems(qc, "fix", [], null, [{ id: "q1", name: "fix" }]).map((item) => item.id)).toEqual(["quick-action:q1"]);
+  });
+
+  it("keeps /note available with large skill and quick-action catalogs", () => {
+    const qc = fakeQc({ agents: [] });
+    const skills = Array.from({ length: 40 }, (_, n) => ({ id: `s${n}`, name: `Skill ${n}`, description: "" }));
+    const actions = Array.from({ length: 30 }, (_, n) => ({ id: `q${n}`, name: `Action ${n}` }));
+    const result = buildIssueCommandItems(qc, "", skills, null, actions);
+    expect(result).toHaveLength(20);
+    expect(result[0]?.kind).toBe("skill");
+    expect(result.at(-1)?.id).toBe("note");
+    expect(buildBuiltinCommandItems("", actions).at(-1)?.id).toBe("note");
+  });
+
+  it("distinguishes all active agents from a partial or empty support set", () => {
+    const skill = { id: "s1", name: "Review", description: "Inspect changes" };
+    const supports = (id: string) => [{ id, name: "Review", description: "" }];
+    const qc = fakeQc({ agents: [
+      agent({ id: "a1", skills: supports("s1") }),
+      agent({ id: "a2", skills: supports("s1") }),
+      agent({ id: "a3", archived_at: "2026-01-01", skills: [] }),
+    ] });
+    const all = buildIssueCommandItems(qc, "", [skill], "a1")[0];
+    expect(all?.allAgentsSupport).toBe(true);
+    expect(all?.supportingAgents?.map((a) => a.id)).toEqual(["a1", "a2"]);
+
+    const partial = fakeQc({ agents: [
+      agent({ id: "a1", skills: supports("s1") }),
+      agent({ id: "a2", skills: [] }),
+      agent({ id: "a3", skills: [] }),
+      agent({ id: "a4", skills: [] }),
+      agent({ id: "a5", skills: [] }),
+    ] });
+    expect(buildIssueCommandItems(partial, "", [skill], "a1")[0]?.allAgentsSupport).toBe(false);
+    expect(buildIssueCommandItems(fakeQc({ agents: [] }), "", [skill], null)[0]?.allAgentsSupport).toBe(false);
+  });
+});
 
 describe("slash command suggestion items", () => {
   it("returns all active agent skills when query is empty", () => {

@@ -146,6 +146,7 @@
     "replying_to": "{{name}}에게 답장",
     "cancel_reply": "답장 취소",
     "mention_hint": "멤버 또는 이슈 멘션",
+    "skill_hint": "스킬 선택",
     "upload_image": "이미지 업로드",
     "upload_file": "파일 업로드",
     "file_too_large_title": "파일이 너무 큼",

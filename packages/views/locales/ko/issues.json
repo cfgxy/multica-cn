@@ -940,6 +940,16 @@
       "no_labels": "이 워크스페이스에는 아직 라벨이 없습니다.",
       "no_members_or_agents": "이 워크스페이스에는 아직 멤버나 에이전트가 없습니다."
     },
+    "skill": {
+      "title": "스킬",
+      "search": "스킬 검색",
+      "loading": "스킬 불러오는 중…",
+      "load_failed": "스킬을 불러오지 못했습니다",
+      "retry": "다시 시도",
+      "empty": "일치하는 스킬 없음",
+      "all": "모든 에이전트",
+      "none": "에이전트 없음"
+    },
     "mention": {
       "everyone": "모든 사람",
       "screen_title": "멘션",

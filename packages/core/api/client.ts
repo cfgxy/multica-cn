@@ -461,6 +461,7 @@ import {
   RuntimeModelListRequestSchema,
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
   SkillSchema,
+  SkillListSchema,
   EMPTY_SKILL,
   SkillImportResultSchema,
   EMPTY_SKILL_IMPORT_RESULT,
@@ -3846,7 +3847,8 @@ export class ApiClient {
 
   // Skills
   async listSkills(): Promise<SkillSummary[]> {
-    return this.fetch("/api/skills");
+    const raw = await this.fetch<unknown>("/api/skills");
+    return parseWithFallback(raw, SkillListSchema, [], { endpoint: "listSkills" });
   }
 
   async getSkill(id: string): Promise<Skill> {
