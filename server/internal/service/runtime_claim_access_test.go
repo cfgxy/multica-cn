@@ -20,7 +20,11 @@ type runtimeClaimAccessFixture struct {
 	pool      *pgxpool.Pool
 	agentID   pgtype.UUID
 	runtimeID pgtype.UUID
-	taskID    string
+	// boundRuntimeID is the runtime the agent row is actually bound to; it
+	// differs from runtimeID (the task's pinned runtime) when matchingBinding
+	// is false.
+	boundRuntimeID pgtype.UUID
+	taskID         string
 }
 
 func newRuntimeClaimAccessFixture(
@@ -84,10 +88,11 @@ func newRuntimeClaimAccessFixture(
 	taskID := fx.Task(t, agentID, taskCols)
 
 	return runtimeClaimAccessFixture{
-		pool:      pool,
-		agentID:   util.MustParseUUID(agentID),
-		runtimeID: util.MustParseUUID(taskRuntimeID),
-		taskID:    taskID,
+		pool:           pool,
+		agentID:        util.MustParseUUID(agentID),
+		runtimeID:      util.MustParseUUID(taskRuntimeID),
+		boundRuntimeID: util.MustParseUUID(boundRuntimeID),
+		taskID:         taskID,
 	}
 }
 
@@ -106,7 +111,11 @@ func TestRuntimeAccessGatesQueuedTaskClaims(t *testing.T) {
 		{name: "private runtime accepts owner agent", visibility: "private", sameOwner: true, matchingBinding: true, wantClaim: true},
 		{name: "private runtime routes ownerless agent to handler", visibility: "private", sameOwner: true, matchingBinding: true, ownerlessAgent: true, wantClaim: true},
 		{name: "public runtime accepts foreign agent", visibility: "public", wantClaim: true, matchingBinding: true},
-		{name: "task runtime must match agent binding", visibility: "public", wantClaim: false, matchingBinding: false},
+		// RUYI-224: the task's pinned runtime is not the authority after an
+		// agent rebind — the row stranded on the old runtime is discovered and
+		// claimed by the runtime the agent is bound to now, and the claim
+		// rewrites the row onto it.
+		{name: "stranded queued row follows agent rebind", visibility: "public", wantClaim: true, matchingBinding: false},
 	}
 
 	for _, tt := range tests {
@@ -119,11 +128,19 @@ func TestRuntimeAccessGatesQueuedTaskClaims(t *testing.T) {
 			}
 			q := db.New(fixture.pool)
 
-			candidates, err := q.ListQueuedClaimCandidatesByRuntime(ctx, fixture.runtimeID)
+			// Under the RUYI-224 authority model discovery and claim both key
+			// on the agent's CURRENT binding: a stranded row is only visible
+			// to the runtime the agent actually uses now.
+			actingRuntime := fixture.runtimeID
+			if !tt.matchingBinding {
+				actingRuntime = fixture.boundRuntimeID
+			}
+
+			candidates, err := q.ListQueuedClaimCandidatesByRuntime(ctx, actingRuntime)
 			if err != nil {
 				t.Fatalf("list singular candidates: %v", err)
 			}
-			batchCandidates, err := q.ListQueuedClaimCandidatesByRuntimes(ctx, []pgtype.UUID{fixture.runtimeID})
+			batchCandidates, err := q.ListQueuedClaimCandidatesByRuntimes(ctx, []pgtype.UUID{actingRuntime})
 			if err != nil {
 				t.Fatalf("list batch candidates: %v", err)
 			}
@@ -140,7 +157,7 @@ func TestRuntimeAccessGatesQueuedTaskClaims(t *testing.T) {
 
 			claimed, err := q.ClaimAgentTask(ctx, db.ClaimAgentTaskParams{
 				AgentID:          fixture.agentID,
-				RuntimeID:        fixture.runtimeID,
+				RuntimeID:        actingRuntime,
 				PrepareLeaseSecs: 60,
 				RuntimeStaleSecs: RuntimeClaimFreshnessSeconds,
 			})
@@ -162,6 +179,11 @@ func TestRuntimeAccessGatesQueuedTaskClaims(t *testing.T) {
 			}
 			if util.UUIDToString(claimed.ID) != fixture.taskID {
 				t.Fatalf("claimed task = %s, want %s", util.UUIDToString(claimed.ID), fixture.taskID)
+			}
+			// A successful claim rewrites the row onto the claiming runtime.
+			if util.UUIDToString(claimed.RuntimeID) != util.UUIDToString(actingRuntime) {
+				t.Fatalf("claimed row runtime_id = %s, want rewritten to %s",
+					util.UUIDToString(claimed.RuntimeID), util.UUIDToString(actingRuntime))
 			}
 		})
 	}
