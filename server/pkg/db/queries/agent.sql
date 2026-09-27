@@ -2305,6 +2305,21 @@ SELECT * FROM agent_task_queue
 WHERE runtime_id = $1 AND status IN ('queued', 'dispatched')
 ORDER BY priority DESC, created_at ASC;
 
+-- name: ListInFlightTasksByRuntime :many
+-- Returns the in-flight tasks (running / waiting_local_directory) a runtime
+-- owns, with the workspace identity and pinned work_dir the daemon's
+-- probe-based orphan recovery needs (RUYI-225). The daemon probes each
+-- task's env-root execution lock: the kernel releases that advisory flock
+-- when the holding worker dies, so "lock acquirable" proves the worker is
+-- gone while "lock held" proves live work — the distinction
+-- RecoverOrphanedTasksForRuntime cannot make. dispatched rows are excluded
+-- on purpose: they already have the prepare-lease expiry path. The workspace
+-- identity comes from the runtime row: agent_task_queue has no workspace_id.
+SELECT t.id, r.workspace_id, t.status, t.work_dir
+FROM agent_task_queue t
+JOIN agent_runtime r ON r.id = t.runtime_id
+WHERE t.runtime_id = $1 AND t.status IN ('running', 'waiting_local_directory');
+
 -- name: ListQueuedClaimCandidatesByRuntime :many
 -- Returns rows the runtime is authorized to attempt to claim. Status is restricted to
 -- 'queued' (in contrast to ListPendingTasksByRuntime which also includes
