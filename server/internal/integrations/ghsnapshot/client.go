@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/multica-ai/multica/server/internal/util"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -86,7 +87,7 @@ type cachedToken struct {
 //   - Key present but malformed → (nil, err): operator-actionable, surface it.
 func NewClientFromEnv() (*Client, error) {
 	appID := strings.TrimSpace(os.Getenv("GITHUB_APP_ID"))
-	pemKey := strings.TrimSpace(os.Getenv("GITHUB_APP_PRIVATE_KEY"))
+	pemKey := util.NormalizePEMKey(os.Getenv("GITHUB_APP_PRIVATE_KEY"))
 	if appID == "" || pemKey == "" {
 		return nil, nil
 	}
