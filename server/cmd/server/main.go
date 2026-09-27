@@ -16,6 +16,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/daemonws"
+	"github.com/multica-ai/multica/server/internal/dbbackup"
 	"github.com/multica-ai/multica/server/internal/dbstartup"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
@@ -658,6 +659,17 @@ func main() {
 	// Source-context cleanup is object-store work, so it gets its own goroutine
 	// instead of a slot in the runtime sweep tick.
 	go runSourceContextSweeper(sweepCtx, taskSvc)
+	// Daily database dump backups (RUYI-237): pg_dump -Fc archives into
+	// MULTICA_BACKUP_DIR with rolling retention. Shells out to pg_dump, so a
+	// failed or missing binary is logged each round and never fatal — the
+	// catch-up check re-dumps as soon as the newest archive is one interval
+	// old. Restore runbook: server/internal/dbbackup/README.md.
+	backupConfig := dbbackup.ConfigFromEnv(os.Getenv, dbURL)
+	if backupConfig.Enabled {
+		go dbbackup.RunJob(sweepCtx, backupConfig)
+	} else {
+		slog.Info("database backup disabled", "env", dbbackup.EnabledEnv)
+	}
 	go heartbeatScheduler.Run(sweepCtx)
 	go runAutopilotFailureMonitor(autopilotCtx, queries, bus, envFailureMonitorConfig())
 	if autopilotSvc.QuotaEnabled() {
