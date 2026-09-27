@@ -501,6 +501,18 @@ deleted_prompt_quality_daily AS (
 ),
 deleted_prompt_perplexity_scores AS (
     DELETE FROM prompt_perplexity_score WHERE workspace_id = $1
+),
+-- The quiz bank and its measurements (RUYI-185) go the same way. Results are
+-- deleted before the bank for readability only — neither has an FK, and both
+-- are workspace-scoped with no dependents outside this statement.
+-- prompt_quiz_sweep_state is deliberately NOT here: it is the scheduler's
+-- single-row cursor, has no workspace_id, and belongs to the deployment rather
+-- than to any workspace.
+deleted_prompt_quiz_results AS (
+    DELETE FROM prompt_quiz_result WHERE workspace_id = $1
+),
+deleted_prompt_quiz_items AS (
+    DELETE FROM prompt_quiz_item WHERE workspace_id = $1
 )
 -- Keep the two-system cleanup ledger until object storage has been settled.
 -- Moving every row out of pending also prevents a concurrent media bind from

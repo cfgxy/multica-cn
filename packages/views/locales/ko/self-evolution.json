@@ -7,7 +7,8 @@
   },
   "tabs": {
     "overview": "개요",
-    "quality": "품질"
+    "quality": "품질",
+    "quiz": "퀴즈"
   },
   "quality": {
     "scopePicker": {
@@ -157,6 +158,72 @@
       "scoring_model": "평가 모델을 사용할 수 없습니다",
       "unknown": "{{kind}}을(를) 사용할 수 없습니다",
       "note": "대시보드 데이터에는 영향이 없습니다."
+    }
+  },
+  "quiz": {
+    "noSubject": "판독값은 프롬프트 계층별로 제공됩니다. 에이전트를 선택하면 해당 퀴즈 이력을 불러옵니다.",
+    "reading": {
+      "title": "회귀 판독값",
+      "description": "동일한 고정 문제 은행을 모든 프롬프트 버전에 반복 실행합니다. 판독값은 단일 점수가 아니라 분포입니다.",
+      "error": "판독값을 불러올 수 없습니다",
+      "noVersion": "이 프롬프트에는 기록된 버전이 없어 측정된 것이 없습니다.",
+      "accumulating": "v{{version}}의 유효 판독값은 {{need}}회 중 {{have}}회입니다. 그룹이 채워질 때까지 비교가 없습니다.",
+      "noBaseline": "v{{version}}은 {{count}}회 실행으로 측정되었고(중앙값 {{median}}, 사분위 범위 {{iqr}}) 이 프롬프트의 첫 버전입니다. 비교할 이전 버전이 없으며 다음 버전의 기준선이 됩니다.",
+      "versions": "기준선 v{{baseline}}, 판독 대상 v{{current}}.",
+      "outcomes": "{{answered}}회 실행이 답변을 냈고 {{errored}}회는 오류로 끝났습니다. 두 수치 모두 점수가 아닙니다. 답변 내용의 정답 여부는 채점하지 않습니다.",
+      "incomparable": "{{count}}건의 측정값은 이 그룹에서 제외되었습니다. 다른 문항 문구, 또는 다른 런타임이나 모델에서 측정된 값입니다.",
+      "baselineIncomparable": "기준 그룹에서도 같은 이유로 {{count}}건이 제외되었습니다.",
+      "notAGate": "퀴즈는 프롬프트 버전 배포를 막지 않습니다. 품질이 어떻게 변했는지만 기록합니다.",
+      "verdict": {
+        "insufficient": "판독값 없음",
+        "steady": "유지",
+        "improved": "개선",
+        "regressed": "회귀"
+      },
+      "stats": {
+        "baseline": "기준선 그룹",
+        "current": "현재 그룹",
+        "statistic": "Mann-Whitney z",
+        "threshold": "노이즈 선",
+        "group": "중앙값 {{median}}, 사분위 범위 {{iqr}}, n={{n}}"
+      }
+    },
+    "bank": {
+      "title": "문제 은행",
+      "description": "모든 버전에 같은 문제를 사용합니다. 본문을 편집하면 새 리비전이 시작됩니다.",
+      "add": "문제 추가",
+      "revision": "리비전 {{revision}}",
+      "active": "사용",
+      "retired": "중지",
+      "discrimination": {
+        "pending": "미판정",
+        "no_signal": "측정값 없음",
+        "flat": "현재 변별력 없음",
+        "ok": "변별력 있음"
+      },
+      "edit": "편집",
+      "delete": "삭제",
+      "error": {
+        "title": "문제 은행을 불러올 수 없습니다",
+        "write": "문제 은행이 변경되지 않았습니다."
+      },
+      "empty": {
+        "title": "아직 문제가 없습니다",
+        "description": "문제가 없으면 어떤 버전도 측정할 수 없습니다. 하나를 추가해 첫 판독값을 만드세요."
+      },
+      "dialog": {
+        "addTitle": "문제 추가",
+        "editTitle": "문제 편집",
+        "description": "문제 본문은 운영 엔티티를 지목할 수 없습니다. 이슈 키, ID, 링크는 금지입니다. 서버는 위반 본문을 거부하고 어떤 참조를 지워야 하는지 알려줍니다.",
+        "slug": "슬러그",
+        "questionTitle": "제목",
+        "body": "문제 본문",
+        "bodyHint": "최대 4000자. 본문은 자체적으로 완결되어야 합니다. 퀴즈 실행 뒤에는 이슈가 없습니다.",
+        "rubric": "표준 답안과 채점 항목",
+        "rubricHint": "소유자만 볼 수 있으며 측정 대상 실행에는 전달되지 않습니다. 저장하면 이 항목의 내용으로 기존 표준 답안을 전체 교체합니다.",
+        "cancel": "취소",
+        "save": "저장"
+      }
     }
   }
 }
