@@ -441,6 +441,152 @@ func TestProgressCardFinalFrameLandsUnderBackoffDebtAndSharedBudget(t *testing.T
 	}
 }
 
+// TestProgressCardFinalFrameRetriesTransportFailure pins the failure-class
+// rule for the terminal frame: the final write is a full-card PATCH
+// replacement keyed by the message id, so it is idempotent and an ambiguous
+// transport failure — no Lark code, not a rate limit — must consume the same
+// retry budget as a rate limit instead of abandoning the card after one
+// attempt. Retrying must also not invent a backoff: the wait between
+// attempts stays the chat's ordinary write interval.
+func TestProgressCardFinalFrameRetriesTransportFailure(t *testing.T) {
+	p, q, api, clock := newProgressTestPatcher(t)
+	taskID := "ee999999-ee99-ee99-ee99-eeeeeeeeeeee"
+	sessionID := uuidString(q.binding.ChatSessionID)
+
+	p.handleTaskMessage(progressFrame(taskID, sessionID, 1, protocol.TaskMessagePayload{
+		Type: "text", Content: "first",
+	}))
+	// The next two patch attempts answer with an ambiguous transport
+	// failure: the mid-stream frame, then the terminal frame's first
+	// attempt. The terminal retry must land on the second attempt.
+	api.mu.Lock()
+	api.patchTransportFailures = 2
+	api.mu.Unlock()
+	clock.now = clock.now.Add(2 * time.Second)
+	p.handleTaskMessage(progressFrame(taskID, sessionID, 2, protocol.TaskMessagePayload{
+		Type: "text", Content: "second",
+	}))
+
+	clock.now = clock.now.Add(2 * time.Second)
+	p.handleEvent(events.Event{
+		Type:          protocol.EventChatDone,
+		TaskID:        taskID,
+		ChatSessionID: sessionID,
+		Payload: protocol.ChatDonePayload{
+			TaskID: taskID, ChatSessionID: sessionID, Content: "answer after transport failure",
+		},
+	})
+	p.progress.waitIdle()
+
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	outcomes := append([]error(nil), api.patchOutcomes...)
+	if len(api.textSent) != 1 || api.textSent[0].Text != "answer after transport failure" {
+		t.Fatalf("answer must land regardless of patch failures; textSent=%+v", api.textSent)
+	}
+	if len(outcomes) != 3 || outcomes[2] != nil {
+		t.Fatalf("terminal frame must be retried past a transport failure and land; outcomes=%v", outcomes)
+	}
+	last := api.patched[len(api.patched)-1].CardJSON
+	if !strings.Contains(last, "已完成") {
+		t.Fatalf("the landing retry must carry the completed card; got %s", last)
+	}
+	if len(clock.waited) != 1 || clock.waited[0] != progressPatchInterval {
+		t.Fatalf("transport-failure retry must wait only the write interval, not the rate-limit backoff; waited=%v", clock.waited)
+	}
+}
+
+// gatedSendClient parks the first frame's POST mid-flight: the embedded fake
+// has already recorded the send, the message id has not come back, and the
+// push path still holds the chat's schedule lock — the exact intermediate
+// state a chat:done can race against in production.
+type gatedSendClient struct {
+	*fakeAPIClient
+	gate     chan struct{} // closed by the test to let the parked POST return
+	inFlight chan struct{} // closed by the client once the POST is parked
+}
+
+func (g *gatedSendClient) SendInteractiveCard(ctx context.Context, p SendCardParams) (string, error) {
+	id, err := g.fakeAPIClient.SendInteractiveCard(ctx, p)
+	close(g.inFlight)
+	<-g.gate
+	return id, err
+}
+
+// TestProgressCardFinalFrameLandsWhenFirstFrameStillInFlight pins the
+// send-vs-finalize race: a chat:done processed while the first frame's POST
+// is still in flight reads cardMessageID before send() has written it. The
+// judgment is made without the chat's write slot, so no lock-ordered double
+// can pin its ordering — progressFinalizeAfterCardRead is the seam that
+// makes the read observable. With the early exit in place the test fails
+// deterministically: finalize has already given up (and released the card)
+// by the time the POST returns, so the terminal frame never lands.
+func TestProgressCardFinalFrameLandsWhenFirstFrameStillInFlight(t *testing.T) {
+	p, q, api, _ := newProgressTestPatcher(t)
+	taskID := "eeaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
+	sessionID := uuidString(q.binding.ChatSessionID)
+
+	gate := make(chan struct{})
+	inFlight := make(chan struct{})
+	p.client = &gatedSendClient{fakeAPIClient: api, gate: gate, inFlight: inFlight}
+	// A real row id, so markTerminal's status flip is observable: the stuck-
+	// streaming DB row was half of the race's damage, the frozen card the
+	// other half.
+	q.mu.Lock()
+	q.createReturn = OutboundCardMessage{ID: uuidFromString(t, "eeeebbbb-eeee-eeee-eeee-eeeeeeeeeeee")}
+	q.mu.Unlock()
+
+	frameDone := make(chan struct{})
+	go func() {
+		defer close(frameDone)
+		p.handleTaskMessage(progressFrame(taskID, sessionID, 1, protocol.TaskMessagePayload{
+			Type: "text", Content: "first",
+		}))
+	}()
+	<-inFlight // first POST recorded and parked; the schedule lock is held
+
+	readDone := make(chan struct{})
+	progressFinalizeAfterCardRead = func() { close(readDone) }
+	defer func() { progressFinalizeAfterCardRead = nil }()
+
+	p.handleEvent(events.Event{
+		Type:          protocol.EventChatDone,
+		TaskID:        taskID,
+		ChatSessionID: sessionID,
+		Payload: protocol.ChatDonePayload{
+			TaskID: taskID, ChatSessionID: sessionID, Content: "answer during first frame",
+		},
+	})
+	<-readDone // finalize has judged hasCard on the intermediate state
+
+	close(gate) // the first POST returns; send() writes cardMessageID
+	<-frameDone
+	p.progress.waitIdle()
+
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	outcomes := append([]error(nil), api.patchOutcomes...)
+	if len(api.textSent) != 1 || api.textSent[0].Text != "answer during first frame" {
+		t.Fatalf("answer must land regardless of the race; textSent=%+v", api.textSent)
+	}
+	if len(api.sent) != 1 {
+		t.Fatalf("exactly one card send expected; sent=%d", len(api.sent))
+	}
+	if len(outcomes) != 1 || outcomes[0] != nil {
+		t.Fatalf("terminal frame must land after the in-flight first frame; patch outcomes=%v", outcomes)
+	}
+	last := api.patched[len(api.patched)-1].CardJSON
+	if !strings.Contains(last, "已完成") {
+		t.Fatalf("terminal frame must carry the completed state; got %s", last)
+	}
+	q.mu.Lock()
+	status := append([]UpdateOutboundCardStatusParams(nil), q.statusUpdates...)
+	q.mu.Unlock()
+	if len(status) != 1 || status[0].Status != string(CardStatusFinal) {
+		t.Fatalf("the card row must leave streaming for final; statusUpdates=%+v", status)
+	}
+}
+
 // TestProgressCardWindowTruncates pins the bounded entry window (cc-connect
 // core/progress_compact.go:301, maxEntries 10): older entries fall off and the
 // card says so instead of growing without limit.
