@@ -6165,6 +6165,54 @@ func (q *Queries) ListChatFinalizeDeferredExpired(ctx context.Context, arg ListC
 	return items, nil
 }
 
+const listInFlightTasksByRuntime = `-- name: ListInFlightTasksByRuntime :many
+SELECT t.id, r.workspace_id, t.status, t.work_dir
+FROM agent_task_queue t
+JOIN agent_runtime r ON r.id = t.runtime_id
+WHERE t.runtime_id = $1 AND t.status IN ('running', 'waiting_local_directory')
+`
+
+type ListInFlightTasksByRuntimeRow struct {
+	ID          pgtype.UUID `json:"id"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Status      string      `json:"status"`
+	WorkDir     pgtype.Text `json:"work_dir"`
+}
+
+// Returns the in-flight tasks (running / waiting_local_directory) a runtime
+// owns, with the workspace identity and pinned work_dir the daemon's
+// probe-based orphan recovery needs (RUYI-225). The daemon probes each
+// task's env-root execution lock: the kernel releases that advisory flock
+// when the holding worker dies, so "lock acquirable" proves the worker is
+// gone while "lock held" proves live work — the distinction
+// RecoverOrphanedTasksForRuntime cannot make. dispatched rows are excluded
+// on purpose: they already have the prepare-lease expiry path. The workspace
+// identity comes from the runtime row: agent_task_queue has no workspace_id.
+func (q *Queries) ListInFlightTasksByRuntime(ctx context.Context, runtimeID pgtype.UUID) ([]ListInFlightTasksByRuntimeRow, error) {
+	rows, err := q.db.Query(ctx, listInFlightTasksByRuntime, runtimeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListInFlightTasksByRuntimeRow{}
+	for rows.Next() {
+		var i ListInFlightTasksByRuntimeRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Status,
+			&i.WorkDir,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPendingDelegatedFailureRecoveries = `-- name: ListPendingDelegatedFailureRecoveries :many
 SELECT recovery.id, recovery.issue_id, recovery.author_type, recovery.author_id, recovery.content, recovery.type, recovery.created_at, recovery.updated_at, recovery.parent_id, recovery.workspace_id, recovery.resolved_at, recovery.resolved_by_type, recovery.resolved_by_id, recovery.source_task_id, recovery.quick_action_id, recovery.via_plugin_id, recovery.revision, recovery.recovery_settled_at
 FROM comment recovery
@@ -8218,18 +8266,35 @@ SET status = 'failed',
     failure_reason = 'runtime_recovery',
     wait_reason = NULL,
     prepare_lease_expires_at = NULL
-WHERE runtime_id = $1 AND status IN ('dispatched', 'running', 'waiting_local_directory')
+WHERE runtime_id = $1
+  AND status IN ('dispatched', 'running', 'waiting_local_directory')
+  AND (
+    NOT $2::bool
+    OR work_dir IS NULL
+    OR work_dir = ''
+  )
 RETURNING id, agent_id, issue_id, status, priority, dispatched_at, started_at, completed_at, result, error, created_at, context, runtime_id, session_id, work_dir, trigger_comment_id, chat_session_id, autopilot_run_id, attempt, max_attempts, parent_task_id, failure_reason, trigger_summary, force_fresh_session, is_leader_task, wait_reason, initiator_user_id, handoff_note, prepare_lease_expires_at, squad_id, runtime_mcp_overlay, escalation_for_task_id, fire_at, originator_user_id, runtime_connected_apps, coalesced_comment_ids, delivered_comment_ids, chat_input_task_id, chat_finalize_deferred_at, originator_source, delegated_from_task_id, retry_of_task_id, rerun_of_task_id, rule_version_id, trigger_evidence_kind, trigger_evidence_ref_id, accountable_user_id, session_rollout_missing, retired_session_id, quick_actions_disabled, regenerate_quick_actions_for, branch_name, durable_work_dir, channel_context_revision, prompt_versions
 `
 
-// Called by the daemon at startup. Atomically fails any dispatched/running/
-// waiting_local_directory task that the prior incarnation of this runtime
+type RecoverOrphanedTasksForRuntimeParams struct {
+	RuntimeID       pgtype.UUID `json:"runtime_id"`
+	OnlyUnprobeable bool        `json:"only_unprobeable"`
+}
+
+// Called by the daemon at startup. Atomically fails dispatched/running/
+// waiting_local_directory tasks that the prior incarnation of this runtime
 // owned but did not finalize. Returns the failed rows so callers can hand
 // them to the auto-retry path. waiting_local_directory rows are included
 // because the daemon holding the path lock is the same process that just
 // died — without us, the row would sit waiting forever.
-func (q *Queries) RecoverOrphanedTasksForRuntime(ctx context.Context, runtimeID pgtype.UUID) ([]AgentTaskQueue, error) {
-	rows, err := q.db.Query(ctx, recoverOrphanedTasksForRuntime, runtimeID)
+//
+// only_unprobeable scopes the fail to rows without a pinned work_dir: the
+// ones the daemon's RUYI-225 lock probe cannot judge, so the blind fallback
+// stays correct for them alone. With only_unprobeable=false the historical
+// blanket semantics apply — the runtime_gone re-register path, where the
+// runtime rows were truly deleted server-side, relies on that.
+func (q *Queries) RecoverOrphanedTasksForRuntime(ctx context.Context, arg RecoverOrphanedTasksForRuntimeParams) ([]AgentTaskQueue, error) {
+	rows, err := q.db.Query(ctx, recoverOrphanedTasksForRuntime, arg.RuntimeID, arg.OnlyUnprobeable)
 	if err != nil {
 		return nil, err
 	}
