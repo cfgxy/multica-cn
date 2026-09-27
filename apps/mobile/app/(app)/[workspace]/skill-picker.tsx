@@ -29,7 +29,7 @@ export default function SkillPickerRoute() {
   const activeCount = agents.filter((agent) => !agent.archived_at).length;
 
   return (
-    <FlatList
+    <FlatList<(typeof rows)[number]>
       ref={listRef}
       data={rows}
       keyExtractor={({ skill }) => skill.id}
