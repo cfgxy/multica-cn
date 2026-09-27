@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/multica-ai/multica/server/internal/events"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
@@ -44,6 +45,11 @@ func (c *progressClock) Wait(_ context.Context, d time.Duration) error {
 func newProgressTestPatcher(t *testing.T) (*Patcher, *fakePatcherQueries, *fakeAPIClient, *progressClock) {
 	t.Helper()
 	p, q, api := newTestPatcher(t)
+	// A channel_task_delivery row only exists for tasks a channel conversation
+	// started, and those task rows carry their session. The progress pipeline
+	// resolves the card's session identity from that row (events carry none),
+	// so the fixture task must carry it too.
+	q.task = db.AgentTaskQueue{ChatSessionID: q.binding.ChatSessionID}
 	clock := &progressClock{now: time.Date(2026, 9, 27, 10, 0, 0, 0, time.UTC)}
 	p.cfg.Now = clock.Now
 	p.cfg.Wait = clock.Wait
@@ -433,5 +439,55 @@ func TestProgressCardClearsTypingBadgeOnFirstFrame(t *testing.T) {
 	defer api.mu.Unlock()
 	if len(api.deletedReactions) != 1 {
 		t.Fatalf("the first card frame must clear the Typing badge; deleted=%+v", api.deletedReactions)
+	}
+}
+
+// productionTaskMessageFrame builds the exact event shape handler.publishTask
+// emits for EventTaskMessage (the CreateTaskMessages loop in
+// internal/handler/daemon.go): a TaskID scope hint, NO ChatSessionID scope
+// hint, and a protocol.TaskMessagePayload value payload — the payload type has
+// no chat_session_id field at all. Fixtures that stuff a session into the
+// event prove nothing about production, which is how the first delivery
+// shipped a card pipeline that was unreachable outside tests.
+func productionTaskMessageFrame(taskID string, seq int, payload protocol.TaskMessagePayload) events.Event {
+	return events.Event{
+		Type:        protocol.EventTaskMessage,
+		WorkspaceID: "00000000-0000-0000-0000-000000000001",
+		ActorType:   "system",
+		ActorID:     "",
+		TaskID:      taskID,
+		Payload:     payload,
+	}
+}
+
+// TestProgressCardHandlesProductionEventShape is the seam test for the shape
+// above: with no session identity on the event, the card must still be created
+// and patched, and the persisted row plus the Typing-badge clear must be keyed
+// by the session resolved from the task's delivery path.
+func TestProgressCardHandlesProductionEventShape(t *testing.T) {
+	p, q, api, clock := newProgressTestPatcher(t)
+	taskID := "ee666666-ee66-ee66-ee66-eeeeeeeeeeee"
+	sessionID := uuidString(q.binding.ChatSessionID)
+
+	p.handleTaskMessage(productionTaskMessageFrame(taskID, 1, protocol.TaskMessagePayload{
+		Type: "text", Content: "planning the change",
+	}))
+	clock.now = clock.now.Add(2 * time.Second)
+	p.handleTaskMessage(productionTaskMessageFrame(taskID, 2, protocol.TaskMessagePayload{
+		Type: "tool_use", Tool: "Read",
+	}))
+
+	api.mu.Lock()
+	sent, patched := len(api.sent), len(api.patched)
+	api.mu.Unlock()
+	if sent != 1 || patched != 1 {
+		t.Fatalf("production-shape frames must create then patch the card; sent=%d patched=%d", sent, patched)
+	}
+
+	q.mu.Lock()
+	created := append([]CreateOutboundCardMessageParams(nil), q.created...)
+	q.mu.Unlock()
+	if len(created) != 1 || uuidString(created[0].ChatSessionID) != sessionID {
+		t.Fatalf("card row must be keyed by the task-path session; got %+v", created)
 	}
 }

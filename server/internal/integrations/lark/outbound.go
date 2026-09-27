@@ -449,6 +449,12 @@ type outboundTarget struct {
 	binding   ChatSessionBinding
 	creds     InstallationCredentials
 	agentName string
+	// chatSessionID is the owning session, read from the agent task row that
+	// resolveOutboundTarget loads anyway. Task-scoped events reach this package
+	// without session identity — handler.publishTask stamps only a TaskID hint
+	// and TaskMessagePayload has no chat_session_id field — so the delivery
+	// path is where the card writes get theirs.
+	chatSessionID pgtype.UUID
 }
 
 // resolveOutboundTarget answers "does this task's output belong on Feishu, and
@@ -514,7 +520,10 @@ func (p *Patcher) resolveOutboundTarget(ctx context.Context, taskID pgtype.UUID)
 	if agent, agentErr := p.queries.GetAgent(ctx, inst.AgentID); agentErr == nil {
 		agentName = agent.Name
 	}
-	return &outboundTarget{taskID: taskID, binding: binding, creds: creds, agentName: agentName}, nil
+	return &outboundTarget{
+		taskID: taskID, binding: binding, creds: creds, agentName: agentName,
+		chatSessionID: task.ChatSessionID,
+	}, nil
 }
 
 // sendChatReply turns ChatDonePayload.Content into a Lark message.
