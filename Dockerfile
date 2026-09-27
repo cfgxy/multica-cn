@@ -38,7 +38,7 @@ FROM alpine:3.21
 
 ARG APK_MIRROR=mirrors.tuna.tsinghua.edu.cn
 RUN sed -i "s#https://dl-cdn.alpinelinux.org#https://${APK_MIRROR}#" /etc/apk/repositories && \
-    apk add --no-cache ca-certificates tzdata
+    apk add --no-cache ca-certificates tzdata postgresql17-client
 
 WORKDIR /app
 
