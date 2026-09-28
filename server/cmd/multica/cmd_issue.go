@@ -557,11 +557,11 @@ func init() {
 	issueUpdateCmd.Flags().String("parent", "", "Parent issue ID (use --parent \"\" to clear)")
 	issueUpdateCmd.Flags().Int("stage", 0, "Stage ordinal (>=1) for this sub-issue; see `issue create --stage`")
 	issueUpdateCmd.Flags().Float64("position", 0, "Ordering position within the board column (lower sorts first); prefer `issue reorder` for relative moves")
-	issueUpdateCmd.Flags().Bool("no-start", false, "Apply the update without starting another agent run — only meaningful when the issue already has a run underway; the default start behavior is for handing off fresh work")
+	issueUpdateCmd.Flags().Bool("no-start", false, "Apply the update without starting an agent run")
 	issueUpdateCmd.Flags().String("output", "json", "Output format: table or json")
 
 	// issue status
-	issueStatusCmd.Flags().Bool("no-start", false, "Change status without starting another agent run — only meaningful when the issue already has a run underway. Refused when it would promote an issue out of backlog: that promotion is itself the handoff")
+	issueStatusCmd.Flags().Bool("no-start", false, "Change status without starting an agent run")
 	issueStatusCmd.Flags().String("output", "table", "Output format: table or json")
 
 	// issue reorder
@@ -571,7 +571,7 @@ func init() {
 	issueAssignCmd.Flags().String("to", "", "Assignee name (member, agent, or squad; fuzzy match)")
 	issueAssignCmd.Flags().String("to-id", "", "Assignee UUID — member, agent, or squad (mutually exclusive with --to)")
 	issueAssignCmd.Flags().Bool("unassign", false, "Remove current assignee")
-	issueAssignCmd.Flags().Bool("no-start", false, "Record ownership without starting another agent run — only meaningful when the work is already underway")
+	issueAssignCmd.Flags().Bool("no-start", false, "Assign ownership without starting an agent run")
 	issueAssignCmd.Flags().String("output", "json", "Output format: table or json")
 
 	// issue comment list
@@ -1569,9 +1569,6 @@ func runIssueStatus(cmd *cobra.Command, args []string) error {
 
 	body := map[string]any{"status": status}
 	if noStart {
-		if err := guardBacklogNoStart(ctx, client, issueRef.ID, status); err != nil {
-			return err
-		}
 		body["suppress_run"] = true
 	}
 	var result map[string]any
@@ -1586,44 +1583,6 @@ func runIssueStatus(cmd *cobra.Command, args []string) error {
 		return cli.PrintJSON(os.Stdout, result)
 	}
 	return nil
-}
-
-// guardBacklogNoStart 拒绝那种「把单从 backlog 提升出来、同时又压掉 run」的
-// `issue status --no-start` 调用：提升出 backlog 本身就是交接动作，压掉 run 会把
-// 交接变成一次没人接手的静默状态翻转（RUYI-254）。
-//
-// 当前状态拿不到免费的：resolveIssueRef 对完整 UUID 直接自证短路、不发 GET
-// （GH #7017），issue key 形态虽然发了 GET 但只保留 id/display，不带 status。
-// 因此守卫必须自己读一次，且这次读取只发生在显式传了 --no-start 的低频路径上，
-// 未传该 flag 的常规调用仍然零额外往返。
-//
-// 读取是提示性的：任何失败（网络、404、权限）都放行，守卫不引入新的失败点。
-func guardBacklogNoStart(ctx context.Context, client *cli.APIClient, issueID, target string) error {
-	var issue map[string]any
-	if err := client.GetJSON(ctx, "/api/issues/"+url.PathEscape(issueID), &issue); err != nil {
-		return nil
-	}
-
-	current := strVal(issue, "status")
-	// 自定义状态继承其分类的平台行为，所以优先按分类判断。
-	category := strVal(issue, "status_category")
-	if category == "" {
-		category = current
-	}
-	if !strings.EqualFold(category, "backlog") {
-		return nil
-	}
-	// 目标仍在 backlog（含原地不动）时没有发生提升，不拦。
-	if strings.EqualFold(target, "backlog") || strings.EqualFold(target, current) {
-		return nil
-	}
-
-	return fmt.Errorf(
-		"issue %s is in backlog: promoting it out of backlog is itself the handoff, so --no-start is refused here.\n"+
-			"Drop --no-start to promote it — that hands the issue over and starts the run.\n"+
-			"Keep the issue in backlog if you do not want a run to start.",
-		issueDisplayKey(issue),
-	)
 }
 
 // ---------------------------------------------------------------------------
