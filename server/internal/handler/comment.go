@@ -7,6 +7,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -1478,7 +1479,94 @@ type CommentTriggerPreviewResponse struct {
 	// this comment is posted as-is (MUL-4525 §2). Additive: old clients ignore
 	// it. It lets the composer warn before sending instead of the user only
 	// discovering the silent no-op afterwards.
-	Blocked []CommentTriggerOutcome `json:"blocked,omitempty"`
+	Blocked         []CommentTriggerOutcome `json:"blocked,omitempty"`
+	InvalidMentions []invalidAgentMention   `json:"invalid_mentions,omitempty"`
+}
+
+// invalidAgentMention identifies a complete Markdown link in the normalized
+// content. Offsets are UTF-8 byte offsets into the string the server stores.
+type invalidAgentMention struct {
+	Start int `json:"start"`
+	End   int `json:"end"`
+}
+
+// Match agent link endings even when the UUID is malformed. Walking back to
+// the matching label bracket avoids including earlier Markdown links in the
+// error span while preserving labels with nested brackets.
+var agentMentionAdmissionRe = regexp.MustCompile(`\]\(mention://agent/([^\s)]*)\)`)
+
+func agentMentionStart(content string, close int) int {
+	depth := 0
+	for i := close - 1; i >= 0 && content[i] != '\n'; i-- {
+		switch content[i] {
+		case ']':
+			depth++
+		case '[':
+			if depth == 0 {
+				if i+1 < close {
+					return i
+				}
+				return -1
+			}
+			depth--
+		}
+	}
+	return -1
+}
+
+// validateExplicitAgentMentions checks the admission gate independently of
+// runtime readiness and queue state. Suppressed targets still name an agent,
+// and duplicate links each get their own span for the editor to repair.
+func (h *Handler) validateExplicitAgentMentions(ctx context.Context, issue db.Issue, content, actorType, actorID, originatorUserID string) ([]invalidAgentMention, error) {
+	if isNoteComment(content) {
+		return nil, nil
+	}
+	var invalid []invalidAgentMention
+	verdicts := make(map[string]bool)
+	for _, match := range agentMentionAdmissionRe.FindAllStringSubmatchIndex(content, -1) {
+		start := agentMentionStart(content, match[0])
+		if start < 0 {
+			continue
+		}
+		id := content[match[2]:match[3]]
+		allowed, checked := verdicts[id]
+		if !checked {
+			agentUUID, err := util.ParseUUID(id)
+			if err == nil {
+				agent, lookupErr := h.Queries.GetAgentInWorkspace(ctx, db.GetAgentInWorkspaceParams{
+					ID: agentUUID, WorkspaceID: issue.WorkspaceID,
+				})
+				if lookupErr != nil && !errors.Is(lookupErr, pgx.ErrNoRows) {
+					return nil, lookupErr
+				}
+				if lookupErr == nil {
+					allowed = h.invokeAgentDecision(ctx, agent, actorType, actorID, originatorUserID, uuidToString(issue.WorkspaceID)) && !agent.ArchivedAt.Valid
+				}
+			}
+			verdicts[id] = allowed
+		}
+		if !allowed {
+			invalid = append(invalid, invalidAgentMention{Start: start, End: match[1]})
+		}
+	}
+	return invalid, nil
+}
+
+func (h *Handler) admitExplicitAgentMentions(w http.ResponseWriter, r *http.Request, issue db.Issue, content, actorType, actorID string) bool {
+	invalid, err := h.validateExplicitAgentMentions(r.Context(), issue, content, actorType, actorID, h.invokeOriginatorFromRequest(r, actorType, actorID))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to validate comment mentions")
+		return false
+	}
+	if len(invalid) > 0 {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error":            "one or more agent mentions cannot be invoked",
+			"code":             "invalid_agent_mentions",
+			"invalid_mentions": invalid,
+		})
+		return false
+	}
+	return true
 }
 
 type CommentTriggerAgentResponse struct {
@@ -1646,10 +1734,33 @@ func (h *Handler) PreviewCommentTriggers(w http.ResponseWriter, r *http.Request)
 
 	actorType, actorID := h.resolveActor(r, userID, uuidToString(issue.WorkspaceID))
 	opts.OriginatorUserID = h.invokeOriginatorFromRequest(r, actorType, actorID)
+	if editingComment != nil {
+		member, ok := h.workspaceMember(w, r, uuidToString(issue.WorkspaceID))
+		if !ok {
+			return
+		}
+		if !(editingComment.AuthorType == actorType && uuidToString(editingComment.AuthorID) == actorID) && !roleAllowed(member.Role, "owner", "admin") {
+			writeError(w, http.StatusForbidden, "only comment author or admin can edit")
+			return
+		}
+		if editingComment.Content == content {
+			writeJSON(w, http.StatusOK, CommentTriggerPreviewResponse{Agents: []CommentTriggerAgentResponse{}})
+			return
+		}
+	}
+	invalid, err := h.validateExplicitAgentMentions(r.Context(), issue, content, actorType, actorID, opts.OriginatorUserID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to validate comment mentions")
+		return
+	}
 	triggers, targets := h.computeCommentAgentTriggers(r.Context(), issue, content, parentComment, actorType, actorID, opts)
+	if len(invalid) > 0 {
+		triggers = nil
+	}
 	resp := CommentTriggerPreviewResponse{
-		Agents:  make([]CommentTriggerAgentResponse, 0, len(triggers)),
-		Blocked: commentBlockedTargetOutcomes(targets),
+		Agents:          make([]CommentTriggerAgentResponse, 0, len(triggers)),
+		Blocked:         commentBlockedTargetOutcomes(targets),
+		InvalidMentions: invalid,
 	}
 	for _, trigger := range triggers {
 		resp.Agents = append(resp.Agents, h.commentAgentTriggerToResponse(trigger))
@@ -1837,6 +1948,9 @@ func (h *Handler) CreateComment(w http.ResponseWriter, r *http.Request) {
 			}
 			sourceTaskID = task.ID
 		}
+	}
+	if !h.admitExplicitAgentMentions(w, r, issue, req.Content, authorType, authorID) {
+		return
 	}
 
 	// NOTE: Comment content is stored as Markdown source. XSS is handled at the
@@ -3285,6 +3399,9 @@ func (h *Handler) UpdateComment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		triggerIssue = &issue
+		if !h.admitExplicitAgentMentions(w, r, issue, req.Content, actorType, actorID) {
+			return
+		}
 		// A content edit is a NEW action, so its delegation lineage must key on THIS
 		// edit. Only the AGENT author re-editing its OWN comment carries the lineage
 		// forward (commentSourceTaskID re-stamps the current editing task) — so

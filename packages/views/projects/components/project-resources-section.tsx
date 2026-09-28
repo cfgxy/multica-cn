@@ -57,7 +57,7 @@ import {
 } from "./local-directory-mode-dialog";
 import { localDirectoryLabel } from "./local-directory-label";
 import { useT } from "../../i18n";
-import { githubShortLabel } from "../../common/github-url";
+import { gitRepoShortLabel, isWebLinkableRepoUrl } from "../../common/github-url";
 
 // Project Resources sidebar section.
 //
@@ -466,7 +466,7 @@ export function ProjectResourcesSection({ projectId }: { projectId: string }) {
                           <Tooltip>
                             <TooltipTrigger
                               render={
-                                <span className="truncate flex-1">{githubShortLabel(repo.url)}</span>
+                                <span className="truncate flex-1">{gitRepoShortLabel(repo.url)}</span>
                               }
                             />
                             <TooltipContent side="top">{repo.url}</TooltipContent>
@@ -600,7 +600,8 @@ function ResourceRow({
   const { t } = useT("projects");
   if (isGithubRef(resource)) {
     const ref = resource.resource_ref;
-    const display = resource.label || (ref.ref ? `${githubShortLabel(ref.url)} @ ${ref.ref}` : githubShortLabel(ref.url));
+    const label = gitRepoShortLabel(ref.url);
+    const display = resource.label || (ref.ref ? `${label} @ ${ref.ref}` : label);
     const tooltip = ref.ref ? `${ref.url}\nref: ${ref.ref}` : ref.url;
     return (
       <div className="flex items-center gap-2 text-caption group">
@@ -608,14 +609,20 @@ function ResourceRow({
         <Tooltip>
           <TooltipTrigger
             render={
-              <a
-                href={ref.url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="truncate flex-1 hover:underline"
-              >
-                {display}
-              </a>
+              // An ssh:// or git@host: clone URL is not a page — render it as
+              // plain text rather than a link the browser cannot follow.
+              isWebLinkableRepoUrl(ref.url) ? (
+                <a
+                  href={ref.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="truncate flex-1 hover:underline"
+                >
+                  {display}
+                </a>
+              ) : (
+                <span className="truncate flex-1">{display}</span>
+              )
             }
           />
           <TooltipContent side="top" className="whitespace-pre-line">{tooltip}</TooltipContent>

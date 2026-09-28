@@ -62,12 +62,12 @@ function makePR(overrides: Partial<GitHubPullRequest> = {}): GitHubPullRequest {
   };
 }
 
-function renderList() {
+function renderList(showGitHub = true) {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={qc}>
       <I18nProvider resources={TEST_RESOURCES} locale="en">
-        <PullRequestList issueId="issue-1" />
+        <PullRequestList issueId="issue-1" showGitHub={showGitHub} />
       </I18nProvider>
     </QueryClientProvider>,
   );
@@ -78,6 +78,25 @@ async function waitForRender() {
 }
 
 describe("PullRequestList sidebar rows", () => {
+  it("shows GitLab MR without the GitHub sidebar and hides GitHub and legacy rows", async () => {
+    mockPRs = [
+      makePR({ id: "github", title: "GitHub PR" }),
+      makePR({ id: "legacy", title: "Legacy PR", provider: undefined }),
+      makePR({ id: "gitlab", title: "GitLab MR", provider: "gitlab" }),
+    ];
+    renderList(false);
+    expect(await screen.findByText("GitLab MR")).toBeInTheDocument();
+    expect(screen.queryByText("GitHub PR")).not.toBeInTheDocument();
+    expect(screen.queryByText("Legacy PR")).not.toBeInTheDocument();
+  });
+
+  it("keeps the existing GitHub rows when its sidebar is enabled", async () => {
+    mockPRs = [makePR({ title: "GitHub PR" }), makePR({ id: "gitlab", provider: "gitlab", title: "GitLab MR" })];
+    renderList(true);
+    expect(await screen.findByText("GitHub PR")).toBeInTheDocument();
+    expect(screen.getByText("GitLab MR")).toBeInTheDocument();
+  });
+
   it("uses the sidebar list-row surface instead of a card surface", async () => {
     mockPRs = [makePR({ title: "Visual row" })];
     renderList();

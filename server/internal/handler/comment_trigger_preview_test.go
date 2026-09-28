@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/multica-ai/multica/server/internal/testutil"
 	"github.com/multica-ai/multica/server/internal/util"
 )
 
@@ -1268,8 +1269,14 @@ func TestPreviewCommentTriggers_MalformedMentionIDDoesNotPanic(t *testing.T) {
 				t.Fatalf("blocked reason = %q, want %q", blocked.ReasonCode, tc.reason)
 			}
 
-			// The create path must survive the same input and enqueue nothing.
-			postCommentForTriggerPreviewTest(t, issueID, map[string]any{"content": tc.content})
+			// Invalid agent links now fail before write; squad links retain
+			// the old successful comment with a blocked outcome.
+			if tc.targetType == "agent" {
+				testutil.Call(t, testHandler.CreateComment,
+					withURLParam(newRequest(http.MethodPost, "/api/issues/"+issueID+"/comments", map[string]any{"content": tc.content}), "id", issueID)).Want(http.StatusUnprocessableEntity)
+			} else {
+				postCommentForTriggerPreviewTest(t, issueID, map[string]any{"content": tc.content})
+			}
 			if got := countQueuedCommentTriggerTasks(t, issueID, assigneeID); got != 0 {
 				t.Fatalf("assignee queued tasks = %d, want 0", got)
 			}

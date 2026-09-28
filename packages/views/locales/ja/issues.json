@@ -493,6 +493,8 @@
     "edit_action": "編集",
     "update_failed": "コメントを更新できませんでした",
     "send_failed": "コメントを送信できませんでした",
+    "invalid_agent_mentions": "コメントは投稿されませんでした。エージェントへのメンションを確認して、もう一度お試しください。",
+    "preview_invalid_agent_mentions": "投稿前にエージェントへのメンションを確認してください。",
     "posted_partial_trigger_other": "コメントを投稿しましたが、{{count}} 件のメンションはトリガーされませんでした",
     "posted_partial_trigger_named": "コメントを投稿しましたが、{{name}} はトリガーされませんでした（{{reason}}）",
     "trigger_blocked_chip_aria": "{{name}} はトリガーされません — {{reason}}",
