@@ -174,16 +174,30 @@ type PatcherConfig struct {
 	// entirely — it sends the raw assistant reply as a plain text IM
 	// message — so this only matters for the failure branch.
 	Renderer Renderer
-	Now      func() time.Time
-	Logger   *slog.Logger
+	// ProgressRenderer drives the streaming process card (progress_card.go).
+	// Separate from Renderer because the two are different card generations:
+	// the error card is schema 1.0, the process card schema 2.0.
+	ProgressRenderer ProgressRenderer
+	Now              func() time.Time
+	// Wait is how the progress scheduler sleeps out a throttle interval or a
+	// rate-limit backoff. Injected so tests drive the schedule from a fake
+	// clock instead of real time.
+	Wait   func(ctx context.Context, d time.Duration) error
+	Logger *slog.Logger
 }
 
 func (c PatcherConfig) withDefaults() PatcherConfig {
 	if c.Renderer == nil {
 		c.Renderer = NewDefaultRenderer()
 	}
+	if c.ProgressRenderer == nil {
+		c.ProgressRenderer = NewDefaultProgressRenderer()
+	}
 	if c.Now == nil {
 		c.Now = time.Now
+	}
+	if c.Wait == nil {
+		c.Wait = progressWait
 	}
 	if c.Logger == nil {
 		c.Logger = slog.Default()
@@ -217,6 +231,7 @@ type Patcher struct {
 	credentials     CredentialsResolver
 	client          APIClient
 	typingIndicator *TypingIndicatorManager
+	progress        *progressCards
 	cfg             PatcherConfig
 
 	// objects is nil unless WithAttachments wired object storage, and nil is
@@ -252,6 +267,7 @@ func NewPatcher(queries PatcherQueries, credentials CredentialsResolver, client 
 	for _, opt := range opts {
 		opt(p)
 	}
+	p.progress = newProgressCards(p)
 	return p
 }
 
@@ -303,14 +319,28 @@ func (p *Patcher) SetTypingIndicatorManager(m *TypingIndicatorManager) {
 //     and task-failed race the add the same way — and closing it needs a
 //     per-session generation the add can check when its call returns.
 //
+//   - EventTaskMessage — the run's process frames, which drive the separate
+//     streaming progress card (progress_card.go). Added on the Owner's
+//     instruction of 2026-09-26 ("流式卡片的形态；参考我改版的 CCConnect 形态",
+//     RUYI-221) after a Feishu run was reported as giving no feedback at all
+//     until the answer landed.
+//
+//     This does NOT restore the removed card lifecycle. What made that one
+//     unwanted was that the REPLY lived inside card chrome; here the reply is
+//     still the plain text message sendChatReply posts, and the progress card
+//     is a second, process-only artifact whose footer states it has stopped
+//     and that the answer is the next message — the same split ccconnect uses
+//     (platform/feishu/feishu.go progressStateMeta).
+//
 // We deliberately do NOT subscribe to EventTaskQueued / EventTaskRunning
-// (no thinking-card lifecycle anymore — adds noise without value) or to
-// EventTaskCompleted (chat tasks always emit EventChatDone first, which
-// is what we care about; non-chat tasks have no Lark binding anyway and
-// would early-return). Leaving EventTaskCompleted unsubscribed also
-// avoids the prior "Done." overwrite regression where the no-content
-// EventTaskCompleted payload would wipe the real reply.
+// (a queued/running card frame carries no process information the task
+// messages do not already carry) or to EventTaskCompleted (chat tasks always
+// emit EventChatDone first, which is what we care about; non-chat tasks have
+// no Lark binding anyway and would early-return). Leaving EventTaskCompleted
+// unsubscribed also avoids the prior "Done." overwrite regression where the
+// no-content EventTaskCompleted payload would wipe the real reply.
 func (p *Patcher) Register(bus *events.Bus) {
+	bus.Subscribe(protocol.EventTaskMessage, p.handleTaskMessage)
 	bus.Subscribe(protocol.EventTaskFailed, p.handleEvent)
 	bus.Subscribe(protocol.EventChatDone, p.handleEvent)
 	bus.Subscribe(protocol.EventTaskCancelled, p.handleEvent)
@@ -319,7 +349,10 @@ func (p *Patcher) Register(bus *events.Bus) {
 func (p *Patcher) handleEvent(e events.Event) {
 	// Use a fresh background ctx with a tight timeout: bus delivery is
 	// synchronous so a stuck Lark HTTP call would otherwise wedge the
-	// whole publish call site.
+	// whole publish call site. The terminal progress-card frame is the one
+	// deliberate exception: it finalizes on its own bounded budget
+	// (finalizeLater) because its retry schedule must outlive rate-limit
+	// backoffs this event budget cannot cover.
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := p.processEvent(ctx, e); err != nil {
@@ -365,19 +398,91 @@ func (p *Patcher) processEvent(ctx context.Context, e events.Event) error {
 		if p.typingIndicator != nil {
 			p.typingIndicator.Clear(ctx, chatSessionID)
 		}
+		// A cancelled run leaves a running progress card on screen with nothing
+		// behind it, so its last frame is the one that says so. No-op when the
+		// run never produced a card.
+		p.progress.finalizeLater(taskID, chatSessionID, ProgressStateCancelled)
 		return nil
 	}
 
+	target, err := p.resolveOutboundTarget(ctx, taskID)
+	if err != nil || target == nil {
+		return err
+	}
+
+	// Clear the "processing" reaction before the reply is visible so the
+	// user sees a clean transition. Best-effort: a failure here is logged
+	// but does not block the actual reply. The progress card's first frame
+	// already clears it; this stays as the safety net for a run whose card
+	// never landed, and Clear on an untracked session is a no-op.
+	if p.typingIndicator != nil {
+		p.typingIndicator.Clear(ctx, chatSessionID)
+	}
+
+	// The answer goes out FIRST, then the card is stopped: the terminal card
+	// frame may have to wait out a rate-limit backoff, and neither the reply
+	// nor this synchronous publish call site must inherit that latency — so
+	// the stop runs on finalizeLater's own budget.
+	switch e.Type {
+	case protocol.EventChatDone:
+		replyErr := p.sendChatReply(ctx, target.creds, target.binding, e.Payload)
+		// The files leave on a goroutine of their own, and deliberately
+		// regardless of what the words did. A turn with no text at all is the
+		// ordinary shape of "here is the file you asked for" — sendChatReply
+		// drops empty content and returns nil — so gating the attachment on a
+		// non-empty reply would silently lose exactly those turns. A text send
+		// that failed is no reason to withhold the file either.
+		if p.mayCarryAttachments(e) {
+			p.deliverAttachments(e, attachmentTarget{Creds: target.creds, Binding: target.binding})
+		}
+		p.progress.finalizeLater(taskID, chatSessionID, ProgressStateCompleted)
+		return replyErr
+	case protocol.EventTaskFailed:
+		failErr := p.fail(ctx, target.creds, target.binding, taskID, target.agentName, e.Payload)
+		p.progress.finalizeLater(taskID, chatSessionID, ProgressStateFailed)
+		return failErr
+	}
+	return nil
+}
+
+// outboundTarget is everything one outbound write needs: where the message
+// goes and which app credentials send it. It is resolved per event/frame
+// rather than cached, so a credential rotation or a rebound session between
+// two frames is picked up, and no decrypted secret outlives the call.
+type outboundTarget struct {
+	taskID    pgtype.UUID
+	binding   ChatSessionBinding
+	creds     InstallationCredentials
+	agentName string
+	// chatSessionID is the owning session, read from the agent task row that
+	// resolveOutboundTarget loads anyway. Task-scoped events reach this package
+	// without session identity — handler.publishTask stamps only a TaskID hint
+	// and TaskMessagePayload has no chat_session_id field — so the delivery
+	// path is where the card writes get theirs.
+	chatSessionID pgtype.UUID
+}
+
+// resolveOutboundTarget answers "does this task's output belong on Feishu, and
+// through which app". A nil target with a nil error means no — the task is not
+// channel-routed, its installation is revoked, or its input did not come from
+// the channel.
+//
+// The channel gate reads the delivery row's immutable ChannelType snapshot,
+// which is routing ("this task's output was addressed to Feishu"), not a
+// capability claim about the adapter. Capability stays where the
+// ChannelCarriesFiles comment in execenv/channel_type.go says it belongs: in
+// what the injected APIClient can actually do.
+func (p *Patcher) resolveOutboundTarget(ctx context.Context, taskID pgtype.UUID) (*outboundTarget, error) {
 	delivery, err := p.queries.GetChannelTaskDelivery(ctx, taskID)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			// Direct Multica task or violated snapshot invariant — fail closed.
-			return nil
+			return nil, nil
 		}
-		return fmt.Errorf("lookup lark task delivery: %w", err)
+		return nil, fmt.Errorf("lookup lark task delivery: %w", err)
 	}
 	if delivery.ChannelType != channelTypeFeishu {
-		return nil
+		return nil, nil
 	}
 	binding := ChatSessionBinding{
 		ID: delivery.BindingID, InstallationID: delivery.InstallationID,
@@ -393,59 +498,37 @@ func (p *Patcher) processEvent(ctx context.Context, e events.Event) error {
 	// batch, not chat_input_task_id presence (which #5645 originally used).
 	task, err := p.queries.GetAgentTask(ctx, taskID)
 	if err != nil {
-		return fmt.Errorf("load agent task: %w", err)
+		return nil, fmt.Errorf("load agent task: %w", err)
 	}
 	deliver, err := engine.TaskInputIsChannelIngested(ctx, p.queries, task)
 	if err != nil {
-		return fmt.Errorf("classify task input origin: %w", err)
+		return nil, fmt.Errorf("classify task input origin: %w", err)
 	}
 	if !deliver {
-		return nil
+		return nil, nil
 	}
 
 	inst, err := p.queries.GetLarkInstallation(ctx, binding.InstallationID)
 	if err != nil {
-		return fmt.Errorf("load installation: %w", err)
+		return nil, fmt.Errorf("load installation: %w", err)
 	}
 	if InstallationStatus(inst.Status) != InstallationActive {
 		// Revoked between trigger and event; nothing to patch.
-		return nil
+		return nil, nil
 	}
 	creds, err := p.installationCredentials(inst)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
-	agent, agentErr := p.queries.GetAgent(ctx, inst.AgentID)
 	agentName := ""
-	if agentErr == nil {
+	if agent, agentErr := p.queries.GetAgent(ctx, inst.AgentID); agentErr == nil {
 		agentName = agent.Name
 	}
-
-	// Clear the "processing" reaction before the reply is visible so the
-	// user sees a clean transition. Best-effort: a failure here is logged
-	// but does not block the actual reply.
-	if p.typingIndicator != nil {
-		p.typingIndicator.Clear(ctx, chatSessionID)
-	}
-
-	switch e.Type {
-	case protocol.EventChatDone:
-		replyErr := p.sendChatReply(ctx, creds, binding, e.Payload)
-		// The files leave on a goroutine of their own, and deliberately
-		// regardless of what the words did. A turn with no text at all is the
-		// ordinary shape of "here is the file you asked for" — sendChatReply
-		// drops empty content and returns nil — so gating the attachment on a
-		// non-empty reply would silently lose exactly those turns. A text send
-		// that failed is no reason to withhold the file either.
-		if p.mayCarryAttachments(e) {
-			p.deliverAttachments(e, attachmentTarget{Creds: creds, Binding: binding})
-		}
-		return replyErr
-	case protocol.EventTaskFailed:
-		return p.fail(ctx, creds, binding, taskID, agentName, e.Payload)
-	}
-	return nil
+	return &outboundTarget{
+		taskID: taskID, binding: binding, creds: creds, agentName: agentName,
+		chatSessionID: task.ChatSessionID,
+	}, nil
 }
 
 // sendChatReply turns ChatDonePayload.Content into a Lark message.
