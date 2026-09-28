@@ -11,6 +11,13 @@ export { promptQualityDashboardOptions, promptQualityKeys } from "./queries";
 export { quizVerdict, quizDiscrimination, toQuizView, quizOutcomeCount } from "./quiz";
 export type { QuizVerdict, QuizDiscrimination, QuizView, Incomparable } from "./quiz";
 export {
+  skillEvolutionKeys,
+  skillVersionsOptions,
+  skillVersionOptions,
+  skillUsageOptions,
+  useRestoreSkillVersion,
+} from "./skill-queries";
+export {
   promptQuizKeys,
   promptQuizItemsOptions,
   promptQuizItemOptions,
