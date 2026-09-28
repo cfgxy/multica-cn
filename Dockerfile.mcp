@@ -1,0 +1,75 @@
+# MCP HTTP server image (apps/mcp, streamable HTTP transport).
+# RUYI-209 部署阶段新增的本地部署素材（不入库）：构建模式参照 Dockerfile.web。
+# 容器内进程绑 0.0.0.0:3002（docker 惯例）；对宿主/外部的暴露面由 compose
+# override 的 ports 发布控制为 127.0.0.1:3002，frpc 侧不再有 3002 映射。
+
+# --- Dependencies ---
+FROM node:22-alpine AS deps
+
+# CN mirror (override via build args when building outside China): covers
+# both package tarballs and the pnpm binary corepack downloads.
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+ENV npm_config_registry=${NPM_REGISTRY} \
+    COREPACK_NPM_REGISTRY=${NPM_REGISTRY}
+
+WORKDIR /app
+
+# Copy workspace config and all package.json files needed to resolve the
+# @multica/mcp dependency closure.
+COPY pnpm-lock.yaml pnpm-workspace.yaml package.json turbo.json .npmrc ./
+# patchedDependencies are referenced from package.json and hash-verified by
+# pnpm install --frozen-lockfile; the patch files must exist in the context
+COPY patches ./patches
+COPY apps/mcp/package.json apps/mcp/
+COPY packages/tsconfig/package.json packages/tsconfig/
+COPY packages/eslint-config/package.json packages/eslint-config/
+
+RUN corepack enable && \
+    PNPM_VERSION="$(node -p 'require("./package.json").packageManager')" && \
+    corepack prepare "$PNPM_VERSION" --activate && \
+    pnpm config set store-dir /pnpm-store --global
+
+# Cache mount keeps the pnpm store across builds; only the @multica/mcp
+# closure is fetched from the registry.
+RUN --mount=type=cache,id=pnpm-store,target=/pnpm-store \
+    pnpm install --frozen-lockfile --filter @multica/mcp...
+
+# --- Build ---
+FROM node:22-alpine AS builder
+
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+ENV npm_config_registry=${NPM_REGISTRY} \
+    COREPACK_NPM_REGISTRY=${NPM_REGISTRY}
+
+WORKDIR /app
+COPY --from=deps /app ./
+COPY packages/tsconfig packages/tsconfig/
+COPY apps/mcp apps/mcp/
+
+# builder 是独立 stage：pnpm 不随 deps 带入，需在此重新启用 corepack
+# （版本取自 package.json 的 packageManager，走 CN mirror 下载）。
+RUN corepack enable && \
+    COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
+    corepack prepare "$(node -p 'require("./package.json").packageManager')" --activate && \
+    pnpm --filter @multica/mcp build
+
+# --- Runtime ---
+FROM node:22-alpine AS runner
+
+ENV NODE_ENV=production
+
+RUN addgroup --system --gid 1001 nodejs && \
+    adduser --system --uid 1001 mcp
+
+WORKDIR /app
+# 保持 pnpm workspace 相对布局：apps/mcp/node_modules 内的 symlink 指向仓库根
+# node_modules/.pnpm，两段必须按原相对路径落位，否则运行时解析失败。
+COPY --from=builder --chown=mcp:nodejs /app/node_modules ./node_modules
+COPY --from=builder --chown=mcp:nodejs /app/apps/mcp ./apps/mcp
+
+USER mcp
+WORKDIR /app/apps/mcp
+
+EXPOSE 3002
+
+CMD ["node", "dist/index.js", "--transport", "http", "--port", "3002", "--host", "0.0.0.0"]
