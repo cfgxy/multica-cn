@@ -118,6 +118,15 @@ export function composeServerList(
   return [builtIn, ...customServers.filter((s) => !s.builtIn)];
 }
 
+/** undefined bypasses the gate; null requires an explicit selection. */
+export function getStartupServerTarget(
+  servers: ServerEntry[],
+  previousId: string | null,
+): string | null | undefined {
+  if (servers.length < 2) return undefined;
+  return servers.some((s) => s.id === previousId) ? previousId : null;
+}
+
 /**
  * Web 地址解析,全应用唯一收口:`webUrl ?? apiUrl`。
  * 回退值绝不落盘 —— 用户日后改了服务器地址,Web 跳转自动跟着走。

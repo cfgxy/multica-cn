@@ -1459,6 +1459,17 @@
     "expiry_never": "永久有效"
   },
   "server": {
+    "startup": {
+      "title": "选择要连接的服务器",
+      "countdown": "{{n}} 秒后自动连接「{{name}}」",
+      "connect_now": "立即连接",
+      "cancel_auto": "取消自动连接",
+      "next": "即将连接",
+      "checking": "检测中",
+      "reachable": "连接正常",
+      "unreachable": "无法连接",
+      "recheck": "重新检测"
+    },
     "title": "服务器",
     "back": "返回",
     "add": "添加服务器",

@@ -53,6 +53,21 @@ export function resolveEffectiveRuntimeConfig(
   };
 }
 
+/** Undefined bypasses the gate; null opens explicit selection. */
+export function getStartupServerTarget(
+  builtin: RuntimeConfig,
+  storage: StorageAdapter = defaultStorage,
+): string | null | undefined {
+  const persisted = parsePersisted(storage);
+  const servers = [
+    resolveBuiltInEntry(builtin),
+    ...(persisted?.servers.filter((s) => !s.builtIn) ?? []),
+  ];
+  if (servers.length < 2) return undefined;
+  const previousId = persisted?.activeServerId;
+  return servers.some((s) => s.id === previousId) ? previousId : null;
+}
+
 let storeRegistered = false;
 
 /** Idempotently create + register + hydrate the server store for the UI. */

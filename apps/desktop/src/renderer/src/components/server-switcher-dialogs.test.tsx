@@ -3,7 +3,7 @@ import { act, fireEvent, render, screen } from "@testing-library/react";
 
 const mocks = vi.hoisted(() => ({
   switchToServer: vi.fn(),
-  reload: vi.fn(),
+  applyServerSwitch: vi.fn(),
   toastError: vi.fn(),
 }));
 
@@ -54,9 +54,9 @@ vi.mock("../platform/desktop-servers", () => ({
 import { useServerSwitcherStore } from "../stores/server-switcher-store";
 import { ServerSwitcherDialogs } from "./server-switcher-dialogs";
 
-Object.defineProperty(window, "location", {
-  value: { reload: mocks.reload },
-  writable: true,
+Object.defineProperty(window, "desktopAPI", {
+  value: { applyServerSwitch: mocks.applyServerSwitch },
+  configurable: true,
 });
 
 const ENTRY = { id: "srv_b", name: "Home lab", apiUrl: "https://b.example.com", webUrl: null, builtIn: false };
@@ -85,7 +85,7 @@ describe("ServerSwitcherDialogs — switch confirmation", () => {
     });
 
     expect(mocks.switchToServer).toHaveBeenCalledWith("srv_b");
-    expect(mocks.reload).toHaveBeenCalledTimes(1);
+    expect(mocks.applyServerSwitch).toHaveBeenCalledTimes(1);
   });
 
   it("signed-in users confirm first, then switch and reload", () => {
@@ -100,7 +100,7 @@ describe("ServerSwitcherDialogs — switch confirmation", () => {
 
     fireEvent.click(screen.getByText("Switch", { selector: "[data-slot=alert-dialog-action]" }));
     expect(mocks.switchToServer).toHaveBeenCalledWith("srv_b");
-    expect(mocks.reload).toHaveBeenCalledTimes(1);
+    expect(mocks.applyServerSwitch).toHaveBeenCalledTimes(1);
   });
 
   it("shows a toast instead of reloading when the switch is rejected", () => {
@@ -114,7 +114,7 @@ describe("ServerSwitcherDialogs — switch confirmation", () => {
     fireEvent.click(screen.getByText("Switch", { selector: "[data-slot=alert-dialog-action]" }));
 
     expect(mocks.switchToServer).toHaveBeenCalledWith("srv_b");
-    expect(mocks.reload).not.toHaveBeenCalled();
+    expect(mocks.applyServerSwitch).not.toHaveBeenCalled();
     expect(mocks.toastError).toHaveBeenCalledWith("Could not switch servers.");
   });
 
