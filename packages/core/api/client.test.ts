@@ -2381,6 +2381,15 @@ describe("ApiClient skill version responses", () => {
     created_at: "2026-01-01T00:00:00Z",
   };
 
+  it("validates skill lists consumed by the shared tab", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: "skill-1", workspace_id: "ws-1", name: "review-helper" }])))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 42, name: "broken" }]))));
+    const client = new ApiClient("https://api.example.test");
+    expect(await client.listSkills()).toMatchObject([{ id: "skill-1", name: "review-helper" }]);
+    expect(await client.listSkills()).toEqual([]);
+  });
+
   it("keeps list responses metadata-only and parses detail and restore", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify([version])))
@@ -2407,6 +2416,23 @@ describe("ApiClient skill version responses", () => {
     expect(await client.listSkillVersions("skill-1")).toEqual([]);
     expect(await client.getSkillVersion("skill-1", 1)).toMatchObject({ id: "", version: 0, files: [] });
     expect(await client.restoreSkillVersion("skill-1", 1)).toEqual({ version: 0 });
+  });
+
+  it("reads explicit skill invocations and rejects malformed usage responses", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        total: 1, last_30_days: 1, assigned_agents: 2, since: "2026-09-28T00:00:00Z",
+        versions: [{ version: 2, count: 1 }],
+        recent: [{ task_id: "run-1", issue_id: "issue-1", version: 2, used_at: "2026-09-28T00:00:00Z" }],
+      })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ total: "invalid" }))));
+    const client = new ApiClient("https://api.example.test");
+    expect(await client.getSkillUsage("skill-1")).toMatchObject({
+      total: 1, assigned_agents: 2, versions: [{ version: 2, count: 1 }], recent: [{ task_id: "run-1" }],
+    });
+    expect(await client.getSkillUsage("skill-1")).toEqual({
+      total: 0, last_30_days: 0, assigned_agents: 0, versions: [], recent: [],
+    });
   });
 });
 

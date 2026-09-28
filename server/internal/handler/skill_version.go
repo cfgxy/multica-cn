@@ -33,6 +33,7 @@ type SkillVersionResponse struct {
 	SourceVersion    *int32             `json:"source_version,omitempty"`
 	SourceProposalID *string            `json:"source_proposal_id,omitempty"`
 	AuthorUserID     *string            `json:"author_user_id,omitempty"`
+	CanRestore       bool               `json:"can_restore"`
 	CreatedAt        time.Time          `json:"created_at"`
 }
 
@@ -73,6 +74,15 @@ func (h *Handler) ListSkillVersions(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	member, err := h.getWorkspaceMember(r.Context(), userID, uuidToString(skill.WorkspaceID))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "skill not found")
+		return
+	}
 	rows, err := h.DB.Query(r.Context(), `SELECT id, version, name, description, source,
 		source_version, source_proposal_id, author_user_id, created_at
 		FROM skill_version WHERE skill_id = $1 AND workspace_id = $2 ORDER BY version DESC`,
@@ -84,7 +94,7 @@ func (h *Handler) ListSkillVersions(w http.ResponseWriter, r *http.Request) {
 	defer rows.Close()
 	versions := make([]SkillVersionResponse, 0)
 	for rows.Next() {
-		v := SkillVersionResponse{SkillID: uuidToString(skill.ID)}
+		v := SkillVersionResponse{SkillID: uuidToString(skill.ID), CanRestore: member.Role == "owner"}
 		var id, proposalID, authorID pgtype.UUID
 		var sourceVersion pgtype.Int4
 		if err := rows.Scan(&id, &v.Version, &v.Name, &v.Description, &v.Source,
@@ -171,6 +181,16 @@ func (h *Handler) GetSkillVersion(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, "failed to load skill version")
 		return
 	}
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	member, err := h.getWorkspaceMember(r.Context(), userID, uuidToString(skill.WorkspaceID))
+	if err != nil {
+		writeError(w, http.StatusNotFound, "skill not found")
+		return
+	}
+	v.CanRestore = member.Role == "owner"
 	writeJSON(w, http.StatusOK, v)
 }
 

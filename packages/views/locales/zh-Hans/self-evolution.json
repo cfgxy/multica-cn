@@ -8,7 +8,36 @@
   "tabs": {
     "overview": "总览",
     "quality": "质量",
-    "quiz": "题库测验"
+    "quiz": "题库测验",
+    "skills": "Skill"
+  },
+  "skills": {
+    "choose": "选择 skill",
+    "manage": "管理 skill",
+    "empty": "暂无 skill。",
+    "history": "版本记录",
+    "noVersions": "该 skill 暂无版本记录。",
+    "usage": "已观测使用",
+    "allTime": "累计",
+    "last30": "最近 30 天",
+    "assigned": "已分配智能体",
+    "invocations_other": "显式调用 {{count}} 次",
+    "observedSince": "最早观测到的调用：{{date}}；此前的使用无法回填。",
+    "noObserved": "暂无显式调用记录；此前的使用情况未知。",
+    "recent": "最近调用",
+    "chatRun": "聊天运行",
+    "observational": "调用次数属于观测数据，不代表 skill 的效果。",
+    "version": "版本 v{{version}}",
+    "usedAt": "{{date}} · 版本 {{version}}",
+    "diff": "与上一版对比",
+    "restore": "恢复此版本",
+    "restoreConfirm": "将 v{{version}} 的内容恢复为新版本 v{{next}}；分配关系不变。",
+    "restoreError": "恢复版本失败。",
+    "ownerOnly": "仅工作空间 Owner 可恢复版本。",
+    "cancel": "取消",
+    "error": "加载 skill 历史失败。",
+    "retry": "重试",
+    "sources": { "create": "创建", "proposal": "提案转化", "revision": "提案修订", "edit": "编辑", "restore": "恢复" }
   },
   "quality": {
     "scopePicker": {
