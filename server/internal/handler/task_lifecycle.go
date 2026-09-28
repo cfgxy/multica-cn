@@ -14,8 +14,16 @@ import (
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
+// RecoverOrphansRequest narrows the blind fail when the daemon's lock probe
+// has already judged every task with a pinned work_dir: with OnlyUnprobeable
+// set, only rows the probe cannot see (no work_dir) are failed, so the call
+// can never override a held-lock "still alive" verdict.
+type RecoverOrphansRequest struct {
+	OnlyUnprobeable bool `json:"only_unprobeable"`
+}
+
 // RecoverOrphanedTasks is called by the daemon at startup for each runtime
-// it owns. It atomically fails any dispatched/running tasks the server still
+// it owns. It atomically fails dispatched/running tasks the server still
 // believes belong to that runtime — those are the tasks the previous daemon
 // process was running when it died — and triggers MaybeRetryFailedTask for
 // each so the user sees a fresh attempt instead of a permanently stuck row.
@@ -30,7 +38,15 @@ func (h *Handler) RecoverOrphanedTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rows, err := h.TaskService.RecoverOrphanedTasksForRuntime(r.Context(), parseUUID(runtimeID))
+	// The body is optional: an empty one keeps the historical blanket fail
+	// (older daemons and the runtime_gone path rely on that).
+	var req RecoverOrphansRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	rows, err := h.TaskService.RecoverOrphanedTasksForRuntime(r.Context(), parseUUID(runtimeID), req.OnlyUnprobeable)
 	if err != nil {
 		slog.Warn("recover-orphans failed", "runtime_id", runtimeID, "error", err)
 		writeError(w, http.StatusInternalServerError, "recover orphans failed")

@@ -575,11 +575,37 @@ func (c *Client) PinTaskSession(ctx context.Context, taskID, sessionID, workDir 
 	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/tasks/%s/session", taskID), body, nil)
 }
 
-// RecoverOrphans tells the server to fail any dispatched/running tasks the
-// previous daemon process for this runtime left behind. The server will
-// auto-retry eligible tasks.
-func (c *Client) RecoverOrphans(ctx context.Context, runtimeID string) error {
-	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/recover-orphans", runtimeID), map[string]any{}, nil)
+// RecoverOrphans tells the server to fail in-flight tasks the previous daemon
+// process for this runtime left behind. The server will auto-retry eligible
+// tasks. onlyUnprobeable scopes the fail to rows without a pinned work_dir —
+// the ones the RUYI-225 lock probe cannot judge — so the call can never
+// override a probe verdict; the blanket scope stays for the runtime_gone
+// re-register path, where the runtime rows were truly deleted server-side.
+func (c *Client) RecoverOrphans(ctx context.Context, runtimeID string, onlyUnprobeable bool) error {
+	return c.postJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/recover-orphans", runtimeID), map[string]any{"only_unprobeable": onlyUnprobeable}, nil)
+}
+
+// InFlightTask is one running/waiting_local_directory row the server still
+// attributes to a runtime, as returned by the in-flight list. WorkDir is the
+// session work_dir pinned by PinTaskSession — empty when the task never got
+// far enough to pin one (waiting_local_directory rows have no session yet).
+type InFlightTask struct {
+	ID          string `json:"id"`
+	WorkspaceID string `json:"workspace_id"`
+	Status      string `json:"status"`
+	WorkDir     string `json:"work_dir,omitempty"`
+}
+
+// ListInFlightTasks fetches the in-flight tasks the server still attributes
+// to runtimeID. The probe-based orphan recovery (RUYI-225) lists these before
+// deciding per task whether its worker provably died with the previous daemon
+// process — the per-task judgement RecoverOrphans' blanket fail cannot make.
+func (c *Client) ListInFlightTasks(ctx context.Context, runtimeID string) ([]InFlightTask, error) {
+	var tasks []InFlightTask
+	if err := c.getJSON(ctx, fmt.Sprintf("/api/daemon/runtimes/%s/tasks/in-flight", runtimeID), &tasks); err != nil {
+		return nil, err
+	}
+	return tasks, nil
 }
 
 // GetTaskStatus returns the current status of a task. Used by the daemon to

@@ -379,6 +379,10 @@ type multiProviderRegisterFixture struct {
 	// upsert behavior.
 	providerToID map[string]string
 	idCounter    int
+	// orphanScopes records the only_unprobeable flag of each recover-orphans
+	// request, in order. The runtime_gone path must keep the historical
+	// blanket scope (false): the runtime rows were truly deleted server-side.
+	orphanScopes []bool
 }
 
 func newMultiProviderRegisterFixture(t *testing.T, providers map[string]string) *multiProviderRegisterFixture {
@@ -419,6 +423,13 @@ func newMultiProviderRegisterFixture(t *testing.T, providers map[string]string) 
 				Repos:    []RepoData{},
 			})
 		case strings.HasSuffix(r.URL.Path, "/recover-orphans"):
+			var body struct {
+				OnlyUnprobeable bool `json:"only_unprobeable"`
+			}
+			_ = json.NewDecoder(r.Body).Decode(&body)
+			fx.mu.Lock()
+			fx.orphanScopes = append(fx.orphanScopes, body.OnlyUnprobeable)
+			fx.mu.Unlock()
 			w.WriteHeader(http.StatusOK)
 		default:
 			w.WriteHeader(http.StatusOK)
@@ -495,6 +506,21 @@ func TestHandleRuntimeGone_PartialWorkspaceRecoveryKeepsSibling(t *testing.T) {
 	}
 	if _, ok := d.runtimeIndex["rt-codex-1"]; !ok {
 		t.Fatalf("rt-codex-1 dropped from runtimeIndex during partial recovery")
+	}
+	// The runtime_gone path keeps the historical blanket recover-orphans
+	// scope: the deleted runtime's rows have no live probe target, so every
+	// in-flight task on them is a genuine orphan (RUYI-225 rework constraint:
+	// this baseline semantics must not silently narrow).
+	fx.mu.Lock()
+	scopes := append([]bool(nil), fx.orphanScopes...)
+	fx.mu.Unlock()
+	if len(scopes) == 0 {
+		t.Fatalf("re-registered runtime never got a recover-orphans call")
+	}
+	for i, only := range scopes {
+		if only {
+			t.Fatalf("recover-orphans call #%d ran with only_unprobeable=true; runtime_gone must keep the blanket scope", i)
+		}
 	}
 }
 
