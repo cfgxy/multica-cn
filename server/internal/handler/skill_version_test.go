@@ -75,6 +75,41 @@ func TestSkillVersionCreateEditRestoreKeepsHistory(t *testing.T) {
 	}
 }
 
+func TestSkillVersionRestorePermissionIsServerDerived(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("database fixture is required")
+	}
+	var skill SkillWithFilesResponse
+	testutil.Call(t, testHandler.CreateSkill, newRequest(http.MethodPost, "/api/skills", map[string]any{
+		"name": "skill-restore-role-test", "content": "body",
+	})).Want(http.StatusCreated).JSON(&skill)
+	dbfx.Cleanup(t, `DELETE FROM skill_version WHERE skill_id = $1`, skill.ID)
+	dbfx.Cleanup(t, `DELETE FROM skill WHERE id = $1`, skill.ID)
+	memberUserID, _ := createEphemeralMember(t, testWorkspaceID, "skill-restore", "member")
+	memberRequest := func(method, path string) *http.Request {
+		req := newRequest(method, path, nil)
+		req.Header.Set("X-User-ID", memberUserID)
+		return req
+	}
+	var versions []SkillVersionResponse
+	testutil.Call(t, testHandler.ListSkillVersions,
+		withURLParam(memberRequest(http.MethodGet, "/api/skills/"+skill.ID+"/versions"), "id", skill.ID),
+	).Want(http.StatusOK).JSON(&versions)
+	if len(versions) != 1 || versions[0].CanRestore {
+		t.Fatalf("member must not receive restore capability: %+v", versions)
+	}
+	var detail SkillVersionResponse
+	testutil.Call(t, testHandler.GetSkillVersion,
+		withURLParams(memberRequest(http.MethodGet, "/api/skills/"+skill.ID+"/versions/1"), "id", skill.ID, "version", "1"),
+	).Want(http.StatusOK).JSON(&detail)
+	if detail.CanRestore {
+		t.Fatalf("member detail must not grant restore capability: %+v", detail)
+	}
+	testutil.Call(t, testHandler.RestoreSkillVersion,
+		withURLParams(memberRequest(http.MethodPost, "/api/skills/"+skill.ID+"/versions/1/restore"), "id", skill.ID, "version", "1"),
+	).Want(http.StatusForbidden)
+}
+
 func TestSkillVersionFileChangeIsRecorded(t *testing.T) {
 	if testHandler == nil {
 		t.Fatal("database fixture is required")

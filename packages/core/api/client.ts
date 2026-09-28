@@ -82,6 +82,7 @@ import type {
   SkillSummary,
   SkillVersion,
   SkillVersionSummary,
+  SkillUsage,
   CreateSkillRequest,
   UpdateSkillRequest,
   SetAgentSkillsRequest,
@@ -463,11 +464,13 @@ import {
   RuntimeModelListRequestSchema,
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
   SkillSchema,
+  SkillSummaryListSchema,
   EMPTY_SKILL,
   SkillVersionListSchema,
   SkillVersionSchema,
   EMPTY_SKILL_VERSION,
   SkillRestoreResultSchema,
+  SkillUsageSchema,
   SkillImportResultSchema,
   EMPTY_SKILL_IMPORT_RESULT,
   IssueViewSchema,
@@ -3852,7 +3855,10 @@ export class ApiClient {
 
   // Skills
   async listSkills(): Promise<SkillSummary[]> {
-    return this.fetch("/api/skills");
+    const raw = await this.fetch<unknown>("/api/skills");
+    return parseWithFallback<SkillSummary[]>(raw, SkillSummaryListSchema, [], {
+      endpoint: "GET /api/skills",
+    });
   }
 
   async getSkill(id: string): Promise<Skill> {
@@ -3880,6 +3886,13 @@ export class ApiClient {
     return parseWithFallback(raw, SkillRestoreResultSchema, { version: 0 }, {
       endpoint: "POST /api/skills/{id}/versions/{version}/restore",
     });
+  }
+
+  async getSkillUsage(id: string): Promise<SkillUsage> {
+    const raw = await this.fetch<unknown>(`/api/skills/${encodeURIComponent(id)}/usage`);
+    return parseWithFallback<SkillUsage>(raw, SkillUsageSchema, {
+      total: 0, last_30_days: 0, assigned_agents: 0, versions: [], recent: [],
+    }, { endpoint: "GET /api/skills/{id}/usage" });
   }
 
   async createSkill(data: CreateSkillRequest): Promise<Skill> {

@@ -50,6 +50,7 @@ export type {
   SkillFile,
   SkillVersion,
   SkillVersionSummary,
+  SkillUsage,
   CreateSkillRequest,
   SkillImportResult,
   UpdateSkillRequest,

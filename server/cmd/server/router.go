@@ -2381,6 +2381,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Delete("/", h.DeleteSkill)
 					r.Post("/refresh", h.RefreshSkill)
 					r.Get("/versions", h.ListSkillVersions)
+					r.Get("/usage", h.GetSkillUsage)
 					r.Get("/versions/{version}", h.GetSkillVersion)
 					r.With(middleware.RequireWorkspaceRole(queries, "owner")).Post("/versions/{version}/restore", h.RestoreSkillVersion)
 					r.Get("/labels", h.ListLabelsForSkill)

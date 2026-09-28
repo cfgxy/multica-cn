@@ -906,6 +906,7 @@ export interface SkillVersionSummary {
   name: string;
   description: string;
   source: string;
+  can_restore?: boolean;
   source_version?: number;
   source_proposal_id?: string;
   author_user_id?: string;
@@ -916,6 +917,20 @@ export interface SkillVersion extends SkillVersionSummary {
   content: string;
   config: Record<string, unknown>;
   files: { path: string; content: string }[];
+}
+
+export interface SkillUsage {
+  total: number;
+  last_30_days: number;
+  assigned_agents: number;
+  since?: string;
+  versions: { version: number; count: number }[];
+  recent: {
+    task_id: string;
+    issue_id?: string;
+    version: number;
+    used_at: string;
+  }[];
 }
 
 export interface CreateSkillRequest {
