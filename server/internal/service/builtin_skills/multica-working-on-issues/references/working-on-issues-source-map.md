@@ -134,6 +134,8 @@ and is hidden from the PR list.
 | Failed task may roll `in_progress` → `todo` when no active task remains | `server/internal/service/task.go` (`HandleFailedTasks`) | new citation |
 | Custom statuses inherit their category's behavior in full; enqueue/park contracts resolve the effective category via `issuestatus.Effective` / `Resolve` (MUL-6243) | `server/internal/issuestatus/issuestatus.go` (`Effective`, `Resolve`) | new citation |
 | Runtime brief lists the workspace's active custom statuses grouped by category; catalog rides the claim payload (MUL-6460) | `server/internal/daemon/execenv/runtime_config_sections.go` (`writeIssueStatusCommand`); claim injection in `server/internal/handler/daemon.go` (`buildClaimedTaskResponse`, status catalog block) | new citation |
+| A status-only write enqueues only on the `backlog` → active transition; every other status change falls through to the no-trigger default, so it needs no run suppression | `server/internal/service/issue_trigger.go` (`WillEnqueueRun`, `RunSourceStatus` case and its `default`) | new citation |
+| `--no-start` on a promotion out of `backlog` suppresses that enqueue and leaves the issue parked | `server/internal/handler/issue.go` (`UpdateIssue`, `!req.SuppressRun` guard on `dispatchIssueRun`) | new citation |
 | Literal-key exceptions to category rules: failed-task rollback writes the `todo` key; merged close-intent PR writes the `done` key | `server/internal/service/task.go` (`HandleFailedTasks`); `server/internal/handler/github.go` (merge close-intent path) | new citation |
 
 Creation with `--status todo` (or any non-backlog status) on an agent-assigned
