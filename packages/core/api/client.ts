@@ -193,6 +193,7 @@ import type {
   ListGitHubRepositoriesResponse,
   GitHubConnectResponse,
   ListVCSConnectionsResponse,
+  ListGitLabRepositoriesResponse,
   ConnectVCSRequest,
   ConnectVCSResponse,
   ListLarkInstallationsResponse,
@@ -455,6 +456,8 @@ import {
   GitHubConnectResponseSchema,
   ListGitHubInstallationsResponseSchema,
   ListGitHubRepositoriesResponseSchema,
+  ListGitLabRepositoriesResponseSchema,
+  EMPTY_LIST_GITLAB_REPOSITORIES_RESPONSE,
   EMPTY_GITHUB_CONNECT_RESPONSE,
   EMPTY_LIST_GITHUB_INSTALLATIONS_RESPONSE,
   EMPTY_LIST_GITHUB_REPOSITORIES_RESPONSE,
@@ -5242,6 +5245,22 @@ export class ApiClient {
   // VCS integration (Forgejo / Gitea / GitLab)
   async listVCSConnections(workspaceId: string): Promise<ListVCSConnectionsResponse> {
     return this.fetch(`/api/workspaces/${workspaceId}/vcs/connections`);
+  }
+
+  async listGitLabRepositories(
+    workspaceId: string,
+    connectionId: string,
+    page = 1,
+  ): Promise<ListGitLabRepositoriesResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/vcs/connections/${connectionId}/repositories?page=${page}&per_page=100`,
+    );
+    return parseWithFallback(
+      raw,
+      ListGitLabRepositoriesResponseSchema,
+      EMPTY_LIST_GITLAB_REPOSITORIES_RESPONSE,
+      { endpoint: "GET /api/workspaces/:id/vcs/connections/:connectionId/repositories", redactContent: true },
+    );
   }
 
   async connectVCS(
