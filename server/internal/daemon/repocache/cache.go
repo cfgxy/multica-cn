@@ -378,6 +378,7 @@ func (c *Cache) SyncContext(ctx context.Context, workspaceID string, repos []Rep
 			continue
 		}
 		barePath := filepath.Join(wsDir, bareDirName(repo.URL))
+		logURL := redactGitCredentials(repo.URL)
 
 		repoLock := c.lockForRepo(barePath)
 		if err := repoLock.LockContext(ctx); err != nil {
@@ -385,18 +386,18 @@ func (c *Cache) SyncContext(ctx context.Context, workspaceID string, repos []Rep
 		}
 		if isBareRepo(barePath) {
 			// Already cached — fetch latest.
-			c.logger.Info("repo cache: fetching", "url", repo.URL, "path", barePath)
+			c.logger.Info("repo cache: fetching", "url", logURL, "path", barePath)
 			if err := gitFetchContext(ctx, barePath); err != nil {
-				c.logger.Warn("repo cache: fetch failed", "url", repo.URL, "error", err)
+				c.logger.Warn("repo cache: fetch failed", "url", logURL, "error", err)
 				if firstErr == nil {
 					firstErr = err
 				}
 			}
 		} else {
 			// Not cached — bare clone.
-			c.logger.Info("repo cache: cloning", "url", repo.URL, "path", barePath)
+			c.logger.Info("repo cache: cloning", "url", logURL, "path", barePath)
 			if err := gitCloneBareContext(ctx, repo.URL, barePath); err != nil {
-				c.logger.Error("repo cache: clone failed", "url", repo.URL, "error", err)
+				c.logger.Error("repo cache: clone failed", "url", logURL, "error", err)
 				if firstErr == nil {
 					firstErr = err
 				}
@@ -603,7 +604,7 @@ func gitCloneBareContext(ctx context.Context, url, dest string) error {
 	if out, err := runGitCombinedOutputContext(ctx, "clone", "--bare", url, dest); err != nil {
 		// Clean up partial clone.
 		os.RemoveAll(dest)
-		return fmt.Errorf("git clone --bare: %s: %w", strings.TrimSpace(string(out)), err)
+		return gitNetworkFailure("git clone --bare", out, err)
 	}
 	// `git clone --bare` populates refs/heads/* as a snapshot and defaults to
 	// a mirror-style fetch refspec. Convert the bare repo to the standard
@@ -654,7 +655,7 @@ func runGitFetch(barePath string) error {
 
 func runGitFetchContext(ctx context.Context, barePath string) error {
 	if out, err := runGitCombinedOutputContext(ctx, "-C", barePath, "fetch", "origin"); err != nil {
-		return fmt.Errorf("git fetch: %s: %w", strings.TrimSpace(string(out)), err)
+		return gitNetworkFailure("git fetch", out, err)
 	}
 	return nil
 }

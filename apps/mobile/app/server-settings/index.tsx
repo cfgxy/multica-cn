@@ -37,6 +37,7 @@ import {
 import { useAuthStore } from "@/data/auth-store";
 import { useServerStore } from "@/data/server-store";
 import { switchServer } from "@/data/switch-server";
+import { useStartupServerStore } from "@/data/startup-server-store";
 import { pickActiveServer, type ServerEntry } from "@/data/server-config";
 import { THEME } from "@/lib/theme";
 import { useColorScheme } from "@/lib/use-color-scheme";
@@ -49,6 +50,7 @@ export default function ServerListScreen() {
   const removeServer = useServerStore((s) => s.removeServer);
   const user = useAuthStore((s) => s.user);
   const qc = useQueryClient();
+  const startupPhase = useStartupServerStore((s) => s.phase);
   const { colorScheme } = useColorScheme();
   const mutedFg = THEME[colorScheme].mutedForeground;
 
@@ -88,6 +90,13 @@ export default function ServerListScreen() {
 
   const onSelect = useCallback(
     (entry: ServerEntry) => {
+      if (startupPhase === "select") {
+        void useStartupServerStore.getState().connect(entry.id).then(
+          () => router.replace("/"),
+          () => Alert.alert(t("server.switch_failed_title"), t("server.switch_failed_message")),
+        );
+        return;
+      }
       if (entry.id === active.id) return;
       // 未登录时直接切换,不打扰;已登录弹确认(切换会重载该服务器的
       // 会话数据,非破坏性,不用 destructive 样式)。
@@ -107,7 +116,7 @@ export default function ServerListScreen() {
         ],
       );
     },
-    [active.id, user, doSwitch, t],
+    [active.id, user, doSwitch, t, startupPhase],
   );
 
   const onDelete = useCallback(

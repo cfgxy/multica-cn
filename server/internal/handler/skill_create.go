@@ -26,7 +26,7 @@ type skillCreateInput struct {
 // transaction. Callers compose skill creation with other writes (e.g. agent
 // template materialization) inside one outer transaction. For standalone
 // skill creation, prefer createSkillWithFiles, which manages its own tx.
-func createSkillWithFilesInTx(ctx context.Context, qtx *db.Queries, input skillCreateInput) (SkillWithFilesResponse, error) {
+func createSkillWithFilesInTx(ctx context.Context, tx pgx.Tx, qtx *db.Queries, input skillCreateInput) (SkillWithFilesResponse, error) {
 	config, err := json.Marshal(input.Config)
 	if err != nil {
 		return SkillWithFilesResponse{}, err
@@ -64,6 +64,9 @@ func createSkillWithFilesInTx(ctx context.Context, qtx *db.Queries, input skillC
 		}
 		fileResps = append(fileResps, skillFileToResponse(sf))
 	}
+	if err := appendSkillVersion(ctx, tx, skill.ID, input.CreatorID, "create", nil); err != nil {
+		return SkillWithFilesResponse{}, err
+	}
 
 	return SkillWithFilesResponse{
 		SkillResponse: skillToResponse(skill),
@@ -80,7 +83,7 @@ func (h *Handler) createSkillWithFiles(ctx context.Context, input skillCreateInp
 
 	qtx := h.Queries.WithTx(tx)
 
-	result, err := createSkillWithFilesInTx(ctx, qtx, input)
+	result, err := createSkillWithFilesInTx(ctx, tx, qtx, input)
 	if err != nil {
 		return SkillWithFilesResponse{}, err
 	}
@@ -165,6 +168,9 @@ func (h *Handler) overwriteSkillWithFiles(ctx context.Context, input skillOverwr
 		}
 		return SkillWithFilesResponse{}, err
 	}
+	if err := lockSkillVersionTarget(ctx, tx, existing); err != nil {
+		return SkillWithFilesResponse{}, err
+	}
 	allowOverwrite := input.AllowOverwrite
 	if allowOverwrite == nil {
 		allowOverwrite = canOverwriteSkillByLocalImport
@@ -224,6 +230,9 @@ func (h *Handler) overwriteSkillWithFiles(ctx context.Context, input skillOverwr
 			return SkillWithFilesResponse{}, err
 		}
 		fileResps = append(fileResps, skillFileToResponse(sf))
+	}
+	if err := appendSkillVersion(ctx, tx, skill.ID, parseUUID(input.UserID), "edit", nil); err != nil {
+		return SkillWithFilesResponse{}, err
 	}
 
 	if err := tx.Commit(ctx); err != nil {

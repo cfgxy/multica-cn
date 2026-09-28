@@ -3023,13 +3023,28 @@ func TestRunIssueUpdateNoStartSendsSuppressRun(t *testing.T) {
 	}
 }
 
+func TestIssueNoStartHelpDistinguishesActorAndAssignee(t *testing.T) {
+	for _, cmd := range []*cobra.Command{issueUpdateCmd, issueStatusCmd, issueAssignCmd} {
+		usage := cmd.Flags().Lookup("no-start").Usage
+		for _, want := range []string{"agent callers", "member callers", "agent or squad assignee"} {
+			if !strings.Contains(usage, want) {
+				t.Errorf("%s --no-start help missing %q: %s", cmd.Name(), want, usage)
+			}
+		}
+	}
+}
+
 func TestRunIssueStatusNoStartSendsSuppressRun(t *testing.T) {
 	var body map[string]any
+	getCalls := 0
+	putCalls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/api/issues/MUL-1":
+			getCalls++
 			json.NewEncoder(w).Encode(map[string]any{"id": "issue-1", "identifier": "MUL-1", "status": "backlog"})
 		case r.Method == http.MethodPut && r.URL.Path == "/api/issues/issue-1":
+			putCalls++
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 				t.Errorf("decode body: %v", err)
 			}
@@ -3053,6 +3068,9 @@ func TestRunIssueStatusNoStartSendsSuppressRun(t *testing.T) {
 	}
 	if got := body["suppress_run"]; got != true {
 		t.Fatalf("suppress_run = %#v, want true", got)
+	}
+	if getCalls != 1 || putCalls != 1 {
+		t.Fatalf("GET calls = %d, PUT calls = %d; want 1 each (resolve then update)", getCalls, putCalls)
 	}
 }
 

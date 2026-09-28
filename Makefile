@@ -21,15 +21,20 @@ POSTGRES_USER ?= multica
 POSTGRES_PASSWORD ?= multica
 POSTGRES_PORT ?= 5432
 PORT := $(or $(BACKEND_PORT),$(API_PORT),$(SERVER_PORT),$(PORT),8080)
+# Browser-facing URLs default to EMPTY (same-origin mode): the web app then
+# sends relative URLs through the Next proxy (REMOTE_API_URL) and derives the
+# WS URL from window.location. Do not bake absolute localhost URLs here — this
+# block is exported, and an exported value outranks .env in compose variable
+# interpolation, silently overriding the operator's .env (RUYI-256).
 ifeq ($(origin MULTICA_PUBLIC_URL), undefined)
-MULTICA_PUBLIC_URL := http://localhost:$(PORT)
+MULTICA_PUBLIC_URL :=
 endif
 FRONTEND_PORT ?= 3000
 FRONTEND_ORIGIN ?= http://localhost:$(FRONTEND_PORT)
 MULTICA_APP_URL ?= $(FRONTEND_ORIGIN)
 DATABASE_URL ?= postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@localhost:$(POSTGRES_PORT)/$(POSTGRES_DB)?sslmode=disable
-NEXT_PUBLIC_API_URL ?= http://localhost:$(PORT)
-NEXT_PUBLIC_WS_URL ?= ws://localhost:$(PORT)/ws
+NEXT_PUBLIC_API_URL ?=
+NEXT_PUBLIC_WS_URL ?=
 GOOGLE_REDIRECT_URI ?= $(FRONTEND_ORIGIN)/auth/callback
 MULTICA_SERVER_URL ?= ws://localhost:$(PORT)/ws
 LOCAL_UPLOAD_BASE_URL ?= http://localhost:$(PORT)
@@ -87,7 +92,21 @@ makehelp: help ## Alias for `make help`
 # ---------- Self-hosting (Docker Compose) ----------
 ##@ Self-hosting
 
-selfhost: ## Create .env if needed, then pull and start the official self-hosted images
+# The MCP + OAuth shape of the self-hosted stack — the redis and mcp services, and
+# the MCP_URL / OAUTH_SIGNING_KEY / REDIS_URL entries on frontend/backend — is
+# declared only in docker-compose.selfhost.local.yml. Compose interpolates a
+# variable into a container only when some compose file declares it, so setting
+# those three in .env does nothing on its own: a selfhost run without this overlay
+# rebuilds frontend/backend without them and silently drops the public /api/mcp
+# entry point back to 404 (RUYI-260). Overlay the file whenever it exists, and keep
+# the file list byte-identical when it does not, so upstream users, CI and
+# deployments that never configured MCP are unaffected.
+SELFHOST_LOCAL_FILE := docker-compose.selfhost.local.yml
+SELFHOST_LOCAL_OVERRIDE := $(if $(wildcard $(SELFHOST_LOCAL_FILE)),-f $(SELFHOST_LOCAL_FILE))
+SELFHOST_COMPOSE_FILES := $(strip -f docker-compose.selfhost.yml $(SELFHOST_LOCAL_OVERRIDE))
+SELFHOST_BUILD_COMPOSE_FILES := $(strip -f docker-compose.selfhost.yml -f docker-compose.selfhost.build.yml $(SELFHOST_LOCAL_OVERRIDE))
+
+selfhost: ## Create .env if needed, then pull and start the official images (overlays docker-compose.selfhost.local.yml when present)
 	$(REQUIRE_COMPOSE)
 	@if [ ! -f .env ]; then \
 		echo "==> Creating .env from .env.example..."; \
@@ -108,6 +127,10 @@ selfhost: ## Create .env if needed, then pull and start the official self-hosted
 		fi; \
 		echo "==> Generated random JWT_SECRET, POSTGRES_PASSWORD, and MULTICA_VCS_SECRET_KEY"; \
 	fi
+# Pull stays on the official file alone: the overlay's mcp image is built from this
+# checkout (Dockerfile.mcp), and `pull` treats a missing buildable image as a pull
+# failure, which would misreport the official images as unpublished. The `up` below
+# builds it and pulls redis on demand.
 	@echo "==> Pulling official Multica images..."
 	@if ! $(COMPOSE) -f docker-compose.selfhost.yml pull; then \
 		echo ""; \
@@ -117,10 +140,10 @@ selfhost: ## Create .env if needed, then pull and start the official self-hosted
 		exit 1; \
 	fi
 	@echo "==> Starting Multica via Docker Compose..."
-	$(COMPOSE) -f docker-compose.selfhost.yml up -d
+	$(COMPOSE) $(SELFHOST_COMPOSE_FILES) up -d
 	@bash scripts/selfhost-wait.sh official
 
-selfhost-build: ## Build backend/web from the current checkout and start the self-hosted stack
+selfhost-build: ## Build backend/web from this checkout and start the stack (overlays docker-compose.selfhost.local.yml when present)
 	$(REQUIRE_COMPOSE)
 	@if [ ! -f .env ]; then \
 		echo "==> Creating .env from .env.example..."; \
@@ -142,13 +165,13 @@ selfhost-build: ## Build backend/web from the current checkout and start the sel
 		echo "==> Generated random JWT_SECRET, POSTGRES_PASSWORD, and MULTICA_VCS_SECRET_KEY"; \
 	fi
 	@echo "==> Building Multica from the current checkout..."
-	$(COMPOSE) -f docker-compose.selfhost.yml -f docker-compose.selfhost.build.yml up -d --build
+	$(COMPOSE) $(SELFHOST_BUILD_COMPOSE_FILES) up -d --build
 	@bash scripts/selfhost-wait.sh build
 
-selfhost-stop: ## Stop the self-hosted Docker Compose stack
+selfhost-stop: ## Stop the self-hosted Docker Compose stack (overlays docker-compose.selfhost.local.yml when present)
 	$(REQUIRE_COMPOSE)
 	@echo "==> Stopping Multica services..."
-	$(COMPOSE) -f docker-compose.selfhost.yml down
+	$(COMPOSE) $(SELFHOST_COMPOSE_FILES) down
 	@echo "✓ All services stopped."
 
 # ---------- Daemon (systemd service on this host) ----------

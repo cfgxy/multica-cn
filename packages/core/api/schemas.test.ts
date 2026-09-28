@@ -26,6 +26,7 @@ import {
   AutopilotRunSchema,
   FALLBACK_AUTOPILOT_RUN,
   CommentTriggerPreviewSchema,
+  CommentSchema,
   DashboardAgentRunTimeListSchema,
   DashboardRunTimeDailyListSchema,
   DashboardFailureByAgentListSchema,
@@ -78,6 +79,8 @@ import {
   PluginPreviewSchema,
   EMPTY_PLUGIN_INSTALLATION_LIST,
   EMPTY_PLUGIN_PREVIEW,
+  ListGitLabRepositoriesResponseSchema,
+  EMPTY_LIST_GITLAB_REPOSITORIES_RESPONSE,
 } from "./schemas";
 import { IssueViewSchema, IssueViewListSchema } from "./schemas";
 import {
@@ -87,13 +90,26 @@ import {
   EMPTY_ISSUE_STATUS_ENTRY,
 } from "./schemas";
 import { parseWithFallback } from "./schema";
-import { SkillListSchema } from "./schemas";
+import { SkillSummaryListSchema } from "./schemas";
 
 describe("skill list response", () => {
   it("normalizes optional fields and fails closed on malformed records", () => {
-    const valid = parseWithFallback([{ id: "s1", workspace_id: "ws", name: "Review" }], SkillListSchema, SkillListSchema.parse([]), { endpoint: "listSkills" });
+    const valid = parseWithFallback([{ id: "s1", workspace_id: "ws", name: "Review" }], SkillSummaryListSchema, SkillSummaryListSchema.parse([]), { endpoint: "listSkills" });
     expect(valid[0]?.description).toBe("");
-    expect(parseWithFallback([{ id: 8, name: "bad" }], SkillListSchema, [], { endpoint: "listSkills" })).toEqual([]);
+    expect(parseWithFallback([{ id: 8, name: "bad" }], SkillSummaryListSchema, [], { endpoint: "listSkills" })).toEqual([]);
+  });
+});
+
+describe("ListGitLabRepositoriesResponseSchema", () => {
+  it("accepts a paginated minimal GitLab projection", () => {
+    const value = { repositories: [{ id: 3, full_name: "team/sub/app", clone_url: "git@git.test:team/sub/app.git", archived: false, private: true, description: null }], next_page: 2 };
+    expect(ListGitLabRepositoriesResponseSchema.parse(value)).toEqual(value);
+  });
+
+  it("falls back to empty for malformed pages and projects", () => {
+    for (const value of [null, {}, { repositories: "secret", next_page: 2 }, { repositories: [{ id: 1, clone_url: "url" }], next_page: 2 }, { repositories: [], next_page: "three" }]) {
+      expect(parseWithFallback(value, ListGitLabRepositoriesResponseSchema, EMPTY_LIST_GITLAB_REPOSITORIES_RESPONSE, { endpoint: "GET /api/workspaces/:id/vcs/connections/:connectionId/repositories" })).toEqual(EMPTY_LIST_GITLAB_REPOSITORIES_RESPONSE);
+    }
   });
 });
 
@@ -1520,6 +1536,29 @@ describe("AutopilotQuotaUsageSchema", () => {
 
 // The comment composer branches on preview.blocked to warn before sending
 // (MUL-4525 §2), so the additive field must parse and degrade gracefully.
+describe("CommentSchema.trigger_outcomes", () => {
+  const comment = {
+    id: "comment-1", issue_id: "issue-1", author_type: "member", author_id: "user-1",
+    content: "accepted", type: "comment", parent_id: null,
+    created_at: "2026-09-28T00:00:00Z", updated_at: "2026-09-28T00:00:00Z",
+  };
+
+  it("keeps valid outcomes but discards malformed entries and fields", () => {
+    const result = CommentSchema.parse({
+      ...comment,
+      trigger_outcomes: [
+        { target_type: "agent", target_id: "agent-1", status: "queued" },
+        { target_type: "agent", status: "blocked" },
+      ],
+    });
+    expect(result.trigger_outcomes).toEqual([
+      expect.objectContaining({ target_id: "agent-1", status: "queued" }),
+    ]);
+    expect(CommentSchema.parse({ ...comment, trigger_outcomes: "bad" }).trigger_outcomes).toEqual([]);
+    expect(CommentSchema.safeParse({ ...comment, id: 123 }).success).toBe(false);
+  });
+});
+
 describe("CommentTriggerPreviewSchema.blocked", () => {
   it("parses blocked mention outcomes alongside agents", () => {
     const parsed = CommentTriggerPreviewSchema.parse({
@@ -1537,6 +1576,14 @@ describe("CommentTriggerPreviewSchema.blocked", () => {
   it("defaults blocked to [] when an older server omits it", () => {
     const parsed = CommentTriggerPreviewSchema.parse({ agents: [] });
     expect(parsed.blocked).toEqual([]);
+    expect(parsed.invalid_mentions).toEqual([]);
+  });
+
+  it("keeps valid invalid-mention spans and tolerates a malformed field", () => {
+    expect(CommentTriggerPreviewSchema.parse({ agents: [], invalid_mentions: [{ start: 3, end: 12 }] }).invalid_mentions)
+      .toEqual([{ start: 3, end: 12 }]);
+    expect(CommentTriggerPreviewSchema.parse({ agents: [], invalid_mentions: "invalid" }).invalid_mentions)
+      .toEqual([]);
   });
 
   it("degrades a malformed blocked field to [] without dropping agents", () => {
