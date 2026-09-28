@@ -3,6 +3,8 @@ import { Button } from "@multica/ui/components/ui/button";
 import { MulticaIcon } from "@multica/ui/components/common/multica-icon";
 import { useT } from "@multica/views/i18n";
 import { DragStrip } from "@multica/views/platform";
+import { useState } from "react";
+import { StartupServerSelect } from "./startup-server-select";
 
 export function DesktopAuthRecoveryPage({
   onRetry,
@@ -15,6 +17,11 @@ export function DesktopAuthRecoveryPage({
   const retryAuthentication = useAuthStore(
     (state) => state.retryAuthentication,
   );
+  const [selectingServer, setSelectingServer] = useState(false);
+
+  if (selectingServer) {
+    return <StartupServerSelect previousId={null} onClose={() => setSelectingServer(false)} />;
+  }
 
   return (
     <div className="flex h-screen flex-col">
@@ -36,6 +43,9 @@ export function DesktopAuthRecoveryPage({
             {isRetrying
               ? t(($) => $.desktop.recovery.retrying)
               : t(($) => $.desktop.recovery.retry)}
+          </Button>
+          <Button variant="outline" className="mt-2" disabled={isRetrying} onClick={() => setSelectingServer(true)}>
+            {t(($) => $.desktop.recovery.switch_server)}
           </Button>
         </div>
       </div>
