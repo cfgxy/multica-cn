@@ -246,6 +246,9 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 		"`--stage <N>`",
 		"when a whole stage finishes",
 		"multica issue status <child-id> todo",
+		"a fresh agent handoff still starts one",
+		"For an agent actor,",
+		"For a member actor, `--no-start` can defer a run for an agent or squad assignee",
 		// MUL-5442: the brief's Issue Metadata section defers the full
 		// write discipline here. Every relocated ban is anchored
 		// individually — both defining categories AND each example —
@@ -277,6 +280,14 @@ func TestWorkingOnIssuesSkillCoversIssueLoopContracts(t *testing.T) {
 	for _, want := range mustContain {
 		if !strings.Contains(body, want) {
 			t.Errorf("working-on-issues skill missing %q", want)
+		}
+	}
+	if got := strings.Count(body, "For a member actor, `--no-start` can defer a run for an agent or squad assignee"); got != 2 {
+		t.Errorf("working-on-issues skill member actor guidance appears %d times, want 2 (assignment, promotion)", got)
+	}
+	for _, stale := range []string{"member assignee can defer starting a run", "for a member assignee, the flag can defer starting a run", "suppressing it strands the child", "leaves the issue parked with nobody"} {
+		if strings.Contains(body, stale) {
+			t.Errorf("working-on-issues skill retains obsolete guidance %q", stale)
 		}
 	}
 
