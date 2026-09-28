@@ -55,3 +55,47 @@ func TestSkillUsageCountsExplicitInvocationOnly(t *testing.T) {
 		t.Fatal("instrumentation start must be explicit")
 	}
 }
+
+func TestSkillUsageVersionCostCountsMeasuredRunsOnce(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("database fixture is required")
+	}
+	var skill SkillWithFilesResponse
+	testutil.Call(t, testHandler.CreateSkill, newRequest(http.MethodPost, "/api/skills", map[string]any{
+		"name": "skill-cost-test", "content": "initial",
+	})).Want(http.StatusCreated).JSON(&skill)
+	dbfx.Cleanup(t, `DELETE FROM skill_version WHERE skill_id = $1`, skill.ID)
+	dbfx.Cleanup(t, `DELETE FROM skill WHERE id = $1`, skill.ID)
+	agentID := dbfx.Agent(t, "skill cost agent", handlerTestRuntimeID(t), testutil.Cols{})
+	issueID := dbfx.Issue(t, "skill cost", testutil.Cols{})
+	measured := dbfx.Task(t, agentID, testutil.Cols{
+		"issue_id": issueID, "runtime_id": handlerTestRuntimeID(t),
+		"status": "completed", "started_at": testutil.Raw("now()"),
+		"completed_at": testutil.Raw("now()"), "attempt": 2,
+	})
+	unmeasured := dbfx.Task(t, agentID, testutil.Cols{
+		"issue_id": issueID, "runtime_id": handlerTestRuntimeID(t),
+		"status": "completed", "started_at": testutil.Raw("now()"),
+		"completed_at": testutil.Raw("now()"),
+	})
+	for _, taskID := range []string{measured, unmeasured} {
+		testutil.Call(t, testHandler.ReportTaskMessages, batchMessagesRequest(t, taskID, []any{
+			map[string]any{"seq": 1, "type": "tool_use", "tool": "Skill", "input": map[string]any{"skill": "skill-cost-test"}},
+			map[string]any{"seq": 2, "type": "tool_use", "tool": "Skill", "input": map[string]any{"skill": "skill-cost-test"}},
+		})).Want(http.StatusOK)
+	}
+	dbfx.Exec(t, `INSERT INTO task_usage (task_id, provider, model, input_tokens, output_tokens)
+		VALUES ($1, 'test', 'model', 80, 20)`, measured)
+	dbfx.Cleanup(t, `DELETE FROM task_usage WHERE task_id = $1`, measured)
+	var usage SkillUsageResponse
+	testutil.Call(t, testHandler.GetSkillUsage,
+		withURLParam(newRequest(http.MethodGet, "/api/skills/"+skill.ID+"/usage", nil), "id", skill.ID),
+	).Want(http.StatusOK).JSON(&usage)
+	if usage.Total != 4 || len(usage.Versions) != 1 {
+		t.Fatalf("two invocations per task must still count as four invocations: %+v", usage)
+	}
+	v := usage.Versions[0]
+	if v.Runs != 2 || v.TokenSamples != 1 || v.MedianTotalTokens == nil || *v.MedianTotalTokens != 100 || v.RetriedRuns != 1 {
+		t.Fatalf("version cost must count unique runs and exclude missing usage: %+v", v)
+	}
+}
