@@ -1449,6 +1449,17 @@
     "expiry_never": "無期限"
   },
   "server": {
+    "startup": {
+      "title": "接続するサーバーを選択",
+      "countdown": "{{n}}秒後に{{name}}へ自動接続",
+      "connect_now": "今すぐ接続",
+      "cancel_auto": "自動接続を中止",
+      "next": "まもなく接続",
+      "checking": "確認中",
+      "reachable": "接続可能",
+      "unreachable": "接続不可",
+      "recheck": "再確認"
+    },
     "title": "サーバー",
     "back": "戻る",
     "add": "サーバーを追加",

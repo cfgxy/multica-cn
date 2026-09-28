@@ -14,6 +14,7 @@ import i18n from "i18next";
 import { api } from "@/data/api";
 import { queryClient } from "@/data/query-client";
 import { useAuthStore } from "@/data/auth-store";
+import { useStartupServerStore } from "@/data/startup-server-store";
 import { useWorkspaceStore } from "@/data/workspace-store";
 import { shouldHandleUnauthorized } from "@/lib/auth-route";
 import { LightboxProvider, prewarmHighlighter } from "@/lib/markdown";
@@ -34,10 +35,19 @@ prewarmHighlighter();
 
 function AuthInitializer({ children }: { children: React.ReactNode }) {
   const initialize = useAuthStore((s) => s.initialize);
+  const phase = useStartupServerStore((s) => s.phase);
+  const begin = useStartupServerStore((s) => s.begin);
   const qc = useQueryClient();
   // Idempotent guard: 401 on multiple in-flight requests would otherwise
   // logout/navigate repeatedly during the same session-expire moment.
   const signingOutRef = useRef(false);
+  const startupStartedRef = useRef(false);
+
+  useEffect(() => {
+    if (startupStartedRef.current) return;
+    startupStartedRef.current = true;
+    void begin().catch(() => useStartupServerStore.setState({ phase: "ready" }));
+  }, [begin]);
 
   useEffect(() => {
     // Wire 401 handling onto the shared ApiClient singleton. Must be set
@@ -71,14 +81,16 @@ function AuthInitializer({ children }: { children: React.ReactNode }) {
         })();
       },
     });
-    initialize();
-  }, [initialize, qc]);
+    if (phase === "ready") void initialize();
+  }, [initialize, qc, phase]);
 
   return <>{children}</>;
 }
 
 export default function RootLayout() {
   const { colorScheme, isDarkColorScheme } = useColorScheme();
+  const phase = useStartupServerStore((s) => s.phase);
+  const isAuthLoading = useAuthStore((s) => s.isLoading);
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
@@ -102,9 +114,10 @@ export default function RootLayout() {
                     <Stack.Screen name="(app)" />
                     {/* 登录前后都可达 —— 未登录用户连自建后端是核心场景。 */}
                     <Stack.Screen name="server-settings" />
+                    <Stack.Screen name="servers" />
                   </Stack>
                   {/* RUYI-37: 系统通知点击 → 对应 Issue（冷启动与运行时两条入口）。 */}
-                  <NotificationResponseNavigator />
+                  {phase === "ready" && !isAuthLoading && <NotificationResponseNavigator />}
                   <PortalHost />
                 </LightboxProvider>
               </AuthInitializer>
