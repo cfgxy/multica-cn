@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { configStore } from "../config";
-import { ApiClient, ApiError, CHAT_DRAFT_RESTORE_CAPABILITY, clientErrorMessage } from "./client";
+import { ApiClient, ApiError, CHAT_DRAFT_RESTORE_CAPABILITY, clientErrorMessage, errorCode } from "./client";
 import { EMPTY_PLUGIN_PACKAGE_LIST, EMPTY_PLUGIN_PREVIEW, EMPTY_PLUGIN_SURFACE_LAUNCH } from "./schemas";
 
 afterEach(() => {
@@ -74,6 +74,30 @@ describe("ApiClient agent conversation-starter compatibility", () => {
 });
 
 describe("ApiClient edit guards", () => {
+  it("does not accept malformed comment write responses as successful saves", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => Promise.resolve(new Response("{}", {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }))));
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.createComment("issue-1", "draft")).rejects.toThrow(/invalid comment response/i);
+    await expect(client.updateComment("comment-1", "draft")).rejects.toThrow(/invalid comment response/i);
+  });
+
+  it("preserves structured mention failures for desktop and web clients", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: "one or more agent mentions cannot be invoked",
+      code: "invalid_agent_mentions",
+      invalid_mentions: [{ start: 3, end: 61 }],
+    }), { status: 422, headers: { "Content-Type": "application/json" } })));
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.createComment("issue-1", "draft")).rejects.toMatchObject({
+      status: 422,
+      body: { code: "invalid_agent_mentions", invalid_mentions: [{ start: 3, end: 61 }] },
+    });
+    expect(errorCode(new ApiError("rejected", 422, "Unprocessable Entity", { code: "invalid_agent_mentions" }))).toBe("invalid_agent_mentions");
+  });
+
   it("serializes field baselines for issue and comment writes", async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(
       new Response("{}", {
@@ -85,7 +109,8 @@ describe("ApiClient edit guards", () => {
     const client = new ApiClient("https://api.example.test");
 
     await client.updateIssue("issue-1", { title: "Latest", title_base: "Original" });
-    await client.updateComment("comment-1", "Latest", [], undefined, "Original");
+    await expect(client.updateComment("comment-1", "Latest", [], undefined, "Original"))
+      .rejects.toThrow(/invalid comment response/i);
 
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
       title: "Latest",

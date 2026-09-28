@@ -79,4 +79,5 @@ export interface CommentTriggerPreview {
   // Explicit @agent / @squad mentions that will NOT trigger if posted as-is
   // (MUL-4525 §2). Additive: older servers omit it.
   blocked?: CommentTriggerOutcome[];
+  invalid_mentions?: { start: number; end: number }[];
 }
