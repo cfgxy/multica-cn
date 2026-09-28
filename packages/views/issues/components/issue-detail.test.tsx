@@ -6,6 +6,7 @@ import type { Issue, IssueStatusEntry, Label, TimelineEntry } from "@multica/cor
 import type { TimelineQueryData, TimelineTruncationKind } from "@multica/core/issues/timeline-query";
 import { issueStatusKeys } from "@multica/core/issue-statuses";
 import { COMMENT_HIGHLIGHT_HOLD_MS } from "@multica/core/issues/comment-highlight";
+import { configStore } from "@multica/core/config";
 import { I18nProvider } from "@multica/core/i18n/react";
 import { toast } from "sonner";
 import { useResolvedExpandStore } from "@multica/core/issues/stores/resolved-expand-store";
@@ -20,6 +21,7 @@ import enIssues from "../../locales/en/issues.json";
 const TEST_RESOURCES = { en: { common: enCommon, issues: enIssues } };
 
 const mockViewport = vi.hoisted(() => ({ isMobile: false }));
+const mockGitHubEnabled = vi.hoisted(() => ({ value: true }));
 
 // Counts MockContentEditor mounts. This pins the description to exactly one
 // eager editor per issue and catches stale editor reuse across issue switches.
@@ -107,7 +109,10 @@ vi.mock("@multica/core/paths", async () => {
   );
   return {
     ...actual,
-    useCurrentWorkspace: () => ({ id: "ws-1", name: "Test WS", slug: "test" }),
+    useCurrentWorkspace: () => ({
+      id: "ws-1", name: "Test WS", slug: "test",
+      settings: { github_enabled: mockGitHubEnabled.value },
+    }),
     useWorkspacePaths: () => actual.paths.workspace("test"),
   };
 });
@@ -329,6 +334,7 @@ const mockApiObj = vi.hoisted(() => ({
   listMembers: vi.fn().mockResolvedValue([{ user_id: "user-1", name: "Test User", email: "test@test.com", role: "admin" }]),
   listAgents: vi.fn().mockResolvedValue([]),
   getProject: vi.fn(),
+  listIssuePullRequests: vi.fn().mockResolvedValue({ pull_requests: [] }),
   listProjects: vi.fn().mockResolvedValue({ projects: [] }),
 }));
 
@@ -735,6 +741,8 @@ describe("IssueDetail (shared)", () => {
     vi.clearAllMocks();
     contentEditorMounts.count = 0;
     mockViewport.isMobile = false;
+    mockGitHubEnabled.value = true;
+    configStore.getState().setAuthConfig({ allowSignup: true, vcsIntegrationAvailable: false });
     useTimelineSortStore.setState({ mode: "recent-comment", hintSeen: false });
     // Default: issue loads successfully
     mockApiObj.getIssue.mockResolvedValue(mockIssue);
@@ -758,6 +766,23 @@ describe("IssueDetail (shared)", () => {
     // Reset project mock — individual tests override per case. Default fixture
     // has project_id: null so getProject is not invoked.
     mockApiObj.getProject.mockReset();
+    mockApiObj.listIssuePullRequests.mockResolvedValue({ pull_requests: [] });
+  });
+
+  it("shows linked GitLab MR when GitHub is disabled without showing GitHub rows", async () => {
+    mockGitHubEnabled.value = false;
+    configStore.getState().setAuthConfig({ allowSignup: true, vcsIntegrationAvailable: true });
+    mockApiObj.listIssuePullRequests.mockResolvedValue({
+      pull_requests: [
+        { id: "github", provider: "github", title: "GitHub PR" },
+        { id: "gitlab", provider: "gitlab", title: "GitLab MR", state: "open", html_url: "https://example.test/mr/1", repo_owner: "team", repo_name: "repo", number: 1 },
+      ],
+    });
+
+    renderIssueDetail();
+    expect(await screen.findByRole("button", { name: "Pull requests" })).toBeInTheDocument();
+    expect(await screen.findByText("GitLab MR")).toBeInTheDocument();
+    expect(screen.queryByText("GitHub PR")).not.toBeInTheDocument();
   });
 
   it("opens source-context creation from both a root comment and a reply", async () => {
