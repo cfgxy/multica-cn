@@ -17,6 +17,7 @@
  * clears.
  */
 import { create } from "zustand";
+import type { MentionToken } from "@/lib/mention-trigger";
 
 export type MentionTargetType = "member" | "agent" | "squad" | "all" | "issue";
 
@@ -38,11 +39,24 @@ function sameMention(
 
 interface State {
   mentions: MentionChipDraft[];
-  /** Add or remove by (type, id). Picker uses this — selecting an
-   *  already-selected row removes it (label-picker idiom). */
+  /** Add or remove by (type, id). Kept for MessageComposer's submit
+   *  rollback, which restores chips into a just-cleared store (there
+   *  toggle === add). */
   toggle: (mention: MentionChipDraft) => void;
+  /** RUYI-232 single-select insert: add the chip idempotently. The
+   *  picker calls this once per picked row and closes the sheet
+   *  immediately — re-picking the same row must not remove it. */
+  add: (mention: MentionChipDraft) => void;
   remove: (type: MentionTargetType, id: string) => void;
   clear: () => void;
+  /** RUYI-232 typing trigger: the `@` token the composer was editing
+   *  when it pushed the picker, so the composer can strip the raw
+   *  `@<query>` text from the draft once a pick lands. Null when the
+   *  picker was opened via the `@` toolbar button (no token to strip).
+   *  Overwritten on every composer-initiated push, so a stale value
+   *  from a dismissed sheet can never mis-fire a later strip. */
+  token: MentionToken | null;
+  setToken: (token: MentionToken | null) => void;
 }
 
 export const useMentionDraftStore = create<State>((set) => ({
@@ -57,9 +71,17 @@ export const useMentionDraftStore = create<State>((set) => ({
       }
       return { mentions: [...s.mentions, mention] };
     }),
+  add: (mention) =>
+    set((s) =>
+      s.mentions.some((m) => sameMention(m, mention))
+        ? s
+        : { mentions: [...s.mentions, mention] },
+    ),
   remove: (type, id) =>
     set((s) => ({
       mentions: s.mentions.filter((m) => !sameMention(m, { type, id })),
     })),
   clear: () => set({ mentions: [] }),
+  token: null,
+  setToken: (token) => set({ token }),
 }));

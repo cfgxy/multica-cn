@@ -1,0 +1,54 @@
+# Self-host override: the services (redis + mcp) and environment additions the
+# MCP OAuth surface needs. Without this file the deployment keeps its previous
+# shape: OAuth stays off and /api/mcp falls through to the backend 404.
+# Usage:
+#   docker compose -f docker-compose.selfhost.yml -f docker-compose.selfhost.build.yml \
+#     -f docker-compose.selfhost.local.yml <cmd>
+# Rollback: drop this file from the -f list, `down redis mcp`, and clear the
+# three OAuth/MCP variables in .env.
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # Only holds single-use authorization codes with a 60s TTL
+    # (server/internal/oauth/code_store.go), so nothing needs to survive a
+    # restart; reachable on the compose network only, no host port published.
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+
+  mcp:
+    image: multica-mcp:dev
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      # Host binding is 127.0.0.1 only; the single public entry point is the
+      # /api/mcp rewrite on the Next.js port 3000.
+      - "127.0.0.1:3002:3002"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      # Backend REST address MCP forwards the caller's token to, verbatim,
+      # over the compose network.
+      MULTICA_SERVER_URL: http://backend:8080
+      # Base for the absolute resource_metadata URL in the 401
+      # WWW-Authenticate header (the real public domain).
+      MULTICA_APP_URL: ${MULTICA_APP_URL}
+
+  backend:
+    environment:
+      # Unset keeps the whole OAuth surface off (the PAT path is unaffected);
+      # the PEM itself is injected from .env.
+      OAUTH_SIGNING_KEY: ${OAUTH_SIGNING_KEY:-}
+      # Authorization-code store (60s TTL, consumed once). Note that this
+      # variable also switches the realtime relay on in its default sharded
+      # mode — a self-consistent path for a single replica.
+      REDIS_URL: ${REDIS_URL:-}
+
+  frontend:
+    environment:
+      # Target of the /api/mcp rewrite
+      # (apps/web/config/runtime-urls.ts resolveMcpUrl). When unset /api/mcp
+      # falls back to the backend 404, matching the previous behaviour.
+      MCP_URL: ${MCP_URL:-}

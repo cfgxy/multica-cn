@@ -164,7 +164,8 @@ type LocalWorktree struct {
 	// Branch is the branch created for this task, in the user's repo.
 	Branch string
 	// BaseCommit is the commit the worktree started from — this turn's baseline
-	// when one was committed, otherwise the branch tip it continued. Finalize
+	// when one was committed, otherwise the commit the branch was created on (a
+	// clean start sits on the user's own HEAD). Finalize
 	// compares the delivered tip against it twice: to decide whether the task
 	// produced anything, and to decide whether it may be recorded at all.
 	//
@@ -482,15 +483,16 @@ func PrepareLocalWorktree(params LocalWorktreeParams, logger *slog.Logger) (*Loc
 			rollback()
 			return nil, fmt.Errorf("execenv: could not inspect the prepared worktree for %q: %w", gitRoot, dirtyErr)
 		}
-		// A branch this prepare created gets its baseline even when there was
-		// nothing to replay. Two things need it. The empty case is the one that
-		// used to be skipped, and it is the one where the branch sits exactly on
-		// the user's own HEAD — so the branch had no commit of its own, and
-		// nothing distinguished it from a branch the user creates there
-		// themselves. And `git diff <baseline>..<branch>` is then the agent's
-		// work on every branch, not only on the ones that started dirty.
-		if dirty || !plan.continues {
-			baseline, baseErr := commitBaseline(worktreePath, plan.continues, dirty)
+		// Only a worktree carrying replayed user work commits a baseline. A clean
+		// start used to pin an empty "the task worktree started here" marker onto
+		// every new branch, and that marker rode into every delivered PR
+		// (RUYI-229). A clean branch needs no commit of its own to stay readable —
+		// everything the agent does sits on the user's HEAD, so
+		// `git diff <HEAD>..<branch>` is still precisely the agent's work — and a
+		// turn that produces nothing drops its branch outright, so the branch is
+		// never left sitting there unowned.
+		if dirty {
+			baseline, baseErr := commitBaseline(worktreePath, plan.continues)
 			if baseErr != nil {
 				// Without a baseline the task cannot tell the user's work from the
 				// agent's, so it would later commit the user's files as if the agent
@@ -502,13 +504,20 @@ func PrepareLocalWorktree(params LocalWorktreeParams, logger *slog.Logger) (*Loc
 			// and everything downstream measures the delivery against it.
 			wt.BaseCommit = baseline
 		}
-		// The branch now carries this snapshot, so record it — together with the
-		// owner, which is what lets the next task prove this branch is its own
-		// before continuing it. Recorded here as well as at Finalize so a turn
-		// that never reaches Finalize still leaves the branch identifiable.
-		if err := wt.recordState(wt.BaseCommit, logger); err != nil && logger != nil {
-			logger.Warn("execenv: could not record the task branch before the run (non-fatal; Finalize records the delivered tip)",
-				"branch", wt.Branch, "error", err)
+		// Record the branch as this conversation's as early as it can honestly be
+		// recorded: only once the branch carries a commit of this conversation's
+		// own — the baseline just made, or the prior work a continued branch
+		// stands on. A clean new branch has no such commit yet; recording its tip
+		// would pin the user's own HEAD as the ownership proof, which is exactly
+		// where a branch they later delete and recreate lands (MUL-6881). Its
+		// record waits for Finalize and the delivery itself. Recording here as
+		// well as at Finalize is what keeps a turn that never reaches Finalize
+		// recoverable on every branch that could carry work into it.
+		if dirty || plan.continues {
+			if err := wt.recordState(wt.BaseCommit, logger); err != nil && logger != nil {
+				logger.Warn("execenv: could not record the task branch before the run (non-fatal; Finalize records the delivered tip)",
+					"branch", wt.Branch, "error", err)
+			}
 		}
 	}
 
@@ -654,7 +663,13 @@ func (w *LocalWorktree) Finalize(logger *slog.Logger) (LocalWorktreeOutcome, err
 	// would take their work with it.
 	tip, err := runGitTrimmed(w.Path, "rev-parse", "--verify", "HEAD")
 	producedWork := err != nil || tip != w.BaseCommit
-	dropped := !producedWork && w.createdBranch
+	dropped := false
+	if !producedWork && w.createdBranch {
+		// A detached checkout can return to the base while the task branch still
+		// carries work. Only discard a branch that itself remains at the base.
+		branchTip, branchErr := runGitTrimmed(w.GitRoot, "rev-parse", "--verify", "refs/heads/"+w.Branch)
+		dropped = branchErr == nil && branchTip == tip
+	}
 
 	// A turn that started mid-merge only gets to advance the branch's recorded
 	// state if it committed something after resolving. When the branch is still
@@ -809,20 +824,12 @@ func (w *LocalWorktree) AbortWithReason(err error) {
 // commit on the task branch, returning the new tip. On a continued branch that
 // state is the increment since the previous turn, so the message says so rather
 // than claiming to be the branch's baseline.
-//
-// A new branch gets one even with nothing to record. The commit is then empty,
-// and that is the point: it is the branch's first commit of its own, the thing
-// that makes it distinguishable later from a branch the user creates at the
-// same place — see LocalWorktree.BaseCommit.
-func commitBaseline(worktreePath string, continued, dirty bool) (string, error) {
+func commitBaseline(worktreePath string, continued bool) (string, error) {
 	message := "chore(agent): baseline — uncommitted work from the local directory"
-	switch {
-	case continued:
+	if continued {
 		message = "chore(agent): uncommitted work from the local directory since the previous turn"
-	case !dirty:
-		message = "chore(agent): baseline — the task worktree started here"
 	}
-	if _, err := commitEverything(worktreePath, message, !dirty); err != nil {
+	if _, err := commitEverything(worktreePath, message); err != nil {
 		return "", err
 	}
 	tip, err := runGitTrimmed(worktreePath, "rev-parse", "--verify", "HEAD")
@@ -838,13 +845,13 @@ func commitBaseline(worktreePath string, continued, dirty bool) (string, error) 
 func (w *LocalWorktree) commitAll(logger *slog.Logger) (bool, error) {
 	// Never --allow-empty here: an empty commit would make a read-only turn look
 	// like it produced work and leave its branch behind.
-	return commitEverything(w.Path, "chore(agent): uncommitted changes from task", false)
+	return commitEverything(w.Path, "chore(agent): uncommitted changes from task")
 }
 
 // commitEverything returns (false, nil) for the benign "there was nothing to
 // commit" case and (false, err) for a real failure — the distinction callers
 // need to decide whether the tree is safe to discard.
-func commitEverything(worktreePath, message string, allowEmpty bool) (bool, error) {
+func commitEverything(worktreePath, message string) (bool, error) {
 	// Two steps rather than one `add -A`. Agent runtimes create and delete
 	// state files (.omc/, .zcode/, ...) in the worktree right up to the moment
 	// the agent exits, and a plain `add -A` walks those untracked directories:
@@ -866,17 +873,15 @@ func commitEverything(worktreePath, message string, allowEmpty bool) (bool, erro
 	// than parsing git's wording: with the runtime directories excluded, the
 	// leftover untracked files make commit phrase it as "nothing added to
 	// commit but untracked files present" — a shape the old "nothing to
-	// commit" match never saw, and one that read like a real failure. The
-	// allowEmpty case must still run: a clean base's baseline is an
-	// intentional empty commit.
-	if !allowEmpty {
-		staged, err := runGit(worktreePath, "diff", "--cached", "--name-only")
-		if err != nil {
-			return false, fmt.Errorf("git diff --cached: %s: %w", strings.TrimSpace(staged), err)
-		}
-		if strings.TrimSpace(staged) == "" {
-			return false, nil
-		}
+	// commit" match never saw, and one that read like a real failure. No caller
+	// of this function may create an empty commit: a read-only turn must never
+	// look like it produced work.
+	staged, err := runGit(worktreePath, "diff", "--cached", "--name-only")
+	if err != nil {
+		return false, fmt.Errorf("git diff --cached: %s: %w", strings.TrimSpace(staged), err)
+	}
+	if strings.TrimSpace(staged) == "" {
+		return false, nil
 	}
 	// --no-verify: the user's commit hooks are written for the user's own
 	// workflow (interactive linters, test suites, signing prompts) and a hook
@@ -884,9 +889,6 @@ func commitEverything(worktreePath, message string, allowEmpty bool) (bool, erro
 	// it does NOT disable commit.gpgSign, which is why the caller has to treat
 	// a commit failure as "keep the worktree" rather than a warning.
 	args := append(commitIdentityArgs(worktreePath), "commit", "--no-verify")
-	if allowEmpty {
-		args = append(args, "--allow-empty")
-	}
 	args = append(args, "-m", message)
 	if out, err := runGit(worktreePath, args...); err != nil {
 		if strings.Contains(out, "nothing to commit") {
@@ -1862,8 +1864,8 @@ func quotedPaths(paths []string) string {
 // branch — a run that checked out something else, or a branch someone moved
 // underneath it, delivers a commit this record has no business describing. And
 // it has to still contain the commit this turn started from — this turn's own
-// baseline when it made one, otherwise the branch tip it continued. A run that
-// resets its worktree back to the user's own HEAD passes neither test but the
+// baseline when it made one, otherwise the commit the branch was created on.
+// A run that resets its worktree back to the user's own HEAD passes neither test but the
 // second is the one that matters, twice over: recording a plain user commit as
 // the checkpoint is what makes a branch they later recreate there look like
 // ours, and a tip without this turn's starting point no longer carries the

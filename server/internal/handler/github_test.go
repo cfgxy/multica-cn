@@ -2245,6 +2245,46 @@ func TestSignGitHubAppJWT_ClaimsAndSignature(t *testing.T) {
 	}
 }
 
+// TestSignGitHubAppJWT_PEMWritings pins that both writings of
+// GITHUB_APP_PRIVATE_KEY a `.env` file can carry reach the parser identically
+// (RUYI-216): the real multi-line block every existing deployment has, and the
+// single line with `\n` escapes that `Makefile`'s `include .env` can parse.
+// Normalization lives in util.NormalizePEMKey; its own matrix is in
+// internal/util/pem_test.go.
+func TestSignGitHubAppJWT_PEMWritings(t *testing.T) {
+	pemBytes, key := generateTestRSAKeyPEM(t)
+	multiline := strings.TrimSpace(string(pemBytes))
+	escaped := strings.ReplaceAll(multiline, "\n", `\n`)
+
+	for _, tc := range []struct {
+		name  string
+		value string
+	}{
+		{"real newlines", multiline},
+		{"escaped newlines on one line", escaped},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("GITHUB_APP_ID", "424242")
+			t.Setenv("GITHUB_APP_PRIVATE_KEY", tc.value)
+
+			now := time.Date(2026, 6, 5, 12, 0, 0, 0, time.UTC)
+			tok, err := signGitHubAppJWT(now)
+			if err != nil {
+				t.Fatalf("sign with this writing: %v", err)
+			}
+			parsed, err := jwt.Parse(
+				tok,
+				func(*jwt.Token) (any, error) { return &key.PublicKey, nil },
+				jwt.WithValidMethods([]string{"RS256"}),
+				jwt.WithTimeFunc(func() time.Time { return now }),
+			)
+			if err != nil || !parsed.Valid {
+				t.Fatalf("token does not verify against the configured key: err=%v", err)
+			}
+		})
+	}
+}
+
 func TestFetchGitHubInstallationRepositories(t *testing.T) {
 	pemBytes, key := generateTestRSAKeyPEM(t)
 	t.Setenv("GITHUB_APP_ID", "424242")

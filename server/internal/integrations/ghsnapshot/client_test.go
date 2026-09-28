@@ -202,4 +202,19 @@ func TestNewClientFromEnv(t *testing.T) {
 			t.Fatalf("got (%v, %v), want enabled client", c, err)
 		}
 	})
+	// RUYI-216: the same key written as one physical line with `\n` escapes —
+	// the writing `Makefile`'s `include .env` can parse — must enable the
+	// client too, so App auth does not depend on which writing the operator
+	// picked. Normalization matrix: internal/util/pem_test.go.
+	t.Run("escaped-newline writing of the same key enables the client", func(t *testing.T) {
+		key, _ := rsa.GenerateKey(rand.Reader, 2048)
+		pemBytes := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+		escaped := strings.ReplaceAll(strings.TrimSpace(string(pemBytes)), "\n", `\n`)
+		t.Setenv("GITHUB_APP_ID", "1")
+		t.Setenv("GITHUB_APP_PRIVATE_KEY", escaped)
+		c, err := NewClientFromEnv()
+		if err != nil || !c.Enabled() {
+			t.Fatalf("got (%v, %v), want enabled client", c, err)
+		}
+	})
 }
