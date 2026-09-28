@@ -3674,6 +3674,57 @@ func (h *Handler) ListPendingTasksByRuntime(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// InFlightTaskResponse is one row of the in-flight list the daemon's
+// probe-based orphan recovery consumes (RUYI-225). WorkDir is null when the
+// task never pinned a session work_dir (waiting_local_directory rows have no
+// session yet), in which case the probe has nothing to inspect and the
+// daemon must leave the task alone.
+type InFlightTaskResponse struct {
+	ID          string  `json:"id"`
+	WorkspaceID string  `json:"workspace_id"`
+	Status      string  `json:"status"`
+	WorkDir     *string `json:"work_dir"`
+}
+
+// ListInFlightTasksByRuntime returns the running/waiting_local_directory
+// tasks a daemon owns on one runtime, with the workspace identity and pinned
+// work_dir the recovery probe needs. Unlike the blanket recover-orphans fail,
+// the daemon derives each task's env root from that identity and probes the
+// env root's execution lock: lock acquirable proves the worker died with the
+// previous daemon process, lock held proves live work that must not be
+// failed. dispatched rows are excluded — the prepare-lease expiry path owns
+// those.
+func (h *Handler) ListInFlightTasksByRuntime(w http.ResponseWriter, r *http.Request) {
+	runtimeID := chi.URLParam(r, "runtimeId")
+
+	// Verify the caller owns this runtime's workspace.
+	if _, ok := h.requireDaemonRuntimeAccess(w, r, runtimeID); !ok {
+		return
+	}
+
+	tasks, err := h.Queries.ListInFlightTasksByRuntime(r.Context(), parseUUID(runtimeID))
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to list in-flight tasks")
+		return
+	}
+
+	resp := make([]InFlightTaskResponse, 0, len(tasks))
+	for _, t := range tasks {
+		task := InFlightTaskResponse{
+			ID:          uuidToString(t.ID),
+			WorkspaceID: uuidToString(t.WorkspaceID),
+			Status:      t.Status,
+		}
+		if t.WorkDir.Valid {
+			dir := t.WorkDir.String
+			task.WorkDir = &dir
+		}
+		resp = append(resp, task)
+	}
+
+	writeJSON(w, http.StatusOK, resp)
+}
+
 // ---------------------------------------------------------------------------
 // Task Lifecycle (called by daemon)
 // ---------------------------------------------------------------------------

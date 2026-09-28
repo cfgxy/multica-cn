@@ -156,7 +156,7 @@ FRONTEND_ORIGIN=https://multica.example.com
 
 ```dotenv
 GITHUB_APP_ID=<GitHub App 的数字 ID>
-GITHUB_APP_PRIVATE_KEY=<完整 PEM 私钥，保留 BEGIN/END 行和换行>
+GITHUB_APP_PRIVATE_KEY="<完整 PEM 私钥写成一行，保留 BEGIN/END 行，换行写作 \n>"
 ```
 
 私钥在 GitHub App 的 **Private keys → Generate a private key** 中生成。不配置时集成会平稳降级：PR 照常镜像，任务照常自动关联并在合并时转 Done，只是 PR 卡片不显示 CI 或合并状态。

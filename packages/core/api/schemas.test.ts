@@ -3,6 +3,12 @@ import {
   AppConfigSchema,
   MarketplaceItemSchema,
   MarketplaceItemListSchema,
+  PromptQuizItemSchema,
+  PromptQuizItemDetailSchema,
+  PromptQuizItemListSchema,
+  PromptQuizBaselineSchema,
+  EMPTY_PROMPT_QUIZ_ITEM,
+  EMPTY_PROMPT_QUIZ_BASELINE,
   WecomInstallationSchema,
   ListWecomInstallationsResponseSchema,
   RedeemWecomBindingTokenResponseSchema,
@@ -20,6 +26,7 @@ import {
   AutopilotRunSchema,
   FALLBACK_AUTOPILOT_RUN,
   CommentTriggerPreviewSchema,
+  CommentSchema,
   DashboardAgentRunTimeListSchema,
   DashboardRunTimeDailyListSchema,
   DashboardFailureByAgentListSchema,
@@ -1505,6 +1512,29 @@ describe("AutopilotQuotaUsageSchema", () => {
 
 // The comment composer branches on preview.blocked to warn before sending
 // (MUL-4525 §2), so the additive field must parse and degrade gracefully.
+describe("CommentSchema.trigger_outcomes", () => {
+  const comment = {
+    id: "comment-1", issue_id: "issue-1", author_type: "member", author_id: "user-1",
+    content: "accepted", type: "comment", parent_id: null,
+    created_at: "2026-09-28T00:00:00Z", updated_at: "2026-09-28T00:00:00Z",
+  };
+
+  it("keeps valid outcomes but discards malformed entries and fields", () => {
+    const result = CommentSchema.parse({
+      ...comment,
+      trigger_outcomes: [
+        { target_type: "agent", target_id: "agent-1", status: "queued" },
+        { target_type: "agent", status: "blocked" },
+      ],
+    });
+    expect(result.trigger_outcomes).toEqual([
+      expect.objectContaining({ target_id: "agent-1", status: "queued" }),
+    ]);
+    expect(CommentSchema.parse({ ...comment, trigger_outcomes: "bad" }).trigger_outcomes).toEqual([]);
+    expect(CommentSchema.safeParse({ ...comment, id: 123 }).success).toBe(false);
+  });
+});
+
 describe("CommentTriggerPreviewSchema.blocked", () => {
   it("parses blocked mention outcomes alongside agents", () => {
     const parsed = CommentTriggerPreviewSchema.parse({
@@ -1522,6 +1552,14 @@ describe("CommentTriggerPreviewSchema.blocked", () => {
   it("defaults blocked to [] when an older server omits it", () => {
     const parsed = CommentTriggerPreviewSchema.parse({ agents: [] });
     expect(parsed.blocked).toEqual([]);
+    expect(parsed.invalid_mentions).toEqual([]);
+  });
+
+  it("keeps valid invalid-mention spans and tolerates a malformed field", () => {
+    expect(CommentTriggerPreviewSchema.parse({ agents: [], invalid_mentions: [{ start: 3, end: 12 }] }).invalid_mentions)
+      .toEqual([{ start: 3, end: 12 }]);
+    expect(CommentTriggerPreviewSchema.parse({ agents: [], invalid_mentions: "invalid" }).invalid_mentions)
+      .toEqual([]);
   });
 
   it("degrades a malformed blocked field to [] without dropping agents", () => {
@@ -2288,5 +2326,93 @@ describe("MarketplaceItemSchema", () => {
       { endpoint: "GET /api/marketplace/items" },
     );
     expect(parsed).toEqual([]);
+  });
+});
+
+describe("prompt quiz schemas (RUYI-185)", () => {
+  it("keeps the bank list free of a rubric even when the server sends one", () => {
+    // The list is member-visible. A response that carried the answer key must
+    // not put it into a parsed row, because every surface that renders a row
+    // could then render it.
+    const parsed = PromptQuizItemSchema.parse({
+      id: "i-1",
+      slug: "summarize",
+      title: "Summarize",
+      body: "Summarize the thread.",
+      revision: 2,
+      runtime_profile: "member",
+      active: true,
+      discrimination: "flat",
+      rubric: "EXPECTED ANSWER: three constraints",
+      created_at: "2026-09-01T00:00:00Z",
+      updated_at: "2026-09-01T00:00:00Z",
+    });
+    expect("rubric" in parsed).toBe(false);
+    expect(parsed.discrimination).toBe("flat");
+  });
+
+  it("defaults a missing discrimination mark to empty, which narrows to pending", () => {
+    const parsed = PromptQuizItemSchema.parse({ id: "i-1", slug: "s", title: "t", body: "b" });
+    expect(parsed.discrimination).toBe("");
+    expect(parsed.active).toBe(false);
+  });
+
+  it("carries the rubric on the owner-only detail read", () => {
+    const parsed = PromptQuizItemDetailSchema.parse({
+      id: "i-1",
+      slug: "s",
+      title: "t",
+      body: "b",
+      rubric: "EXPECTED ANSWER: three constraints",
+    });
+    expect(parsed.rubric).toBe("EXPECTED ANSWER: three constraints");
+  });
+
+  it("falls back to an unreadable question rather than a blank live one", () => {
+    // The fallback is what an editor would be seeded with, so it must not look
+    // like a valid question: revision 0 and active false.
+    const parsed = parseWithFallback(
+      { id: 17, slug: null },
+      PromptQuizItemDetailSchema,
+      EMPTY_PROMPT_QUIZ_ITEM,
+      { endpoint: "GET /api/prompt-quiz/items/{id}" },
+    );
+    expect(parsed).toEqual(EMPTY_PROMPT_QUIZ_ITEM);
+    expect(parsed.rubric).toBe("");
+    expect(parsed.active).toBe(false);
+  });
+
+  it("falls back to an empty bank on a malformed listing", () => {
+    const parsed = parseWithFallback(
+      { items: "all-of-them" },
+      PromptQuizItemListSchema,
+      [],
+      { endpoint: "GET /api/prompt-quiz/items" },
+    );
+    expect(parsed).toEqual([]);
+  });
+
+  it("reads a backend with no cohort accounting as having excluded nothing", () => {
+    const parsed = PromptQuizBaselineSchema.parse({
+      scope: "agent",
+      scope_id: "a-1",
+      current_version: 3,
+      measured: true,
+    });
+    expect(parsed.incomparable).toBe(0);
+    expect(parsed.baseline_incomparable).toBe(0);
+    expect(parsed.outcomes).toEqual({});
+  });
+
+  it("falls back to an unmeasured reading, never to a clean one", () => {
+    const parsed = parseWithFallback(
+      { current_version: "three", comparison: { verdict: 9 } },
+      PromptQuizBaselineSchema,
+      EMPTY_PROMPT_QUIZ_BASELINE,
+      { endpoint: "GET /api/prompt-governance/{scope}/{scopeId}/quiz" },
+    );
+    expect(parsed).toEqual(EMPTY_PROMPT_QUIZ_BASELINE);
+    expect(parsed.measured).toBe(false);
+    expect(parsed.comparison).toBeUndefined();
   });
 });

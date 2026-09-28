@@ -342,3 +342,121 @@ func TestPromptGovernanceSaveRequiresOwnerRole(t *testing.T) {
 		t.Fatalf("owner write: expected 200, got %d: %s", w.Code, w.Body.String())
 	}
 }
+
+// ── empty-content guard (RUYI-213) ──────────────────────────────────────────
+//
+// The 922 v1 backfill snapshotted whatever each tier's business column held at
+// the time, so a tier whose content had already been lost carries an empty v1
+// row. Switching to such a version used to copy that emptiness straight back
+// over content restored since. The guard rejects any write whose content is
+// blank while the tier's current effective content is not.
+
+func TestPromptGovernanceSwitchToEmptyVersionIsRejected(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := dbfx.Agent(t, "prompt-gov-empty-switch", handlerTestRuntimeID(t), map[string]any{"instructions": "live content"})
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM prompt_version WHERE scope = 'agent' AND scope_id = $1`, agentID)
+	})
+
+	// An empty v1 row, exactly as the backfill would have written it for a
+	// tier whose business column was already blank. It cannot be created
+	// through the handler — the save gate rejects empty content — so it is
+	// inserted directly, the same way the migration did.
+	dbfx.Exec(t, `INSERT INTO prompt_version (workspace_id, scope, scope_id, version, content, content_sha256, source, change_note)
+		VALUES ($1, 'agent', $2, 1, '', encode(digest('', 'sha256'), 'hex'), 'import', 'empty v1 baseline')`,
+		testWorkspaceID, agentID)
+
+	code, raw := callPromptGov(t, testHandler.SwitchPromptGovernanceVersion, http.MethodPost,
+		"/api/prompt-governance/agent/"+agentID+"/versions/1/switch", nil,
+		map[string]string{"scope": "agent", "scopeId": agentID, "version": "1"})
+	if code != http.StatusConflict {
+		t.Fatalf("switch to empty v1: expected 409, got %d: %s", code, raw)
+	}
+
+	// The point of the guard is the business column, not the status code:
+	// the live instructions must survive the rejected switch.
+	var instructions string
+	dbfx.QueryRow(t, `SELECT instructions FROM agent WHERE id = $1`, agentID).Scan(&instructions)
+	if instructions != "live content" {
+		t.Fatalf("agent.instructions = %q after a rejected switch, want the live content intact", instructions)
+	}
+	// And no new version row may be appended for a write that was refused.
+	if n := dbfx.Count(t, `SELECT count(*) FROM prompt_version WHERE scope = 'agent' AND scope_id = $1`, agentID); n != 1 {
+		t.Fatalf("prompt_version rows = %d after a rejected switch, want the single seeded v1", n)
+	}
+}
+
+func TestPromptGovernanceSwitchToWhitespaceVersionIsRejected(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := dbfx.Agent(t, "prompt-gov-blank-switch", handlerTestRuntimeID(t), map[string]any{"instructions": "live content"})
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM prompt_version WHERE scope = 'agent' AND scope_id = $1`, agentID)
+	})
+
+	// Whitespace-only content passes the save gate's len()>0 check, so it can
+	// reach prompt_version through a normal save and later be switched back
+	// to. It erases live text just as thoroughly as an empty string.
+	dbfx.Exec(t, `INSERT INTO prompt_version (workspace_id, scope, scope_id, version, content, content_sha256, source, change_note)
+		VALUES ($1, 'agent', $2, 1, '   ', encode(digest('   ', 'sha256'), 'hex'), 'import', 'whitespace v1 baseline')`,
+		testWorkspaceID, agentID)
+
+	code, raw := callPromptGov(t, testHandler.SwitchPromptGovernanceVersion, http.MethodPost,
+		"/api/prompt-governance/agent/"+agentID+"/versions/1/switch", nil,
+		map[string]string{"scope": "agent", "scopeId": agentID, "version": "1"})
+	if code != http.StatusConflict {
+		t.Fatalf("switch to whitespace v1: expected 409, got %d: %s", code, raw)
+	}
+	var instructions string
+	dbfx.QueryRow(t, `SELECT instructions FROM agent WHERE id = $1`, agentID).Scan(&instructions)
+	if instructions != "live content" {
+		t.Fatalf("agent.instructions = %q after a rejected switch, want the live content intact", instructions)
+	}
+}
+
+func TestPromptGovernanceSaveOfWhitespaceContentIsRejected(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := dbfx.Agent(t, "prompt-gov-blank-save", handlerTestRuntimeID(t), map[string]any{"instructions": "live content"})
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM prompt_version WHERE scope = 'agent' AND scope_id = $1`, agentID)
+	})
+
+	code, raw := callPromptGov(t, testHandler.SavePromptGovernanceVersion, http.MethodPost,
+		"/api/prompt-governance/agent/"+agentID+"/versions",
+		map[string]any{"content": "\n \t\n", "change_note": "accidental blank save"},
+		map[string]string{"scope": "agent", "scopeId": agentID})
+	if code != http.StatusConflict {
+		t.Fatalf("blank save: expected 409, got %d: %s", code, raw)
+	}
+	var instructions string
+	dbfx.QueryRow(t, `SELECT instructions FROM agent WHERE id = $1`, agentID).Scan(&instructions)
+	if instructions != "live content" {
+		t.Fatalf("agent.instructions = %q after a rejected blank save, want the live content intact", instructions)
+	}
+}
+
+// The guard must not block a write to a tier that is already empty — there is
+// no live content to lose, and an agent created without instructions must
+// still be able to receive its first (or a subsequent blank) version.
+func TestPromptGovernanceBlankWriteAllowedWhenCurrentContentIsEmpty(t *testing.T) {
+	if testHandler == nil {
+		t.Skip("database not available")
+	}
+	agentID := dbfx.Agent(t, "prompt-gov-blank-on-blank", handlerTestRuntimeID(t), map[string]any{"instructions": ""})
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM prompt_version WHERE scope = 'agent' AND scope_id = $1`, agentID)
+	})
+
+	code, raw := callPromptGov(t, testHandler.SavePromptGovernanceVersion, http.MethodPost,
+		"/api/prompt-governance/agent/"+agentID+"/versions",
+		map[string]any{"content": " ", "change_note": "blank over blank"},
+		map[string]string{"scope": "agent", "scopeId": agentID})
+	if code != http.StatusOK {
+		t.Fatalf("blank write over empty content: expected 200, got %d: %s", code, raw)
+	}
+}

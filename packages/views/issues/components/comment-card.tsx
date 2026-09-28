@@ -480,6 +480,8 @@ function useEditAttachmentState(
         toast.error(
           errorCode(err) === "revision_conflict"
             ? t(($) => $.revision.conflict)
+            : errorCode(err) === "invalid_agent_mentions"
+            ? t(($) => $.comment.invalid_agent_mentions)
             : err instanceof Error && err.message
             ? err.message
             : t(($) => $.comment.update_failed),
@@ -796,6 +798,7 @@ function CommentRow({
               <CommentTriggerChips
                 agents={edit.triggerPreview.agents}
                 blocked={edit.triggerPreview.blocked}
+                invalidMentionCount={edit.triggerPreview.invalidMentionCount}
                 draftContent={edit.content}
                 suppressedAgentIds={edit.suppressedAgentIds}
                 onToggle={edit.toggleSuppressedAgent}
@@ -1154,6 +1157,7 @@ function CommentCardImpl({
                     <CommentTriggerChips
                       agents={edit.triggerPreview.agents}
                       blocked={edit.triggerPreview.blocked}
+                      invalidMentionCount={edit.triggerPreview.invalidMentionCount}
                       draftContent={edit.content}
                       suppressedAgentIds={edit.suppressedAgentIds}
                       onToggle={edit.toggleSuppressedAgent}

@@ -1,14 +1,18 @@
-# RUYI-209 部署阶段本地 override（不入库，2026-09-26）。
-# 用途：MCP OAuth 上线所需的新增服务与环境变量增量。使用方式：
+# Self-host override: the services (redis + mcp) and environment additions the
+# MCP OAuth surface needs. Without this file the deployment keeps its previous
+# shape: OAuth stays off and /api/mcp falls through to the backend 404.
+# Usage:
 #   docker compose -f docker-compose.selfhost.yml -f docker-compose.selfhost.build.yml \
 #     -f docker-compose.selfhost.local.yml <cmd>
-# 回滚：从 -f 列表移除本文件，`down redis mcp`，.env 还原同目录 .bak-ruyi209-*。
+# Rollback: drop this file from the -f list, `down redis mcp`, and clear the
+# three OAuth/MCP variables in .env.
 services:
   redis:
     image: redis:7-alpine
     restart: unless-stopped
-    # 仅承载 60s TTL 的一次性授权码（server/internal/oauth/code_store.go），
-    # 无持久化需求；仅 compose 网络内可达，不发布宿主端口。
+    # Only holds single-use authorization codes with a 60s TTL
+    # (server/internal/oauth/code_store.go), so nothing needs to survive a
+    # restart; reachable on the compose network only, no host port published.
     command: ["redis-server", "--save", "", "--appendonly", "no"]
 
   mcp:
@@ -20,25 +24,31 @@ services:
     depends_on:
       - backend
     ports:
-      # 宿主仅 127.0.0.1 绑定；对外唯一入口是 Next.js 3000 的 /api/mcp rewrite。
+      # Host binding is 127.0.0.1 only; the single public entry point is the
+      # /api/mcp rewrite on the Next.js port 3000.
       - "127.0.0.1:3002:3002"
     environment:
       TZ: ${TZ:-Asia/Shanghai}
-      # MCP 把调用方 token 原样透传给的 backend REST 地址（compose 网络内）。
+      # Backend REST address MCP forwards the caller's token to, verbatim,
+      # over the compose network.
       MULTICA_SERVER_URL: http://backend:8080
-      # 401 WWW-Authenticate 的 resource_metadata 绝对 URL 基址（真实域名）。
+      # Base for the absolute resource_metadata URL in the 401
+      # WWW-Authenticate header (the real public domain).
       MULTICA_APP_URL: ${MULTICA_APP_URL}
 
   backend:
     environment:
-      # 未设置时 OAuth 面整体不启用（PAT 路径不受影响）；PEM 由 .env 注入。
+      # Unset keeps the whole OAuth surface off (the PAT path is unaffected);
+      # the PEM itself is injected from .env.
       OAUTH_SIGNING_KEY: ${OAUTH_SIGNING_KEY:-}
-      # 授权码存储（60s TTL 一次性消费）。注意：该变量同时使 realtime relay
-      # 以默认 sharded 模式启用（单副本自洽路径），见发布记录风险项。
+      # Authorization-code store (60s TTL, consumed once). Note that this
+      # variable also switches the realtime relay on in its default sharded
+      # mode — a self-consistent path for a single replica.
       REDIS_URL: ${REDIS_URL:-}
 
   frontend:
     environment:
-      # /api/mcp rewrite 目标（apps/web/config/runtime-urls.ts resolveMcpUrl）。
-      # 未设置时 /api/mcp 落回 backend 404，与旧行为一致。
+      # Target of the /api/mcp rewrite
+      # (apps/web/config/runtime-urls.ts resolveMcpUrl). When unset /api/mcp
+      # falls back to the backend 404, matching the previous behaviour.
       MCP_URL: ${MCP_URL:-}

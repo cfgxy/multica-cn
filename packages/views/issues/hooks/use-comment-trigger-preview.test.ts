@@ -251,12 +251,20 @@ describe("useCommentTriggerPreview", () => {
 
     await advancePreviewDebounce();
 
-    expect(result.current).toEqual({ agents: [], blocked: [] });
+    expect(result.current).toEqual({ agents: [], blocked: [], invalidMentionCount: 0 });
     expect(previewCommentTriggers).not.toHaveBeenCalled();
   });
 });
 
 describe("commentTriggerPreviewSignature", () => {
+  it("changes when a malformed agent link is added or corrected", () => {
+    expect(commentTriggerPreviewSignature("text [@A](mention://agent/not-a-uuid)")).not.toBe(
+      commentTriggerPreviewSignature("text"),
+    );
+    expect(commentTriggerPreviewSignature("text [@A](mention://agent/not-a-uuid)")).not.toBe(
+      commentTriggerPreviewSignature("text [@A](mention://agent/still-not-a-uuid)"),
+    );
+  });
   it("ignores ordinary text changes", () => {
     expect(commentTriggerPreviewSignature("hello")).toBe(
       commentTriggerPreviewSignature("hello with more ordinary text"),

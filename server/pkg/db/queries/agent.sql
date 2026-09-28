@@ -156,6 +156,38 @@ UPDATE agent SET
 WHERE id = $1
 RETURNING *;
 
+-- name: MigrateAgentTaskQueueOnRuntimeRebind :execrows
+-- RUYI-224: runs in the SAME transaction as UpdateAgent when the update
+-- rebinds the agent onto a different runtime. Claim eligibility follows the
+-- agent's current runtime (ClaimAgentTask fences on it and rewrites the row
+-- to the actual claimer), so a queued row left on the old runtime by a torn
+-- rebind would be invisible to the new runtime's claim candidates and stuck
+-- forever with no error and no log. Pre-execution rows therefore move with
+-- the agent:
+--   * 'queued' — never handed to a daemon; safe to re-point.
+--   * 'deferred' — inert until the fire_at sweeper promotes it back to
+--     'queued' (PromoteDueDeferredTasksForRuntime), and that sweeper health-
+--     checks the ROW's runtime; migrating keeps promotion and the subsequent
+--     claim attached to the runtime the agent actually uses now.
+-- Everything else stays put: 'dispatched' / 'waiting_local_directory' /
+-- 'running' rows are owned by the old runtime's daemon (it holds the task
+-- token, the prepare lease and the delivered-comment CAS, all keyed on
+-- runtime_id), and terminal rows are history. A dispatched-not-started row
+-- stranded this way stops being re-deliverable once the fence notices the
+-- agent moved — the same wedged-dispatch behavior as before this fix; the
+-- stale-dispatch recovery machinery (MUL-4257) owns that path.
+UPDATE agent_task_queue
+SET runtime_id = @new_runtime_id
+WHERE agent_id = @agent_id
+  AND status IN ('queued', 'deferred')
+  AND runtime_id <> @new_runtime_id
+  -- Fenced against workspace teardown / legacy runtime merge (migration 284):
+  -- this is a runtime_id ownership write. Key-share locks on the agent and
+  -- the NEW runtime serialize against a teardown or a merge deleting either;
+  -- a lost race migrates 0 rows and the rebind transaction commits an agent
+  -- row the fence has proven still resolvable.
+  AND lock_task_owner_rows(@agent_id, NULL, @new_runtime_id);
+
 -- name: ClearAgentComposioToolkitAllowlist :one
 -- Explicit NULL-clear for composio_toolkit_allowlist. The COALESCE-based
 -- UpdateAgent cannot set the column back to NULL — sending an empty array
@@ -785,22 +817,31 @@ WHERE atq.id = $1 AND a.workspace_id = $2;
 -- "any other quick-create-shaped task" (all four FKs NULL) for the same agent —
 -- otherwise a user mashing the create button could fire concurrent quick-creates
 -- whose completion lookup would race over "most recent issue by this agent".
+--
+-- The agent's CURRENT runtime binding is the claim authority (RUYI-224): the
+-- eligibility fence and every runtime check below evaluate the runtime the
+-- daemon is polling, which the service layer has already matched against
+-- agent.runtime_id. A task's persisted runtime_id is NOT part of the fence —
+-- a row stranded on the old runtime by a rebind (or a torn rebind
+-- transaction) is claimed here and REWRITTEN to the claiming runtime, so the
+-- column converges on "runtime that actually took the task".
 UPDATE agent_task_queue
 SET status = 'dispatched',
     dispatched_at = now(),
-    prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision)
+    prepare_lease_expires_at = now() + make_interval(secs => @prepare_lease_secs::double precision),
+    runtime_id = @runtime_id
 WHERE id = (
     SELECT atq.id FROM agent_task_queue atq
     WHERE atq.agent_id = @agent_id
-      AND atq.runtime_id = @runtime_id
       AND atq.status = 'queued'
       AND EXISTS (
           SELECT 1
           FROM agent a
-          JOIN agent_runtime r ON r.id = atq.runtime_id
+          JOIN agent_runtime r ON r.id = @runtime_id
           WHERE a.id = atq.agent_id
-            -- A task's persisted runtime is not authority after an agent rebind.
-            AND a.runtime_id = atq.runtime_id
+            -- The claiming runtime must be the agent's current binding; an
+            -- unbound agent (NULL runtime) never matches.
+            AND a.runtime_id = @runtime_id
             -- Private runtimes only execute their owner's agents. Ownerless
             -- runtime/agent rows remain claimable only so the handler can
             -- settle them explicitly before daemon delivery; filtering them
@@ -842,6 +883,12 @@ WHERE id = (
     LIMIT 1
     FOR UPDATE SKIP LOCKED
 )
+-- Fenced against workspace teardown / legacy runtime merge (migration 284):
+-- the writeback pins the row onto the claiming runtime, so this is an
+-- ownership write and must re-verify the agent + runtime owner rows like
+-- every other one. A lost race (an owner row already deleted) yields no
+-- row — the same "nothing to claim" outcome as an empty candidate scan.
+AND lock_task_owner_rows(@agent_id, NULL, @runtime_id)
 RETURNING *;
 
 -- name: SetTaskDeliveredCommentIDs :one
@@ -904,7 +951,15 @@ WHERE id = (
       AND atq.dispatched_at < now() - make_interval(secs => @claim_recovery_secs::double precision)
       AND (atq.prepare_lease_expires_at IS NULL OR atq.prepare_lease_expires_at < now())
       AND EXISTS (
-          -- Keep this authorization fence in sync with ClaimAgentTask.
+          -- Authorization fence, kept in sync with ClaimAgentTask's RUYI-224
+          -- authority model: a dispatched row is owned by the runtime it was
+          -- claimed on (the claim rewrote runtime_id), so re-delivery stays
+          -- authorized only while that runtime is still the agent's CURRENT
+          -- binding — the outer runtime_id filter pins atq.runtime_id to the
+          -- polling runtime, making this fence "agent still bound here".
+          -- A row whose agent moved away is never re-delivered by the old
+          -- runtime; recovering that wedged dispatch is the stale-dispatch
+          -- machinery's job, not this fence's.
           SELECT 1
           FROM agent a
           JOIN agent_runtime r ON r.id = atq.runtime_id
@@ -950,7 +1005,15 @@ WHERE id IN (
       AND atq.dispatched_at < now() - make_interval(secs => @claim_recovery_secs::double precision)
       AND (atq.prepare_lease_expires_at IS NULL OR atq.prepare_lease_expires_at < now())
       AND EXISTS (
-          -- Keep this authorization fence in sync with ClaimAgentTask.
+          -- Authorization fence, kept in sync with ClaimAgentTask's RUYI-224
+          -- authority model: a dispatched row is owned by the runtime it was
+          -- claimed on (the claim rewrote runtime_id), so re-delivery stays
+          -- authorized only while that runtime is still the agent's CURRENT
+          -- binding — the outer runtime_id filter pins atq.runtime_id to the
+          -- polling runtime, making this fence "agent still bound here".
+          -- A row whose agent moved away is never re-delivered by the old
+          -- runtime; recovering that wedged dispatch is the stale-dispatch
+          -- machinery's job, not this fence's.
           SELECT 1
           FROM agent a
           JOIN agent_runtime r ON r.id = atq.runtime_id
@@ -1299,12 +1362,18 @@ WHERE id = $1
   );
 
 -- name: RecoverOrphanedTasksForRuntime :many
--- Called by the daemon at startup. Atomically fails any dispatched/running/
--- waiting_local_directory task that the prior incarnation of this runtime
+-- Called by the daemon at startup. Atomically fails dispatched/running/
+-- waiting_local_directory tasks that the prior incarnation of this runtime
 -- owned but did not finalize. Returns the failed rows so callers can hand
 -- them to the auto-retry path. waiting_local_directory rows are included
 -- because the daemon holding the path lock is the same process that just
 -- died — without us, the row would sit waiting forever.
+--
+-- only_unprobeable scopes the fail to rows without a pinned work_dir: the
+-- ones the daemon's RUYI-225 lock probe cannot judge, so the blind fallback
+-- stays correct for them alone. With only_unprobeable=false the historical
+-- blanket semantics apply — the runtime_gone re-register path, where the
+-- runtime rows were truly deleted server-side, relies on that.
 UPDATE agent_task_queue
 SET status = 'failed',
     completed_at = now(),
@@ -1312,7 +1381,13 @@ SET status = 'failed',
     failure_reason = 'runtime_recovery',
     wait_reason = NULL,
     prepare_lease_expires_at = NULL
-WHERE runtime_id = $1 AND status IN ('dispatched', 'running', 'waiting_local_directory')
+WHERE runtime_id = $1
+  AND status IN ('dispatched', 'running', 'waiting_local_directory')
+  AND (
+    NOT @only_unprobeable::bool
+    OR work_dir IS NULL
+    OR work_dir = ''
+  )
 RETURNING *;
 
 -- name: FailStaleTasks :many
@@ -2242,6 +2317,21 @@ SELECT * FROM agent_task_queue
 WHERE runtime_id = $1 AND status IN ('queued', 'dispatched')
 ORDER BY priority DESC, created_at ASC;
 
+-- name: ListInFlightTasksByRuntime :many
+-- Returns the in-flight tasks (running / waiting_local_directory) a runtime
+-- owns, with the workspace identity and pinned work_dir the daemon's
+-- probe-based orphan recovery needs (RUYI-225). The daemon probes each
+-- task's env-root execution lock: the kernel releases that advisory flock
+-- when the holding worker dies, so "lock acquirable" proves the worker is
+-- gone while "lock held" proves live work — the distinction
+-- RecoverOrphanedTasksForRuntime cannot make. dispatched rows are excluded
+-- on purpose: they already have the prepare-lease expiry path. The workspace
+-- identity comes from the runtime row: agent_task_queue has no workspace_id.
+SELECT t.id, r.workspace_id, t.status, t.work_dir
+FROM agent_task_queue t
+JOIN agent_runtime r ON r.id = t.runtime_id
+WHERE t.runtime_id = $1 AND t.status IN ('running', 'waiting_local_directory');
+
 -- name: ListQueuedClaimCandidatesByRuntime :many
 -- Returns rows the runtime is authorized to attempt to claim. Status is restricted to
 -- 'queued' (in contrast to ListPendingTasksByRuntime which also includes
@@ -2249,18 +2339,24 @@ ORDER BY priority DESC, created_at ASC;
 -- and cannot be re-claimed — including them in the candidate list pads
 -- the result with rows that always lose the per-(issue, agent) race in
 -- ClaimAgentTask, wasting CPU and a SELECT every poll cycle when the
--- runtime is busy on a long-running task. Backed by the partial index
--- idx_agent_task_queue_claim_candidates so the warm path is cheap.
+-- runtime is busy on a long-running task.
+--
+-- RUYI-224: discovery follows the same authority as ClaimAgentTask — the
+-- agent's CURRENT runtime binding, not the row's persisted runtime_id. A row
+-- stranded on an old runtime by a rebind (or a torn rebind transaction)
+-- surfaces here for the runtime the agent actually uses now; the claim then
+-- rewrites the row onto the claiming runtime. Unlike the old runtime_id = $1
+-- filter this cannot use idx_agent_task_queue_claim_candidates for narrowing,
+-- but the 'queued' partial index keeps the scanned set bounded by current
+-- queue depth, which is small by construction.
 SELECT atq.* FROM agent_task_queue atq
-WHERE atq.runtime_id = $1
-  AND atq.status = 'queued'
+WHERE atq.status = 'queued'
   AND EXISTS (
-      -- Keep this authorization fence in sync with ClaimAgentTask.
       SELECT 1
       FROM agent a
-      JOIN agent_runtime r ON r.id = atq.runtime_id
+      JOIN agent_runtime r ON r.id = $1
       WHERE a.id = atq.agent_id
-        AND a.runtime_id = atq.runtime_id
+        AND a.runtime_id = $1
         AND (
             r.visibility = 'public'
             OR (
@@ -2372,22 +2468,20 @@ RETURNING *;
 -- queued claim candidates across every runtime_id in the input set in ONE round
 -- trip, so a daemon can list candidates for all of its runtimes with a single
 -- query instead of one per runtime. Ordering matches the singular query
--- (priority, then FIFO) so the batch claim loop keeps the same fairness. The
--- runtime_id filter is served by the partial index
--- idx_agent_task_queue_claim_candidates; the cross-runtime ORDER BY still needs
--- a sort step (each runtime's slice is index-ordered, but merging several
--- runtimes' rows into one priority/FIFO order is not). The per-machine
+-- (priority, then FIFO) so the batch claim loop keeps the same fairness.
+-- RUYI-224: like the singular query, discovery keys on the agent's CURRENT
+-- runtime binding (r = the runtime in the set the agent is bound to), so rows
+-- stranded on an old runtime are surfaced for the runtime the agent uses now.
+-- The cross-runtime ORDER BY still needs a sort step; the per-machine
 -- candidate set is small, so this is cheap in practice.
 SELECT atq.* FROM agent_task_queue atq
-WHERE atq.runtime_id = ANY(@runtime_ids::uuid[])
-  AND atq.status = 'queued'
+WHERE atq.status = 'queued'
   AND EXISTS (
-      -- Keep this authorization fence in sync with ClaimAgentTask.
       SELECT 1
       FROM agent a
-      JOIN agent_runtime r ON r.id = atq.runtime_id
+      JOIN agent_runtime r ON r.id = a.runtime_id
       WHERE a.id = atq.agent_id
-        AND a.runtime_id = atq.runtime_id
+        AND a.runtime_id = ANY(@runtime_ids::uuid[])
         AND (
             r.visibility = 'public'
             OR (

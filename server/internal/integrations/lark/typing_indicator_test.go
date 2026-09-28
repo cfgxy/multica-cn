@@ -71,6 +71,18 @@ func (f *fakeTypingAPIClient) DeleteMessageReaction(_ context.Context, p DeleteR
 	f.deleteCalled = append(f.deleteCalled, deleteReactionCall{p.InstallationID, p.MessageID, p.ReactionID})
 	return f.deleteErr
 }
+func (f *fakeTypingAPIClient) UploadImage(context.Context, UploadImageParams) (string, error) {
+	return "", nil
+}
+func (f *fakeTypingAPIClient) UploadFile(context.Context, UploadFileParams) (string, error) {
+	return "", nil
+}
+func (f *fakeTypingAPIClient) SendImageMessage(context.Context, SendImageParams) (string, error) {
+	return "", nil
+}
+func (f *fakeTypingAPIClient) SendFileMessage(context.Context, SendFileParams) (string, error) {
+	return "", nil
+}
 
 type fakeTypingQueries struct {
 	binding      ChatSessionBinding

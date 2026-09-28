@@ -25,6 +25,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/util"
 	"github.com/multica-ai/multica/server/pkg/agent"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/promptquiz"
 	"github.com/multica-ai/multica/server/pkg/protocol"
 	"github.com/multica-ai/multica/server/pkg/remotemcp"
 )
@@ -994,7 +995,7 @@ func basename(p string) string {
 
 // computeTaskKind picks the source-discriminator string the activity UI uses
 // to choose how to render a task row. Computed from the existing FK shape so
-// no extra DB lookup is needed: chat / autopilot / comment-on-issue (any
+// no extra DB lookup is needed: chat / autopilot / quiz / comment-on-issue (any
 // triggered task with both an issue_id and trigger_comment_id) / quick_create
 // (no linked source — the agent is creating the issue itself) / direct
 // (assignee-driven task on an existing issue).
@@ -1004,6 +1005,13 @@ func computeTaskKind(t db.AgentTaskQueue) string {
 	}
 	if uuidToString(t.AutopilotRunID) != "" {
 		return "autopilot"
+	}
+	// A quiz run (RUYI-185) also has no issue, so it has to be recognised
+	// BEFORE the quick_create fallthrough — otherwise every measurement would
+	// be counted as a member creating an issue, which is exactly the
+	// production statistic quiz runs must stay out of.
+	if t.OriginatorSource.Valid && t.OriginatorSource.String == promptquiz.OriginatorSource {
+		return promptquiz.TaskKind
 	}
 	if uuidToString(t.IssueID) == "" {
 		return "quick_create"
@@ -2109,7 +2117,12 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	updated, err := h.Queries.UpdateAgent(r.Context(), params)
+	// A runtime rebind is the one field whose update must drag queue rows
+	// along: claim eligibility keys on the agent's current binding, so the
+	// agent-row write and the queued/deferred row migration commit atomically
+	// (RUYI-224).
+	rebinding := params.RuntimeID.Valid && params.RuntimeID != existing.RuntimeID
+	updated, migratedTasks, err := h.updateAgentPersisted(r.Context(), params, rebinding)
 	if err != nil {
 		// Unique constraint on (workspace_id, name) — mirror CreateAgent and
 		// return a clear conflict instead of a 500 that leaks the raw
@@ -2129,6 +2142,19 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		slog.Warn("update agent failed", append(logger.RequestAttrs(r), "error", err, "agent_id", id)...)
 		writeError(w, http.StatusInternalServerError, "failed to update agent: "+err.Error())
 		return
+	}
+	if rebinding {
+		if migratedTasks > 0 {
+			slog.Info("agent runtime rebind migrated queue rows",
+				append(logger.RequestAttrs(r), "agent_id", id, "migrated", migratedTasks)...)
+		}
+		// The migrated rows only become visible to the new runtime's claim
+		// path when its daemon looks: kill any cached "no queued task"
+		// verdict for it and kick the daemon now instead of waiting out the
+		// empty-claim TTL with stranded work in hand (RUYI-224).
+		if h.TaskService != nil {
+			h.TaskService.NotifyRuntimeMayHaveWork(updated.RuntimeID)
+		}
 	}
 
 	// Nullable runtime overrides: null/empty in the request means explicitly
@@ -2209,6 +2235,41 @@ func (h *Handler) UpdateAgent(w http.ResponseWriter, r *http.Request) {
 		redactComposioToolkitAllowlist(&resp)
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// updateAgentPersisted writes the agent row via UpdateAgent. When the update
+// rebinds the agent onto a different runtime, the queued/deferred queue-row
+// migration commits in the SAME transaction (RUYI-224): claim eligibility
+// follows the agent's current runtime, so a torn rebind that left a queued
+// row on the old runtime would strand it forever — invisible to the new
+// runtime's claim candidates, with no error and no log. Returns the number of
+// queue rows migrated (always 0 when not rebinding).
+func (h *Handler) updateAgentPersisted(ctx context.Context, params db.UpdateAgentParams, rebinding bool) (db.Agent, int64, error) {
+	if !rebinding {
+		updated, err := h.Queries.UpdateAgent(ctx, params)
+		return updated, 0, err
+	}
+	tx, err := h.TxStarter.Begin(ctx)
+	if err != nil {
+		return db.Agent{}, 0, err
+	}
+	defer tx.Rollback(ctx)
+	qtx := h.Queries.WithTx(tx)
+	updated, err := qtx.UpdateAgent(ctx, params)
+	if err != nil {
+		return db.Agent{}, 0, err
+	}
+	migrated, err := qtx.MigrateAgentTaskQueueOnRuntimeRebind(ctx, db.MigrateAgentTaskQueueOnRuntimeRebindParams{
+		AgentID:      params.ID,
+		NewRuntimeID: params.RuntimeID,
+	})
+	if err != nil {
+		return db.Agent{}, 0, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return db.Agent{}, 0, err
+	}
+	return updated, migrated, nil
 }
 
 // attachAgentSkills populates resp.Skills from the agent_skill junction

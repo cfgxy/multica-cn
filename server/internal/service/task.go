@@ -3965,6 +3965,15 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 
 	// 6. Claim per distinct agent through the runtime-scoped helper, preserving
 	// per-(issue, agent) serialization, capacity caps, and dispatch side effects.
+	// RUYI-224: pass an empty runtimeID so claimTask resolves the agent's
+	// CURRENT binding as the claim runtime. The step-4 candidate fence already
+	// guarantees that binding is in the polled set; the row's persisted
+	// runtime_id may still point at an older runtime (a rebind between the
+	// candidate SELECT and this claim, or a row stranded by a torn rebind),
+	// and claiming by that stale value would bounce off the service-side
+	// runtime_mismatch fence and strand the row forever. The SQL claim
+	// rewrites the row onto the resolved runtime; the runtimeInSet guard below
+	// keeps the routing contract.
 	triedAgents := make(map[string]struct{}, len(candidates))
 	for i := range candidates {
 		if len(claimed) >= maxTasks {
@@ -3976,7 +3985,7 @@ func (s *TaskService) ClaimTasksForRuntimes(ctx context.Context, runtimeIDs []pg
 		}
 		triedAgents[agentKey] = struct{}{}
 
-		task, err := s.claimTask(ctx, candidates[i].AgentID, candidates[i].RuntimeID)
+		task, err := s.claimTask(ctx, candidates[i].AgentID, pgtype.UUID{})
 		if err != nil {
 			// Each scoped claim commits in its own transaction, so earlier
 			// iterations (and step-2 reclaims) are already dispatched
@@ -5768,9 +5777,16 @@ func (s *TaskService) ExpireStaleQueuedTasks(ctx context.Context, arg db.ExpireS
 }
 
 // RecoverOrphanedTasksForRuntime fails work a restarted daemon reports it lost.
-func (s *TaskService) RecoverOrphanedTasksForRuntime(ctx context.Context, runtimeID pgtype.UUID) ([]db.AgentTaskQueue, error) {
+// onlyUnprobeable scopes the fail to rows without a pinned work_dir — the
+// daemon's lock probe cannot judge those, so the blind fallback covers them
+// alone; probe-visible tasks keep whatever verdict the probe reached. The
+// runtime_gone re-register path passes false for the historical blanket fail.
+func (s *TaskService) RecoverOrphanedTasksForRuntime(ctx context.Context, runtimeID pgtype.UUID, onlyUnprobeable bool) ([]db.AgentTaskQueue, error) {
 	return s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
-		return qtx.RecoverOrphanedTasksForRuntime(ctx, runtimeID)
+		return qtx.RecoverOrphanedTasksForRuntime(ctx, db.RecoverOrphanedTasksForRuntimeParams{
+			RuntimeID:       runtimeID,
+			OnlyUnprobeable: onlyUnprobeable,
+		})
 	})
 }
 
@@ -6876,6 +6892,15 @@ func priorityToInt(p string) int32 {
 func (s *TaskService) NotifyTaskEnqueued(ctx context.Context, task db.AgentTaskQueue) {
 	s.captureTaskQueued(ctx, task)
 	s.notifyTaskAvailable(task)
+}
+
+// NotifyRuntimeMayHaveWork invalidates a runtime's empty-claim verdict and
+// kicks its daemon WS without a task row. RUYI-224: called after an agent
+// rebind commits its queued/deferred queue migration, so the NEW runtime's
+// daemon wakes (and any cached "no queued task" verdict for it dies) instead
+// of idling until the empty-claim TTL expires with stranded work waiting.
+func (s *TaskService) NotifyRuntimeMayHaveWork(runtimeID pgtype.UUID) {
+	s.notifyRuntimeMayHaveWork(runtimeID, "")
 }
 
 // NotifyTaskFinished invalidates a runtime's empty-claim verdict and emits a
