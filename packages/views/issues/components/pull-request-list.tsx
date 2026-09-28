@@ -26,6 +26,7 @@ import {
 import type { GitHubPullRequest, GitHubPullRequestState } from "@multica/core/types";
 import { cn } from "@multica/ui/lib/utils";
 import { useT, useTimeAgo } from "../../i18n";
+import { isVisiblePullRequest } from "./pull-request-visibility";
 
 type IssuesT = ReturnType<typeof useT<"issues">>["t"];
 
@@ -43,11 +44,11 @@ const STATE_ICON: Record<
   closed: { icon: GitPullRequestClosed, className: "text-rose-600 dark:text-rose-400" },
 };
 
-export function PullRequestList({ issueId }: { issueId: string }) {
+export function PullRequestList({ issueId, showGitHub = true }: { issueId: string; showGitHub?: boolean }) {
   const { t } = useT("issues");
   const [expanded, setExpanded] = useState(false);
   const { data, isLoading } = useQuery(issuePullRequestsOptions(issueId));
-  const prs = data?.pull_requests ?? [];
+  const prs = (data?.pull_requests ?? []).filter((pr) => isVisiblePullRequest(pr, showGitHub));
 
   if (isLoading) {
     return <p className="text-caption text-muted-foreground px-2">{t(($) => $.detail.pull_requests_loading)}</p>;
