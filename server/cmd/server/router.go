@@ -155,7 +155,7 @@ func appURLFromEnv() string {
 // must never reach a log line, so a parse failure is reported as a parse
 // failure, without the value that failed.
 func newOAuthSigner(siteRoot string) *oauth.Signer {
-	pem := strings.TrimSpace(os.Getenv("OAUTH_SIGNING_KEY"))
+	pem := util.NormalizePEMKey(os.Getenv("OAUTH_SIGNING_KEY"))
 	if pem == "" {
 		slog.Warn("mcp oauth disabled: OAUTH_SIGNING_KEY not configured")
 		return nil
@@ -267,6 +267,12 @@ type RouterOptions struct {
 	// WecomMetrics is the WeCom adapter's health sink. Nil discards every
 	// counter, which is what a deployment with /metrics turned off gets.
 	WecomMetrics *obsmetrics.WecomMetrics
+
+	// LarkMetrics is the Feishu adapter's outbound file-delivery sink. Nil
+	// discards every counter, which is what a deployment with /metrics turned
+	// off gets.
+	LarkMetrics *obsmetrics.LarkMetrics
+
 	DaemonHub    *daemonws.Hub
 	DaemonWakeup service.TaskWakeupNotifier
 	FeatureFlags *featureflag.Service
@@ -630,7 +636,33 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// backfills) take it directly; the constructor-based services
 				// wrap *db.Queries internally, so they keep taking queries.
 				cs := lark.NewChannelStore(queries)
-				patcher := lark.NewPatcher(cs, installSvc, larkClient, lark.PatcherConfig{})
+				// WithAttachments adds the second hop behind a reply: the
+				// files the agent bound to it are read back out of object
+				// storage, uploaded to Feishu and sent into the chat. Passed
+				// only when this deployment configured storage — with none
+				// there is nothing to read an attachment out of, and the
+				// option is what the delivery path checks for.
+				//
+				// DeclareChannelFileDelivery is the same condition said to the
+				// agent: a run only gets told it can send a file where this
+				// branch actually built the hop that sends it. The two lines
+				// sit together on purpose — a deployment that has the storage
+				// and a deployment whose agents are promised delivery must be
+				// the same deployment, and the only way to keep that true is
+				// for one `if` to decide both. Declaring from the channel type
+				// instead would promise delivery on every Feishu deployment,
+				// storage or not.
+				larkPatcherOpts := []lark.PatcherOption{}
+				if store != nil {
+					larkPatcherOpts = append(larkPatcherOpts, lark.WithAttachments(store))
+					h.DeclareChannelFileDelivery(string(channel.TypeFeishu))
+				}
+				// File delivery is built to fail quietly in the chat, so the
+				// counters are the only place an operator sees storage that
+				// stopped being readable.
+				larkPatcherOpts = append(larkPatcherOpts,
+					lark.WithOutboundMetrics(larkMetricsOrNil(opts.LarkMetrics)))
+				patcher := lark.NewPatcher(cs, installSvc, larkClient, lark.PatcherConfig{}, larkPatcherOpts...)
 				patcher.Register(bus)
 
 				// Typing indicator: shows a "processing" reaction on the user's
@@ -1530,6 +1562,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 		r.Post("/runtimes/{runtimeId}/tasks/{taskId}/prepare-lease", h.ExtendTaskPrepareLease)
 		r.Post("/runtimes/{runtimeId}/tasks/{taskId}/skill-bundles/resolve", h.ResolveTaskSkillBundles)
 		r.Get("/runtimes/{runtimeId}/tasks/pending", h.ListPendingTasksByRuntime)
+		r.Get("/runtimes/{runtimeId}/tasks/in-flight", h.ListInFlightTasksByRuntime)
 		r.Post("/runtimes/{runtimeId}/update/{updateId}/result", h.ReportUpdateResult)
 		r.Post("/runtimes/{runtimeId}/models/{requestId}/result", h.ReportModelListResult)
 		r.Post("/runtimes/{runtimeId}/local-skills/{requestId}/result", h.ReportLocalSkillListResult)
@@ -2012,11 +2045,39 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// Quality dashboard (RUYI-184): read-only rollups over the
 				// same scope, member-visible for the same reason history is.
 				r.Get("/quality", h.GetPromptQualityDashboard)
+				// Quiz baseline reading (RUYI-185): the distribution
+				// comparison between this scope's two newest measured
+				// versions. A reading, never a gate — no write route below
+				// consults it.
+				r.Get("/quiz", h.GetPromptQuizBaseline)
 			})
 			r.Group(func(r chi.Router) {
 				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
 				r.Post("/versions", h.SavePromptGovernanceVersion)
 				r.Post("/versions/{version}/switch", h.SwitchPromptGovernanceVersion)
+			})
+		})
+
+		// Quiz bank maintenance (RUYI-185). Workspace-scoped rather than
+		// prompt-scope-scoped: one bank is replayed against every scope, so
+		// hanging it off /{scope}/{scopeId} would imply a per-scope bank that
+		// does not exist. Writes are Owner-only for the same reason prompt
+		// writes are — a question body enters an agent's context.
+		r.Route("/api/prompt-quiz/items", func(r chi.Router) {
+			r.Use(handler.RequireHumanActor)
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireWorkspaceMember(queries))
+				r.Get("/", h.ListPromptQuizItems)
+			})
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
+				// The single-item read sits here, not in the member group above:
+				// it is the only endpoint returning an item's rubric (the private
+				// half, migration 935), so it is gated like a write.
+				r.Get("/{itemId}", h.GetPromptQuizItem)
+				r.Post("/", h.CreatePromptQuizItem)
+				r.Patch("/{itemId}", h.UpdatePromptQuizItem)
+				r.Delete("/{itemId}", h.DeletePromptQuizItem)
 			})
 		})
 
@@ -2734,6 +2795,17 @@ type WecomRelay interface {
 // directly would give the adapter a non-nil interface holding a nil pointer —
 // and the first counter call would panic on a deployment with /metrics off.
 func wecomMetricsOrNil(m *obsmetrics.WecomMetrics) wecom.Metrics {
+	if m == nil {
+		return nil
+	}
+	return m
+}
+
+// larkMetricsOrNil is wecomMetricsOrNil for the Feishu adapter, and exists for
+// the same reason: a nil *LarkMetrics still satisfies lark.Metrics, so
+// assigning it directly would hand the adapter a non-nil interface wrapping a
+// nil pointer and the first counter call would panic.
+func larkMetricsOrNil(m *obsmetrics.LarkMetrics) lark.Metrics {
 	if m == nil {
 		return nil
 	}

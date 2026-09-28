@@ -51,6 +51,8 @@
  */
 import { marked, type Tokens } from "marked";
 
+import { promoteSoftBreaks } from "./soft-breaks";
+
 /**
  * One table cell as the lexer produced it. `text` is the raw markdown source
  * of the cell (what the row-detail sheet renders through enriched); `tokens`
@@ -99,7 +101,11 @@ export function splitMarkdown(input: string): MarkdownSegment[] {
   const flushProse = () => {
     const trimmed = proseBuffer.replace(/^\s+|\s+$/g, "");
     if (trimmed.length > 0) {
-      out.push({ type: "prose", content: trimmed });
+      // RUYI-235: web renders a paragraph-internal single \n as a hard break
+      // (remark-breaks); md4c folds it into a space (CommonMark default), so
+      // multi-line comments merged into one line on mobile. Promote in the
+      // prose domain only — code/table/mermaid have already left the buffer.
+      out.push({ type: "prose", content: promoteSoftBreaks(trimmed) });
     }
     proseBuffer = "";
   };

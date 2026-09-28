@@ -227,8 +227,11 @@ func TestPiExecuteAttachesStdinPipe(t *testing.T) {
 	}
 
 	fakePath := filepath.Join(t.TempDir(), "pi")
+	// LC_ALL=C: stat -c '%F' localizes its output ("先进先出" under zh_CN),
+	// which matches neither fifo nor *pipe* and fails the probe on any
+	// non-English host.
 	script := "#!/bin/sh\n" +
-		"kind=$(stat -c '%F' -L /proc/self/fd/0 2>/dev/null || echo unknown)\n" +
+		"kind=$(LC_ALL=C stat -c '%F' -L /proc/self/fd/0 2>/dev/null || echo unknown)\n" +
 		"payload=$(cat)\n" +
 		"case \"$kind\" in\n" +
 		"  fifo|*pipe*)\n" +

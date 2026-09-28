@@ -63,9 +63,16 @@ services:
       - "127.0.0.1:${BACKEND_PORT:-${API_PORT:-${SERVER_PORT:-${PORT:-8080}}}}:8080"
     volumes:
       - backend_uploads:/app/data/uploads
+      - backend_backups:${MULTICA_BACKUP_DIR:-/app/backups}
     environment:
       TZ: ${TZ:-Asia/Shanghai}
       DATABASE_URL: postgres://${POSTGRES_USER:-multica}:${POSTGRES_PASSWORD:-multica}@postgres:5432/${POSTGRES_DB:-multica}?sslmode=disable
+      MULTICA_BACKUP_ENABLED: ${MULTICA_BACKUP_ENABLED:-true}
+      MULTICA_BACKUP_DIR: ${MULTICA_BACKUP_DIR:-/app/backups}
+      MULTICA_BACKUP_INTERVAL: ${MULTICA_BACKUP_INTERVAL:-24h}
+      MULTICA_BACKUP_RETENTION_DAYS: ${MULTICA_BACKUP_RETENTION_DAYS:-7}
+      MULTICA_BACKUP_PG_DUMP: ${MULTICA_BACKUP_PG_DUMP:-pg_dump}
+      MULTICA_BACKUP_TIMEOUT: ${MULTICA_BACKUP_TIMEOUT:-2h}
       PORT: "8080"
       METRICS_ADDR: ${METRICS_ADDR:-}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set to a strong random value — generate one with 'openssl rand -hex 32'}
@@ -217,3 +224,4 @@ services:
 volumes:
   pgdata:
   backend_uploads:
+  backend_backups:

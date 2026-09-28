@@ -1,10 +1,14 @@
 /**
  * Pure picker body for the comment composer's @mention chips.
  *
- * Mirrors `LabelPickerBody`: multi-select with tap-to-toggle, sheet stays
- * open across toggles, user dismisses via grabber drag-down or Back. The
- * composer's chip row reflects the store live (sheet is presented over
- * the composer; the row is partly visible behind the sheet).
+ * RUYI-232 single-select: tapping a row inserts the chip into the
+ * mention draft store and closes the sheet immediately (`router.back`).
+ * One picker session = one mention; picking several mentions means
+ * re-opening the picker (toolbar `@` button or typing `@`). Mirrors the
+ * web editor's suggestion `command(item)` semantics — pick-and-close,
+ * never a multi-select checklist (which is the label-picker idiom, not
+ * the mention one). The composer's chip row above the input shows the
+ * accumulated chips and each chip has its own remove button.
  *
  * Sections (alphabetical within each):
  *   1. `@all` (pinned top, filtered by query)
@@ -21,6 +25,7 @@
  */
 import { useEffect, useMemo, useState } from "react";
 import { FlatList, Pressable, View } from "react-native";
+import { useRouter } from "expo-router";
 import { useQuery } from "@tanstack/react-query";
 import { Ionicons } from "@expo/vector-icons";
 import { useColorScheme } from "nativewind";
@@ -43,7 +48,6 @@ import { useWorkspaceStore } from "@/data/workspace-store";
 import {
   useMentionDraftStore,
   type MentionChipDraft,
-  type MentionTargetType,
 } from "@/data/stores/mention-draft-store";
 import { useScrollToTopOnChange } from "@/lib/use-scroll-to-top-on-change";
 import { THEME } from "@/lib/theme";
@@ -88,13 +92,13 @@ export function MentionPickerBody({ query, mode = "comment" }: Props) {
     [agents],
   );
   const listRef = useScrollToTopOnChange(query);
+  const router = useRouter();
   const { t } = useT("issues");
   const { colorScheme } = useColorScheme();
   const checkColor =
     colorScheme === "dark" ? THEME.dark.primary : THEME.light.primary;
 
-  const selected = useMentionDraftStore((s) => s.mentions);
-  const toggle = useMentionDraftStore((s) => s.toggle);
+  const add = useMentionDraftStore((s) => s.add);
 
   // Server-side issue search (mirrors web's mention-suggestion.tsx). Empty
   // query → no fetch + no issues section. Debounced 200ms; in-flight
@@ -121,19 +125,6 @@ export function MentionPickerBody({ query, mode = "comment" }: Props) {
       clearTimeout(timer);
     };
   }, [query]);
-
-  const isSelectedKey = (type: MentionTargetType, id: string) =>
-    selected.some((m) => m.type === type && m.id === id);
-
-  const isSelected = (row: Row): boolean => {
-    if (row.kind === "section") return false;
-    if (row.kind === "all") return isSelectedKey("all", "all");
-    if (row.kind === "member")
-      return isSelectedKey("member", row.member.user_id);
-    if (row.kind === "agent") return isSelectedKey("agent", row.agent.id);
-    if (row.kind === "squad") return isSelectedKey("squad", row.squad.id);
-    return isSelectedKey("issue", row.issue.id);
-  };
 
   const rows = useMemo<Row[]>(() => {
     const q = query.trim().toLowerCase();
@@ -197,6 +188,9 @@ export function MentionPickerBody({ query, mode = "comment" }: Props) {
     // `t` 进依赖：分组标题是译文，切语言后 memo 必须重算。
   }, [mode, members, agents, squads, issueResults, query, t]);
 
+  // Single-select insert-and-close (RUYI-232): one tap = one chip, then
+  // the sheet goes away. Idempotent `add` means re-picking the same row
+  // in a later session can't duplicate it.
   const pick = (row: Row) => {
     let chip: MentionChipDraft | null = null;
     if (row.kind === "all") chip = { type: "all", id: "all", name: "all" };
@@ -216,7 +210,9 @@ export function MentionPickerBody({ query, mode = "comment" }: Props) {
         id: row.issue.id,
         name: row.issue.identifier,
       };
-    if (chip) toggle(chip);
+    if (!chip) return;
+    add(chip);
+    router.back();
   };
 
   // FlatList returned as the route's direct child so RNSScreenContentWrapper
@@ -329,9 +325,6 @@ export function MentionPickerBody({ query, mode = "comment" }: Props) {
                     )
                   : t("mobile.picker.squad", "Squad")}
               </Text>
-            ) : null}
-            {isSelected(item) ? (
-              <Ionicons name="checkmark" size={20} color={checkColor} />
             ) : null}
           </Pressable>
         );

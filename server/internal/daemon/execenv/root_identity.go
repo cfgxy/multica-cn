@@ -76,6 +76,27 @@ func ResolveRootDir(params RootDirParams) (string, error) {
 	return validateTaskRootRecord(params, recordDir, record)
 }
 
+// ResolveRootDirReadOnly resolves a task's env root from its identity without
+// creating or modifying anything: it reads the installed task-root record and
+// validates it, and returns "" when no record exists yet. Used by the daemon's
+// probe-based orphan recovery (RUYI-225), which must stay side-effect free —
+// ResolveRootDir would install a record for a task that never prepared, and
+// that poisoned record would misdirect the retry's own resolution.
+func ResolveRootDirReadOnly(params RootDirParams) (string, error) {
+	if params.WorkspacesRoot == "" || params.WorkspaceID == "" || params.TaskID == "" {
+		return "", fmt.Errorf("execenv: resolve env root read-only: workspaces root, workspace ID and task ID are all required")
+	}
+	recordDir := taskRootRecordDir(params)
+	record, err := readTaskRootRecord(recordDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", err
+	}
+	return validateTaskRootRecord(params, recordDir, record)
+}
+
 func taskRootRecordDir(params RootDirParams) string {
 	return filepath.Join(
 		params.WorkspacesRoot,

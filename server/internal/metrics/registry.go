@@ -26,6 +26,7 @@ type Registry struct {
 	ChannelMedia *ChannelMediaReconcilerMetrics
 	ChannelLease *ChannelLeaseMetrics
 	Wecom        *WecomMetrics
+	Lark         *LarkMetrics
 }
 
 func NewRegistry(opts RegistryOptions) *Registry {
@@ -55,6 +56,9 @@ func NewRegistry(opts RegistryOptions) *Registry {
 	wecomMetrics := NewWecomMetrics()
 	reg.MustRegister(wecomMetrics.Collectors()...)
 
+	larkMetrics := NewLarkMetrics()
+	reg.MustRegister(larkMetrics.Collectors()...)
+
 	if opts.Pool != nil {
 		reg.MustRegister(NewDBCollector(opts.Pool))
 	}
@@ -72,6 +76,7 @@ func NewRegistry(opts RegistryOptions) *Registry {
 		ChannelMedia: channelMedia,
 		ChannelLease: channelLease,
 		Wecom:        wecomMetrics,
+		Lark:         larkMetrics,
 	}
 }
 
