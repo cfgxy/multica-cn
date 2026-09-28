@@ -698,6 +698,23 @@ func TestEnrichRecentContextProductionErrorShapes(t *testing.T) {
 			wantCalls: 1,
 		},
 		{
+			name:      "group_history_scope_denied_envelope",
+			err:       errors.New(`lark http client: list chat messages: code=230027 msg="missing im:message.group_msg"`),
+			wantLine:  "[Recent Lark context unavailable: the bot cannot read this chat history. Continuing with the latest message.]",
+			wantCalls: 1,
+		},
+		{
+			name: "group_history_scope_denied_http_400",
+			err: fmt.Errorf("lark http client: list chat messages: %w", &larkAPIStatusError{
+				StatusCode: 400,
+				Code:       230027,
+				Msg:        "missing im:message.group_msg",
+				Raw:        `{"code":230027,"msg":"missing im:message.group_msg"}`,
+			}),
+			wantLine:  "[Recent Lark context unavailable: the bot cannot read this chat history. Continuing with the latest message.]",
+			wantCalls: 1,
+		},
+		{
 			name:      "message_deleted",
 			err:       errors.New(`lark http client: list chat messages: code=230110 msg="message has been deleted"`),
 			wantLine:  "[Recent Lark context unavailable: the referenced chat history is deleted or no longer visible. Continuing with the latest message.]",

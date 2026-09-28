@@ -16,6 +16,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/analytics"
 	"github.com/multica-ai/multica/server/internal/auth"
 	"github.com/multica-ai/multica/server/internal/daemonws"
+	"github.com/multica-ai/multica/server/internal/dbbackup"
 	"github.com/multica-ai/multica/server/internal/dbstartup"
 	"github.com/multica-ai/multica/server/internal/events"
 	"github.com/multica-ai/multica/server/internal/handler"
@@ -555,6 +556,7 @@ func main() {
 	var channelMediaMetrics *obsmetrics.ChannelMediaReconcilerMetrics
 	var channelLeaseMetrics *obsmetrics.ChannelLeaseMetrics
 	var wecomMetrics *obsmetrics.WecomMetrics
+	var larkMetrics *obsmetrics.LarkMetrics
 	if metricsConfig.Enabled() {
 		metricsRegistry := obsmetrics.NewRegistry(obsmetrics.RegistryOptions{
 			Pool:     pool,
@@ -568,6 +570,7 @@ func main() {
 		channelMediaMetrics = metricsRegistry.ChannelMedia
 		channelLeaseMetrics = metricsRegistry.ChannelLease
 		wecomMetrics = metricsRegistry.Wecom
+		larkMetrics = metricsRegistry.Lark
 		// Forward inbound daemon WS frames into the per-kind counter so
 		// dashboards can split heartbeat / unknown / invalid traffic.
 		if daemonHub != nil {
@@ -602,6 +605,7 @@ func main() {
 		ChannelLeaseMetrics: channelLeaseMetrics,
 		ChannelLeaseRedis:   channelLeaseRedis,
 		WecomMetrics:        wecomMetrics,
+		LarkMetrics:         larkMetrics,
 		DaemonHub:           daemonHub,
 		DaemonWakeup:        daemonWakeup,
 		WecomSenders:        wecomSenders,
@@ -655,6 +659,17 @@ func main() {
 	// Source-context cleanup is object-store work, so it gets its own goroutine
 	// instead of a slot in the runtime sweep tick.
 	go runSourceContextSweeper(sweepCtx, taskSvc)
+	// Daily database dump backups (RUYI-237): pg_dump -Fc archives into
+	// MULTICA_BACKUP_DIR with rolling retention. Shells out to pg_dump, so a
+	// failed or missing binary is logged each round and never fatal — the
+	// catch-up check re-dumps as soon as the newest archive is one interval
+	// old. Restore runbook: server/internal/dbbackup/README.md.
+	backupConfig := dbbackup.ConfigFromEnv(os.Getenv, dbURL)
+	if backupConfig.Enabled {
+		go dbbackup.RunJob(sweepCtx, backupConfig)
+	} else {
+		slog.Info("database backup disabled", "env", dbbackup.EnabledEnv)
+	}
 	go heartbeatScheduler.Run(sweepCtx)
 	go runAutopilotFailureMonitor(autopilotCtx, queries, bus, envFailureMonitorConfig())
 	if autopilotSvc.QuotaEnabled() {
@@ -720,6 +735,14 @@ func main() {
 	// failing the tick.
 	if err := schedulerMgr.Register(scheduler.PromptQualityJob(pool, h.LLM)); err != nil {
 		slog.Warn("scheduler: failed to register prompt_quality rollup job", "error", err)
+	}
+	// RUYI-185: the periodic quiz replays a fixed question set against each
+	// agent's current prompt version so two versions are comparable, and
+	// re-runs it to surface regressions. It only ever writes measurements —
+	// the prompt publish path does not read them, so a failing or stuck sweep
+	// cannot hold a release (Owner Q10).
+	if err := schedulerMgr.Register(scheduler.PromptQuizJob(pool)); err != nil {
+		slog.Warn("scheduler: failed to register prompt_quiz_sweep job", "error", err)
 	}
 	// MUL-3551: scheduled-Autopilot dispatch runs on the same DB-backed
 	// scheduler. The job owns its plan_times via PlansForScope (each

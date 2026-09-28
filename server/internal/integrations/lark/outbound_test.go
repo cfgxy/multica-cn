@@ -34,6 +34,12 @@ type fakePatcherQueries struct {
 	created             []CreateOutboundCardMessageParams
 	createReturn        OutboundCardMessage
 	statusUpdates       []UpdateOutboundCardStatusParams
+	// Attachment lookup, exercised by outbound_media_test.go.
+	// attachmentLookups counts the calls so the "no object storage
+	// configured" case can assert the query never ran at all.
+	attachments       []db.Attachment
+	attachmentsErr    error
+	attachmentLookups int
 }
 
 func (f *fakePatcherQueries) GetAgentTask(ctx context.Context, id pgtype.UUID) (db.AgentTaskQueue, error) {
@@ -100,11 +106,41 @@ type fakeAPIClient struct {
 	sendReturn     string
 	sendErr        error
 	patchErr       error
+	// patchRateLimitFailures, when > 0, makes the next N patch attempts
+	// answer with a 230020 rate limit. Unlike patchErr it needs no mid-run
+	// mutation — which a finalize running outside the event's goroutine
+	// makes impossible to interleave with.
+	patchRateLimitFailures int
+	// patchTransportFailures, when > 0, makes the next N patch attempts
+	// answer with an ambiguous transport failure (errProgressPatchBoom: no
+	// Lark code, not a rate limit). Same no-mid-run-mutation contract as
+	// patchRateLimitFailures.
+	patchTransportFailures int
+	// patchOutcomes records the error each patch attempt returned, so a test
+	// can tell a landed retry from a recorded-but-failed attempt.
+	patchOutcomes []error
 	textSendErr    error
 	textSendReturn string
 	mdCardErr      error
 	mdCardReturn   string
 	bindingSent    []BindingPromptParams
+	// File-delivery surface, exercised by outbound_media_test.go.
+	imageUploads   []UploadImageParams
+	fileUploads    []UploadFileParams
+	imageSent      []SendImageParams
+	fileSent       []SendFileParams
+	imageKeyReturn string
+	fileKeyReturn  string
+	uploadImageErr error
+	uploadFileErr  error
+	sendImageErr   error
+	sendFileErr    error
+	// sendFileHook takes precedence over sendFileErr when set, so a test can
+	// hand consecutive file sends different outcomes.
+	sendFileHook func() error
+	// deletedReactions records typing-badge removals so a test can prove the
+	// badge came off at a specific point in the outbound sequence.
+	deletedReactions []DeleteReactionParams
 	// threadReplyErr, when non-nil, is returned by the three send
 	// methods whenever the call carries a thread ReplyTarget, while the
 	// attempt is still recorded. Tests inject either a classified
@@ -137,7 +173,18 @@ func (f *fakeAPIClient) PatchInteractiveCard(ctx context.Context, p PatchCardPar
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.patched = append(f.patched, p)
-	return f.patchErr
+	var err error
+	if f.patchRateLimitFailures > 0 {
+		f.patchRateLimitFailures--
+		err = &APIError{Op: "patch interactive card", Code: larkRateLimitCode, Msg: "rate limited (scripted)"}
+	} else if f.patchTransportFailures > 0 {
+		f.patchTransportFailures--
+		err = errProgressPatchBoom
+	} else {
+		err = f.patchErr
+	}
+	f.patchOutcomes = append(f.patchOutcomes, err)
+	return err
 }
 func (f *fakeAPIClient) SendTextMessage(ctx context.Context, p SendTextParams) (string, error) {
 	f.mu.Lock()
@@ -182,10 +229,20 @@ func (f *fakeAPIClient) AddMessageReaction(ctx context.Context, p AddReactionPar
 	return "fake-reaction-id", nil
 }
 func (f *fakeAPIClient) DeleteMessageReaction(ctx context.Context, p DeleteReactionParams) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deletedReactions = append(f.deletedReactions, p)
 	return nil
 }
 
 func newTestPatcher(t *testing.T) (*Patcher, *fakePatcherQueries, *fakeAPIClient) {
+	t.Helper()
+	return newTestPatcherWith(t)
+}
+
+// newTestPatcherWith is newTestPatcher with construction options, so the
+// file-delivery tests get the same fixture rather than a parallel one.
+func newTestPatcherWith(t *testing.T, opts ...PatcherOption) (*Patcher, *fakePatcherQueries, *fakeAPIClient) {
 	t.Helper()
 	q := &fakePatcherQueries{
 		binding: ChatSessionBinding{
@@ -208,7 +265,7 @@ func newTestPatcher(t *testing.T) (*Patcher, *fakePatcherQueries, *fakeAPIClient
 	p := NewPatcher(q, fakeCredentials{secret: "shh"}, api, PatcherConfig{
 		Logger: newDiscardLogger(),
 		Now:    time.Now,
-	})
+	}, opts...)
 	return p, q, api
 }
 

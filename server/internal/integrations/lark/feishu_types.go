@@ -26,7 +26,8 @@ type InboundMessage struct {
 	// event.message.content. Text/post decoding consumes it immediately; media
 	// ingestion keeps it so the adapter can extract image_key/file_key before
 	// translating to channel.InboundMessage.
-	Content string
+	Content     string
+	RecentMedia []RecentMediaMessage
 	// ForceFreshSession marks this dispatch as a one-off fresh start: the
 	// daemon should skip prior session resume when it claims the resulting
 	// chat task.
@@ -59,6 +60,12 @@ type InboundMessage struct {
 	// enricher prepends quoted/forwarded context). `/issue` is parsed from
 	// THIS, not the enriched Body.
 	CommandBody string
+}
+
+type RecentMediaMessage struct {
+	MessageID   string
+	MessageType string
+	Content     string
 }
 
 // Outcome categorizes what the inbound pipeline decided. The OutcomeReplier

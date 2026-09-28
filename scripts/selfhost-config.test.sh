@@ -42,6 +42,7 @@ trap 'rm -f "$tmp_env"; rm -rf "$tmp_dir"' EXIT
 sed 's/^FRONTEND_PORT=.*/FRONTEND_PORT=3100/' .env.example >"$tmp_env"
 printf '\nBACKEND_PORT=9100\nSMTP_FROM_EMAIL=multica@example.com\n' >>"$tmp_env"
 printf 'MULTICA_LLM_API_KEY=llm-key-from-env\nMULTICA_LLM_BASE_URL=http://gateway.example/v1\nMULTICA_LLM_DEFAULT_MODEL=model-from-env\nMULTICA_LLM_MAX_RETRIES=3\n' >>"$tmp_env"
+printf 'MULTICA_BACKUP_RETENTION_DAYS=14\nMULTICA_BACKUP_INTERVAL=12h\n' >>"$tmp_env"
 
 config="$(
   docker compose \
@@ -58,6 +59,30 @@ require_config "$config" 'MULTICA_APP_URL: http://localhost:3100'
 require_config "$config" 'SMTP_FROM_EMAIL: multica@example.com'
 require_config "$config" 'MULTICA_DATABASE_STARTUP_TIMEOUT: 3m'
 require_config "$config" 'MULTICA_DATABASE_CONNECT_TIMEOUT: 5s'
+require_config "$config" 'MULTICA_BACKUP_RETENTION_DAYS: "14"'
+require_config "$config" 'MULTICA_BACKUP_INTERVAL: 12h'
+
+JWT_SECRET="$JWT_SECRET" docker compose --env-file .env.example -f docker-compose.selfhost.yml config --format json |
+  node -e '
+const config = JSON.parse(require("fs").readFileSync(0, "utf8"));
+const backend = config.services.backend;
+const mount = backend.volumes.find((volume) => volume.target === "/app/backups");
+if (backend.environment.MULTICA_BACKUP_DIR !== "/app/backups" ||
+    backend.environment.MULTICA_BACKUP_RETENTION_DAYS !== "7" ||
+    !mount || mount.type !== "volume" || !config.volumes[mount.source]) {
+  throw new Error("default backups must use a persistent volume with seven-day retention");
+}
+'
+
+MULTICA_BACKUP_DIR=/var/backups/multica \
+  docker compose --env-file "$tmp_env" -f docker-compose.selfhost.yml config --format json |
+  node -e '
+const backend = JSON.parse(require("fs").readFileSync(0, "utf8")).services.backend;
+if (backend.environment.MULTICA_BACKUP_DIR !== "/var/backups/multica" ||
+    !backend.volumes.some((volume) => volume.target === "/var/backups/multica")) {
+  throw new Error("custom backup directory must remain mounted on a persistent volume");
+}
+'
 
 # The backend environment is an explicit allowlist, so a variable documented in
 # .env.example but missing here silently never reaches the container: the
