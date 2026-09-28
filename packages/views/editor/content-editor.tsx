@@ -612,6 +612,7 @@ const ContentEditor = forwardRef<ContentEditorRef, ContentEditorProps>(
         enableSlashCommands,
         slashCommandMode,
         quickActionMenu: {
+          getAssignedAgentId: () => quickActionMenuRef.current?.getAssignedAgentId?.() ?? null,
           getQuickActions: () => quickActionMenuRef.current?.getQuickActions?.() ?? [],
           renderQuickAction: (id: string) =>
             quickActionMenuRef.current?.renderQuickAction?.(id) ?? Promise.resolve(""),
