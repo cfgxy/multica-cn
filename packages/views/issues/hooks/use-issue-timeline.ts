@@ -48,6 +48,7 @@ import {
 } from "@multica/core/issues/comment-trigger-outcomes";
 import { useWSEvent, useWSReconnect } from "@multica/core/realtime";
 import { toast } from "sonner";
+import { errorCode } from "@multica/core/api";
 import { useT } from "../../i18n";
 import { blockedShortReasonLabel } from "../blocked-trigger-copy";
 
@@ -406,7 +407,9 @@ export function useIssueTimeline(issueId: string, userId?: string) {
         return comment.id;
       } catch (err) {
         toast.error(
-          err instanceof Error && err.message
+          errorCode(err) === "invalid_agent_mentions"
+            ? t(($) => $.comment.invalid_agent_mentions)
+            : err instanceof Error && err.message
             ? err.message
             : t(($) => $.comment.send_failed),
         );
@@ -431,7 +434,9 @@ export function useIssueTimeline(issueId: string, userId?: string) {
         return comment.id;
       } catch (err) {
         toast.error(
-          err instanceof Error && err.message
+          errorCode(err) === "invalid_agent_mentions"
+            ? t(($) => $.comment.invalid_agent_mentions)
+            : err instanceof Error && err.message
             ? err.message
             : t(($) => $.comment.send_reply_failed),
         );

@@ -99,6 +99,18 @@ first, then removes those agent IDs as a post-filter. A missing or empty field
 preserves the old behavior. A valid UUID that is not in the computed trigger set
 is a no-op; a malformed UUID is rejected at the request boundary.
 
+Before POST /comments or a body-changing PUT /comments/{id} writes anything,
+the server checks EVERY explicit Markdown `mention://agent/` link in the
+normalized body, including suppressed targets. An unknown, inaccessible,
+archived, or malformed agent target rejects the WHOLE comment with HTTP 422,
+`code: invalid_agent_mentions` and `invalid_mentions` entries containing
+UTF-8 byte offsets `start` and `end` (end exclusive) of the complete link.
+The public error cannot distinguish an unknown agent from an inaccessible
+private one and does not suggest names or disclose the target. Correct the link
+and retry the original draft. `/note` comments, squad mentions, and edits that
+change only attachments keep their previous behavior. Preview applies the
+same invoke/edit gate and shows no runnable agents if a link fails admission.
+
 ## @all is the broadcast type
 
 `@all` uses the literal `all`, never a UUID:
@@ -122,30 +134,23 @@ evaluated BEFORE the `@all` short-circuit.
 
 ## What does NOT happen (so the result doesn't surprise you)
 
-None of these start a fresh run, and none produce an error response — but they
-are three different things, and the response tells you which. A mention that
-never parsed is a truly silent no-op. One that parsed and was refused comes back
-in `trigger_outcomes` as `status: "blocked"` with a `reason_code`. One whose
-target is already busy comes back `coalesced` or `deferred`: no second run, but
-your comment IS folded into the task that is already running, so it still gets
-read. Read that array after posting — it is the only place any of this shows up.
+The cases below do not start a fresh run, but they have different responses.
+A link that never parsed is a silent no-op. An invalid explicit agent link
+returns HTTP 422 before saving. A squad mention that cannot trigger can still
+be saved with a blocked `trigger_outcomes` entry. A busy valid agent target
+returns `coalesced` or `deferred`: no second run, but your comment is folded
+into existing work. Check `trigger_outcomes` after any successful send.
 
 - **A name where a UUID belongs.** `mention://member/Alice` is dead. The id
   group accepts only hex+dashes or `all`; the non-hex letters in a typical name
   make the whole pattern fail to match, so the parser returns nothing.
-- **A hex-ish but wrong UUID.** A well-formed-looking UUID that no entity owns
-  DOES parse, then no-ops at lookup: the workspace-scoped query finds no agent
-  and the mention is reported blocked with `invocation_not_allowed`. That code
-  is deliberately ambiguous — **a typo'd UUID and a genuine permission denial
-  look identical on purpose**, because the id you typed could name a private
-  agent in another workspace and the reason must not confirm that it exists.
-  **So when you see `invocation_not_allowed`, check the UUID against the live
-  roster BEFORE you touch any visibility or invocation setting** (MUL-5548);
-  `multica squad member list <squad-id> --output json` returns the `member_id`
-  to build the mention from. An id that matches the pattern but is NOT a valid
-  UUID at all (`mention://agent/-`) is rejected by the id parser and blocked
-  with `target_unavailable` instead — a non-UUID names no entity anywhere, so
-  it conceals nothing. Neither case is ever an error response.
+- **A wrong agent UUID.** The server rejects an explicit agent link with
+  `invalid_agent_mentions` whether the UUID is unknown, inaccessible, archived
+  or malformed. The response only names the link's byte offsets, never the
+  target or its state. Check the UUID against `multica agent list --output json`
+  before retrying; a private agent visible to an admin may still be
+  uninvocable. A malformed link that does not follow the Markdown mention
+  shape may not be recognized at all, so use the exact syntax above.
 - **An already-pending task.** Even a correct `@agent`/`@squad` starts no second
   run when the target already has a pending task on this issue
   (`HasPendingTaskForIssueAndAgent`). This is a fold, not a drop: the comment

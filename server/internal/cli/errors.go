@@ -473,6 +473,11 @@ func userMessage(err error, lang Language) string {
 	var httpErr *HTTPError
 	if errors.As(err, &httpErr) {
 		kind := httpErr.Kind()
+		if httpErr.StatusCode == http.StatusUnprocessableEntity {
+			if msg := invalidAgentMentionMessage(httpErr.Body, lang); msg != "" {
+				return msg
+			}
+		}
 		// A 401 on a task token is not a login problem, and the generic copy
 		// below is the wrong instruction for whoever reads it: it says to sign
 		// in again or ask an administrator for valid credentials. An
@@ -507,6 +512,33 @@ func userMessage(err error, lang Language) string {
 	// whose message is already meant for the user (e.g. a missing argument or
 	// a validation message constructed in a command). Show it as-is.
 	return strings.TrimSpace(err.Error())
+}
+
+func invalidAgentMentionMessage(body string, lang Language) string {
+	var rejected struct {
+		Code  string `json:"code"`
+		Spans []struct {
+			Start int `json:"start"`
+			End   int `json:"end"`
+		} `json:"invalid_mentions"`
+	}
+	if json.Unmarshal([]byte(body), &rejected) != nil || rejected.Code != "invalid_agent_mentions" {
+		return ""
+	}
+	spans := make([]string, 0, len(rejected.Spans))
+	for _, span := range rejected.Spans {
+		if span.Start < 0 || span.End <= span.Start {
+			return ""
+		}
+		spans = append(spans, fmt.Sprintf("[%d,%d)", span.Start, span.End))
+	}
+	if len(spans) == 0 {
+		return ""
+	}
+	if lang == LangZH {
+		return "评论未发送（invalid_agent_mentions）。请核对 UTF-8 字节区间 " + strings.Join(spans, "、") + " 的智能体提及；输入原稿未更改。"
+	}
+	return "The comment was not posted (invalid_agent_mentions). Check the agent mention at UTF-8 byte range " + strings.Join(spans, ", ") + "; your input is unchanged."
 }
 
 // extractServerMessage tries to pull a human-readable message out of a JSON
