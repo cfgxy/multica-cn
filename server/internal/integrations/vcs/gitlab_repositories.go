@@ -21,7 +21,9 @@ var (
 	ErrUpstream    = errors.New("GitLab repository browsing unavailable")
 )
 
-const gitLabProjectsResponseLimit = 2 << 20
+// 完整项目载荷比 simple=true 的受限字段集大约四倍，上限同比例放宽以保持等效余量；
+// 它的作用是给响应体一个硬界，不是贴合某一种载荷形态。
+const gitLabProjectsResponseLimit = 8 << 20
 
 type GitLabRepository struct {
 	ID          int64   `json:"id"`
@@ -88,7 +90,8 @@ func ListGitLabRepositories(ctx context.Context, instanceURL, token string, page
 		return empty, ErrUpstream
 	}
 	q := u.Query()
-	q.Set("simple", "true")
+	// 不带 simple=true：该模式下 GitLab 只返回受限字段集，archived 与 visibility 都不在其中
+	// （GitLab CE 16.10.7 实测），而这两个字段正是归档标识与私有标识的唯一来源。
 	q.Set("order_by", "id")
 	q.Set("sort", "asc")
 	q.Set("page", strconv.Itoa(page))
@@ -143,9 +146,15 @@ func ListGitLabRepositories(ctx context.Context, instanceURL, token string, page
 	// Keep the accumulator separate from the error return value so no failure path leaks a partial page.
 	result := GitLabRepositoryPage{Repositories: []GitLabRepository{}}
 	for _, project := range projects {
-		if project.ID <= 0 || project.Path == "" || project.Archived == nil || (project.Visibility != "public" && project.Visibility != "internal" && project.Visibility != "private") || strings.Contains(project.Path, token) {
+		// 身份字段仍是硬要求：缺了就无法标识项目，属于结构性畸形。
+		// archived / visibility 是展示语义，上游按版本或权限裁剪时降级取值，不牵连整页。
+		if project.ID <= 0 || project.Path == "" || strings.Contains(project.Path, token) {
 			return empty, ErrUpstream
 		}
+		// 归档标识未知时按未归档处理：归档项目在选择列表里是禁选的，误标会把可用项目锁死。
+		archived := project.Archived != nil && *project.Archived
+		// 可见性未知或不在已知枚举内时按私有处理：绝不把可能私有的项目展示成公开。
+		private := project.Visibility != "public"
 		cloneURL := project.SSHURL
 		if !validGitLabCloneURL(cloneURL) {
 			cloneURL = project.HTTPURL
@@ -159,7 +168,7 @@ func ListGitLabRepositories(ctx context.Context, instanceURL, token string, page
 		}
 		result.Repositories = append(result.Repositories, GitLabRepository{
 			ID: project.ID, FullName: project.Path, CloneURL: cloneURL,
-			Archived: *project.Archived, Private: project.Visibility != "public", Description: description,
+			Archived: archived, Private: private, Description: description,
 		})
 	}
 	next := resp.Header.Get("X-Next-Page")
