@@ -82,7 +82,7 @@ import {
   ListIssuesResponseSchema,
   ListIssueStatusesResponseSchema,
   TimelineEntriesSchema,
-  SkillListSchema,
+  SkillSummaryListSchema,
   WorkspaceSubscriptionSummarySchema,
 } from "@multica/core/api/schemas";
 import type { AppConfigResponse } from "@multica/core/api/schemas";
@@ -603,7 +603,7 @@ class ApiClient {
   }
 
   async listSkills(opts?: { signal?: AbortSignal }): Promise<SkillSummary[]> {
-    return this.fetchValidated("/api/skills", SkillListSchema, [], { signal: opts?.signal });
+    return this.fetchValidated("/api/skills", SkillSummaryListSchema, [], { signal: opts?.signal });
   }
 
   // Workspace runtimes — feeds the presence dot's availability dimension

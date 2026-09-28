@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { z } from "zod";
 import { ApiClient, ApiError } from "./client";
-import { parseWithFallback } from "./schema";
+import { parseWithFallback, setSchemaLogger } from "./schema";
 
 // Helper: stub fetch with a single JSON response. Status defaults to 200.
 function stubFetchJson(
@@ -28,6 +28,21 @@ afterEach(() => {
 // app in past incidents. The contract is: a malformed response degrades to
 // an empty/safe shape, never throws into React.
 describe("ApiClient schema fallback", () => {
+  it("never logs raw GitLab projects from a malformed response", async () => {
+    const warn = vi.fn();
+    setSchemaLogger({ debug: vi.fn(), info: vi.fn(), warn, error: vi.fn() });
+    try {
+      stubFetchJson({ repositories: "private-upstream-payload" });
+      const client = new ApiClient("https://api.example.test");
+      await expect(client.listGitLabRepositories("ws-1", "connection-1")).resolves.toEqual({
+        repositories: [], next_page: null,
+      });
+      expect(warn).toHaveBeenCalledOnce();
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("private-upstream-payload");
+    } finally {
+      setSchemaLogger({ debug() {}, info() {}, warn() {}, error() {} });
+    }
+  });
   describe("GitHub repository import", () => {
     it("falls back safely when installation or repository responses are malformed", async () => {
       stubFetchJson({ installations: "not-an-array", configured: true });

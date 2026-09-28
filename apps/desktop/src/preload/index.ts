@@ -120,6 +120,7 @@ const desktopAPI = {
   /** Identifies whether this renderer owns the main tabbed window or a
    *  dedicated issue window, parsed from validated launch arguments. */
   windowContext,
+  startupGateAvailable: ipcRenderer.sendSync("server:claim-startup-gate") === true,
   /** Read any freeze/crash breadcrumb left by a previous session, so the
    *  renderer can flush it to telemetry on boot. Returns null when there's
    *  nothing pending (the normal case). Reading does not consume it — call
@@ -225,6 +226,7 @@ const desktopAPI = {
     subscribeToMainRendererChannel("settings:open", () => callback()),
   /** Ask the main process to close the window (used after closing the last tab). */
   closeWindow: () => ipcRenderer.send("window:close"),
+  applyServerSwitch: () => ipcRenderer.send("server:switch-applied"),
   /** Open a validated issue-detail route in a dedicated native window. */
   openIssueWindow: (request: IssueWindowRequest) =>
     ipcRenderer.invoke("window:open-issue", request),

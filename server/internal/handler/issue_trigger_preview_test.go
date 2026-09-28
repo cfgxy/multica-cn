@@ -7,6 +7,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // seededReadyAgentID returns a workspace agent that has a runtime bound (the
@@ -183,6 +185,98 @@ func TestPreviewIssueTrigger_MatchesWritePath(t *testing.T) {
 	}
 	if got := taskCountFor(t, issue2.ID, agentID); got != 0 {
 		t.Fatalf("preview said no run for backlog assign but write path enqueued %d", got)
+	}
+}
+
+// Status promotion has the same result in preview and the real write path,
+// including statuses whose keys inherit a different category.
+func TestPreviewIssueTrigger_BacklogPromotionCategories(t *testing.T) {
+	agentID := seededReadyAgentID(t)
+	cases := []struct {
+		name     string
+		category string
+		custom   bool
+		wantRun  bool
+	}{
+		{name: "todo", category: "todo", wantRun: true},
+		{name: "in_progress", category: "in_progress", wantRun: true},
+		{name: "blocked", category: "blocked"},
+		{name: "in_review", category: "in_review"},
+		{name: "done", category: "done"},
+		{name: "cancelled", category: "cancelled"},
+		{name: "custom todo", category: "todo", custom: true, wantRun: true},
+		{name: "custom in_progress", category: "in_progress", custom: true, wantRun: true},
+		{name: "custom blocked", category: "blocked", custom: true},
+		{name: "custom in_review", category: "in_review", custom: true},
+		{name: "custom done", category: "done", custom: true},
+		{name: "custom cancelled", category: "cancelled", custom: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			status := tc.category
+			if tc.custom {
+				status = "ruyi255_" + tc.category
+				dbfx.Insert(t, "issue_status", testutil.Cols{
+					"workspace_id": testWorkspaceID,
+					"key":          status, "name": tc.name, "description": "",
+					"category": tc.category, "color": "#ff0000", "position": 1,
+				})
+			}
+			issueID := dbfx.Issue(t, "backlog promotion "+tc.name, testutil.Cols{
+				"status": "backlog", "assignee_type": "agent", "assignee_id": agentID,
+			})
+			dbfx.Cleanup(t, "DELETE FROM agent_task_queue WHERE issue_id = $1", issueID)
+
+			preview := previewIssueTrigger(t, map[string]any{
+				"issue_ids": []string{issueID}, "status": status,
+			})
+			want := 0
+			if tc.wantRun {
+				want = 1
+			}
+			if preview.TotalCount != want || len(preview.Triggers) != want {
+				t.Fatalf("preview %s: got %+v, want %d status triggers", status, preview, want)
+			}
+			if tc.wantRun && (preview.Triggers[0].Source != "status" || preview.Triggers[0].AgentID != agentID) {
+				t.Fatalf("preview %s: wrong trigger %+v", status, preview.Triggers[0])
+			}
+
+			req := withURLParam(newRequest("PUT", "/api/issues/"+issueID, map[string]any{"status": status}), "id", issueID)
+			testutil.Call(t, testHandler.UpdateIssue, req).Want(http.StatusOK)
+			if got := taskCountFor(t, issueID, agentID); got != want {
+				t.Fatalf("write %s: got %d tasks, want %d", status, got, want)
+			}
+		})
+	}
+}
+
+func TestPreviewIssueTrigger_BatchBacklogPromotion(t *testing.T) {
+	agentID := seededReadyAgentID(t)
+	for _, tc := range []struct {
+		status  string
+		wantRun int
+	}{
+		{status: "blocked"},
+		{status: "in_review"},
+		{status: "in_progress", wantRun: 1},
+	} {
+		t.Run(tc.status, func(t *testing.T) {
+			issueID := dbfx.Issue(t, "batch backlog promotion "+tc.status, testutil.Cols{
+				"status": "backlog", "assignee_type": "agent", "assignee_id": agentID,
+			})
+			dbfx.Cleanup(t, "DELETE FROM agent_task_queue WHERE issue_id = $1", issueID)
+			preview := previewIssueTrigger(t, map[string]any{
+				"issue_ids": []string{issueID}, "status": tc.status,
+			})
+			if preview.TotalCount != tc.wantRun {
+				t.Fatalf("batch preview %s: got %+v, want %d triggers", tc.status, preview, tc.wantRun)
+			}
+			batchSetStatus(t, []string{issueID}, tc.status)
+			if got := taskCountFor(t, issueID, agentID); got != tc.wantRun {
+				t.Fatalf("batch write %s: got %d tasks, want %d", tc.status, got, tc.wantRun)
+			}
+		})
 	}
 }
 

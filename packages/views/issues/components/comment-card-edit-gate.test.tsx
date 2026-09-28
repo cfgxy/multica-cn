@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { act, fireEvent, screen, waitFor } from "@testing-library/react";
 import { forwardRef, useEffect, useImperativeHandle, useRef, type ReactNode, type Ref } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { toast } from "sonner";
 import type { Attachment, TimelineEntry } from "@multica/core/types";
 import type { UploadResult } from "@multica/core/hooks/use-file-upload";
 import { useCommentDraftStore } from "@multica/core/issues/stores";
@@ -205,6 +206,21 @@ beforeEach(() => {
   apiUploadFile.mockReset();
   useCommentDraftStore.setState({ drafts: {} });
   editorDefaultValues.values = [];
+});
+
+it("keeps an edit draft when an agent mention is rejected", async () => {
+  const onEdit = vi.fn().mockRejectedValue({ body: { code: "invalid_agent_mentions" } });
+  const toastSpy = vi.spyOn(toast, "error");
+  renderCard(onEdit);
+  await startEditing();
+  fireEvent.change(screen.getByTestId("editor"), { target: { value: "My rejected edit" } });
+  fireEvent.click(getSaveButton());
+
+  await waitFor(() => expect(onEdit).toHaveBeenCalledOnce());
+  expect(toastSpy).toHaveBeenCalledWith("The comment wasn't posted. Check the agent mentions and try again.");
+  expect((screen.getByTestId("editor") as HTMLTextAreaElement).value).toBe("My rejected edit");
+  expect(useCommentDraftStore.getState().getDraft("edit:issue-1:comment-1")).toBe("My rejected edit");
+  toastSpy.mockRestore();
 });
 
 describe("comment edit — draft snapshot", () => {
