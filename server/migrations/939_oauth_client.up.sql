@@ -14,7 +14,7 @@
 -- client_secret_hash stores only the hash. The plaintext secret is returned
 -- once at creation time and never persisted or logged.
 --
--- client_id uniqueness is enforced by 930, not by an inline UNIQUE: the house
+-- client_id uniqueness is enforced by 940, not by an inline UNIQUE: the house
 -- rule requires every index a migration creates to be built CONCURRENTLY, and
 -- an inline constraint would build its index inside this statement.
 CREATE TABLE IF NOT EXISTS oauth_client (
