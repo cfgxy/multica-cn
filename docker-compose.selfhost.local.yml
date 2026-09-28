@@ -1,0 +1,44 @@
+# RUYI-209 部署阶段本地 override（不入库，2026-09-26）。
+# 用途：MCP OAuth 上线所需的新增服务与环境变量增量。使用方式：
+#   docker compose -f docker-compose.selfhost.yml -f docker-compose.selfhost.build.yml \
+#     -f docker-compose.selfhost.local.yml <cmd>
+# 回滚：从 -f 列表移除本文件，`down redis mcp`，.env 还原同目录 .bak-ruyi209-*。
+services:
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    # 仅承载 60s TTL 的一次性授权码（server/internal/oauth/code_store.go），
+    # 无持久化需求；仅 compose 网络内可达，不发布宿主端口。
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+
+  mcp:
+    image: multica-mcp:dev
+    build:
+      context: .
+      dockerfile: Dockerfile.mcp
+    restart: unless-stopped
+    depends_on:
+      - backend
+    ports:
+      # 宿主仅 127.0.0.1 绑定；对外唯一入口是 Next.js 3000 的 /api/mcp rewrite。
+      - "127.0.0.1:3002:3002"
+    environment:
+      TZ: ${TZ:-Asia/Shanghai}
+      # MCP 把调用方 token 原样透传给的 backend REST 地址（compose 网络内）。
+      MULTICA_SERVER_URL: http://backend:8080
+      # 401 WWW-Authenticate 的 resource_metadata 绝对 URL 基址（真实域名）。
+      MULTICA_APP_URL: ${MULTICA_APP_URL}
+
+  backend:
+    environment:
+      # 未设置时 OAuth 面整体不启用（PAT 路径不受影响）；PEM 由 .env 注入。
+      OAUTH_SIGNING_KEY: ${OAUTH_SIGNING_KEY:-}
+      # 授权码存储（60s TTL 一次性消费）。注意：该变量同时使 realtime relay
+      # 以默认 sharded 模式启用（单副本自洽路径），见发布记录风险项。
+      REDIS_URL: ${REDIS_URL:-}
+
+  frontend:
+    environment:
+      # /api/mcp rewrite 目标（apps/web/config/runtime-urls.ts resolveMcpUrl）。
+      # 未设置时 /api/mcp 落回 backend 404，与旧行为一致。
+      MCP_URL: ${MCP_URL:-}
