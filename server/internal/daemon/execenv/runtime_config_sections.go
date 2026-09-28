@@ -284,7 +284,7 @@ func writeAvailableCommands(b *strings.Builder, ctx TaskContextForEnv) {
 	// Assign deliberately stays in the core brief: it is the action that can
 	// create an unaware cross-issue run, and agents cannot discover the safe
 	// ownership-only --no-start path if the command is hidden behind --help.
-	b.WriteString("- `multica issue assign <id> (--to X | --to-id <uuid> | --unassign) [--no-start]` — change ownership. On assign/update/status, `--no-start` records the change without starting another run — use it when the work is already underway.\n")
+	b.WriteString("- `multica issue assign <id> (--to X | --to-id <uuid> | --unassign) [--no-start]` — change ownership. On assign/update/status, `--no-start` records the change without starting another run — it is only meaningful when the work is already underway, and `issue status` refuses it when it would promote an issue out of backlog, because that promotion is itself the handoff.\n")
 	writeIssueStatusCommand(b, ctx)
 	b.WriteString("- `multica issue children <id> [--output json]` — list a parent's sub-issues grouped by stage.\n")
 	b.WriteString("- `multica issue comment add <issue-id> [--content \"...\" | --content-file <path> | --content-stdin] [--parent <comment-id>] [--attachment <path>]` — post a comment. Agent-authored bodies MUST use `--content-file`; see `## Comment Formatting` for why. `multica issue comment add --help` for full flags.\n")
