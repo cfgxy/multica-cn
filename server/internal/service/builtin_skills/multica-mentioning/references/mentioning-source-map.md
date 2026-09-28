@@ -46,6 +46,13 @@ a pointer.
 
 | Fact | Source |
 | --- | --- |
+| Explicit agent links, including malformed IDs and suppressed targets, are checked before comment creation or changed-body edit; the same predicate is used by preview | `server/internal/handler/comment.go` (search `validateExplicitAgentMentions`, `admitExplicitAgentMentions`) |
+| Failure is HTTP 422 with `invalid_agent_mentions` and normalized UTF-8 byte offsets for each full link, and occurs before create/attachment/event/cancellation | `server/internal/handler/comment.go` (search `invalidAgentMention`, `admitExplicitAgentMentions` and its callers); `server/internal/handler/comment_mention_admission_test.go` |
+| Preview omits runnable agents on invalid explicit agent mentions; edit preview checks author/admin permissions | `server/internal/handler/comment.go` (search `PreviewCommentTriggers`) |
+| Web/desktop preserve the rejected draft and translate the code; CLI retains the input file and formats the code and byte offsets into a safe message | `packages/views/issues/hooks/use-issue-timeline.ts`, `packages/views/issues/components/comment-card.tsx`, `server/internal/cli/errors.go` (search `invalidAgentMentionMessage`) |
+
+| Fact | Source |
+| --- | --- |
 | Preview route: `POST /api/issues/{id}/comments/trigger-preview` | `server/cmd/server/router.go:707` |
 | Preview handler loads the issue, expands issue identifiers, then calls `computeCommentAgentTriggers` | `server/internal/handler/comment.go:837-911` |
 | Preview request accepts `content`, optional `parent_id`, and optional `editing_comment_id` | `server/internal/handler/comment.go:778-782` |
@@ -89,10 +96,11 @@ a pointer.
 
 ## Guards and outcomes for a parsed mention
 
-A mention that parses is never silently dropped: every guard below either
-records a blocked outcome with a stable `reason_code`, or hands the trigger to
-enqueue, which resolves it to queued / coalesced / deferred. Only a mention
-that never parsed at all (a name where a UUID belongs) is a true silent no-op.
+For a submitted comment, invalid explicit agent links are rejected by the
+admission gate before these dispatch guards run. The table below still
+describes preview diagnostics, historical stored comments and squad mention
+outcomes; accepted agent links proceed to queue or coalesce as before. Links
+that never match the Markdown mention shape still do not trigger anything.
 
 | Guard | Outcome | Source |
 | --- | --- | --- |
