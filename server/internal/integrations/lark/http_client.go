@@ -492,7 +492,11 @@ func (c *httpAPIClient) PatchInteractiveCard(ctx context.Context, p PatchCardPar
 		if isTokenError(resp.Code) {
 			c.invalidateToken(p.InstallationID.AppID)
 		}
-		return fmt.Errorf("lark http client: patch interactive card: code=%d msg=%q", resp.Code, resp.Msg)
+		// Typed, not fmt.Errorf: the progress-card scheduler classifies the
+		// rate-limit code (230020) off this error, and a plain wrapped string
+		// reports code 0 — an ambiguous transport failure — so every rate limit
+		// would look like one and get retried straight into the next one.
+		return &APIError{Op: "patch interactive card", Code: resp.Code, Msg: resp.Msg}
 	}
 	return nil
 }
