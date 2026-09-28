@@ -140,6 +140,8 @@ func ListGitLabRepositories(ctx context.Context, instanceURL, token string, page
 	if len(body) == 0 || body[0] != '[' || json.Unmarshal(body, &projects) != nil || len(projects) > perPage {
 		return empty, ErrUpstream
 	}
+	// 结果累加器与错误返回值分开：任何失败路径都只返回 empty，不外泄半截数据。
+	result := GitLabRepositoryPage{Repositories: []GitLabRepository{}}
 	for _, project := range projects {
 		if project.ID <= 0 || project.Path == "" || project.Archived == nil || (project.Visibility != "public" && project.Visibility != "internal" && project.Visibility != "private") || strings.Contains(project.Path, token) {
 			return empty, ErrUpstream
@@ -155,7 +157,7 @@ func ListGitLabRepositories(ctx context.Context, instanceURL, token string, page
 		if description != nil && strings.Contains(*description, token) {
 			description = nil
 		}
-		empty.Repositories = append(empty.Repositories, GitLabRepository{
+		result.Repositories = append(result.Repositories, GitLabRepository{
 			ID: project.ID, FullName: project.Path, CloneURL: cloneURL,
 			Archived: *project.Archived, Private: project.Visibility != "public", Description: description,
 		})
@@ -164,12 +166,12 @@ func ListGitLabRepositories(ctx context.Context, instanceURL, token string, page
 	if next != "" {
 		nextPage, err := strconv.Atoi(next)
 		if err != nil || nextPage <= page {
-			return GitLabRepositoryPage{Repositories: []GitLabRepository{}}, ErrUpstream
+			return empty, ErrUpstream
 		}
 		if int64(nextPage) > 50000/int64(perPage) {
-			return GitLabRepositoryPage{Repositories: []GitLabRepository{}}, ErrPageLimit
+			return empty, ErrPageLimit
 		}
-		empty.NextPage = nextPage
+		result.NextPage = nextPage
 	}
-	return empty, nil
+	return result, nil
 }
