@@ -470,9 +470,14 @@ func ModelKnownIncompatibleWithProvider(providerType, model string) bool {
 }
 
 // claudeContextWindowTagRe recognises Claude Code's trailing context-window
-// model modifier (for example, claude-opus-5[1m]). Keep this narrower than a
-// generic bracket suffix: capability lookup may inherit the base model's
-// effort catalog only when the modifier is syntactically a context size.
+// model modifier (for example, claude-opus-5[1m]). It is deliberately
+// NARROWER than the shared launch/billing tag shape in pkg/modeltag: only a
+// positive size plus k/m unit may inherit the base model's effort catalog,
+// while any other bracket text (`claude-opus-5[foo]`) keeps exact-match
+// behavior. Capability lookup may inherit the base model's effort catalog
+// only when the modifier is syntactically a context size. The
+// strict-subset-of-lenient nesting between this shape and modeltag's is
+// pinned by TestContextTagShapesStayNested in modeltag_consistency_test.go.
 var claudeContextWindowTagRe = regexp.MustCompile(`\[[1-9][0-9]*[km]\]$`)
 
 // modelIDForCapabilityLookup returns the catalog identity for a runtime-native
