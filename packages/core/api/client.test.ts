@@ -2367,6 +2367,49 @@ describe("ApiClient refreshSkill response schema", () => {
   });
 });
 
+describe("ApiClient skill version responses", () => {
+  const version = {
+    id: "version-1",
+    skill_id: "skill-1",
+    version: 1,
+    name: "review-helper",
+    description: "Reviews changes",
+    content: "# Review",
+    config: { origin: "local" },
+    files: [{ path: "references/checklist.md", content: "Check" }],
+    source: "create",
+    created_at: "2026-01-01T00:00:00Z",
+  };
+
+  it("keeps list responses metadata-only and parses detail and restore", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([version])))
+      .mockResolvedValueOnce(new Response(JSON.stringify(version)))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ version: 2 })));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    const listed = await client.listSkillVersions("skill-1");
+    expect(listed).toMatchObject([{ version: 1, name: "review-helper" }]);
+    expect(listed[0]).not.toHaveProperty("content");
+    expect(await client.getSkillVersion("skill-1", 1)).toMatchObject({ content: "# Review", files: version.files });
+    expect(await client.restoreSkillVersion("skill-1", 1)).toEqual({ version: 2 });
+    expect(fetchMock.mock.calls[2]?.[1]?.method).toBe("POST");
+  });
+
+  it("falls back when the list, detail or restore response is malformed", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ versions: [version] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...version, files: 42 })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ version: "wrong" }))));
+    const client = new ApiClient("https://api.example.test");
+
+    expect(await client.listSkillVersions("skill-1")).toEqual([]);
+    expect(await client.getSkillVersion("skill-1", 1)).toMatchObject({ id: "", version: 0, files: [] });
+    expect(await client.restoreSkillVersion("skill-1", 1)).toEqual({ version: 0 });
+  });
+});
+
 describe("ApiClient workspace MCP servers", () => {
   function stubJSON(body: unknown) {
     const fetchMock = vi.fn().mockResolvedValue(

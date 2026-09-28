@@ -80,6 +80,8 @@ import type {
   User,
   Skill,
   SkillSummary,
+  SkillVersion,
+  SkillVersionSummary,
   CreateSkillRequest,
   UpdateSkillRequest,
   SetAgentSkillsRequest,
@@ -462,6 +464,10 @@ import {
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
   SkillSchema,
   EMPTY_SKILL,
+  SkillVersionListSchema,
+  SkillVersionSchema,
+  EMPTY_SKILL_VERSION,
+  SkillRestoreResultSchema,
   SkillImportResultSchema,
   EMPTY_SKILL_IMPORT_RESULT,
   IssueViewSchema,
@@ -3851,6 +3857,29 @@ export class ApiClient {
 
   async getSkill(id: string): Promise<Skill> {
     return this.fetch(`/api/skills/${id}`);
+  }
+
+  async listSkillVersions(id: string): Promise<SkillVersionSummary[]> {
+    const raw = await this.fetch<unknown>(`/api/skills/${encodeURIComponent(id)}/versions`);
+    return parseWithFallback(raw, SkillVersionListSchema, [] as SkillVersionSummary[], {
+      endpoint: "GET /api/skills/{id}/versions",
+    });
+  }
+
+  async getSkillVersion(id: string, version: number): Promise<SkillVersion> {
+    const raw = await this.fetch<unknown>(`/api/skills/${encodeURIComponent(id)}/versions/${version}`);
+    return parseWithFallback(raw, SkillVersionSchema, EMPTY_SKILL_VERSION, {
+      endpoint: "GET /api/skills/{id}/versions/{version}",
+    });
+  }
+
+  async restoreSkillVersion(id: string, version: number): Promise<{ version: number }> {
+    const raw = await this.fetch<unknown>(`/api/skills/${encodeURIComponent(id)}/versions/${version}/restore`, {
+      method: "POST",
+    });
+    return parseWithFallback(raw, SkillRestoreResultSchema, { version: 0 }, {
+      endpoint: "POST /api/skills/{id}/versions/{version}/restore",
+    });
   }
 
   async createSkill(data: CreateSkillRequest): Promise<Skill> {

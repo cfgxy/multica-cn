@@ -899,6 +899,25 @@ export interface SkillFile {
   updated_at: string;
 }
 
+export interface SkillVersionSummary {
+  id: string;
+  skill_id: string;
+  version: number;
+  name: string;
+  description: string;
+  source: string;
+  source_version?: number;
+  source_proposal_id?: string;
+  author_user_id?: string;
+  created_at: string;
+}
+
+export interface SkillVersion extends SkillVersionSummary {
+  content: string;
+  config: Record<string, unknown>;
+  files: { path: string; content: string }[];
+}
+
 export interface CreateSkillRequest {
   name: string;
   description?: string;
