@@ -88,7 +88,7 @@ export function SkillTab({ wsId }: { wsId: string }) {
         </section>
         <section className="min-w-0 space-y-4" aria-label={t(($) => $.skills.usage)}>
           <h3 className="text-title font-medium">{t(($) => $.skills.usage)}</h3>
-          {usage.isPending ? <Skeleton className="h-32 w-full" /> : usage.isError ?
+          {usage.isPending ? <Skeleton className="h-32 w-full" /> : usage.isError || !usage.data ?
             <p role="alert" className="text-body text-destructive">{t(($) => $.skills.error)} <Button size="sm" onClick={() => usage.refetch()}>{t(($) => $.skills.retry)}</Button></p> : <>
             <div className="flex flex-wrap gap-x-10 gap-y-3 text-body">
               <div><p className="text-caption text-muted-foreground">{t(($) => $.skills.allTime)}</p><strong className="text-title">{t(($) => $.skills.invocations, { count: usage.data?.total ?? 0 })}</strong></div>
