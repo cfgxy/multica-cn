@@ -133,6 +133,32 @@ func TestFormatErrorValidationUsesServerMessage(t *testing.T) {
 	}
 }
 
+func TestFormatErrorInvalidAgentMentionsShowsSafeByteSpans(t *testing.T) {
+	for _, tc := range []struct {
+		lang, expected string
+	}{
+		{"en_US.UTF-8", "comment was not posted"},
+		{"zh_CN.UTF-8", "评论未发送"},
+	} {
+		t.Run(tc.lang, func(t *testing.T) {
+			withLang(t, tc.lang)
+			err := fmt.Errorf("add comment: %w", &HTTPError{
+				Method: "POST", Path: "/api/issues/example/comments", StatusCode: 422,
+				Body: `{"error":"one or more agent mentions cannot be invoked","code":"invalid_agent_mentions","invalid_mentions":[{"start":7,"end":68},{"start":75,"end":136}]}`,
+			})
+			got := FormatError(err, false)
+			for _, piece := range []string{tc.expected, "invalid_agent_mentions", "[7,68)", "[75,136)"} {
+				if !strings.Contains(got, piece) {
+					t.Errorf("formatted message %q misses %q", got, piece)
+				}
+			}
+			if strings.Contains(got, "example/comments") || strings.Contains(got, "add comment:") {
+				t.Errorf("formatted error leaked request path: %q", got)
+			}
+		})
+	}
+}
+
 // TestFormatErrorConflictUsesServerMessage pins GH #6264: a 409 body carries a
 // hand-written fix ("reply under this comment", "a skill with that name
 // exists"), and the generic conflict template actively misdirects by telling

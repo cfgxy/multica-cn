@@ -38,6 +38,7 @@ interface CommentTriggerChipsProps {
   // (MUL-4525 §2). Each renders as a named warning chip so the user sees WHICH
   // target won't run and why, not a silent no-op after sending.
   blocked?: CommentTriggerOutcome[];
+  invalidMentionCount?: number;
   // The draft markdown, used only to label each blocked target with the name the
   // user typed in its mention markup. The server omits blocked target names
   // (enumeration-safety); this is the user's own text, so it discloses nothing new.
@@ -126,6 +127,7 @@ function TriggerAgentTooltipBody({
 export function CommentTriggerChips({
   agents,
   blocked = [],
+  invalidMentionCount = 0,
   draftContent = "",
   suppressedAgentIds,
   onToggle,
@@ -137,7 +139,7 @@ export function CommentTriggerChips({
 
   // Loading and errors render nothing: the preview is an enhancement, and
   // any interim chrome here reads as composer noise.
-  if (agents.length === 0 && blocked.length === 0) return null;
+  if (agents.length === 0 && blocked.length === 0 && invalidMentionCount === 0) return null;
 
   const allowed =
     agents.length === 1 ? (
@@ -156,11 +158,26 @@ export function CommentTriggerChips({
       />
     ) : null;
 
-  if (blocked.length === 0) return allowed;
+  if (blocked.length === 0 && invalidMentionCount === 0) return allowed;
 
   return (
     <div className="flex flex-wrap items-center gap-1.5">
       {allowed}
+      {invalidMentionCount > 0 && blocked.length === 0 && (
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <span
+                className="inline-flex size-6 items-center justify-center text-destructive"
+                aria-label={t(($) => $.comment.preview_invalid_agent_mentions)}
+              >
+                <TriangleAlert className="size-4" />
+              </span>
+            }
+          />
+          <TooltipContent side="top">{t(($) => $.comment.preview_invalid_agent_mentions)}</TooltipContent>
+        </Tooltip>
+      )}
       {blocked.map((outcome) => (
         <BlockedTriggerChip
           key={`${outcome.target_type}:${outcome.target_id}`}
