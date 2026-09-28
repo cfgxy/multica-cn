@@ -1191,7 +1191,10 @@ func buildClaudeArgs(opts ExecOptions, logger *slog.Logger) []string {
 		args = append(args, "--strict-mcp-config")
 	}
 	if opts.Model != "" {
-		args = append(args, "--model", opts.Model)
+		// Normalized rather than forwarded verbatim: a gateway alias that
+		// still carries its context-window tag is rejected by the CLI up
+		// front (see claudeCLIModelArg).
+		args = append(args, "--model", claudeCLIModelArg(opts.Model))
 	}
 	if opts.ThinkingLevel != "" {
 		// Slotted right after --model so the per-session effort runs
