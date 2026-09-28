@@ -1456,6 +1456,17 @@
     "expiry_never": "Never"
   },
   "server": {
+    "startup": {
+      "title": "Choose a server to connect",
+      "countdown": "Auto-connecting to {{name}} in {{n}}s",
+      "connect_now": "Connect now",
+      "cancel_auto": "Cancel auto-connect",
+      "next": "Connecting next",
+      "checking": "Checking",
+      "reachable": "Reachable",
+      "unreachable": "Unreachable",
+      "recheck": "Recheck"
+    },
     "title": "Servers",
     "back": "Back",
     "add": "Add server",
