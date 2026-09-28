@@ -1,0 +1,109 @@
+diff --git a/Makefile b/Makefile
+index 777479d03..376d7467e 100644
+--- a/Makefile
++++ b/Makefile
+@@ -1,4 +1,4 @@
+-.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev daemon-build daemon-install daemon-update daemon-preflight
++.PHONY: help makehelp dev server daemon cli multica build test migrate-up migrate-down sqlc seed clean setup start stop check worktree-env setup-main start-main stop-main check-main setup-worktree start-worktree stop-worktree check-worktree remove-worktree agent-branches db-up db-down db-drop db-reset selfhost selfhost-build selfhost-stop up down status list destroy gc env-exec api-dev web-dev desktop-dev daemon-build daemon-install daemon-install-profile daemon-update daemon-preflight
+ 
+ MAIN_ENV_FILE ?= .env
+ WORKTREE_ENV_FILE ?= .env.worktree
+@@ -182,6 +182,35 @@ daemon-install: daemon-build ## Install daemon binary + systemd units as the INV
+ daemon-preflight: ## Read-only check of kernel/system prerequisites for the OOM guard
+ 	@bash deploy/oom-preflight.sh
+ 
++# 多 profile 并存：默认 daemon 仍由 daemon-install 安装的 multica-daemon.service 承载；
++# 额外连接（同时连多个服务端）用 systemd 模板实例，实例名即 profile 名：
++#   make daemon-install-profile PROFILE=idata
++#     → systemctl enable --now multica-daemon@idata（读取 ~/.multica/profiles/idata/）
++# 前置条件：该 profile 已认证（multica --profile <name> login / login --token）。
++# 不触碰 multica-daemon.service；oom-guard 升级为多实例版并原地重启（对默认实例行为不变）。
++daemon-install-profile: daemon-build ## Install a named-profile daemon as systemd instance: make daemon-install-profile PROFILE=idata (runs multica-daemon@<profile>)
++	@if [ -z "$(PROFILE)" ]; then echo "ERROR: PROFILE=<name> is required, e.g. make daemon-install-profile PROFILE=idata"; exit 1; fi
++	@if [ -n "$$SUDO_USER" ]; then echo "ERROR: run 'make daemon-install-profile' as the regular user (sudo is invoked internally)"; exit 1; fi
++	@test -f $(HOME)/.multica/profiles/$(PROFILE)/config.json || { echo "ERROR: profile '$(PROFILE)' is not authenticated — run 'multica --profile $(PROFILE) login' first"; exit 1; }
++	install -m755 server/bin/multica $(HOME)/.local/bin/multica
++	$(HOME)/.local/bin/multica daemon stop --profile $(PROFILE) >/dev/null 2>&1 || true
++	sed -e 's|@USER@|$(USER)|g' \
++	    -e 's|@GROUP@|$(GROUP)|g' \
++	    -e 's|@HOME@|$(HOME)|g' \
++	    -e 's|@BIN@|$(HOME)/.local/bin/multica|g' \
++	    -e 's|@CPU_QUOTA@|$(CPU_QUOTA)|g' \
++	    -e 's|@MEMORY_HIGH@|$(MEMORY_HIGH)|g' \
++	    -e 's|@MEMORY_MAX@|$(MEMORY_MAX)|g' \
++	    deploy/multica-daemon@.service.template > /tmp/multica-daemon@.service
++	sudo install -m644 /tmp/multica-daemon@.service /etc/systemd/system/multica-daemon@.service
++	sudo install -m644 deploy/multica-oom-guard.service /etc/systemd/system/multica-oom-guard.service
++	sudo install -m755 deploy/oom-guard.sh /usr/local/sbin/multica-oom-guard.sh
++	sudo systemctl daemon-reload
++	sudo systemctl enable --now multica-daemon@$(PROFILE).service
++	sudo systemctl restart multica-oom-guard.service
++	@systemctl --no-pager --lines=0 status multica-daemon@$(PROFILE).service
++	@echo "daemon profile $(PROFILE): systemctl stop/start 用 multica-daemon@$(PROFILE)；日志用 multica daemon logs --profile $(PROFILE)"
++
+ daemon-update: daemon-build ## Update the daemon binary only, then graceful restart (no unit changes)
+ 	install -m755 server/bin/multica $(HOME)/.local/bin/multica
+ 	sudo systemctl restart multica-daemon.service
+diff --git a/deploy/oom-guard.sh b/deploy/oom-guard.sh
+index f57d2064d..85c585ce2 100755
+--- a/deploy/oom-guard.sh
++++ b/deploy/oom-guard.sh
+@@ -14,7 +14,6 @@ set -u
+ MAIN_ADJ=-1000
+ PROTECTED_ADJ=0
+ BAIT=500
+-CG=/sys/fs/cgroup/system.slice/multica-daemon.service
+ 
+ # Agent 运行时与 MCP 识别。误判方向刻意偏保护：误保一条命令无害
+ # （OOM 转杀次高 badness），误杀 Agent 则中断对话。
+@@ -37,19 +36,25 @@ is_protected() {
+ 	return 1
+ }
+ 
++# 覆盖默认实例与全部模板实例（multica-daemon.service + multica-daemon@<profile>.service）。
++# 单元未安装或未运行时 cgroup 目录不存在，按实例跳过即可，不影响其余实例。
+ while sleep 1; do
+-	mainpid=$(systemctl show -p MainPID --value multica-daemon.service 2>/dev/null)
+-	[ -n "${mainpid:-}" ] && [ "$mainpid" != "0" ] || continue
+-	cur=$(cat "/proc/$mainpid/oom_score_adj" 2>/dev/null) || continue
+-	if [ "$cur" != "$MAIN_ADJ" ]; then
+-		echo "$MAIN_ADJ" > "/proc/$mainpid/oom_score_adj" 2>/dev/null
+-	fi
+-	while IFS= read -r pid; do
+-		[ "$pid" = "$mainpid" ] && continue
+-		if is_protected "$pid"; then target=$PROTECTED_ADJ; else target=$BAIT; fi
+-		adj=$(cat "/proc/$pid/oom_score_adj" 2>/dev/null) || continue
+-		if [ "$adj" != "$target" ]; then
+-			echo "$target" > "/proc/$pid/oom_score_adj" 2>/dev/null
++	for CG in /sys/fs/cgroup/system.slice/multica-daemon*.service; do
++		[ -d "$CG" ] || continue
++		unit=${CG##*/}
++		mainpid=$(systemctl show -p MainPID --value "$unit" 2>/dev/null)
++		[ -n "${mainpid:-}" ] && [ "$mainpid" != "0" ] || continue
++		cur=$(cat "/proc/$mainpid/oom_score_adj" 2>/dev/null) || continue
++		if [ "$cur" != "$MAIN_ADJ" ]; then
++			echo "$MAIN_ADJ" > "/proc/$mainpid/oom_score_adj" 2>/dev/null
+ 		fi
+-	done < "$CG/cgroup.procs"
++		while IFS= read -r pid; do
++			[ "$pid" = "$mainpid" ] && continue
++			if is_protected "$pid"; then target=$PROTECTED_ADJ; else target=$BAIT; fi
++			adj=$(cat "/proc/$pid/oom_score_adj" 2>/dev/null) || continue
++			if [ "$adj" != "$target" ]; then
++				echo "$target" > "/proc/$pid/oom_score_adj" 2>/dev/null
++			fi
++		done < "$CG/cgroup.procs"
++	done
+ done
+diff --git a/docker-compose.selfhost.yml b/docker-compose.selfhost.yml
+index da0e86bec..3d0a6bb2e 100644
+--- a/docker-compose.selfhost.yml
++++ b/docker-compose.selfhost.yml
+@@ -71,6 +71,7 @@ services:
+       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET must be set to a strong random value — generate one with 'openssl rand -hex 32'}
+       FRONTEND_ORIGIN: ${FRONTEND_ORIGIN:-http://localhost:3000}
+       CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
++      RATE_LIMIT_TRUSTED_PROXIES: ${RATE_LIMIT_TRUSTED_PROXIES:-}
+       RESEND_API_KEY: ${RESEND_API_KEY:-}
+       RESEND_FROM_EMAIL: ${RESEND_FROM_EMAIL:-noreply@multica.ai}
+       SMTP_HOST: ${SMTP_HOST:-}
