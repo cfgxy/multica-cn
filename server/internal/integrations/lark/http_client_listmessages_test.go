@@ -171,3 +171,46 @@ func TestHTTPClient_ListChatMessagesMissingChatID(t *testing.T) {
 		t.Fatalf("want error for empty chat id")
 	}
 }
+
+func TestHTTPClient_ListChatMessagesMediaResourceContract(t *testing.T) {
+	fake := newLarkFake(t)
+	fake.stubToken("tok", 7200)
+	fake.mux.HandleFunc("/open-apis/im/v1/messages", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Query().Get("container_id") != "oc_group" ||
+			r.URL.Query().Get("container_id_type") != "chat" || r.URL.Query().Get("end_time") != "3" {
+			t.Errorf("历史消息请求不符合预期：%s %s", r.Method, r.URL.String())
+		}
+		writeJSON(w, map[string]any{"code": 0, "data": map[string]any{"items": []any{map[string]any{
+			"message_id": "om_original", "msg_type": "file", "create_time": "2000",
+			"sender": map[string]any{"id": "ou_sender", "sender_type": "user"},
+			"body":   map[string]any{"content": `{"file_key":"key_file","file_name":"notes.txt"}`},
+		}}}})
+	})
+	fake.mux.HandleFunc("/open-apis/im/v1/messages/om_original/resources/key_file", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Query().Get("type") != "file" || r.Header.Get("Authorization") != "Bearer tok" {
+			t.Errorf("历史文件下载请求不符合预期：%s %s", r.Method, r.URL.String())
+		}
+		w.Header().Set("Content-Type", "text/plain")
+		_, _ = w.Write([]byte("document"))
+	})
+
+	client := newTestClient(fake, time.Now)
+	items, err := client.ListChatMessages(context.Background(), testCreds(), ListMessagesParams{ChatID: "oc_group", EndTime: 3, PageSize: 10})
+	if err != nil || len(items) != 1 {
+		t.Fatalf("历史文件响应错误：items=%+v err=%v", items, err)
+	}
+	item := items[0]
+	if item.MessageID != "om_original" || item.SenderID != "ou_sender" || item.MessageType != "file" || item.Content != `{"file_key":"key_file","file_name":"notes.txt"}` {
+		t.Fatalf("历史文件字段未保真：%+v", item)
+	}
+	resources := mediaResourcesFromMessage(InboundMessage{MessageID: item.MessageID, MessageType: item.MessageType, Content: item.Content})
+	if len(resources) != 1 {
+		t.Fatalf("历史文件资源未解析：%+v", resources)
+	}
+	got, err := client.DownloadMessageResource(context.Background(), testCreds(), DownloadResourceParams{
+		MessageID: resources[0].messageID, FileKey: resources[0].key, Type: resources[0].fetchType,
+	})
+	if err != nil || string(got.Data) != "document" {
+		t.Fatalf("原消息资源下载失败：result=%+v err=%v", got, err)
+	}
+}
