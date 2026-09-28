@@ -83,6 +83,7 @@ import type {
   ShareLink,
   ShareLinkInfo,
   Skill,
+  SkillVersion,
   SkillImportResult,
   Squad,
   TimelineEntry,
@@ -3335,6 +3336,42 @@ export const EMPTY_SKILL: Skill = {
   updated_at: "",
   files: [],
 };
+
+export const SkillVersionSummarySchema = z.object({
+  id: z.string(),
+  skill_id: z.string(),
+  version: z.number().int().positive(),
+  name: z.string(),
+  description: z.string().default(""),
+  source: z.string(),
+  source_version: z.number().int().positive().optional(),
+  source_proposal_id: z.string().optional(),
+  author_user_id: z.string().optional(),
+  created_at: z.string(),
+});
+
+export const SkillVersionListSchema = z.array(SkillVersionSummarySchema);
+
+export const SkillVersionSchema = SkillVersionSummarySchema.extend({
+  content: z.string(),
+  config: z.record(z.string(), z.unknown()).default({}),
+  files: z.array(z.object({ path: z.string(), content: z.string() })).default([]),
+});
+
+export const EMPTY_SKILL_VERSION: SkillVersion = {
+  id: "",
+  skill_id: "",
+  version: 0,
+  name: "",
+  description: "",
+  source: "",
+  created_at: "",
+  content: "",
+  config: {},
+  files: [],
+};
+
+export const SkillRestoreResultSchema = z.object({ version: z.number().int().positive() });
 
 export const SkillImportExistingSkillSchema = z.object({
   id: z.string(),
