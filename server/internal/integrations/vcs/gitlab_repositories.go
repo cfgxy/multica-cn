@@ -140,7 +140,7 @@ func ListGitLabRepositories(ctx context.Context, instanceURL, token string, page
 	if len(body) == 0 || body[0] != '[' || json.Unmarshal(body, &projects) != nil || len(projects) > perPage {
 		return empty, ErrUpstream
 	}
-	// 结果累加器与错误返回值分开：任何失败路径都只返回 empty，不外泄半截数据。
+	// Keep the accumulator separate from the error return value so no failure path leaks a partial page.
 	result := GitLabRepositoryPage{Repositories: []GitLabRepository{}}
 	for _, project := range projects {
 		if project.ID <= 0 || project.Path == "" || project.Archived == nil || (project.Visibility != "public" && project.Visibility != "internal" && project.Visibility != "private") || strings.Contains(project.Path, token) {
