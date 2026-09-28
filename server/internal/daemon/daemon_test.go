@@ -1621,6 +1621,72 @@ func TestMergeUsage(t *testing.T) {
 	}
 }
 
+func TestRunTask_ReportsContextOnlyUsage(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fixture is POSIX-only")
+	}
+
+	configDir := t.TempDir()
+	t.Setenv("CLAUDE_CONFIG_DIR", configDir)
+	const model = "claude-sonnet-5"
+	tests := []struct {
+		name          string
+		sessionID     string
+		inputTokens   int64
+		outputTokens  int64
+		cacheRead     int64
+		cacheWrite    int64
+		contextTokens int64
+		wantEntries   int
+	}{
+		{"context only", "00000000-0000-4000-8000-000000000001", 0, 0, 0, 0, 350000, 1},
+		{"all zero", "00000000-0000-4000-8000-000000000002", 0, 0, 0, 0, 0, 0},
+		{"billing unchanged", "00000000-0000-4000-8000-000000000003", 12, 7, 4, 3, 26, 1},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			d, _, cleanup := newLeaderReuseTestDaemon(t)
+			defer cleanup()
+
+			if tt.inputTokens == 0 && tt.contextTokens > 0 {
+				transcriptDir := filepath.Join(configDir, "projects", "fixture")
+				if err := os.MkdirAll(transcriptDir, 0o700); err != nil {
+					t.Fatalf("mkdir transcript dir: %v", err)
+				}
+				transcript := fmt.Sprintf(`{"type":"assistant","isSidechain":false,"message":{"id":"msg-last","model":"%s","usage":{"input_tokens":100,"output_tokens":0,"cache_read_input_tokens":%d,"cache_creation_input_tokens":0}}}`+"\n", model, tt.contextTokens-100)
+				if err := os.WriteFile(filepath.Join(transcriptDir, tt.sessionID+".jsonl"), []byte(transcript), 0o600); err != nil {
+					t.Fatalf("write transcript: %v", err)
+				}
+			}
+
+			script := fmt.Sprintf("#!/bin/sh\nIFS= read -r _\nprintf '%%s\\n' '%s' '%s'\n",
+				fmt.Sprintf(`{"type":"assistant","message":{"model":"%s","usage":{"input_tokens":%d,"output_tokens":%d,"cache_read_input_tokens":%d,"cache_creation_input_tokens":%d},"content":[{"type":"text","text":"done"}]}}`, model, tt.inputTokens, tt.outputTokens, tt.cacheRead, tt.cacheWrite),
+				fmt.Sprintf(`{"type":"result","subtype":"success","is_error":false,"session_id":"%s","result":"done"}`, tt.sessionID))
+			if err := os.WriteFile(d.cfg.Agents["claude"].Path, []byte(script), 0o755); err != nil {
+				t.Fatalf("write fake agent: %v", err)
+			}
+
+			result, err := d.runTask(context.Background(), leaderReuseTestTask("usage-filter-"+tt.sessionID), "claude", 0, d.logger)
+			if err != nil {
+				t.Fatalf("runTask: %v", err)
+			}
+			if len(result.Usage) != tt.wantEntries {
+				t.Fatalf("usage entries = %+v, want %d", result.Usage, tt.wantEntries)
+			}
+			if tt.wantEntries == 0 {
+				return
+			}
+			u := result.Usage[0]
+			if u.Model != model || u.Provider != "claude" || u.InputTokens != tt.inputTokens ||
+				u.OutputTokens != tt.outputTokens || u.CacheReadTokens != tt.cacheRead ||
+				u.CacheWriteTokens != tt.cacheWrite || u.ContextTokens != tt.contextTokens {
+				t.Fatalf("usage entry = %+v, want billing (%d,%d,%d,%d) and context %d", u,
+					tt.inputTokens, tt.outputTokens, tt.cacheRead, tt.cacheWrite, tt.contextTokens)
+			}
+		})
+	}
+}
+
 // fakeBackend is a test double for agent.Backend that returns preconfigured
 // results. Each call to Execute pops the next entry from the results slice.
 type fakeBackend struct {
