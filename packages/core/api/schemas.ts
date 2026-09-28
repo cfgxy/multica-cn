@@ -110,6 +110,7 @@ import type {
   PromptVersion,
 } from "../types/prompt-market";
 import type { PromptQualityDashboard } from "../types/prompt-quality";
+import type { PromptQuizBaseline, PromptQuizItemDetail } from "../types/prompt-quiz";
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
 import type { CreateFeedbackResponse } from "../feedback/types";
 
@@ -1033,6 +1034,15 @@ export const EMPTY_CREATE_FEEDBACK_RESPONSE: CreateFeedbackResponse = {
   created_at: "",
 };
 
+// A malformed outcome must never turn an accepted comment into a bogus
+// "delivered" signal. Keep valid outcomes while dropping bad entries.
+export const CommentTriggerOutcomeSchema = z.object({
+  target_type: z.string().default(""),
+  target_id: z.string(),
+  status: z.string().default(""),
+  reason_code: z.string().default(""),
+}).loose();
+
 export const CommentSchema = z.object({
   id: z.string(),
   issue_id: z.string(),
@@ -1049,6 +1059,12 @@ export const CommentSchema = z.object({
   source_task_id: z.string().nullable().optional(),
   // Set only on comments a quick action produced (MUL-5465). Server-only.
   quick_action_id: z.string().nullable().optional(),
+  trigger_outcomes: z.array(z.unknown()).catch([]).optional().transform((items) =>
+    items?.flatMap((item) => {
+      const parsed = CommentTriggerOutcomeSchema.safeParse(item);
+      return parsed.success ? [parsed.data] : [];
+    }),
+  ),
 }).loose();
 
 export const CommentsListSchema = z.array(CommentSchema);
@@ -1084,15 +1100,12 @@ const CommentTriggerPreviewAgentSchema = z.object({
 // Per-target outcome of an explicit @agent / @squad mention (MUL-4525 §2).
 // target_id is required to correlate with the client's rendered mention; a
 // malformed entry (missing id) is dropped rather than failing the whole payload.
-export const CommentTriggerOutcomeSchema = z.object({
-  target_type: z.string().default(""),
-  target_id: z.string(),
-  status: z.string().default(""),
-  reason_code: z.string().default(""),
-}).loose();
-
 export const CommentTriggerPreviewSchema = z.object({
   agents: z.array(CommentTriggerPreviewAgentSchema).default([]),
+  invalid_mentions: z
+    .array(z.object({ start: z.number().int().nonnegative(), end: z.number().int().nonnegative() }))
+    .catch([])
+    .default([]),
   // Drop malformed blocked entries INDIVIDUALLY (MUL-4525): a single bad item
   // must not discard the whole set of valid blocked mentions. A non-array
   // degrades to []; each valid entry is kept, each malformed one dropped.
@@ -4046,4 +4059,132 @@ export const EMPTY_PROMPT_QUALITY_DASHBOARD: PromptQualityDashboard = {
   versions: [],
   perplexity: [],
   data_sources: { degraded: false, items: [] },
+};
+
+// --- Prompt quiz (RUYI-185) ---
+//
+// The reading is a distribution per side, and every field that fed the verdict
+// travels with it so a reader can recompute the call. `n` defaults to 0 and
+// `verdict` to "insufficient" for the same reason the quality measures default
+// to "no_data": an unread response must not be able to report a clean bill of
+// health for a version nothing measured.
+
+export const PromptQuizItemSchema = z.object({
+  id: z.string().default(""),
+  slug: z.string().default(""),
+  title: z.string().default(""),
+  body: z.string().default(""),
+  revision: z.number().default(0),
+  runtime_profile: z.string().default("member"),
+  active: z.boolean().default(false),
+  // Server-driven and absent on a build that predates it; "" narrows to
+  // "pending" in core/self-evolution/quiz.ts rather than to a verdict.
+  discrimination: z.string().default(""),
+  created_at: z.string().default(""),
+  updated_at: z.string().default(""),
+});
+
+/**
+ * The owner-only single-item read and the write responses, which carry the
+ * private half.
+ *
+ * The list schema above is deliberately NOT this one: a rubric parsed into a
+ * list row could be rendered anywhere the list is, and the field is only ever
+ * needed by the editor that is about to send it back.
+ */
+export const PromptQuizItemDetailSchema = PromptQuizItemSchema.extend({
+  rubric: z.string().default(""),
+});
+
+/**
+ * The fallback for a bank write whose response did not parse. `active: false`
+ * and `revision: 0` so a row the client cannot read is never shown as a live
+ * question — the list refetch that follows every write is what puts the real
+ * row on screen.
+ */
+export const EMPTY_PROMPT_QUIZ_ITEM: PromptQuizItemDetail = {
+  id: "",
+  slug: "",
+  title: "",
+  body: "",
+  revision: 0,
+  runtime_profile: "member",
+  active: false,
+  discrimination: "",
+  rubric: "",
+  created_at: "",
+  updated_at: "",
+};
+
+export const PromptQuizItemListSchema = z
+  .object({ items: z.array(PromptQuizItemSchema).default([]) })
+  .transform((v) => v.items);
+
+const EMPTY_QUIZ_SUMMARY = {
+  n: 0,
+  mean: 0,
+  median: 0,
+  iqr: 0,
+  std_dev: 0,
+  min: 0,
+  max: 0,
+} as const;
+
+export const PromptQuizSummarySchema = z.object({
+  n: z.number().default(0),
+  mean: z.number().default(0),
+  median: z.number().default(0),
+  iqr: z.number().default(0),
+  std_dev: z.number().default(0),
+  min: z.number().default(0),
+  max: z.number().default(0),
+});
+
+export const PromptQuizComparisonSchema = z.object({
+  baseline: PromptQuizSummarySchema.default(EMPTY_QUIZ_SUMMARY),
+  current: PromptQuizSummarySchema.default(EMPTY_QUIZ_SUMMARY),
+  z: z.number().default(0),
+  threshold: z.number().default(0),
+  // Server-driven, and the default is the verdict that claims nothing.
+  verdict: z.string().default("insufficient"),
+});
+
+export const PromptQuizBaselineSchema = z.object({
+  scope: z.string().default(""),
+  scope_id: z.string().default(""),
+  current_version: z.number().default(0),
+  baseline_version: z.number().default(0),
+  required_sample: z.number().default(0),
+  required_baseline: z.number().default(0),
+  comparison: PromptQuizComparisonSchema.optional(),
+  current: PromptQuizSummarySchema.default(EMPTY_QUIZ_SUMMARY),
+  measured: z.boolean().default(false),
+  outcomes: z.record(z.string(), z.number()).default({}),
+  // Absent on a backend predating the cohort rule. 0 then reads as "nothing was
+  // excluded", which is what such a backend actually did.
+  incomparable: z.number().default(0),
+  baseline_incomparable: z.number().default(0),
+});
+
+/**
+ * The fallback for a quiz reading that did not parse.
+ *
+ * `measured: false` with no comparison and an empty outcome map: a client that
+ * could not read the response knows nothing about this version's quality, and
+ * "steady" would be a claim it cannot back. `required_*` stay 0 rather than
+ * carrying the server's real N, since a hardcoded copy here would drift from
+ * the calibrated constants it mirrors.
+ */
+export const EMPTY_PROMPT_QUIZ_BASELINE: PromptQuizBaseline = {
+  scope: "",
+  scope_id: "",
+  current_version: 0,
+  baseline_version: 0,
+  required_sample: 0,
+  required_baseline: 0,
+  current: EMPTY_QUIZ_SUMMARY,
+  measured: false,
+  outcomes: {},
+  incomparable: 0,
+  baseline_incomparable: 0,
 };

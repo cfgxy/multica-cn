@@ -1,12 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
@@ -18,6 +21,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/logger"
 	"github.com/multica-ai/multica/server/internal/migrations"
 	"github.com/multica-ai/multica/server/internal/taskusagebackfill"
+	"golang.org/x/term"
 )
 
 // preMigrationHook runs work that must happen before a specific migration is
@@ -311,7 +315,11 @@ var concurrentIndexCleanups = map[string]string{
 	"926_prompt_quality_daily_scope_day_index":                  "idx_prompt_quality_daily_scope_day",
 	"927_prompt_quality_daily_workspace_index":                  "idx_prompt_quality_daily_workspace",
 	"928_prompt_perplexity_score_workspace_index":               "idx_prompt_perplexity_score_workspace",
-	"930_oauth_client_client_id_index":                          "idx_oauth_client_client_id",
+	"930_prompt_quiz_result_baseline_index":                     "idx_prompt_quiz_result_baseline",
+	"931_prompt_quiz_result_batch_index":                        "idx_prompt_quiz_result_batch",
+	"932_prompt_quiz_item_workspace_index":                      "idx_prompt_quiz_item_workspace",
+	"936_prompt_quiz_result_item_index":                         "idx_prompt_quiz_result_item",
+	"940_oauth_client_client_id_index":                          "idx_oauth_client_client_id",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
@@ -422,6 +430,12 @@ var upMigrationConditions = map[string]migrationCondition{
 	"446_issue_properties_bigm_index": whenOperatorClassAvailable(issuePropertiesBigramOperatorClass),
 }
 
+var downMigrationConditions = map[string]migrationCondition{
+	// 344 removes the V1 table without restoring it on rollback. Rebuild the
+	// global index concurrently only if the table still exists at 312.
+	"312_drop_global_plugin_identity_key_index": whenTableExists("plugin_identity"),
+}
+
 func hooksForDirection(direction string) map[string]preMigrationHook {
 	switch direction {
 	case "up":
@@ -449,12 +463,32 @@ func ensureSourceContextRollbackSafe(ctx context.Context, pool *pgxpool.Pool) er
 }
 
 func conditionsForDirection(direction string) map[string]migrationCondition {
-	if direction == "up" {
+	switch direction {
+	case "up":
 		return upMigrationConditions
+	case "down":
+		return downMigrationConditions
+	default:
+		return nil
 	}
-	// Rollbacks intentionally ignore environment gates: they restore the
-	// portable pre-migration schema regardless of which up SQL actually ran.
-	return nil
+}
+
+func whenTableExists(table string) migrationCondition {
+	return func(ctx context.Context, conn *pgxpool.Conn) (bool, string, error) {
+		var exists bool
+		if err := conn.QueryRow(ctx, `
+			SELECT EXISTS (
+				SELECT 1 FROM pg_class
+				WHERE oid = to_regclass($1) AND relkind IN ('r', 'p')
+			)
+		`, table).Scan(&exists); err != nil {
+			return false, "", fmt.Errorf("inspect table %q: %w", table, err)
+		}
+		if !exists {
+			return false, fmt.Sprintf("table %s does not exist", table), nil
+		}
+		return true, "", nil
+	}
 }
 
 func whenIndexUsable(requirement usableIndexRequirement) migrationCondition {
@@ -663,6 +697,10 @@ const migrationAdvisoryLockKey int64 = 7244554146635925501
 // Postgres without colliding with the production table.
 const defaultSchemaMigrationsTable = "schema_migrations"
 
+// migrateUsage is printed when the command is invoked without a direction or
+// with one it does not support.
+const migrateUsage = "Usage: go run ./cmd/migrate <up|down> [--yes]"
+
 // runOptions carries everything runMigrations needs that is not the
 // pool itself. Tests use it to inject a hermetic migrations directory,
 // a unique per-test bookkeeping table, and a unique advisory-lock key
@@ -698,17 +736,164 @@ type runOptions struct {
 	Conditions map[string]migrationCondition
 }
 
+// rollbackEntry names one migration a down run would actually roll back.
+type rollbackEntry struct {
+	Version  string
+	Filename string // base name of the .down.sql file that will execute
+}
+
+// gateDownRun is the confirmation gate in front of every down run. It
+// prints the rollbacks the run would perform — version plus .down.sql
+// filename, in execution order — and requires explicit consent before
+// the caller may execute any down SQL:
+//
+//   - --yes confirms in any environment, including non-interactive ones;
+//   - otherwise an interactive stdin must answer "y" / "yes";
+//   - a non-interactive session without --yes is refused (fail closed),
+//     so scripts and CI can never start a rollback by accident;
+//   - nothing applied means nothing to confirm: the gate proceeds and
+//     runMigrations skips every file, matching the pre-gate no-op.
+//
+// The plan is a snapshot taken without the migration advisory lock;
+// runMigrations re-checks the ledger per file, so a concurrent runner
+// between snapshot and execution can only shrink the executed set.
+// A false result means the caller must not run any down SQL. The ledger
+// table must be the same one runMigrations will read; empty means
+// defaultSchemaMigrationsTable.
+func gateDownRun(ctx context.Context, pool *pgxpool.Pool, files []string, args []string, stdin io.Reader, interactive bool, stdout io.Writer, schemaMigrationsTable string) (bool, error) {
+	table := schemaMigrationsTable
+	if table == "" {
+		table = defaultSchemaMigrationsTable
+	}
+	applied, err := loadAppliedVersions(ctx, pool, table)
+	if err != nil {
+		return false, fmt.Errorf("inspect %s: %w", table, err)
+	}
+	entries := planDownRollbacks(files, applied)
+	printDownPlan(stdout, entries)
+	if len(entries) == 0 {
+		fmt.Fprintln(stdout, "no applied migrations to roll back; nothing to do.")
+		return true, nil
+	}
+
+	yes, err := parseDownFlags(args)
+	if err != nil {
+		return false, err
+	}
+	if yes {
+		fmt.Fprintln(stdout, "confirmed via --yes.")
+		return true, nil
+	}
+	if !interactive {
+		fmt.Fprintln(stdout, "non-interactive session: rerun with --yes to confirm this rollback.")
+		return false, nil
+	}
+	fmt.Fprint(stdout, "Type 'y' to roll back, anything else to abort: ")
+	answer, readErr := bufio.NewReader(stdin).ReadString('\n')
+	if readErr != nil && answer == "" {
+		fmt.Fprintln(stdout)
+		fmt.Fprintln(stdout, "no confirmation read; aborting.")
+		return false, nil
+	}
+	if downConsentGiven(answer) {
+		fmt.Fprintln(stdout, "confirmed interactively.")
+		return true, nil
+	}
+	fmt.Fprintln(stdout, "confirmation declined; aborting.")
+	return false, nil
+}
+
+// downConsentGiven accepts only an explicit "y" or "yes"; a bare Enter,
+// any other word, or EOF all refuse.
+func downConsentGiven(answer string) bool {
+	answer = strings.TrimSpace(answer)
+	return strings.EqualFold(answer, "y") || strings.EqualFold(answer, "yes")
+}
+
+// parseDownFlags parses the arguments after the direction subcommand.
+// Anything other than --yes fails closed: a typo'd confirmation flag
+// must abort the run, never silently skip the gate.
+func parseDownFlags(args []string) (bool, error) {
+	yes := false
+	for _, arg := range args {
+		if arg != "--yes" {
+			return false, fmt.Errorf("unknown argument %q for down; only --yes is supported", arg)
+		}
+		yes = true
+	}
+	return yes, nil
+}
+
+// stdinIsInteractive reports whether stdin is a real terminal. Redirected
+// or closed stdin (pipes, /dev/null, files) and a failed check all count
+// as non-interactive: the safe default is to refuse. A character-device
+// check alone is not enough — /dev/null is a character device too.
+func stdinIsInteractive() bool {
+	return term.IsTerminal(int(os.Stdin.Fd()))
+}
+
+// loadAppliedVersions returns the versions recorded in the schema
+// migrations table. A table that does not exist yet (fresh database)
+// is an empty ledger, not an error.
+func loadAppliedVersions(ctx context.Context, pool *pgxpool.Pool, tableIdent string) (map[string]bool, error) {
+	var regclass *string
+	if err := pool.QueryRow(ctx, "SELECT to_regclass($1)::text", tableIdent).Scan(&regclass); err != nil {
+		return nil, fmt.Errorf("resolve table: %w", err)
+	}
+	if regclass == nil {
+		return map[string]bool{}, nil
+	}
+	rows, err := pool.Query(ctx, fmt.Sprintf("SELECT version FROM %s", tableIdent))
+	if err != nil {
+		return nil, fmt.Errorf("read ledger: %w", err)
+	}
+	defer rows.Close()
+	applied := make(map[string]bool)
+	for rows.Next() {
+		var version string
+		if err := rows.Scan(&version); err != nil {
+			return nil, fmt.Errorf("scan ledger version: %w", err)
+		}
+		applied[version] = true
+	}
+	return applied, rows.Err()
+}
+
+// planDownRollbacks filters the down file list down to the migrations
+// actually recorded as applied, preserving list order — which is the
+// order runMigrations executes (migrations.Files reverses for down).
+func planDownRollbacks(files []string, applied map[string]bool) []rollbackEntry {
+	var entries []rollbackEntry
+	for _, file := range files {
+		version := migrations.ExtractVersion(file)
+		if !applied[version] {
+			continue
+		}
+		entries = append(entries, rollbackEntry{Version: version, Filename: filepath.Base(file)})
+	}
+	return entries
+}
+
+// printDownPlan writes the pending rollback list before any confirmation
+// is requested, one numbered line per migration in execution order.
+func printDownPlan(w io.Writer, entries []rollbackEntry) {
+	fmt.Fprintf(w, "migrate down will roll back %d applied migration(s), in this order:\n", len(entries))
+	for i, entry := range entries {
+		fmt.Fprintf(w, "  %3d. %s  (%s)\n", i+1, entry.Version, entry.Filename)
+	}
+}
+
 func main() {
 	logger.Init()
 
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: go run ./cmd/migrate <up|down>")
+		fmt.Println(migrateUsage)
 		os.Exit(1)
 	}
 
 	direction := os.Args[1]
 	if direction != "up" && direction != "down" {
-		fmt.Println("Usage: go run ./cmd/migrate <up|down>")
+		fmt.Println(migrateUsage)
 		os.Exit(1)
 	}
 
@@ -739,6 +924,21 @@ func main() {
 	}
 	startupCtx, stopStartup := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stopStartup()
+
+	// Down runs never execute SQL without explicit consent: the gate
+	// prints the rollback plan and demands --yes or an interactive "y".
+	if direction == "down" {
+		proceed, err := gateDownRun(startupCtx, pool, files, os.Args[2:], os.Stdin, stdinIsInteractive(), os.Stdout, options.SchemaMigrationsTable)
+		if err != nil {
+			slog.Error("migrate down refused", "error", err)
+			os.Exit(1)
+		}
+		if !proceed {
+			fmt.Fprintln(os.Stderr, "migrate down aborted; no down SQL was executed.")
+			os.Exit(1)
+		}
+	}
+
 	retryOptions := startupSettings.RetryOptions()
 	retryOptions.ShouldRetry = dbstartup.IsTransientDatabaseError
 	retryOptions.OnRetry = func(event dbstartup.RetryEvent) {

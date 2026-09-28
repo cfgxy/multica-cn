@@ -59,7 +59,7 @@ func (r *feishuMediaResolver) HasMedia(msg channel.InboundMessage) bool {
 	if err != nil {
 		return false
 	}
-	return len(mediaResourcesFromMessage(lm)) > 0
+	return len(mediaResourcesFromMessage(lm)) > 0 || len(lm.RecentMedia) > 0
 }
 
 func (r *feishuMediaResolver) ResolveMedia(ctx context.Context, inst engine.ResolvedInstallation, _ engine.ResolvedIdentity, _ pgtype.UUID, chatMessageID pgtype.UUID, msg channel.InboundMessage) channel.InboundMessage {
@@ -69,6 +69,11 @@ func (r *feishuMediaResolver) ResolveMedia(ctx context.Context, inst engine.Reso
 		return msg
 	}
 	resources := mediaResourcesFromMessage(lm)
+	for _, recent := range lm.RecentMedia {
+		resources = append(resources, mediaResourcesFromMessage(InboundMessage{
+			MessageID: recent.MessageID, MessageType: recent.MessageType, Content: recent.Content,
+		})...)
+	}
 	if len(resources) == 0 {
 		return msg
 	}
@@ -372,7 +377,7 @@ func mediaFilename(lm InboundMessage, res larkMediaResource, got DownloadedResou
 	case channel.MsgTypeAudio:
 		prefix = "feishu-audio"
 	}
-	name := prefix + "-" + safePathSegment(lm.MessageID)
+	name := prefix + "-" + safePathSegment(firstNonEmpty(res.messageID, lm.MessageID))
 	if index > 0 {
 		name += "-" + strconv.Itoa(index+1)
 	}

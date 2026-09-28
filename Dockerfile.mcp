@@ -1,7 +1,8 @@
 # MCP HTTP server image (apps/mcp, streamable HTTP transport).
-# RUYI-209 部署阶段新增的本地部署素材（不入库）：构建模式参照 Dockerfile.web。
-# 容器内进程绑 0.0.0.0:3002（docker 惯例）；对宿主/外部的暴露面由 compose
-# override 的 ports 发布控制为 127.0.0.1:3002，frpc 侧不再有 3002 映射。
+# Build layout mirrors Dockerfile.web; used by docker-compose.selfhost.local.yml.
+# The process binds 0.0.0.0:3002 inside the container (the usual Docker shape);
+# what the host and the outside world can reach is decided by the compose
+# override, which publishes the port as 127.0.0.1:3002 only.
 
 # --- Dependencies ---
 FROM node:22-alpine AS deps
@@ -46,8 +47,9 @@ COPY --from=deps /app ./
 COPY packages/tsconfig packages/tsconfig/
 COPY apps/mcp apps/mcp/
 
-# builder 是独立 stage：pnpm 不随 deps 带入，需在此重新启用 corepack
-# （版本取自 package.json 的 packageManager，走 CN mirror 下载）。
+# builder is a separate stage: pnpm does not carry over from deps, so corepack
+# has to be enabled again here (version read from package.json packageManager,
+# downloaded through the CN mirror).
 RUN corepack enable && \
     COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
     corepack prepare "$(node -p 'require("./package.json").packageManager')" --activate && \
@@ -62,8 +64,9 @@ RUN addgroup --system --gid 1001 nodejs && \
     adduser --system --uid 1001 mcp
 
 WORKDIR /app
-# 保持 pnpm workspace 相对布局：apps/mcp/node_modules 内的 symlink 指向仓库根
-# node_modules/.pnpm，两段必须按原相对路径落位，否则运行时解析失败。
+# Keep the pnpm workspace layout: symlinks under apps/mcp/node_modules point at
+# the root node_modules/.pnpm, so both trees must land at their original
+# relative paths or module resolution fails at runtime.
 COPY --from=builder --chown=mcp:nodejs /app/node_modules ./node_modules
 COPY --from=builder --chown=mcp:nodejs /app/apps/mcp ./apps/mcp
 

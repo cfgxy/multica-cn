@@ -190,6 +190,21 @@ func (e *inboundEnricher) Enrich(ctx context.Context, msg InboundMessage, creds 
 	if wantRecent {
 		recentItems, recentErr = e.fetchRecentItems(ctx, creds, msg)
 	}
+	if recentErr == nil && wantRecent && msg.SenderOpenID != "" {
+		triggerTime := parseLarkMillis(msg.CreateTime)
+		for _, item := range recentItems {
+			itemTime := parseLarkMillis(item.CreateTime)
+			if triggerTime == 0 || itemTime == 0 || itemTime >= triggerTime ||
+				item.MessageID == "" || item.SenderType != "user" || item.SenderID != string(msg.SenderOpenID) ||
+				item.ThreadID != msg.ThreadID {
+				continue
+			}
+			media := RecentMediaMessage{MessageID: item.MessageID, MessageType: item.MessageType, Content: item.Content}
+			if len(mediaResourcesFromMessage(InboundMessage{MessageID: media.MessageID, MessageType: media.MessageType, Content: media.Content})) > 0 {
+				msg.RecentMedia = append(msg.RecentMedia, media)
+			}
+		}
+	}
 	var quotedItems []LarkMessage
 	var quotedErr error
 	if msg.ParentID != "" {
@@ -492,7 +507,7 @@ func classifyRecentContextFetchError(err error) recentContextFetchClassification
 	switch {
 	case strings.Contains(msg, "missing chat_id") || strings.Contains(msg, "missing chat id"):
 		return recentContextFetchClassification{category: recentContextFailureChannelUnbound}
-	case containsAny(msg, "code=99991002", "code=230001", "no permission", "permission denied", "insufficient permissions", "forbidden", "http 403"):
+	case containsAny(msg, "code=99991002", "code=230001", "code=230027", "no permission", "permission denied", "insufficient permissions", "forbidden", "http 403"):
 		return recentContextFetchClassification{category: recentContextFailurePermissionDenied}
 	case containsAny(msg, "code=230110", "code=230011", "code=230050", "deleted", "recalled", "not visible", "invisible"):
 		return recentContextFetchClassification{category: recentContextFailureMessageDeleted}
@@ -514,7 +529,7 @@ func classifyRecentContextFetchError(err error) recentContextFetchClassification
 
 func classifyRecentContextAPIError(code int, msg string) recentContextFetchClassification {
 	switch {
-	case code == 99991002 || code == 230001:
+	case code == 99991002 || code == 230001 || code == 230027:
 		return recentContextFetchClassification{category: recentContextFailurePermissionDenied}
 	case code == 230110 || code == 230011 || code == 230050:
 		return recentContextFetchClassification{category: recentContextFailureMessageDeleted}

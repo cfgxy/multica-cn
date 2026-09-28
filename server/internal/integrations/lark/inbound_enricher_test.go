@@ -108,6 +108,20 @@ func (f *enricherFakeClient) DeleteMessageReaction(context.Context, DeleteReacti
 	return nil
 }
 
+// Outbound media is not this fake's business; the enricher never sends.
+func (f *enricherFakeClient) UploadImage(context.Context, UploadImageParams) (string, error) {
+	return "", nil
+}
+func (f *enricherFakeClient) UploadFile(context.Context, UploadFileParams) (string, error) {
+	return "", nil
+}
+func (f *enricherFakeClient) SendImageMessage(context.Context, SendImageParams) (string, error) {
+	return "", nil
+}
+func (f *enricherFakeClient) SendFileMessage(context.Context, SendFileParams) (string, error) {
+	return "", nil
+}
+
 func textMsg(id, sender, text, createTime string) LarkMessage {
 	return LarkMessage{
 		MessageID:   id,

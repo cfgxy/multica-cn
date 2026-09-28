@@ -69,6 +69,11 @@ import type {
   PromptTargetState,
   PromptVersion,
   PromptQualityDashboard,
+  PromptQuizItem,
+  PromptQuizItemDetail,
+  PromptQuizBaseline,
+  CreatePromptQuizItemRequest,
+  UpdatePromptQuizItemRequest,
   MarketplaceListing,
   MarketplacePlaceholder,
   MemberWithUser,
@@ -502,6 +507,11 @@ import {
   EMPTY_PROMPT_VERSION,
   PromptQualityDashboardSchema,
   EMPTY_PROMPT_QUALITY_DASHBOARD,
+  PromptQuizItemDetailSchema,
+  PromptQuizItemListSchema,
+  PromptQuizBaselineSchema,
+  EMPTY_PROMPT_QUIZ_ITEM,
+  EMPTY_PROMPT_QUIZ_BASELINE,
   MarketplaceListingSchema,
   MarketplaceListingListSchema,
   ShareLinkSchema,
@@ -1428,7 +1438,7 @@ export class ApiClient {
     attachmentIds?: string[],
     suppressAgentIds?: string[],
   ): Promise<Comment> {
-    return this.fetch(`/api/issues/${issueId}/comments`, {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/comments`, {
       method: "POST",
       body: JSON.stringify({
         content,
@@ -1438,6 +1448,9 @@ export class ApiClient {
         ...(suppressAgentIds?.length ? { suppress_agent_ids: suppressAgentIds } : {}),
       }),
     });
+    const comment = parseWithFallback(raw, CommentSchema, EMPTY_COMMENT, { endpoint: "POST /api/issues/:id/comments" });
+    if (!comment.id) throw new Error("Invalid comment response");
+    return comment;
   }
 
   async previewCommentTriggers(issueId: string, content: string, parentId?: string, editingCommentId?: string): Promise<CommentTriggerPreview> {
@@ -1498,7 +1511,7 @@ export class ApiClient {
   }
 
   async updateComment(commentId: string, content: string, attachmentIds?: string[], suppressAgentIds?: string[], contentBase?: string, expectedRevision?: number): Promise<Comment> {
-    return this.fetch(`/api/comments/${commentId}`, {
+    const raw = await this.fetch<unknown>(`/api/comments/${commentId}`, {
       method: "PUT",
       body: JSON.stringify({
         content,
@@ -1508,6 +1521,9 @@ export class ApiClient {
         ...(expectedRevision !== undefined ? { expected_revision: expectedRevision } : {}),
       }),
     });
+    const comment = parseWithFallback(raw, CommentSchema, EMPTY_COMMENT, { endpoint: "PUT /api/comments/:id" });
+    if (!comment.id) throw new Error("Invalid comment response");
+    return comment;
   }
 
   async deleteComment(commentId: string): Promise<void> {
@@ -3126,6 +3142,83 @@ export class ApiClient {
     );
     return parseWithFallback(raw, PromptQualityDashboardSchema, EMPTY_PROMPT_QUALITY_DASHBOARD, {
       endpoint: "GET /api/prompt-governance/{scope}/{id}/quality",
+    });
+  }
+
+  /**
+   * The quiz bank for the current workspace.
+   *
+   * One bank is replayed against every prompt scope, so this endpoint takes no
+   * scope: a per-scope bank would make two versions of different tiers
+   * incomparable, which is the whole point of a fixed bank.
+   */
+  async listPromptQuizItems(params?: { activeOnly?: boolean }): Promise<PromptQuizItem[]> {
+    const suffix = params?.activeOnly === true ? "?active=true" : "";
+    const raw = await this.fetch<unknown>(`/api/prompt-quiz/items${suffix}`);
+    return parseWithFallback(raw, PromptQuizItemListSchema, [] as PromptQuizItem[], {
+      endpoint: "GET /api/prompt-quiz/items",
+    });
+  }
+
+  /**
+   * One bank entry including its rubric — the only read that returns it, and
+   * owner-only server-side for that reason.
+   *
+   * The editor needs it because an update replaces the rubric wholesale: saving
+   * a form seeded from a list row, which has no rubric, would clear the stored
+   * answer key.
+   */
+  async getPromptQuizItem(itemId: string): Promise<PromptQuizItemDetail> {
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-quiz/items/${encodeURIComponent(itemId)}`,
+    );
+    return parseWithFallback(raw, PromptQuizItemDetailSchema, EMPTY_PROMPT_QUIZ_ITEM, {
+      endpoint: "GET /api/prompt-quiz/items/{id}",
+    });
+  }
+
+  async createPromptQuizItem(body: CreatePromptQuizItemRequest): Promise<PromptQuizItemDetail> {
+    const raw = await this.fetch<unknown>(`/api/prompt-quiz/items`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    return parseWithFallback(raw, PromptQuizItemDetailSchema, EMPTY_PROMPT_QUIZ_ITEM, {
+      endpoint: "POST /api/prompt-quiz/items",
+    });
+  }
+
+  async updatePromptQuizItem(
+    itemId: string,
+    body: UpdatePromptQuizItemRequest,
+  ): Promise<PromptQuizItemDetail> {
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-quiz/items/${encodeURIComponent(itemId)}`,
+      { method: "PATCH", body: JSON.stringify(body) },
+    );
+    return parseWithFallback(raw, PromptQuizItemDetailSchema, EMPTY_PROMPT_QUIZ_ITEM, {
+      endpoint: "PATCH /api/prompt-quiz/items/{id}",
+    });
+  }
+
+  async deletePromptQuizItem(itemId: string): Promise<void> {
+    await this.fetch(`/api/prompt-quiz/items/${encodeURIComponent(itemId)}`, {
+      method: "DELETE",
+    });
+  }
+
+  /**
+   * The regression reading for one prompt scope: the distribution comparison
+   * between its two newest measured versions.
+   *
+   * A reading, never a gate. No write method on this client consults it, and
+   * the server's publish path does not either (Owner Q10).
+   */
+  async getPromptQuizBaseline(scope: string, scopeId: string): Promise<PromptQuizBaseline> {
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-governance/${encodeURIComponent(scope)}/${encodeURIComponent(scopeId)}/quiz`,
+    );
+    return parseWithFallback(raw, PromptQuizBaselineSchema, EMPTY_PROMPT_QUIZ_BASELINE, {
+      endpoint: "GET /api/prompt-governance/{scope}/{id}/quiz",
     });
   }
 

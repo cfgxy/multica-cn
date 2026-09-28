@@ -4,9 +4,17 @@ MAIN_ENV_FILE ?= .env
 WORKTREE_ENV_FILE ?= .env.worktree
 ENV_FILE ?= $(if $(wildcard $(MAIN_ENV_FILE)),$(MAIN_ENV_FILE),$(if $(wildcard $(WORKTREE_ENV_FILE)),$(WORKTREE_ENV_FILE),$(MAIN_ENV_FILE)))
 
+# Including the env file directly makes a single multi-line value in it — a PEM
+# key, a certificate — abort every target with "missing separator" before the
+# first recipe runs, because makefile syntax has no line continuation for
+# values (RUYI-218). scripts/env-make-include.sh rewrites those values as
+# `define` blocks, which the `export` below still delivers to subprocesses with
+# their newlines intact, and passes everything else through unchanged.
 ifneq ($(wildcard $(ENV_FILE)),)
-include $(ENV_FILE)
+ENV_MAKEFRAG := $(shell bash scripts/env-make-include.sh '$(ENV_FILE)')
+include $(ENV_MAKEFRAG)
 endif
+unexport ENV_MAKEFRAG
 
 POSTGRES_DB ?= multica
 POSTGRES_USER ?= multica

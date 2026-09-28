@@ -17,7 +17,14 @@
  *
  * Mention picker is a formSheet route, pushed via `mentionPickerPath`.
  * That route writes selections into `useMentionDraftStore`; this composer
- * reads from the same store.
+ * reads from the same store. Two ways in (RUYI-232):
+ *   - toolbar `@` button → push with `token = null` (nothing to strip);
+ *   - typing `@` at a word boundary (whitespace / line start before it,
+ *     never `a@b` emails — `mentionTriggerFromInput`) → push with the
+ *     token recorded in the store, so the strip effect removes the raw
+ *     `@<query>` text from the draft once the single-select pick lands.
+ * The picker inserts one chip per session and closes itself; picks
+ * accumulate across sessions in the store's `mentions` array.
  *
  * Why a shared component:
  *   - Comment and chat composers want byte-identical UI / interaction.
@@ -44,7 +51,14 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { Keyboard, Pressable, TextInput, View } from "react-native";
+import {
+  Keyboard,
+  Pressable,
+  TextInput,
+  View,
+  type NativeSyntheticEvent,
+  type TextInputSelectionChangeEventData,
+} from "react-native";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { Ionicons } from "@expo/vector-icons";
@@ -59,6 +73,7 @@ import {
   serializeMentionChips,
   type MentionMarker,
 } from "@/lib/mention-serialize";
+import { mentionTriggerFromInput } from "@/lib/mention-trigger";
 import { useFileAttach } from "@/components/editor/use-file-attach";
 import { useColorScheme } from "@/lib/use-color-scheme";
 import { stripMarkdown } from "@/lib/strip-markdown";
@@ -210,14 +225,53 @@ export function MessageComposer({
   const mentions = useMentionDraftStore((s) => s.mentions);
   const removeMention = useMentionDraftStore((s) => s.remove);
   const clearMentions = useMentionDraftStore((s) => s.clear);
+  // The `@` token recorded when typing opened the picker (RUYI-232).
+  // Consumed once a pick lands; see the strip effect below.
+  const pendingToken = useMentionDraftStore((s) => s.token);
+
+  // Caret mirror for the typing-trigger predicate. Written from
+  // onSelectionChange only — never triggers a re-render.
+  const selectionRef = useRef<{ start: number; end: number }>({
+    start: 0,
+    end: 0,
+  });
+  const onSelectionChange = useCallback(
+    (e: NativeSyntheticEvent<TextInputSelectionChangeEventData>) => {
+      selectionRef.current = e.nativeEvent.selection;
+    },
+    [],
+  );
 
   // Drop mention draft on composer unmount so navigating away doesn't
   // leak chips into the next composer's session.
   useEffect(() => {
     return () => {
       clearMentions();
+      useMentionDraftStore.getState().setToken(null);
     };
   }, [clearMentions]);
+
+  // RUYI-232: a pick landed while a typing-triggered token is pending →
+  // strip the raw `@<query>` slice from the draft (the chip now carries
+  // the mention; serializeMentionChips prepends it on send) and refocus
+  // the input. Content-matched against the recorded token, so a stale
+  // token from an abandoned sheet can never delete the wrong text —
+  // and every composer-initiated push rewrites the token first anyway.
+  const prevMentionsLenRef = useRef(mentions.length);
+  useEffect(() => {
+    const prevLen = prevMentionsLenRef.current;
+    prevMentionsLenRef.current = mentions.length;
+    if (!pendingToken || mentions.length <= prevLen) return;
+
+    const { start, query } = pendingToken;
+    useMentionDraftStore.getState().setToken(null);
+    const expected = `@${query}`;
+    if (text.slice(start, start + expected.length) !== expected) return;
+    const next = text.slice(0, start) + text.slice(start + expected.length);
+    selectionRef.current = { start, end: start };
+    setText(next);
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, [pendingToken, mentions.length, text, setText]);
 
   // Auto-expand + focus when an `expandTrigger` changes. Comment uses
   // this to react to the long-press → reply flow setting a reply target.
@@ -252,6 +306,10 @@ export function MessageComposer({
 
   const handleSubmit = useCallback(async () => {
     if (!canSend) return;
+    // Sending invalidates any pending typing-trigger token: the submit
+    // rollback re-adds chips (mentions length grows) and must not be
+    // mistaken for a fresh pick landing on an old `@` token.
+    useMentionDraftStore.getState().setToken(null);
     const textSnap = text;
     const mentionsSnap = mentions;
     const attachmentsSnap = attachments;
@@ -300,8 +358,31 @@ export function MessageComposer({
     restoreAttachments,
   ]);
 
+  const handleChangeText = useCallback(
+    (next: string) => {
+      // Typing `@` at a word boundary (whitespace / line start before
+      // it — never `a@b` emails) opens the picker (RUYI-232). The store
+      // carries the token so the strip effect knows which `@<query>`
+      // slice to remove once a pick lands. The toolbar-button path
+      // sets the token to null instead — nothing typed to strip.
+      const token = mentionTriggerFromInput(
+        text,
+        next,
+        selectionRef.current.end,
+      );
+      setText(next);
+      if (token) {
+        useMentionDraftStore.getState().setToken(token);
+        router.push(mentionPickerPath);
+      }
+    },
+    [text, setText, mentionPickerPath],
+  );
+
   const onAtPress = useCallback(() => {
     Haptics.selectionAsync().catch(() => {});
+    // Toolbar path inserts no `@` into the draft — nothing to strip on pick.
+    useMentionDraftStore.getState().setToken(null);
     router.push(mentionPickerPath);
   }, [mentionPickerPath]);
 
@@ -407,7 +488,8 @@ export function MessageComposer({
         <TextInput
           ref={inputRef}
           value={text}
-          onChangeText={setText}
+          onChangeText={handleChangeText}
+          onSelectionChange={onSelectionChange}
           onBlur={onBlur}
           placeholder={resolvedPlaceholder}
           placeholderTextColor={theme.mutedForeground}
