@@ -47,7 +47,7 @@ func TestListGitLabRepositories(t *testing.T) {
 		case "8":
 			fmt.Fprint(w, `[{"id":9,"path_with_namespace":"team/archived","visibility":"private"}]`)
 		case "10":
-			// 首条项目合法、第二条缺少 archived，校验失败必须丢弃已累加的结果。
+			// First project is valid, second one lacks archived: validation failure must drop what was accumulated.
 			w.Header().Set("X-Next-Page", "11")
 			fmt.Fprint(w, `[{"id":10,"path_with_namespace":"team/valid","ssh_url_to_repo":"git@git.test:team/valid.git","visibility":"private","archived":false},{"id":11,"path_with_namespace":"team/broken","visibility":"private"}]`)
 		case "9":
