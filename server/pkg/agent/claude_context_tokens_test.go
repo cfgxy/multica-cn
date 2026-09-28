@@ -232,3 +232,94 @@ func TestNormalizeModelKey(t *testing.T) {
 		}
 	}
 }
+
+// applyBudgetStopContextTokens is the third and last writer of ContextTokens
+// (RUYI-259). Its whole contract is in the boundaries: it fires only for a
+// budget stop, only with a reading, and only upwards — a wrong answer in any of
+// those directions hands the session gate a number that resumes an oversized
+// session.
+func TestApplyBudgetStopContextTokens(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		usage         map[string]TokenUsage
+		budgetStop    bool
+		contextAtStop int64
+		want          map[string]int64
+	}{
+		{
+			name:          "budget stop fills an entry that has no reading",
+			usage:         map[string]TokenUsage{"claude-sonnet-5": {InputTokens: 100}},
+			budgetStop:    true,
+			contextAtStop: 204_887,
+			want:          map[string]int64{"claude-sonnet-5": 204_887},
+		},
+		{
+			name:          "budget stop upgrades an earlier, smaller reading",
+			usage:         map[string]TokenUsage{"claude-sonnet-5": {ContextTokens: 50_000}},
+			budgetStop:    true,
+			contextAtStop: 204_887,
+			want:          map[string]int64{"claude-sonnet-5": 204_887},
+		},
+		{
+			name: "a larger reading is never lowered",
+			// Lowering it is the one direction that talks the gate into
+			// resuming: the inherited session is at least that large.
+			usage:         map[string]TokenUsage{"claude-sonnet-5": {ContextTokens: 300_000}},
+			budgetStop:    true,
+			contextAtStop: 204_887,
+			want:          map[string]int64{"claude-sonnet-5": 300_000},
+		},
+		{
+			name:          "every model of a stopped run gets the reading",
+			usage:         map[string]TokenUsage{"claude-sonnet-5": {}, "claude-haiku-4-5": {ContextTokens: 1_000}},
+			budgetStop:    true,
+			contextAtStop: 204_887,
+			want:          map[string]int64{"claude-sonnet-5": 204_887, "claude-haiku-4-5": 204_887},
+		},
+		{
+			name: "no budget stop, no backfill",
+			// The negative branch that keeps the fold and transcript paths the
+			// only writers on every ordinary run.
+			usage:         map[string]TokenUsage{"claude-sonnet-5": {ContextTokens: 50_000}},
+			budgetStop:    false,
+			contextAtStop: 204_887,
+			want:          map[string]int64{"claude-sonnet-5": 50_000},
+		},
+		{
+			name:          "a stop without a reading invents nothing",
+			usage:         map[string]TokenUsage{"claude-sonnet-5": {}},
+			budgetStop:    true,
+			contextAtStop: 0,
+			want:          map[string]int64{"claude-sonnet-5": 0},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			applyBudgetStopContextTokens(tc.usage, tc.budgetStop, tc.contextAtStop)
+
+			for model, want := range tc.want {
+				if got := tc.usage[model].ContextTokens; got != want {
+					t.Errorf("%s ContextTokens = %d, want %d", model, got, want)
+				}
+			}
+		})
+	}
+}
+
+// An empty usage map is the shape a run that never reported a model arrives
+// with; the helper must not invent an entry for it, because a fabricated model
+// key would be attributed to the wrong session size downstream.
+func TestApplyBudgetStopContextTokensLeavesEmptyUsageEmpty(t *testing.T) {
+	t.Parallel()
+
+	usage := map[string]TokenUsage{}
+	applyBudgetStopContextTokens(usage, true, 204_887)
+	if len(usage) != 0 {
+		t.Fatalf("usage gained entries out of nowhere: %#v", usage)
+	}
+}

@@ -104,7 +104,9 @@ import { ExecutionLogSection } from "./execution-log-section";
 import { QuickActionsSection } from "./quick-actions-section";
 import { PluginPanelSection } from "../../plugins";
 import { PullRequestList } from "./pull-request-list";
-import { useGitHubSettings } from "@multica/core/github";
+import { issuePullRequestsOptions, useGitHubSettings } from "@multica/core/github";
+import { useConfigStore } from "@multica/core/config";
+import { shouldShowPullRequestSection } from "./pull-request-visibility";
 import { useQuery } from "@tanstack/react-query";
 import { useAuthStore } from "@multica/core/auth";
 import { useWorkspacePaths } from "@multica/core/paths";
@@ -1226,6 +1228,11 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
   const [pullRequestsOpen, setPullRequestsOpen] = useState(true);
   const [metadataOpen, setMetadataOpen] = useState(false);
   const githubSettings = useGitHubSettings();
+  const vcsAvailable = useConfigStore((state) => state.vcsIntegrationAvailable);
+  const { data: linkedPullRequests } = useQuery({
+    ...issuePullRequestsOptions(id),
+    enabled: !!id && vcsAvailable && !githubSettings.prSidebar,
+  });
 
   // Per-issue, per-session set of optional properties currently visible in
   // the sidebar Properties section. Seeded on issue switch with whichever
@@ -2657,10 +2664,8 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
         </div>
       )}
 
-      {/* Pull requests — hidden when the workspace disables the PR sidebar
-          (or the GitHub master switch is off). Backend data is kept either
-          way so re-enabling restores the section instantly. */}
-      {githubSettings.prSidebar && (
+      {/* GitHub settings do not suppress linked self-hosted VCS pull requests. */}
+      {shouldShowPullRequestSection(githubSettings.prSidebar, vcsAvailable, linkedPullRequests?.pull_requests ?? []) && (
         <div>
           <button
             type="button"
@@ -2670,7 +2675,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             {t(($) => $.detail.section_pull_requests)}
             <ChevronRight className={`!size-3 shrink-0 stroke-[2.5] text-muted-foreground transition-transform ${pullRequestsOpen ? "rotate-90" : ""}`} />
           </button>
-          {pullRequestsOpen && <div className="pl-2"><PullRequestList issueId={id} /></div>}
+          {pullRequestsOpen && <div className="pl-2"><PullRequestList issueId={id} showGitHub={githubSettings.prSidebar} /></div>}
         </div>
       )}
 
