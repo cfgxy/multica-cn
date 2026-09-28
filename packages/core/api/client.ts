@@ -3888,11 +3888,11 @@ export class ApiClient {
     });
   }
 
-  async getSkillUsage(id: string): Promise<SkillUsage> {
+  async getSkillUsage(id: string): Promise<SkillUsage | null> {
     const raw = await this.fetch<unknown>(`/api/skills/${encodeURIComponent(id)}/usage`);
-    return parseWithFallback<SkillUsage>(raw, SkillUsageSchema, {
-      total: 0, last_30_days: 0, assigned_agents: 0, versions: [], recent: [],
-    }, { endpoint: "GET /api/skills/{id}/usage" });
+    return parseWithFallback<SkillUsage | null>(raw, SkillUsageSchema, null, {
+      endpoint: "GET /api/skills/{id}/usage",
+    });
   }
 
   async createSkill(data: CreateSkillRequest): Promise<Skill> {
