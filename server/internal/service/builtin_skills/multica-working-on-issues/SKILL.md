@@ -217,7 +217,9 @@ close intent writes the literal `done` key.
 
 - **`backlog`** parks an agent-assigned issue: the assignee is set but no task
   fires. Moving `backlog → todo` (or any non-done/non-cancelled status) enqueues
-  the assigned agent then.
+  the assigned agent then. Promote with a plain status write. `--no-start` on
+  that write suppresses the enqueue and leaves the issue parked with nobody
+  running.
 - **`in_progress` / `in_review`** are agent-managed CLI mutations, not
   `StartTask` / `CompleteTask` side effects. The runtime brief asks agents to
   write the state the issue is in whenever their work changes it — not from
@@ -253,15 +255,22 @@ close intent writes the literal `done` key.
 ## Claim ownership without duplicating a run
 
 Assigning an active issue to an agent normally starts a run. When the work is
-already underway and the write only records ownership or progress, pass
-`--no-start` on every command in that flow — suppressing the assignment alone
-does not suppress a later status update:
+already underway and the write only records ownership, pass `--no-start` on the
+assignment:
 
 ```bash
 multica issue assign <issue-id> --to-id <agent-id> --no-start
 multica issue update <issue-id> --assignee-id <agent-id> --no-start
-multica issue status <issue-id> in_progress --no-start
 ```
+
+Two limits on the flag:
+
+- Only a write that would otherwise start a run needs it — an assignment, or a
+  promotion out of `backlog`. A status-only write that stays outside `backlog`
+  (`todo` → `in_progress` → `in_review`) starts no run, so it never needs
+  `--no-start`.
+- Never pass it on a promotion out of `backlog`. That promotion is the handoff —
+  suppressing it strands the child with no run. See the sub-issue sections below.
 
 Before self-assigning, check the target issue's comment history for an existing
 claim and any `## Active sibling runs` block (its `run-messages` commands show
@@ -324,6 +333,9 @@ multica issue status <child-id> todo   # promote when the previous step is truly
 
 Creating every serial step as `todo` enqueues the whole chain at once.
 
+The promotion carries no `--no-start`. Starting the child's run is the entire
+point of the write; suppress it and the chain stops there.
+
 ### Stages: order sub-issues into barrier groups
 
 `--stage <N>` (N ≥ 1) groups sub-issues under the same parent into ordered
@@ -351,7 +363,7 @@ When both Stage 1 sub-issues finish you (the parent assignee) are woken with a
 
 ```bash
 multica issue children <parent-id>             # sub-issues grouped by stage
-multica issue status <stage-2-child-id> todo   # promote when its deps are met
+multica issue status <stage-2-child-id> todo   # promote when its deps are met, never with --no-start
 ```
 
 `issue children --output json` reports per-stage `done` counts. A workspace may

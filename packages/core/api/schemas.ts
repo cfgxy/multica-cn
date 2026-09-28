@@ -1034,6 +1034,15 @@ export const EMPTY_CREATE_FEEDBACK_RESPONSE: CreateFeedbackResponse = {
   created_at: "",
 };
 
+// A malformed outcome must never turn an accepted comment into a bogus
+// "delivered" signal. Keep valid outcomes while dropping bad entries.
+export const CommentTriggerOutcomeSchema = z.object({
+  target_type: z.string().default(""),
+  target_id: z.string(),
+  status: z.string().default(""),
+  reason_code: z.string().default(""),
+}).loose();
+
 export const CommentSchema = z.object({
   id: z.string(),
   issue_id: z.string(),
@@ -1050,6 +1059,12 @@ export const CommentSchema = z.object({
   source_task_id: z.string().nullable().optional(),
   // Set only on comments a quick action produced (MUL-5465). Server-only.
   quick_action_id: z.string().nullable().optional(),
+  trigger_outcomes: z.array(z.unknown()).catch([]).optional().transform((items) =>
+    items?.flatMap((item) => {
+      const parsed = CommentTriggerOutcomeSchema.safeParse(item);
+      return parsed.success ? [parsed.data] : [];
+    }),
+  ),
 }).loose();
 
 export const CommentsListSchema = z.array(CommentSchema);
@@ -1085,15 +1100,12 @@ const CommentTriggerPreviewAgentSchema = z.object({
 // Per-target outcome of an explicit @agent / @squad mention (MUL-4525 §2).
 // target_id is required to correlate with the client's rendered mention; a
 // malformed entry (missing id) is dropped rather than failing the whole payload.
-export const CommentTriggerOutcomeSchema = z.object({
-  target_type: z.string().default(""),
-  target_id: z.string(),
-  status: z.string().default(""),
-  reason_code: z.string().default(""),
-}).loose();
-
 export const CommentTriggerPreviewSchema = z.object({
   agents: z.array(CommentTriggerPreviewAgentSchema).default([]),
+  invalid_mentions: z
+    .array(z.object({ start: z.number().int().nonnegative(), end: z.number().int().nonnegative() }))
+    .catch([])
+    .default([]),
   // Drop malformed blocked entries INDIVIDUALLY (MUL-4525): a single bad item
   // must not discard the whole set of valid blocked mentions. A non-array
   // degrades to []; each valid entry is kept, each malformed one dropped.
