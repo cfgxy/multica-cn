@@ -1512,6 +1512,23 @@ type SkillToLabel struct {
 	CreatedAt pgtype.Timestamptz `json:"created_at"`
 }
 
+type SkillVersion struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	SkillID          pgtype.UUID        `json:"skill_id"`
+	Version          int32              `json:"version"`
+	Name             string             `json:"name"`
+	Description      string             `json:"description"`
+	Content          string             `json:"content"`
+	Config           []byte             `json:"config"`
+	Files            []byte             `json:"files"`
+	Source           string             `json:"source"`
+	SourceVersion    pgtype.Int4        `json:"source_version"`
+	SourceProposalID pgtype.UUID        `json:"source_proposal_id"`
+	AuthorUserID     pgtype.UUID        `json:"author_user_id"`
+	CreatedAt        pgtype.Timestamptz `json:"created_at"`
+}
+
 type Squad struct {
 	ID           pgtype.UUID        `json:"id"`
 	WorkspaceID  pgtype.UUID        `json:"workspace_id"`

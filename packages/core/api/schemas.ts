@@ -84,6 +84,7 @@ import type {
   ShareLink,
   ShareLinkInfo,
   Skill,
+  SkillVersion,
   SkillImportResult,
   Squad,
   TimelineEntry,
@@ -3353,6 +3354,8 @@ export const SkillSchema = z.object({
   files: z.array(SkillFileSchema).optional().default([]),
 }).loose();
 
+export const SkillSummaryListSchema = z.array(SkillSchema.omit({ content: true, files: true }));
+
 export const EMPTY_SKILL: Skill = {
   id: "",
   workspace_id: "",
@@ -3365,6 +3368,64 @@ export const EMPTY_SKILL: Skill = {
   updated_at: "",
   files: [],
 };
+
+export const SkillVersionSummarySchema = z.object({
+  id: z.string(),
+  skill_id: z.string(),
+  version: z.number().int().positive(),
+  name: z.string(),
+  description: z.string().default(""),
+  source: z.string(),
+  can_restore: z.boolean().optional().default(false),
+  source_version: z.number().int().positive().optional(),
+  source_proposal_id: z.string().optional(),
+  author_user_id: z.string().optional(),
+  created_at: z.string(),
+});
+
+export const SkillVersionListSchema = z.array(SkillVersionSummarySchema);
+
+export const SkillVersionSchema = SkillVersionSummarySchema.extend({
+  content: z.string(),
+  config: z.record(z.string(), z.unknown()).default({}),
+  files: z.array(z.object({ path: z.string(), content: z.string() })).default([]),
+});
+
+export const EMPTY_SKILL_VERSION: SkillVersion = {
+  id: "",
+  skill_id: "",
+  version: 0,
+  name: "",
+  description: "",
+  source: "",
+  created_at: "",
+  content: "",
+  config: {},
+  files: [],
+};
+
+export const SkillRestoreResultSchema = z.object({ version: z.number().int().positive() });
+
+export const SkillUsageSchema = z.object({
+  total: z.number().int().nonnegative(),
+  last_30_days: z.number().int().nonnegative(),
+  assigned_agents: z.number().int().nonnegative().default(0),
+  since: z.string().optional(),
+  versions: z.array(z.object({
+    version: z.number().int().positive(),
+    count: z.number().int().nonnegative(),
+    runs: z.number().int().nonnegative().optional(),
+    token_samples: z.number().int().nonnegative().optional(),
+    median_total_tokens: z.number().nonnegative().nullable().optional(),
+    retried_runs: z.number().int().nonnegative().optional(),
+  })),
+  recent: z.array(z.object({
+    task_id: z.string(),
+    issue_id: z.string().optional(),
+    version: z.number().int().positive(),
+    used_at: z.string(),
+  })),
+});
 
 export const SkillImportExistingSkillSchema = z.object({
   id: z.string(),
