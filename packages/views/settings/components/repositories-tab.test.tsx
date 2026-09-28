@@ -335,9 +335,12 @@ describe("RepositoriesTab — automatic updates", () => {
   });
 
   // URL boundary cases are covered in repository-identity.test.ts.
-  it("deduplicates an existing non-git SCP GitLab project while importing other projects", async () => {
+  it.each([
+    "deploy@git.test:a/app.git",
+    "https://git.test/a/app.git",
+  ])("deduplicates an existing GitLab project (%s) while importing other projects", async (existingURL) => {
     vcsRef.current = { available: true, configured: true, can_manage: true, connections: [{ id: "gl-1", provider: "gitlab", instance_url: "https://git.test", account_login: "admin" }] };
-    workspaceRef.current = { ...workspaceRef.current, repos: [{ url: "deploy@git.test:a/app.git" }] };
+    workspaceRef.current = { ...workspaceRef.current, repos: [{ url: existingURL }] };
     gitLabRef.current = { pages: [
       { repositories: [
         { id: 1, full_name: "a/app", clone_url: "git@git.test:a/app.git", description: null, private: true, archived: false },
@@ -363,7 +366,7 @@ describe("RepositoriesTab — automatic updates", () => {
     await user.click(checkboxes[1]!);
     await user.click(screen.getByRole("button", { name: "Add GitLab repositories" }));
     await waitFor(() => expect(mockUpdateWorkspace).toHaveBeenCalledWith("workspace-1", { repos: [
-      { url: "deploy@git.test:a/app.git" },
+      { url: existingURL },
       { url: "git@git.test:b/app.git", description: "Second" },
     ] }));
   });
