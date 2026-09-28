@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/go-chi/chi/v5"
 	"github.com/jackc/pgx/v5/pgtype"
@@ -57,28 +58,64 @@ func parsePromptVersionScope(s string) (promptVersionScope, bool) {
 // NextPromptVersion race-free even for a scope with zero prior versions —
 // there is no prompt_version row to lock yet, but the owning row always
 // exists.
-func (h *Handler) lockScopeEntity(w http.ResponseWriter, r *http.Request, qtx *db.Queries, scope promptVersionScope, workspaceID, scopeID pgtype.UUID) bool {
+//
+// It also returns the tier's current effective content, read under that
+// same lock, so the empty-content guard in commitPromptGovernanceVersion
+// compares against live text that cannot change before the UPDATE.
+func (h *Handler) lockScopeEntity(w http.ResponseWriter, r *http.Request, qtx *db.Queries, scope promptVersionScope, workspaceID, scopeID pgtype.UUID) (string, bool) {
 	ctx := r.Context()
+	var current string
 	var err error
 	switch scope {
 	case promptVersionScopeWorkspace:
 		if scopeID != workspaceID {
 			writeError(w, http.StatusNotFound, "scope not found in this workspace")
-			return false
+			return "", false
 		}
-		_, err = qtx.LockWorkspaceForPromptVersion(ctx, scopeID)
+		var row db.LockWorkspaceForPromptVersionRow
+		row, err = qtx.LockWorkspaceForPromptVersion(ctx, scopeID)
+		current = row.EffectiveContent
 	case promptVersionScopeProject:
-		_, err = qtx.LockProjectForPromptVersion(ctx, db.LockProjectForPromptVersionParams{ID: scopeID, WorkspaceID: workspaceID})
+		var row db.LockProjectForPromptVersionRow
+		row, err = qtx.LockProjectForPromptVersion(ctx, db.LockProjectForPromptVersionParams{ID: scopeID, WorkspaceID: workspaceID})
+		current = row.EffectiveContent
 	case promptVersionScopeSquad:
-		_, err = qtx.LockSquadForPromptVersion(ctx, db.LockSquadForPromptVersionParams{ID: scopeID, WorkspaceID: workspaceID})
+		var row db.LockSquadForPromptVersionRow
+		row, err = qtx.LockSquadForPromptVersion(ctx, db.LockSquadForPromptVersionParams{ID: scopeID, WorkspaceID: workspaceID})
+		current = row.EffectiveContent
 	case promptVersionScopeAgent:
-		_, err = qtx.LockAgentForPromptVersion(ctx, db.LockAgentForPromptVersionParams{ID: scopeID, WorkspaceID: workspaceID})
+		var row db.LockAgentForPromptVersionRow
+		row, err = qtx.LockAgentForPromptVersion(ctx, db.LockAgentForPromptVersionParams{ID: scopeID, WorkspaceID: workspaceID})
+		current = row.EffectiveContent
 	}
 	if err != nil {
 		writeError(w, http.StatusNotFound, "scope not found in this workspace")
-		return false
+		return "", false
 	}
-	return true
+	return current, true
+}
+
+// seedPromptVersionV1 writes the v1 baseline row for a scope that was just
+// created (RUYI-213). Migration 922 snapshotted every tier that existed when
+// self-evolution shipped, but it was a one-time backfill: without this call a
+// scope created afterwards has no v1 row at all, so version history and diff
+// have nothing to anchor on and the tier's original content is unrecoverable.
+//
+// Idempotent through the unique index on (scope, scope_id, version): a v1 that
+// already exists makes the insert a no-op rather than an error, so a caller
+// retrying a partially-failed create cannot end up with a second baseline.
+//
+// Callers pass their transaction's *db.Queries so the baseline commits or rolls
+// back with the entity it describes.
+func seedPromptVersionV1(ctx context.Context, qtx *db.Queries, scope promptVersionScope, workspaceID, scopeID pgtype.UUID, content string) error {
+	return qtx.InsertPromptVersionBaselineIfAbsent(ctx, db.InsertPromptVersionBaselineIfAbsentParams{
+		WorkspaceID:   workspaceID,
+		Scope:         string(scope),
+		ScopeID:       scopeID,
+		Content:       content,
+		ContentSha256: sha256Hex(content),
+		ChangeNote:    "v1 基线：创建时内容",
+	})
 }
 
 // writeScopeEffectiveContent copies content into the scope's business
@@ -449,7 +486,22 @@ func (h *Handler) commitPromptGovernanceVersion(w http.ResponseWriter, r *http.R
 	defer tx.Rollback(ctx)
 	qtx := h.Queries.WithTx(tx)
 
-	if !h.lockScopeEntity(w, r, qtx, scope, workspaceID, scopeID) {
+	currentContent, ok := h.lockScopeEntity(w, r, qtx, scope, workspaceID, scopeID)
+	if !ok {
+		return
+	}
+
+	// Empty-content guard (RUYI-213): a blank incoming content must never
+	// erase live prompt text. The 922 v1 backfill snapshotted whatever the
+	// business column held at the time, so a tier whose content was already
+	// lost carries an empty v1 row — switching to it would copy that emptiness
+	// straight back over content restored since. Rejecting with 409 leaves both
+	// the version line and the business column untouched; writing blank over
+	// blank stays allowed, since there is nothing to lose.
+	if strings.TrimSpace(pw.content) == "" && strings.TrimSpace(currentContent) != "" {
+		slog.Warn("prompt version write blocked: empty content would erase live text", append(logger.RequestAttrs(r),
+			"scope", string(scope), "source", pw.source)...)
+		writeError(w, http.StatusConflict, "refusing to write empty content over the tier's current non-empty content; edit the content or pick a non-empty version")
 		return
 	}
 

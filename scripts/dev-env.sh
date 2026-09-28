@@ -151,6 +151,40 @@ list_env_names() {
   return 0
 }
 
+# A manifest only carries the keys that existed when it was written: entries
+# predating the slot registry have no OFFSET, FRONTEND_PORT, PROFILE or
+# DATABASE_URL line. Under `set -u` reading one is fatal, so a single such entry
+# aborted `make list` partway through the registry and printed an
+# unbound-variable line on every `make up` slot probe. The recorded backend port
+# is what recovers the slot: allocation derives backend = 18080 + offset.
+#
+# Recovering the slot alone, without a subshell: offset_registered calls this
+# once per registered environment for every candidate slot, so a fork here is
+# paid up to a thousand times per allocation.
+backfill_manifest_slot() {
+  : "${BACKEND_PORT:=0}"
+  if [ -z "${OFFSET:-}" ]; then
+    if [ "$BACKEND_PORT" -gt 18080 ]; then OFFSET=$((BACKEND_PORT - 18080)); else OFFSET=0; fi
+  fi
+  : "${FRONTEND_PORT:=$((13000 + OFFSET))}"
+}
+
+# Every remaining key, derived the way cmd_up derives it. A default must stay
+# safe for the destructive verbs: an empty PROFILE would make `destroy` delete
+# the whole profiles home, and an empty DB_NAME must never satisfy
+# env_file_agrees_on_database.
+backfill_manifest() {
+  backfill_manifest_slot
+  : "${DIR:=}" "${CREATED_AT:=}" "${OWNER:=unknown}" "${TTL_HOURS:=0}" \
+    "${EXPIRES_AT:=}" "${ENV_FILE:=}" "${DB_NAME:=}" "${DATABASE_URL:=}" \
+    "${PROFILE:=dev-$NAME}"
+  : "${WORKSPACES_ROOT:=$DEV_WORKSPACES_PARENT/multica_workspaces_$PROFILE}" \
+    "${DESKTOP_RENDERER_PORT:=$(renderer_port_for_offset "$OFFSET")}" \
+    "${DESKTOP_APP_SUFFIX:=$NAME}"
+  : "${DESKTOP_USER_DATA_DIR:=$(desktop_user_data_dir "$DESKTOP_APP_SUFFIX")}" \
+    "${DESKTOP_ENV_FILE:=$DIR/apps/desktop/.env.development.local}"
+}
+
 # Loads a manifest into NAME/DIR/BACKEND_PORT/... in the caller's scope.
 load_manifest() {
   local file
@@ -160,6 +194,7 @@ load_manifest() {
   # shellcheck disable=SC1090
   . "$file"
   [ "$NAME" = "$1" ] || die "Manifest $file declares NAME=$NAME; expected $1."
+  backfill_manifest
 }
 
 # Prints nothing (and succeeds) for a missing manifest or key: callers compare
@@ -174,8 +209,8 @@ manifest_field() {
     # shellcheck disable=SC1090
     . "$file"
     case "$key" in
-      DIR) printf '%s' "$DIR" ;;
-      OFFSET) printf '%s' "$OFFSET" ;;
+      DIR) printf '%s' "${DIR:-}" ;;
+      OFFSET) backfill_manifest_slot; printf '%s' "$OFFSET" ;;
       *) return 1 ;;
     esac
   )
@@ -210,8 +245,17 @@ EOF
 # The trailing `|| true` is load-bearing on macOS's bash 3.2: `x="$(fn)"` inside
 # a function aborts the script under `set -e` when fn's last command fails, and
 # "no process is listening" is the normal answer here, not an error.
+# lsof alone is not enough on a host that runs Docker: the overlay and netns
+# mounts make it warn "can't stat()" and return an INCOMPLETE fd set, and what
+# goes missing here is a listening dev server that is plainly there — `ss`
+# reported the pid for :13161 while `lsof` reported nothing for the same socket.
+# ss reads /proc/net/tcp* and is unaffected, so it answers first; lsof stays the
+# fallback for hosts without iproute2, macOS among them.
 port_listener_pid() {
-  lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | head -1 || true
+  local pid
+  pid="$(ss -lntp "sport = :$1" 2>/dev/null | sed -n 's/.*pid=\([0-9]\{1,\}\).*/\1/p' | head -1 || true)"
+  [ -n "$pid" ] || pid="$(lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null | head -1 || true)"
+  printf '%s' "$pid"
 }
 
 port_free() { [ -z "$(port_listener_pid "$1")" ]; }
@@ -525,6 +569,26 @@ process_group_id() {
   ps -p "$1" -o pgid= 2>/dev/null | tr -d ' ' || true
 }
 
+# Process group equality cannot prove ownership of a web listener: turbo starts
+# each task in a NEW process group, so the chain is
+#
+#   make (launcher, pgid=launcher) → pnpm → turbo
+#     → pnpm run dev (pgid=itself) → next → next-server (the listener)
+#
+# and the listener's pgid is turbo's task group, never the launcher's pid.
+# Ancestry is what actually proves it, and it stays just as strict: a process
+# that merely reused the port has no path up to this environment's launcher.
+pid_has_ancestor() {
+  local pid=$1 ancestor=$2 hops=0
+  [ -n "$pid" ] && [ -n "$ancestor" ] || return 1
+  while [ -n "$pid" ] && [ "$pid" != 0 ] && [ "$pid" != 1 ] && [ "$hops" -lt 32 ]; do
+    [ "$pid" = "$ancestor" ] && return 0
+    pid="$(ps -p "$pid" -o ppid= 2>/dev/null | tr -d ' ' || true)"
+    hops=$((hops + 1))
+  done
+  return 1
+}
+
 listener_belongs_to_component() {
   local component=$1 port=$2 launcher listener recorded
   launcher="$(component_pid "$component" || true)"
@@ -532,7 +596,16 @@ listener_belongs_to_component() {
   [ -n "$launcher" ] && [ -n "$listener" ] || return 1
   recorded="$(cat "$(listener_pid_file "$component")" 2>/dev/null || true)"
   [ -n "$recorded" ] && [ "$listener" = "$recorded" ] && return 0
-  [ "$(process_group_id "$listener")" = "$launcher" ]
+  pid_has_ancestor "$listener" "$launcher"
+}
+
+# Written once ownership has been proven, so `down` can identify the listener
+# again without re-deriving ancestry from a tree that has since changed shape.
+record_listener_pid() {
+  local component=$1 port=$2 listener
+  listener="$(port_listener_pid "$port")"
+  [ -n "$listener" ] || return 0
+  printf '%s\n' "$listener" > "$(listener_pid_file "$component")"
 }
 
 health_belongs_to_api() {
@@ -585,6 +658,7 @@ Run 'make down' here first — a leftover instance answers /health with 200 and 
         stop_component api
         die "Something else is serving :$BACKEND_PORT, or the launched api did not report pid/commit/started_at for commit $expected_commit."
       fi
+      record_listener_pid api "$BACKEND_PORT"
       ok "api healthy at http://localhost:$BACKEND_PORT (pid $(json_field "$health" pid), commit $expected_commit)"
       return 0
     fi
@@ -616,6 +690,7 @@ start_web() {
         stop_component web
         die "Web on :$FRONTEND_PORT is not owned by the process group this environment launched."
       fi
+      record_listener_pid web "$FRONTEND_PORT"
       ok "web serving http://localhost:$FRONTEND_PORT (pid ${listener:-?})"
       return 0
     fi
@@ -846,8 +921,27 @@ stop_component() {
       ;;
   esac
 
+  local port=""
+  case "$name" in
+    api) port="$BACKEND_PORT" ;;
+    web) port="$FRONTEND_PORT" ;;
+    desktop) port="$DESKTOP_RENDERER_PORT" ;;
+  esac
+
   recorded_listener="$(cat "$(listener_pid_file "$name")" 2>/dev/null || true)"
   pid="$(component_pid "$name" || true)"
+
+  # Ownership has to be established while the launcher is still alive: ancestry
+  # is the only proof of it, and the intermediate processes that carry that proof
+  # are gone the moment the launcher's process group dies.
+  if [ -z "$recorded_listener" ] && [ -n "$pid" ] && [ -n "$port" ]; then
+    local found
+    found="$(port_listener_pid "$port")"
+    if [ -n "$found" ] && pid_has_ancestor "$found" "$pid"; then
+      recorded_listener="$found"
+    fi
+  fi
+
   if [ -n "$pid" ]; then
     launcher="$pid"
     # Negative pid targets the process group, so make → go run → server all go
@@ -869,25 +963,29 @@ stop_component() {
     info "$name was not running"
   fi
 
-  # A process group kill can miss a listener that has reparented away from its
-  # launcher. Only kill that listener when its process group still proves it
-  # belongs to the recorded launcher; a stale manifest must never kill an
-  # unrelated process that later reused the port.
-  local port=""
-  case "$name" in
-    api) port="$BACKEND_PORT" ;;
-    web) port="$FRONTEND_PORT" ;;
-    desktop) port="$DESKTOP_RENDERER_PORT" ;;
-  esac
+  # A process group kill misses the listener whenever it does not share the
+  # launcher's group — which for web is always, because turbo puts each task in
+  # its own group. Only kill the listener when it was proven to belong to this
+  # environment; a stale manifest must never kill an unrelated process that later
+  # reused the port.
   if [ -n "$port" ]; then
-    local listener
+    local listener listener_pgid
     listener="$(port_listener_pid "$port")"
     if [ -n "$listener" ]; then
       if { [ -n "$recorded_listener" ] && [ "$listener" = "$recorded_listener" ]; } \
-        || { [ -n "$launcher" ] && [ "$(process_group_id "$listener")" = "$launcher" ]; }; then
+        || { [ -n "$launcher" ] && pid_has_ancestor "$listener" "$launcher"; }; then
+        # The listener's own group holds the rest of turbo's task subtree (pnpm,
+        # next). Signalling the group is what keeps those from being orphaned;
+        # it is only safe because this branch has already proven the listener is
+        # ours, and the group it leads was created for this task alone.
+        listener_pgid="$(process_group_id "$listener")"
+        [ -n "$listener_pgid" ] && [ "$listener_pgid" != "$launcher" ] \
+          && kill -TERM -"$listener_pgid" 2>/dev/null || true
         kill -TERM "$listener" 2>/dev/null || true
         sleep 1
         if kill -0 "$listener" 2>/dev/null; then
+          [ -n "$listener_pgid" ] && [ "$listener_pgid" != "$launcher" ] \
+            && kill -KILL -"$listener_pgid" 2>/dev/null || true
           kill -KILL "$listener" 2>/dev/null || true
           sleep 1
         fi

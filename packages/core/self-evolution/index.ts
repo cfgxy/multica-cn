@@ -8,3 +8,14 @@ export {
 } from "./measure";
 export type { DimensionCard, MeasureView } from "./measure";
 export { promptQualityDashboardOptions, promptQualityKeys } from "./queries";
+export { quizVerdict, quizDiscrimination, toQuizView, quizOutcomeCount } from "./quiz";
+export type { QuizVerdict, QuizDiscrimination, QuizView, Incomparable } from "./quiz";
+export {
+  promptQuizKeys,
+  promptQuizItemsOptions,
+  promptQuizItemOptions,
+  promptQuizBaselineOptions,
+  useCreatePromptQuizItem,
+  useUpdatePromptQuizItem,
+  useDeletePromptQuizItem,
+} from "./quiz-queries";

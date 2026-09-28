@@ -141,9 +141,17 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"prompt_version": workspaceDelete,
 	// Derived from prompt_version and agent_task_queue (RUYI-184); both are
 	// workspace-owned, so the derivations are too.
-	"prompt_quality_daily":           workspaceDelete,
-	"prompt_perplexity_score":        workspaceDelete,
-	"prompt_quality_rollup_state":    workspaceDeleteKeep,
+	"prompt_quality_daily":        workspaceDelete,
+	"prompt_perplexity_score":     workspaceDelete,
+	"prompt_quality_rollup_state": workspaceDeleteKeep,
+	// The quiz bank and its measurements (RUYI-185) are workspace-owned: the
+	// questions are written in the workspace and the readings only mean anything
+	// against its prompt versions, which are deleted here too.
+	"prompt_quiz_item":   workspaceDelete,
+	"prompt_quiz_result": workspaceDelete,
+	// The sweep's single-row cursor has no workspace_id: it is the deployment's
+	// scheduler state, not any workspace's data.
+	"prompt_quiz_sweep_state":        workspaceDeleteKeep,
 	"quick_action":                   workspaceDelete,
 	"runtime_profile":                workspaceDelete,
 	"schema_migrations":              workspaceDeleteKeep,

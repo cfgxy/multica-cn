@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -25,7 +26,24 @@ func TestMain(m *testing.M) {
 	} {
 		os.Unsetenv(key)
 	}
-	os.Exit(m.Run())
+	// daemonTaskContextMarkerPath walks up from the working directory looking
+	// for .multica/daemon_task_context.json. Running this suite from inside a
+	// daemon-managed worktree (e.g. a platform-assigned task workspace) would
+	// otherwise flip every command under test into its fail-closed "inside a
+	// daemon-managed task" branch. Tests that need a specific cwd call
+	// t.Chdir on top of this base directory.
+	base, err := os.MkdirTemp("", "multica-cmd-tests-")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "testmain: mkdtemp: %v\n", err)
+		os.Exit(1)
+	}
+	if err := os.Chdir(base); err != nil {
+		fmt.Fprintf(os.Stderr, "testmain: chdir %s: %v\n", base, err)
+		os.Exit(1)
+	}
+	code := m.Run()
+	os.RemoveAll(base)
+	os.Exit(code)
 }
 
 // testCmd returns a minimal cobra.Command with the --profile persistent flag
