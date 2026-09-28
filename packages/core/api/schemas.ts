@@ -3381,7 +3381,14 @@ export const SkillUsageSchema = z.object({
   last_30_days: z.number().int().nonnegative(),
   assigned_agents: z.number().int().nonnegative().default(0),
   since: z.string().optional(),
-  versions: z.array(z.object({ version: z.number().int().positive(), count: z.number().int().nonnegative() })),
+  versions: z.array(z.object({
+    version: z.number().int().positive(),
+    count: z.number().int().nonnegative(),
+    runs: z.number().int().nonnegative().optional(),
+    token_samples: z.number().int().nonnegative().optional(),
+    median_total_tokens: z.number().nonnegative().nullable().optional(),
+    retried_runs: z.number().int().nonnegative().optional(),
+  })),
   recent: z.array(z.object({
     task_id: z.string(),
     issue_id: z.string().optional(),

@@ -96,6 +96,17 @@ export function SkillTab({ wsId }: { wsId: string }) {
               <div><p className="text-caption text-muted-foreground">{t(($) => $.skills.assigned)}</p><strong className="text-title">{usage.data?.assigned_agents ?? 0}</strong></div>
             </div>
             <p className="text-caption text-muted-foreground">{usage.data?.since ? t(($) => $.skills.observedSince, { date: new Date(usage.data.since).toLocaleDateString(locale) }) : t(($) => $.skills.noObserved)}</p>
+            <h4 className="text-body font-medium">{t(($) => $.skills.versionCost)}</h4>
+            {!usage.data?.versions.length ? <p className="text-body text-muted-foreground">{t(($) => $.skills.noObserved)}</p> :
+              <div className="divide-y border-y">{usage.data.versions.map((item) => (
+                <div key={item.version} className="flex flex-wrap items-center justify-between gap-x-4 gap-y-1 py-2 text-caption">
+                  <span>{t(($) => $.skills.version, { version: item.version })}</span>
+                  <span className="text-muted-foreground">{item.runs === undefined ? t(($) => $.skills.notCollected) : t(($) => $.skills.measuredRuns, { count: item.runs, samples: item.token_samples ?? 0 })}</span>
+                  {item.token_samples === undefined || item.token_samples === 0 ? <Badge variant="secondary">{t(($) => $.skills.noCostData)}</Badge> :
+                    item.token_samples < 5 || item.median_total_tokens == null ? <Badge variant="secondary">{t(($) => $.skills.insufficientCost)}</Badge> :
+                      <strong>{t(($) => $.skills.medianTokens, { count: item.median_total_tokens })}</strong>}
+                </div>
+              ))}</div>}
             <h4 className="text-body font-medium">{t(($) => $.skills.recent)}</h4>
             {!usage.data?.recent.length ? <p className="text-body text-muted-foreground">{t(($) => $.skills.noObserved)}</p> :
               <div className="divide-y border-y">{usage.data.recent.slice(0, 5).map((item, index) => (

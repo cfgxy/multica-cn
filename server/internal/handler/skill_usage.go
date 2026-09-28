@@ -16,8 +16,12 @@ type SkillUseResponse struct {
 }
 
 type SkillVersionUsageResponse struct {
-	Version int32 `json:"version"`
-	Count   int64 `json:"count"`
+	Version           int32    `json:"version"`
+	Count             int64    `json:"count"`
+	Runs              int64    `json:"runs"`
+	TokenSamples      int64    `json:"token_samples"`
+	MedianTotalTokens *float64 `json:"median_total_tokens"`
+	RetriedRuns       int64    `json:"retried_runs"`
 }
 
 type SkillUsageResponse struct {
@@ -84,6 +88,48 @@ func (h *Handler) GetSkillUsage(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load skill usage")
 		return
+	}
+	rows, err = h.DB.Query(r.Context(), skillInvocations+`, used_runs AS (
+		SELECT DISTINCT task_id, version FROM invocations
+	), run_cost AS (
+		SELECT used_runs.version, t.attempt, cost.total_tokens
+		FROM used_runs JOIN agent_task_queue t ON t.id = used_runs.task_id
+		LEFT JOIN LATERAL (
+			SELECT SUM(u.input_tokens + u.output_tokens)::bigint AS total_tokens
+			FROM task_usage u WHERE u.task_id = t.id
+		) cost ON TRUE
+		WHERE t.status IN ('completed', 'failed', 'cancelled') AND t.completed_at IS NOT NULL
+	)
+	SELECT version, count(*), count(total_tokens),
+		percentile_cont(0.5) WITHIN GROUP (ORDER BY total_tokens),
+		count(*) FILTER (WHERE attempt > 1)
+	FROM run_cost GROUP BY version`, skill.ID, skill.WorkspaceID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load skill usage")
+		return
+	}
+	stats := make(map[int32]SkillVersionUsageResponse)
+	for rows.Next() {
+		var v SkillVersionUsageResponse
+		if err := rows.Scan(&v.Version, &v.Runs, &v.TokenSamples, &v.MedianTotalTokens, &v.RetriedRuns); err != nil {
+			rows.Close()
+			writeError(w, http.StatusInternalServerError, "failed to load skill usage")
+			return
+		}
+		stats[v.Version] = v
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to load skill usage")
+		return
+	}
+	for i := range usage.Versions {
+		v := &usage.Versions[i]
+		if measured, ok := stats[v.Version]; ok {
+			v.Runs, v.TokenSamples = measured.Runs, measured.TokenSamples
+			v.MedianTotalTokens, v.RetriedRuns = measured.MedianTotalTokens, measured.RetriedRuns
+		}
 	}
 	var first *time.Time
 	if err := h.DB.QueryRow(r.Context(), skillInvocations+`
