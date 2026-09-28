@@ -8,7 +8,37 @@
   "tabs": {
     "overview": "Overview",
     "quality": "Quality",
-    "quiz": "Quiz"
+    "quiz": "Quiz",
+    "skills": "Skills"
+  },
+  "skills": {
+    "choose": "Skill",
+    "manage": "Manage skills",
+    "empty": "No skills yet.",
+    "history": "Version history",
+    "noVersions": "No version history for this skill.",
+    "usage": "Observed usage",
+    "allTime": "All time",
+    "last30": "Last 30 days",
+    "assigned": "Assigned agents",
+    "invocations_one": "{{count}} explicit invocation",
+    "invocations_other": "{{count}} explicit invocations",
+    "observedSince": "First observed invocation: {{date}}. Earlier use cannot be inferred.",
+    "noObserved": "No explicit invocations recorded. Earlier use is unknown.",
+    "recent": "Recent invocations",
+    "chatRun": "Chat run",
+    "observational": "Invocation counts are observed calls, not measured skill outcomes.",
+    "version": "Version v{{version}}",
+    "usedAt": "{{date}} · version {{version}}",
+    "diff": "Changes from previous version",
+    "restore": "Restore version",
+    "restoreConfirm": "Restore v{{version}} as v{{next}}? Assignments remain unchanged.",
+    "restoreError": "Could not restore this version.",
+    "ownerOnly": "Only the workspace owner can restore versions.",
+    "cancel": "Cancel",
+    "error": "Could not load skill history.",
+    "retry": "Retry",
+    "sources": { "create": "Created", "proposal": "Proposal", "revision": "Proposal revision", "edit": "Edited", "restore": "Restored" }
   },
   "quality": {
     "scopePicker": {

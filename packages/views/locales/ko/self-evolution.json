@@ -8,7 +8,36 @@
   "tabs": {
     "overview": "개요",
     "quality": "품질",
-    "quiz": "퀴즈"
+    "quiz": "퀴즈",
+    "skills": "Skill"
+  },
+  "skills": {
+    "choose": "skill 선택",
+    "manage": "skill 관리",
+    "empty": "아직 skill이 없습니다.",
+    "history": "버전 기록",
+    "noVersions": "이 skill의 버전 기록이 없습니다.",
+    "usage": "관측된 사용",
+    "allTime": "누적",
+    "last30": "최근 30일",
+    "assigned": "할당된 에이전트",
+    "invocations_other": "명시적 호출 {{count}}회",
+    "observedSince": "처음 관측된 호출: {{date}}. 이전 사용은 알 수 없습니다.",
+    "noObserved": "명시적 호출 기록이 없습니다. 이전 사용은 알 수 없습니다.",
+    "recent": "최근 호출",
+    "chatRun": "채팅 실행",
+    "observational": "호출 횟수는 관측치이며 skill의 효과를 뜻하지 않습니다.",
+    "version": "버전 v{{version}}",
+    "usedAt": "{{date}} · 버전 {{version}}",
+    "diff": "이전 버전과 비교",
+    "restore": "이 버전 복원",
+    "restoreConfirm": "v{{version}}을 새 버전 v{{next}}로 복원합니다. 할당은 그대로 유지됩니다.",
+    "restoreError": "버전을 복원하지 못했습니다.",
+    "ownerOnly": "워크스페이스 Owner만 버전을 복원할 수 있습니다.",
+    "cancel": "취소",
+    "error": "skill 기록을 불러오지 못했습니다.",
+    "retry": "다시 시도",
+    "sources": { "create": "생성", "proposal": "제안", "revision": "제안 수정", "edit": "편집", "restore": "복원" }
   },
   "quality": {
     "scopePicker": {

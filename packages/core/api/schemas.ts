@@ -3324,6 +3324,8 @@ export const SkillSchema = z.object({
   files: z.array(SkillFileSchema).optional().default([]),
 }).loose();
 
+export const SkillSummaryListSchema = z.array(SkillSchema.omit({ content: true, files: true }));
+
 export const EMPTY_SKILL: Skill = {
   id: "",
   workspace_id: "",
@@ -3344,6 +3346,7 @@ export const SkillVersionSummarySchema = z.object({
   name: z.string(),
   description: z.string().default(""),
   source: z.string(),
+  can_restore: z.boolean().optional().default(false),
   source_version: z.number().int().positive().optional(),
   source_proposal_id: z.string().optional(),
   author_user_id: z.string().optional(),
@@ -3372,6 +3375,20 @@ export const EMPTY_SKILL_VERSION: SkillVersion = {
 };
 
 export const SkillRestoreResultSchema = z.object({ version: z.number().int().positive() });
+
+export const SkillUsageSchema = z.object({
+  total: z.number().int().nonnegative(),
+  last_30_days: z.number().int().nonnegative(),
+  assigned_agents: z.number().int().nonnegative().default(0),
+  since: z.string().optional(),
+  versions: z.array(z.object({ version: z.number().int().positive(), count: z.number().int().nonnegative() })),
+  recent: z.array(z.object({
+    task_id: z.string(),
+    issue_id: z.string().optional(),
+    version: z.number().int().positive(),
+    used_at: z.string(),
+  })),
+});
 
 export const SkillImportExistingSkillSchema = z.object({
   id: z.string(),
