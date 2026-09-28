@@ -11,6 +11,7 @@ import (
 	dto "github.com/prometheus/client_model/go"
 
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
+	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
 // captureSuppressObservability swaps in a WARN-capturing default logger and a
@@ -171,6 +172,62 @@ func TestUnsuppressedPromoteStaysQuiet(t *testing.T) {
 	}
 	if got := suppressedRunCount(t, m, "status", "member"); got != 0 {
 		t.Fatalf("issue_run_suppressed_total{source=status,actor_type=member} = %v, want 0", got)
+	}
+}
+
+func TestAgentSuppressObservabilityFollowsHonoredDecision(t *testing.T) {
+	agentID := seededReadyAgentID(t)
+	for _, batch := range []bool{false, true} {
+		for _, active := range []bool{false, true} {
+			name := "single"
+			if batch {
+				name = "batch"
+			}
+			if active {
+				name += "/active"
+			} else {
+				name += "/without_anchor"
+			}
+			t.Run(name, func(t *testing.T) {
+				issueID := backlogIssueFor(t, agentID)
+				if active {
+					dbfx.Task(t, agentID, testutil.Cols{
+						"issue_id": issueID, "status": "running", "runtime_id": runtimeIDForAgent(t, agentID),
+					})
+				}
+				logs, m := captureSuppressObservability(t)
+				if batch {
+					req := testutil.JSONRequest("PUT", "/api/issues/batch?workspace_id="+testWorkspaceID, map[string]any{
+						"issue_ids": []string{issueID},
+						"updates":   map[string]any{"status": "in_progress", "suppress_run": true},
+					})
+					testutil.WithHeaders(req, "X-User-ID", testUserID, "X-Workspace-ID", testWorkspaceID,
+						"X-Actor-Source", "task_token", "X-Agent-ID", agentID)
+					testutil.Call(t, testHandler.BatchUpdateIssues, req).Want(http.StatusOK)
+				} else {
+					testutil.Call(t, testHandler.UpdateIssue, suppressRunRequest(issueID, "in_progress", agentID)).Want(http.StatusOK)
+				}
+				if got := taskCountFor(t, issueID, agentID); got != 1 {
+					t.Fatalf("task count = %d, want 1", got)
+				}
+				want := 0.0
+				if active {
+					want = 1
+					line := suppressWarnLine(t, logs.String())
+					for _, field := range []string{"issue_id=" + issueID, "actor_type=agent", "actor_id=" + agentID,
+						"trigger_source=status", "target_status=in_progress"} {
+						if !strings.Contains(line, field) {
+							t.Fatalf("suppression WARN missing %q: %s", field, line)
+						}
+					}
+				} else if strings.Contains(logs.String(), suppressWarnMessage) {
+					t.Fatalf("ignored suppress logged a WARN: %s", logs.String())
+				}
+				if got := suppressedRunCount(t, m, "status", "agent"); got != want {
+					t.Fatalf("suppression counter = %v, want %v", got, want)
+				}
+			})
+		}
 	}
 }
 
