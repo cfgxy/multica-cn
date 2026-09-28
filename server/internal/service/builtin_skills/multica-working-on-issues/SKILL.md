@@ -255,14 +255,12 @@ close intent writes the literal `done` key.
 ## Claim ownership without duplicating a run
 
 Assigning an active issue to an agent normally starts a run. When the work is
-already underway and the write only records ownership or progress, pass
-`--no-start` on every command in that flow — suppressing the assignment alone
-does not suppress a later status update:
+already underway and the write only records ownership, pass `--no-start` on the
+assignment:
 
 ```bash
 multica issue assign <issue-id> --to-id <agent-id> --no-start
 multica issue update <issue-id> --assignee-id <agent-id> --no-start
-multica issue status <issue-id> in_progress --no-start
 ```
 
 Two limits on the flag:
@@ -270,8 +268,7 @@ Two limits on the flag:
 - Only a write that would otherwise start a run needs it — an assignment, or a
   promotion out of `backlog`. A status-only write that stays outside `backlog`
   (`todo` → `in_progress` → `in_review`) starts no run, so it never needs
-  `--no-start`; the status line above is belt-and-braces inside a flow that also
-  reassigns.
+  `--no-start`.
 - Never pass it on a promotion out of `backlog`. That promotion is the handoff —
   suppressing it strands the child with no run. See the sub-issue sections below.
 
