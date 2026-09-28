@@ -135,7 +135,7 @@ and is hidden from the PR list.
 | Custom statuses inherit their category's behavior in full; enqueue/park contracts resolve the effective category via `issuestatus.Effective` / `Resolve` (MUL-6243) | `server/internal/issuestatus/issuestatus.go` (`Effective`, `Resolve`) | new citation |
 | Runtime brief lists the workspace's active custom statuses grouped by category; catalog rides the claim payload (MUL-6460) | `server/internal/daemon/execenv/runtime_config_sections.go` (`writeIssueStatusCommand`); claim injection in `server/internal/handler/daemon.go` (`buildClaimedTaskResponse`, status catalog block) | new citation |
 | A status-only write enqueues only on the `backlog` → active transition; every other status change falls through to the no-trigger default, so it needs no run suppression | `server/internal/service/issue_trigger.go` (`WillEnqueueRun`, `RunSourceStatus` case and its `default`) | new citation |
-| `--no-start` on a promotion out of `backlog` suppresses that enqueue and leaves the issue parked | `server/internal/handler/issue.go` (`UpdateIssue`, `!req.SuppressRun` guard on `dispatchIssueRun`) | new citation |
+| An agent actor's `--no-start` on promotion out of `backlog` suppresses only if the target agent already has an active run; a member actor may defer a run for an agent or squad assignee | `server/internal/handler/issue_trigger.go` (`suppressesRun`); `server/internal/handler/issue.go` (`UpdateIssue`, `dispatchIssueRun`) | RUYI-251 |
 | Literal-key exceptions to category rules: failed-task rollback writes the `todo` key; merged close-intent PR writes the `done` key | `server/internal/service/task.go` (`HandleFailedTasks`); `server/internal/handler/github.go` (merge close-intent path) | new citation |
 
 Creation with `--status todo` (or any non-backlog status) on an agent-assigned
@@ -155,7 +155,7 @@ away, so no task is left orphaned.
 | Behavior | Source |
 |---|---|
 | `issue assign --no-start`, `issue update --no-start`, and `issue status --no-start` send `suppress_run=true` | `server/cmd/multica/cmd_issue.go` (`runIssueAssign`, `runIssueUpdate`, `runIssueStatus`) |
-| Update and batch-update apply ownership while skipping dispatch when `suppress_run` is true | `server/internal/handler/issue.go` (`UpdateIssue`, `BatchUpdateIssues`) |
+| Update and batch-update apply ownership; `suppress_run` is honored for a member actor, or an agent actor with an active run for the target `(issue, agent)`, but ignored for an agent actor without one | `server/internal/handler/issue.go` (`UpdateIssue`, `BatchUpdateIssues`); `server/internal/handler/issue_trigger.go` (`suppressesRun`) |
 | Trusted direct self-assignment suppresses enqueue only when the target `(issue, agent)` already has a non-terminal task | `server/internal/service/issue_trigger.go` (`WillEnqueueRun`), `server/internal/handler/issue_trigger.go` (`shouldSuppressActiveSelfAssignment`) |
 | Claim responses expose a bounded, workspace-scoped snapshot of the same agent's other dispatched/running/waiting issue tasks; queued tasks are excluded | `server/pkg/db/queries/agent.sql` (`ListActiveSiblingIssueTasks`), `server/internal/handler/daemon.go` (`buildClaimedTaskResponse`) |
 | Daemon prompts point to the target's comment history and concrete sibling `run-messages` commands | `server/internal/daemon/prompt.go` (`buildActiveSiblingRunsBlock`) |
