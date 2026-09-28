@@ -89,10 +89,10 @@ vi.mock("../platform/desktop-servers", async (importOriginal) => {
   };
 });
 
-const reload = vi.fn();
-Object.defineProperty(window, "location", {
-  value: { reload },
-  writable: true,
+const applyServerSwitch = vi.fn();
+Object.defineProperty(window, "desktopAPI", {
+  value: { applyServerSwitch },
+  configurable: true,
 });
 
 import { useServerSwitcherStore } from "../stores/server-switcher-store";
@@ -138,7 +138,7 @@ function resetSwitcherStore() {
 describe("ServerSettingsDialog — list", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    reload.mockClear();
+    applyServerSwitch.mockClear();
     resetSwitcherStore();
     freshStore();
   });
@@ -190,7 +190,7 @@ describe("ServerSettingsDialog — list", () => {
 describe("ServerSettingsDialog — create", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    reload.mockClear();
+    applyServerSwitch.mockClear();
     resetSwitcherStore();
     freshStore();
   });
@@ -215,7 +215,7 @@ describe("ServerSettingsDialog — create", () => {
       expect(custom[0]?.apiUrl).toBe("https://home.example.com");
     });
     // A non-active entry edit never reloads the app.
-    expect(reload).not.toHaveBeenCalled();
+    expect(applyServerSwitch).not.toHaveBeenCalled();
   });
 
   it("blocks a duplicate address", () => {
@@ -233,7 +233,7 @@ describe("ServerSettingsDialog — create", () => {
 describe("ServerSettingsDialog — delete", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    reload.mockClear();
+    applyServerSwitch.mockClear();
     resetSwitcherStore();
   });
 
@@ -256,7 +256,7 @@ describe("ServerSettingsDialog — delete", () => {
 describe("ServerSettingsDialog — active address change", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    reload.mockClear();
+    applyServerSwitch.mockClear();
     resetSwitcherStore();
   });
 
@@ -283,7 +283,7 @@ describe("ServerSettingsDialog — active address change", () => {
     );
 
     expect(mocks.resetActiveServerSession).toHaveBeenCalledTimes(1);
-    expect(reload).toHaveBeenCalledTimes(1);
+    expect(applyServerSwitch).toHaveBeenCalledTimes(1);
     expect(store.getState().servers.find((s) => s.id === entry.id)?.apiUrl).toBe(
       "https://lab2.example.com",
     );
@@ -308,7 +308,7 @@ describe("ServerSettingsDialog — active address change", () => {
     fireEvent.click(screen.getByText("Save"));
 
     expect(mocks.resetActiveServerSession).not.toHaveBeenCalled();
-    expect(reload).toHaveBeenCalledTimes(1);
+    expect(applyServerSwitch).toHaveBeenCalledTimes(1);
     expect(store.getState().servers.find((s) => s.id === entry.id)?.name).toBe("Renamed");
   });
 });

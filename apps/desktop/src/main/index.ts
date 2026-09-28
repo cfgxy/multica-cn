@@ -56,6 +56,7 @@ import {
   type MainRendererMessageChannel,
 } from "../shared/main-renderer-messages";
 import { AuthSessionCoordinator } from "./auth-session-coordinator";
+import { reloadForServerSwitch } from "./server-window-switch";
 import {
   NotificationGate,
   parseNativeNotificationPayload,
@@ -138,6 +139,7 @@ const authSessionCoordinator = new AuthSessionCoordinator<BrowserWindow>(
 const notificationGate = new NotificationGate();
 const mainRendererMessages = new MainRendererMessageQueue();
 let desktopInitialized = false;
+let startupGateAvailable = true;
 let authSessionGeneration = 0;
 const rendererRouteContexts = new WeakMap<
   Electron.WebContents,
@@ -658,6 +660,13 @@ if (!gotTheLock) {
       BrowserWindow.fromWebContents(event.sender)?.close();
     });
 
+    ipcMain.on("server:claim-startup-gate", (event) => {
+      const isFirstMainWindow = startupGateAvailable &&
+        BrowserWindow.fromWebContents(event.sender) === mainWindow;
+      if (isFirstMainWindow) startupGateAvailable = false;
+      event.returnValue = isFirstMainWindow;
+    });
+
     ipcMain.handle("window:open-issue", (event, request: unknown) => {
       if (!BrowserWindow.fromWebContents(event.sender)) {
         return { ok: false, reason: "invalid_request" } as const;
@@ -755,6 +764,12 @@ if (!gotTheLock) {
       if (issueWindows.has(sourceWindow)) {
         authSessionCoordinator.reportIssue(sourceWindow, userId);
       }
+    });
+
+    ipcMain.on("server:switch-applied", (event) => {
+      const source = BrowserWindow.fromWebContents(event.sender);
+      if (!source || (source !== mainWindow && !issueWindows.has(source))) return;
+      reloadForServerSwitch(source, ensureMainWindow(), issueWindows);
     });
 
     // IPC: toggle immersive mode — hides the macOS traffic lights so full-screen

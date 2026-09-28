@@ -26,6 +26,7 @@ import { Input } from "@multica/ui/components/ui/input";
 import { Label } from "@multica/ui/components/ui/label";
 import { useT } from "@multica/views/i18n";
 import { useAuthStore } from "@multica/core/auth";
+import { defaultStorage } from "@multica/core/platform";
 import {
   SERVER_PROBE_PATH,
   findDuplicateServer,
@@ -59,9 +60,11 @@ type ProbeState = "idle" | "probing" | "ok" | "failed";
 export function ServerSettingsDialog({
   open,
   onClose,
+  preAuth = false,
 }: {
   open: boolean;
   onClose: () => void;
+  preAuth?: boolean;
 }) {
   const { t } = useT("settings");
   const servers = useServerStore((s) => s.servers);
@@ -187,13 +190,13 @@ export function ServerSettingsDialog({
       // The live token belongs to the old address — reset the session
       // (mobile parity) and reload into the login page of the new URL.
       resetActiveServerSessionStorage();
-      window.location.reload();
+      window.desktopAPI.applyServerSwitch();
       return;
     }
     if (editing?.id === activeServerId) {
       // A non-address field (name/webUrl) changed on the active server —
       // reload so the boot-time config picks it up.
-      window.location.reload();
+      window.desktopAPI.applyServerSwitch();
       return;
     }
     onClose();
@@ -205,7 +208,9 @@ export function ServerSettingsDialog({
       !!editing &&
       editing.id === activeServerId &&
       normalizeUrl(apiUrl) !== editing.apiUrl;
-    if (switchesActiveServer && useAuthStore.getState().user) {
+    if (switchesActiveServer && (preAuth
+      ? defaultStorage.getItem("multica_token") != null
+      : useAuthStore.getState().user)) {
       setConfirmActiveUrlChange(true);
       return;
     }
