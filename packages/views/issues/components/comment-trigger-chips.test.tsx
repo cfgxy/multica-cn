@@ -31,6 +31,12 @@ const bob: CommentTriggerPreviewAgent = {
 };
 
 describe("CommentTriggerChips", () => {
+  it("warns for malformed agent links that have no blocked outcome", () => {
+    renderWithI18n(
+      <CommentTriggerChips agents={[]} invalidMentionCount={1} suppressedAgentIds={new Set()} onToggle={vi.fn()} />,
+    );
+    expect(screen.getByLabelText("Check agent mentions before posting.")).toBeInTheDocument();
+  });
   it("renders nothing without agents", () => {
     const { container } = renderWithI18n(
       <CommentTriggerChips agents={[]} suppressedAgentIds={new Set()} onToggle={vi.fn()} />,

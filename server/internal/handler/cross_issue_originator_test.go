@@ -334,10 +334,16 @@ func TestCrossIssueDelegation_EveryEntryPointJudgesTheSameHuman(t *testing.T) {
 			runTo(t, firstTaskID)
 
 			t.Run("mention", func(t *testing.T) {
+				before := dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1`, chain.IssueY)
+				want := http.StatusUnprocessableEntity
+				if tc.admit {
+					want = http.StatusCreated
+				}
 				agentComments(t, firstHop, firstTaskID, chain.IssueY, mention(secondHop),
-					triggerCommentOf(t, firstTaskID)).Want(http.StatusCreated)
-				// A blocked mention is reported in trigger_outcomes, not as an
-				// error status, so the enqueue is what says yes or no.
+					triggerCommentOf(t, firstTaskID)).Want(want)
+				if !tc.admit && dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1`, chain.IssueY) != before {
+					t.Fatal("a refused delegation persisted its comment")
+				}
 				if _, _, got := queuedTaskFor(t, chain.IssueY, secondHop); got != tc.admit {
 					t.Fatalf("mention admitted = %v, want %v", got, tc.admit)
 				}
@@ -374,7 +380,10 @@ func TestCrossIssueDelegation_EveryEntryPointJudgesTheSameHuman(t *testing.T) {
 	t.Run("an unattributed chain grants nothing", func(t *testing.T) {
 		chain := newCrossIssueChain(t, bohan, nil)
 		agentComments(t, chain.CoordinatorID, chain.TaskA, chain.IssueY, mention(firstHop), "").
-			Want(http.StatusCreated)
+			Want(http.StatusUnprocessableEntity)
+		if dbfx.Count(t, `SELECT count(*) FROM comment WHERE issue_id = $1`, chain.IssueY) != 0 {
+			t.Fatal("an unattributed delegation persisted its comment")
+		}
 		if _, _, ok := queuedTaskFor(t, chain.IssueY, firstHop); ok {
 			t.Fatal("an unattributed chain must not satisfy a member-scoped allow-list")
 		}
