@@ -589,9 +589,13 @@ func (d *Daemon) providersMissingRuntimes() []string {
 // (refreshWorkspaceRuntimeProfiles), which is the only place allowed to cache a
 // profile-set signature.
 //
-// RecoverOrphans is deliberately NOT called: unlike the runtime_gone recovery
-// path, the surviving runtime IDs may still be executing tasks for the user,
-// and failing those as orphans would kill live work (MUL-3332).
+// RecoverOrphans is deliberately NOT called (MUL-3332): a runtime ID arriving
+// through this path may still carry work whose worker is alive, and the blind
+// call would fail it. Newly-registered IDs instead go through the probe-based
+// orphan recovery (recoverInFlightTasksForRuntime, RUYI-225): each task's
+// env-root execution lock distinguishes a worker that died with an earlier
+// daemon process — failed and retried — from one still running, which is left
+// alone.
 func (d *Daemon) convergeRuntimeRegistrations(ctx context.Context) {
 	// detectBuiltinRuntimes version-gates the availability set and publishes
 	// this round's drops for /health, so a provider that cannot register still
@@ -659,6 +663,15 @@ func (d *Daemon) convergeRuntimeRegistrations(ctx context.Context) {
 					"workspace_id", t.id, "providers", t.missing, "runtime_ids", newIDs)
 			}
 			d.deregisterRevivedRuntimes(ctx, t.id, revived)
+			// A runtime registered here was invisible to this process until
+			// now, so anything still in-flight on it lost its worker with an
+			// earlier daemon process — or is live under another daemon, which
+			// the env-root lock probe respects. This is the hole that left
+			// RUYI-225's zombies permanent: the first registration round
+			// missed these runtimes, and this path used to recover nothing.
+			for _, rid := range newIDs {
+				d.recoverInFlightTasksForRuntime(ctx, rid)
+			}
 			return nil
 		})
 	}
