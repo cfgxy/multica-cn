@@ -1459,6 +1459,17 @@
     "byo_failed_toast": "WeCom 봇을 연결하지 못했어요"
   },
   "server": {
+    "startup": {
+      "title": "연결할 서버 선택",
+      "countdown": "{{n}}초 후 {{name}}에 자동 연결",
+      "connect_now": "지금 연결",
+      "cancel_auto": "자동 연결 취소",
+      "next": "곧 연결",
+      "checking": "확인 중",
+      "reachable": "연결 가능",
+      "unreachable": "연결 불가",
+      "recheck": "다시 확인"
+    },
     "title": "서버",
     "back": "뒤로",
     "add": "서버 추가",

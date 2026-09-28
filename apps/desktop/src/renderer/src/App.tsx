@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { CoreProvider, defaultStorage } from "@multica/core/platform";
 import { pickLocale, type SupportedLocale } from "@multica/core/i18n";
+import { I18nProvider } from "@multica/core/i18n/react";
 import { useAuthStore } from "@multica/core/auth";
 import { useWelcomeStore } from "@multica/core/onboarding";
 import { workspaceKeys } from "@multica/core/workspace/queries";
@@ -14,6 +15,7 @@ import { MulticaIcon } from "@multica/ui/components/common/multica-icon";
 import { Toaster } from "@multica/ui/components/ui/sonner";
 import { DesktopLoginPage } from "./pages/login";
 import { DesktopAuthRecoveryPage } from "./pages/auth-recovery";
+import { StartupServerSelect } from "./pages/startup-server-select";
 import { DesktopShell } from "./components/desktop-layout";
 import { UpdateNotification } from "./components/update-notification";
 import { IssueWindow } from "./components/issue-window";
@@ -31,6 +33,7 @@ import { flushFreezeBreadcrumb } from "./freeze-flush";
 import { DesktopAuthSessionBridge } from "./platform/auth-session-bridge";
 import {
   ensureServerStore,
+  getStartupServerTarget,
   resolveEffectiveRuntimeConfig,
 } from "./platform/desktop-servers";
 import { DEFAULT_RUNTIME_CONFIG } from "../../shared/runtime-config";
@@ -397,6 +400,10 @@ export default function App() {
   // restarting Electron; packaged builds always expose windowContext.
   const windowContext =
     window.desktopAPI.windowContext ?? { kind: "main" as const };
+  const [startupTarget, setStartupTarget] = useState<string | null | undefined>(() => {
+    if (windowContext.kind === "issue" || !window.desktopAPI.startupGateAvailable) return undefined;
+    return getStartupServerTarget(builtinConfig);
+  });
   useCmdWCloseTab();
   // Mounted at the App root for the same reason as Cmd+W: the chord has to
   // work in every renderer state, not only inside the tab shell.
@@ -464,7 +471,11 @@ export default function App() {
 
   return (
     <ThemeProvider>
-      {runtimeConfigResult.ok ? (
+      {runtimeConfigResult.ok && startupTarget !== undefined ? (
+        <I18nProvider locale={locale} resources={resources}>
+          <StartupServerSelect previousId={startupTarget} onContinue={() => setStartupTarget(undefined)} />
+        </I18nProvider>
+      ) : runtimeConfigResult.ok ? (
         <CoreProvider
           apiBaseUrl={effectiveConfig.apiUrl}
           wsUrl={effectiveConfig.wsUrl}
