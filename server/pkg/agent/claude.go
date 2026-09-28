@@ -471,6 +471,16 @@ func (b *claudeBackend) Execute(ctx context.Context, prompt string, opts ExecOpt
 		// last request's real numbers, exactly what the next resume inherits.
 		fillContextTokensFromTranscript(usage, claudeTranscriptRoot(), opts.Cwd, reportedSessionID, b.cfg.Logger)
 
+		// A budget-stopped run has one authoritative reading that neither path
+		// above can produce: the poller's last live measurement, the very
+		// number the ceiling tripped on. Both paths above can leave a smaller,
+		// earlier reading in place — fold writes whatever the stream reported,
+		// and the transcript fill refuses to override a non-zero value — and
+		// the claim-time session gate then judges the session still usable and
+		// resumes it (RUYI-148 first production trigger, 2026-09-18: attempt 2
+		// re-grew the same 204K session and burnt the retry chain).
+		applyBudgetStopContextTokens(usage, budgetStop.Load(), contextAtStop.Load())
+
 		// Run-scoped observability (RUYI-154): one extra transcript pass
 		// yields the largest single-request context and the number of native
 		// auto-compacts; turns come from the result event's num_turns.
@@ -869,6 +879,28 @@ func foldContextTokens(usage map[string]TokenUsage, contextTokens map[string]int
 	}
 }
 
+// applyBudgetStopContextTokens publishes the poller's final live reading onto
+// every usage entry of a run the context-budget ceiling force-stopped. Only an
+// upgrade: an entry already carrying a larger reading keeps it, because the
+// session the next attempt would inherit is at least that large and lowering
+// the number is the one direction that talks the session gate into resuming an
+// oversized session. A run that stopped for any other reason, or a poller that
+// never got a reading, is left untouched — the fold and transcript paths own
+// those, and a zero there deliberately degrades to size_unknown (decision
+// D4 A).
+func applyBudgetStopContextTokens(usage map[string]TokenUsage, budgetStop bool, contextAtStop int64) {
+	if !budgetStop || contextAtStop <= 0 {
+		return
+	}
+	for model, u := range usage {
+		if u.ContextTokens >= contextAtStop {
+			continue
+		}
+		u.ContextTokens = contextAtStop
+		usage[model] = u
+	}
+}
+
 // claudeProjectSlug reproduces the directory name claude CLI derives from a
 // working directory when storing session transcripts under
 // <config>/projects: every character outside [A-Za-z0-9-] becomes a dash
@@ -1191,7 +1223,10 @@ func buildClaudeArgs(opts ExecOptions, logger *slog.Logger) []string {
 		args = append(args, "--strict-mcp-config")
 	}
 	if opts.Model != "" {
-		args = append(args, "--model", opts.Model)
+		// Normalized rather than forwarded verbatim: a gateway alias that
+		// still carries its context-window tag is rejected by the CLI up
+		// front (see claudeCLIModelArg).
+		args = append(args, "--model", claudeCLIModelArg(opts.Model))
 	}
 	if opts.ThinkingLevel != "" {
 		// Slotted right after --model so the per-session effort runs

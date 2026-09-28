@@ -26,6 +26,7 @@ import {
   AutopilotRunSchema,
   FALLBACK_AUTOPILOT_RUN,
   CommentTriggerPreviewSchema,
+  CommentSchema,
   DashboardAgentRunTimeListSchema,
   DashboardRunTimeDailyListSchema,
   DashboardFailureByAgentListSchema,
@@ -1526,6 +1527,29 @@ describe("AutopilotQuotaUsageSchema", () => {
 
 // The comment composer branches on preview.blocked to warn before sending
 // (MUL-4525 §2), so the additive field must parse and degrade gracefully.
+describe("CommentSchema.trigger_outcomes", () => {
+  const comment = {
+    id: "comment-1", issue_id: "issue-1", author_type: "member", author_id: "user-1",
+    content: "accepted", type: "comment", parent_id: null,
+    created_at: "2026-09-28T00:00:00Z", updated_at: "2026-09-28T00:00:00Z",
+  };
+
+  it("keeps valid outcomes but discards malformed entries and fields", () => {
+    const result = CommentSchema.parse({
+      ...comment,
+      trigger_outcomes: [
+        { target_type: "agent", target_id: "agent-1", status: "queued" },
+        { target_type: "agent", status: "blocked" },
+      ],
+    });
+    expect(result.trigger_outcomes).toEqual([
+      expect.objectContaining({ target_id: "agent-1", status: "queued" }),
+    ]);
+    expect(CommentSchema.parse({ ...comment, trigger_outcomes: "bad" }).trigger_outcomes).toEqual([]);
+    expect(CommentSchema.safeParse({ ...comment, id: 123 }).success).toBe(false);
+  });
+});
+
 describe("CommentTriggerPreviewSchema.blocked", () => {
   it("parses blocked mention outcomes alongside agents", () => {
     const parsed = CommentTriggerPreviewSchema.parse({
@@ -1543,6 +1567,14 @@ describe("CommentTriggerPreviewSchema.blocked", () => {
   it("defaults blocked to [] when an older server omits it", () => {
     const parsed = CommentTriggerPreviewSchema.parse({ agents: [] });
     expect(parsed.blocked).toEqual([]);
+    expect(parsed.invalid_mentions).toEqual([]);
+  });
+
+  it("keeps valid invalid-mention spans and tolerates a malformed field", () => {
+    expect(CommentTriggerPreviewSchema.parse({ agents: [], invalid_mentions: [{ start: 3, end: 12 }] }).invalid_mentions)
+      .toEqual([{ start: 3, end: 12 }]);
+    expect(CommentTriggerPreviewSchema.parse({ agents: [], invalid_mentions: "invalid" }).invalid_mentions)
+      .toEqual([]);
   });
 
   it("degrades a malformed blocked field to [] without dropping agents", () => {

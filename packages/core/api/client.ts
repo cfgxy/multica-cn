@@ -1441,7 +1441,7 @@ export class ApiClient {
     attachmentIds?: string[],
     suppressAgentIds?: string[],
   ): Promise<Comment> {
-    return this.fetch(`/api/issues/${issueId}/comments`, {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/comments`, {
       method: "POST",
       body: JSON.stringify({
         content,
@@ -1451,6 +1451,9 @@ export class ApiClient {
         ...(suppressAgentIds?.length ? { suppress_agent_ids: suppressAgentIds } : {}),
       }),
     });
+    const comment = parseWithFallback(raw, CommentSchema, EMPTY_COMMENT, { endpoint: "POST /api/issues/:id/comments" });
+    if (!comment.id) throw new Error("Invalid comment response");
+    return comment;
   }
 
   async previewCommentTriggers(issueId: string, content: string, parentId?: string, editingCommentId?: string): Promise<CommentTriggerPreview> {
@@ -1511,7 +1514,7 @@ export class ApiClient {
   }
 
   async updateComment(commentId: string, content: string, attachmentIds?: string[], suppressAgentIds?: string[], contentBase?: string, expectedRevision?: number): Promise<Comment> {
-    return this.fetch(`/api/comments/${commentId}`, {
+    const raw = await this.fetch<unknown>(`/api/comments/${commentId}`, {
       method: "PUT",
       body: JSON.stringify({
         content,
@@ -1521,6 +1524,9 @@ export class ApiClient {
         ...(expectedRevision !== undefined ? { expected_revision: expectedRevision } : {}),
       }),
     });
+    const comment = parseWithFallback(raw, CommentSchema, EMPTY_COMMENT, { endpoint: "PUT /api/comments/:id" });
+    if (!comment.id) throw new Error("Invalid comment response");
+    return comment;
   }
 
   async deleteComment(commentId: string): Promise<void> {
