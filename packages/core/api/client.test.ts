@@ -2422,16 +2422,28 @@ describe("ApiClient skill version responses", () => {
     vi.stubGlobal("fetch", vi.fn()
       .mockResolvedValueOnce(new Response(JSON.stringify({
         total: 1, last_30_days: 1, assigned_agents: 2, since: "2026-09-28T00:00:00Z",
-        versions: [{ version: 2, count: 1 }],
+        versions: [{ version: 2, count: 1, runs: 2, token_samples: 1, median_total_tokens: 100, retried_runs: 1 }],
         recent: [{ task_id: "run-1", issue_id: "issue-1", version: 2, used_at: "2026-09-28T00:00:00Z" }],
       })))
-      .mockResolvedValueOnce(new Response(JSON.stringify({ total: "invalid" }))));
+      .mockResolvedValueOnce(new Response(JSON.stringify({ total: "invalid" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        total: 1, last_30_days: 1, versions: [{ version: 2, count: 1, token_samples: "bad" }], recent: [],
+      })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        total: 1, last_30_days: 1, versions: [{ version: 2, count: 1 }], recent: [],
+      }))));
     const client = new ApiClient("https://api.example.test");
     expect(await client.getSkillUsage("skill-1")).toMatchObject({
-      total: 1, assigned_agents: 2, versions: [{ version: 2, count: 1 }], recent: [{ task_id: "run-1" }],
+      total: 1, assigned_agents: 2, versions: [{ version: 2, count: 1, runs: 2, token_samples: 1, median_total_tokens: 100, retried_runs: 1 }], recent: [{ task_id: "run-1" }],
     });
     expect(await client.getSkillUsage("skill-1")).toEqual({
       total: 0, last_30_days: 0, assigned_agents: 0, versions: [], recent: [],
+    });
+    expect(await client.getSkillUsage("skill-1")).toEqual({
+      total: 0, last_30_days: 0, assigned_agents: 0, versions: [], recent: [],
+    });
+    expect(await client.getSkillUsage("skill-1")).toMatchObject({
+      total: 1, versions: [{ version: 2, count: 1 }],
     });
   });
 });

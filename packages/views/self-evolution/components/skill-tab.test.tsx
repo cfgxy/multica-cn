@@ -8,7 +8,7 @@ import enCommon from "../../locales/en/common.json";
 import enSelfEvolution from "../../locales/en/self-evolution.json";
 import { SkillTab } from "./skill-tab";
 
-const state = vi.hoisted(() => ({ canRestore: false }));
+const state = vi.hoisted(() => ({ canRestore: false, tokenSamples: 1 }));
 
 vi.mock("@multica/core/api", () => ({
   api: {
@@ -27,7 +27,7 @@ vi.mock("@multica/core/api", () => ({
       created_at: "2026-09-28T00:00:00Z",
     }),
     getSkillUsage: () => Promise.resolve({ total: 1, last_30_days: 1, assigned_agents: 2, since: "2026-09-28T00:00:00Z",
-      versions: [{ version: 1, count: 1 }],
+      versions: [{ version: 1, count: 1, runs: Math.max(2, state.tokenSamples), token_samples: state.tokenSamples, median_total_tokens: 100, retried_runs: 1 }],
       recent: [{ task_id: "task-1", issue_id: "issue-1", version: 1, used_at: "2026-09-28T00:00:00Z" }],
     }),
   },
@@ -42,6 +42,7 @@ vi.mock("@multica/core/paths", () => ({
 
 it("shows version history and observed invocations without member restore access", async () => {
   state.canRestore = false;
+  state.tokenSamples = 1;
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
@@ -52,6 +53,23 @@ it("shows version history and observed invocations without member restore access
   );
   await waitFor(() => expect(screen.getByRole("heading", { name: "review-helper" })).toBeTruthy());
   expect(await screen.findByText("1 explicit invocation")).toBeTruthy();
+  expect(screen.getByText("2 runs, 1 with token data")).toBeTruthy();
+  expect(screen.getByText("Insufficient samples")).toBeTruthy();
+  expect(screen.queryByText(/100 tokens/)).toBeNull();
   expect(screen.getByRole("link", { name: /issue-1/ }).getAttribute("href")).toBe("/team/issues/issue-1");
   expect(screen.queryByRole("button", { name: /Restore/ })).toBeNull();
+});
+
+it("shows measured cost only after five token samples", async () => {
+  state.tokenSamples = 5;
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  render(
+    <QueryClientProvider client={client}>
+      <I18nProvider locale="en" resources={{ en: { common: enCommon, "self-evolution": enSelfEvolution } }}>
+        <SkillTab wsId="ws-1" />
+      </I18nProvider>
+    </QueryClientProvider>,
+  );
+  expect(await screen.findByText("Median 100 tokens")).toBeTruthy();
+  expect(screen.queryByText("Insufficient samples")).toBeNull();
 });

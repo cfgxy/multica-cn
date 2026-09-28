@@ -924,7 +924,14 @@ export interface SkillUsage {
   last_30_days: number;
   assigned_agents: number;
   since?: string;
-  versions: { version: number; count: number }[];
+  versions: {
+    version: number;
+    count: number;
+    runs?: number;
+    token_samples?: number;
+    median_total_tokens?: number | null;
+    retried_runs?: number;
+  }[];
   recent: {
     task_id: string;
     issue_id?: string;
