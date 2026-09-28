@@ -46,6 +46,10 @@ func TestListGitLabRepositories(t *testing.T) {
 			fmt.Fprint(w, `[{"id":7,"path_with_namespace":"team/fallback","ssh_url_to_repo":"git@git.test:/unsafe.git","http_url_to_repo":"https://git.test/team/fallback.git","visibility":"private","archived":false},{"id":8,"path_with_namespace":"team/unsafe","ssh_url_to_repo":"https://user:secret@git.test/a.git","http_url_to_repo":"https://git.test/a.git?token=secret","visibility":"private","archived":false}]`)
 		case "8":
 			fmt.Fprint(w, `[{"id":9,"path_with_namespace":"team/archived","visibility":"private"}]`)
+		case "10":
+			// 首条项目合法、第二条缺少 archived，校验失败必须丢弃已累加的结果。
+			w.Header().Set("X-Next-Page", "11")
+			fmt.Fprint(w, `[{"id":10,"path_with_namespace":"team/valid","ssh_url_to_repo":"git@git.test:team/valid.git","visibility":"private","archived":false},{"id":11,"path_with_namespace":"team/broken","visibility":"private"}]`)
 		case "9":
 			next := *r.URL
 			query := next.Query()
@@ -99,6 +103,10 @@ func TestListGitLabRepositories(t *testing.T) {
 	page, err = ListGitLabRepositories(context.Background(), server.URL, token, 9, 20)
 	if err != nil || len(page.Repositories) != 0 {
 		t.Errorf("same-origin redirect: %+v, %v", page, err)
+	}
+	page, err = ListGitLabRepositories(context.Background(), server.URL, token, 10, 20)
+	if !errors.Is(err, ErrUpstream) || len(page.Repositories) != 0 || page.NextPage != 0 {
+		t.Errorf("partial page leaked on validation failure: %+v, %v", page, err)
 	}
 }
 
