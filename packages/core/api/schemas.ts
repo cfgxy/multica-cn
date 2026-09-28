@@ -65,6 +65,7 @@ import type {
   ListIssuesResponse,
   ListGitHubInstallationsResponse,
   ListGitHubRepositoriesResponse,
+  ListGitLabRepositoriesResponse,
   ListLabelsResponse,
   ListWebhookDeliveriesResponse,
   IssueStatusEntry,
@@ -427,6 +428,23 @@ export const ListGitHubRepositoriesResponseSchema = z.object({
 export const EMPTY_LIST_GITHUB_REPOSITORIES_RESPONSE: ListGitHubRepositoriesResponse = {
   repositories: [],
   total_count: 0,
+  next_page: null,
+};
+
+export const ListGitLabRepositoriesResponseSchema = z.object({
+  repositories: z.array(z.object({
+    id: z.number().int().positive(),
+    full_name: z.string().min(1),
+    clone_url: z.string(),
+    archived: z.boolean(),
+    private: z.boolean(),
+    description: z.string().nullable(),
+  }).strip()),
+  next_page: z.number().int().positive().nullable(),
+}).strip();
+
+export const EMPTY_LIST_GITLAB_REPOSITORIES_RESPONSE: ListGitLabRepositoriesResponse = {
+  repositories: [],
   next_page: null,
 };
 
