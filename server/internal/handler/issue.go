@@ -3137,6 +3137,9 @@ type UpdateIssueRequest struct {
 	// ("暂时不启动" — MUL-3375). It is not an undo: the change takes effect and
 	// the issue can be run later via manual run/rerun. Optional; omitted or
 	// false keeps today's behavior. Mirrors comment suppress_agent_ids.
+	// Honored unconditionally for a member actor; for a trusted task-scoped
+	// agent actor it needs an existing run to anchor on — see suppressesRun
+	// (RUYI-251).
 	SuppressRun bool `json:"suppress_run,omitempty"`
 	// HandoffNote is an optional free-text instruction injected into the run's
 	// opening context when this write starts an agent/squad run ("交接说明" —
@@ -3666,7 +3669,7 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			StatusChanged:   statusChanged,
 		},
 		h.issueTriggerWriteProbe(r, actorType, actorID, issue),
-	); ok && !req.SuppressRun {
+	); ok && !h.suppressesRun(r.Context(), req.SuppressRun, actorType, trigger) {
 		h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, req.HandoffNote)
 	}
 
@@ -4348,7 +4351,7 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				StatusChanged:   statusChanged,
 			},
 			h.issueTriggerWriteProbe(r, actorType, actorID, issue),
-		); ok && !req.Updates.SuppressRun {
+		); ok && !h.suppressesRun(r.Context(), req.Updates.SuppressRun, actorType, trigger) {
 			h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, req.Updates.HandoffNote)
 		}
 
