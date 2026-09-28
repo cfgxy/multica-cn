@@ -18,6 +18,11 @@ import (
 // selection cannot fan out into thousands of readiness probes.
 const maxPreviewTriggerIssues = 500
 
+// suppressWarnMessage is the single log message for an honored `suppress_run`.
+// It is a constant so operators grep one string and the tests assert the same
+// one the handlers emit.
+const suppressWarnMessage = "issue write suppressed an agent run"
+
 // issueTriggerWriteProbe builds the probe the write paths feed to
 // WillEnqueueRun. The private-agent gate is already enforced at the HTTP
 // boundary (validateAssigneePair on assign) and inside enqueueSquadLeaderTask
@@ -76,6 +81,23 @@ func (h *Handler) shouldSuppressActiveSelfAssignment(ctx context.Context, actorT
 	}
 	active, err := h.hasActiveTaskForIssueAndAgent(ctx, issueID, targetAgentID)
 	return active || err != nil
+}
+
+// recordSuppressedIssueRun leaves the only trace an honored `suppress_run`
+// produces. The write itself succeeds and no task row appears, so without this
+// nothing on the server distinguishes "a human deliberately parked the run"
+// from "the run was lost" — RUYI-248 had to be reconstructed from agent
+// session transcripts for exactly that reason. The ids go in the log; the
+// counter carries only the two closed enums (RUYI-252).
+func (h *Handler) recordSuppressedIssueRun(issue db.Issue, trigger service.IssueRunTrigger, actorType, actorID string) {
+	slog.Warn(suppressWarnMessage,
+		"issue_id", uuidToString(issue.ID),
+		"actor_type", actorType,
+		"actor_id", actorID,
+		"trigger_source", string(trigger.Source),
+		"target_status", issue.Status,
+	)
+	h.Metrics.RecordIssueRunSuppressed(string(trigger.Source), actorType)
 }
 
 // dispatchIssueRun executes the enqueue side effect for a decision produced by

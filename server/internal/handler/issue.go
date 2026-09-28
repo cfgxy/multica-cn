@@ -3666,8 +3666,12 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 			StatusChanged:   statusChanged,
 		},
 		h.issueTriggerWriteProbe(r, actorType, actorID, issue),
-	); ok && !req.SuppressRun {
-		h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, req.HandoffNote)
+	); ok {
+		if req.SuppressRun {
+			h.recordSuppressedIssueRun(issue, trigger, actorType, actorID)
+		} else {
+			h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, req.HandoffNote)
+		}
 	}
 
 	// Platform-driven parent notification: when this issue transitions into
@@ -4348,8 +4352,12 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 				StatusChanged:   statusChanged,
 			},
 			h.issueTriggerWriteProbe(r, actorType, actorID, issue),
-		); ok && !req.Updates.SuppressRun {
-			h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, req.Updates.HandoffNote)
+		); ok {
+			if req.Updates.SuppressRun {
+				h.recordSuppressedIssueRun(issue, trigger, actorType, actorID)
+			} else {
+				h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, req.Updates.HandoffNote)
+			}
 		}
 
 		// No status change — not even → cancelled — cancels active tasks here,
