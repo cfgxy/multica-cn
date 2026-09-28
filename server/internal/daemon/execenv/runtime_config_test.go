@@ -66,6 +66,34 @@ func TestSubIssueCreationSectionPresentForIssueRuns(t *testing.T) {
 	}
 }
 
+func TestIssueBriefNoStartMatchesAgentAndMemberHandoffs(t *testing.T) {
+	t.Parallel()
+	out := buildMetaSkillContent("claude", TaskContextForEnv{IssueID: "issue-1"})
+	for _, want := range []string{
+		"a fresh agent handoff still starts one",
+		"For an agent actor,",
+		"For a member actor, `--no-start` can defer a run for an agent or squad assignee",
+		"A status-only write outside `backlog` starts no run",
+		"even with `--no-start`",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("issue brief missing %q", want)
+		}
+	}
+	if got := strings.Count(out, "For a member actor, `--no-start` can defer a run for an agent or squad assignee"); got != 3 {
+		t.Errorf("issue brief member actor guidance appears %d times, want 3 (commands, workflow, sub-issues)", got)
+	}
+	for _, stale := range []string{
+		"For a member assignee",
+		"suppressing it leaves the child parked",
+		"which suppresses the very run",
+	} {
+		if strings.Contains(out, stale) {
+			t.Errorf("issue brief still contains obsolete guidance %q", stale)
+		}
+	}
+}
+
 func TestIssueWorkflowCarriesSourceContextPrecedenceOnce(t *testing.T) {
 	t.Parallel()
 	out := buildMetaSkillContent("claude", TaskContextForEnv{IssueID: "issue-1"})
