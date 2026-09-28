@@ -220,6 +220,31 @@ func TestBusinessMetricsRuntimeGC(t *testing.T) {
 	}
 }
 
+func TestBusinessMetricsIssueRunSuppressed(t *testing.T) {
+	m := NewBusinessMetrics()
+	m.RecordIssueRunSuppressed(IssueRunSuppressSourceStatus, IssueRunSuppressActorAgent)
+	m.RecordIssueRunSuppressed("some-future-source", "webhook")
+
+	if got := testutil.ToFloat64(m.issueRunSuppressed.WithLabelValues(IssueRunSuppressSourceStatus, IssueRunSuppressActorAgent)); got != 1 {
+		t.Fatalf("issue run suppressed (status, agent) = %v, want 1", got)
+	}
+	if got := testutil.ToFloat64(m.issueRunSuppressed.WithLabelValues(IssueRunSuppressOther, IssueRunSuppressOther)); got != 1 {
+		t.Fatalf("issue run suppressed (other, other) = %v, want 1", got)
+	}
+	// A source that never fired must still read as an explicit zero, so a
+	// dashboard can tell "no suppression happened" from "never instrumented".
+	if got := testutil.ToFloat64(m.issueRunSuppressed.WithLabelValues(IssueRunSuppressSourceAssign, IssueRunSuppressActorMember)); got != 0 {
+		t.Fatalf("issue run suppressed (assign, member) = %v, want 0", got)
+	}
+
+	if _, ok := GatherForTest(t, m)["multica_issue_run_suppressed_total"]; !ok {
+		t.Fatal("registry did not expose metric family multica_issue_run_suppressed_total")
+	}
+
+	var nilMetrics *BusinessMetrics
+	nilMetrics.RecordIssueRunSuppressed(IssueRunSuppressSourceAssign, IssueRunSuppressActorMember)
+}
+
 func TestBusinessMetricsRuntimeSweepStage(t *testing.T) {
 	m := NewBusinessMetrics()
 	m.ObserveRuntimeSweepStage(RuntimeSweepStageLiveness, 250*time.Millisecond, 3, 1)
