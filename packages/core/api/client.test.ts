@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { configStore } from "../config";
-import { ApiClient, ApiError, CHAT_DRAFT_RESTORE_CAPABILITY, clientErrorMessage } from "./client";
+import { ApiClient, ApiError, CHAT_DRAFT_RESTORE_CAPABILITY, clientErrorMessage, errorCode } from "./client";
 import { EMPTY_PLUGIN_PACKAGE_LIST, EMPTY_PLUGIN_PREVIEW, EMPTY_PLUGIN_SURFACE_LAUNCH } from "./schemas";
 
 afterEach(() => {
@@ -74,6 +74,30 @@ describe("ApiClient agent conversation-starter compatibility", () => {
 });
 
 describe("ApiClient edit guards", () => {
+  it("does not accept malformed comment write responses as successful saves", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation(() => Promise.resolve(new Response("{}", {
+      status: 200,
+      headers: { "Content-Type": "application/json" },
+    }))));
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.createComment("issue-1", "draft")).rejects.toThrow(/invalid comment response/i);
+    await expect(client.updateComment("comment-1", "draft")).rejects.toThrow(/invalid comment response/i);
+  });
+
+  it("preserves structured mention failures for desktop and web clients", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      error: "one or more agent mentions cannot be invoked",
+      code: "invalid_agent_mentions",
+      invalid_mentions: [{ start: 3, end: 61 }],
+    }), { status: 422, headers: { "Content-Type": "application/json" } })));
+    const client = new ApiClient("https://api.example.test");
+    await expect(client.createComment("issue-1", "draft")).rejects.toMatchObject({
+      status: 422,
+      body: { code: "invalid_agent_mentions", invalid_mentions: [{ start: 3, end: 61 }] },
+    });
+    expect(errorCode(new ApiError("rejected", 422, "Unprocessable Entity", { code: "invalid_agent_mentions" }))).toBe("invalid_agent_mentions");
+  });
+
   it("serializes field baselines for issue and comment writes", async () => {
     const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(
       new Response("{}", {
@@ -85,7 +109,8 @@ describe("ApiClient edit guards", () => {
     const client = new ApiClient("https://api.example.test");
 
     await client.updateIssue("issue-1", { title: "Latest", title_base: "Original" });
-    await client.updateComment("comment-1", "Latest", [], undefined, "Original");
+    await expect(client.updateComment("comment-1", "Latest", [], undefined, "Original"))
+      .rejects.toThrow(/invalid comment response/i);
 
     expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
       title: "Latest",
@@ -2363,6 +2388,83 @@ describe("ApiClient refreshSkill response schema", () => {
       description: "",
       content: "",
       files: [],
+    });
+  });
+});
+
+describe("ApiClient skill version responses", () => {
+  const version = {
+    id: "version-1",
+    skill_id: "skill-1",
+    version: 1,
+    name: "review-helper",
+    description: "Reviews changes",
+    content: "# Review",
+    config: { origin: "local" },
+    files: [{ path: "references/checklist.md", content: "Check" }],
+    source: "create",
+    created_at: "2026-01-01T00:00:00Z",
+  };
+
+  it("validates skill lists consumed by the shared tab", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: "skill-1", workspace_id: "ws-1", name: "review-helper" }])))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 42, name: "broken" }]))));
+    const client = new ApiClient("https://api.example.test");
+    expect(await client.listSkills()).toMatchObject([{ id: "skill-1", name: "review-helper" }]);
+    expect(await client.listSkills()).toEqual([]);
+  });
+
+  it("keeps list responses metadata-only and parses detail and restore", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([version])))
+      .mockResolvedValueOnce(new Response(JSON.stringify(version)))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ version: 2 })));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    const listed = await client.listSkillVersions("skill-1");
+    expect(listed).toMatchObject([{ version: 1, name: "review-helper" }]);
+    expect(listed[0]).not.toHaveProperty("content");
+    expect(await client.getSkillVersion("skill-1", 1)).toMatchObject({ content: "# Review", files: version.files });
+    expect(await client.restoreSkillVersion("skill-1", 1)).toEqual({ version: 2 });
+    expect(fetchMock.mock.calls[2]?.[1]?.method).toBe("POST");
+  });
+
+  it("falls back when the list, detail or restore response is malformed", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ versions: [version] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...version, files: 42 })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ version: "wrong" }))));
+    const client = new ApiClient("https://api.example.test");
+
+    expect(await client.listSkillVersions("skill-1")).toEqual([]);
+    expect(await client.getSkillVersion("skill-1", 1)).toMatchObject({ id: "", version: 0, files: [] });
+    expect(await client.restoreSkillVersion("skill-1", 1)).toEqual({ version: 0 });
+  });
+
+  it("reads explicit skill invocations and rejects malformed usage responses", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        total: 1, last_30_days: 1, assigned_agents: 2, since: "2026-09-28T00:00:00Z",
+        versions: [{ version: 2, count: 1, runs: 2, token_samples: 1, median_total_tokens: 100, retried_runs: 1 }],
+        recent: [{ task_id: "run-1", issue_id: "issue-1", version: 2, used_at: "2026-09-28T00:00:00Z" }],
+      })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ total: "invalid" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        total: 1, last_30_days: 1, versions: [{ version: 2, count: 1, token_samples: "bad" }], recent: [],
+      })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        total: 1, last_30_days: 1, versions: [{ version: 2, count: 1 }], recent: [],
+      }))));
+    const client = new ApiClient("https://api.example.test");
+    expect(await client.getSkillUsage("skill-1")).toMatchObject({
+      total: 1, assigned_agents: 2, versions: [{ version: 2, count: 1, runs: 2, token_samples: 1, median_total_tokens: 100, retried_runs: 1 }], recent: [{ task_id: "run-1" }],
+    });
+    expect(await client.getSkillUsage("skill-1")).toBeNull();
+    expect(await client.getSkillUsage("skill-1")).toBeNull();
+    expect(await client.getSkillUsage("skill-1")).toMatchObject({
+      total: 1, versions: [{ version: 2, count: 1 }],
     });
   });
 });

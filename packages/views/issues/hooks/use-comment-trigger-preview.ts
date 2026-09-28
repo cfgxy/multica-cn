@@ -15,6 +15,7 @@ export interface UseCommentTriggerPreviewResult {
   // Explicit @agent / @squad mentions that will NOT trigger if posted as-is
   // (MUL-4525 §2), so the composer can warn before sending.
   blocked: CommentTriggerOutcome[];
+  invalidMentionCount: number;
 }
 
 export function isNoteCommentDraft(content: string): boolean {
@@ -33,6 +34,9 @@ export function commentTriggerPreviewSignature(content: string): string {
     seen.add(token);
     tokens.push(token);
   }
+  // The routing parser omits malformed IDs, but the admission preview still
+  // needs a new query when the user edits one of those links.
+  tokens.push(...(content.match(/\]\(mention:\/\/agent\/[^)\s]*\)/g) ?? []));
 
   return `nonempty|${tokens.join(",")}`;
 }
@@ -114,11 +118,12 @@ export function useCommentTriggerPreview({
   // Loading and errors intentionally surface as "no agents": the preview is
   // an enhancement, and the composer renders nothing for an empty list.
   if (signature === "empty" || debouncedSignature === "empty") {
-    return { agents: [], blocked: [] };
+    return { agents: [], blocked: [], invalidMentionCount: 0 };
   }
 
   return {
     agents: previewQuery.data?.agents ?? [],
     blocked: previewQuery.data?.blocked ?? [],
+    invalidMentionCount: previewQuery.data?.invalid_mentions?.length ?? 0,
   };
 }

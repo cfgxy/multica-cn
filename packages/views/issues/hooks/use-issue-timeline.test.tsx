@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { renderHook, act } from "@testing-library/react";
+import { toast } from "sonner";
+import { ApiError } from "@multica/core/api";
+import { I18nProvider } from "@multica/core/i18n/react";
+import { RESOURCES } from "../../test/i18n";
+import type { ReactNode } from "react";
 import type { TimelineEntry } from "@multica/core/types";
 
 function timelineData(entries: TimelineEntry[] = []) {
@@ -141,6 +146,7 @@ describe("useIssueTimeline", () => {
     stableHandles.deleteMutateAsync.mockClear();
     stableHandles.resolveMutateAsync.mockClear();
     stableHandles.toggleMutate.mockClear();
+    vi.mocked(toast.error).mockClear();
     queryState.data = timelineData();
     queryState.isLoading = false;
     cacheUpdates.last = null;
@@ -197,6 +203,27 @@ describe("useIssueTimeline", () => {
       attachmentIds: ["attachment-1"],
       suppressAgentIds: ["agent-1"],
     });
+  });
+
+  it("keeps a rejected comment in the composer and names the mention error", async () => {
+    stableHandles.createMutateAsync.mockRejectedValueOnce(
+      new ApiError("one or more agent mentions cannot be invoked", 422, "Unprocessable Entity", {
+        code: "invalid_agent_mentions", invalid_mentions: [{ start: 3, end: 62 }],
+      }),
+    );
+    const { result } = renderHook(() => useIssueTimeline("issue-1", "user-1"), {
+      wrapper: ({ children }: { children: ReactNode }) => (
+        <I18nProvider locale="en" resources={RESOURCES}>{children}</I18nProvider>
+      ),
+    });
+    let accepted: string | false = "unexpected";
+
+    await act(async () => {
+      accepted = await result.current.submitComment("[@No](mention://agent/00000000-0000-0000-0000-0000000000ff)");
+    });
+
+    expect(accepted).toBe(false);
+    expect(toast.error).toHaveBeenCalledWith("The comment wasn't posted. Check the agent mentions and try again.");
   });
 
   it("passes the captured comment content through editComment", async () => {

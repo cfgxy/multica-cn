@@ -80,6 +80,9 @@ import type {
   User,
   Skill,
   SkillSummary,
+  SkillVersion,
+  SkillVersionSummary,
+  SkillUsage,
   CreateSkillRequest,
   UpdateSkillRequest,
   SetAgentSkillsRequest,
@@ -193,6 +196,7 @@ import type {
   ListGitHubRepositoriesResponse,
   GitHubConnectResponse,
   ListVCSConnectionsResponse,
+  ListGitLabRepositoriesResponse,
   ConnectVCSRequest,
   ConnectVCSResponse,
   ListLarkInstallationsResponse,
@@ -455,14 +459,21 @@ import {
   GitHubConnectResponseSchema,
   ListGitHubInstallationsResponseSchema,
   ListGitHubRepositoriesResponseSchema,
+  ListGitLabRepositoriesResponseSchema,
+  EMPTY_LIST_GITLAB_REPOSITORIES_RESPONSE,
   EMPTY_GITHUB_CONNECT_RESPONSE,
   EMPTY_LIST_GITHUB_INSTALLATIONS_RESPONSE,
   EMPTY_LIST_GITHUB_REPOSITORIES_RESPONSE,
   RuntimeModelListRequestSchema,
   MALFORMED_RUNTIME_MODEL_LIST_REQUEST,
   SkillSchema,
-  SkillListSchema,
+  SkillSummaryListSchema,
   EMPTY_SKILL,
+  SkillVersionListSchema,
+  SkillVersionSchema,
+  EMPTY_SKILL_VERSION,
+  SkillRestoreResultSchema,
+  SkillUsageSchema,
   SkillImportResultSchema,
   EMPTY_SKILL_IMPORT_RESULT,
   IssueViewSchema,
@@ -1439,7 +1450,7 @@ export class ApiClient {
     attachmentIds?: string[],
     suppressAgentIds?: string[],
   ): Promise<Comment> {
-    return this.fetch(`/api/issues/${issueId}/comments`, {
+    const raw = await this.fetch<unknown>(`/api/issues/${issueId}/comments`, {
       method: "POST",
       body: JSON.stringify({
         content,
@@ -1449,6 +1460,9 @@ export class ApiClient {
         ...(suppressAgentIds?.length ? { suppress_agent_ids: suppressAgentIds } : {}),
       }),
     });
+    const comment = parseWithFallback(raw, CommentSchema, EMPTY_COMMENT, { endpoint: "POST /api/issues/:id/comments" });
+    if (!comment.id) throw new Error("Invalid comment response");
+    return comment;
   }
 
   async previewCommentTriggers(issueId: string, content: string, parentId?: string, editingCommentId?: string): Promise<CommentTriggerPreview> {
@@ -1509,7 +1523,7 @@ export class ApiClient {
   }
 
   async updateComment(commentId: string, content: string, attachmentIds?: string[], suppressAgentIds?: string[], contentBase?: string, expectedRevision?: number): Promise<Comment> {
-    return this.fetch(`/api/comments/${commentId}`, {
+    const raw = await this.fetch<unknown>(`/api/comments/${commentId}`, {
       method: "PUT",
       body: JSON.stringify({
         content,
@@ -1519,6 +1533,9 @@ export class ApiClient {
         ...(expectedRevision !== undefined ? { expected_revision: expectedRevision } : {}),
       }),
     });
+    const comment = parseWithFallback(raw, CommentSchema, EMPTY_COMMENT, { endpoint: "PUT /api/comments/:id" });
+    if (!comment.id) throw new Error("Invalid comment response");
+    return comment;
   }
 
   async deleteComment(commentId: string): Promise<void> {
@@ -3848,11 +3865,43 @@ export class ApiClient {
   // Skills
   async listSkills(): Promise<SkillSummary[]> {
     const raw = await this.fetch<unknown>("/api/skills");
-    return parseWithFallback(raw, SkillListSchema, [], { endpoint: "listSkills" });
+    return parseWithFallback<SkillSummary[]>(raw, SkillSummaryListSchema, [], {
+      endpoint: "GET /api/skills",
+    });
   }
 
   async getSkill(id: string): Promise<Skill> {
     return this.fetch(`/api/skills/${id}`);
+  }
+
+  async listSkillVersions(id: string): Promise<SkillVersionSummary[]> {
+    const raw = await this.fetch<unknown>(`/api/skills/${encodeURIComponent(id)}/versions`);
+    return parseWithFallback(raw, SkillVersionListSchema, [] as SkillVersionSummary[], {
+      endpoint: "GET /api/skills/{id}/versions",
+    });
+  }
+
+  async getSkillVersion(id: string, version: number): Promise<SkillVersion> {
+    const raw = await this.fetch<unknown>(`/api/skills/${encodeURIComponent(id)}/versions/${version}`);
+    return parseWithFallback(raw, SkillVersionSchema, EMPTY_SKILL_VERSION, {
+      endpoint: "GET /api/skills/{id}/versions/{version}",
+    });
+  }
+
+  async restoreSkillVersion(id: string, version: number): Promise<{ version: number }> {
+    const raw = await this.fetch<unknown>(`/api/skills/${encodeURIComponent(id)}/versions/${version}/restore`, {
+      method: "POST",
+    });
+    return parseWithFallback(raw, SkillRestoreResultSchema, { version: 0 }, {
+      endpoint: "POST /api/skills/{id}/versions/{version}/restore",
+    });
+  }
+
+  async getSkillUsage(id: string): Promise<SkillUsage | null> {
+    const raw = await this.fetch<unknown>(`/api/skills/${encodeURIComponent(id)}/usage`);
+    return parseWithFallback<SkillUsage | null>(raw, SkillUsageSchema, null, {
+      endpoint: "GET /api/skills/{id}/usage",
+    });
   }
 
   async createSkill(data: CreateSkillRequest): Promise<Skill> {
@@ -5238,6 +5287,22 @@ export class ApiClient {
   // VCS integration (Forgejo / Gitea / GitLab)
   async listVCSConnections(workspaceId: string): Promise<ListVCSConnectionsResponse> {
     return this.fetch(`/api/workspaces/${workspaceId}/vcs/connections`);
+  }
+
+  async listGitLabRepositories(
+    workspaceId: string,
+    connectionId: string,
+    page = 1,
+  ): Promise<ListGitLabRepositoriesResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/workspaces/${workspaceId}/vcs/connections/${connectionId}/repositories?page=${page}&per_page=100`,
+    );
+    return parseWithFallback(
+      raw,
+      ListGitLabRepositoriesResponseSchema,
+      EMPTY_LIST_GITLAB_REPOSITORIES_RESPONSE,
+      { endpoint: "GET /api/workspaces/:id/vcs/connections/:connectionId/repositories", redactContent: true },
+    );
   }
 
   async connectVCS(

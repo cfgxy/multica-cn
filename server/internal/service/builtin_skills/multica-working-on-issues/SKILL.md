@@ -216,8 +216,12 @@ failed-task rollback below writes the literal `todo` key, and a merged PR with
 close intent writes the literal `done` key.
 
 - **`backlog`** parks an agent-assigned issue: the assignee is set but no task
-  fires. Moving `backlog → todo` (or any non-done/non-cancelled status) enqueues
-  the assigned agent then.
+  fires. A status-only move out of `backlog` enqueues only when the destination
+  category is `todo` or `in_progress`; `blocked`, `in_review`, `done`, and
+  `cancelled` do not enqueue. Promote to `todo` or `in_progress` with a plain
+  status write when handing off work. `--no-start` does not revert the status:
+  an agent actor with no active run on this issue cannot use it to suppress a
+  fresh handoff; a member actor may use it to defer an agent or squad run.
 - **`in_progress` / `in_review`** are agent-managed CLI mutations, not
   `StartTask` / `CompleteTask` side effects. The runtime brief asks agents to
   write the state the issue is in whenever their work changes it — not from
@@ -253,15 +257,24 @@ close intent writes the literal `done` key.
 ## Claim ownership without duplicating a run
 
 Assigning an active issue to an agent normally starts a run. When the work is
-already underway and the write only records ownership or progress, pass
-`--no-start` on every command in that flow — suppressing the assignment alone
-does not suppress a later status update:
+already underway and the write only records ownership, pass `--no-start` on the
+assignment:
 
 ```bash
 multica issue assign <issue-id> --to-id <agent-id> --no-start
 multica issue update <issue-id> --assignee-id <agent-id> --no-start
-multica issue status <issue-id> in_progress --no-start
 ```
+
+The flag's limits depend on the actor and assignee:
+
+- Only a write that would otherwise start a run needs it — an assignment, or a
+  status-only move from `backlog` to effective `todo` or `in_progress`. Other
+  status-only moves start no run, so they never need `--no-start`.
+- For an agent actor, `--no-start` suppresses an additional run only if the target
+  agent already has an active run for this issue; a fresh agent handoff still starts one.
+- For a member actor, `--no-start` can defer a run for an agent or squad assignee.
+
+See the sub-issue sections below.
 
 Before self-assigning, check the target issue's comment history for an existing
 claim and any `## Active sibling runs` block (its `run-messages` commands show
@@ -323,6 +336,10 @@ multica issue status <child-id> todo   # promote when the previous step is truly
 ```
 
 Creating every serial step as `todo` enqueues the whole chain at once.
+
+Prefer promotion without `--no-start` to make the handoff explicit. For an agent
+actor, even `--no-start` starts a run when the target agent has no active run on
+this child. For a member actor, `--no-start` can defer a run for an agent or squad assignee.
 
 ### Stages: order sub-issues into barrier groups
 
