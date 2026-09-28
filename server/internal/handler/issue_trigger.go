@@ -78,6 +78,40 @@ func (h *Handler) shouldSuppressActiveSelfAssignment(ctx context.Context, actorT
 	return active || err != nil
 }
 
+// suppressesRun decides whether a requested suppress_run actually cancels the
+// enqueue this write would otherwise perform.
+//
+// A member actor is the human "暂时不启动" affordance (the run-confirm dialog)
+// and is always honored. A trusted task-scoped agent actor is not: the flag's
+// own documented meaning is "without starting ANOTHER run", so honoring it on
+// an issue that holds no run at all silently discards the work instead of
+// deferring it. That is the RUYI-248 stranding — a leader promoted parked
+// sub-issues with `--no-start`, the board showed them in progress and nothing
+// was ever queued, with no log to find it by. The suppression therefore needs
+// an existing run to anchor on: with an active task on the (issue, agent) pair
+// it still suppresses, composing with shouldSuppressActiveSelfAssignment's
+// self-claim dedup; with none it is ignored and the run enqueues, where the
+// (issue_id, agent_id) pending unique index remains the duplicate backstop.
+//
+// A failed lookup fails closed to "suppress" for the same reason
+// shouldSuppressActiveSelfAssignment does: "cannot confirm whether a run is
+// active" must never license a possibly-duplicate run.
+func (h *Handler) suppressesRun(ctx context.Context, requested bool, actorType string, trigger service.IssueRunTrigger) bool {
+	if !requested || actorType != "agent" {
+		return requested
+	}
+	active, err := h.hasActiveTaskForIssueAndAgent(ctx, trigger.IssueID, trigger.AgentID)
+	if err != nil || active {
+		return true
+	}
+	slog.Info("ignoring suppress_run from agent actor: issue has no active run to suppress",
+		"issue_id", uuidToString(trigger.IssueID),
+		"agent_id", uuidToString(trigger.AgentID),
+		"source", string(trigger.Source),
+	)
+	return false
+}
+
 // dispatchIssueRun executes the enqueue side effect for a decision produced by
 // WillEnqueueRun, carrying an optional handoff note into the run's opening
 // context. The squad path still flows through enqueueSquadLeaderTask so the
