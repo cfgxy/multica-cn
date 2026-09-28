@@ -78,6 +78,8 @@ import {
   PluginPreviewSchema,
   EMPTY_PLUGIN_INSTALLATION_LIST,
   EMPTY_PLUGIN_PREVIEW,
+  ListGitLabRepositoriesResponseSchema,
+  EMPTY_LIST_GITLAB_REPOSITORIES_RESPONSE,
 } from "./schemas";
 import { IssueViewSchema, IssueViewListSchema } from "./schemas";
 import {
@@ -87,6 +89,19 @@ import {
   EMPTY_ISSUE_STATUS_ENTRY,
 } from "./schemas";
 import { parseWithFallback } from "./schema";
+
+describe("ListGitLabRepositoriesResponseSchema", () => {
+  it("accepts a paginated minimal GitLab projection", () => {
+    const value = { repositories: [{ id: 3, full_name: "team/sub/app", clone_url: "git@git.test:team/sub/app.git", archived: false, private: true, description: null }], next_page: 2 };
+    expect(ListGitLabRepositoriesResponseSchema.parse(value)).toEqual(value);
+  });
+
+  it("falls back to empty for malformed pages and projects", () => {
+    for (const value of [null, {}, { repositories: "secret", next_page: 2 }, { repositories: [{ id: 1, clone_url: "url" }], next_page: 2 }, { repositories: [], next_page: "three" }]) {
+      expect(parseWithFallback(value, ListGitLabRepositoriesResponseSchema, EMPTY_LIST_GITLAB_REPOSITORIES_RESPONSE, { endpoint: "GET /api/workspaces/:id/vcs/connections/:connectionId/repositories" })).toEqual(EMPTY_LIST_GITLAB_REPOSITORIES_RESPONSE);
+    }
+  });
+});
 
 const baseIssue = {
   id: "11111111-1111-1111-1111-111111111111",
