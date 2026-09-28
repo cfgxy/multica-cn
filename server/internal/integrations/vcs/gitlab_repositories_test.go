@@ -18,7 +18,8 @@ func TestListGitLabRepositories(t *testing.T) {
 	}))
 	defer other.Close()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/api/v4/projects" || r.Header.Get("PRIVATE-TOKEN") != token || r.URL.Query().Get("simple") != "true" || r.URL.Query().Get("order_by") != "id" || r.URL.Query().Get("sort") != "asc" {
+		// simple=true 让 GitLab 只回受限字段集，其中不含 archived 与 visibility，故本接口禁止携带它。
+		if r.URL.Path != "/api/v4/projects" || r.Header.Get("PRIVATE-TOKEN") != token || r.URL.Query().Has("simple") || r.URL.Query().Get("order_by") != "id" || r.URL.Query().Get("sort") != "asc" {
 			t.Errorf("unexpected projects request: %s", r.URL.Path)
 		}
 		switch r.URL.Query().Get("page") {
@@ -37,7 +38,7 @@ func TestListGitLabRepositories(t *testing.T) {
 		case "3":
 			fmt.Fprint(w, `{"not":"an array"}`)
 		case "4":
-			fmt.Fprint(w, strings.Repeat(" ", 2<<20))
+			fmt.Fprint(w, strings.Repeat(" ", gitLabProjectsResponseLimit+1))
 		case "5":
 			http.Redirect(w, r, other.URL, http.StatusFound)
 		case "6":
@@ -45,11 +46,11 @@ func TestListGitLabRepositories(t *testing.T) {
 		case "7":
 			fmt.Fprint(w, `[{"id":7,"path_with_namespace":"team/fallback","ssh_url_to_repo":"git@git.test:/unsafe.git","http_url_to_repo":"https://git.test/team/fallback.git","visibility":"private","archived":false},{"id":8,"path_with_namespace":"team/unsafe","ssh_url_to_repo":"https://user:secret@git.test/a.git","http_url_to_repo":"https://git.test/a.git?token=secret","visibility":"private","archived":false}]`)
 		case "8":
-			fmt.Fprint(w, `[{"id":9,"path_with_namespace":"team/archived","visibility":"private"}]`)
+			// GitLab CE 16.10.7 实测载荷形态：条目可能整条缺 archived / visibility。
+			fmt.Fprint(w, `[{"id":9,"path_with_namespace":"team/no-archived","visibility":"public"},{"id":10,"path_with_namespace":"team/no-visibility","archived":true},{"id":11,"path_with_namespace":"team/bare"},{"id":12,"path_with_namespace":"team/unknown-visibility","visibility":"shared","archived":false}]`)
 		case "10":
-			// First project is valid, second one lacks archived: validation failure must drop what was accumulated.
 			w.Header().Set("X-Next-Page", "11")
-			fmt.Fprint(w, `[{"id":10,"path_with_namespace":"team/valid","ssh_url_to_repo":"git@git.test:team/valid.git","visibility":"private","archived":false},{"id":11,"path_with_namespace":"team/broken","visibility":"private"}]`)
+			fmt.Fprint(w, `[{"id":1,"path_with_namespace":"ok/one","visibility":"public","archived":false},{"id":0,"path_with_namespace":"bad/zero-id"}]`)
 		case "9":
 			next := *r.URL
 			query := next.Query()
@@ -96,9 +97,26 @@ func TestListGitLabRepositories(t *testing.T) {
 	if err != nil || len(page.Repositories) != 2 || page.Repositories[0].CloneURL != "https://git.test/team/fallback.git" || page.Repositories[1].CloneURL != "" {
 		t.Errorf("unsafe URL fallback: %+v, %v", page, err)
 	}
-	_, err = ListGitLabRepositories(context.Background(), server.URL, token, 8, 20)
+	// 缺字段降级：整批仍返回，archived 未知按未归档（不误禁选），可见性未知按私有（不把可能私有的项目标成公开）。
+	page, err = ListGitLabRepositories(context.Background(), server.URL, token, 8, 20)
+	if err != nil || len(page.Repositories) != 4 {
+		t.Fatalf("degraded fields page: %+v, %v", page, err)
+	}
+	for i, want := range []GitLabRepository{
+		{ID: 9, FullName: "team/no-archived", Archived: false, Private: false},
+		{ID: 10, FullName: "team/no-visibility", Archived: true, Private: true},
+		{ID: 11, FullName: "team/bare", Archived: false, Private: true},
+		{ID: 12, FullName: "team/unknown-visibility", Archived: false, Private: true},
+	} {
+		got := page.Repositories[i]
+		if got.ID != want.ID || got.FullName != want.FullName || got.Archived != want.Archived || got.Private != want.Private {
+			t.Errorf("degraded entry %d: got %+v, want %+v", i, got, want)
+		}
+	}
+	// 结构性畸形不随字段降级一起放宽。
+	_, err = ListGitLabRepositories(context.Background(), server.URL, token, 10, 20)
 	if !errors.Is(err, ErrUpstream) {
-		t.Errorf("missing archived field accepted: %v", err)
+		t.Errorf("malformed entry accepted: %v", err)
 	}
 	page, err = ListGitLabRepositories(context.Background(), server.URL, token, 9, 20)
 	if err != nil || len(page.Repositories) != 0 {
