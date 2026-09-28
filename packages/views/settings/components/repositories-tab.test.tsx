@@ -144,7 +144,7 @@ vi.mock("../../navigation", () => ({
   }),
 }));
 
-import { RepositoriesTab, repositoryIdentity } from "./repositories-tab";
+import { RepositoriesTab } from "./repositories-tab";
 
 const TEST_RESOURCES = {
   en: { common: enCommon, settings: enSettings },
@@ -334,9 +334,10 @@ describe("RepositoriesTab — automatic updates", () => {
     expect(screen.queryByRole("button", { name: /Choose from GitLab/ })).toBeNull();
   });
 
-  it("imports selected GitLab subgroup projects across pages without duplicates or archived entries", async () => {
+  // URL boundary cases are covered in repository-identity.test.ts.
+  it("deduplicates an existing non-git SCP GitLab project while importing other projects", async () => {
     vcsRef.current = { available: true, configured: true, can_manage: true, connections: [{ id: "gl-1", provider: "gitlab", instance_url: "https://git.test", account_login: "admin" }] };
-    workspaceRef.current = { ...workspaceRef.current, repos: [{ url: "https://git.test/a/app.git" }] };
+    workspaceRef.current = { ...workspaceRef.current, repos: [{ url: "deploy@git.test:a/app.git" }] };
     gitLabRef.current = { pages: [
       { repositories: [
         { id: 1, full_name: "a/app", clone_url: "git@git.test:a/app.git", description: null, private: true, archived: false },
@@ -362,7 +363,7 @@ describe("RepositoriesTab — automatic updates", () => {
     await user.click(checkboxes[1]!);
     await user.click(screen.getByRole("button", { name: "Add GitLab repositories" }));
     await waitFor(() => expect(mockUpdateWorkspace).toHaveBeenCalledWith("workspace-1", { repos: [
-      { url: "https://git.test/a/app.git" },
+      { url: "deploy@git.test:a/app.git" },
       { url: "git@git.test:b/app.git", description: "Second" },
     ] }));
   });
@@ -491,21 +492,6 @@ describe("RepositoriesTab — automatic updates", () => {
         ],
       });
     });
-  });
-
-  it("preserves repository path casing when comparing clone URLs", () => {
-    expect(
-      repositoryIdentity("https://GitHub.com/Acme/Repo.git"),
-    ).toBe("github.com/Acme/Repo");
-    expect(
-      repositoryIdentity("git@github.com:acme/repo.git"),
-    ).toBe("github.com/acme/repo");
-  });
-
-  it("never imports a credential-bearing or escaped-control clone URL", () => {
-    expect(repositoryIdentity("https://user:secret@git.test/team/app.git")).toBeNull();
-    expect(repositoryIdentity("https://git.test/team/app.git?token=secret")).toBeNull();
-    expect(repositoryIdentity("https://git.test/team/app%0a.git")).toBeNull();
   });
 
   it("opens the picker after returning from a GitHub connection", async () => {

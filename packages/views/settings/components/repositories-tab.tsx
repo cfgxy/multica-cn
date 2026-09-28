@@ -63,6 +63,7 @@ import {
 } from "./settings-layout";
 import { useAutoSave } from "./use-auto-save";
 import { GitHubMark } from "./github-mark";
+import { repositoryIdentity } from "./repository-identity";
 
 const EMPTY_REPOSITORIES: WorkspaceRepo[] = [];
 
@@ -73,47 +74,6 @@ function repositoriesEqual(left: WorkspaceRepo[], right: WorkspaceRepo[]) {
       repo.url === right[index]?.url &&
       (repo.description ?? "") === (right[index]?.description ?? ""),
   );
-}
-
-export function repositoryIdentity(rawURL: string): string | null {
-  const value = rawURL.trim();
-  if (!value || /[\s?#\\]/.test(value)) return null;
-  try {
-    for (const char of decodeURIComponent(value)) {
-      const code = char.codePointAt(0) ?? 0;
-      if (code < 32 || code === 127) return null;
-    }
-  } catch {
-    return null;
-  }
-
-  let host = "";
-  let path = "";
-  if (!value.includes("://")) {
-    const scpLike = value.match(/^git@([^:@\s/]+):([^\s?#]+)$/);
-    if (scpLike) {
-      host = scpLike[1] ?? "";
-      path = scpLike[2] ?? "";
-    }
-  }
-  if (!host) {
-    try {
-      const parsed = new URL(value);
-      if (!["https:", "http:", "ssh:"].includes(parsed.protocol) ||
-          parsed.search || parsed.hash ||
-          (parsed.username && !(parsed.protocol === "ssh:" && parsed.username === "git")) || parsed.password) return null;
-      host = parsed.hostname;
-      path = parsed.pathname;
-    } catch {
-      return null;
-    }
-  }
-
-  const normalizedPath = path
-    .replace(/^\/+|\/+$/g, "")
-    .replace(/\.git$/i, "");
-  if (!host || !normalizedPath) return null;
-  return `${host.toLowerCase()}/${normalizedPath}`;
 }
 
 export function RepositoriesTab() {
