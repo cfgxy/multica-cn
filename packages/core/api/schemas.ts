@@ -3427,6 +3427,38 @@ export const SkillUsageSchema = z.object({
   })),
 });
 
+export const SkillEffectMetricsSchema = z.object({
+  runs: z.number().int().nonnegative(),
+  token_samples: z.number().int().nonnegative(),
+  median_total_tokens: z.number().nonnegative().nullable().optional(),
+  retried_runs: z.number().int().nonnegative(),
+  reviewed_issues: z.number().int().nonnegative(),
+  first_pass_issues: z.number().int().nonnegative(),
+});
+
+export const SkillEffectSchema = z.object({
+  since: z.string().optional(),
+  use_group: SkillEffectMetricsSchema,
+  control_group: SkillEffectMetricsSchema,
+  perplexity: z.object({
+    scored: z.boolean(),
+    bands: z.array(z.string()).optional(),
+  }),
+  version_events: z.array(z.object({
+    version: z.number().int().positive(),
+    from_version: z.number().int().positive(),
+    source: z.string(),
+    operator_id: z.string().optional(),
+    created_at: z.string(),
+    before: SkillEffectMetricsSchema.nullable().optional(),
+    after: SkillEffectMetricsSchema.nullable().optional(),
+    window_days: z.number().int().positive(),
+    window_uses: z.number().int().positive(),
+    before_mode: z.string(),
+    after_mode: z.string(),
+  })),
+});
+
 export const SkillImportExistingSkillSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -4267,3 +4299,72 @@ export const EMPTY_PROMPT_QUIZ_BASELINE: PromptQuizBaseline = {
   incomparable: 0,
   baseline_incomparable: 0,
 };
+
+export const ProposalSchema = z.object({
+  id: z.string(),
+  type: z.string(),
+  status: z.string(),
+  title: z.string(),
+  summary: z.string(),
+  evidence: z.array(z.unknown()),
+  prophecy: z.record(z.string(), z.unknown()),
+  generation_snapshot: z.record(z.string(), z.unknown()),
+  adoption_snapshot: z.record(z.string(), z.unknown()).optional(),
+  verification: z.record(z.string(), z.unknown()).optional(),
+  audit_log: z.array(z.unknown()),
+  transfer_error: z.string().optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+}).loose();
+
+export const ProposalListSchema = z.array(ProposalSchema);
+
+export const KnowledgeScanBatchSchema = z.object({
+  id: z.string(),
+  dir_id: z.string(),
+  trigger_source: z.string(),
+  result: z.string(),
+  added: z.number().int(),
+  updated: z.number().int(),
+  removed: z.number().int(),
+  error: z.string().optional(),
+  started_at: z.string(),
+  finished_at: z.string().optional(),
+}).loose();
+
+export const KnowledgeDirSchema = z.object({
+  id: z.string(),
+  kind: z.string(),
+  path: z.string(),
+  project_id: z.string().optional(),
+  label: z.string(),
+  health_state: z.string(),
+  health_note: z.string(),
+  removed: z.boolean(),
+  entry_count: z.number().int(),
+  last_scan: KnowledgeScanBatchSchema.optional(),
+  created_at: z.string(),
+  updated_at: z.string(),
+}).loose();
+
+export const KnowledgeDirListSchema = z.array(KnowledgeDirSchema);
+
+export const KnowledgeEntrySchema = z.object({
+  id: z.string(),
+  dir_id: z.string(),
+  key: z.string(),
+  content: z.string(),
+  content_sha256: z.string(),
+  mirror_state: z.string(),
+  first_seen_at: z.string(),
+  last_confirmed_at: z.string(),
+  adoption_state: z.string(),
+  adopted_at: z.string().optional(),
+  adopted_by: z.string().optional(),
+  ultimate_dir_id: z.string().optional(),
+  adopted_from_dir_id: z.string().optional(),
+  adopted_from_key: z.string().optional(),
+  adoption_error: z.string().optional(),
+}).loose();
+
+export const KnowledgeEntryListSchema = z.array(KnowledgeEntrySchema);

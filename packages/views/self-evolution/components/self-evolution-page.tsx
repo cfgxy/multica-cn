@@ -15,6 +15,8 @@ import { CollectionPageHeader } from "../../layout/collection-page";
 import { PAGE_GUTTER } from "../../layout/page-header";
 import { useT } from "../../i18n";
 import { cn } from "@multica/ui/lib/utils";
+import { KnowledgeTab } from "./knowledge-tab";
+import { ProposalTab } from "./proposal-tab";
 import { QualityTab } from "./quality-tab";
 import { QuizTab } from "./quiz-tab";
 import { SkillTab } from "./skill-tab";
@@ -25,9 +27,10 @@ import { SkillTab } from "./skill-tab";
  * Phase 1 (RUYI-183) wired up the nav entry, route and locale surface; the
  * quality tab (RUYI-184) is the first one with data behind it, and the quiz tab
  * (RUYI-185) reads the same scopes through a fixed question bank. Skill history
- * and observed use join them in phase four. The tabs live
- * inside the page rather than as sibling routes, so no new route or page key
- * enters the three registries.
+ * and observed use join them in phase four, and the proposal pool plus the
+ * knowledge mirror (RUYI-265) close the loop from evidence to adoption. The
+ * tabs live inside the page rather than as sibling routes, so no new route or
+ * page key enters the three registries.
  */
 export function SelfEvolutionPage() {
   const { t } = useT("self-evolution");
@@ -53,6 +56,8 @@ export function SelfEvolutionPage() {
             <TabsTrigger value="quality">{t(($) => $.tabs.quality)}</TabsTrigger>
             <TabsTrigger value="quiz">{t(($) => $.tabs.quiz)}</TabsTrigger>
             <TabsTrigger value="skills">{t(($) => $.tabs.skills)}</TabsTrigger>
+            <TabsTrigger value="proposals">{t(($) => $.tabs.proposals)}</TabsTrigger>
+            <TabsTrigger value="knowledge">{t(($) => $.tabs.knowledge)}</TabsTrigger>
           </TabsList>
           <TabsContent value="overview" className="pt-6">
             <Empty>
@@ -73,6 +78,12 @@ export function SelfEvolutionPage() {
           </TabsContent>
           <TabsContent value="skills" className="pt-6">
             <SkillTab wsId={wsId} />
+          </TabsContent>
+          <TabsContent value="proposals" className="pt-6">
+            <ProposalTab wsId={wsId} />
+          </TabsContent>
+          <TabsContent value="knowledge" className="pt-6">
+            <KnowledgeTab wsId={wsId} />
           </TabsContent>
         </Tabs>
       </div>

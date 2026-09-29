@@ -9,7 +9,9 @@
     "overview": "Overview",
     "quality": "Quality",
     "quiz": "Quiz",
-    "skills": "Skills"
+    "skills": "Skills",
+    "proposals": "Proposals",
+    "knowledge": "Knowledge"
   },
   "skills": {
     "choose": "Skill",
@@ -31,6 +33,33 @@
     "noCostData": "No token data",
     "insufficientCost": "Insufficient samples",
     "medianTokens": "Median {{count}} tokens",
+    "versionComparison": "Version measurements",
+    "compareTo": "Compare with",
+    "noComparison": "A second version is needed for comparison.",
+    "metric": "Measurement",
+    "change": "Difference",
+    "tokenMetric": "Median run tokens",
+    "retryMetric": "Retried runs",
+    "noComparisonData": "No runs",
+    "comparisonCaveat": "Based on explicit invocations. Differences across versions are observational, not evidence that the skill caused a change; at least five measured runs on each side are required to show a difference.",
+    "useVsControl": "Use group vs control group",
+    "useGroup": "Use group",
+    "controlGroup": "Control group",
+    "perplexityMetric": "Prompt perplexity (D3)",
+    "perplexityNotScored": "Not scored",
+    "notComparable": "Same prompt both sides",
+    "perplexitySamePrompt": "Perplexity is scored per prompt version and both groups read the same prompt, so the difference is not comparable.",
+    "firstPassMetric": "First-pass review rate (D7)",
+    "noReviewData": "No review data",
+    "useControlCaveat": "The control group holds terminal runs by the same roles on the same project that never invoked the skill inside the instrumentation window. Deltas appear only when both sides have at least 5 samples.",
+    "versionEvents": "Version events",
+    "noVersionEvents": "No version events yet (the first version is not an event).",
+    "versionEventTitle": "v{{from}} → v{{version}}",
+    "eventBefore": "Before: {{count}} runs",
+    "eventAfter": "After: {{count}} runs",
+    "windowModeDays": "{{days}}-day window",
+    "windowModeUses": "{{uses}}-use window",
+    "windowModeNone": "No uses in window",
     "recent": "Recent invocations",
     "chatRun": "Chat run",
     "observational": "Invocation counts are observed calls, not measured skill outcomes.",
@@ -44,7 +73,13 @@
     "cancel": "Cancel",
     "error": "Could not load skill history.",
     "retry": "Retry",
-    "sources": { "create": "Created", "proposal": "Proposal", "revision": "Proposal revision", "edit": "Edited", "restore": "Restored" }
+    "sources": {
+      "create": "Created",
+      "proposal": "Proposal",
+      "revision": "Proposal revision",
+      "edit": "Edited",
+      "restore": "Restored"
+    }
   },
   "quality": {
     "scopePicker": {
@@ -261,5 +296,143 @@
         "save": "Save"
       }
     }
+  },
+  "proposals": {
+    "title": "Proposal pool",
+    "description": "A proposal enters the pool only with a falsifiable prophecy; adoption and verification are separate records, and rejected rows stay retrievable.",
+    "filterAll": "All statuses",
+    "status": {
+      "draft": "Draft",
+      "needs_revision": "Needs revision",
+      "adopted": "Adopted",
+      "rejected": "Rejected",
+      "archived": "Archived"
+    },
+    "type": {
+      "prompt_revision": "Prompt revision",
+      "skill": "Skill change",
+      "project_cognition": "Project cognition",
+      "lesson": "Lesson",
+      "pitfall": "Pitfall"
+    },
+    "create": "New proposal",
+    "createTitle": "New proposal",
+    "createDescription": "The prophecy is written at creation and frozen afterwards; quantitative proposals need a metric, a direction and a numeric band, behavior proposals an observable change and a falsification condition.",
+    "typeLabel": "Type",
+    "titleLabel": "Title",
+    "summaryLabel": "Summary",
+    "prophecyOutcome": "Expected outcome",
+    "prophecyFalsify": "Falsification condition",
+    "prophecyObject": "Metric",
+    "prophecyDirection": "Expected direction",
+    "prophecyRangeLow": "Band low",
+    "prophecyRangeHigh": "Band high",
+    "direction": {
+      "down": "Down",
+      "up": "Up",
+      "unchanged": "Unchanged"
+    },
+    "cancel": "Cancel",
+    "submit": "Submit",
+    "list": "Proposals",
+    "detailTitle": "Proposal detail",
+    "detail": {
+      "prophecy": "Prophecy at entry",
+      "falsify": "Falsification condition",
+      "object": "Metric",
+      "direction": "Direction",
+      "band": "Band [{{low}}, {{high}}]",
+      "verification": "Verification record",
+      "noVerification": "No verification recorded yet; verdicts can be added after adoption.",
+      "audit": "Audit trail"
+    },
+    "createdAt": "Created {{date}}",
+    "transferError": "Knowledge transfer failed: {{error}}",
+    "adopt": "Adopt",
+    "reject": "Reject",
+    "restore": "Restore to draft",
+    "verify": "Record verification",
+    "verifySubmit": "Submit verification",
+    "rejectReasonLabel": "Rejection reason",
+    "rejectReasonPlaceholder": "Reason kept in the audit trail",
+    "verifyVerdictLabel": "Verdict",
+    "verifyEvidenceLabel": "Evidence",
+    "verifyEvidencePlaceholder": "Required: evidence supporting the verdict",
+    "verifyNoteLabel": "Note (optional)",
+    "ownerOnly": "Adopting, rejecting, restoring and verifying are workspace-owner only.",
+    "verdict": {
+      "established": "Established",
+      "partial": "Partially established",
+      "refuted": "Refuted",
+      "undeterminable": "Undeterminable"
+    },
+    "empty": {
+      "title": "No proposals",
+      "description": "The pool is empty. Create a proposal with a falsifiable prophecy to enter it."
+    },
+    "error": {
+      "read": "Failed to load proposals",
+      "write": "The action did not complete.",
+      "retry": "Retry"
+    }
+  },
+  "knowledge": {
+    "title": "Knowledge mirror",
+    "description": "Candidate bd memories directories are mirrored read-only; the only write path is an owner adoption transferring content into the ultimate library.",
+    "register": "Register directory",
+    "registerTitle": "Register knowledge directory",
+    "registerDescription": "Registering runs the initial read-only scan. The ultimate library is designated separately and is not registered through this form.",
+    "kindLabel": "Directory kind",
+    "kind": {
+      "ultimate": "Ultimate library",
+      "candidate_cli": "Candidate (manual)",
+      "candidate_auto": "Candidate (auto-discovered)"
+    },
+    "pathLabel": "Directory path",
+    "labelLabel": "Display label",
+    "labelPlaceholder": "Optional",
+    "cancel": "Cancel",
+    "registerSubmit": "Register",
+    "dirsTitle": "Registered directories",
+    "entriesTitle": "Entry mirror",
+    "entryCount": "{{n}} entries",
+    "lastScan": "Last scan ({{result}}): +{{added}}, ~{{updated}}, -{{removed}}",
+    "neverScanned": "Never scanned",
+    "health": {
+      "ok": "Healthy",
+      "unhealthy": "Unhealthy"
+    },
+    "scanResult": {
+      "noop": "no change",
+      "changed": "changed",
+      "failed": "failed"
+    },
+    "scan": "Scan now",
+    "unregister": "Unregister",
+    "allDirs": "All directories",
+    "searchPlaceholder": "Search key or content",
+    "mirrorState": {
+      "synced": "Synced",
+      "source_deleted": "Source deleted",
+      "source_removed": "Source removed"
+    },
+    "adoptionState": {
+      "pending": "Pending",
+      "adopted": "Adopted",
+      "failed": "Failed"
+    },
+    "adopt": "Adopt",
+    "adoptedFrom": "Adopted from {{key}}",
+    "emptyDirs": {
+      "title": "No registered directories",
+      "description": "Register a candidate bd memories directory and its contents are mirrored here read-only."
+    },
+    "emptyEntries": "No entries under the current filter.",
+    "error": {
+      "read": "Failed to load knowledge",
+      "write": "The action did not complete.",
+      "retry": "Retry"
+    },
+    "ownerOnly": "Registering, scanning, unregistering and adopting are workspace-owner only."
   }
 }
