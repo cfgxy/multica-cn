@@ -58,6 +58,7 @@ import {
   View,
   type NativeSyntheticEvent,
   type TextInputSelectionChangeEventData,
+  type TextInputKeyPressEventData,
 } from "react-native";
 import { KeyboardStickyView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -65,6 +66,8 @@ import { Ionicons } from "@expo/vector-icons";
 import { router, type Href } from "expo-router";
 import * as Haptics from "expo-haptics";
 import { useMentionDraftStore } from "@/data/stores/mention-draft-store";
+import { useSkillDraftStore } from "@/data/stores/skill-draft-store";
+import { insertSkillReference, serializeSkillReference, skillTriggerFromInput } from "@/lib/skill-reference";
 import {
   canSubmitMessageDraft,
   completedAttachmentIds,
@@ -102,6 +105,8 @@ interface Props {
   /** Push target for the `@` button. The picker route reads /
    *  writes `useMentionDraftStore` directly. */
   mentionPickerPath: Href;
+  /** Issue comments may pick a skill; chat keeps its existing input behavior. */
+  skillPickerPath?: Href;
 
   /** Attachment upload context — forwarded to `api.uploadFile`. Comment
    *  passes `issueId`; chat omits both (uploads are session-scoped via
@@ -159,6 +164,7 @@ interface Props {
 export function MessageComposer({
   onSubmit,
   mentionPickerPath,
+  skillPickerPath,
   uploadContext,
   placeholder,
   pillLabel,
@@ -228,6 +234,14 @@ export function MessageComposer({
   // The `@` token recorded when typing opened the picker (RUYI-232).
   // Consumed once a pick lands; see the strip effect below.
   const pendingToken = useMentionDraftStore((s) => s.token);
+  const selectedSkill = useSkillDraftStore((s) => s.selected);
+  const slashTypedRef = useRef(false);
+  const hasSkillPicker = !!skillPickerPath;
+
+  useEffect(() => {
+    if (!hasSkillPicker) return;
+    return () => useSkillDraftStore.getState().clear();
+  }, [hasSkillPicker]);
 
   // Caret mirror for the typing-trigger predicate. Written from
   // onSelectionChange only — never triggers a re-render.
@@ -241,6 +255,32 @@ export function MessageComposer({
     },
     [],
   );
+
+  useEffect(() => {
+    if (!selectedSkill || !hasSkillPicker) return;
+    const store = useSkillDraftStore.getState();
+    store.setSelected(null);
+    const token = store.token;
+    store.setToken(null);
+    let next: string;
+    let cursor: number;
+    if (token) {
+      next = insertSkillReference(text, token, selectedSkill);
+      if (next === text) return;
+      cursor = token.start + serializeSkillReference(selectedSkill).length + 1;
+    } else {
+      const selection = selectionRef.current;
+      const reference = serializeSkillReference(selectedSkill) + " ";
+      next = text.slice(0, selection.start) + reference + text.slice(selection.end);
+      cursor = selection.start + reference.length;
+    }
+    setText(next);
+    selectionRef.current = { start: cursor, end: cursor };
+    requestAnimationFrame(() => {
+      inputRef.current?.focus();
+      inputRef.current?.setNativeProps({ selection: { start: cursor, end: cursor } });
+    });
+  }, [selectedSkill, hasSkillPicker, text, setText]);
 
   // Drop mention draft on composer unmount so navigating away doesn't
   // leak chips into the next composer's session.
@@ -310,6 +350,7 @@ export function MessageComposer({
     // rollback re-adds chips (mentions length grows) and must not be
     // mistaken for a fresh pick landing on an old `@` token.
     useMentionDraftStore.getState().setToken(null);
+    useSkillDraftStore.getState().setToken(null);
     const textSnap = text;
     const mentionsSnap = mentions;
     const attachmentsSnap = attachments;
@@ -360,6 +401,10 @@ export function MessageComposer({
 
   const handleChangeText = useCallback(
     (next: string) => {
+      const skillToken = skillPickerPath
+        ? skillTriggerFromInput(text, next, selectionRef.current.end, slashTypedRef.current)
+        : null;
+      slashTypedRef.current = false;
       // Typing `@` at a word boundary (whitespace / line start before
       // it — never `a@b` emails) opens the picker (RUYI-232). The store
       // carries the token so the strip effect knows which `@<query>`
@@ -371,13 +416,23 @@ export function MessageComposer({
         selectionRef.current.end,
       );
       setText(next);
-      if (token) {
+      if (skillToken && skillPickerPath) {
+        useSkillDraftStore.getState().setToken(skillToken);
+        router.push(skillPickerPath);
+      } else if (token) {
         useMentionDraftStore.getState().setToken(token);
         router.push(mentionPickerPath);
       }
     },
-    [text, setText, mentionPickerPath],
+    [text, setText, mentionPickerPath, skillPickerPath],
   );
+
+  const onSlashPress = useCallback(() => {
+    if (!skillPickerPath) return;
+    Haptics.selectionAsync().catch(() => {});
+    useSkillDraftStore.getState().setToken(null);
+    router.push(skillPickerPath);
+  }, [skillPickerPath]);
 
   const onAtPress = useCallback(() => {
     Haptics.selectionAsync().catch(() => {});
@@ -489,6 +544,9 @@ export function MessageComposer({
           ref={inputRef}
           value={text}
           onChangeText={handleChangeText}
+          onKeyPress={(event: NativeSyntheticEvent<TextInputKeyPressEventData>) => {
+            slashTypedRef.current = event.nativeEvent.key === "/";
+          }}
           onSelectionChange={onSelectionChange}
           onBlur={onBlur}
           placeholder={resolvedPlaceholder}
@@ -515,6 +573,16 @@ export function MessageComposer({
             )}
             className="h-8 w-8"
           />
+          {skillPickerPath ? (
+            <IconButton
+              name="code-slash-outline"
+              iconSize={20}
+              onPress={onSlashPress}
+              disabled={toolsDisabled}
+              accessibilityLabel={t("composer.skill_hint", "Choose a skill")}
+              className="h-8 w-8"
+            />
+          ) : null}
           <IconButton
             name="image-outline"
             iconSize={20}

@@ -1,6 +1,11 @@
 "use client";
 
 import { useRef, useState, useCallback, useEffect } from "react";
+import { useQuery } from "@tanstack/react-query";
+import { skillListOptions } from "@multica/core/workspace/queries";
+import { getCurrentWsId } from "@multica/core/platform";
+import { Slash } from "lucide-react";
+import { Button } from "@multica/ui/components/ui/button";
 import { cn } from "@multica/ui/lib/utils";
 import { ContentEditor, type ContentEditorRef, useFileDropZone, FileDropOverlay, useLazyEditor, useUploadGate, useComposerSubmit } from "../../editor";
 import { FileUploadButton } from "@multica/ui/components/common/file-upload-button";
@@ -17,6 +22,7 @@ import { useStickyComposer } from "../hooks/use-sticky-composer";
 
 interface CommentInputProps {
   issueId: string;
+  assignedAgentId?: string | null;
   /** Resolves true on success, false on failure. The composer keeps the text
    *  (editor locked + button spinning) until this settles, then clears only on
    *  success — a failed send must not silently discard the user's draft. */
@@ -25,7 +31,7 @@ interface CommentInputProps {
   onAccepted?: (commentId: string) => void;
 }
 
-function CommentInput({ issueId, onSubmit, onAccepted }: CommentInputProps) {
+function CommentInput({ issueId, assignedAgentId, onSubmit, onAccepted }: CommentInputProps) {
   const { t } = useT("issues");
   const { t: tEditor } = useT("editor");
   const sendShortcut = useShortcut("send");
@@ -40,6 +46,9 @@ function CommentInput({ issueId, onSubmit, onAccepted }: CommentInputProps) {
   // Quick actions in the `/` menu: picking one inserts the server-rendered
   // body so the user can edit before sending, instead of firing immediately.
   const quickActionMenu = useQuickActionMenu(issueId);
+  const wsId = getCurrentWsId();
+  useQuery({ ...skillListOptions(wsId ?? ""), enabled: !!wsId });
+  const [slashPending, setSlashPending] = useState(false);
   const draftKey = `new:${issueId}` as const;
   const [initialDraft] = useState(() =>
     useCommentDraftStore.getState().getDraft(draftKey),
@@ -69,6 +78,9 @@ function CommentInput({ issueId, onSubmit, onAccepted }: CommentInputProps) {
       useCommentDraftStore.getState().getUploads(draftKey).length > 0,
     editorRef,
   });
+  useEffect(() => {
+    if (slashPending && lazy.ready && editorRef.current?.insertSlashTrigger()) setSlashPending(false);
+  }, [slashPending, lazy.ready]);
   const { isDragOver, dropZoneProps } = useFileDropZone({
     onDrop: lazy.uploadOrQueue,
   });
@@ -238,7 +250,7 @@ function CommentInput({ issueId, onSubmit, onAccepted }: CommentInputProps) {
           attachments={pendingAttachments}
           enableSlashCommands
           slashCommandMode="command"
-          quickActionMenu={quickActionMenu}
+          quickActionMenu={{ ...quickActionMenu, getAssignedAgentId: () => assignedAgentId ?? null }}
         />
       </div>
       )}
@@ -279,6 +291,17 @@ function CommentInput({ issueId, onSubmit, onAccepted }: CommentInputProps) {
         />
       </div>
       <div className="absolute bottom-1 right-1.5 flex items-center gap-1">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          title={tEditor(($) => $.slash_command.skills_group)}
+          aria-label={tEditor(($) => $.slash_command.skills_group)}
+          disabled={submitting}
+          onClick={() => { setSlashPending(true); lazy.activate(); }}
+        >
+          <Slash className="size-4" />
+        </Button>
         <FileUploadButton
           size="sm"
           multiple

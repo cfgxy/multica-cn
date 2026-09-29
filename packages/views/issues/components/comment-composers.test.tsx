@@ -12,6 +12,7 @@ import { ReplyInput } from "./reply-input";
 
 /** Shape of ContentEditor's `quickActionMenu` prop, as the composers pass it. */
 type QuickActionMenuProp = {
+  getAssignedAgentId?: () => string | null;
   getQuickActions?: () => { id: string; name: string; description?: string }[];
   renderQuickAction?: (quickActionId: string) => Promise<string>;
   onRenderError?: (error: unknown) => void;
@@ -23,6 +24,8 @@ type QuickActionMenuProp = {
 const apiUploadFile = vi.hoisted(() => vi.fn());
 const apiListWorkspaces = vi.hoisted(() => vi.fn());
 const apiListQuickActions = vi.hoisted(() => vi.fn());
+const apiListSkills = vi.hoisted(() => vi.fn().mockResolvedValue([]));
+const insertSlashSpy = vi.hoisted(() => vi.fn().mockReturnValue(true));
 const apiRenderQuickAction = vi.hoisted(() => vi.fn());
 const uploadWithToast = vi.hoisted(() => vi.fn());
 const editorDefaultValues = vi.hoisted(() => ({
@@ -58,6 +61,7 @@ vi.mock("@multica/core/api", () => ({
     uploadFile: apiUploadFile,
     listWorkspaces: apiListWorkspaces,
     listQuickActions: apiListQuickActions,
+    listSkills: apiListSkills,
     renderQuickAction: apiRenderQuickAction,
   },
 }));
@@ -148,6 +152,7 @@ vi.mock("../../editor", async () => ({
         valueRef.current = "";
       },
       focus: () => { focusCalls.focused += 1; },
+      insertSlashTrigger: insertSlashSpy,
       focusAtCoords: () => {},
       blur: () => { focusCalls.blurred += 1; },
       uploadFile: async (file: File) => {
@@ -262,6 +267,8 @@ beforeEach(() => {
   apiUploadFile.mockReset();
   apiListWorkspaces.mockReset();
   apiListQuickActions.mockReset();
+  apiListSkills.mockResolvedValue([]);
+  insertSlashSpy.mockClear();
   apiRenderQuickAction.mockReset();
   insertMarkdownSpy.mockReset();
   insertPlaceholderSpy.mockReset();
@@ -359,6 +366,12 @@ describe("quick action `/` menu", () => {
 });
 
 describe("comment composers", () => {
+  it("activates the lazy editor and inserts the toolbar slash through its suggestion trigger", async () => {
+    renderWithProviders(<CommentInput issueId="issue-1" assignedAgentId="agent-1" onSubmit={vi.fn().mockResolvedValue(true)} />);
+    fireEvent.click(screen.getByRole("button", { name: "Skills" }));
+    await waitFor(() => expect(insertSlashSpy).toHaveBeenCalledOnce());
+    expect(editorQuickActionMenu.last?.getAssignedAgentId?.()).toBe("agent-1");
+  });
   it("renders the main comment composer without a manual expand control", () => {
     const { container } = renderCommentInput();
 
@@ -367,8 +380,9 @@ describe("comment composers", () => {
     expect(screen.getByTestId("comment-composer-shell")).toHaveTextContent("Leave a comment...");
     activateComposer("comment-composer-shell");
     expect(screen.getByPlaceholderText("Leave a comment...")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Skills" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Attach file" })).toBeInTheDocument();
-    expect(container.querySelectorAll("button")).toHaveLength(2);
+    expect(container.querySelectorAll("button")).toHaveLength(3);
 
     const shell = screen.getByTestId("drop-zone");
     expect(shell.className).not.toMatch(/max-h-/);

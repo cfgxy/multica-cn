@@ -251,7 +251,7 @@ func BuildPrompt(task Task, provider string, options ...PromptOption) string {
 
 func buildPromptBody(task Task, provider string) string {
 	if task.ChatSessionID != "" {
-		return buildChatPrompt(task)
+		return buildChatPrompt(task, provider)
 	}
 	if task.TriggerCommentID != "" {
 		return buildCommentPrompt(task, provider)
@@ -404,6 +404,11 @@ func buildCommentPrompt(task Task, provider string) string {
 	var b strings.Builder
 	b.WriteString("You are running as a local coding agent for a Multica workspace.\n\n")
 	fmt.Fprintf(&b, "Your assigned issue ID is: %s\n\n", task.IssueID)
+	sources := []string{task.TriggerCommentContent}
+	for _, comment := range task.CoalescedComments {
+		sources = append(sources, comment.Content)
+	}
+	writeSkillInvocationSection(&b, task, provider, sources...)
 	if task.TriggerCommentContent != "" {
 		authorLabel := "A user"
 		if task.TriggerAuthorType == "system" {
@@ -589,7 +594,7 @@ func commentReplyThreads(task Task) []execenv.ThreadReplyTarget {
 }
 
 // buildChatPrompt constructs a prompt for interactive chat tasks.
-func buildChatPrompt(task Task) string {
+func buildChatPrompt(task Task, provider string) string {
 	// Legacy compatibility for historical proactive-introduction sessions.
 	// New agent creation no longer creates a chat or runs this prompt.
 	if task.ChatIntro {
@@ -664,37 +669,7 @@ func buildChatPrompt(task Task) string {
 		fmt.Fprintf(&b, "Reply to %s with the final outcome only. Do NOT narrate planned or in-progress steps (\"我先读取…\"); completed actions are part of the outcome.\n", platform)
 		b.WriteString("\n")
 	}
-	if task.Agent != nil && len(task.Agent.Skills) > 0 {
-		refs := ExtractSlashSkills(task.ChatMessage)
-		if len(refs) > 0 {
-			agentSkills := make(map[string]string, len(task.Agent.Skills))
-			for _, s := range task.Agent.Skills {
-				agentSkills[s.ID] = s.Name
-			}
-
-			selected := make([]string, 0, len(refs))
-			seen := make(map[string]struct{}, len(refs))
-			for _, ref := range refs {
-				name, ok := agentSkills[ref.ID]
-				if !ok {
-					continue
-				}
-				if _, ok := seen[ref.ID]; ok {
-					continue
-				}
-				seen[ref.ID] = struct{}{}
-				selected = append(selected, name)
-			}
-
-			if len(selected) > 0 {
-				b.WriteString("Explicitly selected skills:\n")
-				for _, name := range selected {
-					fmt.Fprintf(&b, "- %s\n", name)
-				}
-				b.WriteString("\n")
-			}
-		}
-	}
+	writeSkillInvocationSection(&b, task, provider, task.ChatMessage)
 	fmt.Fprintf(&b, "User message:\n%s\n", task.ChatMessage)
 	// List attachments by id + filename so the agent can fetch them via
 	// the CLI. We deliberately do NOT inline the URL: chat attachments

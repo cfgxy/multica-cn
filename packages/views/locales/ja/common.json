@@ -146,6 +146,7 @@
     "replying_to": "{{name}} に返信",
     "cancel_reply": "返信をキャンセル",
     "mention_hint": "メンバーまたは課題をメンション",
+    "skill_hint": "スキルを選択",
     "upload_image": "画像をアップロード",
     "upload_file": "ファイルをアップロード",
     "file_too_large_title": "ファイルサイズが大きすぎます",

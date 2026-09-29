@@ -197,6 +197,7 @@ export function useMarkdownStyle() {
       // pattern can be tested against the router that has to agree with it.
       linkVariants: {
         [COMMENT_ANCHOR_URL_PATTERN]: commentAnchorLinkVariant(t),
+        "^slash://skill/": commentAnchorLinkVariant(t),
       },
       // Inline code — monospace + muted-foreground tint, NO background chip.
       //

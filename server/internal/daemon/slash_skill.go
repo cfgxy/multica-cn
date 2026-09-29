@@ -33,3 +33,24 @@ func ExtractSlashSkills(md string) []SlashSkillRef {
 
 	return refs
 }
+
+// ExtractSlashSkillsAll extracts skill refs across several markdown sources
+// (trigger comment, coalesced comments, chat message), deduplicating by ID
+// across sources in first-seen order. Empty sources are skipped.
+func ExtractSlashSkillsAll(sources []string) []SlashSkillRef {
+	seen := make(map[string]struct{})
+	refs := make([]SlashSkillRef, 0)
+	for _, src := range sources {
+		if src == "" {
+			continue
+		}
+		for _, ref := range ExtractSlashSkills(src) {
+			if _, ok := seen[ref.ID]; ok {
+				continue
+			}
+			seen[ref.ID] = struct{}{}
+			refs = append(refs, ref)
+		}
+	}
+	return refs
+}
