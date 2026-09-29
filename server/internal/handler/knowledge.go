@@ -83,9 +83,19 @@ func bdListMemories(ctx context.Context, dirPath string) (map[string]string, err
 	if err != nil {
 		return nil, err
 	}
-	var memories map[string]string
-	if err := json.Unmarshal(out, &memories); err != nil {
+	// bd envelopes its metadata into the same flat object as the memories (a
+	// numeric "schema_version"), so not every value is a string: decode each
+	// entry separately and keep only the string-valued memories.
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(out, &raw); err != nil {
 		return nil, err
+	}
+	memories := make(map[string]string, len(raw))
+	for key, value := range raw {
+		var content string
+		if json.Unmarshal(value, &content) == nil {
+			memories[key] = content
+		}
 	}
 	return memories, nil
 }

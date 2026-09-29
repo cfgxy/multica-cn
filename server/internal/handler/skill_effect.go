@@ -139,16 +139,23 @@ func (h *Handler) GetSkillEffect(w http.ResponseWriter, r *http.Request) {
 
 	// The instrumentation window starts at the skill's first version; runs
 	// before that could not have invoked it under versioned attribution.
-	var firstVersionAt time.Time
+	// A skill created before migration 941 and never edited since has no
+	// version rows: min() is NULL, and without a window there is nothing to
+	// compare — serve an empty view rather than a 500.
+	var firstVersionAt pgtype.Timestamptz
 	if err := h.DB.QueryRow(r.Context(),
 		`SELECT min(created_at) FROM skill_version WHERE skill_id = $1 AND workspace_id = $2`,
 		skill.ID, skill.WorkspaceID).Scan(&firstVersionAt); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to load skill effect comparison")
 		return
 	}
+	if !firstVersionAt.Valid {
+		writeJSON(w, http.StatusOK, SkillEffectResponse{VersionEvents: make([]SkillEffectEvent, 0)})
+		return
+	}
 
 	response := SkillEffectResponse{
-		Since:         firstVersionAt.Format(time.RFC3339),
+		Since:         firstVersionAt.Time.Format(time.RFC3339),
 		VersionEvents: make([]SkillEffectEvent, 0),
 	}
 

@@ -51,7 +51,15 @@ func runFakeBd(args []string) {
 	// follows the subcommand immediately in knowledge.go's invocations.
 	switch args[0] {
 	case "memories":
-		out, _ := json.Marshal(fakeBdRead(statePath))
+		// Real bd envelopes a numeric schema_version into the same flat
+		// object as the memories; mirror that shape so every scan/adoption
+		// test exercises the tolerant decode and the metadata field is
+		// never mirrored as an entry.
+		envelope := map[string]any{"schema_version": 1}
+		for key, content := range fakeBdRead(statePath) {
+			envelope[key] = content
+		}
+		out, _ := json.Marshal(envelope)
 		payload = string(out)
 	case "remember":
 		if _, err := os.Stat(filepath.Join(dir, "FAIL_REMEMBER")); err == nil {
