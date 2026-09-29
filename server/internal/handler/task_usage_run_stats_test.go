@@ -6,6 +6,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/multica-ai/multica/server/internal/agentconfig"
+	"github.com/multica-ai/multica/server/internal/testutil"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
 )
 
 // TestListTasksByIssueHydratesRunStats is the RUYI-154 read-side guard: turns,
@@ -174,5 +178,45 @@ func TestReportTaskUsageOldDaemonMissingRunStatsCompat(t *testing.T) {
 	}
 	if turns != nil || compactions != nil || maxContextTokens != nil || contextTokens != nil {
 		t.Errorf("run stats = turns=%v compactions=%v max_ctx=%v ctx=%v, want all NULL", turns, compactions, maxContextTokens, contextTokens)
+	}
+}
+
+func TestReportTaskUsageContextOnlyReachesSessionGate(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	ctx := context.Background()
+	_, taskID := seedNULTask(t, "context-only-usage-agent")
+	taskUUID := parseUUID(taskID)
+	t.Cleanup(func() {
+		if _, err := testPool.Exec(context.Background(), `DELETE FROM task_usage WHERE task_id = $1`, taskID); err != nil {
+			t.Errorf("clean up task usage: %v", err)
+		}
+	})
+
+	body := json.RawMessage(`{"usage":[{"provider":"anthropic","model":"claude-sonnet-5","input_tokens":0,"output_tokens":0,"cache_read_tokens":0,"cache_write_tokens":0,"context_tokens":350000}]}`)
+	req := daemonTaskRequest(t, "/api/daemon/tasks/"+taskID+"/usage", taskID, body)
+	testutil.Call(t, testHandler.ReportTaskUsage, req).Want(http.StatusOK)
+
+	rows, err := testHandler.Queries.GetTaskUsage(ctx, taskUUID)
+	if err != nil {
+		t.Fatalf("read task usage: %v", err)
+	}
+	if len(rows) != 1 || rows[0].InputTokens != 0 || rows[0].OutputTokens != 0 ||
+		rows[0].CacheReadTokens != 0 || rows[0].CacheWriteTokens != 0 ||
+		!rows[0].ContextTokens.Valid || rows[0].ContextTokens.Int64 != 350000 {
+		t.Fatalf("persisted context-only usage = %+v, want one zero-billing row with context 350000", rows)
+	}
+
+	tokens, err := testHandler.Queries.GetTaskContextTokens(ctx, taskUUID)
+	if err != nil || !tokens.Valid || tokens.Int64 != 350000 {
+		t.Fatalf("GetTaskContextTokens = %+v, %v; want 350000", tokens, err)
+	}
+	outcome := testHandler.decideSessionResumeForTask(ctx, db.Agent{
+		SessionMaxContextTokens: 400000,
+		SessionCompactPct:      80,
+	}, taskUUID)
+	if !outcome.known || outcome.contextTokens != tokens.Int64 || outcome.decision != agentconfig.SessionResumeCompactSoft {
+		t.Fatalf("session gate = %+v, want measured 350000 and compact_soft", outcome)
 	}
 }

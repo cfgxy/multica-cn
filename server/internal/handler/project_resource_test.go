@@ -1697,3 +1697,51 @@ func TestProjectResourceLegacyRenameSkipsWorktreeGate(t *testing.T) {
 		t.Fatalf("switching to in_place needs no capability: %d %s", w.Code, w.Body.String())
 	}
 }
+
+// TestProjectResourcesForClaimCarriesGenericGitURLs pins the task-injection
+// contract for RUYI-249: a github_repo resource is a pointer to ANY git
+// remote, so the claim's repo list must carry a GitLab subgroup path and an
+// ssh clone URL through verbatim — the daemon clones what it is given. The
+// GitHub cases are the zero-regression guard for resources created before the
+// contract was widened.
+func TestProjectResourcesForClaimCarriesGenericGitURLs(t *testing.T) {
+	cases := []struct {
+		name string
+		url  string
+		ref  string
+	}{
+		{"github https", "https://github.com/multica-ai/multica.git", ""},
+		{"github scp with ref", "git@github.com:multica-ai/multica.git", "main"},
+		{"gitlab subgroup https", "https://gitlab.example.com/group/sub/deep/repo.git", ""},
+		{"gitlab subgroup scp", "git@gitlab.example.com:group/sub/deep/repo.git", "release"},
+		{"gitlab ssh scheme with port", "ssh://git@gitlab.example.com:2222/group/sub/repo.git", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ref := map[string]any{"url": tc.url}
+			if tc.ref != "" {
+				ref["ref"] = tc.ref
+			}
+			raw, err := json.Marshal(ref)
+			if err != nil {
+				t.Fatalf("marshal ref: %v", err)
+			}
+			resources, repos := projectResourcesForClaim([]db.ProjectResource{{
+				ResourceType: "github_repo",
+				ResourceRef:  raw,
+			}})
+			if len(resources) != 1 {
+				t.Fatalf("resources = %d, want 1", len(resources))
+			}
+			if len(repos) != 1 {
+				t.Fatalf("repos = %d, want 1 — the URL never reached the checkout list", len(repos))
+			}
+			if repos[0].URL != tc.url {
+				t.Errorf("repos[0].URL = %q, want %q (URL must not be rewritten)", repos[0].URL, tc.url)
+			}
+			if repos[0].Ref != tc.ref {
+				t.Errorf("repos[0].Ref = %q, want %q", repos[0].Ref, tc.ref)
+			}
+		})
+	}
+}

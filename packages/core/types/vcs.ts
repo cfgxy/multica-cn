@@ -38,6 +38,20 @@ export interface ListVCSConnectionsResponse {
   can_manage?: boolean;
 }
 
+export interface GitLabRepository {
+  id: number;
+  full_name: string;
+  clone_url: string;
+  archived: boolean;
+  private: boolean;
+  description: string | null;
+}
+
+export interface ListGitLabRepositoriesResponse {
+  repositories: GitLabRepository[];
+  next_page: number | null;
+}
+
 export interface ConnectVCSRequest {
   provider: VCSProvider;
   instance_url: string;

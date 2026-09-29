@@ -1,17 +1,10 @@
 package agent
 
 import (
-	"regexp"
 	"strings"
-)
 
-// claudeContextTagRe matches a trailing context-window variant tag such as the
-// `[1m]` Claude Code's model catalog appends to a model id. One complete tag
-// with at least one character inside, anchored at the end — the same shape
-// `contextTagRe` in server/internal/metrics/pricing.go and `stripContextTag`
-// in packages/views/runtimes/utils.ts recognise, so an empty tag (`model[]`)
-// or a bare bracket (`model[`) is not a tag on any of the three sides.
-var claudeContextTagRe = regexp.MustCompile(`\[[^\]]+\]$`)
+	"github.com/multica-ai/multica/server/pkg/modeltag"
+)
 
 // claudeCLIModelArg renders a model id the way the Claude CLI's `--model`
 // accepts it.
@@ -32,17 +25,28 @@ var claudeContextTagRe = regexp.MustCompile(`\[[^\]]+\]$`)
 // here keeps one id from being a Claude model for billing and a gateway alias
 // for launching.
 //
-// Exactly ONE tag is stripped, the same single pass PriceForModelAlias and
-// the frontend's canonicalCandidates make. A doubly tagged id is not a shape
-// we recognise, and peeling one tag off it would put a still-tagged id on the
-// wire as if it were deliberate; it goes through verbatim and the CLI reports
-// it.
+// Exactly ONE tag is stripped, through modeltag.StripOne — the shared rule
+// source PriceForModelAlias uses, so launch and billing cannot disagree about
+// which shapes carry a tag. A doubly tagged id is not a shape we recognise,
+// and peeling one tag off it would put a still-tagged id on the wire as if it
+// were deliberate; it goes through verbatim and the CLI reports it.
+//
+// Out-of-catalog gateway aliases (RUYI-267): a bare id the installed CLI
+// does not list — `gpt-5.6-sol` behind a routing gateway — goes on the wire
+// verbatim, and the CLI may print its own
+// `[claude-code:unrecognized_model]` stderr notice while still running the
+// model. That notice is the CLI's, and its observability level is the stderr
+// relay's: every line reaches the daemon log at Debug (the `[claude:stderr]`
+// prefix) and a bounded tail rides on the final error when a run fails. No
+// Multica code classifies or filters it, and none should grow here — quiet
+// relay is the contract, and silencing the line would also silence the
+// launch-blocking form the tag-stripping case above depends on seeing.
 func claudeCLIModelArg(model string) string {
 	if strings.Contains(strings.ToLower(model), "claude") {
 		return model
 	}
-	stripped := claudeContextTagRe.ReplaceAllString(model, "")
-	if stripped == model || claudeContextTagRe.MatchString(stripped) {
+	stripped, changed, stillTagged := modeltag.StripOne(model)
+	if !changed || stillTagged {
 		return model
 	}
 	return stripped

@@ -31,6 +31,7 @@ interface DesktopAPI {
   runtimeConfig: RuntimeConfigResult;
   /** Main tabbed window or a dedicated issue-only window. */
   windowContext: DesktopWindowContext;
+  startupGateAvailable: boolean;
   /** Read any freeze/crash breadcrumb from a previous session, so the renderer
    *  can flush it to telemetry on boot. Null when nothing's pending. Reading
    *  does not consume it — acknowledge with `ackFreeze`. */
@@ -110,6 +111,8 @@ interface DesktopAPI {
   onOpenSettings: (callback: () => void) => () => void;
   /** Ask the main process to close the window. */
   closeWindow: () => void;
+  /** Reload the main renderer and close issue windows after a persisted server switch. */
+  applyServerSwitch: () => void;
   /** Open an issue-detail tab in a dedicated native window. */
   openIssueWindow: (
     request: IssueWindowRequest,
