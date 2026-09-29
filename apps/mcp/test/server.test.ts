@@ -73,6 +73,7 @@ describe("createMcpServer (via in-memory client)", () => {
     const names = tools.map((tool) => tool.name).sort();
     expect(names).toEqual([
       "add_comment",
+      "assign_issue",
       "create_issue",
       "dispatch_agent",
       "get_issue",
