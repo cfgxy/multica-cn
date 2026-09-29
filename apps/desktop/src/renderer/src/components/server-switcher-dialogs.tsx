@@ -41,7 +41,7 @@ export function ServerSwitcherDialogs() {
       // query cache, tab groups) against the target server — the same
       // mechanism as the language switch, and the desktop equivalent of
       // mobile's re-initialize on switch.
-      window.location.reload();
+      window.desktopAPI.applyServerSwitch();
     } else {
       toast.error(t(($) => $.server.switch_failed_message));
     }

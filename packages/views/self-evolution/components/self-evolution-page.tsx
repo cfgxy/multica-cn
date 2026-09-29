@@ -17,13 +17,15 @@ import { useT } from "../../i18n";
 import { cn } from "@multica/ui/lib/utils";
 import { QualityTab } from "./quality-tab";
 import { QuizTab } from "./quiz-tab";
+import { SkillTab } from "./skill-tab";
 
 /**
  * Prompt-governance / self-evolution page.
  *
  * Phase 1 (RUYI-183) wired up the nav entry, route and locale surface; the
  * quality tab (RUYI-184) is the first one with data behind it, and the quiz tab
- * (RUYI-185) reads the same scopes through a fixed question bank. The tabs live
+ * (RUYI-185) reads the same scopes through a fixed question bank. Skill history
+ * and observed use join them in phase four. The tabs live
  * inside the page rather than as sibling routes, so no new route or page key
  * enters the three registries.
  */
@@ -50,6 +52,7 @@ export function SelfEvolutionPage() {
             <TabsTrigger value="overview">{t(($) => $.tabs.overview)}</TabsTrigger>
             <TabsTrigger value="quality">{t(($) => $.tabs.quality)}</TabsTrigger>
             <TabsTrigger value="quiz">{t(($) => $.tabs.quiz)}</TabsTrigger>
+            <TabsTrigger value="skills">{t(($) => $.tabs.skills)}</TabsTrigger>
           </TabsList>
           <TabsContent value="overview" className="pt-6">
             <Empty>
@@ -67,6 +70,9 @@ export function SelfEvolutionPage() {
           </TabsContent>
           <TabsContent value="quiz" className="pt-6">
             <QuizTab wsId={wsId} />
+          </TabsContent>
+          <TabsContent value="skills" className="pt-6">
+            <SkillTab wsId={wsId} />
           </TabsContent>
         </Tabs>
       </div>

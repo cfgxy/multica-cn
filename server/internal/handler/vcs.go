@@ -8,6 +8,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"github.com/go-chi/chi/v5"
@@ -142,6 +143,82 @@ func (h *Handler) ListVCSConnections(w http.ResponseWriter, r *http.Request) {
 		"configured":  h.isVCSConfigured(),
 		"can_manage":  canManage,
 	})
+}
+
+// ListVCSConnectionRepositories only exposes projects to workspace administrators.
+// The route also requires owner/admin membership before entering this handler.
+func (h *Handler) ListVCSConnectionRepositories(w http.ResponseWriter, r *http.Request) {
+	wsUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "id"), "workspace id")
+	if !ok {
+		return
+	}
+	connUUID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "connectionId"), "connection id")
+	if !ok {
+		return
+	}
+	if !h.isVCSAvailable() {
+		writeError(w, http.StatusNotFound, "vcs integration is not available")
+		return
+	}
+	if !h.isVCSConfigured() {
+		writeError(w, http.StatusServiceUnavailable, "vcs integration is not configured")
+		return
+	}
+	page, perPage := 1, 100
+	var err error
+	if r.URL.Query().Has("page") {
+		page, err = strconv.Atoi(r.URL.Query().Get("page"))
+	}
+	if err == nil && r.URL.Query().Has("per_page") {
+		perPage, err = strconv.Atoi(r.URL.Query().Get("per_page"))
+	}
+	if err != nil || page < 1 || perPage < 1 || perPage > 100 {
+		writeError(w, http.StatusBadRequest, "invalid repository pagination")
+		return
+	}
+	if int64(page) > 50000/int64(perPage) {
+		writeError(w, http.StatusBadRequest, "GitLab offset pagination limit reached")
+		return
+	}
+	conn, err := h.Queries.GetVCSConnectionByID(r.Context(), connUUID)
+	if err != nil || conn.WorkspaceID != wsUUID {
+		writeError(w, http.StatusNotFound, "vcs connection not found")
+		return
+	}
+	if conn.Provider != string(vcs.KindGitLab) {
+		writeError(w, http.StatusBadRequest, "repository browsing requires a GitLab connection")
+		return
+	}
+	token, err := h.openVCSSecret(conn.AccessTokenEncrypted)
+	if err != nil || token == "" {
+		writeError(w, http.StatusServiceUnavailable, "vcs connection credentials unavailable")
+		return
+	}
+	result, err := vcs.ListGitLabRepositories(r.Context(), conn.InstanceUrl, token, page, perPage)
+	if err != nil {
+		switch {
+		case errors.Is(err, vcs.ErrUnauthorized):
+			writeError(w, http.StatusFailedDependency, "GitLab connection authorization expired")
+		case errors.Is(err, vcs.ErrRateLimited):
+			writeError(w, http.StatusTooManyRequests, "GitLab rate limited repository browsing; retry later")
+		case errors.Is(err, vcs.ErrPageLimit):
+			writeError(w, http.StatusBadRequest, "GitLab offset pagination limit reached")
+		default:
+			writeError(w, http.StatusBadGateway, "GitLab repository browsing unavailable; retry later")
+		}
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"repositories": result.Repositories,
+		"next_page":    nullableGitLabNextPage(result.NextPage),
+	})
+}
+
+func nullableGitLabNextPage(page int) any {
+	if page == 0 {
+		return nil
+	}
+	return page
 }
 
 type connectVCSRequest struct {
