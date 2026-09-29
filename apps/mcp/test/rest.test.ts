@@ -122,6 +122,25 @@ describe("MulticaClient", () => {
     });
   });
 
+  it("serializes unassign as explicit JSON nulls, not omitted keys or empty strings", async () => {
+    const calls: CapturedCall[] = [];
+    const client = makeClient(
+      makeFetch(200, { id: "i1", identifier: "WS-1", number: 1, title: "t", status: "todo" }, calls),
+    );
+    await client.updateIssue("ws", "WS-1", { assignee_type: null, assignee_id: null });
+    expect(calls[0]?.init.method).toBe("PUT");
+    const raw = String(calls[0]?.init.body);
+    // The server decides unassign by rawFields: keys present as null. An
+    // omitted key would keep the current assignee instead.
+    expect(raw).toContain('"assignee_type":null');
+    expect(raw).toContain('"assignee_id":null');
+    const body = JSON.parse(raw) as Record<string, unknown>;
+    expect(Object.hasOwn(body, "assignee_type")).toBe(true);
+    expect(body.assignee_type).toBeNull();
+    expect(body.assignee_id).toBeNull();
+    expect(raw).not.toContain('""');
+  });
+
   it("maps non-2xx to MulticaApiError with the server message", async () => {
     const client = makeClient(
       makeFetch(409, { code: "active_duplicate_issue", error: "duplicate" }),
