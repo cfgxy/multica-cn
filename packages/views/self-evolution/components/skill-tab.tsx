@@ -130,8 +130,8 @@ export function SkillTab({ wsId }: { wsId: string }) {
                 {olderVersions.length > 0 && baselineVersion !== undefined && <label className="flex items-center gap-2 text-caption text-muted-foreground">
                   {t(($) => $.skills.compareTo)}
                   <Select items={olderVersions.map((v) => ({ value: String(v.version), label: `v${v.version}` }))} value={String(baselineVersion)} onValueChange={(value) => { if (typeof value === "string") setComparisonVersion(Number(value)); }}>
-                    <SelectTrigger size="sm" className="w-24"><SelectValue>v{baselineVersion}</SelectValue></SelectTrigger>
-                    <SelectContent>{olderVersions.map((v) => <SelectItem key={v.id} value={String(v.version)}>v{v.version}</SelectItem>)}</SelectContent>
+                    <SelectTrigger size="sm" className="w-24"><SelectValue>{`v${baselineVersion}`}</SelectValue></SelectTrigger>
+                    <SelectContent>{olderVersions.map((v) => <SelectItem key={v.id} value={String(v.version)}>{`v${v.version}`}</SelectItem>)}</SelectContent>
                   </Select>
                 </label>}
               </div>
@@ -140,7 +140,7 @@ export function SkillTab({ wsId }: { wsId: string }) {
                 <div className="min-w-0 overflow-x-auto">
                   <div className="min-w-[28rem] space-y-2 text-caption">
                   <div className="grid grid-cols-[minmax(0,1fr)_repeat(2,minmax(0,6rem))_minmax(0,7rem)] gap-2 border-b pb-2 text-muted-foreground">
-                    <span>{t(($) => $.skills.metric)}</span><span>v{baselineVersion}</span><span>v{latestVersion}</span><span>{t(($) => $.skills.change)}</span>
+                    <span>{t(($) => $.skills.metric)}</span><span>{`v${baselineVersion}`}</span><span>{`v${latestVersion}`}</span><span>{t(($) => $.skills.change)}</span>
                   </div>
                   <SkillComparisonRow label={t(($) => $.skills.tokenMetric)}
                     before={baselineUsage?.median_total_tokens} after={currentUsage?.median_total_tokens}
