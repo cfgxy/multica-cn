@@ -24,6 +24,7 @@ import { IssueActionsContextMenu } from "../actions";
 import { LabelChip } from "../../labels/label-chip";
 import { CustomStatusChip } from "./custom-status-chip";
 import { IssueAgentActivityIndicator } from "./issue-agent-activity-indicator";
+import { SuppressedBadge } from "./suppressed-badge";
 import { useIssueSurfaceSelection } from "../surface/selection-context";
 import { useLocale } from "../../i18n";
 
@@ -113,6 +114,10 @@ function ListRowContent({
           <span className="w-16 shrink-0 text-caption text-muted-foreground">
             {issue.identifier}
           </span>
+          {/* Same run-status signal slot as the board card (RUYI-275);
+              SuppressedBadge and the activity indicator are mutually
+              exclusive with the indicator winning. */}
+          <SuppressedBadge issue={issue} />
           <IssueAgentActivityIndicator issueId={issue.id} />
 
           <span className="flex min-w-0 flex-1 items-center gap-1.5">

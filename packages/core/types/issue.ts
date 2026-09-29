@@ -214,6 +214,17 @@ export interface Issue {
    * created_at/updated_at values are second-precision; parse before comparing.
    */
   last_activity_at?: string | null;
+  /**
+   * Read-side snapshot of an honored `suppress_run` ("暂不开始", RUYI-275):
+   * true from the write that suppressed the run until a write truly starts a
+   * run or the assignee is removed; writes that start no run leave it
+   * untouched. Optional for compatibility with a server that predates it —
+   * treat anything other than `true` (false / undefined) as not held.
+   */
+  run_suppressed?: boolean;
+  /** When the hold was placed (RFC3339); null/absent whenever
+   * run_suppressed is not true. */
+  run_suppressed_at?: string | null;
   /** Present only on issue detail responses for issues created from a comment. */
   source_context?: IssueSourceContext;
 }

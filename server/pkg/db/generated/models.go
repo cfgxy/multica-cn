@@ -835,6 +835,8 @@ type Issue struct {
 	Properties         []byte             `json:"properties"`
 	Revision           int64              `json:"revision"`
 	LastActivityAt     pgtype.Timestamptz `json:"last_activity_at"`
+	RunSuppressed      bool               `json:"run_suppressed"`
+	RunSuppressedAt    pgtype.Timestamptz `json:"run_suppressed_at"`
 }
 
 type IssueDependency struct {
