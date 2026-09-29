@@ -1,6 +1,7 @@
 import { queryOptions, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "../api";
 import type {
+  CreatePromptQuizBatchRequest,
   CreatePromptQuizItemRequest,
   UpdatePromptQuizItemRequest,
 } from "../types/prompt-quiz";
@@ -25,6 +26,10 @@ export const promptQuizKeys = {
   item: (wsId: string, itemId: string) => [...promptQuizKeys.all(wsId), "item", itemId] as const,
   baseline: (wsId: string, scope: string, scopeId: string) =>
     [...promptQuizKeys.all(wsId), "baseline", scope, scopeId] as const,
+  samples: (wsId: string, scope: string, scopeId: string) =>
+    [...promptQuizKeys.all(wsId), "samples", scope, scopeId] as const,
+  batch: (wsId: string, batchId: string) =>
+    [...promptQuizKeys.all(wsId), "batch", batchId] as const,
 };
 
 export function promptQuizItemsOptions(wsId: string, activeOnly = false) {
@@ -58,6 +63,71 @@ export function promptQuizBaselineOptions(wsId: string, scope: string, scopeId: 
     // The sweep runs hourly; re-reading faster than that only costs requests.
     staleTime: 5 * 60 * 1000,
     enabled: wsId !== "" && scope !== "" && scopeId !== "",
+  });
+}
+
+/**
+ * The graded-sample window for one prompt scope (RUYI-286).
+ *
+ * Owner-only server-side — these rows carry score_detail, the per-assertion
+ * grading output of the private half — so this must only be enabled where the
+ * caller already gates on that role.
+ */
+export function promptQuizSamplesOptions(
+  wsId: string,
+  scope: string,
+  scopeId: string,
+  version?: number,
+) {
+  return queryOptions({
+    queryKey: promptQuizKeys.samples(wsId, scope, scopeId),
+    queryFn: () =>
+      api.getPromptQuizSamples({
+        scope,
+        scopeId,
+        ...(version !== undefined ? { version } : {}),
+      }),
+    staleTime: 60 * 1000,
+    enabled: wsId !== "" && scope !== "" && scopeId !== "",
+  });
+}
+
+/**
+ * One batch's read-back (RUYI-286): per-run rows with score_detail, outcome
+ * counts, and the batch's graded mean. Owner-only server-side; disabled until
+ * a batch id exists, and only fetched while the reader is looking at it.
+ */
+export function promptQuizBatchOptions(wsId: string, batchId: string) {
+  return queryOptions({
+    queryKey: promptQuizKeys.batch(wsId, batchId),
+    queryFn: () => api.getPromptQuizBatch(batchId),
+    enabled: wsId !== "" && batchId !== "",
+  });
+}
+
+/** Idempotent import of the shipped benchmark bank. */
+export function useImportPromptQuizBank(wsId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: () => api.importPromptQuizBank(),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: promptQuizKeys.all(wsId) });
+    },
+  });
+}
+
+/**
+ * Orders real quiz runs for the named agents. The runs are asynchronous —
+ * ordered rows in agent_task_queue — so "ordered" is not "graded"; the caller
+ * reads back the batch (or the samples window) after the runs finish.
+ */
+export function useCreatePromptQuizBatch(wsId: string) {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: (body: CreatePromptQuizBatchRequest) => api.createPromptQuizBatch(body),
+    onSettled: () => {
+      qc.invalidateQueries({ queryKey: promptQuizKeys.all(wsId) });
+    },
   });
 }
 
