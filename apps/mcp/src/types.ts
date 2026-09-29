@@ -52,6 +52,8 @@ export interface IssueInfo {
   updated_at?: string;
   last_activity_at?: string;
   revision?: number;
+  /** True while the last run-triggering write was suppressed (RUYI-275). */
+  run_suppressed?: boolean;
 }
 
 export interface SearchIssueInfo extends IssueInfo {
@@ -138,6 +140,16 @@ export interface UpdateIssueBody {
   status?: string;
   expected_revision?: number;
   suppress_run?: boolean;
+  // Assignee change. A string pair assigns/reassigns; explicit nulls clear
+  // the assignee. The nulls must survive serialization — the server decides
+  // unassign by rawFields ("key present as null"), so omitted keys and empty
+  // strings both mean "keep the current assignee" (server/internal/handler/
+  // issue.go, refreshUntouchedNullableIssueParams).
+  assignee_type?: string | null;
+  assignee_id?: string | null;
+  // Injected into the triggered run's opening context; dropped when the
+  // write starts no run (suppress_run, backlog parking, member/unassign).
+  handoff_note?: string;
 }
 
 export interface ActiveTaskInfo {

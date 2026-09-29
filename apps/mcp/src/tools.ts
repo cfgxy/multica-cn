@@ -4,7 +4,9 @@
  * Read: list_workspaces, list_agents, list_projects, list_issues, get_issue,
  *       search_issues, progress_digest.
  * Write: create_issue (general — any workspace, any project), add_comment,
- *       update_issue_status.
+ *       update_issue_status, assign_issue (assign/reassign/unassign an
+ *       existing issue — agent/squad assignment triggers a real run, the
+ *       tool description must say so).
  * Dispatch: dispatch_agent (issue quick-create with an agent — triggers a
  *       real agent run and consumes the token owner's quota; the tool
  *       description must say so).
@@ -31,6 +33,7 @@ import type {
   CommentInfo,
   IssueInfo,
   SearchIssueInfo,
+  UpdateIssueBody,
 } from "./types.js";
 
 export interface JsonSchemaProperty {
@@ -52,6 +55,7 @@ export interface ToolDefinition {
 
 const PRIORITY_ENUM = ["urgent", "high", "medium", "low", "none"] as const;
 const ASSIGNER_TYPES = ["member", "agent", "squad"] as const;
+const ASSIGN_ISSUE_TYPES = [...ASSIGNER_TYPES, "unassigned"] as const;
 
 const DATE_PATTERN = "^\\d{4}-\\d{2}-\\d{2}$";
 
@@ -485,6 +489,104 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         title: issue.title,
         status: issue.status,
         revision: issue.revision,
+      };
+    },
+  },
+  {
+    name: "assign_issue",
+    description:
+      "Assign, reassign or unassign the assignee of an EXISTING issue (the create_issue-time assignee is separate). " +
+      "Pass assignee_type 'member' | 'agent' | 'squad' plus assignee_id to assign or reassign; pass the literal 'unassigned' (no assignee_id) to clear the assignee. " +
+      "WARNING: assigning or reassigning to an agent or squad triggers a REAL agent run — the squad's run executes on its leader agent — and consumes the token owner's quota; use only when the user explicitly asks for the handoff. " +
+      "Exceptions: if the issue is currently in backlog the assignment parks silently (no run until it leaves backlog); suppress_run=true applies the assignment without starting the run (the issue is flagged run_suppressed and can be run later). " +
+      "Reassignment does NOT cancel an already queued/running task — old and new runs proceed in parallel, with no duplicate dispatch to the same agent. " +
+      "Assigning to a member and unassigning never trigger a run.",
+    inputSchema: {
+      type: "object",
+      properties: {
+        workspace: wsProperty(),
+        issue: issueProperty(),
+        assignee_type: {
+          type: "string",
+          enum: [...ASSIGN_ISSUE_TYPES],
+          description:
+            "'member', 'agent' or 'squad' to assign/reassign, or the literal 'unassigned' to clear the assignee.",
+        },
+        assignee_id: {
+          type: "string",
+          description:
+            "Assignee UUID: member user id, agent id (from list_agents) or squad id. Required unless assignee_type is 'unassigned'.",
+        },
+        suppress_run: {
+          type: "boolean",
+          description:
+            "Set true to apply the assignment without starting the agent run it would trigger (default false). " +
+            "No effect for member assignees or unassign — those never start a run.",
+        },
+        handoff_note: {
+          type: "string",
+          description:
+            "Optional instruction injected into the triggered run's opening context. " +
+            "Dropped when no run starts (suppress_run=true, backlog parking, member or unassign).",
+        },
+        expected_revision: {
+          type: "integer",
+          description: "Optimistic-lock revision from a previous read; the write fails if the issue changed since.",
+          minimum: 0,
+        },
+      },
+      required: ["workspace", "issue", "assignee_type"],
+    },
+    async handler(args, client) {
+      const workspace = requireString(args, "workspace");
+      const issueId = requireString(args, "issue");
+      const assigneeType = optionalEnum(args, "assignee_type", ASSIGN_ISSUE_TYPES);
+      if (assigneeType === undefined) {
+        throw new ToolInputError(
+          "'assignee_type' is required: 'member', 'agent', 'squad', or 'unassigned'",
+        );
+      }
+      const assigneeId = optionalString(args, "assignee_id");
+      const body: UpdateIssueBody = {
+        suppress_run: optionalBoolean(args, "suppress_run"),
+        handoff_note: optionalString(args, "handoff_note", { maxLength: 5_000 }),
+        expected_revision: optionalInt(args, "expected_revision", { min: 0 }),
+      };
+      if (assigneeType === "unassigned") {
+        if (assigneeId !== undefined) {
+          throw new ToolInputError("'assignee_id' must be omitted when assignee_type is 'unassigned'");
+        }
+        // The server decides unassign by rawFields: the keys must be present
+        // as JSON nulls — omitted keys and empty strings both keep the
+        // current assignee.
+        body.assignee_type = null;
+        body.assignee_id = null;
+      } else {
+        if (assigneeId === undefined) {
+          throw new ToolInputError(
+            `'assignee_id' is required when assignee_type is '${assigneeType}'`,
+          );
+        }
+        body.assignee_type = assigneeType;
+        body.assignee_id = assigneeId;
+      }
+      const issue = await client.updateIssue(workspace, issueId, body);
+      const note =
+        assigneeType === "unassigned"
+          ? "Assignee cleared. Unassigning never triggers a run."
+          : assigneeType === "member"
+            ? "Assigned to a member. Member assignment does not trigger agent runs."
+            : "Assigning to an agent/squad normally triggers a real agent run (quota use) — unless the issue was in backlog or suppress_run was set. run_suppressed=true in this result means the run was suppressed; reassignment never cancels an in-flight run.";
+      return {
+        assigned: assigneeType !== "unassigned",
+        id: issue.id,
+        identifier: issue.identifier,
+        title: issue.title,
+        assignee_type: issue.assignee_type ?? null,
+        assignee_id: issue.assignee_id ?? null,
+        revision: issue.revision,
+        run_suppressed: issue.run_suppressed ?? false,
+        note,
       };
     },
   },
