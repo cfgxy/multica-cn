@@ -13,6 +13,7 @@ import (
 	"github.com/multica-ai/multica/server/internal/util"
 	agentver "github.com/multica-ai/multica/server/pkg/agent"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/dbid"
 )
 
 // maxPreviewTriggerIssues caps a single preview request so a pathological
@@ -129,6 +130,7 @@ func (h *Handler) recordSuppressedIssueRun(ctx context.Context, issue db.Issue, 
 		return
 	}
 	if _, err := h.Queries.CreateActivity(ctx, db.CreateActivityParams{
+		ID:          dbid.NewV7(),
 		WorkspaceID: issue.WorkspaceID,
 		IssueID:     issue.ID,
 		ActorType:   pgtype.Text{String: actorType, Valid: true},
