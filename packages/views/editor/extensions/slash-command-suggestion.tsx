@@ -170,22 +170,20 @@ export const SlashCommandList = forwardRef<
               </span>
             )}
             {item.kind === "skill" && (
-              <span className="flex items-center gap-1 text-muted-foreground">
-                {item.allAgentsSupport ? (
-                  <span className={item.assignedAgentId && item.supportingAgents?.some((agent) => agent.id === item.assignedAgentId) ? "rounded border px-1 ring-2 ring-primary" : "rounded border px-1"}>{t(($) => $.slash_command.all_agents)}</span>
-                ) : (
-                  <>
-                    {(item.supportingAgents?.length ?? 0) === 0 && (
-                      <span>{t(($) => $.slash_command.no_agents)}</span>
-                    )}
-                    {item.supportingAgents?.slice(0, 3).map((agent) => (
-                      <span key={agent.id} title={agent.name} className={agent.id === item.assignedAgentId ? "rounded-full ring-2 ring-primary" : ""}>
-                        <ActorAvatar actorType="agent" actorId={agent.id} name={agent.name} avatarUrl={agent.avatar_url} size="xs" profileLink={false} />
-                      </span>
-                    ))}
-                    {(item.supportingAgents?.length ?? 0) > 3 && <span>+{(item.supportingAgents?.length ?? 0) - 3}</span>}
-                  </>
+              <span
+                className="flex items-center gap-1 text-muted-foreground"
+                title={item.allAgentsSupport ? t(($) => $.slash_command.all_agents) : undefined}
+                aria-label={item.allAgentsSupport ? t(($) => $.slash_command.all_agents) : undefined}
+              >
+                {(item.supportingAgents?.length ?? 0) === 0 && (
+                  <span>{t(($) => $.slash_command.no_agents)}</span>
                 )}
+                {item.supportingAgents?.slice(0, 3).map((agent) => (
+                  <span key={agent.id} title={agent.name} className={agent.id === item.assignedAgentId ? "rounded-full ring-2 ring-primary" : ""}>
+                    <ActorAvatar actorType="agent" actorId={agent.id} name={agent.name} avatarUrl={agent.avatar_url} size="xs" profileLink={false} />
+                  </span>
+                ))}
+                {(item.supportingAgents?.length ?? 0) > 3 && <span>+{(item.supportingAgents?.length ?? 0) - 3}</span>}
               </span>
             )}
           </button>

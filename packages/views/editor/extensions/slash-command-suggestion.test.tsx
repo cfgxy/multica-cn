@@ -37,6 +37,12 @@ vi.mock("@multica/core/chat", () => ({
   useChatStore: { getState: () => chatState },
 }));
 
+vi.mock("../../common/actor-avatar", () => ({
+  ActorAvatar: ({ name }: { name: string }) => (
+    <span data-testid="actor-avatar">{name}</span>
+  ),
+}));
+
 import {
   SlashCommandList,
   type SlashCommandListRef,
@@ -644,6 +650,67 @@ describe("SlashCommandList built-in command rendering", () => {
     expect(
       getByText("Add a note — won't trigger any agents"),
     ).toBeInTheDocument();
+  });
+});
+
+describe("SlashCommandList skill agent-support rendering", () => {
+  function skillItem(overrides: Partial<SlashCommandItem>): SlashCommandItem {
+    return {
+      id: "s1",
+      label: "Review",
+      description: "Inspect changes",
+      kind: "skill",
+      supportingAgents: [],
+      assignedAgentId: null,
+      allAgentsSupport: false,
+      ...overrides,
+    };
+  }
+
+  it("renders the all-agents tier as an avatar group with a full-support label instead of an All text chip", () => {
+    const { getAllByTestId, queryByText, getByLabelText } = render(
+      <I18nWrapper>
+        <SlashCommandList
+          items={[skillItem({
+            allAgentsSupport: true,
+            supportingAgents: [
+              agent({ id: "a1", name: "Alpha" }),
+              agent({ id: "a2", name: "Beta" }),
+            ],
+          })]}
+          query=""
+          command={vi.fn()}
+        />
+      </I18nWrapper>,
+    );
+
+    expect(getAllByTestId("actor-avatar")).toHaveLength(2);
+    expect(queryByText("All")).not.toBeInTheDocument();
+    expect(getByLabelText("All")).toBeInTheDocument();
+  });
+
+  it("keeps the avatar cap of three with an overflow count and the assigned-agent highlight", () => {
+    const { getAllByTestId, getByText, getByTitle } = render(
+      <I18nWrapper>
+        <SlashCommandList
+          items={[skillItem({
+            assignedAgentId: "a2",
+            supportingAgents: [
+              agent({ id: "a1", name: "Alpha" }),
+              agent({ id: "a2", name: "Beta" }),
+              agent({ id: "a3", name: "Gamma" }),
+              agent({ id: "a4", name: "Delta" }),
+            ],
+          })]}
+          query=""
+          command={vi.fn()}
+        />
+      </I18nWrapper>,
+    );
+
+    expect(getAllByTestId("actor-avatar")).toHaveLength(3);
+    expect(getByText("+1")).toBeInTheDocument();
+    expect(getByTitle("Beta").className).toContain("ring-primary");
   });
 });
 
