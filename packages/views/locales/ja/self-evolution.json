@@ -171,7 +171,9 @@
         "no_reviewed_issues": "この期間にレビューへ進んだ Issue がありません。",
         "below_sample_floor": "実行数が宣言された下限を下回っています。",
         "unknown": "サーバーは理由を示しませんでした。"
-      }
+      },
+      "coverage": "{{total}} 回のうち {{covered}} 回を検査",
+      "deductions": "減点明細（{{count}}）"
     },
     "perplexity": {
       "title": "D3 ルール困惑度",

@@ -8,8 +8,13 @@ import {
   CardHeader,
   CardTitle,
 } from "@multica/ui/components/ui/card";
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from "@multica/ui/components/ui/collapsible";
 import type { MeasureView } from "@multica/core/self-evolution";
-import type { PromptQualityDimension } from "@multica/core/types";
+import type { PromptQualityDeduction, PromptQualityDimension } from "@multica/core/types";
 import { useT, useLocale } from "../../i18n";
 import { formatMeasureValue } from "./quality-format";
 
@@ -25,15 +30,31 @@ import { formatMeasureValue } from "./quality-format";
 export function QualityMeasureCard({
   dimension,
   view,
+  runs,
+  deductions,
 }: {
   dimension: PromptQualityDimension;
   view: MeasureView;
+  /** The version group's finished runs. D2 states its sample against it. */
+  runs?: number;
+  /** D2 only: the recorded breaches behind the median (RUYI-287). */
+  deductions?: PromptQualityDeduction[];
 }) {
   const { t } = useT("self-evolution");
   const locale = useLocale();
 
   const label = t(($) => $.quality.dimensions[dimension].label);
   const hint = t(($) => $.quality.dimensions[dimension].hint);
+
+  // D2's sample is the covered count, not the run count. Naming both sides is
+  // what keeps a 36-of-40 window from reading as fully inspected — the gap
+  // between the two numbers is runs no rule could read, not consent to skip.
+  const coverage =
+    dimension === "discipline" && runs !== undefined ? (
+      <div className="text-caption text-muted-foreground tabular-nums">
+        {t(($) => $.quality.measure.coverage, { covered: view.sample, total: runs })}
+      </div>
+    ) : null;
 
   return (
     <Card className="gap-3" data-testid={`quality-card-${dimension}`}>
@@ -60,6 +81,8 @@ export function QualityMeasureCard({
                   denominator: view.denominator,
                 })}
               </div>
+            ) : coverage ? (
+              coverage
             ) : view.sample > 0 ? (
               <div className="text-caption text-muted-foreground">
                 {t(($) => $.quality.measure.ofRuns, { count: view.sample })}
@@ -79,6 +102,7 @@ export function QualityMeasureCard({
               {t(($) => $.quality.measure.noData)}
             </div>
             <div className="text-caption text-muted-foreground">{reasonText(t, view.reason)}</div>
+            {coverage}
           </>
         ) : null}
 
@@ -96,7 +120,37 @@ export function QualityMeasureCard({
               })}
             </div>
             <div className="text-caption text-muted-foreground">{reasonText(t, view.reason)}</div>
+            {coverage}
           </>
+        ) : null}
+
+        {/* The trail behind the median: rule, weight and the run it came from,
+            collapsed until asked. An empty or absent list renders nothing — it
+            is not proof of a clean record, so no "no deductions" line exists. */}
+        {deductions && deductions.length > 0 ? (
+          <Collapsible className="mt-1">
+            <CollapsibleTrigger
+              data-testid="quality-deductions-toggle"
+              className="w-fit text-caption text-muted-foreground underline-offset-2 hover:underline"
+            >
+              {t(($) => $.quality.measure.deductions, { count: deductions.length })}
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <ul className="mt-2 flex max-h-48 flex-col gap-1 overflow-y-auto">
+                {deductions.map((d, i) => (
+                  <li key={`${d.task_id}-${d.seq}-${i}`} className="flex items-center gap-2">
+                    <Badge variant="outline" className="font-mono">
+                      {d.rule}
+                    </Badge>
+                    <span className="tabular-nums">-{d.points}</span>
+                    <span className="font-mono text-caption text-muted-foreground">
+                      {d.task_id.slice(0, 8)}·{d.seq}
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </CollapsibleContent>
+          </Collapsible>
         ) : null}
       </CardContent>
     </Card>

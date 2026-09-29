@@ -4075,6 +4075,14 @@ export const PromptQualityMeasuresSchema = z.object({
   first_pass_rate: PromptQualityMeasureSchema.default(NO_DATA_MEASURE),
 });
 
+// One recorded D2 breach, traced to the run that produced it (RUYI-287).
+export const PromptQualityDeductionSchema = z.object({
+  task_id: z.string().default(""),
+  rule: z.string().default(""),
+  points: z.number().default(0),
+  seq: z.number().default(0),
+});
+
 export const PromptQualityVersionMeasuresSchema = z.object({
   version: z.number().default(0),
   days: z.number().default(0),
@@ -4084,6 +4092,9 @@ export const PromptQualityVersionMeasuresSchema = z.object({
   measures: PromptQualityMeasuresSchema.default(NO_DATA_MEASURES),
   failure_reasons: z.record(z.string(), z.number()).default({}),
   excluded_failed_runs: z.number().default(0),
+  // D2 drill-down. Optional on the wire so a backend without the field still
+  // parses; absence is not read as "no deductions" anywhere.
+  discipline_deductions: z.array(PromptQualityDeductionSchema).optional(),
 });
 
 // Evidence carries locations and notes only — which tier and section a rule
