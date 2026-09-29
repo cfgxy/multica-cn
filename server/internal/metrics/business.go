@@ -27,6 +27,22 @@ const (
 	RuntimeGCSkipEligibilityChanged = "eligibility_changed"
 	RuntimeGCSkipNonTerminalTask    = "non_terminal_task"
 	RuntimeGCSkipWorkspaceMismatch  = "workspace_mismatch"
+
+	// Issue-run suppression labels (RUYI-252). `source` mirrors the trigger
+	// source the enqueue predicate resolved, `actor_type` is who asked for the
+	// suppression. Both are closed enums: the issue id and the actor id belong
+	// in the WARN log this counter travels with, never in a label — they are on
+	// forbiddenMetricLabels precisely because they grow with the workspace.
+	IssueRunSuppressSourceAssign = "assign"
+	IssueRunSuppressSourceStatus = "status"
+	IssueRunSuppressActorMember  = "member"
+	IssueRunSuppressActorAgent   = "agent"
+	IssueRunSuppressOther        = "other"
+)
+
+var (
+	allIssueRunSuppressSources = []string{IssueRunSuppressSourceAssign, IssueRunSuppressSourceStatus, IssueRunSuppressOther}
+	allIssueRunSuppressActors  = []string{IssueRunSuppressActorMember, IssueRunSuppressActorAgent, IssueRunSuppressOther}
 )
 
 type activeTaskLabels struct {
@@ -69,6 +85,13 @@ type BusinessMetrics struct {
 	entitlementDecision            *prometheus.CounterVec
 	entitlementVersionRegression   prometheus.Counter
 	autopilotQuotaDecision         *prometheus.CounterVec
+
+	// issueRunSuppressed counts issue writes that WOULD have started a run but
+	// were told not to (`suppress_run`). Without it the honored-suppress path
+	// is invisible to operators: the write succeeds, no task row appears, and
+	// nothing distinguishes "deliberately parked" from "silently stranded"
+	// (RUYI-248). Paired with a WARN carrying the ids this counter cannot.
+	issueRunSuppressed *prometheus.CounterVec
 
 	// agentRuntimeLookup counts single-row agent_runtime reads by product
 	// source. Every source shares one SQL fingerprint, so this is the only
@@ -271,6 +294,10 @@ func NewBusinessMetrics() *BusinessMetrics {
 			Namespace: "multica", Subsystem: "autopilot_quota", Name: "decision_total",
 			Help: "Total autopilot quota admission outcomes.",
 		}, metricLabels("multica_autopilot_quota_decision_total")),
+		issueRunSuppressed: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Namespace: "multica", Subsystem: "issue_run", Name: "suppressed_total",
+			Help: "Total agent runs an issue write would have started but suppressed on request.",
+		}, metricLabels("multica_issue_run_suppressed_total")),
 		agentRuntimeLookup: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Namespace: "multica", Subsystem: "agent_runtime", Name: "lookup_total",
 			Help: "Total single-row agent_runtime reads by product source and outcome.",
@@ -289,6 +316,13 @@ func NewBusinessMetrics() *BusinessMetrics {
 	for _, source := range AllRuntimeLookupSources() {
 		for _, result := range AllRuntimeLookupResults() {
 			m.agentRuntimeLookup.WithLabelValues(source, result).Add(0)
+		}
+	}
+	// Same prewarm rationale for the 9-series suppression grid: an operator
+	// looking for the metric must find it at zero, not find nothing.
+	for _, source := range allIssueRunSuppressSources {
+		for _, actorType := range allIssueRunSuppressActors {
+			m.issueRunSuppressed.WithLabelValues(source, actorType).Add(0)
 		}
 	}
 	return m
@@ -328,6 +362,7 @@ func (m *BusinessMetrics) Collectors() []prometheus.Collector {
 		m.entitlementDecision,
 		m.entitlementVersionRegression,
 		m.autopilotQuotaDecision,
+		m.issueRunSuppressed,
 		m.agentRuntimeLookup,
 	}, m.events.collectors()...)
 }
@@ -390,6 +425,38 @@ func (m *BusinessMetrics) RecordAutopilotQuotaDecision(action, source, result st
 		source = "other"
 	}
 	m.autopilotQuotaDecision.WithLabelValues(action, source, result).Inc()
+}
+
+// RecordIssueRunSuppressed counts one honored `suppress_run`: an issue write
+// whose trigger predicate resolved a runnable agent and then skipped the
+// enqueue because the request asked it to. Unknown label values collapse to
+// "other" so a new trigger source or actor kind cannot open unbounded series.
+func (m *BusinessMetrics) RecordIssueRunSuppressed(source, actorType string) {
+	if m == nil {
+		return
+	}
+	m.issueRunSuppressed.WithLabelValues(
+		normalizeIssueRunSuppressSource(source),
+		normalizeIssueRunSuppressActor(actorType),
+	).Inc()
+}
+
+func normalizeIssueRunSuppressSource(source string) string {
+	switch source {
+	case IssueRunSuppressSourceAssign, IssueRunSuppressSourceStatus:
+		return source
+	default:
+		return IssueRunSuppressOther
+	}
+}
+
+func normalizeIssueRunSuppressActor(actorType string) string {
+	switch actorType {
+	case IssueRunSuppressActorMember, IssueRunSuppressActorAgent:
+		return actorType
+	default:
+		return IssueRunSuppressOther
+	}
 }
 
 func (m *BusinessMetrics) RecordRuntimeGCDeleted() {
