@@ -389,6 +389,8 @@ function RegisterDirDialog({
               id="knowledge-path"
               value={path}
               onChange={(e) => setPath(e.target.value)}
+              // Example filesystem path of a memory mirror, not copy.
+              // eslint-disable-next-line no-restricted-syntax
               placeholder="/srv/memories/project-x"
             />
           </div>
