@@ -1,189 +1,32 @@
 package handler
 
-// Knowledge directory mirroring and the Owner adoption transfer at the HTTP
-// boundary (RUYI-265, spec §K).
+// Knowledge directories and the daemon-facing plan/results pipeline at the
+// HTTP boundary (RUYI-265 spec §K, RUYI-289).
 //
-// bd is faked by re-executing this test binary in helper-process mode
-// (TestFakeBd below): the state file inside the -C directory plays the bd
-// library, and every invocation is logged so the tests can assert the scan
-// path carries --readonly against the source and that the only writes ever
-// issued target the ultimate directory.
+// Since RUYI-289 the handler never touches bd: registration, scan requests
+// and adoption only mutate queued state; /api/daemon/knowledge/plan hands
+// the work to the daemon hosting the paths and /api/daemon/knowledge/results
+// lands what the daemon reports. bd IO itself is exercised by the daemon
+// package's tests against a fake bd binary.
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
 
-// --- fake bd (helper process) ----------------------------------------------
-
-// TestFakeBd is never a real test in this run: when the binary is re-executed
-// with a "-- fakebd" marker argv (see fakeBdSetup's wrapper script) it plays
-// the bd CLI for one invocation and exits, so no framework output pollutes
-// the captured stdout.
-func TestFakeBd(t *testing.T) {
-	for i, arg := range os.Args {
-		if arg == "--" && i+2 < len(os.Args) && os.Args[i+1] == "fakebd" {
-			runFakeBd(os.Args[i+2:])
-		}
-	}
-}
-
-func runFakeBd(args []string) {
-	dir := fakeBdFlag(args, "-C")
-	statePath := filepath.Join(dir, "state.json")
-	if log, err := os.OpenFile(filepath.Join(dir, "invocations.log"), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644); err == nil {
-		fmt.Fprintf(log, "%s\n", strings.Join(args, "\x1f"))
-		log.Close()
-	}
-	// The payload goes to a file, not stdout: the re-executed test binary
-	// prints its own TestMain banner there before TestFakeBd runs, and the
-	// wrapper script cats the file on success so the caller sees only it.
-	payload := ""
-	// The positional argument (content for remember, key for recall) always
-	// follows the subcommand immediately in knowledge.go's invocations.
-	switch args[0] {
-	case "memories":
-		// Real bd envelopes a numeric schema_version into the same flat
-		// object as the memories; mirror that shape so every scan/adoption
-		// test exercises the tolerant decode and the metadata field is
-		// never mirrored as an entry.
-		envelope := map[string]any{"schema_version": 1}
-		for key, content := range fakeBdRead(statePath) {
-			envelope[key] = content
-		}
-		out, _ := json.Marshal(envelope)
-		payload = string(out)
-	case "remember":
-		if _, err := os.Stat(filepath.Join(dir, "FAIL_REMEMBER")); err == nil {
-			fmt.Fprintln(os.Stderr, "simulated bd write failure")
-			os.Exit(1)
-		}
-		state := fakeBdRead(statePath)
-		state[fakeBdFlag(args, "--key")] = args[1]
-		data, _ := json.Marshal(state)
-		os.WriteFile(statePath, data, 0o644)
-	case "recall":
-		payload = fakeBdRead(statePath)[args[1]]
-	default:
-		fmt.Fprintf(os.Stderr, "fake bd: unknown subcommand %q\n", args[0])
-		os.Exit(1)
-	}
-	os.WriteFile(filepath.Join(dir, "stdout.payload"), []byte(payload), 0o644)
-	os.Exit(0)
-}
-
-func fakeBdFlag(args []string, name string) string {
-	for i := 1; i < len(args); i++ {
-		if args[i] == name && i+1 < len(args) {
-			return args[i+1]
-		}
-	}
-	return ""
-}
-
-func fakeBdRead(path string) map[string]string {
-	state := map[string]string{}
-	if data, err := os.ReadFile(path); err == nil {
-		_ = json.Unmarshal(data, &state)
-	}
-	// "null" JSON (a nil seed marshalled) unmarshals into a nil map, which
-	// would panic on the first remember write — normalize to empty.
-	if state == nil {
-		state = map[string]string{}
-	}
-	return state
-}
-
-// fakeBdSetup redirects the knowledge flow's bd binary at this test binary
-// re-executed in fake-bd mode via a tiny wrapper script (the extra
-// "-test.run" keeps the subprocess from running the whole suite; the payload
-// cat keeps the binary's own banner out of the captured stdout).
-func fakeBdSetup(t *testing.T) {
-	t.Helper()
-	script := filepath.Join(t.TempDir(), "fake-bd")
-	body := `#!/bin/sh
-dir=""
-prev=""
-for a in "$@"; do
-  if [ "$prev" = "-C" ]; then dir="$a"; fi
-  prev="$a"
-done
-"${GO_FAKE_BD_TARGET}" -test.run=^TestFakeBd$ -- fakebd "$@" >/dev/null 2>"$dir/subprocess.stderr"
-status=$?
-if [ "$status" -eq 0 ] && [ -n "$dir" ] && [ -f "$dir/stdout.payload" ]; then
-  cat "$dir/stdout.payload"
-fi
-if [ "$status" -ne 0 ] && [ -n "$dir" ] && [ -s "$dir/subprocess.stderr" ]; then
-  cat "$dir/subprocess.stderr" >&2
-fi
-exit $status
-`
-	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
-		t.Fatalf("write fake bd wrapper: %v", err)
-	}
-	t.Setenv("MULTICA_KNOWLEDGE_BD_BIN", script)
-	t.Setenv("GO_FAKE_BD_TARGET", os.Args[0])
-}
-
-// fakeBdDir creates a directory whose fake bd state is seeded.
-func fakeBdDir(t *testing.T, seed map[string]string) string {
-	t.Helper()
-	dir := t.TempDir()
-	fakeBdReplace(t, dir, seed)
-	return dir
-}
-
-// fakeBdReplace overwrites the whole fake bd state — the test-side way to
-// simulate source edits and deletions between scans.
-func fakeBdReplace(t *testing.T, dir string, state map[string]string) {
-	t.Helper()
-	data, err := json.Marshal(state)
-	if err != nil {
-		t.Fatalf("marshal fake bd state: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "state.json"), data, 0o644); err != nil {
-		t.Fatalf("write fake bd state: %v", err)
-	}
-}
-
-func fakeBdState(t *testing.T, dir string) map[string]string {
-	t.Helper()
-	return fakeBdRead(filepath.Join(dir, "state.json"))
-}
-
-func fakeBdInvocations(t *testing.T, dir string) []string {
-	t.Helper()
-	data, err := os.ReadFile(filepath.Join(dir, "invocations.log"))
-	if err != nil {
-		return nil
-	}
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	for i, line := range lines {
-		lines[i] = strings.ReplaceAll(line, "\x1f", " ")
-	}
-	return lines
-}
-
 // --- shared fixtures ---------------------------------------------------------
 
-// registerKnowledgeDir registers one directory and registers cleanup for
-// its mirror rows, batches and the directory itself.
+// registerKnowledgeDir registers one directory (no scan happens in-process)
+// and registers cleanup for its mirror rows, batches and the directory.
 func registerKnowledgeDir(t *testing.T, kind, path string) string {
 	t.Helper()
 	var created struct{ ID, Status string }
 	testutil.Call(t, testHandler.PostKnowledgeDir, newRequest(http.MethodPost, "/api/knowledge/dirs",
 		map[string]any{"kind": kind, "path": path})).Want(http.StatusCreated).JSON(&created)
-	// Cleanup is registered before any assertion so a failed status check
-	// cannot leak a registered directory into later tests (the unique-path
-	// and single-ultimate gates would 409 on it).
 	ids := []string{created.ID}
 	t.Cleanup(func() {
 		ctx := context.Background()
@@ -191,10 +34,20 @@ func registerKnowledgeDir(t *testing.T, kind, path string) string {
 		testPool.Exec(ctx, `DELETE FROM knowledge_scan_batch WHERE dir_id = ANY($1::uuid[])`, ids)
 		testPool.Exec(ctx, `DELETE FROM knowledge_dir WHERE id = ANY($1::uuid[])`, ids)
 	})
-	if created.Status != "scanned" {
-		t.Fatalf("register %s dir: initial scan status=%q, want scanned", kind, created.Status)
+	if created.Status != "queued for first scan" {
+		t.Fatalf("register %s dir: status=%q, want queued for first scan", kind, created.Status)
 	}
 	return created.ID
+}
+
+// cleanupSystemProposals removes the pool rows auto-discovery created during
+// the test (keyed on the generation snapshot's knowledge_dir_id).
+func cleanupSystemProposals(t *testing.T) {
+	t.Helper()
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(),
+			`DELETE FROM proposal WHERE workspace_id = $1 AND created_by_type = 'system'`, testWorkspaceID)
+	})
 }
 
 func knowledgeEntries(t *testing.T, dirID string) []KnowledgeEntryResponse {
@@ -217,173 +70,444 @@ func knowledgeEntryByKey(t *testing.T, dirID, key string) KnowledgeEntryResponse
 	return KnowledgeEntryResponse{}
 }
 
-func scanKnowledgeDir(t *testing.T, dirID string) KnowledgeScanBatchResponse {
+// latestScanBatch reads the most recent batch row for a directory straight
+// from the database — the HTTP scan endpoint now only queues work.
+func latestScanBatch(t *testing.T, dirID string) KnowledgeScanBatchResponse {
 	t.Helper()
 	var batch KnowledgeScanBatchResponse
+	err := testPool.QueryRow(context.Background(), `
+SELECT dir_id::text, trigger_source, result, added, updated, removed, COALESCE(error, '')
+FROM knowledge_scan_batch WHERE dir_id = $1 ORDER BY started_at DESC LIMIT 1`, dirID).
+		Scan(&batch.DirID, &batch.TriggerSource, &batch.Result, &batch.Added, &batch.Updated, &batch.Removed, &batch.Error)
+	if err != nil {
+		t.Fatalf("no scan batch recorded for %s: %v", dirID, err)
+	}
+	return batch
+}
+
+// knowledgeDirState reads one directory row with the fields the UI reads.
+func knowledgeDirState(t *testing.T, dirID string) KnowledgeDirResponse {
+	t.Helper()
+	var dirs []KnowledgeDirResponse
+	testutil.Call(t, testHandler.GetKnowledgeDirs,
+		newRequest(http.MethodGet, "/api/knowledge/dirs", nil)).Want(http.StatusOK).JSON(&dirs)
+	for _, dir := range dirs {
+		if dir.ID == dirID {
+			return dir
+		}
+	}
+	t.Fatalf("knowledge dir %s not found", dirID)
+	return KnowledgeDirResponse{}
+}
+
+func requestScan(t *testing.T, dirID string) {
+	t.Helper()
 	testutil.Call(t, testHandler.ScanKnowledgeDir,
 		withURLParam(newRequest(http.MethodPost, "/api/knowledge/dirs/"+dirID+"/scan", nil), "id", dirID)).
-		Want(http.StatusOK).JSON(&batch)
-	return batch
+		Want(http.StatusAccepted)
+}
+
+func knowledgePlan(t *testing.T, daemonID string) KnowledgePlanResponse {
+	t.Helper()
+	var plan KnowledgePlanResponse
+	testutil.Call(t, testHandler.GetKnowledgePlan,
+		newRequest(http.MethodGet, "/api/daemon/knowledge/plan?daemon_id="+daemonID, nil)).
+		Want(http.StatusOK).JSON(&plan)
+	return plan
+}
+
+func postKnowledgeResults(t *testing.T, daemonID string, body map[string]any) map[string]any {
+	t.Helper()
+	var ack map[string]any
+	testutil.Call(t, testHandler.PostKnowledgeResults,
+		newRequest(http.MethodPost, "/api/daemon/knowledge/results?daemon_id="+daemonID, body)).
+		Want(http.StatusOK).JSON(&ack)
+	return ack
+}
+
+func adoptEntry(t *testing.T, entryID string) int {
+	t.Helper()
+	response := testutil.Call(t, testHandler.AdoptKnowledgeEntry,
+		withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+entryID+"/adopt", nil), "id", entryID))
+	return response.Code
 }
 
 // --- tests -------------------------------------------------------------------
 
-// TestKnowledgeAdoptRequiresUltimateDir pins the precondition: with no
-// ultimate directory designated, adoption refuses instead of inventing a
-// destination, and the entry is marked failed with that reason.
-func TestKnowledgeAdoptRequiresUltimateDir(t *testing.T) {
+// TestKnowledgeRegistrationQueuesFirstScan pins the new registration
+// semantics: the handler only records the directory (dup path and second
+// ultimate refuse with 409); the first scan is daemon work now.
+func TestKnowledgeRegistrationQueuesFirstScan(t *testing.T) {
 	if testHandler == nil {
 		t.Fatal("database fixture is required")
 	}
-	fakeBdSetup(t)
 
-	candidate := registerKnowledgeDir(t, "candidate_cli", fakeBdDir(t, map[string]string{"k": "v"}))
-	entry := knowledgeEntryByKey(t, candidate, "k")
-	testutil.Call(t, testHandler.AdoptKnowledgeEntry,
-		withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+entry.ID+"/adopt", nil), "id", entry.ID)).
+	candidate := registerKnowledgeDir(t, "candidate_cli", t.TempDir())
+	if dir := knowledgeDirState(t, candidate); !dir.ScanRequested {
+		t.Fatalf("fresh registration must be queued for its first scan: %+v", dir)
+	}
+
+	// Duplicate path in the same workspace refuses.
+	testutil.Call(t, testHandler.PostKnowledgeDir, newRequest(http.MethodPost, "/api/knowledge/dirs",
+		map[string]any{"kind": "candidate_cli", "path": knowledgeDirState(t, candidate).Path})).
 		Want(http.StatusConflict)
-	failed := knowledgeEntryByKey(t, candidate, "k")
-	if failed.AdoptionState != "failed" || !strings.Contains(failed.AdoptionError, "ultimate") {
-		t.Fatalf("after refused adoption: state=%q error=%q, want failed + ultimate-missing reason", failed.AdoptionState, failed.AdoptionError)
+
+	// A second active ultimate refuses (single adoption target per workspace).
+	registerKnowledgeDir(t, "ultimate", t.TempDir())
+	testutil.Call(t, testHandler.PostKnowledgeDir, newRequest(http.MethodPost, "/api/knowledge/dirs",
+		map[string]any{"kind": "ultimate", "path": t.TempDir()})).Want(http.StatusConflict)
+
+	// Unknown kinds refuse; kind is optional and defaults to candidate_cli.
+	testutil.Call(t, testHandler.PostKnowledgeDir, newRequest(http.MethodPost, "/api/knowledge/dirs",
+		map[string]any{"kind": " sovereign", "path": t.TempDir()})).Want(http.StatusBadRequest)
+	var created struct{ ID string }
+	testutil.Call(t, testHandler.PostKnowledgeDir, newRequest(http.MethodPost, "/api/knowledge/dirs",
+		map[string]any{"path": t.TempDir()})).Want(http.StatusCreated).JSON(&created)
+	testPool.Exec(context.Background(), `DELETE FROM knowledge_dir WHERE id = $1`, created.ID)
+
+	// An explicit scan request queues a refresh instead of scanning inline.
+	requestScan(t, candidate)
+	if dir := knowledgeDirState(t, candidate); !dir.ScanRequested {
+		t.Fatalf("scan request must set scan_requested: %+v", dir)
 	}
 }
 
-// TestKnowledgeMirrorScanAndAdopt walks the §K loop end to end:
-// registration mirrors the source on the spot, rescans log added / noop /
-// source_deleted batches faithfully, adoption transfers into the ultimate
-// bd (verified by reading the ultimate state back), and the scan path never
-// issues a write against the source directory.
-func TestKnowledgeMirrorScanAndAdopt(t *testing.T) {
+// TestKnowledgePlanHandsWorkToDaemon pins the plan contents: hosted +
+// unclaimed directories with their mirror SHA map, the resolved ultimate,
+// and — after a queue-time adoption — the pending transfer job.
+func TestKnowledgePlanHandsWorkToDaemon(t *testing.T) {
 	if testHandler == nil {
 		t.Fatal("database fixture is required")
 	}
-	fakeBdSetup(t)
+	const daemonID = "daemon-under-test"
 
-	ultimatePath := fakeBdDir(t, map[string]string{"existing": "untouched ultimate content"})
-	ultimateID := registerKnowledgeDir(t, "ultimate", ultimatePath)
+	ultimate := registerKnowledgeDir(t, "ultimate", "/tmp/ultimate-under-test")
+	candidate := registerKnowledgeDir(t, "candidate_cli", "/tmp/candidate-under-test")
 
-	candidatePath := fakeBdDir(t, map[string]string{
-		"tip-1": "restart the daemon after editing its env file",
-		"tip-2": "read the migration ledger before renumbering",
-	})
-	candidate := registerKnowledgeDir(t, "candidate_cli", candidatePath)
-
-	// Initial scan mirrored both keys.
-	if entries := knowledgeEntries(t, candidate); len(entries) != 2 {
-		t.Fatalf("initial mirror: got %d entries, want 2", len(entries))
-	}
-
-	// An unchanged rescan is a logged no-op.
-	if batch := scanKnowledgeDir(t, candidate); batch.Result != "noop" || batch.Added+batch.Updated+batch.Removed != 0 {
-		t.Fatalf("unchanged rescan: %+v, want noop with zero deltas", batch)
-	}
-
-	// Source evolves: tip-2 edited, tip-3 added, tip-1 deleted.
-	fakeBdReplace(t, candidatePath, map[string]string{
-		"tip-2": "always diff the ledger against the disk stems",
-		"tip-3": "a candidate memory up for adoption",
-	})
-	batch := scanKnowledgeDir(t, candidate)
-	if batch.Result != "changed" || batch.Added != 1 || batch.Updated != 1 || batch.Removed != 1 {
-		t.Fatalf("changed rescan: %+v, want changed 1/1/1", batch)
-	}
-	deleted := knowledgeEntryByKey(t, candidate, "tip-1")
-	if deleted.MirrorState != "source_deleted" {
-		t.Fatalf("vanished key tip-1: mirror_state=%q, want source_deleted", deleted.MirrorState)
-	}
-	edited := knowledgeEntryByKey(t, candidate, "tip-2")
-	if edited.Content != "always diff the ledger against the disk stems" {
-		t.Fatalf("edited key tip-2: content=%q", edited.Content)
-	}
-
-	// Owner adopts tip-3: the transfer must be visible in the ultimate bd.
-	entry := knowledgeEntryByKey(t, candidate, "tip-3")
-	testutil.Call(t, testHandler.AdoptKnowledgeEntry,
-		withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+entry.ID+"/adopt", nil), "id", entry.ID)).
-		Want(http.StatusOK)
-	if content := fakeBdState(t, ultimatePath)["tip-3"]; content != "a candidate memory up for adoption" {
-		t.Fatalf("ultimate state after adoption: tip-3=%q", content)
-	}
-	adopted := knowledgeEntryByKey(t, candidate, "tip-3")
-	if adopted.AdoptionState != "adopted" || adopted.UltimateDirID == nil || *adopted.UltimateDirID != ultimateID {
-		t.Fatalf("adopted entry: state=%q ultimate=%v, want adopted + provenance", adopted.AdoptionState, adopted.UltimateDirID)
-	}
-	if adopted.AdoptedFromDirID == nil || *adopted.AdoptedFromDirID != candidate ||
-		adopted.AdoptedFromKey == nil || *adopted.AdoptedFromKey != "tip-3" {
-		t.Fatalf("adopted entry provenance: from=%v key=%v", adopted.AdoptedFromDirID, adopted.AdoptedFromKey)
-	}
-	// The pre-existing ultimate memory is untouched, and re-adoption refuses.
-	if content := fakeBdState(t, ultimatePath)["existing"]; content != "untouched ultimate content" {
-		t.Fatalf("ultimate existing key rewritten: %q", content)
-	}
-	testutil.Call(t, testHandler.AdoptKnowledgeEntry,
-		withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+entry.ID+"/adopt", nil), "id", entry.ID)).
-		Want(http.StatusConflict)
-
-	// Same content under a different key: the ultimate library stays
-	// deduplicated — adoption refuses and names the existing key.
-	dup := knowledgeEntryByKey(t, candidate, "tip-2") // any not-yet-adopted entry
-	dbfx.Exec(t, `UPDATE knowledge_entry SET content = 'untouched ultimate content' WHERE id = $1`, dup.ID)
-	testutil.Call(t, testHandler.AdoptKnowledgeEntry,
-		withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+dup.ID+"/adopt", nil), "id", dup.ID)).
-		Want(http.StatusConflict)
-	if err := strings.Contains(knowledgeEntryByKey(t, candidate, "tip-2").AdoptionError, "existing"); !err {
-		t.Fatalf("duplicate-content refusal must name the existing key")
-	}
-
-	// The scan path is read-only against the source: every memories call
-	// carried --readonly, and no remember ever targeted the candidate dir.
-	for _, line := range fakeBdInvocations(t, candidatePath) {
-		if strings.HasPrefix(line, "memories") && !strings.Contains(line, "--readonly") {
-			t.Fatalf("memories call without --readonly against the source: %q", line)
-		}
-		if strings.HasPrefix(line, "remember") {
-			t.Fatalf("write issued against the candidate source: %q", line)
+	plan := knowledgePlan(t, daemonID)
+	var ws *KnowledgePlanWorkspace
+	for i := range plan.Workspaces {
+		if plan.Workspaces[i].WorkspaceID == testWorkspaceID {
+			ws = &plan.Workspaces[i]
 		}
 	}
+	if ws == nil {
+		t.Fatalf("plan misses the test workspace: %+v", plan.Workspaces)
+	}
+	if !ws.HasUltimate || ws.Ultimate == nil || ws.Ultimate.DirID != ultimate {
+		t.Fatalf("plan ultimate: has=%v ultimate=%+v, want dir %s", ws.HasUltimate, ws.Ultimate, ultimate)
+	}
+	var planned *KnowledgePlanDir
+	for i := range ws.Dirs {
+		if ws.Dirs[i].DirID == candidate {
+			planned = &ws.Dirs[i]
+		}
+	}
+	if planned == nil {
+		t.Fatalf("plan misses the candidate dir: %+v", ws.Dirs)
+	}
+	if !planned.ScanRequired || !planned.ScanRequested || planned.Bound {
+		t.Fatalf("fresh candidate in plan: %+v, want scan_required + unclaimed", planned)
+	}
+	if len(planned.Mirror) != 0 {
+		t.Fatalf("fresh candidate mirror: %v, want empty", planned.Mirror)
+	}
 
-	// Unregistering keeps history: entries flip to source_removed, rows stay.
-	testutil.Call(t, testHandler.DeleteKnowledgeDir,
-		withURLParam(newRequest(http.MethodDelete, "/api/knowledge/dirs/"+candidate, nil), "id", candidate)).
-		Want(http.StatusOK)
-	retired := knowledgeEntryByKey(t, candidate, "tip-2")
-	if retired.MirrorState != "source_removed" {
-		t.Fatalf("after unregister: tip-2 mirror_state=%q, want source_removed", retired.MirrorState)
+	// The daemon's first successful scan claims the unclaimed directory.
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": candidate, "trigger_source": "initial", "ok": true,
+			"memories": map[string]string{"tip": "seeded by the fake daemon"},
+		}},
+	})
+	if dir := knowledgeDirState(t, candidate); dir.HealthState != "ok" {
+		t.Fatalf("health after first scan: %q, want ok", dir.HealthState)
+	}
+
+	// Mirror SHA map is now populated for the next cycle.
+	planned = nil
+	for i := range knowledgePlan(t, daemonID).Workspaces {
+		w := &knowledgePlan(t, daemonID).Workspaces[i]
+		if w.WorkspaceID == testWorkspaceID {
+			ws = w
+		}
+	}
+	for i := range ws.Dirs {
+		if ws.Dirs[i].DirID == candidate {
+			planned = &ws.Dirs[i]
+		}
+	}
+	if planned == nil || !planned.Bound || planned.ScanRequired {
+		t.Fatalf("candidate after first scan: %+v, want bound + scan satisfied", planned)
+	}
+	if planned.Mirror["tip"] == "" {
+		t.Fatalf("mirror SHA map missing tip: %v", planned.Mirror)
 	}
 }
 
-// TestKnowledgeTransferFailureMarksEntryForRetry pins G1's failure half: a
-// bd write failure must leave the entry explicitly failed with the reason —
-// never silently adopted — and a retry after the source heals succeeds.
-func TestKnowledgeTransferFailureMarksEntryForRetry(t *testing.T) {
+// TestKnowledgeResultsLandsScans pins the diff pipeline: a daemon-reported
+// memories map becomes added/updated/source_deleted mirror rows and a faithful
+// batch log; unchanged and failed reports land as noop/failed batches; the
+// queue flags clear; and reports for another daemon's directory are refused.
+func TestKnowledgeResultsLandsScans(t *testing.T) {
 	if testHandler == nil {
 		t.Fatal("database fixture is required")
 	}
-	fakeBdSetup(t)
+	const daemonID = "daemon-under-test"
 
-	ultimatePath := fakeBdDir(t, nil)
-	registerKnowledgeDir(t, "ultimate", ultimatePath)
-	candidate := registerKnowledgeDir(t, "candidate_cli", fakeBdDir(t, map[string]string{"flaky": "content worth retrying"}))
+	candidate := registerKnowledgeDir(t, "candidate_cli", "/tmp/scan-target-under-test")
 
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": candidate, "trigger_source": "initial", "ok": true,
+			"memories": map[string]string{"a": "one", "b": "two"},
+		}},
+	})
+	if batch := latestScanBatch(t, candidate); batch.Result != "changed" || batch.Added != 2 {
+		t.Fatalf("initial scan batch: %+v, want changed +2", batch)
+	}
+	if dir := knowledgeDirState(t, candidate); dir.ScanRequested || dir.HealthState != "ok" {
+		t.Fatalf("dir after scan: requested=%v health=%q, want cleared + ok", dir.ScanRequested, dir.HealthState)
+	}
+
+	// Source evolves: a edited, c added, b deleted.
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": candidate, "trigger_source": "scheduled", "ok": true,
+			"memories": map[string]string{"a": "one-edited", "c": "three"},
+		}},
+	})
+	if batch := latestScanBatch(t, candidate); batch.Result != "changed" || batch.Added != 1 || batch.Updated != 1 || batch.Removed != 1 {
+		t.Fatalf("changed scan batch: %+v, want 1/1/1", batch)
+	}
+	if deleted := knowledgeEntryByKey(t, candidate, "b"); deleted.MirrorState != "source_deleted" {
+		t.Fatalf("vanished key b: mirror_state=%q, want source_deleted", deleted.MirrorState)
+	}
+	if edited := knowledgeEntryByKey(t, candidate, "a"); edited.Content != "one-edited" {
+		t.Fatalf("edited key a: content=%q", edited.Content)
+	}
+
+	// An unchanged report logs a zero-change noop batch.
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": candidate, "trigger_source": "manual", "ok": true, "unchanged": true,
+		}},
+	})
+	if batch := latestScanBatch(t, candidate); batch.Result != "noop" || batch.TriggerSource != "manual" {
+		t.Fatalf("unchanged scan batch: %+v, want manual noop", batch)
+	}
+
+	// A failed report flips health to no_access with the reason.
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": candidate, "trigger_source": "scheduled", "ok": false,
+			"error": "bd disappeared",
+		}},
+	})
+	if batch := latestScanBatch(t, candidate); batch.Result != "failed" || !strings.Contains(batch.Error, "bd disappeared") {
+		t.Fatalf("failed scan batch: %+v", batch)
+	}
+	if dir := knowledgeDirState(t, candidate); dir.HealthState != "no_access" || !strings.Contains(dir.HealthNote, "bd disappeared") {
+		t.Fatalf("dir after failure: health=%q note=%q", dir.HealthState, dir.HealthNote)
+	}
+
+	// Reports for a directory bound to ANOTHER daemon are ignored — a daemon
+	// may not poison a competitor's hosted source.
+	testPool.Exec(context.Background(),
+		`UPDATE knowledge_dir SET daemon_id = 'some-other-daemon' WHERE id = $1`, candidate)
+	ack := postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": candidate, "trigger_source": "scheduled", "ok": false,
+			"error": "forged failure",
+		}},
+	})
+	if ack["scans_applied"].(float64) != 0 {
+		t.Fatalf("foreign daemon scan applied: %v", ack)
+	}
+	if dir := knowledgeDirState(t, candidate); dir.HealthState != "no_access" {
+		t.Fatalf("foreign daemon report must not touch health, got %q", dir.HealthState)
+	}
+}
+
+// TestKnowledgeSystemProposalOncePerDirectory pins §4: the first scan of a
+// newly discovered candidate_auto source with entries creates exactly one
+// system proposal with a B1-valid prophecy and source evidence; later scans,
+// and ultimate/candidate_cli kinds, never create one.
+func TestKnowledgeSystemProposalOncePerDirectory(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("database fixture is required")
+	}
+	cleanupSystemProposals(t)
+	const daemonID = "daemon-under-test"
+
+	discovered := postKnowledgeResults(t, daemonID, map[string]any{
+		"discoveries": []map[string]any{{
+			"workspace_id": testWorkspaceID, "path": "/tmp/project-alpha", "label": "project-alpha",
+		}},
+	})
+	if discovered["discoveries_registered"].(float64) != 1 {
+		t.Fatalf("discovery not registered: %v", discovered)
+	}
+	var dirID string
+	if err := testPool.QueryRow(context.Background(), `
+SELECT id FROM knowledge_dir WHERE workspace_id = $1 AND path = '/tmp/project-alpha'`,
+		testWorkspaceID).Scan(&dirID); err != nil {
+		t.Fatalf("discovered dir missing: %v", err)
+	}
+	testPool.Exec(context.Background(), `UPDATE knowledge_dir SET daemon_id = $2 WHERE id = $1`, dirID, daemonID)
+	t.Cleanup(func() {
+		testPool.Exec(context.Background(), `DELETE FROM knowledge_dir WHERE id = $1`, dirID)
+	})
+
+	// Re-reporting the same discovery must not duplicate the row.
+	again := postKnowledgeResults(t, daemonID, map[string]any{
+		"discoveries": []map[string]any{{
+			"workspace_id": testWorkspaceID, "path": "/tmp/project-alpha", "label": "project-alpha",
+		}},
+	})
+	if again["discoveries_registered"].(float64) != 0 {
+		t.Fatalf("duplicate discovery registered: %v", again)
+	}
+
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": dirID, "trigger_source": "initial", "ok": true,
+			"memories": map[string]string{"k1": "one", "k2": "two"},
+		}},
+	})
+	var proposals []ProposalResponse
+	testutil.Call(t, testHandler.GetProposals, newRequest(http.MethodGet, "/api/proposals", nil)).
+		Want(http.StatusOK).JSON(&proposals)
+	var system []ProposalResponse
+	for _, proposal := range proposals {
+		if proposal.CreatedByType == "system" {
+			system = append(system, proposal)
+		}
+	}
+	if len(system) != 1 {
+		t.Fatalf("system proposals after first scan: %d, want exactly 1", len(system))
+	}
+	created := system[0]
+	if created.Type != "project_cognition" {
+		t.Fatalf("system proposal type: %q", created.Type)
+	}
+	if created.Prophecy["outcome_text"] == "" || created.Prophecy["falsify_condition"] == "" {
+		t.Fatalf("system proposal prophecy is not B1-valid: %v", created.Prophecy)
+	}
+	if created.GenerationSnapshot["knowledge_dir_id"] != dirID {
+		t.Fatalf("generation snapshot must name the source dir: %v", created.GenerationSnapshot)
+	}
+	evidence, _ := created.Evidence[0].(map[string]any)
+	if evidence["path"] != "/tmp/project-alpha" || evidence["entry_count"].(float64) != 2 {
+		t.Fatalf("system proposal evidence: %v", evidence)
+	}
+
+	// A later changed scan must not create a second proposal.
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": dirID, "trigger_source": "scheduled", "ok": true,
+			"memories": map[string]string{"k1": "one", "k2": "two", "k3": "three"},
+		}},
+	})
+	proposals = nil
+	testutil.Call(t, testHandler.GetProposals, newRequest(http.MethodGet, "/api/proposals", nil)).
+		Want(http.StatusOK).JSON(&proposals)
+	system = system[:0]
+	for _, proposal := range proposals {
+		if proposal.CreatedByType == "system" {
+			system = append(system, proposal)
+		}
+	}
+	if len(system) != 1 {
+		t.Fatalf("system proposals after second scan: %d, want still 1", len(system))
+	}
+}
+
+// TestKnowledgeAdoptionStateMachine pins the async adoption: queue-time
+// guards (no ultimate → 409, already adopted → 409, in-flight → 409), the
+// plan carrying the pending job, and the callback landing adopted-with-
+// provenance or failed-with-reason. Stale callbacks stay inert.
+func TestKnowledgeAdoptionStateMachine(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("database fixture is required")
+	}
+	const daemonID = "daemon-under-test"
+
+	ultimate := registerKnowledgeDir(t, "ultimate", "/tmp/ultimate-state-machine")
+	candidate := registerKnowledgeDir(t, "candidate_cli", "/tmp/candidate-state-machine")
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": candidate, "trigger_source": "initial", "ok": true,
+			"memories": map[string]string{"flaky": "content worth retrying"},
+		}},
+	})
 	entry := knowledgeEntryByKey(t, candidate, "flaky")
-	if err := os.WriteFile(filepath.Join(ultimatePath, "FAIL_REMEMBER"), []byte("1"), 0o644); err != nil {
-		t.Fatalf("plant failure flag: %v", err)
+
+	// No-ultimate refusal: drop the ultimate row temporarily.
+	testPool.Exec(context.Background(), `UPDATE knowledge_dir SET removed = TRUE WHERE id = $1`, ultimate)
+	if code := adoptEntry(t, entry.ID); code != http.StatusConflict {
+		t.Fatalf("adopt without ultimate: %d, want 409", code)
 	}
-	testutil.Call(t, testHandler.AdoptKnowledgeEntry,
-		withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+entry.ID+"/adopt", nil), "id", entry.ID)).
-		Want(http.StatusConflict)
-	failed := knowledgeEntryByKey(t, candidate, "flaky")
-	if failed.AdoptionState != "failed" || !strings.Contains(failed.AdoptionError, "transfer failed") {
-		t.Fatalf("after failed transfer: state=%q error=%q", failed.AdoptionState, failed.AdoptionError)
+	if state := knowledgeEntryByKey(t, candidate, "flaky").AdoptionState; state != "pending" {
+		t.Fatalf("refused adoption must not move the entry: %q", state)
+	}
+	testPool.Exec(context.Background(), `UPDATE knowledge_dir SET removed = FALSE WHERE id = $1`, ultimate)
+
+	// Queueing succeeds and shows in the daemon plan with the ultimate.
+	if code := adoptEntry(t, entry.ID); code != http.StatusAccepted {
+		t.Fatalf("first adopt: %d, want 202", code)
+	}
+	if code := adoptEntry(t, entry.ID); code != http.StatusConflict {
+		t.Fatalf("second adopt while transferring: %d, want 409", code)
+	}
+	plan := knowledgePlan(t, daemonID)
+	var job *KnowledgePlanAdopt
+	for i := range plan.Workspaces {
+		if plan.Workspaces[i].WorkspaceID != testWorkspaceID {
+			continue
+		}
+		for j := range plan.Workspaces[i].Adoptions {
+			if plan.Workspaces[i].Adoptions[j].ID == entry.ID {
+				job = &plan.Workspaces[i].Adoptions[j]
+			}
+		}
+	}
+	if job == nil || job.Key != "flaky" || job.UltimateDirID != ultimate {
+		t.Fatalf("pending adoption missing from plan: %+v", job)
 	}
 
-	if err := os.Remove(filepath.Join(ultimatePath, "FAIL_REMEMBER")); err != nil {
-		t.Fatalf("clear failure flag: %v", err)
+	// Failure callback lands 'failed' with the reason; retry queues again.
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"adoptions": []map[string]any{{"kind": "entry", "id": entry.ID, "ok": false, "error": "bd write refused"}},
+	})
+	failed := knowledgeEntryByKey(t, candidate, "flaky")
+	if failed.AdoptionState != "failed" || !strings.Contains(failed.AdoptionError, "bd write refused") {
+		t.Fatalf("after failed callback: state=%q error=%q", failed.AdoptionState, failed.AdoptionError)
 	}
-	testutil.Call(t, testHandler.AdoptKnowledgeEntry,
-		withURLParam(newRequest(http.MethodPost, "/api/knowledge/entries/"+entry.ID+"/adopt", nil), "id", entry.ID)).
-		Want(http.StatusOK)
-	if content := fakeBdState(t, ultimatePath)["flaky"]; content != "content worth retrying" {
-		t.Fatalf("ultimate state after retry: %q", content)
+	if code := adoptEntry(t, entry.ID); code != http.StatusAccepted {
+		t.Fatalf("retry after failure: %d, want 202", code)
+	}
+
+	// Success callback lands adopted with provenance; a stale repeat is inert.
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"adoptions": []map[string]any{{
+			"kind": "entry", "id": entry.ID, "ok": true, "ultimate_dir_id": ultimate,
+		}},
+	})
+	adopted := knowledgeEntryByKey(t, candidate, "flaky")
+	if adopted.AdoptionState != "adopted" || adopted.UltimateDirID == nil || *adopted.UltimateDirID != ultimate {
+		t.Fatalf("after success callback: state=%q ultimate=%v", adopted.AdoptionState, adopted.UltimateDirID)
+	}
+	if adopted.AdoptedFromDirID == nil || *adopted.AdoptedFromDirID != candidate || adopted.AdoptedFromKey == nil || *adopted.AdoptedFromKey != "flaky" {
+		t.Fatalf("adopted provenance: from=%v key=%v", adopted.AdoptedFromDirID, adopted.AdoptedFromKey)
+	}
+	postKnowledgeResults(t, daemonID, map[string]any{
+		"adoptions": []map[string]any{{"kind": "entry", "id": entry.ID, "ok": false, "error": "stale"}},
+	})
+	if state := knowledgeEntryByKey(t, candidate, "flaky").AdoptionState; state != "adopted" {
+		t.Fatalf("stale callback moved a terminal entry: %q", state)
+	}
+	if code := adoptEntry(t, entry.ID); code != http.StatusConflict {
+		t.Fatalf("adopt after adopted: %d, want 409", code)
 	}
 }
