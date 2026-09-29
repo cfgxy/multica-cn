@@ -15,6 +15,7 @@ export {
   skillVersionsOptions,
   skillVersionOptions,
   skillUsageOptions,
+  skillEffectOptions,
   useRestoreSkillVersion,
 } from "./skill-queries";
 export {
@@ -26,3 +27,21 @@ export {
   useUpdatePromptQuizItem,
   useDeletePromptQuizItem,
 } from "./quiz-queries";
+export {
+  proposalKeys,
+  proposalListOptions,
+  useCreateProposal,
+  useAdoptProposal,
+  useRejectProposal,
+  useRestoreProposal,
+  useVerifyProposal,
+} from "./proposal-queries";
+export {
+  knowledgeKeys,
+  knowledgeDirsOptions,
+  knowledgeEntriesOptions,
+  useRegisterKnowledgeDir,
+  useScanKnowledgeDir,
+  useUnregisterKnowledgeDir,
+  useAdoptKnowledgeEntry,
+} from "./knowledge-queries";
