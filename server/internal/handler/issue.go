@@ -1519,7 +1519,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	query := fmt.Sprintf(`SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-	   i.revision
+	   i.revision, i.run_suppressed, i.run_suppressed_at
 FROM issue i
 WHERE %s
 ORDER BY %s
@@ -1560,6 +1560,8 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 			&row.Stage,
 			&row.Properties,
 			&row.Revision,
+			&row.RunSuppressed,
+			&row.RunSuppressedAt,
 		); err != nil {
 			slog.Warn("ListIssues scan failed", "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to list issues")
