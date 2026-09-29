@@ -623,6 +623,28 @@ func (q *Queries) DeleteWorkspaceRuntimesAndProjects(ctx context.Context, worksp
 	return err
 }
 
+const deleteWorkspaceSelfEvolutionData = `-- name: DeleteWorkspaceSelfEvolutionData :exec
+WITH deleted_proposals AS (
+    DELETE FROM proposal WHERE proposal.workspace_id = $1
+),
+deleted_scan_batches AS (
+    DELETE FROM knowledge_scan_batch WHERE knowledge_scan_batch.workspace_id = $1
+),
+deleted_knowledge_entries AS (
+    DELETE FROM knowledge_entry WHERE knowledge_entry.workspace_id = $1
+)
+DELETE FROM knowledge_dir WHERE knowledge_dir.workspace_id = $1
+`
+
+// Self-evolution tables (RUYI-265) have no foreign keys or cascades. Every
+// row — proposals, registered knowledge directories, mirror entries and scan
+// batches — is workspace-keyed, so each table deletes by workspace_id
+// directly; no id-set indirection is needed.
+func (q *Queries) DeleteWorkspaceSelfEvolutionData(ctx context.Context, workspaceID pgtype.UUID) error {
+	_, err := q.db.Exec(ctx, deleteWorkspaceSelfEvolutionData, workspaceID)
+	return err
+}
+
 const deleteWorkspaceSquadsAndSkills = `-- name: DeleteWorkspaceSquadsAndSkills :exec
 WITH deleted_squads AS (
     DELETE FROM squad WHERE squad.workspace_id = $1

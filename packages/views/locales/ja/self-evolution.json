@@ -9,7 +9,9 @@
     "overview": "概要",
     "quality": "品質",
     "quiz": "クイズ",
-    "skills": "Skill"
+    "skills": "Skill",
+    "proposals": "提案",
+    "knowledge": "ナレッジ"
   },
   "skills": {
     "choose": "skill を選択",
@@ -30,6 +32,33 @@
     "noCostData": "token データなし",
     "insufficientCost": "サンプル不足",
     "medianTokens": "中央値 {{count}} token",
+    "versionComparison": "バージョン別の測定値",
+    "compareTo": "比較対象",
+    "noComparison": "比較には2つ以上のバージョンが必要です。",
+    "metric": "測定値",
+    "change": "差分",
+    "tokenMetric": "実行 token の中央値",
+    "retryMetric": "再試行した実行の割合",
+    "noComparisonData": "実行データなし",
+    "comparisonCaveat": "明示的な呼び出しのみを集計します。バージョン間の差は観測値であり、skill が変化を引き起こした証拠ではありません。差分の表示には両側でそれぞれ5件以上の有効な実行が必要です。",
+    "useVsControl": "使用グループ vs 対照グループ",
+    "useGroup": "使用グループ",
+    "controlGroup": "対照グループ",
+    "perplexityMetric": "プロンプトパープレキシティ（D3）",
+    "perplexityNotScored": "未スコア",
+    "notComparable": "両側同じプロンプトのため比較不可",
+    "perplexitySamePrompt": "パープレキシティはプロンプトバージョン単位で評価され、両グループは同じプロンプトを読むため差は比較できません。",
+    "firstPassMetric": "一発通過率（D7）",
+    "noReviewData": "レビューデータなし",
+    "useControlCaveat": "対照グループは計測期間内に同ロール・同プロジェクトでスキルを呼び出していない終了済み run です。差分は両側それぞれ 5 サンプル以上で表示されます。",
+    "versionEvents": "バージョンイベント",
+    "noVersionEvents": "バージョンイベントはまだありません（初版はイベントに含まれません）。",
+    "versionEventTitle": "v{{from}} → v{{version}}",
+    "eventBefore": "イベント前 {{count}} run",
+    "eventAfter": "イベント後 {{count}} run",
+    "windowModeDays": "{{days}} 日ウィンドウ",
+    "windowModeUses": "{{uses}} 回使用ウィンドウ",
+    "windowModeNone": "ウィンドウ内の使用なし",
     "recent": "最近の呼び出し",
     "chatRun": "チャット実行",
     "observational": "呼び出し回数は観測値であり、skill の効果を示すものではありません。",
@@ -43,7 +72,13 @@
     "cancel": "キャンセル",
     "error": "skill の履歴を読み込めませんでした。",
     "retry": "再試行",
-    "sources": { "create": "作成", "proposal": "提案", "revision": "提案による改訂", "edit": "編集", "restore": "復元" }
+    "sources": {
+      "create": "作成",
+      "proposal": "提案",
+      "revision": "提案による改訂",
+      "edit": "編集",
+      "restore": "復元"
+    }
   },
   "quality": {
     "scopePicker": {
@@ -260,5 +295,143 @@
         "save": "保存"
       }
     }
+  },
+  "proposals": {
+    "title": "提案プール",
+    "description": "提案は反証可能な予言を伴ってのみ登録されます。採用と検証は別々に記録され、却下された提案も参照可能なまま残ります。",
+    "filterAll": "すべてのステータス",
+    "status": {
+      "draft": "ドラフト",
+      "needs_revision": "要改訂",
+      "adopted": "採用済み",
+      "rejected": "却下",
+      "archived": "アーカイブ"
+    },
+    "type": {
+      "prompt_revision": "プロンプト改訂",
+      "skill": "スキル変更",
+      "project_cognition": "プロジェクト認知",
+      "lesson": "教訓",
+      "pitfall": "既知の落とし穴"
+    },
+    "create": "新規提案",
+    "createTitle": "新規提案",
+    "createDescription": "予言は作成時に書き込まれ、以降は変更できません。定量的な提案には指標・方向・数値帯が必要で、行動型の提案には観察可能な変化と反証条件が必要です。",
+    "typeLabel": "種別",
+    "titleLabel": "タイトル",
+    "summaryLabel": "要約",
+    "prophecyOutcome": "期待される結果",
+    "prophecyFalsify": "反証条件",
+    "prophecyObject": "指標",
+    "prophecyDirection": "予想方向",
+    "prophecyRangeLow": "帯の下限",
+    "prophecyRangeHigh": "帯の上限",
+    "direction": {
+      "down": "低下",
+      "up": "上昇",
+      "unchanged": "変化なし"
+    },
+    "cancel": "キャンセル",
+    "submit": "送信",
+    "list": "提案一覧",
+    "detailTitle": "提案の詳細",
+    "detail": {
+      "prophecy": "登録時の予言",
+      "falsify": "反証条件",
+      "object": "指標",
+      "direction": "方向",
+      "band": "帯 [{{low}}, {{high}}]",
+      "verification": "検証記録",
+      "noVerification": "検証はまだ記録されていません。採用後に判定を追加できます。",
+      "audit": "操作監査"
+    },
+    "createdAt": "作成 {{date}}",
+    "transferError": "知識転送に失敗しました：{{error}}",
+    "adopt": "採用",
+    "reject": "却下",
+    "restore": "ドラフトに戻す",
+    "verify": "検証を記録",
+    "verifySubmit": "検証を送信",
+    "rejectReasonLabel": "却下理由",
+    "rejectReasonPlaceholder": "監査ログに残す却下理由",
+    "verifyVerdictLabel": "判定",
+    "verifyEvidenceLabel": "エビデンス",
+    "verifyEvidencePlaceholder": "必須：判定を支えるエビデンス",
+    "verifyNoteLabel": "メモ（任意）",
+    "ownerOnly": "採用・却下・復元・検証はワークスペースのオーナーのみ実行できます。",
+    "verdict": {
+      "established": "成立",
+      "partial": "部分的に成立",
+      "refuted": "反証された",
+      "undeterminable": "判定不能"
+    },
+    "empty": {
+      "title": "提案はありません",
+      "description": "プールは空です。反証可能な予言を添えた提案を作成すると登録されます。"
+    },
+    "error": {
+      "read": "提案の読み込みに失敗しました",
+      "write": "操作は完了しませんでした。",
+      "retry": "再試行"
+    }
+  },
+  "knowledge": {
+    "title": "ナレッジミラー",
+    "description": "候補の bd memories ディレクトリは読み取り専用でミラーされ、唯一の書き込み経路はオーナーによる最終ライブラリへの採用転送です。",
+    "register": "ディレクトリを登録",
+    "registerTitle": "ナレッジディレクトリを登録",
+    "registerDescription": "登録すると最初の読み取り専用スキャンが実行されます。最終ライブラリは別途指定され、このフォームからは登録しません。",
+    "kindLabel": "ディレクトリ種別",
+    "kind": {
+      "ultimate": "最終ライブラリ",
+      "candidate_cli": "候補（手動登録）",
+      "candidate_auto": "候補（自動検出）"
+    },
+    "pathLabel": "ディレクトリパス",
+    "labelLabel": "表示ラベル",
+    "labelPlaceholder": "任意",
+    "cancel": "キャンセル",
+    "registerSubmit": "登録",
+    "dirsTitle": "登録済みディレクトリ",
+    "entriesTitle": "エントリーミラー",
+    "entryCount": "{{n}} 件",
+    "lastScan": "前回スキャン（{{result}}）：追加 {{added}}、更新 {{updated}}、削除 {{removed}}",
+    "neverScanned": "未スキャン",
+    "health": {
+      "ok": "正常",
+      "unhealthy": "異常"
+    },
+    "scanResult": {
+      "noop": "変化なし",
+      "changed": "変化あり",
+      "failed": "失敗"
+    },
+    "scan": "今すぐスキャン",
+    "unregister": "登録解除",
+    "allDirs": "すべてのディレクトリ",
+    "searchPlaceholder": "キーまたは内容を検索",
+    "mirrorState": {
+      "synced": "同期済み",
+      "source_deleted": "ソース削除済み",
+      "source_removed": "ソース解除済み"
+    },
+    "adoptionState": {
+      "pending": "未採用",
+      "adopted": "採用済み",
+      "failed": "採用失敗"
+    },
+    "adopt": "採用",
+    "adoptedFrom": "{{key}} から採用",
+    "emptyDirs": {
+      "title": "登録済みディレクトリはありません",
+      "description": "候補の bd memories ディレクトリを登録すると、内容が読み取り専用でミラーされます。"
+    },
+    "emptyEntries": "現在のフィルターではエントリーがありません。",
+    "error": {
+      "read": "ナレッジの読み込みに失敗しました",
+      "write": "操作は完了しませんでした。",
+      "retry": "再試行"
+    },
+    "ownerOnly": "登録・スキャン・解除・採用はワークスペースのオーナーのみ実行できます。"
   }
 }

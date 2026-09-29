@@ -9,7 +9,9 @@
     "overview": "总览",
     "quality": "质量",
     "quiz": "题库测验",
-    "skills": "Skill"
+    "skills": "Skill",
+    "proposals": "提案池",
+    "knowledge": "知识库"
   },
   "skills": {
     "choose": "选择 skill",
@@ -30,6 +32,33 @@
     "noCostData": "无 token 数据",
     "insufficientCost": "样本不足",
     "medianTokens": "中位数 {{count}} token",
+    "versionComparison": "版本读数对照",
+    "compareTo": "对比版本",
+    "noComparison": "需要至少两个版本才能对照。",
+    "metric": "读数",
+    "change": "差值",
+    "tokenMetric": "运行 token 中位数",
+    "retryMetric": "重试运行占比",
+    "noComparisonData": "无运行数据",
+    "comparisonCaveat": "仅统计显式调用。版本差异是观察性数据，不能证明由 skill 引起；两侧各至少 5 个有效运行样本才展示差值。",
+    "useVsControl": "使用组 vs 对照组",
+    "useGroup": "使用组",
+    "controlGroup": "对照组",
+    "perplexityMetric": "提示词困惑分（D3）",
+    "perplexityNotScored": "未评分",
+    "notComparable": "两组同源，不可比",
+    "perplexitySamePrompt": "困惑分按提示词版本评分，两组读取同一份提示词，分差不可比。",
+    "firstPassMetric": "一次通过率（D7）",
+    "noReviewData": "无评审数据",
+    "useControlCaveat": "对照组为埋点期内同角色、同项目且未调用该 skill 的终态 run；两组各至少 5 个样本才展示差值。",
+    "versionEvents": "版本事件",
+    "noVersionEvents": "暂无版本事件（首个版本不算事件）。",
+    "versionEventTitle": "v{{from}} → v{{version}}",
+    "eventBefore": "事件前 {{count}} 次运行",
+    "eventAfter": "事件后 {{count}} 次运行",
+    "windowModeDays": "按 {{days}} 天窗口",
+    "windowModeUses": "按 {{uses}} 次使用窗口",
+    "windowModeNone": "窗口内无使用",
     "recent": "最近调用",
     "chatRun": "聊天运行",
     "observational": "调用次数属于观测数据，不代表 skill 的效果。",
@@ -43,7 +72,13 @@
     "cancel": "取消",
     "error": "加载 skill 历史失败。",
     "retry": "重试",
-    "sources": { "create": "创建", "proposal": "提案转化", "revision": "提案修订", "edit": "编辑", "restore": "恢复" }
+    "sources": {
+      "create": "创建",
+      "proposal": "提案转化",
+      "revision": "提案修订",
+      "edit": "编辑",
+      "restore": "恢复"
+    }
   },
   "quality": {
     "scopePicker": {
@@ -260,5 +295,143 @@
         "save": "保存"
       }
     }
+  },
+  "proposals": {
+    "title": "提案池",
+    "description": "每个提案入池时必须附可证伪预言；采纳与验证分开记录，被拒绝的提案保留可查。",
+    "filterAll": "全部状态",
+    "status": {
+      "draft": "草稿",
+      "needs_revision": "待修订",
+      "adopted": "已采纳",
+      "rejected": "已拒绝",
+      "archived": "已归档"
+    },
+    "type": {
+      "prompt_revision": "Prompt 修订",
+      "skill": "Skill 变更",
+      "project_cognition": "项目认知",
+      "lesson": "经验教训",
+      "pitfall": "已知陷阱"
+    },
+    "create": "新建提案",
+    "createTitle": "新建提案",
+    "createDescription": "预言在创建时写入且此后不可改；数量型提案需给出指标、方向与数值区间，行为型提案需给出可观察变化与证伪条件。",
+    "typeLabel": "类型",
+    "titleLabel": "标题",
+    "summaryLabel": "摘要",
+    "prophecyOutcome": "预期结果",
+    "prophecyFalsify": "证伪条件",
+    "prophecyObject": "指标名",
+    "prophecyDirection": "预期方向",
+    "prophecyRangeLow": "区间下限",
+    "prophecyRangeHigh": "区间上限",
+    "direction": {
+      "down": "下降",
+      "up": "上升",
+      "unchanged": "不变"
+    },
+    "cancel": "取消",
+    "submit": "提交",
+    "list": "提案列表",
+    "detailTitle": "提案详情",
+    "detail": {
+      "prophecy": "入池预言",
+      "falsify": "证伪条件",
+      "object": "指标",
+      "direction": "方向",
+      "band": "区间 [{{low}}, {{high}}]",
+      "verification": "验证记录",
+      "noVerification": "尚未记录任何验证；采纳后可补充判定与证据。",
+      "audit": "操作审计"
+    },
+    "createdAt": "创建于 {{date}}",
+    "transferError": "知识转移失败：{{error}}",
+    "adopt": "采纳",
+    "reject": "拒绝",
+    "restore": "恢复为草稿",
+    "verify": "记录验证",
+    "verifySubmit": "提交验证",
+    "rejectReasonLabel": "拒绝理由",
+    "rejectReasonPlaceholder": "填写留痕用的拒绝理由",
+    "verifyVerdictLabel": "判定",
+    "verifyEvidenceLabel": "证据",
+    "verifyEvidencePlaceholder": "必填：支持该判定的证据",
+    "verifyNoteLabel": "备注（可选）",
+    "ownerOnly": "采纳、拒绝、恢复与验证仅工作空间 Owner 可操作。",
+    "verdict": {
+      "established": "成立",
+      "partial": "部分成立",
+      "refuted": "被证伪",
+      "undeterminable": "无法判定"
+    },
+    "empty": {
+      "title": "暂无提案",
+      "description": "提案池为空。新建提案时附上可证伪预言即可入池。"
+    },
+    "error": {
+      "read": "提案加载失败",
+      "write": "操作未完成。",
+      "retry": "重试"
+    }
+  },
+  "knowledge": {
+    "title": "知识库镜像",
+    "description": "候选 bd memories 目录以只读方式镜像；唯一写路径是 Owner 采纳后转移到最终权威库。",
+    "register": "注册目录",
+    "registerTitle": "注册知识目录",
+    "registerDescription": "注册即执行首次只读扫描。最终权威库另行指定，不在本表单注册。",
+    "kindLabel": "目录类型",
+    "kind": {
+      "ultimate": "最终权威库",
+      "candidate_cli": "候选（手动注册）",
+      "candidate_auto": "候选（自动发现）"
+    },
+    "pathLabel": "目录路径",
+    "labelLabel": "显示名",
+    "labelPlaceholder": "可选",
+    "cancel": "取消",
+    "registerSubmit": "注册",
+    "dirsTitle": "已注册目录",
+    "entriesTitle": "条目镜像",
+    "entryCount": "{{n}} 条",
+    "lastScan": "上次扫描（{{result}}）：新增 {{added}}，更新 {{updated}}，移除 {{removed}}",
+    "neverScanned": "尚未扫描",
+    "health": {
+      "ok": "健康",
+      "unhealthy": "异常"
+    },
+    "scanResult": {
+      "noop": "无变化",
+      "changed": "有变化",
+      "failed": "失败"
+    },
+    "scan": "立即扫描",
+    "unregister": "注销",
+    "allDirs": "全部目录",
+    "searchPlaceholder": "搜索 key 或内容",
+    "mirrorState": {
+      "synced": "已同步",
+      "source_deleted": "源已删除",
+      "source_removed": "源已移除"
+    },
+    "adoptionState": {
+      "pending": "待采纳",
+      "adopted": "已采纳",
+      "failed": "采纳失败"
+    },
+    "adopt": "采纳",
+    "adoptedFrom": "采纳自 {{key}}",
+    "emptyDirs": {
+      "title": "暂无注册目录",
+      "description": "注册一个候选 bd memories 目录后，其内容会以只读方式镜像到这里。"
+    },
+    "emptyEntries": "当前筛选下没有条目。",
+    "error": {
+      "read": "知识库加载失败",
+      "write": "操作未完成。",
+      "retry": "重试"
+    },
+    "ownerOnly": "注册、扫描、注销与采纳仅工作空间 Owner 可操作。"
   }
 }

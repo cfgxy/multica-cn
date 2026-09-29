@@ -985,6 +985,57 @@ type IssueViewPreference struct {
 	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
 }
 
+// Registered bd memories directories: read-only candidate sources plus one per-workspace ultimate adoption target.
+type KnowledgeDir struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	Kind        string             `json:"kind"`
+	Path        string             `json:"path"`
+	ProjectID   pgtype.UUID        `json:"project_id"`
+	Label       string             `json:"label"`
+	HealthState string             `json:"health_state"`
+	HealthNote  string             `json:"health_note"`
+	Removed     bool               `json:"removed"`
+	CreatedBy   pgtype.UUID        `json:"created_by"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+}
+
+// Read-only mirror of bd memories entries; adoption_state=adopted only after transfer into the ultimate bd confirmed by read-back.
+type KnowledgeEntry struct {
+	ID               pgtype.UUID        `json:"id"`
+	WorkspaceID      pgtype.UUID        `json:"workspace_id"`
+	DirID            pgtype.UUID        `json:"dir_id"`
+	Key              string             `json:"key"`
+	Content          string             `json:"content"`
+	ContentSha256    string             `json:"content_sha256"`
+	MirrorState      string             `json:"mirror_state"`
+	FirstSeenAt      pgtype.Timestamptz `json:"first_seen_at"`
+	LastConfirmedAt  pgtype.Timestamptz `json:"last_confirmed_at"`
+	AdoptionState    string             `json:"adoption_state"`
+	AdoptedAt        pgtype.Timestamptz `json:"adopted_at"`
+	AdoptedBy        pgtype.UUID        `json:"adopted_by"`
+	UltimateDirID    pgtype.UUID        `json:"ultimate_dir_id"`
+	AdoptedFromDirID pgtype.UUID        `json:"adopted_from_dir_id"`
+	AdoptedFromKey   pgtype.Text        `json:"adopted_from_key"`
+	AdoptionError    string             `json:"adoption_error"`
+}
+
+// Per-directory scan batch log; zero-change batches are logged too so incremental ingestion stays recomputable.
+type KnowledgeScanBatch struct {
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	DirID         pgtype.UUID        `json:"dir_id"`
+	TriggerSource string             `json:"trigger_source"`
+	Result        string             `json:"result"`
+	Added         int32              `json:"added"`
+	Updated       int32              `json:"updated"`
+	Removed       int32              `json:"removed"`
+	Error         string             `json:"error"`
+	StartedAt     pgtype.Timestamptz `json:"started_at"`
+	FinishedAt    pgtype.Timestamptz `json:"finished_at"`
+}
+
 type LarkBindingToken struct {
 	TokenHash      string             `json:"token_hash"`
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
@@ -1429,6 +1480,27 @@ type PromptVersion struct {
 	AuthorUserID      pgtype.UUID        `json:"author_user_id"`
 	AuthorNoteIssueID pgtype.UUID        `json:"author_note_issue_id"`
 	CreatedAt         pgtype.Timestamptz `json:"created_at"`
+}
+
+// Self-evolution proposals: falsifiable prophecy fixed at creation (B1), adoption and verification recorded separately (B2), rejected proposals retained without version links (B3).
+type Proposal struct {
+	ID                 pgtype.UUID        `json:"id"`
+	WorkspaceID        pgtype.UUID        `json:"workspace_id"`
+	Type               string             `json:"type"`
+	Status             string             `json:"status"`
+	Title              string             `json:"title"`
+	Summary            string             `json:"summary"`
+	Evidence           []byte             `json:"evidence"`
+	Prophecy           []byte             `json:"prophecy"`
+	GenerationSnapshot []byte             `json:"generation_snapshot"`
+	AdoptionSnapshot   []byte             `json:"adoption_snapshot"`
+	Verification       []byte             `json:"verification"`
+	AuditLog           []byte             `json:"audit_log"`
+	TransferError      string             `json:"transfer_error"`
+	CreatedByType      string             `json:"created_by_type"`
+	CreatedByID        pgtype.UUID        `json:"created_by_id"`
+	CreatedAt          pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
 }
 
 type QuickAction struct {

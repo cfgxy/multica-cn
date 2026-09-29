@@ -1204,6 +1204,13 @@ func (h *Handler) DeleteWorkspace(w http.ResponseWriter, r *http.Request) {
 			run:  func() error { return qtx.DeleteWorkspaceLeafData(ctx, requester.WorkspaceID) },
 		},
 		{
+			// Self-evolution rows (RUYI-265) carry no foreign keys by project
+			// rule, so proposals, knowledge directories, their mirror entries
+			// and the scan log are swept explicitly with the workspace.
+			name: "delete self-evolution data",
+			run:  func() error { return qtx.DeleteWorkspaceSelfEvolutionData(ctx, requester.WorkspaceID) },
+		},
+		{
 			name: "delete autopilot runs",
 			run:  func() error { return qtx.DeleteWorkspaceAutopilotRuns(ctx, requester.WorkspaceID) },
 		},

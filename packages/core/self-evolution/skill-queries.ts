@@ -7,6 +7,7 @@ export const skillEvolutionKeys = {
   versions: (wsId: string, skillId: string) => [...skillEvolutionKeys.all(wsId), skillId, "versions"] as const,
   version: (wsId: string, skillId: string, number: number) => [...skillEvolutionKeys.all(wsId), skillId, "version", number] as const,
   usage: (wsId: string, skillId: string) => [...skillEvolutionKeys.all(wsId), skillId, "usage"] as const,
+  effect: (wsId: string, skillId: string) => [...skillEvolutionKeys.all(wsId), skillId, "effect"] as const,
 };
 
 export function skillVersionsOptions(wsId: string, skillId: string) {
@@ -29,6 +30,14 @@ export function skillUsageOptions(wsId: string, skillId: string) {
   return queryOptions({
     queryKey: skillEvolutionKeys.usage(wsId, skillId),
     queryFn: () => api.getSkillUsage(skillId),
+    enabled: !!wsId && !!skillId,
+  });
+}
+
+export function skillEffectOptions(wsId: string, skillId: string) {
+  return queryOptions({
+    queryKey: skillEvolutionKeys.effect(wsId, skillId),
+    queryFn: () => api.getSkillEffect(skillId),
     enabled: !!wsId && !!skillId,
   });
 }
