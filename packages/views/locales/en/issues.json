@@ -1081,5 +1081,9 @@
     "tasks": {
       "issue_unavailable": "Issue unavailable"
     }
+  },
+  "suppressed": {
+    "badge": "On hold",
+    "tooltip": "Assigned but not started yet — resumes when started"
   }
 }

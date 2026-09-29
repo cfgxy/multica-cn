@@ -29,6 +29,13 @@ vi.mock("@multica/core/auth", () => ({
 vi.mock("@multica/core/agents", () => ({
   isAgentRuntimeBound: () => true,
   useAgentPresenceDetail: () => ({ availability: "offline", workload: null }),
+  // SuppressedBadge (RUYI-275) rides on every board card and subscribes to
+  // the workspace task snapshot; an empty snapshot keeps the indicator-first
+  // mutual exclusion quiescent so the picker tests stay about the picker.
+  agentTaskSnapshotOptions: () => ({
+    queryKey: ["agent-tasks", "ws-1"],
+    queryFn: async () => [],
+  }),
 }));
 
 vi.mock("@multica/core/paths", () => ({

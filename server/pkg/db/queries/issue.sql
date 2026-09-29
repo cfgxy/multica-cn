@@ -8,7 +8,7 @@
 SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-       i.revision
+       i.revision, i.run_suppressed, i.run_suppressed_at
 FROM issue i
 WHERE i.workspace_id = $1
   AND (sqlc.narg('status')::text IS NULL OR i.status = sqlc.narg('status'))
@@ -155,6 +155,19 @@ INSERT INTO issue (
 -- name: GetIssueByNumber :one
 SELECT * FROM issue
 WHERE workspace_id = $1 AND number = $2;
+
+-- name: SetIssueRunSuppressed :one
+-- Read-side snapshot maintenance for an honored `suppress_run` (RUYI-275).
+-- Set by the write that suppressed the run, cleared by the next write that
+-- truly starts a run or by the assignee being removed. Deliberately does NOT
+-- touch updated_at / revision / last_activity_at: this is server-side state
+-- maintenance, not a user-visible issue edit, and bumping them would fan out
+-- spurious activity and client refetches.
+UPDATE issue SET
+    run_suppressed = $2,
+    run_suppressed_at = $3
+WHERE id = $1
+RETURNING *;
 
 -- name: UpdateIssue :one
 WITH candidate AS (
@@ -350,7 +363,7 @@ DELETE FROM issue WHERE issue.id IN (SELECT target.id FROM target);
 SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-       i.revision
+       i.revision, i.run_suppressed, i.run_suppressed_at
 FROM issue i
 WHERE i.workspace_id = $1
   -- Negate only known terminal keys so an unknown legacy key remains visible.

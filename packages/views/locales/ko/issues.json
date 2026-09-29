@@ -1042,5 +1042,9 @@
     "tasks": {
       "issue_unavailable": "작업을 볼 수 없음"
     }
+  },
+  "suppressed": {
+    "badge": "보류 중",
+    "tooltip": "할당됨, 아직 시작되지 않음 — 시작하면 재개됩니다"
   }
 }
