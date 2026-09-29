@@ -124,11 +124,14 @@
   },
   "slash_command": {
     "skills_group": "스킬",
+    "skills_attached_group": "이 에이전트에 연결됨",
+    "skills_unattached_group": "미연결",
     "commands_group": "명령",
     "all_agents": "전체",
     "no_agents": "에이전트 없음",
     "no_skills_configured": "구성된 스킬 없음",
     "no_results": "일치하는 스킬 없음",
+    "unattached_reason": "참조가 적용되지 않습니다. 먼저 에이전트에 연결하세요",
     "commands": {
       "note": "메모 추가 — 에이전트를 트리거하지 않음"
     }
