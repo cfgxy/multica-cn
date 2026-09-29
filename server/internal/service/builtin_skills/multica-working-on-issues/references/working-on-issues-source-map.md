@@ -125,8 +125,8 @@ and is hidden from the PR list.
 |---|---|---|
 | Create-time: agent-assigned, non-backlog issue enqueues immediately | `server/internal/handler/issue.go:2263-2264` | new citation |
 | `shouldEnqueueAgentTask` returns false for `backlog` (parking lot) | `server/internal/handler/issue.go:2644-2648` | new citation |
-| Backlog → non-backlog (not done/cancelled) enqueues on update | `server/internal/handler/issue.go:2537-2540` | `:2523` |
-| Same contract in batch update | `server/internal/handler/issue.go:3021-3024` | new citation |
+| Backlog → `todo` / `in_progress` effective category enqueues on update; `blocked` / `in_review` / `done` / `cancelled` do not | `server/internal/service/issue_trigger.go` (`WillEnqueueRun`, `issuestatus.Effective` and `RunSourceStatus` case); `server/internal/handler/issue.go` (`UpdateIssue`, `WillEnqueueRun` dispatch) | `:2523` |
+| Same contract in batch update | `server/internal/handler/issue.go` (`BatchUpdateIssues`, `WillEnqueueRun` dispatch) | new citation |
 | Child → `done` notifies + wakes the parent, gated by the stage barrier | `server/internal/handler/issue_child_done.go:66` (`notifyParentOfChildDone`; doc comment at `:15`; barrier gate at `:115`) | func def `:51` |
 | Status change (incl. → `cancelled`) does NOT cancel in-flight tasks; only issue deletion does (MUL-4465) | no-cancel note in `server/internal/handler/issue.go:2652-2658` (`UpdateIssue`) and `:3170-3171` (`BatchUpdateIssues`); deletion still cancels at `:2863` (`DeleteIssue`) / `:3239` (`BatchDeleteIssues`) via `CancelTasksForIssue` (`server/internal/service/task.go:1229`) | new citation |
 | `StartTask` / `CompleteTask` do not write issue status (agent CLI owns progress) | `server/internal/service/task.go` (`StartTask` / `CompleteTask` comments) | new citation |
@@ -134,14 +134,15 @@ and is hidden from the PR list.
 | Failed task may roll `in_progress` → `todo` when no active task remains | `server/internal/service/task.go` (`HandleFailedTasks`) | new citation |
 | Custom statuses inherit their category's behavior in full; enqueue/park contracts resolve the effective category via `issuestatus.Effective` / `Resolve` (MUL-6243) | `server/internal/issuestatus/issuestatus.go` (`Effective`, `Resolve`) | new citation |
 | Runtime brief lists the workspace's active custom statuses grouped by category; catalog rides the claim payload (MUL-6460) | `server/internal/daemon/execenv/runtime_config_sections.go` (`writeIssueStatusCommand`); claim injection in `server/internal/handler/daemon.go` (`buildClaimedTaskResponse`, status catalog block) | new citation |
-| A status-only write enqueues only on the `backlog` → active transition; every other status change falls through to the no-trigger default, so it needs no run suppression | `server/internal/service/issue_trigger.go` (`WillEnqueueRun`, `RunSourceStatus` case and its `default`) | new citation |
-| An agent actor's `--no-start` on promotion out of `backlog` suppresses only if the target agent already has an active run; a member actor may defer a run for an agent or squad assignee | `server/internal/handler/issue_trigger.go` (`suppressesRun`); `server/internal/handler/issue.go` (`UpdateIssue`, `dispatchIssueRun`) | RUYI-251 |
+| A status-only write enqueues only on a `backlog` → `todo` / `in_progress` effective-category transition; every other status change falls through to the no-trigger default | `server/internal/service/issue_trigger.go` (`WillEnqueueRun`, `issuestatus.Effective`, `RunSourceStatus` case and its `default`) | new citation |
+| `--no-start` on a triggering move from `backlog` does not undo the status change; an agent actor suppresses only with an active task on this issue for the target agent, while a member actor may defer a run for an agent or squad assignee | `server/internal/handler/issue_trigger.go` (`suppressesRun`); `server/internal/handler/issue.go` (`UpdateIssue`, `dispatchIssueRun`) | RUYI-251 |
 | Literal-key exceptions to category rules: failed-task rollback writes the `todo` key; merged close-intent PR writes the `done` key | `server/internal/service/task.go` (`HandleFailedTasks`); `server/internal/handler/github.go` (merge close-intent path) | new citation |
 
 Creation with `--status todo` (or any non-backlog status) on an agent-assigned
 issue fires the agent immediately; `--status backlog` parks it with the assignee
-set but no trigger. Promoting `backlog → todo` later fires it then (update path,
-line 2537).
+set but no trigger. A later status-only move from `backlog` to the effective
+`todo` or `in_progress` category fires it; moves to `blocked`, `in_review`,
+`done`, or `cancelled` do not (update and batch-update paths above).
 
 Moving an issue to `cancelled` used to call `CancelTasksForIssue` and stop every
 active task on it (the old #940 behavior). MUL-4465 removed that from both

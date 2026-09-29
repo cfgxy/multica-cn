@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -92,18 +94,46 @@ func TestMain(m *testing.M) {
 	})
 	testPool = pool
 
-	testUserID, testWorkspaceID, err = setupHandlerTestFixture(ctx, pool)
-	if err != nil {
-		fmt.Printf("Failed to set up handler test fixture: %v\n", err)
-		pool.Close()
-		os.Exit(1)
+	// -count=N re-runs the test functions N times inside this one process
+	// while TestMain still runs only once. The suite fixture is process-scoped:
+	// per-test rows go through t.Cleanup, but anything a test leaves behind on
+	// a path that bypasses it survives until cleanupHandlerTestFixture, which
+	// used to run exactly once per process. With -count>=2 the second run then
+	// started on the first run's residue and failed on fixed-name unique
+	// conflicts and active-issue duplicates that a fresh process never sees
+	// (RUYI-266). Run the suite once per requested count and rebuild the
+	// fixture between runs, so every in-process iteration starts from the
+	// state a fresh process would see.
+	//
+	// TestMain runs before flag.Parse (parsing happens inside the first
+	// m.Run), so the count must be parsed here to be visible at all.
+	flag.Parse()
+	totalRuns := 1
+	if f := flag.Lookup("test.count"); f != nil {
+		if n, err := strconv.Atoi(f.Value.String()); err == nil && n > 0 {
+			totalRuns = n
+		}
 	}
-	dbfx = testutil.New(pool, testWorkspaceID, testUserID)
+	// The loop above owns the repetition; each m.Run below must execute the
+	// suite exactly once.
+	_ = flag.Set("test.count", "1")
 
-	stopHeartbeat := keepFixtureRuntimeOnline(pool, testRuntimeID)
+	code := 0
+	for run := 0; run < totalRuns; run++ {
+		testUserID, testWorkspaceID, err = setupHandlerTestFixture(ctx, pool)
+		if err != nil {
+			fmt.Printf("Failed to set up handler test fixture: %v\n", err)
+			pool.Close()
+			os.Exit(1)
+		}
+		dbfx = testutil.New(pool, testWorkspaceID, testUserID)
 
-	code := m.Run()
-	stopHeartbeat()
+		stopHeartbeat := keepFixtureRuntimeOnline(pool, testRuntimeID)
+		if runCode := m.Run(); runCode != 0 {
+			code = runCode
+		}
+		stopHeartbeat()
+	}
 	if err := cleanupHandlerTestFixture(context.Background(), pool); err != nil {
 		fmt.Printf("Failed to clean up handler test fixture: %v\n", err)
 		if code == 0 {

@@ -61,8 +61,8 @@ func TestBuildClaudeArgsStripsContextTagForGatewayModels(t *testing.T) {
 		{"untagged claude", "claude-opus-5", "claude-opus-5"},
 
 		// Shapes that are not a complete trailing tag are left alone, the
-		// same call pricing's contextTagRe and the frontend's
-		// stripContextTag make.
+		// same call modeltag.StripOne (shared with pricing) and the
+		// frontend's stripContextTag make.
 		{"empty tag", "gpt-5.6-sol[]", "gpt-5.6-sol[]"},
 		{"unterminated tag", "gpt-5.6-sol[1m", "gpt-5.6-sol[1m"},
 		{"tag not at end", "gpt-5.6-sol[1m]-preview", "gpt-5.6-sol[1m]-preview"},
