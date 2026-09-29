@@ -156,8 +156,9 @@ Never copy the visual shape of an existing hand-written `components/ui/` compone
 ## Build & release
 
 - **Main CI** (`.github/workflows/ci.yml`) excludes mobile via `--filter='!@multica/mobile'`. Mobile failures do NOT block web/desktop PRs.
-- **Mobile verify** (`.github/workflows/mobile-verify.yml`): triggered on `apps/mobile/**` or `packages/core/types/**` changes — runs typecheck/lint/test only, no IPA build.
-- **Mobile release** (`.github/workflows/mobile-release.yml`): triggered by `mobile-v*.*.*` tag → `eas build` + `eas submit`.
+- **Mobile verify** (`.github/workflows/mobile-verify.yml`): triggered on `apps/mobile/**` / `packages/core/**` / root manifest changes on main — runs typecheck/lint/test only, no native build.
+- **Android release** (`.github/workflows/mobile-android-build.yml`): push to main (same path filter) builds the production APK and publishes two GitHub Releases — the rolling `mobile-android-latest` and the versioned `mobile-android-v<version>-b<build>`; PR / manual dispatch upload artifacts only, no Release.
+- **iOS release** (`.github/workflows/mobile-ios-release.yml`): triggered by `mobile-ios-v*.*.*` tags.
 - **OTA** — EAS Update for JS-only fixes that don't change the runtime version. Manual / on-demand push to preview/production channels.
 
 Mobile release cadence is decoupled from main `v*.*.*` tags (server / CLI / desktop).
