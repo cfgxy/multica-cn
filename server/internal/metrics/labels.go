@@ -35,6 +35,7 @@ const (
 	labelGate         = "gate"
 	labelOutcome      = "outcome"
 	labelStage        = "stage"
+	labelActorType    = "actor_type"
 )
 
 var businessMetricLabels = map[string][]string{
@@ -104,6 +105,7 @@ var businessMetricLabels = map[string][]string{
 	"multica_entitlement_decision_total":               {labelGate, labelAction, labelReason},
 	"multica_entitlement_version_regression_total":     {},
 	"multica_autopilot_quota_decision_total":           {labelAction, labelSource, labelResult},
+	"multica_issue_run_suppressed_total":               {labelSource, labelActorType},
 }
 
 var forbiddenMetricLabels = map[string]struct{}{
