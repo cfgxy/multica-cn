@@ -320,6 +320,7 @@ var concurrentIndexCleanups = map[string]string{
 	"932_prompt_quiz_item_workspace_index":                      "idx_prompt_quiz_item_workspace",
 	"936_prompt_quiz_result_item_index":                         "idx_prompt_quiz_result_item",
 	"940_oauth_client_client_id_index":                          "idx_oauth_client_client_id",
+	"942_skill_version_identity_index":                         "idx_skill_version_identity",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction

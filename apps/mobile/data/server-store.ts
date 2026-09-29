@@ -53,7 +53,7 @@ interface ServerState {
   /** hydrate 是否完成。首个 API 请求发出前必须为 true。 */
   hydrated: boolean;
   /** 冷启动读取持久化配置。`authStore.initialize()` 最前面 await 它。 */
-  hydrate: () => Promise<void>;
+  hydrate: () => Promise<string | null>;
   addServer: (input: NewServerInput) => Promise<ServerEntry>;
   updateServer: (id: string, input: NewServerInput) => Promise<void>;
   removeServer: (id: string) => Promise<void>;
@@ -105,6 +105,7 @@ export const useServerStore = create<ServerState>((set, get) => {
         persisted?.activeServerId ?? BUILT_IN_SERVER_ID,
       );
       set({ servers, activeServerId: active.id, hydrated: true });
+      return persisted?.activeServerId ?? null;
     },
 
     addServer: async (input) => {

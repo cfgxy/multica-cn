@@ -585,6 +585,10 @@ func (h *Handler) UpdateSkill(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 
 	qtx := h.Queries.WithTx(tx)
+	if err := lockSkillVersionTarget(r.Context(), tx, skill); err != nil {
+		writeError(w, http.StatusNotFound, "skill not found")
+		return
+	}
 
 	params := db.UpdateSkillParams{
 		ID: parseUUID(id),
@@ -644,6 +648,10 @@ func (h *Handler) UpdateSkill(w http.ResponseWriter, r *http.Request) {
 			fileResps[i] = skillFileToResponse(f)
 		}
 	}
+	if err := appendSkillVersion(r.Context(), tx, skill.ID, parseUUID(requestUserID(r)), "edit", nil); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record skill version")
+		return
+	}
 
 	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to commit")
@@ -677,6 +685,14 @@ func (h *Handler) DeleteSkill(w http.ResponseWriter, r *http.Request) {
 	}
 	defer tx.Rollback(r.Context())
 	qtx := h.Queries.WithTx(tx)
+	if err := lockSkillVersionTarget(r.Context(), tx, skill); err != nil {
+		writeError(w, http.StatusNotFound, "skill not found")
+		return
+	}
+	if _, err := tx.Exec(r.Context(), `DELETE FROM skill_version WHERE skill_id = $1 AND workspace_id = $2`, skill.ID, skill.WorkspaceID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete skill versions")
+		return
+	}
 	if err := qtx.DeleteSkillLabelAssignmentsBySkill(r.Context(), skill.ID); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to remove skill label assignments")
 		return
@@ -2505,13 +2521,31 @@ func (h *Handler) UpsertSkillFile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sf, err := h.Queries.UpsertSkillFile(r.Context(), db.UpsertSkillFileParams{
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	if err := lockSkillVersionTarget(r.Context(), tx, skill); err != nil {
+		writeError(w, http.StatusNotFound, "skill not found")
+		return
+	}
+	sf, err := h.Queries.WithTx(tx).UpsertSkillFile(r.Context(), db.UpsertSkillFileParams{
 		SkillID: skill.ID,
 		Path:    sanitizeNullBytes(req.Path),
 		Content: sanitizeNullBytes(req.Content),
 	})
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to upsert skill file: "+err.Error())
+		return
+	}
+	if err := appendSkillVersion(r.Context(), tx, skill.ID, parseUUID(requestUserID(r)), "edit", nil); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record skill version")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save skill file")
 		return
 	}
 
@@ -2540,7 +2574,25 @@ func (h *Handler) DeleteSkillFile(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "skill file not found")
 		return
 	}
-	if err := h.Queries.DeleteSkillFile(r.Context(), file.ID); err != nil {
+	tx, err := h.TxStarter.Begin(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to start transaction")
+		return
+	}
+	defer tx.Rollback(r.Context())
+	if err := lockSkillVersionTarget(r.Context(), tx, skill); err != nil {
+		writeError(w, http.StatusNotFound, "skill not found")
+		return
+	}
+	if err := h.Queries.WithTx(tx).DeleteSkillFile(r.Context(), file.ID); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete skill file")
+		return
+	}
+	if err := appendSkillVersion(r.Context(), tx, skill.ID, parseUUID(requestUserID(r)), "edit", nil); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to record skill version")
+		return
+	}
+	if err := tx.Commit(r.Context()); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to delete skill file")
 		return
 	}

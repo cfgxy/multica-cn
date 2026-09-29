@@ -21,15 +21,20 @@ POSTGRES_USER ?= multica
 POSTGRES_PASSWORD ?= multica
 POSTGRES_PORT ?= 5432
 PORT := $(or $(BACKEND_PORT),$(API_PORT),$(SERVER_PORT),$(PORT),8080)
+# Browser-facing URLs default to EMPTY (same-origin mode): the web app then
+# sends relative URLs through the Next proxy (REMOTE_API_URL) and derives the
+# WS URL from window.location. Do not bake absolute localhost URLs here — this
+# block is exported, and an exported value outranks .env in compose variable
+# interpolation, silently overriding the operator's .env (RUYI-256).
 ifeq ($(origin MULTICA_PUBLIC_URL), undefined)
-MULTICA_PUBLIC_URL := http://localhost:$(PORT)
+MULTICA_PUBLIC_URL :=
 endif
 FRONTEND_PORT ?= 3000
 FRONTEND_ORIGIN ?= http://localhost:$(FRONTEND_PORT)
 MULTICA_APP_URL ?= $(FRONTEND_ORIGIN)
 DATABASE_URL ?= postgres://$(POSTGRES_USER):$(POSTGRES_PASSWORD)@localhost:$(POSTGRES_PORT)/$(POSTGRES_DB)?sslmode=disable
-NEXT_PUBLIC_API_URL ?= http://localhost:$(PORT)
-NEXT_PUBLIC_WS_URL ?= ws://localhost:$(PORT)/ws
+NEXT_PUBLIC_API_URL ?=
+NEXT_PUBLIC_WS_URL ?=
 GOOGLE_REDIRECT_URI ?= $(FRONTEND_ORIGIN)/auth/callback
 MULTICA_SERVER_URL ?= ws://localhost:$(PORT)/ws
 LOCAL_UPLOAD_BASE_URL ?= http://localhost:$(PORT)

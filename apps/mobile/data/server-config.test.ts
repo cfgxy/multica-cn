@@ -19,6 +19,7 @@ import {
   composeServerList,
   findDuplicateServer,
   interpretProbeResponse,
+  getStartupServerTarget,
   isPlainHttp,
   isValidServerUrl,
   normalizeUrl,
@@ -38,6 +39,19 @@ const custom = (over: Partial<ServerEntry> = {}): ServerEntry => ({
   webUrl: null,
   builtIn: false,
   ...over,
+});
+
+describe("getStartupServerTarget", () => {
+  const builtIn = buildBuiltInServer("https://api.example.test", undefined);
+  it("skips the gate for one server", () => {
+    expect(getStartupServerTarget([builtIn], null)).toBeUndefined();
+  });
+  it("starts the countdown only for a valid persisted previous server", () => {
+    expect(getStartupServerTarget([builtIn, custom()], "srv_1")).toBe("srv_1");
+    expect(getStartupServerTarget([builtIn, custom()], "default")).toBe("default");
+    expect(getStartupServerTarget([builtIn, custom()], "deleted")).toBeNull();
+    expect(getStartupServerTarget([builtIn, custom()], null)).toBeNull();
+  });
 });
 
 describe("normalizeUrl", () => {

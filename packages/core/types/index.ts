@@ -48,6 +48,9 @@ export type {
   DisabledRuntimeSkill,
   SetAgentRuntimeSkillEnabledRequest,
   SkillFile,
+  SkillVersion,
+  SkillVersionSummary,
+  SkillUsage,
   CreateSkillRequest,
   SkillImportResult,
   UpdateSkillRequest,
@@ -270,6 +273,8 @@ export type {
 export type {
   VCSProvider,
   VCSConnection,
+  GitLabRepository,
+  ListGitLabRepositoriesResponse,
   ListVCSConnectionsResponse,
   ConnectVCSRequest,
   ConnectVCSResponse,

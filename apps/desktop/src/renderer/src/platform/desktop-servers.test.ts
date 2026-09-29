@@ -5,6 +5,7 @@ import { DEFAULT_RUNTIME_CONFIG } from "../../../shared/runtime-config";
 import {
   ensureServerStore,
   resolveEffectiveRuntimeConfig,
+  getStartupServerTarget,
   useServerStore,
 } from "./desktop-servers";
 
@@ -91,6 +92,26 @@ describe("resolveEffectiveRuntimeConfig", () => {
   it("falls back to the built-in config on a corrupted payload", () => {
     const storage = makeStorage({ multica_servers: "{broken" });
     expect(resolveEffectiveRuntimeConfig(BUILTIN, storage)).toEqual(BUILTIN);
+  });
+});
+
+describe("getStartupServerTarget", () => {
+  it("skips selection for the built-in server alone", () => {
+    expect(getStartupServerTarget(BUILTIN, makeStorage())).toBeUndefined();
+  });
+
+  it("uses the persisted previous server when it still exists", () => {
+    const storage = makeStorage();
+    persistServers(storage, [{ id: "srv_a", name: "A", apiUrl: "https://a.example.com" }], "srv_a");
+    expect(getStartupServerTarget(BUILTIN, storage)).toBe("srv_a");
+  });
+
+  it("requires explicit selection when the persisted id is missing or dangling", () => {
+    const storage = makeStorage();
+    persistServers(storage, [{ id: "srv_a", name: "A", apiUrl: "https://a.example.com" }], "srv_gone");
+    expect(getStartupServerTarget(BUILTIN, storage)).toBeNull();
+    persistServers(storage, [{ id: "srv_a", name: "A", apiUrl: "https://a.example.com" }], "default");
+    expect(getStartupServerTarget(BUILTIN, storage)).toBe("default");
   });
 });
 

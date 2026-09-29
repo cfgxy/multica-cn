@@ -8,7 +8,42 @@
   "tabs": {
     "overview": "概要",
     "quality": "品質",
-    "quiz": "クイズ"
+    "quiz": "クイズ",
+    "skills": "Skill"
+  },
+  "skills": {
+    "choose": "skill を選択",
+    "manage": "skill を管理",
+    "empty": "skill はまだありません。",
+    "history": "バージョン履歴",
+    "noVersions": "バージョン履歴がありません。",
+    "usage": "観測された利用",
+    "allTime": "累計",
+    "last30": "直近30日",
+    "assigned": "割り当て済みエージェント",
+    "invocations_other": "明示的な呼び出し {{count}} 件",
+    "observedSince": "最初に確認した呼び出し：{{date}}。以前の利用は不明です。",
+    "noObserved": "明示的な呼び出しの記録はありません。以前の利用は不明です。",
+    "versionCost": "バージョン別 token 消費量",
+    "measuredRuns": "実行 {{count}} 件、token データあり {{samples}} 件",
+    "notCollected": "実行データ未収集",
+    "noCostData": "token データなし",
+    "insufficientCost": "サンプル不足",
+    "medianTokens": "中央値 {{count}} token",
+    "recent": "最近の呼び出し",
+    "chatRun": "チャット実行",
+    "observational": "呼び出し回数は観測値であり、skill の効果を示すものではありません。",
+    "version": "バージョン v{{version}}",
+    "usedAt": "{{date}} · バージョン {{version}}",
+    "diff": "前バージョンとの差分",
+    "restore": "このバージョンを復元",
+    "restoreConfirm": "v{{version}} を新しい v{{next}} として復元します。割り当ては変わりません。",
+    "restoreError": "バージョンを復元できませんでした。",
+    "ownerOnly": "復元できるのはワークスペースのオーナーのみです。",
+    "cancel": "キャンセル",
+    "error": "skill の履歴を読み込めませんでした。",
+    "retry": "再試行",
+    "sources": { "create": "作成", "proposal": "提案", "revision": "提案による改訂", "edit": "編集", "restore": "復元" }
   },
   "quality": {
     "scopePicker": {

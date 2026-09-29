@@ -2392,6 +2392,83 @@ describe("ApiClient refreshSkill response schema", () => {
   });
 });
 
+describe("ApiClient skill version responses", () => {
+  const version = {
+    id: "version-1",
+    skill_id: "skill-1",
+    version: 1,
+    name: "review-helper",
+    description: "Reviews changes",
+    content: "# Review",
+    config: { origin: "local" },
+    files: [{ path: "references/checklist.md", content: "Check" }],
+    source: "create",
+    created_at: "2026-01-01T00:00:00Z",
+  };
+
+  it("validates skill lists consumed by the shared tab", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: "skill-1", workspace_id: "ws-1", name: "review-helper" }])))
+      .mockResolvedValueOnce(new Response(JSON.stringify([{ id: 42, name: "broken" }]))));
+    const client = new ApiClient("https://api.example.test");
+    expect(await client.listSkills()).toMatchObject([{ id: "skill-1", name: "review-helper" }]);
+    expect(await client.listSkills()).toEqual([]);
+  });
+
+  it("keeps list responses metadata-only and parses detail and restore", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify([version])))
+      .mockResolvedValueOnce(new Response(JSON.stringify(version)))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ version: 2 })));
+    vi.stubGlobal("fetch", fetchMock);
+    const client = new ApiClient("https://api.example.test");
+
+    const listed = await client.listSkillVersions("skill-1");
+    expect(listed).toMatchObject([{ version: 1, name: "review-helper" }]);
+    expect(listed[0]).not.toHaveProperty("content");
+    expect(await client.getSkillVersion("skill-1", 1)).toMatchObject({ content: "# Review", files: version.files });
+    expect(await client.restoreSkillVersion("skill-1", 1)).toEqual({ version: 2 });
+    expect(fetchMock.mock.calls[2]?.[1]?.method).toBe("POST");
+  });
+
+  it("falls back when the list, detail or restore response is malformed", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ versions: [version] })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ...version, files: 42 })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ version: "wrong" }))));
+    const client = new ApiClient("https://api.example.test");
+
+    expect(await client.listSkillVersions("skill-1")).toEqual([]);
+    expect(await client.getSkillVersion("skill-1", 1)).toMatchObject({ id: "", version: 0, files: [] });
+    expect(await client.restoreSkillVersion("skill-1", 1)).toEqual({ version: 0 });
+  });
+
+  it("reads explicit skill invocations and rejects malformed usage responses", async () => {
+    vi.stubGlobal("fetch", vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        total: 1, last_30_days: 1, assigned_agents: 2, since: "2026-09-28T00:00:00Z",
+        versions: [{ version: 2, count: 1, runs: 2, token_samples: 1, median_total_tokens: 100, retried_runs: 1 }],
+        recent: [{ task_id: "run-1", issue_id: "issue-1", version: 2, used_at: "2026-09-28T00:00:00Z" }],
+      })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ total: "invalid" })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        total: 1, last_30_days: 1, versions: [{ version: 2, count: 1, token_samples: "bad" }], recent: [],
+      })))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        total: 1, last_30_days: 1, versions: [{ version: 2, count: 1 }], recent: [],
+      }))));
+    const client = new ApiClient("https://api.example.test");
+    expect(await client.getSkillUsage("skill-1")).toMatchObject({
+      total: 1, assigned_agents: 2, versions: [{ version: 2, count: 1, runs: 2, token_samples: 1, median_total_tokens: 100, retried_runs: 1 }], recent: [{ task_id: "run-1" }],
+    });
+    expect(await client.getSkillUsage("skill-1")).toBeNull();
+    expect(await client.getSkillUsage("skill-1")).toBeNull();
+    expect(await client.getSkillUsage("skill-1")).toMatchObject({
+      total: 1, versions: [{ version: 2, count: 1 }],
+    });
+  });
+});
+
 describe("ApiClient workspace MCP servers", () => {
   function stubJSON(body: unknown) {
     const fetchMock = vi.fn().mockResolvedValue(
