@@ -5,6 +5,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -16,7 +17,7 @@ import { useChatStore } from "@multica/core/chat";
 import { getCurrentWsId } from "@multica/core/platform";
 import { canAssignAgentToIssue } from "@multica/core/permissions";
 import { isImeComposing } from "@multica/core/utils";
-import { workspaceKeys } from "@multica/core/workspace/queries";
+import { workspaceKeys, skillListOptions } from "@multica/core/workspace/queries";
 import type { Agent, MemberWithUser, SkillSummary } from "@multica/core/types";
 import { useT } from "../../i18n";
 import { ActorAvatar } from "../../common/actor-avatar";
@@ -49,6 +50,14 @@ export interface SlashCommandItem {
   supportingAgents?: Agent[];
   assignedAgentId?: string | null;
   allAgentsSupport?: boolean;
+  /**
+   * Chat skill picker only: whether the active chat agent has this skill
+   * attached and enabled. `false` renders the row disabled with a reason —
+   * the daemon only resolves skills through the agent-skill junction, so a
+   * reference to an unattached skill would silently do nothing. Undefined
+   * (issue composer) keeps the row selectable as before.
+   */
+  attached?: boolean;
 }
 
 interface SlashCommandListProps {
@@ -77,9 +86,24 @@ export const SlashCommandList = forwardRef<
   const [selectedIndex, setSelectedIndex] = useState(0);
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
+  // Rows the chat picker marked `attached: false` are visible but dead —
+  // the daemon resolves skill references through the agent-skill junction,
+  // so picking one would insert text that silently does nothing.
+  const isRowDisabled = useCallback(
+    (item: SlashCommandItem) => item.kind === "skill" && item.attached === false,
+    [],
+  );
+  const selectableIndices = useMemo(
+    () =>
+      items
+        .map((item, index) => (isRowDisabled(item) ? null : index))
+        .filter((index): index is number => index !== null),
+    [items, isRowDisabled],
+  );
+
   useEffect(() => {
-    setSelectedIndex(0);
-  }, [items]);
+    setSelectedIndex(selectableIndices[0] ?? 0);
+  }, [selectableIndices]);
 
   useEffect(() => {
     itemRefs.current[selectedIndex]?.scrollIntoView({ block: "nearest" });
@@ -88,10 +112,10 @@ export const SlashCommandList = forwardRef<
   const selectItem = useCallback(
     (index: number) => {
       const item = items[index];
-      if (!item) return;
+      if (!item || isRowDisabled(item)) return;
       command(item);
     },
-    [items, command],
+    [items, command, isRowDisabled],
   );
 
   useImperativeHandle(ref, () => ({
@@ -101,15 +125,24 @@ export const SlashCommandList = forwardRef<
       // see pickerNavigationDirection.
       const direction = pickerNavigationDirection(event);
       if (direction !== null) {
-        if (items.length === 0) return false;
-        const delta = direction === "next" ? 1 : items.length - 1;
-        setSelectedIndex((i) => (i + delta) % items.length);
+        if (selectableIndices.length === 0) return false;
+        const pos = selectableIndices.indexOf(selectedIndex);
+        const delta = direction === "next" ? 1 : selectableIndices.length - 1;
+        const next = selectableIndices[
+          (Math.max(pos, 0) + delta) % selectableIndices.length
+        ]!;
+        setSelectedIndex(next);
         return true;
       }
       // Enter is the canonical accept; plain Tab is an additive alias (see
       // isPickerAcceptKey). Shift/modifier+Tab fall through to focus nav.
       if (isPickerAcceptKey(event)) {
-        if (items.length === 0) return false;
+        if (selectableIndices.length === 0) {
+          // Rows are on screen but none selectable (all-unattached library).
+          // Swallow the key so a dead Enter never leaks into the composer as
+          // a send/newline — arrows stay fall-through for cursor movement.
+          return items.length > 0;
+        }
         selectItem(selectedIndex);
         return true;
       }
@@ -137,6 +170,19 @@ export const SlashCommandList = forwardRef<
       ? t(($) => $.slash_command.commands.note)
       : item.description;
 
+  // Group boundaries: the chat picker partitions skills into attached
+  // (selectable) and unattached (disabled) blocks; the issue composer's
+  // items carry no attachment data and keep the legacy single "Skills"
+  // header; commands trail last.
+  const groupKeyOf = (
+    item: SlashCommandItem,
+  ): "attached" | "unattached" | "skill" | "command" => {
+    if (item.kind !== "skill") return "command";
+    if (item.attached === undefined) return "skill";
+    return item.attached ? "attached" : "unattached";
+  };
+  const hasSkills = items.some((item) => item.kind === "skill");
+
   return (
     // Height budget clamps to min(design max, viewport-aware
     // `--suggestion-available-height` from suggestion-popup.tsx's size
@@ -145,21 +191,35 @@ export const SlashCommandList = forwardRef<
     <div className="rounded-md border bg-popover py-1 shadow-md w-80 max-h-[min(300px,var(--suggestion-available-height,300px))] overflow-y-auto">
       {items.map((item, index) => {
         const description = describe(item);
-        const groupStart = index === 0 || (items[index - 1]?.kind === "skill" && item.kind !== "skill");
+        const key = groupKeyOf(item);
+        const groupStart = index === 0 || groupKeyOf(items[index - 1]!) !== key;
+        const disabled = isRowDisabled(item);
         return (
           <div key={item.id}>
-          {groupStart && item.kind === "skill" && (
+          {groupStart && key === "attached" && (
+            <div className="px-3 py-1 text-caption text-muted-foreground">{t(($) => $.slash_command.skills_attached_group)}</div>
+          )}
+          {groupStart && key === "unattached" && (
+            <div className="px-3 py-1 text-caption text-muted-foreground">{t(($) => $.slash_command.skills_unattached_group)}</div>
+          )}
+          {groupStart && key === "skill" && (
             <div className="px-3 py-1 text-caption text-muted-foreground">{t(($) => $.slash_command.skills_group)}</div>
           )}
-          {groupStart && item.kind !== "skill" && items.some((entry) => entry.kind === "skill") && (
+          {groupStart && key === "command" && hasSkills && (
             <div className="px-3 pt-2 pb-1 text-caption text-muted-foreground">{t(($) => $.slash_command.commands_group)}</div>
           )}
           <button
             ref={(el) => {
               itemRefs.current[index] = el;
             }}
+            disabled={disabled}
+            aria-disabled={disabled || undefined}
             className={`flex w-full flex-col gap-0.5 px-3 py-1.5 text-left text-caption transition-colors ${
-              selectedIndex === index ? "bg-accent" : "hover:bg-accent/50"
+              disabled
+                ? "cursor-not-allowed opacity-60"
+                : selectedIndex === index
+                  ? "bg-accent"
+                  : "hover:bg-accent/50"
             }`}
             onClick={() => selectItem(index)}
           >
@@ -169,7 +229,12 @@ export const SlashCommandList = forwardRef<
                 {description}
               </span>
             )}
-            {item.kind === "skill" && (
+            {item.kind === "skill" && disabled && (
+              <span className="text-muted-foreground">
+                {t(($) => $.slash_command.unattached_reason)}
+              </span>
+            )}
+            {item.kind === "skill" && !disabled && (
               <span
                 className="flex items-center gap-1 text-muted-foreground"
                 title={item.allAgentsSupport ? t(($) => $.slash_command.all_agents) : undefined}
@@ -279,11 +344,50 @@ function buildItems(qc: QueryClient, query: string): SlashCommandItem[] {
     availableAgents.find((a) => a.id === selectedAgentId) ??
     availableAgents[0] ??
     null;
+  if (!activeAgent) return [];
+
+  // RUYI-288: the picker shows the whole workspace library, not just the
+  // agent's attachments — hiding unattached skills made it read as a curated
+  // subset. A cold cache yields no rows for this keystroke; warm it in the
+  // background so the next keystroke sees the real list (chat-input also
+  // prefetches on mount; a `[]` cache means fetched-and-empty, don't refetch).
+  const cachedSkills =
+    qc.getQueryData<SkillSummary[]>(workspaceKeys.skills(wsId));
+  if (cachedSkills === undefined) {
+    void qc.fetchQuery(skillListOptions(wsId)).catch(() => {});
+  }
+  const skills = cachedSkills ?? [];
 
   const q = query.toLowerCase();
-  return rankSkillMatches(activeAgent?.skills ?? [], q)
-    .slice(0, MAX_ITEMS)
-    .map((s) => ({ id: s.id, label: s.name, description: s.description ?? "" }));
+  const attachedIds = new Set(
+    activeAgent.skills
+      .filter((s) => s.enabled !== false)
+      .map((s) => s.id),
+  );
+  // Selectable (attached) rows lead; a stable sort preserves rank/library
+  // order inside each block, so the cap below can never drop an attached
+  // skill in favor of an unattached one at the same rank.
+  const ranked = rankSkillMatches(skills, q)
+    .map((skill) => ({ skill, attached: attachedIds.has(skill.id) }));
+  ranked.sort((a, b) => Number(b.attached) - Number(a.attached));
+
+  return ranked.slice(0, MAX_ITEMS).map(({ skill, attached }) => {
+    const supportingAgents = availableAgents.filter((a) =>
+      a.skills?.some((s) => s.id === skill.id && s.enabled !== false),
+    );
+    return {
+      id: skill.id,
+      label: skill.name,
+      description: skill.description ?? "",
+      kind: "skill",
+      supportingAgents,
+      assignedAgentId: activeAgent.id,
+      allAgentsSupport:
+        availableAgents.length > 0 &&
+        supportingAgents.length === availableAgents.length,
+      attached,
+    };
+  });
 }
 
 export function createSlashCommandSuggestion(qc: QueryClient): Omit<
