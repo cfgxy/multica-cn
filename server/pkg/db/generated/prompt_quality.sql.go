@@ -146,6 +146,38 @@ func (q *Queries) GetPromptVersionContent(ctx context.Context, arg GetPromptVers
 	return content, err
 }
 
+const listPromptPerplexityBacklogWorkspaces = `-- name: ListPromptPerplexityBacklogWorkspaces :many
+SELECT DISTINCT d.workspace_id
+FROM prompt_quality_daily d
+WHERE d.scope = 'agent'
+  AND d.finished_runs > 0
+ORDER BY 1
+`
+
+// The workspaces whose D3 backlog exists at all: those with agent-scope
+// buckets that carry finished runs. Walking this list keeps the backlog pass
+// inside per-workspace boundaries without spending calls on workspaces that
+// have nothing to score.
+func (q *Queries) ListPromptPerplexityBacklogWorkspaces(ctx context.Context) ([]pgtype.UUID, error) {
+	rows, err := q.db.Query(ctx, listPromptPerplexityBacklogWorkspaces)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []pgtype.UUID{}
+	for rows.Next() {
+		var workspace_id pgtype.UUID
+		if err := rows.Scan(&workspace_id); err != nil {
+			return nil, err
+		}
+		items = append(items, workspace_id)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPromptPerplexityScores = `-- name: ListPromptPerplexityScores :many
 SELECT id, workspace_id, scope, scope_id, version, runtime_profile, band, percent_low, percent_high, evidence, model, scored_at
 FROM prompt_perplexity_score
@@ -204,6 +236,7 @@ SELECT
     max(d.day)::date AS last_day
 FROM prompt_quality_daily d
 WHERE d.scope = 'agent'
+  AND d.workspace_id = $1::uuid
   AND d.finished_runs > 0
   AND (
     SELECT count(*)
@@ -211,15 +244,16 @@ WHERE d.scope = 'agent'
     WHERE s.scope = 'agent'
       AND s.scope_id = d.scope_id
       AND s.version = d.version
-  ) < $1::int
+  ) < $2::int
 GROUP BY d.workspace_id, d.scope_id, d.version
 ORDER BY last_day DESC, d.version DESC
-LIMIT $2::int
+LIMIT $3::int
 `
 
 type ListPromptPerplexityUnscoredVersionsParams struct {
-	ProfileCount int32 `json:"profile_count"`
-	RowLimit     int32 `json:"row_limit"`
+	WorkspaceID  pgtype.UUID `json:"workspace_id"`
+	ProfileCount int32       `json:"profile_count"`
+	RowLimit     int32       `json:"row_limit"`
 }
 
 type ListPromptPerplexityUnscoredVersionsRow struct {
@@ -232,6 +266,11 @@ type ListPromptPerplexityUnscoredVersionsRow struct {
 // D3 orchestration: agent prompt versions that carry finished runs but have no
 // score for at least one runtime profile.
 //
+// Bound to one workspace on purpose: the backlog job must never reach past the
+// workspace it serves, or one tenant's scoring pass writes its model's
+// judgement into another's dashboard (RUYI-287 — an unfiltered test run on a
+// shared database filled real agents' cards with stub rows).
+//
 // Driven from prompt_quality_daily rather than from prompt_version so a
 // version nobody ever ran is not scored: a score costs a model call, and the
 // dashboard only ever shows D3 next to versions that have runs beside it.
@@ -240,7 +279,7 @@ type ListPromptPerplexityUnscoredVersionsRow struct {
 // `member` but refused for `leader_task` is still incomplete, and rescoring is
 // an upsert.
 func (q *Queries) ListPromptPerplexityUnscoredVersions(ctx context.Context, arg ListPromptPerplexityUnscoredVersionsParams) ([]ListPromptPerplexityUnscoredVersionsRow, error) {
-	rows, err := q.db.Query(ctx, listPromptPerplexityUnscoredVersions, arg.ProfileCount, arg.RowLimit)
+	rows, err := q.db.Query(ctx, listPromptPerplexityUnscoredVersions, arg.WorkspaceID, arg.ProfileCount, arg.RowLimit)
 	if err != nil {
 		return nil, err
 	}

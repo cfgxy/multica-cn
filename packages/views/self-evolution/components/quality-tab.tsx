@@ -175,7 +175,15 @@ export function QualityTab({
             </div>
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
               {toDimensionCards(dashboard.data.window.measures).map((card) => (
-                <QualityMeasureCard key={card.key} dimension={card.key} view={card.view} />
+                <QualityMeasureCard
+                  key={card.key}
+                  dimension={card.key}
+                  view={card.view}
+                  runs={dashboard.data.window.runs}
+                  deductions={
+                    card.key === "discipline" ? dashboard.data.window.discipline_deductions : undefined
+                  }
+                />
               ))}
             </div>
           </section>

@@ -172,7 +172,9 @@
         "no_reviewed_issues": "No issue reached review in this window.",
         "below_sample_floor": "Fewer runs than the declared floor.",
         "unknown": "The server did not say why."
-      }
+      },
+      "coverage": "covered {{covered}} of {{total}} runs",
+      "deductions": "Deduction detail ({{count}})"
     },
     "perplexity": {
       "title": "D3 Rule perplexity",
