@@ -671,6 +671,8 @@ function ProposalCreateDialog({
                   id="proposal-metric"
                   value={metric}
                   onChange={(e) => setMetric(e.target.value)}
+                  // Backend metric key, not copy.
+                  // eslint-disable-next-line no-restricted-syntax
                   placeholder="median_total_tokens"
                 />
               </div>
