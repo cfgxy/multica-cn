@@ -181,9 +181,23 @@ grep -v '^MULTICA_PUBLIC_URL=' "$worktree_env" >"$old_worktree_env"
 require_env \
   "$(resolve_local_public_url "$old_worktree_env")" \
   "http://localhost:${worktree_backend_port}"
-require_env \
-  "$(resolve_make_public_url "$old_worktree_env")" \
-  "http://localhost:${worktree_backend_port}"
+
+# The two derivation paths intentionally differ when the env file omits
+# MULTICA_PUBLIC_URL. The Makefile defaults it to EMPTY (same-origin mode:
+# the web app sends relative URLs through the Next proxy and derives the WS
+# URL from window.location) because the bare `export` hands the value to
+# compose interpolation, where a baked localhost URL would silently outrank
+# the operator's own compose defaults. scripts/local-env.sh keeps deriving
+# http://localhost:PORT for direct dev-server runs that never pass through
+# make. Pin BOTH sides so neither path can silently adopt the other's
+# semantics: local-env.sh must still derive above, and make must export an
+# empty value here — a derived localhost URL from make is the regression to
+# catch.
+make_public_url="$(resolve_make_public_url "$old_worktree_env")"
+if [ -n "$make_public_url" ]; then
+  echo "make must default MULTICA_PUBLIC_URL to empty (same-origin mode) when the env file omits it; got: $make_public_url"
+  exit 1
+fi
 
 explicit_worktree_env="$tmp_dir/.env.worktree.explicit"
 cp "$old_worktree_env" "$explicit_worktree_env"
@@ -281,6 +295,10 @@ recipe_dir="$tmp_dir/recipe"
 mkdir -p "$recipe_dir/scripts"
 cp Makefile .env.example docker-compose.selfhost.yml docker-compose.selfhost.build.yml "$recipe_dir/"
 cp scripts/selfhost-wait.sh "$recipe_dir/scripts/"
+# The Makefile rewrites the env file through this helper before including it
+# (RUYI-218), so the throwaway recipe dir needs it just as much as the wait
+# script; without the copy every recipe run dies before compose is invoked.
+cp scripts/env-make-include.sh "$recipe_dir/scripts/"
 
 record="$tmp_dir/published"
 curl_log="$tmp_dir/probed"

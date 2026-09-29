@@ -42,6 +42,16 @@ const (
 )
 
 func TestMain(m *testing.M) {
+	// Helper-process children (the fake-bd re-exec in knowledge_test.go) run
+	// this same TestMain. They must neither build nor tear down the shared
+	// fixture: a child's cleanupHandlerTestFixture would delete the fixture
+	// rows out from under the still-running parent process, and every later
+	// test touching a legacy-FK table (issue_label et al.) fails with 23503.
+	for i, arg := range os.Args {
+		if arg == "--" && i+2 < len(os.Args) && os.Args[i+1] == "fakebd" {
+			os.Exit(m.Run())
+		}
+	}
 	ctx := context.Background()
 	dbURL := os.Getenv("DATABASE_URL")
 	if dbURL == "" {
