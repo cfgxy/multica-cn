@@ -298,6 +298,11 @@ WHERE a.id = sqlc.arg('agent_id')::uuid;
 -- D3 orchestration: agent prompt versions that carry finished runs but have no
 -- score for at least one runtime profile.
 --
+-- Bound to one workspace on purpose: the backlog job must never reach past the
+-- workspace it serves, or one tenant's scoring pass writes its model's
+-- judgement into another's dashboard (RUYI-287 — an unfiltered test run on a
+-- shared database filled real agents' cards with stub rows).
+--
 -- Driven from prompt_quality_daily rather than from prompt_version so a
 -- version nobody ever ran is not scored: a score costs a model call, and the
 -- dashboard only ever shows D3 next to versions that have runs beside it.
@@ -312,6 +317,7 @@ SELECT
     max(d.day)::date AS last_day
 FROM prompt_quality_daily d
 WHERE d.scope = 'agent'
+  AND d.workspace_id = sqlc.arg('workspace_id')::uuid
   AND d.finished_runs > 0
   AND (
     SELECT count(*)
@@ -323,3 +329,14 @@ WHERE d.scope = 'agent'
 GROUP BY d.workspace_id, d.scope_id, d.version
 ORDER BY last_day DESC, d.version DESC
 LIMIT sqlc.arg('row_limit')::int;
+
+-- name: ListPromptPerplexityBacklogWorkspaces :many
+-- The workspaces whose D3 backlog exists at all: those with agent-scope
+-- buckets that carry finished runs. Walking this list keeps the backlog pass
+-- inside per-workspace boundaries without spending calls on workspaces that
+-- have nothing to score.
+SELECT DISTINCT d.workspace_id
+FROM prompt_quality_daily d
+WHERE d.scope = 'agent'
+  AND d.finished_runs > 0
+ORDER BY 1;

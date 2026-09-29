@@ -171,7 +171,9 @@
         "no_reviewed_issues": "该窗口内没有 Issue 进入评审。",
         "below_sample_floor": "运行数低于声明阈值。",
         "unknown": "服务端未说明原因。"
-      }
+      },
+      "coverage": "{{total}} 次运行中可评 {{covered}} 次",
+      "deductions": "扣分明细（{{count}}）"
     },
     "perplexity": {
       "title": "D3 规则困惑度",

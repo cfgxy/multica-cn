@@ -171,7 +171,9 @@
         "no_reviewed_issues": "이 기간에 리뷰로 넘어간 이슈가 없습니다.",
         "below_sample_floor": "실행 수가 선언된 하한보다 적습니다.",
         "unknown": "서버가 이유를 알리지 않았습니다."
-      }
+      },
+      "coverage": "총 {{total}}회 중 {{covered}}회 검사됨",
+      "deductions": "감점 내역 ({{count}})"
     },
     "perplexity": {
       "title": "D3 규칙 난해도",
