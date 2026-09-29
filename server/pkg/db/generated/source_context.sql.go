@@ -78,11 +78,7 @@ func (q *Queries) AttachIssueSourceContext(ctx context.Context, arg AttachIssueS
 }
 
 const claimSourceContextObjectIntentForCleanup = `-- name: ClaimSourceContextObjectIntentForCleanup :one
-UPDATE issue_source_context_object_intent AS intent
-SET state = 'deleting',
-    lease_token = $1,
-    lease_expires_at = now() + interval '2 minutes'
-FROM (
+WITH due AS MATERIALIZED (
     SELECT candidate.storage_key
     FROM issue_source_context_object_intent candidate
     WHERE candidate.next_attempt_at <= now()
@@ -93,11 +89,23 @@ FROM (
     ORDER BY candidate.next_attempt_at, candidate.storage_key
     LIMIT 1
     FOR UPDATE SKIP LOCKED
-) due
+)
+UPDATE issue_source_context_object_intent AS intent
+SET state = 'deleting',
+    lease_token = $1,
+    lease_expires_at = now() + interval '2 minutes'
+FROM due
 WHERE intent.storage_key = due.storage_key
 RETURNING intent.storage_key, intent.workspace_id, intent.source_context_id, intent.attachment_id, intent.object_url, intent.state, intent.lease_token, intent.lease_expires_at, intent.next_attempt_at, intent.last_error, intent.created_at
 `
 
+// The candidate subquery must be MATERIALIZED: as a plain UPDATE ... FROM
+// subquery the planner may place it on the inner side of a nested loop and
+// re-evaluate it per target row. Each re-evaluation skips the rows this same
+// command already leased (they no longer match the due predicate) and returns
+// the next due key, so a single UPDATE would lease every due intent while the
+// caller deletes only the first RETURNING row, stranding the rest behind a
+// two-minute lease (RUYI-276).
 func (q *Queries) ClaimSourceContextObjectIntentForCleanup(ctx context.Context, leaseToken pgtype.UUID) (IssueSourceContextObjectIntent, error) {
 	row := q.db.QueryRow(ctx, claimSourceContextObjectIntentForCleanup, leaseToken)
 	var i IssueSourceContextObjectIntent
