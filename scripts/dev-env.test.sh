@@ -131,12 +131,12 @@ loaded="$(bash -c 'source "$1"; printf %s "$DIR"' _ "$quoted")"
 [ ! -e "$root_dir/should-not-exist" ] || fail "loading a manifest executed its value"
 
 status=0
-dev_env up --name ../../escape > "$out" 2>&1 || status=$?
+MULTICA_DEV_ALLOW_MAIN_CHECKOUT=1 dev_env up --name ../../escape > "$out" 2>&1 || status=$?
 [ "$status" -ne 0 ] || fail "up accepted a path-traversing environment name"
 require_contains "$out" "Invalid environment name"
 
 status=0
-dev_env up --ttl nope > "$out" 2>&1 || status=$?
+MULTICA_DEV_ALLOW_MAIN_CHECKOUT=1 dev_env up --ttl nope > "$out" 2>&1 || status=$?
 [ "$status" -ne 0 ] || fail "up accepted a non-numeric TTL"
 require_contains "$out" "TTL must be a positive integer"
 
@@ -323,7 +323,7 @@ dev_env status no-such-env > "$out" 2>&1 || status=$?
 require_contains "$out" "Unknown environment"
 
 status=0
-dev_env up --components nope > "$out" 2>&1 || status=$?
+MULTICA_DEV_ALLOW_MAIN_CHECKOUT=1 dev_env up --components nope > "$out" 2>&1 || status=$?
 [ "$status" -ne 0 ] || fail "up with an unknown component must fail"
 require_contains "$out" "Unknown component"
 
