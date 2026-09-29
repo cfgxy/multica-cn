@@ -675,6 +675,22 @@ deleted_packages AS (
 )
 DELETE FROM plugin_installation WHERE id IN (SELECT id FROM installations);
 
+-- name: DeleteWorkspaceSelfEvolutionData :exec
+-- Self-evolution tables (RUYI-265) have no foreign keys or cascades. Every
+-- row — proposals, registered knowledge directories, mirror entries and scan
+-- batches — is workspace-keyed, so each table deletes by workspace_id
+-- directly; no id-set indirection is needed.
+WITH deleted_proposals AS (
+    DELETE FROM proposal WHERE proposal.workspace_id = $1
+),
+deleted_scan_batches AS (
+    DELETE FROM knowledge_scan_batch WHERE knowledge_scan_batch.workspace_id = $1
+),
+deleted_knowledge_entries AS (
+    DELETE FROM knowledge_entry WHERE knowledge_entry.workspace_id = $1
+)
+DELETE FROM knowledge_dir WHERE knowledge_dir.workspace_id = $1;
+
 -- name: DeleteWorkspaceAgents :exec
 DELETE FROM agent WHERE agent.workspace_id = $1;
 
