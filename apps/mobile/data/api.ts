@@ -52,6 +52,7 @@ import type {
   ListIssueStatusesResponse,
   SendChatMessageResponse,
   Squad,
+  SkillSummary,
   NotificationPreferenceResponse,
   NotificationPreferences,
   TaskMessagePayload,
@@ -81,6 +82,7 @@ import {
   ListIssuesResponseSchema,
   ListIssueStatusesResponseSchema,
   TimelineEntriesSchema,
+  SkillSummaryListSchema,
   WorkspaceSubscriptionSummarySchema,
 } from "@multica/core/api/schemas";
 import type { AppConfigResponse } from "@multica/core/api/schemas";
@@ -598,6 +600,10 @@ class ApiClient {
     return parseWithFallback(raw, AgentListSchema, EMPTY_AGENT_LIST, {
       endpoint: "listAgents",
     });
+  }
+
+  async listSkills(opts?: { signal?: AbortSignal }): Promise<SkillSummary[]> {
+    return this.fetchValidated("/api/skills", SkillSummaryListSchema, [], { signal: opts?.signal });
   }
 
   // Workspace runtimes — feeds the presence dot's availability dimension

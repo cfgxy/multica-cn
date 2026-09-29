@@ -13,7 +13,10 @@ const emptyTr = vi.hoisted(() => ({ __emptyTransaction: true }));
 // most recent render — lets the placeholder tests assert the getter it wires
 // into the Placeholder extension reads the live value.
 const capturedExtOptions = vi.hoisted<{
-  current: { placeholder?: string | (() => string) } | undefined;
+  current: {
+    placeholder?: string | (() => string);
+    quickActionMenu?: { getAssignedAgentId?: () => string | null };
+  } | undefined;
 }>(() => ({ current: undefined }));
 const editorState = vi.hoisted(() => ({
   isFocused: false,
@@ -42,6 +45,7 @@ vi.mock("@tanstack/react-query", () => ({
 vi.mock("./extensions", () => ({
   createEditorExtensions: (options: {
     placeholder?: string | (() => string);
+    quickActionMenu?: { getAssignedAgentId?: () => string | null };
   }) => {
     capturedExtOptions.current = options;
     return [];
@@ -173,6 +177,28 @@ describe("ContentEditor", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it("passes the current issue assignee to slash suggestions after prop updates", () => {
+    const { rerender } = render(
+      <ContentEditor
+        enableSlashCommands
+        slashCommandMode="command"
+        quickActionMenu={{ getAssignedAgentId: () => "agent-1" }}
+      />,
+    );
+
+    expect(capturedExtOptions.current?.quickActionMenu?.getAssignedAgentId?.()).toBe("agent-1");
+
+    rerender(
+      <ContentEditor
+        enableSlashCommands
+        slashCommandMode="command"
+        quickActionMenu={{ getAssignedAgentId: () => "agent-2" }}
+      />,
+    );
+
+    expect(capturedExtOptions.current?.quickActionMenu?.getAssignedAgentId?.()).toBe("agent-2");
   });
 
   it("focuses the editor when clicking the empty container area", () => {

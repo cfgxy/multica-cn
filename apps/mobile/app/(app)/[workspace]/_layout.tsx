@@ -241,6 +241,14 @@ export default function WorkspaceLayout() {
             title: i18n.t("issues:mobile.mention.screen_title", "Mention"),
           }}
         />
+        <Stack.Screen
+          name="skill-picker"
+          options={{
+            ...SHEET_OPTIONS,
+            headerShown: true,
+            title: i18n.t("issues:mobile.skill.title", "Skills"),
+          }}
+        />
         {/* 同 label：无 native header 则 `headerSearchBarOptions` 无处挂载，
             搜索框不渲染，`query` 恒为空 —— 本批新增的
             `common:mobile.common.no_matches`（搜索态才渲染）因此永不可达。 */}

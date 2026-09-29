@@ -1,6 +1,14 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
-import { AgentTaskSchema } from "./schemas";
+import { AgentSchema, AgentTaskSchema } from "./schemas";
+
+describe("AgentSchema skill assignments", () => {
+  it("preserves disabled assignments and tolerates older or malformed payloads", () => {
+    expect(AgentSchema.parse({ id: "a1", skills: [{ id: "s1", name: "Review", enabled: false }] }).skills[0]?.enabled).toBe(false);
+    expect(AgentSchema.parse({ id: "a1", skills: [{ id: "s1", name: "Review" }] }).skills[0]?.enabled).toBeUndefined();
+    expect(AgentSchema.parse({ id: "a1", skills: [{ id: 123 }] }).skills).toEqual([]);
+  });
+});
 
 /**
  * RUYI-33 — run-detail entry gating and failure classification read the

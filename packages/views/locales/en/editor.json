@@ -86,6 +86,10 @@
     "group_cancelled": "Cancelled"
   },
   "slash_command": {
+    "skills_group": "Skills",
+    "commands_group": "Commands",
+    "all_agents": "All",
+    "no_agents": "No agents",
     "no_skills_configured": "No skills configured",
     "no_results": "No matching skills",
     "commands": {
