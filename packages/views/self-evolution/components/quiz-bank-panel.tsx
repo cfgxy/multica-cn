@@ -29,6 +29,7 @@ import {
   quizDiscrimination,
   useCreatePromptQuizItem,
   useDeletePromptQuizItem,
+  useImportPromptQuizBank,
   useUpdatePromptQuizItem,
 } from "@multica/core/self-evolution";
 import type { PromptQuizItem, PromptQuizItemDetail } from "@multica/core/types";
@@ -71,6 +72,7 @@ export function QuizBankPanel({
   const create = useCreatePromptQuizItem(wsId);
   const update = useUpdatePromptQuizItem(wsId);
   const remove = useDeletePromptQuizItem(wsId);
+  const importBank = useImportPromptQuizBank(wsId);
 
   const [editing, setEditing] = useState<PromptQuizItem | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -86,9 +88,29 @@ export function QuizBankPanel({
           {t(($) => $.quiz.bank.description)}
         </span>
         {canManage ? (
-          <Button size="sm" variant="outline" onClick={() => setCreateOpen(true)}>
-            {t(($) => $.quiz.bank.add)}
-          </Button>
+          <>
+            <Button size="sm" variant="outline" onClick={() => setCreateOpen(true)}>
+              {t(($) => $.quiz.bank.add)}
+            </Button>
+            {/* Idempotent per slug: the shipped benchmark bank lands once, and
+                re-importing after a body edit only bumps that item's revision. */}
+            <Button
+              size="sm"
+              variant="outline"
+              disabled={importBank.isPending}
+              onClick={() => {
+                importBank.mutate(undefined, {
+                  onSuccess: (resp) =>
+                    toast.success(t(($) => $.quiz.bank.importDone, { imported: resp.imported })),
+                  onError: (e) =>
+                    toast.error(clientErrorMessage(e) ?? t(($) => $.quiz.bank.importError)),
+                });
+              }}
+              data-testid="quiz-bank-import"
+            >
+              {t(($) => $.quiz.bank.import)}
+            </Button>
+          </>
         ) : null}
       </div>
 
@@ -137,6 +159,16 @@ export function QuizBankPanel({
               <Badge variant="outline" data-testid={`quiz-item-discrimination-${item.slug}`}>
                 {t(($) => $.quiz.bank.discrimination[quizDiscrimination(item.discrimination)])}
               </Badge>
+              {item.difficulty !== undefined ? (
+                <Badge variant="outline" data-testid={`quiz-item-difficulty-${item.slug}`}>
+                  {t(($) => $.quiz.bank.difficulty[quizDifficulty(item.difficulty)])}
+                </Badge>
+              ) : null}
+              {(item.tags ?? []).map((tag) => (
+                <Badge key={tag} variant="outline">
+                  {tag}
+                </Badge>
+              ))}
               {canManage ? (
                 <div className="ml-auto flex gap-1">
                   <Button size="sm" variant="ghost" onClick={() => setEditing(item)}>
@@ -355,4 +387,13 @@ function toDraft(item: PromptQuizItemDetail | null): QuizItemDraft {
     rubric: item?.rubric ?? "",
     active: item?.active ?? true,
   };
+}
+
+/**
+ * The difficulty label a list row shows. Like the verdict narrowing, an
+ * unknown server value degrades to the middle bucket rather than to a guess —
+ * but an absent value (older backend) never renders a badge at all.
+ */
+function quizDifficulty(difficulty: string | undefined): "easy" | "medium" | "hard" {
+  return difficulty === "easy" || difficulty === "hard" ? difficulty : "medium";
 }

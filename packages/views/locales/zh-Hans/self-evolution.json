@@ -339,7 +339,34 @@
         "rubricHint": "仅所有者可见，绝不随题面发送给被测 run。保存时会用本字段的内容整体替换已存的标准答案。",
         "cancel": "取消",
         "save": "保存"
-      }
+      },
+      "difficulty": {
+        "easy": "简单",
+        "medium": "中等",
+        "hard": "困难"
+      },
+      "import": "导入标准题库",
+      "importDone": "已导入 {{imported}} 道题",
+      "importError": "标准题库未导入。"
+    },
+    "graded": {
+      "title": "评分",
+      "description": "按题目的标准答案逐项核对已采集 run 的回答；逐条证据可反查到具体断言。",
+      "summary": "已评分 {{graded}} 条 · 均分 {{mean}}",
+      "ungraded": "尚未评分",
+      "run": "运行一轮评分",
+      "ordered": "已下单 {{ordered}} 条测验 run",
+      "refused": "{{count}} 个代理未能下单，其余已执行",
+      "runError": "评分批次未下单。",
+      "batchLines": "本轮：已回答 {{answered}} · 出错 {{errored}} · 已评分 {{graded}}",
+      "samplesTitle": "最近评分样本",
+      "samplesEmpty": "暂无评分样本。先运行一轮评分，等 run 完成后这里会出现逐条证据。",
+      "version": "v{{version}}",
+      "answered": "已回答",
+      "errored": "出错",
+      "checkPassed": "{{id}}（{{kind}}）通过：{{evidence}}",
+      "checkFailed": "{{id}}（{{kind}}）未过：{{evidence}}",
+      "notAGate": "评分是读数不是闸门：发布路径不读取它。"
     }
   },
   "proposals": {
