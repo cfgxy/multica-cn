@@ -130,11 +130,14 @@ WHERE workspace_id = sqlc.arg(workspace_id)
 RETURNING storage_key;
 
 -- name: ClaimSourceContextObjectIntentForCleanup :one
-UPDATE issue_source_context_object_intent AS intent
-SET state = 'deleting',
-    lease_token = sqlc.arg(lease_token),
-    lease_expires_at = now() + interval '2 minutes'
-FROM (
+-- The candidate subquery must be MATERIALIZED: as a plain UPDATE ... FROM
+-- subquery the planner may place it on the inner side of a nested loop and
+-- re-evaluate it per target row. Each re-evaluation skips the rows this same
+-- command already leased (they no longer match the due predicate) and returns
+-- the next due key, so a single UPDATE would lease every due intent while the
+-- caller deletes only the first RETURNING row, stranding the rest behind a
+-- two-minute lease (RUYI-276).
+WITH due AS MATERIALIZED (
     SELECT candidate.storage_key
     FROM issue_source_context_object_intent candidate
     WHERE candidate.next_attempt_at <= now()
@@ -145,7 +148,12 @@ FROM (
     ORDER BY candidate.next_attempt_at, candidate.storage_key
     LIMIT 1
     FOR UPDATE SKIP LOCKED
-) due
+)
+UPDATE issue_source_context_object_intent AS intent
+SET state = 'deleting',
+    lease_token = sqlc.arg(lease_token),
+    lease_expires_at = now() + interval '2 minutes'
+FROM due
 WHERE intent.storage_key = due.storage_key
 RETURNING intent.*;
 

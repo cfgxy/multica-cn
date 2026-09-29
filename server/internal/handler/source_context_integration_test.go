@@ -680,22 +680,52 @@ func TestCommentSourceContextLifecycle(t *testing.T) {
 	if _, err := cleanupTx.Exec(ctx, `LOCK TABLE issue_source_context_object_intent IN SHARE ROW EXCLUSIVE MODE`); err != nil {
 		t.Fatalf("lock target intent table: %v", err)
 	}
-	if _, err := cleanupTx.Exec(ctx, `
-		UPDATE issue_source_context_object_intent
-		SET created_at = now() - interval '2 hours', next_attempt_at = '-infinity'::timestamptz
-		WHERE source_context_id = $1
-	`, contextID); err != nil {
-		t.Fatalf("age target delete intents: %v", err)
+	ageTargetIntents := func() {
+		if _, err := cleanupTx.Exec(ctx, `
+			UPDATE issue_source_context_object_intent
+			SET created_at = now() - interval '2 hours', next_attempt_at = '-infinity'::timestamptz
+			WHERE source_context_id = $1
+		`, contextID); err != nil {
+			t.Fatalf("age target delete intents: %v", err)
+		}
 	}
+	ageTargetIntents()
 	originalObjectStore := testHandler.TaskService.SourceContextStorage
 	originalQueries := testHandler.TaskService.Queries
 	testHandler.TaskService.SourceContextStorage = store
 	testHandler.TaskService.Queries = originalQueries.WithTx(cleanupTx)
-	cleaned, err := testHandler.TaskService.CleanupSourceContextObjectIntents(ctx, 10)
+	// A foreign session holding FOR KEY SHARE / FOR SHARE row locks slips past
+	// the table lock above (ROW SHARE does not conflict with SHARE ROW
+	// EXCLUSIVE), and the claim's FOR UPDATE SKIP LOCKED then ends the round
+	// early with ErrNoRows. Production tolerates exactly this by sweeping
+	// again on the next tick, so the oracle asserts convergence across bounded
+	// rounds instead of single-round completeness (RUYI-276).
+	cleaned := 0
+	for round := 0; round < 5; round++ {
+		roundCleaned, err := testHandler.TaskService.CleanupSourceContextObjectIntents(ctx, 10)
+		if err != nil {
+			testHandler.TaskService.SourceContextStorage = originalObjectStore
+			testHandler.TaskService.Queries = originalQueries
+			t.Fatalf("cleanup target delete intents round %d: %v", round, err)
+		}
+		cleaned += roundCleaned
+		var remaining int
+		if err := cleanupTx.QueryRow(ctx,
+			`SELECT count(*) FROM issue_source_context_object_intent WHERE source_context_id = $1`, contextID,
+		).Scan(&remaining); err != nil {
+			testHandler.TaskService.SourceContextStorage = originalObjectStore
+			testHandler.TaskService.Queries = originalQueries
+			t.Fatalf("count remaining target delete intents: %v", err)
+		}
+		if remaining == 0 {
+			break
+		}
+		ageTargetIntents()
+	}
 	testHandler.TaskService.SourceContextStorage = originalObjectStore
 	testHandler.TaskService.Queries = originalQueries
-	if err != nil || cleaned < 3 {
-		t.Fatalf("cleanup target delete intents = %d, err=%v", cleaned, err)
+	if cleaned < 3 {
+		t.Fatalf("cleanup target delete intents = %d across bounded rounds, want at least 3", cleaned)
 	}
 	if err := cleanupTx.Commit(ctx); err != nil {
 		t.Fatalf("commit isolated target intent cleanup: %v", err)
