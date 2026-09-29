@@ -270,14 +270,14 @@ func TestCommentTriggerOnComment(t *testing.T) {
 
 	t.Run("top-level comment mentioning only others suppresses trigger", func(t *testing.T) {
 		clearTasks(t, issueID)
-		otherID := createSecondAgent(t)
-		content := fmt.Sprintf("[@SomeoneElse](mention://agent/%s) what do you think?", otherID)
+		otherAgentID := createSecondAgent(t)
+		content := fmt.Sprintf("[@SomeoneElse](mention://agent/%s) what do you think?", otherAgentID)
 		postComment(t, issueID, content, nil)
 		if n := countPendingTasksForAgent(t, issueID, agentID); n != 0 {
-			t.Errorf("expected no automatic task for the assignee, got %d", n)
+			t.Errorf("expected 0 pending tasks for assignee, got %d", n)
 		}
-		if n := countPendingTasksForAgent(t, issueID, otherID); n != 1 {
-			t.Errorf("expected one explicit mention task for the other agent, got %d", n)
+		if n := countPendingTasksForAgent(t, issueID, otherAgentID); n != 1 {
+			t.Errorf("expected 1 pending task for mentioned agent, got %d", n)
 		}
 	})
 
