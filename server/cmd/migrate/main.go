@@ -325,6 +325,11 @@ var concurrentIndexCleanups = map[string]string{
 	"946_knowledge_dir_workspace":                              "idx_knowledge_dir_workspace",
 	"947_knowledge_entry_identity":                             "uidx_knowledge_entry_identity",
 	"948_knowledge_scan_batch_dir":                             "idx_knowledge_scan_batch_dir",
+	"951_knowledge_dir_ws_path_unique":                         "uidx_knowledge_dir_ws_path",
+	"952_knowledge_dir_ultimate_active_unique":                 "uidx_knowledge_dir_ultimate_active",
+	"953_knowledge_dir_daemon_idx":                             "idx_knowledge_dir_daemon",
+	"954_project_resource_local_dir_daemon_idx":                "idx_project_resource_local_dir_daemon",
+	"955_proposal_system_dir_dedupe":                           "uidx_proposal_system_dir",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
