@@ -90,6 +90,15 @@ import {
   EMPTY_ISSUE_STATUS_ENTRY,
 } from "./schemas";
 import { parseWithFallback } from "./schema";
+import { SkillSummaryListSchema } from "./schemas";
+
+describe("skill list response", () => {
+  it("normalizes optional fields and fails closed on malformed records", () => {
+    const valid = parseWithFallback([{ id: "s1", workspace_id: "ws", name: "Review" }], SkillSummaryListSchema, SkillSummaryListSchema.parse([]), { endpoint: "listSkills" });
+    expect(valid[0]?.description).toBe("");
+    expect(parseWithFallback([{ id: 8, name: "bad" }], SkillSummaryListSchema, [], { endpoint: "listSkills" })).toEqual([]);
+  });
+});
 
 describe("ListGitLabRepositoriesResponseSchema", () => {
   it("accepts a paginated minimal GitLab projection", () => {

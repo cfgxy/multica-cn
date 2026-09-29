@@ -35,6 +35,8 @@ export function resolveLinkAction(
   url: string,
   wsSlug: string | null,
 ): LinkAction {
+  // Skill references are prompt hints, not outbound URLs or navigation targets.
+  if (url.startsWith("slash://")) return { kind: "noop" };
   // `mention://` 是内部 scheme——绝不能交给系统。没有 App 注册它，
   // `Linking.openURL("mention://…")` 会弹 iOS 的 "Cannot open URL" 或
   // 静默失败。所有形态在这里穷举，一律不落到 external 分支：

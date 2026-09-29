@@ -10,6 +10,9 @@ import { resolveLinkAction } from "./link-route";
  * 而不是靠两处渲染代码各自复制一遍。
  */
 describe("resolveLinkAction", () => {
+  it("keeps skill chip links inside the application", () => {
+    expect(resolveLinkAction("slash://skill/s1", "ws")).toEqual({ kind: "noop" });
+  });
   it("mention://issue 走 App 内路由", () => {
     expect(resolveLinkAction("mention://issue/abc", "ws")).toEqual({
       kind: "route",

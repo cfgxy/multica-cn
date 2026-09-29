@@ -9,6 +9,7 @@ import { createMarkdownPasteExtension } from "./markdown-paste";
 import {
   SuggestionTriggerArmingExtension,
   isTriggerArmedAt,
+  armSuggestionTrigger,
 } from "./suggestion-trigger-arming";
 
 // ---------------------------------------------------------------------------
@@ -187,6 +188,14 @@ describe("suggestion trigger arming", () => {
       type(editor, "/shi");
 
       expect(picker(editor, slashKey)).toEqual({ active: true, query: "shi" });
+    });
+
+    it("toolbar insertion arms only its own slash transaction", () => {
+      const editor = makeEditor();
+      editor.commands.focus("end");
+      armSuggestionTrigger(editor, editor.state.selection.from);
+      editor.commands.insertContent("/");
+      expect(picker(editor, slashKey).active).toBe(true);
     });
 
     it("keeps multi-word queries alive, so allowSpaces issue search survives", () => {

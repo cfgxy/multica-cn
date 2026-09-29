@@ -54,6 +54,12 @@ const TRIGGER_CHARS = new Set(["@", "/"]);
  * the time `shouldShow` reads it.
  */
 const armedPositions = new WeakMap<Editor, number | null>();
+const armCallbacks = new WeakMap<Editor, (position: number) => void>();
+
+/** Toolbar insertion uses the same one-transaction provenance as keyboard input. */
+export function armSuggestionTrigger(editor: Editor, position: number): void {
+  armCallbacks.get(editor)?.(position);
+}
 
 /** True when `from` is where the user typed a trigger character. */
 export function isTriggerArmedAt(editor: Editor, from: number): boolean {
@@ -88,6 +94,7 @@ export const SuggestionTriggerArmingExtension = Extension.create({
     // consumed by the very next `apply`. Holds a position in the NEW document:
     // text typed at `from` puts its i-th character at `from + i`.
     let pendingArm: number | null = null;
+    armCallbacks.set(editor, (position) => { pendingArm = position; });
 
     return [
       new Plugin<number | null>({

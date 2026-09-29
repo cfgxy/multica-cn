@@ -3598,6 +3598,7 @@ export function IssueDetail({ issueId, onDelete, onDone, defaultSidebarOpen = tr
             <CommentInput
               key={id}
               issueId={id}
+              assignedAgentId={issue.assignee_type === "agent" ? issue.assignee_id : null}
               onSubmit={submitComment}
               onAccepted={scrollToTimelineBottom}
             />

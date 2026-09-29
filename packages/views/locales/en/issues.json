@@ -979,6 +979,16 @@
       "no_labels": "No labels in this workspace yet.",
       "no_members_or_agents": "No members or agents in this workspace yet."
     },
+    "skill": {
+      "title": "Skills",
+      "search": "Search skills",
+      "loading": "Loading skills",
+      "load_failed": "Couldn't load skills",
+      "retry": "Retry",
+      "empty": "No matching skills",
+      "all": "All agents",
+      "none": "No agents"
+    },
     "mention": {
       "everyone": "Everyone",
       "screen_title": "Mention",

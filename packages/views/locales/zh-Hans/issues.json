@@ -942,6 +942,16 @@
       "no_labels": "此工作区还没有标签。",
       "no_members_or_agents": "此工作区还没有成员或 Agent。"
     },
+    "skill": {
+      "title": "技能",
+      "search": "搜索技能",
+      "loading": "加载技能中…",
+      "load_failed": "技能加载失败",
+      "retry": "重试",
+      "empty": "没有匹配的技能",
+      "all": "全部智能体",
+      "none": "暂无智能体"
+    },
     "mention": {
       "everyone": "所有人",
       "screen_title": "提及",

@@ -86,6 +86,10 @@
     "group_cancelled": "已取消"
   },
   "slash_command": {
+    "skills_group": "技能",
+    "commands_group": "命令",
+    "all_agents": "全部",
+    "no_agents": "暂无智能体",
     "no_skills_configured": "暂无配置的技能",
     "no_results": "没有匹配的技能",
     "commands": {
