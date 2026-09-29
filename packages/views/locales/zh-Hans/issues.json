@@ -1042,5 +1042,9 @@
     "tasks": {
       "issue_unavailable": "任务不可见"
     }
+  },
+  "suppressed": {
+    "badge": "已暂缓",
+    "tooltip": "已指派但暂不启动，再次启动时会恢复"
   }
 }
