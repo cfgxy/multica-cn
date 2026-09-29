@@ -2082,6 +2082,47 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			})
 		})
 
+		// Self-evolution daily proposals (RUYI-265, spec §A B1–B3). Human
+		// actors only: browsing and submitting the pool is member-level;
+		// adopt/reject/restore/verify are the Owner's decisions, and
+		// rejected proposals stay readable but re-enter the pool solely
+		// through the audited restore action.
+		r.Route("/api/proposals", func(r chi.Router) {
+			r.Use(handler.RequireHumanActor)
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireWorkspaceMember(queries))
+				r.Get("/", h.GetProposals)
+				r.Post("/", h.PostProposal)
+			})
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
+				r.Post("/{id}/adopt", h.AdoptProposal)
+				r.Post("/{id}/reject", h.RejectProposal)
+				r.Post("/{id}/restore", h.RestoreProposal)
+				r.Post("/{id}/verify", h.VerifyProposal)
+			})
+		})
+
+		// Knowledge directories mirroring bd memories (RUYI-265, spec §K).
+		// Scans and reads are member-level and strictly read-only against
+		// the source directories; registering, scanning, unregistering and
+		// adopting into the ultimate library are Owner-only.
+		r.Route("/api/knowledge", func(r chi.Router) {
+			r.Use(handler.RequireHumanActor)
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireWorkspaceMember(queries))
+				r.Get("/dirs", h.GetKnowledgeDirs)
+				r.Get("/entries", h.GetKnowledgeEntries)
+			})
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
+				r.Post("/dirs", h.PostKnowledgeDir)
+				r.Post("/dirs/{id}/scan", h.ScanKnowledgeDir)
+				r.Delete("/dirs/{id}", h.DeleteKnowledgeDir)
+				r.Post("/entries/{id}/adopt", h.AdoptKnowledgeEntry)
+			})
+		})
+
 		// --- Workspace-scoped routes (all require workspace membership) ---
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RequireWorkspaceMember(queries))
@@ -2383,6 +2424,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					r.Post("/refresh", h.RefreshSkill)
 					r.Get("/versions", h.ListSkillVersions)
 					r.Get("/usage", h.GetSkillUsage)
+					r.Get("/effect", h.GetSkillEffect)
 					r.Get("/versions/{version}", h.GetSkillVersion)
 					r.With(middleware.RequireWorkspaceRole(queries, "owner")).Post("/versions/{version}/restore", h.RestoreSkillVersion)
 					r.Get("/labels", h.ListLabelsForSkill)

@@ -78,6 +78,13 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"github_pull_request_check_suite": workspaceDelete,
 	"inbox_item":                      workspaceDelete,
 	"issue":                           workspaceDelete,
+	// Self-evolution surfaces (RUYI-265): proposals, registered knowledge
+	// directories, their read-only mirror entries and the scan log all go
+	// with the workspace (DeleteWorkspaceSelfEvolutionData).
+	"knowledge_dir":        workspaceDelete,
+	"knowledge_entry":      workspaceDelete,
+	"knowledge_scan_batch": workspaceDelete,
+	"proposal":             workspaceDelete,
 	// Published marketplace listings (RUYI-99) are owned by the workspace that
 	// published them and go with it. Not Settle: the tombstone reserves a name
 	// so its owner can republish, and a deleted workspace has no owner left to

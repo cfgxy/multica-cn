@@ -940,6 +940,131 @@ export interface SkillUsage {
   }[];
 }
 
+export interface SkillEffectMetrics {
+  runs: number;
+  token_samples: number;
+  median_total_tokens?: number | null;
+  retried_runs: number;
+  reviewed_issues: number;
+  first_pass_issues: number;
+}
+
+/** GET /api/skills/{id}/effect — use-group vs control-group readouts (§S.5/§S.6). */
+export interface SkillEffect {
+  since?: string;
+  use_group: SkillEffectMetrics;
+  control_group: SkillEffectMetrics;
+  perplexity: {
+    scored: boolean;
+    bands?: string[];
+  };
+  version_events: {
+    version: number;
+    from_version: number;
+    source: string;
+    operator_id?: string;
+    created_at: string;
+    before?: SkillEffectMetrics | null;
+    after?: SkillEffectMetrics | null;
+    window_days: number;
+    window_uses: number;
+    before_mode: string;
+    after_mode: string;
+  }[];
+}
+
+/**
+ * GET/POST /api/proposals — the self-evolution proposal pool (§A B1–B3).
+ * The prophecy is required at creation and frozen afterwards; adoption and
+ * verification are separate records, and rejected rows stay retrievable.
+ */
+export interface Proposal {
+  id: string;
+  type: string;
+  status: string;
+  title: string;
+  summary: string;
+  evidence: unknown[];
+  prophecy: Record<string, unknown>;
+  generation_snapshot: Record<string, unknown>;
+  adoption_snapshot?: Record<string, unknown>;
+  verification?: Record<string, unknown>;
+  audit_log: unknown[];
+  transfer_error?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateProposalRequest {
+  type: string;
+  title: string;
+  summary: string;
+  evidence?: unknown[];
+  prophecy: Record<string, unknown>;
+}
+
+export interface VerifyProposalRequest {
+  verdict: string;
+  evidence: string;
+  note?: string;
+}
+
+/** One scan of one knowledge directory — every batch is logged, even no-ops. */
+export interface KnowledgeScanBatch {
+  id: string;
+  dir_id: string;
+  trigger_source: string;
+  result: string;
+  added: number;
+  updated: number;
+  removed: number;
+  error?: string;
+  started_at: string;
+  finished_at?: string;
+}
+
+/** GET/POST /api/knowledge/dirs — a registered bd memories directory (§K). */
+export interface KnowledgeDir {
+  id: string;
+  kind: string;
+  path: string;
+  project_id?: string;
+  label: string;
+  health_state: string;
+  health_note: string;
+  removed: boolean;
+  entry_count: number;
+  last_scan?: KnowledgeScanBatch;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RegisterKnowledgeDirRequest {
+  kind: string;
+  path: string;
+  project_id?: string;
+  label?: string;
+}
+
+/** GET /api/knowledge/entries — the read-only mirror of a source directory. */
+export interface KnowledgeEntry {
+  id: string;
+  dir_id: string;
+  key: string;
+  content: string;
+  content_sha256: string;
+  mirror_state: string;
+  first_seen_at: string;
+  last_confirmed_at: string;
+  adoption_state: string;
+  adopted_at?: string;
+  adopted_by?: string;
+  ultimate_dir_id?: string;
+  adopted_from_dir_id?: string;
+  adopted_from_key?: string;
+  adoption_error?: string;
+}
+
 export interface CreateSkillRequest {
   name: string;
   description?: string;

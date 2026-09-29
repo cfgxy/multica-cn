@@ -83,6 +83,14 @@ import type {
   SkillVersion,
   SkillVersionSummary,
   SkillUsage,
+  Proposal,
+  CreateProposalRequest,
+  VerifyProposalRequest,
+  KnowledgeScanBatch,
+  KnowledgeDir,
+  RegisterKnowledgeDirRequest,
+  KnowledgeEntry,
+  SkillEffect,
   CreateSkillRequest,
   UpdateSkillRequest,
   SetAgentSkillsRequest,
@@ -474,6 +482,10 @@ import {
   EMPTY_SKILL_VERSION,
   SkillRestoreResultSchema,
   SkillUsageSchema,
+  SkillEffectSchema,
+  ProposalListSchema,
+  KnowledgeDirListSchema,
+  KnowledgeEntryListSchema,
   SkillImportResultSchema,
   EMPTY_SKILL_IMPORT_RESULT,
   IssueViewSchema,
@@ -3902,6 +3914,91 @@ export class ApiClient {
     return parseWithFallback<SkillUsage | null>(raw, SkillUsageSchema, null, {
       endpoint: "GET /api/skills/{id}/usage",
     });
+  }
+
+
+  async getSkillEffect(id: string): Promise<SkillEffect | null> {
+    const raw = await this.fetch<unknown>(`/api/skills/${encodeURIComponent(id)}/effect`);
+    return parseWithFallback<SkillEffect | null>(raw, SkillEffectSchema, null, {
+      endpoint: "GET /api/skills/{id}/effect",
+    });
+  }
+
+  async listProposals(params?: { status?: string; type?: string }): Promise<Proposal[]> {
+    const query = new URLSearchParams();
+    if (params?.status) query.set("status", params.status);
+    if (params?.type) query.set("type", params.type);
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    const raw = await this.fetch<unknown>(`/api/proposals${suffix}`);
+    return parseWithFallback(raw, ProposalListSchema, [], {
+      endpoint: "GET /api/proposals",
+    });
+  }
+
+  async createProposal(data: CreateProposalRequest): Promise<{ id: string }> {
+    return this.fetch("/api/proposals", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async adoptProposal(id: string): Promise<{ status: string }> {
+    return this.fetch(`/api/proposals/${encodeURIComponent(id)}/adopt`, { method: "POST" });
+  }
+
+  async rejectProposal(id: string, reason: string): Promise<{ status: string }> {
+    return this.fetch(`/api/proposals/${encodeURIComponent(id)}/reject`, {
+      method: "POST",
+      body: JSON.stringify({ reason }),
+    });
+  }
+
+  async restoreProposal(id: string): Promise<{ status: string }> {
+    return this.fetch(`/api/proposals/${encodeURIComponent(id)}/restore`, { method: "POST" });
+  }
+
+  async verifyProposal(id: string, data: VerifyProposalRequest): Promise<{ status: string }> {
+    return this.fetch(`/api/proposals/${encodeURIComponent(id)}/verify`, {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async listKnowledgeDirs(): Promise<KnowledgeDir[]> {
+    const raw = await this.fetch<unknown>(`/api/knowledge/dirs`);
+    return parseWithFallback(raw, KnowledgeDirListSchema, [], {
+      endpoint: "GET /api/knowledge/dirs",
+    });
+  }
+
+  async registerKnowledgeDir(data: RegisterKnowledgeDirRequest): Promise<{ id: string; status: string }> {
+    return this.fetch("/api/knowledge/dirs", {
+      method: "POST",
+      body: JSON.stringify(data),
+    });
+  }
+
+  async scanKnowledgeDir(id: string): Promise<KnowledgeScanBatch> {
+    return this.fetch(`/api/knowledge/dirs/${encodeURIComponent(id)}/scan`, { method: "POST" });
+  }
+
+  async unregisterKnowledgeDir(id: string): Promise<{ status: string }> {
+    return this.fetch(`/api/knowledge/dirs/${encodeURIComponent(id)}`, { method: "DELETE" });
+  }
+
+  async listKnowledgeEntries(params?: { dir_id?: string; q?: string }): Promise<KnowledgeEntry[]> {
+    const query = new URLSearchParams();
+    if (params?.dir_id) query.set("dir_id", params.dir_id);
+    if (params?.q) query.set("q", params.q);
+    const suffix = query.size > 0 ? `?${query.toString()}` : "";
+    const raw = await this.fetch<unknown>(`/api/knowledge/entries${suffix}`);
+    return parseWithFallback(raw, KnowledgeEntryListSchema, [], {
+      endpoint: "GET /api/knowledge/entries",
+    });
+  }
+
+  async adoptKnowledgeEntry(id: string): Promise<{ status: string }> {
+    return this.fetch(`/api/knowledge/entries/${encodeURIComponent(id)}/adopt`, { method: "POST" });
   }
 
   async createSkill(data: CreateSkillRequest): Promise<Skill> {
