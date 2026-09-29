@@ -1052,5 +1052,9 @@
     "tasks": {
       "issue_unavailable": "タスクが表示できません"
     }
+  },
+  "suppressed": {
+    "badge": "保留中",
+    "tooltip": "割り当て済み・未開始 — 開始すると再開します"
   }
 }

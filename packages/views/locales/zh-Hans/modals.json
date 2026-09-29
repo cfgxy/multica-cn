@@ -65,7 +65,9 @@
     "toast_failed": "操作失败",
     "create_will_start": "创建后 {{name}} 会立即开始工作。",
     "create_will_start_squad": "创建后 {{name}} 的队长会评估并开始安排任务。",
-    "create_parked": "已指派——在 backlog 中不会开始工作。"
+    "create_parked": "已指派——在 backlog 中不会开始工作。",
+    "toast_suppressed_single": "已暂缓：任务已指派，暂不启动",
+    "toast_suppressed_batch": "已暂缓 {{count}} 个任务，均暂不启动"
   },
   "create_squad": {
     "title": "创建小队",
