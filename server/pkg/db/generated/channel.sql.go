@@ -249,12 +249,7 @@ func (q *Queries) ClaimChannelMediaPendingObjectsForBind(ctx context.Context, ar
 }
 
 const claimNextChannelMediaPendingObjectForReconcile = `-- name: ClaimNextChannelMediaPendingObjectForReconcile :one
-UPDATE channel_media_pending_object AS obj
-SET state = CASE WHEN obj.state = 'tombstoned' THEN 'tombstoned' ELSE 'deleting' END,
-    lease_token = $1,
-    lease_expires_at = now() + $2::interval,
-    attempt = obj.attempt + 1
-FROM (
+WITH due AS MATERIALIZED (
     SELECT cand.storage_key FROM channel_media_pending_object AS cand
     WHERE cand.next_attempt_at <= now()
       AND (
@@ -265,7 +260,13 @@ FROM (
     ORDER BY cand.next_attempt_at
     LIMIT 1
     FOR UPDATE SKIP LOCKED
-) AS due
+)
+UPDATE channel_media_pending_object AS obj
+SET state = CASE WHEN obj.state = 'tombstoned' THEN 'tombstoned' ELSE 'deleting' END,
+    lease_token = $1,
+    lease_expires_at = now() + $2::interval,
+    attempt = obj.attempt + 1
+FROM due
 WHERE obj.storage_key = due.storage_key
 RETURNING obj.storage_key, obj.workspace_id, obj.chat_message_id, obj.storage_url, obj.installation_id, obj.state, obj.lease_token, obj.lease_expires_at, obj.attempt, obj.next_attempt_at, obj.last_error, obj.tombstone_pass, obj.created_at
 `
@@ -292,6 +293,16 @@ type ClaimNextChannelMediaPendingObjectForReconcileParams struct {
 // FOR UPDATE SKIP LOCKED keeps replicas off each other's row; the
 // object-storage DELETE happens outside any transaction, gated by the lease
 // token. No row (ErrNoRows) means nothing is due — the sweep is done.
+//
+// The due subquery is pinned behind AS MATERIALIZED (RUYI-277, same family
+// as RUYI-276's source-context claim fix): as an inline UPDATE..FROM
+// subquery its plan shape drifted with table statistics between hash-join
+// (single evaluation) and nested-loop inner (re-evaluated per target row).
+// On the inner side, rows this very command had just leased no longer match
+// the due predicate, so the LIMIT 1 selection cascaded and one UPDATE
+// leased every due row while the sqlc :one caller consumed only the first
+// RETURNING row — the rest stranded on 2-minute leases. MATERIALIZED makes
+// single evaluation structural instead of statistics-dependent.
 func (q *Queries) ClaimNextChannelMediaPendingObjectForReconcile(ctx context.Context, arg ClaimNextChannelMediaPendingObjectForReconcileParams) (ChannelMediaPendingObject, error) {
 	row := q.db.QueryRow(ctx, claimNextChannelMediaPendingObjectForReconcile, arg.LeaseToken, arg.Lease, arg.SettleDelay)
 	var i ChannelMediaPendingObject

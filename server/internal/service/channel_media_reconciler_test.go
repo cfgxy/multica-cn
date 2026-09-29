@@ -798,3 +798,79 @@ func TestChannelMediaReconciler_TombstonePassSurvivesDeleteFailure(t *testing.T)
 		t.Fatalf("row = %q, want it dropped once the schedule is exhausted", state)
 	}
 }
+
+// TestClaimNextChannelMediaPendingObjectForReconcile_ClaimsExactlyOneRow pins
+// the single-lease invariant behind the MATERIALIZED due CTE (RUYI-277): with
+// three due rows seeded and the nested-loop join family forced on the session,
+// one claim must lease exactly one row and leave the other two untouched. The
+// RUYI-276 sibling claim cascaded its lease to every due row once the planner
+// moved the inline due subquery to a nested-loop inner side — the same plan
+// shape this test forces — so the invariant is asserted under that shape.
+func TestClaimNextChannelMediaPendingObjectForReconcile_ClaimsExactlyOneRow(t *testing.T) {
+	pool := newCancelFinalizePool(t)
+	f := seedReconcilerFixture(t, pool)
+	keys := []string{"ws/lark/claim-a", "ws/lark/claim-b", "ws/lark/claim-c"}
+	ages := []time.Duration{
+		ChannelMediaReconcileSettleDelay + 3*time.Minute,
+		ChannelMediaReconcileSettleDelay + 2*time.Minute,
+		ChannelMediaReconcileSettleDelay + 1*time.Minute,
+	}
+	for i, key := range keys {
+		f.seedLedgerRow(t, key, fmt.Sprintf("https://cdn.test/claim-%d", i), "pending", ages[i])
+	}
+
+	ctx := context.Background()
+	conn, err := pool.Acquire(ctx)
+	if err != nil {
+		t.Fatalf("acquire conn: %v", err)
+	}
+	defer func() {
+		_, _ = conn.Exec(ctx, "RESET enable_hashjoin; RESET enable_mergejoin; RESET enable_material")
+		conn.Release()
+	}()
+	if _, err := conn.Exec(ctx, "SET enable_hashjoin = off; SET enable_mergejoin = off; SET enable_material = off"); err != nil {
+		t.Fatalf("force nested-loop shape: %v", err)
+	}
+
+	leaseToken := pgtype.UUID{
+		Bytes: [16]byte{0x27, 0x07, 0xa5, 0x6c, 0xa9, 0x36, 0x47, 0x3e, 0x8e, 0x0a, 0x2b, 0x9d, 0x5f, 0x01, 0x93, 0x44},
+		Valid: true,
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	claimed, err := db.New(tx).ClaimNextChannelMediaPendingObjectForReconcile(ctx, db.ClaimNextChannelMediaPendingObjectForReconcileParams{
+		LeaseToken:  leaseToken,
+		Lease:       pgInterval(channelMediaReconcileLease),
+		SettleDelay: pgInterval(ChannelMediaReconcileSettleDelay),
+	})
+	if err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+
+	var leased, stillDue int
+	if err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM channel_media_pending_object WHERE lease_token = $1`, leaseToken,
+	).Scan(&leased); err != nil {
+		t.Fatalf("count leased: %v", err)
+	}
+	if err := tx.QueryRow(ctx,
+		`SELECT count(*) FROM channel_media_pending_object WHERE storage_key = ANY($1) AND state = 'pending' AND lease_token IS NULL`,
+		keys,
+	).Scan(&stillDue); err != nil {
+		t.Fatalf("count still due: %v", err)
+	}
+
+	if leased != 1 {
+		t.Fatalf("one claim leased %d rows (RUYI-277 cascade shape), want exactly 1 (returned key %q)", leased, claimed.StorageKey)
+	}
+	if stillDue != len(keys)-1 {
+		t.Fatalf("%d seeded rows survived unleased, want %d", stillDue, len(keys)-1)
+	}
+	if claimed.StorageKey != keys[0] {
+		t.Fatalf("claimed %q, want oldest-due %q", claimed.StorageKey, keys[0])
+	}
+}
