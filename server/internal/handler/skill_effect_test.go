@@ -93,6 +93,35 @@ func TestSkillEffectComparesUseGroupWithControl(t *testing.T) {
 	}
 }
 
+// TestSkillEffectZeroVersionSkillServesEmptyView pins the pre-941 legacy
+// shape: a skill with no version rows has no instrumentation window, so the
+// effect card serves an explicit empty view (200) instead of a NULL-scan 500.
+func TestSkillEffectZeroVersionSkillServesEmptyView(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("database fixture is required")
+	}
+	var skill SkillWithFilesResponse
+	testutil.Call(t, testHandler.CreateSkill, newRequest(http.MethodPost, "/api/skills", map[string]any{
+		"name": "skill-effect-zero-version", "content": "initial",
+	})).Want(http.StatusCreated).JSON(&skill)
+	dbfx.Cleanup(t, `DELETE FROM skill_version WHERE skill_id = $1`, skill.ID)
+	dbfx.Cleanup(t, `DELETE FROM skill WHERE id = $1`, skill.ID)
+	// Strip the auto-created first version: skills created before migration
+	// 941 and never edited since have no rows here.
+	dbfx.Exec(t, `DELETE FROM skill_version WHERE skill_id = $1`, skill.ID)
+
+	var effect SkillEffectResponse
+	testutil.Call(t, testHandler.GetSkillEffect,
+		withURLParam(newRequest(http.MethodGet, "/api/skills/"+skill.ID+"/effect", nil), "id", skill.ID),
+	).Want(http.StatusOK).JSON(&effect)
+	if effect.Since != "" {
+		t.Fatalf("zero-version skill must have no window start, got since=%q", effect.Since)
+	}
+	if effect.UseGroup.Runs != 0 || effect.ControlGroup.Runs != 0 || len(effect.VersionEvents) != 0 {
+		t.Fatalf("zero-version effect must be an empty view: %+v", effect)
+	}
+}
+
 // TestSkillEffectVersionEventWindows covers the §S.6 timeline: a version bump
 // produces one event whose before window covers the outgoing version's uses
 // and whose after window covers the incoming version's uses, with the window
