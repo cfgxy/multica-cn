@@ -361,6 +361,10 @@
       "lesson": "Lesson",
       "pitfall": "Pitfall"
     },
+    "source": {
+      "system": "System",
+      "member": "Member"
+    },
     "create": "New proposal",
     "createTitle": "New proposal",
     "createDescription": "The prophecy is written at creation and frozen afterwards; quantitative proposals need a metric, a direction and a numeric band, behavior proposals an observable change and a falsification condition.",
@@ -394,6 +398,8 @@
     },
     "createdAt": "Created {{date}}",
     "transferError": "Knowledge transfer failed: {{error}}",
+    "transferring": "Transferring",
+    "transferringNote": "Adoption queued — the transfer into the knowledge hub runs in the background and this row settles automatically.",
     "adopt": "Adopt",
     "reject": "Reject",
     "restore": "Restore to draft",
@@ -423,16 +429,16 @@
     }
   },
   "knowledge": {
-    "title": "Knowledge mirror",
-    "description": "Candidate bd memories directories are mirrored read-only; the only write path is an owner adoption transferring content into the ultimate library.",
+    "title": "Knowledge library",
+    "description": "bd memories directories are discovered automatically from connected projects or added manually below; entries mirror read-only, and adoption transfers them into the knowledge hub in the background.",
     "register": "Register directory",
     "registerTitle": "Register knowledge directory",
-    "registerDescription": "Registering runs the initial read-only scan. The ultimate library is designated separately and is not registered through this form.",
+    "registerDescription": "Registers the path as a manually added source; the first read-only scan runs in the background. The knowledge hub is designated separately and is not registered here.",
     "kindLabel": "Directory kind",
     "kind": {
-      "ultimate": "Ultimate library",
-      "candidate_cli": "Candidate (manual)",
-      "candidate_auto": "Candidate (auto-discovered)"
+      "ultimate": "Knowledge hub",
+      "candidate_cli": "Manually added",
+      "candidate_auto": "Auto-discovered"
     },
     "pathLabel": "Directory path",
     "labelLabel": "Display label",
@@ -444,6 +450,7 @@
     "entryCount": "{{n}} entries",
     "lastScan": "Last scan ({{result}}): +{{added}}, ~{{updated}}, -{{removed}}",
     "neverScanned": "Never scanned",
+    "scanRequested": "Scan queued",
     "health": {
       "ok": "Healthy",
       "unhealthy": "Unhealthy"
@@ -455,6 +462,8 @@
     },
     "scan": "Scan now",
     "unregister": "Unregister",
+    "advancedTitle": "Advanced: add an external source",
+    "advancedDescription": "Point at a bd memories directory on this machine. Label is optional.",
     "allDirs": "All directories",
     "searchPlaceholder": "Search key or content",
     "mirrorState": {
@@ -464,6 +473,7 @@
     },
     "adoptionState": {
       "pending": "Pending",
+      "transferring": "Transferring",
       "adopted": "Adopted",
       "failed": "Failed"
     },
@@ -471,7 +481,7 @@
     "adoptedFrom": "Adopted from {{key}}",
     "emptyDirs": {
       "title": "No registered directories",
-      "description": "Register a candidate bd memories directory and its contents are mirrored here read-only."
+      "description": "Sources appear here automatically when a connected daemon discovers a project with bd memories; you can also add one manually under Advanced below."
     },
     "emptyEntries": "No entries under the current filter.",
     "error": {
