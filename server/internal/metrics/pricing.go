@@ -3,6 +3,8 @@ package metrics
 import (
 	"regexp"
 	"strings"
+
+	"github.com/multica-ai/multica/server/pkg/modeltag"
 )
 
 // CostUSDTicksPerUSD is the scale of provider-reported costs: xAI reports
@@ -123,12 +125,15 @@ var modelPrices = map[string]ModelPrice{
 // A date snapshot carrying a context tag (`claude-fable-5-20260401[1m]`) is
 // covered by the tag-stripping retry in PriceForModelAlias, so it does not
 // need a combined alternative here.
-//
 // Anything else — another version digit, a `-preview`-style qualifier — is a
 // distinct SKU at an unknown rate and stays unmapped until it gets a row of
 // its own, the same "every catalog SKU needs its own row" rule the frontend
 // table states.
-const claudeVersionEnd = `(?:-20\d{6}|-20\d{2}-\d{2}-\d{2}|-latest|\[[^\]]+\])?$`
+//
+// The bracket alternative is modeltag.Pattern, not a local literal: the tag
+// shape admitted here is by construction the same one the launch side strips
+// and PriceForModelAlias retries with (RUYI-267).
+const claudeVersionEnd = `(?:-20\d{6}|-20\d{2}-\d{2}-\d{2}|-latest|` + modeltag.Pattern + `)?$`
 
 var modelAliasRules = []struct {
 	re       *regexp.Regexp
@@ -185,16 +190,16 @@ var modelAliasRules = []struct {
 	{regexp.MustCompile(`(^|/|:)grok-4\.20-0309-non-reasoning$`), "xai:grok-4.20-0309-non-reasoning"},
 	// Alibaba Qwen. All rules are anchored so unknown suffixed variants
 	// (`qwen3.7-plus-extra`, `qwen3.8-max-preview-extra`) stay unmapped;
-	// an optional complete bracket tag `[…]` with at least one character
-	// inside is admitted to match the frontend's behavior of stripping the
-	// context tag (`\[[^\]]+\]$` in packages/views/runtimes/utils.ts), so
-	// empty tags like `qwen3.7-plus[]` stay unmapped on both sides.
+	// an optional complete bracket tag is admitted via modeltag.Pattern,
+	// matching the frontend's behavior of stripping the context tag
+	// (`\[[^\]]+\]$` in packages/views/runtimes/utils.ts), so empty tags
+	// like `qwen3.7-plus[]` stay unmapped on both sides.
 	// qwen3.8-max stays anchored so `qwen3.8-max-preview` (and its `[1m]`
 	// variant) never borrows the GA tier.
-	{regexp.MustCompile(`(^|/|:)qwen3[.-]7-plus(\[[^\]]+\])?$`), "alibaba:qwen3.7-plus"},
-	{regexp.MustCompile(`(^|/|:)qwen3[.-]6-flash(\[[^\]]+\])?$`), "alibaba:qwen3.6-flash"},
-	{regexp.MustCompile(`(^|/|:)qwen3[.-]8-max(\[[^\]]+\])?$`), "alibaba:qwen3.8-max"},
-	{regexp.MustCompile(`(^|/|:)qwen3[.-]8-max-preview(\[[^\]]+\])?$`), "alibaba:qwen3.8-max-preview"},
+	{regexp.MustCompile(`(^|/|:)qwen3[.-]7-plus(` + modeltag.Pattern + `)?$`), "alibaba:qwen3.7-plus"},
+	{regexp.MustCompile(`(^|/|:)qwen3[.-]6-flash(` + modeltag.Pattern + `)?$`), "alibaba:qwen3.6-flash"},
+	{regexp.MustCompile(`(^|/|:)qwen3[.-]8-max(` + modeltag.Pattern + `)?$`), "alibaba:qwen3.8-max"},
+	{regexp.MustCompile(`(^|/|:)qwen3[.-]8-max-preview(` + modeltag.Pattern + `)?$`), "alibaba:qwen3.8-max-preview"},
 	// Kimi K3. Anchored so the distinct CodeBuddy SKU `kimi-k3-1` stays
 	// unmapped; `kimi-code/k3` (Kimi Code CLI) resolves via the `/k3$` form.
 	{regexp.MustCompile(`(^|/|:)kimi-k3$`), "moonshotai:kimi-k3"},
@@ -204,13 +209,12 @@ var modelAliasRules = []struct {
 	// model identity, so it stays unmapped.
 }
 
-// contextTagRe matches a trailing context-window variant tag such as the
-// `[1m]` Claude Code appends to the model id. A complete bracket tag with at
-// least one character inside, anchored at the end — the same shape the
-// frontend's `stripContextTag` strips (`\[[^\]]+\]$` in
-// packages/views/runtimes/utils.ts), so empty tags (`model[]`) and non-tag
-// trailing brackets (`model[`) stay unmapped on both sides.
-var contextTagRe = regexp.MustCompile(`\[[^\]]+\]$`)
+// Context tags are recognised through pkg/modeltag — the same rule source
+// the launch side strips with, so a tagged id cannot be one shape for
+// launching and another for billing (RUYI-267). The frontend's
+// `stripContextTag` (`\[[^\]]+\]$` in packages/views/runtimes/utils.ts) is
+// the TypeScript copy of the same shape; parity is pinned by tests on both
+// sides.
 
 func matchModelAlias(model string) (ModelPrice, bool) {
 	for _, rule := range modelAliasRules {
@@ -241,8 +245,8 @@ func PriceForModelAlias(model string) (ModelPrice, bool) {
 	// that already, correctly, rejected the raw form — the dashboard leaves
 	// that id unmapped, so pricing it here would put two different costs on
 	// one usage row. A second tag means the id is not a shape we recognise.
-	if stripped := contextTagRe.ReplaceAllString(model, ""); stripped != model {
-		if contextTagRe.MatchString(stripped) {
+	if stripped, changed, stillTagged := modeltag.StripOne(model); changed {
+		if stillTagged {
 			return ModelPrice{}, false
 		}
 		return matchModelAlias(stripped)
