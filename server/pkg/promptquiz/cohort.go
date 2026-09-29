@@ -60,6 +60,12 @@ type Measurement struct {
 	// reporting outage read as a cost improvement.
 	Value  float64
 	Valued bool
+	// Score is the graded reading (RUYI-286), valid only when Scored is set.
+	// NULL on the row — check-less item, errored run, no answer text — is
+	// Scored=false, the "measured but not graded" state; it never reads as 0
+	// and never enters SummarizeScores.
+	Score  float64
+	Scored bool
 }
 
 // usable reports whether a row is a reading at all, independent of any cohort.
@@ -141,6 +147,9 @@ func (c Cohort) Select(ms []Measurement) (Sample, int) {
 			continue
 		}
 		sample.Values = append(sample.Values, m.Value)
+		if m.Scored {
+			sample.Scores = append(sample.Scores, ScoredReading{ItemID: m.ItemID, Score: m.Score})
+		}
 	}
 	return sample, excluded
 }
