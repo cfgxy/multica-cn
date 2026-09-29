@@ -1,23 +1,26 @@
 // @vitest-environment jsdom
 
-import { it, expect, vi } from "vitest";
+import { it, expect, vi, type Mock } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { I18nProvider } from "@multica/core/i18n/react";
+import { api } from "@multica/core/api";
 import type { KnowledgeDir, KnowledgeEntry } from "@multica/core/types";
 import enCommon from "../../locales/en/common.json";
 import enSelfEvolution from "../../locales/en/self-evolution.json";
 import { KnowledgeTab } from "./knowledge-tab";
 
 /**
- * The knowledge tab's wiring (RUYI-265 §K).
+ * The knowledge tab's wiring (RUYI-265 §K, reworked by RUYI-289).
  *
  * The mirror's read-only scan and the single-write adoption path are enforced
  * by the server and covered by its handler tests. What only a mount can show
  * is asserted here: that every directory control is hidden from a non-owner,
- * that the ultimate library offers no scan/unregister despite being owner
- * visible, and that adoption is offered exactly for pending entries while
- * adopted ones show their provenance line.
+ * that the knowledge hub offers no scan/unregister despite being owner
+ * visible, that adoption is offered exactly for pending entries while adopted
+ * ones show their provenance line, and that manual registration survives only
+ * as the collapsed advanced form (path + label, no kind choice).
  */
 
 const TEST_RESOURCES = { en: { common: enCommon, "self-evolution": enSelfEvolution } };
@@ -107,19 +110,19 @@ it("shows the mirror to a member with no write controls at all", async () => {
   expect(screen.getByText(/Last scan \(changed\): \+1, ~0, -0/)).toBeTruthy();
   expect(screen.getByText("deploy-rollback")).toBeTruthy();
   expect(screen.getByText("Pending")).toBeTruthy();
-  expect(screen.queryByRole("button", { name: "Register directory" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Scan now" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Unregister" })).toBeNull();
   expect(screen.queryByRole("button", { name: "Adopt" })).toBeNull();
+  expect(screen.queryByTestId("knowledge-advanced")).toBeNull();
   expect(
     screen.getByText("Registering, scanning, unregistering and adopting are workspace-owner only."),
   ).toBeTruthy();
 });
 
-it("offers scan and unregister for candidates but not for the ultimate library", async () => {
+it("offers scan and unregister for candidates but not for the knowledge hub", async () => {
   state.role = "owner";
   state.dirs = [
-    dirFixture(),
+    dirFixture({ scan_requested: true }),
     dirFixture({
       id: "dir-ultimate",
       kind: "ultimate",
@@ -135,9 +138,36 @@ it("offers scan and unregister for candidates but not for the ultimate library",
   expect(
     Array.from(candidate.querySelectorAll("button")).some((b) => b.textContent === "Unregister"),
   ).toBe(true);
+  expect(candidate.textContent).toContain("Scan queued");
   const ultimate = screen.getByTestId("knowledge-dir-dir-ultimate");
   expect(ultimate.querySelectorAll("button")).toHaveLength(0);
-  expect(screen.getByText("Ultimate library")).toBeTruthy();
+  expect(screen.getByText("Knowledge hub")).toBeTruthy();
+});
+
+it("registers a manual source through the collapsed advanced form", async () => {
+  state.role = "owner";
+  state.dirs = [];
+  state.entries = [];
+  mount();
+  const toggle = await screen.findByRole("button", {
+    name: /Advanced: add an external source/,
+  });
+  expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  await userEvent.click(toggle);
+  await userEvent.type(
+    screen.getByLabelText("Directory path"),
+    "/srv/memories/legacy-project",
+  );
+  await userEvent.type(screen.getByLabelText("Display label"), "legacy project");
+  await userEvent.click(screen.getByRole("button", { name: "Register" }));
+  await waitFor(() =>
+    expect(api.registerKnowledgeDir).toHaveBeenCalledWith({
+      kind: "candidate_cli",
+      path: "/srv/memories/legacy-project",
+      label: "legacy project",
+    }),
+  );
+  expect((api.registerKnowledgeDir as Mock).mock.calls[0]?.[0]).not.toHaveProperty("kind", "ultimate");
 });
 
 it("offers adoption for pending entries and shows provenance for adopted ones", async () => {
@@ -162,6 +192,12 @@ it("offers adoption for pending entries and shows provenance for adopted ones", 
       adoption_state: "failed",
       adoption_error: "bd recall mismatch",
     }),
+    entryFixture({
+      id: "entry-t",
+      key: "in-flight-entry",
+      content: "Queued for the knowledge hub.",
+      adoption_state: "transferring",
+    }),
   ];
   mount();
   expect(await screen.findByTestId("knowledge-entry-deploy-rollback")).toBeTruthy();
@@ -173,5 +209,6 @@ it("offers adoption for pending entries and shows provenance for adopted ones", 
   expect(adoptedRow.querySelectorAll("button")).toHaveLength(0);
   expect(screen.getByText("Adopted from deploy-rollback")).toBeTruthy();
   expect(screen.getByText("Adopted")).toBeTruthy();
+  expect(screen.getByText("Transferring")).toBeTruthy();
   expect(screen.getByText("bd recall mismatch")).toBeTruthy();
 });
