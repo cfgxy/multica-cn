@@ -65,7 +65,9 @@
     "toast_failed": "작업에 실패했습니다",
     "create_will_start": "생성 후 {{name}}이(가) 바로 작업을 시작합니다.",
     "create_will_start_squad": "생성 후 {{name}}의 리더가 내용을 평가한 뒤 작업 배분을 시작합니다.",
-    "create_parked": "할당됨 — 백로그에서는 작업을 시작하지 않습니다."
+    "create_parked": "할당됨 — 백로그에서는 작업을 시작하지 않습니다.",
+    "toast_suppressed_single": "보류 중 — 할당되었지만 아직 시작되지 않았습니다",
+    "toast_suppressed_batch": "{{count}}개 작업을 보류했습니다. 모두 시작되지 않았습니다"
   },
   "create_squad": {
     "title": "스쿼드 만들기",

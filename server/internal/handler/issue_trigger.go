@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgtype"
 	obsmetrics "github.com/multica-ai/multica/server/internal/metrics"
@@ -83,13 +84,22 @@ func (h *Handler) shouldSuppressActiveSelfAssignment(ctx context.Context, actorT
 	return active || err != nil
 }
 
-// recordSuppressedIssueRun leaves the only trace an honored `suppress_run`
+// recordSuppressedIssueRun leaves the durable trace an honored `suppress_run`
 // produces. The write itself succeeds and no task row appears, so without this
 // nothing on the server distinguishes "a human deliberately parked the run"
 // from "the run was lost" — RUYI-248 had to be reconstructed from agent
 // session transcripts for exactly that reason. The ids go in the log; the
 // counter carries only the two closed enums (RUYI-252).
-func (h *Handler) recordSuppressedIssueRun(issue db.Issue, trigger service.IssueRunTrigger, actorType, actorID string) {
+//
+// RUYI-275 adds two product-visible traces beside the WARN + metric: an
+// append-only `run_suppressed` activity_log event whose details carry the
+// same five fields as this log line (issue_id, actor_type, actor_id,
+// trigger_source, target_status — the audit trail), while the issue row's
+// run_suppressed snapshot (maintained by setRunSuppressedState before the
+// response was built) answers "is the issue held right now". The event
+// insert is best-effort: the write has already committed, and failing it
+// must not fail the request — the WARN + metric are the fallback trail.
+func (h *Handler) recordSuppressedIssueRun(ctx context.Context, issue db.Issue, trigger service.IssueRunTrigger, actorType, actorID string) {
 	slog.Warn(suppressWarnMessage,
 		"issue_id", uuidToString(issue.ID),
 		"actor_type", actorType,
@@ -98,6 +108,68 @@ func (h *Handler) recordSuppressedIssueRun(issue db.Issue, trigger service.Issue
 		"target_status", issue.Status,
 	)
 	h.Metrics.RecordIssueRunSuppressed(string(trigger.Source), actorType)
+
+	details, err := json.Marshal(map[string]any{
+		"issue_id":       uuidToString(issue.ID),
+		"actor_type":     actorType,
+		"actor_id":       actorID,
+		"trigger_source": string(trigger.Source),
+		"target_status":  issue.Status,
+	})
+	if err != nil {
+		slog.Warn("marshal run_suppressed activity details", "issue_id", uuidToString(issue.ID), "error", err)
+		return
+	}
+	actorUUID, err := util.ParseUUID(actorID)
+	if err != nil {
+		// actorID comes from resolveActor and is always a UUID; reaching this
+		// means an unexpected actor shape — keep the log+metric trail, skip
+		// the event rather than insert a row that violates the FK shape.
+		slog.Warn("run_suppressed actor id is not a uuid", "issue_id", uuidToString(issue.ID), "actor_id", actorID)
+		return
+	}
+	if _, err := h.Queries.CreateActivity(ctx, db.CreateActivityParams{
+		WorkspaceID: issue.WorkspaceID,
+		IssueID:     issue.ID,
+		ActorType:   pgtype.Text{String: actorType, Valid: true},
+		ActorID:     actorUUID,
+		Action:      suppressedActivityAction,
+		Details:     details,
+	}); err != nil {
+		slog.Warn("insert run_suppressed activity", "issue_id", uuidToString(issue.ID), "error", err)
+	}
+}
+
+// suppressedActivityAction is the activity_log action for an honored
+// `suppress_run` (RUYI-275). The details payload mirrors the WARN log line's
+// five fields verbatim, so an operator can join the two trails by content.
+const suppressedActivityAction = "run_suppressed"
+
+// setRunSuppressedState maintains the issue row's run_suppressed snapshot
+// (RUYI-275): set when a write's run was honored-suppressed, cleared when the
+// write truly starts a run or removes the assignee, untouched otherwise. It
+// deliberately rides outside UpdateIssue's CTE: the disposition is only known
+// after WillEnqueueRun evaluates the already-updated row, and a second
+// targeted UPDATE keeps the big write query from growing trigger-probe
+// columns. Best-effort — on error the stale snapshot persists and the next
+// disposition-bearing write repairs it; the caller returns the refreshed row
+// so the WS payload and HTTP response flip the badge in the same event that
+// reports this write.
+func (h *Handler) setRunSuppressedState(ctx context.Context, issue db.Issue, suppressed bool) db.Issue {
+	var at pgtype.Timestamptz
+	if suppressed {
+		at = pgtype.Timestamptz{Time: time.Now(), Valid: true}
+	}
+	updated, err := h.Queries.SetIssueRunSuppressed(ctx, db.SetIssueRunSuppressedParams{
+		ID:              issue.ID,
+		RunSuppressed:   suppressed,
+		RunSuppressedAt: at,
+	})
+	if err != nil {
+		slog.Warn("maintain run_suppressed snapshot", "issue_id", uuidToString(issue.ID), "suppressed", suppressed, "error", err)
+		return issue
+	}
+	return updated
 }
 
 // suppressesRun decides whether a requested suppress_run actually cancels the

@@ -183,10 +183,12 @@ export function RunConfirmModal({
       ...(!suppressRun && !noteDisabled && note.trim() ? { handoff_note: note.trim() } : {}),
     });
     try {
-      // Completion is silent, exactly as before: the assignee and any run show
-      // up through the issue's normal assignee / run-status updates, so there is
-      // no result toast to add here. Whether a run started is the server's
-      // existing decision at write time, not something this dialog reports.
+      // The start path stays silent, exactly as before: the assignee and the
+      // run show up through the issue's normal assignee / run-status updates.
+      // The suppress path is the exception (RUYI-275): the write deliberately
+      // starts nothing, so without a toast the click looks like it did
+      // nothing — the toast is the first level of the two-level feedback,
+      // with the persisted board/list badge as the second.
       if (issueIds.length === 1) {
         await updateIssue.mutateAsync({
           id: issueIds[0]!,
@@ -194,6 +196,15 @@ export function RunConfirmModal({
         });
       } else {
         await batchUpdate.mutateAsync({ ids: issueIds, updates: payload });
+      }
+      if (suppressRun) {
+        toast.success(
+          issueIds.length === 1
+            ? t(($) => $.run_confirm.toast_suppressed_single)
+            : t(($) => $.run_confirm.toast_suppressed_batch, {
+                count: issueIds.length,
+              }),
+        );
       }
       onClose();
     } catch (err) {

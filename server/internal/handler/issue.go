@@ -82,6 +82,17 @@ type IssueResponse struct {
 	// LastActivityAt is the latest semantic issue activity. It stays nullable
 	// while the operator-run historical backfill is incomplete.
 	LastActivityAt *string `json:"last_activity_at"`
+	// RunSuppressed snapshots whether the issue's latest run-producing write
+	// was an honored `suppress_run` (RUYI-275): true from that write until a
+	// write truly starts a run or the assignee is removed. Writes that start
+	// no run (title/priority/position edits) leave it untouched. It answers
+	// "is the issue held right now" for the board/list badge; the
+	// append-only `run_suppressed` activity_log events answer "when and by
+	// whom". Old backends predate it — clients must treat absence as false.
+	RunSuppressed bool `json:"run_suppressed"`
+	// RunSuppressedAt is when the hold was placed (nanosecond RFC3339, same
+	// format as LastActivityAt); null whenever RunSuppressed is false.
+	RunSuppressedAt *string `json:"run_suppressed_at"`
 	// Metadata is the per-issue KV map (see issue_metadata.go). Always emitted
 	// (empty object when unset) so frontend code can `issue.metadata[key]`
 	// without nil-guarding the parent field.
@@ -323,8 +334,10 @@ func issueToResponse(i db.Issue, issuePrefix string) IssueResponse {
 		CreatedAt:      timestampToString(i.CreatedAt),
 		UpdatedAt:      timestampToString(i.UpdatedAt),
 		Revision:       i.Revision,
-		LastActivityAt: timestampToNanoPtr(i.LastActivityAt),
-		Metadata:       parseIssueMetadata(i.Metadata),
+		LastActivityAt:  timestampToNanoPtr(i.LastActivityAt),
+		RunSuppressed:   i.RunSuppressed,
+		RunSuppressedAt: timestampToNanoPtr(i.RunSuppressedAt),
+		Metadata:        parseIssueMetadata(i.Metadata),
 		Properties:     parseIssueProperties(i.Properties),
 	}
 }
@@ -360,8 +373,10 @@ func issueListRowToResponse(i db.ListIssuesRow, issuePrefix string) IssueRespons
 		CreatedAt:      timestampToString(i.CreatedAt),
 		UpdatedAt:      timestampToString(i.UpdatedAt),
 		Revision:       i.Revision,
-		LastActivityAt: timestampToNanoPtr(i.LastActivityAt),
-		Metadata:       parseIssueMetadata(i.Metadata),
+		LastActivityAt:  timestampToNanoPtr(i.LastActivityAt),
+		RunSuppressed:   i.RunSuppressed,
+		RunSuppressedAt: timestampToNanoPtr(i.RunSuppressedAt),
+		Metadata:        parseIssueMetadata(i.Metadata),
 		Properties:     parseIssueProperties(i.Properties),
 	}
 }
@@ -429,8 +444,10 @@ func openIssueRowToResponse(i db.ListOpenIssuesRow, issuePrefix string) IssueRes
 		CreatedAt:      timestampToString(i.CreatedAt),
 		UpdatedAt:      timestampToString(i.UpdatedAt),
 		Revision:       i.Revision,
-		LastActivityAt: timestampToNanoPtr(i.LastActivityAt),
-		Metadata:       parseIssueMetadata(i.Metadata),
+		LastActivityAt:  timestampToNanoPtr(i.LastActivityAt),
+		RunSuppressed:   i.RunSuppressed,
+		RunSuppressedAt: timestampToNanoPtr(i.RunSuppressedAt),
+		Metadata:        parseIssueMetadata(i.Metadata),
 		Properties:     parseIssueProperties(i.Properties),
 	}
 }
@@ -1502,7 +1519,7 @@ func (h *Handler) ListIssues(w http.ResponseWriter, r *http.Request) {
 	query := fmt.Sprintf(`SELECT i.id, i.workspace_id, i.title, i.description, i.status, i.priority,
        i.assignee_type, i.assignee_id, i.creator_type, i.creator_id,
        i.parent_issue_id, i.position, i.start_date, i.due_date, i.created_at, i.updated_at, i.last_activity_at, i.number, i.project_id, i.metadata, i.stage, i.properties,
-	   i.revision
+	   i.revision, i.run_suppressed, i.run_suppressed_at
 FROM issue i
 WHERE %s
 ORDER BY %s
@@ -1543,6 +1560,8 @@ LIMIT %s OFFSET %s`, whereSql, orderBy, limitRef, offsetRef)
 			&row.Stage,
 			&row.Properties,
 			&row.Revision,
+			&row.RunSuppressed,
+			&row.RunSuppressedAt,
 		); err != nil {
 			slog.Warn("ListIssues scan failed", "error", err)
 			writeError(w, http.StatusInternalServerError, "failed to list issues")
@@ -3590,14 +3609,50 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// Determine actor identity: agent (via X-Agent-ID header) or member.
 	actorType, actorID := h.resolveActor(r, userID, workspaceID)
 
+	assigneeChanged := (req.AssigneeType != nil || req.AssigneeID != nil) &&
+		(prevIssue.AssigneeType.String != issue.AssigneeType.String || uuidToString(prevIssue.AssigneeID) != uuidToString(issue.AssigneeID))
+	statusChanged := req.Status != nil && prevIssue.Status != issue.Status
+
+	// Decide the run disposition BEFORE building the response. Whether this
+	// write would enqueue a run — and whether `suppress_run` is honored — is
+	// a read-only predicate (the same single WillEnqueueRun rule the preview
+	// endpoint consults, MUL-3375), so evaluating it early is free; only the
+	// dispatch / record below have side effects. The outcome maintains the
+	// issue's run_suppressed snapshot (RUYI-275) so the WS payload and the
+	// HTTP response carry the post-maintenance value: the badge flips in the
+	// very event that reports this write, not on some later refetch.
+	//   set   — the write suppressed the run it would have started;
+	//   clear — the write truly starts a run, or removes the assignee (no
+	//           active holder, so a hold has nothing left to hold);
+	//   keep  — everything else (title/priority/position edits…): untouched.
+	trigger, willEnqueue := h.IssueService.WillEnqueueRun(r.Context(),
+		service.IssueTriggerInput{
+			Issue:           issue,
+			PrevStatus:      prevIssue.Status,
+			AssigneeChanged: assigneeChanged,
+			StatusChanged:   statusChanged,
+		},
+		h.issueTriggerWriteProbe(r, actorType, actorID, issue),
+	)
+	suppressedRun := willEnqueue && h.suppressesRun(r.Context(), req.SuppressRun, actorType, trigger)
+	// Assignee clearance compares the rows, not the request pointers: an
+	// explicit JSON-null unassign leaves req.AssigneeType nil, so
+	// assigneeChanged cannot see it — "had an assignee, now has none" is the
+	// direct test for the hold losing its active holder (RUYI-275).
+	assigneeCleared := (prevIssue.AssigneeType.Valid || prevIssue.AssigneeID.Valid) &&
+		!issue.AssigneeType.Valid && !issue.AssigneeID.Valid
+	switch {
+	case suppressedRun:
+		issue = h.setRunSuppressedState(r.Context(), issue, true)
+	case willEnqueue || assigneeCleared:
+		issue = h.setRunSuppressedState(r.Context(), issue, false)
+	}
+
 	prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
 	resp := issueToResponse(issue, prefix)
 	slog.Info("issue updated", append(logger.RequestAttrs(r), "issue_id", id, "workspace_id", workspaceID)...)
 
 	h.fillStatusCategory(r.Context(), issue.WorkspaceID, &resp)
-	assigneeChanged := (req.AssigneeType != nil || req.AssigneeID != nil) &&
-		(prevIssue.AssigneeType.String != issue.AssigneeType.String || uuidToString(prevIssue.AssigneeID) != uuidToString(issue.AssigneeID))
-	statusChanged := req.Status != nil && prevIssue.Status != issue.Status
 	priorityChanged := req.Priority != nil && prevIssue.Priority != issue.Priority
 	// project_changed gates the client's per-project issue-list refetch the way
 	// status/assignee flags gate theirs. Without it the client must diff
@@ -3645,9 +3700,11 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Reconcile the task queue. Whether this write starts an agent run — and
-	// for whom (agent assignee or squad leader) — is decided by the single
-	// WillEnqueueRun predicate, shared verbatim with the preview endpoint so
-	// the two never drift (MUL-3375).
+	// for whom (agent assignee or squad leader) — was decided above by the
+	// single WillEnqueueRun predicate, shared verbatim with the preview
+	// endpoint so the two never drift (MUL-3375); only the side effect lands
+	// here, after the response carrying the run_suppressed snapshot was
+	// built (RUYI-275).
 	//
 	// A reassignment intentionally does NOT cancel existing tasks on the issue
 	// (#4963 / MUL-4113). The previous "cancel every active task on the issue"
@@ -3661,20 +3718,10 @@ func (h *Handler) UpdateIssue(w http.ResponseWriter, r *http.Request) {
 	// it stops in-flight agent runs, so that implicit coupling is gone
 	// (MUL-4465). Deleting an issue still cancels its tasks (see DeleteIssue),
 	// because the tasks' owning issue ceases to exist.
-	if trigger, ok := h.IssueService.WillEnqueueRun(r.Context(),
-		service.IssueTriggerInput{
-			Issue:           issue,
-			PrevStatus:      prevIssue.Status,
-			AssigneeChanged: assigneeChanged,
-			StatusChanged:   statusChanged,
-		},
-		h.issueTriggerWriteProbe(r, actorType, actorID, issue),
-	); ok {
-		if h.suppressesRun(r.Context(), req.SuppressRun, actorType, trigger) {
-			h.recordSuppressedIssueRun(issue, trigger, actorType, actorID)
-		} else {
-			h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, req.HandoffNote)
-		}
+	if suppressedRun {
+		h.recordSuppressedIssueRun(r.Context(), issue, trigger, actorType, actorID)
+	} else if willEnqueue {
+		h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, req.HandoffNote)
 	}
 
 	// Platform-driven parent notification: when this issue transitions into
@@ -4322,14 +4369,42 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
-		resp := issueToResponse(issue, prefix)
 		actorType, actorID := h.resolveActor(r, userID, workspaceID)
 
-		fillBatch(&resp)
 		assigneeChanged := (req.Updates.AssigneeType != nil || req.Updates.AssigneeID != nil) &&
 			(prevIssue.AssigneeType.String != issue.AssigneeType.String || uuidToString(prevIssue.AssigneeID) != uuidToString(issue.AssigneeID))
 		statusChanged := req.Updates.Status != nil && prevIssue.Status != issue.Status
+
+		// Same single predicate as UpdateIssue — batch must not grow its own
+		// copy of the enqueue rule (the historical source of four-entry-point
+		// drift, MUL-3375). suppress_run applies batch-wide. Decided BEFORE
+		// the response is built so the run_suppressed snapshot maintenance
+		// (RUYI-275) lands in the same WS payload and HTTP response; see
+		// UpdateIssue for the set/clear/keep rules.
+		trigger, willEnqueue := h.IssueService.WillEnqueueRun(r.Context(),
+			service.IssueTriggerInput{
+				Issue:           issue,
+				PrevStatus:      prevIssue.Status,
+				AssigneeChanged: assigneeChanged,
+				StatusChanged:   statusChanged,
+			},
+			h.issueTriggerWriteProbe(r, actorType, actorID, issue),
+		)
+		suppressedRun := willEnqueue && h.suppressesRun(r.Context(), req.Updates.SuppressRun, actorType, trigger)
+		// Same row-based clearance test as UpdateIssue (RUYI-275).
+		assigneeCleared := (prevIssue.AssigneeType.Valid || prevIssue.AssigneeID.Valid) &&
+			!issue.AssigneeType.Valid && !issue.AssigneeID.Valid
+		switch {
+		case suppressedRun:
+			issue = h.setRunSuppressedState(r.Context(), issue, true)
+		case willEnqueue || assigneeCleared:
+			issue = h.setRunSuppressedState(r.Context(), issue, false)
+		}
+
+		prefix := h.getIssuePrefix(r.Context(), issue.WorkspaceID)
+		resp := issueToResponse(issue, prefix)
+
+		fillBatch(&resp)
 		priorityChanged := req.Updates.Priority != nil && prevIssue.Priority != issue.Priority
 		projectChanged := req.Updates.ProjectID != nil && uuidToString(prevIssue.ProjectID) != uuidToString(issue.ProjectID)
 
@@ -4343,24 +4418,10 @@ func (h *Handler) BatchUpdateIssues(w http.ResponseWriter, r *http.Request) {
 
 		// Reassignment does not cancel existing tasks (#4963 / MUL-4113) —
 		// mirrors UpdateIssue. See that handler for the rationale.
-		//
-		// Same single predicate as UpdateIssue — batch must not grow its own
-		// copy of the enqueue rule (the historical source of four-entry-point
-		// drift, MUL-3375). suppress_run applies batch-wide.
-		if trigger, ok := h.IssueService.WillEnqueueRun(r.Context(),
-			service.IssueTriggerInput{
-				Issue:           issue,
-				PrevStatus:      prevIssue.Status,
-				AssigneeChanged: assigneeChanged,
-				StatusChanged:   statusChanged,
-			},
-			h.issueTriggerWriteProbe(r, actorType, actorID, issue),
-		); ok {
-			if h.suppressesRun(r.Context(), req.Updates.SuppressRun, actorType, trigger) {
-				h.recordSuppressedIssueRun(issue, trigger, actorType, actorID)
-			} else {
-				h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, req.Updates.HandoffNote)
-			}
+		if suppressedRun {
+			h.recordSuppressedIssueRun(r.Context(), issue, trigger, actorType, actorID)
+		} else if willEnqueue {
+			h.dispatchIssueRun(r.Context(), issue, trigger, actorType, actorID, req.Updates.HandoffNote)
 		}
 
 		// No status change — not even → cancelled — cancels active tasks here,

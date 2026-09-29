@@ -27,6 +27,7 @@ import type { ChildProgress } from "./list-row";
 import { IssueActionsContextMenu } from "../actions";
 import { LabelChip } from "../../labels/label-chip";
 import { IssueAgentActivityIndicator } from "./issue-agent-activity-indicator";
+import { SuppressedBadge } from "./suppressed-badge";
 import { CustomStatusChip, useIsCustomStatus } from "./custom-status-chip";
 import { useIssueSurfaceActionsOptional } from "../surface/actions-context";
 function formatDate(date: string, locale: string): string {
@@ -181,6 +182,10 @@ export const BoardCardContent = memo(function BoardCardContent({
           {priorityIconNode}
           <p className="text-caption text-muted-foreground truncate">{issue.identifier}</p>
         </div>
+        {/* Same run-status signal slot (RUYI-275): the badge renders only
+            when there is no activity indicator to show — the two are mutually
+            exclusive with the indicator winning, so exactly one is visible. */}
+        <SuppressedBadge issue={issue} />
         <IssueAgentActivityIndicator issueId={issue.id} />
       </div>
 
