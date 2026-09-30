@@ -491,6 +491,10 @@ func (r *Router) processClaimed(ctx context.Context, set ResolverSet, msg channe
 			Message:             msg,
 			ClaimToken:          claimToken,
 			MediaPendingSeconds: mediaPendingSeconds,
+			// Durable run-intent recording (RUYI-304) mirrors the in-memory
+			// debounce condition below: only the ordinary path schedules a
+			// run, so only it leaves an intent row for the compensator.
+			RecordRunIntent: runIntentTriggerFor(msg, identity.UserID, inst.ID),
 		})
 		if errors.Is(err, ErrRouteChanged) {
 			routeChangeRetries++
@@ -930,6 +934,16 @@ func (r *Router) scheduleRunMode(
 	}
 }
 
+// runIntentTriggerFor is non-nil exactly when this inbound message will go
+// through the debounced-run path below: SkipAgentRun messages (/issue) never
+// trigger an agent run, so they never leave a run-intent row.
+func runIntentTriggerFor(msg channel.InboundMessage, sender, installation pgtype.UUID) *RunIntentTrigger {
+	if msg.SkipAgentRun {
+		return nil
+	}
+	return &RunIntentTrigger{InitiatorUserID: sender, InstallationID: installation}
+}
+
 // chatRunFlushTimeout bounds the detached flush (session reload + enqueue +
 // notice), which runs on its own fresh context.
 const chatRunFlushTimeout = 10 * time.Second
@@ -965,15 +979,68 @@ func (r *Router) flushChatRun(
 		// not stick on the user's message.
 		r.clearTyping(ctx, set, sessionID)
 		switch {
+		case errors.Is(err, service.ErrChatRunIntentAlreadyFired):
+			// Another flush or the compensating reconciler already won this
+			// window; the winner owns the task lifecycle and the user-facing
+			// outcome, so this loser stays silent.
+			r.logger.Info("channel router: flush lost the run window to another trigger",
+				"chat_session_id", uuidString(sessionID), "context_revision", contextRevision)
 		case errors.Is(err, service.ErrChatTaskAgentNoRuntime):
-			r.emitFlushReply(ctx, set, inst, msg, sessionID, bindingID, routeRevision, OutcomeAgentOffline)
+			r.deadIntentAndNotify(ctx, set, inst, msg, sessionID, contextRevision,
+				bindingID, routeRevision, "agent_offline", err, OutcomeAgentOffline)
 		case errors.Is(err, service.ErrChatTaskAgentArchived):
-			r.emitFlushReply(ctx, set, inst, msg, sessionID, bindingID, routeRevision, OutcomeAgentArchived)
+			r.deadIntentAndNotify(ctx, set, inst, msg, sessionID, contextRevision,
+				bindingID, routeRevision, "agent_archived", err, OutcomeAgentArchived)
+		case errors.Is(err, service.ErrChatSessionArchived):
+			r.deadIntentAndNotify(ctx, set, inst, msg, sessionID, contextRevision,
+				bindingID, routeRevision, "session_archived", err, OutcomeSessionUnavailable)
+		case errors.Is(err, service.ErrChatTaskAgentMissing):
+			r.deadIntentAndNotify(ctx, set, inst, msg, sessionID, contextRevision,
+				bindingID, routeRevision, "agent_missing", err, OutcomeSessionUnavailable)
+		case errors.Is(err, service.ErrChatRouteFenceMismatch):
+			// The route was superseded (/new or retired binding) — the
+			// old-generation input was intentionally abandoned. Settle the
+			// ledger so the reconciler never re-arms it; never notify.
+			if _, deadErr := r.tasks.MarkChatRunIntentDead(ctx, sessionID, contextRevision, "route_superseded", err.Error()); deadErr != nil {
+				r.logger.Error("channel router: settle superseded run intent failed",
+					"chat_session_id", uuidString(sessionID), "err", deadErr.Error())
+			}
+			r.logger.Info("channel router: flushed run superseded by newer route",
+				"chat_session_id", uuidString(sessionID), "context_revision", contextRevision)
 		default:
+			// Transient: the run-intent CAS rolled back with the transaction,
+			// so the row stays pending and the compensating reconciler will
+			// re-drive this window. No notice — the failure is not terminal.
 			r.logger.Error("channel router: flush enqueue chat task failed",
 				"chat_session_id", uuidString(sessionID), "err", err.Error())
 		}
 	}
+}
+
+// deadIntentAndNotify terminalizes the still-pending run intent after the
+// flush failed permanently (the debounced trigger will never re-fire, so the
+// row must not stay armed for the reconciler), then delivers the terminal
+// notice. The flush is the only user-facing path for these outcomes — the
+// reconciler settles rows silently — so the notice is emitted even if another
+// path had already settled the row.
+func (r *Router) deadIntentAndNotify(
+	ctx context.Context,
+	set ResolverSet,
+	inst ResolvedInstallation,
+	msg channel.InboundMessage,
+	sessionID pgtype.UUID,
+	contextRevision int64,
+	bindingID pgtype.UUID,
+	routeRevision int64,
+	reason string,
+	cause error,
+	outcome Outcome,
+) {
+	if _, err := r.tasks.MarkChatRunIntentDead(ctx, sessionID, contextRevision, reason, cause.Error()); err != nil {
+		r.logger.Error("channel router: settle run intent failed",
+			"chat_session_id", uuidString(sessionID), "reason", reason, "err", err.Error())
+	}
+	r.emitFlushReply(ctx, set, inst, msg, sessionID, bindingID, routeRevision, outcome)
 }
 
 // clearTyping asks the platform to drop the "processing" indicator for a session

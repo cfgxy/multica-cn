@@ -336,6 +336,7 @@ type fakeTasks struct {
 	err                 error
 	prepared            bool
 	prepareErr          error
+	deadMarkReasons     []string
 }
 
 func (f *fakeTasks) PromoteChannelChatTasksIfMediaReady(_ context.Context, _ pgtype.UUID) error {
@@ -377,6 +378,17 @@ func (f *fakeTasks) EnqueuePreparedChannelChatTaskInTx(ctx context.Context, _ pg
 	return f.EnqueueChannelChatTask(ctx, session, initiator, forceFresh, contextRevision, pgtype.UUID{}, 0)
 }
 func (f *fakeTasks) FinalizeChatTaskEnqueue(context.Context, db.AgentTaskQueue) {}
+func (f *fakeTasks) MarkChatRunIntentDead(_ context.Context, _ pgtype.UUID, _ int64, deadReason, _ string) (bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.deadMarkReasons = append(f.deadMarkReasons, deadReason)
+	return true, nil
+}
+func (f *fakeTasks) deadMarks() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.deadMarkReasons)
+}
 func (f *fakeTasks) wasPrepared() bool {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -1519,17 +1531,19 @@ func TestRouter_FlushArchived_ClearsTyping(t *testing.T) {
 	}
 }
 
-// TestRouter_FlushSessionArchived_ClearsTypingAndSaysNothing pins what the
-// flush does with the refusal EnqueueChatTask returns when the session was
-// archived while the debounce window was still open. Two things have to be
-// true, and the second is the one worth a test: the typing indicator must be
-// cleared here (no task will exist, so the bus-driven clear can never fire),
-// and nothing may be posted back — the archive deleted the channel binding
-// before this flush ran, so a notice would be addressed to a room that is no
-// longer bound to this conversation. The error is not one of the two the
-// switch names, so it falls to the default log branch and says nothing, which
-// is the behaviour this test holds in place.
-func TestRouter_FlushSessionArchived_ClearsTypingAndSaysNothing(t *testing.T) {
+// TestRouter_FlushSessionArchived_SettlesIntentAndNotifies pins what the
+// flush does with the refusal EnqueueChannelChatTask returns when the session
+// was archived while the debounce window was still open (RUYI-304). Three
+// things must hold: the typing indicator is cleared here (no task will exist,
+// so the bus-driven clear can never fire); the run-intent row is settled dead
+// so the compensating reconciler never re-drives a window the session can no
+// longer serve; and the user gets the visible degradation notice — before the
+// durable ledger this refusal vanished into the default log branch, and the
+// message silently disappeared. The notice text carries no internal detail;
+// posting through a room the archive may have unbound fails gracefully inside
+// the replier, which is the acceptable cost of not second-guessing the
+// session state here.
+func TestRouter_FlushSessionArchived_SettlesIntentAndNotifies(t *testing.T) {
 	h := newHarness(t)
 	h.tasks.err = service.ErrChatSessionArchived
 	if err := h.router.Handle(context.Background(), p2pMessage(t)); err != nil {
@@ -1538,20 +1552,21 @@ func TestRouter_FlushSessionArchived_ClearsTypingAndSaysNothing(t *testing.T) {
 	if !waitFor(time.Second, func() bool { return h.typing.settledCalls() == 1 }) {
 		t.Fatalf("an archived-session flush must clear the typing indicator, got %d OnSettled calls", h.typing.settledCalls())
 	}
-	// The ingest ACK is the only reply this message is entitled to; anything
-	// else came from the flush. Waiting the window out is the assertion —
-	// waitFor returns false only if it never happened.
-	spoke := func() (Result, bool) {
-		for _, r := range h.replier.calls() {
-			if r.Outcome != OutcomeIngested {
-				return r, true
-			}
-		}
-		return Result{}, false
+	if !waitFor(time.Second, func() bool { return h.tasks.deadMarks() == 1 }) {
+		t.Fatalf("an archived-session flush must settle the run intent dead, got %d dead marks", h.tasks.deadMarks())
 	}
-	if waitFor(200*time.Millisecond, func() bool { _, ok := spoke(); return ok }) {
-		reply, _ := spoke()
-		t.Fatalf("archived-session flush posted %q into a room the archive had already unbound", reply.Outcome)
+	notices := []Result{}
+	for _, r := range h.replier.calls() {
+		if r.Outcome != OutcomeIngested {
+			notices = append(notices, r)
+		}
+	}
+	if len(notices) != 1 || notices[0].Outcome != OutcomeSessionUnavailable {
+		outcomes := []Outcome{}
+		for _, n := range notices {
+			outcomes = append(outcomes, n.Outcome)
+		}
+		t.Fatalf("archived-session flush notices = %v, want exactly one %q", outcomes, OutcomeSessionUnavailable)
 	}
 }
 

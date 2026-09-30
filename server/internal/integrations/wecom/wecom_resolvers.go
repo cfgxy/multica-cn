@@ -271,6 +271,7 @@ func (r *sessionBinder) AppendMessage(ctx context.Context, p engine.AppendParams
 		// fires the moment the message lands and the agent is handed the
 		// "[Image]" placeholder while the download is still going.
 		MediaPendingSeconds: p.MediaPendingSeconds,
+		RecordRunIntent:     p.RecordRunIntent,
 	})
 }
 
