@@ -16,12 +16,16 @@ import { useLocale, useT } from "../../i18n";
 /**
  * The self-evolution overview tab (RUYI-284).
  *
- * One read-only lens across the six data planes the other tabs own. Every
+ * One read-only lens across the data planes the other tabs own. Every
  * number here is served by the workspace aggregate endpoint, which folds the
  * same rows through the same code paths as the tabs — so a section can only
  * disagree with its tab through a bug, not by construction. The overview is a
  * lens, not a surface: there is deliberately no write control anywhere in this
  * tree, and the component test holds that line.
+ *
+ * Proposal metrics keep their section slot but stay deliberately unwired
+ * (Leader boundary on RUYI-284, 2026-09-30): the pool's model is being
+ * replaced by RUYI-305, and reading the current table would be rework.
  *
  * Three kinds of emptiness stay distinguishable, per the acceptance spec: a
  * plane with nothing in it says so in its own section; a plane whose sample is
@@ -81,16 +85,6 @@ export function OverviewTab({ wsId }: { wsId: string }) {
       case "improved": return t(($) => $.quiz.reading.verdict.improved);
       case "regressed": return t(($) => $.quiz.reading.verdict.regressed);
       default: return t(($) => $.quiz.reading.verdict.insufficient);
-    }
-  };
-  const statusLabel = (status: string) => {
-    switch (status) {
-      case "draft": return t(($) => $.proposals.status.draft);
-      case "needs_revision": return t(($) => $.proposals.status.needs_revision);
-      case "adopted": return t(($) => $.proposals.status.adopted);
-      case "rejected": return t(($) => $.proposals.status.rejected);
-      case "archived": return t(($) => $.proposals.status.archived);
-      default: return status;
     }
   };
   const scanLabel = (result: string) => {
@@ -267,25 +261,13 @@ export function OverviewTab({ wsId }: { wsId: string }) {
         data-testid="overview-proposals"
       >
         <h3 className="text-title font-medium">{t(($) => $.overview.proposals.title)}</h3>
-        {data.proposals.total === 0 ? (
-          <p className="text-body text-muted-foreground">{t(($) => $.overview.proposals.empty)}</p>
-        ) : (
-          <div className="flex flex-col gap-1">
-            <p className="text-body">
-              {t(($) => $.overview.proposals.pending, { count: data.proposals.pending })} ·{" "}
-              {t(($) => $.overview.proposals.adopted, { count: data.proposals.adopted })} ·{" "}
-              {t(($) => $.overview.proposals.total, { count: data.proposals.total })}
-            </p>
-            {data.proposals.latest ? (
-              <p className="flex flex-wrap items-center gap-2 text-caption text-muted-foreground">
-                <span className="min-w-0 truncate">
-                  {t(($) => $.overview.proposals.latest, { title: data.proposals.latest.title })}
-                </span>
-                <Badge variant="outline">{statusLabel(data.proposals.latest.status)}</Badge>
-              </p>
-            ) : null}
-          </div>
-        )}
+        {/* Deliberately unwired: the pool's model is being replaced by
+            RUYI-305, so reading the current behavior-prophecy table here
+            would be rework the moment it lands. The section keeps its slot
+            with an explicit pending note instead of a lying zero. */}
+        <p className="text-body text-muted-foreground">
+          {t(($) => $.overview.proposals.pendingModel)}
+        </p>
       </section>
 
       <section

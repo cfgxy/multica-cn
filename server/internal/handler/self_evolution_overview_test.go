@@ -171,9 +171,6 @@ func TestSelfEvolutionOverviewEmptyWorkspace(t *testing.T) {
 	if resp.Quiz.ScopeID != "" || resp.Quiz.Measured {
 		t.Errorf("quiz scope/measured = %q/%v, want no scope and unmeasured", resp.Quiz.ScopeID, resp.Quiz.Measured)
 	}
-	if resp.Proposals.Total != 0 || resp.Proposals.Latest != nil || len(resp.Proposals.ByStatus) != 0 {
-		t.Errorf("proposals = %+v, want an empty pool", resp.Proposals)
-	}
 	if resp.Knowledge.Dirs != 0 || resp.Knowledge.Entries != 0 || resp.Knowledge.LastScan != nil {
 		t.Errorf("knowledge = %+v, want an empty mirror", resp.Knowledge)
 	}
@@ -234,20 +231,6 @@ func TestSelfEvolutionOverviewAggregatesWorkspaceActivity(t *testing.T) {
 	overviewQuizResult(t, wsID, agentA, itemID, 1, 100, now.Add(-2*time.Hour))
 	overviewQuizResult(t, wsID, agentA, itemID, 1, 120, now.Add(-90*time.Minute))
 	overviewQuizResult(t, wsID, agentA, itemID, 2, 90, now.Add(-30*time.Minute))
-
-	// ── proposals: one adopted (older), one draft (newest overall) ──
-	dbfx.Insert(t, "proposal", testutil.Cols{
-		"workspace_id": wsID, "type": "lesson", "status": "adopted",
-		"title":      "older adopted",
-		"prophecy":   testutil.Raw(`'{"outcome_text":"x","falsify_condition":"y"}'::jsonb`),
-		"created_at": now.Add(-48 * time.Hour),
-	})
-	dbfx.Insert(t, "proposal", testutil.Cols{
-		"workspace_id": wsID, "type": "pitfall", "status": "draft",
-		"title":      "newest draft",
-		"prophecy":   testutil.Raw(`'{"outcome_text":"x","falsify_condition":"y"}'::jsonb`),
-		"created_at": now.Add(-10 * time.Minute),
-	})
 
 	// ── knowledge: one live dir, one removed; entries and scans on the live one ──
 	liveDir := dbfx.Insert(t, "knowledge_dir", testutil.Cols{
@@ -411,15 +394,6 @@ func TestSelfEvolutionOverviewAggregatesWorkspaceActivity(t *testing.T) {
 	if baseline.ScopeID != resp.Quiz.ScopeID || baseline.Measured != resp.Quiz.Measured ||
 		baseline.CurrentVersion != resp.Quiz.CurrentVersion {
 		t.Errorf("overview quiz %+v disagrees with the per-scope endpoint %+v", resp.Quiz, baseline)
-	}
-
-	// proposals
-	if resp.Proposals.Total != 2 || resp.Proposals.Pending != 1 || resp.Proposals.Adopted != 1 {
-		t.Errorf("proposals = %+v, want total 2, pending 1, adopted 1", resp.Proposals)
-	}
-	if resp.Proposals.Latest == nil || resp.Proposals.Latest.Title != "newest draft" ||
-		resp.Proposals.Latest.Status != "draft" {
-		t.Errorf("latest proposal = %+v, want the newest draft", resp.Proposals.Latest)
 	}
 
 	// knowledge

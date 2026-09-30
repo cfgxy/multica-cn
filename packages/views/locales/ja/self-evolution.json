@@ -40,11 +40,7 @@
     },
     "proposals": {
       "title": "提案プール",
-      "empty": "提案プールは空です。",
-      "pending": "採用待ち {{count}}",
-      "adopted": "累計採用 {{count}}",
-      "total": "全 {{count}} 件",
-      "latest": "最新：{{title}}"
+      "pendingModel": "提案メトリクスは新しい提案モデル（RUYI-305）の提供後に接続されます。"
     },
     "knowledge": {
       "title": "ナレッジミラー",

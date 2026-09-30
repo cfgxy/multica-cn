@@ -86,13 +86,6 @@ function overviewFixture(overrides: Partial<SelfEvolutionOverview> = {}): SelfEv
       required_baseline: 30,
       last_measured_at: "2026-09-30T02:00:00Z",
     },
-    proposals: {
-      total: 2,
-      pending: 1,
-      adopted: 1,
-      by_status: { draft: 1, adopted: 1 },
-      latest: { id: "p-2", title: "cache the rollup", status: "draft", created_at: "2026-09-30T03:00:00Z" },
-    },
     knowledge: {
       dirs: 1,
       entries: 2,
@@ -145,8 +138,11 @@ it("renders the six sections from the aggregate", async () => {
     screen.getByText("Insufficient sample (baseline needs 30, current needs 12 usable readings)"),
   ).toBeTruthy();
 
-  expect(screen.getByText("1 awaiting adoption · 1 adopted in total · 2 proposals")).toBeTruthy();
-  expect(screen.getByText("Latest: cache the rollup")).toBeTruthy();
+  // The proposals slot stays but is deliberately unwired (RUYI-305): an
+  // explicit pending note, never a count of the old model's rows.
+  expect(screen.getByTestId("overview-proposals").textContent).toContain(
+    "Proposal metrics arrive with the new proposal model",
+  );
   expect(screen.getByTestId("overview-knowledge").textContent).toContain("1 directories");
   expect(screen.getByTestId("overview-skills").textContent).toContain("7 explicit invocations in total");
 });
@@ -171,7 +167,6 @@ it("keeps the three kinds of emptiness distinguishable and offers no write contr
       excluded_failed_runs: 0,
     },
     quiz: { verdict: "insufficient", measured: false, required_sample: 12, required_baseline: 30 },
-    proposals: { total: 0, pending: 0, adopted: 0, by_status: {} },
     knowledge: { dirs: 0, entries: 0 },
     skills: { count: 0, invocations: 0 },
   });
@@ -181,7 +176,6 @@ it("keeps the three kinds of emptiness distinguishable and offers no write contr
   expect(screen.getByText("No version history on any tier yet.")).toBeTruthy();
   expect(screen.getByText("No measured runs in this window.")).toBeTruthy();
   expect(screen.getByText("No recorded measurements yet.")).toBeTruthy();
-  expect(screen.getByText("The proposal pool is empty.")).toBeTruthy();
   expect(screen.getByText("No registered directories yet.")).toBeTruthy();
   expect(screen.getByText("No registered skills yet.")).toBeTruthy();
 

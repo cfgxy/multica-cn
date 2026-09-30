@@ -40,11 +40,7 @@
     },
     "proposals": {
       "title": "Proposal pool",
-      "empty": "The proposal pool is empty.",
-      "pending": "{{count}} awaiting adoption",
-      "adopted": "{{count}} adopted in total",
-      "total": "{{count}} proposals",
-      "latest": "Latest: {{title}}"
+      "pendingModel": "Proposal metrics arrive with the new proposal model (RUYI-305)."
     },
     "knowledge": {
       "title": "Knowledge mirror",
