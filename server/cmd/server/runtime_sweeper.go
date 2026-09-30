@@ -313,12 +313,34 @@ func sweepOfflineRuntimeTasks(ctx context.Context, queries *db.Queries, taskSvc 
 	}
 	stats.candidates = len(failedTasks)
 	stats.changed = len(failedTasks)
-	if len(failedTasks) == 0 {
-		return
+	if len(failedTasks) > 0 {
+		slog.Info("runtime sweeper: failed tasks beyond reconnect grace", "count", len(failedTasks))
+		taskSvc.HandleFailedTasks(ctx, failedTasks)
 	}
 
-	slog.Info("runtime sweeper: failed tasks beyond reconnect grace", "count", len(failedTasks))
-	taskSvc.HandleFailedTasks(ctx, failedTasks)
+	// RUYI-292: a cancel_requested row on a runtime that died mid-stop can
+	// never receive the daemon cancel-ack that would confirm the stop. The
+	// user asked for the stop, so the honest terminal is cancelled — not the
+	// failed verdict every other in-flight row on a dead runtime gets. Same
+	// grace and batch bounds as the failure sweep above.
+	converged, err := taskSvc.ConvergeCancelRequestedForOfflineRuntimes(ctx, db.ConvergeCancelRequestedForOfflineRuntimesParams{
+		ReconnectGraceSecs: reconnectGrace.Seconds(),
+		MaxPerTick:         offlineTaskFailBatchSize,
+	})
+	if err != nil {
+		slog.Warn("runtime sweeper: failed to converge cancel_requested on long-offline runtimes", "error", err)
+		return
+	}
+	stats.candidates += len(converged)
+	stats.changed += len(converged)
+	if len(converged) == 0 {
+		return
+	}
+	slog.Info("runtime sweeper: converged cancel_requested to cancelled beyond reconnect grace", "count", len(converged))
+	taskSvc.CaptureCancelledTasks(ctx, converged)
+	for _, t := range converged {
+		taskSvc.RebroadcastCancelledTask(ctx, t.ID)
+	}
 	return
 }
 

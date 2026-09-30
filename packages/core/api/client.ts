@@ -36,6 +36,8 @@ import type {
   WorkspaceWorkingAgent,
   WorkspaceWorkingAgentMineRelation,
   WorkspaceWorkingAgentType,
+  RunDetail,
+  CancelRunResult,
   AgentRuntime,
   RuntimeProfile,
   CreateRuntimeProfileRequest,

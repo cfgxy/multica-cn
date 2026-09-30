@@ -168,6 +168,88 @@ type RerunIssueRequest struct {
 	TaskID string `json:"task_id,omitempty"`
 }
 
+// RunLineageEntry is one node of a run's retry chain as the detail surface
+// shows it: enough to draw the chain (who, what state, when, which lineage
+// edge) without dragging the full per-run payload along for every ancestor.
+type RunLineageEntry struct {
+	ID             string  `json:"id"`
+	AgentID        string  `json:"agent_id"`
+	Status         string  `json:"status"`
+	CreatedAt      *string `json:"created_at,omitempty"`
+	CompletedAt    *string `json:"completed_at,omitempty"`
+	Attempt        int32   `json:"attempt"`
+	FailureReason  string  `json:"failure_reason,omitempty"`
+	RerunOfTaskID  *string `json:"rerun_of_task_id,omitempty"`
+	RetryOfTaskID  *string `json:"retry_of_task_id,omitempty"`
+	CancelledByUID string  `json:"cancel_requested_by_user_id,omitempty"`
+}
+
+// GetIssueTask returns one run of this issue, with its full retry chain so a
+// detail drawer can show cancelled→retried→completed history without a second
+// call. The chain follows BOTH lineage columns (manual rerun + system retry),
+// so a mixed chain — including forks — stays visible.
+func (h *Handler) GetIssueTask(w http.ResponseWriter, r *http.Request) {
+	issue, ok := h.loadIssueForUser(w, r, chi.URLParam(r, "id"))
+	if !ok {
+		return
+	}
+
+	taskID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "taskId"), "task id")
+	if !ok {
+		return
+	}
+
+	task, err := h.Queries.GetAgentTask(r.Context(), taskID)
+	if err != nil || uuidToString(task.IssueID) != uuidToString(issue.ID) {
+		writeError(w, http.StatusNotFound, "task not found")
+		return
+	}
+
+	workspaceID := uuidToString(issue.WorkspaceID)
+	resp := taskToResponse(task, workspaceID)
+	h.hydrateTaskAttributions(r.Context(), []*TaskAttribution{resp.Attribution})
+
+	chain := func(rows []db.AgentTaskQueue) []RunLineageEntry {
+		entries := make([]RunLineageEntry, 0, len(rows))
+		for _, t := range rows {
+			if t.ID == task.ID {
+				continue // the detail payload above already carries the run itself
+			}
+			failureReason := ""
+			if t.FailureReason.Valid {
+				failureReason = t.FailureReason.String
+			}
+			entries = append(entries, RunLineageEntry{
+				ID:             uuidToString(t.ID),
+				AgentID:        uuidToString(t.AgentID),
+				Status:         t.Status,
+				CreatedAt:      timestampToPtr(t.CreatedAt),
+				CompletedAt:    timestampToPtr(t.CompletedAt),
+				Attempt:        t.Attempt,
+				FailureReason:  failureReason,
+				RerunOfTaskID:  uuidToPtr(t.RerunOfTaskID),
+				RetryOfTaskID:  uuidToPtr(t.RetryOfTaskID),
+				CancelledByUID: uuidToString(t.CancelRequestedByUserID),
+			})
+		}
+		return entries
+	}
+	ancestors, err := h.Queries.ListRunAncestry(r.Context(), task.ID)
+	if err != nil {
+		ancestors = nil // chain is decoration; the run itself is the answer
+	}
+	descendants, err := h.Queries.ListRunDescendants(r.Context(), task.ID)
+	if err != nil {
+		descendants = nil
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"task":        resp,
+		"ancestors":   chain(ancestors),
+		"descendants": chain(descendants),
+	})
+}
+
 // RetryTask is the RUYI-292 run-level retry entry: POST
 // /api/issues/{id}/tasks/{taskId}/retry re-attempts one specific finished run
 // (failed or cancelled; completed keeps its existing rerun surface) as a NEW
