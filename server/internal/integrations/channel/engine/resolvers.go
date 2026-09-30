@@ -31,6 +31,10 @@ const (
 	OutcomeIssueUsage    Outcome = "issue_usage"
 	OutcomeAgentOffline  Outcome = "agent_offline"
 	OutcomeAgentArchived Outcome = "agent_archived"
+	// OutcomeSessionUnavailable tells the user the session cannot start a run
+	// anymore (archived, agent removed, or route superseded). Text must stay
+	// free of internal detail — table names, error strings, internal paths.
+	OutcomeSessionUnavailable Outcome = "session_unavailable"
 )
 
 // DropReason enumerates the drop-audit categories. Values match the legacy
@@ -140,6 +144,11 @@ type AppendParams struct {
 	Message             channel.InboundMessage
 	ClaimToken          pgtype.UUID
 	MediaPendingSeconds float64
+	// RecordRunIntent, when non-nil, durably arms the run-trigger intent rows
+	// (RUYI-304) inside the append transaction. The Router sets it exactly on
+	// the ordinary-message path that schedules a debounced run; /issue
+	// (SkipAgentRun), /new and /clear never schedule one and leave it nil.
+	RecordRunIntent *RunIntentTrigger
 }
 
 // AppendResult reports what AppendMessage decided.
@@ -422,6 +431,10 @@ type TaskEnqueuer interface {
 	FinalizeChatTaskEnqueue(ctx context.Context, task db.AgentTaskQueue)
 	PromoteChannelChatTasksIfMediaReady(ctx context.Context, sessionID pgtype.UUID) error
 	PromoteDeferredChannelIssueTask(ctx context.Context, taskID pgtype.UUID) error
+	// MarkChatRunIntentDead terminalizes a still-pending run-intent row after
+	// a flush failed permanently; the bool reports whether THIS caller won
+	// the row (and therefore owns the user-visible terminal notice).
+	MarkChatRunIntentDead(ctx context.Context, chatSessionID pgtype.UUID, contextRevision int64, deadReason, lastError string) (bool, error)
 }
 
 // SessionReader reads the rows the debounced flush + /issue identifier need.

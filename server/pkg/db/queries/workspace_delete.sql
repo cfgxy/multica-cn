@@ -513,6 +513,13 @@ deleted_prompt_quiz_results AS (
 ),
 deleted_prompt_quiz_items AS (
     DELETE FROM prompt_quiz_item WHERE workspace_id = $1
+),
+-- Channel run-trigger intents (RUYI-304) are workspace-scoped with no
+-- external side effects — unlike the media ledger below, a dead intent row
+-- owns nothing outside this database, so it can be cascade-deleted directly
+-- instead of being handed to a reconciler.
+deleted_channel_chat_run_intents AS (
+    DELETE FROM channel_chat_run_intent WHERE workspace_id = $1
 )
 -- Keep the two-system cleanup ledger until object storage has been settled.
 -- Moving every row out of pending also prevents a concurrent media bind from

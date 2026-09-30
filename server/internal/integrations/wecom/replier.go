@@ -22,11 +22,12 @@ import (
 )
 
 const (
-	agentOfflineText  = "⚠️ 智能体当前不在线，你的消息已收到，等它上线后会处理。"
-	agentArchivedText = "⚠️ 该智能体已归档，无法回复。请联系工作区管理员。"
-	freshPendingText  = "✅ 已准备从空上下文运行。你的下一条聊天消息仍会进入当前对话，但不会带上之前的上下文。"
-	chatStartedText   = "✅ 已新建 Multica 对话。你的下一条消息会进入该对话。"
-	issueUsageText    = "请填写任务标题，格式如下：\n\n`/issue <标题>`\n`[描述]`（可选）"
+	agentOfflineText       = "⚠️ 智能体当前不在线，你的消息已收到，等它上线后会处理。"
+	agentArchivedText      = "⚠️ 该智能体已归档，无法回复。请联系工作区管理员。"
+	sessionUnavailableText = "⚠️ 会话当前无法启动，发送 /new 可重新开始。"
+	freshPendingText       = "✅ 已准备从空上下文运行。你的下一条聊天消息仍会进入当前对话，但不会带上之前的上下文。"
+	chatStartedText        = "✅ 已新建 Multica 对话。你的下一条消息会进入该对话。"
+	issueUsageText         = "请填写任务标题，格式如下：\n\n`/issue <标题>`\n`[描述]`（可选）"
 )
 
 // OutboundReplier implements engine.OutboundReplier for WeCom.
@@ -115,6 +116,11 @@ func (r *OutboundReplier) Reply(ctx context.Context, inst engine.ResolvedInstall
 	case engine.OutcomeAgentArchived:
 		if err := r.post(ctx, inst, msg, agentArchivedText); err != nil {
 			r.logger.WarnContext(ctx, "wecom replier: archived notice failed",
+				"installation_id", util.UUIDToString(inst.ID), "error", err)
+		}
+	case engine.OutcomeSessionUnavailable:
+		if err := r.post(ctx, inst, msg, sessionUnavailableText); err != nil {
+			r.logger.WarnContext(ctx, "wecom replier: session-unavailable notice failed",
 				"installation_id", util.UUIDToString(inst.ID), "error", err)
 		}
 	case engine.OutcomeFreshPending:

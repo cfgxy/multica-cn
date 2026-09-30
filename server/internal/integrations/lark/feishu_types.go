@@ -88,6 +88,10 @@ const (
 	OutcomeAgentOffline Outcome = "agent_offline"
 	// OutcomeAgentArchived — landed, but the agent is archived.
 	OutcomeAgentArchived Outcome = "agent_archived"
+	// OutcomeSessionUnavailable — the session cannot start a run anymore
+	// (archived, agent removed, route superseded). Copy stays free of
+	// internal detail.
+	OutcomeSessionUnavailable Outcome = "session_unavailable"
 )
 
 // DispatchResult is the Feishu-side verdict the OutcomeReplier consumes to

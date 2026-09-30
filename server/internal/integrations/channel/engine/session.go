@@ -75,6 +75,7 @@ type SessionQueries interface {
 	SetChannelChatContextInitiator(ctx context.Context, arg db.SetChannelChatContextInitiatorParams) (pgtype.UUID, error)
 	UpdateChannelChatSessionBindingReplyTarget(ctx context.Context, arg db.UpdateChannelChatSessionBindingReplyTargetParams) error
 	MarkChannelInboundDedupProcessed(ctx context.Context, arg db.MarkChannelInboundDedupProcessedParams) (int64, error)
+	UpsertChatRunIntent(ctx context.Context, arg db.UpsertChatRunIntentParams) error
 }
 
 // dbSessionQueries adapts *db.Queries to SessionQueries — the only purpose is
@@ -207,6 +208,9 @@ func (a dbSessionQueries) UpdateChannelChatSessionBindingReplyTarget(ctx context
 }
 func (a dbSessionQueries) MarkChannelInboundDedupProcessed(ctx context.Context, arg db.MarkChannelInboundDedupProcessedParams) (int64, error) {
 	return a.q.MarkChannelInboundDedupProcessed(ctx, arg)
+}
+func (a dbSessionQueries) UpsertChatRunIntent(ctx context.Context, arg db.UpsertChatRunIntentParams) error {
+	return a.q.UpsertChatRunIntent(ctx, arg)
 }
 
 // SessionTitles is retained in the constructor surface for adapter
@@ -380,6 +384,9 @@ type AppendInput struct {
 	ClaimToken          pgtype.UUID
 	MediaPendingSeconds float64
 	ForceFresh          bool
+	// RecordRunIntent arms the durable run-intent rows (RUYI-304) in the same
+	// tx; see AppendParams.RecordRunIntent.
+	RecordRunIntent *RunIntentTrigger
 	// BeforeCommit adds work that must be atomic with this message and its
 	// context-generation change. Native slash commands use it to snapshot and
 	// enqueue the task before the message becomes visible.
@@ -753,6 +760,11 @@ func (s *ChatSession) AppendUserMessage(ctx context.Context, in AppendInput) (Ap
 			return AppendResult{}, err
 		}
 	}
+	if in.RecordRunIntent != nil {
+		if err := s.recordRunIntents(ctx, qtx, currentSession, contextRevision, binding.ID, binding.RouteRevision, *in.RecordRunIntent, in.ForceFresh, pendingContexts); err != nil {
+			return AppendResult{}, err
+		}
+	}
 
 	if err := tx.Commit(ctx); err != nil {
 		return AppendResult{}, fmt.Errorf("commit: %w", err)
@@ -768,6 +780,56 @@ func (s *ChatSession) AppendUserMessage(ctx context.Context, in AppendInput) (Ap
 		BindingID:       binding.ID,
 		RouteRevision:   binding.RouteRevision,
 	}, nil
+}
+
+// RunIntentTrigger carries the authenticated sender snapshot for durable
+// run-intent recording. The Router fills it only on the ordinary-message path:
+// /issue (SkipAgentRun), /new and /clear never schedule a debounced run, so
+// they never leave an intent row behind.
+type RunIntentTrigger struct {
+	InitiatorUserID pgtype.UUID
+	InstallationID  pgtype.UUID
+}
+
+// channelChatRunIntentFireDelay pushes the durable fire deadline two batch
+// windows out: the in-memory debounce flushes first, and the compensating
+// reconciler only picks the row up when that flush never happened (crash,
+// restart, failed enqueue).
+const channelChatRunIntentFireDelay = 2 * DefaultChatRunBatchWindow
+
+// recordRunIntents durably arms every generation that still has unowned
+// channel input, inside the append transaction. The current generation is
+// armed with the just-authenticated sender and this message's ForceFresh flag;
+// orphan generations (windows lost to a crash) keep the initiator snapshotted
+// on their own generation row and are skipped when that snapshot is absent —
+// recovery fails closed rather than impersonating a sender.
+func (s *ChatSession) recordRunIntents(ctx context.Context, qtx SessionQueries, session db.ChatSession, currentRevision int64, bindingID pgtype.UUID, routeRevision int64, trigger RunIntentTrigger, forceFresh bool, pending []PendingContext) error {
+	for _, pc := range pending {
+		initiator := pc.InitiatorUserID
+		orphanFresh := false
+		if pc.Revision == currentRevision {
+			initiator = trigger.InitiatorUserID
+			orphanFresh = forceFresh
+		}
+		if !initiator.Valid {
+			continue
+		}
+		if err := qtx.UpsertChatRunIntent(ctx, db.UpsertChatRunIntentParams{
+			ID:              pgtype.UUID{Bytes: uuid.New(), Valid: true},
+			WorkspaceID:     session.WorkspaceID,
+			ChatSessionID:   session.ID,
+			ContextRevision: pc.Revision,
+			InitiatorUserID: initiator,
+			ForceFresh:      orphanFresh,
+			BindingID:       bindingID,
+			RouteRevision:   routeRevision,
+			InstallationID:  trigger.InstallationID,
+			FireDelay:       pgtype.Interval{Microseconds: channelChatRunIntentFireDelay.Microseconds(), Valid: true},
+		}); err != nil {
+			return fmt.Errorf("upsert channel chat run intent: %w", err)
+		}
+	}
+	return nil
 }
 
 // MarkPendingFresh persists a bare `/clear` command. Non-bare `/clear` messages

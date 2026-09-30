@@ -187,6 +187,10 @@ func (*bindTestTasks) PromoteDeferredChannelIssueTask(context.Context, pgtype.UU
 	return nil
 }
 
+func (*bindTestTasks) MarkChatRunIntentDead(context.Context, pgtype.UUID, int64, string, string) (bool, error) {
+	return true, nil
+}
+
 // promotions is the only way to read the counter from the test goroutine.
 func (b *bindTestTasks) promotions() int {
 	b.mu.Lock()
