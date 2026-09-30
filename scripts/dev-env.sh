@@ -1458,13 +1458,16 @@ cmd_destroy() {
 
   # Drop only on agreement (see env_file_agrees_on_database) and never the
   # shared main database: it outlives every environment registered against it.
+  # A vanished checkout has no env file to agree with; the registry manifest is
+  # then the only record of the database, and gc collects exactly those
+  # orphans, so its word alone authorizes the drop.
   if [ "$DB_NAME" = "$MAIN_DATABASE_NAME" ]; then
     ok "database $DB_NAME is the shared main database — left in place, never dropped by destroy"
     info "Reset it deliberately with ALLOW_MAIN_DB_DROP=1 make db-reset, or by hand via psql."
   elif ! command -v psql >/dev/null 2>&1; then
     warn "psql not found; $DB_NAME was left in place."
     failures=$((failures + 1))
-  elif env_file_agrees_on_database; then
+  elif env_file_agrees_on_database || [ ! -d "$DIR" ]; then
     admin_url="$(admin_database_url "$DATABASE_URL")"
     if PGCONNECT_TIMEOUT=3 psql "$admin_url" -tAc 'SELECT 1' >/dev/null 2>&1; then
       if psql "$admin_url" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"$DB_NAME\" WITH (FORCE)" >/dev/null; then
