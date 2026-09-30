@@ -189,7 +189,9 @@ type AgentTaskQueue struct {
 	DurableWorkDir            pgtype.Text `json:"durable_work_dir"`
 	ChannelContextRevision    pgtype.Int8 `json:"channel_context_revision"`
 	// Prompt tier version numbers this run was claimed with (RUYI-183). Keys present only for tiers actually injected; absent, not zero, for tiers that were not.
-	PromptVersions []byte `json:"prompt_versions"`
+	PromptVersions          []byte             `json:"prompt_versions"`
+	CancelRequestedByUserID pgtype.UUID        `json:"cancel_requested_by_user_id"`
+	CancelRequestedAt       pgtype.Timestamptz `json:"cancel_requested_at"`
 }
 
 type AgentToLabel struct {
