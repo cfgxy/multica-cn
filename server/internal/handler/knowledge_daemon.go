@@ -212,6 +212,9 @@ WHERE pr.resource_type = 'local_directory'
 	}
 
 	// Directories this daemon hosts or that are not claimed by any daemon.
+	// Ultimate directories are excluded: they are the adoption flow's write
+	// target (handled by the dedicated query below), never scan sources —
+	// scanning one would re-import adopted content as pending candidates.
 	type planDirRow struct {
 		workspaceID string
 		dir         KnowledgePlanDir
@@ -220,7 +223,8 @@ WHERE pr.resource_type = 'local_directory'
 SELECT d.id::text, d.workspace_id::text, d.kind, d.path, d.daemon_id, d.scan_requested,
        EXISTS(SELECT 1 FROM knowledge_scan_batch b WHERE b.dir_id = d.id) AS has_batch
 FROM knowledge_dir d
-WHERE d.workspace_id = ANY($1) AND d.removed = FALSE AND (d.daemon_id = $2 OR d.daemon_id = '')`,
+WHERE d.workspace_id = ANY($1) AND d.removed = FALSE AND d.kind <> 'ultimate'
+  AND (d.daemon_id = $2 OR d.daemon_id = '')`,
 		workspaceIDs, daemonID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to build the knowledge plan")
@@ -466,6 +470,12 @@ WHERE id = $1 AND removed = FALSE`, dirID).
 			continue
 		}
 		if _, allowedWorkspace := allowed[uuidToString(workspaceID)]; !allowedWorkspace {
+			continue
+		}
+		// Same trust-boundary rule as the plan: a scan report for an ultimate
+		// directory — a stale cycle's report, or a daemon not deriving its
+		// work from the plan — must not land mirror rows.
+		if kind == "ultimate" {
 			continue
 		}
 		// A daemon may only scan directories it hosts or unclaimed ones.

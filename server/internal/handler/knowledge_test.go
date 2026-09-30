@@ -245,6 +245,84 @@ func TestKnowledgePlanHandsWorkToDaemon(t *testing.T) {
 	}
 }
 
+// TestKnowledgePlanExcludesUltimateFromScanDirs pins the RUYI-289 QA P1 fix:
+// the ultimate directory is the adoption flow's write target, so the plan
+// must expose it as ws.Ultimate (adoption jobs ride it) but never list it in
+// Dirs — otherwise every scheduled scan re-imports adopted content into the
+// candidate pool as pending duplicates.
+func TestKnowledgePlanExcludesUltimateFromScanDirs(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("database fixture is required")
+	}
+	const daemonID = "daemon-under-test"
+
+	ultimate := registerKnowledgeDir(t, "ultimate", "/tmp/ultimate-not-a-scan-target")
+	candidate := registerKnowledgeDir(t, "candidate_cli", "/tmp/ultimate-fix-candidate")
+
+	plan := knowledgePlan(t, daemonID)
+	var ws *KnowledgePlanWorkspace
+	for i := range plan.Workspaces {
+		if plan.Workspaces[i].WorkspaceID == testWorkspaceID {
+			ws = &plan.Workspaces[i]
+		}
+	}
+	if ws == nil {
+		t.Fatalf("plan misses the test workspace: %+v", plan.Workspaces)
+	}
+	if !ws.HasUltimate || ws.Ultimate == nil || ws.Ultimate.DirID != ultimate {
+		t.Fatalf("plan ultimate: has=%v ultimate=%+v, want dir %s", ws.HasUltimate, ws.Ultimate, ultimate)
+	}
+	for _, dir := range ws.Dirs {
+		if dir.DirID == ultimate {
+			t.Fatalf("ultimate dir %s handed to the daemon as a scan target: %+v", ultimate, dir)
+		}
+	}
+	planned := false
+	for _, dir := range ws.Dirs {
+		if dir.DirID == candidate {
+			planned = true
+		}
+	}
+	if !planned {
+		t.Fatalf("candidate dir %s missing from plan dirs: %+v", candidate, ws.Dirs)
+	}
+}
+
+// TestKnowledgeResultsRefuseUltimateScanReports pins the server-side guard of
+// the same fix: a scan report for an ultimate directory is dropped at the
+// trust boundary — no mirror rows, no batch log, no health change — so
+// adopted content cannot re-enter the pool through a stale or stray report.
+func TestKnowledgeResultsRefuseUltimateScanReports(t *testing.T) {
+	if testHandler == nil {
+		t.Fatal("database fixture is required")
+	}
+	const daemonID = "daemon-under-test"
+
+	ultimate := registerKnowledgeDir(t, "ultimate", "/tmp/ultimate-scan-guard")
+
+	ack := postKnowledgeResults(t, daemonID, map[string]any{
+		"scans": []map[string]any{{
+			"dir_id": ultimate, "trigger_source": "scheduled", "ok": true,
+			"memories": map[string]string{"adopted-key": "content already living in the ultimate store"},
+		}},
+	})
+	if ack["scans_applied"].(float64) != 0 {
+		t.Fatalf("ultimate scan report applied: %v", ack)
+	}
+	var batches, entries int
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT count(*) FROM knowledge_scan_batch WHERE dir_id = $1`, ultimate).Scan(&batches); err != nil {
+		t.Fatal(err)
+	}
+	if err := testPool.QueryRow(context.Background(),
+		`SELECT count(*) FROM knowledge_entry WHERE dir_id = $1`, ultimate).Scan(&entries); err != nil {
+		t.Fatal(err)
+	}
+	if batches != 0 || entries != 0 {
+		t.Fatalf("ultimate scan side effects: batches=%d entries=%d, want 0/0", batches, entries)
+	}
+}
+
 // TestKnowledgeResultsLandsScans pins the diff pipeline: a daemon-reported
 // memories map becomes added/updated/source_deleted mirror rows and a faithful
 // batch log; unchanged and failed reports land as noop/failed batches; the
