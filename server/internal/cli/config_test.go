@@ -16,6 +16,7 @@ import (
 func TestCLIConfig_BackwardCompat_OldFileLoadsWithNilBackends(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
+	t.Setenv("MULTICA_TASK_CONFIG_ROOT", "")
 
 	// Write a 4-field config exactly as the historical daemon would have.
 	cfgDir := filepath.Join(tmp, ".multica")
@@ -56,6 +57,7 @@ func TestCLIConfig_BackwardCompat_OldFileLoadsWithNilBackends(t *testing.T) {
 func TestCLIConfig_BackwardCompat_NilBackendsOmittedFromJSON(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
+	t.Setenv("MULTICA_TASK_CONFIG_ROOT", "")
 
 	cfg := CLIConfig{
 		ServerURL: "https://api.multica.ai",
@@ -129,6 +131,7 @@ func TestCLIConfig_OpenClawOverride_RoundTrip(t *testing.T) {
 func TestCLIConfig_OpenClawOverride_PartialFieldsOmitted(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
+	t.Setenv("MULTICA_TASK_CONFIG_ROOT", "")
 
 	cfg := CLIConfig{
 		ServerURL: "https://api.multica.ai",
@@ -233,6 +236,7 @@ func TestCLIConfig_ProfileCommandOverrides_RoundTrip(t *testing.T) {
 func TestCLIConfig_ProfileCommandOverrides_OmittedWhenEmpty(t *testing.T) {
 	tmp := t.TempDir()
 	t.Setenv("HOME", tmp)
+	t.Setenv("MULTICA_TASK_CONFIG_ROOT", "")
 
 	cfg := CLIConfig{ServerURL: "https://api.multica.ai", Token: "mul_xyz"}
 	if err := SaveCLIConfig(cfg); err != nil {

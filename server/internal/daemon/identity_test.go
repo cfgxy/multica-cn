@@ -14,6 +14,7 @@ import (
 func TestEnsureDaemonID_Persists(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("MULTICA_TASK_CONFIG_ROOT", "")
 
 	first, err := EnsureDaemonID("")
 	if err != nil {
@@ -68,6 +69,7 @@ func TestEnsureDaemonID_SharedAcrossProfiles(t *testing.T) {
 func TestEnsureDaemonID_PromotesPreChangeProfileFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("MULTICA_TASK_CONFIG_ROOT", "")
 
 	// Seed a per-profile daemon.id the way pre-#1220 daemons laid it out.
 	legacyID := uuid.Must(uuid.NewV7()).String()
@@ -103,6 +105,7 @@ func TestEnsureDaemonID_PromotesPreChangeProfileFile(t *testing.T) {
 func TestEnsureDaemonID_RegeneratesCorruptFile(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("MULTICA_TASK_CONFIG_ROOT", "")
 
 	dir := filepath.Join(home, ".multica")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -130,6 +133,7 @@ func TestEnsureDaemonID_RegeneratesCorruptFile(t *testing.T) {
 func TestLegacyDaemonUUIDs_ScansProfileDirs(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("MULTICA_TASK_CONFIG_ROOT", "")
 
 	uuidA := uuid.Must(uuid.NewV7()).String()
 	uuidB := uuid.Must(uuid.NewV7()).String()
