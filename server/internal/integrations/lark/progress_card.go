@@ -93,11 +93,12 @@ const (
 	ProgressEntryError      ProgressEntryKind = "error"
 )
 
-// ProgressEntry is one rendered line. Tool arguments and tool output are
-// deliberately absent: they are exactly where a token, a cookie or raw PII
-// shows up (a shell command with an Authorization header, an API response
-// body), and the card is posted into a chat the agent does not control. The
-// tool NAME and a success dot carry the progress signal without the payload.
+// ProgressEntry is one rendered line. For tool entries, Text carries the
+// one-line title (tool_use) or result preview (tool_result) derived from the
+// payload's Input/Output — the channels the daemon redacts and truncates and
+// the server ingest re-redacts; the derivation re-scrubs and clips before
+// rendering (progress_summary.go). An empty derivation renders the bare tool
+// row, exactly as before the summaries existed.
 type ProgressEntry struct {
 	Kind ProgressEntryKind
 	Text string
@@ -186,9 +187,20 @@ func renderProgressEntryElement(e ProgressEntry) map[string]any {
 	var body string
 	switch e.Kind {
 	case ProgressEntryToolUse:
+		// 「工具名 + 调用说明」 — the same two layers the web transcript row
+		// shows (chat-message-list's tool row: name span + summary span).
 		body = "**" + e.Tool + "**"
+		if e.Text != "" {
+			body += " " + e.Text
+		}
 	case ProgressEntryToolResult:
+		// 「工具名 + 结果摘要预览」 with the 「tool 结果：」 prefix of the web's
+		// tool_result_named row; an absent preview degrades to the bare row so
+		// no dangling separator renders.
 		body = progressResultDot(e.Success) + " **" + e.Tool + "**"
+		if e.Text != "" {
+			body += " 结果：" + e.Text
+		}
 	default:
 		body = e.Text
 	}
@@ -435,12 +447,12 @@ func progressEntryFromPayload(payload protocol.TaskMessagePayload) (ProgressEntr
 		if payload.Tool == "" {
 			return ProgressEntry{}, false
 		}
-		return ProgressEntry{Kind: ProgressEntryToolUse, Tool: payload.Tool}, true
+		return ProgressEntry{Kind: ProgressEntryToolUse, Tool: payload.Tool, Text: progressToolTitle(payload.Input)}, true
 	case "tool_result":
 		if payload.Tool == "" {
 			return ProgressEntry{}, false
 		}
-		e := ProgressEntry{Kind: ProgressEntryToolResult, Tool: payload.Tool}
+		e := ProgressEntry{Kind: ProgressEntryToolResult, Tool: payload.Tool, Text: progressResultSummary(payload.Output)}
 		if payload.IsError != nil {
 			ok := !*payload.IsError
 			e.Success = &ok
