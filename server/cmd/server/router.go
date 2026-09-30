@@ -2442,6 +2442,11 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Post("/", h.CreateSkill)
 				r.Get("/search", h.SearchSkills)
 				r.Post("/import", h.ImportSkill)
+				// Workspace skill catalog (RUYI-288): union read model over
+				// cataloged skills and runtime discovery sightings, plus the
+				// enqueue that refreshes it from every online runtime.
+				r.Get("/catalog", h.ListSkillCatalog)
+				r.Post("/catalog/sync", h.SyncSkillCatalog)
 				r.Route("/{id}", func(r chi.Router) {
 					r.Get("/", h.GetSkill)
 					r.Put("/", h.UpdateSkill)
