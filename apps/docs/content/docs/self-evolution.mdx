@@ -1,0 +1,110 @@
+---
+title: Self-Evolution
+description: How agent prompts change over time, and what changed them — the prompt-governance workbench.
+---
+
+import { Callout } from "fumadocs-ui/components/callout";
+
+Self-Evolution is the prompt-governance workbench of a workspace. Open **Self-Evolution** in the workspace sidebar to inspect the version history and quality measurements of [agent](/agents) prompts, run regression quizzes against a fixed question bank, and turn observations into improvements through the proposal pool and the knowledge mirror.
+
+The page has seven tabs: Overview, Quality, Versions, Quiz, Skills, Proposals and Knowledge. It opens on Quality by default.
+
+## Overview
+
+A placeholder for the prompt-governance overview. No data is wired up yet; the entries to the other tabs work as usual.
+
+## Quality
+
+The Quality tab shows a run-measurement dashboard for one agent's prompt. Pick an agent with the **Subject** selector at the top (subjects are agents only for now), then adjust the statistics window with the **Window** picker (last 30 days by default).
+
+The dashboard reads seven dimensions:
+
+| Dimension | Meaning |
+|---|---|
+| D1 Injected / run cost | Median tokens of the assembled prompt injected per run; median total tokens a run consumed. |
+| D2 Discipline | Median discipline score out of 100: a run starts at 100 and loses points for each mechanically checkable clause it broke. |
+| D3 Rule perplexity | An ambiguity score for the assembled prompt, judged per runtime profile (member run / leader task run), never merged or averaged. |
+| D4 Turn failure rate | Share of tool results the agent received as errors. |
+| D5 Retries | Share of runs that needed more than one attempt. |
+| D6 Prompt-attributed failures | Failures whose cause points at the prompt; environment and provider failures are excluded. |
+| D7 First-pass rate | Share of reviewed issues accepted without rework. |
+
+**All versions in window** splits the readings by prompt version: select two versions on the timeline to compare them dimension by dimension. **Manage versions** jumps to the Versions tab.
+
+## Versions
+
+The Versions tab is the entry to the prompt version lifecycle. One rule governs it: **every effective change appends a version; history is never rewritten**.
+
+Pick the agent with the **Subject** selector at the top first; without a subject the page only shows a placeholder.
+
+### Creating a version
+
+1. After choosing a subject (agent), click **New version** at the top right.
+2. The editor is preloaded with the agent's currently effective prompt; edit it in place.
+3. Fill in the **change note**: what changed and why.
+4. Click **Save version**. The content is appended as the next version and takes effect immediately.
+
+<Callout type="warning">
+Saving runs a secret scan: if the prompt appears to contain credentials, the save is rejected with the matched rules, line numbers and masked samples. Remove the flagged content and save again.
+</Callout>
+
+### Activating and rolling back
+
+The version list is ordered newest first. Each row carries a source badge (Baseline / Edit / Rollback / Auto snapshot), the change note, the creation date, a content fingerprint prefix and a quality badge; the newest row also shows a **Latest** badge.
+
+Activating any historical version (**Activate**) performs a rollback: its content is copied forward as a new latest version and takes effect immediately, while the old rows stay untouched. Versions created by a rollback show "from vN". You can later activate an even older version to undo the switch — history only grows, and every switch leaves a complete trail.
+
+### Comparing any two versions
+
+Click two version chips to open a content diff of the two. Clicking a third chip replaces the older selection; **Clear selection** exits the comparison.
+
+### Quality binding
+
+Quality evaluation binds each run to the prompt version it claimed. The badge on each version row shows how many runs that version served, so you can see directly which version preceded each quality change.
+
+### Write access
+
+Reading versions is open to every member; **New version** and **Activate** are workspace-owner only (admins are not included). Non-owners see no write controls.
+
+## Quiz
+
+The Quiz tab replays one fixed question bank against every prompt version and produces a regression reading: with one version as the baseline, it compares the reading distributions of the current version (median, IQR) and issues a verdict — improved / steady / regressed / no reading.
+
+- A reading is a distribution, not a single score; no comparison is shown until a group has enough samples.
+- A quiz never blocks a prompt version from being published. It records how quality changed.
+- The **Question bank** panel manages the fixed questions: add, edit and retire them. Editing a body starts a new revision; readings are only compared within the same wording, runtime and model.
+- A question must be self-contained and must not name any production entity (issue key, id, link); the server refuses such bodies.
+- Bank writes are workspace-owner only. The answer key and grading points are owner-only and never sent to the run being measured.
+
+## Skills
+
+The Skills tab shows the version history and observed usage of [skills](/skills): which agents they are assigned to, explicit invocation counts, median token cost per version, and version measurements — median run tokens, retried runs and first-pass rate, comparing a use group against a control group.
+
+Differences across versions are observational and do not prove that the skill caused a change; a delta appears only when both sides have at least five valid run samples.
+
+Restoring a historical version is append-only too: an owner clicks **Restore version** and the content becomes a new version; assignments remain unchanged.
+
+## Proposals
+
+The Proposals tab manages improvement proposals. A proposal enters the pool only with a falsifiable prophecy: quantitative proposals carry a metric, an expected direction and a numeric band; behavior proposals an observable change and a falsification condition. The prophecy is written at creation and frozen afterwards.
+
+Proposals move through draft, needs revision, adopted, rejected and archived. Rejected proposals stay retrievable; after adoption, verification records (established / partially established / refuted / undeterminable) require evidence.
+
+Adopting, rejecting, restoring to draft and recording verification are workspace-owner only.
+
+## Knowledge
+
+The Knowledge tab mirrors candidate bd memories directories read-only. After registering a directory you can run scans (showing added / updated / removed counts) and search the entry mirror by key or content.
+
+The mirror itself is read-only: the only write path is an owner adopting a pending entry, which transfers the content into the ultimate library. Registering, scanning, unregistering and adopting are workspace-owner only.
+
+## Permission summary
+
+| Action | Permission |
+|---|---|
+| Viewing all tabs and readings | Every member |
+| Creating versions, activating (rolling back) versions | Workspace owner |
+| Adding / editing / deleting quiz questions | Workspace owner |
+| Restoring skill versions | Workspace owner |
+| Adopting / rejecting / restoring / verifying proposals | Workspace owner |
+| Registering / scanning / unregistering / adopting knowledge directories | Workspace owner |
