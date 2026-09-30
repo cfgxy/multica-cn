@@ -465,7 +465,15 @@ type AgentTaskResponse struct {
 	// verbatim: it is a ref inside the user's own repo, not a filesystem path.
 	// Populated on both terminal paths — a failed run can still have committed
 	// partial work, and that is when the pointer matters most.
-	BranchName               string                 `json:"branch_name,omitempty"`
+	BranchName               string `json:"branch_name,omitempty"`
+	// RUYI-292: who asked to stop this run and when the stop was accepted
+	// (status → cancel_requested). The run detail surfaces show the canceller;
+	// clients compute the unconfirmed-stop warning by comparing
+	// cancel_requested_at against the shared 30s threshold
+	// (cancelUnconfirmedAfterMs in packages/core) rather than each port
+	// hardcoding its own number.
+	CancelRequestedAt       *string `json:"cancel_requested_at,omitempty"`
+	CancelRequestedByUserID string  `json:"cancel_requested_by_user_id,omitempty"`
 	TriggerCommentID         *string                `json:"trigger_comment_id,omitempty"`          // comment that triggered this task
 	CoalescedCommentIDs      []string               `json:"coalesced_comment_ids,omitempty"`       // MUL-4195: earlier comments folded into this run when it had not yet started, so a single run still covers every deliberate comment; trigger_comment_id is the newest. Surfaced so the UI can show which comments a run covered. omitempty so old clients ignore it
 	CoalescedComments        []CoalescedCommentData `json:"coalesced_comments,omitempty"`          // MUL-4195: full detail (thread_id/author/created_at/content) of the folded comments, so the daemon prompt can address each without assuming they share the triggering thread. omitempty so old clients ignore it
@@ -830,6 +838,8 @@ func taskToResponse(t db.AgentTaskQueue, workspaceID string) AgentTaskResponse {
 		Error:                  textToPtr(t.Error),
 		FailureReason:          failureReason,
 		BranchName:             branchName,
+		CancelRequestedAt:      timestampToPtr(t.CancelRequestedAt),
+		CancelRequestedByUserID: uuidToString(t.CancelRequestedByUserID),
 		Attempt:                t.Attempt,
 		MaxAttempts:            t.MaxAttempts,
 		ParentTaskID:           uuidToPtr(t.ParentTaskID),

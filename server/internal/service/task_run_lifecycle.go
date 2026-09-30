@@ -10,9 +10,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 
-	"github.com/multica-ai/multica/server/internal/daemon/protocol"
-	"github.com/multica-ai/multica/server/pkg/db"
-	"github.com/multica-ai/multica/server/pkg/util"
+	"github.com/multica-ai/multica/server/internal/util"
+	db "github.com/multica-ai/multica/server/pkg/db/generated"
+	"github.com/multica-ai/multica/server/pkg/protocol"
 )
 
 // RUYI-292 run lifecycle: the user-initiated single-run cancel matrix and the
@@ -29,6 +29,18 @@ const (
 	RunCancelCodeAlreadyCancelled  = "already_cancelled"  // idempotent repeat after confirmation
 	RunCancelCodeNotCancellable    = "not_cancellable"    // completed/failed: nothing to stop (409)
 )
+
+// RunCancelCodeMessages is the single human-readable copy per matrix code.
+// The HTTP handler, the MCP cancel_run tool and the CLI all surface these
+// verbatim so a user sees one explanation no matter which port they stopped
+// the run from (tech design §5: one dialect, not three).
+var RunCancelCodeMessages = map[string]string{
+	RunCancelCodeCancelled:         "run cancelled",
+	RunCancelCodeCancelRequested:   "stop requested; waiting for the runtime to confirm",
+	RunCancelCodeAlreadyCancelling: "stop already requested; still waiting for the runtime to confirm",
+	RunCancelCodeAlreadyCancelled:  "run is already cancelled",
+	RunCancelCodeNotCancellable:    "run already finished (completed/failed); nothing to stop",
+}
 
 // RunCancelOutcome is the cancel matrix result: the row AS IT IS after the call
 // plus the matrix code describing what happened.
@@ -148,19 +160,22 @@ const retryThrottleWindow = 5
 // force_fresh_session. The three D6 gates run before any mutation; the 5s
 // window returns the already-created child (idempotent repeat), everything
 // else either 409s or enqueues exactly one child.
-func (s *TaskService) RetryRun(ctx context.Context, issueID pgtype.UUID, sourceTaskID pgtype.UUID, actorUserID pgtype.UUID, canInvoke func(agent db.Agent) bool) (*db.AgentTaskQueue, error) {
+//
+// The bool reports whether THIS call created the child (true) or returned an
+// existing in-window descendant (false) — ports use it to answer 202 vs 200.
+func (s *TaskService) RetryRun(ctx context.Context, issueID pgtype.UUID, sourceTaskID pgtype.UUID, actorUserID pgtype.UUID, canInvoke func(agent db.Agent) bool) (*db.AgentTaskQueue, bool, error) {
 	source, err := s.Queries.GetAgentTask(ctx, sourceTaskID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	if !source.IssueID.Valid || util.UUIDToString(source.IssueID) != util.UUIDToString(issueID) {
-		return nil, fmt.Errorf("source task does not belong to this issue")
+		return nil, false, fmt.Errorf("source task does not belong to this issue")
 	}
 	switch source.Status {
 	case "completed", "failed", "cancelled":
 		// retryable
 	default:
-		return nil, ErrRetrySourceNotFinished
+		return nil, false, ErrRetrySourceNotFinished
 	}
 
 	// Double-click damping first: the unfinished child of a retry seconds ago
@@ -170,18 +185,18 @@ func (s *TaskService) RetryRun(ctx context.Context, issueID pgtype.UUID, sourceT
 		ThrottleSecs:  retryThrottleWindow,
 	})
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-		return nil, fmt.Errorf("look up recent retry descendant: %w", err)
+		return nil, false, fmt.Errorf("look up recent retry descendant: %w", err)
 	}
 	if recent.ID.Valid {
-		return &recent, nil
+		return &recent, false, nil
 	}
 
 	descendantActive, err := s.Queries.HasActiveRetryDescendant(ctx, sourceTaskID)
 	if err != nil {
-		return nil, fmt.Errorf("check retry descendant: %w", err)
+		return nil, false, fmt.Errorf("check retry descendant: %w", err)
 	}
 	if descendantActive {
-		return nil, ErrRetryDescendantActive
+		return nil, false, ErrRetryDescendantActive
 	}
 
 	agentBusy, err := s.Queries.HasActiveTaskForIssueAgent(ctx, db.HasActiveTaskForIssueAgentParams{
@@ -189,13 +204,17 @@ func (s *TaskService) RetryRun(ctx context.Context, issueID pgtype.UUID, sourceT
 		AgentID: source.AgentID,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("check agent queue slot: %w", err)
+		return nil, false, fmt.Errorf("check agent queue slot: %w", err)
 	}
 	if agentBusy {
-		return nil, ErrRetryAgentHasQueuedRun
+		return nil, false, ErrRetryAgentHasQueuedRun
 	}
 
 	// MUL-4525 invoke gate + lineage + attribution are RerunIssue's job; the
 	// retry entry adds only the gates above.
-	return s.RerunIssue(ctx, issueID, sourceTaskID, pgtype.UUID{}, actorUserID, canInvoke)
+	created, err := s.RerunIssue(ctx, issueID, sourceTaskID, pgtype.UUID{}, actorUserID, canInvoke)
+	if err != nil {
+		return nil, false, err
+	}
+	return created, true, nil
 }
