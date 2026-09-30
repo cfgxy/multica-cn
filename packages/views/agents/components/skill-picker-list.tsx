@@ -138,7 +138,7 @@ export function SkillPickerList({
                     {sourceById?.get(skill.id) && (
                       <Badge
                         variant="secondary"
-                        className="ml-1.5 shrink-0 px-1.5 py-0 text-[10px] font-normal"
+                        className="ml-1.5 shrink-0 px-1.5 py-0 text-micro font-normal"
                       >
                         {sourceById.get(skill.id)}
                       </Badge>

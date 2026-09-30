@@ -390,8 +390,8 @@ function CatalogDiscoveries({ entries, importingKey, onImport, locale }: {
               <div className="flex items-center gap-1.5">
                 <span className="truncate text-body font-medium">{entry.name}</span>
                 {entry.matching_skill_id
-                  ? <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px] font-normal">{t(($) => $.skills.discoveryExists)}</Badge>
-                  : <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px] font-normal">{t(($) => $.skills.catalogSourceRuntime)}</Badge>}
+                  ? <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-micro font-normal">{t(($) => $.skills.discoveryExists)}</Badge>
+                  : <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-micro font-normal">{t(($) => $.skills.catalogSourceRuntime)}</Badge>}
               </div>
               <p className="truncate text-caption text-muted-foreground">
                 {entry.description || entry.source_path}

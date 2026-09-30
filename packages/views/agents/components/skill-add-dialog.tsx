@@ -181,7 +181,7 @@ export function SkillAddDialog({
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-1.5">
                       <span className="truncate text-body font-medium">{entry.name}</span>
-                      <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-[10px] font-normal">
+                      <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-micro font-normal">
                         {t(($) => $.tab_body.skills.source_runtime)}
                       </Badge>
                     </div>
