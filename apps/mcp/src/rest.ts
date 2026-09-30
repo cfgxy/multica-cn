@@ -17,6 +17,7 @@ import { stderrLogger, type Logger } from "./log.js";
 import type {
   ActiveTaskInfo,
   AgentInfo,
+  CancelRunResult,
   CommentInfo,
   CommentListParams,
   CreateCommentBody,
@@ -26,6 +27,8 @@ import type {
   IssueListResult,
   ProjectInfo,
   QuickCreateBody,
+  RunDetail,
+  RunInfo,
   SearchIssueInfo,
   UpdateIssueBody,
   WorkspaceInfo,
@@ -215,6 +218,47 @@ export class MulticaClient {
       }
       throw error;
     }
+  }
+
+  // ---- run lifecycle (RUYI-292) ------------------------------------------
+
+  async listIssueRuns(
+    workspace: string,
+    issueId: string,
+    params: { status?: string; trigger?: string; limit?: number } = {},
+  ): Promise<{ tasks: RunInfo[] }> {
+    return this.request("GET", `/api/issues/${encodeURIComponent(issueId)}/task-runs`, {
+      workspace,
+      query: {
+        status: params.status,
+        trigger: params.trigger,
+        limit: params.limit,
+      },
+    });
+  }
+
+  async getIssueRun(workspace: string, issueId: string, runId: string): Promise<RunDetail> {
+    return this.request(
+      "GET",
+      `/api/issues/${encodeURIComponent(issueId)}/tasks/${encodeURIComponent(runId)}`,
+      { workspace },
+    );
+  }
+
+  async cancelIssueRun(workspace: string, issueId: string, runId: string): Promise<CancelRunResult> {
+    return this.request(
+      "POST",
+      `/api/issues/${encodeURIComponent(issueId)}/tasks/${encodeURIComponent(runId)}/cancel`,
+      { workspace, body: {} },
+    );
+  }
+
+  async retryIssueRun(workspace: string, issueId: string, runId: string): Promise<RunInfo> {
+    return this.request(
+      "POST",
+      `/api/issues/${encodeURIComponent(issueId)}/tasks/${encodeURIComponent(runId)}/retry`,
+      { workspace, body: {} },
+    );
   }
 
   // ---- transport --------------------------------------------------------

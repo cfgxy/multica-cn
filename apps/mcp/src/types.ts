@@ -161,3 +161,55 @@ export interface ActiveTaskInfo {
   created_at?: string;
   [key: string]: unknown;
 }
+
+// RUYI-292 run lifecycle. status is the raw server value: queued, dispatched,
+// deferred, waiting_local_directory, running, cancel_requested, completed,
+// failed, cancelled. Raw values, not display buckets — callers merge for
+// display (queued/dispatched/deferred/waiting_local_directory → "pending").
+export interface RunInfo {
+  id: string;
+  status: string;
+  agent_id?: string;
+  issue_id?: string;
+  created_at?: string;
+  started_at?: string;
+  completed_at?: string;
+  error?: string;
+  failure_reason?: string;
+  attempt?: number;
+  rerun_of_task_id?: string;
+  retry_of_task_id?: string;
+  cancel_requested_at?: string;
+  cancel_requested_by_user_id?: string;
+  [key: string]: unknown;
+}
+
+// One node of a run's retry chain (get_run detail): manual-rerun and
+// system-retry edges both visible, so cancelled→retried→completed history
+// reads as one chain even when the edge kinds differ.
+export interface RunLineageEntry {
+  id: string;
+  agent_id: string;
+  status: string;
+  created_at?: string;
+  completed_at?: string;
+  attempt: number;
+  failure_reason?: string;
+  rerun_of_task_id?: string;
+  retry_of_task_id?: string;
+  cancel_requested_by_user_id?: string;
+}
+
+export interface RunDetail {
+  task: RunInfo;
+  ancestors: RunLineageEntry[];
+  descendants: RunLineageEntry[];
+}
+
+// Server cancel-matrix answer: code ∈ cancelled | cancel_requested |
+// already_cancelling | already_cancelled | not_cancellable (409).
+export interface CancelRunResult {
+  code: string;
+  message?: string;
+  task: RunInfo;
+}

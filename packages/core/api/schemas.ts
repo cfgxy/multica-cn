@@ -1864,6 +1864,13 @@ export const AgentTaskSchema = z.object({
   compactions: z.number().optional().catch(undefined),
   max_context_tokens: z.number().optional().catch(undefined),
   context_tokens: z.number().optional().catch(undefined),
+  // RUYI-292 run lifecycle: two-phase cancel attribution and rerun lineage.
+  // status is an open string above, so "cancel_requested" needs no enum
+  // change; these additive fields degrade independently like the rest.
+  cancel_requested_at: z.string().optional().catch(undefined),
+  cancel_requested_by_user_id: z.string().optional().catch(undefined),
+  rerun_of_task_id: z.string().optional().catch(undefined),
+  retry_of_task_id: z.string().optional().catch(undefined),
 }).loose();
 
 export const AgentTaskListSchema = z.array(AgentTaskSchema);
