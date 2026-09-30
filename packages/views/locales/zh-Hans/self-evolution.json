@@ -40,11 +40,7 @@
     },
     "proposals": {
       "title": "提案池动态",
-      "empty": "提案池为空。",
-      "pending": "待采纳 {{count}}",
-      "adopted": "累计采纳 {{count}}",
-      "total": "共 {{count}} 条",
-      "latest": "最近提案：{{title}}"
+      "pendingModel": "提案指标将随新提案模型（RUYI-305）落地后接入。"
     },
     "knowledge": {
       "title": "知识库沉淀",

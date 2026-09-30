@@ -11,15 +11,17 @@ import (
 	"github.com/jackc/pgx/v5/pgtype"
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
-	"github.com/multica-ai/multica/server/pkg/promptquiz"
 	"github.com/multica-ai/multica/server/pkg/promptquality"
+	"github.com/multica-ai/multica/server/pkg/promptquiz"
 )
 
 // Self-evolution workspace overview (RUYI-284).
 //
-// One read-only endpoint folding the six real data planes the tabs already
-// serve — prompt versions, quality rollups, quiz readings, proposals,
-// knowledge, skills — into a member-visible summary. It adds no writer and no
+// One read-only endpoint folding the real data planes the tabs already
+// serve — prompt versions, quality rollups, quiz readings, knowledge,
+// skills — into a member-visible summary. Proposal metrics are excluded on
+// purpose: the pool's model is being replaced by RUYI-305, and wiring the
+// current behavior-prophecy table would be rework the moment it lands. It adds no writer and no
 // second caliber: quality folds through the same Combine+Present path the
 // quality tab uses, quiz verdicts come from the shared baseline reader
 // (promptQuizBaselineData), and the counts run over the same tables and the
@@ -68,23 +70,6 @@ type SelfEvolutionOverviewQuiz struct {
 	LastMeasuredAt string `json:"last_measured_at,omitempty"`
 }
 
-type SelfEvolutionOverviewProposal struct {
-	ID        string    `json:"id"`
-	Title     string    `json:"title"`
-	Status    string    `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
-}
-
-type SelfEvolutionOverviewProposals struct {
-	Total   int64 `json:"total"`
-	Pending int64 `json:"pending"`
-	Adopted int64 `json:"adopted"`
-	// ByStatus carries the full status breakdown so the summary cannot hide
-	// a status behind the two headline counts.
-	ByStatus map[string]int64               `json:"by_status"`
-	Latest   *SelfEvolutionOverviewProposal `json:"latest,omitempty"`
-}
-
 type SelfEvolutionOverviewScan struct {
 	Result        string    `json:"result"`
 	TriggerSource string    `json:"trigger_source"`
@@ -110,7 +95,6 @@ type SelfEvolutionOverviewResponse struct {
 	Versions  []SelfEvolutionOverviewTier    `json:"versions"`
 	Quality   SelfEvolutionOverviewQuality   `json:"quality"`
 	Quiz      SelfEvolutionOverviewQuiz      `json:"quiz"`
-	Proposals SelfEvolutionOverviewProposals `json:"proposals"`
 	Knowledge SelfEvolutionOverviewKnowledge `json:"knowledge"`
 	Skills    SelfEvolutionOverviewSkills    `json:"skills"`
 }
@@ -142,11 +126,6 @@ func (h *Handler) GetSelfEvolutionOverview(w http.ResponseWriter, r *http.Reques
 		writeError(w, http.StatusInternalServerError, "failed to read quiz measurements")
 		return
 	}
-	proposals, err := h.selfEvolutionOverviewProposals(ctx, workspaceID)
-	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read proposals")
-		return
-	}
 	knowledge, err := h.selfEvolutionOverviewKnowledge(ctx, workspaceID)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to read knowledge directories")
@@ -162,7 +141,6 @@ func (h *Handler) GetSelfEvolutionOverview(w http.ResponseWriter, r *http.Reques
 		Versions:  versions,
 		Quality:   quality,
 		Quiz:      quiz,
-		Proposals: proposals,
 		Knowledge: knowledge,
 		Skills:    skills,
 	})
@@ -271,55 +249,6 @@ func (h *Handler) selfEvolutionOverviewQuiz(ctx context.Context, workspaceID pgt
 		quiz.Verdict = string(base.Comparison.Verdict)
 	}
 	return quiz, nil
-}
-
-func (h *Handler) selfEvolutionOverviewProposals(ctx context.Context, workspaceID pgtype.UUID) (SelfEvolutionOverviewProposals, error) {
-	out := SelfEvolutionOverviewProposals{ByStatus: map[string]int64{}}
-	rows, err := h.DB.Query(ctx, `
-SELECT status, count(*) FROM proposal
-WHERE workspace_id = $1 GROUP BY status`, workspaceID)
-	if err != nil {
-		return out, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var status string
-		var count int64
-		if err := rows.Scan(&status, &count); err != nil {
-			return out, err
-		}
-		out.ByStatus[status] = count
-		out.Total += count
-		switch status {
-		case "draft", "needs_revision":
-			// In-pool states: a draft is unread, a needs_revision is waiting
-			// on its author. Both are awaiting a decision, unlike the three
-			// statuses that have already had one.
-			out.Pending += count
-		case "adopted":
-			out.Adopted = count
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return out, err
-	}
-
-	var latest SelfEvolutionOverviewProposal
-	var id pgtype.UUID
-	err = h.DB.QueryRow(ctx, `
-SELECT id, title, status, created_at FROM proposal
-WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT 1`, workspaceID).
-		Scan(&id, &latest.Title, &latest.Status, &latest.CreatedAt)
-	switch {
-	case err == nil:
-		latest.ID = uuidToString(id)
-		out.Latest = &latest
-	case errors.Is(err, pgx.ErrNoRows):
-		// An empty pool is a real state; Latest stays nil.
-	default:
-		return out, err
-	}
-	return out, nil
 }
 
 func (h *Handler) selfEvolutionOverviewKnowledge(ctx context.Context, workspaceID pgtype.UUID) (SelfEvolutionOverviewKnowledge, error) {
