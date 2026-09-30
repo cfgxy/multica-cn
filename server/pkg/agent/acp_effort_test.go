@@ -434,6 +434,25 @@ func TestACPCatalogProviderGate(t *testing.T) {
 	if !ThinkingControlSupported("hermes") || !IsKnownThinkingValue("hermes", "high") {
 		t.Error("hermes should advertise reasoning control now that jcode applies it")
 	}
+	// deerflow (deerflow-acp, RUYI-321 stage 2): the bridge broadcasts a
+	// thinking switch (id `thinking`, category `thought_level`, options
+	// on/off) on session/new AND session/resume, applies set_config_option to
+	// a per-session override, and threads it into
+	// DeerFlowClient.stream(thinking_enabled=…) → _get_runnable_config → the
+	// per-turn create_chat_model. Confirmed against the bridge source on the
+	// RUYI-321 branch: the engine has no discrete levels, so on/off is the
+	// whole vocabulary.
+	if !ThinkingControlSupported("deerflow") {
+		t.Error("deerflow should advertise the thinking switch now that the bridge applies it")
+	}
+	for _, level := range []string{"on", "off"} {
+		if !IsKnownThinkingValue("deerflow", level) {
+			t.Errorf("IsKnownThinkingValue(deerflow, %q) = false, want true", level)
+		}
+	}
+	if IsKnownThinkingValue("deerflow", "not a token") {
+		t.Error("malformed tokens must still be rejected for deerflow")
+	}
 	// Copilot discovers over ACP but executes through its own CLI, so it must
 	// not be swept in by the generalization.
 	if ThinkingControlSupported("copilot") {

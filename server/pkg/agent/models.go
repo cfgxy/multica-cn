@@ -2955,6 +2955,10 @@ func discoverDeerflowModels(ctx context.Context, runtimeCmd Command) (Catalog, e
 		tmpdirPrefix: "multica-deerflow-discovery-",
 		acpArgs:      []string{"acp"},
 		processDir:   strings.TrimSpace(os.Getenv(deerflowHomeEnv)),
+		// RUYI-321 stage 2: the same session/new carries the thinking switch
+		// (id `thinking`, on/off), so the session's current model gets the
+		// picker — same deal as zcode above.
+		annotate: annotateACPThinkingForSessionModel,
 	})
 	if err != nil || len(models) == 0 {
 		if err != nil {
