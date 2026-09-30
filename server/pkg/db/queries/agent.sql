@@ -2918,3 +2918,125 @@ WHERE agent_id = $1 AND issue_id = $2
   AND started_at IS NOT NULL
 ORDER BY COALESCE(completed_at, started_at, dispatched_at, created_at) DESC
 LIMIT 1;
+
+-- name: RequestAgentTaskCancel :one
+-- RUYI-292 phase 1 of the user-initiated two-phase cancel: accept the stop
+-- request against an in-flight run. The daemon observes the new status via its
+-- poll/reconcile channels, interrupts the agent process tree, and confirms via
+-- cancel-ack (ConvergeCancelRequestedToCancelled). CAS on the non-terminal
+-- in-flight set: a row that reached a terminal state first keeps it and the
+-- caller maps the miss to the conflict matrix. 'queued' is absent on purpose —
+-- with no process to stop the server flips it straight to 'cancelled'
+-- (CancelAgentTask* family), per the product cancel matrix.
+UPDATE agent_task_queue
+SET status = 'cancel_requested',
+    cancel_requested_by_user_id = sqlc.narg('cancel_requested_by_user_id'),
+    cancel_requested_at = now(),
+    prepare_lease_expires_at = NULL
+WHERE id = $1
+  AND status IN ('dispatched', 'running', 'waiting_local_directory', 'deferred')
+RETURNING *;
+
+-- name: ConvergeCancelRequestedToCancelled :one
+-- RUYI-292 phase 2 + terminal guard. The daemon's cancel-ack calls this to
+-- record the CONFIRMED stop (completed_at = ack time, per the product spec).
+-- The /complete and /fail callbacks call it first as a terminal guard: a write
+-- landing on a cancel_requested row loses the race ("cancel wins") and must
+-- converge to cancelled instead of stamping completed/failed over a stopping
+-- run. CAS on status='cancel_requested' makes both entries idempotent and
+-- keeps a completed/failed row untouched.
+UPDATE agent_task_queue
+SET status = 'cancelled', completed_at = COALESCE(completed_at, now())
+WHERE id = $1 AND status = 'cancel_requested'
+RETURNING *;
+
+-- name: HasActiveTaskForIssueAgent :one
+-- RUYI-292 retry gate: does (issue, agent) already hold an unfinished run?
+-- Includes cancel_requested: that row is mid-stop and still occupies the
+-- serialization slot, so a retry must surface the conflict instead of racing it.
+SELECT EXISTS(
+    SELECT 1 FROM agent_task_queue
+    WHERE issue_id = $1 AND agent_id = $2
+      AND status IN ('queued', 'dispatched', 'deferred', 'waiting_local_directory', 'running', 'cancel_requested')
+) AS has_active;
+
+-- name: HasActiveRetryDescendant :one
+-- RUYI-292 retry gate: does the source run already have an unfinished direct
+-- descendant? Both manual (rerun_of_task_id) and system (retry_of_task_id)
+-- lineage count — the product rule caps retries-per-source regardless of which
+-- lineage column carries the link.
+SELECT EXISTS(
+    SELECT 1 FROM agent_task_queue d
+    WHERE (d.rerun_of_task_id = $1 OR d.retry_of_task_id = $1)
+      AND d.status IN ('queued', 'dispatched', 'deferred', 'waiting_local_directory', 'running', 'cancel_requested')
+) AS has_active;
+
+-- name: FindRecentRetryDescendant :one
+-- RUYI-292 idempotent retry within the throttle window: the still-unfinished
+-- child created seconds ago IS the answer to a double-clicked retry — return it
+-- instead of enqueueing a sibling. Outside the window (or once the child has
+-- finished) the caller falls through to the normal retry path.
+SELECT d.* FROM agent_task_queue d
+WHERE (d.rerun_of_task_id = $1 OR d.retry_of_task_id = $1)
+  AND d.created_at > now() - make_interval(secs => @throttle_secs::double precision)
+  AND d.status IN ('queued', 'dispatched', 'deferred', 'waiting_local_directory', 'running', 'cancel_requested')
+ORDER BY d.created_at DESC
+LIMIT 1;
+
+-- name: ListRunAncestry :many
+-- RUYI-292 full ancestor chain of a run, following BOTH lineage columns so a
+-- mixed manual-retry / system-retry chain stays visible (MUL-4302 §5 keeps the
+-- columns distinct; the read unions them). Depth is bounded in practice — each
+-- run points at one parent — and the recursive CTE walks to the root.
+WITH RECURSIVE ancestry AS (
+    SELECT root.id AS ancestor_id FROM agent_task_queue root WHERE root.id = $1
+    UNION
+    SELECT CASE
+               WHEN t.rerun_of_task_id IS NOT NULL THEN t.rerun_of_task_id
+               ELSE t.retry_of_task_id
+           END AS ancestor_id
+    FROM agent_task_queue t
+    JOIN ancestry a ON t.rerun_of_task_id = a.ancestor_id OR t.retry_of_task_id = a.ancestor_id
+)
+SELECT t.* FROM agent_task_queue t
+JOIN ancestry a ON t.id = a.ancestor_id
+ORDER BY t.created_at ASC;
+
+-- name: ListRunDescendants :many
+-- RUYI-292 full descendant chain of a run (reverse of ListRunAncestry), so a
+-- run detail can show the whole retry fan-out, including cross-lineage forks.
+WITH RECURSIVE descend AS (
+    SELECT root.id AS node_id FROM agent_task_queue root WHERE root.id = $1
+    UNION
+    SELECT child.id AS node_id
+    FROM agent_task_queue child
+    JOIN descend d ON child.rerun_of_task_id = d.node_id OR child.retry_of_task_id = d.node_id
+)
+SELECT t.* FROM agent_task_queue t
+JOIN descend ON t.id = descend.node_id
+ORDER BY t.created_at ASC;
+
+-- name: ListTasksByIssueFiltered :many
+-- RUYI-292: the execution history behind the issue runs list, with status and
+-- trigger-source filters. status_filter takes a comma-separated list of raw
+-- statuses; the 'pending' alias expands to the queued-family display bucket
+-- (D8 status merge) so callers filter by user-visible state. trigger_filter
+-- maps the user-facing trigger buckets to their columns, falling through to a
+-- raw trigger_evidence_kind match for kinds this query doesn't name.
+SELECT * FROM agent_task_queue
+WHERE issue_id = $1
+  AND (
+        sqlc.narg('status_filter')::text IS NULL
+        OR (@status_filter::text = 'pending' AND status IN ('queued', 'dispatched', 'deferred', 'waiting_local_directory'))
+        OR status = ANY(string_to_array(@status_filter::text, ','))
+      )
+  AND (
+        sqlc.narg('trigger_filter')::text IS NULL
+        OR (@trigger_filter::text = 'comment' AND trigger_comment_id IS NOT NULL)
+        OR (@trigger_filter::text = 'autopilot' AND autopilot_run_id IS NOT NULL)
+        OR (@trigger_filter::text = 'rerun' AND rerun_of_task_id IS NOT NULL)
+        OR (@trigger_filter::text = 'system_retry' AND retry_of_task_id IS NOT NULL)
+        OR trigger_evidence_kind = @trigger_filter::text
+      )
+ORDER BY created_at DESC
+LIMIT @row_limit;
