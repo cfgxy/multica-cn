@@ -166,6 +166,34 @@ type CLIConfig struct {
 // load/save round-trip (see TestCLIConfig_UnknownFieldsArePreserved).
 type BackendOverrides struct {
 	OpenClaw *OpenClawOverride `json:"openclaw,omitempty"`
+	Deerflow *DeerflowOverride `json:"deerflow,omitempty"`
+}
+
+// DeerflowOverride configures the DeerFlow backend. All fields are optional;
+// empty values fall through to the existing behavior.
+//
+// Resolution precedence (env beats config beats default, mirroring the
+// OpenClaw override contract):
+//
+//	Home: MULTICA_DEERFLOW_HOME (env) > backends.deerflow.home > task workdir fallback
+//
+// Home is the DeerFlow DEPLOYMENT ROOT — the directory holding the
+// config.yaml DeerFlow resolves relative to its process working directory.
+// Setting it is what makes the deerflow-acp bridge work in a standard
+// deployment (RUYI-283 QA P1): without it the bridge starts in the task
+// workdir, every turn fails with backend-unavailable (-32010), and model
+// discovery answers session/new with no models block, leaving the picker
+// empty. When set, the daemon injects MULTICA_DEERFLOW_HOME=<value> into its
+// own process environment at startup unless the user already exported one
+// upstream; both the turn path (resolveDeerflowProcessDir) and the model
+// discovery path (discoverDeerflowModels) read it from there.
+//
+// Per-agent variation stays available through the agent custom_env key
+// DEERFLOW_HOME, which the turn path honours above the daemon-wide value —
+// the MULTICA_ spelling is deliberately stripped from custom_env by
+// isBlockedEnvKey, so the non-namespaced key is the user-reachable tier.
+type DeerflowOverride struct {
+	Home string `json:"home,omitempty"`
 }
 
 // OpenClawOverride configures the OpenClaw backend. All fields are optional;

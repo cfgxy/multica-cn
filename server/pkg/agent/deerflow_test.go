@@ -695,6 +695,109 @@ func TestDeerflowProcessDirComesFromHomeEnv(t *testing.T) {
 	}
 }
 
+// TestDeerflowProcessDirReadsProcessEnvFallback covers the standard-deployment
+// resolution tier: MULTICA_DEERFLOW_HOME set in the DAEMON process environment
+// (via backends.deerflow.home in config.json or a deployment-level export)
+// must be honoured even though the daemon's process env never reaches the
+// task env map (taskMulticaEnvironment assembles task identity vars only).
+// resolveDeerflowProcessDir runs inside the daemon, so os.Getenv is reachable.
+// The configured task env wins when present; this fallback applies only when
+// it is silent.
+func TestDeerflowProcessDirReadsProcessEnvFallback(t *testing.T) {
+	// t.Setenv forbids parallel siblings: the lookup reads this process's env.
+	deployRoot := t.TempDir()
+	taskDir := t.TempDir()
+	t.Setenv(deerflowHomeEnv, deployRoot)
+
+	b := &deerflowBackend{cfg: Config{Logger: deerflowTestLogger()}}
+	if got := b.resolveDeerflowProcessDir(taskDir); got != deployRoot {
+		t.Fatalf("expected the daemon-process deployment root fallback, got %q", got)
+	}
+
+	// The task-env tier outranks the process-env tier: an agent-scoped
+	// configuration is more specific than the daemon-wide one.
+	overrideRoot := t.TempDir()
+	specific := &deerflowBackend{cfg: Config{
+		Logger: deerflowTestLogger(),
+		Env:    map[string]string{deerflowHomeEnv: overrideRoot},
+	}}
+	if got := specific.resolveDeerflowProcessDir(taskDir); got != overrideRoot {
+		t.Fatalf("expected the task-env deployment root to outrank the process env, got %q", got)
+	}
+}
+
+// TestDeerflowProcessDirReadsCustomEnvKey covers the agent custom_env tier.
+// DEERFLOW_HOME is NOT daemon-namespaced, so isBlockedEnvKey lets a user-set
+// custom_env value through to the task env map — the one user-reachable
+// runtime configuration surface (the MULTICA_ spelling is stripped there by
+// design, RUYI-283 QA).
+func TestDeerflowProcessDirReadsCustomEnvKey(t *testing.T) {
+	deployRoot := t.TempDir()
+	taskDir := t.TempDir()
+
+	b := &deerflowBackend{cfg: Config{
+		Logger: deerflowTestLogger(),
+		Env:    map[string]string{"DEERFLOW_HOME": deployRoot},
+	}}
+	if got := b.resolveDeerflowProcessDir(taskDir); got != deployRoot {
+		t.Fatalf("expected the custom_env deployment root, got %q", got)
+	}
+
+	// The MULTICA_ spelling stays authoritative within the task env tier.
+	taskEnvRoot := t.TempDir()
+	both := &deerflowBackend{cfg: Config{
+		Logger: deerflowTestLogger(),
+		Env: map[string]string{
+			"DEERFLOW_HOME": deployRoot,
+			deerflowHomeEnv: taskEnvRoot,
+		},
+	}}
+	if got := both.resolveDeerflowProcessDir(taskDir); got != taskEnvRoot {
+		t.Fatalf("expected the MULTICA_ spelling to outrank DEERFLOW_HOME, got %q", got)
+	}
+}
+
+// TestDeerflowDiscoveryRunsInDeploymentRoot pins the discovery half of the
+// cwd wiring (RUYI-283 QA failure surface 1): the discovery subprocess must
+// start in the DeerFlow deployment root — the bridge resolves config.yaml
+// relative to its process cwd, and a discovery started in the daemon's cwd
+// answers session/new with no models block at all.
+func TestDeerflowDiscoveryRunsInDeploymentRoot(t *testing.T) {
+	deployRoot := t.TempDir()
+	pwdFile := filepath.Join(t.TempDir(), "pwd")
+	script := `#!/bin/sh
+pwd > '` + pwdFile + `'
+while IFS= read -r line; do
+  id=$(printf '%s' "$line" | sed -n 's/.*"id":\([0-9]*\).*/\1/p')
+  case "$line" in
+    *'"method":"initialize"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"protocolVersion":1,"agentInfo":{"name":"deerflow-acp","version":"0.2.0"},"authMethods":[],"agentCapabilities":{"loadSession":true}}}\n' "$id"
+      ;;
+    *'"method":"session/new"'*)
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"df-disc-1","models":{"available_models":[{"model_id":"glm-4-7","name":"GLM 4.7"}],"current_model_id":"glm-4-7"}}}\n' "$id"
+      ;;
+  esac
+done
+`
+	bin := writeFakeDeerflowScript(t, script)
+	t.Setenv(deerflowHomeEnv, deployRoot)
+
+	cat, err := ListModels(context.Background(), "deerflow", Command{Path: bin})
+	if err != nil {
+		t.Fatalf("deerflow ListModels error: %v", err)
+	}
+	if len(cat.Models) != 1 {
+		t.Fatalf("expected the advertised model, got %+v", cat.Models)
+	}
+	got, err := os.ReadFile(pwdFile)
+	if err != nil {
+		t.Fatalf("discovery subprocess never ran: %v", err)
+	}
+	if strings.TrimSpace(string(got)) != deployRoot {
+		t.Fatalf("discovery subprocess ran in %q, want the deployment root %q", strings.TrimSpace(string(got)), deployRoot)
+	}
+}
+
 // TestDeerflowSessionCwdIsTaskDirNotDeploymentRoot is the wire-level half of
 // the split above.
 func TestDeerflowSessionCwdIsTaskDirNotDeploymentRoot(t *testing.T) {
