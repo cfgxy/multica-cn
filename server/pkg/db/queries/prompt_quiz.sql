@@ -401,3 +401,17 @@ WHERE pv.scope = 'agent'
   AND a.runtime_id IS NOT NULL
 ORDER BY pv.scope_id, pv.version DESC
 LIMIT sqlc.arg('row_limit')::int;
+
+-- name: LatestQuizMeasuredScopeByWorkspace :one
+-- Overview read path (RUYI-284): the agent scope whose quiz measurements are
+-- most recent, so the overview serves that scope's real baseline comparison
+-- instead of inventing a workspace-wide number. The agent join is the
+-- workspace tenancy guard; the scope literal mirrors the sweep, whose
+-- measurements are all agent-scoped.
+SELECT r.scope, r.scope_id, a.name AS scope_name, max(r.measured_at)::timestamptz AS last_measured_at
+FROM prompt_quiz_result r
+JOIN agent a ON a.id = r.scope_id
+WHERE r.scope = 'agent' AND a.workspace_id = $1
+GROUP BY r.scope, r.scope_id, a.name
+ORDER BY last_measured_at DESC
+LIMIT 1;

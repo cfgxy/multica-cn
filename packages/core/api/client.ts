@@ -69,6 +69,7 @@ import type {
   PromptTargetState,
   PromptVersion,
   PromptQualityDashboard,
+  SelfEvolutionOverview,
   PromptQuizItem,
   PromptQuizItemDetail,
   PromptQuizBaseline,
@@ -534,6 +535,8 @@ import {
   EMPTY_PROMPT_VERSION,
   PromptQualityDashboardSchema,
   EMPTY_PROMPT_QUALITY_DASHBOARD,
+  SelfEvolutionOverviewSchema,
+  EMPTY_SELF_EVOLUTION_OVERVIEW,
   PromptGovernanceVersionSchema,
   PromptGovernanceVersionListSchema,
   EMPTY_PROMPT_GOVERNANCE_VERSION,
@@ -3173,6 +3176,24 @@ export class ApiClient {
     );
     return parseWithFallback(raw, PromptQualityDashboardSchema, EMPTY_PROMPT_QUALITY_DASHBOARD, {
       endpoint: "GET /api/prompt-governance/{scope}/{id}/quality",
+    });
+  }
+
+  /**
+   * The workspace-level self-evolution overview (RUYI-284): one read-only
+   * aggregate across the six data planes the tabs serve. Member-visible on the
+   * server; the route has no non-GET method and this client adds none.
+   *
+   * `days` is the quality window length; the server clamps it exactly as the
+   * per-agent dashboard does, so both read the same rows.
+   */
+  async getSelfEvolutionOverview(params?: { days?: number }): Promise<SelfEvolutionOverview> {
+    const query = new URLSearchParams();
+    if (params?.days !== undefined) query.set("days", String(params.days));
+    const suffix = query.toString() === "" ? "" : `?${query.toString()}`;
+    const raw = await this.fetch<unknown>(`/api/self-evolution/overview${suffix}`);
+    return parseWithFallback(raw, SelfEvolutionOverviewSchema, EMPTY_SELF_EVOLUTION_OVERVIEW, {
+      endpoint: "GET /api/self-evolution/overview",
     });
   }
 

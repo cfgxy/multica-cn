@@ -381,6 +381,9 @@ destroy: ## Stop this environment, drop its database and profile, free its slot
 gc: ## Collect environments whose directory is gone or whose TTL expired
 	@bash scripts/dev-env.sh gc $(ARGS)
 
+qa-clean: ## Reclaim QA leftovers in ~/.multica/qa (ARGS="--issue ruyi-283 --yes [--docker]"; default is a dry run)
+	@bash scripts/qa-clean.sh $(ARGS)
+
 env-exec: ## Run a command with this environment's variables (ARGS="-- pnpm dev:desktop")
 	@bash scripts/dev-env.sh exec $(ARGS)
 

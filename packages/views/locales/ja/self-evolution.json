@@ -1,10 +1,6 @@
 {
   "title": "自己進化",
   "description": "エージェントとスクワッドのプロンプトが時間とともにどう変化したか、その変化の要因を確認します。",
-  "empty": {
-    "title": "まだ接続されていません",
-    "description": "これはプロンプトガバナンス概要のナビゲーション骨組みです（RUYI-183 フェーズ1）。バージョン履歴、差分、採用状況のビューは今後のステージで提供されます。"
-  },
   "tabs": {
     "overview": "概要",
     "quality": "品質",
@@ -13,6 +9,57 @@
     "proposals": "提案",
     "knowledge": "ナレッジ",
     "versions": "バージョン"
+  },
+  "overview": {
+    "loading": "概要を読み込み中",
+    "error": "概要の読み込みに失敗しました",
+    "retry": "再試行",
+    "versions": {
+      "title": "プロンプトバージョン活動",
+      "empty": "どの階層にもバージョン履歴はまだありません。",
+      "currentVersion": "現在 v{{version}}",
+      "currentUnset": "{{count}} 件の対象がそれぞれ前進",
+      "count": "{{subjects}} 対象・全 {{count}} バージョン",
+      "lastChange": "{{date}} · {{actor}}",
+      "lastChangeNoActor": "{{date}}"
+    },
+    "quality": {
+      "title": "品質読み取り（過去 {{days}} 日）",
+      "empty": "この期間に測定されたランはありません。",
+      "runs": "{{count}} ラン",
+      "subjects": "読み取りありエージェント {{count}}",
+      "excluded": "環境またはプロバイダ障害により {{count}} ランを除外"
+    },
+    "quiz": {
+      "title": "問題バンクの結論",
+      "empty": "記録された測定はまだありません。",
+      "versions": "ベースライン v{{baseline}} → v{{current}}",
+      "singleVersion": "現在 v{{current}}（初バージョン、ベースラインなし）",
+      "insufficientSample": "サンプル不足（ベースラインに {{baseline}} 件、現在に {{current}} 件の有効読み取りが必要）",
+      "lastMeasured": "最終測定 {{date}}"
+    },
+    "proposals": {
+      "title": "提案プール",
+      "empty": "提案プールは空です。",
+      "pending": "採用待ち {{count}}",
+      "adopted": "累計採用 {{count}}",
+      "total": "全 {{count}} 件",
+      "latest": "最新：{{title}}"
+    },
+    "knowledge": {
+      "title": "ナレッジミラー",
+      "empty": "登録ディレクトリはまだありません。",
+      "dirs": "ディレクトリ {{count}} 件",
+      "entries": "エントリ {{count}} 件",
+      "lastScan": "前回スキャン：{{result}} · {{date}}",
+      "neverScanned": "未スキャン"
+    },
+    "skills": {
+      "title": "Skill 観測",
+      "empty": "登録された skill はまだありません。",
+      "count": "skill {{count}} 件",
+      "invocations": "累計明示呼び出し {{count}} 回"
+    }
   },
   "skills": {
     "choose": "skill を選択",

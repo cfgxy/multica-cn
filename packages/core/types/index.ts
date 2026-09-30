@@ -418,3 +418,14 @@ export type {
   WorkspaceSubscriptionSeatReconcileResult,
   CreateWorkspaceSubscriptionPortalResponse,
 } from "./billing";
+export type {
+  SelfEvolutionOverview,
+  SelfEvolutionOverviewTier,
+  SelfEvolutionOverviewQuality,
+  SelfEvolutionOverviewQuiz,
+  SelfEvolutionOverviewProposal,
+  SelfEvolutionOverviewProposals,
+  SelfEvolutionOverviewScan,
+  SelfEvolutionOverviewKnowledge,
+  SelfEvolutionOverviewSkills,
+} from "./self-evolution-overview";
