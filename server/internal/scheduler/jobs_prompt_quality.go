@@ -67,7 +67,7 @@ func makePromptQualityHandler(pool *pgxpool.Pool, gen promptperplexity.Generator
 		// count-based dimensions are already persisted, and a version that
 		// could not be scored stays unscored, which is a state the dashboard
 		// renders rather than an error it has to report.
-		backlog, scoreErr := perplexity.ScoreBacklog(ctx)
+		backlog, scoreErr := perplexity.ScoreBacklogAll(ctx)
 
 		result := map[string]any{"bucket_limit": promptqualityrollup.BucketLimit}
 		result["perplexity_considered"] = backlog.Considered
