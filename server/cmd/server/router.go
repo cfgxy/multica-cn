@@ -1596,6 +1596,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 		r.Post("/runtimes/{runtimeId}/recover-orphans", h.RecoverOrphanedTasks)
 		r.Post("/tasks/{taskId}/session", h.PinTaskSession)
+
+		// Knowledge pipeline (RUYI-289): the daemon that hosts the paths
+		// pulls its scan/discovery/adoption work package and reports results;
+		// bd IO never runs inside the server container.
+		r.Get("/knowledge/plan", h.GetKnowledgePlan)
+		r.Post("/knowledge/results", h.PostKnowledgeResults)
 	})
 
 	// Public Plugin Action API. This is the stable, globally versioned contract
