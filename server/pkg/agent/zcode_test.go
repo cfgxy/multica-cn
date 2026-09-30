@@ -796,9 +796,9 @@ func TestZcodeErrorClassification(t *testing.T) {
 	}
 }
 
-// TestZcodeModelSelectionSupported is the counterpart to deerflow: the bridge
-// registers session/set_model for exactly this client, so the family must
-// offer the picker.
+// TestZcodeModelSelectionSupported is the counterpart to qwenpaw/mcode/
+// zeroclaw: the bridge registers session/set_model for exactly this client,
+// so the family must offer the picker.
 func TestZcodeModelSelectionSupported(t *testing.T) {
 	t.Parallel()
 	if !ModelSelectionSupported("zcode") {
