@@ -41,7 +41,13 @@ var deerflowBlockedArgs = map[string]blockedArgMode{
 // DEERFLOW_ACP_* configuration surface and the daemon passes the runtime's
 // env through untouched; re-deriving or overriding that surface here would
 // rebuild the env layer the bridge already owns.
-const deerflowHomeEnv = "MULTICA_DEERFLOW_HOME"
+const deerflowHomeEnv = DeerflowHomeEnv
+
+// DeerflowHomeEnv is the process-env var carrying the DeerFlow deployment
+// root. Exported because internal/daemon injects it at startup from
+// backends.deerflow.home (RUYI-283 QA P1); package-local call sites keep
+// the unexported spelling above.
+const DeerflowHomeEnv = "MULTICA_DEERFLOW_HOME"
 
 // DeerFlow's bridge answers unknown sessions and its own refusals with
 // private codes. They are all -320xx, which the shared ACP helpers do not
@@ -145,10 +151,13 @@ func deerflowLoadSessionSupported(result json.RawMessage) bool {
 // table departs from every existing family in ways a shell would have to
 // paper over:
 //
-//   - session/set_model answers -32601. The model is fixed for the process
-//     lifetime by DEERFLOW_ACP_MODEL, so ModelSelectionSupported opts the
-//     family out and this backend never sends the RPC. A kimi-shaped shell
-//     would send it and hard-fail every model-pinned task.
+//   - session/set_model is session-scoped and validated against the
+//     bridge's own model list (unknown ids are refused, not silently
+//     remapped). The backend re-sends the pick before every prompt: it
+//     spawns a fresh bridge process per turn, and a session resumed into a
+//     new process carries no override, so re-sending is what makes the
+//     pick stick. ModelSelectionSupported and the ListModels discovery in
+//     models.go expose the catalog from the session/new models block.
 //   - session/set_config_option answers -32601, so no thinking level is
 //     negotiated here. DEERFLOW_ACP_THINKING owns that switch.
 //   - A non-empty mcpServers list answers -32602 rather than being ignored.
@@ -199,11 +208,30 @@ func (s *deerflowMessageStream) close() {
 }
 
 // resolveDeerflowProcessDir picks the working directory for the bridge
-// process. A configured deerflowHomeEnv wins when it names a real directory;
-// anything else falls back to the task workdir with a warning that says what
+// process. The deployment root is looked up in tiers, most specific first:
+//
+//  1. the task env's MULTICA_DEERFLOW_HOME (deployment-level injection via
+//     agent.Config.Env) — the historical spelling;
+//  2. the task env's DEERFLOW_HOME — the agent custom_env spelling. The
+//     MULTICA_ prefix is deliberately stripped from custom_env by
+//     isBlockedEnvKey, so this non-namespaced key is the one user-reachable
+//     per-agent configuration surface (RUYI-283 QA);
+//  3. the DAEMON process environment's MULTICA_DEERFLOW_HOME — set by
+//     backends.deerflow.home in config.json (applyDeerflowOverride) or a
+//     deployment-level export. The task env map never contains the daemon's
+//     process env, but this function runs inside the daemon, so the lookup
+//     is direct.
+//
+// Anything else falls back to the task workdir with a warning that says what
 // breaks, because a wrong cwd surfaces later as an opaque -32010.
 func (b *deerflowBackend) resolveDeerflowProcessDir(taskCwd string) string {
 	home := strings.TrimSpace(b.cfg.Env[deerflowHomeEnv])
+	if home == "" {
+		home = strings.TrimSpace(b.cfg.Env["DEERFLOW_HOME"])
+	}
+	if home == "" {
+		home = strings.TrimSpace(os.Getenv(deerflowHomeEnv))
+	}
 	if home == "" {
 		b.cfg.Logger.Warn("deerflow: "+deerflowHomeEnv+" is unset; starting the bridge in the task workdir",
 			"backend", "deerflow",
@@ -244,16 +272,10 @@ func (b *deerflowBackend) Execute(ctx context.Context, prompt string, opts ExecO
 			"backend", "deerflow",
 		)
 	}
-	// Same shape for the model: the bridge answers session/set_model with
-	// -32601 because the model is pinned at process start by
-	// DEERFLOW_ACP_MODEL. Sending it would fail the task; silently dropping it
-	// without a record would let the UI claim a pick that never applied.
-	if opts.Model != "" {
-		b.cfg.Logger.Warn("deerflow cannot switch models per session; the model is fixed at bridge startup by DEERFLOW_ACP_MODEL",
-			"backend", "deerflow",
-			"requested_model", opts.Model,
-		)
-	}
+	// The model pick is applied per turn after the session is established
+	// (below): the bridge validates the id against its own list and refuses
+	// unknown ones, which fails the turn visibly instead of silently running
+	// it on the default model.
 	if opts.ThinkingLevel != "" {
 		b.cfg.Logger.Warn("deerflow cannot set a thinking level per session; DEERFLOW_ACP_THINKING owns that switch",
 			"backend", "deerflow",
@@ -520,6 +542,34 @@ func (b *deerflowBackend) Execute(ctx context.Context, prompt string, opts ExecO
 		msgStream.send(Message{Type: MessageStatus, Status: "running", SessionID: sessionID})
 		b.cfg.Logger.Info("deerflow session ready", "session_id", sessionID)
 
+		// Apply the model pick on BOTH fresh and resumed sessions: this
+		// backend spawns a fresh bridge process per turn and a session
+		// resumed into it carries no override, so re-sending before every
+		// prompt is what makes the pick stick. The bridge validates the id
+		// and refuses unknown ones; the turn then fails visibly while the
+		// session stays healthy, so the resume pointer is preserved.
+		if opts.Model != "" {
+			if _, err := c.request(runCtx, "session/set_model", map[string]any{
+				"sessionId": sessionID,
+				"modelId":   opts.Model,
+			}); err != nil {
+				b.cfg.Logger.Warn("deerflow set_model failed; failing the turn instead of running on the default model",
+					"backend", "deerflow",
+					"session_id", sessionID,
+					"requested_model", opts.Model,
+				)
+				resCh <- Result{
+					Status:         "failed",
+					Error:          deerflowRequestErrorMessage("session/set_model", err),
+					DurationMs:     time.Since(startTime).Milliseconds(),
+					SessionID:      sessionID,
+					ResumeRejected: resumeRejected,
+				}
+				return
+			}
+			b.cfg.Logger.Info("deerflow session model set", "session_id", sessionID, "model", opts.Model)
+		}
+
 		userText := prompt
 		if opts.SystemPrompt != "" {
 			userText = opts.SystemPrompt + "\n\n---\n\n" + prompt
@@ -621,12 +671,15 @@ func (b *deerflowBackend) Execute(ctx context.Context, prompt string, opts ExecO
 		// The bridge reports token counts on PromptResponse.usage and does not
 		// emit usage_update by default (its size/used fields express context
 		// occupancy, which DeerFlow does not provide). There is no per-turn
-		// model id in the response either — the model is process-global — so
-		// attribute under the configured model when one is known and "unknown"
-		// otherwise rather than inventing an id.
+		// model id in the response either, so attribute under the applied
+		// pick (opts.Model) when one was sent, the configured process default
+		// next, and "unknown" otherwise rather than inventing an id.
 		var usageMap map[string]TokenUsage
 		if acpUsagePresent(u) {
-			model := strings.TrimSpace(b.cfg.Env["DEERFLOW_ACP_MODEL"])
+			model := strings.TrimSpace(opts.Model)
+			if model == "" {
+				model = strings.TrimSpace(b.cfg.Env["DEERFLOW_ACP_MODEL"])
+			}
 			if model == "" {
 				model = "unknown"
 			}
