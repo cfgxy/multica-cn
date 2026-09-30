@@ -107,6 +107,30 @@ it("offers adopt and reject for a draft only", async () => {
   expect(screen.queryByRole("button", { name: /Record verification/ })).toBeNull();
 });
 
+it("marks each row's source and the in-flight knowledge transfer", async () => {
+  state.role = "owner";
+  state.proposals = [
+    draftProposal({ id: "prop-sys", created_by_type: "system" }),
+    draftProposal({ id: "prop-mem" }),
+  ];
+  const { unmount } = mount();
+  await waitFor(() => expect(screen.getByTestId("proposal-owner-actions")).toBeTruthy());
+  expect(screen.getByText("System")).toBeTruthy();
+  expect(screen.getByText("Member")).toBeTruthy();
+  unmount();
+
+  // While a knowledge transfer rides the daemon queue the lifecycle buttons
+  // step aside: the row is neither adoptable again nor rejectable mid-flight.
+  state.proposals = [
+    draftProposal({ id: "prop-t", transfer_state: "transferring" }),
+  ];
+  mount();
+  await waitFor(() => expect(screen.getByTestId("proposal-transferring")).toBeTruthy());
+  expect(screen.getByText("Transferring")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Adopt" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Reject" })).toBeNull();
+});
+
 it("moves the lifecycle controls with the row's status", async () => {
   state.role = "owner";
   // B2: verify exists only after adoption.

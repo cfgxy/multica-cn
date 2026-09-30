@@ -14,8 +14,6 @@ package handler
 import (
 	"context"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -150,13 +148,14 @@ func TestProposalProphecyGate(t *testing.T) {
 
 // TestProposalAdoptVerifySeparation is B2: verification records what
 // happened after adoption — never before it, never without evidence, and
-// never by overwriting an earlier mark.
+// never by overwriting an earlier mark. A knowledge-type adoption queues a
+// daemon transfer; the decision snapshot exists from queue time, but status
+// only flips to adopted once the daemon reported the transfer done.
 func TestProposalAdoptVerifySeparation(t *testing.T) {
 	if testHandler == nil {
 		t.Fatal("database fixture is required")
 	}
-	fakeBdSetup(t)
-	registerKnowledgeDir(t, "ultimate", fakeBdDir(t, nil))
+	ultimate := registerKnowledgeDir(t, "ultimate", t.TempDir())
 
 	id := createProposal(t, map[string]any{
 		"type": "lesson", "title": "checklist habit", "summary": "attach the checklist unprompted",
@@ -170,20 +169,33 @@ func TestProposalAdoptVerifySeparation(t *testing.T) {
 		t.Fatalf("verify before adopt: %d, want 409", code)
 	}
 
-	// Adoption records its own snapshot, independent of any verification.
-	if code := proposalAction(t, id, "adopt", nil); code != http.StatusOK {
-		t.Fatalf("adopt: %d", code)
+	// Adoption queues the knowledge transfer: the decision snapshot exists
+	// from queue time, but the pool still shows draft + transferring.
+	if code := proposalAction(t, id, "adopt", nil); code != http.StatusAccepted {
+		t.Fatalf("adopt: %d, want 202", code)
 	}
-	proposal := proposalByID(t, id)
-	if proposal.Status != "adopted" {
-		t.Fatalf("status after adopt: %q", proposal.Status)
+	queued := proposalByID(t, id)
+	if queued.Status != "draft" || queued.TransferState != "transferring" {
+		t.Fatalf("queued adoption: status=%q transfer_state=%q", queued.Status, queued.TransferState)
 	}
-	if _, ok := proposal.AdoptionSnapshot["adopted_by"]; !ok {
+	if _, ok := queued.AdoptionSnapshot["adopted_by"]; !ok {
 		t.Fatalf("adoption snapshot missing the decision maker")
 	}
-	transfer, _ := proposal.AdoptionSnapshot["knowledge_transfer"].(map[string]any)
+	transfer, _ := queued.AdoptionSnapshot["knowledge_transfer"].(map[string]any)
 	if transfer["key"] != "proposal-"+id[:8] {
 		t.Fatalf("adoption snapshot transfer: %v, want key proposal-%s", transfer, id[:8])
+	}
+
+	// The daemon reports remember + read-back success; only then does the
+	// pool show adopted — still without any verification record.
+	postKnowledgeResults(t, "daemon-under-test", map[string]any{
+		"adoptions": []map[string]any{{
+			"kind": "proposal", "id": id, "ok": true, "ultimate_dir_id": ultimate,
+		}},
+	})
+	proposal := proposalByID(t, id)
+	if proposal.Status != "adopted" || proposal.TransferState != "" {
+		t.Fatalf("status after transfer: status=%q transfer_state=%q", proposal.Status, proposal.TransferState)
 	}
 	if proposal.Verification != nil && len(proposal.Verification) > 0 {
 		t.Fatalf("adoption must not fabricate a verification record: %v", proposal.Verification)
@@ -226,8 +238,8 @@ func TestProposalRejectRetainsAndRestore(t *testing.T) {
 	if testHandler == nil {
 		t.Fatal("database fixture is required")
 	}
-	fakeBdSetup(t)
-	registerKnowledgeDir(t, "ultimate", fakeBdDir(t, nil))
+	ultimate := registerKnowledgeDir(t, "ultimate", t.TempDir())
+	_ = ultimate
 
 	id := createProposal(t, map[string]any{
 		"type": "lesson", "title": "checklist habit", "summary": "attach the checklist unprompted",
@@ -273,9 +285,14 @@ func TestProposalRejectRetainsAndRestore(t *testing.T) {
 	if proposalByID(t, id).Status != "draft" {
 		t.Fatalf("status after restore: %q, want draft", proposalByID(t, id).Status)
 	}
-	if code := proposalAction(t, id, "adopt", nil); code != http.StatusOK {
-		t.Fatalf("adopt after restore: %d", code)
+	// Adoption works again — queued as a daemon transfer, resolved by the
+	// daemon's success report.
+	if code := proposalAction(t, id, "adopt", nil); code != http.StatusAccepted {
+		t.Fatalf("adopt after restore: %d, want 202", code)
 	}
+	postKnowledgeResults(t, "daemon-under-test", map[string]any{
+		"adoptions": []map[string]any{{"kind": "proposal", "id": id, "ok": true}},
+	})
 	adopted := proposalByID(t, id)
 	restoreFound := false
 	for _, entry := range adopted.AuditLog {
@@ -290,47 +307,47 @@ func TestProposalRejectRetainsAndRestore(t *testing.T) {
 
 // TestProposalKnowledgeTransferFailureAndRetry pins the ②–④ adoption rule:
 // a knowledge-type proposal is adopted only when its content reached the
-// ultimate bd and was read back. A failed transfer leaves the proposal
-// un-adopted with the reason; a retry after the failure heals succeeds.
+// ultimate bd and was read back. The failure arrives as the daemon's report;
+// it leaves the proposal un-adopted with the reason and no adoption
+// snapshot, and a re-queued adoption that succeeds flips it to adopted.
 func TestProposalKnowledgeTransferFailureAndRetry(t *testing.T) {
 	if testHandler == nil {
 		t.Fatal("database fixture is required")
 	}
-	fakeBdSetup(t)
-	ultimatePath := fakeBdDir(t, nil)
-	registerKnowledgeDir(t, "ultimate", ultimatePath)
+	registerKnowledgeDir(t, "ultimate", t.TempDir())
 
 	id := createProposal(t, map[string]any{
 		"type": "pitfall", "title": "migration renumbering trap",
 		"summary": "renumbering without rewriting the ledger replays dropped DDL",
 		"prophecy": behaviorProphecy,
 	})
-	if err := os.WriteFile(filepath.Join(ultimatePath, "FAIL_REMEMBER"), []byte("1"), 0o644); err != nil {
-		t.Fatalf("plant failure flag: %v", err)
+	if code := proposalAction(t, id, "adopt", nil); code != http.StatusAccepted {
+		t.Fatalf("adopt: %d, want 202", code)
 	}
-	if code := proposalAction(t, id, "adopt", nil); code != http.StatusConflict {
-		t.Fatalf("adopt with failing transfer: %d, want 409", code)
-	}
+	// The daemon fails the transfer and reports why.
+	postKnowledgeResults(t, "daemon-under-test", map[string]any{
+		"adoptions": []map[string]any{{"kind": "proposal", "id": id, "ok": false, "error": "bd remember refused the write"}},
+	})
 	stalled := proposalByID(t, id)
-	if stalled.Status != "draft" || stalled.TransferError == "" {
-		t.Fatalf("after failed transfer: status=%q transfer_error=%q, want draft + reason", stalled.Status, stalled.TransferError)
+	if stalled.Status != "draft" || stalled.TransferState != "" || stalled.TransferError == "" {
+		t.Fatalf("after failed transfer: status=%q transfer_state=%q transfer_error=%q, want draft + cleared + reason",
+			stalled.Status, stalled.TransferState, stalled.TransferError)
 	}
 	if _, hasSnapshot := stalled.AdoptionSnapshot["adopted_by"]; hasSnapshot {
 		t.Fatalf("a failed transfer must not leave an adoption snapshot")
 	}
 
-	if err := os.Remove(filepath.Join(ultimatePath, "FAIL_REMEMBER")); err != nil {
-		t.Fatalf("clear failure flag: %v", err)
+	// Re-adopting is the idempotent retry; this time the transfer lands.
+	if code := proposalAction(t, id, "adopt", nil); code != http.StatusAccepted {
+		t.Fatalf("adopt after failure: %d, want 202", code)
 	}
-	if code := proposalAction(t, id, "adopt", nil); code != http.StatusOK {
-		t.Fatalf("adopt after healing: %d", code)
-	}
+	postKnowledgeResults(t, "daemon-under-test", map[string]any{
+		"adoptions": []map[string]any{{"kind": "proposal", "id": id, "ok": true}},
+	})
 	adopted := proposalByID(t, id)
-	if adopted.Status != "adopted" || adopted.TransferError != "" {
-		t.Fatalf("after successful retry: status=%q transfer_error=%q", adopted.Status, adopted.TransferError)
-	}
-	if content := fakeBdState(t, ultimatePath)["proposal-"+id[:8]]; !strings.Contains(content, "renumbering without rewriting the ledger") {
-		t.Fatalf("ultimate state after retry: %q", content)
+	if adopted.Status != "adopted" || adopted.TransferError != "" || adopted.TransferState != "" {
+		t.Fatalf("after successful retry: status=%q transfer_error=%q transfer_state=%q",
+			adopted.Status, adopted.TransferError, adopted.TransferState)
 	}
 }
 

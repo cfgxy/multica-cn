@@ -6,14 +6,6 @@ import { toast } from "sonner";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@multica/ui/components/ui/dialog";
-import {
   Empty,
   EmptyDescription,
   EmptyHeader,
@@ -42,13 +34,15 @@ import {
 import { useT } from "../../i18n";
 
 /**
- * The knowledge mirror (RUYI-265 §K).
+ * The knowledge library (RUYI-265 §K, reworked by RUYI-289).
  *
- * Directories are scanned strictly read-only; the one write path is adoption,
- * which transfers an entry's content into the ultimate library. That transfer
- * is owner-only on the server — registering, scanning and unregistering a
- * directory too — so the buttons are hidden rather than disabled for
- * non-owners. Everyone can read the mirror and the adoption trail.
+ * Auto-discovered sources lead the view; manually adding an external source is
+ * a collapsed advanced action. Scanning never runs in the UI — registration
+ * and scan requests only queue work that the hosting daemon picks up, and the
+ * queued state is shown as a badge instead of being pretended away. The single
+ * write path is adoption, which queues a background transfer into the
+ * knowledge hub. All of register/scan/unregister/adopt is owner-only on the
+ * server, so the controls are hidden rather than disabled for non-owners.
  */
 export function KnowledgeTab({ wsId }: { wsId: string }) {
   const { t } = useT("self-evolution");
@@ -57,7 +51,6 @@ export function KnowledgeTab({ wsId }: { wsId: string }) {
 
   const [dirId, setDirId] = useState("");
   const [query, setQuery] = useState("");
-  const [registerOpen, setRegisterOpen] = useState(false);
 
   const dirs = useQuery(knowledgeDirsOptions(wsId));
   const entries = useQuery(knowledgeEntriesOptions(wsId, dirId, query));
@@ -88,6 +81,7 @@ export function KnowledgeTab({ wsId }: { wsId: string }) {
   const adoptionLabel = (state: string) => {
     switch (state) {
       case "pending": return t(($) => $.knowledge.adoptionState.pending);
+      case "transferring": return t(($) => $.knowledge.adoptionState.transferring);
       case "adopted": return t(($) => $.knowledge.adoptionState.adopted);
       case "failed": return t(($) => $.knowledge.adoptionState.failed);
       default: return state;
@@ -104,16 +98,9 @@ export function KnowledgeTab({ wsId }: { wsId: string }) {
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-col gap-1.5">
-          <h2 className="text-title font-semibold">{t(($) => $.knowledge.title)}</h2>
-          <p className="text-body text-muted-foreground">{t(($) => $.knowledge.description)}</p>
-        </div>
-        {canManage ? (
-          <Button size="sm" variant="outline" onClick={() => setRegisterOpen(true)}>
-            {t(($) => $.knowledge.register)}
-          </Button>
-        ) : null}
+      <div className="flex flex-col gap-1.5">
+        <h2 className="text-title font-semibold">{t(($) => $.knowledge.title)}</h2>
+        <p className="text-body text-muted-foreground">{t(($) => $.knowledge.description)}</p>
       </div>
 
       <section className="min-w-0 space-y-3" aria-label={t(($) => $.knowledge.dirsTitle)}>
@@ -152,11 +139,17 @@ export function KnowledgeTab({ wsId }: { wsId: string }) {
                         : t(($) => $.knowledge.health.unhealthy)}
                     </Badge>
                   )}
+                  {dir.scan_requested ? (
+                    <Badge variant="outline">{t(($) => $.knowledge.scanRequested)}</Badge>
+                  ) : null}
                   <span className="ml-auto text-caption text-muted-foreground">
                     {t(($) => $.knowledge.entryCount, { n: dir.entry_count })}
                   </span>
                 </span>
                 <p className="truncate font-mono text-caption text-muted-foreground">{dir.path}</p>
+                {dir.health_note ? (
+                  <p className="text-caption text-muted-foreground">{dir.health_note}</p>
+                ) : null}
                 <p className="text-caption text-muted-foreground">
                   {dir.last_scan
                     ? t(($) => $.knowledge.lastScan, {
@@ -305,114 +298,88 @@ export function KnowledgeTab({ wsId }: { wsId: string }) {
         ) : null}
       </section>
 
-      <RegisterDirDialog
-        open={registerOpen}
-        pending={register.isPending}
-        onOpenChange={setRegisterOpen}
-        onSubmit={(draft) => {
-          register.mutate(draft, {
-            onSuccess: () => setRegisterOpen(false),
-            onError: mutationError,
-          });
-        }}
-      />
+      {canManage ? (
+        <AdvancedSourceForm
+          pending={register.isPending}
+          onSubmit={(draft) => {
+            register.mutate(draft, { onError: mutationError });
+          }}
+        />
+      ) : null}
     </div>
   );
 }
 
-const DIR_KINDS = ["candidate_cli", "candidate_auto"] as const;
-
 /**
- * The ultimate library is designated elsewhere (it is the adoption target, not
- * one of the candidates this form registers), so only candidate kinds are
- * offered here.
+ * Manual registration is an advanced action: auto-discovery is the default
+ * path, so the form hides behind a collapsed section and only asks for the
+ * two fields a human can meaningfully provide. The source kind is the
+ * server's decision — manual paths always land as candidate_cli (RUYI-289).
  */
-function RegisterDirDialog({
-  open,
+function AdvancedSourceForm({
   pending,
-  onOpenChange,
   onSubmit,
 }: {
-  open: boolean;
   pending: boolean;
-  onOpenChange: (open: boolean) => void;
   onSubmit: (draft: { kind: string; path: string; label?: string }) => void;
 }) {
   const { t } = useT("self-evolution");
-  const [kind, setKind] = useState<(typeof DIR_KINDS)[number]>("candidate_cli");
+  const [open, setOpen] = useState(false);
   const [path, setPath] = useState("");
   const [label, setLabel] = useState("");
 
   const submit = () => {
     onSubmit({
-      kind,
+      kind: "candidate_cli",
       path,
       ...(label.trim() ? { label: label.trim() } : {}),
     });
+    setPath("");
+    setLabel("");
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>{t(($) => $.knowledge.registerTitle)}</DialogTitle>
-          <DialogDescription>{t(($) => $.knowledge.registerDescription)}</DialogDescription>
-        </DialogHeader>
-        <div className="space-y-3">
-          <div className="space-y-1.5">
-            <Label>{t(($) => $.knowledge.kindLabel)}</Label>
-            <Select
-              items={DIR_KINDS.map((v) => ({
-                value: v,
-                label: t(($) => $.knowledge.kind[v]),
-              }))}
-              value={kind}
-              onValueChange={(next) => {
-                if (typeof next === "string") setKind(next as (typeof DIR_KINDS)[number]);
-              }}
-            >
-              <SelectTrigger size="sm" className="w-full">
-                <SelectValue>{t(($) => $.knowledge.kind[kind])}</SelectValue>
-              </SelectTrigger>
-              <SelectContent>
-                {DIR_KINDS.map((v) => (
-                  <SelectItem key={v} value={v}>
-                    {t(($) => $.knowledge.kind[v])}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+    <section className="space-y-3 border-t pt-4" data-testid="knowledge-advanced">
+      <Button
+        size="sm"
+        variant="ghost"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        {open ? "▾" : "▸"} {t(($) => $.knowledge.advancedTitle)}
+      </Button>
+      {open ? (
+        <div className="space-y-3 rounded-md border border-border p-3">
+          <p className="text-caption text-muted-foreground">
+            {t(($) => $.knowledge.advancedDescription)}
+          </p>
+          <div className="grid gap-3 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+            <div className="space-y-1.5">
+              <Label htmlFor="knowledge-advanced-path">{t(($) => $.knowledge.pathLabel)}</Label>
+              <Input
+                id="knowledge-advanced-path"
+                value={path}
+                onChange={(e) => setPath(e.target.value)}
+                // Example filesystem path of a memory mirror, not copy.
+                // eslint-disable-next-line no-restricted-syntax
+                placeholder="/srv/memories/project-x"
+              />
+            </div>
+            <div className="space-y-1.5">
+              <Label htmlFor="knowledge-advanced-label">{t(($) => $.knowledge.labelLabel)}</Label>
+              <Input
+                id="knowledge-advanced-label"
+                value={label}
+                onChange={(e) => setLabel(e.target.value)}
+                placeholder={t(($) => $.knowledge.labelPlaceholder)}
+              />
+            </div>
           </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="knowledge-path">{t(($) => $.knowledge.pathLabel)}</Label>
-            <Input
-              id="knowledge-path"
-              value={path}
-              onChange={(e) => setPath(e.target.value)}
-              // Example filesystem path of a memory mirror, not copy.
-              // eslint-disable-next-line no-restricted-syntax
-              placeholder="/srv/memories/project-x"
-            />
-          </div>
-          <div className="space-y-1.5">
-            <Label htmlFor="knowledge-label">{t(($) => $.knowledge.labelLabel)}</Label>
-            <Input
-              id="knowledge-label"
-              value={label}
-              onChange={(e) => setLabel(e.target.value)}
-              placeholder={t(($) => $.knowledge.labelPlaceholder)}
-            />
-          </div>
-        </div>
-        <DialogFooter>
-          <Button variant="ghost" onClick={() => onOpenChange(false)}>
-            {t(($) => $.knowledge.cancel)}
-          </Button>
-          <Button disabled={pending || path.trim() === ""} onClick={submit}>
+          <Button size="sm" disabled={pending || path.trim() === ""} onClick={submit}>
             {t(($) => $.knowledge.registerSubmit)}
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </div>
+      ) : null}
+    </section>
   );
 }
