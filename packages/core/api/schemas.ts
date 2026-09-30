@@ -113,6 +113,10 @@ import type {
 } from "../types/prompt-market";
 import type { PromptQualityDashboard } from "../types/prompt-quality";
 import type { PromptQuizBaseline, PromptQuizItemDetail } from "../types/prompt-quiz";
+import type {
+  PromptGovernanceVersion,
+  PromptGovernanceVersionList,
+} from "../types/prompt-version";
 import type { CloudRuntimeNode } from "../runtimes/cloud-runtime";
 import type { CreateFeedbackResponse } from "../feedback/types";
 
@@ -4170,6 +4174,56 @@ export const EMPTY_PROMPT_QUALITY_DASHBOARD: PromptQualityDashboard = {
   versions: [],
   perplexity: [],
   data_sources: { degraded: false, items: [] },
+};
+
+// --- Prompt governance versions (RUYI-285) ---
+//
+// One row of the append-only prompt_version line (RUYI-183) as the governance
+// API returns it. Every field defaults rather than rejects: an unread response
+// must still parse, and the view renders the emptiness instead of inventing
+// content. The list fallback carries total 0 for the same reason the quality
+// dashboard falls back to no versions.
+
+export const PromptGovernanceVersionSchema = z.object({
+  id: z.string().default(""),
+  scope: z.string().default(""),
+  scope_id: z.string().default(""),
+  version: z.number().default(0),
+  content: z.string().default(""),
+  content_sha256: z.string().default(""),
+  source: z.string().default(""),
+  source_version: z.number().optional(),
+  change_note: z.string().default(""),
+  author_user_id: z.string().optional(),
+  author_note_issue_id: z.string().optional(),
+  scanner_revision: z.string().default(""),
+  created_at: z.string().default(""),
+});
+
+export const PromptGovernanceVersionListSchema = z.object({
+  versions: z.array(PromptGovernanceVersionSchema).default([]),
+  total: z.number().default(0),
+});
+
+// Fallback for a save/switch response that did not parse: an unnamed version
+// zero. The caller stays on the page and the list refetch renders the truth;
+// a fabricated version number here could read as "the write landed".
+export const EMPTY_PROMPT_GOVERNANCE_VERSION: PromptGovernanceVersion = {
+  id: "",
+  scope: "",
+  scope_id: "",
+  version: 0,
+  content: "",
+  content_sha256: "",
+  source: "",
+  change_note: "",
+  scanner_revision: "",
+  created_at: "",
+};
+
+export const EMPTY_PROMPT_GOVERNANCE_VERSION_LIST: PromptGovernanceVersionList = {
+  versions: [],
+  total: 0,
 };
 
 // --- Prompt quiz (RUYI-185) ---

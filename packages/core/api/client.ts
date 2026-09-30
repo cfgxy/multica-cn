@@ -74,6 +74,9 @@ import type {
   PromptQuizBaseline,
   CreatePromptQuizItemRequest,
   UpdatePromptQuizItemRequest,
+  PromptGovernanceVersion,
+  PromptGovernanceVersionList,
+  SavePromptGovernanceVersionRequest,
   MarketplaceListing,
   MarketplacePlaceholder,
   MemberWithUser,
@@ -531,6 +534,10 @@ import {
   EMPTY_PROMPT_VERSION,
   PromptQualityDashboardSchema,
   EMPTY_PROMPT_QUALITY_DASHBOARD,
+  PromptGovernanceVersionSchema,
+  PromptGovernanceVersionListSchema,
+  EMPTY_PROMPT_GOVERNANCE_VERSION,
+  EMPTY_PROMPT_GOVERNANCE_VERSION_LIST,
   PromptQuizItemDetailSchema,
   PromptQuizItemListSchema,
   PromptQuizBaselineSchema,
@@ -3166,6 +3173,78 @@ export class ApiClient {
     );
     return parseWithFallback(raw, PromptQualityDashboardSchema, EMPTY_PROMPT_QUALITY_DASHBOARD, {
       endpoint: "GET /api/prompt-governance/{scope}/{id}/quality",
+    });
+  }
+
+  /**
+   * The prompt tier's version line, newest first, each row with full content.
+   *
+   * The server includes content on every row on purpose (this is a private,
+   * workspace-scoped audit surface): the editor preloads the current draft
+   * from it, and the version comparison diffs two list rows client-side, so
+   * no second fetch is needed to compare a pair.
+   */
+  async listPromptGovernanceVersions(
+    scope: string,
+    scopeId: string,
+    params?: { limit?: number; offset?: number },
+  ): Promise<PromptGovernanceVersionList> {
+    const query = new URLSearchParams();
+    if (params?.limit !== undefined) query.set("limit", String(params.limit));
+    if (params?.offset !== undefined) query.set("offset", String(params.offset));
+    const suffix = query.toString() === "" ? "" : `?${query.toString()}`;
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-governance/${encodeURIComponent(scope)}/${encodeURIComponent(scopeId)}/versions${suffix}`,
+    );
+    return parseWithFallback(
+      raw,
+      PromptGovernanceVersionListSchema,
+      EMPTY_PROMPT_GOVERNANCE_VERSION_LIST,
+      { endpoint: "GET /api/prompt-governance/{scope}/{id}/versions" },
+    );
+  }
+
+  /**
+   * Saves an edit as a new version: the server appends the row, copies the
+   * content into the tier's business column, and returns the created version.
+   *
+   * A secret-scan hit throws ApiError with status 422 and a
+   * PromptSecretScanBlockedSchema body (`code: "prompt_secret_detected"`); a
+   * blank content over live non-empty text is a 409. There is no override for
+   * either — the caller shows the findings (or the guard message) and the
+   * editor edits the text.
+   */
+  async savePromptGovernanceVersion(
+    scope: string,
+    scopeId: string,
+    input: SavePromptGovernanceVersionRequest,
+  ): Promise<PromptGovernanceVersion> {
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-governance/${encodeURIComponent(scope)}/${encodeURIComponent(scopeId)}/versions`,
+      { method: "POST", body: JSON.stringify(input) },
+    );
+    return parseWithFallback(raw, PromptGovernanceVersionSchema, EMPTY_PROMPT_GOVERNANCE_VERSION, {
+      endpoint: "POST /api/prompt-governance/{scope}/{id}/versions",
+    });
+  }
+
+  /**
+   * Activates a historical version by copy-forward: the server appends a new
+   * row with the target's content (source "revert", source_version set) and
+   * makes it effective. Rollback and switch are the same call — history is
+   * never rewritten.
+   */
+  async switchPromptGovernanceVersion(
+    scope: string,
+    scopeId: string,
+    version: number,
+  ): Promise<PromptGovernanceVersion> {
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-governance/${encodeURIComponent(scope)}/${encodeURIComponent(scopeId)}/versions/${encodeURIComponent(version)}/switch`,
+      { method: "POST" },
+    );
+    return parseWithFallback(raw, PromptGovernanceVersionSchema, EMPTY_PROMPT_GOVERNANCE_VERSION, {
+      endpoint: "POST /api/prompt-governance/{scope}/{id}/versions/{version}/switch",
     });
   }
 

@@ -21,6 +21,7 @@ Multica 的 MCP（Model Context Protocol）server：让 codex / claude code / Ch
 | 写 | `create_issue` | 通用创建：任意空间、任意项目 |
 | 写 | `add_comment` | 追加评论（@agent 会触发真实派发） |
 | 写 | `update_issue_status` | 状态流转（`suppress_run` 可避免连带派发） |
+| 写 | `assign_issue` | 已有 issue 的指派/改派/取消指派（agent/squad 指派触发真实 run） |
 | 派发 | `dispatch_agent` | 一句话建 issue 并派发 agent run（消耗配额） |
 
 v1 不暴露：删除类操作、权限/成员变更、跨用户管理。
@@ -134,5 +135,13 @@ npm tarball artifact（附 SHA256）。
 
 - 凭据仅 PAT，存储与 CLI 同源，不新增明文存储面。
 - 日志脱敏：不含 token 与评论正文；REST 客户端只记录方法、路径模板、状态码与耗时。
-- `dispatch_agent` / 评论 @agent / 状态流转均可能触发真实 agent run，消耗
-  token 所属用户的配额——工具描述中已显式提示。
+- `dispatch_agent` / 评论 @agent / 状态流转 / `assign_issue` 对 agent 或 squad 的
+  指派均可能触发真实 agent run，消耗 token 所属用户的配额——工具描述中已显式提示。
+- `assign_issue` 的 run 触发语义与后端单一判定源一致
+  （`server/internal/service/issue_trigger.go`）：指派/改派给 agent 或 squad 时，
+  issue 处于 backlog 则静默停放不触发；改派不取消已在排队/执行的任务，新旧 run
+  并行，同一 agent 不会重复入队；指派给 member 与取消指派从不触发 run；
+  `suppress_run=true` 应用指派但不启动本次触发的 run（issue 标记
+  `run_suppressed`，可稍后手动运行）；`handoff_note` 仅在实际触发 run 时注入。
+- 取消指派以显式 JSON `null` 表达（`assignee_type: null` + `assignee_id: null`），
+  与字段省略、空串严格区分——与服务端 rawFields 判定一致。

@@ -11,7 +11,8 @@
     "quiz": "クイズ",
     "skills": "Skill",
     "proposals": "提案",
-    "knowledge": "ナレッジ"
+    "knowledge": "ナレッジ",
+    "versions": "バージョン"
   },
   "skills": {
     "choose": "skill を選択",
@@ -433,5 +434,42 @@
       "retry": "再試行"
     },
     "ownerOnly": "登録・スキャン・解除・採用はワークスペースのオーナーのみ実行できます。"
+  },
+  "versions": {
+    "title": "バージョン履歴",
+    "manage": "バージョン管理",
+    "description": "有効な変更はすべて新バージョンとして追記され、履歴は書き換えられません。",
+    "bindingNote": "品質評価は実行が取得したバージョンに紐付きます。バッジは各バージョンが処理した実行数を示します。",
+    "newVersion": "新バージョン",
+    "clearSelection": "選択を解除",
+    "emptyTitle": "バージョンはまだありません",
+    "emptyDescription": "このエージェントの現在のプロンプトから最初のバージョンを作成してください。",
+    "error": "バージョンの読み込みに失敗しました",
+    "retry": "再試行",
+    "sourceImport": "基線",
+    "sourceEdit": "編集",
+    "sourceRevert": "ロールバック",
+    "sourceAuto": "自動スナップショット",
+    "fromVersion": "v{{version}} から",
+    "latest": "最新",
+    "runs": "{{n}} 回の実行",
+    "noRuns": "品質データなし",
+    "activate": "このバージョンに切替",
+    "activateTitle": "v{{version}} を有効化しますか？",
+    "activateBody": "有効化すると、この内容の新バージョンが追記され即時有効になります。履歴は書き換えられません。",
+    "cancel": "キャンセル",
+    "confirmActivate": "確認",
+    "compareTitle": "v{{from}} → v{{to}} を比較",
+    "editorTitle": "新バージョン",
+    "editorDescription": "下のテキストを次のバージョンとして保存し、即時有効化します。",
+    "contentLabel": "プロンプト本文",
+    "contentHint": "現在有効な内容を予め読み込んでいます。保存前に編集してください。",
+    "noteLabel": "変更メモ",
+    "notePlaceholder": "何を・なぜ変更したか",
+    "save": "バージョンを保存",
+    "saving": "保存中…",
+    "secretBlocked": "未保存：プロンプトに認証情報が含まれている可能性があります。",
+    "findingLine": "{{line}} 行目",
+    "saveFailed": "保存に失敗しました"
   }
 }
