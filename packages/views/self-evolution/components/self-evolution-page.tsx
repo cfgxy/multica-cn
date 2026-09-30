@@ -20,6 +20,7 @@ import { ProposalTab } from "./proposal-tab";
 import { QualityTab } from "./quality-tab";
 import { QuizTab } from "./quiz-tab";
 import { SkillTab } from "./skill-tab";
+import { VersionsTab } from "./versions-tab";
 
 /**
  * Prompt-governance / self-evolution page.
@@ -54,6 +55,7 @@ export function SelfEvolutionPage() {
           <TabsList>
             <TabsTrigger value="overview">{t(($) => $.tabs.overview)}</TabsTrigger>
             <TabsTrigger value="quality">{t(($) => $.tabs.quality)}</TabsTrigger>
+            <TabsTrigger value="versions">{t(($) => $.tabs.versions)}</TabsTrigger>
             <TabsTrigger value="quiz">{t(($) => $.tabs.quiz)}</TabsTrigger>
             <TabsTrigger value="skills">{t(($) => $.tabs.skills)}</TabsTrigger>
             <TabsTrigger value="proposals">{t(($) => $.tabs.proposals)}</TabsTrigger>
@@ -71,7 +73,10 @@ export function SelfEvolutionPage() {
             </Empty>
           </TabsContent>
           <TabsContent value="quality" className="pt-6">
-            <QualityTab wsId={wsId} />
+            <QualityTab wsId={wsId} onManageVersions={() => setTab("versions")} />
+          </TabsContent>
+          <TabsContent value="versions" className="pt-6">
+            <VersionsTab wsId={wsId} />
           </TabsContent>
           <TabsContent value="quiz" className="pt-6">
             <QuizTab wsId={wsId} />
