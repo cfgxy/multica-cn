@@ -2193,6 +2193,7 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 					// queued messages into its own run (task-token scoped).
 					r.Post("/consume-queued-tasks", h.ConsumeQueuedTasksForIssue)
 					r.Post("/rerun", h.RerunIssue)
+					r.Post("/tasks/{taskId}/retry", h.RetryTask)
 					r.Post("/quick-actions/{quickActionId}/run", h.RunQuickAction)
 					r.Post("/quick-actions/{quickActionId}/render", h.RenderQuickAction)
 					r.Get("/task-runs", h.ListTasksByIssue)
