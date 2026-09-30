@@ -17,6 +17,7 @@ func TestHermesSessionStorePathLayout(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	t.Setenv("MULTICA_TASK_CONFIG_ROOT", "")
 
 	agent := "11111111-2222-3333-4444-555555555555"
 	issue := "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
@@ -261,6 +262,7 @@ func TestPruneHermesSessionStores(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	t.Setenv("MULTICA_TASK_CONFIG_ROOT", "")
 
 	root := filepath.Join(home, ".multica", hermesSessionStoreRoot)
 	idle := filepath.Join(root, "agent-1", "default", "issue-idle")

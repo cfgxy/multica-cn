@@ -55,6 +55,7 @@ func TestHermesMemoryStorePathLayout(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	t.Setenv("MULTICA_TASK_CONFIG_ROOT", "")
 
 	agent := "11111111-2222-3333-4444-555555555555"
 	got := HermesMemoryStorePath("", agent, filepath.Join(platformDefaultHermesHome(), "profiles", "research"))
@@ -546,6 +547,7 @@ func TestPruneHermesMemoryStores(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	t.Setenv("MULTICA_TASK_CONFIG_ROOT", "")
 
 	root := filepath.Join(home, ".multica", hermesMemoryStoreRoot)
 	idle := filepath.Join(root, "agent-idle", "default")
