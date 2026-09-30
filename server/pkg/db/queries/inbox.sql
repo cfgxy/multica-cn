@@ -1,9 +1,11 @@
 -- name: ListInboxItems :many
 SELECT i.*,
        iss.status AS issue_status,
-       iss.priority AS issue_priority
+       iss.priority AS issue_priority,
+       COALESCE(ws.issue_prefix || '-' || iss.number::text, '')::text AS issue_identifier
 FROM inbox_item i
 LEFT JOIN issue iss ON iss.id = i.issue_id
+LEFT JOIN workspace ws ON ws.id = i.workspace_id
 WHERE i.workspace_id = $1 AND i.recipient_type = $2 AND i.recipient_id = $3 AND i.archived = false
 ORDER BY i.created_at DESC;
 
@@ -75,10 +77,12 @@ WITH eligible_archived AS MATERIALIZED (
 )
 SELECT i.*,
        iss.status AS issue_status,
-       iss.priority AS issue_priority
+       iss.priority AS issue_priority,
+       COALESCE(ws.issue_prefix || '-' || iss.number::text, '')::text AS issue_identifier
 FROM inbox_item i
 JOIN selected_ids selected ON selected.id = i.id
 LEFT JOIN issue iss ON iss.id = i.issue_id
+LEFT JOIN workspace ws ON ws.id = i.workspace_id
 ORDER BY i.created_at DESC, i.id DESC;
 
 -- name: GetInboxItem :one

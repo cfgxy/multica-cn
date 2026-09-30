@@ -1379,6 +1379,43 @@ describe("InboxItemListSchema", () => {
     ).toBe(EMPTY_INBOX_ITEMS);
   });
 
+  it("surfaces the server-assembled issue identifier", () => {
+    const parsed = parseWithFallback(
+      [row({ issue_identifier: "RUYI-314" })],
+      InboxItemListSchema,
+      EMPTY_INBOX_ITEMS,
+      ENDPOINT,
+    );
+    expect(parsed).toHaveLength(1);
+    expect(parsed[0]).toMatchObject({ issue_identifier: "RUYI-314" });
+  });
+
+  it("tolerates null and absent issue identifiers for issue-less notifications", () => {
+    expect(
+      parseWithFallback(
+        [row({ issue_identifier: null, issue_id: null })],
+        InboxItemListSchema,
+        EMPTY_INBOX_ITEMS,
+        ENDPOINT,
+      ),
+    ).toHaveLength(1);
+    // row() carries no issue_identifier at all — the absent case.
+    expect(
+      parseWithFallback([row()], InboxItemListSchema, EMPTY_INBOX_ITEMS, ENDPOINT),
+    ).toHaveLength(1);
+  });
+
+  it("returns the empty fallback when the issue identifier is wrong-typed", () => {
+    expect(
+      parseWithFallback(
+        [row({ issue_identifier: 314 })],
+        InboxItemListSchema,
+        EMPTY_INBOX_ITEMS,
+        ENDPOINT,
+      ),
+    ).toBe(EMPTY_INBOX_ITEMS);
+  });
+
   it("returns the empty fallback for a non-array body", () => {
     expect(
       parseWithFallback({ items: [] }, InboxItemListSchema, EMPTY_INBOX_ITEMS, ENDPOINT),

@@ -93,4 +93,29 @@ describe("inbox list schema", () => {
     const parsed = InboxListSchema.safeParse([future]);
     expect(parsed.success).toBe(true);
   });
+
+  it("defaults a missing issue identifier to null", () => {
+    // An older backend predating the identifier projection omits the field
+    // entirely; the row must still parse and render without one.
+    const parsed = InboxListSchema.safeParse([{
+      id: "inbox-6",
+      recipient_type: "member",
+      type: "status_changed",
+    }]);
+    expect(parsed.success).toBe(true);
+    expect(parsed.success && parsed.data[0]?.issue_identifier).toBe(null);
+  });
+
+  it("rejects a non-string issue identifier", () => {
+    // Same blast radius as details (see the file header): the schema is an
+    // array, so a non-string here must fail the parse rather than leak into a
+    // Text node and crash the row.
+    const bad = {
+      id: "inbox-7",
+      recipient_type: "member",
+      type: "status_changed",
+      issue_identifier: 314,
+    };
+    expect(InboxListSchema.safeParse([bad]).success).toBe(false);
+  });
 });
