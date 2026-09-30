@@ -66,6 +66,7 @@ jobs:
               - 'scripts/worktree-db.test.sh'
               - 'scripts/dev-env.sh'
               - 'scripts/dev-env.test.sh'
+              - 'scripts/qa-clean.sh'
               - 'scripts/selfhost-wait.sh'
               # selfhost-config.test.sh asserts on the installers' side of
               # the port contract, so a change to either must run it.
