@@ -233,6 +233,12 @@ func LoadConfig(overrides Overrides) (Config, error) {
 		if oc := openclawOverrideFrom(cliCfg); oc != nil {
 			applyOpenclawOverride(oc)
 		}
+		// DeerFlow deployment root from config (RUYI-283 QA P1): injects
+		// MULTICA_DEERFLOW_HOME into this process env so both the turn path
+		// and model discovery start the bridge in the deployment root.
+		if dc := deerflowOverrideFrom(cliCfg); dc != nil {
+			applyDeerflowOverride(dc)
+		}
 		// Per-machine custom-runtime command path overrides (MUL-3284).
 		// Copy into our own map so later mutation of the loaded config can't
 		// alias daemon state, and so an empty map normalizes to nil.
@@ -1206,5 +1212,33 @@ func applyOpenclawOverride(oc *cli.OpenClawOverride) {
 		if _, set := os.LookupEnv(execenv.OpenclawCLITimeoutEnv); !set {
 			_ = os.Setenv(execenv.OpenclawCLITimeoutEnv, oc.CLITimeout)
 		}
+	}
+}
+
+// deerflowOverrideFrom returns the DeerFlow override block from a loaded
+// CLIConfig, or nil when no override is configured. Same nullable-pointer
+// navigation contract as openclawOverrideFrom.
+func deerflowOverrideFrom(cfg cli.CLIConfig) *cli.DeerflowOverride {
+	if cfg.Backends == nil {
+		return nil
+	}
+	return cfg.Backends.Deerflow
+}
+
+// applyDeerflowOverride translates backends.deerflow.home into the
+// MULTICA_DEERFLOW_HOME process env var (RUYI-283 QA P1). Env-set-by-user
+// wins over config-set-by-file: Setenv only when the var is not already
+// present, matching the contract documented on cli.DeerflowOverride.
+//
+// Side effects are scoped like applyOpenclawOverride: the var is
+// DeerFlow-specific (resolveDeerflowProcessDir and discoverDeerflowModels
+// are its only readers), LoadConfig runs once before any backend Execute,
+// and later reloads do not unset — the daemon lifecycle is exit-and-respawn.
+func applyDeerflowOverride(dc *cli.DeerflowOverride) {
+	if dc == nil || dc.Home == "" {
+		return
+	}
+	if _, set := os.LookupEnv(agent.DeerflowHomeEnv); !set {
+		_ = os.Setenv(agent.DeerflowHomeEnv, dc.Home)
 	}
 }
