@@ -40,11 +40,7 @@
     },
     "proposals": {
       "title": "제안 풀",
-      "empty": "제안 풀이 비어 있습니다.",
-      "pending": "채택 대기 {{count}}건",
-      "adopted": "누적 채택 {{count}}건",
-      "total": "총 {{count}}건",
-      "latest": "최근 제안: {{title}}"
+      "pendingModel": "제안 지표는 새 제안 모델(RUYI-305)이 제공된 후 연결됩니다."
     },
     "knowledge": {
       "title": "지식 미러",

@@ -423,9 +423,7 @@ export type {
   SelfEvolutionOverviewTier,
   SelfEvolutionOverviewQuality,
   SelfEvolutionOverviewQuiz,
-  SelfEvolutionOverviewProposal,
-  SelfEvolutionOverviewProposals,
-  SelfEvolutionOverviewScan,
+      SelfEvolutionOverviewScan,
   SelfEvolutionOverviewKnowledge,
   SelfEvolutionOverviewSkills,
 } from "./self-evolution-overview";

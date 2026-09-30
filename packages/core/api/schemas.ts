@@ -4463,21 +4463,6 @@ const SelfEvolutionOverviewQuizSchema = z.object({
   last_measured_at: z.string().optional(),
 });
 
-const SelfEvolutionOverviewProposalSchema = z.object({
-  id: z.string().default(""),
-  title: z.string().default(""),
-  status: z.string().default(""),
-  created_at: z.string().default(""),
-});
-
-const SelfEvolutionOverviewProposalsSchema = z.object({
-  total: z.number().default(0),
-  pending: z.number().default(0),
-  adopted: z.number().default(0),
-  by_status: z.record(z.string(), z.number()).default({}),
-  latest: SelfEvolutionOverviewProposalSchema.optional(),
-});
-
 const SelfEvolutionOverviewScanSchema = z.object({
   result: z.string().default(""),
   trigger_source: z.string().default(""),
@@ -4523,18 +4508,12 @@ export const SelfEvolutionOverviewSchema = z.object({
     required_sample: 0,
     required_baseline: 0,
   }),
-  proposals: SelfEvolutionOverviewProposalsSchema.default({
-    total: 0,
-    pending: 0,
-    adopted: 0,
-    by_status: {},
-  }),
   knowledge: SelfEvolutionOverviewKnowledgeSchema.default({ dirs: 0, entries: 0 }),
   skills: SelfEvolutionOverviewSkillsSchema.default({ count: 0, invocations: 0 }),
 });
 
 // The fallback for a response that did not parse: no tier rows, an unmeasured
-// window, no quiz scope, an empty pool, an empty mirror and no skills. None of
+// window, no quiz scope, an empty mirror and no skills. None of
 // these may arrive as a zero pretending to be a reading.
 export const EMPTY_SELF_EVOLUTION_OVERVIEW: SelfEvolutionOverview = {
   versions: [],
@@ -4547,7 +4526,6 @@ export const EMPTY_SELF_EVOLUTION_OVERVIEW: SelfEvolutionOverview = {
     excluded_failed_runs: 0,
   },
   quiz: { verdict: "insufficient", measured: false, required_sample: 0, required_baseline: 0 },
-  proposals: { total: 0, pending: 0, adopted: 0, by_status: {} },
   knowledge: { dirs: 0, entries: 0 },
   skills: { count: 0, invocations: 0 },
 };

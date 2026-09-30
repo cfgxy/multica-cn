@@ -60,24 +60,6 @@ export interface SelfEvolutionOverviewQuiz {
   last_measured_at?: string;
 }
 
-/** The pool's most recent proposal, as the list endpoint serves it. */
-export interface SelfEvolutionOverviewProposal {
-  id: string;
-  title: string;
-  status: string;
-  created_at: string;
-}
-
-export interface SelfEvolutionOverviewProposals {
-  total: number;
-  /** draft + needs_revision: in the pool awaiting a decision. */
-  pending: number;
-  adopted: number;
-  /** The full status breakdown, so no status hides behind the headlines. */
-  by_status: Record<string, number>;
-  latest?: SelfEvolutionOverviewProposal;
-}
-
 export interface SelfEvolutionOverviewScan {
   /** "noop" | "changed" | "failed", server-driven. */
   result: string;
@@ -102,7 +84,6 @@ export interface SelfEvolutionOverview {
   versions: SelfEvolutionOverviewTier[];
   quality: SelfEvolutionOverviewQuality;
   quiz: SelfEvolutionOverviewQuiz;
-  proposals: SelfEvolutionOverviewProposals;
   knowledge: SelfEvolutionOverviewKnowledge;
   skills: SelfEvolutionOverviewSkills;
 }
