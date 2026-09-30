@@ -33,6 +33,7 @@ import (
 const (
 	agentOfflineText        = "⚠️ The agent is offline, so this message won't be processed automatically."
 	agentArchivedText       = "⚠️ This agent has been archived and can't respond. Please contact your workspace admin."
+	sessionUnavailableText  = "⚠️ This session can no longer be started. Send /new to begin a new one."
 	freshPendingText        = "✅ Fresh start ready. Your next chat message will run without previous context."
 	chatStartedText         = "✅ Started a new Multica chat. Your next message will enter it."
 	issueUsageText          = "Please include an issue title. Use:\n\n`/issue <title>`\n\n`[description]` (optional)"
@@ -122,6 +123,11 @@ func (r *OutboundReplier) Reply(ctx context.Context, inst engine.ResolvedInstall
 	case engine.OutcomeAgentArchived:
 		if err := r.post(ctx, inst, msg, agentArchivedText); err != nil {
 			r.logger.WarnContext(ctx, "dingtalk replier: archived notice failed",
+				"installation_id", util.UUIDToString(inst.ID), "error", err)
+		}
+	case engine.OutcomeSessionUnavailable:
+		if err := r.post(ctx, inst, msg, sessionUnavailableText); err != nil {
+			r.logger.WarnContext(ctx, "dingtalk replier: session-unavailable notice failed",
 				"installation_id", util.UUIDToString(inst.ID), "error", err)
 		}
 	case engine.OutcomeFreshPending:

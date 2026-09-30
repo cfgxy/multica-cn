@@ -28,11 +28,12 @@ import (
 //   - Dropped addressed /issue commands: an authorization/status refusal.
 
 const (
-	msgFreshPending   = "✅ Fresh start ready. Your next chat message will run without previous context."
-	msgChatStarted    = "✅ Started a new Multica chat. Your next message will enter it."
-	msgIssueUsage     = "Please include an issue title. Use:\n\n/issue <title>\n[description] (optional)"
-	msgIssueNotMember = "You're not a member of this Multica workspace, so I can't file an issue for you. Ask a workspace admin to invite you, then send the command again."
-	msgIssueDisabled  = "This Telegram bot isn't connected to Multica (or was disconnected). Ask a workspace admin to reconnect it."
+	msgFreshPending       = "✅ Fresh start ready. Your next chat message will run without previous context."
+	msgSessionUnavailable = "⚠️ This session can no longer be started. Send /new to begin a new one."
+	msgChatStarted        = "✅ Started a new Multica chat. Your next message will enter it."
+	msgIssueUsage         = "Please include an issue title. Use:\n\n/issue <title>\n[description] (optional)"
+	msgIssueNotMember     = "You're not a member of this Multica workspace, so I can't file an issue for you. Ask a workspace admin to invite you, then send the command again."
+	msgIssueDisabled      = "This Telegram bot isn't connected to Multica (or was disconnected). Ask a workspace admin to reconnect it."
 )
 
 // bindingMinter is the binding-token surface the replier needs.
@@ -110,6 +111,11 @@ func (r *OutboundReplier) Reply(ctx context.Context, inst engine.ResolvedInstall
 	case engine.OutcomeAgentArchived:
 		if err := r.post(ctx, inst, msg, msgAgentArchived); err != nil {
 			r.logger.WarnContext(ctx, "telegram replier: archived notice failed",
+				"installation_id", util.UUIDToString(inst.ID), "error", err)
+		}
+	case engine.OutcomeSessionUnavailable:
+		if err := r.post(ctx, inst, msg, msgSessionUnavailable); err != nil {
+			r.logger.WarnContext(ctx, "telegram replier: session-unavailable notice failed",
 				"installation_id", util.UUIDToString(inst.ID), "error", err)
 		}
 	case engine.OutcomeFreshPending:

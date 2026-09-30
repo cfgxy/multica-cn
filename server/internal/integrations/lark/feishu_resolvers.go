@@ -241,6 +241,7 @@ func (r *feishuSessionBinder) AppendMessage(ctx context.Context, p engine.Append
 		ClaimToken:          p.ClaimToken,
 		MediaPendingSeconds: p.MediaPendingSeconds,
 		ForceFresh:          p.Message.ForceFresh,
+		RecordRunIntent:     p.RecordRunIntent,
 	})
 }
 
