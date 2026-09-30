@@ -4365,9 +4365,21 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 	// task inside the completion transaction below. It is broadcast (chat:done)
 	// only after the transaction commits.
 	var chatAssistantMsg *db.ChatMessage
+	guardConverged := false
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
 			return err
+		}
+		// RUYI-292 terminal guard: a completion landing on a cancel_requested
+		// row lost the cancel race ("first terminal writer wins") and must
+		// converge to cancelled instead of stamping completed over a stopping
+		// run. Short-circuits the rest of the completion transaction.
+		if converged, gerr := qtx.ConvergeCancelRequestedToCancelled(ctx, taskID); gerr != nil && !errors.Is(gerr, pgx.ErrNoRows) {
+			return fmt.Errorf("cancel-race guard: %w", gerr)
+		} else if converged.ID.Valid {
+			task = converged
+			guardConverged = true
+			return nil
 		}
 		t, err := qtx.CompleteAgentTask(ctx, db.CompleteAgentTaskParams{
 			ID:                    taskID,
@@ -4470,6 +4482,14 @@ func (s *TaskService) CompleteTask(ctx context.Context, taskID pgtype.UUID, resu
 		return nil, fmt.Errorf("complete task: %w", err)
 	}
 
+	if guardConverged {
+		// The cancel race was lost above; the row is cancelled, not completed.
+		// Skip every completed-specific side effect (chat outcome, completed
+		// broadcast, notifications) — the cancel/ack path owns this row now.
+		slog.Info("task completion converged to cancelled (cancel race lost)",
+			"task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
+		return &task, nil
+	}
 	slog.Info("task completed", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
 	s.captureTaskCompleted(ctx, task)
 
@@ -4845,9 +4865,20 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 
 	var task db.AgentTaskQueue
 	var retried *db.AgentTaskQueue
+	guardConverged := false
 	if err := s.runInTx(ctx, func(qtx *db.Queries) error {
 		if err := lockChatSessionForTaskWrite(ctx, qtx, taskID); err != nil {
 			return err
+		}
+		// RUYI-292 terminal guard: a failure landing on a cancel_requested row
+		// lost the cancel race and converges to cancelled (first terminal
+		// writer wins); the auto-retry child below must not spawn either.
+		if converged, gerr := qtx.ConvergeCancelRequestedToCancelled(ctx, taskID); gerr != nil && !errors.Is(gerr, pgx.ErrNoRows) {
+			return fmt.Errorf("cancel-race guard: %w", gerr)
+		} else if converged.ID.Valid {
+			task = converged
+			guardConverged = true
+			return nil
 		}
 		t, err := qtx.FailAgentTask(ctx, db.FailAgentTaskParams{
 			ID:             taskID,
