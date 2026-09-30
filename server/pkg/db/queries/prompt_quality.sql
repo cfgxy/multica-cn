@@ -340,3 +340,15 @@ FROM prompt_quality_daily d
 WHERE d.scope = 'agent'
   AND d.finished_runs > 0
 ORDER BY 1;
+-- name: ListAgentPromptQualityDailyByWorkspace :many
+-- Overview read path (RUYI-284): the same rows ListPromptQualityDaily serves
+-- for one agent, across every agent in a workspace in one pass. The agent
+-- join carries the workspace tenancy guard; scope stays a parameter so a
+-- future second measured tier widens the caller, not this query's shape.
+SELECT q.*
+FROM prompt_quality_daily q
+JOIN agent a ON a.id = q.scope_id
+WHERE q.scope = sqlc.arg('scope')::text
+  AND a.workspace_id = sqlc.arg('workspace_id')::uuid
+  AND q.day >= sqlc.arg('since')::date
+ORDER BY q.scope_id, q.day;

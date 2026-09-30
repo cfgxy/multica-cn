@@ -1,10 +1,6 @@
 {
   "title": "자기 진화",
   "description": "에이전트와 스쿼드 프롬프트가 시간에 따라 어떻게 바뀌었는지, 무엇이 그 변화를 만들었는지 확인합니다.",
-  "empty": {
-    "title": "아직 연결되지 않음",
-    "description": "이 화면은 프롬프트 거버넌스 개요를 위한 내비게이션 뼈대입니다(RUYI-183 1단계). 버전 이력, diff, 적용 현황 화면은 이후 단계에서 제공됩니다."
-  },
   "tabs": {
     "overview": "개요",
     "quality": "품질",
@@ -13,6 +9,57 @@
     "proposals": "제안",
     "knowledge": "지식",
     "versions": "버전"
+  },
+  "overview": {
+    "loading": "개요를 불러오는 중",
+    "error": "개요를 불러오지 못했습니다",
+    "retry": "다시 시도",
+    "versions": {
+      "title": "프롬프트 버전 활동",
+      "empty": "어떤 계층에도 버전 기록이 아직 없습니다.",
+      "currentVersion": "현재 v{{version}}",
+      "currentUnset": "{{count}}개 대상이 각자 진행 중",
+      "count": "{{subjects}}개 대상 · 총 {{count}}개 버전",
+      "lastChange": "{{date}} · {{actor}}",
+      "lastChangeNoActor": "{{date}}"
+    },
+    "quality": {
+      "title": "품질 측정값(최근 {{days}}일)",
+      "empty": "이 기간에 측정된 실행이 없습니다.",
+      "runs": "{{count}}회 실행",
+      "subjects": "측정값이 있는 에이전트 {{count}}개",
+      "excluded": "환경 또는 공급자 장애로 {{count}}회 실행 제외"
+    },
+    "quiz": {
+      "title": "문제은행 결론",
+      "empty": "기록된 측정이 아직 없습니다.",
+      "versions": "베이스라인 v{{baseline}} → v{{current}}",
+      "singleVersion": "현재 v{{current}}(첫 버전, 베이스라인 없음)",
+      "insufficientSample": "샘플 부족(베이스라인 {{baseline}}건, 현재 {{current}}건의 유효 측정 필요)",
+      "lastMeasured": "마지막 측정 {{date}}"
+    },
+    "proposals": {
+      "title": "제안 풀",
+      "empty": "제안 풀이 비어 있습니다.",
+      "pending": "채택 대기 {{count}}건",
+      "adopted": "누적 채택 {{count}}건",
+      "total": "총 {{count}}건",
+      "latest": "최근 제안: {{title}}"
+    },
+    "knowledge": {
+      "title": "지식 미러",
+      "empty": "등록된 디렉터리가 아직 없습니다.",
+      "dirs": "디렉터리 {{count}}개",
+      "entries": "항목 {{count}}건",
+      "lastScan": "마지막 스캔: {{result}} · {{date}}",
+      "neverScanned": "스캔 없음"
+    },
+    "skills": {
+      "title": "Skill 관측",
+      "empty": "등록된 skill이 아직 없습니다.",
+      "count": "skill {{count}}개",
+      "invocations": "누적 명시 호출 {{count}}회"
+    }
   },
   "skills": {
     "choose": "skill 선택",

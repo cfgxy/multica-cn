@@ -108,3 +108,29 @@ LIMIT 1;
 -- time; absent keys mean "tier not injected", never version 0.
 UPDATE agent_task_queue SET prompt_versions = $2
 WHERE id = $1;
+
+-- name: SummarizePromptVersionsByWorkspace :many
+-- Overview read path (RUYI-284): per-tier version activity for the whole
+-- workspace in one pass. subject_count matters: "current version" is only a
+-- well-defined number when the tier has a single subject, so the caller
+-- presents max_version as "highest version in the tier" otherwise.
+SELECT scope,
+       count(*) AS version_count,
+       count(DISTINCT scope_id) AS subject_count,
+       max(version)::int AS max_version,
+       max(created_at)::timestamptz AS last_change_at
+FROM prompt_version
+WHERE workspace_id = $1
+GROUP BY scope
+ORDER BY scope;
+
+-- name: LatestPromptVersionActorByScope :many
+-- Overview read path (RUYI-284): who made each tier's most recent change.
+-- DISTINCT ON because a tier's newest row is not necessarily its highest
+-- version — activating an older version appends a new row, and "most recent
+-- change" is an ordering over created_at, not over version numbers.
+SELECT DISTINCT ON (v.scope) v.scope, u.name AS actor_name, v.created_at
+FROM prompt_version v
+LEFT JOIN "user" u ON u.id = v.author_user_id
+WHERE v.workspace_id = $1
+ORDER BY v.scope, v.created_at DESC;
