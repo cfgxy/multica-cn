@@ -361,6 +361,8 @@
       "batchLines": "本轮：已回答 {{answered}} · 出错 {{errored}} · 已评分 {{graded}}",
       "samplesTitle": "最近评分样本",
       "samplesEmpty": "暂无评分样本。先运行一轮评分，等 run 完成后这里会出现逐条证据。",
+      "measuredAt": "测量时间",
+      "gradedAt": "评分时间",
       "version": "v{{version}}",
       "answered": "已回答",
       "errored": "出错",

@@ -362,6 +362,8 @@
       "batchLines": "This batch: {{answered}} answered · {{errored}} errored · {{graded}} graded",
       "samplesTitle": "Recent graded samples",
       "samplesEmpty": "No graded samples yet. Run one grading batch; per-check evidence appears here once the runs finish.",
+      "measuredAt": "Measured",
+      "gradedAt": "Graded",
       "version": "v{{version}}",
       "answered": "answered",
       "errored": "errored",
