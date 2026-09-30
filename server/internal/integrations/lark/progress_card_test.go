@@ -613,11 +613,14 @@ func TestProgressCardWindowTruncates(t *testing.T) {
 	}
 }
 
-// TestProgressCardCredentialsNeverRenderedRaw pins the security constraint: a
-// tool's arguments and output never reach the card, so a token that appears in
-// a shell command or an API response cannot be rendered into the chat.
+// TestProgressCardCredentialsNeverRenderedRaw pins the security constraint of
+// the derived tool text: titles and previews may only carry the payload's
+// Input/Output channels, and the card re-scrubs them with redact.Text before
+// rendering. Even a payload that skipped the daemon's and the ingest's
+// redaction (deployment-order skew) cannot leak a secret-shaped token into
+// the chat — it renders in its redacted form instead.
 func TestProgressCardCredentialsNeverRenderedRaw(t *testing.T) {
-	p, q, api, _ := newProgressTestPatcher(t)
+	p, q, api, clock := newProgressTestPatcher(t)
 	taskID := "ee777777-ee77-ee77-ee77-eeeeeeeeeeee"
 	sessionID := uuidString(q.binding.ChatSessionID)
 	secret := "supersecretvalue"
@@ -626,17 +629,29 @@ func TestProgressCardCredentialsNeverRenderedRaw(t *testing.T) {
 		Type: "tool_use", Tool: "Bash",
 		Input: map[string]any{"command": "curl -H 'Authorization: Bearer " + secret + "'"},
 	}))
+	clock.now = clock.now.Add(2 * time.Second)
+	p.handleTaskMessage(progressFrame(taskID, sessionID, 2, protocol.TaskMessagePayload{
+		Type: "tool_result", Tool: "Bash",
+		Output: "token=" + secret,
+	}))
 
 	api.mu.Lock()
 	defer api.mu.Unlock()
-	if len(api.sent) != 1 {
-		t.Fatalf("expected the card to be created; sent=%d", len(api.sent))
+	if len(api.sent) != 1 || len(api.patched) != 1 {
+		t.Fatalf("expected one send and one patch; sent=%d patched=%d", len(api.sent), len(api.patched))
 	}
-	if strings.Contains(api.sent[0].CardJSON, secret) {
-		t.Fatalf("tool input must never be rendered into the card; got %s", api.sent[0].CardJSON)
+	card := api.patched[0].CardJSON
+	if strings.Contains(card, secret) {
+		t.Fatalf("a secret-shaped token must never render raw; got %s", card)
 	}
-	if !strings.Contains(api.sent[0].CardJSON, "Bash") {
-		t.Errorf("the tool name is the part that is safe to show; got %s", api.sent[0].CardJSON)
+	if !strings.Contains(card, "Bearer [REDACTED]") {
+		t.Errorf("the tool title must show the command in its redacted form; got %s", card)
+	}
+	if !strings.Contains(card, "[REDACTED CREDENTIAL]") {
+		t.Errorf("the result preview must show the output in its redacted form; got %s", card)
+	}
+	if !strings.Contains(card, "Bash") {
+		t.Errorf("the tool name is the part that is safe to show; got %s", card)
 	}
 }
 
@@ -710,5 +725,140 @@ func TestProgressCardHandlesProductionEventShape(t *testing.T) {
 	q.mu.Unlock()
 	if len(created) != 1 || uuidString(created[0].ChatSessionID) != sessionID {
 		t.Fatalf("card row must be keyed by the task-path session; got %+v", created)
+	}
+}
+
+// TestProgressEntryFromPayloadDerivesToolText pins the payload→entry mapping
+// for the two new text layers: a tool_use entry carries the title derived
+// from the (sanitized) input, a tool_result entry the preview derived from
+// the (truncated) output, and both degrade to the bare tool row when the
+// payload carries nothing derivable. IsError mapping is unaffected.
+func TestProgressEntryFromPayloadDerivesToolText(t *testing.T) {
+	errFlag := true
+	entry, ok := progressEntryFromPayload(protocol.TaskMessagePayload{
+		Type:  "tool_use",
+		Tool:  "Bash",
+		Input: map[string]any{"command": "git status"},
+	})
+	if !ok || entry.Tool != "Bash" || entry.Text != "git status" {
+		t.Fatalf("tool_use must derive its title from the input; got %+v ok=%v", entry, ok)
+	}
+
+	entry, ok = progressEntryFromPayload(protocol.TaskMessagePayload{Type: "tool_use", Tool: "Read"})
+	if !ok || entry.Text != "" {
+		t.Fatalf("tool_use without input must degrade to the bare row; got %+v", entry)
+	}
+
+	entry, ok = progressEntryFromPayload(protocol.TaskMessagePayload{
+		Type: "tool_result", Tool: "Bash", Output: "clean tree",
+	})
+	if !ok || entry.Text != "clean tree" {
+		t.Fatalf("tool_result must derive its preview from the output; got %+v", entry)
+	}
+
+	entry, ok = progressEntryFromPayload(protocol.TaskMessagePayload{
+		Type: "tool_result", Tool: "Bash", Output: "boom", IsError: &errFlag,
+	})
+	if !ok || entry.Text != "boom" || entry.Success == nil || *entry.Success {
+		t.Fatalf("failed tool_result must keep the error flag beside its preview; got %+v", entry)
+	}
+
+	entry, ok = progressEntryFromPayload(protocol.TaskMessagePayload{Type: "tool_result", Tool: "Read"})
+	if !ok || entry.Text != "" {
+		t.Fatalf("tool_result without output must degrade to the bare row; got %+v", entry)
+	}
+}
+
+// progressMarkdownRows extracts the markdown-element contents of a rendered
+// card, one per entry row, so format assertions read against the exact row a
+// Lark chat will show.
+func progressMarkdownRows(t *testing.T, render CardRender) []string {
+	t.Helper()
+	doc := decodeCard(t, render.JSON)
+	body, _ := doc["body"].(map[string]any)
+	els, _ := body["elements"].([]any)
+	var rows []string
+	for _, el := range els {
+		m, ok := el.(map[string]any)
+		if !ok || m["tag"] != "markdown" {
+			continue
+		}
+		if c, ok := m["content"].(string); ok {
+			rows = append(rows, c)
+		}
+	}
+	return rows
+}
+
+// TestProgressCardRendersToolTitleAndResultSummary pins the two information
+// layers the issue asks for: a tool_use row reads 「工具调用 tool 标题」 and a
+// tool_result row 「工具结果 圆点 tool 结果：预览」. A failed result keeps its red
+// dot beside the summary — the preview must not mask the error state — and
+// entries with nothing derivable render exactly the bare row the card
+// shipped with, with no trailing separators.
+func TestProgressCardRendersToolTitleAndResultSummary(t *testing.T) {
+	failed := false
+	ok := true
+	render, err := NewDefaultProgressRenderer().RenderProgress(ProgressInput{
+		AgentName: "TestAgent",
+		State:     ProgressStateRunning,
+		Entries: []ProgressEntry{
+			{Kind: ProgressEntryToolUse, Tool: "Bash", Text: "git status"},
+			{Kind: ProgressEntryToolResult, Tool: "Bash", Text: "clean tree", Success: &ok},
+			{Kind: ProgressEntryToolResult, Tool: "Bash", Text: "boom", Success: &failed},
+			{Kind: ProgressEntryToolUse, Tool: "Read"},
+			{Kind: ProgressEntryToolResult, Tool: "Read"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("render progress card: %v", err)
+	}
+	rows := progressMarkdownRows(t, render)
+	want := []string{
+		"<text_tag color='blue'>工具调用</text_tag> **Bash** git status",
+		"<text_tag color='green'>工具结果</text_tag> 🟢 **Bash** 结果：clean tree",
+		"<text_tag color='green'>工具结果</text_tag> 🔴 **Bash** 结果：boom",
+		"<text_tag color='blue'>工具调用</text_tag> **Read**",
+		"<text_tag color='green'>工具结果</text_tag> ⚪ **Read**",
+	}
+	if len(rows) != len(want) {
+		t.Fatalf("expected %d tool rows, got %d: %+v", len(want), len(rows), rows)
+	}
+	for i := range want {
+		if rows[i] != want[i] {
+			t.Errorf("row %d = %q, want %q", i, rows[i], want[i])
+		}
+	}
+}
+
+// TestProgressCardCarriesToolTitleAndResultSummary walks the streaming path
+// end to end: task messages that carry Input/Output land on the card as a
+// tool title and an unwrapped result preview.
+func TestProgressCardCarriesToolTitleAndResultSummary(t *testing.T) {
+	p, q, api, clock := newProgressTestPatcher(t)
+	taskID := "eecccccc-cccc-cccc-cccc-cccccccccccc"
+	sessionID := uuidString(q.binding.ChatSessionID)
+
+	p.handleTaskMessage(progressFrame(taskID, sessionID, 1, protocol.TaskMessagePayload{
+		Type: "tool_use", Tool: "Bash",
+		Input: map[string]any{"command": "git status"},
+	}))
+	clock.now = clock.now.Add(2 * time.Second)
+	p.handleTaskMessage(progressFrame(taskID, sessionID, 2, protocol.TaskMessagePayload{
+		Type: "tool_result", Tool: "Bash",
+		Output: `"clean\ntree"`,
+	}))
+
+	api.mu.Lock()
+	defer api.mu.Unlock()
+	if len(api.patched) != 1 {
+		t.Fatalf("the result frame must patch the card; patched=%d", len(api.patched))
+	}
+	last := api.patched[0].CardJSON
+	if !strings.Contains(last, "**Bash** git status") {
+		t.Errorf("card must carry the tool title; got %s", last)
+	}
+	if !strings.Contains(last, "结果：clean tree") {
+		t.Errorf("card must carry the unwrapped result preview; got %s", last)
 	}
 }
