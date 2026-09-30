@@ -360,6 +360,40 @@ func (q *Queries) GetPromptQuizSweepState(ctx context.Context) (GetPromptQuizSwe
 	return i, err
 }
 
+const latestQuizMeasuredScopeByWorkspace = `-- name: LatestQuizMeasuredScopeByWorkspace :one
+SELECT r.scope, r.scope_id, a.name AS scope_name, max(r.measured_at)::timestamptz AS last_measured_at
+FROM prompt_quiz_result r
+JOIN agent a ON a.id = r.scope_id
+WHERE r.scope = 'agent' AND a.workspace_id = $1
+GROUP BY r.scope, r.scope_id, a.name
+ORDER BY last_measured_at DESC
+LIMIT 1
+`
+
+type LatestQuizMeasuredScopeByWorkspaceRow struct {
+	Scope          string             `json:"scope"`
+	ScopeID        pgtype.UUID        `json:"scope_id"`
+	ScopeName      string             `json:"scope_name"`
+	LastMeasuredAt pgtype.Timestamptz `json:"last_measured_at"`
+}
+
+// Overview read path (RUYI-284): the agent scope whose quiz measurements are
+// most recent, so the overview serves that scope's real baseline comparison
+// instead of inventing a workspace-wide number. The agent join is the
+// workspace tenancy guard; the scope literal mirrors the sweep, whose
+// measurements are all agent-scoped.
+func (q *Queries) LatestQuizMeasuredScopeByWorkspace(ctx context.Context, workspaceID pgtype.UUID) (LatestQuizMeasuredScopeByWorkspaceRow, error) {
+	row := q.db.QueryRow(ctx, latestQuizMeasuredScopeByWorkspace, workspaceID)
+	var i LatestQuizMeasuredScopeByWorkspaceRow
+	err := row.Scan(
+		&i.Scope,
+		&i.ScopeID,
+		&i.ScopeName,
+		&i.LastMeasuredAt,
+	)
+	return i, err
+}
+
 const listActivePromptQuizItemsForProfile = `-- name: ListActivePromptQuizItemsForProfile :many
 SELECT
     id,

@@ -2123,6 +2123,16 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			})
 		})
 
+		// Self-evolution workspace overview (RUYI-284): one read-only
+		// aggregate across the six data planes the tabs serve. Member-visible
+		// like the reads it mirrors; there is deliberately no write method on
+		// this tree — the overview is a lens, not a surface.
+		r.Route("/api/self-evolution", func(r chi.Router) {
+			r.Use(handler.RequireHumanActor)
+			r.Use(middleware.RequireWorkspaceMember(queries))
+			r.Get("/overview", h.GetSelfEvolutionOverview)
+		})
+
 		// --- Workspace-scoped routes (all require workspace membership) ---
 		r.Group(func(r chi.Router) {
 			r.Use(middleware.RequireWorkspaceMember(queries))
