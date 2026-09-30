@@ -361,6 +361,8 @@
       "batchLines": "이 배치: 답변 {{answered}} · 오류 {{errored}} · 채점 {{graded}}",
       "samplesTitle": "최근 채점 샘플",
       "samplesEmpty": "아직 채점 샘플이 없습니다. 채점 배치를 실행하면 run 완료 후 근거가 표시됩니다.",
+      "measuredAt": "측정 시간",
+      "gradedAt": "채점 시간",
       "version": "v{{version}}",
       "answered": "답변",
       "errored": "오류",

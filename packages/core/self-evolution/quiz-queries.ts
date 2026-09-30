@@ -26,8 +26,8 @@ export const promptQuizKeys = {
   item: (wsId: string, itemId: string) => [...promptQuizKeys.all(wsId), "item", itemId] as const,
   baseline: (wsId: string, scope: string, scopeId: string) =>
     [...promptQuizKeys.all(wsId), "baseline", scope, scopeId] as const,
-  samples: (wsId: string, scope: string, scopeId: string) =>
-    [...promptQuizKeys.all(wsId), "samples", scope, scopeId] as const,
+  samples: (wsId: string, scope: string, scopeId: string, version?: number) =>
+    [...promptQuizKeys.all(wsId), "samples", scope, scopeId, version] as const,
   batch: (wsId: string, batchId: string) =>
     [...promptQuizKeys.all(wsId), "batch", batchId] as const,
 };
@@ -80,7 +80,7 @@ export function promptQuizSamplesOptions(
   version?: number,
 ) {
   return queryOptions({
-    queryKey: promptQuizKeys.samples(wsId, scope, scopeId),
+    queryKey: promptQuizKeys.samples(wsId, scope, scopeId, version),
     queryFn: () =>
       api.getPromptQuizSamples({
         scope,
@@ -88,7 +88,7 @@ export function promptQuizSamplesOptions(
         ...(version !== undefined ? { version } : {}),
       }),
     staleTime: 60 * 1000,
-    enabled: wsId !== "" && scope !== "" && scopeId !== "",
+    enabled: wsId !== "" && scope !== "" && scopeId !== "" && (version ?? 0) > 0,
   });
 }
 
