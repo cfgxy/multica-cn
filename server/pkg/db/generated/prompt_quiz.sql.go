@@ -391,6 +391,34 @@ func (q *Queries) GetPromptQuizSweepState(ctx context.Context) (GetPromptQuizSwe
 	return i, err
 }
 
+const getPromptQuizTaskAnswer = `-- name: GetPromptQuizTaskAnswer :one
+SELECT content
+FROM task_message
+WHERE task_id = $1::uuid
+  AND type = 'text'
+  AND content IS NOT NULL
+ORDER BY seq DESC
+LIMIT 1
+`
+
+// The answer a quiz run produced: its last text message (RUYI-286 grading).
+//
+// 'text' is the assistant-output message type the daemon writes (thinking /
+// tool_use / tool_result / error are the others); the LAST one by seq is the
+// run's conclusion. task_message is the single transcript — this reads it,
+// it does not copy it, so grading evidence can point at the run without the
+// result row growing a second copy of the answer.
+//
+// ErrNoRows is the "no answer" case (errored run, or a completed run that
+// somehow produced no text): the collector maps it to a NULL score, which is
+// the "measured but not graded" state migration 950 defines.
+func (q *Queries) GetPromptQuizTaskAnswer(ctx context.Context, taskID pgtype.UUID) (pgtype.Text, error) {
+	row := q.db.QueryRow(ctx, getPromptQuizTaskAnswer, taskID)
+	var content pgtype.Text
+	err := row.Scan(&content)
+	return content, err
+}
+
 const latestQuizMeasuredScopeByWorkspace = `-- name: LatestQuizMeasuredScopeByWorkspace :one
 SELECT r.scope, r.scope_id, a.name AS scope_name, max(r.measured_at)::timestamptz AS last_measured_at
 FROM prompt_quiz_result r
@@ -423,33 +451,6 @@ func (q *Queries) LatestQuizMeasuredScopeByWorkspace(ctx context.Context, worksp
 		&i.LastMeasuredAt,
 	)
 	return i, err
-
-const getPromptQuizTaskAnswer = `-- name: GetPromptQuizTaskAnswer :one
-SELECT content
-FROM task_message
-WHERE task_id = $1::uuid
-  AND type = 'text'
-  AND content IS NOT NULL
-ORDER BY seq DESC
-LIMIT 1
-`
-
-// The answer a quiz run produced: its last text message (RUYI-286 grading).
-//
-// 'text' is the assistant-output message type the daemon writes (thinking /
-// tool_use / tool_result / error are the others); the LAST one by seq is the
-// run's conclusion. task_message is the single transcript — this reads it,
-// it does not copy it, so grading evidence can point at the run without the
-// result row growing a second copy of the answer.
-//
-// ErrNoRows is the "no answer" case (errored run, or a completed run that
-// somehow produced no text): the collector maps it to a NULL score, which is
-// the "measured but not graded" state migration 950 defines.
-func (q *Queries) GetPromptQuizTaskAnswer(ctx context.Context, taskID pgtype.UUID) (pgtype.Text, error) {
-	row := q.db.QueryRow(ctx, getPromptQuizTaskAnswer, taskID)
-	var content pgtype.Text
-	err := row.Scan(&content)
-	return content, err
 }
 
 const listActivePromptQuizItemsForProfile = `-- name: ListActivePromptQuizItemsForProfile :many
