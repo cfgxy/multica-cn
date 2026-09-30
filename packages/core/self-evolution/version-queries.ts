@@ -1,0 +1,66 @@
+import { queryOptions, useMutation, useQueryClient } from "@tanstack/react-query";
+import { api } from "../api";
+import type { SavePromptGovernanceVersionRequest } from "../types/prompt-version";
+import { workspaceKeys } from "../workspace/queries";
+
+/**
+ * Prompt governance version lifecycle queries (RUYI-285).
+ *
+ * The version line is the write side of what the quality dashboard measures:
+ * a save or switch appends a row AND rewrites the tier's business column, so
+ * both families of cache must move together. The agent detail and list caches
+ * carry the effective instructions — leaving them stale would have the editor
+ * preload a draft the tier stopped running after the very action it just
+ * confirmed.
+ *
+ * Nothing here is optimistic. The server can refuse a save (secret scan 422,
+ * blank-over-live 409) after the user has already seen a diff of exactly that
+ * text, so a row patched into cache before the answer could be a row the
+ * server never accepted.
+ */
+export const promptVersionKeys = {
+  all: (wsId: string) => ["prompt-governance-versions", wsId] as const,
+  list: (wsId: string, scope: string, scopeId: string) =>
+    [...promptVersionKeys.all(wsId), scope, scopeId] as const,
+};
+
+export function promptGovernanceVersionsOptions(
+  wsId: string,
+  scope: string,
+  scopeId: string,
+) {
+  return queryOptions({
+    queryKey: promptVersionKeys.list(wsId, scope, scopeId),
+    queryFn: () => api.listPromptGovernanceVersions(scope, scopeId),
+    enabled: wsId !== "" && scope !== "" && scopeId !== "",
+  });
+}
+
+function useInvalidateAfterVersionWrite(wsId: string, scope: string, scopeId: string) {
+  const qc = useQueryClient();
+  return () => {
+    qc.invalidateQueries({ queryKey: promptVersionKeys.all(wsId) });
+    // The business column moved with the version row; agent caches hold it.
+    if (scope === "agent" && scopeId !== "") {
+      qc.invalidateQueries({ queryKey: workspaceKeys.agent(wsId, scopeId) });
+      qc.invalidateQueries({ queryKey: workspaceKeys.agents(wsId) });
+    }
+  };
+}
+
+export function useSavePromptVersion(wsId: string, scope: string, scopeId: string) {
+  const invalidate = useInvalidateAfterVersionWrite(wsId, scope, scopeId);
+  return useMutation({
+    mutationFn: (data: SavePromptGovernanceVersionRequest) =>
+      api.savePromptGovernanceVersion(scope, scopeId, data),
+    onSuccess: invalidate,
+  });
+}
+
+export function useSwitchPromptVersion(wsId: string, scope: string, scopeId: string) {
+  const invalidate = useInvalidateAfterVersionWrite(wsId, scope, scopeId);
+  return useMutation({
+    mutationFn: (version: number) => api.switchPromptGovernanceVersion(scope, scopeId, version),
+    onSuccess: invalidate,
+  });
+}

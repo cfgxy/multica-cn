@@ -11,7 +11,8 @@
     "quiz": "퀴즈",
     "skills": "Skill",
     "proposals": "제안",
-    "knowledge": "지식"
+    "knowledge": "지식",
+    "versions": "버전"
   },
   "skills": {
     "choose": "skill 선택",
@@ -433,5 +434,42 @@
       "retry": "재시도"
     },
     "ownerOnly": "등록·스캔·해제·채택은 워크스페이스 소유자만 수행할 수 있습니다."
+  },
+  "versions": {
+    "title": "버전 기록",
+    "manage": "버전 관리",
+    "description": "유효한 변경은 모두 새 버전으로 추가되며 기록은 절대 다시 쓰이지 않습니다.",
+    "bindingNote": "품질 평가는 각 실행이 가져간 버전에 묶입니다. 배지는 각 버전이 처리한 실행 수를 보여줍니다.",
+    "newVersion": "새 버전",
+    "clearSelection": "선택 해제",
+    "emptyTitle": "아직 버전이 없습니다",
+    "emptyDescription": "이 에이전트의 현재 프롬프트로 첫 버전을 만드세요.",
+    "error": "버전을 불러오지 못했습니다",
+    "retry": "재시도",
+    "sourceImport": "베이스라인",
+    "sourceEdit": "편집",
+    "sourceRevert": "롤백",
+    "sourceAuto": "자동 스냅샷",
+    "fromVersion": "v{{version}}에서",
+    "latest": "최신",
+    "runs": "{{n}}회 실행",
+    "noRuns": "품질 데이터 없음",
+    "activate": "이 버전으로 전환",
+    "activateTitle": "v{{version}}을(를) 활성화할까요?",
+    "activateBody": "활성화하면 이 내용의 새 버전이 추가되고 즉시 적용됩니다. 기록은 다시 쓰이지 않습니다.",
+    "cancel": "취소",
+    "confirmActivate": "확인",
+    "compareTitle": "v{{from}} → v{{to}} 비교",
+    "editorTitle": "새 버전",
+    "editorDescription": "아래 텍스트를 다음 버전으로 저장하고 즉시 적용합니다.",
+    "contentLabel": "프롬프트 본문",
+    "contentHint": "현재 유효한 내용이 미리 채워져 있습니다. 저장 전에 편집하세요.",
+    "noteLabel": "변경 메모",
+    "notePlaceholder": "무엇을 왜 바꿨는지",
+    "save": "버전 저장",
+    "saving": "저장 중…",
+    "secretBlocked": "저장되지 않음: 프롬프트에 자격 증명이 포함된 것으로 보입니다.",
+    "findingLine": "{{line}}행",
+    "saveFailed": "저장 실패"
   }
 }
