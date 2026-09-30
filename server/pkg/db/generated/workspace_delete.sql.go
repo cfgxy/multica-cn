@@ -481,6 +481,9 @@ deleted_prompt_quiz_results AS (
 ),
 deleted_prompt_quiz_items AS (
     DELETE FROM prompt_quiz_item WHERE workspace_id = $1
+),
+deleted_channel_chat_run_intents AS (
+    DELETE FROM channel_chat_run_intent WHERE workspace_id = $1
 )
 UPDATE channel_media_pending_object
 SET state = CASE
@@ -518,6 +521,10 @@ WHERE channel_media_pending_object.workspace_id = $1
 // prompt_quiz_sweep_state is deliberately NOT here: it is the scheduler's
 // single-row cursor, has no workspace_id, and belongs to the deployment rather
 // than to any workspace.
+// Channel run-trigger intents (RUYI-304) are workspace-scoped with no
+// external side effects — unlike the media ledger below, a dead intent row
+// owns nothing outside this database, so it can be cascade-deleted directly
+// instead of being handed to a reconciler.
 // Keep the two-system cleanup ledger until object storage has been settled.
 // Moving every row out of pending also prevents a concurrent media bind from
 // attaching an object after the workspace teardown commits. The reconciler
