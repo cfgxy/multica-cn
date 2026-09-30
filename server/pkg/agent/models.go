@@ -1890,6 +1890,15 @@ type acpDiscoveryProvider struct {
 	extraEnv         []string
 	tmpdirPrefix     string
 	isolatedStateEnv string
+	// processDir, when non-empty, is the working directory the discovery
+	// subprocess starts in; empty inherits the daemon's cwd. DeerFlow needs
+	// this: its bridge resolves config.yaml relative to the process cwd, so
+	// discovery started anywhere else answers session/new with no models
+	// block (RUYI-283 QA failure surface 1). The session/new `cwd` param
+	// stays the temp dir below — process cwd and session cwd are separate
+	// concerns (deerflowBackend.resolveDeerflowProcessDir makes the same
+	// split on the task side).
+	processDir string
 	// acpArgs is the argv passed to the binary to start it in ACP
 	// server mode. Defaults to []string{"acp"} when nil/empty.
 	acpArgs []string
@@ -1967,6 +1976,12 @@ func discoverACPModels(ctx context.Context, runtimeCmd Command, p acpDiscoveryPr
 	}
 	cmd := runtimeCmd.exec(runCtx, cmdArgs...)
 	hideAgentWindow(cmd)
+	// A provider that needs a specific process cwd gets it here; without
+	// this the subprocess inherits the daemon's cwd, which for DeerFlow is
+	// never the deployment root in a standard deployment.
+	if p.processDir != "" {
+		cmd.Dir = p.processDir
+	}
 	childEnv := append(os.Environ(), p.extraEnv...)
 	if isolatedStateDir != "" {
 		childEnv = replaceEnvValue(childEnv, p.isolatedStateEnv, isolatedStateDir)
@@ -2921,16 +2936,25 @@ func codebuddyStaticModels() []Model {
 // discoverDeerflowModels enumerates the model catalog from a deerflow-acp
 // session/new handshake. The bridge advertises models.available_models (the
 // ACP UNSTABLE snake_case spelling parseACPSessionNewModels reads) and
-// honours session/set_model per session. Enumeration requires the bridge to
-// resolve its DeerFlow config; a backend without one answers session/new
-// with no models block. On any failure the caller falls back to the
-// manual-entry field.
+// honours session/set_model per session. Two preconditions must hold for the
+// handshake to yield anything (RUYI-283 QA):
+//
+//   - the bridge must start in the DeerFlow deployment root — it resolves
+//     config.yaml relative to its process cwd. MULTICA_DEERFLOW_HOME in the
+//     daemon process environment (set by backends.deerflow.home in
+//     config.json or a deployment-level export) selects that root; absent
+//     it, discovery inherits the daemon's cwd and the session/new response
+//     carries no models block.
+//   - the bridge's DeerFlow config must load.
+//
+// On any failure the caller falls back to the manual-entry field.
 func discoverDeerflowModels(ctx context.Context, runtimeCmd Command) (Catalog, error) {
 	models, err := discoverACPModels(ctx, runtimeCmd, acpDiscoveryProvider{
 		defaultBin:   "deerflow-acp",
 		clientName:   "multica-model-discovery",
 		tmpdirPrefix: "multica-deerflow-discovery-",
 		acpArgs:      []string{"acp"},
+		processDir:   strings.TrimSpace(os.Getenv(deerflowHomeEnv)),
 	})
 	if err != nil || len(models) == 0 {
 		if err != nil {

@@ -41,7 +41,13 @@ var deerflowBlockedArgs = map[string]blockedArgMode{
 // DEERFLOW_ACP_* configuration surface and the daemon passes the runtime's
 // env through untouched; re-deriving or overriding that surface here would
 // rebuild the env layer the bridge already owns.
-const deerflowHomeEnv = "MULTICA_DEERFLOW_HOME"
+const deerflowHomeEnv = DeerflowHomeEnv
+
+// DeerflowHomeEnv is the process-env var carrying the DeerFlow deployment
+// root. Exported because internal/daemon injects it at startup from
+// backends.deerflow.home (RUYI-283 QA P1); package-local call sites keep
+// the unexported spelling above.
+const DeerflowHomeEnv = "MULTICA_DEERFLOW_HOME"
 
 // DeerFlow's bridge answers unknown sessions and its own refusals with
 // private codes. They are all -320xx, which the shared ACP helpers do not
@@ -202,11 +208,30 @@ func (s *deerflowMessageStream) close() {
 }
 
 // resolveDeerflowProcessDir picks the working directory for the bridge
-// process. A configured deerflowHomeEnv wins when it names a real directory;
-// anything else falls back to the task workdir with a warning that says what
+// process. The deployment root is looked up in tiers, most specific first:
+//
+//  1. the task env's MULTICA_DEERFLOW_HOME (deployment-level injection via
+//     agent.Config.Env) — the historical spelling;
+//  2. the task env's DEERFLOW_HOME — the agent custom_env spelling. The
+//     MULTICA_ prefix is deliberately stripped from custom_env by
+//     isBlockedEnvKey, so this non-namespaced key is the one user-reachable
+//     per-agent configuration surface (RUYI-283 QA);
+//  3. the DAEMON process environment's MULTICA_DEERFLOW_HOME — set by
+//     backends.deerflow.home in config.json (applyDeerflowOverride) or a
+//     deployment-level export. The task env map never contains the daemon's
+//     process env, but this function runs inside the daemon, so the lookup
+//     is direct.
+//
+// Anything else falls back to the task workdir with a warning that says what
 // breaks, because a wrong cwd surfaces later as an opaque -32010.
 func (b *deerflowBackend) resolveDeerflowProcessDir(taskCwd string) string {
 	home := strings.TrimSpace(b.cfg.Env[deerflowHomeEnv])
+	if home == "" {
+		home = strings.TrimSpace(b.cfg.Env["DEERFLOW_HOME"])
+	}
+	if home == "" {
+		home = strings.TrimSpace(os.Getenv(deerflowHomeEnv))
+	}
 	if home == "" {
 		b.cfg.Logger.Warn("deerflow: "+deerflowHomeEnv+" is unset; starting the bridge in the task workdir",
 			"backend", "deerflow",
