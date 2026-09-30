@@ -1,8 +1,10 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/go-chi/chi/v5"
@@ -11,6 +13,14 @@ import (
 
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
 	"github.com/multica-ai/multica/server/pkg/promptquiz"
+)
+
+// The two read failures a baseline can hit, kept as sentinels so the shared
+// reader (promptQuizBaselineData) and its two HTTP callers render the same
+// messages the endpoint wrote before the overview joined it.
+var (
+	errQuizVersionRead = errors.New("failed to read the prompt version")
+	errQuizSampleRead  = errors.New("failed to read quiz measurements")
 )
 
 // Quiz bank maintenance and the regression reading (RUYI-185, self-evolution
@@ -372,7 +382,34 @@ func (h *Handler) GetPromptQuizBaseline(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 
-	current, err := h.Queries.GetLatestPromptVersion(r.Context(), db.GetLatestPromptVersionParams{
+	resp, err := h.promptQuizBaselineData(r.Context(), scope, scopeID)
+	if err != nil {
+		if errors.Is(err, errQuizVersionRead) {
+			writeError(w, http.StatusInternalServerError, errQuizVersionRead.Error())
+			return
+		}
+		writeError(w, http.StatusInternalServerError, errQuizSampleRead.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// promptQuizBaselineData is the read both the per-scope quiz endpoint and the
+// workspace overview (RUYI-284) serve. One function owns what a baseline
+// comparison is, so the two surfaces cannot drift apart; callers have already
+// established that scopeID belongs to the workspace. Every field a reader
+// needs to recompute the verdict travels on the response — nothing here is
+// collapsed into a bare label.
+func (h *Handler) promptQuizBaselineData(ctx context.Context, scope promptVersionScope, scopeID pgtype.UUID) (PromptQuizBaselineResponse, error) {
+	resp := PromptQuizBaselineResponse{
+		Scope:          string(scope),
+		ScopeID:        uuidToString(scopeID),
+		RequiredSample: promptquiz.NewVersionSampleSize,
+		RequiredBase:   promptquiz.BaselineSampleSize,
+		Outcomes:       map[string]int{},
+	}
+
+	current, err := h.Queries.GetLatestPromptVersion(ctx, db.GetLatestPromptVersionParams{
 		Scope:   string(scope),
 		ScopeID: scopeID,
 	})
@@ -380,31 +417,15 @@ func (h *Handler) GetPromptQuizBaseline(w http.ResponseWriter, r *http.Request) 
 		if errors.Is(err, pgx.ErrNoRows) {
 			// No version, therefore nothing to compare. An empty reading, not
 			// an error and not a zero score.
-			writeJSON(w, http.StatusOK, PromptQuizBaselineResponse{
-				Scope: string(scope), ScopeID: uuidToString(scopeID),
-				RequiredSample: promptquiz.NewVersionSampleSize,
-				RequiredBase:   promptquiz.BaselineSampleSize,
-				Outcomes:       map[string]int{},
-			})
-			return
+			return resp, nil
 		}
-		writeError(w, http.StatusInternalServerError, "failed to read the prompt version")
-		return
+		return resp, fmt.Errorf("%w: %v", errQuizVersionRead, err)
 	}
+	resp.CurrentVersion = current.Version
 
-	resp := PromptQuizBaselineResponse{
-		Scope:          string(scope),
-		ScopeID:        uuidToString(scopeID),
-		CurrentVersion: current.Version,
-		RequiredSample: promptquiz.NewVersionSampleSize,
-		RequiredBase:   promptquiz.BaselineSampleSize,
-		Outcomes:       map[string]int{},
-	}
-
-	currentRows, outcomes, err := h.readQuizSample(r, scope, scopeID, current.Version)
+	currentRows, outcomes, err := h.readQuizSample(ctx, scope, scopeID, current.Version)
 	if err != nil {
-		writeError(w, http.StatusInternalServerError, "failed to read quiz measurements")
-		return
+		return resp, fmt.Errorf("%w: %v", errQuizSampleRead, err)
 	}
 	resp.Outcomes = outcomes
 
@@ -416,8 +437,7 @@ func (h *Handler) GetPromptQuizBaseline(w http.ResponseWriter, r *http.Request) 
 	if !ok {
 		// No usable reading yet, so no cohort and no sample. Every stored row is
 		// still counted in Outcomes above.
-		writeJSON(w, http.StatusOK, resp)
-		return
+		return resp, nil
 	}
 	currentSample, incomparable := cohort.Select(currentRows)
 	resp.Incomparable = incomparable
@@ -426,17 +446,16 @@ func (h *Handler) GetPromptQuizBaseline(w http.ResponseWriter, r *http.Request) 
 
 	if current.Version > 1 {
 		resp.BaselineVersion = current.Version - 1
-		baseRows, _, err := h.readQuizSample(r, scope, scopeID, resp.BaselineVersion)
+		baseRows, _, err := h.readQuizSample(ctx, scope, scopeID, resp.BaselineVersion)
 		if err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to read quiz measurements")
-			return
+			return resp, fmt.Errorf("%w: %v", errQuizSampleRead, err)
 		}
 		baseSample, baseIncomparable := cohort.Select(baseRows)
 		resp.BaselineIncomparable = baseIncomparable
 		cmp := promptquiz.Compare(baseSample, currentSample)
 		resp.Comparison = &cmp
 	}
-	writeJSON(w, http.StatusOK, resp)
+	return resp, nil
 }
 
 // quizSampleLimit bounds one read. Generous relative to the required group
@@ -461,8 +480,8 @@ const quizSampleLimit = 500
 // Errored rows never enter a sample — a run that never answered measured nothing
 // about the prompt, and folding its absent cost in would let an outage read as a
 // cost improvement. Runaway but completed runs stay in.
-func (h *Handler) readQuizSample(r *http.Request, scope promptVersionScope, scopeID pgtype.UUID, version int32) ([]promptquiz.Measurement, map[string]int, error) {
-	rows, err := h.Queries.ListPromptQuizSamples(r.Context(), db.ListPromptQuizSamplesParams{
+func (h *Handler) readQuizSample(ctx context.Context, scope promptVersionScope, scopeID pgtype.UUID, version int32) ([]promptquiz.Measurement, map[string]int, error) {
+	rows, err := h.Queries.ListPromptQuizSamples(ctx, db.ListPromptQuizSamplesParams{
 		Scope:    string(scope),
 		ScopeID:  scopeID,
 		Version:  version,

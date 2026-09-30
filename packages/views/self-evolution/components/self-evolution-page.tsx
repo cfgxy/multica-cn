@@ -2,13 +2,6 @@
 
 import { useState } from "react";
 import { Sprout } from "lucide-react";
-import {
-  Empty,
-  EmptyDescription,
-  EmptyHeader,
-  EmptyMedia,
-  EmptyTitle,
-} from "@multica/ui/components/ui/empty";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@multica/ui/components/ui/tabs";
 import { useWorkspaceId } from "@multica/core/hooks";
 import { CollectionPageHeader } from "../../layout/collection-page";
@@ -16,6 +9,7 @@ import { PAGE_GUTTER } from "../../layout/page-header";
 import { useT } from "../../i18n";
 import { cn } from "@multica/ui/lib/utils";
 import { KnowledgeTab } from "./knowledge-tab";
+import { OverviewTab } from "./overview-tab";
 import { ProposalTab } from "./proposal-tab";
 import { QualityTab } from "./quality-tab";
 import { QuizTab } from "./quiz-tab";
@@ -62,15 +56,7 @@ export function SelfEvolutionPage() {
             <TabsTrigger value="knowledge">{t(($) => $.tabs.knowledge)}</TabsTrigger>
           </TabsList>
           <TabsContent value="overview" className="pt-6">
-            <Empty>
-              <EmptyHeader>
-                <EmptyMedia variant="icon">
-                  <Sprout className="h-4 w-4" />
-                </EmptyMedia>
-                <EmptyTitle>{t(($) => $.empty.title)}</EmptyTitle>
-                <EmptyDescription>{t(($) => $.empty.description)}</EmptyDescription>
-              </EmptyHeader>
-            </Empty>
+            <OverviewTab wsId={wsId} />
           </TabsContent>
           <TabsContent value="quality" className="pt-6">
             <QualityTab wsId={wsId} onManageVersions={() => setTab("versions")} />

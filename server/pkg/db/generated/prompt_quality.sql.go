@@ -146,6 +146,69 @@ func (q *Queries) GetPromptVersionContent(ctx context.Context, arg GetPromptVers
 	return content, err
 }
 
+const listAgentPromptQualityDailyByWorkspace = `-- name: ListAgentPromptQualityDailyByWorkspace :many
+SELECT q.id, q.workspace_id, q.scope, q.scope_id, q.version, q.day, q.finished_runs, q.injected_tokens, q.run_tokens_median, q.discipline_score_median, q.discipline_covered_runs, q.discipline_deductions, q.tool_results_measured, q.tool_results_error, q.attempt_total, q.retried_runs, q.attributable_failed_runs, q.excluded_failed_runs, q.failure_reason_counts, q.first_pass_issues, q.reviewed_issues, q.updated_at
+FROM prompt_quality_daily q
+JOIN agent a ON a.id = q.scope_id
+WHERE q.scope = $1::text
+  AND a.workspace_id = $2::uuid
+  AND q.day >= $3::date
+ORDER BY q.scope_id, q.day
+`
+
+type ListAgentPromptQualityDailyByWorkspaceParams struct {
+	Scope       string      `json:"scope"`
+	WorkspaceID pgtype.UUID `json:"workspace_id"`
+	Since       pgtype.Date `json:"since"`
+}
+
+// Overview read path (RUYI-284): the same rows ListPromptQualityDaily serves
+// for one agent, across every agent in a workspace in one pass. The agent
+// join carries the workspace tenancy guard; scope stays a parameter so a
+// future second measured tier widens the caller, not this query's shape.
+func (q *Queries) ListAgentPromptQualityDailyByWorkspace(ctx context.Context, arg ListAgentPromptQualityDailyByWorkspaceParams) ([]PromptQualityDaily, error) {
+	rows, err := q.db.Query(ctx, listAgentPromptQualityDailyByWorkspace, arg.Scope, arg.WorkspaceID, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []PromptQualityDaily{}
+	for rows.Next() {
+		var i PromptQualityDaily
+		if err := rows.Scan(
+			&i.ID,
+			&i.WorkspaceID,
+			&i.Scope,
+			&i.ScopeID,
+			&i.Version,
+			&i.Day,
+			&i.FinishedRuns,
+			&i.InjectedTokens,
+			&i.RunTokensMedian,
+			&i.DisciplineScoreMedian,
+			&i.DisciplineCoveredRuns,
+			&i.DisciplineDeductions,
+			&i.ToolResultsMeasured,
+			&i.ToolResultsError,
+			&i.AttemptTotal,
+			&i.RetriedRuns,
+			&i.AttributableFailedRuns,
+			&i.ExcludedFailedRuns,
+			&i.FailureReasonCounts,
+			&i.FirstPassIssues,
+			&i.ReviewedIssues,
+			&i.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPromptPerplexityBacklogWorkspaces = `-- name: ListPromptPerplexityBacklogWorkspaces :many
 SELECT DISTINCT d.workspace_id
 FROM prompt_quality_daily d

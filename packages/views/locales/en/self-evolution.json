@@ -1,10 +1,6 @@
 {
   "title": "Self-Evolution",
   "description": "How agent and squad prompts change over time, and what changed them.",
-  "empty": {
-    "title": "Not wired up yet",
-    "description": "This is a navigation skeleton for the prompt-governance overview (RUYI-183 phase 1). Version history, diff and adoption views land in a later stage."
-  },
   "tabs": {
     "overview": "Overview",
     "quality": "Quality",
@@ -13,6 +9,53 @@
     "proposals": "Proposals",
     "knowledge": "Knowledge",
     "versions": "Versions"
+  },
+  "overview": {
+    "loading": "Loading the overview",
+    "error": "Failed to load the overview",
+    "retry": "Retry",
+    "versions": {
+      "title": "Prompt version activity",
+      "empty": "No version history on any tier yet.",
+      "currentVersion": "Current v{{version}}",
+      "currentUnset": "{{count}} subjects advancing on their own",
+      "count": "{{count}} versions across {{subjects}} subjects",
+      "lastChange": "{{date}} · {{actor}}",
+      "lastChangeNoActor": "{{date}}"
+    },
+    "quality": {
+      "title": "Quality readings (last {{days}} days)",
+      "empty": "No measured runs in this window.",
+      "runs": "{{count}} runs",
+      "subjects": "{{count}} agents with readings",
+      "excluded": "{{count}} runs excluded for environment or provider failures"
+    },
+    "quiz": {
+      "title": "Quiz conclusion",
+      "empty": "No recorded measurements yet.",
+      "versions": "Baseline v{{baseline}} → v{{current}}",
+      "singleVersion": "Current v{{current}} (first version, no baseline yet)",
+      "insufficientSample": "Insufficient sample (baseline needs {{baseline}}, current needs {{current}} usable readings)",
+      "lastMeasured": "Last measured {{date}}"
+    },
+    "proposals": {
+      "title": "Proposal pool",
+      "pendingModel": "Proposal metrics arrive with the new proposal model (RUYI-305)."
+    },
+    "knowledge": {
+      "title": "Knowledge mirror",
+      "empty": "No registered directories yet.",
+      "dirs": "{{count}} directories",
+      "entries": "{{count}} entries",
+      "lastScan": "Last scan: {{result}} · {{date}}",
+      "neverScanned": "Never scanned"
+    },
+    "skills": {
+      "title": "Skill observations",
+      "empty": "No registered skills yet.",
+      "count": "{{count}} skills",
+      "invocations": "{{count}} explicit invocations in total"
+    }
   },
   "skills": {
     "choose": "Skill",
