@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { MulticaApiError } from "../src/rest.js";
 import { findTool, TOOL_DEFINITIONS } from "../src/tools.js";
 import type { MulticaClient } from "../src/rest.js";
 import { ToolInputError } from "../src/schemas.js";
@@ -63,6 +64,7 @@ describe("tool surface", () => {
     expect(TOOL_DEFINITIONS.map((tool) => tool.name).sort()).toEqual(
       [
         "add_comment",
+        "assign_issue",
         "create_issue",
         "dispatch_agent",
         "get_issue",
@@ -78,7 +80,7 @@ describe("tool surface", () => {
   });
 
   it("documents the quota cost on dispatch and comment tools", () => {
-    for (const name of ["dispatch_agent", "add_comment", "update_issue_status"]) {
+    for (const name of ["dispatch_agent", "add_comment", "update_issue_status", "assign_issue"]) {
       const tool = findTool(name);
       expect(tool?.description).toMatch(/quota|run/i);
     }
@@ -255,5 +257,190 @@ describe("progress_digest handler", () => {
     for (const params of queried) {
       expect(params.project_id).toBe("p9");
     }
+  });
+});
+
+describe("assign_issue handler", () => {
+  function updateIssueOf(
+    client: MulticaClient,
+  ): Array<{ id: string; body: Record<string, unknown> }> {
+    return callsOf(client)
+      .filter((call) => call.method === "updateIssue")
+      .map((call) => ({
+        id: call.args[0] as string,
+        body: call.args[1] as Record<string, unknown>,
+      }));
+  }
+
+  it("assigns to each assignee kind (member, agent, squad)", async () => {
+    const tool = findTool("assign_issue");
+    for (const assigneeType of ["member", "agent", "squad"] as const) {
+      const client = fakeClient();
+      await tool?.handler(
+        { workspace: WS, issue: "VOI-1", assignee_type: assigneeType, assignee_id: "u1" },
+        client,
+      );
+      const [call] = updateIssueOf(client);
+      expect(call?.body).toEqual({ assignee_type: assigneeType, assignee_id: "u1" });
+    }
+  });
+
+  it("reassigns from A to B with a plain pair body", async () => {
+    const captured: Array<Record<string, unknown>> = [];
+    const client = fakeClient({
+      updateIssue: async (_ws: string, _id: string, body: Record<string, unknown>) => {
+        captured.push(body);
+        return issueFixture({
+          status: "in_progress",
+          revision: 3,
+          assignee_type: "agent",
+          assignee_id: "agent-b",
+        });
+      },
+    });
+    const tool = findTool("assign_issue");
+    const result = (await tool?.handler(
+      { workspace: WS, issue: "VOI-1", assignee_type: "agent", assignee_id: "agent-b" },
+      client,
+    )) as Record<string, unknown>;
+    expect(captured[0]).toEqual({ assignee_type: "agent", assignee_id: "agent-b" });
+    expect(JSON.stringify(captured[0])).not.toContain("null");
+    expect(result.assigned).toBe(true);
+    expect(result.assignee_type).toBe("agent");
+    expect(result.assignee_id).toBe("agent-b");
+  });
+
+  it("unassigns via the literal 'unassigned' and sends explicit JSON nulls", async () => {
+    const client = fakeClient();
+    const tool = findTool("assign_issue");
+    const result = (await tool?.handler(
+      { workspace: WS, issue: "VOI-1", assignee_type: "unassigned" },
+      client,
+    )) as Record<string, unknown>;
+    const [call] = updateIssueOf(client);
+    expect(call).toBeDefined();
+    const body = call?.body ?? {};
+    expect(Object.hasOwn(body, "assignee_type")).toBe(true);
+    expect(Object.hasOwn(body, "assignee_id")).toBe(true);
+    expect(body.assignee_type).toBeNull();
+    expect(body.assignee_id).toBeNull();
+    const wire = JSON.stringify(body);
+    expect(wire).toContain('"assignee_type":null');
+    expect(wire).toContain('"assignee_id":null');
+    expect(wire).not.toContain('""');
+    expect(result.assigned).toBe(false);
+  });
+
+  it("accepts identifier and UUID issue references verbatim", async () => {
+    const tool = findTool("assign_issue");
+    const uuid = "0b7f4c1e-1111-4222-8333-abcdefabcdef";
+    for (const issue of ["VOI-1", uuid]) {
+      const client = fakeClient();
+      await tool?.handler(
+        { workspace: WS, issue, assignee_type: "member", assignee_id: "u1" },
+        client,
+      );
+      const [call] = updateIssueOf(client);
+      expect(call?.id).toBe(issue);
+    }
+  });
+
+  it("passes suppress_run, handoff_note and expected_revision through", async () => {
+    const client = fakeClient();
+    const tool = findTool("assign_issue");
+    await tool?.handler(
+      {
+        workspace: WS,
+        issue: "VOI-1",
+        assignee_type: "squad",
+        assignee_id: "s1",
+        suppress_run: true,
+        handoff_note: "先跑回归再动实现",
+        expected_revision: 4,
+      },
+      client,
+    );
+    const [call] = updateIssueOf(client);
+    expect(call?.body).toEqual({
+      assignee_type: "squad",
+      assignee_id: "s1",
+      suppress_run: true,
+      handoff_note: "先跑回归再动实现",
+      expected_revision: 4,
+    });
+  });
+
+  it("rejects an unknown assignee_type before hitting the API", async () => {
+    const tool = findTool("assign_issue");
+    await expect(
+      tool?.handler(
+        { workspace: WS, issue: "VOI-1", assignee_type: "robot", assignee_id: "r1" },
+        fakeClient(),
+      ),
+    ).rejects.toThrow(ToolInputError);
+  });
+
+  it("rejects a missing assignee_id for a concrete assignee_type", async () => {
+    const tool = findTool("assign_issue");
+    for (const assigneeType of ["member", "agent", "squad"]) {
+      await expect(
+        tool?.handler({ workspace: WS, issue: "VOI-1", assignee_type: assigneeType }, fakeClient()),
+      ).rejects.toThrow(ToolInputError);
+    }
+  });
+
+  it("rejects assignee_id combined with 'unassigned'", async () => {
+    const tool = findTool("assign_issue");
+    await expect(
+      tool?.handler(
+        { workspace: WS, issue: "VOI-1", assignee_type: "unassigned", assignee_id: "u1" },
+        fakeClient(),
+      ),
+    ).rejects.toThrow(ToolInputError);
+  });
+
+  it("propagates server errors with status and message intact", async () => {
+    const tool = findTool("assign_issue");
+    const conflict = fakeClient({
+      updateIssue: async () => {
+        throw new MulticaApiError(409, "issue_revision_conflict: issue changed since revision 3");
+      },
+    });
+    const err = await tool
+      ?.handler(
+        { workspace: WS, issue: "VOI-1", assignee_type: "agent", assignee_id: "a9" },
+        conflict,
+      )
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(MulticaApiError);
+    expect((err as MulticaApiError).status).toBe(409);
+    expect((err as MulticaApiError).message).toContain("issue changed since revision 3");
+
+    const forbidden = fakeClient({
+      updateIssue: async () => {
+        throw new MulticaApiError(403, "you do not have permission to assign work to this agent");
+      },
+    });
+    const err2 = await tool
+      ?.handler(
+        { workspace: WS, issue: "VOI-1", assignee_type: "agent", assignee_id: "a9" },
+        forbidden,
+      )
+      .catch((e: unknown) => e);
+    expect(err2).toBeInstanceOf(MulticaApiError);
+    expect((err2 as MulticaApiError).status).toBe(403);
+  });
+
+  it("surfaces the server's run_suppressed snapshot in the result", async () => {
+    const client = fakeClient({
+      updateIssue: async () => issueFixture({ revision: 7, run_suppressed: true }),
+    });
+    const tool = findTool("assign_issue");
+    const result = (await tool?.handler(
+      { workspace: WS, issue: "VOI-1", assignee_type: "agent", assignee_id: "a1", suppress_run: true },
+      client,
+    )) as Record<string, unknown>;
+    expect(result.run_suppressed).toBe(true);
+    expect(result.revision).toBe(7);
   });
 });
