@@ -31,11 +31,12 @@ import (
 //   - Ingested with an /issue created: a confirmation of the new issue.
 
 const (
-	agentOfflineText  = "⚠️ The agent is offline right now. Your message was received and will be handled once it's back online."
-	agentArchivedText = "⚠️ This agent has been archived and can't respond. Please contact your workspace admin."
-	freshPendingText  = "✅ Fresh start ready. Your next chat message will run without previous context."
-	chatStartedText   = "✅ Started a new Multica chat. Your next message will enter it."
-	issueUsageText    = "Please include an issue title. Use:\n\n`/issue <title>`\n`[description]` (optional)"
+	agentOfflineText       = "⚠️ The agent is offline right now. Your message was received and will be handled once it's back online."
+	agentArchivedText      = "⚠️ This agent has been archived and can't respond. Please contact your workspace admin."
+	sessionUnavailableText = "⚠️ This session can no longer be started. Send /new to begin a new one."
+	freshPendingText       = "✅ Fresh start ready. Your next chat message will run without previous context."
+	chatStartedText        = "✅ Started a new Multica chat. Your next message will enter it."
+	issueUsageText         = "Please include an issue title. Use:\n\n`/issue <title>`\n`[description]` (optional)"
 )
 
 // bindingMinter is the binding-token surface the replier needs.
@@ -125,6 +126,11 @@ func (r *OutboundReplier) Reply(ctx context.Context, inst engine.ResolvedInstall
 	case engine.OutcomeAgentArchived:
 		if err := r.postResult(ctx, inst, msg, res, agentArchivedText); err != nil {
 			r.logger.WarnContext(ctx, "slack replier: archived notice failed",
+				"installation_id", util.UUIDToString(inst.ID), "error", err)
+		}
+	case engine.OutcomeSessionUnavailable:
+		if err := r.postResult(ctx, inst, msg, res, sessionUnavailableText); err != nil {
+			r.logger.WarnContext(ctx, "slack replier: session-unavailable notice failed",
 				"installation_id", util.UUIDToString(inst.ID), "error", err)
 		}
 	case engine.OutcomeFreshPending:

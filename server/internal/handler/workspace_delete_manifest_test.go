@@ -45,6 +45,9 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"autopilot_trigger":               workspaceDelete,
 	"channel_binding_token":           workspaceDelete,
 	"channel_chat_context_generation": workspaceDelete,
+	// Run-trigger intents (RUYI-304) own nothing outside the database: the
+	// cascade deletes them directly instead of settling through a reconciler.
+	"channel_chat_run_intent":         workspaceDelete,
 	"channel_chat_session_binding":    workspaceDelete,
 	"channel_inbound_audit":           workspaceDelete,
 	"channel_inbound_message_dedup":   workspaceDelete,
