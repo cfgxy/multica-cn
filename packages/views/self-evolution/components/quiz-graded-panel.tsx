@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
@@ -16,6 +16,7 @@ import { Skeleton } from "@multica/ui/components/ui/skeleton";
 import { clientErrorMessage } from "@multica/core/api";
 import {
   promptQuizBatchOptions,
+  promptQuizKeys,
   promptQuizSamplesOptions,
   useCreatePromptQuizBatch,
 } from "@multica/core/self-evolution";
@@ -53,9 +54,24 @@ export function QuizGradedPanel({
     new Intl.NumberFormat(locale, { style: "percent", maximumFractionDigits: 0 }).format(v);
 
   const run = useCreatePromptQuizBatch(wsId);
-  const [batchId, setBatchId] = useState("");
-  const batch = useQuery(promptQuizBatchOptions(wsId, batchId));
-  const samples = useQuery(promptQuizSamplesOptions(wsId, "agent", agentId));
+  const queryClient = useQueryClient();
+  const [orderedBatch, setOrderedBatch] = useState({ agentId: "", batchId: "" });
+  const batchId = orderedBatch.agentId === agentId ? orderedBatch.batchId : "";
+  const batch = useQuery({
+    ...promptQuizBatchOptions(wsId, batchId),
+    refetchInterval: batchId !== "" ? 15_000 : false,
+  });
+  const samples = useQuery({
+    ...promptQuizSamplesOptions(wsId, "agent", agentId, baseline.current_version),
+    refetchInterval: batchId !== "" ? 15_000 : false,
+  });
+
+  const batchGraded = batch.data?.scores?.graded ?? 0;
+  useEffect(() => {
+    if (batchGraded > 0) {
+      void queryClient.invalidateQueries({ queryKey: promptQuizKeys.baseline(wsId, "agent", agentId) });
+    }
+  }, [agentId, batchGraded, queryClient, wsId]);
 
   const scores = baseline.scores;
   const graded = scores?.graded ?? 0;
@@ -65,7 +81,7 @@ export function QuizGradedPanel({
       { agent_ids: [agentId] },
       {
         onSuccess: (resp) => {
-          if (resp.batch_id !== "") setBatchId(resp.batch_id);
+          if (resp.batch_id !== "") setOrderedBatch({ agentId, batchId: resp.batch_id });
           const refused = resp.refused_agents?.length ?? 0;
           if (refused > 0) {
             toast.warning(t(($) => $.quiz.graded.refused, { count: refused }));
@@ -116,6 +132,7 @@ export function QuizGradedPanel({
             <p className="text-caption text-muted-foreground">{t(($) => $.quiz.reading.error)}</p>
           ) : (
             <div className="flex flex-col gap-1" data-testid="quiz-graded-batch">
+              <p className="break-all text-caption text-muted-foreground">{batchId}</p>
               <p className="text-caption text-muted-foreground">
                 {t(($) => $.quiz.graded.batchLines, {
                   answered: batch.data?.counts.answered ?? 0,
@@ -123,13 +140,24 @@ export function QuizGradedPanel({
                   graded: batch.data?.scores?.graded ?? 0,
                 })}
               </p>
+              {(batch.data?.rows.length ?? 0) > 0 ? (
+                <ul className="flex flex-col gap-2">
+                  {batch.data?.rows.map((row) => (
+                    <SampleRow key={row.task_id} row={row} pct={pct} locale={locale} />
+                  ))}
+                </ul>
+              ) : null}
             </div>
           )
         ) : null}
 
         <div className="flex flex-col gap-1">
           <h4 className="text-caption font-medium">{t(($) => $.quiz.graded.samplesTitle)}</h4>
-          {samples.isPending ? (
+          {baseline.current_version <= 0 ? (
+            <p className="text-caption text-muted-foreground">
+              {t(($) => $.quiz.graded.samplesEmpty)}
+            </p>
+          ) : samples.isPending ? (
             <Skeleton className="h-16 w-full rounded-lg" />
           ) : samples.isError ? (
             <p className="text-caption text-muted-foreground">{t(($) => $.quiz.reading.error)}</p>
@@ -140,7 +168,7 @@ export function QuizGradedPanel({
           ) : (
             <ul className="flex flex-col gap-2">
               {(samples.data ?? []).slice(0, 10).map((row) => (
-                <SampleRow key={row.task_id} row={row} pct={pct} />
+                <SampleRow key={row.task_id} row={row} pct={pct} locale={locale} />
               ))}
             </ul>
           )}
@@ -159,15 +187,20 @@ export function QuizGradedPanel({
 function SampleRow({
   row,
   pct,
+  locale,
 }: {
   row: PromptQuizSampleRow;
   pct: (v: number) => string;
+  locale: string;
 }) {
   const { t } = useT("self-evolution");
   const checks = parseChecks(row.score_detail);
 
   return (
-    <li className="flex flex-col gap-1 rounded-md border border-border px-3 py-2">
+    <li
+      className="flex flex-col gap-1 rounded-md border border-border px-3 py-2"
+      data-testid={`quiz-sample-${row.task_id}`}
+    >
       <div className="flex flex-wrap items-center gap-2">
         <span className="text-caption font-medium">{row.item_title ?? row.item_slug ?? row.item_id}</span>
         <Badge variant="outline">{t(($) => $.quiz.graded.version, { version: row.version })}</Badge>
@@ -183,6 +216,19 @@ function SampleRow({
         ) : (
           <Badge variant="outline">{t(($) => $.quiz.graded.ungraded)}</Badge>
         )}
+      </div>
+      <div className="flex flex-wrap gap-x-3 gap-y-1 text-caption text-muted-foreground">
+        <span className="min-w-0 break-all">task_id: {row.task_id}</span>
+        {row.measured_at && !Number.isNaN(Date.parse(row.measured_at)) ? (
+          <span>
+            {t(($) => $.quiz.graded.measuredAt)}: <time dateTime={row.measured_at}>{new Date(row.measured_at).toLocaleString(locale)}</time>
+          </span>
+        ) : null}
+        {row.graded_at && !Number.isNaN(Date.parse(row.graded_at)) ? (
+          <span>
+            {t(($) => $.quiz.graded.gradedAt)}: <time dateTime={row.graded_at}>{new Date(row.graded_at).toLocaleString(locale)}</time>
+          </span>
+        ) : null}
       </div>
       {checks.length > 0 ? (
         <ul className="flex flex-col gap-0.5">
