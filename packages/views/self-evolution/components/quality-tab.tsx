@@ -45,10 +45,17 @@ const WINDOW_DAYS = [7, 30, 90] as const;
 export function QualityTab({
   wsId,
   initialAgentId = "",
+  onManageVersions,
 }: {
   wsId: string;
   /** Preselects the subject. The page leaves it empty; tests supply one. */
   initialAgentId?: string;
+  /**
+   * When provided, the timeline section grows a jump into the version
+   * lifecycle tab — the natural "make another version" path from the
+   * measured versions it renders (RUYI-285).
+   */
+  onManageVersions?: () => void;
 }) {
   const { t } = useT("self-evolution");
   const locale = useLocale();
@@ -189,6 +196,11 @@ export function QualityTab({
               {selectedVersions.length > 0 ? (
                 <Button size="sm" variant="ghost" onClick={() => setSelectedVersions([])}>
                   {t(($) => $.quality.timeline.clear)}
+                </Button>
+              ) : null}
+              {onManageVersions ? (
+                <Button size="sm" variant="outline" onClick={onManageVersions}>
+                  {t(($) => $.versions.manage)}
                 </Button>
               ) : null}
             </div>
