@@ -5107,6 +5107,16 @@ func (s *TaskService) FailTask(ctx context.Context, taskID pgtype.UUID, errMsg, 
 		return nil, fmt.Errorf("fail task: %w", err)
 	}
 
+	if guardConverged {
+		// The cancel race was lost above; the row is cancelled, not failed.
+		// Skip every failure-specific side effect (auto-retry spawn, delegated
+		// recovery, failure comments, inbox notifications) — the cancel/ack
+		// path owns this row now, same contract as the completion guard.
+		slog.Info("task failure converged to cancelled (cancel race lost)",
+			"task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID))
+		return &task, nil
+	}
+
 	slog.Warn("task failed", "task_id", util.UUIDToString(task.ID), "issue_id", util.UUIDToString(task.IssueID), "error", errMsg, "failure_reason", failureReason)
 	s.captureTaskFailed(ctx, task)
 
@@ -5855,6 +5865,16 @@ func (s *TaskService) enqueueRerunTask(ctx context.Context, issue db.Issue, agen
 func (s *TaskService) FailTasksForOfflineRuntimes(ctx context.Context, arg db.FailTasksForOfflineRuntimesParams) ([]db.AgentTaskQueue, error) {
 	return s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
 		return qtx.FailTasksForOfflineRuntimes(ctx, arg)
+	})
+}
+
+// ConvergeCancelRequestedForOfflineRuntimes closes out runs whose stop was
+// accepted (cancel_requested) but whose runtime died before the daemon could
+// ack-confirm it: they converge to cancelled, not failed — the user ended
+// these runs, the runtime merely made the confirmation impossible (RUYI-292).
+func (s *TaskService) ConvergeCancelRequestedForOfflineRuntimes(ctx context.Context, arg db.ConvergeCancelRequestedForOfflineRuntimesParams) ([]db.AgentTaskQueue, error) {
+	return s.terminateTasksInTx(ctx, func(qtx *db.Queries) ([]db.AgentTaskQueue, error) {
+		return qtx.ConvergeCancelRequestedForOfflineRuntimes(ctx, arg)
 	})
 }
 

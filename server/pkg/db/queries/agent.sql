@@ -3040,3 +3040,29 @@ WHERE issue_id = $1
       )
 ORDER BY created_at DESC
 LIMIT @row_limit;
+
+-- name: ConvergeCancelRequestedForOfflineRuntimes :many
+-- RUYI-292: a cancel_requested row whose runtime died mid-stop can never be
+-- confirmed by a daemon cancel-ack. The stop was already accepted, so the
+-- honest terminal summary is cancelled — the offline sweeper fails every
+-- other in-flight row on a dead runtime, but failing a row the user asked to
+-- STOP would misreport who ended it. Same victims shape and bounds as
+-- FailTasksForOfflineRuntimes so the sweeper transaction stays bounded.
+WITH victims AS (
+  SELECT task.id
+  FROM agent_task_queue task
+  JOIN agent_runtime runtime ON runtime.id = task.runtime_id
+  WHERE task.status = 'cancel_requested'
+    AND runtime.status = 'offline'
+    AND COALESCE(runtime.last_seen_at, runtime.updated_at) <
+        now() - make_interval(secs => @reconnect_grace_secs::double precision)
+  ORDER BY COALESCE(runtime.last_seen_at, runtime.updated_at), task.created_at
+  LIMIT @max_per_tick::int
+  FOR UPDATE OF task SKIP LOCKED
+)
+UPDATE agent_task_queue AS task
+SET status = 'cancelled', completed_at = COALESCE(task.completed_at, now())
+FROM victims
+WHERE task.id = victims.id
+  AND task.status = 'cancel_requested'
+RETURNING task.*;

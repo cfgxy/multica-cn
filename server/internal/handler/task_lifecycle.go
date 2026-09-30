@@ -168,6 +168,75 @@ type RerunIssueRequest struct {
 	TaskID string `json:"task_id,omitempty"`
 }
 
+// RetryTask is the RUYI-292 run-level retry entry: POST
+// /api/issues/{id}/tasks/{taskId}/retry re-attempts one specific finished run
+// (failed or cancelled; completed keeps its existing rerun surface) as a NEW
+// run on the source run's agent with the agent's CURRENT configuration, in a
+// fresh session, linked through the rerun lineage. The D6 anti-storm gates
+// answer 409 with a machine-readable code; an in-window repeat answers 200
+// with the child the first call created.
+func (h *Handler) RetryTask(w http.ResponseWriter, r *http.Request) {
+	id := chi.URLParam(r, "id")
+	issue, ok := h.loadIssueForUser(w, r, id)
+	if !ok {
+		return
+	}
+
+	taskID, ok := parseUUIDOrBadRequest(w, chi.URLParam(r, "taskId"), "task id")
+	if !ok {
+		return
+	}
+
+	userID, ok := requireUserID(w, r)
+	if !ok {
+		return
+	}
+	workspaceID := uuidToString(issue.WorkspaceID)
+	actorType, actorID := h.resolveActor(r, userID, workspaceID)
+	actorUserID := memberActorUserID(actorType, actorID)
+
+	// Same invoke gate as the rerun path (MUL-4525): retrying a run of a
+	// private agent the caller may no longer trigger is a 403, not a run.
+	originatorUserID := h.invokeOriginatorFromRequest(r, actorType, actorID)
+	canInvoke := func(agent db.Agent) bool {
+		return h.canInvokeAgent(r.Context(), agent, actorType, actorID, originatorUserID, workspaceID)
+	}
+
+	task, created, err := h.TaskService.RetryRun(r.Context(), issue.ID, taskID, actorUserID, canInvoke)
+	switch {
+	case errors.Is(err, service.ErrRetrySourceNotFinished):
+		writeError(w, http.StatusConflict, "retry_source_not_finished: source run has not finished")
+		return
+	case errors.Is(err, service.ErrRetryDescendantActive):
+		writeError(w, http.StatusConflict, "retry_descendant_active: source run already has an unfinished retry")
+		return
+	case errors.Is(err, service.ErrRetryAgentHasQueuedRun):
+		writeError(w, http.StatusConflict, "agent_already_queued: the agent already has an unfinished run on this issue")
+		return
+	case errors.Is(err, service.ErrRerunInvokeNotAllowed):
+		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)
+		return
+	case err != nil:
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeError(w, http.StatusNotFound, "task not found")
+			return
+		}
+		slog.Warn("issue task retry failed", "issue_id", id, "task_id", taskID, "error", err)
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	resp := taskToResponse(*task, workspaceID)
+	h.hydrateTaskAttributions(r.Context(), []*TaskAttribution{resp.Attribution})
+	// 202: this call enqueued the retry. 200: an identical in-window retry
+	// already created it — the response carries that existing child (D6 rule 3).
+	status := http.StatusAccepted
+	if !created {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, resp)
+}
+
 // RerunIssue manually re-enqueues an agent run for the issue. By default it
 // targets the issue's current assignee (agent or squad leader); if the
 // request body carries task_id, the rerun targets the agent that ran that

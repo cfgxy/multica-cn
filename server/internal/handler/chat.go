@@ -1802,6 +1802,16 @@ func (h *Handler) CancelTaskByUser(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// RUYI-292: a stop is already in flight for this run (accepted from the
+	// issue runs surface). The settlement flow below targets a queued/running
+	// row and would 400 on its CAS; answer idempotently with the current row —
+	// the daemon cancel-ack owns the terminal flip now.
+	if task.Status == "cancel_requested" {
+		resp := CancelTaskByUserResponse{AgentTaskResponse: taskToResponse(task, workspaceID)}
+		writeJSON(w, http.StatusOK, resp)
+		return
+	}
+
 	var (
 		queuedOnly      bool
 		expectedSession pgtype.UUID
