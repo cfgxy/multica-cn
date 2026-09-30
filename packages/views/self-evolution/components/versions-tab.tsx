@@ -156,7 +156,11 @@ export function VersionsTab({
           </Select>
         </div>
         {canManage ? (
-          <Button size="sm" onClick={() => setEditorOpen(true)}>
+          <Button
+            size="sm"
+            disabled={agentId === ""}
+            onClick={() => setEditorOpen(true)}
+          >
             <Plus className="h-4 w-4" />
             {t(($) => $.versions.newVersion)}
           </Button>

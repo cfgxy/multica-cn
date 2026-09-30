@@ -130,14 +130,14 @@ vi.mock("@multica/core/self-evolution", async () => {
   };
 });
 
-function renderTab() {
+function renderTab({ initialAgentId = "agent-1" }: { initialAgentId?: string } = {}) {
   const qc = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   });
   return render(
     <QueryClientProvider client={qc}>
       <I18nProvider resources={TEST_RESOURCES} locale="en">
-        <VersionsTab wsId="ws-1" initialAgentId="agent-1" />
+        <VersionsTab wsId="ws-1" initialAgentId={initialAgentId} />
       </I18nProvider>
     </QueryClientProvider>,
   );
@@ -172,6 +172,20 @@ describe("VersionsTab", () => {
     expect(screen.queryByRole("button", { name: /activate/i })).not.toBeInTheDocument();
     // Reads, including comparison, stay available.
     expect(screen.getAllByRole("button", { name: /^v\d+$/ }).length).toBeGreaterThan(0);
+  });
+
+  it("blocks the new-version entry until a subject is picked", async () => {
+    renderTab({ initialAgentId: "" });
+
+    // The empty-state copy replaces the version line, and the entry is inert.
+    await screen.findByText("Pick a subject");
+    const newButton = screen.getByRole("button", { name: /new version/i });
+    expect(newButton).toBeDisabled();
+
+    // Clicking opens no editor, so no save request can ever leave the tab.
+    fireEvent.click(newButton);
+    expect(screen.queryByRole("button", { name: /save version/i })).not.toBeInTheDocument();
+    expect(state.saved).toHaveLength(0);
   });
 
   it("saves an edited draft as a new version with the change note", async () => {
