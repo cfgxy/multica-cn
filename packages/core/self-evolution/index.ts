@@ -45,3 +45,9 @@ export {
   useUnregisterKnowledgeDir,
   useAdoptKnowledgeEntry,
 } from "./knowledge-queries";
+export {
+  promptVersionKeys,
+  promptGovernanceVersionsOptions,
+  useSavePromptVersion,
+  useSwitchPromptVersion,
+} from "./version-queries";

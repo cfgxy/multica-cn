@@ -157,6 +157,12 @@ export type {
   UpdatePromptQuizItemRequest,
 } from "./prompt-quiz";
 export type {
+  PromptGovernanceVersion,
+  PromptGovernanceVersionList,
+  PromptVersionSource,
+  SavePromptGovernanceVersionRequest,
+} from "./prompt-version";
+export type {
   PluginInstallation,
   PluginConfigField,
   PluginConfigFieldType,
