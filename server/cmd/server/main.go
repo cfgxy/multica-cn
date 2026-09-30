@@ -554,6 +554,7 @@ func main() {
 	var httpMetrics *obsmetrics.HTTPMetrics
 	var businessMetrics *obsmetrics.BusinessMetrics
 	var channelMediaMetrics *obsmetrics.ChannelMediaReconcilerMetrics
+	var channelChatRunMetrics *obsmetrics.ChannelChatRunReconcilerMetrics
 	var channelLeaseMetrics *obsmetrics.ChannelLeaseMetrics
 	var wecomMetrics *obsmetrics.WecomMetrics
 	var larkMetrics *obsmetrics.LarkMetrics
@@ -568,6 +569,7 @@ func main() {
 		httpMetrics = metricsRegistry.HTTP
 		businessMetrics = metricsRegistry.Business
 		channelMediaMetrics = metricsRegistry.ChannelMedia
+		channelChatRunMetrics = metricsRegistry.ChannelChatRun
 		channelLeaseMetrics = metricsRegistry.ChannelLease
 		wecomMetrics = metricsRegistry.Wecom
 		larkMetrics = metricsRegistry.Lark
@@ -706,6 +708,14 @@ func main() {
 	if h.ChannelMediaReconciler != nil {
 		h.ChannelMediaReconciler.Metrics = channelMediaMetrics
 		go h.ChannelMediaReconciler.Run(sweepCtx)
+	}
+
+	// Channel chat run-intent reconciler (RUYI-304): re-drives debounced run
+	// windows whose in-memory flush never happened. An independent worker so
+	// enqueue latency spikes cannot starve any other sweeper's cadence.
+	if h.ChannelChatRunReconciler != nil {
+		h.ChannelChatRunReconciler.Metrics = channelChatRunMetrics
+		go h.ChannelChatRunReconciler.Run(sweepCtx)
 	}
 
 	// MUL-2957: DB-backed execution scheduler. The scheduler turns the

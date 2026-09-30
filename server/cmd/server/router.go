@@ -577,6 +577,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			Logger:  slog.Default(),
 		}
 	}
+	// Run-intent reconciler (RUYI-304): re-drives debounce windows whose
+	// in-memory flush never happened (crash, restart, failed enqueue). No
+	// external dependencies, so it is built unconditionally. Started from
+	// main.go as its own worker.
+	h.ChannelChatRunReconciler = &service.ChannelChatRunReconciler{
+		Queries: queries,
+		Tasks:   h.TaskService,
+		Logger:  slog.Default(),
+	}
 	installationStore := lark.NewChannelInstallationStore(queries)
 	h.ChannelSupervisor = buildChannelSupervisor(
 		installationStore,
