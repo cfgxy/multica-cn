@@ -1563,6 +1563,22 @@ type RuntimeProfile struct {
 	UpdatedAt      pgtype.Timestamptz `json:"updated_at"`
 }
 
+type RuntimeSkillDiscovery struct {
+	ID          pgtype.UUID        `json:"id"`
+	WorkspaceID pgtype.UUID        `json:"workspace_id"`
+	RuntimeID   string             `json:"runtime_id"`
+	Provider    string             `json:"provider"`
+	Root        string             `json:"root"`
+	Plugin      string             `json:"plugin"`
+	Key         string             `json:"key"`
+	Name        string             `json:"name"`
+	Description string             `json:"description"`
+	SourcePath  string             `json:"source_path"`
+	FileCount   int32              `json:"file_count"`
+	FirstSeenAt pgtype.Timestamptz `json:"first_seen_at"`
+	LastSeenAt  pgtype.Timestamptz `json:"last_seen_at"`
+}
+
 type SeatCapacityOutbox struct {
 	WorkspaceID    pgtype.UUID        `json:"workspace_id"`
 	OperationToken pgtype.UUID        `json:"operation_token"`

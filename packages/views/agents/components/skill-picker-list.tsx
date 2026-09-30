@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Search } from "lucide-react";
 import { SkillIcon } from "../../skills/lib/skill-icon";
 import type { SkillSummary } from "@multica/core/types";
+import { Badge } from "@multica/ui/components/ui/badge";
 import { Checkbox } from "@multica/ui/components/ui/checkbox";
 import { Input } from "@multica/ui/components/ui/input";
 import { cn } from "@multica/ui/lib/utils";
@@ -14,6 +15,12 @@ interface SkillPickerListProps {
    *  skills in SkillAddDialog) before passing — this component just
    *  renders the rows. */
   skills: readonly SkillSummary[];
+
+  /** Optional catalog-source label keyed by skill id (RUYI-288). Rows
+   *  without an entry — the workspace-authored default — render no badge;
+   *  runtime-imported and plugin-contributed rows get one, so the origin
+   *  classification stays visible without changing row interaction. */
+  sourceById?: ReadonlyMap<string, string>;
 
   /** Currently-toggled rows. Selected rows get a checked Checkbox and a
    *  subtle background; click toggles. */
@@ -53,6 +60,7 @@ export function SkillPickerList({
   skills,
   selectedIds,
   onToggle,
+  sourceById,
   searchable = true,
   loading = false,
   emptyMessage,
@@ -125,7 +133,17 @@ export function SkillPickerList({
                 />
                 <SkillIcon className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">
-                  <div className="truncate text-body font-medium">{skill.name}</div>
+                  <div className="truncate text-body font-medium">
+                    {skill.name}
+                    {sourceById?.get(skill.id) && (
+                      <Badge
+                        variant="secondary"
+                        className="ml-1.5 shrink-0 px-1.5 py-0 text-[10px] font-normal"
+                      >
+                        {sourceById.get(skill.id)}
+                      </Badge>
+                    )}
+                  </div>
                   {skill.description ? (
                     <div className="truncate text-caption text-muted-foreground">
                       {skill.description}

@@ -123,7 +123,23 @@
       "revision": "Proposal revision",
       "edit": "Edited",
       "restore": "Restored"
-    }
+    },
+    "catalogSearchLabel": "Search",
+    "catalogSearchPlaceholder": "Search skills by name",
+    "catalogSourceFilter": "Source",
+    "catalogSourceAll": "All sources",
+    "catalogSourceWorkspace": "Workspace",
+    "catalogSourceRuntime": "Runtime",
+    "catalogSourcePlugin": "Plugin",
+    "catalogSelectableHint": "Selectable rows are skills already imported into this workspace. Runtime and plugin discoveries below are visible but not selectable until imported.",
+    "catalogNoMatch": "No discovered skills match the current search or source filter.",
+    "discoveriesTitle": "Discovered on runtimes",
+    "discoveryImport": "Import",
+    "discoveryImporting": "Importing…",
+    "discoveryExists": "Already a skill",
+    "discoveryLastSeen": "Last seen {{date}}",
+    "discoveryImportedToast": "Skill imported. It is now selectable with its own version history.",
+    "discoveryImportFailedToast": "Import failed. Check the runtime connection and try again."
   },
   "quality": {
     "scopePicker": {

@@ -84,6 +84,7 @@ import type {
   User,
   Skill,
   SkillSummary,
+  SkillCatalogEntry,
   SkillVersion,
   SkillVersionSummary,
   SkillUsage,
@@ -3980,6 +3981,16 @@ export class ApiClient {
     return parseWithFallback<SkillSummary[]>(raw, SkillSummaryListSchema, [], {
       endpoint: "GET /api/skills",
     });
+  }
+
+  // Workspace skill catalog (RUYI-288): authored skills unioned with
+  // metadata-only runtime discovery sightings.
+  async listSkillCatalog(): Promise<SkillCatalogEntry[]> {
+    return this.fetch<SkillCatalogEntry[]>("/api/skills/catalog");
+  }
+
+  async syncSkillCatalog(): Promise<{ triggered: number }> {
+    return this.fetch("/api/skills/catalog/sync", { method: "POST" });
   }
 
   async getSkill(id: string): Promise<Skill> {
