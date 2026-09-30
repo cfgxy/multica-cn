@@ -16,6 +16,7 @@ import (
 
 	"github.com/multica-ai/multica/server/internal/cli"
 	"github.com/multica-ai/multica/server/internal/daemon/execenv"
+	"github.com/multica-ai/multica/server/pkg/agent"
 )
 
 func TestResolveAgentExecutablePath_PreservesDispatchShimName(t *testing.T) {
@@ -1586,6 +1587,75 @@ func TestOpenclawOverrideFrom_NavigationCases(t *testing.T) {
 	}
 }
 
+// =============================================================================
+// CLI config Backends.Deerflow overrides (RUYI-283 QA P1)
+// =============================================================================
+
+// TestApplyDeerflowOverride_SetsHomeWhenEnvUnset verifies the happy path:
+// backends.deerflow.home becomes MULTICA_DEERFLOW_HOME in the daemon process
+// environment, which resolveDeerflowProcessDir and discoverDeerflowModels
+// both read. This is the standard-deployment fix for the QA P1 — without it
+// neither the model picker nor a model-pinned turn can reach a DeerFlow
+// deployment rooted anywhere but the daemon's cwd.
+func TestApplyDeerflowOverride_SetsHomeWhenEnvUnset(t *testing.T) {
+	os.Unsetenv("MULTICA_DEERFLOW_HOME")
+	t.Cleanup(func() { os.Unsetenv("MULTICA_DEERFLOW_HOME") })
+
+	applyDeerflowOverride(&cli.DeerflowOverride{Home: "/from/config/deerflow"})
+
+	if got := os.Getenv("MULTICA_DEERFLOW_HOME"); got != "/from/config/deerflow" {
+		t.Errorf("MULTICA_DEERFLOW_HOME: got %q, want /from/config/deerflow", got)
+	}
+}
+
+// TestApplyDeerflowOverride_EnvWinsOverConfig mirrors the OpenClaw
+// precedence contract: a user who already exports MULTICA_DEERFLOW_HOME
+// (shell, launchctl, systemd unit) must not see the daemon silently change
+// its meaning when a config file appears later.
+func TestApplyDeerflowOverride_EnvWinsOverConfig(t *testing.T) {
+	t.Setenv("MULTICA_DEERFLOW_HOME", "/from/env/deerflow")
+
+	applyDeerflowOverride(&cli.DeerflowOverride{Home: "/from/config/deerflow"})
+
+	if got := os.Getenv("MULTICA_DEERFLOW_HOME"); got != "/from/env/deerflow" {
+		t.Errorf("MULTICA_DEERFLOW_HOME: env should win, got %q want /from/env/deerflow", got)
+	}
+}
+
+// TestApplyDeerflowOverride_DoesNothingWhenNilAndEmpty verifies the no-op
+// paths: a nil override and an override with an empty Home must both leave
+// the environment untouched.
+func TestApplyDeerflowOverride_DoesNothingWhenNilAndEmpty(t *testing.T) {
+	os.Unsetenv("MULTICA_DEERFLOW_HOME")
+	t.Cleanup(func() { os.Unsetenv("MULTICA_DEERFLOW_HOME") })
+
+	applyDeerflowOverride(nil)
+	if _, set := os.LookupEnv("MULTICA_DEERFLOW_HOME"); set {
+		t.Errorf("nil override must not setenv; got %q", os.Getenv("MULTICA_DEERFLOW_HOME"))
+	}
+
+	applyDeerflowOverride(&cli.DeerflowOverride{})
+	if _, set := os.LookupEnv("MULTICA_DEERFLOW_HOME"); set {
+		t.Errorf("empty Home must not setenv; got %q", os.Getenv("MULTICA_DEERFLOW_HOME"))
+	}
+}
+
+// TestDeerflowOverrideFrom_NavigationCases verifies the nullable-pointer
+// chain into Backends.Deerflow, mirroring the OpenClaw variant.
+func TestDeerflowOverrideFrom_NavigationCases(t *testing.T) {
+	if got := deerflowOverrideFrom(cli.CLIConfig{}); got != nil {
+		t.Errorf("nil Backends should produce nil override, got %+v", got)
+	}
+	if got := deerflowOverrideFrom(cli.CLIConfig{Backends: &cli.BackendOverrides{}}); got != nil {
+		t.Errorf("nil Deerflow inside Backends should produce nil override, got %+v", got)
+	}
+	want := &cli.DeerflowOverride{Home: "/x"}
+	got := deerflowOverrideFrom(cli.CLIConfig{Backends: &cli.BackendOverrides{Deerflow: want}})
+	if got != want {
+		t.Errorf("happy path should return inner pointer; got %p want %p", got, want)
+	}
+}
+
 // TestLoadConfig_AppliesBackendOverridesFromConfigFile is the integration
 // test that ties commit 1's schema to commit 2's wire-up: write a config
 // file with backends.openclaw.{binary_path,state_dir}, call LoadConfig
@@ -1644,6 +1714,42 @@ func TestLoadConfig_AppliesBackendOverridesFromConfigFile(t *testing.T) {
 	}
 	if got := os.Getenv("OPENCLAW_STATE_DIR"); got != "/var/lib/openclaw-isolated" {
 		t.Errorf("OPENCLAW_STATE_DIR: got %q, want injected from config", got)
+	}
+}
+
+// TestLoadConfig_AppliesDeerflowHomeFromConfigFile is the deerflow twin of
+// the OpenClaw integration test above: write a config file with
+// backends.deerflow.home, call LoadConfig (no env vars set), and verify
+// MULTICA_DEERFLOW_HOME was injected into the process environment — the
+// var both resolveDeerflowProcessDir (turn path) and discoverDeerflowModels
+// (model picker) read.
+func TestLoadConfig_AppliesDeerflowHomeFromConfigFile(t *testing.T) {
+	stageFakeAgent(t)
+
+	os.Unsetenv(agent.DeerflowHomeEnv)
+	t.Cleanup(func() { os.Unsetenv(agent.DeerflowHomeEnv) })
+
+	t.Setenv("HOME", t.TempDir())
+	deployRoot := t.TempDir()
+	cfg := cli.CLIConfig{
+		ServerURL: "http://localhost:8080",
+		Backends: &cli.BackendOverrides{
+			Deerflow: &cli.DeerflowOverride{Home: deployRoot},
+		},
+	}
+	if err := cli.SaveCLIConfig(cfg); err != nil {
+		t.Fatalf("save cli config: %v", err)
+	}
+
+	if _, err := LoadConfig(Overrides{
+		ServerURL:      "http://localhost:8080",
+		WorkspacesRoot: t.TempDir(),
+	}); err != nil {
+		t.Fatalf("LoadConfig: %v", err)
+	}
+
+	if got := os.Getenv(agent.DeerflowHomeEnv); got != deployRoot {
+		t.Errorf("%s: got %q, want %q injected from config", agent.DeerflowHomeEnv, got, deployRoot)
 	}
 }
 
