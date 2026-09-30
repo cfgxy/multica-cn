@@ -78,6 +78,16 @@ FROM prompt_quiz_item
 WHERE id = sqlc.arg('id')::uuid
   AND workspace_id = sqlc.arg('workspace_id')::uuid;
 
+-- name: GetPromptQuizItemWorkspace :one
+-- Workspace resolution for quiz runs (RUYI-286 rework). ResolveTaskWorkspaceID
+-- knows only the task, so this is the one item read that cannot be
+-- workspace-scoped: it looks the workspace UP from the item id the task's
+-- context carries, instead of filtering by one. Selects the id alone — the
+-- private halves must not travel on an access-control path.
+SELECT workspace_id
+FROM prompt_quiz_item
+WHERE id = sqlc.arg('id')::uuid;
+
 -- name: ListPromptQuizItems :many
 -- The member-visible bank. Columns are named rather than selected with * so that
 -- rubric — the private half (migration 935) — cannot reach this response by

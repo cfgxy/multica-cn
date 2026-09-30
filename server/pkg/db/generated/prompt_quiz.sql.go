@@ -346,6 +346,24 @@ func (q *Queries) GetPromptQuizItem(ctx context.Context, arg GetPromptQuizItemPa
 	return i, err
 }
 
+const getPromptQuizItemWorkspace = `-- name: GetPromptQuizItemWorkspace :one
+SELECT workspace_id
+FROM prompt_quiz_item
+WHERE id = $1::uuid
+`
+
+// Workspace resolution for quiz runs (RUYI-286 rework). ResolveTaskWorkspaceID
+// knows only the task, so this is the one item read that cannot be
+// workspace-scoped: it looks the workspace UP from the item id the task's
+// context carries, instead of filtering by one. Selects the id alone — the
+// private halves must not travel on an access-control path.
+func (q *Queries) GetPromptQuizItemWorkspace(ctx context.Context, id pgtype.UUID) (pgtype.UUID, error) {
+	row := q.db.QueryRow(ctx, getPromptQuizItemWorkspace, id)
+	var workspace_id pgtype.UUID
+	err := row.Scan(&workspace_id)
+	return workspace_id, err
+}
+
 const getPromptQuizSweepState = `-- name: GetPromptQuizSweepState :one
 SELECT last_run_started_at, last_run_finished_at, last_enqueued, last_collected, last_error
 FROM prompt_quiz_sweep_state
