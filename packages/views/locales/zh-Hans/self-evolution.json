@@ -122,7 +122,23 @@
       "revision": "提案修订",
       "edit": "编辑",
       "restore": "恢复"
-    }
+    },
+    "catalogSearchLabel": "搜索",
+    "catalogSearchPlaceholder": "按名称搜索技能",
+    "catalogSourceFilter": "来源",
+    "catalogSourceAll": "全部来源",
+    "catalogSourceWorkspace": "工作区",
+    "catalogSourceRuntime": "运行时",
+    "catalogSourcePlugin": "插件",
+    "catalogSelectableHint": "可选项是已导入本工作区的技能；下方运行时与插件发现仅可见，导入后才可选择。",
+    "catalogNoMatch": "没有发现项匹配当前搜索或来源筛选。",
+    "discoveriesTitle": "运行时发现",
+    "discoveryImport": "导入",
+    "discoveryImporting": "导入中…",
+    "discoveryExists": "已是技能",
+    "discoveryLastSeen": "最近发现于 {{date}}",
+    "discoveryImportedToast": "技能已导入，现在可选择并带独立版本历史。",
+    "discoveryImportFailedToast": "导入失败，请检查运行时连接后重试。"
   },
   "quality": {
     "scopePicker": {

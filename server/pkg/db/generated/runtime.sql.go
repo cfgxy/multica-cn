@@ -696,6 +696,39 @@ func (q *Queries) ListDaemonCustomNames(ctx context.Context, arg ListDaemonCusto
 	return items, nil
 }
 
+const listOnlineRuntimesByWorkspace = `-- name: ListOnlineRuntimesByWorkspace :many
+SELECT id, provider FROM agent_runtime
+WHERE workspace_id = $1 AND status = 'online'
+ORDER BY last_seen_at DESC
+`
+
+type ListOnlineRuntimesByWorkspaceRow struct {
+	ID       pgtype.UUID `json:"id"`
+	Provider string      `json:"provider"`
+}
+
+// Workspace-scoped online runtimes, freshest heartbeat first. The skill
+// catalog sync fans a discovery request out to each of these (RUYI-288).
+func (q *Queries) ListOnlineRuntimesByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]ListOnlineRuntimesByWorkspaceRow, error) {
+	rows, err := q.db.Query(ctx, listOnlineRuntimesByWorkspace, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListOnlineRuntimesByWorkspaceRow{}
+	for rows.Next() {
+		var i ListOnlineRuntimesByWorkspaceRow
+		if err := rows.Scan(&i.ID, &i.Provider); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listStaleOfflineRuntimeGCCandidates = `-- name: ListStaleOfflineRuntimeGCCandidates :many
 SELECT id FROM agent_runtime
 WHERE status = 'offline'
