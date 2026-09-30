@@ -942,6 +942,22 @@ var acpCatalogThinkingProviders = map[string]bool{
 	// GLM-5.3 low/high/max fallback, so the catalog is annotated per session
 	// like reasonix's (see annotateACPThinkingForSessionModel).
 	"zcode": true,
+	// deerflow (deerflow-acp): session/new AND session/resume advertise the
+	// selector as option id `thinking` under category `thought_level` with a
+	// two-value on/off vocabulary (src/deerflow_acp/config.py
+	// THINKING_CONFIG_OPTION_ID / THINKING_VALUES — DeerFlow's engine has no
+	// discrete levels, only extra_body.thinking enabled/disabled), so the
+	// shared parser matches it by category. set_config_option writes a
+	// per-session override (src/deerflow_acp/agent.py set_config_option) that
+	// prompt threads through run_turn → the turn-runner payload → worker →
+	// EmbeddedDeerFlowBackend.stream(thinking_enabled=…) into
+	// DeerFlowClient.stream's per-turn overrides (_get_runnable_config,
+	// consumed by create_chat_model) — the same channel the bridge's own
+	// DEERFLOW_ACP_THINKING static default drives, so the switch reaches the
+	// model call rather than stopping at the config surface. Verified against
+	// the bridge source on the RUYI-321 branch plus its pytest suite
+	// (tests/test_agent.py thinking section, tests/test_thinking_threading.py).
+	"deerflow": true,
 }
 
 // usesDynamicThinkingCatalog reports whether a provider's effort vocabulary is

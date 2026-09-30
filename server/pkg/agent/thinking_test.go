@@ -592,6 +592,7 @@ func TestThinkingControlSupported(t *testing.T) {
 		{"hermes", true},   // jcode applies it; Hermes Agent gets an empty catalog
 		{"kimi", true},     // dynamic catalog; ACP session/set_config_option applies it
 		{"zcode", true},    // dynamic catalog; thought selector → session/setThoughtLevel
+		{"deerflow", true}, // dynamic catalog; thinking switch → set_config_option → thinking_enabled
 		{"qwenpaw", false},
 		{"", false},
 		{"not-a-runtime", false},
@@ -610,7 +611,7 @@ func TestThinkingControlSupported(t *testing.T) {
 // reject a level while claiming the runtime supports one, or vice versa.
 func TestThinkingControlSupportedMatchesTokenGate(t *testing.T) {
 	t.Parallel()
-	providers := []string{"claude", "codebuddy", "grok", "codex", "opencode", "pi", "hermes", "kimi", "zcode", "cursor"}
+	providers := []string{"claude", "codebuddy", "grok", "codex", "opencode", "pi", "hermes", "kimi", "zcode", "deerflow", "cursor"}
 	// "medium" is in every fixed enum and is a well-formed dynamic token, so a
 	// provider with any reasoning control accepts it.
 	for _, provider := range providers {
