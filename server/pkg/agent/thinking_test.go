@@ -545,6 +545,15 @@ func TestIsKnownThinkingValue(t *testing.T) {
 		// Hermes Agent advertises none. The per-session catalog decides, so the
 		// literal gate opens for both.
 		{"hermes", "low", true},
+		{"zcode", "", true},
+		// zcode is an ACP catalog runtime like kimi: the literal gate accepts
+		// well-formed tokens and the per-session catalog (thought selector,
+		// GLM-5.3 → low/high/max) does the exact per-model check.
+		{"zcode", "low", true},
+		{"zcode", "max", true},
+		{"zcode", "future-level", true},
+		{"zcode", ".hidden", false},
+		{"zcode", "bad value", false},
 		{"grok", "", true},
 		{"grok", "none", true},
 		{"grok", "minimal", true},
@@ -582,6 +591,7 @@ func TestThinkingControlSupported(t *testing.T) {
 		{"pi", true},       // fixed tokens, per-model subset discovered over RPC
 		{"hermes", true},   // jcode applies it; Hermes Agent gets an empty catalog
 		{"kimi", true},     // dynamic catalog; ACP session/set_config_option applies it
+		{"zcode", true},    // dynamic catalog; thought selector → session/setThoughtLevel
 		{"qwenpaw", false},
 		{"", false},
 		{"not-a-runtime", false},
@@ -600,7 +610,7 @@ func TestThinkingControlSupported(t *testing.T) {
 // reject a level while claiming the runtime supports one, or vice versa.
 func TestThinkingControlSupportedMatchesTokenGate(t *testing.T) {
 	t.Parallel()
-	providers := []string{"claude", "codebuddy", "grok", "codex", "opencode", "pi", "hermes", "kimi", "cursor"}
+	providers := []string{"claude", "codebuddy", "grok", "codex", "opencode", "pi", "hermes", "kimi", "zcode", "cursor"}
 	// "medium" is in every fixed enum and is a well-formed dynamic token, so a
 	// provider with any reasoning control accepts it.
 	for _, provider := range providers {
@@ -771,14 +781,23 @@ func TestValidateThinkingLevel_ExplicitModel(t *testing.T) {
 		t.Error("high should be valid on a syntactically valid opus-5 context variant")
 	}
 
-	// Arbitrary bracket suffixes are not context-window tags. Keep malformed
-	// variants fail-closed even when their apparent base model is known.
+	// Arbitrary bracket suffixes are not context-window tags. The malformed
+	// variant resolves to no catalog entry, so it gets the conservative
+	// out-of-list fallback (low/medium/high) — never an inheritance of the
+	// apparent base model's full vocabulary: xhigh/max stay closed.
 	ok, err = ValidateThinkingLevel(ctx, "claude", Command{Path: fakeClaude}, "claude-opus-5[weird]", "high")
 	if err != nil {
 		t.Fatalf("unexpected err for malformed context tag: %v", err)
 	}
+	if !ok {
+		t.Error("malformed context tag takes the out-of-list fallback; high must pass")
+	}
+	ok, err = ValidateThinkingLevel(ctx, "claude", Command{Path: fakeClaude}, "claude-opus-5[weird]", "xhigh")
+	if err != nil {
+		t.Fatalf("unexpected err for malformed context tag: %v", err)
+	}
 	if ok {
-		t.Error("malformed context tag must fail closed")
+		t.Error("malformed context tag must not inherit the base model's xhigh")
 	}
 
 	// xhigh is NOT valid on Sonnet — should fail.
@@ -790,13 +809,99 @@ func TestValidateThinkingLevel_ExplicitModel(t *testing.T) {
 		t.Errorf("xhigh must not be valid on sonnet-4-6; got true")
 	}
 
-	// An unknown model with a valid token still fails closed (no guess).
+	// An out-of-list claude model (an org alias, a release newer than the
+	// static table) takes the conservative fallback subset — low/medium/high
+	// pass so the picker is not a fake switch the daemon warn-and-drops at
+	// run time; anything outside the subset still fails closed (no
+	// full-vocabulary guess).
 	ok, err = ValidateThinkingLevel(ctx, "claude", Command{Path: fakeClaude}, "claude-nonexistent", "high")
 	if err != nil {
 		t.Fatalf("unexpected err: %v", err)
 	}
+	if !ok {
+		t.Errorf("out-of-list model must accept %q via the fallback; got false", "high")
+	}
+	ok, err = ValidateThinkingLevel(ctx, "claude", Command{Path: fakeClaude}, "claude-nonexistent", "xhigh")
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
 	if ok {
-		t.Errorf("unknown model must fail closed; got true")
+		t.Error("out-of-list model must not accept xhigh; the fallback stays conservative")
+	}
+}
+
+// TestValidateThinkingLevelWith_ClaudeModelOutsideCatalog pins the validator
+// side of the out-of-list fallback over a synthetic loader: a claude model
+// with NO catalog entry accepts exactly claudeStaticEffortFallback and
+// inherits nothing else, a listed model keeps its exact per-model answer,
+// empty stays the runtime-default sentinel, and other providers keep failing
+// closed. The daemon's pre-execution guard calls this; if it rejected what
+// the UI offers, the picker would be a fake switch.
+func TestValidateThinkingLevelWith_ClaudeModelOutsideCatalog(t *testing.T) {
+	t.Parallel()
+	loader := func() (Catalog, error) {
+		return Catalog{Models: []Model{
+			{ID: "claude-sonnet-4-6", Thinking: &ModelThinking{SupportedLevels: []ThinkingLevel{
+				{Value: "low", Label: "Low"},
+				{Value: "medium", Label: "Medium"},
+				{Value: "high", Label: "High"},
+				{Value: "max", Label: "Max"},
+			}}},
+		}}, nil
+	}
+	validate := func(provider, model, value string) bool {
+		t.Helper()
+		ok, err := ValidateThinkingLevelWith(loader, provider, model, value)
+		if err != nil {
+			t.Fatalf("ValidateThinkingLevelWith(%q, %q, %q): %v", provider, model, value, err)
+		}
+		return ok
+	}
+
+	for _, level := range []string{"low", "medium", "high"} {
+		if !validate("claude", "claude-super-9", level) {
+			t.Errorf("out-of-list claude model must accept %q via the fallback", level)
+		}
+	}
+	for _, level := range []string{"xhigh", "max", "ultra"} {
+		if validate("claude", "claude-super-9", level) {
+			t.Errorf("out-of-list claude model must reject %q; the fallback stays conservative", level)
+		}
+	}
+
+	if !validate("claude", "claude-sonnet-4-6", "max") {
+		t.Error("a listed model keeps its exact catalog (max is sonnet-only here)")
+	}
+	if validate("claude", "claude-sonnet-4-6", "xhigh") {
+		t.Error("a listed model keeps its exact catalog; xhigh must not leak in")
+	}
+
+	if !validate("claude", "claude-super-9", "") || !validate("claude", "", "") {
+		t.Error("empty value stays the runtime-default sentinel regardless of resolution")
+	}
+
+	// Empty model with a catalog that flags no Default entry: no entry the
+	// answer could be read from, so the same fallback applies.
+	noDefault := func() (Catalog, error) {
+		return Catalog{Models: []Model{
+			{ID: "claude-opus-5", Thinking: &ModelThinking{SupportedLevels: []ThinkingLevel{
+				{Value: "low", Label: "Low"},
+				{Value: "medium", Label: "Medium"},
+				{Value: "high", Label: "High"},
+				{Value: "xhigh", Label: "Extra high"},
+				{Value: "max", Label: "Max"},
+			}}},
+		}}, nil
+	}
+	if ok, err := ValidateThinkingLevelWith(noDefault, "claude", "", "high"); err != nil || !ok {
+		t.Errorf("empty model with no Default entry: high should pass via the fallback (ok=%v err=%v)", ok, err)
+	}
+	if ok, err := ValidateThinkingLevelWith(noDefault, "claude", "", "xhigh"); err != nil || ok {
+		t.Errorf("empty model with no Default entry: xhigh must not leak from the unrelated entry (ok=%v err=%v)", ok, err)
+	}
+
+	if validate("codex", "gpt-unknown", "high") {
+		t.Error("the out-of-list fallback is claude's; codex keeps failing closed")
 	}
 }
 

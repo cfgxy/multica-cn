@@ -182,6 +182,52 @@ func TestAnnotateACPThinkingForSessionModelNoOption(t *testing.T) {
 	}
 }
 
+// zcodeEffortSessionResult is the zcode-acp shape: the model catalog lives in
+// the `model` config option (no top-level models block), and the effort dial
+// is the `thought` selector — matched by category `thought_level`, while the
+// id is what set_config_option must address. The GLM-5.3 vocabulary
+// (low/high/max) mirrors the provider config's models[].reasoning.variants.
+const zcodeEffortSessionResult = `{"sessionId":"ses-zcode",` +
+	`"configOptions":[` +
+	`{"type":"select","id":"model","name":"Model","category":"model","currentValue":"glm-5.3","options":[` +
+	`{"value":"glm-5.3","name":"GLM-5.3"},{"value":"glm-4.7","name":"GLM-4.7"}]},` +
+	`{"type":"select","id":"thought","name":"Thought","category":"thought_level","currentValue":"high","options":[` +
+	`{"value":"low","name":"Low"},{"value":"high","name":"High"},{"value":"max","name":"Max"}]}]}`
+
+// TestAnnotateACPThinkingZcodeSessionModel pins discoverZcodeModels' wiring:
+// the zcode handshake must feed the same annotate hook as reasonix — the
+// thought selector describes the session's current model only, and the
+// per-model vocabulary (GLM-5.3 → low/high/max) must reach the catalog so the
+// UI offers what set_config_option can actually apply.
+func TestAnnotateACPThinkingZcodeSessionModel(t *testing.T) {
+	t.Parallel()
+	models := parseACPConfigOptionModels(json.RawMessage(zcodeEffortSessionResult))
+	if len(models) != 2 {
+		t.Fatalf("models = %+v, want 2 entries from the model config option", models)
+	}
+	if !models[0].Default || models[0].ID != "glm-5.3" {
+		t.Fatalf("current model = %+v, want glm-5.3 flagged Default", models[0])
+	}
+	annotateACPThinkingForSessionModel(models, json.RawMessage(zcodeEffortSessionResult))
+
+	current := models[0]
+	if current.Thinking == nil {
+		t.Fatal("the session's current model must carry the thought catalog")
+	}
+	for _, want := range []string{"low", "high", "max"} {
+		if !hasThinkingLevel(current.Thinking, want) {
+			t.Errorf("GLM-5.3 catalog missing %q: %+v", want, current.Thinking.SupportedLevels)
+		}
+	}
+	if current.Thinking.DefaultLevel != "high" {
+		t.Errorf("DefaultLevel = %q, want the thought selector's currentValue", current.Thinking.DefaultLevel)
+	}
+	if models[1].Thinking != nil {
+		t.Errorf("glm-4.7 got %+v; the thought selector describes the session's current model only",
+			models[1].Thinking)
+	}
+}
+
 // ── applyACPEffortOption ─────────────────────────────────────────────
 
 type recordedACPCall struct {
