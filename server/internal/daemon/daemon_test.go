@@ -189,6 +189,7 @@ func TestPrepareReasonixTaskStateHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	t.Setenv("MULTICA_TASK_CONFIG_ROOT", "")
 
 	got, err := prepareReasonixTaskStateHome("work", "runtime-1", "agent_2")
 	if err != nil {
@@ -211,6 +212,7 @@ func TestPrepareDshTaskSessionRoot(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	t.Setenv("MULTICA_TASK_CONFIG_ROOT", "")
 
 	got, err := prepareDshTaskSessionRoot("work", "runtime-1", "agent_2")
 	if err != nil {
