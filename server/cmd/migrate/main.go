@@ -330,6 +330,9 @@ var concurrentIndexCleanups = map[string]string{
 	"953_knowledge_dir_daemon_idx":                             "idx_knowledge_dir_daemon",
 	"954_project_resource_local_dir_daemon_idx":                "idx_project_resource_local_dir_daemon",
 	"955_proposal_system_dir_dedupe":                           "uidx_proposal_system_dir",
+	"966_channel_chat_run_intent_id_uidx":                       "channel_chat_run_intent_id_uidx",
+	"968_channel_chat_run_intent_pending_uidx":                  "channel_chat_run_intent_pending_uidx",
+	"969_channel_chat_run_intent_claim_idx":                     "idx_channel_chat_run_intent_claim",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
