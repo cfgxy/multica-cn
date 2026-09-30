@@ -2716,3 +2716,135 @@ describe("clientErrorMessage", () => {
     expect(clientErrorMessage(undefined)).toBeUndefined();
   });
 });
+
+describe("ApiClient prompt governance versions (RUYI-285)", () => {
+  const versionRow = {
+    id: "pv-1",
+    scope: "agent",
+    scope_id: "agent-1",
+    version: 2,
+    content: "second draft",
+    content_sha256: "abc123",
+    source: "edit",
+    change_note: "收紧工具使用纪律",
+    author_user_id: "u-1",
+    scanner_revision: "rev-1",
+    created_at: "2026-09-29T12:00:00.000Z",
+  };
+
+  it("lists versions with full content", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(
+        JSON.stringify({ versions: [versionRow], total: 1 }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    await expect(
+      client.listPromptGovernanceVersions("agent", "agent-1"),
+    ).resolves.toEqual({ versions: [versionRow], total: 1 });
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://api.example.test/api/prompt-governance/agent/agent-1/versions",
+    );
+  });
+
+  it("applies limit and offset as a query string", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ versions: [], total: 0 }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    await client.listPromptGovernanceVersions("agent", "agent-1", {
+      limit: 10,
+      offset: 5,
+    });
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://api.example.test/api/prompt-governance/agent/agent-1/versions?limit=10&offset=5",
+    );
+  });
+
+  it("falls back to an empty list when the response is malformed", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        new Response(JSON.stringify({ versions: "nope" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        }),
+      ),
+    );
+
+    const client = new ApiClient("https://api.example.test");
+    await expect(
+      client.listPromptGovernanceVersions("agent", "agent-1"),
+    ).resolves.toEqual({ versions: [], total: 0 });
+  });
+
+  it("saves a new version with content and change note", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(versionRow), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    await expect(
+      client.savePromptGovernanceVersion("agent", "agent-1", {
+        content: "second draft",
+        change_note: "收紧工具使用纪律",
+      }),
+    ).resolves.toEqual(versionRow);
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://api.example.test/api/prompt-governance/agent/agent-1/versions",
+    );
+    expect(fetchMock.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          content: "second draft",
+          change_note: "收紧工具使用纪律",
+        }),
+      }),
+    );
+  });
+
+  it("switches to a historical version", async () => {
+    const revertRow = {
+      ...versionRow,
+      id: "pv-3",
+      version: 3,
+      source: "revert",
+      source_version: 2,
+      change_note: "切换至历史版本 v2",
+    };
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(revertRow), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const client = new ApiClient("https://api.example.test");
+    await expect(
+      client.switchPromptGovernanceVersion("agent", "agent-1", 2),
+    ).resolves.toEqual(revertRow);
+
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://api.example.test/api/prompt-governance/agent/agent-1/versions/2/switch",
+    );
+    expect(fetchMock.mock.calls[0]?.[1]).toEqual(
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+});
