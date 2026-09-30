@@ -360,6 +360,10 @@
       "lesson": "经验教训",
       "pitfall": "已知陷阱"
     },
+    "source": {
+      "system": "系统",
+      "member": "成员"
+    },
     "create": "新建提案",
     "createTitle": "新建提案",
     "createDescription": "预言在创建时写入且此后不可改；数量型提案需给出指标、方向与数值区间，行为型提案需给出可观察变化与证伪条件。",
@@ -393,6 +397,8 @@
     },
     "createdAt": "创建于 {{date}}",
     "transferError": "知识转移失败：{{error}}",
+    "transferring": "转移中",
+    "transferringNote": "已排队采纳——正在后台转移到知识总库，完成后此行自动更新。",
     "adopt": "采纳",
     "reject": "拒绝",
     "restore": "恢复为草稿",
@@ -422,16 +428,16 @@
     }
   },
   "knowledge": {
-    "title": "知识库镜像",
-    "description": "候选 bd memories 目录以只读方式镜像；唯一写路径是 Owner 采纳后转移到最终权威库。",
+    "title": "知识库",
+    "description": "自动发现或手动添加的 bd memories 目录以只读方式镜像；Owner 采纳后由后台转移到知识总库。",
     "register": "注册目录",
     "registerTitle": "注册知识目录",
-    "registerDescription": "注册即执行首次只读扫描。最终权威库另行指定，不在本表单注册。",
+    "registerDescription": "登记为手动添加的外部来源，首次只读扫描在后台执行。知识总库另行指定，不在此登记。",
     "kindLabel": "目录类型",
     "kind": {
-      "ultimate": "最终权威库",
-      "candidate_cli": "候选（手动注册）",
-      "candidate_auto": "候选（自动发现）"
+      "ultimate": "知识总库",
+      "candidate_cli": "手动添加",
+      "candidate_auto": "自动发现"
     },
     "pathLabel": "目录路径",
     "labelLabel": "显示名",
@@ -443,6 +449,7 @@
     "entryCount": "{{n}} 条",
     "lastScan": "上次扫描（{{result}}）：新增 {{added}}，更新 {{updated}}，移除 {{removed}}",
     "neverScanned": "尚未扫描",
+    "scanRequested": "扫描待执行",
     "health": {
       "ok": "健康",
       "unhealthy": "异常"
@@ -454,6 +461,8 @@
     },
     "scan": "立即扫描",
     "unregister": "注销",
+    "advancedTitle": "高级：添加外部来源",
+    "advancedDescription": "指向本机上的 bd memories 目录，显示名为可选项。",
     "allDirs": "全部目录",
     "searchPlaceholder": "搜索 key 或内容",
     "mirrorState": {
@@ -463,6 +472,7 @@
     },
     "adoptionState": {
       "pending": "待采纳",
+      "transferring": "转移中",
       "adopted": "已采纳",
       "failed": "采纳失败"
     },
@@ -470,7 +480,7 @@
     "adoptedFrom": "采纳自 {{key}}",
     "emptyDirs": {
       "title": "暂无注册目录",
-      "description": "注册一个候选 bd memories 目录后，其内容会以只读方式镜像到这里。"
+      "description": "已连接的守护进程发现项目自带的 bd memories 后会自动出现在这里；也可以在下方「高级」中手动添加外部来源。"
     },
     "emptyEntries": "当前筛选下没有条目。",
     "error": {

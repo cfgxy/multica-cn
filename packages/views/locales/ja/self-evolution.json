@@ -360,6 +360,10 @@
       "lesson": "教訓",
       "pitfall": "既知の落とし穴"
     },
+    "source": {
+      "system": "システム",
+      "member": "メンバー"
+    },
     "create": "新規提案",
     "createTitle": "新規提案",
     "createDescription": "予言は作成時に書き込まれ、以降は変更できません。定量的な提案には指標・方向・数値帯が必要で、行動型の提案には観察可能な変化と反証条件が必要です。",
@@ -393,6 +397,8 @@
     },
     "createdAt": "作成 {{date}}",
     "transferError": "知識転送に失敗しました：{{error}}",
+    "transferring": "転送中",
+    "transferringNote": "採用をキューに追加しました——ナレッジハブへの転送はバックグラウンドで実行され、完了後この行は自動的に更新されます。",
     "adopt": "採用",
     "reject": "却下",
     "restore": "ドラフトに戻す",
@@ -422,16 +428,16 @@
     }
   },
   "knowledge": {
-    "title": "ナレッジミラー",
-    "description": "候補の bd memories ディレクトリは読み取り専用でミラーされ、唯一の書き込み経路はオーナーによる最終ライブラリへの採用転送です。",
+    "title": "ナレッジライブラリ",
+    "description": "bd memories ディレクトリは接続済みプロジェクトから自動検出されるか、下から手動追加します。エントリは読み取り専用でミラーされ、採用するとバックグラウンドでナレッジハブへ転送されます。",
     "register": "ディレクトリを登録",
     "registerTitle": "ナレッジディレクトリを登録",
-    "registerDescription": "登録すると最初の読み取り専用スキャンが実行されます。最終ライブラリは別途指定され、このフォームからは登録しません。",
+    "registerDescription": "このパスを手動追加ソースとして登録します。初回の読み取り専用スキャンはバックグラウンドで実行されます。ナレッジハブは別途指定し、ここでは登録しません。",
     "kindLabel": "ディレクトリ種別",
     "kind": {
-      "ultimate": "最終ライブラリ",
-      "candidate_cli": "候補（手動登録）",
-      "candidate_auto": "候補（自動検出）"
+      "ultimate": "ナレッジハブ",
+      "candidate_cli": "手動追加",
+      "candidate_auto": "自動検出"
     },
     "pathLabel": "ディレクトリパス",
     "labelLabel": "表示ラベル",
@@ -443,6 +449,7 @@
     "entryCount": "{{n}} 件",
     "lastScan": "前回スキャン（{{result}}）：追加 {{added}}、更新 {{updated}}、削除 {{removed}}",
     "neverScanned": "未スキャン",
+    "scanRequested": "スキャン待ち",
     "health": {
       "ok": "正常",
       "unhealthy": "異常"
@@ -454,6 +461,8 @@
     },
     "scan": "今すぐスキャン",
     "unregister": "登録解除",
+    "advancedTitle": "詳細：外部ソースを追加",
+    "advancedDescription": "このマシン上の bd memories ディレクトリを指定します。表示名は任意です。",
     "allDirs": "すべてのディレクトリ",
     "searchPlaceholder": "キーまたは内容を検索",
     "mirrorState": {
@@ -463,6 +472,7 @@
     },
     "adoptionState": {
       "pending": "未採用",
+      "transferring": "転送中",
       "adopted": "採用済み",
       "failed": "採用失敗"
     },
@@ -470,7 +480,7 @@
     "adoptedFrom": "{{key}} から採用",
     "emptyDirs": {
       "title": "登録済みディレクトリはありません",
-      "description": "候補の bd memories ディレクトリを登録すると、内容が読み取り専用でミラーされます。"
+      "description": "接続済みデーモンが bd memories を持つプロジェクトを検出すると自動的にここに表示されます。「詳細」から手動追加もできます。"
     },
     "emptyEntries": "現在のフィルターではエントリーがありません。",
     "error": {

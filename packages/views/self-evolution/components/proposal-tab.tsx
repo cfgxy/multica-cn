@@ -197,6 +197,11 @@ export function ProposalTab({ wsId }: { wsId: string }) {
                   <span className="flex w-full items-center gap-2">
                     <span className="min-w-0 flex-1 truncate font-medium">{p.title}</span>
                     <Badge variant="outline">{typeLabel(p.type)}</Badge>
+                    {p.created_by_type === "system" ? (
+                      <Badge variant="secondary">{t(($) => $.proposals.source.system)}</Badge>
+                    ) : (
+                      <Badge variant="outline">{t(($) => $.proposals.source.member)}</Badge>
+                    )}
                     <Badge variant={p.status === "adopted" ? "secondary" : "outline"}>
                       {statusLabel(p.status)}
                     </Badge>
@@ -441,26 +446,36 @@ function ProposalDetail({
 
       {canManage ? (
         <div className="space-y-3 border-t pt-4" data-testid="proposal-owner-actions">
+          {proposal.transfer_state === "transferring" ? (
+            <div className="space-y-1.5" data-testid="proposal-transferring">
+              <Badge variant="outline">{t(($) => $.proposals.transferring)}</Badge>
+              <p className="text-caption text-muted-foreground">
+                {t(($) => $.proposals.transferringNote)}
+              </p>
+            </div>
+          ) : null}
           {proposal.status === "draft" || proposal.status === "needs_revision" ? (
-            <>
-              <Button size="sm" disabled={pending} onClick={onAdopt}>
-                {t(($) => $.proposals.adopt)}
-              </Button>
-              <div className="space-y-1.5">
-                <Label htmlFor="proposal-reject-reason">
-                  {t(($) => $.proposals.rejectReasonLabel)}
-                </Label>
-                <Input
-                  id="proposal-reject-reason"
-                  value={rejectReason}
-                  onChange={(e) => onRejectReason(e.target.value)}
-                  placeholder={t(($) => $.proposals.rejectReasonPlaceholder)}
-                />
-                <Button size="sm" variant="outline" disabled={pending} onClick={onReject}>
-                  {t(($) => $.proposals.reject)}
+            proposal.transfer_state === "transferring" ? null : (
+              <>
+                <Button size="sm" disabled={pending} onClick={onAdopt}>
+                  {t(($) => $.proposals.adopt)}
                 </Button>
-              </div>
-            </>
+                <div className="space-y-1.5">
+                  <Label htmlFor="proposal-reject-reason">
+                    {t(($) => $.proposals.rejectReasonLabel)}
+                  </Label>
+                  <Input
+                    id="proposal-reject-reason"
+                    value={rejectReason}
+                    onChange={(e) => onRejectReason(e.target.value)}
+                    placeholder={t(($) => $.proposals.rejectReasonPlaceholder)}
+                  />
+                  <Button size="sm" variant="outline" disabled={pending} onClick={onReject}>
+                    {t(($) => $.proposals.reject)}
+                  </Button>
+                </div>
+              </>
+            )
           ) : null}
           {proposal.status === "rejected" || proposal.status === "archived" ? (
             <Button size="sm" variant="outline" disabled={pending} onClick={onRestore}>

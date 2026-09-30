@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"time"
@@ -34,8 +35,15 @@ type ProposalResponse struct {
 	Verification       map[string]any `json:"verification,omitempty"`
 	AuditLog           []any          `json:"audit_log"`
 	TransferError      string         `json:"transfer_error,omitempty"`
-	CreatedAt          time.Time      `json:"created_at"`
-	UpdatedAt          time.Time      `json:"updated_at"`
+	// member | agent | system — who put the proposal into the pool; the UI
+	// renders it as the source badge (system = auto-discovery findings).
+	CreatedByType string `json:"created_by_type"`
+	// '' = idle, 'transferring' = the knowledge-type adoption transfer is
+	// queued/being executed by a daemon; status only flips to adopted after
+	// the daemon confirmed the transfer (RUYI-289).
+	TransferState string    `json:"transfer_state"`
+	CreatedAt     time.Time `json:"created_at"`
+	UpdatedAt     time.Time `json:"updated_at"`
 }
 
 // validateProposalProphecy enforces the §A.2 type matrix. Quantitative types
@@ -81,10 +89,10 @@ func validateProposalProphecy(proposalType string, prophecy map[string]any) stri
 // effect — the reference at creation time, the audit baseline at adoption.
 // No prompt versions at all is a legitimate "no measurement yet" state and
 // is stored as an explicit null, never as a zero.
-func (h *Handler) proposalPromptSnapshot(r *http.Request, workspaceID pgtype.UUID) map[string]any {
+func (h *Handler) proposalPromptSnapshot(ctx context.Context, workspaceID pgtype.UUID) map[string]any {
 	snapshot := map[string]any{"captured_at": time.Now().UTC().Format(time.RFC3339)}
 	var version pgtype.Int4
-	err := h.DB.QueryRow(r.Context(), `
+	err := h.DB.QueryRow(ctx, `
 SELECT version FROM prompt_version
 WHERE workspace_id = $1 AND scope = 'workspace' AND scope_id = $1
 ORDER BY version DESC LIMIT 1`, workspaceID).Scan(&version)
@@ -96,7 +104,7 @@ ORDER BY version DESC LIMIT 1`, workspaceID).Scan(&version)
 	return snapshot
 }
 
-func (h *Handler) proposalAppendAudit(r *http.Request, id pgtype.UUID, action string, detail map[string]any, actor string) {
+func (h *Handler) proposalAppendAudit(ctx context.Context, id pgtype.UUID, action string, detail map[string]any, actor string) {
 	entry := map[string]any{"action": action, "actor": actor, "at": time.Now().UTC().Format(time.RFC3339)}
 	if detail != nil {
 		entry["detail"] = detail
@@ -105,7 +113,7 @@ func (h *Handler) proposalAppendAudit(r *http.Request, id pgtype.UUID, action st
 	if err != nil {
 		return
 	}
-	_, _ = h.DB.Exec(r.Context(),
+	_, _ = h.DB.Exec(ctx,
 		`UPDATE proposal SET audit_log = audit_log || $2::jsonb, updated_at = now() WHERE id = $1`,
 		id, encoded)
 }
@@ -117,7 +125,8 @@ func (h *Handler) GetProposals(w http.ResponseWriter, r *http.Request) {
 	status, proposalType := r.URL.Query().Get("status"), r.URL.Query().Get("type")
 	rows, err := h.DB.Query(r.Context(), `
 SELECT id, type, status, title, summary, evidence, prophecy, generation_snapshot,
-       adoption_snapshot, verification, audit_log, transfer_error, created_at, updated_at
+       adoption_snapshot, verification, audit_log, transfer_error, created_by_type,
+       transfer_state, created_at, updated_at
 FROM proposal
 WHERE workspace_id = $1 AND ($2 = '' OR status = $2) AND ($3 = '' OR type = $3)
 ORDER BY created_at DESC LIMIT 200`, workspaceID, status, proposalType)
@@ -148,7 +157,8 @@ func scanProposalRow(w http.ResponseWriter, rows interface{ Scan(dest ...any) er
 	var adoption, verification []byte
 	if err := rows.Scan(&id, &proposal.Type, &proposal.Status, &proposal.Title, &proposal.Summary,
 		&evidence, &prophecy, &generation, &adoption, &verification, &audit,
-		&proposal.TransferError, &proposal.CreatedAt, &proposal.UpdatedAt); err != nil {
+		&proposal.TransferError, &proposal.CreatedByType, &proposal.TransferState,
+		&proposal.CreatedAt, &proposal.UpdatedAt); err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to read proposals")
 		return proposal, false
 	}
@@ -227,7 +237,7 @@ func (h *Handler) PostProposal(w http.ResponseWriter, r *http.Request) {
 	}
 	encodedProphecy, _ := json.Marshal(body.Prophecy)
 	encodedEvidence, _ := json.Marshal(body.Evidence)
-	encodedGeneration, _ := json.Marshal(h.proposalPromptSnapshot(r, workspaceID))
+	encodedGeneration, _ := json.Marshal(h.proposalPromptSnapshot(r.Context(), workspaceID))
 	var id pgtype.UUID
 	if err := h.DB.QueryRow(r.Context(), `
 INSERT INTO proposal (workspace_id, type, title, summary, evidence, prophecy, generation_snapshot, created_by_type, created_by_id)
@@ -242,12 +252,15 @@ RETURNING id`,
 }
 
 // AdoptProposal serves POST /api/proposals/{id}/adopt: the Owner decision
-// (B2's adoption half). It captures the adoption snapshot inside the same
-// flow — the audit baseline verification compares against. Knowledge-type
-// proposals (project_cognition/lesson/pitfall) additionally transfer into
-// the workspace's ultimate knowledge directory in the same server flow
-// (spec §A.3 r4): adoption is only recorded once the transfer succeeded and
-// was read back; on failure the proposal stays un-adopted with the reason.
+// (B2's adoption half). The adoption snapshot is captured here — the audit
+// baseline verification compares against. Non-knowledge types
+// (prompt_revision/skill) adopt synchronously as before. Knowledge-type
+// proposals (project_cognition/lesson/pitfall) additionally transfer into the
+// workspace's ultimate knowledge directory, and since RUYI-289 that transfer
+// runs on the daemon hosting the ultimate bd: this handler only queues it
+// (transfer_state='transferring') and the proposal becomes 'adopted' when the
+// daemon reported remember + read-back success. Failures clear the marker and
+// keep the reason in transfer_error; re-adopting is the idempotent retry.
 func (h *Handler) AdoptProposal(w http.ResponseWriter, r *http.Request) {
 	userID, ok := requireUserID(w, r)
 	if !ok {
@@ -258,10 +271,10 @@ func (h *Handler) AdoptProposal(w http.ResponseWriter, r *http.Request) {
 	if !idOK {
 		return
 	}
-	var proposalType, status string
+	var proposalType, status, transferState string
 	if err := h.DB.QueryRow(r.Context(),
-		`SELECT type, status FROM proposal WHERE id = $1 AND workspace_id = $2`,
-		proposalID, workspaceID).Scan(&proposalType, &status); err != nil {
+		`SELECT type, status, transfer_state FROM proposal WHERE id = $1 AND workspace_id = $2`,
+		proposalID, workspaceID).Scan(&proposalType, &status, &transferState); err != nil {
 		writeError(w, http.StatusNotFound, "proposal not found")
 		return
 	}
@@ -272,39 +285,53 @@ func (h *Handler) AdoptProposal(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "only draft or needs-revision proposals can be adopted; rejected proposals must be restored first")
 		return
 	}
-
-	adoption := h.proposalPromptSnapshot(r, workspaceID)
-	adoption["adopted_by"] = userID
-
-	if proposalType == "project_cognition" || proposalType == "lesson" || proposalType == "pitfall" {
-		var title, summary string
-		if err := h.DB.QueryRow(r.Context(),
-			`SELECT title, summary FROM proposal WHERE id = $1`, proposalID).Scan(&title, &summary); err != nil {
-			writeError(w, http.StatusInternalServerError, "failed to load the proposal for transfer")
-			return
-		}
-		key := "proposal-" + uuidToString(proposalID)[:8]
-		content := title + "\n\n" + summary
-		if _, err := h.knowledgeTransfer(r, workspaceID, key, content, userID); err != nil {
-			_, _ = h.DB.Exec(r.Context(),
-				`UPDATE proposal SET transfer_error = $2, updated_at = now() WHERE id = $1`,
-				proposalID, err.Error())
-			h.proposalAppendAudit(r, proposalID, "adopt_failed", map[string]any{"reason": err.Error()}, userID)
-			writeError(w, http.StatusConflict, "adoption aborted: "+err.Error())
-			return
-		}
-		adoption["knowledge_transfer"] = map[string]any{"key": key, "state": "transferred"}
-	}
-	encoded, _ := json.Marshal(adoption)
-	tag, err := h.DB.Exec(r.Context(), `
-UPDATE proposal SET status = 'adopted', adoption_snapshot = $2, transfer_error = '', updated_at = now()
-WHERE id = $1 AND status IN ('draft', 'needs_revision')`, proposalID, encoded)
-	if err != nil || tag.RowsAffected() == 0 {
-		writeError(w, http.StatusInternalServerError, "failed to record the adoption")
+	if transferState == "transferring" {
+		writeError(w, http.StatusConflict, "a transfer for this proposal is already in progress")
 		return
 	}
-	h.proposalAppendAudit(r, proposalID, "adopt", nil, userID)
-	writeJSON(w, http.StatusOK, map[string]string{"status": "adopted"})
+
+	adoption := h.proposalPromptSnapshot(r.Context(), workspaceID)
+	adoption["adopted_by"] = userID
+	encoded, _ := json.Marshal(adoption)
+
+	isKnowledgeType := proposalType == "project_cognition" || proposalType == "lesson" || proposalType == "pitfall"
+	if !isKnowledgeType {
+		// No knowledge transfer is involved: the Owner decision is the whole
+		// adoption, synchronous exactly as before the daemon split.
+		tag, err := h.DB.Exec(r.Context(), `
+UPDATE proposal SET status = 'adopted', adoption_snapshot = $2, updated_at = now()
+WHERE id = $1 AND status IN ('draft', 'needs_revision') AND transfer_state = ''`,
+			proposalID, encoded)
+		if err != nil || tag.RowsAffected() == 0 {
+			writeError(w, http.StatusConflict, "this proposal cannot be adopted right now")
+			return
+		}
+		h.proposalAppendAudit(r.Context(), proposalID, "adopt", nil, userID)
+		writeJSON(w, http.StatusOK, map[string]string{"status": "adopted"})
+		return
+	}
+
+	ultimateID, _, err := h.knowledgeUltimateDir(r.Context(), workspaceID)
+	if err != nil {
+		writeError(w, http.StatusConflict, "adoption aborted: "+err.Error())
+		return
+	}
+	key := "proposal-" + uuidToString(proposalID)[:8]
+	adoption["knowledge_transfer"] = map[string]any{
+		"key": key, "state": "queued", "ultimate_dir_id": uuidToString(ultimateID),
+	}
+	encoded, _ = json.Marshal(adoption)
+	tag, err := h.DB.Exec(r.Context(), `
+UPDATE proposal SET transfer_state = 'transferring', transfer_error = '',
+    adoption_snapshot = $2, updated_at = now()
+WHERE id = $1 AND status IN ('draft', 'needs_revision') AND transfer_state = ''`,
+		proposalID, encoded)
+	if err != nil || tag.RowsAffected() == 0 {
+		writeError(w, http.StatusConflict, "this proposal cannot be adopted right now")
+		return
+	}
+	h.proposalAppendAudit(r.Context(), proposalID, "adopt_queued", nil, userID)
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "transferring"})
 }
 
 // RejectProposal serves POST /api/proposals/{id}/reject. Rejection is a
@@ -332,7 +359,7 @@ WHERE id = $1 AND workspace_id = $2 AND status IN ('draft', 'needs_revision')`,
 		writeError(w, http.StatusConflict, "only draft or needs-revision proposals can be rejected")
 		return
 	}
-	h.proposalAppendAudit(r, proposalID, "reject", map[string]any{"reason": body.Reason}, userID)
+	h.proposalAppendAudit(r.Context(), proposalID, "reject", map[string]any{"reason": body.Reason}, userID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "rejected"})
 }
 
@@ -356,7 +383,7 @@ WHERE id = $1 AND workspace_id = $2 AND status IN ('rejected', 'archived')`,
 		writeError(w, http.StatusConflict, "only rejected or archived proposals can be restored")
 		return
 	}
-	h.proposalAppendAudit(r, proposalID, "restore", nil, userID)
+	h.proposalAppendAudit(r.Context(), proposalID, "restore", nil, userID)
 	writeJSON(w, http.StatusOK, map[string]string{"status": "draft"})
 }
 
