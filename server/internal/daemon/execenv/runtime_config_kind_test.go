@@ -303,6 +303,16 @@ func TestBackgroundTaskSafetySlimHardPins(t *testing.T) {
 		"exact child PID you started",
 		"`multica daemon status --output json`",
 		"never kill it if it is the reported daemon PID",
+		// Resource self-cleanup (2026-09-30 incident): without these pins a
+		// trim can silently re-allow QA/build runs to leave dev stacks running
+		// — exactly the ~10 GB of orphaned next-servers the paragraph exists
+		// to prevent.
+		"Everything you start is yours to stop",
+		"`make down`/`make destroy`, `docker compose down`",
+		"not something the next run inherits",
+		"start it with a TTL (`make up --ttl 24`)",
+		"scripts/qa-clean.sh --issue <issue-id> --yes",
+		"Build outputs, screenshots, and QA evidence are runtime-local",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("slim Background Task Safety missing hardened pin %q\n---\n%s", want, out)
