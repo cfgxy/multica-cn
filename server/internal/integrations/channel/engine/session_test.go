@@ -362,6 +362,10 @@ func (f *fakeSessionQueries) MarkChannelInboundDedupProcessed(_ context.Context,
 	return f.markRows, nil
 }
 
+func (f *fakeSessionQueries) UpsertChatRunIntent(_ context.Context, _ db.UpsertChatRunIntentParams) error {
+	return nil
+}
+
 func newTestSession(f SessionQueries) *ChatSession {
 	return newChatSessionWith(f, fakeTxStarter{}, channel.TypeFeishu, SessionTitles{Group: "G", Direct: "D", Fallback: "F"})
 }
