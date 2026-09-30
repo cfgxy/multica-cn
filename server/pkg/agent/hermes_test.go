@@ -1352,6 +1352,47 @@ func TestHermesClientHandleToolCallComplete(t *testing.T) {
 	if got.Output != "file1.go\nfile2.go\n" {
 		t.Errorf("output: got %q", got.Output)
 	}
+	if got.IsError == nil {
+		t.Error("IsError: got nil, want false for a completed tool call")
+	} else if *got.IsError {
+		t.Error("IsError: got true, want false for a completed tool call")
+	}
+}
+
+// TestHermesClientHandleToolCallFailedMarksIsError pins the error mapping
+// that feeds the three-state progress card: an ACP tool_call_update with
+// status="failed" must surface as a ToolResult carrying IsError=true — the
+// backend's own verdict, not something inferred from the output text. The
+// failed status keeps passing through unchanged, and the result is still
+// emitted so the card shows the failure instead of dropping the row.
+func TestHermesClientHandleToolCallFailedMarksIsError(t *testing.T) {
+	t.Parallel()
+
+	var got Message
+	c := &hermesClient{
+		pending: make(map[int]*pendingRPC),
+		onMessage: func(msg Message) {
+			got = msg
+		},
+	}
+
+	line := `{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"ses_1","update":{"sessionUpdate":"tool_call_update","toolCallId":"tc-fail-1","status":"failed","kind":"execute","rawOutput":"boom: exit 3\n"}}}`
+	c.handleLine(line)
+
+	if got.Type != MessageToolResult {
+		t.Errorf("type: got %v, want MessageToolResult", got.Type)
+	}
+	if got.CallID != "tc-fail-1" {
+		t.Errorf("callID: got %q, want %q", got.CallID, "tc-fail-1")
+	}
+	if got.Status != "failed" {
+		t.Errorf("status: got %q, want %q", got.Status, "failed")
+	}
+	if got.IsError == nil {
+		t.Error("IsError: got nil, want true for a failed tool call")
+	} else if !*got.IsError {
+		t.Error("IsError: got false, want true for a failed tool call")
+	}
 }
 
 // TestHermesClientKimiStreamingToolCall walks the real kimi frame
