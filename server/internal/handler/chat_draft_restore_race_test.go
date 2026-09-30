@@ -151,7 +151,7 @@ func TestFinalizeDeferredCancelledChat_TakesTheChatSessionLockBeforeInserting(t 
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
-	f := seedDraftRestoreRaceFixture(t, "handler-tests-draft-restore-race-writer")
+	f := seedDraftRestoreRaceFixture(t, handlerTestSlug("handler-tests-draft-restore-race-writer"))
 
 	tx, err := testPool.Begin(ctx)
 	if err != nil {
@@ -192,7 +192,7 @@ func TestDeleteWorkspace_SweepsRestoreCommittedByAConcurrentFinalizer(t *testing
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
-	f := seedDraftRestoreRaceFixture(t, "handler-tests-draft-restore-race-deleter")
+	f := seedDraftRestoreRaceFixture(t, handlerTestSlug("handler-tests-draft-restore-race-deleter"))
 
 	// A finalizer held open mid-flight: session locked, restore written, not yet
 	// committed. (That the real finalizer takes this lock is pinned by the test
@@ -258,7 +258,7 @@ func TestCreateChatSession_BlocksWhileTheWorkspaceDeleteLockIsHeld(t *testing.T)
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
-	f := seedDraftRestoreRaceFixture(t, "handler-tests-draft-restore-race-newsession")
+	f := seedDraftRestoreRaceFixture(t, handlerTestSlug("handler-tests-draft-restore-race-newsession"))
 
 	var agentID string
 	if err := testPool.QueryRow(ctx,
@@ -324,7 +324,7 @@ func TestFinalizeDeferredCancelledChat_SkipsTheInsertWhenTheSessionIsGone(t *tes
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
-	f := seedDraftRestoreRaceFixture(t, "handler-tests-draft-restore-race-gone")
+	f := seedDraftRestoreRaceFixture(t, handlerTestSlug("handler-tests-draft-restore-race-gone"))
 
 	w := httptest.NewRecorder()
 	req := withURLParam(newRequest(http.MethodDelete, fmt.Sprintf("/api/workspaces/%s", f.workspaceID), nil), "id", f.workspaceID)

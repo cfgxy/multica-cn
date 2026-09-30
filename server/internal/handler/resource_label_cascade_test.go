@@ -272,7 +272,7 @@ func TestDeleteWorkspace_CleansResourceLabelAssignments(t *testing.T) {
 		t.Skip("database not available")
 	}
 	ctx := context.Background()
-	wsID, agentID, skillID := seedWorkspaceResourceLabelFixture(t, ctx, "handler-tests-delete-labels")
+	wsID, agentID, skillID := seedWorkspaceResourceLabelFixture(t, ctx, handlerTestSlug("handler-tests-delete-labels"))
 
 	w := httptest.NewRecorder()
 	req := newRequest("DELETE", "/api/workspaces/"+wsID, nil)
@@ -302,7 +302,7 @@ func TestDeleteWorkspace_RollsBackResourceLabelCleanup(t *testing.T) {
 	// The teardown transaction sets its own lock_timeout (MUL-5983); shorten
 	// it so the blocked administration step fails while the test is young.
 	setWorkspaceDeleteLockTimeoutForTest(t, 100*time.Millisecond)
-	wsID, agentID, skillID := seedWorkspaceResourceLabelFixture(t, ctx, "handler-tests-delete-labels-rollback")
+	wsID, agentID, skillID := seedWorkspaceResourceLabelFixture(t, ctx, handlerTestSlug("handler-tests-delete-labels-rollback"))
 
 	blocker, err := testPool.Begin(ctx)
 	if err != nil {
