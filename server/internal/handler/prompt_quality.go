@@ -48,6 +48,10 @@ type PromptQualityMeasuresResponse struct {
 	Measures promptquality.Presentation `json:"measures"`
 	Reasons  map[string]int             `json:"failure_reasons"`
 	Excluded int                        `json:"excluded_failed_runs"`
+	// D2 drill-down: the recorded breaches behind the median, each carrying the
+	// run it came from. Without these the score is a number with no trail back
+	// to the runs that lowered it (RUYI-287).
+	Deductions []promptquality.Deduction `json:"discipline_deductions,omitempty"`
 }
 
 // PromptQualityPerplexityResponse is one D3 score. There is one per runtime
@@ -194,12 +198,13 @@ func promptQualityByVersion(rows []db.PromptQualityDaily) []PromptQualityMeasure
 func promptQualityMeasures(version int32, rows []db.PromptQualityDaily, results []promptquality.Result) PromptQualityMeasuresResponse {
 	combined := promptquality.Combine(results)
 	out := PromptQualityMeasuresResponse{
-		Version:  version,
-		Days:     len(rows),
-		Runs:     combined.FinishedRuns,
-		Measures: promptquality.Present(combined),
-		Reasons:  combined.FailureReasonCounts,
-		Excluded: combined.ExcludedFailedRuns,
+		Version:    version,
+		Days:       len(rows),
+		Runs:       combined.FinishedRuns,
+		Measures:   promptquality.Present(combined),
+		Reasons:    combined.FailureReasonCounts,
+		Excluded:   combined.ExcludedFailedRuns,
+		Deductions: combined.Deductions,
 	}
 	for _, row := range rows {
 		if !row.Day.Valid {
@@ -250,6 +255,12 @@ func promptQualityRowToResult(row db.PromptQualityDaily) promptquality.Result {
 		// request: D6's headline number lives in its own column, and losing the
 		// breakdown is not a reason to blank the other six cards.
 		_ = json.Unmarshal(row.FailureReasonCounts, &out.FailureReasonCounts)
+	}
+	if len(row.DisciplineDeductions) > 0 {
+		// Same tolerance as the counts blob: the D2 median lives in its own
+		// column, so a deduction list that will not decode costs the drill-down,
+		// not the card.
+		_ = json.Unmarshal(row.DisciplineDeductions, &out.Deductions)
 	}
 	return out
 }

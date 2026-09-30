@@ -136,6 +136,7 @@ export type {
 export type {
   PromptQualityScope,
   PromptQualityDimension,
+  PromptQualityDeduction,
   PromptQualityMeasure,
   PromptQualityMeasures,
   PromptQualityVersionMeasures,

@@ -69,6 +69,17 @@ export interface PromptQualityMeasures {
   first_pass_rate: PromptQualityMeasure;
 }
 
+/**
+ * One recorded D2 breach, traced to the run that produced it (RUYI-287).
+ * `rule` is the rule id, never a sentence derived from the command.
+ */
+export interface PromptQualityDeduction {
+  task_id: string;
+  rule: string;
+  points: number;
+  seq: number;
+}
+
 /** One version's seven cards plus the span they cover. */
 export interface PromptQualityVersionMeasures {
   /** 0 for the window aggregate across versions. */
@@ -82,6 +93,13 @@ export interface PromptQualityVersionMeasures {
   /** D6 breakdown by failure reason. Empty when the blob did not parse. */
   failure_reasons: Record<string, number>;
   excluded_failed_runs: number;
+  /**
+   * D2 drill-down: the recorded breaches behind the median, each carrying the
+   * run it came from. Absent or empty is not a clean record — it also covers a
+   * stored list that did not parse — which is why the drill-down renders only
+   * when items exist and no "no deductions" claim is ever made.
+   */
+  discipline_deductions?: PromptQualityDeduction[];
 }
 
 /** One evidence entry behind a D3 sub-dimension score. Locations, never text. */

@@ -297,7 +297,7 @@ func TestScoreBacklogIsANoOpWhenTheModelIsOff(t *testing.T) {
 	v := s.version(11, "## Agent Identity\nDo the thing.")
 	s.daily(v, 5)
 
-	out, err := s.p.ScoreBacklog(context.Background())
+	out, err := s.p.ScoreBacklog(context.Background(), mustUUID(s.t, testWorkspaceID))
 	if err != nil {
 		t.Fatalf("ScoreBacklog: %v", err)
 	}
@@ -317,7 +317,7 @@ func TestScoreBacklogScoresAVersionThatHasRunsBehindIt(t *testing.T) {
 	v := s.version(12, "## Agent Identity\nDo the thing.")
 	s.daily(v, 4)
 
-	out, err := s.p.ScoreBacklog(context.Background())
+	out, err := s.p.ScoreBacklog(context.Background(), mustUUID(s.t, testWorkspaceID))
 	if err != nil {
 		t.Fatalf("ScoreBacklog: %v", err)
 	}
@@ -336,7 +336,7 @@ func TestScoreBacklogIgnoresAVersionWithNoFinishedRuns(t *testing.T) {
 	v := s.version(13, "## Agent Identity\nDo the thing.")
 	s.daily(v, 0)
 
-	out, err := s.p.ScoreBacklog(context.Background())
+	out, err := s.p.ScoreBacklog(context.Background(), mustUUID(s.t, testWorkspaceID))
 	if err != nil {
 		t.Fatalf("ScoreBacklog: %v", err)
 	}
@@ -357,12 +357,12 @@ func TestScoreBacklogLeavesAFullyScoredVersionAlone(t *testing.T) {
 	v := s.version(14, "## Agent Identity\nDo the thing.")
 	s.daily(v, 4)
 
-	if _, err := s.p.ScoreBacklog(context.Background()); err != nil {
+	if _, err := s.p.ScoreBacklog(context.Background(), mustUUID(s.t, testWorkspaceID)); err != nil {
 		t.Fatalf("first pass: %v", err)
 	}
 	callsAfterFirst := s.gen.calls
 
-	out, err := s.p.ScoreBacklog(context.Background())
+	out, err := s.p.ScoreBacklog(context.Background(), mustUUID(s.t, testWorkspaceID))
 	if err != nil {
 		t.Fatalf("second pass: %v", err)
 	}
@@ -377,6 +377,112 @@ func TestScoreBacklogLeavesAFullyScoredVersionAlone(t *testing.T) {
 
 // The backlog is a queue, not a transaction: a version whose content cannot be
 // read is reported and skipped, and the versions behind it still get scored.
+// The backlog is scoped to the workspace whose dashboard the job serves.
+// Without that boundary one workspace's test run reaches into every other
+// workspace's unscored versions on a shared database — the exact failure that
+// filled real agents' D3 cards with stub rows (RUYI-287).
+func TestScoreBacklogOnlyTouchesItsOwnWorkspace(t *testing.T) {
+	s := newPerplexityScenario(t)
+
+	// A second workspace shaped like the fixture's: an agent version with
+	// finished runs behind it and no scores yet. Any score row that appears on
+	// it after the pass is a version this job had no business scoring.
+	other := s.f.Workspace(t, "pq isolation other", "pq-isolation-other")
+	foreign := testutil.New(testPool, other, testUserID)
+	foreignRuntime := foreign.Runtime(t, "pq-isolation-runtime")
+	foreignAgent := foreign.Agent(t, "pq-isolation-agent", foreignRuntime)
+	foreign.Insert(t, "prompt_version", testutil.Cols{
+		"workspace_id":   other,
+		"scope":          "agent",
+		"scope_id":       foreignAgent,
+		"version":        1,
+		"content":        "## Agent Identity\nDo the other thing.",
+		"content_sha256": strings.Repeat("1", 64),
+		"source":         "edit",
+	})
+	foreign.Insert(t, "prompt_quality_daily", testutil.Cols{
+		"workspace_id":  other,
+		"scope":         "agent",
+		"scope_id":      foreignAgent,
+		"version":       1,
+		"day":           time.Now().UTC().Format("2006-01-02"),
+		"finished_runs": 4,
+	})
+	t.Cleanup(func() {
+		_, _ = testPool.Exec(context.Background(),
+			`DELETE FROM prompt_perplexity_score WHERE scope = 'agent' AND scope_id = $1`, foreignAgent)
+	})
+
+	v := s.version(21, "## Agent Identity\nDo the thing.")
+	s.daily(v, 4)
+
+	out, err := s.p.ScoreBacklog(context.Background(), mustUUID(s.t, testWorkspaceID))
+	if err != nil {
+		t.Fatalf("ScoreBacklog: %v", err)
+	}
+	if out.Considered != 1 {
+		t.Errorf("considered %d versions, want only the fixture workspace's one", out.Considered)
+	}
+	if n := foreign.Count(t, `SELECT count(*) FROM prompt_perplexity_score WHERE scope = 'agent' AND scope_id = $1`, foreignAgent); n != 0 {
+		t.Errorf("wrote %d score rows into another workspace's backlog", n)
+	}
+	// Registers the fixture workspace's own score rows for cleanup, so a run
+	// against a shared database leaves nothing behind either.
+	s.rows()
+}
+
+// Two versions of one agent are two measurements. The store is keyed on
+// (workspace, scope, scope_id, version, profile), so a later version's score
+// must never reach back and rewrite an earlier one's rows — different versions
+// produce different stored D3 numbers, side by side.
+func TestScoreAgentVersionStoresVersionsIndependently(t *testing.T) {
+	s := newPerplexityScenario(t)
+	v1 := s.version(22, "## Agent Identity\nFirst draft.")
+	if _, err := s.p.ScoreAgentVersion(context.Background(), mustUUID(t, s.agentID), v1); err != nil {
+		t.Fatalf("score v%d: %v", v1, err)
+	}
+
+	s.gen.reply = strings.Replace(scoreReply(), `"band":"medium"`, `"band":"high"`, 1)
+	s.gen.reply = strings.Replace(s.gen.reply, `"percent_high":45`, `"percent_high":75`, 1)
+	s.gen.reply = strings.Replace(s.gen.reply, `"percent_low":30`, `"percent_low":60`, 1)
+	v2 := s.version(23, "## Agent Identity\nSecond draft.")
+	if _, err := s.p.ScoreAgentVersion(context.Background(), mustUUID(t, s.agentID), v2); err != nil {
+		t.Fatalf("score v%d: %v", v2, err)
+	}
+
+	rows := s.rows()
+	if len(rows) != 2*len(promptperplexity.Profiles) {
+		t.Fatalf("stored %d rows, want one per profile per version (%d)", len(rows), 2*len(promptperplexity.Profiles))
+	}
+	for _, r := range rows {
+		want := struct {
+			band string
+			low  float64
+			high float64
+		}{band: "medium", low: 30, high: 45}
+		if r.Version == v2 {
+			want = struct {
+				band string
+				low  float64
+				high float64
+			}{band: "high", low: 60, high: 75}
+		}
+		if r.Band != want.band {
+			t.Errorf("v%d %s band = %q, want %q", r.Version, r.RuntimeProfile, r.Band, want.band)
+		}
+		for _, check := range []struct {
+			name    string
+			numeric pgtype.Numeric
+			want    float64
+		}{{"percent_low", r.PercentLow, want.low}, {"percent_high", r.PercentHigh, want.high}} {
+			f, err := check.numeric.Float64Value()
+			if err != nil || !f.Valid || f.Float64 != check.want {
+				t.Errorf("v%d %s %s = %v, want %v", r.Version, r.RuntimeProfile, check.name, check.numeric, check.want)
+			}
+		}
+	}
+}
+
 func TestScoreBacklogKeepsGoingAfterOneVersionFails(t *testing.T) {
 	s := newPerplexityScenario(t)
 	// 16 has a rollup row but no prompt_version row, so reading its content
@@ -385,7 +491,7 @@ func TestScoreBacklogKeepsGoingAfterOneVersionFails(t *testing.T) {
 	v := s.version(15, "## Agent Identity\nDo the thing.")
 	s.daily(v, 4)
 
-	out, err := s.p.ScoreBacklog(context.Background())
+	out, err := s.p.ScoreBacklog(context.Background(), mustUUID(s.t, testWorkspaceID))
 	if err != nil {
 		t.Fatalf("ScoreBacklog: %v", err)
 	}

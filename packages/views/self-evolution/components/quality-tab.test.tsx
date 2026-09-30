@@ -212,7 +212,67 @@ describe("QualityTab with a subject", () => {
     const card = await screen.findByTestId("quality-card-discipline");
     expect(card).toHaveTextContent("90 / 100");
     expect(card.textContent).not.toMatch(/9,000%/);
-    expect(card).toHaveTextContent("over 36 runs");
+    // D2's sample is the covered count, so the card states it against the
+    // window's finished runs — "over 36 runs" let a 36-of-40 window read as
+    // fully inspected (RUYI-287 缺陷 2).
+    expect(card).toHaveTextContent("covered 36 of 40 runs");
+  });
+
+  // The coverage line is not an ok-state courtesy: a "no data" discipline card
+  // still owes the reader the size of the window it inspected nothing of.
+  it("states how many runs the discipline score can actually inspect", async () => {
+    dashboardRef.current = dashboard({
+      window: {
+        ...dashboard().window,
+        measures: {
+          ...dashboard().window.measures,
+          discipline: measure({
+            state: "no_data",
+            unit: "score",
+            value: null,
+            numerator: null,
+            denominator: null,
+            sample: 0,
+            reason: "no_covered_runs",
+          }),
+        },
+      },
+    });
+    renderWithAgent();
+    const card = await screen.findByTestId("quality-card-discipline");
+    expect(card).toHaveTextContent("covered 0 of 40 runs");
+  });
+
+  // The stored breaches travel with the score: the drill-down lists each one
+  // with the rule and the run it came from, collapsed until asked (RUYI-287
+  // 缺陷 1).
+  it("opens the deduction drill-down behind the D2 card", async () => {
+    dashboardRef.current = dashboard({
+      window: {
+        ...dashboard().window,
+        discipline_deductions: [
+          {
+            task_id: "0198ffff-0000-7000-8000-0000000000ea",
+            rule: "unscoped_go_test",
+            points: 10,
+            seq: 3,
+          },
+          {
+            task_id: "0198ffff-0000-7000-8000-0000000000eb",
+            rule: "comment_body_outside_workdir",
+            points: 5,
+            seq: 7,
+          },
+        ],
+      },
+    });
+    renderWithAgent();
+    const toggle = await screen.findByTestId("quality-deductions-toggle");
+    expect(toggle).toHaveTextContent(enSelfEvolution.quality.measure.deductions.replace("{{count}}", "2"));
+    expect(screen.queryByText("unscoped_go_test")).not.toBeInTheDocument();
+    fireEvent.click(toggle);
+    expect(await screen.findByText("unscoped_go_test")).toBeInTheDocument();
+    expect(screen.getByText("comment_body_outside_workdir")).toBeInTheDocument();
   });
 
   // QA P1b: D6 is a count of attributable failures. It used to be formatted as a
