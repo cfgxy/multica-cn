@@ -1455,6 +1455,12 @@ type PromptQuizItem struct {
 	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
 	// Private half of the item: expected answer and grading points. Never sent to a measuring run and never returned by the member-visible bank list. Empty string means no rubric has been written yet, which is why it is not NULL-able.
 	Rubric string `json:"rubric"`
+	// Bank presentation metadata, member-visible. One entry per coverage category (discipline / conflict / boundary / tool / format / context / refusal / regression), which is what makes type coverage mechanically checkable.
+	Tags []string `json:"tags"`
+	// Bank presentation metadata, member-visible: easy / medium / hard.
+	Difficulty string `json:"difficulty"`
+	// Structured half of the answer key: machine-checkable assertions graded against the run answer at collection time. Private like rubric (migration 935): never sent to a measuring run, never returned by the member-visible list. NULL or [] = the item is not scored.
+	RubricChecks []byte `json:"rubric_checks"`
 }
 
 // RUYI-185 quiz measurements at one-row-per-repeat grain — the grain the distribution baseline needs and prompt_quality_daily cannot express. batch_id is a column because a batch has no fact of its own; task_id joins back to the quiz run in agent_task_queue (originator_source=quiz, issue_id IS NULL).
@@ -1478,6 +1484,12 @@ type PromptQuizResult struct {
 	RuntimeID pgtype.UUID `json:"runtime_id"`
 	// The model(s) the daemon reported usage under for the measuring run, comma-joined when a run spanned more than one. Part of the cohort key for the same reason as runtime_id. NULL means the daemon reported no usage, which also leaves run_tokens NULL.
 	RunModel pgtype.Text `json:"run_model"`
+	// Weighted pass ratio over the item's rubric_checks, 0..1, computed at collection. NULL = not graded: no checks on the item, no answer text, or an errored run. Independent of outcome by design (migration 933).
+	Score pgtype.Float4 `json:"score"`
+	// Per-assertion verdicts with evidence — the explanation the grade can be re-traced from. Evidence names the assertion and the verdict, never quotes the answer; the answer stays in task_message (join via task_id).
+	ScoreDetail []byte `json:"score_detail"`
+	// When the grade was computed (collection tick). measured_at is when the measurement row was stored; grading happens in the same tick today but the two are independent facts.
+	GradedAt pgtype.Timestamptz `json:"graded_at"`
 }
 
 type PromptQuizSweepState struct {

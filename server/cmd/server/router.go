@@ -2097,6 +2097,21 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			})
 		})
 
+		// Batch quiz runs and graded-sample traceability (RUYI-286). The
+		// bank import upserts the built-in benchmark catalog; a batch orders
+		// REAL agent_task_queue runs through the same fence and payload the
+		// sweep uses; the batch and samples reads expose score evidence.
+		// All Owner-only: score_detail is the grading output of the private
+		// half, so traceability sits behind the rubric's own gate.
+		r.Route("/api/prompt-quiz", func(r chi.Router) {
+			r.Use(handler.RequireHumanActor)
+			r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
+			r.Post("/bank/import", h.ImportPromptQuizBank)
+			r.Post("/batches", h.CreatePromptQuizBatch)
+			r.Get("/batches/{batchId}", h.GetPromptQuizBatch)
+			r.Get("/samples", h.GetPromptQuizSamples)
+		})
+
 		// Self-evolution daily proposals (RUYI-265, spec §A B1–B3). Human
 		// actors only: browsing and submitting the pool is member-level;
 		// adopt/reject/restore/verify are the Owner's decisions, and
