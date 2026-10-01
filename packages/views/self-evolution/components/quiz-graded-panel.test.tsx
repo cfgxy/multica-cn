@@ -27,6 +27,7 @@ const baseline = {
   baseline_version: 1,
   required_sample: 12,
   required_baseline: 30,
+  current: { n: 12, mean: 0.55, median: 0.5, iqr: 0.2, std_dev: 0.15, min: 0.2, max: 0.9 },
   measured: true,
   outcomes: { answered: 1, errored: 0 },
   incomparable: 0,
@@ -77,7 +78,11 @@ describe("QuizGradedPanel", () => {
     expect(sample).toHaveTextContent("rule-1");
   });
 
+  // Fake timers must be active before mounting: the batch query schedules its
+  // refetchInterval timer on success, and a timer created under real timers is
+  // invisible to vi.advanceTimersByTimeAsync.
   it("refreshes an ordered batch and its samples after asynchronous grading", async () => {
+    vi.useFakeTimers();
     let latest: PromptQuizSampleRow[] = [];
     api.getPromptQuizSamples.mockImplementation(async () => latest);
     api.getPromptQuizBatch.mockImplementation(async () => ({
@@ -86,13 +91,19 @@ describe("QuizGradedPanel", () => {
       scores: { graded: latest.length, mean: 0.5 },
     }));
     api.createPromptQuizBatch.mockResolvedValue({ batch_id: "batch-1", ordered: 1 });
+    // Positive advance: react-query's notifyManager schedules observer
+    // notifications via setTimeout(0), which a 0ms tick does not run.
+    const flush = async () => {
+      await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+    };
     mount();
-    await screen.findByText(enSelfEvolution.quiz.graded.samplesEmpty);
+    await flush();
+    expect(screen.getByText(enSelfEvolution.quiz.graded.samplesEmpty)).toBeInTheDocument();
     fireEvent.click(screen.getByTestId("quiz-graded-run"));
-    await screen.findByTestId("quiz-graded-batch");
+    await flush();
+    await flush();
     expect(screen.getByTestId("quiz-graded-batch")).toHaveTextContent("0 graded");
 
-    vi.useFakeTimers();
     latest = [row];
     await act(async () => { await vi.advanceTimersByTimeAsync(15_000); });
     expect(screen.getByTestId("quiz-graded-batch")).toHaveTextContent("1 graded");
