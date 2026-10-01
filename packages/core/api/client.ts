@@ -1,3 +1,4 @@
+import { z } from "zod";
 import { configStore } from "../config";
 import type {
   Issue,
@@ -87,9 +88,12 @@ import type {
   SkillVersion,
   SkillVersionSummary,
   SkillUsage,
-  Proposal,
-  CreateProposalRequest,
-  VerifyProposalRequest,
+  PromptProposal,
+  PromptProposalDraftRequest,
+  PromptProposalPreview,
+  PromptProposalBatchOutcome,
+  RetrospectiveConfig,
+  RetrospectiveRun,
   KnowledgeScanBatch,
   KnowledgeDir,
   RegisterKnowledgeDirRequest,
@@ -487,7 +491,13 @@ import {
   SkillRestoreResultSchema,
   SkillUsageSchema,
   SkillEffectSchema,
-  ProposalListSchema,
+  PromptProposalListSchema,
+  PromptProposalSchema,
+  PromptProposalPreviewSchema,
+  PromptProposalBatchOutcomeSchema,
+  RetrospectiveConfigSchema,
+  RetrospectiveRunListSchema,
+  RetrospectiveRunSchema,
   KnowledgeDirListSchema,
   KnowledgeEntryListSchema,
   SkillImportResultSchema,
@@ -4024,43 +4034,150 @@ export class ApiClient {
     });
   }
 
-  async listProposals(params?: { status?: string; type?: string }): Promise<Proposal[]> {
+  async listPromptProposals(params?: { status?: string }): Promise<PromptProposal[]> {
     const query = new URLSearchParams();
     if (params?.status) query.set("status", params.status);
-    if (params?.type) query.set("type", params.type);
     const suffix = query.size > 0 ? `?${query.toString()}` : "";
-    const raw = await this.fetch<unknown>(`/api/proposals${suffix}`);
-    return parseWithFallback(raw, ProposalListSchema, [], {
-      endpoint: "GET /api/proposals",
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals${suffix}`);
+    return parseWithFallback(raw, PromptProposalListSchema, [], {
+      endpoint: "GET /api/prompt-legislation/proposals",
     });
   }
 
-  async createProposal(data: CreateProposalRequest): Promise<{ id: string }> {
-    return this.fetch("/api/proposals", {
+  async createPromptProposal(data: PromptProposalDraftRequest): Promise<PromptProposal> {
+    const raw = await this.fetch<unknown>("/api/prompt-legislation/proposals", {
       method: "POST",
       body: JSON.stringify(data),
     });
+    return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
+      endpoint: "POST /api/prompt-legislation/proposals",
+    });
   }
 
-  async adoptProposal(id: string): Promise<{ status: string }> {
-    return this.fetch(`/api/proposals/${encodeURIComponent(id)}/adopt`, { method: "POST" });
+  async updatePromptProposalDraft(id: string, data: PromptProposalDraftRequest): Promise<PromptProposal> {
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}`, {
+      method: "PATCH",
+      body: JSON.stringify(data),
+    });
+    return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
+      endpoint: "PATCH /api/prompt-legislation/proposals/{id}",
+    });
   }
 
-  async rejectProposal(id: string, reason: string): Promise<{ status: string }> {
-    return this.fetch(`/api/proposals/${encodeURIComponent(id)}/reject`, {
+  async submitPromptProposal(id: string): Promise<PromptProposal> {
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}/submit`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
+      endpoint: "POST /api/prompt-legislation/proposals/{id}/submit",
+    });
+  }
+
+  async previewPromptProposal(id: string): Promise<PromptProposalPreview> {
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}/preview`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, PromptProposalPreviewSchema, raw as PromptProposalPreview, {
+      endpoint: "POST /api/prompt-legislation/proposals/{id}/preview",
+    });
+  }
+
+  async approvePromptProposal(id: string, confirmDiffPreviewed: boolean): Promise<PromptProposal> {
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}/approve`, {
+      method: "POST",
+      body: JSON.stringify({ confirm_diff_previewed: confirmDiffPreviewed }),
+    });
+    return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
+      endpoint: "POST /api/prompt-legislation/proposals/{id}/approve",
+    });
+  }
+
+  async batchApprovePromptProposals(
+    ids: string[],
+    confirmDiffPreviewed: boolean,
+  ): Promise<PromptProposalBatchOutcome[]> {
+    const raw = await this.fetch<unknown>("/api/prompt-legislation/proposals/approve-batch", {
+      method: "POST",
+      body: JSON.stringify({ ids, confirm_diff_previewed: confirmDiffPreviewed }),
+    });
+    return parseWithFallback(raw, z.array(PromptProposalBatchOutcomeSchema), raw as PromptProposalBatchOutcome[], {
+      endpoint: "POST /api/prompt-legislation/proposals/approve-batch",
+    });
+  }
+
+  async rejectPromptProposal(id: string, reason: string): Promise<PromptProposal> {
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}/reject`, {
       method: "POST",
       body: JSON.stringify({ reason }),
     });
+    return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
+      endpoint: "POST /api/prompt-legislation/proposals/{id}/reject",
+    });
   }
 
-  async restoreProposal(id: string): Promise<{ status: string }> {
-    return this.fetch(`/api/proposals/${encodeURIComponent(id)}/restore`, { method: "POST" });
-  }
-
-  async verifyProposal(id: string, data: VerifyProposalRequest): Promise<{ status: string }> {
-    return this.fetch(`/api/proposals/${encodeURIComponent(id)}/verify`, {
+  async restorePromptProposal(id: string): Promise<PromptProposal> {
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}/restore`, {
       method: "POST",
-      body: JSON.stringify(data),
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
+      endpoint: "POST /api/prompt-legislation/proposals/{id}/restore",
+    });
+  }
+
+  async reworkPromptProposal(id: string): Promise<PromptProposal> {
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}/rework`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
+      endpoint: "POST /api/prompt-legislation/proposals/{id}/rework",
+    });
+  }
+
+  async enactPromptProposal(id: string): Promise<PromptProposal> {
+    const raw = await this.fetch<unknown>(`/api/prompt-legislation/proposals/${encodeURIComponent(id)}/enact`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, PromptProposalSchema, raw as PromptProposal, {
+      endpoint: "POST /api/prompt-legislation/proposals/{id}/enact",
+    });
+  }
+
+  async getRetrospectiveConfig(): Promise<RetrospectiveConfig> {
+    const raw = await this.fetch<unknown>("/api/retrospective/config");
+    return parseWithFallback(raw, RetrospectiveConfigSchema, raw as RetrospectiveConfig, {
+      endpoint: "GET /api/retrospective/config",
+    });
+  }
+
+  async updateRetrospectiveConfig(patch: Partial<RetrospectiveConfig>): Promise<RetrospectiveConfig> {
+    const raw = await this.fetch<unknown>("/api/retrospective/config", {
+      method: "PUT",
+      body: JSON.stringify(patch),
+    });
+    return parseWithFallback(raw, RetrospectiveConfigSchema, raw as RetrospectiveConfig, {
+      endpoint: "PUT /api/retrospective/config",
+    });
+  }
+
+  async listRetrospectiveRuns(): Promise<RetrospectiveRun[]> {
+    const raw = await this.fetch<unknown>("/api/retrospective/runs");
+    return parseWithFallback(raw, RetrospectiveRunListSchema, [], {
+      endpoint: "GET /api/retrospective/runs",
+    });
+  }
+
+  async triggerRetrospectiveRun(): Promise<RetrospectiveRun> {
+    const raw = await this.fetch<unknown>("/api/retrospective/run", {
+      method: "POST",
+      body: JSON.stringify({}),
+    });
+    return parseWithFallback(raw, RetrospectiveRunSchema, raw as RetrospectiveRun, {
+      endpoint: "POST /api/retrospective/run",
     });
   }
 

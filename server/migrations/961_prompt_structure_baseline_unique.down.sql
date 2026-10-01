@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS uidx_prompt_structure_baseline_carrier;

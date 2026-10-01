@@ -50,7 +50,6 @@ export function SkillTab({ wsId }: { wsId: string }) {
   const sourceLabel = (source: string) => {
     switch (source) {
       case "create": return t(($) => $.skills.sources.create);
-      case "proposal": return t(($) => $.skills.sources.proposal);
       case "revision": return t(($) => $.skills.sources.revision);
       case "edit": return t(($) => $.skills.sources.edit);
       case "restore": return t(($) => $.skills.sources.restore);

@@ -333,6 +333,10 @@ var concurrentIndexCleanups = map[string]string{
 	"966_channel_chat_run_intent_id_uidx":                       "channel_chat_run_intent_id_uidx",
 	"968_channel_chat_run_intent_pending_uidx":                  "channel_chat_run_intent_pending_uidx",
 	"969_channel_chat_run_intent_claim_idx":                     "idx_channel_chat_run_intent_claim",
+	"959_prompt_proposal_workspace_index":                      "idx_prompt_proposal_workspace_status",
+	"961_prompt_structure_baseline_unique":                     "uidx_prompt_structure_baseline_carrier",
+	"963_retrospective_run_index":                              "idx_retrospective_run_workspace",
+	"964_retrospective_watermark_unique":                       "uidx_retrospective_watermark_issue",
 }
 
 // concurrentDownIndexCleanups covers every migration whose down direction
