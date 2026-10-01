@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/multica-ai/multica/server/internal/testutil"
 )
@@ -363,5 +364,74 @@ func TestListTasksByIssueFamilyScopePayloadStaysLean(t *testing.T) {
 		if _, ok := raw[0][key]; !ok && key != "started_at" {
 			t.Errorf("family row missing %q", key)
 		}
+	}
+}
+
+// An explicit ?limit=N must truncate the default (no-filter) path too, not
+// just the filtered one — the first QA pass of the RUYI-292 runs list hit
+// exactly this, limit=5 answering with the whole log. Truncation keeps the
+// NEWEST runs; with no limit param the response stays the full history the
+// issue sidebar and the CLI short-task-ID resolver read, which
+// TestListTasksByIssueDefaultsToFullHistory pins on its own.
+func TestListTasksByIssueExplicitLimitTruncatesDefaultPath(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	f := newFamilyFixture(t)
+	base := time.Now().UTC()
+	taskAt := func(age time.Duration, status string) string {
+		return dbfx.Task(t, f.agentID, testutil.Cols{
+			"issue_id":   f.childA,
+			"status":     status,
+			"runtime_id": handlerTestRuntimeID(t),
+			"created_at": base.Add(-age),
+		})
+	}
+	taskAt(3*time.Hour, "completed")
+	taskAt(2*time.Hour, "failed")
+	second := taskAt(1*time.Hour, "completed")
+	newest := taskAt(0, "running")
+
+	got := runsRequest(t, f.childA, "limit=2")
+	if len(got) != 2 {
+		t.Fatalf("limit=2 returned %d runs, want 2", len(got))
+	}
+	if got[0].ID != newest || got[1].ID != second {
+		t.Fatalf("limit=2 returned [%s, %s], want the two newest [%s, %s]",
+			got[0].ID, got[1].ID, newest, second)
+	}
+}
+
+// The filtered branch carried LIMIT @row_limit from day one; this pins it so a
+// refactor cannot quietly drop truncation on one branch while fixing the other
+// — the two branches sit side by side in the handler and read like one query.
+func TestListTasksByIssueStatusFilterExplicitLimitTruncates(t *testing.T) {
+	if testHandler == nil || testPool == nil {
+		t.Skip("database not available")
+	}
+	f := newFamilyFixture(t)
+	base := time.Now().UTC()
+	taskAt := func(age time.Duration) string {
+		return dbfx.Task(t, f.agentID, testutil.Cols{
+			"issue_id":   f.childA,
+			"status":     "completed",
+			"runtime_id": handlerTestRuntimeID(t),
+			"created_at": base.Add(-age),
+		})
+	}
+	taskAt(3 * time.Hour)
+	taskAt(2 * time.Hour)
+	second := taskAt(1 * time.Hour)
+	newest := taskAt(0)
+	// A running run must not consume the completed-only budget.
+	f.task(t, f.childA, "running")
+
+	got := runsRequest(t, f.childA, "status=completed&limit=2")
+	if len(got) != 2 {
+		t.Fatalf("status=completed&limit=2 returned %d runs, want 2", len(got))
+	}
+	if got[0].ID != newest || got[1].ID != second {
+		t.Fatalf("filtered limit=2 returned [%s, %s], want the two newest [%s, %s]",
+			got[0].ID, got[1].ID, newest, second)
 	}
 }

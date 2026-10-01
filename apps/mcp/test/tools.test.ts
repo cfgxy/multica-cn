@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { MulticaApiError } from "../src/rest.js";
+import { MulticaApiError, MulticaClient } from "../src/rest.js";
 import { findTool, TOOL_DEFINITIONS } from "../src/tools.js";
-import type { MulticaClient } from "../src/rest.js";
 import { ToolInputError } from "../src/schemas.js";
 import type { IssueInfo } from "../src/types.js";
 
@@ -461,12 +460,12 @@ describe("run lifecycle tools (RUYI-292)", () => {
     const client = fakeClient({
       listIssueRuns: async (_ws: string, issue: string, params: Record<string, unknown>) => {
         callsOf(client).push({ method: "listIssueRuns", args: [issue, params] });
-        return {
-          tasks: [
-            { ...run },
-            { ...run, id: "t2", status: "queued", rerun_of_task_id: "t0" },
-          ],
-        };
+        // The server answers task-runs with a bare array; keep this mock
+        // shaped like the real payload, not like a client-side wrapper.
+        return [
+          { ...run },
+          { ...run, id: "t2", status: "queued", rerun_of_task_id: "t0" },
+        ];
       },
     });
     const tool = findTool("list_issue_runs");
@@ -481,6 +480,31 @@ describe("run lifecycle tools (RUYI-292)", () => {
     expect(result.total).toBe(2);
     expect(result.runs[0]?.trigger).toBe("other");
     expect(result.runs[1]?.trigger).toBe("rerun");
+  });
+
+  it("list_issue_runs consumes the server's bare-array task-runs payload (contract drift guard)", async () => {
+    // Runs the tool against the REAL MulticaClient over a mocked HTTP layer:
+    // GET task-runs answers a bare array (writeJSON of []AgentTaskResponse).
+    // The first QA pass of RUYI-292 crashed real stdio calls because the
+    // client declared a wrapper-object shape and the tool tests mocked the
+    // same wrong shape — unit-green, integration-dead. This fails again if
+    // either side drifts from the bare-array contract.
+    const fetchImpl = (async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      new Response(
+        JSON.stringify([run, { ...run, id: "t2", status: "queued", rerun_of_task_id: "t0" }]),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      )) as typeof fetch;
+    const client = new MulticaClient({
+      serverUrl: "https://api.example.com",
+      token: "mul_test",
+      fetchImpl,
+    });
+    const tool = findTool("list_issue_runs");
+    const result = (await tool?.handler(
+      { workspace: WS, issue: "VOI-1", limit: 50 },
+      client,
+    )) as { total: number };
+    expect(result.total).toBe(2);
   });
 
   it("get_run returns chain detail", async () => {
