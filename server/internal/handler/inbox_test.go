@@ -210,3 +210,72 @@ func TestArchiveCompletedInboxExpandsCustomTerminalStatuses(t *testing.T) {
 		t.Fatalf("archived rows for open issue = %d, want 0", got)
 	}
 }
+
+func TestListInboxProjectsIssueIdentifier(t *testing.T) {
+	workspaceID := dbfx.Workspace(t, "Inbox identifier", "inbox-identifier-"+uuid.NewString(),
+		testutil.Cols{"issue_prefix": "INB"})
+	dbfx.Member(t, workspaceID, testUserID, "owner")
+	activeIssueID := dbfx.Issue(t, "Active identifier issue", testutil.Cols{"workspace_id": workspaceID})
+	// A separate issue keeps the archived row eligible: the archived list drops
+	// any issue that still has an active row.
+	archivedIssueID := dbfx.Issue(t, "Archived identifier issue", testutil.Cols{"workspace_id": workspaceID})
+
+	dbfx.Insert(t, "inbox_item", testutil.Cols{
+		"workspace_id":   workspaceID,
+		"recipient_type": "member",
+		"recipient_id":   testUserID,
+		"type":           "status_changed",
+		"severity":       "info",
+		"issue_id":       activeIssueID,
+		"title":          "Active with issue",
+	})
+	dbfx.Insert(t, "inbox_item", testutil.Cols{
+		"workspace_id":   workspaceID,
+		"recipient_type": "member",
+		"recipient_id":   testUserID,
+		"type":           "new_comment",
+		"severity":       "info",
+		"issue_id":       archivedIssueID,
+		"title":          "Archived with issue",
+		"archived":       true,
+	})
+	dbfx.Insert(t, "inbox_item", testutil.Cols{
+		"workspace_id":   workspaceID,
+		"recipient_type": "member",
+		"recipient_id":   testUserID,
+		"type":           "autopilot_paused",
+		"severity":       "info",
+		"title":          "System notification without issue",
+	})
+
+	var active []InboxItemResponse
+	testutil.Call(t, inboxWorkspaceHandler(testHandler.ListInbox),
+		inboxRequest(http.MethodGet, "/api/inbox", workspaceID)).
+		Want(http.StatusOK).
+		JSON(&active)
+	if len(active) != 2 {
+		t.Fatalf("active inbox items = %d, want 2: %+v", len(active), active)
+	}
+	byTitle := map[string]*InboxItemResponse{}
+	for i := range active {
+		byTitle[active[i].Title] = &active[i]
+	}
+	if got := byTitle["Active with issue"]; got == nil || got.IssueIdentifier == nil || *got.IssueIdentifier != "INB-1" {
+		t.Errorf("active issue identifier = %+v, want INB-1", got)
+	}
+	if got := byTitle["System notification without issue"]; got == nil || got.IssueIdentifier != nil {
+		t.Errorf("issue-less identifier = %+v, want nil", got)
+	}
+
+	var archived []InboxItemResponse
+	testutil.Call(t, inboxWorkspaceHandler(testHandler.ListArchivedInbox),
+		inboxRequest(http.MethodGet, "/api/inbox/archived", workspaceID)).
+		Want(http.StatusOK).
+		JSON(&archived)
+	if len(archived) != 1 {
+		t.Fatalf("archived inbox items = %d, want 1: %+v", len(archived), archived)
+	}
+	if archived[0].IssueIdentifier == nil || *archived[0].IssueIdentifier != "INB-2" {
+		t.Errorf("archived issue identifier = %v, want INB-2", archived[0].IssueIdentifier)
+	}
+}
