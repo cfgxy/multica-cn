@@ -424,10 +424,12 @@ WITH eligible_archived AS MATERIALIZED (
 )
 SELECT i.id, i.workspace_id, i.recipient_type, i.recipient_id, i.type, i.severity, i.issue_id, i.title, i.body, i.read, i.archived, i.created_at, i.actor_type, i.actor_id, i.details,
        iss.status AS issue_status,
-       iss.priority AS issue_priority
+       iss.priority AS issue_priority,
+       COALESCE(ws.issue_prefix || '-' || iss.number::text, '')::text AS issue_identifier
 FROM inbox_item i
 JOIN selected_ids selected ON selected.id = i.id
 LEFT JOIN issue iss ON iss.id = i.issue_id
+LEFT JOIN workspace ws ON ws.id = i.workspace_id
 ORDER BY i.created_at DESC, i.id DESC
 `
 
@@ -438,23 +440,24 @@ type ListArchivedInboxItemsParams struct {
 }
 
 type ListArchivedInboxItemsRow struct {
-	ID            pgtype.UUID        `json:"id"`
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	RecipientType string             `json:"recipient_type"`
-	RecipientID   pgtype.UUID        `json:"recipient_id"`
-	Type          string             `json:"type"`
-	Severity      string             `json:"severity"`
-	IssueID       pgtype.UUID        `json:"issue_id"`
-	Title         string             `json:"title"`
-	Body          pgtype.Text        `json:"body"`
-	Read          bool               `json:"read"`
-	Archived      bool               `json:"archived"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	ActorType     pgtype.Text        `json:"actor_type"`
-	ActorID       pgtype.UUID        `json:"actor_id"`
-	Details       []byte             `json:"details"`
-	IssueStatus   pgtype.Text        `json:"issue_status"`
-	IssuePriority pgtype.Text        `json:"issue_priority"`
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	RecipientType   string             `json:"recipient_type"`
+	RecipientID     pgtype.UUID        `json:"recipient_id"`
+	Type            string             `json:"type"`
+	Severity        string             `json:"severity"`
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	Title           string             `json:"title"`
+	Body            pgtype.Text        `json:"body"`
+	Read            bool               `json:"read"`
+	Archived        bool               `json:"archived"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	ActorType       pgtype.Text        `json:"actor_type"`
+	ActorID         pgtype.UUID        `json:"actor_id"`
+	Details         []byte             `json:"details"`
+	IssueStatus     pgtype.Text        `json:"issue_status"`
+	IssuePriority   pgtype.Text        `json:"issue_priority"`
+	IssueIdentifier string             `json:"issue_identifier"`
 }
 
 // Archived counterpart of ListInboxItems, backing the inbox's "Archived"
@@ -505,6 +508,7 @@ func (q *Queries) ListArchivedInboxItems(ctx context.Context, arg ListArchivedIn
 			&i.Details,
 			&i.IssueStatus,
 			&i.IssuePriority,
+			&i.IssueIdentifier,
 		); err != nil {
 			return nil, err
 		}
@@ -519,9 +523,11 @@ func (q *Queries) ListArchivedInboxItems(ctx context.Context, arg ListArchivedIn
 const listInboxItems = `-- name: ListInboxItems :many
 SELECT i.id, i.workspace_id, i.recipient_type, i.recipient_id, i.type, i.severity, i.issue_id, i.title, i.body, i.read, i.archived, i.created_at, i.actor_type, i.actor_id, i.details,
        iss.status AS issue_status,
-       iss.priority AS issue_priority
+       iss.priority AS issue_priority,
+       COALESCE(ws.issue_prefix || '-' || iss.number::text, '')::text AS issue_identifier
 FROM inbox_item i
 LEFT JOIN issue iss ON iss.id = i.issue_id
+LEFT JOIN workspace ws ON ws.id = i.workspace_id
 WHERE i.workspace_id = $1 AND i.recipient_type = $2 AND i.recipient_id = $3 AND i.archived = false
 ORDER BY i.created_at DESC
 `
@@ -533,23 +539,24 @@ type ListInboxItemsParams struct {
 }
 
 type ListInboxItemsRow struct {
-	ID            pgtype.UUID        `json:"id"`
-	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
-	RecipientType string             `json:"recipient_type"`
-	RecipientID   pgtype.UUID        `json:"recipient_id"`
-	Type          string             `json:"type"`
-	Severity      string             `json:"severity"`
-	IssueID       pgtype.UUID        `json:"issue_id"`
-	Title         string             `json:"title"`
-	Body          pgtype.Text        `json:"body"`
-	Read          bool               `json:"read"`
-	Archived      bool               `json:"archived"`
-	CreatedAt     pgtype.Timestamptz `json:"created_at"`
-	ActorType     pgtype.Text        `json:"actor_type"`
-	ActorID       pgtype.UUID        `json:"actor_id"`
-	Details       []byte             `json:"details"`
-	IssueStatus   pgtype.Text        `json:"issue_status"`
-	IssuePriority pgtype.Text        `json:"issue_priority"`
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	RecipientType   string             `json:"recipient_type"`
+	RecipientID     pgtype.UUID        `json:"recipient_id"`
+	Type            string             `json:"type"`
+	Severity        string             `json:"severity"`
+	IssueID         pgtype.UUID        `json:"issue_id"`
+	Title           string             `json:"title"`
+	Body            pgtype.Text        `json:"body"`
+	Read            bool               `json:"read"`
+	Archived        bool               `json:"archived"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	ActorType       pgtype.Text        `json:"actor_type"`
+	ActorID         pgtype.UUID        `json:"actor_id"`
+	Details         []byte             `json:"details"`
+	IssueStatus     pgtype.Text        `json:"issue_status"`
+	IssuePriority   pgtype.Text        `json:"issue_priority"`
+	IssueIdentifier string             `json:"issue_identifier"`
 }
 
 func (q *Queries) ListInboxItems(ctx context.Context, arg ListInboxItemsParams) ([]ListInboxItemsRow, error) {
@@ -579,6 +586,7 @@ func (q *Queries) ListInboxItems(ctx context.Context, arg ListInboxItemsParams) 
 			&i.Details,
 			&i.IssueStatus,
 			&i.IssuePriority,
+			&i.IssueIdentifier,
 		); err != nil {
 			return nil, err
 		}

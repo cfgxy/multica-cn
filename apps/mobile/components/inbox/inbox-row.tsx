@@ -47,11 +47,19 @@ export function InboxRow({ item, activity, onPress }: Props) {
       <View className="flex-row gap-3">
         <ActorAvatar type={actorType} id={actorId} size={36} showPresence />
         <View className="flex-1 min-w-0">
-          {/* Top row: [unread dot + title] (left) | [status icon] (right) */}
+          {/* Top row: [unread dot + identifier + title] (left) | [status icon]
+              (right). The identifier anchors the row to its issue (RUYI-314):
+              muted and shrink-0 like issue-row.tsx's identifier column, so a
+              long title truncates before the identifier does. */}
           <View className="flex-row items-center gap-2">
             <View className="flex-row items-center gap-1.5 flex-1 min-w-0">
               {isUnread ? (
                 <View className="size-1.5 rounded-full bg-brand shrink-0" />
+              ) : null}
+              {item.issue_identifier ? (
+                <Text className="text-xs text-muted-foreground shrink-0">
+                  {item.issue_identifier}
+                </Text>
               ) : null}
               <Text
                 className={cn(

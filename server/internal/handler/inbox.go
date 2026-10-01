@@ -14,23 +14,26 @@ import (
 )
 
 type InboxItemResponse struct {
-	ID            string          `json:"id"`
-	WorkspaceID   string          `json:"workspace_id"`
-	RecipientType string          `json:"recipient_type"`
-	RecipientID   string          `json:"recipient_id"`
-	Type          string          `json:"type"`
-	Severity      string          `json:"severity"`
-	IssueID       *string         `json:"issue_id"`
-	Title         string          `json:"title"`
-	Body          *string         `json:"body"`
-	Read          bool            `json:"read"`
-	Archived      bool            `json:"archived"`
-	CreatedAt     string          `json:"created_at"`
-	IssueStatus   *string         `json:"issue_status"`
-	IssuePriority *string         `json:"issue_priority"`
-	ActorType     *string         `json:"actor_type"`
-	ActorID       *string         `json:"actor_id"`
-	Details       json.RawMessage `json:"details"`
+	ID            string  `json:"id"`
+	WorkspaceID   string  `json:"workspace_id"`
+	RecipientType string  `json:"recipient_type"`
+	RecipientID   string  `json:"recipient_id"`
+	Type          string  `json:"type"`
+	Severity      string  `json:"severity"`
+	IssueID       *string `json:"issue_id"`
+	Title         string  `json:"title"`
+	Body          *string `json:"body"`
+	Read          bool    `json:"read"`
+	Archived      bool    `json:"archived"`
+	CreatedAt     string  `json:"created_at"`
+	IssueStatus   *string `json:"issue_status"`
+	IssuePriority *string `json:"issue_priority"`
+	// Full human-readable identifier of the linked issue (e.g. `RUYI-314`),
+	// assembled in the list queries; nil for notifications without an issue.
+	IssueIdentifier *string         `json:"issue_identifier"`
+	ActorType       *string         `json:"actor_type"`
+	ActorID         *string         `json:"actor_id"`
+	Details         json.RawMessage `json:"details"`
 }
 
 func inboxToResponse(i db.InboxItem) InboxItemResponse {
@@ -53,25 +56,36 @@ func inboxToResponse(i db.InboxItem) InboxItemResponse {
 	}
 }
 
+// inboxIssueIdentifier exposes the query's COALESCE'd identifier only when an
+// issue is linked; issue-less notifications keep the field null in the
+// response even though the join yields an empty string for them.
+func inboxIssueIdentifier(issueID pgtype.UUID, identifier string) *string {
+	if !issueID.Valid {
+		return nil
+	}
+	return &identifier
+}
+
 func inboxRowToResponse(r db.ListInboxItemsRow) InboxItemResponse {
 	return InboxItemResponse{
-		ID:            uuidToString(r.ID),
-		WorkspaceID:   uuidToString(r.WorkspaceID),
-		RecipientType: r.RecipientType,
-		RecipientID:   uuidToString(r.RecipientID),
-		Type:          r.Type,
-		Severity:      r.Severity,
-		IssueID:       uuidToPtr(r.IssueID),
-		Title:         r.Title,
-		Body:          textToPtr(r.Body),
-		Read:          r.Read,
-		Archived:      r.Archived,
-		CreatedAt:     timestampToString(r.CreatedAt),
-		IssueStatus:   textToPtr(r.IssueStatus),
-		IssuePriority: textToPtr(r.IssuePriority),
-		ActorType:     textToPtr(r.ActorType),
-		ActorID:       uuidToPtr(r.ActorID),
-		Details:       json.RawMessage(r.Details),
+		ID:              uuidToString(r.ID),
+		WorkspaceID:     uuidToString(r.WorkspaceID),
+		RecipientType:   r.RecipientType,
+		RecipientID:     uuidToString(r.RecipientID),
+		Type:            r.Type,
+		Severity:        r.Severity,
+		IssueID:         uuidToPtr(r.IssueID),
+		Title:           r.Title,
+		Body:            textToPtr(r.Body),
+		Read:            r.Read,
+		Archived:        r.Archived,
+		CreatedAt:       timestampToString(r.CreatedAt),
+		IssueStatus:     textToPtr(r.IssueStatus),
+		IssuePriority:   textToPtr(r.IssuePriority),
+		IssueIdentifier: inboxIssueIdentifier(r.IssueID, r.IssueIdentifier),
+		ActorType:       textToPtr(r.ActorType),
+		ActorID:         uuidToPtr(r.ActorID),
+		Details:         json.RawMessage(r.Details),
 	}
 }
 

@@ -60,6 +60,14 @@ export interface InboxItem {
    * projection; null also covers notifications without a linked issue.
    */
   issue_priority?: IssuePriority | null;
+  /**
+   * Full human-readable identifier of the linked issue (e.g. `RUYI-314`),
+   * assembled server-side as the workspace prefix + "-" + issue number.
+   * Optional so an installed Desktop client remains compatible with an older
+   * backend that predates this projection; null covers notifications without
+   * a linked issue.
+   */
+  issue_identifier?: string | null;
   read: boolean;
   archived: boolean;
   created_at: string;
