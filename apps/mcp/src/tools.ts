@@ -674,7 +674,8 @@ export const TOOL_DEFINITIONS: ToolDefinition[] = [
         throw new ToolInputError("'trigger' must be one of: comment, autopilot, rerun, system_retry");
       }
       const limit = optionalInt(args, "limit", { min: 1, max: 1000 });
-      const { tasks } = await client.listIssueRuns(workspace, issueId, {
+      // listIssueRuns resolves to the server's bare array — see rest.ts.
+      const tasks = await client.listIssueRuns(workspace, issueId, {
         status,
         trigger,
         limit,

@@ -2835,6 +2835,17 @@ SELECT * FROM agent_task_queue
 WHERE issue_id = $1
 ORDER BY created_at DESC;
 
+-- name: ListTasksByIssueWithLimit :many
+-- RUYI-292: ListTasksByIssue under an explicit ?limit=N. A separate query on
+-- purpose: the unlimited ListTasksByIssue is a contract, not an oversight —
+-- the issue-detail execution log and the CLI short-task-ID resolver read the
+-- full history, and comment conversation routing scans it too. The handler
+-- routes here only when the caller actually passed a limit.
+SELECT * FROM agent_task_queue
+WHERE issue_id = $1
+ORDER BY created_at DESC
+LIMIT @row_limit;
+
 -- name: UpdateAgentStatus :one
 UPDATE agent SET status = $2, updated_at = now()
 WHERE id = $1

@@ -5376,6 +5376,9 @@ func (h *Handler) ListTasksByIssue(w http.ResponseWriter, r *http.Request) {
 	statusFilter := strings.TrimSpace(r.URL.Query().Get("status"))
 	triggerFilter := strings.TrimSpace(r.URL.Query().Get("trigger"))
 	listLimit := runListDefaultLimit
+	// Only an explicitly passed limit truncates; the absent-param default must
+	// stay the full history (see the default branch below).
+	limitExplicit := false
 	if limitStr := r.URL.Query().Get("limit"); limitStr != "" {
 		n, parseErr := strconv.Atoi(limitStr)
 		if parseErr != nil || n < 1 || n > runListMaxLimit {
@@ -5383,6 +5386,7 @@ func (h *Handler) ListTasksByIssue(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		listLimit = n
+		limitExplicit = true
 	}
 
 	var tasks []db.AgentTaskQueue
@@ -5400,7 +5404,19 @@ func (h *Handler) ListTasksByIssue(w http.ResponseWriter, r *http.Request) {
 	case activeOnly:
 		tasks, err = h.Queries.ListActiveTasksByIssue(r.Context(), issue.ID)
 	default:
-		tasks, err = h.Queries.ListTasksByIssue(r.Context(), issue.ID)
+		// An explicit limit truncates the execution log (RUYI-292 rework: it
+		// used to be silently ignored here). No limit keeps the full history
+		// the issue sidebar and the CLI short-task-ID resolver read —
+		// ListTasksByIssue keeps that unlimited contract, and comment
+		// conversation routing depends on it too.
+		if limitExplicit {
+			tasks, err = h.Queries.ListTasksByIssueWithLimit(r.Context(), db.ListTasksByIssueWithLimitParams{
+				IssueID:  issue.ID,
+				RowLimit: int32(listLimit),
+			})
+		} else {
+			tasks, err = h.Queries.ListTasksByIssue(r.Context(), issue.ID)
+		}
 	}
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "failed to list tasks")

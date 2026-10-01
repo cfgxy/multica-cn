@@ -226,8 +226,11 @@ export class MulticaClient {
     workspace: string,
     issueId: string,
     params: { status?: string; trigger?: string; limit?: number } = {},
-  ): Promise<{ tasks: RunInfo[] }> {
-    return this.request("GET", `/api/issues/${encodeURIComponent(issueId)}/task-runs`, {
+  ): Promise<RunInfo[]> {
+    // The handler answers task-runs with a bare array (writeJSON of
+    // []AgentTaskResponse) — no wrapper object. tools.test.ts pins this
+    // shape end-to-end; keep both sides in sync.
+    return this.request<RunInfo[]>("GET", `/api/issues/${encodeURIComponent(issueId)}/task-runs`, {
       workspace,
       query: {
         status: params.status,
