@@ -4257,6 +4257,10 @@ export const PromptQuizItemSchema = z.object({
   // Server-driven and absent on a build that predates it; "" narrows to
   // "pending" in core/self-evolution/quiz.ts rather than to a verdict.
   discrimination: z.string().default(""),
+  // RUYI-286 presentation metadata. Optional so an older backend still parses;
+  // neither field is a private half, so the list schema carrying them is safe.
+  tags: z.array(z.string()).optional(),
+  difficulty: z.string().optional(),
   created_at: z.string().default(""),
   updated_at: z.string().default(""),
 });
@@ -4271,6 +4275,9 @@ export const PromptQuizItemSchema = z.object({
  */
 export const PromptQuizItemDetailSchema = PromptQuizItemSchema.extend({
   rubric: z.string().default(""),
+  // The structured answer key passes through untyped for the editor
+  // round-trip; like `rubric`, it must never be rendered from a list.
+  rubric_checks: z.unknown().optional(),
 });
 
 /**
@@ -4326,6 +4333,62 @@ export const PromptQuizComparisonSchema = z.object({
   verdict: z.string().default("insufficient"),
 });
 
+export const PromptQuizScoreSummarySchema = z.object({
+  graded: z.number().default(0),
+  mean: z.number().default(0),
+  items: z
+    .array(
+      z.object({
+        item_id: z.string(),
+        graded: z.number().default(0),
+        mean: z.number().default(0),
+      }),
+    )
+    .default([]),
+});
+
+export const PromptQuizSampleRowSchema = z.object({
+  task_id: z.string().default(""),
+  scope: z.string().default(""),
+  scope_id: z.string().default(""),
+  version: z.number().default(0),
+  item_id: z.string().default(""),
+  item_revision: z.number().default(0),
+  item_slug: z.string().optional(),
+  item_title: z.string().optional(),
+  outcome: z.string().default(""),
+  score: z.number().nullable().optional(),
+  score_detail: z.unknown().optional(),
+  graded_at: z.string().optional(),
+  measured_at: z.string().optional(),
+  run_tokens: z.number().nullable().optional(),
+  task_status: z.string().optional(),
+});
+
+export const PromptQuizBatchCreateResponseSchema = z.object({
+  batch_id: z.string().default(""),
+  ordered: z.number().default(0),
+  refused_agents: z
+    .array(z.object({ agent_id: z.string(), reason: z.string() }))
+    .optional(),
+});
+
+export const PromptQuizSampleListSchema = z.object({
+  rows: z.array(PromptQuizSampleRowSchema).default([]),
+});
+
+export const PromptQuizBatchResponseSchema = z.object({
+  batch_id: z.string().default(""),
+  rows: z.array(PromptQuizSampleRowSchema).default([]),
+  counts: z.record(z.string(), z.number()).default({}),
+  scores: PromptQuizScoreSummarySchema.optional(),
+});
+
+export const PromptQuizBankImportResponseSchema = z.object({
+  imported: z.number().default(0),
+  slugs: z.array(z.string()).default([]),
+});
+
 export const PromptQuizBaselineSchema = z.object({
   scope: z.string().default(""),
   scope_id: z.string().default(""),
@@ -4341,6 +4404,9 @@ export const PromptQuizBaselineSchema = z.object({
   // excluded", which is what such a backend actually did.
   incomparable: z.number().default(0),
   baseline_incomparable: z.number().default(0),
+  // RUYI-286 graded side; optional so an older backend still parses.
+  scores: PromptQuizScoreSummarySchema.optional(),
+  baseline_scores: PromptQuizScoreSummarySchema.optional(),
 });
 
 /**

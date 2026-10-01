@@ -355,7 +355,37 @@
         "rubricHint": "オーナーのみ閲覧でき、測定対象の実行には送信されません。保存するとこの欄の内容で既存の模範解答を全置換します。",
         "cancel": "キャンセル",
         "save": "保存"
-      }
+      },
+      "difficulty": {
+        "easy": "易",
+        "medium": "中",
+        "hard": "難"
+      },
+      "import": "標準問題セットを取り込む",
+      "importDone": "{{imported}} 件を取り込みました",
+      "importError": "標準問題セットは取り込まれませんでした。"
+    },
+    "graded": {
+      "title": "採点",
+      "description": "収集済み run の回答を問題ごとの模範解答で項目別に検証し、断言単位の根拠を示します。",
+      "summary": "採点 {{graded}} 件 · 平均 {{mean}}",
+      "ungraded": "未採点",
+      "run": "採点バッチを実行",
+      "ordered": "{{ordered}} 件のクイズ run を発行しました",
+      "refused": "{{count}} 件のエージェントは発行できませんでした",
+      "runError": "採点バッチは発行されませんでした。",
+      "batchLines": "このバッチ：回答 {{answered}} · エラー {{errored}} · 採点 {{graded}}",
+      "samplesTitle": "最近の採点サンプル",
+      "samplesEmpty": "採点サンプルはまだありません。採点バッチを実行すると、run 完了後に根拠が表示されます。",
+      "taskId": "task_id",
+      "measuredAt": "測定日時",
+      "gradedAt": "採点日時",
+      "version": "v{{version}}",
+      "answered": "回答済み",
+      "errored": "エラー",
+      "checkPassed": "{{id}}（{{kind}}）合格：{{evidence}}",
+      "checkFailed": "{{id}}（{{kind}}）不合格：{{evidence}}",
+      "notAGate": "採点は読み取り値でありゲートではありません：公開経路は参照しません。"
     }
   },
   "proposals": {

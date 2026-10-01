@@ -355,7 +355,37 @@
         "rubricHint": "소유자만 볼 수 있으며 측정 대상 실행에는 전달되지 않습니다. 저장하면 이 항목의 내용으로 기존 표준 답안을 전체 교체합니다.",
         "cancel": "취소",
         "save": "저장"
-      }
+      },
+      "difficulty": {
+        "easy": "쉬움",
+        "medium": "보통",
+        "hard": "어려움"
+      },
+      "import": "표준 문제 은행 가져오기",
+      "importDone": "{{imported}}개 항목을 가져왔습니다",
+      "importError": "표준 문제 은행을 가져오지 못했습니다."
+    },
+    "graded": {
+      "title": "채점",
+      "description": "수집된 run의 답변을 문제별 모범 답안으로 항목 단위로 검증하고 각 확인의 근거를 보여줍니다.",
+      "summary": "채점 {{graded}}건 · 평균 {{mean}}",
+      "ungraded": "미채점",
+      "run": "채점 배치 실행",
+      "ordered": "퀴즈 run {{ordered}}건을 발행했습니다",
+      "refused": "{{count}}개 에이전트는 발행되지 않았습니다",
+      "runError": "채점 배치가 발행되지 않았습니다.",
+      "batchLines": "이 배치: 답변 {{answered}} · 오류 {{errored}} · 채점 {{graded}}",
+      "samplesTitle": "최근 채점 샘플",
+      "samplesEmpty": "아직 채점 샘플이 없습니다. 채점 배치를 실행하면 run 완료 후 근거가 표시됩니다.",
+      "taskId": "task_id",
+      "measuredAt": "측정 시간",
+      "gradedAt": "채점 시간",
+      "version": "v{{version}}",
+      "answered": "답변",
+      "errored": "오류",
+      "checkPassed": "{{id}}({{kind}}) 통과: {{evidence}}",
+      "checkFailed": "{{id}}({{kind}}) 미통과: {{evidence}}",
+      "notAGate": "채점은 읽기 값이지 게이트가 아닙니다: 게시 경로는 읽지 않습니다."
     }
   },
   "proposals": {
