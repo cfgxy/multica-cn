@@ -7029,24 +7029,33 @@ func (q *Queries) ListQueuedClaimCandidatesByRuntimes(ctx context.Context, runti
 
 const listRunAncestry = `-- name: ListRunAncestry :many
 WITH RECURSIVE ancestry AS (
-    SELECT root.id AS ancestor_id FROM agent_task_queue root WHERE root.id = $1
+    SELECT root.id AS node_id,
+           CASE
+               WHEN root.rerun_of_task_id IS NOT NULL THEN root.rerun_of_task_id
+               ELSE root.retry_of_task_id
+           END AS next_ancestor_id
+    FROM agent_task_queue root WHERE root.id = $1
     UNION
-    SELECT CASE
-               WHEN t.rerun_of_task_id IS NOT NULL THEN t.rerun_of_task_id
-               ELSE t.retry_of_task_id
-           END AS ancestor_id
-    FROM agent_task_queue t
-    JOIN ancestry a ON t.rerun_of_task_id = a.ancestor_id OR t.retry_of_task_id = a.ancestor_id
+    SELECT parent.id AS node_id,
+           CASE
+               WHEN parent.rerun_of_task_id IS NOT NULL THEN parent.rerun_of_task_id
+               ELSE parent.retry_of_task_id
+           END AS next_ancestor_id
+    FROM agent_task_queue parent
+    JOIN ancestry a ON parent.id = a.next_ancestor_id
 )
 SELECT t.id, t.agent_id, t.issue_id, t.status, t.priority, t.dispatched_at, t.started_at, t.completed_at, t.result, t.error, t.created_at, t.context, t.runtime_id, t.session_id, t.work_dir, t.trigger_comment_id, t.chat_session_id, t.autopilot_run_id, t.attempt, t.max_attempts, t.parent_task_id, t.failure_reason, t.trigger_summary, t.force_fresh_session, t.is_leader_task, t.wait_reason, t.initiator_user_id, t.handoff_note, t.prepare_lease_expires_at, t.squad_id, t.runtime_mcp_overlay, t.escalation_for_task_id, t.fire_at, t.originator_user_id, t.runtime_connected_apps, t.coalesced_comment_ids, t.delivered_comment_ids, t.chat_input_task_id, t.chat_finalize_deferred_at, t.originator_source, t.delegated_from_task_id, t.retry_of_task_id, t.rerun_of_task_id, t.rule_version_id, t.trigger_evidence_kind, t.trigger_evidence_ref_id, t.accountable_user_id, t.session_rollout_missing, t.retired_session_id, t.quick_actions_disabled, t.regenerate_quick_actions_for, t.branch_name, t.durable_work_dir, t.channel_context_revision, t.prompt_versions, t.cancel_requested_by_user_id, t.cancel_requested_at FROM agent_task_queue t
-JOIN ancestry a ON t.id = a.ancestor_id
+JOIN ancestry a ON t.id = a.node_id
 ORDER BY t.created_at ASC
 `
 
 // RUYI-292 full ancestor chain of a run, following BOTH lineage columns so a
 // mixed manual-retry / system-retry chain stays visible (MUL-4302 §5 keeps the
-// columns distinct; the read unions them). Depth is bounded in practice — each
-// run points at one parent — and the recursive CTE walks to the root.
+// columns distinct; the read unions them). Each recursion step walks from a
+// chain node to that node's OWN parent row (rerun_of preferred, retry_of
+// fallback; NULL at the root ends the walk), so the chain reads parent-ward
+// from the requested run. Depth is bounded in practice — each run points at
+// one parent.
 func (q *Queries) ListRunAncestry(ctx context.Context, id pgtype.UUID) ([]AgentTaskQueue, error) {
 	rows, err := q.db.Query(ctx, listRunAncestry, id)
 	if err != nil {

@@ -651,7 +651,36 @@
       "source_backfill": "Backfilled attribution",
       "source_unattributed": "No responsible member resolved"
     },
-    "usage_total_tooltip": "Token usage for this issue — click for the per-run breakdown"
+    "usage_total_tooltip": "Token usage for this issue — click for the per-run breakdown",
+    "status_cancel_requested": "Stopping",
+    "stop_again_tooltip": "Resend stop request",
+    "stop_again_aria": "Resend stop request",
+    "cancel_unconfirmed_banner": "Stop was requested over 30 seconds ago and is still unconfirmed — the runtime may be offline. Click stop again to re-send the request.",
+    "filter_status_aria": "Filter runs by status",
+    "filter_trigger_aria": "Filter runs by trigger source",
+    "filter_status_all": "All statuses",
+    "filter_status_pending": "Pending",
+    "filter_status_running": "Running",
+    "filter_status_cancel_requested": "Stopping",
+    "filter_status_completed": "Completed",
+    "filter_status_failed": "Failed",
+    "filter_status_cancelled": "Cancelled",
+    "filter_trigger_all": "All triggers",
+    "filter_trigger_comment": "Comments",
+    "filter_trigger_autopilot": "Autopilot",
+    "filter_trigger_rerun": "Manual rerun",
+    "filter_trigger_system_retry": "System retry",
+    "filter_empty": "No runs match the current filters.",
+    "clear_filters": "Clear filters",
+    "show_more": "Show {{count}} more",
+    "retry_conflict_agent_busy": "Not retried — this agent already has an unfinished run on this issue",
+    "retry_conflict_descendant_active": "Not retried — this run already has an unfinished retry",
+    "rerun_task_tooltip": "Run again",
+    "rerun_task_aria": "Run again",
+    "rerun_confirm_title": "Run this task again?",
+    "rerun_confirm_body": "A new run will start on the same agent with its current configuration, in a fresh session. This run stays in the history unchanged.",
+    "rerun_confirm_keep": "Keep as is",
+    "rerun_confirm_confirm": "Run again"
   },
   "usage_detail": {
     "title": "Usage breakdown",
@@ -1095,5 +1124,19 @@
   "suppressed": {
     "badge": "On hold",
     "tooltip": "Assigned but not started yet — resumes when started"
+  },
+  "run_detail": {
+    "agent": "Agent",
+    "attempt": "Attempt",
+    "attempt_value": "Retry #{{attempt}}",
+    "created": "Created",
+    "finished": "Finished",
+    "usage": "Usage",
+    "reason": "Reason",
+    "cancelled_by": "Stop requested by {{name}}{{time}}",
+    "raw_error": "Raw error",
+    "lineage": "Run chain",
+    "lineage_rerun": "Manual rerun",
+    "lineage_system_retry": "System retry"
   }
 }

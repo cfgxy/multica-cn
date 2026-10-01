@@ -627,7 +627,36 @@
       "source_backfill": "백필된 귀속",
       "source_unattributed": "책임 멤버를 확인할 수 없음"
     },
-    "usage_total_tooltip": "이 태스크의 토큰 사용량 — 클릭하면 실행별 내역"
+    "usage_total_tooltip": "이 태스크의 토큰 사용량 — 클릭하면 실행별 내역",
+    "status_cancel_requested": "정지 중",
+    "stop_again_tooltip": "정지 요청 다시 보내기",
+    "stop_again_aria": "정지 요청 다시 보내기",
+    "cancel_unconfirmed_banner": "정지 요청 후 30초가 지나도 확인되지 않았습니다——런타임이 오프라인일 수 있습니다. 정지를 다시 클릭하여 요청을 재전송하세요.",
+    "filter_status_aria": "상태로 실행 필터링",
+    "filter_trigger_aria": "트리거 원본으로 실행 필터링",
+    "filter_status_all": "모든 상태",
+    "filter_status_pending": "대기 중",
+    "filter_status_running": "실행 중",
+    "filter_status_cancel_requested": "정지 중",
+    "filter_status_completed": "완료됨",
+    "filter_status_failed": "실패",
+    "filter_status_cancelled": "취소됨",
+    "filter_trigger_all": "모든 트리거",
+    "filter_trigger_comment": "댓글",
+    "filter_trigger_autopilot": "오토파일럿",
+    "filter_trigger_rerun": "수동 재실행",
+    "filter_trigger_system_retry": "시스템 재시도",
+    "filter_empty": "필터와 일치하는 실행이 없습니다.",
+    "clear_filters": "필터 지우기",
+    "show_more": "더 보기({{count}})",
+    "retry_conflict_agent_busy": "재시도 안 함——이 에이전트는 이 이슈에서 아직 완료되지 않은 실행이 있습니다",
+    "retry_conflict_descendant_active": "재시도 안 함——이 실행에는 아직 완료되지 않은 재시도가 있습니다",
+    "rerun_task_tooltip": "다시 실행",
+    "rerun_task_aria": "다시 실행",
+    "rerun_confirm_title": "이 작업을 다시 실행할까요?",
+    "rerun_confirm_body": "동일한 에이전트에서 현재 설정과 새 세션으로 다시 실행합니다. 이 실행은 기록에 그대로 남습니다.",
+    "rerun_confirm_keep": "그대로 두기",
+    "rerun_confirm_confirm": "다시 실행"
   },
   "usage_detail": {
     "title": "사용량 내역",
@@ -1056,5 +1085,19 @@
   "suppressed": {
     "badge": "보류 중",
     "tooltip": "할당됨, 아직 시작되지 않음 — 시작하면 재개됩니다"
+  },
+  "run_detail": {
+    "agent": "에이전트",
+    "attempt": "시도 횟수",
+    "attempt_value": "재시도 #{{attempt}}",
+    "created": "생성 시각",
+    "finished": "종료 시각",
+    "usage": "사용량",
+    "reason": "원인",
+    "cancelled_by": "{{name}} 님이 정지 요청 · {{time}}",
+    "raw_error": "원본 오류",
+    "lineage": "실행 체인",
+    "lineage_rerun": "수동 재실행",
+    "lineage_system_retry": "시스템 재시도"
   }
 }

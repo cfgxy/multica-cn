@@ -4965,11 +4965,16 @@ func (h *Handler) AckTaskCancelled(w http.ResponseWriter, r *http.Request) {
 	// stick on the row this ack is terminalizing.
 	delivered := false
 	confirmedFlip := false
-	if confirmed, err := h.Queries.ConvergeCancelRequestedToCancelled(r.Context(), task.ID); err != nil {
+	// The CAS is :one, so a row not in cancel_requested (already flipped,
+	// terminal from another path) surfaces as ErrNoRows — that miss is the
+	// documented no-op, not a persistence failure.
+	confirmed, err := h.Queries.ConvergeCancelRequestedToCancelled(r.Context(), task.ID)
+	switch {
+	case err != nil && !errors.Is(err, pgx.ErrNoRows):
 		slog.Error("cancel ack: confirm cancel_requested failed", "task_id", taskID, "error", err)
 		writeError(w, http.StatusInternalServerError, "failed to confirm cancellation")
 		return
-	} else if confirmed.ID.Valid {
+	case err == nil && confirmed.ID.Valid:
 		confirmedFlip = true
 		slog.Info("cancel ack: cancel_requested confirmed cancelled",
 			"task_id", taskID, "daemon_confirmed", req.Confirmed,
