@@ -33,22 +33,27 @@ func TestNewReturnsDeerflowBackend(t *testing.T) {
 //
 //   - initialize advertises loadSession only when the bridge was started with
 //     unstable protocol support; DEERFLOW_NO_LOAD_SESSION drops it.
-//   - session/new answers {sessionId} with a df-prefixed thread id. The real
-//     bridge also carries a models block on session/new; this fake omits it
-//     because the turn path never reads it — discovery has its own fake
-//     (fakeDeerflowDiscoveryScript).
-//   - session/resume answers a bare {}, but only after the same parameter
-//     binding the bridge does: `cwd` is a required positional of
-//     resume_session, so a request without it is answered -32602 the way the
-//     real bridge's JSON-RPC dispatcher does.
+//   - session/new answers {sessionId, configOptions} with a df-prefixed
+//     thread id. The real bridge also carries a models block on session/new;
+//     this fake omits it because the turn path never reads it — discovery has
+//     its own fake (fakeDeerflowDiscoveryScript). The configOptions block is
+//     the thinking switch (RUYI-321 stage 2): id `thinking` under category
+//     `thought_level`, options on/off — DeerFlow's engine has no discrete
+//     levels.
+//   - session/resume answers the same configOptions block — the bridge is a
+//     fresh process per turn, so resume is where turn 2+ reads the switch —
+//     but only after the same parameter binding the bridge does: `cwd` is a
+//     required positional of resume_session, so a request without it is
+//     answered -32602 the way the real bridge's JSON-RPC dispatcher does.
 //   - session/set_model is routed and answers {} unless
-//     DEERFLOW_SET_MODEL_ERROR_CODE selects a refusal; set_config_option is
-//     NOT routed and the default arm answers -32601, so any attempt to send
-//     it fails the turn visibly.
+//     DEERFLOW_SET_MODEL_ERROR_CODE selects a refusal; session/
+//     set_config_option echoes the switch with the requested value read back
+//     unless DEERFLOW_SET_CONFIG_ERROR_CODE selects a refusal.
 //   - the private -320xx codes are selectable through env so each one's resume
 //     accounting can be pinned separately.
 func fakeDeerflowACPScript() string {
 	return `#!/bin/sh
+THINKING_OPTS='{"id":"thinking","name":"Thinking","category":"thought_level","currentValue":"on","options":[{"name":"On","value":"on"},{"name":"Off","value":"off"}],"type":"select"}'
 while IFS= read -r line; do
   if [ -n "$DEERFLOW_REQUESTS_FILE" ]; then
     printf '%s\n' "$line" >> "$DEERFLOW_REQUESTS_FILE"
@@ -63,7 +68,7 @@ while IFS= read -r line; do
       fi
       ;;
     *'"method":"session/new"'*)
-      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"df-0123456789abcdef"}}\n' "$id"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"sessionId":"df-0123456789abcdef","configOptions":[%s]}}\n' "$id" "$THINKING_OPTS"
       ;;
     *'"method":"session/set_model"'*)
       if [ -n "$DEERFLOW_SET_MODEL_ERROR_CODE" ]; then
@@ -71,6 +76,14 @@ while IFS= read -r line; do
         exit 0
       fi
       printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+      ;;
+    *'"method":"session/set_config_option"'*)
+      if [ -n "$DEERFLOW_SET_CONFIG_ERROR_CODE" ]; then
+        printf '{"jsonrpc":"2.0","id":%s,"error":{"code":%s,"message":"deerflow set_config_option refused"}}\n' "$id" "$DEERFLOW_SET_CONFIG_ERROR_CODE"
+        exit 0
+      fi
+      value=$(printf '%s' "$line" | sed -n 's/.*"value":"\([^"]*\)".*/\1/p')
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[{"id":"thinking","name":"Thinking","category":"thought_level","currentValue":"%s","options":[{"name":"On","value":"on"},{"name":"Off","value":"off"}],"type":"select"}]}}\n' "$id" "$value"
       ;;
     *'"method":"session/resume"'*)
       case "$line" in
@@ -87,7 +100,7 @@ while IFS= read -r line; do
       if [ -n "$DEERFLOW_STALE_REPLAY" ]; then
         printf '{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"df-existing","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"STALE PRIOR ANSWER"}}}}\n'
       fi
-      printf '{"jsonrpc":"2.0","id":%s,"result":{}}\n' "$id"
+      printf '{"jsonrpc":"2.0","id":%s,"result":{"configOptions":[%s]}}\n' "$id" "$THINKING_OPTS"
       ;;
     *'"method":"session/prompt"'*)
       if [ -n "$DEERFLOW_PROMPT_ERROR_CODE" ]; then
@@ -197,11 +210,63 @@ func TestDeerflowUsageFallsBackToUnknownModel(t *testing.T) {
 	}
 }
 
-// TestDeerflowSetModelButNeverNegotiatesEffort is the regression for treating
-// deerflow as a kimi-shaped runtime on the THINKING side: set_config_option
-// still answers -32601 on the wire, so a saved thinking level must be dropped
-// with a warning while the model pick next to it is applied normally.
-func TestDeerflowSetModelButNeverNegotiatesEffort(t *testing.T) {
+// TestDeerflowAppliesThinkingSwitch is the stage-2 flip of the old
+// SetModelButNeverNegotiatesEffort regression: the bridge now broadcasts a
+// thinking switch (id `thinking`, category `thought_level`, options on/off —
+// DeerFlow's engine has no discrete levels) and applies set_config_option to
+// a per-session override that threads into DeerFlowClient.stream as
+// thinking_enabled. A saved "on" must therefore go out on the wire next to
+// the model pick, not be dropped with a warning.
+func TestDeerflowAppliesThinkingSwitch(t *testing.T) {
+	t.Parallel()
+	bin := writeFakeDeerflowScript(t, fakeDeerflowACPScript())
+	reqFile := filepath.Join(t.TempDir(), "requests.txt")
+
+	b, err := New("deerflow", Config{
+		ExecutablePath: bin,
+		Logger:         deerflowTestLogger(),
+		Env:            map[string]string{"DEERFLOW_REQUESTS_FILE": reqFile},
+	})
+	if err != nil {
+		t.Fatalf("New(deerflow) error: %v", err)
+	}
+
+	session, err := b.Execute(context.Background(), "test prompt", ExecOptions{
+		Cwd:           t.TempDir(),
+		Model:         "deepseek-reasoner",
+		ThinkingLevel: "on",
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	for range session.Messages {
+	}
+	result := <-session.Result
+	if result.Status != "completed" {
+		t.Fatalf("expected completed, got status=%q error=%q", result.Status, result.Error)
+	}
+	frame := findRecordedFrame(t, reqFile, "session/set_config_option")
+	params, _ := frame["params"].(map[string]any)
+	if params["configId"] != "thinking" {
+		t.Fatalf("set_config_option must address the advertised thinking option id, got %#v", params["configId"])
+	}
+	if params["value"] != "on" {
+		t.Fatalf("set_config_option must carry the saved switch value, got %#v", params["value"])
+	}
+	if findRecordedFrame(t, reqFile, "session/set_model")["params"].(map[string]any)["modelId"] != "deepseek-reasoner" {
+		t.Fatal("the model pick next to the thinking switch must still be applied")
+	}
+	if _, ok := result.Usage["deepseek-reasoner"]; !ok {
+		t.Fatalf("usage must bill against the applied model, got %+v", result.Usage)
+	}
+}
+
+// TestDeerflowDropsUnadvertisedThinkingLevel keeps the vocabulary guard: the
+// switch advertises on/off only, so a stale "high" saved against an older
+// catalog must be skipped locally — the session DOES advertise the option, so
+// this is the supports() arm in applyACPEffortOption, not the missing-option
+// arm — and it must not fail the turn.
+func TestDeerflowDropsUnadvertisedThinkingLevel(t *testing.T) {
 	t.Parallel()
 	bin := writeFakeDeerflowScript(t, fakeDeerflowACPScript())
 	reqFile := filepath.Join(t.TempDir(), "requests.txt")
@@ -233,8 +298,45 @@ func TestDeerflowSetModelButNeverNegotiatesEffort(t *testing.T) {
 	if findRecordedFrame(t, reqFile, "session/set_model")["params"].(map[string]any)["modelId"] != "deepseek-reasoner" {
 		t.Fatal("the model pick next to the dropped thinking level must still be applied")
 	}
-	if _, ok := result.Usage["deepseek-reasoner"]; !ok {
-		t.Fatalf("usage must bill against the applied model, got %+v", result.Usage)
+}
+
+// TestDeerflowReplaysThinkingSwitchOnResumedTurn pins the per-turn replay:
+// the bridge is a fresh process every turn, so turn 2+ arrives through
+// session/resume and the saved switch must be re-applied from the options
+// THAT response advertises — the same re-send discipline the model pick
+// already follows.
+func TestDeerflowReplaysThinkingSwitchOnResumedTurn(t *testing.T) {
+	t.Parallel()
+	bin := writeFakeDeerflowScript(t, fakeDeerflowACPScript())
+	reqFile := filepath.Join(t.TempDir(), "requests.txt")
+
+	b, err := New("deerflow", Config{
+		ExecutablePath: bin,
+		Logger:         deerflowTestLogger(),
+		Env:            map[string]string{"DEERFLOW_REQUESTS_FILE": reqFile},
+	})
+	if err != nil {
+		t.Fatalf("New(deerflow) error: %v", err)
+	}
+
+	session, err := b.Execute(context.Background(), "test prompt", ExecOptions{
+		Cwd:             t.TempDir(),
+		ResumeSessionID: "df-0123456789abcdef",
+		ThinkingLevel:   "on",
+	})
+	if err != nil {
+		t.Fatalf("Execute error: %v", err)
+	}
+	for range session.Messages {
+	}
+	result := <-session.Result
+	if result.Status != "completed" {
+		t.Fatalf("expected completed, got status=%q error=%q", result.Status, result.Error)
+	}
+	frame := findRecordedFrame(t, reqFile, "session/set_config_option")
+	params, _ := frame["params"].(map[string]any)
+	if params["configId"] != "thinking" || params["value"] != "on" {
+		t.Fatalf("resumed turn must replay the thinking switch, got %#v", params)
 	}
 }
 
@@ -963,6 +1065,45 @@ func TestDeerflowListModels(t *testing.T) {
 	}
 	if other := byID["deepseek-chat"]; other.Default {
 		t.Fatalf("expected only current_model_id to be the default, got %+v", other)
+	}
+}
+
+// TestDeerflowListModelsAnnotatesThinkingOnCurrentModel pins the stage-2
+// discovery wiring: the same session/new that carries the models block now
+// carries the thinking switch, and annotateACPThinkingForSessionModel must
+// fill the CURRENT model's catalog from it (on/off) while the other models
+// stay picker-less — the switch describes the session, not every model.
+func TestDeerflowListModelsAnnotatesThinkingOnCurrentModel(t *testing.T) {
+	t.Parallel()
+	bin := writeFakeDeerflowScript(t, fakeDeerflowDiscoveryScript(
+		`{"sessionId":"df-disc-1","models":{"available_models":[{"model_id":"deepseek-chat","name":"DeepSeek Chat"},{"model_id":"qwen3-max","name":"Qwen3 Max"}],"current_model_id":"qwen3-max"},"configOptions":[{"id":"thinking","name":"Thinking","category":"thought_level","currentValue":"on","options":[{"name":"On","value":"on"},{"name":"Off","value":"off"}],"type":"select"}]}`,
+	))
+
+	cat, err := ListModels(context.Background(), "deerflow", Command{Path: bin})
+	if err != nil {
+		t.Fatalf("deerflow ListModels error: %v", err)
+	}
+	byID := map[string]Model{}
+	for _, m := range cat.Models {
+		byID[m.ID] = m
+	}
+	current, ok := byID["qwen3-max"]
+	if !ok {
+		t.Fatalf("expected the current model in the catalog, got %+v", cat.Models)
+	}
+	if current.Thinking == nil {
+		t.Fatal("the session's current model must carry the thinking switch catalog")
+	}
+	if current.Thinking.DefaultLevel != "on" {
+		t.Errorf("DefaultLevel = %q, want the switch's currentValue to be on", current.Thinking.DefaultLevel)
+	}
+	for _, want := range []string{"on", "off"} {
+		if !hasThinkingLevel(current.Thinking, want) {
+			t.Errorf("catalog missing %q: %+v", want, current.Thinking.SupportedLevels)
+		}
+	}
+	if other := byID["deepseek-chat"]; other.Thinking != nil {
+		t.Errorf("deepseek-chat got %+v; the thinking switch describes the session's current model only", other.Thinking)
 	}
 }
 
