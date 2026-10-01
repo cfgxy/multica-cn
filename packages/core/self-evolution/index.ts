@@ -23,9 +23,13 @@ export {
   promptQuizItemsOptions,
   promptQuizItemOptions,
   promptQuizBaselineOptions,
+  promptQuizSamplesOptions,
+  promptQuizBatchOptions,
   useCreatePromptQuizItem,
   useUpdatePromptQuizItem,
   useDeletePromptQuizItem,
+  useImportPromptQuizBank,
+  useCreatePromptQuizBatch,
 } from "./quiz-queries";
 export {
   promptProposalKeys,

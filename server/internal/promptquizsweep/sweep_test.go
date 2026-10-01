@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -462,4 +463,66 @@ func (b *bank) finishedRun(t *testing.T, promptVersions string) string {
 		"started_at":              testutil.Raw("now() - interval '2 minutes'"),
 		"completed_at":            testutil.Raw("now()"),
 	})
+}
+
+// TestSweepGradesCompletedRunsAgainstTheItemChecks pins the grading seam
+// (RUYI-286): a completed run whose answer satisfies the item's published
+// assertions stores its weighted pass ratio, per-assertion detail and grading
+// time; a run whose answer misses stores a real 0 — while a run with no
+// answer text at all stays NULL, because it never answered and "no answer" is
+// not "all assertions failed".
+func TestSweepGradesCompletedRunsAgainstTheItemChecks(t *testing.T) {
+	b := newBank(t)
+	checks := `[{"id":"say-front","kind":"includes_all","weight":3,"phrases":["前台阻塞"]},
+	            {"id":"say-no-background","kind":"excludes","weight":1,"phrases":["可以先结束回合"]}]`
+	b.f.Exec(t, `UPDATE prompt_quiz_item SET rubric_checks = $1::jsonb WHERE id = $2`, checks, b.itemID)
+
+	writeAnswer := func(taskID, content string) {
+		t.Helper()
+		b.f.Insert(t, "task_message", testutil.Cols{
+			"task_id": taskID, "seq": 1, "type": "text", "content": content,
+		})
+	}
+
+	gradedFull := b.finishedRun(t, `{"agent": 3}`)
+	writeAnswer(gradedFull, "正确做法：必须在本回合内前台阻塞收齐构建结果后才能结束回合，不得提前退出等待。")
+	gradedZero := b.finishedRun(t, `{"agent": 3}`)
+	writeAnswer(gradedZero, "可以先结束回合，等构建完成后再回来收结果。")
+	unanswered := b.finishedRun(t, `{"agent": 3}`)
+
+	if out := b.run(t); out.Collected != 3 {
+		t.Fatalf("collected %d runs, want 3", out.Collected)
+	}
+
+	var fullScore, zeroScore float64
+	var fullDetail []byte
+	var fullGradedAt, zeroGradedAt *time.Time
+	var nullScore *float64
+	b.f.QueryRow(t, `SELECT score, score_detail, graded_at FROM prompt_quiz_result WHERE task_id = $1`, gradedFull).
+		Scan(&fullScore, &fullDetail, &fullGradedAt)
+	b.f.QueryRow(t, `SELECT score, graded_at FROM prompt_quiz_result WHERE task_id = $1`, gradedZero).
+		Scan(&zeroScore, &zeroGradedAt)
+	b.f.QueryRow(t, `SELECT score FROM prompt_quiz_result WHERE task_id = $1`, unanswered).Scan(&nullScore)
+
+	// (say-front passes 3/3; say-no-background passes on the excludes) → 1.0.
+	if fullScore != 1.0 {
+		t.Errorf("graded-full score = %v, want 1.0", fullScore)
+	}
+	if len(fullDetail) == 0 || !strings.Contains(string(fullDetail), "say-front") {
+		t.Errorf("graded-full detail missing per-assertion verdicts: %s", fullDetail)
+	}
+	if fullGradedAt == nil {
+		t.Error("graded-full has no graded_at")
+	}
+	// The exclusion fires → the real zero, not a NULL: an answer that got every
+	// assertion wrong measured something.
+	if zeroScore != 0.0 {
+		t.Errorf("graded-zero score = %v, want 0.0", zeroScore)
+	}
+	if zeroGradedAt == nil {
+		t.Error("graded-zero has no graded_at")
+	}
+	if nullScore != nil {
+		t.Errorf("unanswered run stored score %v, want NULL", *nullScore)
+	}
 }

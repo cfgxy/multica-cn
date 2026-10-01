@@ -167,9 +167,12 @@ var workspaceDeletionManifest = map[string]workspaceDeleteAction{
 	"prompt_quiz_result": workspaceDelete,
 	// The sweep's single-row cursor has no workspace_id: it is the deployment's
 	// scheduler state, not any workspace's data.
-	"prompt_quiz_sweep_state":        workspaceDeleteKeep,
-	"quick_action":                   workspaceDelete,
-	"runtime_profile":                workspaceDelete,
+	"prompt_quiz_sweep_state": workspaceDeleteKeep,
+	"quick_action":            workspaceDelete,
+	"runtime_profile":         workspaceDelete,
+	// RUYI-288: runtime-local skill discovery summaries are workspace-scoped
+	// metadata; the whole set goes away with the workspace.
+	"runtime_skill_discovery":        workspaceDelete,
 	"schema_migrations":              workspaceDeleteKeep,
 	"seat_capacity_outbox":           workspaceDeleteSettle,
 	"skill":                          workspaceDelete,

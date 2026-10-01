@@ -74,17 +74,23 @@ import type {
   PromptQuizItem,
   PromptQuizItemDetail,
   PromptQuizBaseline,
+  PromptQuizSampleRow,
+  PromptQuizBatchCreateResponse,
+  PromptQuizBatchResponse,
+  PromptQuizBankImportResponse,
   CreatePromptQuizItemRequest,
   UpdatePromptQuizItemRequest,
   PromptGovernanceVersion,
   PromptGovernanceVersionList,
   SavePromptGovernanceVersionRequest,
+  CreatePromptQuizBatchRequest,
   MarketplaceListing,
   MarketplacePlaceholder,
   MemberWithUser,
   User,
   Skill,
   SkillSummary,
+  SkillCatalogEntry,
   SkillVersion,
   SkillVersionSummary,
   SkillUsage,
@@ -554,6 +560,10 @@ import {
   PromptQuizItemDetailSchema,
   PromptQuizItemListSchema,
   PromptQuizBaselineSchema,
+  PromptQuizSampleListSchema,
+  PromptQuizBatchResponseSchema,
+  PromptQuizBatchCreateResponseSchema,
+  PromptQuizBankImportResponseSchema,
   EMPTY_PROMPT_QUIZ_ITEM,
   EMPTY_PROMPT_QUIZ_BASELINE,
   MarketplaceListingSchema,
@@ -3356,6 +3366,76 @@ export class ApiClient {
     });
   }
 
+  /**
+   * Owner actions for the graded side of the quiz (RUYI-286). All four sit
+   * behind the server's owner route guard, because the read-backs expose
+   * score_detail — the grading output of the private half of each item.
+   */
+
+  /** Imports the shipped benchmark bank (idempotent per slug). */
+  async importPromptQuizBank(): Promise<PromptQuizBankImportResponse> {
+    const raw = await this.fetch<unknown>(`/api/prompt-quiz/bank/import`, { method: "POST" });
+    return parseWithFallback(raw, PromptQuizBankImportResponseSchema, { imported: 0, slugs: [] }, {
+      endpoint: "POST /api/prompt-quiz/bank/import",
+    });
+  }
+
+  /**
+   * Orders real quiz runs — the same agent_task_queue rows the sweep creates —
+   * for the named agents against the active member-profile bank.
+   */
+  async createPromptQuizBatch(body: CreatePromptQuizBatchRequest): Promise<PromptQuizBatchCreateResponse> {
+    const raw = await this.fetch<unknown>(`/api/prompt-quiz/batches`, {
+      method: "POST",
+      body: JSON.stringify(body),
+    });
+    return parseWithFallback(
+      raw,
+      PromptQuizBatchCreateResponseSchema,
+      { batch_id: "", ordered: 0 },
+      { endpoint: "POST /api/prompt-quiz/batches" },
+    );
+  }
+
+  /** One batch's read-back: per-run rows, outcome counts, and the graded mean. */
+  async getPromptQuizBatch(batchId: string): Promise<PromptQuizBatchResponse> {
+    const raw = await this.fetch<unknown>(
+      `/api/prompt-quiz/batches/${encodeURIComponent(batchId)}`,
+    );
+    return parseWithFallback(
+      raw,
+      PromptQuizBatchResponseSchema,
+      { batch_id: batchId, rows: [], counts: {} },
+      { endpoint: "GET /api/prompt-quiz/batches/{id}" },
+    );
+  }
+
+  /**
+   * The workspace's newest graded samples. score may be null — unmeasured is
+   * not zero, and the schema keeps that distinction for an older backend.
+   */
+  async getPromptQuizSamples(params?: {
+    scope?: string;
+    scopeId?: string;
+    version?: number;
+    limit?: number;
+  }): Promise<PromptQuizSampleRow[]> {
+    const query = new URLSearchParams();
+    if (params?.scope !== undefined) query.set("scope", params.scope);
+    if (params?.scopeId !== undefined) query.set("scope_id", params.scopeId);
+    if (params?.version !== undefined) query.set("version", String(params.version));
+    if (params?.limit !== undefined) query.set("limit", String(params.limit));
+    const suffix = query.toString() === "" ? "" : `?${query.toString()}`;
+    const raw = await this.fetch<unknown>(`/api/prompt-quiz/samples${suffix}`);
+    const parsed = await parseWithFallback(
+      raw,
+      PromptQuizSampleListSchema,
+      { rows: [] as PromptQuizSampleRow[] },
+      { endpoint: "GET /api/prompt-quiz/samples" },
+    );
+    return parsed.rows;
+  }
+
   /** The workspace's install library. Holding a row changes no prompt. */
   async listPromptInstalls(): Promise<PromptInstall[]> {
     const raw = await this.fetch<unknown>(`/api/marketplace/prompt-installations`);
@@ -3990,6 +4070,16 @@ export class ApiClient {
     return parseWithFallback<SkillSummary[]>(raw, SkillSummaryListSchema, [], {
       endpoint: "GET /api/skills",
     });
+  }
+
+  // Workspace skill catalog (RUYI-288): authored skills unioned with
+  // metadata-only runtime discovery sightings.
+  async listSkillCatalog(): Promise<SkillCatalogEntry[]> {
+    return this.fetch<SkillCatalogEntry[]>("/api/skills/catalog");
+  }
+
+  async syncSkillCatalog(): Promise<{ triggered: number }> {
+    return this.fetch("/api/skills/catalog/sync", { method: "POST" });
   }
 
   async getSkill(id: string): Promise<Skill> {

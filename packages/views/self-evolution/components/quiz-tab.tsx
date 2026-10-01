@@ -22,6 +22,7 @@ import { agentListOptions } from "@multica/core/workspace/queries";
 import type { Agent } from "@multica/core/types";
 import { useT } from "../../i18n";
 import { QuizBankPanel } from "./quiz-bank-panel";
+import { QuizGradedPanel } from "./quiz-graded-panel";
 import { QuizReadingCard } from "./quiz-reading-card";
 
 /**
@@ -106,6 +107,12 @@ export function QuizTab({
       ) : (
         <QuizReadingCard view={toQuizView(baseline.data)} />
       )}
+
+      {/* The graded side reflects the rubrics — owner-only private halves — so
+          it mounts exactly where the bank editor does, and never for a member. */}
+      {canManage && agentId !== "" && baseline.isSuccess ? (
+        <QuizGradedPanel wsId={wsId} agentId={agentId} baseline={baseline.data} />
+      ) : null}
 
       <QuizBankPanel wsId={wsId} canManage={canManage} />
     </div>

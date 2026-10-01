@@ -670,6 +670,8 @@ WITH deleted_squads AS (
     DELETE FROM squad WHERE squad.workspace_id = $1
 ), deleted_skill_versions AS (
     DELETE FROM skill_version WHERE workspace_id = $1
+), deleted_runtime_skill_discoveries AS (
+    DELETE FROM runtime_skill_discovery WHERE workspace_id = $1
 )
 DELETE FROM skill WHERE skill.workspace_id = $1
 `

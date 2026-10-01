@@ -48,6 +48,10 @@ const mockSetContent = vi.hoisted(() => vi.fn());
 
 vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({}),
+  // ChatInput warms the workspace skill library (RUYI-288); these tests never
+  // assert on it, so inert stubs for the hook + the options factory suffice.
+  useQuery: () => ({ data: undefined }),
+  queryOptions: (opts: unknown) => opts,
 }));
 // Captures what ContentEditor wires into its extensions. `onSubmitRef` is the
 // Mod+Enter path — it bypasses the SubmitButton entirely, which is why the

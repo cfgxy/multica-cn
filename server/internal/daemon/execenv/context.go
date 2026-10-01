@@ -1012,6 +1012,9 @@ func renderIssueContext(provider string, ctx TaskContextForEnv) string {
 	if ctx.AutopilotRunID != "" {
 		return renderAutopilotContext(ctx)
 	}
+	if ctx.QuizPrompt != "" {
+		return renderQuizContext(ctx)
+	}
 	if ctx.QuickCreatePrompt != "" {
 		return renderQuickCreateContext(ctx)
 	}
@@ -1039,6 +1042,21 @@ func renderIssueContext(provider string, ctx TaskContextForEnv) string {
 	b.WriteString("## Quick Start\n\n")
 	fmt.Fprintf(&b, "Run `multica issue get %s --output json` to fetch the full issue details.\n\n", ctx.IssueID)
 
+	return b.String()
+}
+
+// renderQuizContext renders issue_context.md for prompt-quiz measurement runs
+// (RUYI-286). It carries the item under test verbatim — the same text the
+// per-turn prompt shows. The quiz context payload structurally excludes the
+// item's private half (no rubric, no answer key), so this channel cannot leak
+// them (A2); beyond the fixed headers it adds nothing.
+func renderQuizContext(ctx TaskContextForEnv) string {
+	var b strings.Builder
+	b.WriteString("# Prompt Quiz\n\n")
+	b.WriteString("**Trigger:** Prompt-evaluation run\n\n")
+	b.WriteString("## Item under test\n\n")
+	b.WriteString(ctx.QuizPrompt)
+	b.WriteString("\n\n")
 	return b.String()
 }
 

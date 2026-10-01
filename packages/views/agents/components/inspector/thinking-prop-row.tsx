@@ -2,13 +2,58 @@
 
 import { useQuery } from "@tanstack/react-query";
 import type { ReactNode } from "react";
-import type { RuntimeModel } from "@multica/core/types";
+import type {
+  RuntimeModel,
+  RuntimeModelThinkingLevel,
+} from "@multica/core/types";
 import { runtimeModelsOptions } from "@multica/core/runtimes";
 import { PropRow } from "../../../common/prop-row";
 import { SettingsRow } from "../../../settings/components/settings-layout";
 import { useT } from "../../../i18n";
 import { ThinkingPicker } from "./thinking-picker";
 import { findModelCapabilityEntry } from "./model-capability";
+
+/**
+ * Vocabulary offered for a claude model the daemon catalog cannot resolve —
+ * not in `models` at all (a release the static list hasn't caught up with, an
+ * org-proxy alias). Mirrors the server side: ValidateThinkingLevelWith accepts
+ * exactly this subset for unresolvable claude models, so the picker never
+ * offers a level the daemon would warn-and-drop at run time. Deliberately
+ * narrower than the CLI's full superset — xhigh/max would dangle on models
+ * that reject them (e.g. Haiku).
+ */
+const CLAUDE_FALLBACK_THINKING_LEVELS: RuntimeModelThinkingLevel[] = [
+  { value: "low", label: "Low" },
+  { value: "medium", label: "Medium" },
+  { value: "high", label: "High" },
+];
+
+/**
+ * Resolves the picker vocabulary for the agent's current (provider, model).
+ *
+ * - Catalog answered and has the model → the model's own levels.
+ * - Catalog answered but has no entry for the model → claude falls back to
+ *   CLAUDE_FALLBACK_THINKING_LEVELS; every other provider stays empty.
+ *   An entry that EXISTS with no thinking vocabulary is the catalog answering
+ *   "this model takes no effort" (old CLI, or a live row with effort off), so
+ *   it stays empty rather than borrowing the fallback.
+ * - Catalog hasn't answered (runtime offline, query disabled) → empty, so an
+ *   offline agent doesn't preview levels we can't verify.
+ */
+function resolveThinkingLevels(
+  models: RuntimeModel[] | undefined,
+  model: string,
+  provider: string,
+): RuntimeModelThinkingLevel[] {
+  if (!models) return [];
+  const entry = pickModelEntry(models, model, provider);
+  const levels = entry?.thinking?.supported_levels ?? [];
+  if (levels.length > 0) return levels;
+  if (!entry && provider === "claude") {
+    return CLAUDE_FALLBACK_THINKING_LEVELS;
+  }
+  return levels;
+}
 
 /**
  * Thinking row for the agent inspector. Hidden when the active model has
@@ -52,9 +97,11 @@ export function ThinkingPropRow({
     runtimeModelsOptions(runtimeOnline ? runtimeId : null),
   );
 
-  const models = modelsQuery.data?.models ?? [];
-  const entry = pickModelEntry(models, model, provider);
-  const levels = entry?.thinking?.supported_levels ?? [];
+  const levels = resolveThinkingLevels(
+    modelsQuery.data?.models,
+    model,
+    provider,
+  );
   if (levels.length === 0 && !value) return null;
 
   return (
@@ -92,9 +139,11 @@ export function ThinkingSettingField({
   const modelsQuery = useQuery(
     runtimeModelsOptions(runtimeOnline ? runtimeId : null),
   );
-  const models = modelsQuery.data?.models ?? [];
-  const entry = pickModelEntry(models, model, provider);
-  const levels = entry?.thinking?.supported_levels ?? [];
+  const levels = resolveThinkingLevels(
+    modelsQuery.data?.models,
+    model,
+    provider,
+  );
 
   if (levels.length === 0 && !value) return null;
 
