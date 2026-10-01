@@ -606,6 +606,7 @@ const InboxItemSchema: z.ZodType<InboxItem> = z.object({
   issue_status: z.string().nullable().default(null) as unknown as z.ZodType<
     InboxItem["issue_status"]
   >,
+  issue_identifier: z.string().nullable().default(null),
   read: z.boolean().default(false),
   archived: z.boolean().default(false),
   created_at: z.string().default(""),
