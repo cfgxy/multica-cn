@@ -588,7 +588,15 @@
       "add_dialog_confirm_default": "追加",
       "add_dialog_confirm_other": "スキル {{count}} 件を追加",
       "add_dialog_cancel": "キャンセル",
-      "add_failed_toast": "スキルを追加できませんでした"
+      "add_failed_toast": "スキルを追加できませんでした",
+      "source_runtime": "ランタイム",
+      "source_plugin": "プラグイン",
+      "add_dialog_discoveries_title": "ランタイムで検出",
+      "add_dialog_discovery_hint": "接続済みランタイムで検出されたスキルフォルダーです。インポートすると割り当て可能なワークスペーススキルになります。それまでは表示のみです。",
+      "add_dialog_discovery_import": "インポート",
+      "add_dialog_discovery_importing": "インポート中…",
+      "add_dialog_discovery_imported_toast": "スキルをインポートし、選択できるようになりました。",
+      "add_dialog_discovery_import_failed_toast": "インポートに失敗しました。ランタイム接続を確認して再試行してください。"
     },
     "integrations": {
       "intro": "このエージェントを外部のチャットプラットフォームに接続し、普段使っているツールから直接やり取りできるようにします。",

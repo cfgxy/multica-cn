@@ -123,7 +123,23 @@
       "revision": "Revised",
       "edit": "Edited",
       "restore": "Restored"
-    }
+    },
+    "catalogSearchLabel": "Search",
+    "catalogSearchPlaceholder": "Search skills by name",
+    "catalogSourceFilter": "Source",
+    "catalogSourceAll": "All sources",
+    "catalogSourceWorkspace": "Workspace",
+    "catalogSourceRuntime": "Runtime",
+    "catalogSourcePlugin": "Plugin",
+    "catalogSelectableHint": "Selectable rows are skills already imported into this workspace. Runtime and plugin discoveries below are visible but not selectable until imported.",
+    "catalogNoMatch": "No discovered skills match the current search or source filter.",
+    "discoveriesTitle": "Discovered on runtimes",
+    "discoveryImport": "Import",
+    "discoveryImporting": "Importing…",
+    "discoveryExists": "Already a skill",
+    "discoveryLastSeen": "Last seen {{date}}",
+    "discoveryImportedToast": "Skill imported. It is now selectable with its own version history.",
+    "discoveryImportFailedToast": "Import failed. Check the runtime connection and try again."
   },
   "quality": {
     "scopePicker": {
@@ -340,7 +356,37 @@
         "rubricHint": "Owner-only, and never sent to the run being measured. Saving replaces the stored answer key with whatever this field holds.",
         "cancel": "Cancel",
         "save": "Save"
-      }
+      },
+      "difficulty": {
+        "easy": "Easy",
+        "medium": "Medium",
+        "hard": "Hard"
+      },
+      "import": "Import benchmark bank",
+      "importDone": "Imported {{imported}} items",
+      "importError": "The benchmark bank was not imported."
+    },
+    "graded": {
+      "title": "Grading",
+      "description": "Checks each collected run's answer against the item's answer key, assertion by assertion, with per-check evidence.",
+      "summary": "{{graded}} graded · mean {{mean}}",
+      "ungraded": "Not graded yet",
+      "run": "Run one grading batch",
+      "ordered": "Ordered {{ordered}} quiz runs",
+      "refused": "{{count}} agent(s) were refused; the rest were ordered",
+      "runError": "No grading batch was ordered.",
+      "batchLines": "This batch: {{answered}} answered · {{errored}} errored · {{graded}} graded",
+      "samplesTitle": "Recent graded samples",
+      "samplesEmpty": "No graded samples yet. Run one grading batch; per-check evidence appears here once the runs finish.",
+      "taskId": "task_id",
+      "measuredAt": "Measured",
+      "gradedAt": "Graded",
+      "version": "v{{version}}",
+      "answered": "answered",
+      "errored": "errored",
+      "checkPassed": "{{id}} ({{kind}}) passed: {{evidence}}",
+      "checkFailed": "{{id}} ({{kind}}) failed: {{evidence}}",
+      "notAGate": "Grading is a reading, not a gate: no publish path reads it."
     }
   },
   "legislation": {

@@ -19,6 +19,7 @@ export const workspaceKeys = {
   squadMemberStatus: (wsId: string, squadId: string) =>
     ["workspaces", wsId, "squads", squadId, "members-status"] as const,
   skills: (wsId: string) => ["workspaces", wsId, "skills"] as const,
+  skillCatalog: (wsId: string) => ["workspaces", wsId, "skill-catalog"] as const,
   assigneeFrequency: (wsId: string) => ["workspaces", wsId, "assignee-frequency"] as const,
   mcpServers: (wsId: string) => ["workspaces", wsId, "mcp-servers"] as const,
   // Installed state is per workspace, so the catalog cache is keyed by
@@ -134,6 +135,16 @@ export function skillListOptions(wsId: string) {
   return queryOptions({
     queryKey: workspaceKeys.skills(wsId),
     queryFn: () => api.listSkills(),
+  });
+}
+
+// Union catalog: authored skills plus metadata-only runtime discovery
+// sightings (RUYI-288). Refetch after catalog/sync or a local-skill import
+// lands to observe the refreshed index.
+export function skillCatalogOptions(wsId: string) {
+  return queryOptions({
+    queryKey: workspaceKeys.skillCatalog(wsId),
+    queryFn: () => api.listSkillCatalog(),
   });
 }
 
