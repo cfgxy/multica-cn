@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/google/uuid"
 	"github.com/multica-ai/multica/server/internal/middleware"
 	"github.com/multica-ai/multica/server/internal/util"
 	db "github.com/multica-ai/multica/server/pkg/db/generated"
@@ -60,43 +61,10 @@ func privateAgentTestFixture(t *testing.T) (agentID, ownerID, memberID string) {
 	t.Helper()
 
 	ctx := context.Background()
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO "user" (name, email)
-		VALUES ('Private Agent Owner', 'private-agent-owner@multica.test')
-		RETURNING id
-	`).Scan(&ownerID); err != nil {
-		t.Fatalf("create owner user: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(),
-			`DELETE FROM "user" WHERE email = 'private-agent-owner@multica.test'`)
-	})
-
-	if _, err := testPool.Exec(ctx, `
-		INSERT INTO member (workspace_id, user_id, role)
-		VALUES ($1, $2, 'member')
-	`, testWorkspaceID, ownerID); err != nil {
-		t.Fatalf("add owner as member: %v", err)
-	}
-
-	if err := testPool.QueryRow(ctx, `
-		INSERT INTO "user" (name, email)
-		VALUES ('Plain Member', 'plain-member@multica.test')
-		RETURNING id
-	`).Scan(&memberID); err != nil {
-		t.Fatalf("create plain member user: %v", err)
-	}
-	t.Cleanup(func() {
-		testPool.Exec(context.Background(),
-			`DELETE FROM "user" WHERE email = 'plain-member@multica.test'`)
-	})
-
-	if _, err := testPool.Exec(ctx, `
-		INSERT INTO member (workspace_id, user_id, role)
-		VALUES ($1, $2, 'member')
-	`, testWorkspaceID, memberID); err != nil {
-		t.Fatalf("add plain member: %v", err)
-	}
+	ownerID = dbfx.User(t, "Private Agent Owner", "private-agent-owner+"+uuid.NewString()+"@multica.test")
+	dbfx.Member(t, testWorkspaceID, ownerID, "member")
+	memberID = dbfx.User(t, "Plain Member", "plain-member+"+uuid.NewString()+"@multica.test")
+	dbfx.Member(t, testWorkspaceID, memberID, "member")
 
 	if err := testPool.QueryRow(ctx, `
 		INSERT INTO agent (
@@ -116,6 +84,28 @@ func privateAgentTestFixture(t *testing.T) (agentID, ownerID, memberID string) {
 	})
 
 	return agentID, ownerID, memberID
+}
+
+func TestPrivateAgentTestFixtureUsesUniqueEmails(t *testing.T) {
+	seen := make(map[string]bool)
+	for _, name := range []string{"first", "second"} {
+		t.Run(name, func(t *testing.T) {
+			_, ownerID, memberID := privateAgentTestFixture(t)
+			for _, tc := range []struct {
+				id, legacyEmail string
+			}{
+				{ownerID, "private-agent-owner@multica.test"},
+				{memberID, "plain-member@multica.test"},
+			} {
+				var email string
+				dbfx.QueryRow(t, `SELECT email FROM "user" WHERE id = $1`, tc.id).Scan(&email)
+				if email == tc.legacyEmail || seen[email] {
+					t.Fatalf("fixture reused email %q", email)
+				}
+				seen[email] = true
+			}
+		})
+	}
 }
 
 func newRequestAs(userID, method, path string, body any) *http.Request {

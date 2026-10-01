@@ -180,12 +180,54 @@ func (r Runner) collect(ctx context.Context) (int, error) {
 				params.DurationMs = pgtype.Int8{Int64: ms, Valid: true}
 			}
 		}
+		// Grading (RUYI-286): only a run that produced an answer can be
+		// graded, and only against checks that exist. Every "not graded"
+		// path leaves Score NULL — the column's "measured but not graded"
+		// state — so an outage or a check-less item can never read as 0.
+		// Cost attribution above stays unconditional: an errored run's
+		// tokens are still what it cost, even though it never enters a
+		// sample.
+		if run.Status == "completed" {
+			grade, detail := r.gradeTask(ctx, run.TaskID, item.RubricChecks)
+			if grade.Graded {
+				params.Score = pgtype.Float4{Float32: float32(grade.Score), Valid: true}
+				params.ScoreDetail = detail
+				params.GradedAt = pgtype.Timestamptz{Time: time.Now(), Valid: true}
+			}
+		}
 		if _, err := r.Queries.UpsertPromptQuizResult(ctx, params); err != nil {
 			return n, fmt.Errorf("store quiz measurement: %w", err)
 		}
 		n++
 	}
 	return n, nil
+}
+
+// gradeTask grades one finished run: the item's checks against the run's last
+// text message.
+//
+// Both reads are allowed to come up empty without failing the tick — no
+// checks on the item, no text message from the run, or a stored check set the
+// write gate would have refused all grade to Graded=false, which the caller
+// stores as a NULL score. The tick keeps folding the other runs; the row
+// keeps saying "measured, not graded" instead of growing a fake 0.
+func (r Runner) gradeTask(ctx context.Context, taskID pgtype.UUID, checksJSON []byte) (promptquiz.GradeResult, []byte) {
+	if len(checksJSON) == 0 {
+		return promptquiz.GradeResult{}, nil
+	}
+	answer, err := r.Queries.GetPromptQuizTaskAnswer(ctx, taskID)
+	if err != nil {
+		return promptquiz.GradeResult{}, nil
+	}
+	grade := promptquiz.Grade(checksJSON, answer.String)
+	if !grade.Graded {
+		return promptquiz.GradeResult{}, nil
+	}
+	detail, err := json.Marshal(grade.Detail)
+	if err != nil {
+		return promptquiz.GradeResult{}, nil
+	}
+	return grade, detail
 }
 
 // enqueue orders measurements for the versions furthest from N.
@@ -275,11 +317,23 @@ func (r Runner) enqueue(ctx context.Context, budget int) (int, error) {
 // field, so this function could not send the answer key even by mistake.
 // sweep_test.go asserts the payload's field set rather than trusting that.
 func taskContext(item db.ListActivePromptQuizItemsForProfileRow, batch pgtype.UUID) ([]byte, error) {
+	return TaskContextPayload(uuid.UUID(item.ID.Bytes).String(), item.Body, batch)
+}
+
+// TaskContextPayload builds the payload a quiz run's daemon receives, exported
+// for the batch endpoint (RUYI-286), which orders runs outside a sweep tick.
+//
+// It carries the question and nothing else: no issue, no workspace entity, no
+// prior measurement, and none of the item's private halves. That is what makes
+// two measurements of the same item comparable — the run's whole input is the
+// prompt under test plus a fixed string. The guarantee is the caller's to keep
+// on this path: pass the body and the ids, nothing more.
+func TaskContextPayload(itemID, body string, batch pgtype.UUID) ([]byte, error) {
 	payload, err := json.Marshal(map[string]any{
 		"kind":          promptquiz.TaskKind,
 		"quiz_batch_id": uuid.UUID(batch.Bytes).String(),
-		"quiz_item_id":  uuid.UUID(item.ID.Bytes).String(),
-		"quiz_prompt":   item.Body,
+		"quiz_item_id":  itemID,
+		"quiz_prompt":   body,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("encode quiz context: %w", err)
