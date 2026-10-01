@@ -369,6 +369,28 @@ type ChannelChatContextGeneration struct {
 	CreatedAt              pgtype.Timestamptz `json:"created_at"`
 }
 
+type ChannelChatRunIntent struct {
+	ID              pgtype.UUID        `json:"id"`
+	WorkspaceID     pgtype.UUID        `json:"workspace_id"`
+	ChatSessionID   pgtype.UUID        `json:"chat_session_id"`
+	ContextRevision int64              `json:"context_revision"`
+	InitiatorUserID pgtype.UUID        `json:"initiator_user_id"`
+	ForceFresh      bool               `json:"force_fresh"`
+	BindingID       pgtype.UUID        `json:"binding_id"`
+	RouteRevision   int64              `json:"route_revision"`
+	InstallationID  pgtype.UUID        `json:"installation_id"`
+	State           string             `json:"state"`
+	FireAt          pgtype.Timestamptz `json:"fire_at"`
+	Attempts        int32              `json:"attempts"`
+	NextAttemptAt   pgtype.Timestamptz `json:"next_attempt_at"`
+	ClaimedBy       pgtype.UUID        `json:"claimed_by"`
+	ClaimExpiresAt  pgtype.Timestamptz `json:"claim_expires_at"`
+	DeadReason      pgtype.Text        `json:"dead_reason"`
+	LastError       pgtype.Text        `json:"last_error"`
+	CreatedAt       pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt       pgtype.Timestamptz `json:"updated_at"`
+}
+
 type ChannelChatSessionBinding struct {
 	ID                     pgtype.UUID        `json:"id"`
 	ChatSessionID          pgtype.UUID        `json:"chat_session_id"`
@@ -989,18 +1011,20 @@ type IssueViewPreference struct {
 
 // Registered bd memories directories: read-only candidate sources plus one per-workspace ultimate adoption target.
 type KnowledgeDir struct {
-	ID          pgtype.UUID        `json:"id"`
-	WorkspaceID pgtype.UUID        `json:"workspace_id"`
-	Kind        string             `json:"kind"`
-	Path        string             `json:"path"`
-	ProjectID   pgtype.UUID        `json:"project_id"`
-	Label       string             `json:"label"`
-	HealthState string             `json:"health_state"`
-	HealthNote  string             `json:"health_note"`
-	Removed     bool               `json:"removed"`
-	CreatedBy   pgtype.UUID        `json:"created_by"`
-	CreatedAt   pgtype.Timestamptz `json:"created_at"`
-	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	ID            pgtype.UUID        `json:"id"`
+	WorkspaceID   pgtype.UUID        `json:"workspace_id"`
+	Kind          string             `json:"kind"`
+	Path          string             `json:"path"`
+	ProjectID     pgtype.UUID        `json:"project_id"`
+	Label         string             `json:"label"`
+	HealthState   string             `json:"health_state"`
+	HealthNote    string             `json:"health_note"`
+	Removed       bool               `json:"removed"`
+	CreatedBy     pgtype.UUID        `json:"created_by"`
+	CreatedAt     pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt     pgtype.Timestamptz `json:"updated_at"`
+	DaemonID      string             `json:"daemon_id"`
+	ScanRequested bool               `json:"scan_requested"`
 }
 
 // Read-only mirror of bd memories entries; adoption_state=adopted only after transfer into the ultimate bd confirmed by read-back.
@@ -1503,6 +1527,7 @@ type Proposal struct {
 	CreatedByID        pgtype.UUID        `json:"created_by_id"`
 	CreatedAt          pgtype.Timestamptz `json:"created_at"`
 	UpdatedAt          pgtype.Timestamptz `json:"updated_at"`
+	TransferState      string             `json:"transfer_state"`
 }
 
 type QuickAction struct {

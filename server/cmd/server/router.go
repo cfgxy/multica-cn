@@ -577,6 +577,15 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			Logger:  slog.Default(),
 		}
 	}
+	// Run-intent reconciler (RUYI-304): re-drives debounce windows whose
+	// in-memory flush never happened (crash, restart, failed enqueue). No
+	// external dependencies, so it is built unconditionally. Started from
+	// main.go as its own worker.
+	h.ChannelChatRunReconciler = &service.ChannelChatRunReconciler{
+		Queries: queries,
+		Tasks:   h.TaskService,
+		Logger:  slog.Default(),
+	}
 	installationStore := lark.NewChannelInstallationStore(queries)
 	h.ChannelSupervisor = buildChannelSupervisor(
 		installationStore,
@@ -1587,6 +1596,12 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 
 		r.Post("/runtimes/{runtimeId}/recover-orphans", h.RecoverOrphanedTasks)
 		r.Post("/tasks/{taskId}/session", h.PinTaskSession)
+
+		// Knowledge pipeline (RUYI-289): the daemon that hosts the paths
+		// pulls its scan/discovery/adoption work package and reports results;
+		// bd IO never runs inside the server container.
+		r.Get("/knowledge/plan", h.GetKnowledgePlan)
+		r.Post("/knowledge/results", h.PostKnowledgeResults)
 	})
 
 	// Public Plugin Action API. This is the stable, globally versioned contract
@@ -2121,6 +2136,16 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				r.Delete("/dirs/{id}", h.DeleteKnowledgeDir)
 				r.Post("/entries/{id}/adopt", h.AdoptKnowledgeEntry)
 			})
+		})
+
+		// Self-evolution workspace overview (RUYI-284): one read-only
+		// aggregate across the six data planes the tabs serve. Member-visible
+		// like the reads it mirrors; there is deliberately no write method on
+		// this tree — the overview is a lens, not a surface.
+		r.Route("/api/self-evolution", func(r chi.Router) {
+			r.Use(handler.RequireHumanActor)
+			r.Use(middleware.RequireWorkspaceMember(queries))
+			r.Get("/overview", h.GetSelfEvolutionOverview)
 		})
 
 		// --- Workspace-scoped routes (all require workspace membership) ---

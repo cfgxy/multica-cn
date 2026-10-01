@@ -1,10 +1,6 @@
 {
   "title": "자기 진화",
   "description": "에이전트와 스쿼드 프롬프트가 시간에 따라 어떻게 바뀌었는지, 무엇이 그 변화를 만들었는지 확인합니다.",
-  "empty": {
-    "title": "아직 연결되지 않음",
-    "description": "이 화면은 프롬프트 거버넌스 개요를 위한 내비게이션 뼈대입니다(RUYI-183 1단계). 버전 이력, diff, 적용 현황 화면은 이후 단계에서 제공됩니다."
-  },
   "tabs": {
     "overview": "개요",
     "quality": "품질",
@@ -13,6 +9,53 @@
     "proposals": "제안",
     "knowledge": "지식",
     "versions": "버전"
+  },
+  "overview": {
+    "loading": "개요를 불러오는 중",
+    "error": "개요를 불러오지 못했습니다",
+    "retry": "다시 시도",
+    "versions": {
+      "title": "프롬프트 버전 활동",
+      "empty": "어떤 계층에도 버전 기록이 아직 없습니다.",
+      "currentVersion": "현재 v{{version}}",
+      "currentUnset": "{{count}}개 대상이 각자 진행 중",
+      "count": "{{subjects}}개 대상 · 총 {{count}}개 버전",
+      "lastChange": "{{date}} · {{actor}}",
+      "lastChangeNoActor": "{{date}}"
+    },
+    "quality": {
+      "title": "품질 측정값(최근 {{days}}일)",
+      "empty": "이 기간에 측정된 실행이 없습니다.",
+      "runs": "{{count}}회 실행",
+      "subjects": "측정값이 있는 에이전트 {{count}}개",
+      "excluded": "환경 또는 공급자 장애로 {{count}}회 실행 제외"
+    },
+    "quiz": {
+      "title": "문제은행 결론",
+      "empty": "기록된 측정이 아직 없습니다.",
+      "versions": "베이스라인 v{{baseline}} → v{{current}}",
+      "singleVersion": "현재 v{{current}}(첫 버전, 베이스라인 없음)",
+      "insufficientSample": "샘플 부족(베이스라인 {{baseline}}건, 현재 {{current}}건의 유효 측정 필요)",
+      "lastMeasured": "마지막 측정 {{date}}"
+    },
+    "proposals": {
+      "title": "제안 풀",
+      "pendingModel": "제안 지표는 새 제안 모델(RUYI-305)이 제공된 후 연결됩니다."
+    },
+    "knowledge": {
+      "title": "지식 미러",
+      "empty": "등록된 디렉터리가 아직 없습니다.",
+      "dirs": "디렉터리 {{count}}개",
+      "entries": "항목 {{count}}건",
+      "lastScan": "마지막 스캔: {{result}} · {{date}}",
+      "neverScanned": "스캔 없음"
+    },
+    "skills": {
+      "title": "Skill 관측",
+      "empty": "등록된 skill이 아직 없습니다.",
+      "count": "skill {{count}}개",
+      "invocations": "누적 명시 호출 {{count}}회"
+    }
   },
   "skills": {
     "choose": "skill 선택",
@@ -172,7 +215,9 @@
         "no_reviewed_issues": "이 기간에 리뷰로 넘어간 이슈가 없습니다.",
         "below_sample_floor": "실행 수가 선언된 하한보다 적습니다.",
         "unknown": "서버가 이유를 알리지 않았습니다."
-      }
+      },
+      "coverage": "총 {{total}}회 중 {{covered}}회 검사됨",
+      "deductions": "감점 내역 ({{count}})"
     },
     "perplexity": {
       "title": "D3 규칙 난해도",
@@ -315,6 +360,10 @@
       "lesson": "교훈",
       "pitfall": "알려진 함정"
     },
+    "source": {
+      "system": "시스템",
+      "member": "멤버"
+    },
     "create": "새 제안",
     "createTitle": "새 제안",
     "createDescription": "예측은 생성 시 기록되며 이후 변경할 수 없습니다. 정량 제안은 지표·방향·수치 범위가, 행동 제안은 관찰 가능한 변화와 반증 조건이 필요합니다.",
@@ -348,6 +397,8 @@
     },
     "createdAt": "생성 {{date}}",
     "transferError": "지식 전송 실패: {{error}}",
+    "transferring": "전송 중",
+    "transferringNote": "채택이 대기열에 등록되었습니다 — 지식 허브로의 전송이 백그라운드에서 실행되며 완료되면 이 행이 자동으로 갱신됩니다.",
     "adopt": "채택",
     "reject": "기각",
     "restore": "초안으로 복원",
@@ -377,16 +428,16 @@
     }
   },
   "knowledge": {
-    "title": "지식 미러",
-    "description": "후보 bd memories 디렉터리는 읽기 전용으로 미러되며, 유일한 쓰기 경로는 소유자가 최종 라이브러리로 전송하는 채택입니다.",
+    "title": "지식 라이브러리",
+    "description": "bd memories 디렉터리는 연결된 프로젝트에서 자동으로 발견되거나 아래에서 수동 추가됩니다. 항목은 읽기 전용으로 미러링되며, 채택 시 백그라운드에서 지식 허브로 전송됩니다.",
     "register": "디렉터리 등록",
     "registerTitle": "지식 디렉터리 등록",
-    "registerDescription": "등록 시 첫 읽기 전용 스캔이 실행됩니다. 최종 라이브러리는 별도로 지정되며 이 양식에서 등록하지 않습니다.",
+    "registerDescription": "이 경로를 수동 추가 소스로 등록합니다. 최초 읽기 전용 스캔은 백그라운드에서 실행됩니다. 지식 허브는 별도로 지정하며 여기서 등록하지 않습니다.",
     "kindLabel": "디렉터리 유형",
     "kind": {
-      "ultimate": "최종 라이브러리",
-      "candidate_cli": "후보(수동 등록)",
-      "candidate_auto": "후보(자동 발견)"
+      "ultimate": "지식 허브",
+      "candidate_cli": "수동 추가",
+      "candidate_auto": "자동 발견"
     },
     "pathLabel": "디렉터리 경로",
     "labelLabel": "표시 라벨",
@@ -398,6 +449,7 @@
     "entryCount": "{{n}}개",
     "lastScan": "마지막 스캔({{result}}): +{{added}}, ~{{updated}}, -{{removed}}",
     "neverScanned": "스캔 안 됨",
+    "scanRequested": "스캔 대기 중",
     "health": {
       "ok": "정상",
       "unhealthy": "비정상"
@@ -409,6 +461,8 @@
     },
     "scan": "지금 스캔",
     "unregister": "등록 해제",
+    "advancedTitle": "고급: 외부 소스 추가",
+    "advancedDescription": "이 머신의 bd memories 디렉터리를 가리킵니다. 표시명은 선택입니다.",
     "allDirs": "모든 디렉터리",
     "searchPlaceholder": "키 또는 내용 검색",
     "mirrorState": {
@@ -418,6 +472,7 @@
     },
     "adoptionState": {
       "pending": "대기 중",
+      "transferring": "전송 중",
       "adopted": "채택됨",
       "failed": "실패"
     },
@@ -425,7 +480,7 @@
     "adoptedFrom": "{{key}}에서 채택",
     "emptyDirs": {
       "title": "등록된 디렉터리 없음",
-      "description": "후보 bd memories 디렉터리를 등록하면 내용이 읽기 전용으로 미러됩니다."
+      "description": "연결된 데몬이 bd memories 가 있는 프로젝트를 발견하면 자동으로 여기에 표시됩니다. 아래 '고급'에서 수동으로 추가할 수도 있습니다."
     },
     "emptyEntries": "현재 필터에 해당하는 항목이 없습니다.",
     "error": {

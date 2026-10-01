@@ -1796,6 +1796,23 @@ func acpToolCallStartCarriesInvocation(toolName, argsText string) bool {
 	return strings.HasPrefix(strings.TrimSpace(argsText), "$ ")
 }
 
+// acpToolCallStatusIsError maps an ACP tool_call_update status onto the
+// three-valued tool-result error flag, mirroring codexToolResultIsError.
+// ACP reports no is_error field; the status enum is the only outcome a tool
+// call carries, so an unrecognized status stays nil — a vocabulary this
+// function has not seen is not evidence, and must not be read as success.
+func acpToolCallStatusIsError(status string) *bool {
+	yes, no := true, false
+	switch status {
+	case "completed":
+		return &no
+	case "failed":
+		return &yes
+	default:
+		return nil
+	}
+}
+
 func (c *hermesClient) handleToolCallUpdate(data json.RawMessage) {
 	var msg struct {
 		ToolCallID string            `json:"toolCallId"`
@@ -1852,10 +1869,11 @@ func (c *hermesClient) handleToolCallUpdate(data json.RawMessage) {
 	}
 	if c.onMessage != nil {
 		c.onMessage(Message{
-			Type:   MessageToolResult,
-			CallID: msg.ToolCallID,
-			Output: output,
-			Status: msg.Status,
+			Type:    MessageToolResult,
+			CallID:  msg.ToolCallID,
+			Output:  output,
+			Status:  msg.Status,
+			IsError: acpToolCallStatusIsError(msg.Status),
 		})
 	}
 }

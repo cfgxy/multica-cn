@@ -136,6 +136,7 @@ export type {
 export type {
   PromptQualityScope,
   PromptQualityDimension,
+  PromptQualityDeduction,
   PromptQualityMeasure,
   PromptQualityMeasures,
   PromptQualityVersionMeasures,
@@ -417,3 +418,12 @@ export type {
   WorkspaceSubscriptionSeatReconcileResult,
   CreateWorkspaceSubscriptionPortalResponse,
 } from "./billing";
+export type {
+  SelfEvolutionOverview,
+  SelfEvolutionOverviewTier,
+  SelfEvolutionOverviewQuality,
+  SelfEvolutionOverviewQuiz,
+      SelfEvolutionOverviewScan,
+  SelfEvolutionOverviewKnowledge,
+  SelfEvolutionOverviewSkills,
+} from "./self-evolution-overview";

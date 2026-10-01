@@ -94,22 +94,61 @@ type BacklogOutcome struct {
 	Failed int
 }
 
-// ScoreBacklog scores agent prompt versions that have runs behind them but no
-// complete set of D3 scores.
+// ScoreBacklog scores one workspace's agent prompt versions that have runs
+// behind them but no complete set of D3 scores.
 //
-// It is driven off prompt_quality_daily, so a version nobody ever ran is never
-// scored: D3 exists to explain the other six dimensions, and there is nothing
-// to explain where there are no runs. A disabled model client makes this a
-// no-op rather than an error — D3 not being scored is a state the dashboard
-// renders, not a failure of the rollup.
-func (p Perplexity) ScoreBacklog(ctx context.Context) (BacklogOutcome, error) {
+// The workspace is the boundary the caller serves, not a formality: a pass
+// must never write a judgement formed for one workspace into another's
+// dashboard (RUYI-287). A disabled model client makes this a no-op rather than
+// an error — D3 not being scored is a state the dashboard renders, not a
+// failure of the rollup.
+func (p Perplexity) ScoreBacklog(ctx context.Context, workspaceID pgtype.UUID) (BacklogOutcome, error) {
+	return p.scoreWorkspaceBacklog(ctx, workspaceID, ScoreBudget)
+}
+
+// ScoreBacklogAll drains every workspace's backlog in one pass, sharing
+// ScoreBudget across them so a deployment with many workspaces costs no more
+// per tick than a single-workspace one did.
+func (p Perplexity) ScoreBacklogAll(ctx context.Context) (BacklogOutcome, error) {
+	if p.Generator == nil || !p.Generator.Enabled() {
+		return BacklogOutcome{}, nil
+	}
+
+	workspaces, err := p.Queries.ListPromptPerplexityBacklogWorkspaces(ctx)
+	if err != nil {
+		return BacklogOutcome{}, fmt.Errorf("list backlog workspaces: %w", err)
+	}
+
+	out := BacklogOutcome{}
+	budget := ScoreBudget
+	for _, ws := range workspaces {
+		if budget <= 0 {
+			break
+		}
+		part, err := p.scoreWorkspaceBacklog(ctx, ws, int32(budget))
+		if err != nil {
+			// One workspace's failure does not abandon the rest; what this
+			// pass already stored stays, and the failing workspace is
+			// re-listed next tick because nothing it owns was scored.
+			return out, err
+		}
+		budget -= part.Considered
+		out.Considered += part.Considered
+		out.Scored += part.Scored
+		out.Failed += part.Failed
+	}
+	return out, nil
+}
+
+func (p Perplexity) scoreWorkspaceBacklog(ctx context.Context, workspaceID pgtype.UUID, rowLimit int32) (BacklogOutcome, error) {
 	if p.Generator == nil || !p.Generator.Enabled() {
 		return BacklogOutcome{}, nil
 	}
 
 	rows, err := p.Queries.ListPromptPerplexityUnscoredVersions(ctx, db.ListPromptPerplexityUnscoredVersionsParams{
+		WorkspaceID:  workspaceID,
 		ProfileCount: int32(len(promptperplexity.Profiles)),
-		RowLimit:     ScoreBudget,
+		RowLimit:     rowLimit,
 	})
 	if err != nil {
 		return BacklogOutcome{}, fmt.Errorf("list unscored versions: %w", err)

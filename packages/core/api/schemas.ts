@@ -112,6 +112,7 @@ import type {
   PromptVersion,
 } from "../types/prompt-market";
 import type { PromptQualityDashboard } from "../types/prompt-quality";
+import type { SelfEvolutionOverview } from "../types/self-evolution-overview";
 import type { PromptQuizBaseline, PromptQuizItemDetail } from "../types/prompt-quiz";
 import type {
   PromptGovernanceVersion,
@@ -4079,6 +4080,14 @@ export const PromptQualityMeasuresSchema = z.object({
   first_pass_rate: PromptQualityMeasureSchema.default(NO_DATA_MEASURE),
 });
 
+// One recorded D2 breach, traced to the run that produced it (RUYI-287).
+export const PromptQualityDeductionSchema = z.object({
+  task_id: z.string().default(""),
+  rule: z.string().default(""),
+  points: z.number().default(0),
+  seq: z.number().default(0),
+});
+
 export const PromptQualityVersionMeasuresSchema = z.object({
   version: z.number().default(0),
   days: z.number().default(0),
@@ -4088,6 +4097,9 @@ export const PromptQualityVersionMeasuresSchema = z.object({
   measures: PromptQualityMeasuresSchema.default(NO_DATA_MEASURES),
   failure_reasons: z.record(z.string(), z.number()).default({}),
   excluded_failed_runs: z.number().default(0),
+  // D2 drill-down. Optional on the wire so a backend without the field still
+  // parses; absence is not read as "no deductions" anywhere.
+  discipline_deductions: z.array(PromptQualityDeductionSchema).optional(),
 });
 
 // Evidence carries locations and notes only — which tier and section a rule
@@ -4422,3 +4434,98 @@ export const KnowledgeEntrySchema = z.object({
 }).loose();
 
 export const KnowledgeEntryListSchema = z.array(KnowledgeEntrySchema);
+
+// --- Self-evolution workspace overview (RUYI-284) ---
+//
+// One read-only aggregate across the six data planes the tabs serve. Every
+// field defaults rather than rejects, and the defaults are the honest ones:
+// zero counts, an unmeasured window (no_data measures, never a fabricated 0%),
+// and a quiz verdict of "insufficient" — the branch that claims nothing.
+
+const SelfEvolutionOverviewTierSchema = z.object({
+  scope: z.string().default(""),
+  version_count: z.number().default(0),
+  subject_count: z.number().default(0),
+  current_version: z.number().optional(),
+  last_change_at: z.string().optional(),
+  last_actor: z.string().optional(),
+});
+
+const SelfEvolutionOverviewQuizSchema = z.object({
+  scope_id: z.string().optional(),
+  scope_name: z.string().optional(),
+  current_version: z.number().optional(),
+  baseline_version: z.number().optional(),
+  verdict: z.string().default("insufficient"),
+  measured: z.boolean().default(false),
+  required_sample: z.number().default(0),
+  required_baseline: z.number().default(0),
+  last_measured_at: z.string().optional(),
+});
+
+const SelfEvolutionOverviewScanSchema = z.object({
+  result: z.string().default(""),
+  trigger_source: z.string().default(""),
+  started_at: z.string().default(""),
+});
+
+const SelfEvolutionOverviewKnowledgeSchema = z.object({
+  dirs: z.number().default(0),
+  entries: z.number().default(0),
+  last_scan: SelfEvolutionOverviewScanSchema.optional(),
+});
+
+const SelfEvolutionOverviewSkillsSchema = z.object({
+  count: z.number().default(0),
+  invocations: z.number().default(0),
+});
+
+export const SelfEvolutionOverviewSchema = z.object({
+  versions: z.array(SelfEvolutionOverviewTierSchema).default([]),
+  quality: z
+    .object({
+      since: z.string().default(""),
+      days: z.number().default(0),
+      runs: z.number().default(0),
+      subjects_measured: z.number().default(0),
+      measures: PromptQualityMeasuresSchema.default(NO_DATA_MEASURES),
+      excluded_failed_runs: z.number().default(0),
+    })
+    .default({
+      since: "",
+      days: 0,
+      runs: 0,
+      subjects_measured: 0,
+      measures: NO_DATA_MEASURES,
+      excluded_failed_runs: 0,
+    }),
+  // `.default()` takes the section's parsed output, so each fallback is the
+  // full object — a section that arrives as null parses into its own honest
+  // zero, never a missing field.
+  quiz: SelfEvolutionOverviewQuizSchema.default({
+    verdict: "insufficient",
+    measured: false,
+    required_sample: 0,
+    required_baseline: 0,
+  }),
+  knowledge: SelfEvolutionOverviewKnowledgeSchema.default({ dirs: 0, entries: 0 }),
+  skills: SelfEvolutionOverviewSkillsSchema.default({ count: 0, invocations: 0 }),
+});
+
+// The fallback for a response that did not parse: no tier rows, an unmeasured
+// window, no quiz scope, an empty mirror and no skills. None of
+// these may arrive as a zero pretending to be a reading.
+export const EMPTY_SELF_EVOLUTION_OVERVIEW: SelfEvolutionOverview = {
+  versions: [],
+  quality: {
+    since: "",
+    days: 0,
+    runs: 0,
+    subjects_measured: 0,
+    measures: NO_DATA_MEASURES,
+    excluded_failed_runs: 0,
+  },
+  quiz: { verdict: "insufficient", measured: false, required_sample: 0, required_baseline: 0 },
+  knowledge: { dirs: 0, entries: 0 },
+  skills: { count: 0, invocations: 0 },
+};

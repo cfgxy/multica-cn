@@ -352,6 +352,29 @@ FAIL_DROP=1 dev_env destroy drop-fails-904 --yes > "$out" 2>&1 || status=$?
 require_contains "$out" "manifest and slot were kept"
 dev_env destroy drop-fails-904 --yes > "$out" 2>&1 || fail "retrying destroy after database recovery failed"
 
+# A vanished checkout leaves no env file to cross-check against; the registry
+# manifest is then the only record of the database, and destroy must still drop
+# it and release the slot. gc collects exactly these orphans, so a refusal here
+# would wedge every directory-gone environment (and `dev_env gc`) forever.
+write_manifest "orphan-destroy-906" "$tmp_dir/vanished-checkout" 906
+dev_env destroy orphan-destroy-906 --yes > "$out" 2>&1 \
+  || fail "destroy of a directory-gone environment must succeed"
+[ -f "$MULTICA_DEV_HOME/envs/orphan-destroy-906/manifest.env" ] \
+  && fail "destroy of a directory-gone environment must consume the manifest"
+
+# The boundary of that exception: when the checkout EXISTS and its env file
+# names a different database than the manifest, the drop stays refused.
+write_manifest "mismatch-907" "$tmp_dir/mismatch-checkout" 907
+mkdir -p "$tmp_dir/mismatch-checkout"
+printf 'POSTGRES_DB=multica_some_other_db\nDATABASE_URL=postgres://multica:multica@localhost:5432/multica_some_other_db?sslmode=disable\n' \
+  > "$tmp_dir/mismatch-checkout/.env.example"
+status=0
+dev_env destroy mismatch-907 --yes > "$out" 2>&1 || status=$?
+[ "$status" -ne 0 ] || fail "destroy must refuse the drop when the env file names another database"
+[ -f "$MULTICA_DEV_HOME/envs/mismatch-907/manifest.env" ] \
+  || fail "a refused drop must keep the manifest"
+require_contains "$out" "refusing to drop database"
+
 # ---------------------------------------------------------------------------
 # destroy consumes the manifest: the slot is free afterwards, which is what
 # makes the registry an allocator rather than a second place to leak.
@@ -516,5 +539,111 @@ if grep -Fq "main checkout" "$out"; then
   fail "the gate fired in a worktree: $(cat "$out")"
 fi
 require_contains "$out" "Unknown component"
+
+# --- QA-checkout policy (2026-09-30 incident) -------------------------------
+#
+# Envs registered inside the QA root (~/.multica/qa, sibling of the dev home)
+# must be disposable: `up` defaults them to a TTL and `gc` collects ttl-less
+# ones past the policy age. The incident this guards: three QA dev stacks ran
+# for half a day after their sessions ended because OWNER=human TTL_HOURS=0
+# meant never-collected.
+
+# The policy decision is one function; unit-test it directly (dev-env.sh is
+# source-safe — main runs only when executed).
+qa_ttl_probe="$tmp_dir/qa-ttl-probe.sh"
+cat > "$qa_ttl_probe" <<PROBE
+export MULTICA_DEV_HOME="$tmp_dir/dev"
+source "$root_dir/scripts/dev-env.sh"
+printf '%s %s %s\n' \
+  "\$(qa_default_ttl_for "$tmp_dir/qa/ruyi-900/wt")" \
+  "\$(qa_default_ttl_for "$tmp_dir/elsewhere")" \
+  "\$(qa_default_ttl_for "")"
+PROBE
+qa_ttl_out="$(bash "$qa_ttl_probe" 2>&1)" \
+  || fail "sourcing dev-env.sh for qa_default_ttl_for failed: $qa_ttl_out"
+[ "$qa_ttl_out" = "24 0 0" ] || fail "qa_default_ttl_for default wrong: $qa_ttl_out (want: QA root -> 24, elsewhere -> 0)"
+
+cat > "$qa_ttl_probe" <<PROBE
+export MULTICA_DEV_HOME="$tmp_dir/dev" MULTICA_DEV_QA_TTL_HOURS=8
+source "$root_dir/scripts/dev-env.sh"
+qa_default_ttl_for "$tmp_dir/qa/ruyi-900/wt"
+PROBE
+qa_ttl_override="$(bash "$qa_ttl_probe" 2>&1)" \
+  || fail "qa_default_ttl_for with MULTICA_DEV_QA_TTL_HOURS failed"
+[ "$qa_ttl_override" = "8" ] || fail "MULTICA_DEV_QA_TTL_HOURS override wrong: $qa_ttl_override"
+
+# Manifest helper with a controlled CREATED_AT (the shared write_manifest_*
+# helpers hardcode 2026-01-01).
+write_qa_manifest() {
+  local name=$1 dir=$2 offset=$3 created=$4
+  local db="multica_qa_gc_$offset" profile="dev-qa-gc-$offset"
+  mkdir -p "$dir"
+  cat > "$dir/.env.worktree" <<EOF
+POSTGRES_DB=$db
+POSTGRES_USER=multica
+DATABASE_URL=postgres://multica:multica@localhost:5432/$db?sslmode=disable
+EOF
+  mkdir -p "$MULTICA_DEV_HOME/envs/$name/logs"
+  cat > "$MULTICA_DEV_HOME/envs/$name/manifest.env" <<EOF
+NAME=$name
+DIR=$(printf '%q' "$dir")
+CREATED_AT=$created
+OWNER=human
+TTL_HOURS=0
+ENV_FILE=.env.worktree
+OFFSET=$offset
+BACKEND_PORT=$((18080 + offset))
+FRONTEND_PORT=$((13000 + offset))
+DB_NAME=$db
+DATABASE_URL=postgres://multica:multica@localhost:5432/$db?sslmode=disable
+PROFILE=$profile
+WORKSPACES_ROOT=$(printf '%q' "$MULTICA_DEV_WORKSPACES_PARENT/multica_workspaces_$profile")
+DESKTOP_RENDERER_PORT=$((5174 + offset))
+DESKTOP_APP_SUFFIX=$name
+EOF
+}
+
+qa_root="$tmp_dir/qa"
+qa_expired_dir="$qa_root/ruyi-900/wt"
+qa_fresh_dir="$qa_root/ruyi-901/wt"
+human_old_dir="$tmp_dir/human-checkout-903"
+write_qa_manifest qa-gc-expired "$qa_expired_dir" 901 2026-01-01T00:00:00Z
+write_qa_manifest qa-gc-fresh "$qa_fresh_dir" 902 "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+write_qa_manifest human-old-env "$human_old_dir" 903 2026-01-01T00:00:00Z
+
+dev_env gc --dry-run > "$out" 2>&1 || fail "gc --dry-run must succeed"
+require_contains "$out" "qa-gc-expired"
+require_contains "$out" "QA-checkout env with no ttl"
+if grep -Fq "qa-gc-fresh" "$out"; then
+  fail "gc must not collect a QA env inside its ttl"
+fi
+if grep -Fq "human-old-env" "$out"; then
+  fail "gc must not collect a ttl-less env outside the QA root"
+fi
+
+dev_env gc > "$out" 2>&1 || fail "gc must succeed"
+[ -f "$MULTICA_DEV_HOME/envs/qa-gc-expired/manifest.env" ] \
+  && fail "gc must consume the expired QA env's manifest"
+[ -f "$MULTICA_DEV_HOME/envs/qa-gc-fresh/manifest.env" ] \
+  || fail "gc must keep the in-ttl QA env's manifest"
+[ -f "$MULTICA_DEV_HOME/envs/human-old-env/manifest.env" ] \
+  || fail "gc must keep a ttl-less env outside the QA root"
+
+# qa-clean.sh: dry run reports, --yes --issue destroys only the scoped env.
+qa_clean_dir="$qa_root/ruyi-905/wt"
+write_qa_manifest qa-clean-target "$qa_clean_dir" 905 2026-01-01T00:00:00Z
+bash "$root_dir/scripts/qa-clean.sh" > "$out" 2>&1 || fail "qa-clean dry run must succeed"
+require_contains "$out" "dry run"
+require_contains "$out" "would destroy environment qa-clean-target"
+[ -f "$MULTICA_DEV_HOME/envs/qa-clean-target/manifest.env" ] \
+  || fail "qa-clean dry run must not destroy anything"
+
+bash "$root_dir/scripts/qa-clean.sh" --issue ruyi-905 --yes > "$out" 2>&1 \
+  || fail "qa-clean --yes --issue must succeed"
+require_contains "$out" "destroyed environment qa-clean-target"
+[ -f "$MULTICA_DEV_HOME/envs/qa-clean-target/manifest.env" ] \
+  && fail "qa-clean --yes must consume the scoped env's manifest"
+[ -f "$MULTICA_DEV_HOME/envs/qa-gc-fresh/manifest.env" ] \
+  || fail "qa-clean --issue must not touch envs of other issues"
 
 echo "✓ dev-env.sh registry behaviour verified"

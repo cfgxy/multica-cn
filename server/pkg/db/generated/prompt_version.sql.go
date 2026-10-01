@@ -200,6 +200,44 @@ func (q *Queries) InsertPromptVersionBaselineIfAbsent(ctx context.Context, arg I
 	return err
 }
 
+const latestPromptVersionActorByScope = `-- name: LatestPromptVersionActorByScope :many
+SELECT DISTINCT ON (v.scope) v.scope, u.name AS actor_name, v.created_at
+FROM prompt_version v
+LEFT JOIN "user" u ON u.id = v.author_user_id
+WHERE v.workspace_id = $1
+ORDER BY v.scope, v.created_at DESC
+`
+
+type LatestPromptVersionActorByScopeRow struct {
+	Scope     string             `json:"scope"`
+	ActorName pgtype.Text        `json:"actor_name"`
+	CreatedAt pgtype.Timestamptz `json:"created_at"`
+}
+
+// Overview read path (RUYI-284): who made each tier's most recent change.
+// DISTINCT ON because a tier's newest row is not necessarily its highest
+// version — activating an older version appends a new row, and "most recent
+// change" is an ordering over created_at, not over version numbers.
+func (q *Queries) LatestPromptVersionActorByScope(ctx context.Context, workspaceID pgtype.UUID) ([]LatestPromptVersionActorByScopeRow, error) {
+	rows, err := q.db.Query(ctx, latestPromptVersionActorByScope, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []LatestPromptVersionActorByScopeRow{}
+	for rows.Next() {
+		var i LatestPromptVersionActorByScopeRow
+		if err := rows.Scan(&i.Scope, &i.ActorName, &i.CreatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listPromptVersions = `-- name: ListPromptVersions :many
 SELECT id, workspace_id, scope, scope_id, version, content, content_sha256, source, source_version, change_note, scanner_revision, gate_result, author_user_id, author_note_issue_id, created_at FROM prompt_version
 WHERE scope = $1 AND scope_id = $2
@@ -388,6 +426,56 @@ type SetAgentTaskQueuePromptVersionsParams struct {
 func (q *Queries) SetAgentTaskQueuePromptVersions(ctx context.Context, arg SetAgentTaskQueuePromptVersionsParams) error {
 	_, err := q.db.Exec(ctx, setAgentTaskQueuePromptVersions, arg.ID, arg.PromptVersions)
 	return err
+}
+
+const summarizePromptVersionsByWorkspace = `-- name: SummarizePromptVersionsByWorkspace :many
+SELECT scope,
+       count(*) AS version_count,
+       count(DISTINCT scope_id) AS subject_count,
+       max(version)::int AS max_version,
+       max(created_at)::timestamptz AS last_change_at
+FROM prompt_version
+WHERE workspace_id = $1
+GROUP BY scope
+ORDER BY scope
+`
+
+type SummarizePromptVersionsByWorkspaceRow struct {
+	Scope        string             `json:"scope"`
+	VersionCount int64              `json:"version_count"`
+	SubjectCount int64              `json:"subject_count"`
+	MaxVersion   int32              `json:"max_version"`
+	LastChangeAt pgtype.Timestamptz `json:"last_change_at"`
+}
+
+// Overview read path (RUYI-284): per-tier version activity for the whole
+// workspace in one pass. subject_count matters: "current version" is only a
+// well-defined number when the tier has a single subject, so the caller
+// presents max_version as "highest version in the tier" otherwise.
+func (q *Queries) SummarizePromptVersionsByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]SummarizePromptVersionsByWorkspaceRow, error) {
+	rows, err := q.db.Query(ctx, summarizePromptVersionsByWorkspace, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SummarizePromptVersionsByWorkspaceRow{}
+	for rows.Next() {
+		var i SummarizePromptVersionsByWorkspaceRow
+		if err := rows.Scan(
+			&i.Scope,
+			&i.VersionCount,
+			&i.SubjectCount,
+			&i.MaxVersion,
+			&i.LastChangeAt,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
 }
 
 const updateAgentInstructionsForPromptVersion = `-- name: UpdateAgentInstructionsForPromptVersion :one

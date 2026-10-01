@@ -1,10 +1,6 @@
 {
   "title": "自进化",
   "description": "查看智能体与小队 prompt 随时间的变化，以及变化的来源。",
-  "empty": {
-    "title": "尚未接入数据",
-    "description": "这是 prompt 治理总览的导航骨架（RUYI-183 阶段一）。版本历史、diff 与采用情况视图将在后续阶段交付。"
-  },
   "tabs": {
     "overview": "总览",
     "quality": "质量",
@@ -13,6 +9,53 @@
     "proposals": "提案池",
     "knowledge": "知识库",
     "versions": "版本"
+  },
+  "overview": {
+    "loading": "正在加载总览",
+    "error": "总览加载失败",
+    "retry": "重试",
+    "versions": {
+      "title": "Prompt 版本活动",
+      "empty": "各层级暂无版本记录。",
+      "currentVersion": "当前 v{{version}}",
+      "currentUnset": "{{count}} 个对象各自推进",
+      "count": "{{count}} 个版本 / {{subjects}} 个对象",
+      "lastChange": "{{date}} · {{actor}}",
+      "lastChangeNoActor": "{{date}}"
+    },
+    "quality": {
+      "title": "质量读数（最近 {{days}} 天）",
+      "empty": "窗口内没有任何已度量的运行。",
+      "runs": "{{count}} 次运行",
+      "subjects": "{{count}} 个智能体有读数",
+      "excluded": "已剔除 {{count}} 次环境或供应商故障"
+    },
+    "quiz": {
+      "title": "题库测验结论",
+      "empty": "尚无任何已记录的测量。",
+      "versions": "基线 v{{baseline}} → v{{current}}",
+      "singleVersion": "当前 v{{current}}（首个版本，暂无基线）",
+      "insufficientSample": "样本不足（基线需 {{baseline}}、当前需 {{current}} 条可用读数）",
+      "lastMeasured": "最近测量 {{date}}"
+    },
+    "proposals": {
+      "title": "提案池动态",
+      "pendingModel": "提案指标将随新提案模型（RUYI-305）落地后接入。"
+    },
+    "knowledge": {
+      "title": "知识库沉淀",
+      "empty": "暂无注册目录。",
+      "dirs": "{{count}} 个目录",
+      "entries": "{{count}} 条条目",
+      "lastScan": "最近扫描：{{result}} · {{date}}",
+      "neverScanned": "尚未扫描"
+    },
+    "skills": {
+      "title": "Skill 观测",
+      "empty": "暂无注册 skill。",
+      "count": "共 {{count}} 个 skill",
+      "invocations": "累计显式调用 {{count}} 次"
+    }
   },
   "skills": {
     "choose": "选择 skill",
@@ -172,7 +215,9 @@
         "no_reviewed_issues": "该窗口内没有 Issue 进入评审。",
         "below_sample_floor": "运行数低于声明阈值。",
         "unknown": "服务端未说明原因。"
-      }
+      },
+      "coverage": "{{total}} 次运行中可评 {{covered}} 次",
+      "deductions": "扣分明细（{{count}}）"
     },
     "perplexity": {
       "title": "D3 规则困惑度",
@@ -315,6 +360,10 @@
       "lesson": "经验教训",
       "pitfall": "已知陷阱"
     },
+    "source": {
+      "system": "系统",
+      "member": "成员"
+    },
     "create": "新建提案",
     "createTitle": "新建提案",
     "createDescription": "预言在创建时写入且此后不可改；数量型提案需给出指标、方向与数值区间，行为型提案需给出可观察变化与证伪条件。",
@@ -348,6 +397,8 @@
     },
     "createdAt": "创建于 {{date}}",
     "transferError": "知识转移失败：{{error}}",
+    "transferring": "转移中",
+    "transferringNote": "已排队采纳——正在后台转移到知识总库，完成后此行自动更新。",
     "adopt": "采纳",
     "reject": "拒绝",
     "restore": "恢复为草稿",
@@ -377,16 +428,16 @@
     }
   },
   "knowledge": {
-    "title": "知识库镜像",
-    "description": "候选 bd memories 目录以只读方式镜像；唯一写路径是 Owner 采纳后转移到最终权威库。",
+    "title": "知识库",
+    "description": "自动发现或手动添加的 bd memories 目录以只读方式镜像；Owner 采纳后由后台转移到知识总库。",
     "register": "注册目录",
     "registerTitle": "注册知识目录",
-    "registerDescription": "注册即执行首次只读扫描。最终权威库另行指定，不在本表单注册。",
+    "registerDescription": "登记为手动添加的外部来源，首次只读扫描在后台执行。知识总库另行指定，不在此登记。",
     "kindLabel": "目录类型",
     "kind": {
-      "ultimate": "最终权威库",
-      "candidate_cli": "候选（手动注册）",
-      "candidate_auto": "候选（自动发现）"
+      "ultimate": "知识总库",
+      "candidate_cli": "手动添加",
+      "candidate_auto": "自动发现"
     },
     "pathLabel": "目录路径",
     "labelLabel": "显示名",
@@ -398,6 +449,7 @@
     "entryCount": "{{n}} 条",
     "lastScan": "上次扫描（{{result}}）：新增 {{added}}，更新 {{updated}}，移除 {{removed}}",
     "neverScanned": "尚未扫描",
+    "scanRequested": "扫描待执行",
     "health": {
       "ok": "健康",
       "unhealthy": "异常"
@@ -409,6 +461,8 @@
     },
     "scan": "立即扫描",
     "unregister": "注销",
+    "advancedTitle": "高级：添加外部来源",
+    "advancedDescription": "指向本机上的 bd memories 目录，显示名为可选项。",
     "allDirs": "全部目录",
     "searchPlaceholder": "搜索 key 或内容",
     "mirrorState": {
@@ -418,6 +472,7 @@
     },
     "adoptionState": {
       "pending": "待采纳",
+      "transferring": "转移中",
       "adopted": "已采纳",
       "failed": "采纳失败"
     },
@@ -425,7 +480,7 @@
     "adoptedFrom": "采纳自 {{key}}",
     "emptyDirs": {
       "title": "暂无注册目录",
-      "description": "注册一个候选 bd memories 目录后，其内容会以只读方式镜像到这里。"
+      "description": "已连接的守护进程发现项目自带的 bd memories 后会自动出现在这里；也可以在下方「高级」中手动添加外部来源。"
     },
     "emptyEntries": "当前筛选下没有条目。",
     "error": {

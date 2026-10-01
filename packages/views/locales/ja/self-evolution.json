@@ -1,10 +1,6 @@
 {
   "title": "自己進化",
   "description": "エージェントとスクワッドのプロンプトが時間とともにどう変化したか、その変化の要因を確認します。",
-  "empty": {
-    "title": "まだ接続されていません",
-    "description": "これはプロンプトガバナンス概要のナビゲーション骨組みです（RUYI-183 フェーズ1）。バージョン履歴、差分、採用状況のビューは今後のステージで提供されます。"
-  },
   "tabs": {
     "overview": "概要",
     "quality": "品質",
@@ -13,6 +9,53 @@
     "proposals": "提案",
     "knowledge": "ナレッジ",
     "versions": "バージョン"
+  },
+  "overview": {
+    "loading": "概要を読み込み中",
+    "error": "概要の読み込みに失敗しました",
+    "retry": "再試行",
+    "versions": {
+      "title": "プロンプトバージョン活動",
+      "empty": "どの階層にもバージョン履歴はまだありません。",
+      "currentVersion": "現在 v{{version}}",
+      "currentUnset": "{{count}} 件の対象がそれぞれ前進",
+      "count": "{{subjects}} 対象・全 {{count}} バージョン",
+      "lastChange": "{{date}} · {{actor}}",
+      "lastChangeNoActor": "{{date}}"
+    },
+    "quality": {
+      "title": "品質読み取り（過去 {{days}} 日）",
+      "empty": "この期間に測定されたランはありません。",
+      "runs": "{{count}} ラン",
+      "subjects": "読み取りありエージェント {{count}}",
+      "excluded": "環境またはプロバイダ障害により {{count}} ランを除外"
+    },
+    "quiz": {
+      "title": "問題バンクの結論",
+      "empty": "記録された測定はまだありません。",
+      "versions": "ベースライン v{{baseline}} → v{{current}}",
+      "singleVersion": "現在 v{{current}}（初バージョン、ベースラインなし）",
+      "insufficientSample": "サンプル不足（ベースラインに {{baseline}} 件、現在に {{current}} 件の有効読み取りが必要）",
+      "lastMeasured": "最終測定 {{date}}"
+    },
+    "proposals": {
+      "title": "提案プール",
+      "pendingModel": "提案メトリクスは新しい提案モデル（RUYI-305）の提供後に接続されます。"
+    },
+    "knowledge": {
+      "title": "ナレッジミラー",
+      "empty": "登録ディレクトリはまだありません。",
+      "dirs": "ディレクトリ {{count}} 件",
+      "entries": "エントリ {{count}} 件",
+      "lastScan": "前回スキャン：{{result}} · {{date}}",
+      "neverScanned": "未スキャン"
+    },
+    "skills": {
+      "title": "Skill 観測",
+      "empty": "登録された skill はまだありません。",
+      "count": "skill {{count}} 件",
+      "invocations": "累計明示呼び出し {{count}} 回"
+    }
   },
   "skills": {
     "choose": "skill を選択",
@@ -172,7 +215,9 @@
         "no_reviewed_issues": "この期間にレビューへ進んだ Issue がありません。",
         "below_sample_floor": "実行数が宣言された下限を下回っています。",
         "unknown": "サーバーは理由を示しませんでした。"
-      }
+      },
+      "coverage": "{{total}} 回のうち {{covered}} 回を検査",
+      "deductions": "減点明細（{{count}}）"
     },
     "perplexity": {
       "title": "D3 ルール困惑度",
@@ -315,6 +360,10 @@
       "lesson": "教訓",
       "pitfall": "既知の落とし穴"
     },
+    "source": {
+      "system": "システム",
+      "member": "メンバー"
+    },
     "create": "新規提案",
     "createTitle": "新規提案",
     "createDescription": "予言は作成時に書き込まれ、以降は変更できません。定量的な提案には指標・方向・数値帯が必要で、行動型の提案には観察可能な変化と反証条件が必要です。",
@@ -348,6 +397,8 @@
     },
     "createdAt": "作成 {{date}}",
     "transferError": "知識転送に失敗しました：{{error}}",
+    "transferring": "転送中",
+    "transferringNote": "採用をキューに追加しました——ナレッジハブへの転送はバックグラウンドで実行され、完了後この行は自動的に更新されます。",
     "adopt": "採用",
     "reject": "却下",
     "restore": "ドラフトに戻す",
@@ -377,16 +428,16 @@
     }
   },
   "knowledge": {
-    "title": "ナレッジミラー",
-    "description": "候補の bd memories ディレクトリは読み取り専用でミラーされ、唯一の書き込み経路はオーナーによる最終ライブラリへの採用転送です。",
+    "title": "ナレッジライブラリ",
+    "description": "bd memories ディレクトリは接続済みプロジェクトから自動検出されるか、下から手動追加します。エントリは読み取り専用でミラーされ、採用するとバックグラウンドでナレッジハブへ転送されます。",
     "register": "ディレクトリを登録",
     "registerTitle": "ナレッジディレクトリを登録",
-    "registerDescription": "登録すると最初の読み取り専用スキャンが実行されます。最終ライブラリは別途指定され、このフォームからは登録しません。",
+    "registerDescription": "このパスを手動追加ソースとして登録します。初回の読み取り専用スキャンはバックグラウンドで実行されます。ナレッジハブは別途指定し、ここでは登録しません。",
     "kindLabel": "ディレクトリ種別",
     "kind": {
-      "ultimate": "最終ライブラリ",
-      "candidate_cli": "候補（手動登録）",
-      "candidate_auto": "候補（自動検出）"
+      "ultimate": "ナレッジハブ",
+      "candidate_cli": "手動追加",
+      "candidate_auto": "自動検出"
     },
     "pathLabel": "ディレクトリパス",
     "labelLabel": "表示ラベル",
@@ -398,6 +449,7 @@
     "entryCount": "{{n}} 件",
     "lastScan": "前回スキャン（{{result}}）：追加 {{added}}、更新 {{updated}}、削除 {{removed}}",
     "neverScanned": "未スキャン",
+    "scanRequested": "スキャン待ち",
     "health": {
       "ok": "正常",
       "unhealthy": "異常"
@@ -409,6 +461,8 @@
     },
     "scan": "今すぐスキャン",
     "unregister": "登録解除",
+    "advancedTitle": "詳細：外部ソースを追加",
+    "advancedDescription": "このマシン上の bd memories ディレクトリを指定します。表示名は任意です。",
     "allDirs": "すべてのディレクトリ",
     "searchPlaceholder": "キーまたは内容を検索",
     "mirrorState": {
@@ -418,6 +472,7 @@
     },
     "adoptionState": {
       "pending": "未採用",
+      "transferring": "転送中",
       "adopted": "採用済み",
       "failed": "採用失敗"
     },
@@ -425,7 +480,7 @@
     "adoptedFrom": "{{key}} から採用",
     "emptyDirs": {
       "title": "登録済みディレクトリはありません",
-      "description": "候補の bd memories ディレクトリを登録すると、内容が読み取り専用でミラーされます。"
+      "description": "接続済みデーモンが bd memories を持つプロジェクトを検出すると自動的にここに表示されます。「詳細」から手動追加もできます。"
     },
     "emptyEntries": "現在のフィルターではエントリーがありません。",
     "error": {

@@ -990,6 +990,10 @@ export interface Proposal {
   adoption_snapshot?: Record<string, unknown>;
   verification?: Record<string, unknown>;
   audit_log: unknown[];
+  /** "system" rows are seeded by knowledge auto-discovery (RUYI-289). */
+  created_by_type?: string;
+  /** Non-empty while a knowledge transfer rides the daemon queue. */
+  transfer_state?: string;
   transfer_error?: string;
   created_at: string;
   updated_at: string;
@@ -1033,6 +1037,9 @@ export interface KnowledgeDir {
   health_state: string;
   health_note: string;
   removed: boolean;
+  /** Set on registration or by an explicit rescan request; cleared once the
+   * hosting daemon lands the scan (RUYI-289). */
+  scan_requested?: boolean;
   entry_count: number;
   last_scan?: KnowledgeScanBatch;
   created_at: string;

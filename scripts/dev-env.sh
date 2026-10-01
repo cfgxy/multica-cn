@@ -49,6 +49,22 @@ DEFAULT_COMPONENTS="api web"
 # entry that still names it after a checkout was re-pointed by hand.
 MAIN_DATABASE_NAME="multica"
 
+# QA checkout policy. Directories under ~/.multica/qa (sibling of DEV_HOME) are
+# disposable per-issue verification checkouts that agents create out-of-band.
+# Left unbounded they become archaeology: the 2026-09-30 incident had three QA
+# dev stacks (next-server + Go api) holding ~10 GB RSS for half a day after
+# their sessions ended, because the envs were registered OWNER=human TTL=0 and
+# nothing ever reaped them. Two guards close that:
+#   1. `up` inside a QA checkout defaults the environment to a TTL even without
+#      --ttl, and every `up` slides the expiry forward — a busy env survives,
+#      a forgotten one dies QA_TTL_HOURS after its last use.
+#   2. `gc` also collects QA-checkout envs whose manifest still says
+#      TTL_HOURS=0 once they are older than QA_TTL_HOURS — the backstop for
+#      envs registered before this policy existed. Human main checkouts are
+#      never touched by either guard.
+QA_ROOT="$(dirname "$DEV_HOME")/qa"
+QA_TTL_HOURS="${MULTICA_DEV_QA_TTL_HOURS:-24}"
+
 # An agent runs with TMPDIR=/tmp/multica-task-<id>, deleted when the run ends.
 # Anything the Go toolchain builds there goes with it, so a binary started from
 # such a build stops being re-executable the moment its creator finishes.
@@ -123,6 +139,24 @@ release_lock() { rm -rf "$LOCK_DIR"; }
 
 env_dir()      { printf '%s/%s' "$ENVS_DIR" "$1"; }
 manifest_of()  { printf '%s/%s/manifest.env' "$ENVS_DIR" "$1"; }
+
+# True when $1 lives inside the QA-checkout root (~/.multica/qa). Quoted
+# pattern variables compare literally, so paths with glob metacharacters are
+# safe.
+dir_is_qa_checkout() {
+  [ "${1:-}" = "$QA_ROOT" ] && return 0
+  case "${1:-}" in "$QA_ROOT"/*) return 0 ;; esac
+  return 1
+}
+
+# The ttl an environment in $1 defaults to under the QA-checkout policy
+# (0 = no default: main checkouts stay immortal unless --ttl says otherwise).
+# Extracted so the policy is one decision the tests can call directly; `up`
+# applies it in both the fresh and the reuse branch.
+qa_default_ttl_for() {
+  dir_is_qa_checkout "$1" || { printf '0\n'; return 0; }
+  printf '%s\n' "$QA_TTL_HOURS"
+}
 
 valid_env_name() {
   case "$1" in
@@ -1288,6 +1322,14 @@ Start the rest with 'make up C=api,web', or run 'make up C=daemon' from your own
       TTL_HOURS="$ttl"
       EXPIRES_AT="$(expires_at_after_hours "$ttl")"
       save_manifest
+    elif [ "${TTL_HOURS:-0}" = 0 ] && [ "$(qa_default_ttl_for "$DIR")" != 0 ]; then
+      # QA-checkout policy: slide the default expiry forward on every `up`, so
+      # an env a session keeps using survives while one abandoned after a
+      # single `up` still dies QA_TTL_HOURS later.
+      TTL_HOURS="$QA_TTL_HOURS"
+      EXPIRES_AT="$(expires_at_after_hours "$QA_TTL_HOURS")"
+      save_manifest
+      info "QA checkout without ttl: expires $EXPIRES_AT (${QA_TTL_HOURS}h from now; override with --ttl)"
     fi
     info "Reusing environment $NAME (ports $BACKEND_PORT/$FRONTEND_PORT, database $DB_NAME)"
   else
@@ -1324,8 +1366,12 @@ Start the rest with 'make up C=api,web', or run 'make up C=daemon' from your own
     CREATED_AT="$(now_iso)"
     OWNER="$owner"
     TTL_HOURS="$ttl"
+    if [ "$TTL_HOURS" = 0 ] && [ "$(qa_default_ttl_for "$REPO_ROOT")" != 0 ]; then
+      TTL_HOURS="$QA_TTL_HOURS"
+      info "QA checkout: defaulting ttl to ${QA_TTL_HOURS}h (override with --ttl or MULTICA_DEV_QA_TTL_HOURS)"
+    fi
     EXPIRES_AT=""
-    [ "$ttl" = 0 ] || EXPIRES_AT="$(expires_at_after_hours "$ttl")"
+    [ "$TTL_HOURS" = 0 ] || EXPIRES_AT="$(expires_at_after_hours "$TTL_HOURS")"
     OFFSET="$offset"
     BACKEND_PORT="$PORT"
     DB_NAME="$POSTGRES_DB"
@@ -1412,13 +1458,16 @@ cmd_destroy() {
 
   # Drop only on agreement (see env_file_agrees_on_database) and never the
   # shared main database: it outlives every environment registered against it.
+  # A vanished checkout has no env file to agree with; the registry manifest is
+  # then the only record of the database, and gc collects exactly those
+  # orphans, so its word alone authorizes the drop.
   if [ "$DB_NAME" = "$MAIN_DATABASE_NAME" ]; then
     ok "database $DB_NAME is the shared main database — left in place, never dropped by destroy"
     info "Reset it deliberately with ALLOW_MAIN_DB_DROP=1 make db-reset, or by hand via psql."
   elif ! command -v psql >/dev/null 2>&1; then
     warn "psql not found; $DB_NAME was left in place."
     failures=$((failures + 1))
-  elif env_file_agrees_on_database; then
+  elif env_file_agrees_on_database || [ ! -d "$DIR" ]; then
     admin_url="$(admin_database_url "$DATABASE_URL")"
     if PGCONNECT_TIMEOUT=3 psql "$admin_url" -tAc 'SELECT 1' >/dev/null 2>&1; then
       if psql "$admin_url" -v ON_ERROR_STOP=1 -c "DROP DATABASE IF EXISTS \"$DB_NAME\" WITH (FORCE)" >/dev/null; then
@@ -1562,6 +1611,16 @@ cmd_gc() {
           [ "$age_hours" -lt "$TTL_HOURS" ] || reason="it expired ${age_hours}h after a ${TTL_HOURS}h ttl"
         fi
       fi
+      # Backstop for QA checkouts registered before the default-TTL policy:
+      # an env with no TTL whose directory sits under the QA root still ages
+      # out, so a forgotten verification stack cannot live forever. Main
+      # checkouts (and any directory outside the QA root) keep TTL_HOURS=0
+      # meaning never-collected.
+      if [ -z "$reason" ] && [ "${TTL_HOURS:-0}" = 0 ] && dir_is_qa_checkout "$DIR"; then
+        created_epoch="$(node -e 'process.stdout.write(String(Math.floor(Date.parse(process.argv[1]) / 1000)))' "$CREATED_AT" 2>/dev/null || echo 0)"
+        age_hours=$(( ($(now_epoch) - created_epoch) / 3600 ))
+        [ "$age_hours" -lt "$QA_TTL_HOURS" ] || reason="it is a QA-checkout env with no ttl, ${age_hours}h after creation (policy: ${QA_TTL_HOURS}h)"
+      fi
       [ -n "$reason" ] || exit 0
       if [ "$dry_run" = 1 ]; then
         printf '%s would be collected: %s\n' "$NAME" "$reason"
@@ -1618,6 +1677,12 @@ desktop (Electron). Anything selected implies api.
 
 down keeps the database, the CLI profile and the allocated slot.
 destroy consumes them.
+
+QA checkouts (~/.multica/qa/*): `up` defaults their ttl to
+${QA_TTL_HOURS}h and slides it on every `up`; `gc` also collects
+ttl-less QA envs older than ${QA_TTL_HOURS}h. Override with
+MULTICA_DEV_QA_TTL_HOURS or --ttl. Sweep leftovers with
+scripts/qa-clean.sh (make qa-clean).
 EOF
 }
 
