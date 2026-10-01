@@ -287,13 +287,13 @@ func (h *Handler) RetryTask(w http.ResponseWriter, r *http.Request) {
 	task, created, err := h.TaskService.RetryRun(r.Context(), issue.ID, taskID, actorUserID, canInvoke)
 	switch {
 	case errors.Is(err, service.ErrRetrySourceNotFinished):
-		writeError(w, http.StatusConflict, "retry_source_not_finished: source run has not finished")
+		writeErrorCode(w, http.StatusConflict, "retry_source_not_finished", "retry_source_not_finished: source run has not finished")
 		return
 	case errors.Is(err, service.ErrRetryDescendantActive):
-		writeError(w, http.StatusConflict, "retry_descendant_active: source run already has an unfinished retry")
+		writeErrorCode(w, http.StatusConflict, "retry_descendant_active", "retry_descendant_active: source run already has an unfinished retry")
 		return
 	case errors.Is(err, service.ErrRetryAgentHasQueuedRun):
-		writeError(w, http.StatusConflict, "agent_already_queued: the agent already has an unfinished run on this issue")
+		writeErrorCode(w, http.StatusConflict, "agent_already_queued", "agent_already_queued: the agent already has an unfinished run on this issue")
 		return
 	case errors.Is(err, service.ErrRerunInvokeNotAllowed):
 		h.writeDispatchBlocked(w, http.StatusForbidden, ReasonInvocationNotAllowed)

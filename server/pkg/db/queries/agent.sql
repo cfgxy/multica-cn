@@ -2986,20 +2986,29 @@ LIMIT 1;
 -- name: ListRunAncestry :many
 -- RUYI-292 full ancestor chain of a run, following BOTH lineage columns so a
 -- mixed manual-retry / system-retry chain stays visible (MUL-4302 §5 keeps the
--- columns distinct; the read unions them). Depth is bounded in practice — each
--- run points at one parent — and the recursive CTE walks to the root.
+-- columns distinct; the read unions them). Each recursion step walks from a
+-- chain node to that node's OWN parent row (rerun_of preferred, retry_of
+-- fallback; NULL at the root ends the walk), so the chain reads parent-ward
+-- from the requested run. Depth is bounded in practice — each run points at
+-- one parent.
 WITH RECURSIVE ancestry AS (
-    SELECT root.id AS ancestor_id FROM agent_task_queue root WHERE root.id = $1
+    SELECT root.id AS node_id,
+           CASE
+               WHEN root.rerun_of_task_id IS NOT NULL THEN root.rerun_of_task_id
+               ELSE root.retry_of_task_id
+           END AS next_ancestor_id
+    FROM agent_task_queue root WHERE root.id = $1
     UNION
-    SELECT CASE
-               WHEN t.rerun_of_task_id IS NOT NULL THEN t.rerun_of_task_id
-               ELSE t.retry_of_task_id
-           END AS ancestor_id
-    FROM agent_task_queue t
-    JOIN ancestry a ON t.rerun_of_task_id = a.ancestor_id OR t.retry_of_task_id = a.ancestor_id
+    SELECT parent.id AS node_id,
+           CASE
+               WHEN parent.rerun_of_task_id IS NOT NULL THEN parent.rerun_of_task_id
+               ELSE parent.retry_of_task_id
+           END AS next_ancestor_id
+    FROM agent_task_queue parent
+    JOIN ancestry a ON parent.id = a.next_ancestor_id
 )
 SELECT t.* FROM agent_task_queue t
-JOIN ancestry a ON t.id = a.ancestor_id
+JOIN ancestry a ON t.id = a.node_id
 ORDER BY t.created_at ASC;
 
 -- name: ListRunDescendants :many
