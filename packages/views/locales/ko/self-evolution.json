@@ -122,7 +122,23 @@
       "revision": "제안 수정",
       "edit": "편집",
       "restore": "복원"
-    }
+    },
+    "catalogSearchLabel": "검색",
+    "catalogSearchPlaceholder": "이름으로 스킬 검색",
+    "catalogSourceFilter": "소스",
+    "catalogSourceAll": "모든 소스",
+    "catalogSourceWorkspace": "워크스페이스",
+    "catalogSourceRuntime": "런타임",
+    "catalogSourcePlugin": "플러그인",
+    "catalogSelectableHint": "선택 가능한 항목은 이 워크스페이스에 가져온 스킬입니다. 아래 런타임/플러그인 발견 항목은 표시만 되며 가져온 후에 선택할 수 있습니다.",
+    "catalogNoMatch": "현재 검색 또는 소스 필터와 일치하는 발견 항목이 없습니다.",
+    "discoveriesTitle": "런타임에서 발견",
+    "discoveryImport": "가져오기",
+    "discoveryImporting": "가져오는 중…",
+    "discoveryExists": "스킬 등록됨",
+    "discoveryLastSeen": "마지막 발견 {{date}}",
+    "discoveryImportedToast": "스킬을 가져왔습니다. 이제 자체 버전 기록과 함께 선택할 수 있습니다.",
+    "discoveryImportFailedToast": "가져오기에 실패했습니다. 런타임 연결을 확인한 후 다시 시도하세요."
   },
   "quality": {
     "scopePicker": {
