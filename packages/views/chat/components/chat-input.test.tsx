@@ -2,6 +2,7 @@ import { cloneElement, forwardRef, useEffect, useRef, useImperativeHandle } from
 import { beforeEach, describe, it, expect, vi } from "vitest";
 import { act, render, screen, fireEvent, waitFor } from "@testing-library/react";
 import { I18nProvider } from "@multica/core/i18n/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { UploadResult } from "@multica/core/hooks/use-file-upload";
 import type { DraftUpload } from "@multica/core/drafts";
 import enCommon from "../../locales/en/common.json";
@@ -363,7 +364,9 @@ function renderInput(props: Partial<React.ComponentProps<typeof ChatInput>> = {}
   const onSend = props.onSend ?? vi.fn();
   const view = render(
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
-      <ChatInput onSend={onSend} uploadEnabled agentName="Multica" {...props} />
+      <QueryClientProvider client={new QueryClient()}>
+        <ChatInput onSend={onSend} uploadEnabled agentName="Multica" {...props} />
+      </QueryClientProvider>
     </I18nProvider>,
   );
   return { onSend, ...view };
@@ -372,7 +375,9 @@ function renderInput(props: Partial<React.ComponentProps<typeof ChatInput>> = {}
 function element(props: Partial<React.ComponentProps<typeof ChatInput>>) {
   return (
     <I18nProvider locale="en" resources={TEST_RESOURCES}>
-      <ChatInput onSend={vi.fn()} uploadEnabled agentName="Multica" {...props} />
+      <QueryClientProvider client={new QueryClient()}>
+        <ChatInput onSend={vi.fn()} uploadEnabled agentName="Multica" {...props} />
+      </QueryClientProvider>
     </I18nProvider>
   );
 }
@@ -470,28 +475,16 @@ describe("ChatInput new-chat draft identity", () => {
 
 describe("ChatInput focusRequest", () => {
   it("focuses the editor when focusRequest becomes a non-zero value (new chat)", () => {
-    const { rerender } = render(
-      <I18nProvider locale="en" resources={TEST_RESOURCES}>
-        <ChatInput onSend={vi.fn()} agentName="Multica" focusRequest={0} />
-      </I18nProvider>,
-    );
+    const { rerender } = render(element({ focusRequest: 0 }));
     // The inert initial value must not steal focus (e.g. a plain deep-link open).
     expect(editorState.focused).toBe(0);
 
     // Starting a new chat bumps the nonce — the compose box grabs focus.
-    rerender(
-      <I18nProvider locale="en" resources={TEST_RESOURCES}>
-        <ChatInput onSend={vi.fn()} agentName="Multica" focusRequest={1} />
-      </I18nProvider>,
-    );
+    rerender(element({ focusRequest: 1 }));
     expect(editorState.focused).toBe(1);
 
     // Each subsequent new chat re-focuses.
-    rerender(
-      <I18nProvider locale="en" resources={TEST_RESOURCES}>
-        <ChatInput onSend={vi.fn()} agentName="Multica" focusRequest={2} />
-      </I18nProvider>,
-    );
+    rerender(element({ focusRequest: 2 }));
     expect(editorState.focused).toBe(2);
   });
 
