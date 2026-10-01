@@ -46,6 +46,13 @@ FOR UPDATE;
 SELECT * FROM agent_runtime
 WHERE id = $1 AND workspace_id = $2;
 
+-- name: ListOnlineRuntimesByWorkspace :many
+-- Workspace-scoped online runtimes, freshest heartbeat first. The skill
+-- catalog sync fans a discovery request out to each of these (RUYI-288).
+SELECT id, provider FROM agent_runtime
+WHERE workspace_id = $1 AND status = 'online'
+ORDER BY last_seen_at DESC;
+
 -- name: UpsertAgentRuntime :one
 -- (xmax = 0) AS inserted distinguishes a fresh insert (true) from an upsert
 -- that updated an existing row (false). Analytics reads this to fire

@@ -44,6 +44,7 @@ export type {
   UpdateAgentEnvRequest,
   Skill,
   SkillSummary,
+  SkillCatalogEntry,
   AgentSkillSummary,
   DisabledRuntimeSkill,
   SetAgentRuntimeSkillEnabledRequest,
@@ -151,8 +152,15 @@ export type {
   PromptQuizSummary,
   PromptQuizComparison,
   PromptQuizBaseline,
+  PromptQuizItemScore,
+  PromptQuizScoreSummary,
+  PromptQuizSampleRow,
   CreatePromptQuizItemRequest,
   UpdatePromptQuizItemRequest,
+  CreatePromptQuizBatchRequest,
+  PromptQuizBatchCreateResponse,
+  PromptQuizBatchResponse,
+  PromptQuizBankImportResponse,
 } from "./prompt-quiz";
 export type {
   PromptGovernanceVersion,

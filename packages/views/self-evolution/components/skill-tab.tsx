@@ -1,8 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { RotateCcw } from "lucide-react";
+import { toast } from "sonner";
 import { useWorkspacePaths } from "@multica/core/paths";
 import {
   skillEffectOptions,
@@ -11,11 +12,12 @@ import {
   skillVersionsOptions,
   useRestoreSkillVersion,
 } from "@multica/core/self-evolution";
-import { skillListOptions } from "@multica/core/workspace/queries";
-import type { SkillVersionSummary } from "@multica/core/types";
+import { skillCatalogOptions, skillListOptions } from "@multica/core/workspace/queries";
+import type { SkillCatalogEntry, SkillVersionSummary } from "@multica/core/types";
 import { Badge } from "@multica/ui/components/ui/badge";
 import { Button } from "@multica/ui/components/ui/button";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@multica/ui/components/ui/alert-dialog";
+import { Input } from "@multica/ui/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@multica/ui/components/ui/select";
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@multica/ui/components/ui/sheet";
 import { Skeleton } from "@multica/ui/components/ui/skeleton";
@@ -23,6 +25,7 @@ import { Tooltip, TooltipContent, TooltipTrigger } from "@multica/ui/components/
 import { useT, useLocale } from "../../i18n";
 import { AppLink } from "../../navigation";
 import { PromptDiffView } from "../../market/prompt-diff-view";
+import { useCatalogSkillImport } from "../../skills/lib/use-catalog-skill-import";
 
 export function SkillTab({ wsId }: { wsId: string }) {
   const { t } = useT("self-evolution");
@@ -32,7 +35,11 @@ export function SkillTab({ wsId }: { wsId: string }) {
   const [selectedVersion, setSelectedVersion] = useState<number | null>(null);
   const [comparisonVersion, setComparisonVersion] = useState<number | null>(null);
   const [confirmRestore, setConfirmRestore] = useState(false);
+  const [search, setSearch] = useState("");
+  const [sourceFilter, setSourceFilter] = useState("all");
   const skills = useQuery(skillListOptions(wsId));
+  const catalog = useQuery(skillCatalogOptions(wsId));
+  const { importSkill, importingKey } = useCatalogSkillImport(wsId);
   const currentId = selectedId || skills.data?.[0]?.id || "";
   const currentSkill = skills.data?.find((s) => s.id === currentId);
   const versions = useQuery(skillVersionsOptions(wsId, currentId));
@@ -47,6 +54,49 @@ export function SkillTab({ wsId }: { wsId: string }) {
     ? comparisonVersion : olderVersions[0]?.version;
   const currentUsage = usage.data?.versions.find((v) => v.version === latestVersion);
   const baselineUsage = usage.data?.versions.find((v) => v.version === baselineVersion);
+
+  // Catalog-derived classification (RUYI-288): source badges for authored
+  // skills, plus the not-yet-imported runtime sightings. Authored skills
+  // stay the only selector options — versions and quality comparisons key
+  // off real skill rows; sightings join them through import.
+  const catalogSourceLabel = (source: string) => {
+    switch (source) {
+      case "workspace": return t(($) => $.skills.catalogSourceWorkspace);
+      case "runtime": return t(($) => $.skills.catalogSourceRuntime);
+      case "plugin": return t(($) => $.skills.catalogSourcePlugin);
+      default: return source;
+    }
+  };
+  const authoredSource = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const entry of catalog.data ?? []) {
+      if (entry.kind === "skill") map.set(entry.id ?? "", entry.source);
+    }
+    return map;
+  }, [catalog.data]);
+  const currentSourceLabel = useMemo(() => {
+    const source = authoredSource.get(currentId) ?? "workspace";
+    return source === "workspace" ? "" : catalogSourceLabel(source);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [authoredSource, currentId, t]);
+  const discoveries = useMemo(
+    () => (catalog.data ?? []).filter(
+      (e): e is SkillCatalogEntry & { runtime_id: string; key: string } =>
+        e.kind === "discovery" && !!e.runtime_id && !!e.key,
+    ),
+    [catalog.data],
+  );
+  const trimmedSearch = search.trim().toLowerCase();
+  const matchesSearch = (name: string) =>
+    !trimmedSearch || name.toLowerCase().includes(trimmedSearch);
+  const matchesSource = (source: string) =>
+    sourceFilter === "all" || source === sourceFilter;
+  const selectableSkills = (skills.data ?? []).filter(
+    (s) => matchesSearch(s.name) && matchesSource(authoredSource.get(s.id) ?? "workspace"),
+  );
+  const visibleDiscoveries = discoveries.filter(
+    (d) => matchesSearch(d.name) && matchesSource("runtime"),
+  );
   const sourceLabel = (source: string) => {
     switch (source) {
       case "create": return t(($) => $.skills.sources.create);
@@ -63,29 +113,73 @@ export function SkillTab({ wsId }: { wsId: string }) {
       default: return t(($) => $.skills.windowModeDays, { days });
     }
   };
+  const handleImport = async (entry: SkillCatalogEntry) => {
+    try {
+      await importSkill(entry);
+      toast.success(t(($) => $.skills.discoveryImportedToast));
+    } catch {
+      toast.error(t(($) => $.skills.discoveryImportFailedToast));
+    }
+  };
 
   if (skills.isPending) return <div className="space-y-4"><Skeleton className="h-9 w-56" /><Skeleton className="h-48 w-full" /></div>;
   if (skills.isError) return <p role="alert" className="text-body text-destructive">{t(($) => $.skills.error)} <Button variant="outline" size="sm" onClick={() => skills.refetch()}>{t(($) => $.skills.retry)}</Button></p>;
-  if (!skills.data?.length) return <div className="space-y-3 text-body"><p>{t(($) => $.skills.empty)}</p><AppLink href={paths.skills()}>{t(($) => $.skills.manage)}</AppLink></div>;
+  if (!skills.data?.length) return (
+    <div className="space-y-4">
+      <div className="space-y-3 text-body"><p>{t(($) => $.skills.empty)}</p><AppLink href={paths.skills()}>{t(($) => $.skills.manage)}</AppLink></div>
+      <CatalogDiscoveries entries={discoveries} importingKey={importingKey} onImport={handleImport} locale={locale} />
+    </div>
+  );
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <label className="space-y-1.5 text-caption text-muted-foreground">
           <span>{t(($) => $.skills.choose)}</span>
-          <Select items={(skills.data ?? []).map((s) => ({ value: s.id, label: s.name }))} value={currentId} onValueChange={(id) => { if (typeof id === "string") { setSelectedId(id); setSelectedVersion(null); setComparisonVersion(null); } }}>
+          <Select items={selectableSkills.map((s) => ({ value: s.id, label: s.name }))} value={currentId} onValueChange={(id) => { if (typeof id === "string") { setSelectedId(id); setSelectedVersion(null); setComparisonVersion(null); } }}>
             <SelectTrigger className="w-56 max-w-full" size="sm"><SelectValue>{currentSkill?.name ?? t(($) => $.skills.choose)}</SelectValue></SelectTrigger>
-            <SelectContent>{skills.data?.map((skill) => <SelectItem key={skill.id} value={skill.id}>{skill.name}</SelectItem>)}</SelectContent>
+            <SelectContent>{selectableSkills.map((skill) => <SelectItem key={skill.id} value={skill.id}>{skill.name}</SelectItem>)}</SelectContent>
           </Select>
         </label>
-        <Button size="sm" variant="outline" render={<AppLink href={paths.skills()} />}>{t(($) => $.skills.manage)}</Button>
+        <div className="flex flex-wrap items-end gap-2">
+          <label className="space-y-1.5 text-caption text-muted-foreground">
+            <span>{t(($) => $.skills.catalogSearchLabel)}</span>
+            <Input value={search} onChange={(e) => setSearch(e.target.value)} placeholder={t(($) => $.skills.catalogSearchPlaceholder)} className="h-9 w-44" />
+          </label>
+          <label className="space-y-1.5 text-caption text-muted-foreground">
+            <span>{t(($) => $.skills.catalogSourceFilter)}</span>
+            <Select items={[
+              { value: "all", label: t(($) => $.skills.catalogSourceAll) },
+              { value: "workspace", label: t(($) => $.skills.catalogSourceWorkspace) },
+              { value: "runtime", label: t(($) => $.skills.catalogSourceRuntime) },
+              { value: "plugin", label: t(($) => $.skills.catalogSourcePlugin) },
+            ]} value={sourceFilter} onValueChange={(value) => { if (typeof value === "string") setSourceFilter(value); }}>
+              <SelectTrigger className="w-36" size="sm"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">{t(($) => $.skills.catalogSourceAll)}</SelectItem>
+                <SelectItem value="workspace">{t(($) => $.skills.catalogSourceWorkspace)}</SelectItem>
+                <SelectItem value="runtime">{t(($) => $.skills.catalogSourceRuntime)}</SelectItem>
+                <SelectItem value="plugin">{t(($) => $.skills.catalogSourcePlugin)}</SelectItem>
+              </SelectContent>
+            </Select>
+          </label>
+          <Button size="sm" variant="outline" render={<AppLink href={paths.skills()} />}>{t(($) => $.skills.manage)}</Button>
+        </div>
       </div>
+
+      <p className="text-caption text-muted-foreground">{t(($) => $.skills.catalogSelectableHint)}</p>
 
       <div className="flex flex-wrap items-center gap-3 border-b pb-4">
         <h2 className="text-title font-semibold">{currentSkill?.name}</h2>
+        {currentSourceLabel && <Badge variant="secondary">{currentSourceLabel}</Badge>}
         {versions.data?.[0] && <Badge variant="secondary">{t(($) => $.skills.version, { version: versions.data[0].version })}</Badge>}
         <p className="w-full text-body text-muted-foreground">{currentSkill?.description}</p>
       </div>
+
+      <CatalogDiscoveries entries={visibleDiscoveries} importingKey={importingKey} onImport={handleImport} locale={locale} />
+      {discoveries.length > 0 && visibleDiscoveries.length === 0 && (
+        <p className="text-caption text-muted-foreground">{t(($) => $.skills.catalogNoMatch)}</p>
+      )}
 
       <div className="grid min-w-0 gap-8 lg:grid-cols-[minmax(0,2fr)_minmax(0,3fr)]">
         <section className="min-w-0 space-y-3" aria-label={t(($) => $.skills.history)}>
@@ -268,4 +362,49 @@ function SkillComparisonRow({ label, before, after, beforeSamples, afterSamples,
 
 function skillSnapshotText(version: { content: string; files: { path: string; content: string }[] }) {
   return [version.content, ...version.files.map((file) => `${file.path}\n${file.content}`)].join("\n\n");
+}
+
+/**
+ * Runtime-discovered skills that are not imported yet (RUYI-288). Metadata
+ * only: each row explains its state — importable, or already covered by an
+ * authored skill of the same name — and the import action reuses the existing
+ * runtime-local import flow, after which the skill shows up as a real
+ * selectable row with its own version trail.
+ */
+function CatalogDiscoveries({ entries, importingKey, onImport, locale }: {
+  entries: (SkillCatalogEntry & { runtime_id: string; key: string })[];
+  importingKey: string | null;
+  onImport: (entry: SkillCatalogEntry) => void;
+  locale: string;
+}) {
+  const { t } = useT("self-evolution");
+  if (entries.length === 0) return null;
+  return (
+    <section className="space-y-2" aria-label={t(($) => $.skills.discoveriesTitle)}>
+      <h3 className="text-body font-medium">{t(($) => $.skills.discoveriesTitle)}</h3>
+      <div className="divide-y rounded-lg border bg-card">
+        {entries.map((entry) => (
+          <div key={`${entry.runtime_id}:${entry.key}`} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2">
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-1.5">
+                <span className="truncate text-body font-medium">{entry.name}</span>
+                {entry.matching_skill_id
+                  ? <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-micro font-normal">{t(($) => $.skills.discoveryExists)}</Badge>
+                  : <Badge variant="outline" className="shrink-0 px-1.5 py-0 text-micro font-normal">{t(($) => $.skills.catalogSourceRuntime)}</Badge>}
+              </div>
+              <p className="truncate text-caption text-muted-foreground">
+                {entry.description || entry.source_path}
+                {` · ${t(($) => $.skills.discoveryLastSeen, { date: new Date(entry.last_seen_at ?? Date.now()).toLocaleString(locale) })}`}
+              </p>
+            </div>
+            {entry.matching_skill_id ? null : (
+              <Button variant="outline" size="sm" disabled={importingKey !== null} onClick={() => onImport(entry)}>
+                {importingKey === entry.key ? t(($) => $.skills.discoveryImporting) : t(($) => $.skills.discoveryImport)}
+              </Button>
+            )}
+          </div>
+        ))}
+      </div>
+    </section>
+  );
 }

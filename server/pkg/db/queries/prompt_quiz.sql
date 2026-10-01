@@ -7,11 +7,41 @@
 
 -- name: CreatePromptQuizItem :one
 INSERT INTO prompt_quiz_item (
-    workspace_id, slug, title, body, rubric, runtime_profile, created_by_user_id
+    workspace_id, slug, title, body, rubric, rubric_checks, tags, difficulty, runtime_profile, created_by_user_id
 ) VALUES (
     sqlc.arg('workspace_id'), sqlc.arg('slug'), sqlc.arg('title'), sqlc.arg('body'),
-    sqlc.arg('rubric'), sqlc.arg('runtime_profile'), sqlc.narg('created_by_user_id')
+    sqlc.arg('rubric'), sqlc.arg('rubric_checks'), sqlc.arg('tags'), sqlc.arg('difficulty'),
+    sqlc.arg('runtime_profile'), sqlc.narg('created_by_user_id')
 )
+RETURNING *;
+
+-- name: UpsertPromptQuizBankItem :one
+-- Bank import (RUYI-286): upsert on the item's (workspace_id, slug) identity so
+-- re-importing the benchmark catalog updates the shipped wording in place
+-- instead of duplicating it. Revision semantics mirror UpdatePromptQuizItem: the
+-- body is the only field whose change orphans old measurements, so only a body
+-- change advances it — a rubric/checks/tags/difficulty edit regrades future
+-- runs and re-renders the bank without rewriting history. created_by_user_id
+-- keeps the original author on conflict: an import refreshes content, it does
+-- not re-attribute it.
+INSERT INTO prompt_quiz_item (
+    workspace_id, slug, title, body, rubric, rubric_checks, tags, difficulty, runtime_profile, created_by_user_id
+) VALUES (
+    sqlc.arg('workspace_id'), sqlc.arg('slug'), sqlc.arg('title'), sqlc.arg('body'),
+    sqlc.arg('rubric'), sqlc.arg('rubric_checks'), sqlc.arg('tags'), sqlc.arg('difficulty'),
+    sqlc.arg('runtime_profile'), sqlc.narg('created_by_user_id')
+)
+ON CONFLICT (workspace_id, slug) DO UPDATE SET
+    title = EXCLUDED.title,
+    body = EXCLUDED.body,
+    rubric = EXCLUDED.rubric,
+    rubric_checks = EXCLUDED.rubric_checks,
+    tags = EXCLUDED.tags,
+    difficulty = EXCLUDED.difficulty,
+    revision = CASE WHEN prompt_quiz_item.body = EXCLUDED.body
+                    THEN prompt_quiz_item.revision
+                    ELSE prompt_quiz_item.revision + 1 END,
+    updated_at = now()
 RETURNING *;
 
 -- name: UpdatePromptQuizItem :one
@@ -19,11 +49,16 @@ RETURNING *;
 -- rewriting its rubric, must not orphan the measurements already taken against
 -- its wording, and bumping on every save would do exactly that. The rubric is
 -- deliberately not part of the test: it never reached the run being measured, so
--- editing it changes nothing about what was measured.
+-- editing it changes nothing about what was measured. rubric_checks follows the
+-- rubric for the same reason — it grades answers, it is not part of what was
+-- measured (migration 950).
 UPDATE prompt_quiz_item
 SET title = sqlc.arg('title'),
     body = sqlc.arg('body'),
     rubric = sqlc.arg('rubric'),
+    rubric_checks = sqlc.arg('rubric_checks'),
+    tags = sqlc.arg('tags'),
+    difficulty = sqlc.arg('difficulty'),
     runtime_profile = sqlc.arg('runtime_profile'),
     active = sqlc.arg('active'),
     revision = CASE WHEN body = sqlc.arg('body') THEN revision ELSE revision + 1 END,
@@ -43,12 +78,24 @@ FROM prompt_quiz_item
 WHERE id = sqlc.arg('id')::uuid
   AND workspace_id = sqlc.arg('workspace_id')::uuid;
 
+-- name: GetPromptQuizItemWorkspace :one
+-- Workspace resolution for quiz runs (RUYI-286 rework). ResolveTaskWorkspaceID
+-- knows only the task, so this is the one item read that cannot be
+-- workspace-scoped: it looks the workspace UP from the item id the task's
+-- context carries, instead of filtering by one. Selects the id alone — the
+-- private halves must not travel on an access-control path.
+SELECT workspace_id
+FROM prompt_quiz_item
+WHERE id = sqlc.arg('id')::uuid;
+
 -- name: ListPromptQuizItems :many
 -- The member-visible bank. Columns are named rather than selected with * so that
 -- rubric — the private half (migration 935) — cannot reach this response by
 -- being added to the table: the Go type this generates simply has no field for
--- it. Reading a rubric goes through GetPromptQuizItem, which the router puts
--- behind the owner role.
+-- it. The same holds for rubric_checks (migration 950), the structured half of
+-- the answer key: tags and difficulty are member-visible presentation metadata
+-- and DO travel; the two answer-key halves never do. Reading a private half
+-- goes through GetPromptQuizItem, which the router puts behind the owner role.
 SELECT
     id,
     workspace_id,
@@ -56,6 +103,8 @@ SELECT
     title,
     body,
     revision,
+    tags,
+    difficulty,
     runtime_profile,
     active,
     created_by_user_id,
@@ -97,23 +146,34 @@ ORDER BY id;
 -- rewrites the measurement it already wrote instead of doubling the sample —
 -- the property the distribution baseline depends on, since N is counted from
 -- these rows.
+--
+-- score / score_detail / graded_at (migration 950) ride the same upsert: the
+-- grade is computed by the collector just before this call, so a re-collected
+-- task re-grades instead of keeping a stale verdict. A NULL score is a stored
+-- state, not an omission: an item without checks, an errored run, and a run
+-- that left no answer text are all "measured but not graded".
 INSERT INTO prompt_quiz_result (
     workspace_id, scope, scope_id, version,
     item_id, item_revision, item_body_sha256,
     runtime_id, run_model,
-    batch_id, task_id, outcome, run_tokens, duration_ms, measured_at
+    batch_id, task_id, outcome, run_tokens, duration_ms, measured_at,
+    score, score_detail, graded_at
 ) VALUES (
     sqlc.arg('workspace_id'), sqlc.arg('scope'), sqlc.arg('scope_id'), sqlc.arg('version'),
     sqlc.arg('item_id'), sqlc.arg('item_revision'), sqlc.arg('item_body_sha256'),
     sqlc.arg('runtime_id'), sqlc.narg('run_model'),
     sqlc.arg('batch_id'), sqlc.arg('task_id'), sqlc.arg('outcome'),
-    sqlc.narg('run_tokens'), sqlc.narg('duration_ms'), now()
+    sqlc.narg('run_tokens'), sqlc.narg('duration_ms'), now(),
+    sqlc.narg('score'), sqlc.narg('score_detail'), sqlc.narg('graded_at')
 )
 ON CONFLICT (task_id) DO UPDATE SET
     outcome = EXCLUDED.outcome,
     run_tokens = EXCLUDED.run_tokens,
     run_model = EXCLUDED.run_model,
     duration_ms = EXCLUDED.duration_ms,
+    score = EXCLUDED.score,
+    score_detail = EXCLUDED.score_detail,
+    graded_at = EXCLUDED.graded_at,
     measured_at = now()
 RETURNING *;
 
@@ -142,6 +202,7 @@ SELECT
     r.runtime_id,
     r.run_model,
     r.outcome,
+    r.score,
     r.run_tokens,
     r.duration_ms,
     r.measured_at
@@ -415,3 +476,89 @@ WHERE r.scope = 'agent' AND a.workspace_id = $1
 GROUP BY r.scope, r.scope_id, a.name
 ORDER BY last_measured_at DESC
 LIMIT 1;
+
+-- name: GetPromptQuizTaskAnswer :one
+-- The answer a quiz run produced: its last text message (RUYI-286 grading).
+--
+-- 'text' is the assistant-output message type the daemon writes (thinking /
+-- tool_use / tool_result / error are the others); the LAST one by seq is the
+-- run's conclusion. task_message is the single transcript — this reads it,
+-- it does not copy it, so grading evidence can point at the run without the
+-- result row growing a second copy of the answer.
+--
+-- ErrNoRows is the "no answer" case (errored run, or a completed run that
+-- somehow produced no text): the collector maps it to a NULL score, which is
+-- the "measured but not graded" state migration 950 defines.
+SELECT content
+FROM task_message
+WHERE task_id = sqlc.arg('task_id')::uuid
+  AND type = 'text'
+  AND content IS NOT NULL
+ORDER BY seq DESC
+LIMIT 1;
+
+-- name: ListPromptQuizResultsForBatch :many
+-- One batch's rows for the traceability view (RUYI-286): per sample — which
+-- item, which agent/version, outcome, score, and the task id that joins back
+-- to the run. Owner-only at the route: it exposes score_detail's assertion
+-- evidence, which is the private half's grading output.
+--
+-- LEFT JOIN, not JOIN: an item hard-deleted after the batch ran must not erase
+-- the batch's history — the reading stays interpretable through item_revision
+-- and item_body_sha256, which is exactly why the item is not a version table.
+SELECT
+    r.task_id,
+    r.scope,
+    r.scope_id,
+    r.version,
+    r.item_id,
+    r.item_revision,
+    r.outcome,
+    r.score,
+    r.score_detail,
+    r.graded_at,
+    r.measured_at,
+    r.run_tokens,
+    i.slug AS item_slug,
+    i.title AS item_title,
+    atq.status AS task_status
+FROM prompt_quiz_result r
+LEFT JOIN prompt_quiz_item i ON i.id = r.item_id AND i.workspace_id = r.workspace_id
+JOIN agent_task_queue atq ON atq.id = r.task_id
+WHERE r.workspace_id = sqlc.arg('workspace_id')::uuid
+  AND r.batch_id = sqlc.arg('batch_id')::uuid
+ORDER BY r.measured_at DESC
+LIMIT sqlc.arg('row_limit')::int;
+
+-- name: ListPromptQuizGradedSamples :many
+-- One scope-version's graded samples, newest first, for the drill-down
+-- (RUYI-286): the row the quality page reads to answer "what did this version
+-- score on this question, when, and on what evidence". Owner-only at the
+-- route for the same reason as the batch list above.
+--
+-- Like ListPromptQuizResultsForBatch: LEFT JOIN so deleting an item keeps its
+-- readings readable; errored rows return with their outcome intact so "not
+-- graded because the run errored" stays visible rather than collapsing into
+-- the graded population.
+SELECT
+    r.task_id,
+    r.batch_id,
+    r.item_id,
+    r.item_revision,
+    r.item_body_sha256,
+    r.outcome,
+    r.score,
+    r.score_detail,
+    r.graded_at,
+    r.measured_at,
+    r.run_tokens,
+    i.slug AS item_slug,
+    i.title AS item_title
+FROM prompt_quiz_result r
+LEFT JOIN prompt_quiz_item i ON i.id = r.item_id AND i.workspace_id = r.workspace_id
+WHERE r.workspace_id = sqlc.arg('workspace_id')::uuid
+  AND r.scope = sqlc.arg('scope')::text
+  AND r.scope_id = sqlc.arg('scope_id')::uuid
+  AND r.version = sqlc.arg('version')::int
+ORDER BY r.measured_at DESC
+LIMIT sqlc.arg('row_limit')::int;

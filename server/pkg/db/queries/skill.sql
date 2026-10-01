@@ -23,6 +23,19 @@ WHERE id = $1;
 SELECT * FROM skill
 WHERE id = $1 AND workspace_id = $2;
 
+-- name: ListSkillCatalogByWorkspace :many
+-- Catalog read model for the workspace skill directory (RUYI-288): same rows
+-- as ListSkillsByWorkspace minus the heavy columns, plus the derived source
+-- classification. `origin_type` is 'runtime_local' for skills imported from
+-- runtime-local discovery; plugin-sourced rows are identified by
+-- plugin_installation_id. Everything else is workspace-authored.
+SELECT id, name, description, created_by, created_at, updated_at,
+       (plugin_installation_id IS NOT NULL)::bool AS is_plugin,
+       COALESCE(config -> 'origin' ->> 'type', '')::text AS origin_type
+FROM skill
+WHERE workspace_id = $1
+ORDER BY name ASC;
+
 -- name: GetSkillByWorkspaceAndName :one
 -- Used by skill import and runtime-local skill discovery to reuse a workspace
 -- skill by name rather than violating UNIQUE(workspace_id, name).

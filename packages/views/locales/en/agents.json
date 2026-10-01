@@ -708,7 +708,15 @@
       "add_dialog_confirm_one": "Add {{count}} skill",
       "add_dialog_confirm_other": "Add {{count}} skills",
       "add_dialog_cancel": "Cancel",
-      "add_failed_toast": "Failed to add skill"
+      "add_failed_toast": "Failed to add skill",
+      "source_runtime": "Runtime",
+      "source_plugin": "Plugin",
+      "add_dialog_discoveries_title": "Discovered on runtimes",
+      "add_dialog_discovery_hint": "Folders discovered on connected runtimes. Importing creates an assignable workspace skill; until then they are listed for visibility only.",
+      "add_dialog_discovery_import": "Import",
+      "add_dialog_discovery_importing": "Importing…",
+      "add_dialog_discovery_imported_toast": "Skill imported and now selectable.",
+      "add_dialog_discovery_import_failed_toast": "Import failed. Check the runtime connection and try again."
     },
     "integrations": {
       "intro": "Connect this agent to external chat platforms so people can work with it where they already are.",
