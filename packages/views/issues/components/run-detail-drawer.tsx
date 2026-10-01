@@ -101,7 +101,7 @@ function RunDetailContent({
   return (
     <>
       <SheetHeader className="p-0">
-        <SheetTitle className="text-left text-sm leading-snug">{trigger}</SheetTitle>
+        <SheetTitle className="text-left text-body leading-snug">{trigger}</SheetTitle>
         <div className="flex items-center gap-1.5 text-caption">
           <TaskStatusIcon status={task.status} />
           <span>{statusLabel}</span>
