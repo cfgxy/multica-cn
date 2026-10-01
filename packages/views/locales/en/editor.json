@@ -87,11 +87,14 @@
   },
   "slash_command": {
     "skills_group": "Skills",
+    "skills_attached_group": "Attached to this agent",
+    "skills_unattached_group": "Not attached",
     "commands_group": "Commands",
     "all_agents": "All",
     "no_agents": "No agents",
     "no_skills_configured": "No skills configured",
     "no_results": "No matching skills",
+    "unattached_reason": "Won't take effect — attach it to this agent first",
     "commands": {
       "note": "Add a note — won't trigger any agents"
     }

@@ -419,6 +419,60 @@ func (q *Queries) ListAgentSkillsByWorkspace(ctx context.Context, workspaceID pg
 	return items, nil
 }
 
+const listSkillCatalogByWorkspace = `-- name: ListSkillCatalogByWorkspace :many
+SELECT id, name, description, created_by, created_at, updated_at,
+       (plugin_installation_id IS NOT NULL)::bool AS is_plugin,
+       COALESCE(config -> 'origin' ->> 'type', '')::text AS origin_type
+FROM skill
+WHERE workspace_id = $1
+ORDER BY name ASC
+`
+
+type ListSkillCatalogByWorkspaceRow struct {
+	ID          pgtype.UUID        `json:"id"`
+	Name        string             `json:"name"`
+	Description string             `json:"description"`
+	CreatedBy   pgtype.UUID        `json:"created_by"`
+	CreatedAt   pgtype.Timestamptz `json:"created_at"`
+	UpdatedAt   pgtype.Timestamptz `json:"updated_at"`
+	IsPlugin    bool               `json:"is_plugin"`
+	OriginType  string             `json:"origin_type"`
+}
+
+// Catalog read model for the workspace skill directory (RUYI-288): same rows
+// as ListSkillsByWorkspace minus the heavy columns, plus the derived source
+// classification. `origin_type` is 'runtime_local' for skills imported from
+// runtime-local discovery; plugin-sourced rows are identified by
+// plugin_installation_id. Everything else is workspace-authored.
+func (q *Queries) ListSkillCatalogByWorkspace(ctx context.Context, workspaceID pgtype.UUID) ([]ListSkillCatalogByWorkspaceRow, error) {
+	rows, err := q.db.Query(ctx, listSkillCatalogByWorkspace, workspaceID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListSkillCatalogByWorkspaceRow{}
+	for rows.Next() {
+		var i ListSkillCatalogByWorkspaceRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Name,
+			&i.Description,
+			&i.CreatedBy,
+			&i.CreatedAt,
+			&i.UpdatedAt,
+			&i.IsPlugin,
+			&i.OriginType,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listSkillFileMetadata = `-- name: ListSkillFileMetadata :many
 SELECT id, skill_id, path,
        octet_length(content)::bigint AS size,

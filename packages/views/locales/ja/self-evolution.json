@@ -122,7 +122,23 @@
       "revision": "提案による改訂",
       "edit": "編集",
       "restore": "復元"
-    }
+    },
+    "catalogSearchLabel": "検索",
+    "catalogSearchPlaceholder": "名前でスキルを検索",
+    "catalogSourceFilter": "ソース",
+    "catalogSourceAll": "すべてのソース",
+    "catalogSourceWorkspace": "ワークスペース",
+    "catalogSourceRuntime": "ランタイム",
+    "catalogSourcePlugin": "プラグイン",
+    "catalogSelectableHint": "選択可能な行はこのワークスペースにインポート済みのスキルです。下のランタイム/プラグインの検出は表示のみで、インポート後に選択できます。",
+    "catalogNoMatch": "現在の検索またはソース絞り込みに一致する検出結果はありません。",
+    "discoveriesTitle": "ランタイムで検出",
+    "discoveryImport": "インポート",
+    "discoveryImporting": "インポート中…",
+    "discoveryExists": "スキル登録済み",
+    "discoveryLastSeen": "最終検出 {{date}}",
+    "discoveryImportedToast": "スキルをインポートしました。独自のバージョン履歴付きで選択できます。",
+    "discoveryImportFailedToast": "インポートに失敗しました。ランタイム接続を確認して再試行してください。"
   },
   "quality": {
     "scopePicker": {
