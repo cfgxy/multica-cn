@@ -31,7 +31,6 @@ type SkillVersionResponse struct {
 	Files            []SkillVersionFile `json:"files,omitempty"`
 	Source           string             `json:"source"`
 	SourceVersion    *int32             `json:"source_version,omitempty"`
-	SourceProposalID *string            `json:"source_proposal_id,omitempty"`
 	AuthorUserID     *string            `json:"author_user_id,omitempty"`
 	CanRestore       bool               `json:"can_restore"`
 	CreatedAt        time.Time          `json:"created_at"`
@@ -84,7 +83,7 @@ func (h *Handler) ListSkillVersions(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rows, err := h.DB.Query(r.Context(), `SELECT id, version, name, description, source,
-		source_version, source_proposal_id, author_user_id, created_at
+		source_version, author_user_id, created_at
 		FROM skill_version WHERE skill_id = $1 AND workspace_id = $2 ORDER BY version DESC`,
 		skill.ID, skill.WorkspaceID)
 	if err != nil {
@@ -95,20 +94,16 @@ func (h *Handler) ListSkillVersions(w http.ResponseWriter, r *http.Request) {
 	versions := make([]SkillVersionResponse, 0)
 	for rows.Next() {
 		v := SkillVersionResponse{SkillID: uuidToString(skill.ID), CanRestore: member.Role == "owner"}
-		var id, proposalID, authorID pgtype.UUID
+		var id, authorID pgtype.UUID
 		var sourceVersion pgtype.Int4
 		if err := rows.Scan(&id, &v.Version, &v.Name, &v.Description, &v.Source,
-			&sourceVersion, &proposalID, &authorID, &v.CreatedAt); err != nil {
+			&sourceVersion, &authorID, &v.CreatedAt); err != nil {
 			writeError(w, http.StatusInternalServerError, "failed to read skill versions")
 			return
 		}
 		v.ID = uuidToString(id)
 		if sourceVersion.Valid {
 			v.SourceVersion = &sourceVersion.Int32
-		}
-		if proposalID.Valid {
-			s := uuidToString(proposalID)
-			v.SourceProposalID = &s
 		}
 		if authorID.Valid {
 			s := uuidToString(authorID)
@@ -134,14 +129,14 @@ func skillVersionNumber(w http.ResponseWriter, r *http.Request) (int32, bool) {
 
 func (h *Handler) loadSkillVersion(ctx context.Context, skill db.Skill, version int32) (SkillVersionResponse, error) {
 	v := SkillVersionResponse{SkillID: uuidToString(skill.ID)}
-	var id, proposalID, authorID pgtype.UUID
+	var id, authorID pgtype.UUID
 	var sourceVersion pgtype.Int4
 	var files []byte
 	err := h.DB.QueryRow(ctx, `SELECT id, version, name, description, content, config,
-		files, source, source_version, source_proposal_id, author_user_id, created_at
+		files, source, source_version, author_user_id, created_at
 		FROM skill_version WHERE skill_id = $1 AND workspace_id = $2 AND version = $3`,
 		skill.ID, skill.WorkspaceID, version).Scan(&id, &v.Version, &v.Name, &v.Description,
-		&v.Content, &v.Config, &files, &v.Source, &sourceVersion, &proposalID, &authorID, &v.CreatedAt)
+		&v.Content, &v.Config, &files, &v.Source, &sourceVersion, &authorID, &v.CreatedAt)
 	if err != nil {
 		return v, err
 	}
@@ -151,10 +146,6 @@ func (h *Handler) loadSkillVersion(ctx context.Context, skill db.Skill, version 
 	v.ID = uuidToString(id)
 	if sourceVersion.Valid {
 		v.SourceVersion = &sourceVersion.Int32
-	}
-	if proposalID.Valid {
-		s := uuidToString(proposalID)
-		v.SourceProposalID = &s
 	}
 	if authorID.Valid {
 		s := uuidToString(authorID)

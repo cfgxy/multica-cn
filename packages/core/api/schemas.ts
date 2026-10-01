@@ -3383,7 +3383,6 @@ export const SkillVersionSummarySchema = z.object({
   source: z.string(),
   can_restore: z.boolean().optional().default(false),
   source_version: z.number().int().positive().optional(),
-  source_proposal_id: z.string().optional(),
   author_user_id: z.string().optional(),
   created_at: z.string(),
 });
@@ -4432,24 +4431,91 @@ export const EMPTY_PROMPT_QUIZ_BASELINE: PromptQuizBaseline = {
   baseline_incomparable: 0,
 };
 
-export const ProposalSchema = z.object({
+// The gate report keeps the server's legislation.Finding shape (structured
+// line/level/message, jsonb passthrough) — flattening these to strings would
+// make parseWithFallback drop every real gate_failed row into its fallback.
+export const LegislationGateFindingSchema = z.object({
+  line: z.number().optional(),
+  level: z.string(),
+  message: z.string(),
+});
+
+export const PromptProposalMergeRefSchema = z.object({
+  issue_id: z.string(),
+  run_id: z.string(),
+});
+
+export const PromptProposalSchema = z.object({
   id: z.string(),
-  type: z.string(),
+  workspace_id: z.string(),
+  carrier_scope: z.string(),
+  carrier_scope_id: z.string(),
+  target_section: z.string(),
+  change_kind: z.string(),
+  clause_name: z.string(),
+  clause_text: z.string(),
+  gate_answer_layer: z.string(),
+  gate_answer_retention: z.string(),
+  gate_answer_cost: z.string(),
+  gate_answer_conflict: z.string(),
+  gate_answer_dedup: z.string(),
+  evidence_anchors: z.array(z.record(z.string(), z.unknown())),
   status: z.string(),
-  title: z.string(),
-  summary: z.string(),
-  evidence: z.array(z.unknown()),
-  prophecy: z.record(z.string(), z.unknown()),
-  generation_snapshot: z.record(z.string(), z.unknown()),
-  adoption_snapshot: z.record(z.string(), z.unknown()).optional(),
-  verification: z.record(z.string(), z.unknown()).optional(),
+  gate_errors: z.array(LegislationGateFindingSchema),
+  gate_warnings: z.array(LegislationGateFindingSchema),
+  enacted_version: z.number().optional(),
+  rollback_reason: z.string(),
+  merged_from: z.array(PromptProposalMergeRefSchema),
+  source: z.string(),
+  created_by_type: z.string(),
+  created_by_id: z.string().optional(),
   audit_log: z.array(z.unknown()),
-  transfer_error: z.string().optional(),
   created_at: z.string(),
   updated_at: z.string(),
 }).loose();
 
-export const ProposalListSchema = z.array(ProposalSchema);
+export const PromptProposalListSchema = z.array(PromptProposalSchema);
+
+export const LegislationDiffLineSchema = z.object({
+  kind: z.enum(["context", "add", "del"]),
+  text: z.string(),
+});
+
+export const PromptProposalPreviewSchema = z.object({
+  proposal: PromptProposalSchema,
+  diff: z.array(LegislationDiffLineSchema),
+  current_sha256: z.string(),
+  baseline_used: z.boolean(),
+});
+
+export const PromptProposalBatchOutcomeSchema = z.object({
+  id: z.string(),
+  status: z.number(),
+  body: z.string(),
+});
+
+export const RetrospectiveConfigSchema = z.object({
+  enabled: z.boolean(),
+  include_in_review: z.boolean(),
+  window_days: z.number(),
+});
+
+export const RetrospectiveRunSchema = z.object({
+  id: z.string(),
+  status: z.string(),
+  trigger: z.string(),
+  window_start: z.string(),
+  window_end: z.string(),
+  issues_scanned: z.number(),
+  issues_analyzed: z.number(),
+  proposals_created: z.number(),
+  proposals_merged: z.number(),
+  duplicates_skipped: z.number(),
+  error: z.string(),
+  created_at: z.string(),
+}).loose();
+
+export const RetrospectiveRunListSchema = z.array(RetrospectiveRunSchema);
 
 export const KnowledgeScanBatchSchema = z.object({
   id: z.string(),

@@ -11,6 +11,7 @@ import { cn } from "@multica/ui/lib/utils";
 import { KnowledgeTab } from "./knowledge-tab";
 import { OverviewTab } from "./overview-tab";
 import { ProposalTab } from "./proposal-tab";
+import { RetrospectiveTab } from "./retrospective-tab";
 import { QualityTab } from "./quality-tab";
 import { QuizTab } from "./quiz-tab";
 import { SkillTab } from "./skill-tab";
@@ -22,8 +23,9 @@ import { VersionsTab } from "./versions-tab";
  * Phase 1 (RUYI-183) wired up the nav entry, route and locale surface; the
  * quality tab (RUYI-184) is the first one with data behind it, and the quiz tab
  * (RUYI-185) reads the same scopes through a fixed question bank. Skill history
- * and observed use join them in phase four, and the proposal pool plus the
- * knowledge mirror (RUYI-265) close the loop from evidence to adoption. The
+ * and observed use join them in phase four, and the prompt legislation pool
+ * plus the daily retrospective (RUYI-305) and the knowledge mirror (RUYI-265)
+ * close the loop from evidence to enacted clauses. The
  * tabs live inside the page rather than as sibling routes, so no new route or
  * page key enters the three registries.
  */
@@ -53,6 +55,7 @@ export function SelfEvolutionPage() {
             <TabsTrigger value="quiz">{t(($) => $.tabs.quiz)}</TabsTrigger>
             <TabsTrigger value="skills">{t(($) => $.tabs.skills)}</TabsTrigger>
             <TabsTrigger value="proposals">{t(($) => $.tabs.proposals)}</TabsTrigger>
+            <TabsTrigger value="retrospective">{t(($) => $.tabs.retrospective)}</TabsTrigger>
             <TabsTrigger value="knowledge">{t(($) => $.tabs.knowledge)}</TabsTrigger>
           </TabsList>
           <TabsContent value="overview" className="pt-6">
@@ -72,6 +75,9 @@ export function SelfEvolutionPage() {
           </TabsContent>
           <TabsContent value="proposals" className="pt-6">
             <ProposalTab wsId={wsId} />
+          </TabsContent>
+          <TabsContent value="retrospective" className="pt-6">
+            <RetrospectiveTab wsId={wsId} />
           </TabsContent>
           <TabsContent value="knowledge" className="pt-6">
             <KnowledgeTab wsId={wsId} />
