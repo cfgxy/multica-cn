@@ -939,7 +939,6 @@ export interface SkillVersionSummary {
   source: string;
   can_restore?: boolean;
   source_version?: number;
-  source_proposal_id?: string;
   author_user_id?: string;
   created_at: string;
 }
@@ -1002,46 +1001,6 @@ export interface SkillEffect {
     before_mode: string;
     after_mode: string;
   }[];
-}
-
-/**
- * GET/POST /api/proposals — the self-evolution proposal pool (§A B1–B3).
- * The prophecy is required at creation and frozen afterwards; adoption and
- * verification are separate records, and rejected rows stay retrievable.
- */
-export interface Proposal {
-  id: string;
-  type: string;
-  status: string;
-  title: string;
-  summary: string;
-  evidence: unknown[];
-  prophecy: Record<string, unknown>;
-  generation_snapshot: Record<string, unknown>;
-  adoption_snapshot?: Record<string, unknown>;
-  verification?: Record<string, unknown>;
-  audit_log: unknown[];
-  /** "system" rows are seeded by knowledge auto-discovery (RUYI-289). */
-  created_by_type?: string;
-  /** Non-empty while a knowledge transfer rides the daemon queue. */
-  transfer_state?: string;
-  transfer_error?: string;
-  created_at: string;
-  updated_at: string;
-}
-
-export interface CreateProposalRequest {
-  type: string;
-  title: string;
-  summary: string;
-  evidence?: unknown[];
-  prophecy: Record<string, unknown>;
-}
-
-export interface VerifyProposalRequest {
-  verdict: string;
-  evidence: string;
-  note?: string;
 }
 
 /** One scan of one knowledge directory — every batch is logged, even no-ops. */

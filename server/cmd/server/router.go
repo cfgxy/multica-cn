@@ -2066,6 +2066,9 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 				// versions. A reading, never a gate — no write route below
 				// consults it.
 				r.Get("/quiz", h.GetPromptQuizBaseline)
+				// Structure baseline (RUYI-305 E4): the enacted-reference
+				// section/clause lists the gate diffs against. Read-only.
+				r.Get("/baseline", h.GetPromptStructureBaselineHandler)
 			})
 			r.Group(func(r chi.Router) {
 				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
@@ -2112,24 +2115,52 @@ func NewRouterWithOptions(pool *pgxpool.Pool, hub *realtime.Hub, bus *events.Bus
 			r.Get("/samples", h.GetPromptQuizSamples)
 		})
 
-		// Self-evolution daily proposals (RUYI-265, spec §A B1–B3). Human
-		// actors only: browsing and submitting the pool is member-level;
-		// adopt/reject/restore/verify are the Owner's decisions, and
-		// rejected proposals stay readable but re-enter the pool solely
-		// through the audited restore action.
-		r.Route("/api/proposals", func(r chi.Router) {
+		// Prompt legislation (RUYI-305 E2): the rebuilt proposal pool. A
+		// proposal is a Prompt improvement draft moving through
+		// draft → pending_owner → approved → (gate) → enacted | gate_failed,
+		// with rejected kept for the record and re-entered only via the
+		// audited restore. Browsing, drafting and submitting are member
+		// actions on their own drafts; approve/reject/restore/enact are the
+		// Owner's decisions — enact is the system execution, so it never
+		// accepts a member route. Approval requires the full-carrier diff to
+		// have been previewed first (confirm_diff_previewed), the injection
+		// defence for a channel that writes into every agent's context.
+		r.Route("/api/prompt-legislation/proposals", func(r chi.Router) {
 			r.Use(handler.RequireHumanActor)
 			r.Group(func(r chi.Router) {
 				r.Use(middleware.RequireWorkspaceMember(queries))
-				r.Get("/", h.GetProposals)
-				r.Post("/", h.PostProposal)
+				r.Get("/", h.ListPromptProposals)
+				r.Post("/", h.CreatePromptProposal)
+				r.Patch("/{id}", h.UpdatePromptProposal)
+				r.Post("/{id}/submit", h.SubmitPromptProposal)
+				r.Post("/{id}/preview", h.PreviewPromptProposal)
+				r.Post("/{id}/rework", h.ReworkPromptProposal)
 			})
 			r.Group(func(r chi.Router) {
 				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
-				r.Post("/{id}/adopt", h.AdoptProposal)
-				r.Post("/{id}/reject", h.RejectProposal)
-				r.Post("/{id}/restore", h.RestoreProposal)
-				r.Post("/{id}/verify", h.VerifyProposal)
+				r.Post("/{id}/approve", h.ApprovePromptProposal)
+				r.Post("/approve-batch", h.BatchApprovePromptProposals)
+				r.Post("/{id}/reject", h.RejectPromptProposal)
+				r.Post("/{id}/restore", h.RestorePromptProposal)
+				r.Post("/{id}/enact", h.EnactPromptProposal)
+			})
+		})
+
+		// Daily retrospective (RUYI-305 E3): config and run records surface
+		// on the self-evolution page. Reads are member-level; enabling the
+		// schedule and triggering a manual pass are Owner decisions — a run
+		// writes proposals into the pool and spends model budget.
+		r.Route("/api/retrospective", func(r chi.Router) {
+			r.Use(handler.RequireHumanActor)
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireWorkspaceMember(queries))
+				r.Get("/config", h.GetRetrospectiveConfig)
+				r.Get("/runs", h.ListRetrospectiveRuns)
+			})
+			r.Group(func(r chi.Router) {
+				r.Use(middleware.RequireWorkspaceRole(queries, "owner"))
+				r.Put("/config", h.UpdateRetrospectiveConfig)
+				r.Post("/run", h.TriggerRetrospectiveRun)
 			})
 		})
 
