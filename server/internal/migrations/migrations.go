@@ -31,7 +31,7 @@ func ResolveDir() (string, error) {
 				}
 				seen[dir] = true
 				info, err := os.Stat(dir)
-				if err == nil && info.IsDir() {
+				if err == nil && info.IsDir() && hasUpMigrations(dir) {
 					return dir, nil
 				}
 			}
@@ -39,6 +39,16 @@ func ResolveDir() (string, error) {
 		}
 	}
 	return "", fmt.Errorf("migrations directory not found")
+}
+
+// hasUpMigrations reports whether dir actually contains migration files. A
+// directory merely named "migrations" must not win the search: test binaries
+// resolve from their package's working directory, and this package's own dir
+// (internal/migrations) is named "migrations" while holding no *.up.sql —
+// taking it made Files() return an empty migration set (RUYI-322 precheck).
+func hasUpMigrations(dir string) bool {
+	matches, err := filepath.Glob(filepath.Join(dir, "*.up.sql"))
+	return err == nil && len(matches) > 0
 }
 
 func searchRoots() []string {

@@ -3,6 +3,7 @@ package handler
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -37,11 +38,52 @@ var testRuntimeID string
 // writing an INSERT and a matching DELETE by hand; see internal/testutil.
 var dbfx *testutil.Fixture
 
-const (
-	handlerTestEmail         = "handler-test@multica.ai"
-	handlerTestName          = "Handler Test User"
-	handlerTestWorkspaceSlug = "handler-tests"
+const handlerTestName = "Handler Test User"
+
+// handlerFixtureSuffix is unique per test process: PID plus random bytes.
+// Random rides along because the shared dev database is reachable from more
+// than one host, so the PID alone does not separate two processes.
+var handlerFixtureSuffix = newHandlerFixtureSuffix()
+
+// The suite fixture identity used to be fixed (RUYI-311): two `go test`
+// processes on one shared database raced — process B's setup cleanup deleted
+// process A's live fixture user and workspace, and every later test in A
+// failed on missing rows and FK violations that looked like product
+// regressions. The identity is now process-unique so concurrent processes
+// never share fixture rows; sweepStaleHandlerFixtures keeps a process that
+// dies before its cleanup from leaking its rows forever.
+var (
+	handlerTestEmail         string
+	handlerTestWorkspaceSlug string
 )
+
+func init() {
+	handlerTestEmail, handlerTestWorkspaceSlug = makeHandlerFixtureIdentity()
+}
+
+func newHandlerFixtureSuffix() string {
+	buf := make([]byte, 4)
+	if _, err := rand.Read(buf); err != nil {
+		panic(fmt.Sprintf("seed handler fixture suffix: %v", err))
+	}
+	return fmt.Sprintf("%d-%x", os.Getpid(), buf)
+}
+
+// makeHandlerFixtureIdentity returns a fresh (email, slug) pair unique among
+// all test processes sharing one database. TestMain seeds the package vars
+// from one call; tests call it again to stand in for a concurrent process.
+func makeHandlerFixtureIdentity() (string, string) {
+	suffix := newHandlerFixtureSuffix()
+	return "handler-test-" + suffix + "@multica.ai", "handler-tests-" + suffix
+}
+
+// handlerTestSlug namespaces a per-test workspace slug to this process.
+// Per-test fixtures clean their predecessor by deleting the slug before
+// reinserting, so fixed per-test slugs made that pre-delete cross-process
+// too: it removed the other process's live test workspace mid-run.
+func handlerTestSlug(name string) string {
+	return name + "-" + handlerFixtureSuffix
+}
 
 func TestMain(m *testing.M) {
 	// Helper-process children (the fake-bd re-exec in knowledge_test.go) run
@@ -69,6 +111,18 @@ func TestMain(m *testing.M) {
 		fmt.Printf("Skipping tests: database not reachable: %v\n", err)
 		pool.Close()
 		os.Exit(0)
+	}
+
+	// Fail fast when the database cannot describe this branch's schema
+	// (RUYI-322): a ledger with versions an unmerged branch applied turned
+	// dynamic schema-manifest tests structurally red, and a ledger that lost
+	// applied tables surfaced as 500s in unrelated cases. Both are
+	// environment states, not code regressions — name them before any test
+	// runs. Strictly read-only.
+	if err := testutil.CheckMigrationLedger(ctx, pool); err != nil {
+		fmt.Printf("handler tests: refusing to run: %v\n", err)
+		pool.Close()
+		os.Exit(1)
 	}
 
 	queries := db.New(pool)
@@ -211,6 +265,9 @@ func keepFixtureRuntimeOnline(pool *pgxpool.Pool, runtimeID string) func() {
 }
 
 func setupHandlerTestFixture(ctx context.Context, pool *pgxpool.Pool) (string, string, error) {
+	if err := sweepStaleHandlerFixtures(ctx, pool); err != nil {
+		return "", "", err
+	}
 	if err := cleanupHandlerTestFixture(ctx, pool); err != nil {
 		return "", "", err
 	}
@@ -277,19 +334,72 @@ func setupHandlerTestFixture(ctx context.Context, pool *pgxpool.Pool) (string, s
 }
 
 func cleanupHandlerTestFixture(ctx context.Context, pool *pgxpool.Pool) error {
+	return cleanupHandlerFixtureIdentity(ctx, pool, handlerTestEmail, handlerTestWorkspaceSlug)
+}
+
+// cleanupHandlerFixtureIdentity removes one fixture identity's rows. It takes
+// the identity as parameters so a test can stand in for a concurrent process
+// and prove one identity's cleanup leaves another identity's rows alone.
+func cleanupHandlerFixtureIdentity(ctx context.Context, pool *pgxpool.Pool, email, slug string) error {
 	var hasClientUsageTable bool
 	if err := pool.QueryRow(ctx, `SELECT to_regclass('client_usage_daily') IS NOT NULL`).Scan(&hasClientUsageTable); err != nil {
 		return err
 	}
 	if hasClientUsageTable {
-		if _, err := pool.Exec(ctx, `DELETE FROM client_usage_daily WHERE user_id IN (SELECT id FROM "user" WHERE email = $1)`, handlerTestEmail); err != nil {
+		if _, err := pool.Exec(ctx, `DELETE FROM client_usage_daily WHERE user_id IN (SELECT id FROM "user" WHERE email = $1)`, email); err != nil {
 			return err
 		}
 	}
-	if _, err := pool.Exec(ctx, `DELETE FROM workspace WHERE slug = $1`, handlerTestWorkspaceSlug); err != nil {
+	if _, err := pool.Exec(ctx, `DELETE FROM workspace WHERE slug = $1`, slug); err != nil {
 		return err
 	}
-	if _, err := pool.Exec(ctx, `DELETE FROM "user" WHERE email = $1`, handlerTestEmail); err != nil {
+	if _, err := pool.Exec(ctx, `DELETE FROM "user" WHERE email = $1`, email); err != nil {
+		return err
+	}
+	return nil
+}
+
+// handlerFixtureResidueTTL bounds how long a fixture row may outlive the
+// process that created it. Process-unique fixture names mean a process that
+// dies before its cleanup leaks its rows: the next run no longer reuses (and
+// so no longer removes) the same fixed names. No handler test process runs
+// anywhere near this long, so anything in the fixture namespace older than
+// the TTL is dead residue, not another process's live fixture.
+const handlerFixtureResidueTTL = "24 hours"
+
+// sweepStaleHandlerFixtures removes fixture rows abandoned by processes that
+// died before cleanup. The patterns cover the whole handler fixture
+// namespace — the legacy fixed names ("handler-tests", "handler-test@…")
+// and every process-unique identity derived from them.
+func sweepStaleHandlerFixtures(ctx context.Context, pool *pgxpool.Pool) error {
+	var hasClientUsageTable bool
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('client_usage_daily') IS NOT NULL`).Scan(&hasClientUsageTable); err != nil {
+		return err
+	}
+	if hasClientUsageTable {
+		if _, err := pool.Exec(ctx, `
+			DELETE FROM client_usage_daily
+			WHERE user_id IN (
+				SELECT id FROM "user"
+				WHERE email LIKE 'handler-test%@multica.ai'
+				  AND created_at < now() - $1::interval
+			)
+		`, handlerFixtureResidueTTL); err != nil {
+			return err
+		}
+	}
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM workspace
+		WHERE slug LIKE 'handler-tests%'
+		  AND created_at < now() - $1::interval
+	`, handlerFixtureResidueTTL); err != nil {
+		return err
+	}
+	if _, err := pool.Exec(ctx, `
+		DELETE FROM "user"
+		WHERE email LIKE 'handler-test%@multica.ai'
+		  AND created_at < now() - $1::interval
+	`, handlerFixtureResidueTTL); err != nil {
 		return err
 	}
 	return nil
